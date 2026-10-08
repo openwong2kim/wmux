@@ -51,7 +51,14 @@ import {
   type ShortcutActionId,
 } from '../../../shared/keymap';
 import { shortcutPressGuard } from '../../utils/shortcutBindings';
-import { describeShortcut, rebindProblemText } from '../../utils/shortcutRebind';
+import {
+  builtinKeyConflict,
+  customKeyConflict,
+  describeShortcut,
+  rebindProblemText,
+  type KeyConflict,
+} from '../../utils/shortcutRebind';
+import KeyConflictConfirm from '../shared/KeyConflictConfirm';
 import { CLAUDE_EFFORT_LEVELS } from '../../../shared/claudeModels';
 import type { AgentSlug } from '../../../shared/agentIdentity';
 import {
@@ -4459,6 +4466,10 @@ export function TabShortcuts() {
   // Filter for the shortcut list: matches the action's name or its key combo.
   const [shortcutQuery, setShortcutQuery] = useState('');
   const [shortcutNote, setShortcutNote] = useState<{ action: ShortcutActionId; text: string } | null>(null);
+  // #1885 — a save that would leave a custom keybinding dead on its key waits
+  // here for Use anyway / Cancel.
+  const [keyConflict, setKeyConflict] = useState<{ conflict: KeyConflict; save: () => void } | null>(null);
+  useOwnedDialog(keyConflict !== null);
 
   const platform: NodeJS.Platform = window.electronAPI?.platform === 'darwin'
     ? 'darwin'
@@ -4481,7 +4492,22 @@ export function TabShortcuts() {
   const moveShortcut = (action: ShortcutActionId, combo: string) => {
     const text = problemText(action, combo);
     setShortcutNote(text ? { action, text } : null);
-    if (!text) setShortcutOverride(action, combo);
+    if (text) return;
+    const save = () => setShortcutOverride(action, combo);
+    const conflict = customKeyConflict(action, combo);
+    if (conflict) setKeyConflict({ conflict, save });
+    else save();
+  };
+  // A custom keybinding put on a key a built-in owns would never fire (#1885).
+  const recordCustomKey = (target: string, key: string) => {
+    const save = () => {
+      if (target === 'new') addKeybinding({ key, label: '', command: '', sendEnter: true });
+      else updateKeybinding(target, { key });
+    };
+    const unchanged = target !== 'new' && customKeybindings.some((kb) => kb.id === target && kb.key === key);
+    const conflict = unchanged ? null : builtinKeyConflict(key);
+    if (conflict) setKeyConflict({ conflict, save });
+    else save();
   };
   // Back to the default combo(s) — unless something else took one of them
   // meanwhile, which would leave two actions on one key.
@@ -4817,14 +4843,21 @@ export function TabShortcuts() {
         <KeyCaptureOverlay
           label={t('settings.kb.pressKey')}
           onCapture={(key, _code) => {
-            if (capturingFor === 'new') {
-              addKeybinding({ key, label: '', command: '', sendEnter: true });
-            } else {
-              updateKeybinding(capturingFor, { key });
-            }
+            recordCustomKey(capturingFor, key);
             setCapturingFor(null);
           }}
           onCancel={() => setCapturingFor(null)}
+        />
+      )}
+
+      {keyConflict && (
+        <KeyConflictConfirm
+          conflict={keyConflict.conflict}
+          onConfirm={() => {
+            keyConflict.save();
+            setKeyConflict(null);
+          }}
+          onCancel={() => setKeyConflict(null)}
         />
       )}
     </div>

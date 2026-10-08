@@ -20,7 +20,14 @@ import { isChatV2Covering } from '../ChatV2/coverage';
 import { showWorkspaces } from '../../utils/showWorkspaces';
 import { comboFromEvent, displayCombo, effectiveBindings, type ShortcutActionId } from '../../../shared/keymap';
 import { shortcutPlatform, shortcutPressGuard } from '../../utils/shortcutBindings';
-import { clearShortcut, describeShortcut, rebindProblemText } from '../../utils/shortcutRebind';
+import {
+  clearShortcut,
+  customKeyConflict,
+  describeShortcut,
+  rebindProblemText,
+  type KeyConflict,
+} from '../../utils/shortcutRebind';
+import KeyConflictConfirm from '../shared/KeyConflictConfirm';
 import {
   openMultiTask,
   openWorktaskCleanup,
@@ -172,6 +179,13 @@ export default function CommandPalette() {
   // the same rules Settings → Shortcuts applies (shortcutRebind).
   const [recording, setRecording] = useState<ShortcutActionId | null>(null);
   const [recordNote, setRecordNote] = useState<string | null>(null);
+  // #1885 — the recorded key also runs a custom keybinding: ask before the
+  // built-in takes it. The ref lets the recorder's teardown leave focus in
+  // the dialog instead of pulling it back to the search input underneath.
+  const [keyConflict, setKeyConflict] = useState<
+    { conflict: KeyConflict; action: ShortcutActionId; combo: string } | null
+  >(null);
+  const keyConflictOpenRef = useRef(false);
   const shortcutOverrides = useStore((s) => s.shortcutOverrides);
   const setShortcutOverride = useStore((s) => s.setShortcutOverride);
   const setKeyCaptureActive = useStore((s) => s.setKeyCaptureActive);
@@ -735,6 +749,8 @@ export default function CommandPalette() {
     // listening behind a palette that is gone.
     setRecording(null);
     setRecordNote(null);
+    keyConflictOpenRef.current = false;
+    setKeyConflict(null);
     if (visible) {
       setQuery('');
       setActiveIdx(0);
@@ -782,6 +798,13 @@ export default function CommandPalette() {
       shortcutPressGuard.noteActed(e);
       const problem = rebindProblemText(recording, combo);
       if (problem) { setRecordNote(problem); return; }
+      const conflict = customKeyConflict(recording, combo);
+      if (conflict) {
+        keyConflictOpenRef.current = true;
+        setKeyConflict({ conflict, action: recording, combo });
+        finish();
+        return;
+      }
       setShortcutOverride(recording, combo);
       finish();
     };
@@ -789,10 +812,18 @@ export default function CommandPalette() {
     return () => {
       window.removeEventListener('keydown', handler, true);
       setKeyCaptureActive(false);
-      // The search input was swapped out for the prompt; give it focus back.
-      requestAnimationFrame(() => inputRef.current?.focus());
+      // The search input was swapped out for the prompt; give it focus back
+      // (unless a key conflict dialog took over, which hands it back itself).
+      requestAnimationFrame(() => { if (!keyConflictOpenRef.current) inputRef.current?.focus(); });
     };
   }, [recording, setKeyCaptureActive, setShortcutOverride]);
+
+  const closeKeyConflict = (useAnyway: boolean) => {
+    if (useAnyway && keyConflict) setShortcutOverride(keyConflict.action, keyConflict.combo);
+    keyConflictOpenRef.current = false;
+    setKeyConflict(null);
+    requestAnimationFrame(() => inputRef.current?.focus());
+  };
 
   // -------------------------------------------------------------------------
   // Keep activeIdx in bounds when results change
@@ -988,6 +1019,13 @@ export default function CommandPalette() {
           )}
         </div>
       </div>
+      {keyConflict && (
+        <KeyConflictConfirm
+          conflict={keyConflict.conflict}
+          onConfirm={() => closeKeyConflict(true)}
+          onCancel={() => closeKeyConflict(false)}
+        />
+      )}
     </div>
   );
 }

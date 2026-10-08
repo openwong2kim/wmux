@@ -11,6 +11,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { useStore } from '../../../stores';
 import { t } from '../../../i18n';
 import CommandPalette from '../CommandPalette';
+import { buildDefaultCustomKeybindings } from '../../../../shared/types';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -149,5 +150,49 @@ describe('CommandPalette shortcut recording', () => {
     selectRow(wsName);
     startRecording();
     expect(recordingPrompt()).toBeNull();
+  });
+});
+
+// #1885 — the palette used to take a custom keybinding's key with no word.
+describe('CommandPalette shortcut recording onto a custom keybinding key', () => {
+  const dialog = () => container.querySelector<HTMLElement>('[data-testid="key-conflict-confirm"]');
+  const button = (attr: string) => container.querySelector<HTMLButtonElement>(`[${attr}]`) as HTMLButtonElement;
+  const click = (el: HTMLElement) => act(() => { el.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+
+  beforeEach(() => {
+    useStore.setState({ customKeybindings: buildDefaultCustomKeybindings('win32').map((kb) => ({ ...kb })) });
+  });
+
+  it('asks before F7 stops running the custom keybinding; Cancel keeps it', () => {
+    selectRow(t('palette.cmd.movePane.right'));
+    startRecording();
+    press({ key: 'F7', code: 'F7' });
+
+    expect(recordingPrompt()).toBeNull();
+    expect(useStore.getState().keyCaptureActive).toBe(false);
+    expect(dialog()?.textContent).toContain('F7 is already used by “Claude (skip permissions)”');
+    expect(useStore.getState().shortcutOverrides).toEqual({});
+
+    click(button('data-key-conflict-cancel'));
+    expect(dialog()).toBeNull();
+    expect(useStore.getState().shortcutOverrides).toEqual({});
+    expect(useStore.getState().commandPaletteVisible).toBe(true);
+  });
+
+  it('Use anyway gives the command F7', () => {
+    selectRow(t('palette.cmd.movePane.right'));
+    startRecording();
+    press({ key: 'F7', code: 'F7' });
+    click(button('data-key-conflict-confirm'));
+    expect(dialog()).toBeNull();
+    expect(useStore.getState().shortcutOverrides.movePaneRight).toBe('F7');
+  });
+
+  it('no question for a key no custom keybinding uses', () => {
+    selectRow(t('palette.cmd.movePane.right'));
+    startRecording();
+    press({ key: 'F8', code: 'F8' });
+    expect(dialog()).toBeNull();
+    expect(useStore.getState().shortcutOverrides.movePaneRight).toBe('F8');
   });
 });

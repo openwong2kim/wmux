@@ -533,6 +533,48 @@ export function rebindProblem(
   return other ? { kind: 'taken', by: other.action } : null;
 }
 
+/** The fields of a custom keybinding the conflict checks below read. */
+export interface CustomKeyLike {
+  key: string;
+  label: string;
+  command: string;
+}
+
+/**
+ * The custom keybindings a built-in moved to `combo` would silently take the
+ * key from (#1885). Built-ins are dispatched first, so a custom keybinding on
+ * the same key stops firing. Not a refusal like rebindProblem: the user may
+ * mean to take the key over, so Settings and the palette ask first.
+ *
+ * Plain string equality is the whole rule. Custom keys are stored with
+ * literal Ctrl / Shift / Alt in that order, the same order comboFromEvent
+ * spells them, and a ⌘ (`Meta+…`) built-in can never equal one, which is
+ * what the custom keybinding list's own conflict icon compares too.
+ */
+export function customKeybindingsOn<T extends CustomKeyLike>(
+  combo: string,
+  customKeybindings: readonly T[],
+): T[] {
+  return customKeybindings.filter((kb) => kb.key === combo);
+}
+
+/**
+ * The built-in that owns `key`, so a custom keybinding recorded there would
+ * never fire (#1885) — or null when nothing does. `bindings` are the
+ * built-ins in force (effectiveBindings), so a switched-off or moved built-in
+ * no longer claims its old key (#818, #1152); the prefix trigger owns
+ * Ctrl+<its key>.
+ */
+export function builtinOwning(
+  key: string,
+  bindings: readonly ShortcutBinding[],
+  prefixKeyCode: string,
+): ShortcutActionId | 'prefix' | null {
+  const prefixKey = comboKeyFromCode(prefixKeyCode);
+  if (prefixKey !== null && key === 'Ctrl+' + prefixKey) return 'prefix';
+  return bindings.find((b) => b.combo === key)?.action ?? null;
+}
+
 /**
  * Keep only well-formed overrides for configurable actions. Session files are
  * hand-editable and outlive versions, so anything else is dropped rather than

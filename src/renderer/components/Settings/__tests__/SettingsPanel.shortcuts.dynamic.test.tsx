@@ -14,7 +14,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { TabShortcuts } from '../SettingsPanel';
 import { useStore } from '../../../stores';
 import { useKeyboard } from '../../../hooks/useKeyboard';
-import { createWorkspace } from '../../../../shared/types';
+import { buildDefaultCustomKeybindings, createWorkspace } from '../../../../shared/types';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -101,7 +101,9 @@ describe('Settings → Shortcuts (#1455)', () => {
     click(badge(PREV));
     press({ key: 'k', code: 'KeyK' });
     expect(overrides()).toEqual({});
-    expect(container.textContent).toContain('Hold Ctrl, ⌘ or Alt');
+    // #1885 — Windows has no ⌘ key, so the hint does not name it.
+    expect(container.textContent).toContain('Hold Ctrl or Alt (or use an F-key)');
+    expect(container.textContent).not.toContain('⌘');
   });
 
   it('a chord that is already a shortcut reaches the recorder instead of running', () => {
@@ -202,5 +204,90 @@ describe('Settings → Shortcuts search', () => {
     expect(container.textContent).toContain('No shortcuts match');
     type('');
     expect(shown().length).toBe(all);
+  });
+});
+
+// #1885 — built-ins run before custom keybindings. Taking a custom
+// keybinding's key (or putting one on a built-in's key) leaves the custom one
+// dead, so Settings asks first: Use anyway saves, Cancel keeps the old key.
+describe('Settings → Shortcuts: keys custom keybindings use (#1885)', () => {
+  const dialog = () => container.querySelector<HTMLElement>('[data-testid="key-conflict-confirm"]');
+  const cancel = () => container.querySelector<HTMLButtonElement>('[data-key-conflict-cancel]') as HTMLButtonElement;
+  const useAnyway = () => container.querySelector<HTMLButtonElement>('[data-key-conflict-confirm]') as HTMLButtonElement;
+  const customKeys = () => useStore.getState().customKeybindings.map((kb) => kb.key);
+  const customBadge = (key: string) => {
+    const el = [...container.querySelectorAll<HTMLButtonElement>('button.settings-kbd')]
+      .find((b) => b.textContent === key);
+    if (!el) throw new Error(`no custom keybinding badge ${key}`);
+    return el;
+  };
+
+  beforeEach(() => {
+    act(() => useStore.setState({
+      customKeybindings: buildDefaultCustomKeybindings('win32').map((kb) => ({ ...kb })),
+    }));
+  });
+
+  it('warns before a built-in takes the default F7 keybinding, and Cancel keeps the old key', () => {
+    click(badge(PREV));
+    press({ key: 'F7', code: 'F7' });
+    expect(overrides()).toEqual({});
+    expect(dialog()?.textContent).toContain('F7 is already used by “Claude (skip permissions)”');
+    expect(dialog()?.textContent).toContain('stops working');
+    // The safe answer holds the focus, so Enter does not take the key.
+    expect(document.activeElement).toBe(cancel());
+    click(cancel());
+    expect(dialog()).toBeNull();
+    expect(overrides()).toEqual({});
+    expect(badge(PREV).textContent).toBe('Alt+ArrowUp');
+  });
+
+  it('Use anyway moves the built-in onto F7, as before', () => {
+    click(badge(PREV));
+    press({ key: 'F7', code: 'F7' });
+    click(useAnyway());
+    expect(dialog()).toBeNull();
+    expect(overrides()).toEqual({ prevWorkspace: 'F7' });
+    expect(badge(PREV).textContent).toBe('F7');
+  });
+
+  it('Escape answers Cancel', () => {
+    click(badge(PREV));
+    press({ key: 'F7', code: 'F7' });
+    act(() => {
+      (document.activeElement ?? window).dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true, cancelable: true }),
+      );
+    });
+    expect(dialog()).toBeNull();
+    expect(overrides()).toEqual({});
+  });
+
+  it('a key no custom keybinding uses saves with no question', () => {
+    click(badge(PREV));
+    press({ key: 'F8', code: 'F8' });
+    expect(dialog()).toBeNull();
+    expect(overrides()).toEqual({ prevWorkspace: 'F8' });
+  });
+
+  it('warns that a custom keybinding on a built-in key will not fire', () => {
+    click(customBadge('F7'));
+    press({ key: 't', code: 'KeyT', ctrlKey: true });
+    expect(dialog()?.textContent).toContain('Ctrl+T is already used by “New terminal in this pane”');
+    expect(dialog()?.textContent).toContain('will not fire');
+    click(cancel());
+    expect(customKeys()).toEqual(['F7']);
+
+    click(customBadge('F7'));
+    press({ key: 't', code: 'KeyT', ctrlKey: true });
+    click(useAnyway());
+    expect(customKeys()).toEqual(['Ctrl+T']);
+  });
+
+  it('a custom keybinding on a free key saves with no question', () => {
+    click(customBadge('F7'));
+    press({ key: 'F9', code: 'F9' });
+    expect(dialog()).toBeNull();
+    expect(customKeys()).toEqual(['F9']);
   });
 });

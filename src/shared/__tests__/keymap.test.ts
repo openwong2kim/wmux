@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest';
 import {
   WMUX_KEYMAP,
   builtinCombosFor,
+  builtinOwning,
+  customKeybindingsOn,
   collidesWithKeymap,
   ADVERTISED_SHORTCUTS,
   UNBOUND_SHORTCUTS,
@@ -21,6 +23,7 @@ import {
   type ShortcutKeyEventLike,
   workspaceShortcutNumber,
 } from '../keymap';
+import { buildDefaultCustomKeybindings } from '../types';
 
 /**
  * The table only earns its keep if its rows are in the SAME spelling the
@@ -346,6 +349,45 @@ describe('override validation', () => {
     expect(rebindProblem('prevWorkspace', 'Ctrl+T', b, 'win32', 'KeyB')).toEqual({ kind: 'taken', by: 'newSurface' });
     // Its own current combo is not a conflict.
     expect(rebindProblem('prevWorkspace', 'Alt+ArrowUp', b, 'win32', 'KeyB')).toBeNull();
+  });
+
+  // #1885 — built-ins run before custom keybindings, so a built-in moved onto
+  // a custom keybinding's key leaves the custom one dead. Not a refusal (the
+  // owner chose warn, then allow), so rebindProblem itself stays silent.
+  it('customKeybindingsOn names the custom keybinding a built-in would take the key from', () => {
+    const win = buildDefaultCustomKeybindings('win32');
+    const mac = buildDefaultCustomKeybindings('darwin');
+    // The shipped F7 → `claude --dangerously-skip-permissions` binding.
+    expect(customKeybindingsOn('F7', win).map((kb) => kb.id)).toEqual(['kb-default-f7']);
+    expect(rebindProblem('toggleSidebar', 'F7', defaultBindings('win32'), 'win32', 'KeyB')).toBeNull();
+    // macOS seeds Ctrl+7; a ⌘ built-in can never meet a literal-Ctrl custom key.
+    expect(customKeybindingsOn('Ctrl+7', mac).map((kb) => kb.id)).toEqual(['kb-default-f7']);
+    expect(customKeybindingsOn('Meta+7', mac)).toEqual([]);
+    // Different keys: no false positive.
+    expect(customKeybindingsOn('F8', win)).toEqual([]);
+    expect(customKeybindingsOn('Ctrl+F7', win)).toEqual([]);
+    expect(customKeybindingsOn('Shift+F7', win)).toEqual([]);
+    // Same modifier order on both sides (Ctrl, Shift, Alt).
+    const custom = [{ key: 'Ctrl+Shift+Alt+K', label: 'k', command: 'echo k' }];
+    const recorded = comboFromEvent(ev({ key: 'K', code: 'KeyK', shiftKey: true, altKey: true }));
+    expect(recorded).toBe('Ctrl+Shift+Alt+K');
+    expect(customKeybindingsOn(recorded ?? '', custom)).toEqual(custom);
+  });
+
+  it('builtinOwning names the built-in a custom keybinding would lose its key to', () => {
+    const b = defaultBindings('win32');
+    expect(builtinOwning('Ctrl+T', b, 'KeyB')).toBe('newSurface');
+    expect(builtinOwning('F2', b, 'KeyB')).toBe('mentionAgent');
+    expect(builtinOwning('Ctrl+B', b, 'KeyB')).toBe('prefix');
+    // The default F7 custom keybinding sits on a free key.
+    expect(builtinOwning('F7', b, 'KeyB')).toBeNull();
+    expect(builtinOwning('Ctrl+Alt+Q', b, 'KeyB')).toBeNull();
+    // A switched-off or moved built-in no longer claims its old key (#1152).
+    expect(builtinOwning('F2', effectiveBindings('win32', { mentionAgent: null }), 'KeyB')).toBeNull();
+    const moved = effectiveBindings('win32', { toggleSidebar: 'F7' });
+    expect(builtinOwning('F7', moved, 'KeyB')).toBe('toggleSidebar');
+    // On macOS a ⌘ built-in is not a literal Ctrl key.
+    expect(builtinOwning('Ctrl+T', defaultBindings('darwin'), 'KeyB')).toBeNull();
   });
 });
 

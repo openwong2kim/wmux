@@ -2,9 +2,12 @@ import { useStore } from '../stores';
 import { t } from '../i18n';
 import {
   UNBOUND_SHORTCUTS,
+  builtinOwning,
+  customKeybindingsOn,
   displayCombo,
   rebindProblem,
   shortcutDescription,
+  type CustomKeyLike,
   type ShortcutActionId,
 } from '../../shared/keymap';
 import { currentShortcutBindings, shortcutPlatform } from './shortcutBindings';
@@ -30,11 +33,72 @@ export function rebindProblemText(action: ShortcutActionId, combo: string): stri
   if (!problem) return null;
   const shown = displayCombo(combo, platform);
   switch (problem.kind) {
-    case 'needsModifier': return t('settings.sc.needsModifier');
+    case 'needsModifier': return t(needsModifierKey(platform));
     case 'clipboard': return t('settings.sc.reservedKey', { combo: shown });
     case 'prefix': return t('settings.sc.prefixConflict', { combo: shown });
     case 'taken': return t('settings.sc.conflict', { name: describeShortcut(problem.by) });
   }
+}
+
+/**
+ * The "needs a modifier" hint names the keys the platform has: ⌘ and ⌥ on
+ * macOS, Ctrl and Alt elsewhere (#1885). Shift alone is not enough
+ * (invalidShortcutCombo), so neither sentence offers it.
+ */
+export function needsModifierKey(
+  platform: NodeJS.Platform,
+): 'settings.sc.needsModifier' | 'settings.sc.needsModifierMac' {
+  return platform === 'darwin' ? 'settings.sc.needsModifierMac' : 'settings.sc.needsModifier';
+}
+
+/** How a custom keybinding is named in a warning: its label, else its command. */
+export function customKeybindingName(kb: CustomKeyLike): string {
+  return kb.label.trim() || kb.command.trim() || kb.key;
+}
+
+/**
+ * The key conflict to confirm before a save goes through (#1885), or null.
+ * Built-ins are dispatched before custom keybindings, so either direction
+ * leaves the custom keybinding dead on that key: the owner's call is to say
+ * so and let the user go ahead anyway.
+ */
+export interface KeyConflict {
+  /** `shadowsCustom`: a built-in is moving onto a custom keybinding's key.
+   *  `builtinWins`: a custom keybinding is being put on a built-in's key. */
+  kind: 'shadowsCustom' | 'builtinWins';
+  /** The key as the user reads it (⌘ / ⌥ on macOS). */
+  combo: string;
+  /** Who loses (shadowsCustom) or who wins (builtinWins), ready to show. */
+  name: string;
+}
+
+/**
+ * Moving `action` to `combo` would take the key from these custom
+ * keybindings. Null when none, or when `action` already runs on `combo`
+ * (nothing changes, so there is nothing to warn about).
+ */
+export function customKeyConflict(action: ShortcutActionId, combo: string): KeyConflict | null {
+  if (currentShortcutBindings().some((b) => b.action === action && b.combo === combo)) return null;
+  // Only the first custom keybinding on a key ever fires (useKeyboard's
+  // dispatch takes the first match), so that is the one that stops working.
+  const [hit] = customKeybindingsOn(combo, useStore.getState().customKeybindings);
+  if (!hit) return null;
+  return {
+    kind: 'shadowsCustom',
+    combo: displayCombo(combo, shortcutPlatform()),
+    name: customKeybindingName(hit),
+  };
+}
+
+/** A custom keybinding on `key` would never fire: this built-in owns it. */
+export function builtinKeyConflict(key: string): KeyConflict | null {
+  const owner = builtinOwning(key, currentShortcutBindings(), useStore.getState().prefixConfig.key);
+  if (owner === null) return null;
+  return {
+    kind: 'builtinWins',
+    combo: displayCombo(key, shortcutPlatform()),
+    name: owner === 'prefix' ? t('settings.prefixMode') : describeShortcut(owner),
+  };
 }
 
 /** True for actions that ship with no key (see UNBOUND_SHORTCUTS). */
