@@ -78,6 +78,7 @@ import { screenShowsActiveDialog, screenShowsPermissionDialog } from '../transcr
 import { terminalPromptTextRisk } from '../push/approvalRisk';
 import {
   decideApprovalPress,
+  encodeAnswerKey,
   keystrokesForAgent,
   looksLikeApprovalPrompt,
   questionOnScreen,
@@ -425,6 +426,13 @@ export interface ApprovalRegistryDeps {
    * delivery it did not make.
    */
   writeToSession: (sessionId: string, data: string) => boolean;
+  /**
+   * The pane's input is parsed as win32-input-mode key records (a ConPTY pane
+   * on Windows), so a key with no byte of its own — Esc — is written as a key
+   * record instead (see `encodeAnswerKey`). Absent or false: the bytes go out
+   * as they are.
+   */
+  win32Input?: (sessionId: string) => boolean;
   /**
    * The workspace-shaped half of the press scope (see `decideApprovalPress`):
    * is this workspace a WorkTask task workspace, and what is its deck autonomy
@@ -1470,6 +1478,11 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
     return !screenShowsActiveDialog(screen.rows) && !screenShowsPermissionDialog(screen.rows);
   }
 
+  /** The bytes that press `key` in this pane (a win32 Esc record on Windows, #1915). */
+  private answerBytes(sessionId: string, key: string): string {
+    return encodeAnswerKey(key, this.deps.win32Input?.(sessionId) === true);
+  }
+
   private async readPromptScreenSafely(
     sessionId: string,
   ): Promise<{ rows: readonly string[]; mark: PromptScreenMark; cols?: number } | null> {
@@ -2071,7 +2084,7 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
         : (choiceDigit ?? keys.approve);
       let delivered = false;
       try {
-        delivered = this.deps.writeToSession(record.sessionId, data);
+        delivered = this.deps.writeToSession(record.sessionId, this.answerBytes(record.sessionId, data));
       } catch (err) {
         this.deps.log?.(
           'warn',
@@ -2446,7 +2459,7 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
         record.pressedAt = this.now();
         let delivered = false;
         try {
-          delivered = this.deps.writeToSession(record.sessionId, '\x1b');
+          delivered = this.deps.writeToSession(record.sessionId, this.answerBytes(record.sessionId, '\x1b'));
         } catch (err) {
           this.deps.log?.('warn', `[approvals] write failed for ${record.sessionId}: ${String(err)}`);
         }

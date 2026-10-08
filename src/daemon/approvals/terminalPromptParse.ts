@@ -643,7 +643,11 @@ const LASTING_RULE = /don'?t ask again|\balways\b|for this session/i;
 /** The decision an answerable choice label stands for. */
 export function decisionForChoiceLabel(label: string): 'approve' | 'deny' | null {
   const text = label.trim();
-  if (LASTING_RULE.test(text)) return null;
+  // Never a phone answer either: an option that switches the session's
+  // permission mode ("Yes, and switch to auto mode", 2.1.293's third Bash
+  // option) changes every later prompt, not just this one. It stays in the
+  // terminal; the phone is offered the plain Yes and No.
+  if (LASTING_RULE.test(text) || PLAN_MODE_SWITCH.test(text)) return null;
   if (PLAIN_YES.test(text)) return 'approve';
   if (PLAIN_NO.test(text)) return 'deny';
   return null;
@@ -654,7 +658,8 @@ export function decisionForChoiceLabel(label: string): 'approve' | 'deny' | null
  *
  * Only the plain Yes and a plain No (`No`, or `No, …`) are ever answerable.
  * Anything that writes a lasting rule — "Yes, and don't ask again for …
- * commands", "always", "for this session" — stays display-only. No plain Yes,
+ * commands", "always", "for this session" — or switches the permission mode
+ * ("Yes, and switch to auto mode") stays display-only. No plain Yes,
  * or a row the TUI cut: not answerable. How long the command is does not
  * matter — the record's summary is capped for display, the binding and the
  * fingerprint take the whole command. Whether the dialog's top may be off
@@ -745,6 +750,27 @@ function rowsMatchAt(rows: readonly string[], target: string, suffix: boolean): 
   return -1;
 }
 
+/** The first row of Claude's own tip, drawn above a call's description (2.1.293). */
+const TIP_ROW = /^Tip:\s/;
+
+/**
+ * Do the description rows spell the call's description? Exactly, or (Claude
+ * Code 2.1.293) after a tip Claude draws between the title and the
+ * description: `Tip: auto mode handles these prompts for you — choose "switch
+ * to auto mode" below`. The tip's text is Claude's, and a narrow pane wraps it
+ * onto rows at the same indent as the description, so it is not matched by its
+ * words: the first row must open with `Tip:`, and the rows after the tip must
+ * spell the whole description, to its end. The tip itself binds nothing.
+ */
+function descriptionRowsSpell(rows: readonly string[], description: string): boolean {
+  if (rowsMatchAt(rows, description, false) === 0) return true;
+  if (!TIP_ROW.test(rows[0] ?? '')) return false;
+  for (let k = 1; k < rows.length; k++) {
+    if (rowsMatchAt(rows.slice(k), description, false) === 0) return true;
+  }
+  return false;
+}
+
 /**
  * Is this dialog the one for this tool call? The dialog's title must name the
  * call's tool, and its command rows must be exactly the call's full command —
@@ -790,7 +816,7 @@ export function dialogMatchesToolCall(
     // description — the call's own when it has one. A call without one gets
     // Claude's own label there ("Run shell command"): prose the gutter keeps
     // apart from the command, so it binds nothing and is not compared.
-    if (description && rowsMatchAt(parsed.descriptionRows, description, false) !== 0) return false;
+    if (description && !descriptionRowsSpell(parsed.descriptionRows, description)) return false;
     return rowsMatchAt(parsed.commandRows, command, topCut) >= 0;
   }
   // One block of indented rows: the command, optionally its description after

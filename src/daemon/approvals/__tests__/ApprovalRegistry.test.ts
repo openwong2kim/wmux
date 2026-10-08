@@ -17,6 +17,7 @@ import {
 } from '../approvalStore';
 import {
   decideApprovalPress,
+  encodeAnswerKey,
   keystrokesForAgent,
   looksLikeApprovalPrompt,
   looksLikeChoiceOnScreen,
@@ -225,6 +226,30 @@ describe('ApprovalRegistry — lifecycle', () => {
     await h.registry.resolve({ id: 'req-1', decision: 'deny', resolvedBy: 'phone' });
 
     expect(h.writes).toEqual([{ sessionId: 'pty-a', data: '\x1b' }]);
+  });
+
+  it('#1915: on a win32-input-mode pane deny sends the Esc key record, and approve still sends the digit', async () => {
+    const panes: string[] = [];
+    const h = makeRegistry({ win32Input: (sessionId) => { panes.push(sessionId); return true; } });
+    await awaitingInput(h.registry);
+    await settle();
+
+    await h.registry.resolve({ id: 'req-1', decision: 'deny', resolvedBy: 'phone' });
+
+    // A bare ESC is held by conhost as the start of a sequence; the record is a key.
+    expect(h.writes).toEqual([{ sessionId: 'pty-a', data: '\x1b[27;1;27;1;0;1_\x1b[27;1;0;0;0;1_' }]);
+    expect(panes).toEqual(['pty-a']);
+  });
+
+  it('#1915: on a win32-input-mode pane approve still sends the plain digit', async () => {
+    const h = makeRegistry({ win32Input: () => true });
+    await awaitingInput(h.registry);
+    await settle();
+
+    await h.registry.resolve({ id: 'req-1', decision: 'approve', resolvedBy: 'phone' });
+
+    // Measured: a digit presses its option through conhost as a plain byte.
+    expect(h.writes).toEqual([{ sessionId: 'pty-a', data: '1' }]);
   });
 
   it('an unknown id is not-found and writes nothing', async () => {
@@ -963,6 +988,20 @@ describe('risk hint — a UI step-up signal, never a gate', () => {
 
     const third = makeRegistry();
     expect(third.registry.list().recentlyResolved[0].risk).toBeUndefined();
+  });
+});
+
+describe('encodeAnswerKey (#1915)', () => {
+  it('writes Esc as its win32-input-mode key record pair only on a win32-input pane', () => {
+    expect(encodeAnswerKey('\x1b', true)).toBe('\x1b[27;1;27;1;0;1_\x1b[27;1;0;0;0;1_');
+    expect(encodeAnswerKey('\x1b', false)).toBe('\x1b');
+  });
+
+  it('leaves every other answer key as it is (measured: digits, a lone CR and a VT arrow press as bytes)', () => {
+    for (const key of ['1', '4', '\r', '\x1b[B', '\x1b[200~text\x1b[201~']) {
+      expect(encodeAnswerKey(key, true)).toBe(key);
+      expect(encodeAnswerKey(key, false)).toBe(key);
+    }
   });
 });
 

@@ -86,6 +86,26 @@ The Fetch and Read screens were captured on Claude Code 2.1.292 in manual mode
 grid height; the narrow variants are the same dialog after a pane resize. They
 are in `claude-2.1.292/` (alternate screen).
 
+Measured on Claude Code 2.1.293 and 2.1.294 on Windows (captured 2026-10-08 in
+a 100- and an 80-column ConPTY pane of an isolated daemon, manual mode): the
+Bash dialog draws `Tip: auto mode handles these prompts for you — choose
+"switch to auto mode" below` between the title and the call's description (an
+80-column pane wraps it onto a second prose row, `below`), and its options are
+`1. Yes`, `2. Yes, and always allow access to <dir> from this project`,
+`3. Yes, and switch to auto mode · auto mode handles these prompts for you`,
+`4. No`. Keys on that pane, written raw to the PTY:
+
+| Bytes | Effect |
+| --- | --- |
+| `1` / `4` | Act immediately, as above |
+| lone `ESC` (`\x1b`) | Nothing: the dialog (and an AskUserQuestion picker) stays up. conhost reads input as win32-input-mode records and holds a bare ESC as the start of a sequence |
+| `CSI 27;1;27;1;0;1 _` `CSI 27;1;0;0;0;1 _` (the Esc key record pair) | Cancels at once: the Bash dialog interrupts the turn, the picker answers "User declined to answer questions" |
+| lone `\r`, `ESC [ B` | Enter and Down on the picker, as in the table above |
+
+The screens are in `claude-2.1.293/` (alternate screen). The user name in the
+paths is replaced at the same length, so wraps are unchanged, and the banner's
+model and plan names are replaced.
+
 ## Claude Code — other menus
 
 The startup Bypass Permissions warning (`❯ No, exit` / `Yes, I accept`) has no

@@ -638,6 +638,11 @@ function createApprovalRegistry(sessionManager: DaemonSessionManager): ApprovalR
       managed.bridge.noteInput(data, true);
       return true;
     },
+    // Every pane on a Windows daemon is a ConPTY, and ConPTY puts its own
+    // input side into win32-input-mode (`?9001h`) at the start of every
+    // session (#1363), whatever runs in it. So the host, not the pane's
+    // output, says how an answer's Esc must be written (#1915).
+    win32Input: () => process.platform === 'win32',
     // The stepwise driver's own keys: the new key revision comes back in the
     // same synchronous block as the write (see DaemonPTYBridge.noteInput).
     writeStepKey: (sessionId, data) => {

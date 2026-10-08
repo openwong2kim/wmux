@@ -449,5 +449,10 @@ describe('DaemonPTYBridge — running-episode turn id', () => {
     bridge.noteInput('\x1b');
     bridge.noteInput('\x1b[201~');
     expect(bridge.getLastEscAt()).toBe(t2);
+
+    // #1915: on Windows an approval answer writes Esc as a win32-input-mode record.
+    vi.advanceTimersByTime(1000);
+    bridge.noteInput('\x1b[27;1;27;1;0;1_\x1b[27;1;0;0;0;1_', true);
+    expect(bridge.getLastEscAt()).toBe(Date.now());
   });
 });

@@ -14,6 +14,7 @@ import { OutputModeTracker } from './util/outputModeTracker';
 import { RESIZE_REDRAW_GUARD_MS } from '../main/notification/idleSuppression';
 import { stripReplayQuerySequences } from '../shared/replayQuerySanitizer';
 import { isFreshSessionSource } from '../shared/hooks/signal-types';
+import { ESCAPE_WIN32 } from '../shared/win32InputKeys';
 import { titleShowsRunningTurn } from './transcript/chatScreenGate';
 import type { TurnFailure } from '../shared/phoneTurnFailure';
 
@@ -342,8 +343,9 @@ export class DaemonPTYBridge extends EventEmitter {
       const active = DaemonPTYBridge.stripPassiveInput(data);
       // Every path that types into a pane ends here (pipe, web raw input, chat
       // Stop, approval keys), so this is the one place a lone Esc is seen.
-      // Inside a bracketed paste an ESC is text, not a key.
-      if (active === '\x1b' && !this.inputInBracketedPaste) this.lastEscAt = this.lastInputAt;
+      // Inside a bracketed paste an ESC is text, not a key. On Windows the
+      // approval answers write Esc as a win32-input-mode record (#1915).
+      if ((active === '\x1b' || active === ESCAPE_WIN32) && !this.inputInBracketedPaste) this.lastEscAt = this.lastInputAt;
       if (active.length > 0) {
         this.keyInputRevision += 1;
         this.lastKeyInputAt = this.lastInputAt;
