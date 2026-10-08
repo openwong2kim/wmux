@@ -3612,6 +3612,8 @@ export const ko = {
   'remotePage.groupMessages': "메시지 링크",
   'remotePage.groupMessagesHint': "판에 닿지 않고 메시지만 받음",
   'remotePage.exposureTitle': "{name}에 보여 줄 것",
+  'remotePage.removeHostKept': "이 PC가 참여한 PC 목록에서 {name}을(를) 제거하지 못했습니다. 다시 제거해 보세요.",
+  'remotePage.removePeerKept': "{name}은(는) 아직 이 PC에 접속할 수 있습니다. 이쪽 페어링을 해제하지 못했습니다. 다시 제거해 보세요.",
   'remotePage.connect.button': "PC 연결…",
   'remotePage.connect.title': "PC 연결",
   'remotePage.connect.tabInvite': "이 PC로 초대",

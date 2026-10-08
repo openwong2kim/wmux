@@ -1,4 +1,4 @@
-import type { A2aRemoteTaskState } from '../../../shared/a2aRemoteDelivery';
+import { heldNeedsPerson, heldReason } from '../../stores/slices/a2aRemoteSlice';
 import type { Task } from '../../../shared/types';
 import UiButton from '../ui/Button';
 import { timeAgo } from '../../utils/timeAgo';
@@ -13,12 +13,7 @@ import { timeAgo } from '../../utils/timeAgo';
 
 type T = (key: string, vars?: Record<string, string | number>) => string;
 
-/** Why a task (or its newest held reply) is held. */
-export function heldReason(task: Task): string | undefined {
-  const marker = task.metadata.remote as A2aRemoteTaskState | undefined;
-  if (!marker) return undefined;
-  return marker.held ?? marker.inbox?.find((i) => i.held)?.held;
-}
+export { heldReason };
 
 /** The PC a held task came from or went to: the alias' first part. */
 export function heldPeer(task: Task): string {
@@ -38,7 +33,7 @@ export interface A2aHeldRowProps {
 export function A2aHeldRow({ task, now, busy, onRetry, onReject, t }: A2aHeldRowProps) {
   const reason = heldReason(task) ?? 'pane-missing';
   // Work for Moa is never handed to a pane; a brain-unavailable hold goes by itself once Moa can take it.
-  const brain = reason === 'brain-delivery-pending' || reason === 'brain-unavailable';
+  const brain = !heldNeedsPerson(task);
   const at = Date.parse(task.status?.timestamp ?? '');
   return (
     <li className="wmux-remote-req" data-task-id={task.id} data-testid="a2a-held">

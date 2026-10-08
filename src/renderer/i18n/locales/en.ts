@@ -4177,6 +4177,8 @@ export const en = {
   'remotePage.groupMessages': "Message links",
   'remotePage.groupMessagesHint': "Messages only, they never reach a pane",
   'remotePage.exposureTitle': "What {name} can see",
+  'remotePage.removeHostKept': "{name} is still listed among the PCs this PC joined: removing it there failed. Try Remove again.",
+  'remotePage.removePeerKept': "{name} can still connect to this PC: revoking its pairing here failed. Try Remove again.",
   'remotePage.connect.button': "Connect a PC…",
   'remotePage.connect.title': "Connect a PC",
   'remotePage.connect.tabInvite': "Invite this PC",

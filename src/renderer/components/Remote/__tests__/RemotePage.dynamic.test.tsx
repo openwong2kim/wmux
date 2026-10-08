@@ -27,12 +27,12 @@ const link = (over: Partial<A2aLinkRecordV1> = {}): A2aLinkRecordV1 => ({
   createdAt: new Date(Date.now() - 120_000).toISOString(), updatedAt: '2026-10-07T00:00:00.000Z',
   ...over,
 });
-const held = (id: string): Task => ({
+const held = (id: string, reason = 'pane-missing'): Task => ({
   id, kind: 'task', status: { state: 'submitted', timestamp: new Date().toISOString() }, history: [],
   metadata: {
     title: 'check the CI log', from: { workspaceId: 'remote:l1', name: 'office-win/API/codex' },
     to: { workspaceId: 'w1', name: 'B', paneId: 'p1' },
-    remote: { v: 1, linkId: 'l1', hostId: PEER_HOST, messageId: 'm', direction: 'inbound', delivered: false, held: 'pane-missing' },
+    remote: { v: 1, linkId: 'l1', hostId: PEER_HOST, messageId: 'm', direction: 'inbound', delivered: false, held: reason },
   },
 }) as unknown as Task;
 
@@ -267,5 +267,39 @@ describe('Remote page', () => {
     act(() => ws.querySelector('button')!.click());
     expect(useStore.getState().remoteWorkspaces.map((w) => w.key)).toEqual(['host-1:rws-1']);
     expect(useStore.getState().appRoute).toBe('workspaces');
+  });
+
+  it('keeps a hold for Moa out of Needs you, as a quiet line', async () => {
+    stub([], { held: [held('rt-moa', 'brain-unavailable')] });
+    await render();
+    expect($('[data-remote-needs]')).toBeNull();
+    expect($('[data-remote-moa-hold="rt-moa"]')?.textContent).toContain('Work from office-win is on hold');
+  });
+
+  it('removing a PC says when the other PC was not told, and which side is left on a partial failure', async () => {
+    stub([], { hosts: [{ hostId: HOST, name: 'DESK', role: 'joiner', state: 'connected', pending: 0 }] });
+    api.a2aRemote.hostsRemove.mockResolvedValue({ ok: true, remoteRevoked: false });
+    await render();
+    const removeVia = async (hostId: string) => {
+      act(() => $(`[data-remote-pc="${hostId}"] [data-remote-menu]`)!.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+      act(() => $<HTMLButtonElement>('[data-remote-menu-item="remove"]')!.click());
+      await act(async () => { $<HTMLButtonElement>(`[data-remote-pc="${hostId}"] [data-remote-confirm="pc"]`)!.click(); });
+    };
+    await removeVia(HOST);
+    expect(api.a2aRemote.hostsRemove).toHaveBeenCalledWith(HOST);
+    expect($('[data-remote-notice]')?.textContent).toBe('Removed DESK here, but that PC could not be reached. Disconnect this PC there too.');
+  });
+
+  it('a PC paired both ways that keeps its peer pairing says so', async () => {
+    stub([], { hosts: [{ hostId: PEER_HOST, name: 'office-win', role: 'server', state: 'connected', pending: 0 }] });
+    api.a2aRemote.hostsList.mockResolvedValue({ hosts: [{ v: 1, hostId: PEER_HOST, name: 'office-win', addresses: ['10.0.0.2'], port: 45660, fingerprint256: 'AA', peerId: 'x', createdAt: '' }] });
+    api.a2aRemote.hostsRemove.mockResolvedValue({ ok: true, remoteRevoked: true });
+    api.a2aRemote.peersRevoke.mockResolvedValue({ ok: false });
+    await render();
+    act(() => $(`[data-remote-pc="${PEER_HOST}"] [data-remote-menu]`)!.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+    act(() => $<HTMLButtonElement>('[data-remote-menu-item="remove"]')!.click());
+    await act(async () => { $<HTMLButtonElement>(`[data-remote-pc="${PEER_HOST}"] [data-remote-confirm="pc"]`)!.click(); });
+    expect(api.a2aRemote.peersRevoke).toHaveBeenCalledWith(`peer-${PEER_HOST}`);
+    expect($('[data-remote-notice]')?.textContent).toBe('office-win can still connect to this PC: revoking its pairing here failed. Try Remove again.');
   });
 });

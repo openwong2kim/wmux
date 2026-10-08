@@ -858,6 +858,7 @@ details[open] > .wmux-chatv2-tool-line .wmux-chatv2-chevron { transform: rotate(
 
 /* Needs you: one bordered block, a hairline over the subtle fill (no wash). */
 .wmux-remote-needs { display: flex; flex-direction: column; gap: 4px; padding: 8px 8px 8px 12px; border: 1px solid var(--attention-hairline); border-radius: 10px; background: var(--selection-subtle); }
+.wmux-remote-quiet { margin: 0; padding: 0 12px; font-size: 12px; color: var(--text-muted); }
 .wmux-remote-needs-title { margin: 0; font-size: 13px; font-weight: 500; color: var(--text-main); }
 .wmux-remote-needs-list { margin: 0; padding: 0; list-style: none; }
 .wmux-remote-needs-list > li + li { border-top: 1px solid var(--stroke); }

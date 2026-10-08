@@ -19,11 +19,11 @@ import type { A2aLinkRecordV1 } from '../../../shared/a2aRemote';
 import type { A2aRemoteHostStatus, A2aRemoteStatus } from '../../../shared/rpc';
 import { buildRemoteEntries, paneNamesByPty, serverReach, type RemoteEntry, type ServerReach } from './remoteEntries';
 import { selectRemoteInbox } from '../../stores/selectors/remoteInbox';
-import { selectRemoteNeedsYou } from '../../stores/slices/a2aRemoteSlice';
+import { heldNeedsPerson, heldReason, selectRemoteNeedsYou } from '../../stores/slices/a2aRemoteSlice';
 import { refreshA2aRemote } from '../../hooks/useA2aRemoteBridge';
 import { buildPaneSnapshot, moaBrainEnd } from '../../hooks/useA2aRemoteSnapshot';
 import { A2aLinkRequestRow, A2aLinkRow, type LocalNames } from './A2aLinksPanel';
-import { A2aHeldRow, A2aIdentityRow } from './A2aDeliveryPanel';
+import { A2aHeldRow, A2aIdentityRow, heldPeer } from './A2aDeliveryPanel';
 import A2aLinkDialog from './A2aLinkDialog';
 import RemoteConnectDialog, { type ConnectTab } from './RemoteConnectDialog';
 import RemoteRowMenu, { type RemoteRowMenuItem } from './RemoteRowMenu';
@@ -119,6 +119,7 @@ export default function RemotePage() {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<{ key: string; message: string } | null>(null);
   const [details, setDetails] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [hostWorkspaces, setHostWorkspaces] = useState<Record<string, RemoteWorkspaceSummary[] | 'loading' | 'failed'>>({});
   const [now, setNow] = useState(() => Date.now());
@@ -209,6 +210,9 @@ export default function RemotePage() {
   }, [feed]);
   const pcName = useCallback((hostId: string) => pcs.find((p) => p.hostId === hostId)?.name ?? hostId.slice(0, 6), [pcs]);
   const requests = feed.links.filter((l) => l.state === 'proposed-in');
+  // Holds for Moa clear by themselves: a quiet line, not a Needs you row.
+  const personHeld = feed.held.filter(heldNeedsPerson);
+  const moaHeld = feed.held.filter((x) => !heldNeedsPerson(x));
   const changedPcs = pcs.filter((p) => p.identityChanged);
 
   // This PC's repo for each pane a request names (the same-repo evidence).
@@ -316,12 +320,27 @@ export default function RemotePage() {
   });
 
   // A PC paired either way is dropped on both records this PC holds for it.
+  // The outcome is a page notice, not a row error: the row is gone after it.
   const removePc = (pc: PcRow) => run(`pc:${pc.hostId}`, async () => {
-    if (!a2a) return t('a2aLink.error.failed');
-    let ok = true;
-    if (pc.joined) ok = (await a2a.hostsRemove(pc.hostId))?.ok !== false && ok;
-    if (pc.peerId) ok = (await a2a.peersRevoke(pc.peerId))?.ok !== false && ok;
-    return ok ? null : t('settings.a2aRemoteActionFailed');
+    if (!a2a) return t('settings.a2aRemoteActionFailed');
+    const lines: string[] = [];
+    let hostOk = true;
+    let peerOk = true;
+    if (pc.joined) {
+      const r = await a2a.hostsRemove(pc.hostId).catch(() => null);
+      hostOk = r?.ok === true;
+      // Removed here, but that PC was not told: it still holds this PC's pairing.
+      if (hostOk && r?.remoteRevoked !== true) lines.push(t('settings.a2aRemoteRemovedLocalOnly', { name: pc.name }));
+    }
+    if (pc.peerId) {
+      const r = await a2a.peersRevoke(pc.peerId).catch(() => null);
+      peerOk = r?.ok === true;
+    }
+    if (!hostOk && !peerOk) return t('settings.a2aRemoteActionFailed');
+    if (!hostOk) lines.push(t('remotePage.removeHostKept', { name: pc.name }));
+    if (!peerOk) lines.push(t('remotePage.removePeerKept', { name: pc.name }));
+    if (mounted.current) setNotice(lines.length > 0 ? lines.join(' ') : null);
+    return null;
   });
 
   const toggleHost = async (hostId: string) => {
@@ -575,6 +594,7 @@ export default function RemotePage() {
         </p>
       </header>
       {devicesError && <p className="ui-note px-1" role="status">{t('web.devicesUnavailable')}</p>}
+      {notice && <p className="wmux-a2a-note" data-tone="warning" role="status" data-remote-notice>{notice}</p>}
 
       <div className="wmux-remote-machine" data-remote-machine>
         <div className="wmux-remote-machine-line">
@@ -680,7 +700,7 @@ export default function RemotePage() {
                   t={t}
                 />
               ))}
-              {feed.held.map((task) => (
+              {personHeld.map((task) => (
                 <A2aHeldRow
                   key={task.id}
                   task={task}
@@ -714,6 +734,11 @@ export default function RemotePage() {
           </section>
         )}
       </div>
+      {moaHeld.map((task) => (
+        <p key={task.id} className="wmux-remote-quiet" data-remote-moa-hold={task.id}>
+          {`${t('remotePage.needs.heldTitle', { pc: heldPeer(task) })} · ${t(`a2aDelivery.reason.${heldReason(task)}`)}`}
+        </p>
+      ))}
 
       {nothing ? (
         <div className="wmux-remote-empty" data-remote-empty>

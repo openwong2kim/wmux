@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { useStore } from '../../../stores';
 import MiniSidebar from '../MiniSidebar';
 import { selectRemoteNeedsYou } from '../../../stores/slices/a2aRemoteSlice';
-import { A2A_HELD_POLL_MS, useA2aRemoteBridge } from '../../../hooks/useA2aRemoteBridge';
+import { A2A_HELD_POLL_MS, refreshA2aRemote, useA2aRemoteBridge } from '../../../hooks/useA2aRemoteBridge';
 import type { A2aLinkRecordV1 } from '../../../../shared/a2aRemote';
 import type { A2aRemoteHostStatus } from '../../../../shared/rpc';
 import type { Task } from '../../../../shared/types';
@@ -22,12 +22,15 @@ const link = (linkId: string, state: A2aLinkRecordV1['state']): A2aLinkRecordV1 
   createdAt: '2026-10-07T00:00:00.000Z', updatedAt: '2026-10-07T00:00:00.000Z',
 });
 const host = (state: A2aRemoteHostStatus['state']): A2aRemoteHostStatus => ({ hostId: HOST, name: 'DESK', role: 'joiner', state, pending: 0 });
-const task = { id: 'rt-1' } as unknown as Task;
+const task = (held = 'pane-missing') => ({
+  id: `rt-${held}`, metadata: { remote: { v: 1, held } },
+}) as unknown as Task;
 
 let container: HTMLDivElement;
 let root: Root;
 let linkListener: (() => void) | null;
 let hostListener: (() => void) | null;
+let goneListener: (() => void) | null;
 let api: Record<string, ReturnType<typeof vi.fn>>;
 
 function Bridge() {
@@ -48,7 +51,12 @@ beforeEach(() => {
     onLinkEvent: vi.fn((cb: () => void) => { linkListener = cb; return () => { linkListener = null; }; }),
     onHostStatus: vi.fn((cb: () => void) => { hostListener = cb; return () => { hostListener = null; }; }),
   };
-  vi.stubGlobal('electronAPI', { web: { status: vi.fn(async () => ({ running: false })) }, a2aRemote: api });
+  goneListener = null;
+  vi.stubGlobal('electronAPI', {
+    web: { status: vi.fn(async () => ({ running: false })) },
+    a2aRemote: api,
+    daemon: { onDisconnected: (cb: () => void) => { goneListener = cb; return () => { goneListener = null; }; } },
+  });
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
@@ -72,7 +80,8 @@ describe('Remote rail badge', () => {
     expect(selectRemoteNeedsYou({
       a2aRemote: {
         links: [link('a', 'proposed-in'), link('b', 'proposed-out'), link('c', 'active')],
-        held: [task, task],
+        // Holds for Moa clear by themselves: not counted.
+        held: [task(), task('occupant-changed'), task('brain-delivery-pending'), task('brain-unavailable')],
         hosts: [host('identity-changed'), host('disconnected')],
         joined: [], peers: [], loaded: true,
       },
@@ -102,7 +111,7 @@ describe('Remote rail badge', () => {
     await act(async () => root.render(<Bridge />));
     await act(async () => { await Promise.resolve(); });
     expect(api.heldList).toHaveBeenCalledTimes(1);
-    api.heldList.mockResolvedValue({ tasks: [task] });
+    api.heldList.mockResolvedValue({ tasks: [task()] });
     await act(async () => { vi.advanceTimersByTime(A2A_HELD_POLL_MS); await Promise.resolve(); });
     expect(api.heldList).toHaveBeenCalledTimes(2);
     expect(api.linksList).toHaveBeenCalledTimes(1);
@@ -112,5 +121,32 @@ describe('Remote rail badge', () => {
     await act(async () => { vi.advanceTimersByTime(A2A_HELD_POLL_MS); });
     expect(api.heldList).toHaveBeenCalledTimes(2);
     visibility.mockRestore();
+  });
+
+  it('drops a refresh that finishes after a newer one already applied', async () => {
+    let releaseOld: (v: unknown) => void = () => undefined;
+    api.linksList.mockImplementationOnce(() => new Promise((r) => { releaseOld = r; }));
+    const old = refreshA2aRemote();
+    api.linksList.mockResolvedValueOnce({ links: [] });
+    await act(async () => { await refreshA2aRemote(); });
+    expect(useStore.getState().a2aRemote.links).toEqual([]);
+    await act(async () => { releaseOld({ links: [link('a', 'proposed-in')] }); await old; });
+    // The older answer (one request) never rolls the newer one (none) back.
+    expect(useStore.getState().a2aRemote.links).toEqual([]);
+  });
+
+  it('clears the feed, and the badge, when the daemon goes away or every read fails', async () => {
+    await act(async () => root.render(<><Bridge /><MiniSidebar rail collapsed={false} /></>));
+    await act(async () => { await Promise.resolve(); });
+    expect(badge()?.textContent).toBe('1');
+    act(() => goneListener?.());
+    expect(badge()).toBeNull();
+    expect(useStore.getState().a2aRemote.loaded).toBe(false);
+
+    await act(async () => { linkListener?.(); await Promise.resolve(); });
+    expect(badge()?.textContent).toBe('1');
+    for (const fn of ['linksList', 'hostsStatus', 'heldList', 'hostsList', 'peersList']) api[fn].mockRejectedValue(new Error('gone'));
+    await act(async () => { linkListener?.(); await Promise.resolve(); });
+    expect(badge()).toBeNull();
   });
 });

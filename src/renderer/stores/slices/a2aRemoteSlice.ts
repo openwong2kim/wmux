@@ -3,6 +3,7 @@ import type { StoreState } from '../index';
 import type { A2aLinkRecordV1, A2aPeerRecordV1, A2aRemoteHostRecordV1 } from '../../../shared/a2aRemote';
 import type { A2aRemoteHostStatus } from '../../../shared/rpc';
 import type { Task } from '../../../shared/types';
+import type { A2aRemoteTaskState } from '../../../shared/a2aRemoteDelivery';
 
 // ─── Cross-PC A2A, as the Remote page and the rail read it ────────────────────
 //
@@ -44,6 +45,21 @@ export const createA2aRemoteSlice: StateCreator<
   }),
 });
 
+/** Held for Moa: it goes by itself once Moa can take it, so nobody has to act. */
+const MOA_HOLDS = new Set(['brain-delivery-pending', 'brain-unavailable']);
+
+/** Why a task (or its newest held reply) is held. */
+export function heldReason(task: Task): string | undefined {
+  const marker = task.metadata.remote as A2aRemoteTaskState | undefined;
+  if (!marker) return undefined;
+  return marker.held ?? marker.inbox?.find((i) => i.held)?.held;
+}
+
+/** Held work a person must deliver or send back (not a hold that clears by itself). */
+export function heldNeedsPerson(task: Task): boolean {
+  return !MOA_HOLDS.has(heldReason(task) ?? '');
+}
+
 /**
  * What waits on a person across PCs: link requests to accept or decline, held
  * work to deliver or send back, and PCs whose certificate changed. The rail's
@@ -52,6 +68,6 @@ export const createA2aRemoteSlice: StateCreator<
 export function selectRemoteNeedsYou(s: Pick<StoreState, 'a2aRemote'>): number {
   const { links, held, hosts } = s.a2aRemote;
   return links.filter((l) => l.state === 'proposed-in').length
-    + held.length
+    + held.filter(heldNeedsPerson).length
     + hosts.filter((h) => h.state === 'identity-changed').length;
 }

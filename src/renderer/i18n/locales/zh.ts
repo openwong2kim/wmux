@@ -3312,6 +3312,8 @@ export const zh = {
   'remotePage.groupMessages': "消息链接",
   'remotePage.groupMessagesHint': "只收消息，不会进入窗格",
   'remotePage.exposureTitle': "{name} 能看到什么",
+  'remotePage.removeHostKept': "{name} 仍在本机加入的电脑列表中：移除失败。请再试一次。",
+  'remotePage.removePeerKept': "{name} 仍可连接本机：撤销其配对失败。请再试一次。",
   'remotePage.connect.button': "连接电脑…",
   'remotePage.connect.title': "连接电脑",
   'remotePage.connect.tabInvite': "邀请到本机",

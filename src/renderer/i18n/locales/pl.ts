@@ -4137,6 +4137,8 @@ export const pl = {
   'remotePage.groupMessages': "Łącza wiadomości",
   'remotePage.groupMessagesHint': "Tylko wiadomości, nigdy nie trafiają do panelu",
   'remotePage.exposureTitle': "Co widzi {name}",
+  'remotePage.removeHostKept': "{name} nadal jest na liście komputerów, do których dołączył ten komputer: usunięcie się nie udało. Spróbuj ponownie.",
+  'remotePage.removePeerKept': "{name} nadal może łączyć się z tym komputerem: nie udało się cofnąć parowania. Spróbuj ponownie.",
   'remotePage.connect.button': "Połącz komputer…",
   'remotePage.connect.title': "Połącz komputer",
   'remotePage.connect.tabInvite': "Zaproś do tego komputera",
