@@ -1513,7 +1513,7 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
     if (read?.parsed.plan) return this.buildPlanPrompt(note, read, binding);
     const parsed = read?.parsed ?? null;
     const command = binding ? commandOfToolInput(binding.name, binding.input) : undefined;
-    // The dialog's second field: a Bash call's description, a WebFetch call's prompt.
+    // The dialog's second field: a shell call's (Bash, PowerShell) description, a WebFetch call's prompt.
     const detail = binding?.input[binding.name === 'WebFetch' ? 'prompt' : 'description'];
     const description = typeof detail === 'string' ? detail : undefined;
     const toolName = binding?.name ?? note.toolName ?? toolFromDialogTitle(parsed?.title);

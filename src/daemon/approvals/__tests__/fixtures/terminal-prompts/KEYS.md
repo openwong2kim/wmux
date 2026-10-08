@@ -70,7 +70,7 @@ There is no "No, keep planning" row in this build.
 | `shift+tab` on row 3 | Approves with the typed feedback (hint shown, not exercised) |
 | `Esc` | Rejects the plan ("User rejected Claude's plan"), ends the turn, stays in plan mode (measured through the phone `/decline`, 2026-09-28) |
 
-## Claude Code — permission dialogs (Bash, Edit, Write)
+## Claude Code — permission dialogs (Bash, PowerShell, Edit, Write)
 
 | Dialog | Options | Keys |
 | --- | --- | --- |
@@ -105,6 +105,22 @@ Bash dialog draws `Tip: auto mode handles these prompts for you — choose
 The screens are in `claude-2.1.293/` (alternate screen). The user name in the
 paths is replaced at the same length, so wraps are unchanged, and the banner's
 model and plan names are replaced.
+
+The PowerShell tool (Claude Code 2.1.294 on Windows, captured 2026-10-08 the
+same way, 100x30 and 80x24, #1936). Its call input is `{ command, description
+}`, as Bash's. The dialog is titled `PowerShell command` and laid out as the
+Bash one: the description, the boxed command (a `│` gutter when it wraps), and
+a reason row under the box when Claude has one (`Command contains script block
+that may execute arbitrary code`). No `Tip:` row and no auto-mode option were
+drawn in this run.
+
+| Dialog | Options | Keys |
+| --- | --- | --- |
+| PowerShell | `1. Yes`, `2. Yes, and always allow access to <dir> from this project` (wraps at 80 columns), `3. No` | `1` runs the command. `3` (No) interrupts the turn. The Esc key record pair cancels it ("Interrupted") |
+| PowerShell, with a reason row | `1. Yes`, `2. No` | `1` runs the command |
+| Write (create, 2.1.294) | `1. Yes`, `2. Yes, and switch to accept edits … for this session (shift+tab)`, `3. No` | `3` rejects. With wmux's default PreToolUse gate the call first waits for the gate's deadline (Write is gated, PowerShell is not) |
+
+The screens are in `claude-2.1.294/`, sanitized as above.
 
 ## Claude Code — other menus
 

@@ -66,4 +66,12 @@ describe('commandOfToolInput', () => {
     expect(commandOfToolInput('Write', { file_path: '/tmp/a.txt', content: 'x' })).toBe('/tmp/a.txt');
     expect(commandOfToolInput('Bash', { file_path: '/tmp/a.txt' })).toBeUndefined();
   });
+
+  it('#1936: is the PowerShell tool\'s command too, which has the same input shape as Bash', () => {
+    expect(commandOfToolInput('PowerShell', { command: 'Set-Content -Path a.txt -Value x', description: 'Write a.txt' }))
+      .toBe('Set-Content -Path a.txt -Value x');
+    expect(commandOfToolInput('PowerShell', { file_path: 'C:\\a.txt' })).toBeUndefined();
+    // Only the shell tools, by name: another tool's `command` field is not what its dialog shows.
+    expect(commandOfToolInput('SomeMcpTool', { command: 'x' })).toBeUndefined();
+  });
 });
