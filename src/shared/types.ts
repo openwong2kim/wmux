@@ -32,7 +32,9 @@ import type { AgentSignalKind } from './hooks/signal-types';
  *  adapter with the Hermes Agent spawn spec; 'claude-pty' = the user's own
  *  Claude Code binary driven as an interactive TUI inside a deck-embedded pty
  *  (the subscription-safe hedge — see ClaudePtyBrainAdapter). New ACP vendors
- *  extend this union + a spawn spec — no new adapter code. */
+ *  extend this union + a spawn spec — no new adapter code.
+ *  TODO(#1904): brain runtime ids, not agent slugs (`hermes` and `claude-pty`
+ *  have no registry row), so this union is not derived from agentIdentity.ts. */
 export type BrainVendor = 'claude' | 'hermes' | 'claude-pty';
 
 export type AgentPreset = _AgentPreset;

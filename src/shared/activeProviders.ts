@@ -1,7 +1,10 @@
+import { agentSlugsWith, type AgentSlugWith } from './agentIdentity';
 import type { OrchestratorRoleBindings } from './orchestratorRole';
 
-export const ALL_ACTIVE_PROVIDERS = ['claude', 'codex', 'agy'] as const;
-export type ActiveProviderId = (typeof ALL_ACTIVE_PROVIDERS)[number];
+/** The agents listed in Settings -> Token usage: the registry rows that declare
+ *  `tokenUsage` (src/shared/agentIdentity.ts), in table order. */
+export const ALL_ACTIVE_PROVIDERS: readonly ActiveProviderId[] = agentSlugsWith('tokenUsage');
+export type ActiveProviderId = AgentSlugWith<'tokenUsage'>;
 
 export function activeProviders(bindings?: OrchestratorRoleBindings | null): ActiveProviderId[] {
   if (!bindings || Object.keys(bindings).length === 0) {

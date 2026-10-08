@@ -28,10 +28,15 @@
  * RESUME_BY_LAUNCHER also gates the resume pill (resumeOfferForRecovered) so we
  * never offer a resume we cannot actually perform.
  *
+ * The grammar per agent is data on its registry row (`resume` in
+ * src/shared/agentIdentity.ts); this module turns it into commands.
+ *
  * This module lives in src/shared so the daemon (tsconfig.daemon.json scopes
  * to src/daemon + src/shared) can import it WITHOUT reaching into
  * integrations/shared (out of the daemon's tsconfig).
  */
+
+import { AGENT_ROWS, agentRow } from './agentIdentity';
 
 /**
  * Per-launcher resume grammar. Two shapes, expressed uniformly as
@@ -49,10 +54,17 @@ interface ResumeGrammar {
   readonly withId: (sessionId: string) => string;
 }
 
-const RESUME_BY_LAUNCHER: Readonly<Record<string, ResumeGrammar>> = {
-  claude: { fallback: '--continue', withId: (id) => `--resume ${id}` },
-  codex: { fallback: 'resume --last', withId: (id) => `resume ${id}` },
-};
+// Derived from the registry's `resume` rows (src/shared/agentIdentity.ts), keyed
+// by slug. A Map, not an object index: a slug now reaches here from ANOTHER
+// machine (#1342), and `constructor` / `toString` must not answer with
+// something off a prototype. `split`/`join` rather than `replace`, so a `$&`
+// inside a session id is inserted literally.
+const RESUME_BY_LAUNCHER: ReadonlyMap<string, ResumeGrammar> = new Map(
+  AGENT_ROWS.flatMap((row): [string, ResumeGrammar][] => {
+    const spec = row.resume;
+    return spec ? [[row.slug, { fallback: spec.latest, withId: (id) => spec.exact.split('{id}').join(id) }]] : [];
+  }),
+);
 
 /**
  * The resume grammar for an agent slug, or undefined if wmux cannot resume it.
@@ -60,13 +72,11 @@ const RESUME_BY_LAUNCHER: Readonly<Record<string, ResumeGrammar>> = {
  * (permission stage) rather than via {@link toResumeCommand}.
  */
 export function resumeGrammarFor(agent: string): ResumeGrammar | undefined {
-  // Own-property check, not a bare index: a plain object literal answers
+  // A Map lookup, not a bare object index: a plain object literal answers
   // `constructor` / `toString` with something truthy off its prototype, and a
   // slug now reaches here from ANOTHER machine (#1342). Without this, such a
   // slug passes as a resumable agent and then has no `withId` to call.
-  return Object.prototype.hasOwnProperty.call(RESUME_BY_LAUNCHER, agent)
-    ? RESUME_BY_LAUNCHER[agent]
-    : undefined;
+  return RESUME_BY_LAUNCHER.get(agent);
 }
 
 /**
@@ -108,7 +118,7 @@ export function permissionFlagFor(mode: PermissionMode | undefined): string {
  * skip-permissions toggle so it never shows a Codex user a flag Codex rejects.
  */
 export function agentSupportsPermissionFlag(agent: string): boolean {
-  return agent === 'claude';
+  return agentRow(agent)?.permissions === 'permission-mode';
 }
 
 /**
@@ -182,7 +192,7 @@ const UUID_RE = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
  * Other agents keep their own id formats, so only these two are checked.
  */
 export function isPlausibleResumeSessionId(agent: string, sessionId: string): boolean {
-  if (agent === 'claude' || agent === 'codex') return UUID_RE.test(sessionId);
+  if (agentRow(agent)?.resume?.idFormat === 'uuid') return UUID_RE.test(sessionId);
   return sessionId.length > 0;
 }
 
@@ -384,7 +394,7 @@ export function toResumeCommand(
   // assignment (`FOO=bar`) or a path that doesn't basename to a known launcher
   // falls through unchanged.
   const stem = launcherStem(tokens[0].value);
-  const grammar = RESUME_BY_LAUNCHER[stem];
+  const grammar = RESUME_BY_LAUNCHER.get(stem);
   if (!grammar) return command;
 
   // Already resuming / one-shot? The detection is grammar-specific:
@@ -448,6 +458,6 @@ export function resumeOfferForRecovered(session: {
 }): string | undefined {
   if (session.exec || session.supervision) return undefined;
   const agent = session.lastDetectedAgent;
-  if (!agent || !RESUME_BY_LAUNCHER[agent]) return undefined;
+  if (!agent || !RESUME_BY_LAUNCHER.has(agent)) return undefined;
   return agent;
 }

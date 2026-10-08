@@ -6,9 +6,12 @@
 // pane; the daemon folds it (see apply.ts) and serves it as snapshots.
 import type { ContextUsage } from "./contextUsage";
 import type { UserQuestionPrompt } from "./userQuestion";
+import type { AgentSlug } from "../agentIdentity";
 
-/** Agents a chat-v2 driver can run. v1 creates `claude` only (see ipc.ts). */
-export type HarnessId = "claude" | "codex" | "opencode";
+/** Agents a chat-v2 driver can run. v1 creates `claude` only (see ipc.ts).
+ *  TODO(#1904): a registry slug subset with its own titles; widening it means
+ *  a new chat-v2 driver, not a registry field. */
+export type HarnessId = Extract<AgentSlug, "claude" | "codex" | "opencode">;
 
 export const HARNESS_TITLE: Record<HarnessId, string> = {
   claude: "Claude Code",

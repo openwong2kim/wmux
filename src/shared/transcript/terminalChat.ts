@@ -1,3 +1,5 @@
+import type { AgentSlug } from '../agentIdentity';
+
 /** A chat surface is a projection of an existing terminal conversation.
  * Optional ACP/managed conversations must not impersonate this binding.
  * Adding a provider requires an identity source and a reader; safe input is a
@@ -22,7 +24,9 @@ export interface TerminalChatBinding {
   };
 }
 
-export type TerminalLaunchAgent = 'claude' | 'codex';
+// TODO(#1904): launching from the phone/web is built for these two agents'
+// flags only; opening it to every registry row needs per-row launch modes.
+export type TerminalLaunchAgent = Extract<AgentSlug, 'claude' | 'codex'>;
 export type TerminalLaunchMode = 'default' | 'bypass' | 'yolo';
 export function validTerminalLaunchMode(agent: unknown, mode: unknown): boolean {
   return mode === undefined || mode === 'default' || agent === 'claude' && mode === 'bypass' || agent === 'codex' && mode === 'yolo';

@@ -11,6 +11,7 @@
 // itself dependency-free, so the narrow-interface property above survives.
 import type { ApprovalPressRefusal } from './approvalKeystrokes';
 import type { QuestionShape } from './askUserQuestion';
+import type { AgentSlug } from '../../shared/agentIdentity';
 
 /** What the resolver asked for. Approve = affirmative, deny = reject. */
 export type ApprovalDecision = 'approve' | 'deny';
@@ -298,8 +299,10 @@ export type DecisionChannel = 'hook-verdict' | 'native-rpc' | 'fenced-keys' | 'n
 
 /** The agent-side identity of a `native-rpc` decision. */
 export interface NativeDecisionRef {
-  /** `claude`: a chat-v2 driver's request (src/daemon/chat/v2), answered through its stdio. */
-  adapter: 'opencode' | 'codex' | 'claude';
+  /** `claude`: a chat-v2 driver's request (src/daemon/chat/v2), answered through its stdio.
+   *  TODO(#1904): each member is a native decision channel written in code; a
+   *  registry slug subset, persisted on records, so it is not derived. */
+  adapter: Extract<AgentSlug, 'opencode' | 'codex' | 'claude'>;
   /** OpenCode requestID / Codex JSON-RPC server request id / Claude `control_request.request_id`. */
   requestId: string;
   /** OpenCode sessionID. */

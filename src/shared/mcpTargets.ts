@@ -15,6 +15,7 @@
 // is not installed here, so it stays unverified and is never created.
 
 import * as path from 'path';
+import { AGENT_ROWS, type AgentSlugWith } from './agentIdentity';
 import { dataSuffix } from './constants';
 
 export type McpConfigFormat = 'json' | 'toml';
@@ -38,9 +39,12 @@ export function externalRegistrationSkipReason(): string | null {
     '(production ~/.claude.json et al. stay untouched; set WMUX_MCP_REGISTER_EXTERNAL=1 to override)';
 }
 
+/** The agents with an MCP target: the registry rows that declare `mcp`. */
+export type McpTargetId = AgentSlugWith<'mcp'>;
+
 export interface McpTarget {
   /** Stable id used in status payloads, CLI `--target`, and UI keys. */
-  id: 'claude' | 'codex' | 'gemini' | 'agy';
+  id: McpTargetId;
   /** Human label for Settings / CLI output. */
   displayName: string;
   /** Config file syntax. Drives which `configIO` adapter is used. */
@@ -77,48 +81,24 @@ export interface McpTarget {
 export const WMUX_SERVER_KEY = 'wmux';
 export const WMUX_SERVER_KEYS: readonly string[] = [WMUX_SERVER_KEY];
 
-export const MCP_TARGETS: readonly McpTarget[] = [
-  {
-    id: 'claude',
-    displayName: 'Claude Code',
-    format: 'json',
-    configPath: (home) => path.join(home, '.claude.json'),
-    createIfMissing: true,
-    verified: true,
-    autoRegister: true,
-  },
-  {
-    id: 'codex',
-    displayName: 'Codex CLI',
-    format: 'toml',
-    configPath: (home) => path.join(home, '.codex', 'config.toml'),
-    createIfMissing: false,
-    verified: true,
-    autoRegister: true,
-  },
-  {
-    id: 'gemini',
-    displayName: 'Gemini CLI',
-    format: 'json',
-    configPath: (home) => path.join(home, '.gemini', 'settings.json'),
-    createIfMissing: false,
-    verified: false,
-    autoRegister: true,
-  },
-  {
-    // Antigravity CLI (`agy`), Google's successor to the Gemini CLI. It reads
-    // MCP servers from `~/.gemini/config/mcp_config.json` (same `mcpServers`
-    // JSON shape; `agy mcp add` writes there). Opt-in only: agy is commonly a
-    // restricted worker, so wmux never adds its tools on its own.
-    id: 'agy',
-    displayName: 'Antigravity CLI',
-    format: 'json',
-    configPath: (home) => path.join(home, '.gemini', 'config', 'mcp_config.json'),
-    createIfMissing: false,
-    verified: false,
-    autoRegister: false,
-  },
-];
+/**
+ * Every agent whose registry row declares an `mcp` target
+ * (src/shared/agentIdentity.ts), in table order. The display name is the
+ * row's; the config path is the row's segments joined under `home`.
+ */
+export const MCP_TARGETS: readonly McpTarget[] = AGENT_ROWS.flatMap((row): McpTarget[] => {
+  const spec = row.mcp;
+  if (!spec) return [];
+  return [{
+    id: row.slug as McpTargetId,
+    displayName: row.display,
+    format: spec.format,
+    configPath: (home) => path.join(home, ...spec.configPath),
+    createIfMissing: spec.createIfMissing,
+    verified: spec.verified,
+    autoRegister: spec.autoRegister,
+  }];
+});
 
 /** Look up a target by id. */
 export function getMcpTarget(id: string): McpTarget | undefined {

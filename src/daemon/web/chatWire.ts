@@ -27,6 +27,7 @@ import {
 } from '../../shared/transcript/terminalChat';
 import type { MetaEvent, ToolBody, TurnEvent } from '../../shared/transcript/turnEvents';
 import type { AgentStatus } from '../../shared/types';
+import { agentRow } from '../../shared/agentIdentity';
 import { chatV2HistoryEpoch, type ChatV2Binding, type ChatV2Status } from '../../shared/chatv2/ipc';
 import { truncateUtf8, utf8Bytes } from '../../shared/chatv2/limits';
 import { HARNESS_TITLE, type Block, type Session, type ToolPreview, type TurnOutcome } from '../../shared/chatv2/session';
@@ -149,9 +150,10 @@ export function buildChatObject(
   const terminal = status.terminal;
   const agent = terminal?.agent;
   // `queue` is passed only for a `chat-queue` caller on a daemon whose queue
-  // loaded: all three agents then queue in the daemon, so `send` stays open
+  // loaded: every agent whose registry row declares `sendQueue` (claude, codex,
+  // opencode) then queues in the daemon, so `send` stays open
   // while a turn runs. Without it the capabilities are today's, byte for byte.
-  const queueing = opts.queue !== undefined && status.agentAlive === true && !!agent && QUEUE_AGENTS.includes(agent);
+  const queueing = opts.queue !== undefined && status.agentAlive === true && agentRow(agent)?.sendQueue === true;
   const capabilities = terminal ? phoneTerminalCapabilities(terminal.capabilities, opts.chatCancel === true) : closed;
   return {
     binding: 'terminal',
@@ -184,9 +186,6 @@ export function buildChatObject(
     ...(opts.queue !== undefined ? { queue: opts.queue.map((item) => ({ ...item })) } : {}),
   };
 }
-
-/** The agents whose sends the daemon queue can hold. */
-const QUEUE_AGENTS: readonly string[] = ['claude', 'codex', 'opencode'];
 
 /**
  * The desktop's terminal capabilities, minus what the phone has no route for:
