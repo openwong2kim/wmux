@@ -137,7 +137,7 @@ There is no per-session "secure mode" toggle in wmux. The substrate is neutral: 
 
 ## 5. Reporting security issues
 
-Security issues should be reported privately. Use GitHub's "Report a vulnerability" workflow on the wmux repository, or email the maintainer directly (see repository README). Please do not file public issues for security-relevant findings until a fix is available.
+Security issues should be reported privately. Use GitHub's "Report a vulnerability" workflow on the wmux repository, or email the maintainer at [open.wong2kim@gmail.com](mailto:open.wong2kim@gmail.com) (see [CONTRIBUTING.md](../CONTRIBUTING.md#reporting-security-issues)). Please do not file public issues for security-relevant findings until a fix is available.
 
 What we consider a security issue:
 
