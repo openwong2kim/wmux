@@ -150,7 +150,7 @@ import { McpRegistrar } from './mcp/McpRegistrar';
 import { BrokerSupervisor, isMcpBrokerEnabled } from './mcp/BrokerSupervisor';
 import { WebviewCdpManager } from './browser-session/WebviewCdpManager';
 import { claimCdpPort, probeCdpEndpointWithRetry } from './browser-session/cdpPort';
-import { clearPrivateBrowserSession } from './browser-session/privateSession';
+import { clearPrivateBrowserSession, trackPrivateBrowserContents } from './browser-session/privateSession';
 import { BrowserBackendStore } from './browser-session/BrowserBackendStore';
 import { ChromeLauncherRegistry } from './browser-session/ChromeLauncher';
 import { ChromeProfileStore } from './browser-session/ChromeProfileStore';
@@ -1522,7 +1522,9 @@ ipcMain.handle('browser:set-discard', (_event, enabled: boolean) => {
   webviewCdpManager.setDiscardMode(enabled);
   return { ok: true };
 });
-// Private browser tabs: the renderer asks once the last one has closed.
+// Private browser tabs: the renderer asks once the last one has closed. The
+// clear waits for the closed tabs' guests to be destroyed (tracked here).
+trackPrivateBrowserContents();
 ipcMain.handle('browser:clear-private-session', async () => {
   await clearPrivateBrowserSession();
   return { ok: true };

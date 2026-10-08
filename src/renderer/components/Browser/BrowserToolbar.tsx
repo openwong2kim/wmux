@@ -2,6 +2,18 @@ import { useRef, useState, useCallback, useEffect } from 'react';
 import { useT } from '../../hooks/useT';
 import { isSafeBrowserUrl } from '../../utils/browserPane';
 import Badge from '../ui/Badge';
+import { IconLock as IconPrivate } from '../icons';
+import { useElementWidth } from '../../hooks/useElementWidth';
+
+/** Below this toolbar width the "Private" badge folds to its padlock, so the
+ *  address field keeps room for the URL. */
+export const PRIVATE_BADGE_COMPACT_BELOW = 520;
+
+/** Compact private marker for a measured toolbar width. Unmeasured (null) and
+ *  zero (a hidden pane) are not "narrow" — same rule as useElementWidth. */
+export function privateBadgeCompact(width: number | null): boolean {
+  return width !== null && width > 0 && width < PRIVATE_BADGE_COMPACT_BELOW;
+}
 
 // ---------------------------------------------------------------------------
 // SVG Icon components
@@ -116,6 +128,8 @@ export default function BrowserToolbar({
   const [inputValue, setInputValue] = useState(currentUrl);
   const [isFocused, setIsFocused] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  const [toolbarRef, toolbarWidth] = useElementWidth<HTMLDivElement>();
+  const compactPrivate = privateBadgeCompact(toolbarWidth);
 
   // Sync display URL when not focused
   useEffect(() => {
@@ -169,6 +183,7 @@ export default function BrowserToolbar({
 
   return (
     <div
+      ref={toolbarRef}
       className="flex items-center gap-1.5 px-2 py-1.5 shrink-0"
       style={{ backgroundColor: 'var(--bg-mantle)', borderBottom: '1px solid var(--bg-surface)' }}
     >
@@ -204,8 +219,10 @@ export default function BrowserToolbar({
         </span>
       </button>
 
-      {/* URL bar */}
-      <form className="flex-1 min-w-0" onSubmit={handleSubmit}>
+      {/* URL bar. A minimum width so the address never collapses to nothing in
+          a narrow pane, and clipped so its contents never paint over the
+          controls beside it. */}
+      <form className="flex-1 min-w-[64px] overflow-hidden" onSubmit={handleSubmit}>
         <div
           className="flex items-center gap-1.5 px-2.5 py-1 rounded-md"
           style={{
@@ -251,11 +268,21 @@ export default function BrowserToolbar({
         </div>
       </form>
 
-      {isPrivate && (
-        <Badge className="shrink-0" title={t('browser.privateTooltip')} data-private-browser-badge>
+      {isPrivate && (compactPrivate ? (
+        <span
+          className="flex items-center justify-center w-6 h-6 shrink-0 text-[var(--text-sub2)]"
+          role="img"
+          aria-label={t('browser.privateTab')}
+          title={t('browser.privateTooltip')}
+          data-private-browser-badge="compact"
+        >
+          <IconPrivate size={14} />
+        </span>
+      ) : (
+        <Badge className="shrink-0" title={t('browser.privateTooltip')} data-private-browser-badge="full">
           {t('browser.private')}
         </Badge>
-      )}
+      ))}
 
       {/* Inspector */}
       <button

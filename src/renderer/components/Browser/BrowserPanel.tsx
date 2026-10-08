@@ -10,6 +10,7 @@ import {
   type BrowserNavigateDetail,
 } from '../../utils/browserPane';
 import { isPrivateBrowserPartition } from '../../../shared/privateBrowser';
+import { isPrivateSessionReady, privateSessionReady } from '../../utils/privateSessionGate';
 
 // The <webview> intrinsic comes from @types/react's built-in
 // WebViewHTMLAttributes — with the automatic JSX runtime (React.JSX
@@ -94,6 +95,17 @@ export default function BrowserPanel({ surfaceId, workspaceId, initialUrl, parti
   // restoreFromDiscard reads/writes this ref and then sets state plainly
   // (Claude+GLM review).
   const discardedRef = useRef(false);
+  // A private tab waits for an in-flight wipe of the private session (the last
+  // private tab just closed) before its <webview> mounts — otherwise that wipe
+  // would take this tab's cookies with it. Normal tabs never wait.
+  const isPrivate = isPrivateBrowserPartition(partition);
+  const [sessionReady, setSessionReady] = useState(() => !isPrivate || isPrivateSessionReady());
+  useEffect(() => {
+    if (sessionReady) return;
+    let alive = true;
+    void privateSessionReady().then(() => { if (alive) setSessionReady(true); });
+    return () => { alive = false; };
+  }, [sessionReady]);
   const [inspecting, setInspecting] = useState(false);
   const [inspectInfo, setInspectInfo] = useState<string | null>(null);
 
@@ -238,7 +250,7 @@ export default function BrowserPanel({ surfaceId, workspaceId, initialUrl, parti
       wv.removeEventListener('did-navigate-in-page', onDidNavigateInPage as EventListener);
       wv.removeEventListener('page-title-updated', onTitleUpdated as EventListener);
     };
-  }, [updateNavState, updateBrowserUrl, surfaceId, workspaceId, discarded]);
+  }, [updateNavState, updateBrowserUrl, surfaceId, workspaceId, discarded, sessionReady]);
 
   // F12 opens DevTools for the webview
   useEffect(() => {
@@ -304,6 +316,12 @@ export default function BrowserPanel({ surfaceId, workspaceId, initialUrl, parti
 
   const handleNavigate = useCallback((url: string) => {
     if (!isSafeBrowserUrl(url)) return;
+    if (!sessionReady) {
+      // No webview yet: it mounts on the target URL once the session is ready.
+      setMountSrc(url);
+      setCurrentUrl(url);
+      return;
+    }
     if (discarded) {
       // Navigating a discarded pane restores it directly onto the target URL.
       discardedRef.current = false;
@@ -321,7 +339,7 @@ export default function BrowserPanel({ surfaceId, workspaceId, initialUrl, parti
       wv.setAttribute('src', url);
     }
     setCurrentUrl(url);
-  }, [isReady, discarded]);
+  }, [isReady, discarded, sessionReady]);
 
   // Imperative navigation channel for openUrlInBrowserPane (terminal link
   // clicks, sidebar port badges, browser.open RPC). The store's browserUrl is
@@ -486,7 +504,7 @@ export default function BrowserPanel({ surfaceId, workspaceId, initialUrl, parti
     };
     wv.addEventListener('console-message', onConsole as EventListener);
     return () => { wv.removeEventListener('console-message', onConsole as EventListener); };
-  }, [removeInspector, discarded]);
+  }, [removeInspector, discarded, sessionReady]);
 
   const handleOpenDevTools = useCallback(() => {
     try {
@@ -535,7 +553,7 @@ export default function BrowserPanel({ surfaceId, workspaceId, initialUrl, parti
         canGoBack={canGoBack}
         canGoForward={canGoForward}
         isActive={isActive}
-        isPrivate={isPrivateBrowserPartition(partition)}
+        isPrivate={isPrivate}
         inspecting={inspecting}
         onNavigate={handleNavigate}
         onBack={handleBack}
@@ -657,7 +675,7 @@ export default function BrowserPanel({ surfaceId, workspaceId, initialUrl, parti
           <webview> is unmounted entirely so the guest renderer process dies
           and its memory is reclaimed; remounting reloads mountSrc. */}
       <div className="flex-1 relative overflow-hidden" style={{ backgroundColor: 'var(--bg-base)' }}>
-        {discarded ? (
+        {!sessionReady ? null : discarded ? (
         <button
           type="button"
           onClick={restoreFromDiscard}

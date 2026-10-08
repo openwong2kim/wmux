@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import { useStore } from '../stores';
 import { createPrivateSessionWatcher } from '../../shared/privateBrowser';
+import { beginPrivateSessionClear } from '../utils/privateSessionGate';
 
 /**
  * Wipes the shared private-tab session in main when the last private browser
@@ -11,11 +12,11 @@ import { createPrivateSessionWatcher } from '../../shared/privateBrowser';
  */
 export function usePrivateBrowserCleanup(): void {
   useEffect(() => {
-    const clear = () => {
-      void window.electronAPI?.browser?.clearPrivateSession?.().catch((err: unknown) => {
+    // Private panels hold their <webview> until this settles (privateSessionGate).
+    const clear = () => beginPrivateSessionClear(() =>
+      window.electronAPI?.browser?.clearPrivateSession?.().catch((err: unknown) => {
         console.warn('[private-browser] failed to clear the private session:', err);
-      });
-    };
+      }));
     const watch = createPrivateSessionWatcher(clear);
     watch(useStore.getState().workspaces);
     return useStore.subscribe((state) => watch(state.workspaces));
