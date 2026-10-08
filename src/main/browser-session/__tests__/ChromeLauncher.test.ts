@@ -327,6 +327,7 @@ describe('ChromeLauncherRegistry', () => {
     expect(activated).toEqual([expect.stringMatching(/\/json\/activate\/tgt-2$/)]);
     // Another workspace's view of the same profile has nothing to show.
     expect(await registry.revealNewest('pane-prof', 'ws-b')).toMatchObject({ ok: false });
+    expect(await registry.revealNewest('live', 'ws-a')).toMatchObject({ ok: false, error: expect.stringContaining('Live Chrome') });
   });
 
   it('statusForWorkspace on the live profile probes actual listening, not just a parseable file', async () => {

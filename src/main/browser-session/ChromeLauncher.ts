@@ -991,8 +991,12 @@ export class ChromeLauncher implements ChromeBackendClient {
    */
   async restoreWindow(surfaceId: string): Promise<void> {
     const targetId = this.surfaces.get(surfaceId)?.targetId;
+    if (!targetId) return;
+    // An adopted Chrome (app restart) has no watcher until something opens a
+    // tab; start it here. Never throws — no socket just means no restore.
+    await this.ensureTargetWatcher();
     const socket = this.watcher;
-    if (!targetId || !socket?.isOpen()) return;
+    if (!socket?.isOpen()) return;
     try {
       const reply = (await socket.send('Browser.getWindowForTarget', { targetId })) as {
         windowId?: number;
@@ -1205,6 +1209,9 @@ export class ChromeLauncherRegistry {
    * be the user's own.
    */
   async revealNewest(profile: string, workspaceId: string): Promise<{ ok: boolean; error?: string }> {
+    if (profile === LIVE_CHROME_PROFILE) {
+      return { ok: false, error: 'Show in Chrome applies to a wmux Chrome profile, not Live Chrome' };
+    }
     const launcher = this.peekLauncher(profile);
     if (!(launcher instanceof ChromeLauncher) || !launcher.isRunning()) {
       return { ok: false, error: `the Chrome for profile "${profile}" is not running` };
