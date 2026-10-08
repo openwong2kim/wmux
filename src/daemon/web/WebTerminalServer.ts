@@ -2638,10 +2638,10 @@ export class WebTerminalServer {
               ...(this.chatWritable(principal) && this.deps.chat?.()?.cancelOutcomeEnabled?.() === true ? { chatCancelOutcome: true } : {}),
               // Whether this caller's `chat-queue` sends are held by the daemon,
               // and DELETE …/chat/queue/:id (which needs `dequeue`) answers.
-              chatQueue: this.chatWritable(principal) && this.deps.chat?.()?.queueEnabled?.() === true && typeof this.deps.chat?.()?.dequeue === 'function',
-              // `deliver:"steer"` on a queued send, and PATCH …/chat/queue/:id (which needs `steer`).
-              ...(this.chatWritable(principal) && this.deps.chat?.()?.queueEnabled?.() === true && typeof this.deps.chat?.()?.steer === 'function'
-                ? { chatSteer: true } : {}),
+              chatQueue: this.chatQueueWorks(principal),
+              // `deliver:"steer"` on a queued send, and PATCH …/chat/queue/:id (which needs `steer`):
+              // only beside a working queue.
+              ...(this.chatQueueWorks(principal) && typeof this.deps.chat?.()?.steer === 'function' ? { chatSteer: true } : {}),
             }
           : {}),
         protocolVersion: PHONE_PROTOCOL_VERSION,
@@ -5124,6 +5124,12 @@ export class WebTerminalServer {
     if (this.opts?.allowTranscript !== true) return 'transcript';
     if (!this.mayInput(principal)) return 'input';
     return null;
+  }
+
+  /** `/api/config` `chatQueue`: chat writes pass, the queue loaded, and DELETE …/chat/queue/:id answers. */
+  private chatQueueWorks(principal: WebPrincipal): boolean {
+    const chat = this.deps.chat?.();
+    return this.chatWritable(principal) && chat?.queueEnabled?.() === true && typeof chat?.dequeue === 'function';
   }
 
   /** Whether a chat write gets past every gate that does not depend on the pane (the caller's, and a bridge). */

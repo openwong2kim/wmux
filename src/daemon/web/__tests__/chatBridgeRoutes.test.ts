@@ -1710,6 +1710,12 @@ describe('native chat routes (contract v0.3.1)', () => {
       expect(await config(device('ro', false))).not.toHaveProperty('chatSteer');
       fns.queueEnabled.mockReturnValue(false);
       expect(await config(bearer(info.token as string))).not.toHaveProperty('chatSteer');
+      // Never without chatQueue: a bridge with steer but no dequeue advertises neither.
+      fns.queueEnabled.mockReturnValue(true);
+      delete (chat as Partial<ChatBridge>).dequeue;
+      const noDequeue = await config(bearer(info.token as string));
+      expect(noDequeue.chatQueue).toBe(false);
+      expect(noDequeue).not.toHaveProperty('chatSteer');
     });
 
     it('SSE chat.queue goes live to the owner among the pane watchers only', async () => {
