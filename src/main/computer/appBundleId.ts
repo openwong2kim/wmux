@@ -1,9 +1,10 @@
 // The bundle id of a .app on disk, read before openApp launches it: a path's
 // file name says nothing about what the bundle is, so the blocklist has to
 // see its CFBundleIdentifier. Electron-free; execFile is injectable for tests.
+// macOS only, so the plist path is built with POSIX separators on any host.
 
 import { execFile as nodeExecFile } from 'node:child_process';
-import * as path from 'node:path';
+import { posix as path } from 'node:path';
 
 /** Absolute path, no shell: the argument is a path an agent chose. */
 export const PLUTIL_PATH = '/usr/bin/plutil';

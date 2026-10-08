@@ -30,6 +30,10 @@ vi.mock('electron', () => ({
   },
 }));
 vi.mock('node:child_process', () => ({ execFile: h.execFile, spawn: h.spawn }));
+// The handlers take the platform as an argument; the helper gates still look
+// at the host. CI's Windows runner is an elevated admin, which would read as
+// an `elevated` helper and refuse every button.
+vi.mock('../selfElevation', () => ({ isSelfElevated: () => false }));
 vi.mock('../../../shared/computer/config', () => ({
   readComputerUseEnabled: () => h.file.enabled,
   readComputerUseAskPerApp: () => h.file.askPerApp === true,
