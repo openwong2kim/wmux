@@ -1,3 +1,377 @@
+## [4.1.0] — 2026-10-08
+
+### Added
+
+- **Choose between the Antigravity (agy) accounts you own.** Settings →
+  Accounts lists your agy accounts. agy keeps one sign-in for the whole
+  computer, so wmux saves each account's sign-in in the Windows Credential
+  Manager and can make another one active, with "Use now" or automatically.
+  Automatic choice is off by default. With "Switch accounts by quota" turned
+  on, before wmux starts a new agy session (role launches, fan-out tasks) it
+  keeps the active account while it has quota and otherwise moves to the
+  registered account with the most quota left. Quota is judged for the model
+  family the session runs (Gemini, unless `--model` names a third-party
+  model), only measured accounts are switched to, and a sign-in made outside
+  wmux that is not registered is left alone. An account you pick by hand
+  ("Use now" or a sign-in) is never switched away automatically. When the
+  account agy would use is out, agy is not started and the pane says when
+  the first account frees up. Resumed conversations (`--continue`,
+  `--conversation`), management subcommands and lines that chain other
+  commands are never held. Quota comes from the agy statusLine sensor, which
+  keeps one snapshot per account; text printed in a pane never marks an
+  account out, and an account that needs signing in again is never reported
+  as out of quota. A sign-in that cannot be saved first is never replaced or
+  signed out. A notice next to the switch says that following each
+  provider's terms is your responsibility. Windows only; on macOS and Linux
+  the section says it is unavailable.
+
+- **Claude Code panes can resume themselves when wmux starts.** A new opt-in setting, Settings › Claude Code › "Resume Claude Code panes automatically on start" (off by default), makes a pane that was running Claude Code pick up its conversation by itself once the shell is ready after a restart. You no longer have to click the Resume pill and press Enter. It resumes the exact conversation when the pane is still in the same folder, otherwise the folder's most recent one, with the same permission mode as before. Skipping permissions is never turned on automatically. With the setting off, nothing changes: the Resume pill shows and nothing is typed. Other agents still use the Resume pill. (#1826)
+
+- **The sidebar keeps your order by default, and every row shows its Ctrl+N number.** Manual is the default sidebar order again, so a workspace no longer moves on its own when it starts working. A sort mode you chose in Settings is kept. In the Attention order, a new workspace now appears at the bottom of the list instead of the top. Each row shows the number its Ctrl+N shortcut jumps to, left of its name, in every sort mode. In a sorted order the numbers follow your stored order, so they can appear out of sequence. (#1827)
+
+- **Alt+F4 asks before quitting wmux.** Pressing Alt+F4 now asks "Quit wmux?" instead of silently hiding the window to the tray. Choosing Quit closes wmux, and your terminal sessions keep running in the background and reattach the next time you open it. The title-bar close button still hides wmux to the tray. (#1828)
+
+- **See how much CPU wmux is using, next to its memory.** The memory figure in the titlebar now has a CPU figure beside it: CPU use of wmux and everything it started, including your shells and the agents running in them, as a percent of the whole machine. Before, only memory was shown, so a busy or runaway process went unnoticed until the machine slowed down. On macOS and Linux the figure covers wmux's own processes only. (#1829)
+
+- **Search the keyboard shortcut list.** Settings > Keyboard shortcuts now has a search field. It filters the list by action name or by key combo, and ignores case, spaces and `+`. If nothing matches, it says so. (#1830)
+
+- **Set a command's shortcut from the command palette.** Each command in the palette shows its current key. Press Ctrl+Enter (Cmd+Enter on macOS), or click the key, to record a new one. The rules are the same as in Settings > Shortcuts: a key that is already taken or not allowed is refused with the reason. Backspace removes the key, and Esc cancels without closing the palette. Stash pane, move pane, multi task, toolbar pin, task cleanup and git diff can now have a shortcut too. They have no key by default, and Settings lists them as "Not set". (#1831)
+
+- **Terminal font size now goes down to 8.** The font-size slider in Settings > Appearance and keyboard zoom out used to stop at 12px. Both now go down to 8px, which fits more text on small or crowded panes. (#1832)
+
+- **New theme: Gruvbox Dark Hard.** A built-in dark theme on Gruvbox's hard-contrast background, with the Gruvbox colours in the terminal. Orange marks activity and things that need you, and aqua-blue marks navigation. Pick it in Settings > Appearance. The terminal palette can also be chosen on its own. (#1834)
+
+- **Cmd+Backspace deletes to the start of the line on macOS.** In a terminal pane, Cmd+Backspace now erases everything before the cursor on the current line, as it does in other macOS text fields and in Terminal.app and iTerm2 (it sends Ctrl+U). It works in shells, vim's insert mode and Claude Code; in zsh the default binding clears the whole line. Before, the key did nothing. If you have bound Cmd+Backspace to a shortcut yourself, your binding still takes priority. (#1835)
+
+- **Typing `exit` closes the tab.** When a shell ends normally (`exit` or Ctrl+D), its tab now closes, the way it does in other terminals. If it was the last tab in a split, the split closes too. If it was the workspace's only terminal, a fresh shell takes its place. If the shell ends with an error or is killed, the tab stays open so you can still read what happened. Panes wmux restarts on its own (a `restart` in `wmux.json`) and panes offering to resume an agent always stay. Turn it off in Settings → Terminal → "Close the tab when its shell exits cleanly". (#1838)
+
+- **wmux asks before closing a tab.** Closing a tab with the keyboard shortcut or the tab's X button now shows a confirmation first, so a stray key press or click no longer stops whatever was running in it. Holding the shortcut down asks once, not again after you cancel. A browser panel that closes itself still closes without asking. (#1839)
+
+- **Moa's shadow judge: see how often Moa would answer the way you do.** A new
+  Settings › Moa toggle, "Shadow judge (records only)", off by default. When an
+  agent asks you a question, Moa decides what it would answer from the numbered
+  rules in `deck-policy.md` (`[R-<id>] …`, plus an `## Always escalate`
+  section) and records that next to the answer you actually gave, in
+  `moa-shadow/decisions.jsonl`. It answers nothing and presses nothing; every
+  question still waits for you. Each judgment is one Claude call with no tools,
+  no settings files and none of your hooks, in a fresh temporary folder, capped at 200 a day, and questions about
+  releases, versions, secrets, deletions and similar always go to you without
+  asking the model. The tab shows decisions, agreement, escalations and tokens
+  used today. (#1841)
+
+- **Attention blink.** A sidebar row that waits on a question, approval or
+  permission dialog can now pulse, chosen per user under Settings >
+  Appearance > Sidebar: Off, Once, Once + remind (the default, every 30 s,
+  1 min or 5 min) or Continuous. Finished turns can show just their dot or
+  pulse once. A workspace on screen never pulses, and reduced motion turns
+  every pulse off.
+
+- **Rename a tab without the double-click.** Right-click a tab and choose **Rename tab**, or run **Rename Tab** from the command palette, where you can also give it a key. Clearing a tab's name gives it back to the shell's own title, and Escape now cancels a rename instead of saving it. (#1854)
+
+- **Groundwork for linking wmux on two PCs.** wmux can now give each PC a stable identity and a self-signed TLS certificate for the upcoming cross-PC agent-to-agent connection. Nothing uses it yet. (#1865)
+
+- **Groundwork for linking panes across PCs on one network.** The web server
+  now keeps a separate, closed-by-default door for paired wmux hosts: a host
+  credential only works there, and phone or operator credentials never do.
+  Nothing is switched on yet — no new route answers and nothing connects out.
+  (#1866)
+
+- **Cross-host A2A storage (groundwork, not yet active).** The daemon can now
+  save cross-PC pane links, what each paired PC is allowed to see, and the
+  credentials on both sides of a pairing. Saved credentials are owner-only, and a
+  damaged file never grants access. Nothing uses these stores yet. (#1867)
+
+- **Agents can ask Moa instead of you (opt-in, off by default).** With Moa's
+  ask mode on, agent panes get `moa_ask` and `moa_ask_status`. Moa checks a
+  question against your policy book and records what it would answer
+  (shadow), or also shows its proposal on your card (suggest); the agent is
+  told to ask you, as before. In auto mode Moa may merge a pull request by
+  itself, but only through a rule you marked auto in the book and switched on,
+  when a fresh read shows the PR on the asking agent's own branch, by a trusted
+  author, with every required check green, no release or Windows paths, and
+  the head the agent named. A kill switch and a daily cap stop it at once, and
+  every automatic merge leaves a receipt. Free questions are never answered
+  automatically.
+
+- **Answer Moa's escalated questions and merges from its panel.** With Moa's
+  ask mode on (suggest or auto), a question Moa would not settle shows in
+  Waiting on you with Moa's suggestion and a one-click accept; a merge shows
+  the PR, its head and the lane's reasons in plain words, with Approve and
+  Decline. If the PR moved since the card was drawn, nothing is merged and the
+  card says so. Below, merge status, merges made outside Moa's lane, and a
+  switch per auto rule that lets Moa settle it alone. Off by default; with
+  the ask mode off the panel is unchanged.
+
+- **Pair two PCs for cross-PC A2A (experimental).** Settings > LAN has a new
+  Cross-PC A2A section. Turn on "Accept connections from other PCs", create a
+  one-time invite, and paste it on the other PC to pair them. The other PC pins
+  this PC's certificate from the invite, so a different PC cannot answer in its
+  place, and the invite lists fallback addresses for when the PC name does not
+  resolve. When pairing fails, the message says why: wrong or expired invite,
+  connection refused, possible firewall, a changed identity, or too many
+  attempts. Removing a PC also tells that PC, when it can be reached. Pane-to-pane
+  messaging comes in a later release. (#1870)
+
+- **Link a pane, or Moa, with another PC (experimental).** In Settings > LAN,
+  each PC that joined this one has "Panes to show": tick the workspaces and
+  panes it may see, and whether it may see this PC's Moa. Nothing is shown
+  until you tick it. On the other PC, "Link with a pane on another PC…" in the
+  pane menu lists those panes, the ones on the same repository first, and warns
+  when the repositories differ; Remote > "Link Moa with another PC…" does the
+  same for Moa, which links only with Moa. The request appears as a card on
+  this PC's Remote page to accept or decline, and the Remote page lists every
+  link with its state and an Unlink. A link ends by itself when its pane closes
+  or moves, or its workspace or Moa goes away. Sending work over a link comes
+  in a later release. (#1874)
+
+- **The phone now says why a turn failed.** When a Claude or phone-started
+  Codex turn ends on an error (a usage or rate limit, a sign-in problem, a
+  lost connection), the phone gets the reason on the pane, in the session
+  list and in run history, and a "Turn failed" notification. The
+  notification never shows the agent's own error text on the lock screen.
+  (#1875)
+
+- **Moa's delegate in Settings › Moa.** Choose how Moa answers agents' questions
+  (off, record only, suggest, auto). In auto, you can pause automatic answers
+  and set a daily cap. When the delegate is off while questions are still open,
+  Moa's panel says how many are waiting. (#1896)
+
+- **Linked panes on two PCs can now send each other work.** An agent can send a task to a linked pane on another PC by its alias, `<PC>/<workspace>/<pane>`. The reply comes back to the pane that sent it. Messages are kept until the other PC confirms them, so a restart or a dropped connection does not lose or duplicate one. Before this, links could be made but nothing was carried over them.
+
+- **The Remote page shows each paired PC's connection.** It shows connected, disconnected, and a warning when the PC's certificate changed (nothing is sent until you pair again). It also lists remote work held because its pane is gone or another agent is in it now. You can send that work to the current agent or reject it.
+
+- **Moa can hand work to Moa on another PC.** Once two PCs link their Moa, Moa can send a task to `<PC>/Moa`. The other PC's Moa is woken to read it, does the work, and answers. Before this, a Moa link could be made but anything sent over it was held. The Moa panel lists the work exchanged with other PCs' Moa, with its state and which PC it is with.
+
+- **The sending PC sees whether its task arrived.** A task sent to another PC is acknowledged twice: when it reaches the agent or Moa there, and when it is read. `a2a_task_query` and the Moa panel show which. Before this, a sent task looked untouched until an answer came back.
+
+- **"Send now" for a queued phone message (Claude).** A message the daemon
+  queued until the turn ends can be switched to steer. It is then typed into
+  the running Claude turn at once, ahead of other queued messages, with the
+  same safety checks as any send. On Codex and OpenCode it still waits for
+  the turn to end. Phone apps see this as `chatSteer` in `/api/config`. (#1906)
+
+- **Fleet can show agents as a board.** A List | Board switch in the Fleet header (also in Settings › Appearance) lays the same rows out in four columns — Needs you, Running, Finished and Idle — with the arrow keys moving between cards and columns. The list stays the default. (#1909)
+
+- **A paired phone can now start Moa with its first message.** Before, the phone could not reach Moa until someone had typed to it on the desktop, because Moa's brain started only on its first desktop turn. `POST /api/moa/messages` now sends a message to Moa whether its brain is running or not. If it isn't, the desktop starts it with that message as the first turn and answers as soon as it accepts, without waiting for the slow cold start. Retries with the same message id are safe: they never start a second turn, and a message whose fate is unknown is never sent again. `GET /api/moa/messages/:id` reports what happened, including when the brain stopped on a startup screen such as folder trust or sign-in. A new `moa` event on `/api/events` says when Moa's pane appears or goes away. (#1910)
+
+- **GitHub Copilot CLI panes can report their own status (opt-in).** `wmux setup-hooks --agent copilot` registers Copilot's lifecycle hooks. Each Copilot pane then shows working, waiting on you, and done from the hooks instead of from a screen guess. wmux writes its own file, `~/.copilot/hooks/wmux.json`, and never edits your settings. `--status` and `--remove` work too. (#1912)
+
+- **Private browser tabs.** `Ctrl+Shift+N` (`Cmd+Shift+N` on macOS), the pane menu, or the command palette opens an in-app browser tab on its own in-memory session. Cookies, storage, cache and HTTP auth are wiped when the last private tab closes. Private tabs are never saved with the session, so a restart does not bring them back. They are marked with a padlock on the tab and a "Private" badge next to the address bar, and they stay in the app even when the browser backend is set to the OS browser. Before this, every in-app tab shared the persistent default session. (#1923)
+
+- **Agents can open and drive private tabs.** `browser_open` takes `private: true`, and `browser_tabs` reports `private: true` on private tabs. Every other browser tool works on them as on a normal tab. A private open never reuses a normal tab, and a normal open never reuses a private one. (#1923)
+
+### Changed
+
+- **Finished turns no longer look like they need you.** A row keeps the
+  needs-you border while a question or an approval waits on you (an open
+  dialog, or an agent that ended its turn on a question). A turn that ended
+  with no question shows a small done dot until you look at the workspace,
+  and a finished worker no longer counts as needs you in the deck briefing
+  or the Tasks panel.
+
+- **The needs-you border is a quiet 1px solid hairline** instead of a dashed
+  line, tuned per look to stay readable.
+
+### Fixed
+
+- **The terminal brain no longer runs a prompt twice after a slow hook.** When
+  Moa's prompt reached Claude Code incomplete and a slow UserPromptSubmit hook
+  held the input box, the resubmitted damaged copy could be read as the retry's
+  result, and the retry was typed on top of the old text, running a doubled
+  prompt. A retry now waits until every Enter of the refused attempt has been
+  answered before typing again.
+
+- **Moa no longer types your message into a startup dialog.** When Moa's
+  terminal brain stopped on a folder-trust, permission or sign-in dialog, the
+  next message was typed into that dialog. Its Enter could pick "exit", so every
+  message failed with "waiting on a prompt" or "session ended" in turn. Moa now
+  holds every message until the dialog is answered. The refused message shows
+  what the dialog asks and an Answer in terminal button that opens it.
+
+- **Computer use can be turned on in the Windows app.** A packaged Windows
+  build refused to run its computer-use helper because the helper is not
+  code-signed, so the switch in Settings stayed off. wmux now runs the helper
+  as long as it matches the fingerprint shipped with the build (a damaged or
+  replaced helper is still refused). Settings notes that the helper is not
+  code-signed, so Windows Defender or SmartScreen may warn about it.
+
+- **`wmux close-workspace` no longer closes your own workspace or one with running agents by accident.** From the CLI, closing the workspace the command runs in, or a workspace that still has agent panes running or owns remote sessions, is now refused with a message that says why. Pass `--force` when that is really intended. Before, both closed at once, and the agents inside were killed mid-work. Closing from the sidebar is unchanged.
+
+- **`fanout_start` names the workspace in its accept `ownerWorkspaceId`.** It is the caller's own workspace, never a task's. `workspaceId` is kept as a deprecated alias. Each task's own workspace is in the completed poll's `result.tasks[]`.
+
+- **Moa recovers when a workspace it depends on is closed.**
+  - If Moa's own workspace is lost, Moa recreates it by itself under the same id, so its conversation and settings come back with it.
+  - Delegated work in a closed workspace is settled instead of showing "Running" forever, and reads "Closed workspace" instead of "Unknown workspace".
+  - Moa's delegated-work list no longer includes other agents' tasks to each other.
+  - A request parked by a restart now shows as "Earlier request: …" instead of Moa's internal notice.
+
+- **A finished pane leaves Fleet's Finished section once you open it.** Focusing a pane whose agent had finished a turn used to leave it listed, and counted, as finished until the agent ran again, even though you had already looked at it. It now drops out as soon as you open it, as the per-pane status already did. (#1824)
+
+- **Terminal history comes back at the sizes it was written at.** When a pane reattaches, is revealed or is restored after its session ended, output from before a resize now reflows the way it did on screen. Before, it re-wrapped at the current width and inline TUI redraws landed on the wrong rows. Busy panes and full-screen apps that do not set scroll regions are now restored from a compact snapshot. Before, the pane got up to 8 MB of raw output and stayed blank while it was re-parsed. (#1825, #1858)
+
+- **Ctrl+Shift+[ and Ctrl+Shift+] are checked against the tab keys when you record a shortcut.** On Windows the recorder stored them as Ctrl+Shift+{ and Ctrl+Shift+}, so it never saw that next tab and previous tab already used them. The new key was accepted and then took next or previous tab away without a warning. The same applied to other shifted symbol keys. (#1831)
+
+- **A shortcut on the Windows key now works from the terminal.** Settings and the palette accepted a key such as Win+J, but it did nothing while a terminal or a text field had focus, which is most of the time. (#1831)
+
+- **The font picker on macOS lists all installed fonts again.** Some installed fonts, such as Nerd Fonts, could be missing from the terminal font list because the font scan was slow and sometimes timed out. wmux now reads the font list from macOS directly, which takes a fraction of a second. (#1833)
+
+- **Switching back to a workspace paints right away, and its panes no longer garble.** A workspace you had not looked at for more than 5 seconds used to take up to half a second to appear after you switched to it. It now appears as quickly as one you just left. A pane that built up a lot of output while hidden now catches up on that output when you reveal it, instead of reloading its whole history. That reload could garble the history after a window or font resize, and Claude Code's redraws stacked into broken frames. A quiet pane also no longer keeps showing an old frame after you reveal it. (#1836)
+
+- **Codex panes no longer offer to resume Claude after a restart.** A Codex hook
+  that invoked wmux's Claude bridge used to save the pane's resume binding as
+  `claude` with the Codex rollout's filename as the session id, so recovery
+  offered `claude --resume rollout-…` with Claude-only flags. The daemon now
+  drops such signals and refuses ids the agent cannot resume. Bindings already
+  saved that way are repaired on load: they become `codex resume <thread id>`
+  when the rollout file still exists, and are dropped otherwise. (#1840)
+
+- **Terminal text no longer turns into black boxes on some GPUs.** With certain graphics drivers (ANGLE's GL backend on Mesa/AMD), the GPU renderer showed every character as a solid black box. Glyph textures no longer depend on a step those drivers fail. (#1848)
+
+- **The Linux packages show the wmux icon.** After installing the `.deb` or `.rpm`, GNOME's dock and app grid showed the Electron logo instead of wmux's own icon. (#1849)
+
+- **The browser app at `/` shows live terminals on Windows again.** On the
+  Windows build, every terminal in the browser app stayed blank and the console
+  repeated `denied electronAPI.pty.resize`, because the build never swapped in
+  the browser terminal. Terminals now paint and accept input as on macOS, and
+  the build refuses to ship a page without the browser terminal.
+
+- **An open classic web viewer now follows a device's "can type" grant.**
+  Ticking "can type" for a paired device on the desktop used to leave an
+  already-open `/classic` page read-only until it was reloaded. The page now
+  picks up the new grant within about 10 seconds, and unticking it makes the
+  page read-only right away.
+
+- **Background panes keep their size when wmux starts.** A pane in a workspace you were not looking at used to have its terminal shrunk to about 10 columns on every start, so an agent resumed there drew a cramped screen and left stray rows behind when you opened the workspace. Hidden panes now keep their last real size until they are shown, and a pane recovered after a daemon restart shows its output on the phone and web view before you open it. (#1852, from #1847 by @bluemas)
+
+- **Long-running fullscreen apps keep scrolling after a pane reattaches.**
+  Codex, vim, htop and other fullscreen apps switch on the alternate screen
+  and mouse tracking once, at startup. After a long session that output had
+  aged out of the pane's 8 MB history, so revealing a hidden pane or
+  restarting wmux brought it back without those modes: the app kept drawing,
+  but the mouse wheel no longer reached it and the pane looked frozen. A
+  reattach now restores the modes, including bracketed paste and focus
+  reporting.
+
+- **Korean composition stays on the caret after a font-size change.** Changing the terminal font size used to leave the IME's composing syllable painted away from the caret until the window was resized, because the cell size it anchored to was stale. The cell grid is now measured again whenever composition starts and after each resize. (#1855)
+
+- The sidebar's workspace count stays on one line when a filter is on: it reads `5/9` instead of a sentence that wrapped in a narrow sidebar. The full sentence is still its tooltip and what a screen reader reads. (#1856)
+
+- **With more than nine workspaces, the sidebar's 9 now marks the row Ctrl+9 opens.** Ctrl+9 jumps to the last workspace, but the sidebar showed 9 on the ninth row. The first eight rows now show 1–8 and the last row shows 9. The rows between them show no number. The collapsed rail's Ctrl+N tooltip follows the same rule. (#1857)
+
+- A phone chat message that failed or was canceled more than a day ago no longer comes back in the conversation while nothing new is queued: the daemon now hides expired finished queue items when it reads them and prunes them on startup. Messages still waiting are never dropped. (#1859)
+
+- Answering a long Claude Code question from the phone no longer fails with "prompt changed". Newer Claude Code draws a question that wraps behind a `│` bar, and the daemon now reads past it, so long questions in any language are answered on the first try. A question that really changed is still refused. (#1861)
+
+- **`fanout_start` now works from an agent in a WSL pane on Windows.** A pane
+  under `/mnt/d/…` was read as `C:\mnt\d\…` and refused as "not a git
+  repository". Drive-mount paths now map to their drive letter, and paths inside
+  the distro map to `\\wsl$\<distro>\…`. The task git reads that use the
+  caller's directory get the same fix.
+
+- **A supervised pane set to restart on failure no longer restarts after a
+  clean exit.** On macOS and Linux a clean exit was read as a failure, so the
+  pane came back after its command had finished normally. (#1871)
+
+- **A turn that failed no longer shows as "working" on the phone.** When a
+  Claude turn ended on an error such as a usage limit, the phone's activity
+  header and session list kept reading "working" until the next turn. They now
+  read idle, like any finished turn. (#1873)
+
+- **Signing out of or shutting down Windows now saves your session first.**
+  The emergency save and the orderly daemon shutdown that run when Windows ends
+  the session were wired to an event that Electron never sends to the app. It
+  is sent to the window. So a logoff, restart or shutdown skipped both. They
+  now run, once, from the main window. A request from the Windows Restart
+  Manager to close wmux (for example while an installer replaces a file) does
+  not end the session, so it is left alone: it does not stop the background
+  service and leave wmux open without it. (#1879)
+
+- **Browser uploads and the REPL no longer accept file names that Windows opens
+  as a different file.** On Windows, a name ending in a dot or space opens the
+  same name without it. A file upload could use that to slip past the upload
+  folder check through a link inside it. A REPL started in such a folder ran
+  next door, in the folder without the dot. Both now refuse names ending in a
+  dot or space, and reserved device names such as `nul`, the same way WSL path
+  translation already does. (#1879)
+
+- **Moa's brain keeps its hooks on Windows machines without Git Bash.** When Claude Code cannot find Git Bash it runs hooks through PowerShell. PowerShell could not parse the hook command lines wmux wrote, so all of Moa's hooks failed: turn start and end, and the guards on denied tools. wmux now has Claude Code start each hook directly, with no shell, so they run under either shell. (#1882)
+
+- **Answering a permission prompt with a number key no longer blocks later hand-offs.** Picking an option in Claude Code's permission dialog by pressing `1`, `2` or `3` counted that key as a half-typed message. After that, every hand-off into that idle pane failed with "Someone was typing in that pane" until someone pressed Enter there. (#1882)
+
+- **Reconnecting to a pane no longer types a focus report into it.** When
+  wmux reattached to a pane (a window reload, or reopening the app while
+  its background service kept running), it replayed the pane's output, and
+  every focus-reporting switch in that output made the terminal send a
+  focus report the pane never asked for. After an AI agent was killed in a
+  Windows PowerShell pane, this showed up as `[O` on the prompt. (#1884)
+
+- **A new Codex binds to its conversation even next to a restored pane that
+  once ran Codex.** After a restart, a pane in the same folder that had run
+  Codex before still counted as a running Codex, so a new Codex there never
+  got its resume pill or Chat View transcript until that pane was closed.
+  (#1892)
+
+- **Chat View and the phone can send to Codex 0.158 again.** Its new
+  shortcut hint row under the composer made every message fail with
+  "input not provably empty", even with nothing typed. (#1892)
+
+- **Windows: wmux tools in Codex no longer answer for the wrong pane after
+  Codex updates itself.** Once Windows reused the old update process's id for
+  a newly opened pane, Codex's wmux calls could act in that pane's workspace.
+  (#1893)
+
+- **Windows: a slow process lookup no longer adds 5 seconds to every wmux
+  call from Codex.** The lookup result is remembered for a minute when it
+  cannot be read. (#1893)
+
+- **Shell commands run with `!` no longer show as your own messages on the
+  phone.** The command and its output now appear as shell rows in the
+  conversation. (#1895)
+
+- **The phone shows the whole conversation right after `/clear`.** The first
+  page could hold only the agent's last reply until you scrolled up. (#1895)
+
+- **A Codex pane started from the phone can take its first message.** Until
+  Codex wrote its first turn, the phone treated the conversation as
+  unavailable and never offered to send. (#1895)
+
+- **Moa's delegate: agents now reach Moa, and the owner's answer reaches them.**
+  A fan-out worker that needed a decision asked it in plain text, because the
+  question tool was removed from its list. The tool now stays listed and the
+  worker is sent to Moa instead. When the owner answers the card, the answer
+  is pasted into the worker's pane as a new turn, so the worker continues on
+  its own. The card then reads "Delivered to <agent>" instead of disappearing. (#1896)
+
+- **Moa's merge judgement sees the PR's real state.** The judge now gets the
+  author, which checks are required, GitHub's merge state and the merge lane's
+  own verdict, so a "required checks green" rule can match. A judge timeout no
+  longer hides the lane's reasons from the card. (#1896)
+
+- **Moa's cards, more clearly.** The note an agent writes is labeled "From the
+  agent, not checked by wmux" and set apart from what wmux checked. Reasons
+  appear in your language, the rule switches have accessible names, and
+  switching language redraws the cards without a reload. (#1896)
+
+- **WebFetch and Read permission prompts now reach the phone Inbox and push.**
+  When Claude Code asked to fetch a URL or read a file outside the project,
+  wmux did not recognise the dialog: the phone showed nothing to answer, and
+  without the PermissionRequest hook installed no card appeared at all. Both
+  dialogs now become the same answerable card as a Bash prompt, with the URL
+  or path as its subject and only the plain Yes and No as choices; the
+  "don't ask again" and session-wide options are never offered. (#1897)
+
+- **Terminal text no longer turns into the wrong characters after long Korean or CJK-heavy output.** With the WebGL renderer, a terminal that had shown a lot of varied text could start drawing some cells with the wrong glyphs. The text underneath was correct (copying it gave the right characters), but the display stayed wrong, even after switching workspaces away and back. The renderer now re-uploads a glyph-atlas page whenever the page itself is replaced, not only when its version number changes. (#1900)
+
+- **Switching workspaces by shortcut stays fast with many terminals open.** With more than 12 terminals, every switch took the GPU renderer from another terminal and rebuilt one before showing the pane, about half a second each time. Up to 15 terminals now keep a GPU renderer, and a pane beyond that shows at once on the plain renderer instead of taking one from another terminal. (#1905)
+
+- **A phone message to a busy Claude pane goes through.** A message sent from
+  the phone while Claude was working could be refused as "busy" again and
+  again, because the desktop showing the same pane reported mouse movement
+  into it and the daemon took that for someone typing. Only real keys, clicks
+  and wheel turns count now, so the message lands in Claude's own queue and
+  is picked up at its next step, as when you type into a running Claude in
+  Terminal. (#1906)
+
 ## [4.0.0] — 2026-10-06
 
 wmux 4.0 is the ADE release. It also includes every change listed under 4.0.0-beta.1 below.
