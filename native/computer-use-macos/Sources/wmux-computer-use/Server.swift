@@ -17,7 +17,7 @@ let agentActions = [
     "capabilities", "listApps", "listWindows", "getAppState",
     "click", "setValue", "type", "pressKey", "hotkey", "scroll",
     // Optional methods (protocol OPTIONAL_HELPER_METHODS).
-    "configure",
+    "openApp", "configure",
 ]
 
 /// Actions that drive the pointer or keyboard: they show the overlay, which
@@ -117,6 +117,9 @@ final class Server {
         case "setValue":
             try await Permissions.require(.accessibility)
             return try Actions.setValue(p, snapshots)
+        case "openApp":
+            try await Permissions.require(.accessibility)
+            return try await OpenApp.open(try p.requireString("app"))
         case "configure":
             guard let overlay = p.bool("overlay") else { throw HelperError("invalid_argument", "overlay must be a boolean") }
             Overlay.shared.setEnabled(overlay)

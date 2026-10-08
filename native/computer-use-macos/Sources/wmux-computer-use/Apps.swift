@@ -66,8 +66,9 @@ enum Apps {
     }
 
     /// Accepts what listApps returns (`id` = bundle id or `pid:N`), a pid, or a
-    /// name (case-insensitive). Several instances of one bundle prefer the
-    /// frontmost one.
+    /// name (case-insensitive): the localized name, the bundle's file name,
+    /// then its CFBundleName (the English name on a localized system).
+    /// Several instances of one bundle prefer the frontmost one.
     static func find(_ selector: String) throws -> ResolvedApp {
         let s = selector.trimmingCharacters(in: .whitespaces)
         guard !s.isEmpty else { throw HelperError("invalid_argument", "app is required") }
@@ -77,9 +78,17 @@ enum Apps {
             return ResolvedApp(app: app)
         }
         let lower = s.lowercased()
-        let candidates = all.filter { $0.bundleIdentifier?.lowercased() == lower }
+        var candidates = all.filter { $0.bundleIdentifier?.lowercased() == lower }
             + all.filter { $0.localizedName?.lowercased() == lower }
             + all.filter { $0.bundleURL?.deletingPathExtension().lastPathComponent.lowercased() == lower }
+        if candidates.isEmpty {
+            candidates = all.filter { app in
+                guard let url = app.bundleURL, let name = Bundle(url: url)?.object(forInfoDictionaryKey: "CFBundleName") as? String else {
+                    return false
+                }
+                return name.lowercased() == lower
+            }
+        }
         guard !candidates.isEmpty else { throw HelperError("app_not_found", "no running app matches \"\(s)\"") }
         return ResolvedApp(app: candidates.first(where: { $0.isActive }) ?? candidates[0])
     }
