@@ -16,6 +16,7 @@ import { stripReplayQuerySequences } from '../shared/replayQuerySanitizer';
 import { isFreshSessionSource } from '../shared/hooks/signal-types';
 import { ESCAPE_WIN32 } from '../shared/win32InputKeys';
 import { isEscapeChunk } from '../shared/hooks/interruptKeystroke';
+import { kittyChunkAsLegacy } from '../shared/kittyKeyEvents';
 import { titleShowsRunningTurn } from './transcript/chatScreenGate';
 import type { TurnFailure } from '../shared/phoneTurnFailure';
 
@@ -379,6 +380,13 @@ export class DaemonPTYBridge extends EventEmitter {
       return this.keyInputRevision;
     }
     const forceSubmitted = opts;
+    // Kitty-encoded keys (a pane that pushed the protocol) are read as the
+    // legacy bytes the checks below match; a key release is not input at all.
+    // Only this accounting changes, the PTY already has the real bytes.
+    if (data.length > 0) {
+      data = kittyChunkAsLegacy(data);
+      if (data.length === 0) return;
+    }
     // Stamped for EVERY write, including the ordinary keystrokes that fall out
     // below. Output that arrives while the user is still typing is the TUI
     // echoing them, and echo must never be mistaken for the agent working —

@@ -40,6 +40,7 @@ import { resolveMacLineDeleteByte } from '../terminal/macLineDeleteKey';
 import { isWslShell } from '../../shared/imagePaste';
 import { encodeEscape, isBareEscape } from '../terminal/escapeKeys';
 import { resolveCtrlLetterByte } from '../terminal/ctrlLetterKeys';
+import { KITTY_FLAGS_RESET, imeKeyLeaksUnderKitty, installKittyPromptReset, kittyKeyboardForHost, xtermEncodesKey, xtermKittyFlags, type KittyHost } from '../terminal/kittyKeyboard';
 import { isComposeChord, composeOwnerHost, TERMINAL_PTY_ATTR, COMPOSE_OWNER_ATTR } from '../terminal/composeChord';
 import { foldRemoteKeyboardState, INITIAL_REMOTE_KEYBOARD_STATE, type RemoteKeyboardState } from '../components/Remote/keyboardProtocol';
 import { attachImeAnchor } from '../terminal/imeAnchor';
@@ -1203,6 +1204,10 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       theme: xtermTheme,
       minimumContrastRatio,
       allowProposedApi: true,
+      // Kitty keyboard protocol: xterm answers `CSI ? u` and encodes keys for
+      // a pane that pushed flags. Desktop only, not on Windows (see
+      // kittyKeyboardForHost).
+      vtExtensions: { kittyKeyboard: kittyKeyboardForHost(window.electronAPI as unknown as KittyHost) },
       // #1437: when the foreground app enables mouse tracking (Claude Code
       // does around its input box), a plain drag goes to the app and nothing
       // gets selected. Off macOS, xterm forces a selection on Shift+drag; on
@@ -2013,6 +2018,18 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         );
       }
     };
+    // Whether xterm encodes keys for this pane right now: the extension is on
+    // for this terminal (an adopted one keeps its own) and the pane's app has
+    // pushed kitty flags. Read per key from xterm itself (see xtermKittyFlags);
+    // the fold above (noteKeyboard) is the fallback if that ever moves.
+    const kittyEncoderOn = terminal.options.vtExtensions?.kittyKeyboard === true;
+    const kittyNegotiated = () => {
+      if (!kittyEncoderOn) return false;
+      const flags = xtermKittyFlags(terminal);
+      return flags === undefined ? keyboardRef.current.kitty : flags > 0;
+    };
+    if (kittyEncoderOn) installKittyPromptReset(terminal);
+
     // #1228 review (C1): the fold is liveness-scoped. When process-truth or
     // OSC 133 says the pane's foreground command is gone, any negotiation it
     // armed (?9001h / kitty push) is stale — the next app in the pane starts
@@ -2031,6 +2048,9 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       ) {
         keyboardRef.current = INITIAL_REMOTE_KEYBOARD_STATE;
         parkedKeyboardByTerminal.delete(terminal);
+        // xterm keeps the kitty flags a dead app pushed and never popped;
+        // drop them with it so the next app gets legacy keys again.
+        if (kittyEncoderOn) terminal.write(KITTY_FLAGS_RESET);
       }
     });
 
@@ -2070,6 +2090,9 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     });
     // Runs only from xterm's key events, after this effect has finished.
     const handleTerminalKey = (e: KeyboardEvent): boolean => {
+      // xtermjs/xterm.js#6112: under kitty, a key the IME consumes must not
+      // reach xterm's encoder (see imeKeyLeaksUnderKitty).
+      if (imeKeyLeaksUnderKitty(e, kittyNegotiated())) return false;
       if (e.type !== 'keydown') return true;
 
       // The IME's plain-key follow-up of a press already acted on (a
@@ -2108,7 +2131,13 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
           codexEndedAt: codexEndedAtRef.current,
         }),
       });
-      if (newlineByte !== null) {
+      // A pane that pushed kitty flags gets Shift+Enter from xterm's encoder.
+      // Ctrl+Enter / Ctrl+J keep wmux's LF: that is a newline wmux promises,
+      // not a key the app asked to receive encoded.
+      const shiftEnterToXterm = newlineByte !== null && e.shiftKey && !e.ctrlKey
+        && (e.key === 'Enter' || e.code === 'Enter' || e.code === 'NumpadEnter')
+        && xtermEncodesKey(e, kittyNegotiated());
+      if (newlineByte !== null && !shiftEnterToXterm) {
         e.preventDefault();
         // #1361: ordered behind an IME commit that xterm has queued but not
         // yet sent. With no IME in play this runs synchronously, exactly as
@@ -2129,7 +2158,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       //      Escape then does nothing for the rest of the turn (#1152).
       // `!isComposing` (inside isBareEscape) defers to the IME while a
       // candidate window is open, where Escape cancels the preedit.
-      if (isBareEscape(e)) {
+      if (isBareEscape(e) && !xtermEncodesKey(e, kittyNegotiated())) {
         const escapeByte = encodeEscape(keyboardRef.current);
         e.preventDefault();
         window.electronAPI.pty.write(ptyId, escapeByte);
@@ -2162,6 +2191,8 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         // #1227 — xterm encodes Ctrl+letter from keyCode (QWERTY position).
         // Write the logical control byte ourselves so a disabled Ctrl+T on
         // Dvorak still delivers 0x14 instead of whatever physical keyCode says.
+        // A pane that pushed kitty flags gets it from xterm's encoder instead.
+        if (xtermEncodesKey(e, kittyNegotiated())) return true;
         const releasedCtrl = resolveCtrlLetterByte(e);
         if (releasedCtrl) {
           e.preventDefault();
@@ -2364,6 +2395,9 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // these from keyCode, which is the QWERTY position, so a Dvorak Ctrl+C
       // became Ctrl+I. Write the logical control byte ourselves. App shortcuts
       // and clipboard chords already returned above.
+      // A pane that pushed kitty flags gets these from xterm's encoder, which
+      // names the logical key too (`CSI 99;5u` for Ctrl+C on any layout).
+      if (xtermEncodesKey(e, kittyNegotiated())) return true;
       const ctrlByte = resolveCtrlLetterByte(e);
       if (ctrlByte) {
         e.preventDefault();

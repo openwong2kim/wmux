@@ -17,6 +17,16 @@ describe('InterruptKeystrokeDetector', () => {
     expect(d.observe('p1', 'abc\x03')).toBe(true);
   });
 
+  it('reads a kitty-negotiated pane the same way, ignoring key releases', () => {
+    // xterm encodes these once the app pushed kitty flags; Codex's flag 2
+    // follows every press with a release, which must not break the double-tap.
+    const d = new InterruptKeystrokeDetector();
+    expect(d.observe('p1', '\x1b[99;5u')).toBe(true);
+    expect(d.observe('p2', '\x1b[27u')).toBe(false);
+    expect(d.observe('p2', '\x1b[27;1:3u')).toBe(false);
+    expect(d.observe('p2', '\x1b[27u')).toBe(true);
+  });
+
   it('treats the exact ESC ESC chunk as an interrupt', () => {
     const d = new InterruptKeystrokeDetector();
     expect(d.observe('p1', '\x1b\x1b')).toBe(true);

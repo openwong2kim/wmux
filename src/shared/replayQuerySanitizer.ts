@@ -43,6 +43,9 @@ const REPLAY_QUERY_SEQUENCES = new RegExp(
     '\\x1b\\[[>=]?[0-9;]*c',
     // XTVERSION — CSI > Ps q
     '\\x1b\\[>[0-9;]*q',
+    // Kitty keyboard flags query. A pane that negotiated the protocol answers
+    // it (`CSI ? flags u`), and a replayed one would type that into the app.
+    '\\x1b\\[\\?u',
     // DECRQM — CSI Ps $ p, CSI ? Ps $ p (claude probes ?2026 sync output)
     '\\x1b\\[\\??[0-9;]*\\$p',
     // OSC color queries — OSC 4/5/10..19 whose last param is "?" (BEL or ST

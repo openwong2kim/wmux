@@ -15,6 +15,7 @@
 export const DOUBLE_ESC_WINDOW_MS = 500;
 
 import { ESCAPE_WIN32 } from '../win32InputKeys';
+import { kittyChunkAsLegacy } from '../kittyKeyEvents';
 
 const CTRL_C = '\x03';
 const ESC = '\x1b';
@@ -47,8 +48,13 @@ export class InterruptKeystrokeDetector {
   constructor(private readonly now: () => number = Date.now) {}
 
   /** Feed one written chunk. True when it completes an interrupt. */
-  observe(ptyId: string, data: string): boolean {
-    if (!ptyId || typeof data !== 'string' || data.length === 0) return false;
+  observe(ptyId: string, raw: string): boolean {
+    if (!ptyId || typeof raw !== 'string' || raw.length === 0) return false;
+    // A pane that pushed kitty flags types Ctrl+C as `CSI 99;5u` and, with
+    // flag 2, follows every key with a release event. A release is not a
+    // keystroke: it must neither count nor break an ESC double-tap.
+    const data = kittyChunkAsLegacy(raw);
+    if (data.length === 0) return false;
     if (data.includes(CTRL_C)) {
       this.pendingEscAt.delete(ptyId);
       return true;

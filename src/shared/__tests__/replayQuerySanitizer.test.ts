@@ -67,6 +67,12 @@ describe('stripReplayQuerySequences', () => {
     expect(out.equals(buf)).toBe(true);
   });
 
+  it('strips the kitty keyboard query but keeps the push and pop', () => {
+    // A pane with kitty on answers `CSI ? u`; replayed, the answer would be
+    // typed into the app. The push / pop are state, not queries.
+    expect(strip('\x1b[>0q\x1b[?u\x1b[c\x1b[<u\x1b[>5u')).toBe('\x1b[<u\x1b[>5u');
+  });
+
   it('returns the same buffer reference when nothing matched', () => {
     const buf = Buffer.from('plain prompt $ ', 'utf8');
     expect(stripReplayQuerySequences(buf)).toBe(buf);
