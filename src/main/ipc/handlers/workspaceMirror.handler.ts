@@ -164,6 +164,10 @@ export function parseWorkspaceMirrorPayload(raw: unknown): WorkspaceMirrorPushPa
     }
     out.panePtys = panePtys;
   }
+  // Every pane id (pane-binding prune). Absent stays absent: unknown, never "no panes".
+  if (Array.isArray(raw.paneIds)) {
+    out.paneIds = raw.paneIds.filter((id): id is string => typeof id === 'string' && PTY_ID_RE.test(id));
+  }
   // Only a literal true counts: anything else keeps the startup Deck reconcile off.
   if (raw.sessionRestored === true) out.sessionRestored = true;
   // Sidebar pins (settle exemption). Absent (old renderer) stays absent.

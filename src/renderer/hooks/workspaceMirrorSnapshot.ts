@@ -351,6 +351,11 @@ export function buildPanePtys(workspaces: Workspace[]): Record<string, string> {
   return out;
 }
 
+/** Every pane id in the layout, stashed panes included (see `paneIds`). */
+export function buildPaneIds(workspaces: Workspace[]): string[] {
+  return workspaces.flatMap((w) => getWorkspaceLeafPanes(w).map((leaf) => leaf.id));
+}
+
 /** Assemble the full push payload from the live store state at `now()`. */
 export function buildWorkspaceMirrorPayload(
   state: MirrorSnapshotState,
@@ -363,6 +368,7 @@ export function buildWorkspaceMirrorPayload(
     fleets: buildFleetSnapshots(state, ts),
     roleBindings: buildRoleBindings(state),
     panePtys: buildPanePtys(state.workspaces),
+    paneIds: buildPaneIds(state.workspaces),
     sessionRestored: state.sessionRestored === true,
     pinnedIds: [...(state.sidebarPinnedIds ?? [])],
     viewed: buildViewed(state),

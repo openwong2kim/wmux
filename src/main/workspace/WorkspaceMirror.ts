@@ -38,6 +38,8 @@ export class WorkspaceMirror {
   // null ⇒ the last push carried no panePtys field (old renderer): unknown,
   // round-trip — never "this PTY belongs to no pane".
   private panePtys: Record<string, string> | null = null;
+  // null ⇒ no paneIds field (old renderer): the pane set is unknown.
+  private paneIds: string[] | null = null;
   private viewed: ViewedPointer | null = null;
   private setAt = 0;
   private populated = false;
@@ -58,6 +60,7 @@ export class WorkspaceMirror {
     this.fleets = new Map(payload.fleets.map((f) => [f.workspaceId, f]));
     this.roleBindings = payload.roleBindings ?? null;
     this.panePtys = payload.panePtys ?? null;
+    this.paneIds = payload.paneIds ? [...payload.paneIds] : null;
     this.sessionRestored = payload.sessionRestored === true;
     this.viewed = payload.viewed ? { ...payload.viewed } : null;
     // Stamp with our own clock, not the renderer's `payload.ts`: `peek().ageMs`
@@ -133,10 +136,28 @@ export class WorkspaceMirror {
     return { paneId, ageMs: this.now() - this.setAt };
   }
 
-  /** Every pane id the last push named (stashed panes included), or null when
-   *  the renderer did not send the map. */
+  /** Every pane id the last push named (stashed and PTY-less panes
+   *  included), or null when the renderer did not send the list. */
   getKnownPaneIds(): Set<string> | null {
-    return this.panePtys === null ? null : new Set(Object.values(this.panePtys));
+    return this.paneIds === null ? null : new Set(this.paneIds);
+  }
+
+  /**
+   * paneId → the workspace it lives in, for every pane that holds a PTY
+   * (panePtys joined with each entry's owned ptyIds). A pane with no PTY is
+   * simply absent — its workspace is unknown, not "none". null when the
+   * renderer sent no panePtys.
+   */
+  getPaneWorkspaces(): Map<string, string> | null {
+    if (this.panePtys === null || this.entries === null) return null;
+    const out = new Map<string, string>();
+    for (const entry of this.entries) {
+      for (const ptyId of entry.ptyIds ?? []) {
+        const paneId = Object.prototype.hasOwnProperty.call(this.panePtys, ptyId) ? this.panePtys[ptyId] : undefined;
+        if (paneId) out.set(paneId, entry.id);
+      }
+    }
+    return out;
   }
 
   /**

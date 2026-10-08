@@ -296,37 +296,58 @@ export class ChromeProfileStore {
   }
 
   /**
-   * Drop pane bindings whose pane no longer exists. `knownPaneIds` must be the
-   * COMPLETE set (stashed panes included) from a restored session — a partial
-   * or freshly generated tree would erase bindings the next healthy boot needs.
-   * Writes only when something is actually orphaned: this runs on every
-   * mirror push.
+   * Bring pane bindings in line with the layout. A binding whose pane no
+   * longer exists is dropped; a bound pane that now lives in another workspace
+   * is RE-HOMED there — the account follows the pane, and the old workspace
+   * stops reporting pane bindings. `knownPaneIds` must be the COMPLETE set
+   * (stashed and PTY-less panes included) from a restored session: a partial
+   * or freshly generated tree would erase bindings the next healthy boot
+   * needs. `paneWorkspaces` may be partial — a pane missing from it keeps its
+   * workspace. Writes only when something changes: this runs on every push.
    */
-  async prunePanes(knownPaneIds: ReadonlySet<string>): Promise<number> {
-    const orphaned = (file: ChromeProfilesFile) =>
-      Object.keys(file.paneBindings).filter((paneId) => !knownPaneIds.has(paneId));
-    if (orphaned(this.ensureCache()).length === 0) return 0;
+  async reconcilePanes(
+    knownPaneIds: ReadonlySet<string>,
+    paneWorkspaces: ReadonlyMap<string, string>,
+  ): Promise<{ pruned: number; rehomed: number }> {
+    const plan = (file: ChromeProfilesFile) => {
+      const gone: string[] = [];
+      const moved: Array<[string, string]> = [];
+      for (const [paneId, binding] of Object.entries(file.paneBindings)) {
+        if (!knownPaneIds.has(paneId)) {
+          gone.push(paneId);
+          continue;
+        }
+        const now = paneWorkspaces.get(paneId);
+        if (now && now !== binding.workspaceId && !isUnsafeKey(now)) moved.push([paneId, now]);
+      }
+      return { gone, moved };
+    };
+    const preview = plan(this.ensureCache());
+    if (preview.gone.length === 0 && preview.moved.length === 0) return { pruned: 0, rehomed: 0 };
     return this.mutate((file) => {
-      const gone = orphaned(file);
+      const { gone, moved } = plan(file);
       for (const paneId of gone) delete file.paneBindings[paneId];
-      return gone.length;
+      // Exclusivity is per profile, not per workspace, so a move never conflicts.
+      for (const [paneId, workspaceId] of moved) file.paneBindings[paneId].workspaceId = workspaceId;
+      return { pruned: gone.length, rehomed: moved.length };
     });
   }
 }
 
 /**
- * Prune pane bindings against a renderer push — only a push from a renderer
- * that RESTORED the saved session, and only when it sent the complete
- * ptyId → paneId map. A failed or empty session load pushes a freshly
+ * Reconcile pane bindings against a renderer push — only a push from a
+ * renderer that RESTORED the saved session, and only when it sent the
+ * complete pane list. A failed or empty session load pushes a freshly
  * generated tree, against which every real pane would look orphaned and lose
  * its account for good (the same rule the Deck's startup reconcile follows).
  */
-export function prunePaneBindingsFromMirror(
-  store: Pick<ChromeProfileStore, 'prunePanes'>,
-  mirror: Pick<WorkspaceMirror, 'isSessionRestored' | 'getKnownPaneIds'>,
-): Promise<number> {
-  if (!mirror.isSessionRestored()) return Promise.resolve(0);
+export function reconcilePaneBindingsFromMirror(
+  store: Pick<ChromeProfileStore, 'reconcilePanes'>,
+  mirror: Pick<WorkspaceMirror, 'isSessionRestored' | 'getKnownPaneIds' | 'getPaneWorkspaces'>,
+): Promise<{ pruned: number; rehomed: number }> {
+  const none = Promise.resolve({ pruned: 0, rehomed: 0 });
+  if (!mirror.isSessionRestored()) return none;
   const known = mirror.getKnownPaneIds();
-  if (known === null || known.size === 0) return Promise.resolve(0);
-  return store.prunePanes(known);
+  if (known === null || known.size === 0) return none;
+  return store.reconcilePanes(known, mirror.getPaneWorkspaces() ?? new Map());
 }

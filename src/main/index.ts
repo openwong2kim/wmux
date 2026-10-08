@@ -153,7 +153,7 @@ import { claimCdpPort, probeCdpEndpointWithRetry } from './browser-session/cdpPo
 import { clearPrivateBrowserSession, trackPrivateBrowserContents } from './browser-session/privateSession';
 import { BrowserBackendStore } from './browser-session/BrowserBackendStore';
 import { ChromeLauncherRegistry } from './browser-session/ChromeLauncher';
-import { ChromeProfileStore, prunePaneBindingsFromMirror } from './browser-session/ChromeProfileStore';
+import { ChromeProfileStore, reconcilePaneBindingsFromMirror } from './browser-session/ChromeProfileStore';
 import { CHROME_PANE_IPC } from '../shared/chromePaneBinding';
 import { ChromeSurfaceStore } from './browser-session/ChromeSurfaceStore';
 import { getActionCacheStore } from './browser-session/ActionCacheStore';
@@ -1618,12 +1618,13 @@ ipcMain.handle(
     }
   },
 );
-// Pane bindings of panes that no longer exist are dropped against a restored
-// session's complete pane map. Fire-and-forget: a failed prune retries on the
-// next push and must never cost the mirror listener anything.
+// Pane bindings follow the layout: a vanished pane's binding is dropped and a
+// moved pane's is re-homed, against a restored session's complete pane list.
+// Fire-and-forget: a failure retries on the next push and must never cost the
+// mirror listener anything.
 getWorkspaceMirror().onSnapshot(() => {
-  prunePaneBindingsFromMirror(chromeProfileStore, getWorkspaceMirror()).catch((err) => {
-    console.warn('[chrome-profiles] pane-binding prune failed:', err);
+  reconcilePaneBindingsFromMirror(chromeProfileStore, getWorkspaceMirror()).catch((err) => {
+    console.warn('[chrome-profiles] pane-binding reconcile failed:', err);
   });
 });
 // Discard/wake signals travel main → renderer: the renderer owns the <webview>
