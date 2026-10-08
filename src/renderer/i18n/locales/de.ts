@@ -131,6 +131,8 @@ export const de = {
   'pane.browserProfileNew': "Neues Profil für diesen Bereich",
   'pane.browserProfileUseWorkspace': "Arbeitsbereichsprofil verwenden",
   'pane.browserProfileFailed': "Browserprofil konnte nicht geändert werden.",
+  'pane.browserProfileInUseWorkspace': "Von einem Arbeitsbereich verwendet",
+  'pane.browserProfileInUsePane': "Von einem anderen Bereich verwendet",
   'pane.showInChrome': "In Chrome anzeigen",
   'pane.showInChromeFailed': "Dieser Bereich konnte nicht in Chrome angezeigt werden.",
   'browser.private': "Privat",

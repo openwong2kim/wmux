@@ -136,6 +136,28 @@ describe('SurfaceTabs — per-pane Chrome profile', () => {
     expect(item('profile-unbind')).toBeNull();
   });
 
+  it('disables profiles bound to a workspace or to another pane, with a reason', async () => {
+    const ws = activeWs();
+    listResult.bindings = { 'ws-other': 'shop' };
+    listResult.paneBindings = {
+      'pane-other': { workspaceId: ws.id, profile: 'work' },
+      [ws.rootPane.id]: { workspaceId: ws.id, profile: 'mine' },
+    };
+    listResult.profiles = ['default', 'live', 'shop', 'work', 'mine', 'free'];
+    mount();
+    await openProfileSubmenu();
+    expect(item('profile:shop')?.getAttribute('aria-disabled')).toBe('true');
+    expect(item('profile:shop')?.title).toBe('In use by a workspace');
+    expect(item('profile:work')?.getAttribute('aria-disabled')).toBe('true');
+    expect(item('profile:work')?.title).toBe('In use by another pane');
+    // This pane's own binding and a free profile stay enabled.
+    expect(item('profile:mine')?.getAttribute('aria-disabled')).toBeNull();
+    expect(item('profile:free')?.getAttribute('aria-disabled')).toBeNull();
+    await clickItem('profile:shop');
+    await clickItem('profile:work');
+    expect(api.bindPane).not.toHaveBeenCalled();
+  });
+
   it('binds a listed profile to this pane', async () => {
     const { paneId, wsId } = mount();
     await openProfileSubmenu();

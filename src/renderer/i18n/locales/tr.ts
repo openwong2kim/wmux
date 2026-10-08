@@ -131,6 +131,8 @@ export const tr = {
   'pane.browserProfileNew': "Bu bölme için yeni profil",
   'pane.browserProfileUseWorkspace': "Çalışma alanı profilini kullan",
   'pane.browserProfileFailed': "Tarayıcı profili değiştirilemedi.",
+  'pane.browserProfileInUseWorkspace': "Bir çalışma alanı kullanıyor",
+  'pane.browserProfileInUsePane': "Başka bir bölme kullanıyor",
   'pane.showInChrome': "Chrome'da göster",
   'pane.showInChromeFailed': "Bu bölme Chrome'da gösterilemedi.",
   'browser.private': "Gizli",

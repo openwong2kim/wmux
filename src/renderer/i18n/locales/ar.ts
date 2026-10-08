@@ -131,6 +131,8 @@ export const ar = {
   'pane.browserProfileNew': "ملف تعريف جديد لهذا الجزء",
   'pane.browserProfileUseWorkspace': "استخدام ملف تعريف مساحة العمل",
   'pane.browserProfileFailed': "تعذّر تغيير ملف تعريف المتصفح.",
+  'pane.browserProfileInUseWorkspace': "مستخدم من مساحة عمل",
+  'pane.browserProfileInUsePane': "مستخدم من جزء آخر",
   'pane.showInChrome': "العرض في Chrome",
   'pane.showInChromeFailed': "تعذّر عرض هذا الجزء في Chrome.",
   'browser.private': "خاص",

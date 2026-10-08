@@ -131,6 +131,8 @@ export const uk = {
   'pane.browserProfileNew': "Новий профіль для цієї панелі",
   'pane.browserProfileUseWorkspace': "Використовувати профіль робочого простору",
   'pane.browserProfileFailed': "Не вдалося змінити профіль браузера.",
+  'pane.browserProfileInUseWorkspace': "Використовується робочим простором",
+  'pane.browserProfileInUsePane': "Використовується іншою панеллю",
   'pane.showInChrome': "Показати в Chrome",
   'pane.showInChromeFailed': "Не вдалося показати цю панель у Chrome.",
   'browser.private': "Приватно",

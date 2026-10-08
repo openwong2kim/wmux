@@ -131,6 +131,8 @@ export const vi = {
   'pane.browserProfileNew': "Hồ sơ mới cho ngăn này",
   'pane.browserProfileUseWorkspace': "Dùng hồ sơ của không gian làm việc",
   'pane.browserProfileFailed': "Không thể đổi hồ sơ trình duyệt.",
+  'pane.browserProfileInUseWorkspace': "Đang được một không gian làm việc dùng",
+  'pane.browserProfileInUsePane': "Đang được ngăn khác dùng",
   'pane.showInChrome': "Hiển thị trong Chrome",
   'pane.showInChromeFailed': "Không thể hiển thị ngăn này trong Chrome.",
   'browser.private': "Riêng tư",

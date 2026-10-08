@@ -705,6 +705,8 @@ export const ko = {
   'pane.browserProfileNew': "이 페인 전용 새 프로필",
   'pane.browserProfileUseWorkspace': "워크스페이스 프로필 사용",
   'pane.browserProfileFailed': "브라우저 프로필을 바꾸지 못했습니다.",
+  'pane.browserProfileInUseWorkspace': "워크스페이스에서 사용 중",
+  'pane.browserProfileInUsePane': "다른 페인에서 사용 중",
   'pane.showInChrome': "Chrome에서 보기",
   'pane.showInChromeFailed': "이 페인을 Chrome에서 보여주지 못했습니다.",
   'browser.private': "시크릿",

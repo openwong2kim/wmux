@@ -131,6 +131,8 @@ export const bs = {
   'pane.browserProfileNew': "Novi profil za ovo okno",
   'pane.browserProfileUseWorkspace': "Koristi profil radnog prostora",
   'pane.browserProfileFailed': "Nije moguće promijeniti profil preglednika.",
+  'pane.browserProfileInUseWorkspace': "Koristi ga radni prostor",
+  'pane.browserProfileInUsePane': "Koristi ga drugo okno",
   'pane.showInChrome': "Prikaži u Chromeu",
   'pane.showInChromeFailed': "Nije moguće prikazati ovo okno u Chromeu.",
   'browser.private': "Privatno",

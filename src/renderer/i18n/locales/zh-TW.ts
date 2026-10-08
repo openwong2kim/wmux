@@ -131,6 +131,8 @@ export const zhTW = {
   'pane.browserProfileNew': "為此窗格新增設定檔",
   'pane.browserProfileUseWorkspace': "使用工作區設定檔",
   'pane.browserProfileFailed': "無法變更瀏覽器設定檔。",
+  'pane.browserProfileInUseWorkspace': "已被工作區使用",
+  'pane.browserProfileInUsePane': "已被其他窗格使用",
   'pane.showInChrome': "在 Chrome 中顯示",
   'pane.showInChromeFailed': "無法在 Chrome 中顯示此窗格。",
   'browser.private': "無痕",

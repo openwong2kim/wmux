@@ -131,6 +131,8 @@ export const it = {
   'pane.browserProfileNew': "Nuovo profilo per questo riquadro",
   'pane.browserProfileUseWorkspace': "Usa il profilo dell’area di lavoro",
   'pane.browserProfileFailed': "Impossibile cambiare il profilo del browser.",
+  'pane.browserProfileInUseWorkspace': "In uso da un’area di lavoro",
+  'pane.browserProfileInUsePane': "In uso da un altro riquadro",
   'pane.showInChrome': "Mostra in Chrome",
   'pane.showInChromeFailed': "Impossibile mostrare questo riquadro in Chrome.",
   'browser.private': "Privata",

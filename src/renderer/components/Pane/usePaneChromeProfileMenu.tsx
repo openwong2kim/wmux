@@ -42,6 +42,9 @@ export function usePaneChromeProfileMenu(opts: {
   const enabled = allowed && isChrome && !!window.electronAPI?.browser?.chromeProfiles?.bindPane;
   const [profiles, setProfiles] = useState<string[]>([]);
   const [bound, setBound] = useState<string | undefined>(undefined);
+  // Profiles main would refuse for this pane (bound to a workspace, or to
+  // another pane) → the i18n key of the reason, shown on a disabled row.
+  const [inUse, setInUse] = useState<Map<string, string>>(new Map());
 
   // Fetched when the menu opens, not per pane mount: a layout holds a dozen
   // panes and none of them needs the list until its menu is up.
@@ -54,6 +57,12 @@ export function usePaneChromeProfileMenu(opts: {
       // (the pane moved), so it is not this pane's binding here either.
       const b = res.paneBindings?.[paneId];
       setBound(b && b.workspaceId === workspaceId ? b.profile : undefined);
+      const taken = new Map<string, string>();
+      for (const p of Object.values(res.bindings)) taken.set(p, 'pane.browserProfileInUseWorkspace');
+      for (const [otherPane, pb] of Object.entries(res.paneBindings ?? {})) {
+        if (otherPane !== paneId && !taken.has(pb.profile)) taken.set(pb.profile, 'pane.browserProfileInUsePane');
+      }
+      setInUse(taken);
     }).catch(() => { /* menu keeps the last rows */ });
   }, [enabled, paneId, workspaceId]);
 
@@ -122,12 +131,17 @@ export function usePaneChromeProfileMenu(opts: {
   const subItems: PaneActionItem[] = useMemo(() => {
     const bindable = profiles.filter((p) => !PANE_UNBINDABLE_PROFILES.has(p));
     return [
-      ...bindable.map((name) => ({
-        key: `profile:${name}`,
-        label: name,
-        active: name === bound,
-        onSelect: () => { if (name !== bound) void bindPane(name); },
-      })),
+      ...bindable.map((name) => {
+        const reason = name === bound ? undefined : inUse.get(name);
+        return {
+          key: `profile:${name}`,
+          label: name,
+          active: name === bound,
+          disabled: !!reason,
+          title: reason ? t(reason) : undefined,
+          onSelect: () => { if (name !== bound) void bindPane(name); },
+        };
+      }),
       {
         key: 'profile-new',
         label: t('pane.browserProfileNew'),
@@ -140,7 +154,7 @@ export function usePaneChromeProfileMenu(opts: {
         onSelect: () => { void bindPane(null); },
       }] : []),
     ];
-  }, [profiles, bound, t, bindPane, createForPane]);
+  }, [profiles, bound, inUse, t, bindPane, createForPane]);
 
   return { mainItems, subItems, reload };
 }

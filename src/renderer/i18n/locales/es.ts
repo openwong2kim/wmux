@@ -131,6 +131,8 @@ export const es = {
   'pane.browserProfileNew': "Nuevo perfil para este panel",
   'pane.browserProfileUseWorkspace': "Usar el perfil del espacio de trabajo",
   'pane.browserProfileFailed': "No se pudo cambiar el perfil del navegador.",
+  'pane.browserProfileInUseWorkspace': "En uso por un espacio de trabajo",
+  'pane.browserProfileInUsePane': "En uso por otro panel",
   'pane.showInChrome': "Mostrar en Chrome",
   'pane.showInChromeFailed': "No se pudo mostrar este panel en Chrome.",
   'browser.private': "Privada",

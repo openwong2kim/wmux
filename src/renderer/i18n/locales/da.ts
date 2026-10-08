@@ -131,6 +131,8 @@ export const da = {
   'pane.browserProfileNew': "Ny profil til denne rude",
   'pane.browserProfileUseWorkspace': "Brug arbejdsområdets profil",
   'pane.browserProfileFailed': "Browserprofilen kunne ikke ændres.",
+  'pane.browserProfileInUseWorkspace': "Bruges af et arbejdsområde",
+  'pane.browserProfileInUsePane': "Bruges af en anden rude",
   'pane.showInChrome': "Vis i Chrome",
   'pane.showInChromeFailed': "Denne rude kunne ikke vises i Chrome.",
   'browser.private': "Privat",
