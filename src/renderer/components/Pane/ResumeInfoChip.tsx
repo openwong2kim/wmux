@@ -323,7 +323,7 @@ export default function ResumeInfoChip(props: {
           {/* 복구 — type the command into THIS pane (no auto-Enter). */}
           <button
             onClick={onRecover}
-            title={t('resume.tooltip')}
+            title={built.exact ? t('resume.tooltip') : t('resume.pickTooltip')}
             style={{
               alignSelf: 'flex-start',
               padding: '2px 10px',

@@ -1273,6 +1273,7 @@ export const zh = {
   'resume.typesLine': '将输入：{command}',
   'resume.runsIn': '运行目录：{cwd}',
   'resume.pickLabel': '选择 {agent} 会话',
+  'resume.pickTooltip': '选择要在此窗格中恢复的对话',
   'resume.pickerNote': '此窗格没有绑定已保存的对话，因此不做猜测，而是打开此文件夹的会话选择器：其他窗格可能共用此文件夹。请在其中选择对话。不会添加跳过权限的参数。',
   'browser.discarded': '已挂起以节省内存 — 点击重新加载',
   'statusBar.channelsTooltip': '切换频道',

@@ -1076,7 +1076,7 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
         // runs in; the picker line also says why it opens a picker and carries
         // no bypass (#1946).
         const primaryTooltip = [
-          resumeStage === 1 ? t('resume.addSessionTooltip') : t('resume.tooltip'),
+          resumeStage === 1 ? t('resume.addSessionTooltip') : sessionId ? t('resume.tooltip') : t('resume.pickTooltip'),
           plan ? t('resume.typesLine', { command: plan.text.trim() }) : '',
           runCwd ? t('resume.runsIn', { cwd: runCwd }) : '',
           !sessionId ? t('resume.pickerNote') : '',

@@ -308,5 +308,6 @@ describe('buildPaneResumeCommand — no exact session opens the picker (#1946)',
     const src = readFileSync(resolve(__dirname, '../ResumeInfoChip.tsx'), 'utf8');
     expect(src).toMatch(/built\.exact\s*\?\s*t\('resume\.label', \{ agent: agentName \}\)\s*:\s*t\('resume\.pickLabel', \{ agent: agentName \}\)/);
     expect(src).toContain("t('resume.pickerNote')");
+    expect(src).toContain("title={built.exact ? t('resume.tooltip') : t('resume.pickTooltip')}");
   });
 });

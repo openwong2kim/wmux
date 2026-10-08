@@ -974,6 +974,7 @@ export const en = {
   // #1946 — no saved conversation is bound to the pane: the pill opens the
   // agent's session picker instead of guessing the newest conversation.
   'resume.pickLabel': 'Pick a {agent} session',
+  'resume.pickTooltip': 'Choose which conversation to resume in this pane',
   'resume.pickerNote': 'No saved conversation is bound to this pane, so this opens the session picker for this folder instead of guessing: other panes may share the folder. Choose the conversation there. No permission-bypass flag is added.',
 
   // Browser

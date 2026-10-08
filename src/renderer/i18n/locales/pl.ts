@@ -962,6 +962,7 @@ export const pl = {
   'resume.typesLine': 'Wpisze: {command}',
   'resume.runsIn': 'Uruchomi w: {cwd}',
   'resume.pickLabel': 'Wybierz sesję {agent}',
+  'resume.pickTooltip': 'Wybierz rozmowę do wznowienia w tym panelu',
   'resume.pickerNote': 'Z tym panelem nie jest powiązana żadna zapisana rozmowa, więc zamiast zgadywać otworzy się lista sesji dla tego folderu: inne panele mogą korzystać z tego samego folderu. Wybierz tam rozmowę. Flaga pomijania uprawnień nie zostanie dodana.',
 
   // Browser

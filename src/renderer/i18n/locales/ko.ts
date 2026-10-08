@@ -689,6 +689,7 @@ export const ko = {
   'resume.typesLine': '입력할 명령: {command}',
   'resume.runsIn': '실행 폴더: {cwd}',
   'resume.pickLabel': '{agent} 세션 고르기',
+  'resume.pickTooltip': '이 창에서 이어갈 대화를 고릅니다',
   'resume.pickerNote': '이 창에 연결된 저장된 대화가 없어, 추측하지 않고 이 폴더의 세션 선택 화면을 엽니다. 다른 창이 같은 폴더를 쓰고 있을 수 있습니다. 거기서 대화를 고르세요. 권한 우회 플래그는 붙이지 않습니다.',
 
   // Browser

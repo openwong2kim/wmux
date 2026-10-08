@@ -548,5 +548,6 @@ describe('recovery pill without an exact session opens the picker (#1946)', () =
     const src = readFileSync(resolve(__dirname, '../Pane.tsx'), 'utf8');
     expect(src).toMatch(/sessionId\s*\?\s*`▶ \$\{t\('resume\.label', \{ agent: agentName \}\)\}`\s*:\s*`▶ \$\{t\('resume\.pickLabel', \{ agent: agentName \}\)\}`/);
     expect(src).toContain("!sessionId ? t('resume.pickerNote') : ''");
+    expect(src).toContain("sessionId ? t('resume.tooltip') : t('resume.pickTooltip')");
   });
 });
