@@ -275,7 +275,9 @@ a person was faster by hand, so the defaults moved:
 
   `openApp` checks its selector against the list before anything launches
   (bundle id, `.app` or exe basename, app name), and the app the helper
-  opened again afterwards.
+  opened again afterwards. An absolute `.app` path is judged by the bundle id
+  in its `Info.plist` (`/usr/bin/plutil`, no shell), since its file name can
+  be anything; one whose bundle id cannot be read is not opened.
 
   The helper reports the process path and bundle ID of each target; main
   refuses before it forwards the action.

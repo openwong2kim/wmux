@@ -13,6 +13,7 @@ import {
 } from '../../shared/computer/config';
 import { ComputerError } from '../../shared/computer/errors';
 import { helperStatus as rawHelperStatus, writeComputerUseSettings, type ComputerHelperStatus, type ComputerUseSettingsPatch } from './settings';
+import { readAppBundleId } from './appBundleId';
 import { isPermissionOp, requestHelperPermissions, resetHelperPermissions, revealHelper } from './permissions';
 import { ComputerService, computerUseShutDown, type ConsentRequester, type HelperLike } from './ComputerService';
 import { HelperProcess } from './HelperProcess';
@@ -201,6 +202,7 @@ export function createComputerService(deps: { requestConsent: ConsentRequester }
   const service: ComputerService = new ComputerService({
     isEnabled: () => readComputerUseEnabled(),
     askPerApp: () => readComputerUseAskPerApp(),
+    readBundleId: (appPath) => readAppBundleId(appPath),
     createHelper: helper && (() => helper),
     requestConsent: deps.requestConsent,
     // No helper, no chord. Every call arms the key before it reaches the

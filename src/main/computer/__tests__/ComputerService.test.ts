@@ -666,7 +666,13 @@ describe('openApp', () => {
   const textEdit: AppInfo = { id: 'com.apple.TextEdit', name: 'TextEdit', pid: 30, path: '/System/Applications/TextEdit.app', bundleId: 'com.apple.TextEdit' };
   const passwords: AppInfo = { id: 'com.apple.Passwords', name: 'Passwords', pid: 31, path: '/System/Applications/Passwords.app', bundleId: 'com.apple.Passwords' };
 
-  function openAppService(opts: { actions?: string[]; opens?: AppInfo; askPerApp?: boolean; running?: boolean } = {}) {
+  function openAppService(opts: {
+    actions?: string[];
+    opens?: AppInfo;
+    askPerApp?: boolean;
+    running?: boolean;
+    bundleIds?: Record<string, string | null>;
+  } = {}) {
     const calls: Array<{ method: HelperMethod; params: unknown }> = [];
     const opened = opts.opens ?? textEdit;
     const window = win(opened);
@@ -690,6 +696,7 @@ describe('openApp', () => {
     const service = new ComputerService({
       isEnabled: () => true,
       askPerApp: () => opts.askPerApp ?? false,
+      readBundleId: async (appPath) => opts.bundleIds?.[appPath] ?? null,
       createHelper: () => helper,
       requestConsent: consent,
       stopKey: fakeStopKey(),
@@ -705,6 +712,18 @@ describe('openApp', () => {
       expect(await codeOf(service.openApp(AGENT_A, { app })), app).toBe('app_blocked');
     }
     expect(calls).toEqual([]);
+  });
+
+  it('judges an absolute .app path by its bundle id before launching, whatever the file is called', async () => {
+    const { service, calls } = openAppService({
+      bundleIds: { '/Users/me/Notes.app': 'com.1password.1password', '/Applications/TextEdit.app': 'com.apple.TextEdit' },
+    });
+    expect(await codeOf(service.openApp(AGENT_A, { app: '/Users/me/Notes.app' }))).toBe('app_blocked');
+    // Unreadable: refused, never launched.
+    expect(await codeOf(service.openApp(AGENT_A, { app: '/tmp/Unknown.app/' }))).toBe('app_not_found');
+    expect(calls).toEqual([]);
+    expect(await codeOf(service.openApp(AGENT_A, { app: '/Applications/TextEdit.app' }))).toBe('resolved');
+    expect(calls.map((c) => c.method)).toEqual(['capabilities', 'openApp']);
   });
 
   it('answers unsupported_action when the helper does not list openApp', async () => {
