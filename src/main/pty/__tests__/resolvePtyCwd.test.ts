@@ -32,28 +32,38 @@ describe('validatePtyCwd', () => {
 });
 
 describe('resolvePtyCreateCwd', () => {
-  it('prefers a valid persisted spawnCwd for a dead-session replacement', () => {
-    const validate = vi.fn((cwd?: string) => cwd === 'D:\\spawn' ? 'D:\\spawn' : undefined);
+  // #1941 — the folder the shell was in, not the one it was spawned in; the
+  // order every daemon recovery path uses.
+  it('prefers a valid live cwd for a dead-session replacement', () => {
+    const validate = vi.fn((cwd?: string) => cwd);
     expect(resolvePtyCreateCwd('C:\\profile', {
       spawnCwd: 'D:\\spawn',
-      cwd: 'D:\\live',
-    }, validate)).toEqual({
-      incomingCwd: 'D:\\spawn',
-      safeCwd: 'D:\\spawn',
-      source: 'recovery-spawnCwd',
-    });
-    expect(validate).toHaveBeenCalledTimes(1);
-  });
-
-  it('falls back to the live cwd when spawnCwd no longer validates', () => {
-    const validate = vi.fn((cwd?: string) => cwd === 'D:\\live' ? 'D:\\live' : undefined);
-    expect(resolvePtyCreateCwd(undefined, {
-      spawnCwd: 'D:\\missing',
       cwd: 'D:\\live',
     }, validate)).toEqual({
       incomingCwd: 'D:\\live',
       safeCwd: 'D:\\live',
       source: 'recovery-cwd',
+    });
+    expect(validate).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls back to the persisted spawnCwd when the live cwd no longer validates', () => {
+    const validate = vi.fn((cwd?: string) => cwd === 'D:\\spawn' ? 'D:\\spawn' : undefined);
+    expect(resolvePtyCreateCwd(undefined, {
+      spawnCwd: 'D:\\spawn',
+      cwd: 'D:\\removed-or-a-file',
+    }, validate)).toEqual({
+      incomingCwd: 'D:\\spawn',
+      safeCwd: 'D:\\spawn',
+      source: 'recovery-spawnCwd',
+    });
+  });
+
+  it('uses the spawnCwd when the shell never reported a cwd', () => {
+    expect(resolvePtyCreateCwd(undefined, { spawnCwd: 'D:\\spawn' }, (cwd) => cwd)).toEqual({
+      incomingCwd: 'D:\\spawn',
+      safeCwd: 'D:\\spawn',
+      source: 'recovery-spawnCwd',
     });
   });
 

@@ -336,6 +336,94 @@ describe.runIf(hasPowerShell)('OSC 133 runtime — powershell.exe', () => {
   }, EVENT_TIMEOUT_MS + 2000);
 });
 
+// Issue #1941. The integration reported the cwd only from the prompt, so on
+// 'cd X; <program>' the session's tracked cwd stayed at the folder of the last
+// prompt for as long as the program ran. A daemon that died in that window
+// recovered the pane there (recovery replays meta.cwd).
+describe.runIf(hasPowerShell)('mid-line cwd report — powershell.exe (#1941)', () => {
+  let manager: DaemonSessionManager;
+  let root: string;
+
+  afterEach(() => {
+    if (manager) manager.disposeAll();
+    // The killed shell can hold its cwd open for a moment after disposeAll.
+    try {
+      if (root) fs.rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
+    } catch { /* a leftover temp folder is not a test failure */ }
+  });
+
+  function startPane(tag: string): { managed: ManagedSession; start: string; target: string } {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-1941-'));
+    const start = path.join(root, 'start');
+    // A space and a percent sign: the payload must survive the percent-decode.
+    const target = path.join(root, 'proj one%20x');
+    fs.mkdirSync(start);
+    fs.mkdirSync(target);
+    manager = new DaemonSessionManager();
+    const id = `rt-pwsh-${tag}-${Date.now()}`;
+    manager.createSession({ id, cmd: POWERSHELL, cwd: start });
+    return { managed: manager.getSession(id)!, start, target };
+  }
+
+  // os.tmpdir() can be an 8.3 short path (C:\Users\RUNNER~1\...) while the
+  // shell may report the long form, so compare the real paths.
+  const real = (p: string): string => {
+    try { return fs.realpathSync.native(p).toLowerCase(); } catch { return p.toLowerCase(); }
+  };
+
+  function waitForCwd(managed: ManagedSession, cwd: string, label: string): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const deadline = Date.now() + EVENT_TIMEOUT_MS;
+      const tick = () => {
+        if (real(managed.meta.cwd) === real(cwd)) return resolve();
+        if (Date.now() > deadline) return reject(new Error(`timed out waiting for ${label}; meta.cwd=${managed.meta.cwd}`));
+        setTimeout(tick, 50);
+      };
+      tick();
+    });
+  }
+
+  it('reports the new folder while the program on the same line still runs', async () => {
+    const { managed, start, target } = startPane('cdline');
+    await waitForCwd(managed, start, 'the first prompt to report the spawn folder');
+    const baseline = managed.promptLog.size;
+
+    // The program must still be running when the assertion is made: a prompt
+    // after it would report the folder anyway, which is the old behaviour.
+    managed.ptyProcess.write(`cd '${target}'; & "${CMD_EXE}" /c "ping -n 8 127.0.0.1 > nul"\r`);
+    const cmdStart = await waitForEventAfter(managed, baseline, (e) => e.type === 'command_start', 'command_start');
+    await waitForCwd(managed, target, 'the mid-line report of the cd target');
+    const ended = managed.promptLog.snapshot().slice(baseline)
+      .some((e) => e.type === 'command_end' && e.byteOffset >= cmdStart.byteOffset);
+    expect(ended).toBe(false);
+  }, EVENT_TIMEOUT_MS * 2 + 2000);
+
+  it('disarms on a program launch and inside a function, and keeps a user action', async () => {
+    const { managed, start } = startPane('arm');
+    await waitForCwd(managed, start, 'the first prompt');
+    const probe = (line: string, label: string) => {
+      const before = managed.ringBuffer.readAll().length;
+      managed.ptyProcess.write(line);
+      return waitForOutputAfter(managed, before, /ARMED\[(\w+)\]/, label);
+    };
+    const armed = 'Write-Output "ARMED[$($ExecutionContext.InvokeCommand.PostCommandLookupAction -eq $global:__wmux_lookup)]"';
+
+    // Cmdlets typed on the line keep it armed until the line ends...
+    expect((await probe(`${armed}\r`, 'armed during a line'))[1]).toBe('True');
+    // ...a program launch disarms it...
+    expect((await probe(`& "${CMD_EXE}" /c rem; ${armed}\r`, 'after a program'))[1]).toBe('False');
+    // ...and so does the first lookup inside a function body, so a
+    // command-heavy function does not pay for the hook on every call.
+    expect((await probe(`function F { Get-Date > $null }; F; ${armed}\r`, 'after a function'))[1]).toBe('False');
+
+    // An action the user installed is chained while ours is armed and is the
+    // one left in place afterwards.
+    managed.ptyProcess.write('$global:userAction = { $global:userHits++ }; $ExecutionContext.InvokeCommand.PostCommandLookupAction = $global:userAction\r');
+    const kept = 'Write-Output "ARMED[$(($ExecutionContext.InvokeCommand.PostCommandLookupAction -eq $global:userAction) -and $global:userHits -gt 0)]"';
+    expect((await probe(`& "${CMD_EXE}" /c rem; ${kept}\r`, 'the user action after ours disarmed'))[1]).toBe('True');
+  }, EVENT_TIMEOUT_MS * 4 + 2000);
+});
+
 describe.runIf(hasGitBash)('OSC 133 runtime — bash.exe (Git Bash)', () => {
   let manager: DaemonSessionManager;
 

@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import os from 'node:os';
+import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { isLinuxCwd, isWslShell, recoveryCwd, mergeWslEnv, resolveWslCwd, WSL_CWD_PROBE, wslTargetArgs } from '../wsl';
@@ -71,6 +72,17 @@ describe('WSL execution target', () => {
       expect(stat).not.toHaveBeenCalled();
       expect(recoveryCwd({ cmd: 'powershell.exe', cwd: 'C:\\gone' }, 'win32')).toBe(os.homedir());
     } finally { stat.mockRestore(); }
+  });
+
+  it('recovers a native shell only into a directory (#1941)', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-1941-'));
+    try {
+      const file = path.join(dir, 'not-a-folder.txt');
+      fs.writeFileSync(file, '');
+      expect(recoveryCwd({ cmd: 'powershell.exe', cwd: dir })).toBe(dir);
+      expect(recoveryCwd({ cmd: 'powershell.exe', cwd: file })).toBe(os.homedir());
+      expect(recoveryCwd({ cmd: 'powershell.exe', cwd: path.join(dir, 'gone') })).toBe(os.homedir());
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
   });
 
   it('transfers pane identity in both directions and translates only designated paths', () => {
