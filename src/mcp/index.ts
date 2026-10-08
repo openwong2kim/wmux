@@ -51,6 +51,7 @@ import { registerMoaHandoffTool } from './handoff';
 import { registerWorktaskTools } from './worktask';
 import { registerGitTools } from './git';
 import { registerPaneLifecycleTools } from './paneLifecycle';
+import { resolvePaneIdRef, resolvePaneRef, resolvePtyRef, type PaneNameRpc } from './paneTarget';
 import { registerFleetTriageTools } from './fleetTriage';
 import { registerAutomationTools } from './automation';
 import { registerReplTools } from './repl/tools';
@@ -175,14 +176,14 @@ const BROWSER_SESSION_START_SHAPE = {
 };
 
 const TERMINAL_READ_SHAPE = {
-  ptyId: z.string().optional().describe('Target a specific terminal by PTY ID (surface_list()). Omit for the active terminal.'),
+  ptyId: z.string().optional().describe('Target a specific terminal by PTY ID (surface_list()) or #pane name. Omit for the active terminal.'),
   tail_lines: z.number().int().positive().optional().describe(`Return only the last N lines, ending at the last non-empty screen row (may be below the cursor). Omit for the default (${DEFAULT_READ_TAIL_LINES}). Capped at 20000. Read cost is O(N), so a small N is both cheaper and fewer tokens.`),
   full_scrollback: z.boolean().optional().describe('Return the ENTIRE terminal backlog (up to the scrollback limit, ~10k lines) instead of a bounded tail. Expensive — walks the whole buffer. Use only when the recent tail is genuinely insufficient.'),
   maxBytes: maxBytesParam,
 };
 
 const TERMINAL_READ_EVENTS_SHAPE = {
-  ptyId: z.string().optional().describe('Target a specific terminal by PTY ID. Omit to use the active terminal.'),
+  ptyId: z.string().optional().describe('Target a specific terminal by PTY ID or #pane name. Omit to use the active terminal.'),
   limit: z.number().int().positive().optional().describe('Return the N most recent events (default 32, capped at 1024). Ignored when sinceOffset or lastCommandOnly is set.'),
   sinceOffset: z.number().int().nonnegative().optional().describe('Return only events whose byteOffset is strictly greater than this value — for diff-style polling.'),
   lastCommandOnly: z.boolean().optional().describe('Skip the events list and only return lastCompletedRange (the byte-offset range + exit code of the most recently finished command).'),
@@ -190,7 +191,7 @@ const TERMINAL_READ_EVENTS_SHAPE = {
 
 const TERMINAL_SEND_SHAPE = {
   text: z.string().describe('Text to send to the terminal'),
-  ptyId: z.string().optional().describe('Target a specific terminal by PTY ID (surface_list()). Omit for the active terminal.'),
+  ptyId: z.string().optional().describe('Target a specific terminal by PTY ID (surface_list()) or #pane name. Omit for the active terminal.'),
   submit: z.boolean().optional().describe('Append a carriage return (\\r) after the text so it is committed — the same as pressing Enter. Use it for shell commands and TUI chat prompts. Default false.'),
   new_task: z.boolean().optional().describe('Set true (with submit) when the text hands this pane a NEW, unrelated task — never for a follow-up, an answer or a correction. If the pane\'s role asks for fresh context, wmux first types the agent\'s fresh-context command (/clear, /new) so the previous task\'s conversation does not carry over; read `freshContext` in the reply. If that command never finishes, the call fails and the text is NOT sent.'),
 };
@@ -199,7 +200,7 @@ const TERMINAL_SEND_KEY_SHAPE = {
   key: z.string().describe(
     'Key name: enter, tab, ctrl+c, ctrl+d, ctrl+z, ctrl+l, escape, up, down, right, left',
   ),
-  ptyId: z.string().optional().describe('Target a specific terminal by PTY ID (surface_list()). Omit for the active terminal.'),
+  ptyId: z.string().optional().describe('Target a specific terminal by PTY ID (surface_list()) or #pane name. Omit for the active terminal.'),
 };
 
 const DECK_COMPLETE_WORK_SHAPE = {
@@ -255,7 +256,7 @@ const PANE_LIST_SHAPE = {
 };
 
 const PANE_SET_METADATA_SHAPE = {
-  paneId: z.string().optional().describe('Target leaf pane id. Omit to use the active pane in the calling workspace.'),
+  paneId: z.string().optional().describe('Target leaf pane id or #pane name. Omit to use the active pane in the calling workspace.'),
   label: z.string().max(64).optional().describe('Short human label, e.g. "Backend".'),
   // P2: `role` is deprecated — pane identity is the auto name + user label now.
   // Removed from the input schema; any legacy role is read-only (dead-read).
@@ -269,7 +270,7 @@ const PANE_SET_METADATA_SHAPE = {
 };
 
 const PANE_GET_METADATA_SHAPE = {
-  paneId: z.string().min(1).optional().describe('Target leaf pane id. Omit for the active pane in the calling workspace. Required with workspaceId.'),
+  paneId: z.string().min(1).optional().describe('Target leaf pane id or #pane name. Omit for the active pane in the calling workspace. Required with workspaceId.'),
   // #1018 opened this cross-workspace read; the write side (pane_set_metadata)
   // deliberately has no equivalent and stays confined to the caller.
   workspaceId: z.string().min(1).optional().describe('Read another workspace\'s pane metadata. Pass its id (a2a_discover / workspace_list) together with a paneId from that same workspace. Omit to read the calling workspace.'),
@@ -321,7 +322,7 @@ const WMUX_EVENTS_POLL_SHAPE = {
     .describe('Event-type filter; omit for all. `notification.received` — a terminal emitted OSC 9/777/99; carries ptyId, source, title, body. `agent.lifecycle` — carries ptyId, kind (agent.stop|agent.subagent_stop|agent.awaiting_input|agent.stop_failure), source (hook|detector|osc133), agent, decision, exitCode (osc133 only); fires when an inner agent ends a turn, hits a y/N prompt mid-turn, or an OSC 133 command completes. `a2a.task` — carries taskId, from, to, kind, state, messagePreview, plus verifiedItemCount on completed/failed (0 = unverified); a POINTER, not the payload (fetch it with a2a_task_query), and DUAL-PARTY: visible to both the sending and receiving workspace, so an unscoped poll receives none.'),
   max: z.number().int().positive().max(1024).optional().describe('Max events per poll (default 256).'),
   blockMs: z.number().int().nonnegative().max(600_000).optional().describe('Wait up to this long (ms) for a match instead of returning an empty page; 0 (default) = immediate. With ptyId+kinds it replaces a terminal_read loop; add process.exited to types so the wait ends if the pane dies (pane.closed is paneId-keyed, so ptyId drops it). parkedCapReached=true means it did NOT wait — back off. One cursor chain per filter combination; nextCursor passes events your filter skipped.'),
-  ptyId: z.string().optional().describe('Only events about this pane. Events with no ptyId are excluded — that is every pane.* event (paneId-keyed); use process.exited to see the pane go away.'),
+  ptyId: z.string().optional().describe('Only events about this pane (ptyId or #pane name). Events with no ptyId are excluded — that is every pane.* event (paneId-keyed); use process.exited to see the pane go away.'),
   kinds: z.array(z.string()).optional().describe('Narrow agent.lifecycle by kind; other types pass through. agent.subagent_stop is a nested subagent returning, not the pane\'s own turn ending. agent.stop_failure = the turn DIED on an API error; it finished nothing.'),
 };
 
@@ -403,8 +404,8 @@ const A2A_SET_SKILLS_SHAPE = {
 
 // send_message / a2a_task_send share this shape (identical param contract).
 const SEND_MESSAGE_SHAPE = {
-  to: z.string().optional().describe('Target: workspace number (1, 2, 3), name ("Workspace 1"), or ID'),
-  pane_id: z.string().optional().describe('Deliver to a specific pane in the target workspace (paneId from pane_list / a2a_discover). Required (or surface_id) when the target runs more than one agent — an unaddressed send there is REFUSED (it names the candidate panes) rather than delivered to whichever pane is focused. Must belong to "to".'),
+  to: z.string().optional().describe('Target: workspace number (1, 2, 3), name ("Workspace 1"), ID, or #pane name'),
+  pane_id: z.string().optional().describe('Deliver to a specific pane in the target workspace (paneId from pane_list / a2a_discover, or #pane name). Required (or surface_id) when the target runs more than one agent — an unaddressed send there is REFUSED (it names the candidate panes) rather than delivered to whichever pane is focused. Must belong to "to".'),
   surface_id: z.string().optional().describe('Deliver to a specific surface in the target workspace (surfaceId from surface_list / a2a_discover). Narrower than pane_id; if both are given they must agree. Must belong to "to".'),
   title: z.string().optional().describe('Short title for the message'),
   task_id: z.string().optional().describe('Reply to existing task ID'),
@@ -1538,12 +1539,16 @@ function addCallerPtyId(params: Record<string, unknown>): void {
   if (callerPtyId) params.callerPtyId = callerPtyId;
 }
 
+// Pane names (`#w1-2`, `#backend`) on the id parameters: resolved to ids
+// before any routing, so every check below still runs on ids (paneTarget.ts).
+const paneNameRpc: PaneNameRpc = (method, params) => sendRpc(method, params);
+
 server.tool(
   'terminal_read',
   `Read the recent text from a terminal: by default the last ${DEFAULT_READ_TAIL_LINES} lines, which is the recent screen plus enough history to judge an agent's latest turn. Omit ptyId for the active terminal. The bound is deliberate — escalate on purpose, not by reflex: widen with tail_lines (e.g. 800), and only as a last resort pull the whole backlog with full_scrollback. rowsBelowCursor counts returned lines below the cursor; if the app has exited they may be stale. For structured command boundaries / exit codes use terminal_read_events instead.`,
   TERMINAL_READ_SHAPE,
   async ({ ptyId, tail_lines, full_scrollback }) => {
-    const route = await resolveTerminalRouteBound(ptyId);
+    const route = await resolveTerminalRouteBound(await resolvePtyRef(ptyId, paneNameRpc));
     const params: Record<string, unknown> = { workspaceId: route.workspaceId };
     if (route.ptyId) params.ptyId = route.ptyId;
     // Clamp, not reject: an over-limit request is served at the ceiling.
@@ -1559,7 +1564,7 @@ server.tool(
   'Return structured OSC 133 prompt/command events (prompt_start, prompt_end, command_start, command_end with exit code) from a terminal. Use it instead of terminal_read when you need command boundaries, exit codes, or byte offsets for diff-style reads. Requires shell integration — auto-injected for pwsh and bash; cmd.exe is unsupported.',
   TERMINAL_READ_EVENTS_SHAPE,
   async ({ ptyId, limit, sinceOffset, lastCommandOnly }) => {
-    const route = await resolveTerminalRouteBound(ptyId);
+    const route = await resolveTerminalRouteBound(await resolvePtyRef(ptyId, paneNameRpc));
     const params: Record<string, unknown> = { workspaceId: route.workspaceId };
     if (route.ptyId) params.ptyId = route.ptyId;
     // Clamp, not reject: an over-limit request is served at the ceiling.
@@ -1576,7 +1581,7 @@ server.tool(
   'Send text to a terminal. By default it is written with no Enter (multi-line text to an agent as one paste), so a shell command or TUI chat prompt sits on the input line uncommitted — pass `submit: true` to commit it. `ok` means the bytes were WRITTEN, never that anything was submitted: with `submit`, read `accepted` — true only when the pane was observed to move (its turn started, or the input line cleared). `accepted:false` (with `agentStatusAfter` and the pane\'s last screen lines) means the prompt is probably still sitting uncommitted; do not report progress on it. Omit ptyId for the active terminal. To message OTHER workspaces use send_message or a2a_broadcast instead.',
   TERMINAL_SEND_SHAPE,
   async ({ text, ptyId, submit, new_task }) => {
-    const route = await resolveTerminalRouteBound(ptyId);
+    const route = await resolveTerminalRouteBound(await resolvePtyRef(ptyId, paneNameRpc));
     const base: Record<string, unknown> = { text, workspaceId: route.workspaceId };
     if (route.ptyId) base.ptyId = route.ptyId;
     // Forward our OWN ptyId so main can reject an omitted-ptyId send from an
@@ -1604,7 +1609,7 @@ server.tool(
   'Send a named key to a terminal. Omit ptyId for the active terminal. NOT A SUBMIT MECHANISM: `key:"enter"` presses Enter on whatever the input box holds, which is usually NOTHING — a question an agent PRINTED is rendered text, not pending input, so Enter submits nothing and the pane stays blocked. ok means the key was delivered, never that anything was submitted or that the agent resumed. To answer a waiting agent, send the answer with terminal_send({ text, submit: true }) and check its `accepted` field — that is the only receipt that the pane moved. Reserve this tool for real key presses: ctrl+c, escape, arrow keys, and y/N prompts the agent genuinely rendered.',
   TERMINAL_SEND_KEY_SHAPE,
   async ({ key, ptyId }) => {
-    const route = await resolveTerminalRouteBound(ptyId);
+    const route = await resolveTerminalRouteBound(await resolvePtyRef(ptyId, paneNameRpc));
     const params: Record<string, unknown> = { key, workspaceId: route.workspaceId };
     if (route.ptyId) params.ptyId = route.ptyId;
     // See terminal_send: forward our ptyId (verified hit, else weak WMUX_PTY_ID
@@ -1749,7 +1754,7 @@ const paneSetMetadata = async ({
 }) => {
   const workspaceId = await requireWorkspaceId();
   const params: Record<string, unknown> = { workspaceId };
-  if (paneId !== undefined) params['paneId'] = paneId;
+  if (paneId !== undefined) params['paneId'] = await resolvePaneIdRef(paneId, paneNameRpc);
   if (label !== undefined) params['label'] = label;
   if (status !== undefined) params['status'] = status;
   if (custom !== undefined) params['custom'] = custom;
@@ -1776,6 +1781,13 @@ const paneGetMetadata = async ({
   // id read its pane metadata without ever proving their own identity.
   // Read path only — the write side takes no such override.
   const own = await requireWorkspaceId();
+  // A pane name supplies the ids an explicit call would: the paneId, and — for
+  // this cross-workspace-capable read only — the workspace that owns it.
+  const named = await resolvePaneRef(paneId, paneNameRpc);
+  if (named) {
+    paneId = named.paneId;
+    if (targetWorkspaceId === undefined && named.workspaceId !== own) targetWorkspaceId = named.workspaceId;
+  }
   const workspaceId = targetWorkspaceId ?? own;
   // A cross-workspace read must name its pane explicitly. Without this,
   // an omitted paneId falls through to resolveTarget's active-leaf lookup
@@ -1815,7 +1827,7 @@ server.tool(
   'Read or write a leaf pane\'s metadata by `action`. set (write, calling workspace only): attach label/status + custom k/v — deep-merge by default, see `mergeMode` for the other semantics and `expectedVersion` for the optimistic-concurrency guard; omit paneId for the active pane. get (read): returns { paneId, metadata, version }; pass workspaceId + paneId to read another workspace\'s pane — a reach the write action does not have; version 0 is the "never written" sentinel, pair it with expectedVersion: 0 to claim a fresh pane atomically.',
   {
     action: z.enum(['set', 'get']).describe('set = write to the calling workspace\'s pane; get = read (may cross workspaces).'),
-    paneId: z.string().optional().describe('Target leaf pane id. Omit for the active pane in the calling workspace. Required with workspaceId (get).'),
+    paneId: z.string().optional().describe('Target leaf pane id or #pane name. Omit for the active pane in the calling workspace. Required with workspaceId (get).'),
     workspaceId: z.string().min(1).optional().describe('get only: read another workspace\'s pane metadata, together with a paneId from that workspace.'),
     label: z.string().max(64).optional().describe('set only: short human label, e.g. "Backend".'),
     status: z.string().max(128).optional().describe('set only: current status, e.g. "running-tests".'),
@@ -1876,7 +1888,7 @@ server.tool(
     if (cursor !== undefined) params['cursor'] = cursor;
     if (types !== undefined) params['types'] = types;
     if (max !== undefined) params['max'] = max;
-    if (ptyId !== undefined) params['ptyId'] = ptyId;
+    if (ptyId !== undefined) params['ptyId'] = await resolvePtyRef(ptyId, paneNameRpc);
     if (kinds !== undefined) params['kinds'] = kinds;
     // A blocking poll parks in main for up to `blockMs`, which is longer than
     // the default per-call RPC deadline — so raise the deadline for THIS call
@@ -1958,6 +1970,27 @@ const sendMessageHandler = async ({ to, pane_id, surface_id, title, task_id, mes
   data?: Record<string, unknown>; data_mime_type?: string;
 }) => {
   const wsId = await requireWorkspaceId();
+  // Pane names: `to: "#w1-2"` names the pane AND its workspace; a name in
+  // pane_id / surface_id addresses that pane and, when `to` is omitted, its
+  // workspace. Only ids reach the renderer, which still requires the pane to
+  // belong to `to` and applies every same-workspace / self-send rule to them.
+  if (to !== undefined && to.trim().charAt(0) === '#') {
+    const named = await resolvePaneRef(to, paneNameRpc);
+    if (named) {
+      to = named.workspaceId;
+      if (!pane_id && !surface_id) pane_id = named.paneId;
+    }
+  }
+  const namedPane = await resolvePaneRef(pane_id, paneNameRpc);
+  if (namedPane) {
+    pane_id = namedPane.paneId;
+    if (!to) to = namedPane.workspaceId;
+  }
+  const namedSurface = await resolvePaneRef(surface_id, paneNameRpc);
+  if (namedSurface) {
+    surface_id = namedSurface.surfaceId;
+    if (!to) to = namedSurface.workspaceId;
+  }
   const params: Record<string, unknown> = {
     workspaceId: wsId,
     message,
@@ -2191,6 +2224,7 @@ registerPaneLifecycleTools(
   {
     callRpc,
     resolveCallerWorkspaceId: resolveScopedReadWorkspaceId,
+    resolvePaneId: async (paneId: string) => (await resolvePaneIdRef(paneId, paneNameRpc)) ?? paneId,
   },
   MCP_CATALOG_OPTIONS,
 );

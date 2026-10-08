@@ -133,11 +133,15 @@ export function getWmuxMcpServerInstructions(profileName: WmuxToolProfile): stri
         'tools for the caller. Search these tools when work must inspect or act inside wmux.'
       : 'wmux provides terminal, pane, workspace, channel, and agent-delegation tools ' +
         'for the caller. Search these tools when work must inspect or act inside wmux.';
+  // Pane tags: the user can hand an agent `#w1-2` / `#backend` instead of ids.
+  const paneNames =
+    'A #<pane name> (e.g. #w1-2, #backend; paneTag in pane_list) can stand in for the pane/pty id of ' +
+    'terminal_*, pane_* and send_message.';
   const discovery = hasBrowser
     ? 'Discover opaque IDs before addressing targets with workspace_list, pane_list, ' +
-      'surface_list, browser_tabs, or a2a_discover as appropriate.'
+      `surface_list, browser_tabs, or a2a_discover as appropriate. ${paneNames}`
     : 'Discover opaque IDs before addressing targets with workspace_list, pane_list, ' +
-      'surface_list, or a2a_discover as appropriate.';
+      `surface_list, or a2a_discover as appropriate. ${paneNames}`;
 
   // Trust and ambiguous-retry rules come before discovery details so every
   // current profile keeps the complete critical block inside the first 512

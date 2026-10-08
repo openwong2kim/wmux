@@ -143,7 +143,7 @@ describe('sessionInfoMarkdown', () => {
       '',
       '## MCP Control',
       '- Send command: terminal_send({ text: "..." })',
-      '- Target specific terminal: terminal_send({ text: "...", ptyId: "<pty-id>" })',
+      '- Target specific terminal: terminal_send({ text: "...", ptyId: "<pty-id or #pane-tag>" })',
       '- Navigate browser: browser_navigate({ url: "...", surfaceId: "<surface-id>" })',
       '- List all surfaces: surface_list()',
     ].join('\n');

@@ -215,3 +215,25 @@ describe('surface_close (ADDRESS family)', () => {
     expect(mockCallRpc).toHaveBeenCalledWith('surface.close', { id: 's1' });
   });
 });
+
+describe('paneLifecycle tools: pane names', () => {
+  it('resolves a #pane name to the paneId before the RPC on every pane-addressed tool', async () => {
+    const named = new Map<string, ToolHandler>();
+    const resolvePaneId = vi.fn(async (ref: string) => (ref === '#w1-2' ? 'pane-real' : ref));
+    registerPaneLifecycleTools(
+      { registerTool: (name: string, _c: unknown, h: ToolHandler) => { named.set(name, h); } } as never,
+      { callRpc: mockCallRpc, resolveCallerWorkspaceId: mockResolveWs, resolvePaneId },
+      { profile: 'full', context: { principal: { kind: 'unattributed' } } },
+    );
+    await named.get('pane_close')?.({ paneId: '#w1-2' });
+    await named.get('pane_focus')?.({ paneId: '#w1-2' });
+    await named.get('pane_stash')?.({ paneId: '#w1-2', restore: true });
+    await named.get('pane_unstash')?.({ paneId: '#w1-2' });
+    expect(mockCallRpc.mock.calls.map((c) => (c as unknown[]).slice(0, 2))).toEqual([
+      ['pane.close', { id: 'pane-real' }],
+      ['pane.focus', { id: 'pane-real' }],
+      ['pane.unstash', { id: 'pane-real' }],
+      ['pane.unstash', { id: 'pane-real' }],
+    ]);
+  });
+});

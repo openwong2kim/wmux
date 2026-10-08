@@ -62,6 +62,10 @@ export interface PaneLifecycleDeps {
    *  id, or '' on a true identity miss (never throws — a create degrades to
    *  the renderer's active-ws fallback, matching pane_list / surface_list). */
   resolveCallerWorkspaceId: () => Promise<string>;
+  /** A paneId that may be a pane name (`#w1-2`) → the paneId (paneTarget.ts).
+   *  Runs before the RPC, so the renderer still checks the id it receives.
+   *  Omitted ⇒ ids only. */
+  resolvePaneId?: (paneId: string) => Promise<string>;
 }
 
 // Module-scope parameter shapes: hoisted out of the per-registration path so
@@ -80,11 +84,11 @@ const PANE_SPLIT_SHAPE = {
 };
 
 const PANE_CLOSE_SHAPE = {
-  paneId: z.string().describe('Leaf pane id to close (from pane_list).'),
+  paneId: z.string().describe('Leaf pane id (pane_list) or #pane name.'),
 };
 
 const PANE_FOCUS_SHAPE = {
-  paneId: z.string().describe('Leaf pane id to focus (from pane_list).'),
+  paneId: z.string().describe('Leaf pane id (pane_list) or #pane name.'),
 };
 
 const SURFACE_NEW_SHAPE = {
@@ -101,7 +105,7 @@ const SURFACE_CLOSE_SHAPE = {
 };
 
 const PANE_STASH_SHAPE = {
-  paneId: z.string().describe('Leaf pane id (pane_list).'),
+  paneId: z.string().describe('Leaf pane id (pane_list) or #pane name.'),
   restore: z
     .boolean()
     .optional()
@@ -122,6 +126,7 @@ export function createPaneLifecycleToolCatalog(
   deps: PaneLifecycleDeps,
 ) {
   const { callRpc, resolveCallerWorkspaceId } = deps;
+  const paneRef = deps.resolvePaneId ?? ((paneId: string) => Promise.resolve(paneId));
 
   return Object.freeze([
     // ── pane_split (CREATE family) ──────────────────────────────────
@@ -146,7 +151,7 @@ export function createPaneLifecycleToolCatalog(
         'Close a leaf pane and dispose its surfaces\' PTYs. paneId is globally unique and resolved across all workspaces, so a supervisor can reap a worker pane it created in a background workspace. Rejects branch (non-leaf) panes and the root pane.',
       inputSchema: PANE_CLOSE_SHAPE,
       profiles: ['full', 'core'],
-      invoke: async ({ paneId }) => callRpc('pane.close', { id: paneId }),
+      invoke: async ({ paneId }) => callRpc('pane.close', { id: await paneRef(paneId) }),
     }),
 
     // ── pane_focus (ADDRESS family, non-yank) ───────────────────────
@@ -156,7 +161,7 @@ export function createPaneLifecycleToolCatalog(
         'Focus a leaf pane. Does NOT switch the on-screen workspace (non-yank): focusing a pane in a background workspace marks it active there without stealing the user\'s screen. Use workspace.focus to switch screens. paneId is resolved across all workspaces.',
       inputSchema: PANE_FOCUS_SHAPE,
       profiles: ['full', 'core', 'commander'],
-      invoke: async ({ paneId }) => callRpc('pane.focus', { id: paneId }),
+      invoke: async ({ paneId }) => callRpc('pane.focus', { id: await paneRef(paneId) }),
     }),
 
     // ── surface_new (CREATE family) ─────────────────────────────────
@@ -199,7 +204,7 @@ export function createPaneLifecycleToolCatalog(
       inputSchema: PANE_STASH_SHAPE,
       profiles: ['full', 'core', 'commander'],
       invoke: async ({ paneId, restore }) =>
-        callRpc(restore ? 'pane.unstash' : 'pane.stash', { id: paneId }),
+        callRpc(restore ? 'pane.unstash' : 'pane.stash', { id: await paneRef(paneId) }),
     }),
 
     defineWmuxTool({
@@ -208,7 +213,7 @@ export function createPaneLifecycleToolCatalog(
         'Put a stashed pane back into the layout, next to its former neighbour. Idempotent: an already-visible pane is success, so the retry PANE_STASHED asks for is always safe.',
       inputSchema: PANE_UNSTASH_SHAPE,
       profiles: ['full', 'core', 'commander'],
-      invoke: async ({ paneId }) => callRpc('pane.unstash', { id: paneId }),
+      invoke: async ({ paneId }) => callRpc('pane.unstash', { id: await paneRef(paneId) }),
     }),
   ]);
 }
