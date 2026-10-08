@@ -219,17 +219,26 @@ is not re-walked.
     An element of the target app counts when its window is the target window,
     or when it sits in a menu, popover or sheet of that app, or its window is
     above the normal layer (a menu the previous click opened). Another normal
-    window of the same app refuses. An element of another app refuses only
-    when that app owns a normal (layer 0) window under the point.
-  - Otherwise (no AX answer, an answer from the helper's own overlay, or
-    another app with no normal window there) the on-screen window list
-    decides, front to back. It skips fully transparent windows, the helper's
-    own windows and every window of another process above the normal layer.
-    macOS 26's Dock keeps a full-screen, layer-20 window on screen at all
-    times that real clicks pass through; taking it at face value refused
-    every click and scroll. The window list needs no Screen Recording grant.
-  - A refused point gets one more `AXRaise` and 500 ms of re-checks before
-    the call fails. The error names the app whose window covers the point.
+    window of the same app refuses. An element of any other app refuses,
+    whatever its layer: floating panels, picture-in-picture windows and status
+    items really receive clicks. The only exceptions are the WindowServer
+    process and a Dock (`com.apple.dock`) element that is not a tile or the
+    tile bar (`AXDockItem`, `AXList`).
+  - Otherwise (no AX answer, an answer from the helper's own overlay, or one
+    of those exceptions) the on-screen window list decides, front to back. It
+    skips fully transparent windows, the helper's own windows, WindowServer
+    windows, and a Dock window that spans the whole target window. macOS 26's
+    Dock keeps such a full-screen, layer-20 window on screen at all times
+    that real clicks pass through; taking it at face value refused every
+    click and scroll. Any other window of another process covers the point.
+    The window list needs no Screen Recording grant.
+  - A point is accepted only when both the AX reading and the window list
+    alone accept it. A refused point gets one more `AXRaise` and 500 ms of
+    re-checks before the call fails. The error names the app whose window
+    covers the point.
+  - Right before a click is posted (after the cursor glide), the window list
+    is read again and must still put the target under the point; otherwise
+    nothing is sent.
   - Actions run off the main thread, so an AX hit test that lands on the
     helper's own overlay is answered instead of waiting out the messaging
     timeout.
@@ -237,10 +246,10 @@ is not re-walked.
   the helper checks again that the screen is not locked, the target app is in
   front, its focused window is the target window, and no password field has
   focus (if focus moves away mid-typing, typing stops and the error says how
-  many characters were sent). Before every scroll notch, the window list is
-  read again (no AX round trip per notch), and the batch stops when its
-  verdict changes from what it was once AX had accepted the point. The batch
-  stops at the first failure and says how far it got.
+  many characters were sent). Before every scroll notch, the first included,
+  the window list is read again (no AX round trip per notch) and must put the
+  target under the point. The batch stops at the first failure and says how
+  far it got.
 - Action ladder: a plain left click on an element with `AXPress` is pressed
   through accessibility. `setValue` is `AXValue` followed by a read-back, which
   counts as `verified`. Everything else is synthetic.

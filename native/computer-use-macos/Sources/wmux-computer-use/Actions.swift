@@ -28,13 +28,15 @@ struct ControlTarget {
 }
 
 enum Focus {
-    /// The on-screen windows, front to back, as the hit test reads them.
-    /// Needs no Screen Recording grant (only window titles are withheld).
-    static func windowList() -> [HitWindow] {
+    /// The on-screen windows, front to back, as the hit test reads them, and
+    /// the pids of the WindowServer process among their owners. Needs no
+    /// Screen Recording grant (only window titles are withheld).
+    static func windowList() -> (windows: [HitWindow], windowServer: Set<Int32>) {
         guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else {
-            return []
+            return ([], [])
         }
-        return list.compactMap { info in
+        var windowServer = Set<Int32>()
+        let windows: [HitWindow] = list.compactMap { info in
             guard let boundsDict = info[kCGWindowBounds as String] as? NSDictionary,
                   let bounds = CGRect(dictionaryRepresentation: boundsDict) else { return nil }
             return HitWindow(
@@ -45,6 +47,10 @@ enum Focus {
                 alpha: (info[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 1
             )
         }
+        for info in list where (info[kCGWindowOwnerName as String] as? String) == "Window Server" {
+            if let pid = (info[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value { windowServer.insert(pid) }
+        }
+        return (windows, windowServer)
     }
 
     /// Roles that make an element part of a transient surface of its app.
@@ -62,6 +68,7 @@ enum Focus {
         guard AXUIElementGetPid(element, &pid) == .success, pid > 0 else { return nil }
         var windowID = AX.element(element, kAXWindowAttribute).flatMap(AX.windowID)
         var transient = false
+        let role = AX.string(element, kAXRoleAttribute)
         var node: AXUIElement? = element
         for _ in 0..<12 {
             guard let current = node else { break }
@@ -73,17 +80,38 @@ enum Focus {
             }
             node = AX.element(current, kAXParentAttribute)
         }
-        return AXHit(pid: pid, windowID: windowID, inTransient: transient)
+        return AXHit(pid: pid, windowID: windowID, inTransient: transient, role: role)
     }
 
-    /// The hit-test verdict at a point. `useAX: false` (the per-notch scroll
-    /// re-check) reads the window list only, which is cheap and needs no IPC.
+    /// The hit-test verdict at a point. `useAX: false` reads the window list
+    /// only, which is cheap and needs no IPC: the re-check right before a
+    /// click is posted and before every scroll notch.
     static func verdict(_ target: ControlTarget, at point: CGPoint, useAX: Bool = true) -> PointerVerdict {
         guard let windowID = UInt32(target.windowID) else { return .covered(by: nil) }
+        let list = windowList()
+        let dock = Set(NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.dock").map(\.processIdentifier))
         return pointerVerdict(
             targetPid: target.pid, targetWindowID: windowID, ownPid: getpid(),
-            ax: useAX ? axHit(at: point) : nil, windows: windowList(), point: point
+            passThrough: PassThrough(dockPids: dock, windowServerPids: list.windowServer),
+            ax: useAX ? axHit(at: point) : nil, windows: list.windows, point: point
         )
+    }
+
+    /// Both readings must accept the point: AX, and the window list alone
+    /// (the one the pre-post and per-notch re-checks use), so an accepted
+    /// point does not fail its own re-check.
+    static func acceptedVerdict(_ target: ControlTarget, at point: CGPoint) -> PointerVerdict {
+        let withAX = verdict(target, at: point)
+        return withAX == .target ? verdict(target, at: point, useAX: false) : withAX
+    }
+
+    /// The re-check right before input is posted: the window list must still
+    /// put the target under the point.
+    static func requireStillUnder(_ target: ControlTarget, at point: CGPoint) throws {
+        let now = verdict(target, at: point, useAX: false)
+        guard now == .target else {
+            throw HelperError("window_not_focused", "\(coverName(now)) covers that point; nothing was sent")
+        }
     }
 
     /// The target app is frontmost and its focused window is the target window.
@@ -141,18 +169,18 @@ enum Focus {
     /// target window. A refused point gets one more raise and 500 ms to clear.
     static func requirePointer(_ target: ControlTarget, window: AXUIElement, at point: CGPoint) async throws {
         await bringForward(target, window: window)
-        var last = verdict(target, at: point)
+        var last = acceptedVerdict(target, at: point)
         if last == .target { return }
         AXUIElementPerformAction(window, kAXRaiseAction as CFString)
         for _ in 0..<10 {
             try await Task.sleep(nanoseconds: 50_000_000)
-            last = verdict(target, at: point)
+            last = acceptedVerdict(target, at: point)
             if last == .target { return }
         }
         throw HelperError("window_not_focused", "\(coverName(last)) covers that point; nothing was sent")
     }
 
-    private static func coverName(_ verdict: PointerVerdict) -> String {
+    static func coverName(_ verdict: PointerVerdict) -> String {
         guard case .covered(let pid?) = verdict else { return "no window of the target" }
         let name = NSRunningApplication(processIdentifier: pid)?.localizedName
         return name.map { "a window of \($0)" } ?? "another window"
@@ -253,6 +281,8 @@ enum Actions {
         }
         try await Focus.requirePointer(target, window: snap.window, at: point)
         await Overlay.shared.show(window: try? snap.windowFrame(), cursor: point, wait: true)
+        // The cursor glide awaited: check again right before posting.
+        try Focus.requireStillUnder(target, at: point)
         await Overlay.shared.press(at: point)
         Input.shared.withModifiers(mods) { flags in
             Input.shared.click(at: point, button: button, count: count, flags: flags)
@@ -401,15 +431,12 @@ enum Actions {
         let (point, _) = try screenPoint(snap, index: p.int("index"), point: try p.point("point"))
         try await Focus.requirePointer(target, window: snap.window, at: point)
         await Overlay.shared.show(window: try? snap.windowFrame(), cursor: point, wait: true)
-        // Re-run the hit-test before every notch: a window that moves over
-        // the point mid-scroll must not receive the rest. The window list
-        // alone (no AX round trip per notch), compared with what it said once
-        // AX had accepted the point.
-        let baseline = Focus.verdict(target, at: point, useAX: false)
+        // Re-run the hit-test before every notch (the first one included,
+        // after the cursor glide): a window that moves over the point
+        // mid-scroll must not receive the rest. The window list alone, no AX
+        // round trip per notch, and it must put the target under the point.
         let sent = Input.shared.scroll(at: point, dx: dx, dy: dy, notches: amount) {
-            guard !Session.isLocked else { return false }
-            let now = Focus.verdict(target, at: point, useAX: false)
-            return now == .target || now == baseline
+            !Session.isLocked && Focus.verdict(target, at: point, useAX: false) == .target
         }
         if sent < amount {
             throw HelperError("window_not_focused", "another window covered the point after \(sent) of \(amount) notches; the rest was not sent")

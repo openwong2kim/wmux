@@ -2,10 +2,13 @@
 // point land on the target window? Pure, so the rules are unit-tested; the
 // executable gathers the inputs (an AX hit and the on-screen window list).
 //
-// macOS 26's Dock keeps a full-screen, layer-20 window on screen at all times
-// that real clicks pass through. Taking the topmost window under the point at
-// face value refused every pointer action, so a window of another process
-// above the normal layer never decides on its own.
+// Anything of another process under the point covers it, whatever its layer:
+// floating panels, picture-in-picture and status items really receive
+// clicks. The exceptions are a closed list: the helper's own overlay, windows
+// of the WindowServer process, and the Dock's full-screen window (macOS 26
+// keeps one on screen at all times, and real clicks pass through it). The
+// Dock's own surfaces (its tile bar, a window that does not span the target)
+// still cover.
 
 import CoreGraphics
 
@@ -27,19 +30,37 @@ public struct HitWindow: Equatable {
 }
 
 /// What AXUIElementCopyElementAtPosition answered: the element's process,
-/// the CGWindowID of its window when AX names one, and whether the element
-/// sits in a menu, popover or sheet (a transient surface of its app).
+/// the CGWindowID of its window when AX names one, whether the element sits
+/// in a menu, popover or sheet (a transient surface of its app), and its role.
 public struct AXHit: Equatable {
     public let pid: Int32
     public let windowID: UInt32?
     public let inTransient: Bool
+    public let role: String?
 
-    public init(pid: Int32, windowID: UInt32?, inTransient: Bool = false) {
+    public init(pid: Int32, windowID: UInt32?, inTransient: Bool = false, role: String? = nil) {
         self.pid = pid
         self.windowID = windowID
         self.inTransient = inTransient
+        self.role = role
     }
 }
+
+/// Processes whose windows are not taken at face value.
+public struct PassThrough: Equatable {
+    /// The Dock (com.apple.dock).
+    public let dockPids: Set<Int32>
+    /// The WindowServer process (owner of the menu bar backdrop and the like).
+    public let windowServerPids: Set<Int32>
+
+    public init(dockPids: Set<Int32> = [], windowServerPids: Set<Int32> = []) {
+        self.dockPids = dockPids
+        self.windowServerPids = windowServerPids
+    }
+}
+
+/// Dock roles that are the Dock itself (its tile bar), which a click would hit.
+private let dockSurfaceRoles: Set<String> = ["AXDockItem", "AXList"]
 
 public enum PointerVerdict: Equatable {
     case target
@@ -53,13 +74,12 @@ public enum PointerVerdict: Equatable {
 ///    target window, or when it is a menu, popover or sheet of that app (or
 ///    its window is above the normal layer, like a menu the previous click
 ///    opened). Another normal window of the same app refuses. An element of
-///    another app refuses only when that app owns a normal (layer 0) window
-///    under the point; otherwise AX is not trusted to have looked through the
-///    overlay, and the window list decides.
+///    any other app refuses, except a Dock element that is not a tile or the
+///    tile bar (the full-screen window AX may name): the window list decides.
 /// 2. The window list, front to back, skipping fully transparent windows, the
-///    helper's own windows (the agent overlay) and any window of another
-///    process above the normal layer (the Dock's full-screen window, the menu
-///    bar). The first window left decides, with the same same-app rule.
+///    helper's own windows (the agent overlay), WindowServer windows and a
+///    Dock window that spans the whole target window (the full-screen one).
+///    The first window left decides, with the same same-app rule.
 ///
 /// An own-process AX answer (the overlay) or no AX answer at all also falls
 /// through to the window list.
@@ -67,6 +87,7 @@ public func pointerVerdict(
     targetPid: Int32,
     targetWindowID: UInt32,
     ownPid: Int32,
+    passThrough: PassThrough = PassThrough(),
     ax: AXHit?,
     windows: [HitWindow],
     point: CGPoint
@@ -76,6 +97,7 @@ public func pointerVerdict(
         guard let id else { return nil }
         return windows.first(where: { $0.windowID == id })?.layer
     }
+    let targetBounds = windows.first(where: { $0.pid == targetPid && $0.windowID == targetWindowID })?.bounds
 
     if let ax, ax.pid != ownPid {
         if ax.pid == targetPid {
@@ -84,14 +106,16 @@ public func pointerVerdict(
             // A window id AX names but that is another normal window of the app.
             if ax.windowID != nil { return .covered(by: targetPid) }
             // No window: AX could not say; the window list decides.
-        } else if under.contains(where: { $0.pid == ax.pid && $0.layer == 0 }) {
+        } else if passThrough.dockPids.contains(ax.pid) {
+            if dockSurfaceRoles.contains(ax.role ?? "") { return .covered(by: ax.pid) }
+        } else if !passThrough.windowServerPids.contains(ax.pid) {
             return .covered(by: ax.pid)
         }
     }
 
     for w in under {
-        if w.pid == ownPid { continue }
-        if w.pid != targetPid && w.layer != 0 { continue }
+        if w.pid == ownPid || passThrough.windowServerPids.contains(w.pid) { continue }
+        if passThrough.dockPids.contains(w.pid), let targetBounds, w.bounds.contains(targetBounds) { continue }
         if w.pid != targetPid { return .covered(by: w.pid) }
         return w.windowID == targetWindowID || w.layer != 0 ? .target : .covered(by: targetPid)
     }

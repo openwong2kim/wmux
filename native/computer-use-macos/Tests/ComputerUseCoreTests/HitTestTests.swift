@@ -8,6 +8,7 @@ final class HitTestTests: XCTestCase {
     let me: Int32 = 50
     let dock: Int32 = 30
     let other: Int32 = 200
+    let windowServer: Int32 = 10
     let point = CGPoint(x: 400, y: 300)
 
     let screen = CGRect(x: 0, y: 0, width: 1512, height: 982)
@@ -18,7 +19,11 @@ final class HitTestTests: XCTestCase {
     var overlay: HitWindow { HitWindow(pid: me, windowID: 900, layer: 3, bounds: screen) }
 
     func verdict(_ ax: AXHit?, _ windows: [HitWindow]) -> PointerVerdict {
-        pointerVerdict(targetPid: target, targetWindowID: targetWindow, ownPid: me, ax: ax, windows: windows, point: point)
+        pointerVerdict(
+            targetPid: target, targetWindowID: targetWindow, ownPid: me,
+            passThrough: PassThrough(dockPids: [dock], windowServerPids: [windowServer]),
+            ax: ax, windows: windows, point: point
+        )
     }
 
     func testDockFullScreenWindowDoesNotCoverWithoutAX() {
@@ -46,6 +51,29 @@ final class HitTestTests: XCTestCase {
         XCTAssertEqual(verdict(AXHit(pid: target, windowID: targetWindow), [dockWindow, targetWin]), .target)
     }
 
+    func testFloatingPanelOfAnotherAppCovers() {
+        let panel = HitWindow(pid: other, windowID: 13, layer: 3, bounds: CGRect(x: 350, y: 250, width: 200, height: 200))
+        XCTAssertEqual(verdict(nil, [panel, dockWindow, targetWin]), .covered(by: other))
+        XCTAssertEqual(verdict(AXHit(pid: other, windowID: 13), [panel, dockWindow, targetWin]), .covered(by: other))
+    }
+
+    func testAXNamingAnotherAppWithoutANormalWindowCovers() {
+        XCTAssertEqual(verdict(AXHit(pid: other, windowID: nil), [dockWindow, targetWin]), .covered(by: other))
+    }
+
+    func testDockTileBarCovers() {
+        let bar = HitWindow(pid: dock, windowID: 2, layer: 20, bounds: CGRect(x: 300, y: 280, width: 600, height: 80))
+        XCTAssertEqual(verdict(AXHit(pid: dock, windowID: 2, role: "AXDockItem"), [bar, dockWindow, targetWin]), .covered(by: dock))
+        // Without AX, a Dock window that does not span the target is not skipped.
+        XCTAssertEqual(verdict(nil, [bar, dockWindow, targetWin]), .covered(by: dock))
+    }
+
+    func testWindowServerWindowsAreSkipped() {
+        let menuBar = HitWindow(pid: windowServer, windowID: 3, layer: 24, bounds: screen)
+        XCTAssertEqual(verdict(nil, [menuBar, targetWin]), .target)
+        XCTAssertEqual(verdict(AXHit(pid: windowServer, windowID: nil), [menuBar, targetWin]), .target)
+    }
+
     func testMenuOfTheSameAppAllows() {
         let menu = HitWindow(pid: target, windowID: 9, layer: 101, bounds: CGRect(x: 380, y: 280, width: 200, height: 300))
         XCTAssertEqual(verdict(nil, [menu, targetWin]), .target)
@@ -62,7 +90,9 @@ final class HitTestTests: XCTestCase {
     func testTransparentWindowsAndMissesAreSkipped() {
         let ghost = HitWindow(pid: other, windowID: 12, layer: 0, bounds: screen, alpha: 0)
         XCTAssertEqual(verdict(nil, [ghost, targetWin]), .target)
-        XCTAssertEqual(verdict(nil, [dockWindow]), .covered(by: nil))
+        XCTAssertEqual(verdict(nil, []), .covered(by: nil))
+        // The target window is not on screen: nothing says the Dock window spans it.
+        XCTAssertEqual(verdict(nil, [dockWindow]), .covered(by: dock))
     }
 
     func testFlipBetweenTopLeftAndBottomLeft() {
