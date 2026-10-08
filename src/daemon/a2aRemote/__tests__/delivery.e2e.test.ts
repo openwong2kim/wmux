@@ -306,6 +306,25 @@ describe('cross-host delivery, end to end', () => {
     expect(b.delivery.status()).toMatchObject([{ hostId: a.hostId, role: 'server', state: 'connected' }]);
   });
 
+  it('roaming: a session that gets through at a later address dials it first from then on', async () => {
+    const b = await makePc('PC-B');
+    const a = await makePc('PC-A');
+    const res = await joinRemoteHost(b.server.beginPairing().invite, {
+      self: () => a.server.ensureIdentity(),
+      selfName: a.name,
+      remoteHosts: a.remoteHosts,
+      timeouts: FAST,
+    });
+    expect(res.ok).toBe(true);
+    // The PC moved: the first saved address no longer answers.
+    a.remoteHosts.updateAddresses(b.hostId, ['no-such-host.invalid', '127.0.0.1']);
+    a.delivery.syncSessions();
+    await until(() => a.remoteHosts.get(b.hostId)?.addresses[0] === '127.0.0.1');
+    expect(a.remoteHosts.get(b.hostId)?.addresses).toEqual(['127.0.0.1', 'no-such-host.invalid']);
+    // And it is persisted, so a restart dials it first too.
+    expect(new RemoteHostStore({ dir: path.join(a.dir, 'a2a') }).get(b.hostId)?.addresses[0]).toBe('127.0.0.1');
+  });
+
   it('a send while B is down is delivered once B is back; B resumes its stream from the cursor without duplicates', async () => {
     let b = await makePc('PC-B');
     const a = await makePc('PC-A');

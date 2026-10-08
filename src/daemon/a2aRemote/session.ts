@@ -31,7 +31,10 @@ import { errMsg, isPlainObject } from './storeFile';
  *              not sent / unavailable  → retried later
  *
  * Reconnects back off exponentially up to `backoffMaxMs`; the pinned client
- * walks the host's addresses in order on every attempt. A certificate that
+ * walks the host's addresses in order on every attempt, and the address that
+ * got through moves to the front (`onConnected`), so a PC that moved between
+ * the LAN and a tailnet waits out an unreachable address once, not on every
+ * reconnect. A certificate that
  * is not the pinned one stops the session (`identity-changed`): nothing is
  * sent until the pairing is redone. A stream that shows no event for
  * `livenessMs` is dropped and redialled.
@@ -78,6 +81,8 @@ export interface JoinerSessionDeps {
   hostId: HostId;
   /** Re-read on every dial: an address or fingerprint update applies to the next one. */
   host: () => A2aRemoteHostRecordV1 | undefined;
+  /** A dial got through (pin checked) at `address`: the store dials it first next time. */
+  onConnected?: (address: string) => void;
   credential: () => PeerCredential | null;
   outbox: Pick<OutboxStore, 'epoch' | 'head' | 'openCount' | 'markSent' | 'markOutcomeUnknown' | 'refuse' | 'ack'>;
   /** Apply one server -> joiner envelope (`acceptInbound`). */
@@ -354,6 +359,7 @@ export class JoinerSession {
       credential: formatPeerCredential(credential),
       connectTimeoutMs: this.timing.connectMs,
       requestTimeoutMs: this.timing.requestMs,
+      ...(this.deps.onConnected ? { onConnected: this.deps.onConnected } : {}),
     });
   }
 

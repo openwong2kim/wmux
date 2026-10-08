@@ -25,6 +25,7 @@ import { isVisibleEnd } from './routes';
 import type { JsonClient } from './joiner';
 import type { BrokenReason, LinkStore } from './linkStore';
 import { PinnedClientError, PinnedTlsClient, type PinnedClientOptions } from './pinnedClient';
+import { addressPromoter } from './remoteHostStore';
 import { errMsg, isPlainObject, isSafeId } from './storeFile';
 
 /**
@@ -62,6 +63,7 @@ export interface A2aLinkRpcDeps {
   remoteHosts: {
     get(hostId: HostId): A2aRemoteHostRecordV1 | undefined;
     credentialFor(hostId: HostId): PeerCredential | null;
+    promoteAddress?(hostId: HostId, address: string): boolean;
   };
   broadcast: (event: A2aRemoteLinkEvent) => void;
   /** Default: no-op (wired to the outbox with the delivery layer). */
@@ -116,6 +118,7 @@ export function registerA2aLinkRpc(onRpc: (method: string, handler: RpcHandler) 
       credential: formatPeerCredential(credential),
       connectTimeoutMs: timeouts.connectMs,
       requestTimeoutMs: timeouts.requestMs,
+      onConnected: addressPromoter(deps.remoteHosts, hostId, deps.log),
     });
   };
 

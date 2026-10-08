@@ -230,6 +230,26 @@ describe('PinnedTlsClient — addresses and proxies', () => {
     expect(out.status).toBe(200);
   }, 15_000);
 
+  it('reports the address that got through, and only after its certificate matched the pin', async () => {
+    const { port } = await httpsServer((_req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end('{"ok":true}');
+    });
+    const reached: string[] = [];
+    await client({ port, addresses: ['::1', '127.0.0.1'], onConnected: (a) => reached.push(a) }).requestJson('GET', '/x');
+    expect(reached).toEqual(['127.0.0.1']);
+    // A wrong certificate is never reported as reached (an impostor must not be promoted).
+    const wrong: string[] = [];
+    const err = await client({ port, fingerprint256: FP_B, addresses: ['127.0.0.1'], onConnected: (a) => wrong.push(a) })
+      .requestJson('GET', '/x')
+      .catch((e: unknown) => e);
+    expect((err as PinnedClientError).code).toBe('fingerprint-mismatch');
+    expect(wrong).toEqual([]);
+    // A throwing callback does not break the connection.
+    const out = await client({ port, addresses: ['127.0.0.1'], onConnected: () => { throw new Error('boom'); } }).requestJson('GET', '/x');
+    expect(out.status).toBe(200);
+  }, 15_000);
+
   it('reports connect-failed, with nothing sent, when no address answers', async () => {
     const { port } = await httpsServer(() => { /* unreachable */ });
     const err = await client({ port, addresses: ['::1'] }).requestJson('GET', '/x').catch((e: unknown) => e);

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { parseInvite } from '../../../shared/a2aRemote';
 import { A2A_PAIR_MAX_ATTEMPTS, A2A_PAIR_TTL_MS, PairingSlot, inviteHost, mintPairCode } from '../pairing';
-import { inviteIpv4s, rankedExternalIpv4s } from '../server';
+import { inviteAlt, inviteIpv4s, rankedExternalIpv4s, type RankedIpv4 } from '../server';
 
 const FP = Array.from({ length: 32 }, () => 'AB').join(':');
 
@@ -69,27 +69,61 @@ describe('invite addresses', () => {
       utun3: [nic('100.64.0.2')],
     } as never);
     expect(ranked).toEqual([
-      { address: '10.1.2.3', preferred: true },
-      { address: '192.168.0.20', preferred: true },
-      { address: '203.0.113.5', preferred: true },
-      { address: '172.20.0.1', preferred: false },
-      { address: '172.17.0.1', preferred: false },
-      { address: '100.101.102.103', preferred: false },
-      { address: '100.64.0.2', preferred: false },
+      { address: '10.1.2.3', preferred: true, tailnet: false },
+      { address: '192.168.0.20', preferred: true, tailnet: false },
+      { address: '203.0.113.5', preferred: true, tailnet: false },
+      { address: '172.20.0.1', preferred: false, tailnet: false },
+      { address: '172.17.0.1', preferred: false, tailnet: false },
+      // CGNAT on a physical adapter is not a tailnet address.
+      { address: '100.101.102.103', preferred: false, tailnet: false },
+      { address: '100.64.0.2', preferred: false, tailnet: true },
     ]);
     // 100.64/10 only: 100.63.x and 100.128.x are ordinary addresses.
     expect(rankedExternalIpv4s({ en0: [nic('100.63.0.1'), nic('100.128.0.1')] } as never).every((r) => r.preferred)).toBe(true);
   });
 
-  it('an invite offers only the preferred addresses, or everything when none is preferred', () => {
-    expect(inviteIpv4s([
-      { address: '10.1.2.3', preferred: true },
-      { address: '100.64.0.2', preferred: false },
-    ])).toEqual(['10.1.2.3']);
-    expect(inviteIpv4s([
-      { address: '172.20.0.1', preferred: false },
-      { address: '100.64.0.2', preferred: false },
-    ])).toEqual(['172.20.0.1', '100.64.0.2']);
+  it('flags Tailscale adapters on every platform, and only in 100.64/10', () => {
+    const ranked = rankedExternalIpv4s({
+      tailscale0: [nic('100.100.1.1')],
+      Tailscale: [nic('100.100.1.2')],
+      utun4: [nic('100.100.1.3'), nic('10.8.0.2')],
+      docker0: [nic('100.100.1.4')],
+    } as never);
+    expect(ranked.filter((r) => r.tailnet).map((r) => r.address)).toEqual(['100.100.1.1', '100.100.1.2', '100.100.1.3']);
+  });
+
+  const lan = (address: string): RankedIpv4 => ({ address, preferred: true, tailnet: false });
+  const tail = (address: string): RankedIpv4 => ({ address, preferred: false, tailnet: true });
+  const virt = (address: string): RankedIpv4 => ({ address, preferred: false, tailnet: false });
+
+  it('an invite offers the LAN addresses, then the tailnet ones; other virtual adapters only when nothing is preferred', () => {
+    // LAN only: unchanged.
+    expect(inviteIpv4s([lan('10.1.2.3'), virt('172.17.0.1')])).toEqual(['10.1.2.3']);
+    // LAN + tailnet: the tailnet address follows the LAN ones; Docker/WSL stay out.
+    expect(inviteIpv4s([lan('10.1.2.3'), lan('192.168.0.20'), virt('172.20.0.1'), tail('100.64.0.2')])).toEqual([
+      '10.1.2.3', '192.168.0.20', '100.64.0.2',
+    ]);
+    // Tailnet only: it comes first, the other virtual adapters last.
+    expect(inviteIpv4s([virt('172.20.0.1'), virt('172.17.0.1'), tail('100.64.0.2')])).toEqual([
+      '100.64.0.2', '172.20.0.1', '172.17.0.1',
+    ]);
+    // Nothing preferred, no tailnet: everything, as ranked.
+    expect(inviteIpv4s([virt('172.20.0.1'), virt('100.101.0.1')])).toEqual(['172.20.0.1', '100.101.0.1']);
+  });
+
+  it('alt keeps the last slot for a tailnet address when LAN addresses would fill every slot', () => {
+    const many = ['10.0.0.1', '10.0.0.2', '10.0.0.3', '10.0.0.4', '10.0.0.5'];
+    // Name host: 4 slots, LAN would fill them all.
+    expect(inviteAlt([...many, '100.64.0.2'], 'desk-pc')).toEqual(['10.0.0.1', '10.0.0.2', '10.0.0.3', '100.64.0.2']);
+    // IP host (no usable name): host + 4 alt, still one of them the tailnet address.
+    expect(inviteAlt([...many, '100.64.0.2'], '10.0.0.1')).toEqual(['10.0.0.2', '10.0.0.3', '10.0.0.4', '100.64.0.2']);
+    // No tailnet address: LAN behaviour unchanged (host + 4).
+    expect(inviteAlt(many, 'desk-pc')).toEqual(many.slice(0, 4));
+    expect(inviteAlt(many, '10.0.0.1')).toEqual(many.slice(1, 5));
+    // Room to spare: nothing is replaced.
+    expect(inviteAlt(['10.0.0.1', '100.64.0.2'], 'desk-pc')).toEqual(['10.0.0.1', '100.64.0.2']);
+    // The tailnet address is the host itself: no slot reserved.
+    expect(inviteAlt(['100.64.0.2', ...many], '100.64.0.2')).toEqual(many.slice(0, 4));
   });
 
   it('an invite carries the name as host and the ranked IPv4s as alt', () => {

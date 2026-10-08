@@ -7,6 +7,7 @@ import {
   ADDRESSES_MAX,
   REMOTE_HOSTS_FILE,
   RemoteHostStore,
+  addressPromoter,
   orderAddresses,
   type NewRemoteHost,
   type RemoteHostStoreOptions,
@@ -50,21 +51,24 @@ afterEach(() => {
 });
 
 describe('orderAddresses', () => {
-  it('puts machine names first, then IPv4s, and dedupes case-insensitively', () => {
+  it('keeps the given (dial) order and dedupes case-insensitively', () => {
+    // No names-first regrouping: an IP promoted ahead of a name must stay
+    // ahead, or a name that resolves to an unreachable LAN address would be
+    // waited out on every reconnect.
     expect(orderAddresses(['10.0.0.5', 'desk-pc', ' DESK-PC ', '10.0.0.5', '', '10.0.0.9', 'desk.corp'])).toEqual([
-      'desk-pc',
-      'desk.corp',
       '10.0.0.5',
+      'desk-pc',
       '10.0.0.9',
+      'desk.corp',
     ]);
   });
 });
 
 describe('RemoteHostStore', () => {
-  it('add stores the record (names first) and the credential separately', () => {
+  it('add stores the record (addresses in dial order) and the credential separately', () => {
     const s = make();
     const rec = s.add(host(), { peerId: PEER, secret: SECRET });
-    expect(rec).toMatchObject({ v: 1, hostId: HOST, addresses: ['DESK-PC', '10.0.0.5'], createdAt: new Date(clock).toISOString() });
+    expect(rec).toMatchObject({ v: 1, hostId: HOST, addresses: ['10.0.0.5', 'DESK-PC'], createdAt: new Date(clock).toISOString() });
     expect(s.credentialFor(HOST)).toEqual({ peerId: PEER, secret: SECRET });
     expect(s.credentialFor(HOST2)).toBeNull();
   });
@@ -98,13 +102,41 @@ describe('RemoteHostStore', () => {
   it('updateAddresses reorders and dedupes; updateFingerprint keeps the hostId', () => {
     const s = make();
     s.add(host(), { peerId: PEER, secret: SECRET });
-    expect(s.updateAddresses(HOST, ['10.0.0.7', 'desk-pc', 'DESK-PC']).addresses).toEqual(['desk-pc', '10.0.0.7']);
+    expect(s.updateAddresses(HOST, ['10.0.0.7', 'desk-pc', 'DESK-PC']).addresses).toEqual(['10.0.0.7', 'desk-pc']);
     const updated = s.updateFingerprint(HOST, FP2);
     expect(updated.hostId).toBe(HOST);
     expect(updated.fingerprint256).toBe(FP2.toUpperCase().match(/.{2}/g)?.join(':'));
     expect(make().get(HOST)?.fingerprint256).toBe(updated.fingerprint256);
     expect(() => s.updateFingerprint(HOST, 'bad')).toThrow();
     expect(() => s.updateAddresses(HOST2, ['x'])).toThrow(/unknown/);
+  });
+
+  it('promoteAddress moves the address that answered to the front, and the order survives a reload', () => {
+    const s = make();
+    s.add(host({ addresses: ['desk-pc', '10.0.0.5', '100.64.0.2'] }), { peerId: PEER, secret: SECRET });
+    expect(s.promoteAddress(HOST, '100.64.0.2')).toBe(true);
+    expect(s.get(HOST)?.addresses).toEqual(['100.64.0.2', 'desk-pc', '10.0.0.5']);
+    expect(make().get(HOST)?.addresses).toEqual(['100.64.0.2', 'desk-pc', '10.0.0.5']);
+    // Already first, unknown address, unknown host: nothing changes, nothing is written.
+    const writes = vi.fn(flakyWrite);
+    const t = make({ write: writes });
+    expect(t.promoteAddress(HOST, '100.64.0.2')).toBe(false);
+    expect(t.promoteAddress(HOST, '203.0.113.9')).toBe(false);
+    expect(t.promoteAddress(HOST2, '10.0.0.5')).toBe(false);
+    expect(writes).not.toHaveBeenCalled();
+    // Case-insensitive for names.
+    expect(t.promoteAddress(HOST, 'DESK-PC')).toBe(true);
+    expect(t.get(HOST)?.addresses).toEqual(['desk-pc', '100.64.0.2', '10.0.0.5']);
+  });
+
+  it('addressPromoter logs a failed write instead of throwing into the connect', () => {
+    const s = make();
+    s.add(host({ addresses: ['10.0.0.5', '100.64.0.2'] }), { peerId: PEER, secret: SECRET });
+    const log = vi.fn();
+    fail = true;
+    expect(() => addressPromoter(s, HOST, log)('100.64.0.2')).not.toThrow();
+    expect(log).toHaveBeenCalledWith('warn', expect.stringContaining('could not move'));
+    expect(s.get(HOST)?.addresses).toEqual(['10.0.0.5', '100.64.0.2']);
   });
 
   it('remove forgets the record and the credential', () => {
@@ -132,7 +164,7 @@ describe('RemoteHostStore', () => {
     expect(() => s.add(host({ peerId: PEER2 }), { peerId: PEER2, secret: SECRET2 })).toThrow();
     expect(s.credentialFor(HOST)).toEqual({ peerId: PEER, secret: SECRET });
     expect(() => s.updateAddresses(HOST, ['other'])).toThrow();
-    expect(s.get(HOST)?.addresses).toEqual(['DESK-PC', '10.0.0.5']);
+    expect(s.get(HOST)?.addresses).toEqual(['10.0.0.5', 'DESK-PC']);
     expect(() => s.updateFingerprint(HOST, FP2)).toThrow();
     expect(s.get(HOST)?.fingerprint256).toBe(FP);
   });

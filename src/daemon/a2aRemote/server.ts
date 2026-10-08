@@ -11,6 +11,7 @@ import {
   formatPeerCredential,
   isA2aRoute,
   isHostId,
+  isTailnetIpv4,
   looksLikePeerCredential,
   parsePeerCredential,
   type A2aHelloResponse,
@@ -90,7 +91,7 @@ export interface A2aServerDeps {
   routes?: WebA2aRoutes;
   /** This machine's name. Default `os.hostname()`. */
   hostname?: () => string;
-  /** The IPv4s another LAN PC should try, best first. Default `inviteIpv4s()`. */
+  /** The IPv4s another PC should try, best first. Default `inviteIpv4s()`. */
   ipv4s?: () => string[];
   /** Bind address. Default `0.0.0.0` (PoC); tests bind loopback. */
   bindHost?: string;
@@ -103,6 +104,8 @@ export interface A2aServerDeps {
 
 /** Interface names of virtual adapters, whose addresses another PC usually cannot reach. */
 const VIRTUAL_NIC_RE = /vEthernet|docker|^br-|veth|vmnet|virtualbox|vboxnet|utun|tailscale|wsl|hyper-v/i;
+/** Interface names Tailscale uses: `tailscale0` (Linux), `Tailscale` (Windows), `utunN` (macOS). */
+const TAILSCALE_NIC_RE = /tailscale|utun/i;
 
 function octets(ip: string): number[] {
   return ip.split('.').map(Number);
@@ -113,23 +116,20 @@ function isRfc1918(ip: string): boolean {
   return a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168);
 }
 
-/** 100.64.0.0/10: carrier-grade NAT, and the Tailscale tailnet range — not the company LAN. */
-function isCgnat(ip: string): boolean {
-  const [a, b] = octets(ip);
-  return a === 100 && b >= 64 && b <= 127;
-}
-
 export interface RankedIpv4 {
   address: string;
   /** A physical adapter's address outside the CGNAT range: worth offering to another LAN PC. */
   preferred: boolean;
+  /** A tailnet address (100.64/10 on a Tailscale adapter): reachable from this PC's other tailnet PCs. */
+  tailnet: boolean;
 }
 
 /**
  * External IPv4s, best candidate for another LAN PC first: physical adapters
  * before virtual ones (Hyper-V, WSL, Docker, VPN tunnels…) and before the
  * CGNAT/Tailscale range, then RFC1918 private addresses before others.
- * Link-local (169.254/16) is left out.
+ * Link-local (169.254/16) is left out. Tailnet addresses are flagged so an
+ * invite can offer them after the LAN ones.
  */
 export function rankedExternalIpv4s(ifaces: NodeJS.Dict<os.NetworkInterfaceInfo[]> = os.networkInterfaces()): RankedIpv4[] {
   const found: Array<RankedIpv4 & { priv: boolean; order: number }> = [];
@@ -138,23 +138,43 @@ export function rankedExternalIpv4s(ifaces: NodeJS.Dict<os.NetworkInterfaceInfo[
     for (const nic of list ?? []) {
       if (nic.family !== 'IPv4' || nic.internal || nic.address.startsWith('169.254.') || seen.has(nic.address)) continue;
       seen.add(nic.address);
-      const preferred = !VIRTUAL_NIC_RE.test(name) && !isCgnat(nic.address);
-      found.push({ address: nic.address, preferred, priv: isRfc1918(nic.address), order: found.length });
+      const cgnat = isTailnetIpv4(nic.address);
+      const preferred = !VIRTUAL_NIC_RE.test(name) && !cgnat;
+      const tailnet = cgnat && TAILSCALE_NIC_RE.test(name);
+      found.push({ address: nic.address, preferred, tailnet, priv: isRfc1918(nic.address), order: found.length });
     }
   }
   found.sort((x, y) => Number(y.preferred) - Number(x.preferred) || Number(y.priv) - Number(x.priv) || x.order - y.order);
-  return found.map(({ address, preferred }) => ({ address, preferred }));
+  return found.map(({ address, preferred, tailnet }) => ({ address, preferred, tailnet }));
 }
 
 /**
- * The addresses an invite offers: the preferred ones only, when there are
- * any (a virtual adapter's or a tailnet address would only cost the other PC
- * a timeout); everything ranked otherwise, so a PC whose adapters all look
- * virtual can still be reached.
+ * The addresses an invite offers, best first: the preferred (LAN) ones, then
+ * this PC's tailnet addresses, so the pairing also works between PCs on one
+ * tailnet. Other virtual adapters' addresses (Docker, WSL, Hyper-V…) would
+ * only cost the other PC a timeout and are left out — unless nothing is
+ * preferred, in which case they follow the tailnet ones so a PC whose
+ * adapters all look virtual can still be reached.
  */
 export function inviteIpv4s(ranked: RankedIpv4[] = rankedExternalIpv4s()): string[] {
   const preferred = ranked.filter((r) => r.preferred);
-  return (preferred.length > 0 ? preferred : ranked).map((r) => r.address);
+  const tailnet = ranked.filter((r) => r.tailnet);
+  const rest = preferred.length > 0 ? [] : ranked.filter((r) => !r.tailnet);
+  return [...preferred, ...tailnet, ...rest].map((r) => r.address);
+}
+
+/**
+ * An invite's `alt`: the offered IPv4s other than `host`, at most
+ * `INVITE_ALT_MAX`. When LAN addresses would fill every slot, the last one
+ * goes to a tailnet address instead, so a PC with many adapters is still
+ * reachable over the tailnet.
+ */
+export function inviteAlt(ips: readonly string[], host: string): string[] {
+  const rest = ips.filter((ip) => ip !== host);
+  const alt = rest.slice(0, INVITE_ALT_MAX);
+  const tailnet = rest.find(isTailnetIpv4);
+  if (tailnet && !isTailnetIpv4(host) && !alt.some(isTailnetIpv4)) alt[alt.length - 1] = tailnet;
+  return alt;
 }
 
 export class A2aServer {
@@ -237,7 +257,7 @@ export class A2aServer {
     const ips = this.ipv4s();
     const host = inviteHost(this.hostname(), ips);
     if (!host) throw new Error('a2a.remote.pair.begin: this PC has no usable name or IPv4 address');
-    const alt = ips.filter((ip) => ip !== host).slice(0, INVITE_ALT_MAX);
+    const alt = inviteAlt(ips, host);
     const opened = this.pairing.begin({ host, port: this.port, fingerprint256: this.identity.fingerprint256, alt });
     return { ...opened, addresses: [host, ...alt] };
   }

@@ -192,6 +192,18 @@ export function isCanonicalIpv4(v: string): boolean {
   return IPV4_RE.test(v) && v.split('.').map(Number).join('.') === v;
 }
 
+/**
+ * 100.64.0.0/10: carrier-grade NAT, and the range Tailscale assigns tailnet
+ * addresses from. An invite only offers such an address when it sits on a
+ * Tailscale adapter (or when this PC has nothing better), so the UI labels
+ * one in an invite as the tailnet address.
+ */
+export function isTailnetIpv4(v: string): boolean {
+  if (!IPV4_RE.test(v)) return false;
+  const [a, b] = v.split('.').map(Number);
+  return a === 100 && b >= 64 && b <= 127;
+}
+
 export function formatInvite(i: A2aInvite): string {
   const alt = i.alt && i.alt.length > 0 ? `&alt=${i.alt.join(',')}` : '';
   return `wmux-a2a://${i.host}:${i.port}/${i.code}#sha256=${i.fingerprint256}${alt}`;

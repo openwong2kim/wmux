@@ -200,15 +200,17 @@ describe('cross-host pairing, end to end', () => {
     expect(a.peers.list().filter((p) => p.revokedAt === undefined)).toHaveLength(0);
   });
 
-  it('falls back to the invite’s alt addresses and saves the one that answered first', async () => {
+  it('falls back to the invite’s alt addresses, saves the one that answered first and keeps the failed ones last', async () => {
     const a = await makePc('PC A');
     const b = await makePc('PC B');
     const invite = inviteOf(a);
-    // A name that cannot resolve, then the real address.
-    const withAlt = formatInvite({ ...invite, host: 'no-such-host.invalid', alt: ['127.0.0.1'] });
+    // A name that cannot resolve, then the real address, then one never tried.
+    // The failed name is kept (last), not dropped: after the PC moves (office
+    // LAN <-> tailnet) it may be the only address that works.
+    const withAlt = formatInvite({ ...invite, host: 'no-such-host.invalid', alt: ['127.0.0.1', '100.64.0.9'] });
     const result = await joinRemoteHost(withAlt, joinerDeps(b));
     expect(result.ok).toBe(true);
-    if (result.ok) expect(result.host.addresses).toEqual(['127.0.0.1']);
+    if (result.ok) expect(result.host.addresses).toEqual(['127.0.0.1', '100.64.0.9', 'no-such-host.invalid']);
   });
 
   it('joining this PC’s own invite is refused', async () => {

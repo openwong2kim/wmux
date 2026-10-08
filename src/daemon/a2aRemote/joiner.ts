@@ -152,13 +152,21 @@ async function join(inviteString: string, deps: JoinDeps): Promise<A2aRemoteHost
       throw new JoinFailure('protocol', `hello answered ${hello.status} for another identity`);
     }
 
-    // Save the address that answered first, then the rest of the invite's
-    // (minus any that failed to connect before it). A name that answered is
+    // Save the address that answered first, then the rest of the invite's,
+    // the ones that failed to connect before it LAST rather than dropped: an
+    // address unreachable now (the tailnet one in the office, the LAN one at
+    // home) may be the only one that works after the PC moves. A later
+    // connect moves whichever answers to the front. A name that answered is
     // also remembered with the IPv4 it resolved to, so a later DNS outage
     // does not strand the pairing.
-    const failedBefore = new Set(candidates.slice(0, candidates.indexOf(reached)));
+    const failedBefore = candidates.slice(0, candidates.indexOf(reached));
     const resolved = net.isIPv4(reached) ? null : await (deps.lookup ?? defaultLookup)(reached);
-    const addresses = [reached, ...(resolved ? [resolved] : []), ...candidates.filter((a) => a !== reached && !failedBefore.has(a))];
+    const addresses = [
+      reached,
+      ...(resolved ? [resolved] : []),
+      ...candidates.filter((a) => a !== reached && !failedBefore.includes(a)),
+      ...failedBefore,
+    ];
     try {
       return deps.remoteHosts.add(
         {

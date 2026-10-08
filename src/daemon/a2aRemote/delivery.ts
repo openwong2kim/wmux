@@ -20,6 +20,7 @@ import type { LinkStore } from './linkStore';
 import { aliasTable, linkAlias, listRemoteTargets, sendRemoteReply, sendRemoteState, sendRemoteTask, syncRemoteTask, type OutboundDeps } from './outbound';
 import { OutboxStore } from './outboxStore';
 import type { A2aRouteTable } from './routes';
+import { addressPromoter } from './remoteHostStore';
 import { JoinerSession, taskOfEnvelope, type SessionClient, type SessionTiming } from './session';
 import type { PinnedClientOptions } from './pinnedClient';
 import { A2aStreamHub } from './streamHub';
@@ -49,6 +50,7 @@ export interface A2aRemoteDeliveryDeps {
     list(): A2aRemoteHostRecordV1[];
     get(hostId: HostId): A2aRemoteHostRecordV1 | undefined;
     credentialFor(hostId: HostId): PeerCredential | null;
+    promoteAddress?(hostId: HostId, address: string): boolean;
   };
   /** Daemon broadcast (`pipeServer.broadcast`). */
   broadcast: (event: { type: string; sessionId: string; data: unknown }) => void;
@@ -346,6 +348,7 @@ export class A2aRemoteDelivery {
     return new JoinerSession({
       hostId,
       host: () => this.deps.remoteHosts.get(hostId),
+      onConnected: addressPromoter(this.deps.remoteHosts, hostId, this.deps.log),
       credential: () => this.deps.remoteHosts.credentialFor(hostId),
       outbox: this.outbox,
       accept: (env, peer) => this.accept(env, peer),

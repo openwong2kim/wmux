@@ -74,15 +74,17 @@ const HOSTNAME_RE = /^(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 /**
- * Machine names first (company DNS survives DHCP), then IPv4s, each group in
- * the given order; trimmed, duplicates removed case-insensitively, anything
- * that is neither a valid IPv4 nor a valid hostname dropped, at most
- * `ADDRESSES_MAX` kept.
+ * The addresses in the given order — the order is the dial order, best
+ * first: the joiner saves the one that answered first and moves the ones
+ * that failed to the end, and `promoteAddress` puts the one that last
+ * answered first (a PC that roams between the office LAN and a tailnet must
+ * not wait out an unreachable address on every reconnect). Trimmed,
+ * duplicates removed case-insensitively, anything that is neither a valid
+ * IPv4 nor a valid hostname dropped, at most `ADDRESSES_MAX` kept.
  */
 export function orderAddresses(addresses: readonly string[]): string[] {
   const seen = new Set<string>();
-  const names: string[] = [];
-  const ips: string[] = [];
+  const out: string[] = [];
   for (const raw of addresses) {
     if (typeof raw !== 'string') continue;
     const a = raw.trim();
@@ -91,9 +93,28 @@ export function orderAddresses(addresses: readonly string[]): string[] {
     const isIp = IPV4_RE.test(a);
     if (!isIp && (/^[\d.]+$/.test(a) || !HOSTNAME_RE.test(a))) continue;
     seen.add(key);
-    (isIp ? ips : names).push(a);
+    out.push(a);
   }
-  return [...names, ...ips].slice(0, ADDRESSES_MAX);
+  return out.slice(0, ADDRESSES_MAX);
+}
+
+/**
+ * A pinned client's `onConnected` for `hostId`: put the address that answered
+ * first in the saved record (best effort — a failed write is logged and the
+ * connect goes on).
+ */
+export function addressPromoter(
+  store: { promoteAddress?(hostId: HostId, address: string): boolean },
+  hostId: HostId,
+  log: StoreLog,
+): (address: string) => void {
+  return (address) => {
+    try {
+      if (store.promoteAddress?.(hostId, address)) log('info', `[a2a-remote] ${hostId}: reached at ${address}; dialling it first from now on`);
+    } catch (err) {
+      log('warn', `[a2a-remote] ${hostId}: could not move ${address} to the front of its addresses: ${errMsg(err)}`);
+    }
+  };
 }
 
 export interface RemoteHostStoreOptions {
@@ -177,6 +198,21 @@ export class RemoteHostStore {
     const next = { ...rec, addresses: ordered };
     this.mutate(hostId, () => this.hosts.set(hostId, next));
     return structuredClone(next);
+  }
+
+  /**
+   * A connect to `hostId` got through at `address` (its pin already checked):
+   * dial it first next time. Writes only when the order changes; false when
+   * nothing changed (already first, or not one of the host's addresses — a
+   * connect never adds an address).
+   */
+  promoteAddress(hostId: HostId, address: string): boolean {
+    const rec = this.hosts.get(hostId);
+    if (!rec) return false;
+    const i = rec.addresses.findIndex((a) => a.toLowerCase() === address.toLowerCase());
+    if (i <= 0) return false;
+    this.updateAddresses(hostId, [rec.addresses[i], ...rec.addresses.filter((_, j) => j !== i)]);
+    return true;
   }
 
   /** Re-pin after a certificate rotation. hostId (and so every link) is unchanged. */
