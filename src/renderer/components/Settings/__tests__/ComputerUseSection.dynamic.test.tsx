@@ -28,8 +28,17 @@ afterEach(() => {
   container = null;
 });
 
-async function render(api: { get: () => Promise<ComputerUseSettingsPayload>; set: (v: boolean) => Promise<ComputerUseSettingsPayload> }) {
+type Patch = { enabled?: boolean; askPerApp?: boolean; overlay?: boolean };
+
+async function render(api: {
+  get: () => Promise<ComputerUseSettingsPayload>;
+  set: (patch: Patch) => Promise<ComputerUseSettingsPayload>;
+  permissions?: (op: 'request' | 'reset' | 'reveal') => Promise<ComputerUseSettingsPayload>;
+}) {
   (window as unknown as { electronAPI: unknown }).electronAPI = { computerUse: api };
+  // A second render in one test replaces the first: its focus listener must go too.
+  if (root) act(() => root?.unmount());
+  container?.remove();
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
@@ -71,7 +80,7 @@ describe('Settings › Computer use', () => {
     expect(sw.getAttribute('aria-checked')).toBe('false');
     expect(el.textContent).toContain('Not in this build yet');
     expect(el.textContent).toMatch(/(Ctrl|Cmd)\+(Alt|Option)\+Shift\+Esc/);
-    for (const id of ['computeruse', 'computerusehelper', 'computerusestop']) {
+    for (const id of ['computeruse', 'computerusehelper', 'computerusestop', 'computeruseask', 'computeruseoverlay']) {
       expect(el.querySelector(`[data-setting-id="${id}"]`), id).not.toBeNull();
     }
   });
@@ -93,7 +102,7 @@ describe('Settings › Computer use', () => {
   });
 
   it('cannot be turned on without a helper, and says why', async () => {
-    const set = vi.fn(async (enabled: boolean) => ({ ...base, enabled }));
+    const set = vi.fn(async ({ enabled }: Patch) => ({ ...base, enabled: enabled ?? false }));
     const el = await render({ get: async () => base, set });
     const sw = el.querySelector('[role="switch"]') as HTMLButtonElement;
     expect(sw.disabled).toBe(true);
@@ -117,22 +126,22 @@ describe('Settings › Computer use', () => {
   });
 
   it('can still be turned off when it was on without a helper', async () => {
-    const set = vi.fn(async (enabled: boolean) => ({ ...base, enabled }));
+    const set = vi.fn(async ({ enabled }: Patch) => ({ ...base, enabled: enabled ?? false }));
     const el = await render({ get: async () => ({ ...base, enabled: true }), set });
     const sw = el.querySelector('[role="switch"]') as HTMLButtonElement;
     expect(sw.disabled).toBe(false);
     await act(async () => { sw.click(); });
-    expect(set).toHaveBeenCalledWith(false);
+    expect(set).toHaveBeenCalledWith({ enabled: false });
     expect(sw.getAttribute('aria-checked')).toBe('false');
     expect(sw.disabled).toBe(true);
   });
 
   it('turns it on through main and shows what main saved', async () => {
-    const set = vi.fn(async (enabled: boolean) => ({ ...ready, enabled }));
+    const set = vi.fn(async ({ enabled }: Patch) => ({ ...ready, enabled: enabled ?? false }));
     const el = await render({ get: async () => ready, set });
     const sw = el.querySelector('[role="switch"]') as HTMLButtonElement;
     await act(async () => { sw.click(); });
-    expect(set).toHaveBeenCalledWith(true);
+    expect(set).toHaveBeenCalledWith({ enabled: true });
     expect(sw.getAttribute('aria-checked')).toBe('true');
   });
 
@@ -145,5 +154,93 @@ describe('Settings › Computer use', () => {
     await act(async () => { sw.click(); });
     expect(sw.getAttribute('aria-checked')).toBe('false');
     expect(el.textContent).toContain('config.json is missing');
+  });
+
+  const switchNamed = (el: HTMLElement, name: string) =>
+    el.querySelector(`[role="switch"][aria-label="${name}"]`) as HTMLButtonElement;
+  const buttonNamed = (el: HTMLElement, name: string) =>
+    [...el.querySelectorAll('button')].find((b) => b.textContent === name) as HTMLButtonElement;
+
+  it('asks before each app only when turned on (off by default), and writes it through main', async () => {
+    const set = vi.fn(async (patch: Patch) => ({ ...ready, ...patch }));
+    const el = await render({ get: async () => ready, set });
+    const ask = switchNamed(el, 'Ask before each app');
+    expect(ask.getAttribute('aria-checked')).toBe('false');
+    await act(async () => { ask.click(); });
+    expect(set).toHaveBeenCalledWith({ askPerApp: true });
+    expect(ask.getAttribute('aria-checked')).toBe('true');
+  });
+
+  it('shows the agent cursor and halo by default, and turns them off through main', async () => {
+    const set = vi.fn(async (patch: Patch) => ({ ...ready, ...patch }));
+    const el = await render({ get: async () => ready, set });
+    const overlay = switchNamed(el, 'Show agent cursor and halo');
+    expect(overlay.getAttribute('aria-checked')).toBe('true');
+    await act(async () => { overlay.click(); });
+    expect(set).toHaveBeenCalledWith({ overlay: false });
+  });
+
+  it('shows no permission block where the helper is not a macOS app', async () => {
+    const el = await render({ get: async () => ready, set: async () => ready });
+    expect(el.textContent).not.toContain('Request access');
+  });
+
+  const mac: ComputerUseSettingsPayload = {
+    ...ready,
+    enabled: true,
+    helperAppPath: '/Applications/wmux.app/Contents/Resources/computer-use-macos/wmux Computer Use.app',
+    permissions: { accessibility: true, screenRecording: false },
+  };
+
+  it('shows each grant, and the full helper path with the remove-and-re-add fix when one is missing', async () => {
+    const el = await render({ get: async () => mac, set: async () => mac });
+    expect(el.textContent).toContain('Permissions');
+    expect(el.textContent).toContain('Allowed');
+    expect(el.textContent).toContain('Not allowed');
+    expect(el.textContent).toContain('(/Applications/wmux.app/Contents/Resources/computer-use-macos/wmux Computer Use.app)');
+    expect(el.textContent).toContain('remove it with “−” and add it again');
+    const granted = await render({ get: async () => ({ ...mac, permissions: { accessibility: true, screenRecording: true } }), set: async () => mac });
+    expect(granted.textContent).not.toContain('remove it with');
+  });
+
+  it('runs Request access and Show helper in Finder through main', async () => {
+    const permissions = vi.fn(async () => mac);
+    const el = await render({ get: async () => mac, set: async () => mac, permissions });
+    await act(async () => { buttonNamed(el, 'Request access').click(); });
+    await act(async () => { buttonNamed(el, 'Show helper in Finder').click(); });
+    expect(permissions.mock.calls).toEqual([['request'], ['reveal']]);
+  });
+
+  it('resets access only after an in-page confirm, never window.confirm', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm').mockImplementation(() => true);
+    const permissions = vi.fn(async () => mac);
+    const el = await render({ get: async () => mac, set: async () => mac, permissions });
+    await act(async () => { buttonNamed(el, 'Reset access').click(); });
+    expect(permissions).not.toHaveBeenCalled();
+    expect(el.textContent).toContain('Reset access removes the helper');
+    // Keep backs out.
+    await act(async () => { buttonNamed(el, 'Keep').click(); });
+    expect(el.textContent).not.toContain('Reset access removes the helper');
+    await act(async () => { buttonNamed(el, 'Reset access').click(); });
+    await act(async () => { buttonNamed(el, 'Reset access').click(); });
+    expect(permissions).toHaveBeenCalledWith('reset');
+    expect(confirmSpy).not.toHaveBeenCalled();
+    confirmSpy.mockRestore();
+  });
+
+  it('explains a permission button that failed', async () => {
+    const el = await render({ get: async () => mac, set: async () => mac, permissions: async () => { throw new Error('codesign rejected the helper'); } });
+    await act(async () => { buttonNamed(el, 'Request access').click(); });
+    expect(el.textContent).toContain('That did not work: codesign rejected the helper');
+  });
+
+  it('re-reads the grants when the window gets focus back', async () => {
+    const get = vi.fn(async () => mac);
+    const el = await render({ get, set: async () => mac });
+    expect(get).toHaveBeenCalledTimes(1);
+    get.mockResolvedValue({ ...mac, permissions: { accessibility: true, screenRecording: true } });
+    await act(async () => { window.dispatchEvent(new Event('focus')); });
+    expect(get).toHaveBeenCalledTimes(2);
+    expect(el.textContent).not.toContain('Not allowed');
   });
 });

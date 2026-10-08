@@ -26,14 +26,21 @@ export function helperStatus(helperPath: string | null): ComputerHelperStatus {
   }
 }
 
+/** The keys Settings › Computer use writes. */
+export interface ComputerUseSettingsPatch {
+  enabled?: boolean;
+  askPerApp?: boolean;
+  overlay?: boolean;
+}
+
 /**
- * Sets the switch in ~/.wmux/computer-use.json. Main is the only writer of
- * this file, so a missing or unreadable one is simply replaced (it already
- * reads as off). Other keys in a valid file are kept.
+ * Writes the given keys into ~/.wmux/computer-use.json. Main is the only
+ * writer of this file, so a missing or unreadable one is simply replaced (it
+ * already reads as off). Other keys in a valid file are kept.
  *
  * Atomic (temp file + rename), so a reader never sees half a file.
  */
-export function writeComputerUseEnabled(enabled: boolean, configPath: string = computerUseConfigPath()): boolean {
+export function writeComputerUseSettings(patch: ComputerUseSettingsPatch, configPath: string = computerUseConfigPath()): void {
   let config: Record<string, unknown> = {};
   try {
     const parsed: unknown = JSON.parse(fs.readFileSync(configPath, 'utf-8'), (key, value) =>
@@ -43,10 +50,17 @@ export function writeComputerUseEnabled(enabled: boolean, configPath: string = c
   } catch {
     // missing or not JSON: start fresh
   }
-  config.enabled = enabled;
+  for (const key of ['enabled', 'askPerApp', 'overlay'] as const) {
+    if (typeof patch[key] === 'boolean') config[key] = patch[key];
+  }
   const tmpPath = `${configPath}.tmp`;
   fs.mkdirSync(path.dirname(configPath), { recursive: true });
   fs.writeFileSync(tmpPath, JSON.stringify(config, null, 2), { encoding: 'utf-8', mode: 0o600 });
   fs.renameSync(tmpPath, configPath);
+}
+
+/** Sets the switch (writeComputerUseSettings) and returns what is on disk now. */
+export function writeComputerUseEnabled(enabled: boolean, configPath: string = computerUseConfigPath()): boolean {
+  writeComputerUseSettings({ enabled }, configPath);
   return readComputerUseEnabled(configPath);
 }

@@ -2,9 +2,9 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { describe, expect, it } from 'vitest';
-import { computerUseConfigPath, readComputerUseEnabled } from '../../../shared/computer/config';
+import { computerUseConfigPath, readComputerUseAskPerApp, readComputerUseEnabled, readComputerUseOverlay } from '../../../shared/computer/config';
 import { getConfigPath } from '../../../daemon/config';
-import { helperStatus, writeComputerUseEnabled } from '../settings';
+import { helperStatus, writeComputerUseEnabled, writeComputerUseSettings } from '../settings';
 
 function tempConfig(content?: string): string {
   const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-cu-')), 'computer-use.json');
@@ -26,6 +26,23 @@ describe('computer use settings', () => {
     expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toEqual({ enabled: true, note: 'kept' });
     expect(writeComputerUseEnabled(false, file)).toBe(false);
     expect(fs.existsSync(`${file}.tmp`)).toBe(false);
+  });
+
+  it('reads askPerApp off and the overlay on unless the file says otherwise', () => {
+    expect(readComputerUseAskPerApp(tempConfig())).toBe(false);
+    expect(readComputerUseOverlay(tempConfig())).toBe(true);
+    expect(readComputerUseAskPerApp(tempConfig('{"askPerApp":"true"}'))).toBe(false);
+    expect(readComputerUseOverlay(tempConfig('{ nope'))).toBe(true);
+  });
+
+  it('writes askPerApp and overlay without touching the switch or other keys', () => {
+    const file = tempConfig(JSON.stringify({ enabled: true, note: 'kept' }));
+    writeComputerUseSettings({ askPerApp: true }, file);
+    writeComputerUseSettings({ overlay: false }, file);
+    expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toEqual({ enabled: true, note: 'kept', askPerApp: true, overlay: false });
+    expect(readComputerUseAskPerApp(file)).toBe(true);
+    expect(readComputerUseOverlay(file)).toBe(false);
+    expect(readComputerUseEnabled(file)).toBe(true);
   });
 
   it('creates a missing file and replaces an unreadable one', () => {
