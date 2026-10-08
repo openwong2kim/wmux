@@ -872,6 +872,17 @@ details[open] > .wmux-chatv2-tool-line .wmux-chatv2-chevron { transform: rotate(
 .wmux-remote-empty { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 40px 24px; border-radius: 10px; background: var(--selection-subtle); text-align: center; color: var(--text-sub); }
 .wmux-remote-empty h2 { margin: 4px 0 0; font-size: 14px; font-weight: 600; color: var(--text-main); }
 .wmux-remote-empty p { max-width: 440px; margin: 0; font-size: 13px; line-height: 1.6; }
+/* Connect a PC dialog: the invite code, the addresses in the order the other PC tries them. */
+.wmux-remote-connect { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.wmux-remote-connect-note { margin: 0; font-size: 12px; color: var(--text-sub); }
+.wmux-remote-connect-label { font-size: 12px; color: var(--text-sub); }
+.wmux-remote-connect-expiry { margin-right: auto; font-size: 12px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.wmux-remote-code { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 8px 8px 8px 12px; border-radius: 10px; background: var(--selection-subtle); }
+.wmux-remote-code code { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.wmux-remote-order { display: flex; flex-direction: column; gap: 2px; margin: 0; padding: 0; list-style: none; }
+.wmux-remote-order li { display: grid; grid-template-columns: 14px minmax(0, 1fr) auto; align-items: center; gap: 8px; min-height: 24px; }
+.wmux-remote-order-n { font-size: 11px; color: var(--text-muted); text-align: right; font-variant-numeric: tabular-nums; }
+.wmux-remote-order-k { font-size: 11px; color: var(--text-muted); }
 
 /* Schedules page: a list column and a main pane. The column is set off by
  * its own tone, the composer box by a fill — no outlines (one boundary). */

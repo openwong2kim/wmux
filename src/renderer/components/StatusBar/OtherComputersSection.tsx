@@ -41,7 +41,7 @@ const STATUS_LABEL: Record<RemoteHostStatus, string> = {
   insecure: 'remote.hubStatusInsecure',
 };
 
-const INPUT_ERROR: Record<RemotePairInputError, string> = {
+export const INPUT_ERROR: Record<RemotePairInputError, string> = {
   empty: 'remote.hubInputEmpty',
   'not-a-link': 'remote.hubInputNotALink',
   'missing-code': 'remote.hubInputMissingCode',
