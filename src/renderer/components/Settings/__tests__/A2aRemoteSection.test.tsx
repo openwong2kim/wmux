@@ -126,6 +126,15 @@ describe('A2aRemoteView — addresses and outcomes', () => {
     expect(html).toContain('settings.a2aRemoteInviteAddresses(desk, 10.0.0.5)');
   });
 
+  it('labels the tailnet address so the invite reads as working over Tailscale too', () => {
+    const html = render(props({
+      invite: 'wmux-a2a://desk:45660/ABCDEFGH#sha256=x&alt=10.0.0.5,100.64.0.2',
+      inviteAddresses: ['desk', '10.0.0.5', '100.64.0.2'],
+      remainingSec: 30,
+    }));
+    expect(html).toContain('settings.a2aRemoteInviteAddresses(desk, 10.0.0.5, settings.a2aRemoteInviteTailnetAddress(100.64.0.2))');
+  });
+
   it('says whether a removed PC was told', () => {
     expect(render(props({ removed: { name: 'BOX', remoteRevoked: true } }))).toContain('settings.a2aRemoteRemovedBoth(BOX)');
     expect(render(props({ removed: { name: 'BOX', remoteRevoked: false } }))).toContain('settings.a2aRemoteRemovedLocalOnly(BOX)');

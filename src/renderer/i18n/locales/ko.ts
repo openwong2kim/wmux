@@ -1475,6 +1475,7 @@ export const ko = {
   'settings.a2aRemoteUnavailable': 'PC 간 A2A에는 wmux 데몬이 필요합니다. 데몬이 연결되면 나타납니다.',
   'settings.a2aRemoteLoading': 'PC 간 A2A 상태를 확인하는 중…',
   'settings.a2aRemoteInviteAddresses': '상대 PC가 시도할 주소: {addresses}',
+  'settings.a2aRemoteInviteTailnetAddress': '{address} (Tailscale)',
   'settings.a2aRemoteJoinError.rate-limited': '이 PC에서 실패한 시도가 너무 많습니다. 잠시 기다린 뒤 다시 시도하세요.',
   'settings.a2aRemoteRemovedBoth': '{name}을(를) 제거했습니다. 상대 PC에도 알렸습니다.',
   'settings.a2aRemoteRemovedLocalOnly': '{name}을(를) 이 PC에서 제거했지만 상대 PC에 연결하지 못했습니다. 상대 PC에서도 이 PC의 연결을 해제하세요.',

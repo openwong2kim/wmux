@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
-import type { A2aPeerRecordV1, A2aRemoteHostRecordV1 } from '../../../shared/a2aRemote';
+import { isTailnetIpv4, type A2aPeerRecordV1, type A2aRemoteHostRecordV1 } from '../../../shared/a2aRemote';
 import type { A2aRemoteJoinError, A2aRemoteStatus } from '../../../shared/rpc';
 import { useT } from '../../hooks/useT';
 import { useIpc } from '../../hooks/useIpc';
@@ -181,7 +181,11 @@ export function A2aRemoteView(props: A2aRemoteViewProps) {
         </SettingRow>
         {invite && inviteAddresses.length > 0 && (
           <SettingNote data-testid="a2a-remote-invite-addresses">
-            {t('settings.a2aRemoteInviteAddresses', { addresses: inviteAddresses.join(', ') })}
+            {t('settings.a2aRemoteInviteAddresses', {
+              addresses: inviteAddresses
+                .map((a) => (isTailnetIpv4(a) ? t('settings.a2aRemoteInviteTailnetAddress', { address: a }) : a))
+                .join(', '),
+            })}
           </SettingNote>
         )}
         {!status.listening && !invite && (

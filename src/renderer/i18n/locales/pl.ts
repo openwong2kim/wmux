@@ -1989,6 +1989,7 @@ export const pl = {
   'settings.a2aRemoteUnavailable': "A2A między komputerami wymaga demona wmux. Pojawi się, gdy demon się połączy.",
   'settings.a2aRemoteLoading': "Sprawdzanie stanu A2A między komputerami…",
   'settings.a2aRemoteInviteAddresses': "Drugi komputer spróbuje: {addresses}",
+  'settings.a2aRemoteInviteTailnetAddress': "{address} (Tailscale)",
   'settings.a2aRemoteJoinError.rate-limited': "Zbyt wiele nieudanych prób z tego komputera. Odczekaj chwilę i spróbuj ponownie.",
   'settings.a2aRemoteRemovedBoth': "Usunięto {name}. Ten komputer również został powiadomiony.",
   'settings.a2aRemoteRemovedLocalOnly': "Usunięto {name} tutaj, ale nie udało się połączyć z tym komputerem. Rozłącz ten komputer również tam.",

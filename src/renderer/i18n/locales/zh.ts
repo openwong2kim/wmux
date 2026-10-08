@@ -2073,6 +2073,7 @@ export const zh = {
   'settings.a2aRemoteUnavailable': '跨 PC A2A 需要 wmux 守护进程。守护进程连接后会显示。',
   'settings.a2aRemoteLoading': '正在检查跨 PC A2A 状态…',
   'settings.a2aRemoteInviteAddresses': '对方 PC 将尝试：{addresses}',
+  'settings.a2aRemoteInviteTailnetAddress': '{address}（Tailscale）',
   'settings.a2aRemoteJoinError.rate-limited': '本机失败次数过多。请稍等片刻后重试。',
   'settings.a2aRemoteRemovedBoth': '已移除 {name}，并已通知该 PC。',
   'settings.a2aRemoteRemovedLocalOnly': '已在本机移除 {name}，但无法连接该 PC。请在该 PC 上也断开本机。',

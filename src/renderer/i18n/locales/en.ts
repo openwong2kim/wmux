@@ -2011,6 +2011,7 @@ export const en = {
   'settings.a2aRemoteUnavailable': 'Cross-PC A2A needs the wmux daemon. It will appear once the daemon connects.',
   'settings.a2aRemoteLoading': 'Checking cross-PC A2A status…',
   'settings.a2aRemoteInviteAddresses': 'The other PC will try: {addresses}',
+  'settings.a2aRemoteInviteTailnetAddress': '{address} (Tailscale)',
   'settings.a2aRemoteJoinError.rate-limited': 'Too many failed attempts from this PC. Wait a minute, then try again.',
   'settings.a2aRemoteRemovedBoth': 'Removed {name}. That PC was told as well.',
   'settings.a2aRemoteRemovedLocalOnly': 'Removed {name} here, but that PC could not be reached. Disconnect this PC there too.',
