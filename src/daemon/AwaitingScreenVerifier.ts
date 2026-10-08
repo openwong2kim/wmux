@@ -37,6 +37,12 @@
 //     dialog anywhere on the grid (parsed with its cursor, or a cursor option
 //     row) also counts as "still up". Releasing clears that record, and a live
 //     dialog can miss the structural bottom-of-screen test.
+//   - While wmux holds a pending AskUserQuestion record for the pane, the pane
+//     stays awaiting whatever the screen shows. A pane nobody has shown can be
+//     a few columns wide, and its dialog then wraps word by word, so no screen
+//     test can see it (#1901). The record ends when the tool returns, the turn
+//     ends or the next prompt is submitted, so it cannot hold the pane past
+//     the question.
 
 import { capSnapshot } from './web/snapshotWindow';
 import { screenShowsActiveDialog, screenShowsPermissionDialog } from './transcript/chatScreenGate';
@@ -69,6 +75,8 @@ export interface AwaitingScreenVerifierDeps {
   clear(sessionId: string): void;
   /** Does wmux hold a pending `terminal_prompt` record for this pane? */
   holdsPrompt?(sessionId: string): boolean;
+  /** Does wmux hold a pending AskUserQuestion record (a question still in flight) for this pane? */
+  holdsQuestion?(sessionId: string): boolean;
   schedule?: (fn: () => void, ms: number) => () => void;
   now?: () => number;
   log?: (level: 'debug' | 'info' | 'warn', message: string) => void;
@@ -224,6 +232,7 @@ export class AwaitingScreenVerifier {
     const dialog = readable && (
       screenShowsActiveDialog(frame.rows)
       || (this.deps.holdsPrompt?.(sessionId) === true && screenShowsPermissionDialog(frame.rows))
+      || this.deps.holdsQuestion?.(sessionId) === true
     );
 
     if (readable && !dialog) {

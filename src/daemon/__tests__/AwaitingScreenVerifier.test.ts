@@ -422,6 +422,54 @@ describe('AwaitingScreenVerifier with a terminal_prompt record held on the pane'
   });
 });
 
+// #1901 — the bottom of an AskUserQuestion drawn into a 10x6 PTY (a fan-out
+// task whose workspace was never shown), the text captured from a real pane:
+// Claude Code wraps the footer one or two words per row.
+const NARROW_QUESTION_BYTES = [
+  '\x1b[?1049h\x1b[2J\x1b[H',
+  'Enter to \r\n',
+  'select · \r\n',
+  '↑/↓ to \r\n',
+  'navigate ·\r\n',
+  'Esc to \r\n',
+  'cancel',
+].join('');
+
+describe('AwaitingScreenVerifier with an AskUserQuestion still in flight (#1901)', () => {
+  let narrowRows: string[] = [];
+  beforeEach(async () => {
+    const outcome = await generateTextSnapshot({ cols: 10, rows: 6, scrollback: 0, initial: Buffer.from(NARROW_QUESTION_BYTES) });
+    if (!outcome.ok) throw new Error('snapshot failed');
+    narrowRows = outcome.rows.map((r) => r.text);
+    vi.useFakeTimers();
+  });
+  afterEach(() => vi.useRealTimers());
+
+  it('the wrapped footer is a dialog no screen test sees', () => {
+    expect(narrowRows.map((r) => r.trim())).toEqual(['Enter to', 'select ·', '↑/↓ to', 'navigate ·', 'Esc to', 'cancel']);
+    expect(screenShowsActiveDialog(narrowRows)).toBe(false);
+  });
+
+  it('holds the pane while the question is in flight and releases once the tool returns', async () => {
+    const pane: FakePane = { awaiting: true, eligible: true, mark: 0, rows: narrowRows };
+    let inFlight = true;
+    const { verifier, renders, cleared } = makeVerifier(pane, { holdsQuestion: () => inFlight });
+    for (let i = 0; i < 10; i++) {
+      output(verifier, pane);
+      await vi.advanceTimersByTimeAsync(1_000);
+    }
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(renders.length).toBeGreaterThan(1);
+    expect(cleared).toEqual([]);
+
+    // The tool returned (its record expired); the agent draws its next frame.
+    inFlight = false;
+    output(verifier, pane, CLEAR_ROWS);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(cleared).toEqual(['p1']);
+  });
+});
+
 describe('renderPaneScreen', () => {
   it('renders at the PTY size when node-pty reports one, else at the recorded size', async () => {
     const seen: Array<{ cols: number; rows: number }> = [];

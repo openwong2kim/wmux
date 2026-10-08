@@ -6035,6 +6035,12 @@ function wireEvents(
     holdsPrompt: (id) => approvalRegistry?.list().pending
       // An agent-held (native) decision is not a dialog on this screen.
       .some((request) => request.sessionId === id && request.kind === 'terminal_prompt' && !isNativeDecision(request)) === true,
+    // #1901 — an AskUserQuestion still in flight: a card carrying the question.
+    // A question-less card only says "waiting on you" and is expired by this
+    // very release, so it must not hold the pane.
+    holdsQuestion: (id) => approvalRegistry?.list().pending
+      .some((request) => request.sessionId === id && request.kind === 'awaiting_input' && !isNativeDecision(request)
+        && (!!request.question || !!request.form || (request.choices?.length ?? 0) > 0 || (request.options?.length ?? 0) > 0)) === true,
     log: (level, message) => log(level, message),
   });
   const forgetAwaiting = (payload: { id: string }): void => awaitingVerifier.forget(payload.id);
