@@ -25,13 +25,31 @@ enum Permission {
         }
     }
 
-    /// One check, no prompt. Posting input needs Accessibility as well, which
-    /// AXIsProcessTrusted covers; CGPreflightPostEventAccess is checked too so
-    /// a partial grant is not reported as working.
+    /// One check, no prompt, read again on every call. Posting input needs
+    /// Accessibility as well, which AXIsProcessTrusted covers;
+    /// CGPreflightPostEventAccess is checked too so a partial grant is not
+    /// reported as working.
     var granted: Bool {
         switch self {
         case .accessibility: return AXIsProcessTrusted() && CGPreflightPostEventAccess()
-        case .screenRecording: return CGPreflightScreenCaptureAccess()
+        case .screenRecording: return CGPreflightScreenCaptureAccess() || Self.windowTitlesReadable()
+        }
+    }
+
+    /// CGPreflightScreenCaptureAccess can keep answering false for the rest of
+    /// the process after a grant. The window list is read live: without the
+    /// grant it withholds the titles of other apps' windows, so one titled
+    /// normal window of another process means the grant is there.
+    private static func windowTitlesReadable() -> Bool {
+        guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else {
+            return false
+        }
+        let me = getpid()
+        return list.contains { info in
+            let pid = (info[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value ?? me
+            let layer = (info[kCGWindowLayer as String] as? NSNumber)?.intValue ?? -1
+            let title = info[kCGWindowName as String] as? String
+            return pid != me && layer == 0 && !(title ?? "").isEmpty
         }
     }
 

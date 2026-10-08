@@ -73,6 +73,12 @@ extension Dictionary where Key == String, Value == Any {
         return nil
     }
 
+    /// A JSON boolean only (not a number).
+    func bool(_ key: String) -> Bool? {
+        guard let n = self[key] as? NSNumber, CFGetTypeID(n) == CFBooleanGetTypeID() else { return nil }
+        return n.boolValue
+    }
+
     func double(_ key: String) -> Double? {
         if let n = self[key] as? NSNumber, CFGetTypeID(n) != CFBooleanGetTypeID() { return n.doubleValue }
         return nil

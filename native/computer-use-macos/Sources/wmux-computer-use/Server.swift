@@ -16,7 +16,13 @@ let walkBudgetSeconds: TimeInterval = 8
 let agentActions = [
     "capabilities", "listApps", "listWindows", "getAppState",
     "click", "setValue", "type", "pressKey", "hotkey", "scroll",
+    // Optional methods (protocol OPTIONAL_HELPER_METHODS).
+    "configure",
 ]
+
+/// Actions that drive the pointer or keyboard: they show the overlay, which
+/// fades once they are done.
+private let inputMethods: Set<String> = ["click", "type", "pressKey", "hotkey", "scroll"]
 
 @MainActor
 final class Server {
@@ -27,6 +33,8 @@ final class Server {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"
     }
 
+    /// Permissions are read on every call, never cached, so a grant given
+    /// while the helper runs shows up without a restart.
     func capabilities() -> JSON {
         [
             "actions": agentActions,
@@ -87,7 +95,11 @@ final class Server {
 
     private func dispatch(_ method: String, _ p: JSON) async throws -> Any {
         // Never type into the lock screen, and say why windows "vanished".
-        if !["capabilities", "listApps", "releaseInput"].contains(method) { try Session.requireUnlocked() }
+        if !["capabilities", "listApps", "releaseInput", "configure"].contains(method) { try Session.requireUnlocked() }
+        if inputMethods.contains(method) {
+            defer { Overlay.shared.scheduleFade() }
+            return try await dispatchInput(method, p)
+        }
         switch method {
         case "capabilities":
             return capabilities()
@@ -102,28 +114,30 @@ final class Server {
             return ["app": app.json, "window": window.json(appId: app.id, pid: app.pid)]
         case "getAppState":
             return try await getAppState(p)
-        case "click":
-            try await Permissions.require(.accessibility)
-            return try await Actions.click(p, snapshots)
         case "setValue":
             try await Permissions.require(.accessibility)
             return try Actions.setValue(p, snapshots)
-        case "type":
-            try await Permissions.require(.accessibility)
-            return try await Actions.type(p, snapshots)
-        case "pressKey":
-            try await Permissions.require(.accessibility)
-            return try Actions.pressKey(p, snapshots)
-        case "hotkey":
-            try await Permissions.require(.accessibility)
-            return try Actions.hotkey(p, snapshots)
-        case "scroll":
-            try await Permissions.require(.accessibility)
-            return try await Actions.scroll(p, snapshots)
+        case "configure":
+            guard let overlay = p.bool("overlay") else { throw HelperError("invalid_argument", "overlay must be a boolean") }
+            Overlay.shared.setEnabled(overlay)
+            return ["ok": true]
         case "releaseInput":
+            // What main sends on the stop key: the overlay goes at once too.
+            Overlay.shared.hide()
             return ["released": try releaseInput(p)]
         default:
             throw HelperError("action_not_supported", "unknown method \"\(method.prefix(40))\"")
+        }
+    }
+
+    private func dispatchInput(_ method: String, _ p: JSON) async throws -> Any {
+        try await Permissions.require(.accessibility)
+        switch method {
+        case "click": return try await Actions.click(p, snapshots)
+        case "type": return try await Actions.type(p, snapshots)
+        case "pressKey": return try await Actions.pressKey(p, snapshots)
+        case "hotkey": return try await Actions.hotkey(p, snapshots)
+        default: return try await Actions.scroll(p, snapshots)
         }
     }
 

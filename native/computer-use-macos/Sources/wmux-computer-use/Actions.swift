@@ -1,6 +1,7 @@
-// Control actions. Each one re-checks its target right before sending input
-// (protocol ControlTarget): keyboard batches need the target window in the
-// foreground, pointer batches need the target's window under the point.
+// Control actions. Each one first brings its target forward (activates the
+// app, raises the window), then re-checks the target right before sending
+// input (protocol ControlTarget): keyboard batches need the target window in
+// the foreground, pointer batches need the target's window under the point.
 // Otherwise nothing is sent and the answer is `window_not_focused`.
 
 import AppKit
@@ -12,6 +13,11 @@ struct ControlTarget {
     let pid: pid_t
     let windowID: String
 
+    init(pid: pid_t, windowID: String) {
+        self.pid = pid
+        self.windowID = windowID
+    }
+
     init(_ params: JSON) throws {
         guard let t = params.object("target"), let pid = t.int("pid"), let window = t.string("windowId") else {
             throw HelperError("invalid_argument", "target {pid, windowId} is required")
@@ -22,42 +28,93 @@ struct ControlTarget {
 }
 
 enum Focus {
-    struct Hit {
-        let pid: pid_t
-        let windowID: CGWindowID
-        let layer: Int
-    }
-
-    /// The window under a screen point, front to back, skipping fully
-    /// transparent windows only. No window is skipped for being wmux's: a
-    /// click-through overlay (the planned agent cursor) would have to be named
-    /// explicitly by main, because "content-protected window of our parent"
-    /// also matches real wmux windows a click must never land on.
-    static func hit(at point: CGPoint) -> Hit? {
+    /// The on-screen windows, front to back, as the hit test reads them.
+    /// Needs no Screen Recording grant (only window titles are withheld).
+    static func windowList() -> [HitWindow] {
         guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else {
-            return nil
+            return []
         }
-        for info in list {
+        return list.compactMap { info in
             guard let boundsDict = info[kCGWindowBounds as String] as? NSDictionary,
-                  let bounds = CGRect(dictionaryRepresentation: boundsDict),
-                  bounds.contains(point) else { continue }
-            if let alpha = info[kCGWindowAlpha as String] as? Double, alpha <= 0 { continue }
-            let pid = (info[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value ?? -1
-            return Hit(
-                pid: pid,
+                  let bounds = CGRect(dictionaryRepresentation: boundsDict) else { return nil }
+            return HitWindow(
+                pid: (info[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value ?? -1,
                 windowID: (info[kCGWindowNumber as String] as? NSNumber)?.uint32Value ?? 0,
-                layer: (info[kCGWindowLayer as String] as? NSNumber)?.intValue ?? 0
+                layer: (info[kCGWindowLayer as String] as? NSNumber)?.intValue ?? 0,
+                bounds: bounds,
+                alpha: (info[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 1
             )
         }
-        return nil
     }
 
-    /// The point lands on the target window, or on a menu, popover or other
-    /// above-normal window of the same app (a menu the previous click opened).
-    /// Another normal window of the same app does not count.
-    static func pointerHitsTarget(_ target: ControlTarget, at point: CGPoint) -> Bool {
-        guard let hit = hit(at: point), hit.pid == target.pid else { return false }
-        return String(hit.windowID) == target.windowID || hit.layer != 0
+    /// Roles that make an element part of a transient surface of its app.
+    private static let transientRoles: Set<String> = ["AXMenu", "AXMenuItem", "AXMenuBar", "AXPopover", "AXSheet"]
+
+    /// What AX finds at a screen point: the element's pid, its window and
+    /// whether it sits in a menu, popover or sheet. Nil when AX cannot answer.
+    /// Called off the main thread (actions run on the concurrent executor),
+    /// so an answer routed to the helper's own overlay cannot deadlock.
+    static func axHit(at point: CGPoint) -> AXHit? {
+        var element: AXUIElement?
+        let rc = AXUIElementCopyElementAtPosition(AXUIElementCreateSystemWide(), Float(point.x), Float(point.y), &element)
+        guard rc == .success, let element else { return nil }
+        var pid: pid_t = 0
+        guard AXUIElementGetPid(element, &pid) == .success, pid > 0 else { return nil }
+        var windowID = AX.element(element, kAXWindowAttribute).flatMap(AX.windowID)
+        var transient = false
+        var node: AXUIElement? = element
+        for _ in 0..<12 {
+            guard let current = node else { break }
+            let role = AX.string(current, kAXRoleAttribute) ?? ""
+            if transientRoles.contains(role) { transient = true }
+            if role == "AXWindow" || role == "AXSheet" {
+                if windowID == nil { windowID = AX.windowID(current) }
+                break
+            }
+            node = AX.element(current, kAXParentAttribute)
+        }
+        return AXHit(pid: pid, windowID: windowID, inTransient: transient)
+    }
+
+    /// The hit-test verdict at a point. `useAX: false` (the per-notch scroll
+    /// re-check) reads the window list only, which is cheap and needs no IPC.
+    static func verdict(_ target: ControlTarget, at point: CGPoint, useAX: Bool = true) -> PointerVerdict {
+        guard let windowID = UInt32(target.windowID) else { return .covered(by: nil) }
+        return pointerVerdict(
+            targetPid: target.pid, targetWindowID: windowID, ownPid: getpid(),
+            ax: useAX ? axHit(at: point) : nil, windows: windowList(), point: point
+        )
+    }
+
+    /// The target app is frontmost and its focused window is the target window.
+    static func isForward(_ target: ControlTarget) -> Bool {
+        guard NSWorkspace.shared.frontmostApplication?.processIdentifier == target.pid else { return false }
+        let focused = AX.element(AX.app(target.pid), kAXFocusedWindowAttribute).flatMap(AX.windowID)
+        return focused.map { String($0) == target.windowID } ?? false
+    }
+
+    /// Brings the target forward when it is not: un-minimizes the window,
+    /// activates the app (NSRunningApplication, then kAXFrontmost, which is
+    /// what works for a process that is never active itself), makes the
+    /// window main and raises it, then waits up to 500 ms for the app to be
+    /// frontmost with that window focused. Never activates the helper.
+    @discardableResult
+    static func bringForward(_ target: ControlTarget, window: AXUIElement) async -> Bool {
+        if isForward(target) { return true }
+        guard target.pid != getpid() else { return false }
+        let appEl = AX.app(target.pid)
+        if AX.bool(window, kAXMinimizedAttribute) == true {
+            AXUIElementSetAttributeValue(window, kAXMinimizedAttribute as CFString, kCFBooleanFalse)
+        }
+        NSRunningApplication(processIdentifier: target.pid)?.activate()
+        AXUIElementSetAttributeValue(appEl, kAXFrontmostAttribute as CFString, kCFBooleanTrue)
+        AXUIElementSetAttributeValue(window, kAXMainAttribute as CFString, kCFBooleanTrue)
+        AXUIElementPerformAction(window, kAXRaiseAction as CFString)
+        for _ in 0..<10 {
+            try? await Task.sleep(nanoseconds: 50_000_000)
+            if isForward(target) { return true }
+        }
+        return false
     }
 
     static func requireKeyboard(_ target: ControlTarget) throws {
@@ -80,17 +137,25 @@ enum Focus {
         try refuseSecureInput(target.pid)
     }
 
-    /// Brings the target window forward (AX, not input) if another window
-    /// covers the point, then requires the point to land on the target.
+    /// Brings the target forward, then requires the point to land on the
+    /// target window. A refused point gets one more raise and 500 ms to clear.
     static func requirePointer(_ target: ControlTarget, window: AXUIElement, at point: CGPoint) async throws {
-        if pointerHitsTarget(target, at: point) { return }
-        AXUIElementSetAttributeValue(AX.app(target.pid), kAXFrontmostAttribute as CFString, kCFBooleanTrue)
+        await bringForward(target, window: window)
+        var last = verdict(target, at: point)
+        if last == .target { return }
         AXUIElementPerformAction(window, kAXRaiseAction as CFString)
         for _ in 0..<10 {
             try await Task.sleep(nanoseconds: 50_000_000)
-            if pointerHitsTarget(target, at: point) { return }
+            last = verdict(target, at: point)
+            if last == .target { return }
         }
-        throw HelperError("window_not_focused", "another window covers that point; nothing was clicked")
+        throw HelperError("window_not_focused", "\(coverName(last)) covers that point; nothing was sent")
+    }
+
+    private static func coverName(_ verdict: PointerVerdict) -> String {
+        guard case .covered(let pid?) = verdict else { return "no window of the target" }
+        let name = NSRunningApplication(processIdentifier: pid)?.localizedName
+        return name.map { "a window of \($0)" } ?? "another window"
     }
 
     /// Secure input (a password field anywhere has focus, or the focused
@@ -146,6 +211,15 @@ private func checkTarget(_ snap: Snapshot, _ target: ControlTarget) throws {
     }
 }
 
+/// Keyboard actions: bring the target forward, show the halo, then require
+/// it in front and no password field focused. Nothing is sent otherwise.
+private func requireKeyboardForward(_ snap: Snapshot, _ target: ControlTarget) async throws {
+    await Focus.bringForward(target, window: snap.window)
+    try Focus.requireKeyboard(target)
+    try Focus.refuseSecureInput(target.pid)
+    await Overlay.shared.show(window: try? snap.windowFrame(), cursor: nil, wait: false)
+}
+
 private func focusedValue(_ pid: pid_t) -> String? {
     AX.element(AX.app(pid), kAXFocusedUIElementAttribute).flatMap { AX.string($0, kAXValueAttribute) }
 }
@@ -172,10 +246,14 @@ enum Actions {
         // Action ladder: a plain left click on a pressable element is AXPress.
         if let element, button == .left, count == 1, mods.isEmpty, AX.actions(element).contains(kAXPressAction) {
             if AXUIElementPerformAction(element, kAXPressAction as CFString) == .success {
+                await Overlay.shared.show(window: try? snap.windowFrame(), cursor: point, wait: false)
+                await Overlay.shared.press(at: point)
                 return result("accessibility", verified: false, note: "pressed through accessibility (AXPress)")
             }
         }
         try await Focus.requirePointer(target, window: snap.window, at: point)
+        await Overlay.shared.show(window: try? snap.windowFrame(), cursor: point, wait: true)
+        await Overlay.shared.press(at: point)
         Input.shared.withModifiers(mods) { flags in
             Input.shared.click(at: point, button: button, count: count, flags: flags)
         }
@@ -214,6 +292,8 @@ enum Actions {
         if let index = p.int("index") {
             let el = try snap.element(at: index)
             if Focus.isSecure(el) { throw HelperError("app_blocked", "that is a password field; wmux does not type into it") }
+            // Forward first: focusing an element of a background app often does not take.
+            await Focus.bringForward(target, window: snap.window)
             AXUIElementSetAttributeValue(el, kAXFocusedAttribute as CFString, kCFBooleanTrue)
             // Typing into whatever else has focus would put the text in the wrong field.
             let focused = AX.element(AX.app(target.pid), kAXFocusedUIElementAttribute)
@@ -221,8 +301,7 @@ enum Actions {
                 throw HelperError("action_not_supported", "element \(index) did not take keyboard focus; nothing was typed. Click it first")
             }
         }
-        try Focus.requireKeyboard(target)
-        try Focus.refuseSecureInput(target.pid)
+        try await requireKeyboardForward(snap, target)
 
         let before = focusedValue(target.pid)
         try typeChecked(text, target: target)
@@ -263,7 +342,7 @@ enum Actions {
         return false
     }
 
-    static func pressKey(_ p: JSON, _ snaps: SnapshotStore) throws -> JSON {
+    static func pressKey(_ p: JSON, _ snaps: SnapshotStore) async throws -> JSON {
         let snap = try snaps.get(try p.requireString("snapshotId"))
         let target = try ControlTarget(p)
         try checkTarget(snap, target)
@@ -272,8 +351,7 @@ enum Actions {
             throw HelperError("invalid_argument", "\"\(key.prefix(20))\" is not a canonical key name")
         }
         let repeatCount = min(50, max(1, p.int("repeat") ?? 1))
-        try Focus.requireKeyboard(target)
-        try Focus.refuseSecureInput(target.pid)
+        try await requireKeyboardForward(snap, target)
         let flags = KeyCodes.intrinsicFlags(for: key)
         for n in 0..<repeatCount {
             if n > 0 {
@@ -289,7 +367,7 @@ enum Actions {
         return result("synthetic", verified: false)
     }
 
-    static func hotkey(_ p: JSON, _ snaps: SnapshotStore) throws -> JSON {
+    static func hotkey(_ p: JSON, _ snaps: SnapshotStore) async throws -> JSON {
         let snap = try snaps.get(try p.requireString("snapshotId"))
         let target = try ControlTarget(p)
         try checkTarget(snap, target)
@@ -300,8 +378,7 @@ enum Actions {
         guard let mods = KeyCodes.orderedModifiers((p["modifiers"] as? [String]) ?? []) else {
             throw HelperError("invalid_argument", "modifiers must be ctrl, alt, shift or meta")
         }
-        try Focus.requireKeyboard(target)
-        try Focus.refuseSecureInput(target.pid)
+        try await requireKeyboardForward(snap, target)
         Input.shared.withModifiers(mods) { flags in
             Input.shared.tap(key: code, flags: flags.union(KeyCodes.intrinsicFlags(for: key)))
         }
@@ -323,10 +400,16 @@ enum Actions {
         }
         let (point, _) = try screenPoint(snap, index: p.int("index"), point: try p.point("point"))
         try await Focus.requirePointer(target, window: snap.window, at: point)
+        await Overlay.shared.show(window: try? snap.windowFrame(), cursor: point, wait: true)
         // Re-run the hit-test before every notch: a window that moves over
-        // the point mid-scroll must not receive the rest.
+        // the point mid-scroll must not receive the rest. The window list
+        // alone (no AX round trip per notch), compared with what it said once
+        // AX had accepted the point.
+        let baseline = Focus.verdict(target, at: point, useAX: false)
         let sent = Input.shared.scroll(at: point, dx: dx, dy: dy, notches: amount) {
-            !Session.isLocked && Focus.pointerHitsTarget(target, at: point)
+            guard !Session.isLocked else { return false }
+            let now = Focus.verdict(target, at: point, useAX: false)
+            return now == .target || now == baseline
         }
         if sent < amount {
             throw HelperError("window_not_focused", "another window covered the point after \(sent) of \(amount) notches; the rest was not sent")
