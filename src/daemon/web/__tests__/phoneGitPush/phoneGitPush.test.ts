@@ -11,7 +11,8 @@ import { GitWriteReceipts, PhoneGitWriteGate } from '../../phoneGitWriteGate';
 import { registerPhoneGitWriteAction, type GitWriteExecuteContext, type GitWriteSessionContext } from '../../phoneGitWriteRegistry';
 import { PhoneGitWriteRoutes, type PhoneGitWriteHost } from '../../phoneGitWriteRoutes';
 import {
-  GIT_NULL_DEVICE, PUSH_RECHECK_DELAY_MS, createPhoneGitPushHandlers, defaultPushDeps, recheckUncertainPushes,
+  GIT_NULL_DEVICE, PHONE_GIT_PUSH_INTENTS_DIR, PUSH_RECHECK_DELAY_MS, createNetworkGitRunner, createPhoneGitPushHandlers,
+  defaultPushDeps, readPushIntent, recheckUncertainPushes, startPushRecovery,
   type PhoneGitPushDeps, type PushChildResult,
 } from '../../phoneGitPush';
 import type { GitWritePins, PushPreview } from '../../../../shared/phoneGitWrite';
@@ -34,6 +35,7 @@ describe('phone git push', { timeout: 60_000 }, () => {
   let calls: { remote: string[][]; gh: string[][]; push: string[][] };
   let deps: PhoneGitPushDeps;
   let receipts: GitWriteReceipts | undefined;
+  let logs: string[];
 
   const env = () => ({ ...buildGitEnv(), GIT_CONFIG_GLOBAL: GIT_NULL_DEVICE });
   const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, env: env(), encoding: 'utf8' }).trim();
@@ -43,6 +45,8 @@ describe('phone git push', { timeout: 60_000 }, () => {
   };
   /** The test's only transport: the GitHub URL, rewritten to the bare repository. */
   const toBare = (args: readonly string[]) => ['-c', `url.${bare.replace(/\\/g, '/')}.insteadOf=${URL_}`, '-c', 'protocol.file.allow=always', ...args];
+  /** The production network environment allows HTTPS only; the test transport is a local file. */
+  const fileToo = (e: NodeJS.ProcessEnv) => ({ ...e, GIT_ALLOW_PROTOCOL: 'https:file' });
 
   beforeEach(() => {
     root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-git-push-')));
@@ -61,17 +65,23 @@ describe('phone git push', { timeout: 60_000 }, () => {
     calls = { remote: [], gh: [], push: [] };
     deps = {
       ...defaultPushDeps,
-      remote: (args, cwd, e) => { calls.remote.push([...args]); return defaultPushDeps.remote(toBare(args), cwd, e); },
+      remote: (args, cwd, e) => {
+        calls.remote.push([...args]);
+        expect(e.GIT_ALLOW_PROTOCOL).toBe('https');
+        return defaultPushDeps.remote(toBare(args), cwd, fileToo(e));
+      },
       gh: async (args) => {
         calls.gh.push([...args]);
-        if (args.at(-1) === 'repos/o/r') return { ok: true, ran: true, code: 0, stdout: JSON.stringify({ default_branch: 'main' }), stderr: '' };
+        if (/^repos\/[^/]+\/[^/]+$/.test(String(args.at(-1)))) return { ok: true, ran: true, code: 0, stdout: JSON.stringify({ default_branch: 'main' }), stderr: '' };
         return { ok: false, ran: true, code: 1, stdout: '', stderr: 'HTTP 500' };
       },
-      push: (args, cwd, e, t) => { calls.push.push([...args]); return defaultPushDeps.push(toBare(args), cwd, e, t); },
+      push: (args, cwd, e, t) => { calls.push.push([...args]); return defaultPushDeps.push(toBare(args), cwd, fileToo(e), t); },
       stateDir: () => stateDir,
       now: () => now,
+      log: (msg) => { logs.push(msg); },
     };
     receipts = undefined;
+    logs = [];
   });
 
   afterEach(() => {
@@ -136,7 +146,8 @@ describe('phone git push', { timeout: 60_000 }, () => {
       repo: 'github.com/o/r', ahead: 1, behind: 0, remoteTip: base, fastForward: true, commitsTruncated: false,
     });
     expect(facts.commits).toEqual([{ oid: head, subject: 'one', author: 'T' }]);
-    expect(pins).toEqual({ head, ref: 'refs/heads/local-x', targetRef: 'refs/heads/remote-y', remoteTip: base });
+    expect(pins).toEqual({ head, ref: 'refs/heads/local-x', targetRef: 'refs/heads/remote-y', remoteTip: base, repo: 'o/r', pushUrl: URL_ });
+    expect(calls.remote.every((a) => a.includes(URL_) && !a.includes('origin'))).toBe(true);
 
     commit(work, 'after the preview'); // HEAD moves on; the reviewed commit is what goes out.
     const { key, run } = await execute(pins, head);
@@ -145,7 +156,10 @@ describe('phone git push', { timeout: 60_000 }, () => {
     expect(bareRef('refs/heads/remote-y')).toBe(head);
     expect(bareRef('refs/heads/local-x')).toBeNull();
     expect(calls.push).toHaveLength(1);
-    expect(calls.push[0].slice(-2)).toEqual(['origin', `${head}:refs/heads/remote-y`]);
+    expect(calls.push[0].slice(-2)).toEqual([URL_, `${head}:refs/heads/remote-y`]);
+    expect(calls.push[0]).toEqual(expect.arrayContaining(['http.proxy=', 'https.proxy=', 'http.sslVerify=true', 'credential.helper=']));
+    expect(git(work, 'rev-parse', 'refs/remotes/origin/remote-y')).toBe(head);
+    expect(fs.readdirSync(path.join(stateDir, PHONE_GIT_PUSH_INTENTS_DIR))).toEqual([]);
     for (const a of calls.push[0]) expect(a).not.toMatch(/^(--force|-f|--mirror|--delete|--tags|\+)/);
   });
 
@@ -193,6 +207,57 @@ describe('phone git push', { timeout: 60_000 }, () => {
     git(work, 'config', key, value);
     expect(await preview()).toEqual({ ok: false, body: { error: 'remote-unsupported' } });
     expect(calls).toEqual({ remote: [], gh: [], push: [] });
+  });
+
+  it.each([
+    ['http.proxy', 'http://127.0.0.1:9'],
+    ['https.proxy', 'http://127.0.0.1:9'],
+    ['http.https://github.com/.sslVerify', 'false'],
+    ['http.https://github.com/.followRedirects', 'true'],
+    ['http.sslCAInfo', '/tmp/ca.pem'],
+    ['credential.helper', 'store'],
+    ['credential.https://github.com.helper', 'store'],
+    ['url.https://github.com/o/r.git.insteadOf', 'https://github.com/o/r.git'],
+    ['core.sshCommand', 'ssh -v'],
+    ['core.gitProxy', 'proxy-cmd'],
+    ['protocol.ext.allow', 'always'],
+    ['remote.origin.vcs', 'x'],
+    ['remote.origin.proxy', 'http://127.0.0.1:9'],
+    ['remote.origin.pushurl', URL_],
+    ['include.path', '/dev/null'],
+    ['includeIf.onbranch:feat.path', '/dev/null'],
+  ])('refuses repository config %s before any network call', async (key, value) => {
+    git(work, 'checkout', '-q', '-b', 'feat');
+    commit(work, 'x');
+    git(work, 'config', key, value);
+    expect(await preview()).toEqual({ ok: false, body: { error: 'remote-unsupported' } });
+    expect(calls).toEqual({ remote: [], gh: [], push: [] });
+  });
+
+  it('refuses a key that arrives through an included file', async () => {
+    git(work, 'checkout', '-q', '-b', 'feat');
+    commit(work, 'x');
+    fs.writeFileSync(path.join(root, 'inc'), '[http]\n\tproxy = http://127.0.0.1:9\n');
+    git(work, 'config', 'include.path', path.join(root, 'inc'));
+    expect(await preview()).toEqual({ ok: false, body: { error: 'remote-unsupported' } });
+    expect(calls).toEqual({ remote: [], gh: [], push: [] });
+  });
+
+  it.each([
+    ['another repository', 'https://github.com/o/other.git'],
+    ['another spelling of the same repository', 'https://github.com/o/r'],
+  ])('answers stale when origin is changed to %s after the preview', async (_name, url) => {
+    git(work, 'checkout', '-q', '-b', 'feat');
+    const head = commit(work, 'x');
+    const { pins } = await okPreview();
+    git(work, 'remote', 'set-url', 'origin', url);
+    const before = { remote: calls.remote.length, push: calls.push.length };
+    const { key, run } = await execute(pins, head);
+    await run;
+    expect(await settled(key)).toMatchObject({ state: 'refused', error: 'stale' });
+    // Refused before any network call under the new URL.
+    expect({ remote: calls.remote.length, push: calls.push.length }).toEqual(before);
+    expect(bareRef('refs/heads/feat')).toBeNull();
   });
 
   it('refuses an upstream on a remote other than origin before any network call', async () => {
@@ -274,15 +339,23 @@ describe('phone git push', { timeout: 60_000 }, () => {
       const head = commit(work, 'in flight');
       const { pins } = await okPreview();
       let release: (r: PushChildResult) => void = () => undefined;
-      const hung = { ...deps, push: () => new Promise<PushChildResult>((resolve) => { release = resolve; }) };
+      let dead = false;
+      const hung: PhoneGitPushDeps = {
+        ...deps,
+        push: () => new Promise<PushChildResult>((resolve) => { release = resolve; }),
+        // Once the daemon is gone its handler learns nothing more.
+        remote: (args, cwd, e) => dead ? Promise.resolve({ ok: false, ran: false, stdout: '', stderr: '' }) : deps.remote(args, cwd, e),
+      };
       const { key, run } = await execute(pins, head, hung);
       await vi.waitFor(() => expect(receipts!.find(key)?.state).toBe('inFlight'), WAIT);
       receipts!.close();
       receipts = new GitWriteReceipts(stateDir, () => now);
-      // The old daemon's handler never comes back; free its push slot.
-      release({ spawned: false, code: null, timedOut: false, stdout: '', stderr: '' });
-      await run;
+      // Free the old handler's push slot; it ends without an outcome and leaves the intent in place.
+      dead = true;
+      release({ spawned: true, code: null, timedOut: true, stdout: '', stderr: '' });
+      await expect(run).rejects.toThrow('push outcome unknown');
       expect(receipts.find(key)?.state).toBe('uncertain');
+      expect(readPushIntent(stateDir, key).state).toBe('ok');
       return { key, head };
     };
     const identity = async () => ({ ok: true as const, token: 'gho_octo' });
@@ -318,6 +391,55 @@ describe('phone git push', { timeout: 60_000 }, () => {
       expect(await recheckUncertainPushes(receipts!, { deps: offline, identity })).toBe(1);
       expect(receipts!.find(key)?.state).toBe('uncertain');
     });
+
+    it('resolves on its own once the daemon starts recovery, and removes the intent', async () => {
+      const { key, head } = await crashMidPush();
+      git(work, ...toBare(['push', '-q', 'origin', `${head}:refs/heads/feat`]));
+      now = receipts!.find(key)!.startedAt! + PUSH_RECHECK_DELAY_MS;
+      const stop = startPushRecovery(receipts!, { deps, identity });
+      try {
+        await vi.waitFor(() => expect(receipts!.find(key)?.state).toBe('done'), WAIT);
+        expect(readPushIntent(stateDir, key).state).toBe('missing');
+      } finally {
+        stop();
+      }
+    });
+
+    it('reads the intent from .bak when the primary is gone or unreadable', async () => {
+      const { key } = await crashMidPush();
+      const file = path.join(stateDir, PHONE_GIT_PUSH_INTENTS_DIR, `${key}.json`);
+      fs.renameSync(file, `${file}.bak`);
+      expect(readPushIntent(stateDir, key).state).toBe('ok');
+      fs.writeFileSync(file, '{torn');
+      expect(readPushIntent(stateDir, key).state).toBe('ok');
+      now = receipts!.find(key)!.startedAt! + PUSH_RECHECK_DELAY_MS;
+      expect(await recheckUncertainPushes(receipts!, { deps, identity })).toBe(0);
+      expect(receipts!.find(key)).toMatchObject({ state: 'refused', error: 'push-not-landed' });
+    });
+
+    it('keeps an unreadable intent uncertain and says so, never treats it as missing', async () => {
+      const { key } = await crashMidPush();
+      const file = path.join(stateDir, PHONE_GIT_PUSH_INTENTS_DIR, `${key}.json`);
+      fs.writeFileSync(file, '{torn');
+      expect(readPushIntent(stateDir, key).state).toBe('unreadable');
+      now = receipts!.find(key)!.startedAt! + PUSH_RECHECK_DELAY_MS;
+      expect(await recheckUncertainPushes(receipts!, { deps, identity })).toBe(1);
+      expect(receipts!.find(key)?.state).toBe('uncertain');
+      expect(logs.some((l) => l.includes('unreadable'))).toBe(true);
+    });
+  });
+
+  it('refuses with git-receipts-unavailable when the intent cannot be written, and pushes nothing', async () => {
+    git(work, 'checkout', '-q', '-b', 'feat');
+    const head = commit(work, 'x');
+    const { pins } = await okPreview();
+    const blocked = path.join(root, 'blocked');
+    fs.writeFileSync(blocked, 'a file where the directory should be');
+    const { key, run } = await execute(pins, head, { ...deps, stateDir: () => blocked });
+    await run;
+    expect(await settled(key)).toMatchObject({ state: 'refused', error: 'git-receipts-unavailable' });
+    expect(calls.push).toHaveLength(0);
+    expect(logs.some((l) => l.includes('intent could not be written'))).toBe(true);
   });
 
   it('answers a resend of the same requestId with the stored receipt and pushes once', async () => {
@@ -386,6 +508,11 @@ describe('push child timeout', { timeout: 30_000 }, () => {
       expect(out.timedOut).toBe(true);
       // Killing git alone left the helper holding the pipes, and the answer never came.
       expect(Date.now() - started).toBeLessThan(10_000);
+      // ls-remote goes through the same process-group runner.
+      const read = Date.now();
+      const ls = await createNetworkGitRunner(500)(['ls-remote', `https://127.0.0.1:${port}/r.git`], os.tmpdir(), env);
+      expect(ls).toMatchObject({ ok: false, ran: false });
+      expect(Date.now() - read).toBeLessThan(10_000);
     } finally {
       for (const s of sockets) s.destroy();
       server.close();

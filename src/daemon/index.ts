@@ -30,6 +30,7 @@ import { AUTOMATION_EVENT } from '../shared/automation';
 import { InputReceiptStore } from './web/InputReceiptStore';
 import { PhoneWorktreeService } from './web/phoneWorktree';
 import { PhoneGitWriteGate } from './web/phoneGitWriteGate';
+import { startPushRecovery } from './web/phoneGitPush';
 import { AnswerReceiptStore } from './approvals/AnswerReceiptStore';
 import { MoaWakeService } from './phone/MoaWakeService';
 import { isMoaWakeFailure } from '../shared/moaWake';
@@ -247,8 +248,13 @@ function getPhoneWorktrees(sessionManager: DaemonSessionManager): PhoneWorktreeS
 // Phone git write actions: one gate for the daemon's lifetime, shared by every
 // web server it starts, so receipts and confirm tokens outlive a web restart.
 let phoneGitWriteGate: PhoneGitWriteGate | null = null;
+let stopPushRecovery: (() => void) | null = null;
 function getPhoneGitWriteGate(): PhoneGitWriteGate {
-  return phoneGitWriteGate ??= new PhoneGitWriteGate({ wmuxDir: getWmuxDir() });
+  if (phoneGitWriteGate) return phoneGitWriteGate;
+  const gate = phoneGitWriteGate = new PhoneGitWriteGate({ wmuxDir: getWmuxDir() });
+  // Settles the push receipts a previous daemon left `uncertain`; never pushes again.
+  if (gate.available) stopPushRecovery = startPushRecovery(gate.receipts, { identity: (login) => gate.identity(login) });
+  return gate;
 }
 let answerReceipts: AnswerReceiptStore | null = null;
 function getAnswerReceipts(): AnswerReceiptStore {
@@ -7018,6 +7024,7 @@ async function shutdown(
   if (shuttingDown) return { stateSaved: false };
   shuttingDown = true;
   gateFlag?.stop();
+  stopPushRecovery?.();
   sessionManager.cancelPendingCreates();
   log('info', `Received ${signal} — shutting down gracefully`);
 

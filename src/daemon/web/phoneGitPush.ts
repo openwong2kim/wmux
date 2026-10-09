@@ -20,13 +20,17 @@ import {
  *
  * - The target is the upstream's ref on `origin`; with no upstream the push
  *   creates `refs/heads/<branch>` only when the remote has no such branch.
- * - The effective `origin` URLs (after `insteadOf` / `pushInsteadOf`) must be
- *   `https://github.com/<owner>/<repo>` before any network call is made.
+ * - Before any network call: the repository's own config may not set
+ *   transport, credential or URL keys (`isolatedConfigKey`), and the
+ *   effective `origin` URLs must be `https://github.com/<owner>/<repo>`.
+ *   Network calls then name that validated URL, never the remote `origin`,
+ *   and the preview pins it into the confirm token.
  * - Global and system git config are never loaded; the argv fixes every push
  *   option a repository's config could otherwise change. Never forced.
- * - The push child runs in its own process group and is killed on daemon
- *   exit. Its intent is written to disk before it spawns, so a restart can
- *   settle the `uncertain` receipt from the remote tip (`recoverUncertainPushes`).
+ * - Every network git child runs in its own process group (a tree on
+ *   Windows), killed on timeout and on daemon exit. A push's intent is written
+ *   to disk before it spawns, so a restart can settle the `uncertain` receipt
+ *   from the remote tip (`startPushRecovery`).
  */
 
 /** Wall clock for one push child. */
@@ -37,7 +41,8 @@ const NETWORK_TIMEOUT_MS = 20_000;
 const LOCAL_TIMEOUT_MS = 10_000;
 const MAX_PUSHES_PER_OWNER = 1;
 const MAX_PUSHES = 2;
-export const PHONE_GIT_PUSH_INFLIGHT_FILE = 'phone-git-push-inflight.json';
+/** One file per in-flight push, named by its receipt key. */
+export const PHONE_GIT_PUSH_INTENTS_DIR = 'phone-git-push-intents';
 
 /** A git runner with an explicit environment. Never throws; a failure is data. */
 export type PushGitRunner = (args: readonly string[], cwd: string, env: NodeJS.ProcessEnv) => Promise<GitRunResult>;
@@ -59,6 +64,7 @@ export interface PhoneGitPushDeps {
   /** Where the in-flight intents are written. */
   stateDir: () => string;
   now: () => number;
+  log: (msg: string) => void;
 }
 
 // ── Runners ──────────────────────────────────────────────────────────────────
@@ -108,7 +114,8 @@ function killGroup(child: ChildProcess, sync = false): void {
   } catch { /* already gone */ }
 }
 
-const spawnPush: PushSpawner = (args, cwd, env, timeoutMs) => new Promise((resolve) => {
+/** Run git in its own process group (a tree on Windows), killed after `timeoutMs` and on daemon exit. */
+const spawnGroup: PushSpawner = (args, cwd, env, timeoutMs) => new Promise((resolve) => {
   if (!exitHookInstalled) {
     exitHookInstalled = true;
     process.once('exit', () => { for (const child of liveChildren.values()) killGroup(child, true); });
@@ -132,17 +139,27 @@ const spawnPush: PushSpawner = (args, cwd, env, timeoutMs) => new Promise((resol
 });
 
 const localGit = execRunner('git', LOCAL_TIMEOUT_MS);
-const networkGit = execRunner('git', NETWORK_TIMEOUT_MS);
 const ghRun = execRunner('gh', NETWORK_TIMEOUT_MS);
+
+/** `ls-remote` and the other network reads: same process-group handling as the push. */
+export function createNetworkGitRunner(timeoutMs: number = NETWORK_TIMEOUT_MS): PushGitRunner {
+  return async (args, cwd, env) => {
+    const out = await spawnGroup(args, cwd, env, timeoutMs);
+    const ran = out.spawned && !out.timedOut && out.code !== null;
+    return { ok: ran && out.code === 0, ran, ...(ran ? { code: out.code as number } : {}), stdout: out.stdout, stderr: out.stderr };
+  };
+}
 
 export const defaultPushDeps: PhoneGitPushDeps = {
   git: localGit,
-  remote: networkGit,
+  remote: createNetworkGitRunner(),
   gh: (args, env) => ghRun(args, undefined, env),
-  push: spawnPush,
+  push: spawnGroup,
   baseEnv: getExecEnv,
   stateDir: getWmuxDir,
   now: Date.now,
+  // eslint-disable-next-line no-console
+  log: (msg) => console.warn(`[web] git push: ${msg}`),
 };
 
 // ── Environment and argv ─────────────────────────────────────────────────────
@@ -158,29 +175,37 @@ function isolatedEnv(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return { ...buildGitEnv(base), GIT_CONFIG_GLOBAL: GIT_NULL_DEVICE, GIT_CONFIG_NOSYSTEM: '1' };
 }
 
-/** `isolatedEnv` plus the login's token from the routes' `ghEnv`. */
+/** `isolatedEnv`, HTTPS as the only transport, plus the login's token from the routes' `ghEnv`. */
 function networkEnv(base: NodeJS.ProcessEnv, ghEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const env = isolatedEnv(base);
+  env.GIT_ALLOW_PROTOCOL = 'https';
+  env.GIT_TERMINAL_PROMPT = '0';
   for (const name of ['GH_TOKEN', 'GH_HOST', 'GH_PROMPT_DISABLED']) {
     if (typeof ghEnv[name] === 'string') env[name] = ghEnv[name];
   }
   return env;
 }
 
-/** Fixed config for every network git call: HTTPS only, no redirects, gh as the only credential source. */
+/**
+ * Fixed config for every network git call: HTTPS only, no redirects, no
+ * proxy, gh as the only credential source. `http.sslCAInfo` is not reset: an
+ * empty value makes git load no CA at all, and with global and system config
+ * off and repository http keys refused, nothing else can set it.
+ */
 const NETWORK_CONFIG: readonly string[] = [
   '-c', 'protocol.allow=never', '-c', 'protocol.https.allow=always',
   '-c', 'http.followRedirects=false', '-c', 'http.sslVerify=true',
+  '-c', 'http.proxy=', '-c', 'https.proxy=',
   '-c', 'core.askPass=', '-c', 'core.fsmonitor=false', '-c', `core.hooksPath=${GIT_NULL_DEVICE}`,
   '-c', 'credential.helper=', '-c', 'credential.helper=!gh auth git-credential',
-  '-c', 'push.pushOption=', '-c', 'remote.origin.mirror=false',
+  '-c', 'push.pushOption=',
 ];
 
-/** The push argv. Exactly one refspec, never forced. */
-export function pushArgv(expectedHead: string, targetRef: string): string[] {
+/** The push argv: to the validated URL, exactly one refspec, never forced. */
+export function pushArgv(pushUrl: string, expectedHead: string, targetRef: string): string[] {
   return [
     ...NETWORK_CONFIG, 'push', '--porcelain', '--no-recurse-submodules', '--no-follow-tags', '--no-signed', '--no-verify',
-    'origin', `${expectedHead}:${targetRef}`,
+    pushUrl, `${expectedHead}:${targetRef}`,
   ];
 }
 
@@ -198,11 +223,43 @@ export function githubHttpsRepo(url: string): string | null {
 }
 
 /**
- * The repository `origin` fetches from and pushes to, from git's own
- * expansion of the URLs (`insteadOf` / `pushInsteadOf` applied). Every URL
- * must be HTTPS github.com and name the same repository; local only.
+ * Repository config keys a push refuses to run under: anything that can
+ * redirect, proxy or re-credential a transport, rewrite a URL, turn a remote
+ * into a command, or pull in another config file. Keys arrive lowercased
+ * (section and name; a subsection keeps its case).
  */
-async function originRepo(git: PushGitRunner, cwd: string, env: NodeJS.ProcessEnv): Promise<string | null> {
+export function isolatedConfigKey(key: string): boolean {
+  return /^(?:https?|credential|url|protocol|include|includeif)\./.test(key)
+    || /^core\.(?:sshcommand|gitproxy)$/.test(key)
+    || /^remote\..+\.(?:vcs|proxy|pushurl)$/.test(key);
+}
+
+/**
+ * Every config key the repository sets (local and worktree, includes
+ * followed), or null when git cannot say. Global and system are off; the
+ * `command` scope is this module's own `-c` and is left out.
+ */
+async function repoConfigKeys(git: PushGitRunner, cwd: string, env: NodeJS.ProcessEnv): Promise<string[] | null> {
+  const out = await git(local('config', '--list', '-z', '--includes', '--show-scope'), cwd, env);
+  if (!out.ok) return null;
+  const fields = out.stdout.split('\0');
+  const keys: string[] = [];
+  for (let i = 0; i + 1 < fields.length; i += 2) {
+    const scope = fields[i] as string;
+    const entry = fields[i + 1] as string;
+    if (scope === 'command') continue;
+    const nl = entry.indexOf('\n');
+    keys.push(nl === -1 ? entry : entry.slice(0, nl));
+  }
+  return keys;
+}
+
+/**
+ * The repository `origin` fetches from and pushes to, from git's own
+ * expansion of the URLs. Every URL must be HTTPS github.com and name the same
+ * repository; `pushUrl` is the one URL every network call then uses. Local only.
+ */
+async function originRepo(git: PushGitRunner, cwd: string, env: NodeJS.ProcessEnv): Promise<{ ownerRepo: string; pushUrl: string } | null> {
   const fetchUrls = await git(local('remote', 'get-url', '--all', 'origin'), cwd, env);
   const pushUrls = await git(local('remote', 'get-url', '--push', '--all', 'origin'), cwd, env);
   if (!fetchUrls.ok || !pushUrls.ok) return null;
@@ -211,7 +268,7 @@ async function originRepo(git: PushGitRunner, cwd: string, env: NodeJS.ProcessEn
   const repos = [...fetchUrls.stdout.split('\n').filter(Boolean), ...pushList].map(githubHttpsRepo);
   const first = repos[0];
   if (repos.length < 2 || !first || repos.some((r) => r === null || r.toLowerCase() !== first.toLowerCase())) return null;
-  return first;
+  return { ownerRepo: first, pushUrl: pushList[0] as string };
 }
 
 function remoteFailure(stderr: string, login: string): GitWriteErrorBody {
@@ -246,7 +303,7 @@ async function defaultBranch(gh: PushGhRunner, repo: string, env: NodeJS.Process
 
 // ── Facts ────────────────────────────────────────────────────────────────────
 
-type Facts = Omit<PushPreviewFacts, 'identity'> & { ownerRepo: string };
+type Facts = Omit<PushPreviewFacts, 'identity'> & { ownerRepo: string; pushUrl: string };
 type Gathered = { ok: true; facts: Facts } | { ok: false; body: GitWriteErrorBody };
 
 const failed = (body: GitWriteErrorBody): Gathered => ({ ok: false, body });
@@ -257,7 +314,7 @@ const gitFailed = (): Gathered => failed({ error: 'git-operation-failed' });
  * and the origin URLs; only then gh and `ls-remote`. `pin` (execute) names the
  * branch ref and the commit instead of reading HEAD.
  */
-async function gather(ctx: GitWriteSessionContext, deps: PhoneGitPushDeps, pin?: { ref: string; head: string }): Promise<Gathered> {
+async function gather(ctx: GitWriteSessionContext, deps: PhoneGitPushDeps, pin?: { ref: string; head: string; repo: string; pushUrl: string }): Promise<Gathered> {
   const base = deps.baseEnv();
   const env = isolatedEnv(base);
   const cwd = ctx.cwd;
@@ -300,16 +357,22 @@ async function gather(ctx: GitWriteSessionContext, deps: PhoneGitPushDeps, pin?:
     targetRef = ref;
   }
 
-  // The effective URLs, before any network call.
-  const ownerRepo = await originRepo(deps.git, cwd, env);
-  if (!ownerRepo) return failed({ error: 'remote-unsupported' });
+  // The repository's own config and the effective URLs, before any network call.
+  const keys = await repoConfigKeys(deps.git, cwd, env);
+  if (!keys) return gitFailed();
+  if (keys.some(isolatedConfigKey)) return failed({ error: 'remote-unsupported' });
+  const origin = await originRepo(deps.git, cwd, env);
+  if (!origin) return failed({ error: 'remote-unsupported' });
+  const { ownerRepo, pushUrl } = origin;
+  // Execute: the URL the person confirmed, or nothing goes out.
+  if (pin && (ownerRepo !== pin.repo || pushUrl !== pin.pushUrl)) return failed({ error: 'stale', head: pin.head });
 
   const net = networkEnv(base, ctx.ghEnv);
   const def = await defaultBranch(deps.gh, ownerRepo, net, ctx.login);
   if ('fail' in def) return failed(def.fail);
   if (def.ref === targetRef) return failed({ error: 'protected-target' });
 
-  const tipRead = await remoteTipOf(deps.remote, 'origin', cwd, targetRef, net, ctx.login);
+  const tipRead = await remoteTipOf(deps.remote, pushUrl, cwd, targetRef, net, ctx.login);
   if ('fail' in tipRead) return failed(tipRead.fail);
   const remoteTip = tipRead.tip;
   if (!hasUpstream && remoteTip !== null) return failed({ error: 'remote-branch-exists' });
@@ -356,7 +419,7 @@ async function gather(ctx: GitWriteSessionContext, deps: PhoneGitPushDeps, pin?:
       repo: `github.com/${ownerRepo}`,
       ahead: Number(aheadOut.stdout.trim()), behind, remoteTip,
       remoteMoved: trackingOid !== remoteTip,
-      fastForward, commits, commitsTruncated, ownerRepo,
+      fastForward, commits, commitsTruncated, ownerRepo, pushUrl,
     },
   };
 }
@@ -366,6 +429,8 @@ async function gather(ctx: GitWriteSessionContext, deps: PhoneGitPushDeps, pin?:
 /** What a restart needs to settle an `uncertain` push. Written before the child spawns. */
 export interface PushIntent {
   ownerRepo: string;
+  /** The validated URL the push went to. */
+  pushUrl: string;
   /** The local branch pushed from. */
   ref: string;
   targetRef: string;
@@ -378,38 +443,74 @@ export interface PushIntent {
   startedAt: number;
 }
 
-const intentFile = (dir: string) => path.join(dir, PHONE_GIT_PUSH_INFLIGHT_FILE);
+/**
+ * One file per push, `<dir>/<receipt key>.json`, created once and removed when
+ * the receipt settles. No file is shared or rewritten, so no writer can drop
+ * another push's intent and none needs a lock of its own: a push reaches this
+ * only after the receipt store, which holds the single-writer lock, accepted
+ * its row.
+ */
+const intentPath = (dir: string, key: string) => path.join(dir, PHONE_GIT_PUSH_INTENTS_DIR, `${key}.json`);
 
 function validIntent(v: unknown): v is PushIntent {
   if (!v || typeof v !== 'object') return false;
   const e = v as Record<string, unknown>;
   return typeof e.ownerRepo === 'string' && githubHttpsRepo(`https://github.com/${e.ownerRepo}`) !== null
+    && typeof e.pushUrl === 'string' && githubHttpsRepo(e.pushUrl)?.toLowerCase() === e.ownerRepo.toLowerCase()
     && typeof e.ref === 'string' && e.ref.startsWith('refs/heads/') && typeof e.create === 'boolean'
     && typeof e.targetRef === 'string' && e.targetRef.startsWith('refs/heads/')
     && typeof e.expectedHead === 'string' && GIT_WRITE_OID.test(e.expectedHead)
     && typeof e.login === 'string' && typeof e.cwd === 'string' && Number.isSafeInteger(e.startedAt);
 }
 
-/** Saved intents by receipt key; a file that cannot be read yields none. */
-export function readPushIntents(dir: string): Record<string, PushIntent> {
-  try {
-    const saved = JSON.parse(fs.readFileSync(intentFile(dir), 'utf8')) as { version?: unknown; rows?: unknown };
-    if (saved.version !== 1 || !saved.rows || typeof saved.rows !== 'object') return {};
-    const out: Record<string, PushIntent> = {};
-    for (const [k, v] of Object.entries(saved.rows as Record<string, unknown>)) if (validIntent(v)) out[k] = v;
-    return out;
-  } catch {
-    return {};
+export type PushIntentRead = { state: 'ok'; intent: PushIntent } | { state: 'missing' } | { state: 'unreadable'; reason: string };
+
+/**
+ * The intent for one receipt key. The atomic writer moves a previous file to
+ * `.bak` before it renames the new one in, so a missing or unreadable primary
+ * falls back to a valid `.bak`. Unreadable is never reported as missing.
+ */
+export function readPushIntent(dir: string, key: string): PushIntentRead {
+  const file = intentPath(dir, key);
+  let reason: string | null = null;
+  for (const candidate of [file, `${file}.bak`]) {
+    let raw: string;
+    try {
+      raw = fs.readFileSync(candidate, 'utf8');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+      reason = error instanceof Error ? error.message : String(error);
+      continue;
+    }
+    try {
+      const saved = JSON.parse(raw) as { version?: unknown; intent?: unknown };
+      if (saved.version === 1 && validIntent(saved.intent)) return { state: 'ok', intent: saved.intent };
+      reason = 'invalid intent';
+    } catch (error) {
+      reason = error instanceof Error ? error.message : String(error);
+    }
   }
+  return reason === null ? { state: 'missing' } : { state: 'unreadable', reason };
 }
 
-/** Record one intent durably, dropping those past the receipt retention. Throws when it cannot be written. */
+/** Record one intent durably, and drop intents past the receipt retention. Throws when it cannot be written. */
 function writePushIntent(dir: string, key: string, intent: PushIntent, now: number): void {
-  const rows = readPushIntents(dir);
-  for (const [k, r] of Object.entries(rows)) if (r.startedAt <= now - GIT_WRITE_RECEIPT_TTL_MS) delete rows[k];
-  rows[key] = intent;
-  fs.mkdirSync(dir, { recursive: true });
-  atomicWriteJSONSync(intentFile(dir), { version: 1, rows }, { durable: true });
+  const file = intentPath(dir, key);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  atomicWriteJSONSync(file, { version: 1, intent }, { durable: true });
+  try {
+    for (const name of fs.readdirSync(path.dirname(file))) {
+      const p = path.join(path.dirname(file), name);
+      if (fs.statSync(p).mtimeMs <= now - GIT_WRITE_RECEIPT_TTL_MS) fs.rmSync(p, { force: true });
+    }
+  } catch { /* sweeping is best effort */ }
+}
+
+function removePushIntent(dir: string, key: string): void {
+  const file = intentPath(dir, key);
+  for (const p of [file, `${file}.bak`]) {
+    try { fs.rmSync(p, { force: true }); } catch { /* left for the sweep */ }
+  }
 }
 
 // ── Landing check ────────────────────────────────────────────────────────────
@@ -421,8 +522,7 @@ type Landed = 'landed' | 'not-landed' | 'unknown';
  * from it. Tried locally first; otherwise GitHub's compare answers.
  */
 async function pushLanded(deps: PhoneGitPushDeps, intent: Omit<PushIntent, 'startedAt'>, net: NodeJS.ProcessEnv): Promise<Landed> {
-  const url = `https://github.com/${intent.ownerRepo}.git`;
-  const tipRead = await remoteTipOf(deps.remote, url, os.tmpdir(), intent.targetRef, net, intent.login);
+  const tipRead = await remoteTipOf(deps.remote, intent.pushUrl, os.tmpdir(), intent.targetRef, net, intent.login);
   if ('fail' in tipRead) return 'unknown';
   const tip = tipRead.tip;
   if (tip === null) return 'not-landed';
@@ -445,18 +545,21 @@ async function pushLanded(deps: PhoneGitPushDeps, intent: Omit<PushIntent, 'star
 }
 
 /**
- * After a push that created the remote branch: name it as the branch's
- * upstream. The source is a commit id, so `--set-upstream` would not record
- * one. A branch that already has an upstream is left alone. Best effort.
+ * After a push landed, record locally what a push to `origin` would have: the
+ * remote-tracking ref, and for a branch the push created, its upstream (the
+ * source is a commit id, so `--set-upstream` would not record one; a branch
+ * that already has an upstream is left alone). Best effort.
  */
-async function recordUpstream(deps: PhoneGitPushDeps, intent: PushIntent): Promise<void> {
-  if (!intent.create) return;
+async function recordPushed(deps: PhoneGitPushDeps, intent: PushIntent): Promise<void> {
   const env = isolatedEnv(deps.baseEnv());
+  const run = (...args: string[]) => deps.git(local(...args), intent.cwd, env);
+  await run('update-ref', `refs/remotes/origin/${intent.targetRef.slice('refs/heads/'.length)}`, intent.expectedHead);
+  if (!intent.create) return;
   const branch = intent.ref.slice('refs/heads/'.length);
-  const has = await deps.git(local('config', '--get', `branch.${branch}.merge`), intent.cwd, env);
+  const has = await run('config', '--get', `branch.${branch}.merge`);
   if (has.ok || has.code !== 1) return;
-  await deps.git(local('config', `branch.${branch}.remote`, 'origin'), intent.cwd, env);
-  await deps.git(local('config', `branch.${branch}.merge`, intent.targetRef), intent.cwd, env);
+  await run('config', `branch.${branch}.remote`, 'origin');
+  await run('config', `branch.${branch}.merge`, intent.targetRef);
 }
 
 // ── Handlers ─────────────────────────────────────────────────────────────────
@@ -468,19 +571,23 @@ export function createPhoneGitPushHandlers(deps: PhoneGitPushDeps = defaultPushD
   async function preview(ctx: GitWriteSessionContext): Promise<GitWritePreviewResult> {
     const g = await gather(ctx, deps);
     if (!g.ok) return { ok: false, body: g.body };
-    const facts: Record<string, unknown> & Omit<Facts, 'ownerRepo'> = { ...g.facts };
+    const facts: Record<string, unknown> & Omit<Facts, 'ownerRepo' | 'pushUrl'> = { ...g.facts };
     delete facts.ownerRepo;
+    delete facts.pushUrl;
     return {
       ok: true,
       facts,
-      pins: { head: facts.head, ref: facts.ref, targetRef: facts.target.ref, remoteTip: facts.remoteTip },
+      pins: {
+        head: facts.head, ref: facts.ref, targetRef: facts.target.ref, remoteTip: facts.remoteTip,
+        repo: g.facts.ownerRepo, pushUrl: g.facts.pushUrl,
+      },
     };
   }
 
   async function execute(ctx: GitWriteExecuteContext): Promise<void> {
     const body = ctx.body as PushExecuteBody;
     const pins = ctx.pins;
-    if (!pins || typeof pins.ref !== 'string' || typeof pins.targetRef !== 'string') {
+    if (!pins || typeof pins.ref !== 'string' || typeof pins.targetRef !== 'string' || typeof pins.repo !== 'string' || typeof pins.pushUrl !== 'string') {
       return ctx.settle({ state: 'refused', error: 'confirm-required' });
     }
     const mine = running.get(ctx.owner) ?? 0;
@@ -488,7 +595,9 @@ export function createPhoneGitPushHandlers(deps: PhoneGitPushDeps = defaultPushD
     running.set(ctx.owner, mine + 1);
     runningTotal += 1;
     try {
-      await executePinned(ctx, body, { ref: pins.ref, targetRef: pins.targetRef, remoteTip: pins.remoteTip as string | null });
+      await executePinned(ctx, body, {
+        ref: pins.ref, targetRef: pins.targetRef, remoteTip: pins.remoteTip as string | null, repo: pins.repo, pushUrl: pins.pushUrl,
+      });
     } finally {
       runningTotal -= 1;
       const left = (running.get(ctx.owner) ?? 1) - 1;
@@ -496,53 +605,73 @@ export function createPhoneGitPushHandlers(deps: PhoneGitPushDeps = defaultPushD
     }
   }
 
-  async function executePinned(ctx: GitWriteExecuteContext, body: PushExecuteBody, pins: { ref: string; targetRef: string; remoteTip: string | null }): Promise<void> {
+  type Pinned = { ref: string; targetRef: string; remoteTip: string | null; repo: string; pushUrl: string };
+
+  async function executePinned(ctx: GitWriteExecuteContext, body: PushExecuteBody, pins: Pinned): Promise<void> {
     const refuse = (b: GitWriteErrorBody) => {
       const { error, ...extras } = b;
       const fields = Object.fromEntries(Object.entries(extras).filter(([, v]) => v !== undefined)) as Record<string, string | number | null>;
       ctx.settle({ state: 'refused', error, ...(Object.keys(fields).length ? { fields } : {}) });
     };
     // Re-read every pinned fact; the commit pushed is `expectedHead`, whatever HEAD is now.
-    const g = await gather(ctx, deps, { ref: pins.ref, head: body.expectedHead });
+    const g = await gather(ctx, deps, { ref: pins.ref, head: body.expectedHead, repo: pins.repo, pushUrl: pins.pushUrl });
     if (!g.ok) return refuse(g.body);
     const f = g.facts;
     if (!f.fastForward) return refuse({ error: 'non-fast-forward', remoteTip: f.remoteTip, behind: f.behind });
     if (f.target.ref !== pins.targetRef || f.remoteTip !== pins.remoteTip) return refuse({ error: 'stale', head: body.expectedHead });
 
-    const base = deps.baseEnv();
-    const net = networkEnv(base, ctx.ghEnv);
+    const net = networkEnv(deps.baseEnv(), ctx.ghEnv);
     const intent: PushIntent = {
-      ownerRepo: f.ownerRepo, ref: f.ref, targetRef: f.target.ref, create: f.target.create, expectedHead: body.expectedHead, login: ctx.login, cwd: ctx.cwd, startedAt: deps.now(),
+      ownerRepo: f.ownerRepo, pushUrl: f.pushUrl, ref: f.ref, targetRef: f.target.ref, create: f.target.create,
+      expectedHead: body.expectedHead, login: ctx.login, cwd: ctx.cwd, startedAt: deps.now(),
     };
-    writePushIntent(deps.stateDir(), GitWriteReceipts.key(ctx.owner, ctx.requestId), intent, deps.now());
-    ctx.markInFlight();
-    const out = await deps.push(pushArgv(body.expectedHead, f.target.ref), ctx.cwd, net, PUSH_TIMEOUT_MS);
-    if (!out.spawned) return refuse({ error: 'git-operation-failed' });
-
-    const done = () => ctx.settle({ state: 'done', fields: { pushed: body.expectedHead, target: f.target.ref } });
-    if (out.code === 0 && !out.timedOut) {
-      await recordUpstream(deps, intent);
-      return done();
+    const dir = deps.stateDir();
+    const key = GitWriteReceipts.key(ctx.owner, ctx.requestId);
+    try {
+      writePushIntent(dir, key, intent, deps.now());
+    } catch (error) {
+      deps.log(`the push intent could not be written: ${error instanceof Error ? error.message : String(error)}`);
+      return refuse({ error: 'git-receipts-unavailable' });
     }
+    ctx.markInFlight();
+    try {
+      const outcome = await pushAndRead(ctx, intent, net);
+      if (outcome === 'unknown') throw new Error('push outcome unknown');
+      if (outcome.state === 'done') {
+        await recordPushed(deps, intent).catch(() => undefined);
+        ctx.settle({ state: 'done', fields: { pushed: intent.expectedHead, target: intent.targetRef } });
+      } else {
+        refuse(outcome.body);
+      }
+      removePushIntent(dir, key);
+    } catch (error) {
+      // The receipt reads `uncertain`; recovery reads the remote once the child can no longer land.
+      schedulePushRecheck(PUSH_RECHECK_DELAY_MS);
+      throw error;
+    }
+  }
+
+  /** Push, then classify. `unknown` when neither git nor the remote can say whether it landed. */
+  async function pushAndRead(ctx: GitWriteExecuteContext, intent: PushIntent, net: NodeJS.ProcessEnv): Promise<{ state: 'done' } | { state: 'refused'; body: GitWriteErrorBody } | 'unknown'> {
+    const out = await deps.push(pushArgv(intent.pushUrl, intent.expectedHead, intent.targetRef), ctx.cwd, net, PUSH_TIMEOUT_MS);
+    if (!out.spawned) return { state: 'refused', body: { error: 'git-operation-failed' } };
+    if (out.code === 0 && !out.timedOut) return { state: 'done' };
     if (!out.timedOut) {
       const rejected = out.stdout.split('\n').find((l) => l.startsWith('!'));
       if (rejected && /non-fast-forward|fetch first|stale info/.test(rejected)) {
-        const tip = await remoteTipOf(deps.remote, 'origin', ctx.cwd, f.target.ref, net, ctx.login);
-        return refuse({ error: 'non-fast-forward', remoteTip: 'tip' in tip ? tip.tip : null });
+        const tip = await remoteTipOf(deps.remote, intent.pushUrl, ctx.cwd, intent.targetRef, net, ctx.login);
+        return { state: 'refused', body: { error: 'non-fast-forward', remoteTip: 'tip' in tip ? tip.tip : null } };
       }
       if (rejected || remoteFailure(out.stderr, ctx.login).error === 'remote-forbidden') {
         // Refused by the remote (permission, protection rule): nothing landed.
-        return refuse({ error: 'remote-forbidden', login: ctx.login });
+        return { state: 'refused', body: { error: 'remote-forbidden', login: ctx.login } };
       }
     }
     // Killed or failed on the way: the remote tip says whether it landed.
     const landed = await pushLanded(deps, intent, net);
-    if (landed === 'landed') {
-      await recordUpstream(deps, intent);
-      return done();
-    }
-    if (landed === 'not-landed') return refuse({ error: 'push-not-landed' });
-    throw new Error('push outcome unknown');
+    if (landed === 'landed') return { state: 'done' };
+    if (landed === 'not-landed') return { state: 'refused', body: { error: 'push-not-landed' } };
+    return 'unknown';
   }
 
   return { preview, execute };
@@ -557,50 +686,86 @@ export interface PushRecoveryOptions {
 }
 
 /**
- * One pass over the `uncertain` push receipts a restart left. A row is read
- * only once PUSH_RECHECK_DELAY_MS has passed since it started (a child that
- * outlived the daemon may still land), then settles `done` when `expectedHead`
- * is on the remote and `refused` / `push-not-landed` when it is not. Nothing
- * is ever pushed again. Returns how many rows are still `uncertain`.
+ * One pass over the `uncertain` push receipts. A row is read only once
+ * PUSH_RECHECK_DELAY_MS has passed since it started (a child that outlived
+ * the daemon may still land), then settles `done` when `expectedHead` is on
+ * the remote and `refused` / `push-not-landed` when it is not. A row whose
+ * intent is missing or unreadable stays `uncertain`. Nothing is ever pushed
+ * again. Returns how many rows are still `uncertain`.
  */
 export async function recheckUncertainPushes(receipts: GitWriteReceipts, opts: PushRecoveryOptions): Promise<number> {
   const deps = opts.deps ?? defaultPushDeps;
-  const intents = readPushIntents(deps.stateDir());
+  if (!receipts.available) return 0;
+  const dir = deps.stateDir();
   let left = 0;
   for (const { key, row } of receipts.uncertain('push')) {
-    const intent = intents[key];
-    const startedAt = row.startedAt ?? intent?.startedAt ?? row.createdAt;
-    if (!intent || deps.now() < startedAt + PUSH_RECHECK_DELAY_MS) { left += 1; continue; }
+    const read = readPushIntent(dir, key);
+    if (read.state !== 'ok') {
+      if (read.state === 'unreadable') deps.log(`an in-flight push intent is unreadable: ${read.reason}`);
+      left += 1;
+      continue;
+    }
+    const intent = read.intent;
+    if (deps.now() < (row.startedAt ?? intent.startedAt) + PUSH_RECHECK_DELAY_MS) { left += 1; continue; }
     const token = await opts.identity(intent.login);
     if (!token.ok) { left += 1; continue; }
     const net = networkEnv(deps.baseEnv(), { GH_TOKEN: token.token, GH_HOST: 'github.com', GH_PROMPT_DISABLED: '1' });
     const landed = await pushLanded(deps, intent, net).catch((): Landed => 'unknown');
+    if (landed === 'unknown') { left += 1; continue; }
     if (landed === 'landed') {
-      await recordUpstream(deps, intent).catch(() => undefined);
+      await recordPushed(deps, intent).catch(() => undefined);
       receipts.settle(key, { state: 'done', fields: { pushed: intent.expectedHead, target: intent.targetRef } });
+    } else {
+      receipts.settle(key, { state: 'refused', error: 'push-not-landed' });
     }
-    else if (landed === 'not-landed') receipts.settle(key, { state: 'refused', error: 'push-not-landed' });
-    else left += 1;
+    removePushIntent(dir, key);
   }
   return left;
 }
 
+/** The recovery loop the daemon started, if any: an in-process `uncertain` push asks it for a re-check. */
+let activeRecovery: { kick(delayMs: number): void } | null = null;
+
+function schedulePushRecheck(delayMs: number): void {
+  activeRecovery?.kick(delayMs);
+}
+
 /**
- * Re-check the `uncertain` pushes now and every `intervalMs` until none is
- * left. Call once after the gate is built. Returns the stop function.
+ * Re-check the `uncertain` pushes now, then every `intervalMs` while any is
+ * left, and again whenever a push in this process turns `uncertain`. Call once
+ * after the gate is built; the returned function stops it (daemon shutdown).
  */
 export function startPushRecovery(receipts: GitWriteReceipts, opts: PushRecoveryOptions & { intervalMs?: number }): () => void {
+  const interval = opts.intervalMs ?? 60_000;
   let stopped = false;
   let timer: NodeJS.Timeout | undefined;
+  let dueAt = Infinity;
+  let running = false;
+  const schedule = (delayMs: number) => {
+    if (stopped || Date.now() + delayMs >= dueAt) return;
+    if (timer) clearTimeout(timer);
+    dueAt = Date.now() + delayMs;
+    timer = setTimeout(tick, delayMs);
+    timer.unref?.();
+  };
   const tick = () => {
+    timer = undefined;
+    dueAt = Infinity;
+    if (running) return schedule(1_000);
+    running = true;
     void recheckUncertainPushes(receipts, opts).catch(() => 1).then((left) => {
-      if (stopped || left === 0) return;
-      timer = setTimeout(tick, opts.intervalMs ?? 60_000);
-      timer.unref?.();
+      running = false;
+      if (left > 0) schedule(interval);
     });
   };
-  tick();
-  return () => { stopped = true; if (timer) clearTimeout(timer); };
+  const handle = { kick: (delayMs: number) => schedule(delayMs) };
+  activeRecovery = handle;
+  schedule(0);
+  return () => {
+    stopped = true;
+    if (timer) clearTimeout(timer);
+    if (activeRecovery === handle) activeRecovery = null;
+  };
 }
 
 registerPhoneGitWriteAction('push', createPhoneGitPushHandlers());
