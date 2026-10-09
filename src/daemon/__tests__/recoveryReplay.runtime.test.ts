@@ -143,8 +143,9 @@ describe.skipIf(!onWindows)('recovery replay — real ConPTY (win32 only; elsewh
 
     // First resize keeps the saved size (schedules the unmute), the second
     // changes it before the 100 ms drain elapses — the Resume row shrinking
-    // the pane is the real-world trigger. The held bytes may mix ConPTY frames
-    // from both sizes; none of them may be replayed.
+    // the pane is the real-world trigger. In-box, the held bytes may mix ConPTY
+    // frames from both sizes, so none of them may be replayed; bundled, they
+    // are the only frame there is (see the branch below).
     mgr.resizeSession(managed.meta.id, 80, 24);
     mgr.resizeSession(managed.meta.id, 80, 22);
     await waitFor(() => !managed.bridge.isMuted, 'unmute');

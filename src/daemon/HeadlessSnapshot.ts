@@ -42,6 +42,9 @@
  * a renderer gets the query live and answers it (the daemon stays silent), or
  * no renderer ever sees it except through a replay, and every replay strips
  * queries (replayQuerySanitizer) — the daemon is then the only responder.
+ * "Replay" includes the live delta an attach flush appends after a snapshot:
+ * SessionPipe writes it before the flush-done marker, and the desk sanitizes
+ * everything before that marker.
  */
 
 import { Terminal } from '@xterm/headless';

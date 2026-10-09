@@ -1386,7 +1386,9 @@ export class DaemonPTYBridge extends EventEmitter {
    * the same synchronous data callback that decides where the chunk goes.
    * If a viewer receives it live, that viewer's xterm answers and the daemon
    * does not; if none does, the chunk only ever reaches a viewer through a
-   * replay, which strips the query, so the daemon is the only responder.
+   * replay, which strips the query, so the daemon is the only responder. (An
+   * attach flush's live delta counts as replay: it is written before the
+   * flush-done marker, and the desk sanitizes everything before the marker.)
    *
    * The reply goes straight to `ptyProcess.write`, not through `noteInput`:
    * it is not user input, and nothing that tracks input (drafts, submits,
@@ -1454,7 +1456,8 @@ export class DaemonPTYBridge extends EventEmitter {
 
   /**
    * #1464: forget what was held so far but keep holding. Called right before a
-   * muted PTY is resized to a new geometry — the chunks already held were
+   * muted PTY is resized to a new geometry (not on the bundled ConPTY, which
+   * sends nothing on resize to replace them, #1965) — the chunks already held were
    * produced at the old size, while the shell's SIGWINCH repaint (the prompt
    * at the new size) arrives after it and is what the unmute should release.
    */
