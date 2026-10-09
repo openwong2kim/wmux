@@ -16,7 +16,7 @@
 // turn view, which is a per-pane phone affordance rather than a fleet signal.
 
 import type { NotificationCategory, NotificationType } from '../../shared/types';
-import { REMOTE_LIMITS, remoteId } from '../../shared/remoteLimits';
+import { REMOTE_LIMITS, cleanRemoteText, remoteId } from '../../shared/remoteLimits';
 
 /** The recorded attention kinds the daemon publishes (WebTerminalServer). */
 export type RemoteAttentionKind = 'critical' | 'notify' | 'approval';
@@ -49,10 +49,9 @@ function str(v: unknown): string {
   return typeof v === 'string' ? v : '';
 }
 
-/** Collapse control characters (newlines included) and cap the length. */
+/** Collapse control and bidi characters (newlines included) and cap the length. */
 function clean(v: unknown, max: number): string {
-  // eslint-disable-next-line no-control-regex
-  return str(v).replace(/[\u0000-\u001f\u007f]+/g, ' ').trim().slice(0, max);
+  return cleanRemoteText(str(v), Infinity).trim().slice(0, max);
 }
 
 /**

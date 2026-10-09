@@ -52,6 +52,16 @@ describe('formatRemoteAttention', () => {
     expect(formatRemoteAttention('approval', { tier: 'info', phase: 'resolved' })).toBeNull();
     expect(formatRemoteAttention('approval', { tier: 'act', toolName: 'Bash' })?.body).toBe('Bash');
   });
+
+  it('replaces C1 controls and bidi overrides in toast text, not only C0', () => {
+    const ch = (...codes: number[]) => String.fromCharCode(...codes);
+    const out = formatRemoteAttention('notify', {
+      title: `Build ${ch(0x202e)}gnp.exe${ch(0x202c)} done`,
+      body: `line one${ch(0x85)}line two${ch(0x2028)}three${ch(0x1b)}[31m`,
+    });
+    expect(out?.title).toBe('Build  gnp.exe  done');
+    expect(out?.body).toBe('line one line two three [31m');
+  });
 });
 
 describe('RemoteAttentionGate', () => {
