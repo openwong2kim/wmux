@@ -443,6 +443,16 @@ describe('remote.handler — hostsPair', () => {
     expect(res).toEqual({ ok: false, reason: 'invalid-code', attemptsLeft: 3 });
   });
 
+  it.each([-5, 1.5, 1e300])('drops an attemptsLeft of %s rather than showing it as a count', async (attemptsLeft) => {
+    const store = fakeStore();
+    const fetchImpl = vi.fn(async () => jsonResponse({ error: 'invalid code', attemptsLeft }, false, 403));
+    registerRemoteHandlers({ store: store as never, attachments: fakeAttachments() as never, fetchImpl: fetchImpl as unknown as typeof fetch });
+
+    const res = await getHandler(IPC.REMOTE_HOSTS_PAIR)({}, 'https://box:9600', 'WRONG');
+
+    expect(res).toEqual({ ok: false, reason: 'invalid-code', attemptsLeft: undefined });
+  });
+
   it('reports unreachable when the fetch itself throws', async () => {
     const store = fakeStore();
     const fetchImpl = vi.fn(async () => { throw new Error('ECONNREFUSED'); });

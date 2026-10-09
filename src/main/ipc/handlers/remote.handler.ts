@@ -236,7 +236,7 @@ async function exchangePairCode(
         return {
           ok: false,
           reason: 'invalid-code',
-          attemptsLeft: Number.isSafeInteger(body.attemptsLeft) ? body.attemptsLeft : undefined,
+          attemptsLeft: Number.isSafeInteger(body.attemptsLeft) && (body.attemptsLeft as number) >= 0 ? body.attemptsLeft : undefined,
         };
       case 'insecure-transport':
         return { ok: false, reason: 'insecure-transport' };
