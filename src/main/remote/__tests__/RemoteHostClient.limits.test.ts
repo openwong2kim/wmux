@@ -160,6 +160,62 @@ describe('RemoteHostClient — geometry', () => {
   });
 });
 
+/** Control and bidi characters, built from code points so no editor or tool
+ *  can normalise them away: ESC, CR, LF, BEL, NUL, C1 NEL, LINE SEPARATOR,
+ *  RIGHT-TO-LEFT OVERRIDE, FIRST STRONG ISOLATE. */
+const C = {
+  esc: String.fromCharCode(0x1b),
+  cr: String.fromCharCode(0x0d),
+  lf: String.fromCharCode(0x0a),
+  bel: String.fromCharCode(0x07),
+  nul: String.fromCharCode(0x00),
+  nel: String.fromCharCode(0x85),
+  ls: String.fromCharCode(0x2028),
+  rlo: String.fromCharCode(0x202e),
+  fsi: String.fromCharCode(0x2068),
+};
+
+describe('RemoteHostClient — control characters in host text', () => {
+  it('normalizeWorkspaces replaces control and bidi characters in display text', () => {
+    const out = normalizeWorkspaces({
+      workspaces: [{
+        id: 'w1',
+        name: `evil${C.esc}[31mRED${C.cr}${C.lf}line${C.rlo}gnp.exe${C.nul}${C.nel}x${C.ls}y${C.fsi}z`,
+        panes: [{
+          sessionId: 's1',
+          shell: `pwsh${C.esc}[2J`,
+          cwd: `C:\\x${C.bel}${C.esc}]8;;file:///C:/${C.bel}link`,
+          agentName: `claude${C.esc}[5m`,
+        }],
+      }],
+    });
+    expect(out).toEqual([{
+      id: 'w1',
+      name: 'evil [31mRED line gnp.exe x y z',
+      panes: [{ sessionId: 's1', shell: 'pwsh [2J', cwd: 'C:\\x ]8;;file:///C:/ link', agentName: 'claude [5m' }],
+    }]);
+  });
+
+  it('normalizeWorkspaces drops a row whose id carries a control character', () => {
+    const out = normalizeWorkspaces({
+      workspaces: [
+        { id: `w${C.esc}1`, name: 'a', panes: [] },
+        { id: 'w2', name: 'b', panes: [{ sessionId: `s${C.lf}1` }, { sessionId: 's2' }] },
+      ],
+    });
+    expect(out).toEqual([{ id: 'w2', name: 'b', panes: [{ sessionId: 's2' }] }]);
+  });
+
+  it("a host's error text reaches the caller without control characters", async () => {
+    const detail = `boom${C.esc}[31m${C.cr}${C.lf}FAKE: credential accepted${C.rlo}`;
+    const client = new RemoteHostClient(host, (async () => new Response(JSON.stringify({ error: 'x', detail }), { status: 500 })) as unknown as typeof fetch);
+    await expect(client.createWorkspace('w1')).rejects.toThrow(/^boom \[31m FAKE: credential accepted $/);
+
+    const resize = new RemoteHostClient(host, (async () => new Response(JSON.stringify({ error: detail }), { status: 500 })) as unknown as typeof fetch);
+    await expect(resize.resizeSession('s1', 80, 24)).resolves.toEqual({ ok: false, reason: 'boom [31m FAKE: credential accepted ' });
+  });
+});
+
 describe('normalizeWorkspaces — bounds', () => {
   it('keeps the first row of a duplicate workspace or session id', () => {
     const out = normalizeWorkspaces({

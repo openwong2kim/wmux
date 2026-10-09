@@ -35,6 +35,7 @@ import {
   REMOTE_LIMITS,
   boundedRemoteString,
   clampRemoteDimension,
+  cleanRemoteText,
   clampRemoteGeometry,
   remoteId,
 } from '../../shared/remoteLimits';
@@ -141,8 +142,8 @@ function isCredentialRejection(status: number, body: ErrorBody): boolean {
 
 /** The host's own wording for a failure, else `fallback`. */
 function errorMessage(body: ErrorBody, fallback: string): string {
-  if (typeof body?.detail === 'string' && body.detail) return body.detail.slice(0, 256);
-  if (typeof body?.error === 'string' && body.error) return body.error.slice(0, 256);
+  if (typeof body?.detail === 'string' && body.detail) return cleanRemoteText(body.detail, 256);
+  if (typeof body?.error === 'string' && body.error) return cleanRemoteText(body.error, 256);
   return fallback;
 }
 
@@ -299,7 +300,7 @@ export function normalizeWorkspaces(body: unknown): RemoteWorkspaceSummary[] {
             ? {
                 // Capped: the value is another machine's output flowing into
                 // row text, title/aria labels, and per-tick string compares.
-                agentName: pane.agentName.slice(0, REMOTE_LIMITS.agentName),
+                agentName: cleanRemoteText(pane.agentName, REMOTE_LIMITS.agentName),
                 ...(isRemoteAgentStatus(pane.agentStatus) ? { agentStatus: pane.agentStatus } : {}),
               }
             : {}),
@@ -548,7 +549,7 @@ export class RemoteHostClient implements RemotePaneEvents {
     if (!res.ok) {
       const parsed = body as { error?: string; detail?: string } | null;
       const reason = parsed?.error ?? parsed?.detail;
-      return { ok: false, reason: typeof reason === 'string' && reason ? reason.slice(0, 256) : `HTTP ${res.status}` };
+      return { ok: false, reason: typeof reason === 'string' && reason ? cleanRemoteText(reason, 256) : `HTTP ${res.status}` };
     }
     const parsed = body as { cols?: unknown; rows?: unknown } | null;
     const applied = clampRemoteGeometry(parsed?.cols, parsed?.rows);
@@ -762,7 +763,7 @@ export class RemoteHostClient implements RemotePaneEvents {
           for (const w of [...waiters, ...queued]) w.reject(err);
           return;
         }
-        const err = new Error(typeof body?.error === 'string' && body.error ? body.error : `write failed: HTTP ${res.status}`);
+        const err = new Error(typeof body?.error === 'string' && body.error ? cleanRemoteText(body.error, 256) : `write failed: HTTP ${res.status}`);
         for (const w of waiters) w.reject(err);
         return;
       }

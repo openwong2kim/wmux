@@ -53,14 +53,40 @@ export const REMOTE_LIMITS = {
   layout: PHONE_SIDEBAR_LIMITS.layout,
 } as const;
 
-/** A bounded, non-empty id from another machine, or undefined. */
-export function remoteId(value: unknown): string | undefined {
-  return typeof value === 'string' && value.length > 0 && value.length <= REMOTE_LIMITS.id ? value : undefined;
+/**
+ * Characters a host could use to restyle or reorder text this app shows as
+ * its own: C0 and C1 controls (ESC, CR, LF, NUL and the rest), DEL, the
+ * Unicode line and paragraph separators, and the bidi embedding, override and
+ * isolate marks. Same reflex as the attention toast text (remoteAttention.ts).
+ */
+// eslint-disable-next-line no-control-regex
+const REMOTE_TEXT_CONTROLS = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]+/g;
+// eslint-disable-next-line no-control-regex
+const HAS_REMOTE_TEXT_CONTROL = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]/;
+
+/** Display text from another machine: cut to `max` characters, each run of
+ *  control characters replaced by one space. */
+export function cleanRemoteText(value: string, max: number): string {
+  return value.slice(0, max).replace(REMOTE_TEXT_CONTROLS, ' ');
 }
 
-/** `value` cut to `max` characters, or undefined when it is not a string. */
+/**
+ * A bounded, non-empty id from another machine, or undefined. An id is sent
+ * back to the host as is, so one carrying a control character is refused
+ * rather than rewritten.
+ */
+export function remoteId(value: unknown): string | undefined {
+  return typeof value === 'string'
+    && value.length > 0
+    && value.length <= REMOTE_LIMITS.id
+    && !HAS_REMOTE_TEXT_CONTROL.test(value)
+    ? value
+    : undefined;
+}
+
+/** `value` as display text (see cleanRemoteText), or undefined when it is not a string. */
 export function boundedRemoteString(value: unknown, max: number): string | undefined {
-  return typeof value === 'string' ? value.slice(0, max) : undefined;
+  return typeof value === 'string' ? cleanRemoteText(value, max) : undefined;
 }
 
 /**

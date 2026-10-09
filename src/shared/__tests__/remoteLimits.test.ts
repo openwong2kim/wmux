@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { REMOTE_LIMITS, clampRemoteGeometry, parseRemoteLayout } from '../remoteLimits';
+import { REMOTE_LIMITS, boundedRemoteString, cleanRemoteText, clampRemoteGeometry, parseRemoteLayout, remoteId } from '../remoteLimits';
 
 const leaf = (paneId: string, ptyId: string) => ({
   kind: 'leaf',
@@ -15,6 +15,36 @@ function deepTree(depth: number): unknown {
   }
   return node;
 }
+
+describe('remote text', () => {
+  const ch = (...codes: number[]) => String.fromCharCode(...codes);
+
+  it('replaces each run of C0, C1, DEL, separator and bidi controls with one space', () => {
+    expect(cleanRemoteText(`a${ch(0x1b, 0x5b)}b`, 100)).toBe('a [b');
+    expect(cleanRemoteText(`a${ch(0x0d, 0x0a, 0x00, 0x7f, 0x85)}b`, 100)).toBe('a b');
+    expect(cleanRemoteText(`a${ch(0x2028)}b${ch(0x2029)}c`, 100)).toBe('a b c');
+    for (const code of [0x202a, 0x202b, 0x202c, 0x202d, 0x202e, 0x2066, 0x2067, 0x2068, 0x2069]) {
+      expect(cleanRemoteText(`a${ch(code)}b`, 100)).toBe('a b');
+    }
+  });
+
+  it('keeps ordinary text, including non-Latin scripts and emoji joiners', () => {
+    const text = `한글 مرحبا ${ch(0xd83d, 0xdc69, 0x200d, 0xd83d, 0xdcbb)} C:\\work`;
+    expect(cleanRemoteText(text, 100)).toBe(text);
+  });
+
+  it('cuts before cleaning, so the result is never longer than the limit', () => {
+    expect(cleanRemoteText('x'.repeat(10) + ch(0x1b), 10)).toBe('x'.repeat(10));
+    expect(boundedRemoteString(`${ch(0x1b)}abc`, 2)).toBe(' a');
+    expect(boundedRemoteString(42, 2)).toBeUndefined();
+  });
+
+  it('refuses an id that carries a control character instead of rewriting it', () => {
+    expect(remoteId('session-1')).toBe('session-1');
+    expect(remoteId(`session${ch(0x0a)}1`)).toBeUndefined();
+    expect(remoteId(`session${ch(0x202e)}1`)).toBeUndefined();
+  });
+});
 
 describe('parseRemoteLayout', () => {
   it('accepts a well-formed tree', () => {
