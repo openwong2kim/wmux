@@ -2424,6 +2424,7 @@ html[data-fullscreen] .wmux-shell-body {
 .wmux-git-repo-tag { position: absolute; right: 8px; bottom: 7px; max-width: 96px; height: 16px; padding: 0 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border-radius: var(--chip-radius, 6px); background: var(--selection); font-size: 11px; line-height: 16px; color: var(--text-sub); }
 .wmux-git-repo-tag:hover { background: var(--selection-hover); color: var(--text-main); }
 .wmux-git-repo-tag[aria-pressed='true'] { color: var(--text-main); }
+.wmux-git-item[aria-current='true'] + .wmux-git-repo-tag { background: var(--selection-hover); }
 .wmux-git-detail-head { position: sticky; top: 0; z-index: 1; display: flex; flex-direction: column; gap: 6px; padding: 12px 0 12px; background: var(--bg-base); border-bottom: 1px solid var(--line); }
 .wmux-git-detail-titlerow { display: flex; align-items: flex-start; gap: 12px; }
 .wmux-git-detail-title { flex: 1; min-width: 0; margin: 0; font-size: 16px; font-weight: 600; line-height: 22px; color: var(--text-main); overflow-wrap: anywhere; }

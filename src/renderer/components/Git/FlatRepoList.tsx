@@ -87,7 +87,10 @@ export function FlatLists({ groups, tab, refreshKey, filter, onFilter, sel, onSe
   // A stored chip whose repo has no open workspace left is ignored.
   const chips = (groups ?? []).filter((g) => storedChips.includes(g.key)).map((g) => g.key);
   const toggleChip = (key: string) => {
-    const next = chips.includes(key) ? chips.filter((k) => k !== key) : [...chips, key];
+    // Read the store, not this render: two clicks before a re-render both count.
+    const keys = new Set((groups ?? []).map((g) => g.key));
+    const cur = useStore.getState().gitPage.repoChips.filter((k) => keys.has(k));
+    const next = cur.includes(key) ? cur.filter((k) => k !== key) : [...cur, key];
     setGitPage({ repoChips: next });
     saveGitRepoChips(next);
   };

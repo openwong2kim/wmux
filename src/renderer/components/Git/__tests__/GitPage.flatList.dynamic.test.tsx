@@ -146,7 +146,9 @@ describe('Git page, All repos flat list', () => {
     act(() => useStore.setState({ gitPage: { ...initialGitPageState(), tab: 'prs', scope: 'all', pick: null } }));
     await render();
     expect(chip('alpha').getAttribute('aria-pressed')).toBe('true');
-    expect(rows().every((r) => r.repo === 'alpha')).toBe(true);
+    expect(rows().every((r) => r.repo === 'alpha')).toBe(true);    // Two clicks before a re-render both count.
+    act(() => { chip('alpha').click(); chip('beta').click(); });
+    expect(useStore.getState().gitPage.repoChips).toEqual(['github.com/o/beta']);
   });
 
   it('the layout toggle switches to the grouped view and back, and is kept', async () => {
