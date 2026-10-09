@@ -1,0 +1,202 @@
+// All repos on the Git page, flat: every repo's Issues or Pull requests in
+// one list, newest update first, each row tagged with its repo. A row of repo
+// chips above it filters by repo (none on = every repo); a row's tag toggles
+// its repo's chip. Each repo is read the way its own list reads it (one
+// headless reader per repo, only the active repo polling), so a chip can say
+// that repo's count, that it is still loading, or that its read failed.
+import { useEffect, useMemo, useState } from 'react';
+import { useT } from '../../hooks/useT';
+import { useStore } from '../../stores';
+import { FOCUS_RING } from '../focusRing';
+import { IconX } from '../icons';
+import { ListFreshness } from './ListFreshness';
+import { PrRow, usePrList } from './PrSection';
+import { IssueFilterBar, IssueRow, useIssueList } from './IssueSection';
+import { repoOwnerWorkspace, type RepoGroup } from './repoGroups';
+import type { GitListState } from './useGitList';
+import { saveGitRepoChips, type GitPageTab, type GitSelection } from './gitPageState';
+import type { PrSummary } from '../../../shared/prSurface';
+import type { IssueFilter, IssueSummary } from '../../../shared/issueSurface';
+
+type Item = PrSummary | IssueSummary;
+
+/** What a repo's reader last said, with the path it read and how to read it again. */
+export interface RepoFeedState extends Omit<GitListState<Item[]>, 'data'> {
+  repoPath: string;
+  data: Item[] | null;
+  reload: (force?: boolean) => void;
+}
+
+/** One repo's list, read and reported up; draws nothing. */
+function RepoFeed({ tab, repoPath, active, filter, refreshKey, onState, onItems }: {
+  tab: GitPageTab;
+  repoPath: string;
+  active: boolean;
+  filter: IssueFilter;
+  refreshKey: number;
+  onState: (s: RepoFeedState) => void;
+  onItems: (list: PrSummary[] | IssueSummary[]) => void;
+}) {
+  const opts = { refreshKey, shown: true, poll: active, lazy: false };
+  // Only the shown tab's reader runs: the other is handed no path.
+  const prs = usePrList(tab === 'prs' ? repoPath : null, opts);
+  const issues = useIssueList(tab === 'issues' ? repoPath : null, filter, opts);
+  const list: GitListState<Item[]> & { reload: (force?: boolean) => void } = tab === 'prs' ? prs : issues;
+  useEffect(() => {
+    onState({ ...list, repoPath });
+    // A new answer (or a new state of the read) is the signal.
+  }, [list.data, list.loading, list.error, list.gate, list.retryAt, list.fetchedAt, repoPath]);
+  useEffect(() => {
+    if (list.data) onItems(list.data as PrSummary[] | IssueSummary[]);
+  }, [list.data]);
+  return null;
+}
+
+/** The most a list reads (main's gh list caps); a repo this long says "100+". */
+const LIST_READ_CAP = 100;
+
+const updatedMs = (item: Item) => {
+  const ms = Date.parse(item.updatedAt);
+  return Number.isFinite(ms) ? ms : 0;
+};
+
+export function FlatLists({ groups, tab, refreshKey, filter, onFilter, sel, onSelect, publish, onOwners, labelOf }: {
+  groups: RepoGroup[] | null;
+  tab: GitPageTab;
+  refreshKey: number;
+  filter: IssueFilter;
+  onFilter: (f: IssueFilter) => void;
+  sel: GitSelection | null;
+  onSelect: (repoPath: string, n: number) => void;
+  publish: (repoPath: string) => (list: PrSummary[] | IssueSummary[]) => void;
+  onOwners?: (owners: Record<string, string | undefined>) => void;
+  /** A repo's full name (owner/repo, or its folder without a remote). */
+  labelOf: (g: RepoGroup) => string;
+}) {
+  const t = useT();
+  const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
+  const storedChips = useStore((s) => s.gitPage.repoChips);
+  const setGitPage = useStore((s) => s.setGitPage);
+  const [feeds, setFeeds] = useState<Record<string, RepoFeedState>>({});
+  const owners = useMemo(
+    () => Object.fromEntries((groups ?? []).map((g) => [g.prPath, repoOwnerWorkspace(g, activeWorkspaceId)])),
+    [groups, activeWorkspaceId],
+  );
+  useEffect(() => { onOwners?.(owners); }, [owners, onOwners]);
+
+  // A stored chip whose repo has no open workspace left is ignored.
+  const chips = (groups ?? []).filter((g) => storedChips.includes(g.key)).map((g) => g.key);
+  const toggleChip = (key: string) => {
+    const next = chips.includes(key) ? chips.filter((k) => k !== key) : [...chips, key];
+    setGitPage({ repoChips: next });
+    saveGitRepoChips(next);
+  };
+
+  if (groups === null) return <div className="wmux-git-note">{t('git.loading')}</div>;
+  if (groups.length === 0) return <div className="wmux-git-note" data-git-all-empty>{t('git.allRepos.empty')}</div>;
+
+  // A feed is kept per repo and tab, and counts only while it reads the path
+  // its group reads now.
+  const feedOf = (g: RepoGroup) => {
+    const f = feeds[`${g.key}\0${tab}`];
+    return f && f.repoPath === g.prPath ? f : undefined;
+  };
+  const shownGroups = chips.length === 0 ? groups : groups.filter((g) => chips.includes(g.key));
+  const rows = shownGroups
+    .flatMap((g) => (feedOf(g)?.data ?? []).map((item) => ({ g, item })))
+    .sort((a, b) => updatedMs(b.item) - updatedMs(a.item)
+      || a.g.key.localeCompare(b.g.key)
+      || b.item.number - a.item.number);
+  const shownFeeds = shownGroups.map(feedOf);
+  const waiting = shownFeeds.some((f) => !f || f.loading);
+  // One freshness line for the list: the oldest answer, a failed read's
+  // "Could not refresh" (Retry reads the failed repos again), a rate limit.
+  const answered = groups.map(feedOf).filter((f): f is RepoFeedState => !!f && !f.gate);
+  const failed = answered.filter((f) => f.error !== null);
+  const fetched = answered.map((f) => f.fetchedAt).filter((x): x is number => x !== null);
+  const retryAt = answered.map((f) => f.retryAt).find((x) => x !== null) ?? null;
+
+  return (
+    <div data-git-flat-list>
+      {groups.map((g) => (
+        <RepoFeed
+          key={`${g.key}\0${tab}`}
+          tab={tab}
+          repoPath={g.prPath}
+          active={g.active}
+          filter={filter}
+          refreshKey={refreshKey}
+          onState={(s) => setFeeds((m) => ({ ...m, [`${g.key}\0${tab}`]: s }))}
+          onItems={publish(g.prPath)}
+        />
+      ))}
+      <div className="wmux-git-chips" role="group" aria-label={t('git.flat.chipsLabel')} data-git-repo-chips>
+        {groups.map((g) => {
+          const f = feedOf(g);
+          const count = f?.data?.length;
+          const problem = f?.gate
+            ? (f.gate.code === 'no-remote' ? t('git.noRemote') : f.gate.message || t('git.list.failed'))
+            : f?.error ?? null;
+          const state = problem ? 'error' : !f || (f.loading && !f.data) ? 'loading' : count ? 'ok' : 'empty';
+          const shownCount = count ? (count >= LIST_READ_CAP ? `${LIST_READ_CAP}+` : String(count)) : '';
+          return (
+            <button
+              key={g.key}
+              type="button"
+              className={`wmux-git-chip ${FOCUS_RING}`}
+              aria-pressed={chips.includes(g.key)}
+              title={problem ? `${labelOf(g)}: ${problem}` : labelOf(g)}
+              onClick={() => toggleChip(g.key)}
+              data-git-repo-chip={g.name}
+              data-state={state}
+            >
+              <span className="wmux-git-chip-name">{g.name}</span>
+              {state === 'loading' && <span className="wmux-git-chip-spin motion-safe:animate-spin" aria-label={t('git.loading')} data-git-chip-loading />}
+              {shownCount && <span className="wmux-git-chip-count">{shownCount}</span>}
+              {state === 'error' && <span className="wmux-git-chip-error" role="img" aria-label={problem ?? ''} data-git-chip-error><IconX size={10} /></span>}
+            </button>
+          );
+        })}
+      </div>
+      {tab === 'issues' && <IssueFilterBar filter={filter} onFilter={onFilter} />}
+      <ListFreshness
+        fetchedAt={fetched.length ? Math.min(...fetched) : null}
+        error={failed[0]?.error ?? null}
+        retryAt={retryAt}
+        onRetry={() => failed.forEach((f) => f.reload(true))}
+      />
+      {rows.length === 0 && (waiting
+        ? <div className="wmux-git-note">{t('git.loading')}</div>
+        : <div className="wmux-git-note" data-git-flat-empty>
+          {tab === 'prs' ? t('git.noPrs') : filter.kind !== 'all' ? t('git.issues.noneFiltered') : t('git.issues.none')}
+        </div>)}
+      {rows.length > 0 && (
+        <ul className="wmux-git-list" aria-label={tab === 'prs' ? t('git.pullRequests') : t('git.issues.listLabel')} data-git-flat-rows>
+          {rows.map(({ g, item }) => {
+            const repoPath = g.prPath;
+            const selected = !!sel && sel.repoPath === repoPath && sel.number === item.number;
+            const dragContext = { repoPath, ...(owners[repoPath] ? { workspaceId: owners[repoPath] } : {}) };
+            const tag = (
+              <button
+                type="button"
+                className={`wmux-git-repo-tag ${FOCUS_RING}`}
+                title={labelOf(g)}
+                aria-label={t('git.flat.tagLabel', { repo: labelOf(g) })}
+                aria-pressed={chips.includes(g.key)}
+                onClick={() => toggleChip(g.key)}
+                data-git-repo-tag={g.name}
+              >{g.name}</button>
+            );
+            return tab === 'prs' ? (
+              <PrRow key={`${g.key}\0${item.number}`} pr={item as PrSummary} repoPath={repoPath} selected={selected}
+                onSelect={() => onSelect(repoPath, item.number)} dragContext={dragContext} tag={tag} />
+            ) : (
+              <IssueRow key={`${g.key}\0${item.number}`} issue={item as IssueSummary} repoPath={repoPath} selected={selected}
+                onSelect={() => onSelect(repoPath, item.number)} dragContext={dragContext} tag={tag} />
+            );
+          })}
+        </ul>
+      )}
+    </div>
+  );
+}

@@ -2409,6 +2409,21 @@ html[data-fullscreen] .wmux-shell-body {
 .wmux-git-group-head:hover { background: var(--hover-fill); }
 .wmux-git-group-name { font-size: 13px; font-weight: 500; color: var(--text-main); }
 .wmux-git-chevron[data-open] { transform: rotate(90deg); }
+.wmux-git-chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 4px 4px 8px; }
+.wmux-git-chip { display: inline-flex; align-items: center; gap: 6px; height: 26px; max-width: 100%; padding: 0 10px; border-radius: var(--chip-radius, 9999px); box-shadow: inset 0 0 0 1px var(--line); font-size: 12px; color: var(--text-sub); }
+.wmux-git-chip:hover { background: var(--hover-fill); color: var(--text-main); }
+.wmux-git-chip[aria-pressed='true'] { background: var(--selection); box-shadow: none; color: var(--text-main); }
+.wmux-git-chip[aria-pressed='true']:hover { background: var(--selection-hover); }
+.wmux-git-chip[data-state='empty']:not([aria-pressed='true']) { opacity: .5; }
+.wmux-git-chip-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wmux-git-chip-count { color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.wmux-git-chip-spin { width: 10px; height: 10px; flex-shrink: 0; border-radius: 9999px; border: 1.5px solid var(--text-muted); border-top-color: transparent; }
+.wmux-git-chip-error { display: inline-flex; flex-shrink: 0; color: var(--accent-red); }
+.wmux-git-tagged-row { position: relative; }
+.wmux-git-tagged-row > .wmux-git-item .wmux-git-item-meta { padding-right: 104px; }
+.wmux-git-repo-tag { position: absolute; right: 8px; bottom: 7px; max-width: 96px; height: 16px; padding: 0 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border-radius: var(--chip-radius, 6px); background: var(--selection); font-size: 11px; line-height: 16px; color: var(--text-sub); }
+.wmux-git-repo-tag:hover { background: var(--selection-hover); color: var(--text-main); }
+.wmux-git-repo-tag[aria-pressed='true'] { color: var(--text-main); }
 .wmux-git-detail-head { position: sticky; top: 0; z-index: 1; display: flex; flex-direction: column; gap: 6px; padding: 12px 0 12px; background: var(--bg-base); border-bottom: 1px solid var(--line); }
 .wmux-git-detail-titlerow { display: flex; align-items: flex-start; gap: 12px; }
 .wmux-git-detail-title { flex: 1; min-width: 0; margin: 0; font-size: 16px; font-weight: 600; line-height: 22px; color: var(--text-main); overflow-wrap: anywhere; }

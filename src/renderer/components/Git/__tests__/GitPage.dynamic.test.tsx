@@ -276,6 +276,8 @@ describe('Git page', () => {
   });
 
   it('All repos: one group per repo, the active repo first; Worktrees keeps the branch bar on top', async () => {
+    // The grouped layout (the flat list has its own tests).
+    act(() => useStore.getState().setGitPage({ allLayout: 'repo' }));
     act(() => root.render(createElement(GitPage)));
     await settle();
     await chooseRepo('all');
@@ -346,6 +348,8 @@ describe('Git page', () => {
   });
 
   it('All repos folds two clones of one remote into one group: one PR list, each clone\'s worktrees labelled', async () => {
+    // The grouped layout (the flat list has its own tests).
+    act(() => useStore.getState().setGitPage({ allLayout: 'repo' }));
     act(() => useStore.setState({
       workspaces: [workspace('a', '/code/alpha'), workspace('b', '/code/alpha-wt/feat'), workspace('c', '/code/beta'), workspace('d', '/tmp/alpha-clone')],
     }));
@@ -366,6 +370,8 @@ describe('Git page', () => {
   });
 
   it('All repos follows a workspace that moves to another repo', async () => {
+    // The grouped layout (the flat list has its own tests).
+    act(() => useStore.getState().setGitPage({ allLayout: 'repo' }));
     act(() => root.render(createElement(GitPage)));
     await settle();
     await chooseRepo('all');

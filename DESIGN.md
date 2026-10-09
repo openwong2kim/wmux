@@ -406,11 +406,22 @@ refresh button. Nothing about branches or worktrees sits above the lists.
 - **Tabs:** text tabs **Issues · Pull requests**, then **Worktrees** as a
   quieter, secondary tab at the end (the active one carries the 2px accent
   bar; a first visit opens on Issues, then the last tab is kept) over a
-  hairline. All repos (from the switcher) groups every open workspace by
-  repo (the active repo first; clones of one remote are one group). Only the
-  shown list of the shown repo polls; another repo's group opens on demand
-  and reads once. The branch bar shows on Worktrees only when the active
-  workspace is in the shown repo.
+  hairline. All repos (from the switcher) shows Issues and Pull requests
+  as **one flat list** across repos, newest update first, each row ending
+  in a small neutral **repo tag** (`--selection`, `--chip-radius`, 11px;
+  the full owner/repo in its tooltip). Over it, a row of **repo chips**,
+  one per repo with its open count: multi-select, none on means every
+  repo, on is `--selection` and off a `--line` hairline. A repo with
+  nothing open keeps a dimmed chip without a digit; a repo still reading
+  shows a small spinner, a failed read a red ✕ with the reason in the
+  tooltip. A row's tag toggles its repo's chip. A **Flat | By repo**
+  segmented control at the toolbar's right brings back the grouped view:
+  every open workspace grouped by repo (the active repo first; clones of
+  one remote are one group), another repo's group opening on demand and
+  reading once. The flat list reads every repo once up front; in both,
+  only the active repo's list polls. Worktrees stays grouped. The branch
+  bar shows on Worktrees only when the active workspace is in the shown
+  repo.
 - **List / detail:** Pull requests and Issues are a split, the list ~30%
   and the detail the rest, each scrolling on its own (the page itself does
   not scroll); stacked on a narrow sheet. A list row is two lines: mono
@@ -448,9 +459,10 @@ refresh button. Nothing about branches or worktrees sits above the lists.
   switches to it) or its folder, the PR, the diff stat (green/red), the
   accent dot only on the active pane's worktree, and Diff / Open / Merge /
   Remove floating over the faded right edge on hover.
-- **Remembered:** the picked repo, tab, issue filter, selected item and list scroll
-  live in the UI store and survive leaving the page; the picked repo and
-  the tab are also kept per viewer across restarts. Anything that lands on a pane (Diff, Open, Go
+- **Remembered:** the picked repo, tab, issue filter, selected item, list
+  scroll, the All repos layout and its repo chips live in the UI store and
+  survive leaving the page; the picked repo, the tab, the layout and the
+  chips are also kept per viewer across restarts. Anything that lands on a pane (Diff, Open, Go
   to terminal, a workspace link) returns to Workspaces.
 - **PR review (detail pane):** under the facts row, in order:
   - **Checks:** a row per check (a green tick for pass, a red mark for fail, a
@@ -910,6 +922,7 @@ primitives plus `Settings/SettingsLayout.tsx` (`SettingsSection`,
 | 2026-10-07 | Owner: the sidebar's default order is Manual (supersedes the 2026-09-25 Attention default); in Attention a new workspace lands last instead of holding the top; the Ctrl+N number is always shown, left of the name, in `--text-muted`, in every order | Rows that move on their own when an agent starts working cost the user the order they built. Ctrl+N already follows the stored order in every mode, so showing its number everywhere tells the truth about the key even when a sorted list makes the numbers read out of sequence. The number is a key label, not a state, so it stays neutral |
 | 2026-10-08 | Owner: Fleet can show its rows as a four-column board again (Running / Needs you / Finished / Idle), as an opt-in layout beside the default list; filters, search, tickets and the detail area are shared, and the old board's folding, dense mode, idle peek and 1–4 keys do not return | Some operators read a fleet by column at a glance; one setting gives them that without bringing back a second set of data, counts or verbs |
 | 2026-10-07 | The Ctrl+N number past eight workspaces: 1–8 on the first eight stored rows, 9 on the last, none between (amends the same-day "always shown" row) | Ctrl+9 jumps to the last workspace, not the ninth, so a 9 on the ninth row named a row the key never opens |
+| 2026-10-09 | Owner decision: on the Git page, All repos shows Issues and Pull requests as one flat list across repos (newest update first) with a neutral repo tag on each row, and a row of repo chips (counts, multi-select, kept per viewer) as the filter; a row's tag toggles its chip. Today's grouped view stays behind a Flat \| By repo toggle. A repo with nothing open keeps a dimmed chip without a digit (an exception to No dead gauges, so a repo never vanishes from the filter); loading and failed reads show on the chip | Repos stacked in one column do not scale to many projects: the owner scrolled one long column hunting for repo headings. A repo becomes a filter, not the first level of the layout |
 
 ### Desktop conversation view
 

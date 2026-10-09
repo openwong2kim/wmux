@@ -1,12 +1,14 @@
 // The Git page's view state, kept in the UI store so the scope, tab, issue
 // filter, selected item and list scroll survive leaving the page and coming
-// back. The tab and the repo choice (All repos, a picked repo, or following
-// the active workspace) are also kept per viewer (local storage) across
-// restarts.
+// back. The tab, the repo choice (All repos, a picked repo, or following
+// the active workspace), the All repos layout and its repo chips are also
+// kept per viewer (local storage) across restarts.
 import type { IssueFilter } from '../../../shared/issueSurface';
 
 export type GitScope = 'repo' | 'all';
 export type GitPageTab = 'prs' | 'issues' | 'worktrees';
+/** All repos' Issues and Pull requests: one flat list across repos, or one group per repo. */
+export type GitAllLayout = 'flat' | 'repo';
 
 /** The item open in the detail pane; `repoPath` says which repo's list it is from. */
 export interface GitSelection {
@@ -26,6 +28,10 @@ export interface GitPageState {
   selected: GitSelection | null;
   /** List scroll offset per list (scope + tab). */
   listScroll: Record<string, number>;
+  /** All repos' layout for Issues and Pull requests. */
+  allLayout: GitAllLayout;
+  /** The repo chips on in the flat list (group keys); none on means every repo. */
+  repoChips: string[];
 }
 
 /** Where a dragged issue / PR came from: the repo and a workspace in it, for
@@ -100,6 +106,48 @@ export function saveGitRepoChoice(choice: Pick<GitPageState, 'scope' | 'pick'>):
   }
 }
 
+/** Where the All repos layout is kept: 'flat' (the default) or 'repo'. */
+export const GIT_ALL_LAYOUT_KEY = 'wmux.git.allLayout';
+
+export function readGitAllLayout(): GitAllLayout {
+  try {
+    return localStorage.getItem(GIT_ALL_LAYOUT_KEY) === 'repo' ? 'repo' : 'flat';
+  } catch {
+    return 'flat';
+  }
+}
+
+export function saveGitAllLayout(layout: GitAllLayout): void {
+  try {
+    localStorage.setItem(GIT_ALL_LAYOUT_KEY, layout);
+  } catch {
+    /* no storage: the choice lasts this session */
+  }
+}
+
+/** Where the flat list's repo chips are kept: a JSON array of group keys. */
+export const GIT_REPO_CHIPS_KEY = 'wmux.git.repoChips';
+
+export function readGitRepoChips(): string[] {
+  try {
+    const v: unknown = JSON.parse(localStorage.getItem(GIT_REPO_CHIPS_KEY) ?? '[]');
+    return Array.isArray(v) ? v.filter((k): k is string => typeof k === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+export function saveGitRepoChips(keys: string[]): void {
+  try {
+    localStorage.setItem(GIT_REPO_CHIPS_KEY, JSON.stringify(keys));
+  } catch {
+    /* no storage: the choice lasts this session */
+  }
+}
+
 export function initialGitPageState(): GitPageState {
-  return { ...readGitRepoChoice(), tab: readGitTab(), issueFilter: { kind: 'all' }, selected: null, listScroll: {} };
+  return {
+    ...readGitRepoChoice(), tab: readGitTab(), issueFilter: { kind: 'all' }, selected: null, listScroll: {},
+    allLayout: readGitAllLayout(), repoChips: readGitRepoChips(),
+  };
 }

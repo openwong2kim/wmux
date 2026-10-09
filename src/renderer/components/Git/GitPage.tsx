@@ -27,11 +27,13 @@ import { GitTab, pathLeaf } from './GitTab';
 import { PrSection } from './PrSection';
 import { IssueSection, getIssueBridge } from './IssueSection';
 import { GitDetail } from './GitDetail';
+import { FlatLists } from './FlatRepoList';
+import SegmentedControl from '../ui/SegmentedControl';
 import { repoOwnerWorkspace, useRepoGroups, type RepoGroup } from './repoGroups';
 import { GhConnectPage } from './GhConnectPage';
 import { useGhAuthGate } from './ghAuthGate';
 import type { GitDragOwner } from './gitPageState';
-import { saveGitRepoChoice, saveGitTab, type GitPageState, type GitPageTab, type GitSelection } from './gitPageState';
+import { saveGitAllLayout, saveGitRepoChoice, saveGitTab, type GitAllLayout, type GitPageState, type GitPageTab, type GitSelection } from './gitPageState';
 import type { PrSummary } from '../../../shared/prSurface';
 import type { IssueFilter, IssueSummary } from '../../../shared/issueSurface';
 
@@ -186,6 +188,11 @@ export default function GitPage() {
   useEffect(() => { if (detailRef.current) detailRef.current.scrollTop = 0; }, [selKey]);
   const selList = sel ? items[itemsKey(sel.repoPath, sel.kind)] : undefined;
   const selItem = sel && selList ? (selList as Array<PrSummary | IssueSummary>).find((x) => x.number === sel.number) ?? null : null;
+  // A repo's full name: owner/repo, or its folder without a remote.
+  const groupLabel = (g: RepoGroup) => repoWeb(g.key)?.label ?? g.name;
+  // In All repos the detail names the selection's repo the way its row tag does.
+  const selGroup = sel && page.scope === 'all' ? groups?.find((g) => g.prPath === sel.repoPath) : undefined;
+  const selGroupLabel = selGroup ? groupLabel(selGroup) : null;
 
   // Open counts: the shown list's own answer when it has one (an issue list
   // only when unfiltered), else one read of that list (all open issues).
@@ -213,7 +220,6 @@ export default function GitPage() {
   const counts = page.scope === 'repo' && resolved ? countsOf([resolved.repoPath]) : [];
 
   // The header menu: All repos, each repo (its clones, its counts when known), Follow active workspace.
-  const groupLabel = (g: RepoGroup) => repoWeb(g.key)?.label ?? g.name;
   const menuOptions: RepoOption[] = [
     { value: 'all', label: t('git.scope.allRepos') },
     ...(groups ?? []).map((g) => {
@@ -296,6 +302,15 @@ export default function GitPage() {
             </button>
           ))}
         </div>
+        {page.scope === 'all' && page.tab !== 'worktrees' && (
+          <SegmentedControl<GitAllLayout>
+            value={page.allLayout}
+            options={[{ value: 'flat', label: t('git.flat.layoutFlat') }, { value: 'repo', label: t('git.flat.layoutByRepo') }]}
+            onValueChange={(allLayout) => { setGitPage({ allLayout }); saveGitAllLayout(allLayout); }}
+            ariaLabel={t('git.flat.layoutLabel')}
+            data-testid="git-all-layout"
+          />
+        )}
       </div>
 
       <div id={`${tabIds}-panel`} role="tabpanel" aria-labelledby={`${tabIds}-${page.tab}`} className="wmux-git-panel">
@@ -314,7 +329,7 @@ export default function GitPage() {
           </div>
         ) : (
           <div className="wmux-git-split" data-git-split>
-            <ListPane scrollKey={`${page.scope}:${page.tab}`} ready={itemsVersion}>
+            <ListPane scrollKey={`${page.scope}:${page.tab}${page.scope === 'all' ? `:${page.allLayout}` : ''}`} ready={itemsVersion}>
               {page.scope === 'repo' ? (
                 resolved && (
                   <RepoList
@@ -330,6 +345,19 @@ export default function GitPage() {
                     dragContext={repoContext}
                   />
                 )
+              ) : page.allLayout === 'flat' ? (
+                <FlatLists
+                  groups={groups}
+                  tab={page.tab}
+                  refreshKey={refreshKey}
+                  filter={page.issueFilter}
+                  onFilter={(issueFilter) => setGitPage({ issueFilter })}
+                  sel={sel}
+                  onSelect={select}
+                  publish={(repoPath) => publish(repoPath, kind)}
+                  onOwners={setGroupOwners}
+                  labelOf={groupLabel}
+                />
               ) : (
                 <AllLists
                   groups={groups}
@@ -350,7 +378,7 @@ export default function GitPage() {
                   kind={kind}
                   refreshKey={refreshKey}
                   repoPath={sel.repoPath}
-                  repoLabel={page.scope === 'repo' ? repoName ?? '' : repoLabelOf(sel.repoPath)}
+                  repoLabel={page.scope === 'repo' ? repoName ?? '' : selGroupLabel ?? repoLabelOf(sel.repoPath)}
                   pr={kind === 'pr' ? (selItem as PrSummary) : null}
                   issue={kind === 'issue' ? (selItem as IssueSummary) : null}
                   repo={page.scope === 'repo' ? repoContext : groupContext(sel.repoPath)}

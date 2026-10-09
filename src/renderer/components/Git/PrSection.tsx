@@ -52,6 +52,65 @@ export function PrStepText({ pr }: { pr: Pick<PrSummary, 'state' | 'checks' | 'm
   );
 }
 
+/** One repo's open PR list, read the way the PR section reads it. */
+export function usePrList(repoPath: string | null, { refreshKey, shown, poll, lazy }: {
+  refreshKey: number; shown: boolean; poll: boolean; lazy: boolean;
+}) {
+  const t = useT();
+  const read = useCallback(async (force: boolean): Promise<ListAnswer<PrSummary[]>> => {
+    const bridge = getGithubBridge();
+    if (!bridge || !repoPath) return { ok: false, kind: 'error', message: t('git.bridgeUnavailable') };
+    const res = await bridge.prList(repoPath, force);
+    if (res.ok) return { ok: true, data: res.prs };
+    if (res.code === 'error') return { ok: false, kind: 'error', message: res.message };
+    return { ok: false, kind: 'gate', gate: { code: res.code, message: res.message, provider: res.provider } };
+  }, [repoPath, t]);
+  return useGitList({ listKey: repoPath, read, shown, poll, lazy, refreshKey });
+}
+
+/** One PR row: selects on click, drags as a PR ref. `tag` sits beside the row (the flat list's repo tag). */
+export function PrRow({ pr, repoPath, selected, onSelect, dragContext, tag }: {
+  pr: PrSummary;
+  repoPath: string;
+  selected: boolean;
+  onSelect?: (pr: PrSummary) => void;
+  dragContext?: GitDragOwner;
+  tag?: React.ReactNode;
+}): React.ReactElement {
+  const t = useT();
+  return (
+    <li data-pr-row={pr.number} className={tag ? 'wmux-git-tagged-row' : undefined}>
+      <button
+        type="button"
+        className={`wmux-git-item ${FOCUS_RING}`}
+        aria-current={selected ? 'true' : undefined}
+        onClick={() => onSelect?.(pr)}
+        // Drags as a PR ref (application/x-wmux-pr) onto an agent pane or workspace.
+        draggable={!!prUrlParts(pr.url)}
+        onDragStart={(e) => {
+          const parts = prUrlParts(pr.url);
+          if (!parts) return;
+          e.dataTransfer.effectAllowed = 'copy';
+          e.dataTransfer.setData(PR_DRAG_TYPE, serializePrDragRef({ ...parts, title: pr.title, url: pr.url }));
+          beginHandoffDrag({ repoPath, ...(dragContext?.workspaceId ? { workspaceId: dragContext.workspaceId } : {}), owner: parts.owner, repo: parts.repo });
+        }}
+      >
+        <span className="wmux-git-item-line">
+          <span className={`wmux-git-item-dot ${checksClass(pr.checks)}`} title={pr.checks ?? ''} aria-hidden="true">●</span>
+          <span className="wmux-git-item-num">#{pr.number}</span>
+          <span className="wmux-git-item-title" title={pr.title}>{pr.title}</span>
+        </span>
+        <span className="wmux-git-item-meta">
+          <PrStepText pr={pr} />
+          {pr.author && <span>@{pr.author}</span>}
+          <span title={pr.updatedAt}>{relTime(pr.updatedAt, t)}</span>
+        </span>
+      </button>
+      {tag}
+    </li>
+  );
+}
+
 export function PrSection({ repoPath, refreshKey = 0, shown = true, poll = true, lazy = false, selected = null, onSelect, onItems, dragContext }: {
   repoPath: string | null;
   refreshKey?: number;
@@ -70,15 +129,7 @@ export function PrSection({ repoPath, refreshKey = 0, shown = true, poll = true,
   dragContext?: GitDragOwner;
 }): React.ReactElement | null {
   const t = useT();
-  const read = useCallback(async (force: boolean): Promise<ListAnswer<PrSummary[]>> => {
-    const bridge = getGithubBridge();
-    if (!bridge || !repoPath) return { ok: false, kind: 'error', message: t('git.bridgeUnavailable') };
-    const res = await bridge.prList(repoPath, force);
-    if (res.ok) return { ok: true, data: res.prs };
-    if (res.code === 'error') return { ok: false, kind: 'error', message: res.message };
-    return { ok: false, kind: 'gate', gate: { code: res.code, message: res.message, provider: res.provider } };
-  }, [repoPath, t]);
-  const list = useGitList({ listKey: repoPath, read, shown, poll, lazy, refreshKey });
+  const list = usePrList(repoPath, { refreshKey, shown, poll, lazy });
 
   useEffect(() => {
     if (list.data) onItems?.(list.data);
@@ -107,34 +158,7 @@ export function PrSection({ repoPath, refreshKey = 0, shown = true, poll = true,
       {prs && prs.length > 0 && (
         <ul className="wmux-git-list" aria-label={t('git.pullRequests')} data-pr-list>
           {prs.map((pr) => (
-            <li key={pr.number} data-pr-row={pr.number}>
-              <button
-                type="button"
-                className={`wmux-git-item ${FOCUS_RING}`}
-                aria-current={selected === pr.number ? 'true' : undefined}
-                onClick={() => onSelect?.(pr)}
-                // Drags as a PR ref (application/x-wmux-pr) onto an agent pane or workspace.
-                draggable={!!prUrlParts(pr.url)}
-                onDragStart={(e) => {
-                  const parts = prUrlParts(pr.url);
-                  if (!parts) return;
-                  e.dataTransfer.effectAllowed = 'copy';
-                  e.dataTransfer.setData(PR_DRAG_TYPE, serializePrDragRef({ ...parts, title: pr.title, url: pr.url }));
-                  beginHandoffDrag({ repoPath, ...(dragContext?.workspaceId ? { workspaceId: dragContext.workspaceId } : {}), owner: parts.owner, repo: parts.repo });
-                }}
-              >
-                <span className="wmux-git-item-line">
-                  <span className={`wmux-git-item-dot ${checksClass(pr.checks)}`} title={pr.checks ?? ''} aria-hidden="true">●</span>
-                  <span className="wmux-git-item-num">#{pr.number}</span>
-                  <span className="wmux-git-item-title" title={pr.title}>{pr.title}</span>
-                </span>
-                <span className="wmux-git-item-meta">
-                  <PrStepText pr={pr} />
-                  {pr.author && <span>@{pr.author}</span>}
-                  <span title={pr.updatedAt}>{relTime(pr.updatedAt, t)}</span>
-                </span>
-              </button>
-            </li>
+            <PrRow key={pr.number} pr={pr} repoPath={repoPath} selected={selected === pr.number} onSelect={onSelect} dragContext={dragContext} />
           ))}
         </ul>
       )}
