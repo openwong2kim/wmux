@@ -22,6 +22,7 @@ import { describe, it, expect } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import ts from 'typescript';
+import { selectPcRailPersisted } from '../../../stores/selectors/pcRail';
 
 describe('AppLayout — axis A session-save invariants', () => {
   const appLayoutPath = path.join(__dirname, '..', 'AppLayout.tsx');
@@ -91,7 +92,8 @@ describe('AppLayout — axis A session-save invariants', () => {
     const code = ts.transpileModule(builder!.getText(tree), {
       compilerOptions: { target: ts.ScriptTarget.ES2022 },
     }).outputText;
-    const build = new Function('useStore', `${code}; return buildSessionData(new Map());`);
+    // The builder's one imported helper, passed in alongside the store.
+    const build = new Function('useStore', 'selectPcRailPersisted', `${code}; return buildSessionData(new Map());`);
     const snapshot = build({ getState: () => ({
       anthropicUsageEnabled: enabled,
       workspaces: [],
@@ -100,7 +102,7 @@ describe('AppLayout — axis A session-save invariants', () => {
       layoutTemplates: [],
       recentCommands: [],
       toolbarSnippets: [],
-    }) });
+    }) }, selectPcRailPersisted);
     const persisted = JSON.parse(JSON.stringify(snapshot));
     expect(Object.hasOwn(persisted, 'anthropicUsageEnabled')).toBe(true);
     expect(persisted.anthropicUsageEnabled).toBe(enabled);
