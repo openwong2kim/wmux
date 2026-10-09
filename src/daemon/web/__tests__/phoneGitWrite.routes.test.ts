@@ -8,9 +8,9 @@ import { EventEmitter } from 'node:events';
 import { WebTerminalServer, type WebDeviceResolver, type WebTerminalStartOptions } from '../WebTerminalServer';
 import { buildGitEnv } from '../sessionDiff';
 import { PhoneGitWriteGate } from '../phoneGitWriteGate';
-import { registerPhoneGitWriteAction, type GitWriteExecuteContext } from '../phoneGitWriteRegistry';
+import { phoneGitWriteHandlers, registerPhoneGitWriteAction, type GitWriteExecuteContext } from '../phoneGitWriteRegistry';
 import { DeviceStore } from '../DeviceStore';
-import { GIT_WRITE_RECEIPT_TTL_MS } from '../../../shared/phoneGitWrite';
+import { GIT_WRITE_RECEIPT_TTL_MS, PHONE_GIT_WRITE_ACTIONS } from '../../../shared/phoneGitWrite';
 import type { DaemonSessionManager } from '../../DaemonSessionManager';
 
 /**
@@ -103,6 +103,17 @@ describe('phone git write routes', { timeout: 60_000 }, () => {
   const config = async (headers: Record<string, string>) =>
     (await fetch(`${base()}/api/config`, { headers })).json() as Promise<Record<string, unknown>>;
 
+  /**
+   * Empty the action registry for one test, whatever the build registered on
+   * import, and put the real handlers back afterwards.
+   */
+  const withoutRegisteredActions = () => {
+    const saved = PHONE_GIT_WRITE_ACTIONS.map((action) => [action, phoneGitWriteHandlers(action)] as const);
+    // Unregistering a placeholder removes the action's entry altogether.
+    for (const [action] of saved) registerPhoneGitWriteAction(action, { preview: async () => ({ ok: false, body: { error: 'not-implemented' } }), execute: async () => undefined })();
+    unregister.push(() => { for (const [action, h] of saved) if (h) registerPhoneGitWriteAction(action, h); });
+  };
+
   /** A push action that records what it was given and settles `done`. */
   const stubPush = () => {
     const runs: GitWriteExecuteContext[] = [];
@@ -145,6 +156,7 @@ describe('phone git write routes', { timeout: 60_000 }, () => {
   });
 
   it('answers 501 and omits the config keys until an action registers', async () => {
+    withoutRegisteredActions();
     await start();
     const phone = device('phone');
     const cfg = await config(phone);
