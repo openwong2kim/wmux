@@ -294,7 +294,11 @@ One page, Tailnet first, on the sheet beside the tools dock with 28px sides
   wraps anywhere, copy). Connecting another computer by A2A starts from
   Connect a PC…; as a workspace share it starts from Connect a PC… or from
   Share & pair's **Connect another computer**, which mints the pairing link
-  and copies it in one click.
+  and copies it in one click. Connect a PC's invite tab carries **Also let
+  it see this PC's workspaces** (off by default, offered only while Share &
+  pair answers over HTTPS): ticked, the copy holds the invite and a
+  view-only pairing link on a second line, and the other PC's one paste
+  connects both.
 - **Needs you** — drawn only while something waits, inside an
   `aria-live="polite"` region: ONE block with a 1px `--attention-hairline`
   border over `--selection-subtle` (no wash), rows split by `--stroke`

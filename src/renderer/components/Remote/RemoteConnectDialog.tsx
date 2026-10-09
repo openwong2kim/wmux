@@ -1,15 +1,19 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useT } from '../../hooks/useT';
-import { useA2aInvite } from '../../hooks/useA2aInvite';
+import { COPIED_MS, useA2aInvite } from '../../hooks/useA2aInvite';
 import { refreshA2aRemote } from '../../hooks/useA2aRemoteBridge';
 import Dialog, { DialogBody, DialogFooter, DialogHeader } from '../ui/Dialog';
 import Button from '../ui/Button';
 import Input from '../ui/Input';
 import SegmentedControl from '../ui/SegmentedControl';
+import Checkbox from '../ui/Checkbox';
+import Field from '../ui/Field';
 import { A2aExposureChecklist } from '../Settings/A2aExposureChecklist';
 import { formatRemaining } from '../Settings/A2aRemoteSection';
 import { INPUT_ERROR } from '../StatusBar/OtherComputersSection';
 import { pairReasonMessage } from '../Sidebar/AttachRemoteModal';
+import { uniqueDeviceName, webComputerLink } from '../StatusBar/WebToggle';
+import { webComputerPairOrigin } from '../../../shared/web';
 import { maskPairInput, parseRemotePairInput } from '../../../shared/remotePairInput';
 import type { A2aRemoteStatus } from '../../../shared/rpc';
 
@@ -24,6 +28,11 @@ import type { A2aRemoteStatus } from '../../../shared/rpc';
 // pairing takes (a pairing link, a `wmux web` token URL, an address and a
 // code), routed by its shape. The clipboard is read only on its Paste button,
 // and nothing connects until the person presses Connect.
+//
+// "Also let it see this PC's workspaces" (off by default, offered only while
+// Share & pair is reachable over HTTPS) adds a view-only computer pairing
+// link to the invite, one per line. Pasted on the other PC, each line
+// connects in turn: one paste, both connections.
 
 export type ConnectTab = 'invite' | 'paste';
 
@@ -34,18 +43,44 @@ export const CONNECT_REDEEM_GRACE_TICKS = 3;
 
 const A2A_INVITE_RE = /^wmux-a2a:\/\//i;
 
-/** What a pasted text is, for the Paste tab: an A2A invite, a pairing link, or nothing usable. */
-export function pastedKind(text: string): 'a2a' | 'link' | null {
-  const value = text.trim();
+function kindOf(value: string): 'a2a' | 'link' | null {
   if (A2A_INVITE_RE.test(value)) return 'a2a';
   return value && parseRemotePairInput(value).kind !== 'error' ? 'link' : null;
 }
 
-/** The pasted text with its secret (code, token) dotted out, for display. */
-export function maskPasted(text: string): string {
-  const value = text.trim();
+/**
+ * The pieces a paste connects, in order: each line of a bundled invite when
+ * every line is one on its own, else the whole text (an address and a code
+ * on two lines is still one pairing).
+ */
+export function pastedParts(text: string): string[] {
+  const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  return lines.length > 1 && lines.every((l) => kindOf(l) !== null) ? lines : [text.trim()];
+}
+
+/** What a pasted text is, for the Paste tab: an A2A invite, a pairing link, both, or nothing usable. */
+export function pastedKind(text: string): 'a2a' | 'link' | 'bundle' | null {
+  const parts = pastedParts(text);
+  return parts.length > 1 ? 'bundle' : kindOf(parts[0]);
+}
+
+function maskOne(value: string): string {
   if (A2A_INVITE_RE.test(value)) return value.replace(/^(wmux-a2a:\/\/[^/]+\/)[^#]*/i, '$1••••••••');
   return maskPairInput(value);
+}
+
+/** The pasted text with its secrets (code, token) dotted out, for display. */
+export function maskPasted(text: string): string {
+  return pastedParts(text).map(maskOne).join('\n');
+}
+
+/** The computer pairing link riding along with the invite. */
+interface WorkspaceLink { link: string; expiresAt: number | null }
+
+/** What the invite tab copies: the invite, plus the workspace link on its own line while it lives. */
+export function inviteBundle(invite: string, ws: WorkspaceLink | null, now: number = Date.now()): string {
+  const live = ws && (ws.expiresAt === null || now < ws.expiresAt);
+  return live ? `${invite}\n${ws.link}` : invite;
 }
 
 export interface RemoteConnectDialogProps {
@@ -61,6 +96,7 @@ export interface RemoteConnectDialogProps {
 export default function RemoteConnectDialog({ initialTab, onClose, onLinkPane, onA2aStatus }: RemoteConnectDialogProps) {
   const t = useT();
   const api = window.electronAPI?.a2aRemote;
+  const web = window.electronAPI?.web;
   const invite = useA2aInvite();
   const { applyPairStatus } = invite;
   // null until the listener's state is known (it picks the first tab).
@@ -74,6 +110,16 @@ export default function RemoteConnectDialog({ initialTab, onClose, onLinkPane, o
   const [creating, setCreating] = useState(false);
   const [joined, setJoined] = useState<{ hostId: string; name: string } | null>(null);
   const [linkHost, setLinkHost] = useState<string | null>(null);
+  // Share & pair answers on an HTTPS address another PC can reach.
+  const [shareReady, setShareReady] = useState(false);
+  const [shareOn, setShareOn] = useState(false);
+  const [shareBusy, setShareBusy] = useState(false);
+  const [shareError, setShareError] = useState(false);
+  const [wsLink, setWsLink] = useState<WorkspaceLink | null>(null);
+  const [bundleCopied, setBundleCopied] = useState(false);
+  const shareRef = useRef(false);
+  const wsRef = useRef<WorkspaceLink | null>(null);
+  wsRef.current = wsLink;
   const copyRef = useRef<HTMLButtonElement>(null);
   const knownPeers = useRef<Set<string> | null>(null);
   const started = useRef(false);
@@ -113,6 +159,55 @@ export default function RemoteConnectDialog({ initialTab, onClose, onLinkPane, o
     }
   }, []);
 
+  useEffect(() => {
+    if (tab !== 'invite' || !web) return;
+    let live = true;
+    void web.status()
+      .then((info) => { if (live) setShareReady(webComputerPairOrigin(info) !== ''); })
+      .catch(() => { /* no web server: the box stays off */ });
+    return () => { live = false; };
+  }, [tab, web]);
+
+  /** Mint a view-only computer pairing link, named like Share & pair's own. */
+  const mintWorkspaceLink = useCallback(async (): Promise<WorkspaceLink | null> => {
+    if (!web?.pairStart) return null;
+    const roster = await web.deviceList().catch(() => null);
+    const name = uniqueDeviceName(t('web.computerDefaultName'), roster?.devices ?? null);
+    const info = await web.pairStart(name, false, 'computer');
+    const link = webComputerLink(info);
+    return link ? { link, expiresAt: info.pairExpiresAt ?? null } : null;
+  }, [web, t]);
+
+  /** Cancel the link this dialog minted, unless Share & pair has minted another since. */
+  const dropWorkspaceLink = useCallback(async () => {
+    const ws = wsRef.current;
+    wsRef.current = null;
+    setWsLink(null);
+    if (!ws || !web) return;
+    const info = await web.status().catch(() => null);
+    if (info && webComputerLink(info) === ws.link) await web.pairCancel?.().catch(() => undefined);
+  }, [web]);
+
+  /**
+   * Copy the invite, with the workspace link when one rides along. That
+   * bundle holds a computer credential: it goes on the clipboard only for as
+   * long as the link lives, as Share & pair's own copy does.
+   */
+  const copyBundle = useCallback(async (text: string, ws: WorkspaceLink | null): Promise<boolean> => {
+    const bundle = inviteBundle(text, ws);
+    if (bundle === text) return invite.copy(text);
+    const write = window.clipboardAPI?.writeEphemeral;
+    if (!write || !ws) return false;
+    try {
+      await write(bundle, Math.max(0, (ws.expiresAt ?? Date.now()) - Date.now()));
+      setBundleCopied(true);
+      setTimeout(() => setBundleCopied(false), COPIED_MS);
+      return true;
+    } catch {
+      return false;
+    }
+  }, [invite]);
+
   // Invite tab, first visit: listener on, invite open, invite copied.
   const startInvite = useCallback(async () => {
     if (!api) return;
@@ -136,14 +231,51 @@ export default function RemoteConnectDialog({ initialTab, onClose, onLinkPane, o
       const text = await invite.create();
       if (!mounted.current) return;
       if (!text) { setInviteError(t('settings.a2aRemoteActionFailed')); return; }
-      if (!(await invite.copy(text)) && mounted.current) setInviteError(t('remotePage.connect.copyFailed'));
+      // A new code while the box is ticked brings a new link along.
+      let ws: WorkspaceLink | null = null;
+      if (shareRef.current) {
+        ws = await mintWorkspaceLink().catch(() => null);
+        if (!mounted.current) return;
+        wsRef.current = ws;
+        setWsLink(ws);
+        setShareError(ws === null);
+      }
+      if (!(await copyBundle(text, ws)) && mounted.current) setInviteError(t('remotePage.connect.copyFailed'));
       copyRef.current?.focus();
     } catch {
       if (mounted.current) setInviteError(t('settings.a2aRemoteActionFailed'));
     } finally {
       if (mounted.current) setCreating(false);
     }
-  }, [api, invite, t, onA2aStatus]);
+  }, [api, invite, t, onA2aStatus, mintWorkspaceLink, copyBundle]);
+
+  /** Tick: mint the link and copy both. Untick: cancel the link and copy the invite alone. */
+  const toggleShare = useCallback(async () => {
+    const next = !shareRef.current;
+    shareRef.current = next;
+    setShareOn(next);
+    setShareError(false);
+    setInviteError(null);
+    const text = invite.invite;
+    setShareBusy(true);
+    try {
+      if (!next) {
+        await dropWorkspaceLink();
+        if (text && mounted.current) await invite.copy(text);
+        return;
+      }
+      // No invite yet: the next one brings the link along.
+      if (!text) return;
+      const ws = await mintWorkspaceLink().catch(() => null);
+      if (!mounted.current) return;
+      wsRef.current = ws;
+      setWsLink(ws);
+      if (!ws) { setShareError(true); return; }
+      if (!(await copyBundle(text, ws)) && mounted.current) setInviteError(t('remotePage.connect.copyFailed'));
+    } finally {
+      if (mounted.current) setShareBusy(false);
+    }
+  }, [invite, dropWorkspaceLink, mintWorkspaceLink, copyBundle, t]);
   useEffect(() => {
     if (tab !== 'invite' || started.current) return;
     started.current = true;
@@ -190,50 +322,65 @@ export default function RemoteConnectDialog({ initialTab, onClose, onLinkPane, o
     return () => window.clearInterval(timer);
   }, [open, api, applyPairStatus]);
 
-  const connect = useCallback(async () => {
-    const text = paste.trim();
-    const kind = pastedKind(text);
-    setMessage(null);
-    if (kind === 'a2a') {
+  /** Connect one pasted piece; the line it leaves for the message. */
+  const connectOne = useCallback(async (text: string): Promise<{ ok: boolean; text: string; hostId?: string }> => {
+    if (kindOf(text) === 'a2a') {
       const r = await invite.join(text);
-      if (!mounted.current || !r) return;
+      if (!r) return { ok: false, text: t('remote.pairFailed') };
       if (r.ok) {
-        setPaste(''); setMasked(false);
-        setLinkHost(r.host.hostId);
-        setMessage({ tone: 'muted', text: t('remotePage.connect.joinedA2a', { name: r.name }) });
         void refreshA2aRemote();
-      } else {
-        const retry = r.retryAfterSec != null && r.retryAfterSec > 0
-          ? ` ${t('settings.a2aRemoteJoinRetryIn', { time: formatRemaining(r.retryAfterSec) })}` : '';
-        setMessage({ tone: 'danger', text: `${t(`settings.a2aRemoteJoinError.${r.error}`)}${retry}` });
+        return { ok: true, text: t('remotePage.connect.joinedA2a', { name: r.name }), hostId: r.host.hostId };
       }
-      return;
+      const retry = r.retryAfterSec != null && r.retryAfterSec > 0
+        ? ` ${t('settings.a2aRemoteJoinRetryIn', { time: formatRemaining(r.retryAfterSec) })}` : '';
+      return { ok: false, text: `${t(`settings.a2aRemoteJoinError.${r.error}`)}${retry}` };
     }
     const parsed = parseRemotePairInput(text);
-    if (parsed.kind === 'error') {
-      setMessage({ tone: 'danger', text: t(INPUT_ERROR[parsed.reason]) });
-      return;
-    }
+    if (parsed.kind === 'error') return { ok: false, text: t(INPUT_ERROR[parsed.reason]) };
     const remote = window.electronAPI?.remote;
-    if (!remote) return;
-    setBusy(true);
+    if (!remote) return { ok: false, text: t('remote.pairFailed') };
     try {
       const res = parsed.kind === 'pair'
         ? await remote.hostsPair(parsed.origin, parsed.code)
         : await remote.hostsAdd(parsed.url);
-      if (!mounted.current) return;
-      if (res.ok) {
-        setPaste(''); setMasked(false);
-        setMessage({ tone: 'muted', text: t('remotePage.connect.hostAdded', { name: res.host.label }) });
-      } else {
-        setMessage({ tone: 'danger', text: 'reason' in res ? pairReasonMessage(t, res.reason, res.attemptsLeft) : res.error });
-      }
+      if (res.ok) return { ok: true, text: t('remotePage.connect.hostAdded', { name: res.host.label }) };
+      return { ok: false, text: 'reason' in res ? pairReasonMessage(t, res.reason, res.attemptsLeft) : res.error };
     } catch {
-      if (mounted.current) setMessage({ tone: 'danger', text: t('remote.pairFailed') });
+      return { ok: false, text: t('remote.pairFailed') };
+    }
+  }, [invite, t]);
+
+  /**
+   * Connect each piece in turn (a bundled invite is two). What failed stays
+   * in the field for another try; what connected does not, since its code is
+   * spent.
+   */
+  const connect = useCallback(async () => {
+    const parts = pastedParts(paste);
+    if (!parts[0]) return;
+    setMessage(null);
+    setBusy(true);
+    const lines: string[] = [];
+    const left: string[] = [];
+    let host: string | null = null;
+    try {
+      for (const part of parts) {
+        const r = await connectOne(part);
+        if (!mounted.current) return;
+        lines.push(r.text);
+        if (!r.ok) left.push(part);
+        if (r.hostId) host = r.hostId;
+      }
     } finally {
       if (mounted.current) setBusy(false);
     }
-  }, [paste, invite, t]);
+    if (left.length !== parts.length) {
+      setPaste(left.join('\n'));
+      if (left.length === 0) setMasked(false);
+    }
+    if (host) setLinkHost(host);
+    setMessage({ tone: left.length > 0 ? 'danger' : 'muted', text: lines.join(' ') });
+  }, [paste, connectOne]);
 
   if (tab === null) return null;
   const working = busy || invite.joinBusy;
@@ -279,9 +426,19 @@ export default function RemoteConnectDialog({ initialTab, onClose, onLinkPane, o
             {invite.invite ? (
               <>
                 <div className="wmux-remote-code">
-                  <code className="ui-code" data-testid="remote-connect-code">{invite.invite}</code>
-                  <Button ref={copyRef} variant="primary" size="md" onClick={() => void invite.copy()} data-testid="remote-connect-copy">
-                    {invite.copied ? t('web.copied') : t('web.copy')}
+                  <code className="ui-code whitespace-pre-line" data-testid="remote-connect-code">{inviteBundle(invite.invite, wsLink)}</code>
+                  <Button
+                    ref={copyRef}
+                    variant="primary"
+                    size="md"
+                    onClick={() => {
+                      void copyBundle(invite.invite ?? '', wsLink).then((ok) => {
+                        if (!ok && mounted.current) setInviteError(t('remotePage.connect.copyFailed'));
+                      });
+                    }}
+                    data-testid="remote-connect-copy"
+                  >
+                    {invite.copied || bundleCopied ? t('web.copied') : t('web.copy')}
                   </Button>
                 </div>
                 {invite.addresses.length > 0 && (
@@ -306,6 +463,19 @@ export default function RemoteConnectDialog({ initialTab, onClose, onLinkPane, o
                 {t('remotePage.connect.newCode')}
               </Button>
             )}
+            <Field
+              label={t('remotePage.connect.shareWorkspaces')}
+              description={shareReady ? t('remotePage.connect.shareWorkspacesHint') : t('remotePage.connect.shareWorkspacesOff')}
+              className="ui-row"
+            >
+              <Checkbox
+                checked={shareOn}
+                disabled={!shareReady || shareBusy || creating}
+                onCheckedChange={() => void toggleShare()}
+                data-testid="remote-connect-share"
+              />
+            </Field>
+            {shareError && <p className="wmux-a2a-note" data-tone="danger" role="alert">{t('remotePage.connect.shareWorkspacesFailed')}</p>}
             {invite.lockedSec != null && invite.lockedSec > 0 && (
               <p className="wmux-a2a-note" data-tone="warning">{t('settings.a2aRemoteInviteLocked', { time: formatRemaining(invite.lockedSec) })}</p>
             )}
@@ -315,7 +485,7 @@ export default function RemoteConnectDialog({ initialTab, onClose, onLinkPane, o
             <span className="wmux-remote-connect-label">{t('remotePage.connect.pasteLabel')}</span>
             {masked ? (
               <div className="wmux-remote-code">
-                <code className="ui-code" data-testid="remote-connect-pasted">{maskPasted(paste)}</code>
+                <code className="ui-code whitespace-pre-line" data-testid="remote-connect-pasted">{maskPasted(paste)}</code>
                 <Button variant="ghost" size="md" onClick={() => { setPaste(''); setMasked(false); }}>{t('remotePage.connect.clear')}</Button>
               </div>
             ) : (
@@ -358,7 +528,7 @@ export default function RemoteConnectDialog({ initialTab, onClose, onLinkPane, o
           </span>
         )}
         {tab === 'invite' && invite.invite && (
-          <Button variant="destructive" size="md" onClick={() => void invite.cancel()} data-testid="remote-connect-discard">
+          <Button variant="destructive" size="md" onClick={() => { void invite.cancel(); void dropWorkspaceLink(); }} data-testid="remote-connect-discard">
             {t('remotePage.connect.discard')}
           </Button>
         )}
