@@ -871,9 +871,11 @@ if (ROLE_SURFACE) {
 // errors so the next identity-gated call re-resolves the live owner.
 function isStaleIdentityResult(value: unknown): boolean {
   const text = typeof value === 'string' ? value : JSON.stringify(value ?? '');
-  // The last pattern is main's browser refusal for a claim whose workspace is
-  // gone: clearing the route also drops the token, so the next call re-claims.
-  return /no workspace found|not owned by workspace|the workspace you claimed is gone/i.test(text);
+  // The last two are main's browser refusals for a claim whose workspace is
+  // gone and for a call that carried no claim (e.g. the cached id came from the
+  // client-side walk, which yields no token): clearing the route drops both the
+  // token and the cached id, so the next call walks again on main's side.
+  return /no workspace found|not owned by workspace|the workspace you claimed is gone|carries no verified workspace/i.test(text);
 }
 
 // Helper: wrap an RPC call as an MCP tool result
@@ -1027,8 +1029,14 @@ async function lookupPidMapWorkspace(): Promise<PidMapLookup> {
     // A claim main minted for the walked workspace: carried on every envelope,
     // it is how main derives this caller's workspace for browser calls (the
     // `verified` lane) instead of reading the request's workspaceId. Never
-    // replaces an external claim's token, which belongs to its pinned route.
-    if (typeof walkToken === 'string' && walkToken.trim() && !getPinnedRoute()) {
+    // replaces an external claim's token, which belongs to its pinned route,
+    // and never set from a shared Codex app-server call: the token is
+    // connection-wide, and its walk names the daemon starter's pane, not the
+    // calling thread's.
+    if (
+      typeof walkToken === 'string' && walkToken.trim() &&
+      !getPinnedRoute() && !viaThread
+    ) {
       setWorkspaceToken(walkToken.trim());
     }
     syncCallerPtyId();

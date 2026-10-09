@@ -108,3 +108,38 @@ describe('browser tools — workspace identity', () => {
     expect(browserCalls('browser.close')).toEqual([{ workspaceId: 'ws-brain' }]);
   });
 });
+
+describe('browser tools — recovering a walk that produced no claim', () => {
+  it('re-walks on main\'s side after a refusal for a cached id that carried no claim', async () => {
+    let serverWalkReady = false;
+    mockSendRpc.mockImplementation(async (method: string) => {
+      if (method === 'a2a.resolve.identity') {
+        // First: only the client-side walk can hit (our parent is an anchor),
+        // and nothing is minted. Later: main's own walk hits and returns a claim.
+        const entries = [{ pid: String(process.ppid), ptyId: 'pty-1', workspaceId: 'ws-walk' }];
+        return serverWalkReady
+          ? { mappings: {}, entries, resolved: { workspaceId: 'ws-walk', ptyId: 'pty-1' }, workspaceToken: 'claim-late' }
+          : { mappings: { [String(process.ppid)]: 'ws-walk' }, entries, resolved: null };
+      }
+      if (method === 'browser.close') {
+        if (getWorkspaceToken()) return { ok: true };
+        throw new Error(
+          'browser.close: BROWSER_SCOPE_REFUSED: browser calls act on the workspace wmux verifies for the ' +
+            'caller, and this call carries no verified workspace. Do not retry unchanged.',
+        );
+      }
+      throw new Error(`rpc-down: ${method}`);
+    });
+    const client = await connect();
+
+    const first = await callTool(client, 'browser_close');
+    expect(first.isError).toBe(true);
+
+    serverWalkReady = true;
+    const second = await callTool(client, 'browser_close');
+
+    expect(second.isError).toBeFalsy();
+    expect(getWorkspaceToken()).toBe('claim-late');
+    expect(mockSendRpc.mock.calls.filter(([m]) => m === 'a2a.resolve.identity')).toHaveLength(2);
+  });
+});
