@@ -17,9 +17,9 @@
 import type { ResumeBinding } from '../../shared/agentResume';
 import { resumeGrammarFor } from '../../shared/agentResume';
 import { agentRow } from '../../shared/agentIdentity';
-import { findCodexTranscript } from './codexCapture';
+import fs from 'node:fs';
 import { checkNativeTranscriptPath } from './providers';
-import { scanForTranscript } from './TranscriptDiscovery';
+import { findCodexTranscriptCandidates, scanForTranscript, type ScanReport } from './TranscriptDiscovery';
 
 const UUID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
 
@@ -219,11 +219,31 @@ export function sessionFromCommandLine(agent: string, cmdline: string | undefine
     : subcommandFormSession(argv, launcher + 1, head, table);
 }
 
-/** Exact-id transcript lookups, per agent with a file transcript. */
-const FIND_TRANSCRIPT: Readonly<Record<string, (id: string, env?: Record<string, string>) => string | undefined>> = {
-  claude: (id, env) => scanForTranscript(id, env).find((file) => checkNativeTranscriptPath('claude', file, id, env).ok),
-  codex: (id, env) => findCodexTranscript(id, env),
+/** Exact-id transcript candidates, per agent with a file transcript; `report` says whether "none" is certain. */
+const CANDIDATES: Readonly<Record<string, (id: string, env: Record<string, string> | undefined, report: ScanReport) => string[]>> = {
+  claude: (id, env, report) => scanForTranscript(id, env, report),
+  codex: (id, env, report) => findCodexTranscriptCandidates(id, env, report),
 };
+
+/** A transcript that holds a conversation: a non-empty file. An empty one is
+ *  what an agent leaves before its first record, and resuming it finds nothing. */
+function holdsConversation(file: string): boolean {
+  try { return fs.statSync(file).size > 0; } catch { return false; }
+}
+
+/**
+ * The transcript `id` names for `agent`: `file` when a contained, non-empty one
+ * exists; otherwise `certain` says whether the lookup proves there is none (a
+ * scan cut short by its bounds, an unreadable folder or duplicate copies prove
+ * nothing).
+ */
+function findTranscript(agent: string, id: string, env?: Record<string, string>): { file?: string; certain: boolean } {
+  const report: ScanReport = { complete: true };
+  const file = CANDIDATES[agent](id, env, report).find((f) => checkNativeTranscriptPath(agent, f, id, env).ok);
+  if (file && holdsConversation(file)) return { file, certain: true };
+  // A contained file that is empty, or one outside the account, is not a conversation either.
+  return { certain: report.complete || file !== undefined };
+}
 
 /**
  * Settle a binding whose agent has stopped (every agent of a recovered pane
@@ -232,14 +252,17 @@ const FIND_TRANSCRIPT: Readonly<Record<string, (id: string, env?: Record<string,
  * id names a conversation only if the agent wrote one before it stopped, and a
  * stopped agent writes nothing more. Returns the binding with the transcript
  * its id names, or `null` when there is none: `--resume <id>` would answer "No
- * conversation found", so the pane offers the session picker instead. A
- * binding that already has a path, or whose agent keeps no file transcript, is
- * returned unchanged.
+ * conversation found", so the pane offers the session picker instead. An
+ * empty transcript counts as none. A binding that already has a path, whose
+ * agent keeps no file transcript, or whose lookup could not finish (see
+ * findTranscript), is returned unchanged.
  */
 export function settleStoppedBinding(binding: ResumeBinding, env?: Record<string, string>): ResumeBinding | null {
-  if (binding.transcriptPath || !Object.hasOwn(FIND_TRANSCRIPT, binding.agent)) return binding;
-  const transcriptPath = FIND_TRANSCRIPT[binding.agent](binding.sessionId, env);
-  return transcriptPath ? { ...binding, transcriptPath } : null;
+  if (binding.transcriptPath || !Object.hasOwn(CANDIDATES, binding.agent)) return binding;
+  const found = findTranscript(binding.agent, binding.sessionId, env);
+  if (found.file) return { ...binding, transcriptPath: found.file };
+  // Dropped only when absence is certain: a scan its bounds cut short keeps the binding.
+  return found.certain ? null : binding;
 }
 
 /**
@@ -264,8 +287,8 @@ export function commandLineBinding(
   const { launchAt, prev } = order;
   if (prev && (launchAt === undefined || prev.ts >= launchAt)) return undefined;
   const found = sessionFromCommandLine(agent, cmdline);
-  if (!found || !cwd || !Object.hasOwn(FIND_TRANSCRIPT, agent)) return undefined;
-  const transcriptPath = FIND_TRANSCRIPT[agent](found.sessionId, env);
+  if (!found || !cwd || !Object.hasOwn(CANDIDATES, agent)) return undefined;
+  const transcriptPath = findTranscript(agent, found.sessionId, env).file;
   if (!transcriptPath && found.kind === 'resume') return undefined;
   return { agent, sessionId: found.sessionId, cwd, ...(transcriptPath ? { transcriptPath } : {}), ts: launchAt ?? order.now ?? Date.now() };
 }

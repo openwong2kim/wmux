@@ -125,7 +125,10 @@ interface SearchState {
 export function scanForTranscript(
   agentSessionId: string,
   sessionEnv?: Record<string, string>,
+  report?: ScanReport,
 ): string[] {
+  if (report) report.complete = true;
+  const incomplete = () => { if (report) report.complete = false; };
   if (!agentSessionId) return [];
   // A traversal-shaped id would turn `path.join` into a directory escape before
   // the guard ever sees it. The guard would still refuse the result, but the
@@ -137,13 +140,14 @@ export function scanForTranscript(
     let entries: fs.Dirent[];
     try {
       entries = fs.readdirSync(root, { withFileTypes: true });
-    } catch {
+    } catch (err) {
       // Root not created yet, or unreadable. The poll retries.
+      if (!isMissing(err)) incomplete();
       continue;
     }
     let examined = 0;
     for (const entry of entries) {
-      if (examined >= MAX_PROJECT_DIRS) break;
+      if (examined >= MAX_PROJECT_DIRS) { incomplete(); break; }
       // One level only: a project directory is never descended into beyond the
       // single candidate stat below.
       if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
@@ -151,7 +155,8 @@ export function scanForTranscript(
       const candidate = path.join(root, entry.name, target);
       try {
         if (!fs.statSync(candidate).isFile()) continue;
-      } catch {
+      } catch (err) {
+        if (!isMissing(err)) incomplete();
         continue;
       }
       found.push(candidate);
@@ -361,9 +366,23 @@ export class TranscriptDiscovery {
   }
 }
 
+/**
+ * Whether a lookup that found nothing proves the file is absent. `complete` is
+ * false when a bound cut the search short, a directory could not be read (other
+ * than not existing), or duplicate copies made the answer ambiguous.
+ */
+export interface ScanReport { complete: boolean }
+
+const isMissing = (err: unknown): boolean => {
+  const code = (err as NodeJS.ErrnoException | undefined)?.code;
+  return code === 'ENOENT' || code === 'ENOTDIR';
+};
+
 /** Exact UUID lookup, never latest-by-cwd. Bound directory depth, total entries
  * and directory reads; no symlinks are followed while searching. */
-export function scanForCodexTranscript(id: string, env?: Record<string, string>): string[] {
+export function scanForCodexTranscript(id: string, env?: Record<string, string>, report?: ScanReport): string[] {
+  if (report) report.complete = true;
+  const incomplete = () => { if (report) report.complete = false; };
   if (!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(id)) return [];
   const queue = [{ directory: codexSessionRoot(env), depth: 0 }];
   const found: string[] = [];
@@ -375,17 +394,21 @@ export function scanForCodexTranscript(id: string, env?: Record<string, string>)
     try {
       dir = fs.opendirSync(next.directory);
       let entry: fs.Dirent | null;
-      while (examined++ < 16000 && (entry = dir.readSync())) {
+      while ((entry = dir.readSync())) {
+        if (examined++ >= 16000) { incomplete(); break; }
         const file = path.join(next.directory, entry.name);
-        if (entry.isDirectory() && next.depth < 3 && queue.length < 512) queue.push({ directory: file, depth: next.depth + 1 });
-        else if (entry.isFile() && entry.name.endsWith(`-${id}.jsonl`)) {
+        if (entry.isDirectory() && next.depth < 3) {
+          if (queue.length < 512) queue.push({ directory: file, depth: next.depth + 1 });
+          else incomplete();
+        } else if (entry.isFile() && entry.name.endsWith(`-${id}.jsonl`)) {
           found.push(file);
-          if (found.length >= 2) return [];
+          if (found.length >= 2) { incomplete(); return []; }
         }
       }
-    } catch { /* Missing/unreadable account: no candidate. */ }
+    } catch (err) { /* Missing/unreadable account: no candidate. */ if (!isMissing(err)) incomplete(); }
     finally { dir?.closeSync(); }
   }
+  if (queue.length) incomplete();
   // Ambiguous duplicate copies must not choose a conversation by directory order.
   return found.length === 1 ? found : [];
 }
@@ -397,10 +420,11 @@ export function scanForCodexTranscript(id: string, env?: Record<string, string>)
  * midnight edge. A non-v7 id falls back to the full bounded walk. Cheap enough
  * for a hot path, and immune to the walk's entry cap missing a new rollout.
  */
-export function findCodexTranscriptCandidates(id: string, env?: Record<string, string>): string[] {
+export function findCodexTranscriptCandidates(id: string, env?: Record<string, string>, report?: ScanReport): string[] {
+  if (report) report.complete = true;
   if (!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(id)) return [];
   const hex = id.replace(/-/g, '');
-  if (hex[12] !== '7') return scanForCodexTranscript(id, env);
+  if (hex[12] !== '7') return scanForCodexTranscript(id, env, report);
   const createdAt = parseInt(hex.slice(0, 12), 16);
   const root = codexSessionRoot(env);
   const found: string[] = [];
@@ -410,9 +434,10 @@ export function findCodexTranscriptCandidates(id: string, env?: Record<string, s
     const pad = (n: number) => String(n).padStart(2, '0');
     const dir = path.join(root, String(date.getFullYear()), pad(date.getMonth() + 1), pad(date.getDate()));
     let names: string[];
-    try { names = fs.readdirSync(dir); } catch { continue; }
+    try { names = fs.readdirSync(dir); } catch (err) { if (!isMissing(err) && report) report.complete = false; continue; }
     for (const name of names) if (name.endsWith(`-${id}.jsonl`)) found.push(path.join(dir, name));
   }
   // Ambiguous duplicate copies must not choose a conversation by directory order.
+  if (found.length > 1 && report) report.complete = false;
   return found.length === 1 ? found : [];
 }

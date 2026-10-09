@@ -187,6 +187,26 @@ describe('X6 ② reboot-survival durability', () => {
     expect(src).toMatch(/onRpc\('daemon\.setResumeBinding'[\s\S]{0,220}applyResumeBinding\(/);
   });
 
+  it('settles a stored binding before any pane is recreated, and the exec relaunch reads the settled one', () => {
+    // A pinned `--session-id` that never got a turn has no transcript; replaying
+    // it unsettled typed `--resume <dead id>` (exit 0, "No conversation found").
+    const src = fs.readFileSync(daemonIndexPath, 'utf-8');
+    const fn = src.slice(src.indexOf('function resumeLaunchCommand('), src.indexOf('// === X6 ③ resume-binding spool ingest'));
+    expect(fn.indexOf('settledForReplay(')).toBeGreaterThan(-1);
+    expect(fn.indexOf('settledForReplay(')).toBeLessThan(fn.indexOf('toResumeCommand('));
+    // Recovery: settled at the top of the loop, before the first recreation.
+    const recovery = src.slice(src.indexOf('async function recoverSessions('));
+    expect(recovery.indexOf('settleStoredBinding(session);')).toBeGreaterThan(-1);
+    expect(recovery.indexOf('settleStoredBinding(session);')).toBeLessThan(recovery.indexOf('resumeLaunchCommand(session'));
+    // Promotion: settled before the pane is recreated.
+    const promote = src.slice(src.indexOf('const startFresh = params['));
+    expect(promote.indexOf('settleStoredBinding(session);')).toBeGreaterThan(-1);
+    expect(promote.indexOf('settleStoredBinding(session);')).toBeLessThan(promote.indexOf('sessionManager.createSessionAsync('));
+    // Both skip WSL panes on the same condition as recovery.
+    const helper = src.slice(src.indexOf('function settledForReplay('), src.indexOf('function settleStoredBinding('));
+    expect(helper).toMatch(/pane\.wslTarget \|\| isWslShell\(pane\.cmd\)/);
+  });
+
   it('every stored-binding folder comparison is guarded by isUsableResumeBinding', () => {
     // A stored binding without its folder once stopped the daemon at startup:
     // normalizeResumeCwd(undefined) threw inside recovery. Recovery and the

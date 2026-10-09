@@ -1204,11 +1204,38 @@ function bindingTranscriptLives(binding: ResumeBinding | undefined): boolean {
   return fs.existsSync(binding.transcriptPath);
 }
 
+// Every replayed agent has stopped (recovery, promotion, a supervised restart),
+// so a binding still waiting for its transcript (a pinned `--session-id` that
+// never got a turn) is settled before anything replays it: it gains the
+// transcript its id names, or it is dropped, and the pane gets a fresh launch or
+// the session picker instead of a `--resume` that finds nothing. A WSL pane's
+// transcripts live in the distro, which this process does not scan.
+function settledForReplay(
+  id: string,
+  binding: ResumeBinding | undefined,
+  pane: { env?: Record<string, string>; cmd?: string; wslTarget?: unknown },
+): ResumeBinding | undefined {
+  if (!binding || pane.wslTarget || isWslShell(pane.cmd)) return binding;
+  const settled = settleStoppedBinding(binding, pane.env ?? {});
+  if (settled !== binding) {
+    log('info', `[resume] ${id}: ${binding.agent} conversation ${binding.sessionId} ${settled ? 'has its transcript now' : 'was never written; not resuming it'}`);
+  }
+  return settled ?? undefined;
+}
+
+// Settle a stored binding in place (see settledForReplay).
+function settleStoredBinding(session: { id: string; resumeBinding?: ResumeBinding; env?: Record<string, string>; cmd?: string; wslTarget?: unknown }): void {
+  const settled = settledForReplay(session.id, session.resumeBinding, session);
+  if (settled) session.resumeBinding = settled;
+  else delete session.resumeBinding;
+}
+
 function resumeLaunchCommand(
   session: {
     id: string;
     exec?: { command: string };
     cmd?: string;
+    wslTarget?: DaemonState['sessions'][number]['wslTarget'];
     cwd: string;
     resumeBinding?: ResumeBinding;
     env?: Record<string,string>;
@@ -1232,6 +1259,8 @@ function resumeLaunchCommand(
   if (spoolBinding && (!binding || (spoolBinding.ts ?? 0) > (binding.ts ?? 0))) {
     binding = spoolBinding;
   }
+  // The agent being replayed has stopped: a binding with no transcript yet is settled first.
+  binding = settledForReplay(session.id, binding, session);
   // D5: start fresh when the exact transcript is gone (pass no binding).
   const usableBinding = bindingTranscriptLives(binding) ? binding : undefined;
   // U-PERM: honor the persisted, consent-gated restore bit (set by main at
@@ -1828,6 +1857,8 @@ async function recoverSessions(
       log('info', `[recovery] scheduled-run session ${session.id} not recovered`);
       continue;
     }
+    // Before anything is recreated: the exec relaunch below reads this binding.
+    settleStoredBinding(session);
     // Publish every WSL placeholder, including cap-skipped panes. Boot must
     // publish RPC/panes without
     // waiting for a cold distro, and one unavailable target must not lose its
@@ -2140,19 +2171,11 @@ async function recoverSessions(
     const managed = sessionManager.getSession(recoveredId);
     if (!managed) continue;
     const m = managed.meta;
-    // Every recovered agent has stopped, so a binding still waiting for its
-    // transcript (a pinned `--session-id` that never got a turn) is settled
-    // now: it gains the transcript its id names, or it is dropped and the pill
-    // opens the session picker instead of a `--resume` that finds nothing.
-    // A WSL pane's transcripts live in the distro, which this process does not scan.
-    if (m.resumeBinding && !m.wslTarget && !isWslShell(m.cmd)) {
-      const settled = settleStoppedBinding(m.resumeBinding, m.env);
-      if (settled !== m.resumeBinding) {
-        log('info', `[resume] ${recoveredId}: ${m.resumeBinding.agent} conversation ${m.resumeBinding.sessionId} ${settled ? 'has its transcript now' : 'was never written; offering the session picker'}`);
-        if (settled) m.resumeBinding = settled;
-        else delete m.resumeBinding;
-      }
-    }
+    // Again after the spool ingest, which can land a binding still waiting for
+    // its transcript: the pill must offer the picker, not a dead `--resume`.
+    const settledBinding = settledForReplay(recoveredId, m.resumeBinding, m);
+    if (settledBinding) m.resumeBinding = settledBinding;
+    else delete m.resumeBinding;
     const offer = resumeOfferForRecovered(m);
     if (!offer) continue;
     recoveredAgentShellIds.set(recoveredId, offer as AgentSlug);
@@ -3016,6 +3039,10 @@ function registerRpcHandlers(
         ? (isWslShell(session.cmd) ? '~' : os.homedir())
         : recoveryCwdLogged(session);
 
+      // Its agent stopped with the suspended pane: settle the stored binding before
+      // the pane is recreated, so the exec relaunch and the pill both see the result.
+      if (!startFresh) settleStoredBinding(session);
+
       const PROMOTE_RETRIES = 4;
       let promoted: ReturnType<typeof sessionManager.createSession> | undefined;
       let lastErr: unknown;
@@ -3079,19 +3106,14 @@ function registerRpcHandlers(
         // conversation this shell has nothing to do with. (The cwd guard below
         // already refuses it; the meta assignment did not.)
         if (!startFresh) {
-          // Its agent stopped with the suspended pane: settle a binding still
-          // waiting for its transcript, as recovery does.
-          const settled = session.resumeBinding && !isWslShell(session.cmd)
-            ? settleStoppedBinding(session.resumeBinding, session.env)
-            : session.resumeBinding;
-          promotedSession.meta.resumeBinding = settled ?? undefined;
+          promotedSession.meta.resumeBinding = session.resumeBinding;
           promotedSession.meta.lastDetectedAgent = session.lastDetectedAgent;
           promotedSession.meta.codexRelayResume = session.codexRelayResume;
           const offer = resumeOfferForRecovered(promotedSession.meta);
           if (offer) recoveredAgentShellIds.set(sessionId, offer as AgentSlug);
-          if (isUsableResumeBinding(settled) && normalizeResumeCwd(settled.cwd) === normalizeResumeCwd(promotedSession.meta.cwd)
-            && (isWslShell(session.cmd) || bindingTranscriptLives(settled))) {
-            recoveredResumeBindings.set(sessionId, settled);
+          if (isUsableResumeBinding(session.resumeBinding) && normalizeResumeCwd(session.resumeBinding.cwd) === normalizeResumeCwd(promotedSession.meta.cwd)
+            && (isWslShell(session.cmd) || bindingTranscriptLives(session.resumeBinding))) {
+            recoveredResumeBindings.set(sessionId, session.resumeBinding);
           }
         }
       }

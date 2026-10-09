@@ -3,6 +3,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { commandLineBinding, sessionFromCommandLine, settleStoppedBinding } from '../agentCommandLineBinding';
+import { MAX_PROJECT_DIRS } from '../TranscriptDiscovery';
+import { toResumeCommand } from '../../../shared/agentResume';
 
 const ID = '0199a1b2-3c4d-7e5f-8a9b-0c1d2e3f4a5b';
 const UP = ID.toUpperCase();
@@ -199,5 +201,34 @@ describe('settleStoppedBinding — a stopped agent writes nothing more', () => {
     expect(settleStoppedBinding(withPath, { CLAUDE_CONFIG_DIR: home })).toBe(withPath);
     const other = { ...pinned, agent: 'gemini' };
     expect(settleStoppedBinding(other, { CLAUDE_CONFIG_DIR: home })).toBe(other);
+  });
+
+  it('drops an empty transcript: a 0-byte file holds no conversation to resume', () => {
+    const dir = path.join(home, 'projects', '-work');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, `${ID}.jsonl`), '');
+    expect(settleStoppedBinding(pinned, { CLAUDE_CONFIG_DIR: home })).toBeNull();
+    // A resume named on the command line does not bind to it either.
+    expect(commandLineBinding('claude', `claude --resume ${ID}`, '/work', { CLAUDE_CONFIG_DIR: home })).toBeUndefined();
+  });
+
+  it('keeps the binding when the scan could not finish, dropping only on certain absence', () => {
+    const projects = path.join(home, 'projects');
+    // More project folders than one scan examines: the id could sit past the bound.
+    for (let i = 0; i < MAX_PROJECT_DIRS + 1; i++) fs.mkdirSync(path.join(projects, `p${String(i).padStart(4, '0')}`), { recursive: true });
+    expect(settleStoppedBinding(pinned, { CLAUDE_CONFIG_DIR: home })).toBe(pinned);
+  });
+
+  // The exec relaunch reads the settled binding: a pin that never got a turn
+  // relaunches fresh, never as `--resume <dead id>`.
+  it('an exec relaunch of a never-written pin starts fresh', () => {
+    const line = `claude --session-id ${ID} --model opus`;
+    const settled = settleStoppedBinding(pinned, { CLAUDE_CONFIG_DIR: home }) ?? undefined;
+    expect(toResumeCommand(line, settled, '/work')).toBe('claude --model opus');
+    const dir = path.join(home, 'projects', '-work');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, `${ID}.jsonl`), '{}\n');
+    const written = settleStoppedBinding(pinned, { CLAUDE_CONFIG_DIR: home }) ?? undefined;
+    expect(toResumeCommand(line, written, '/work')).toBe(`claude --resume ${ID} --model opus`);
   });
 });
