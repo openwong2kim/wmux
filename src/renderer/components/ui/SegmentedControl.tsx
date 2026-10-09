@@ -2,6 +2,7 @@ import { useRef } from 'react';
 import type { KeyboardEvent, ReactNode } from 'react';
 import { FOCUS_RING } from '../focusRing';
 import { useFieldWiring } from './Field';
+import { rovingIndex } from './rovingIndex';
 
 export interface SegmentOption<V extends string> {
   value: V;
@@ -46,15 +47,7 @@ export default function SegmentedControl<V extends string>({
   const tabStop = selectedIndex !== -1 ? selectedIndex : enabled[0] ?? 0;
 
   const move = (from: number, e: KeyboardEvent<HTMLButtonElement>) => {
-    if (enabled.length === 0) return;
-    // From a disabled (but selected) option, step relative to its position.
-    const after = enabled.find((i) => i > from) ?? enabled[0];
-    const before = [...enabled].reverse().find((i) => i < from) ?? enabled[enabled.length - 1];
-    let next: number | undefined;
-    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') next = after;
-    else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') next = before;
-    else if (e.key === 'Home') next = enabled[0];
-    else if (e.key === 'End') next = enabled[enabled.length - 1];
+    const next = rovingIndex(e.key, from, enabled);
     if (next === undefined) return;
     e.preventDefault();
     refs.current[next]?.focus();
