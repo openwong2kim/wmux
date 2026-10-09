@@ -116,12 +116,26 @@ export function FlatLists({ groups, tab, refreshKey, filter, onFilter, sel, onSe
       || b.item.number - a.item.number);
   const shownFeeds = shownGroups.map(feedOf);
   const waiting = shownFeeds.some((f) => !f || f.loading);
-  // One freshness line for the list: the oldest answer, a failed read's
-  // "Could not refresh" (Retry reads the failed repos again), a rate limit.
-  const answered = groups.map(feedOf).filter((f): f is RepoFeedState => !!f && !f.gate);
+  // What stops a repo's list: a gate (no remote, another host...) or a failed read.
+  const problemOf = (f: RepoFeedState | undefined) => (f?.gate
+    ? (f.gate.code === 'no-remote' ? t('git.noRemote') : f.gate.message || t('git.list.failed'))
+    : f?.error ?? null);
+  // One freshness line for the shown repos: the oldest answer, a rate limit,
+  // or a failed read (Retry reads the failed repos again). A failed repo that
+  // never answered makes it "Could not load the list", not "showing the last
+  // list": there is no last list of that repo to show.
+  const answered = shownFeeds.filter((f): f is RepoFeedState => !!f && !f.gate);
   const failed = answered.filter((f) => f.error !== null);
   const fetched = answered.map((f) => f.fetchedAt).filter((x): x is number => x !== null);
+  const fetchedAt = failed.length > 0
+    ? (failed.some((f) => f.fetchedAt === null) ? null : Math.min(...failed.map((f) => f.fetchedAt as number)))
+    : fetched.length > 0 ? Math.min(...fetched) : null;
   const retryAt = answered.map((f) => f.retryAt).find((x) => x !== null) ?? null;
+  // No shown repo has a list (each is gated or failed): "No open ..." would be
+  // wrong, so a gated repo says why, as its group does in By repo; a failed
+  // read is on the freshness line already.
+  const listed = shownFeeds.some((f) => !!f?.data);
+  const gated = shownGroups.filter((g) => !!feedOf(g)?.gate);
 
   return (
     <div data-git-flat-list>
@@ -141,9 +155,7 @@ export function FlatLists({ groups, tab, refreshKey, filter, onFilter, sel, onSe
         {groups.map((g) => {
           const f = feedOf(g);
           const count = f?.data?.length;
-          const problem = f?.gate
-            ? (f.gate.code === 'no-remote' ? t('git.noRemote') : f.gate.message || t('git.list.failed'))
-            : f?.error ?? null;
+          const problem = problemOf(f);
           const state = problem ? 'error' : !f || (f.loading && !f.data) ? 'loading' : count ? 'ok' : 'empty';
           const shownCount = count ? (count >= LIST_READ_CAP ? `${LIST_READ_CAP}+` : String(count)) : '';
           return (
@@ -167,16 +179,20 @@ export function FlatLists({ groups, tab, refreshKey, filter, onFilter, sel, onSe
       </div>
       {tab === 'issues' && <IssueFilterBar filter={filter} onFilter={onFilter} />}
       <ListFreshness
-        fetchedAt={fetched.length ? Math.min(...fetched) : null}
+        fetchedAt={fetchedAt}
         error={failed[0]?.error ?? null}
         retryAt={retryAt}
         onRetry={() => failed.forEach((f) => f.reload(true))}
       />
       {rows.length === 0 && (waiting
         ? <div className="wmux-git-note">{t('git.loading')}</div>
-        : <div className="wmux-git-note" data-git-flat-empty>
-          {tab === 'prs' ? t('git.noPrs') : filter.kind !== 'all' ? t('git.issues.noneFiltered') : t('git.issues.none')}
-        </div>)}
+        : listed
+          ? <div className="wmux-git-note" data-git-flat-empty>
+            {tab === 'prs' ? t('git.noPrs') : filter.kind !== 'all' ? t('git.issues.noneFiltered') : t('git.issues.none')}
+          </div>
+          : gated.map((g) => (
+            <div key={g.key} className="wmux-git-note" data-git-flat-gate={g.name}>{`${labelOf(g)}: ${problemOf(feedOf(g))}`}</div>
+          )))}
       {rows.length > 0 && (
         <ul className="wmux-git-list" aria-label={tab === 'prs' ? t('git.pullRequests') : t('git.issues.listLabel')} data-git-flat-rows>
           {rows.map(({ g, item }) => {

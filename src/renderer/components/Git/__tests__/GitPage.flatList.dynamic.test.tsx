@@ -218,6 +218,42 @@ describe('Git page, All repos flat list', () => {
     expect(useStore.getState().gitPage.selected).toEqual({ kind: 'pr', repoPath: '/code/beta', number: 7 });
   });
 
+  it('a repo whose first read failed says the list could not load, and only while that repo is shown', async () => {
+    await render();
+    // gamma never answered: there is no last list of it to show.
+    const stale = () => container.querySelector('[data-git-list-stale]');
+    expect(stale()?.textContent).toContain('Could not load the list.');
+    expect(stale()?.textContent).not.toContain('showing the last list');
+    // Only alpha shown: its list is fresh, gamma's failure stays on its chip.
+    act(() => chip('alpha').click());
+    expect(stale()).toBeNull();
+    expect(container.querySelector('[data-git-list-fresh]')).not.toBeNull();
+    expect(chip('gamma').getAttribute('data-state')).toBe('error');
+    // Retry reads only the failed repos that are shown.
+    act(() => chip('gamma').click());
+    const before = prList.mock.calls.filter((c) => c[0] === '/code/gamma').length;
+    act(() => (container.querySelector('[data-git-list-retry]') as HTMLButtonElement).click());
+    await settle();
+    expect(prList.mock.calls.filter((c) => c[0] === '/code/gamma').length).toBe(before + 1);
+  });
+
+  it('a repo that cannot be listed (no remote) says so when it is the only one shown, never "No open pull requests"', async () => {
+    prList.mockImplementation(async (p: string) => (p === '/code/gamma'
+      ? { ok: false, code: 'no-remote', message: '' }
+      : { ok: true, prs: [pr('alpha', 9, '2026-10-05T00:00:00Z')] }));
+    await render();
+    act(() => chip('gamma').click());
+    expect(rows()).toEqual([]);
+    expect(container.querySelector('[data-git-flat-empty]')).toBeNull();
+    expect(container.querySelector('[data-git-flat-gate="gamma"]')?.textContent).toBe('o/gamma: This repository has no origin remote.');
+    // With a repo that answered, an empty list is just empty.
+    act(() => { chip('gamma').click(); chip('beta').click(); });
+    prList.mockImplementation(async () => ({ ok: true, prs: [] }));
+    act(() => (container.querySelector('[data-git-refresh]') as HTMLButtonElement).click());
+    await settle();
+    expect(container.querySelector('[data-git-flat-empty]')?.textContent).toBe('No open pull requests.');
+  });
+
   it('Issues: one filter over the merged list', async () => {
     act(() => useStore.getState().setGitPage({ tab: 'issues' }));
     await render();
