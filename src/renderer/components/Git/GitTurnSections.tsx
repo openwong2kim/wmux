@@ -143,12 +143,16 @@ function useGitViewer(groups: RepoGroup[] | null): { login: string | null; versi
   return { login, version };
 }
 
+/** The signed-in login on a repo group's host (an Enterprise host can have
+ *  its own), null while unknown. */
+export const groupLogin = (groupKey: string): string | null => loginByHost.get(groupKey.split('/')[0]) ?? null;
+
 /** The viewer's role on a repo group (its remote key), null while unknown. */
 export const groupPermission = (groupKey: string): RepoPermission | null => permissionByKey.get(groupKey) ?? null;
 
-/** Everything classifyGitTurn needs for the shown repos, except the role,
- *  which each row takes from its own group (groupPermission). The version
- *  changes the context when a role arrives. */
+/** Everything classifyGitTurn needs for the shown repos, except the login
+ *  and the role, which each row takes from its own group (groupLogin,
+ *  groupPermission). The version changes the context when either arrives. */
 export function useGitTurnContext(groups: RepoGroup[] | null): GitTurnContext {
   const links = useActiveLinks();
   const statuses = useStore(useShallow(selectAgentStatusByParty));

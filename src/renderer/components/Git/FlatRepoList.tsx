@@ -18,7 +18,7 @@ import { groupOfPath, repoOwnerWorkspace, type RepoGroup } from './repoGroups';
 import { hostPlatform } from './GitTab';
 import type { GitListState } from './useGitList';
 import { saveGitRepoChips, type GitPageTab, type GitSelection } from './gitPageState';
-import { GitTurnSection, SHOWN_TURNS, groupPermission, shownTurnOf, useGitTurnContext, type ShownTurn } from './GitTurnSections';
+import { GitTurnSection, SHOWN_TURNS, groupLogin, groupPermission, shownTurnOf, useGitTurnContext, type ShownTurn } from './GitTurnSections';
 import type { PrSummary } from '../../../shared/prSurface';
 import type { IssueFilter, IssueSummary } from '../../../shared/issueSurface';
 
@@ -160,8 +160,9 @@ export function FlatLists({ groups, tab, refreshKey, filter, onFilter, sel, onSe
   // Who acts next on each shown row; the sort above holds within a section.
   const byTurn = Object.fromEntries(SHOWN_TURNS.map((turn) => [turn, [] as typeof rows])) as Record<ShownTurn, typeof rows>;
   for (const row of rows) {
-    // The role is the row's group's: its URL may name a renamed repo's new owner.
-    const ctx = { ...turnCtx, repoPermission: () => groupPermission(row.g.key) };
+    // The login and the role are the row's group's: its host may have its own
+    // login, and its URL may name a renamed repo's new owner.
+    const ctx = { ...turnCtx, ghLogin: groupLogin(row.g.key) ?? turnCtx.ghLogin, repoPermission: () => groupPermission(row.g.key) };
     const turn = shownTurnOf(tab === 'prs' ? { kind: 'pr', pr: row.item as PrSummary } : { kind: 'issue', issue: row.item as IssueSummary }, ctx);
     byTurn[turn].push(row);
   }

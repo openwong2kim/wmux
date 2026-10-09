@@ -199,6 +199,19 @@ describe('Git page, who-acts-next sections', () => {
     expect(rowsOf('needs_you')).toEqual(['alpha#9']);
   });
 
+  it('each repo reads its own host\'s login: an Enterprise login does not make the owner an outside author', async () => {
+    const api = (window as unknown as { electronAPI: { github: Record<string, unknown> } }).electronAPI.github;
+    // beta lives on an Enterprise host where the viewer signs in as me-corp.
+    api.repoKey = vi.fn(async (p: string) => ({ key: p === '/code/beta' ? 'ghe.corp/o/beta' : `github.com/o/${p.split('/').pop()}` }));
+    api.viewerLogin = vi.fn(async (p: string) => ({ login: p === '/code/beta' ? 'me-corp' : 'me' }));
+    api.prList = vi.fn(async (p: string) => ({ ok: true, prs: p === '/code/beta'
+      ? [{ ...pr('beta', 3, '2026-10-05T00:00:00Z', { author: 'me-corp', checks: 'failing' }), url: 'https://ghe.corp/o/beta/pull/3' }]
+      : [] }));
+    await render();
+    // The owner's own red PR on a read-only repo is still theirs to fix.
+    expect(rowsOf('needs_you')).toEqual(['beta#3']);
+  });
+
   it('an unknown role leaves another author\'s PR waiting', async () => {
     const api = (window as unknown as { electronAPI: { github: Record<string, unknown> } }).electronAPI.github;
     api.prList = vi.fn(async (p: string) => ({ ok: true, prs: p === '/code/alpha'
