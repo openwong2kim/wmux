@@ -4,6 +4,7 @@ import {
   installPlainDragSelect,
   isDrag,
   mouseOwnedHintApplies,
+  shouldHoldHoverMove,
   shouldInterceptMouseDown,
   type PlainDragMouseDown,
 } from '../plainDragSelect';
@@ -46,6 +47,18 @@ describe('isDrag', () => {
   });
 });
 
+describe('shouldHoldHoverMove', () => {
+  it('holds a hover only under any-event tracking, with the setting on and a live selection', () => {
+    const hover = { buttons: 0 };
+    expect(shouldHoldHoverMove(hover, 'any', true, true)).toBe(true);
+    expect(shouldHoldHoverMove(hover, 'any', true, false)).toBe(false);
+    expect(shouldHoldHoverMove(hover, 'any', false, true)).toBe(false);
+    expect(shouldHoldHoverMove(hover, 'drag', true, true)).toBe(false);
+    expect(shouldHoldHoverMove(hover, 'none', true, true)).toBe(false);
+    expect(shouldHoldHoverMove({ buttons: 1 }, 'any', true, true)).toBe(false);
+  });
+});
+
 describe('mouseOwnedHintApplies', () => {
   it('teaches the modifier only when plain drags do not select', () => {
     expect(mouseOwnedHintApplies('any', false)).toBe(true);
@@ -63,7 +76,8 @@ describe('installPlainDragSelect', () => {
   let seen: Seen[];
   let docUps: number;
   let enabled: boolean;
-  let term: { modes: { mouseTrackingMode: string }; options: { altClickMovesCursor?: boolean }; focus: ReturnType<typeof vi.fn<() => void>>; element: HTMLElement };
+  let selection: boolean;
+  let term: { modes: { mouseTrackingMode: string }; options: { altClickMovesCursor?: boolean }; focus: ReturnType<typeof vi.fn<() => void>>; element: HTMLElement; hasSelection: () => boolean };
   let teardowns: (() => void)[];
 
   const record = (e: Event) => {
@@ -98,7 +112,8 @@ describe('installPlainDragSelect', () => {
     seen = [];
     docUps = 0;
     enabled = true;
-    term = { modes: { mouseTrackingMode: 'any' }, options: { altClickMovesCursor: true }, focus: vi.fn<() => void>(), element: xtermEl };
+    selection = false;
+    term = { modes: { mouseTrackingMode: 'any' }, options: { altClickMovesCursor: true }, focus: vi.fn<() => void>(), element: xtermEl, hasSelection: () => selection };
     teardowns = [];
   });
 
@@ -212,11 +227,47 @@ describe('installPlainDragSelect', () => {
     expect(seen.find((s) => s.type === 'mousedown')).toMatchObject({ altKey: true, detail: 1 });
   });
 
+  // Windows sends a buttonless mousemove at the release point right after the
+  // mouseup; under ?1003 xterm reported it as hover, and a mouse report counts
+  // as user input, which cleared the fresh selection before it was copied.
+  it('keeps hover moves from xterm while a selection is alive under any-event tracking', () => {
+    install(false);
+    const moves = () => seen.filter((s) => s.type === 'mousemove' && s.buttons === 0).length;
+    selection = true;
+    fire(screen, 'mousemove', { buttons: 0, clientX: 40, clientY: 10 });
+    expect(moves()).toBe(0);
+
+    // Dragging (a button held) is never held back.
+    fire(screen, 'mousemove', { buttons: 1, clientX: 41, clientY: 10 });
+    expect(seen.filter((s) => s.type === 'mousemove' && s.buttons === 1)).toHaveLength(1);
+
+    // Hover reporting resumes once the selection is gone.
+    selection = false;
+    fire(screen, 'mousemove', { buttons: 0, clientX: 42, clientY: 10 });
+    expect(moves()).toBe(1);
+  });
+
+  it('passes hover moves through with the setting off or without any-event tracking', () => {
+    install(false);
+    selection = true;
+    enabled = false;
+    fire(screen, 'mousemove', { buttons: 0, clientX: 40, clientY: 10 });
+    enabled = true;
+    term.modes.mouseTrackingMode = 'drag';
+    fire(screen, 'mousemove', { buttons: 0, clientX: 41, clientY: 10 });
+    term.modes.mouseTrackingMode = 'none';
+    fire(screen, 'mousemove', { buttons: 0, clientX: 42, clientY: 10 });
+    expect(seen.filter((s) => s.type === 'mousemove')).toHaveLength(3);
+  });
+
   it('teardown stops intercepting', () => {
     install(true);
     teardowns.forEach((t) => t());
     teardowns = [];
     fire(screen, 'mousedown', { buttons: 1, clientX: 1, clientY: 1 });
     expect(seen.filter((s) => s.type === 'mousedown')).toHaveLength(1);
+    selection = true;
+    fire(screen, 'mousemove', { buttons: 0, clientX: 5, clientY: 1 });
+    expect(seen.filter((s) => s.type === 'mousemove')).toHaveLength(1);
   });
 });

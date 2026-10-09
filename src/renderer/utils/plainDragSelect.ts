@@ -78,6 +78,30 @@ export interface PlainDragTerminal {
   modes?: { mouseTrackingMode?: string };
   focus(): void;
   element?: HTMLElement;
+  hasSelection?(): boolean;
+}
+
+/**
+ * Should this buttonless mousemove be kept from xterm so it does not clear a
+ * live selection?
+ *
+ * Under any-event tracking (`?1003`, which Codex enables) xterm reports every
+ * buttonless move as hover motion, and every mouse report goes through
+ * `coreService.triggerDataEvent(report, true)` — user input, which makes the
+ * SelectionService clear the selection. Windows also delivers a buttonless
+ * mousemove at the release point right after every mouseup (the capture
+ * release), so a drag selection vanished about 20 ms after the button came up,
+ * before the debounced copy-on-select could read it. While a selection is
+ * alive, hover reports are paused instead; the next click, key or wheel clears
+ * the selection as before, and hover reporting resumes.
+ */
+export function shouldHoldHoverMove(
+  e: { buttons: number },
+  trackingMode: string,
+  enabled: boolean,
+  hasSelection: boolean,
+): boolean {
+  return enabled && trackingMode === 'any' && e.buttons === 0 && hasSelection;
 }
 
 export interface PlainDragSelectDeps {
@@ -187,9 +211,19 @@ export function installPlainDragSelect(
     window.addEventListener('blur', onBlur);
   };
 
+  // Capture phase on the container runs before xterm's own mousemove listener
+  // on its element, which is the one that turns a hover into a report.
+  const onHoverMove = (e: MouseEvent): void => {
+    if (replays.has(e)) return;
+    if (!shouldHoldHoverMove(e, term.modes?.mouseTrackingMode ?? 'none', deps.isEnabled(), term.hasSelection?.() ?? false)) return;
+    e.stopImmediatePropagation();
+  };
+
   container.addEventListener('mousedown', onDown, true);
+  container.addEventListener('mousemove', onHoverMove, true);
   return () => {
     container.removeEventListener('mousedown', onDown, true);
+    container.removeEventListener('mousemove', onHoverMove, true);
     stop();
   };
 }
