@@ -34,6 +34,12 @@ export interface SelfContext {
   ptyId?: string;
   /** Verified workspace that owns that pane (live ownership, not the frozen env hint). */
   workspaceId?: string;
+  /**
+   * The claim main minted from its own process-tree walk (only when
+   * `callerPid` was sent). Stamped on the envelope, it is how main scopes
+   * browser calls to this pane's workspace.
+   */
+  workspaceToken?: string;
 }
 
 export interface IdentityEntry {
@@ -53,6 +59,12 @@ export interface IdentityDeps {
   getParentPid: (pid: number) => Promise<number | null>;
   /** Max hops above process.ppid when the env hint says we're inside wmux. */
   maxDepth?: number;
+  /**
+   * Our own pid. When set, main walks our process tree itself and, on a hit,
+   * returns the pane claim (`workspaceToken`). Costs main a process snapshot,
+   * so only callers that need the claim (browser commands) pass it.
+   */
+  callerPid?: number;
 }
 
 const DEFAULT_MAX_DEPTH = 6;
@@ -94,8 +106,13 @@ export async function resolveSelfContext(deps: IdentityDeps): Promise<SelfContex
 
   let entries: IdentityEntry[];
   try {
-    const response = await deps.sendRequest('a2a.resolve.identity' as RpcMethod, {});
+    const response = await deps.sendRequest(
+      'a2a.resolve.identity' as RpcMethod,
+      deps.callerPid !== undefined ? { callerPid: deps.callerPid } : {},
+    );
     if (!response.ok) return {};
+    const claimed = parseServerWalk(response.result);
+    if (claimed) return claimed;
     entries = parseIdentityEntries(response.result);
   } catch {
     return {};
@@ -127,6 +144,20 @@ export async function resolveSelfContext(deps: IdentityDeps): Promise<SelfContex
     if (hit) return toContext(hit);
   }
   return {};
+}
+
+/** Main's own walk hit plus the pane claim it minted, when both are present. */
+function parseServerWalk(result: unknown): SelfContext | null {
+  if (result === null || typeof result !== 'object') return null;
+  const obj = result as { resolved?: unknown; workspaceToken?: unknown };
+  const resolved = obj.resolved as { workspaceId?: unknown; ptyId?: unknown } | null | undefined;
+  if (!resolved || typeof resolved.workspaceId !== 'string' || !resolved.workspaceId) return null;
+  if (typeof obj.workspaceToken !== 'string' || !obj.workspaceToken) return null;
+  return {
+    workspaceId: resolved.workspaceId,
+    ...(typeof resolved.ptyId === 'string' && resolved.ptyId && { ptyId: resolved.ptyId }),
+    workspaceToken: obj.workspaceToken,
+  };
 }
 
 function toContext(entry: IdentityEntry): SelfContext {

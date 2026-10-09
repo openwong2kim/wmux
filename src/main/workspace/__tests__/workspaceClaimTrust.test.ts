@@ -8,8 +8,10 @@
 // contract that makes that unwritable.
 
 import { beforeEach, describe, expect, it } from 'vitest';
+import { __resetWorkspaceMirrorForTest, getWorkspaceMirror } from '../WorkspaceMirror';
 import {
   __resetWorkspaceClaimTrustForTesting,
+  claimTokenForPane,
   lookupWorkspaceClaim,
   mintWorkspaceClaimToken,
   reconcileWorkspaceClaims,
@@ -19,6 +21,7 @@ import {
 
 beforeEach(() => {
   __resetWorkspaceClaimTrustForTesting();
+  __resetWorkspaceMirrorForTest();
 });
 
 describe('workspaceClaimTrust — minting', () => {
@@ -221,5 +224,51 @@ describe('workspaceClaimTrust — bounded growth', () => {
     for (let i = 0; i < 512; i++) mintWorkspaceClaimToken(`ws-${i}`);
 
     expect(lookupWorkspaceClaim(first)).toEqual({ kind: 'stale' });
+  });
+});
+
+describe('workspaceClaimTrust — pane claims', () => {
+  function mirror(entries: Array<{ id: string; ptyIds: string[] }>): void {
+    getWorkspaceMirror().setSnapshot({
+      ts: Date.now(),
+      entries: entries.map((e) => ({ id: e.id, name: e.id, activePtyId: e.ptyIds[0], ptyIds: e.ptyIds })),
+      fleets: [],
+    } as never);
+  }
+
+  it('binds the workspace and the pane, and reuses the live token for the same pane', () => {
+    const token = claimTokenForPane('ws-a', 'pty-1');
+    expect(lookupWorkspaceClaim(token)).toEqual({ kind: 'bound', workspaceId: 'ws-a', ptyId: 'pty-1' });
+    expect(claimTokenForPane('ws-a', 'pty-1')).toBe(token);
+    expect(claimTokenForPane('ws-a', 'pty-2')).not.toBe(token);
+  });
+
+  it('replaces the claim when the same pane is walked into another workspace', () => {
+    const first = claimTokenForPane('ws-a', 'pty-1');
+    const second = claimTokenForPane('ws-b', 'pty-1');
+    expect(second).not.toBe(first);
+    expect(lookupWorkspaceClaim(first)).toEqual({ kind: 'stale' });
+    expect(lookupWorkspaceClaim(second)).toEqual({ kind: 'bound', workspaceId: 'ws-b', ptyId: 'pty-1' });
+  });
+
+  it('goes stale once the mirror shows the pane in another workspace', () => {
+    const token = claimTokenForPane('ws-a', 'pty-1');
+    mirror([{ id: 'ws-a', ptyIds: ['pty-9'] }, { id: 'ws-b', ptyIds: ['pty-1'] }]);
+    expect(lookupWorkspaceClaim(token)).toEqual({ kind: 'stale' });
+  });
+
+  it('keeps a young claim whose pane the mirror has not caught up with, and retires it after the grace window', () => {
+    let clock = 1_000_000;
+    __resetWorkspaceClaimTrustForTesting(() => clock);
+    const token = claimTokenForPane('ws-a', 'pty-1');
+    mirror([{ id: 'ws-a', ptyIds: ['pty-9'] }]);
+    expect(lookupWorkspaceClaim(token)).toMatchObject({ kind: 'bound' });
+    clock += 61_000;
+    expect(lookupWorkspaceClaim(token)).toEqual({ kind: 'stale' });
+  });
+
+  it('refuses to mint without both a workspace and a pane', () => {
+    expect(claimTokenForPane('', 'pty-1')).toBeNull();
+    expect(claimTokenForPane('ws-a', '')).toBeNull();
   });
 });

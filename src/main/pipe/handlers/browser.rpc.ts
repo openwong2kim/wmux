@@ -159,6 +159,8 @@ export type BrowserCallerScopeDecision =
       kind: 'scoped';
       lane: 'pinned' | 'hosted' | 'verified';
       workspaceId: string;
+      /** The caller's pane, when its claim attests one (a pane claim). */
+      ptyId?: string;
     }
   | {
       kind: 'rejected';
@@ -174,6 +176,19 @@ function requestedWorkspaceId(params: Record<string, unknown>): string | undefin
   return typeof params['workspaceId'] === 'string' && params['workspaceId'].length > 0
     ? params['workspaceId']
     : undefined;
+}
+
+/**
+ * The caller's pane for pane-level choices (its Chrome profile, the opener
+ * record). A pane claim's attested pane wins. The envelope's `callerPtyId` is
+ * only a fallback: it is not verified, so it is used only inside a workspace
+ * already scoped from a verified identity, and only to pick one of that
+ * workspace's own panes — it never widens the scope.
+ */
+export function callerPaneOf(ctx: RpcContext | undefined): string | undefined {
+  const claim = ctx?.workspaceClaim;
+  if (claim?.kind === 'bound' && claim.ptyId) return claim.ptyId;
+  return ctx?.callerPtyId;
 }
 
 /**
@@ -428,7 +443,12 @@ export function callerScope(
         verifiedWorkspaceId,
       };
     }
-    return { kind: 'scoped', lane: 'verified', workspaceId: verifiedWorkspaceId };
+    return {
+      kind: 'scoped',
+      lane: 'verified',
+      workspaceId: verifiedWorkspaceId,
+      ...(ctx.workspaceClaim.ptyId && { ptyId: ctx.workspaceClaim.ptyId }),
+    };
   }
 
   // No identity main recorded. The workspace is derived only from the
@@ -829,7 +849,7 @@ export function registerBrowserRpc(
     if (!chromeRegistry) {
       throw new Error(`${method}: browser backend is 'chrome' but no Chrome launcher is wired in this build.`);
     }
-    const callerPtyId = ctx?.callerPtyId;
+    const callerPtyId = callerPaneOf(ctx);
     // The human at the UI (operator lane) and an approved in-process plugin
     // (hosted lane) are not any pane's agent: with no PTY to speak for, they
     // act in the workspace's profile. Only wire callers fail closed below.
@@ -2369,7 +2389,7 @@ export function registerBrowserRpc(
     if (!isUnclaimedBy(surfaceId, openerCaller(openerKey, chrome))) {
       return { ok: true, owner: 'other' as const };
     }
-    surfaceOpeners.note(surfaceId, openerKey, ctx?.callerPtyId);
+    surfaceOpeners.note(surfaceId, openerKey, callerPaneOf(ctx));
     return { ok: true, owner: 'mine' as const };
   });
 

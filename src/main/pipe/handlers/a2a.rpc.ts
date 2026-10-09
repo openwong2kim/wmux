@@ -17,6 +17,7 @@ import { EXECUTE_SEND_MAIN_TIMEOUT_MS } from '../../../shared/executeApprovalBou
 import { GATED_DELIVERY_DEADLINE_MARGIN_MS, GATED_NEW_TASK_SEND_MAIN_TIMEOUT_MS, NEW_TASK_SEND_MAIN_TIMEOUT_MS } from '../../../shared/freshContext';
 import { flagOrphanedTask, isPagedTaskQuery, pagedTaskId, shapeTaskQueryResult, summarizeTask } from '../../../shared/a2aTaskQueryView';
 import { defaultSnapshot } from '../../pty/portWatch';
+import { claimTokenForPane } from '../../workspace/workspaceClaimTrust';
 import type { PortSnapshot, SnapshotFn } from '../../pty/portWatch';
 import { walkToOwningAnchor } from '../../pty/serverSidePidWalk';
 import { tryProcessCreatedAt } from '../../pty/winSnapshotNative';
@@ -559,7 +560,13 @@ export function registerA2aRpc(
       }
     }
 
-    return { mappings, entries, resolved };
+    // A pane claim from main's own walk: the token binds the walked workspace
+    // and pane, so browser calls carrying it are scoped from what main found
+    // rather than from a workspace the caller names. Additive — a caller that
+    // ignores the field is unaffected. Only for a hit main resolved itself,
+    // never for the client-side walk over `entries`.
+    const workspaceToken = resolved ? claimTokenForPane(resolved.workspaceId, resolved.ptyId) : null;
+    return { mappings, entries, resolved, ...(workspaceToken && { workspaceToken }) };
   });
 
   /**

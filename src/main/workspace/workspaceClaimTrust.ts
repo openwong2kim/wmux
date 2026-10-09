@@ -61,9 +61,13 @@
 // where it is briefly wrong.
 
 import { randomUUID } from 'node:crypto';
+import { getWorkspaceMirror } from './WorkspaceMirror';
 
-/** token -> the workspace the claim created for its holder, and when it was issued. */
-const live = new Map<string, { workspaceId: string; mintedAt: number }>();
+/**
+ * token -> the workspace the claim binds its holder to, the pane it was minted
+ * for (pane claims only), and when it was issued.
+ */
+const live = new Map<string, { workspaceId: string; ptyId?: string; mintedAt: number }>();
 
 /**
  * Grace window before `reconcileWorkspaceClaims` may retire a young token.
@@ -114,8 +118,12 @@ export type WorkspaceClaimLookup =
    * from wire values onto them is airtight too.
    */
   | { kind: 'unclaimed' }
-  /** A live token. Its holder owns this workspace by construction. */
-  | { kind: 'bound'; workspaceId: string }
+  /**
+   * A live token. Its holder owns this workspace by construction. `ptyId` is
+   * set for a pane claim: main minted it from its own process-tree walk, so it
+   * also names the pane the holder runs in.
+   */
+  | { kind: 'bound'; workspaceId: string; ptyId?: string }
   /** A token was presented but is unknown, revoked, or its workspace is gone. */
   | { kind: 'stale' };
 
@@ -137,6 +145,49 @@ export function mintWorkspaceClaimToken(workspaceId: unknown): string | null {
     if (!oldest.done) live.delete(oldest.value);
   }
   return token;
+}
+
+/**
+ * The claim for an agent running in a pane, minted from main's own
+ * process-tree walk (`a2a.resolve.identity`): it binds the workspace AND the
+ * pane. One live token per pane — a repeat walk of the same pane in the same
+ * workspace gets the token it already holds, so re-resolving never grows the
+ * registry or evicts another pane's claim.
+ */
+export function claimTokenForPane(workspaceId: unknown, ptyId: unknown): string | null {
+  if (typeof workspaceId !== 'string' || typeof ptyId !== 'string') return null;
+  const ws = workspaceId.trim();
+  const pty = ptyId.trim();
+  if (ws.length === 0 || pty.length === 0) return null;
+  for (const [token, entry] of live) {
+    if (entry.ptyId === pty) {
+      if (entry.workspaceId === ws) return token;
+      // The pane now lives in another workspace: its old claim names a
+      // workspace the pane is no longer in.
+      live.delete(token);
+    }
+  }
+  const token = mintWorkspaceClaimToken(ws);
+  if (token) live.set(token, { workspaceId: ws, ptyId: pty, mintedAt: now() });
+  return token;
+}
+
+/**
+ * Whether a pane claim still describes where its pane is, by the renderer's
+ * workspace mirror: `false` once the pane is in another workspace, or gone
+ * from every workspace after the grace window. No mirror yet means unknown,
+ * which keeps the claim.
+ */
+function paneClaimStillHolds(entry: { workspaceId: string; ptyId?: string; mintedAt: number }): boolean {
+  if (entry.ptyId === undefined) return true;
+  const snapshot = getWorkspaceMirror().peek();
+  if (snapshot === null || snapshot.entries.length === 0) return true;
+  for (const w of snapshot.entries) {
+    if (w.activePtyId === entry.ptyId || (w.ptyIds ?? []).includes(entry.ptyId)) {
+      return w.id === entry.workspaceId;
+    }
+  }
+  return entry.mintedAt > now() - RECONCILE_GRACE_MS;
 }
 
 /** Revoke one token. Idempotent. */
@@ -222,7 +273,15 @@ export function lookupWorkspaceClaim(token: unknown): WorkspaceClaimLookup {
   if (typeof token !== 'string' || token.length === 0) return { kind: 'stale' };
   const entry = live.get(token);
   if (entry === undefined) return { kind: 'stale' };
-  return { kind: 'bound', workspaceId: entry.workspaceId };
+  if (!paneClaimStillHolds(entry)) {
+    live.delete(token);
+    return { kind: 'stale' };
+  }
+  return {
+    kind: 'bound',
+    workspaceId: entry.workspaceId,
+    ...(entry.ptyId !== undefined && { ptyId: entry.ptyId }),
+  };
 }
 
 /** Test-only: clear every registered token and restore the real clock. */

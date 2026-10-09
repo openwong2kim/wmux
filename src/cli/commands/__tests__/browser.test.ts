@@ -11,13 +11,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../client', () => ({
   sendRequest: vi.fn(),
+  setWorkspaceToken: vi.fn(),
 }));
 vi.mock('../../identity', () => ({
   resolveSelfContext: vi.fn(),
   getParentPidDefault: vi.fn(),
 }));
 
-import { sendRequest } from '../../client';
+import { sendRequest, setWorkspaceToken } from '../../client';
 import { getParentPidDefault, resolveSelfContext } from '../../identity';
 import { handleBrowser, handleOpen } from '../browser';
 
@@ -44,6 +45,7 @@ describe('wmux browser navigate caller scoping (#810)', () => {
       env: process.env,
       ppid: process.ppid,
       getParentPid: getParentPidDefault,
+      callerPid: process.pid,
     });
     expect(rpc).toHaveBeenCalledWith('browser.navigate', {
       url: 'https://example.com',
@@ -169,10 +171,16 @@ describe('wmux open / browser close caller scoping (#922 PR-C)', () => {
     expect(rpc).not.toHaveBeenCalledWith('workspace.current', expect.anything());
   });
 
-  it('browser close still honours an explicit --workspace without any lookup', async () => {
+  it('browser close sends an explicit --workspace, still resolving the pane claim it narrows', async () => {
     await handleBrowser(['close', '--workspace', 'ws-named'], false);
     expect(rpc).toHaveBeenCalledWith('browser.close', { workspaceId: 'ws-named' });
-    expect(selfContext).not.toHaveBeenCalled();
+    expect(selfContext).toHaveBeenCalledOnce();
     expect(rpc).not.toHaveBeenCalledWith('workspace.current', expect.anything());
+  });
+
+  it('carries the pane claim main minted on every browser request', async () => {
+    selfContext.mockResolvedValue({ ptyId: 'pty-self', workspaceId: 'ws-self', workspaceToken: 'claim-1' });
+    await handleBrowser(['navigate', 'https://example.com'], false);
+    expect(setWorkspaceToken).toHaveBeenCalledWith('claim-1');
   });
 });

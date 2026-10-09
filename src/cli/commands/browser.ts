@@ -1,7 +1,24 @@
-import { sendRequest } from '../client';
+import { sendRequest, setWorkspaceToken } from '../client';
 import { printResult, ensureOk, parseFlag } from '../utils';
-import { resolveSelfContext, getParentPidDefault } from '../identity';
+import { resolveSelfContext, getParentPidDefault, type SelfContext } from '../identity';
 import type { RpcResponse } from '../../shared/rpc';
+
+/**
+ * Resolve this CLI's pane through main's own process-tree walk and carry the
+ * pane claim main returns on every later request. Browser calls act on the
+ * workspace main verifies for the caller; `--workspace` can only narrow it.
+ */
+async function attestBrowserCaller(): Promise<SelfContext> {
+  const ctx = await resolveSelfContext({
+    sendRequest,
+    env: process.env,
+    ppid: process.ppid,
+    getParentPid: getParentPidDefault,
+    callerPid: process.pid,
+  });
+  if (ctx.workspaceToken) setWorkspaceToken(ctx.workspaceToken);
+  return ctx;
+}
 
 /**
  * wmux open <url> [--workspace <id>]
@@ -17,16 +34,8 @@ export async function handleOpen(args: string[], jsonMode: boolean): Promise<voi
     process.exit(1);
   }
 
-  let workspaceId = parseFlag(args, '--workspace');
-  if (!workspaceId) {
-    const ctx = await resolveSelfContext({
-      sendRequest,
-      env: process.env,
-      ppid: process.ppid,
-      getParentPid: getParentPidDefault,
-    });
-    workspaceId = ctx.workspaceId;
-  }
+  const self = await attestBrowserCaller();
+  let workspaceId = parseFlag(args, '--workspace') ?? self.workspaceId;
     // Outside a wmux pane nothing resolves, and leaving the field absent now
     // means the server refuses instead of guessing (#922 PR-C folded this
     // method into the caller-scope table). So ASK for the target the way
@@ -103,12 +112,7 @@ export async function handleBrowser(
       // Resolve the caller exactly like `wmux open` / `wmux browser close`.
       // Inside a wmux pane this prevents a background workspace from
       // navigating whichever browser target happened to register first.
-      const ctx = await resolveSelfContext({
-        sendRequest,
-        env: process.env,
-        ppid: process.ppid,
-        getParentPid: getParentPidDefault,
-      });
+      const ctx = await attestBrowserCaller();
       // Outside wmux nothing resolves, and this used to send no workspace at
       // all — which let the main process fall back to "whichever target
       // registered first". #810 removed that fallback, so ASK for the target
@@ -145,16 +149,8 @@ export async function handleBrowser(
       // a browser the user is viewing in another workspace. Outside a pane the
       // identity resolves to nothing and the active workspace is used (the
       // pre-fix behavior).
-      let workspaceId = parseFlag(rest, '--workspace');
-      if (!workspaceId) {
-        const ctx = await resolveSelfContext({
-          sendRequest,
-          env: process.env,
-          ppid: process.ppid,
-          getParentPid: getParentPidDefault,
-        });
-        workspaceId = ctx.workspaceId;
-      }
+      const self = await attestBrowserCaller();
+      let workspaceId = parseFlag(rest, '--workspace') ?? self.workspaceId;
       // Outside a wmux pane nothing resolves, and leaving the field absent now
       // means the server refuses instead of guessing (#922 PR-C folded this
       // method into the caller-scope table). So ASK for the target the way
@@ -190,6 +186,8 @@ export async function handleBrowser(
         console.log('Usage: wmux browser session <start|stop|status|list>');
         process.exit(0);
       }
+      // Session calls take the caller's workspace from the pane claim too.
+      await attestBrowserCaller();
 
       switch (action) {
         case 'start': {
