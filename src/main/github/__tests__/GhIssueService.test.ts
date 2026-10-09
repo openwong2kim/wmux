@@ -2,7 +2,7 @@
 // read, gh env, TTL cache, single-flight and the rate-limit breaker (exec
 // mocked, as in GhPrService.test).
 import { describe, it, expect, vi } from 'vitest';
-import { GhIssueService, ghIssueEnv, issueListPath, isRateLimitError, mapRestIssue, mapRestItem, mapGhIssueDetail } from '../GhIssueService';
+import { GhIssueService, ghIssueEnv, issueListPath, isRateLimitError, mapRestIssue, mapRestItem, mapGhIssueDetail, roleOf } from '../GhIssueService';
 import { getExecEnv } from '../../../shared/execEnv';
 import type { IssueFilter } from '../../../shared/issueSurface';
 
@@ -128,6 +128,48 @@ describe('list path and explicit repo', () => {
     const bad = await svc.listIssues('/repo', { kind: 'all' }, '/some/path');
     expect(bad.ok).toBe(false);
     expect(calls).toHaveLength(1);
+  });
+});
+
+describe('repo permission', () => {
+  it('maps the strongest REST flag to its role, none to null', () => {
+    expect(roleOf({ admin: true, maintain: true, push: true, pull: true })).toBe('ADMIN');
+    expect(roleOf({ admin: false, maintain: true, push: true })).toBe('MAINTAIN');
+    expect(roleOf({ admin: false, maintain: false, push: true, triage: true, pull: true })).toBe('WRITE');
+    expect(roleOf({ triage: true, pull: true })).toBe('TRIAGE');
+    expect(roleOf({ pull: true })).toBe('READ');
+    expect(roleOf(null)).toBeNull();
+    expect(roleOf({})).toBeNull();
+  });
+
+  it('reads the named repo once and keeps it for the session; concurrent reads share one call', async () => {
+    const { svc, calls, nowRef } = makeService(() => '{"admin":false,"maintain":false,"push":false,"triage":false,"pull":true}\n');
+    const [a, b] = await Promise.all([svc.repoPermission(KEY, '/r'), svc.repoPermission(KEY, '/r')]);
+    expect([a, b]).toEqual(['READ', 'READ']);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].args).toEqual(['api', '--hostname', 'github.com', 'repos/o/r', '--jq', '.permissions']);
+    nowRef.t += 24 * 60 * 60 * 1000;
+    expect(await svc.repoPermission(KEY, '/r')).toBe('READ');
+    expect(calls).toHaveLength(1);
+  });
+
+  it('is null, and not kept, when gh fails or reports none; a bad key reads nothing', async () => {
+    let fail = true;
+    const { svc, calls } = makeService(() => (fail ? new Error('boom') : 'null\n'));
+    expect(await svc.repoPermission(KEY, '/r')).toBeNull();
+    fail = false;
+    expect(await svc.repoPermission(KEY, '/r')).toBeNull();
+    expect(calls).toHaveLength(2);
+    expect(await svc.repoPermission('/some/path', '/r')).toBeNull();
+    expect(calls).toHaveLength(2);
+  });
+
+  it('makes no call while the rate-limit breaker is open', async () => {
+    const { svc, calls } = makeService((args) => (args.includes('user') ? rateLimitErr() : '{"push":true}'));
+    expect(await svc.signedInLogin('github.com', '/r')).toBeNull();
+    const before = calls.length;
+    expect(await svc.repoPermission(KEY, '/r')).toBeNull();
+    expect(calls).toHaveLength(before);
   });
 });
 

@@ -634,6 +634,9 @@ export const IPC = {
   // Git page Issues view (gh CLI, 30s TTL, rate-limit breaker)
   GITHUB_ISSUE_LIST: 'github:issueList',
   GITHUB_ISSUE_DETAIL: 'github:issueDetail',
+  // The signed-in gh login and the viewer's role on a repo (read on Git page show, cached in main)
+  GITHUB_VIEWER_LOGIN: 'github:viewerLogin',
+  GITHUB_REPO_PERMISSION: 'github:repoPermission',
   // PR review and CI on the Git page's detail pane (src/main/github/GhPrReviewService.ts).
   PR_REVIEW_CHECKS: 'prReview:checks',
   PR_REVIEW_FILES: 'prReview:files',

@@ -26,6 +26,7 @@ import type {
   IssueDetailResult,
   IssueFilter,
   IssueSummary,
+  RepoPermission,
 } from '../../shared/issueSurface';
 import { capBody } from './GhPrService';
 import { GhRateBreaker, ghRateBreaker, isRateLimitError } from './ghRateBreaker';
@@ -193,6 +194,19 @@ export function mapGhIssueDetail(j: GhIssueJson): IssueDetail | null {
   };
 }
 
+/** The strongest role in a REST repo's `permissions` flags, or null when gh
+ *  reports none (signed out, or a token without repo scope). */
+export function roleOf(p: unknown): RepoPermission | null {
+  if (!p || typeof p !== 'object') return null;
+  const f = p as Record<string, unknown>;
+  if (f.admin === true) return 'ADMIN';
+  if (f.maintain === true) return 'MAINTAIN';
+  if (f.push === true) return 'WRITE';
+  if (f.triage === true) return 'TRIAGE';
+  if (f.pull === true) return 'READ';
+  return null;
+}
+
 export { isRateLimitError };
 
 function errorText(err: unknown): string {
@@ -220,6 +234,8 @@ export class GhIssueService {
   private detailCache = new Map<string, { updatedAt: string; value: IssueDetail }>();
   private detailPending = new Map<string, Promise<IssueDetailResult>>();
   private logins = new Map<string, { login: string; at: number }>();
+  private permissions = new Map<string, RepoPermission>();
+  private permissionPending = new Map<string, Promise<RepoPermission | null>>();
   /** Per host rate-limit breaker; the process-wide one in production. */
   private breaker: GhRateBreaker;
 
@@ -280,6 +296,32 @@ export class GhIssueService {
     } catch {
       return null;
     }
+  }
+
+  /** The signed-in viewer's role on the remote `key` (host/owner/repo), read
+   *  once per repo and kept for the session (a role rarely changes; a restart
+   *  reads it again). Null when it cannot be read, the breaker is open or gh
+   *  reports no permissions; a null is not kept, so the next page show asks
+   *  again. Never throws. */
+  async repoPermission(key: string, cwd: string): Promise<RepoPermission | null> {
+    const repo = splitRepoKey(key);
+    if (!repo) return null;
+    const hit = this.permissions.get(key);
+    if (hit) return hit;
+    const pending = this.permissionPending.get(key);
+    if (pending) return pending;
+    if (this.retryAt(repo.host) !== null) return null;
+    const read = this.gh(repo.host, ['api', '--hostname', repo.host, `repos/${repo.owner}/${repo.repo}`, '--jq', '.permissions'], cwd)
+      .then((stdout) => {
+        const role = roleOf(JSON.parse(stdout.trim() || 'null'));
+        if (role) this.permissions.set(key, role);
+        evict(this.permissions);
+        return role;
+      })
+      .catch(() => null)
+      .finally(() => this.permissionPending.delete(key));
+    this.permissionPending.set(key, read);
+    return read;
   }
 
   /**

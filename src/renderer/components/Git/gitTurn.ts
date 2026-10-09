@@ -33,25 +33,30 @@
 //                      - open PR with failing checks, a conflict or changes
 //                        requested, and no agent on it;
 //                      - open PR by another author (ghLogin known and not the
-//                        author) not approved yet and no agent on it: the
-//                        owner reviews it;
+//                        author) not approved yet and no agent on it, on a
+//                        repo the viewer can write to: the owner reviews it;
 //                      - open PR that is otherwise clean but carries a signal
-//                        that cannot be read as green: no checks reported
-//                        (null), mergeable not reported (''), or review
-//                        required on the owner's own PR (requested reviewers
-//                        are not fetched, so "someone else will review" cannot
-//                        be shown; the owner is the one known reviewer here);
+//                        that cannot be read as green: mergeable not reported
+//                        (''), or review required on the owner's own PR
+//                        (requested reviewers are not fetched, so "someone
+//                        else will review" cannot be shown; the owner is the
+//                        one known reviewer here);
 //                      - open issue with no active link, or whose link's agent
 //                        stopped, unless it is assigned only to others.
-//   ready_to_merge     open (not draft) PR: checks passing, MERGEABLE, review
-//                      APPROVED or not required (''). Merging is the owner's
-//                      call in this project. This ranks above agents_on_it as
-//                      specified, so a green PR with its agent still running
-//                      reads as ready.
+//   ready_to_merge     open (not draft) PR: checks passing or none reported
+//                      (null: a repo with no CI), MERGEABLE, review APPROVED
+//                      or not required (''). Merging is the owner's call in
+//                      this project, made in the detail. This ranks above
+//                      agents_on_it as specified, so a green PR with its
+//                      agent still running reads as ready.
 //   agents_on_it       an agent is on the item's link (see above), whatever
 //                      the PR's CI says.
 //   waiting_on_others  drafts; checks pending; mergeable UNKNOWN (GitHub is
-//                      still computing it); an issue whose link is in review
+//                      still computing it); any PR by another author on a
+//                      repo the viewer cannot write to, or whose permission
+//                      is unknown, red CI and conflicts included (an upstream
+//                      repo where the owner is not a maintainer must not
+//                      flood Needs you); an issue whose link is in review
 //                      (its PR row carries the turn) or that is assigned to
 //                      others only (the owner not among the assignees).
 //
@@ -60,7 +65,7 @@
 
 import type { AgentStatus } from '../../../shared/types';
 import { issueUrlParts } from '../../../shared/issueRef';
-import type { IssueSummary } from '../../../shared/issueSurface';
+import { canWriteRepo, type IssueSummary, type RepoPermission } from '../../../shared/issueSurface';
 import type { PrSummary } from '../../../shared/prSurface';
 import { prUrlParts, refKey, type WorkLink, type WorkLinkParty, type WorkLinkState } from '../../../shared/workLink';
 
@@ -89,6 +94,9 @@ export interface GitTurnContext {
   /** The login gh is signed in as. Unknown (null / absent) treats every
    *  author as the owner. */
   ghLogin?: string | null;
+  /** The viewer's role on a repo, by its lowercased host/owner/repo key.
+   *  Unknown (null / absent) counts as no write access. */
+  repoPermission?: (repoKey: string) => RepoPermission | null | undefined;
 }
 
 const ACTIVE: ReadonlySet<WorkLinkState> = new Set<WorkLinkState>(['queued', 'running', 'needs-you', 'blocked', 'review']);
@@ -136,18 +144,31 @@ function settledOrDropped(at: string, now: number): GitTurn | null {
   return now - ms <= SETTLED_WINDOW_MS ? 'settled' : null;
 }
 
+/** The viewer can write to the PR's repo (merge, push, review as a maintainer). */
+function canWrite(pr: PrSummary, ctx: GitTurnContext): boolean {
+  const parts = prUrlParts(pr.url);
+  if (!parts || !ctx.repoPermission) return false;
+  return canWriteRepo(ctx.repoPermission(`${parts.host}/${parts.owner}/${parts.repo}`.toLowerCase()));
+}
+
 function classifyPr(pr: PrSummary, agent: 'working' | 'asking' | 'none', ctx: GitTurnContext): GitTurn {
   if (agent === 'asking') return 'needs_you';
   if (pr.state === 'draft') return agent === 'working' ? 'agents_on_it' : 'waiting_on_others';
+  const external = isExternalAuthor(pr.author, ctx.ghLogin);
+  // Another author's PR on a repo the viewer cannot write to: the owner can
+  // neither merge nor fix it, so it waits on its author and maintainers.
+  if (external && !canWrite(pr, ctx)) return agent === 'working' ? 'agents_on_it' : 'waiting_on_others';
   const broken = pr.checks === 'failing' || pr.mergeable === 'CONFLICTING' || pr.reviewDecision === 'CHANGES_REQUESTED';
   if (broken) return agent === 'working' ? 'agents_on_it' : 'needs_you';
-  if (isExternalAuthor(pr.author, ctx.ghLogin) && pr.reviewDecision !== 'APPROVED') return agent === 'working' ? 'agents_on_it' : 'needs_you';
+  if (external && pr.reviewDecision !== 'APPROVED') return agent === 'working' ? 'agents_on_it' : 'needs_you';
   const reviewOk = pr.reviewDecision === 'APPROVED' || pr.reviewDecision === '';
-  if (pr.checks === 'passing' && pr.mergeable === 'MERGEABLE' && reviewOk) return 'ready_to_merge';
+  // No checks reported (null) is a repo with no CI: nothing left to wait for.
+  const checksOk = pr.checks === 'passing' || pr.checks === null;
+  if (checksOk && pr.mergeable === 'MERGEABLE' && reviewOk) return 'ready_to_merge';
   if (agent === 'working') return 'agents_on_it';
   if (pr.checks === 'pending' || pr.mergeable === 'UNKNOWN') return 'waiting_on_others';
-  // Clean but not provably green: no checks, mergeable not reported, or a
-  // review nobody visible will give. The owner looks.
+  // Clean but not provably green: mergeable not reported, or a review nobody
+  // visible will give. The owner looks.
   return 'needs_you';
 }
 

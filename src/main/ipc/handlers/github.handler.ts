@@ -13,7 +13,7 @@ import type { PrSummary, PrDetail, PrProvider } from '../../github/PrProvider';
 import { ghPrService } from '../../github/GhPrService';
 import { glabPrService } from '../../github/GlabPrService';
 import { ghIssueService } from '../../github/GhIssueService';
-import { parseIssueFilter, type IssueDetailResult, type IssueFilter, type IssueListResult, type IssueRepo } from '../../../shared/issueSurface';
+import { parseIssueFilter, type IssueDetailResult, type IssueFilter, type IssueListResult, type IssueRepo, type RepoPermission } from '../../../shared/issueSurface';
 
 export type GithubPrListResult =
   | { ok: true; prs: PrSummary[] }
@@ -77,6 +77,26 @@ async function issueList(repoPath: string, filter: IssueFilter, force: boolean):
   const res = await ghIssueService.listIssues(repoPath, filter, remote.key, force);
   if (res.ok) return { ok: true, issues: res.issues, repo: repoOfKey(remote.key) };
   return res;
+}
+
+/** A GitHub repo's remote, gated by gh being installed and signed in; null otherwise. */
+async function githubRemote(repoPath: string): Promise<{ host: string; key: string } | null> {
+  const remote = await detectRemote(repoPath);
+  if (!remote?.key || !isGithubHost(remote.host)) return null;
+  const gate = await ghPrService.gate(repoPath, remote.host);
+  return gate.ok ? { host: remote.host, key: remote.key } : null;
+}
+
+/** The login gh is signed in as on the repo's host (lowercased), or null. */
+export async function viewerLogin(repoPath: string): Promise<{ login: string | null }> {
+  const remote = await githubRemote(repoPath);
+  return { login: remote ? await ghIssueService.signedInLogin(remote.host, repoPath) : null };
+}
+
+/** The signed-in viewer's role on the repo, or null when unknown. */
+export async function repoPermission(repoPath: string): Promise<{ permission: RepoPermission | null }> {
+  const remote = await githubRemote(repoPath);
+  return { permission: remote ? await ghIssueService.repoPermission(remote.key, repoPath) : null };
 }
 
 export function registerGithubHandlers(): () => void {
@@ -181,7 +201,31 @@ export function registerGithubHandlers(): () => void {
     }),
   );
 
+  // Who the viewer is and what they may do on a repo, for the Git page's
+  // who-acts-next sections. Read when the page shows; main caches both.
+  ipcMain.removeHandler(IPC.GITHUB_VIEWER_LOGIN);
+  ipcMain.handle(
+    IPC.GITHUB_VIEWER_LOGIN,
+    wrapHandler(IPC.GITHUB_VIEWER_LOGIN, async (_e: Electron.IpcMainInvokeEvent, repoPath: unknown): Promise<{ login: string | null }> => {
+      if (typeof repoPath !== 'string' || !repoPath) return { login: null };
+      const safeRepo = await resolveAccessiblePath(repoPath);
+      return safeRepo ? viewerLogin(safeRepo) : { login: null };
+    }),
+  );
+
+  ipcMain.removeHandler(IPC.GITHUB_REPO_PERMISSION);
+  ipcMain.handle(
+    IPC.GITHUB_REPO_PERMISSION,
+    wrapHandler(IPC.GITHUB_REPO_PERMISSION, async (_e: Electron.IpcMainInvokeEvent, repoPath: unknown): Promise<{ permission: RepoPermission | null }> => {
+      if (typeof repoPath !== 'string' || !repoPath) return { permission: null };
+      const safeRepo = await resolveAccessiblePath(repoPath);
+      return safeRepo ? repoPermission(safeRepo) : { permission: null };
+    }),
+  );
+
   return () => {
+    ipcMain.removeHandler(IPC.GITHUB_VIEWER_LOGIN);
+    ipcMain.removeHandler(IPC.GITHUB_REPO_PERMISSION);
     ipcMain.removeHandler(IPC.GITHUB_PR_LIST);
     ipcMain.removeHandler(IPC.GITHUB_PR_DETAIL);
     ipcMain.removeHandler(IPC.GITHUB_REPO_KEY);

@@ -61,7 +61,15 @@ export interface IssueRepo {
   readonly repo: string;
 }
 
-export type IssueGateCode = 'no-remote' | 'unsupported-host' | 'cli-missing' | 'unauthenticated' | 'error';
+/** The signed-in viewer's role on a repo, as GitHub names it. */
+export type RepoPermission = 'ADMIN' | 'MAINTAIN' | 'WRITE' | 'TRIAGE' | 'READ';
+
+/** The roles that can merge and push: the owner reviews other authors' PRs only here. */
+export function canWriteRepo(permission: RepoPermission | null | undefined): boolean {
+  return permission === 'ADMIN' || permission === 'MAINTAIN' || permission === 'WRITE';
+}
+
+export type IssueGateCode ='no-remote' | 'unsupported-host' | 'cli-missing' | 'unauthenticated' | 'error';
 
 export type IssueListResult =
   | { ok: true; issues: IssueSummary[]; repo: IssueRepo | null }

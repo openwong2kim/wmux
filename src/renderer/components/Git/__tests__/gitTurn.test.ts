@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { AgentStatus } from '../../../../shared/types';
-import type { IssueSummary } from '../../../../shared/issueSurface';
+import type { IssueSummary, RepoPermission } from '../../../../shared/issueSurface';
 import type { PrSummary } from '../../../../shared/prSurface';
 import type { WorkLink } from '../../../../shared/workLink';
 import { classifyGitTurn, countByTurn, GIT_TURN_ORDER, pickItemLink, type GitTurnContext, type GitTurnItem } from '../gitTurn';
@@ -38,8 +38,13 @@ const issueLink = (over: Partial<WorkLink> = {}): WorkLink => link({
   ...over,
 });
 
-const ctx = (links: WorkLink[] = [], status: AgentStatus | null = 'running', ghLogin: string | null = 'owner'): GitTurnContext => ({
-  now: NOW, links, paneStatus: () => status, ghLogin,
+const ctx = (
+  links: WorkLink[] = [],
+  status: AgentStatus | null = 'running',
+  ghLogin: string | null = 'owner',
+  permission: RepoPermission | null = 'WRITE',
+): GitTurnContext => ({
+  now: NOW, links, paneStatus: () => status, ghLogin, repoPermission: (key) => (key === 'github.com/o/r' ? permission : null),
 });
 
 describe('classifyGitTurn: PRs', () => {
@@ -67,6 +72,31 @@ describe('classifyGitTurn: PRs', () => {
     expect(classifyGitTurn(pr({ author: 'contrib', checks: 'pending' }), ctx([]))).toBe('needs_you');
     expect(classifyGitTurn(pr({ author: 'Contrib', reviewDecision: 'APPROVED' }), ctx([]))).toBe('ready_to_merge');
     expect(classifyGitTurn(pr({ author: 'contrib', checks: 'pending' }), ctx([link()], 'running'))).toBe('agents_on_it');
+  });
+
+  it("another author's PR on a repo the viewer cannot write to waits, red CI and conflicts included", () => {
+    for (const permission of ['READ', 'TRIAGE', null] as const) {
+      const c = ctx([], 'idle', 'owner', permission);
+      expect(classifyGitTurn(pr({ author: 'contrib', checks: 'pending' }), c)).toBe('waiting_on_others');
+      expect(classifyGitTurn(pr({ author: 'contrib', checks: 'failing' }), c)).toBe('waiting_on_others');
+      expect(classifyGitTurn(pr({ author: 'contrib', mergeable: 'CONFLICTING' }), c)).toBe('waiting_on_others');
+      expect(classifyGitTurn(pr({ author: 'contrib', checks: null }), c)).toBe('waiting_on_others');
+      expect(classifyGitTurn(pr({ author: 'contrib', reviewDecision: 'APPROVED' }), c)).toBe('waiting_on_others');
+    }
+    // wmux's own signals still count there: an agent on it, or a link asking.
+    expect(classifyGitTurn(pr({ author: 'contrib', checks: 'failing' }), ctx([link()], 'running', 'owner', 'READ'))).toBe('agents_on_it');
+    expect(classifyGitTurn(pr({ author: 'contrib' }), ctx([link({ state: 'needs-you', reason: 'decision' })], 'idle', 'owner', 'READ'))).toBe('needs_you');
+    // No permission lookup at all is unknown, so it waits too.
+    expect(classifyGitTurn(pr({ author: 'contrib', checks: 'pending' }), { ...ctx([], 'idle'), repoPermission: undefined })).toBe('waiting_on_others');
+    // The owner's own PR there is still the owner's turn.
+    expect(classifyGitTurn(pr({ checks: 'failing' }), ctx([], 'idle', 'owner', 'READ'))).toBe('needs_you');
+  });
+
+  it("another author's PR is the owner's to review with write, maintain or admin", () => {
+    for (const permission of ['WRITE', 'MAINTAIN', 'ADMIN'] as const) {
+      expect(classifyGitTurn(pr({ author: 'contrib' }), ctx([], 'idle', 'owner', permission))).toBe('needs_you');
+      expect(classifyGitTurn(pr({ author: 'contrib', checks: 'failing' }), ctx([], 'idle', 'owner', permission))).toBe('needs_you');
+    }
   });
 
   it('with no gh login every author counts as the owner', () => {
@@ -103,8 +133,15 @@ describe('classifyGitTurn: PRs', () => {
     expect(classifyGitTurn(pr({ mergeable: 'UNKNOWN' }), ctx([]))).toBe('waiting_on_others');
   });
 
-  it('unknown signals never read as ready: no checks, mergeable unreported, own review required', () => {
-    expect(classifyGitTurn(pr({ checks: null }), ctx([]))).toBe('needs_you');
+  it('no checks reported (a repo with no CI), mergeable and no review needed is ready_to_merge', () => {
+    expect(classifyGitTurn(pr({ checks: null }), ctx([]))).toBe('ready_to_merge');
+    expect(classifyGitTurn(pr({ checks: null, reviewDecision: 'APPROVED' }), ctx([]))).toBe('ready_to_merge');
+    expect(classifyGitTurn(pr({ checks: null, mergeable: 'CONFLICTING' }), ctx([]))).toBe('needs_you');
+    expect(classifyGitTurn(pr({ checks: null, mergeable: 'UNKNOWN' }), ctx([]))).toBe('waiting_on_others');
+    expect(classifyGitTurn(pr({ checks: null, reviewDecision: 'REVIEW_REQUIRED' }), ctx([]))).toBe('needs_you');
+  });
+
+  it('unknown signals never read as ready: mergeable unreported, own review required', () => {
     expect(classifyGitTurn(pr({ mergeable: '' }), ctx([]))).toBe('needs_you');
     expect(classifyGitTurn(pr({ reviewDecision: 'REVIEW_REQUIRED' }), ctx([]))).toBe('needs_you');
   });
