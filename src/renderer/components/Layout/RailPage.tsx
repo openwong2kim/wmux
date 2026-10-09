@@ -131,8 +131,9 @@ export default function RailPage() {
       data-beside-dock={besideDock && (inset.left > 0 || inset.right > 0) ? 'true' : undefined}
       style={besideDock ? { left: inset.left, right: inset.right } : undefined}
     >
+      {/* Inset to the page's own text edge (Git pads 28px, the others 20px). */}
       {scopeLine && (
-        <p className="shrink-0 truncate px-5 pt-2 text-[12px] text-[var(--text-muted)]" data-this-computer-only title={scopeLine}>{scopeLine}</p>
+        <p className={`shrink-0 truncate pt-2 text-[12px] text-[var(--text-muted)] ${route === 'git' ? 'px-7' : 'px-5'}`} data-this-computer-only title={scopeLine}>{scopeLine}</p>
       )}
       {/* The page's own box: Schedules fills it absolutely, the others flex. */}
       <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">

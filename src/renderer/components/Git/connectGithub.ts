@@ -15,6 +15,7 @@ import { showWorkspaces } from '../../utils/showWorkspaces';
 import { getWorkspaceLeafPanes } from '../../../shared/paneUtils';
 import { isWslShell } from '../../../shared/imagePaste';
 import type { Workspace } from '../../../shared/types';
+import { isShadowWorkspaceId } from '../../../shared/pcRail';
 
 export const GH_LOGIN_COMMAND = 'gh auth login --web';
 
@@ -39,7 +40,8 @@ async function open(title: string): Promise<boolean> {
   const platform = (window as unknown as { electronAPI?: { platform?: string } }).electronAPI?.platform;
   if (platform === 'win32' && (isWslShell(state.defaultShell) || state.defaultShell === 'wsl' || !!state.defaultWslDistro)) return false;
   const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
-  if (!ws || !window.electronAPI?.pty?.create) return false;
+  // Another computer's (shadow) workspace never gets a local shell.
+  if (!ws || isShadowWorkspaceId(ws.id) || !window.electronAPI?.pty?.create) return false;
   const paneId = targetPaneId(ws);
   if (!paneId) return false;
   const cwd = resolveStartupCwd({ splitInheritsCwd: false, profile: ws.profile, startupDirectory: state.startupDirectory });
