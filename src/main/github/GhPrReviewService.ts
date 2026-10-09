@@ -87,7 +87,7 @@ const THREADS_QUERY = `query($owner: String!, $repo: String!, $number: Int!) {
 export const LANE_PR_QUERY = `query($owner: String!, $repo: String!, $number: Int!) {
   repository(owner: $owner, name: $repo) {
     pullRequest(number: $number) {
-      number state isDraft isCrossRepository mergeStateStatus
+      number title state isDraft isCrossRepository mergeable mergeStateStatus
       headRefOid headRefName baseRefName
       mergedAt mergeCommit { oid }
       author { login }
@@ -227,6 +227,8 @@ export function mapLaneFacts(raw: unknown): PrLaneFacts | null {
     baseRefName: str(pr.baseRefName),
     author: str((pr.author as { login?: unknown } | null)?.login) || null,
     ...(str(pr.mergeStateStatus) ? { mergeStateStatus: str(pr.mergeStateStatus) } : {}),
+    ...(typeof pr.title === 'string' ? { title: pr.title } : {}),
+    ...(str(pr.mergeable) ? { mergeable: str(pr.mergeable) } : {}),
     mergedAt: str(pr.mergedAt) || null,
     mergeCommitOid: str((pr.mergeCommit as { oid?: unknown } | null)?.oid) || null,
     labels,

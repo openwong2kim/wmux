@@ -80,6 +80,10 @@ export interface PrLaneFacts {
   author: string | null;
   /** GitHub's mergeStateStatus (CLEAN, BLOCKED, BEHIND, ...), when it was read. */
   mergeStateStatus?: string;
+  /** The title and mergeable (MERGEABLE, CONFLICTING, UNKNOWN), when read:
+   *  display only (the decision card), no lane predicate reads them. */
+  title?: string;
+  mergeable?: string;
   mergedAt: string | null;
   mergeCommitOid: string | null;
   labels: string[];

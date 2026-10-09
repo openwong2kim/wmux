@@ -100,9 +100,9 @@ export interface MoaAskServicePorts {
   askerBranches: (asker: MoaAsker, repoPath: string) => Promise<string[]>;
   /** A verdict the shadow judge already recorded for this question hash. */
   priorJudgment?: (questionHash: string) => MoaJudgeResult | null;
-  /** What the lane read lacks for the decision's PrMergeFacts (title,
-   *  mergeable, squash permission, the gh login). Null or absent: no facts. */
-  mergeFactsExtras?: (repo: { key: string; path: string }, prNumber: number) => Promise<MergeFactsExtras | null>;
+  /** What the decision's PrMergeFacts need beside the lane read: squash
+   *  permission and the gh login. Null or absent: no facts. */
+  mergeFactsExtras?: (repo: { key: string; path: string }) => Promise<MergeFactsExtras | null>;
   /** The gh login a merge in `repo` goes out as, read now (uncached); null
    *  when it cannot be read. */
   currentLogin?: (repo: { key: string; path: string }) => Promise<string | null>;
@@ -387,7 +387,7 @@ export class MoaAskService implements MoaDelegateServicePort {
 
   /** The card's PrMergeFacts on the lane read; null when the extras are unknown. */
   private async mergeFacts(repo: { key: string; path: string }, lane: PrLaneFacts): Promise<PrMergeFacts | null> {
-    const extras = await this.ports.mergeFactsExtras?.(repo, lane.number).catch(() => null);
+    const extras = await this.ports.mergeFactsExtras?.(repo).catch(() => null);
     return extras ? buildMergeFacts(lane, extras) : null;
   }
 

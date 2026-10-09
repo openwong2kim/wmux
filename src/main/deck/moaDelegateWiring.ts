@@ -254,17 +254,11 @@ function build(d: MoaDelegateWiringDeps): MoaAskService {
       return { key: remote.key, path: cwd };
     },
     askerBranches: (asker, repoPath) => askerBranches(d.getDaemonClient, asker, repoPath),
-    // The lane read has no title, mergeable or squash permission; the login
-    // is read now, as the executor's identity gate reads it.
-    mergeFactsExtras: async (repo, prNumber) => {
-      const [head, squash, login] = await Promise.all([
-        ghPrReviewService.checks(repo.path, repo.key, prNumber, true),
-        squashMergeAllowed(repo),
-        currentGhLogin(repo),
-      ]);
-      if (!head.ok || squash === null || !login) return null;
-      const h = head.value.head;
-      return { headRefOid: h.headRefOid, title: h.title, mergeable: h.mergeable, squashAllowed: squash, login };
+    // Per-PR facts come from the lane read; squash permission is per repo,
+    // and the login is read now, as the executor's identity gate reads it.
+    mergeFactsExtras: async (repo) => {
+      const [squash, login] = await Promise.all([squashMergeAllowed(repo), currentGhLogin(repo)]);
+      return squash === null || !login ? null : { squashAllowed: squash, login };
     },
     currentLogin: currentGhLogin,
     priorJudgment: findShadowJudgment,

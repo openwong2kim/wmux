@@ -46,6 +46,15 @@ describe('mapLaneFacts', () => {
     expect(f?.checks.find((c) => c.name === 'bench-confirm')).toMatchObject({ bucket: 'skipping', isRequired: false });
   });
 
+  it('maps title and mergeable when the read has them, and omits them when it does not', () => {
+    const { raw, pr } = readPr('lane-pr1858.json');
+    expect(mapLaneFacts(raw)).not.toHaveProperty('title');
+    expect(mapLaneFacts(raw)).not.toHaveProperty('mergeable');
+    Object.assign(pr, { title: 'Fix  ring geometry', mergeable: 'CONFLICTING' });
+    expect(mapLaneFacts(raw)).toMatchObject({ title: 'Fix  ring geometry', mergeable: 'CONFLICTING' });
+    expect(LANE_PR_QUERY).toMatch(/number title state isDraft isCrossRepository mergeable mergeStateStatus/);
+  });
+
   it('maps an open fork PR with a label and a StatusContext check', () => {
     const f = mapLaneFacts(read('lane-pr1829.json'));
     expect(f).toMatchObject({ state: 'OPEN', isCrossRepository: true, author: 'external-contributor', labels: ['needs-windows-verify'], mergedAt: null, mergeCommitOid: null });

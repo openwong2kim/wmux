@@ -27,6 +27,8 @@ const OPEN_GREEN: PrLaneFacts = {
   state: 'OPEN',
   mergedAt: null,
   mergeCommitOid: null,
+  title: 'Ship it',
+  mergeable: 'MERGEABLE',
   checks: MERGED.checks.map((c) => ({ ...c, isRequired: c.name === 'validate' || c.name === 'Baseline (ubuntu-22.04)' })),
 };
 const SQUASH = 'c'.repeat(40);
@@ -460,7 +462,7 @@ describe('owner resolution', () => {
   });
 
   it('the decision carries the PrMergeFacts of the lane read, display only', async () => {
-    const extras: MergeFactsExtras = { headRefOid: HEAD, title: 'Ship it', mergeable: 'MERGEABLE', squashAllowed: true, login: 'openwong2kim' };
+    const extras: MergeFactsExtras = { squashAllowed: true, login: 'openwong2kim' };
     const h = build(world({ config: { mode: 'suggest', autoRules: [], trustedAuthors: ['openwong2kim'] }, extras }));
     await askAndSettle(h);
     const d = h.decisions.list()[0];
@@ -484,7 +486,7 @@ describe('owner resolution', () => {
   });
 
   it('a head that moves after the decision: the new head is stale, the card head is refused by the executor\'s re-read', async () => {
-    const extras: MergeFactsExtras = { headRefOid: HEAD, title: 'Ship it', mergeable: 'MERGEABLE', squashAllowed: true, login: 'openwong2kim' };
+    const extras: MergeFactsExtras = { squashAllowed: true, login: 'openwong2kim' };
     const w = world({ facts: { ...OPEN_GREEN, author: 'outsider' }, extras });
     const h = build(w);
     await askAndSettle(h);
@@ -502,7 +504,7 @@ describe('owner resolution', () => {
   });
 
   it('the merge goes out only as the gh login the card showed', async () => {
-    const extras: MergeFactsExtras = { headRefOid: HEAD, title: 'Ship it', mergeable: 'MERGEABLE', squashAllowed: true, login: 'openwong2kim' };
+    const extras: MergeFactsExtras = { squashAllowed: true, login: 'openwong2kim' };
     for (const [login, expected] of [['someone-else', 'identity-changed'], [null, 'identity-unknown'], ['OpenWong2Kim', null]] as const) {
       const w = world({ facts: { ...OPEN_GREEN, author: 'outsider' }, extras, login });
       const h = build(w);

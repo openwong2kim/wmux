@@ -7,12 +7,13 @@ const check = (name: string, bucket: PrLaneFacts['checks'][number]['bucket'], is
 const LANE: PrLaneFacts = {
   number: 42, state: 'OPEN', isDraft: false, isCrossRepository: false,
   headRefOid: HEAD, headRefName: 'feat/x', baseRefName: 'main', author: 'octocat', mergeStateStatus: 'CLEAN',
+  title: '  Add   x ', mergeable: 'MERGEABLE',
   mergedAt: null, mergeCommitOid: null, labels: [], labelsTruncated: false, files: ['src/a.ts'], filesTruncated: false,
   checksHeadOid: HEAD,
   checks: [check('validate', 'pass', true), check('lint', 'pass', false), check('docs', 'skipping', false)],
   checksTruncated: false,
 };
-const EXTRAS: MergeFactsExtras = { headRefOid: HEAD, title: '  Add   x ', mergeable: 'MERGEABLE', squashAllowed: true, login: 'octocat' };
+const EXTRAS: MergeFactsExtras = { squashAllowed: true, login: 'octocat' };
 
 describe('buildMergeFacts', () => {
   it('fills every PrMergeFacts field from the lane read and the extras', () => {
@@ -26,7 +27,7 @@ describe('buildMergeFacts', () => {
   });
 
   it('block comes from mergeBlock on the same read', () => {
-    expect(buildMergeFacts(LANE, { ...EXTRAS, mergeable: 'CONFLICTING' })?.block).toBe('conflicts');
+    expect(buildMergeFacts({ ...LANE, mergeable: 'CONFLICTING' }, EXTRAS)?.block).toBe('conflicts');
     const failing = { ...LANE, checks: [check('validate', 'fail', true), check('e2e', 'pending', true)] };
     const f = buildMergeFacts(failing, EXTRAS);
     expect(f?.block).toBe('checks-failing');
@@ -43,12 +44,17 @@ describe('buildMergeFacts', () => {
     const truncated = { ...LANE, checksTruncated: true };
     expect(buildMergeFacts(truncated, EXTRAS)?.block).toBe('checks-pending');
     expect(buildMergeFacts({ ...truncated, mergeStateStatus: 'BEHIND' }, EXTRAS)?.block).toBe('checks-pending');
-    expect(buildMergeFacts(truncated, { ...EXTRAS, mergeable: 'CONFLICTING' })?.block).toBe('conflicts');
+    expect(buildMergeFacts({ ...truncated, mergeable: 'CONFLICTING' }, EXTRAS)?.block).toBe('conflicts');
     expect(buildMergeFacts({ ...truncated, checks: [check('validate', 'fail', true)] }, EXTRAS)?.block).toBe('checks-failing');
   });
 
-  it('extras read on another head give no facts', () => {
-    expect(buildMergeFacts(LANE, { ...EXTRAS, headRefOid: 'b'.repeat(40) })).toBeNull();
+  it('a lane read without title or mergeable gives no facts', () => {
+    const noTitle: PrLaneFacts = { ...LANE };
+    delete noTitle.title;
+    const noMergeable: PrLaneFacts = { ...LANE };
+    delete noMergeable.mergeable;
+    expect(buildMergeFacts(noTitle, EXTRAS)).toBeNull();
+    expect(buildMergeFacts(noMergeable, EXTRAS)).toBeNull();
   });
 });
 
@@ -69,7 +75,7 @@ describe('moaMergeSubject', () => {
     expect(moaMergeSubject('Fix  the   thing ', 7)).toBe('Fix the thing (#7)');
     expect(moaMergeSubject('', 7)).toBe('Pull request #7 (#7)');
     expect(moaMergeSubject('   ', 7)).toBe('Pull request #7 (#7)');
-    expect(buildMergeFacts(LANE, { ...EXTRAS, title: '' })?.subject).toBe('Pull request #42 (#42)');
+    expect(buildMergeFacts({ ...LANE, title: '' }, EXTRAS)?.subject).toBe('Pull request #42 (#42)');
   });
 });
 
