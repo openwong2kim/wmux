@@ -14,7 +14,7 @@ import type { PhoneWorktreeService } from './phoneWorktree';
 import { PHONE_WORKTREE_REQUEST_ID } from '../../shared/phoneGitV1';
 import { sessionFiles, searchSessionFiles, SessionFileError } from './sessionFiles';
 import { openResolvedFile } from './openResolvedFile';
-import { SENT_FILE_CLOCK_SKEW_MS, SentFileIndex, sentFileParts } from '../transcript/sentFiles';
+import { SENT_FILE_CLOCK_SKEW_MS, SentFileIndex, sentFileParts, type GrantTool } from '../transcript/sentFiles';
 import { listFolders, FolderBrowseError, homeIsBrowsable } from './phoneFolders';
 import {
   createSearchCursorCodec,
@@ -2593,6 +2593,10 @@ export class WebTerminalServer {
         // `SendUserFile` (outside the spawn cwd and uploads). Same grant, same
         // omit-when-off shape; the phone shows chips for those files only on true.
         ...(this.opts?.allowTranscript === true ? { turnSentFiles: true } : {}),
+        // Whether `/turns/image` also serves an image the pane's agent opened
+        // with `Read` outside the spawn cwd (its session scratch folder, a temp
+        // directory). Same grant, same omit-when-off shape.
+        ...(this.opts?.allowTranscript === true ? { turnReadImages: true } : {}),
         // Advertised only when BOTH grants the route needs are held, the same
         // way `agentSettings` is: a phone that reads this as "browsable" and
         // then meets a 403 on every listing is worse off than one that never
@@ -5839,8 +5843,8 @@ export class WebTerminalServer {
    * can move it with three bytes of terminal output and aim this route at the
    * whole home directory. A record with no `spawnCwd` leaves the uploads
    * directory as the only root; with neither there is nothing to serve.
-   * Outside the roots, the one path served is a file the pane's agent sent
-   * with `SendUserFile` — see `sentFileTarget`.
+   * Outside the roots, the paths served are a file the pane's agent sent with
+   * `SendUserFile`, or an image it opened with `Read` — see `sentFileTarget`.
    *
    * Everything a caller could use to map the disk answers 404 `image not
    * found` — outside the boundary, missing, a directory, unreadable. A 403 for
@@ -5910,9 +5914,12 @@ export class WebTerminalServer {
         break;
       }
     }
-    // Outside the roots, a file the pane's agent sent with SendUserFile is the
-    // one other path served. Unlisted, expired and missing all get the same 404.
-    const sent = real === null ? await this.sentFileTarget(sessionId, raw) : null;
+    // Outside the roots, a file the pane's agent sent with SendUserFile, or an
+    // image it opened with Read, is the other path served. Unlisted, expired
+    // and missing all get the same 404. Only a sent file is audited: an image
+    // the agent read is what the transcript grant already covers.
+    const sentByAgent = real === null ? await this.sentFileTarget(sessionId, raw, 'SendUserFile') : null;
+    const sent = sentByAgent ?? (real === null ? await this.sentFileTarget(sessionId, raw, 'Read') : null);
     if (sent) real = sent.real;
     if (real === null) {
       this.json(res, 404, { error: 'image not found' });
@@ -5986,7 +5993,7 @@ export class WebTerminalServer {
         this.json(res, 404, { error: 'image not found' });
         return;
       }
-      if (sent) this.auditSentFile(principal, sessionId, sent.name, stat.size);
+      if (sentByAgent) this.auditSentFile(principal, sessionId, sentByAgent.name, stat.size);
       res.writeHead(200, {
         'Content-Type': contentType,
         ...this.securityHeaders(),
@@ -6098,8 +6105,9 @@ export class WebTerminalServer {
         break;
       }
     }
-    // The SendUserFile addition, exactly as on the image route.
-    const sent = real === null ? await this.sentFileTarget(sessionId, raw) : null;
+    // The SendUserFile addition, exactly as on the image route. (The Read
+    // addition is image-route only.)
+    const sent = real === null ? await this.sentFileTarget(sessionId, raw, 'SendUserFile') : null;
     if (sent) real = sent.real;
     if (real === null) {
       this.json(res, 404, { error: 'file not found' });
@@ -6227,12 +6235,16 @@ export class WebTerminalServer {
 
   /**
    * Where to open `raw` when the transcript bound to this pane says its agent
-   * sent that exact path to the user with `SendUserFile` (successfully, under
-   * 24 hours ago), with the call's time — or null.
+   * sent that exact path to the user with `SendUserFile` — or, for `tool:
+   * 'Read'`, opened that image with `Read` — successfully, under 24 hours ago,
+   * with the call's time; or null.
    *
    * The match is on `raw` as the request spelled it, byte for byte against the
-   * transcript's `input.files[]`; `sentFileParts` separately refuses `.`/`..`
-   * segments and doubled separators. Only the PARENT is resolved: the last
+   * transcript's `input.files[]` (or `input.file_path`); `sentFileParts`
+   * separately refuses `.`/`..` segments and doubled separators. A `Read`
+   * grant also matches a spelling whose parent resolves to the recorded
+   * parent's directory (`/tmp` ↔ `/private/tmp`), with the same last
+   * component: the file opened is the same one. Only the PARENT is resolved: the last
    * component is opened as named, so `openResolvedFile` refuses it when it is a
    * symlink and checks the handle is the regular file it looked up.
    *
@@ -6243,13 +6255,22 @@ export class WebTerminalServer {
   private async sentFileTarget(
     sessionId: string,
     raw: string,
+    tool: GrantTool,
   ): Promise<{ real: string; name: string; sentAt: number } | null> {
     const parts = sentFileParts(raw);
     if (!parts) return null;
     const projector = this.deps.projector?.() ?? null;
     const before = projector?.sentFileBinding(sessionId) ?? null;
     if (!projector || !before) return null;
-    const sentAt = await this.sentFiles.sentAt(before.transcriptPath, raw, this.now());
+    let realParent: string | undefined;
+    if (tool === 'Read') {
+      try {
+        realParent = await fs.promises.realpath(parts.dir);
+      } catch {
+        return null;
+      }
+    }
+    const sentAt = await this.sentFiles.grantedAt(before.transcriptPath, raw, this.now(), tool, realParent);
     if (sentAt === null) return null;
     const after = projector.sentFileBinding(sessionId);
     if (

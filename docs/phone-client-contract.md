@@ -803,9 +803,11 @@ via OSC 7 — and the uploads directory. Anything else is `404 image not found`,
 and so is a symlink inside those directories pointing out of them. Note what the
 boundary implies in practice: a screenshot on the Desktop, or a temp file under
 `/var/folders`, is not servable, and an agent that `cd`s out of its spawn cwd
-does not widen it. Fall back to the filename chip. The one addition is a file
+does not widen it. Fall back to the filename chip. The two additions are a file
 the pane's agent explicitly sent to the user — see
-[Files the agent sent with `SendUserFile`](#files-the-agent-sent-with-senduserfile).
+[Files the agent sent with `SendUserFile`](#files-the-agent-sent-with-senduserfile) —
+and an image the agent opened with `Read` — see
+[Images the agent opened with `Read`](#images-the-agent-opened-with-read).
 
 **`404 image not found` is deliberately one answer for four situations** —
 outside the boundary, missing, a directory, unreadable. A separate code for
@@ -953,6 +955,46 @@ the device, the pane, the file's basename and its size — never the full path o
 the content. Repeats for the same device, pane and file within 10 minutes write
 no further line. On `/turns/file` the line is written once the whole body has
 been sent.
+
+#### Images the agent opened with `Read`
+
+```
+GET /api/config → {…, turnReadImages?: true}
+
+GET /api/sessions/<id>/turns/image?path=<absolute path>   (unchanged shape and codes)
+```
+
+Claude Code agents write their screenshots and renders to a per-session scratch
+folder (`/private/tmp/claude-<uid>/<cwd-slug>/<session>/scratchpad/…` on macOS)
+and then look at them with `Read`. Those paths are outside the spawn cwd, so
+`/turns/image` also serves an image the pane's agent opened with `Read`.
+`/turns/file` does not: it keeps the `SendUserFile` addition only.
+
+**Gate on `turnReadImages` from `/api/config`.** Present (and `true`) only
+alongside `turnImages`, behind the same `--allow-transcript` grant. A daemon
+predating the addition omits the key; read a missing key as `false` — on such a
+daemon those fetches 404, as before.
+
+**When a path is served.** Rules 1–9 of the `SendUserFile` section, with these
+differences:
+
+- Rule 1 reads `input.file_path` of a `Read` `tool_use` (in the transcript bound
+  to **that pane**) instead of `input.files[]`, and only a path ending in `.png`,
+  `.jpg`, `.jpeg`, `.gif` or `.webp` (any case) counts. Send the path exactly as
+  the turn page gave it. One respelling is also accepted: the same last
+  component under a parent folder that resolves to the same directory as the
+  recorded one (`/tmp/…` for a recorded `/private/tmp/…`, or the reverse). Any
+  other respelling — a `.` or `..` segment, a different name that links to the
+  file — is refused.
+- Rule 3: the `Read`'s `tool_result` must be a success (no `is_error: true`); a
+  `Read` of a missing file is an error result and grants nothing.
+- Rule 6 is measured from the `Read`: an image rewritten after the agent looked
+  at it is refused.
+- No audit line: an image the agent read is what the transcript grant already
+  covers, as for images under the spawn cwd.
+
+Every refusal is the same `404 {error: 'image not found'}`, and the types and the
+8 MiB cap are unchanged.
 
 ---
 

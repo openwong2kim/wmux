@@ -42,6 +42,29 @@ afterEach(() => {
 });
 
 describe('SentFileIndex', () => {
+  it('records a successful Read of an image path apart from sent files, and skips other Reads', async () => {
+    const read = (filePath: string, isError = false): string => {
+      const id = `toolu_${++seq}`;
+      const timestamp = new Date(NOW).toISOString();
+      return `${[JSON.stringify({
+        type: 'assistant', timestamp,
+        message: { role: 'assistant', content: [{ type: 'tool_use', id, name: 'Read', input: { file_path: filePath } }] },
+      }), JSON.stringify({
+        type: 'user', timestamp,
+        message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: [{ type: 'image' }], ...(isError ? { is_error: true } : {}) }] },
+      })].join('\n')}\n`;
+    };
+    fs.writeFileSync(transcript, [read('/s/a.PNG'), read('/s/b.jpeg', true), read('/s/c.ts'), send(['/s/d.png'])].join(''));
+    const index = new SentFileIndex();
+    expect(await index.grantedAt(transcript, '/s/a.PNG', NOW, 'Read')).toBe(NOW);
+    // A Read grant is not a SendUserFile grant, and the reverse.
+    expect(await index.sentAt(transcript, '/s/a.PNG', NOW)).toBeNull();
+    expect(await index.grantedAt(transcript, '/s/d.png', NOW, 'Read')).toBeNull();
+    expect(await index.grantedAt(transcript, '/s/b.jpeg', NOW, 'Read')).toBeNull();
+    expect(await index.grantedAt(transcript, '/s/c.ts', NOW, 'Read')).toBeNull();
+    expect(await index.grantedAt(transcript, '/s/a.PNG', NOW + SENT_FILE_MAX_AGE_MS + 1, 'Read')).toBeNull();
+  });
+
   it('lists every path of a successful call, byte for byte, inside the 24-hour window', async () => {
     fs.writeFileSync(transcript, send(['/s/a.png', '/s/한글.mp4']));
     const index = new SentFileIndex();

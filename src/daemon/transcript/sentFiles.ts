@@ -1,5 +1,6 @@
-// The files a Claude pane handed to its user with the `SendUserFile` tool, read
-// back from the pane's own transcript.
+// The files a Claude pane handed to its user with the `SendUserFile` tool, and
+// the images its agent opened with the `Read` tool, read back from the pane's
+// own transcript.
 //
 // `/turns/image` and `/turns/file` serve paths under the pane's spawn cwd and
 // the uploads directory. A file the agent explicitly sent to the user is the
@@ -7,6 +8,13 @@
 // `SendUserFile` tool_use naming it byte for byte in `input.files[]`, the
 // matching tool_result succeeded, and the call is under 24 hours old. The list
 // always comes from the transcript, never from the request.
+//
+// `/turns/image` also serves an image the agent opened with `Read`: the same
+// rules, with `input.file_path` in place of `input.files[]`. Agents write their
+// screenshots and renders to a per-session scratch folder outside the spawn
+// cwd and then `Read` them, so this is where most agent-made images live. Only
+// image extensions are indexed: a session reads thousands of source files, and
+// they would crowd image grants out of the per-transcript cap.
 //
 // Why not `parseEntry`: it projects a tool call into a display body (text,
 // possibly truncated), and this needs the structured `input.files` array. The
@@ -39,6 +47,18 @@ export const SENT_FILE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 export const SENT_FILE_CLOCK_SKEW_MS = 5 * 60 * 1000;
 
 const TOOL_NAME = 'SendUserFile';
+
+/** The tools whose calls grant a file. */
+export type GrantTool = 'SendUserFile' | 'Read';
+
+/**
+ * How a `Read` call shows up in a compact JSONL line. The substring test runs
+ * before any parse, and bare `Read` appears in prose everywhere.
+ */
+const READ_NEEDLE = '"name":"Read"';
+
+/** The extensions a `Read` grant is recorded for: the types `/turns/image` serves. */
+const READ_IMAGE_EXT = /\.(?:png|jpe?g|gif|webp)$/i;
 
 /** One read from the transcript. */
 const CHUNK_BYTES = 1024 * 1024;
@@ -77,6 +97,7 @@ interface LineRef {
 }
 
 interface PendingCall {
+  tool: GrantTool;
   files: string[];
   at: number;
   call: LineRef;
@@ -101,14 +122,16 @@ interface TranscriptIndex {
   headHash: string;
   tailHash: string;
   pending: Map<string, PendingCall>;
-  /** Path → the newest successful call that sent it. */
+  /** Path → the newest successful `SendUserFile` call that sent it. */
   sent: Map<string, SentGrant>;
+  /** Path → the newest successful `Read` of it (images only). */
+  read: Map<string, SentGrant>;
 }
 
 function emptyIndex(ino: number, base: number): TranscriptIndex {
   return {
     ino, size: -1, mtimeMs: -1, base, offset: base, headHash: '', tailHash: '',
-    pending: new Map(), sent: new Map(),
+    pending: new Map(), sent: new Map(), read: new Map(),
   };
 }
 
@@ -142,7 +165,7 @@ export function sentFileParts(raw: string, p: path.PlatformPath = path): { dir: 
  */
 function absorbLine(index: TranscriptIndex, bytes: Buffer, offset: number): void {
   const line = bytes.toString('utf8');
-  const mayCall = line.includes(TOOL_NAME);
+  const mayCall = line.includes(TOOL_NAME) || line.includes(READ_NEEDLE);
   let mayAnswer = false;
   if (!mayCall) {
     for (const id of index.pending.keys()) {
@@ -161,15 +184,22 @@ function absorbLine(index: TranscriptIndex, bytes: Buffer, offset: number): void
   let ref: LineRef | undefined;
   const lineRef = (): LineRef => (ref ??= { offset, length: bytes.length, hash: sha256(bytes) });
   for (const block of contentBlocks(entry)) {
-    if (type === 'assistant' && block['type'] === 'tool_use' && block['name'] === TOOL_NAME) {
+    const name = block['name'];
+    if (type === 'assistant' && block['type'] === 'tool_use' && (name === TOOL_NAME || name === 'Read')) {
       const id = block['id'];
       const input = block['input'];
       const at = typeof entry['timestamp'] === 'string' ? Date.parse(entry['timestamp']) : NaN;
       if (typeof id !== 'string' || !id || !isObject(input) || !Number.isFinite(at)) continue;
-      const raw = input['files'];
-      const files = Array.isArray(raw) ? raw.filter((f): f is string => typeof f === 'string' && f.length > 0) : [];
+      let files: string[];
+      if (name === TOOL_NAME) {
+        const raw = input['files'];
+        files = Array.isArray(raw) ? raw.filter((f): f is string => typeof f === 'string' && f.length > 0) : [];
+      } else {
+        const raw = input['file_path'];
+        files = typeof raw === 'string' && READ_IMAGE_EXT.test(raw) ? [raw] : [];
+      }
       if (files.length === 0) continue;
-      index.pending.set(id, { files, at, call: lineRef() });
+      index.pending.set(id, { tool: name, files, at, call: lineRef() });
       if (index.pending.size > MAX_PENDING_CALLS) {
         const oldest = index.pending.keys().next();
         if (!oldest.done) index.pending.delete(oldest.value);
@@ -179,15 +209,16 @@ function absorbLine(index: TranscriptIndex, bytes: Buffer, offset: number): void
       if (!call) continue;
       index.pending.delete(block['tool_use_id']);
       if (block['is_error'] === true) continue;
+      const grants = call.tool === TOOL_NAME ? index.sent : index.read;
       for (const file of call.files) {
-        const prev = index.sent.get(file);
+        const prev = grants.get(file);
         if (prev && prev.at > call.at) continue;
         // Re-inserted so the Map's order stays oldest-first for eviction.
-        index.sent.delete(file);
-        index.sent.set(file, { at: call.at, call: call.call, result: lineRef() });
-        if (index.sent.size > MAX_SENT_PATHS) {
-          const oldest = index.sent.keys().next();
-          if (!oldest.done) index.sent.delete(oldest.value);
+        grants.delete(file);
+        grants.set(file, { at: call.at, call: call.call, result: lineRef() });
+        if (grants.size > MAX_SENT_PATHS) {
+          const oldest = grants.keys().next();
+          if (!oldest.done) grants.delete(oldest.value);
         }
       }
     }
@@ -262,6 +293,32 @@ async function fingerprint(handle: fs.promises.FileHandle, index: TranscriptInde
   return head === null || tail === null ? null : { head, tail };
 }
 
+/**
+ * The newest grant whose recorded path has `filePath`'s last component and a
+ * parent that resolves to `realParent`, or undefined. Recorded paths of a
+ * refused shape never match.
+ */
+async function sameFileGrant(
+  grants: Map<string, SentGrant>,
+  filePath: string,
+  realParent: string,
+): Promise<SentGrant | undefined> {
+  const want = sentFileParts(filePath);
+  if (!want) return undefined;
+  let best: SentGrant | undefined;
+  for (const [recorded, grant] of grants) {
+    if (best && best.at >= grant.at) continue;
+    const parts = sentFileParts(recorded);
+    if (!parts || parts.name !== want.name) continue;
+    try {
+      if ((await fs.promises.realpath(parts.dir)) === realParent) best = grant;
+    } catch {
+      // A parent that no longer resolves names nothing.
+    }
+  }
+  return best;
+}
+
 const READ_FLAGS =
   fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0);
 
@@ -289,11 +346,34 @@ export class SentFileIndex {
    * grant rests on are re-read first; if either changed, the transcript is
    * indexed again from scratch and the answer comes from that.
    */
-  async sentAt(transcriptPath: string, filePath: string, nowMs: number): Promise<number | null> {
+  sentAt(transcriptPath: string, filePath: string, nowMs: number): Promise<number | null> {
+    return this.grantedAt(transcriptPath, filePath, nowMs, TOOL_NAME);
+  }
+
+  /**
+   * `sentAt` for either granting tool. For `Read`, a `realParent` (the
+   * realpath of `filePath`'s parent) also accepts a recorded path with the
+   * same last component whose parent resolves to that same directory — `/tmp`
+   * and `/private/tmp` on macOS. That names the same file the recorded
+   * spelling would open, since the route opens the resolved parent plus the
+   * unresolved name either way.
+   */
+  async grantedAt(
+    transcriptPath: string,
+    filePath: string,
+    nowMs: number,
+    tool: GrantTool,
+    realParent?: string,
+  ): Promise<number | null> {
     for (let attempt = 0; attempt < 2; attempt++) {
       const index = await this.refresh(transcriptPath);
-      const grant = index?.sent.get(filePath);
-      if (!index || !grant) return null;
+      if (!index) return null;
+      const grants = tool === TOOL_NAME ? index.sent : index.read;
+      let grant = grants.get(filePath);
+      if (!grant && tool === 'Read' && realParent !== undefined) {
+        grant = await sameFileGrant(grants, filePath, realParent);
+      }
+      if (!grant) return null;
       const age = nowMs - grant.at;
       if (age > SENT_FILE_MAX_AGE_MS || age < -SENT_FILE_CLOCK_SKEW_MS) return null;
       if (await this.grantStillOnDisk(transcriptPath, grant)) return grant.at;
