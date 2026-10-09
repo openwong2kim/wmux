@@ -141,3 +141,30 @@ function expectSheetClipped(css: string): void {
   });
   if (!clipped) throw new Error('no unconditional .wmux-shell-body rule declares overflow: clip');
 }
+
+// #1688 item 3: the same caret-reveal family inside the sheet. None of these
+// boxes is a real scroller (the terminal, browser and each rail page scroll
+// inside themselves), so they clip instead of hiding.
+describe('pane and page overflow guard (#1688)', () => {
+  const componentsDir = path.join(__dirname, '..', 'components');
+  const read = (...parts: string[]) => fs.readFileSync(path.join(componentsDir, ...parts), 'utf8');
+
+  it('clips the pane content wrappers', () => {
+    const pane = read('Pane', 'Pane.tsx');
+    expect(pane).not.toMatch(/relative overflow-hidden/);
+    expect(pane.match(/relative overflow-clip/g)?.length).toBe(5);
+  });
+
+  it('clips the multiview workspace tile', () => {
+    expect(read('Layout', 'WorkspaceViewport.tsx')).toContain('min-h-0 overflow-clip cursor-pointer');
+  });
+
+  it('clips the rail page host', () => {
+    const decls: string[] = [];
+    postcss.parse(styles).walkRules((rule) => {
+      if (!rule.selectors.includes('.wmux-page')) return;
+      rule.walkDecls(/^overflow(-[xy])?$/, (decl) => { decls.push(`${decl.prop}: ${decl.value}`); });
+    });
+    expect(decls).toEqual(['overflow: clip']);
+  });
+});
