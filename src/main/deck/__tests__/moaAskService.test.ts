@@ -60,6 +60,8 @@ interface World {
   onMerge: (e: MergeEffect) => Promise<PrWriteResult>;
   /** The mergeFactsExtras port; absent: no port. */
   extras?: MergeFactsExtras | null;
+  /** The currentLogin port's answer; absent: no port. */
+  login?: string | null;
 }
 
 function world(over: Partial<World> = {}): World {
@@ -96,6 +98,7 @@ function build(w: World) {
     merge,
     laneContext: (e) => (service as MoaAskService).laneContext(e),
     authorize: (e) => (service as MoaAskService).authorize(e),
+    identity: (e) => (service as MoaAskService).identity(e),
     emit: (e) => service?.emitEffect(e),
     log: () => undefined,
   });
@@ -112,6 +115,7 @@ function build(w: World) {
     resolveRepo: async () => ({ key: 'github.com/openwong2kim/wmux', path: '/repo' }),
     askerBranches: async () => w.branches,
     ...(w.extras !== undefined ? { mergeFactsExtras: async () => w.extras ?? null } : {}),
+    ...(w.login !== undefined ? { currentLogin: async () => w.login ?? null } : {}),
     log: () => undefined,
   });
   const settle = async () => {
@@ -495,6 +499,27 @@ describe('owner resolution', () => {
     await h.settle();
     expect(h.merge).not.toHaveBeenCalled();
     expect(h.effects.list()[0]).toMatchObject({ status: 'refused', reason: 'head-moved' });
+  });
+
+  it('the merge goes out only as the gh login the card showed', async () => {
+    const extras: MergeFactsExtras = { headRefOid: HEAD, title: 'Ship it', mergeable: 'MERGEABLE', squashAllowed: true, login: 'openwong2kim' };
+    for (const [login, expected] of [['someone-else', 'identity-changed'], [null, 'identity-unknown'], ['OpenWong2Kim', null]] as const) {
+      const w = world({ facts: { ...OPEN_GREEN, author: 'outsider' }, extras, login });
+      const h = build(w);
+      await askAndSettle(h);
+      const d = h.decisions.list()[0];
+      if (!d) throw new Error('no decision');
+      await h.service.resolveByOwner({ decisionId: d.id, answer: { type: 'merge', approve: true, expectHead: HEAD } });
+      await h.settle();
+      if (expected) {
+        expect(h.merge).not.toHaveBeenCalled();
+        expect(h.effects.list()[0]).toMatchObject({ status: 'refused', reason: expected });
+      } else {
+        expect(h.merge).toHaveBeenCalledTimes(1);
+        expect(h.effects.list()[0]?.status).toBe('done');
+      }
+      fs.rmSync(path.join(dir, 'moa-delegate'), { recursive: true, force: true });
+    }
   });
 
   it('per-rule auto toggles persist through the port; unknown rules are refused', async () => {

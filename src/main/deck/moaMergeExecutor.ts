@@ -37,6 +37,10 @@ export interface MoaMergeExecutorPorts {
   laneContext: (effect: MergeEffect) => Promise<Omit<MergeLaneContext, 'expectHead'>>;
   /** Null when the effect may run now, else the refusal reason. */
   authorize: (effect: MergeEffect) => string | null;
+  /** Null when the gh login the merge goes out as now is the one the
+   *  decision's card showed, else the refusal reason. Asked right before
+   *  the merge. */
+  identity?: (effect: MergeEffect) => Promise<string | null>;
   emit?: (effect: MergeEffect) => void;
   log?: (line: string) => void;
 }
@@ -101,6 +105,8 @@ export class MoaMergeExecutor {
         const f = verdict.failures[0];
         return await end('refused', f ? `${f.predicate}:${f.reason}` : 'lane');
       }
+      const wrongIdentity = await this.ports.identity?.(claimed);
+      if (wrongIdentity) return await end('refused', wrongIdentity);
       const r = await this.ports.merge(claimed);
       if (r.ok) {
         const after = await this.read(claimed);

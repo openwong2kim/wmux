@@ -33,6 +33,7 @@ import { MoaDecisionStore } from './moaDecisionStore';
 import { MoaEffectStore } from './moaEffectStore';
 import { MoaMergeExecutor } from './moaMergeExecutor';
 import { MoaAskService, type MoaAskConfig } from './moaAskService';
+import { moaMergeSubject, ttlReader } from './moaMergeFacts';
 import { findShadowJudgment, readPaneScreen, runMoaJudge } from './moaShadowHost';
 import type { AskerPaneState, CourierSendResult } from './moaAnswerCourier';
 import { getWorkspaceMirror } from '../workspace/WorkspaceMirror';
@@ -95,25 +96,37 @@ let settingsWatched = false;
 /** Owner logins by GitHub host (the owner's own PRs are trusted authors). */
 const ownerLogins = new Map<string, string>();
 
-/** Squash permission by repo key: a repository setting, read once per run. */
-const squashAllowedByRepo = new Map<string, boolean>();
+/** Squash permission is a repository setting: re-read after SQUASH_TTL_MS. */
+const SQUASH_TTL_MS = 10 * 60 * 1000;
+const gh = process.platform === 'win32' ? 'gh.exe' : 'gh';
 
-async function squashMergeAllowed(repo: { key: string; path: string }): Promise<boolean | null> {
-  const known = squashAllowedByRepo.get(repo.key);
-  if (known !== undefined) return known;
+const squashMergeAllowed = ttlReader(async (repo: { key: string; path: string }): Promise<boolean | null> => {
   const parts = splitRepoKey(repo.key);
   if (!parts) return null;
   try {
-    const { stdout } = await execFileAsync(process.platform === 'win32' ? 'gh.exe' : 'gh', [
+    const { stdout } = await execFileAsync(gh, [
       'api', 'graphql', '--hostname', parts.host,
       '-f', 'query=query($owner: String!, $repo: String!) { repository(owner: $owner, name: $repo) { squashMergeAllowed } }',
       '-f', `owner=${parts.owner}`, '-f', `repo=${parts.repo}`,
       '--jq', '.data.repository.squashMergeAllowed',
     ], { cwd: repo.path, timeout: GH_TIMEOUT_MS, env: ghIssueEnv(), windowsHide: true });
     const v = stdout.trim();
-    if (v !== 'true' && v !== 'false') return null;
-    squashAllowedByRepo.set(repo.key, v === 'true');
-    return v === 'true';
+    return v === 'true' ? true : v === 'false' ? false : null;
+  } catch {
+    return null;
+  }
+}, (repo) => repo.key, SQUASH_TTL_MS);
+
+/** The login gh signs in as on the repo's host now: never cached, so an
+ *  account switch shows on the next card and stops the next merge. */
+async function currentGhLogin(repo: { key: string; path: string }): Promise<string | null> {
+  const parts = splitRepoKey(repo.key);
+  if (!parts) return null;
+  try {
+    const { stdout } = await execFileAsync(gh, ['api', '--hostname', parts.host, 'user', '--jq', '.login'], {
+      cwd: repo.path, timeout: GH_TIMEOUT_MS, env: ghIssueEnv(), windowsHide: true,
+    });
+    return stdout.trim().toLowerCase() || null;
   } catch {
     return null;
   }
@@ -211,13 +224,13 @@ function build(d: MoaDelegateWiringDeps): MoaAskService {
     merge: async (e) => {
       // The subject GitHub would give a squash: the title and the number.
       const head = await ghPrReviewService.checks(e.repoPath, e.repoKey, e.prNumber, true);
-      const title = head.ok ? head.value.head.title.trim() : '';
       return ghPrReviewService.merge(e.repoPath, e.repoKey, e.prNumber, {
-        expectHead: e.expectHead, subject: `${title || `Pull request #${e.prNumber}`} (#${e.prNumber})`, body: '',
+        expectHead: e.expectHead, subject: moaMergeSubject(head.ok ? head.value.head.title : '', e.prNumber), body: '',
       });
     },
     laneContext: (e) => (service as MoaAskService).laneContext(e),
     authorize: (e) => (service as MoaAskService).authorize(e),
+    identity: (e) => (service as MoaAskService).identity(e),
     emit: (e) => service?.emitEffect(e),
     log,
   });
@@ -241,20 +254,19 @@ function build(d: MoaDelegateWiringDeps): MoaAskService {
       return { key: remote.key, path: cwd };
     },
     askerBranches: (asker, repoPath) => askerBranches(d.getDaemonClient, asker, repoPath),
-    // The lane read has no title, mergeable or squash permission; the login is
-    // the one resolveRepo already read for this host.
+    // The lane read has no title, mergeable or squash permission; the login
+    // is read now, as the executor's identity gate reads it.
     mergeFactsExtras: async (repo, prNumber) => {
-      const parts = splitRepoKey(repo.key);
-      const login = parts ? ownerLogins.get(parts.host) : undefined;
-      if (!login) return null;
-      const [head, squashAllowed] = await Promise.all([
+      const [head, squash, login] = await Promise.all([
         ghPrReviewService.checks(repo.path, repo.key, prNumber, true),
         squashMergeAllowed(repo),
+        currentGhLogin(repo),
       ]);
-      if (!head.ok || squashAllowed === null) return null;
+      if (!head.ok || squash === null || !login) return null;
       const h = head.value.head;
-      return { headRefOid: h.headRefOid, title: h.title, mergeable: h.mergeable, squashAllowed, login };
+      return { headRefOid: h.headRefOid, title: h.title, mergeable: h.mergeable, squashAllowed: squash, login };
     },
+    currentLogin: currentGhLogin,
     priorJudgment: findShadowJudgment,
     ...(submit
       ? {

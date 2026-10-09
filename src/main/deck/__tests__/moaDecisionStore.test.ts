@@ -163,8 +163,17 @@ describe('MoaDecisionStore idempotency (AnswerReceiptStore semantics)', () => {
     const reloaded = new MoaDecisionStore(dir).list()[0];
     expect(reloaded).toMatchObject({ id: d.id, lane: { ok: true, reasons: [] } });
     expect(reloaded?.facts).toBeUndefined();
-    fs.writeFileSync(file(), JSON.stringify({ ...saved, decisions: [{ ...saved.decisions[0], facts: { number: 'x' } }] }));
-    expect(() => new MoaDecisionStore(dir)).toThrow('Invalid moa decision entry');
+    const good = {
+      number: 1858, title: 't', state: 'OPEN', isDraft: false, headRefOid: HEAD, headRefName: 'feat/x', baseRefName: 'main',
+      mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN', block: null, squashAllowed: true,
+      checks: { overall: 'success', counts: { total: 0 } }, methods: ['squash'], subject: 't (#1858)', body: '', identity: { login: 'octocat' },
+    };
+    fs.writeFileSync(file(), JSON.stringify({ ...saved, decisions: [{ ...saved.decisions[0], facts: good }] }));
+    expect(new MoaDecisionStore(dir).list()[0]?.facts).toEqual(good);
+    for (const bad of [{ number: 'x' }, { ...good, methods: 'squash' }, { ...good, title: 1 }, { ...good, subject: null }, { ...good, checks: { overall: 'success', counts: { total: '1' } } }]) {
+      fs.writeFileSync(file(), JSON.stringify({ ...saved, decisions: [{ ...saved.decisions[0], facts: bad }] }));
+      expect(() => new MoaDecisionStore(dir), JSON.stringify(bad)).toThrow('Invalid moa decision entry');
+    }
   });
 
   it('a stored answer of the wrong shape refuses to load', async () => {

@@ -132,13 +132,22 @@ export function isMoaDecisionRecord(v: unknown): v is MoaDecision {
     && (d.facts === undefined || isMergeFacts(d.facts));
 }
 
-/** Display-only facts: the field types, not their values (one bad row refuses the file). */
+/** Display-only facts: every field's type, not its value (one bad row refuses the file). */
 function isMergeFacts(v: unknown): boolean {
   const f = v as MoaDecision['facts'];
+  const strings = (a: unknown) => Array.isArray(a) && a.every((x) => typeof x === 'string');
   return !!f && typeof f === 'object'
-    && Number.isSafeInteger(f.number) && typeof f.headRefOid === 'string' && typeof f.isDraft === 'boolean'
-    && typeof f.squashAllowed === 'boolean' && (f.block === null || typeof f.block === 'string')
-    && !!f.checks && typeof f.checks === 'object' && !!f.identity && typeof f.identity.login === 'string';
+    && Number.isSafeInteger(f.number) && typeof f.isDraft === 'boolean' && typeof f.squashAllowed === 'boolean'
+    && [f.title, f.state, f.headRefOid, f.headRefName, f.baseRefName, f.mergeable, f.mergeStateStatus, f.subject, f.body]
+      .every((x) => typeof x === 'string')
+    && (f.block === null || typeof f.block === 'string')
+    && strings(f.methods)
+    && !!f.checks && typeof f.checks === 'object' && typeof f.checks.overall === 'string'
+    && !!f.checks.counts && typeof f.checks.counts === 'object'
+    && Object.values(f.checks.counts).every((n) => typeof n === 'number')
+    && (f.checks.requiredFailing === undefined || strings(f.checks.requiredFailing))
+    && (f.checks.requiredPending === undefined || strings(f.checks.requiredPending))
+    && !!f.identity && typeof f.identity.login === 'string';
 }
 
 const DELIVERY_STATES: ReadonlySet<string> = new Set(['waiting', 'sending', 'delivered', 'seen', 'failed']);

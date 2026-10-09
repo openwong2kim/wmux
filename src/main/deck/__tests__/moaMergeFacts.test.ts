@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { PrLaneFacts } from '../../../shared/prReview';
-import { buildMergeFacts, laneChecksSummary, type MergeFactsExtras } from '../moaMergeFacts';
+import { buildMergeFacts, laneChecksSummary, moaMergeSubject, ttlReader, type MergeFactsExtras } from '../moaMergeFacts';
 
 const HEAD = 'a'.repeat(40);
 const check = (name: string, bucket: PrLaneFacts['checks'][number]['bucket'], isRequired: boolean) => ({ name, workflow: '', bucket, link: '', isRequired });
@@ -45,13 +45,41 @@ describe('buildMergeFacts', () => {
 });
 
 describe('laneChecksSummary', () => {
-  it('omits the required lists when the rollup was truncated', () => {
-    const s = laneChecksSummary({ ...LANE, checksTruncated: true });
-    expect(s).not.toHaveProperty('requiredFailing');
-    expect(s).not.toHaveProperty('requiredPending');
+  it('a truncated rollup vouches for no count: pending (or failure when one is seen), empty counts, no required lists', () => {
+    expect(laneChecksSummary({ ...LANE, checksTruncated: true })).toEqual({ overall: 'pending', counts: {} });
+    const failing = { ...LANE, checksTruncated: true, checks: [...LANE.checks, check('e2e', 'fail', false)] };
+    expect(laneChecksSummary(failing)).toEqual({ overall: 'failure', counts: {} });
   });
 
   it('no checks reads none', () => {
     expect(laneChecksSummary({ ...LANE, checks: [] })).toMatchObject({ overall: 'none', counts: { total: 0 } });
+  });
+});
+
+describe('moaMergeSubject', () => {
+  it('collapses whitespace and falls back for an empty title: one subject for the card and the merge', () => {
+    expect(moaMergeSubject('Fix  the   thing ', 7)).toBe('Fix the thing (#7)');
+    expect(moaMergeSubject('', 7)).toBe('Pull request #7 (#7)');
+    expect(moaMergeSubject('   ', 7)).toBe('Pull request #7 (#7)');
+    expect(buildMergeFacts(LANE, { ...EXTRAS, title: '' })?.subject).toBe('Pull request #42 (#42)');
+  });
+});
+
+describe('ttlReader', () => {
+  it('reads once per key inside the TTL, again after it, and never keeps a null', async () => {
+    let t = 0;
+    const answers: Array<boolean | null> = [true, false, null, true];
+    const read = async () => answers.shift() ?? null;
+    const calls: string[] = [];
+    const r = ttlReader(async (k: string) => { calls.push(k); return read(); }, (k) => k, 600_000, () => t);
+    expect(await r('a')).toBe(true);
+    t = 599_999;
+    expect(await r('a')).toBe(true);
+    t = 600_000;
+    expect(await r('a')).toBe(false);
+    t = 1_300_000;
+    expect(await r('a')).toBeNull();
+    expect(await r('a')).toBe(true);
+    expect(calls).toHaveLength(4);
   });
 });

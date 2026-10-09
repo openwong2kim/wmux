@@ -103,6 +103,9 @@ export interface MoaAskServicePorts {
   /** What the lane read lacks for the decision's PrMergeFacts (title,
    *  mergeable, squash permission, the gh login). Null or absent: no facts. */
   mergeFactsExtras?: (repo: { key: string; path: string }, prNumber: number) => Promise<MergeFactsExtras | null>;
+  /** The gh login a merge in `repo` goes out as, read now (uncached); null
+   *  when it cannot be read. */
+  currentLogin?: (repo: { key: string; path: string }) => Promise<string | null>;
   /** PRs merged since `sinceIso` in a repo (the audit). */
   mergedSince?: (repo: { key: string; path: string }, sinceIso: string) => Promise<Array<Omit<MoaUnreceiptedMerge, 'repoKey'>> | null>;
   judgeDailyCap?: number;
@@ -443,6 +446,20 @@ export class MoaAskService implements MoaDelegateServicePort {
       if (!e.eligible) return `auto-${e.reason}`;
     }
     return null;
+  }
+
+  /**
+   * The executor's identity gate: a decision whose card showed a gh login
+   * merges only as that login. `identity-changed` when gh now signs in as
+   * another account, `identity-unknown` when the login cannot be read.
+   * Decisions without facts (stored before them) showed no login: null.
+   */
+  async identity(effect: MergeEffect): Promise<string | null> {
+    const shown = this.ports.decisions.get(effect.decisionId)?.facts?.identity.login;
+    if (!shown) return null;
+    const now = await this.ports.currentLogin?.({ key: effect.repoKey, path: effect.repoPath }).catch(() => null) ?? null;
+    if (!now) return 'identity-unknown';
+    return now.toLowerCase() === shown.toLowerCase() ? null : 'identity-changed';
   }
 
   /** The lane context for an effect's asker, read now. */

@@ -21,8 +21,21 @@ export interface MergeFactsExtras {
   login: string;
 }
 
-/** Overall state and counts in the phone's check-summary vocabulary. */
+/** The squash subject a Moa merge uses, and the one its card shows: GitHub's
+ *  default (whitespace collapsed), with a fallback for an empty title. */
+export function moaMergeSubject(title: string, number: number): string {
+  return squashSubject(title.trim() ? title : `Pull request #${number}`, number);
+}
+
+/**
+ * Overall state and counts in the phone's check-summary vocabulary. A
+ * truncated rollup (the lane's `checks-truncated`) vouches for no count and no
+ * required list: overall is `failure` when a visible check failed, else
+ * `pending`, and `counts` is empty.
+ */
 export function laneChecksSummary(lane: PrLaneFacts): PrMergeChecks {
+  const failedSeen = lane.checks.some((c) => c.bucket === 'fail' || c.bucket === 'cancel');
+  if (lane.checksTruncated) return { overall: failedSeen ? 'failure' : 'pending', counts: {} };
   const counts = { total: lane.checks.length, passed: 0, failed: 0, pending: 0, skipped: 0 };
   for (const c of lane.checks) {
     if (c.bucket === 'pass') counts.passed += 1;
@@ -31,14 +44,26 @@ export function laneChecksSummary(lane: PrLaneFacts): PrMergeChecks {
     else counts.failed += 1;
   }
   const overall = counts.total === 0 ? 'none' : counts.failed > 0 ? 'failure' : counts.pending > 0 ? 'pending' : 'success';
-  // A truncated rollup cannot list every required check: omit both lists.
-  if (lane.checksTruncated) return { overall, counts };
   const required = lane.checks.filter((c) => c.isRequired === true);
   return {
     overall,
     counts,
     requiredFailing: required.filter((c) => c.bucket === 'fail' || c.bucket === 'cancel').map((c) => c.name),
     requiredPending: required.filter((c) => c.bucket === 'pending').map((c) => c.name),
+  };
+}
+
+/** A value read at most once per `ttlMs` per key; a null read is not kept. */
+export function ttlReader<A, T>(read: (arg: A) => Promise<T | null>, keyOf: (arg: A) => string, ttlMs: number, now: () => number = Date.now) {
+  const hits = new Map<string, { value: T; at: number }>();
+  return async (arg: A): Promise<T | null> => {
+    const key = keyOf(arg);
+    const hit = hits.get(key);
+    if (hit && now() - hit.at < ttlMs) return hit.value;
+    const value = await read(arg);
+    if (value === null) hits.delete(key);
+    else hits.set(key, { value, at: now() });
+    return value;
   };
 }
 
@@ -72,8 +97,8 @@ export function buildMergeFacts(lane: PrLaneFacts, extras: MergeFactsExtras): Pr
     squashAllowed: extras.squashAllowed,
     checks: laneChecksSummary(lane),
     methods: ['squash'],
-    // What the executor merges with: GitHub's squash subject and an empty body.
-    subject: squashSubject(extras.title, lane.number),
+    // What the executor merges with (moaMergeSubject) and an empty body.
+    subject: moaMergeSubject(extras.title, lane.number),
     body: '',
     identity: { login: extras.login },
   };
