@@ -27,6 +27,7 @@ import { recordedRunPtyIds } from './automation/store';
 import { AUTOMATION_EVENT } from '../shared/automation';
 import { InputReceiptStore } from './web/InputReceiptStore';
 import { PhoneWorktreeService } from './web/phoneWorktree';
+import { PhoneGitWriteGate } from './web/phoneGitWriteGate';
 import { AnswerReceiptStore } from './approvals/AnswerReceiptStore';
 import { MoaWakeService } from './phone/MoaWakeService';
 import { isMoaWakeFailure } from '../shared/moaWake';
@@ -62,7 +63,7 @@ import {
   coerceWebTlsConfig,
 } from './web/webStateStore';
 import { stopWebServerDurably } from './web/webStop';
-import { decideWebStartPolicy, resolveWebInlineImages, resolveWebStartGrants } from './web/webStartPolicy';
+import { decideWebStartPolicy, resolveWebGitWriteLogin, resolveWebInlineImages, resolveWebStartGrants } from './web/webStartPolicy';
 import { loadWebPrefs, saveWebPrefs } from './web/webPrefsStore';
 import { scheduleTokenFileReHarden } from '../shared/security';
 import { applyTaskQueryView } from '../shared/a2aTaskQueryView';
@@ -239,6 +240,12 @@ function getPhoneWorktrees(sessionManager: DaemonSessionManager): PhoneWorktreeS
     audit: (deviceId, reason) => getDeviceStore().recordGitWorktree(deviceId, reason),
     log: (level, msg) => log(level, msg),
   });
+}
+// Phone git write actions: one gate for the daemon's lifetime, shared by every
+// web server it starts, so receipts and confirm tokens outlive a web restart.
+let phoneGitWriteGate: PhoneGitWriteGate | null = null;
+function getPhoneGitWriteGate(): PhoneGitWriteGate {
+  return phoneGitWriteGate ??= new PhoneGitWriteGate({ wmuxDir: getWmuxDir() });
 }
 let answerReceipts: AnswerReceiptStore | null = null;
 function getAnswerReceipts(): AnswerReceiptStore {
@@ -751,6 +758,8 @@ function persistWebState(
       allowUpload: info.allowUpload === true,
       allowTranscript: info.allowTranscript === true,
       ...(info.allowDangerousLaunch === true ? { allowDangerousLaunch: true } : {}),
+      ...(info.allowGitWrite === true ? { allowGitWrite: true } : {}),
+      ...(info.gitWriteLogin ? { gitWriteLogin: info.gitWriteLogin } : {}),
       ...(info.tls === true && tls ? { tls } : {}),
       allowedHosts,
       tailscale,
@@ -826,6 +835,7 @@ async function restoreWebServer(sessionManager: DaemonSessionManager): Promise<v
         turnFailure: (id) => sessionManager.getSession(id)?.bridge.getLastFailure(),
         inputReceipts: getInputReceipts,
         phoneWorktrees: () => getPhoneWorktrees(sessionManager),
+        phoneGitWrite: getPhoneGitWriteGate,
         answerReceipts: getAnswerReceipts,
         decisionForms: phoneDecisionForms,
         ...webDecisionDeps(sessionManager),
@@ -902,6 +912,8 @@ async function restoreWebServer(sessionManager: DaemonSessionManager): Promise<v
       allowUpload: state.allowUpload,
       allowTranscript: state.allowTranscript,
       allowDangerousLaunch: state.allowDangerousLaunch === true,
+      allowGitWrite: state.allowGitWrite === true,
+      ...(state.gitWriteLogin ? { gitWriteLogin: state.gitWriteLogin } : {}),
       inlineImages: loadWebPrefs(wmuxDir).inlineImages,
       ...(state.tls ? { tls: state.tls } : {}),
       allowedHosts: state.allowedHosts,
@@ -3150,6 +3162,7 @@ function registerRpcHandlers(
       turnFailure: (id) => sessionManager.getSession(id)?.bridge.getLastFailure(),
       inputReceipts: getInputReceipts,
       phoneWorktrees: () => getPhoneWorktrees(sessionManager),
+      phoneGitWrite: getPhoneGitWriteGate,
       answerReceipts: getAnswerReceipts,
       decisionForms: phoneDecisionForms,
       ...webDecisionDeps(sessionManager),
@@ -3222,6 +3235,8 @@ function registerRpcHandlers(
       allowUpload?: boolean;
       allowTranscript?: boolean;
       allowDangerousLaunch?: boolean;
+      allowGitWrite?: boolean;
+      gitWriteLogin?: unknown;
       inlineImages?: boolean;
       inheritUnsetGrants?: boolean;
       onlyIfRunning?: boolean;
@@ -3254,11 +3269,12 @@ function registerRpcHandlers(
     // launch agents with approvals off (contract §3.4). The one exception is a
     // caller that asks to inherit what it does not send (the desktop popover,
     // which has no control for every grant) — see resolveWebStartGrants.
-    const { allowInput, allowUpload, allowTranscript, allowDangerousLaunch } = resolveWebStartGrants(
+    const { allowInput, allowUpload, allowTranscript, allowDangerousLaunch, allowGitWrite } = resolveWebStartGrants(
       p,
       webServer.currentStartState,
       loadedPrevious.state,
     );
+    const gitWriteLogin = resolveWebGitWriteLogin(p.gitWriteLogin, webServer.currentStartState, loadedPrevious.state);
     const inlineImages = resolveWebInlineImages(
       p.inlineImages,
       webServer.currentStartState,
@@ -3285,6 +3301,8 @@ function registerRpcHandlers(
       allowUpload,
       allowTranscript,
       allowDangerousLaunch,
+      allowGitWrite,
+      ...(gitWriteLogin ? { gitWriteLogin } : {}),
       inlineImages,
       allowedHosts,
       tailscale,

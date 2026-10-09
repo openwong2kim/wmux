@@ -5,6 +5,7 @@ import {
   decideWebStartPolicy,
   resolveWebInlineImages,
   resolveWebStartGrants,
+  resolveWebGitWriteLogin,
   type WebStartPolicyInput,
 } from '../webStartPolicy';
 
@@ -187,6 +188,7 @@ describe('web start grant resolution', () => {
     allowUpload: true,
     allowTranscript: true,
     allowDangerousLaunch: true,
+    allowGitWrite: true,
   };
 
   it('keeps the CLI contract: an absent grant is off unless the caller opts into inheritance', () => {
@@ -197,6 +199,7 @@ describe('web start grant resolution', () => {
       allowUpload: false,
       allowTranscript: false,
       allowDangerousLaunch: false,
+      allowGitWrite: false,
     });
   });
 
@@ -212,6 +215,7 @@ describe('web start grant resolution', () => {
       allowUpload: false,
       allowTranscript: true,
       allowDangerousLaunch: true,
+      allowGitWrite: true,
     });
   });
 
@@ -227,6 +231,7 @@ describe('web start grant resolution', () => {
       allowUpload: true,
       allowTranscript: true,
       allowDangerousLaunch: true,
+      allowGitWrite: false,
     });
   });
 
@@ -242,6 +247,7 @@ describe('web start grant resolution', () => {
       allowUpload: false,
       allowTranscript: false,
       allowDangerousLaunch: false,
+      allowGitWrite: false,
     });
   });
 
@@ -257,6 +263,7 @@ describe('web start grant resolution', () => {
       allowUpload: false,
       allowTranscript: false,
       allowDangerousLaunch: false,
+      allowGitWrite: false,
     });
   });
 });
@@ -281,5 +288,16 @@ describe('inline images switch (#1641)', () => {
 
   it('with nothing running (a restart, or after --stop) the saved preference decides', () => {
     expect(resolveWebInlineImages(undefined, undefined, off)).toBe(false);
+  });
+});
+
+describe('web start git write login', () => {
+  it('takes an explicit login, keeps the running one, then the enabled record, and refuses a bad one', () => {
+    expect(resolveWebGitWriteLogin('octo', { gitWriteLogin: 'other' }, previous())).toBe('octo');
+    expect(resolveWebGitWriteLogin(undefined, { gitWriteLogin: 'other' }, previous({ gitWriteLogin: 'saved' }))).toBe('other');
+    expect(resolveWebGitWriteLogin(undefined, undefined, previous({ gitWriteLogin: 'saved' }))).toBe('saved');
+    expect(resolveWebGitWriteLogin(undefined, undefined, previous({ enabled: false, gitWriteLogin: 'saved' }))).toBeUndefined();
+    expect(() => resolveWebGitWriteLogin('not a login', undefined, previous())).toThrow();
+    expect(() => resolveWebGitWriteLogin(42, undefined, previous())).toThrow();
   });
 });

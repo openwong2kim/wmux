@@ -66,6 +66,7 @@ const exposedWithTranscript = {
   allowUpload: true,
   allowTranscript: true,
   allowDangerousLaunch: true,
+  allowGitWrite: false,
 };
 
 describe('wmux web re-run keeps what it was not told to change', () => {
@@ -183,6 +184,7 @@ describe('planWebStart (tailnet paths, no tailscale shell-out)', () => {
     allowUpload: false,
     allowTranscript: true,
     allowDangerousLaunch: false,
+    allowGitWrite: false,
   };
 
   it('an option-only re-run stays on the tailnet with its allow-list and transcript', () => {

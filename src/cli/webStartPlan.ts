@@ -20,9 +20,10 @@ export interface PreviousWebShape {
   allowUpload: boolean | undefined;
   allowTranscript: boolean | undefined;
   allowDangerousLaunch: boolean | undefined;
+  allowGitWrite: boolean | undefined;
 }
 
-export type WebGrantName = 'allowInput' | 'allowUpload' | 'allowTranscript' | 'allowDangerousLaunch';
+export type WebGrantName = 'allowInput' | 'allowUpload' | 'allowTranscript' | 'allowDangerousLaunch' | 'allowGitWrite';
 
 /** The CLI flag for each grant. `--no-<flag>` turns it off. */
 export const WEB_GRANT_FLAGS: Record<WebGrantName, string> = {
@@ -30,6 +31,7 @@ export const WEB_GRANT_FLAGS: Record<WebGrantName, string> = {
   allowUpload: 'allow-upload',
   allowTranscript: 'allow-transcript',
   allowDangerousLaunch: 'allow-dangerous-launch',
+  allowGitWrite: 'allow-git-write',
 };
 
 export interface WebStartPlan {

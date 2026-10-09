@@ -91,7 +91,8 @@ WEB ACCESS (browser / PWA)
                                     --allow-host on a re-run: loopback only
         [--allow-input]             Enable keyboard input (off by default)
         [--no-allow-<x>]            Turn a grant off on a re-run: input,
-                                    upload, transcript, dangerous-launch
+                                    upload, transcript, dangerous-launch,
+                                    git-write
         [--allow-upload]            Enable photo upload from a paired phone
                                     (JPEG/PNG, 10 MB cap, files kept 24h in
                                     ~/.wmux/uploads/phone). Off by default

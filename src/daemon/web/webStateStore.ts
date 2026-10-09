@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { secureWriteTokenFile } from '../../shared/security';
 import type { WebTlsConfig } from '../../shared/web';
+import { GITHUB_LOGIN } from '../../shared/phoneGitWrite';
 
 /**
  * Durable record of the operator's "yes, serve this" for `wmux web` (#596).
@@ -57,6 +58,13 @@ export interface WebPersistedState {
    * set it on the host.
    */
   allowDangerousLaunch?: boolean;
+  /**
+   * Whether the phone may push, open PRs and merge (`--allow-git-write`).
+   * Persisted only when true; absent reads as false, like the ceiling above.
+   */
+  allowGitWrite?: boolean;
+  /** The GitHub login those writes run as. Dropped on read unless it is a valid login. */
+  gitWriteLogin?: string;
   /** Native HTTPS PEM paths. Key bytes are never persisted here. */
   tls?: WebTlsConfig;
   allowedHosts: string[];
@@ -196,6 +204,10 @@ export function coerceWebStateWithDiagnostics(parsed: unknown): WebStateLoadResu
       // false at /api/config, so the field is omitted entirely unless true.
       ...(o['allowTranscript'] === true ? { allowTranscript: true } : {}),
       ...(o['allowDangerousLaunch'] === true ? { allowDangerousLaunch: true } : {}),
+      ...(o['allowGitWrite'] === true ? { allowGitWrite: true } : {}),
+      ...(typeof o['gitWriteLogin'] === 'string' && GITHUB_LOGIN.test(o['gitWriteLogin'])
+        ? { gitWriteLogin: o['gitWriteLogin'] }
+        : {}),
       ...(tls ? { tls } : {}),
       allowedHosts,
       tailscale,

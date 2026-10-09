@@ -248,6 +248,13 @@ describe('webStateStore (#596 — wmux web survives a daemon restart)', () => {
     expect(coerceWebState(enabled())).not.toHaveProperty('allowDangerousLaunch');
   });
 
+  it('restores the git write ceiling only from a literal true, and only a valid login', () => {
+    saveWebState(dir, enabled({ allowGitWrite: true, gitWriteLogin: 'octocat' }));
+    expect(loadWebState(dir)).toMatchObject({ allowGitWrite: true, gitWriteLogin: 'octocat' });
+    expect(coerceWebState({ ...enabled(), allowGitWrite: 'yes' })).not.toHaveProperty('allowGitWrite');
+    expect(coerceWebState({ ...enabled(), gitWriteLogin: 'not a login' })).not.toHaveProperty('gitWriteLogin');
+  });
+
   it('keeps a pre-TLS state enabled as plaintext for backward compatibility', () => {
     const loaded = coerceWebStateWithDiagnostics(enabled());
     expect(loaded.state.enabled).toBe(true);

@@ -564,6 +564,33 @@ describe.skipIf(!CAN_RUN)('#596 — wmux web survives a daemon restart', () => {
   );
 
   it(
+    'turns the git write ceiling on through daemon.web.start and restores it with its login',
+    async () => {
+      const port = await freePort();
+      // A receipt read past the ceiling answers 404 (no such receipt); with the ceiling off it is 403.
+      const receiptPath = `/api/sessions/none/git/push/${crypto.randomUUID()}`;
+
+      const d1 = await startDaemon();
+      const off = await rpc('daemon.web.start', { port, host: '127.0.0.1', allowInput: true });
+      expect(off.allowGitWrite).toBe(false);
+      expect(await probe(port, receiptPath, off.token as string)).toEqual({ status: 403 });
+
+      const on = await rpc('daemon.web.start', {
+        port, host: '127.0.0.1', allowInput: true, allowGitWrite: true, gitWriteLogin: 'octocat',
+      });
+      expect(on).toMatchObject({ allowGitWrite: true, gitWriteLogin: 'octocat' });
+      expect(await probe(port, receiptPath, on.token as string)).toEqual({ status: 404 });
+
+      await killDaemon(d1);
+      await startDaemon();
+      const after = await rpc('daemon.web.status');
+      expect(after).toMatchObject({ running: true, allowGitWrite: true, gitWriteLogin: 'octocat' });
+      expect(await probe(port, receiptPath, after.token as string)).toEqual({ status: 404 });
+    },
+    120_000,
+  );
+
+  it(
     'an explicit stop is remembered too — and revokes every web credential',
     async () => {
       const port = await freePort();

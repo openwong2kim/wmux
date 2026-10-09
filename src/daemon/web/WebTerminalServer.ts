@@ -1775,6 +1775,8 @@ export class WebTerminalServer {
     allowUpload: boolean;
     allowTranscript: boolean;
     allowDangerousLaunch: boolean;
+    allowGitWrite: boolean;
+    gitWriteLogin?: string;
     inlineImages: boolean;
   } | undefined {
     if (!this.server || !this.opts) return undefined;
@@ -1788,6 +1790,8 @@ export class WebTerminalServer {
       allowUpload: this.opts.allowUpload === true,
       allowTranscript: this.opts.allowTranscript === true,
       allowDangerousLaunch: this.opts.allowDangerousLaunch === true,
+      allowGitWrite: this.opts.allowGitWrite === true,
+      ...(this.opts.gitWriteLogin ? { gitWriteLogin: this.opts.gitWriteLogin } : {}),
       inlineImages: this.opts.inlineImages !== false,
     };
   }

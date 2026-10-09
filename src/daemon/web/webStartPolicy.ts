@@ -1,5 +1,6 @@
 import { webHostIsLoopback, type WebTlsConfig } from '../../shared/web';
 import type { WebPersistedState } from './webStateStore';
+import { GITHUB_LOGIN } from '../../shared/phoneGitWrite';
 
 export interface WebStartPolicyInput {
   requestedTls: WebTlsConfig | false | undefined;
@@ -110,15 +111,17 @@ export function resolveWebInlineImages(
   return saved.inlineImages;
 }
 
-/** The four per-server phone grants a `daemon.web.start` decides. */
+/** The per-server phone grants a `daemon.web.start` decides. */
 export interface WebStartGrants {
   allowInput: boolean;
   allowUpload: boolean;
   allowTranscript: boolean;
   allowDangerousLaunch: boolean;
+  /** Phone push, PR create and merge (`--allow-git-write`). */
+  allowGitWrite: boolean;
 }
 
-const GRANT_KEYS = ['allowInput', 'allowUpload', 'allowTranscript', 'allowDangerousLaunch'] as const;
+const GRANT_KEYS = ['allowInput', 'allowUpload', 'allowTranscript', 'allowDangerousLaunch', 'allowGitWrite'] as const;
 
 /**
  * Resolve the grants for one daemon.web.start.
@@ -151,5 +154,25 @@ export function resolveWebStartGrants(
     allowUpload: resolve('allowUpload'),
     allowTranscript: resolve('allowTranscript'),
     allowDangerousLaunch: resolve('allowDangerousLaunch'),
+    allowGitWrite: resolve('allowGitWrite'),
   };
+}
+
+/**
+ * The GitHub login phone git writes run as, for one daemon.web.start. A
+ * setting rather than a grant: a start that does not name one keeps the
+ * running server's, else the still-enabled persisted record's. A value that
+ * is present but not a GitHub login is refused rather than ignored.
+ */
+export function resolveWebGitWriteLogin(
+  explicit: unknown,
+  live: { gitWriteLogin?: string } | undefined,
+  previous: WebPersistedState,
+): string | undefined {
+  if (explicit !== undefined) {
+    if (typeof explicit !== 'string' || !GITHUB_LOGIN.test(explicit)) throw new Error('gitWriteLogin must be a GitHub login');
+    return explicit;
+  }
+  if (live) return live.gitWriteLogin;
+  return previous.enabled ? previous.gitWriteLogin : undefined;
 }

@@ -175,9 +175,9 @@ export async function handleWeb(args: string[], jsonMode: boolean): Promise<void
     console.error('Error: --inline-images and --no-inline-images cannot be used together');
     process.exit(1);
   }
-  let gitWrite: Record<string, unknown>;
+  let gitWrite: { gitWriteLogin?: string };
   try {
-    gitWrite = resolveGitWriteParams(args);
+    gitWrite = resolveGitWriteLogin(args);
   } catch (error) {
     console.error(`Error: ${error instanceof Error ? error.message : String(error)}`);
     process.exit(1);
@@ -210,6 +210,10 @@ export async function handleWeb(args: string[], jsonMode: boolean): Promise<void
     // an explicit off must be said out loud or it would be inherited.
     ...(grants.allowDangerousLaunch === true || (unknownGrant && grants.allowDangerousLaunch === false)
       ? { allowDangerousLaunch: grants.allowDangerousLaunch }
+      : {}),
+    // The git write ceiling follows the same rule.
+    ...(grants.allowGitWrite === true || (unknownGrant && grants.allowGitWrite === false)
+      ? { allowGitWrite: grants.allowGitWrite }
       : {}),
     ...(unknownGrant ? { inheritUnsetGrants: true } : {}),
   };
@@ -267,20 +271,15 @@ export async function handleWeb(args: string[], jsonMode: boolean): Promise<void
 }
 
 /**
- * `--allow-git-write`, `--no-allow-git-write` and `--git-write-login <login>`.
- * Sent only when given, like `--inline-images`: a re-run that does not name
- * them leaves the decision to the daemon.
+ * `--git-write-login <login>`. Sent only when given: the daemon keeps the
+ * running or persisted login otherwise. (`--allow-git-write` is a grant and
+ * goes through planWebStart like the others.)
  */
-export function resolveGitWriteParams(args: string[]): { allowGitWrite?: boolean; gitWriteLogin?: string } {
-  const on = hasFlag(args, '--allow-git-write');
-  const off = hasFlag(args, '--no-allow-git-write');
-  if (on && off) throw new Error('--allow-git-write and --no-allow-git-write cannot be used together');
-  const login = hasFlag(args, '--git-write-login') ? parseFlag(args, '--git-write-login') ?? '' : undefined;
-  if (login !== undefined && !GITHUB_LOGIN.test(login)) throw new Error('--git-write-login must be a GitHub login');
-  return {
-    ...(on || off ? { allowGitWrite: on } : {}),
-    ...(login !== undefined ? { gitWriteLogin: login } : {}),
-  };
+export function resolveGitWriteLogin(args: string[]): { gitWriteLogin?: string } {
+  if (!hasFlag(args, '--git-write-login')) return {};
+  const login = parseFlag(args, '--git-write-login') ?? '';
+  if (!GITHUB_LOGIN.test(login)) throw new Error('--git-write-login must be a GitHub login');
+  return { gitWriteLogin: login };
 }
 
 /**
@@ -305,6 +304,7 @@ async function loadPreviousWebShape(): Promise<PreviousWebShape | undefined> {
         allowUpload: typeof r.allowUpload === 'boolean' ? r.allowUpload : undefined,
         allowTranscript: typeof r.allowTranscript === 'boolean' ? r.allowTranscript : undefined,
         allowDangerousLaunch: typeof r.allowDangerousLaunch === 'boolean' ? r.allowDangerousLaunch : undefined,
+        allowGitWrite: typeof r.allowGitWrite === 'boolean' ? r.allowGitWrite : undefined,
       };
     }
   } catch {
@@ -322,6 +322,7 @@ async function loadPreviousWebShape(): Promise<PreviousWebShape | undefined> {
     allowUpload: state.allowUpload,
     allowTranscript: state.allowTranscript === true,
     allowDangerousLaunch: state.allowDangerousLaunch === true,
+    allowGitWrite: state.allowGitWrite === true,
   };
 }
 

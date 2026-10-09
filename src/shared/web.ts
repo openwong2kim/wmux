@@ -54,6 +54,10 @@ export interface WebTerminalInfo {
    * (`--allow-dangerous-launch`, or the popover's Advanced option).
    */
   allowDangerousLaunch?: boolean;
+  /** Whether a paired phone may push, open PRs and merge (`--allow-git-write`). */
+  allowGitWrite?: boolean;
+  /** The GitHub login those writes run as. */
+  gitWriteLogin?: string;
   /** Whether the web client draws inline images (`--no-inline-images` turns it off). */
   inlineImages?: boolean;
   /** True when the daemon itself terminates HTTPS (not a Tailscale front). */
