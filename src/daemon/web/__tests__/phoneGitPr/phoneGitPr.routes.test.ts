@@ -79,8 +79,12 @@ describe('phone pr routes', { timeout: 30_000 }, () => {
   afterEach(() => {
     for (const u of unregister) u();
     gate.close();
-    fs.rmSync(root, { recursive: true, force: true });
+    // A git child that a failed test left running still holds the directory on Windows.
+    fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
+
+  /** The first answer follows several real git spawns, which take seconds on a loaded Windows machine. */
+  const WAIT = { timeout: 15_000 };
 
   /** One request; resolves with the first answer written. */
   const call = async (method: string, rest: string, body?: unknown) => {
@@ -88,14 +92,14 @@ describe('phone pr routes', { timeout: 30_000 }, () => {
     const route = matchPhoneGitWriteRoute(method, rest)!;
     await routes.handle({ body } as unknown as http.IncomingMessage, res as unknown as http.ServerResponse, route,
       new URL('http://127.0.0.1/'), { kind: 'device', deviceId: 'phone' });
-    await vi.waitFor(() => expect(res.out.length).toBeGreaterThan(0));
+    await vi.waitFor(() => expect(res.out.length).toBeGreaterThan(0), WAIT);
     return res.out[0];
   };
   const receipt = (rest: string) => vi.waitFor(async () => {
     const r = await call('GET', rest);
     expect(r.body.state).not.toMatch(/^(pending|inFlight)$/);
     return r;
-  });
+  }, WAIT);
 
   it('advertises both actions once registered', () => {
     expect(routes.configKeys({ kind: 'device', deviceId: 'phone' })).toMatchObject({ gitPrCreate: true, gitPrMerge: { methods: ['squash'] } });
