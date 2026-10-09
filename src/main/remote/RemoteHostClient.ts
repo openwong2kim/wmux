@@ -299,6 +299,14 @@ export function normalizeWorkspaces(body: unknown): RemoteWorkspaceSummary[] {
   return workspaces;
 }
 
+/** The pane stream sent a frame over REMOTE_LIMITS.streamBufferBytes. */
+class StreamFrameTooLargeError extends Error {
+  constructor() {
+    super('stream frame exceeds the size limit');
+    this.name = 'StreamFrameTooLargeError';
+  }
+}
+
 type MetaFrame = { cols: number; rows: number; truncated?: boolean; omittedBytes?: number; resize?: boolean };
 
 /** A `meta` frame's fields, typed and bounded: geometry clamped into
@@ -769,6 +777,12 @@ export class RemoteHostClient implements RemotePaneEvents {
     } catch (err) {
       attachment.streamOpen = false;
       if (superseded()) return;
+      if (err instanceof StreamFrameTooLargeError) {
+        // Terminal, like a rejected credential: report once and leave the
+        // attachment idle until it is detached or refreshed.
+        for (const cb of this.errorCbs) cb({ attachId: attachment.attachId, message: err.message });
+        return;
+      }
       this.scheduleReconnect(attachment, err);
     }
   }
@@ -800,9 +814,9 @@ export class RemoteHostClient implements RemotePaneEvents {
         }
         if (buffer.length > REMOTE_LIMITS.streamBufferBytes) {
           // A frame larger than any the host sends is not one to keep
-          // buffering: drop this stream and let the bounded retry decide.
+          // buffering, and reconnecting would only fetch the same frame again.
           await reader.cancel().catch(() => { /* already closed */ });
-          throw new Error('stream frame exceeds the size limit');
+          throw new StreamFrameTooLargeError();
         }
       }
     } finally {

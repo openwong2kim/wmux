@@ -79,13 +79,26 @@ describe('RemoteHostClient — bounded reads', () => {
     expect(body.pulled()).toBeLessThanOrEqual(REMOTE_LIMITS.workspacesBodyBytes + 2 * 64 * 1024);
   });
 
-  it('an endless stream with no frame terminator is cut at the cap and ends in onError', async () => {
+  // The stream opens with a well-formed attach frame pair, so a counter that
+  // resets on any good frame would retry forever; an oversized frame ends it.
+  it('an endless stream with no frame terminator is cut at the cap and never retried', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     const bodies: ReturnType<typeof endlessBody>[] = [];
     const fetchImpl = vi.fn(async () => {
       const body = endlessBody(new Uint8Array(256 * 1024).fill(0x61));
       bodies.push(body);
-      return { ok: true, status: 200, body: body.stream } as unknown as Response;
+      const head = new TextEncoder().encode('event: meta\ndata: {"cols":80,"rows":24}\n\nevent: snapshot\ndata: AA==\n\n');
+      const reader = body.stream.getReader();
+      let sentHead = false;
+      const stream = new ReadableStream<Uint8Array>({
+        async pull(controller) {
+          if (!sentHead) { sentHead = true; controller.enqueue(head); return; }
+          const { value } = await reader.read();
+          if (value) controller.enqueue(value);
+        },
+        cancel() { void reader.cancel(); },
+      });
+      return { ok: true, status: 200, body: stream } as unknown as Response;
     });
     const client = new RemoteHostClient(host, fetchImpl as unknown as typeof fetch);
     const errors: string[] = [];
@@ -99,8 +112,7 @@ describe('RemoteHostClient — bounded reads', () => {
     await flush();
 
     expect(errors).toEqual(['stream frame exceeds the size limit']);
-    // One first attempt plus the bounded retries — never an endless loop.
-    expect(fetchImpl).toHaveBeenCalledTimes(6);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
     for (const body of bodies) {
       expect(body.cancelled()).toBe(true);
       expect(body.pulled()).toBeLessThanOrEqual(REMOTE_LIMITS.streamBufferBytes + 2 * 256 * 1024);
