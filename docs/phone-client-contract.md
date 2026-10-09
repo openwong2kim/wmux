@@ -723,14 +723,16 @@ session opened or linked a PR, the row is
 {id, kind: 'meta', subtype: 'pr_link', label, ts?, url, number?, repo?}
 ```
 
-`url` is always an `http(s)` url (and `label` is the same url, so a client that
-does not know `pr_link` still shows it as before). `number` (a positive integer)
-and `repo` (`owner/name`) are present when the transcript names them or the
-url's path is `/owner/name/pull/N`; a non-GitHub url carries `url` alone. Claude
+`url` is always an `http(s)` url with any user name or password removed (and
+`label` is the same url, so a client that does not know `pr_link` still shows
+it as before). `number` (a positive integer) and `repo` (`owner/name`) are
+present when the transcript names them or the url's path is
+`/owner/name/pull/N` (any case); a non-GitHub url carries `url` alone. Claude
 Code writes the entry again on later turns, so the same PR can arrive several
 times — fold repeats on `url`. An entry with no usable `http(s)` url stays a
-`subtype: 'unknown'` row with no `url`. Daemons before this sent every PR link as
-`unknown`, with the url in `label` only.
+`subtype: 'unknown'` row with no `url` and the fixed label `pull request`.
+Daemons before this sent every PR link as `unknown`, with whatever string the
+entry held in `label`.
 
 **A snapshot reads past an oversized entry.** A first page whose tail window
 starts inside one very large entry (Claude Code's session-start attachments

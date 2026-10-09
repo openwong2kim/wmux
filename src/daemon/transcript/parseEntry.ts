@@ -104,8 +104,9 @@ export function parseTranscriptLineDetailed(
   // conversation content at all.
   if (type === 'pr-link') {
     const pr = prLinkFields(entry);
-    // Without a usable http(s) url the row stays the neutral chip it always was.
-    if (!pr) return single(metaEvent(baseId, ts, 'unknown', prLinkLabel(entry)), empty);
+    // Without a usable http(s) url the row stays a neutral chip, and whatever
+    // string the entry held is not echoed into its label.
+    if (!pr) return single(metaEvent(baseId, ts, 'unknown', 'pull request'), empty);
     return single({ ...metaEvent(baseId, ts, 'pr_link', pr.url), ...pr }, empty);
   }
   // A prompt the human queued while tools ran reaches the model as an
@@ -641,14 +642,6 @@ function metaEvent(
   return { id, kind: 'meta', subtype, label: label.slice(0, 200), ...tsOf(ts) };
 }
 
-function prLinkLabel(entry: Record<string, unknown>): string {
-  for (const key of ['url', 'prUrl', 'link']) {
-    const value = entry[key];
-    if (typeof value === 'string' && value) return value;
-  }
-  return 'pull request';
-}
-
 /** Longest url a `pr_link` row carries; anything longer is not a PR link. */
 const MAX_PR_URL_CHARS = 2048;
 
@@ -656,31 +649,42 @@ const MAX_PR_URL_CHARS = 2048;
 const REPO_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 
 /** `/owner/name/pull/123` at the start of a url path. */
-const PULL_PATH_RE = /^\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/pull\/(\d+)(?:\/|$)/;
+const PULL_PATH_RE = /^\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/pull\/(\d+)(?:\/|$)/i;
 
 /**
- * The structured fields of a `pr-link` entry, or null when it names no http(s)
- * url. Claude Code writes `prUrl`, `prNumber` and `prRepository` (2.1.x,
- * observed 2026-10-08); the explicit fields win, and a `/owner/name/pull/N`
- * url path fills in whichever is missing.
+ * `value` as a `pr_link` url: an http(s) url of bounded length, with any
+ * user name or password removed — or null.
  */
-function prLinkFields(entry: Record<string, unknown>): { url: string; number?: number; repo?: string } | null {
-  let url: string | undefined;
-  for (const key of ['url', 'prUrl', 'link']) {
-    const value = entry[key];
-    if (typeof value === 'string' && value) {
-      url = value;
-      break;
-    }
-  }
-  if (!url || url.length > MAX_PR_URL_CHARS) return null;
+function prUrlOf(value: unknown): { url: string; parsed: URL } | null {
+  if (typeof value !== 'string' || !value || value.length > MAX_PR_URL_CHARS) return null;
   let parsed: URL;
   try {
-    parsed = new URL(url);
+    parsed = new URL(value);
   } catch {
     return null;
   }
   if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return null;
+  if (!parsed.username && !parsed.password) return { url: value, parsed };
+  parsed.username = '';
+  parsed.password = '';
+  return { url: parsed.href, parsed };
+}
+
+/**
+ * The structured fields of a `pr-link` entry, or null when it names no http(s)
+ * url. Claude Code writes `prUrl`, `prNumber` and `prRepository` (2.1.x,
+ * observed 2026-10-08), so `prUrl` is tried first and the first key holding a
+ * usable url wins. The explicit fields win over the url, and a
+ * `/owner/name/pull/N` url path fills in whichever is missing.
+ */
+function prLinkFields(entry: Record<string, unknown>): { url: string; number?: number; repo?: string } | null {
+  let found: { url: string; parsed: URL } | null = null;
+  for (const key of ['prUrl', 'url', 'link']) {
+    found = prUrlOf(entry[key]);
+    if (found) break;
+  }
+  if (!found) return null;
+  const { url, parsed } = found;
   const fromPath = PULL_PATH_RE.exec(parsed.pathname);
   const rawNumber = entry['prNumber'];
   const number = typeof rawNumber === 'number' && Number.isSafeInteger(rawNumber) && rawNumber > 0

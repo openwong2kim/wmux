@@ -138,6 +138,41 @@ describe('parseTranscriptLine — pr-link entries', () => {
     }
     expect(parse({})[0]).toMatchObject({ label: 'pull request' });
   });
+
+  it('never echoes a non-http string into the fallback label', () => {
+    for (const entry of [
+      { prUrl: 'javascript:alert(1)' },
+      { url: 'not a url' },
+      { link: 'file:///etc/hosts' },
+    ]) {
+      expect(parse(entry)[0]).toEqual(expect.objectContaining({ subtype: 'unknown', label: 'pull request' }));
+    }
+  });
+
+  it('removes a user name and password from the url and the label', () => {
+    const [event] = parse({ prUrl: 'https://user:secret@github.com/a/b/pull/5' });
+    expect(event).toMatchObject({
+      subtype: 'pr_link',
+      url: 'https://github.com/a/b/pull/5',
+      label: 'https://github.com/a/b/pull/5',
+      number: 5,
+      repo: 'a/b',
+    });
+    expect(JSON.stringify(event)).not.toContain('secret');
+    expect(JSON.stringify(parse({ prUrl: 'https://token@github.com/a/b/pull/6' }))).not.toContain('token@');
+  });
+
+  it('takes the first key holding a usable http(s) url, prUrl first', () => {
+    expect(parse({ prUrl: 'https://github.com/a/b/pull/1', url: 'https://github.com/c/d/pull/2' })[0])
+      .toMatchObject({ url: 'https://github.com/a/b/pull/1' });
+    expect(parse({ prUrl: 'javascript:void(0)', url: 'notaurl', link: 'https://github.com/e/f/pull/3' })[0])
+      .toMatchObject({ subtype: 'pr_link', url: 'https://github.com/e/f/pull/3', number: 3, repo: 'e/f' });
+  });
+
+  it('reads a /owner/name/PULL/N path whatever its case', () => {
+    expect(parse({ prUrl: 'https://GitHub.com/Acme/Web/PULL/12' })[0])
+      .toMatchObject({ subtype: 'pr_link', number: 12, repo: 'Acme/Web' });
+  });
 });
 
 describe('parseTranscriptLine — meta-user.jsonl (never a human turn)', () => {
