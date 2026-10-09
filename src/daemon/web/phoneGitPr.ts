@@ -185,8 +185,9 @@ export function mapMergeFacts(raw: unknown, rollup: PrMergeRollup, number: numbe
     const check = projectCheck(n);
     return check ? [{ name: check.name, bucket: bucketOf(check.state), isRequired: obj(n)?.isRequired }] : [];
   });
+  // Checks not read vouch for nothing: no counts, and never success (Moa's card follows the same rule).
   const overall = !settled && (summary.overall === 'success' || summary.overall === 'none') ? 'pending' : summary.overall;
-  const checks: PrMergeChecks = { overall, counts: { ...summary.counts } };
+  const checks: PrMergeChecks = { overall, counts: settled ? { ...summary.counts } : {} };
   // Required lists only when every check was read and GitHub said, for each, whether it is required.
   if (rollup !== null && settled && rows.length === nodes.length && rows.every((r) => typeof r.isRequired === 'boolean')) {
     checks.requiredFailing = rows.filter((r) => r.isRequired && (r.bucket === 'fail' || r.bucket === 'cancel')).map((r) => r.name);

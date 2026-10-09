@@ -5776,6 +5776,9 @@ receipt {"requestId": "…", "state": "done", "mergeCommitOid": "<oid>"}
 - **Required checks.** `requiredFailing` and `requiredPending` are
   **omitted** when GitHub could not say which checks are required. Do not
   read their absence as "none required".
+- **Checks not all read.** When some checks could not be read, `counts` is
+  `{}` and `overall` is `failure` (a check that was read failed) or
+  `pending`, never `success`; the required lists are omitted.
 - **`squashAllowed:false`.** The repository forbids squash merges, so merging
   from the phone is impossible.
 

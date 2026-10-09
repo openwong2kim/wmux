@@ -212,9 +212,18 @@ describe('phone pr.create and pr.merge', { timeout: 30_000 }, () => {
       arrange();
       const result = await handlers().merge.preview!(await session('pr.merge'));
       expect(result.ok && result.facts.block).toBe('checks-pending');
-      expect(result.ok && result.facts.checks).toEqual({ overall: 'pending', counts: expect.objectContaining({ total: 100 }) });
+      // Counts over a partial read would understate the total: none at all, as on Moa's card.
+      expect(result.ok && result.facts.checks).toEqual({ overall: 'pending', counts: {} });
       const { settled } = await execute(handlers().merge.execute, 'pr.merge', mergeBody());
       expect(settled).toEqual([{ state: 'refused', error: 'blocked', fields: { reason: 'checks-pending' } }]);
+    });
+
+    it('a partial read with a failing check it did read: overall failure, no counts', async () => {
+      pr.checks = Array.from({ length: 100 }, (_, i) => checkRun(`check-${i}`, i === 7 ? 'FAILURE' : 'SUCCESS', false));
+      pr.totalCount = 150;
+      const result = await handlers().merge.preview!(await session('pr.merge'));
+      expect(result.ok && result.facts.checks).toEqual({ overall: 'failure', counts: {} });
+      expect(result.ok && result.facts.block).toBe('checks-failing');
     });
 
     it('squash-merges the shown head with the body on stdin and reads the squash commit back', async () => {
