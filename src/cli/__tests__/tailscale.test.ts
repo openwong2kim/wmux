@@ -335,6 +335,7 @@ describe('ensureTailscaleServe', () => {
     const out = await ensureTailscaleServe({ webPort: WEB_PORT, exec });
     expect(out).toEqual({
       ok: true,
+      preexisting: false,
       magicDns: 'laptop.tail1234.ts.net',
       servePort: 443,
       url: 'https://laptop.tail1234.ts.net',
@@ -568,6 +569,35 @@ describe('startWebTransport / stopWebTransport ordering', () => {
     expect(events).toContain('tailscale:serve-off');
     expect(events.indexOf('start:FAILED')).toBeLessThan(events.indexOf('tailscale:serve-off'));
     expect(out.ok && out.rolledBack).toBe(true);
+  });
+
+  it('leaves a front that already proxied to this port when the server fails to start', async () => {
+    // Another wmux on the same machine owns the port and the front: this
+    // start fails to bind, and removing the front would cut off its phones.
+    const { events, exec } = timeline();
+    let seeded = true;
+    const seededExec: TailscaleExec = async (cmd, args, opts) => {
+      if (seeded && args[0] === 'serve' && args[1] === 'status') {
+        events.push('tailscale:serve-status');
+        return { stdout: serveOurs(), stderr: '' };
+      }
+      if (args[0] === 'serve' && args.includes('--bg')) seeded = false;
+      return exec(cmd, args, opts);
+    };
+    const out = await startWebTransport({
+      port: WEB_PORT,
+      tailscale: true,
+      expose: false,
+      exec: seededExec,
+      startServer: async () => {
+        events.push('start:FAILED');
+        return { failed: true, value: 'EADDRINUSE' };
+      },
+    });
+    expect(events).toContain('start:FAILED');
+    expect(events).not.toContain('tailscale:serve-off');
+    expect(out.ok && out.rolledBack).toBe(false);
+    expect(out.ok && out.value).toBe('EADDRINUSE');
   });
 
   it('does NOT roll back a serve when the server started fine', async () => {

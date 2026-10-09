@@ -62,7 +62,18 @@ export interface TailnetServe {
   url: string;
 }
 
-export type TailscaleSetup = ({ ok: true } & TailnetServe) | { ok: false; problem: TailscaleProblem; detail?: string };
+export type TailscaleSetup =
+  | ({
+      ok: true;
+      /**
+       * The slot already proxied to this web port before this call. Then the
+       * front was not created here and may belong to a server that is still
+       * running (another wmux instance on the same port), so a failed start
+       * must leave it alone.
+       */
+      preexisting: boolean;
+    } & TailnetServe)
+  | { ok: false; problem: TailscaleProblem; detail?: string };
 
 // === identity ===============================================================
 
@@ -431,6 +442,7 @@ export async function ensureTailscaleServe(opts: {
 
   return {
     ok: true,
+    preexisting: ownership === 'ours',
     magicDns,
     servePort,
     url: servePort === 443 ? `https://${magicDns}` : `https://${magicDns}:${servePort}`,
@@ -700,6 +712,20 @@ export async function startWebTransport<T>(opts: {
 
   const started = await opts.startServer({ host: binding.host, allowedHosts });
   if (started.failed) {
+    // Roll back only a front this call created. A front that already pointed
+    // at this port is not ours to remove: when another wmux owns the port, its
+    // server is why this start failed, and removing the front would cut off
+    // every phone paired with it.
+    if (serve.preexisting) {
+      return {
+        ok: true,
+        host: binding.host,
+        allowedHosts,
+        warnings: binding.warnings,
+        value: started.value,
+        rolledBack: false,
+      };
+    }
     await removeTailscaleServe({
       webPort: opts.port,
       servePort: serve.servePort,
