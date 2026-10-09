@@ -149,14 +149,24 @@ describe('pane and page overflow guard (#1688)', () => {
   const componentsDir = path.join(__dirname, '..', 'components');
   const read = (...parts: string[]) => fs.readFileSync(path.join(componentsDir, ...parts), 'utf8');
 
-  it('clips the pane content wrappers', () => {
+  // Unlike hidden, clip is not a scroll container, so a flex item's automatic
+  // minimum size becomes its content size: without min-h-0/min-w-0 the box
+  // could not shrink below the terminal's current size.
+  const clippedClassLists = (source: string) => [...source.matchAll(/className="([^"]*)"/g)]
+    .map((m) => m[1].split(/\s+/)).filter((classes) => classes.includes('overflow-clip'));
+
+  it('clips the pane content wrappers and lets them shrink', () => {
     const pane = read('Pane', 'Pane.tsx');
     expect(pane).not.toMatch(/relative overflow-hidden/);
-    expect(pane.match(/relative overflow-clip/g)?.length).toBe(5);
+    const clipped = clippedClassLists(pane);
+    expect(clipped.length).toBeGreaterThanOrEqual(5);
+    for (const classes of clipped) expect(classes).toEqual(expect.arrayContaining(['min-h-0', 'min-w-0']));
   });
 
-  it('clips the multiview workspace tile', () => {
-    expect(read('Layout', 'WorkspaceViewport.tsx')).toContain('min-h-0 overflow-clip cursor-pointer');
+  it('clips the multiview workspace tile and lets it shrink', () => {
+    const clipped = clippedClassLists(read('Layout', 'WorkspaceViewport.tsx'));
+    expect(clipped.length).toBe(1);
+    expect(clipped[0]).toEqual(expect.arrayContaining(['min-h-0', 'min-w-0']));
   });
 
   it('clips the rail page host', () => {
