@@ -11,6 +11,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {
+  AUTOMATION_AGENT_CAPS,
   AUTOMATION_TOOL_NAME_RE,
   type AutomationAgent,
   type AutomationPermissionMode,
@@ -63,7 +64,7 @@ export function permissionFlags(
   mode: AutomationPermissionMode,
   allowedTools: readonly string[] | undefined,
 ): string[] {
-  if (agent === 'codex' && mode === 'auto') throw new Error('Auto mode is claude only');
+  if (mode === 'auto' && !AUTOMATION_AGENT_CAPS[agent].autoMode) throw new Error('Auto mode is claude only');
   const flags = [...PERMISSION_FLAGS[agent][mode]];
   if (agent === 'claude' && mode === 'scoped') {
     const tools = allowedTools ?? [];

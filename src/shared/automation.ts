@@ -23,6 +23,21 @@ export type AutomationAgent = 'claude' | 'codex';
  */
 export type AutomationPermissionMode = 'approval' | 'scoped' | 'auto' | 'bypass';
 
+/**
+ * What each agent's scheduled runs support, read instead of comparing agent
+ * names: `autoMode` (Claude's own auto permission mode), `toolList` (scoped
+ * takes a per-tool allow-list; codex scoped is a fixed sandbox), and the mode a
+ * new schedule starts in.
+ */
+export const AUTOMATION_AGENT_CAPS: Readonly<Record<AutomationAgent, {
+  autoMode: boolean;
+  toolList: boolean;
+  defaultMode: AutomationPermissionMode;
+}>> = {
+  claude: { autoMode: true, toolList: true, defaultMode: 'auto' },
+  codex: { autoMode: false, toolList: false, defaultMode: 'scoped' },
+};
+
 export interface AutomationScheduleTrigger {
   kind: 'schedule';
   /** 0 = Sunday … 6 = Saturday (JS Date#getDay). Non-empty, unique, sorted. */

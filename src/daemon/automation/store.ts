@@ -16,6 +16,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { atomicReadJSONSync, atomicWriteJSON } from '../util/atomicWrite';
 import {
+  AUTOMATION_AGENT_CAPS,
   AUTOMATION_DEFAULTS,
   AUTOMATION_FINAL_RUN_STATES,
   type Automation,
@@ -69,12 +70,11 @@ export function coerceAutomation(raw: unknown): Automation | null {
   if (isPermissionMode(perm['mode']) && perm['mode'] !== 'approval') {
     const granted = num(perm['grantedRevision']);
     // codex scoped carries no tool list (a fixed sandbox); auto is claude only.
-    const tools = perm['mode'] === 'scoped' && draft.value.action.agent === 'claude'
-      ? validateAllowedTools(perm['allowedTools'])
-      : null;
+    const caps = AUTOMATION_AGENT_CAPS[draft.value.action.agent];
+    const tools = perm['mode'] === 'scoped' && caps.toolList ? validateAllowedTools(perm['allowedTools']) : null;
     const restorable = perm['mode'] === 'bypass' ||
-      (perm['mode'] === 'auto' && draft.value.action.agent === 'claude') ||
-      (perm['mode'] === 'scoped' && (draft.value.action.agent === 'codex' || tools?.ok === true));
+      (perm['mode'] === 'auto' && caps.autoMode) ||
+      (perm['mode'] === 'scoped' && (!caps.toolList || tools?.ok === true));
     if (granted !== undefined && restorable) {
       permission = {
         mode: perm['mode'],

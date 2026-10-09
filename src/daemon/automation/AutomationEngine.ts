@@ -22,6 +22,7 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import type { AgentSlug } from '../../shared/agentIdentity';
 import {
+  AUTOMATION_AGENT_CAPS,
   AUTOMATION_DEFAULTS,
   AUTOMATION_PTY_PREFIX,
   type Automation,
@@ -412,7 +413,7 @@ export class AutomationEngine {
     const automation = this.find(id);
     if (!automation) return { ok: false, error: 'Not found' };
     if (!isPermissionMode(mode)) return { ok: false, error: 'Invalid permission mode' };
-    if (mode === 'auto' && automation.action.agent !== 'claude') return { ok: false, error: 'Auto mode is for Claude only' };
+    if (mode === 'auto' && !AUTOMATION_AGENT_CAPS[automation.action.agent].autoMode) return { ok: false, error: 'Auto mode is for Claude only' };
     const before = effectiveMode(automation);
     if (mode === 'approval') {
       automation.permission = { mode: 'approval' };

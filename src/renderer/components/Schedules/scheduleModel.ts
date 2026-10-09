@@ -1,4 +1,5 @@
 import {
+  AUTOMATION_AGENT_CAPS,
   AUTOMATION_DEFAULTS,
   AUTOMATION_TOOL_NAME_RE,
   type Automation,
@@ -37,12 +38,12 @@ const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
  * pre-selection alone is never the grant.
  */
 export function defaultModeFor(agent: AutomationAgent): AutomationPermissionMode {
-  return agent === 'codex' ? 'scoped' : 'auto';
+  return AUTOMATION_AGENT_CAPS[agent].defaultMode;
 }
 
 /** The modes the editor offers: auto is Claude's own mode, Codex has none. */
 export function modesFor(agent: AutomationAgent): AutomationPermissionMode[] {
-  return agent === 'codex' ? ['approval', 'scoped', 'bypass'] : ['approval', 'scoped', 'auto', 'bypass'];
+  return AUTOMATION_AGENT_CAPS[agent].autoMode ? ['approval', 'scoped', 'auto', 'bypass'] : ['approval', 'scoped', 'bypass'];
 }
 
 /** The mode after an agent switch: the new agent's default until the user picked one, else the pick if it still applies. */
