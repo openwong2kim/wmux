@@ -231,7 +231,7 @@ export class GitWriteReceipts {
    * Record a `pending` row durably. Makes room in this owner's quota by
    * dropping their oldest settled rows (`done` / `refused`); an unsettled or
    * `uncertain` row is kept. Throws GitWriteReceiptCapacityError when nothing
-   * can be dropped, and rethrows a failed write after forgetting the row.
+   * can be dropped, and rethrows a failed write after dropping the row.
    */
   begin(key: string, row: Omit<GitWriteReceiptRow, 'createdAt' | 'state'>): void {
     if (!this.available) throw new Error('phone git write receipts unavailable');
