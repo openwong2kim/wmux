@@ -275,6 +275,10 @@ export interface FanOutRequest {
    *  dropped), so the caller can record it the way it recorded the first wave.
    *  `remaining` is how many still wait; 0 means this fan-out is fully settled. */
   onDeferredLaunch?: (task: FanOutTaskResult, info: { remaining: number; outputBatchDir?: string }) => void;
+  /** Called the moment a task's workspace exists (before the result is
+   *  returned), so a caller that scopes powers to these workspaces (the Moa
+   *  goal contract) knows them before the task's first event can arrive. */
+  onTaskWorkspace?: (workspaceId: string, index: number) => void;
 }
 
 /** How long a dependent task may wait before it is dropped. A dependency whose
@@ -676,6 +680,7 @@ export class FanOutService {
     // ── 태스크 순차 처리(직렬 큐가 이미 강제하지만, 스폰 부하도 직렬로) ──
     const common = (k: number) => ({
       onLaunchFailed: launchFailures.notify,
+      ...(req.onTaskWorkspace ? { onWorkspace: req.onTaskWorkspace } : {}),
       index: k,
       title: titles[k],
       prompt: effectivePrompts[k],
@@ -955,6 +960,7 @@ export class FanOutService {
     const spawnAt = (k: number, done: FanOutTaskResult[]): Promise<FanOutTaskResult> =>
       this.spawnOne({
         onLaunchFailed: launchFailures.notify,
+        ...(req.onTaskWorkspace ? { onWorkspace: req.onTaskWorkspace } : {}),
         index: k,
         title: entries[k].title,
         prompt: effectivePrompts[k],
@@ -1073,6 +1079,8 @@ export class FanOutService {
     taskNote?: string;
     /** #1919 — called when the launch check concludes the agent never started. */
     onLaunchFailed?: (task: FanOutTaskResult) => void;
+    /** See FanOutRequest.onTaskWorkspace. */
+    onWorkspace?: (workspaceId: string, index: number) => void;
   }): Promise<FanOutTaskResult> {
     const base: FanOutTaskResult = { index: ctx.index, title: ctx.title, ok: false };
     if (ctx.agentChoice) base.agent = ctx.agentChoice.agent;
@@ -1290,6 +1298,11 @@ export class FanOutService {
       releaseAgyTrust();
     }
     base.workspaceId = workspaceId;
+    try {
+      ctx.onWorkspace?.(workspaceId, ctx.index);
+    } catch (err) {
+      console.warn(`[fanout] onTaskWorkspace threw for ${workspaceId}: ${String(err)}`);
+    }
     handOverTempDir(workspaceId);
     // The renderer already stamped the lineage before the agent launched; this
     // second write is idempotent and covers a renderer that did not. It carries

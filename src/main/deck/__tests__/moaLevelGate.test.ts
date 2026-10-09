@@ -19,7 +19,7 @@ afterEach(() => setMoaLevelGate(null));
 
 describe('moa level gate', () => {
   it('every L0-refused method is a real commander method', () => {
-    const surface = new Set<string>(COMMANDER_RPC_METHODS as readonly string[]);
+    const surface = new Set<string>(COMMANDER_RPC_METHODS as ReadonlySet<string>);
     for (const m of MOA_L0_REFUSED_METHODS) expect(surface.has(m), m).toBe(true);
   });
 

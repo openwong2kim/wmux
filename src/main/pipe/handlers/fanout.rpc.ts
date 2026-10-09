@@ -1311,6 +1311,19 @@ export function registerFanOutRpc(
         try {
           const result = await service.start({
             ...req,
+            // Under a goal, the task workspace joins the goal the moment it
+            // exists, before its agent's first event can wake the HQ.
+            ...(goalReserved && goalPort
+              ? {
+                  onTaskWorkspace: (wsId: string) => {
+                    try {
+                      if (goalReserved) goalPort?.attach(goalReserved.goalId, [wsId]);
+                    } catch {
+                      /* appendLaunched attaches again */
+                    }
+                  },
+                }
+              : {}),
             beforeDeferredLaunch: (index) => {
               const r = guards.stampDeferredStart(key);
               if (r.ok) stamped.add(index);

@@ -16,6 +16,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { RpcRouter } from '../RpcRouter';
+import type { RpcMethod } from '../../../shared/rpc';
 import { PluginTrustStore } from '../../mcp/PluginTrustStore';
 import { registerMcpPluginRpc } from '../handlers/mcp.rpc';
 import { mintCommanderToken, revokeCommanderToken } from '../../deck/commanderTrust';
@@ -211,7 +212,7 @@ describe('commander role gate — Moa level gate', () => {
   afterEach(() => setMoaLevelGate(null));
 
   const call = (token: string, method: string, params: Record<string, unknown> = {}) =>
-    router.dispatch({ id: `t-${method}`, method, params, clientName: HERMES, commanderToken: token });
+    router.dispatch({ id: `t-${method}`, method: method as RpcMethod, params, clientName: HERMES, commanderToken: token });
 
   it('level 0 refuses pane.split for the HQ, keeps pane.list, leaves other commanders alone', async () => {
     setMoaLevelGate({ hqWorkspaceId: () => 'ws-brain', level: () => 0, activeGoal: () => null });

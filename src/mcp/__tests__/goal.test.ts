@@ -47,7 +47,7 @@ describe('moa goal tools', () => {
 
   it('is commander-only, with its RPCs in the commander lane and the first-party set', () => {
     for (const t of ['moa_propose_goal', 'moa_goal']) expect(COMMANDER_ONLY_TOOLS).toContain(t);
-    for (const m of ['deck.proposeGoal', 'deck.goal']) {
+    for (const m of ['deck.proposeGoal', 'deck.goal'] as const) {
       expect(COMMANDER_RPC_METHODS.has(m)).toBe(true);
       expect(FIRST_PARTY_METHODS.has(m)).toBe(true);
     }

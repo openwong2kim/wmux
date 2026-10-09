@@ -1990,3 +1990,27 @@ describe('a commander under an approved Moa goal fans out over the goal reposito
     expect(g.st.used).toBe(0);
   });
 });
+
+describe('the goal learns each task workspace as soon as it exists', () => {
+  it('passes onTaskWorkspace to the service only under a goal, and it attaches', async () => {
+    const attached: string[] = [];
+    const port: FanOutGoalPort = {
+      anchor: () => ({ goalId: 'G-abc123', repoRoot: SIBLING_REPO_ROOT }),
+      reserve: () => ({ ok: true, goalId: 'G-abc123' }),
+      release: () => undefined,
+      attach: (_id, ids) => attached.push(...ids),
+    };
+    const h = setup({ goal: port });
+    await h.call({ ...goodParams(), senderPtyId: undefined }, { origin: 'local', commanderWorkspace: CALLER_WS });
+    await h.flush();
+    const req = h.request() as FanOutRequest & { onTaskWorkspace?: (ws: string, i: number) => void };
+    expect(typeof req.onTaskWorkspace).toBe('function');
+    req.onTaskWorkspace?.('ws-early', 0);
+    expect(attached).toContain('ws-early');
+
+    const plain = setup();
+    await plain.call(goodParams());
+    await plain.flush();
+    expect((plain.request() as { onTaskWorkspace?: unknown }).onTaskWorkspace).toBeUndefined();
+  });
+});
