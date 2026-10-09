@@ -52,6 +52,12 @@ export type GitWriteError =
   | 'git-busy' | 'rate-limited'
   | 'gh-unavailable' | 'remote-unreachable'
   | 'git-receipts-unavailable'
+  /** The session's directory is not inside a git repository. */
+  | 'not-a-git-repo'
+  /** git could not answer while resolving the repository. */
+  | 'git-operation-failed'
+  /** This daemon does not serve the action yet (its `/api/config` key is absent). */
+  | 'not-implemented'
   /** Receipt only: the push did not reach the remote. */
   | 'push-not-landed';
 
@@ -70,6 +76,9 @@ export const GIT_WRITE_ERROR_STATUS: Readonly<Record<GitWriteError, number>> = {
   'git-busy': 429, 'rate-limited': 429,
   'gh-unavailable': 502, 'remote-unreachable': 502,
   'git-receipts-unavailable': 503,
+  'not-a-git-repo': 409,
+  'git-operation-failed': 500,
+  'not-implemented': 501,
   'push-not-landed': 409,
 };
 

@@ -3,7 +3,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
-  GitWriteConfirmTokens, GitWriteReceipts, PHONE_GIT_WRITE_RECEIPTS_FILE, ghTokenFor, ghWriteEnv,
+  GIT_WRITE_RECEIPTS_PER_OWNER, GitWriteConfirmTokens, GitWriteReceiptCapacityError, GitWriteReceipts,
+  PHONE_GIT_WRITE_RECEIPTS_FILE, ghTokenFor, ghWriteEnv,
   type GitWriteBinding, type GhTokenRunner,
 } from '../phoneGitWriteGate';
 import { GIT_WRITE_CONFIRM_TTL_MS, GIT_WRITE_RECEIPT_TTL_MS } from '../../../shared/phoneGitWrite';
@@ -36,6 +37,16 @@ describe('confirm tokens', () => {
     expect(use({}, { head: 'c'.repeat(40) })).toEqual({ ok: false, error: 'stale', pins });
   });
 
+  it('spends a token only when the receipt write succeeds', () => {
+    const tokens = new GitWriteConfirmTokens();
+    const { confirmToken } = tokens.mint(binding, pins);
+    expect(() => tokens.consume(confirmToken, binding, { head: OID }, () => { throw new Error('disk full'); })).toThrow('disk full');
+    let committed = 0;
+    expect(tokens.consume(confirmToken, binding, { head: OID }, () => { committed += 1; }).ok).toBe(true);
+    expect(committed).toBe(1);
+    expect(tokens.consume(confirmToken, binding, { head: OID }).ok).toBe(false);
+  });
+
   it('leaves a token alone when another owner presents it', () => {
     const tokens = new GitWriteConfirmTokens();
     const { confirmToken } = tokens.mint(binding, pins);
@@ -46,41 +57,86 @@ describe('confirm tokens', () => {
 
 describe('receipts', () => {
   let dir: string;
+  const open: GitWriteReceipts[] = [];
+  const store = (now: () => number = Date.now) => { const r = new GitWriteReceipts(dir, now); open.push(r); return r; };
   beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-git-write-receipts-')); });
-  afterEach(() => { fs.rmSync(dir, { recursive: true, force: true }); });
+  afterEach(() => {
+    for (const r of open.splice(0)) r.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
 
-  const row = { requestId: 'r', action: 'push' as const, sessionId: 's1', owner: 'device:a', fingerprint: 'f'.repeat(64) };
+  const row = { requestId: 'r', action: 'push' as const, sessionId: 's1', owner: 'device:a', repo: '/r/.git', fingerprint: 'f'.repeat(64) };
 
-  it('persists across a restart: inFlight reads uncertain, pending reads refused, done stays', () => {
+  it('persists across a restart: inFlight reads uncertain, pending reads refused, done stays', async () => {
     let now = 5_000;
-    const first = new GitWriteReceipts(dir, () => now);
-    const [a, b, c] = ['a', 'b', 'c'].map((id) => GitWriteReceipts.key('device:a', '/r/.git', id));
+    const first = store(() => now);
+    const [a, b, c] = ['a', 'b', 'c'].map((id) => GitWriteReceipts.key('device:a', id));
     first.begin(a, { ...row, requestId: 'a' });
     first.begin(b, { ...row, requestId: 'b' });
     first.markInFlight(b);
     first.begin(c, { ...row, requestId: 'c' });
     first.markInFlight(c);
     first.settle(c, { state: 'done', fields: { pushed: OID, target: 'refs/heads/x' } });
-    // The settle is coalesced onto the next tick; the restart below happens after it.
-    return new Promise<void>((resolve) => setImmediate(() => {
-      const second = new GitWriteReceipts(dir, () => now);
-      expect(second.available).toBe(true);
-      expect(second.find(a)).toMatchObject({ state: 'refused', error: 'confirm-required' });
-      expect(second.find(b)).toMatchObject({ state: 'uncertain', startedAt: 5_000 });
-      expect(second.find(c)).toMatchObject({ state: 'done', fields: { pushed: OID } });
-      // Never re-run: an uncertain row settles only from a read.
-      expect(second.uncertain('push').map((u) => u.key)).toEqual([b]);
-      now += GIT_WRITE_RECEIPT_TTL_MS;
-      expect(second.find(c)).toBeNull();
-      resolve();
-    }));
+    // The settle is coalesced onto the next tick; the restart happens after it.
+    await new Promise((r) => setImmediate(r));
+    first.close();
+    const second = store(() => now);
+    expect(second.available).toBe(true);
+    expect(second.find(a)).toMatchObject({ state: 'refused', error: 'confirm-required' });
+    expect(second.find(b)).toMatchObject({ state: 'uncertain', startedAt: 5_000, repo: '/r/.git' });
+    expect(second.find(c)).toMatchObject({ state: 'done', fields: { pushed: OID } });
+    // Never re-run: an uncertain row settles only from a read.
+    expect(second.uncertain('push').map((u) => u.key)).toEqual([b]);
+    now += GIT_WRITE_RECEIPT_TTL_MS;
+    expect(second.find(c)).toBeNull();
+  });
+
+  it('never evicts a receipt inside the retention window: a full owner is refused instead', () => {
+    let now = 1_000;
+    const r = store(() => now);
+    for (let i = 0; i < GIT_WRITE_RECEIPTS_PER_OWNER; i++) {
+      const key = GitWriteReceipts.key('device:a', `id-${i}`);
+      r.begin(key, { ...row, requestId: `id-${i}` });
+      r.settle(key, { state: 'done' });
+    }
+    expect(() => r.begin(GitWriteReceipts.key('device:a', 'one-more'), { ...row, requestId: 'one-more' })).toThrow(GitWriteReceiptCapacityError);
+    // The oldest settled receipt is still there to answer a resend.
+    expect(r.find(GitWriteReceipts.key('device:a', 'id-0'))).toMatchObject({ state: 'done' });
+    // Another device is unaffected.
+    expect(() => r.begin(GitWriteReceipts.key('device:b', 'x'), { ...row, owner: 'device:b', requestId: 'x' })).not.toThrow();
+    // Once the window has passed, room comes back by expiry alone.
+    now += GIT_WRITE_RECEIPT_TTL_MS;
+    expect(() => r.begin(GitWriteReceipts.key('device:a', 'later'), { ...row, requestId: 'later' })).not.toThrow();
   });
 
   it('fails closed on a file it cannot read', () => {
     fs.writeFileSync(path.join(dir, PHONE_GIT_WRITE_RECEIPTS_FILE), '{truncated');
-    const store = new GitWriteReceipts(dir);
-    expect(store.available).toBe(false);
-    expect(() => store.begin('k'.repeat(64), row)).toThrow();
+    const r = store();
+    expect(r.available).toBe(false);
+    expect(() => r.begin('k'.repeat(64), row)).toThrow();
+  });
+
+  it('has one writer: a second instance, a live foreign lock or a taken-over lock fail closed', () => {
+    const first = store();
+    expect(first.available).toBe(true);
+    expect(store().available).toBe(false);
+    first.close();
+    // A lock left by a process that is gone is taken over.
+    const lock = path.join(dir, `${PHONE_GIT_WRITE_RECEIPTS_FILE}.lock`);
+    const bootSecs = Math.round((Date.now() - os.uptime() * 1000) / 1000);
+    fs.writeFileSync(lock, `999999999:${bootSecs}:dead`);
+    const revived = store();
+    expect(revived.available).toBe(true);
+    revived.close();
+    // A live process (the test runner's parent) holding it keeps the store closed.
+    fs.writeFileSync(lock, `${process.ppid}:${bootSecs}:alive`);
+    expect(store().available).toBe(false);
+    fs.unlinkSync(lock);
+    // A writer whose lock was replaced stops writing.
+    const owner = store();
+    fs.writeFileSync(lock, 'someone-else');
+    expect(() => owner.begin(GitWriteReceipts.key('device:a', 'x'), row)).toThrow();
+    expect(owner.available).toBe(false);
   });
 });
 

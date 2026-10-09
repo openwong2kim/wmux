@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
@@ -44,9 +45,9 @@ const MAX_TOKENS = 256;
  * Single-use confirm tokens: 32 random bytes, in memory only (a restart voids
  * them all), GIT_WRITE_CONFIRM_TTL_MS from the preview.
  *
- * `consume` is synchronous and deletes the row before it compares anything, so
- * two executes racing on one token cannot both pass. A token presented by a
- * different owner is left alone: it is not theirs to spend.
+ * `consume` is synchronous from lookup to delete, so two executes racing on
+ * one token cannot both pass. A token presented by a different owner is left
+ * alone: it is not theirs to spend.
  */
 export class GitWriteConfirmTokens {
   private readonly rows = new Map<string, TokenRow>();
@@ -65,19 +66,27 @@ export class GitWriteConfirmTokens {
     return { confirmToken, expiresAt };
   }
 
-  consume(confirmToken: string, binding: GitWriteBinding, bodyPins: GitWritePins): ConfirmConsumeResult {
+  /**
+   * Validate and spend a token. `commit` runs only when the token is valid,
+   * inside the same synchronous step, and the token is spent only if `commit`
+   * returns: when it throws (the receipt could not be written) the token stays
+   * valid and the error propagates. A token that fails validation is spent.
+   */
+  consume(confirmToken: string, binding: GitWriteBinding, bodyPins: GitWritePins, commit?: () => void): ConfirmConsumeResult {
     const row = this.rows.get(confirmToken);
     if (!row || row.binding.owner !== binding.owner) return { ok: false, error: 'confirm-required' };
-    this.rows.delete(confirmToken);
-    if (row.expiresAt <= this.now()) return { ok: false, error: 'confirm-required' };
+    const refuse = (result: ConfirmConsumeResult) => { this.rows.delete(confirmToken); return result; };
+    if (row.expiresAt <= this.now()) return refuse({ ok: false, error: 'confirm-required' });
     const b = row.binding;
     if (b.sessionId !== binding.sessionId || b.repo !== binding.repo || b.action !== binding.action) {
-      return { ok: false, error: 'confirm-required' };
+      return refuse({ ok: false, error: 'confirm-required' });
     }
-    if (b.login !== binding.login) return { ok: false, error: 'identity-changed' };
+    if (b.login !== binding.login) return refuse({ ok: false, error: 'identity-changed' });
     for (const [k, v] of Object.entries(bodyPins)) {
-      if (!(k in row.pins) || row.pins[k] !== v) return { ok: false, error: 'stale', pins: row.pins };
+      if (!(k in row.pins) || row.pins[k] !== v) return refuse({ ok: false, error: 'stale', pins: row.pins });
     }
+    commit?.();
+    this.rows.delete(confirmToken);
     return { ok: true, pins: row.pins };
   }
 
@@ -91,8 +100,10 @@ export class GitWriteConfirmTokens {
 
 export const PHONE_GIT_WRITE_RECEIPTS_FILE = 'phone-git-write-receipts.json';
 const MAX_FILE_BYTES = 8 * 1024 * 1024;
+/** Live receipts one owner may hold; the next request is refused (429 `git-busy`), nothing is evicted. */
 export const GIT_WRITE_RECEIPTS_PER_OWNER = 200;
-const MAX_ENTRIES = 4000;
+/** Live receipts across every owner, with the same rule. */
+export const GIT_WRITE_RECEIPTS_MAX = 4000;
 
 /** Fields an action may record on its receipt: its `Done` fields, or a refusal's extras. */
 export type GitWriteReceiptFields = Readonly<Record<string, string | number | boolean | null>>;
@@ -102,6 +113,8 @@ export interface GitWriteReceiptRow {
   action: PhoneGitWriteAction;
   sessionId: string;
   owner: string;
+  /** Canonical git common dir the request was accepted for. */
+  repo: string;
   /** pr.merge: the PR number from the path. */
   number?: number;
   /** sha256 of `gitWriteFingerprintSource`. */
@@ -114,7 +127,7 @@ export interface GitWriteReceiptRow {
   fields?: GitWriteReceiptFields;
 }
 
-/** Every receipt this owner may hold is still unsettled. */
+/** This owner, or the whole store, holds as many live receipts as it may. */
 export class GitWriteReceiptCapacityError extends Error {}
 
 const STATES: ReadonlySet<string> = new Set<GitWriteReceiptState>(['pending', 'inFlight', 'done', 'refused', 'uncertain']);
@@ -124,7 +137,8 @@ const str = (v: unknown, max: number) => typeof v === 'string' && v.length > 0 &
 function validRow(key: string, v: unknown): v is GitWriteReceiptRow {
   if (!/^[a-f0-9]{64}$/.test(key) || !v || typeof v !== 'object' || Array.isArray(v)) return false;
   const e = v as Record<string, unknown>;
-  if (!str(e.requestId, 64) || !str(e.sessionId, 256) || !str(e.owner, 300) || typeof e.action !== 'string' || !ACTIONS.has(e.action)) return false;
+  if (!str(e.requestId, 64) || !str(e.sessionId, 256) || !str(e.owner, 300) || !str(e.repo, 4096)) return false;
+  if (typeof e.action !== 'string' || !ACTIONS.has(e.action)) return false;
   if (typeof e.fingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(e.fingerprint) || !Number.isSafeInteger(e.createdAt)) return false;
   if (typeof e.state !== 'string' || !STATES.has(e.state)) return false;
   if (e.startedAt !== undefined && !Number.isSafeInteger(e.startedAt)) return false;
@@ -139,34 +153,102 @@ function validRow(key: string, v: unknown): v is GitWriteReceiptRow {
   return true;
 }
 
+// ── Single writer ────────────────────────────────────────────────────────────
+
+/** Lock files this process holds, released on exit. */
+const heldLocks = new Map<string, string>();
+let exitHookInstalled = false;
+
+function bootTime(): number {
+  return Math.round((Date.now() - os.uptime() * 1000) / 1000);
+}
+
+function processAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+/**
+ * Take `<file>.lock` for this instance. The lock names the pid, the machine's
+ * boot time and a random instance id. A lock left by a process that is gone
+ * (or by a previous boot) is taken over; a live one, or one this process
+ * already holds, makes the store fail closed.
+ */
+function acquireLock(lockPath: string): string {
+  const instance = `${process.pid}:${bootTime()}:${randomBytes(8).toString('hex')}`;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      fs.writeFileSync(lockPath, instance, { flag: 'wx', mode: 0o600 });
+      heldLocks.set(lockPath, instance);
+      if (!exitHookInstalled) {
+        exitHookInstalled = true;
+        process.once('exit', () => {
+          for (const [lock, mine] of heldLocks) {
+            try { if (fs.readFileSync(lock, 'utf8') === mine) fs.unlinkSync(lock); } catch { /* best effort */ }
+          }
+        });
+      }
+      return instance;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+    }
+    if (heldLocks.has(lockPath)) throw new Error('the receipt store is already open in this process');
+    const [pidText, bootText] = fs.readFileSync(lockPath, 'utf8').split(':');
+    const pid = Number(pidText);
+    const sameBoot = Math.abs(Number(bootText) - bootTime()) <= 120;
+    if (Number.isSafeInteger(pid) && pid > 0 && pid !== process.pid && sameBoot && processAlive(pid)) {
+      throw new Error(`another process (pid ${pid}) holds the receipt store`);
+    }
+    fs.unlinkSync(lockPath);
+  }
+  throw new Error('could not take the receipt store lock');
+}
+
 /**
  * Durable receipts: `phone-git-write-receipts.json`, `version: 1`, 0600,
- * keyed by sha256(owner, repo, requestId), kept GIT_WRITE_RECEIPT_TTL_MS from
- * creation.
+ * keyed by sha256(owner, requestId), kept GIT_WRITE_RECEIPT_TTL_MS from
+ * creation. Each row stores the repository it was accepted for, so a receipt
+ * stays readable after its session closed.
  *
- * `begin` (token consumed, `pending`) and `markInFlight` (about to spawn) are
- * written synchronously and durably before the caller goes on; settled
- * outcomes are coalesced onto the next tick.
+ * NOTHING IS EVICTED INSIDE THE RETENTION WINDOW: a dropped `done` receipt
+ * would let a resent request run again. A full owner (or store) refuses new
+ * requests instead.
+ *
+ * ONE WRITER: the store takes `<file>.lock` and checks it is still its own
+ * before every write; a second writer leaves it `available: false`.
+ *
+ * `begin` (`pending`) and `markInFlight` (about to spawn) are written
+ * synchronously and durably before the caller goes on; settled outcomes are
+ * coalesced onto the next tick.
  *
  * On load, an `inFlight` row reads `uncertain` (it may have landed) and a
  * `pending` row reads `refused` / `confirm-required` (nothing was spawned).
  * Neither is ever run again from here.
  *
  * FAIL CLOSED: a file that exists but cannot be read or validated leaves the
- * store `available: false`, and the routes answer 503. Starting empty over
- * it would let a resent execute run a second time.
+ * store unavailable, and the routes answer 503. Starting empty over it would
+ * let a resent execute run a second time.
  */
 export class GitWriteReceipts {
-  readonly available: boolean;
   readonly loadError?: string;
   private rows: Record<string, GitWriteReceiptRow> = {};
   private readonly file: string;
+  private readonly lockPath: string;
+  private instance: string | undefined;
+  private lost = false;
   private saveScheduled = false;
 
   constructor(directory: string, private readonly now: () => number = Date.now) {
     this.file = path.join(directory, PHONE_GIT_WRITE_RECEIPTS_FILE);
+    this.lockPath = `${this.file}.lock`;
     let loadError: string | undefined;
     try {
+      fs.mkdirSync(directory, { recursive: true });
+      this.instance = acquireLock(this.lockPath);
       // A crash between the atomic writer's two renames leaves only `.bak`.
       const source = fs.existsSync(this.file) ? this.file : fs.existsSync(`${this.file}.bak`) ? `${this.file}.bak` : null;
       if (source) {
@@ -192,13 +274,23 @@ export class GitWriteReceipts {
       this.rows = {};
       loadError = error instanceof Error ? error.message : String(error);
     }
-    this.available = loadError === undefined;
     if (loadError !== undefined) this.loadError = loadError;
   }
 
-  /** The store key for one request. Exposed so an action can settle its own row. */
-  static key(owner: string, repo: string, requestId: string): string {
-    return createHash('sha256').update(JSON.stringify([owner, repo, requestId])).digest('hex');
+  /** False when the file could not be read, or another writer holds or took the store. */
+  get available(): boolean { return this.loadError === undefined && !this.lost && this.instance !== undefined; }
+
+  /** Release the lock (daemon shutdown, tests). The store is unusable afterwards. */
+  close(): void {
+    if (this.instance === undefined) return;
+    try { if (fs.readFileSync(this.lockPath, 'utf8') === this.instance) fs.unlinkSync(this.lockPath); } catch { /* gone already */ }
+    heldLocks.delete(this.lockPath);
+    this.instance = undefined;
+  }
+
+  /** The store key for one request. */
+  static key(owner: string, requestId: string): string {
+    return createHash('sha256').update(JSON.stringify([owner, requestId])).digest('hex');
   }
 
   private expired(row: GitWriteReceiptRow): boolean { return row.createdAt <= this.now() - GIT_WRITE_RECEIPT_TTL_MS; }
@@ -208,6 +300,12 @@ export class GitWriteReceipts {
   }
 
   private save(): void {
+    let mine = false;
+    try { mine = this.instance !== undefined && fs.readFileSync(this.lockPath, 'utf8') === this.instance; } catch { /* lock gone */ }
+    if (!mine) {
+      this.lost = true;
+      throw new Error('the receipt store lock is no longer held by this instance');
+    }
     this.dropExpired();
     atomicWriteJSONSync(this.file, { version: 1, rows: this.rows }, { durable: true });
   }
@@ -231,24 +329,18 @@ export class GitWriteReceipts {
   }
 
   /**
-   * Record a `pending` row durably. Makes room in this owner's quota by
-   * dropping their oldest settled rows (`done` / `refused`); an unsettled or
-   * `uncertain` row is kept. Throws GitWriteReceiptCapacityError when nothing
-   * can be dropped, and rethrows a failed write after dropping the row.
+   * Record a `pending` row durably. Throws GitWriteReceiptCapacityError when
+   * this owner or the store is full (nothing is evicted), and rethrows a
+   * failed write after dropping the row.
    */
   begin(key: string, row: Omit<GitWriteReceiptRow, 'createdAt' | 'state'>): void {
     if (!this.available) throw new Error('phone git write receipts unavailable');
     this.dropExpired();
-    const settled = (rows: Array<[string, GitWriteReceiptRow]>) =>
-      rows.filter(([, r]) => r.state === 'done' || r.state === 'refused').sort(([, a], [, b]) => a.createdAt - b.createdAt);
-    const mine = Object.entries(this.rows).filter(([, r]) => r.owner === row.owner);
-    for (const [k] of settled(mine).slice(0, Math.max(0, mine.length - GIT_WRITE_RECEIPTS_PER_OWNER + 1))) delete this.rows[k];
-    if (Object.values(this.rows).filter((r) => r.owner === row.owner).length >= GIT_WRITE_RECEIPTS_PER_OWNER) {
+    const live = Object.values(this.rows);
+    if (live.filter((r) => r.owner === row.owner).length >= GIT_WRITE_RECEIPTS_PER_OWNER) {
       throw new GitWriteReceiptCapacityError('receipt quota full');
     }
-    const all = Object.entries(this.rows);
-    for (const [k] of settled(all).slice(0, Math.max(0, all.length - MAX_ENTRIES + 1))) delete this.rows[k];
-    if (Object.keys(this.rows).length >= MAX_ENTRIES) throw new GitWriteReceiptCapacityError('receipt store full');
+    if (live.length >= GIT_WRITE_RECEIPTS_MAX) throw new GitWriteReceiptCapacityError('receipt store full');
     this.rows[key] = { ...row, createdAt: this.now(), state: 'pending' };
     try {
       this.save();
@@ -373,6 +465,9 @@ export class PhoneGitWriteGate {
   }
 
   get available(): boolean { return this.receipts.available; }
+
+  /** Release the receipt store's lock. */
+  close(): void { this.receipts.close(); }
 
   identity(login: string): Promise<GhTokenResult> {
     return ghTokenFor(login, this.ghRunner);

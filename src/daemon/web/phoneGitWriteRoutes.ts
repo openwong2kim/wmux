@@ -21,10 +21,12 @@ import {
  *   1. ceiling: `--allow-git-write` (403 `git-write-disabled`)
  *   2. grant: the input grant AND, for a device, one set explicitly; a record
  *      that predates grants does not pass (403 `read-only: …`)
- *   3. session, repository, receipt store, `gitWriteLogin`
- *   4. receipt GET answers here; an action without handlers answers 501
- *   5. execute: requestId lookup → token consume (receipt `pending`, durable)
- *      → re-authorization → identity → 202, then the action runs
+ *   3. receipt store; a receipt GET answers here, by owner + requestId
+ *   4. an action without handlers answers 501; then `gitWriteLogin`
+ *   5. preview: admission (429 `git-busy`), session, repository, identity
+ *   6. execute: requestId lookup → session and repository → durable `pending`
+ *      row and token consume in one step → re-authorization → identity →
+ *      202, then the action runs
  *
  * A resend with the same requestId and body gets the stored receipt with
  * `replayed: true`, also after its token was spent; a different body under
@@ -108,7 +110,17 @@ function receiptBody(row: GitWriteReceiptRow, replayed: boolean): Record<string,
   };
 }
 
+/** What a request knows before its session is located. */
+type Call = Omit<GitWriteSessionContext, 'ghEnv' | 'cwd' | 'repo'>;
+
+const MAX_PREVIEWS_IN_FLIGHT = 4;
+const PREVIEWS_PER_MINUTE = 12;
+
 export class PhoneGitWriteRoutes {
+  private previewsInFlight = 0;
+  private readonly previewsByOwner = new Map<string, number>();
+  private readonly previewTimes = new Map<string, number[]>();
+
   constructor(private readonly host: PhoneGitWriteHost) {}
 
   /**
@@ -150,36 +162,23 @@ export class PhoneGitWriteRoutes {
       });
     }
     const sessionId = decode(route.rawSessionId);
-    const session = sessionId === null ? undefined : this.host.session(principal, sessionId);
-    if (sessionId === null || !session?.spawnCwd) return this.host.json(res, 404, { error: 'session not found' });
-    const cwd = session.spawnCwd;
-
+    if (sessionId === null) return this.host.json(res, 404, { error: 'session not found' });
     let number: number | undefined;
     if (route.rawNumber !== undefined) {
       const n = parsePrNumber(route.rawNumber);
       if (n === null) return this.fail(res, { error: 'invalid-git-request' });
       number = n;
     }
-    let requestId: string | undefined;
-    if (route.rawRequestId !== undefined) {
-      const raw = decode(route.rawRequestId);
-      if (raw === null || !GIT_WRITE_REQUEST_ID.test(raw)) return this.fail(res, { error: 'invalid-git-request' });
-      requestId = raw.toLowerCase();
-    }
-
     const gate = this.gate();
     if (!gate?.available) return this.fail(res, { error: 'git-receipts-unavailable' });
-    let repo: PhoneGitRepo | null;
-    try {
-      repo = await resolvePhoneGitRepo(cwd, this.host.git());
-    } catch {
-      return this.host.json(res, 500, { error: 'git-operation-failed' });
-    }
-    if (!repo) return this.host.json(res, 409, { error: 'not-a-git-repo' });
     const owner = principal.kind === 'device' ? `device:${principal.deviceId}` : 'operator';
 
+    // A receipt is read by owner + requestId alone: it stays readable after
+    // its session closed or its checkout moved.
     if (route.kind === 'receipt') {
-      const row = gate.receipts.find(GitWriteReceipts.key(owner, repo.commonReal, requestId as string));
+      const raw = decode(route.rawRequestId as string);
+      if (raw === null || !GIT_WRITE_REQUEST_ID.test(raw)) return this.fail(res, { error: 'invalid-git-request' });
+      const row = gate.receipts.find(GitWriteReceipts.key(owner, raw.toLowerCase()));
       if (!row || row.action !== route.action || row.sessionId !== sessionId || row.number !== number) {
         return this.fail(res, { error: 'receipt-expired' });
       }
@@ -187,128 +186,191 @@ export class PhoneGitWriteRoutes {
     }
 
     const handlers = phoneGitWriteHandlers(route.action);
-    if (!handlers) return this.host.json(res, 501, { error: 'not-implemented' });
+    if (!handlers) return this.fail(res, { error: 'not-implemented' });
     if (!login) return this.fail(res, { error: 'gh-auth-missing' });
-
-    const base: Omit<GitWriteSessionContext, 'ghEnv'> = {
+    const call: Call = {
       action: route.action, owner, deviceId: principal.kind === 'device' ? principal.deviceId : '',
-      sessionId, cwd, repo, login, ...(number !== undefined ? { number } : {}),
+      sessionId, login, ...(number !== undefined ? { number } : {}),
     };
     if (route.kind === 'preview') {
       return this.host.readJsonBody(req, res, (body) => {
-        void this.preview(res, body, gate, base, handlers.preview).catch((err: unknown) => this.crashed(res, err));
+        void this.preview(res, principal, body, gate, call, handlers.preview).catch((err: unknown) => this.crashed(res, err));
       }, MAX_PREVIEW_BODY_BYTES);
     }
     this.host.readJsonBody(req, res, (body) => {
-      void this.execute(req, res, url, principal, body, gate, base).catch((err: unknown) => this.crashed(res, err));
+      void this.execute(req, res, url, principal, body, gate, call).catch((err: unknown) => this.crashed(res, err));
     }, MAX_EXECUTE_BODY_BYTES);
   }
 
   private crashed(res: http.ServerResponse, err: unknown): void {
     this.host.log('warn', `[web] git write route failed: ${err instanceof Error ? err.message : String(err)}`);
-    if (!res.headersSent) this.host.json(res, 500, { error: 'git-operation-failed' });
+    if (!res.headersSent) this.fail(res, { error: 'git-operation-failed' });
+  }
+
+  /** The session's spawn cwd and repository, or the refusal to send. */
+  private async locate(principal: GitWritePrincipal, sessionId: string): Promise<{ cwd: string; repo: PhoneGitRepo } | { refuse: GitWriteErrorBody | 'session' }> {
+    const session = this.host.session(principal, sessionId);
+    if (!session?.spawnCwd) return { refuse: 'session' };
+    try {
+      const repo = await resolvePhoneGitRepo(session.spawnCwd, this.host.git());
+      return repo ? { cwd: session.spawnCwd, repo } : { refuse: { error: 'not-a-git-repo' } };
+    } catch {
+      return { refuse: { error: 'git-operation-failed' } };
+    }
+  }
+
+  private refuseLocate(res: http.ServerResponse, refuse: GitWriteErrorBody | 'session'): void {
+    if (refuse === 'session') return this.host.json(res, 404, { error: 'session not found' });
+    return this.fail(res, refuse);
+  }
+
+  /**
+   * Admit one preview: at most one in flight per owner and four overall, and
+   * at most PREVIEWS_PER_MINUTE per owner. Each preview runs gh and git.
+   * Returns the release function, or null when refused.
+   */
+  private admitPreview(owner: string): (() => void) | null {
+    const now = Date.now();
+    const recent = (this.previewTimes.get(owner) ?? []).filter((t) => t > now - 60_000);
+    if ((this.previewsByOwner.get(owner) ?? 0) >= 1 || this.previewsInFlight >= MAX_PREVIEWS_IN_FLIGHT || recent.length >= PREVIEWS_PER_MINUTE) {
+      this.previewTimes.set(owner, recent);
+      return null;
+    }
+    recent.push(now);
+    this.previewTimes.set(owner, recent);
+    this.previewsInFlight += 1;
+    this.previewsByOwner.set(owner, (this.previewsByOwner.get(owner) ?? 0) + 1);
+    return () => {
+      this.previewsInFlight -= 1;
+      const left = (this.previewsByOwner.get(owner) ?? 1) - 1;
+      if (left > 0) this.previewsByOwner.set(owner, left); else this.previewsByOwner.delete(owner);
+    };
   }
 
   private async preview(
-    res: http.ServerResponse, body: unknown, gate: PhoneGitWriteGate,
-    base: Omit<GitWriteSessionContext, 'ghEnv'>, preview: PhoneGitWriteActionHandlers['preview'],
+    res: http.ServerResponse, principal: GitWritePrincipal, body: unknown, gate: PhoneGitWriteGate,
+    call: Call, preview: PhoneGitWriteActionHandlers['preview'],
   ): Promise<void> {
     if (!parsePreviewBody(body).ok || !preview) return this.fail(res, { error: 'invalid-git-request' });
-    const identity = await gate.identity(base.login);
-    if (!identity.ok) {
-      return identity.reason === 'missing'
-        ? this.fail(res, { error: 'gh-auth-missing', login: base.login })
-        : this.fail(res, { error: 'gh-unavailable' });
+    const release = this.admitPreview(call.owner);
+    if (!release) return this.fail(res, { error: 'git-busy' });
+    try {
+      const where = await this.locate(principal, call.sessionId);
+      if ('refuse' in where) return this.refuseLocate(res, where.refuse);
+      const identity = await gate.identity(call.login);
+      if (!identity.ok) {
+        return identity.reason === 'missing'
+          ? this.fail(res, { error: 'gh-auth-missing', login: call.login })
+          : this.fail(res, { error: 'gh-unavailable' });
+      }
+      const result = await preview({ ...call, ...where, ghEnv: ghWriteEnv(process.env, identity.token) });
+      if (!result.ok) return this.fail(res, result.body);
+      const grant = gate.tokens.mint(
+        { owner: call.owner, sessionId: call.sessionId, repo: where.repo.commonReal, action: call.action, login: call.login },
+        result.pins,
+      );
+      this.host.json(res, 200, { ...result.facts, identity: { login: call.login }, ...grant });
+    } finally {
+      release();
     }
-    const result = await preview({ ...base, ghEnv: ghWriteEnv(process.env, identity.token) });
-    if (!result.ok) return this.fail(res, result.body);
-    const grant = gate.tokens.mint(
-      { owner: base.owner, sessionId: base.sessionId, repo: base.repo.commonReal, action: base.action, login: base.login },
-      result.pins,
-    );
-    this.host.json(res, 200, { ...result.facts, identity: { login: base.login }, ...grant });
   }
 
   private async execute(
     req: http.IncomingMessage, res: http.ServerResponse, url: URL, principal: GitWritePrincipal,
-    raw: unknown, gate: PhoneGitWriteGate, base: Omit<GitWriteSessionContext, 'ghEnv'>,
+    raw: unknown, gate: PhoneGitWriteGate, call: Call,
   ): Promise<void> {
-    const parsed = base.action === 'push' ? parsePushExecute(raw)
-      : base.action === 'pr.merge' ? parsePrMergeExecute(raw)
+    const parsed = call.action === 'push' ? parsePushExecute(raw)
+      : call.action === 'pr.merge' ? parsePrMergeExecute(raw)
         : parsePrCreateExecute(raw);
     if (!parsed.ok) return this.fail(res, { error: parsed.error });
     const body: PushExecuteBody | PrMergeExecuteBody | PrCreateExecuteBody = parsed.value;
     const { requestId } = body;
-    const fingerprint = fingerprintOf(gitWriteFingerprintSource(base.action, body, base.number));
-    const key = GitWriteReceipts.key(base.owner, base.repo.commonReal, requestId);
+    const fingerprint = fingerprintOf(gitWriteFingerprintSource(call.action, body, call.number));
+    const key = GitWriteReceipts.key(call.owner, requestId);
 
-    // 1. requestId lookup: a resend gets its receipt back, never a 428.
+    // 1. requestId lookup: a resend gets its receipt back, never a 428, also
+    //    after its session closed. A live session that now resolves to another
+    //    repository makes it a different request.
     const existing = gate.receipts.find(key);
     if (existing) {
       // The fingerprint covers the action and PR number; the session is checked on its own.
-      if (existing.fingerprint !== fingerprint || existing.action !== base.action || existing.sessionId !== base.sessionId) {
+      if (existing.fingerprint !== fingerprint || existing.action !== call.action || existing.sessionId !== call.sessionId) {
         return this.fail(res, { error: 'request-id-reused' });
       }
+      const where = this.host.session(principal, call.sessionId) ? await this.locate(principal, call.sessionId) : null;
+      if (where && !('refuse' in where) && where.repo.commonReal !== existing.repo) return this.fail(res, { error: 'request-id-reused' });
       return this.host.json(res, 200, receiptBody(existing, true));
     }
 
-    // 2. Token consume and the durable `pending` row, in one synchronous step.
+    const where = await this.locate(principal, call.sessionId);
+    if ('refuse' in where) return this.refuseLocate(res, where.refuse);
+    const row = {
+      requestId, action: call.action, sessionId: call.sessionId, owner: call.owner, repo: where.repo.commonReal, fingerprint,
+      ...(call.number !== undefined ? { number: call.number } : {}),
+    };
+    // A request accepted while this one resolved its repository.
+    if (gate.receipts.find(key)) return this.fail(res, { error: 'request-id-reused' });
+
+    // 2. The durable `pending` row and the token consume, in one synchronous
+    //    step. The token is spent only once the row is on disk.
     let pins: GitWritePins | null = null;
-    if (base.action !== 'pr.create') {
-      const b = body as PushExecuteBody | PrMergeExecuteBody;
-      const consumed = gate.tokens.consume(
-        b.confirmToken,
-        { owner: base.owner, sessionId: base.sessionId, repo: base.repo.commonReal, action: base.action, login: base.login },
-        executeBodyPins(base.action, b, base.number),
-      );
-      if (!consumed.ok) {
-        if (consumed.error !== 'stale') return this.fail(res, { error: consumed.error });
-        const now = base.action === 'push' ? { head: String(consumed.pins.head) } : { headRefOid: String(consumed.pins.headRefOid) };
-        return this.fail(res, { error: 'stale', ...now });
-      }
-      pins = consumed.pins;
-    }
+    let refusal: GitWriteErrorBody | null = null;
+    const begin = () => gate.receipts.begin(key, row);
     try {
-      gate.receipts.begin(key, {
-        requestId, action: base.action, sessionId: base.sessionId, owner: base.owner, fingerprint,
-        ...(base.number !== undefined ? { number: base.number } : {}),
-      });
+      if (call.action === 'pr.create') {
+        begin();
+      } else {
+        const b = body as PushExecuteBody | PrMergeExecuteBody;
+        const consumed = gate.tokens.consume(
+          b.confirmToken,
+          { owner: call.owner, sessionId: call.sessionId, repo: where.repo.commonReal, action: call.action, login: call.login },
+          executeBodyPins(call.action, b, call.number),
+          begin,
+        );
+        if (consumed.ok) pins = consumed.pins;
+        else if (consumed.error === 'stale') {
+          refusal = call.action === 'push'
+            ? { error: 'stale', head: String(consumed.pins.head) }
+            : { error: 'stale', headRefOid: String(consumed.pins.headRefOid) };
+        } else refusal = { error: consumed.error };
+      }
     } catch (error) {
       if (error instanceof GitWriteReceiptCapacityError) return this.fail(res, { error: 'git-busy' });
       this.host.log('warn', `[web] git write receipt could not be written: ${error instanceof Error ? error.message : String(error)}`);
       return this.fail(res, { error: 'git-receipts-unavailable' });
     }
+    if (refusal) return this.fail(res, refusal);
     const settle = (outcome: GitWriteSettle | { state: 'uncertain' }) => gate.receipts.settle(key, outcome);
 
     // 3. Re-authorization with the same credential, both grants re-read.
-    if (!(await this.host.stillAuthorized(req, url, principal, base.sessionId)) || !this.host.ceiling().allowGitWrite) {
+    if (!(await this.host.stillAuthorized(req, url, principal, call.sessionId)) || !this.host.ceiling().allowGitWrite) {
       settle({ state: 'refused', error: 'authorization-expired' });
       return this.fail(res, { error: 'authorization-expired' });
     }
     // 4. The identity: the login must still hold a token.
-    const identity = await gate.identity(base.login);
-    if (!identity.ok || this.host.ceiling().login !== base.login) {
+    const identity = await gate.identity(call.login);
+    if (!identity.ok || this.host.ceiling().login !== call.login) {
       settle({ state: 'refused', error: 'identity-changed' });
       return this.fail(res, { error: 'identity-changed' });
     }
 
-    const handlers = phoneGitWriteHandlers(base.action);
+    const handlers = phoneGitWriteHandlers(call.action);
     if (!handlers) {
-      settle({ state: 'refused', error: 'gh-unavailable' });
-      return this.host.json(res, 501, { error: 'not-implemented' });
+      settle({ state: 'refused', error: 'not-implemented' });
+      return this.fail(res, { error: 'not-implemented' });
     }
     this.host.json(res, 202, { requestId, replayed: false, state: 'pending' });
     try {
       await handlers.execute({
-        ...base, ghEnv: ghWriteEnv(process.env, identity.token), requestId, body, pins,
+        ...call, ...where, ghEnv: ghWriteEnv(process.env, identity.token), requestId, body, pins,
         markInFlight: () => gate.receipts.markInFlight(key),
         settle,
       });
     } catch (err) {
-      this.host.log('warn', `[web] git write ${base.action} failed: ${err instanceof Error ? err.message : String(err)}`);
-      const row = gate.receipts.find(key);
-      if (row?.state === 'inFlight') settle({ state: 'uncertain' });
-      else if (row?.state === 'pending') settle({ state: 'refused', error: 'gh-unavailable' });
+      this.host.log('warn', `[web] git write ${call.action} failed: ${err instanceof Error ? err.message : String(err)}`);
+      const now = gate.receipts.find(key);
+      if (now?.state === 'inFlight') settle({ state: 'uncertain' });
+      else if (now?.state === 'pending') settle({ state: 'refused', error: 'gh-unavailable' });
     }
   }
 }

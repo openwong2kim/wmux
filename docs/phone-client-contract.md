@@ -5600,7 +5600,8 @@ characters; anything else is dropped.
 ## Phone git write actions: push, PR create, merge (not served yet)
 
 > **Status.** The contract, gate, confirm tokens, receipts and identity are in
-> place (`src/shared/phoneGitWrite.ts`, `src/daemon/web/phoneGitWrite*.ts`).
+> place (`src/shared/phoneGitWrite.ts`, `src/daemon/web/phoneGitWrite*.ts`),
+> and `wmux web --allow-git-write --git-write-login <login>` arms them.
 > The actions themselves land separately. Until an action is served its
 > routes answer `501 {error:"not-implemented"}` and its `/api/config` key is
 > omitted, so a phone that follows the keys never calls them.
@@ -5659,21 +5660,33 @@ app's Face ID / hold happens on the phone and the server cannot verify it.
   `request-id-reused`).
 
 **Execute order.** (1) `requestId` lookup: an existing receipt with the same
-body returns with `replayed:true`, whatever its state; a different body is
-409 `request-id-reused`. (2) Atomic token consume, and the receipt is written
-`pending` to disk in the same step. (3) Re-authorization with the same
-credential: the ceiling and the explicit grant are read again. (4) The
-pinned facts and the identity are read again. (5) The receipt goes
-`inFlight` on disk, then git or gh runs. The body fingerprint excludes
-`confirmToken`, which is why a resend after the token was spent still
-matches.
+body returns with `replayed:true`, whatever its state, even after its session
+closed; a different body, another session, or a live session that now
+resolves to another repository is 409 `request-id-reused`. (2) In one
+synchronous step the receipt is written `pending` to disk and the token is
+spent; if the write fails the token stays valid and the answer is 503
+`git-receipts-unavailable` (or 429 `git-busy` when the device's receipts are
+full). (3) Re-authorization with the same credential: the ceiling and the
+explicit grant are read again. (4) The pinned facts and the identity are read
+again. (5) The receipt goes `inFlight` on disk, then git or gh runs. The body
+fingerprint excludes `confirmToken`, which is why a resend after the token was
+spent still matches.
+
+**Preview budget.** Each preview runs git and gh, so a device gets one preview
+at a time and at most 12 a minute, and the daemon four at a time;
+beyond that, 429 `git-busy`.
 
 ### Receipts
 
-Receipts are keyed by device, repository and `requestId`, persisted on disk
-and **kept for at least 72 hours**. A resend or a GET within that window
-returns the stored receipt; after it, a GET answers 404 `receipt-expired`
-and the app re-checks the branch or PR instead.
+Receipts are keyed by device and `requestId`, persisted on disk with the
+repository they were accepted for, and **kept for at least 72 hours**. Nothing
+evicts a receipt inside that window: a device holding 200 live receipts (or a
+daemon holding 4000) gets 429 `git-busy` for new requests until older ones
+expire. A resend or a GET within the window returns the stored receipt, also
+after the session closed; after it, a GET answers 404 `receipt-expired` and the
+app re-checks the branch or PR instead. A daemon has one writer for the
+receipt file; when it cannot hold it, every route answers 503
+`git-receipts-unavailable`.
 
 | State | Meaning |
 |---|---|
@@ -5789,10 +5802,12 @@ sheet. No stored token for that login → 424 `gh-auth-missing`;
 | 409 | `non-fast-forward` (+ `remoteTip`, `behind`) | pull on the desktop |
 | 409 | `blocked` (+ `reason`) | show the reason |
 | 409 | `not-a-git-repo` | the session is not in a repository |
+| 500 | `git-operation-failed` | git could not answer; retry later |
+| 501 | `not-implemented` | this daemon does not serve the action yet (its key is absent) |
 | 409 | `squash-disabled`, `protected-target`, `remote-branch-exists`, `remote-unsupported`, `not-pushed`, `pr-exists` (+ `number`), `no-commits-ahead`, `detached-head`, `git-operation-in-progress`, `merge-in-flight`, `identity-changed`, `request-id-reused` | show; usually re-preview |
 | 424 | `gh-auth-missing`, `remote-forbidden` (+ `login`) | fix on the desktop |
 | 428 | `confirm-required` | new preview |
-| 429 | `git-busy` | retry later |
+| 429 | `git-busy` | retry later (preview budget, or receipts full) |
 | 429 | `rate-limited` (+ `retryAt`, epoch ms) | wait until `retryAt` |
 | 502 | `gh-unavailable`, `remote-unreachable` | retry later |
 | 503 | `git-receipts-unavailable` | retry later |

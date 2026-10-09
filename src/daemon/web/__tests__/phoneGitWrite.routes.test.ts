@@ -36,6 +36,7 @@ describe('phone git write routes', { timeout: 60_000 }, () => {
   let server: WebTerminalServer;
   let unregister: Array<() => void>;
   let gate: PhoneGitWriteGate | undefined;
+  let panes: Map<string, Pane>;
   const savedGhToken = process.env.GH_TOKEN;
 
   beforeEach(() => {
@@ -47,7 +48,7 @@ describe('phone git write routes', { timeout: 60_000 }, () => {
     const run = (...args: string[]) => execFileSync('git', args, { cwd: repo, env: buildGitEnv(), encoding: 'utf8' });
     run('init', '-q', '-b', 'main');
     run('-c', 'user.name=T', '-c', 'user.email=t@example.invalid', 'commit', '-q', '--allow-empty', '-m', 'base');
-    const panes = new Map([['s1', pane('s1', repo)], ['s2', pane('s2', repo)]]);
+    panes = new Map([['s1', pane('s1', repo)], ['s2', pane('s2', repo)]]);
     roster = new Map();
     now = 1_000_000;
     ghLogins = new Map([['octo', 'gho_octo']]);
@@ -84,6 +85,7 @@ describe('phone git write routes', { timeout: 60_000 }, () => {
   });
   afterEach(async () => {
     for (const u of unregister) u();
+    gate?.close();
     if (server.isRunning) await server.stop();
     if (savedGhToken === undefined) delete process.env.GH_TOKEN; else process.env.GH_TOKEN = savedGhToken;
     fs.rmSync(root, { recursive: true, force: true });
@@ -224,6 +226,33 @@ describe('phone git write routes', { timeout: 60_000 }, () => {
     expect((await call(phone, 'GET', `s1/git/pr/999/merge/${second.requestId}`)).status).toBe(404);
   });
 
+  it('answers a receipt and a resend after the session closed', async () => {
+    stubPush();
+    await start();
+    const phone = device('phone');
+    const facts = await preview(phone);
+    const body = { requestId: randomUUID(), confirmToken: facts.confirmToken, expectedHead: OID, expectedRef: REF };
+    expect((await call(phone, 'POST', 's1/git/push', body)).status).toBe(202);
+    await vi.waitFor(async () => expect(await (await call(phone, 'GET', `s1/git/push/${body.requestId}`)).json()).toMatchObject({ state: 'done' }));
+    panes.delete('s1');
+    expect(await (await call(phone, 'GET', `s1/git/push/${body.requestId}`)).json()).toMatchObject({ state: 'done' });
+    expect(await (await call(phone, 'POST', 's1/git/push', body)).json()).toMatchObject({ replayed: true, state: 'done' });
+    // A new request on the closed session is refused.
+    expect((await call(phone, 'POST', 's1/git/push/preview', {})).status).toBe(404);
+  });
+
+  it('limits previews per device', async () => {
+    stubPush();
+    await start();
+    const phone = device('phone');
+    for (let i = 0; i < 12; i++) expect((await call(phone, 'POST', 's1/git/push/preview', {})).status).toBe(200);
+    const busy = await call(phone, 'POST', 's1/git/push/preview', {});
+    expect(busy.status).toBe(429);
+    expect(await busy.json()).toEqual({ error: 'git-busy' });
+    // Another device has its own budget.
+    expect((await call(device('other'), 'POST', 's1/git/push/preview', {})).status).toBe(200);
+  });
+
   it('keeps receipts across a restart for 72 hours, then answers receipt-expired', async () => {
     const runs = stubPush();
     await start();
@@ -234,6 +263,7 @@ describe('phone git write routes', { timeout: 60_000 }, () => {
     await vi.waitFor(async () => expect(await (await call(phone, 'GET', `s1/git/push/${body.requestId}`)).json()).toMatchObject({ state: 'done' }));
     await new Promise((r) => setImmediate(r));
     // A new daemon: tokens are gone, the receipt is not.
+    gate?.close();
     gate = undefined;
     expect(await (await call(phone, 'POST', 's1/git/push', body)).json()).toMatchObject({ replayed: true, state: 'done' });
     // Another device does not see it.
