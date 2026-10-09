@@ -522,4 +522,6 @@ export const bs = {
   // ─── Stavka radnog prostora: upozorenje o granici worktree-a zadatka ───
   'workspace.cwdDeparted': 'Panel cwd napustio granicu worktree-a zadatka: {cwd}',
   'workspace.departed': 'napustio',
+  'settings.plainDragSelect': "Označi tekst prevlačenjem, čak i kad aplikacija koristi miš",
+  'settings.plainDragSelectDesc': "Obično prevlačenje označava tekst čak i u aplikacijama koje koriste miš, poput Codexa; klik i dalje ide aplikaciji. Držite Shift (macOS) ili Alt (Windows, Linux) dok prevlačite da biste prevlačenje poslali aplikaciji.",
 } as const;

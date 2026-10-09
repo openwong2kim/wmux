@@ -518,4 +518,6 @@ export const hi = {
   // ─── Workspace item: task worktree boundary warning ───
   'workspace.cwdDeparted': 'पैनल cwd टास्क worktree सीमा के बाहर चला गया: {cwd}',
   'workspace.departed': 'बाहर चला गया',
+  'settings.plainDragSelect': "ऐप माउस इस्तेमाल करे तब भी खींचकर टेक्स्ट चुनें",
+  'settings.plainDragSelectDesc': "Codex जैसे माउस इस्तेमाल करने वाले ऐप में भी सामान्य रूप से खींचने पर टेक्स्ट चुना जाता है; क्लिक अब भी ऐप तक जाता है। खींचने को ऐप तक भेजने के लिए खींचते समय Shift (macOS) या Alt (Windows, Linux) दबाए रखें।",
 } as const;

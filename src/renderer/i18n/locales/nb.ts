@@ -522,4 +522,6 @@ export const nb = {
   // ─── Workspace item: task worktree boundary warning ───
   'workspace.cwdDeparted': 'Panelets cwd forlot oppgavens worktree-grense: {cwd}',
   'workspace.departed': 'forlatt',
+  'settings.plainDragSelect': "Merk tekst ved å dra, også når appen bruker musen",
+  'settings.plainDragSelectDesc': "Et vanlig dra merker tekst også i apper som bruker musen, som Codex; et klikk går fortsatt til appen. Hold Shift (macOS) eller Alt (Windows, Linux) mens du drar for å sende dra-bevegelsen til appen.",
 } as const;

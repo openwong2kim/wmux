@@ -2150,6 +2150,8 @@ export const en = {
   'settings.splitInheritsCwdDesc': 'A pane created by splitting starts in the original pane\'s current directory.',
   'settings.closeTabOnShellExit': 'Close the tab when its shell exits cleanly',
   'settings.closeTabOnShellExitDesc': 'Typing exit or pressing Ctrl+D closes the tab. A shell that ends with an error, and a pane wmux restarts on its own, stay open.',
+  'settings.plainDragSelect': "Select text by dragging, even when the app uses the mouse",
+  'settings.plainDragSelectDesc': "A plain drag selects text even in apps that use the mouse, such as Codex; a click still goes to the app. Hold Shift (macOS) or Alt (Windows, Linux) while dragging to send the drag to the app instead.",
   'settings.imeResidueGuard': 'Clear IME residue while idle',
   'settings.imeResidueGuardDesc': 'Protects against voice-input tools that replace leftover IME text destructively. Leave off unless you use such a tool — the clearing can confuse some IMEs.',
   'settings.hiddenPaneRetention': 'Pause hidden pane rendering',

@@ -571,4 +571,6 @@ export const ja = {
   'plugin.staleGate.message': 'Claude Code プラグインが古く、すべてのツール呼び出しで権限確認を強制しています。wmux を更新してもプラグインは更新されません。プラグインを更新してください。',
   'plugin.staleGate.copy': 'コマンドをコピー',
   'plugin.staleGate.copied': 'コマンドをコピーしました。ターミナルで実行し、Claude セッションを再起動してください。',
+  'settings.plainDragSelect': "アプリがマウスを使っていてもドラッグでテキストを選択",
+  'settings.plainDragSelectDesc': "Codex のようにマウスを使うアプリでも、そのままドラッグするとテキストを選択します。クリックはこれまでどおりアプリに届きます。ドラッグをアプリに送るには、Shift（macOS）または Alt（Windows、Linux）を押しながらドラッグします。",
 } as const;

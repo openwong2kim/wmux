@@ -260,6 +260,7 @@ describe('settings persist across tabs', () => {
   it.each([
     ['terminal', 'splitcwd', 'splitInheritsCwd'],
     ['terminal', 'inlineimages', 'inlineImagesEnabled'],
+    ['terminal', 'plaindragselect', 'plainDragSelectEnabled'],
     ['appearance', 'sidebarpanecoordinates', 'sidebarShowPaneCoordinates'],
     ['roles', 'a2a', 'a2aAutoApproveExecute'],
     ['browser', 'sitememory', 'siteMemoryEnabled'],

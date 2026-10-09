@@ -522,4 +522,6 @@ export const fr = {
   // ─── Élément d'espace de travail : avertissement de limite du worktree de tâche ───
   'workspace.cwdDeparted': 'Le cwd du panneau est sorti de la limite du worktree de la tâche : {cwd}',
   'workspace.departed': 'sorti',
+  'settings.plainDragSelect': "Sélectionner le texte en faisant glisser, même si l'app utilise la souris",
+  'settings.plainDragSelectDesc': "Un simple glisser sélectionne le texte même dans les apps qui utilisent la souris, comme Codex ; un clic reste transmis à l'app. Maintenez Maj (macOS) ou Alt (Windows, Linux) pendant le glisser pour l'envoyer à l'app.",
 } as const;

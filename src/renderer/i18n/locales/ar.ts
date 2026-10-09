@@ -519,4 +519,6 @@ export const ar = {
   // ─── Workspace item: task worktree boundary warning ───
   'workspace.cwdDeparted': 'خرج cwd الخاص بالجزء عن حدود worktree للمهمة: {cwd}',
   'workspace.departed': 'خرج',
+  'settings.plainDragSelect': "تحديد النص بالسحب حتى عندما يستخدم التطبيق الماوس",
+  'settings.plainDragSelectDesc': "السحب العادي يحدد النص حتى في التطبيقات التي تستخدم الماوس مثل Codex، بينما تظل النقرة تصل إلى التطبيق. اضغط مع الاستمرار على Shift (macOS) أو Alt (Windows وLinux) أثناء السحب لإرسال السحب إلى التطبيق.",
 } as const;

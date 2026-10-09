@@ -517,4 +517,6 @@ export const th = {
   // ─── Workspace item: task worktree boundary warning ───
   'workspace.cwdDeparted': 'cwd ของพาเนลออกนอกขอบเขต worktree ของงาน: {cwd}',
   'workspace.departed': 'ออกไปแล้ว',
+  'settings.plainDragSelect': "ลากเพื่อเลือกข้อความ แม้แอปจะใช้เมาส์อยู่",
+  'settings.plainDragSelectDesc': "การลากตามปกติจะเลือกข้อความได้แม้ในแอปที่ใช้เมาส์ เช่น Codex ส่วนการคลิกยังส่งไปที่แอปเหมือนเดิม กด Shift (macOS) หรือ Alt (Windows, Linux) ค้างไว้ขณะลากเพื่อส่งการลากไปที่แอป",
 } as const;

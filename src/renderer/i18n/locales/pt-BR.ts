@@ -523,4 +523,6 @@ export const ptBR = {
   // ─── Item de espaço de trabalho: aviso de limite do worktree da tarefa ───
   'workspace.cwdDeparted': 'O cwd do painel saiu do limite do worktree da tarefa: {cwd}',
   'workspace.departed': 'fora',
+  'settings.plainDragSelect': "Selecionar texto ao arrastar, mesmo quando o app usa o mouse",
+  'settings.plainDragSelectDesc': "Arrastar normalmente seleciona texto mesmo em apps que usam o mouse, como o Codex; um clique continua indo para o app. Segure Shift (macOS) ou Alt (Windows, Linux) ao arrastar para enviar o arraste ao app.",
 } as const;

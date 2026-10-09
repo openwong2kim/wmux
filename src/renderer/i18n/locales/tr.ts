@@ -523,4 +523,6 @@ export const tr = {
   // ─── Çalışma alanı ögesi: görev worktree sınırı uyarısı ───
   'workspace.cwdDeparted': "Bölme cwd'si görev worktree sınırının dışına çıktı: {cwd}",
   'workspace.departed': 'ayrıldı',
+  'settings.plainDragSelect': "Uygulama fareyi kullansa bile sürükleyerek metin seç",
+  'settings.plainDragSelectDesc': "Düz sürükleme, Codex gibi fareyi kullanan uygulamalarda bile metni seçer; tıklama yine uygulamaya gider. Sürüklemeyi uygulamaya göndermek için sürüklerken Shift (macOS) veya Alt (Windows, Linux) tuşunu basılı tutun.",
 } as const;

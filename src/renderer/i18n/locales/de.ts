@@ -519,4 +519,6 @@ export const de = {
   // ─── Workspace item: task worktree boundary warning ───
   'workspace.cwdDeparted': 'Bereichs-cwd hat die worktree-Grenze der Task verlassen: {cwd}',
   'workspace.departed': 'verlassen',
+  'settings.plainDragSelect': "Text per Ziehen markieren, auch wenn die App die Maus nutzt",
+  'settings.plainDragSelectDesc': "Einfaches Ziehen markiert Text auch in Apps, die die Maus verwenden, etwa Codex; ein Klick geht weiterhin an die App. Halte beim Ziehen Shift (macOS) oder Alt (Windows, Linux) gedrückt, um das Ziehen an die App zu senden.",
 } as const;

@@ -558,4 +558,6 @@ export const zhTW = {
   // ─── 工作區項目: 任務 worktree 邊界警告 ───
   'workspace.cwdDeparted': '面板 cwd 已越出任務 worktree 邊界：{cwd}',
   'workspace.departed': '已越界',
+  'settings.plainDragSelect': "應用程式使用滑鼠時也可拖曳選取文字",
+  'settings.plainDragSelectDesc': "即使在 Codex 等使用滑鼠的應用程式中，直接拖曳也會選取文字；點擊仍會傳給應用程式。按住 Shift（macOS）或 Alt（Windows、Linux）拖曳，即可將拖曳傳給應用程式。",
 } as const;

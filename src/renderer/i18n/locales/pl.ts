@@ -2125,6 +2125,8 @@ export const pl = {
   'settings.splitInheritsCwdDesc': 'Panel utworzony przez podział startuje w bieżącym katalogu panelu źródłowego.',
   'settings.closeTabOnShellExit': 'Zamknij kartę, gdy powłoka zakończy się poprawnie',
   'settings.closeTabOnShellExitDesc': 'Wpisanie exit lub naciśnięcie Ctrl+D zamyka kartę. Powłoka zakończona błędem oraz panel, który wmux sam uruchamia ponownie, pozostają otwarte.',
+  'settings.plainDragSelect': "Zaznaczaj tekst przeciąganiem, nawet gdy aplikacja używa myszy",
+  'settings.plainDragSelectDesc': "Zwykłe przeciągnięcie zaznacza tekst także w aplikacjach używających myszy, takich jak Codex; kliknięcie nadal trafia do aplikacji. Przytrzymaj Shift (macOS) lub Alt (Windows, Linux) podczas przeciągania, aby wysłać je do aplikacji.",
   'settings.imeResidueGuard': 'Czyść pozostałości IME w bezczynności',
   'settings.imeResidueGuardDesc': 'Chroni przed narzędziami głosowego wejścia, które destrukcyjnie zastępują pozostały tekst IME. Zostaw wyłączone, chyba że używasz takiego narzędzia — czyszczenie może zmylić niektóre IME.',
   'settings.hiddenPaneRetention': 'Wstrzymaj renderowanie ukrytych paneli',

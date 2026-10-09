@@ -523,4 +523,6 @@ export const ru = {
   // ─── Workspace item: task worktree boundary warning ───
   'workspace.cwdDeparted': 'cwd панели вышел за границу worktree задачи: {cwd}',
   'workspace.departed': 'вне границ',
+  'settings.plainDragSelect': "Выделять текст перетаскиванием, даже если приложение использует мышь",
+  'settings.plainDragSelectDesc': "Обычное перетаскивание выделяет текст даже в приложениях, которые используют мышь, например в Codex; щелчок по-прежнему передаётся приложению. Удерживайте Shift (macOS) или Alt (Windows, Linux) при перетаскивании, чтобы передать его приложению.",
 } as const;

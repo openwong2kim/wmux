@@ -1362,6 +1362,8 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       if (typeof data.coldParkEnabled === 'boolean') state.coldParkEnabled = data.coldParkEnabled;
       // #1641: default ON; only an explicit persisted false opts out.
       if (typeof data.inlineImagesEnabled === 'boolean') state.inlineImagesEnabled = data.inlineImagesEnabled;
+      // #1947: default ON; only an explicit persisted false opts out.
+      if (typeof data.plainDragSelectEnabled === 'boolean') state.plainDragSelectEnabled = data.plainDragSelectEnabled;
       if (typeof data.startupDirectory === 'string') state.startupDirectory = data.startupDirectory.trim();
       if (data.scrollbackLines != null) state.scrollbackLines = data.scrollbackLines;
       if (data.scrollbackRestoreEnabled != null) state.scrollbackRestoreEnabled = data.scrollbackRestoreEnabled;

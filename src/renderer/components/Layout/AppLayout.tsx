@@ -433,6 +433,7 @@ function buildSessionData(dumped: Map<string, boolean>): SessionData {
     hiddenPaneRetentionEnabled: state.hiddenPaneRetentionEnabled,
     coldParkEnabled: state.coldParkEnabled,
     inlineImagesEnabled: state.inlineImagesEnabled,
+    plainDragSelectEnabled: state.plainDragSelectEnabled,
     browserLightweightMode: state.browserLightweightMode,
     browserDiscardHidden: state.browserDiscardHidden,
     siteMemoryEnabled: state.siteMemoryEnabled,

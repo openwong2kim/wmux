@@ -966,3 +966,13 @@ describe('UISlice — Fleet layout', () => {
     expect(store.getState().fleetLayout).toBe('board');
   });
 });
+
+// #1947: plain-drag selection under app mouse tracking is the default.
+describe('UISlice — plain drag select (#1947)', () => {
+  it('defaults on and toggles', () => {
+    const store = createTestStore();
+    expect(store.getState().plainDragSelectEnabled).toBe(true);
+    store.getState().setPlainDragSelectEnabled(false);
+    expect(store.getState().plainDragSelectEnabled).toBe(false);
+  });
+});

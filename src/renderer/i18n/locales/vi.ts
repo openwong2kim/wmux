@@ -517,4 +517,6 @@ export const vi = {
   // ─── Workspace item: task worktree boundary warning ───
   'workspace.cwdDeparted': 'cwd của khung đã rời khỏi ranh giới worktree của tác vụ: {cwd}',
   'workspace.departed': 'đã rời',
+  'settings.plainDragSelect': "Kéo để chọn văn bản, kể cả khi ứng dụng dùng chuột",
+  'settings.plainDragSelectDesc': "Kéo thông thường sẽ chọn văn bản ngay cả trong ứng dụng dùng chuột như Codex; cú nhấp vẫn được gửi tới ứng dụng. Giữ Shift (macOS) hoặc Alt (Windows, Linux) khi kéo để gửi thao tác kéo tới ứng dụng.",
 } as const;

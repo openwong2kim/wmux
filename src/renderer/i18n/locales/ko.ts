@@ -1614,6 +1614,8 @@ export const ko = {
   'settings.splitInheritsCwdDesc': '창 분할로 생긴 새 패널이 원래 패널의 현재 디렉토리에서 시작합니다.',
   'settings.closeTabOnShellExit': '셸이 정상 종료되면 탭 닫기',
   'settings.closeTabOnShellExitDesc': 'exit를 입력하거나 Ctrl+D를 누르면 탭이 닫힙니다. 오류로 끝난 셸과 wmux가 자동으로 다시 시작하는 패널은 열린 채로 남습니다.',
+  'settings.plainDragSelect': "앱이 마우스를 써도 드래그로 텍스트 선택",
+  'settings.plainDragSelectDesc': "Codex처럼 마우스를 쓰는 앱에서도 그냥 드래그하면 텍스트가 선택됩니다. 클릭은 그대로 앱에 전달됩니다. 드래그를 앱에 보내려면 Shift(macOS) 또는 Alt(Windows, Linux)를 누른 채 드래그하세요.",
   'settings.imeResidueGuard': 'IME 잔여 텍스트 자동 비우기',
   'settings.imeResidueGuardDesc': '잔여 IME 텍스트를 파괴적으로 덮어쓰는 음성 입력 도구로부터 보호합니다. 해당 도구를 쓰지 않으면 꺼 두세요 — 일부 입력기와 충돌할 수 있습니다.',
   'settings.hiddenPaneRetention': '숨겨진 패널 렌더링 일시정지',

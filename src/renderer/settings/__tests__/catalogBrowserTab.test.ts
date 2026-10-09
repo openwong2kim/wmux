@@ -20,7 +20,7 @@ describe('settings catalog — Browser tab', () => {
   it('leaves the rest of the Terminal tab where it was', () => {
     const onTerminal = SETTINGS_CATALOG.filter((e) => e.tab === 'terminal').map((e) => e.id);
     expect(onTerminal).toEqual([
-      'shell', 'startdir', 'splitcwd', 'closeonexit', 'ime', 'retention', 'coldpark', 'inlineimages', 'scrollback', 'restore', 'imagepaste',
+      'shell', 'startdir', 'splitcwd', 'closeonexit', 'plaindragselect', 'ime', 'retention', 'coldpark', 'inlineimages', 'scrollback', 'restore', 'imagepaste',
     ]);
   });
 

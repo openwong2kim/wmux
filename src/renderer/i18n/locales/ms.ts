@@ -523,4 +523,6 @@ export const ms = {
   // ─── Workspace item: task worktree boundary warning ───
   'workspace.cwdDeparted': 'cwd panel keluar dari sempadan worktree tugas: {cwd}',
   'workspace.departed': 'keluar',
+  'settings.plainDragSelect': "Pilih teks dengan menyeret, walaupun aplikasi menggunakan tetikus",
+  'settings.plainDragSelectDesc': "Seretan biasa memilih teks walaupun dalam aplikasi yang menggunakan tetikus, seperti Codex; klik tetap dihantar ke aplikasi. Tahan Shift (macOS) atau Alt (Windows, Linux) semasa menyeret untuk menghantar seretan ke aplikasi.",
 } as const;

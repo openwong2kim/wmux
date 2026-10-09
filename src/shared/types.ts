@@ -898,6 +898,8 @@ export interface SessionData {
   coldParkEnabled?: boolean;
   /** #1641: draw sixel / iTerm2 inline images (default true). */
   inlineImagesEnabled?: boolean;
+  /** #1947: plain left-drag selects text under app mouse tracking (default true). */
+  plainDragSelectEnabled?: boolean;
   /**
    * #517 browser lightweight mode: CPU-throttle effectively-invisible embedded
    * browser guests (automation-leased guests stay full-speed). Default false.

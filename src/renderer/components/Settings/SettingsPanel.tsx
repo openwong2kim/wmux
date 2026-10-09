@@ -1913,6 +1913,8 @@ function TabTerminal() {
   const setSplitInheritsCwd = useStore((s) => s.setSplitInheritsCwd);
   const closeTabOnShellExit = useStore((s) => s.closeTabOnShellExit);
   const setCloseTabOnShellExit = useStore((s) => s.setCloseTabOnShellExit);
+  const plainDragSelectEnabled = useStore((s) => s.plainDragSelectEnabled);
+  const setPlainDragSelectEnabled = useStore((s) => s.setPlainDragSelectEnabled);
   const imeResidueGuardEnabled = useStore((s) => s.imeResidueGuardEnabled);
   const setImeResidueGuardEnabled = useStore((s) => s.setImeResidueGuardEnabled);
   const hiddenPaneRetentionEnabled = useStore((s) => s.hiddenPaneRetentionEnabled);
@@ -2026,6 +2028,13 @@ function TabTerminal() {
         </SettingRow>
       </SettingsSection>
       <SettingsSection title={t('settings.sectionInput')}>
+        <SettingRow id="plaindragselect" label={t('settings.plainDragSelect')} description={t('settings.plainDragSelectDesc')}>
+          <Toggle
+            checked={plainDragSelectEnabled}
+            onChange={setPlainDragSelectEnabled}
+            label={t('settings.plainDragSelect')}
+          />
+        </SettingRow>
         <SettingRow id="ime" label={t('settings.imeResidueGuard')} description={t('settings.imeResidueGuardDesc')}>
           <Toggle
             checked={imeResidueGuardEnabled}

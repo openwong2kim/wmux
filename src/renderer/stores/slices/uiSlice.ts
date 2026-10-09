@@ -460,6 +460,12 @@ export interface UISlice {
   inlineImagesEnabled: boolean;
   setInlineImagesEnabled: (enabled: boolean) => void;
 
+  // #1947: a plain left-drag selects text even while the foreground app
+  // tracks the mouse (default ON). Read at every mousedown, so a toggle
+  // applies to open panes immediately.
+  plainDragSelectEnabled: boolean;
+  setPlainDragSelectEnabled: (enabled: boolean) => void;
+
   // #517 browser lightweight mode (default OFF while dogfooding): CPU-throttle
   // embedded browser guests that are effectively invisible (hidden workspace /
   // zoom-hidden / minimized window) and not under automation. CPU-only — does
@@ -1530,6 +1536,12 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
 
   setInlineImagesEnabled: (enabled) => set((state) => {
     state.inlineImagesEnabled = enabled;
+  }),
+
+  plainDragSelectEnabled: true,
+
+  setPlainDragSelectEnabled: (enabled) => set((state) => {
+    state.plainDragSelectEnabled = enabled;
   }),
 
   setHiddenPaneRetentionEnabled: (enabled) => set((state) => {

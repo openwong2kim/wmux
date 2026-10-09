@@ -522,4 +522,6 @@ export const it = {
   // ─── Elemento area di lavoro: avviso confine del worktree dell'attività ───
   'workspace.cwdDeparted': "Il cwd del pannello è uscito dal confine del worktree dell'attività: {cwd}",
   'workspace.departed': 'uscito',
+  'settings.plainDragSelect': "Seleziona il testo trascinando, anche se l'app usa il mouse",
+  'settings.plainDragSelectDesc': "Un semplice trascinamento seleziona il testo anche nelle app che usano il mouse, come Codex; un clic arriva comunque all'app. Tieni premuto Maiusc (macOS) o Alt (Windows, Linux) mentre trascini per inviare il trascinamento all'app.",
 } as const;
