@@ -40,6 +40,10 @@ export function hostSummary(host: PcRailHost, feed: PcRailHostFeed | undefined, 
   }
   if (host.attention.needsYou > 0) lines.push(t('pcRail.needsYouCount', { count: host.attention.needsYou }));
   if (host.attention.finished > 0) lines.push(t('pcRail.finishedCount', { count: host.attention.finished }));
+  // An unreachable host keeps its last-known counts; say how old they are.
+  if (state === 'offline' && host.lastSeenAt !== null && (host.attention.needsYou > 0 || host.attention.finished > 0)) {
+    lines.push(t('pcRail.asOf', { time: clockTime(host.lastSeenAt) }));
+  }
   if (host.muted) lines.push(t('pcRail.muted'));
   if (host.tokenKind === 'operator') lines.push(t('pcRail.operatorToken'));
   return lines;
@@ -61,7 +65,8 @@ export function accessLines(host: PcRailHost, t: Translate): string[] {
 
 function Badge({ badge }: { badge: PcBadge }) {
   if (badge.kind === 'needs-you') {
-    return <span className="wmux-nav-count wmux-nav-badge" data-pc-badge="needs-you" aria-hidden="true">{badgeText(badge.count)}</span>;
+    // Pushed to the icon's corner: a monogram is wider than a page glyph.
+    return <span className="wmux-nav-count wmux-nav-badge" style={{ top: -2, right: -2 }} data-pc-badge="needs-you" aria-hidden="true">{badgeText(badge.count)}</span>;
   }
   if (badge.kind === 'finished') {
     // The sidebar's neutral done dot, in the corner the needs-you dot uses.
@@ -207,7 +212,7 @@ export default function PcRail() {
             onContextMenu={(e: MouseEvent<HTMLButtonElement>) => { e.preventDefault(); openMenu(host.id, e.currentTarget); }}
           >
             <span
-              className="text-[13px] font-semibold leading-none tracking-tight"
+              className="text-[12px] font-semibold leading-none tracking-tight"
               style={{ color: dim ? 'var(--text-muted)' : undefined, opacity: dim ? 0.6 : undefined }}
               aria-hidden="true"
             >
@@ -228,7 +233,7 @@ export default function PcRail() {
           triggerRef={menuTriggerRef}
           items={menuItems}
           onClose={closeMenu}
-          footer={<span data-pc-access>{accessLines(menuHost, t).map((line) => <span key={line} className="block">{line}</span>)}</span>}
+          footer={<span className="block whitespace-normal" data-pc-access>{accessLines(menuHost, t).map((line) => <span key={line} className="block">{line}</span>)}</span>}
         />
       )}
     </nav>
