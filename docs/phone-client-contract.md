@@ -716,6 +716,22 @@ and `!` shell mode: the command (`bash_input`, labelled with the command line)
 and what it printed (`bash_output`, a fixed label; the output itself is not
 sent). The subtype set is additive: render an unknown one as a neutral meta row.
 
+**A linked pull request is a `pr_link` row.** When Claude Code records that the
+session opened or linked a PR, the row is
+
+```
+{id, kind: 'meta', subtype: 'pr_link', label, ts?, url, number?, repo?}
+```
+
+`url` is always an `http(s)` url (and `label` is the same url, so a client that
+does not know `pr_link` still shows it as before). `number` (a positive integer)
+and `repo` (`owner/name`) are present when the transcript names them or the
+url's path is `/owner/name/pull/N`; a non-GitHub url carries `url` alone. Claude
+Code writes the entry again on later turns, so the same PR can arrive several
+times — fold repeats on `url`. An entry with no usable `http(s)` url stays a
+`subtype: 'unknown'` row with no `url`. Daemons before this sent every PR link as
+`unknown`, with the url in `label` only.
+
 **A snapshot reads past an oversized entry.** A first page whose tail window
 starts inside one very large entry (Claude Code's session-start attachments
 can exceed the window) keeps reading backward until it holds the recent rows,

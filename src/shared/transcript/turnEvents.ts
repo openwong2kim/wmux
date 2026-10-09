@@ -182,8 +182,19 @@ export interface MetaEvent extends TurnEventBase {
     | 'system_reminder'
     | 'bash_input'
     | 'bash_output'
+    | 'pr_link'
     | 'unknown';
   label: string;
+  /**
+   * `pr_link` only: the pull request the session linked (Claude Code's
+   * `pr-link` entry). `url` is always an http(s) url; `number` and `repo`
+   * (`owner/name`) are present when the entry or a `/owner/name/pull/N` url
+   * names them. Claude Code writes the entry again on later turns, so the same
+   * PR can arrive more than once.
+   */
+  url?: string;
+  number?: number;
+  repo?: string;
   /**
    * Claude Code records a pasted image's source path in its own `isMeta` entry
    * right after the prompt that carried the image; clients fold it into that row.

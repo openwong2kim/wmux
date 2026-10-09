@@ -13,7 +13,7 @@
 // Entry classes observed in a real transcript (Claude Code 2.1.206) and what
 // they map to here:
 //   user / assistant                → the conversation (see below)
-//   pr-link                         → meta
+//   pr-link                         → meta (`pr_link`)
 //   system, last-prompt, mode, permission-mode, attachment,
 //   file-history-snapshot, ai-title, queue-operation, anything unknown → []
 //
@@ -103,7 +103,10 @@ export function parseTranscriptLineDetailed(
   // because it is a real, user-visible outcome of the turn; the rest carry no
   // conversation content at all.
   if (type === 'pr-link') {
-    return single(metaEvent(baseId, ts, 'unknown', prLinkLabel(entry)), empty);
+    const pr = prLinkFields(entry);
+    // Without a usable http(s) url the row stays the neutral chip it always was.
+    if (!pr) return single(metaEvent(baseId, ts, 'unknown', prLinkLabel(entry)), empty);
+    return single({ ...metaEvent(baseId, ts, 'pr_link', pr.url), ...pr }, empty);
   }
   // A prompt the human queued while tools ran reaches the model as an
   // attachment, never as a `user` entry (Claude Code 2.1.282, probed 2026-09-25).
@@ -644,6 +647,54 @@ function prLinkLabel(entry: Record<string, unknown>): string {
     if (typeof value === 'string' && value) return value;
   }
   return 'pull request';
+}
+
+/** Longest url a `pr_link` row carries; anything longer is not a PR link. */
+const MAX_PR_URL_CHARS = 2048;
+
+/** `owner/name`, each part a GitHub-style name. */
+const REPO_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+
+/** `/owner/name/pull/123` at the start of a url path. */
+const PULL_PATH_RE = /^\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/pull\/(\d+)(?:\/|$)/;
+
+/**
+ * The structured fields of a `pr-link` entry, or null when it names no http(s)
+ * url. Claude Code writes `prUrl`, `prNumber` and `prRepository` (2.1.x,
+ * observed 2026-10-08); the explicit fields win, and a `/owner/name/pull/N`
+ * url path fills in whichever is missing.
+ */
+function prLinkFields(entry: Record<string, unknown>): { url: string; number?: number; repo?: string } | null {
+  let url: string | undefined;
+  for (const key of ['url', 'prUrl', 'link']) {
+    const value = entry[key];
+    if (typeof value === 'string' && value) {
+      url = value;
+      break;
+    }
+  }
+  if (!url || url.length > MAX_PR_URL_CHARS) return null;
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return null;
+  }
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return null;
+  const fromPath = PULL_PATH_RE.exec(parsed.pathname);
+  const rawNumber = entry['prNumber'];
+  const number = typeof rawNumber === 'number' && Number.isSafeInteger(rawNumber) && rawNumber > 0
+    ? rawNumber
+    : fromPath ? Number(fromPath[3]) : undefined;
+  const rawRepo = entry['prRepository'];
+  const repo = typeof rawRepo === 'string' && REPO_RE.test(rawRepo)
+    ? rawRepo
+    : fromPath ? `${fromPath[1]}/${fromPath[2]}` : undefined;
+  return {
+    url,
+    ...(number !== undefined && Number.isSafeInteger(number) && number > 0 ? { number } : {}),
+    ...(repo !== undefined ? { repo } : {}),
+  };
 }
 
 function single(event: TurnEvent, empty: ParsedTranscriptLine): ParsedTranscriptLine {
