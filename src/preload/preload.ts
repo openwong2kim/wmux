@@ -92,6 +92,15 @@ import type {
   WebTerminalInfo,
   WebDiagnosis,
 } from '../shared/web';
+import { PC_RAIL_IPC } from '../shared/pcRail';
+import type {
+  PcRailApprovalsRequest,
+  PcRailApprovalsResult,
+  PcRailAttentionEvent,
+  PcRailMutesRequest,
+  PcRailStreamEvent,
+} from '../shared/pcRail';
+import { PC_RAIL_FEED_EVENT, type PcRailFeedEvent } from '../main/remote/pcRailWire';
 import type { PairFailureReason, RemoteAttachmentDescriptor, RemoteErrorReason, RemoteHostPublic, RemoteHostStatus, RemoteWorkspaceSummary } from '../shared/remoteHosts';
 
 /** Mirrors {@link McpStatusPayload} in src/main/ipc/handlers/mcp.handler.ts. */
@@ -2231,6 +2240,42 @@ document.addEventListener('DOMContentLoaded', () => {
     return () => { ipcRenderer.removeListener(IPC.REMOTE_POLL_TICK, listener); };
   },
 };
+
+// PC rail — the computer column's feeds (main polls every web-paired host and
+// holds one attention stream per host while at least one subscribe is live).
+// `subscribe` returns its own release, so one mount balances one count.
+export interface PcRailBridge {
+  subscribe(): () => void;
+  onFeed(callback: (e: PcRailFeedEvent) => void): () => void;
+  onAttention(callback: (e: PcRailAttentionEvent) => void): () => void;
+  onStream(callback: (e: PcRailStreamEvent) => void): () => void;
+  approvalsList(request: PcRailApprovalsRequest): Promise<PcRailApprovalsResult>;
+  setMutes(request: PcRailMutesRequest): Promise<void>;
+}
+
+function onPcRailPush<T>(channel: string, callback: (payload: T) => void): () => void {
+  const listener = (_event: unknown, payload: T) => callback(payload);
+  ipcRenderer.on(channel, listener);
+  return () => { ipcRenderer.removeListener(channel, listener); };
+}
+
+const pcRailBridge: PcRailBridge = {
+  subscribe: () => {
+    ipcRenderer.send(PC_RAIL_IPC.SUBSCRIBE);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      ipcRenderer.send(PC_RAIL_IPC.UNSUBSCRIBE);
+    };
+  },
+  onFeed: (callback) => onPcRailPush(PC_RAIL_FEED_EVENT, callback),
+  onAttention: (callback) => onPcRailPush(PC_RAIL_IPC.ATTENTION_EVENT, callback),
+  onStream: (callback) => onPcRailPush(PC_RAIL_IPC.STREAM_EVENT, callback),
+  approvalsList: (request) => ipcRenderer.invoke(PC_RAIL_IPC.APPROVALS_LIST, request) as Promise<PcRailApprovalsResult>,
+  setMutes: (request) => ipcRenderer.invoke(PC_RAIL_IPC.MUTES_SET, request) as Promise<void>,
+};
+(electronAPI as Record<string, unknown>).pcRail = pcRailBridge;
 
 contextBridge.exposeInMainWorld('electronAPI', electronAPI);
 

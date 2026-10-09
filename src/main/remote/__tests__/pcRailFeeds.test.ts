@@ -1,0 +1,170 @@
+import { describe, it, expect, vi } from 'vitest';
+import type { RemoteHost } from '../../../shared/remoteHosts';
+import { fetchPcRailApprovals, fetchPcRailWorkspaces, normalizePcRailWorkspaces, PC_RAIL_BODY_LIMITS } from '../pcRailFeed';
+import { PcRailHub, nextPcRailPollDelay, type PcRailHubDeps } from '../pcRailHub';
+import { PcRailAttentionStream } from '../pcRailAttention';
+import type { PcRailFeedEvent } from '../pcRailWire';
+
+const host = (id: string, origin = `https://${id}.tail.ts.net`): RemoteHost => ({
+  id, label: id, origin, token: `tok-${id}`, addedAt: 1,
+});
+
+const json = (body: unknown, status = 200): Response => new Response(JSON.stringify(body), { status });
+
+describe('normalizePcRailWorkspaces', () => {
+  it('keeps the sidebar extras and the host focus, drops unusable rows and repeats', () => {
+    const out = normalizePcRailWorkspaces({
+      activeWorkspaceId: 'w1',
+      workspaces: [
+        { id: 'w1', name: 'one', order: 2, pinned: true, color: 'blue', gitBranch: 'main', panes: [{ sessionId: 's1', agentName: 'claude', agentStatus: 'complete' }] },
+        { id: 'w1', name: 'dup', panes: [{ sessionId: 's9' }] },
+        { id: 'w2', name: 'no panes', panes: [] },
+        { id: 'w3', name: 'empty', empty: true, panes: [] },
+        { id: 'w4', name: 'reused session', panes: [{ sessionId: 's1' }] },
+        { id: 'x'.repeat(500), name: 'long id', panes: [{ sessionId: 's5' }] },
+      ],
+    });
+    expect(out.activeWorkspaceId).toBe('w1');
+    expect(out.workspaces.map((w) => w.id)).toEqual(['w1', 'w3']);
+    expect(out.workspaces[0]).toMatchObject({ order: 2, pinned: true, gitBranch: 'main', panes: [{ sessionId: 's1', agentStatus: 'complete' }] });
+    expect(out.workspaces[1]).toMatchObject({ empty: true, panes: [] });
+  });
+
+  it('caps rows and drops a focus that is not listed', () => {
+    const workspaces = Array.from({ length: 400 }, (_, i) => ({ id: `w${i}`, name: '', panes: [{ sessionId: `s${i}` }] }));
+    const out = normalizePcRailWorkspaces({ workspaces, activeWorkspaceId: 'gone' });
+    expect(out.workspaces).toHaveLength(256);
+    expect(out.activeWorkspaceId).toBeUndefined();
+  });
+});
+
+describe('pcRail fetches', () => {
+  it('maps statuses and never contacts an insecure host', async () => {
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (url.includes('revoked')) return json({}, 401);
+      if (url.includes('down')) throw new TypeError('fetch failed');
+      return json({ workspaces: [] });
+    }) as unknown as typeof fetch;
+    expect(await fetchPcRailWorkspaces(host('revoked'), fetchImpl)).toEqual({ ok: false, reason: 'auth-rejected' });
+    expect(await fetchPcRailWorkspaces(host('down'), fetchImpl)).toEqual({ ok: false, reason: 'unreachable' });
+    expect(await fetchPcRailWorkspaces(host('lan', 'http://192.168.0.5:9600'), fetchImpl)).toEqual({ ok: false, reason: 'insecure-transport' });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it('refuses a body over the cap', async () => {
+    const big = 'x'.repeat(PC_RAIL_BODY_LIMITS.approvals + 10);
+    const fetchImpl = vi.fn(async () => new Response(`{"pending":["${big}"]}`)) as unknown as typeof fetch;
+    expect(await fetchPcRailApprovals(host('a'), fetchImpl)).toEqual({ ok: false, reason: 'unavailable' });
+  });
+
+  it('reads the pending approvals', async () => {
+    const fetchImpl = vi.fn(async () => json({ pending: [{ id: 'a1', sessionId: 's1', state: 'pending' }], recentlyResolved: [] })) as unknown as typeof fetch;
+    expect(await fetchPcRailApprovals(host('a'), fetchImpl)).toEqual({ ok: true, approvals: [{ id: 'a1', sessionId: 's1' }] });
+  });
+});
+
+describe('nextPcRailPollDelay', () => {
+  it('polls every 10 s and backs off an unreachable host', () => {
+    expect(nextPcRailPollDelay(0)).toBe(10_000);
+    expect([1, 2, 3, 9].map((n) => nextPcRailPollDelay(n, 'unreachable'))).toEqual([20_000, 40_000, 60_000, 60_000]);
+    expect(nextPcRailPollDelay(1, 'auth-rejected')).toBe(60_000);
+  });
+});
+
+function hubWith(hosts: RemoteHost[], fetchImpl: typeof fetch, extra: Partial<PcRailHubDeps> = {}) {
+  const feeds: PcRailFeedEvent[] = [];
+  const toasts: string[] = [];
+  const handlers = new Map<string, Parameters<NonNullable<PcRailHubDeps['streamFactory']>>[1]>();
+  const hub = new PcRailHub({
+    hosts: { list: () => hosts.map(({ token: _t, ...pub }) => pub), get: (id) => hosts.find((h) => h.id === id) ?? null },
+    attachedHostIds: () => new Set(),
+    feed: (e) => feeds.push(e),
+    frame: () => undefined,
+    stream: () => undefined,
+    toast: (label, n) => toasts.push(`${label}:${n.title}`),
+    fetchImpl,
+    setTimeoutImpl: () => ({ unref() { /* never fires */ } }) as unknown as ReturnType<typeof setTimeout>,
+    clearTimeoutImpl: () => undefined,
+    streamFactory: (h, hs) => {
+      handlers.set(h.id, hs);
+      return { start: () => undefined, stop: () => undefined };
+    },
+    ...extra,
+  });
+  return { hub, feeds, toasts, handlers };
+}
+
+const flush = () => new Promise((r) => setTimeout(r, 0));
+
+describe('PcRailHub', () => {
+  it('a slow host does not hold back another host', async () => {
+    const fetchImpl = vi.fn((url: string) => {
+      if (url.startsWith('https://slow.')) return new Promise<Response>(() => undefined);
+      if (url.endsWith('/api/approvals')) return Promise.resolve(json({ pending: [] }));
+      if (url.endsWith('/api/config')) return Promise.resolve(json({ allowInput: true }));
+      return Promise.resolve(json({ workspaces: [{ id: 'w', name: 'w', panes: [{ sessionId: 's' }] }] }));
+    }) as unknown as typeof fetch;
+    const { hub, feeds } = hubWith([host('slow'), host('fast')], fetchImpl);
+    hub.start();
+    await flush();
+    await flush();
+    expect(feeds[0]).toEqual({ type: 'hosts', hosts: [{ id: 'slow', label: 'slow' }, { id: 'fast', label: 'fast' }] });
+    const fast = feeds.find((e) => e.type === 'feed' && e.hostId === 'fast');
+    expect(fast).toMatchObject({ ok: true, approvals: [], allowInput: true });
+    expect(feeds.some((e) => e.type === 'feed' && e.hostId === 'slow')).toBe(false);
+    hub.stop();
+  });
+
+  it('flags an insecure host without contacting it', () => {
+    const fetchImpl = vi.fn() as unknown as typeof fetch;
+    const { hub, feeds, handlers } = hubWith([host('lan', 'http://192.168.0.5:9600')], fetchImpl);
+    hub.start();
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(handlers.size).toBe(0);
+    expect(feeds).toContainEqual(expect.objectContaining({ type: 'feed', hostId: 'lan', ok: false, reason: 'insecure-transport' }));
+    hub.stop();
+  });
+
+  it('a muted host still feeds but never toasts', () => {
+    const fetchImpl = vi.fn(() => new Promise<Response>(() => undefined)) as unknown as typeof fetch;
+    const { hub, toasts, handlers } = hubWith([host('a'), host('b')], fetchImpl);
+    hub.setMuted(['a']);
+    hub.start();
+    const n = { sessionId: 's', title: 'Approval needed', body: '', type: 'warning' as const, category: 'approval' as const };
+    handlers.get('a')!.onNotification('a', n);
+    handlers.get('b')!.onNotification('b', n);
+    expect(toasts).toEqual(['b:Approval needed']);
+    hub.stop();
+  });
+});
+
+describe('PcRailAttentionStream', () => {
+  it('forwards only frames after the reset head, and reports open', async () => {
+    const sse = [
+      'event: reset\ndata: {"epoch":"e","headId":5}\n\n',
+      'event: critical\ndata: {"sessionId":"old","id":4,"epoch":"e","tier":"act"}\n\n',
+      'event: approval\ndata: {"sessionId":"s1","approvalId":"a1","phase":"create","tier":"act","id":6,"epoch":"e"}\n\n',
+    ].join('');
+    const fetchImpl = vi.fn(async () => new Response(sse)) as unknown as typeof fetch;
+    const frames: unknown[] = [];
+    const states: string[] = [];
+    const toasts: string[] = [];
+    const stream = new PcRailAttentionStream({
+      host: host('a'),
+      fetchImpl,
+      onFrame: (kind, data) => frames.push([kind, (data as { sessionId: string }).sessionId]),
+      onState: (s) => states.push(s),
+      onNotification: (_l, n) => toasts.push(n.sessionId),
+      setTimeoutImpl: () => ({ unref() { /* never fires */ } }) as unknown as ReturnType<typeof setTimeout>,
+      clearTimeoutImpl: () => undefined,
+    });
+    stream.start();
+    await flush();
+    await flush();
+    await flush();
+    expect(frames).toEqual([['approval', 's1']]);
+    expect(toasts).toEqual(['s1']);
+    expect(states[0]).toBe('open');
+    stream.stop();
+  });
+});

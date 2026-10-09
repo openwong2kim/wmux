@@ -22,6 +22,7 @@ import { decUnread } from './notificationSlice';
 import { mergeDeadPaneRecovery, type DeadPaneRecovery } from '../../../shared/ptyRecovery';
 import { stashedPaneLiveness } from '../../../shared/paneStash';
 import { resolveAttentionBlink, resolveAttentionBlinkFinished, resolveAttentionRemindMs } from '../../components/Sidebar/attentionBlink';
+import { restorePcRail } from './pcRailSlice';
 import { clampSidebarWidth, dropOwnerFoldKeys, movePinned, pinnedFirst, pruneTaskGroupExpanded, resolveSidebarSortMode, sortModeMigratedToAttention, unpinNestedTasks } from '../../utils/sidebarLayout';
 import {
   collectLeafIds,
@@ -867,6 +868,9 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
         ...(Array.isArray(data.phoneWorkspaceRequestIds) ? data.phoneWorkspaceRequestIds.filter(isPhoneWorkspaceId) : []),
         ...(Array.isArray(data.workspaces) ? data.workspaces.map(w => w.id).filter(isPhoneWorkspaceId) : []),
       ])].slice(0, PHONE_WORKSPACE_REQUEST_LIMIT);
+      // PC rail: optional `pcRail` field, parsed (and shadow ids refused) by the
+      // shared parser. Ahead of the empty-workspace return below.
+      if ('pcRail' in data) restorePcRail(state, (data as { pcRail?: unknown }).pcRail);
       // Site guides are restored ahead of the empty-workspace return below:
       // that return would otherwise skip the saved marker while the session
       // still counts as loaded, and the Chrome auto-enable would override a
