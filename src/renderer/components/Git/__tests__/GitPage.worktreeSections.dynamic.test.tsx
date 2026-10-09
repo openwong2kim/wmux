@@ -37,6 +37,7 @@ const MAIN = '/code/alpha';
 const wt = (name: string) => `/code/alpha-wt/${name}`;
 let heads: Record<string, string>;
 let dirty: Record<string, number>;
+let statusFails: Set<string>;
 const worktrees = () => [
   { path: MAIN, branch: 'main' },
   { path: wt('feat'), branch: 'feat' },
@@ -60,6 +61,7 @@ beforeEach(() => {
   clearGitCaches();
   heads = {};
   dirty = { [wt('wip')]: 2 };
+  statusFails = new Set();
   try { localStorage.clear(); } catch { /* none */ }
   prList = vi.fn(async () => ({ ok: true, prs: [pr(7, 'feat'), pr(8, 'review')] }));
   list = vi.fn(async (p: string) => ({ ok: true, repoPath: p, mainPath: MAIN, worktrees: worktrees() }));
@@ -67,6 +69,7 @@ beforeEach(() => {
     platform: 'linux',
     diff: {
       resolveRepo: vi.fn(async (cwd: string) => (cwd.startsWith('/code/alpha') ? { ok: true, repoPath: cwd } : { ok: false })),
+      status: vi.fn(async (p: string) => (statusFails.has(p) ? { ok: false, error: 'git status failed' } : { ok: true, files: dirty[p] ?? 0 })),
       read: vi.fn(async (p: string) => ({
         ok: true, files: [],
         numstat: Array.from({ length: dirty[p] ?? 0 }, (_, i) => ({ path: `f${i}.ts`, additions: 1, deletions: 0 })),
@@ -131,9 +134,12 @@ describe('Git page Worktrees: who acts next', () => {
     expect(summary()).toBe('In use 2 · Uncommitted changes 1 · No open PR 1 · Cleanup candidates 1 · No workspace 1');
     // The open PRs are the header's own read: the tab read no list of its own.
     expect(prList).toHaveBeenCalledTimes(1);
-    // Every worktree's uncommitted changes were read (local git).
-    const read = (window as unknown as { electronAPI: { diff: { read: ReturnType<typeof vi.fn> } } }).electronAPI.diff.read;
-    expect(read).toHaveBeenCalledWith(wt('ship'), '', 'workspace');
+    // A worktree nobody sits on gets a status-only read; only ones with a
+    // workspace get the full diff counts.
+    const diff = (window as unknown as { electronAPI: { diff: { read: ReturnType<typeof vi.fn>; status: ReturnType<typeof vi.fn> } } }).electronAPI.diff;
+    expect(diff.status).toHaveBeenCalledWith(wt('ship'));
+    expect(diff.read).not.toHaveBeenCalledWith(wt('ship'), '', 'workspace');
+    expect(diff.read).toHaveBeenCalledWith(wt('feat'), '', 'workspace');
   });
 
   it('a summary entry opens its folded section and focuses its header', async () => {
@@ -151,6 +157,22 @@ describe('Git page Worktrees: who acts next', () => {
     prList.mockResolvedValue({ ok: false, code: 'error', message: 'boom' });
     await mount();
     expect(section('noPr')).toBeNull();
+    expect(branchesIn('idle')).toEqual(['ship', 'review']);
+  });
+
+  it('a PR list that may be cut off at its cap never makes a missing branch No open PR', async () => {
+    // 30 open PRs (the lowest provider cap): 'ship' could have one past it.
+    prList.mockResolvedValue({ ok: true, prs: Array.from({ length: 30 }, (_, i) => pr(100 + i, i === 0 ? 'review' : `other-${i}`)) });
+    await mount();
+    expect(section('noPr')).toBeNull();
+    expect(branchesIn('idle')).toEqual(['ship', 'review']);
+  });
+
+  it('a failed status read is unknown: never No open PR or a cleanup candidate', async () => {
+    statusFails = new Set([wt('ship')]);
+    await mount();
+    expect(section('noPr')).toBeNull();
+    expect(branchesIn('cleanup')).toEqual(['done']);
     expect(branchesIn('idle')).toEqual(['ship', 'review']);
   });
 
@@ -182,6 +204,9 @@ describe('Git page Worktrees: who acts next', () => {
     expect(section('noPr')).toBeNull();
     act(() => head('snoozed').click());
     expect(branchesIn('snoozed')).toEqual(['ship']);
+    // A snoozed row keeps its other actions beside Unsnooze.
+    const snoozedRow = section('snoozed')!.querySelector('[data-git-worktree-row]')!;
+    expect([...snoozedRow.querySelectorAll('[data-git-row-actions] button')].map((b) => b.textContent)).toEqual(['Unsnooze', 'Diff', 'Open', 'Merge', 'Remove']);
     act(() => (container.querySelector(`[data-git-unsnooze="${wt('ship')}"]`) as HTMLButtonElement).click());
     await settle();
     expect(branchesIn('noPr')).toEqual(['ship']);

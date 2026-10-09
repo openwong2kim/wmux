@@ -36,7 +36,7 @@ import { FOCUS_RING } from '../focusRing';
 import type { Pane, PaneLeaf } from '../../../shared/types';
 import type { WorktreeEntry } from '../../../shared/worktreeParse';
 import type { MergeSessionStatus } from '../../../main/git/mergeSession';
-import type { DiffReadResult, DiffReadError } from '../../../shared/diffParse';
+import type { DiffReadResult, DiffReadError, DiffStatusResult } from '../../../shared/diffParse';
 import { ShipButton } from './ShipButton';
 import { PrBadge } from '../Sidebar/WorkspaceItem';
 import { isPlausibleCwd } from '../../../shared/cwdShape';
@@ -145,14 +145,38 @@ interface WorktreeBridge {
 }
 
 type DiffRead = (worktreePath: string, targetHeadOid: string, mode: 'task' | 'workspace') => Promise<DiffReadResult | DiffReadError>;
+type DiffStatusRead = (worktreePath: string) => Promise<DiffStatusResult | DiffReadError>;
 
-function getBridges(): { worktree: WorktreeBridge | null; resolveRepo: ResolveRepo | null; readDiff: DiffRead | null } {
+function getBridges(): { worktree: WorktreeBridge | null; resolveRepo: ResolveRepo | null; readDiff: DiffRead | null; readStatus: DiffStatusRead | null } {
   const api = (
     window as unknown as {
-      electronAPI?: { worktree?: WorktreeBridge; diff?: { resolveRepo?: ResolveRepo; read?: DiffRead } };
+      electronAPI?: { worktree?: WorktreeBridge; diff?: { resolveRepo?: ResolveRepo; read?: DiffRead; status?: DiffStatusRead } };
     }
   ).electronAPI;
-  return { worktree: api?.worktree ?? null, resolveRepo: api?.diff?.resolveRepo ?? null, readDiff: api?.diff?.read ?? null };
+  return {
+    worktree: api?.worktree ?? null,
+    resolveRepo: api?.diff?.resolveRepo ?? null,
+    readDiff: api?.diff?.read ?? null,
+    readStatus: api?.diff?.status ?? null,
+  };
+}
+
+/** At most this many worktree stat reads run at once across every list on
+ *  the page (All repos mounts one list per checkout). */
+export const STAT_READ_CONCURRENCY = 4;
+let statReadsActive = 0;
+const statReadQueue: (() => void)[] = [];
+async function withStatReadSlot<T>(fn: () => Promise<T>): Promise<T> {
+  if (statReadsActive < STAT_READ_CONCURRENCY) statReadsActive++;
+  else await new Promise<void>((resolve) => statReadQueue.push(resolve));
+  try {
+    return await fn();
+  } finally {
+    // Hand the slot straight to the next waiter, or give it back.
+    const next = statReadQueue.shift();
+    if (next) next();
+    else statReadsActive--;
+  }
 }
 
 /** The Worktrees tab's folds: every section starts open, Snoozed folded. */
@@ -201,8 +225,14 @@ function DiffCounts({ stat, t }: { stat: DiffStat; t: (k: string) => string }): 
   );
 }
 
-/** What the page knows of a repo's open PRs (GitTabProps.prList). */
-export type WorktreePrList = { prs: readonly PrSummary[] } | 'gated' | null;
+/** What the page knows of a repo's open PRs (GitTabProps.prList):
+ *  `complete` is false when the list may be cut off at its read cap. */
+export type WorktreePrList = { prs: readonly PrSummary[]; complete: boolean } | 'gated' | null;
+
+/** The lowest open-PR read cap of the list providers (GhPrService reads 100,
+ *  GlabPrService 30). A list this long may be cut off, so a branch missing
+ *  from it may still have an open PR. */
+export const PR_LIST_SAFE_CAP = 30;
 
 export interface GitTabProps {
   /** Repo base override; without it the active pane's cwd decides. */
@@ -302,7 +332,7 @@ export function GitTab({
     const live = () => mounted.current && seq === loadSeq.current && !document.hidden;
     setLoading(true);
     setError(null);
-    const { worktree, resolveRepo, readDiff } = getBridges();
+    const { worktree, resolveRepo, readDiff, readStatus } = getBridges();
     if (!worktree || !resolveRepo) {
       setError(t('git.bridgeUnavailable'));
       setLoading(false);
@@ -383,40 +413,57 @@ export function GitTab({
     }
     setOnRepoWorkspaces(onRepo);
 
-    // Uncommitted diff stats (local git, once per load): every listed
-    // worktree, since a worktree nobody sits on with uncommitted changes is
-    // its own section; a prunable one (its folder is gone) and a merge
-    // session's are not read. The card alone reads only its own worktree.
-    if (!readDiff) return;
-    const paths = new Map<string, string>();
+    // Uncommitted changes (local git, once per load, at most
+    // STAT_READ_CONCURRENCY reads at once across the page). A worktree with a
+    // workspace on it gets the diff counts, as the Review list did; every
+    // other listed worktree gets a status-only count (no file is read), since
+    // one nobody sits on with uncommitted changes is its own section. A
+    // prunable one (its folder is gone) and a merge session's are not read.
+    // A failed read stays an error: unknown, never clean. The card alone
+    // reads only its own worktree.
+    const diffPaths = new Map<string, string>();
+    const statusPaths = new Map<string, string>();
     if (showSections) {
-      for (const w of onRepo) paths.set(normWorktreePath(w.repoPath, plat), w.repoPath);
+      for (const w of onRepo) diffPaths.set(normWorktreePath(w.repoPath, plat), w.repoPath);
       for (const w of res.worktrees) {
-        if (w.prunable === null && !w.integration) paths.set(normWorktreePath(w.path, plat), w.path);
+        const key = normWorktreePath(w.path, plat);
+        if (w.prunable === null && !w.integration && !diffPaths.has(key)) statusPaths.set(key, w.path);
       }
     } else {
-      paths.set(normWorktreePath(current, plat), current);
+      diffPaths.set(normWorktreePath(current, plat), current);
     }
-    const next: Record<string, DiffStat> = {};
-    for (const [key, path] of paths) {
-      const stat: DiffStat = { files: 0, additions: 0, deletions: 0, error: null };
+    const failed = (e: unknown): DiffStat => ({ files: 0, additions: 0, deletions: 0, error: e instanceof Error ? e.message : String(e) });
+    const readOne = async (path: string): Promise<DiffStat | null> => {
+      if (!readDiff) return null;
       try {
-        const diff = await readDiff(path, '', 'workspace');
-        if (diff.ok) {
-          stat.files = diff.numstat.length;
-          for (const n of diff.numstat) {
-            stat.additions += n.additions ?? 0;
-            stat.deletions += n.deletions ?? 0;
-          }
-        } else {
-          stat.error = diff.error;
+        const diff = await withStatReadSlot(() => readDiff(path, '', 'workspace'));
+        if (!diff.ok) return { files: 0, additions: 0, deletions: 0, error: diff.error };
+        const stat: DiffStat = { files: diff.numstat.length, additions: 0, deletions: 0, error: null };
+        for (const n of diff.numstat) {
+          stat.additions += n.additions ?? 0;
+          stat.deletions += n.deletions ?? 0;
         }
+        return stat;
       } catch (e) {
-        stat.error = e instanceof Error ? e.message : String(e);
+        return failed(e);
       }
-      if (!live()) return;
-      next[key] = stat;
-    }
+    };
+    const statusOne = async (path: string): Promise<DiffStat | null> => {
+      if (!readStatus) return null;
+      try {
+        const st = await withStatReadSlot(() => readStatus(path));
+        return st.ok ? { files: st.files, additions: 0, deletions: 0, error: null } : { files: 0, additions: 0, deletions: 0, error: st.error };
+      } catch (e) {
+        return failed(e);
+      }
+    };
+    const answers = await Promise.all([
+      ...[...diffPaths].map(async ([key, path]) => [key, await readOne(path)] as const),
+      ...[...statusPaths].map(async ([key, path]) => [key, await statusOne(path)] as const),
+    ]);
+    if (!live()) return;
+    const next: Record<string, DiffStat> = {};
+    for (const [key, stat] of answers) if (stat) next[key] = stat;
     setStats(next);
     setStatsReady(true);
   }, [activeCwdCandidates, t, showSections]);
@@ -663,7 +710,12 @@ export function GitTab({
   const openPrBranches = prList && prList !== 'gated' ? new Set(prList.prs.map((p) => p.headRefName)) : null;
   const classified = rows.map((row) => ({
     row,
-    section: classifyWorktree(row, { now, openPrBranches, busyWorkspaces: new Set(busyKey ? busyKey.split('\0') : []) }),
+    section: classifyWorktree(row, {
+      now,
+      openPrBranches,
+      prListComplete: !!prList && prList !== 'gated' && prList.complete,
+      busyWorkspaces: new Set(busyKey ? busyKey.split('\0') : []),
+    }),
   }));
   // Snoozes: judged against a row's state only once the list and its stats
   // are in; the section counts only while the PR list is known (a gate such

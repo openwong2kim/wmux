@@ -97,7 +97,7 @@ describe('classifyWorktree — who acts next on a worktree', () => {
     workspaceId: id, name: id, pr: state ? { number: 1, state, checks: null, url: 'u' } : null,
   });
   const sig = (over: Partial<WorktreeSignals> = {}): WorktreeSignals => ({
-    now, openPrBranches: new Set(['open-pr']), busyWorkspaces: new Set(), ...over,
+    now, openPrBranches: new Set(['open-pr']), prListComplete: true, busyWorkspaces: new Set(), ...over,
   });
 
   it('sorts rows into the five sections, first match wins', () => {
@@ -110,6 +110,8 @@ describe('classifyWorktree — who acts next on a worktree', () => {
       row('quiet', { lastCommitAt: now - (STALE_WORKTREE_DAYS + 1) * day }),
       row('detached', { branch: null, detached: true }),
       row('prunable', { prunable: 'gone' }, { stat: null }),
+      row('unread', { lastCommitAt: now - 90 * day, detached: true }, { stat: null }),
+      row('read-failed', { lastCommitAt: now - 90 * day }, { stat: { ...clean, error: 'git status failed' } }),
       row('merged', {}, { workspaces: [ws('m', 'merged')] }),
       row('locked', { branch: null, detached: true, locked: 'on a USB disk' }),
       row('merge', { branch: null, detached: true, integration: true }),
@@ -123,7 +125,9 @@ describe('classifyWorktree — who acts next on a worktree', () => {
     expect(names(g.cleanup)).toEqual(['quiet', 'detached', 'prunable', 'merged']);
     // The main worktree, a locked one, a merge session's and one with an
     // open PR (even quiet) are never candidates.
-    expect(names(g.idle)).toEqual(['main', 'open-pr', 'locked', 'merge']);
+    // An unknown uncommitted state (not read yet, or the read failed) is
+    // never taken as clean: neither a candidate nor No open PR.
+    expect(names(g.idle)).toEqual(['main', 'open-pr', 'unread', 'read-failed', 'locked', 'merge']);
   });
 
   it('a merged PR is a cleanup candidate only with a clean tree and no agent working or asking there', () => {
@@ -140,6 +144,13 @@ describe('classifyWorktree — who acts next on a worktree', () => {
     // The main worktree and a locked one never are.
     expect(classifyWorktree(merged({ isMain: true }), sig())).toBe('inUse');
     expect(classifyWorktree(row('feat', { locked: '' }, { workspaces: [ws('w', 'merged')] }), sig())).toBe('inUse');
+  });
+
+  it('a PR list that may be cut off at its cap proves nothing about a missing branch', () => {
+    // 'feat' has an open PR past the list's cap.
+    expect(classifyWorktree(row('feat'), sig({ prListComplete: false }))).toBe('idle');
+    // A branch the capped list does hold is still known to have one.
+    expect(classifyWorktree(row('open-pr', { lastCommitAt: now - 90 * day }), sig({ prListComplete: false }))).toBe('idle');
   });
 
   it('No open PR needs the PR list: unknown keeps the row in No workspace', () => {
@@ -221,6 +232,18 @@ describe('worktree snooze', () => {
     expect(run(a, 'idle')).toEqual([]);
     expect(run({ ...a, entry: { ...a.entry, headOid: 'def5678' } }, 'idle')).toEqual(['/wt/a']);
     expect(run(a, 'inUse')).toEqual(['/wt/a']);
+  });
+
+  it('a failed read of the uncommitted state keeps the snooze (unknown, not clean)', () => {
+    const d = row('/wt/a', { stat: { files: 2, additions: 3, deletions: 0, error: null } });
+    const snoozes = { '/wt/a': z(d, 'uncommitted', null) };
+    const failed = row('/wt/a', { stat: { files: 0, additions: 0, deletions: 0, error: 'git status failed' } });
+    const res = resolveWorktreeSnoozes({ snoozes, repo: '/repo', rows: [{ row: failed, section: 'idle' }], now, settled: true, prKnown: true });
+    expect([...res.snoozed]).toEqual(['/wt/a']);
+    expect(res.ended).toEqual([]);
+    // A workspace opening on it still ends the snooze.
+    const used = resolveWorktreeSnoozes({ snoozes, repo: '/repo', rows: [{ row: failed, section: 'inUse' }], now, settled: true, prKnown: true });
+    expect(used.ended).toEqual(['/wt/a']);
   });
 
   it('while the row is still loading, only time ends it; another repo\'s snoozes are left alone', () => {

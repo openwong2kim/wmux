@@ -119,14 +119,19 @@ export const STALE_WORKTREE_DAYS = 14;
 //   uncommitted  no workspace, and uncommitted changes: work nobody is on.
 //   cleanup      not the main worktree, not locked, not a merge session's,
 //                and: its workspace's PR is merged (see inUse), or no
-//                workspace and detached, prunable, or quiet for
-//                STALE_WORKTREE_DAYS without an open PR. A candidate to look
-//                at, not a verdict: it may hold unpushed work.
-//   noPr         no workspace, a branch (not the main worktree) and the
-//                repo's open PR list, when the page holds one, has no PR
+//                workspace and prunable (its folder is gone), or no
+//                workspace, a tree known to be clean, and detached or quiet
+//                for STALE_WORKTREE_DAYS without an open PR. A candidate to
+//                look at, not a verdict: it may hold unpushed work.
+//   noPr         no workspace, a tree known to be clean, a branch (not the
+//                main worktree), and the repo's open PR list is held and
+//                complete and has no PR from it. A list that may be cut off
+//                at its read cap proves nothing about a branch missing
 //                from it.
 //   idle         the rest: no workspace and nothing to do (an open PR, the
-//                main worktree, a locked one, or the PR list unknown).
+//                main worktree, a locked one, the PR state unknown, or the
+//                uncommitted state unknown: a failed or pending read is
+//                never taken as clean).
 // The signals are ones wmux already reads: the worktree list, the uncommitted
 // diff stat, the workspaces on each worktree with their pushed PR status (the
 // only place a merged PR shows: the open list holds open PRs only) and live
@@ -146,6 +151,8 @@ export interface WorktreeSignals {
   now: number;
   /** The head branches of the repo's open PRs; null when the page holds no list. */
   openPrBranches: ReadonlySet<string> | null;
+  /** The list holds every open PR (it is shorter than its read cap). */
+  prListComplete: boolean;
   /** Workspaces where an agent is working or asking. */
   busyWorkspaces: ReadonlySet<string>;
 }
@@ -167,8 +174,9 @@ export function classifyWorktree(row: GitWorktreeRow, s: WorktreeSignals): Workt
   // admin dir), so a fresh worktree on an old branch is not "quiet".
   const lastAt = Math.max(e.lastCommitAt ?? 0, e.worktreeAt ?? 0);
   const quiet = lastAt > 0 && s.now - lastAt > STALE_WORKTREE_DAYS * 24 * 60 * 60 * 1000;
-  if (removable && (e.detached || e.prunable !== null || (quiet && !openPr))) return 'cleanup';
-  if (!row.isMain && !e.integration && e.branch && s.openPrBranches !== null && !openPr) return 'noPr';
+  if (removable && (e.prunable !== null || (clean && (e.detached || (quiet && !openPr))))) return 'cleanup';
+  const noOpenPr = !!e.branch && s.openPrBranches !== null && s.prListComplete && !openPr;
+  if (clean && !row.isMain && !e.integration && noOpenPr) return 'noPr';
   return 'idle';
 }
 
@@ -209,7 +217,8 @@ export function worktreeSnoozeSig(row: GitWorktreeRow, section: WorktreeSection)
  *  `settled`: the list and its stats are in, so a row still loading does not
  *  read as changed). While the repo's PR list is unknown (`prKnown` false) a
  *  row cannot tell No open PR from No workspace, so its section is left out
- *  of the comparison and only a new commit or new edits wake it. Pure. */
+ *  of the comparison and only a new commit or new edits wake it. A row whose
+ *  uncommitted state is unknown (a pending or failed read) keeps its snooze. Pure. */
 export function resolveWorktreeSnoozes(input: {
   snoozes: Readonly<Record<string, WorktreeSnooze>>;
   repo: string;
@@ -231,6 +240,13 @@ export function resolveWorktreeSnoozes(input: {
     const hit = byKey.get(key);
     if (!hit) {
       if (input.settled) ended.push(key);
+      continue;
+    }
+    // A row whose uncommitted state is unknown (still loading, or the read
+    // failed) has not changed as far as anyone can tell: it stays snoozed.
+    const statKnown = (hit.row.stat !== null && hit.row.stat.error === null) || hit.row.entry.prunable !== null;
+    if (!statKnown && hit.section !== 'inUse') {
+      snoozed.add(key);
       continue;
     }
     const sig = worktreeSnoozeSig(hit.row, hit.section);

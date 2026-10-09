@@ -23,7 +23,7 @@ import { FOCUS_RING } from '../focusRing';
 import { IconChevron, IconExternalLink, IconRefresh } from '../icons';
 import { useActiveRepo } from './useActiveRepo';
 import { RepoSwitcher, type RepoOption } from './RepoSwitcher';
-import { GitTab, hostPlatform, openWtSection, pathLeaf, type WorktreePrList } from './GitTab';
+import { GitTab, hostPlatform, openWtSection, pathLeaf, PR_LIST_SAFE_CAP, type WorktreePrList } from './GitTab';
 import { PrSection } from './PrSection';
 import { IssueSection, getIssueBridge } from './IssueSection';
 import { GitDetail } from './GitDetail';
@@ -265,8 +265,9 @@ export default function GitPage() {
       const key = itemsKey(repoPath, 'pr');
       const listed = items[key] as PrSummary[] | undefined;
       const read = gatePrs.repoPath === repoPath && (gatePrs.prs || gatePrs.gated) ? gatePrs : null;
-      if (read && (!listed || read.gen > (itemsGen[key] ?? -1))) return read.prs ? { prs: read.prs } : 'gated';
-      if (listed) return { prs: listed };
+      const prs = read && (!listed || read.gen > (itemsGen[key] ?? -1)) ? read.prs : listed;
+      if (prs) return { prs, complete: prs.length < PR_LIST_SAFE_CAP };
+      if (read) return 'gated';
     }
     return null;
   };

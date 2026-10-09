@@ -520,16 +520,20 @@ refresh button. Nothing about branches or worktrees sits above the lists.
   session on top, then the worktrees in the flat list's who-acts-next
   grammar, as fold sections in order: **In use** (a workspace on it),
   **Uncommitted changes** (no workspace, changes on disk: work nobody is
-  on), **No open PR** (no workspace, a branch, and the repo's open PR list
-  the page already holds has none from it; with no list held the row stays
-  in No workspace), **Cleanup candidates** (a workspace whose PR is merged,
-  with a clean tree and no agent working or asking there; or no workspace
-  and detached, prunable, or no commits in 14 days without an open PR),
+  on), **No open PR** (no workspace, a tree known to be clean, a branch,
+  and the repo's open PR list the page already holds is complete and has
+  none from it; with no list held, or one that may be cut off at its read
+  cap, the row stays in No workspace), **Cleanup candidates** (a workspace
+  whose PR is merged, with a clean tree and no agent working or asking
+  there; or no workspace and prunable; or no workspace, a tree known to be
+  clean, and detached or no commits in 14 days without an open PR),
   captioned as something to check before removing, never as safe to
   delete, and **No workspace** (the rest). The main worktree, a locked one
   and a merge session's are never candidates. The sections are judged from
   what wmux already reads: the worktree list, every worktree's uncommitted
-  diff stat (local git, once per load), the workspaces on each worktree
+  state (the diff counts where a workspace sits, a status-only count
+  elsewhere: local git, once per load, a few reads at a time; a failed
+  read is unknown, never clean), the workspaces on each worktree
   with their pushed PR status and live agent status, and the open PR list
   of the header's read or a Pull requests list; the tab reads no PR list
   of its own. All headers stay neutral (no orange: none of these is a
