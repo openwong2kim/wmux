@@ -102,6 +102,10 @@ WEB ACCESS (browser / PWA)
         [--allow-dangerous-launch]  Let a phone start Claude/Codex from chat
                                     with approvals off (bypass/yolo), after
                                     per-launch confirmation. Off by default
+        [--allow-git-write]         Let a phone with an explicit input grant
+                                    push, open PRs and squash-merge, after a
+                                    preview and confirmation. Off by default
+        [--git-write-login <login>] GitHub login those writes run as
         [--no-inline-images]        Stop the browser terminal drawing sixel and
                                     iTerm2 images (on by default; kept across
                                     re-runs, restarts and --stop;

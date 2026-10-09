@@ -1047,6 +1047,16 @@ export class DeviceStore {
   }
 
   /**
+   * Whether this device's input grant was set explicitly. Unlike `resolve`,
+   * a record written before grants existed does NOT pass: the git write
+   * routes need a grant somebody chose. Revoked or unknown → false.
+   */
+  hasExplicitInputGrant(deviceId: string): boolean {
+    const record = this.devices.get(deviceId);
+    return !!record && record.revokedAt === undefined && record.allowInput === true;
+  }
+
+  /**
    * Constant-time verification of a presented secret against a stored record.
    *
    * There is NO branch on the presented secret's length anywhere on this path.

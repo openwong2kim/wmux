@@ -11,6 +11,8 @@ import { sessionPullRequests } from './sessionPullRequests';
 import { SessionGitController, SessionGitError } from './sessionGit';
 import { PhoneGitReads, type PhoneGitSessionRef } from './phoneGitRead';
 import type { PhoneWorktreeService } from './phoneWorktree';
+import type { PhoneGitWriteGate } from './phoneGitWriteGate';
+import { matchPhoneGitWriteRoute, PhoneGitWriteRoutes } from './phoneGitWriteRoutes';
 import { PHONE_WORKTREE_REQUEST_ID } from '../../shared/phoneGitV1';
 import { sessionFiles, searchSessionFiles, SessionFileError } from './sessionFiles';
 import { openResolvedFile } from './openResolvedFile';
@@ -348,6 +350,15 @@ export interface WebTerminalStartOptions {
    */
   allowDangerousLaunch?: boolean;
   /**
+   * Whether the phone may push, open PRs and squash-merge
+   * (`--allow-git-write`). A server CEILING on top of an explicit per-device
+   * input grant; a device record that predates grants does not pass. Absent →
+   * false. See phoneGitWriteRoutes.ts.
+   */
+  allowGitWrite?: boolean;
+  /** The GitHub login every phone push and merge runs as (`--git-write-login`). Absent: none run. */
+  gitWriteLogin?: string;
+  /**
    * Whether the web client draws inline images (sixel, iTerm2) (#1641).
    * Absent → on; `wmux web --no-inline-images` turns it off. Advertised on
    * `/api/config` as `inlineImages`.
@@ -399,6 +410,10 @@ export interface WebTerminalInfo {
   allowTranscript?: boolean;
   /** Whether chat launch may use `bypass`/`yolo`. Its own opt-in (contract §3.4). */
   allowDangerousLaunch?: boolean;
+  /** Whether phone push / PR create / merge are armed (`--allow-git-write`). */
+  allowGitWrite?: boolean;
+  /** The GitHub login those writes run as. */
+  gitWriteLogin?: string;
   /** Whether the web client draws inline images (#1641). */
   inlineImages?: boolean;
   /** True when this listener terminates HTTPS inside the daemon. */
@@ -528,6 +543,11 @@ export interface WebDeviceResolver {
    * daemon injects here.
    */
   list?(): WebDeviceSummary[];
+  /**
+   * Whether the device's input grant was set explicitly (a record that
+   * predates grants answers false). Absent: no device passes the git write gate.
+   */
+  hasExplicitInputGrant?(deviceId: string): boolean;
   revoke?(deviceId: string, actor: DeviceActor): { ok: boolean; reason?: 'not-found' | 'persist-failed' };
   setInput?(
     deviceId: string,
@@ -742,6 +762,8 @@ interface WebTerminalServerDeps {
   git?: GitRunner;
   /** Phone worktree creation (contract item 5). Absent: the routes 503 and `gitWorktrees` is omitted. */
   phoneWorktrees?: () => PhoneWorktreeService;
+  /** Phone git write actions: tokens, receipts, identity. Absent: the routes 503 and no config key is set. */
+  phoneGitWrite?: () => PhoneGitWriteGate;
   /**
    * Where `POST /api/upload` writes photos. Optional like `approvals`: a daemon
    * that did not wire one still serves every other route, and the upload route
@@ -1898,7 +1920,7 @@ export class WebTerminalServer {
 
     this.deps.log(
       'info',
-      `[web] ${options.tls ? 'HTTPS' : 'HTTP'} listening on ${this.opts.host}:${this.opts.port} (input ${options.allowInput ? 'ENABLED' : 'read-only'}, uploads ${options.allowUpload ? 'ENABLED' : 'off'}${options.allowDangerousLaunch ? ', dangerous chat launch ENABLED' : ''})`,
+      `[web] ${options.tls ? 'HTTPS' : 'HTTP'} listening on ${this.opts.host}:${this.opts.port} (input ${options.allowInput ? 'ENABLED' : 'read-only'}, uploads ${options.allowUpload ? 'ENABLED' : 'off'}${options.allowDangerousLaunch ? ', dangerous chat launch ENABLED' : ''}${options.allowGitWrite ? ', git write ENABLED' : ''})`,
     );
     // N7 — the bridge's OpenCode watches poll the plugin once a second, so a
     // watch nobody reads any more has to end on its own. Unref'd: this timer
@@ -2317,6 +2339,8 @@ export class WebTerminalServer {
         allowUpload: this.opts.allowUpload,
         allowTranscript: this.opts?.allowTranscript === true,
         allowDangerousLaunch: this.opts.allowDangerousLaunch === true,
+        allowGitWrite: this.opts.allowGitWrite === true,
+        ...(this.opts.gitWriteLogin ? { gitWriteLogin: this.opts.gitWriteLogin } : {}),
         inlineImages: this.opts.inlineImages !== false,
         tls: this.opts.tls !== undefined,
         token: this.token,
@@ -2337,6 +2361,8 @@ export class WebTerminalServer {
       allowUpload: this.opts.allowUpload,
       allowTranscript: this.opts.allowTranscript === true,
       allowDangerousLaunch: this.opts.allowDangerousLaunch === true,
+      allowGitWrite: this.opts.allowGitWrite === true,
+      ...(this.opts.gitWriteLogin ? { gitWriteLogin: this.opts.gitWriteLogin } : {}),
       inlineImages: this.opts.inlineImages !== false,
       tls: this.opts.tls !== undefined,
       token: this.token,
@@ -2645,6 +2671,9 @@ export class WebTerminalServer {
         // Phone Git v1 (contract item 5): OMITTED, not false, without the grant.
         ...(this.mayInput(principal) ? { gitProjects: true, gitChecks: true } : {}),
         ...(this.mayInput(principal) && this.phoneWorktreeService()?.available ? { gitWorktrees: true } : {}),
+        // Phone git write actions: OMITTED, not false, unless that action can
+        // run for this caller (see PhoneGitWriteRoutes.configKeys).
+        ...this.gitWriteRoutes.configKeys(principal),
         runHistory: this.opts?.allowTranscript === true && this.deps.runHistory !== undefined,
         // `GET /api/search`, and which of its scopes can answer. OMITTED, not
         // false, when none can — the shape a daemon predating the route serves.
@@ -2809,6 +2838,12 @@ export class WebTerminalServer {
       }
       if ((req.method === 'GET' || req.method === 'POST') && rest.endsWith('/accounts')) {
         return this.handleSessionAccounts(req,res,rest.slice(0,-'/accounts'.length),url,principal);
+      }
+      // Before the `/git/pr` list and `/git` matches below: POST `…/git/pr` is pr.create.
+      const gitWrite = matchPhoneGitWriteRoute(req.method, rest);
+      if (gitWrite) {
+        void this.gitWriteRoutes.handle(req, res, gitWrite, url, principal).catch((err: unknown) => this.failRequest(res, err));
+        return;
       }
       const phoneGitRead = req.method === 'GET' ? /^([^/]+)\/git\/(branches|checks)$/.exec(rest) : null;
       if (phoneGitRead) return this.handlePhoneGitRead(res, phoneGitRead[1], principal, phoneGitRead[2] as 'branches' | 'checks');
@@ -4101,6 +4136,38 @@ export class WebTerminalServer {
       if (error instanceof SessionGitError) return this.json(res, error.status, { error: error.tag });
       return this.json(res, 500, { error: 'git-operation-failed' });
     }).finally(() => { this.phoneGitRequests -= 1; });
+  }
+
+  private gitWriteRoutesInstance: PhoneGitWriteRoutes | undefined;
+
+  /** Push, PR create and merge (phoneGitWriteRoutes.ts), reading this server's state at request time. */
+  private get gitWriteRoutes(): PhoneGitWriteRoutes {
+    return this.gitWriteRoutesInstance ??= new PhoneGitWriteRoutes({
+      ceiling: () => ({
+        allowGitWrite: this.server !== null && this.opts?.allowGitWrite === true,
+        ...(this.opts?.gitWriteLogin ? { login: this.opts.gitWriteLogin } : {}),
+      }),
+      mayInput: (p) => this.mayInput(p as WebPrincipal),
+      explicitInputGrant: (deviceId) => {
+        try { return this.deps.devices?.hasExplicitInputGrant?.(deviceId) === true; } catch { return false; }
+      },
+      refuseInput: (res, p, detail) => this.refuseInput(res, p as WebPrincipal, detail),
+      session: (p, id) => this.attachableSession(p as WebPrincipal, id)?.meta,
+      stillAuthorized: async (req, url, p, id) => {
+        const principal = p as WebPrincipal;
+        const fresh = await this.authenticate(req, url, false).catch(() => ({ ok: false as const }));
+        if (!fresh.ok || fresh.principal.kind !== principal.kind) return false;
+        if (principal.kind === 'device' && (fresh.principal.kind !== 'device' || fresh.principal.deviceId !== principal.deviceId)) return false;
+        if (!this.mayInput(fresh.principal)) return false;
+        if (fresh.principal.kind === 'device' && this.deps.devices?.hasExplicitInputGrant?.(fresh.principal.deviceId) !== true) return false;
+        return this.attachableSession(fresh.principal, id) !== undefined;
+      },
+      readJsonBody: (req, res, onBody, maxBytes) => this.readJsonBody(req, res, onBody, maxBytes),
+      json: (res, status, body) => this.json(res, status, body, { 'Cache-Control': 'no-store' }),
+      gate: () => this.deps.phoneGitWrite?.(),
+      git: () => (this.git ??= this.deps.git ?? createGitRunner()),
+      log: (level, msg) => this.deps.log(level, msg),
+    });
   }
 
   /** The worktree service, or undefined when it is not wired or could not be built. */
