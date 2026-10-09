@@ -39,6 +39,14 @@ describe('buildMergeFacts', () => {
     expect(buildMergeFacts(rest, EXTRAS)).toMatchObject({ mergeStateStatus: 'UNKNOWN', block: 'unknown' });
   });
 
+  it('a truncated rollup blocks as checks-pending unless a stronger block applies (as the phone preview does)', () => {
+    const truncated = { ...LANE, checksTruncated: true };
+    expect(buildMergeFacts(truncated, EXTRAS)?.block).toBe('checks-pending');
+    expect(buildMergeFacts({ ...truncated, mergeStateStatus: 'BEHIND' }, EXTRAS)?.block).toBe('checks-pending');
+    expect(buildMergeFacts(truncated, { ...EXTRAS, mergeable: 'CONFLICTING' })?.block).toBe('conflicts');
+    expect(buildMergeFacts({ ...truncated, checks: [check('validate', 'fail', true)] }, EXTRAS)?.block).toBe('checks-failing');
+  });
+
   it('extras read on another head give no facts', () => {
     expect(buildMergeFacts(LANE, { ...EXTRAS, headRefOid: 'b'.repeat(40) })).toBeNull();
   });

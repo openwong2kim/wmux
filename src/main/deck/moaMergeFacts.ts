@@ -8,7 +8,10 @@
 // and an owner answer on another head is refused as `stale`.
 
 import type { PrMergeChecks, PrMergeFacts } from '../../shared/phoneGitWrite';
-import { mergeBlock, squashSubject, type PrLaneFacts } from '../../shared/prReview';
+import { mergeBlock, squashSubject, type MergeBlock, type PrLaneFacts } from '../../shared/prReview';
+
+/** Blocks a truncated check rollup turns into `checks-pending`. */
+const UNSETTLED_OVERRIDES: ReadonlySet<MergeBlock | null> = new Set<MergeBlock | null>([null, 'behind', 'blocked', 'unknown']);
 
 /** What the lane read lacks, read beside it. */
 export interface MergeFactsExtras {
@@ -71,7 +74,7 @@ export function ttlReader<A, T>(read: (arg: A) => Promise<T | null>, keyOf: (arg
 export function buildMergeFacts(lane: PrLaneFacts, extras: MergeFactsExtras): PrMergeFacts | null {
   if (extras.headRefOid !== lane.headRefOid) return null;
   const mergeStateStatus = lane.mergeStateStatus ?? 'UNKNOWN';
-  const block = mergeBlock({
+  let block = mergeBlock({
     number: lane.number,
     title: extras.title,
     url: '',
@@ -83,6 +86,9 @@ export function buildMergeFacts(lane: PrLaneFacts, extras: MergeFactsExtras): Pr
     mergeable: extras.mergeable,
     mergeStateStatus,
   }, lane.checks);
+  // Checks the read could not list may still be running: never call that
+  // mergeable. A stronger block stays. The phone preview applies the same rule.
+  if (lane.checksTruncated && UNSETTLED_OVERRIDES.has(block)) block = 'checks-pending';
   return {
     number: lane.number,
     title: extras.title,
