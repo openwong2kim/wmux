@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execFile, spawn } from 'node:child_process';
+import { execFile, execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { getWmuxDir } from '../config';
 import { atomicWriteJSONSync } from '../util/atomicWrite';
 import { getExecEnv } from '../../shared/execEnv';
@@ -77,29 +77,49 @@ function execRunner(bin: string, timeout: number): (args: readonly string[], cwd
   });
 }
 
-/** Process groups of running push children, killed when the daemon exits. */
-const liveChildren = new Set<number>();
+/** Running push children, killed with their process group when the daemon exits. */
+const liveChildren = new Map<number, ChildProcess>();
 let exitHookInstalled = false;
 
-function killGroup(pid: number): void {
+/** taskkill by absolute path: a bare name is looked up in the working directory first on Windows. */
+const TASKKILL = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'taskkill.exe');
+
+/**
+ * Kill the push child and everything it started. On Windows there is no
+ * process group and killing git.exe alone leaves git-remote-https, the
+ * credential helper's sh and gh running: the push goes on, and the child's
+ * pipes stay open until they exit, so neither the timeout nor daemon exit
+ * would stop it. taskkill /T ends the tree, and only while git.exe still
+ * runs: after it exits its pid may already belong to another process.
+ * `sync` is for the exit hook, where nothing asynchronous runs.
+ */
+function killGroup(child: ChildProcess, sync = false): void {
+  const pid = child.pid;
+  if (pid === undefined) return;
   try {
-    if (process.platform === 'win32') process.kill(pid, 'SIGKILL');
-    else process.kill(-pid, 'SIGKILL');
+    if (process.platform !== 'win32') {
+      process.kill(-pid, 'SIGKILL');
+      return;
+    }
+    if (child.exitCode !== null || child.signalCode !== null) return;
+    const args = ['/PID', String(pid), '/T', '/F'];
+    if (sync) execFileSync(TASKKILL, args, { stdio: 'ignore', windowsHide: true, timeout: 5_000 });
+    else execFile(TASKKILL, args, { windowsHide: true, timeout: 5_000 }, () => { /* already gone */ });
   } catch { /* already gone */ }
 }
 
 const spawnPush: PushSpawner = (args, cwd, env, timeoutMs) => new Promise((resolve) => {
   if (!exitHookInstalled) {
     exitHookInstalled = true;
-    process.once('exit', () => { for (const pid of liveChildren) killGroup(pid); });
+    process.once('exit', () => { for (const child of liveChildren.values()) killGroup(child, true); });
   }
   let stdout = '';
   let stderr = '';
   let timedOut = false;
   const child = spawn('git', [...args], { cwd, env, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
   const pid = child.pid;
-  if (pid !== undefined) liveChildren.add(pid);
-  const timer = setTimeout(() => { timedOut = true; if (pid !== undefined) killGroup(pid); }, timeoutMs);
+  if (pid !== undefined) liveChildren.set(pid, child);
+  const timer = setTimeout(() => { timedOut = true; killGroup(child); }, timeoutMs);
   child.stdout.on('data', (b: Buffer) => { if (stdout.length < 256 * 1024) stdout += b.toString('utf8'); });
   child.stderr.on('data', (b: Buffer) => { if (stderr.length < 256 * 1024) stderr += b.toString('utf8'); });
   const finish = (spawned: boolean, code: number | null) => {

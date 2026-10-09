@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
+import net from 'node:net';
 import type http from 'node:http';
 import { buildGitEnv, createGitRunner } from '../../sessionDiff';
 import { GitWriteReceipts, PhoneGitWriteGate } from '../../phoneGitWriteGate';
@@ -367,6 +368,27 @@ describe('phone git push', { timeout: 60_000 }, () => {
     } finally {
       unregister();
       gate.close();
+    }
+  });
+});
+
+describe('push child timeout', { timeout: 30_000 }, () => {
+  it('ends git-remote-https too: a remote that never answers does not outlive the timeout', async () => {
+    // Accepts and never answers, so git-remote-https (git's child) hangs in the handshake.
+    const sockets: net.Socket[] = [];
+    const server = net.createServer((s) => { sockets.push(s); s.on('error', () => undefined); });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    try {
+      const { port } = server.address() as net.AddressInfo;
+      const env = { ...buildGitEnv(), GIT_CONFIG_GLOBAL: GIT_NULL_DEVICE, GIT_CONFIG_NOSYSTEM: '1' };
+      const started = Date.now();
+      const out = await defaultPushDeps.push(['ls-remote', `https://127.0.0.1:${port}/r.git`], os.tmpdir(), env, 500);
+      expect(out.timedOut).toBe(true);
+      // Killing git alone left the helper holding the pipes, and the answer never came.
+      expect(Date.now() - started).toBeLessThan(10_000);
+    } finally {
+      for (const s of sockets) s.destroy();
+      server.close();
     }
   });
 });
