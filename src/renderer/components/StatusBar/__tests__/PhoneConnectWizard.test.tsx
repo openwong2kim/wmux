@@ -124,6 +124,7 @@ function render(over: Partial<PhoneWizardViewProps>): string {
     onToggleAcknowledged: vi.fn(),
     notice: null,
     onRetry: vi.fn(),
+    onPairNow: vi.fn(),
     onNext: vi.fn(),
     onBack: vi.fn(),
     onRemoteChange: vi.fn(),
@@ -151,10 +152,12 @@ describe('PhoneWizardView', () => {
     expect(html).toContain('web.wizardAllSettings');
   });
 
-  it('step 1 ready: Next is the one primary', () => {
-    const html = render({ diagnosis: { tailscale: tsOk, web: { running: false } } });
+  it('step 1 ready: Pair a phone is the one primary, the options one click away', () => {
+    const html = render({ name: 'Phone', diagnosis: { tailscale: tsOk, web: { running: false } } });
     expect(html).toContain('web.wizardReady');
     expect(html.match(/ui-btn-primary/g)?.length).toBe(1);
+    expect(html).toMatch(/ui-btn-primary[^>]*>web\.connectPhonePair/);
+    expect(html).toContain('web.connectPhoneOptions');
   });
 
   it('step 1 problem: quotes describeTailscaleProblem lines, links the URL, offers retry', () => {

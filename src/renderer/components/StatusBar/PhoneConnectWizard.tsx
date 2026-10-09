@@ -8,7 +8,14 @@ import Checkbox from '../ui/Checkbox';
 import Field from '../ui/Field';
 import Input from '../ui/Input';
 import SegmentedControl from '../ui/SegmentedControl';
-import { DEVICE_NAME_MAX, PhonePairCode, splitLinkedLine, webQrPayload, type CopyTarget } from './WebToggle';
+import {
+  DEVICE_NAME_MAX,
+  PhonePairCode,
+  splitLinkedLine,
+  uniqueDeviceName,
+  webQrPayload,
+  type CopyTarget,
+} from './WebToggle';
 import {
   webComputerPairOrigin,
   type WebDeviceSummary,
@@ -171,6 +178,8 @@ export interface PhoneWizardViewProps {
   /** A one-line note carried into a step (e.g. a pairing that lapsed). */
   notice: string | null;
   onRetry: () => void;
+  /** Pair from step 1 with the defaults: view only, grants as they are. */
+  onPairNow: () => void;
   onNext: () => void;
   onBack: () => void;
   onRemoteChange: (remote: boolean) => void;
@@ -275,18 +284,30 @@ export function PhoneWizardView(p: PhoneWizardViewProps) {
               <Lines lines={p.diagnosis.tailscale.lines} onOpenLink={p.onOpenLink} />
             </>
           ) : null}
+          {p.errorLines.length > 0 ? <Lines lines={p.errorLines} onOpenLink={p.onOpenLink} /> : null}
         </PopoverSection>
-        {footer(
-          ok ? (
-            <Button variant="primary" size="md" onClick={p.onNext}>
-              {t('web.wizardNext')}
-            </Button>
-          ) : (
-            <Button size="md" onClick={p.onRetry} disabled={readiness === null}>
-              {t('web.wizardRetry')}
-            </Button>
-          ),
-        )}
+        {/* Ready means one click to the QR: the defaults (view only, the
+            server's grants untouched, a prefilled name) need no step 2, which
+            stays one click away for anyone who wants to choose. */}
+        {ok
+          ? footer(
+              <Button
+                variant={p.busy || !p.name.trim() ? 'secondary' : 'primary'}
+                size="md"
+                onClick={p.onPairNow}
+                disabled={p.busy || !p.name.trim()}
+              >
+                {p.busy ? t('web.wizardPreparing') : t('web.connectPhonePair')}
+              </Button>,
+              <Button variant="ghost" size="md" onClick={p.onNext} disabled={p.busy}>
+                {t('web.connectPhoneOptions')}
+              </Button>,
+            )
+          : footer(
+              <Button size="md" onClick={p.onRetry} disabled={readiness === null}>
+                {t('web.wizardRetry')}
+              </Button>,
+            )}
       </>
     );
   }
@@ -480,6 +501,8 @@ export interface PhoneConnectWizardProps {
   onCopyPairCode: () => void;
   /** The pairing in progress, owned by the popover so it survives a close. */
   session: { current: WizardSession | null };
+  /** The prefilled name, unique against the roster the popover read. */
+  defaultName?: string;
   t: (key: string) => string;
 }
 
@@ -495,6 +518,7 @@ export default function PhoneConnectWizard({
   onCopyPairUrl,
   onCopyPairCode,
   session,
+  defaultName = '',
   t,
 }: PhoneConnectWizardProps) {
   const api = (typeof window === 'undefined' ? undefined : window.electronAPI?.web) as WebApi | undefined;
@@ -506,7 +530,7 @@ export default function PhoneConnectWizard({
   const [remote, setRemote] = useState(false);
   /** Seeded from the running server; always sent as an explicit boolean. */
   const [upload, setUpload] = useState(() => info.running && info.allowUpload === true);
-  const [name, setName] = useState('');
+  const [name, setName] = useState(defaultName);
   const [acknowledged, setAcknowledged] = useState(false);
   const [roster, setRoster] = useState<WebDeviceSummary[] | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -591,7 +615,12 @@ export default function PhoneConnectWizard({
     [api, onInfo, restoreGrants, session],
   );
 
-  const handleConnect = useCallback(async () => {
+  /**
+   * Start if needed, widen what was chosen, mint. `quick` is step 1's Pair a
+   * phone: view only and the server's upload grant as it stands, so it
+   * changes nothing server-wide and has no shared impact to confirm.
+   */
+  const handleConnect = useCallback(async (quick = false) => {
     const trimmed = name.trim();
     if (!api || !trimmed) return;
     setBusy(true);
@@ -602,27 +631,29 @@ export default function PhoneConnectWizard({
     try {
       // Look again first, like the hub's Start: the popover may be a poll behind.
       let current = await api.status();
+      const wantRemote = quick ? false : remote;
+      const wantUpload = quick ? current.running && current.allowUpload === true : upload;
       if (!current.running) {
         // Every grant the screen shows is sent as shown, so nothing the
         // operator did not see is inherited from an earlier run.
-        const args: WebStartArgs = { tailscale: true, allowInput: remote, allowUpload: upload };
+        const args: WebStartArgs = { tailscale: true, allowInput: wantRemote, allowUpload: wantUpload };
         current = await api.start(args);
         onInfo(current);
         if (!current.running) {
           setErrorLines(current.transportError?.lines ?? (current.error ? [current.error] : []));
           return;
         }
-        if (remote) restore.allowInput = false;
+        if (wantRemote) restore.allowInput = false;
       } else {
         // Raise input, never lower it: view-only for THIS phone must not
         // take typing away from phones already paired.
         const grants: WebGrantArgs = {};
-        if (remote && current.allowInput !== true) {
+        if (wantRemote && current.allowInput !== true) {
           grants.allowInput = true;
           restore.allowInput = false;
         }
-        if (upload !== (current.allowUpload === true)) {
-          grants.allowUpload = upload;
+        if (wantUpload !== (current.allowUpload === true)) {
+          grants.allowUpload = wantUpload;
           restore.allowUpload = current.allowUpload === true;
         }
         if (Object.keys(grants).length > 0 && api.setGrants) {
@@ -635,13 +666,13 @@ export default function PhoneConnectWizard({
         }
       }
       const mintedAt = Date.now();
-      const res = await api.pairStart(trimmed, remote, 'phone');
+      const res = await api.pairStart(trimmed, wantRemote, 'phone');
       onInfo(res);
       if (res.pairStartError || !codeIsLive(res, trimmed)) {
         setErrorLines([res.pairStartError ?? res.error ?? t('web.wizardCheckFailed')]);
         return;
       }
-      session.current = { name: trimmed, remote, mintedAt, restore };
+      session.current = { name: trimmed, remote: wantRemote, mintedAt, restore };
       minted = true;
       setStep('qr');
     } catch (err) {
@@ -756,6 +787,7 @@ export default function PhoneConnectWizard({
       onToggleAcknowledged={() => setAcknowledged((v) => !v)}
       notice={notice}
       onRetry={() => void runCheck()}
+      onPairNow={() => void handleConnect(true)}
       onNext={() => setStep('permissions')}
       onBack={() => setStep('check')}
       onRemoteChange={setRemote}
@@ -771,7 +803,7 @@ export default function PhoneConnectWizard({
       onAnother={() => {
         // A fresh decision for the next phone: nothing carries over.
         setConnected(null);
-        setName('');
+        setName(uniqueDeviceName(t('web.connectPhoneDefaultName'), devices));
         setRemote(false);
         setUpload(info.running && info.allowUpload === true);
         setNotice(null);

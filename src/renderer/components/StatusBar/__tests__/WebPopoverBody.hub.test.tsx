@@ -126,11 +126,40 @@ describe('computer pairing link', () => {
 });
 
 describe('Share this computer — the two cards', () => {
-  it('disables "Connect another computer" with its reason when no secure origin exists', () => {
+  it('without Tailscale, says why there is no computer link and offers no button', () => {
     const html = renderBody({ info: { running: true, host: '127.0.0.1', urls: ['http://127.0.0.1:7681/?token=T'] } });
     expect(html).toContain('web.connectComputer');
     expect(html).toContain('web.computerNeedsHttps');
-    expect(html).toMatch(/disabled="">web\.createComputerLink/);
+    expect(html).not.toContain('web.computerTurnOnHttps');
+    expect(html).not.toContain('web.computerCopyNewLink');
+  });
+
+  it('with Tailscale usable, offers the HTTPS fix inline instead of the dead end', () => {
+    const loopback: WebTerminalInfo = { running: true, host: '127.0.0.1', urls: ['http://127.0.0.1:7681/?token=T'] };
+    const html = renderBody({ info: loopback, onTurnOnHttps: vi.fn() });
+    expect(html).not.toContain('web.computerNeedsHttps');
+    expect(html).toContain('web.computerHttpsHint');
+    expect(html).toContain('>web.computerTurnOnHttps<');
+    // Nothing paired: nothing to warn about.
+    expect(html).not.toContain('web-computer-https-revokes');
+    // Paired devices: the restart crosses into HTTPS and rotates them, said up front.
+    const withDevices = renderBody({
+      info: loopback,
+      onTurnOnHttps: vi.fn(),
+      roster: { total: 2, active: 0, phones: 2, computers: 0, other: 0 },
+    });
+    expect(withDevices).toContain('web-computer-https-revokes');
+  });
+
+  it('a tailnet server whose front is gone gets the fix without a revocation warning', () => {
+    const html = renderBody({
+      info: { running: true, host: '127.0.0.1', tailscale: true, urls: ['http://127.0.0.1:7681/?token=T'], pairRefusal: { reason: 'no-front', detail: 'x' } },
+      onTurnOnHttps: vi.fn(),
+      roster: { total: 2, active: 0, phones: 2, computers: 0, other: 0 },
+    });
+    expect(html).toContain('web.refusalNoFront');
+    expect(html).toContain('>web.computerTurnOnHttps<');
+    expect(html).not.toContain('web-computer-https-revokes');
   });
 
   it('names the transport refusal instead of the generic reason when one applies', () => {
@@ -144,7 +173,8 @@ describe('Share this computer — the two cards', () => {
   it('shows the computer form, prefilled and enabled, on a secure origin', () => {
     const html = renderBody({ info: tailnet });
     expect(html).toContain('value="Computer"');
-    expect(html).not.toMatch(/disabled="">web\.createComputerLink/);
+    expect(html).toMatch(/<button[^>]*class="ui-btn ui-btn-secondary[^"]*"[^>]*>web\.computerCopyNewLink</);
+    expect(html).not.toMatch(/disabled="">web\.computerCopyNewLink/);
     expect(html).toContain('web.pairAllowInput');
   });
 
@@ -152,7 +182,7 @@ describe('Share this computer — the two cards', () => {
     const html = renderBody({ info: { ...tailnet, pairCode: 'QWXZ7K9M', pendingDeviceName: 'iPhone', pendingPairFlow: 'phone' } });
     expect(html).toContain('web.phonePairingInProgress');
     expect(html).toContain('web.cancelPairing');
-    expect(html).not.toContain('web.createComputerLink');
+    expect(html).not.toContain('web.computerCopyNewLink');
     expect(html).not.toContain('wmux-desktop-code');
   });
 
@@ -162,7 +192,7 @@ describe('Share this computer — the two cards', () => {
       pairRemainingMs: 581_000,
     });
     expect(html).toContain('web.computerPairingInProgress');
-    expect(html).not.toContain('web.showPairCode');
+    expect(html).not.toContain('web.connectPhonePair');
     // Exactly one place shows the code: the computer link.
     expect(html.match(/QWXZ7K9M/g)).toHaveLength(1);
     expect(html).toContain('https://desk.tail1234.ts.net/pair#wmux-desktop-code=QWXZ7K9M');

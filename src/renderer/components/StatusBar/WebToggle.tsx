@@ -33,6 +33,7 @@ import { useStore } from '../../stores';
 import {
   buildDesktopPairLink,
   webComputerPairOrigin,
+  webHostIsLoopback,
   webIsExposed,
   type PairFlow,
   type WebDeviceSummary,
@@ -208,6 +209,27 @@ export function summarizeRoster(devices: readonly WebDeviceSummary[]): RosterSum
   };
 }
 
+/**
+ * The name a new device gets when the operator types none: `base`, then
+ * `base 2`, `base 3`, … — the first one no live device (or the pending code)
+ * already carries, so one click still leaves a roster a human can revoke from.
+ */
+export function uniqueDeviceName(
+  base: string,
+  devices: readonly WebDeviceSummary[] | null,
+  pendingName?: string,
+): string {
+  const taken = new Set(
+    (devices ?? []).filter((d) => d.revokedAt === undefined).map((d) => d.name.trim().toLowerCase()),
+  );
+  if (pendingName) taken.add(pendingName.trim().toLowerCase());
+  for (let n = 1; ; n++) {
+    const suffix = n === 1 ? '' : ` ${n}`;
+    const name = `${base.slice(0, DEVICE_NAME_MAX - suffix.length)}${suffix}`;
+    if (!taken.has(name.toLowerCase())) return name;
+  }
+}
+
 // ─── Presentational popover body (renderToStaticMarkup-testable) ───────────
 
 export interface WebPopoverBodyProps {
@@ -289,6 +311,12 @@ export interface WebPopoverBodyProps {
   pairErrorFlow?: PairFlow | null;
   /** Open the step-by-step phone wizard. Absent when the bridge cannot run it. */
   onOpenWizard?: () => void;
+  /**
+   * Restart the running server behind a `tailscale serve` front, the inline
+   * fix for a computer link that needs HTTPS. Absent when Tailscale cannot
+   * front this computer, which keeps the plain explanation instead.
+   */
+  onTurnOnHttps?: () => void;
   t: (key: string) => string;
 }
 
@@ -438,6 +466,7 @@ export function WebPopoverBody({
   pairRemainingMs = null,
   pairErrorFlow = null,
   onOpenWizard,
+  onTurnOnHttps,
   t,
 }: WebPopoverBodyProps) {
   // Same control in both bodies below — declared once so the running and
@@ -555,9 +584,77 @@ export function WebPopoverBody({
     </div>
   );
   };
+  // The phone card's name field, shared by the stopped and running bodies. It
+  // arrives prefilled, so pairing never waits on typing; it stays editable
+  // because this is still the one moment a human is present to name it.
+  const phoneNameInput = (
+    <>
+      <p className="ui-note">{t('web.nameHint')}</p>
+      <Input
+        type="text"
+        value={deviceName}
+        onChange={(e) => onDeviceNameChange(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' && deviceName.trim() && !busy) onStartPairing();
+        }}
+        placeholder={t('web.namePlaceholder')}
+        maxLength={DEVICE_NAME_MAX}
+        aria-label={t('web.nameHint')}
+        className="w-full text-[13px]"
+      />
+    </>
+  );
   if (!info.running) {
     return (
       <>
+        {/* The common path first: one click starts the server and mints the
+            named code (or the computer link). The options below shape that
+            start but are not required for it. */}
+        <PopoverSection title={t('web.connectPhone')}>
+          {phoneNameInput}
+          <div className="flex flex-wrap items-center gap-2">
+            {/* In flight it is not the primary: DESIGN.md keeps the warm fill
+                off disabled and running actions. */}
+            <Button
+              variant={busy ? 'secondary' : 'primary'}
+              size="sm"
+              onClick={onStartPairing}
+              disabled={busy || deviceName.trim().length === 0}
+            >
+              {busy ? t('web.starting') : t('web.connectPhonePair')}
+            </Button>
+            {/* A computer link needs HTTPS another machine can reach, which
+                only the tailnet front gives a popover start. */}
+            {tailscale ? (
+              <Button size="sm" onClick={onStartComputerPairing} disabled={busy}>
+                {t('web.connectComputer')}
+              </Button>
+            ) : null}
+          </div>
+          {info.transportError ? (
+            <div className="ui-notice flex gap-2 px-3 py-2.5">
+              <span className="mt-0.5 shrink-0 text-[var(--accent-yellow)]" aria-hidden="true">
+                <IconWarning size={12} />
+              </span>
+              <div className="flex min-w-0 flex-col gap-1">
+                {info.transportError.lines.map((line, i) => {
+                  const { before, url, after } = splitLinkedLine(line);
+                  return (
+                    <span key={i} className="ui-note">
+                      {before}
+                      {url ? (
+                        <button type="button" onClick={() => onOpenLink(url)} className={WEB_LINK}>
+                          {url}
+                        </button>
+                      ) : null}
+                      {after}
+                    </span>
+                  );
+                })}
+              </div>
+            </div>
+          ) : null}
+        </PopoverSection>
         <PopoverSection title={t('web.shareThisComputer')}>
           {wizardLink}
           {info.error ? <p className="ui-note">{info.error}</p> : null}
@@ -583,29 +680,6 @@ export function WebPopoverBody({
               to the LAN but cannot pair a phone, and a checkbox that silently
               means "watch only" is how someone ends up stuck at a 403. */}
           {expose ? <p className="ui-note">{t('web.exposeNoPairing')}</p> : null}
-          {info.transportError ? (
-            <div className="ui-notice flex gap-2 px-3 py-2.5">
-              <span className="mt-0.5 shrink-0 text-[var(--accent-yellow)]" aria-hidden="true">
-                <IconWarning size={12} />
-              </span>
-              <div className="flex min-w-0 flex-col gap-1">
-                {info.transportError.lines.map((line, i) => {
-                  const { before, url, after } = splitLinkedLine(line);
-                  return (
-                    <span key={i} className="ui-note">
-                      {before}
-                      {url ? (
-                        <button type="button" onClick={() => onOpenLink(url)} className={WEB_LINK}>
-                          {url}
-                        </button>
-                      ) : null}
-                      {after}
-                    </span>
-                  );
-                })}
-              </div>
-            </div>
-          ) : null}
           <p className="ui-note flex gap-1.5">
             <span className="mt-0.5 shrink-0" aria-hidden="true">
               <IconLock size={11} />
@@ -615,10 +689,10 @@ export function WebPopoverBody({
         </PopoverSection>
         <div className="flex items-center justify-between gap-2">
           {devicesLink}
-          {/* In flight it is not the primary: DESIGN.md keeps the warm fill off
-              disabled and running actions. */}
-          <Button variant={busy ? 'secondary' : 'primary'} size="md" onClick={onStart} disabled={busy}>
-            {busy ? t('web.starting') : t('web.start')}
+          {/* Start without pairing anything (to open it on this machine, or
+              to pair later). Secondary: Pair a phone is this body's primary. */}
+          <Button size="md" onClick={onStart} disabled={busy}>
+            {t('web.start')}
           </Button>
         </div>
       </>
@@ -713,19 +787,7 @@ export function WebPopoverBody({
           // this is the only moment a human is present to give one; the phone
           // still types nothing but the code.
           <>
-            <p className="ui-note">{t('web.nameHint')}</p>
-            <Input
-              type="text"
-              value={deviceName}
-              onChange={(e) => onDeviceNameChange(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && deviceName.trim() && !busy) onStartPairing();
-              }}
-              placeholder={t('web.namePlaceholder')}
-              maxLength={DEVICE_NAME_MAX}
-              aria-label={t('web.nameHint')}
-              className="w-full text-[13px]"
-            />
+            {phoneNameInput}
             {/* Asked HERE, with the name, for the same reason the name is: this
                 is the only moment a human is present to say what the device is
                 for. The phone types a code and nothing else. Unticked by
@@ -736,12 +798,13 @@ export function WebPopoverBody({
               <Checkbox checked={pairAllowInput} onCheckedChange={() => onTogglePairAllowInput()} />
             </Field>
             <Button
+              variant={busy || deviceName.trim().length === 0 ? 'secondary' : 'primary'}
               size="sm"
               onClick={onStartPairing}
               disabled={busy || deviceName.trim().length === 0}
               className="self-start"
             >
-              {t('web.showPairCode')}
+              {t('web.connectPhonePair')}
             </Button>
             {/* A refused mint used to leave this panel looking untouched: no
                 code appeared and nothing said why. The button guards the empty
@@ -790,19 +853,36 @@ export function WebPopoverBody({
             </div>
           </>
         ) : !computerOrigin ? (
-          // Disabled WITH its reason, inline: a greyed button alone is a
-          // puzzle, and the fix (HTTPS over Tailscale) is one checkbox away.
+          // The reason, inline, and — when Tailscale can front this computer —
+          // the fix itself rather than directions to it.
           <>
             <p className="ui-note" data-testid="web-computer-disabled-reason">
               {info.pairRefusal
                 ? info.pairRefusal.reason === 'no-front'
                   ? t('web.refusalNoFront')
                   : t('web.refusalInsecure')
-                : t('web.computerNeedsHttps')}
+                : onTurnOnHttps
+                  ? t('web.computerHttpsHint')
+                  : t('web.computerNeedsHttps')}
             </p>
-            <Button size="sm" disabled className="self-start">
-              {t('web.createComputerLink')}
-            </Button>
+            {onTurnOnHttps ? (
+              <>
+                <Button size="sm" onClick={onTurnOnHttps} disabled={busy} className="self-start">
+                  {busy ? t('web.starting') : t('web.computerTurnOnHttps')}
+                </Button>
+                {/* Moving a plaintext server behind the encrypted front
+                    rotates every web credential (decideWebStartPolicy), the
+                    same as the Stop it replaces. Said before the click. */}
+                {roster && roster.total > 0 && !(info.tailscale === true && webHostIsLoopback(info.host ?? '')) ? (
+                  <p className="ui-note" data-testid="web-computer-https-revokes">
+                    {t('web.computerHttpsRevokes').replace('{count}', String(roster.total))}
+                  </p>
+                ) : null}
+                {info.transportError ? (
+                  <p className="ui-row-error">{info.transportError.lines.join(' ')}</p>
+                ) : null}
+              </>
+            ) : null}
           </>
         ) : (
           <>
@@ -827,7 +907,7 @@ export function WebPopoverBody({
               disabled={busy || computerDeviceName.trim().length === 0}
               className="self-start"
             >
-              {t('web.createComputerLink')}
+              {t('web.computerCopyNewLink')}
             </Button>
             {info.pairStartError && pairErrorFlow === 'computer' ? (
               <p className="ui-row-error">{info.pairStartError}</p>
@@ -886,7 +966,8 @@ export default function WebToggle({ variant = 'icon', compact = false }: {
   const [allowUpload, setAllowUpload] = useState(false);
   const [allowDangerousLaunch, setAllowDangerousLaunch] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
-  const [deviceName, setDeviceName] = useState('');
+  /** The phone card's name as typed; null means the prefilled default. */
+  const [deviceName, setDeviceName] = useState<string | null>(null);
   const [devicesOpen, setDevicesOpen] = useState(false);
   const [pairAllowInput, setPairAllowInput] = useState(false);
   /** The computer card's own name and grant — never shared with the phone card. */
@@ -923,6 +1004,9 @@ export default function WebToggle({ variant = 'icon', compact = false }: {
       // from a fresh decision.
       setPairAllowInput(false);
       setComputerAllowInput(false);
+      // And the names: the next default counts the device just added.
+      setDeviceName(null);
+      setComputerDeviceName(null);
     }
     hadPendingName.current = has;
   }, [info.pendingDeviceName]);
@@ -1029,6 +1113,41 @@ export default function WebToggle({ variant = 'icon', compact = false }: {
       clearInterval(timer);
     };
   }, [open, refresh, refreshDevices]);
+
+  /**
+   * Whether Tailscale can front this computer, asked once per open of the hub
+   * while that matters (nothing running, or running without an HTTPS address).
+   * `WEB_DIAGNOSE` is read-only and deduped in main — the same check the
+   * wizard's first step runs. A usable tailnet becomes the default transport
+   * until the operator picks one; it never turns the LAN on.
+   */
+  const [tailscaleUsable, setTailscaleUsable] = useState<boolean | null>(null);
+  const tailscaleProbe = useRef<Promise<boolean> | null>(null);
+  /** The operator ticked or unticked a transport box; stop defaulting it. */
+  const transportTouched = useRef(false);
+  const needsProbe = !info.running || !webComputerPairOrigin(info);
+  useEffect(() => {
+    if (!open) {
+      tailscaleProbe.current = null;
+      return;
+    }
+    if (view !== 'hub' || !needsProbe || tailscaleProbe.current) return;
+    const a = webApi();
+    if (typeof a?.diagnose !== 'function') return;
+    const probe = a.diagnose().then(
+      (d) => d.tailscale.ok,
+      () => false,
+    );
+    tailscaleProbe.current = probe;
+    void probe.then((ok) => {
+      if (tailscaleProbe.current !== probe) return;
+      setTailscaleUsable(ok);
+      if (ok && !transportTouched.current && !wasRunning.current) {
+        setTailscale(true);
+        setExpose(false);
+      }
+    });
+  }, [open, view, needsProbe]);
 
   // Every way the popover closes (toggle, outside click, Escape, a host
   // handed to the attach dialog) lands here, so the next open decides again.
@@ -1177,29 +1296,47 @@ export default function WebToggle({ variant = 'icon', compact = false }: {
     setOpen(!open);
   }, [open]);
 
+  /**
+   * Start the server unless one is already up, and answer the running status
+   * (or null when the start failed — its reason is already in `info`). The
+   * caller owns `busy`, so a start and the pairing after it are one action.
+   */
+  const ensureRunning = useCallback(async (a: WebApi): Promise<WebTerminalInfo | null> => {
+    // Look again first: the popover may be up to a poll behind. A server
+    // started (or stopped) elsewhere since then is not ours to restart.
+    const current = await a.status();
+    if (current.running) {
+      applyInfo(current);
+      return current;
+    }
+    let transport = { expose, tailscale };
+    // A click can beat the tailnet check that sets the default: wait for it,
+    // so the first click does not land on a loopback address a phone cannot
+    // reach. A box the operator touched is their choice and is sent as shown.
+    if (!transportTouched.current && tailscaleProbe.current && (await tailscaleProbe.current)) {
+      transport = { expose: false, tailscale: true };
+    }
+    const values = { allowTranscript, allowUpload, allowDangerousLaunch };
+    const grants: WebGrantArgs = {};
+    for (const key of ['allowTranscript', 'allowUpload', 'allowDangerousLaunch'] as const) {
+      if (touchedGrants.current.has(key)) grants[key] = values[key];
+    }
+    const args: WebStartArgs = { allowInput, ...transport, ...grants };
+    const next = await a.start(args);
+    applyInfo(next);
+    return next.running ? next : null;
+  }, [allowInput, expose, tailscale, allowTranscript, allowUpload, allowDangerousLaunch, applyInfo]);
+
   const handleStart = useCallback(async () => {
     const a = webApi();
     if (!a) return;
     setBusy(true);
     try {
-      // Look again first: the popover may be up to a poll behind. A server
-      // started (or stopped) elsewhere since then is not ours to restart.
-      const current = await a.status();
-      if (current.running) {
-        applyInfo(current);
-        return;
-      }
-      const values = { allowTranscript, allowUpload, allowDangerousLaunch };
-      const grants: WebGrantArgs = {};
-      for (const key of ['allowTranscript', 'allowUpload', 'allowDangerousLaunch'] as const) {
-        if (touchedGrants.current.has(key)) grants[key] = values[key];
-      }
-      const args: WebStartArgs = { allowInput, expose, tailscale, ...grants };
-      applyInfo(await a.start(args));
+      await ensureRunning(a);
     } finally {
       setBusy(false);
     }
-  }, [allowInput, expose, tailscale, allowTranscript, allowUpload, allowDangerousLaunch, applyInfo]);
+  }, [ensureRunning]);
 
   /**
    * A grant row was toggled. Stopped, it only changes what the next Start
@@ -1236,6 +1373,7 @@ export default function WebToggle({ variant = 'icon', compact = false }: {
   // in. Enforced here as well as main-side so the checkboxes never show a
   // combination the handler would silently rewrite.
   const handleToggleTailscale = useCallback(() => {
+    transportTouched.current = true;
     setTailscale((v) => {
       if (!v) setExpose(false);
       return !v;
@@ -1243,6 +1381,7 @@ export default function WebToggle({ variant = 'icon', compact = false }: {
   }, []);
 
   const handleToggleExpose = useCallback(() => {
+    transportTouched.current = true;
     setExpose((v) => {
       if (!v) setTailscale(false);
       return !v;
@@ -1283,11 +1422,12 @@ export default function WebToggle({ variant = 'icon', compact = false }: {
     () => copyValue('pairCode', info.pairCode ?? ''),
     [copyValue, info],
   );
-  const handleCopyComputerLink = useCallback(async () => {
-    const link = webComputerLink(info);
+  /** Copy the computer link `from` carries — the fresh mint, or the shown one. */
+  const copyComputerLink = useCallback(async (from: WebTerminalInfo) => {
+    const link = webComputerLink(from);
     const api = window.clipboardAPI;
     if (!link || !api?.writeEphemeral) return;
-    const ttl = Math.max(0, (info.pairExpiresAt ?? Date.now()) - Date.now());
+    const ttl = Math.max(0, (from.pairExpiresAt ?? Date.now()) - Date.now());
     try {
       await api.writeEphemeral(link, ttl);
       setCopied('computerLink');
@@ -1295,7 +1435,11 @@ export default function WebToggle({ variant = 'icon', compact = false }: {
     } catch {
       /* clipboard lock — the link stays select-all for a manual copy */
     }
-  }, [info]);
+  }, []);
+
+  // Prefilled names, unique against the roster read on this open.
+  const effectiveDeviceName = deviceName ?? uniqueDeviceName(t('web.connectPhoneDefaultName'), devices);
+  const effectiveComputerName = computerDeviceName ?? uniqueDeviceName(t('web.computerDefaultName'), devices);
 
   /**
    * "New code" now goes through pairStart too, carrying the name the operator
@@ -1305,7 +1449,7 @@ export default function WebToggle({ variant = 'icon', compact = false }: {
   const handleNewPairCode = useCallback(async () => {
     const a = webApi();
     if (!a) return;
-    const name = (info.pendingDeviceName ?? deviceName).trim();
+    const name = (info.pendingDeviceName ?? effectiveDeviceName).trim();
     setBusy(true);
     try {
       // The grant rides along. Without it the preload default (`false`)
@@ -1318,7 +1462,7 @@ export default function WebToggle({ variant = 'icon', compact = false }: {
     } finally {
       setBusy(false);
     }
-  }, [deviceName, info.pendingDeviceName, pairAllowInput]);
+  }, [effectiveDeviceName, info.pendingDeviceName, pairAllowInput]);
 
   /**
    * Send an install link to the OS browser.
@@ -1333,32 +1477,64 @@ export default function WebToggle({ variant = 'icon', compact = false }: {
     void window.electronAPI?.shell?.openExternal?.(url);
   }, []);
 
+  /** Pair a phone: start the server if it is off, then mint the named code. */
   const handleStartPairing = useCallback(async () => {
     const a = webApi();
-    const name = deviceName.trim();
+    const name = effectiveDeviceName.trim();
     if (!a?.pairStart || !name) return;
     setBusy(true);
     try {
+      if (!(await ensureRunning(a))) return;
       setPairErrorFlow('phone');
       setInfo(await a.pairStart(name, pairAllowInput, 'phone'));
     } finally {
       setBusy(false);
     }
-  }, [deviceName, pairAllowInput]);
+  }, [effectiveDeviceName, pairAllowInput, ensureRunning]);
 
-  const effectiveComputerName = computerDeviceName ?? t('web.computerDefaultName');
+  /**
+   * Connect another computer: start if off, mint the link and put it on the
+   * clipboard in the same click — the link is the only thing to hand over.
+   */
   const handleStartComputerPairing = useCallback(async () => {
     const a = webApi();
     const name = effectiveComputerName.trim();
     if (!a?.pairStart || !name) return;
     setBusy(true);
     try {
+      if (!(await ensureRunning(a))) return;
       setPairErrorFlow('computer');
-      setInfo(await a.pairStart(name, computerAllowInput, 'computer'));
+      const next = await a.pairStart(name, computerAllowInput, 'computer');
+      setInfo(next);
+      await copyComputerLink(next);
     } finally {
       setBusy(false);
     }
-  }, [effectiveComputerName, computerAllowInput]);
+  }, [effectiveComputerName, computerAllowInput, ensureRunning, copyComputerLink]);
+
+  /**
+   * The computer card's inline fix: what Stop → tick Tailscale → Start did,
+   * as one restart in place. The grants come along — input as the server has
+   * it, the rest inherited — so the fix changes the transport and nothing else.
+   */
+  const handleTurnOnHttps = useCallback(async () => {
+    const a = webApi();
+    if (!a) return;
+    setBusy(true);
+    try {
+      const next = await a.start({ tailscale: true, allowInput: info.allowInput === true });
+      if (next.running) {
+        applyInfo(next);
+        return;
+      }
+      // The front could not be put up. Whether the old server survived is the
+      // daemon's word, not this reply's, so read it before showing anything.
+      const now = await a.status();
+      applyInfo(now.running ? { ...now, transportError: next.transportError } : next);
+    } finally {
+      setBusy(false);
+    }
+  }, [info.allowInput, applyInfo]);
 
   const handleCancelPairing = useCallback(async () => {
     const a = webApi();
@@ -1464,6 +1640,7 @@ export default function WebToggle({ variant = 'icon', compact = false }: {
               onCopyPairUrl={handleCopyPairUrl}
               onCopyPairCode={handleCopyPairCode}
               session={wizardSession}
+              defaultName={uniqueDeviceName(t('web.connectPhoneDefaultName'), devices)}
               t={t}
             />
           ) : (
@@ -1503,7 +1680,7 @@ export default function WebToggle({ variant = 'icon', compact = false }: {
             onOpenUrl={handleOpenUrl}
             onOpenLink={handleOpenLink}
             onNewPairCode={handleNewPairCode}
-            deviceName={deviceName}
+            deviceName={effectiveDeviceName}
             onDeviceNameChange={(v) => setDeviceName(v.slice(0, DEVICE_NAME_MAX))}
             onStartPairing={handleStartPairing}
             onOpenDevices={handleOpenDevices}
@@ -1517,10 +1694,11 @@ export default function WebToggle({ variant = 'icon', compact = false }: {
             onToggleComputerAllowInput={() => setComputerAllowInput((v) => !v)}
             onStartComputerPairing={handleStartComputerPairing}
             onCancelPairing={handleCancelPairing}
-            onCopyComputerLink={() => void handleCopyComputerLink()}
+            onCopyComputerLink={() => void copyComputerLink(info)}
             pairRemainingMs={pairRemainingMs}
             pairErrorFlow={pairErrorFlow}
             onOpenWizard={canWizard ? () => setView('wizard') : undefined}
+            onTurnOnHttps={tailscaleUsable === true ? () => void handleTurnOnHttps() : undefined}
             t={t}
           />
           </>

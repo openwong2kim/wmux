@@ -99,14 +99,17 @@ function buttonNamed(text: string): HTMLButtonElement {
 }
 
 describe('WebToggle — Connect another computer', () => {
-  it('starts the computer flow with its own prefilled name and unticked grant', async () => {
+  it('starts the computer flow with its own prefilled name and unticked grant, and copies the link at once', async () => {
     status = tailnet;
     pairStart.mockResolvedValue(computerPending);
     await mountAndOpen();
-    await act(async () => buttonNamed('Create pairing link').click());
+    await act(async () => buttonNamed('Create and copy link').click());
     await flush();
     expect(pairStart).toHaveBeenCalledWith('Computer', false, 'computer');
     expect(document.querySelector('[data-testid="web-computer-link"]')?.textContent).toBe(LINK);
+    expect(writeEphemeral).toHaveBeenCalledWith(LINK, expect.any(Number));
+    expect(clipboard).toBe(LINK);
+    expect(buttonNamed('Copied')).toBeTruthy();
   });
 
   it('the phone card cancels a live computer pairing instead of starting over it', async () => {

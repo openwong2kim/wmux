@@ -15,6 +15,7 @@ import {
   splitLinkedLine,
   webQrPayload,
   webBindLabel,
+  uniqueDeviceName,
   WebPopoverBody,
   type WebPopoverBodyProps,
 } from '../WebToggle';
@@ -131,22 +132,63 @@ describe('WebToggle pure helpers', () => {
   });
 });
 
-describe('WebPopoverBody — off state', () => {
-  const html = renderBody({ info: { running: false } });
+describe('uniqueDeviceName', () => {
+  const device = (name: string, revokedAt?: number) => ({
+    deviceId: name,
+    name,
+    createdAt: 1,
+    lastSeenAt: 1,
+    allowInput: false,
+    ...(revokedAt !== undefined ? { revokedAt } : {}),
+  });
 
-  it('shows the headline, both checkboxes and the Start primary', () => {
+  it('is the bare base on an empty or unread roster', () => {
+    expect(uniqueDeviceName('Phone', [])).toBe('Phone');
+    expect(uniqueDeviceName('Phone', null)).toBe('Phone');
+  });
+
+  it('counts up past live names, case-insensitively, and the pending one', () => {
+    expect(uniqueDeviceName('Phone', [device('phone'), device('Phone 2')])).toBe('Phone 3');
+    expect(uniqueDeviceName('Phone', [device('Phone')], 'Phone 2')).toBe('Phone 3');
+  });
+
+  it('a revoked device frees its name', () => {
+    expect(uniqueDeviceName('Phone', [device('Phone', 5)])).toBe('Phone');
+  });
+
+  it('stays inside the name cap', () => {
+    const long = 'x'.repeat(40);
+    const name = uniqueDeviceName(long, [device('x'.repeat(32))]);
+    expect(name.length).toBeLessThanOrEqual(32);
+    expect(name.endsWith(' 2')).toBe(true);
+  });
+});
+
+describe('WebPopoverBody — off state', () => {
+  const html = renderBody({ info: { running: false }, deviceName: 'Phone' });
+
+  it('leads with Pair a phone, keeps the options and Start', () => {
+    expect(html).toContain('web.connectPhonePair');
+    expect(html).toContain('value="Phone"');
     expect(html).toContain('web.shareThisComputer');
     expect(html).toContain('web.allowInput');
     expect(html).toContain('web.expose');
     expect(html).toContain('web.start');
   });
 
+  it('offers the computer link only while the tailnet transport is chosen', () => {
+    expect(html).not.toContain('>web.connectComputer<');
+    expect(renderBody({ info: { running: false }, deviceName: 'Phone', tailscale: true })).toContain(
+      '>web.connectComputer<',
+    );
+  });
+
   it('surfaces the scrollback-exposure warning', () => {
     expect(html).toContain('web.scrollbackWarning');
   });
 
-  it('Start uses the single amber primary fill', () => {
-    expect(html).toContain('ui-btn-primary');
+  it('Pair a phone uses the single amber primary fill; Start is secondary', () => {
+    expect(html).toMatch(/ui-btn-primary[^>]*>web\.connectPhonePair/);
     // One primary per surface: nothing else in the stopped body is filled.
     expect(html.split('ui-btn-primary').length - 1).toBe(1);
   });
@@ -247,7 +289,7 @@ describe('WebPopoverBody — on state', () => {
     expect(html).toContain('web.connectPhone');
     // A spent code lands back on the name field, which IS the way back: the
     // next device needs a name anyway, and minting from there gives it one.
-    expect(html).toContain('web.showPairCode');
+    expect(html).toContain('web.connectPhonePair');
   });
 
   it('★ the QR replaces the address text, and copy stays reachable', () => {
@@ -281,7 +323,7 @@ describe('WebPopoverBody — on state', () => {
     });
     expect(html).not.toContain('48293576');
     expect(html).toContain('web.nameHint');
-    expect(html).toContain('web.showPairCode');
+    expect(html).toContain('web.connectPhonePair');
   });
 
   it('names the device the code will register, next to the code', () => {
@@ -306,7 +348,7 @@ describe('WebPopoverBody — on state', () => {
       deviceName: 'phone',
     });
     // Same button, now reachable.
-    expect(named).toContain('web.showPairCode');
+    expect(named).toContain('web.connectPhonePair');
     expect(named.split('disabled=""').length).toBeLessThan(empty.split('disabled=""').length);
   });
 
