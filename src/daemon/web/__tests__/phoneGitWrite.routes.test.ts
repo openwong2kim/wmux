@@ -205,6 +205,25 @@ describe('phone git write routes', { timeout: 60_000 }, () => {
     expect(runs).toHaveLength(0);
   });
 
+  it('binds a merge receipt to its PR number', async () => {
+    unregister.push(registerPhoneGitWriteAction('pr.merge', {
+      preview: async (ctx) => ({ ok: true, facts: { number: ctx.number, headRefOid: OID }, pins: { number: ctx.number ?? null, headRefOid: OID } }),
+      execute: async (ctx) => { ctx.markInFlight(); ctx.settle({ state: 'done', fields: { mergeCommitOid: OID } }); },
+    }));
+    await start();
+    const phone = device('phone');
+    expect(await config(phone)).toMatchObject({ gitPrMerge: { methods: ['squash'] } });
+    const facts = await (await call(phone, 'POST', 's1/git/pr/1980/merge/preview', {})).json() as Record<string, unknown>;
+    const body = { requestId: randomUUID(), confirmToken: facts.confirmToken, expectHead: OID, method: 'squash', subject: 'T (#1980)', body: '' };
+    // A token minted for PR 1980 does not merge PR 1981.
+    expect((await call(phone, 'POST', 's1/git/pr/1981/merge', body)).status).toBe(409);
+    const t2 = (await (await call(phone, 'POST', 's1/git/pr/1980/merge/preview', {})).json() as Record<string, unknown>).confirmToken;
+    const second = { ...body, requestId: randomUUID(), confirmToken: t2 };
+    expect((await call(phone, 'POST', 's1/git/pr/1980/merge', second)).status).toBe(202);
+    await vi.waitFor(async () => expect(await (await call(phone, 'GET', `s1/git/pr/1980/merge/${second.requestId}`)).json()).toMatchObject({ state: 'done', mergeCommitOid: OID }));
+    expect((await call(phone, 'GET', `s1/git/pr/999/merge/${second.requestId}`)).status).toBe(404);
+  });
+
   it('keeps receipts across a restart for 72 hours, then answers receipt-expired', async () => {
     const runs = stubPush();
     await start();

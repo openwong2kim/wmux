@@ -102,6 +102,8 @@ export interface GitWriteReceiptRow {
   action: PhoneGitWriteAction;
   sessionId: string;
   owner: string;
+  /** pr.merge: the PR number from the path. */
+  number?: number;
   /** sha256 of `gitWriteFingerprintSource`. */
   fingerprint: string;
   createdAt: number;
@@ -126,6 +128,7 @@ function validRow(key: string, v: unknown): v is GitWriteReceiptRow {
   if (typeof e.fingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(e.fingerprint) || !Number.isSafeInteger(e.createdAt)) return false;
   if (typeof e.state !== 'string' || !STATES.has(e.state)) return false;
   if (e.startedAt !== undefined && !Number.isSafeInteger(e.startedAt)) return false;
+  if (e.number !== undefined && !(Number.isSafeInteger(e.number) && (e.number as number) > 0)) return false;
   if (e.error !== undefined && !str(e.error, 64)) return false;
   if (e.fields !== undefined) {
     if (!e.fields || typeof e.fields !== 'object' || Array.isArray(e.fields)) return false;

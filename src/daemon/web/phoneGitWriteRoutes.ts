@@ -180,7 +180,9 @@ export class PhoneGitWriteRoutes {
 
     if (route.kind === 'receipt') {
       const row = gate.receipts.find(GitWriteReceipts.key(owner, repo.commonReal, requestId as string));
-      if (!row || row.action !== route.action || row.sessionId !== sessionId) return this.fail(res, { error: 'receipt-expired' });
+      if (!row || row.action !== route.action || row.sessionId !== sessionId || row.number !== number) {
+        return this.fail(res, { error: 'receipt-expired' });
+      }
       return this.host.json(res, 200, receiptBody(row, false));
     }
 
@@ -243,6 +245,7 @@ export class PhoneGitWriteRoutes {
     // 1. requestId lookup: a resend gets its receipt back, never a 428.
     const existing = gate.receipts.find(key);
     if (existing) {
+      // The fingerprint covers the action and PR number; the session is checked on its own.
       if (existing.fingerprint !== fingerprint || existing.action !== base.action || existing.sessionId !== base.sessionId) {
         return this.fail(res, { error: 'request-id-reused' });
       }
@@ -266,7 +269,10 @@ export class PhoneGitWriteRoutes {
       pins = consumed.pins;
     }
     try {
-      gate.receipts.begin(key, { requestId, action: base.action, sessionId: base.sessionId, owner: base.owner, fingerprint });
+      gate.receipts.begin(key, {
+        requestId, action: base.action, sessionId: base.sessionId, owner: base.owner, fingerprint,
+        ...(base.number !== undefined ? { number: base.number } : {}),
+      });
     } catch (error) {
       if (error instanceof GitWriteReceiptCapacityError) return this.fail(res, { error: 'git-busy' });
       this.host.log('warn', `[web] git write receipt could not be written: ${error instanceof Error ? error.message : String(error)}`);
