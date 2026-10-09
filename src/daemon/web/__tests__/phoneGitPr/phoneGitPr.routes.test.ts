@@ -27,19 +27,21 @@ describe('phone pr routes', { timeout: 30_000 }, () => {
   let routes: PhoneGitWriteRoutes;
   let calls: string[][];
   let merged: boolean;
+  let prHead: string;
+  let openPrs: unknown[];
   let unregister: Array<() => void>;
 
   const ok = (data: unknown): PrGhResult => ({ ok: true, stdout: JSON.stringify(data) });
   const gh: PrGhRunner = async (args) => {
     calls.push([...args]);
     if (args[0] === 'pr' && args[1] === 'merge') { merged = true; return { ok: true, stdout: '' }; }
-    if (args.includes('GET')) return ok([]);
+    if (args.includes('GET')) return ok(openPrs);
     if (args.includes('POST')) return ok({ number: 1981, html_url: 'https://github.com/octo/repo/pull/1981' });
     const query = args.find((a) => a.startsWith('query=')) ?? '';
     if (query.includes('squashMergeAllowed')) {
       return ok({ data: { repository: { squashMergeAllowed: true, pullRequest: {
         number: 1980, title: 'T', state: merged ? 'MERGED' : 'OPEN', isDraft: false, mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN',
-        headRefOid: HEAD, headRefName: 'feat/x', baseRefName: 'main', mergeCommit: merged ? { oid: SQUASH } : null,
+        headRefOid: prHead, headRefName: 'feat/x', baseRefName: 'main', mergeCommit: merged ? { oid: SQUASH } : null,
         commits: { nodes: [] },
       } } } });
     }
@@ -59,6 +61,8 @@ describe('phone pr routes', { timeout: 30_000 }, () => {
     git('remote', 'add', 'origin', 'https://github.com/octo/repo.git');
     calls = [];
     merged = false;
+    prHead = HEAD;
+    openPrs = [];
     gate = new PhoneGitWriteGate({ wmuxDir: path.join(root, '.wmux'), ghToken: async () => ({ ok: true, stdout: 'gho_octo\n' }) });
     const h = createPhoneGitPrHandlers({ gh, git: createGitRunner() });
     unregister = [registerPhoneGitWriteAction('pr.create', h.create), registerPhoneGitWriteAction('pr.merge', h.merge)];
@@ -129,5 +133,25 @@ describe('phone pr routes', { timeout: 30_000 }, () => {
       status: 200, body: { requestId: body.requestId, replayed: true, state: 'done', mergeCommitOid: SQUASH },
     });
     expect(calls.filter((c) => c[0] === 'pr' && c[1] === 'merge')).toHaveLength(1);
+  });
+
+  it('puts the pr-exists number beside the tag in the receipt, as in the 409', async () => {
+    openPrs = [{ number: 1977, title: 'Old', draft: false, created_at: '2026-10-01T00:00:00Z',
+      html_url: 'https://github.com/octo/repo/pull/1977', base: { ref: 'main' }, head: { ref: 'feat/x', repo: { full_name: 'octo/repo' } } }];
+    const body = { requestId: randomUUID(), title: 'Add the thing', body: '' };
+    expect((await call('POST', 's1/git/pr', body)).status).toBe(202);
+    expect((await receipt(`s1/git/pr/receipts/${body.requestId}`)).body)
+      .toEqual({ requestId: body.requestId, state: 'refused', error: 'pr-exists', number: 1977 });
+    expect(calls.filter((c) => c.includes('POST'))).toHaveLength(0);
+  });
+
+  it('puts the moved headRefOid beside stale in the receipt', async () => {
+    const preview = await call('POST', 's1/git/pr/1980/merge/preview', {});
+    prHead = 'b'.repeat(40);
+    const body = { requestId: randomUUID(), confirmToken: preview.body.confirmToken, expectHead: HEAD, method: 'squash', subject: 'T (#1980)', body: '' };
+    expect((await call('POST', 's1/git/pr/1980/merge', body)).status).toBe(202);
+    expect((await receipt(`s1/git/pr/1980/merge/${body.requestId}`)).body)
+      .toEqual({ requestId: body.requestId, state: 'refused', error: 'stale', headRefOid: prHead });
+    expect(calls.filter((c) => c[0] === 'pr' && c[1] === 'merge')).toHaveLength(0);
   });
 });
