@@ -11,12 +11,17 @@
 //
 // Permission is bound to the schedule's revision: any edit that changes what
 // runs (folder, agent, account, prompt) bumps `revision`, and a non-approval
-// mode is honoured only while `permission.grantedRevision === revision`. The
-// grant is written by the daemon from `automation.grant`, never from a client
-// payload.
+// mode is honoured only while `permission.grantedRevision === revision`; until
+// it is granted again, the schedule's runs are skipped (`needs_regrant`), never
+// started in a weaker mode. The grant is written by the daemon from
+// `automation.grant`, never from a client payload.
 
 export type AutomationAgent = 'claude' | 'codex';
-export type AutomationPermissionMode = 'approval' | 'scoped' | 'bypass';
+/**
+ * `auto` is Claude's own auto permission mode (claude only): Claude approves
+ * routine actions itself and stops risky ones, with no human at the desk.
+ */
+export type AutomationPermissionMode = 'approval' | 'scoped' | 'auto' | 'bypass';
 
 export interface AutomationScheduleTrigger {
   kind: 'schedule';
@@ -49,7 +54,8 @@ export interface AutomationPermission {
    * per-tool allow-list: codex `scoped` means the workspace-write sandbox with
    * no approval prompts, and a grant carrying tools for codex is refused.
    * `approval` pins claude to `--permission-mode default`; codex approval runs
-   * use the user's own codex approval configuration unchanged.
+   * use the user's own codex approval configuration unchanged. `auto` is
+   * claude only; a codex grant for it is refused.
    */
   allowedTools?: string[];
   /** Revision the human granted `mode` at. Daemon-written only. */
@@ -68,7 +74,10 @@ export interface Automation {
   permission: AutomationPermission;
   policy: {
     overlap: 'skip_if_active';
-    /** Awaiting-a-human ceiling; absent = only the absolute run cap applies. */
+    /**
+     * Awaiting-a-human ceiling; absent = AUTOMATION_DEFAULTS (approval
+     * 15 min, every other mode 60 min).
+     */
     awaitTimeoutMinutes?: number;
     /** Absolute per-run ceiling (default AUTOMATION_DEFAULTS.maxRunMinutes). */
     maxRunMinutes?: number;
@@ -101,14 +110,16 @@ export type AutomationRunReason =
   | 'agent_error'
   | 'process_exit'
   | 'interrupted'
-  | 'cancelled';
+  | 'cancelled'
+  /** The schedule changed after its non-approval mode was granted; it was not started. */
+  | 'needs_regrant';
 
 export interface AutomationRun {
   id: string;
   automationId: string;
   /** Automation revision this run executed. */
   revision: number;
-  /** Effective permission mode after the revision check (may be a downgrade). */
+  /** Permission mode the run launched with (a stale grant is skipped, never downgraded). */
   effectiveMode: AutomationPermissionMode;
   scheduledFor: number;
   trigger: 'scheduled' | 'manual' | 'test';
@@ -135,8 +146,10 @@ export const AUTOMATION_FINAL_RUN_STATES: readonly AutomationRunState[] = [
 export const AUTOMATION_DEFAULTS = {
   graceMinutes: 180,
   maxRunMinutes: 240,
-  /** Unattended modes (scoped/bypass) fail a run stuck awaiting a human. */
+  /** Unattended modes (scoped/auto/bypass) fail a run stuck awaiting a human. */
   unattendedAwaitTimeoutMinutes: 60,
+  /** Approval runs end when nobody answers for this long, freeing the slot. */
+  approvalAwaitTimeoutMinutes: 15,
   /** Keep a completed session this long before tree-kill (plain-text last turn). */
   completionLingerMinutes: 10,
   runHistoryPerAutomation: 10,
@@ -180,6 +193,12 @@ export const AUTOMATION_RPC = {
 } as const;
 
 /**
+ * `needs-regrant`: an update changed what runs after a non-approval grant, so
+ * the schedule is skipped until a human grants it again.
+ */
+export type AutomationAttentionKind = 'proposed' | 'grant-raised' | 'needs-regrant';
+
+/**
  * A queued `attention` event. The daemon keeps these until a first-party
  * client acknowledges them, so a desktop that was not connected when a draft
  * arrived (or a grant was raised) still surfaces it on its next `list`.
@@ -188,7 +207,7 @@ export interface AutomationAttention {
   id: string;
   automationId: string;
   automationName: string;
-  kind: 'proposed' | 'grant-raised';
+  kind: AutomationAttentionKind;
   at: number;
 }
 
@@ -240,5 +259,5 @@ export const AUTOMATION_EVENT = 'automation.event';
 export type AutomationEvent =
   | { type: 'automations-changed' }
   | { type: 'run-changed'; run: AutomationRun; automationName: string }
-  /** A draft arrived, or a permission grant was raised — surface to the human. */
-  | { type: 'attention'; automationId: string; automationName: string; kind: 'proposed' | 'grant-raised' };
+  /** A draft arrived, a grant was raised, or a grant went stale — surface to the human. */
+  | { type: 'attention'; automationId: string; automationName: string; kind: AutomationAttentionKind };

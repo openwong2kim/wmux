@@ -12,7 +12,7 @@
 //   completed | failed | unknown   first completion signal wins; the session
 //              then lingers (a plain-text question may need a human) and is
 //              snapshotted + tree-killed + destroyed afterwards
-//   skipped    overlap / missed / daemon_down, never launched
+//   skipped    overlap / missed / daemon_down / needs_regrant, never launched
 //
 // A run still launching/running/awaiting when the daemon starts is recorded
 // `unknown` and never relaunched: its session did not survive (recovery
@@ -46,6 +46,7 @@ import {
   effectiveMode,
   isPermissionMode,
   modeRaises,
+  needsRegrant,
   validateAllowedTools,
   validateDraft,
 } from './draft';
@@ -341,13 +342,18 @@ export class AutomationEngine {
     if (!draft.ok) return { ok: false, error: draft.error };
     // The revision is the server's: any client-sent revision/grant is ignored
     // because only the validated draft fields are read.
-    if (changesWhatRuns(automation.action, draft.value.action)) automation.revision += 1;
+    const bumped = changesWhatRuns(automation.action, draft.value.action);
+    if (bumped) automation.revision += 1;
     automation.name = draft.value.name;
     automation.trigger = draft.value.trigger;
     automation.action = draft.value.action;
     automation.policy = { overlap: 'skip_if_active', ...draft.value.policy };
     automation.updatedAt = this.now();
     automation.nextRunAt = automation.enabled ? nextOccurrenceAfter(automation.trigger, this.now()) : null;
+    // Raised now, not at the first skipped occurrence: the editor grants again
+    // in the same save (and the grant clears this), so only an update that
+    // never got its grant leaves it standing.
+    if (bumped && needsRegrant(automation)) this.queueAttention(automation, 'needs-regrant');
     await this.persistAutomations();
     this.emitAutomations();
     return { ok: true, automation: clone(automation) };
@@ -389,6 +395,7 @@ export class AutomationEngine {
     const automation = this.find(id);
     if (!automation) return { ok: false, error: 'Not found' };
     if (!isPermissionMode(mode)) return { ok: false, error: 'Invalid permission mode' };
+    if (mode === 'auto' && automation.action.agent !== 'claude') return { ok: false, error: 'Auto mode is for Claude only' };
     const before = effectiveMode(automation);
     if (mode === 'approval') {
       automation.permission = { mode: 'approval' };
@@ -407,6 +414,8 @@ export class AutomationEngine {
       automation.permission = { mode, grantedRevision: automation.revision };
     }
     automation.updatedAt = this.now();
+    // The grant now matches the current revision: a stale-grant notice is moot.
+    this.attention = this.attention.filter((x) => !(x.automationId === automation.id && x.kind === 'needs-regrant'));
     if (mode !== 'approval' && modeRaises(before, mode)) this.queueAttention(automation, 'grant-raised');
     await this.persistAutomations();
     this.emitAutomations();
@@ -425,6 +434,8 @@ export class AutomationEngine {
     const automation = this.find(id);
     if (!automation) return { ok: false, error: 'Not found' };
     if (kind !== 'manual' && kind !== 'test') return { ok: false, error: 'Invalid run kind' };
+    // The same rule as the schedule: a stale grant never runs, not even by hand.
+    if (needsRegrant(automation)) return { ok: false, error: 'Grant the permission again before running' };
     const run = await this.startRun(automation, this.now(), kind);
     return { ok: true, run: clone(run) };
   }
@@ -511,12 +522,13 @@ export class AutomationEngine {
     scheduledFor: number,
     reason: AutomationRunReason,
     trigger: AutomationRun['trigger'] = 'scheduled',
+    mode: AutomationPermissionMode = effectiveMode(automation),
   ): AutomationRun {
     const run: AutomationRun = {
       id: this.newId(),
       automationId: automation.id,
       revision: automation.revision,
-      effectiveMode: effectiveMode(automation),
+      effectiveMode: mode,
       scheduledFor,
       trigger,
       state: 'skipped',
@@ -540,6 +552,13 @@ export class AutomationEngine {
     // update/grant landing during the claim save below must not mix an old
     // grant with a new action (or the reverse).
     const snapshot = clone(automation);
+    // Fail closed: a grant that predates an edit never runs as a weaker mode.
+    if (needsRegrant(snapshot)) {
+      const skipped = this.recordSkipped(automation, scheduledFor, 'needs_regrant', trigger, snapshot.permission.mode);
+      this.pruneAndDrop();
+      await this.persistRuns();
+      return skipped;
+    }
     const mode = effectiveMode(snapshot);
     // Overlap: an open run, or any run of this schedule whose session is still
     // live (lingering after completion, or ambiguous). A completed/failed run
@@ -778,11 +797,15 @@ export class AutomationEngine {
     return (automation?.policy.maxRunMinutes ?? AUTOMATION_DEFAULTS.maxRunMinutes) * MINUTE_MS;
   }
 
-  private awaitTimeoutMs(run: AutomationRun): number | null {
+  private awaitTimeoutMs(run: AutomationRun): number {
     const automation = this.automations.find((a) => a.id === run.automationId);
     const configured = automation?.policy.awaitTimeoutMinutes;
     if (configured !== undefined) return configured * MINUTE_MS;
-    return run.effectiveMode === 'approval' ? null : AUTOMATION_DEFAULTS.unattendedAwaitTimeoutMinutes * MINUTE_MS;
+    // Approval runs end too: an unanswered prompt must not hold the slot (and
+    // skip the next occurrences as overlap) until the absolute run cap.
+    return (run.effectiveMode === 'approval'
+      ? AUTOMATION_DEFAULTS.approvalAwaitTimeoutMinutes
+      : AUTOMATION_DEFAULTS.unattendedAwaitTimeoutMinutes) * MINUTE_MS;
   }
 
   private async monitorRun(run: AutomationRun, live: LiveRun, now: number): Promise<void> {
@@ -842,7 +865,7 @@ export class AutomationEngine {
         await this.persistRuns();
       }
       const limit = this.awaitTimeoutMs(run);
-      if (limit !== null && now - (live.awaitingSince ?? now) > limit) {
+      if (now - (live.awaitingSince ?? now) > limit) {
         await this.terminate(run, 'failed', 'await_timeout');
       }
       return;

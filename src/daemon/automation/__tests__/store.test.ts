@@ -2,11 +2,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { effectiveMode, validateAllowedTools, validateDraft } from '../draft';
+import { effectiveMode, modeRaises, needsRegrant, validateAllowedTools, validateDraft } from '../draft';
 import {
   AUTOMATIONS_FILE,
   AUTOMATION_RUNS_FILE,
   cleanSnapshotText,
+  coerceRun,
   recordedRunPtyIds,
   loadAutomations,
   pruneRuns,
@@ -53,6 +54,20 @@ describe('draft validation', () => {
     expect(effectiveMode({ revision: 3, permission: { mode: 'bypass', grantedRevision: 2 } })).toBe('approval');
     expect(effectiveMode({ revision: 3, permission: { mode: 'scoped' } })).toBe('approval');
   });
+
+  it('needsRegrant is computed from the revision; approval never needs one', () => {
+    expect(needsRegrant({ revision: 2, permission: { mode: 'auto', grantedRevision: 2 } })).toBe(false);
+    expect(needsRegrant({ revision: 3, permission: { mode: 'auto', grantedRevision: 2 } })).toBe(true);
+    expect(needsRegrant({ revision: 3, permission: { mode: 'scoped' } })).toBe(true);
+    expect(needsRegrant({ revision: 3, permission: { mode: 'approval' } })).toBe(false);
+  });
+
+  it('auto ranks between scoped and bypass', () => {
+    expect(modeRaises('approval', 'auto')).toBe(true);
+    expect(modeRaises('scoped', 'auto')).toBe(true);
+    expect(modeRaises('auto', 'bypass')).toBe(true);
+    expect(modeRaises('bypass', 'auto')).toBe(false);
+  });
 });
 
 describe('store', () => {
@@ -72,6 +87,33 @@ describe('store', () => {
     expect(state.automations[0].permission).toEqual({ mode: 'approval' });
     fs.writeFileSync(path.join(dir, AUTOMATIONS_FILE), '{not json');
     expect(loadAutomations(dir).automations).toEqual([]);
+  });
+
+  it('restores auto (claude only) and codex scoped grants; drops auto for codex', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-auto-'));
+    const codex = { ...draft.action, agent: 'codex' };
+    fs.writeFileSync(path.join(dir, AUTOMATIONS_FILE), JSON.stringify({
+      version: 1,
+      automations: [
+        { ...draft, id: 'a1', revision: 2, createdAt: 1, permission: { mode: 'auto', grantedRevision: 2 } },
+        { ...draft, action: codex, id: 'a2', revision: 1, createdAt: 1, permission: { mode: 'scoped', grantedRevision: 1 } },
+        { ...draft, action: codex, id: 'a3', revision: 1, createdAt: 1, permission: { mode: 'auto', grantedRevision: 1 } },
+      ],
+      attention: [{ id: 'x1', automationId: 'a1', automationName: 'n', kind: 'needs-regrant', at: 1 }],
+    }));
+    const state = loadAutomations(dir);
+    expect(state.automations.map((a) => a.permission)).toEqual([
+      { mode: 'auto', grantedRevision: 2 },
+      { mode: 'scoped', grantedRevision: 1 },
+      { mode: 'approval' },
+    ]);
+    expect(state.attention.map((x) => x.kind)).toEqual(['needs-regrant']);
+  });
+
+  it('a needs_regrant skip survives coerceRun', () => {
+    expect(coerceRun({
+      id: 'r1', automationId: 'a1', revision: 2, effectiveMode: 'auto', scheduledFor: 1, state: 'skipped', reason: 'needs_regrant',
+    })).toMatchObject({ effectiveMode: 'auto', state: 'skipped', reason: 'needs_regrant' });
   });
 
   it('snapshot text: control characters stripped, tail kept under the cap, file is 0600', () => {

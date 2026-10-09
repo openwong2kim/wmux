@@ -55,6 +55,16 @@ describe('scheduled-run command line through the three wrapper shells', () => {
     expect(buildAutomationCommand('codex', 'codex', 'bypass', undefined)).toBe('codex --dangerously-bypass-approvals-and-sandbox');
   });
 
+  it('auto: claude auto mode with the wmux MCP deny list as one quoted argument; codex refuses it', () => {
+    const auto = buildAutomationCommand('claude --model haiku', 'claude', 'auto', ['Read']);
+    expect(auto).toBe('claude --model haiku --permission-mode auto --disallowedTools ' +
+      '"mcp__wmux__fanout_start,mcp__wmux__terminal_send,mcp__wmux__terminal_send_key,mcp__wmux__send_message,' +
+      'mcp__wmux__surface_new,mcp__wmux__pane_split,mcp__wmux__browser_*"');
+    expect(buildExecArgs('/bin/bash', auto)).toEqual(['-lc', auto]);
+    expect(buildExecArgs('pwsh', auto)?.[3]).toBe(`${auto}${PWSH_EXIT_TAIL}`);
+    expect(() => permissionFlags('codex', 'auto', undefined)).toThrow();
+  });
+
   it('refuses any tool name that could reach a shell parser', () => {
     for (const bad of ['Read;rm -rf ~', 'Bash(rm:*)', '$(whoami)', '`id`', 'Read,Edit', 'A&calc', 'A|B', "Read'", 'Read"', '', '1Read', 'Read Edit']) {
       expect(() => permissionFlags('claude', 'scoped', [bad]), bad).toThrow();

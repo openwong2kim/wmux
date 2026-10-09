@@ -9,7 +9,8 @@
 //
 // Threat model: a same-user process that edits these files directly is out of
 // scope (crontab-equivalent). The permission grant is still bound to the
-// revision, so an edited prompt without a matching grant runs in approval mode.
+// revision, so an edited prompt without a matching grant is not started at all
+// (skipped as `needs_regrant`) until a human grants it again.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -19,6 +20,7 @@ import {
   AUTOMATION_FINAL_RUN_STATES,
   type Automation,
   type AutomationAttention,
+  type AutomationAttentionKind,
   type AutomationRun,
   type AutomationRunReason,
   type AutomationRunState,
@@ -47,8 +49,9 @@ const RUN_STATES: ReadonlySet<string> = new Set<AutomationRunState>([
 ]);
 const RUN_REASONS: ReadonlySet<string> = new Set<AutomationRunReason>([
   'overlap', 'missed', 'daemon_down', 'first_run_blocked', 'launch_failed', 'account_missing',
-  'await_timeout', 'timeout', 'agent_error', 'process_exit', 'interrupted', 'cancelled',
+  'await_timeout', 'timeout', 'agent_error', 'process_exit', 'interrupted', 'cancelled', 'needs_regrant',
 ]);
+const ATTENTION_KINDS: ReadonlySet<string> = new Set<AutomationAttentionKind>(['proposed', 'grant-raised', 'needs-regrant']);
 
 const num = (v: unknown): number | undefined => (typeof v === 'number' && Number.isFinite(v) ? v : undefined);
 
@@ -65,8 +68,14 @@ export function coerceAutomation(raw: unknown): Automation | null {
   let permission: Automation['permission'] = { mode: 'approval' };
   if (isPermissionMode(perm['mode']) && perm['mode'] !== 'approval') {
     const granted = num(perm['grantedRevision']);
-    const tools = perm['mode'] === 'scoped' ? validateAllowedTools(perm['allowedTools']) : null;
-    if (granted !== undefined && (perm['mode'] === 'bypass' || tools?.ok)) {
+    // codex scoped carries no tool list (a fixed sandbox); auto is claude only.
+    const tools = perm['mode'] === 'scoped' && draft.value.action.agent === 'claude'
+      ? validateAllowedTools(perm['allowedTools'])
+      : null;
+    const restorable = perm['mode'] === 'bypass' ||
+      (perm['mode'] === 'auto' && draft.value.action.agent === 'claude') ||
+      (perm['mode'] === 'scoped' && (draft.value.action.agent === 'codex' || tools?.ok === true));
+    if (granted !== undefined && restorable) {
       permission = {
         mode: perm['mode'],
         grantedRevision: granted,
@@ -130,8 +139,14 @@ function coerceAttention(raw: unknown): AutomationAttention | null {
   const at = num(o['at']);
   if (typeof o['id'] !== 'string' || !ID_RE.test(o['id']) || typeof o['automationId'] !== 'string' ||
       typeof o['automationName'] !== 'string' || at === undefined ||
-      (o['kind'] !== 'proposed' && o['kind'] !== 'grant-raised')) return null;
-  return { id: o['id'], automationId: o['automationId'], automationName: o['automationName'].slice(0, 120), kind: o['kind'], at };
+      typeof o['kind'] !== 'string' || !ATTENTION_KINDS.has(o['kind'])) return null;
+  return {
+    id: o['id'],
+    automationId: o['automationId'],
+    automationName: o['automationName'].slice(0, 120),
+    kind: o['kind'] as AutomationAttentionKind,
+    at,
+  };
 }
 
 function readJson(file: string): unknown {

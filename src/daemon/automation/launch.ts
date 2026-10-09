@@ -16,7 +16,19 @@ import {
   type AutomationPermissionMode,
 } from '../../shared/automation';
 import { CLAUDE_SANDBOXED_ENV } from '../../shared/agentFirstRun';
+import { FANOUT_WORKER_DISALLOWED_TOOLS } from '../../shared/workerLaunch';
 import { buildWebPaneEnv } from '../web/webPaneEnv';
+
+/**
+ * The wmux MCP tools an `auto` run may not call: the same fixed list fanout
+ * workers carry (no fan-out, no typing into or opening panes, no messaging
+ * other agents, no browser). wmux registers its MCP server at user scope, so a
+ * scheduled claude sees those tools, and auto mode would otherwise decide on
+ * them without a human. One double-quoted, comma-joined argument — the form
+ * workerLaunchFlags ships — so the `*` is never globbed by `bash -lc` and
+ * `pwsh -Command` reads one string, not an array literal.
+ */
+const AUTO_DISALLOWED_TOOLS = `"${FANOUT_WORKER_DISALLOWED_TOOLS.join(',')}"`;
 
 /**
  * Permission flags per agent and effective mode. `scoped` for claude is
@@ -32,22 +44,26 @@ const PERMISSION_FLAGS: Record<AutomationAgent, Record<AutomationPermissionMode,
     // Pinned before the variadic tool list: a user default mode that
     // auto-approves would otherwise grant more than the scoped policy.
     scoped: ['--permission-mode', 'default', '--allowedTools'],
+    auto: ['--permission-mode', 'auto', '--disallowedTools', AUTO_DISALLOWED_TOOLS],
     bypass: ['--dangerously-skip-permissions'],
   },
   codex: {
     // No pin: codex approval runs use the user's own codex approval config.
     approval: [],
     scoped: ['--sandbox', 'workspace-write', '--ask-for-approval', 'never'],
+    // Codex has no auto mode; permissionFlags refuses it before this is read.
+    auto: [],
     bypass: ['--dangerously-bypass-approvals-and-sandbox'],
   },
 };
 
-/** Throws on any tool name outside the bare-name grammar. */
+/** Throws on any tool name outside the bare-name grammar, and on codex `auto`. */
 export function permissionFlags(
   agent: AutomationAgent,
   mode: AutomationPermissionMode,
   allowedTools: readonly string[] | undefined,
 ): string[] {
+  if (agent === 'codex' && mode === 'auto') throw new Error('Auto mode is claude only');
   const flags = [...PERMISSION_FLAGS[agent][mode]];
   if (agent === 'claude' && mode === 'scoped') {
     const tools = allowedTools ?? [];
