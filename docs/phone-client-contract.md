@@ -4529,9 +4529,14 @@ Codex launches are typed as before.
 **Resume.** `resume: true` continues only the pane's **own** conversation: the
 one its binding names (see *Resuming a bound pane* below). It never picks the
 newest conversation recorded in the pane's folder: several panes can share a
-folder, and each would reopen the same one. A pane with no binding answers
-`409 resume-unavailable` (`effect:"none"`) and nothing is typed, whatever its
-folder holds. Offer Resume only where `/turns` `chat.resumable` is `true`. If
+folder, and each would reopen the same one. A pane with no binding for the
+requested agent answers `409 resume-unavailable` (`effect:"none"`) and nothing
+is typed, whatever its folder holds. That answer comes before every readiness
+check of the launch (shell state, approvals, installed agents, a launch already
+pending, `resume-prompt-unsupported`); only the request checks run first: the
+grants, a malformed body or `clientLaunchId`, the dangerous-mode ceiling and
+`confirm`, and the launch-id receipt. `/turns` `chat.resumable` is always
+`false` on such a pane, so offer Resume only where it is `true`. If
 another live pane is running that conversation (its binding names it and the
 same agent is running there), the answer is `409 resume-in-use`
 (`effect:"none"`), because two agents would append to one conversation. With a

@@ -1665,6 +1665,12 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
     if (agent !== 'claude' && agent !== 'codex') return fail('invalid-chat-request');
     let command: string;
     const resume = req.resume === true;
+    // Only the pane's own conversation is ever resumed. With no exact binding for
+    // this agent there is nothing to continue, whatever the shell or install state
+    // (the newest conversation in the folder is a guess another pane may own), so
+    // this answer comes before every other check. `/turns` `chat.resumable` is false
+    // for such a pane, so a client gating on it never sends the request.
+    if (resume && boundOf(deps.pane(id))?.agent !== agent) return fail('resume-unavailable');
     if (resume && req.prompt !== undefined && !(deps.resumeTakesPrompt?.(agent) ?? RESUME_TAKES_PROMPT[agent])) return fail('resume-prompt-unsupported');
     try { command = terminalLaunchCommand(agent, req.prompt, req.mode); } catch { return fail('invalid-chat-request'); }
     // A fresh Claude is pinned to a minted id, so the pane's exact conversation is
@@ -1711,9 +1717,7 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
       if (bound && !await sessionLives(bound, env, true)) return fail('resume-unavailable');
       const boundCwd = bound && boundShell === 'posix' ? quotedCwd(bound.cwd) : undefined;
       if (resume) {
-        // Only the pane's own conversation is ever resumed. With no binding there
-        // is nothing exact to continue, and the newest conversation in the folder
-        // is a guess another pane sharing it may own.
+        // Already refused at the top without a binding; kept so no path can type an unbound resume.
         const sessionId = bound?.sessionId;
         if (!sessionId) return fail('resume-unavailable');
         // Two agents appending to one conversation: refuse while another pane runs it.

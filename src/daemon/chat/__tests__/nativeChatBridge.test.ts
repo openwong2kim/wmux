@@ -566,6 +566,31 @@ describe('launch', () => {
     expect(f.typed).toEqual([]);
   });
 
+  it('answers resume-unavailable for an unbound resume before every other check, and never reads it resumable', async () => {
+    const f = fixture();
+    const go = () => createChatBridge(f.deps).launch({ id: 'pane', agent: 'claude', resume: true, prompt: 'go' });
+    const unavailable = { ok: false, error: 'resume-unavailable', effect: 'none' };
+    f.deps.resumeTakesPrompt = () => false;
+    expect(await go()).toEqual(unavailable);
+    f.state.idle = { ok: false, reason: 'unsupported-shell' };
+    expect(await go()).toEqual(unavailable);
+    f.state.idle = { ok: false, reason: 'shell-has-children' };
+    expect(await go()).toEqual(unavailable);
+    f.state.idle = { ok: true }; f.state.installed = ['codex'];
+    expect(await go()).toEqual(unavailable);
+    f.state.installed = ['claude', 'codex']; f.state.pendingApproval = 'apr';
+    expect(await go()).toEqual(unavailable);
+    f.state.pendingApproval = undefined; f.shell.empty = false;
+    expect(await go()).toEqual(unavailable);
+    // A binding for the other agent is not this agent's conversation.
+    f.state.pane!.meta.resumeBinding = { agent: 'codex', sessionId: '0f1e2d3c-4b5a-4987-8a6b-5c4d3e2f1a0b', cwd: '/proj', ts: 1 };
+    expect(await go()).toEqual(unavailable);
+    f.state.pane!.meta.resumeBinding = undefined;
+    f.deps.boundSessionLives = async () => true;
+    expect(await createChatBridge(f.deps).resumable!('pane')).toBe(false);
+    expect(f.typed).toEqual([]);
+  });
+
   describe('resume of a bound pane whose agent exited', () => {
     const SID = '0f1e2d3c-4b5a-4987-8a6b-5c4d3e2f1a0b';
     const bound = (f: ReturnType<typeof fixture>, extra: Record<string, unknown> = {}) => {
@@ -693,6 +718,7 @@ describe('launch', () => {
 
   it('refuses resume + prompt for an agent whose resume line takes no prompt', async () => {
     const f = fixture();
+    f.state.pane!.meta.resumeBinding = { agent: 'codex', sessionId: '0f1e2d3c-4b5a-4987-8a6b-5c4d3e2f1a0b', cwd: '/proj', ts: 1 };
     f.deps.resumeTakesPrompt = (agent) => agent !== 'codex';
     const bridge = createChatBridge(f.deps);
     expect(await bridge.launch({ id: 'pane', agent: 'codex', resume: true, prompt: 'go' })).toEqual({ ok: false, error: 'resume-prompt-unsupported', effect: 'none' });
