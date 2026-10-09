@@ -16,6 +16,7 @@
 // turn view, which is a per-pane phone affordance rather than a fleet signal.
 
 import type { NotificationCategory, NotificationType } from '../../shared/types';
+import { remoteId } from '../../shared/remoteLimits';
 
 /** The recorded attention kinds the daemon publishes (WebTerminalServer). */
 export type RemoteAttentionKind = 'critical' | 'notify' | 'approval';
@@ -160,14 +161,16 @@ export class RemoteAttentionGate {
     if (event !== 'critical' && event !== 'notify' && event !== 'approval') return null;
     const parsed = safeParse(data);
     if (!parsed) return null;
-    const sessionId = str(parsed.sessionId);
+    // Bounded like every other id from a remote host: the epoch and session
+    // id are kept in the dedup set below, so their length is what it costs.
+    const sessionId = remoteId(parsed.sessionId);
     if (!sessionId) return null;
 
     // An event with no numeric id and no epoch can be neither placed against
     // the replay boundary nor deduped against the pane-stream tee of itself.
     // Firing it would defeat both gates at once, so it is dropped.
     const id = typeof parsed.id === 'number' ? parsed.id : null;
-    const epoch = str(parsed.epoch);
+    const epoch = remoteId(parsed.epoch);
     if (id === null || !epoch) return null;
     if (id <= this.replayUntilId) return null; // replayed backlog
     const key = `${epoch}:${id}`;

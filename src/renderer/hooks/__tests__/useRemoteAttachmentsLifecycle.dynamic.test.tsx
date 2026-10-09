@@ -1368,3 +1368,84 @@ describe('useRemoteAttachmentsLifecycle — main-driven poll cadence (#1391)', (
     unmount();
   });
 });
+
+describe('useRemoteAttachmentsLifecycle — one round per host', () => {
+  // A host that never answers holds only its own requests. The healthy host is
+  // asked on every tick, while the hung one is skipped until it answers.
+  it('a slow host never delays the next request to a normal host', async () => {
+    vi.useFakeTimers();
+    const slow = deferred<ListResult>();
+    installElectronApi({
+      mainTick: true,
+      listImpl: (hostId: string) =>
+        hostId === 'h2'
+          ? slow.promise
+          : Promise.resolve({ ok: true as const, workspaces: [{ id: 'ws-1', name: 'Remote WS', panes: [] }] }),
+    });
+    mount();
+    act(() => {
+      useStore.setState((s) => {
+        s.remoteWorkspaces = [{ ...descriptor, panes: [] }, { ...descriptor2, panes: [] }];
+        s.activeRemoteKey = null;
+      });
+    });
+    await settle();
+    api.workspacesList.mockClear();
+
+    for (let i = 0; i < 3; i += 1) {
+      await act(async () => { tickCb?.(); await Promise.resolve(); });
+      await settle();
+    }
+    const calls = (hostId: string) => api.workspacesList.mock.calls.filter(([h]) => h === hostId).length;
+    expect(calls('h1')).toBe(3);
+    expect(calls('h2')).toBe(1);
+
+    // Once the slow host answers, the next tick asks it again.
+    await act(async () => {
+      slow.resolve({ ok: true as const, workspaces: [] });
+      await Promise.resolve();
+    });
+    await settle();
+    await act(async () => { tickCb?.(); await Promise.resolve(); });
+    await settle();
+    expect(calls('h1')).toBe(4);
+    expect(calls('h2')).toBe(2);
+    unmount();
+  });
+
+  it('an exit during a host\'s in-flight request queues ONE follow-up for that host only', async () => {
+    vi.useFakeTimers();
+    const slow = deferred<ListResult>();
+    let h2Calls = 0;
+    installElectronApi({
+      listImpl: (hostId: string) => {
+        if (hostId === 'h2' && ++h2Calls === 1) return slow.promise;
+        return Promise.resolve({ ok: true as const, workspaces: [] });
+      },
+    });
+    mount();
+    act(() => {
+      useStore.setState((s) => {
+        s.remoteWorkspaces = [{ ...descriptor, panes: [] }, { ...descriptor2, panes: [] }];
+        s.activeRemoteKey = null;
+      });
+    });
+    await act(async () => { exitCb?.(); await vi.advanceTimersByTimeAsync(500); });
+    await settle();
+    await act(async () => { exitCb?.(); await vi.advanceTimersByTimeAsync(500); });
+    await settle();
+    const calls = (hostId: string) => api.workspacesList.mock.calls.filter(([h]) => h === hostId).length;
+    expect(calls('h2')).toBe(1);
+    const h1Before = calls('h1');
+
+    await act(async () => {
+      slow.resolve({ ok: true as const, workspaces: [] });
+      await Promise.resolve();
+    });
+    await settle();
+    expect(calls('h2')).toBe(2);
+    // The follow-up was for h2 alone.
+    expect(calls('h1')).toBe(h1Before);
+    unmount();
+  });
+});

@@ -425,7 +425,7 @@ function parseWorkspace(value: unknown, drop: SidebarDropReporter): PhoneSidebar
   if (task) row.task = task;
   else if (value.task !== undefined) drop('workspace.task');
   if (value.layout !== undefined) {
-    const layout = parseLayout(value.layout, drop);
+    const layout = parsePhoneSidebarLayout(value.layout, drop);
     if (layout) row.layout = layout;
   }
   const moaHandoff = parseMoaHandoff(value.moaHandoff);
@@ -491,7 +491,7 @@ class LayoutRefusal extends Error {
  * have. Two things degrade instead: an unknown surface kind reads as 'other',
  * and an `activePaneId` that is not a leaf of the tree is dropped alone.
  */
-function parseLayout(value: unknown, drop: SidebarDropReporter): PhoneSidebarLayout | undefined {
+export function parsePhoneSidebarLayout(value: unknown, drop: SidebarDropReporter): PhoneSidebarLayout | undefined {
   const bounds = PHONE_SIDEBAR_LIMITS.layout;
   let nodes = 0;
   let leaves = 0;

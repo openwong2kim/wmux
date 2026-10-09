@@ -239,10 +239,13 @@ function remoteSurfaceWorkspaces(workspaces: readonly Workspace[]): {
 }
 
 export function useRemoteAttachmentsLifecycle(): void {
-  // A refresh round is serialised: while one is in flight, further triggers
-  // set `pending` and are coalesced into a single follow-up round.
-  const inFlight = useRef(false);
-  const pending = useRef(false);
+  // Each HOST runs its own round: a host is asked again only once its last
+  // answer is in, and a slow or unreachable host never holds back another
+  // host's next request. A trigger that finds a host still in flight queues
+  // one follow-up for that host alone (`pendingHosts`); a tick or focus
+  // event that finds it in flight is dropped for that host instead.
+  const hostsInFlight = useRef(new Set<string>());
+  const pendingHosts = useRef(new Set<string>());
   const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const unmounted = useRef(false);
   /** hostId → when the poll may talk to it again. Entries for hosts nothing is
@@ -250,72 +253,88 @@ export function useRemoteAttachmentsLifecycle(): void {
    *  from a clean slate. */
   const backoff = useRef(new Map<string, BackoffEntry>());
   /** When the foreground catch-up last actually ran (#1391) — its own rate
-   *  limit. Not a substitute for inFlight/pending: those serialise rounds, this
-   *  one decides whether to ask for another at all. */
+   *  limit. Not a substitute for the per-host in-flight set: that serialises
+   *  each host's requests, this decides whether to ask for another at all. */
   const lastForegroundRefreshAt = useRef(0);
+
+  /** The attached hosts, with the backoff map pruned to them. */
+  const attachedHosts = useCallback((): string[] => {
+    // One workspacesList per HOST, not per attached workspace — several
+    // mirrors of the same machine share a single round trip.
+    const hostIds = [...new Set(useStore.getState().remoteWorkspaces.map((w) => w.hostId))];
+    for (const hostId of [...backoff.current.keys()]) {
+      if (!hostIds.includes(hostId)) backoff.current.delete(hostId);
+    }
+    return hostIds;
+  }, []);
 
   // Stable for the renderer's lifetime — it closes over refs only, so the
   // effects below can depend on it without ever re-subscribing. NEVER rejects:
   // each host is contained below, so no caller needs a rejection handler.
-  const refresh = useCallback(async (): Promise<void> => {
-    if (inFlight.current) {
-      pending.current = true;
-      return;
-    }
+  //
+  // `queueBusy`: whether a host still in flight gets one follow-up once it
+  // answers (exit events, new surfaces — triggers that carry information) or
+  // is skipped (ticks and focus — see `refreshTick`). `only` limits the round
+  // to those hosts. Resolves once every host THIS call started has answered.
+  const refreshHosts = useCallback(async (queueBusy: boolean, only?: ReadonlySet<string>): Promise<void> => {
     const remote = window.electronAPI?.remote;
     if (!remote) return;
-    inFlight.current = true;
-    try {
-      // One workspacesList per HOST, not per attached workspace — several
-      // mirrors of the same machine share a single round trip.
-      const hostIds = [...new Set(useStore.getState().remoteWorkspaces.map((w) => w.hostId))];
-      for (const hostId of [...backoff.current.keys()]) {
-        if (!hostIds.includes(hostId)) backoff.current.delete(hostId);
-      }
-      const now = Date.now();
-      const due = hostIds.filter((h) => (backoff.current.get(h)?.nextAttemptAt ?? 0) <= now);
+    const now = Date.now();
+    const due = attachedHosts().filter(
+      (h) => (!only || only.has(h)) && (backoff.current.get(h)?.nextAttemptAt ?? 0) <= now,
+    );
 
-      // PARALLEL: a host that is asleep burns the full request timeout, and
-      // serialising would make every healthy host wait behind it.
-      await Promise.all(due.map(async (hostId) => {
-        try {
-          const result = await fetchHost(remote, hostId);
-          if (unmounted.current) return;
-          noteHostResult(backoff.current, hostId, result);
-          applyHostResult(hostId, result);
-        } catch {
-          // One misbehaving host must never abort the round: the hosts queued
-          // behind it would be skipped, and on boot their descriptors would
-          // never be filled in at all.
+    const runHost = async (hostId: string): Promise<void> => {
+      hostsInFlight.current.add(hostId);
+      try {
+        const result = await fetchHost(remote, hostId);
+        if (unmounted.current) return;
+        noteHostResult(backoff.current, hostId, result);
+        applyHostResult(hostId, result);
+      } catch {
+        // One misbehaving host must never abort another host's round, and on
+        // boot their descriptors would never be filled in at all.
+      } finally {
+        hostsInFlight.current.delete(hostId);
+        if (pendingHosts.current.delete(hostId) && !unmounted.current) {
+          void refreshHosts(true, new Set([hostId]));
         }
-      }));
-    } finally {
-      inFlight.current = false;
-      if (pending.current && !unmounted.current) {
-        pending.current = false;
-        void refresh();
       }
+    };
+
+    // PARALLEL: a host that is asleep burns the full request timeout, and
+    // serialising would make every healthy host wait behind it.
+    const started: Promise<void>[] = [];
+    for (const hostId of due) {
+      if (hostsInFlight.current.has(hostId)) {
+        if (queueBusy) pendingHosts.current.add(hostId);
+        continue;
+      }
+      started.push(runHost(hostId));
     }
-  }, []);
+    await Promise.all(started);
+  }, [attachedHosts]);
+
+  const refresh = useCallback((): Promise<void> => refreshHosts(true), [refreshHosts]);
 
   /**
-   * A HEARTBEAT refresh (#1391). Dropped outright while a round is in flight,
-   * where `refresh` would coalesce it into a queued follow-up.
+   * A HEARTBEAT refresh (#1391). A host whose request is still in flight is
+   * skipped outright, where `refresh` would queue a follow-up for it.
    *
    * The difference matters because one round against an unreachable host can
    * take 20s — a `/api/config` probe timeout plus a `/api/workspaces` timeout —
-   * while ticks keep arriving every 10s. Queueing them would make the `finally`
-   * fire the next round the instant the last one ends, turning a backgrounded
-   * window with one sleeping host into a continuous request loop. Backoff does
-   * not save us: it only engages once a round COMPLETES and fails.
+   * while ticks keep arriving every 10s. Queueing them would ask that host
+   * again the instant its last request ends, turning a backgrounded window
+   * with one sleeping host into a continuous request loop. Backoff does not
+   * save us: it only engages once a request COMPLETES and fails. Every other
+   * host is still asked on this tick.
    *
    * An exit event or a new surface still queues, and should: those carry
    * information, and a tick carries none — the next one is 10s away.
    */
   const refreshTick = useCallback((): void => {
-    if (inFlight.current) return;
-    void refresh();
-  }, [refresh]);
+    void refreshHosts(false);
+  }, [refreshHosts]);
 
   /**
    * "The user is looking at this window again" (#1391). Refreshes now instead of
@@ -335,26 +354,27 @@ export function useRemoteAttachmentsLifecycle(): void {
    *     `failures` to 0, so the exponential ladder could never climb past one
    *     step while the user keeps switching windows — #1385's backoff, disarmed
    *     by a feature that is only supposed to skip one wait.
-   *   · the in-flight drop, for the reason spelled out on `refreshTick`. A round
-   *     against a sleeping host runs 20s while focus events keep arriving; if
-   *     these queued, the `finally` would start the next round the instant the
-   *     last one ended. The heartbeat path is guarded and this one has the same
-   *     exposure — `focus` is bound raw, so alt-tab, DevTools closing, a tray
-   *     show and a notification click all land here.
+   *   · the in-flight skip, for the reason spelled out on `refreshTick`. A
+   *     request to a sleeping host runs 20s while focus events keep arriving;
+   *     if these queued, that host would be asked again the instant its last
+   *     request ended. `focus` is bound raw, so alt-tab, DevTools closing, a
+   *     tray show and a notification click all land here.
    *   · its OWN clock. Deliberately not `refresh`'s: a tick round in which every
    *     host is backed off issues no request at all, and letting that count as
    *     "just refreshed" would swallow the next return to the window — which is
-   *     precisely the moment this function exists to serve.
+   *     precisely the moment this function exists to serve. Nor does a focus
+   *     that finds every host in flight count: it asked nothing.
    */
   const refreshForeground = useCallback((): void => {
-    if (inFlight.current) return;
+    const hostIds = attachedHosts();
+    if (hostIds.length > 0 && hostIds.every((h) => hostsInFlight.current.has(h))) return;
     if (Date.now() - lastForegroundRefreshAt.current < FOREGROUND_REFRESH_MIN_GAP_MS) return;
     lastForegroundRefreshAt.current = Date.now();
-    for (const entry of backoff.current.values()) {
-      if (!entry.authRejected && !entry.insecure) entry.nextAttemptAt = 0;
+    for (const [hostId, entry] of backoff.current) {
+      if (!entry.authRejected && !entry.insecure && !hostsInFlight.current.has(hostId)) entry.nextAttemptAt = 0;
     }
-    void refresh();
-  }, [refresh]);
+    void refreshHosts(false);
+  }, [attachedHosts, refreshHosts]);
 
   // ① Boot restore — once per renderer lifetime.
   useEffect(() => {

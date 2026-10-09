@@ -31,6 +31,14 @@ import type {
 } from '../../shared/remoteHosts';
 import { isRemoteAgentStatus, parseRemoteResumeInfo } from '../../shared/remoteHosts';
 import { isCredentialSafeOriginString } from '../../shared/remotePairInput';
+import {
+  REMOTE_LIMITS,
+  boundedRemoteString,
+  clampRemoteDimension,
+  clampRemoteGeometry,
+  remoteId,
+} from '../../shared/remoteLimits';
+import { readBoundedJson } from './readBoundedJson';
 
 export interface RemoteMetaEvent {
   attachId: string;
@@ -119,7 +127,7 @@ type ErrorBody = { error?: unknown; detail?: unknown } | null;
 /** Reads a failed response's JSON body once; null when it is not JSON. */
 async function readErrorBody(res: Response): Promise<ErrorBody> {
   try {
-    const body = (await res.json()) as unknown;
+    const body = await readBoundedJson(res, REMOTE_LIMITS.smallBodyBytes);
     return typeof body === 'object' && body !== null ? (body as ErrorBody) : null;
   } catch {
     return null;
@@ -132,8 +140,8 @@ function isCredentialRejection(status: number, body: ErrorBody): boolean {
 
 /** The host's own wording for a failure, else `fallback`. */
 function errorMessage(body: ErrorBody, fallback: string): string {
-  if (typeof body?.detail === 'string' && body.detail) return body.detail;
-  if (typeof body?.error === 'string' && body.error) return body.error;
+  if (typeof body?.detail === 'string' && body.detail) return body.detail.slice(0, 256);
+  if (typeof body?.error === 'string' && body.error) return body.error.slice(0, 256);
   return fallback;
 }
 
@@ -221,28 +229,43 @@ function backoffForAttempt(attempt: number): number {
  *
  *  So: normalise here, once, where every caller benefits. Anything that does
  *  not match the declared shape is DROPPED rather than passed on; a workspace
- *  with no usable id, or a pane with no sessionId, cannot be addressed anyway. */
-function normalizeWorkspaces(body: unknown): RemoteWorkspaceSummary[] {
+ *  with no usable id, or a pane with no sessionId, cannot be addressed anyway.
+ *
+ *  Bounded the same way (REMOTE_LIMITS): ids over the id length are dropped,
+ *  free text is cut to its limit, rows past the workspace and pane counts are
+ *  not read, and a repeated workspace or session id keeps its first row only,
+ *  so every key the renderer derives from this reply is unique. */
+export function normalizeWorkspaces(body: unknown): RemoteWorkspaceSummary[] {
   if (typeof body !== 'object' || body === null) return [];
   const list = (body as { workspaces?: unknown }).workspaces;
   if (!Array.isArray(list)) return [];
 
   const workspaces: RemoteWorkspaceSummary[] = [];
+  const seenWorkspaces = new Set<string>();
+  const seenSessions = new Set<string>();
   for (const rawWs of list) {
+    if (workspaces.length >= REMOTE_LIMITS.workspaces) break;
     if (typeof rawWs !== 'object' || rawWs === null) continue;
     const ws = rawWs as Record<string, unknown>;
-    if (typeof ws.id !== 'string' || !ws.id) continue;
+    const wsId = remoteId(ws.id);
+    if (!wsId || seenWorkspaces.has(wsId)) continue;
+    seenWorkspaces.add(wsId);
 
     const panes: RemotePaneSummary[] = [];
     if (Array.isArray(ws.panes)) {
       for (const rawPane of ws.panes) {
+        if (seenSessions.size >= REMOTE_LIMITS.panes) break;
         if (typeof rawPane !== 'object' || rawPane === null) continue;
         const pane = rawPane as Record<string, unknown>;
-        if (typeof pane.sessionId !== 'string' || !pane.sessionId) continue;
+        const sessionId = remoteId(pane.sessionId);
+        if (!sessionId || seenSessions.has(sessionId)) continue;
+        seenSessions.add(sessionId);
+        const shell = boundedRemoteString(pane.shell, REMOTE_LIMITS.shell);
+        const cwd = boundedRemoteString(pane.cwd, REMOTE_LIMITS.cwd);
         panes.push({
-          sessionId: pane.sessionId,
-          ...(typeof pane.shell === 'string' ? { shell: pane.shell } : {}),
-          ...(typeof pane.cwd === 'string' ? { cwd: pane.cwd } : {}),
+          sessionId,
+          ...(shell !== undefined ? { shell } : {}),
+          ...(cwd !== undefined ? { cwd } : {}),
           // #1163 — agent metadata is additive-optional (older hosts omit
           // both fields). The status is additionally whitelist-checked so a
           // NEWER host's unknown status degrades to "name only" instead of
@@ -251,7 +274,7 @@ function normalizeWorkspaces(body: unknown): RemoteWorkspaceSummary[] {
             ? {
                 // Capped: the value is another machine's output flowing into
                 // row text, title/aria labels, and per-tick string compares.
-                agentName: pane.agentName.slice(0, 256),
+                agentName: pane.agentName.slice(0, REMOTE_LIMITS.agentName),
                 ...(isRemoteAgentStatus(pane.agentStatus) ? { agentStatus: pane.agentStatus } : {}),
               }
             : {}),
@@ -271,9 +294,31 @@ function normalizeWorkspaces(body: unknown): RemoteWorkspaceSummary[] {
         });
       }
     }
-    workspaces.push({ id: ws.id, name: typeof ws.name === 'string' ? ws.name : '', panes });
+    workspaces.push({ id: wsId, name: boundedRemoteString(ws.name, REMOTE_LIMITS.workspaceName) ?? '', panes });
   }
   return workspaces;
+}
+
+type MetaFrame = { cols: number; rows: number; truncated?: boolean; omittedBytes?: number; resize?: boolean };
+
+/** A `meta` frame's fields, typed and bounded: geometry clamped into
+ *  1..geometryMax, the optional flags kept only when well-formed. Null when
+ *  the frame carries no usable geometry. */
+function parseMetaFrame(raw: unknown): MetaFrame | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  const cols = clampRemoteDimension(r.cols);
+  const rows = clampRemoteDimension(r.rows);
+  if (cols === null || rows === null) return null;
+  return {
+    cols,
+    rows,
+    ...(typeof r.truncated === 'boolean' ? { truncated: r.truncated } : {}),
+    ...(typeof r.omittedBytes === 'number' && Number.isSafeInteger(r.omittedBytes) && r.omittedBytes >= 0
+      ? { omittedBytes: r.omittedBytes }
+      : {}),
+    ...(r.resize === true ? { resize: true } : {}),
+  };
 }
 
 export class RemoteHostClient implements RemotePaneEvents {
@@ -358,12 +403,12 @@ export class RemoteHostClient implements RemotePaneEvents {
     }
     let body: unknown;
     try {
-      body = await res.json();
+      body = await readBoundedJson(res, REMOTE_LIMITS.smallBodyBytes);
     } catch {
       throw new Error('createWorkspace failed: response body was not JSON');
     }
-    const sessionId = (body as { id?: unknown } | null)?.id;
-    if (typeof sessionId !== 'string' || !sessionId) {
+    const sessionId = remoteId((body as { id?: unknown } | null)?.id);
+    if (!sessionId) {
       throw new Error('createWorkspace failed: response carried no session id');
     }
     return { sessionId };
@@ -427,6 +472,8 @@ export class RemoteHostClient implements RemotePaneEvents {
     rows: number,
   ): Promise<{ ok: true; cols: number; rows: number } | { ok: false; reason: string }> {
     if (this.insecure) return { ok: false, reason: 'insecure-transport' };
+    const requested = clampRemoteGeometry(cols, rows);
+    if (!requested) return { ok: false, reason: 'cols and rows must be finite numbers' };
     let res: Response;
     try {
       res = await this.fetchImpl(
@@ -434,7 +481,7 @@ export class RemoteHostClient implements RemotePaneEvents {
         {
           method: 'POST',
           headers: { ...this.authHeaders(), 'Content-Type': 'application/json' },
-          body: JSON.stringify({ cols, rows }),
+          body: JSON.stringify(requested),
           redirect: 'error',
           signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
         },
@@ -444,7 +491,7 @@ export class RemoteHostClient implements RemotePaneEvents {
     }
     let body: unknown;
     try {
-      body = await res.json();
+      body = await readBoundedJson(res, REMOTE_LIMITS.smallBodyBytes);
     } catch {
       body = null;
     }
@@ -454,13 +501,15 @@ export class RemoteHostClient implements RemotePaneEvents {
     }
     if (!res.ok) {
       const parsed = body as { error?: string; detail?: string } | null;
-      return { ok: false, reason: parsed?.error ?? parsed?.detail ?? `HTTP ${res.status}` };
+      const reason = parsed?.error ?? parsed?.detail;
+      return { ok: false, reason: typeof reason === 'string' && reason ? reason.slice(0, 256) : `HTTP ${res.status}` };
     }
     const parsed = body as { cols?: unknown; rows?: unknown } | null;
-    if (typeof parsed?.cols !== 'number' || typeof parsed?.rows !== 'number') {
+    const applied = clampRemoteGeometry(parsed?.cols, parsed?.rows);
+    if (!applied) {
       return { ok: false, reason: 'resizeSession: response carried no geometry' };
     }
-    return { ok: true, cols: parsed.cols, rows: parsed.rows };
+    return { ok: true, ...applied };
   }
 
   async listWorkspaces(): Promise<RemoteWorkspacesResponse> {
@@ -481,7 +530,7 @@ export class RemoteHostClient implements RemotePaneEvents {
     }
     let body: unknown;
     try {
-      body = await res.json();
+      body = await readBoundedJson(res, REMOTE_LIMITS.workspacesBodyBytes);
     } catch {
       throw new Error('listWorkspaces failed: response body was not JSON');
     }
@@ -736,19 +785,24 @@ export class RemoteHostClient implements RemotePaneEvents {
       for (;;) {
         const { done, value } = await reader.read();
         if (done || superseded()) return;
-        // Reset the backoff schedule only once a frame has actually
-        // arrived — resetting it right after headers (connect-only, no
-        // data) would let a server that accepts the request then drops
-        // before sending anything retry forever, since the counter never
-        // gets a chance to climb past MAX_RECONNECT_ATTEMPTS.
-        attachment.reconnectAttempt = 0;
         buffer += decoder.decode(value, { stream: true });
         let sepIndex: number;
         while ((sepIndex = buffer.indexOf('\n\n')) !== -1) {
           const rawFrame = buffer.slice(0, sepIndex);
           buffer = buffer.slice(sepIndex + 2);
-          this.handleFrame(attachment, rawFrame);
+          // Reset the backoff schedule only once an event frame has actually
+          // been dispatched — resetting it right after headers, or on any
+          // chunk, would let a server that accepts the request and then never
+          // completes a frame retry forever, since the counter never gets a
+          // chance to climb past MAX_RECONNECT_ATTEMPTS.
+          if (this.handleFrame(attachment, rawFrame)) attachment.reconnectAttempt = 0;
           if (superseded()) return;
+        }
+        if (buffer.length > REMOTE_LIMITS.streamBufferBytes) {
+          // A frame larger than any the host sends is not one to keep
+          // buffering: drop this stream and let the bounded retry decide.
+          await reader.cancel().catch(() => { /* already closed */ });
+          throw new Error('stream frame exceeds the size limit');
         }
       }
     } finally {
@@ -756,7 +810,8 @@ export class RemoteHostClient implements RemotePaneEvents {
     }
   }
 
-  private handleFrame(attachment: Attachment, rawFrame: string): void {
+  /** Returns whether the frame was an event (not a comment or heartbeat). */
+  private handleFrame(attachment: Attachment, rawFrame: string): boolean {
     const lines = rawFrame.split('\n');
     let event: string | null = null;
     const dataLines: string[] = [];
@@ -768,20 +823,24 @@ export class RemoteHostClient implements RemotePaneEvents {
         dataLines.push(line.slice('data:'.length).replace(/^ /, ''));
       }
     }
-    if (event === null) return; // pure comment frame, nothing to dispatch
+    if (event === null) return false; // pure comment frame, nothing to dispatch
     const data = dataLines.join('\n');
+    this.dispatchFrame(attachment, event, data);
+    return true;
+  }
+
+  private dispatchFrame(attachment: Attachment, event: string, data: string): void {
 
     switch (event) {
       case 'meta': {
-        let parsed: {
-          cols: number; rows: number;
-          truncated?: boolean; omittedBytes?: number; resize?: boolean;
-        };
+        let raw: unknown;
         try {
-          parsed = JSON.parse(data);
+          raw = JSON.parse(data);
         } catch {
           return; // malformed frame — drop rather than crash the pump
         }
+        const parsed = parseMetaFrame(raw);
+        if (!parsed) return; // no usable geometry — drop the frame
         // Geometry-only: the daemon marks the mid-stream form, which has no
         // snapshot behind it. Dispatch it straight through so the mirror
         // resizes its grid WITHOUT resetting and losing its scrollback.

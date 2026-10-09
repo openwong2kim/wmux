@@ -1580,3 +1580,39 @@ describe('remote.handler — hostsAdd names needs-HTTPS, never "could not reach"
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 });
+
+describe('remote.handler — bounds on what a host sends', () => {
+  it('a remote toast never names a local pane or workspace, whatever ids the event carries', async () => {
+    const { toastManager } = await import('../../../notification/ToastManager');
+    const show = vi.spyOn(toastManager, 'show').mockImplementation(() => undefined);
+    const host: RemoteHost = { id: 'h1', label: 'office-mac', origin: 'https://box:9600', token: 't', addedAt: 0 };
+    let fire: ((label: string, n: unknown) => void) | undefined;
+    registerRemoteHandlers({
+      store: fakeStore([host]) as never,
+      attachments: fakeAttachments([{ key: 'h1:ws-1', hostId: 'h1', hostLabel: 'office-mac', workspaceId: 'ws-1', name: 'w' }]) as never,
+      fetchImpl: vi.fn() as unknown as typeof fetch,
+      attentionSubscriberFactory: ((_h: RemoteHost, onNotification: (label: string, n: unknown) => void) => {
+        fire = onNotification;
+        return { start: vi.fn(), stop: vi.fn() };
+      }) as never,
+    });
+    // A session id that collides with a local pty id is still only a remote id.
+    fire?.('office-mac', { sessionId: 'local-pty-1', title: 'Approval needed', body: 'x', type: 'warning', category: 'approval' });
+    expect(show).toHaveBeenCalledWith('office-mac · Approval needed', 'x', { ptyId: null, workspaceId: null });
+    show.mockRestore();
+  });
+
+  it('probe refuses an oversized /api/config body', async () => {
+    const big = new Response(`{"allowInput":true,"pad":"${'x'.repeat(200 * 1024)}"}`);
+    const fetchImpl = vi.fn(async () => big);
+    registerRemoteHandlers({ store: fakeStore() as never, attachments: fakeAttachments() as never, fetchImpl: fetchImpl as unknown as typeof fetch });
+    const res = await getHandler(IPC.REMOTE_HOSTS_ADD)({}, 'https://box:9600?token=t') as { ok: boolean; error?: string };
+    expect(res).toEqual({ ok: false, error: "that machine's wmux is too old for remote attach" });
+  });
+
+  it('resize request refuses non-finite geometry before reaching the host', async () => {
+    registerRemoteHandlers({ store: fakeStore() as never, attachments: fakeAttachments() as never, fetchImpl: vi.fn() as unknown as typeof fetch });
+    const res = await getHandler(IPC.REMOTE_PANE_RESIZE_REQUEST)({}, 'a1', Number.NaN, 24);
+    expect(res).toEqual({ ok: false, reason: 'cols and rows must be numbers' });
+  });
+});

@@ -243,3 +243,15 @@ describe('RemoteAttentionSubscriber', () => {
     expect(seen).toEqual(['one']);
   });
 });
+
+describe('RemoteAttentionGate — bounds', () => {
+  it('drops an event whose epoch or session id is over the id bound', () => {
+    const gate = new RemoteAttentionGate();
+    gate.beginStream();
+    gate.consume('reset', JSON.stringify({ epoch: 'e1', headId: 0 }));
+    const long = 'e'.repeat(10_000);
+    expect(gate.consume('notify', JSON.stringify({ sessionId: 's', body: 'b', epoch: long, id: 1 }))).toBeNull();
+    expect(gate.consume('notify', JSON.stringify({ sessionId: long, body: 'b', epoch: 'e1', id: 2 }))).toBeNull();
+    expect(gate.consume('notify', JSON.stringify({ sessionId: 's', body: 'b', epoch: 'e1', id: 3 }))).not.toBeNull();
+  });
+});
