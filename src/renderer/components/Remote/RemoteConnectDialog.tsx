@@ -29,6 +29,8 @@ export type ConnectTab = 'invite' | 'paste';
 
 /** How often the open invite is checked for a PC that redeemed it. */
 export const CONNECT_PAIR_POLL_MS = 2_000;
+/** Ticks an invite that went away before its expiry is still watched for the PC that redeemed it. */
+export const CONNECT_REDEEM_GRACE_TICKS = 3;
 
 const A2A_INVITE_RE = /^wmux-a2a:\/\//i;
 
@@ -127,8 +129,10 @@ export default function RemoteConnectDialog({ initialTab, onClose, onLinkPane, o
         if (mounted.current) setInviteError(status.lastError ?? t('settings.a2aRemoteActionFailed'));
         return;
       }
+      // By pairing (peerId), not by PC: a PC that pairs again under this
+      // invite keeps its hostId but gets a new peerId.
       const peers = await api.peersList().catch(() => null);
-      knownPeers.current = new Set((peers?.peers ?? []).filter((p) => p.revokedAt === undefined).map((p) => p.hostId));
+      knownPeers.current = new Set((peers?.peers ?? []).map((p) => p.peerId));
       const text = await invite.create();
       if (!mounted.current) return;
       if (!text) { setInviteError(t('settings.a2aRemoteActionFailed')); return; }
@@ -150,8 +154,17 @@ export default function RemoteConnectDialog({ initialTab, onClose, onLinkPane, o
   // that PC's checklist. The invite going inactive with no new PC means it
   // expired or was burned; the countdown line says so.
   const open = invite.invite !== null;
+  const expiresRef = useRef<number | null>(null);
+  expiresRef.current = invite.expiresAt;
   useEffect(() => {
     if (!open || !api) return;
+    // The daemon consumes the invite before it has stored the new PC's
+    // pairing (a key derivation sits in between), so a tick can see the
+    // invite gone and the PC not there yet. An invite that went away before
+    // its expiry was most likely redeemed: keep looking for a few ticks (an
+    // invite burned by wrong codes reads the same, and shows as gone a little
+    // later).
+    let graceTicks = CONNECT_REDEEM_GRACE_TICKS;
     const timer = window.setInterval(() => {
       void (async () => {
         try {
@@ -159,12 +172,16 @@ export default function RemoteConnectDialog({ initialTab, onClose, onLinkPane, o
           if (pair.active) { applyPairStatus(pair); return; }
           const peers = await api.peersList();
           if (!mounted.current) return;
-          applyPairStatus(pair);
-          const fresh = (peers?.peers ?? []).find((p) => p.revokedAt === undefined && !knownPeers.current?.has(p.hostId));
+          const fresh = (peers?.peers ?? []).find((p) => p.revokedAt === undefined && !knownPeers.current?.has(p.peerId));
           if (fresh) {
+            applyPairStatus(pair);
             setJoined({ hostId: fresh.hostId, name: fresh.name });
             void refreshA2aRemote();
+            return;
           }
+          const beforeExpiry = expiresRef.current !== null && Date.now() < expiresRef.current;
+          if (beforeExpiry && graceTicks > 0) { graceTicks -= 1; return; }
+          applyPairStatus(pair);
         } catch {
           /* the daemon is away; the next tick tries again */
         }

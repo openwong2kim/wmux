@@ -8,14 +8,22 @@ import type { A2aRemoteFeed } from '../stores/slices/a2aRemoteSlice';
  */
 export const A2A_HELD_POLL_MS = 30_000;
 
-/** Refreshes started, and the newest one whose answers were applied. */
+type FeedList = 'links' | 'hosts' | 'held' | 'joined' | 'peers';
+const FEED_LISTS: readonly FeedList[] = ['links', 'hosts', 'held', 'joined', 'peers'];
+
+/**
+ * Refreshes started, and per list the newest refresh whose answer was
+ * applied. Per list, because a held-only poll must not make an older full
+ * refresh still in flight drop its links and hosts.
+ */
 let started = 0;
-let applied = 0;
+const appliedAt: Record<FeedList, number> = { links: 0, hosts: 0, held: 0, joined: 0, peers: 0 };
 
 /** Forget everything read so far: the daemon is gone, so nothing in it can be acted on. */
 export function resetA2aRemote(): void {
   // A read still in flight from before the reset must not bring it back.
-  applied = ++started;
+  const generation = ++started;
+  for (const key of FEED_LISTS) appliedAt[key] = generation;
   useStore.getState().setA2aRemote({ links: [], hosts: [], held: [], joined: [], peers: [], loaded: false });
 }
 
@@ -31,13 +39,14 @@ export async function refreshA2aRemote(only?: 'held'): Promise<void> {
   const api = window.electronAPI?.a2aRemote;
   if (!api?.linksList) return;
   const generation = ++started;
-  const patch: Partial<A2aRemoteFeed> = {};
+  const patch: Partial<Pick<A2aRemoteFeed, FeedList>> = {};
+  let answered = false;
   let failed = 0;
   const read = async <T>(call: (() => Promise<T>) | undefined, apply: (v: T) => void): Promise<void> => {
     if (!call) return;
     try {
       apply(await call());
-      patch.loaded = true;
+      answered = true;
     } catch {
       failed++;
     }
@@ -53,13 +62,20 @@ export async function refreshA2aRemote(only?: 'held'): Promise<void> {
       }),
     ]),
   ]);
-  if (generation < applied) return;
-  applied = generation;
-  if (!patch.loaded && failed > 0) {
-    resetA2aRemote();
+  if (!answered && failed > 0) {
+    // Every read failed: the daemon is away. Only a full refresh says so (one
+    // held read failing says little), and only when nothing newer has landed.
+    if (only !== 'held' && FEED_LISTS.every((key) => appliedAt[key] < generation)) resetA2aRemote();
     return;
   }
-  if (Object.keys(patch).length > 0) useStore.getState().setA2aRemote(patch);
+  // Each list takes this answer only when no newer refresh already applied it.
+  const fresh: Partial<A2aRemoteFeed> = {};
+  for (const key of FEED_LISTS) {
+    if (patch[key] === undefined || appliedAt[key] > generation) continue;
+    appliedAt[key] = generation;
+    Object.assign(fresh, { [key]: patch[key] });
+  }
+  if (Object.keys(fresh).length > 0) useStore.getState().setA2aRemote({ ...fresh, loaded: true });
 }
 
 /**

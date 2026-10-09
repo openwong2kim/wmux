@@ -135,6 +135,30 @@ describe('Remote rail badge', () => {
     expect(useStore.getState().a2aRemote.links).toEqual([]);
   });
 
+  it('a held-only poll that lands first does not make an older full refresh drop its links', async () => {
+    let releaseLinks: (v: unknown) => void = () => undefined;
+    api.linksList.mockImplementationOnce(() => new Promise((r) => { releaseLinks = r; }));
+    const full = refreshA2aRemote();
+    api.heldList.mockResolvedValueOnce({ tasks: [task()] });
+    await act(async () => { await refreshA2aRemote('held'); });
+    expect(useStore.getState().a2aRemote.held).toHaveLength(1);
+    await act(async () => { releaseLinks({ links: [link('a', 'proposed-in')] }); await full; });
+    // The new request reaches the badge; the held list stays the newer one.
+    expect(useStore.getState().a2aRemote.links.map((l) => l.linkId)).toEqual(['a']);
+    expect(useStore.getState().a2aRemote.held).toHaveLength(1);
+  });
+
+  it('a held-only read that fails leaves the rest of the feed alone', async () => {
+    await act(async () => root.render(<><Bridge /><MiniSidebar rail collapsed={false} /></>));
+    await act(async () => { await Promise.resolve(); });
+    expect(badge()?.textContent).toBe('1');
+    api.heldList.mockRejectedValueOnce(new Error('timeout'));
+    await act(async () => { await refreshA2aRemote('held'); });
+    expect(badge()?.textContent).toBe('1');
+    expect(useStore.getState().a2aRemote.loaded).toBe(true);
+    expect(useStore.getState().a2aRemote.links).toHaveLength(2);
+  });
+
   it('clears the feed, and the badge, when the daemon goes away or every read fails', async () => {
     await act(async () => root.render(<><Bridge /><MiniSidebar rail collapsed={false} /></>));
     await act(async () => { await Promise.resolve(); });

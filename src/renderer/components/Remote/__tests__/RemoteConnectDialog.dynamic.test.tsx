@@ -9,7 +9,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { useStore } from '../../../stores';
-import RemoteConnectDialog, { CONNECT_PAIR_POLL_MS, maskPasted, pastedKind } from '../RemoteConnectDialog';
+import RemoteConnectDialog, { CONNECT_PAIR_POLL_MS, CONNECT_REDEEM_GRACE_TICKS, maskPasted, pastedKind } from '../RemoteConnectDialog';
 import { COPIED_MS } from '../../../hooks/useA2aInvite';
 
 const INVITE = 'wmux-a2a://desk.tail1.ts.net:45660/K7M2QX9P#A7:0D:5E:91';
@@ -166,5 +166,60 @@ describe('Connect a PC dialog', () => {
     expect(a2a.exposureGet).toHaveBeenCalledWith(HOST);
     expect(a2a.exposureSet).not.toHaveBeenCalled();
     expect([...joined!.querySelectorAll('[role="checkbox"]')].some((c) => c.getAttribute('aria-checked') === 'true')).toBe(false);
+  });
+
+  const tick = async () => {
+    await act(async () => { vi.advanceTimersByTime(CONNECT_PAIR_POLL_MS); });
+    for (let i = 0; i < 6; i++) await act(async () => { await Promise.resolve(); });
+  };
+  const redeemed = () => a2a.pairStatus.mockResolvedValue({ active: false, expiresAt: null, attemptsLeft: 0, lockedUntil: null });
+
+  it('a PC that pairs again (same hostId, new pairing) still gets its checklist', async () => {
+    stub('');
+    // That PC removed this one on its side only: its old pairing here is still live.
+    a2a.peersList.mockResolvedValue({ peers: [{ v: 1, peerId: 'p0', hostId: HOST, name: 'DESK', createdAt: '' }] });
+    await render({ initialTab: 'invite' });
+    redeemed();
+    a2a.peersList.mockResolvedValue({ peers: [
+      { v: 1, peerId: 'p0', hostId: HOST, name: 'DESK', createdAt: '', revokedAt: '2026-10-09T00:00:00.000Z' },
+      { v: 1, peerId: 'p1', hostId: HOST, name: 'DESK', createdAt: '' },
+    ] });
+    await tick();
+    expect(q('remote-connect-joined')?.textContent).toContain('DESK joined');
+  });
+
+  it('keeps looking when the invite is gone before the new PC is stored', async () => {
+    stub('');
+    await render({ initialTab: 'invite' });
+    redeemed();
+    // The daemon consumed the code and is still deriving the new PC's key.
+    await tick();
+    expect(q('remote-connect-joined')).toBeNull();
+    expect(q('remote-connect-code')?.textContent).toBe(INVITE);
+    a2a.peersList.mockResolvedValue({ peers: [{ v: 1, peerId: 'p1', hostId: HOST, name: 'DESK', createdAt: '' }] });
+    await tick();
+    expect(q('remote-connect-joined')?.textContent).toContain('DESK joined');
+  });
+
+  it('an invite gone with nobody joining is let go after the grace ticks, and at once once it expired', async () => {
+    stub('');
+    await render({ initialTab: 'invite' });
+    redeemed();
+    for (let i = 0; i < CONNECT_REDEEM_GRACE_TICKS; i++) await tick();
+    expect(q('remote-connect-code')).not.toBeNull();
+    await tick();
+    expect(q('remote-connect-code')).toBeNull();
+    expect(q('remote-connect-new-code')).not.toBeNull();
+    expect(q('remote-connect-joined')).toBeNull();
+
+    act(() => root.unmount());
+    root = createRoot(container);
+    stub('');
+    a2a.pairBegin.mockResolvedValue({ invite: INVITE, expiresAt: Date.now() + 1_000, addresses: [], tailnet: [] });
+    await render({ initialTab: 'invite' });
+    redeemed();
+    await tick();
+    expect(q('remote-connect-code')).toBeNull();
+    expect(q('remote-connect-new-code')).not.toBeNull();
   });
 });

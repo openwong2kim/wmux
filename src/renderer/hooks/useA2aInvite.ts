@@ -28,6 +28,8 @@ export interface A2aInviteState {
   /** Those of `addresses` that are this PC's tailnet addresses. */
   tailnet: string[];
   remainingSec: number | null;
+  /** When the open invite expires (epoch ms), or null with none open. */
+  expiresAt: number | null;
   lockedSec: number | null;
   copied: boolean;
   /** The last create / cancel / copy failed. */
@@ -149,6 +151,7 @@ export function useA2aInvite(): A2aInviteState {
     addresses,
     tailnet,
     remainingSec: deadline != null ? Math.ceil((deadline - now) / 1000) : null,
+    expiresAt: deadline,
     lockedSec: lockedUntil != null ? Math.ceil((lockedUntil - now) / 1000) : null,
     copied,
     failed,
