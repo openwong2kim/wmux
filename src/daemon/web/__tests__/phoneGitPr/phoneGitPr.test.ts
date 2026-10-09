@@ -56,6 +56,8 @@ describe('phone pr.create and pr.merge', { timeout: 30_000 }, () => {
   const gh: PrGhRunner = async (args, opts) => {
     calls.push({ args: [...args], ...(opts.input !== undefined ? { input: opts.input } : {}) });
     expect(opts.env.GH_TOKEN).toBe('gho_octo');
+    // Never the session's checkout: on Windows a gh.exe there would run first.
+    expect(opts).not.toHaveProperty('cwd');
     if (args[0] === 'pr' && args[1] === 'merge') return onMerge();
     if (args[0] === 'api' && args.includes('POST')) return onCreate();
     const query = args.find((a) => a.startsWith('query=')) ?? '';

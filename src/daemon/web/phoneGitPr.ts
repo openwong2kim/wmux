@@ -35,11 +35,17 @@ export type PrGhResult =
   /** `spawned: false`: gh never started (not installed), so nothing reached GitHub. */
   | { ok: false; spawned: boolean; stdout: string; stderr: string };
 
-export type PrGhRunner = (args: readonly string[], opts: { cwd: string; env: NodeJS.ProcessEnv; input?: string; timeoutMs: number }) => Promise<PrGhResult>;
+/**
+ * No `cwd`: every call names its repository, so gh never runs in the session's
+ * checkout. On Windows a bare `gh` is looked up in the working directory before
+ * PATH, so a `gh.exe` committed to the repository root would otherwise be
+ * started with the write token in its environment.
+ */
+export type PrGhRunner = (args: readonly string[], opts: { env: NodeJS.ProcessEnv; input?: string; timeoutMs: number }) => Promise<PrGhResult>;
 
 const runGh: PrGhRunner = (args, opts) => new Promise((resolve) => {
   const child = execFile('gh', [...args], {
-    cwd: opts.cwd, env: opts.env, timeout: opts.timeoutMs, maxBuffer: GH_MAX_BUFFER, windowsHide: true,
+    env: opts.env, timeout: opts.timeoutMs, maxBuffer: GH_MAX_BUFFER, windowsHide: true,
   }, (error, stdout, stderr) => {
     if (!error) return resolve({ ok: true, stdout: String(stdout) });
     resolve({ ok: false, spawned: (error as NodeJS.ErrnoException).code !== 'ENOENT', stdout: String(stdout ?? ''), stderr: String(stderr ?? '') });
@@ -189,7 +195,7 @@ export function createPhoneGitPrHandlers(deps: PhoneGitPrDeps = {}): { create: P
   async function call(ctx: GitWriteSessionContext, args: string[], timeoutMs: number, input?: string): Promise<PrGhResult & { failure?: GhFailure }> {
     const until = breaker.retryAt(GITHUB_HOST);
     if (until !== null) throw new Refusal({ error: 'rate-limited', retryAt: until });
-    const out = await gh(args, { cwd: ctx.cwd, env: ctx.ghEnv, timeoutMs, ...(input !== undefined ? { input } : {}) });
+    const out = await gh(args, { env: ctx.ghEnv, timeoutMs, ...(input !== undefined ? { input } : {}) });
     if (out.ok) {
       breaker.reset(GITHUB_HOST);
       return out;
