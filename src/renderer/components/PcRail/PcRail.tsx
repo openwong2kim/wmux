@@ -7,61 +7,11 @@ import { IconBell, IconComputer, IconServer, IconX } from '../icons';
 import PaneActionsMenu, { PANE_ACTIONS_MENU_WIDTH, type PaneActionItem } from '../Pane/PaneActionsMenu';
 import { selectFleetSectionCounts } from '../../stores/selectors/fleet';
 import { selectActivePcId, selectPcRailHosts, selectPcRailVisible } from '../../stores/selectors/pcRail';
-import { LOCAL_PC_ID, isPcRailFeedStale, type PcRailHost, type PcRailHostFeed } from '../../../shared/pcRail';
-import { timeAgo } from '../../utils/timeAgo';
-import { badgeText, monogram, pcBadge, pcIconState, type PcBadge } from './pcRailModel';
+import { LOCAL_PC_ID } from '../../../shared/pcRail';
+import { accessLines, badgeText, hostSummary, monogram, pcBadge, pcIconState, type PcBadge } from './pcRailModel';
 
 /** Column width; the titlebar segment widens by the same amount. */
 export const PC_RAIL_WIDTH = 48;
-
-type Translate = ReturnType<typeof useT>;
-
-function clockTime(at: number): string {
-  return new Date(at).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
-}
-
-/**
- * The host's name plus every state the icon draws, one per line: the
- * tooltip and the accessible description say the same thing.
- */
-export function hostSummary(host: PcRailHost, feed: PcRailHostFeed | undefined, t: Translate, now = Date.now()): string[] {
-  const lines = [host.label];
-  const state = pcIconState(host);
-  if (state === 'online') {
-    lines.push(t('pcRail.online'));
-    if (feed && feed.workspaces.length === 0) lines.push(t('pcRail.noWorkspaces', { name: host.label }));
-  } else if (state === 'unchecked') lines.push(t('pcRail.notChecked'));
-  else if (state === 'offline') {
-    lines.push(host.lastSeenAt !== null ? t('pcRail.offlineLastSeen', { time: clockTime(host.lastSeenAt) }) : t('pcRail.offline'));
-  } else if (state === 'needs-repair') lines.push(t('pcRail.needsRepair', { name: host.label }));
-  else lines.push(t('pcRail.insecure'));
-  if (feed && isPcRailFeedStale(feed) && feed.fetchedAt !== null && state !== 'offline') {
-    lines.push(t('pcRail.updatedAgo', { time: timeAgo(feed.fetchedAt, now) }));
-  }
-  if (host.attention.needsYou > 0) lines.push(t('pcRail.needsYouCount', { count: host.attention.needsYou }));
-  if (host.attention.finished > 0) lines.push(t('pcRail.finishedCount', { count: host.attention.finished }));
-  // An unreachable host keeps its last-known counts; say how old they are.
-  if (state === 'offline' && host.lastSeenAt !== null && (host.attention.needsYou > 0 || host.attention.finished > 0)) {
-    lines.push(t('pcRail.asOf', { time: clockTime(host.lastSeenAt) }));
-  }
-  if (host.muted) lines.push(t('pcRail.muted'));
-  if (host.tokenKind === 'operator') lines.push(t('pcRail.operatorToken'));
-  return lines;
-}
-
-/**
- * What the PC menu says about this computer's access to `host`: view only or
- * can type, and how to take it back. An operator-link host is not a paired
- * device over there, so it gets the operator note instead of the revoke hint.
- */
-export function accessLines(host: PcRailHost, t: Translate): string[] {
-  const lines: string[] = [];
-  if (host.allowInput !== undefined) lines.push(host.allowInput ? t('pcRail.access.canType') : t('pcRail.access.viewOnly'));
-  lines.push(host.tokenKind === 'operator'
-    ? t('pcRail.operatorTokenHint', { name: host.label })
-    : t('pcRail.access.revokeHint', { name: host.label }));
-  return lines;
-}
 
 function Badge({ badge }: { badge: PcBadge }) {
   if (badge.kind === 'needs-you') {
