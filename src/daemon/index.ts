@@ -160,7 +160,7 @@ import { TranscriptActivityWatcher } from './transcript/TranscriptActivityWatche
 import { TranscriptDiscovery, DISCOVERABLE_AGENT } from './transcript/TranscriptDiscovery';
 import { admitCodexCapture, gateCodexStop } from './transcript/codexCapture';
 import { CodexCwdBinder, codexLiveFor, describeCodexPane, readProcessStartMs, type CodexPaneFacts } from './transcript/codexRolloutByCwd';
-import { commandLineBinding } from './transcript/agentCommandLineBinding';
+import { commandLineBinding, settleStoppedBinding } from './transcript/agentCommandLineBinding';
 import { PushSender } from './push/PushSender';
 import { RelayTransport } from './push/RelayTransport';
 import { LiveActivityPusher, type LiveActivityCounts } from './push/LiveActivityPusher';
@@ -2140,6 +2140,19 @@ async function recoverSessions(
     const managed = sessionManager.getSession(recoveredId);
     if (!managed) continue;
     const m = managed.meta;
+    // Every recovered agent has stopped, so a binding still waiting for its
+    // transcript (a pinned `--session-id` that never got a turn) is settled
+    // now: it gains the transcript its id names, or it is dropped and the pill
+    // opens the session picker instead of a `--resume` that finds nothing.
+    // A WSL pane's transcripts live in the distro, which this process does not scan.
+    if (m.resumeBinding && !m.wslTarget && !isWslShell(m.cmd)) {
+      const settled = settleStoppedBinding(m.resumeBinding, m.env);
+      if (settled !== m.resumeBinding) {
+        log('info', `[resume] ${recoveredId}: ${m.resumeBinding.agent} conversation ${m.resumeBinding.sessionId} ${settled ? 'has its transcript now' : 'was never written; offering the session picker'}`);
+        if (settled) m.resumeBinding = settled;
+        else delete m.resumeBinding;
+      }
+    }
     const offer = resumeOfferForRecovered(m);
     if (!offer) continue;
     recoveredAgentShellIds.set(recoveredId, offer as AgentSlug);
@@ -3066,14 +3079,19 @@ function registerRpcHandlers(
         // conversation this shell has nothing to do with. (The cwd guard below
         // already refuses it; the meta assignment did not.)
         if (!startFresh) {
-          promotedSession.meta.resumeBinding = session.resumeBinding;
+          // Its agent stopped with the suspended pane: settle a binding still
+          // waiting for its transcript, as recovery does.
+          const settled = session.resumeBinding && !isWslShell(session.cmd)
+            ? settleStoppedBinding(session.resumeBinding, session.env)
+            : session.resumeBinding;
+          promotedSession.meta.resumeBinding = settled ?? undefined;
           promotedSession.meta.lastDetectedAgent = session.lastDetectedAgent;
           promotedSession.meta.codexRelayResume = session.codexRelayResume;
           const offer = resumeOfferForRecovered(promotedSession.meta);
           if (offer) recoveredAgentShellIds.set(sessionId, offer as AgentSlug);
-          if (isUsableResumeBinding(session.resumeBinding) && normalizeResumeCwd(session.resumeBinding.cwd) === normalizeResumeCwd(promotedSession.meta.cwd)
-            && (isWslShell(session.cmd) || bindingTranscriptLives(session.resumeBinding))) {
-            recoveredResumeBindings.set(sessionId, session.resumeBinding);
+          if (isUsableResumeBinding(settled) && normalizeResumeCwd(settled.cwd) === normalizeResumeCwd(promotedSession.meta.cwd)
+            && (isWslShell(session.cmd) || bindingTranscriptLives(settled))) {
+            recoveredResumeBindings.set(sessionId, settled);
           }
         }
       }

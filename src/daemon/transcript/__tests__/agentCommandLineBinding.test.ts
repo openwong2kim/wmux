@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { commandLineBinding, sessionFromCommandLine } from '../agentCommandLineBinding';
+import { commandLineBinding, sessionFromCommandLine, settleStoppedBinding } from '../agentCommandLineBinding';
 
 const ID = '0199a1b2-3c4d-7e5f-8a9b-0c1d2e3f4a5b';
 const UP = ID.toUpperCase();
@@ -170,5 +170,34 @@ describe('commandLineBinding — validates against the exact transcript', () => 
       expect(commandLineBinding('claude', pinned, '/work', env(), { prev: hook(1) })).toBeUndefined();
       expect(commandLineBinding('claude', pinned, '/work', env(), { now: 9 })?.ts).toBe(9);
     });
+  });
+});
+
+// A pinned Claude that stopped before its first turn wrote no conversation:
+// recovery must not offer `claude --resume <pin>` ("No conversation found").
+describe('settleStoppedBinding — a stopped agent writes nothing more', () => {
+  let home: string;
+  beforeEach(() => { home = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-settle-')); });
+  afterEach(() => { fs.rmSync(home, { recursive: true, force: true }); });
+  const pinned = { agent: 'claude', sessionId: ID, cwd: '/work', ts: 7 };
+
+  it('drops a path-less binding whose conversation was never written', () => {
+    expect(settleStoppedBinding(pinned, { CLAUDE_CONFIG_DIR: home })).toBeNull();
+    expect(settleStoppedBinding({ ...pinned, agent: 'codex' }, { CODEX_HOME: home })).toBeNull();
+  });
+
+  it('adopts the transcript a path-less binding names', () => {
+    const dir = path.join(home, 'projects', '-work');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, `${ID}.jsonl`), '{}\n');
+    const settled = settleStoppedBinding(pinned, { CLAUDE_CONFIG_DIR: home });
+    expect(settled).toEqual({ ...pinned, transcriptPath: expect.stringContaining(`${ID}.jsonl`) });
+  });
+
+  it('leaves a binding with a path, or of an agent without file transcripts, as it is', () => {
+    const withPath = { ...pinned, transcriptPath: path.join(home, 'gone.jsonl') };
+    expect(settleStoppedBinding(withPath, { CLAUDE_CONFIG_DIR: home })).toBe(withPath);
+    const other = { ...pinned, agent: 'gemini' };
+    expect(settleStoppedBinding(other, { CLAUDE_CONFIG_DIR: home })).toBe(other);
   });
 });

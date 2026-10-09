@@ -226,6 +226,23 @@ const FIND_TRANSCRIPT: Readonly<Record<string, (id: string, env?: Record<string,
 };
 
 /**
+ * Settle a binding whose agent has stopped (every agent of a recovered pane
+ * has). A binding recorded before its conversation was written carries no
+ * transcript path: a pinned `--session-id`, or a SessionStart without one. Its
+ * id names a conversation only if the agent wrote one before it stopped, and a
+ * stopped agent writes nothing more. Returns the binding with the transcript
+ * its id names, or `null` when there is none: `--resume <id>` would answer "No
+ * conversation found", so the pane offers the session picker instead. A
+ * binding that already has a path, or whose agent keeps no file transcript, is
+ * returned unchanged.
+ */
+export function settleStoppedBinding(binding: ResumeBinding, env?: Record<string, string>): ResumeBinding | null {
+  if (binding.transcriptPath || !Object.hasOwn(FIND_TRANSCRIPT, binding.agent)) return binding;
+  const transcriptPath = FIND_TRANSCRIPT[binding.agent](binding.sessionId, env);
+  return transcriptPath ? { ...binding, transcriptPath } : null;
+}
+
+/**
  * The binding `cmdline` proves for a pane whose agent runs in `cwd`, or
  * undefined. A resumed id must have its transcript on disk now; a pinned id
  * binds without one (its transcript is written on the first turn).
