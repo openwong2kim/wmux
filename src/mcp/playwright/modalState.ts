@@ -359,7 +359,7 @@ export async function assertNoPendingModal(page: Page): Promise<void> {
   const view = publicView(pending) as PendingModal;
   throw taggedFailure(
     'dialog_blocked',
-    `A ${describeModal(view)} is open on this page. ${answerHint(view)}`,
+    `This page has an open ${describeModal(view)}. ${answerHint(view)}`,
     'none',
   );
 }
@@ -391,7 +391,7 @@ export async function answerModal(page: Page, accept: boolean, text?: string): P
   if (!pending.causedByAgent) {
     throw taggedFailure(
       'dialog_blocked',
-      `A ${describeModal(view)} is open on this page, but it did not open from an agent action. Leave it for the person at the browser; it is not answered for them.`,
+      `This page has an open ${describeModal(view)}, but it did not open from an agent action. Leave it for the person at the browser; it is not answered for them.`,
       'none',
     );
   }
