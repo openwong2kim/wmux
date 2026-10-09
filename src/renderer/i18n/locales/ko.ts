@@ -3697,6 +3697,8 @@ export const ko = {
   'pcRail.retry': "다시 시도",
   'pcRail.needsRepair': "{name}이(가) 더 이상 이 컴퓨터를 허용하지 않습니다",
   'pcRail.pairAgain': "다시 페어링",
+  'pcRail.insecure': "안전하지 않은 연결",
+  'pcRail.insecureHint': "평문 http로 페어링되어 이 컴퓨터는 {name}에 연결하지 않습니다. 리모트 페이지를 확인하세요.",
   'pcRail.needsYouCount': "{count}개 확인 필요",
   'pcRail.finishedCount': "{count}개 완료",
   'pcRail.asOf': "{time} 기준",

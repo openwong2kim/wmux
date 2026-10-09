@@ -60,7 +60,7 @@ export interface PcRailHost {
    * Absent for hosts added before this was recorded: show neither label.
    */
   tokenKind?: PcRailTokenKind;
-  /** From REMOTE_HOSTS_STATUS. `unreachable` renders as Offline, `needs-repair` as Pair again. */
+  /** From REMOTE_HOSTS_STATUS. The column renders it through pcRailHostState. */
   status: RemoteHostStatus;
   /** False when the host refuses typing (view only). Absent until probed. */
   allowInput?: boolean;
@@ -71,9 +71,35 @@ export interface PcRailHost {
   muted: boolean;
 }
 
-/** True for the statuses the column draws as online. */
+/**
+ * What the column shows for a host status. Each state has its own copy:
+ *
+ *   online        connected, reachable
+ *   offline       unreachable: "Offline · last seen …", Retry
+ *   needs-repair  the host refused this computer's credential: Pair again
+ *   insecure      paired over plain http to another machine, so it is never
+ *                 contacted: "Not a secure connection", see the Remote page.
+ *                 Never drawn as Offline: retrying cannot change it.
+ */
+export type PcRailHostState = 'online' | 'offline' | 'needs-repair' | 'insecure';
+
+export function pcRailHostState(status: RemoteHostStatus): PcRailHostState {
+  switch (status) {
+    case 'connected':
+    case 'reachable':
+      return 'online';
+    case 'unreachable':
+      return 'offline';
+    case 'needs-repair':
+      return 'needs-repair';
+    case 'insecure':
+      return 'insecure';
+  }
+}
+
+/** True for the statuses the column draws as online. `insecure` is not online and not offline. */
 export function isPcRailHostOnline(status: RemoteHostStatus): boolean {
-  return status === 'connected' || status === 'reachable';
+  return pcRailHostState(status) === 'online';
 }
 
 /** What the rail keeps across restarts (optional fields in session.json). */
@@ -138,14 +164,19 @@ export function parsePcRailPersisted(value: unknown): PcRailPersisted {
   const activePcId = persistedId(value.activePcId) ?? LOCAL_PC_ID;
   const lastWorkspaceByPc: Record<PcId, string> = {};
   if (isRecord(value.lastWorkspaceByPc)) {
-    let kept = 0;
-    for (const [pcId, wsId] of Object.entries(value.lastWorkspaceByPc)) {
-      if (kept >= PC_RAIL_LIMITS.hosts) break;
+    const raw = value.lastWorkspaceByPc;
+    // This computer's entry first, so the host cap can never push it out.
+    const local = Object.prototype.hasOwnProperty.call(raw, LOCAL_PC_ID) ? persistedId(raw[LOCAL_PC_ID]) : undefined;
+    if (local) lastWorkspaceByPc[LOCAL_PC_ID] = local;
+    let hosts = 0;
+    for (const [pcId, wsId] of Object.entries(raw)) {
+      if (hosts >= PC_RAIL_LIMITS.hosts) break;
+      if (pcId === LOCAL_PC_ID) continue;
       const pc = persistedId(pcId);
       const ws = persistedId(wsId);
       if (!pc || !ws) continue;
       lastWorkspaceByPc[pc] = ws;
-      kept++;
+      hosts++;
     }
   }
   const mutedPcs: string[] = [];

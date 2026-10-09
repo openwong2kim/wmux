@@ -4255,6 +4255,8 @@ export const en = {
   'pcRail.retry': "Retry",
   'pcRail.needsRepair': "{name} no longer accepts this computer",
   'pcRail.pairAgain': "Pair again",
+  'pcRail.insecure': "Not a secure connection",
+  'pcRail.insecureHint': "Paired over plain http, so this computer does not contact {name}. Check the Remote page.",
   'pcRail.needsYouCount': "{count} need you",
   'pcRail.finishedCount': "{count} finished",
   'pcRail.asOf': "As of {time}",

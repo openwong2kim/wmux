@@ -4215,6 +4215,8 @@ export const pl = {
   'pcRail.retry': "Ponów",
   'pcRail.needsRepair': "{name} nie akceptuje już tego komputera",
   'pcRail.pairAgain': "Sparuj ponownie",
+  'pcRail.insecure': "Połączenie nie jest bezpieczne",
+  'pcRail.insecureHint': "Sparowano przez zwykłe http, więc ten komputer nie łączy się z {name}. Sprawdź stronę Zdalny dostęp.",
   'pcRail.needsYouCount': "Czeka na ciebie: {count}",
   'pcRail.finishedCount': "Zakończone: {count}",
   'pcRail.asOf': "Stan na {time}",

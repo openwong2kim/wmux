@@ -3390,6 +3390,8 @@ export const zh = {
   'pcRail.retry': "重试",
   'pcRail.needsRepair': "{name} 不再接受本机",
   'pcRail.pairAgain': "重新配对",
+  'pcRail.insecure': "连接不安全",
+  'pcRail.insecureHint': "通过明文 http 配对，因此本机不会连接 {name}。请查看远程页面。",
   'pcRail.needsYouCount': "{count} 个需要你处理",
   'pcRail.finishedCount': "{count} 个已完成",
   'pcRail.asOf': "截至 {time}",

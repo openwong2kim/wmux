@@ -4,7 +4,9 @@ import { generateId } from '../../types';
 import { remoteAgentKey, remoteAttachmentKey } from '../../remoteHosts';
 import {
   LOCAL_PC_ID,
+  PC_RAIL_APPROVAL_LIMITS,
   PC_RAIL_LIMITS,
+  PC_RAIL_PENDING_TTL_MS,
   PC_RAIL_SHORTCUTS,
   applyPcRailAttentionFrame,
   comparePcRailRows,
@@ -16,6 +18,8 @@ import {
   parsePcRailWorkspaceExtras,
   parseRemoteApprovalsList,
   parseShadowWorkspaceId,
+  pcRailHostState,
+  isPcRailHostOnline,
   prunePcRailPersisted,
   reconcilePcRailApprovals,
   type PcRailWorkspaceRow,
@@ -109,6 +113,23 @@ describe('persisted rail state', () => {
     expect(pruned).toEqual({ activePcId: LOCAL_PC_ID, lastWorkspaceByPc: { [HOST]: 'w2', [LOCAL_PC_ID]: 'w3' }, mutedPcs: [HOST] });
   });
 
+  it('keeps this computer first when the host cap is reached', () => {
+    const hosts = Object.fromEntries(Array.from({ length: 200 }, (_, i) => [`h${i}`, `w${i}`]));
+    const parsed = parsePcRailPersisted({ lastWorkspaceByPc: { ...hosts, [LOCAL_PC_ID]: 'ws-local' } });
+    expect(parsed.lastWorkspaceByPc[LOCAL_PC_ID]).toBe('ws-local');
+    expect(Object.keys(parsed.lastWorkspaceByPc)[0]).toBe(LOCAL_PC_ID);
+    expect(Object.keys(parsed.lastWorkspaceByPc)).toHaveLength(PC_RAIL_LIMITS.hosts + 1);
+  });
+
+  it('gives insecure its own state, never offline', () => {
+    expect(pcRailHostState('insecure')).toBe('insecure');
+    expect(pcRailHostState('unreachable')).toBe('offline');
+    expect(pcRailHostState('needs-repair')).toBe('needs-repair');
+    expect(pcRailHostState('connected')).toBe('online');
+    expect(pcRailHostState('reachable')).toBe('online');
+    expect(isPcRailHostOnline('insecure')).toBe(false);
+  });
+
   it('marks a feed stale after the third missed tick', () => {
     expect(isPcRailFeedStale({ failedTicks: 2 })).toBe(false);
     expect(isPcRailFeedStale({ failedTicks: 3 })).toBe(true);
@@ -156,22 +177,68 @@ describe('attention reconcile', () => {
     expect(parseRemoteApprovalsList('nope')).toBeNull();
   });
 
-  it('SSE raises at once and the list replaces it on the next tick', () => {
-    let ledger = reconcilePcRailApprovals([]);
-    const raised = applyPcRailAttentionFrame(ledger, 'approval', { tier: 'act', phase: 'create', approvalId: 'a1', sessionId: 's1' });
+  const T0 = 1_000_000;
+
+  it('skips prompts already answered from another device', () => {
+    const listed = parseRemoteApprovalsList({ pending: [
+      { id: 'a1', sessionId: 's1', state: 'pending', pressedAt: 5 },
+      { id: 'a2', sessionId: 's2', state: 'pending' },
+    ] });
+    expect(listed?.map((a) => a.id)).toEqual(['a2']);
+  });
+
+  it('SSE raises at once; the list replaces approvals and keeps criticals', () => {
+    let ledger = reconcilePcRailApprovals({}, [], T0);
+    const raised = applyPcRailAttentionFrame(ledger, 'approval', { tier: 'act', phase: 'create', approvalId: 'a1', sessionId: 's1' }, T0);
     expect(raised.refetch).toBe(true);
-    ledger = raised.ledger;
-    const crit = applyPcRailAttentionFrame(ledger, 'critical', { tier: 'act', sessionId: 's2' });
-    ledger = crit.ledger;
+    ledger = applyPcRailAttentionFrame(raised.ledger, 'approval', { tier: 'act', phase: 'create', approvalId: 'a2', sessionId: 's3' }, T0).ledger;
+    ledger = applyPcRailAttentionFrame(ledger, 'critical', { tier: 'act', sessionId: 's2' }, T0).ledger;
+    expect(Object.keys(ledger).sort()).toEqual(['approval:a1', 'approval:a2', 'critical:s2']);
+    ledger = reconcilePcRailApprovals(ledger, [{ id: 'a1', sessionId: 's1' }], T0 + 1);
     expect(Object.keys(ledger).sort()).toEqual(['approval:a1', 'critical:s2']);
-    // A critical frame has no settling frame: only the list clears it.
-    ledger = reconcilePcRailApprovals([{ id: 'a1', sessionId: 's1' }]);
-    expect(Object.keys(ledger)).toEqual(['approval:a1']);
+    // A critical goes when its pane leaves the host's list, or when it expires.
+    expect(Object.keys(reconcilePcRailApprovals(ledger, [], T0 + 2, new Set(['s1'])))).toEqual([]);
+    expect(Object.keys(reconcilePcRailApprovals(ledger, [], T0 + 2, new Set(['s2'])))).toEqual(['critical:s2']);
+    expect(Object.keys(reconcilePcRailApprovals(ledger, [], T0 + PC_RAIL_PENDING_TTL_MS))).toEqual([]);
+  });
+
+  it('treats a missing or unknown tier as act', () => {
+    const empty = reconcilePcRailApprovals({}, [], T0);
+    for (const tier of [undefined, 'urgent']) {
+      const crit = applyPcRailAttentionFrame(empty, 'critical', { tier, sessionId: 's1' }, T0);
+      expect(Object.keys(crit.ledger)).toEqual(['critical:s1']);
+      const create = applyPcRailAttentionFrame(empty, 'approval', { tier, phase: 'create', approvalId: 'a1', sessionId: 's1' }, T0);
+      expect(Object.keys(create.ledger)).toEqual(['approval:a1']);
+    }
+    expect(applyPcRailAttentionFrame(empty, 'critical', { tier: 'info', sessionId: 's1' }, T0).ledger).toBe(empty);
+    expect(applyPcRailAttentionFrame(empty, 'approval', { phase: 'resolve', approvalId: 'a1', sessionId: 's1' }, T0).ledger).toBe(empty);
+  });
+
+  it('drops an answered prompt on press, and the next list does not bring it back', () => {
+    let ledger = reconcilePcRailApprovals({}, [{ id: 'a1', sessionId: 's1' }], T0);
+    const pressed = applyPcRailAttentionFrame(ledger, 'approval', { tier: 'info', phase: 'press', approvalId: 'a1', sessionId: 's1' }, T0);
+    expect(pressed).toEqual({ ledger: {}, refetch: true });
+    const listed = parseRemoteApprovalsList({ pending: [{ id: 'a1', sessionId: 's1', state: 'pending', pressedAt: T0 }] }) ?? [];
+    ledger = reconcilePcRailApprovals(pressed.ledger, listed, T0 + 1);
+    expect(ledger).toEqual({});
+  });
+
+  it('stays bounded under 10k distinct ids, and a repeat costs no copy', () => {
+    let ledger = reconcilePcRailApprovals({}, [], T0);
+    for (let i = 0; i < 10_000; i++) {
+      ledger = applyPcRailAttentionFrame(ledger, 'approval', { tier: 'act', approvalId: `a${i}`, sessionId: `s${i}` }, T0 + i).ledger;
+    }
+    expect(Object.keys(ledger)).toHaveLength(PC_RAIL_APPROVAL_LIMITS.approvals);
+    expect(ledger['approval:a9999']).toBeDefined();
+    expect(ledger['approval:a0']).toBeUndefined();
+    const again = applyPcRailAttentionFrame(ledger, 'approval', { tier: 'act', approvalId: 'a9999', sessionId: 's9999' }, T0 + 10_000);
+    expect(again.ledger).toBe(ledger);
+    expect(again.refetch).toBe(false);
   });
 
   it('clears an approval on its settling frame and ignores the rest', () => {
-    const start = reconcilePcRailApprovals([{ id: 'a1', sessionId: 's1' }]);
-    const settled = applyPcRailAttentionFrame(start, 'approval', { tier: 'info', phase: 'resolve', approvalId: 'a1', sessionId: 's1' });
+    const start = reconcilePcRailApprovals({}, [{ id: 'a1', sessionId: 's1' }], T0);
+    const settled = applyPcRailAttentionFrame(start, 'approval', { tier: 'info', phase: 'resolve', approvalId: 'a1', sessionId: 's1' }, T0);
     expect(settled).toEqual({ ledger: {}, refetch: true });
     for (const [kind, data] of [
       ['notify', { tier: 'act', sessionId: 's1' }],
@@ -181,7 +248,7 @@ describe('attention reconcile', () => {
       ['approval', { tier: 'info', phase: 'resolve', approvalId: 'unknown', sessionId: 's1' }],
       ['approval', 'garbage'],
     ] as const) {
-      expect(applyPcRailAttentionFrame(start, kind, data)).toEqual({ ledger: start, refetch: false });
+      expect(applyPcRailAttentionFrame(start, kind, data, T0)).toEqual({ ledger: start, refetch: false });
     }
   });
 
@@ -194,7 +261,7 @@ describe('attention reconcile', () => {
         { sessionId: 's4', workspaceId: 'w2', agentStatus: 'awaiting_input' },
         { sessionId: 's5', workspaceId: 'w2', agentName: 'codex', agentStatus: 'complete' },
       ],
-      pending: reconcilePcRailApprovals([{ id: 'a1', sessionId: 's1' }, { id: 'a2', sessionId: 's5' }]),
+      pending: reconcilePcRailApprovals({}, [{ id: 'a1', sessionId: 's1' }, { id: 'a2', sessionId: 's5' }], 0),
       completeSeenAt: { s2: 200, s3: 100, s5: 300 },
       hostSeen: { w2: 150 },
     });
