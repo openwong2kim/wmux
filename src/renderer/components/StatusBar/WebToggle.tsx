@@ -995,13 +995,22 @@ export function WebPopoverBody({
  * (2026-08-18) — the deck reopens from the titlebar and this glyph comes back
  * with it. The popover anchors under the button.
  */
-export default function WebToggle({ variant = 'icon', compact = false }: {
+export default function WebToggle({ variant = 'icon', compact = false, onOpenChange }: {
   /** `page`: the Remote page's "Share & pair" button, which is the hub there. */
   variant?: 'icon' | 'sidebar' | 'page';
   compact?: boolean;
+  /**
+   * Told whenever the popover opens or closes. A host that would otherwise
+   * unmount this button (the Remote page drops it once sharing is on) keeps
+   * it while the popover is open, so a pairing started here stays on screen.
+   */
+  onOpenChange?: (open: boolean) => void;
 } = {}) {
   const t = useT();
   const [open, setOpen] = useState(false);
+  useEffect(() => {
+    onOpenChange?.(open);
+  }, [open, onOpenChange]);
   const [info, setInfo] = useState<WebTerminalInfo>({ running: false });
   const [allowInput, setAllowInput] = useState(false);
   const [expose, setExpose] = useState(false);

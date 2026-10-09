@@ -117,6 +117,8 @@ export default function RemotePage() {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<{ key: string; message: string } | null>(null);
   const [details, setDetails] = useState(false);
+  /** The line's Share & pair popover is open (see the This computer line). */
+  const [shareOpen, setShareOpen] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [hostWorkspaces, setHostWorkspaces] = useState<Record<string, RemoteWorkspaceSummary[] | 'loading' | 'failed'>>({});
@@ -608,8 +610,11 @@ export default function RemotePage() {
               {a2aWord}
             </span>
           )}
-          {/* Phone access off: its switch (the share popover's Start) is one click away. */}
-          {reach === 'off' && <WebToggle variant="page" />}
+          {/* Phone access off: its switch (the share popover's Start) is one click away.
+              Pair a phone starts sharing from this popover, so the next poll
+              reads phone access as on. Keep the button, and the QR it shows,
+              until the popover closes. */}
+          {(reach === 'off' || shareOpen) && <WebToggle variant="page" onOpenChange={setShareOpen} />}
           <span className="flex-1" />
           <button
             type="button"

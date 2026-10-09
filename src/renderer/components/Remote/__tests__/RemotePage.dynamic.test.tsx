@@ -331,4 +331,31 @@ describe('Remote page', () => {
     expect(api.a2aRemote.configure).toHaveBeenCalledWith({ enabled: true });
     expect($('[data-remote-a2a]')?.textContent).toBe('A2A :45660 listening');
   });
+
+  it('keeps Share & pair open when a pairing started there turns phone access on', async () => {
+    stub([]);
+    let running = false;
+    api.web.status.mockImplementation(async () => (running
+      ? { running: true, host: '127.0.0.1', port: 7681, allowInput: false, token: 'SECRET-TOKEN', urls: ['http://127.0.0.1:7681/?token=SECRET-TOKEN'] }
+      : { running: false }));
+    await render();
+    const share = () => $<HTMLButtonElement>('[data-remote-machine] [data-testid="deck-web-toggle"]');
+    expect(share()).not.toBeNull();
+    await act(async () => { share()!.click(); });
+    for (let i = 0; i < 4; i++) await act(async () => { await Promise.resolve(); });
+    expect(container.ownerDocument.querySelector('[role="dialog"]')).not.toBeNull();
+    // Pair a phone (or Connect another computer) started sharing from the
+    // popover; the page's next poll reads phone access as on.
+    running = true;
+    await act(async () => { vi.advanceTimersByTime(REMOTE_PAGE_POLL_MS); });
+    for (let i = 0; i < 4; i++) await act(async () => { await Promise.resolve(); });
+    expect($('[data-remote-server]')?.textContent).toBe('Phone access: This computer only');
+    // The popover, with the code it shows, is still there.
+    expect(share()).not.toBeNull();
+    expect(container.ownerDocument.querySelector('[role="dialog"]')).not.toBeNull();
+    // Closing it lets the line drop the button, as it does while sharing is on.
+    await act(async () => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })); });
+    expect(container.ownerDocument.querySelector('[role="dialog"]')).toBeNull();
+    expect(share()).toBeNull();
+  });
 });
