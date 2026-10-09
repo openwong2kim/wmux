@@ -23,13 +23,13 @@ import { FOCUS_RING } from '../focusRing';
 import { IconChevron, IconExternalLink, IconRefresh } from '../icons';
 import { useActiveRepo } from './useActiveRepo';
 import { RepoSwitcher, type RepoOption } from './RepoSwitcher';
-import { GitTab, pathLeaf } from './GitTab';
+import { GitTab, hostPlatform, pathLeaf } from './GitTab';
 import { PrSection } from './PrSection';
 import { IssueSection, getIssueBridge } from './IssueSection';
 import { GitDetail } from './GitDetail';
 import { FlatLists } from './FlatRepoList';
 import SegmentedControl from '../ui/SegmentedControl';
-import { repoOwnerWorkspace, useRepoGroups, type RepoGroup } from './repoGroups';
+import { groupOfPath, repoOwnerWorkspace, useRepoGroups, type RepoGroup } from './repoGroups';
 import { GhConnectPage } from './GhConnectPage';
 import { useGhAuthGate } from './ghAuthGate';
 import type { GitDragOwner } from './gitPageState';
@@ -186,12 +186,15 @@ export default function GitPage() {
   const selKey = sel ? `${sel.kind}\0${sel.repoPath}\0${sel.number}` : '';
   // A new selection starts at the top of its detail.
   useEffect(() => { if (detailRef.current) detailRef.current.scrollTop = 0; }, [selKey]);
-  const selList = sel ? items[itemsKey(sel.repoPath, sel.kind)] : undefined;
+  // In All repos a selection belongs to its repo's group, even when it was
+  // made from a clone or a worktree of it; that group's list path reads it.
+  const selGroup = sel && page.scope === 'all' && groups ? groupOfPath(groups, sel.repoPath, hostPlatform()) : undefined;
+  const selPath = selGroup ? selGroup.prPath : sel?.repoPath ?? '';
+  const selList = sel ? items[itemsKey(selPath, sel.kind)] : undefined;
   const selItem = sel && selList ? (selList as Array<PrSummary | IssueSummary>).find((x) => x.number === sel.number) ?? null : null;
   // A repo's full name: owner/repo, or its folder without a remote.
   const groupLabel = (g: RepoGroup) => repoWeb(g.key)?.label ?? g.name;
   // In All repos the detail names the selection's repo the way its row tag does.
-  const selGroup = sel && page.scope === 'all' ? groups?.find((g) => g.prPath === sel.repoPath) : undefined;
   const selGroupLabel = selGroup ? groupLabel(selGroup) : null;
 
   // Open counts: the shown list's own answer when it has one (an issue list
@@ -377,11 +380,11 @@ export default function GitPage() {
                 <GitDetail
                   kind={kind}
                   refreshKey={refreshKey}
-                  repoPath={sel.repoPath}
+                  repoPath={selPath}
                   repoLabel={page.scope === 'repo' ? repoName ?? '' : selGroupLabel ?? repoLabelOf(sel.repoPath)}
                   pr={kind === 'pr' ? (selItem as PrSummary) : null}
                   issue={kind === 'issue' ? (selItem as IssueSummary) : null}
-                  repo={page.scope === 'repo' ? repoContext : groupContext(sel.repoPath)}
+                  repo={page.scope === 'repo' ? repoContext : groupContext(selPath)}
                 />
               ) : (
                 <GitDetail kind={kind} repoPath="" repoLabel="" />

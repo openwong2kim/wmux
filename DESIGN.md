@@ -413,8 +413,10 @@ refresh button. Nothing about branches or worktrees sits above the lists.
   one per repo with its open count: multi-select, none on means every
   repo, on is `--selection` and off a `--line` hairline. A repo with
   nothing open keeps a dimmed chip without a digit; a repo still reading
-  shows a small spinner, a failed read a red ✕ with the reason in the
-  tooltip. A row's tag toggles its repo's chip. A **Flat | By repo**
+  shows a small spinner, a first read held by GitHub's rate limit a
+  muted clock, a failed read a red ✕ with the reason in the tooltip.
+  A row's tag toggles its repo's chip; a selection in a repo the chips
+  leave out is cleared. A **Flat | By repo**
   segmented control at the toolbar's right brings back the grouped view:
   every open workspace grouped by repo (the active repo first; clones of
   one remote are one group), another repo's group opening on demand and

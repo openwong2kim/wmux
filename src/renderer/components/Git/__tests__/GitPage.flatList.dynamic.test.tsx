@@ -53,7 +53,8 @@ beforeEach(() => {
   issueList = vi.fn(async (p: string) => (p === '/code/alpha'
     ? { ok: true, issues: [issue('alpha', 1, '2026-10-01T00:00:00Z')] }
     : p === '/code/beta' ? { ok: true, issues: [issue('beta', 2, '2026-10-02T00:00:00Z')] } : { ok: true, issues: [] }));
-  const paths = ['/code/alpha', '/code/beta', '/code/gamma'];
+  // beta-clone is a second clone of beta's remote.
+  const paths = ['/code/alpha', '/code/beta', '/code/gamma', '/code/beta-clone'];
   (window as unknown as { electronAPI: unknown }).electronAPI = {
     platform: 'linux',
     diff: { resolveRepo: vi.fn(async (cwd: string) => (paths.includes(cwd) ? { ok: true, repoPath: cwd } : { ok: false })) },
@@ -63,7 +64,7 @@ beforeEach(() => {
     github: {
       prList,
       prDetail: vi.fn(async (_p: string, n: number) => ({ ok: true, detail: { number: n, comments: [] } })),
-      repoKey: vi.fn(async (p: string) => ({ key: `github.com/o/${p.split('/').pop()}` })),
+      repoKey: vi.fn(async (p: string) => ({ key: `github.com/o/${p.split('/').pop()!.replace(/-clone$/, '')}` })),
       issueList,
       issueDetail: vi.fn(async () => ({ ok: true, detail: null })),
     },
@@ -88,7 +89,7 @@ const rows = () => [...container.querySelectorAll('[data-git-flat-rows] > li')].
   repo: li.querySelector('[data-git-repo-tag]')?.textContent,
   number: Number(li.getAttribute('data-pr-row') ?? li.getAttribute('data-issue-row')),
 }));
-const chip = (name: string) => container.querySelector(`[data-git-repo-chip="${name}"]`) as HTMLButtonElement;
+const chip = (name: string) => container.querySelector(`[data-git-repo-chip="github.com/o/${name}"]`) as HTMLButtonElement;
 const render = async () => {
   act(() => root.render(createElement(GitPage)));
   await settle();
@@ -100,7 +101,7 @@ describe('Git page, All repos flat list', () => {
     expect(container.querySelector('[data-git-flat-list]')).not.toBeNull();
     expect(container.querySelector('[data-git-repo-group]')).toBeNull();
     expect(rows()).toEqual([{ repo: 'alpha', number: 9 }, { repo: 'beta', number: 7 }, { repo: 'alpha', number: 7 }]);
-    const tag = container.querySelector('[data-git-flat-rows] [data-git-repo-tag="beta"]') as HTMLButtonElement;
+    const tag = container.querySelector('[data-git-flat-rows] [data-git-repo-tag="github.com/o/beta"]') as HTMLButtonElement;
     expect(tag.getAttribute('title')).toBe('o/beta');
     // A tag is its own button beside the row, never inside it.
     expect(tag.closest('.wmux-git-item')).toBeNull();
@@ -133,11 +134,11 @@ describe('Git page, All repos flat list', () => {
     expect(rows()).toEqual([{ repo: 'beta', number: 7 }]);
     expect(JSON.parse(localStorage.getItem('wmux.git.repoChips')!)).toEqual(['github.com/o/beta']);
     // The tag on the only row turns its chip off again: every repo.
-    act(() => (container.querySelector('[data-git-flat-rows] [data-git-repo-tag="beta"]') as HTMLButtonElement).click());
+    act(() => (container.querySelector('[data-git-flat-rows] [data-git-repo-tag="github.com/o/beta"]') as HTMLButtonElement).click());
     expect(chip('beta').getAttribute('aria-pressed')).toBe('false');
     expect(rows().length).toBe(3);
     // An alpha row's tag narrows to alpha, and selecting nothing else.
-    act(() => (container.querySelector('[data-git-flat-rows] [data-git-repo-tag="alpha"]') as HTMLButtonElement).click());
+    act(() => (container.querySelector('[data-git-flat-rows] [data-git-repo-tag="github.com/o/alpha"]') as HTMLButtonElement).click());
     expect(rows()).toEqual([{ repo: 'alpha', number: 9 }, { repo: 'alpha', number: 7 }]);
     expect(useStore.getState().gitPage.selected).toBeNull();
     // Kept across a remount.
@@ -210,7 +211,7 @@ describe('Git page, All repos flat list', () => {
     // Back to every repo, select beta again; a refresh whose answer lacks the
     // row keeps the selection.
     act(() => chip('alpha').click());
-    act(() => (container.querySelector('[data-git-flat-rows] [data-pr-row="7"] [data-git-repo-tag="beta"]')!.previousElementSibling as HTMLButtonElement).click());
+    act(() => (container.querySelector('[data-git-flat-rows] [data-pr-row="7"] [data-git-repo-tag="github.com/o/beta"]')!.previousElementSibling as HTMLButtonElement).click());
     await settle();
     prList.mockImplementation(async (p: string) => (p === '/code/beta' ? { ok: true, prs: [] } : { ok: true, prs: [pr('alpha', 9, '2026-10-05T00:00:00Z')] }));
     act(() => (container.querySelector('[data-git-refresh]') as HTMLButtonElement).click());
@@ -245,13 +246,65 @@ describe('Git page, All repos flat list', () => {
     act(() => chip('gamma').click());
     expect(rows()).toEqual([]);
     expect(container.querySelector('[data-git-flat-empty]')).toBeNull();
-    expect(container.querySelector('[data-git-flat-gate="gamma"]')?.textContent).toBe('o/gamma: This repository has no origin remote.');
+    expect(container.querySelector('[data-git-flat-gate="github.com/o/gamma"]')?.textContent).toBe('o/gamma: This repository has no origin remote.');
     // With a repo that answered, an empty list is just empty.
     act(() => { chip('gamma').click(); chip('beta').click(); });
     prList.mockImplementation(async () => ({ ok: true, prs: [] }));
     act(() => (container.querySelector('[data-git-refresh]') as HTMLButtonElement).click());
     await settle();
     expect(container.querySelector('[data-git-flat-empty]')?.textContent).toBe('No open pull requests.');
+  });
+
+  it('entering the flat layout, or All repos, clears a selection the saved chips leave out, and keeps one they show', async () => {
+    const beta = 'github.com/o/beta';
+    // Selected in By repo, from alpha, while the chips saved for Flat are [beta].
+    act(() => useStore.getState().setGitPage({ allLayout: 'repo', repoChips: [beta], selected: { kind: 'pr', repoPath: '/code/alpha', number: 9 } }));
+    await render();
+    expect(container.querySelector('[data-git-flat-list]')).toBeNull();
+    expect(useStore.getState().gitPage.selected).not.toBeNull();
+    const radio = (label: string) => [...container.querySelectorAll('[data-testid="git-all-layout"] [role="radio"]')].find((b) => b.textContent === label) as HTMLButtonElement;
+    act(() => radio('Flat').click());
+    await settle();
+    expect(useStore.getState().gitPage.selected).toBeNull();
+    expect(container.querySelector('[data-git-detail-empty]')).not.toBeNull();
+    // Selected in This repo (alpha), then All repos with [beta]: cleared too.
+    act(() => useStore.getState().setGitPage({ scope: 'repo', selected: { kind: 'pr', repoPath: '/code/alpha', number: 9 } }));
+    await settle();
+    expect(useStore.getState().gitPage.selected).not.toBeNull();
+    act(() => useStore.getState().setGitPage({ scope: 'all' }));
+    await settle();
+    expect(useStore.getState().gitPage.selected).toBeNull();
+    // A selection in a repo the chips show is kept.
+    act(() => useStore.getState().setGitPage({ scope: 'repo', selected: { kind: 'pr', repoPath: '/code/beta', number: 7 } }));
+    await settle();
+    act(() => useStore.getState().setGitPage({ scope: 'all' }));
+    await settle();
+    expect(useStore.getState().gitPage.selected).toEqual({ kind: 'pr', repoPath: '/code/beta', number: 7 });
+  });
+
+  it('a selection made from a clone of a repo is that repo\'s: kept under its chip, marked and shown', async () => {
+    act(() => useStore.setState({
+      workspaces: [workspace('a', '/code/alpha'), workspace('b', '/code/beta'), workspace('c', '/code/gamma'), workspace('d', '/code/beta-clone')],
+    }));
+    act(() => useStore.getState().setGitPage({ repoChips: ['github.com/o/beta'], selected: { kind: 'pr', repoPath: '/code/beta-clone', number: 7 } }));
+    await render();
+    // One beta group (its list read from one checkout), its chip on.
+    expect(container.querySelectorAll('[data-git-repo-chip="github.com/o/beta"]').length).toBe(1);
+    expect(useStore.getState().gitPage.selected).toEqual({ kind: 'pr', repoPath: '/code/beta-clone', number: 7 });
+    expect(container.querySelector('[data-git-flat-rows] [data-pr-row="7"] > button')!.getAttribute('aria-current')).toBe('true');
+    expect(container.querySelector('[data-git-detailpane] [data-git-detail-head]')?.textContent).toContain('beta fix');
+  });
+
+  it('a repo whose first read is held by the rate limit says so on its chip, never empty', async () => {
+    issueList.mockImplementation(async (p: string) => (p === '/code/gamma'
+      ? { ok: false, code: 'rate-limited', retryAt: Date.now() + 60_000 }
+      : { ok: true, issues: [] }));
+    act(() => useStore.getState().setGitPage({ tab: 'issues' }));
+    await render();
+    expect(chip('gamma').getAttribute('data-state')).toBe('rate');
+    expect(chip('gamma').querySelector('[data-git-chip-rate]')).not.toBeNull();
+    expect(chip('gamma').getAttribute('title')).toContain('rate limit');
+    expect(chip('beta').getAttribute('data-state')).toBe('empty');
   });
 
   it('Issues: one filter over the merged list', async () => {

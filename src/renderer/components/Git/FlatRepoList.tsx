@@ -8,11 +8,12 @@ import { useEffect, useMemo, useState } from 'react';
 import { useT } from '../../hooks/useT';
 import { useStore } from '../../stores';
 import { FOCUS_RING } from '../focusRing';
-import { IconX } from '../icons';
-import { ListFreshness } from './ListFreshness';
+import { IconClock, IconX } from '../icons';
+import { ListFreshness, clockTime } from './ListFreshness';
 import { PrRow, usePrList } from './PrSection';
 import { IssueFilterBar, IssueRow, useIssueList } from './IssueSection';
-import { repoOwnerWorkspace, type RepoGroup } from './repoGroups';
+import { groupOfPath, repoOwnerWorkspace, type RepoGroup } from './repoGroups';
+import { hostPlatform } from './GitTab';
 import type { GitListState } from './useGitList';
 import { saveGitRepoChips, type GitPageTab, type GitSelection } from './gitPageState';
 import type { PrSummary } from '../../../shared/prSurface';
@@ -91,13 +92,27 @@ export function FlatLists({ groups, tab, refreshKey, filter, onFilter, sel, onSe
     const keys = new Set((groups ?? []).map((g) => g.key));
     const cur = useStore.getState().gitPage.repoChips.filter((k) => keys.has(k));
     const next = cur.includes(key) ? cur.filter((k) => k !== key) : [...cur, key];
-    // A chip change that hides the selected row clears the selection, so the
-    // detail never shows a row the filter hid. A refresh never clears it.
-    const selGroup = sel ? groups?.find((g) => g.prPath === sel.repoPath) : undefined;
-    const hidesSel = !!selGroup && next.length > 0 && !next.includes(selGroup.key);
-    setGitPage(hidesSel ? { repoChips: next, selected: null } : { repoChips: next });
+    setGitPage({ repoChips: next });
     saveGitRepoChips(next);
   };
+  // While the flat list is shown, the selection never sits in a repo the
+  // chips leave out: the detail and its writes (merge, review, hand-off) would
+  // act on a row nobody can see. Checked on mount (entering All repos or the
+  // flat layout), on a chip change and on a new selection, by the repo's chip,
+  // never by the row being in the last answer, so a refresh never clears it.
+  // The selection is read from the store at check time.
+  const selected = useStore((s) => s.gitPage.selected);
+  useEffect(() => {
+    if (!groups) return;
+    const cur = useStore.getState().gitPage;
+    if (!cur.selected) return;
+    const on = groups.filter((g) => cur.repoChips.includes(g.key)).map((g) => g.key);
+    if (on.length === 0) return;
+    const g = groupOfPath(groups, cur.selected.repoPath, hostPlatform());
+    if (!g || !on.includes(g.key)) setGitPage({ selected: null });
+  }, [groups, storedChips, selected, setGitPage]);
+  // The selection's group, matched by any of its paths (a clone, a worktree).
+  const selGroupKey = sel && groups ? groupOfPath(groups, sel.repoPath, hostPlatform())?.key : undefined;
 
   if (groups === null) return <div className="wmux-git-note">{t('git.loading')}</div>;
   if (groups.length === 0) return <div className="wmux-git-note" data-git-all-empty>{t('git.allRepos.empty')}</div>;
@@ -156,7 +171,10 @@ export function FlatLists({ groups, tab, refreshKey, filter, onFilter, sel, onSe
           const f = feedOf(g);
           const count = f?.data?.length;
           const problem = problemOf(f);
-          const state = problem ? 'error' : !f || (f.loading && !f.data) ? 'loading' : count ? 'ok' : 'empty';
+          // Never "empty" before a first answer: a first read held by the rate
+          // limit says so, anything else still reading spins.
+          const state = problem ? 'error' : !f?.data ? (f?.retryAt ? 'rate' : 'loading') : count ? 'ok' : 'empty';
+          const rateLabel = f?.retryAt ? t('git.issues.rateLimited', { time: clockTime(f.retryAt) }) : '';
           const shownCount = count ? (count >= LIST_READ_CAP ? `${LIST_READ_CAP}+` : String(count)) : '';
           return (
             <button
@@ -164,14 +182,15 @@ export function FlatLists({ groups, tab, refreshKey, filter, onFilter, sel, onSe
               type="button"
               className={`wmux-git-chip ${FOCUS_RING}`}
               aria-pressed={chips.includes(g.key)}
-              title={problem ? `${labelOf(g)}: ${problem}` : labelOf(g)}
+              title={problem ? `${labelOf(g)}: ${problem}` : state === 'rate' ? `${labelOf(g)}: ${rateLabel}` : labelOf(g)}
               onClick={() => toggleChip(g.key)}
-              data-git-repo-chip={g.name}
+              data-git-repo-chip={g.key}
               data-state={state}
             >
               <span className="wmux-git-chip-name">{g.name}</span>
               {state === 'loading' && <span className="wmux-git-chip-spin motion-safe:animate-spin" aria-label={t('git.loading')} data-git-chip-loading />}
               {shownCount && <span className="wmux-git-chip-count">{shownCount}</span>}
+              {state === 'rate' && <span className="wmux-git-chip-rate" role="img" aria-label={rateLabel} data-git-chip-rate><IconClock size={11} /></span>}
               {state === 'error' && <span className="wmux-git-chip-error" role="img" aria-label={problem ?? ''} data-git-chip-error><IconX size={10} /></span>}
             </button>
           );
@@ -191,13 +210,13 @@ export function FlatLists({ groups, tab, refreshKey, filter, onFilter, sel, onSe
             {tab === 'prs' ? t('git.noPrs') : filter.kind !== 'all' ? t('git.issues.noneFiltered') : t('git.issues.none')}
           </div>
           : gated.map((g) => (
-            <div key={g.key} className="wmux-git-note" data-git-flat-gate={g.name}>{`${labelOf(g)}: ${problemOf(feedOf(g))}`}</div>
+            <div key={g.key} className="wmux-git-note" data-git-flat-gate={g.key}>{`${labelOf(g)}: ${problemOf(feedOf(g))}`}</div>
           )))}
       {rows.length > 0 && (
         <ul className="wmux-git-list" aria-label={tab === 'prs' ? t('git.pullRequests') : t('git.issues.listLabel')} data-git-flat-rows>
           {rows.map(({ g, item }) => {
             const repoPath = g.prPath;
-            const selected = !!sel && sel.repoPath === repoPath && sel.number === item.number;
+            const selected = !!sel && selGroupKey === g.key && sel.number === item.number;
             const dragContext = { repoPath, ...(owners[repoPath] ? { workspaceId: owners[repoPath] } : {}) };
             const tag = (
               <button
@@ -207,7 +226,7 @@ export function FlatLists({ groups, tab, refreshKey, filter, onFilter, sel, onSe
                 aria-label={t('git.flat.tagLabel', { repo: labelOf(g) })}
                 aria-pressed={chips.includes(g.key)}
                 onClick={() => toggleChip(g.key)}
-                data-git-repo-tag={g.name}
+                data-git-repo-tag={g.key}
               >{g.name}</button>
             );
             return tab === 'prs' ? (
