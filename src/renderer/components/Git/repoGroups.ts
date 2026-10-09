@@ -59,6 +59,16 @@ export function repoOwnerWorkspace(group: Pick<RepoGroup, 'checkouts'>, activeWo
   return all[0];
 }
 
+/** The group a repo path belongs to: its list path, a checkout (clone) of
+ *  it, or a workspace's worktree in it; undefined when none. A selection made
+ *  from a clone or a worktree is that group's, not "no group". */
+export function groupOfPath<G extends Pick<RepoGroup, 'prPath' | 'checkouts'>>(groups: readonly G[], repoPath: string, platform?: string): G | undefined {
+  const p = normWorktreePath(repoPath, platform);
+  return groups.find((g) => normWorktreePath(g.prPath, platform) === p
+    || g.checkouts.some((c) => normWorktreePath(c.mainPath, platform) === p
+      || c.workspaces.some((w) => !!w.repoPath && normWorktreePath(w.repoPath, platform) === p)));
+}
+
 /** Group resolved workspaces by remote (else checkout); the active repo first, then by name. */
 export function groupWorkspacesByRepo(
   list: readonly ResolvedWorkspace[],

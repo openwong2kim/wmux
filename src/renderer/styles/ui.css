@@ -2419,6 +2419,7 @@ html[data-fullscreen] .wmux-shell-body {
 .wmux-git-chip-count { color: var(--text-muted); font-variant-numeric: tabular-nums; }
 .wmux-git-chip-spin { width: 10px; height: 10px; flex-shrink: 0; border-radius: 9999px; border: 1.5px solid var(--text-muted); border-top-color: transparent; }
 .wmux-git-chip-error { display: inline-flex; flex-shrink: 0; color: var(--accent-red); }
+.wmux-git-chip-rate { display: inline-flex; flex-shrink: 0; color: var(--text-muted); }
 .wmux-git-tagged-row { position: relative; }
 .wmux-git-tagged-row > .wmux-git-item .wmux-git-item-meta { padding-right: 104px; }
 .wmux-git-repo-tag { position: absolute; right: 8px; bottom: 7px; max-width: 96px; height: 16px; padding: 0 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border-radius: var(--chip-radius, 6px); background: var(--selection); font-size: 11px; line-height: 16px; color: var(--text-sub); }
