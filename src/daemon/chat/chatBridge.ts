@@ -234,7 +234,9 @@ export interface ChatLaunchRequest {
   /** The first message; absent launches the agent alone. */
   prompt?: string;
   mode?: TerminalLaunchMode;
-  /** Continue the newest conversation in the pane's cwd (Claude `--continue`, Codex `resume --last`). */
+  /** Continue the pane's own bound conversation by its exact id (Claude `--resume <id>`, Codex
+   *  `resume <id>`). A pane with no binding is `resume-unavailable`: the newest conversation in
+   *  the folder is never guessed. */
   resume?: boolean;
   /** Phone: refuse a pane that already has a readable conversation (desktop eligibility rule). */
   refuseConversation?: boolean;

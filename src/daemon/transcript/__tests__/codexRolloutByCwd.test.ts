@@ -7,7 +7,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { ResumeBinding } from '../../../shared/agentResume';
 import {
-  CodexCwdBinder, codexLiveFor, describeCodexPane, findCodexRolloutByCwd, LAUNCH_WINDOW_MS, latestCodexRolloutForCwd, MAX_HEAD_READS, parseEtime,
+  CodexCwdBinder, codexLiveFor, describeCodexPane, findCodexRolloutByCwd, LAUNCH_WINDOW_MS, MAX_HEAD_READS, parseEtime,
   type CodexCwdQuery, type CodexPaneFacts,
 } from '../codexRolloutByCwd';
 
@@ -204,28 +204,3 @@ describe('CodexCwdBinder', () => {
   });
 });
 
-describe('latestCodexRolloutForCwd', () => {
-  const touch = (file: string, at: number) => fs.utimesSync(file, at / 1000, at / 1000);
-
-  it('names the most recently updated interactive rollout in the cwd, however old, and nothing else', async () => {
-    expect(await latestCodexRolloutForCwd(cwd, env)).toBeUndefined();
-    touch(rollout(A, { originator: 'codex_exec', source: 'exec' }), LAUNCH + 9_000);
-    touch(rollout(B, { thread_source: 'subagent' }), LAUNCH + 9_000);
-    touch(rollout(C, { cwd: path.join(cwd, 'elsewhere') }), LAUNCH + 9_000);
-    expect(await latestCodexRolloutForCwd(cwd, env)).toBeUndefined();
-    // Created 90 days ago but written to last: Codex sorts by update time.
-    touch(rollout(uuid(9), {}, LAUNCH - 90 * 86_400_000), LAUNCH + 5_000);
-    touch(rollout(uuid(8), {}, LAUNCH), LAUNCH + 1_000);
-    expect(await latestCodexRolloutForCwd(cwd, env)).toBe(uuid(9));
-  });
-
-  it('skips other originators without a full read, and answers undefined when a budget runs out', async () => {
-    touch(rollout(A, {}, LAUNCH - 86_400_000), LAUNCH);
-    for (let i = 1; i <= 3; i++) touch(rollout(uuid(i), { originator: 'codex_exec' }), LAUNCH + i * 1_000);
-    expect(await latestCodexRolloutForCwd(cwd, env, 1)).toBe(A);
-    expect(await latestCodexRolloutForCwd(cwd, env, 1, 3)).toBeUndefined();
-    for (let i = 4; i <= 5; i++) touch(rollout(uuid(i), { cwd: path.join(cwd, 'other') }), LAUNCH + i * 1_000);
-    expect(await latestCodexRolloutForCwd(cwd, env, 2)).toBeUndefined();
-    expect(await latestCodexRolloutForCwd(cwd, env, 3)).toBe(A);
-  });
-});

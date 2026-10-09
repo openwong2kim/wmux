@@ -36,7 +36,8 @@ function fixture() {
       noteInput: (data: string) => { shell.revision++; shell.empty = false; if (data === '\x1b') shell.escAt = Date.now(); }, getLastEscAt: () => shell.escAt, getTitle: () => shell.title,
       noteInterrupt: () => { shell.escAt = Date.now(); } },
     promptLog: { size: 3, isCommandRunning: () => false },
-    ptyProcess: { write: (data) => { typed.push(data); } },
+    // A fresh Claude launch carries a minted `--session-id`; it is random, so it reads as PIN here.
+    ptyProcess: { write: (data) => { typed.push(data.replace(/ --session-id [0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}/, ' --session-id PIN')); } },
   };
   const agent: ChatAgentState = { agentName: null, agentVerified: false, agentStatus: 'idle', inputQuiet: true, inputRevision: 0, incarnationId: 'inc' };
   const state = {
@@ -426,7 +427,7 @@ describe('launch', () => {
   it('types the fixed launcher once and consumes the empty prompt', async () => {
     const f = fixture();
     expect(await f.bridge.launch({ id: 'pane', agent: 'claude', prompt: "it's done" })).toEqual({ ok: true, effect: 'submitted' });
-    expect(f.typed).toEqual(["claude -- 'it'\\''s done'\r"]);
+    expect(f.typed).toEqual(["claude --session-id PIN -- 'it'\\''s done'\r"]);
     expect(await f.bridge.launch({ id: 'pane', agent: 'claude', prompt: 'again' }))
       .toMatchObject({ ok: false, error: 'launch-not-ready', reason: 'shell-not-empty', effect: 'none' });
   });
@@ -448,7 +449,7 @@ describe('launch', () => {
     f.state.pane!.meta.env = { CLAUDE_CONFIG_DIR: "/acct/it's b", CODEX_HOME: '/ws/codex' };
     f.state.pane!.meta.paneAccount = { vendor: 'claude' };
     expect(await f.bridge.launch({ id: 'pane', agent: 'claude', prompt: 'go' })).toMatchObject({ ok: true });
-    expect(f.typed).toEqual(["CLAUDE_CONFIG_DIR='/acct/it'\\''s b' claude -- 'go'\r"]);
+    expect(f.typed).toEqual(["CLAUDE_CONFIG_DIR='/acct/it'\\''s b' claude --session-id PIN -- 'go'\r"]);
     // The other vendor's agent, and a pane with no chosen account, are typed as before.
     const g = fixture();
     g.state.pane!.meta.env = { CLAUDE_CONFIG_DIR: '/acct/b' };
@@ -458,7 +459,7 @@ describe('launch', () => {
     const h = fixture();
     h.state.pane!.meta.env = { CLAUDE_CONFIG_DIR: '/ws/claude' };
     expect(await h.bridge.launch({ id: 'pane', agent: 'claude', prompt: 'go' })).toMatchObject({ ok: true });
-    expect(h.typed).toEqual(["claude -- 'go'\r"]);
+    expect(h.typed).toEqual(["claude --session-id PIN -- 'go'\r"]);
   });
 
   it('a typed account prefix survives an rc export in a real shell', async () => {
@@ -528,40 +529,29 @@ describe('launch', () => {
     expect(started[0]).toMatchObject({ KEEP_ME: 'yes' });
   });
 
-  it('launches bare with no prompt, and resumes in the pane cwd for both agents', async () => {
+  it('launches bare with no prompt, pinning a fresh Claude to a minted id', async () => {
     const f = fixture();
-    const checked: Array<[string, string]> = [];
-    f.deps.latestResumeSession = async (agent, cwd) => { checked.push([agent, cwd]); return 'sess-1'; };
     const bridge = () => createChatBridge(f.deps);
     const fresh = () => { f.shell.empty = true; };
     expect(await bridge().launch({ id: 'pane', agent: 'claude' })).toEqual({ ok: true, effect: 'submitted' });
     fresh();
     expect(await bridge().launch({ id: 'pane', agent: 'codex' })).toMatchObject({ ok: true });
     fresh();
-    expect(await bridge().launch({ id: 'pane', agent: 'claude', resume: true, mode: 'bypass' })).toMatchObject({ ok: true });
-    fresh();
-    expect(await bridge().launch({ id: 'pane', agent: 'codex', resume: true })).toMatchObject({ ok: true });
-    fresh();
-    expect(await bridge().launch({ id: 'pane', agent: 'claude', resume: true, prompt: "it's next" })).toMatchObject({ ok: true });
-    fresh();
-    expect(await bridge().launch({ id: 'pane', agent: 'codex', resume: true, prompt: 'go', mode: 'yolo' })).toMatchObject({ ok: true });
+    expect(await bridge().launch({ id: 'pane', agent: 'claude', mode: 'bypass', prompt: 'go' })).toMatchObject({ ok: true });
     expect(f.typed).toEqual([
-      'claude\r',
+      'claude --session-id PIN\r',
       'codex --remote unix:///tmp/relay.sock --cd "$PWD"\r',
-      "cd -- '/live' && claude --continue --dangerously-skip-permissions\r",
-      "codex resume --remote unix:///tmp/relay.sock --cd '/live' --last\r",
-      "cd -- '/live' && claude --continue -- 'it'\\''s next'\r",
-      "codex resume --remote unix:///tmp/relay.sock --cd '/live' --last --dangerously-bypass-approvals-and-sandbox -- 'go'\r",
+      "claude --session-id PIN --dangerously-skip-permissions -- 'go'\r",
     ]);
-    expect(checked).toEqual([['claude', '/live'], ['codex', '/live'], ['claude', '/live'], ['codex', '/live']]);
     // A blank prompt is still malformed: only an absent one is a bare launch.
     fresh();
     expect(await bridge().launch({ id: 'pane', agent: 'claude', prompt: '  ' })).toMatchObject({ error: 'invalid-chat-request', effect: 'none' });
   });
 
-  it('refuses a resume with nothing to continue before any relay is touched or anything typed', async () => {
+  // Recovery resumes only the pane's own conversation: with no binding the newest
+  // conversation in the folder is never guessed (another pane there may own it).
+  it('refuses a resume on a pane with no binding before any relay is touched or anything typed', async () => {
     const f = fixture();
-    f.deps.latestResumeSession = async () => undefined;
     const prepare = vi.fn(f.deps.relays.prepare);
     const retire = vi.fn(f.deps.relays.retire);
     f.deps.relays.prepare = prepare; f.deps.relays.retire = retire;
@@ -569,32 +559,11 @@ describe('launch', () => {
     for (const agent of ['claude', 'codex'] as const) {
       expect(await bridge.launch({ id: 'pane', agent, resume: true })).toEqual({ ok: false, error: 'resume-unavailable', effect: 'none' });
       expect(await bridge.launch({ id: 'pane', agent, resume: true, prompt: 'go' })).toMatchObject({ error: 'resume-unavailable', effect: 'none' });
+      expect(await bridge.launch({ id: 'pane', agent, resume: true, mode: agent === 'claude' ? 'bypass' : 'yolo' })).toMatchObject({ error: 'resume-unavailable' });
     }
     expect(prepare).not.toHaveBeenCalled();
     expect(retire).not.toHaveBeenCalled();
     expect(f.typed).toEqual([]);
-  });
-
-  it('refuses a resume whose latest session another live pane is running, and one in an unquotable cwd', async () => {
-    const f = fixture();
-    const other: ChatPane = { ...f.state.pane!, meta: { ...f.state.pane!.meta, id: 'other' } };
-    const agents: Record<string, ChatAgentState> = { other: { ...f.state.agent, agentName: 'Claude Code', agentVerified: true } };
-    f.deps.pane = (id) => id === 'other' ? other : f.state.pane;
-    f.deps.agentState = (id) => agents[id] ?? { ...f.state.agent };
-    f.deps.latestResumeSession = async () => 'sess-1';
-    f.deps.panesBoundTo = (_agent, sessionId) => sessionId === 'sess-1' ? ['pane', 'other'] : [];
-    const bridge = () => createChatBridge(f.deps);
-    expect(await bridge().launch({ id: 'pane', agent: 'claude', resume: true })).toEqual({ ok: false, error: 'resume-in-use', effect: 'none' });
-    // Codex in the other pane does not hold a Claude session.
-    expect(await bridge().launch({ id: 'pane', agent: 'codex', resume: true })).toMatchObject({ ok: true });
-    f.shell.empty = true;
-    // The agent there has exited: the binding alone does not hold the session.
-    agents.other = { ...f.state.agent, agentName: null };
-    expect(await bridge().launch({ id: 'pane', agent: 'claude', resume: true })).toMatchObject({ ok: true });
-    f.shell.empty = true;
-    f.state.pane!.meta.cwd = "/it's";
-    expect(await bridge().launch({ id: 'pane', agent: 'claude', resume: true })).toMatchObject({ error: 'resume-unavailable', effect: 'none' });
-    expect(f.typed).toHaveLength(2);
   });
 
   describe('resume of a bound pane whose agent exited', () => {
@@ -605,7 +574,6 @@ describe('launch', () => {
         permissionMode: 'bypassPermissions', ts: 1, ...extra };
       f.state.pane!.meta.cmd = '/bin/zsh';
       f.deps.boundSessionLives = async () => true;
-      f.deps.latestResumeSession = async () => { throw new Error('the newest-conversation lookup must not run'); };
     };
     const phone = (agent: 'claude' | 'codex', extra: Record<string, unknown> = {}) =>
       ({ id: 'pane', agent, resume: true, refuseConversation: true, ...extra });
@@ -725,12 +693,10 @@ describe('launch', () => {
 
   it('refuses resume + prompt for an agent whose resume line takes no prompt', async () => {
     const f = fixture();
-    f.deps.latestResumeSession = async () => 'sess-1';
     f.deps.resumeTakesPrompt = (agent) => agent !== 'codex';
     const bridge = createChatBridge(f.deps);
     expect(await bridge.launch({ id: 'pane', agent: 'codex', resume: true, prompt: 'go' })).toEqual({ ok: false, error: 'resume-prompt-unsupported', effect: 'none' });
     expect(f.typed).toEqual([]);
-    expect(await bridge.launch({ id: 'pane', agent: 'codex', resume: true })).toMatchObject({ ok: true });
   });
 
   it('types nothing when the grant is gone, and is uncertain when typing throws', async () => {

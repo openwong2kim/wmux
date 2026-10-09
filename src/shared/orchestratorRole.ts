@@ -642,8 +642,8 @@ export interface ApplyRoleBindingOptions {
   suppressSkipPermissions?: boolean;
   /**
    * #1916: the line resumes no exact session (the session picker `claude
-   * --resume` / `codex resume`, #1946, or a cwd-relative `--continue` /
-   * `resume --last`), so it may reach an unrelated conversation. The
+   * --resume` / `codex resume`, #1946), so it may reach an unrelated
+   * conversation. The
    * role's permission settings are withheld entirely: its skip flag, and every
    * permission choice in its args (`--permission-mode ...`, `-a never`, ...),
    * as well as the skip spellings. Model, effort and the other args still apply.

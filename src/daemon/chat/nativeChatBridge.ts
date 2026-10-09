@@ -15,8 +15,8 @@ import { screenBlocksChatSend, screenShowsRunningTurn, screenShowsTurnEnding, ti
 import { claudeComposerRows, claudeComposerShows, deliverChatPrompt, type ChatScreenRows } from '../transcript/deliverChatPrompt';
 import { INTERRUPT_COOLDOWN_MS, interruptChatTurn, type ChatInterruptVerdict } from '../transcript/interruptChatTurn';
 import { boundResumeCommand, codexRuntimeEnv, resumeCwdUsable, terminalLaunchCommand } from '../transcript/terminalLaunch';
-import { boundSessionLives, latestResumeSession } from '../transcript/resumeAvailable';
-import { isUsableResumeBinding, type ResumeBinding } from '../../shared/agentResume';
+import { boundSessionLives } from '../transcript/resumeAvailable';
+import { isUsableResumeBinding, withLaunchSessionId, type ResumeBinding } from '../../shared/agentResume';
 import { CHATV2_PROVIDER_SESSION_ID } from '../../shared/chatv2/ipc';
 import { classifyShell } from '../shell-integration';
 import { inResumeCwd, type ResumeShell } from './v2/handoff';
@@ -126,8 +126,6 @@ export interface NativeChatBridgeDeps<P extends ChatPane> {
   /** `anyShell` also accepts PowerShell and cmd (the caller picked its grammar already). */
   idleShell(pid: number, env: NodeJS.ProcessEnv, anyShell?: boolean): Promise<{ ok: true } | { ok: false; reason: 'missing' | 'unsupported-shell' | 'shell-has-children' }>;
   installedAgents(env: NodeJS.ProcessEnv): Promise<AgentLaunchOptions[]>;
-  /** Whether a resume launch has a conversation to continue in `cwd` (default: the agent's own records). */
-  latestResumeSession?(agent: TerminalLaunchAgent, cwd: string, env: NodeJS.ProcessEnv): Promise<string | undefined>;
   /** Whether a pane's binding still names a conversation to continue (default: its transcript and folder exist). */
   boundSessionLives?(binding: ResumeBinding, env: NodeJS.ProcessEnv, fresh: boolean): Promise<boolean>;
   /** Panes whose resume binding names this agent session (the daemon's own records). */
@@ -232,7 +230,7 @@ const CLEAR_FRAME_POLLS = 8;
 const DELIVERED_KEEP = 32;
 /**
  * Whether the agent takes a first message on its resume command line
- * (`claude --continue -- 'p'`, `codex resume --last -- 'p'`). One that cannot
+ * (`claude --resume <id> -- 'p'`, `codex resume <id> -- 'p'`). One that cannot
  * refuses resume + prompt with `resume-prompt-unsupported`.
  */
 const RESUME_TAKES_PROMPT: Readonly<Record<TerminalLaunchAgent, boolean>> = { claude: true, codex: true };
@@ -1668,7 +1666,10 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
     let command: string;
     const resume = req.resume === true;
     if (resume && req.prompt !== undefined && !(deps.resumeTakesPrompt?.(agent) ?? RESUME_TAKES_PROMPT[agent])) return fail('resume-prompt-unsupported');
-    try { command = terminalLaunchCommand(agent, req.prompt, req.mode, resume); } catch { return fail('invalid-chat-request'); }
+    try { command = terminalLaunchCommand(agent, req.prompt, req.mode); } catch { return fail('invalid-chat-request'); }
+    // A fresh Claude is pinned to a minted id, so the pane's exact conversation is
+    // on its command line from the start (the daemon binds it from there).
+    if (!resume) command = withLaunchSessionId(command, randomUUID());
     if (launching.has(id)) return fail('launch-pending');
     launching.add(id);
     let relay: LaunchRelay | undefined;
@@ -1706,15 +1707,14 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
       try { buildAgentLaunch({ agent }, await deps.installedAgents(env)); } catch { return fail('agent-not-installed'); }
       // Checked against the agent's own records before anything is typed (or a
       // Codex relay is touched), so a resume never starts an agent that fails.
-      // The resume line names this cwd itself (Claude `cd --`, Codex `--cd`), so
-      // it must be quotable; the agent then runs exactly where it was checked.
-      const cwd = pane.meta.cwd || pane.meta.spawnCwd;
-      const quoted = quotedCwd(cwd);
       // Uncached: a record deleted since the last `/turns` read must not be typed.
       if (bound && !await sessionLives(bound, env, true)) return fail('resume-unavailable');
       const boundCwd = bound && boundShell === 'posix' ? quotedCwd(bound.cwd) : undefined;
       if (resume) {
-        const sessionId = bound?.sessionId ?? (cwd && quoted ? await (deps.latestResumeSession ?? latestResumeSession)(agent, cwd, env) : undefined);
+        // Only the pane's own conversation is ever resumed. With no binding there
+        // is nothing exact to continue, and the newest conversation in the folder
+        // is a guess another pane sharing it may own.
+        const sessionId = bound?.sessionId;
         if (!sessionId) return fail('resume-unavailable');
         // Two agents appending to one conversation: refuse while another pane runs it.
         if (heldElsewhere(id, agent, sessionId)) return fail('resume-in-use');
@@ -1738,8 +1738,8 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
         if (!RELAY_URL.test(relay.url)) return fail('launch-unconfirmed');
         // Typed into an idle zsh/bash/sh prompt (idleShell refuses anything else), so the
         // shell's own "$PWD" is the directory Codex should start in; a tracked cwd can only lag it.
-        // A resume names the directory its availability was checked in, so `--last` filters on that one.
-        command = withCodexRemote(command, relay.url, boundCwd ?? (resume && quoted ? quoted : codexCdOperand()));
+        // A bound resume names its binding's own folder.
+        command = withCodexRemote(command, relay.url, boundCwd ?? codexCdOperand());
       }
       // A pane created with a chosen account launches that vendor's agent on it,
       // whatever the shell's rc files exported (see withChosenAccountEnv).
@@ -1749,7 +1749,7 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
       // A relay Codex is placed by its `--cd`; every other bound line changes folder first.
       if (bound && boundShell) {
         if (agent !== 'codex' || boundShell === 'pwsh') command = inResumeCwd(bound.cwd, command, boundShell);
-      } else if (resume && agent === 'claude') command = `cd -- ${quoted} && ${command}`;
+      }
       const secondIdle = await idle();
       if (secondIdle) return secondIdle;
       if (req.authorized) {

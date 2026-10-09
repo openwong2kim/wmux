@@ -4253,7 +4253,7 @@ bridge. A missing key reads as `false`; none of them moves `protocolVersion`.
 | `chatLaunchModes` | Present only when `chatLaunch` is true. `{claude:[…], codex:[…]}`: `default` only, plus `bypass` (Claude) / `yolo` (Codex) when the server was started with `wmux web --allow-dangerous-launch` |
 | `chatSkills` | `/commands` accepts `?agent=` and answers the native catalogue |
 | `chatLaunchBare` | `POST …/chat/launch` accepts an omitted or empty `prompt` (starts the agent with no first message). Daemon capability; `chatLaunch` still says whether this caller may launch |
-| `chatLaunchResume` | `POST …/chat/launch` accepts `resume: true` (continue the newest conversation in the pane's cwd). Daemon capability, same as above |
+| `chatLaunchResume` | `POST …/chat/launch` accepts `resume: true`. Since the exact-id rule (see **Resume** below) it continues only a pane's own bound conversation (`chatResumeBound`); a pane with no binding answers `409 resume-unavailable`. Daemon capability, same as above |
 | `chatResumeBound` | `resume: true` is also accepted on a pane that keeps a binding whose agent exited, and continues exactly that conversation; `/turns` `chat.resumable` says when. Daemon capability, same as above |
 | `chatVersion` | Version of this chat contract (`1`). Bumped only on a breaking change |
 
@@ -4520,44 +4520,31 @@ allowed (`launch-id-expired`). Model, effort, arguments, command, cwd and
 environment are refused; model and effort for new panes stay on
 `POST /api/sessions {agentLaunch}`.
 
-**Resume.** `resume: true` continues the newest conversation recorded for that
-agent in the pane's cwd. Claude is typed as `cd -- '<cwd>' && claude --continue`
-and Codex as `codex resume --remote <relay> --cd '<cwd>' --last`, so the agent runs
-in the directory the daemon checked. A cwd that cannot be written as one
-single-quoted word (not absolute, or containing a quote, backslash or control
-character) is `resume-unavailable`. The command line is built from fixed tokens
-only, never from request text. It combines with `mode`, and the dangerous-mode
-rules below are unchanged: `bypass`/`yolo` still need the ceiling and the exact
-`confirm`. With a non-empty `prompt` the agent resumes first and the prompt is
-its first message, passed the same gated way as on a fresh launch
-(`-- '<prompt>'` after the resume flags). An agent that cannot take one refuses
-with `409 resume-prompt-unsupported` (none today).
+**Fresh Claude launches carry their id.** A launch without `resume` types Claude
+as `claude --session-id <uuid> …` with a daemon-minted lowercase UUID, so the
+pane's exact conversation id is known from the agent's command line before the
+first hook. The binding (and `/turns` `agentSessionId`) then names that id.
+Codex launches are typed as before.
 
-Before anything is typed, the daemon finds the conversation the agent would
-continue:
-
-- **Claude:** the most recently modified non-empty transcript in Claude's
-  project directory for that cwd, under `CLAUDE_CONFIG_DIR` when it is set. A
-  cwd whose project name is longer than 200 characters counts only when the
-  transcript records that cwd.
-- **Codex:** the most recently updated interactive Codex CLI thread whose
-  recorded cwd is that cwd, excluding `codex exec` and sub-agent threads, within
-  a bounded scan. Because the launch goes through the pane's relay
-  (`--remote`), Codex filters `--last` on that exact cwd. Its linked-worktree
-  widening applies only to a local launch, so a sibling worktree's thread is
-  neither counted nor resumed.
-
-If there is no such conversation, the answer is `409 resume-unavailable`
-(`effect:"none"`); the daemon never launches an agent that would fail. If
+**Resume.** `resume: true` continues only the pane's **own** conversation: the
+one its binding names (see *Resuming a bound pane* below). It never picks the
+newest conversation recorded in the pane's folder: several panes can share a
+folder, and each would reopen the same one. A pane with no binding answers
+`409 resume-unavailable` (`effect:"none"`) and nothing is typed, whatever its
+folder holds. Offer Resume only where `/turns` `chat.resumable` is `true`. If
 another live pane is running that conversation (its binding names it and the
 same agent is running there), the answer is `409 resume-in-use`
-(`effect:"none"`), because two agents would append to one conversation. The
-lookup is cached for 30 s per agent, cwd and account.
+(`effect:"none"`), because two agents would append to one conversation. With a
+non-empty `prompt` the agent resumes first and the prompt is its first message,
+passed the same gated way as on a fresh launch (`-- '<prompt>'` after the
+resume flags). An agent that cannot take one refuses with
+`409 resume-prompt-unsupported` (none today). It combines with `mode`, and the
+dangerous-mode rules below are unchanged: `bypass`/`yolo` still need the
+ceiling and the exact `confirm`.
 
 Without `resume`, a pane that already resolves to a conversation (including
 one whose agent has exited but whose binding remains) is still
-`conversation-exists`. The newest-conversation lookup above is for a pane with
-no binding, typically a fresh pane opened in the project's directory.
+`conversation-exists`.
 
 **Resuming a bound pane** (`chatResumeBound`). On a pane that keeps a binding
 and whose agent is not running, `resume: true` continues exactly that binding's
@@ -4592,15 +4579,16 @@ rules are unchanged.
 The agent may start a new session id on resume. The binding then moves and
 `historyEpoch` changes, so re-read the conversation as a new one.
 
-`chat.resumable` (terminal bindings) is `false` wherever a bound resume launch
-(without a prompt) would refuse before typing, checked in the launch's order:
+`chat.resumable` (terminal bindings) is `false` on a pane with no binding, and
+wherever a bound resume launch (without a prompt) would refuse before typing,
+checked in the launch's order:
 the agent is running, the pane holds a managed conversation, the shell is not
 one of the above (fish, nu, cmd.exe, WSL), the binding's id or folder fails its
 check, the conversation's record is gone, or another live pane runs it. The
 record must be a non-empty transcript inside the session root of the account
 the pane launches with (`CLAUDE_CONFIG_DIR` or `CODEX_HOME` when set; no other
 root counts) and its folder must exist. For `resumable` that lookup is cached
-for 30 s, like the one above. The launch re-checks the record without the
+for 30 s. The launch re-checks the record without the
 cache, so a record deleted meanwhile is `409 resume-unavailable`, and the
 pane-state checks (empty prompt, approvals) apply as for any launch.
 Receipts and the binding wait are the same as for any launch.
@@ -4635,7 +4623,7 @@ changes; never persist it.
 | launch receipt store full | 429 | `{error:"launch-busy"}` | `none` — retry later |
 | another launch running on this pane | 409 | `{error:"launch-pending"}` | `none` |
 | pane already has a conversation (no `resume`, or a managed record) | 409 | `{error:"conversation-exists"}` | `none` |
-| `resume` with nothing to continue in the pane's cwd; on a bound pane: the record is gone or unreadable, the id or folder fails its check, or `agent` is not the binding's agent | 409 | `{error:"resume-unavailable"}` | `none` |
+| `resume` on a pane with no binding (the newest conversation in its folder is never guessed); on a bound pane: the record is gone or unreadable, the id or folder fails its check, or `agent` is not the binding's agent | 409 | `{error:"resume-unavailable"}` | `none` |
 | `resume` of a conversation another live pane is running | 409 | `{error:"resume-in-use"}` | `none` |
 | `resume` on a bound pane whose agent is still running | 409 | `{error:"launch-not-ready", reason:"agent-running"}` | `none` |
 | `resume` + `prompt` for an agent that cannot take both, or a bound resume with a `prompt` on a PowerShell pane | 409 | `{error:"resume-prompt-unsupported"}` | `none` |
@@ -5093,7 +5081,7 @@ after the profile, right before the agent, on the first launch and on every
 recovery replay. `chat/launch` types into the pane's interactive shell, whose
 `.zshrc` / `.bashrc` can export another account too: on a pane created with
 `accountId`, a launch of that account's vendor is typed with the account's key
-as a one-command prefix (`CLAUDE_CONFIG_DIR='<dir>' claude -- '…'`), so the
+as a one-command prefix (`CLAUDE_CONFIG_DIR='<dir>' claude --session-id <uuid> -- '…'`), so the
 agent runs on the chosen account. A pane without `accountId` and the other
 vendor's agent are typed as before. Not covered: fish and PowerShell wrappers
 for `agentLaunch` (a launch is only typed into zsh, bash or sh), and an agent

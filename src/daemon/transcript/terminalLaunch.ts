@@ -20,15 +20,15 @@ export function codexRuntimeEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 /** Quote an initial instruction for the verified POSIX shell.
  * Never accept controls, terminal escapes or a caller-supplied launcher.
  * `undefined` launches the agent with no first message (a blank string is
- * still refused). `resume` continues the newest conversation in the shell's
- * directory: Claude `--continue`, Codex `resume --last` (whose first
- * positional after `--last` is the prompt). Every token is fixed. */
-export function terminalLaunchCommand(agent: unknown, prompt: unknown, mode: unknown = 'default', resume = false): string {
+ * still refused). Always a fresh launch: a resume names its exact conversation
+ * (`boundResumeCommand`), never the newest one in the shell's directory.
+ * Every token is fixed. */
+export function terminalLaunchCommand(agent: unknown, prompt: unknown, mode: unknown = 'default'): string {
   if (!validTerminalLaunchMode(agent, mode) || (agent !== 'claude' && agent !== 'codex') || (prompt !== undefined && (typeof prompt !== 'string' ||
       !prompt.trim() || prompt.length > 2000 || [...prompt].some(c => c.charCodeAt(0) < 32 && c !== '\n' || c.charCodeAt(0) === 127)))) {
     throw new Error('Invalid initial message');
   }
-  const head = !resume ? agent : agent === 'codex' ? 'codex resume --last' : 'claude --continue';
+  const head = agent;
   const flags = mode === 'bypass' ? ' --dangerously-skip-permissions' : mode === 'yolo' ? ' --dangerously-bypass-approvals-and-sandbox' : '';
   return head + flags + (prompt === undefined ? '' : " -- '" + prompt.replace(/'/g, "'\\''") + "'");
 }
