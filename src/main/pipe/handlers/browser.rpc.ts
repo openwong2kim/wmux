@@ -751,6 +751,7 @@ export function registerBrowserRpc(
   // `mcp.mode` getter. Kept in the signature for the existing wiring, but the
   // browser scope no longer reads it: the workspace comes from the verified
   // identity in both modes (see `scopeFor`).
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   _getEnforcementMode: () => EnforcementMode = () => 'shadow',
   // 'chrome' backend (Phase 2/2.5): per-profile real-Chrome instances behind
   // a workspace-binding registry. Optional so older wirings/tests keep
