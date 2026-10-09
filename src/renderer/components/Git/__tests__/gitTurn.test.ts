@@ -66,6 +66,7 @@ describe('classifyGitTurn: PRs', () => {
   it("another author's PR awaiting review is needs_you; approved and green is ready", () => {
     expect(classifyGitTurn(pr({ author: 'contrib', checks: 'pending' }), ctx([]))).toBe('needs_you');
     expect(classifyGitTurn(pr({ author: 'Contrib', reviewDecision: 'APPROVED' }), ctx([]))).toBe('ready_to_merge');
+    expect(classifyGitTurn(pr({ author: 'contrib', checks: 'pending' }), ctx([link()], 'running'))).toBe('agents_on_it');
   });
 
   it('with no gh login every author counts as the owner', () => {
@@ -138,6 +139,7 @@ describe('classifyGitTurn: issues', () => {
   it('an issue assigned to someone else waits; assigned to the owner needs you', () => {
     expect(classifyGitTurn(issue({ assignees: ['helper'] }), ctx([]))).toBe('waiting_on_others');
     expect(classifyGitTurn(issue({ assignees: ['Owner'] }), ctx([]))).toBe('needs_you');
+    expect(classifyGitTurn(issue({ assignees: ['Owner', 'helper'] }), ctx([]))).toBe('needs_you');
     expect(classifyGitTurn(issue({ assignees: ['helper'] }), ctx([], 'idle', null))).toBe('needs_you');
   });
 
