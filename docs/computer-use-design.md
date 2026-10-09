@@ -216,7 +216,13 @@ The error codes live in `src/shared/computer/errors.ts`. Each code carries
 `value_not_settable`, `snapshot_unknown`, `permission_missing`,
 `target_elevated`, `input_busy`, `shortcut_blocked`, `stop_key_unavailable`, `aborted`, `timeout`,
 `screenshot_failed`, `helper_unavailable`, `helper_incompatible`,
-`unsupported_platform`, `invalid_argument`, `internal`.
+`turned_off`, `shutting_down`, `unsupported_platform`, `invalid_argument`,
+`internal`.
+
+`turned_off` (the person switched computer use off) and `shutting_down` (wmux
+is quitting or restarting its helper) are main-only, like `shortcut_blocked`;
+helpers never send them. `helper_unavailable` is kept for a helper that is
+missing, damaged or failed to start, which is the case that needs a reinstall.
 
 Errors are classified by stable identifiers (HRESULTs, AXError values), never
 by localized message text.

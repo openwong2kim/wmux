@@ -210,11 +210,11 @@ export class ComputerService {
   private ensureReady(): HelperLike {
     // Checked before anything else: a call that lands during quit must not
     // take the stop key back or spawn a helper nothing will ever dispose.
-    if (this.disposed) fail('helper_unavailable', 'wmux is shutting down');
+    if (this.disposed) fail('shutting_down', 'wmux is shutting down');
     if (!this.deps.isEnabled()) {
       // Turned off, possibly by editing the file by hand: give the chord back.
       this.deps.stopKey.release();
-      fail('helper_unavailable', 'computer use is turned off. The user turns it on in Settings › Computer use');
+      fail('turned_off', 'computer use is turned off. The user turns it on in Settings › Computer use');
     }
     if (!this.deps.createHelper) {
       fail('unsupported_platform', `computer use is not available on ${process.platform}`);

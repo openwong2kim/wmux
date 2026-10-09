@@ -206,7 +206,7 @@ export class HelperProcess {
       if (generation !== this.abortGeneration) throw new ComputerError('aborted', 'stopped by the user');
     };
     const run = async (): Promise<HelperMethods[M]['result']> => {
-      if (this.disposed) throw new ComputerError('helper_unavailable', 'computer use is shutting down');
+      if (this.disposed) throw new ComputerError('shutting_down', 'computer use is shutting down');
       assertCurrent();
       if (this.heldInput && method !== 'releaseInput') {
         let released = false;
@@ -254,7 +254,7 @@ export class HelperProcess {
   dispose(): void {
     this.disposed = true;
     this.clearIdle();
-    const error = new ComputerError('helper_unavailable', 'computer use is shutting down');
+    const error = new ComputerError('shutting_down', 'computer use is shutting down');
     if (this.running) {
       // Mid-input, stdin EOF first: the helper releases what it holds on EOF,
       // and no fresh helper may be started for it any more.
@@ -351,7 +351,7 @@ export class HelperProcess {
   }
 
   private ensureRunning(): Promise<Running> {
-    if (this.disposed) return Promise.reject(new ComputerError('helper_unavailable', 'computer use is shutting down'));
+    if (this.disposed) return Promise.reject(new ComputerError('shutting_down', 'computer use is shutting down'));
     if (this.running) return Promise.resolve(this.running);
     if (!this.starting) {
       this.starting = this.start()
@@ -373,9 +373,14 @@ export class HelperProcess {
   private async start(): Promise<Running> {
     if (this.opts.verify) {
       await this.opts.verify(this.opts.command);
-      if (this.disposed) throw new ComputerError('helper_unavailable', 'computer use is shutting down');
+      if (this.disposed) throw new ComputerError('shutting_down', 'computer use is shutting down');
     }
-    const running = await this.spawnHelper();
+    // A helper killed by dispose() while starting reports its exit; the
+    // caller should hear that wmux is shutting down instead.
+    const running = await this.spawnHelper().catch((err: unknown) => {
+      if (this.disposed) throw new ComputerError('shutting_down', 'computer use is shutting down');
+      throw err;
+    });
     // Before the request that started it, so its first action already runs
     // with the person's settings (the overlay).
     await this.sendConfigure(running);
@@ -464,7 +469,7 @@ export class HelperProcess {
               return;
             }
             if (this.disposed) {
-              fail(new ComputerError('helper_unavailable', 'computer use is shutting down'));
+              fail(new ComputerError('shutting_down', 'computer use is shutting down'));
               return;
             }
             settled = true;

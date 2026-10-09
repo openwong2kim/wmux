@@ -25,6 +25,8 @@ export const COMPUTER_ERROR_CODES = [
   'screenshot_failed',
   'helper_unavailable',
   'helper_incompatible',
+  'turned_off',
+  'shutting_down',
   'unsupported_platform',
   'invalid_argument',
   'internal',
@@ -82,6 +84,13 @@ export const COMPUTER_ERROR_NEXT_STEPS: Record<ComputerErrorCode, readonly strin
   screenshot_failed: ['Use mode "ax" (accessibility tree only), or retry once.'],
   helper_unavailable: ['Computer use is not available right now. Tell the user; do not loop on retries.'],
   helper_incompatible: ['The computer-use helper does not match this wmux build. Tell the user to reinstall or update wmux.'],
+  turned_off: [
+    'The user has turned computer use off. Do not retry until they turn it back on in Settings › Computer use; ask them if you need it.',
+  ],
+  shutting_down: [
+    'wmux is quitting or restarting its computer-use helper. Nothing is wrong with the install; do not loop on retries.',
+    'If wmux is still running, call again once; otherwise tell the user the step was cut off.',
+  ],
   unsupported_platform: ['Computer use is not supported on this operating system yet.'],
   invalid_argument: ['Fix the arguments named in the message and call again.'],
   internal: ['Retry once. If it fails again, tell the user.'],

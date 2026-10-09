@@ -171,7 +171,7 @@ describe('computer-use stop key lifecycle', () => {
     mod.disposeComputerUse(null);
     const service = create();
     const err = await service.listApps().catch((e: unknown) => e);
-    expect((err as { code?: string }).code).toBe('helper_unavailable');
+    expect((err as { code?: string }).code).toBe('shutting_down');
     expect(h.register).not.toHaveBeenCalled();
     expect(h.shortcuts.has(ACCEL)).toBe(false);
     expect(h.helperCreated.count).toBe(0);

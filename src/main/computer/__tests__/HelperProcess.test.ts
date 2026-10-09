@@ -267,7 +267,7 @@ describe('HelperProcess', () => {
     });
     expect(await waitFor(() => requests().length > 0)).toBe(true);
     helper.dispose();
-    expect(await codeOf(click)).toBe('helper_unavailable');
+    expect(await codeOf(click)).toBe('shutting_down');
     expect(await waitFor(() => requests().includes('eof-release'), 2_000)).toBe(true);
     expect(requests()).toEqual(['click', 'eof-release']);
   });
@@ -379,7 +379,7 @@ describe('HelperProcess', () => {
     expect(await waitFor(() => requests().length > 0)).toBe(true);
     helper.dispose();
     helper.abort();
-    expect(await codeOf(click)).toBe('helper_unavailable');
+    expect(await codeOf(click)).toBe('shutting_down');
     await new Promise((r) => setTimeout(r, 300));
     expect(spawns).toBe(1);
     expect(requests()).toEqual(['click']);
@@ -395,7 +395,7 @@ describe('HelperProcess', () => {
     const pending = helper.request('listApps', {});
     await waitFor(() => child !== undefined);
     helper.dispose();
-    expect(await codeOf(pending)).toBe('helper_unavailable');
+    expect(await codeOf(pending)).toBe('shutting_down');
     expect(await waitFor(() => child?.exitCode !== null || child?.signalCode !== null)).toBe(true);
     expect(helper.hello).toBeNull();
   });
@@ -403,6 +403,6 @@ describe('HelperProcess', () => {
   it('refuses work after dispose', async () => {
     const { helper } = makeHelper('ok');
     helper.dispose();
-    expect(await codeOf(helper.request('listApps', {}))).toBe('helper_unavailable');
+    expect(await codeOf(helper.request('listApps', {}))).toBe('shutting_down');
   });
 });
