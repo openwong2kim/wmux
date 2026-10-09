@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { KeyboardEvent } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { A2A_BRAIN_ALIAS, type A2aEndpointKind, type A2aExposedPane, type A2aRemoteHostRecordV1 } from '../../../shared/a2aRemote';
 import type { A2aRemoteCallError } from '../../../shared/rpc';
@@ -56,6 +57,9 @@ export interface A2aLinkDialogViewProps {
   t: T;
 }
 
+const isPicked = (selected: A2aExposedPane | null, pane: A2aExposedPane): boolean =>
+  selected?.kind === pane.kind && selected?.workspaceId === pane.workspaceId && selected?.paneId === pane.paneId;
+
 export function A2aLinkDialogView(p: A2aLinkDialogViewProps) {
   const { t } = p;
   const brainMode = p.localKind === 'brain';
@@ -65,6 +69,46 @@ export function A2aLinkDialogView(p: A2aLinkDialogViewProps) {
   const hiddenOther = (p.panes?.length ?? 0) - (choices?.length ?? 0);
   const canSend = !!p.selected && p.selected.kind === p.localKind && (p.send || p.receive) && !p.busy && !p.outcome?.ok;
   const hostName = p.hosts.find((h) => h.hostId === p.hostId)?.name ?? '';
+
+  // PC picker: a radio group, so one Tab stop (the checked PC, else the
+  // first); arrows move and select, wrapping; Home/End jump to the ends.
+  // The key handling mirrors ui/SegmentedControl, kept here for the wrapping
+  // button look.
+  const hostRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const hostTabStop = Math.max(0, p.hosts.findIndex((h) => h.hostId === p.hostId));
+  const onHostKey = (from: number, e: KeyboardEvent<HTMLButtonElement>) => {
+    const n = p.hosts.length;
+    let next: number | undefined;
+    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') next = (from + 1) % n;
+    else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') next = (from - 1 + n) % n;
+    else if (e.key === 'Home') next = 0;
+    else if (e.key === 'End') next = n - 1;
+    if (next === undefined) return;
+    e.preventDefault();
+    hostRefs.current[next]?.focus();
+    p.onPickHost(p.hosts[next].hostId);
+  };
+
+  // Pane list: a listbox, so one Tab stop with roving tabIndex. ↑/↓ (and
+  // Home/End) move the active option without picking it; Enter/Space are the
+  // option button's own activation, which picks it through onClick.
+  const paneRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const [activePane, setActivePane] = useState<number | null>(null);
+  const selectedPane = choices?.findIndex(({ pane }) => isPicked(p.selected, pane)) ?? -1;
+  const paneTabStop = activePane !== null && activePane < (choices?.length ?? 0)
+    ? activePane
+    : Math.max(0, selectedPane);
+  const onPaneKey = (from: number, e: KeyboardEvent<HTMLButtonElement>) => {
+    const last = (choices?.length ?? 0) - 1;
+    let next: number | undefined;
+    if (e.key === 'ArrowDown') next = Math.min(from + 1, last);
+    else if (e.key === 'ArrowUp') next = Math.max(from - 1, 0);
+    else if (e.key === 'Home') next = 0;
+    else if (e.key === 'End') next = last;
+    if (next === undefined) return;
+    e.preventDefault();
+    paneRefs.current[next]?.focus();
+  };
   return (
     <Dialog onClose={p.onClose} width={560} data-testid="a2a-link-dialog">
       <DialogHeader
@@ -89,14 +133,19 @@ export function A2aLinkDialogView(p: A2aLinkDialogViewProps) {
           <p className="wmux-a2a-note" data-testid="a2a-link-no-hosts">{t('a2aLink.noHosts')}</p>
         ) : (
           <div className="flex flex-wrap gap-2" role="radiogroup" aria-label={t('a2aLink.pc')}>
-            {p.hosts.map((h) => (
+            {p.hosts.map((h, i) => (
               <UiButton
                 key={h.hostId}
+                ref={(el) => {
+                  hostRefs.current[i] = el;
+                }}
                 role="radio"
                 aria-checked={p.hostId === h.hostId}
+                tabIndex={i === hostTabStop ? 0 : -1}
                 variant={p.hostId === h.hostId ? 'secondary' : 'ghost'}
                 size="md"
                 onClick={() => p.onPickHost(h.hostId)}
+                onKeyDown={(e) => onHostKey(i, e)}
               >
                 {h.name}
               </UiButton>
@@ -117,17 +166,23 @@ export function A2aLinkDialogView(p: A2aLinkDialogViewProps) {
         )}
         {choices && choices.length > 0 && (
           <ul className="wmux-a2a-list" role="listbox" aria-label={t(brainMode ? 'a2aLink.moaSection' : 'a2aLink.panes')} data-testid="a2a-link-panes">
-            {choices.map(({ pane, recommended }) => {
-              const on = p.selected?.kind === pane.kind && p.selected?.workspaceId === pane.workspaceId && p.selected?.paneId === pane.paneId;
+            {choices.map(({ pane, recommended }, i) => {
+              const on = isPicked(p.selected, pane);
               return (
                 <li key={`${pane.kind}/${pane.workspaceId}/${pane.paneId ?? ''}`}>
                   <button
+                    ref={(el) => {
+                      paneRefs.current[i] = el;
+                    }}
                     type="button"
                     role="option"
                     aria-selected={on}
+                    tabIndex={i === paneTabStop ? 0 : -1}
                     data-pane-id={pane.paneId ?? 'moa'}
                     className={`wmux-a2a-row ${FOCUS_RING}`}
                     onClick={() => p.onPickPane(pane)}
+                    onFocus={() => setActivePane(i)}
+                    onKeyDown={(e) => onPaneKey(i, e)}
                   >
                     <span className="flex items-center gap-2">
                       <span className="truncate">

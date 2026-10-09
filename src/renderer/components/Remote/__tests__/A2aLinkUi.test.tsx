@@ -151,6 +151,92 @@ describe('A2aLinkDialogView', () => {
   });
 });
 
+const HOST2 = '22222222-2222-4222-8222-222222222222';
+const HOST3 = '33333333-3333-4333-8333-333333333333';
+const host = (hostId: string, name: string) => ({ v: 1 as const, hostId, name, addresses: [name], port: 45660, fingerprint256: 'AA', peerId: name, createdAt: '' });
+function key(el: Element, k: string): KeyboardEvent {
+  const e = new KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true });
+  act(() => { el.dispatchEvent(e); });
+  return e;
+}
+const tabStops = (root: Element, role: string) =>
+  [...root.querySelectorAll(`[role="${role}"]`)].map((el) => el.getAttribute('tabindex'));
+
+describe('A2aLinkDialogView keyboard', () => {
+  it('the PC picker is one Tab stop; arrows move and select, wrapping; Home/End jump', () => {
+    const onPickHost = vi.fn();
+    const body = render(createElement(A2aLinkDialogView, dialogProps({
+      hosts: [host(HOST, 'DESK'), host(HOST2, 'LAPTOP'), host(HOST3, 'MINI')], hostId: HOST2, onPickHost,
+    })));
+    const radios = [...body.querySelectorAll<HTMLButtonElement>('[role="radio"]')];
+    expect(tabStops(body, 'radio')).toEqual(['-1', '0', '-1']);
+    radios[1].focus();
+    expect(key(radios[1], 'ArrowRight').defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(radios[2]);
+    expect(onPickHost).toHaveBeenLastCalledWith(HOST3);
+    key(radios[2], 'ArrowDown');
+    expect(document.activeElement).toBe(radios[0]);
+    expect(onPickHost).toHaveBeenLastCalledWith(HOST);
+    key(radios[0], 'ArrowLeft');
+    expect(onPickHost).toHaveBeenLastCalledWith(HOST3);
+    key(radios[2], 'ArrowUp');
+    expect(onPickHost).toHaveBeenLastCalledWith(HOST2);
+    key(radios[1], 'End');
+    expect(document.activeElement).toBe(radios[2]);
+    key(radios[2], 'Home');
+    expect(document.activeElement).toBe(radios[0]);
+    expect(onPickHost).toHaveBeenLastCalledWith(HOST);
+    expect(key(radios[0], 'a').defaultPrevented).toBe(false);
+  });
+
+  it('with no PC picked yet, the first PC is the Tab stop', () => {
+    const body = render(createElement(A2aLinkDialogView, dialogProps({ hosts: [host(HOST, 'DESK'), host(HOST2, 'LAPTOP')], hostId: null })));
+    expect(tabStops(body, 'radio')).toEqual(['0', '-1']);
+  });
+
+  it('the pane list is one Tab stop; arrows move the active option without picking it', () => {
+    const onPickPane = vi.fn();
+    const body = render(createElement(A2aLinkDialogView, dialogProps({
+      panes: rankExposedPanes([pane('a'), pane('b'), pane('c')], null), selected: pane('b'), onPickPane,
+    })));
+    const options = () => [...body.querySelectorAll<HTMLButtonElement>('[role="option"]')];
+    // The picked pane holds the Tab stop.
+    expect(tabStops(body, 'option')).toEqual(['-1', '0', '-1']);
+    act(() => options()[1].focus());
+    expect(key(options()[1], 'ArrowDown').defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(options()[2]);
+    // The Tab stop follows the active option, so Tab back in lands there.
+    expect(tabStops(body, 'option')).toEqual(['-1', '-1', '0']);
+    key(options()[2], 'ArrowDown');
+    expect(document.activeElement).toBe(options()[2]);
+    key(options()[2], 'Home');
+    expect(document.activeElement).toBe(options()[0]);
+    key(options()[0], 'ArrowUp');
+    expect(document.activeElement).toBe(options()[0]);
+    key(options()[0], 'End');
+    expect(document.activeElement).toBe(options()[2]);
+    expect(onPickPane).not.toHaveBeenCalled();
+  });
+
+  it('Enter and Space are left to the option button, which picks the active pane', () => {
+    const onPickPane = vi.fn();
+    const body = render(createElement(A2aLinkDialogView, dialogProps({
+      panes: rankExposedPanes([pane('a'), pane('b')], null), onPickPane,
+    })));
+    const options = [...body.querySelectorAll<HTMLButtonElement>('[role="option"]')];
+    expect(tabStops(body, 'option')).toEqual(['0', '-1']);
+    act(() => options[0].focus());
+    key(options[0], 'ArrowDown');
+    // Not prevented, so the browser's own button activation runs (jsdom
+    // does not synthesize it); that activation is the click below.
+    expect(key(options[1], 'Enter').defaultPrevented).toBe(false);
+    expect(key(options[1], ' ').defaultPrevented).toBe(false);
+    expect(options[1].type).toBe('button');
+    act(() => options[1].click());
+    expect(onPickPane).toHaveBeenCalledWith(pane('b'));
+  });
+});
+
 const link = (over: Partial<A2aLinkRecordV1> = {}): A2aLinkRecordV1 => ({
   v: 1, linkId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', version: 1, state: 'proposed-in',
   local: { kind: 'pane', workspaceId: 'w1', paneId: 'p1' },
