@@ -20,6 +20,7 @@ import { PluginTrustStore } from '../../mcp/PluginTrustStore';
 import { registerMcpPluginRpc } from '../handlers/mcp.rpc';
 import { mintCommanderToken, revokeCommanderToken } from '../../deck/commanderTrust';
 import type { RpcContext } from '../../../shared/rpc';
+import { setMoaLevelGate } from '../../deck/moaLevelGate';
 
 let tmpDir = '';
 let store: PluginTrustStore;
@@ -199,6 +200,53 @@ describe('commander role gate — claimed but invalid (fail closed, never demote
     });
     if (!res.ok) {
       expect(String((res as { error?: string }).error)).not.toMatch(/commander token/);
+    }
+  });
+});
+
+// Moa autonomy level (moaLevelGate.ts) through the real dispatch: level 0
+// refuses acting methods for the HQ token only; reads and other commanders
+// pass; no gate installed = today's behaviour.
+describe('commander role gate — Moa level gate', () => {
+  afterEach(() => setMoaLevelGate(null));
+
+  const call = (token: string, method: string, params: Record<string, unknown> = {}) =>
+    router.dispatch({ id: `t-${method}`, method, params, clientName: HERMES, commanderToken: token });
+
+  it('level 0 refuses pane.split for the HQ, keeps pane.list, leaves other commanders alone', async () => {
+    setMoaLevelGate({ hqWorkspaceId: () => 'ws-brain', level: () => 0, activeGoal: () => null });
+    const hq = mintCommanderToken('ws-brain');
+    const other = mintCommanderToken('ws-other-brain');
+    try {
+      const refused = await call(hq, 'pane.split', { direction: 'horizontal' });
+      expect(refused.ok).toBe(false);
+      expect(String((refused as { error?: string }).error)).toMatch(/level 0/);
+      expect((await call(hq, 'pane.list')).ok).toBe(true);
+      expect((await call(other, 'pane.split', { direction: 'horizontal' })).ok).toBe(true);
+    } finally {
+      revokeCommanderToken(hq);
+      revokeCommanderToken(other);
+    }
+  });
+
+  it('level 1 (default) passes exactly as without the gate', async () => {
+    setMoaLevelGate({ hqWorkspaceId: () => 'ws-brain', level: () => 1, activeGoal: () => null });
+    const hq = mintCommanderToken('ws-brain');
+    try {
+      expect((await call(hq, 'pane.split', { direction: 'horizontal' })).ok).toBe(true);
+    } finally {
+      revokeCommanderToken(hq);
+    }
+  });
+
+  it('teardown stays refused at every level (the gate only adds refusals)', async () => {
+    setMoaLevelGate({ hqWorkspaceId: () => 'ws-brain', level: () => 3, activeGoal: () => ({ goalId: 'G-1', humanOnly: [] }) });
+    const hq = mintCommanderToken('ws-brain');
+    try {
+      expect((await call(hq, 'workspace.new')).ok).toBe(false);
+      expect((await call(hq, 'pane.close')).ok).toBe(false);
+    } finally {
+      revokeCommanderToken(hq);
     }
   });
 });

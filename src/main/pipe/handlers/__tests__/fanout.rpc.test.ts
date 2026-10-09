@@ -34,7 +34,7 @@ vi.mock('../../../deck/deckDecisionStore', () => ({ loadWorkspaceDecision: vi.fn
 import { sendToRenderer } from '../_bridge';
 import { git } from '../../../git/git';
 import { loadWorkspaceDecision } from '../../../deck/deckDecisionStore';
-import { registerFanOutRpc, FANOUT_WIRE_AGENT_CMD, FANOUT_IDEMPOTENCY_KEY_MAX_BYTES } from '../fanout.rpc';
+import { registerFanOutRpc, FANOUT_WIRE_AGENT_CMD, FANOUT_IDEMPOTENCY_KEY_MAX_BYTES, type FanOutGoalPort } from '../fanout.rpc';
 import type { FanOutRequest, FanOutResult, FanOutService, FanOutStatus } from '../../../worktask/FanOutService';
 import type { RpcRouter } from '../../RpcRouter';
 import { FanOutGuards } from '../../../worktask/fanoutGuards';
@@ -122,6 +122,8 @@ function setup(opts?: {
   platform?: NodeJS.Platform;
   /** What daemon.listSessions answers. Omitted = no daemon client at all. */
   daemonSessions?: unknown[];
+  /** The Moa goal contract port (P2). Omitted = no goal service. */
+  goal?: FanOutGoalPort;
 }): Harness {
   const commanderAnchorPtyId =
     opts?.commanderAnchorPtyId === undefined ? 'pty-1' : opts.commanderAnchorPtyId;
@@ -241,6 +243,7 @@ function setup(opts?: {
     getDaemonClient: opts?.daemonSessions
       ? () => ({ isConnected: true, rpc: daemonRpc }) as unknown as DaemonClient
       : undefined,
+    goal: () => opts?.goal ?? null,
   });
   const handler = handlers.get('task.fanout.start');
   if (!handler) throw new Error('task.fanout.start was not registered');
@@ -1884,5 +1887,106 @@ describe('a WSL caller pane is resolved to the Windows path of its directory', (
     expect(await h.call(goodParams())).toMatchObject({ ok: true, repoPath: 'D:/work/repo' });
     expect(gitDirs()).toContain('D:\\work\\repo\\src');
     expect(h.daemonRpc).not.toHaveBeenCalled();
+  });
+});
+
+
+// ── P2: an approved Moa goal anchors the HQ's fan-out on the goal's repo ────
+describe('a commander under an approved Moa goal fans out over the goal repository', () => {
+  const COMMANDER: RpcContext = { origin: 'local', commanderWorkspace: CALLER_WS };
+  const brainParams = (o: Record<string, unknown> = {}) => ({ ...goodParams(o), senderPtyId: undefined });
+
+  function goalPort(over: Partial<{ repoRoot: string; maxTasks: number; ws: string; active: () => boolean }> = {}) {
+    const st = { used: 0, max: over.maxTasks ?? 4, attached: [] as string[], released: 0 };
+    const active = over.active ?? (() => true);
+    const port: FanOutGoalPort = {
+      anchor: (ws) => (active() && ws === (over.ws ?? CALLER_WS) ? { goalId: 'G-abc123', repoRoot: over.repoRoot ?? SIBLING_REPO_ROOT } : null),
+      reserve: (n) => {
+        if (st.used + n > st.max) return { ok: false, reason: `goal allows ${st.max}` };
+        st.used += n;
+        return { ok: true, goalId: 'G-abc123' };
+      },
+      release: (_id, n) => {
+        st.used -= n;
+        st.released += n;
+      },
+      attach: (_id, ids) => st.attached.push(...ids),
+    };
+    return { port, st };
+  }
+
+  it('without a goal the anchor is the HQ active pane (behaviour verified unchanged)', async () => {
+    const h = setup();
+    const res = await h.call(brainParams(), COMMANDER);
+    expect(res).toMatchObject({ ok: true, repoPath: CALLER_REPO_ROOT });
+    expect(res.goalId).toBeUndefined();
+  });
+
+  it('uses the goal repo instead of the active pane, reserves the tasks and attaches the workspaces', async () => {
+    const g = goalPort();
+    const h = setup({ goal: g.port, commanderAnchorPtyId: '' });
+    h.start.mockImplementationOnce(async () => ({
+      ok: true,
+      tasks: [
+        { index: 0, title: 'first task', ok: true, workspaceId: 'ws-t1' },
+        { index: 1, title: 'second task', ok: false },
+      ],
+    }));
+    const res = await h.call(brainParams(), COMMANDER);
+    expect(res).toMatchObject({ ok: true, repoPath: SIBLING_REPO_ROOT, goalId: 'G-abc123' });
+    // No active pane was needed at all.
+    expect(h.rendererCalls()).not.toContain('workspace.list');
+    await h.flush();
+    expect(h.request().repoPath).toBe(SIBLING_REPO_ROOT);
+    expect(g.st.attached).toEqual(['ws-t1']);
+    // The task that never got a workspace is given back.
+    expect(g.st.used).toBe(1);
+  });
+
+  it('a fan-out over the goal task budget is refused before anything is asked', async () => {
+    const g = goalPort({ maxTasks: 1 });
+    const h = setup({ goal: g.port });
+    const res = await h.call(brainParams(), COMMANDER);
+    expect(errorOf(res).message).toMatch(/goal does not allow/);
+    expect(h.approvalCount()).toBe(0);
+    expect(h.start).not.toHaveBeenCalled();
+  });
+
+  it('a goal repo that is no longer a repository root is refused', async () => {
+    const g = goalPort({ repoRoot: nodePath.resolve('/nowhere') });
+    const h = setup({ goal: g.port });
+    const res = await h.call(brainParams(), COMMANDER);
+    expect(errorOf(res).code).toBe('FAILED_PRECONDITION');
+    expect(g.st.used).toBe(0);
+  });
+
+  it('a declined approval gives the reservation back', async () => {
+    const g = goalPort();
+    const h = setup({ goal: g.port, approval: { approved: false, outcome: 'declined' } });
+    await h.call(brainParams(), COMMANDER);
+    await h.flush();
+    expect(h.start).not.toHaveBeenCalled();
+    expect(g.st.used).toBe(0);
+  });
+
+  it('a goal that ends while the prompt is up denies the fan-out (repo-moved) and releases', async () => {
+    let on = true;
+    const g = goalPort({ active: () => on });
+    const h = setup({ goal: g.port, approval: 'hang' });
+    await h.call(brainParams(), COMMANDER);
+    on = false;
+    h.approveHungPrompt();
+    await h.flush();
+    await h.flush();
+    expect(h.start).not.toHaveBeenCalled();
+    expect(g.st.used).toBe(0);
+  });
+
+  it('a pane caller (not a commander) never uses the goal', async () => {
+    const g = goalPort();
+    const h = setup({ goal: g.port });
+    const res = await h.call(goodParams());
+    expect(res).toMatchObject({ ok: true, repoPath: CALLER_REPO_ROOT });
+    expect(g.st.used).toBe(0);
   });
 });
