@@ -6,6 +6,7 @@ import { execFileSync } from 'node:child_process';
 import { buildGitEnv, createGitRunner } from '../../sessionDiff';
 import { resolvePhoneGitRepo, type PhoneGitRepo } from '../../phoneGitRead';
 import { createPhoneGitPrHandlers, type PrGhResult, type PrGhRunner } from '../../phoneGitPr';
+import { getExecEnv } from '../../../../shared/execEnv';
 import type { GitWriteExecuteContext, GitWriteSettle } from '../../phoneGitWriteRegistry';
 import type { PrCreateExecuteBody, PrMergeExecuteBody } from '../../../../shared/phoneGitWrite';
 
@@ -25,6 +26,10 @@ type Call = { args: string[]; input?: string };
 interface FakePr {
   state: string; isDraft: boolean; mergeable: string; mergeStateStatus: string; headRefOid: string;
   mergeCommit: string | null; checks: Array<Record<string, unknown>>; totalCount?: number;
+  /** No rollup at all (contexts null). */
+  noRollup?: boolean;
+  /** A page after the first fails to read. */
+  laterPagesFail?: boolean;
 }
 
 const checkRun = (name: string, conclusion: string | null, isRequired?: boolean | null) => ({
@@ -44,7 +49,7 @@ describe('phone pr.create and pr.merge', { timeout: 30_000 }, () => {
   let now: number;
   // pr.create's side of GitHub.
   let remoteHead: string | null;
-  let openPrs: Array<{ number: number; headRepository: { nameWithOwner: string } }>;
+  let openPrs: Array<Record<string, unknown>>;
   let aheadBy: number;
   let baseExists: boolean;
   let onCreate: () => Promise<PrGhResult>;
@@ -58,32 +63,41 @@ describe('phone pr.create and pr.merge', { timeout: 30_000 }, () => {
     expect(opts.env.GH_TOKEN).toBe('gho_octo');
     // Never the session's checkout: on Windows a gh.exe there would run first.
     expect(opts).not.toHaveProperty('cwd');
+    // gh resolves on the same search path as every other spawn, with the identity's HOME.
+    expect(opts.env.PATH).toBe(process.platform === 'win32' ? '/usr/bin:/bin' : getExecEnv().PATH);
+    expect(opts.env.HOME).toBe('/home/octo');
     if (args[0] === 'pr' && args[1] === 'merge') return onMerge();
     if (args[0] === 'api' && args.includes('POST')) return onCreate();
     const query = args.find((a) => a.startsWith('query=')) ?? '';
     if (query.includes('squashMergeAllowed')) {
       if (query.includes('isRequired') && !requiredReadable) return fail('GraphQL: Resource not available for isRequired');
+      // 100 checks a page; the cursor is the index of the next one.
+      const after = Number(args.find((a) => a.startsWith('after='))?.slice('after='.length) ?? 0);
+      if (after > 0 && pr.laterPagesFail) return fail('Post "https://api.github.com/graphql": EOF');
+      const page = pr.checks.slice(after, after + 100).map((c) => {
+        if (query.includes('isRequired')) return c;
+        const { isRequired: _omitted, ...rest } = c;
+        return rest;
+      });
+      const hasNextPage = after + 100 < pr.checks.length;
       return ok({ data: { repository: { squashMergeAllowed: squashAllowed, pullRequest: {
         number: 1980, title: 'Add the thing', state: pr.state, isDraft: pr.isDraft, mergeable: pr.mergeable,
         mergeStateStatus: pr.mergeStateStatus, headRefOid: pr.headRefOid, headRefName: 'feat/x', baseRefName: 'main',
         mergeCommit: pr.mergeCommit ? { oid: pr.mergeCommit } : null,
-        commits: { nodes: [{ commit: { statusCheckRollup: { contexts: {
+        commits: { nodes: [{ commit: { statusCheckRollup: pr.noRollup ? null : { contexts: {
           totalCount: pr.totalCount ?? pr.checks.length,
-          nodes: pr.checks.map((c) => {
-            if (query.includes('isRequired')) return c;
-            const { isRequired: _omitted, ...rest } = c;
-            return rest;
-          }),
+          pageInfo: { hasNextPage, endCursor: hasNextPage ? String(after + 100) : null },
+          nodes: page,
         } } } }] },
       } } } });
     }
-    if (query.includes('pullRequests(headRefName')) {
+    if (args.includes('GET')) return ok(openPrs);
+    if (query.includes('headRef: ref(')) {
       const hasBase = args.includes('hasBase=true');
       return ok({ data: { repository: {
         defaultBranchRef: { name: 'main', compare: { aheadBy } },
         ...(hasBase ? { baseRef: baseExists ? { name: args.find((a) => a.startsWith('baseQ='))?.slice('baseQ=refs/heads/'.length), compare: { aheadBy } } : null } : {}),
         headRef: remoteHead ? { target: { oid: remoteHead } } : null,
-        pullRequests: { nodes: openPrs },
       } } });
     }
     throw new Error(`unexpected gh call: ${args.join(' ')}`);
@@ -114,10 +128,10 @@ describe('phone pr.create and pr.merge', { timeout: 30_000 }, () => {
   });
   afterEach(() => { fs.rmSync(root, { recursive: true, force: true }); });
 
-  const handlers = () => createPhoneGitPrHandlers({ gh, git: createGitRunner(), now: () => now });
+  const handlers = () => createPhoneGitPrHandlers({ gh, git: createGitRunner(), now: () => now, sleep: async () => undefined });
   const session = async (action: 'pr.create' | 'pr.merge') => {
     repo = (await resolvePhoneGitRepo(cwd, createGitRunner()))!;
-    return { action, owner: 'device:d', deviceId: 'd', sessionId: 's1', cwd, repo, login: 'octo', ghEnv: { GH_TOKEN: 'gho_octo' },
+    return { action, owner: 'device:d', deviceId: 'd', sessionId: 's1', cwd, repo, login: 'octo', ghEnv: { GH_TOKEN: 'gho_octo', HOME: '/home/octo', PATH: '/usr/bin:/bin' },
       ...(action === 'pr.merge' ? { number: 1980 } : {}) };
   };
   const execute = async (run: (ctx: GitWriteExecuteContext) => Promise<void>, action: 'pr.create' | 'pr.merge', body: PrCreateExecuteBody | PrMergeExecuteBody) => {
@@ -136,6 +150,12 @@ describe('phone pr.create and pr.merge', { timeout: 30_000 }, () => {
   });
   const createBody = (over: Partial<PrCreateExecuteBody> = {}): PrCreateExecuteBody => ({
     requestId: '0d6b1c1e-1111-4222-8333-444455556667', title: 'Add the thing', body: 'Why', ...over,
+  });
+  /** An open PR as the REST list answers it; defaults match createBody(). */
+  const restPr = (number: number, over: { repo?: string; title?: string; base?: string; draft?: boolean; createdAt?: number } = {}) => ({
+    number, title: over.title ?? 'Add the thing', draft: over.draft ?? false, created_at: new Date(over.createdAt ?? now).toISOString(),
+    html_url: `https://github.com/octo/repo/pull/${number}`, base: { ref: over.base ?? 'main' },
+    head: { ref: 'feat/x', repo: { full_name: over.repo ?? 'octo/repo' } },
   });
   const merges = () => calls.filter((c) => c.args[0] === 'pr' && c.args[1] === 'merge');
 
@@ -165,12 +185,36 @@ describe('phone pr.create and pr.merge', { timeout: 30_000 }, () => {
       const partial = await handlers().merge.preview!(await session('pr.merge'));
       expect(partial.ok && partial.facts.checks).not.toHaveProperty('requiredPending');
       pr.checks = [checkRun('build', null, true)];
-      pr.totalCount = 101;
-      const truncated = await handlers().merge.preview!(await session('pr.merge'));
-      expect(truncated.ok && truncated.facts.checks).not.toHaveProperty('requiredFailing');
-      pr.totalCount = undefined;
       const pending = await handlers().merge.preview!(await session('pr.merge'));
       expect(pending.ok && pending.facts.checks).toMatchObject({ requiredFailing: [], requiredPending: ['build'] });
+      // No rollup to read: the lists are omitted, never sent empty.
+      pr.noRollup = true;
+      const none = await handlers().merge.preview!(await session('pr.merge'));
+      expect(none.ok && none.facts.checks).toEqual({ overall: 'none', counts: { total: 0, passed: 0, failed: 0, pending: 0, skipped: 0 } });
+    });
+
+    it('reads every page of checks', async () => {
+      pr.checks = Array.from({ length: 150 }, (_, i) => checkRun(`check-${i}`, 'SUCCESS', i === 149));
+      const result = await handlers().merge.preview!(await session('pr.merge'));
+      expect(result.ok && result.facts).toMatchObject({
+        block: null,
+        checks: { overall: 'success', counts: { total: 150, passed: 150 }, requiredFailing: [], requiredPending: [] },
+      });
+      expect(calls.filter((c) => c.args.some((a) => a.startsWith('query=')))).toHaveLength(2);
+      expect(calls[1].args).toContain('after=100');
+    });
+
+    it.each([
+      ['a later page fails', () => { pr.laterPagesFail = true; }],
+      ['GitHub counts more checks than it lists', () => { pr.checks = pr.checks.slice(0, 100); pr.totalCount = 150; }],
+    ])('treats checks it could not read as still running (%s)', async (_case, arrange) => {
+      pr.checks = Array.from({ length: 150 }, (_, i) => checkRun(`check-${i}`, 'SUCCESS', false));
+      arrange();
+      const result = await handlers().merge.preview!(await session('pr.merge'));
+      expect(result.ok && result.facts.block).toBe('checks-pending');
+      expect(result.ok && result.facts.checks).toEqual({ overall: 'pending', counts: expect.objectContaining({ total: 100 }) });
+      const { settled } = await execute(handlers().merge.execute, 'pr.merge', mergeBody());
+      expect(settled).toEqual([{ state: 'refused', error: 'blocked', fields: { reason: 'checks-pending' } }]);
     });
 
     it('squash-merges the shown head with the body on stdin and reads the squash commit back', async () => {
@@ -223,12 +267,14 @@ describe('phone pr.create and pr.merge', { timeout: 30_000 }, () => {
       expect(merges()).toHaveLength(0);
     });
 
-    it('refuses a rate-limited merge with retryAt and holds further calls until then', async () => {
+    it('reads a rate-limited merge back instead of refusing it, and holds further calls', async () => {
       pr.checks = [];
       onMerge = async () => fail('HTTP 429: API rate limit exceeded for user');
       const h = handlers();
-      const { settled } = await execute(h.merge.execute, 'pr.merge', mergeBody());
-      expect(settled).toEqual([{ state: 'refused', error: 'rate-limited', fields: { retryAt: now + 60_000 } }]);
+      const limited = await execute(h.merge.execute, 'pr.merge', mergeBody());
+      // It may have reached GitHub: the PR still reads open, so the outcome stays uncertain.
+      expect(limited).toMatchObject({ outcome: 'threw', settled: [] });
+      expect(calls.at(-1)!.args).toContain('graphql');
       const before = calls.length;
       expect(await h.merge.preview!(await session('pr.merge'))).toEqual({ ok: false, body: { error: 'rate-limited', retryAt: now + 60_000 } });
       expect(calls).toHaveLength(before);
@@ -268,14 +314,37 @@ describe('phone pr.create and pr.merge', { timeout: 30_000 }, () => {
       expect(landed.settled).toEqual([{ state: 'done', fields: { mergeCommitOid: SQUASH } }]);
     });
 
-    it('settles a merge GitHub refused while the PR stayed open', async () => {
+    it('never refuses a merge once gh ran: a GitHub refusal with the PR still open stays uncertain', async () => {
       pr.checks = [];
-      onMerge = async () => {
-        pr = { ...pr, mergeStateStatus: 'BLOCKED' };
-        return fail('GraphQL: Pull request is not mergeable (mergePullRequest)');
+      onMerge = async () => fail('GraphQL: Pull request is not mergeable (mergePullRequest)');
+      expect(await execute(handlers().merge.execute, 'pr.merge', mergeBody())).toMatchObject({ outcome: 'threw', settled: [] });
+    });
+
+    it('reads a merge gh reported as done again until the squash commit shows', async () => {
+      pr.checks = [];
+      let reads = 0;
+      const slow: PrGhRunner = async (args, opts) => {
+        const query = args.find((a) => a.startsWith('query=')) ?? '';
+        // The first two read-backs still show the PR open.
+        if (pr.state === 'MERGED' && query && ++reads <= 2) return gh(args, opts).then((r) => (r.ok ? { ok: true, stdout: r.stdout.replace('"MERGED"', '"OPEN"') } : r));
+        return gh(args, opts);
       };
-      const { settled } = await execute(handlers().merge.execute, 'pr.merge', mergeBody());
-      expect(settled).toEqual([{ state: 'refused', error: 'blocked', fields: { reason: 'blocked' } }]);
+      const sleeps: number[] = [];
+      const h = createPhoneGitPrHandlers({ gh: slow, git: createGitRunner(), sleep: async (ms) => { sleeps.push(ms); } });
+      expect((await execute(h.merge.execute, 'pr.merge', mergeBody())).settled).toEqual([{ state: 'done', fields: { mergeCommitOid: SQUASH } }]);
+      expect(sleeps).toEqual([1_000, 2_000]);
+      reads = -10;
+      pr = { ...pr, state: 'OPEN', mergeCommit: null };
+      expect(await execute(h.merge.execute, 'pr.merge', mergeBody())).toMatchObject({ outcome: 'threw', settled: [] });
+    });
+
+    it('refuses a merge that never reached GitHub', async () => {
+      pr.checks = [];
+      const h = createPhoneGitPrHandlers({
+        gh: async (args, opts) => (args[1] === 'merge' ? { ok: false, spawned: false, stdout: '', stderr: '' } : gh(args, opts)),
+        git: createGitRunner(),
+      });
+      expect((await execute(h.merge.execute, 'pr.merge', mergeBody())).settled).toEqual([{ state: 'refused', error: 'gh-unavailable' }]);
     });
 
     it('answers pr-not-found and refuses a non-GitHub origin without calling gh', async () => {
@@ -305,8 +374,10 @@ describe('phone pr.create and pr.merge', { timeout: 30_000 }, () => {
       git('config', 'branch.feat/x.merge', 'refs/heads/remote-name');
       const { settled } = await execute(handlers().create.execute, 'pr.create', createBody({ base: 'release' }));
       expect(settled[0]).toMatchObject({ state: 'done' });
-      const read = calls[0].args;
-      expect(read).toEqual(expect.arrayContaining(['head=remote-name', 'headQ=refs/heads/remote-name', 'baseQ=refs/heads/release', 'hasBase=true']));
+      expect(calls[0].args).toEqual(expect.arrayContaining(['headQ=refs/heads/remote-name', 'baseQ=refs/heads/release', 'hasBase=true']));
+      // Open PRs are looked up by the origin owner's head only.
+      expect(calls[1].args).toEqual(['api', '--hostname', 'github.com', '-X', 'GET', 'repos/octo/repo/pulls',
+        '-f', 'head=octo:remote-name', '-f', 'state=open', '-f', 'per_page=100']);
       expect(JSON.parse(calls.find((c) => c.args.includes('POST'))!.input!)).toMatchObject({ head: 'remote-name', base: 'release', draft: false });
     });
 
@@ -323,7 +394,7 @@ describe('phone pr.create and pr.merge', { timeout: 30_000 }, () => {
       ['not-pushed', () => { remoteHead = MOVED; }, undefined],
       ['not-pushed', () => { remoteHead = null; }, undefined],
       ['pr-exists', () => {
-        openPrs = [{ number: 7, headRepository: { nameWithOwner: 'someone/repo' } }, { number: 1975, headRepository: { nameWithOwner: 'Octo/Repo' } }];
+        openPrs = [restPr(7, { repo: 'someone/repo' }), restPr(1975, { repo: 'Octo/Repo' })];
       }, { number: 1975 }],
       ['invalid-base', () => { baseExists = false; }, undefined],
       ['no-commits-ahead', () => { aheadBy = 0; }, undefined],
@@ -341,22 +412,34 @@ describe('phone pr.create and pr.merge', { timeout: 30_000 }, () => {
       expect(settled).toEqual([{ state: 'refused', error: 'detached-head' }]);
     });
 
-    it('settles a create whose answer was lost from the PR it left behind', async () => {
+    const TIMEOUT = 'Post "https://api.github.com/repos/octo/repo/pulls": net/http: timeout awaiting response headers';
+    it.each([
+      ['a timeout', TIMEOUT],
+      ['a rate limit', 'HTTP 403: API rate limit exceeded for user ID 1.'],
+      ['a refusal', 'gh: Validation Failed (HTTP 422)'],
+    ])('settles a create after %s only from the PR it left behind', async (_case, stderr) => {
       onCreate = async () => {
-        openPrs = [{ number: 1982, headRepository: { nameWithOwner: 'octo/repo' } }];
-        return fail('Post "https://api.github.com/repos/octo/repo/pulls": net/http: timeout awaiting response headers');
+        openPrs = [restPr(1982)];
+        return fail(stderr);
       };
       const { settled } = await execute(handlers().create.execute, 'pr.create', createBody());
       expect(settled).toEqual([{ state: 'done', fields: { number: 1982, url: 'https://github.com/octo/repo/pull/1982' } }]);
-      onCreate = async () => fail('Post "https://api.github.com/repos/octo/repo/pulls": net/http: timeout awaiting response headers');
-      openPrs = [];
-      expect((await execute(handlers().create.execute, 'pr.create', createBody())).outcome).toBe('threw');
     });
 
-    it('refuses a rate-limited create', async () => {
-      onCreate = async () => fail('HTTP 403: API rate limit exceeded for user ID 1.');
-      const { settled } = await execute(handlers().create.execute, 'pr.create', createBody());
-      expect(settled).toEqual([{ state: 'refused', error: 'rate-limited', fields: { retryAt: now + 60_000 } }]);
+    it.each([
+      ['no PR', () => []],
+      ['another title', () => [restPr(1982, { title: 'Something else' })]],
+      ['another base', () => [restPr(1982, { base: 'release' })]],
+      ['another draft state', () => [restPr(1982, { draft: true })]],
+      ['an older PR', () => [restPr(1982, { createdAt: now - 10 * 60_000 })]],
+    ])('leaves a create uncertain when the read-back shows %s', async (_case, prs) => {
+      onCreate = async () => {
+        openPrs = prs();
+        return fail('gh: Validation Failed (HTTP 422): base is invalid');
+      };
+      const result = await execute(handlers().create.execute, 'pr.create', createBody());
+      expect(result).toMatchObject({ outcome: 'threw', settled: [] });
+      expect(result.markInFlight).toHaveBeenCalled();
     });
   });
 });

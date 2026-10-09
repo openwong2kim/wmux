@@ -33,6 +33,7 @@ describe('phone pr routes', { timeout: 30_000 }, () => {
   const gh: PrGhRunner = async (args) => {
     calls.push([...args]);
     if (args[0] === 'pr' && args[1] === 'merge') { merged = true; return { ok: true, stdout: '' }; }
+    if (args.includes('GET')) return ok([]);
     if (args.includes('POST')) return ok({ number: 1981, html_url: 'https://github.com/octo/repo/pull/1981' });
     const query = args.find((a) => a.startsWith('query=')) ?? '';
     if (query.includes('squashMergeAllowed')) {
