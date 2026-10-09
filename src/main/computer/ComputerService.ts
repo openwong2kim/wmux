@@ -167,6 +167,14 @@ export function computerUseShutDown(): boolean {
   return shutDown;
 }
 
+/**
+ * App quit. Set even when no service was ever built, so a call or a Settings
+ * read that lands during quit cannot build one and take the stop key back.
+ */
+export function markComputerUseShutDown(): void {
+  shutDown = true;
+}
+
 function fail(code: ConstructorParameters<typeof ComputerError>[0], message: string): never {
   throw new ComputerError(code, message);
 }
@@ -508,7 +516,7 @@ export class ComputerService {
 
   dispose(): void {
     this.disposed = true;
-    shutDown = true;
+    markComputerUseShutDown();
     this.generation += 1;
     this.withdrawConsentPrompts();
     this.helper?.dispose();

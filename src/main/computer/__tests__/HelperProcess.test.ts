@@ -306,6 +306,39 @@ describe('HelperProcess', () => {
     expect(await codeOf(apps)).toBe('resolved');
   });
 
+  it('keeps a dead helper\'s late stderr out of its replacement\'s exit message', async () => {
+    const children: Array<{ child: ChildProcessWithoutNullStreams; stderr: PassThrough; say: (o: unknown) => void; sent: Array<{ id: number; method: string }> }> = [];
+    const fakeSpawn = () => {
+      const emitter = new EventEmitter() as unknown as ChildProcessWithoutNullStreams;
+      const stdout = new PassThrough();
+      const stdin = new PassThrough();
+      const stderr = new PassThrough();
+      const entry = { child: emitter, stderr, say: (o: unknown) => stdout.write(`${JSON.stringify(o)}\n`), sent: [] as Array<{ id: number; method: string }> };
+      stdin.on('data', (d: Buffer) => { for (const line of String(d).split('\n').filter(Boolean)) entry.sent.push(JSON.parse(line)); });
+      Object.assign(emitter, { stdout, stdin, stderr, exitCode: null, signalCode: null, kill: () => true });
+      children.push(entry);
+      queueMicrotask(() => entry.say({ type: 'hello', protocolVersion: 2, os: 'darwin', helperVersion: 'x', capabilities: { actions: [], modes: [], permissions: {} } }));
+      return emitter;
+    };
+    const helper = new HelperProcess({ command: 'unused', spawn: fakeSpawn, timeoutFor: () => 100 });
+    helpers.push(helper);
+    const click = helper.request('click', { snapshotId: 's', target: TARGET, index: 1, button: 'left', clickCount: 1, modifiers: [] });
+    expect(await codeOf(click)).toBe('timeout');
+    expect(await waitFor(() => children.length === 2 && children[1].sent.length === 1)).toBe(true);
+    const [dead, live] = children;
+    live.say({ id: live.sent[0].id, ok: true, result: { released: true } });
+    const apps = helper.request('listApps', {});
+    expect(await waitFor(() => live.sent.length === 2)).toBe(true);
+    // The killed helper writes to stderr after it was replaced.
+    dead.stderr.write('stale line from the dead helper\n');
+    await new Promise((r) => setTimeout(r, 20));
+    expect(helper.lastStderr).toBe('');
+    (live.child as unknown as EventEmitter).emit('exit', 1, null);
+    const err = await apps.catch((e: unknown) => e);
+    expect((err as ComputerError).code).toBe('helper_unavailable');
+    expect((err as ComputerError).message).not.toContain('stale line');
+  });
+
   it('names exactly what the cut-off request sent in the release, never a blanket key list', async () => {
     const cases: Array<[string, () => Promise<unknown>, Record<string, unknown>]> = [];
     const hotkey = makeHelper('hang', { timeoutFor: () => 200 });

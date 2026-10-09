@@ -434,6 +434,9 @@ export class HelperProcess {
       });
 
       child.stderr.on('data', (chunk: string) => {
+        // A replaced helper's late stderr must not end up in its successor's
+        // exit message.
+        if (!this.isCurrent(child)) return;
         this.stderrTail = (this.stderrTail + chunk).slice(-STDERR_TAIL_BYTES);
       });
 
@@ -493,7 +496,7 @@ export class HelperProcess {
       return;
     }
     // A helper that is no longer the running one has nothing to answer.
-    if (this.running?.child !== child && this.startingChild !== child) return;
+    if (!this.isCurrent(child)) return;
     if (parsed.kind === 'invalid') {
       this.log(`invalid helper line (${parsed.reason}); killing it`);
       this.terminate(child, new ComputerError('internal', `the computer-use helper sent an invalid reply (${parsed.reason})`));
@@ -512,6 +515,11 @@ export class HelperProcess {
     } else {
       pending.reject(new ComputerError(parsed.response.error.code, parsed.response.error.message));
     }
+  }
+
+  /** The running helper, or the one still starting. */
+  private isCurrent(child: ChildProcessWithoutNullStreams): boolean {
+    return this.running?.child === child || this.startingChild === child;
   }
 
   private send(running: Running, method: HelperMethod, params: unknown): Promise<unknown> {
