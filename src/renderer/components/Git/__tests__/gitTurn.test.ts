@@ -44,7 +44,7 @@ const ctx = (
   ghLogin: string | null = 'owner',
   permission: RepoPermission | null = 'WRITE',
 ): GitTurnContext => ({
-  now: NOW, links, paneStatus: () => status, ghLogin, repoPermission: (key) => (key === 'github.com/o/r' ? permission : null),
+  now: NOW, links, paneStatus: () => status, ghLogin, repoPermission: () => permission,
 });
 
 describe('classifyGitTurn: PRs', () => {
@@ -178,6 +178,18 @@ describe('classifyGitTurn: issues', () => {
     expect(classifyGitTurn(issue({ assignees: ['Owner'] }), ctx([]))).toBe('needs_you');
     expect(classifyGitTurn(issue({ assignees: ['Owner', 'helper'] }), ctx([]))).toBe('needs_you');
     expect(classifyGitTurn(issue({ assignees: ['helper'] }), ctx([], 'idle', null))).toBe('needs_you');
+  });
+
+  it('an unrouted issue on a repo the viewer cannot write to waits, unless it is assigned to the owner', () => {
+    // An unknown role keeps it the owner's: a failed role read never empties Needs you.
+    expect(classifyGitTurn(issue(), ctx([], 'idle', 'owner', null))).toBe('needs_you');
+    for (const permission of ['READ', 'TRIAGE'] as const) {
+      expect(classifyGitTurn(issue(), ctx([], 'idle', 'owner', permission))).toBe('waiting_on_others');
+      expect(classifyGitTurn(issue({ assignees: ['owner'] }), ctx([], 'idle', 'owner', permission))).toBe('needs_you');
+    }
+    // An agent on it or asking still counts there.
+    expect(classifyGitTurn(issue(), ctx([issueLink()], 'running', 'owner', 'READ'))).toBe('agents_on_it');
+    expect(classifyGitTurn(issue(), ctx([issueLink()], 'awaiting_input', 'owner', 'READ'))).toBe('needs_you');
   });
 
   it('a done link does not route an issue', () => {

@@ -42,7 +42,9 @@
 //                        else will review" cannot be shown; the owner is the
 //                        one known reviewer here);
 //                      - open issue with no active link, or whose link's agent
-//                        stopped, unless it is assigned only to others.
+//                        stopped, unless it is assigned only to others or
+//                        sits on a repo the viewer is known not to write to
+//                        (and is not assigned to the owner).
 //   ready_to_merge     open (not draft) PR: checks passing or none reported
 //                      (null: a repo with no CI), MERGEABLE, review APPROVED
 //                      or not required (''). Merging is the owner's call in
@@ -56,7 +58,9 @@
 //                      repo the viewer cannot write to, or whose permission
 //                      is unknown, red CI and conflicts included (an upstream
 //                      repo where the owner is not a maintainer must not
-//                      flood Needs you); an issue whose link is in review
+//                      flood Needs you); an unrouted issue on a repo known
+//                      to be read-only for the viewer, not assigned to the
+//                      owner; an issue whose link is in review
 //                      (its PR row carries the turn) or that is assigned to
 //                      others only (the owner not among the assignees).
 //
@@ -94,9 +98,12 @@ export interface GitTurnContext {
   /** The login gh is signed in as. Unknown (null / absent) treats every
    *  author as the owner. */
   ghLogin?: string | null;
-  /** The viewer's role on a repo, by its lowercased host/owner/repo key.
-   *  Unknown (null / absent) counts as no write access. */
-  repoPermission?: (repoKey: string) => RepoPermission | null | undefined;
+  /** The viewer's role on the repo the item was read from. The caller
+   *  resolves it from the item's list, not its URL: a renamed or moved repo's
+   *  URLs name the new owner while the remote still names the old one.
+   *  Unknown (null / absent) counts as no write access for another author's
+   *  PR, and as the owner's repo for an issue. */
+  repoPermission?: (item: GitTurnItem) => RepoPermission | null | undefined;
 }
 
 const ACTIVE: ReadonlySet<WorkLinkState> = new Set<WorkLinkState>(['queued', 'running', 'needs-you', 'blocked', 'review']);
@@ -144,11 +151,9 @@ function settledOrDropped(at: string, now: number): GitTurn | null {
   return now - ms <= SETTLED_WINDOW_MS ? 'settled' : null;
 }
 
-/** The viewer can write to the PR's repo (merge, push, review as a maintainer). */
-function canWrite(pr: PrSummary, ctx: GitTurnContext): boolean {
-  const parts = prUrlParts(pr.url);
-  if (!parts || !ctx.repoPermission) return false;
-  return canWriteRepo(ctx.repoPermission(`${parts.host}/${parts.owner}/${parts.repo}`.toLowerCase()));
+/** The viewer's role on the item's repo; null when unknown. */
+function roleOn(item: GitTurnItem, ctx: GitTurnContext): RepoPermission | null {
+  return ctx.repoPermission?.(item) ?? null;
 }
 
 function classifyPr(pr: PrSummary, agent: 'working' | 'asking' | 'none', ctx: GitTurnContext): GitTurn {
@@ -157,7 +162,7 @@ function classifyPr(pr: PrSummary, agent: 'working' | 'asking' | 'none', ctx: Gi
   const external = isExternalAuthor(pr.author, ctx.ghLogin);
   // Another author's PR on a repo the viewer cannot write to: the owner can
   // neither merge nor fix it, so it waits on its author and maintainers.
-  if (external && !canWrite(pr, ctx)) return agent === 'working' ? 'agents_on_it' : 'waiting_on_others';
+  if (external && !canWriteRepo(roleOn({ kind: 'pr', pr }, ctx))) return agent === 'working' ? 'agents_on_it' : 'waiting_on_others';
   const broken = pr.checks === 'failing' || pr.mergeable === 'CONFLICTING' || pr.reviewDecision === 'CHANGES_REQUESTED';
   if (broken) return agent === 'working' ? 'agents_on_it' : 'needs_you';
   if (external && pr.reviewDecision !== 'APPROVED') return agent === 'working' ? 'agents_on_it' : 'needs_you';
@@ -177,7 +182,14 @@ function classifyIssue(issue: IssueSummary, link: WorkLink | null, agent: 'worki
   if (agent === 'working') return 'agents_on_it';
   if (link?.state === 'review') return 'waiting_on_others';
   const login = ctx.ghLogin;
-  if (login && issue.assignees.length > 0 && !issue.assignees.some((a) => sameLogin(a, login))) return 'waiting_on_others';
+  const mine = !!login && issue.assignees.some((a) => sameLogin(a, login));
+  if (login && issue.assignees.length > 0 && !mine) return 'waiting_on_others';
+  // An unrouted issue on a repo the viewer is known not to write to (an
+  // upstream project) is its maintainers' to triage, unless it is assigned to
+  // the owner. An unknown role keeps it here: the owner's own repos must not
+  // empty Needs you while a role read fails.
+  const role = roleOn({ kind: 'issue', issue }, ctx);
+  if (!mine && role !== null && !canWriteRepo(role)) return 'waiting_on_others';
   return 'needs_you';
 }
 

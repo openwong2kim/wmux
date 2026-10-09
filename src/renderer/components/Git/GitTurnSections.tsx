@@ -143,9 +143,12 @@ function useGitViewer(groups: RepoGroup[] | null): { login: string | null; versi
   return { login, version };
 }
 
-const permissionOf = (key: string): RepoPermission | null => permissionByKey.get(key) ?? null;
+/** The viewer's role on a repo group (its remote key), null while unknown. */
+export const groupPermission = (groupKey: string): RepoPermission | null => permissionByKey.get(groupKey) ?? null;
 
-/** Everything classifyGitTurn needs for the shown repos. */
+/** Everything classifyGitTurn needs for the shown repos, except the role,
+ *  which each row takes from its own group (groupPermission). The version
+ *  changes the context when a role arrives. */
 export function useGitTurnContext(groups: RepoGroup[] | null): GitTurnContext {
   const links = useActiveLinks();
   const statuses = useStore(useShallow(selectAgentStatusByParty));
@@ -155,8 +158,7 @@ export function useGitTurnContext(groups: RepoGroup[] | null): GitTurnContext {
     links,
     paneStatus: (party: WorkLinkParty) => (party.paneId ? statuses[`p:${party.paneId}`] : statuses[`w:${party.workspaceId}`]) ?? null,
     ghLogin: login,
-    repoPermission: permissionOf,
-    // version: a role arrived (the lookup reads the session cache).
+    // version: a role arrived (groupPermission reads the session cache).
   }), [links, statuses, login, version]);
 }
 
