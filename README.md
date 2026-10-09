@@ -54,7 +54,7 @@ winget install openwong2kim.wmux    # or: choco install wmux
 
 ### Answer from your phone
 
-When an agent stops to ask you something — a Claude Code question (single or multi-select, several questions, or an "Other" answer) or a permission prompt — it reaches your iPhone as a push notification when you are away from the desk. Answer it in the Inbox and the pane on your desktop moves on. Terminals and agent output travel straight from the daemon on your machine to your phone. Push notifications pass through the project's relay as sealed envelopes it cannot read; only the lock-screen Live Activity carries a few counts and your computer's name in plain text. Details: [the phone client contract](docs/phone-client-contract.md).
+When an agent stops to ask you something — a Claude Code question (single or multi-select, several questions, or an "Other" answer) or a permission prompt — it reaches the Inbox on your iPhone. Answer it there and the pane on your desktop moves on. Terminals and agent output travel straight from the daemon on your machine to your phone. A default install does not send push notifications yet, so you see the question when you open the app. When push is configured, notifications pass through the project's relay as sealed envelopes it cannot read; only the lock-screen Live Activity carries a few counts and your computer's name in plain text. Details: [the phone client contract](docs/phone-client-contract.md).
 
 <img alt="An agent's question in the iPhone Inbox is answered by picking Three dots; the desktop pane receives the answer and the agent edits, tests and commits while the Inbox reads Nothing is waiting on you" src="docs/readme/phone.gif" width="900" />
 
