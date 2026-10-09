@@ -967,8 +967,9 @@ GET /api/sessions/<id>/turns/image?path=<absolute path>   (unchanged shape and c
 Claude Code agents write their screenshots and renders to a per-session scratch
 folder (`/private/tmp/claude-<uid>/<cwd-slug>/<session>/scratchpad/…` on macOS)
 and then look at them with `Read`. Those paths are outside the spawn cwd, so
-`/turns/image` also serves an image the pane's agent opened with `Read`.
-`/turns/file` does not: it keeps the `SendUserFile` addition only.
+`/turns/image` also serves an image the pane's agent opened with `Read` — at
+whatever absolute path it read, not only the scratch folder. `/turns/file` does
+not: it keeps the `SendUserFile` addition only.
 
 **Gate on `turnReadImages` from `/api/config`.** Present (and `true`) only
 alongside `turnImages`, behind the same `--allow-transcript` grant. A daemon
