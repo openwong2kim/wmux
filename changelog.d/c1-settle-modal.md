@@ -13,6 +13,6 @@
   result, and `browser_dialog` answers it. The action that opened it returns
   at once instead of waiting. A dialog the agent did not cause is left for the
   person at the browser. A file chooser opened by a click on the agent's tab is
-  answered with `browser_file_upload`. Tabs you own or lent keep their old
-  behaviour, and leaving a page (`beforeunload`) is still accepted
+  answered with `browser_file_upload`. Your own tabs, and tabs you lent to an
+  agent, keep their old behaviour, and leaving a page (`beforeunload`) is still accepted
   automatically.

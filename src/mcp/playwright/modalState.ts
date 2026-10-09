@@ -59,8 +59,13 @@ const MAX_MESSAGE_CHARS = 500;
 
 const records = new WeakMap<Page, ModalRecord>();
 // Scope key -> page, so the lease (which holds a scope, not a Page) can render
-// the block without resolving the page a second time.
-const pagesByScope = new Map<string, WeakRef<Page>>();
+// the block without resolving the page a second time. Strong refs (the MCP
+// bundle targets ES2020, so no WeakRef), dropped when the page closes.
+const pagesByScope = new Map<string, Page>();
+
+function forgetPage(page: Page): void {
+  for (const [key, p] of pagesByScope) if (p === page) pagesByScope.delete(key);
+}
 // Agent tool calls in flight per scope key, and when the last one ended.
 const agentActivity = new Map<string, { active: number; lastEnd: number }>();
 /** A modal opening this soon after an agent call ended still counts as its doing. */
@@ -130,7 +135,7 @@ export function attachModalTracking(
   page: Page,
   opts: { scopeKey: string; fileChooser: boolean },
 ): void {
-  pagesByScope.set(opts.scopeKey, new WeakRef(page));
+  pagesByScope.set(opts.scopeKey, page);
   let record = records.get(page);
   if (!record) {
     const created: ModalRecord = { fileChooser: false, scopeKeys: new Set(), waiters: new Set() };
@@ -150,6 +155,7 @@ export function attachModalTracking(
     page.on('close', () => {
       created.pending = undefined;
       created.armed = undefined;
+      forgetPage(page);
     });
   }
   record.scopeKeys.delete(opts.scopeKey);
@@ -235,7 +241,7 @@ function onDialog(record: ModalRecord, dialog: Dialog): void {
 export function rememberModalScope(page: Page, scopeKey: string): void {
   const record = records.get(page);
   if (!record) return;
-  pagesByScope.set(scopeKey, new WeakRef(page));
+  pagesByScope.set(scopeKey, page);
   record.scopeKeys.delete(scopeKey);
   record.scopeKeys.add(scopeKey);
 }
@@ -246,7 +252,7 @@ export function pendingModal(page: Page | null | undefined): PendingModal | unde
 }
 
 export function pendingModalForScope(workspaceId?: string, surfaceId?: string): PendingModal | undefined {
-  const page = pagesByScope.get(modalScopeKey(workspaceId, surfaceId))?.deref();
+  const page = pagesByScope.get(modalScopeKey(workspaceId, surfaceId));
   if (!page) return undefined;
   return pendingModal(page);
 }
