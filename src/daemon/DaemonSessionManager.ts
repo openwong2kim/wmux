@@ -628,9 +628,9 @@ export class DaemonSessionManager extends EventEmitter {
     // letting the raw node-pty error propagate as an opaque session-create
     // failure. (useConpty is a Windows-only hint; node-pty ignores it elsewhere.)
     //
-    // #910: below Windows 11 the in-box ConPTY never forwards mouse-mode
-    // DECSETs, so vim `set mouse=a` gets no events. Those builds spawn against
-    // node-pty's bundled conpty.dll instead. If the bundled DLL itself is
+    // #910/#1932: Windows spawns against node-pty's bundled conpty.dll (the
+    // in-box ConPTY drops mouse DECSETs on Windows 10 and swallows sixel on
+    // Windows 11; see shouldUseBundledConpty). If the bundled DLL itself is
     // missing/corrupt (a packaging failure), fall back to in-box exactly once —
     // any other failure keeps failing, because PaneSupervisor's restart backoff
     // exists to absorb transient ConPTY errors (87) and a broad fallback would
@@ -1185,8 +1185,8 @@ export class DaemonSessionManager extends EventEmitter {
    * the pane blank whenever the last repaint landed before this timer fired
    * (4 of 6 panes in the Windows dogfood of #1469).
    *
-   * #1965, the bundled ConPTY (OpenConsole: Windows 10, or forced with
-   * WMUX_CONPTY_BACKEND): everything above about the repaint is in-box
+   * #1965, the bundled ConPTY (OpenConsole, the default on every Windows
+   * build since #1932): everything above about the repaint is in-box
    * behaviour. OpenConsole emits 0 bytes for every resize call — same size,
    * ±1 row or column, back-and-forth — so discarding and asking for a repaint
    * left a recovered pane blank until a key was pressed. Here the held output

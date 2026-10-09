@@ -90,6 +90,7 @@ import { restoreSeam } from '../../shared/restoreSeam';
 import { createDefaultConfig } from '../config';
 import { PWSH_EXIT_TAIL } from '../execWrapper';
 import { FACTORY_DEFAULT_SCOPES, __setPolicyProbeForTests } from '../../shared/pwshExecutionPolicy';
+import { CONPTY_BACKEND_ENV } from '../../shared/conptyWindows';
 
 // #1620: never let the host's real registry decide PowerShell argv here. Pin a
 // machine with an explicit policy (no extra args) unless a test opts in.
@@ -97,9 +98,15 @@ const EXPLICIT_POLICY = { scopes: { ...FACTORY_DEFAULT_SCOPES, currentUser: 'set
 
 describe('DaemonSessionManager', () => {
   let manager: DaemonSessionManager;
+  let prevBackendEnv: string | undefined;
 
   beforeEach(() => {
     __setPolicyProbeForTests(EXPLICIT_POLICY);
+    // The mocked PTY models the in-box ConPTY (it "repaints" when a test says
+    // so). Windows hosts default to the bundled backend since #1932, so pin
+    // in-box here; the bundled cases set `conptyBackend` on the session.
+    prevBackendEnv = process.env[CONPTY_BACKEND_ENV];
+    process.env[CONPTY_BACKEND_ENV] = 'inbox';
     manager = new DaemonSessionManager();
     lastMockPty = null;
   });
@@ -107,6 +114,8 @@ describe('DaemonSessionManager', () => {
   afterEach(() => {
     manager.disposeAll();
     __setPolicyProbeForTests(null);
+    if (prevBackendEnv === undefined) delete process.env[CONPTY_BACKEND_ENV];
+    else process.env[CONPTY_BACKEND_ENV] = prevBackendEnv;
   });
 
   // 1. createSession → session created with state = detached

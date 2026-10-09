@@ -14,7 +14,7 @@
  *
  * The expectations depend on the ConPTY backend the session started on
  * (`managed.conptyBackend`, #1965). The in-box ConPTY repaints on every resize;
- * the bundled OpenConsole (Windows 10, or `WMUX_CONPTY_BACKEND=bundled`) emits
+ * the bundled OpenConsole (the Windows default since #1932) emits
  * nothing on resize, so its held output is replayed instead. Run this file
  * with each value of that variable to cover both.
  */

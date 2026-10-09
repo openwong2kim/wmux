@@ -124,32 +124,36 @@ describe('parseWindowsBuildNumber', () => {
 });
 
 describe('shouldUseBundledConpty', () => {
-  it('bundles below Windows 11, in-box at Windows 11 and above', () => {
-    // #910: Win10's in-box ConPTY drops mouse DECSETs; the bundled OpenConsole
-    // has the fix. 22000 is a product cut — Server 2022 (20348) bundles too,
-    // early Win11 22000 does not (its in-box already relays mouse).
+  it('bundles on every readable Windows build, Windows 10 and Windows 11 alike', () => {
+    // #910: Win10's in-box ConPTY drops mouse DECSETs. #1932: Win11's in-box
+    // ConPTY answers DA1 without sixel and swallows the sixel DCS. The bundled
+    // OpenConsole has neither problem, so there is no build cut any more.
+    expect(shouldUseBundledConpty('win32', 17763)).toBe(true);
     expect(shouldUseBundledConpty('win32', 19045)).toBe(true);
     expect(shouldUseBundledConpty('win32', 20348)).toBe(true);
     expect(shouldUseBundledConpty('win32', 21999)).toBe(true);
-    expect(shouldUseBundledConpty('win32', 22000)).toBe(false);
-    expect(shouldUseBundledConpty('win32', 26200)).toBe(false);
+    expect(shouldUseBundledConpty('win32', 22000)).toBe(true);
+    expect(shouldUseBundledConpty('win32', 22621)).toBe(true);
+    expect(shouldUseBundledConpty('win32', 26100)).toBe(true);
+    expect(shouldUseBundledConpty('win32', 26200)).toBe(true);
   });
 
   it('never bundles off Windows or without a readable build', () => {
     // null build = "could not read it" — keep the in-box default rather than
     // act on a number that was never read.
     expect(shouldUseBundledConpty('darwin', 19045)).toBe(false);
-    expect(shouldUseBundledConpty('linux', 19045)).toBe(false);
+    expect(shouldUseBundledConpty('linux', 26200)).toBe(false);
     expect(shouldUseBundledConpty('win32', null)).toBe(false);
   });
 
   it('#1965: WMUX_CONPTY_BACKEND forces the backend on Windows only', () => {
-    expect(shouldUseBundledConpty('win32', 26200, parseConptyBackendOverride('bundled'))).toBe(true);
+    expect(shouldUseBundledConpty('win32', 26200, parseConptyBackendOverride('inbox'))).toBe(false);
     expect(shouldUseBundledConpty('win32', 19045, parseConptyBackendOverride('inbox'))).toBe(false);
     expect(shouldUseBundledConpty('win32', null, parseConptyBackendOverride('bundled'))).toBe(true);
     // Unset or unrecognised: the build decides, as before.
     expect(shouldUseBundledConpty('win32', 19045, parseConptyBackendOverride(undefined))).toBe(true);
-    expect(shouldUseBundledConpty('win32', 26200, parseConptyBackendOverride('fast'))).toBe(false);
+    expect(shouldUseBundledConpty('win32', 26200, parseConptyBackendOverride('fast'))).toBe(true);
+    expect(shouldUseBundledConpty('win32', null, parseConptyBackendOverride('fast'))).toBe(false);
     // node-pty ignores the DLL option off Windows; so does the override.
     expect(shouldUseBundledConpty('linux', 19045, parseConptyBackendOverride('bundled'))).toBe(false);
   });
@@ -174,9 +178,22 @@ describe('xtermWindowsBuildNumber', () => {
     expect(xtermWindowsBuildNumber('win32', 20348)).toBe(22621);
   });
 
-  it('passes the real build through when in-box ConPTY drives the PTY', () => {
-    expect(xtermWindowsBuildNumber('win32', 22000)).toBe(22000);
-    expect(xtermWindowsBuildNumber('win32', 26200)).toBe(26200);
+  it('reports the same token on Windows 11, where the bundled DLL now drives the PTY too', () => {
+    // #1932: Windows 11 left the in-box backend, so it must not keep passing
+    // its real build through: the renderer describes the backend that runs.
+    expect(xtermWindowsBuildNumber('win32', 22000)).toBe(22621);
+    expect(xtermWindowsBuildNumber('win32', 26200)).toBe(22621);
+  });
+
+  it('agrees with the spawn predicate on every build', () => {
+    // The spawn sites and the renderer must never disagree about the backend
+    // (the damaged-install fallback is the one accepted exception; it is
+    // decided at spawn time and not modelled here).
+    for (const build of [17763, 19045, 20348, 21376, 21999, 22000, 22621, 26100, 26200]) {
+      const bundled = shouldUseBundledConpty('win32', build);
+      expect(bundled).toBe(true);
+      expect(xtermWindowsBuildNumber('win32', build)).toBe(bundled ? 22621 : build);
+    }
   });
 
   it('returns null off Windows or unreadable, so the caller omits the field', () => {

@@ -1,8 +1,8 @@
 /**
  * #1965 — the bundled ConPTY (node-pty's conpty.dll + OpenConsole) against the
- * real thing. Windows 10 users run on it by default (#910); CI's runner and
- * most dev machines are Windows 11, whose sessions use the in-box ConPTY, so
- * this suite forces the bundled backend with WMUX_CONPTY_BACKEND.
+ * real thing. It is the default backend on every Windows build (#910, #1932);
+ * this suite still pins it with WMUX_CONPTY_BACKEND so it keeps testing
+ * OpenConsole whatever the runner's build or a demotion would pick.
  *
  * Two behaviours of OpenConsole that the in-box ConPTY does not share:
  *  - it writes a DA1 query (`CSI c`) at startup and holds the shell's output

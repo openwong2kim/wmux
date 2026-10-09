@@ -309,9 +309,9 @@ export class PTYManager {
     // Windows). Surface an actionable error instead of the raw node-pty throw.
     // (useConpty is a Windows-only hint; node-pty ignores it elsewhere.)
     //
-    // #910: below Windows 11 the in-box ConPTY never forwards mouse-mode
-    // DECSETs (see shared/platform.ts shouldUseBundledConpty), so local-mode
-    // spawns take the bundled conpty.dll there too. DLL-load failures fall
+    // #910/#1932: Windows spawns take the bundled conpty.dll (see
+    // shared/conptyWindows.ts shouldUseBundledConpty), so local-mode spawns
+    // match the daemon's backend. DLL-load failures fall
     // back to in-box exactly once; anything else keeps failing so transient
     // ConPTY errors reach the supervisor's restart backoff.
     let ptyProcess: ReturnType<typeof pty.spawn>;

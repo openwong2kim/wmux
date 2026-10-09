@@ -6,24 +6,26 @@
 // process.platform at import time and would throw a ReferenceError in the
 // renderer bundle. Everything here takes platform/build as parameters.
 
-/** The first Windows 11 build (21H2). */
-export const WINDOWS_11_FIRST_BUILD = 22000;
-
 /**
  * Whether PTYs on this machine should spawn against node-pty's bundled
- * conpty.dll (OpenConsole) instead of the OS in-box ConPTY (#910).
+ * conpty.dll (OpenConsole) instead of the OS in-box ConPTY.
  *
- * Windows 10's in-box ConPTY never forwards mouse-mode DECSETs (`?1000`
- * `?1002` `?1006`) to the output pipe, so TUIs that enable mouse tracking
- * (vim `set mouse=a`, tmux, ...) never see clicks or wheel events. The
- * OpenConsole build shipped inside node-pty's prebuilds has the fix
- * (microsoft/terminal#15977), so below the cut we ask node-pty for the DLL
- * backend (`useConptyDll: true`).
+ * Every Windows build with a readable version takes the bundled DLL
+ * (`useConptyDll: true`):
  *
- * 22000 is a PRODUCT cut, not the upstream fix build: it covers Server 2022
- * (20348) and misses early/unpatched Win11 22000 — acceptable, because those
- * machines get mouse relay from their own in-box ConPTY. Do not present this
- * number as "the build where inbox ConPTY gained mouse".
+ * - #910 (Windows 10): the in-box ConPTY never forwards mouse-mode DECSETs
+ *   (`?1000` `?1002` `?1006`) to the output pipe, so TUIs that enable mouse
+ *   tracking (vim `set mouse=a`, tmux, ...) never see clicks or wheel events.
+ *   The OpenConsole build in node-pty's prebuilds has the fix.
+ * - #1932 (Windows 11): the in-box ConPTY answers DA1 itself without sixel
+ *   and swallows sixel DCS sequences, while the renderer still answers
+ *   XTSMGRAPHICS — so inline sixel images never render in a local pane. The
+ *   bundled OpenConsole passes the DCS through, and DA1/DA2 are answered by
+ *   xterm.js (DA1 then advertises sixel). Measured on Windows 11 26200.
+ *
+ * Until #1932 this predicate cut at build 22000 (Windows 11 kept in-box).
+ * That cut is gone: one backend on every Windows build, so a pane behaves
+ * the same on Windows 10 and 11.
  *
  * A null build means "could not read it" — keep the in-box backend rather
  * than acting on a number that was never really read.
@@ -46,8 +48,7 @@ export function shouldUseBundledConpty(
 ): boolean {
   if (platform !== 'win32') return false;
   if (override !== null) return override;
-  if (buildNumber === null) return false;
-  return buildNumber < WINDOWS_11_FIRST_BUILD;
+  return buildNumber !== null;
 }
 
 /** Which ConPTY backend a PTY actually started on. */
@@ -56,9 +57,10 @@ export type ConptyBackend = 'bundled' | 'inbox';
 /**
  * Env var that forces the PTY backend on Windows: `bundled` or `inbox`. The
  * spawn sites read it from their own process env and pass the parsed value to
- * `shouldUseBundledConpty` as its override. It exists so a Windows 11 machine
- * (and the runtime tests) can exercise the bundled OpenConsole path that only
- * Windows 10 users get by default (#1965).
+ * `shouldUseBundledConpty` as its override. It is a test and diagnosis seam
+ * (#1965): the runtime tests pin the bundled backend with it, whatever the
+ * runner's build, and `inbox` puts a machine back on the OS ConPTY to tell a
+ * backend-specific problem from anything else.
  */
 export const CONPTY_BACKEND_ENV = 'WMUX_CONPTY_BACKEND';
 
