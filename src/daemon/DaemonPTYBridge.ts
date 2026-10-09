@@ -15,6 +15,7 @@ import { RESIZE_REDRAW_GUARD_MS } from '../main/notification/idleSuppression';
 import { stripReplayQuerySequences } from '../shared/replayQuerySanitizer';
 import { isFreshSessionSource } from '../shared/hooks/signal-types';
 import { ESCAPE_WIN32 } from '../shared/win32InputKeys';
+import { isEscapeChunk } from '../shared/hooks/interruptKeystroke';
 import { titleShowsRunningTurn } from './transcript/chatScreenGate';
 import type { TurnFailure } from '../shared/phoneTurnFailure';
 
@@ -367,10 +368,17 @@ export class DaemonPTYBridge extends EventEmitter {
     // `?1006h`) the digit can arrive glued to SGR mouse reports, and a focus
     // change adds `ESC [ I` / `ESC [ O`. Neither is a keystroke, so both are
     // stripped before the lone-key test.
+    //
+    // ESC counts in every encoding wmux writes (#1901): on Windows the bare
+    // byte can leave the AskUserQuestion picker up (#1915), so whatever really
+    // cancels it arrives as a win32-input-mode record pair. No hook reports a
+    // cancelled question, and on a narrow grid the screen verifier holds the
+    // pane while the question's record is pending, so an unrecognised cancel
+    // left the pane at Needs you until the next prompt.
     const wasAwaiting = this.awaitingHuman;
     const keyProbe = wasAwaiting ? data.replace(DaemonPTYBridge.NON_KEY_INPUT, '') : data;
-    // eslint-disable-next-line no-control-regex
-    const answerKey = wasAwaiting && !this.inputInBracketedPaste && /^(?:[1-9]|\x1b)$/.test(keyProbe);
+    const answerKey = wasAwaiting && !this.inputInBracketedPaste
+      && (/^[1-9]$/.test(keyProbe) || isEscapeChunk(keyProbe));
     const hasSubmitBoundary = this.scanSubmittedInput(data);
     const answered = forceSubmitted || hasSubmitBoundary || answerKey;
     // An unsubmitted draft in the composer: typed or pasted text with no Enter
