@@ -496,7 +496,9 @@ export function readPushIntent(dir: string, key: string): PushIntentRead {
 /** Record one intent durably, and drop intents past the receipt retention. Throws when it cannot be written. */
 function writePushIntent(dir: string, key: string, intent: PushIntent, now: number): void {
   const file = intentPath(dir, key);
-  fs.mkdirSync(path.dirname(file), { recursive: true });
+  // Owner-only, like the receipt store: the directory (also when an earlier build made it) and its files.
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+  if (process.platform !== 'win32') fs.chmodSync(path.dirname(file), 0o700);
   atomicWriteJSONSync(file, { version: 1, intent }, { durable: true });
   try {
     for (const name of fs.readdirSync(path.dirname(file))) {

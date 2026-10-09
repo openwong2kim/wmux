@@ -405,6 +405,15 @@ describe('phone git push', { timeout: 60_000 }, () => {
       }
     });
 
+    it.skipIf(process.platform === 'win32')('keeps the intent directory 0700 and its files 0600', async () => {
+      const dir = path.join(stateDir, PHONE_GIT_PUSH_INTENTS_DIR);
+      fs.mkdirSync(dir, { recursive: true, mode: 0o755 });
+      fs.chmodSync(dir, 0o755);
+      const { key } = await crashMidPush();
+      expect(fs.statSync(dir).mode & 0o777).toBe(0o700);
+      expect(fs.statSync(path.join(dir, `${key}.json`)).mode & 0o777).toBe(0o600);
+    });
+
     it('reads the intent from .bak when the primary is gone or unreadable', async () => {
       const { key } = await crashMidPush();
       const file = path.join(stateDir, PHONE_GIT_PUSH_INTENTS_DIR, `${key}.json`);
