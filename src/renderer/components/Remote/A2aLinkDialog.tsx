@@ -57,6 +57,7 @@ export interface A2aLinkDialogViewProps {
   t: T;
 }
 
+const paneKey = (pane: A2aExposedPane): string => `${pane.kind}/${pane.workspaceId}/${pane.paneId ?? ''}`;
 const isPicked = (selected: A2aExposedPane | null, pane: A2aExposedPane): boolean =>
   selected?.kind === pane.kind && selected?.workspaceId === pane.workspaceId && selected?.paneId === pane.paneId;
 
@@ -92,12 +93,17 @@ export function A2aLinkDialogView(p: A2aLinkDialogViewProps) {
   // Pane list: a listbox, so one Tab stop with roving tabIndex. ↑/↓ (and
   // Home/End) move the active option without picking it; Enter/Space are the
   // option button's own activation, which picks it through onClick.
+  // The active option is kept by pane key, not index: the rows re-sort when
+  // my repo arrives late, and the Tab stop has to stay on the same pane. It
+  // is tied to the PC it was set on, so another PC's list starts from its
+  // picked pane even if focus never left the list (a re-render that removes
+  // the focused row fires no blur).
   const paneRefs = useRef<Array<HTMLButtonElement | null>>([]);
-  const [activePane, setActivePane] = useState<number | null>(null);
+  const [activePane, setActivePane] = useState<{ hostId: string | null; key: string } | null>(null);
+  const activeKey = activePane && activePane.hostId === p.hostId ? activePane.key : null;
+  const activeIndex = activeKey === null ? -1 : choices?.findIndex(({ pane }) => paneKey(pane) === activeKey) ?? -1;
   const selectedPane = choices?.findIndex(({ pane }) => isPicked(p.selected, pane)) ?? -1;
-  const paneTabStop = activePane !== null && activePane < (choices?.length ?? 0)
-    ? activePane
-    : Math.max(0, selectedPane);
+  const paneTabStop = activeIndex !== -1 ? activeIndex : Math.max(0, selectedPane);
   const onPaneKey = (from: number, e: KeyboardEvent<HTMLButtonElement>) => {
     const last = (choices?.length ?? 0) - 1;
     let next: number | undefined;
@@ -179,7 +185,7 @@ export function A2aLinkDialogView(p: A2aLinkDialogViewProps) {
             {choices.map(({ pane, recommended }, i) => {
               const on = isPicked(p.selected, pane);
               return (
-                <li key={`${pane.kind}/${pane.workspaceId}/${pane.paneId ?? ''}`}>
+                <li key={paneKey(pane)}>
                   <button
                     ref={(el) => {
                       paneRefs.current[i] = el;
@@ -191,7 +197,7 @@ export function A2aLinkDialogView(p: A2aLinkDialogViewProps) {
                     data-pane-id={pane.paneId ?? 'moa'}
                     className={`wmux-a2a-row ${FOCUS_RING}`}
                     onClick={() => p.onPickPane(pane)}
-                    onFocus={() => setActivePane(i)}
+                    onFocus={() => setActivePane({ hostId: p.hostId, key: paneKey(pane) })}
                     onKeyDown={(e) => onPaneKey(i, e)}
                   >
                     <span className="flex items-center gap-2">

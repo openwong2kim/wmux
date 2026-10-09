@@ -221,6 +221,29 @@ describe('A2aLinkDialogView keyboard', () => {
     expect(tabStops(body, 'option')).toEqual(['-1', '0', '-1']);
   });
 
+  it('the Tab stop stays on the focused pane when the list re-sorts, and resets for another PC', () => {
+    const el = document.createElement('div');
+    document.body.appendChild(el);
+    const root = createRoot(el);
+    roots.push({ root, el });
+    const panes = [pane('a', 'x/o/web'), pane('b', 'x/o/web'), pane('c', 'x/o/api')];
+    const props = dialogProps({ panes: rankExposedPanes(panes, null), selected: pane('a', 'x/o/web') });
+    act(() => root.render(createElement(A2aLinkDialogView, props)));
+    const stop = () => el.querySelector('[role="option"][tabindex="0"]')?.getAttribute('data-pane-id');
+    const option = (id: string) => el.querySelector(`[role="option"][data-pane-id="${id}"]`) as HTMLButtonElement;
+    act(() => option('c').focus());
+    expect(stop()).toBe('c');
+    // My repo arrives late: c moves to the top, and keeps the Tab stop.
+    act(() => root.render(createElement(A2aLinkDialogView, { ...props, panes: rankExposedPanes(panes, 'x/o/api') })));
+    expect([...el.querySelectorAll('[role="option"]')].map((o) => o.getAttribute('data-pane-id'))).toEqual(['c', 'a', 'b']);
+    expect(stop()).toBe('c');
+    // Another PC with the same pane ids: its picked pane is the Tab stop.
+    act(() => root.render(createElement(A2aLinkDialogView, {
+      ...props, hosts: [...props.hosts, host(HOST2, 'LAPTOP')], hostId: HOST2, selected: pane('b', 'x/o/web'),
+    })));
+    expect(stop()).toBe('b');
+  });
+
   it('Enter and Space are left to the option button, which picks the active pane', () => {
     const onPickPane = vi.fn();
     const body = render(createElement(A2aLinkDialogView, dialogProps({
