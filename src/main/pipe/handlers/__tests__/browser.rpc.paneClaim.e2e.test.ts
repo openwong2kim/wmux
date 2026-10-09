@@ -111,7 +111,7 @@ describe.skipIf(process.platform === 'win32')('pane claim from a real process-tr
     vi.clearAllMocks();
     __resetWorkspaceClaimTrustForTesting();
     dirRef.current = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-pidmap-e2e-'));
-    fs.writeFileSync(path.join(dirRef.current, String(shell!.pid)), WALKED_PTY);
+    fs.writeFileSync(path.join(dirRef.current, String(shell?.pid)), WALKED_PTY);
     sendToRendererMock.mockImplementation(async (_w: unknown, method: string, params: { ptyId?: string }) =>
       method === 'input.findOwnerWorkspace' && params.ptyId === WALKED_PTY
         ? { workspaceId: WALKED_WS }

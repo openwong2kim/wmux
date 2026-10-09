@@ -24,8 +24,9 @@ to automation, and it is always available as an escape hatch.
 Every browser call acts on the workspace wmux verifies for the caller, not on a
 workspace the call names:
 
-- an agent in a wmux pane: the pane its MCP server runs under, found by wmux's
-  own walk of the process tree;
+- an agent in a wmux pane, or the `wmux` CLI run in one: that pane, found by
+  wmux's own walk of the process tree (the claim it issues names the workspace
+  and the pane);
 - the workspace orchestrator: the workspace its commander token is bound to;
 - an iframe plugin: the workspace the plugin host is showing;
 - an external MCP client: the workspace it claimed with `mcp.claimWorkspace`;
