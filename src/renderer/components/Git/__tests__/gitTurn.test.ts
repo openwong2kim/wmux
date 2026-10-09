@@ -99,6 +99,28 @@ describe('classifyGitTurn: PRs', () => {
     }
   });
 
+  it('with the login unknown, a PR on a repo known to be read-only waits, red CI and conflicts included', () => {
+    for (const permission of ['READ', 'TRIAGE'] as const) {
+      const c = ctx([], 'idle', null, permission);
+      expect(classifyGitTurn(pr({ author: 'contrib', checks: 'failing' }), c)).toBe('waiting_on_others');
+      expect(classifyGitTurn(pr({ author: 'contrib', mergeable: 'CONFLICTING' }), c)).toBe('waiting_on_others');
+      expect(classifyGitTurn(pr({ author: 'contrib' }), c)).toBe('waiting_on_others');
+    }
+    // An agent on it still counts.
+    expect(classifyGitTurn(pr({ author: 'contrib', checks: 'failing' }), ctx([link()], 'running', null, 'READ'))).toBe('agents_on_it');
+    // With write access, or the role unknown too, it counts as the owner's.
+    expect(classifyGitTurn(pr({ author: 'contrib', checks: 'failing' }), ctx([], 'idle', null, 'WRITE'))).toBe('needs_you');
+    expect(classifyGitTurn(pr({ author: 'contrib', checks: 'failing' }), ctx([], 'idle', null, null))).toBe('needs_you');
+  });
+
+  it('a host wmux reads no identity on (no login, no role) classifies as before: the owner\'s', () => {
+    const c = ctx([], 'idle', null, null);
+    expect(classifyGitTurn(pr({ author: 'me-on-gitlab', checks: 'failing' }), c)).toBe('needs_you');
+    expect(classifyGitTurn(pr({ author: 'me-on-gitlab' }), c)).toBe('ready_to_merge');
+    expect(classifyGitTurn(pr({ author: 'me-on-gitlab', checks: 'pending' }), c)).toBe('waiting_on_others');
+    expect(classifyGitTurn(issue(), c)).toBe('needs_you');
+  });
+
   it('with no gh login every author counts as the owner', () => {
     expect(classifyGitTurn(pr({ author: 'contrib', checks: 'pending' }), ctx([], 'idle', null))).toBe('waiting_on_others');
   });
@@ -190,6 +212,12 @@ describe('classifyGitTurn: issues', () => {
     // An agent on it or asking still counts there.
     expect(classifyGitTurn(issue(), ctx([issueLink()], 'running', 'owner', 'READ'))).toBe('agents_on_it');
     expect(classifyGitTurn(issue(), ctx([issueLink()], 'awaiting_input', 'owner', 'READ'))).toBe('needs_you');
+  });
+
+  it('with the login unknown, an unrouted issue on a read-only repo waits; with the role unknown it stays', () => {
+    expect(classifyGitTurn(issue(), ctx([], 'idle', null, 'READ'))).toBe('waiting_on_others');
+    expect(classifyGitTurn(issue({ assignees: ['owner'] }), ctx([], 'idle', null, 'READ'))).toBe('waiting_on_others');
+    expect(classifyGitTurn(issue(), ctx([], 'idle', null, null))).toBe('needs_you');
   });
 
   it('a done link does not route an issue', () => {

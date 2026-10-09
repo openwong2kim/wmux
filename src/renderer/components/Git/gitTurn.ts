@@ -58,7 +58,8 @@
 //                      repo the viewer cannot write to, or whose permission
 //                      is unknown, red CI and conflicts included (an upstream
 //                      repo where the owner is not a maintainer must not
-//                      flood Needs you); an unrouted issue on a repo known
+//                      flood Needs you); with the login unknown, any PR on a
+//                      repo known to be read-only; an unrouted issue on a repo known
 //                      to be read-only for the viewer, not assigned to the
 //                      owner; an issue whose link is in review
 //                      (its PR row carries the turn) or that is assigned to
@@ -95,8 +96,11 @@ export interface GitTurnContext {
   /** The live agent status of a link's pane (the workspace's when the link
    *  names no pane); null when the pane or workspace is gone. */
   paneStatus: (party: WorkLinkParty) => AgentStatus | null | undefined;
-  /** The login gh is signed in as. Unknown (null / absent) treats every
-   *  author as the owner. */
+  /** The login gh is signed in as on the item's host. Unknown (null /
+   *  absent) means the author cannot be told apart from the owner: on a repo
+   *  known to be read-only for the viewer the item waits, elsewhere it counts
+   *  as the owner's. A host wmux reads no identity on (anything but GitHub)
+   *  has neither a login nor a role, so its items classify as the owner's. */
   ghLogin?: string | null;
   /** The viewer's role on the repo the item was read from. The caller
    *  resolves it from the item's list, not its URL: a renamed or moved repo's
@@ -160,9 +164,13 @@ function classifyPr(pr: PrSummary, agent: 'working' | 'asking' | 'none', ctx: Gi
   if (agent === 'asking') return 'needs_you';
   if (pr.state === 'draft') return agent === 'working' ? 'agents_on_it' : 'waiting_on_others';
   const external = isExternalAuthor(pr.author, ctx.ghLogin);
-  // Another author's PR on a repo the viewer cannot write to: the owner can
-  // neither merge nor fix it, so it waits on its author and maintainers.
-  if (external && !canWriteRepo(roleOn({ kind: 'pr', pr }, ctx))) return agent === 'working' ? 'agents_on_it' : 'waiting_on_others';
+  const role = roleOn({ kind: 'pr', pr }, ctx);
+  // Another author's PR on a repo the viewer cannot write to (or whose role
+  // is unknown), or a PR whose author cannot be told apart (login unknown) on
+  // a repo known to be read-only: the owner can neither merge nor fix it, so
+  // it waits on its author and maintainers.
+  const readOnly = role !== null && !canWriteRepo(role);
+  if ((external && !canWriteRepo(role)) || (!ctx.ghLogin && readOnly)) return agent === 'working' ? 'agents_on_it' : 'waiting_on_others';
   const broken = pr.checks === 'failing' || pr.mergeable === 'CONFLICTING' || pr.reviewDecision === 'CHANGES_REQUESTED';
   if (broken) return agent === 'working' ? 'agents_on_it' : 'needs_you';
   if (external && pr.reviewDecision !== 'APPROVED') return agent === 'working' ? 'agents_on_it' : 'needs_you';

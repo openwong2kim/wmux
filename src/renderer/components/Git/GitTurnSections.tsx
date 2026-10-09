@@ -10,7 +10,7 @@
 // Settled is not drawn: the lists read open items only, so it would always
 // be empty. A row the classifier calls settled (or drops) waits with others
 // rather than vanishing.
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useT } from '../../hooks/useT';
 import { useStore } from '../../stores';
@@ -95,14 +95,18 @@ function useActiveLinks(): WorkLink[] {
 }
 
 interface ViewerBridge {
-  viewerLogin?: (repoPath: string) => Promise<{ login: string | null }>;
-  repoPermission?: (repoPath: string) => Promise<{ permission: RepoPermission | null }>;
+  viewerLogin?: (repoPath: string, force?: boolean) => Promise<{ login: string | null }>;
+  repoPermission?: (repoPath: string, force?: boolean) => Promise<{ permission: RepoPermission | null; login: string | null }>;
 }
 
-// Kept for the session: a login or a role rarely changes, and main caches
-// them too. A failed read is not kept, so the next page show asks again.
+// Kept for the session (main caches them too): each host's login, and each
+// repo's role with the login it was read under (null when main could not
+// read the login). A role read under another login than the host's current
+// one is not used (gh auth switch). A failed
+// read is not kept, so the next page show asks again; the page's refresh
+// reads both again.
 const loginByHost = new Map<string, string>();
-const permissionByKey = new Map<string, RepoPermission>();
+const permissionByKey = new Map<string, { permission: RepoPermission; login: string | null }>();
 
 /** Test hook: forget the session's logins and roles. */
 export function clearGitViewerCache(): void {
@@ -110,60 +114,74 @@ export function clearGitViewerCache(): void {
   permissionByKey.clear();
 }
 
-/** The signed-in login and each shown repo's role, read once per repo when
- *  the page shows (mount) and kept. */
-function useGitViewer(groups: RepoGroup[] | null): { login: string | null; version: number } {
+const hostOf = (groupKey: string): string => groupKey.split('/')[0];
+
+/** Reads each shown repo's host login and role when the page shows (mount),
+ *  and again, forced, on the page's refresh. The version changes when an
+ *  answer arrives. */
+function useGitViewer(groups: RepoGroup[] | null, refreshKey: number): number {
   const [version, setVersion] = useState(0);
   const remotes = (groups ?? []).filter((g) => !g.key.startsWith('path:'));
   const sig = remotes.map((g) => `${g.key}\0${g.prPath}`).join('\n');
+  const lastRefresh = useRef(refreshKey);
   useEffect(() => {
     const api = (window as unknown as { electronAPI?: { github?: ViewerBridge } }).electronAPI?.github;
     if (!api) return undefined;
+    const force = lastRefresh.current !== refreshKey;
+    lastRefresh.current = refreshKey;
     let alive = true;
     const bump = () => { if (alive) setVersion((v) => v + 1); };
     const askedHosts = new Set<string>();
     for (const g of remotes) {
-      const host = g.key.split('/')[0];
-      if (!loginByHost.has(host) && !askedHosts.has(host) && api.viewerLogin) {
+      const host = hostOf(g.key);
+      if ((force || !loginByHost.has(host)) && !askedHosts.has(host) && api.viewerLogin) {
         askedHosts.add(host);
-        void api.viewerLogin(g.prPath).then((r) => {
+        void api.viewerLogin(g.prPath, force).then((r) => {
           if (r.login) { loginByHost.set(host, r.login); bump(); }
         }, () => undefined);
       }
-      if (!permissionByKey.has(g.key) && api.repoPermission) {
-        void api.repoPermission(g.prPath).then((r) => {
-          if (r.permission) { permissionByKey.set(g.key, r.permission); bump(); }
+      if ((force || !permissionByKey.has(g.key)) && api.repoPermission) {
+        void api.repoPermission(g.prPath, force).then((r) => {
+          if (r.permission) {
+            // main read the role under its current login for the host, if any.
+            permissionByKey.set(g.key, { permission: r.permission, login: r.login });
+            if (r.login) loginByHost.set(host, r.login);
+            bump();
+          }
         }, () => undefined);
       }
     }
     return () => { alive = false; };
-    // The shown repos are the signal (sig spells them).
-  }, [sig]);
-  const login = loginByHost.get('github.com') ?? loginByHost.values().next().value ?? null;
-  return { login, version };
+    // The shown repos (sig spells them) and the page's refresh are the signal.
+  }, [sig, refreshKey]);
+  return version;
 }
 
-/** The signed-in login on a repo group's host (an Enterprise host can have
- *  its own), null while unknown. */
-export const groupLogin = (groupKey: string): string | null => loginByHost.get(groupKey.split('/')[0]) ?? null;
+/** The signed-in login on a repo group's host, null while unknown. Never
+ *  another host's: an Enterprise host can sign the viewer in as someone else. */
+export const groupLogin = (groupKey: string): string | null => loginByHost.get(hostOf(groupKey)) ?? null;
 
-/** The viewer's role on a repo group (its remote key), null while unknown. */
-export const groupPermission = (groupKey: string): RepoPermission | null => permissionByKey.get(groupKey) ?? null;
+/** The viewer's role on a repo group (its remote key), read under the host's
+ *  current login; null while unknown. */
+export function groupPermission(groupKey: string): RepoPermission | null {
+  const hit = permissionByKey.get(groupKey);
+  // A role read with no login matches only while the host's login is unknown.
+  return hit && hit.login === groupLogin(groupKey) ? hit.permission : null;
+}
 
 /** Everything classifyGitTurn needs for the shown repos, except the login
  *  and the role, which each row takes from its own group (groupLogin,
  *  groupPermission). The version changes the context when either arrives. */
-export function useGitTurnContext(groups: RepoGroup[] | null): GitTurnContext {
+export function useGitTurnContext(groups: RepoGroup[] | null, refreshKey: number): GitTurnContext {
   const links = useActiveLinks();
   const statuses = useStore(useShallow(selectAgentStatusByParty));
-  const { login, version } = useGitViewer(groups);
+  const version = useGitViewer(groups, refreshKey);
   return useMemo<GitTurnContext>(() => ({
     now: Date.now(),
     links,
     paneStatus: (party: WorkLinkParty) => (party.paneId ? statuses[`p:${party.paneId}`] : statuses[`w:${party.workspaceId}`]) ?? null,
-    ghLogin: login,
-    // version: a role arrived (groupPermission reads the session cache).
-  }), [links, statuses, login, version]);
+    // version: a login or a role arrived (the row lookups read the session cache).
+  }), [links, statuses, version]);
 }
 
 /** Open a section and bring its header into view (the summary's jump). */

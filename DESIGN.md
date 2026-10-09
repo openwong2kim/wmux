@@ -427,10 +427,14 @@ refresh button. Nothing about branches or worktrees sits above the lists.
   judged from wmux's own signals: the PR's state (checks, mergeable,
   review, draft), its work link to a pane and that pane's live agent
   status, the signed-in login and the viewer's role on the repo (read
-  when the page shows, never polled; a row takes the role of the repo it
-  was read from). Another author's PR counts as Needs you only where the
-  viewer can write; elsewhere it waits on others, and so does an unrouted
-  issue not assigned to the owner on a repo known to be read-only. A PR
+  when the page shows and again on its refresh, never polled; a row takes
+  its own host's login and the role of the repo it was read from, the role
+  kept per signed-in login). Another author's PR counts as Needs you only
+  where the viewer can write; elsewhere it waits on others, and so does an
+  unrouted issue not assigned to the owner on a repo known to be
+  read-only. With the login unknown, any PR on a repo known to be
+  read-only waits too. A host wmux reads no identity on (anything but
+  GitHub) has neither, so its items count as the owner's. A PR
   with no CI that is mergeable and needs no review is Ready to merge.
   Under the page title, a muted **summary line** names each non-empty
   section with its count (`Needs you 3 · Ready to merge 2 · Agents on it

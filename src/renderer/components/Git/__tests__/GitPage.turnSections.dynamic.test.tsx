@@ -63,7 +63,7 @@ beforeEach(() => {
   clearGitCaches();
   clearGitViewerCache();
   try { localStorage.clear(); } catch { /* none */ }
-  repoPermission = vi.fn(async (p: string) => ({ permission: p === '/code/alpha' ? 'ADMIN' : 'READ' }));
+  repoPermission = vi.fn(async (p: string) => ({ permission: p === '/code/alpha' ? 'ADMIN' : 'READ', login: 'me' }));
   (window as unknown as { electronAPI: unknown }).electronAPI = {
     platform: 'linux',
     diff: { resolveRepo: vi.fn(async (cwd: string) => ({ ok: true, repoPath: cwd })) },
@@ -204,6 +204,7 @@ describe('Git page, who-acts-next sections', () => {
     // beta lives on an Enterprise host where the viewer signs in as me-corp.
     api.repoKey = vi.fn(async (p: string) => ({ key: p === '/code/beta' ? 'ghe.corp/o/beta' : `github.com/o/${p.split('/').pop()}` }));
     api.viewerLogin = vi.fn(async (p: string) => ({ login: p === '/code/beta' ? 'me-corp' : 'me' }));
+    repoPermission.mockImplementation(async (p: string) => ({ permission: p === '/code/alpha' ? 'ADMIN' : 'READ', login: p === '/code/beta' ? 'me-corp' : 'me' }));
     api.prList = vi.fn(async (p: string) => ({ ok: true, prs: p === '/code/beta'
       ? [{ ...pr('beta', 3, '2026-10-05T00:00:00Z', { author: 'me-corp', checks: 'failing' }), url: 'https://ghe.corp/o/beta/pull/3' }]
       : [] }));
@@ -212,12 +213,56 @@ describe('Git page, who-acts-next sections', () => {
     expect(rowsOf('needs_you')).toEqual(['beta#3']);
   });
 
+  it('a host with no login of its own never borrows another host\'s: the PR counts as the owner\'s', async () => {
+    const api = (window as unknown as { electronAPI: { github: Record<string, unknown> } }).electronAPI.github;
+    // beta's host gives wmux no identity (no login, no role); github.com says "me".
+    api.repoKey = vi.fn(async (p: string) => ({ key: p === '/code/beta' ? 'git.corp/o/beta' : `github.com/o/${p.split('/').pop()}` }));
+    api.viewerLogin = vi.fn(async (p: string) => ({ login: p === '/code/beta' ? null : 'me' }));
+    repoPermission.mockImplementation(async (p: string) => (p === '/code/beta' ? { permission: null, login: null } : { permission: 'ADMIN', login: 'me' }));
+    api.prList = vi.fn(async (p: string) => ({ ok: true, prs: p === '/code/beta'
+      ? [{ ...pr('beta', 3, '2026-10-05T00:00:00Z', { author: 'me-at-corp', checks: 'failing' }), url: 'https://git.corp/o/beta/pull/3' }]
+      : [] }));
+    await render();
+    // Read as "me" it would be another author's with no role, hidden in Waiting on others.
+    expect(rowsOf('needs_you')).toEqual(['beta#3']);
+  });
+
+  it('with the login read failing, a red PR on a read-only upstream repo still waits', async () => {
+    const api = (window as unknown as { electronAPI: { github: Record<string, unknown> } }).electronAPI.github;
+    api.viewerLogin = vi.fn(async () => { throw new Error('gh exploded'); });
+    // main still reads the role, with no login to keep it under.
+    repoPermission.mockImplementation(async (p: string) => ({ permission: p === '/code/alpha' ? 'ADMIN' : 'READ', login: null }));
+    api.prList = vi.fn(async (p: string) => ({ ok: true, prs: p === '/code/beta'
+      ? [pr('beta', 6, '2026-10-06T00:00:00Z', { author: 'contrib', checks: 'failing' })]
+      : [pr('alpha', 1, '2026-10-01T00:00:00Z', { author: 'contrib', checks: 'failing' })] }));
+    await render();
+    // alpha (writable) is the owner's to act on; beta (read-only) waits.
+    expect(rowsOf('needs_you')).toEqual(['alpha#1']);
+    expect(count('waiting_on_others')).toBe('1');
+  });
+
+  it('the page\'s refresh reads the roles again, forced', async () => {
+    const api = (window as unknown as { electronAPI: { github: Record<string, unknown> } }).electronAPI.github;
+    api.prList = vi.fn(async (p: string) => ({ ok: true, prs: p === '/code/alpha'
+      ? [pr('alpha', 9, '2026-10-05T00:00:00Z', { author: 'contrib' })]
+      : [] }));
+    await render();
+    expect(rowsOf('needs_you')).toEqual(['alpha#9']);
+    // The owner lost write access on alpha; only a refresh may find out.
+    repoPermission.mockImplementation(async () => ({ permission: 'READ', login: 'me' }));
+    act(() => (container.querySelector('[data-git-refresh]') as HTMLButtonElement).click());
+    await settle();
+    expect(repoPermission).toHaveBeenCalledWith('/code/alpha', true);
+    expect(section('needs_you')).toBeNull();
+    expect(count('waiting_on_others')).toBe('1');
+  });
+
   it('an unknown role leaves another author\'s PR waiting', async () => {
     const api = (window as unknown as { electronAPI: { github: Record<string, unknown> } }).electronAPI.github;
     api.prList = vi.fn(async (p: string) => ({ ok: true, prs: p === '/code/alpha'
       ? [pr('alpha', 9, '2026-10-05T00:00:00Z', { author: 'contrib' })]
       : [] }));
-    repoPermission.mockImplementation(async () => ({ permission: null }));
+    repoPermission.mockImplementation(async () => ({ permission: null, login: 'me' }));
     await render();
     expect(section('needs_you')).toBeNull();
     expect(count('waiting_on_others')).toBe('1');

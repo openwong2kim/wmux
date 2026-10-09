@@ -89,7 +89,7 @@ export function FlatLists({ groups, tab, refreshKey, filter, onFilter, sel, onSe
     [groups, activeWorkspaceId],
   );
   useEffect(() => { onOwners?.(owners); }, [owners, onOwners]);
-  const turnCtx = useGitTurnContext(groups);
+  const turnCtx = useGitTurnContext(groups, refreshKey);
 
   // A stored chip whose repo has no open workspace left is ignored.
   const chips = (groups ?? []).filter((g) => storedChips.includes(g.key)).map((g) => g.key);
@@ -160,9 +160,9 @@ export function FlatLists({ groups, tab, refreshKey, filter, onFilter, sel, onSe
   // Who acts next on each shown row; the sort above holds within a section.
   const byTurn = Object.fromEntries(SHOWN_TURNS.map((turn) => [turn, [] as typeof rows])) as Record<ShownTurn, typeof rows>;
   for (const row of rows) {
-    // The login and the role are the row's group's: its host may have its own
-    // login, and its URL may name a renamed repo's new owner.
-    const ctx = { ...turnCtx, ghLogin: groupLogin(row.g.key) ?? turnCtx.ghLogin, repoPermission: () => groupPermission(row.g.key) };
+    // The login and the role are the row's group's, never another host's: its
+    // host may have its own login, and its URL may name a renamed repo's new owner.
+    const ctx = { ...turnCtx, ghLogin: groupLogin(row.g.key), repoPermission: () => groupPermission(row.g.key) };
     const turn = shownTurnOf(tab === 'prs' ? { kind: 'pr', pr: row.item as PrSummary } : { kind: 'issue', issue: row.item as IssueSummary }, ctx);
     byTurn[turn].push(row);
   }
