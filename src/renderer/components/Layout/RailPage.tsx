@@ -6,9 +6,23 @@ import SchedulesView from '../Schedules/SchedulesView';
 import RemotePage from '../Remote/RemotePage';
 import GitPage from '../Git/GitPage';
 import { PAGES_BESIDE_DOCK } from './pagesBesideDock';
+import { useT } from '../../hooks/useT';
+import { selectSelectedRemotePcName } from '../Git/thisComputerOnly';
 
 const SettingsPanel = lazy(() => import('../Settings/SettingsPanel'));
 
+/** Rail pages that show this computer only (Remote is about the others). */
+const THIS_COMPUTER_PAGES: ReadonlySet<string> = new Set(['fleet', 'schedules', 'git']);
+
+/**
+ * The muted line a rail page shows while another computer is selected in the
+ * PC rail, or null. Its data stays this computer's either way. A computer the
+ * roster has not named yet gets no line rather than an empty name. Pure.
+ */
+export function thisComputerOnlyLine(route: string, remotePcName: string | null, t: (key: string, vars?: Record<string, string | number>) => string): string | null {
+  if (!remotePcName || !THIS_COMPUTER_PAGES.has(route)) return null;
+  return t('pcRail.thisComputerOnly', { name: remotePcName });
+}
 
 /**
  * How far a page beside the dock stays off each edge of the sheet so the dock
@@ -84,7 +98,9 @@ function useInsetBesideDock(enabled: boolean, page: React.RefObject<HTMLDivEleme
  * floating bar.
  */
 export default function RailPage() {
+  const t = useT();
   const route = useStore((s) => s.appRoute);
+  const remotePcName = useStore(selectSelectedRemotePcName);
   const inspectModeActive = useStore((s) => s.inspectModeActive);
   const pageRef = useRef<HTMLDivElement | null>(null);
   const besideDock = PAGES_BESIDE_DOCK.has(route) && !inspectModeActive;
@@ -106,6 +122,7 @@ export default function RailPage() {
     );
   }
   if (route === 'workspaces') return null;
+  const scopeLine = thisComputerOnlyLine(route, remotePcName, t);
   return (
     <div
       ref={pageRef}
@@ -114,10 +131,16 @@ export default function RailPage() {
       data-beside-dock={besideDock && (inset.left > 0 || inset.right > 0) ? 'true' : undefined}
       style={besideDock ? { left: inset.left, right: inset.right } : undefined}
     >
-      {route === 'fleet' && <ErrorBoundary name="FleetView"><FleetView /></ErrorBoundary>}
-      {route === 'schedules' && <ErrorBoundary name="SchedulesView"><SchedulesView /></ErrorBoundary>}
-      {route === 'remote' && <ErrorBoundary name="RemotePage"><RemotePage /></ErrorBoundary>}
-      {route === 'git' && <ErrorBoundary name="GitPage"><GitPage /></ErrorBoundary>}
+      {scopeLine && (
+        <p className="shrink-0 truncate px-5 pt-2 text-[12px] text-[var(--text-muted)]" data-this-computer-only title={scopeLine}>{scopeLine}</p>
+      )}
+      {/* The page's own box: Schedules fills it absolutely, the others flex. */}
+      <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
+        {route === 'fleet' && <ErrorBoundary name="FleetView"><FleetView /></ErrorBoundary>}
+        {route === 'schedules' && <ErrorBoundary name="SchedulesView"><SchedulesView /></ErrorBoundary>}
+        {route === 'remote' && <ErrorBoundary name="RemotePage"><RemotePage /></ErrorBoundary>}
+        {route === 'git' && <ErrorBoundary name="GitPage"><GitPage /></ErrorBoundary>}
+      </div>
     </div>
   );
 }

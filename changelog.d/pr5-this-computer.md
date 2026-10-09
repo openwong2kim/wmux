@@ -1,0 +1,8 @@
+### Added
+
+- **Pages say when they show this computer only.** With another computer
+  selected in the computer column, Fleet, Schedules and Git show one muted
+  line, "This computer · office-mac isn't shown here yet"; what they list is
+  unchanged. Git's This repo and Worktrees say "Files on office-mac aren't
+  shown yet" instead of reading that computer's folders from this disk, and a
+  pane's new-browser action reads "Browser (this computer)".

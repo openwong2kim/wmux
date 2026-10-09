@@ -18,6 +18,7 @@ import { FOCUS_RING } from '../focusRing';
 import { HIT_TARGET_24 } from '../hitArea';
 import { IconSplitRight, IconSplitDown, IconBrowser, IconExternalLink, IconEyeOff, IconPencil, IconGrid, IconComputer, IconLock } from '../icons';
 import { isPrivateBrowserSurface } from '../../../shared/privateBrowser';
+import { LOCAL_PC_ID, isShadowWorkspaceId } from '../../../shared/pcRail';
 import A2aLinkDialog from '../Remote/A2aLinkDialog';
 import { displayPath } from '../../utils/displayPath';
 import { workspaceColorHex } from '../../../shared/workspaceColors';
@@ -682,6 +683,10 @@ export default function SurfaceTabs({
   useEffect(() => {
     if (menu === 'main') reloadChromeProfiles();
   }, [menu, reloadChromeProfiles]);
+  // PC rail: with another computer on screen (or in its shadow workspace) a
+  // new browser still opens on this one, so its label says so.
+  const otherPcShown = useStore((s) => s.pcRail.activePcId !== LOCAL_PC_ID) || isShadowWorkspaceId(workspace.id);
+  const newBrowserLabel = otherPcShown ? t('pcRail.browserThisComputer') : t('pane.newBrowser');
   const menuItems: PaneActionItem[] = useMemo(() => [
     {
       key: 'split-right',
@@ -699,7 +704,7 @@ export default function SurfaceTabs({
     },
     {
       key: 'new-browser',
-      label: t('pane.newBrowser'),
+      label: newBrowserLabel,
       icon: <IconBrowser size={14} />,
       onSelect: onAddBrowser,
     },
@@ -781,7 +786,7 @@ export default function SurfaceTabs({
       onSelect: () => { useStore.getState().snapToLayoutTemplate(tmpl.id); },
     })),
   ], [
-    t, onSplitHorizontal, onSplitVertical, onAddBrowser, onAddPrivateBrowser, chromeProfile.mainItems, onAddRemote,
+    t, onSplitHorizontal, onSplitVertical, onAddBrowser, newBrowserLabel, onAddPrivateBrowser, chromeProfile.mainItems, onAddRemote,
     onSplitHorizontalRemote, onSplitVerticalRemote, startPaneRename,
     menuTabSurface, startRename, canLinkRemote,
     stashChord, stashDisabled, stashTooltip, stashThisPane, isZoomed, toggleZoom,
@@ -1200,8 +1205,8 @@ export default function SurfaceTabs({
           <button
             className={`ui-icon-btn ${FOCUS_RING} w-6 h-6`}
             onClick={(e) => { e.stopPropagation(); onAddBrowser(); }}
-            title={t('pane.newBrowser')}
-            aria-label={t('pane.newBrowser')}
+            title={newBrowserLabel}
+            aria-label={newBrowserLabel}
             data-pane-action="new-browser"
           >
             <IconBrowser size={14} />

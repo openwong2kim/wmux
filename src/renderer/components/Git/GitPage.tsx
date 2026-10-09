@@ -33,6 +33,7 @@ import SegmentedControl from '../ui/SegmentedControl';
 import { groupOfPath, repoOwnerWorkspace, useRepoGroups, type RepoGroup } from './repoGroups';
 import { GhConnectPage } from './GhConnectPage';
 import { useGhAuthGate } from './ghAuthGate';
+import { selectRemoteScopeName } from './thisComputerOnly';
 import type { GitDragOwner } from './gitPageState';
 import { saveGitAllLayout, saveGitRepoChoice, saveGitTab, type GitAllLayout, type GitPageState, type GitPageTab, type GitSelection } from './gitPageState';
 import type { PrSummary } from '../../../shared/prSurface';
@@ -77,6 +78,12 @@ export default function GitPage() {
   // A picked repo with no open workspace left: follow the active one instead.
   const pickMissing = pick !== null && groups !== null && pickedGroup === null;
   const following = pick === null || pickMissing;
+  // Another computer is on screen (PC rail): the active workspace's files are
+  // there, so following it reads nothing and says so; picked repos and All
+  // repos are this computer's and stay as they are.
+  const remoteScope = useStore(selectRemoteScopeName);
+  const remoteFiles = following && remoteScope !== null;
+  const remoteFilesNote = remoteScope ? t('pcRail.filesNotShown', { name: remoteScope }) : t('git.noRepo');
   // The repo shown in This repo (the gate's repo in All repos).
   const resolved = following
     ? active.repo
@@ -271,7 +278,8 @@ export default function GitPage() {
             )}
           </div>
           {pickMissing && <p className="wmux-git-page-summary" data-git-pick-missing>{t('git.repoMenu.missing')}</p>}
-          {page.scope === 'repo' && !resolved && !resolving && <p className="wmux-git-page-summary" data-git-no-repo>{t('git.noRepo')}</p>}
+          {page.scope === 'repo' && remoteFiles && <p className="wmux-git-page-summary" data-git-remote-files>{remoteFilesNote}</p>}
+          {page.scope === 'repo' && !remoteFiles && !resolved && !resolving && <p className="wmux-git-page-summary" data-git-no-repo>{t('git.noRepo')}</p>}
           {counts.length > 0 && <p className="wmux-git-page-summary" data-git-page-counts>{counts.join(' · ')}</p>}
           {page.scope === 'all' && page.allLayout === 'flat' && page.tab !== 'worktrees' && turnCounts && <GitTurnSummary counts={turnCounts} />}
         </div>
@@ -325,11 +333,13 @@ export default function GitPage() {
           <div className="wmux-git-scroll" data-git-worktrees-tab>
             {/* The active workspace's branch (Diff, Go to terminal, the ship
                 button), unless a picked repo it is not in is shown. */}
-            {(page.scope === 'all' || following || pickedGroup?.active) && <GitTab layout="summary" refreshKey={refreshKey} />}
+            {(page.scope === 'all' || following || pickedGroup?.active) && (remoteScope !== null
+              ? <div className="wmux-git-note" data-git-remote-files>{remoteFilesNote}</div>
+              : <GitTab layout="summary" refreshKey={refreshKey} />)}
             {page.scope === 'all'
               ? <AllWorktrees groups={groups} refreshKey={refreshKey} />
               : following
-                ? <GitTab layout="worktrees" refreshKey={refreshKey} />
+                ? (remoteFiles ? null : <GitTab layout="worktrees" refreshKey={refreshKey} />)
                 : pickedGroup
                   ? <GroupWorktrees group={pickedGroup} refreshKey={refreshKey} />
                   : <div className="wmux-git-note">{t('git.loading')}</div>}

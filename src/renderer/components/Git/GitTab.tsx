@@ -37,6 +37,8 @@ import { PrBadge } from '../Sidebar/WorkspaceItem';
 import { isPlausibleCwd } from '../../../shared/cwdShape';
 import { showWorkspaces } from '../../utils/showWorkspaces';
 import { resolveRepoCached } from './repoCache';
+import { isShadowWorkspaceId } from '../../../shared/pcRail';
+import { selectRemoteScopeName } from './thisComputerOnly';
 import {
   buildWorktreeRows, groupWorktreeRows, normWorktreePath, worktreeContaining, STALE_WORKTREE_DAYS,
   type DiffStat, type GitWorktreeRow, type WorkspaceOnRepo, type WorktreeRowUI,
@@ -77,12 +79,15 @@ function findFirstLeaf(root: Pane): PaneLeaf | null {
 // Repo-base cwd candidates of a workspace, in priority order (2026-07-21): an
 // agent TUI pane's shell cwd can sit outside the repo (shell in home, agent in
 // the repo), so the hook-reported metadata.cwd is the second candidate. The
-// caller tries them in order and keeps the first that resolves.
+// caller tries them in order and keeps the first that resolves. A shadow
+// workspace (another computer's, PC rail) has none: its folders are on that
+// computer, so not one of them, nor the local startup folder, is read here.
 export function repoCwdCandidates(
-  ws: { rootPane: Pane; activePaneId: string; metadata?: { cwd?: string }; profile?: { startupCwd?: string } },
+  ws: { id?: string; rootPane: Pane; activePaneId: string; metadata?: { cwd?: string }; profile?: { startupCwd?: string } },
   startupDirectory: string,
   fallbackToFirstLeaf: boolean,
 ): string[] {
+  if (isShadowWorkspaceId(ws.id)) return [];
   const leaf = findActiveLeaf(ws.rootPane, ws.activePaneId) ?? (fallbackToFirstLeaf ? findFirstLeaf(ws.rootPane) : null);
   const surface = leaf?.surfaces.find((s) => s.id === leaf.activeSurfaceId);
   // A polluted cwd (an impossible shape saved by a scraping false positive) is skipped.
@@ -99,6 +104,8 @@ export function repoCwdCandidates(
 // The active workspace's candidates as one primitive string, so the selector
 // only re-renders when they change.
 export function selectActivePaneCwdCandidates(state: StoreState): string {
+  // Another computer is on screen: its folders are not on this disk.
+  if (selectRemoteScopeName(state) !== null) return '';
   const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
   if (!ws) return '';
   return repoCwdCandidates(ws, state.startupDirectory || '', false).join('\0');
