@@ -10,7 +10,7 @@
 // Settled is not drawn: the lists read open items only, so it would always
 // be empty. A row the classifier calls settled (or drops) waits with others
 // rather than vanishing.
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useT } from '../../hooks/useT';
 import { useStore } from '../../stores';
@@ -124,7 +124,9 @@ function useGitViewer(groups: RepoGroup[] | null, refreshKey: number): number {
   const remotes = (groups ?? []).filter((g) => !g.key.startsWith('path:'));
   const sig = remotes.map((g) => `${g.key}\0${g.prPath}`).join('\n');
   const lastRefresh = useRef(refreshKey);
-  useEffect(() => {
+  // A layout effect, so a replaced read is marked stale at commit, before
+  // any of its answers can land after the new render.
+  useLayoutEffect(() => {
     const api = (window as unknown as { electronAPI?: { github?: ViewerBridge } }).electronAPI?.github;
     if (!api) return undefined;
     const force = lastRefresh.current !== refreshKey;

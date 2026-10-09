@@ -204,6 +204,21 @@ describe('repo permission', () => {
     expect(roleCalls(calls)).toHaveLength(2);
   });
 
+  it('a refresh that waited on a read which tripped the rate limit makes no call of its own', async () => {
+    let release: (v: string | Error) => void = () => undefined;
+    const { svc, calls } = makeService((args) => (args.includes('user')
+      ? 'me\n'
+      : new Promise<string>((resolve, reject) => { release = (v) => (v instanceof Error ? reject(v) : resolve(v)); })));
+    const early = svc.repoPermission(KEY, '/r');
+    await Promise.resolve();
+    const forced = svc.repoPermission(KEY, '/r', true);
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+    release(rateLimitErr());
+    expect((await early).permission).toBeNull();
+    expect((await forced).permission).toBeNull();
+    expect(roleCalls(calls)).toHaveLength(1);
+  });
+
   it('a repo that answers with no permissions is read-only and kept; a failed read is null and not kept', async () => {
     let fail = true;
     const { svc, calls } = makeService((args) => (args.includes('user') ? 'me\n' : fail ? new Error('boom') : 'null\n'));

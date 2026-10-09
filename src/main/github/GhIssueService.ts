@@ -331,6 +331,8 @@ export class GhIssueService {
     // A refresh never takes the answer of a read that began before it.
     if (force && read) {
       await read;
+      // That read may have tripped the rate-limit breaker.
+      if (this.retryAt(repo.host) !== null) return { permission: null, login };
       read = this.permissionPending.get(pendingKey);
     }
     if (!read) {
