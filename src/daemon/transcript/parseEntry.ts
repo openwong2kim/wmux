@@ -645,8 +645,12 @@ function metaEvent(
 /** Longest url a `pr_link` row carries; anything longer is not a PR link. */
 const MAX_PR_URL_CHARS = 2048;
 
-/** `owner/name`, each part a GitHub-style name. */
-const REPO_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+/**
+ * `owner/name`, each part a GitHub-style name. A part that is `.` or `..` is
+ * not a name: a client that joins `repo` into a url or an API path would walk
+ * up out of it.
+ */
+const REPO_RE = /^(?!\.{1,2}\/)[A-Za-z0-9_.-]+\/(?!\.{1,2}$)[A-Za-z0-9_.-]+$/;
 
 /** `/owner/name/pull/123` at the start of a url path. */
 const PULL_PATH_RE = /^\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/pull\/(\d+)(?:\/|$)/i;
@@ -654,6 +658,13 @@ const PULL_PATH_RE = /^\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/pull\/(\d+)(?:\/|
 /**
  * `value` as a `pr_link` url: an http(s) url of bounded length, with any
  * user name or password removed — or null.
+ *
+ * The url is the parser's own serialization, never the entry's string: the
+ * parser drops leading and trailing control characters and spaces, and tabs
+ * and newlines anywhere, and reads `\` as `/`, so the raw string can differ
+ * from the address it opens (`https://github.com\t.evil.example/…` starts
+ * with `https://github.com` and opens `github.com.evil.example`). A client
+ * that checks the string it is given must be checking the address it opens.
  */
 function prUrlOf(value: unknown): { url: string; parsed: URL } | null {
   if (typeof value !== 'string' || !value || value.length > MAX_PR_URL_CHARS) return null;
@@ -664,10 +675,10 @@ function prUrlOf(value: unknown): { url: string; parsed: URL } | null {
     return null;
   }
   if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return null;
-  if (!parsed.username && !parsed.password) return { url: value, parsed };
   parsed.username = '';
   parsed.password = '';
-  return { url: parsed.href, parsed };
+  // Serializing can percent-encode, so the cap is checked again on the result.
+  return parsed.href.length > MAX_PR_URL_CHARS ? null : { url: parsed.href, parsed };
 }
 
 /**
@@ -697,7 +708,7 @@ function prLinkFields(entry: Record<string, unknown>): { url: string; number?: n
   return {
     url,
     ...(number !== undefined && Number.isSafeInteger(number) && number > 0 ? { number } : {}),
-    ...(repo !== undefined ? { repo } : {}),
+    ...(repo !== undefined && REPO_RE.test(repo) ? { repo } : {}),
   };
 }
 

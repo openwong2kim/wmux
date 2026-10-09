@@ -162,6 +162,38 @@ describe('parseTranscriptLine — pr-link entries', () => {
     expect(JSON.stringify(parse({ prUrl: 'https://token@github.com/a/b/pull/6' }))).not.toContain('token@');
   });
 
+  it('sends the url as the parser reads it, not the string the entry held', () => {
+    for (const [raw, url] of [
+      ['  https://github.com/a/b/pull/1  ', 'https://github.com/a/b/pull/1'],
+      ['\u0001https://github.com/a/b/pull/2', 'https://github.com/a/b/pull/2'],
+      ['https://github.com/a/b/pull/3\n', 'https://github.com/a/b/pull/3'],
+      ['https://github.com\t.evil.example/a/b/pull/4', 'https://github.com.evil.example/a/b/pull/4'],
+      ['https:\\\\github.com\\a\\b\\pull\\5', 'https://github.com/a/b/pull/5'],
+      ['https://:@github.com/a/b/pull/6', 'https://github.com/a/b/pull/6'],
+      ['HTTPS://GITHUB.COM/a/b/pull/7', 'https://github.com/a/b/pull/7'],
+    ]) {
+      expect(parse({ prUrl: raw })[0]).toMatchObject({ subtype: 'pr_link', url, label: url });
+    }
+  });
+
+  it('applies the length cap to the url it sends, after encoding', () => {
+    const head = 'https://github.com/a/b/pull/1?q=';
+    const [event] = parse({ prUrl: `${head}${'é'.repeat(2048 - head.length)}` });
+    expect(event).toMatchObject({ subtype: 'unknown', label: 'pull request' });
+    expect(event).not.toHaveProperty('url');
+  });
+
+  it('never sends a repo with a . or .. part', () => {
+    for (const prRepository of ['../..', './x', 'x/.', 'x/..', '../x']) {
+      const [event] = parse({ prUrl: 'https://ghe.example.com/a/b/-/c', prRepository });
+      expect(event).toMatchObject({ subtype: 'pr_link' });
+      expect(event).not.toHaveProperty('repo');
+    }
+    // A dotted name is still a name, and the url path still fills the gap.
+    expect(parse({ prUrl: 'https://github.com/a/b/pull/1', prRepository: 'x.y/.github' })[0]).toMatchObject({ repo: 'x.y/.github' });
+    expect(parse({ prUrl: 'https://github.com/a/b/pull/1', prRepository: '../..' })[0]).toMatchObject({ repo: 'a/b' });
+  });
+
   it('takes the first key holding a usable http(s) url, prUrl first', () => {
     expect(parse({ prUrl: 'https://github.com/a/b/pull/1', url: 'https://github.com/c/d/pull/2' })[0])
       .toMatchObject({ url: 'https://github.com/a/b/pull/1' });

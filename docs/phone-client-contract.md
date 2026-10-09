@@ -723,9 +723,12 @@ session opened or linked a PR, the row is
 {id, kind: 'meta', subtype: 'pr_link', label, ts?, url, number?, repo?}
 ```
 
-`url` is always an `http(s)` url with any user name or password removed (and
-`label` is the same url, so a client that does not know `pr_link` still shows
-it as before). `number` (a positive integer) and `repo` (`owner/name`) are
+`url` is always an `http(s)` url with any user name or password removed, in
+the URL parser's own serialization rather than the string the transcript held
+(so no surrounding spaces, control characters or `\` separators; at most 2048
+characters), and `label` is the same url, so a client that does not know
+`pr_link` still shows it as before. `number` (a positive integer) and `repo`
+(`owner/name`, neither part `.` or `..`) are
 present when the transcript names them or the url's path is
 `/owner/name/pull/N` (any case); a non-GitHub url carries `url` alone. Claude
 Code writes the entry again on later turns, so the same PR can arrive several
