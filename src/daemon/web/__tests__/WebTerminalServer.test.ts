@@ -9382,6 +9382,41 @@ describe('WebTerminalServer', () => {
       expect(await res.json()).toEqual({ error: 'image not found' });
     });
 
+    // A junction needs no symlink privilege, so this runs on any Windows box,
+    // where the symlink cases above fail with EPERM unless Developer Mode is on.
+    it.runIf(process.platform === 'win32')('on Windows, serves only the spelling the Read used, whichever separators it has', async () => {
+      const file = path.join(scratch, 'shot.png');
+      const slashed = path.join(scratch, 'slashed.png').replace(/\\/g, '/');
+      fs.writeFileSync(file, PNG_1X1);
+      fs.writeFileSync(slashed, PNG_1X1);
+      const alias = path.join(path.dirname(scratch), 'alias');
+      fs.symlinkSync(scratch, alias, 'junction');
+      readFile(transcript, file);
+      readFile(transcript, slashed);
+      const info = await startWithTranscript();
+      const h = bearer(info.token as string);
+      expect((await fetch(imageUrl('s1', file), { headers: h })).status).toBe(200);
+      expect((await fetch(imageUrl('s1', slashed), { headers: h })).status).toBe(200);
+      const swapCase = (s: string): string => s.replace(/[a-z]/gi, (c) => (c === c.toLowerCase() ? c.toUpperCase() : c.toLowerCase()));
+      for (const p of [
+        file.replace(/\\/g, '/'),
+        slashed.replace(/\//g, '\\'),
+        `${file[0] === file[0].toLowerCase() ? file[0].toUpperCase() : file[0].toLowerCase()}${file.slice(1)}`,
+        path.join(scratch, 'SHOT.PNG'),
+        swapCase(file),
+        `\\\\?\\${file}`,
+        `\\\\.\\${file}`,
+        `${file}.`,
+        `${file} `,
+        `${file}::$DATA`,
+        path.join(alias, 'shot.png'),
+      ]) {
+        const res = await fetch(imageUrl('s1', p), { headers: h });
+        expect(res.status, p).toBe(404);
+        expect(await res.json()).toEqual({ error: 'image not found' });
+      }
+    });
+
     it.runIf(process.platform === 'darwin')('serves the /tmp spelling of a Read recorded under /private/tmp, and the reverse', async () => {
       const root = fs.realpathSync(fs.mkdtempSync('/tmp/wmux-read-alias-'));
       dirs.push(root);
