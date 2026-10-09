@@ -255,3 +255,36 @@ describe('RemoteAttentionGate — bounds', () => {
     expect(gate.consume('notify', JSON.stringify({ sessionId: 's', body: 'b', epoch: 'e1', id: 3 }))).not.toBeNull();
   });
 });
+
+describe('RemoteAttentionSubscriber — byte bounds', () => {
+  it('drops the stream on a frame over the byte cap, even when its UTF-16 length is under it', async () => {
+    const notes: unknown[] = [];
+    // 3 bytes per character: ~384 KiB on the wire, ~128K UTF-16 units.
+    const big = '한'.repeat(128 * 1024);
+    let calls = 0;
+    const fetchImpl = vi.fn(async () => {
+      calls += 1;
+      return fakeStream([
+        'event: reset\ndata: {"epoch":"e1","headId":0}\n\n',
+        `event: notify\ndata: ${JSON.stringify({ sessionId: 's', epoch: 'e1', id: 1, title: big })}\n\n`,
+      ]);
+    });
+    const sub = new RemoteAttentionSubscriber({
+      host: HOST,
+      onNotification: (_l, n) => notes.push(n),
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      setTimeoutImpl: (() => 0) as never,
+      clearTimeoutImpl: () => undefined,
+    });
+    sub.start();
+    for (let i = 0; i < 20; i += 1) await new Promise((r) => setImmediate(r));
+    sub.stop();
+    expect(calls).toBe(1);
+    expect(notes).toEqual([]);
+  });
+
+  it('cuts a tool + summary approval body to the body limit', () => {
+    const out = formatRemoteAttention('approval', { tier: 'act', toolName: 't'.repeat(500), toolInputSummary: 's'.repeat(500) });
+    expect(out?.body.length).toBe(240);
+  });
+});

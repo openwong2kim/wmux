@@ -21,12 +21,25 @@ export const REMOTE_LIMITS = {
   /** Config probe, pair exchange, create/resize replies, error bodies. */
   smallBodyBytes: 64 * 1024,
   /**
-   * The unterminated tail of a pane stream. The largest frame a host sends is
-   * the attach snapshot: a 256 KiB window by default, base64 on the wire, so
-   * this leaves wide headroom while still bounding a stream that never ends a
-   * frame.
+   * One pane-stream frame, and the unterminated tail, in bytes. The largest
+   * frame a host sends is the attach snapshot: a 256 KiB window by default,
+   * base64 on the wire, so this leaves wide headroom while still bounding a
+   * stream that never ends a frame.
    */
   streamBufferBytes: 4 * 1024 * 1024,
+  /**
+   * Pane output (base64, as sent to the viewer) the viewer may have
+   * outstanding before the stream stops being read. Several seconds of a busy
+   * pane; a viewer that keeps up never gets near it.
+   */
+  viewerWindowBytes: 8 * 1024 * 1024,
+  /** A viewer that consumes nothing for this long ends its attach. */
+  viewerStallMs: 30_000,
+  /** The `/api/events` frame buffer; attention frames are small JSON. */
+  attentionBufferBytes: 256 * 1024,
+  /** Attention text shown in a notification. */
+  attentionTitle: 120,
+  attentionBody: 240,
   workspaces: PHONE_SIDEBAR_LIMITS.workspaces,
   /** Panes over the whole reply, not per workspace. */
   panes: PHONE_SIDEBAR_LIMITS.panes,

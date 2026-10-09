@@ -1607,7 +1607,8 @@ describe('remote.handler — bounds on what a host sends', () => {
     const fetchImpl = vi.fn(async () => big);
     registerRemoteHandlers({ store: fakeStore() as never, attachments: fakeAttachments() as never, fetchImpl: fetchImpl as unknown as typeof fetch });
     const res = await getHandler(IPC.REMOTE_HOSTS_ADD)({}, 'https://box:9600?token=t') as { ok: boolean; error?: string };
-    expect(res).toEqual({ ok: false, error: "that machine's wmux is too old for remote attach" });
+    // Its own case: an oversized answer is not an old wmux.
+    expect(res).toEqual({ ok: false, error: 'that host sent an answer this app cannot use' });
   });
 
   it('resize request refuses non-finite geometry before reaching the host', async () => {

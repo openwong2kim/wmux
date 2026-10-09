@@ -16,6 +16,7 @@
 
 import type { RemoteHost } from '../../shared/remoteHosts';
 import { isCredentialSafeOriginString } from '../../shared/remotePairInput';
+import { REMOTE_LIMITS } from '../../shared/remoteLimits';
 import { RemoteAttentionGate, type RemoteAttentionNotification } from './remoteAttention';
 
 // Reconnect backoff, +/-30% jitter so several hosts dropped by one tailnet
@@ -43,11 +44,11 @@ const HOPELESS_STATUSES = new Set([401, 403, 404]);
 const IDLE_TIMEOUT_MS = 75_000;
 
 /**
- * Hard cap on the unterminated tail of the frame buffer. A remote daemon is
- * not trusted with unbounded main-process heap: a peer that never sends a
- * frame separator would otherwise grow this forever.
+ * Cap, in bytes, on each frame and on the unterminated tail of the frame
+ * buffer. A remote daemon is not trusted with unbounded main-process heap: a
+ * peer that never sends a frame separator would otherwise grow this forever.
  */
-const MAX_BUFFER_BYTES = 256 * 1024;
+const MAX_BUFFER_BYTES = REMOTE_LIMITS.attentionBufferBytes;
 
 /**
  * Token bucket, per host. A pane that loops OSC 9 — or a compromised host —
@@ -204,10 +205,14 @@ export class RemoteAttentionSubscriber {
           if (!match) break;
           const frame = buffer.slice(0, match.index);
           buffer = buffer.slice(match.index + match[0].length);
+          if (Buffer.byteLength(frame) > MAX_BUFFER_BYTES) {
+            controller.abort();
+            return;
+          }
           this.handleFrame(frame);
           if (!this.current(gen)) return;
         }
-        if (buffer.length > MAX_BUFFER_BYTES) {
+        if (Buffer.byteLength(buffer) > MAX_BUFFER_BYTES) {
           // A peer that never terminates a frame is not one to keep reading.
           controller.abort();
           return;

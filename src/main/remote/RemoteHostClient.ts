@@ -39,6 +39,7 @@ import {
   remoteId,
 } from '../../shared/remoteLimits';
 import { readBoundedJson } from './readBoundedJson';
+import { SseFrameSplitter } from './sseFrameSplitter';
 
 export interface RemoteMetaEvent {
   attachId: string;
@@ -199,6 +200,21 @@ interface Attachment {
   authRejectedReported?: boolean;
   /** An SSE response is open and being read right now (not reconnecting). */
   streamOpen?: boolean;
+  /** Pane bytes handed to the viewer and not yet acknowledged by it. */
+  unacked: number;
+  /** Wakes a stream paused on the viewer's window (an ack, detach or refresh). */
+  creditWaiter: (() => void) | null;
+}
+
+export interface RemoteHostClientOptions {
+  /**
+   * Bytes of pane output (snapshot and data frames) the viewer may have
+   * outstanding before this client stops reading the stream. Off when
+   * undefined: the viewer must then call `ack` as it consumes output.
+   */
+  viewerWindowBytes?: number;
+  /** How long a stream may wait on the viewer before the attach ends. */
+  viewerStallMs?: number;
 }
 
 interface WriteQueueState {
@@ -234,7 +250,16 @@ function backoffForAttempt(attempt: number): number {
  *  Bounded the same way (REMOTE_LIMITS): ids over the id length are dropped,
  *  free text is cut to its limit, rows past the workspace and pane counts are
  *  not read, and a repeated workspace or session id keeps its first row only,
- *  so every key the renderer derives from this reply is unique. */
+ *  so every key the renderer derives from this reply is unique.
+ *
+ *  Session ids are deduplicated across the whole reply, not per workspace: the
+ *  host lists each live session exactly once, under the one workspace its env
+ *  names (WebTerminalServer `handleWorkspacesList`), and this app keys attaches
+ *  by (host, session), so a second row for a session could only collide.
+ *
+ *  A row's `layout` is not read: nothing on the desktop draws a host's split
+ *  tree yet, and `RemoteWorkspaceSummary` has no field for it. The first
+ *  reader must parse it with `parseRemoteLayout` (shared/remoteLimits.ts). */
 export function normalizeWorkspaces(body: unknown): RemoteWorkspaceSummary[] {
   if (typeof body !== 'object' || body === null) return [];
   const list = (body as { workspaces?: unknown }).workspaces;
@@ -299,6 +324,14 @@ export function normalizeWorkspaces(body: unknown): RemoteWorkspaceSummary[] {
   return workspaces;
 }
 
+/** The viewer did not consume pane output within `viewerStallMs`. */
+class ViewerStalledError extends Error {
+  constructor() {
+    super('stream paused: the viewer stopped consuming output');
+    this.name = 'ViewerStalledError';
+  }
+}
+
 /** The pane stream sent a frame over REMOTE_LIMITS.streamBufferBytes. */
 class StreamFrameTooLargeError extends Error {
   constructor() {
@@ -347,9 +380,14 @@ export class RemoteHostClient implements RemotePaneEvents {
   /** Credentials may not be sent to this origin (see RemoteInsecureTransportError). */
   private readonly insecure: boolean;
 
-  constructor(host: RemoteHost, fetchImpl: typeof fetch = fetch) {
+  private readonly viewerWindowBytes: number | undefined;
+  private readonly viewerStallMs: number;
+
+  constructor(host: RemoteHost, fetchImpl: typeof fetch = fetch, opts: RemoteHostClientOptions = {}) {
     this.host = host;
     this.fetchImpl = fetchImpl;
+    this.viewerWindowBytes = opts.viewerWindowBytes;
+    this.viewerStallMs = opts.viewerStallMs ?? REMOTE_LIMITS.viewerStallMs;
     this.insecure = !isCredentialSafeOriginString(host.origin);
   }
 
@@ -517,6 +555,12 @@ export class RemoteHostClient implements RemotePaneEvents {
     if (!applied) {
       return { ok: false, reason: 'resizeSession: response carried no geometry' };
     }
+    // A host answer that needed clamping is not the geometry the host applied,
+    // so it is not reported as a grant. (An in-range answer that differs from
+    // the request is normal: the host floors small sizes.)
+    if (applied.cols !== parsed?.cols || applied.rows !== parsed?.rows) {
+      return { ok: false, reason: 'resizeSession: response geometry out of range' };
+    }
     return { ok: true, ...applied };
   }
 
@@ -556,6 +600,8 @@ export class RemoteHostClient implements RemotePaneEvents {
       reconnectTimer: null,
       detached: false,
       generation: 0,
+      unacked: 0,
+      creditWaiter: null,
     };
     this.attachments.set(attachId, attachment);
     this.openStream(attachment);
@@ -571,7 +617,47 @@ export class RemoteHostClient implements RemotePaneEvents {
       attachment.reconnectTimer = null;
     }
     attachment.controller.abort();
+    attachment.creditWaiter?.();
     this.attachments.delete(attachId);
+  }
+
+  /**
+   * The viewer consumed `bytes` of this attach's pane output. Lets a stream
+   * paused on the viewer window read again once the outstanding bytes are back
+   * under it.
+   */
+  ack(attachId: string, bytes: number): void {
+    const attachment = this.attachments.get(attachId);
+    if (!attachment || !Number.isFinite(bytes) || bytes <= 0) return;
+    attachment.unacked = Math.max(0, attachment.unacked - bytes);
+    if (this.viewerWindowBytes === undefined || attachment.unacked <= this.viewerWindowBytes) {
+      attachment.creditWaiter?.();
+    }
+  }
+
+  /** Bytes handed to the viewer and not yet acknowledged (for tests and logs). */
+  unackedBytes(attachId: string): number {
+    return this.attachments.get(attachId)?.unacked ?? 0;
+  }
+
+  /**
+   * Resolves true at once while the viewer is within its window; otherwise
+   * waits for an ack. False when the viewer stays behind for `viewerStallMs`,
+   * or the attach was detached or refreshed meanwhile.
+   */
+  private waitForCredit(attachment: Attachment, superseded: () => boolean): Promise<boolean> {
+    const windowBytes = this.viewerWindowBytes;
+    if (windowBytes === undefined || attachment.unacked <= windowBytes) return Promise.resolve(true);
+    return new Promise<boolean>((resolve) => {
+      const timer = setTimeout(() => finish(false), this.viewerStallMs);
+      const finish = (ok: boolean): void => {
+        clearTimeout(timer);
+        if (attachment.creditWaiter === wake) attachment.creditWaiter = null;
+        resolve(ok && !superseded());
+      };
+      const wake = (): void => finish(true);
+      attachment.creditWaiter = wake;
+    });
   }
 
   /**
@@ -594,6 +680,10 @@ export class RemoteHostClient implements RemotePaneEvents {
     attachment.controller.abort();
     attachment.controller = new AbortController();
     attachment.reconnectAttempt = 0;
+    // The refreshed stream starts with a fresh snapshot; the old backlog no
+    // longer counts against the viewer.
+    attachment.unacked = 0;
+    attachment.creditWaiter?.();
     this.openStream(attachment);
   }
 
@@ -777,7 +867,7 @@ export class RemoteHostClient implements RemotePaneEvents {
     } catch (err) {
       attachment.streamOpen = false;
       if (superseded()) return;
-      if (err instanceof StreamFrameTooLargeError) {
+      if (err instanceof StreamFrameTooLargeError || err instanceof ViewerStalledError) {
         // Terminal, like a rejected credential: report once and leave the
         // attachment idle until it is detached or refreshed.
         for (const cb of this.errorCbs) cb({ attachId: attachment.attachId, message: err.message });
@@ -793,17 +883,21 @@ export class RemoteHostClient implements RemotePaneEvents {
     superseded: () => boolean,
   ): Promise<void> {
     const reader = body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
+    // Bytes, not decoded characters: every complete frame and the pending
+    // tail are held to the cap before anything is parsed or dispatched.
+    const splitter = new SseFrameSplitter(REMOTE_LIMITS.streamBufferBytes);
     try {
       for (;;) {
         const { done, value } = await reader.read();
         if (done || superseded()) return;
-        buffer += decoder.decode(value, { stream: true });
-        let sepIndex: number;
-        while ((sepIndex = buffer.indexOf('\n\n')) !== -1) {
-          const rawFrame = buffer.slice(0, sepIndex);
-          buffer = buffer.slice(sepIndex + 2);
+        const frames = splitter.push(value);
+        if (frames === null) {
+          // A frame larger than any the host sends is not one to keep
+          // buffering, and reconnecting would only fetch the same frame again.
+          await reader.cancel().catch(() => { /* already closed */ });
+          throw new StreamFrameTooLargeError();
+        }
+        for (const rawFrame of frames) {
           // Reset the backoff schedule only once an event frame has actually
           // been dispatched — resetting it right after headers, or on any
           // chunk, would let a server that accepts the request and then never
@@ -812,11 +906,12 @@ export class RemoteHostClient implements RemotePaneEvents {
           if (this.handleFrame(attachment, rawFrame)) attachment.reconnectAttempt = 0;
           if (superseded()) return;
         }
-        if (buffer.length > REMOTE_LIMITS.streamBufferBytes) {
-          // A frame larger than any the host sends is not one to keep
-          // buffering, and reconnecting would only fetch the same frame again.
+        // Stop reading while the viewer is behind: the host is held back by
+        // TCP instead of the backlog growing here.
+        if (!(await this.waitForCredit(attachment, superseded))) {
+          if (superseded()) return;
           await reader.cancel().catch(() => { /* already closed */ });
-          throw new StreamFrameTooLargeError();
+          throw new ViewerStalledError();
         }
       }
     } finally {
@@ -873,6 +968,7 @@ export class RemoteHostClient implements RemotePaneEvents {
         const meta = attachment.pendingMeta;
         if (!meta) return; // snapshot without a preceding meta — nothing to combine with
         attachment.pendingMeta = null;
+        attachment.unacked += data.length;
         const evt: RemoteMetaEvent = {
           attachId: attachment.attachId,
           cols: meta.cols,
@@ -886,6 +982,7 @@ export class RemoteHostClient implements RemotePaneEvents {
       }
       case 'data': {
         this.flushPendingMetaAsResize(attachment);
+        attachment.unacked += data.length;
         for (const cb of this.dataCbs) cb({ attachId: attachment.attachId, dataB64: data });
         return;
       }

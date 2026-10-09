@@ -141,14 +141,18 @@ describe('RemoteHostClient — geometry', () => {
     expect(resizes).toEqual([{ attachId, cols: 120, rows: 30 }]);
   });
 
-  it('resizeSession clamps what it sends and what it reports', async () => {
+  it('resizeSession clamps what it sends and refuses an out-of-range answer', async () => {
     const fetchImpl = vi.fn(async (_url: string, _init?: RequestInit) =>
       new Response(JSON.stringify({ cols: 99999, rows: Number.MAX_SAFE_INTEGER })),
     );
     const client = new RemoteHostClient(host, fetchImpl as unknown as typeof fetch);
     const result = await client.resizeSession('s1', 1e12, 0);
     expect(JSON.parse(String(fetchImpl.mock.calls[0][1]?.body))).toEqual({ cols: REMOTE_LIMITS.geometryMax, rows: 1 });
-    expect(result).toEqual({ ok: true, cols: REMOTE_LIMITS.geometryMax, rows: REMOTE_LIMITS.geometryMax });
+    expect(result).toEqual({ ok: false, reason: 'resizeSession: response geometry out of range' });
+
+    // An in-range answer that differs from the request (the host floors) is a grant.
+    fetchImpl.mockImplementationOnce(async () => new Response(JSON.stringify({ cols: 40, rows: 8 })));
+    await expect(client.resizeSession('s1', 20, 4)).resolves.toEqual({ ok: true, cols: 40, rows: 8 });
 
     fetchImpl.mockClear();
     await expect(client.resizeSession('s1', Number.NaN, 24)).resolves.toMatchObject({ ok: false });
@@ -186,5 +190,132 @@ describe('normalizeWorkspaces — bounds', () => {
     expect(out[0].panes[0].cwd).toHaveLength(REMOTE_LIMITS.cwd);
     expect(out[0].panes[0].shell).toHaveLength(REMOTE_LIMITS.shell);
     expect(out.reduce((n, w) => n + w.panes.length, 0)).toBe(REMOTE_LIMITS.panes);
+  });
+});
+
+/** A stream that yields `chunks` (bytes) and then stays open. */
+function byteStream(chunks: Uint8Array[]): Response {
+  let i = 0;
+  const stream = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (i < chunks.length) controller.enqueue(chunks[i++]);
+    },
+  });
+  return { ok: true, status: 200, body: stream } as unknown as Response;
+}
+
+describe('RemoteHostClient — frames are counted in bytes', () => {
+  const enc = new TextEncoder();
+
+  it('refuses a COMPLETE data frame over the cap before dispatching it', async () => {
+    const big = 'A'.repeat(REMOTE_LIMITS.streamBufferBytes + 10);
+    const frame = enc.encode(`event: data\ndata: ${big}\n\n`);
+    const client = new RemoteHostClient(host, (async () => byteStream([frame])) as unknown as typeof fetch);
+    const data: unknown[] = [];
+    const errors: string[] = [];
+    client.onData((e) => data.push(e));
+    client.onError((e) => errors.push(e.message));
+    client.attach('s1');
+    await flush();
+    client.detachAll();
+    expect(data).toEqual([]);
+    expect(errors).toEqual(['stream frame exceeds the size limit']);
+  });
+
+  it('refuses a multi-byte frame whose UTF-16 length is under the cap but bytes are over it', async () => {
+    // 3 bytes per character: ~2M characters, ~6 MiB on the wire.
+    const chars = Math.ceil((REMOTE_LIMITS.streamBufferBytes * 1.5) / 3);
+    const name = '한'.repeat(chars);
+    expect(name.length).toBeLessThan(REMOTE_LIMITS.streamBufferBytes);
+    const frame = enc.encode(`event: meta\ndata: {"cols":80,"rows":24,"x":"${name}"}\n\n`);
+    const client = new RemoteHostClient(host, (async () => byteStream([frame])) as unknown as typeof fetch);
+    const resizes: unknown[] = [];
+    const errors: string[] = [];
+    client.onResize((e) => resizes.push(e));
+    client.onError((e) => errors.push(e.message));
+    client.attach('s1');
+    await flush();
+    client.detachAll();
+    expect(resizes).toEqual([]);
+    expect(errors).toEqual(['stream frame exceeds the size limit']);
+  });
+
+  it('still delivers multi-byte frames split across chunks', async () => {
+    const bytes = enc.encode('event: data\ndata: 한글\n\nevent: exit\ndata: {}\n\n');
+    const chunks = [bytes.subarray(0, 20), bytes.subarray(20, 24), bytes.subarray(24, 25), bytes.subarray(25)];
+    const client = new RemoteHostClient(host, (async () => byteStream(chunks)) as unknown as typeof fetch);
+    const data: string[] = [];
+    let exits = 0;
+    client.onData((e) => data.push(e.dataB64));
+    client.onExit(() => { exits += 1; });
+    client.attach('s1');
+    await flush();
+    client.detachAll();
+    expect(data).toEqual(['한글']);
+    expect(exits).toBe(1);
+  });
+});
+
+describe('RemoteHostClient — viewer window', () => {
+  /** A host that sends complete, in-limit data frames for as long as it is read. */
+  function steadyHost(frameBytes: number): { fetchImpl: typeof fetch; pulled: () => number } {
+    const frame = new TextEncoder().encode(`event: data\ndata: ${'B'.repeat(frameBytes)}\n\n`);
+    let pulled = 0;
+    const fetchImpl = (async () => {
+      const stream = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          pulled += frame.byteLength;
+          controller.enqueue(frame);
+        },
+      });
+      return { ok: true, status: 200, body: stream } as unknown as Response;
+    }) as unknown as typeof fetch;
+    return { fetchImpl, pulled: () => pulled };
+  }
+
+  it('stops reading at the window for a viewer that never acks, then ends the attach', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const host1 = steadyHost(64 * 1024);
+    const windowBytes = 1024 * 1024;
+    const client = new RemoteHostClient(host, host1.fetchImpl, { viewerWindowBytes: windowBytes, viewerStallMs: 5_000 });
+    let delivered = 0;
+    const errors: string[] = [];
+    client.onData((e) => { delivered += e.dataB64.length; });
+    client.onError((e) => errors.push(e.message));
+    const attachId = client.attach('s1');
+    await flush();
+    await flush();
+
+    // Paused: what was handed over is bounded by the window plus one chunk.
+    expect(delivered).toBeGreaterThan(windowBytes);
+    expect(delivered).toBeLessThanOrEqual(windowBytes + 64 * 1024);
+    const pulledWhilePaused = host1.pulled();
+    await flush();
+    expect(host1.pulled()).toBeLessThanOrEqual(pulledWhilePaused + 2 * (64 * 1024 + 32));
+    expect(client.unackedBytes(attachId)).toBe(delivered);
+
+    await vi.advanceTimersByTimeAsync(5_000);
+    await flush();
+    expect(errors).toEqual(['stream paused: the viewer stopped consuming output']);
+    client.detachAll();
+  });
+
+  it('resumes reading once the viewer acks', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const host1 = steadyHost(64 * 1024);
+    const windowBytes = 1024 * 1024;
+    const client = new RemoteHostClient(host, host1.fetchImpl, { viewerWindowBytes: windowBytes, viewerStallMs: 5_000 });
+    let delivered = 0;
+    const errors: string[] = [];
+    client.onData((e) => { delivered += e.dataB64.length; });
+    client.onError((e) => errors.push(e.message));
+    const attachId = client.attach('s1');
+    await flush();
+    const before = delivered;
+    client.ack(attachId, before);
+    await flush();
+    expect(delivered).toBeGreaterThan(before);
+    expect(errors).toEqual([]);
+    client.detachAll();
   });
 });

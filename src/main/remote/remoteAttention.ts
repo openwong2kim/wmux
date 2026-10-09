@@ -16,7 +16,7 @@
 // turn view, which is a per-pane phone affordance rather than a fleet signal.
 
 import type { NotificationCategory, NotificationType } from '../../shared/types';
-import { remoteId } from '../../shared/remoteLimits';
+import { REMOTE_LIMITS, remoteId } from '../../shared/remoteLimits';
 
 /** The recorded attention kinds the daemon publishes (WebTerminalServer). */
 export type RemoteAttentionKind = 'critical' | 'notify' | 'approval';
@@ -42,8 +42,8 @@ const SEEN_CAP = 200;
  * this from" prefix. Same reflex as RemoteHostClient, which already truncates
  * every remote-supplied string it surfaces.
  */
-const MAX_TITLE_CHARS = 120;
-const MAX_BODY_CHARS = 240;
+const MAX_TITLE_CHARS = REMOTE_LIMITS.attentionTitle;
+const MAX_BODY_CHARS = REMOTE_LIMITS.attentionBody;
 
 function str(v: unknown): string {
   return typeof v === 'string' ? v : '';
@@ -80,7 +80,7 @@ export function formatRemoteAttention(
     if (data.tier !== 'act') return null;
     const tool = clean(data.toolName, MAX_TITLE_CHARS);
     const summary = clean(data.toolInputSummary, MAX_BODY_CHARS);
-    const detail = tool && summary ? `${tool}: ${summary}` : tool || summary;
+    const detail = (tool && summary ? `${tool}: ${summary}` : tool || summary).slice(0, MAX_BODY_CHARS);
     return {
       title: 'Approval needed',
       body: detail || 'An agent is waiting for your decision.',

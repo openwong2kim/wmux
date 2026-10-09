@@ -35,7 +35,7 @@ import { parseRemoteAttachmentKey, parseWebUrl, remoteAttachmentKey, REMOTE_POLL
 import { normalizeWorkspaceColor } from '../../../shared/workspaceColors';
 import { DEVICE_KIND_HEADER } from '../../../shared/web';
 import { HostStatusProber, combineHostStatus } from '../../remote/hostStatus';
-import { readBoundedJson } from '../../remote/readBoundedJson';
+import { RemoteBodyTooLargeError, readBoundedJson } from '../../remote/readBoundedJson';
 import { REMOTE_LIMITS, clampRemoteGeometry } from '../../../shared/remoteLimits';
 import { credentialOriginProblem, isCredentialSafeOriginString } from '../../../shared/remotePairInput';
 import type {
@@ -70,7 +70,9 @@ type ProbeResult =
   | { kind: 'unreachable' }
   /** Plain http to another machine: never probed, the token would go in the clear. */
   | { kind: 'needs-https' }
-  | { kind: 'incompatible' };
+  | { kind: 'incompatible' }
+  /** The host answered with a body over the size limit: not a version question. */
+  | { kind: 'unusable' };
 
 export interface RegisterRemoteHandlersDeps {
   store: RemoteHostsStore;
@@ -144,8 +146,8 @@ async function probeConfig(
   let parsed: unknown;
   try {
     parsed = await readBoundedJson(res, REMOTE_LIMITS.smallBodyBytes);
-  } catch {
-    return { kind: 'incompatible' };
+  } catch (err) {
+    return { kind: err instanceof RemoteBodyTooLargeError ? 'unusable' : 'incompatible' };
   }
   if (!parsed || typeof parsed !== 'object') return { kind: 'incompatible' };
   const allowInput = (parsed as RemoteConfigProbe).allowInput === true;
@@ -167,6 +169,8 @@ function probeFailureMessage(probe: Exclude<ProbeResult, { kind: 'ok' }>): strin
       return NEEDS_HTTPS_MESSAGE;
     case 'incompatible':
       return "that machine's wmux is too old for remote attach";
+    case 'unusable':
+      return 'that host sent an answer this app cannot use';
   }
 }
 
@@ -662,6 +666,8 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
       // a reason that would wrongly imply the CODE was wrong.
       const probe = await probeConfig(origin, exchange.token, fetchImpl);
       if (probe.kind === 'needs-https') return { ok: false, reason: 'insecure-transport' };
+      // An oversized answer is not an old wmux; the generic failure fits it.
+      if (probe.kind === 'unusable') return { ok: false, reason: 'pairing-failed' };
       if (probe.kind !== 'ok') {
         return { ok: false, reason: 'incompatible' };
       }
