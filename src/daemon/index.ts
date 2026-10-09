@@ -319,6 +319,8 @@ const codexProcessStart = new Map<string, number>();
 // Binds a pane to the conversation its agent's command line names, on the
 // launch edge (agentCommandLineBinding.ts). Set by registerRpcHandlers.
 let bindFromAgentCommandLine: ((sessionId: string, slug: string, pid: number) => void) | null = null;
+// The agent process (`pid@start`) whose command line each pane last read; cleared on its death edge.
+const agentCommandLineRead = new Map<string, string>();
 // #1163 — registerRpcHandlers' canonical agent-state reader (readDaemonAgentState),
 // read by BOTH WebTerminalServer construction sites for /api/workspaces. Module-
 // scoped because the boot-restore site has no agent tracker in scope; a request
@@ -2142,7 +2144,7 @@ async function recoverSessions(
     // Surface the EXACT-session binding ONLY when its captured cwd still matches
     // the recovered session's cwd (F7 — `--resume` is cwd-scoped) AND its origin
     // transcript still exists (D5 — a purged id is a dead-end). Either miss drops
-    // the pill to the cwd-relative `--continue`.
+    // the pill to the agent's session picker (#1946).
     if (isUsableResumeBinding(m.resumeBinding) && normalizeResumeCwd(m.resumeBinding.cwd) === normalizeResumeCwd(m.cwd) && bindingTranscriptLives(m.resumeBinding)) {
       recoveredResumeBindings.set(recoveredId, m.resumeBinding);
     }
@@ -3752,26 +3754,38 @@ function registerRpcHandlers(
   }
   // Once per agent process: the tracker re-emits `alive` on every re-probe, and
   // by then a `/clear` or `/resume` may have moved the pane on from the id its
-  // command line named at launch.
-  const commandLineReadFor = new Map<string, number>();
+  // command line named at launch. A process is its pid plus its start time
+  // (POSIX; on Windows the death edge clears the entry, so a reused pid reads
+  // afresh). Recorded only after a successful read: a failed one is retried on
+  // the next alive edge.
+  const commandLineReading = new Set<string>();
   bindFromAgentCommandLine = (id, slug, pid) => {
     const managed = sessionManager.getSession(id);
     // A WSL pane's agent pid is a Linux pid; the host process table would name another process.
     if (!managed || managed.meta.wslTarget || isWslShell(managed.meta.cmd)) return;
-    if (commandLineReadFor.get(id) === pid) return;
-    for (const known of commandLineReadFor.keys()) if (!sessionManager.getSession(known)) commandLineReadFor.delete(known);
-    commandLineReadFor.set(id, pid);
-    void agentProcessTracker.commandLineOf(pid).then((cmdline) => {
+    const flight = `${id}:${pid}`;
+    if (commandLineReading.has(flight)) return;
+    commandLineReading.add(flight);
+    void Promise.all([agentProcessTracker.commandLineOf(pid), readProcessStartMs(pid)]).then(([cmdline, startedAt]) => {
+      const processKey = `${pid}@${startedAt ?? ''}`;
+      if (agentCommandLineRead.get(id) === processKey) return;
       // Relaunched (or closed) while the table was read: this line is not the pane's agent any more.
-      if (agentProcessTracker.pidFor(id) !== pid) return;
+      if (cmdline === undefined || agentProcessTracker.pidFor(id) !== pid) return;
       const live = sessionManager.getSession(id);
       if (!live) return;
-      const binding = commandLineBinding(slug, cmdline, live.meta.cwd, live.meta.env);
+      for (const known of agentCommandLineRead.keys()) if (!sessionManager.getSession(known)) agentCommandLineRead.delete(known);
+      agentCommandLineRead.set(id, processKey);
+      // The launch time orders this against hook / relay / notify captures (see commandLineBinding).
+      const launchAt = startedAt ?? live.promptLog.recent(256).filter((e) => e.type === 'command_start').pop()?.ts;
+      const binding = commandLineBinding(slug, cmdline, live.meta.cwd, live.meta.env, {
+        ...(launchAt !== undefined ? { launchAt } : {}),
+        ...(live.meta.resumeBinding ? { prev: live.meta.resumeBinding } : {}),
+      });
       if (!binding) return;
       log('info', `[resume] bound ${id} to ${slug} conversation ${binding.sessionId} from its command line`);
       // Same writer as a hook-supplied binding: vetted, merged, saveImmediate'd.
       if (applyResumeBinding(id, binding)) transcriptProjector?.rebind(id);
-    }).catch(() => undefined);
+    }).catch(() => undefined).finally(() => commandLineReading.delete(flight));
   };
 
   // D7 — the transcript RPCs are the one part of this surface that returns a
@@ -7971,6 +7985,7 @@ async function main(): Promise<void> {
       const pid = agentProcessTracker.pidFor(sessionId);
       if (pid !== undefined) bindFromAgentCommandLine?.(sessionId, state.slug, pid);
     }
+    if (!state.alive) agentCommandLineRead.delete(sessionId);
     // A Codex launch edge opens a fresh cwd-bind window; a death edge closes it.
     codexCwdBinder?.reset(sessionId);
     codexProcessStart.delete(sessionId);

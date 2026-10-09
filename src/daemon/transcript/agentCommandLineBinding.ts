@@ -16,6 +16,7 @@
 
 import type { ResumeBinding } from '../../shared/agentResume';
 import { resumeGrammarFor } from '../../shared/agentResume';
+import { agentRow } from '../../shared/agentIdentity';
 import { findCodexTranscript } from './codexCapture';
 import { checkNativeTranscriptPath } from './providers';
 import { scanForTranscript } from './TranscriptDiscovery';
@@ -29,68 +30,193 @@ export interface CommandLineSession {
   kind: 'resume' | 'pin';
 }
 
-/** Words of a process command line. Quotes are dropped rather than honoured:
- *  Windows nests them (`cmd /c "…\codex.cmd" resume <id>`), ps prints none, and
- *  an id, flag or subcommand never contains a space. */
-function words(cmdline: string): string[] {
-  return cmdline.replace(/["']/g, ' ').split(/\s+/).filter(Boolean);
+/** One command-line word; `quoted` when any part of it sat inside double quotes. */
+interface Word {
+  value: string;
+  quoted: boolean;
 }
 
-/** `C:\…\codex.cmd` → `codex`, `/…/codex.js` → `codex`. */
+/**
+ * Words of a process command line. Double quotes group (Windows keeps them in
+ * `Win32_Process.CommandLine`, the CommandLineToArgvW convention); a single
+ * quote is an ordinary character there, so it is too here. A quoted word is
+ * never a flag, a subcommand or an id: it is a prompt or a path.
+ *
+ * On macOS and Linux `ps` joins argv with spaces, so quoting is already lost
+ * and `claude -- '--resume <uuid>'` reads as `claude -- --resume <uuid>`. What
+ * keeps a prompt from naming the conversation there: the id is taken only from
+ * its canonical position (among the leading options, or right after the
+ * `resume` subcommand), scanning stops at an unquoted `--`, and a resumed id
+ * binds only when its transcript exists.
+ */
+function words(cmdline: string): Word[] {
+  const out: Word[] = [];
+  let value = '';
+  let quoted = false;
+  let inQuote = false;
+  let started = false;
+  for (const ch of cmdline) {
+    if (ch === '"') { inQuote = !inQuote; quoted = true; started = true; continue; }
+    if (!inQuote && (ch === ' ' || ch === '\t')) {
+      if (started) out.push({ value, quoted });
+      value = ''; quoted = false; started = false;
+      continue;
+    }
+    value += ch; started = true;
+  }
+  if (started) out.push({ value, quoted });
+  return out;
+}
+
+/** `C:\…\node.exe` → `node`, `/…/codex.js` → `codex`. */
 function stemOf(word: string): string {
   return (word.split(/[\\/]/).pop() ?? '').toLowerCase().replace(/\.(exe|cmd|bat|ps1|js|mjs|cjs)$/, '');
 }
 
-/** The id after `flag` (`flag <id>` or `flag=<id>`), when it is a UUID. */
-function flagValue(argv: readonly string[], flag: string): string | undefined {
-  for (let i = 0; i < argv.length; i++) {
-    const w = argv[i];
-    if (w === flag && UUID.test(argv[i + 1] ?? '')) return argv[i + 1].toLowerCase();
-    if (w.startsWith(`${flag}=`) && UUID.test(w.slice(flag.length + 1))) return w.slice(flag.length + 1).toLowerCase();
-  }
-  return undefined;
+/** Script runtimes: their script argument, not argv[0], is the agent. */
+const RUNTIMES: ReadonlySet<string> = new Set(['node', 'bun', 'deno']);
+
+/**
+ * Index of the agent's own word: argv[0] (the process the tracker attributed
+ * to the agent), or, under a script runtime, the script, which must be the
+ * agent's (`…/codex.js`, `…/node_modules/@anthropic-ai/claude-code/cli.js`).
+ */
+function launcherIndex(argv: readonly Word[], agent: string): number {
+  if (argv.length === 0) return -1;
+  if (!RUNTIMES.has(stemOf(argv[0].value))) return 0;
+  const i = argv.findIndex((w, k) => k > 0 && (w.quoted || !w.value.startsWith('-')));
+  if (i < 0) return -1;
+  const script = argv[i].value.replace(/\\/g, '/').toLowerCase();
+  const packages = agentRow(agent)?.process?.packages ?? [];
+  return stemOf(script) === agent || packages.some((pkg) => script.includes(`/node_modules/${pkg.toLowerCase()}/`)) ? i : -1;
 }
 
-/** Codex global options that take a value; their value is not the subcommand. */
-const CODEX_VALUE_FLAGS: ReadonlySet<string> = new Set([
-  '-c', '--config', '-m', '--model', '-p', '--profile', '-C', '--cd', '-s', '--sandbox',
-  '-a', '--ask-for-approval', '-i', '--image', '--enable', '--disable', '--remote', '--local-provider',
-]);
+/** How many values an option takes: 1, or 'many' (up to the next option). Unknown options take none. */
+type Arity = 1 | 'many';
+interface OptionTable {
+  readonly options: ReadonlyMap<string, Arity>;
+}
+
+/** Each agent's options that take values (from its `--help`). An option not
+ *  listed is read as a switch; a value it really takes then reads as the first
+ *  positional, which ends the scan, so a gap here fails closed. */
+const OPTIONS: Readonly<Record<string, OptionTable>> = {
+  claude: {
+    options: new Map<string, Arity>([
+      ...['--model', '--fallback-model', '--settings', '--setting-sources', '--permission-mode', '--append-system-prompt',
+        '--system-prompt', '--system-prompt-file', '--append-system-prompt-file', '--output-format', '--input-format',
+        '--max-turns', '--max-budget-usd', '--agent', '--agents', '--json-schema', '--permission-prompt-tool', '--name',
+        '--from-pr', '--session-id'].map((o) => [o, 1 as Arity] as const),
+      ...['--add-dir', '--allowedTools', '--allowed-tools', '--disallowedTools', '--disallowed-tools', '--mcp-config',
+        '--betas', '--plugin-dir', '--tools', '--file'].map((o) => [o, 'many' as Arity] as const),
+    ]),
+  },
+  codex: {
+    options: new Map<string, Arity>([
+      ...['-c', '--config', '-m', '--model', '-p', '--profile', '-C', '--cd', '-s', '--sandbox', '-a', '--ask-for-approval',
+        '--enable', '--disable', '--remote', '--remote-auth-token-env', '--local-provider', '--add-dir'].map((o) => [o, 1 as Arity] as const),
+      ...['-i', '--image'].map((o) => [o, 'many' as Arity] as const),
+    ]),
+  },
+};
+
+/** The index just past option `argv[i]` and its values. */
+function skipOption(argv: readonly Word[], i: number, table: OptionTable | undefined): number {
+  const name = argv[i].value;
+  if (name.includes('=')) return i + 1;
+  const arity = table?.options.get(name);
+  if (arity === 1) return i + 2;
+  if (arity === 'many') {
+    let j = i + 1;
+    while (j < argv.length && (argv[j].quoted || !argv[j].value.startsWith('-'))) j++;
+    return j;
+  }
+  return i + 1;
+}
+
+const isOption = (w: Word | undefined): boolean => !!w && !w.quoted && w.value.startsWith('-') && w.value !== '--';
+const uuidOf = (w: Word | undefined): string | undefined =>
+  w && !w.quoted && UUID.test(w.value) ? w.value.toLowerCase() : undefined;
+
+/** An `--opt <uuid>` / `--opt=<uuid>` value at `argv[i]`, or undefined. */
+function inlineOrNext(argv: readonly Word[], i: number, flag: string): string | undefined {
+  const w = argv[i];
+  if (w.value.startsWith(`${flag}=`)) {
+    const v = w.value.slice(flag.length + 1);
+    return UUID.test(v) ? v.toLowerCase() : undefined;
+  }
+  return w.value === flag ? uuidOf(argv[i + 1]) : undefined;
+}
+
+/**
+ * Flag form (Claude): read the leading options up to the first positional (the
+ * prompt), an unquoted `--`, or the end. Only there does `--resume <uuid>`
+ * resume and the pin flag (`--session-id <uuid>`) pin. A pin wins: with
+ * `--fork-session` it is the new conversation's id, and a fresh launch has
+ * nothing else. `--fork-session` without a pin starts an id the line does not
+ * name, so it names nothing.
+ */
+function flagFormSession(argv: readonly Word[], from: number, resumeFlag: string, pin: string | undefined, table: OptionTable | undefined): CommandLineSession | undefined {
+  let resumed: string | undefined;
+  let pinned: string | undefined;
+  let fork = false;
+  let i = from;
+  while (i < argv.length && isOption(argv[i])) {
+    const name = argv[i].value;
+    if (name === resumeFlag || name.startsWith(`${resumeFlag}=`)) {
+      resumed ??= inlineOrNext(argv, i, resumeFlag);
+      // `--resume <term>` opens the picker on a search term: the term is its value.
+      i += name === resumeFlag && argv[i + 1] && !isOption(argv[i + 1]) && argv[i + 1].value !== '--' && !argv[i + 1].quoted ? 2 : 1;
+      continue;
+    }
+    if (pin && (name === pin || name.startsWith(`${pin}=`))) pinned ??= inlineOrNext(argv, i, pin);
+    if (name === '--fork-session') fork = true;
+    i = skipOption(argv, i, table);
+  }
+  if (pinned) return { sessionId: pinned, kind: 'pin' };
+  if (fork || !resumed) return undefined;
+  return { sessionId: resumed, kind: 'resume' };
+}
+
+/**
+ * Subcommand form (Codex): skip the global options (with their values), the
+ * first positional must be the unquoted subcommand (`resume`), then skip its
+ * options; the first positional after them is the id. `--last` names none, and
+ * so does an unquoted `--` before the id.
+ */
+function subcommandFormSession(argv: readonly Word[], from: number, subcommand: string, table: OptionTable | undefined): CommandLineSession | undefined {
+  let i = from;
+  while (i < argv.length && isOption(argv[i])) i = skipOption(argv, i, table);
+  const sub = argv[i];
+  if (!sub || sub.quoted || sub.value !== subcommand) return undefined;
+  i++;
+  while (i < argv.length && isOption(argv[i])) {
+    if (argv[i].value === '--last') return undefined;
+    i = skipOption(argv, i, table);
+  }
+  const id = uuidOf(argv[i]);
+  return id ? { sessionId: id, kind: 'resume' } : undefined;
+}
 
 /**
  * The conversation id `cmdline` names for `agent` (a registry slug), or
- * undefined when it names none. Grammar comes from the registry row:
- *   - flag form (Claude `--resume {id}`): `--resume <uuid>` / `--resume=<uuid>`;
- *     its pin flag (`--session-id <uuid>`) is a `pin`. `--fork-session` starts
- *     a new id the line does not name, so it names nothing.
- *   - subcommand form (Codex `resume {id}`): the first word after the launcher
- *     that is not a global option must be `resume`; the first UUID after it is
- *     the id (so `resume --remote … --cd … <uuid>` works). `--last` names none.
+ * undefined when it names none. The agent's word is argv[0], or the script a
+ * runtime runs (`node …/codex.js`). Grammar comes from the registry row:
+ *   - flag form (Claude `--resume {id}`), see flagFormSession;
+ *   - subcommand form (Codex `resume {id}`), see subcommandFormSession.
  * Pure — exported for tests.
  */
 export function sessionFromCommandLine(agent: string, cmdline: string | undefined): CommandLineSession | undefined {
   const grammar = resumeGrammarFor(agent);
   if (!grammar || !cmdline) return undefined;
   const argv = words(cmdline);
-  const [head] = grammar.withId('{id}').split(' ');
-  if (head.startsWith('-')) {
-    if (argv.includes('--fork-session')) return undefined;
-    const resumed = flagValue(argv, head);
-    if (resumed) return { sessionId: resumed, kind: 'resume' };
-    const pinned = grammar.pin ? flagValue(argv, grammar.pin) : undefined;
-    return pinned ? { sessionId: pinned, kind: 'pin' } : undefined;
-  }
-  const launcher = argv.findIndex((w) => stemOf(w) === agent);
+  const launcher = launcherIndex(argv, agent);
   if (launcher < 0) return undefined;
-  let i = launcher + 1;
-  while (i < argv.length && argv[i].startsWith('-')) {
-    i += CODEX_VALUE_FLAGS.has(argv[i]) ? 2 : 1;
-  }
-  if (argv[i] !== head) return undefined;
-  const rest = argv.slice(i + 1);
-  if (rest.includes('--last')) return undefined;
-  const id = rest.find((w) => UUID.test(w));
-  return id ? { sessionId: id.toLowerCase(), kind: 'resume' } : undefined;
+  const table = Object.hasOwn(OPTIONS, agent) ? OPTIONS[agent] : undefined;
+  const [head] = grammar.withId('{id}').split(' ');
+  return head.startsWith('-')
+    ? flagFormSession(argv, launcher + 1, head, grammar.pin, table)
+    : subcommandFormSession(argv, launcher + 1, head, table);
 }
 
 /** Exact-id transcript lookups, per agent with a file transcript. */
@@ -103,17 +229,26 @@ const FIND_TRANSCRIPT: Readonly<Record<string, (id: string, env?: Record<string,
  * The binding `cmdline` proves for a pane whose agent runs in `cwd`, or
  * undefined. A resumed id must have its transcript on disk now; a pinned id
  * binds without one (its transcript is written on the first turn).
+ *
+ * Hooks, the Codex relay and notify are authoritative and win over the command
+ * line: the binding is stamped with the agent's launch time (`launchAt`), so
+ * any of them captured during this run is newer and the stale-capture guard in
+ * the daemon's writer keeps it, and a later one replaces this. A pane that
+ * already holds a binding from this run (`prev.ts >= launchAt`) is left alone,
+ * and so is one holding any binding when the launch time is unknown.
  */
 export function commandLineBinding(
   agent: string,
   cmdline: string | undefined,
   cwd: string,
   env?: Record<string, string>,
-  now = Date.now(),
+  order: { launchAt?: number; prev?: ResumeBinding; now?: number } = {},
 ): ResumeBinding | undefined {
+  const { launchAt, prev } = order;
+  if (prev && (launchAt === undefined || prev.ts >= launchAt)) return undefined;
   const found = sessionFromCommandLine(agent, cmdline);
   if (!found || !cwd || !Object.hasOwn(FIND_TRANSCRIPT, agent)) return undefined;
   const transcriptPath = FIND_TRANSCRIPT[agent](found.sessionId, env);
   if (!transcriptPath && found.kind === 'resume') return undefined;
-  return { agent, sessionId: found.sessionId, cwd, ...(transcriptPath ? { transcriptPath } : {}), ts: now };
+  return { agent, sessionId: found.sessionId, cwd, ...(transcriptPath ? { transcriptPath } : {}), ts: launchAt ?? order.now ?? Date.now() };
 }
