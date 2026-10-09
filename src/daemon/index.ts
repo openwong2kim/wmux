@@ -8134,6 +8134,10 @@ async function main(): Promise<void> {
   });
   const sessionPipes = new Map<string, SessionPipe>();
   const sessionDataListeners = new Map<string, { bridge: import('./DaemonPTYBridge').DaemonPTYBridge; listener: (data: Buffer) => void }>();
+  // #1965: a pipe past its initial flush delivers PTY output live, so its
+  // renderer answers the startup DA1 itself; before that the bytes only reach
+  // it through the (query-stripped) ring replay, and the daemon answers.
+  sessionManager.setLiveRendererProbe((id) => sessionPipes.get(id)?.isFlushed === true);
 
   // Forward reference — initialised at step 8c after the snapshot runner is
   // wired. RPC handlers that fire before initialisation simply skip the

@@ -11,6 +11,12 @@
  * session pipe: the attach flush is the ring as it stands when the client
  * attaches, and after that every bridge 'data' event is forwarded to the
  * client. The replay burst is the 'data' emitted while the unmute runs.
+ *
+ * The expectations depend on the ConPTY backend the session started on
+ * (`managed.conptyBackend`, #1965). The in-box ConPTY repaints on every resize;
+ * the bundled OpenConsole (Windows 10, or `WMUX_CONPTY_BACKEND=bundled`) emits
+ * nothing on resize, so its held output is replayed instead. Run this file
+ * with each value of that variable to cover both.
  */
 
 import { describe, it, expect, afterEach } from 'vitest';
@@ -132,7 +138,7 @@ describe.skipIf(!onWindows)('recovery replay — real ConPTY (win32 only; elsewh
     expect(replayed).toMatch(/[A-Za-z]:\\[^\r\n]*>/);
   }, WAIT_MS + 10000);
 
-  it('(b) same size then a size change inside the window: nothing held is replayed, the prompt still arrives', async () => {
+  it('(b) same size then a size change inside the window: the prompt arrives without a keypress', async () => {
     const { mgr, managed, client } = await recoverWithHeldHead(`rt-1464-change-${Date.now()}`);
 
     // First resize keeps the saved size (schedules the unmute), the second
@@ -144,6 +150,16 @@ describe.skipIf(!onWindows)('recovery replay — real ConPTY (win32 only; elsewh
     await waitFor(() => !managed.bridge.isMuted, 'unmute');
 
     expect(client.flush).toContain(HISTORY);
+    if (managed.conptyBackend === 'bundled') {
+      // #1965: OpenConsole emits nothing on resize, so the held output is the
+      // only copy of the prompt; it is replayed (drawn at the spawn geometry).
+      const replayed = client.replayed.join('');
+      expect(replayed).toContain(HEAD);
+      expect(replayed).toMatch(/[A-Za-z]:\\[^\r\n]*>/);
+      managed.ptyProcess.write(`echo ${TAIL}\r`);
+      await waitFor(() => client.live.join('').includes(TAIL), `${TAIL} to arrive live`);
+      return;
+    }
     expect(client.replayed.join('')).toBe('');
     // …but the pane is not left blank: with no keystroke, ConPTY's repaint at
     // the current size (asked for after the unmute) brings cmd's prompt. The
