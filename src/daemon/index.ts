@@ -144,7 +144,7 @@ import { isWslDistroSpawnArgs } from '../shared/wslDistro';
 import { randomUUID } from 'node:crypto';
 import { monitorEventLoopDelay, performance as nodePerformance } from 'node:perf_hooks';
 import { DAEMON_EXIT_ALREADY_RUNNING, ENV_KEYS, isBrainPty } from '../shared/constants';
-import { toResumeCommand, resumeOfferForRecovered, mergeResumeBinding, isProvisionalCapture, normalizeResumeCwd, isUsableResumeBinding, isPlausibleResumeSessionId } from '../shared/agentResume';
+import { toResumeCommand, resumeGrammarFor, resumeOfferForRecovered, mergeResumeBinding, isProvisionalCapture, normalizeResumeCwd, isUsableResumeBinding, isPlausibleResumeSessionId } from '../shared/agentResume';
 import type { ResumeBinding } from '../shared/agentResume';
 import { agentDisplayToSlug, AGENT_SLUG_SET, isAgentSlug } from '../shared/agentIdentity';
 import type { AgentEventStatus } from '../main/pty/AgentDetector';
@@ -160,6 +160,7 @@ import { TranscriptActivityWatcher } from './transcript/TranscriptActivityWatche
 import { TranscriptDiscovery, DISCOVERABLE_AGENT } from './transcript/TranscriptDiscovery';
 import { admitCodexCapture, gateCodexStop } from './transcript/codexCapture';
 import { CodexCwdBinder, codexLiveFor, describeCodexPane, readProcessStartMs, type CodexPaneFacts } from './transcript/codexRolloutByCwd';
+import { commandLineBinding } from './transcript/agentCommandLineBinding';
 import { PushSender } from './push/PushSender';
 import { RelayTransport } from './push/RelayTransport';
 import { LiveActivityPusher, type LiveActivityCounts } from './push/LiveActivityPusher';
@@ -315,6 +316,9 @@ let transcriptDiscovery: TranscriptDiscovery | null = null;
 let codexCwdBinder: CodexCwdBinder | null = null;
 // Start time of each pane's current Codex process, read on its launch edge.
 const codexProcessStart = new Map<string, number>();
+// Binds a pane to the conversation its agent's command line names, on the
+// launch edge (agentCommandLineBinding.ts). Set by registerRpcHandlers.
+let bindFromAgentCommandLine: ((sessionId: string, slug: string, pid: number) => void) | null = null;
 // #1163 — registerRpcHandlers' canonical agent-state reader (readDaemonAgentState),
 // read by BOTH WebTerminalServer construction sites for /api/workspaces. Module-
 // scoped because the boot-restore site has no agent tracker in scope; a request
@@ -1172,8 +1176,9 @@ function log(level: string, msg: string, ...args: unknown[]): void {
 // touched (brand-new createSession callers don't call this).
 //
 // X6 ③: with a captured resumeBinding whose cwd still matches, the rewrite
-// targets the EXACT session (`claude --resume <id>`); otherwise it falls back to
-// `--continue` (latest-in-cwd). Permission-mode restore (re-applying the
+// targets the EXACT session (`claude --resume <id>`); otherwise the agent starts
+// fresh — never `--continue` / `resume --last`, which would reopen the newest
+// conversation in the folder in every pane sharing it. Permission-mode restore (re-applying the
 // captured `--dangerously-skip-permissions` etc.) is OPT-IN via the persisted
 // `supervision.restorePermissionMode` bit (U-PERM): main sets it at CREATION
 // only when the leaf declared `unattended` AND the user gave explicit unattended
@@ -1181,7 +1186,7 @@ function log(level: string, msg: string, ...args: unknown[]): void {
 // that bit verbatim here — no trust file is read at replay (Minimal design-lock
 // 2026-07-01: trust is gated at creation, consistent with how every other
 // supervised replay is unconditional post-creation). Absent/false → D6 fail-safe
-// (plain --resume/--continue, NO bypass flag). The pill path (explicit user
+// (plain --resume, NO bypass flag). The pill path (explicit user
 // Enter) still opts in via permissionFlagFor separately.
 // X6 ③ (D5): a binding is usable for an EXACT-session resume only when its
 // origin transcript still exists. A purged id turns `--resume` into a silent
@@ -1223,13 +1228,13 @@ function resumeLaunchCommand(
   if (spoolBinding && (!binding || (spoolBinding.ts ?? 0) > (binding.ts ?? 0))) {
     binding = spoolBinding;
   }
-  // D5: drop to `--continue` when the exact transcript is gone (pass no binding).
+  // D5: start fresh when the exact transcript is gone (pass no binding).
   const usableBinding = bindingTranscriptLives(binding) ? binding : undefined;
   // U-PERM: honor the persisted, consent-gated restore bit (set by main at
   // creation). When ON, toResumeCommand appends the captured permission flag
   // (e.g. --dangerously-skip-permissions) — but ONLY inside its binding+cwd-match
-  // branch, so a purged transcript (usableBinding undefined) still yields a plain
-  // --continue with no bypass (fail-safe). No trust file is read here.
+  // branch, so a purged transcript (usableBinding undefined) still yields a
+  // fresh launch with no bypass (fail-safe). No trust file is read here.
   const restorePermissionMode = session.supervision?.restorePermissionMode === true;
   const rewritten = toResumeCommand(
     session.exec.command,
@@ -1237,11 +1242,14 @@ function resumeLaunchCommand(
     session.cwd,
     restorePermissionMode ? { restorePermissionMode: true } : undefined,
   );
-  if (rewritten === session.exec.command) return undefined; // not a known agent launcher / already resuming
+  if (rewritten === session.exec.command) return undefined; // not a known agent launcher / already resuming / no exact binding
   log(
     'info',
-    `X6 resume: replaying session ${session.id} as resume form in ${session.cwd}` +
-      (restorePermissionMode ? ' (unattended permission-mode restore ON)' : ''),
+    // Differs from the no-binding form only when the exact branch was taken.
+    rewritten !== toResumeCommand(session.exec.command)
+      ? `X6 resume: replaying session ${session.id} as its exact conversation in ${session.cwd}` +
+        (restorePermissionMode ? ' (unattended permission-mode restore ON)' : '')
+      : `X6 resume: replaying session ${session.id} fresh without its pinned --session-id`,
   );
   return rewritten;
 }
@@ -3742,6 +3750,29 @@ function registerRpcHandlers(
       log: (level, message) => log(level, message),
     });
   }
+  // Once per agent process: the tracker re-emits `alive` on every re-probe, and
+  // by then a `/clear` or `/resume` may have moved the pane on from the id its
+  // command line named at launch.
+  const commandLineReadFor = new Map<string, number>();
+  bindFromAgentCommandLine = (id, slug, pid) => {
+    const managed = sessionManager.getSession(id);
+    // A WSL pane's agent pid is a Linux pid; the host process table would name another process.
+    if (!managed || managed.meta.wslTarget || isWslShell(managed.meta.cmd)) return;
+    if (commandLineReadFor.get(id) === pid) return;
+    for (const known of commandLineReadFor.keys()) if (!sessionManager.getSession(known)) commandLineReadFor.delete(known);
+    commandLineReadFor.set(id, pid);
+    void agentProcessTracker.commandLineOf(pid).then((cmdline) => {
+      // Relaunched (or closed) while the table was read: this line is not the pane's agent any more.
+      if (agentProcessTracker.pidFor(id) !== pid) return;
+      const live = sessionManager.getSession(id);
+      if (!live) return;
+      const binding = commandLineBinding(slug, cmdline, live.meta.cwd, live.meta.env);
+      if (!binding) return;
+      log('info', `[resume] bound ${id} to ${slug} conversation ${binding.sessionId} from its command line`);
+      // Same writer as a hook-supplied binding: vetted, merged, saveImmediate'd.
+      if (applyResumeBinding(id, binding)) transcriptProjector?.rebind(id);
+    }).catch(() => undefined);
+  };
 
   // D7 — the transcript RPCs are the one part of this surface that returns a
   // pane's full CONVERSATION, and the design note that justified keeping Chat
@@ -7934,6 +7965,12 @@ async function main(): Promise<void> {
     if (!state.alive) automationEngine?.onAgentProcessExit(sessionId);
     // The agent that hit the limit is gone; a relaunch is a new agent.
     if (!state.alive) usageLimits?.drop(sessionId);
+    // An agent whose command line names its conversation (`--resume <id>`,
+    // `resume <id>`, a pinned `--session-id <id>`) binds the pane to exactly that.
+    if (state.alive && state.slug && resumeGrammarFor(state.slug)) {
+      const pid = agentProcessTracker.pidFor(sessionId);
+      if (pid !== undefined) bindFromAgentCommandLine?.(sessionId, state.slug, pid);
+    }
     // A Codex launch edge opens a fresh cwd-bind window; a death edge closes it.
     codexCwdBinder?.reset(sessionId);
     codexProcessStart.delete(sessionId);

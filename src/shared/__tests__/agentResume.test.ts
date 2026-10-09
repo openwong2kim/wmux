@@ -16,6 +16,7 @@ import {
   parseCodexRolloutStem,
   defaultResumeSkipPermissions,
   resumePermissionFlag,
+  withLaunchSessionId,
 } from '../agentResume';
 
 // #1916 — the resume toggle's default and the flag a user-typed resume line carries.
@@ -30,7 +31,7 @@ describe('defaultResumeSkipPermissions / resumePermissionFlag (#1916)', () => {
     }
   });
 
-  it('the cwd-relative fallback never carries a permission flag', () => {
+  it('a line without an exact session never carries a permission flag', () => {
     for (const recordedMode of [undefined, 'bypassPermissions', 'plan'] as const) {
       for (const skipPermissions of [true, false]) {
         expect(resumePermissionFlag({ agent: 'claude', exact: false, recordedMode, skipPermissions })).toBe('');
@@ -60,37 +61,76 @@ const binding = (over: Partial<ResumeBinding> = {}): ResumeBinding => ({
 
 describe('toResumeCommand (X6)', () => {
   describe('rewrites known agent launchers', () => {
-    it('claude → claude --continue', () => {
-      expect(toResumeCommand('claude')).toBe('claude --continue');
+    const r = (c: string) => toResumeCommand(c, binding(), CWD);
+    it('claude → claude --resume <id>', () => {
+      expect(r('claude')).toBe('claude --resume abc-123');
     });
 
     it('preserves trailing args after the launcher', () => {
-      expect(toResumeCommand('claude --dangerously-skip-permissions')).toBe(
-        'claude --continue --dangerously-skip-permissions',
+      expect(r('claude --dangerously-skip-permissions')).toBe(
+        'claude --resume abc-123 --dangerously-skip-permissions',
       );
     });
 
     it('preserves a quoted prompt argument verbatim', () => {
-      expect(toResumeCommand('claude "do the thing"')).toBe('claude --continue "do the thing"');
+      expect(r('claude "do the thing"')).toBe('claude --resume abc-123 "do the thing"');
     });
 
     it('matches a Windows .exe / .cmd basename', () => {
-      expect(toResumeCommand('claude.cmd')).toBe('claude.cmd --continue');
-      expect(toResumeCommand('claude.exe --foo')).toBe('claude.exe --continue --foo');
+      expect(r('claude.cmd')).toBe('claude.cmd --resume abc-123');
+      expect(r('claude.exe --foo')).toBe('claude.exe --resume abc-123 --foo');
     });
 
     it('matches a quoted absolute path launcher', () => {
-      expect(toResumeCommand('"C:\\tools\\claude\\claude.exe" --foo')).toBe(
-        '"C:\\tools\\claude\\claude.exe" --continue --foo',
+      expect(r('"C:\\tools\\claude\\claude.exe" --foo')).toBe(
+        '"C:\\tools\\claude\\claude.exe" --resume abc-123 --foo',
       );
     });
 
     it('normalizes a POSIX absolute path launcher', () => {
-      expect(toResumeCommand('/usr/local/bin/claude')).toBe('/usr/local/bin/claude --continue');
+      expect(r('/usr/local/bin/claude')).toBe('/usr/local/bin/claude --resume abc-123');
     });
 
     it('tolerates leading whitespace (preserved verbatim)', () => {
-      expect(toResumeCommand('  claude')).toBe('  claude --continue');
+      expect(r('  claude')).toBe('  claude --resume abc-123');
+    });
+  });
+
+  // Recovery resumes only the pane's own id: with no exact binding the launch
+  // stays fresh — never `--continue` / `resume --last` (#1946).
+  describe('no exact binding → a fresh launch, never a latest-in-folder guess', () => {
+    it('no binding leaves claude / codex unchanged', () => {
+      expect(toResumeCommand('claude')).toBe('claude');
+      expect(toResumeCommand('claude --model haiku', undefined, CWD)).toBe('claude --model haiku');
+      expect(toResumeCommand('codex')).toBe('codex');
+      expect(toResumeCommand('codex "do it"')).toBe('codex "do it"');
+    });
+  });
+
+  // A1 — a pinned `--session-id X` must never reach a relaunch as-is: Claude
+  // refuses an id already in use, and `--session-id X --resume X` is not a resume.
+  describe('--session-id in the launch line', () => {
+    const U = '7b0e3c2a-1f4d-4c8e-9a6b-2d5f8e1c3a90';
+    it('exact resume replaces the pinned id with the binding id', () => {
+      expect(toResumeCommand(`claude --session-id ${U} --model opus`, binding(), CWD)).toBe(
+        'claude --resume abc-123 --model opus',
+      );
+      expect(toResumeCommand(`claude --model opus --session-id=${U}`, binding(), CWD)).toBe(
+        'claude --resume abc-123 --model opus',
+      );
+    });
+    it('no binding strips the pin (a fresh session, not "already in use")', () => {
+      expect(toResumeCommand(`claude --session-id ${U}`)).toBe('claude');
+      expect(toResumeCommand(`claude --session-id ${U} "hi"`, undefined, CWD)).toBe('claude "hi"');
+    });
+    it('a quoted --session-id inside a prompt is left alone', () => {
+      expect(toResumeCommand('claude "explain --session-id x"', binding(), CWD)).toBe(
+        'claude --resume abc-123 "explain --session-id x"',
+      );
+    });
+    it('re-applying is a fixpoint', () => {
+      const once = toResumeCommand(`claude --session-id ${U}`, binding(), CWD);
+      expect(toResumeCommand(once, binding(), CWD)).toBe(once);
     });
   });
 
@@ -100,8 +140,8 @@ describe('toResumeCommand (X6)', () => {
       expect(toResumeCommand(c)).toBe(c);
     });
     it('re-applying is a fixpoint', () => {
-      const once = toResumeCommand('claude --foo');
-      expect(toResumeCommand(once)).toBe(once);
+      const once = toResumeCommand('claude --foo', binding(), CWD);
+      expect(toResumeCommand(once, binding(), CWD)).toBe(once);
     });
     it('--resume <id> → unchanged (would double-resume)', () => {
       const c = 'claude --resume abc-123';
@@ -119,8 +159,8 @@ describe('toResumeCommand (X6)', () => {
     });
     it('a flag inside a QUOTED prompt is NOT treated as a resume flag', () => {
       // The prompt mentions --continue but the command itself is fresh.
-      expect(toResumeCommand('claude "explain the --continue flag"')).toBe(
-        'claude --continue "explain the --continue flag"',
+      expect(toResumeCommand('claude "explain the --continue flag"', binding(), CWD)).toBe(
+        'claude --resume abc-123 "explain the --continue flag"',
       );
     });
   });
@@ -133,9 +173,6 @@ describe('toResumeCommand (X6)', () => {
       expect(toResumeCommand('claude --model haiku', binding(), CWD)).toBe(
         'claude --resume abc-123 --model haiku',
       );
-    });
-    it('fallback resume keeps --model haiku', () => {
-      expect(toResumeCommand('claude --model haiku')).toBe('claude --continue --model haiku');
     });
   });
 
@@ -168,24 +205,24 @@ describe('toResumeCommand (X6)', () => {
       );
     });
 
-    it('cwd MISMATCH → falls back to --continue (F7: --resume is cwd-scoped)', () => {
-      expect(toResumeCommand('claude', binding({ cwd: 'C:\\other' }), CWD)).toBe('claude --continue');
+    it('cwd MISMATCH → fresh launch (F7: --resume is cwd-scoped)', () => {
+      expect(toResumeCommand('claude', binding({ cwd: 'C:\\other' }), CWD)).toBe('claude');
     });
 
-    it('no paneCwd provided → cannot prove cwd match → --continue', () => {
-      expect(toResumeCommand('claude', binding())).toBe('claude --continue');
+    it('no paneCwd provided → cannot prove cwd match → fresh launch', () => {
+      expect(toResumeCommand('claude', binding())).toBe('claude');
     });
 
-    it('binding for a DIFFERENT agent slug → --continue', () => {
-      expect(toResumeCommand('claude', binding({ agent: 'codex' }), CWD)).toBe('claude --continue');
+    it('binding for a DIFFERENT agent slug → fresh launch', () => {
+      expect(toResumeCommand('claude', binding({ agent: 'codex' }), CWD)).toBe('claude');
     });
 
-    it('binding with an empty sessionId → --continue', () => {
-      expect(toResumeCommand('claude', binding({ sessionId: '' }), CWD)).toBe('claude --continue');
+    it('binding with an empty sessionId → fresh launch', () => {
+      expect(toResumeCommand('claude', binding({ sessionId: '' }), CWD)).toBe('claude');
     });
 
-    it('undefined binding → --continue (today’s behavior, unchanged)', () => {
-      expect(toResumeCommand('claude', undefined, CWD)).toBe('claude --continue');
+    it('undefined binding → fresh launch', () => {
+      expect(toResumeCommand('claude', undefined, CWD)).toBe('claude');
     });
 
     it('already --resume <id> → unchanged even with a binding (no double-resume)', () => {
@@ -236,10 +273,10 @@ describe('toResumeCommand (X6)', () => {
       expect(toResumeCommand('claude', binding(), CWD, opt)).toBe('claude --resume abc-123');
     });
 
-    it('opt-in has NO effect on the --continue fallback (cwd mismatch)', () => {
+    it('opt-in has NO effect without an exact binding (cwd mismatch)', () => {
       expect(
         toResumeCommand('claude', binding({ cwd: 'C:\\other', permissionMode: 'bypassPermissions' }), CWD, opt),
-      ).toBe('claude --continue');
+      ).toBe('claude');
     });
 
     it('default OFF: bypass binding does NOT auto-add the flag (D6 fail-safe)', () => {
@@ -249,7 +286,7 @@ describe('toResumeCommand (X6)', () => {
     });
   });
 
-  describe('codex — subcommand resume grammar (resume <id> / resume --last)', () => {
+  describe('codex — subcommand resume grammar (resume <id>)', () => {
     const cbind = (over: Partial<ResumeBinding> = {}): ResumeBinding => ({
       agent: 'codex',
       sessionId: 'uuid-1',
@@ -258,12 +295,8 @@ describe('toResumeCommand (X6)', () => {
       ...over,
     });
 
-    it('codex → codex resume --last (fallback, no binding)', () => {
-      expect(toResumeCommand('codex')).toBe('codex resume --last');
-    });
-
-    it('preserves a trailing prompt after the fallback', () => {
-      expect(toResumeCommand('codex "do it"')).toBe('codex resume --last "do it"');
+    it('preserves a trailing prompt after the exact resume', () => {
+      expect(toResumeCommand('codex "do it"', cbind(), CWD)).toBe('codex resume uuid-1 "do it"');
     });
 
     it('binding + cwd match → codex resume <id> (exact)', () => {
@@ -276,13 +309,13 @@ describe('toResumeCommand (X6)', () => {
       );
     });
 
-    it('cwd MISMATCH → falls back to resume --last (F7: cwd-scoped)', () => {
-      expect(toResumeCommand('codex', cbind({ cwd: 'C:\\other' }), CWD)).toBe('codex resume --last');
+    it('cwd MISMATCH → fresh launch (F7: cwd-scoped)', () => {
+      expect(toResumeCommand('codex', cbind({ cwd: 'C:\\other' }), CWD)).toBe('codex');
     });
 
     it('codex.exe / codex.cmd basename resumes', () => {
-      expect(toResumeCommand('codex.exe')).toBe('codex.exe resume --last');
-      expect(toResumeCommand('codex.cmd --foo')).toBe('codex.cmd resume --last --foo');
+      expect(toResumeCommand('codex.exe', cbind(), CWD)).toBe('codex.exe resume uuid-1');
+      expect(toResumeCommand('codex.cmd --foo', cbind(), CWD)).toBe('codex.cmd resume uuid-1 --foo');
     });
 
     it('already `codex resume ...` → unchanged (no double-resume), even with a binding', () => {
@@ -299,12 +332,12 @@ describe('toResumeCommand (X6)', () => {
     it('a codex `-c` config override is NOT a resume flag — still rewritten (CodeRabbit)', () => {
       // Codex `-c key=value` is a config override, unlike claude `-c` (=continue).
       // The claude SKIP_TOKENS / short-flag heuristic must not short-circuit it.
-      expect(toResumeCommand('codex -c model="o3"')).toBe('codex resume --last -c model="o3"');
+      expect(toResumeCommand('codex -c model="o3"', cbind(), CWD)).toBe('codex resume uuid-1 -c model="o3"');
       expect(toResumeCommand('codex -c model=o3', cbind(), CWD)).toBe('codex resume uuid-1 -c model=o3');
     });
 
     it('a quoted `resume` in a codex prompt is NOT the subcommand', () => {
-      expect(toResumeCommand('codex "resume the task"')).toBe('codex resume --last "resume the task"');
+      expect(toResumeCommand('codex "resume the task"', cbind(), CWD)).toBe('codex resume uuid-1 "resume the task"');
     });
 
     it('codex has no permission mode → opt-in restore is a no-op', () => {
@@ -313,8 +346,8 @@ describe('toResumeCommand (X6)', () => {
       );
     });
 
-    it('claude binding on a codex launcher → fallback (agent mismatch)', () => {
-      expect(toResumeCommand('codex', binding({ agent: 'claude' }), CWD)).toBe('codex resume --last');
+    it('claude binding on a codex launcher → fresh launch (agent mismatch)', () => {
+      expect(toResumeCommand('codex', binding({ agent: 'claude' }), CWD)).toBe('codex');
     });
 
     it('isResumableLaunchCommand: true for bare codex, false once resuming / one-shot', () => {
@@ -472,11 +505,11 @@ describe('resume picker grammar (#1946)', () => {
     expect(resumeGrammarFor('codex')?.picker).toBe('resume');
   });
 
-  it('the unattended replay still resumes the latest conversation, never a picker nobody can drive', () => {
-    expect(toResumeCommand('claude')).toBe('claude --continue');
-    expect(toResumeCommand('codex')).toBe('codex resume --last');
+  it('the unattended replay resumes only an exact binding, never a guess or a picker nobody can drive', () => {
+    expect(toResumeCommand('claude')).toBe('claude');
+    expect(toResumeCommand('codex')).toBe('codex');
     const codexBinding: ResumeBinding = { agent: 'codex', sessionId: '0199a1b2-0000-7000-8000-9f8e7d6c5b4a', cwd: 'D:/repo', ts: 1 };
-    expect(toResumeCommand('codex', codexBinding, 'D:/elsewhere')).toBe('codex resume --last');
+    expect(toResumeCommand('codex', codexBinding, 'D:/elsewhere')).toBe('codex');
     expect(toResumeCommand('codex', codexBinding, 'd:\\repo')).toBe(`codex resume ${codexBinding.sessionId}`);
   });
 
@@ -534,5 +567,37 @@ describe('isPlausibleResumeSessionId / parseCodexRolloutStem (#1823)', () => {
   it('splits a rollout stem into its local date and thread id', () => {
     expect(parseCodexRolloutStem(stem)).toEqual({ year: '2026', month: '10', day: '03', threadId: '01234567-89ab-7cde-8fab-0123456789ab' });
     expect(parseCodexRolloutStem('01234567-89ab-7cde-8fab-0123456789ab')).toBeUndefined();
+  });
+});
+
+// A1 — a fresh wmux-launched Claude is pinned to a minted id.
+describe('withLaunchSessionId (A1)', () => {
+  const U = '7b0e3c2a-1f4d-4c8e-9a6b-2d5f8e1c3a90';
+  it('pins a fresh claude launch right after the launcher', () => {
+    expect(withLaunchSessionId('claude', U)).toBe(`claude --session-id ${U}`);
+    expect(withLaunchSessionId('claude --model opus "fix it"', U)).toBe(`claude --session-id ${U} --model opus "fix it"`);
+    expect(withLaunchSessionId('claude.cmd --dangerously-skip-permissions', U)).toBe(`claude.cmd --session-id ${U} --dangerously-skip-permissions`);
+  });
+  it('lowercases the id', () => {
+    expect(withLaunchSessionId('claude', U.toUpperCase())).toBe(`claude --session-id ${U}`);
+  });
+  it('never touches a resume, continue, fork, print or an existing pin', () => {
+    for (const c of ['claude --resume', `claude --resume ${U}`, 'claude -r', 'claude --continue', 'claude -c', 'claude -p "hi"',
+      'claude --print "hi"', `claude --session-id ${U}`, `claude --session-id=${U}`, `claude --resume ${U} --fork-session`, 'claude --fork-session']) {
+      expect(withLaunchSessionId(c, U)).toBe(c);
+    }
+  });
+  it('skips subcommands, shell syntax and other launchers', () => {
+    for (const c of ['claude mcp list', 'claude doctor', 'claude && echo done', 'cd /x && claude', 'FOO=1 claude', 'codex', 'claude-foo', '']) {
+      expect(withLaunchSessionId(c, U)).toBe(c);
+    }
+  });
+  it('refuses an id that is not a UUID', () => {
+    expect(withLaunchSessionId('claude', 'not-a-uuid')).toBe('claude');
+  });
+  it('the pinned line is still resumable, and toResumeCommand drops the pin', () => {
+    const line = withLaunchSessionId('claude --model opus', U);
+    expect(isResumableLaunchCommand(line)).toBe(true);
+    expect(toResumeCommand(line, { agent: 'claude', sessionId: U, cwd: '/r', ts: 1 }, '/r')).toBe(`claude --resume ${U} --model opus`);
   });
 });

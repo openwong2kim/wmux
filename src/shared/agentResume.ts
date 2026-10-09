@@ -11,15 +11,14 @@
  * replay sites pass the rewritten string as a NON-persisted launch command
  * (see DaemonSessionManager.createSession `execLaunchCommand`).
  *
- * Mechanism, per agent (see RESUME_BY_LAUNCHER): resume the latest / an exact
- * session in the pane's cwd. Two grammars:
- *   - flag form (Claude Code): `--continue` (latest-in-cwd) / `--resume <id>`
- *     (exact). Verified 2026-06-13: `--continue` resumes the latest session for
- *     the cwd with zero captured state and is a graceful fresh start when there
- *     is nothing to continue.
- *   - subcommand form (Codex): `resume --last` (most recent recorded) /
- *     `resume <id>` (exact; UUID takes precedence). Verified via
- *     `codex resume --help` (v0.142.2).
+ * Mechanism, per agent (see RESUME_BY_LAUNCHER): resume the pane's own EXACT
+ * session, never a guess. Two grammars:
+ *   - flag form (Claude Code): `--resume <id>`.
+ *   - subcommand form (Codex): `resume <id>` (verified via `codex resume --help`,
+ *     v0.142.2).
+ * There is no "latest in this folder" form (`--continue` / `resume --last`):
+ * several panes can share a folder, and each would reopen the same newest
+ * conversation. With no exact binding the command is left a fresh launch.
  * Resume is cwd-scoped, so the caller MUST only apply this when the original
  * cwd still exists — otherwise it would resume an unrelated session.
  *
@@ -40,31 +39,27 @@ import { AGENT_ROWS, agentRow } from './agentIdentity';
 
 /**
  * Per-launcher resume grammar. Two shapes, expressed uniformly as
- * {fallback, picker, withId} so the insertion logic stays agent-agnostic:
- *   - flag form (Claude): fallback `--continue`, picker `--resume`, exact
- *     `--resume <id>`.
- *   - subcommand form (Codex): fallback `resume --last`, picker `resume`, exact
- *     `resume <id>`.
+ * {picker, withId} so the insertion logic stays agent-agnostic:
+ *   - flag form (Claude): picker `--resume`, exact `--resume <id>`.
+ *   - subcommand form (Codex): picker `resume`, exact `resume <id>`.
  * `withId` returns the tokens inserted right after the launcher token;
- * `fallback` is used when no exact binding applies (no capture, cwd mismatch,
- * or a purged/dead transcript) on a path with no person at the keyboard;
- * `picker` is what a person-driven resume types instead (#1946). Membership
+ * `picker` is what a person-driven resume types when no exact binding applies
+ * (#1946). An unattended path with no exact binding resumes nothing. Membership
  * here also gates the resume pill.
  */
 interface ResumeGrammar {
-  /** Insertion when no exact-session binding applies (latest-in-cwd). Only for
-   *  unattended replay: it cannot tell apart panes that share a folder. */
-  readonly fallback: string;
   /**
    * #1946: insertion that opens the agent's own session picker (Claude
    * `--resume`, Codex `resume`), filtered to the shell's folder. What the resume
    * pill, chip and Deck type when no exact session is bound: several panes can
-   * share a folder, and `fallback` would reopen the same newest conversation in
-   * every one of them.
+   * share a folder, and a latest-in-folder guess would reopen the same newest
+   * conversation in every one of them.
    */
   readonly picker: string;
   /** Insertion that resumes the EXACT origin session id. */
   readonly withId: (sessionId: string) => string;
+  /** The flag that pins a fresh launch's session id (Claude `--session-id`), if any. */
+  readonly pin?: string;
 }
 
 // Derived from the registry's `resume` rows (src/shared/agentIdentity.ts), keyed
@@ -76,7 +71,7 @@ const RESUME_BY_LAUNCHER: ReadonlyMap<string, ResumeGrammar> = new Map(
   AGENT_ROWS.flatMap((row): [string, ResumeGrammar][] => {
     const spec = row.resume;
     return spec
-      ? [[row.slug, { fallback: spec.latest, picker: spec.picker, withId: (id) => spec.exact.split('{id}').join(id) }]]
+      ? [[row.slug, { picker: spec.picker, withId: (id) => spec.exact.split('{id}').join(id), ...(spec.pin ? { pin: spec.pin } : {}) }]]
       : [];
   }),
 );
@@ -130,7 +125,7 @@ export function permissionFlagFor(mode: PermissionMode | undefined): string {
  * #1916 — where the resume pill's and chip's skip-permissions toggle starts:
  * on only when the line resumes the EXACT recorded conversation and that
  * conversation ran with `bypassPermissions`. Everything else starts off,
- * including a binding that only reaches the cwd-relative fallback.
+ * including a binding that only reaches the session picker.
  */
 export function defaultResumeSkipPermissions(
   recordedMode: PermissionMode | undefined,
@@ -142,8 +137,8 @@ export function defaultResumeSkipPermissions(
 /**
  * #1916 — the permission flag a user-typed resume line carries.
  *
- * - A line without an exact session (the session picker, #1946, or the
- *   unattended `--continue` / `resume --last`) carries NO flag. The conversation
+ * - A line without an exact session (the session picker, #1946) carries NO
+ *   flag. The conversation
  *   it reaches is not one wmux can vouch for, so it must never be combined with
  *   `--dangerously-skip-permissions`. Bypass needs an exact binding.
  * - On an exact resume, the toggle ON types `--dangerously-skip-permissions`.
@@ -256,8 +251,8 @@ export function parseCodexRolloutStem(stem: string): { year: string; month: stri
 /**
  * Unquoted tokens that mean "already resuming" or "not a resumable run" →
  * leave the command unchanged. `--continue`/`--resume`/`-c`/`-r` already
- * resume; `-p`/`--print` is a non-interactive one-shot (rewriting it to
- * `--continue` would change its semantics and, under `restart: always`, could
+ * resume; `-p`/`--print` is a non-interactive one-shot (rewriting it to a
+ * resume would change its semantics and, under `restart: always`, could
  * re-run a print loop). We err toward NOT rewriting: a missed resume just
  * starts fresh, a wrong rewrite changes behavior.
  */
@@ -383,8 +378,8 @@ export function mergeResumeBinding(
  * Decide what to insert after the launcher token: the grammar's id-aware
  * insertion (`grammar.withId(id)` + optional permFlag) when a valid binding
  * exists for THIS launcher and its origin cwd still matches the pane (F7:
- * `--resume`/`resume <id>` are cwd-scoped), or the grammar's plain `fallback`
- * (`--continue` / `resume --last`) otherwise.
+ * `--resume`/`resume <id>` are cwd-scoped), or undefined otherwise. There is
+ * no latest-in-folder fallback: it cannot tell apart panes that share a folder.
  *
  * The permission flag is OPT-IN (`options.restorePermissionMode`) and OFF by
  * default. The only auto-run consumer is the supervised replay path, which must
@@ -399,7 +394,7 @@ function resumeInsertion(
   binding: ResumeBinding | undefined,
   paneCwd: string | undefined,
   options: { restorePermissionMode?: boolean } | undefined,
-): string {
+): string | undefined {
   if (
     binding &&
     binding.agent === stem &&
@@ -415,7 +410,56 @@ function resumeInsertion(
     }
     return insertion;
   }
-  return grammar.fallback;
+  return undefined;
+}
+
+/**
+ * Whether `tokens` (a tokenized launch line) is an agent run wmux must leave
+ * alone: already resuming, or a non-interactive one-shot. The detection is
+ * grammar-specific:
+ *   - Codex (subcommand form): `codex resume ...` already resumes, `codex
+ *     exec|e ...` is a non-interactive one-shot (Codex's analogue of claude
+ *     `-p`). Codex's `-c`/`-r`/`-p` are config/other flags, NOT resume flags,
+ *     so the Claude flag heuristic must NOT apply to it — otherwise a valid
+ *     `codex -c model=o3` is wrongly left un-resumed (CodeRabbit).
+ *   - Claude (flag form): exact SKIP_TOKENS plus short-flag clusters that
+ *     contain c/r/p (e.g. `-cp`). Errs toward skipping. Checked on UNQUOTED
+ *     tokens only.
+ */
+function alreadyResumingOrOneShot(stem: string, tokens: readonly Token[]): boolean {
+  if (stem === 'codex') {
+    return tokens.length > 1 &&
+      !tokens[1].quoted &&
+      (tokens[1].value === 'resume' || tokens[1].value === 'exec' || tokens[1].value === 'e');
+  }
+  for (const t of tokens) {
+    if (t.quoted) continue;
+    if (SKIP_TOKENS.has(t.value)) return true;
+    if (/^-[a-z]*[crp][a-z]*$/.test(t.value)) return true;
+  }
+  return false;
+}
+
+/**
+ * The source ranges of every unquoted `<pin> <id>` / `<pin>=<id>` (Claude
+ * `--session-id`) in `tokens`. Each range starts at the end of the token before
+ * it, so removing it also removes the separating space. Scanning stops at an
+ * unquoted `--`: what follows is the prompt.
+ */
+function pinFlagRanges(tokens: readonly Token[], pin: string): Array<[number, number]> {
+  const ranges: Array<[number, number]> = [];
+  for (let i = 1; i < tokens.length; i++) {
+    const t = tokens[i];
+    if (t.quoted) continue;
+    if (t.value === '--') break;
+    if (t.value === pin && i + 1 < tokens.length) {
+      ranges.push([tokens[i - 1].end, tokens[i + 1].end]);
+      i++;
+    } else if (t.value.startsWith(`${pin}=`)) {
+      ranges.push([tokens[i - 1].end, t.end]);
+    }
+  }
+  return ranges;
 }
 
 /**
@@ -424,17 +468,25 @@ function resumeInsertion(
  * already a resume/one-shot, or when it uses syntax we won't touch (env
  * assignment, pipeline — anything whose first token is not a bare launcher).
  *
- * With a valid `binding` whose cwd matches `paneCwd`, resumes the EXACT session
- * (`--resume <id>`); otherwise falls back to `--continue` (latest-in-cwd, still
- * correct for the single-session case). Permission-mode restore is opt-in via
- * `options.restorePermissionMode` (default OFF — D6 fail-safe).
+ * Only a valid `binding` whose cwd matches `paneCwd` resumes, and it resumes
+ * that EXACT session (`--resume <id>` / `resume <id>`). Without one the command
+ * stays a fresh launch: never `--continue` / `resume --last`, which pick the
+ * newest conversation in the folder and so cannot tell apart panes sharing it.
+ * Permission-mode restore is opt-in via `options.restorePermissionMode`
+ * (default OFF — D6 fail-safe).
+ *
+ * A pin flag (Claude `--session-id <id>`) in the launch line is removed either way: the
+ * id names a conversation that may now exist, and Claude refuses to start a
+ * new session under an id already in use ("Session ID … is already in use",
+ * verified 2026-10-09). On resume the binding's id is the authority, not the
+ * flag's (a `/clear` or `/resume` may have moved the pane on).
  *
  * Unattended paths only (supervised replay): nobody is there to drive a
  * picker. The resume pill, chip and Deck type the grammar's `picker` instead
  * when no exact session is bound (#1946).
  *
- * Idempotent: re-applying never double-adds the flag (`--resume`/`--continue`
- * are both skip tokens).
+ * Idempotent: re-applying never double-adds the flag (`--resume` is a skip
+ * token).
  */
 export function toResumeCommand(
   command: string,
@@ -451,42 +503,60 @@ export function toResumeCommand(
   const stem = launcherStem(tokens[0].value);
   const grammar = RESUME_BY_LAUNCHER.get(stem);
   if (!grammar) return command;
+  if (alreadyResumingOrOneShot(stem, tokens)) return command;
 
-  // Already resuming / one-shot? The detection is grammar-specific:
-  //   - Codex (subcommand form): `codex resume ...` already resumes, `codex
-  //     exec|e ...` is a non-interactive one-shot (Codex's analogue of claude
-  //     `-p`). Codex's `-c`/`-r`/`-p` are config/other flags, NOT resume flags,
-  //     so the Claude flag heuristic must NOT apply to it — otherwise a valid
-  //     `codex -c model=o3` is wrongly left un-resumed (CodeRabbit).
-  //   - Claude (flag form): exact SKIP_TOKENS plus short-flag clusters that
-  //     contain c/r/p (e.g. `-cp`). Errs toward skipping. Checked on UNQUOTED
-  //     tokens only.
-  if (stem === 'codex') {
-    if (
-      tokens.length > 1 &&
-      !tokens[1].quoted &&
-      (tokens[1].value === 'resume' || tokens[1].value === 'exec' || tokens[1].value === 'e')
-    ) {
-      return command;
-    }
-  } else {
-    for (const t of tokens) {
-      if (t.quoted) continue;
-      if (SKIP_TOKENS.has(t.value)) return command;
-      if (/^-[a-z]*[crp][a-z]*$/.test(t.value)) return command;
-    }
+  let out = command;
+  if (grammar.pin) {
+    for (const [from, to] of pinFlagRanges(tokens, grammar.pin).reverse()) out = out.slice(0, from) + out.slice(to);
   }
-
   // Insert the resume tokens immediately after the launcher token, preserving
   // the rest of the command (and its spacing/quoting) verbatim.
   const insert = resumeInsertion(stem, grammar, binding, paneCwd, options);
+  if (insert === undefined) return out;
   const at = tokens[0].end;
-  return `${command.slice(0, at)} ${insert}${command.slice(at)}`;
+  return `${out.slice(0, at)} ${insert}${out.slice(at)}`;
 }
 
-/** Whether a launch command would be rewritten by {@link toResumeCommand}. */
+/**
+ * Whether a launch command is one {@link toResumeCommand} would resume given an
+ * exact binding: a known agent launcher that is not already resuming and not a
+ * one-shot.
+ */
 export function isResumableLaunchCommand(command: string): boolean {
-  return toResumeCommand(command) !== command;
+  const tokens = tokenize(command);
+  if (tokens.length === 0) return false;
+  const stem = launcherStem(tokens[0].value);
+  return RESUME_BY_LAUNCHER.has(stem) && !alreadyResumingOrOneShot(stem, tokens);
+}
+
+/**
+ * A1 — pin a FRESH launch of an agent that has a pin flag (Claude
+ * `--session-id`, see AgentResumeSpec.pin) to a wmux-minted conversation id
+ * (`claude --session-id <id> …`), so the pane's exact id is known from the
+ * agent's command line before any hook arrives (the transcript is then
+ * `<id>.jsonl`). Returns `command` unchanged unless it is certainly a fresh
+ * interactive Claude launch:
+ *   - the first token is the launcher itself (an env assignment, `cd … &&`
+ *     or any other prefix is someone else's syntax);
+ *   - it does not already resume, continue, fork, print or pin an id;
+ *   - the token after the launcher is not an unquoted word: that is a
+ *     subcommand (`claude mcp …`, `claude doctor`) or shell syntax, and cannot
+ *     be told apart from an unquoted prompt.
+ * The caller unwraps a leading worker model-env marker first (see
+ * launchSessionPin.ts).
+ */
+export function withLaunchSessionId(command: string, sessionId: string): string {
+  if (!UUID_RE.test(sessionId)) return command;
+  const tokens = tokenize(command);
+  if (tokens.length === 0) return command;
+  const stem = launcherStem(tokens[0].value);
+  const pin = RESUME_BY_LAUNCHER.get(stem)?.pin;
+  if (!pin || alreadyResumingOrOneShot(stem, tokens)) return command;
+  if (tokens.some((t) => !t.quoted && (t.value.startsWith(pin) || t.value === '--fork-session'))) return command;
+  const next = tokens[1];
+  if (next && !next.quoted && !next.value.startsWith('-')) return command;
+  const at = tokens[0].end;
+  return `${command.slice(0, at)} ${pin} ${sessionId.toLowerCase()}${command.slice(at)}`;
 }
 
 /**

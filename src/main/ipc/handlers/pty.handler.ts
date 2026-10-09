@@ -19,6 +19,7 @@ import { withFreshWindowsPath } from '../../../shared/windowsPathEnv';
 import { getAccountStore } from '../../account/accountStore';
 import { withAccountQuota } from '../../account/accountQuotaGate';
 import { withDelegateSpawnSettings } from '../../agents/delegateSpawnPolicy';
+import { withLaunchSessionPin } from '../../agents/launchSessionPin';
 import { resolveEnvPolicy, type SpawnKind } from '../../../shared/spawnKind';
 import { withheldCredentialNames } from '../../../shared/envFilter';
 import { getShellUtf8Locale } from '../../pty/shellLocale';
@@ -406,7 +407,7 @@ export function registerPTYHandlers(
       // create and before the PTY (and the agent) exists. A failed stamp fails
       // the create; the renderer rolls the workspace back.
       stampFanoutTaskPane(options);
-      options = withDelegateSpawnSettings(withWmuxTools(await withAccountQuota(options)));
+      options = withLaunchSessionPin(withDelegateSpawnSettings(withWmuxTools(await withAccountQuota(options))));
 
       // X8 exec-style unit: a supervised wmux.json leaf runs its command as the
       // pane's root process under a daemon-chosen wrapper shell (the daemon
@@ -641,7 +642,7 @@ export function registerPTYHandlers(
       // create and before the PTY (and the agent) exists. A failed stamp fails
       // the create; the renderer rolls the workspace back.
       stampFanoutTaskPane(options);
-      options = withDelegateSpawnSettings(withWmuxTools(await withAccountQuota(options)));
+      options = withLaunchSessionPin(withDelegateSpawnSettings(withWmuxTools(await withAccountQuota(options))));
 
       // X8 — supervision lives inside the daemon (decision ②). In local mode it
       // can't be honored, but a silent drop would be a trust violation: the user

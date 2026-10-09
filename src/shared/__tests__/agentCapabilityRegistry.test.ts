@@ -95,9 +95,9 @@ describe('derived lists match the literals they replaced', () => {
   });
 
   it('RESUME_BY_LAUNCHER (claude, codex)', () => {
-    expect(resumeGrammarFor('claude')?.fallback).toBe('--continue');
+    expect(resumeGrammarFor('claude')?.picker).toBe('--resume');
     expect(resumeGrammarFor('claude')?.withId(UUID)).toBe(`--resume ${UUID}`);
-    expect(resumeGrammarFor('codex')?.fallback).toBe('resume --last');
+    expect(resumeGrammarFor('codex')?.picker).toBe('resume');
     expect(resumeGrammarFor('codex')?.withId(UUID)).toBe(`resume ${UUID}`);
     // The id is inserted literally, never read as a replacement pattern.
     expect(resumeGrammarFor('claude')?.withId('a$&b')).toBe('--resume a$&b');

@@ -17,8 +17,8 @@ describe('pty.handler PTY_CREATE — account quota before wmux tools', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'handlers', 'pty.handler.ts'), 'utf-8');
 
   it('applies withAccountQuota first on both the daemon and the local path', () => {
-    // The delegate stage wraps the result last; quota still runs before the tool splice.
-    expect(source.match(/options = withDelegateSpawnSettings\(withWmuxTools\(await withAccountQuota\(options\)\)\);/g) ?? []).toHaveLength(2);
+    // The session pin wraps the result last, after the delegate stage; quota still runs before the tool splice.
+    expect(source.match(/options = withLaunchSessionPin\(withDelegateSpawnSettings\(withWmuxTools\(await withAccountQuota\(options\)\)\)\);/g) ?? []).toHaveLength(2);
     expect(source).not.toMatch(/withAccountQuota\(withWmuxTools\(/);
   });
 });
