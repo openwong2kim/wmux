@@ -560,6 +560,8 @@ describe('native chat routes (contract v0.3.1)', () => {
         available: false, reason: 'no-hook',
         chat: {
           binding: 'none',
+          // Present and false, never omitted: a Swift client decodes an absent key as nil.
+          resumable: false,
           capabilities: { history: false, send: false, permissions: false, cancel: false, fileUndo: false, launch: true, skills: true },
           launch: { ready: true, reason: 'ok', agents: ['claude', 'codex'], maxPromptUnits: 2000 },
         },

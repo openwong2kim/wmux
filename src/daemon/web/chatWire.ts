@@ -111,6 +111,9 @@ export function buildChatObject(
     return {
       binding: 'none',
       ...liveness,
+      // Always present, so a client gating Resume on it reads `false`, not "absent":
+      // a pane with no binding has no conversation of its own to continue.
+      resumable: false,
       capabilities: {
         ...closed,
         launch: launch?.ready === true,

@@ -4278,7 +4278,7 @@ transcript), then the Claude/Codex transcript file — and adds `chat` to every
   "maxSendBytes": 23000,          // only when the binding has a byte limit (OpenCode)
   "agentStatus": "complete",      // open set
   "agentAlive": true,
-  "resumable": false,             // terminal only; see "Resuming a bound pane"
+  "resumable": false,             // terminal and "none" (always false there); absent for "managed"; see "Resuming a bound pane"
   "capabilities": { "history": true, "send": true, "permissions": false, "cancel": false,
                     "fileUndo": false, "streaming": false, "launch": false, "skills": true },
   "blocked": { "by": "approval", "approvalId": "apr_…" },  // only while blocked
@@ -4584,9 +4584,10 @@ rules are unchanged.
 The agent may start a new session id on resume. The binding then moves and
 `historyEpoch` changes, so re-read the conversation as a new one.
 
-`chat.resumable` (terminal bindings) is `false` on a pane with no binding, and
-wherever a bound resume launch (without a prompt) would refuse before typing,
-checked in the launch's order:
+`chat.resumable` is present on `terminal` and `none` bindings. On `none` (a
+pane with no binding) it is always `false`, sent explicitly rather than left
+out. On a `terminal` binding it is `false` wherever a bound resume launch
+(without a prompt) would refuse before typing, checked in the launch's order:
 the agent is running, the pane holds a managed conversation, the shell is not
 one of the above (fish, nu, cmd.exe, WSL), the binding's id or folder fails its
 check, the conversation's record is gone, or another live pane runs it. The
