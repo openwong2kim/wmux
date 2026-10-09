@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { RemoteHost } from '../../../shared/remoteHosts';
-import { fetchPcRailApprovals, fetchPcRailWorkspaces, normalizePcRailWorkspaces, PC_RAIL_BODY_LIMITS } from '../pcRailFeed';
+import { fetchPcRailApprovals, fetchPcRailWorkspaces, normalizePcRailWorkspaces } from '../pcRailFeed';
 import { PcRailHub, nextPcRailPollDelay, type PcRailHubDeps } from '../pcRailHub';
 import { PcRailAttentionStream } from '../pcRailAttention';
 import type { PcRailFeedEvent } from '../pcRailWire';
@@ -52,7 +52,7 @@ describe('pcRail fetches', () => {
   });
 
   it('refuses a body over the cap', async () => {
-    const big = 'x'.repeat(PC_RAIL_BODY_LIMITS.approvals + 10);
+    const big = 'x'.repeat(1024 * 1024 + 10);
     const fetchImpl = vi.fn(async () => new Response(`{"pending":["${big}"]}`)) as unknown as typeof fetch;
     expect(await fetchPcRailApprovals(host('a'), fetchImpl)).toEqual({ ok: false, reason: 'unavailable' });
   });
@@ -166,5 +166,18 @@ describe('PcRailAttentionStream', () => {
     expect(toasts).toEqual(['s1']);
     expect(states[0]).toBe('open');
     stream.stop();
+  });
+});
+
+describe('normalizePcRailWorkspaces layout', () => {
+  it('keeps a bounded layout and limits unplaced to the row sessions', () => {
+    const layout = { root: { kind: 'leaf', paneId: 'p1', activeIndex: 0, surfaces: [{ surfaceId: 'sf1', kind: 'terminal', ptyId: 's1' }] }, activePaneId: 'p1', unplaced: ['s2', 'elsewhere', 's2'] };
+    const out = normalizePcRailWorkspaces({ workspaces: [{ id: 'w1', name: 'one', layout, panes: [{ sessionId: 's1' }, { sessionId: 's2' }] }] });
+    expect(out.workspaces[0].layout).toMatchObject({ activePaneId: 'p1', unplaced: ['s2'] });
+    const deep = { kind: 'split', direction: 'horizontal', children: [] as unknown[] };
+    let node = deep;
+    for (let i = 0; i < 40; i++) { const next = { kind: 'split', direction: 'horizontal', children: [] as unknown[] }; node.children.push(next); node = next; }
+    const deepOut = normalizePcRailWorkspaces({ workspaces: [{ id: 'w2', name: 'deep', layout: { root: deep }, panes: [{ sessionId: 's9' }] }] });
+    expect(deepOut.workspaces[0].layout).toBeUndefined();
   });
 });

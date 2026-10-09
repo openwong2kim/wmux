@@ -7,12 +7,14 @@
 //
 // Replayed frames are never forwarded: the reconcile that follows every open
 // is the truth for what was raised while the stream was down. The transport
-// rules (backoff, idle watchdog, buffer cap, no redirects) match
-// RemoteAttentionSubscriber.
+// rules (backoff, idle watchdog, no redirects) match RemoteAttentionSubscriber;
+// frames are split and bounded in bytes by SseFrameSplitter.
 
 import type { RemoteHost } from '../../shared/remoteHosts';
 import { isCredentialSafeOriginString } from '../../shared/remotePairInput';
 import type { PcRailAttentionFrameKind } from '../../shared/pcRail';
+import { REMOTE_LIMITS } from '../../shared/remoteLimits';
+import { SseFrameSplitter } from './sseFrameSplitter';
 import { RemoteAttentionGate, type RemoteAttentionNotification } from './remoteAttention';
 
 const BACKOFF_STEPS_MS = [1_000, 2_000, 5_000, 15_000, 60_000];
@@ -20,10 +22,6 @@ const JITTER_RATIO = 0.3;
 const HOPELESS_STATUSES = new Set([401, 403, 404]);
 /** The daemon heartbeats every 25 s; three missed beats is a dead socket. */
 const IDLE_TIMEOUT_MS = 75_000;
-const MAX_BUFFER_BYTES = 256 * 1024;
-/** One frame body forwarded to the renderer. Attention payloads are small. */
-const MAX_FRAME_DATA_CHARS = 16 * 1024;
-const FRAME_SEPARATOR = /\r\n\r\n|\n\n|\r\r/;
 const FRAME_KINDS: ReadonlySet<string> = new Set(['critical', 'approval', 'notify']);
 
 export type PcRailStreamState = 'open' | 'reopen' | 'closed';
@@ -153,26 +151,22 @@ export class PcRailAttentionStream {
 
   private async pump(gen: number, body: ReadableStream<Uint8Array>, controller: AbortController): Promise<void> {
     const reader = body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
+    const splitter = new SseFrameSplitter(REMOTE_LIMITS.attentionBufferBytes);
     this.armIdleWatchdog(controller);
     try {
       for (;;) {
         const { done, value } = await reader.read();
         if (done || !this.current(gen)) return;
         this.armIdleWatchdog(controller);
-        buffer += decoder.decode(value, { stream: true });
-        for (;;) {
-          const match = FRAME_SEPARATOR.exec(buffer);
-          if (!match) break;
-          const frame = buffer.slice(0, match.index);
-          buffer = buffer.slice(match.index + match[0].length);
-          this.handleFrame(frame);
-          if (!this.current(gen)) return;
-        }
-        if (buffer.length > MAX_BUFFER_BYTES) {
+        const frames = splitter.push(value);
+        if (frames === null) {
+          // A frame, or an unterminated tail, past the cap: stop reading this peer.
           controller.abort();
           return;
+        }
+        for (const frame of frames) {
+          this.handleFrame(frame);
+          if (!this.current(gen)) return;
         }
       }
     } finally {
@@ -198,7 +192,7 @@ export class PcRailAttentionStream {
         const headId = safeParse(data)?.headId;
         if (typeof headId === 'number' && headId >= 0) this.replayUntilId = headId;
       }
-    } else if (FRAME_KINDS.has(event) && data.length <= MAX_FRAME_DATA_CHARS) {
+    } else if (FRAME_KINDS.has(event)) {
       const parsed = safeParse(data);
       const id = parsed?.id;
       if (parsed && typeof id === 'number' && id > this.replayUntilId) {
