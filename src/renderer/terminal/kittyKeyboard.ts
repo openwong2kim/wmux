@@ -196,27 +196,31 @@ export function kittyCtrlLetter(byte: string): string {
  * Releases xterm must not report because xterm never reported the press.
  *
  * With flag 2 (Codex pushes 7) xterm sends a release for every keyup it sees.
- * A keydown that never reached xterm's encoder (a key wmux encoded or
- * swallowed itself, a shortcut, an IME candidate key) still has its keyup go
- * to xterm, and the app gets a release with no press. The candidate key's
- * keyup even arrives after compositionend, so `isComposing` no longer marks
- * it. This remembers the physical key of each such keydown on a negotiated
- * pane and swallows its keyup once. Cleared when the terminal loses focus.
+ * A keydown that never reached xterm's encoder still has its keyup go to
+ * xterm, and the app gets a release with no press: a key wmux encoded or
+ * swallowed itself, a shortcut or prefix key the window-level handler took
+ * before xterm saw it, an IME key (the candidate key's keyup even arrives
+ * after compositionend, so `isComposing` no longer marks it). So the filter
+ * pairs from the other side: it remembers the physical key of every keydown
+ * xterm's encoder did see, and on a negotiated pane lets a keyup through only
+ * for one of those. Cleared when the terminal loses focus.
  */
 export class UnpairedReleaseFilter {
-  private readonly held = new Set<string>();
+  private readonly pressed = new Set<string>();
 
-  /** A keydown the encoder did not see (`reachedXterm` false). */
-  noteKeydown(e: { code: string }, reachedXterm: boolean, negotiated: boolean): void {
-    if (negotiated && !reachedXterm && e.code) this.held.add(e.code);
+  /** A keydown and whether it went on to xterm's encoder. */
+  noteKeydown(e: { code: string; keyCode: number; isComposing: boolean }, reachedXterm: boolean): void {
+    if (reachedXterm && e.code && e.keyCode !== 229 && !e.isComposing) this.pressed.add(e.code);
   }
 
-  /** Whether this keyup belongs to such a keydown; forgets it if so. */
-  swallowsKeyup(e: { code: string }): boolean {
-    return !!e.code && this.held.delete(e.code);
+  /** Whether xterm must not see this keyup; forgets its keydown either way. */
+  swallowsKeyup(e: { code: string }, negotiated: boolean): boolean {
+    if (!e.code) return false;
+    const paired = this.pressed.delete(e.code);
+    return negotiated && !paired;
   }
 
   clear(): void {
-    this.held.clear();
+    this.pressed.clear();
   }
 }

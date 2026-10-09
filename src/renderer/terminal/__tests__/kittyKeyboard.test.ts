@@ -131,10 +131,10 @@ describe('xtermjs/xterm.js#6112 against the installed xterm', () => {
     const run = async (withFilter: boolean) => {
       const filter = new UnpairedReleaseFilter();
       term.attachCustomKeyEventHandler((e) => {
-        if (withFilter && e.type === 'keyup' && filter.swallowsKeyup(e)) return false;
+        if (withFilter && e.type === 'keyup' && filter.swallowsKeyup(e, true)) return false;
         // wmux encodes this Escape itself, so xterm never sees the press.
         const pass = e.type !== 'keydown';
-        if (withFilter && e.type === 'keydown') filter.noteKeydown(e, pass, true);
+        if (withFilter && e.type === 'keydown') filter.noteKeydown(e, pass);
         return pass;
       });
       const data: string[] = [];
@@ -149,6 +149,22 @@ describe('xtermjs/xterm.js#6112 against the installed xterm', () => {
     };
     expect(await run(false)).toEqual(['\x1b[27;1:3u']);
     expect(await run(true)).toEqual([]);
+  });
+
+  it('pairs from the encoder side, so a keydown xterm never saw cannot release', () => {
+    const filter = new UnpairedReleaseFilter();
+    const down = (code: string, keyCode = 65, isComposing = false) => ({ code, keyCode, isComposing });
+    // A press xterm encoded releases normally, once.
+    filter.noteKeydown(down('KeyA'), true);
+    expect(filter.swallowsKeyup({ code: 'KeyA' }, true)).toBe(false);
+    expect(filter.swallowsKeyup({ code: 'KeyA' }, true)).toBe(true);
+    // Taken before xterm (a prefix key, a window shortcut): no keydown recorded.
+    expect(filter.swallowsKeyup({ code: 'Escape' }, true)).toBe(true);
+    // An IME key reached xterm only as composition text, not as a key.
+    filter.noteKeydown(down('Space', 229), true);
+    expect(filter.swallowsKeyup({ code: 'Space' }, true)).toBe(true);
+    // A pane that never negotiated keeps every keyup.
+    expect(filter.swallowsKeyup({ code: 'KeyB' }, false)).toBe(false);
   });
 
   it('drops the flags of an app that died without popping at the next prompt', async () => {

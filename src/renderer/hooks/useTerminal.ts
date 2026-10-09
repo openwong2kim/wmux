@@ -2085,7 +2085,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // reached xterm's encoder is kept from xterm, so the app gets no release
     // without a press.
     terminal.attachCustomKeyEventHandler((e) => {
-      if (e.type === 'keyup' && unpairedReleases.swallowsKeyup(e)) return false;
+      if (e.type === 'keyup' && unpairedReleases.swallowsKeyup(e, kittyNegotiated())) return false;
       const pass = handleTerminalKey(e);
       if (e.type === 'keydown') {
         keyVerdict = {
@@ -2096,7 +2096,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
             prefixKeyCode: useStore.getState().prefixConfig.key,
           }),
         };
-        unpairedReleases.noteKeydown(e, pass, kittyNegotiated());
+        unpairedReleases.noteKeydown(e, pass);
       }
       return pass;
     });
