@@ -52,7 +52,9 @@ is needed.
 
 - The helper's first line is
   `{"type":"hello","protocolVersion":2,"os":"win32","helperVersion":"…","capabilities":{…}}`.
-  A request is replayed after a crash only if `hello` was never seen for it.
+  Requests are never replayed: one whose helper dies fails, and the next
+  request starts a fresh helper. Only the start itself is retried, once, on a
+  `protocolVersion` mismatch.
 - Request: `{"id":7,"method":"getAppState","params":{…}}`.
 - Response: `{"id":7,"ok":true,"result":{…}}` or
   `{"id":7,"ok":false,"error":{"code":"element_stale","message":"…"}}`.
@@ -96,7 +98,8 @@ is needed.
 - Idle exit after 5 minutes. The helper also exits when stdin closes, so it
   never outlives wmux.
 - The maximum line length is 24 MB (base64 screenshots). stderr keeps a 4 KB
-  tail for crash reports.
+  tail; its last line goes to main's log when the helper exits, never to the
+  agent, which gets the exit code.
 - A `protocolVersion` mismatch triggers one restart, then `helper_incompatible`.
 
 ## Observation
@@ -104,9 +107,9 @@ is needed.
 `getAppState { app, window?, mode: "ax" | "vision" | "both" }`. `ax` does not
 need screen-recording permission.
 
-**Tree text.** Both helpers render it the same way. Golden fixtures in
-`src/shared/computer/__fixtures__` pin the format, and each helper's tests
-must reproduce them.
+**Tree text.** Both helpers render it the same way, in the format of the
+example below. No shared golden fixtures pin it yet; each helper's own tests
+check its output.
 
 ```
 App: Notepad (pid 4812) · Window: "notes.txt - Notepad"
@@ -318,8 +321,11 @@ a person was faster by hand, so the defaults moved:
     name). The MCP server stamps the pane from its own PID-map walk (hit only,
     never the `WMUX_PTY_ID` env hint), and main resolves it to the workspace
     that owns it; an orchestrator brain is keyed on its commander workspace;
-    a caller with no pane is keyed on a random id its MCP server process
-    mints once. A pane that does not resolve is refused. The tool's input
+    a caller with no pane is keyed on a random id its MCP server instance
+    mints once (one per broker connection, or one per process when the MCP
+    server runs as a single stdio child). A pane that does not resolve is
+    refused. An agent started inside another agent's pane resolves to that
+    pane, so it shares that agent's consent, snapshots and input lock. The tool's input
     schema has no identity field, so a prompt-injected model cannot pick
     one, and a caller-supplied `workspaceId` is not trusted.
   - The prompt names the asking session by client name and workspace name
