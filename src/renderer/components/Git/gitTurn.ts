@@ -33,7 +33,8 @@
 //                      - open PR with failing checks, a conflict or changes
 //                        requested, and no agent on it;
 //                      - open PR by another author (ghLogin known and not the
-//                        author) not approved yet: the owner reviews it;
+//                        author) not approved yet and no agent on it: the
+//                        owner reviews it;
 //                      - open PR that is otherwise clean but carries a signal
 //                        that cannot be read as green: no checks reported
 //                        (null), mergeable not reported (''), or review
@@ -41,7 +42,7 @@
 //                        are not fetched, so "someone else will review" cannot
 //                        be shown; the owner is the one known reviewer here);
 //                      - open issue with no active link, or whose link's agent
-//                        stopped, unless it is assigned to someone else.
+//                        stopped, unless it is assigned only to others.
 //   ready_to_merge     open (not draft) PR: checks passing, MERGEABLE, review
 //                      APPROVED or not required (''). Merging is the owner's
 //                      call in this project. This ranks above agents_on_it as
@@ -52,7 +53,7 @@
 //   waiting_on_others  drafts; checks pending; mergeable UNKNOWN (GitHub is
 //                      still computing it); an issue whose link is in review
 //                      (its PR row carries the turn) or that is assigned to
-//                      someone else.
+//                      others only (the owner not among the assignees).
 //
 // Drafts: only a needs-you link or an asking pane pulls a draft into
 // needs_you, and a working agent into agents_on_it; red CI on a draft waits.
@@ -140,7 +141,7 @@ function classifyPr(pr: PrSummary, agent: 'working' | 'asking' | 'none', ctx: Gi
   if (pr.state === 'draft') return agent === 'working' ? 'agents_on_it' : 'waiting_on_others';
   const broken = pr.checks === 'failing' || pr.mergeable === 'CONFLICTING' || pr.reviewDecision === 'CHANGES_REQUESTED';
   if (broken) return agent === 'working' ? 'agents_on_it' : 'needs_you';
-  if (isExternalAuthor(pr.author, ctx.ghLogin) && pr.reviewDecision !== 'APPROVED') return 'needs_you';
+  if (isExternalAuthor(pr.author, ctx.ghLogin) && pr.reviewDecision !== 'APPROVED') return agent === 'working' ? 'agents_on_it' : 'needs_you';
   const reviewOk = pr.reviewDecision === 'APPROVED' || pr.reviewDecision === '';
   if (pr.checks === 'passing' && pr.mergeable === 'MERGEABLE' && reviewOk) return 'ready_to_merge';
   if (agent === 'working') return 'agents_on_it';
@@ -155,7 +156,7 @@ function classifyIssue(issue: IssueSummary, link: WorkLink | null, agent: 'worki
   if (agent === 'working') return 'agents_on_it';
   if (link?.state === 'review') return 'waiting_on_others';
   const login = ctx.ghLogin;
-  if (login && issue.assignees.some((a) => !sameLogin(a, login))) return 'waiting_on_others';
+  if (login && issue.assignees.length > 0 && !issue.assignees.some((a) => sameLogin(a, login))) return 'waiting_on_others';
   return 'needs_you';
 }
 
