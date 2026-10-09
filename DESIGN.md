@@ -288,6 +288,8 @@ One page, Tailnet first, on the sheet beside the tools dock with 28px sides
   be reachable: a usable tailnet ticks HTTPS over Tailscale visibly first,
   never the LAN; otherwise the popover says why, as the wizard's first step
   does. Start stays as a secondary that starts exactly what the boxes show).
+  A popover opened there keeps the button on the line until it closes, so
+  the QR survives sharing turning on.
   Details unfolds in place: the phone
   address without its token (copy), whether input is allowed, Share & pair,
   the A2A port and the full fingerprint (plain mono values; the fingerprint
