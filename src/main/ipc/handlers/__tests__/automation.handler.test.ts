@@ -15,7 +15,7 @@ vi.mock('electron', () => ({
 
 import { IPC } from '../../../../shared/constants';
 import { AUTOMATION_RPC } from '../../../../shared/automation';
-import { registerAutomationHandlers } from '../automation.handler';
+import { autoConfirmCopy, registerAutomationHandlers } from '../automation.handler';
 
 const rpc = vi.fn();
 const client = { isConnected: true, rpc } as never;
@@ -35,7 +35,7 @@ describe('automation IPC handlers', () => {
       method === AUTOMATION_RPC.list ? { automations: [{ id: 'a1', name: 'Nightly' }] } : { ok: true, automation: { id: 'a1' } });
     confirm.mockResolvedValue(false);
     await expect(call(IPC.AUTOMATION_GRANT, 'a1', 'bypass')).resolves.toEqual({ ok: false, error: 'cancelled' });
-    expect(confirm).toHaveBeenCalledWith(null, 'Nightly');
+    expect(confirm).toHaveBeenCalledWith(null, 'Nightly', 'bypass');
     expect(rpc).not.toHaveBeenCalledWith(AUTOMATION_RPC.grant, expect.anything());
 
     confirm.mockResolvedValue(true);
@@ -44,7 +44,27 @@ describe('automation IPC handlers', () => {
 
     confirm.mockClear();
     await call(IPC.AUTOMATION_GRANT, 'a1', 'approval');
+    await call(IPC.AUTOMATION_GRANT, 'a1', 'scoped', ['Read']);
     expect(confirm).not.toHaveBeenCalled();
+  });
+
+  it('asks main to confirm every Auto grant; a decline sends no grant', async () => {
+    rpc.mockImplementation(async (method: string) =>
+      method === AUTOMATION_RPC.list ? { automations: [{ id: 'a1', name: 'Nightly' }] } : { ok: true, automation: { id: 'a1' } });
+    confirm.mockResolvedValue(false);
+    await expect(call(IPC.AUTOMATION_GRANT, 'a1', 'auto')).resolves.toEqual({ ok: false, error: 'cancelled' });
+    expect(confirm).toHaveBeenCalledWith(null, 'Nightly', 'auto');
+    expect(rpc).not.toHaveBeenCalledWith(AUTOMATION_RPC.grant, expect.anything());
+
+    confirm.mockResolvedValue(true);
+    await expect(call(IPC.AUTOMATION_GRANT, 'a1', 'auto')).resolves.toMatchObject({ ok: true });
+    expect(rpc).toHaveBeenCalledWith(AUTOMATION_RPC.grant, { id: 'a1', mode: 'auto' });
+  });
+
+  it('auto copy names the schedule on one line in both locales', () => {
+    expect(autoConfirmCopy('en', 'Night\nly').message).toBe('Run "Night ly" in Claude\'s auto mode?');
+    expect(autoConfirmCopy('ko', '').message).toContain('"wmux"');
+    expect(autoConfirmCopy('ko', 'x').cancel).toBe('취소');
   });
 
   it('never widens a malformed automationId to every run', async () => {

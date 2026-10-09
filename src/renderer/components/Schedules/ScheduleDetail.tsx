@@ -10,15 +10,17 @@ import Switch from '../ui/Switch';
 import Dialog, { DialogFooter, DialogHeader } from '../ui/Dialog';
 import {
   accountLabel, agentLabel, describeTrigger, folderName, formatDuration, formatWhen, resumeCommand, runStateLabel,
-  BYPASS_DECLINED,
+  GRANT_DECLINED,
 } from './format';
 import { openAutomationRun } from './openRun';
 import type { AccountOption } from './useAccounts';
 
-function report(error: string | undefined, t: ReturnType<typeof useT>): void {
+function report(error: string | undefined, t: ReturnType<typeof useT>, modeLabel: string): void {
   if (!error) return;
-  if (error === BYPASS_DECLINED) {
-    useStore.getState().pushToast({ level: 'info', message: t('schedules.bypassDeclinedEdit') });
+  // Only "Grant again" asks main to confirm here, and it is shown only for a
+  // stale grant: declining leaves the schedule skipped until it is granted.
+  if (error === GRANT_DECLINED) {
+    useStore.getState().pushToast({ level: 'info', message: t('schedules.grantDeclinedStale', { mode: modeLabel }) });
     return;
   }
   useStore.getState().pushToast({ level: 'error', message: t('schedules.error', { error }) });
@@ -55,7 +57,7 @@ export default function ScheduleDetail({ automation: a, accounts, onEdit, onDisc
     setBusy(true);
     try {
       const r = await fn(api);
-      if (r && !r.ok) report(r.error, t);
+      if (r && !r.ok) report(r.error, t, modeLabel);
     } finally {
       setBusy(false);
       void useStore.getState().refreshSchedules();

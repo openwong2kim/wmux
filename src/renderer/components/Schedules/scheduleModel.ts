@@ -31,12 +31,36 @@ export const DAILY = [0, 1, 2, 3, 4, 5, 6];
 export const WEEKDAYS = [1, 2, 3, 4, 5];
 const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
 
+/**
+ * A new schedule runs unattended by default: Claude in its auto mode, Codex in
+ * its workspace sandbox. Saving still asks: main confirms auto natively, so the
+ * pre-selection alone is never the grant.
+ */
+export function defaultModeFor(agent: AutomationAgent): AutomationPermissionMode {
+  return agent === 'codex' ? 'scoped' : 'auto';
+}
+
+/** The modes the editor offers: auto is Claude's own mode, Codex has none. */
+export function modesFor(agent: AutomationAgent): AutomationPermissionMode[] {
+  return agent === 'codex' ? ['approval', 'scoped', 'bypass'] : ['approval', 'scoped', 'auto', 'bypass'];
+}
+
+/** The mode after an agent switch: the new agent's default until the user picked one, else the pick if it still applies. */
+export function modeAfterAgentChange(
+  agent: AutomationAgent,
+  mode: AutomationPermissionMode,
+  keepPick: boolean,
+): AutomationPermissionMode {
+  if (!keepPick) return defaultModeFor(agent);
+  return modesFor(agent).includes(mode) ? mode : defaultModeFor(agent);
+}
+
 export function emptyForm(): ScheduleForm {
   return {
     name: '', prompt: '', cwd: '', agent: 'claude', accountId: '',
     weekdays: WEEKDAYS.slice(), time: '09:00', model: '', effort: '',
     graceMinutes: String(AUTOMATION_DEFAULTS.graceMinutes), awaitTimeoutMinutes: '', maxRunMinutes: '',
-    mode: 'approval', toolsText: '',
+    mode: defaultModeFor('claude'), toolsText: '',
   };
 }
 
@@ -143,28 +167,15 @@ export function revisionFieldsChanged(original: Automation, form: ScheduleForm):
 }
 
 /**
- * Show "saving resets permission to Approval" before save: the schedule holds
- * a non-approval grant, the edit bumps the revision, and the user has not
- * picked a permission again in this edit (a fresh pick is granted after the
- * update, at the new revision).
- */
-export function shouldWarnPermissionReset(
-  original: Automation | null,
-  form: ScheduleForm,
-  permissionTouched: boolean,
-): boolean {
-  if (!original || permissionTouched) return false;
-  if (original.permission.mode === 'approval') return false;
-  return revisionFieldsChanged(original, form);
-}
-
-/**
  * Whether saving must call automation.grant: a new schedule with a
- * non-approval mode, or a permission the user picked in this edit.
+ * non-approval mode, a permission the user picked in this edit, or a
+ * non-approval mode whose grant this edit's what-runs change would leave
+ * stale (granted again in the same save, at the revision the update produced,
+ * so the schedule is never left skipping as needs_regrant).
  */
 export function grantNeeded(original: Automation | null, form: ScheduleForm, permissionTouched: boolean): boolean {
   if (!original) return form.mode !== 'approval';
-  if (!permissionTouched) return false;
+  if (!permissionTouched) return form.mode !== 'approval' && revisionFieldsChanged(original, form);
   // A pick is granted at the revision the update just produced — including
   // the same non-approval mode picked again after a revision-bumping edit.
   return form.mode !== 'approval' || original.permission.mode !== 'approval';

@@ -111,8 +111,15 @@ describe('AutomationEngine — revision & grants', () => {
     });
     expect(edited.ok && edited.automation.revision).toBe(2);
     expect(edited.ok && edited.automation.permission.grantedRevision).toBe(1);
-    // The update raised the stale-grant notice right away.
+    // The update queued the stale-grant notice right away; it is broadcast
+    // only once it outlives the editor's own update → grant window.
     expect(h.engine.list().pendingAttention?.map((x) => x.kind)).toEqual(['grant-raised', 'needs-regrant']);
+    const regrantEvents = () => h.events.filter((e) => e.type === 'attention' && e.kind === 'needs-regrant');
+    h.engine.tick(h.clock.t + 1_000);
+    expect(regrantEvents()).toHaveLength(0);
+    h.engine.tick(h.clock.t + 11_000);
+    h.engine.tick(h.clock.t + 12_000);
+    expect(regrantEvents()).toHaveLength(1);
     // A manual/test run refuses; nothing is spawned.
     expect(await h.engine.runNow(a.automation.id, 'test')).toEqual({ ok: false, error: expect.any(String) });
     // The schedule's own occurrence is recorded skipped, never launched as approval.

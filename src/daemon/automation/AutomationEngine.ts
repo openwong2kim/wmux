@@ -79,6 +79,12 @@ export const LINGER_ATTACHED_MAX_MS = 60 * 60_000;
 const TRACKER_ARM_AFTER_MS = 10_000;
 const TRACKER_ARM_EVERY_MS = 35_000;
 const MINUTE_MS = 60_000;
+/**
+ * A needs-regrant notice is announced only once it has stood this long: the
+ * editor's own save is update → grant, and the grant (which withdraws the
+ * notice) lands within moments.
+ */
+export const REGRANT_NOTICE_SETTLE_MS = 10_000;
 
 export interface AutomationAgentView {
   slug: AgentSlug | null;
@@ -150,6 +156,8 @@ export class AutomationEngine {
   private readonly live = new Map<string, LiveRun>();
   /** Active run registry: pane id → run id. The gate-skip / history-skip key. */
   private readonly panes = new Map<string, string>();
+  /** needs-regrant attention ids already broadcast (queued silently, announced from the tick). */
+  private readonly announced = new Set<string>();
   private booting = true;
   private lastTickAt: number | null = null;
   private tickTimer: NodeJS.Timeout | null = null;
@@ -262,7 +270,7 @@ export class AutomationEngine {
     this.ports.emit({ type: 'automations-changed' });
   }
 
-  private queueAttention(automation: Automation, kind: AutomationAttention['kind']): void {
+  private queueAttention(automation: Automation, kind: AutomationAttention['kind'], announce = true): void {
     this.attention.push({
       id: this.newId(),
       automationId: automation.id,
@@ -271,7 +279,16 @@ export class AutomationEngine {
       at: this.now(),
     });
     if (this.attention.length > ATTENTION_CAP) this.attention = this.attention.slice(-ATTENTION_CAP);
-    this.ports.emit({ type: 'attention', automationId: automation.id, automationName: automation.name, kind });
+    if (announce) this.ports.emit({ type: 'attention', automationId: automation.id, automationName: automation.name, kind });
+  }
+
+  /** Broadcast needs-regrant notices that outlived the editor's update → grant window. */
+  private announceRegrantNotices(now: number): void {
+    for (const item of this.attention) {
+      if (item.kind !== 'needs-regrant' || this.announced.has(item.id) || now - item.at < REGRANT_NOTICE_SETTLE_MS) continue;
+      this.announced.add(item.id);
+      this.ports.emit({ type: 'attention', automationId: item.automationId, automationName: item.automationName, kind: item.kind });
+    }
   }
 
   // ── Reads ─────────────────────────────────────────────────────────────────
@@ -353,7 +370,7 @@ export class AutomationEngine {
     // Raised now, not at the first skipped occurrence: the editor grants again
     // in the same save (and the grant clears this), so only an update that
     // never got its grant leaves it standing.
-    if (bumped && needsRegrant(automation)) this.queueAttention(automation, 'needs-regrant');
+    if (bumped && needsRegrant(automation)) this.queueAttention(automation, 'needs-regrant', false);
     await this.persistAutomations();
     this.emitAutomations();
     return { ok: true, automation: clone(automation) };
@@ -464,6 +481,7 @@ export class AutomationEngine {
       this.ports.log('info', `[automation] tick gap ${Math.round((now - this.lastTickAt) / 1000)}s — recomputing due runs`);
     }
     this.lastTickAt = now;
+    this.announceRegrantNotices(now);
     const booting = this.booting;
     this.booting = false;
     let automationsDirty = false;
