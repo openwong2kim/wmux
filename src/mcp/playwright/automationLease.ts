@@ -15,6 +15,7 @@ import { takeGuideAnnouncement } from './guideAnnounce';
 import { redactPasswordParams } from './redact';
 import { invalidateSnapshotBaseline, invalidateSnapshotBaselineIfStale } from './snapshotCache';
 import { PlaywrightEngine } from './PlaywrightEngine';
+import { beginAgentWindow, pendingModalForScope, renderModalBlock } from './modalState';
 import {
   isServable,
   normalizeUrlKey,
@@ -148,6 +149,21 @@ function prependBrowserEvents<T>(result: T, events: LifecycleEventWire[]): T {
     // tool's own first line ("...(24s ago)Navigated to https://...").
     text: `[browser events]\n${lines.join('\n')}\n`,
   });
+  return result;
+}
+
+/**
+ * Prepend a [modal] block while a dialog or file chooser is open on this
+ * surface, error results included: a read that failed because a dialog
+ * interrupted its evaluation needs the explanation most. Rendered after the
+ * body, so a modal the body itself raised is reported in the same result.
+ */
+function prependModalBlock<T>(result: T, scope: BrowserTargetScope): T {
+  const modal = pendingModalForScope(scope.workspaceId, scope.surfaceId);
+  if (!modal) return result;
+  const shaped = result as { content?: Array<{ type: string; text?: string }> } | null | undefined;
+  if (!shaped || !Array.isArray(shaped.content)) return result;
+  shaped.content.unshift({ type: 'text', text: renderModalBlock(modal) });
   return result;
 }
 
@@ -411,8 +427,9 @@ export async function withAutomationLease<T>(
     }, RENEW_INTERVAL_MS);
     (lateRenew as { unref?: () => void }).unref?.();
     const lateEvents = await drainLifecycleEvents(scope);
+    const endAgentWindow = beginAgentWindow(scope.workspaceId, scope.surfaceId);
     try {
-      const result = await fn(scope);
+      const result = prependModalBlock(await fn(scope), scope);
       // Post-drain runs in the return expression, i.e. still inside this
       // finally's lease bracket — browser.lifecycle.get is a leased RPC and
       // must not hit a re-throttled guest.
@@ -426,6 +443,7 @@ export async function withAutomationLease<T>(
       );
       return prependReplayHints(withEvents, [...lateEvents, ...postEvents], scope);
     } finally {
+      endAgentWindow();
       done = true;
       clearInterval(lateTimer);
       clearInterval(lateRenew);
@@ -445,8 +463,9 @@ export async function withAutomationLease<T>(
   (renewTimer as { unref?: () => void }).unref?.();
 
   const events = await drainLifecycleEvents(scope);
+  const endAgentWindow = beginAgentWindow(scope.workspaceId, scope.surfaceId);
   try {
-    const result = await fn(scope);
+    const result = prependModalBlock(await fn(scope), scope);
     // Post-drain still inside the lease bracket (see the late-acquire branch).
     const postEvents = await drainLifecycleEventsPost(scope);
     const withEvents = prependBrowserEvents(
@@ -455,6 +474,7 @@ export async function withAutomationLease<T>(
     );
     return prependReplayHints(withEvents, [...events, ...postEvents], scope);
   } finally {
+    endAgentWindow();
     clearInterval(renewTimer);
     sendRpc('browser.lease.release', { token: heldToken }).catch(() => {
       /* TTL expiry cleans up */

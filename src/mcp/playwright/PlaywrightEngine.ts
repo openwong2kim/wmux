@@ -16,6 +16,12 @@ import {
   type BrowserTargetScope,
 } from './browserScope';
 import { attachPageCapture } from './pageCapture';
+import {
+  assertNoPendingModal,
+  attachModalTracking,
+  modalScopeKey,
+  rememberModalScope,
+} from './modalState';
 import { reassertUserAgentEmulation } from './ua-emulation';
 import {
   getOpenerKey,
@@ -664,12 +670,23 @@ export class PlaywrightEngine {
     // over CDP without main ever seeing the call — so the gate has to run here
     // too. Default 'read' keeps every existing call site byte-identical; a
     // mutating tool passes 'write' explicitly.
-    opts: { intent?: 'read' | 'write' } = {},
+    //
+    // `answersModal` is for the two tools that answer a pending dialog or file
+    // chooser; every other write is refused while one is open (modalState).
+    opts: { intent?: 'read' | 'write'; answersModal?: boolean } = {},
   ): Promise<Page | null> {
     assertBrowserTargetScope(scope);
     const page = await this.getPage(scope.surfaceId, scope.workspaceId, scope.noSurface === true);
+    const scopeKey = modalScopeKey(scope.workspaceId, scope.surfaceId);
     if (page && opts.intent === 'write') {
-      await this.assertLiveWriteAllowed(page, scope);
+      const owner = await this.assertLiveWriteAllowed(page, scope);
+      // Dialogs and file choosers are intercepted only on a tab the agent
+      // owns. A lent tab or the user's own keeps Playwright's default, so
+      // their uploads and dialogs are never taken from them.
+      if (owner === 'agent') attachModalTracking(page, { scopeKey, fileChooser: true });
+      if (!opts.answersModal) await assertNoPendingModal(page);
+    } else if (page) {
+      rememberModalScope(page, scopeKey);
     }
     // Chrome backend: main's webContents-side lifecycle capture cannot see
     // these tabs, so mirror navigations/closes engine-side (dogfood P1 — the
@@ -724,8 +741,17 @@ export class PlaywrightEngine {
    * here hands an agent a tab the user took back. Measured need first, cache
    * second.
    */
-  private async assertLiveWriteAllowed(page: Page, scope: BrowserTargetScope): Promise<void> {
-    if (this.liveWriteScope !== 'agent') return;
+  //
+  // Returns who owns the tab as far as this lane can tell: 'agent' off Live
+  // Chrome (every target there is wmux's own), the row's owner under the
+  // 'agent' policy, and 'unknown' under the 'all' policy, where no ownership is
+  // checked and the tab may well be the user's.
+  private async assertLiveWriteAllowed(
+    page: Page,
+    scope: BrowserTargetScope,
+  ): Promise<'agent' | 'borrowed' | 'unknown'> {
+    if (this.liveWriteScope === undefined) return 'agent';
+    if (this.liveWriteScope !== 'agent') return 'unknown';
     // The label stands in for a method name: this lane covers a dozen mutating
     // tools, and naming the wrong one would be worse than naming none.
     const label = 'this tool call';
@@ -743,9 +769,9 @@ export class PlaywrightEngine {
     this.cacheShellUrl(info);
     // The policy can have been switched to 'all' since the value was cached;
     // this response is the current one, so honour it rather than the memory.
-    if (info.liveWriteScope !== 'agent') return;
+    if (info.liveWriteScope !== 'agent') return 'unknown';
     const row = info.targets.find((t) => t.targetId === targetId || t.surfaceId === targetId);
-    if (row && row.owner !== 'user') return;
+    if (row && row.owner !== 'user') return row.owner === 'agent' ? 'agent' : row.owner === 'borrowed' ? 'borrowed' : 'unknown';
     throw new AgentWindowScopeError(label, targetId);
   }
 

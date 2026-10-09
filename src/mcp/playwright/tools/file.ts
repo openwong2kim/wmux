@@ -5,6 +5,7 @@ import type { Page } from 'playwright-core';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { PlaywrightEngine } from '../PlaywrightEngine';
+import { answerModal, takeFileChooser } from '../modalState';
 import { leasedMutation, withAutomationLease } from '../automationLease';
 import type { BrowserToolDeps } from '../browserScope';
 import { resolveRef } from '../snapshot';
@@ -621,7 +622,9 @@ export function registerFileTools(server: McpServer, deps: BrowserToolDeps): voi
     BROWSER_FILE_UPLOAD_SHAPE,
     async ({ paths, selector, ref, timeout, surfaceId }) => leasedMutation(deps, surfaceId, async (scope, effect) => {
       try {
-        const page = await engine.getPageForScope(scope, { intent: 'write' });
+        // The one other tool allowed through a pending modal: it answers a
+        // file chooser that a click opened.
+        const page = await engine.getPageForScope(scope, { intent: 'write', answersModal: true });
         if (!page) {
           throw taggedFailure('not_supported', 'No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
         }
@@ -630,7 +633,11 @@ export function registerFileTools(server: McpServer, deps: BrowserToolDeps): voi
         const resolvedSelector = selector ?? DEFAULT_FILE_INPUT_SELECTOR;
         const resolvedTimeout = timeout ?? REF_UPLOAD_TIMEOUT_MS;
 
-        if (ref) {
+        const chooser = takeFileChooser(page);
+        if (chooser) {
+          const target = { setInputFiles: (files: string[], o: { timeout: number }) => chooser.setFiles(files, o) };
+          await effect.dispatch(() => setInputFilesTagged(target, safePaths, resolvedTimeout));
+        } else if (ref) {
           // A ref names an element we hold as a handle, not as a selector, so
           // the by-path CDP route cannot address it and this stays on
           // Playwright's content-copying path — 50MB cap included. Kept for
@@ -871,38 +878,31 @@ export function registerFileTools(server: McpServer, deps: BrowserToolDeps): voi
   // -----------------------------------------------------------------------
   server.tool(
     'browser_dialog',
-    'Pre-register a handler for the NEXT dialog (alert, confirm, prompt, beforeunload); it is accepted or dismissed automatically when it appears.' + EFFECT_TRAILER_NOTE,
+    'Answer the dialog (alert, confirm, prompt) an action of yours opened — results show it as a [modal] block; accept:false also cancels a file chooser. With no dialog open, the answer is armed for the next one for 30s.' + EFFECT_TRAILER_NOTE,
     BROWSER_DIALOG_SHAPE,
     async ({ accept, text, surfaceId }) => leasedMutation(deps, surfaceId, async (scope, effect) => {
       try {
         // Answering a dialog (accept/dismiss, and prompt text) acts on the page.
-        const page = await engine.getPageForScope(scope, { intent: 'write' });
+        const page = await engine.getPageForScope(scope, { intent: 'write', answersModal: true });
         if (!page) {
           throw taggedFailure('not_supported', 'No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
         }
 
-        page.once('dialog', async (dialog) => {
-          if (accept) {
-            await dialog.accept(text);
-          } else {
-            await dialog.dismiss();
-          }
-        });
-        // Nothing is sent to the page here — what this tool mutates is the
-        // handler armed on it, and that registration is what `committed`
-        // reports. The dialog it answers has not happened yet.
         effect.begin();
-
+        const answer = await answerModal(page, accept, text);
         const action = accept ? 'accepted' : 'dismissed';
+        // A pre-arm sends nothing to the page — what it mutates is the answer
+        // waiting for the next dialog, and that is what `committed` reports.
+        const message =
+          answer.kind === 'armed'
+            ? `Dialog handler set. Next dialog will be ${action}.`
+            : answer.kind === 'already_closed'
+              ? `The ${answer.modal.type} had already closed; nothing was answered.`
+              : answer.modal.type === 'filechooser'
+                ? 'File chooser cancelled.'
+                : `The ${answer.modal.type} was ${action}.`;
         return withEffectTrailer(
-          {
-            content: [
-              {
-                type: 'text' as const,
-                text: `Dialog handler set. Next dialog will be ${action}.`,
-              },
-            ],
-          },
+          { content: [{ type: 'text' as const, text: message }] },
           effect.success(),
         );
       } catch (error) {
