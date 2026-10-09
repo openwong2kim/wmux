@@ -19,6 +19,25 @@ Settings → Browser picks one. It applies to every workspace.
 `external` is not a degraded mode. It is the right answer when a site is hostile
 to automation, and it is always available as an escape hatch.
 
+## Which workspace a browser call acts on
+
+Every browser call acts on the workspace wmux verifies for the caller, not on a
+workspace the call names:
+
+- an agent in a wmux pane: the pane its MCP server runs under, found by wmux's
+  own walk of the process tree;
+- the workspace orchestrator: the workspace its commander token is bound to;
+- an iframe plugin: the workspace the plugin host is showing;
+- an external MCP client: the workspace it claimed with `mcp.claimWorkspace`;
+- the wmux window itself (and the phone browser, which acts through it): any
+  workspace, as the person at the keyboard.
+
+A `workspaceId` in the request may only narrow the call to that same workspace;
+a different one is refused. A call with no verified identity is refused with a
+`BROWSER_SCOPE_REFUSED` error that says what is missing. This holds for every
+backend, `external` included: the OS browser belongs to no workspace, but the
+call that hands it a URL still comes from one.
+
 ## Choosing a Chrome profile: three levels of exposure
 
 On the `chrome` backend, each workspace binds to a profile

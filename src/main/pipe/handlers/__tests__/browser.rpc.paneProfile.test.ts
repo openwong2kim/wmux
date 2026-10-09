@@ -10,6 +10,7 @@ import { ChromeProfileStore, LIVE_CHROME_PROFILE } from '../../../browser-sessio
 import type { BrowserBackendStore } from '../../../browser-session/BrowserBackendStore';
 import { getWorkspaceMirror, __resetWorkspaceMirrorForTest } from '../../../workspace/WorkspaceMirror';
 import { PANE_PROFILE_UNRESOLVED_CODE } from '../../../../shared/chromePaneBinding';
+import { dispatchAsClaimedCaller } from './claimedCaller';
 
 /**
  * Per-pane Chrome profiles at the RPC boundary.
@@ -102,7 +103,7 @@ function makeRegistry(store: ChromeProfileStore) {
 }
 
 function register(registry: ReturnType<typeof makeRegistry>): RpcRouter {
-  const router = new RpcRouter();
+  const router = dispatchAsClaimedCaller(new RpcRouter());
   const cdp = {
     getTarget: vi.fn(() => null),
     listTargets: vi.fn(() => []),

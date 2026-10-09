@@ -48,6 +48,17 @@ Permission enforcement is a substrate guarantee for plugin access through docume
 
 > Status: Phase 2.1 implementation work item. The contract above is the Phase 0 declaration of intent; enforcement code ships across the v3.0 release window. See `plans/generic-wandering-teapot.md`.
 
+### 1.3.1 Browser calls act on the caller's verified workspace
+
+Every `browser.*` RPC derives its workspace from an identity main recorded: a
+validated commander token, the plugin host's binding, or a workspace claim
+token (minted by `mcp.claimWorkspace`, or for a pane's MCP server from main's
+own process-tree walk). A `workspaceId` in the request only narrows that
+identity; a different one, or a call with no recorded identity, is refused in
+both `mcp.mode`s. The renderer operator is the one caller that may act across
+workspaces. Like §1.3 this is a confinement guarantee for callers using the
+documented surfaces, not a defence against same-user code (§3).
+
 ### 1.4 Packaging fuse posture
 
 The shipped Electron build sets these fuses (`forge.config.ts`), recorded here so the disabled ones are on the record and not mistaken for oversights:

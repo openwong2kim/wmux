@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BrowserWindow } from 'electron';
 import { RpcRouter } from '../../RpcRouter';
 import { registerBrowserRpc } from '../browser.rpc';
+import { dispatchAsClaimedCaller } from './claimedCaller';
 
 const { validateResolvedNavigationUrlMock } = vi.hoisted(() => ({
   validateResolvedNavigationUrlMock: vi.fn(),
@@ -77,7 +78,7 @@ function register(targets: Array<typeof TARGET>) {
     renewRpcLease: vi.fn(() => true),
     releaseRpcLease: vi.fn(() => true),
   };
-  const router = new RpcRouter();
+  const router = dispatchAsClaimedCaller(new RpcRouter());
   registerBrowserRpc(router, () => null as unknown as BrowserWindow, cdp as never);
   return { router, cdp };
 }

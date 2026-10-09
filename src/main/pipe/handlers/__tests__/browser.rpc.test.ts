@@ -16,6 +16,7 @@ import {
   canDiscloseBrowserAttachInfo,
   registerBrowserRpc,
 } from '../browser.rpc';
+import { claimOn, dispatchAsClaimedCaller } from './claimedCaller';
 
 const { validateResolvedNavigationUrlMock } = vi.hoisted(() => ({
   validateResolvedNavigationUrlMock: vi.fn(),
@@ -280,10 +281,18 @@ describe('callerScope shadow decision (#810)', () => {
       },
     ],
     [
-      'identified caller declaring a scope',
+      // A workspaceId in the request is not an identity: with no verified
+      // connection or claim behind it, the call is refused and the named id
+      // is kept only for the audit log.
+      'identified caller naming a workspace it has no claim on',
       { origin: 'local', externalWire: true, clientName: 'approved-plugin' },
       { workspaceId: 'ws-declared' },
-      { kind: 'scoped', lane: 'declared', workspaceId: 'ws-declared' },
+      {
+        kind: 'rejected',
+        lane: 'declared',
+        reason: 'workspace-unresolved',
+        requestedWorkspaceId: 'ws-declared',
+      },
     ],
     [
       'identified caller omitting its scope',
@@ -301,10 +310,15 @@ describe('callerScope shadow decision (#810)', () => {
       { kind: 'rejected', lane: 'declared', reason: 'workspace-unresolved' },
     ],
     [
-      'bundled CLI that resolved its workspace',
+      'bundled CLI naming a workspace without a claim',
       { origin: 'local', externalWire: true, clientName: 'wmux-cli' },
       { workspaceId: 'ws-cli' },
-      { kind: 'scoped', lane: 'declared', workspaceId: 'ws-cli' },
+      {
+        kind: 'rejected',
+        lane: 'declared',
+        reason: 'workspace-unresolved',
+        requestedWorkspaceId: 'ws-cli',
+      },
     ],
     [
       // Being first-party is not a scope either: the bundled MCP servers send
@@ -325,10 +339,15 @@ describe('callerScope shadow decision (#810)', () => {
       { kind: 'rejected', lane: 'legacy', reason: 'legacy-workspace-unresolved' },
     ],
     [
-      'legacy caller retaining an explicit narrow scope',
+      'legacy caller naming a workspace being refused',
       { origin: 'local', externalWire: true },
       { workspaceId: 'ws-legacy' },
-      { kind: 'allowed', lane: 'legacy', workspaceId: 'ws-legacy' },
+      {
+        kind: 'rejected',
+        lane: 'legacy',
+        reason: 'legacy-workspace-unresolved',
+        requestedWorkspaceId: 'ws-legacy',
+      },
     ],
     [
       'remote caller failing closed',
@@ -371,7 +390,7 @@ describe('registerBrowserRpc', () => {
     // workspace, so it is the one branch the lane table does not scope.
     backendMode?: 'builtin' | 'external' | 'chrome',
   ): RpcRouter {
-    const router = new RpcRouter();
+    const router = dispatchAsClaimedCaller(new RpcRouter());
     const webviewCdpManager = {
       getTarget: vi.fn(() => ({ surfaceId: 'surface-1', webContentsId: 42, targetId: 'target-1', wsUrl: 'ws://127.0.0.1/devtools/page/target-1' })),
       listTargets: vi.fn(() => [{ surfaceId: 'surface-1', webContentsId: 42, targetId: 'target-1', wsUrl: 'ws://127.0.0.1/devtools/page/target-1' }]),
@@ -444,23 +463,32 @@ describe('registerBrowserRpc', () => {
   it.each([...FIRST_PARTY_CLIENT_NAMES])(
     'browser.cdp.info returns attach metadata to supported wire client %s',
     async (clientName) => {
-      const router = register();
+      vi.useFakeTimers();
+      try {
+        const router = register();
 
-      const response = await router.dispatch({
-        id: '3',
-        method: 'browser.cdp.info',
-        params: {},
-        clientName,
-      }, { externalWire: true });
+        const responsePromise = router.dispatch({
+          id: '3',
+          method: 'browser.cdp.info',
+          params: {},
+          clientName,
+          ...claimOn('ws-1'),
+        }, { externalWire: true });
+        await vi.advanceTimersByTimeAsync(1500);
+        const response = await responsePromise;
 
-      expect(response.ok).toBe(true);
-      if (response.ok) {
-        // No window (getWindow → null): shellUrl is omitted, not null.
-        expect(response.result).toEqual({
-          cdpPort: 18800,
-          workspaceBackend: 'builtin',
-          targets: [{ surfaceId: 'surface-1', targetId: 'target-1' }],
-        });
+        expect(response.ok).toBe(true);
+        if (response.ok) {
+          // No window (getWindow → null): shellUrl is omitted, not null.
+          expect(response.result).toEqual({
+            cdpPort: 18800,
+            workspaceBackend: 'builtin',
+            targetsScoped: true,
+            targets: [],
+          });
+        }
+      } finally {
+        vi.useRealTimers();
       }
     },
   );
@@ -530,7 +558,7 @@ describe('registerBrowserRpc', () => {
     function registerMultiWs(
       listTargets = vi.fn(() => multiWorkspaceTargets),
     ): { router: RpcRouter; listTargets: typeof listTargets } {
-      const router = new RpcRouter();
+      const router = dispatchAsClaimedCaller(new RpcRouter());
       const webviewCdpManager = {
         getTarget: vi.fn(),
         listTargets,
@@ -556,6 +584,7 @@ describe('registerBrowserRpc', () => {
         method: 'browser.cdp.info',
         params: { workspaceId: 'ws-a' },
         clientName: 'claude-code',
+        ...claimOn('ws-a'),
       }, { externalWire: true });
 
       expect(response.ok).toBe(true);
@@ -582,6 +611,7 @@ describe('registerBrowserRpc', () => {
           method: 'browser.cdp.info',
           params: { workspaceId: 'ws-none' },
           clientName: 'claude-code',
+          ...claimOn('ws-none'),
         }, { externalWire: true });
         await vi.advanceTimersByTimeAsync(1500);
         const response = await responsePromise;
@@ -639,55 +669,52 @@ describe('registerBrowserRpc', () => {
       }
     });
 
-    it('keeps legacy target metadata but withholds attach metadata', async () => {
-      const { router } = registerMultiWs();
+    it('refuses a legacy caller before listing any target', async () => {
+      const { router, listTargets } = registerMultiWs();
 
       const response = await router.dispatch({
         id: 'ws3',
         method: 'browser.cdp.info',
         params: {},
+        workspaceToken: undefined,
       });
 
-      expect(response.ok).toBe(true);
-      if (response.ok) {
-        const result = response.result as {
-          cdpPort?: number;
-          shellUrl?: string;
-          targetsScoped?: boolean;
-          targets: unknown[];
-        };
-        expect(result.cdpPort).toBeUndefined();
-        expect(result.shellUrl).toBeUndefined();
-        expect(result.targetsScoped).toBeUndefined();
-        expect(result.targets).toHaveLength(3);
-      }
+      expect(response.ok).toBe(false);
+      if (!response.ok) expect(response.error).toContain('BROWSER_SCOPE_REFUSED');
+      expect(listTargets).not.toHaveBeenCalled();
     });
   });
 
   it('does not disclose attach metadata to an iframe with a privileged-name collision', async () => {
     const getUrl = vi.fn(() => 'file:///private/app-shell.html');
-    const router = register(windowWithUrl(getUrl));
+    vi.useFakeTimers();
+    try {
+      const router = register(windowWithUrl(getUrl));
 
-    const response = await router.dispatch({
-      id: 'collision',
-      method: 'browser.cdp.info',
-      params: {},
-      clientName: 'claude-code',
-    }, { firstParty: true });
+      // An iframe plugin arrives through the plugin host, bound to the
+      // workspace it is shown in.
+      const responsePromise = router.dispatch({
+        id: 'collision',
+        method: 'browser.cdp.info',
+        params: {},
+        clientName: 'claude-code',
+      }, { firstParty: true, hostedWorkspace: 'ws-host' });
+      await vi.advanceTimersByTimeAsync(1500);
+      const response = await responsePromise;
 
-    expect(response.ok).toBe(true);
-    if (response.ok) {
-      expect(response.result).not.toHaveProperty('cdpPort');
-      expect(response.result).not.toHaveProperty('shellUrl');
-      expect(response.result).toMatchObject({
-        workspaceBackend: 'builtin',
-        targets: [{ surfaceId: 'surface-1', targetId: 'target-1' }],
-      });
+      expect(response.ok).toBe(true);
+      if (response.ok) {
+        expect(response.result).not.toHaveProperty('cdpPort');
+        expect(response.result).not.toHaveProperty('shellUrl');
+        expect(response.result).toMatchObject({ workspaceBackend: 'builtin', targetsScoped: true });
+      }
+      expect(getUrl).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
     }
-    expect(getUrl).not.toHaveBeenCalled();
   });
 
-  it('shadow-logs an identified unscoped cdp.info call without changing its target response', async () => {
+  it('refuses an identified caller with no verified workspace in shadow mode too, and logs it', async () => {
     const shadowSink = vi.fn();
     const router = register(() => null, shadowSink);
 
@@ -698,12 +725,9 @@ describe('registerBrowserRpc', () => {
       clientName: 'approved-plugin',
     }, { externalWire: true });
 
-    expect(response.ok).toBe(true);
-    if (response.ok) {
-      expect(response.result).toMatchObject({
-        targets: [{ surfaceId: 'surface-1', targetId: 'target-1' }],
-      });
-    }
+    expect(response.ok).toBe(false);
+    if (!response.ok) expect(response.error).toContain('BROWSER_SCOPE_REFUSED');
+    expect(cdpOf(router).listTargets).not.toHaveBeenCalled();
     expect(shadowSink).toHaveBeenCalledOnce();
     expect(shadowSink).toHaveBeenCalledWith({
       clientName: 'approved-plugin',
@@ -712,7 +736,7 @@ describe('registerBrowserRpc', () => {
     });
   });
 
-  it('does not shadow-log a declared scope or a trusted operator lane', async () => {
+  it('does not log a claimed scope or a trusted operator lane', async () => {
     const shadowSink = vi.fn();
     const router = register(() => null, shadowSink);
 
@@ -721,6 +745,7 @@ describe('registerBrowserRpc', () => {
       method: 'browser.cdp.info',
       params: { workspaceId: 'ws-declared' },
       clientName: 'approved-plugin',
+      ...claimOn('ws-declared'),
     }, { externalWire: true });
     await router.dispatch({
       id: 'scope-shadow-operator',
@@ -731,7 +756,7 @@ describe('registerBrowserRpc', () => {
     expect(shadowSink).not.toHaveBeenCalled();
   });
 
-  it('observes leased target handlers and swallows a failing shadow sink', async () => {
+  it('refuses a leased target handler even when the audit sink throws', async () => {
     const shadowSink = vi.fn(() => {
       throw new Error('audit disk unavailable');
     });
@@ -744,20 +769,20 @@ describe('registerBrowserRpc', () => {
       clientName: 'approved-plugin',
     }, { externalWire: true });
 
-    expect(response.ok).toBe(true);
+    expect(response.ok).toBe(false);
+    if (!response.ok) expect(response.error).toContain('BROWSER_SCOPE_REFUSED');
     expect(shadowSink).toHaveBeenCalledWith({
       clientName: 'approved-plugin',
       method: 'browser.evaluate',
       reason: 'workspace-unresolved',
     });
-    expect(mockWebContents.debugger.sendCommand).toHaveBeenCalled();
+    expect(mockWebContents.debugger.sendCommand).not.toHaveBeenCalled();
   });
 
-  // ── #810 step 4: the same decisions, now authoritative ────────────────────
+  // ── The same decisions under enforce mode ─────────────────────────────────
   //
-  // Every case below is paired: the shadow assertions above prove the response
-  // is unchanged, these prove the enforce mode refuses. A test that only checked
-  // enforce would not catch the rollback path silently breaking.
+  // `mcp.mode` does not change the browser scope: the cases above (shadow) and
+  // below (enforce) refuse the same callers and scope the same ones.
 
   it('refuses an identified caller that omits workspaceId, and never looks a target up', async () => {
     const shadowSink = vi.fn();
@@ -773,7 +798,8 @@ describe('registerBrowserRpc', () => {
     expect(response.ok).toBe(false);
     if (!response.ok) {
       expect(response.error).toContain('BROWSER_SCOPE_REFUSED');
-      expect(response.error).toContain('send the workspaceId');
+      expect(response.error).toContain('carries no verified workspace');
+      expect(response.error).toContain('mcp.claimWorkspace');
       expect(response.error).toContain('Do not retry unchanged');
     }
     // The refusal is the whole point: no lookup, no lease, no evaluation.
@@ -941,10 +967,11 @@ describe('registerBrowserRpc', () => {
     });
   });
 
-  it('leaves a legacy caller that names a workspace byte-identical', async () => {
-    // Ruling (c) narrows only the OMITTED case. This one is the half that must
-    // not move, and it is the half most external integrations actually use.
-    const router = register(() => null, undefined, 'enforce');
+  it('refuses a legacy caller that names a workspace, before any lookup', async () => {
+    // A named workspace is not an identity: with nothing verified behind it,
+    // the call is refused and the name is kept only for the audit log.
+    const shadowSink = vi.fn();
+    const router = register(() => null, shadowSink, 'enforce');
 
     const response = await router.dispatch({
       id: 'scope-enforce-legacy-named',
@@ -952,13 +979,19 @@ describe('registerBrowserRpc', () => {
       params: { expression: '1 + 1', workspaceId: 'ws-named' },
     }, { externalWire: true });
 
-    expect(response.ok).toBe(true);
-    expect(cdpOf(router).getTarget).toHaveBeenCalledWith(undefined, 'ws-named');
+    expect(response.ok).toBe(false);
+    if (!response.ok) expect(response.error).toContain('BROWSER_SCOPE_REFUSED');
+    expect(cdpOf(router).getTarget).not.toHaveBeenCalled();
+    expect(shadowSink).toHaveBeenCalledWith({
+      clientName: undefined,
+      method: 'browser.evaluate',
+      reason: 'legacy-workspace-unresolved',
+      requestedWorkspaceId: 'ws-named',
+    });
   });
 
   it('refuses a legacy caller that names nothing, and says what to add', async () => {
-    // This is what (c) closes: the workspace-blind "first registered surface"
-    // lookup. The message has to teach, because whoever reads it has no plugin
+    // The message has to teach, because whoever reads it has no plugin
     // identity to look up and built against the documented envelope-less path.
     const shadowSink = vi.fn();
     const router = register(() => null, shadowSink, 'enforce');
@@ -972,10 +1005,8 @@ describe('registerBrowserRpc', () => {
     expect(response.ok).toBe(false);
     if (!response.ok) {
       expect(response.error).toContain('BROWSER_SCOPE_REFUSED');
-      expect(response.error).toContain('send workspaceId in the params');
-      // Both named methods exist and are reachable for this caller class.
-      expect(response.error).toContain('workspace.current');
-      expect(response.error).toContain('workspace.list');
+      expect(response.error).toContain('carries no identity envelope');
+      expect(response.error).toContain('mcp.claimWorkspace');
       expect(response.error).toContain('Do not retry unchanged');
     }
     expect(cdpOf(router).getTarget).not.toHaveBeenCalled();
@@ -986,10 +1017,9 @@ describe('registerBrowserRpc', () => {
     });
   });
 
-  it('still lets an omitted legacy caller through in shadow mode', async () => {
-    // The rollback lever keeps its promise: `mcp.mode: shadow` restores the
-    // pre-#810 behaviour for this caller exactly, refusal logged but not
-    // applied. Nothing about (c) rides outside that switch.
+  it('refuses an omitted legacy caller in shadow mode too', async () => {
+    // The browser scope no longer reads `mcp.mode`: shadow logs the decision
+    // and applies it, the same as enforce.
     const shadowSink = vi.fn();
     const router = register(() => null, shadowSink, 'shadow');
 
@@ -999,10 +1029,8 @@ describe('registerBrowserRpc', () => {
       params: { expression: '1 + 1' },
     }, { externalWire: true });
 
-    expect(response.ok).toBe(true);
-    // Unscoped, exactly as before: the lookup runs with no workspace.
-    expect(cdpOf(router).getTarget).toHaveBeenCalledWith(undefined, undefined);
-    // Observed, not enforced — which is how the window before enforce works.
+    expect(response.ok).toBe(false);
+    expect(cdpOf(router).getTarget).not.toHaveBeenCalled();
     expect(shadowSink).toHaveBeenCalledWith({
       clientName: undefined,
       method: 'browser.evaluate',
@@ -1035,6 +1063,7 @@ describe('registerBrowserRpc — browser.open / browser.close scoping (#922 PR-C
         method,
         params: { url: 'https://example.com', workspaceId: 'ws-declared' },
         clientName: 'approved-plugin',
+        ...claimOn('ws-declared'),
       }, { externalWire: true });
 
       expect(sendToRendererMock).toHaveBeenCalledWith(
@@ -1127,10 +1156,10 @@ describe('registerBrowserRpc — browser.open / browser.close scoping (#922 PR-C
   );
 
   it.each(['browser.open', 'browser.close'] as const)(
-    '%s is unchanged in shadow mode — the rollback lever still covers it',
+    '%s refuses an unverified caller in shadow mode too',
     async (method) => {
-      // #810's promise: `mcp.mode: shadow` restores the previous behaviour.
-      // Folding these two in must not create a path that ignores the switch.
+      // `mcp.mode` does not soften the browser scope: an absent workspace
+      // would reach the renderer's UI-active fallback, so it is refused.
       const router = register(() => null, undefined, 'shadow');
       const res = await router.dispatch({
         id: `prc-${method}-shadow`,
@@ -1139,14 +1168,9 @@ describe('registerBrowserRpc — browser.open / browser.close scoping (#922 PR-C
         clientName: 'approved-plugin',
       }, { externalWire: true });
 
-      expect(res.ok).toBe(true);
-      // Absent workspaceId reaches the renderer exactly as before, so its
-      // active-workspace fallback still runs.
-      expect(sendToRendererMock).toHaveBeenCalledWith(
-        expect.anything(),
-        method,
-        expect.not.objectContaining({ workspaceId: expect.anything() }),
-      );
+      expect(res.ok).toBe(false);
+      if (!res.ok) expect(res.error).toContain('BROWSER_SCOPE_REFUSED');
+      expect(sendToRendererMock).not.toHaveBeenCalled();
     },
   );
 
@@ -1185,9 +1209,9 @@ describe('registerBrowserRpc — browser.open / browser.close scoping (#922 PR-C
     if (!res.ok) expect(res.error).toContain('BROWSER_SCOPE_REFUSED');
   });
 
-  it('browser.tabs still answers an identified caller that names its own workspace', async () => {
-    // The bundled MCP path: it resolves a workspace id itself and always sends
-    // a non-empty one, so it lands in `declared` and is unchanged.
+  it('browser.tabs refuses an identified caller that names a workspace it holds no claim on', async () => {
+    // The bundled MCP sends its workspace id on every call; without the
+    // walk's claim on the envelope that id alone is not a scope.
     const router = register(() => null, undefined, 'enforce');
     const res = await router.dispatch({
       id: 'prc-tabs-declared',
@@ -1196,18 +1220,11 @@ describe('registerBrowserRpc — browser.open / browser.close scoping (#922 PR-C
       clientName: 'claude-code',
     }, { externalWire: true });
 
-    expect(res.ok).toBe(true);
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).toContain('BROWSER_SCOPE_REFUSED');
   });
 
-  it('browser.tabs leaves the legacy caller exactly where ruling (c) left it', async () => {
-    // Recorded as the table's behaviour, not as a fix. `browser.tabs` is
-    // wmux.internal, which no plugin can declare, and ruling (c) keeps the
-    // table's legacy lane accepting the workspace such a caller names. Folding
-    // this method in confines the identified lanes and changes nothing for
-    // this one. The caller class itself was closed at the gate by #1111: under
-    // enforce mode PermissionEnforcer refuses it before this table runs. This
-    // router is in the default shadow mode (the `'enforce'` below is the
-    // browser table's own scope mode), so the handler still runs here.
+  it('browser.tabs refuses a legacy caller that names a workspace', async () => {
     const router = register(() => null, undefined, 'enforce');
     const res = await router.dispatch({
       id: 'prc-tabs-legacy',
@@ -1215,7 +1232,8 @@ describe('registerBrowserRpc — browser.open / browser.close scoping (#922 PR-C
       params: { action: 'list', workspaceId: 'ws-someone-else' },
     }, { externalWire: true });
 
-    expect(res.ok).toBe(true);
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).toContain('BROWSER_SCOPE_REFUSED');
   });
 
   it('browser.tabs refuses a legacy caller that names nothing, per ruling (c)', async () => {
@@ -1230,9 +1248,9 @@ describe('registerBrowserRpc — browser.open / browser.close scoping (#922 PR-C
     expect(res.ok).toBe(false);
   });
 
-  it('leaves the external backend unscoped — the OS browser owns no workspace', async () => {
-    // Refusing an unscoped caller here would break a working path for no gain:
-    // there is no wmux surface to own.
+  it('scopes the external backend too — the caller is verified before the url leaves', async () => {
+    // The OS browser owns no workspace, but the call comes from one: an
+    // unverified caller is refused before anything is handed off.
     const router = register(() => null, undefined, 'enforce', 'external');
     const res = await router.dispatch({
       id: 'prc-open-external',
@@ -1240,8 +1258,21 @@ describe('registerBrowserRpc — browser.open / browser.close scoping (#922 PR-C
       params: { url: 'https://example.com' },
       clientName: 'approved-plugin',
     }, { externalWire: true });
-    // Whatever the delegation does, the lane table did not refuse it — the
-    // same caller IS refused on the builtin branch, one test above.
+
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).toContain('BROWSER_SCOPE_REFUSED');
+  });
+
+  it('opens externally for a claimed caller', async () => {
+    const router = register(() => null, undefined, 'enforce', 'external');
+    const res = await router.dispatch({
+      id: 'prc-open-external-claimed',
+      method: 'browser.open',
+      params: { url: 'https://example.com' },
+      clientName: 'claude-code',
+      ...claimOn('ws-claimed'),
+    }, { externalWire: true });
+
     if (!res.ok) expect(res.error).not.toContain('BROWSER_SCOPE_REFUSED');
   });
 });
@@ -1254,6 +1285,7 @@ describe('registerBrowserRpc — browser.open / browser.close scoping (#922 PR-C
       method: 'browser.evaluate',
       params: { expression: '1 + 1', workspaceId: 'ws-declared' },
       clientName: 'approved-plugin',
+      ...claimOn('ws-declared'),
     }, { externalWire: true });
 
     expect(response.ok).toBe(true);
@@ -1277,7 +1309,7 @@ describe('registerBrowserRpc — browser.open / browser.close scoping (#922 PR-C
     if (!response.ok) expect(response.error).toContain('BROWSER_SCOPE_REFUSED');
   });
 
-  it('keeps the operator and legacy lanes working under enforce', async () => {
+  it('keeps the operator lane working and refuses the legacy one under enforce', async () => {
     const router = register(() => null, undefined, 'enforce');
 
     // Human operator crossing workspaces on purpose.
@@ -1288,19 +1320,15 @@ describe('registerBrowserRpc — browser.open / browser.close scoping (#922 PR-C
     }, { operator: true });
     expect(operator.ok).toBe(true);
 
-    // Envelope-less caller, at the HANDLER level: this router runs in the
-    // default shadow mode, so the handler still runs after PermissionEnforcer
-    // logs the closed-lane rejection (#1111 refuses it at the gate under
-    // enforce mode). #922 ruling (c) narrowed this handler lane WITHOUT closing
-    // it — the deliberate, visible change this assertion was written to catch.
-    // A legacy caller that names a workspace is unchanged; one that names
-    // nothing is refused, and that half is covered in the PR-B block above.
+    // Envelope-less caller, at the HANDLER level: a workspace it names is
+    // not an identity, so the browser scope refuses it.
     const legacy = await router.dispatch({
       id: 'scope-enforce-legacy',
       method: 'browser.evaluate',
       params: { expression: '1 + 1', workspaceId: 'ws-legacy' },
+      workspaceToken: undefined,
     });
-    expect(legacy.ok).toBe(true);
+    expect(legacy.ok).toBe(false);
   });
 
   it('refuses cdp.info before disclosing anything, including targets', async () => {
@@ -1365,28 +1393,29 @@ describe('registerBrowserRpc — browser.open / browser.close scoping (#922 PR-C
     expect(sendToRendererMock).not.toHaveBeenCalled();
   });
 
-  it('shadow mode looks targets up by the request field, not the decision', async () => {
-    // Shadow is the rollback, so it must be pre-#810 behavior exactly. The
-    // regression this guards: returning the decision's workspace here would
-    // re-scope callers (notably the pinned lane) in the mode whose promise is
-    // that it changes nothing.
+  it('shadow mode looks targets up by the verified workspace, not the request field', async () => {
+    // A claimed caller that omits workspaceId is looked up in its claim's
+    // workspace; one that names nothing verified is refused before any lookup.
     const router = register(() => null, undefined, 'shadow');
 
-    await router.dispatch({
+    const unverified = await router.dispatch({
       id: 'scope-shadow-passthrough-none',
-      method: 'browser.evaluate',
-      params: { expression: '1 + 1' },
-      clientName: 'approved-plugin',
-    }, { externalWire: true });
-    expect(cdpOf(router).getTarget).toHaveBeenCalledWith(undefined, undefined);
-
-    await router.dispatch({
-      id: 'scope-shadow-passthrough-declared',
       method: 'browser.evaluate',
       params: { expression: '1 + 1', workspaceId: 'ws-declared' },
       clientName: 'approved-plugin',
     }, { externalWire: true });
-    expect(cdpOf(router).getTarget).toHaveBeenCalledWith(undefined, 'ws-declared');
+    expect(unverified.ok).toBe(false);
+    expect(cdpOf(router).getTarget).not.toHaveBeenCalled();
+
+    const claimed = await router.dispatch({
+      id: 'scope-shadow-passthrough-claimed',
+      method: 'browser.evaluate',
+      params: { expression: '1 + 1' },
+      clientName: 'approved-plugin',
+      ...claimOn('ws-claimed'),
+    }, { externalWire: true });
+    expect(claimed.ok).toBe(true);
+    expect(cdpOf(router).getTarget).toHaveBeenCalledWith(undefined, 'ws-claimed');
   });
 
   it('treats an empty workspaceId as absent, the same as the pre-#810 inline check', async () => {
@@ -1409,7 +1438,7 @@ describe('registerBrowserRpc — browser.open / browser.close scoping (#922 PR-C
     if (!response.ok) expect(response.error).toContain('BROWSER_SCOPE_REFUSED');
   });
 
-  it('shadow mode still answers every one of those calls', async () => {
+  it('shadow mode refuses every one of those calls as well', async () => {
     const router = register(() => null, undefined, 'shadow');
 
     for (const [id, method, params] of [
@@ -1423,7 +1452,7 @@ describe('registerBrowserRpc — browser.open / browser.close scoping (#922 PR-C
         params: params as Record<string, unknown>,
         clientName: 'approved-plugin',
       }, { externalWire: true });
-      expect(response.ok).toBe(true);
+      expect(response.ok).toBe(false);
     }
   });
 
@@ -1682,7 +1711,7 @@ describe('registerBrowserRpc — browser.open / browser.close scoping (#922 PR-C
   });
 
   it('browser.lifecycle.get answers a missing target with empty entries, not an error (Phase 1)', async () => {
-    const router = new RpcRouter();
+    const router = dispatchAsClaimedCaller(new RpcRouter());
     const webviewCdpManager = {
       getTarget: vi.fn(() => null),
       listTargets: vi.fn(() => []),
@@ -1738,7 +1767,7 @@ describe('registerBrowserRpc — browser.open / browser.close scoping (#922 PR-C
   });
 
   it('browser.console.get fails clearly when no webview target is registered (#106)', async () => {
-    const router = new RpcRouter();
+    const router = dispatchAsClaimedCaller(new RpcRouter());
     const webviewCdpManager = {
       getTarget: vi.fn(() => null),
       listTargets: vi.fn(() => []),
@@ -1833,7 +1862,7 @@ describe('browser.screenshot capture fallback (#529)', () => {
   // Local mirror of the register() helper above (it is scoped to the first
   // describe block).
   function register(): RpcRouter {
-    const router = new RpcRouter();
+    const router = dispatchAsClaimedCaller(new RpcRouter());
     const webviewCdpManager = {
       getTarget: vi.fn(() => ({ surfaceId: 'surface-1', webContentsId: 42, targetId: 'target-1', wsUrl: 'ws://127.0.0.1/devtools/page/target-1' })),
       listTargets: vi.fn(() => []),
@@ -1961,7 +1990,7 @@ describe('registerBrowserRpc — scoped callers stay inside their workspace (#69
       renewRpcLease: vi.fn(() => true),
       releaseRpcLease: vi.fn(() => true),
     };
-    const router = new RpcRouter();
+    const router = dispatchAsClaimedCaller(new RpcRouter());
     registerBrowserRpc(router, () => null as unknown as BrowserWindow, cdp as never);
     return { router, cdp };
   }
@@ -2113,7 +2142,7 @@ describe('registerBrowserRpc — navigate fallback under a scope (#695)', () => 
       renewRpcLease: vi.fn(() => true),
       releaseRpcLease: vi.fn(() => true),
     };
-    const router = new RpcRouter();
+    const router = dispatchAsClaimedCaller(new RpcRouter());
     registerBrowserRpc(router, () => null as unknown as BrowserWindow, cdp as never);
     return { router, cdp };
   }
