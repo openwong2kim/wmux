@@ -25,6 +25,7 @@ import { claimFit } from '../utils/fitGuard';
 import { createFitScheduler } from '../utils/layoutTransitionGate';
 import { installAltClickTrackingGuard } from '../utils/altClickUnderMouseTracking';
 import { createMouseOwnedHint } from '../utils/mouseOwnedHint';
+import { installPlainDragSelect, mouseOwnedHintApplies } from '../utils/plainDragSelect';
 import { resizeOrderFor, runOrderedFit, type CancelOrderedFit } from '../utils/resizeOrder';
 import { createAutoSelectionCopy } from '../utils/autoSelectionCopy';
 import { createOsc52Handler } from '../utils/osc52Clipboard';
@@ -1444,6 +1445,14 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // short Option+click would reach xterm's click-to-move-cursor and type
     // arrow keys into the app. Keep that feature to shell prompts.
     const detachAltClickGuard = installAltClickTrackingGuard(container, terminal);
+    // #1947: a plain left-drag selects even while the app tracks the mouse
+    // (Codex enables ?1003 at startup); a plain click still reaches the app.
+    // Installed after the alt-click guard so the guard still sees every press,
+    // including the replayed Option+mousedown. The setting is read per press.
+    const detachPlainDragSelect = installPlainDragSelect(container, terminal, {
+      isEnabled: () => useStore.getState().plainDragSelectEnabled,
+      isMac,
+    });
 
     // Issue #167: keep the hidden IME textarea empty while idle. xterm only
     // clears it on blur, so IME-committed text accumulates there after it was
@@ -3030,7 +3039,9 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       isMouseOwned: () => {
         const mode = (terminal as unknown as { modes?: { mouseTrackingMode?: string } })
           .modes?.mouseTrackingMode ?? 'none';
-        return mode !== 'none';
+        // #1947: with plain-drag select on, a plain drag selects, so there is
+        // nothing to teach (and on macOS Shift+drag is the way to the app).
+        return mouseOwnedHintApplies(mode, useStore.getState().plainDragSelectEnabled);
       },
       show: showMouseOwnedHintToast,
     });
@@ -3111,6 +3122,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       if (pendingFitRaf !== null) cancelAnimationFrame(pendingFitRaf);
       if (isMac) { container.removeEventListener('paste', blockNativePaste, true); }
       detachAltClickGuard();
+      detachPlainDragSelect();
       detachAltScreenWheel();
       terminal.textarea?.removeEventListener('focus', onTextareaFocus);
       terminal.textarea?.removeEventListener('keydown', onWatchdogKeyDown);
