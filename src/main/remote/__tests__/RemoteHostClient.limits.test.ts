@@ -115,7 +115,9 @@ describe('RemoteHostClient — bounded reads', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     for (const body of bodies) {
       expect(body.cancelled()).toBe(true);
-      expect(body.pulled()).toBeLessThanOrEqual(REMOTE_LIMITS.streamBufferBytes + 2 * 256 * 1024);
+      // The chunk that crosses the cap, plus one chunk prefetched by each of
+      // the two stream layers in this double (the wrapper and the endless body).
+      expect(body.pulled()).toBeLessThanOrEqual(REMOTE_LIMITS.streamBufferBytes + 3 * 256 * 1024);
     }
     client.detachAll();
   });
