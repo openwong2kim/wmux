@@ -783,6 +783,31 @@ describe('channel_post', () => {
       { workspaceId: 'ws-other', name: 'other' },
     ]);
     expect(resolvePaneId).toHaveBeenCalledTimes(1);
+    expect(resolvePaneId).toHaveBeenCalledWith('#w2-1', 'ws-worker');
+  });
+
+  it('passes an unresolvable #pane name through so only that pin is refused', async () => {
+    mockSendRpc.mockResolvedValue({ ok: true, message: { seq: 4 } });
+    const resolvePaneId = vi.fn(async (ref: string) => {
+      if (ref === '#gone') throw new Error('no pane named "#gone"');
+      return ref === '#w2-1' ? 'pane-21' : ref;
+    });
+    const post = collectTools({ ...DEFAULT_CHANNEL_DEPS, resolvePaneId }).get('channel_post')!;
+    const res = await post({
+      channel_id: 'ch-1',
+      text: '@a @b',
+      member_id: 'm-1',
+      mentions: [
+        { workspace_id: 'ws-a', name: 'a', pane_id: '#gone' },
+        { workspace_id: 'ws-b', name: 'b', pane_id: '#w2-1' },
+      ],
+    });
+    expect((res as { isError?: boolean }).isError).toBeUndefined();
+    const params = mockSendRpc.mock.calls[0][1] as Record<string, unknown>;
+    expect(params.mentions).toEqual([
+      { workspaceId: 'ws-a', name: 'a', paneId: '#gone' },
+      { workspaceId: 'ws-b', name: 'b', paneId: 'pane-21' },
+    ]);
   });
 
   it('surfaces PERSIST_FAILED from the daemon as isError (U2 directive)', async () => {

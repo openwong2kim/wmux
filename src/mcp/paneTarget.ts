@@ -54,13 +54,15 @@ export function classifyPaneRef(value: string): 'name' | 'id' | 'maybe' {
 export async function resolvePaneRef(
   value: string | undefined,
   rpc: PaneNameRpc,
+  /** Resolve only within this workspace (pane.resolveName's scope). */
+  workspaceId?: string,
 ): Promise<ResolvedPaneTarget | null> {
   if (value === undefined || value === '') return null;
   const kind = classifyPaneRef(value);
   if (kind === 'id') return null;
   let res: { ok?: unknown; reason?: unknown; error?: unknown; target?: ResolvedPaneTarget } | null;
   try {
-    res = (await rpc('pane.resolveName', { name: value })) as typeof res;
+    res = (await rpc('pane.resolveName', { name: value, ...(workspaceId ? { workspaceId } : {}) })) as typeof res;
   } catch (err) {
     if (kind === 'maybe') return null;
     throw err;
@@ -80,7 +82,7 @@ export async function resolvePtyRef(value: string | undefined, rpc: PaneNameRpc)
 }
 
 /** A paneId parameter that may be a pane name → the paneId. */
-export async function resolvePaneIdRef(value: string | undefined, rpc: PaneNameRpc): Promise<string | undefined> {
-  const target = await resolvePaneRef(value, rpc);
+export async function resolvePaneIdRef(value: string | undefined, rpc: PaneNameRpc, workspaceId?: string): Promise<string | undefined> {
+  const target = await resolvePaneRef(value, rpc, workspaceId);
   return target ? target.paneId : value;
 }

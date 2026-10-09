@@ -2183,7 +2183,7 @@ registerChannelTools(
   {
     resolveWorkspaceId: requireWorkspaceId,
     getSenderPtyId: () => verifiedPtyId(),
-    resolvePaneId: async (ref: string) => (await resolvePaneIdRef(ref, paneNameRpc)) ?? ref,
+    resolvePaneId: async (ref: string, workspaceId: string) => (await resolvePaneIdRef(ref, paneNameRpc, workspaceId)) ?? ref,
   },
   MCP_CATALOG_OPTIONS,
 );

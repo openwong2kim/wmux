@@ -33,7 +33,7 @@ import {
   type RegisterWmuxToolsOptions,
 } from './toolCatalog';
 import type { RpcMethod } from '../shared/rpc';
-import type { ChannelVisibility } from '../shared/channels';
+import { CHANNEL_MENTIONS_MAX, type ChannelVisibility } from '../shared/channels';
 
 /** Resolver the parent module injects so tests can stub without booting the
  *  PID-map walk (src/mcp/index.ts uses its own verified resolver). */
@@ -49,9 +49,10 @@ export interface ChannelToolDeps {
    *  calls fail closed without a resolvable senderPtyId. */
   getSenderPtyId: () => string;
   /** A mention's `pane_id` may be a pane name (`#w1-2`, `#backend`); this
-   *  turns it into the paneId before the daemon proves the pane belongs to
-   *  `workspace_id`. Absent → the value is passed through as before. */
-  resolvePaneId?: (ref: string) => Promise<string>;
+   *  turns it into the paneId, looked up within the mention's `workspace_id`,
+   *  before the daemon proves the pane belongs there. Absent → the value is
+   *  passed through as before. */
+  resolvePaneId?: (ref: string, workspaceId: string) => Promise<string>;
 }
 
 /** Channel name pattern matches `CHANNEL_NAME_RE` in src/shared/channels.ts:
@@ -363,8 +364,16 @@ export function createChannelToolCatalog(deps: ChannelToolDeps) {
       };
       if (client_msg_id !== undefined) params['clientMsgId'] = client_msg_id;
       if (mentions !== undefined) {
-        const resolvePaneId = deps.resolvePaneId ?? (async (ref: string) => ref);
-        const paneIds = await Promise.all(mentions.map((m) => (m.pane_id !== undefined ? resolvePaneId(m.pane_id) : undefined)));
+        // A name that does not resolve (unknown, ambiguous, renderer not
+        // answering) is passed through as written: the daemon then refuses
+        // that one pin in `droppedMentions` and the post still lands, which is
+        // the contract an id pin already has. Over the mention cap the daemon
+        // rejects the post anyway, so nothing is looked up.
+        const resolve = deps.resolvePaneId;
+        const lookUp = resolve && mentions.length <= CHANNEL_MENTIONS_MAX
+          ? (ref: string, ws: string) => resolve(ref, ws).catch(() => ref)
+          : async (ref: string) => ref;
+        const paneIds = await Promise.all(mentions.map((m) => (m.pane_id !== undefined ? lookUp(m.pane_id, m.workspace_id) : undefined)));
         params['mentions'] = mentions.map((m, i) => ({
           workspaceId: m.workspace_id,
           name: m.name ?? m.workspace_id,

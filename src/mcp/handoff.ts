@@ -55,7 +55,9 @@ export function registerMoaHandoffTool(register: McpServer['tool'], deps: MoaHan
     async ({ ptyId, paneId, body, title, external_source }) => {
       const params: Record<string, unknown> = { token: deps.getCommanderToken(), body };
       if (ptyId) params.ptyId = deps.resolvePtyId ? await deps.resolvePtyId(ptyId) : ptyId;
-      if (paneId) params.paneId = deps.resolvePaneId ? await deps.resolvePaneId(paneId) : paneId;
+      // main targets by ptyId when both are given, so a paneId it will not use
+      // is not looked up (a stale name there must not refuse the hand-off).
+      if (paneId) params.paneId = deps.resolvePaneId && !ptyId ? await deps.resolvePaneId(paneId) : paneId;
       if (title) params.title = title;
       if (external_source !== undefined) params.externalSource = external_source;
       return deps.callRpc('deck.proposeHandoff', params, PROPOSE_HANDOFF_TIMEOUT_MS);

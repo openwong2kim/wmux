@@ -56,6 +56,9 @@ describe('moa_propose_handoff', () => {
     await handler!({ paneId: '#w2-1', body: 'y' });
     expect(callRpc.mock.calls[0][1]).toEqual({ token: 'tok-hq', ptyId: 'daemon-1', body: 'x' });
     expect(callRpc.mock.calls[1][1]).toEqual({ token: 'tok-hq', paneId: 'pane-21', body: 'y' });
+    // With a ptyId, main ignores paneId, so a paneId name is not looked up.
+    await handler!({ ptyId: 'daemon-9', paneId: '#stale', body: 'z' });
+    expect(callRpc.mock.calls[2][1]).toEqual({ token: 'tok-hq', ptyId: 'daemon-9', paneId: '#stale', body: 'z' });
   });
 
   it('is commander-only, with its RPC in the commander lane and the first-party set', () => {
