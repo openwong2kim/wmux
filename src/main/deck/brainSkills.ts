@@ -161,14 +161,16 @@ Use a plain pane split when the work is one worker, or is read-only.
   \`completed\` with the per-task result. The accept's \`ownerWorkspaceId\`
   (and its deprecated alias \`workspaceId\`) is YOUR workspace, never a task's;
   each task's own workspace is \`workspaceId\` in \`result.tasks[]\`.
-- **The operator must approve it.** The prompt is never auto-approved. A
+- **It does not ask by default.** Unless the operator turned fan-out
+  approval on in Settings, it starts at once. When approval is on, a
   \`denied\` answer is a real outcome, not an error to retry around, and there
   are four reasons: \`declined\` (they said no), \`timeout\` (nobody was at the
   keyboard), \`unavailable\` (the prompt could not be shown), and \`repo-moved\`
   (the anchor pane changed directory mid-approval). None of them is retried by
   minting a new key — say what happened instead.
 - **You do not choose the repository or the workspace.** They are derived from
-  your own verified identity. Fan-out always runs in your workspace's
+  your own verified identity. Fan-out runs in your workspace's repository, or,
+  under a goal the operator approved (moa_propose_goal), in the goal's
   repository.
 - **A fresh key means a fresh fan-out.** Reusing a key polls; inventing a new
   one spawns N more worktrees. Never mint a new key just because a poll was

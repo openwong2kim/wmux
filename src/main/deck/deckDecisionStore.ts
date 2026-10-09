@@ -67,13 +67,14 @@ export interface WorkspaceDecision {
 }
 
 /** `issue-proposal`: Moa's issue and PR proposals lane. `moa-handoff`: a
- *  hand-off Moa proposed (moaHandoff.ts). Both are main-owned: main acts on the
- *  answer, no brain ever sees or resolves the card. */
-export type DecisionOrigin = 'issue-proposal' | 'moa-handoff';
+ *  hand-off Moa proposed (moaHandoff.ts). `moa-goal`: the approval card of a
+ *  goal contract Moa proposed (moaGoalContract.ts). All main-owned: main acts
+ *  on the answer, no brain ever sees or resolves the card. */
+export type DecisionOrigin = 'issue-proposal' | 'moa-handoff' | 'moa-goal';
 
 /** Origins whose cards main answers. Never set from the wire (deck.requestDecision
  *  takes no origin), never shown to a brain, never resolvable by one. */
-export const MAIN_OWNED_ORIGINS: readonly DecisionOrigin[] = ['issue-proposal', 'moa-handoff'];
+export const MAIN_OWNED_ORIGINS: readonly DecisionOrigin[] = ['issue-proposal', 'moa-handoff', 'moa-goal'];
 
 export type DecisionResolvedBy = 'human' | 'brain';
 

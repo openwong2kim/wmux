@@ -12,6 +12,7 @@ import { isAlwaysEnforcedMethod } from '../mcp/methodCapabilityMap';
 import { isLocalExternalWireContext } from '../mcp/rpcProvenance';
 import { commanderTokenWorkspace } from '../deck/commanderTrust';
 import { COMMANDER_TEARDOWN_DENY } from '../../shared/commanderSurface';
+import { commanderLevelRefusal } from '../deck/moaLevelGate';
 import type { EnforcementMode } from '../mcp/enforcementMode';
 import type { ApprovalQueue } from '../mcp/ApprovalQueue';
 import {
@@ -359,6 +360,11 @@ export class RpcRouter {
           ok: false,
           error: `method ${request.method} is denied for orchestrator brains (teardown gate)`,
         };
+      }
+      // Moa's autonomy level (moaLevelGate.ts): refuse-only, HQ token only.
+      const levelRefusal = commanderLevelRefusal(request.method, boundWorkspace, request.params);
+      if (levelRefusal) {
+        return { id: request.id, ok: false, error: levelRefusal };
       }
     }
 

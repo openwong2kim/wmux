@@ -300,6 +300,29 @@ export function TabMoa({ registerDialog }: TabMoaProps) {
     await refreshMoa();
   };
 
+  // ── Level and goal (moaLevelGate.ts / moaGoalContract.ts) ──
+  const goal = moa?.goal ?? null;
+  const [goalEndFailed, setGoalEndFailed] = useState(false);
+  const onEndGoal = async () => {
+    setGoalEndFailed(false);
+    try {
+      const r = await window.electronAPI.deck?.moa?.endGoal();
+      if (!r?.ok) setGoalEndFailed(true);
+    } catch {
+      setGoalEndFailed(true);
+    }
+    await refreshMoa();
+  };
+  const goalLine = !goal
+    ? t('moa.settings.goalNone')
+    : goal.status === 'pending'
+      ? t('moa.settings.goalPending', { id: goal.id, goal: goal.goal })
+      : goal.status === 'active' && goal.live
+        ? t('moa.settings.goalActive', { id: goal.id, goal: goal.goal, tasks: goal.tasksUsed, maxTasks: goal.maxTasks, turns: goal.turnsUsed, maxTurns: goal.maxTurns })
+        : goal.status === 'active'
+          ? t('moa.settings.goalInert', { id: goal.id, reason: goal.inertReason ?? '' })
+          : t('moa.settings.goalEnded', { id: goal.id, note: goal.endNote ?? goal.status });
+
   const storedCap = moa?.config.maxTurnsPerHour;
   const [capDraft, setCapDraft] = useState('');
   const [capInvalid, setCapInvalid] = useState(false);
@@ -653,6 +676,27 @@ export function TabMoa({ registerDialog }: TabMoaProps) {
       </SettingsSection>
 
       <SettingsSection>
+        <SettingRow id="moalevel" label={t('moa.settings.level')} description={t('moa.settings.levelDesc')}>
+          <MoaSelect
+            value={String(moa?.config.level ?? 1)}
+            onChange={(v) => {
+              const n = Number(v);
+              if (n === 0 || n === 1 || n === 2 || n === 3) void patchConfig({ level: n });
+            }}
+            options={[0, 1, 2, 3].map((n) => ({ value: String(n), label: t(`moa.settings.level${n}`) }))}
+            label={t('moa.settings.level')}
+          />
+        </SettingRow>
+        <SettingRow id="moagoal" label={t('moa.settings.goal')} description={goalLine}>
+          {goal && (goal.status === 'pending' || goal.status === 'active') && (
+            <Button variant="secondary" size="md" onClick={() => { void onEndGoal(); }} disabled={!loaded} data-testid="moa-goal-end">
+              {t('moa.settings.goalEnd')}
+            </Button>
+          )}
+        </SettingRow>
+        {goalEndFailed && (
+          <SettingNote tone="danger" role="alert">{t('moa.settings.goalEndFailed')}</SettingNote>
+        )}
         <SettingRow id="moaturncap" label={t('moa.settings.turnCap')} description={t('moa.settings.turnCapDesc')}>
           <Input
             type="number"

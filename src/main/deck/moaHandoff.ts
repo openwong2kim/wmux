@@ -66,6 +66,7 @@ import type { WorkLink, WorkLinkReason, WorkLinkState } from '../../shared/workL
 import type { WorkLinkUpsert } from '../workLink/workLinkStore';
 import type { OperatorTaskDelivery } from '../git/handoff';
 import type { HandoffTarget } from '../../shared/gitHandoff';
+import { goalHardRuleHit } from '../../shared/moaGoal';
 import type { DeliveryCheck } from '../pipe/deliveryGuards';
 
 const TITLE_MAX = 80;
@@ -89,8 +90,11 @@ export interface HandoffRecord {
   /** The body carries text from outside (GitHub, the web): it always asks. */
   externalSource: boolean;
   state: HandoffState;
-  /** Delivered without a click (danger mode). */
+  /** Delivered without a click (danger mode, or an approved goal). */
   auto?: boolean;
+  /** Delivered without a click under this approved goal contract
+   *  (moaGoalContract.ts): the target is a workspace the goal covers. */
+  goalId?: string;
   /** The card (or the failure notice) in the target slot. */
   decisionId?: string;
   notice?: boolean;
@@ -215,6 +219,9 @@ export interface MoaHandoffPorts {
   /** Something Moa's panel shows moved (cards, receipts). */
   notify?: () => void;
   autoPerHour?: () => number;
+  /** The active goal contract covering `workspaceId`, read at the moment of
+   *  use (moaGoalContract.covers). Absent or null: no goal path. */
+  goalCovers?: (workspaceId: string) => { goalId: string; humanOnly: readonly string[] } | null;
   now?: () => number;
   filePath?: string;
 }
@@ -429,15 +436,17 @@ export class MoaHandoffService {
 
   /** What Moa's wake for a hand-off task carries, or null when the task is
    *  not one. The question is the worker's own text: untrusted. */
-  handoffDetail(taskId: string): { question?: string; internalCancel?: 'pane-gone' | 'replaced' } | null {
+  handoffDetail(taskId: string): { question?: string; internalCancel?: 'pane-gone' | 'replaced'; goalId?: string } | null {
     const r = this.byTask(taskId);
     if (!r) return null;
     if (r.internalCancel) return { internalCancel: r.internalCancel };
-    if (!r.lastQuestion || r.taskState !== 'input-required') return {};
+    // Delivered under a goal the operator approved: the wake may say so.
+    const goal = r.goalId ? { goalId: r.goalId } : {};
+    if (!r.lastQuestion || r.taskState !== 'input-required') return goal;
     // The question is where the worker ended: keep the END of its closing
     // words, which the wake's quote would otherwise cut off.
     const chars = [...r.lastQuestion];
-    return { question: chars.length > WAKE_QUESTION_CHARS ? `…${chars.slice(-WAKE_QUESTION_CHARS).join('')}` : r.lastQuestion };
+    return { question: chars.length > WAKE_QUESTION_CHARS ? `…${chars.slice(-WAKE_QUESTION_CHARS).join('')}` : r.lastQuestion, ...goal };
   }
 
   /** The HQ is waiting on a hand-off it proposed: a card the operator has not
@@ -567,6 +576,26 @@ export class MoaHandoffService {
       createdAt: now,
       at: now,
     };
+    // GOAL PATH: a workspace an approved goal covers takes the hand-off without
+    // a card, unless Moa itself said the body carries outside text or the body
+    // asks for something that stays the operator's (shared/moaGoal.ts). The
+    // operator's turn is not required here: approving the goal is the grant
+    // to follow it through on wakes. Anything short of a delivery falls back
+    // to the card, exactly like the danger path.
+    const goal = params.externalSource === true ? null : this.goalAllows(record);
+    if (goal) {
+      const res = await this.deliver({ ...record, goalId: goal }, body, true);
+      if (res.delivered && res.taskId) return { ok: true, mode: 'auto', id: record.id, taskId: res.taskId };
+      console.warn(`[moa:handoff] goal hand-off to ${t.workspaceId} did not go through (${res.why}); asking with a card`);
+      record.state = 'pending';
+      record.auto = undefined;
+      record.goalId = undefined;
+      record.taskId = undefined;
+      record.linkId = undefined;
+      record.id = randomUUID();
+      record.askReason = 'delivery-failed';
+      return this.raiseCard(record);
+    }
     if (this.autoAllowed(record)) {
       const res = await this.deliver(record, body, true);
       if (res.delivered && res.taskId) return { ok: true, mode: 'auto', id: record.id, taskId: res.taskId };
@@ -629,6 +658,31 @@ export class MoaHandoffService {
     return 'hourly-cap';
   }
 
+  /** The goal rule, from the stores at this moment: the id of the active goal
+   *  that covers the target, when the body passes its hard rules and the
+   *  target's hourly auto cap has room. Never a brain's word. */
+  private goalAllows(r: HandoffRecord): string | null {
+    if (this.ports.hqWorkspaceId() !== r.hqWorkspaceId) return null;
+    const cover = this.goalRuleHolds(r);
+    if (!cover) return null;
+    return this.autoCapRoom(r) ? cover : null;
+  }
+
+  private goalRuleHolds(r: Pick<HandoffRecord, 'hqWorkspaceId' | 'target' | 'body'>): string | null {
+    const cover = this.ports.goalCovers?.(r.target.workspaceId) ?? null;
+    if (!cover || this.ports.hqWorkspaceId() !== r.hqWorkspaceId) return null;
+    return goalHardRuleHit(r.body, cover.humanOnly) ? null : cover.goalId;
+  }
+
+  private autoCapRoom(r: HandoffRecord): boolean {
+    const since = this.now() - HOUR_MS;
+    const limit = this.ports.autoPerHour?.() ?? HANDOFF_AUTO_PER_HOUR_DEFAULT;
+    const recent = Object.values(this.file.items).filter(
+      (x) => x.auto && (x.state === 'delivered' || x.state === 'delivering') && x.target.workspaceId === r.target.workspaceId && x.createdAt >= since,
+    ).length;
+    return recent < limit;
+  }
+
   private autoAllowed(r: HandoffRecord): boolean {
     if (!this.autoRuleHolds(r)) return false;
     const since = this.now() - HOUR_MS;
@@ -673,7 +727,9 @@ export class MoaHandoffService {
     if (auto) {
       guardKey = `moa-auto-${record.id}`;
       const check = (): string | null =>
-        this.autoRuleHolds(record) ? null : 'a workspace mode or the auto hand-off setting changed';
+        record.goalId
+          ? this.goalRuleHolds({ ...record, body }) === record.goalId ? null : 'the goal ended or no longer covers this workspace'
+          : this.autoRuleHolds(record) ? null : 'a workspace mode or the auto hand-off setting changed';
       unregister = this.ports.registerCheck(guardKey, { beforePaste: check, beforeEnter: check });
     }
     let sent: OperatorTaskDelivery;
@@ -681,7 +737,7 @@ export class MoaHandoffService {
       sent = await this.ports.deliver({
         target: record.target,
         title: `Moa: ${record.title}`,
-        message: buildHandoffText(body, taskId, auto),
+        message: buildHandoffText(body, taskId, auto, record.goalId),
         ...(link ? { workLinkId: link.id } : {}),
         ...(guardKey ? { guardKey } : {}),
         presetTaskId: taskId,

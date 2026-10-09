@@ -3,7 +3,18 @@
 
 import type { MoaAskMode } from './moaAsk';
 
-export type MoaLevel = 1 | 2 | 3;
+/** Moa's autonomy level, enforced in main (src/main/deck/moaLevelGate.ts):
+ *  0 observe only (every write the brain could make is refused), 1 today's
+ *  behaviour (the default: what main already allows, nothing more), 2 adds
+ *  the powers of an operator-approved goal contract (shared/moaGoal.ts), 3 is
+ *  reserved for merging under a contract and is enforced like 2 for now. */
+export type MoaLevel = 0 | 1 | 2 | 3;
+
+export const MOA_LEVELS: readonly MoaLevel[] = [0, 1, 2, 3];
+
+export function isMoaLevel(v: unknown): v is MoaLevel {
+  return v === 0 || v === 1 || v === 2 || v === 3;
+}
 
 export type MoaHqState = 'unset' | 'ok' | 'hq-missing' | 'hq-unknown' | 'hq-store-corrupt';
 
@@ -80,8 +91,28 @@ export interface MoaShadowStats {
 
 export type MoaConfigPatch = Partial<Pick<MoaConfig, 'onboarded' | 'level' | 'maxTurnsPerHour' | 'bubbles' | 'reduceMotion' | 'approvalPress' | 'memoryProposals' | 'issueProposals' | 'trustedAuthors' | 'issuePollMinutes' | 'ignoredRepos' | 'autoHandoff' | 'readWithoutAsking' | 'shadowJudge' | 'askMode' | 'autoDailyCap' | 'autoPaused'>>;
 
+/** Settings › Moa's view of the goal contract (shared/moaGoal.ts): the open
+ *  one, or the last one that ended. */
+export interface MoaGoalPanel {
+  id: string;
+  status: import('./moaGoal').MoaGoalStatus;
+  goal: string;
+  repoRoot: string | null;
+  tasksUsed: number;
+  maxTasks: number;
+  turnsUsed: number;
+  maxTurns: number;
+  expiresAt?: number;
+  /** Granting powers right now (active, level 2+, budget left). */
+  live: boolean;
+  /** Why an active contract grants nothing right now. */
+  inertReason?: string;
+  endNote?: string;
+}
+
 export interface MoaState {
   config: MoaConfig;
+  goal?: MoaGoalPanel | null;
   hq: { workspaceId: string | null; state: MoaHqState };
   /** Decisions the HQ migration archived; `unacked` drives the one-time notice. */
   archive: { unacked: number; total: number };

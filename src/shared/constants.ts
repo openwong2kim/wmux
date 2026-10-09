@@ -343,6 +343,9 @@ export const IPC = {
   DECK_MOA_ARCHIVE_LIST: 'deck:moa:archive:list',
   DECK_MOA_ARCHIVE_ACK: 'deck:moa:archive:ack',
   DECK_MOA_STORE_RESET: 'deck:moa:store:reset',
+  //   DECK_MOA_GOAL_END: the operator ends Moa's open goal contract
+  //   (moaGoalContract.ts) from Settings › Moa. Ending only takes powers away.
+  DECK_MOA_GOAL_END: 'deck:moa:goal:end',
   //   DECK_MOA_SHADOW_STATS — the shadow judge's readout (MoaShadowStats).
   DECK_MOA_SHADOW_STATS: 'deck:moa:shadow:stats',
   //   DECK_MOA_MEMORY_LIST / _DELETE: what Moa remembers (saved precedents,
