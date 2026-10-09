@@ -484,20 +484,19 @@ describe.runIf(hasPowerShell)('mid-line cwd report — powershell.exe (#1941)', 
 
     // A cd after the cap, then a program that is still running: meta.cwd
     // stays put until the prompt after the program reports the new folder.
-    const base1 = managed.promptLog.size;
+    // Output markers, not prompt events, tell where the line is: the previous
+    // line's prompt can still be in flight when this one is written. Each
+    // marker is concatenated at run time so the echoed command does not match.
     managed.ptyProcess.write('$ExecutionContext.InvokeCommand.PostCommandLookupAction = $null\r');
-    const end1 = await waitForEventAfter(managed, base1, (e) => e.type === 'command_end', 'command_end of the reset');
-    await waitForEventAfter(managed, base1, (e) => e.type === 'prompt_end' && e.byteOffset >= end1.byteOffset, 'the prompt after the reset');
-    const base2 = managed.promptLog.size;
-    managed.ptyProcess.write(`for ($i = 0; $i -lt 200; $i++) { Get-Date > $null }; cd '${target}'; & "${CMD_EXE}" /c "ping -n 8 127.0.0.1 > nul"\r`);
-    const start2 = await waitForEventAfter(managed, base2, (e) => e.type === 'command_start', 'command_start of the capped line');
-    // ping -n 8 runs about 7 s; the loop itself well under 1 s.
-    await new Promise((r) => setTimeout(r, 2000));
-    const running = !managed.promptLog.snapshot().slice(base2)
-      .some((e) => e.type === 'command_end' && e.byteOffset >= start2.byteOffset);
-    expect(running).toBe(true);
+    const before = managed.ringBuffer.readAll().length;
+    managed.ptyProcess.write(`for ($i = 0; $i -lt 200; $i++) { Get-Date > $null }; cd '${target}'; Write-Output ('PING' + 'START[1]'); & "${CMD_EXE}" /c "ping -n 8 127.0.0.1 > nul"; Write-Output ('PING' + 'DONE[1]')\r`);
+    await waitForOutputAfter(managed, before, /PINGSTART\[1\]/, 'the capped line reaching the program');
+    // The hook would have written OSC 7 ahead of the marker; give the daemon a
+    // moment to parse the stream, while ping -n 8 still runs for about 7 s.
+    await new Promise((r) => setTimeout(r, 500));
+    expect(managed.ringBuffer.readAll().subarray(before).toString('utf8')).not.toMatch(/PINGDONE\[1\]/);
     expect(real(managed.meta.cwd)).toBe(real(start));
-    await waitForEventAfter(managed, base2, (e) => e.type === 'command_end' && e.byteOffset >= start2.byteOffset, 'command_end of the capped line');
+    await waitForOutputAfter(managed, before, /PINGDONE\[1\]/, 'the program on the capped line ending');
     await waitForCwd(managed, target, 'the prompt report after the capped line');
   }, EVENT_TIMEOUT_MS * 8 + 2000);
 
