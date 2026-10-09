@@ -1202,6 +1202,7 @@ above and gives the same record; only what the rows must spell differs:
 | `<Tool> command` (`Bash command`) | the tool | the command | the command (and its description) | `Do you want to proceed?` | `Yes`, a plain `No` |
 | `Fetch` | `WebFetch` | the URL | `url: <url>` and `prompt: <prompt>` in the dashed box; the URL as Claude parses it (`https://example.com` → `https://example.com/`) | `Do you want to allow Claude to fetch this content?` | `1. Yes`, `3. No, and tell Claude what to do differently (esc)` |
 | `Read file` | `Read` | the path | `Read(<path>)` in the dashed box | `Do you want to proceed?` | `1. Yes`, `3. No` |
+| `Tool use` (2.1.296), with the box starting `Web Search(` | `WebSearch` | the query, then `(only allowing domains: <domain>)` when the call has one | `Web Search("<query>")` in the dashed box, the query verbatim; one allowed domain adds `, only allowing domains: <domain>` before the `)` | `Do you want to proceed?` | `1. Yes` only: deny with `/decline` (Esc) |
 
 The Fetch dialog draws no `Esc to cancel` footer: it is active when nothing but
 blank rows follows its options, and a narrow pane wraps its question over two
@@ -1209,6 +1210,20 @@ rows (read as one). Fetch and Read dialogs bind only with their title on screen,
 never with the top scrolled off. Their option 2 (`Yes, and don't ask again for
 <host>`, `Yes, allow reading from <dir> during this session`) is never a
 choice. Other titles (`Edit file`, `Create file`) stay informational.
+
+`Tool use` is Claude's generic title: only the box's first row names the tool,
+and a `Tool use` dialog for anything else stays informational. A WebSearch
+record's `choices` hold the Yes alone, in every layout: its option 2 is the
+standing grant in a pane 80 columns or wider and `No` in a 50-column one, so
+the record is denied only with `POST /api/approvals/<id>/decline`. A WebSearch
+call with two or more allowed domains, blocked domains, or another `mode` is
+not a measured shape and stays informational.
+
+A row the TUI cut (ending in `…`) still makes a dialog unanswerable, with one
+exception: an option whose visible text already says it writes a lasting rule
+or switches the permission mode (WebSearch's `2. Yes, and don't ask again for
+Web Search commands in <cwd>…`). It is never a choice, so its cut does not
+hide anything a key would press.
 
 `choices` then holds only the plain `Yes` and a plain `No` (`No`, or `No, …`
 such as "No, and tell Claude what to do differently"). An option that writes a

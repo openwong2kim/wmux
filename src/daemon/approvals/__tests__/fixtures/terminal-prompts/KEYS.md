@@ -122,6 +122,28 @@ drawn in this run.
 
 The screens are in `claude-2.1.294/`, sanitized as above.
 
+The WebSearch tool (Claude Code 2.1.296 on macOS, captured 2026-10-10 in a
+PTY read with `@xterm/headless`, `--permission-mode default --setting-sources
+project --strict-mcp-config` as Moa's brain runs, main buffer). Its call input
+is `{ query, mode: "standard" }`, plus `allowed_domains` when the model sets
+one; the PermissionRequest hook's `tool_input` is the same object. The dialog
+is titled with Claude's generic `Tool use`, draws `│ Claude wants to search
+the web for: <query>`, and boxes the call between dashed rules as
+`Web Search("<query>")` (the query verbatim, quotes not escaped; a `│` gutter
+when it wraps). One allowed domain is drawn as `, only allowing domains:
+github.com` before the closing `)`. Footer `Esc to cancel · Tab to amend`.
+
+| Dialog | Options | Keys |
+| --- | --- | --- |
+| WebSearch, 80 columns or wider | `1. Yes`, `2. Yes, and don't ask again for Web Search commands in <cwd>` (the TUI cuts it with `…` when the cwd does not fit), `3. No` | `Esc` rejects and interrupts the turn ("Interrupted · What should Claude do instead?"). Digits were not pressed |
+| WebSearch, 50 columns | `1. Yes`, `2. No` (the standing grant is not drawn) | as above |
+
+Because `2` is the standing grant in one layout and `No` in the other, wmux
+offers WebSearch's `1. Yes` only and denies with the Esc decline. The screens
+are in `claude-2.1.296/` (the user name in paths replaced at the same length,
+the plan name replaced), with the 2.1.296 Fetch dialog, unchanged from 2.1.292.
+Grep and Glob are not tools on 2.1.296 ("No such tool available").
+
 ## Claude Code — other menus
 
 The startup Bypass Permissions warning (`❯ No, exit` / `Yes, I accept`) has no

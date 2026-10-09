@@ -70,7 +70,8 @@ import {
   parsePlanPrompt,
   parseTerminalPrompt,
   terminalPromptAnswerability,
-  toolFromDialogTitle,
+  toolOfDialog,
+  webSearchDetail,
   type ParsedTerminalPrompt,
 } from './terminalPromptParse';
 import { commandOfToolInput, type PendingToolUse } from '../transcript/pendingToolUse';
@@ -1547,17 +1548,20 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
     if (read?.parsed.plan) return this.buildPlanPrompt(note, read, binding);
     const parsed = read?.parsed ?? null;
     const command = binding ? commandOfToolInput(binding.name, binding.input) : undefined;
-    // The dialog's second field: a shell call's (Bash, PowerShell) description, a WebFetch call's prompt.
-    const detail = binding?.input[binding.name === 'WebFetch' ? 'prompt' : 'description'];
-    const description = typeof detail === 'string' ? detail : undefined;
-    const toolName = binding?.name ?? note.toolName ?? toolFromDialogTitle(parsed?.title);
+    // The dialog's second field: a shell call's (Bash, PowerShell) description,
+    // a WebFetch call's prompt, a WebSearch call's domain filter as its box
+    // draws it (null: a shape not measured, which binds nothing).
+    const webSearch = binding?.name === 'WebSearch' ? webSearchDetail(binding.input) : undefined;
+    const detail = binding?.name === 'WebSearch' ? webSearch : binding?.input[binding.name === 'WebFetch' ? 'prompt' : 'description'];
+    const description = typeof detail === 'string' && detail ? detail : undefined;
+    const toolName = binding?.name ?? note.toolName ?? (parsed ? toolOfDialog(parsed) : undefined);
     // The call's own input is the source of the summary; the screen only when
-    // there is no call to read it from.
-    const summary = boundRecordText(command, TERMINAL_PROMPT_SUMMARY_MAX)
+    // there is no call to read it from. A WebSearch domain filter shows next to its query.
+    const summary = boundRecordText(command && webSearch ? `${command} (${webSearch})` : command, TERMINAL_PROMPT_SUMMARY_MAX)
       ?? (parsed ? boundRecordText(parsed.commandText, TERMINAL_PROMPT_SUMMARY_MAX) : undefined)
       ?? note.summary;
     // The summary is capped for display; the binding takes the WHOLE command.
-    const call = binding && command && !binding.unbindable
+    const call = binding && command && !binding.unbindable && webSearch !== null
       ? { name: binding.name, command, ...(description ? { description } : {}) }
       : null;
     const topCut = !!parsed && !parsed.topRuleFound;
@@ -1581,7 +1585,7 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
         && !!mark && !!this.soleEvidence(note.sessionId)?.mark
         && this.soleEvidence(note.sessionId)!.mark!.keyInputRevision === mark.keyInputRevision
         && this.soleEvidence(note.sessionId)!.mark!.incarnation === mark.incarnation
-        && toolFromDialogTitle(parsed.title) === binding.name
+        && toolOfDialog(parsed) === binding.name
         && dialogMatchesToolCall(parsed, call, { topCut })
     );
     const answer = bound ? terminalPromptAnswerability(parsed) : null;
