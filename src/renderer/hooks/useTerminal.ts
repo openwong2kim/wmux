@@ -40,7 +40,7 @@ import { resolveMacLineDeleteByte } from '../terminal/macLineDeleteKey';
 import { isWslShell } from '../../shared/imagePaste';
 import { encodeEscape, isBareEscape } from '../terminal/escapeKeys';
 import { resolveCtrlLetterByte } from '../terminal/ctrlLetterKeys';
-import { KITTY_FLAGS_RESET, imeKeyLeaksUnderKitty, installKittyPromptReset, kittyKeyboardForHost, xtermEncodesKey, xtermKittyFlags, type KittyHost } from '../terminal/kittyKeyboard';
+import { UnpairedReleaseFilter, imeKeyLeaksUnderKitty, installKittyPromptReset, kittyCtrlLetter, kittyKeyboardForHost, resetXtermKitty, xtermEncodesKey, xtermKittyFlags, type KittyHost } from '../terminal/kittyKeyboard';
 import { isComposeChord, composeOwnerHost, TERMINAL_PTY_ATTR, COMPOSE_OWNER_ATTR } from '../terminal/composeChord';
 import { foldRemoteKeyboardState, INITIAL_REMOTE_KEYBOARD_STATE, type RemoteKeyboardState } from '../components/Remote/keyboardProtocol';
 import { attachImeAnchor } from '../terminal/imeAnchor';
@@ -2029,6 +2029,13 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       return flags === undefined ? keyboardRef.current.kitty : flags > 0;
     };
     if (kittyEncoderOn) installKittyPromptReset(terminal);
+    // A Ctrl+letter wmux resolves itself goes out in the form the pane asked
+    // for: kitty `CSI <letter>;5u` once it pushed flags, the C0 byte otherwise.
+    const ctrlLetterForPane = (byte: string) => (kittyNegotiated() ? kittyCtrlLetter(byte) : byte);
+    // Releases of keys whose press never reached xterm (see UnpairedReleaseFilter).
+    const unpairedReleases = new UnpairedReleaseFilter();
+    const clearUnpairedReleases = () => unpairedReleases.clear();
+    terminal.textarea?.addEventListener('blur', clearUnpairedReleases);
 
     // #1228 review (C1): the fold is liveness-scoped. When process-truth or
     // OSC 133 says the pane's foreground command is gone, any negotiation it
@@ -2050,7 +2057,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         parkedKeyboardByTerminal.delete(terminal);
         // xterm keeps the kitty flags a dead app pushed and never popped;
         // drop them with it so the next app gets legacy keys again.
-        if (kittyEncoderOn) terminal.write(KITTY_FLAGS_RESET);
+        if (kittyEncoderOn) resetXtermKitty(terminal);
       }
     });
 
@@ -2074,7 +2081,11 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // Clipboard + shortcut handling. The wrapper records, for the
     // dead-input watchdog only, whether each keydown was handed to xterm and,
     // if not, roughly why (#1950). It never changes the handler's answer.
+    // Ahead of it, on a kitty-negotiated pane, a keyup whose keydown never
+    // reached xterm's encoder is kept from xterm, so the app gets no release
+    // without a press.
     terminal.attachCustomKeyEventHandler((e) => {
+      if (e.type === 'keyup' && unpairedReleases.swallowsKeyup(e)) return false;
       const pass = handleTerminalKey(e);
       if (e.type === 'keydown') {
         keyVerdict = {
@@ -2085,6 +2096,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
             prefixKeyCode: useStore.getState().prefixConfig.key,
           }),
         };
+        unpairedReleases.noteKeydown(e, pass, kittyNegotiated());
       }
       return pass;
     });
@@ -2197,7 +2209,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         if (releasedCtrl) {
           e.preventDefault();
           shortcutPressGuard.noteActed(e);
-          window.electronAPI.pty.write(ptyId, releasedCtrl);
+          window.electronAPI.pty.write(ptyId, ctrlLetterForPane(releasedCtrl));
           noteUserKeystroke(releasedCtrl);
           return false;
         }
@@ -2401,7 +2413,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       const ctrlByte = resolveCtrlLetterByte(e);
       if (ctrlByte) {
         e.preventDefault();
-        window.electronAPI.pty.write(ptyId, ctrlByte);
+        window.electronAPI.pty.write(ptyId, ctrlLetterForPane(ctrlByte));
         noteUserKeystroke(ctrlByte);
         return false;
       }
@@ -3250,6 +3262,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         disposeTerminal();
       }
       unsubscribeKeyboardLiveness();
+      terminal.textarea?.removeEventListener('blur', clearUnpairedReleases);
       terminalRef.current = null;
       // #1256: clear the published instance too. On a ptyId re-run the next
       // effect publishes the new instance; on a true unmount React ignores

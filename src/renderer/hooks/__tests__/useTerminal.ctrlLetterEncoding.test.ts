@@ -52,7 +52,7 @@ describe('useTerminal ctrl-letter encoding + keyboard-state lifecycle (source-le
     // #1228 C2: the SIGINT path (Dvorak Ctrl+C, #1227) must feed the
     // interrupt observer via noteUserKeystroke, not just the watchdog.
     expect(HANDLER).toMatch(
-      /if \(ctrlByte\) \{\s*e\.preventDefault\(\);\s*window\.electronAPI\.pty\.write\(ptyId, ctrlByte\);\s*noteUserKeystroke\(ctrlByte\);\s*return false;/,
+      /if \(ctrlByte\) \{\s*e\.preventDefault\(\);\s*window\.electronAPI\.pty\.write\(ptyId, ctrlLetterForPane\(ctrlByte\)\);\s*noteUserKeystroke\(ctrlByte\);\s*return false;/,
     );
   });
 

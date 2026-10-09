@@ -31,9 +31,26 @@ export function kittyKeyboardForHost(host: KittyHost): boolean {
   return host.platform !== 'win32';
 }
 
-/** Private xterm 6.1 state wmux reads: the flags the encoder uses right now. */
+/** Private xterm 6.1 state wmux reads and resets (common/Types.ts
+ *  IKittyKeyboardState): the active flags, the flags parked for the other
+ *  screen, and one push stack per screen. */
+interface XtermKittyState {
+  flags: number;
+  mainFlags: number;
+  altFlags: number;
+  mainStack: number[];
+  altStack: number[];
+}
+
 interface XtermKittyInternals {
-  _core?: { coreService?: { kittyKeyboard?: { flags?: unknown } } };
+  _core?: { coreService?: { kittyKeyboard?: Partial<XtermKittyState> } };
+}
+
+function kittyState(term: object): XtermKittyState | undefined {
+  const s = (term as XtermKittyInternals)._core?.coreService?.kittyKeyboard;
+  if (!s || typeof s.flags !== 'number' || typeof s.mainFlags !== 'number' || typeof s.altFlags !== 'number'
+    || !Array.isArray(s.mainStack) || !Array.isArray(s.altStack)) return undefined;
+  return s as XtermKittyState;
 }
 
 /**
@@ -47,17 +64,44 @@ interface XtermKittyInternals {
  * locked by kittyKeyboard.test.ts against the installed xterm.
  */
 export function xtermKittyFlags(term: object): number | undefined {
-  const flags = (term as XtermKittyInternals)._core?.coreService?.kittyKeyboard?.flags;
-  return typeof flags === 'number' ? flags : undefined;
+  return kittyState(term)?.flags;
 }
 
-/** Pops every pushed flag set on the current screen (flags end at 0). Written
- *  to the terminal, never to the PTY, when the app that pushed is gone. */
+/** Pops every pushed flag set on the current screen (flags end at 0). The
+ *  fallback reset when xterm's state cannot be reached directly. */
 export const KITTY_FLAGS_RESET = '\x1b[<99u';
 
-interface PromptHookTerminal {
-  parser: { registerOscHandler(ident: number, callback: (data: string) => boolean): { dispose(): void } };
+interface ResettableTerminal {
   write(data: string): void;
+}
+
+/**
+ * Forget every kitty flag xterm holds, on both screens, right now.
+ *
+ * Synchronous on purpose: called from inside the parser (a prompt mark), a
+ * reset written with `write()` would queue behind the rest of the chunk and
+ * wipe a push that came after the mark (a replay that runs on into a live
+ * app, a shell that pushes its own flags after drawing the prompt). Both
+ * screens, because xterm parks the alt screen's flags and stack separately
+ * and would bring a dead app's flags back on the next alt-screen entry. When
+ * the internals cannot be reached, falls back to popping the current
+ * screen's stack through the parser.
+ */
+export function resetXtermKitty(term: ResettableTerminal): void {
+  const s = kittyState(term);
+  if (!s) {
+    term.write(KITTY_FLAGS_RESET);
+    return;
+  }
+  s.flags = 0;
+  s.mainFlags = 0;
+  s.altFlags = 0;
+  s.mainStack.length = 0;
+  s.altStack.length = 0;
+}
+
+interface PromptHookTerminal extends ResettableTerminal {
+  parser: { registerOscHandler(ident: number, callback: (data: string) => boolean): { dispose(): void } };
 }
 
 const promptResetInstalled = new WeakSet<object>();
@@ -76,7 +120,7 @@ export function installKittyPromptReset(term: PromptHookTerminal): void {
   if (promptResetInstalled.has(term)) return;
   promptResetInstalled.add(term);
   term.parser.registerOscHandler(133, (data) => {
-    if (data === 'A' || data.startsWith('A;')) term.write(KITTY_FLAGS_RESET);
+    if (data === 'A' || data.startsWith('A;')) resetXtermKitty(term);
     return false;
   });
 }
@@ -134,4 +178,45 @@ export function imeKeyLeaksUnderKitty(e: KittyKeyEventLike, negotiated: boolean)
   if (e.type === 'keyup') return e.isComposing;
   if (e.type !== 'keydown') return false;
   return e.isComposing && e.key.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey;
+}
+
+/**
+ * The kitty form of a Ctrl+letter wmux resolved itself (from the physical key,
+ * because an IME left `key` as a jamo or 'Process'): `CSI <codepoint> ; 5 u`,
+ * e.g. Ctrl+C becomes `CSI 99;5u`, which is what xterm's encoder would have
+ * sent for the same key. Anything that is not a C0 letter byte is unchanged.
+ */
+export function kittyCtrlLetter(byte: string): string {
+  const code = byte.length === 1 ? byte.charCodeAt(0) : 0;
+  if (code < 1 || code > 26) return byte;
+  return `\x1b[${code + 96};5u`;
+}
+
+/**
+ * Releases xterm must not report because xterm never reported the press.
+ *
+ * With flag 2 (Codex pushes 7) xterm sends a release for every keyup it sees.
+ * A keydown that never reached xterm's encoder (a key wmux encoded or
+ * swallowed itself, a shortcut, an IME candidate key) still has its keyup go
+ * to xterm, and the app gets a release with no press. The candidate key's
+ * keyup even arrives after compositionend, so `isComposing` no longer marks
+ * it. This remembers the physical key of each such keydown on a negotiated
+ * pane and swallows its keyup once. Cleared when the terminal loses focus.
+ */
+export class UnpairedReleaseFilter {
+  private readonly held = new Set<string>();
+
+  /** A keydown the encoder did not see (`reachedXterm` false). */
+  noteKeydown(e: { code: string }, reachedXterm: boolean, negotiated: boolean): void {
+    if (negotiated && !reachedXterm && e.code) this.held.add(e.code);
+  }
+
+  /** Whether this keyup belongs to such a keydown; forgets it if so. */
+  swallowsKeyup(e: { code: string }): boolean {
+    return !!e.code && this.held.delete(e.code);
+  }
+
+  clear(): void {
+    this.held.clear();
+  }
 }

@@ -37,7 +37,7 @@ describe('useTerminal IME double keydown (source-level lock)', () => {
   it('arms the guard when it writes a released shortcut byte', () => {
     const encode = HANDLER.indexOf('const releasedCtrl = resolveCtrlLetterByte(e);');
     const note = HANDLER.indexOf('shortcutPressGuard.noteActed(e);', encode);
-    const write = HANDLER.indexOf('window.electronAPI.pty.write(ptyId, releasedCtrl);', encode);
+    const write = HANDLER.indexOf('window.electronAPI.pty.write(ptyId, ctrlLetterForPane(releasedCtrl));', encode);
     expect(encode).toBeGreaterThan(-1);
     expect(note).toBeGreaterThan(encode);
     expect(note).toBeLessThan(write);

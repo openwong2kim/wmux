@@ -5,7 +5,9 @@ import { installCanvas2dStub } from '../../../test-utils/canvas2dStub';
 import {
   imeKeyLeaksUnderKitty,
   installKittyPromptReset,
+  kittyCtrlLetter,
   kittyKeyboardForHost,
+  UnpairedReleaseFilter,
   xtermEncodesKey,
   xtermKittyFlags,
 } from '../kittyKeyboard';
@@ -85,6 +87,68 @@ describe('xtermjs/xterm.js#6112 against the installed xterm', () => {
     expect(await sent(true, candidateSpace)).toEqual([]);
     expect(await sent(true, { key: '1', code: 'Digit1', keyCode: 49, isComposing: true })).toEqual([]);
     expect(await sent(true, { ...candidateSpace, isComposing: false })).toEqual([' ']);
+  });
+
+  it('sends a Ctrl+letter wmux resolved itself in the kitty form', () => {
+    expect(kittyCtrlLetter('\x03')).toBe('\x1b[99;5u');
+    expect(kittyCtrlLetter('\x01')).toBe('\x1b[97;5u');
+    expect(kittyCtrlLetter('\x1a')).toBe('\x1b[122;5u');
+    expect(kittyCtrlLetter('\x1b')).toBe('\x1b');
+    expect(kittyCtrlLetter('a')).toBe('a');
+  });
+
+  /** A kitty terminal with the prompt reset; `write` resolves once parsed. */
+  function promptTerminal() {
+    const term = new Terminal({ allowProposedApi: true, vtExtensions: { kittyKeyboard: true } });
+    terms.push(term);
+    installKittyPromptReset(term);
+    const write = (s: string) => new Promise<void>((r) => term.write(s, r));
+    return { term, write };
+  }
+
+  it('resets at the prompt mark itself, so a push right after it survives', async () => {
+    const { term, write } = promptTerminal();
+    await write('\x1b[>7u');
+    // One chunk: the prompt mark, then an app (or a replay running on into
+    // one) pushing its own flags. A reset queued behind the chunk would wipe it.
+    await write('\x1b]133;A\x07$ \x1b[>5u');
+    expect(xtermKittyFlags(term)).toBe(5);
+  });
+
+  it('clears the alt screen too, so a dead app\'s flags do not come back there', async () => {
+    const { term, write } = promptTerminal();
+    await write('\x1b[?1049h\x1b[>7u\x1b[?1049l'); // pushed on the alt screen, then died
+    await write('\x1b]133;A\x07$ ');
+    await write('\x1b[?1049h'); // the next fullscreen app, before it negotiates
+    expect(xtermKittyFlags(term)).toBe(0);
+  });
+
+  it('keeps a release from xterm when its press never reached the encoder', async () => {
+    const term = new Terminal({ allowProposedApi: true, vtExtensions: { kittyKeyboard: true } });
+    terms.push(term);
+    term.open(document.body.appendChild(document.createElement('div')));
+    await new Promise<void>((r) => term.write('\x1b[>7u', r)); // Codex's flags: releases on
+    const run = async (withFilter: boolean) => {
+      const filter = new UnpairedReleaseFilter();
+      term.attachCustomKeyEventHandler((e) => {
+        if (withFilter && e.type === 'keyup' && filter.swallowsKeyup(e)) return false;
+        // wmux encodes this Escape itself, so xterm never sees the press.
+        const pass = e.type !== 'keydown';
+        if (withFilter && e.type === 'keydown') filter.noteKeydown(e, pass, true);
+        return pass;
+      });
+      const data: string[] = [];
+      const sub = term.onData((d) => data.push(d));
+      for (const type of ['keydown', 'keyup']) {
+        const ev = new KeyboardEvent(type, { key: 'Escape', code: 'Escape', bubbles: true, cancelable: true });
+        Object.defineProperty(ev, 'keyCode', { value: 27 });
+        term.textarea!.dispatchEvent(ev);
+      }
+      sub.dispose();
+      return data;
+    };
+    expect(await run(false)).toEqual(['\x1b[27;1:3u']);
+    expect(await run(true)).toEqual([]);
   });
 
   it('drops the flags of an app that died without popping at the next prompt', async () => {
