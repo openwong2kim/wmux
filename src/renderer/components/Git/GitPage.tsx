@@ -28,6 +28,7 @@ import { PrSection } from './PrSection';
 import { IssueSection, getIssueBridge } from './IssueSection';
 import { GitDetail } from './GitDetail';
 import { FlatLists } from './FlatRepoList';
+import { GitTurnSummary, type ShownTurn } from './GitTurnSections';
 import SegmentedControl from '../ui/SegmentedControl';
 import { groupOfPath, repoOwnerWorkspace, useRepoGroups, type RepoGroup } from './repoGroups';
 import { GhConnectPage } from './GhConnectPage';
@@ -113,6 +114,8 @@ export default function GitPage() {
     ? { repoPath: resolved.repoPath, ...(owner ? { workspaceId: owner } : {}) }
     : undefined;
   const [groupOwners, setGroupOwners] = useState<Record<string, string | undefined>>({});
+  // The flat list's rows per who-acts-next section, for the header summary.
+  const [turnCounts, setTurnCounts] = useState<Record<ShownTurn, number> | null>(null);
   const groupContext = (repoPath: string): GitDragOwner => {
     const workspaceId = groupOwners[repoPath];
     return { repoPath, ...(workspaceId ? { workspaceId } : {}) };
@@ -270,6 +273,7 @@ export default function GitPage() {
           {pickMissing && <p className="wmux-git-page-summary" data-git-pick-missing>{t('git.repoMenu.missing')}</p>}
           {page.scope === 'repo' && !resolved && !resolving && <p className="wmux-git-page-summary" data-git-no-repo>{t('git.noRepo')}</p>}
           {counts.length > 0 && <p className="wmux-git-page-summary" data-git-page-counts>{counts.join(' · ')}</p>}
+          {page.scope === 'all' && page.allLayout === 'flat' && page.tab !== 'worktrees' && turnCounts && <GitTurnSummary counts={turnCounts} />}
         </div>
         <button
           type="button"
@@ -360,6 +364,7 @@ export default function GitPage() {
                   publish={(repoPath) => publish(repoPath, kind)}
                   onOwners={setGroupOwners}
                   labelOf={groupLabel}
+                  onTurnCounts={setTurnCounts}
                 />
               ) : (
                 <AllLists

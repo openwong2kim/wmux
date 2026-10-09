@@ -2420,6 +2420,17 @@ html[data-fullscreen] .wmux-shell-body {
 .wmux-git-chip-spin { width: 10px; height: 10px; flex-shrink: 0; border-radius: 9999px; border: 1.5px solid var(--text-muted); border-top-color: transparent; }
 .wmux-git-chip-error { display: inline-flex; flex-shrink: 0; color: var(--accent-red); }
 .wmux-git-chip-rate { display: inline-flex; flex-shrink: 0; color: var(--text-muted); }
+/* All repos flat: who-acts-next sections. Neutral except Needs you's
+   attention dot and count, and Ready to merge's green check (icon only). */
+.wmux-git-turn + .wmux-git-turn { margin-top: 12px; }
+.wmux-git-turn-head { display: flex; align-items: center; gap: 6px; width: 100%; height: 28px; padding: 0 6px; border-radius: 6px; text-align: left; font-size: 12px; font-weight: 600; color: var(--text-sub); scroll-margin-top: 8px; }
+.wmux-git-turn-head:hover { background: var(--hover-fill); color: var(--text-main); }
+.wmux-git-turn-dot { width: 7px; height: 7px; flex-shrink: 0; border-radius: 9999px; background: var(--attention); }
+.wmux-git-turn-check { display: inline-flex; flex-shrink: 0; color: var(--accent-green); }
+.wmux-git-turn-count { font-weight: 400; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.wmux-git-turn[data-git-turn-section='needs_you'] .wmux-git-turn-count { color: var(--attention-text); }
+.wmux-git-turn-jump { border-radius: 4px; color: inherit; font-variant-numeric: tabular-nums; }
+.wmux-git-turn-jump:hover { color: var(--text-main); text-decoration: underline; }
 .wmux-git-tagged-row { position: relative; }
 .wmux-git-tagged-row > .wmux-git-item .wmux-git-item-meta { padding-right: 104px; }
 .wmux-git-repo-tag { position: absolute; right: 8px; bottom: 7px; max-width: 96px; height: 16px; padding: 0 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border-radius: var(--chip-radius, 6px); background: var(--selection); font-size: 11px; line-height: 16px; color: var(--text-sub); }

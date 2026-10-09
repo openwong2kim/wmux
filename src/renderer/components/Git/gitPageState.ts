@@ -32,6 +32,9 @@ export interface GitPageState {
   allLayout: GitAllLayout;
   /** The repo chips on in the flat list (group keys); none on means every repo. */
   repoChips: string[];
+  /** The flat list's who-acts-next sections the viewer opened or closed;
+   *  a section absent here keeps its default (GitTurnSections). */
+  turnCollapsed: Partial<Record<import('./gitTurn').GitTurn, boolean>>;
 }
 
 /** Where a dragged issue / PR came from: the repo and a workspace in it, for
@@ -148,6 +151,6 @@ export function saveGitRepoChips(keys: string[]): void {
 export function initialGitPageState(): GitPageState {
   return {
     ...readGitRepoChoice(), tab: readGitTab(), issueFilter: { kind: 'all' }, selected: null, listScroll: {},
-    allLayout: readGitAllLayout(), repoChips: readGitRepoChips(),
+    allLayout: readGitAllLayout(), repoChips: readGitRepoChips(), turnCollapsed: {},
   };
 }

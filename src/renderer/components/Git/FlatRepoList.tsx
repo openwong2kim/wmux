@@ -4,6 +4,8 @@
 // its repo's chip. Each repo is read the way its own list reads it (one
 // headless reader per repo, only the active repo polling), so a chip can say
 // that repo's count, that it is still loading, or that its read failed.
+// The shown rows are split into who-acts-next sections (GitTurnSections),
+// newest first within each.
 import { useEffect, useMemo, useState } from 'react';
 import { useT } from '../../hooks/useT';
 import { useStore } from '../../stores';
@@ -16,6 +18,7 @@ import { groupOfPath, repoOwnerWorkspace, type RepoGroup } from './repoGroups';
 import { hostPlatform } from './GitTab';
 import type { GitListState } from './useGitList';
 import { saveGitRepoChips, type GitPageTab, type GitSelection } from './gitPageState';
+import { GitTurnSection, SHOWN_TURNS, shownTurnOf, useGitTurnContext, type ShownTurn } from './GitTurnSections';
 import type { PrSummary } from '../../../shared/prSurface';
 import type { IssueFilter, IssueSummary } from '../../../shared/issueSurface';
 
@@ -61,7 +64,7 @@ const updatedMs = (item: Item) => {
   return Number.isFinite(ms) ? ms : 0;
 };
 
-export function FlatLists({ groups, tab, refreshKey, filter, onFilter, sel, onSelect, publish, onOwners, labelOf }: {
+export function FlatLists({ groups, tab, refreshKey, filter, onFilter, sel, onSelect, publish, onOwners, labelOf, onTurnCounts }: {
   groups: RepoGroup[] | null;
   tab: GitPageTab;
   refreshKey: number;
@@ -73,6 +76,8 @@ export function FlatLists({ groups, tab, refreshKey, filter, onFilter, sel, onSe
   onOwners?: (owners: Record<string, string | undefined>) => void;
   /** A repo's full name (owner/repo, or its folder without a remote). */
   labelOf: (g: RepoGroup) => string;
+  /** Rows per who-acts-next section over the chip-filtered list, for the header summary. */
+  onTurnCounts?: (counts: Record<ShownTurn, number> | null) => void;
 }) {
   const t = useT();
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
@@ -84,6 +89,7 @@ export function FlatLists({ groups, tab, refreshKey, filter, onFilter, sel, onSe
     [groups, activeWorkspaceId],
   );
   useEffect(() => { onOwners?.(owners); }, [owners, onOwners]);
+  const turnCtx = useGitTurnContext(groups);
 
   // A stored chip whose repo has no open workspace left is ignored.
   const chips = (groups ?? []).filter((g) => storedChips.includes(g.key)).map((g) => g.key);
@@ -151,6 +157,14 @@ export function FlatLists({ groups, tab, refreshKey, filter, onFilter, sel, onSe
   // read is on the freshness line already.
   const listed = shownFeeds.some((f) => !!f?.data);
   const gated = shownGroups.filter((g) => !!feedOf(g)?.gate);
+  // Who acts next on each shown row; the sort above holds within a section.
+  const byTurn = Object.fromEntries(SHOWN_TURNS.map((turn) => [turn, [] as typeof rows])) as Record<ShownTurn, typeof rows>;
+  for (const row of rows) {
+    const turn = shownTurnOf(tab === 'prs' ? { kind: 'pr', pr: row.item as PrSummary } : { kind: 'issue', issue: row.item as IssueSummary }, turnCtx);
+    byTurn[turn].push(row);
+  }
+  const turnCounts = Object.fromEntries(SHOWN_TURNS.map((turn) => [turn, byTurn[turn].length])) as Record<ShownTurn, number>;
+  const listLabel = tab === 'prs' ? t('git.pullRequests') : t('git.issues.listLabel');
 
   return (
     <div data-git-flat-list>
@@ -212,33 +226,50 @@ export function FlatLists({ groups, tab, refreshKey, filter, onFilter, sel, onSe
           : gated.map((g) => (
             <div key={g.key} className="wmux-git-note" data-git-flat-gate={g.key}>{`${labelOf(g)}: ${problemOf(feedOf(g))}`}</div>
           )))}
+      {onTurnCounts && <TurnCountsReport counts={turnCounts} onTurnCounts={onTurnCounts} />}
       {rows.length > 0 && (
-        <ul className="wmux-git-list" aria-label={tab === 'prs' ? t('git.pullRequests') : t('git.issues.listLabel')} data-git-flat-rows>
-          {rows.map(({ g, item }) => {
-            const repoPath = g.prPath;
-            const selected = !!sel && selGroupKey === g.key && sel.number === item.number;
-            const dragContext = { repoPath, ...(owners[repoPath] ? { workspaceId: owners[repoPath] } : {}) };
-            const tag = (
-              <button
-                type="button"
-                className={`wmux-git-repo-tag ${FOCUS_RING}`}
-                title={labelOf(g)}
-                aria-label={t('git.flat.tagLabel', { repo: labelOf(g) })}
-                aria-pressed={chips.includes(g.key)}
-                onClick={() => toggleChip(g.key)}
-                data-git-repo-tag={g.key}
-              >{g.name}</button>
-            );
-            return tab === 'prs' ? (
-              <PrRow key={`${g.key}\0${item.number}`} pr={item as PrSummary} repoPath={repoPath} selected={selected}
-                onSelect={() => onSelect(repoPath, item.number)} dragContext={dragContext} tag={tag} />
-            ) : (
-              <IssueRow key={`${g.key}\0${item.number}`} issue={item as IssueSummary} repoPath={repoPath} selected={selected}
-                onSelect={() => onSelect(repoPath, item.number)} dragContext={dragContext} tag={tag} />
-            );
-          })}
-        </ul>
+        <div data-git-turn-sections>
+          {SHOWN_TURNS.filter((turn) => turnCounts[turn] > 0).map((turn) => (
+            <GitTurnSection key={turn} turn={turn} count={turnCounts[turn]} listLabel={listLabel}>
+              {byTurn[turn].map(({ g, item }) => {
+                const repoPath = g.prPath;
+                const selected = !!sel && selGroupKey === g.key && sel.number === item.number;
+                const dragContext = { repoPath, ...(owners[repoPath] ? { workspaceId: owners[repoPath] } : {}) };
+                const tag = (
+                  <button
+                    type="button"
+                    className={`wmux-git-repo-tag ${FOCUS_RING}`}
+                    title={labelOf(g)}
+                    aria-label={t('git.flat.tagLabel', { repo: labelOf(g) })}
+                    aria-pressed={chips.includes(g.key)}
+                    onClick={() => toggleChip(g.key)}
+                    data-git-repo-tag={g.key}
+                  >{g.name}</button>
+                );
+                return tab === 'prs' ? (
+                  <PrRow key={`${g.key}\0${item.number}`} pr={item as PrSummary} repoPath={repoPath} selected={selected}
+                    onSelect={() => onSelect(repoPath, item.number)} dragContext={dragContext} tag={tag} />
+                ) : (
+                  <IssueRow key={`${g.key}\0${item.number}`} issue={item as IssueSummary} repoPath={repoPath} selected={selected}
+                    onSelect={() => onSelect(repoPath, item.number)} dragContext={dragContext} tag={tag} />
+                );
+              })}
+            </GitTurnSection>
+          ))}
+        </div>
       )}
     </div>
   );
+}
+
+/** Hands the section counts up to the page header whenever they change;
+ *  gone (null) when the flat list is. */
+function TurnCountsReport({ counts, onTurnCounts }: {
+  counts: Record<ShownTurn, number>;
+  onTurnCounts: (counts: Record<ShownTurn, number> | null) => void;
+}) {
+  const sig = SHOWN_TURNS.map((turn) => counts[turn]).join(',');
+  useEffect(() => { onTurnCounts(counts); }, [sig]);
+  useEffect(() => () => onTurnCounts(null), [onTurnCounts]);
+  return null;
 }
