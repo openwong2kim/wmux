@@ -94,18 +94,18 @@ describe('MCP workspace routing (source-level invariants)', () => {
     expect(block, 'P2-2: must prefer the external pin').toMatch(/getPinnedRoute/);
   });
 
-  it('browser_open routes through requireWorkspaceId, never the weak resolver', () => {
+  it('browser_open routes through the browser resolver, never the weak one', () => {
     const block = toolBlock('browser_open');
-    expect(block).toMatch(/requireWorkspaceId\(\)/);
+    expect(block).toMatch(/requireBrowserWorkspaceId\(\)/);
     expect(block).not.toMatch(/resolveWorkspaceId\(\)/);
   });
 
-  it('browser_close routes through requireWorkspaceId, never the weak resolver', () => {
+  it('browser_close routes through the browser resolver, never the weak one', () => {
     // The close mirror of invariant 2: a surfaceId-less browser_close used to
     // fall back to the UI-active workspace and tore down whatever browser the
     // user was looking at — the same #190-class misroute browser_open had.
     const block = toolBlock('browser_close');
-    expect(block).toMatch(/requireWorkspaceId\(\)/);
+    expect(block).toMatch(/requireBrowserWorkspaceId\(\)/);
     expect(block).not.toMatch(/resolveWorkspaceId\(\)/);
   });
 
@@ -196,21 +196,21 @@ describe('MCP workspace routing (source-level invariants)', () => {
     }
   });
 
-  it('PlaywrightEngine auto-open is wired to requireWorkspaceId (#190)', () => {
+  it('PlaywrightEngine auto-open is wired to the browser resolver (#190)', () => {
     // getPage()'s auto-open issues browser.open OUTSIDE any tool handler, so
     // the per-tool requireWorkspaceId() guard (invariant 2) cannot cover it.
     // index.ts injects the strict resolver into the engine so auto-open is
     // pinned to the calling session and fails closed (skips auto-open) on a
     // resolve miss, never reaching the renderer's active-workspace fallback.
-    expect(src).toMatch(/setWorkspaceIdResolver\(\s*requireWorkspaceId\s*\)/);
+    expect(src).toMatch(/setWorkspaceIdResolver\(\s*requireBrowserWorkspaceId\s*\)/);
   });
 
   it('every Playwright browser tool receives the same strict workspace resolver (#695)', () => {
     // Unit tests inject a resolver in isolation. This source lock covers the
     // complementary production seam: every browser registration must share the
-    // strict requireWorkspaceId dependency, never the weak/UI-active resolver.
+    // strict browser resolver (no env hint), never the weak/UI-active one.
     expect(src).toMatch(
-      /const browserToolDeps\s*=\s*\{\s*resolveWorkspaceId:\s*requireWorkspaceId\s*,/,
+      /const browserToolDeps\s*=\s*\{\s*resolveWorkspaceId:\s*requireBrowserWorkspaceId\s*,/,
     );
     // The recording ring rides the same object and must be constructed HERE,
     // inside createWmuxServer — one per broker connection. A module-level ring
@@ -259,23 +259,22 @@ describe('MCP workspace routing (source-level invariants)', () => {
     expect(block).not.toMatch(/resolveWorkspaceId\(\)/);
   });
 
-  it('browser_session_status is workspace-SCOPED — routes through the fail-soft read resolver so the chrome backend reports the caller\'s own binding', () => {
+  it('browser_session_status is workspace-SCOPED — routes through the browser resolver, fail-soft, so the chrome backend reports the caller\'s own binding', () => {
     // Unlike start/stop/list, status answers "which profile THIS workspace is
     // bound to", which scopes per-workspace on the chrome backend
     // (statusForWorkspace). The server has no ctx→workspace lane for a normal
-    // agent, so the MCP layer MUST resolve and pass the caller's workspaceId, or
-    // status silently reports the 'default' profile for a live-bound workspace
-    // (undermining #1105's "this workspace" promise). It is a READ, so it resolves
-    // via the fail-soft resolveScopedReadWorkspaceId ('' on an unresolvable
-    // identity → the builtin path never throws), never requireWorkspaceId nor the
-    // raw weak resolver.
+    // agent, so the MCP layer resolves the caller's workspace through the
+    // browser resolver (no env hint) and passes it to narrow main's verified
+    // scope. It is a READ, so a miss sends nothing rather than throwing, never
+    // requireWorkspaceId nor the raw weak resolver.
     // The logic lives in the shared `browserSessionStatus` const (both the
     // pre-merge browser_session_status tool and the merged browser_session
     // {action:'status'} call it), so the invariant locks the const.
     const block = src.match(/const browserSessionStatus = async \(\) => \{[\s\S]*?callRpc\('browser\.session\.status'/)?.[0];
     if (!block) throw new Error('browserSessionStatus handler not found in mcp/index.ts');
-    expect(block).toMatch(/resolveScopedReadWorkspaceId\(\)/);
-    expect(block).not.toMatch(/requireWorkspaceId\(\)/);
+    expect(block).toMatch(/warmBrowserIdentity\(\)/);
+    expect(src).toMatch(/const warmBrowserIdentity = \(\) => requireBrowserWorkspaceId\(\)\.catch\(/);
+    expect(block).not.toMatch(/[^r]requireWorkspaceId\(\)/);
     expect(block).not.toMatch(/resolveWorkspaceId\(\)/);
   });
 
