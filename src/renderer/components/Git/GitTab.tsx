@@ -20,10 +20,15 @@
 // itself and the stderr is surfaced as-is). The main worktree shows a badge
 // instead of Remove. A workspace name on a row switches to that workspace.
 //
+// The rows are split into who-acts-next sections (worktreeRows:
+// classifyWorktree): In use, Uncommitted changes, No open PR, Cleanup
+// candidates and No workspace. A row in a section that asks something of the
+// owner can be snoozed out of it until a chosen time or until it changes.
+//
 // Design contract (DESIGN.md): monochrome glyphs, branches and paths in mono,
 // diff counts green/red, and at most ONE accent point — the dot marking the
-// worktree the active pane is in.
-import { useCallback, useEffect, useRef, useState } from 'react';
+// worktree the active pane is in. The section headers stay neutral.
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useStore } from '../../stores';
 import type { StoreState } from '../../stores';
 import { useT } from '../../hooks/useT';
@@ -39,9 +44,13 @@ import { showWorkspaces } from '../../utils/showWorkspaces';
 import { resolveRepoCached } from './repoCache';
 import { isShadowWorkspaceId } from '../../../shared/pcRail';
 import { selectRemoteScopeName } from './thisComputerOnly';
+import { FoldSection, selectAgentStatusByParty } from './GitTurnSections';
+import { saveGitWtSnoozes } from './gitPageState';
+import type { PrSummary } from '../../../shared/prSurface';
 import {
-  buildWorktreeRows, groupWorktreeRows, normWorktreePath, worktreeContaining, STALE_WORKTREE_DAYS,
-  type DiffStat, type GitWorktreeRow, type WorkspaceOnRepo, type WorktreeRowUI,
+  buildWorktreeRows, classifyWorktree, normWorktreePath, resolveWorktreeSnoozes, snoozeUntil, worktreeContaining, worktreeSnoozeSig,
+  SNOOZABLE_SECTIONS, SNOOZE_CHOICES, STALE_WORKTREE_DAYS, WORKTREE_SECTION_ORDER,
+  type DiffStat, type GitWorktreeRow, type SnoozeChoice, type WorkspaceOnRepo, type WorktreeRowUI, type WorktreeSection,
 } from './worktreeRows';
 
 /** Settle time before the per-worktree diff stats are read. */
@@ -146,6 +155,37 @@ function getBridges(): { worktree: WorktreeBridge | null; resolveRepo: ResolveRe
   return { worktree: api?.worktree ?? null, resolveRepo: api?.diff?.resolveRepo ?? null, readDiff: api?.diff?.read ?? null };
 }
 
+/** The Worktrees tab's folds: every section starts open, Snoozed folded. */
+export type WtFold = WorktreeSection | 'snoozed';
+export function isWtCollapsed(key: WtFold, stored: Partial<Record<WtFold, boolean>>): boolean {
+  return stored[key] ?? key === 'snoozed';
+}
+
+/** Open a Worktrees section and bring its first header into view (the
+ *  header summary's jump). */
+export function openWtSection(key: WorktreeSection): void {
+  const s = useStore.getState();
+  if (isWtCollapsed(key, s.gitPage.wtCollapsed)) {
+    s.setGitPage({ wtCollapsed: { ...s.gitPage.wtCollapsed, [key]: false } });
+  }
+  requestAnimationFrame(() => {
+    const head = document.querySelector<HTMLElement>(`[data-git-wt-section="${key}"] [data-git-wt-head]`);
+    head?.focus({ preventScroll: true });
+    head?.scrollIntoView?.({ block: 'start' });
+  });
+}
+
+/** The workspaces where an agent is working or asking, as one string so the
+ *  selector re-renders only when the set changes. */
+export function selectBusyWorkspaces(s: StoreState): string {
+  const st = selectAgentStatusByParty(s);
+  return Object.keys(st)
+    .filter((k) => k.startsWith('w:') && (st[k] === 'running' || st[k] === 'awaiting_input'))
+    .map((k) => k.slice(2))
+    .sort()
+    .join('\0');
+}
+
 /** Diff counts, coloured like a diff; the changed-path count when only untracked files changed. */
 function DiffCounts({ stat, t }: { stat: DiffStat; t: (k: string) => string }): React.ReactElement {
   if (stat.error) {
@@ -160,6 +200,9 @@ function DiffCounts({ stat, t }: { stat: DiffStat; t: (k: string) => string }): 
     </span>
   );
 }
+
+/** What the page knows of a repo's open PRs (GitTabProps.prList). */
+export type WorktreePrList = { prs: readonly PrSummary[] } | 'gated' | null;
 
 export interface GitTabProps {
   /** Repo base override; without it the active pane's cwd decides. */
@@ -186,10 +229,17 @@ export interface GitTabProps {
    *  the active pane's, passed apart so switching panes within the repo does
    *  not change `cwd` and reload the group. */
   currentPath?: string;
+  /** The repo's open PR list as the page already holds it (its header read
+   *  or a Pull requests list): the PRs, 'gated' when the repo has no PR list
+   *  to read (no remote, another host), null / absent when not read. */
+  prList?: WorktreePrList;
+  /** Hands this list's visible row count per section up to the page's
+   *  summary line whenever it changes; null once the list is gone. */
+  onSectionCounts?: (counts: Record<WorktreeSection, number> | null) => void;
 }
 
 export function GitTab({
-  cwd, refreshKey = 0, onRepo, onResolved, layout = 'full', slot, workspacesOnRepo, markCurrent = true, currentPath,
+  cwd, refreshKey = 0, onRepo, onResolved, layout = 'full', slot, workspacesOnRepo, markCurrent = true, currentPath, onSectionCounts, prList = null,
 }: GitTabProps = {}): React.ReactElement {
   const showCard = layout === 'full' || layout === 'summary';
   const showSections = layout !== 'summary';
@@ -221,6 +271,8 @@ export function GitTab({
   const [worktrees, setWorktrees] = useState<WorktreeRowUI[]>([]);
   const [onRepoWorkspaces, setOnRepoWorkspaces] = useState<WorkspaceOnRepo[]>([]);
   const [stats, setStats] = useState<Record<string, DiffStat>>({});
+  // The stats were read for the listed worktrees (a snooze is judged only then).
+  const [statsReady, setStatsReady] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [newBranch, setNewBranch] = useState('');
@@ -267,6 +319,7 @@ export function GitTab({
       setWorktrees([]);
       setOnRepoWorkspaces([]);
       setStats({});
+      setStatsReady(false);
       setSession(null);
       setLoading(false);
       onRepoRef.current?.(null);
@@ -330,13 +383,17 @@ export function GitTab({
     }
     setOnRepoWorkspaces(onRepo);
 
-    // Uncommitted diff stats for the worktrees a workspace sits on, as the
-    // Review list did; idle worktrees are not read. The card alone reads only
-    // its own worktree.
+    // Uncommitted diff stats (local git, once per load): every listed
+    // worktree, since a worktree nobody sits on with uncommitted changes is
+    // its own section; a prunable one (its folder is gone) and a merge
+    // session's are not read. The card alone reads only its own worktree.
     if (!readDiff) return;
     const paths = new Map<string, string>();
     if (showSections) {
       for (const w of onRepo) paths.set(normWorktreePath(w.repoPath, plat), w.repoPath);
+      for (const w of res.worktrees) {
+        if (w.prunable === null && !w.integration) paths.set(normWorktreePath(w.path, plat), w.path);
+      }
     } else {
       paths.set(normWorktreePath(current, plat), current);
     }
@@ -361,6 +418,7 @@ export function GitTab({
       next[key] = stat;
     }
     setStats(next);
+    setStatsReady(true);
   }, [activeCwdCandidates, t, showSections]);
 
   useEffect(() => {
@@ -393,6 +451,7 @@ export function GitTab({
       setWorktrees([]);
       setOnRepoWorkspaces([]);
       setStats({});
+      setStatsReady(false);
       setSession(null);
       onRepoRef.current?.(null);
       onResolvedRef.current?.(null);
@@ -595,6 +654,97 @@ export function GitTab({
     stats,
     platform: hostPlatform(),
   });
+  // Who acts next on each row: the repo's open PR list as the page holds it
+  // (nothing is read for it here) and which workspaces have an agent
+  // working or asking.
+  const busyKey = useStore((s) => (showSections ? selectBusyWorkspaces(s) : ''));
+  const [tick, setTick] = useState(0);
+  const now = Date.now();
+  const openPrBranches = prList && prList !== 'gated' ? new Set(prList.prs.map((p) => p.headRefName)) : null;
+  const classified = rows.map((row) => ({
+    row,
+    section: classifyWorktree(row, { now, openPrBranches, busyWorkspaces: new Set(busyKey ? busyKey.split('\0') : []) }),
+  }));
+  // Snoozes: judged against a row's state only once the list and its stats
+  // are in; the section counts only while the PR list is known (a gate such
+  // as no remote counts as known: it will not change).
+  const setGitPage = useStore((s) => s.setGitPage);
+  const snoozes = useStore((s) => s.gitPage.wtSnooze);
+  const repoKey = mainPath ? normWorktreePath(mainPath, hostPlatform()) : '';
+  const settled = !!repoPath && !loading && statsReady;
+  const { snoozed, ended } = showSections
+    ? resolveWorktreeSnoozes({ snoozes, repo: repoKey, rows: classified, now, settled, prKnown: prList !== null })
+    : { snoozed: new Set<string>(), ended: [] as string[] };
+  const endedKey = ended.join('\n');
+  useEffect(() => {
+    if (!endedKey) return;
+    const cur = useStore.getState().gitPage.wtSnooze;
+    const next = { ...cur };
+    let changed = false;
+    for (const k of endedKey.split('\n')) {
+      if (k in next) { delete next[k]; changed = true; }
+    }
+    if (changed) {
+      setGitPage({ wtSnooze: next });
+      saveGitWtSnoozes(next);
+    }
+  }, [endedKey, setGitPage]);
+  // Wake on the earliest snooze end shown here, so its row comes back on time.
+  const nextEnd = Math.min(...[...snoozed].map((k) => snoozes[k]?.until ?? Infinity));
+  useEffect(() => {
+    if (!Number.isFinite(nextEnd)) return undefined;
+    const id = window.setTimeout(() => setTick((n) => n + 1), Math.max(0, nextEnd - Date.now()) + 50);
+    return () => window.clearTimeout(id);
+  }, [nextEnd, tick]);
+  // The row whose snooze choices are open (by key).
+  const [picking, setPicking] = useState<string | null>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  const focusIn = (selector: string) => requestAnimationFrame(() => listRef.current?.querySelector<HTMLElement>(selector)?.focus());
+  const snooze = (row: GitWorktreeRow, section: WorktreeSection, choice: SnoozeChoice) => {
+    const cur = useStore.getState().gitPage.wtSnooze;
+    const next = { ...cur, [row.key]: { until: snoozeUntil(choice, Date.now()), sig: worktreeSnoozeSig(row, section), repo: repoKey } };
+    setGitPage({ wtSnooze: next });
+    saveGitWtSnoozes(next);
+    setPicking(null);
+    // The row leaves its section; focus lands on the Snoozed header.
+    focusIn('[data-git-wt-section="snoozed"] [data-git-wt-head]');
+  };
+  const closePicker = (key: string) => {
+    setPicking(null);
+    // Back to the row's Snooze (matched by value: a path is no safe selector).
+    requestAnimationFrame(() => {
+      [...(listRef.current?.querySelectorAll<HTMLElement>('[data-git-snooze]') ?? [])].find((b) => b.dataset.gitSnooze === key)?.focus();
+    });
+  };
+  // The choices open with the first one focused.
+  useEffect(() => {
+    if (picking) listRef.current?.querySelector<HTMLElement>('[data-git-snooze-choices] button')?.focus();
+  }, [picking]);
+  const unsnooze = (key: string, section: WorktreeSection) => {
+    const next = { ...useStore.getState().gitPage.wtSnooze };
+    delete next[key];
+    setGitPage({ wtSnooze: next });
+    saveGitWtSnoozes(next);
+    focusIn(`[data-git-wt-section="${section}"] [data-git-wt-head]`);
+  };
+  const wtCollapsed = useStore((s) => s.gitPage.wtCollapsed);
+  const toggleFold = (key: WtFold) => {
+    const cur = useStore.getState().gitPage.wtCollapsed;
+    setGitPage({ wtCollapsed: { ...cur, [key]: !isWtCollapsed(key, cur) } });
+  };
+  const bySection = Object.fromEntries(WORKTREE_SECTION_ORDER.map((k) => [k, [] as typeof classified])) as Record<WorktreeSection, typeof classified>;
+  const snoozedRows: typeof classified = [];
+  for (const c of classified) (snoozed.has(c.row.key) ? snoozedRows : bySection[c.section]).push(c);
+  // The visible counts per section, for the page's summary line.
+  const counts = Object.fromEntries(WORKTREE_SECTION_ORDER.map((k) => [k, bySection[k].length])) as Record<WorktreeSection, number>;
+  const countsSig = showSections && repoPath ? WORKTREE_SECTION_ORDER.map((k) => counts[k]).join(',') : '';
+  const onCountsRef = useRef(onSectionCounts);
+  onCountsRef.current = onSectionCounts;
+  const countsRef = useRef(counts);
+  countsRef.current = counts;
+  useLayoutEffect(() => { onCountsRef.current?.(countsSig ? countsRef.current : null); }, [countsSig]);
+  useEffect(() => () => onCountsRef.current?.(null), []);
+
   const currentRow = rows.find((r) => r.isCurrent) ?? null;
   const currentBranch = currentRow?.entry.branch ?? null;
   // The workspace's pushed metadata trails the active pane; it describes the
@@ -616,11 +766,28 @@ export function GitTab({
       ? { files: activeMeta.gitSync.dirty, additions: activeMeta.gitSync.added ?? 0, deletions: activeMeta.gitSync.removed ?? 0, error: null }
       : null);
 
-  const renderRow = (row: GitWorktreeRow) => {
+  const snoozeLabel = (key: string) => {
+    const until = snoozes[key]?.until ?? null;
+    return until === null
+      ? t('git.wt.snoozedUntilChange')
+      : t('git.wt.snoozedUntil', { time: new Date(until).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) });
+  };
+
+  const renderRow = (row: GitWorktreeRow, section: WorktreeSection, isSnoozed: boolean) => {
     const wt = row.entry;
     const firstPr = row.workspaces.find((w) => w.pr)?.pr ?? null;
+    const isPicking = picking === row.key;
+    // Uncommitted counts: on a row with a workspace (as before), or when there are changes.
+    const showStat = !!row.stat && (row.workspaces.length > 0 || (row.stat.error === null && row.stat.files > 0));
     return (
-      <li key={wt.path} className="wmux-git-row group" data-git-worktree-row data-current={row.isCurrent ? 'true' : undefined}>
+      <li
+        key={wt.path}
+        className="wmux-git-row group"
+        data-git-worktree-row
+        data-current={row.isCurrent ? 'true' : undefined}
+        data-picking={isPicking ? 'true' : undefined}
+        data-wide={isPicking || isSnoozed || SNOOZABLE_SECTIONS.has(section) ? 'true' : undefined}
+      >
         {/* The one accent point: the worktree the active pane is in. */}
         <span aria-hidden="true" className="wmux-git-dot" data-on={row.isCurrent ? 'true' : undefined} />
         <div className="wmux-git-row-text" data-git-row-text>
@@ -657,48 +824,99 @@ export function GitTab({
           </span>
         </div>
         {row.isMain && <span className="wmux-git-main-badge">{t('git.main') || 'main'}</span>}
-        {row.stat && <DiffCounts stat={row.stat} t={t} />}
-        <div className="wmux-git-row-actions" data-git-row-actions>
-          <button
-            type="button"
-            onClick={() => handleDiff(wt.path)}
-            className={`wmux-git-action ${FOCUS_RING}`}
-            title={t('git.diffDesc') || 'Open the diff view for this worktree'}
+        {showStat && row.stat && <DiffCounts stat={row.stat} t={t} />}
+        {isPicking ? (
+          <div
+            className="wmux-git-row-actions"
+            role="group"
+            aria-label={t('git.wt.snoozeFor')}
+            data-git-snooze-choices
+            onKeyDown={(e) => {
+              if (e.key !== 'Escape') return;
+              e.preventDefault();
+              closePicker(row.key);
+            }}
           >
-            {t('git.diff') || 'Diff'}
-          </button>
-          <button
-            type="button"
-            onClick={() => handleOpen(wt)}
-            className={`wmux-git-action ${FOCUS_RING}`}
-            title={t('git.openDesc') || 'Open as a new workspace'}
-          >
-            {t('git.open') || 'Open'}
-          </button>
-          {/* Isolated merge of this worktree into base — feature rows only, one session at a time. */}
-          {!row.isMain && wt.branch && (
+            {SNOOZE_CHOICES.map((choice) => (
+              <button
+                key={choice}
+                type="button"
+                onClick={() => snooze(row, section, choice)}
+                className={`wmux-git-action ${FOCUS_RING}`}
+                data-git-snooze-choice={choice}
+              >
+                {t(`git.wt.snooze.${choice}`)}
+              </button>
+            ))}
+            <button type="button" onClick={() => closePicker(row.key)} className={`wmux-git-action ${FOCUS_RING}`}>
+              {t('git.wt.snoozeCancel')}
+            </button>
+          </div>
+        ) : (
+          <div className="wmux-git-row-actions" data-git-row-actions>
+            {isSnoozed ? (
+              <button
+                type="button"
+                onClick={() => unsnooze(row.key, section)}
+                className={`wmux-git-action ${FOCUS_RING}`}
+                title={snoozeLabel(row.key)}
+                data-git-unsnooze={row.key}
+              >
+                {t('git.wt.unsnooze')}
+              </button>
+            ) : SNOOZABLE_SECTIONS.has(section) && (
+              <button
+                type="button"
+                onClick={() => setPicking(row.key)}
+                disabled={!settled}
+                className={`wmux-git-action ${FOCUS_RING}`}
+                title={t('git.wt.snoozeDesc')}
+                data-git-snooze={row.key}
+              >
+                {t('git.wt.snoozeAction')}
+              </button>
+            )}
             <button
               type="button"
-              onClick={() => void handleMerge(wt)}
-              disabled={busy || session !== null}
+              onClick={() => handleDiff(wt.path)}
               className={`wmux-git-action ${FOCUS_RING}`}
-              title={t('git.mergeDesc') || 'Merge this worktree into the base branch (isolated, verified)'}
+              title={t('git.diffDesc') || 'Open the diff view for this worktree'}
             >
-              {t('git.merge') || 'Merge'}
+              {t('git.diff') || 'Diff'}
             </button>
-          )}
-          {!row.isMain && (
             <button
               type="button"
-              onClick={() => void handleRemove(wt)}
-              disabled={busy}
-              className={`wmux-git-action wmux-git-action-danger ${FOCUS_RING}`}
-              title={t('git.removeDesc') || 'Remove worktree (refused if dirty)'}
+              onClick={() => handleOpen(wt)}
+              className={`wmux-git-action ${FOCUS_RING}`}
+              title={t('git.openDesc') || 'Open as a new workspace'}
             >
-              {t('git.remove') || 'Remove'}
+              {t('git.open') || 'Open'}
             </button>
-          )}
-        </div>
+            {/* Isolated merge of this worktree into base — feature rows only, one session at a time. */}
+            {!row.isMain && wt.branch && (
+              <button
+                type="button"
+                onClick={() => void handleMerge(wt)}
+                disabled={busy || session !== null}
+                className={`wmux-git-action ${FOCUS_RING}`}
+                title={t('git.mergeDesc') || 'Merge this worktree into the base branch (isolated, verified)'}
+              >
+                {t('git.merge') || 'Merge'}
+              </button>
+            )}
+            {!row.isMain && (
+              <button
+                type="button"
+                onClick={() => void handleRemove(wt)}
+                disabled={busy}
+                className={`wmux-git-action wmux-git-action-danger ${FOCUS_RING}`}
+                title={t('git.removeDesc') || 'Remove worktree (refused if dirty)'}
+              >
+                {t('git.remove') || 'Remove'}
+              </button>
+            )}
+          </div>
+        )}
       </li>
     );
   };
@@ -861,15 +1079,23 @@ export function GitTab({
       </div>
   ) : null;
 
-  const groups = groupWorktreeRows(rows, Date.now());
-  const group = (key: 'inUse' | 'idle' | 'cleanup', items: GitWorktreeRow[]) => items.length > 0 && (
-    <section key={key} className="wmux-git-wt-group" data-git-wt-group={key} aria-label={t(`git.wt.${key}`)}>
-      <h3 className="wmux-git-subhead">{t(`git.wt.${key}`)} · {items.length}</h3>
-      {key === 'cleanup' && (
-        <p className="wmux-git-wt-caption">{t('git.wt.cleanupCaption', { days: STALE_WORKTREE_DAYS })}</p>
-      )}
-      <ul data-git-worktree-list>{items.map(renderRow)}</ul>
-    </section>
+  const fold = (key: WtFold, items: typeof classified) => items.length > 0 && (
+    <FoldSection
+      key={key}
+      kind="wt"
+      sectionKey={key}
+      name={t(`git.wt.${key}`)}
+      count={items.length}
+      collapsed={isWtCollapsed(key, wtCollapsed)}
+      onToggle={() => toggleFold(key)}
+      listLabel={t('git.worktrees')}
+      listProps={{ 'data-git-worktree-list': '' }}
+      caption={key === 'cleanup'
+        ? <p className="wmux-git-wt-caption">{t('git.wt.cleanupCaption', { days: STALE_WORKTREE_DAYS })}</p>
+        : key === 'snoozed' ? <p className="wmux-git-wt-caption">{t('git.wt.snoozedCaption')}</p> : undefined}
+    >
+      {items.map((c) => renderRow(c.row, c.section, key === 'snoozed'))}
+    </FoldSection>
   );
 
   return (
@@ -907,9 +1133,10 @@ export function GitTab({
             </button>
           </div>
           {mergeEl}
-          {group('inUse', groups.inUse)}
-          {group('idle', groups.idle)}
-          {group('cleanup', groups.cleanup)}
+          <div ref={listRef} className="wmux-git-wt-sections" data-git-wt-sections>
+            {WORKTREE_SECTION_ORDER.map((k) => fold(k, bySection[k]))}
+            {fold('snoozed', snoozedRows)}
+          </div>
         </div>
       )}
     </div>

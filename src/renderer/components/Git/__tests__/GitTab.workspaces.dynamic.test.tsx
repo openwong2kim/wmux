@@ -151,8 +151,10 @@ describe('GitTab — one row per worktree, with the workspaces on it', () => {
     expect(r[2].textContent).toContain('idle');
     // A workspace on another repo is not on any row.
     expect(container.textContent).not.toContain('other-ws');
-    // Idle worktrees are not read (only current + worktrees with a workspace).
-    expect(read).not.toHaveBeenCalledWith(IDLE, '', 'workspace');
+    // Every worktree's uncommitted changes are read (a worktree nobody sits
+    // on can hold work), but a clean one without a workspace shows no stat.
+    expect(read).toHaveBeenCalledWith(IDLE, '', 'workspace');
+    expect(r[2].textContent).not.toContain('clean');
     // The one accent dot is on the active pane's worktree.
     expect(r[1].getAttribute('data-current')).toBe('true');
     expect(r[0].getAttribute('data-current')).toBeNull();

@@ -23,16 +23,17 @@ import { FOCUS_RING } from '../focusRing';
 import { IconChevron, IconExternalLink, IconRefresh } from '../icons';
 import { useActiveRepo } from './useActiveRepo';
 import { RepoSwitcher, type RepoOption } from './RepoSwitcher';
-import { GitTab, hostPlatform, pathLeaf } from './GitTab';
+import { GitTab, hostPlatform, openWtSection, pathLeaf, type WorktreePrList } from './GitTab';
 import { PrSection } from './PrSection';
 import { IssueSection, getIssueBridge } from './IssueSection';
 import { GitDetail } from './GitDetail';
 import { FlatLists } from './FlatRepoList';
-import { GitTurnSummary, type ShownTurn } from './GitTurnSections';
+import { GitTurnSummary, SectionSummary, type ShownTurn } from './GitTurnSections';
+import { WORKTREE_SECTION_ORDER, type WorktreeSection } from './worktreeRows';
 import SegmentedControl from '../ui/SegmentedControl';
 import { groupOfPath, repoOwnerWorkspace, useRepoGroups, type RepoGroup } from './repoGroups';
 import { GhConnectPage } from './GhConnectPage';
-import { useGhAuthGate } from './ghAuthGate';
+import { ghAuthStateOf, useGhAuthGate } from './ghAuthGate';
 import { selectRemoteScopeName } from './thisComputerOnly';
 import type { GitDragOwner } from './gitPageState';
 import { saveGitAllLayout, saveGitRepoChoice, saveGitTab, type GitAllLayout, type GitPageState, type GitPageTab, type GitSelection } from './gitPageState';
@@ -52,6 +53,9 @@ const itemsKey = (repoPath: string, kind: GitSelection['kind']) => `${repoPath}\
 
 /** One count read's answer, tagged with its repo and the refresh it came under. */
 interface CountAnswer { repoPath: string; gen: number; count?: number }
+/** The gate's PR list read: its count, plus the list itself (or that the
+ *  repo has none to read) for the Worktrees tab's No open PR. */
+interface GatePrAnswer extends CountAnswer { prs?: PrSummary[]; gated?: boolean }
 
 export default function GitPage() {
   const t = useT();
@@ -96,9 +100,12 @@ export default function GitPage() {
   };
   // Signed out or no gh: the page is one connect card (re-read on refresh / after a login).
   // The open PR count comes from the gate's own PR list read (one per repo and refresh).
-  const [gatePrs, setGatePrs] = useState<CountAnswer>({ repoPath: '', gen: -1 });
+  const [gatePrs, setGatePrs] = useState<GatePrAnswer>({ repoPath: '', gen: -1 });
   const gate = useGhAuthGate(resolved?.repoPath ?? null, refreshKey, (repoPath, res) => {
-    setGatePrs({ repoPath, gen: generation.current, ...(res.ok ? { count: res.prs.length } : {}) });
+    setGatePrs({
+      repoPath, gen: generation.current,
+      ...(res.ok ? { count: res.prs.length, prs: res.prs } : ghAuthStateOf(res) === 'not-github' ? { gated: true } : {}),
+    });
   });
   const recheck = () => setRefreshKey((k) => k + 1);
   // Back from the connect card: the lists mounted while the gate was still
@@ -122,6 +129,31 @@ export default function GitPage() {
   const [groupOwners, setGroupOwners] = useState<Record<string, string | undefined>>({});
   // The flat list's rows per who-acts-next section, for the header summary.
   const [turnCounts, setTurnCounts] = useState<Record<ShownTurn, number> | null>(null);
+  // The Worktrees tab's visible rows per section, per worktree list shown
+  // (one per checkout in All repos), summed for the header summary.
+  const [wtCounts, setWtCounts] = useState<Record<string, Record<WorktreeSection, number>>>({});
+  const wtReporters = useRef(new Map<string, (c: Record<WorktreeSection, number> | null) => void>());
+  const reportWt = (id: string) => {
+    let fn = wtReporters.current.get(id);
+    if (!fn) {
+      fn = (c) => setWtCounts((m) => {
+        if (!c) {
+          if (!(id in m)) return m;
+          const next = { ...m };
+          delete next[id];
+          return next;
+        }
+        return { ...m, [id]: c };
+      });
+      wtReporters.current.set(id, fn);
+    }
+    return fn;
+  };
+  const wtTotals = WORKTREE_SECTION_ORDER.map((k) => ({
+    key: k,
+    name: t(`git.wt.${k}`),
+    count: Object.values(wtCounts).reduce((n, c) => n + c[k], 0),
+  })).filter((e) => e.count > 0);
   const groupContext = (repoPath: string): GitDragOwner => {
     const workspaceId = groupOwners[repoPath];
     return { repoPath, ...(workspaceId ? { workspaceId } : {}) };
@@ -225,6 +257,20 @@ export default function GitPage() {
     if (readCount === undefined) return listed.length;
     return read.gen > (itemsGen[key] ?? -1) ? readCount : listed.length;
   };
+  // A repo's open PRs as the page already holds them, for the Worktrees tab:
+  // a PR list's answer or the gate's read, whichever came under the later
+  // refresh. Nothing is read for it.
+  const prListOf = (repoPaths: string[]): WorktreePrList => {
+    for (const repoPath of repoPaths) {
+      const key = itemsKey(repoPath, 'pr');
+      const listed = items[key] as PrSummary[] | undefined;
+      const read = gatePrs.repoPath === repoPath && (gatePrs.prs || gatePrs.gated) ? gatePrs : null;
+      if (read && (!listed || read.gen > (itemsGen[key] ?? -1))) return read.prs ? { prs: read.prs } : 'gated';
+      if (listed) return { prs: listed };
+    }
+    return null;
+  };
+  const groupPrList = (g: RepoGroup): WorktreePrList => prListOf([g.prPath, ...(g.active && active.repo ? [active.repo.repoPath] : [])]);
   const countsOf = (repoPaths: string[]) => (['issue', 'pr'] as const).map((k) => {
     const n = repoPaths.map((p) => cachedCount(p, k)).find((c) => c !== undefined);
     return countOf(n, k === 'issue' ? 'git.count.issues' : 'git.count.prs');
@@ -282,6 +328,10 @@ export default function GitPage() {
           {page.scope === 'repo' && !remoteFiles && !resolved && !resolving && <p className="wmux-git-page-summary" data-git-no-repo>{t('git.noRepo')}</p>}
           {counts.length > 0 && <p className="wmux-git-page-summary" data-git-page-counts>{counts.join(' · ')}</p>}
           {page.scope === 'all' && page.allLayout === 'flat' && page.tab !== 'worktrees' && turnCounts && <GitTurnSummary counts={turnCounts} />}
+          {/* Follows the same gating as the lists it sums: no line for another computer's workspace. */}
+          {page.tab === 'worktrees' && !remoteFiles && (
+            <SectionSummary kind="wt" label={t('git.wt.summaryLabel')} entries={wtTotals} onJump={(k) => openWtSection(k as WorktreeSection)} />
+          )}
         </div>
         <button
           type="button"
@@ -337,11 +387,11 @@ export default function GitPage() {
                 no card, and the header says why when following it. */}
             {(page.scope === 'all' || following || pickedGroup?.active) && remoteScope === null && <GitTab layout="summary" refreshKey={refreshKey} />}
             {page.scope === 'all'
-              ? <AllWorktrees groups={groups} refreshKey={refreshKey} />
+              ? <AllWorktrees groups={groups} refreshKey={refreshKey} reportCounts={reportWt} prListOf={groupPrList} />
               : following
-                ? (remoteFiles ? null : <GitTab layout="worktrees" refreshKey={refreshKey} />)
+                ? (remoteFiles ? null : <GitTab layout="worktrees" refreshKey={refreshKey} onSectionCounts={reportWt('follow')} prList={resolved ? prListOf([resolved.repoPath]) : null} />)
                 : pickedGroup
-                  ? <GroupWorktrees group={pickedGroup} refreshKey={refreshKey} />
+                  ? <GroupWorktrees group={pickedGroup} refreshKey={refreshKey} reportCounts={reportWt} prList={groupPrList(pickedGroup)} />
                   : <div className="wmux-git-note">{t('git.loading')}</div>}
           </div>
         ) : (
@@ -556,7 +606,14 @@ function AllLists({ groups, tab, refreshKey, filter, onFilter, sel, onSelect, pu
 }
 
 /** All repos on the Worktrees tab: each repo's checkouts, grouped. */
-function AllWorktrees({ groups, refreshKey }: { groups: RepoGroup[] | null; refreshKey: number }) {
+type ReportWtCounts = (id: string) => (counts: Record<WorktreeSection, number> | null) => void;
+
+function AllWorktrees({ groups, refreshKey, reportCounts, prListOf }: {
+  groups: RepoGroup[] | null;
+  refreshKey: number;
+  reportCounts: ReportWtCounts;
+  prListOf: (g: RepoGroup) => WorktreePrList;
+}) {
   const t = useT();
   if (groups === null) return <div className="wmux-git-note">{t('git.loading')}</div>;
   if (groups.length === 0) return <div className="wmux-git-note" data-git-all-empty>{t('git.allRepos.empty')}</div>;
@@ -568,7 +625,7 @@ function AllWorktrees({ groups, refreshKey }: { groups: RepoGroup[] | null; refr
             {g.name}
             <span className="wmux-git-group-meta">{t('git.allRepos.workspaces', { count: g.workspaceCount })}</span>
           </h2>
-          <GroupWorktrees group={g} refreshKey={refreshKey} />
+          <GroupWorktrees group={g} refreshKey={refreshKey} reportCounts={reportCounts} prList={prListOf(g)} />
         </section>
       ))}
     </div>
@@ -576,7 +633,13 @@ function AllWorktrees({ groups, refreshKey }: { groups: RepoGroup[] | null; refr
 }
 
 /** One repo's checkouts on the Worktrees tab (labelled when there are clones). */
-function GroupWorktrees({ group, refreshKey }: { group: RepoGroup; refreshKey: number }) {
+function GroupWorktrees({ group, refreshKey, reportCounts, prList }: {
+  group: RepoGroup;
+  refreshKey: number;
+  reportCounts: ReportWtCounts;
+  /** The group's open PRs as the page holds them (one list for every checkout). */
+  prList: WorktreePrList;
+}) {
   return (
     <>
       {group.checkouts.map((c) => (
@@ -591,6 +654,8 @@ function GroupWorktrees({ group, refreshKey }: { group: RepoGroup; refreshKey: n
             markCurrent={!!c.currentPath}
             workspacesOnRepo={c.workspaces}
             refreshKey={refreshKey}
+            onSectionCounts={reportCounts(`checkout:${c.mainPath}`)}
+            prList={prList}
           />
         </div>
       ))}
