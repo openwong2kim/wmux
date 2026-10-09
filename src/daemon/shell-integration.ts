@@ -348,8 +348,8 @@ $global:__wmux_osc7 = {
 # 64 lookups on one line. Measured on 5.1: an armed lookup costs about 45 us, so
 # the cap bounds the cost of a line at about 3 ms, and long hand-typed lines
 # (pipelines, chains of ten commands) made at most 10 armed lookups. The
-# consequence: a cd placed after the first 64 lookups on one line is reported
-# at the next prompt, not immediately.
+# consequence: a cd that is the 64th lookup on its line or later is reported at
+# the next prompt, not immediately.
 #
 # An action the user already set is kept: it is chained while ours is armed and
 # restored when ours disarms.
