@@ -12,7 +12,7 @@
 import type { RemoteHost } from '../../shared/remoteHosts';
 import { isCredentialSafeOriginString } from '../../shared/remotePairInput';
 import { REMOTE_LIMITS, parseRemoteLayout, remoteId } from '../../shared/remoteLimits';
-import type { PhoneWorkspaceLayout } from '../../shared/phoneFleetSidebar';
+import type { PhoneLayoutNode, PhoneWorkspaceLayout } from '../../shared/phoneFleetSidebar';
 import {
   parsePcRailWorkspaceExtras,
   parseRemoteApprovalsList,
@@ -75,20 +75,38 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * A row's split tree under the layout bounds, plus `unplaced` limited to the
- * row's own sessions. Undefined when the host sent none or it fails a bound.
+ * Narrow a validated tree to one row: a terminal tab may only name a session
+ * that row lists, once. Any other id (another workspace's session, one cut by
+ * the pane limit, a repeat) is removed and the tab keeps its slot.
  */
-function parseRowLayout(raw: unknown, listed: ReadonlySet<string>): PhoneWorkspaceLayout | undefined {
+function narrowNode(node: PhoneLayoutNode, listed: ReadonlySet<string>, placed: Set<string>): PhoneLayoutNode {
+  if (node.kind === 'split') {
+    return { ...node, children: node.children.map((child) => narrowNode(child, listed, placed)) };
+  }
+  const surfaces = node.surfaces.map((surface) => {
+    if (surface.ptyId === undefined) return surface;
+    if (listed.has(surface.ptyId) && !placed.has(surface.ptyId)) {
+      placed.add(surface.ptyId);
+      return surface;
+    }
+    const { ptyId: _dropped, ...rest } = surface;
+    return rest;
+  });
+  return { ...node, surfaces };
+}
+
+/**
+ * A row's split tree under the layout bounds, narrowed to the row's own
+ * sessions. `unplaced` is recomputed here (the row's sessions no tab holds,
+ * in the row's order), never taken from the host. Undefined when the host
+ * sent no layout or it fails a bound.
+ */
+function parseRowLayout(raw: unknown, sessionIds: readonly string[]): PhoneWorkspaceLayout | undefined {
   const layout = parseRemoteLayout(raw);
   if (!layout) return undefined;
-  const unplaced: string[] = [];
-  const rawUnplaced = isRecord(raw) && Array.isArray(raw.unplaced) ? raw.unplaced : [];
-  for (const value of rawUnplaced) {
-    if (unplaced.length >= listed.size) break;
-    const id = remoteId(value);
-    if (id && listed.has(id) && !unplaced.includes(id)) unplaced.push(id);
-  }
-  return { ...layout, unplaced };
+  const placed = new Set<string>();
+  const root = narrowNode(layout.root, new Set(sessionIds), placed);
+  return { ...layout, root, unplaced: sessionIds.filter((id) => !placed.has(id)) };
 }
 
 /**
@@ -111,7 +129,7 @@ export function normalizePcRailWorkspaces(body: unknown): PcRailWorkspacesRespon
     const extras = parsePcRailWorkspaceExtras(raw, base.panes.length);
     if (!extras) continue;
     const layout = isRecord(raw) && raw.layout !== undefined
-      ? parseRowLayout(raw.layout, new Set(base.panes.map((p) => p.sessionId)))
+      ? parseRowLayout(raw.layout, base.panes.map((p) => p.sessionId))
       : undefined;
     workspaces.push({ ...base, ...extras, ...(layout ? { layout } : {}) });
   }

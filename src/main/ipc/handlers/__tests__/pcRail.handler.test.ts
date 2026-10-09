@@ -99,4 +99,28 @@ describe('pcRail.handler', () => {
     expect(await approvals({}, { hostId: 'unknown' })).toEqual({ ok: false, reason: 'unavailable' });
     dispose();
   });
+
+  it('holds the hub toasts until the first mute set, then shows only unmuted ones', async () => {
+    let hubDeps: PcRailHubDeps | null = null;
+    const toast = vi.fn();
+    const dispose = registerPcRailHandlers({
+      store: { list: () => [], get: () => null },
+      attachments: { list: () => [] },
+      toast,
+      hubFactory: (deps) => {
+        hubDeps = deps;
+        return { start: vi.fn(), stop: vi.fn(), isRunning: () => false, snapshot: () => [], setMuted: vi.fn() } as unknown as PcRailHub;
+      },
+    });
+    const n = { sessionId: 's', title: 'Approval needed', body: 'b', type: 'warning' as const, category: 'approval' as const };
+    hubDeps!.toast('muted-host', 'mini', n);
+    hubDeps!.toast('open-host', 'office', n);
+    expect(toast).not.toHaveBeenCalled();
+    await ipcHandlers.get(PC_RAIL_IPC.MUTES_SET)!({}, { hostIds: ['muted-host'] });
+    expect(toast).toHaveBeenCalledTimes(1);
+    expect(toast).toHaveBeenCalledWith('office · Approval needed', 'b');
+    hubDeps!.toast('muted-host', 'mini', n);
+    expect(toast).toHaveBeenCalledTimes(1);
+    dispose();
+  });
 });

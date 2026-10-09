@@ -37,7 +37,7 @@ export interface PcRailHubSinks {
   feed(event: PcRailFeedEvent): void;
   frame(hostId: string, kind: PcRailAttentionFrameKind, data: unknown): void;
   stream(hostId: string, state: PcRailStreamState): void;
-  toast(hostLabel: string, n: RemoteAttentionNotification): void;
+  toast(hostId: string, hostLabel: string, n: RemoteAttentionNotification): void;
 }
 
 export interface PcRailHubDeps extends PcRailHubSources, PcRailHubSinks {
@@ -132,6 +132,16 @@ export class PcRailHub {
     for (const id of new Set([...this.pollers.keys(), ...this.streams.keys(), ...this.lastFeed.keys()])) {
       if (!wanted.has(id)) this.dropHost(id);
     }
+    // The roster goes out before any feed for a host it adds: the renderer
+    // ignores feeds for hosts its roster does not list.
+    const roster: PcRailHostInfo[] = listed.map((h) => {
+      const allowInput = this.pollers.get(h.id)?.allowInput ?? h.allowInput;
+      return { id: h.id, label: h.label, ...(allowInput !== undefined ? { allowInput } : {}) };
+    });
+    if (JSON.stringify(roster) !== JSON.stringify(this.hosts)) {
+      this.hosts = roster;
+      this.deps.feed({ type: 'hosts', hosts: roster });
+    }
     for (const pub of listed) {
       const host = this.deps.hosts.get(pub.id);
       if (!host) continue;
@@ -143,15 +153,6 @@ export class PcRailHub {
         continue;
       }
       if (!this.pollers.has(host.id)) this.addHost(host);
-    }
-
-    const roster: PcRailHostInfo[] = listed.map((h) => {
-      const allowInput = this.pollers.get(h.id)?.allowInput ?? h.allowInput;
-      return { id: h.id, label: h.label, ...(allowInput !== undefined ? { allowInput } : {}) };
-    });
-    if (JSON.stringify(roster) !== JSON.stringify(this.hosts)) {
-      this.hosts = roster;
-      this.deps.feed({ type: 'hosts', hosts: roster });
     }
   }
 
@@ -165,7 +166,7 @@ export class PcRailHub {
       onState: (state: PcRailStreamState) => this.deps.stream(host.id, state),
       onNotification: (label: string, n: RemoteAttentionNotification) => {
         if (this.muted.has(host.id) || this.deps.attachedHostIds().has(host.id)) return;
-        this.deps.toast(label, n);
+        this.deps.toast(host.id, label, n);
       },
     };
     const stream = this.deps.streamFactory
@@ -192,6 +193,7 @@ export class PcRailHub {
     const probe = poller.ticks % PC_RAIL_CONFIG_PROBE_EVERY_TICKS === 0;
     poller.ticks++;
     let reason: PcRailFeedFailure | undefined;
+    const listRequestedAt = this.now();
     try {
       const [list, allowInput] = await Promise.all([
         fetchPcRailWorkspaces(host, this.fetchImpl),
@@ -200,6 +202,7 @@ export class PcRailHub {
       if (this.pollers.get(host.id) !== poller) return;
       if (allowInput !== undefined) poller.allowInput = allowInput;
       if (list.ok) {
+        const approvalsRequestedAt = this.now();
         const approvals = await fetchPcRailApprovals(host, this.fetchImpl);
         if (this.pollers.get(host.id) !== poller) return;
         poller.failures = 0;
@@ -209,7 +212,10 @@ export class PcRailHub {
           at: this.now(),
           ok: true,
           response: list.response,
-          ...(approvals.ok ? { approvals: approvals.approvals } : {}),
+          listRequestedAt,
+          ...(approvals.ok
+            ? { approvals: approvals.approvals, approvalsRequestedAt }
+            : { approvalsError: approvals.reason }),
           ...(poller.allowInput !== undefined ? { allowInput: poller.allowInput } : {}),
         });
       } else {

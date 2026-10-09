@@ -1602,6 +1602,34 @@ describe('remote.handler — bounds on what a host sends', () => {
     show.mockRestore();
   });
 
+  it('a host muted in the PC rail does not toast through the attach path', async () => {
+    const { toastManager } = await import('../../../notification/ToastManager');
+    const { registerPcRailHandlers } = await import('../pcRail.handler');
+    const { PC_RAIL_IPC } = await import('../../../../shared/pcRail');
+    const show = vi.spyOn(toastManager, 'show').mockImplementation(() => undefined);
+    const host: RemoteHost = { id: 'h1', label: 'office-mac', origin: 'https://box:9600', token: 't', addedAt: 0 };
+    let fire: ((label: string, n: unknown) => void) | undefined;
+    registerRemoteHandlers({
+      store: fakeStore([host]) as never,
+      attachments: fakeAttachments([{ key: 'h1:ws-1', hostId: 'h1', hostLabel: 'office-mac', workspaceId: 'ws-1', name: 'w' }]) as never,
+      fetchImpl: vi.fn() as unknown as typeof fetch,
+      attentionSubscriberFactory: ((_h: RemoteHost, onNotification: (label: string, n: unknown) => void) => {
+        fire = onNotification;
+        return { start: vi.fn(), stop: vi.fn() };
+      }) as never,
+    });
+    const disposePcRail = registerPcRailHandlers({ store: { list: () => [], get: () => null }, attachments: { list: () => [] } });
+    const n = { sessionId: 's', title: 'Approval needed', body: 'x', type: 'warning', category: 'approval' };
+    await getHandler(PC_RAIL_IPC.MUTES_SET)({}, { hostIds: ['h1'] });
+    fire?.('office-mac', n);
+    expect(show).not.toHaveBeenCalled();
+    await getHandler(PC_RAIL_IPC.MUTES_SET)({}, { hostIds: [] });
+    fire?.('office-mac', n);
+    expect(show).toHaveBeenCalledTimes(1);
+    disposePcRail();
+    show.mockRestore();
+  });
+
   it('probe refuses an oversized /api/config body', async () => {
     const big = new Response(`{"allowInput":true,"pad":"${'x'.repeat(200 * 1024)}"}`);
     const fetchImpl = vi.fn(async () => big);

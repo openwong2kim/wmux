@@ -81,7 +81,7 @@ function hubWith(hosts: RemoteHost[], fetchImpl: typeof fetch, extra: Partial<Pc
     feed: (e) => feeds.push(e),
     frame: () => undefined,
     stream: () => undefined,
-    toast: (label, n) => toasts.push(`${label}:${n.title}`),
+    toast: (_hostId, label, n) => toasts.push(`${label}:${n.title}`),
     fetchImpl,
     setTimeoutImpl: () => ({ unref() { /* never fires */ } }) as unknown as ReturnType<typeof setTimeout>,
     clearTimeoutImpl: () => undefined,
@@ -179,5 +179,56 @@ describe('normalizePcRailWorkspaces layout', () => {
     for (let i = 0; i < 40; i++) { const next = { kind: 'split', direction: 'horizontal', children: [] as unknown[] }; node.children.push(next); node = next; }
     const deepOut = normalizePcRailWorkspaces({ workspaces: [{ id: 'w2', name: 'deep', layout: { root: deep }, panes: [{ sessionId: 's9' }] }] });
     expect(deepOut.workspaces[0].layout).toBeUndefined();
+  });
+});
+
+describe('pcRail review fixes', () => {
+  it('a layout tab may only name a session of its own row', () => {
+    const leaf = (paneId: string, ptyId: string, surfaceId: string) => ({ kind: 'leaf', paneId, activeIndex: 0, surfaces: [{ surfaceId, kind: 'terminal', ptyId }] });
+    const layout = {
+      root: { kind: 'split', direction: 'horizontal', sizes: [34, 33, 33], children: [leaf('p1', 's1', 'a'), leaf('p2', 'other-ws', 'b'), leaf('p3', 'cut-by-limit', 'c')] },
+      unplaced: ['other-ws'],
+    };
+    const out = normalizePcRailWorkspaces({
+      workspaces: [
+        { id: 'w1', name: 'one', layout, panes: [{ sessionId: 's1' }, { sessionId: 's2' }] },
+        { id: 'w2', name: 'two', panes: [{ sessionId: 'other-ws' }] },
+      ],
+    });
+    const root = out.workspaces[0].layout?.root as unknown as { children: Array<{ surfaces: Array<{ ptyId?: string }> }> };
+    expect(root.children.map((c) => c.surfaces[0].ptyId)).toEqual(['s1', undefined, undefined]);
+    expect(out.workspaces[0].layout?.unplaced).toEqual(['s2']);
+  });
+
+  it('sends the roster before the failure feed of an insecure host added later', () => {
+    const list: RemoteHost[] = [host('a')];
+    const fetchImpl = vi.fn(() => new Promise<Response>(() => undefined)) as unknown as typeof fetch;
+    const { hub, feeds } = hubWith(list, fetchImpl);
+    hub.start();
+    list.push(host('lan', 'http://192.168.0.5:9600'));
+    hub.sync();
+    const rosterAt = feeds.findIndex((e) => e.type === 'hosts' && e.hosts.some((h) => h.id === 'lan'));
+    const failAt = feeds.findIndex((e) => e.type === 'feed' && e.hostId === 'lan');
+    expect(rosterAt).toBeGreaterThanOrEqual(0);
+    expect(failAt).toBeGreaterThan(rosterAt);
+    hub.stop();
+  });
+
+  it('a tick whose approvals read failed says so', async () => {
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (url.endsWith('/api/approvals')) return json({}, 503);
+      if (url.endsWith('/api/config')) return json({ allowInput: false });
+      return json({ workspaces: [] });
+    }) as unknown as typeof fetch;
+    const { hub, feeds } = hubWith([host('a')], fetchImpl);
+    hub.start();
+    await flush();
+    await flush();
+    await flush();
+    const tick = feeds.find((e) => e.type === 'feed');
+    expect(tick).toMatchObject({ ok: true, approvalsError: 'unavailable' });
+    expect(tick && 'approvals' in tick).toBe(false);
+    expect(tick).toHaveProperty('listRequestedAt');
+    hub.stop();
   });
 });

@@ -96,7 +96,7 @@ import { registerPluginSchemePrivileges, registerPluginProtocolHandler } from '.
 import { registerPluginHostHandlers } from './ipc/handlers/pluginHost.handler';
 import { registerProjectConfigHandlers } from './ipc/handlers/projectConfig.handler';
 import { registerChannelLocalHandlers } from './ipc/handlers/channelLocal.handler';
-import { registerRemoteHandlers } from './ipc/handlers/remote.handler';
+import { registerRemoteSurfaces } from './ipc/handlers/remoteRegistration';
 import { RemoteHostsStore } from './remote/RemoteHostsStore';
 import { RemoteAttachmentsStore } from './remote/RemoteAttachmentsStore';
 import { registerFanOutHandler, startGuiFanOut } from './ipc/handlers/fanout.handler';
@@ -1082,7 +1082,8 @@ registerChannelLocalHandlers(() => daemonClient);
 // channelLocal above). Registered once, outside the daemon-swap cycle: the
 // registered hosts/tokens live on disk in main, independent of the local
 // daemon connection. See remote.handler.ts for the push-routing contract.
-registerRemoteHandlers({
+// The PC rail feeds share the same two stores (remoteRegistration.ts).
+registerRemoteSurfaces({
   store: new RemoteHostsStore(path.join(getWmuxDir(), 'remote-hosts.json')),
   attachments: new RemoteAttachmentsStore(path.join(getWmuxDir(), 'remote-attachments.json')),
 });

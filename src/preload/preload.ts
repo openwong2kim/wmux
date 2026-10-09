@@ -100,7 +100,7 @@ import type {
   PcRailMutesRequest,
   PcRailStreamEvent,
 } from '../shared/pcRail';
-import { PC_RAIL_FEED_EVENT, type PcRailFeedEvent } from '../main/remote/pcRailWire';
+import type { PcRailFeedEvent } from '../main/remote/pcRailWire';
 import type { PairFailureReason, RemoteAttachmentDescriptor, RemoteErrorReason, RemoteHostPublic, RemoteHostStatus, RemoteWorkspaceSummary } from '../shared/remoteHosts';
 
 /** Mirrors {@link McpStatusPayload} in src/main/ipc/handlers/mcp.handler.ts. */
@@ -2269,7 +2269,7 @@ const pcRailBridge: PcRailBridge = {
       ipcRenderer.send(PC_RAIL_IPC.UNSUBSCRIBE);
     };
   },
-  onFeed: (callback) => onPcRailPush(PC_RAIL_FEED_EVENT, callback),
+  onFeed: (callback) => onPcRailPush(PC_RAIL_IPC.FEED_EVENT, callback),
   onAttention: (callback) => onPcRailPush(PC_RAIL_IPC.ATTENTION_EVENT, callback),
   onStream: (callback) => onPcRailPush(PC_RAIL_IPC.STREAM_EVENT, callback),
   approvalsList: (request) => ipcRenderer.invoke(PC_RAIL_IPC.APPROVALS_LIST, request) as Promise<PcRailApprovalsResult>,

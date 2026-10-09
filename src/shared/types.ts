@@ -24,6 +24,7 @@ import type { WorkspaceColorId } from './workspaceColors';
 // cycle, which TypeScript resolves without any runtime import.
 import type { AgentSlug } from './events';
 import type { OrchestratorRoleBindings } from './orchestratorRole';
+import type { PcRailPersisted } from './pcRail';
 import type { AgentSignalKind } from './hooks/signal-types';
 
 // Re-export for backward compatibility
@@ -999,6 +1000,8 @@ export interface SessionData {
   shortcutOverrides?: Partial<Record<string, string | null>>;
   autoUpdateEnabled?: boolean;
   customThemeColors?: CustomThemeColors;
+  /** PC rail: the selected computer, the last workspace per computer, muted hosts. Never a shadow id. */
+  pcRail?: PcRailPersisted;
   sidebarMode?: 'workspaces' | 'company';
   company?: Company | null;
   memberCosts?: Record<string, number>;

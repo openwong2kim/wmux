@@ -26,9 +26,14 @@ export function usePcRailFeeds(): void {
     let disposed = false;
     const timers = new Map<string, ReturnType<typeof setTimeout>>();
 
+    // Each answer is applied against when its request started: an older
+    // answer than one already applied is dropped, and one that an SSE frame
+    // overtook is dropped and asked again (the slice decides which).
     const reconcile = (hostId: string): void => {
+      const requestedAt = Date.now();
       void api.approvalsList({ hostId }).then((result) => {
-        if (!disposed && result.ok) useStore.getState().reconcilePcRailHostApprovals(hostId, result.approvals);
+        if (disposed || !result.ok) return;
+        if (useStore.getState().reconcilePcRailHostApprovals(hostId, result.approvals, requestedAt) === 'raced') reconcileSoon(hostId);
       }).catch(() => undefined);
     };
     const reconcileSoon = (hostId: string): void => {
@@ -39,15 +44,8 @@ export function usePcRailFeeds(): void {
       }, PC_RAIL_REFETCH_DEBOUNCE_MS));
     };
 
-    const offFeed = api.onFeed((event) => useStore.getState().applyPcRailFeedEvent(event));
-    const offAttention = api.onAttention((event) => {
-      if (useStore.getState().applyPcRailAttention(event)) reconcileSoon(event.hostId);
-    });
-    const offStream = api.onStream((event) => {
-      if (event.state !== 'closed') reconcile(event.hostId);
-    });
-    const release = api.subscribe();
-
+    // Mutes reach main before the subscribe, so no toast fires for a muted
+    // host in between (main also holds toasts until it has a mute set).
     let lastMutes: string[] | null = null;
     const pushMutes = (mutedPcs: string[]): void => {
       if (mutedPcs === lastMutes) return;
@@ -55,6 +53,17 @@ export function usePcRailFeeds(): void {
       void api.setMutes({ hostIds: [...mutedPcs] }).catch(() => undefined);
     };
     pushMutes(useStore.getState().pcRail.mutedPcs);
+
+    const offFeed = api.onFeed((event) => {
+      if (useStore.getState().applyPcRailFeedEvent(event) && event.type === 'feed') reconcileSoon(event.hostId);
+    });
+    const offAttention = api.onAttention((event) => {
+      if (useStore.getState().applyPcRailAttention(event)) reconcileSoon(event.hostId);
+    });
+    const offStream = api.onStream((event) => {
+      if (event.state !== 'closed') reconcile(event.hostId);
+    });
+    const release = api.subscribe();
 
     let lastAttached = useStore.getState().remoteWorkspaces;
     useStore.getState().migrateAttachedRemoteWorkspaces();

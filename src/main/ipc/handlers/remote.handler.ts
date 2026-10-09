@@ -31,6 +31,7 @@ import { RemoteAttentionSubscriber } from '../../remote/RemoteAttentionSubscribe
 import type { RemoteAttentionNotification } from '../../remote/remoteAttention';
 import { isCategoryMuted } from '../../notification/mutedCategories';
 import { toastManager } from '../../notification/ToastManager';
+import { isPcRailHostMuted } from './pcRail.handler';
 import { parseRemoteAttachmentKey, parseWebUrl, remoteAttachmentKey, REMOTE_POLL_INTERVAL_MS } from '../../../shared/remoteHosts';
 import { normalizeWorkspaceColor } from '../../../shared/workspaceColors';
 import { DEVICE_KIND_HEADER } from '../../../shared/web';
@@ -315,7 +316,7 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
   // and the toast dedup without a second copy of any of them.
   const attentionSubs = new Map<string, RemoteAttentionSubscriber>(); // hostId -> sub
 
-  function onRemoteAttention(hostLabel: string, n: RemoteAttentionNotification): void {
+  function onRemoteAttention(hostId: string, hostLabel: string, n: RemoteAttentionNotification): void {
     const label = hostLabel || 'Remote';
     // NOT `dispatchNotification`: its renderer leg resolves a notification with
     // no ptyId and no workspaceId onto the ACTIVE LOCAL workspace
@@ -328,6 +329,8 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
     // the mirrored per-category mute, and ToastManager (which applies the
     // `toastEnabled` setting and stays quiet while a window has OS focus).
     if (isCategoryMuted(n.category)) return;
+    // The PC rail's per-computer mute covers this path too.
+    if (isPcRailHostMuted(hostId)) return;
     toastManager.show(`${label} · ${n.title}`, n.body, { ptyId: null, workspaceId: null });
   }
 
@@ -348,7 +351,7 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
       if (attentionSubs.has(hostId)) continue;
       const host = store.get(hostId);
       if (!host) continue;
-      const sub = makeAttentionSubscriber(host, onRemoteAttention);
+      const sub = makeAttentionSubscriber(host, (label, n) => onRemoteAttention(host.id, label, n));
       attentionSubs.set(hostId, sub);
       sub.start();
     }

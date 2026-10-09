@@ -870,7 +870,7 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       ])].slice(0, PHONE_WORKSPACE_REQUEST_LIMIT);
       // PC rail: optional `pcRail` field, parsed (and shadow ids refused) by the
       // shared parser. Ahead of the empty-workspace return below.
-      if ('pcRail' in data) restorePcRail(state, (data as { pcRail?: unknown }).pcRail);
+      if (data.pcRail !== undefined) restorePcRail(state, data.pcRail);
       // Site guides are restored ahead of the empty-workspace return below:
       // that return would otherwise skip the saved marker while the session
       // still counts as loaded, and the Chrome auto-enable would override a

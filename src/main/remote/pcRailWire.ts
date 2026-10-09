@@ -1,15 +1,15 @@
-// PC rail: the one push PR1's PC_RAIL_IPC does not name yet.
+// PC rail: the payload of PC_RAIL_IPC.FEED_EVENT.
 //
 // Main owns the 10 s per-host poll (a renderer timer is throttled while the
 // window is in the background), so the results need a main → renderer push.
-// Kept free of runtime imports so preload and the renderer can import it.
-// Proposed for PC_RAIL_IPC as FEED_EVENT.
+// Type-only, so preload and the renderer can import it.
 
+import { PC_RAIL_IPC } from '../../shared/pcRail';
 import type { RemoteApprovalSummary } from '../../shared/pcRail/attention';
 import type { PcRailWorkspacesResponse } from '../../shared/pcRail/workspaceRow';
 
 /** main → renderer (push): PcRailFeedEvent. */
-export const PC_RAIL_FEED_EVENT = 'pcRail:feed-event';
+export const PC_RAIL_FEED_EVENT = PC_RAIL_IPC.FEED_EVENT;
 
 export type PcRailFeedFailure = 'unreachable' | 'auth-rejected' | 'insecure-transport' | 'unavailable';
 
@@ -23,14 +23,22 @@ export interface PcRailHostInfo {
 export type PcRailFeedEvent =
   /** The full host roster, sent on subscribe and whenever it changes. */
   | { type: 'hosts'; hosts: PcRailHostInfo[] }
-  /** One host's poll tick answered. `approvals` is absent when that read failed. */
+  /**
+   * One host's poll tick answered. Times are epoch ms on this machine: each
+   * list is a snapshot of when its request started. `approvals` and
+   * `approvalsRequestedAt` are absent when that read failed, and
+   * `approvalsError` says why.
+   */
   | {
     type: 'feed';
     hostId: string;
     at: number;
     ok: true;
     response: PcRailWorkspacesResponse;
+    listRequestedAt: number;
     approvals?: RemoteApprovalSummary[];
+    approvalsRequestedAt?: number;
+    approvalsError?: PcRailFeedFailure;
     allowInput?: boolean;
   }
   /** One host's poll tick got no usable answer. */

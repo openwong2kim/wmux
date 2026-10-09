@@ -22,7 +22,6 @@ import type { RemoteHostsStore } from '../../remote/RemoteHostsStore';
 import type { RemoteAttachmentsStore } from '../../remote/RemoteAttachmentsStore';
 import { PcRailHub, type PcRailHubDeps } from '../../remote/pcRailHub';
 import { fetchPcRailApprovals } from '../../remote/pcRailFeed';
-import { PC_RAIL_FEED_EVENT } from '../../remote/pcRailWire';
 import type { RemoteAttentionNotification } from '../../remote/remoteAttention';
 import { isCategoryMuted } from '../../notification/mutedCategories';
 import { toastManager } from '../../notification/ToastManager';
@@ -92,17 +91,28 @@ export function registerPcRailHandlers(deps: RegisterPcRailHandlersDeps): () => 
     toastManager.show(title, body, { ptyId: null, workspaceId: null });
   });
 
+  // Until the renderer sends its first mute set, main cannot tell a muted
+  // host from an unmuted one, so the hub's toasts wait (a few, then dropped).
+  const HELD_TOASTS_MAX = 5;
+  let mutesKnown = false;
+  const heldToasts: Array<{ hostId: string; title: string; body: string }> = [];
+
   const hubDeps: PcRailHubDeps = {
     hosts: store,
     attachedHostIds: () => new Set(attachments.list().map((a) => a.hostId)),
     fetchImpl,
-    feed: (event) => broadcast(PC_RAIL_FEED_EVENT, event),
+    feed: (event) => broadcast(PC_RAIL_IPC.FEED_EVENT, event),
     frame: (hostId, kind, data) => broadcast(PC_RAIL_IPC.ATTENTION_EVENT, { hostId, kind, data } satisfies PcRailAttentionEvent),
     stream: (hostId, state) => broadcast(PC_RAIL_IPC.STREAM_EVENT, { hostId, state } satisfies PcRailStreamEvent),
-    toast: (hostLabel: string, n: RemoteAttentionNotification) => {
+    toast: (hostId: string, hostLabel: string, n: RemoteAttentionNotification) => {
       // A remote toast names no local pane or workspace, as on the attach path.
       if (isCategoryMuted(n.category)) return;
-      showToast(`${hostLabel || 'Remote'} · ${n.title}`, n.body);
+      const title = `${hostLabel || 'Remote'} · ${n.title}`;
+      if (!mutesKnown) {
+        if (heldToasts.length < HELD_TOASTS_MAX) heldToasts.push({ hostId, title, body: n.body });
+        return;
+      }
+      if (!mutedHosts.has(hostId)) showToast(title, n.body);
     },
   };
   const hub = deps.hubFactory ? deps.hubFactory(hubDeps) : new PcRailHub(hubDeps);
@@ -153,7 +163,7 @@ export function registerPcRailHandlers(deps: RegisterPcRailHandlersDeps): () => 
     // A renderer that joins a running hub gets the current picture at once.
     if (wasRunning) {
       for (const event of hub.snapshot()) {
-        if (!sender.isDestroyed()) sender.send(PC_RAIL_FEED_EVENT, event);
+        if (!sender.isDestroyed()) sender.send(PC_RAIL_IPC.FEED_EVENT, event);
       }
     }
   });
@@ -184,6 +194,10 @@ export function registerPcRailHandlers(deps: RegisterPcRailHandlersDeps): () => 
       mutedHosts.clear();
       for (const id of ids) mutedHosts.add(id);
       hub.setMuted(mutedHosts);
+      if (!mutesKnown) {
+        mutesKnown = true;
+        for (const t of heldToasts.splice(0)) if (!mutedHosts.has(t.hostId)) showToast(t.title, t.body);
+      }
     }));
 
   return () => {

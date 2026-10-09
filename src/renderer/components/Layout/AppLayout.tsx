@@ -12,6 +12,7 @@ import { WorkspaceCenter } from './WorkspaceCenter';
 import { EmptyLeafFunnel } from './EmptyLeafFunnel';
 import { selectProjectCwdSignature } from '../../stores/selectors/appLayout';
 import { selectInboxOwnsApprovals } from '../../stores/selectors/approvalInbox';
+import { selectPcRailPersisted } from '../../stores/selectors/pcRail';
 import { shouldShowInstallError, shouldReannounceAfterError, isSmartAppControlHold, truncateReason } from './updateNoticePolicy';
 import { isInstallBlockedByWindowsReason } from '../../../shared/installAbortReasons';
 import { hooksLaunchCheck, nextFirstBootSurface } from './firstBootSequence';
@@ -468,6 +469,7 @@ function buildSessionData(dumped: Map<string, boolean>): SessionData {
     shortcutOverrides: state.shortcutOverrides,
     autoUpdateEnabled: state.autoUpdateEnabled,
     customThemeColors: state.customThemeColors ?? undefined,
+    pcRail: selectPcRailPersisted(state),
     onboardingCompleted: state.onboardingCompleted,
     // T8a: persist first-run wizard + cheat sheet flags alongside onboardingCompleted.
     // workspaceSlice.loadSession (T5) reads these back, defaulting to false.

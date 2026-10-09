@@ -9,6 +9,7 @@ import {
   comparePcRailRows,
   countPcRailAttention,
   isPcRailFeedStale,
+  parsePcRailPersisted,
   type PcId,
   type PcRailAttentionCounts,
   type PcRailAttentionPane,
@@ -22,9 +23,13 @@ import { remoteAttachmentKey } from '../../../shared/remoteHosts';
 const NO_ATTENTION: PcRailAttentionCounts = Object.freeze({ needsYou: 0, finished: 0 });
 const NO_ROWS: readonly PcRailWorkspaceRow[] = Object.freeze([]);
 
-/** What session.json stores for the rail (the save path writes this as `pcRail`). */
-export function selectPcRailPersisted(state: StoreState): PcRailPersisted {
-  return state.pcRail;
+/**
+ * What session.json stores for the rail (buildSessionData writes it as
+ * `pcRail`), run through the same parser the load path uses, so a save can
+ * never write a shadow id or an over-cap map.
+ */
+export function selectPcRailPersisted(state: Pick<StoreState, 'pcRail'>): PcRailPersisted {
+  return parsePcRailPersisted(state.pcRail);
 }
 
 export function selectActivePcId(state: StoreState): PcId {
