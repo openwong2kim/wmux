@@ -132,3 +132,57 @@ describe('owner decision 2 — under an active goal, direct sends stay inside th
     expect(moaGoalSendScope('ws-other')).toBeNull();
   });
 });
+
+describe('owner decision 3 — channel posts, pane focus and new panes stay inside an active goal', () => {
+  const paneWs: Record<string, string> = { 'pane-task': 'ws-task', 'pane-ops': 'ws-ops', 'pane-hq': HQ };
+  const channels: Record<string, string[]> = { 'ch-in': [HQ, 'ws-task'], 'ch-out': [HQ, 'ws-task', 'ws-ops'], 'ch-empty': [] };
+  function scoped(level: MoaLevel = 2, active = true, extra: Partial<MoaLevelGateDeps> = {}): MoaLevelGateDeps {
+    return {
+      hqWorkspaceId: () => HQ,
+      level: () => level,
+      activeGoal: () => (active ? { goalId: 'G-abc123', humanOnly: [], scope: ['ws-task'] } : null),
+      paneOwner: async (p) => paneWs[p] ?? null,
+      channelMembers: async (_hq, c) => channels[c] ?? null,
+      ...extra,
+    };
+  }
+  const OUT = /refused under goal G-abc123: workspace ws-ops is outside the goal's contract.*moa_propose_handoff/s;
+
+  it('a channel post is refused when a member or a mention is outside the contract', async () => {
+    expect(await moaScopeRefusal(scoped(), 'a2a.channel.post', HQ, { channelId: 'ch-in', text: 'status?' })).toBeNull();
+    expect(await moaScopeRefusal(scoped(), 'a2a.channel.post', HQ, { channelId: 'ch-out', text: 'status?' })).toMatch(OUT);
+    expect(await moaScopeRefusal(scoped(), 'a2a.channel.post', HQ, { channelId: 'ch-in', text: 'x', mentions: [{ workspaceId: 'ws-ops', name: 'ops' }] })).toMatch(OUT);
+  });
+
+  it('a channel post fails closed when its members cannot be read', async () => {
+    expect(await moaScopeRefusal(scoped(), 'a2a.channel.post', HQ, { channelId: 'ch-empty', text: 'x' })).toMatch(/could not be read/);
+    expect(await moaScopeRefusal(scoped(), 'a2a.channel.post', HQ, { channelId: 'ch-unknown', text: 'x' })).toMatch(/could not be read/);
+    expect(await moaScopeRefusal(scoped(2, true, { channelMembers: undefined }), 'a2a.channel.post', HQ, { channelId: 'ch-in', text: 'x' })).toMatch(/could not be read/);
+    expect(await moaScopeRefusal(scoped(), 'a2a.channel.post', HQ, { text: 'x' })).toMatch(/no channel was named/);
+  });
+
+  it('pane.focus goes by the pane\'s workspace and fails closed when unknown', async () => {
+    expect(await moaScopeRefusal(scoped(), 'pane.focus', HQ, { id: 'pane-task' })).toBeNull();
+    expect(await moaScopeRefusal(scoped(), 'pane.focus', HQ, { id: 'pane-hq' })).toBeNull();
+    expect(await moaScopeRefusal(scoped(), 'pane.focus', HQ, { id: 'pane-ops' })).toMatch(OUT);
+    expect(await moaScopeRefusal(scoped(), 'pane.focus', HQ, { id: 'pane-gone' })).toMatch(/could not be resolved/);
+    expect(await moaScopeRefusal(scoped(2, true, { paneOwner: async () => { throw new Error('x'); } }), 'pane.focus', HQ, { id: 'pane-task' })).toMatch(/could not be resolved/);
+  });
+
+  it('creating panes outside the contract is refused; omitted workspace means the HQ itself', async () => {
+    for (const m of ['pane.split', 'surface.new']) {
+      expect(await moaScopeRefusal(scoped(), m, HQ, { direction: 'horizontal' })).toBeNull();
+      expect(await moaScopeRefusal(scoped(), m, HQ, { direction: 'horizontal', workspaceId: 'ws-task' })).toBeNull();
+      expect(await moaScopeRefusal(scoped(), m, HQ, { direction: 'horizontal', workspaceId: 'ws-ops' })).toMatch(OUT);
+    }
+  });
+
+  it('no active goal, level 1, or another commander: unchanged', async () => {
+    for (const d of [scoped(2, false), scoped(1, true)]) {
+      expect(await moaScopeRefusal(d, 'a2a.channel.post', HQ, { channelId: 'ch-out', text: 'x' })).toBeNull();
+      expect(await moaScopeRefusal(d, 'pane.focus', HQ, { id: 'pane-ops' })).toBeNull();
+      expect(await moaScopeRefusal(d, 'surface.new', HQ, { workspaceId: 'ws-ops' })).toBeNull();
+    }
+    expect(await moaScopeRefusal(scoped(), 'pane.split', 'ws-other', { workspaceId: 'ws-ops' })).toBeNull();
+  });
+});

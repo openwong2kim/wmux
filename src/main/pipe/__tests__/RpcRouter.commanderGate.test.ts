@@ -16,11 +16,10 @@ import * as os from 'os';
 import * as path from 'path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { RpcRouter } from '../RpcRouter';
-import type { RpcMethod } from '../../../shared/rpc';
 import { PluginTrustStore } from '../../mcp/PluginTrustStore';
 import { registerMcpPluginRpc } from '../handlers/mcp.rpc';
 import { mintCommanderToken, revokeCommanderToken } from '../../deck/commanderTrust';
-import type { RpcContext } from '../../../shared/rpc';
+import type { RpcContext, RpcMethod } from '../../../shared/rpc';
 import { setMoaLevelGate } from '../../deck/moaLevelGate';
 
 let tmpDir = '';
@@ -259,6 +258,25 @@ describe('commander role gate — Moa level gate', () => {
       expect(String((key as { error?: string }).error)).toMatch(/outside the goal's contract/);
       const inside = await call(hq, 'input.send', { ptyId: 'pty-task', text: 'use fixture A' });
       expect(inside.ok).toBe(true);
+    } finally {
+      revokeCommanderToken(hq);
+    }
+  });
+
+  it('under an active goal, a new pane in a workspace outside the contract is refused; with no goal it is not', async () => {
+    let active = true;
+    setMoaLevelGate({
+      hqWorkspaceId: () => 'ws-brain',
+      level: () => 2,
+      activeGoal: () => (active ? { goalId: 'G-abc123', humanOnly: [], scope: ['ws-task'] } : null),
+    });
+    const hq = mintCommanderToken('ws-brain');
+    try {
+      const out = await call(hq, 'pane.split', { direction: 'horizontal', workspaceId: 'ws-ops' });
+      expect(String((out as { error?: string }).error)).toMatch(/refused under goal G-abc123: workspace ws-ops is outside the goal's contract/);
+      active = false;
+      const after = await call(hq, 'pane.split', { direction: 'horizontal', workspaceId: 'ws-ops' });
+      expect(String((after as { error?: string }).error ?? '')).not.toMatch(/refused under goal/);
     } finally {
       revokeCommanderToken(hq);
     }

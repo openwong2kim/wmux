@@ -83,6 +83,10 @@ export interface MoaLevelGateDeps {
   /** The workspace on the other side of an A2A task the HQ is party to, or
    *  null when it cannot be read. */
   taskCounterparty?: (hqWorkspaceId: string, taskId: string) => Promise<string | null>;
+  /** Which workspace holds a pane (by paneId). Absent or failing: unknown. */
+  paneOwner?: (paneId: string) => Promise<string | null>;
+  /** The member workspaces of a channel, read as the HQ; null when unreadable. */
+  channelMembers?: (hqWorkspaceId: string, channelId: string) => Promise<string[] | null>;
 }
 
 /** The refusal for `method` from the commander bound to `workspaceId`, or null. Pure. */
@@ -146,6 +150,11 @@ export function commanderLevelRefusal(method: string, workspaceId: string, param
 // does not cover), and a raw keystroke or a reply parked behind a card would
 // land late on a pane that has moved on. A target that cannot be resolved is
 // refused too (fail closed). Without an active goal nothing here applies.
+//
+// The same check covers (owner decision 3) a channel post whose channel has a
+// member — or whose mention names a workspace — outside the contract,
+// pane.focus on a pane outside it, and creating panes (pane.split,
+// surface.new) in a workspace outside it.
 
 const SCOPED_METHODS: ReadonlySet<string> = new Set([
   'input.send',
@@ -153,6 +162,10 @@ const SCOPED_METHODS: ReadonlySet<string> = new Set([
   'a2a.task.send',
   'a2a.task.update',
   'a2a.broadcast',
+  'a2a.channel.post',
+  'pane.focus',
+  'pane.split',
+  'surface.new',
 ]);
 
 function str(v: unknown): string | null {
@@ -226,6 +239,39 @@ export async function moaScopeRefusal(
       if (!target) return unknown(`the other side of task ${taskId} could not be read`);
       break;
     }
+    case 'a2a.channel.post': {
+      const channelId = str(p.channelId);
+      if (!channelId) return unknown('no channel was named');
+      const mentioned = Array.isArray(p.mentions)
+        ? p.mentions.map((m) => (m && typeof m === 'object' ? str((m as Record<string, unknown>).workspaceId) : null))
+        : [];
+      for (const w of mentioned) if (w && !g.scope.includes(w)) return outside(w);
+      let members: string[] | null = null;
+      try {
+        members = deps.channelMembers ? await deps.channelMembers(g.scope[0], channelId) : null;
+      } catch {
+        members = null;
+      }
+      if (!members || members.length === 0) return unknown(`the members of channel ${channelId} could not be read`);
+      const out = members.find((w) => !g.scope.includes(w));
+      return out ? outside(out) : null;
+    }
+    case 'pane.focus': {
+      const pane = str(p.id);
+      if (!pane) return unknown('no pane was named');
+      try {
+        target = deps.paneOwner ? await deps.paneOwner(pane) : null;
+      } catch {
+        target = null;
+      }
+      if (!target) return unknown(`the workspace of pane ${pane} could not be resolved`);
+      break;
+    }
+    case 'pane.split':
+    case 'surface.new':
+      // Omitted, the handler pins it to the commander's own workspace.
+      target = str(p.workspaceId) ?? g.scope[0];
+      break;
     default:
       return null;
   }

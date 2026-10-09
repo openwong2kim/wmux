@@ -84,6 +84,13 @@ export function counterpartyFromQuery(reply: unknown, hq: string, taskId: string
   return null;
 }
 
+/** The member workspace ids in an `a2a.channel.getMembers` reply, or null. Exported for tests. */
+export function membersFromReply(reply: unknown): string[] | null {
+  if (!isRec(reply) || reply.ok !== true || !Array.isArray(reply.members)) return null;
+  const ids = reply.members.map((m: unknown) => (isRec(m) && typeof m.workspaceId === 'string' ? m.workspaceId : null));
+  return ids.every((x): x is string => x !== null) ? [...new Set(ids as string[])] : null;
+}
+
 /** Install the commander level gate over `goals` (null uninstalls). */
 export function installMoaLevelGate(goals: MoaGoalService | null, lookups: MoaLevelGateLookups = {}): void {
   setMoaLevelGate({
@@ -102,6 +109,21 @@ export function installMoaLevelGate(goals: MoaGoalService | null, lookups: MoaLe
     ...(lookups.getWindow
       ? { ptyOwner: (ptyId: string) => resolvePtyOwnerWorkspace(lookups.getWindow as GetWindow, ptyId) }
       : {}),
+    paneOwner: async (paneId: string) => {
+      const win = lookups.getWindow;
+      if (!win) return null;
+      for (const e of getWorkspaceMirror().getEntries() ?? []) {
+        const panes = await sendToRenderer(win, 'pane.list', { workspaceId: e.id, includeStashed: true }).catch(() => null);
+        if (Array.isArray(panes) && panes.some((x: unknown) => isRec(x) && x.id === paneId)) return e.id;
+      }
+      return null;
+    },
+    channelMembers: async (hq: string, channelId: string) => {
+      const dc = lookups.getDaemonClient?.() ?? null;
+      if (!dc) return null;
+      const r = await dc.rpc('a2a.channel.getMembers', { channelId, verifiedWorkspaceId: hq }).catch(() => null);
+      return membersFromReply(r);
+    },
     taskCounterparty: async (hq: string, taskId: string) => {
       if (isRemoteTaskId(taskId)) return null; // another PC: never inside a contract
       const q = { workspaceId: hq, view: 'page', taskId };
