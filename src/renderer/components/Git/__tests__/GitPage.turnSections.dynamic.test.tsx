@@ -188,6 +188,42 @@ describe('Git page, who-acts-next sections', () => {
     expect(container.querySelector('[data-git-detailpane] [data-git-detail-head]')?.textContent).toContain('alpha pr 4');
   });
 
+  it('a row takes its repo\'s role from its list, even when its URL names a moved repo\'s new owner', async () => {
+    const api = (window as unknown as { electronAPI: { github: Record<string, unknown> } }).electronAPI.github;
+    // alpha moved to another owner: its PR URLs say moved/alpha, its remote o/alpha.
+    api.prList = vi.fn(async (p: string) => ({ ok: true, prs: p === '/code/alpha'
+      ? [pr('alpha', 9, '2026-10-05T00:00:00Z', { author: 'contrib', url: 'https://github.com/moved/alpha/pull/9' })]
+      : [] }));
+    await render();
+    // ADMIN on alpha: the contributor's PR is the owner's to review.
+    expect(rowsOf('needs_you')).toEqual(['alpha#9']);
+  });
+
+  it('an unknown role leaves another author\'s PR waiting', async () => {
+    const api = (window as unknown as { electronAPI: { github: Record<string, unknown> } }).electronAPI.github;
+    api.prList = vi.fn(async (p: string) => ({ ok: true, prs: p === '/code/alpha'
+      ? [pr('alpha', 9, '2026-10-05T00:00:00Z', { author: 'contrib' })]
+      : [] }));
+    repoPermission.mockImplementation(async () => ({ permission: null }));
+    await render();
+    expect(section('needs_you')).toBeNull();
+    expect(count('waiting_on_others')).toBe('1');
+  });
+
+  it('Issues: an unrouted issue on a read-only repo waits; on the owner\'s repo it needs you', async () => {
+    const issue = (repo: string, number: number) => ({
+      number, title: `${repo} issue ${number}`, state: 'open', author: 'a', labels: [], assignees: [],
+      updatedAt: '2026-10-02T00:00:00Z', url: `https://github.com/o/${repo}/issues/${number}`, comments: 0,
+    });
+    const api = (window as unknown as { electronAPI: { github: Record<string, unknown> } }).electronAPI.github;
+    api.issueList = vi.fn(async (p: string) => ({ ok: true, issues: [p === '/code/alpha' ? issue('alpha', 11) : issue('beta', 12)] }));
+    act(() => useStore.getState().setGitPage({ tab: 'issues' }));
+    await render();
+    expect(container.querySelectorAll('[data-git-turn-section="needs_you"] [data-issue-row]').length).toBe(1);
+    expect(container.querySelector('[data-git-turn-section="needs_you"] [data-issue-row="11"]')).not.toBeNull();
+    expect(count('waiting_on_others')).toBe('1');
+  });
+
   it('By repo is unchanged: no sections, no summary', async () => {
     act(() => useStore.getState().setGitPage({ allLayout: 'repo' }));
     await render();
