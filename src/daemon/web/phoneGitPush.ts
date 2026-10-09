@@ -127,9 +127,15 @@ export const defaultPushDeps: PhoneGitPushDeps = {
 
 // ── Environment and argv ─────────────────────────────────────────────────────
 
+/**
+ * The null device as git spells it on every platform: Git for Windows maps
+ * `/dev/null` to `nul` itself and cannot open `\\.\nul` (`os.devNull`).
+ */
+export const GIT_NULL_DEVICE = '/dev/null';
+
 /** The hardened git environment with global and system config off. */
 function isolatedEnv(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  return { ...buildGitEnv(base), GIT_CONFIG_GLOBAL: os.devNull, GIT_CONFIG_NOSYSTEM: '1' };
+  return { ...buildGitEnv(base), GIT_CONFIG_GLOBAL: GIT_NULL_DEVICE, GIT_CONFIG_NOSYSTEM: '1' };
 }
 
 /** `isolatedEnv` plus the login's token from the routes' `ghEnv`. */
@@ -145,7 +151,7 @@ function networkEnv(base: NodeJS.ProcessEnv, ghEnv: NodeJS.ProcessEnv): NodeJS.P
 const NETWORK_CONFIG: readonly string[] = [
   '-c', 'protocol.allow=never', '-c', 'protocol.https.allow=always',
   '-c', 'http.followRedirects=false', '-c', 'http.sslVerify=true',
-  '-c', 'core.askPass=', '-c', 'core.fsmonitor=false', '-c', `core.hooksPath=${os.devNull}`,
+  '-c', 'core.askPass=', '-c', 'core.fsmonitor=false', '-c', `core.hooksPath=${GIT_NULL_DEVICE}`,
   '-c', 'credential.helper=', '-c', 'credential.helper=!gh auth git-credential',
   '-c', 'push.pushOption=', '-c', 'remote.origin.mirror=false',
 ];

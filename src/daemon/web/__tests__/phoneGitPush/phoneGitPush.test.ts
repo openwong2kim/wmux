@@ -10,7 +10,7 @@ import { GitWriteReceipts, PhoneGitWriteGate } from '../../phoneGitWriteGate';
 import { registerPhoneGitWriteAction, type GitWriteExecuteContext, type GitWriteSessionContext } from '../../phoneGitWriteRegistry';
 import { PhoneGitWriteRoutes, type PhoneGitWriteHost } from '../../phoneGitWriteRoutes';
 import {
-  PUSH_RECHECK_DELAY_MS, createPhoneGitPushHandlers, defaultPushDeps, recheckUncertainPushes,
+  GIT_NULL_DEVICE, PUSH_RECHECK_DELAY_MS, createPhoneGitPushHandlers, defaultPushDeps, recheckUncertainPushes,
   type PhoneGitPushDeps, type PushChildResult,
 } from '../../phoneGitPush';
 import type { GitWritePins, PushPreview } from '../../../../shared/phoneGitWrite';
@@ -34,14 +34,14 @@ describe('phone git push', { timeout: 60_000 }, () => {
   let deps: PhoneGitPushDeps;
   let receipts: GitWriteReceipts | undefined;
 
-  const env = () => ({ ...buildGitEnv(), GIT_CONFIG_GLOBAL: os.devNull });
+  const env = () => ({ ...buildGitEnv(), GIT_CONFIG_GLOBAL: GIT_NULL_DEVICE });
   const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, env: env(), encoding: 'utf8' }).trim();
   const commit = (cwd: string, msg: string) => {
     git(cwd, 'commit', '-q', '--allow-empty', '-m', msg);
     return git(cwd, 'rev-parse', 'HEAD');
   };
   /** The test's only transport: the GitHub URL, rewritten to the bare repository. */
-  const toBare = (args: readonly string[]) => ['-c', `url.${bare}.insteadOf=${URL_}`, '-c', 'protocol.file.allow=always', ...args];
+  const toBare = (args: readonly string[]) => ['-c', `url.${bare.replace(/\\/g, '/')}.insteadOf=${URL_}`, '-c', 'protocol.file.allow=always', ...args];
 
   beforeEach(() => {
     root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-git-push-')));
