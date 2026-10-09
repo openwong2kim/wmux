@@ -503,6 +503,22 @@ async function main() {
     ? payload.cwd
     : null;
 
+  // A headless run nested in a pane (`-p` started by the pane's own agent)
+  // inherits WMUX_PTY_ID, so its hooks name the HOST pane; its transcript is
+  // not the pane's conversation. Same rule as the Claude bridge: a known
+  // non-interactive entrypoint reports no session id and no transcript path,
+  // so it can never rebind the pane (or be spooled for recovery). An absent
+  // entrypoint is left for the daemon to judge.
+  const INTERACTIVE_ENTRYPOINTS = new Set(['cli', 'vscode', 'jetbrains']);
+  const entrypoint = typeof process.env.CLAUDE_CODE_ENTRYPOINT === 'string'
+    && process.env.CLAUDE_CODE_ENTRYPOINT.length > 0
+    ? process.env.CLAUDE_CODE_ENTRYPOINT
+    : undefined;
+  if (entrypoint !== undefined && !INTERACTIVE_ENTRYPOINTS.has(entrypoint) && payload) {
+    const { transcript_path: _path, session_id: _id, ...rest } = payload;
+    payload = rest;
+  }
+
   // Token usage extraction from transcript_path.
   const transcriptPath = (payload && typeof payload.transcript_path === 'string' && payload.transcript_path.length > 0)
     ? payload.transcript_path
@@ -548,6 +564,9 @@ async function main() {
     workspaceId: envWorkspaceId,
     surfaceId: envSurfaceId,
     ptyId: envPtyId,
+    ...(entrypoint ? { entrypoint } : {}),
+    // The process that ran this hook (the agent itself); see the Claude bridge.
+    agentPid: process.ppid,
     cwd: payloadCwd ?? process.cwd(),
     payload: {
       ...(payload ?? {}),

@@ -1098,6 +1098,26 @@ async function main() {
   // We only do this for stop-class kinds. PostToolUse / SessionStart
   // do not carry final usage and the cost of the read isn't justified
   // per tool call.
+  // A headless run nested in a pane (`claude -p` started by the pane's own
+  // agent through Bash, the native chat driver) inherits WMUX_PTY_ID, so its
+  // hooks name the HOST pane. Its transcript is not the pane's conversation:
+  // reporting it would rebind the pane to the child session (the phone then
+  // shows the child's transcript) and spool that binding for recovery. Same
+  // measured distinguisher as the gate above — `claude -p` reports `sdk-cli`
+  // even when its parent is an interactive `cli`. An ABSENT entrypoint (an
+  // older Claude Code) is not judged here; the daemon decides it.
+  const entrypoint = typeof process.env.CLAUDE_CODE_ENTRYPOINT === 'string'
+    && process.env.CLAUDE_CODE_ENTRYPOINT.length > 0
+    ? process.env.CLAUDE_CODE_ENTRYPOINT
+    : undefined;
+  const headless = entrypoint !== undefined && !INTERACTIVE_ENTRYPOINTS.has(entrypoint);
+  if (headless && payload) {
+    // Stripped from the payload too: a daemon reads payload.transcript_path,
+    // and an older daemon would bind whatever id is left.
+    const { transcript_path: _path, session_id: _id, ...rest } = payload;
+    payload = rest;
+  }
+
   const transcriptPath = (payload && typeof payload.transcript_path === 'string' && payload.transcript_path.length > 0)
     ? payload.transcript_path
     : null;
@@ -1184,6 +1204,11 @@ async function main() {
     surfaceId: envSurfaceId,
     ptyId: envPtyId,
     ...(wslAgentProcess ? { wslAgentProcess } : {}),
+    ...(entrypoint ? { entrypoint } : {}),
+    // The process that ran this hook: Claude Code itself (measured on macOS —
+    // no shell between them). The daemon compares it with the pane's tracked
+    // agent process before letting an entrypoint-less signal rebind the pane.
+    agentPid: process.ppid,
     cwd: payloadCwd ?? process.cwd(),
     payload: {
       ...(payload ?? {}),
