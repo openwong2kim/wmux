@@ -278,50 +278,72 @@ export class GhIssueService {
   }
 
   /** The signed-in login on `host`, for the assigned/created filters. */
-  private async login(host: string, cwd: string): Promise<string> {
+  private async login(host: string, cwd: string, force = false): Promise<string> {
     const hit = this.logins.get(host);
-    if (hit && this.now() - hit.at < LOGIN_TTL_MS) return hit.login;
+    if (hit && !force && this.now() - hit.at < LOGIN_TTL_MS) return hit.login;
     const login = (await this.gh(host, ['api', '--hostname', host, 'user', '--jq', '.login'], cwd)).trim();
     if (!login) throw new Error('could not read the signed-in GitHub login');
+    // Another account on this host (gh auth switch): its roles are not ours.
+    if (hit && hit.login !== login) this.clearPermissions(host);
     this.logins.set(host, { login, at: this.now() });
     return login;
   }
 
+  private clearPermissions(host: string): void {
+    for (const k of [...this.permissions.keys()]) if (k.startsWith(`${host}/`)) this.permissions.delete(k);
+  }
+
   /** The login gh is signed in as on `host` (cached like the filters' read),
    *  or null when it cannot be read or the breaker is open. Never throws. */
-  async signedInLogin(host: string, cwd: string): Promise<string | null> {
+  async signedInLogin(host: string, cwd: string, force = false): Promise<string | null> {
     if (this.retryAt(host) !== null) return null;
     try {
-      return (await this.login(host, cwd)).toLowerCase();
+      return (await this.login(host, cwd, force)).toLowerCase();
     } catch {
       return null;
     }
   }
 
-  /** The signed-in viewer's role on the remote `key` (host/owner/repo), read
-   *  once per repo and kept for the session (a role rarely changes; a restart
-   *  reads it again). Null when it cannot be read, the breaker is open or gh
-   *  reports no permissions; a null is not kept, so the next page show asks
-   *  again. Never throws. */
-  async repoPermission(key: string, cwd: string): Promise<RepoPermission | null> {
+  /** The signed-in viewer's role on the remote `key` (host/owner/repo) and
+   *  the login it was read under. Kept per repo and login for the session, so
+   *  another account (gh auth switch) reads its own; `force` (the page's
+   *  refresh) reads the login and the role again. A repo that answers with no
+   *  permissions (a public repo the viewer does not collaborate on) is READ
+   *  and kept like any role. When the login cannot be read the role is
+   *  still read, answered with a null login and not kept. A failed read (gh
+   *  error, the breaker open) is null and not kept, so the next page show
+   *  asks again. Never throws. */
+  async repoPermission(key: string, cwd: string, force = false): Promise<{ permission: RepoPermission | null; login: string | null }> {
     const repo = splitRepoKey(key);
-    if (!repo) return null;
-    const hit = this.permissions.get(key);
-    if (hit) return hit;
-    const pending = this.permissionPending.get(key);
-    if (pending) return pending;
-    if (this.retryAt(repo.host) !== null) return null;
-    const read = this.gh(repo.host, ['api', '--hostname', repo.host, `repos/${repo.owner}/${repo.repo}`, '--jq', '.permissions'], cwd)
-      .then((stdout) => {
-        const role = roleOf(JSON.parse(stdout.trim() || 'null'));
-        if (role) this.permissions.set(key, role);
-        evict(this.permissions);
-        return role;
-      })
-      .catch(() => null)
-      .finally(() => this.permissionPending.delete(key));
-    this.permissionPending.set(key, read);
-    return read;
+    if (!repo || this.retryAt(repo.host) !== null) return { permission: null, login: null };
+    let login: string | null = null;
+    try {
+      login = (await this.login(repo.host, cwd, force)).toLowerCase();
+    } catch {
+      if (this.retryAt(repo.host) !== null) return { permission: null, login: null };
+    }
+    // Without a login the answer is not kept: it cannot say whose role it is.
+    const cacheKey = login === null ? null : `${key}\0${login}`;
+    const hit = cacheKey === null ? undefined : this.permissions.get(cacheKey);
+    if (hit && !force) return { permission: hit, login };
+    const pendingKey = cacheKey ?? `${key}\0`;
+    let read = this.permissionPending.get(pendingKey);
+    if (!read) {
+      read = this.gh(repo.host, ['api', '--hostname', repo.host, `repos/${repo.owner}/${repo.repo}`, '--jq', '.permissions'], cwd)
+        .then((stdout) => {
+          // Answered: no permissions there means no more than read access.
+          const role = roleOf(JSON.parse(stdout.trim() || 'null')) ?? 'READ';
+          if (cacheKey !== null) {
+            this.permissions.set(cacheKey, role);
+            evict(this.permissions);
+          }
+          return role;
+        })
+        .catch(() => null)
+        .finally(() => this.permissionPending.delete(pendingKey));
+      this.permissionPending.set(pendingKey, read);
+    }
+    return { permission: await read, login };
   }
 
   /**

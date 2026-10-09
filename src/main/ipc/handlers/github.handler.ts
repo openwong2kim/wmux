@@ -87,16 +87,18 @@ async function githubRemote(repoPath: string): Promise<{ host: string; key: stri
   return gate.ok ? { host: remote.host, key: remote.key } : null;
 }
 
-/** The login gh is signed in as on the repo's host (lowercased), or null. */
-export async function viewerLogin(repoPath: string): Promise<{ login: string | null }> {
+/** The login gh is signed in as on the repo's host (lowercased), or null.
+ *  `force` (the page's refresh) reads it again. */
+export async function viewerLogin(repoPath: string, force = false): Promise<{ login: string | null }> {
   const remote = await githubRemote(repoPath);
-  return { login: remote ? await ghIssueService.signedInLogin(remote.host, repoPath) : null };
+  return { login: remote ? await ghIssueService.signedInLogin(remote.host, repoPath, force) : null };
 }
 
-/** The signed-in viewer's role on the repo, or null when unknown. */
-export async function repoPermission(repoPath: string): Promise<{ permission: RepoPermission | null }> {
+/** The signed-in viewer's role on the repo and the login it was read under;
+ *  both null when unknown. `force` (the page's refresh) reads both again. */
+export async function repoPermission(repoPath: string, force = false): Promise<{ permission: RepoPermission | null; login: string | null }> {
   const remote = await githubRemote(repoPath);
-  return { permission: remote ? await ghIssueService.repoPermission(remote.key, repoPath) : null };
+  return remote ? ghIssueService.repoPermission(remote.key, repoPath, force) : { permission: null, login: null };
 }
 
 export function registerGithubHandlers(): () => void {
@@ -206,20 +208,20 @@ export function registerGithubHandlers(): () => void {
   ipcMain.removeHandler(IPC.GITHUB_VIEWER_LOGIN);
   ipcMain.handle(
     IPC.GITHUB_VIEWER_LOGIN,
-    wrapHandler(IPC.GITHUB_VIEWER_LOGIN, async (_e: Electron.IpcMainInvokeEvent, repoPath: unknown): Promise<{ login: string | null }> => {
+    wrapHandler(IPC.GITHUB_VIEWER_LOGIN, async (_e: Electron.IpcMainInvokeEvent, repoPath: unknown, force: unknown): Promise<{ login: string | null }> => {
       if (typeof repoPath !== 'string' || !repoPath) return { login: null };
       const safeRepo = await resolveAccessiblePath(repoPath);
-      return safeRepo ? viewerLogin(safeRepo) : { login: null };
+      return safeRepo ? viewerLogin(safeRepo, force === true) : { login: null };
     }),
   );
 
   ipcMain.removeHandler(IPC.GITHUB_REPO_PERMISSION);
   ipcMain.handle(
     IPC.GITHUB_REPO_PERMISSION,
-    wrapHandler(IPC.GITHUB_REPO_PERMISSION, async (_e: Electron.IpcMainInvokeEvent, repoPath: unknown): Promise<{ permission: RepoPermission | null }> => {
-      if (typeof repoPath !== 'string' || !repoPath) return { permission: null };
+    wrapHandler(IPC.GITHUB_REPO_PERMISSION, async (_e: Electron.IpcMainInvokeEvent, repoPath: unknown, force: unknown): Promise<{ permission: RepoPermission | null; login: string | null }> => {
+      if (typeof repoPath !== 'string' || !repoPath) return { permission: null, login: null };
       const safeRepo = await resolveAccessiblePath(repoPath);
-      return safeRepo ? repoPermission(safeRepo) : { permission: null };
+      return safeRepo ? repoPermission(safeRepo, force === true) : { permission: null, login: null };
     }),
   );
 

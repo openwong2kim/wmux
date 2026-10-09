@@ -1343,12 +1343,14 @@ const electronAPI = {
       ipcRenderer.invoke(IPC.GITHUB_ISSUE_DETAIL, repoPath, number, updatedAt) as Promise<
         import('../shared/issueSurface').IssueDetailResult
       >,
-    // The signed-in gh login (lowercased) and the viewer's role on the repo; null when unknown.
-    viewerLogin: (repoPath: string) =>
-      ipcRenderer.invoke(IPC.GITHUB_VIEWER_LOGIN, repoPath) as Promise<{ login: string | null }>,
-    repoPermission: (repoPath: string) =>
-      ipcRenderer.invoke(IPC.GITHUB_REPO_PERMISSION, repoPath) as Promise<{
+    // The signed-in gh login (lowercased) and the viewer's role on the repo
+    // with the login it was read under; null when unknown. force re-reads both.
+    viewerLogin: (repoPath: string, force?: boolean) =>
+      ipcRenderer.invoke(IPC.GITHUB_VIEWER_LOGIN, repoPath, force === true) as Promise<{ login: string | null }>,
+    repoPermission: (repoPath: string, force?: boolean) =>
+      ipcRenderer.invoke(IPC.GITHUB_REPO_PERMISSION, repoPath, force === true) as Promise<{
         permission: import('../shared/issueSurface').RepoPermission | null;
+        login: string | null;
       }>,
     // PR review and CI: reads, and writes tied to the head the person saw
     // (main re-reads it right before writing and refuses if it moved).
