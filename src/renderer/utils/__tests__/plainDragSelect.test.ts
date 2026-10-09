@@ -135,6 +135,24 @@ describe('installPlainDragSelect', () => {
     expect(seen.filter((s) => s.type === 'mousedown')).toHaveLength(1);
   });
 
+  it('keeps a double press as a double press, so drag-select goes by word', () => {
+    install(true);
+    fire(screen, 'mousedown', { buttons: 1, detail: 2, clientX: 10, clientY: 10 });
+    fire(screen, 'mousemove', { buttons: 1, clientX: 40, clientY: 10 });
+    expect(seen.find((s) => s.type === 'mousedown')).toMatchObject({ detail: 2, altKey: true });
+  });
+
+  it('leaves a press on the scrollbar beside the text area alone', () => {
+    install(true);
+    const scrollbar = document.createElement('div');
+    scrollbar.className = 'xterm-scrollable-element';
+    xtermEl.appendChild(scrollbar);
+    const ev = new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0, buttons: 1, clientX: 10, clientY: 10 });
+    scrollbar.dispatchEvent(ev);
+    expect(ev.defaultPrevented).toBe(false);
+    expect(seen.filter((s) => s.type === 'mousedown')).toHaveLength(1);
+  });
+
   it('uses Shift as the force-selection modifier off macOS', () => {
     install(false);
     fire(screen, 'mousedown', { buttons: 1, clientX: 10, clientY: 10 });
@@ -150,7 +168,7 @@ describe('installPlainDragSelect', () => {
     const replayed = seen.filter((s) => s.type !== 'mousemove');
     expect(replayed).toEqual([
       { type: 'mousedown', detail: 1, altKey: false, shiftKey: false, x: 10, y: 10, buttons: 1 },
-      { type: 'mouseup', detail: 1, altKey: false, shiftKey: false, x: 10, y: 10, buttons: 0 },
+      { type: 'mouseup', detail: 1, altKey: false, shiftKey: false, x: 12, y: 12, buttons: 0 },
     ]);
     // Exactly one release reaches the document (the replayed one), so the
     // #582 drag flag and xterm's document mouseup still disarm.

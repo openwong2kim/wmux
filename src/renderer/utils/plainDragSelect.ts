@@ -75,7 +75,7 @@ export function mouseOwnedHintApplies(trackingMode: string, plainDragSelectEnabl
 }
 
 export interface PlainDragTerminal {
-  modes: { mouseTrackingMode: string };
+  modes?: { mouseTrackingMode?: string };
   focus(): void;
   element?: HTMLElement;
 }
@@ -100,9 +100,9 @@ export function installPlainDragSelect(
   // they are marked explicitly.
   const replays = new WeakSet<Event>();
 
-  let pending: { origin: Point; target: EventTarget } | null = null;
+  let pending: { origin: Point; target: EventTarget; detail: number } | null = null;
 
-  const replay = (target: EventTarget, type: string, at: Point, buttons: number, force: boolean): void => {
+  const replay = (target: EventTarget, type: string, at: Point, buttons: number, force: boolean, detail: number): void => {
     const ev = new MouseEvent(type, {
       bubbles: true,
       cancelable: true,
@@ -111,7 +111,9 @@ export function installPlainDragSelect(
       clientY: at.clientY,
       button: 0,
       buttons,
-      detail: 1,
+      // At least 1: xterm only starts a selection for detail 1-3, and a
+      // double/triple press keeps its count so drag-select goes by word/line.
+      detail: Math.max(1, detail),
       altKey: force && deps.isMac,
       shiftKey: force && !deps.isMac,
     });
@@ -144,23 +146,24 @@ export function installPlainDragSelect(
       return;
     }
     if (!isDrag(pending.origin, e, threshold)) return;
-    const { origin, target } = pending;
+    const { origin, target, detail } = pending;
     stop();
     const t = replayTarget(target);
-    replay(t, 'mousedown', origin, 1, true);
-    replay(t, 'mousemove', { clientX: e.clientX, clientY: e.clientY }, 1, true);
+    replay(t, 'mousedown', origin, 1, true, detail);
+    replay(t, 'mousemove', { clientX: e.clientX, clientY: e.clientY }, 1, true, detail);
   };
 
   const onUp = (e: MouseEvent): void => {
     if (!pending || replays.has(e) || e.button !== 0) return;
-    const { origin, target } = pending;
+    const { origin, target, detail } = pending;
     stop();
     // A click: the app gets the press and release it would have had. The real
     // release is replaced by the replayed one so it is not reported twice.
     e.stopImmediatePropagation();
     const t = replayTarget(target);
-    replay(t, 'mousedown', origin, 1, false);
-    replay(t, 'mouseup', origin, 0, false);
+    // The release is reported where it happened, not at the press.
+    replay(t, 'mousedown', origin, 1, false, detail);
+    replay(t, 'mouseup', { clientX: e.clientX, clientY: e.clientY }, 0, false, detail);
   };
 
   const onBlur = (): void => stop();
@@ -168,14 +171,17 @@ export function installPlainDragSelect(
   const onDown = (e: MouseEvent): void => {
     if (replays.has(e)) return;
     if (pending) stop();
-    if (!shouldInterceptMouseDown(e, term.modes.mouseTrackingMode, deps.isEnabled())) return;
+    // Only presses on the text area: the scrollbar beside it is a control,
+    // and a drag on it must scroll, not start a selection.
+    if (!(e.target instanceof Element) || !e.target.closest('.xterm-screen')) return;
+    if (!shouldInterceptMouseDown(e, term.modes?.mouseTrackingMode ?? 'none', deps.isEnabled())) return;
     // Hold the press back from xterm (which would report it to the app) and
     // from the browser's native selection. xterm focuses on mousedown, so do
     // it here instead: a slow drag must not leave the terminal unfocused.
     e.stopImmediatePropagation();
     e.preventDefault();
     term.focus();
-    pending = { origin: { clientX: e.clientX, clientY: e.clientY }, target: e.target ?? container };
+    pending = { origin: { clientX: e.clientX, clientY: e.clientY }, target: e.target, detail: e.detail };
     window.addEventListener('mousemove', onMove, true);
     window.addEventListener('mouseup', onUp, true);
     window.addEventListener('blur', onBlur);
