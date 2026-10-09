@@ -8893,6 +8893,104 @@ describe('WebTerminalServer', () => {
     });
   });
 
+  describe('#1976 - a path naming another host never reaches the filesystem', () => {
+    /** The smallest legal PNG: signature, IHDR for 1x1, one IDAT, IEND. */
+    const PNG_1X1 = Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+      'base64',
+    );
+    const routes = [
+      { route: 'image', missing: 'image not found' },
+      { route: 'file', missing: 'file not found' },
+    ] as const;
+    let dirs: string[];
+    const tmpTree = (): string => {
+      const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-turn-unc-')));
+      dirs.push(dir);
+      return dir;
+    };
+    const turnUrl = (route: string, p: string): string =>
+      `${base()}/api/sessions/s1/turns/${route}?path=${encodeURIComponent(p)}`;
+    /** Every realpath call that named the requested host or device, whatever the spelling. */
+    const realpathsOfHost = (spy: { mock: { calls: unknown[][] } }): string[] =>
+      spy.mock.calls.map(([p]) => String(p)).filter((p) => p.includes('192.0.2.1') || p.includes('pipe'));
+
+    let realpath: { mockRestore(): void } | undefined;
+    beforeEach(() => { dirs = []; });
+    afterEach(() => {
+      realpath?.mockRestore();
+      realpath = undefined;
+      for (const dir of dirs) fs.rmSync(dir, { recursive: true, force: true });
+    });
+
+    for (const { route, missing } of routes) {
+      // `//host/share` is absolute on every platform, so with win32's rules
+      // stubbed in this case runs on every CI OS. Without the gate the route
+      // realpaths it (ENOENT on posix, an SMB connect on Windows) and answers
+      // the same 404, so the spy is what tells the two apart.
+      it(`/turns/${route}: //host/share answers the missing-file 404 without a realpath`, async () => {
+        managed.meta.spawnCwd = tmpTree();
+        const info = await startWithTranscript();
+        const spy = vi.spyOn(fs.promises, 'realpath');
+        realpath = spy;
+        const platform = Object.getOwnPropertyDescriptor(process, 'platform');
+        Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+        let res: Response;
+        try {
+          res = await fetch(turnUrl(route, '//192.0.2.1/share/x.png'), { headers: bearer(info.token as string) });
+        } finally {
+          if (platform) Object.defineProperty(process, 'platform', platform);
+        }
+        expect(res.status).toBe(404);
+        expect((await res.json()).error).toBe(missing);
+        expect(realpathsOfHost(spy)).toEqual([]);
+      });
+
+      it.runIf(process.platform === 'win32')(
+        `/turns/${route}: UNC, device and namespace spellings answer 404 without a realpath`,
+        async () => {
+          managed.meta.spawnCwd = tmpTree();
+          const info = await startWithTranscript();
+          const spy = vi.spyOn(fs.promises, 'realpath');
+          realpath = spy;
+          const shapes = [
+            '\\\\192.0.2.1\\share\\x.png',
+            '//192.0.2.1/share/x.png',
+            '\\/192.0.2.1/share/x.png',
+            '/\\192.0.2.1\\share\\x.png',
+            '\\\\?\\UNC\\192.0.2.1\\share\\x.png',
+            '\\??\\UNC\\192.0.2.1\\share\\x.png',
+            '\\\\.\\pipe\\x.png',
+          ];
+          for (const shape of shapes) {
+            const started = Date.now();
+            const res = await fetch(turnUrl(route, shape), { headers: bearer(info.token as string) });
+            expect(res.status, shape).toBe(404);
+            expect((await res.json()).error, shape).toBe(missing);
+            // Generous against a loaded runner, far under an SMB connect timeout.
+            expect(Date.now() - started, shape).toBeLessThan(5000);
+          }
+          expect(realpathsOfHost(spy)).toEqual([]);
+        },
+      );
+
+      it.runIf(process.platform === 'win32')(
+        `/turns/${route}: a drive path written with forward slashes still serves`,
+        async () => {
+          const dir = tmpTree();
+          fs.writeFileSync(path.join(dir, 'a.png'), PNG_1X1);
+          managed.meta.spawnCwd = dir;
+          const info = await startWithTranscript();
+          const res = await fetch(turnUrl(route, path.join(dir, 'a.png').split(path.sep).join('/')), {
+            headers: bearer(info.token as string),
+          });
+          expect(res.status).toBe(200);
+          expect(Buffer.from(await res.arrayBuffer())).toEqual(PNG_1X1);
+        },
+      );
+    }
+  });
+
   describe('SendUserFile files on /turns/image and /turns/file', () => {
     /** The smallest legal PNG: signature, IHDR for 1x1, one IDAT, IEND. */
     const PNG_1X1 = Buffer.from(

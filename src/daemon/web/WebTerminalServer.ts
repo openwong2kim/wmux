@@ -15,6 +15,7 @@ import { PHONE_WORKTREE_REQUEST_ID } from '../../shared/phoneGitV1';
 import { sessionFiles, searchSessionFiles, SessionFileError } from './sessionFiles';
 import { openResolvedFile } from './openResolvedFile';
 import { SENT_FILE_CLOCK_SKEW_MS, SentFileIndex, sentFileParts, type GrantTool } from '../transcript/sentFiles';
+import { isLocalClientPath } from './clientPath';
 import { listFolders, FolderBrowseError, homeIsBrowsable } from './phoneFolders';
 import {
   createSearchCursorCodec,
@@ -5897,6 +5898,12 @@ export class WebTerminalServer {
       });
       return;
     }
+    // Before ANY filesystem call: on Windows a lookup on a UNC or device path
+    // reaches the host it names (#1976). Same 404 as a missing file.
+    if (!isLocalClientPath(raw)) {
+      this.json(res, 404, { error: 'image not found' });
+      return;
+    }
 
     const roots = [managed.meta.spawnCwd, this.deps.uploadsDir].filter(
       (dir): dir is string => typeof dir === 'string' && dir.length > 0,
@@ -6046,9 +6053,11 @@ export class WebTerminalServer {
    * it was rewired to call. Shipped phone builds depend on that route, and the
    * contract this one was written to (wmux-ios, 2026-09-20) asks in as many
    * words that it not be touched; refactoring it to reach a new abstraction is
-   * a change to it, whatever the diff says about behaviour. The one shared
-   * piece is the open itself, `openResolvedFile`: #1434 asked for both routes
-   * to change together, and two copies of that check could drift apart.
+   * a change to it, whatever the diff says about behaviour. The shared pieces
+   * are the open itself, `openResolvedFile`: #1434 asked for both routes to
+   * change together, and two copies of that check could drift apart; and the
+   * `isLocalClientPath` gate that runs before any filesystem call, for the same
+   * reason (#1976).
    *
    * Every piece of the boundary is load-bearing here for the reasons spelled
    * out on that handler: the roots are `meta.spawnCwd` ∪ `deps.uploadsDir` and
@@ -6093,6 +6102,10 @@ export class WebTerminalServer {
         error: 'bad-file-ref',
         detail: 'path must be an absolute filesystem path',
       });
+      return;
+    }
+    if (!isLocalClientPath(raw)) {
+      this.json(res, 404, { error: 'file not found' });
       return;
     }
 
@@ -6272,6 +6285,7 @@ export class WebTerminalServer {
     raw: string,
     tool: GrantTool,
   ): Promise<{ real: string; name: string; sentAt: number } | null> {
+    if (!isLocalClientPath(raw)) return null;
     const parts = sentFileParts(raw);
     if (!parts) return null;
     const projector = this.deps.projector?.() ?? null;
