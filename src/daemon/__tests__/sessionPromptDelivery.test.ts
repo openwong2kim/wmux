@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
+import { DaemonPTYBridge } from '../DaemonPTYBridge';
 import {
   deliverScheduledPrompt,
+  deliveryInputFence,
   type ScheduledPromptAgentState,
 } from '../sessionPromptDelivery';
 
@@ -295,5 +297,42 @@ describe('deliverScheduledPrompt', () => {
     const chat = running();
     expect(await deliverScheduledPrompt('claude', 'incarnation-1', 'next', { ...chat.deps, acceptRunning: true })).toBe('sent');
     expect(chat.writes).toEqual(['\x1b[200~next\x1b[201~', '\r']);
+  });
+});
+
+describe('deliverScheduledPrompt — a viewer attaching mid-delivery', () => {
+  // Replays a scheduled run's first prompt: the agent was ready, the prompt
+  // was pasted, and inside the submit delay a renderer attached to the pane,
+  // so its terminal reported focus and answered the agent's startup queries.
+  // Those replies reach the PTY as input but type nothing.
+  async function deliverWithAttach(
+    fence: (bridge: DaemonPTYBridge) => { inputRevision: number; inputQuiet: boolean },
+    attachWrites: string[],
+  ) {
+    const bridge = new DaemonPTYBridge();
+    const written: string[] = [];
+    const getAgentState = (): ScheduledPromptAgentState => ({
+      slug: 'claude', incarnationId: 'inc-1', status: 'idle', ...fence(bridge), inputQuiet: true,
+    });
+    const result = await deliverScheduledPrompt('claude', 'inc-1', '나에게 인사해', {
+      getAgentState,
+      isAgentProcessAlive: alwaysAlive,
+      write: (data) => { written.push(data); bridge.noteInput(data); return true; },
+      delay: async () => { for (const reply of attachWrites) bridge.noteInput(reply); },
+    });
+    return { result, written };
+  }
+  const ATTACH = ['\x1b[I', '\x1b[?1;2c', '\x1b[>0;276;0c'];
+
+  it('the all-writes fence refuses Enter after a viewer attached (the old behaviour)', async () => {
+    const all = (b: DaemonPTYBridge) => ({ inputRevision: b.getInputRevision(), inputQuiet: true });
+    expect((await deliverWithAttach(all, ATTACH)).result).toBe('error');
+  });
+
+  it('the key-only fence submits through an attach, and still refuses a real keystroke', async () => {
+    const attached = await deliverWithAttach(deliveryInputFence, ATTACH);
+    expect(attached.result).toBe('sent');
+    expect(attached.written).toEqual(['\x1b[200~나에게 인사해\x1b[201~', '\r']);
+    expect((await deliverWithAttach(deliveryInputFence, ['x'])).result).toBe('error');
   });
 });

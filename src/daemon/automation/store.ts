@@ -23,6 +23,7 @@ import {
   type AutomationAttention,
   type AutomationAttentionKind,
   type AutomationRun,
+  type AutomationRunDetail,
   type AutomationRunReason,
   type AutomationRunState,
 } from '../../shared/automation';
@@ -52,6 +53,7 @@ const RUN_REASONS: ReadonlySet<string> = new Set<AutomationRunReason>([
   'overlap', 'missed', 'daemon_down', 'first_run_blocked', 'launch_failed', 'account_missing',
   'await_timeout', 'timeout', 'agent_error', 'process_exit', 'interrupted', 'cancelled', 'needs_regrant',
 ]);
+const RUN_DETAILS: ReadonlySet<string> = new Set<AutomationRunDetail>(['submit_retried', 'prompt_not_in_composer', 'submit_unconfirmed']);
 const ATTENTION_KINDS: ReadonlySet<string> = new Set<AutomationAttentionKind>(['proposed', 'grant-raised', 'needs-regrant']);
 
 const num = (v: unknown): number | undefined => (typeof v === 'number' && Number.isFinite(v) ? v : undefined);
@@ -112,6 +114,7 @@ export function coerceRun(raw: unknown): AutomationRun | null {
   if (!id || !automationId || revision === undefined || scheduledFor === undefined || !state) return null;
   const trigger = o['trigger'] === 'manual' || o['trigger'] === 'test' ? o['trigger'] : 'scheduled';
   const reason = typeof o['reason'] === 'string' && RUN_REASONS.has(o['reason']) ? (o['reason'] as AutomationRunReason) : undefined;
+  const detail = typeof o['detail'] === 'string' && RUN_DETAILS.has(o['detail']) ? (o['detail'] as AutomationRunDetail) : undefined;
   const ptyId = typeof o['ptyId'] === 'string' && ID_RE.test(o['ptyId']) ? o['ptyId'] : undefined;
   const agentSessionId = typeof o['agentSessionId'] === 'string' && o['agentSessionId'].length <= 256 ? o['agentSessionId'] : undefined;
   const startedAt = num(o['startedAt']);
@@ -125,6 +128,7 @@ export function coerceRun(raw: unknown): AutomationRun | null {
     trigger,
     state,
     ...(reason ? { reason } : {}),
+    ...(detail ? { detail } : {}),
     ...(ptyId ? { ptyId } : {}),
     ...(agentSessionId ? { agentSessionId } : {}),
     ...(startedAt !== undefined ? { startedAt } : {}),

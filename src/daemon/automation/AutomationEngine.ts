@@ -35,6 +35,7 @@ import {
   type AutomationPermissionMode,
   type AutomationRun,
   type AutomationRunNowResult,
+  type AutomationRunDetail,
   type AutomationRunReason,
   type AutomationRunState,
 } from '../../shared/automation';
@@ -77,6 +78,9 @@ export const READY_STABLE_READS = 2;
 export const PROCESS_EXIT_SETTLE_MS = 30_000;
 /** An attached human may keep a completed session open this long at most. */
 export const LINGER_ATTACHED_MAX_MS = 60 * 60_000;
+/** Enter presses for a pasted prompt the delivery left unsubmitted, and their spacing. */
+export const SUBMIT_RETRY_MAX = 3;
+export const SUBMIT_RETRY_GAP_MS = 3_000;
 const TRACKER_ARM_AFTER_MS = 10_000;
 const TRACKER_ARM_EVERY_MS = 35_000;
 const MINUTE_MS = 60_000;
@@ -122,7 +126,11 @@ export interface AutomationEnginePorts {
   sendKey: (id: string, sequence: string) => Promise<void>;
   readAgent: (id: string) => AutomationAgentView;
   armAgentTracker: (id: string) => void;
-  deliverPrompt: (id: string, slug: AgentSlug, incarnationId: string, prompt: string) => Promise<SessionPromptScheduleResult>;
+  /** `onWrite('paste')` fires right before the paste is written: after it, the composer may hold the prompt. */
+  deliverPrompt: (
+    id: string, slug: AgentSlug, incarnationId: string, prompt: string,
+    onWrite?: (stage: 'paste' | 'submit') => void,
+  ) => Promise<SessionPromptScheduleResult>;
   hasPendingApproval: (id: string) => boolean;
   /** Newest recorded transcript turn end, ms epoch. */
   transcriptTurnEndAt: (id: string) => number | undefined;
@@ -735,10 +743,20 @@ export class AutomationEngine {
       await this.terminate(run, 'failed', ready.reason);
       return;
     }
-    const result = await this.deliver(run, live, action.agent, action.prompt, ready.incarnationId);
+    const delivery = await this.deliver(run, live, action.agent, action.prompt, ready.incarnationId);
     if (isFinalRunState(run.state) || live.phase !== 'launching') return;
+    let result = delivery.result;
+    if (result === 'error' && delivery.pasted) {
+      // The paste may sit in the composer with only Enter missing. Settle it
+      // on the screen instead of destroying a session that is fine.
+      this.ports.log('warn', `[automation] run ${run.id} prompt pasted but not submitted; confirming the submit`);
+      const settled = await this.confirmSubmit(run, live, action.prompt);
+      if (isFinalRunState(run.state) || live.phase !== 'launching') return;
+      run.detail = settled;
+      if (settled === 'submit_retried') result = 'sent';
+    }
     if (result !== 'sent') {
-      this.ports.log('warn', `[automation] run ${run.id} prompt delivery ${result}`);
+      this.ports.log('warn', `[automation] run ${run.id} prompt delivery ${result}${run.detail ? ` (${run.detail})` : ''}`);
       await this.terminate(run, 'failed', 'launch_failed');
       return;
     }
@@ -823,19 +841,70 @@ export class AutomationEngine {
     agent: AutomationAgent,
     prompt: string,
     incarnationId: string,
-  ): Promise<SessionPromptScheduleResult> {
+  ): Promise<{ result: SessionPromptScheduleResult; pasted: boolean }> {
     const started = this.now();
+    let pasted = false;
+    const onWrite = (stage: 'paste' | 'submit') => { if (stage === 'paste') pasted = true; };
     for (;;) {
-      if (isFinalRunState(run.state) || live.phase !== 'launching') return 'error';
+      if (isFinalRunState(run.state) || live.phase !== 'launching') return { result: 'error', pasted };
       let result: SessionPromptScheduleResult;
       try {
-        result = await this.ports.deliverPrompt(live.ptyId, agent, incarnationId, prompt);
+        result = await this.ports.deliverPrompt(live.ptyId, agent, incarnationId, prompt, onWrite);
       } catch {
-        return 'error';
+        return { result: 'error', pasted };
       }
-      if (result !== 'busy' || this.now() - started >= READY_DEADLINE_MS) return result;
+      if (result !== 'busy' || this.now() - started >= READY_DEADLINE_MS) return { result, pasted };
       await this.sleep(READY_POLL_MS);
     }
+  }
+
+  /**
+   * A pasted prompt the delivery did not submit. Within the readiness
+   * deadline: while the prompt is on screen, press Enter (at most
+   * SUBMIT_RETRY_MAX times, SUBMIT_RETRY_GAP_MS apart) until the agent shows
+   * it took the turn — running, or new transcript entries. Nothing is pressed
+   * once the prompt is nowhere on screen. The pane is the run's own and is
+   * not offered to anyone else, so a draft there is the one just pasted.
+   */
+  private async confirmSubmit(run: AutomationRun, live: LiveRun, prompt: string): Promise<AutomationRunDetail> {
+    const started = this.now();
+    let enters = 0;
+    let lastEnterAt = -Infinity;
+    let firstEnterAt: number | null = null;
+    while (this.now() - started < READY_DEADLINE_MS) {
+      if (isFinalRunState(run.state) || live.phase !== 'launching') return 'submit_unconfirmed';
+      if (this.ports.sessionPid(live.ptyId) === null) return 'submit_unconfirmed';
+      if (firstEnterAt !== null) {
+        const view = this.ports.readAgent(live.ptyId);
+        const lastEvent = this.ports.transcriptLastEventAt?.(live.ptyId);
+        if (view.status === 'running' || view.status === 'complete' || (lastEvent !== undefined && lastEvent >= firstEnterAt)) {
+          return 'submit_retried';
+        }
+      }
+      let screen = '';
+      try {
+        screen = await this.ports.readScreen(live.ptyId);
+      } catch {
+        screen = '';
+      }
+      if (!screenShowsPrompt(screen, prompt)) {
+        // Before any Enter: the paste never landed. After one: the agent took
+        // it and cleared the composer without a status we could read yet.
+        return firstEnterAt === null ? 'prompt_not_in_composer' : 'submit_retried';
+      }
+      if (enters < SUBMIT_RETRY_MAX && this.now() - lastEnterAt >= SUBMIT_RETRY_GAP_MS) {
+        try {
+          await this.ports.sendKey(live.ptyId, '\r');
+        } catch {
+          return 'submit_unconfirmed';
+        }
+        enters++;
+        lastEnterAt = this.now();
+        firstEnterAt ??= lastEnterAt;
+      }
+      await this.sleep(READY_POLL_MS);
+    }
+    return 'submit_unconfirmed';
   }
 
   // ── Monitoring ────────────────────────────────────────────────────────────
@@ -1074,6 +1143,19 @@ export class AutomationEngine {
     if (live) this.panes.delete(live.ptyId);
     this.live.delete(runId);
   }
+}
+
+/**
+ * Is the prompt visible anywhere on screen? Whitespace-insensitive; the first
+ * line (at most 40 characters) stands for the prompt. A long paste the agent
+ * folds into a placeholder (Claude's "[Pasted text #1 …]") counts as visible.
+ */
+export function screenShowsPrompt(screen: string, prompt: string): boolean {
+  const flat = (s: string) => s.replace(/\s+/g, '');
+  if (/\[Pasted text #\d+/.test(screen)) return true;
+  const first = prompt.split('\n').map((l) => l.trim()).find(Boolean) ?? '';
+  const needle = flat(Array.from(first).slice(0, 40).join(''));
+  return needle.length > 0 && flat(screen).includes(needle);
 }
 
 function clone<T>(value: T): T {

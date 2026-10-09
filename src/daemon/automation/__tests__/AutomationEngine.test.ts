@@ -4,7 +4,7 @@ import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import type { AutomationEvent, AutomationRun } from '../../../shared/automation';
 import type { SessionPromptScheduleResult } from '../../../shared/sessionPromptSchedule';
-import { AutomationEngine, type AutomationAgentView, type AutomationEnginePorts } from '../AutomationEngine';
+import { AutomationEngine, screenShowsPrompt, type AutomationAgentView, type AutomationEnginePorts } from '../AutomationEngine';
 import { AUTOMATION_RUNS_FILE, AUTOMATIONS_FILE, snapshotPath } from '../store';
 
 const MIN = 60_000;
@@ -658,6 +658,62 @@ describe('AutomationEngine — review regressions', () => {
     const h = harness({ ports: { deliverPrompt: async () => { throw new Error('boom'); } } });
     const run = await startedRun(h);
     expect(run).toMatchObject({ state: 'failed', reason: 'launch_failed' });
+  });
+
+  describe('a pasted prompt the delivery did not submit', () => {
+    // The owner's dogfood run: Claude ready, the prompt pasted, then delivery
+    // answered 'error' before Enter (a viewer attached mid-delivery). The
+    // composer held the prompt; the session was fine.
+    const pastedThenError = (h: { state: Harness['state'] }) => async (
+      _id: string, _slug: unknown, _inc: string, prompt: string, onWrite?: (stage: 'paste' | 'submit') => void,
+    ) => {
+      onWrite?.('paste');
+      h.state.screen = `▐▛███▜▌ Claude Code\n──────\n❯ ${prompt}\n──────\n⏵⏵ auto mode on`;
+      return 'error' as const;
+    };
+
+    it('presses Enter again and runs once the agent takes the turn (submit_retried)', async () => {
+      const h = harness();
+      h.engine['ports'].deliverPrompt = pastedThenError(h);
+      h.engine['ports'].sendKey = async (_id, key) => {
+        h.keys.push(key);
+        h.state.agent = { ...h.state.agent, status: 'running' };
+      };
+      const run = await startedRun(h);
+      expect(h.keys).toEqual(['\r']);
+      expect(run).toMatchObject({ state: 'running', detail: 'submit_retried' });
+      expect(h.destroyed).toEqual([]);
+    });
+
+    it('never presses Enter when the prompt is nowhere on screen (prompt_not_in_composer)', async () => {
+      const h = harness();
+      h.engine['ports'].deliverPrompt = async (_id, _slug, _inc, _prompt, onWrite) => { onWrite?.('paste'); return 'error'; };
+      const run = await startedRun(h);
+      expect(h.keys).toEqual([]);
+      expect(run).toMatchObject({ state: 'failed', reason: 'launch_failed', detail: 'prompt_not_in_composer' });
+    });
+
+    it('gives up at the readiness deadline after a bounded number of Enters (submit_unconfirmed)', async () => {
+      const h = harness();
+      h.engine['ports'].deliverPrompt = pastedThenError(h);
+      const run = await startedRun(h);
+      expect(h.keys).toEqual(['\r', '\r', '\r']);
+      expect(run).toMatchObject({ state: 'failed', reason: 'launch_failed', detail: 'submit_unconfirmed' });
+    });
+
+    it('an error before anything was pasted still fails at once, with no Enter', async () => {
+      const h = harness({ ports: { deliverPrompt: async () => 'error' } });
+      const run = await startedRun(h);
+      expect(h.keys).toEqual([]);
+      expect(run).toMatchObject({ state: 'failed', reason: 'launch_failed' });
+      expect(run.detail).toBeUndefined();
+    });
+
+    it('screenShowsPrompt matches across wrapping and a folded paste', () => {
+      expect(screenShowsPrompt('❯ 나에게\n  인사해', '나에게 인사해')).toBe(true);
+      expect(screenShowsPrompt('❯ [Pasted text #1 +40 lines]', 'a\nlong\nprompt')).toBe(true);
+      expect(screenShowsPrompt('❯ ', '나에게 인사해')).toBe(false);
+    });
   });
 
   it('a tick during remove() cannot start a run for the schedule being deleted', async () => {

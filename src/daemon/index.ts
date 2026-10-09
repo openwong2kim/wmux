@@ -194,7 +194,7 @@ import type { ApprovalDecision, DecisionFormKind, NativeDecisionOutcome, NativeD
 import type { AgentSlug } from '../shared/events';
 import { LANLINK_SENTINEL_SESSION_ID } from '../shared/lanlink';
 import { classifyTasklistOutput, classifyKillOutcome, lockOwnerIsReclaimable, type ProcessLiveness } from '../shared/processLiveness';
-import { deliverScheduledPrompt, type ScheduledPromptDeliveryDeps } from './sessionPromptDelivery';
+import { deliverScheduledPrompt, deliveryInputFence, type ScheduledPromptDeliveryDeps } from './sessionPromptDelivery';
 import { deliverCallerNudge } from './callerNudgeDelivery';
 import { UsageLimitRegistry } from './usageLimit/UsageLimitRegistry';
 import type { SessionPromptScheduleResult } from '../shared/sessionPromptSchedule';
@@ -4776,15 +4776,15 @@ function registerRpcHandlers(
       getAgentState: () => {
         const current = readDaemonAgentState(id);
         const slug = current.agentName ? agentDisplayToSlug(current.agentName) : undefined;
+        const bridge = sessionManager.getSession(id)?.bridge;
         // #1307 — an unverified pane (hook/screen-only, or a shell at rest
         // past exit) reports as no agent here, refusing delivery the same
         // way a stale-agent or missing-session snapshot already does.
-        return slug && current.agentVerified ? {
+        return slug && current.agentVerified && bridge ? {
           slug,
           incarnationId: current.incarnationId,
           status: current.agentStatus,
-          inputQuiet: current.inputQuiet,
-          inputRevision: current.inputRevision,
+          ...deliveryInputFence(bridge),
         } : null;
       },
       isAgentProcessAlive: async () => {
@@ -4946,7 +4946,11 @@ function registerRpcHandlers(
       const managed = liveManaged(id);
       if (managed) agentProcessTracker.arm(id, managed.meta.pid);
     },
-    deliverPrompt: (id, slug, incarnationId, prompt) => deliverPromptToSession(id, slug, incarnationId, prompt),
+    // Same usage-limit hold as deliverPromptToSession, plus the paste edge the
+    // engine needs to tell "nothing written" from "pasted, not submitted".
+    deliverPrompt: async (id, slug, incarnationId, prompt, onWrite) => (usageLimits?.holds(id)
+      ? 'busy'
+      : deliverPromptToSessionNow(id, slug, incarnationId, prompt, onWrite ? { onWrite } : {})),
     hasPendingApproval: (id) => approvalRegistry?.list().pending.some((r) => r.sessionId === id) ?? false,
     transcriptTurnEndAt: (id) => transcriptTurnEnd(projector.snapshot(id)?.events, 0)?.at,
     transcriptLastEventAt: (id) => projector.snapshot(id)?.events.at(-1)?.ts,

@@ -129,6 +129,15 @@ export type AutomationRunReason =
   /** The schedule changed after its non-approval mode was granted; it was not started. */
   | 'needs_regrant';
 
+/**
+ * How a pasted prompt that was not submitted on the first try was settled:
+ * `submit_retried` — Enter was pressed again and the agent took the prompt;
+ * `prompt_not_in_composer` — the prompt was nowhere on screen, so nothing was
+ * pressed; `submit_unconfirmed` — the prompt stayed unsubmitted until the
+ * readiness deadline.
+ */
+export type AutomationRunDetail = 'submit_retried' | 'prompt_not_in_composer' | 'submit_unconfirmed';
+
 export interface AutomationRun {
   id: string;
   automationId: string;
@@ -140,6 +149,8 @@ export interface AutomationRun {
   trigger: 'scheduled' | 'manual' | 'test';
   state: AutomationRunState;
   reason?: AutomationRunReason;
+  /** Finer cause, where one is recorded (see AutomationRunDetail). */
+  detail?: AutomationRunDetail;
   /** Daemon PTY id while the session exists. */
   ptyId?: string;
   /** Agent's own session id (e.g. for `claude --resume <id>`), when known. */
