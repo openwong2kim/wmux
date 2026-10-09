@@ -489,7 +489,7 @@ export class HelperProcess {
       child.on('exit', (code, signal) => {
         this.log(`helper exited (code ${code ?? 'null'}, signal ${signal ?? 'null'})`);
         fail(new ComputerError('helper_unavailable', `the computer-use helper exited during start-up (exit code ${code ?? 'none'})`));
-        this.onExit(child);
+        this.onExit(child, code);
       });
     });
   }
@@ -555,9 +555,13 @@ export class HelperProcess {
     });
   }
 
-  private onExit(child: ChildProcessWithoutNullStreams): void {
-    const tail = this.stderrTail.trim().split('\n').slice(-1)[0] ?? '';
-    this.terminate(child, new ComputerError('helper_unavailable', `the computer-use helper exited${tail ? `: ${tail}` : ''}`));
+  private onExit(child: ChildProcessWithoutNullStreams, code: number | null = null): void {
+    // The helper's stderr goes to the log, never to the agent: it is the
+    // helper's own diagnostics (paths, OS error text), not something an agent
+    // can act on.
+    const tail = this.isCurrent(child) ? this.stderrTail.trim().split('\n').slice(-1)[0] ?? '' : '';
+    if (tail) this.log(`helper stderr before exit: ${tail}`);
+    this.terminate(child, new ComputerError('helper_unavailable', `the computer-use helper exited${code !== null ? ` (exit code ${code})` : ''}`));
   }
 
   private failPending(error: Error): void {

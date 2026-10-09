@@ -339,6 +339,34 @@ describe('HelperProcess', () => {
     expect((err as ComputerError).message).not.toContain('stale line');
   });
 
+  it('logs the helper\'s last stderr line on exit but keeps it out of the agent\'s error', async () => {
+    const children: Array<{ child: ChildProcessWithoutNullStreams; stderr: PassThrough; say: (o: unknown) => void; sent: Array<{ id: number; method: string }> }> = [];
+    const fakeSpawn = () => {
+      const emitter = new EventEmitter() as unknown as ChildProcessWithoutNullStreams;
+      const stdout = new PassThrough();
+      const stdin = new PassThrough();
+      const stderr = new PassThrough();
+      const entry = { child: emitter, stderr, say: (o: unknown) => stdout.write(`${JSON.stringify(o)}\n`), sent: [] as Array<{ id: number; method: string }> };
+      stdin.on('data', (d: Buffer) => { for (const line of String(d).split('\n').filter(Boolean)) entry.sent.push(JSON.parse(line)); });
+      Object.assign(emitter, { stdout, stdin, stderr, exitCode: null, signalCode: null, kill: () => true });
+      children.push(entry);
+      queueMicrotask(() => entry.say({ type: 'hello', protocolVersion: 2, os: 'darwin', helperVersion: 'x', capabilities: { actions: [], modes: [], permissions: {} } }));
+      return emitter;
+    };
+    const logged: string[] = [];
+    const helper = new HelperProcess({ command: 'unused', spawn: fakeSpawn, log: (m) => logged.push(m) });
+    helpers.push(helper);
+    const apps = helper.request('listApps', {});
+    expect(await waitFor(() => children.length === 1 && children[0].sent.length === 1)).toBe(true);
+    children[0].stderr.write('fatal: C:\\Users\\me\\secret path\n');
+    await new Promise((r) => setTimeout(r, 20));
+    (children[0].child as unknown as EventEmitter).emit('exit', 3, null);
+    const err = await apps.catch((e: unknown) => e);
+    expect((err as ComputerError).code).toBe('helper_unavailable');
+    expect((err as ComputerError).message).toBe('the computer-use helper exited (exit code 3)');
+    expect(logged.some((m) => m.includes('secret path'))).toBe(true);
+  });
+
   it('names exactly what the cut-off request sent in the release, never a blanket key list', async () => {
     const cases: Array<[string, () => Promise<unknown>, Record<string, unknown>]> = [];
     const hotkey = makeHelper('hang', { timeoutFor: () => 200 });
