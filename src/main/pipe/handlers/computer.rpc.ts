@@ -77,11 +77,50 @@ export function registerComputerRpc(
       }
       return getService().openApp(agent, { app: params.app });
     }
-    const control = { ...params };
-    delete control.senderPtyId;
-    delete control.callerInstance;
-    return getService().control(agent, control as unknown as ControlParams);
+    return getService().control(agent, parseControlParams(params));
   }, 'required'));
+}
+
+type FieldCheck = (value: unknown) => boolean;
+const isString: FieldCheck = (v) => typeof v === 'string';
+const isNumber: FieldCheck = (v) => typeof v === 'number' && Number.isFinite(v);
+const isStringArray: FieldCheck = (v) => Array.isArray(v) && v.every((x) => typeof x === 'string');
+const oneOf = (values: readonly string[]): FieldCheck => (v) => typeof v === 'string' && values.includes(v);
+
+/**
+ * The shape of a control call's params, checked at the pipe: any pipe client
+ * (not only the MCP tool, whose schema already does this) reaches here. Unknown
+ * fields and wrong types are refused, never passed on. What the values mean
+ * (keys, chords, snapshot ownership) is ComputerService's to judge.
+ */
+const CONTROL_FIELDS: Record<Exclude<keyof ControlParams, 'action'>, FieldCheck> = {
+  snapshotId: isString,
+  index: (v) => Number.isInteger(v) && (v as number) >= 0,
+  x: isNumber,
+  y: isNumber,
+  button: oneOf(['left', 'right', 'middle']),
+  clickCount: isNumber,
+  modifiers: isStringArray,
+  value: isString,
+  text: isString,
+  key: isString,
+  repeat: isNumber,
+  keys: isStringArray,
+  direction: oneOf(['up', 'down', 'left', 'right']),
+  amount: isNumber,
+};
+
+function parseControlParams(params: Record<string, unknown>): ControlParams {
+  const control: Record<string, unknown> = { action: params.action };
+  for (const [field, value] of Object.entries(params)) {
+    // The identity was consumed by the wrapper; the action was checked above.
+    if (field === 'action' || field === 'senderPtyId' || field === 'callerInstance' || value === undefined) continue;
+    const check = (CONTROL_FIELDS as Record<string, FieldCheck | undefined>)[field];
+    if (!check) throw new ComputerError('invalid_argument', `${String(params.action)} does not take ${field}`);
+    if (!check(value)) throw new ComputerError('invalid_argument', `${field} has the wrong type or value`);
+    control[field] = value;
+  }
+  return control as unknown as ControlParams;
 }
 
 const INSTANCE_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;

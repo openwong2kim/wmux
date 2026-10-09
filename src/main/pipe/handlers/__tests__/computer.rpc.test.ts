@@ -156,6 +156,30 @@ describe('computer.rpc', () => {
     );
   });
 
+  it('checks the shape of control params at the pipe: unknown fields and wrong types never reach the service', async () => {
+    const control = vi.fn(async () => ({ method: 'accessibility', verification: 'verified' }));
+    const { call } = setup({ control } as never);
+    const act = (params: Record<string, unknown>) =>
+      errorOf(call('computer.act', { action: 'click', snapshotId: 's1', senderPtyId: 'pty-a1', ...params }, { clientName: 'c' }));
+    for (const bad of [
+      { index: 1, workspaceId: 'ws-forged' },
+      { index: '3' },
+      { index: -1 },
+      { index: 1, button: 'back' },
+      { index: 1, modifiers: 'ctrl' },
+      { x: 'NaN', y: 2 },
+      { index: 1, clickCount: Infinity },
+      { snapshotId: 7, index: 1 },
+    ]) {
+      expect((await act(bad))?.code, JSON.stringify(bad)).toBe('invalid_argument');
+    }
+    expect(control).not.toHaveBeenCalled();
+    expect(await act({ index: 1, button: 'right', clickCount: 2, modifiers: ['ctrl'] })).toBeNull();
+    expect(control).toHaveBeenCalledWith(expect.anything(), {
+      action: 'click', snapshotId: 's1', index: 1, button: 'right', clickCount: 2, modifiers: ['ctrl'],
+    });
+  });
+
   it('routes openApp on computer.act to the service by selector, with the caller identity', async () => {
     const control = vi.fn();
     const openApp = vi.fn(async () => ({ app: { id: 'com.apple.TextEdit' }, window: null }));
