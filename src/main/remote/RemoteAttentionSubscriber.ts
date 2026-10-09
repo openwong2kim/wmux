@@ -206,7 +206,7 @@ export class RemoteAttentionSubscriber {
           const frame = buffer.slice(0, match.index);
           buffer = buffer.slice(match.index + match[0].length);
           if (Buffer.byteLength(frame) > MAX_BUFFER_BYTES) {
-            controller.abort();
+            this.dropOversized(controller);
             return;
           }
           this.handleFrame(frame);
@@ -214,13 +214,24 @@ export class RemoteAttentionSubscriber {
         }
         if (Buffer.byteLength(buffer) > MAX_BUFFER_BYTES) {
           // A peer that never terminates a frame is not one to keep reading.
-          controller.abort();
+          this.dropOversized(controller);
           return;
         }
       }
     } finally {
       reader.releaseLock();
     }
+  }
+
+  /**
+   * End a stream that sent a frame over the cap, and wait the slowest backoff
+   * step before the next connect. The host's own `reset` frame resets the
+   * backoff on every connect, so without this a host that follows it with an
+   * endless frame would be reconnected about once a second, forever.
+   */
+  private dropOversized(controller: AbortController): void {
+    this.attempt = BACKOFF_STEPS_MS.length - 1;
+    controller.abort();
   }
 
   private handleFrame(raw: string): void {

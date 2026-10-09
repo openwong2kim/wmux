@@ -218,6 +218,28 @@ describe('RemoteAttentionSubscriber', () => {
     sub.stop();
   });
 
+  it('backs off to the slowest step after an oversized frame, even though the reset frame reset the counter', async () => {
+    const h = timerHarness();
+    const fetchImpl = vi.fn(async () => fakeStream([
+      frame('reset', { epoch: 'e1', headId: 0 }),
+      'event: notify\ndata: ' + 'A'.repeat(300 * 1024),
+    ]));
+    const sub = new RemoteAttentionSubscriber({
+      host: HOST,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      jitter: () => 0.5,
+      setTimeoutImpl: h.setTimeoutImpl,
+      clearTimeoutImpl: h.clearTimeoutImpl,
+      onNotification: () => { throw new Error('must not notify'); },
+    });
+    sub.start();
+    await vi.waitFor(() => expect(h.reconnectDelays()).toEqual([60_000]));
+    h.fireReconnect();
+    await vi.waitFor(() => expect(h.reconnectDelays()).toEqual([60_000, 60_000]));
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    sub.stop();
+  });
+
   it('stops delivering after stop(), even mid-stream', async () => {
     const seen: string[] = [];
     const h = timerHarness();
