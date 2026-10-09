@@ -154,6 +154,19 @@ describe('MoaDecisionStore idempotency (AnswerReceiptStore semantics)', () => {
     expect(() => new MoaDecisionStore(dir)).toThrow();
   });
 
+  it('a merge decision stored before facts existed still loads; malformed facts refuse the file', async () => {
+    const store = new MoaDecisionStore(dir);
+    const d = await newTicket(store, MERGE);
+    await store.settle(d.id, { ...ESCALATE, lane: { ok: true, reasons: [] } });
+    const saved = JSON.parse(fs.readFileSync(file(), 'utf8'));
+    expect(saved.decisions[0]).not.toHaveProperty('facts');
+    const reloaded = new MoaDecisionStore(dir).list()[0];
+    expect(reloaded).toMatchObject({ id: d.id, lane: { ok: true, reasons: [] } });
+    expect(reloaded?.facts).toBeUndefined();
+    fs.writeFileSync(file(), JSON.stringify({ ...saved, decisions: [{ ...saved.decisions[0], facts: { number: 'x' } }] }));
+    expect(() => new MoaDecisionStore(dir)).toThrow('Invalid moa decision entry');
+  });
+
   it('a stored answer of the wrong shape refuses to load', async () => {
     const store = new MoaDecisionStore(dir);
     const d = await newTicket(store, Q);

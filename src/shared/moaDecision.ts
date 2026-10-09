@@ -44,6 +44,7 @@ import type {
   MoaTicketView,
 } from './moaAsk';
 import { MOA_ASK_POLL_MS } from './moaAsk';
+import type { PrMergeFacts } from './phoneGitWrite';
 
 export const MOA_DELEGATE_DIRNAME = 'moa-delegate';
 export const MOA_DECISIONS_FILENAME = 'decisions.json';
@@ -107,6 +108,11 @@ export interface MoaDecision {
    *  decided on: wmux's own check, shown to the owner as checked facts.
    *  Display only: the executor re-reads and re-checks before any merge. */
   lane?: { ok: boolean; reasons: string[] };
+  /** A merge's facts on that same read: the phone merge preview's object
+   *  without its confirm grant, so one sheet serves both. Display only, like
+   *  `lane`; absent on decisions recorded before it existed, or when a field
+   *  could not be read. */
+  facts?: PrMergeFacts;
 }
 
 /**

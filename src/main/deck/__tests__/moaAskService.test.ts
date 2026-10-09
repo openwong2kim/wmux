@@ -15,6 +15,7 @@ import { MoaMergeExecutor } from '../moaMergeExecutor';
 import { MoaAskService, type MoaAskConfig } from '../moaAskService';
 import { parsePolicyBook } from '../deckPolicy';
 import type { JudgeRunResult } from '../moaShadowJudge';
+import type { MergeFactsExtras } from '../moaMergeFacts';
 
 const FIXTURES = path.join(__dirname, '../../github/__tests__/fixtures/moaMergeLane');
 const MERGED = mapLaneFacts(JSON.parse(fs.readFileSync(path.join(FIXTURES, 'lane-pr1858.json'), 'utf8'))) as PrLaneFacts;
@@ -57,6 +58,8 @@ interface World {
   branches: string[];
   /** What GitHub does on merge. */
   onMerge: (e: MergeEffect) => Promise<PrWriteResult>;
+  /** The mergeFactsExtras port; absent: no port. */
+  extras?: MergeFactsExtras | null;
 }
 
 function world(over: Partial<World> = {}): World {
@@ -108,6 +111,7 @@ function build(w: World) {
     readScreen,
     resolveRepo: async () => ({ key: 'github.com/openwong2kim/wmux', path: '/repo' }),
     askerBranches: async () => w.branches,
+    ...(w.extras !== undefined ? { mergeFactsExtras: async () => w.extras ?? null } : {}),
     log: () => undefined,
   });
   const settle = async () => {
@@ -449,6 +453,48 @@ describe('owner resolution', () => {
     expect(h.merge).toHaveBeenCalledTimes(1);
     const after = await h.service.status(ASKER, view.ticketId);
     expect(after.ok && after.ticket).toMatchObject({ status: 'answered', answer: { resolvedBy: 'owner', actionVerdict: 'go' }, effect: { status: 'done' } });
+  });
+
+  it('the decision carries the PrMergeFacts of the lane read, display only', async () => {
+    const extras: MergeFactsExtras = { headRefOid: HEAD, title: 'Ship it', mergeable: 'MERGEABLE', squashAllowed: true, login: 'openwong2kim' };
+    const h = build(world({ config: { mode: 'suggest', autoRules: [], trustedAuthors: ['openwong2kim'] }, extras }));
+    await askAndSettle(h);
+    const d = h.decisions.list()[0];
+    expect(d?.facts).toMatchObject({
+      number: 1858, title: 'Ship it', state: 'OPEN', headRefOid: HEAD, headRefName: BRANCH, mergeable: 'MERGEABLE',
+      squashAllowed: true, methods: ['squash'], subject: 'Ship it (#1858)', body: '', identity: { login: 'openwong2kim' },
+    });
+    expect(d?.facts).not.toHaveProperty('confirmToken');
+    // Survives a reload of the store.
+    expect(new MoaDecisionStore(dir).list()[0]?.facts).toEqual(d?.facts);
+  });
+
+  it('no facts when the extras are unknown or the port is absent', async () => {
+    for (const extras of [null, undefined]) {
+      const h = build(world({ config: { mode: 'suggest', autoRules: [], trustedAuthors: ['openwong2kim'] }, extras }));
+      await askAndSettle(h);
+      expect(h.decisions.list()[0]?.facts).toBeUndefined();
+      expect(h.decisions.list()[0]?.lane).toEqual({ ok: true, reasons: [] });
+      fs.rmSync(path.join(dir, 'moa-delegate'), { recursive: true, force: true });
+    }
+  });
+
+  it('a head that moves after the decision: the new head is stale, the card head is refused by the executor\'s re-read', async () => {
+    const extras: MergeFactsExtras = { headRefOid: HEAD, title: 'Ship it', mergeable: 'MERGEABLE', squashAllowed: true, login: 'openwong2kim' };
+    const w = world({ facts: { ...OPEN_GREEN, author: 'outsider' }, extras });
+    const h = build(w);
+    await askAndSettle(h);
+    const d = h.decisions.list()[0];
+    if (!d?.facts) throw new Error('no facts');
+    const moved = 'd'.repeat(40);
+    w.facts = { ...OPEN_GREEN, author: 'outsider', headRefOid: moved, checksHeadOid: moved };
+    expect(await h.service.resolveByOwner({ decisionId: d.id, answer: { type: 'merge', approve: true, expectHead: moved } }))
+      .toMatchObject({ ok: false, code: 'stale' });
+    const r = await h.service.resolveByOwner({ decisionId: d.id, answer: { type: 'merge', approve: true, expectHead: d.facts.headRefOid } });
+    expect(r.ok).toBe(true);
+    await h.settle();
+    expect(h.merge).not.toHaveBeenCalled();
+    expect(h.effects.list()[0]).toMatchObject({ status: 'refused', reason: 'head-moved' });
   });
 
   it('per-rule auto toggles persist through the port; unknown rules are refused', async () => {

@@ -93,6 +93,8 @@ export interface MoaSettlement {
   answer?: MoaDecision['answer'];
   /** A merge's lane verdict on the fresh read it was decided on. */
   lane?: MoaDecision['lane'];
+  /** A merge's PrMergeFacts on that read. */
+  facts?: MoaDecision['facts'];
 }
 
 export type MoaOwnerResolve =
@@ -126,7 +128,17 @@ export function isMoaDecisionRecord(v: unknown): v is MoaDecision {
     && (d.judge === null || isJudgeResult(d.judge))
     && (d.answer === undefined || isStoredAnswer(d.answer, d.kind))
     && (d.delivery === undefined || isDelivery(d.delivery))
-    && (d.lane === undefined || (!!d.lane && typeof d.lane.ok === 'boolean' && Array.isArray(d.lane.reasons) && d.lane.reasons.every((r) => typeof r === 'string')));
+    && (d.lane === undefined || (!!d.lane && typeof d.lane.ok === 'boolean' && Array.isArray(d.lane.reasons) && d.lane.reasons.every((r) => typeof r === 'string')))
+    && (d.facts === undefined || isMergeFacts(d.facts));
+}
+
+/** Display-only facts: the field types, not their values (one bad row refuses the file). */
+function isMergeFacts(v: unknown): boolean {
+  const f = v as MoaDecision['facts'];
+  return !!f && typeof f === 'object'
+    && Number.isSafeInteger(f.number) && typeof f.headRefOid === 'string' && typeof f.isDraft === 'boolean'
+    && typeof f.squashAllowed === 'boolean' && (f.block === null || typeof f.block === 'string')
+    && !!f.checks && typeof f.checks === 'object' && !!f.identity && typeof f.identity.login === 'string';
 }
 
 const DELIVERY_STATES: ReadonlySet<string> = new Set(['waiting', 'sending', 'delivered', 'seen', 'failed']);
@@ -280,6 +292,7 @@ export class MoaDecisionStore {
       why: s.why,
       ...(s.status === 'answered' && s.answer ? { answer: s.answer } : {}),
       ...(s.lane ? { lane: { ok: s.lane.ok, reasons: [...s.lane.reasons] } } : {}),
+      ...(s.facts ? { facts: s.facts } : {}),
       resolvedBy: s.status === 'answered' ? 'moa-auto' : s.status === 'refused' ? 'refused' : null,
       resolvedAt: s.status === 'escalated' ? null : at,
       receipt,

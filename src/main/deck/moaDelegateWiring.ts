@@ -24,7 +24,7 @@ import { moaAskSwitchPath, readMoaAskEnabled } from '../../shared/moaAskSwitch';
 import type { DaemonClient } from '../DaemonClient';
 import { detectRemote } from '../github/PrProvider';
 import { ghPrReviewService } from '../github/GhPrReviewService';
-import { ghIssueService } from '../github/GhIssueService';
+import { ghIssueEnv, ghIssueService, splitRepoKey } from '../github/GhIssueService';
 import { getTaskLedger } from './taskLedgerHost';
 import { getMoaConfig, onHqStoreWritten, setMoaAutoRules } from './deckHqStore';
 import { loadPolicyBook } from './deckPolicy';
@@ -46,6 +46,7 @@ const TICK_MS = 10 * 60 * 1000;
 /** The audit of merges without a lane receipt. */
 const AUDIT_MS = 24 * 60 * 60 * 1000;
 const GIT_TIMEOUT_MS = 5_000;
+const GH_TIMEOUT_MS = 15_000;
 
 /** The ask mode in force: off unless Moa is on and the owner chose one. */
 export function moaAskModeNow(): MoaAskMode {
@@ -93,6 +94,30 @@ let deps: MoaDelegateWiringDeps | null = null;
 let settingsWatched = false;
 /** Owner logins by GitHub host (the owner's own PRs are trusted authors). */
 const ownerLogins = new Map<string, string>();
+
+/** Squash permission by repo key: a repository setting, read once per run. */
+const squashAllowedByRepo = new Map<string, boolean>();
+
+async function squashMergeAllowed(repo: { key: string; path: string }): Promise<boolean | null> {
+  const known = squashAllowedByRepo.get(repo.key);
+  if (known !== undefined) return known;
+  const parts = splitRepoKey(repo.key);
+  if (!parts) return null;
+  try {
+    const { stdout } = await execFileAsync(process.platform === 'win32' ? 'gh.exe' : 'gh', [
+      'api', 'graphql', '--hostname', parts.host,
+      '-f', 'query=query($owner: String!, $repo: String!) { repository(owner: $owner, name: $repo) { squashMergeAllowed } }',
+      '-f', `owner=${parts.owner}`, '-f', `repo=${parts.repo}`,
+      '--jq', '.data.repository.squashMergeAllowed',
+    ], { cwd: repo.path, timeout: GH_TIMEOUT_MS, env: ghIssueEnv(), windowsHide: true });
+    const v = stdout.trim();
+    if (v !== 'true' && v !== 'false') return null;
+    squashAllowedByRepo.set(repo.key, v === 'true');
+    return v === 'true';
+  } catch {
+    return null;
+  }
+}
 
 async function git(args: string[], cwd: string): Promise<string | null> {
   try {
@@ -216,6 +241,20 @@ function build(d: MoaDelegateWiringDeps): MoaAskService {
       return { key: remote.key, path: cwd };
     },
     askerBranches: (asker, repoPath) => askerBranches(d.getDaemonClient, asker, repoPath),
+    // The lane read has no title, mergeable or squash permission; the login is
+    // the one resolveRepo already read for this host.
+    mergeFactsExtras: async (repo, prNumber) => {
+      const parts = splitRepoKey(repo.key);
+      const login = parts ? ownerLogins.get(parts.host) : undefined;
+      if (!login) return null;
+      const [head, squashAllowed] = await Promise.all([
+        ghPrReviewService.checks(repo.path, repo.key, prNumber, true),
+        squashMergeAllowed(repo),
+      ]);
+      if (!head.ok || squashAllowed === null) return null;
+      const h = head.value.head;
+      return { headRefOid: h.headRefOid, title: h.title, mergeable: h.mergeable, squashAllowed, login };
+    },
     priorJudgment: findShadowJudgment,
     ...(submit
       ? {
