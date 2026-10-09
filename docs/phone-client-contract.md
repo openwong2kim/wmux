@@ -5596,3 +5596,226 @@ characters; anything else is dropped.
 - #1653 (remote pane from the + menu) creates panes on a paired remote host
   through the Surface model, not `POST /api/sessions`; `accountId` does not
   apply to remote panes.
+
+## Phone git write actions: push, PR create, merge (not served yet)
+
+> **Status.** The contract, gate, confirm tokens, receipts and identity are in
+> place (`src/shared/phoneGitWrite.ts`, `src/daemon/web/phoneGitWrite*.ts`).
+> The actions themselves land separately. Until an action is served its
+> routes answer `501 {error:"not-implemented"}` and its `/api/config` key is
+> omitted, so a phone that follows the keys never calls them.
+
+This adds three actions: `push`, `pr.create` and `pr.merge`. The daemon
+derives the repository, the refs and the remote from the session's trusted
+`spawnCwd`; **the phone never sends a path, a ref or a refspec.**
+
+### Gate and discovery
+
+The `/api/config` keys are **omitted, not false**, when the caller cannot use
+them:
+
+| Key | Advertises |
+|---|---|
+| `gitPush` | push preview, execute, receipt |
+| `gitPrCreate` | PR creation and its receipt |
+| `gitPrMerge` | `{methods:["squash"]}`; merge preview, execute, receipt |
+
+A key appears only when all of these hold: the host runs
+`wmux web --allow-git-write` (off by default), the host has a GitHub login set
+for writes (`--git-write-login`), the receipt store loaded, this caller holds
+the input grant, the device's grant was **set explicitly**, and that action is
+served. Devices paired before grants existed read as allowed for typing but
+not here: the desktop has to set their grant first. There is no reason hint
+when the keys are absent. Never probe with a write.
+
+The operator token passes the grant check; it still needs the ceiling.
+
+### Two-step flow (push and merge)
+
+1. `POST …/preview` with body `{}` returns the facts plus a `confirmToken`
+   and `expiresAt` (epoch ms, 90 s, single use).
+2. Show the facts, then run Face ID / hold-to-confirm.
+3. `POST` execute with `requestId` (a new UUID per user intent),
+   `confirmToken` and the pinned values from the preview. It answers 202
+   `{requestId, replayed:false, state:"pending"}`.
+4. Poll `GET …/<requestId>` (1 s, backing off to 5 s) until `done`, `refused`
+   or `uncertain`.
+
+`pr.create` has no preview or token; send `requestId` directly.
+
+The token is bound to the device, the session, the repository, the action,
+the gh login and the pinned values (push: `head`, `ref`, `target.ref`,
+`remoteTip`; merge: `number`, `headRefOid`). A restart voids every token. The
+app's Face ID / hold happens on the phone and the server cannot verify it.
+
+**Retry rules.**
+
+- **Lost response:** resend the **same** body with the same `requestId`, even
+  though the token is spent. You get the stored receipt with `replayed:true`;
+  nothing runs twice.
+- **428 `confirm-required` or a 409:** start a new preview with a new
+  `requestId`, and ask for confirmation again. Never swap the token silently.
+- **Never** reuse a `requestId` with a different body (409
+  `request-id-reused`).
+
+**Execute order.** (1) `requestId` lookup: an existing receipt with the same
+body returns with `replayed:true`, whatever its state; a different body is
+409 `request-id-reused`. (2) Atomic token consume, and the receipt is written
+`pending` to disk in the same step. (3) Re-authorization with the same
+credential: the ceiling and the explicit grant are read again. (4) The
+pinned facts and the identity are read again. (5) The receipt goes
+`inFlight` on disk, then git or gh runs. The body fingerprint excludes
+`confirmToken`, which is why a resend after the token was spent still
+matches.
+
+### Receipts
+
+Receipts are keyed by device, repository and `requestId`, persisted on disk
+and **kept for at least 72 hours**. A resend or a GET within that window
+returns the stored receipt; after it, a GET answers 404 `receipt-expired`
+and the app re-checks the branch or PR instead.
+
+| State | Meaning |
+|---|---|
+| `pending` | accepted, not started |
+| `inFlight` | running |
+| `done` | finished |
+| `refused` | not done; `error` holds the tag |
+| `uncertain` | may or may not have happened; the daemon is checking. Do not retry. Re-read the receipt, or re-check the branch or PR. |
+
+An uncertain action is **never re-run** automatically. A daemon restart turns
+an `inFlight` receipt into `uncertain`, and a `pending` one (nothing was
+started) into `refused` / `confirm-required`.
+
+### Endpoints
+
+| Action | Preview | Execute | Receipt |
+|---|---|---|---|
+| push | `POST /api/sessions/<id>/git/push/preview` | `POST …/git/push` | `GET …/git/push/<requestId>` |
+| pr.create | — | `POST …/git/pr` | `GET …/git/pr/receipts/<requestId>` |
+| pr.merge | `POST …/git/pr/<number>/merge/preview` | `POST …/git/pr/<number>/merge` | `GET …/git/pr/<number>/merge/<requestId>` |
+
+`GET …/git/pr` (the PR list) is unchanged.
+
+#### push
+
+```json
+preview 200 {
+  "branch": "feat/x", "ref": "refs/heads/feat/x", "head": "<oid>",
+  "target": {"remote": "origin", "ref": "refs/heads/feat/x", "create": false},
+  "repo": "github.com/owner/repo",
+  "ahead": 3, "behind": 0, "remoteTip": "<oid>|null", "remoteMoved": false, "fastForward": true,
+  "commits": [{"oid": "<oid>", "subject": "…", "author": "…"}], "commitsTruncated": false,
+  "identity": {"login": "octocat"},
+  "confirmToken": "…", "expiresAt": 1760000090000
+}
+execute {"requestId": "<uuid>", "confirmToken": "…", "expectedHead": "<head>", "expectedRef": "<ref>"}
+receipt {"requestId": "…", "state": "done", "pushed": "<oid>", "target": "refs/heads/feat/x"}
+```
+
+- **Where it pushes.** To the upstream branch, which may have a different
+  name than the local branch; show `target.ref`. `create:true` means a new
+  remote branch (the app shows its own copy on the same sheet).
+- **`fastForward:false`.** The push will fail with `non-fast-forward`.
+  Disable the button.
+- **Never force-pushes.** There is no override.
+- **Default branch.** Pushing to the repository's default branch is refused
+  (`protected-target`).
+- **Which commit.** The daemon pushes exactly `expectedHead`, the commit the
+  user saw.
+- **Commits.** At most 20; show "and N more" from `ahead`.
+
+#### pr.create
+
+```json
+execute {"requestId": "<uuid>", "title": "…", "body": "…", "base": "main", "draft": false}
+receipt {"requestId": "…", "state": "done", "number": 1980, "url": "https://github.com/owner/repo/pull/1980"}
+```
+
+- `base` is optional; it defaults to the repository's default branch.
+- `title` is 1–256 chars and `body` ≤ 64 KiB, no NUL.
+- The branch must already be pushed (`not-pushed`).
+
+#### pr.merge
+
+```json
+preview 200 {
+  "number": 1980, "title": "…", "state": "OPEN", "isDraft": false,
+  "headRefOid": "<oid>", "headRefName": "feat/x", "baseRefName": "main",
+  "mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN", "block": null,
+  "squashAllowed": true,
+  "checks": {"overall": "success", "counts": {}, "requiredFailing": [], "requiredPending": []},
+  "methods": ["squash"], "subject": "Title (#1980)", "body": "",
+  "identity": {"login": "octocat"}, "confirmToken": "…", "expiresAt": 1760000090000
+}
+execute {"requestId": "<uuid>", "confirmToken": "…", "expectHead": "<headRefOid>", "method": "squash", "subject": "…", "body": "…"}
+receipt {"requestId": "…", "state": "done", "mergeCommitOid": "<oid>"}
+```
+
+- **`PrMergeFacts`.** The preview without `confirmToken` and `expiresAt` is
+  the shared `PrMergeFacts` type. A Moa pr.merge decision carries the same
+  object, so one sheet serves both; a head that moves after the decision was
+  created reads `stale`.
+- **Method.** Squash only.
+- **`block` values.** Non-null means the merge will be refused. Values:
+  `not-open`, `draft`, `conflicts`, `checks-failing`, `checks-pending`,
+  `blocked` (required reviews, rulesets), `behind`, `unknown`.
+- **Required checks.** `requiredFailing` and `requiredPending` are
+  **omitted** when GitHub could not say which checks are required. Do not
+  read their absence as "none required".
+- **`squashAllowed:false`.** The repository forbids squash merges, so merging
+  from the phone is impossible.
+
+### Identity
+
+Every push and merge goes out as the host's `gitWriteLogin`. Each git or gh
+network call gets that login's stored token as `GH_TOKEN`, replacing any
+token the daemon inherited, so switching the active gh account on the desktop
+does not change who the phone writes as. Show `identity.login` on the confirm
+sheet. No stored token for that login → 424 `gh-auth-missing`;
+`identity-changed` means the token was removed between preview and execute.
+
+### Errors (`{error, …}`)
+
+| HTTP | `error` | Do |
+|---|---|---|
+| 400 | `invalid-git-request`, `merge-method-unsupported`, `invalid-pr-title`, `invalid-base` | fix the request |
+| 401 | `authorization-expired` | re-authenticate |
+| 403 | `git-write-disabled` | the host has the feature off |
+| 403 | `read-only: …` | no input grant, or one that was never set explicitly |
+| 404 | `session not found`, `pr-not-found` | refresh |
+| 404 | `receipt-expired` | the receipt is older than 72 h (or never existed for this device); re-check the branch or PR |
+| 409 | `stale` (+ `head` / `headRefOid`) | new preview |
+| 409 | `non-fast-forward` (+ `remoteTip`, `behind`) | pull on the desktop |
+| 409 | `blocked` (+ `reason`) | show the reason |
+| 409 | `not-a-git-repo` | the session is not in a repository |
+| 409 | `squash-disabled`, `protected-target`, `remote-branch-exists`, `remote-unsupported`, `not-pushed`, `pr-exists` (+ `number`), `no-commits-ahead`, `detached-head`, `git-operation-in-progress`, `merge-in-flight`, `identity-changed`, `request-id-reused` | show; usually re-preview |
+| 424 | `gh-auth-missing`, `remote-forbidden` (+ `login`) | fix on the desktop |
+| 428 | `confirm-required` | new preview |
+| 429 | `git-busy` | retry later |
+| 429 | `rate-limited` (+ `retryAt`, epoch ms) | wait until `retryAt` |
+| 502 | `gh-unavailable`, `remote-unreachable` | retry later |
+| 503 | `git-receipts-unavailable` | retry later |
+
+Refusals inside a receipt use the same tags, plus `push-not-landed`.
+
+### Moa mapping (one merge sheet)
+
+| Phone merge | Moa decision |
+|---|---|
+| path `number` | `prNumber` |
+| `expectHead` | `answer.expectHead` (same full-sha format) |
+| execute | `answer.approve: true`; decline = don't execute |
+| `stale` + `headRefOid` | `stale` |
+| `blocked` + `reason` | `blocked-<reason>` |
+| `rate-limited` + `retryAt` | same |
+| receipt `state` | merge effect status (same five names) |
+| `mergeCommitOid` | same |
+| preview facts | `PrMergeFacts` |
+
+### What this guards against
+
+`--allow-git-write` and the two-step flow protect against mis-taps, replays,
+stale screens and mistakes. They do not protect against a stolen, unlocked,
+paired device: a device with the input grant can already type into a shell.
+Revoking the device is the answer to theft. See `docs/SECURITY.md` §1.5.

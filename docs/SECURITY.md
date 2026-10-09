@@ -87,6 +87,19 @@ explicit `wmux web --stop` also revokes both credential classes. Rotation is
 acknowledged only after the device roster and new web state are durable;
 otherwise the new listener is stopped and the operation fails.
 
+Phone git writes (push, PR create, squash merge) are a further host ceiling,
+`--allow-git-write`, off by default, and they also need a device input grant
+that was set explicitly: a device record that predates grants is allowed to
+type but not to write to GitHub. Push and merge need a fresh preview and a
+single-use confirm token bound to that device, session, repository, action,
+GitHub login and the values shown; every execute is keyed by a request id
+whose receipt is kept on disk, so a resent request returns the stored outcome
+instead of running again. These guard against mis-taps, replays, stale
+screens and mistakes. They do **not** guard against a stolen, unlocked,
+paired device: `--allow-input` already lets such a device type arbitrary
+input into a shell, including `git push`. Revoking the device is the answer
+to theft.
+
 ---
 
 ## 2. What wmux delegates to the operating system
@@ -164,3 +177,4 @@ What we do not consider a wmux security issue:
 | 2026-08-02 | Documented the Browser/PWA trust boundary and native TLS fail-closed behavior (#764). |
 | 2026-08-11 | §1.2 rewritten for the PowerShell-free token ACL rebuild. The `powershell.exe -ExecutionPolicy Bypass -EncodedCommand` .NET rebuild was removed: under Constrained Language Mode (AppLocker/WDAC, standard on managed fleets) it could not run at all and every attempt degraded silently to the weaker `icacls` strip — measured 22/22 failures on a real corporate machine, meaning that installed base ran with looser token ACLs than this section stated. Norton also flagged the argument shape as `IDP.HELU.PSE85` (GHSA-8fj2-47w9-jxq3). Replaced by a fresh-inode rewrite staged inside a pre-hardened staging directory, with an in-place repair plus `icacls /save` read-back verification when the target is locked. |
 | 2026-09-28 | §3: documented the process-scoped `-ExecutionPolicy RemoteSigned` that Windows PowerShell 5.1 panes and exec units now get on a factory-default Windows client, and only there (#1620). `RemoteSigned`, not `Bypass`, because the `Bypass` argument shape is what Norton flagged (GHSA-8fj2-47w9-jxq3); explicit policies and Group Policy are never overridden. |
+| 2026-10-09 | §1.5: documented the `--allow-git-write` ceiling for phone push, PR create and merge, and what it does and does not guard against. |
