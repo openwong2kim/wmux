@@ -160,3 +160,18 @@ describe('deckSlice', () => {
     });
   });
 });
+
+describe('Jev local Fleet answer provenance', () => {
+  it('marks only the completed matching exchange, preserving its text and workspace', () => {
+    useStore.setState({ brainThreads: {} });
+    useStore.getState().startDeckBrainTurn(WS_A, 'status');
+    useStore.getState().applyDeckBrainEvent(WS_A, { type: 'text-delta', text: 'Fleet snapshot' });
+    useStore.getState().applyDeckBrainEvent(WS_A, { type: 'turn-end', sessionId: null, localAnswer: { prompt: 'status', text: 'Fleet snapshot' } });
+    expect(threadOf(WS_A).status).toBe('idle');
+    expect(threadOf(WS_A).messages.every((m) => m.localFleet)).toBe(true);
+    expect(threadOf(WS_B).messages).toEqual([]);
+    useStore.getState().startDeckBrainTurn(WS_A, 'another request');
+    useStore.getState().applyDeckBrainEvent(WS_A, { type: 'turn-end', sessionId: 'real' });
+    expect(threadOf(WS_A).messages.slice(-2).some((m) => m.localFleet)).toBe(false);
+  });
+});

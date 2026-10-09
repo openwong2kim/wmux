@@ -28,6 +28,7 @@ const SOURCES = [
   'ComputerUseSection.tsx',
   'QuickLaunchSection.tsx',
   'MoaTab.tsx',
+  'JevSettings.tsx',
 ];
 
 function anchoredIds(): Set<string> {

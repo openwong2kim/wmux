@@ -146,6 +146,7 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
   { id: 'claudeacct', tab: 'accounts', labelKey: 'accounts.title', synonyms: 'claude account login subscription max usage quota 계정' },
 
   { id: 'moaswitch', tab: 'moa', labelKey: 'moa.settings.switch', descKey: 'moa.settings.switchDesc', synonyms: 'moa main bot hq orchestrator brain on off enable disable 모아 메인봇 오케스트레이터' },
+  { id: 'jev', tab: 'moa', labelKey: 'jev.settings.title', descKey: 'jev.settings.allowDesc', synonyms: 'jev typesafe fleet experimental read only api key session privacy' },
   { id: 'brain', tab: 'moa', labelKey: 'moa.settings.engine', descKey: 'moa.settings.engineDesc', synonyms: 'orchestrator brain engine runtime hermes claude acp sdk terminal' },
   { id: 'model', tab: 'moa', labelKey: 'settings.orchestratorModel', descKey: 'settings.orchestratorModelDesc', synonyms: 'model opus sonnet haiku' },
   { id: 'effort', tab: 'moa', labelKey: 'settings.orchestratorEffort', descKey: 'settings.orchestratorEffortDesc', synonyms: 'effort thinking reasoning budget low medium high max' },

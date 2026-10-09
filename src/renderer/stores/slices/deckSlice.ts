@@ -179,6 +179,17 @@ export const createDeckSlice: StateCreator<
         return;
       }
       thread.messages = applyBrainEvent(thread.messages, event);
+      if (event.type === 'turn-end' && event.localAnswer) {
+        // Keep the local exchange in this session's existing thread so it
+        // survives panel remounts and a later terminal-brain startup.
+        const assistant = thread.messages.findLast((m) => m.role === 'assistant');
+        const user = thread.messages.findLast((m) => m.role === 'user');
+        if (assistant && user && user.text === event.localAnswer.prompt) {
+          assistant.localFleet = true;
+          assistant.text = event.localAnswer.text;
+          user.localFleet = true;
+        }
+      }
       if (event.type === 'turn-end' || event.type === 'error') {
         thread.status = 'idle';
       }

@@ -39,6 +39,7 @@ import Input from '../ui/Input';
 import SegmentedControl from '../ui/SegmentedControl';
 import Badge from '../ui/Badge';
 import { SettingsSection, SettingRow, SettingNote } from './SettingsLayout';
+import JevSettings from './JevSettings';
 
 const MODES: readonly AgentMode[] = ['off', 'assist', 'danger'];
 const isMode = (v: unknown): v is AgentMode => typeof v === 'string' && (MODES as readonly string[]).includes(v);
@@ -995,6 +996,8 @@ export function TabMoa({ registerDialog }: TabMoaProps) {
           />
         </SettingRow>
       </SettingsSection>
+
+      <JevSettings />
 
       {firstRunOpen && <MoaFirstRunCard onClose={() => setFirstRunOpen(false)} />}
       {archiveOpen && <MoaArchiveDialog onClose={() => setArchiveOpen(false)} />}

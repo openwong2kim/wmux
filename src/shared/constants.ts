@@ -202,6 +202,10 @@ export const IPC = {
   //                   slot, turn-start announce); resolves { ok, code? }.
   DECK_WAKE: 'deck:wake',
   DECK_STATUS: 'deck:status',
+  // Experimental, opt-in Fleet routing. Session memory only; status never
+  // returns the user-entered key and configuring a key does not opt in.
+  DECK_JEV_STATUS: 'deck:jev:status',
+  DECK_JEV_CONFIGURE: 'deck:jev:configure',
   DECK_FULLPOWER_SET: 'deck:fullpower:set',
   //   DECK_BRAIN_VENDOR_SET (invoke) renderer → main: sync the orchestrator
   //                   brain vendor (BYOB M0 — 'claude' | 'hermes'). Same

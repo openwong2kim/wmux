@@ -84,7 +84,14 @@ export type BrainEvent =
       workspaceId?: string;
     }
   | { type: 'tool-end'; name: string; ok: boolean; toolId?: string }
-  | { type: 'turn-end'; sessionId: string | null; usage?: BrainUsage }
+  | {
+      type: 'turn-end';
+      sessionId: string | null;
+      usage?: BrainUsage;
+      /** A deterministic main-side answer absent from the provider's own
+       *  transcript. The renderer keeps it as a local conversation entry. */
+      localAnswer?: { prompt: string; text: string };
+    }
   | {
       type: 'error';
       message: string;

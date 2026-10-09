@@ -1,0 +1,6 @@
+html, body, #root { min-height: 100%; height: auto; overflow: auto; }
+body { background: var(--bg-base); color: var(--text-main); }
+.jev-harness { max-width: 720px; margin: 32px auto; padding: 0 24px 32px; }
+.jev-harness > h1 { font-size: 16px; font-weight: 500; }
+.jev-harness > p { margin: 12px 0 28px; color: var(--text-sub); font-size: 13px; }
+.jev-harness > pre { margin-top: 24px; white-space: pre-wrap; font-size: 11px; }

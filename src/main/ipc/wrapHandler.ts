@@ -113,6 +113,8 @@ export function maskInlineCredentials(s: string): string {
  * whatever the operator copied, which includes pairing links and tokens.
  */
 const NO_ARGS_SUMMARY_CHANNELS = new Set([
+  // User-entered session credential: never summarize even malformed payloads.
+  'deck:jev:configure',
   'clipboard:write',
   'clipboard:read',
   'clipboard:read-image',

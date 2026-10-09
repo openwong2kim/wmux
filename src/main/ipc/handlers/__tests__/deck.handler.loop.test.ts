@@ -1419,3 +1419,79 @@ describe('Moa hand-off wiring in deck.handler', () => {
     expect(handoffFake.onWorkerStop).toHaveBeenCalledWith('pty-w', 'claude', lastMessage);
   });
 });
+
+// Real IPC handler + real manager + real Jev adapter, with only the external
+// provider and renderer board mocked. These are integration tests, not UI E2E.
+describe('deck:send experimental Jev read-only route', () => {
+  async function setup(mode: 'ok' | 'error' | 'timeout' | 'malformed' | 'stale' = 'ok') {
+    const { JevFleetFastPath, JEV_MODEL } = await import('../../../deck/jevFleetFastPath');
+    const net = vi.fn(async () => {
+      if (mode === 'error') throw new Error('offline');
+      if (mode === 'timeout') return new Promise<Response>(() => undefined);
+      return new Response(JSON.stringify(mode === 'malformed' ? {} : {
+        model: JEV_MODEL,
+        answers: { intent: { type: 'choice', choice: 'status', probabilities: { needs_you: 0.01, finished: 0.01, status: 0.97, fallback: 0.01 }, confidence: 0.96 } },
+        usage: { input_tokens: 200, output_tokens: 8 },
+      }));
+    });
+    const jev = new JevFleetFastPath({ fetch: net, timeoutMs: 25 });
+    const board = vi.fn(async () => ({
+      generatedAt: mode === 'stale' ? Date.now() - 10000 : Date.now(), scope: 'fleet', needsYou: [], finished: [], running: [], idle: { count: 1 },
+    }));
+    const streamed: BrainEvent[] = [];
+    cleanup?.();
+    cleanup = registerDeckHandler(() => ({ isDestroyed: () => false, webContents: { send: (channel: string, data: { event?: BrainEvent }) => {
+      if (channel === IPC.DECK_STREAM && data.event) streamed.push(data.event);
+    } } } as unknown as import('electron').BrowserWindow), {
+      jev, readJevFleetBoard: board,
+      createAdapter: (opts) => { const a = new FakeAdapter(opts.workspaceId); adapters.push(a); return a; },
+    });
+    return { net, board, streamed };
+  }
+  it('is OFF by default and absent key never calls the provider', async () => {
+    const { net } = await setup();
+    expect(await invoke(IPC.DECK_JEV_STATUS, {})).toEqual({ enabled: false, hasKey: false });
+    await invoke(IPC.DECK_JEV_CONFIGURE, { enabled: true });
+    await invoke(IPC.DECK_SEND, { workspaceId: 'ws-1', text: 'status' });
+    expect(net).not.toHaveBeenCalled();
+    expect(adapters[0].sentTexts).toHaveLength(1);
+  });
+  it('key entry alone never consents; explicit opt-in produces the local stream and no Moa call', async () => {
+    const { net, board, streamed } = await setup();
+    expect(await invoke(IPC.DECK_JEV_CONFIGURE, { apiKey: 'test-only-not-a-real-key' })).toEqual({ enabled: false, hasKey: true });
+    expect(net).not.toHaveBeenCalled();
+    await invoke(IPC.DECK_JEV_CONFIGURE, { enabled: true });
+    const result = await invoke(IPC.DECK_SEND, { workspaceId: 'ws-1', text: 'status', fleetContext: 'PRIVATE FLEET CONTEXT MUST STAY LOCAL' });
+    expect(result).toMatchObject({ ok: true, localAnswer: { text: expect.stringContaining('1 idle') } });
+    expect(adapters[0].sentTexts).toEqual([]);
+    expect(board).toHaveBeenCalledOnce();
+    expect(streamed.map((e) => e.type)).toEqual(['text-delta', 'turn-end']);
+    expect(streamed[1]).toMatchObject({ localAnswer: { prompt: 'status' } });
+    expect(JSON.stringify(net.mock.calls)).not.toContain('PRIVATE FLEET CONTEXT');
+  });
+  it.each(['error', 'timeout', 'malformed', 'stale'] as const)('%s goes through original Moa exactly once with original context', async (mode) => {
+    const { streamed } = await setup(mode);
+    await invoke(IPC.DECK_JEV_CONFIGURE, { apiKey: 'test-only', enabled: true });
+    mockPolicyBlock = 'original policy';
+    const result = await invoke(IPC.DECK_SEND, { workspaceId: 'ws-1', text: 'status' });
+    expect(result).toEqual({ ok: true });
+    expect(adapters[0].sentTexts).toHaveLength(1);
+    expect(adapters[0].sentTexts[0]).toContain('original policy');
+    expect(adapters[0].sentTexts[0]).toMatch(/status$/);
+    expect(streamed.some((e) => e.type === 'turn-end' && e.localAnswer)).toBe(false);
+  });
+  it('mixed/action requests skip Jev and reach original Moa once', async () => {
+    const { net } = await setup();
+    await invoke(IPC.DECK_JEV_CONFIGURE, { apiKey: 'test-only', enabled: true });
+    await invoke(IPC.DECK_SEND, { workspaceId: 'ws-1', text: 'status and merge the PR' });
+    expect(net).not.toHaveBeenCalled();
+    expect(adapters[0].sentTexts).toHaveLength(1);
+    expect(adapters[0].sentTexts[0]).toMatch(/status and merge the PR$/);
+  });
+  it('clear key disables the session and never returns the credential', async () => {
+    await setup();
+    await invoke(IPC.DECK_JEV_CONFIGURE, { apiKey: 'test-only', enabled: true });
+    expect(await invoke(IPC.DECK_JEV_CONFIGURE, { clearKey: true })).toEqual({ enabled: false, hasKey: false });
+    expect(await invoke(IPC.DECK_JEV_STATUS, {})).toEqual({ enabled: false, hasKey: false });
+  });
+});

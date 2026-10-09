@@ -23,6 +23,9 @@ import { ipcMain, app, type BrowserWindow } from 'electron';
 import { sanitizeClaudeEffort, type ClaudeEffort } from '../../../shared/claudeModels';
 import { IPC } from '../../../shared/constants';
 import { wrapHandler } from '../wrapHandler';
+import { sendToRenderer } from '../../pipe/handlers/_bridge';
+import { JevFleetFastPath } from '../../deck/jevFleetFastPath';
+import type { JevConfigurePatch } from '../../../shared/jev';
 import type { BrainAdapter, BrainEvent } from '../../deck/BrainAdapter';
 import { ClaudeSdkAdapter, buildCommanderSystemPrompt, resolveMcpBundlePath } from '../../deck/ClaudeSdkAdapter';
 import { AcpBrainAdapter } from '../../deck/AcpBrainAdapter';
@@ -213,6 +216,10 @@ import { isStartupDeckReconcileDone, tryStartupDeckReconcile, workLinkOwnerLive 
 type GetWindow = () => BrowserWindow | null;
 
 export interface RegisterDeckHandlerOptions {
+  /** Test seam; production creates a default-off, session-only provider. */
+  jev?: JevFleetFastPath;
+  /** Read-only Fleet RPC seam; no provider ever receives this board. */
+  readJevFleetBoard?: () => Promise<unknown>;
   /** Adapter factory — injected in tests so no SDK subprocess spawns. Defaults
    *  to a fresh ClaudeSdkAdapter (subscription Claude, wmux MCP auto-mounted).
    *  `model` is the orchestrator model override ('' → SDK default);
@@ -367,6 +374,15 @@ export function registerDeckHandler(
   getWindow: GetWindow,
   opts: RegisterDeckHandlerOptions = {},
 ): () => void {
+  const jev = opts.jev ?? new JevFleetFastPath();
+  const readJevFleetBoard = opts.readJevFleetBoard ?? (() =>
+    sendToRenderer(getWindow, 'fleet.triage', {}, { timeoutMs: 400 }));
+  ipcMain.removeHandler(IPC.DECK_JEV_STATUS);
+  ipcMain.handle(IPC.DECK_JEV_STATUS, wrapHandler(IPC.DECK_JEV_STATUS, async () => jev.status()));
+  ipcMain.removeHandler(IPC.DECK_JEV_CONFIGURE);
+  ipcMain.handle(IPC.DECK_JEV_CONFIGURE, wrapHandler(IPC.DECK_JEV_CONFIGURE,
+    async (_event: Electron.IpcMainInvokeEvent, raw: unknown) => jev.configure(raw as JevConfigurePatch)));
+
   // Adopt one process-wide boot identity for durable work records (#733). The
   // EventBus already mints a per-process UUID at construction, so reusing it
   // keeps "this boot" meaning the same thing to the work store as it does to
@@ -1355,44 +1371,55 @@ export function registerDeckHandler(
     const refusal = refuseWhenModeOff(workspaceId);
     if (refusal) return refusal;
     const mgr = ensureManager(workspaceId, opts.fleetContext, opts.model ?? brainModel);
-    // Human input resets this workspace's auto-wake budget and subsumes any
-    // buffered push events (the human's own turn re-observes live state) —
-    // but ONLY when the send will actually be accepted. A busy reject (e.g.
-    // racing an in-flight auto-wake turn) must not consume buffered events:
-    // that stop may be the very completion the loop is waiting on, and
-    // subsuming it on a turn that never ran would silently stall the loop
-    // (dogfood finding, 2026-07-12). Status check + send are one synchronous
-    // sequence, so nothing can interleave (same basis as runTurnForWorkspace).
     const idle = mgr.getStatus().status === 'idle';
-    if (idle) {
-      beginTrackedWork(workspaceId, text);
-      coalescer?.notifyHumanSend(workspaceId);
-    }
-    // Awaits the full turn (events stream over DECK_STREAM meanwhile); the
-    // resolved value is only the accept/reject verdict. The loop + decision
-    // blocks ride in front of the typed text — invisible to the renderer's
-    // optimistic user bubble, visible to the brain. If this human turn carried
-    // a resolved decision's block, consume it (id-scoped) so it never re-injects.
-    const injectedDecision = loadBrainDecision(workspaceId);
-    // A human at the composer: no double-check delay — they are waiting on it,
-    // and a turn they typed themselves cannot be racing their own TUI input.
-    moaTranscript.notePrompt(workspaceId, text);
-    // A turn the phone sent has no optimistic bubble in the desktop deck, so
-    // open it there the way a scheduled run does.
-    if (idle && opts.source === 'phone') {
-      emit(workspaceId, { type: 'turn-start', prompt: text, vendor: vendorForWorkspace(workspaceId) });
-    }
+    // Preparation mutates work/context bookkeeping. A local read must never
+    // supersede an active job, consume a resolved decision, or enter Claude's
+    // prompt-rewrite history. Run it only once Moa will actually receive text.
+    let injectedDecision: ReturnType<typeof loadBrainDecision> = null;
+    const prepareMoa = (): string => {
+      if (idle) {
+        beginTrackedWork(workspaceId, text);
+        coalescer?.notifyHumanSend(workspaceId);
+      }
+      injectedDecision = loadBrainDecision(workspaceId);
+      moaTranscript.notePrompt(workspaceId, text);
+      if (idle && opts.source === 'phone') {
+        emit(workspaceId, { type: 'turn-start', prompt: text, vendor: vendorForWorkspace(workspaceId) });
+      }
+      return withLoopContext(workspaceId, text);
+    };
     const tap = idle ? opts.onEvent : undefined;
     if (tap) turnTaps.set(workspaceId, tap);
     let verdict: CommanderSendResult;
+    let usedMoa = false;
     try {
-      verdict = await mgr.send(withLoopContext(workspaceId, text), { origin: 'human' });
+      // V1 is desktop composer only. Phone messages keep their existing route.
+      // send reserves the manager synchronously before the first lookup await.
+      if (idle && opts.source === 'desktop' && jev.canAttempt(text)) {
+        verdict = await mgr.send(text, { origin: 'human' }, async (signal) => {
+          const local = await jev.answer(text, readJevFleetBoard, signal).catch(() => null);
+          if (signal.aborted) return null;
+          // The HQ/mode may have moved while the request was in flight. Abort
+          // the reserved turn instead of answering or spawning a retired brain.
+          if (refuseWhenModeOff(workspaceId)) { mgr.interrupt(); return null; }
+          if (local) return local;
+          return { fallbackText: () => { usedMoa = true; return prepareMoa(); } };
+        });
+      } else {
+        usedMoa = true;
+        verdict = await mgr.send(prepareMoa(), { origin: 'human' });
+      }
     } finally {
       if (tap && turnTaps.get(workspaceId) === tap) turnTaps.delete(workspaceId);
     }
-    settleAmbient(workspaceId, verdict);
-    if (verdict.ok && injectedDecision?.status === 'resolved') {
-      void clearResolvedDecision(workspaceId, injectedDecision.id).catch(() => { /* ignore */ });
+    if (usedMoa) {
+      settleAmbient(workspaceId, verdict);
+      // Re-read through a helper to avoid TypeScript narrowing the closure's
+      // assignment away; only Moa received this resolved decision's context.
+      const decision = injectedDecision as ReturnType<typeof loadBrainDecision>;
+      if (verdict.ok && decision?.status === 'resolved') {
+        void clearResolvedDecision(workspaceId, decision.id).catch(() => { /* ignore */ });
+      }
     }
     return verdict;
   };
@@ -4005,6 +4032,7 @@ export function registerDeckHandler(
   void moaMemory.sync();
 
   const disposeAll = (): void => {
+    jev.dispose();
     for (const { manager } of managers.values()) manager.dispose();
     managers.clear();
   };
@@ -4015,6 +4043,8 @@ export function registerDeckHandler(
 
   return () => {
     app.removeListener('before-quit', disposeAll);
+    ipcMain.removeHandler(IPC.DECK_JEV_STATUS);
+    ipcMain.removeHandler(IPC.DECK_JEV_CONFIGURE);
     moaIssueProposals.dispose();
     setMoaHandoffService(null);
     setMoaWakeHandler(null);

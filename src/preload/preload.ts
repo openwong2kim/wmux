@@ -811,6 +811,12 @@ const electronAPI = {
       >,
   },
   deck: {
+    jev: {
+      status: () =>
+        ipcRenderer.invoke(IPC.DECK_JEV_STATUS) as Promise<import('../shared/jev').JevSessionStatus>,
+      configure: (patch: import('../shared/jev').JevConfigurePatch) =>
+        ipcRenderer.invoke(IPC.DECK_JEV_CONFIGURE, patch) as Promise<import('../shared/jev').JevSessionStatus>,
+    },
     // M1.5: one orchestrator per workspace — every call names the workspace
     // whose brain it addresses. `model` is the orchestrator model override
     // ('' / undefined = the subscription's default). Passed on every send;
