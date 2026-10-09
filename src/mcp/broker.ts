@@ -22,6 +22,8 @@
  * so the supervisor restarts the broker with backoff — shared fate is the
  * accepted trade for the shared weight.
  */
+// Must stay the first import: turns off working-directory executable lookup (Windows) before any module runs.
+import '../shared/exeSearchGuard';
 import * as net from 'net';
 import * as fs from 'fs';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';

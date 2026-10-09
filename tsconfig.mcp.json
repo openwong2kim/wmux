@@ -17,7 +17,9 @@
     "src/shared/uaMetadata.ts",
     "src/shared/rpc.ts",
     "src/shared/constants.ts",
-    "src/shared/types.ts"
+    "src/shared/types.ts",
+    "src/shared/exeSearch.ts",
+    "src/shared/exeSearchGuard.ts"
   ],
   "exclude": [
     "node_modules",

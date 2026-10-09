@@ -354,6 +354,46 @@ describe('DaemonSessionManager', () => {
     }
   });
 
+  // shared/exeSearch.ts: the daemon sets NoDefaultCurrentDirectoryInExePath on
+  // itself (marked WMUX_EXE_SEARCH_GUARD) so its helper spawns never start an
+  // executable out of a working directory. A pane is the user's shell and must
+  // not inherit that — but a value the user set themselves passes through.
+  describe('executable-lookup guard does not reach panes', () => {
+    const KEYS = ['NoDefaultCurrentDirectoryInExePath', 'WMUX_EXE_SEARCH_GUARD'] as const;
+    let saved: Record<string, string | undefined>;
+    beforeEach(() => { saved = Object.fromEntries(KEYS.map((k) => [k, process.env[k]])); });
+    afterEach(() => {
+      for (const k of KEYS) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]; }
+    });
+    const guardKeys = (env: Record<string, string>) =>
+      Object.keys(env).filter((k) => ['NODEFAULTCURRENTDIRECTORYINEXEPATH', 'WMUX_EXE_SEARCH_GUARD'].includes(k.toUpperCase()));
+
+    it('strips it from a supplied env (any case) when wmux added it', () => {
+      process.env.NoDefaultCurrentDirectoryInExePath = '1';
+      process.env.WMUX_EXE_SEARCH_GUARD = '1';
+      manager.createSession({
+        id: 'exe-guard-supplied', cmd: 'cmd.exe', cwd: '.',
+        env: { NoDefaultCurrentDirectoryInExePath: '1', nodefaultcurrentdirectoryinexepath: '1', WMUX_EXE_SEARCH_GUARD: '1', FOO: 'bar' },
+      });
+      expect(guardKeys(lastMockPty?.spawnEnv ?? {})).toEqual([]);
+      expect(lastMockPty?.spawnEnv?.FOO).toBe('bar');
+    });
+
+    it('strips it from the process.env fallback when wmux added it', () => {
+      process.env.NoDefaultCurrentDirectoryInExePath = '1';
+      process.env.WMUX_EXE_SEARCH_GUARD = '1';
+      manager.createSession({ id: 'exe-guard-fallback', cmd: 'cmd.exe', cwd: '.' });
+      expect(guardKeys(lastMockPty?.spawnEnv ?? {})).toEqual([]);
+    });
+
+    it("keeps the user's own setting", () => {
+      process.env.NoDefaultCurrentDirectoryInExePath = '1';
+      delete process.env.WMUX_EXE_SEARCH_GUARD;
+      manager.createSession({ id: 'exe-guard-user', cmd: 'cmd.exe', cwd: '.', env: { NoDefaultCurrentDirectoryInExePath: '1' } });
+      expect(lastMockPty?.spawnEnv?.NoDefaultCurrentDirectoryInExePath).toBe('1');
+    });
+  });
+
   it("propagates the daemon's own suffix in the process.env fallback (no supplied env)", () => {
     const prev = process.env.WMUX_DATA_SUFFIX;
     process.env.WMUX_DATA_SUFFIX = '-rc35';

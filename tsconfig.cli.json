@@ -16,7 +16,9 @@
     "src/shared/rpc.ts",
     "src/shared/constants.ts",
     "src/shared/types.ts",
-    "src/shared/bootPhases.ts"
+    "src/shared/bootPhases.ts",
+    "src/shared/exeSearch.ts",
+    "src/shared/exeSearchGuard.ts"
   ],
   "exclude": [
     "src/cli/**/__tests__/**"

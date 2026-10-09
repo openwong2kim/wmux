@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import path from 'node:path';
 import crossSpawn from 'cross-spawn';
+import { findExecutable, notFoundError } from './exeSearch';
 
 /**
  * Run a CLI by bare name and resolve its stdout, rejecting on a spawn error, a
@@ -68,6 +69,10 @@ function runOnWindows(command: string, args: readonly string[], opts: RunCliOpti
   if (unsafe !== undefined) {
     return Promise.reject(new Error(`runCli: refusing a token that is not safe through a Windows .cmd shim: ${JSON.stringify(unsafe)}`));
   }
+  // cross-spawn's own lookup tries the working directory before PATH, so hand
+  // it an absolute path found on PATH alone (shared/exeSearch.ts).
+  const resolved = findExecutable(command, { env: opts.env ?? process.env, extensions: 'pathext' });
+  if (resolved === null) return Promise.reject(notFoundError(command));
   const killGraceMs = opts.killGraceMs ?? 2000;
   return new Promise((resolve, reject) => {
     let stdout = '';
@@ -75,7 +80,7 @@ function runOnWindows(command: string, args: readonly string[], opts: RunCliOpti
     let failure: Error | null = null;
     let grace: ReturnType<typeof setTimeout> | undefined;
 
-    const child = crossSpawn(command, [...args], {
+    const child = crossSpawn(resolved, [...args], {
       env: opts.env, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'],
     });
 

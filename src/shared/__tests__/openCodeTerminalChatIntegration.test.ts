@@ -6,6 +6,12 @@ import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 const { spawnSync, spawn } = vi.hoisted(() => ({ spawnSync: vi.fn(), spawn: vi.fn() }));
 vi.mock('cross-spawn', () => ({ default: Object.assign(spawn, { sync: spawnSync }) }));
+// cross-spawn is mocked, so whether opencode is really on this machine's PATH
+// must not decide whether it gets called.
+vi.mock('../exeSearch', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../exeSearch')>()),
+  findExecutable: (name: string) => name,
+}));
 import { getExecEnv } from '../execEnv';
 import { installOpenCodeTerminalChat, openCodeTerminalChatIntegration, probeOpenCodeVersion, OPENCODE_PROBE_RETRY_MS, type OpenCodeVersionProbe } from '../openCodeTerminalChatIntegration';
 async function fixture(run: (dir: string, options: Parameters<typeof openCodeTerminalChatIntegration>[0]) => void | Promise<void>) {

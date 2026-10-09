@@ -4,6 +4,8 @@ process.on('SIGINT', () => {
   process.exit(130);
 });
 
+// Must stay the first import: turns off working-directory executable lookup (Windows) before any module runs.
+import '../shared/exeSearchGuard';
 import { hasFlag } from './utils';
 import { handleWorkspace } from './commands/workspace';
 import { handleSurface } from './commands/surface';

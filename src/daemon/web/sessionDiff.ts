@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { NO_CWD_EXE_SEARCH_ENV, resolveExecutable } from '../../shared/exeSearch';
 
 /**
  * "What did this agent change?" — the working-tree diff of a pane's repository,
@@ -226,6 +227,9 @@ export function buildGitEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.Proce
     'PATH', 'PATHEXT', 'HOME', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH',
     'SystemRoot', 'SYSTEMROOT', 'SystemDrive', 'windir', 'COMSPEC', 'ComSpec',
     'TMPDIR', 'TEMP', 'TMP', 'TZ',
+    // Keeps the daemon's own "never look up executables in the working
+    // directory" setting (shared/exeSearch.ts) for anything git starts.
+    NO_CWD_EXE_SEARCH_ENV,
   ];
   const env: NodeJS.ProcessEnv = {};
   for (const k of KEEP) {
@@ -358,7 +362,8 @@ export function createGitRunner(): GitRunner {
   return (args, cwd) =>
     new Promise<GitRunResult>((resolve) => {
       execFile(
-        'git',
+        // Absolute path found on PATH: a git.exe inside `cwd` is never started (Windows).
+        resolveExecutable('git', { env }),
         [...args],
         { cwd, timeout: GIT_TIMEOUT_MS, maxBuffer: GIT_MAX_BUFFER_BYTES, windowsHide: true, env },
         (err, stdout, stderr) => {

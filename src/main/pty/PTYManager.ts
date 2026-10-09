@@ -10,6 +10,7 @@ import { getPipeName, ENV_KEYS, getPidMapDir } from '../../shared/constants';
 import { expandTilde } from '../../shared/expandTilde';
 import { resolveSpawnEnv } from './resolveSpawnEnv';
 import { withFreshWindowsPath } from '../../shared/windowsPathEnv';
+import { withoutExeSearchGuard } from '../../shared/exeSearch';
 import { resolveEnvPolicy, type SpawnKind } from '../../shared/spawnKind';
 import { getAccountStore } from '../account/accountStore';
 import { withheldCredentialNames } from '../../shared/envFilter';
@@ -284,7 +285,10 @@ export class PTYManager {
     // Refresh PATH from the live registry (win32) so a pane spawned by a
     // long-lived control process still finds tools installed after it started —
     // native-terminal freshness. No-op off win32 / on failure (withFreshWindowsPath).
-    const env = resolveSpawnEnv(withFreshWindowsPath(globalThis.process.env), options?.env, identity, getShellUtf8Locale(), policy, accountEnv);
+    // A pane is the user's own shell: drop the executable-lookup guard wmux set
+    // on its own process (see shared/exeSearch.ts), so cmd.exe in the pane
+    // keeps its usual lookup. Same rule as DaemonSessionManager.createSession.
+    const env = withoutExeSearchGuard(resolveSpawnEnv(withFreshWindowsPath(globalThis.process.env), options?.env, identity, getShellUtf8Locale(), policy, accountEnv));
     // 관측 floor: gated pane에서 자격증명을 withheld하면 로컬 로그 1줄로 남긴다.
     // 침묵이 신고 사건의 실제 원인이었다 — "왜 없지?"를 로그로 즉시 답한다.
     if (policy === 'gated') {

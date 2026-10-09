@@ -1,10 +1,18 @@
-import { execFile, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import path from 'node:path';
 import launch from 'cross-spawn';
+import { findExecutable } from '../../shared/exeSearch';
 
 /** Own a process group; never run executable strings through a user shell. */
 export function spawnAgent(command: string, args: string[], cwd: string, env: NodeJS.ProcessEnv): ChildProcessWithoutNullStreams {
-  return launch(command, args, { cwd, env, stdio: 'pipe', windowsHide: true, detached: process.platform !== 'win32' }) as ChildProcessWithoutNullStreams;
+  const options = { cwd, env, stdio: 'pipe', windowsHide: true, detached: process.platform !== 'win32' } as const;
+  // cross-spawn looks a bare name up in `cwd` (the agent's project) before PATH,
+  // so give it an absolute path found on PATH alone (shared/exeSearch.ts). Not
+  // on PATH at all: a plain spawn reports ENOENT the usual way, and its own
+  // lookup skips the working directory under the daemon's guard.
+  const resolved = findExecutable(command, { env, extensions: 'pathext' });
+  if (resolved === null) return spawn(command, args, options) as ChildProcessWithoutNullStreams;
+  return launch(resolved, args, options) as ChildProcessWithoutNullStreams;
 }
 
 /** Called only for a child we own, while its ChildProcess identity is live.

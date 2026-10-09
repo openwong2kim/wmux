@@ -22,6 +22,7 @@ import { buildExecArgs } from './execWrapper';
 import { dropMissingAccountDirs, pinAccountEnv } from './phone/paneAccountSpawn';
 import { windowsPowerShellPolicyArgs } from '../shared/pwshExecutionPolicy';
 import { buildSafeChildEnv, isNestingMarker } from '../shared/envFilter';
+import { withoutExeSearchGuard } from '../shared/exeSearch';
 import { CLAUDE_SANDBOXED_ENV } from '../shared/agentFirstRun';
 import { isMac, parseWindowsBuildNumber } from '../shared/platform';
 import {
@@ -559,6 +560,14 @@ export class DaemonSessionManager extends EventEmitter {
     if (globalThis.process.env[ENV_KEYS.DATA_SUFFIX]) {
       env[ENV_KEYS.DATA_SUFFIX] = globalThis.process.env[ENV_KEYS.DATA_SUFFIX] as string;
     }
+
+    // The daemon (and main, which built a supplied env from its own) runs with
+    // NoDefaultCurrentDirectoryInExePath set so its helper spawns never pick an
+    // executable out of a working directory. A pane is the user's own shell:
+    // drop the variable when wmux added it, so cmd.exe there keeps finding
+    // `.\tool.exe` by bare name exactly as it does outside wmux. Applied here,
+    // after every source (supplied, replayed, fallback) has been merged.
+    withoutExeSearchGuard(env);
 
     // Phone workspace panes: a gone account directory is dropped with a warning
     // (recovery), never handed to the CLI to recreate as an empty config.

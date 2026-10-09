@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import { buildGitEnv, createGitRunner, gitArgv, type GitRunner } from './sessionDiff';
 import { getExecEnv } from '../../shared/execEnv';
+import { resolveExecutable } from '../../shared/exeSearch';
 
 export interface PhonePullRequest { number: number; title: string; state: string; url: string; isDraft: boolean }
 export interface PullRequestState { state: 'available' | 'unsupported' | 'unavailable'; items: PhonePullRequest[] }
@@ -22,7 +23,8 @@ export const runGhJson = (args: readonly string[], maxBuffer = 128 * 1024): Prom
   }
   env.GH_HOST = 'github.com';
   env.GH_PROMPT_DISABLED = '1';
-  execFile('gh', [...args],
+  // Absolute path found on PATH, never a gh.exe in a working directory (Windows).
+  execFile(resolveExecutable('gh', { env }), [...args],
   {env, timeout:8000, maxBuffer, windowsHide:true}, (error, stdout) => {
     if (error) { reject(error); return; }
     try { resolve(JSON.parse(stdout)); } catch (parseError) { reject(parseError); }

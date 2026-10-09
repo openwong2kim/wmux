@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
+import { resolveExecutable } from '../../shared/exeSearch';
 import {
   buildGitEnv, createGitRunner, gitArgv, resolveFilterOverrides, GIT_MAX_BUFFER_BYTES,
   type GitRunner, type GitRunResult,
@@ -79,8 +80,10 @@ export type TreeScanner = (cwd: string, oid: string, config: readonly string[]) 
 export const scanTree: TreeScanner = (cwd, oid, config) => new Promise((resolve) => {
   const env = buildGitEnv();
   const argv = (...args: string[]) => gitArgv(...config, ...args);
-  const list = spawn('git', argv('ls-tree', '-r', '-z', '--full-tree', '--name-only', oid), { cwd, env, windowsHide: true });
-  const check = spawn('git', argv('check-attr', `--source=${oid}`, '-z', '--stdin', 'filter'), { cwd, env, windowsHide: true });
+  // Absolute path found on PATH: a git.exe inside `cwd` is never started (Windows).
+  const gitBin = resolveExecutable('git', { env });
+  const list = spawn(gitBin, argv('ls-tree', '-r', '-z', '--full-tree', '--name-only', oid), { cwd, env, windowsHide: true });
+  const check = spawn(gitBin, argv('check-attr', `--source=${oid}`, '-z', '--stdin', 'filter'), { cwd, env, windowsHide: true });
   let settled = false;
   let longest = 0;
   let longestDir = 0;
@@ -154,7 +157,7 @@ export function createAddRunner(timeoutMs = PHONE_WORKTREE_ADD_TIMEOUT_MS): GitR
   return (args, cwd) => new Promise<GitRunResult>((resolve) => {
     let child: ChildProcess;
     try {
-      child = spawn('git', [...args], { cwd, env, windowsHide: true, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'] });
+      child = spawn(resolveExecutable('git', { env }), [...args], { cwd, env, windowsHide: true, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'] });
     } catch {
       return resolve({ ok: false, ran: false, stdout: '', stderr: '' });
     }

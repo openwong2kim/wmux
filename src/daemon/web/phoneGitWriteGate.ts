@@ -4,6 +4,7 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import { atomicWriteJSONSync } from '../util/atomicWrite';
+import { resolveExecutable } from '../../shared/exeSearch';
 import {
   GIT_WRITE_CONFIRM_TTL_MS, GIT_WRITE_RECEIPT_TTL_MS, GITHUB_LOGIN, PHONE_GIT_WRITE_ACTIONS,
   type GitWriteError, type GitWritePins, type GitWriteReceiptState, type PhoneGitWriteAction,
@@ -395,7 +396,7 @@ export type GhTokenRunner = (args: readonly string[], env: NodeJS.ProcessEnv) =>
   Promise<{ ok: true; stdout: string } | { ok: false; ran: boolean }>;
 
 const runGhTokenCommand: GhTokenRunner = (args, env) => new Promise((resolve) => {
-  execFile('gh', [...args], { env, timeout: 8000, maxBuffer: 64 * 1024, windowsHide: true }, (error, stdout) => {
+  execFile(resolveExecutable('gh', { env }), [...args], { env, timeout: 8000, maxBuffer: 64 * 1024, windowsHide: true }, (error, stdout) => {
     if (!error) return resolve({ ok: true, stdout: String(stdout) });
     const code = (error as NodeJS.ErrnoException).code;
     resolve({ ok: false, ran: code !== 'ENOENT' && !(error as { killed?: boolean }).killed });

@@ -5,6 +5,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { getExecEnv } from './execEnv';
+import { findExecutable, notFoundError } from './exeSearch';
 import { findLifecycleAssetSourceFrom, inspectLifecycleAsset, installLifecycleAsset } from './lifecycleIntegrations';
 
 export interface OpenCodeTerminalChatInstall {
@@ -21,6 +22,12 @@ export const OPENCODE_PROBE_RETRY_MS = 60_000;
 export type OpenCodeVersionProbe = { version: string | null } | { state: 'not-found' | 'timeout' | 'error'; error: string };
 const probeFailure = (error: NodeJS.ErrnoException): OpenCodeVersionProbe =>
   ({ state: error.code === 'ENOENT' ? 'not-found' : error.code === 'ETIMEDOUT' ? 'timeout' : 'error', error: String(error) });
+/**
+ * opencode found on PATH alone, or null. cross-spawn's own lookup tries the
+ * working directory first (shared/exeSearch.ts), and `wmux setup-hooks` runs in
+ * whatever directory the user is in, so it is given an absolute path.
+ */
+const openCodeBinary = (): string | null => findExecutable('opencode', { env: getExecEnv(), extensions: 'pathext' });
 
 /**
  * Non-blocking probe for the GUI process. On timeout the whole process tree is
@@ -29,6 +36,8 @@ const probeFailure = (error: NodeJS.ErrnoException): OpenCodeVersionProbe =>
  * probe settles only once the child has closed, so a retry never overlaps it.
  */
 export function probeOpenCodeVersion(timeoutMs = OPENCODE_PROBE_TIMEOUT_MS, killGraceMs = 2000): Promise<OpenCodeVersionProbe> {
+  const bin = openCodeBinary();
+  if (bin === null) return Promise.resolve(probeFailure(notFoundError('opencode')));
   return new Promise(resolve => {
     const posix = process.platform !== 'win32';
     let stdout = ''; let settled = false; let timedOut = false;
@@ -37,10 +46,14 @@ export function probeOpenCodeVersion(timeoutMs = OPENCODE_PROBE_TIMEOUT_MS, kill
       if (settled) return;
       settled = true; clearTimeout(timer); clearTimeout(grace); resolve(result);
     };
-    const child = crossSpawn('opencode', ['--version'], { windowsHide: true, env: getExecEnv(), stdio: ['ignore', 'pipe', 'ignore'], detached: posix });
+    const child = crossSpawn(bin, ['--version'], { windowsHide: true, env: getExecEnv(), stdio: ['ignore', 'pipe', 'ignore'], detached: posix });
     const killTree = (signal: NodeJS.Signals) => {
       if (!child.pid) return;
-      if (!posix) { execFile('taskkill', ['/pid', String(child.pid), '/T', '/F'], { env: getExecEnv(), windowsHide: true }, () => undefined); return; }
+      if (!posix) {
+        const taskkill = path.win32.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'taskkill.exe');
+        execFile(taskkill, ['/pid', String(child.pid), '/T', '/F'], { env: getExecEnv(), windowsHide: true }, () => undefined);
+        return;
+      }
       try { process.kill(-child.pid, signal); } catch { /* The group is already gone. */ }
     };
     const timer = setTimeout(() => {
@@ -97,7 +110,9 @@ export function openCodeTerminalChatIntegration(options: {
     else if (options.probe) probe = options.probe;
     else {
       // The CLI (`wmux setup-hooks`) may block; the GUI passes an async probe.
-      const run = crossSpawn.sync('opencode', ['--version'], { encoding: 'utf8', timeout: OPENCODE_PROBE_TIMEOUT_MS, maxBuffer: 8192, windowsHide: true, env: getExecEnv() });
+      const bin = openCodeBinary();
+      const run = bin === null ? { error: notFoundError('opencode'), status: null, stdout: '' }
+        : crossSpawn.sync(bin, ['--version'], { encoding: 'utf8', timeout: OPENCODE_PROBE_TIMEOUT_MS, maxBuffer: 8192, windowsHide: true, env: getExecEnv() });
       probe = run.error ? probeFailure(run.error) : { version: run.status === 0 ? run.stdout : null };
     }
     // No version was read (not on PATH, or timed out): not a version verdict.

@@ -9,6 +9,8 @@
  * The broker topology (plans/mcp-broker-design-2026-07-16.md Option A)
  * replaces this entry with src/mcp/shim.ts + src/mcp/broker.ts.
  */
+// Must stay the first import: turns off working-directory executable lookup (Windows) before any module runs.
+import '../shared/exeSearchGuard';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { COMMANDER_MODE_ARG } from '../shared/commanderSurface';
 import { CORE_MODE_ARG } from '../shared/coreSurface';

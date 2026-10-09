@@ -5,6 +5,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { getExecEnv } from '../../shared/execEnv';
+import { resolveExecutable } from '../../shared/exeSearch';
 
 const execFileAsync = promisify(execFile);
 
@@ -16,12 +17,14 @@ export interface GitResult {
 
 export async function git(args: string[], cwd: string): Promise<GitResult> {
   try {
-    const { stdout, stderr } = await execFileAsync('git', args, {
+    const env = getExecEnv();
+    // Absolute path found on PATH, so a git.exe inside `cwd` is never started (Windows).
+    const { stdout, stderr } = await execFileAsync(resolveExecutable('git', { env }), args, {
       cwd,
       timeout: 30000,
       windowsHide: true,
       maxBuffer: 16 * 1024 * 1024,
-      env: getExecEnv(),
+      env,
     });
     return { stdout, stderr, code: 0 };
   } catch (e) {
