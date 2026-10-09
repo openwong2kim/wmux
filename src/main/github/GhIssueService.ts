@@ -328,6 +328,11 @@ export class GhIssueService {
     if (hit && !force) return { permission: hit, login };
     const pendingKey = cacheKey ?? `${key}\0`;
     let read = this.permissionPending.get(pendingKey);
+    // A refresh never takes the answer of a read that began before it.
+    if (force && read) {
+      await read;
+      read = this.permissionPending.get(pendingKey);
+    }
     if (!read) {
       read = this.gh(repo.host, ['api', '--hostname', repo.host, `repos/${repo.owner}/${repo.repo}`, '--jq', '.permissions'], cwd)
         .then((stdout) => {

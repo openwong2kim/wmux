@@ -186,6 +186,24 @@ describe('repo permission', () => {
     expect(roleCalls(calls)).toHaveLength(2);
   });
 
+  it('a refresh never takes the answer of a read that began before it', async () => {
+    let release: (v: string) => void = () => undefined;
+    let first = true;
+    const { svc, calls } = makeService((args) => {
+      if (args.includes('user')) return 'me\n';
+      if (first) { first = false; return new Promise<string>((r) => { release = r; }); }
+      return '{"pull":true}';
+    });
+    const early = svc.repoPermission(KEY, '/r');
+    await Promise.resolve();
+    const forced = svc.repoPermission(KEY, '/r', true);
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+    release('{"push":true}');
+    expect((await early).permission).toBe('WRITE');
+    expect((await forced).permission).toBe('READ');
+    expect(roleCalls(calls)).toHaveLength(2);
+  });
+
   it('a repo that answers with no permissions is read-only and kept; a failed read is null and not kept', async () => {
     let fail = true;
     const { svc, calls } = makeService((args) => (args.includes('user') ? 'me\n' : fail ? new Error('boom') : 'null\n'));

@@ -257,6 +257,26 @@ describe('Git page, who-acts-next sections', () => {
     expect(count('waiting_on_others')).toBe('1');
   });
 
+  it('a late answer from before the refresh is dropped', async () => {
+    const api = (window as unknown as { electronAPI: { github: Record<string, unknown> } }).electronAPI.github;
+    api.prList = vi.fn(async (p: string) => ({ ok: true, prs: p === '/code/alpha'
+      ? [pr('alpha', 9, '2026-10-05T00:00:00Z', { author: 'contrib' })]
+      : [] }));
+    let releaseOld: (v: unknown) => void = () => undefined;
+    repoPermission.mockImplementation((p: string, force?: boolean) => (p === '/code/alpha' && !force
+      ? new Promise((r) => { releaseOld = r; })
+      : Promise.resolve({ permission: 'READ', login: 'me' })));
+    await render();
+    act(() => (container.querySelector('[data-git-refresh]') as HTMLButtonElement).click());
+    await settle();
+    expect(count('waiting_on_others')).toBe('1');
+    // The read from the first page show answers last, with the old role.
+    await act(async () => { releaseOld({ permission: 'ADMIN', login: 'me' }); });
+    await settle();
+    expect(section('needs_you')).toBeNull();
+    expect(count('waiting_on_others')).toBe('1');
+  });
+
   it('an unknown role leaves another author\'s PR waiting', async () => {
     const api = (window as unknown as { electronAPI: { github: Record<string, unknown> } }).electronAPI.github;
     api.prList = vi.fn(async (p: string) => ({ ok: true, prs: p === '/code/alpha'
