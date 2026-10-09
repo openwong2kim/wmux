@@ -165,7 +165,17 @@ export function A2aLinkDialogView(p: A2aLinkDialogViewProps) {
           <p className="wmux-a2a-note" data-testid="a2a-link-none-exposed">{t(brainMode ? 'a2aLink.noMoaExposed' : 'a2aLink.noneExposed')}</p>
         )}
         {choices && choices.length > 0 && (
-          <ul className="wmux-a2a-list" role="listbox" aria-label={t(brainMode ? 'a2aLink.moaSection' : 'a2aLink.panes')} data-testid="a2a-link-panes">
+          <ul
+            className="wmux-a2a-list"
+            role="listbox"
+            aria-label={t(brainMode ? 'a2aLink.moaSection' : 'a2aLink.panes')}
+            data-testid="a2a-link-panes"
+            // Leaving the list hands the Tab stop back to the picked pane, so
+            // coming back in (or after another PC's list loads) lands on it.
+            onBlur={(e) => {
+              if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setActivePane(null);
+            }}
+          >
             {choices.map(({ pane, recommended }, i) => {
               const on = isPicked(p.selected, pane);
               return (

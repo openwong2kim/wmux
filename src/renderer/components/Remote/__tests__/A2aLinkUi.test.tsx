@@ -205,7 +205,7 @@ describe('A2aLinkDialogView keyboard', () => {
     act(() => options()[1].focus());
     expect(key(options()[1], 'ArrowDown').defaultPrevented).toBe(true);
     expect(document.activeElement).toBe(options()[2]);
-    // The Tab stop follows the active option, so Tab back in lands there.
+    // The Tab stop follows the active option while focus is in the list.
     expect(tabStops(body, 'option')).toEqual(['-1', '-1', '0']);
     key(options()[2], 'ArrowDown');
     expect(document.activeElement).toBe(options()[2]);
@@ -216,6 +216,9 @@ describe('A2aLinkDialogView keyboard', () => {
     key(options()[0], 'End');
     expect(document.activeElement).toBe(options()[2]);
     expect(onPickPane).not.toHaveBeenCalled();
+    // Leaving the list hands the Tab stop back to the picked pane.
+    act(() => (body.querySelector('[data-testid="a2a-link-propose"]') as HTMLButtonElement).focus());
+    expect(tabStops(body, 'option')).toEqual(['-1', '0', '-1']);
   });
 
   it('Enter and Space are left to the option button, which picks the active pane', () => {
