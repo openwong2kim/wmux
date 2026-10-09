@@ -91,7 +91,11 @@ export function FlatLists({ groups, tab, refreshKey, filter, onFilter, sel, onSe
     const keys = new Set((groups ?? []).map((g) => g.key));
     const cur = useStore.getState().gitPage.repoChips.filter((k) => keys.has(k));
     const next = cur.includes(key) ? cur.filter((k) => k !== key) : [...cur, key];
-    setGitPage({ repoChips: next });
+    // A chip change that hides the selected row clears the selection, so the
+    // detail never shows a row the filter hid. A refresh never clears it.
+    const selGroup = sel ? groups?.find((g) => g.prPath === sel.repoPath) : undefined;
+    const hidesSel = !!selGroup && next.length > 0 && !next.includes(selGroup.key);
+    setGitPage(hidesSel ? { repoChips: next, selected: null } : { repoChips: next });
     saveGitRepoChips(next);
   };
 

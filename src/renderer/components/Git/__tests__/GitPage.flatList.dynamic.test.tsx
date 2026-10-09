@@ -192,6 +192,32 @@ describe('Git page, All repos flat list', () => {
     act(() => { window.dispatchEvent(new Event('dragend')); });
   });
 
+  it('a chip change that hides the selected row clears the selection; a refresh that drops it does not', async () => {
+    await render();
+    act(() => (container.querySelector('[data-git-flat-rows] > li:nth-child(2) > button') as HTMLButtonElement).click());
+    await settle();
+    expect(useStore.getState().gitPage.selected).toEqual({ kind: 'pr', repoPath: '/code/beta', number: 7 });
+    // Turning on beta's own chip keeps it.
+    act(() => chip('beta').click());
+    expect(useStore.getState().gitPage.selected).not.toBeNull();
+    // alpha alongside beta: still shown, still selected.
+    act(() => chip('alpha').click());
+    expect(useStore.getState().gitPage.selected).not.toBeNull();
+    // Only alpha: the beta row is hidden, so the detail empties.
+    act(() => chip('beta').click());
+    expect(useStore.getState().gitPage.selected).toBeNull();
+    expect(container.querySelector('[data-git-detail-empty]')).not.toBeNull();
+    // Back to every repo, select beta again; a refresh whose answer lacks the
+    // row keeps the selection.
+    act(() => chip('alpha').click());
+    act(() => (container.querySelector('[data-git-flat-rows] [data-pr-row="7"] [data-git-repo-tag="beta"]')!.previousElementSibling as HTMLButtonElement).click());
+    await settle();
+    prList.mockImplementation(async (p: string) => (p === '/code/beta' ? { ok: true, prs: [] } : { ok: true, prs: [pr('alpha', 9, '2026-10-05T00:00:00Z')] }));
+    act(() => (container.querySelector('[data-git-refresh]') as HTMLButtonElement).click());
+    await settle();
+    expect(useStore.getState().gitPage.selected).toEqual({ kind: 'pr', repoPath: '/code/beta', number: 7 });
+  });
+
   it('Issues: one filter over the merged list', async () => {
     act(() => useStore.getState().setGitPage({ tab: 'issues' }));
     await render();
