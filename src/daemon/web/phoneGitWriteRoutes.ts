@@ -5,6 +5,7 @@ import type { GitRunner } from './sessionDiff';
 import { GitWriteReceiptCapacityError, GitWriteReceipts, ghWriteEnv, type GitWriteReceiptRow, type PhoneGitWriteGate } from './phoneGitWriteGate';
 import { phoneGitWriteHandlers, type GitWriteSessionContext, type GitWriteSettle, type PhoneGitWriteActionHandlers } from './phoneGitWriteRegistry';
 import './phoneGitPr';
+import './phoneGitPush';
 import {
   GIT_WRITE_ERROR_STATUS, GIT_WRITE_MERGE_METHODS, GIT_WRITE_PR_BODY_MAX_BYTES, GIT_WRITE_REQUEST_ID,
   executeBodyPins, gitWriteFingerprintSource, parsePrCreateExecute, parsePrMergeExecute, parsePrNumber,
