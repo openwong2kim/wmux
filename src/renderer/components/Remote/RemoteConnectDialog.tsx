@@ -232,6 +232,8 @@ export default function RemoteConnectDialog({ initialTab, onClose, onLinkPane, o
     wsRef.current = ws;
     setWsLink(ws);
     setShareError(got === 'busy' ? 'busy' : ws ? null : 'failed');
+    // Refused or failed: the box does not claim a link that is not there.
+    if (!ws) { shareRef.current = false; setShareOn(false); }
     return ws;
   }, [mintWorkspaceLink, cancelLink]);
 

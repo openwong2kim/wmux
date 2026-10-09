@@ -311,6 +311,7 @@ describe('one invite for A2A and the workspaces', () => {
     await settle();
     expect(web.pairStart).not.toHaveBeenCalled();
     expect(q('remote-connect-share-error')?.textContent).toContain('Share & pair has a pairing code open');
+    expect(share().getAttribute('aria-checked')).toBe('false');
     expect(writeEphemeral).not.toHaveBeenCalled();
   });
 
