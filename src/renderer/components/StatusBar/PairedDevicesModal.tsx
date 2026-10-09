@@ -7,6 +7,7 @@ import Badge from '../ui/Badge';
 import { IconComputer, IconPhone, IconRemoteDevices, IconWarning } from '../icons';
 import { timeAgo } from '../../utils/timeAgo';
 import type { DeviceKind, WebDeviceListError, WebDeviceRevokeResult, WebDeviceSummary } from '../../../shared/web';
+import PairingScope from '../PcRail/PairingScope';
 
 /** The roster's kind glyph: own monograms, never a vendor's mark. */
 function KindIcon({ kind }: { kind: DeviceKind | undefined }) {
@@ -223,6 +224,8 @@ export default function PairedDevicesModal({ onClose }: { onClose: () => void })
     >
       <DialogHeader title={t('web.devicesTitle')} description={t('web.devicesSubtitle')} />
       <DialogBody className="!gap-3">
+        {/* What every device below can reach, so a grant is read against it. */}
+        <PairingScope />
         {/* Says the ticked boxes below are dormant, not active. */}
         {serverReadOnly && (
           <div className="ui-notice flex items-start gap-2 px-3.5 py-2.5 text-[11px] leading-4 text-[var(--text-main)]">

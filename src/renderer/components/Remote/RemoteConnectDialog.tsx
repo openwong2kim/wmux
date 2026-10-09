@@ -9,6 +9,7 @@ import SegmentedControl from '../ui/SegmentedControl';
 import Checkbox from '../ui/Checkbox';
 import Field from '../ui/Field';
 import { A2aExposureChecklist } from '../Settings/A2aExposureChecklist';
+import PairingScope from '../PcRail/PairingScope';
 import { formatRemaining } from '../Settings/A2aRemoteSection';
 import { INPUT_ERROR } from '../StatusBar/OtherComputersSection';
 import { pairReasonMessage } from '../Sidebar/AttachRemoteModal';
@@ -521,6 +522,8 @@ export default function RemoteConnectDialog({ initialTab, onClose, onLinkPane, o
                 data-testid="remote-connect-share"
               />
             </Field>
+            {/* What the shared link reaches, said before the other PC pastes it. */}
+            {shareOn && <PairingScope />}
             {shareError && (
               <p className="wmux-a2a-note" data-tone="danger" role="alert" data-testid="remote-connect-share-error">
                 {t(shareError === 'busy' ? 'remotePage.connect.shareWorkspacesBusy' : 'remotePage.connect.shareWorkspacesFailed')}
@@ -563,6 +566,9 @@ export default function RemoteConnectDialog({ initialTab, onClose, onLinkPane, o
             {!(masked && message) && (
               <p className="wmux-remote-connect-note">{masked ? t('remotePage.connect.fromClipboard') : t('remotePage.connect.pasteHint')}</p>
             )}
+            {/* A shared-workspaces link puts that PC in the computer column,
+                which checks it and holds a connection for its alerts. */}
+            <p className="wmux-remote-connect-note" data-testid="remote-connect-paste-scope">{t('remotePage.connect.pasteScope')}</p>
             {message && (
               <p className="wmux-a2a-note whitespace-pre-line" data-tone={message.tone === 'danger' ? 'danger' : undefined} role={message.tone === 'danger' ? 'alert' : 'status'} data-testid="remote-connect-message">
                 {message.text}

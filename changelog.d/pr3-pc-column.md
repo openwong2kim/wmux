@@ -1,0 +1,17 @@
+### Added
+
+- **A computer column for your paired PCs.** Once another computer is paired
+  for its workspaces, a 48px column appears left of the page rail: this
+  computer first, then each paired PC as a two-letter icon. An icon shows
+  whether the PC is online, offline (with when it was last seen) or needs
+  pairing again, and carries a needs-you count or a done dot until you select
+  it. Alt+Shift+Up/Down moves between computers and Alt+Shift+Home returns to
+  this one; Shift+F10 or a right-click opens a PC's menu to mute its
+  notifications, open the Remote page or pair again, and shows whether this
+  computer can type there and how to revoke it. With no paired PC nothing
+  changes.
+- **Pairing says what a paired device can reach.** Paired devices and Connect
+  a PC now state that a paired device can read and search every workspace,
+  including later ones; that view only can still answer single-key prompts on
+  screen; and that typing also covers opening and closing sessions and
+  answering approvals.

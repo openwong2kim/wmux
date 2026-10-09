@@ -4306,6 +4306,11 @@ export const en = {
   'pcRail.consent.mute': "You can mute notifications from each computer separately.",
   'pcRail.consent.accept': "Show {name}",
   'pcRail.consent.decline': "Not now",
+  'pcRail.notChecked': "Not checked yet",
+  'remote.scope.read': "A paired device can read and search the output of every workspace on this computer, including workspaces opened later.",
+  'remote.scope.viewOnly': "View only blocks typing, but it can still answer on-screen prompts that take a single key.",
+  'remote.scope.input': "Can type also lets it open and close sessions and answer approvals.",
+  'remotePage.connect.pasteScope': "If the invite shares workspaces, this computer can read and search every workspace on that PC, including later ones. While paired, wmux checks it every few seconds, keeps a connection open for its alerts and shows its notifications; mute them from its icon in the computer column.",
 } as const;
 
 export type TranslationKey = keyof typeof en;

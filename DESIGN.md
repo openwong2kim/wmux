@@ -111,9 +111,12 @@ in the terminal whatever the chrome accent.
 └──┴── 8px frame margin ───────────────────────────────────────────────┘
 ```
 
-- **Frame:** the titlebar row, the 48px rail and an 8px margin
-  (`--sheet-inset`) on the left, right and bottom, painted `--frame-bg` — a
-  step darker than the sheet in the dark looks, a soft grey in Paper.
+- **Frame:** the titlebar row, one 48px rail, a conditional 48px **computer
+  column** left of it, and an 8px margin (`--sheet-inset`) on the left,
+  right and bottom, painted `--frame-bg` — a step darker than the sheet in
+  the dark looks, a soft grey in Paper. The computer column is drawn only
+  while at least one computer is web-paired; with none the frame is exactly
+  the one rail (see "Computer column").
 - **Sheet:** one rounded panel (`--sheet-radius` 12px) flush under the
   titlebar, holding the sidebar, the panes and the tools dock. It is set
   off by a 1px `--sheet-edge` hairline and a faint `--sheet-shadow`, nothing
@@ -142,8 +145,8 @@ in the terminal whatever the chrome accent.
 40px (`TITLEBAR_HEIGHT`, shared with main's `titleBarOverlay`). The whole
 bar is a drag region; each interactive child opts out with `no-drag`.
 
-- **Left:** a segment tinted `--bg-mantle` and width-matched to the rail
-  and sidebar below it, so the top-left reads as one panel: on macOS an 80px
+- **Left:** a segment tinted `--bg-mantle` and width-matched to the
+  computer column (when shown), the rail and the sidebar below it, so the top-left reads as one panel: on macOS an 80px
   reserve for the traffic lights (centred in the 40px row, dropped in native
   fullscreen), then, left to right, the `wmux` wordmark and the **sidebar
   toggle** (on Windows and Linux the wordmark is at the far left). The
@@ -243,6 +246,34 @@ navigates through it.
   animates.
 - The command palette and the notification panel float over any page
   without navigating. The web mirror keeps its own sidebar.
+
+### Computer column
+
+A 48px column on the frame, left of the page rail, listing **this computer
+first, then each web-paired computer** (A2A-only peers stay on the Remote
+page). A computer is a **scope**, a page is a destination, so the two never
+share a column. It shares the frame background (no seam), is hidden with 0
+paired hosts (single-PC users see no change), and appearing narrows the
+sheet once, so terminals refit once. The titlebar segment widens to match.
+
+- **Icon:** 40px, the rail item's grammar. A host is a 2-letter monogram of
+  its label (`office-mac` → `OM`); this computer is the computer glyph.
+  The selected computer is the `--selection` square (`aria-current`).
+- **States:** online is plain; offline and not-yet-checked are muted
+  (a host whose list has not come back yet is never drawn online); offline
+  names "last seen 14:02" in the tooltip; needs repair adds the red ✕ mark;
+  an insecure (plain http) host is muted with its own line.
+- **Badges:** needs-you is the rail's `--attention` number badge; finished
+  is the sidebar's neutral done dot. No amber, no wash. **The selected
+  computer shows no badge** — its rows are the evidence, so an event keeps
+  at most two renditions.
+- **Keys:** rebindable `Alt+Shift+↑/↓` cycles computers (as `Alt+↑/↓`
+  cycles workspaces), `Alt+Shift+Home` returns to this computer. Never
+  `Ctrl+Alt+digit` (AltGr on Windows). One tab stop; arrows, Home and End
+  rove; Shift+F10, the context-menu key or a right-click opens a host's
+  menu: Mute / Unmute notifications, Open Remote page, Pair again, with
+  View only or Can type and how to revoke underneath. A host added with its
+  operator link says so and suggests pairing again with a code.
 
 ### Fleet
 
@@ -950,6 +981,7 @@ primitives plus `Settings/SettingsLayout.tsx` (`SettingsSection`,
 | 2026-10-07 | The Ctrl+N number past eight workspaces: 1–8 on the first eight stored rows, 9 on the last, none between (amends the same-day "always shown" row) | Ctrl+9 jumps to the last workspace, not the ninth, so a 9 on the ninth row named a row the key never opens |
 | 2026-10-09 | Owner decision: on the Git page, All repos shows Issues and Pull requests as one flat list across repos (newest update first) with a neutral repo tag on each row, and a row of repo chips (counts, multi-select, kept per viewer) as the filter; a row's tag toggles its chip. Today's grouped view stays behind a Flat \| By repo toggle. A repo with nothing open keeps a dimmed chip without a digit (an exception to No dead gauges, so a repo never vanishes from the filter); loading and failed reads show on the chip | Repos stacked in one column do not scale to many projects: the owner scrolled one long column hunting for repo headings. A repo becomes a filter, not the first level of the layout |
 | 2026-10-09 | Owner decision: the flat All repos list is split into who-acts-next sections (Needs you · Ready to merge · Agents on it · Waiting on others) with a clickable count summary under the title, judged from wmux's own signals: PR state, the work link to a pane and that pane's live agent status, and the viewer's role per repo. Another author's PR, or an unrouted issue not assigned to the owner, is Needs you only where the viewer can write; a PR with no CI that is mergeable and needs no review is Ready to merge. Settled is deferred | Agents open PRs under the owner's GitHub account, so GitHub's author and review-request fields cannot say whose turn it is. Settled would always be empty because the lists read open items only. An upstream repo the owner does not maintain must not flood Needs you |
+| 2026-10-10 | Owner decision (PC rail): the frame is one 48px rail plus a conditional 48px computer column left of it, hidden with 0 web-paired hosts. Amends the one-rail frame | A computer is a scope and a page is a destination; folding computers into the page rail collides with the collapsed sidebar's workspace list, and single-PC users must see no change |
 
 ### Desktop conversation view
 

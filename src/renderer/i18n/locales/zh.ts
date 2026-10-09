@@ -3441,4 +3441,9 @@ export const zh = {
   'pcRail.consent.mute': "可以为每台电脑分别静音通知。",
   'pcRail.consent.accept': "显示 {name}",
   'pcRail.consent.decline': "以后再说",
+  'pcRail.notChecked': "尚未检查",
+  'remote.scope.read': "已配对的设备可以读取和搜索这台电脑上所有工作区的输出，包括之后打开的工作区。",
+  'remote.scope.viewOnly': "仅查看会阻止输入，但仍可回应只需按一个键的屏幕提示。",
+  'remote.scope.input': "可输入还允许它打开和关闭会话以及回应审批。",
+  'remotePage.connect.pasteScope': "如果邀请共享了工作区，这台电脑可以读取和搜索那台电脑上的所有工作区，包括之后打开的。配对期间，wmux 每隔几秒检查一次，保持连接以接收提醒并显示其通知；可在电脑栏中该电脑的图标上将其静音。",
 } as const;

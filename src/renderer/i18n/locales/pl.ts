@@ -4266,4 +4266,9 @@ export const pl = {
   'pcRail.consent.mute': "Powiadomienia można wyciszyć osobno dla każdego komputera.",
   'pcRail.consent.accept': "Pokaż {name}",
   'pcRail.consent.decline': "Nie teraz",
+  'pcRail.notChecked': "Jeszcze nie sprawdzono",
+  'remote.scope.read': "Sparowane urządzenie może czytać i przeszukiwać wyjście każdego obszaru roboczego na tym komputerze, także obszarów otwartych później.",
+  'remote.scope.viewOnly': "Tylko podgląd blokuje pisanie, ale urządzenie nadal może odpowiadać na monity ekranowe wymagające jednego klawisza.",
+  'remote.scope.input': "Może pisać pozwala też otwierać i zamykać sesje oraz odpowiadać na zatwierdzenia.",
+  'remotePage.connect.pasteScope': "Jeśli zaproszenie udostępnia obszary robocze, ten komputer może czytać i przeszukiwać każdy obszar roboczy na tamtym komputerze, także otwarte później. Po sparowaniu wmux sprawdza go co kilka sekund, utrzymuje połączenie dla alertów i pokazuje jego powiadomienia; wycisz je z jego ikony w kolumnie komputerów.",
 } as const;

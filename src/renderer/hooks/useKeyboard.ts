@@ -5,7 +5,8 @@ import { collectPaneTreePtyIds, findLeaf, getLeafPanes, getWorkspacePtyIds } fro
 import { terminalRegistry } from './useTerminal';
 import { t } from '../i18n';
 import { pastePtyChunked } from '../utils/clipboardChunk';
-import { isPrefixTrigger, resolveShortcut, type ShortcutActionId } from '../../shared/keymap';
+import { comboFromEvent, isPrefixTrigger, resolveShortcut, type ShortcutActionId } from '../../shared/keymap';
+import { pcShortcutAction, pcShortcutTarget } from '../components/PcRail/pcRailModel';
 import { currentShortcutBindings, shortcutPressGuard } from '../utils/shortcutBindings';
 import { createTerminalSurface } from '../utils/createTerminalSurface';
 import { openUrlInBrowserPane } from '../utils/browserPaneActions';
@@ -820,6 +821,22 @@ export function useKeyboard() {
           run();
         }
         return;
+      }
+
+      // ─── PC rail: Alt+Shift+Up/Down cycles computers, Alt+Shift+Home
+      // returns to this one. Only while the computer column is shown, and
+      // only when no built-in above took the combo. Captured before xterm,
+      // so the chord never reaches the pane.
+      const pcAction = pcShortcutAction(comboFromEvent(e));
+      if (pcAction) {
+        const st = store.getState();
+        if (st.pcRailHosts.length > 0) {
+          e.preventDefault();
+          e.stopImmediatePropagation();
+          shortcutPressGuard.noteActed(e);
+          st.setActivePc(pcShortcutTarget(pcAction, st.pcRailHosts.map((h) => h.id), st.pcRail.activePcId));
+          return;
+        }
       }
 
       // ─── Custom keybindings → terminal input ─────────────────────────

@@ -73,6 +73,8 @@ import { useUsageLimitBridge } from '../../hooks/useUsageLimitBridge';
 import { useWorkspaceSettleBridge } from '../../hooks/useWorkspaceSettleBridge';
 import { useRemoteInboxBridge } from '../../hooks/useRemoteInboxBridge';
 import { useRemoteAttachmentsLifecycle } from '../../hooks/useRemoteAttachmentsLifecycle';
+import { usePcRailFeeds } from '../../hooks/usePcRailFeeds';
+import PcRail from '../PcRail/PcRail';
 import { useDeckStream } from '../../hooks/useDeckStream';
 import { useChannelsEventSubscription } from '../../hooks/useChannelsEventSubscription';
 import { useChannelsHydration } from '../../hooks/useChannelsHydration';
@@ -941,6 +943,9 @@ export default function AppLayout() {
   // is memory-only, so a reload wipes it) and keep each mirror's pane set in
   // sync with the remote (exit events + a 10s safety-net poll).
   useRemoteAttachmentsLifecycle();
+  // PC rail — host roster, per-host feeds and attention. Always mounted: the
+  // roster arriving is what shows the computer column (none with 0 hosts).
+  usePcRailFeeds();
   // Command Deck Phase 2 — own the Commander brain stream subscription
   // (always-on, mounted once) so orchestrator turn events land in deckSlice even
   // when the dock or the Commander tab is not visible.
@@ -2086,6 +2091,11 @@ export default function AppLayout() {
           stays when the sidebar collapses (MiniSidebar `rail`); the sheet holds
           the sidebar, the panes and the dock. */}
       <div className={`wmux-frame-row flex flex-1 min-h-0 ${sidebarPosition === 'right' ? 'flex-row-reverse' : ''}`}>
+      {/* The computer column, outside the page rail; absent with no paired
+          host. Appearing narrows the sheet once, so terminals refit once. */}
+      <ErrorBoundary name="PcRail">
+        <PcRail />
+      </ErrorBoundary>
       <ErrorBoundary name="SidebarRail">
         <MiniSidebar rail collapsed={!sidebarVisible} />
       </ErrorBoundary>
