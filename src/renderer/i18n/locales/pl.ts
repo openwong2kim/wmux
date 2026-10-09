@@ -4176,6 +4176,7 @@ export const pl = {
   'remotePage.connect.shareWorkspacesHint': "Dodaje w drugim wierszu łącze parowania tylko do podglądu. Drugi komputer wkleja oba naraz.",
   'remotePage.connect.shareWorkspacesOff': "Najpierw włącz Udostępnij i sparuj przez Tailscale lub HTTPS.",
   'remotePage.connect.shareWorkspacesFailed': "Nie udało się utworzyć łącza do obszarów roboczych. Skopiowano samo zaproszenie.",
+  'remotePage.connect.shareWorkspacesBusy': "W Udostępnij i sparuj jest otwarty kod parowania. Najpierw go dokończ lub anuluj.",
   'sidebar.filter.count': "{shown} z {total}",
   'sidebar.filter.status': "Stan",
   'sidebar.filter.kind': "Rodzaj",

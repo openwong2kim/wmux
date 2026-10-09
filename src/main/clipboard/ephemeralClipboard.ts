@@ -45,10 +45,13 @@ export class EphemeralClipboard {
   /**
    * The renderer's word on which link still pairs anything (`''` = none).
    * A held link that is no longer it — consumed, cancelled, re-minted — is
-   * cleared now rather than at its expiry.
+   * cleared now rather than at its expiry. A held bundle (Connect a PC's
+   * invite with the link on its own line) is kept while that line is live.
    */
   keepOnly(stillValid: string): void {
-    if (this.held && this.held.text !== stillValid) this.clear();
+    if (!this.held) return;
+    if (stillValid && this.held.text.split('\n').includes(stillValid)) return;
+    this.clear();
   }
 
   /** Clear the held text if the clipboard still has it (expiry, quit). */

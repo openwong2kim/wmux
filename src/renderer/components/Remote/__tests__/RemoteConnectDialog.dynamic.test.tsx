@@ -86,6 +86,9 @@ describe('pasted text', () => {
     expect(maskPasted(bundle).split('\n')).toHaveLength(2);
     expect(pastedParts('https://office.ts.net:7681\nABCD2345')).toEqual(['https://office.ts.net:7681\nABCD2345']);
     expect(pastedParts(`${INVITE}\nhello`)).toEqual([`${INVITE}\nhello`]);
+    // A stray line drops the bundle back to one piece; every line is still dotted out.
+    expect(maskPasted(`${INVITE}\n${LINK}\nhello`)).not.toMatch(/K7M2QX9P|ABCD2345/);
+    expect(maskPasted('https://office.ts.net:7681\nABCD2345')).toBe('https://office.ts.net:7681 ••••••••');
   });
 });
 
@@ -243,12 +246,16 @@ describe('one invite for A2A and the workspaces', () => {
     running: true, urls: ['https://mac.tail1.ts.net'], pairCode: 'WXYZ6789', pendingDeviceName: 'Computer',
     pendingPairFlow: 'computer', pairExpiresAt: Date.now() + 600_000,
   });
+  const idle = () => ({ running: true, urls: ['https://mac.tail1.ts.net'] });
+  // The daemon's one pairing slot: pairStart fills it, pairCancel empties it.
+  let slot: Record<string, unknown> | null;
   function stubWeb(running = true) {
+    slot = null;
     web = {
-      status: vi.fn(async () => (running ? pending() : { running: false })),
+      status: vi.fn(async () => (running ? { ...idle(), ...slot } : { running: false })),
       deviceList: vi.fn(async () => ({ devices: [] })),
-      pairStart: vi.fn(async () => pending()),
-      pairCancel: vi.fn(async () => ({ running: true })),
+      pairStart: vi.fn(async () => { slot = pending(); return { ...idle(), ...slot }; }),
+      pairCancel: vi.fn(async () => { slot = null; return idle(); }),
     };
     writeEphemeral = vi.fn(async () => undefined);
     vi.stubGlobal('electronAPI', { a2aRemote: a2a, remote, web });
@@ -288,10 +295,43 @@ describe('one invite for A2A and the workspaces', () => {
     await settle();
     await act(async () => { share().click(); });
     await settle();
-    web.status.mockResolvedValue({ ...pending(), pairCode: 'NEWCODE2' });
+    slot = { ...pending(), pairCode: 'NEWCODE2' };
     await act(async () => { share().click(); });
     await settle();
     expect(web.pairCancel).not.toHaveBeenCalled();
+  });
+
+  it('never replaces a pairing code Share & pair already has open', async () => {
+    stub('');
+    stubWeb();
+    slot = { ...pending(), pendingDeviceName: 'Phone', pendingPairFlow: 'phone' };
+    await render({ initialTab: 'invite' });
+    await settle();
+    await act(async () => { share().click(); });
+    await settle();
+    expect(web.pairStart).not.toHaveBeenCalled();
+    expect(q('remote-connect-share-error')?.textContent).toContain('Share & pair has a pairing code open');
+    expect(writeEphemeral).not.toHaveBeenCalled();
+  });
+
+  it('a link that arrives after Discard is cancelled, not copied', async () => {
+    stub('');
+    stubWeb();
+    let release!: () => void;
+    web.pairStart.mockImplementation(() => new Promise((resolve) => {
+      release = () => { slot = pending(); resolve({ ...idle(), ...slot }); };
+    }));
+    await render({ initialTab: 'invite' });
+    await settle();
+    await act(async () => { share().click(); });
+    await settle();
+    await act(async () => { q<HTMLButtonElement>('remote-connect-discard')!.click(); });
+    await settle();
+    await act(async () => { release(); });
+    await settle();
+    expect(writeEphemeral).not.toHaveBeenCalled();
+    expect(web.pairCancel).toHaveBeenCalledTimes(1);
+    expect(slot).toBeNull();
   });
 
   it('is offered only while Share & pair answers over HTTPS', async () => {
@@ -311,7 +351,7 @@ describe('one invite for A2A and the workspaces', () => {
     await settle();
     expect(a2a.join).toHaveBeenCalledWith(INVITE);
     expect(remote.hostsPair).toHaveBeenCalledWith('https://office.ts.net', 'ABCD2345');
-    expect(q('remote-connect-message')?.textContent).toBe('Paired with DESK. Connected to office. Its workspaces are listed under Other PCs.');
+    expect(q('remote-connect-message')?.textContent).toBe('Paired with DESK.\nConnected to office. Its workspaces are listed under Other PCs.');
     expect(q('remote-connect-link-pane')).not.toBeNull();
 
     act(() => root.unmount());

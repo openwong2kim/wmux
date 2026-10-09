@@ -42,4 +42,14 @@ describe('EphemeralClipboard', () => {
     expect(r.board).toBe('');
     expect(r.timers[0].cleared).toBe(true);
   });
+
+  it('keeps a bundle while its link line is live, and clears it once that link is not', () => {
+    const r = rig();
+    const bundle = `wmux-a2a://desk:45660/K7M2QX9P#AA\n${LINK}`;
+    r.clip.write(bundle, 600_000);
+    r.clip.keepOnly(LINK);
+    expect(r.board).toBe(bundle);
+    r.clip.keepOnly(`${LINK}X`);
+    expect(r.board).toBe('');
+  });
 });

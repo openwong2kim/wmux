@@ -3351,6 +3351,7 @@ export const zh = {
   'remotePage.connect.shareWorkspacesHint': "在第二行附上只读配对链接。另一台电脑一次粘贴即可。",
   'remotePage.connect.shareWorkspacesOff': "请先通过 Tailscale 或 HTTPS 开启“共享与配对”。",
   'remotePage.connect.shareWorkspacesFailed': "无法生成工作区链接，只复制了邀请。",
+  'remotePage.connect.shareWorkspacesBusy': "“共享与配对”中有一个未完成的配对代码。请先在那里完成或取消。",
   'sidebar.filter.count': "{total} 个中的 {shown} 个",
   'sidebar.filter.status': "状态",
   'sidebar.filter.kind': "类型",

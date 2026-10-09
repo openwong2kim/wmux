@@ -4216,6 +4216,7 @@ export const en = {
   'remotePage.connect.shareWorkspacesHint': "Adds a view-only pairing link on a second line. The other PC pastes both at once.",
   'remotePage.connect.shareWorkspacesOff': "Turn on Share & pair over Tailscale or HTTPS first.",
   'remotePage.connect.shareWorkspacesFailed': "The workspace link could not be made. The invite alone was copied.",
+  'remotePage.connect.shareWorkspacesBusy': "Share & pair has a pairing code open. Finish or cancel it there first.",
   'sidebar.filter.count': "{shown} of {total}",
   'sidebar.filter.status': "Status",
   'sidebar.filter.kind': "Kind",

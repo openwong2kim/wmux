@@ -3658,6 +3658,7 @@ export const ko = {
   'remotePage.connect.shareWorkspacesHint': "보기 전용 페어링 링크를 둘째 줄에 붙입니다. 다른 PC는 한 번에 붙여넣습니다.",
   'remotePage.connect.shareWorkspacesOff': "먼저 공유 및 페어링을 Tailscale이나 HTTPS로 켜세요.",
   'remotePage.connect.shareWorkspacesFailed': "워크스페이스 링크를 만들지 못했습니다. 초대만 복사했습니다.",
+  'remotePage.connect.shareWorkspacesBusy': "공유 및 페어링에 열려 있는 페어링 코드가 있습니다. 거기서 먼저 마치거나 취소하세요.",
   'sidebar.filter.count': "{total}개 중 {shown}개",
   'sidebar.filter.status': "상태",
   'sidebar.filter.kind': "종류",
