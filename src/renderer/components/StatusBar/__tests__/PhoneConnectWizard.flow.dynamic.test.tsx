@@ -158,7 +158,8 @@ describe('phone wizard — mounted', () => {
   it('opens by itself on an empty roster and walks check → permissions → QR → connected', async () => {
     await mountAndOpen();
     expect(diagnose).toHaveBeenCalledTimes(1);
-    expect(stepText()).toBe('Step 1 of 4');
+    // Ready: one click finishes it, so no "Step 1 of 4" on this screen.
+    expect(stepText()).toBe('');
 
     await click('Options…');
     expect(stepText()).toBe('Step 2 of 4');
@@ -184,8 +185,9 @@ describe('phone wizard — mounted', () => {
   it('Pair a phone on step 1: one click to the QR, view only, prefilled name', async () => {
     await mountAndOpen();
     await click('Pair a phone');
-    // Same start as step 2's defaults: tailnet, input off, upload off.
-    expect(start).toHaveBeenCalledWith({ tailscale: true, allowInput: false, allowUpload: false });
+    // Tailnet, input off; upload is left to the daemon (inherited), as the
+    // hub's Start leaves it.
+    expect(start).toHaveBeenCalledWith({ tailscale: true, allowInput: false });
     expect(setGrants).not.toHaveBeenCalled();
     expect(pairStart).toHaveBeenCalledWith('Phone', false, 'phone');
     expect(stepText()).toBe('Step 3 of 4');
@@ -285,7 +287,7 @@ describe('phone wizard — mounted', () => {
     expect(stepText()).toBe('');
     expect(button('Start')).toBeTruthy();
     await click('Connect a phone step by step');
-    expect(stepText()).toBe('Step 1 of 4');
+    expect(button('Pair a phone')).toBeTruthy();
 
     await act(async () => {
       document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));

@@ -250,7 +250,9 @@ export function PhoneWizardView(p: PhoneWizardViewProps) {
     const ok = readiness === 'ready' || readiness === 'shared';
     return (
       <>
-        <PopoverSection title={t('web.connectPhone')} action={header}>
+        {/* Ready, one click finishes it, so "Step 1 of 4" would overstate the
+            path; the counter comes back on the Options… route. */}
+        <PopoverSection title={t('web.connectPhone')} action={ok ? undefined : header}>
           <p className="text-[13px] font-medium text-[var(--text-main)]">{t('web.wizardCheckTitle')}</p>
           {readiness === null ? (
             <p className="ui-note" role="status">
@@ -635,8 +637,12 @@ export default function PhoneConnectWizard({
       const wantUpload = quick ? current.running && current.allowUpload === true : upload;
       if (!current.running) {
         // Every grant the screen shows is sent as shown, so nothing the
-        // operator did not see is inherited from an earlier run.
-        const args: WebStartArgs = { tailscale: true, allowInput: wantRemote, allowUpload: wantUpload };
+        // operator did not see is inherited from an earlier run. The quick
+        // path showed none, so it leaves them to the daemon, like the hub's
+        // Start: input stays off, the rest is inherited.
+        const args: WebStartArgs = quick
+          ? { tailscale: true, allowInput: false }
+          : { tailscale: true, allowInput: wantRemote, allowUpload: wantUpload };
         current = await api.start(args);
         onInfo(current);
         if (!current.running) {

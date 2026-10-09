@@ -158,6 +158,12 @@ describe('PhoneWizardView', () => {
     expect(html.match(/ui-btn-primary/g)?.length).toBe(1);
     expect(html).toMatch(/ui-btn-primary[^>]*>web\.connectPhonePair/);
     expect(html).toContain('web.connectPhoneOptions');
+    // One click finishes it from here: no step counter on this screen.
+    expect(html).not.toContain('web.wizardStep');
+  });
+
+  it('step 1 problem keeps the step counter', () => {
+    expect(render({ diagnosis: { tailscale: tsBad, web: { running: false } } })).toContain('web.wizardStep');
   });
 
   it('step 1 problem: quotes describeTailscaleProblem lines, links the URL, offers retry', () => {

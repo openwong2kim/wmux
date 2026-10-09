@@ -33,7 +33,6 @@ import { useStore } from '../../stores';
 import {
   buildDesktopPairLink,
   webComputerPairOrigin,
-  webHostIsLoopback,
   webIsExposed,
   type PairFlow,
   type WebDeviceSummary,
@@ -312,12 +311,38 @@ export interface WebPopoverBodyProps {
   /** Open the step-by-step phone wizard. Absent when the bridge cannot run it. */
   onOpenWizard?: () => void;
   /**
-   * Restart the running server behind a `tailscale serve` front, the inline
-   * fix for a computer link that needs HTTPS. Absent when Tailscale cannot
-   * front this computer, which keeps the plain explanation instead.
+   * What the stopped body knows about Tailscale fronting this computer:
+   * still asking, usable, or why not. Absent when this bridge cannot ask,
+   * which trusts the transport checkbox as shown.
+   */
+  tailscaleCheck?: TailscaleCheck;
+  /**
+   * Stopped only: tick HTTPS over Tailscale and start with it — the inline
+   * fix when Tailscale can front this computer but the box is unticked.
    */
   onTurnOnHttps?: () => void;
   t: (key: string) => string;
+}
+
+/** The answer of the per-open Tailscale readiness check (`WEB_DIAGNOSE`). */
+export type TailscaleCheck =
+  | { state: 'checking' }
+  | { state: 'ok' }
+  | { state: 'problem'; lines: string[] };
+
+/**
+ * Whether the stopped body's one-click actions would start a server with an
+ * address another device can reach: the LAN when the operator ticked it, or
+ * a tailnet front that is ticked AND known to work. A loopback-only start
+ * would mint a code nothing off this machine can redeem.
+ */
+export function oneClickReachable(
+  expose: boolean,
+  tailscale: boolean,
+  check: TailscaleCheck | undefined,
+): boolean {
+  if (expose) return true;
+  return tailscale && (check === undefined || check.state === 'ok');
 }
 
 /** A steel text link (DESIGN.md: steel is for focus rings and links). */
@@ -466,6 +491,7 @@ export function WebPopoverBody({
   pairRemainingMs = null,
   pairErrorFlow = null,
   onOpenWizard,
+  tailscaleCheck,
   onTurnOnHttps,
   t,
 }: WebPopoverBodyProps) {
@@ -604,6 +630,33 @@ export function WebPopoverBody({
       />
     </>
   );
+  // Quoted tool output (tailscale's own lines), with its one URL clickable.
+  const problemNotice = (lines: string[]) => (
+    <div className="ui-notice flex gap-2 px-3 py-2.5">
+      <span className="mt-0.5 shrink-0 text-[var(--accent-yellow)]" aria-hidden="true">
+        <IconWarning size={12} />
+      </span>
+      <div className="flex min-w-0 flex-col gap-1">
+        {lines.map((line, i) => {
+          const { before, url, after } = splitLinkedLine(line);
+          return (
+            <span key={i} className="ui-note">
+              {before}
+              {url ? (
+                <button type="button" onClick={() => onOpenLink(url)} className={WEB_LINK}>
+                  {url}
+                </button>
+              ) : null}
+              {after}
+            </span>
+          );
+        })}
+      </div>
+    </div>
+  );
+  const tailnetReady = tailscale && (tailscaleCheck === undefined || tailscaleCheck.state === 'ok');
+  const reachable = oneClickReachable(expose, tailscale, tailscaleCheck);
+  const pairBlocked = busy || !reachable || deviceName.trim().length === 0;
   if (!info.running) {
     return (
       <>
@@ -613,47 +666,53 @@ export function WebPopoverBody({
         <PopoverSection title={t('web.connectPhone')}>
           {phoneNameInput}
           <div className="flex flex-wrap items-center gap-2">
-            {/* In flight it is not the primary: DESIGN.md keeps the warm fill
-                off disabled and running actions. */}
+            {/* In flight or blocked it is not the primary: DESIGN.md keeps
+                the warm fill off disabled and running actions. */}
             <Button
-              variant={busy ? 'secondary' : 'primary'}
+              variant={pairBlocked ? 'secondary' : 'primary'}
               size="sm"
               onClick={onStartPairing}
-              disabled={busy || deviceName.trim().length === 0}
+              disabled={pairBlocked}
             >
               {busy ? t('web.starting') : t('web.connectPhonePair')}
             </Button>
             {/* A computer link needs HTTPS another machine can reach, which
                 only the tailnet front gives a popover start. */}
             {tailscale ? (
-              <Button size="sm" onClick={onStartComputerPairing} disabled={busy}>
+              <Button size="sm" onClick={onStartComputerPairing} disabled={busy || !tailnetReady}>
                 {t('web.connectComputer')}
               </Button>
             ) : null}
           </div>
-          {info.transportError ? (
-            <div className="ui-notice flex gap-2 px-3 py-2.5">
-              <span className="mt-0.5 shrink-0 text-[var(--accent-yellow)]" aria-hidden="true">
-                <IconWarning size={12} />
-              </span>
-              <div className="flex min-w-0 flex-col gap-1">
-                {info.transportError.lines.map((line, i) => {
-                  const { before, url, after } = splitLinkedLine(line);
-                  return (
-                    <span key={i} className="ui-note">
-                      {before}
-                      {url ? (
-                        <button type="button" onClick={() => onOpenLink(url)} className={WEB_LINK}>
-                          {url}
-                        </button>
-                      ) : null}
-                      {after}
-                    </span>
-                  );
-                })}
-              </div>
-            </div>
+          {/* Why the one-click is not on yet, said where the click would be —
+              the same readiness the wizard's first step reports. */}
+          {!reachable ? (
+            tailscaleCheck?.state === 'checking' ? (
+              <p className="ui-note" role="status">
+                {t('web.wizardChecking')}
+              </p>
+            ) : tailscaleCheck?.state === 'problem' ? (
+              problemNotice(tailscaleCheck.lines.length > 0 ? tailscaleCheck.lines : [t('web.wizardCheckFailed')])
+            ) : (
+              <>
+                <p className="ui-note">{t('web.connectPhoneNeedsTailscale')}</p>
+                {/* Tailscale can front this computer; the box is just
+                    unticked. The fix is the box plus Start, in one click. */}
+                {tailscaleCheck?.state === 'ok' && onTurnOnHttps ? (
+                  <Button
+                    variant={busy ? 'secondary' : 'primary'}
+                    size="sm"
+                    onClick={onTurnOnHttps}
+                    disabled={busy}
+                    className="self-start"
+                  >
+                    {busy ? t('web.starting') : t('web.computerTurnOnHttps')}
+                  </Button>
+                ) : null}
+              </>
+            )
           ) : null}
+          {info.transportError ? problemNotice(info.transportError.lines) : null}
         </PopoverSection>
         <PopoverSection title={t('web.shareThisComputer')}>
           {wizardLink}
@@ -853,36 +912,21 @@ export function WebPopoverBody({
             </div>
           </>
         ) : !computerOrigin ? (
-          // The reason, inline, and — when Tailscale can front this computer —
-          // the fix itself rather than directions to it.
+          // Disabled WITH its reason, inline: a greyed button alone is a
+          // puzzle. No in-place fix here on purpose: moving a running server
+          // behind the tailnet front is a restart that rotates every paired
+          // device's credential, so it stays the operator's own Stop → Start.
           <>
             <p className="ui-note" data-testid="web-computer-disabled-reason">
               {info.pairRefusal
                 ? info.pairRefusal.reason === 'no-front'
                   ? t('web.refusalNoFront')
                   : t('web.refusalInsecure')
-                : onTurnOnHttps
-                  ? t('web.computerHttpsHint')
-                  : t('web.computerNeedsHttps')}
+                : t('web.computerNeedsHttps')}
             </p>
-            {onTurnOnHttps ? (
-              <>
-                <Button size="sm" onClick={onTurnOnHttps} disabled={busy} className="self-start">
-                  {busy ? t('web.starting') : t('web.computerTurnOnHttps')}
-                </Button>
-                {/* Moving a plaintext server behind the encrypted front
-                    rotates every web credential (decideWebStartPolicy), the
-                    same as the Stop it replaces. Said before the click. */}
-                {roster && roster.total > 0 && !(info.tailscale === true && webHostIsLoopback(info.host ?? '')) ? (
-                  <p className="ui-note" data-testid="web-computer-https-revokes">
-                    {t('web.computerHttpsRevokes').replace('{count}', String(roster.total))}
-                  </p>
-                ) : null}
-                {info.transportError ? (
-                  <p className="ui-row-error">{info.transportError.lines.join(' ')}</p>
-                ) : null}
-              </>
-            ) : null}
+            <Button size="sm" disabled className="self-start">
+              {t('web.computerCopyNewLink')}
+            </Button>
           </>
         ) : (
           <>
@@ -1115,39 +1159,60 @@ export default function WebToggle({ variant = 'icon', compact = false }: {
   }, [open, refresh, refreshDevices]);
 
   /**
-   * Whether Tailscale can front this computer, asked once per open of the hub
-   * while that matters (nothing running, or running without an HTTPS address).
-   * `WEB_DIAGNOSE` is read-only and deduped in main — the same check the
-   * wizard's first step runs. A usable tailnet becomes the default transport
-   * until the operator picks one; it never turns the LAN on.
+   * Whether Tailscale can front this computer, asked once per open of the
+   * stopped hub. `WEB_DIAGNOSE` is read-only and deduped in main — the same
+   * check the wizard's first step runs. A usable tailnet ticks the transport
+   * box (visibly, before anything can start) until the operator picks one;
+   * it never turns the LAN on. Undefined when this bridge cannot ask.
    */
-  const [tailscaleUsable, setTailscaleUsable] = useState<boolean | null>(null);
-  const tailscaleProbe = useRef<Promise<boolean> | null>(null);
-  /** The operator ticked or unticked a transport box; stop defaulting it. */
+  const [tailscaleCheck, setTailscaleCheck] = useState<TailscaleCheck | undefined>({ state: 'checking' });
+  const probing = useRef(false);
+  /** The operator ticked or unticked a transport box on this open. */
   const transportTouched = useRef(false);
-  const needsProbe = !info.running || !webComputerPairOrigin(info);
+  /** The probe ticked the box, so a close can take that default back. */
+  const tailscaleDefaulted = useRef(false);
+  const stopped = !info.running;
   useEffect(() => {
     if (!open) {
-      tailscaleProbe.current = null;
+      // Each open decides afresh: a stale "usable" must not offer an action.
+      transportTouched.current = false;
+      setTailscaleCheck({ state: 'checking' });
+      if (tailscaleDefaulted.current && !wasRunning.current) setTailscale(false);
+      tailscaleDefaulted.current = false;
       return;
     }
-    if (view !== 'hub' || !needsProbe || tailscaleProbe.current) return;
+    if (view !== 'hub' || !stopped || probing.current) return;
     const a = webApi();
-    if (typeof a?.diagnose !== 'function') return;
-    const probe = a.diagnose().then(
-      (d) => d.tailscale.ok,
-      () => false,
-    );
-    tailscaleProbe.current = probe;
-    void probe.then((ok) => {
-      if (tailscaleProbe.current !== probe) return;
-      setTailscaleUsable(ok);
-      if (ok && !transportTouched.current && !wasRunning.current) {
-        setTailscale(true);
-        setExpose(false);
-      }
-    });
-  }, [open, view, needsProbe]);
+    if (typeof a?.diagnose !== 'function') {
+      setTailscaleCheck(undefined);
+      return;
+    }
+    let live = true;
+    probing.current = true;
+    setTailscaleCheck({ state: 'checking' });
+    void a
+      .diagnose()
+      .then(
+        (d): TailscaleCheck =>
+          d.tailscale.ok ? { state: 'ok' } : { state: 'problem', lines: d.tailscale.lines },
+        (): TailscaleCheck => ({ state: 'problem', lines: [] }),
+      )
+      .then((check) => {
+        if (!live) return;
+        setTailscaleCheck(check);
+        if (check.state === 'ok' && !transportTouched.current && !wasRunning.current) {
+          tailscaleDefaulted.current = true;
+          setTailscale(true);
+          setExpose(false);
+        }
+      });
+    return () => {
+      // Unmounted, closed, or no longer stopped: drop this answer, and let
+      // the next stopped open ask again.
+      live = false;
+      probing.current = false;
+    };
+  }, [open, view, stopped]);
 
   // Every way the popover closes (toggle, outside click, Escape, a host
   // handed to the attach dialog) lands here, so the next open decides again.
@@ -1301,7 +1366,10 @@ export default function WebToggle({ variant = 'icon', compact = false }: {
    * (or null when the start failed — its reason is already in `info`). The
    * caller owns `busy`, so a start and the pairing after it are one action.
    */
-  const ensureRunning = useCallback(async (a: WebApi): Promise<WebTerminalInfo | null> => {
+  const ensureRunning = useCallback(async (
+    a: WebApi,
+    override?: { expose: boolean; tailscale: boolean },
+  ): Promise<WebTerminalInfo | null> => {
     // Look again first: the popover may be up to a poll behind. A server
     // started (or stopped) elsewhere since then is not ours to restart.
     const current = await a.status();
@@ -1309,13 +1377,9 @@ export default function WebToggle({ variant = 'icon', compact = false }: {
       applyInfo(current);
       return current;
     }
-    let transport = { expose, tailscale };
-    // A click can beat the tailnet check that sets the default: wait for it,
-    // so the first click does not land on a loopback address a phone cannot
-    // reach. A box the operator touched is their choice and is sent as shown.
-    if (!transportTouched.current && tailscaleProbe.current && (await tailscaleProbe.current)) {
-      transport = { expose: false, tailscale: true };
-    }
+    // Exactly the transport the boxes show — the one-click actions are not
+    // offered until the box shows the tailnet default.
+    const transport = override ?? { expose, tailscale };
     const values = { allowTranscript, allowUpload, allowDangerousLaunch };
     const grants: WebGrantArgs = {};
     for (const key of ['allowTranscript', 'allowUpload', 'allowDangerousLaunch'] as const) {
@@ -1513,28 +1577,23 @@ export default function WebToggle({ variant = 'icon', compact = false }: {
   }, [effectiveComputerName, computerAllowInput, ensureRunning, copyComputerLink]);
 
   /**
-   * The computer card's inline fix: what Stop → tick Tailscale → Start did,
-   * as one restart in place. The grants come along — input as the server has
-   * it, the rest inherited — so the fix changes the transport and nothing else.
+   * The stopped body's inline fix: Tailscale can front this computer but the
+   * box is unticked. Tick it and start — a plain start with the tailnet, so
+   * there is no running server to restart and nothing to revoke.
    */
   const handleTurnOnHttps = useCallback(async () => {
     const a = webApi();
     if (!a) return;
+    transportTouched.current = true;
+    setTailscale(true);
+    setExpose(false);
     setBusy(true);
     try {
-      const next = await a.start({ tailscale: true, allowInput: info.allowInput === true });
-      if (next.running) {
-        applyInfo(next);
-        return;
-      }
-      // The front could not be put up. Whether the old server survived is the
-      // daemon's word, not this reply's, so read it before showing anything.
-      const now = await a.status();
-      applyInfo(now.running ? { ...now, transportError: next.transportError } : next);
+      await ensureRunning(a, { expose: false, tailscale: true });
     } finally {
       setBusy(false);
     }
-  }, [info.allowInput, applyInfo]);
+  }, [ensureRunning]);
 
   const handleCancelPairing = useCallback(async () => {
     const a = webApi();
@@ -1698,7 +1757,8 @@ export default function WebToggle({ variant = 'icon', compact = false }: {
             pairRemainingMs={pairRemainingMs}
             pairErrorFlow={pairErrorFlow}
             onOpenWizard={canWizard ? () => setView('wizard') : undefined}
-            onTurnOnHttps={tailscaleUsable === true ? () => void handleTurnOnHttps() : undefined}
+            tailscaleCheck={tailscaleCheck}
+            onTurnOnHttps={() => void handleTurnOnHttps()}
             t={t}
           />
           </>

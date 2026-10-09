@@ -283,13 +283,18 @@ One page, Tailnet first, on the sheet beside the tools dock with 28px sides
   name, phone access (`off` / this computer only / local network / Tailnet),
   the A2A state (`A2A :45660 listening`, the listener's error, or `A2A off`)
   and a **Details** toggle. While phone access is off, Share & pair sits on
-  the line (its popover leads with Pair a phone, which starts sharing —
-  behind Tailscale when this PC can be fronted, never on the LAN — and shows
-  the QR in the same click; Start stays as a secondary). Details unfolds in place: the phone
+  the line (its popover leads with Pair a phone, which starts sharing and
+  shows the QR in the same click. It is offered only once the address will
+  be reachable: a usable tailnet ticks HTTPS over Tailscale visibly first,
+  never the LAN; otherwise the popover says why, as the wizard's first step
+  does. Start stays as a secondary that starts exactly what the boxes show).
+  Details unfolds in place: the phone
   address without its token (copy), whether input is allowed, Share & pair,
   the A2A port and the full fingerprint (plain mono values; the fingerprint
-  wraps anywhere, copy). Connecting another computer, by A2A or as a
-  workspace share, starts only from Connect a PC….
+  wraps anywhere, copy). Connecting another computer by A2A starts from
+  Connect a PC…; as a workspace share it starts from Connect a PC… or from
+  Share & pair's **Connect another computer**, which mints the pairing link
+  and copies it in one click.
 - **Needs you** — drawn only while something waits, inside an
   `aria-live="polite"` region: ONE block with a 1px `--attention-hairline`
   border over `--selection-subtle` (no wash), rows split by `--stroke`

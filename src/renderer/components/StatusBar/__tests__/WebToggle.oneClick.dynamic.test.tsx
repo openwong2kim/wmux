@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 //
 // The hub's one-click paths: Pair a phone and Connect another computer start
-// a stopped server (behind Tailscale when this computer can be fronted, never
-// on the LAN, input still off) and mint the named code in the same click; the
-// computer card's HTTPS dead end becomes an inline restart behind Tailscale.
+// a stopped server and mint the named code in the same click — offered only
+// once the address will be reachable (a usable tailnet, ticked visibly first;
+// never the LAN by default; input still off). A running server is never
+// restarted from here.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createElement, act } from 'react';
@@ -119,9 +120,21 @@ async function click(text: string): Promise<void> {
   await flush();
 }
 
+function tailnetBox(): HTMLButtonElement {
+  const label = Array.from(document.querySelectorAll('label')).find((l) => l.textContent === 'Serve over HTTPS (needs Tailscale) — required to pair a phone');
+  return document.getElementById((label as HTMLLabelElement).htmlFor) as HTMLButtonElement;
+}
+
+async function toggleOpen(): Promise<void> {
+  const button = container.querySelector('[data-testid="deck-web-toggle"]') as HTMLButtonElement;
+  await act(async () => button.click());
+  await flush();
+}
+
 describe('WebToggle — one click', () => {
-  it('Pair a phone from a stopped server: tailnet start, input off, then the prefilled unique name', async () => {
+  it('Pair a phone from a stopped server: tailnet ticked first, input off, then the prefilled unique name', async () => {
     await mountAndOpen();
+    expect(tailnetBox().getAttribute('aria-checked')).toBe('true');
     expect((document.querySelector('input[type="text"]') as HTMLInputElement).value).toBe('Phone 2');
     await click('Pair a phone');
     expect(start).toHaveBeenCalledTimes(1);
@@ -130,37 +143,79 @@ describe('WebToggle — one click', () => {
     expect(document.querySelector('[aria-label="QR code that pairs this phone"]')).not.toBeNull();
   });
 
-  it('a click that beats the Tailscale check waits for it instead of starting on loopback', async () => {
+  it('nothing one-click is offered until the Tailscale check answers', async () => {
     let answer: (d: WebDiagnosis) => void = () => undefined;
     diagnose.mockImplementationOnce(() => new Promise<WebDiagnosis>((resolve) => { answer = resolve; }));
     await mountAndOpen();
-    await act(async () => button('Pair a phone').click());
-    await flush();
-    expect(start).not.toHaveBeenCalled();
+    expect(document.body.textContent).toContain('Checking Tailscale…');
+    expect(button('Pair a phone').disabled).toBe(true);
+    expect(tailnetBox().getAttribute('aria-checked')).toBe('false');
     await act(async () => answer({ tailscale: { ok: true, serve: 'free' }, web: status }));
     await flush();
-    expect(start).toHaveBeenCalledWith({ allowInput: false, expose: false, tailscale: true });
+    expect(tailnetBox().getAttribute('aria-checked')).toBe('true');
+    expect(button('Pair a phone').disabled).toBe(false);
   });
 
-  it('without Tailscale keeps today\'s loopback default and offers no computer link', async () => {
+  it('plain Start never waits for the check and starts what the boxes show', async () => {
+    diagnose.mockImplementationOnce(() => new Promise<WebDiagnosis>(() => undefined));
+    await mountAndOpen();
+    await click('Start');
+    expect(start).toHaveBeenCalledWith({ allowInput: false, expose: false, tailscale: false });
+  });
+
+  it('without Tailscale: says why, starts nothing, offers no computer link', async () => {
     tailscaleOk = false;
     await mountAndOpen();
+    expect(document.body.textContent).toContain('tailscale is not on PATH');
+    expect(button('Pair a phone').disabled).toBe(true);
     expect(Array.from(document.querySelectorAll('button')).some((b) => b.textContent === 'Connect another computer')).toBe(false);
     await click('Pair a phone');
-    expect(start).toHaveBeenCalledWith({ allowInput: false, expose: false, tailscale: false });
-    expect(pairStart).toHaveBeenCalledWith('Phone 2', false, 'phone');
+    expect(start).not.toHaveBeenCalled();
+    expect(pairStart).not.toHaveBeenCalled();
   });
 
-  it('a transport the operator chose is sent as shown', async () => {
+  it('unticked while usable: the inline fix ticks the box and starts with it', async () => {
     await mountAndOpen();
-    // The probe ticked the tailnet; unticking it is the operator's call.
-    const label = Array.from(document.querySelectorAll('label')).find((l) => l.textContent === 'Serve over HTTPS (needs Tailscale) — required to pair a phone');
-    const box = document.getElementById((label as HTMLLabelElement).htmlFor) as HTMLButtonElement;
-    expect(box.getAttribute('aria-checked')).toBe('true');
-    await act(async () => box.click());
+    await act(async () => tailnetBox().click());
     await flush();
-    await click('Pair a phone');
-    expect(start).toHaveBeenCalledWith({ allowInput: false, expose: false, tailscale: false });
+    expect(button('Pair a phone').disabled).toBe(true);
+    await click('Turn on HTTPS over Tailscale');
+    expect(start).toHaveBeenCalledWith({ allowInput: false, expose: false, tailscale: true });
+    expect(pairStart).not.toHaveBeenCalled();
+  });
+
+  it('each open decides afresh: an untick does not outlive the popover', async () => {
+    await mountAndOpen();
+    await act(async () => tailnetBox().click());
+    await flush();
+    expect(tailnetBox().getAttribute('aria-checked')).toBe('false');
+    await toggleOpen(); // close
+    await toggleOpen(); // reopen
+    expect(diagnose).toHaveBeenCalledTimes(2);
+    expect(tailnetBox().getAttribute('aria-checked')).toBe('true');
+  });
+
+  it('a default the check set is taken back when the next check finds no Tailscale', async () => {
+    await mountAndOpen();
+    expect(tailnetBox().getAttribute('aria-checked')).toBe('true');
+    await toggleOpen();
+    tailscaleOk = false;
+    await toggleOpen();
+    expect(tailnetBox().getAttribute('aria-checked')).toBe('false');
+    expect(button('Pair a phone').disabled).toBe(true);
+  });
+
+  it('a check answering after unmount changes nothing', async () => {
+    let answer: (d: WebDiagnosis) => void = () => undefined;
+    diagnose.mockImplementationOnce(() => new Promise<WebDiagnosis>((resolve) => { answer = resolve; }));
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    await mountAndOpen();
+    act(() => root.unmount());
+    root = createRoot(container);
+    await act(async () => answer({ tailscale: { ok: true, serve: 'free' }, web: status }));
+    await flush();
+    expect(errors).not.toHaveBeenCalled();
+    errors.mockRestore();
   });
 
   it('Connect another computer from a stopped server: one click puts the link on the clipboard', async () => {
@@ -174,24 +229,12 @@ describe('WebToggle — one click', () => {
     expect(button('Copied')).toBeTruthy();
   });
 
-  it('turns HTTPS on in place for a loopback server, keeping its input grant', async () => {
+  it('a running server without HTTPS is never restarted from the popover', async () => {
     status = { ...LOOPBACK, allowInput: true };
     await mountAndOpen();
-    expect(document.body.textContent).toContain('1 paired device(s) will need to pair again.');
-    await click('Turn on HTTPS over Tailscale');
-    expect(start).toHaveBeenCalledWith({ tailscale: true, allowInput: true });
-    expect(button('Create and copy link')).toBeTruthy();
-  });
-
-  it('a failed HTTPS restart keeps the running body and says why', async () => {
-    status = LOOPBACK;
-    start.mockImplementationOnce(async () => ({
-      running: false,
-      transportError: { reason: 'port-taken', lines: ['something else serves :443'] },
-    }));
-    await mountAndOpen();
-    await click('Turn on HTTPS over Tailscale');
-    expect(document.body.textContent).toContain('something else serves :443');
-    expect(button('Stop')).toBeTruthy();
+    expect(document.body.textContent).toContain('Stop sharing, then start again with HTTPS over Tailscale ticked.');
+    expect(Array.from(document.querySelectorAll('button')).some((b) => b.textContent === 'Turn on HTTPS over Tailscale')).toBe(false);
+    expect(diagnose).not.toHaveBeenCalled();
+    expect(start).not.toHaveBeenCalled();
   });
 });

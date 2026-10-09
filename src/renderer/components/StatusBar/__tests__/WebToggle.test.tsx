@@ -16,6 +16,7 @@ import {
   webQrPayload,
   webBindLabel,
   uniqueDeviceName,
+  oneClickReachable,
   WebPopoverBody,
   type WebPopoverBodyProps,
 } from '../WebToggle';
@@ -164,8 +165,57 @@ describe('uniqueDeviceName', () => {
   });
 });
 
+describe('oneClickReachable', () => {
+  it('the LAN when ticked, or a ticked tailnet known to work', () => {
+    expect(oneClickReachable(true, false, { state: 'checking' })).toBe(true);
+    expect(oneClickReachable(false, true, { state: 'ok' })).toBe(true);
+    expect(oneClickReachable(false, true, { state: 'checking' })).toBe(false);
+    expect(oneClickReachable(false, true, { state: 'problem', lines: [] })).toBe(false);
+    // Loopback only: a code minted there reaches nothing off this machine.
+    expect(oneClickReachable(false, false, { state: 'ok' })).toBe(false);
+  });
+
+  it('trusts the ticked box when this bridge cannot check', () => {
+    expect(oneClickReachable(false, true, undefined)).toBe(true);
+    expect(oneClickReachable(false, false, undefined)).toBe(false);
+  });
+});
+
+describe('WebPopoverBody — one-click readiness', () => {
+  const stopped = { info: { running: false }, deviceName: 'Phone' } as const;
+
+  it('while Tailscale is being checked: says so, nothing is primary', () => {
+    const html = renderBody({ ...stopped, tailscale: false, tailscaleCheck: { state: 'checking' } });
+    expect(html).toContain('web.wizardChecking');
+    expect(html).toMatch(/disabled="">web\.connectPhonePair/);
+    expect(html).not.toContain('ui-btn-primary');
+  });
+
+  it('when Tailscale cannot front it: quotes why, with the link', () => {
+    const html = renderBody({
+      ...stopped,
+      tailscaleCheck: { state: 'problem', lines: ['Install it from https://tailscale.com/download, then sign in.'] },
+    });
+    expect(html).toContain('>https://tailscale.com/download</button>');
+    expect(html).toMatch(/disabled="">web\.connectPhonePair/);
+    expect(html).not.toContain('web.computerTurnOnHttps');
+  });
+
+  it('usable but unticked: the inline fix is the primary', () => {
+    const html = renderBody({ ...stopped, tailscale: false, tailscaleCheck: { state: 'ok' }, onTurnOnHttps: vi.fn() });
+    expect(html).toContain('web.connectPhoneNeedsTailscale');
+    expect(html).toMatch(/ui-btn-primary[^>]*>web\.computerTurnOnHttps/);
+    expect(html.split('ui-btn-primary').length - 1).toBe(1);
+  });
+
+  it('a ticked LAN enables the one-click (the daemon then says why it will not pair)', () => {
+    const html = renderBody({ ...stopped, expose: true, tailscaleCheck: { state: 'problem', lines: [] } });
+    expect(html).not.toMatch(/disabled="">web\.connectPhonePair/);
+  });
+});
+
 describe('WebPopoverBody — off state', () => {
-  const html = renderBody({ info: { running: false }, deviceName: 'Phone' });
+  const html = renderBody({ info: { running: false }, deviceName: 'Phone', tailscale: true, tailscaleCheck: { state: 'ok' } });
 
   it('leads with Pair a phone, keeps the options and Start', () => {
     expect(html).toContain('web.connectPhonePair');
@@ -177,8 +227,8 @@ describe('WebPopoverBody — off state', () => {
   });
 
   it('offers the computer link only while the tailnet transport is chosen', () => {
-    expect(html).not.toContain('>web.connectComputer<');
-    expect(renderBody({ info: { running: false }, deviceName: 'Phone', tailscale: true })).toContain(
+    expect(html).toContain('>web.connectComputer<');
+    expect(renderBody({ info: { running: false }, deviceName: 'Phone', tailscale: false })).not.toContain(
       '>web.connectComputer<',
     );
   });

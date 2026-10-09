@@ -126,40 +126,16 @@ describe('computer pairing link', () => {
 });
 
 describe('Share this computer — the two cards', () => {
-  it('without Tailscale, says why there is no computer link and offers no button', () => {
-    const html = renderBody({ info: { running: true, host: '127.0.0.1', urls: ['http://127.0.0.1:7681/?token=T'] } });
+  it('a running server without HTTPS keeps the Stop/Start note — no in-place restart', () => {
+    const html = renderBody({
+      info: { running: true, host: '127.0.0.1', urls: ['http://127.0.0.1:7681/?token=T'] },
+      tailscaleCheck: { state: 'ok' },
+      onTurnOnHttps: vi.fn(),
+    });
     expect(html).toContain('web.connectComputer');
     expect(html).toContain('web.computerNeedsHttps');
+    expect(html).toMatch(/disabled="">web\.computerCopyNewLink/);
     expect(html).not.toContain('web.computerTurnOnHttps');
-    expect(html).not.toContain('web.computerCopyNewLink');
-  });
-
-  it('with Tailscale usable, offers the HTTPS fix inline instead of the dead end', () => {
-    const loopback: WebTerminalInfo = { running: true, host: '127.0.0.1', urls: ['http://127.0.0.1:7681/?token=T'] };
-    const html = renderBody({ info: loopback, onTurnOnHttps: vi.fn() });
-    expect(html).not.toContain('web.computerNeedsHttps');
-    expect(html).toContain('web.computerHttpsHint');
-    expect(html).toContain('>web.computerTurnOnHttps<');
-    // Nothing paired: nothing to warn about.
-    expect(html).not.toContain('web-computer-https-revokes');
-    // Paired devices: the restart crosses into HTTPS and rotates them, said up front.
-    const withDevices = renderBody({
-      info: loopback,
-      onTurnOnHttps: vi.fn(),
-      roster: { total: 2, active: 0, phones: 2, computers: 0, other: 0 },
-    });
-    expect(withDevices).toContain('web-computer-https-revokes');
-  });
-
-  it('a tailnet server whose front is gone gets the fix without a revocation warning', () => {
-    const html = renderBody({
-      info: { running: true, host: '127.0.0.1', tailscale: true, urls: ['http://127.0.0.1:7681/?token=T'], pairRefusal: { reason: 'no-front', detail: 'x' } },
-      onTurnOnHttps: vi.fn(),
-      roster: { total: 2, active: 0, phones: 2, computers: 0, other: 0 },
-    });
-    expect(html).toContain('web.refusalNoFront');
-    expect(html).toContain('>web.computerTurnOnHttps<');
-    expect(html).not.toContain('web-computer-https-revokes');
   });
 
   it('names the transport refusal instead of the generic reason when one applies', () => {
