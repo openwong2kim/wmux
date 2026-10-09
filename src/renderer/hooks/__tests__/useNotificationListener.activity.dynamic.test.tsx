@@ -249,6 +249,28 @@ describe('useNotificationListener — Fleet activity line (METADATA_UPDATE.activ
       expect(useStore.getState().surfaceAgentStatus['pty-rec2']).toBe('awaiting_input');
     });
 
+    it('#1901: a tool line landing after the awaiting status does not reopen running', () => {
+      // The transcript watcher reports the AskUserQuestion call on its own
+      // poll, so it can arrive after the dialog's awaiting status.
+      seedActivePaneSurface('pty-ask');
+      act(() => { useStore.getState().setSurfaceAgent('pty-ask', 'Claude Code', 'running'); });
+      act(() => { metaCb!({ ptyId: 'pty-ask', agentStatus: 'awaiting_input' }); });
+      act(() => { metaCb!({ ptyId: 'pty-ask', activity: '⚙ AskUserQuestion' }); });
+
+      expect(useStore.getState().surfaceAgentStatus['pty-ask']).toBe('awaiting_input');
+      expect(useStore.getState().surfaceAgent['pty-ask']?.status).toBe('awaiting_input');
+      expect(useStore.getState().surfaceActivity['pty-ask']).toBe('⚙ AskUserQuestion');
+      const wsId = useStore.getState().activeWorkspaceId;
+      expect(selectWorkspaceAgentRoster(useStore.getState(), wsId)
+        .rows.find((r) => r.ptyId === 'pty-ask')!.status).toBe('awaiting_input');
+
+      // The answer reports running; the next tool line then reads as progress.
+      act(() => { metaCb!({ ptyId: 'pty-ask', agentStatus: 'running' }); });
+      act(() => { metaCb!({ ptyId: 'pty-ask', activity: '✎ next.ts' }); });
+      expect(useStore.getState().surfaceAgent['pty-ask']?.status).toBe('running');
+      expect(useStore.getState().surfaceAgentStatus['pty-ask']).toBeUndefined();
+    });
+
     it('an explicit state on the SAME payload stays authoritative', () => {
       // The additive activity field must never overwrite a state the payload
       // itself declares — that state is the newer, stronger evidence.
