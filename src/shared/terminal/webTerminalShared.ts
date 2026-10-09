@@ -14,3 +14,4 @@ export {
 export { gateUserInput } from './userInputGate';
 export { installShellPromptModeReset, shellPromptModeResetFor } from './shellPromptModeReset';
 export { capSixelImageSize } from './sixelCap';
+export { holdNewXtermReplies } from './replyParity';

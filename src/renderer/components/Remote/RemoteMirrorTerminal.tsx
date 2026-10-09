@@ -24,6 +24,7 @@ import { installAltClickTrackingGuard } from '../../utils/altClickUnderMouseTrac
 import { createOsc52Handler } from '../../utils/osc52Clipboard';
 import { gateUserInput, type UserInputTerminal } from '../../../shared/terminal/userInputGate';
 import { installShellPromptModeReset, shellPromptModeResetFor } from '../../../shared/terminal/shellPromptModeReset';
+import { holdNewXtermReplies } from '../../../shared/terminal/replyParity';
 import { fitsHeld, onFitsReleased } from '../../utils/layoutTransitionGate';
 
 export interface RemoteMirrorTerminalProps {
@@ -699,6 +700,7 @@ export default function RemoteMirrorTerminal({ attachId, error, insecureTranspor
     // leaking the instance (DOM, listeners, buffers) on every mount attempt.
     termRef.current = term;
     applyUnicodeWidthModel(term);
+    holdNewXtermReplies(term);
     term.open(container);
 
     // ---- Local editing conveniences (#895) --------------------------------

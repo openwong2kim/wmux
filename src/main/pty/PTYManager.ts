@@ -15,7 +15,12 @@ import { getAccountStore } from '../account/accountStore';
 import { withheldCredentialNames } from '../../shared/envFilter';
 import { getShellUtf8Locale } from './shellLocale';
 import { isWindows, parseWindowsBuildNumber } from '../../shared/platform';
-import { shouldUseBundledConpty, spawnWithConptyPolicy } from '../../shared/conptyWindows';
+import {
+  CONPTY_BACKEND_ENV,
+  parseConptyBackendOverride,
+  shouldUseBundledConpty,
+  spawnWithConptyPolicy,
+} from '../../shared/conptyWindows';
 import { ShellDetector } from '../../shared/ShellDetector';
 import { forgetPtyShell, recordPtyShell } from './ptyShellRegistry';
 import { windowsPowerShellPolicyArgs } from '../../shared/pwshExecutionPolicy';
@@ -310,7 +315,11 @@ export class PTYManager {
     // back to in-box exactly once; anything else keeps failing so transient
     // ConPTY errors reach the supervisor's restart backoff.
     let ptyProcess: ReturnType<typeof pty.spawn>;
-    const useConptyDll = shouldUseBundledConpty(process.platform, parseWindowsBuildNumber(os.release()));
+    const useConptyDll = shouldUseBundledConpty(
+      process.platform,
+      parseWindowsBuildNumber(os.release()),
+      parseConptyBackendOverride(process.env[CONPTY_BACKEND_ENV]),
+    );
     try {
       ptyProcess = spawnWithConptyPolicy(
         (useBundled) => pty.spawn(shell, spawnArgs, {

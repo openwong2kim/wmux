@@ -88,7 +88,7 @@ export class A2aRemoteDelivery {
 
   constructor(deps: A2aRemoteDeliveryDeps) {
     this.deps = deps;
-    this.outbox = new OutboxStore({ dir: deps.dir, log: deps.log, onEnqueue: (rec) => this.onEnqueue(rec) });
+    this.outbox = new OutboxStore({ dir: deps.dir, log: deps.log, onEnqueue: (rec) => this.onEnqueue(rec), onAck: (recs) => this.onAck(recs) });
     this.hub = new A2aStreamHub({
       outbox: this.outbox,
       accept: (env, peer) => this.accept(env, peer),
@@ -225,6 +225,10 @@ export class A2aRemoteDelivery {
   /** Periodic upkeep: drop old acked records, reject holds past their TTL, re-queue what is owed. */
   async maintain(): Promise<void> {
     await this.syncAll().catch((err: unknown) => this.deps.log('warn', `[a2a-remote] outbound sync failed: ${errMsg(err)}`));
+    // Before the prune: an ack whose mark never landed (crash, failed append) is
+    // recovered while its record is still here. This runs at start and every
+    // minute, so every acked record is seen at least once before it is pruned.
+    await this.reconcileReplyAcks();
     try {
       this.outbox.prune();
     } catch (err) {
@@ -383,6 +387,52 @@ export class A2aRemoteDelivery {
     this.hub.notify(rec.hostId);
   }
 
+  /**
+   * The peer acked our replies / states (#1922): once nothing more of ours is
+   * owed on a task, its marker records when the other PC received all of it,
+   * so this side's task view can show its replies arrived there.
+   */
+  private onAck(recs: A2aOutboxRecordV1[]): void {
+    const tasks = new Set<string>();
+    for (const rec of recs) {
+      const taskId = replyOrStateTask(rec);
+      if (taskId) tasks.add(taskId);
+    }
+    for (const taskId of tasks) void this.markReplyAcked(taskId, recs[0].hostId);
+  }
+
+  /** Mark every task whose acked replies / states have no mark yet (see `maintain`). */
+  private async reconcileReplyAcks(): Promise<void> {
+    const marks = new Map<string, HostId>();
+    for (const rec of this.outbox.settled()) {
+      const taskId = rec.state === 'acked' ? replyOrStateTask(rec) : null;
+      const marker = taskId ? this.deps.taskService.getTask(taskId)?.metadata.remote as { replyDeliveredAt?: string } | undefined : undefined;
+      if (taskId && marker && !marker.replyDeliveredAt) marks.set(taskId, rec.hostId);
+    }
+    for (const [taskId, hostId] of marks) {
+      // eslint-disable-next-line no-await-in-loop -- one ledger append at a time
+      await this.markReplyAcked(taskId, hostId);
+    }
+  }
+
+  /**
+   * Record that `hostId` has every reply / state of ours on `taskId`. Whether
+   * any is still owed (or was refused) is decided inside the task's lock, so a
+   * reply queued after the ack is never covered by it. Never rejects.
+   */
+  private async markReplyAcked(taskId: string, hostId: HostId): Promise<void> {
+    if (!this.deps.taskService.getTask(taskId)) return;
+    const notAll = (): boolean =>
+      this.outbox.pending(hostId).some((r) => replyOrStateTask(r) === taskId) ||
+      this.outbox.settled().some((r) => r.hostId === hostId && r.state === 'refused' && replyOrStateTask(r) === taskId);
+    try {
+      const res = await this.deps.taskService.markRemote({ taskId, replyAcked: true, stillOwed: notAll });
+      if (!res.ok) this.deps.log('warn', `[a2a-remote] ${taskId}: peer ack not recorded: ${res.error}`);
+    } catch (err) {
+      this.deps.log('warn', `[a2a-remote] ${taskId}: peer ack not recorded: ${errMsg(err)}`);
+    }
+  }
+
   private servedStatus(hostId: HostId, name: string): A2aRemoteHostStatus {
     const since = this.hub.connectedSince(hostId);
     return {
@@ -420,4 +470,9 @@ export class A2aRemoteDelivery {
   private heldDeps(): HeldDeps {
     return { taskService: this.deps.taskService, linkStore: this.deps.links, outbox: this.outbox };
   }
+}
+
+/** The task a reply / state record is about; null for any other kind. */
+function replyOrStateTask(rec: A2aOutboxRecordV1): string | null {
+  return rec.envelope.kind === 'reply' || rec.envelope.kind === 'state' ? taskOfEnvelope(rec.envelope, remoteTaskId) : null;
 }

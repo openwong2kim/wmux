@@ -828,7 +828,15 @@ export function useNotificationListener() {
           // the same payload carries an explicit complete/waiting/input state,
           // that state is authoritative and must not be overwritten by the
           // additive activity field.
-          if (activity.length > 0 && typeof rest.agentStatus !== 'string') {
+          // A pane blocked on a human is the exception (#1901): the tool that
+          // opened its dialog (AskUserQuestion, or the call behind a permission
+          // prompt) reaches the transcript watcher's line on its own clock, so
+          // it can land after the awaiting status and is no proof of a resume.
+          // The answer itself reports `running` (the daemon's answered edge).
+          const now = useStore.getState();
+          const awaiting = now.surfaceAgent[ptyId]?.status === 'awaiting_input'
+            || now.surfaceAgentStatus[ptyId] === 'awaiting_input';
+          if (activity.length > 0 && typeof rest.agentStatus !== 'string' && !awaiting) {
             state.setSurfaceAgentStatus(ptyId, 'running');
             state.setSurfaceAgent(ptyId, undefined, 'running');
           }

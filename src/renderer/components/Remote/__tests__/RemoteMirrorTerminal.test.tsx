@@ -398,7 +398,8 @@ describe('RemoteMirrorTerminal', () => {
     const { unmount } = render(<RemoteMirrorTerminal attachId="a1" />);
     const term = termInstances[0];
     expect(term.oscHandlers.has(133)).toBe(true);
-    expect(term.parser.csiHandlers.map((h) => `${h.id.prefix}${h.id.final}`)).toEqual(['?h', '?l']);
+    // `>q` is holdNewXtermReplies (XTVERSION stays unanswered); the guard's are ?h / ?l.
+    expect(term.parser.csiHandlers.map((h) => `${h.id.prefix}${h.id.final}`)).toEqual(['>q', '?h', '?l']);
     unmount();
   });
 

@@ -60,7 +60,12 @@ import { windowsPowerShellPolicyArgs } from '../shared/pwshExecutionPolicy';
 // the shell commands and MCP servers of every later Codex thread on the
 // account. Typed in a pane, it inherited that pane's WMUX_* keys, so other
 // panes' Codex commands acted as the first pane. See CODEX_SEED_GUARD.
-const INTEGRATION_VERSION = 12;
+// v13: the pwsh integration reports the cwd in the middle of a command line
+// too (issue #1941). It reported it only from the prompt, so on
+// 'cd X; claude' the pane's tracked cwd stayed at the folder of the last
+// prompt for as long as the program ran, and a daemon restart in that window
+// recovered the pane there. See $global:__wmux_lookup in PWSH_INIT.
+const INTEGRATION_VERSION = 13;
 
 // -----------------------------------------------------------------------
 // Codex shared-server seed guard (v12) — shared by the bash and zsh scripts.
@@ -297,6 +302,118 @@ if (-not (Get-Variable -Name '__wmux_prev_prompt' -Scope Global -ErrorAction Sil
     $global:__wmux_prev_prompt = (Get-Command prompt -CommandType Function -ErrorAction SilentlyContinue).ScriptBlock
 }
 
+# The OSC 7 sequence for the current location, or '' outside the FileSystem
+# provider (a registry/cert location has no directory to report). Records what
+# it reported in $global:__wmux_osc7_last so the mid-line hook below can tell
+# whether the location moved since.
+#
+# Each path segment is percent-encoded (CodeRabbit review on #541): the
+# daemon's parseOsc7Cwd unconditionally decodeURIComponent()s the payload, so
+# a raw path containing a literal '%' (e.g. "build%20cache") would otherwise be
+# silently corrupted by the decode. Splitting on '\\' first and encoding each
+# segment keeps '/' as the literal path separator parseOsc7Cwd expects while
+# %-escaping everything else: colons, spaces, unicode and literal '%' all
+# round-trip through the decode.
+#
+# A scriptblock, not a function, and no cmdlets inside: the mid-line hook runs
+# it from a PostCommandLookupAction, where calling a function or a cmdlet is
+# itself a command lookup.
+$global:__wmux_osc7_last = $null
+$global:__wmux_osc7 = {
+    $loc = $executionContext.SessionState.Path.CurrentLocation
+    if ($loc.Provider.Name -ne 'FileSystem') { return '' }
+    $global:__wmux_osc7_last = $loc.ProviderPath
+    $segments = foreach ($segment in $loc.ProviderPath.Split([char]92)) { [Uri]::EscapeDataString($segment) }
+    return [string][char]27 + ']7;file://' + $env:COMPUTERNAME + '/' + [string]::Join('/', [string[]]$segments) + [char]7
+}
+
+# OSC 7 in the middle of a command line (#1941). The prompt is the only other
+# place the cwd is reported, so on 'cd X; claude' the program ran in X while
+# wmux still held the folder from the last prompt. A daemon that died in that
+# window recovered the pane in the old folder, and the Resume pill resumed
+# that folder's conversation.
+#
+# Between Enter and the next prompt, a PostCommandLookupAction reports the
+# location whenever it moved since the last report, before the next command
+# starts. It disarms itself on the first program or script launch (the
+# location is reported; that is the case that matters) and on the first lookup
+# inside a function, script block or script body: the action runs for every
+# lookup, which costs a command-heavy loop about 40% on 5.1, so it must not
+# stay armed into one. LocationChangedAction would be simpler but does not
+# exist in Windows PowerShell 5.1.
+#
+# A loop typed at the prompt (for/foreach/while) is the exception: its body's
+# lookups are top level too, so the hook would stay armed for the whole loop
+# (a 20,000-command loop ran about 2x slower). It therefore also disarms after
+# 64 lookups on one line. Measured on 5.1: an armed lookup costs about 45 us, so
+# the cap bounds the cost of a line at about 3 ms, and long hand-typed lines
+# (pipelines, chains of ten commands) made at most 10 armed lookups. The
+# consequence: a cd that is the 64th lookup on its line or later is reported at
+# the next prompt, not immediately.
+#
+# An action the user already set is kept: it is chained while ours is armed and
+# restored when ours disarms.
+$global:__wmux_lookup_busy = $false
+$global:__wmux_lookup_n = 0
+$global:__wmux_lookup_absorb = $false
+$global:__wmux_prev_lookup = $null
+$global:__wmux_lookup = {
+    param($__wmux_name, $__wmux_event)
+    # $? as the command line left it. Every statement below resets $? to true.
+    # After a terminating error or a Ctrl+C the host looks up Out-Default and
+    # prompt with this action still armed, so the prompt saw true and reported
+    # the failed command as D;0. It is re-created at the end of this body.
+    $__wmux_ok = $?
+    # The Write-Error at the end of this body is a lookup too and lands here.
+    if ($global:__wmux_lookup_absorb) { $global:__wmux_lookup_absorb = $false; return }
+    # Lookups made by the chained action land here again; neither it nor this
+    # body may run for those.
+    if ($global:__wmux_lookup_busy) { return }
+    $global:__wmux_lookup_busy = $true
+    $global:__wmux_lookup_n++
+    try {
+        # The property returns a delegate, not the scriptblock that was set,
+        # and '&' cannot invoke a delegate. .Invoke() takes either.
+        if ($global:__wmux_prev_lookup) { try { $global:__wmux_prev_lookup.Invoke($__wmux_name, $__wmux_event) } catch { } }
+        $type = if ($__wmux_event.Command) { [string]$__wmux_event.Command.CommandType } else { '' }
+        if ($__wmux_event.CommandOrigin -ne 'Runspace' -or $type -eq 'Application' -or $type -eq 'ExternalScript' -or $global:__wmux_lookup_n -ge 64) {
+            & $global:__wmux_disarm_lookup
+        }
+        $loc = $executionContext.SessionState.Path.CurrentLocation
+        if ($loc.Provider.Name -eq 'FileSystem' -and $loc.ProviderPath -ne $global:__wmux_osc7_last) {
+            [Console]::Write((& $global:__wmux_osc7))
+        }
+    } catch {
+    } finally {
+        $global:__wmux_lookup_busy = $false
+    }
+    if (-not $__wmux_ok) {
+        if ($ExecutionContext.InvokeCommand.PostCommandLookupAction -eq $global:__wmux_lookup) { $global:__wmux_lookup_absorb = $true }
+        # The prompt's idiom: -ErrorAction Ignore sets $? to false and records
+        # nothing in $Error. It must stay the last statement.
+        Write-Error -Message 'wmux: last command failed' -ErrorAction Ignore
+    }
+}
+$global:__wmux_arm_lookup = {
+    $global:__wmux_lookup_busy = $false
+    $global:__wmux_lookup_absorb = $false
+    $global:__wmux_lookup_n = 0
+    $current = $ExecutionContext.InvokeCommand.PostCommandLookupAction
+    if ($current -ne $global:__wmux_lookup) {
+        $global:__wmux_prev_lookup = $current
+        $ExecutionContext.InvokeCommand.PostCommandLookupAction = $global:__wmux_lookup
+    }
+}
+$global:__wmux_disarm_lookup = {
+    if ($ExecutionContext.InvokeCommand.PostCommandLookupAction -eq $global:__wmux_lookup) {
+        $ExecutionContext.InvokeCommand.PostCommandLookupAction = $global:__wmux_prev_lookup
+    }
+}
+# Armed by the PSReadLine Enter handler below. Without PSReadLine the prompt
+# arms it instead: the host then reads the line natively, with no command
+# lookups between the prompt and the user's first command.
+$global:__wmux_arm_at_prompt = $true
+
 function global:prompt {
     # Capture $? and $LASTEXITCODE as the VERY FIRST statements. Any
     # comparison, assignment, or cmdlet call inside this function resets
@@ -335,6 +452,10 @@ function global:prompt {
     $ec = if ($__wmux_le_moved) { $__wmux_le } elseif ($__wmux_ok) { 0 } else { 1 }
     $global:__wmux_prev_le = $__wmux_le
 
+    # The command line is over: the mid-line cwd hook (#1941) must not stay
+    # armed into the prompt or the line editor.
+    & $global:__wmux_disarm_lookup
+
     $esc = [char]27
     $bel = [char]7
 
@@ -346,21 +467,8 @@ function global:prompt {
     # cwd source and turns prompt scraping off for good the first time it sees
     # one — so this hook MUST re-emit on every prompt (parity with the zsh
     # integration), or a single stray OSC 7 from a child program would freeze
-    # the pane's tracked cwd. FileSystem provider only: a registry/cert
-    # location has no directory to report.
-    #
-    # Each path segment is percent-encoded (CodeRabbit review on #541): the
-    # daemon's parseOsc7Cwd unconditionally decodeURIComponent()s the payload,
-    # so a raw path containing a literal '%' (e.g. "build%20cache") would
-    # otherwise be silently corrupted by the decode. Splitting on '\' first and
-    # encoding each segment keeps '/' as the literal path separator
-    # parseOsc7Cwd expects while %-escaping everything else — colons, spaces,
-    # unicode, and literal '%' all round-trip correctly through decode.
-    $loc = $executionContext.SessionState.Path.CurrentLocation
-    if ($loc.Provider.Name -eq 'FileSystem') {
-        $osc7Path = ($loc.ProviderPath -split '\\\\' | ForEach-Object { [Uri]::EscapeDataString($_) }) -join '/'
-        $pre += "$esc]7;file://$env:COMPUTERNAME/$osc7Path$bel"
-    }
+    # the pane's tracked cwd. See $global:__wmux_osc7 for the encoding.
+    $pre += & $global:__wmux_osc7
 
     # Re-assert the snapshot before delegating (#1267). Every statement above
     # reset $? to true, so the prompt we wrap would otherwise always see
@@ -393,6 +501,9 @@ function global:prompt {
     # may have invoked cmdlets that touched it.
     $global:LASTEXITCODE = $__wmux_le
 
+    # Without PSReadLine nothing else runs between here and the user's line.
+    if ($global:__wmux_arm_at_prompt) { & $global:__wmux_arm_lookup }
+
     return $pre + [string]$body + $post
 }
 
@@ -408,6 +519,10 @@ if (Get-Module -ListAvailable -Name PSReadLine) {
             try {
                 [Microsoft.PowerShell.PSConsoleReadLine]::AcceptLine()
                 [Console]::Write([char]27 + ']133;C' + [char]7)
+                # Arm the mid-line cwd hook (#1941) here, after the line
+                # editor's own command lookups (PSConsoleHostReadLine and what
+                # it calls) are behind us.
+                & $global:__wmux_arm_lookup
             } catch {
                 # Some host (constrained sub-shell, missing console, etc.)
                 # blocked the call — fall back to plain AcceptLine via the
@@ -415,6 +530,7 @@ if (Get-Module -ListAvailable -Name PSReadLine) {
                 try { [Microsoft.PowerShell.PSConsoleReadLine]::AcceptLine() } catch { }
             }
         } -ErrorAction SilentlyContinue
+        if ($?) { $global:__wmux_arm_at_prompt = $false }
     } catch {
         # Older PSReadLine versions or hosts without Set-PSReadLineKeyHandler.
     }

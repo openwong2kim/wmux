@@ -8,6 +8,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { A2A_ROUTES, formatPeerCredential, type A2aLinkRecordV1 } from '../../../shared/a2aRemote';
 import { A2A_REMOTE_NOTIFY_METHOD, A2A_REMOTE_RPC } from '../../../shared/a2aRemoteDelivery';
+import { applyTaskQueryView } from '../../../shared/a2aTaskQueryView';
 import type { DaemonConfig } from '../../types';
 import { RemoteA2aBridge } from '../../../main/a2a/RemoteA2aBridge';
 import { CommanderEventCoalescer, type CoalescerInput } from '../../../main/deck/CommanderEventCoalescer';
@@ -606,6 +607,37 @@ describe('Moa to Moa across PCs (brain links), end to end', () => {
       await stopB();
     }
   }, 20_000);
+
+  it('#1922: once the other PC acked a side\'s reply and states, that side\'s task shows replyDeliveredAt (stream and POST paths)', async () => {
+    const b = await makePc('PC-B');
+    const a = await makePc('PC-A');
+    const linkId = await moaLinked(a, b);
+    const stopB = fakeBrain(b, HQ_B);
+    const stopA = fakeBrain(a, HQ_A);
+    const delivered = (pc: Pc, id: string): string | undefined =>
+      (pc.tasks.getTask(id)?.metadata.remote as { replyDeliveredAt?: string } | undefined)?.replyDeliveredAt;
+    try {
+      // A asks: B answers over the stream (B serves it). Then B asks: A answers over its POSTs.
+      const toB = await moaSend(a, HQ_A, linkId, 'q1');
+      await until(() => a.tasks.getTask(toB)?.status.state === 'completed');
+      const toA = await moaSend(b, HQ_B, linkId, 'q2');
+      await until(() => b.tasks.getTask(toA)?.status.state === 'completed');
+      await until(() => a.delivery.outbox.pending(b.hostId).length === 0 && b.delivery.outbox.pending(a.hostId).length === 0);
+      await until(() => !!delivered(b, toB) && !!delivered(a, toA));
+      // What a2a_task_query shows the answering side.
+      const row = applyTaskQueryView(b.tasks.queryTasks(HQ_B, {}), { view: 'page' }).find((t) => (t as { id: string }).id === toB);
+      expect(row).toMatchObject({ state: 'completed', replyDeliveredAt: delivered(b, toB) });
+      // A new reply of ours clears it until the peer acks that one too.
+      const before = delivered(b, toB);
+      await b.rpc(A2A_REMOTE_RPC.reply, { taskId: toB, workspaceId: HQ_B, text: 'one more thing' });
+      await until(() => b.delivery.outbox.pending(a.hostId).length === 0 && !!delivered(b, toB));
+      expect(delivered(b, toB)).not.toBe(before);
+      expect(a.tasks.getTask(toB)!.history.map((m) => (m.parts[0] as { text: string }).text)).toContain('one more thing');
+    } finally {
+      await stopA();
+      await stopB();
+    }
+  }, 30_000);
 
   it('revoking the Moa link mid-task fails it on both sides', async () => {
     const b = await makePc('PC-B');

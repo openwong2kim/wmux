@@ -37,9 +37,16 @@
 //     dialog anywhere on the grid (parsed with its cursor, or a cursor option
 //     row) also counts as "still up". Releasing clears that record, and a live
 //     dialog can miss the structural bottom-of-screen test.
+//   - On a grid narrower than AskUserQuestion's footer, a pending
+//     AskUserQuestion record for the pane also counts as "still up". A pane
+//     nobody has shown can be a few columns wide, and its dialog then wraps
+//     word by word, so no screen test can see it (#1901). At any wider grid
+//     the screen alone decides, as before. A record ending (or the agent
+//     exiting) re-runs the verification without waiting for new output.
 
 import { capSnapshot } from './web/snapshotWindow';
 import { screenShowsActiveDialog, screenShowsPermissionDialog } from './transcript/chatScreenGate';
+import { isNativeDecision, type ApprovalRequest } from './approvals/types';
 
 /** Wait before the confirming second read of a dialog-free frame. */
 export const AWAITING_VERIFY_SETTLE_MS = 750;
@@ -49,11 +56,20 @@ export const AWAITING_VERIFY_MIN_GAP_MS = 250;
 export const AWAITING_VERIFY_MAX_GAP_MS = 5_000;
 /** Consecutive failed renders retried before the verifier waits for new output. */
 export const AWAITING_VERIFY_RENDER_RETRIES = 3;
+/**
+ * Below this width the structural dialog check cannot judge an AskUserQuestion.
+ * Its footer, `Enter to select · ↑/↓ to navigate · Esc to cancel`, is 49
+ * columns. Narrower, it wraps, `Esc to` and `cancel` can land on separate rows,
+ * and the cursor option row is pushed out of the bottom rows the check reads.
+ */
+export const AWAITING_NARROW_DIALOG_COLS = 50;
 
 export interface AwaitingFrame {
   rows: readonly string[];
   /** The pane's output byte count at the instant the grid was read. */
   mark: number;
+  /** The grid's width. Absent: not known, treated as wide. */
+  cols?: number;
 }
 
 export interface AwaitingScreenVerifierDeps {
@@ -69,6 +85,11 @@ export interface AwaitingScreenVerifierDeps {
   clear(sessionId: string): void;
   /** Does wmux hold a pending `terminal_prompt` record for this pane? */
   holdsPrompt?(sessionId: string): boolean;
+  /**
+   * Is an AskUserQuestion still in flight on this pane: wmux holds its pending
+   * record and the agent is alive? Consulted only on a narrow grid.
+   */
+  holdsQuestion?(sessionId: string): boolean;
   schedule?: (fn: () => void, ms: number) => () => void;
   now?: () => number;
   log?: (level: 'debug' | 'info' | 'warn', message: string) => void;
@@ -93,6 +114,8 @@ interface PaneState {
   settleDue: boolean;
   /** Consecutive renders that failed (null / threw). */
   renderFailures: number;
+  /** Something other than output changed the verdict: re-read even an unchanged frame. */
+  recheck: boolean;
 }
 
 export class AwaitingScreenVerifier {
@@ -117,9 +140,11 @@ export class AwaitingScreenVerifier {
 
   /**
    * Something happened on the pane that may have closed its dialog: stdin
-   * input, an output burst, new output. Cheap for a pane that is not awaiting.
+   * input, an output burst, new output, or a `signal` that changes the verdict
+   * without drawing anything (its question record ended, its agent exited).
+   * Cheap for a pane that is not awaiting.
    */
-  trigger(sessionId: string, cause: 'input' | 'output'): void {
+  trigger(sessionId: string, cause: 'input' | 'output' | 'signal'): void {
     if (!this.deps.isAwaiting(sessionId) || !this.deps.eligible(sessionId)) {
       this.forget(sessionId);
       return;
@@ -129,10 +154,12 @@ export class AwaitingScreenVerifier {
       st = {
         inFlight: false, queued: false, streak: 0, lastMark: null,
         lastRunAt: -Infinity, gapMs: this.minGapMs, cancel: null, settleDue: false, renderFailures: 0,
+        recheck: false,
       };
       this.states.set(sessionId, st);
     }
-    if (cause === 'input') st.gapMs = this.minGapMs;
+    if (cause !== 'output') st.gapMs = this.minGapMs;
+    if (cause === 'signal') st.recheck = true;
     if (st.inFlight) {
       st.queued = true;
       return;
@@ -140,7 +167,7 @@ export class AwaitingScreenVerifier {
     if (st.cancel) {
       // A run is already scheduled. Keep it, unless a human just typed and
       // the scheduled run is a backed-off one: bring that one forward.
-      if (cause !== 'input' || st.settleDue) return;
+      if (cause === 'output' || st.settleDue) return;
       st.cancel();
       st.cancel = null;
     }
@@ -188,8 +215,9 @@ export class AwaitingScreenVerifier {
     }
     // Nothing new since the frame last verified, and this is not the settle
     // confirmation: the grid would read the same.
-    if (st.lastMark !== null && markBefore === st.lastMark && !st.settleDue) return;
+    if (st.lastMark !== null && markBefore === st.lastMark && !st.settleDue && !st.recheck) return;
     st.settleDue = false;
+    st.recheck = false;
 
     st.inFlight = true;
     st.lastRunAt = this.now();
@@ -224,6 +252,8 @@ export class AwaitingScreenVerifier {
     const dialog = readable && (
       screenShowsActiveDialog(frame.rows)
       || (this.deps.holdsPrompt?.(sessionId) === true && screenShowsPermissionDialog(frame.rows))
+      || (frame.cols !== undefined && frame.cols < AWAITING_NARROW_DIALOG_COLS
+        && this.deps.holdsQuestion?.(sessionId) === true)
     );
 
     if (readable && !dialog) {
@@ -257,6 +287,26 @@ export class AwaitingScreenVerifier {
       if (!st.cancel) this.scheduleRun(sessionId, st, Math.max(0, st.lastRunAt + st.gapMs - this.now()));
     }
   }
+}
+
+/**
+ * `holdsQuestion` for one pane: an AskUserQuestion card (one that carries the
+ * question) is pending and nothing says its agent is gone. A question-less card
+ * only says "waiting on you" and is expired by the very release it would block.
+ * No hook ends the record when the agent is killed, so a process tracker that
+ * saw it exit, or a shell that reports its command finished (OSC 133), releases.
+ */
+export function questionInFlight(input: {
+  sessionId: string;
+  pending: readonly ApprovalRequest[];
+  /** The process tracker's verdict; undefined when it never attributed the agent. */
+  agentAlive: boolean | undefined;
+  /** OSC 133's verdict on the shell's foreground command; undefined without integration. */
+  commandRunning: boolean | undefined;
+}): boolean {
+  if (input.agentAlive === false || input.commandRunning === false) return false;
+  return input.pending.some((r) => r.sessionId === input.sessionId && r.kind === 'awaiting_input' && !isNativeDecision(r)
+    && (!!r.question || !!r.form || (r.choices?.length ?? 0) > 0 || (r.options?.length ?? 0) > 0));
 }
 
 /** Bytes of the ring's tail a verification (or a prompt read) replays. */
@@ -312,5 +362,5 @@ export async function renderPaneScreen(
   if (getPane() !== pane) return null;
   const after = liveGeometry(pane);
   if (!after || after.cols !== geometry.cols || after.rows !== geometry.rows) return null;
-  return { rows: outcome.rows.map((r) => r.text), mark };
+  return { rows: outcome.rows.map((r) => r.text), mark, cols: geometry.cols };
 }

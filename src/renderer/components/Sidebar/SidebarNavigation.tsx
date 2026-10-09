@@ -13,6 +13,7 @@ import { formatNextShort } from '../Schedules/format';
 import { useT } from '../../hooks/useT';
 import { Icon, IconClock, IconGitBranch, IconGrid, IconRemoteDevices, IconUsers } from '../icons';
 import { selectGitRailSignal } from '../Git/gitSignal';
+import { selectRemoteNeedsYou } from '../../stores/slices/a2aRemoteSlice';
 import type { AppRoute } from '../../stores/slices/uiSlice';
 import { FOCUS_RING } from '../focusRing';
 
@@ -66,6 +67,11 @@ export default function SidebarNavigation({ compact = false, home = false }: {
   // (pushed PR status only). The spoken name says why.
   const gitSignal = useStore(selectGitRailSignal);
   const gitName = gitSignal ? `${t('git.title')}, ${t('git.railSignal')}` : t('git.title');
+  // Remote: other PCs' link requests, held work and changed certificates —
+  // the same count as the page's Needs you block, from the same slice.
+  const remoteNeeds = useStore(selectRemoteNeedsYou);
+  const remoteNeedsText = remoteNeeds > 0 ? t('sidebar.fleetNeedsYou', { count: remoteNeeds }) : '';
+  const remoteName = remoteNeedsText ? `${t('sidebar.remote')}, ${remoteNeedsText}` : t('sidebar.remote');
   // Moa's HQ workspace has no rail entry (its panel and the panel's terminal
   // view are its home), but it can still be the active workspace (Settings ›
   // Moa, the panel's "open HQ"): Workspaces then leads back to the list.
@@ -108,7 +114,7 @@ export default function SidebarNavigation({ compact = false, home = false }: {
       onClick: go('schedules', () => useStore.getState().toggleSchedulesView()),
     }] : []),
     ...(home ? [{
-      id: 'remote', label: t('sidebar.remote'), name: t('sidebar.remote'), active: route === 'remote',
+      id: 'remote', label: t('sidebar.remote'), name: remoteName, active: route === 'remote',
       icon: <IconRemoteDevices size={16} />,
       onClick: () => useStore.getState().setAppRoute('remote'),
     }, {
@@ -161,6 +167,7 @@ export default function SidebarNavigation({ compact = false, home = false }: {
             <span className="wmux-nav-icon" aria-hidden="true">{icon}</span>
             {!compact && <span className="wmux-nav-label min-w-0 flex-1 truncate text-left">{label}</span>}
             {id === 'fleet' && <FleetCounts compact={compact} badge needsYou={fleetCounts.needsYou} needsText={needsText} runningText={runningText} />}
+            {id === 'remote' && <FleetCounts compact={compact} badge needsYou={remoteNeeds} needsText={remoteNeedsText} runningText="" />}
             {id === 'schedules' && <FleetCounts compact={compact} needsYou={schedules.needs} needsText={schedulesNeedsText} runningText={schedulesMutedText} />}
             {id === 'git' && gitSignal && <span className="wmux-nav-count wmux-nav-alert" data-git-nav-signal aria-hidden="true" />}
           </button>{id === 'search' && <WebToggle variant="sidebar" compact={compact} />}</Fragment>

@@ -1,30 +1,19 @@
-import { useCallback, useEffect, useState } from 'react';
-import type { A2aRemoteTaskState } from '../../../shared/a2aRemoteDelivery';
-import type { A2aRemoteHostStatus } from '../../../shared/rpc';
+import { heldNeedsPerson, heldReason } from '../../stores/slices/a2aRemoteSlice';
 import type { Task } from '../../../shared/types';
-import { useT } from '../../hooks/useT';
 import UiButton from '../ui/Button';
-import Badge from '../ui/Badge';
+import { timeAgo } from '../../utils/timeAgo';
 
 // ─── Cross-PC delivery on the Remote page ────────────────────────────────────
 //
-// Each paired PC's connection (connected / connecting / disconnected / its
-// certificate changed) with the messages still owed to it, and the remote
-// work held for a person: the target pane is gone or another agent holds it
-// now. Held work is never re-routed on its own; the person delivers it to the
-// pane as it is now, or rejects it (the other PC is told). Draws nothing
-// while there is no paired PC and nothing held.
+// The two delivery rows of the Needs you block. Held remote work: the target
+// pane is gone or another agent holds it now; it is never re-routed on its
+// own — the person delivers it to the pane as it is now, or sends it back
+// (the other PC is told). A PC whose certificate changed: nothing is sent to
+// it until it is removed and paired again. Pure views.
 
 type T = (key: string, vars?: Record<string, string | number>) => string;
 
-const STATE_TONE = { connected: 'success', connecting: 'neutral', disconnected: 'neutral', 'identity-changed': 'warning' } as const;
-
-/** Why a task (or its newest held reply) is held. */
-export function heldReason(task: Task): string | undefined {
-  const marker = task.metadata.remote as A2aRemoteTaskState | undefined;
-  if (!marker) return undefined;
-  return marker.held ?? marker.inbox?.find((i) => i.held)?.held;
-}
+export { heldReason };
 
 /** The PC a held task came from or went to: the alias' first part. */
 export function heldPeer(task: Task): string {
@@ -32,131 +21,84 @@ export function heldPeer(task: Task): string {
   return (remoteEnd.name ?? '').split('/')[0] || '?';
 }
 
-export interface A2aDeliveryViewProps {
-  hosts: A2aRemoteHostStatus[];
-  held: Task[];
-  busy: string | null;
-  error: string | null;
-  onRetry: (taskId: string) => void;
-  onReject: (taskId: string) => void;
+export interface A2aHeldRowProps {
+  task: Task;
+  now: number;
+  busy: boolean;
+  onRetry: () => void;
+  onReject: () => void;
   t: T;
 }
 
-export function A2aDeliveryView(p: A2aDeliveryViewProps) {
-  const { t } = p;
-  if (p.hosts.length === 0 && p.held.length === 0) return null;
+export function A2aHeldRow({ task, now, busy, onRetry, onReject, t }: A2aHeldRowProps) {
+  const reason = heldReason(task) ?? 'pane-missing';
+  // Work for Moa is never handed to a pane; a brain-unavailable hold goes by itself once Moa can take it.
+  const brain = !heldNeedsPerson(task);
+  const at = Date.parse(task.status?.timestamp ?? '');
   return (
-    <section className="flex flex-col gap-3" aria-labelledby="a2a-delivery-title" data-testid="a2a-delivery">
-      <h2 id="a2a-delivery-title" className="wmux-remote-section-title">{t('a2aDelivery.sectionTitle')}</h2>
-      {p.hosts.length > 0 && (
-        <ul className="wmux-a2a-list" aria-label={t('a2aDelivery.pcs')} data-testid="a2a-delivery-hosts">
-          {p.hosts.map((h) => (
-            <li key={h.hostId} className="wmux-a2a-row" data-host-id={h.hostId}>
-              <span className="wmux-a2a-row-line">
-                <span className="truncate flex-1" style={{ fontWeight: 500 }}>{h.name || h.hostId.slice(0, 6)}</span>
-                <Badge tone={STATE_TONE[h.state]} data-state={h.state}>{t(`a2aDelivery.state.${h.state}`)}</Badge>
-              </span>
-              {h.state === 'identity-changed' && (
-                <p className="wmux-a2a-note" data-tone="warning" data-testid="a2a-delivery-identity">{t('a2aDelivery.identityChanged')}</p>
-              )}
-              {h.pending > 0 && (
-                <span className="wmux-a2a-meta" data-testid="a2a-delivery-pending">
-                  {h.state === 'connected'
-                    ? t('a2aDelivery.sending', { count: h.pending })
-                    : t('a2aDelivery.waiting', { count: h.pending })}
-                </span>
-              )}
-            </li>
-          ))}
-        </ul>
-      )}
-      {p.held.length > 0 && (
-        <ul className="wmux-a2a-list" aria-label={t('a2aDelivery.held')} data-testid="a2a-delivery-held">
-          {p.held.map((task) => {
-            const reason = heldReason(task) ?? 'pane-missing';
-            // Work for Moa is never handed to a pane; a brain-unavailable hold goes by itself once Moa can take it.
-            const brain = reason === 'brain-delivery-pending' || reason === 'brain-unavailable';
-            return (
-              <li key={task.id} className="wmux-a2a-row" data-task-id={task.id}>
-                <span className="wmux-a2a-row-line">
-                  <span className="truncate flex-1" style={{ fontWeight: 500 }}>{task.metadata.title}</span>
-                  <Badge tone="warning">{t('a2aDelivery.heldBadge')}</Badge>
-                </span>
-                <span className="wmux-a2a-meta">{t('a2aDelivery.heldFrom', { pc: heldPeer(task) })}</span>
-                <span className="wmux-a2a-meta" data-testid="a2a-delivery-reason">{t(`a2aDelivery.reason.${reason}`)}</span>
-                <span className="wmux-a2a-row-line" style={{ justifyContent: 'flex-end', marginTop: 4 }}>
-                  <UiButton variant="ghost" size="md" disabled={p.busy === task.id} onClick={() => p.onReject(task.id)}>
-                    {t('a2aDelivery.reject')}
-                  </UiButton>
-                  {!brain && (
-                    <UiButton variant="primary" size="md" disabled={p.busy === task.id} onClick={() => p.onRetry(task.id)} data-testid="a2a-delivery-retry">
-                      {t('a2aDelivery.retry')}
-                    </UiButton>
-                  )}
-                </span>
-              </li>
-            );
-          })}
-        </ul>
-      )}
-      {p.error && <p className="wmux-a2a-note" data-tone="danger">{p.error}</p>}
-    </section>
+    <li className="wmux-remote-req" data-task-id={task.id} data-testid="a2a-held">
+      <div className="wmux-remote-req-body">
+        <span className="wmux-remote-req-title">
+          <span>{t('remotePage.needs.heldTitle', { pc: heldPeer(task) })}</span>
+          {Number.isFinite(at) && <span className="wmux-remote-req-when">{timeAgo(at, now)}</span>}
+        </span>
+        <span className="wmux-remote-req-quote">{`“${task.metadata.title}”`}</span>
+        <span className="wmux-remote-req-text" data-testid="a2a-delivery-reason">{t(`a2aDelivery.reason.${reason}`)}</span>
+      </div>
+      <div className="wmux-remote-req-acts">
+        <UiButton variant="ghost" size="md" disabled={busy} onClick={onReject} data-testid="a2a-delivery-reject">
+          {t('remotePage.needs.sendBack')}
+        </UiButton>
+        {!brain && (
+          <UiButton variant="secondary" size="md" disabled={busy} onClick={onRetry} data-testid="a2a-delivery-retry">
+            {t('remotePage.needs.deliver')}
+          </UiButton>
+        )}
+      </div>
+    </li>
   );
 }
 
-/** How often the panel re-reads while the Remote page is open (status also arrives as a nudge). */
-export const A2A_DELIVERY_POLL_MS = 10_000;
+export interface A2aIdentityRowProps {
+  hostId: string;
+  name: string;
+  /** Links removing this PC would end. */
+  links: number;
+  confirming: boolean;
+  busy: boolean;
+  onPairAgain: () => void;
+  onAskRemove: () => void;
+  onCancelRemove: () => void;
+  onRemove: () => void;
+  t: T;
+}
 
-export default function A2aDeliveryPanel() {
-  const t = useT();
-  const api = window.electronAPI?.a2aRemote;
-  const [hosts, setHosts] = useState<A2aRemoteHostStatus[]>([]);
-  const [held, setHeld] = useState<Task[]>([]);
-  const [busy, setBusy] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  const reload = useCallback(async () => {
-    if (!api?.hostsStatus) return;
-    try {
-      const [s, h] = await Promise.all([api.hostsStatus(), api.heldList()]);
-      if (Array.isArray(s?.hosts)) setHosts(s.hosts);
-      if (Array.isArray(h?.tasks)) setHeld(h.tasks);
-    } catch {
-      // The daemon is away; the next poll or nudge tries again.
-    }
-  }, [api]);
-
-  useEffect(() => {
-    void reload();
-    const offStatus = api?.onHostStatus?.(() => void reload());
-    const offLink = api?.onLinkEvent?.(() => void reload());
-    const poll = setInterval(() => void reload(), A2A_DELIVERY_POLL_MS);
-    return () => { offStatus?.(); offLink?.(); clearInterval(poll); };
-  }, [api, reload]);
-
-  const act = useCallback(async (taskId: string, run: () => Promise<{ ok: boolean; error?: string }>) => {
-    setBusy(taskId); setError(null);
-    try {
-      const r = await run();
-      if (!r.ok) setError(t('a2aDelivery.failed'));
-    } catch {
-      setError(t('a2aDelivery.failed'));
-    } finally {
-      setBusy(null);
-      void reload();
-    }
-  }, [reload, t]);
-
-  if (!api?.hostsStatus) return null;
+export function A2aIdentityRow(p: A2aIdentityRowProps) {
+  const { t } = p;
   return (
-    <A2aDeliveryView
-      hosts={hosts}
-      held={held}
-      busy={busy}
-      error={error}
-      onRetry={(id) => void act(id, () => api.heldRetry(id))}
-      onReject={(id) => void act(id, () => api.heldReject(id))}
-      t={t}
-    />
+    <li className="wmux-remote-req" data-host-id={p.hostId} data-testid="a2a-identity">
+      <div className="wmux-remote-req-body">
+        <span className="wmux-remote-req-title"><b>{p.name}</b><span>{t('remotePage.needs.identityTitle')}</span></span>
+        <span className="wmux-remote-req-text">{t('a2aDelivery.identityChanged')}</span>
+        {p.links > 0 && (
+          <span className="wmux-remote-req-ev" data-testid="a2a-identity-links">{t('remotePage.needs.endsLinks', { count: p.links })}</span>
+        )}
+      </div>
+      <div className="wmux-remote-req-acts">
+        {p.confirming ? (
+          <>
+            <UiButton variant="ghost" size="md" onClick={p.onCancelRemove} autoFocus>{t('a2aLink.keep')}</UiButton>
+            <UiButton variant="danger" size="md" disabled={p.busy} onClick={p.onRemove}>{t('remotePage.removeConfirm')}</UiButton>
+          </>
+        ) : (
+          <>
+            <UiButton variant="ghost" size="md" disabled={p.busy} onClick={p.onAskRemove}>{t('remotePage.remove')}</UiButton>
+            <UiButton variant="secondary" size="md" onClick={p.onPairAgain} data-testid="a2a-identity-pair-again">
+              {t('remotePage.needs.pairAgain')}
+            </UiButton>
+          </>
+        )}
+      </div>
+    </li>
   );
 }

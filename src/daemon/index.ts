@@ -71,7 +71,7 @@ import type { WebTlsConfig } from '../shared/web';
 import { generateSnapshotUnqueued, enqueueSnapshotJob, generateTextSnapshot, generateTextSnapshotUnqueued, capTextRowsToFrameBudget, MAX_SCROLLBACK, type TextSnapshotOutcome } from './HeadlessSnapshot';
 import { readSessionTextReplay } from './sessionTextReplay';
 import { serializeSession } from './sessionSerialize';
-import { AwaitingScreenVerifier, renderPaneScreen } from './AwaitingScreenVerifier';
+import { AwaitingScreenVerifier, questionInFlight, renderPaneScreen } from './AwaitingScreenVerifier';
 import { screenShowsAgentDialog } from './transcript/chatScreenGate';
 import { ApprovalPushRouter } from './push/approvalPushRouter';
 import { readPendingToolUse } from './transcript/pendingToolUse';
@@ -188,7 +188,7 @@ import { GateBroker } from './approvals/GateBroker';
 import { coerceGate } from './approvals/gateConfig';
 import { DeviceStore, type DeviceBatchRevocationCause } from './web/DeviceStore';
 import { revokeDeviceAndDisconnect } from './web/deviceRevoke';
-import { withActivity } from './web/deviceActivity';
+import { withActivity, withViewingSessions } from './web/deviceActivity';
 import { buildWebPaneEnv } from './web/webPaneEnv';
 import { makeChannelPhoneApi, type ChannelPhoneApi } from './web/channelsApi';
 import type { ApprovalDecision, DecisionFormKind, NativeDecisionOutcome, NativeDecisionRef, NativeDecisionReply } from './approvals/types';
@@ -354,6 +354,8 @@ let noteCodexServerLost: ((id:string)=>void) | undefined;
 let noteCodexTurnFailed: ((id:string, threadId:string, turn:unknown)=>void) | undefined;
 /** The `turn_failed` push (contract §7), set at boot once the push sender exists. */
 let pushTurnFailed: ((sessionId:string, failure:TurnFailure)=>void) | undefined;
+/** Re-run a pane's awaiting verification (#1901), set by wireEvents. */
+let reverifyAwaiting: ((sessionId: string) => void) | undefined;
 // Late-bound: the pipe server that carries notices exists only after boot.
 let notifyCodexIdentityRefused: ((id:string,reason:string)=>void) | undefined;
 const codexRefusalNoticedAt = new Map<string,number>();
@@ -3414,8 +3416,10 @@ function registerRpcHandlers(
   pipeServer.onRpc('daemon.web.deviceList', async () => {
     await afterRestore();
     // `activeNow` is computed here, at list time, from the store's in-memory
-    // `lastSeenAt` and the server's live streams. Never persisted.
-    return { devices: withActivity(getDeviceStore().list(), webServer.liveDeviceIds(), Date.now()) };
+    // `lastSeenAt` and the server's live streams. Never persisted. Same for
+    // `viewingSessions`: the panes each device is streaming right now.
+    const devices = withActivity(getDeviceStore().list(), webServer.liveDeviceIds(), Date.now());
+    return { devices: withViewingSessions(devices, webServer.liveSessionsByDevice()) };
   });
 
   pipeServer.onRpc('daemon.web.deviceSetInput', async (params) => {
@@ -6080,8 +6084,26 @@ function wireEvents(
     holdsPrompt: (id) => approvalRegistry?.list().pending
       // An agent-held (native) decision is not a dialog on this screen.
       .some((request) => request.sessionId === id && request.kind === 'terminal_prompt' && !isNativeDecision(request)) === true,
+    // #1901 — an AskUserQuestion still in flight, consulted on a narrow grid only.
+    holdsQuestion: (id) => {
+      const managed = sessionManager.getSession(id);
+      return !!managed && questionInFlight({
+        sessionId: id,
+        pending: approvalRegistry?.list().pending ?? [],
+        agentAlive: agentProcessTracker.identityFor(id)?.alive,
+        commandRunning: managed.promptLog.commandRunningIfKnown(),
+      });
+    },
     log: (level, message) => log(level, message),
   });
+  // A question record that ends (answered, expired, superseded) or an agent
+  // that exits changes the verdict without drawing anything: judge again now.
+  approvalRegistry?.onEvent((event) => {
+    if (event.type !== 'create' && event.type !== 'press' && event.request.kind === 'awaiting_input') {
+      awaitingVerifier.trigger(event.request.sessionId, 'signal');
+    }
+  });
+  reverifyAwaiting = (sessionId) => awaitingVerifier.trigger(sessionId, 'signal');
   const forgetAwaiting = (payload: { id: string }): void => awaitingVerifier.forget(payload.id);
   sessionManager.on('session:died', forgetAwaiting);
   sessionManager.on('session:destroyed', forgetAwaiting);
@@ -7979,6 +8001,8 @@ async function main(): Promise<void> {
     if (!state.alive) automationEngine?.onAgentProcessExit(sessionId);
     // The agent that hit the limit is gone; a relaunch is a new agent.
     if (!state.alive) usageLimits?.drop(sessionId);
+    // A question its agent can no longer be waiting on stops holding the pane.
+    if (!state.alive) reverifyAwaiting?.(sessionId);
     // An agent whose command line names its conversation (`--resume <id>`,
     // `resume <id>`, a pinned `--session-id <id>`) binds the pane to exactly that.
     if (state.alive && state.slug && resumeGrammarFor(state.slug)) {
@@ -8186,6 +8210,10 @@ async function main(): Promise<void> {
   });
   const sessionPipes = new Map<string, SessionPipe>();
   const sessionDataListeners = new Map<string, { bridge: import('./DaemonPTYBridge').DaemonPTYBridge; listener: (data: Buffer) => void }>();
+  // #1965: a pipe past its initial flush delivers PTY output live, so its
+  // renderer answers the startup DA1 itself; before that the bytes only reach
+  // it through the (query-stripped) ring replay, and the daemon answers.
+  sessionManager.setLiveRendererProbe((id) => sessionPipes.get(id)?.isFlushed === true);
 
   // Forward reference — initialised at step 8c after the snapshot runner is
   // wired. RPC handlers that fire before initialisation simply skip the

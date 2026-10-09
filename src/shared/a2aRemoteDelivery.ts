@@ -197,6 +197,13 @@ export type A2aRemoteTaskState = A2aRemoteTaskMarkerV1 & {
   /** Outbound task: when the peer said it handed the task over / its agent read it. */
   remoteDeliveredAt?: string;
   remoteReadAt?: string;
+  /**
+   * Either side: when the other PC had received (transport-acked) every
+   * reply and state change this side queued on the task. Cleared when a new
+   * one is queued, set again once that one is acked (#1922). A receipt of
+   * arrival, not of the other side applying it.
+   */
+  replyDeliveredAt?: string;
   /** Inbound task: its paste stayed in the composer; counted as delivered. */
   note?: 'pasted-not-submitted';
   /** Inbound task: when it was first held. */

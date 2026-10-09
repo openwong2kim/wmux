@@ -11,6 +11,7 @@ import {
 } from '../platform';
 import {
   classifyConptySpawnError,
+  parseConptyBackendOverride,
   spawnWithConptyPolicy,
   shouldUseBundledConpty,
   xtermWindowsBuildNumber,
@@ -141,6 +142,27 @@ describe('shouldUseBundledConpty', () => {
     expect(shouldUseBundledConpty('linux', 19045)).toBe(false);
     expect(shouldUseBundledConpty('win32', null)).toBe(false);
   });
+
+  it('#1965: WMUX_CONPTY_BACKEND forces the backend on Windows only', () => {
+    expect(shouldUseBundledConpty('win32', 26200, parseConptyBackendOverride('bundled'))).toBe(true);
+    expect(shouldUseBundledConpty('win32', 19045, parseConptyBackendOverride('inbox'))).toBe(false);
+    expect(shouldUseBundledConpty('win32', null, parseConptyBackendOverride('bundled'))).toBe(true);
+    // Unset or unrecognised: the build decides, as before.
+    expect(shouldUseBundledConpty('win32', 19045, parseConptyBackendOverride(undefined))).toBe(true);
+    expect(shouldUseBundledConpty('win32', 26200, parseConptyBackendOverride('fast'))).toBe(false);
+    // node-pty ignores the DLL option off Windows; so does the override.
+    expect(shouldUseBundledConpty('linux', 19045, parseConptyBackendOverride('bundled'))).toBe(false);
+  });
+
+  it('parses the override values', () => {
+    expect(parseConptyBackendOverride('bundled')).toBe(true);
+    expect(parseConptyBackendOverride(' Bundled ')).toBe(true);
+    expect(parseConptyBackendOverride('inbox')).toBe(false);
+    expect(parseConptyBackendOverride('in-box')).toBe(false);
+    expect(parseConptyBackendOverride('')).toBeNull();
+    expect(parseConptyBackendOverride(null)).toBeNull();
+    expect(parseConptyBackendOverride('auto')).toBeNull();
+  });
 });
 
 describe('xtermWindowsBuildNumber', () => {
@@ -247,6 +269,24 @@ describe('spawnWithConptyPolicy', () => {
     );
     expect(result).toBe('inbox');
     expect(notices.some((m) => m.includes('no mouse reporting'))).toBe(true);
+  });
+
+  it('#1965: hands the caller the backend that actually started', () => {
+    const backends: string[] = [];
+    const quiet = () => { /* notices are not the subject here */ };
+    spawnWithConptyPolicy(() => 'pty', false, quiet, (b) => backends.push(b));
+    spawnWithConptyPolicy(() => 'pty', true, quiet, (b) => backends.push(b));
+    // A bundled spawn demoted to in-box is an in-box session.
+    spawnWithConptyPolicy(
+      (useBundled) => {
+        if (useBundled) throw new Error('Failed to load conpty.dll');
+        return 'inbox';
+      },
+      true,
+      quiet,
+      (b) => backends.push(b),
+    );
+    expect(backends).toEqual(['inbox', 'bundled', 'inbox']);
   });
 
   it('lets a transient spawn error through to the caller', () => {

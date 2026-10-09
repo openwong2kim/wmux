@@ -2,6 +2,10 @@ import type { WebDeviceSummary, WebTerminalInfo } from '../../../shared/web';
 import { webIsExposed } from '../../../shared/web';
 import type { RemoteHostPublic, RemoteHostStatus } from '../../../shared/remoteHosts';
 import type { LanLinkPeerSummary } from '../../../shared/lanlink';
+import type { Workspace } from '../../../shared/types';
+import type { AgentSlug } from '../../../shared/events';
+import { getWorkspaceLeafPanes } from '../../../shared/paneUtils';
+import { activeAgentSlug, leafDisplayName } from '../../utils/paneNaming';
 
 /**
  * One row of the Remote page: a device paired with this machine, a host this
@@ -21,7 +25,10 @@ export interface RemoteEntry {
   live: boolean;
   status: 'online' | 'offline' | 'blocked' | 'unknown' | RemoteHostStatus;
   lastSeenAt: number | null;
-  /** What it has open right now; null when nothing reports it. */
+  /**
+   * What it has open right now, by name. Null when nothing reports it (a
+   * daemon too old to say); [] when it is watching nothing this PC can name.
+   */
   viewing: string[] | null;
   /** May it type? null when unknown; 'messages' for message-only peers. */
   access: 'input' | 'input-when-on' | 'view' | 'messages' | null;
@@ -41,6 +48,27 @@ export interface RemoteSources {
   peers: LanLinkPeerSummary[] | null;
   /** Names of the remote workspaces this app has open, per host id. */
   openByHost: Record<string, string[]>;
+  /** pty session id → "workspace / pane", for what a phone is viewing. */
+  paneNameByPty?: Record<string, string>;
+}
+
+/**
+ * Every local pane's "workspace / pane" name, keyed by the pty session id of
+ * each of its surfaces (a daemon session id is the renderer's ptyId).
+ */
+export function paneNamesByPty(
+  workspaces: readonly Workspace[],
+  paneLabel?: Record<string, string>,
+  surfaceAgent?: Record<string, { slug?: AgentSlug }>,
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const ws of workspaces) {
+    for (const leaf of getWorkspaceLeafPanes(ws)) {
+      const name = `${ws.name} / ${leafDisplayName(paneLabel, ws, leaf, activeAgentSlug(surfaceAgent, leaf))}`;
+      for (const surface of leaf.surfaces) if (surface.ptyId) out[surface.ptyId] = name;
+    }
+  }
+  return out;
 }
 
 export function buildRemoteEntries(src: RemoteSources): RemoteEntry[] {
@@ -56,8 +84,11 @@ export function buildRemoteEntries(src: RemoteSources): RemoteEntry[] {
       live: d.activeNow === true,
       status: d.activeNow ? 'online' : 'offline',
       lastSeenAt: d.lastSeenAt > 0 ? d.lastSeenAt : null,
-      // The daemon tracks which pane each stream shows but does not report it.
-      viewing: null,
+      // Ids this PC cannot name (a pane closed since) are dropped; an older
+      // daemon that does not report the field leaves it unknown.
+      viewing: d.viewingSessions === undefined
+        ? null
+        : [...new Set(d.viewingSessions.map((id) => src.paneNameByPty?.[id]).filter((n): n is string => !!n))],
       access: !d.allowInput ? 'view' : serverInput ? 'input' : 'input-when-on',
     }));
   const hosts: RemoteEntry[] = (src.hosts ?? []).map((h) => {

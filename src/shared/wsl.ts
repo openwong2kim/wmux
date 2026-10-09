@@ -144,7 +144,17 @@ export function recoveryCwd(session: { cmd: string; cwd: string }, platform = pr
   if (isWslShell(session.cmd, platform)) {
     return isWslCwdShape(session.cwd) && isWslCwdSpawnable(session.cwd) ? session.cwd : '~';
   }
-  return fs.existsSync(session.cwd) ? session.cwd : os.homedir();
+  // #1941 — a directory, not just an existing path: a stored cwd that now
+  // names a file cannot start a shell, and home is the documented fallback.
+  return isDirectory(session.cwd) ? session.cwd : os.homedir();
+}
+
+function isDirectory(dir: string): boolean {
+  try {
+    return fs.statSync(dir).isDirectory();
+  } catch {
+    return false;
+  }
 }
 
 /** Override only our entries; preserve the user's other WSLENV transfers. */

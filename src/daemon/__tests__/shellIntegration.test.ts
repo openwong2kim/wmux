@@ -158,31 +158,74 @@ describe('PWSH_INIT — OSC 7 cwd report (#540)', () => {
     // The emission must live INSIDE the prompt function (re-emitted every
     // prompt), not as a one-shot at init — the sticky depends on re-emission.
     const promptBody = PWSH_INIT.slice(PWSH_INIT.indexOf('function global:prompt'));
-    expect(promptBody).toContain(']7;file://');
+    expect(promptBody).toContain('$pre += & $global:__wmux_osc7');
   });
 
   it('emits only for the FileSystem provider (registry/cert locations have no directory)', () => {
-    expect(PWSH_INIT).toMatch(/Provider\.Name -eq 'FileSystem'/);
+    expect(PWSH_INIT).toMatch(/Provider\.Name -ne 'FileSystem'\) \{ return '' \}/);
   });
 
   it("splits on '\\' and joins with '/' to honor parseOsc7Cwd's /C:/Users/... contract", () => {
-    // Regex split on a literal backslash: the .ps1 must read -split '\\'
-    // (an escaped backslash — a bare '\' is an invalid regex and errors on
-    // every prompt).
-    expect(PWSH_INIT).toContain("-split '\\\\'");
-    expect(PWSH_INIT).toContain("-join '/'");
-    // The host/path separator must produce file://HOST/C:/... (single slash
-    // between host and the converted path).
-    expect(PWSH_INIT).toContain(']7;file://$env:COMPUTERNAME/$osc7Path');
+    // [char]92 is '\'. The host/path separator must produce file://HOST/C:/...
+    // (single slash between host and the converted path).
+    expect(PWSH_INIT).toContain('.ProviderPath.Split([char]92)');
+    expect(PWSH_INIT).toContain("']7;file://' + $env:COMPUTERNAME + '/' + [string]::Join('/', [string[]]$segments)");
   });
 
   it('percent-encodes each path segment so parseOsc7Cwd decode round-trips (#541 review)', () => {
     // parseOsc7Cwd decodeURIComponent()s the payload — a raw literal '%' in a
-    // directory name would be corrupted unless the emitter escapes it.
-    expect(PWSH_INIT).toContain('[Uri]::EscapeDataString');
-    // The encode must run per segment (after the '\' split), never on the
-    // whole path — encoding the whole path would escape the '/' separators.
-    expect(PWSH_INIT).toMatch(/-split '\\\\' \| ForEach-Object \{ \[Uri\]::EscapeDataString\(\$_\) \}/);
+    // directory name would be corrupted unless the emitter escapes it. The
+    // encode must run per segment (after the '\' split), never on the whole
+    // path — encoding the whole path would escape the '/' separators.
+    expect(PWSH_INIT).toContain('foreach ($segment in $loc.ProviderPath.Split([char]92)) { [Uri]::EscapeDataString($segment) }');
+  });
+});
+
+// Issue #1941: the cwd is also reported in the middle of a command line, so
+// 'cd X; claude' moves the tracked cwd before claude starts. The behaviour is
+// exercised end to end in shellIntegration.runtime.test.ts; these pin the
+// wiring that a text edit could silently drop.
+describe('PWSH_INIT — mid-line cwd report (#1941)', () => {
+  it('arms the lookup hook from the Enter handler, and from the prompt only without PSReadLine', () => {
+    const enter = PWSH_INIT.slice(PWSH_INIT.indexOf('Set-PSReadLineKeyHandler -Key Enter'));
+    expect(enter).toContain('& $global:__wmux_arm_lookup');
+    expect(enter).toContain('if ($?) { $global:__wmux_arm_at_prompt = $false }');
+    const promptBody = PWSH_INIT.slice(PWSH_INIT.indexOf('function global:prompt'), PWSH_INIT.indexOf('Set-PSReadLineKeyHandler'));
+    expect(promptBody).toContain('if ($global:__wmux_arm_at_prompt) { & $global:__wmux_arm_lookup }');
+  });
+
+  it('disarms at the prompt, after the $? and $LASTEXITCODE snapshots', () => {
+    const promptBody = PWSH_INIT.slice(PWSH_INIT.indexOf('function global:prompt'));
+    const snapshot = promptBody.indexOf('$__wmux_le = $LASTEXITCODE');
+    const disarm = promptBody.indexOf('& $global:__wmux_disarm_lookup');
+    expect(snapshot).toBeGreaterThan(0);
+    expect(disarm).toBeGreaterThan(snapshot);
+  });
+
+  it('disarms itself on a program or script launch, on any non-top-level lookup, and after 64 lookups', () => {
+    expect(PWSH_INIT).toContain("if ($__wmux_event.CommandOrigin -ne 'Runspace' -or $type -eq 'Application' -or $type -eq 'ExternalScript' -or $global:__wmux_lookup_n -ge 64) {");
+    // The count restarts with every line.
+    const arm = PWSH_INIT.slice(PWSH_INIT.indexOf('$global:__wmux_arm_lookup = {'), PWSH_INIT.indexOf('$global:__wmux_disarm_lookup = {'));
+    expect(arm).toContain('$global:__wmux_lookup_n = 0');
+  });
+
+  it('chains and restores an action the user already set', () => {
+    // The property returns a delegate; '&' cannot invoke one, .Invoke() can.
+    expect(PWSH_INIT).toContain('$global:__wmux_prev_lookup.Invoke($__wmux_name, $__wmux_event)');
+    expect(PWSH_INIT).not.toContain('& $global:__wmux_prev_lookup');
+    expect(PWSH_INIT).toContain('$ExecutionContext.InvokeCommand.PostCommandLookupAction = $global:__wmux_prev_lookup');
+  });
+
+  it('calls no function or cmdlet from inside the action (each would be another lookup)', () => {
+    const start = PWSH_INIT.indexOf('$global:__wmux_osc7 = {');
+    const end = PWSH_INIT.indexOf('$global:__wmux_arm_at_prompt = $true');
+    const hookCode = PWSH_INIT.slice(start, end).split('\n').filter((line) => !line.trim().startsWith('#')).join('\n');
+    // The one exception runs only after a failed command, to hand $? back as
+    // the command line left it; its own lookup is absorbed by
+    // $global:__wmux_lookup_absorb.
+    const restoreStatus = "Write-Error -Message 'wmux: last command failed' -ErrorAction Ignore";
+    expect(hookCode.split(restoreStatus)).toHaveLength(2);
+    expect(hookCode.replace(restoreStatus, '')).not.toMatch(/ForEach-Object|Where-Object|Get-|Set-|Write-|Out-/);
   });
 });
 

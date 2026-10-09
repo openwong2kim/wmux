@@ -3567,6 +3567,26 @@ describe('WebTerminalServer', () => {
       ac.abort();
     });
 
+    it('maps each watching device to the panes it streams in liveSessionsByDevice, deduped', async () => {
+      await startRO();
+      const phone = await pairDevice('Watching phone');
+      expect(server.liveSessionsByDevice().size).toBe(0);
+      const ac = new AbortController();
+      // Two streams on the same pane (two tabs) count once.
+      for (let i = 0; i < 2; i++) {
+        const ticket = await ticketFor(phone.token);
+        const pane = await fetch(`${base()}/api/stream?session=s1&ticket=${encodeURIComponent(ticket)}`, {
+          signal: ac.signal,
+        });
+        expect(pane.status).toBe(200);
+      }
+      await new Promise((r) => setTimeout(r, 30));
+      expect([...server.liveSessionsByDevice()]).toEqual([[phone.deviceId, ['s1']]]);
+      server.disconnectDevice(phone.deviceId);
+      expect(server.liveSessionsByDevice().size).toBe(0);
+      ac.abort();
+    });
+
     it('a pairing started for the other card during a slow mint is never burned by it', async () => {
       await startRO();
       const phone = server.startPairing({ name: 'Phone', allowInput: true, flow: 'phone' });

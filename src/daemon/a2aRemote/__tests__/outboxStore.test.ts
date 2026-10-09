@@ -98,6 +98,22 @@ describe('OutboxStore', () => {
     expect(s.ack(HOST, { epoch: s.epoch, seq: 2 })).toBe(0);
   });
 
+  it('tells onAck exactly the records an ack moved to acked, after it is stored; a throwing listener does not fail the ack', () => {
+    const seen: Array<Array<[string, number, string]>> = [];
+    const s = make({
+      onAck: (recs) => {
+        seen.push(recs.map((r) => [r.envelope.messageId, r.seq, r.state]));
+        throw new Error('listener broke');
+      },
+    });
+    for (const m of ['a', 'b', 'c']) s.enqueue(HOST, env(m));
+    expect(s.ack(HOST, { epoch: s.epoch, seq: 2 })).toBe(2);
+    expect(s.ack(HOST, { epoch: s.epoch, seq: 2 })).toBe(0);
+    expect(s.ack(HOST, { epoch: s.epoch, seq: 3 })).toBe(1);
+    expect(seen).toEqual([[['a', 1, 'acked'], ['b', 2, 'acked']], [['c', 3, 'acked']]]);
+    expect(make().pending(HOST)).toEqual([]);
+  });
+
   it('a refused record is no longer owed and cannot be marked again', () => {
     const s = make();
     s.enqueue(HOST, env('a'));

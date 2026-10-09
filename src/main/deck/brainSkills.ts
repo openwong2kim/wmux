@@ -117,6 +117,10 @@ arrived) or \`read\` (that Moa read it). Once either is there, the other Moa
 has it. Do not raise a decision card to ask whether to keep waiting or to be
 woken: you are woken automatically when it replies or completes. End your turn
 and wait.
+
+Your own replies and state changes on a task between PCs are queued first.
+\`replyDeliveredAt\` in \`a2a_task_query\` says the other PC received all of
+them; until it shows, they are still on their way.
 `;
 
 const FANOUT_SKILL = `---

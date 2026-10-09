@@ -579,6 +579,19 @@ describe('web.handler — device roster', () => {
     ]);
   });
 
+  it('deviceList carries the panes each device is viewing, and leaves the field absent for an older daemon', async () => {
+    installConnected({
+      devices: [
+        { deviceId: 'd1', name: 'Phone', createdAt: 1, lastSeenAt: 2, allowInput: true, viewingSessions: ['pty-1', 7, ''] },
+        { deviceId: 'd2', name: 'Idle', createdAt: 1, lastSeenAt: 2, allowInput: true, viewingSessions: [] },
+        { deviceId: 'd3', name: 'Old', createdAt: 1, lastSeenAt: 2, allowInput: true },
+      ],
+    });
+    const res = (await getHandler(IPC.WEB_DEVICE_LIST)(fakeEvent)) as { devices: { viewingSessions?: string[] }[] };
+    expect(res.devices.map((d) => d.viewingSessions)).toEqual([['pty-1'], [], undefined]);
+    expect('viewingSessions' in res.devices[2]).toBe(false);
+  });
+
   it('pairStart forwards the card only when the renderer states it, and pairCancel reaches the daemon', async () => {
     installConnected({ ok: true, running: true });
     await getHandler(IPC.WEB_PAIR_START)(fakeEvent, { name: 'Computer', allowInput: false, flow: 'computer' });

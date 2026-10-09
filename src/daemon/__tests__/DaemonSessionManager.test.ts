@@ -36,7 +36,10 @@ class MockPty extends EventEmitter {
     return { dispose: () => { /* noop */ } };
   }
 
-  write(_data: string): void { /* noop */ }
+  /** Everything written to the PTY's input, in order. */
+  writes: string[] = [];
+
+  write(data: string): void { this.writes.push(data); }
 
   /** Count of resize() calls = SIGWINCH emissions, for startup-grace assertions. */
   resizeCalls = 0;
@@ -1171,6 +1174,54 @@ describe('DaemonSessionManager', () => {
       }
     });
 
+    // #1965: the bundled OpenConsole (Windows 10, or WMUX_CONPTY_BACKEND)
+    // emits 0 bytes on every resize, so nothing would replace held output that
+    // is discarded, and a repaint request is answered by nothing.
+    it('#1965: bundled ConPTY keeps and replays held output across a size change, with no repaint request', () => {
+      vi.useFakeTimers();
+      try {
+        manager.createSession({ id: 'rec-bundled', cmd: 'cmd.exe', cwd: '.', cols: 62, rows: 44, deferOutput: true });
+        const managed = manager.getSession('rec-bundled')!;
+        managed.conptyBackend = 'bundled';
+        const pty = lastMockPty!;
+        const sizes = recordSizes();
+        withPlatform('win32', () => {
+          pty.simulateData('prompt-at-spawn-geometry > ');
+          manager.resizeSession('rec-bundled', 62, 44);
+          vi.advanceTimersByTime(50);
+          manager.resizeSession('rec-bundled', 62, 42);
+          vi.advanceTimersByTime(50);
+          vi.advanceTimersByTime(200);
+        });
+        expect(managed.bridge.isMuted).toBe(false);
+        // The only frame there is reaches the viewer, at the spawn geometry.
+        expect(managed.ringBuffer.readAll().toString()).toBe('prompt-at-spawn-geometry > ');
+        // One real change, no same-size repaint request after it.
+        expect(sizes).toEqual([[62, 42]]);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('#1965: bundled ConPTY gets no repaint request on the first desk resize after a web activation', () => {
+      vi.useFakeTimers();
+      try {
+        manager.createSession({ id: 'rec-bundled-web', cmd: 'sh', cwd: '.', cols: 62, rows: 44, deferOutput: true });
+        const managed = manager.getSession('rec-bundled-web')!;
+        managed.conptyBackend = 'bundled';
+        const sizes = recordSizes();
+        withPlatform('win32', () => {
+          manager.activateDeferred('rec-bundled-web');
+          vi.advanceTimersByTime(100);
+          manager.resizeSession('rec-bundled-web', 100, 30);
+          vi.advanceTimersByTime(200);
+        });
+        expect(sizes).toEqual([[100, 30]]);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it('default (non-deferred) sessions capture data immediately', () => {
       // Regression guard: Bug 2 fix must not change normal create flow.
       manager.createSession({ id: 'live-1', cmd: 'cmd.exe', cwd: '.' });
@@ -1199,6 +1250,58 @@ describe('DaemonSessionManager', () => {
 
       expect(diedHandler).toHaveBeenCalledWith(expect.objectContaining({ id: 'rec-exit', exitCode: 2 }));
       expect(manager.getSession('rec-exit')?.meta.state).toBe('dead');
+    });
+  });
+
+  // #1965: the bundled OpenConsole waits ~3 s for an answer to its startup
+  // DA1. The daemon answers it only for a bundled session, and only when no
+  // renderer receives that chunk live.
+  describe('startup DA1 reply (#1965)', () => {
+    const PREAMBLE = '\x1b[1t\x1b[c\x1b[?1004h\x1b[?9001h';
+    const REPLY = '\x1b[?62;4;9;22c';
+
+    it('answers once for a bundled session no renderer is receiving live', () => {
+      manager.createSession({ id: 'da1-bundled', cmd: 'sh', cwd: '.' });
+      manager.getSession('da1-bundled')!.conptyBackend = 'bundled';
+      const pty = lastMockPty!;
+      pty.simulateData(PREAMBLE);
+      pty.simulateData('\x1b[c');
+      expect(pty.writes).toEqual([REPLY]);
+    });
+
+    it('does not answer for an in-box session', () => {
+      manager.createSession({ id: 'da1-inbox', cmd: 'sh', cwd: '.' });
+      manager.getSession('da1-inbox')!.conptyBackend = 'inbox';
+      const pty = lastMockPty!;
+      pty.simulateData(PREAMBLE);
+      expect(pty.writes).toEqual([]);
+    });
+
+    it('does not answer while a renderer receives the output live', () => {
+      manager.setLiveRendererProbe((id) => id === 'da1-live');
+      manager.createSession({ id: 'da1-live', cmd: 'sh', cwd: '.' });
+      manager.getSession('da1-live')!.conptyBackend = 'bundled';
+      const pty = lastMockPty!;
+      pty.simulateData(PREAMBLE);
+      expect(pty.writes).toEqual([]);
+    });
+
+    it('answers for a muted (recovered) session even with a live renderer pipe', () => {
+      manager.setLiveRendererProbe(() => true);
+      manager.createSession({ id: 'da1-muted', cmd: 'sh', cwd: '.', deferOutput: true });
+      manager.getSession('da1-muted')!.conptyBackend = 'bundled';
+      const pty = lastMockPty!;
+      pty.simulateData(PREAMBLE);
+      expect(pty.writes).toEqual([REPLY]);
+    });
+
+    it('does not answer a query that follows shell output', () => {
+      manager.createSession({ id: 'da1-late', cmd: 'sh', cwd: '.' });
+      manager.getSession('da1-late')!.conptyBackend = 'bundled';
+      const pty = lastMockPty!;
+      pty.simulateData('Microsoft Windows\r\n');
+      pty.simulateData('\x1b[c');
+      expect(pty.writes).toEqual([]);
     });
   });
 

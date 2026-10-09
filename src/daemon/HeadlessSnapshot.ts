@@ -31,11 +31,26 @@
  * terminal. It must never answer DA1/DSR/OSC color queries — the renderer's
  * xterm is the authoritative responder; a daemon-side reply would race ahead
  * of it and feed the shell wrong values.
+ *
+ * One narrow carve-out lives elsewhere, not here (#1965): the bundled
+ * OpenConsole's startup `CSI c`, which DaemonPTYBridge.armStartupDa1Reply
+ * answers once. It applies only to a bundled-ConPTY session, only to a DA1
+ * among the PTY's very first bytes with nothing but CSI sequences before it,
+ * and only when no renderer is receiving that chunk live (output muted, or no
+ * session pipe past its flush). There is no race under that gate: the check
+ * runs in the same synchronous data callback that routes the chunk, so either
+ * a renderer gets the query live and answers it (the daemon stays silent), or
+ * no renderer ever sees it except through a replay, and every replay strips
+ * queries (replayQuerySanitizer) — the daemon is then the only responder.
+ * "Replay" includes the live delta an attach flush appends after a snapshot:
+ * SessionPipe writes it before the flush-done marker, and the desk sanitizes
+ * everything before that marker.
  */
 
 import { Terminal } from '@xterm/headless';
 import { SerializeAddon } from '@xterm/addon-serialize';
 import { applyUnicodeWidthModel } from '../shared/terminalUnicode';
+import { XTERM_60_VT_EXTENSIONS } from '../shared/terminal/replyParity';
 import type { ReplayGeometry } from './RingBuffer';
 import {
   PartialSequenceTracker,
@@ -214,6 +229,9 @@ async function generateTextInner(req: SnapshotRequest): Promise<TextSnapshotOutc
     scrollback,
     allowProposedApi: true,
     logLevel: 'off',
+    // Same grid as the renderer: xterm 6.1 would apply SGR 221/222, which the
+    // renderer keeps off (shared/terminal/replyParity.ts).
+    vtExtensions: { ...XTERM_60_VT_EXTENSIONS },
   });
   try {
     applyUnicodeWidthModel(terminal);
@@ -323,6 +341,9 @@ async function generateInner(req: SnapshotRequest): Promise<SnapshotOutcome> {
     scrollback,
     allowProposedApi: true,
     logLevel: 'off',
+    // Same grid as the renderer: xterm 6.1 would apply SGR 221/222, which the
+    // renderer keeps off (shared/terminal/replyParity.ts).
+    vtExtensions: { ...XTERM_60_VT_EXTENSIONS },
   });
   const serializer = new SerializeAddon();
   try {

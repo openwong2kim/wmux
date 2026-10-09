@@ -4,8 +4,10 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { IPty } from 'node-pty';
 import {
+  AWAITING_NARROW_DIALOG_COLS,
   AWAITING_VERIFY_RENDER_RETRIES,
   AwaitingScreenVerifier,
+  questionInFlight,
   renderPaneScreen,
   type AwaitingFrame,
   type AwaitingScreenVerifierDeps,
@@ -15,6 +17,7 @@ import { DaemonPTYBridge } from '../DaemonPTYBridge';
 import { RingBuffer } from '../RingBuffer';
 import { generateTextSnapshot } from '../HeadlessSnapshot';
 import { screenShowsActiveDialog, screenShowsAgentDialog } from '../transcript/chatScreenGate';
+import type { ApprovalRequest } from '../approvals/types';
 
 // ── Replay fixtures ──────────────────────────────────────────────────────────
 // Built from the text of a real Claude Code permission dialog raised by a user
@@ -88,6 +91,8 @@ interface FakePane {
   eligible: boolean;
   mark: number;
   rows: readonly string[] | null;
+  /** Grid width the fake render reports; absent means unknown (treated as wide). */
+  cols?: number;
 }
 
 function makeVerifier(pane: FakePane, overrides: Partial<AwaitingScreenVerifierDeps> = {}) {
@@ -99,7 +104,8 @@ function makeVerifier(pane: FakePane, overrides: Partial<AwaitingScreenVerifierD
     outputMark: () => pane.mark,
     render: async (id) => {
       renders.push(id);
-      return pane.rows === null ? null : { rows: pane.rows, mark: pane.mark };
+      if (pane.rows === null) return null;
+      return { rows: pane.rows, mark: pane.mark, ...(pane.cols !== undefined ? { cols: pane.cols } : {}) };
     },
     clear: (id) => {
       cleared.push(id);
@@ -422,6 +428,101 @@ describe('AwaitingScreenVerifier with a terminal_prompt record held on the pane'
   });
 });
 
+// #1901 — the bottom of an AskUserQuestion drawn into a 10x6 PTY (a fan-out
+// task whose workspace was never shown), the text captured from a real pane:
+// Claude Code wraps the footer one or two words per row.
+const NARROW_QUESTION_BYTES = [
+  '\x1b[?1049h\x1b[2J\x1b[H',
+  'Enter to \r\n',
+  'select · \r\n',
+  '↑/↓ to \r\n',
+  'navigate ·\r\n',
+  'Esc to \r\n',
+  'cancel',
+].join('');
+
+describe('AwaitingScreenVerifier with an AskUserQuestion still in flight (#1901)', () => {
+  let narrowRows: string[] = [];
+  beforeEach(async () => {
+    const outcome = await generateTextSnapshot({ cols: 10, rows: 6, scrollback: 0, initial: Buffer.from(NARROW_QUESTION_BYTES) });
+    if (!outcome.ok) throw new Error('snapshot failed');
+    narrowRows = outcome.rows.map((r) => r.text);
+    vi.useFakeTimers();
+  });
+  afterEach(() => vi.useRealTimers());
+
+  it('the wrapped footer is a dialog no screen test sees', () => {
+    expect(narrowRows.map((r) => r.trim())).toEqual(['Enter to', 'select ·', '↑/↓ to', 'navigate ·', 'Esc to', 'cancel']);
+    expect(screenShowsActiveDialog(narrowRows)).toBe(false);
+  });
+
+  it('holds the pane while the question is in flight and releases once the tool returns', async () => {
+    const pane: FakePane = { awaiting: true, eligible: true, mark: 0, rows: narrowRows, cols: 10 };
+    let inFlight = true;
+    const { verifier, renders, cleared } = makeVerifier(pane, { holdsQuestion: () => inFlight });
+    for (let i = 0; i < 10; i++) {
+      output(verifier, pane);
+      await vi.advanceTimersByTimeAsync(1_000);
+    }
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(renders.length).toBeGreaterThan(1);
+    expect(cleared).toEqual([]);
+
+    // The tool returned (its record expired); the agent draws its next frame.
+    inFlight = false;
+    output(verifier, pane, CLEAR_ROWS);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(cleared).toEqual(['p1']);
+  });
+
+  it('releases on the record ending alone, without waiting for new output', async () => {
+    // The dialog-free frame is already on screen and verified; nothing more is drawn.
+    const pane: FakePane = { awaiting: true, eligible: true, mark: 0, rows: ['', '❯ '], cols: 10 };
+    let inFlight = true;
+    const { verifier, cleared } = makeVerifier(pane, { holdsQuestion: () => inFlight });
+    output(verifier, pane);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(cleared).toEqual([]);
+
+    inFlight = false;
+    verifier.trigger('p1', 'signal');
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(cleared).toEqual(['p1']);
+  });
+
+  it('at a normal width the screen alone decides: a pending record does not hold a dialog-free frame', async () => {
+    const pane: FakePane = { awaiting: true, eligible: true, mark: 0, rows: CLEAR_ROWS, cols: AWAITING_NARROW_DIALOG_COLS };
+    const { verifier, cleared } = makeVerifier(pane, { holdsQuestion: () => true });
+    output(verifier, pane);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(cleared).toEqual(['p1']);
+  });
+});
+
+describe('questionInFlight', () => {
+  const question = {
+    id: 'r1', sessionId: 'p1', agent: 'claude', kind: 'awaiting_input', state: 'pending', createdAt: 0,
+    question: 'Which color do you prefer?',
+  } as unknown as ApprovalRequest;
+  const base = { sessionId: 'p1', pending: [question], agentAlive: true, commandRunning: true } as const;
+
+  it('holds for a pending question whose agent is alive (or not known to be gone)', () => {
+    expect(questionInFlight(base)).toBe(true);
+    expect(questionInFlight({ ...base, agentAlive: undefined, commandRunning: undefined })).toBe(true);
+  });
+
+  it('releases when the agent is not running, though the record is still pending', () => {
+    expect(questionInFlight({ ...base, agentAlive: false })).toBe(false);
+    expect(questionInFlight({ ...base, commandRunning: false })).toBe(false);
+  });
+
+  it('a question-less card, or another pane\'s card, does not hold', () => {
+    const informational = { ...question, question: undefined } as unknown as ApprovalRequest;
+    expect(questionInFlight({ ...base, pending: [informational] })).toBe(false);
+    expect(questionInFlight({ ...base, sessionId: 'p2' })).toBe(false);
+  });
+});
+
 describe('renderPaneScreen', () => {
   it('renders at the PTY size when node-pty reports one, else at the recorded size', async () => {
     const seen: Array<{ cols: number; rows: number }> = [];
@@ -431,7 +532,7 @@ describe('renderPaneScreen', () => {
     };
     const live = renderablePane({ meta: { cols: 80, rows: 24 }, ptyProcess: { cols: 120, rows: 40 } });
     const recorded = renderablePane();
-    expect(await renderPaneScreen(() => live, snapshot)).toMatchObject({ rows: ['x'], mark: 5 });
+    expect(await renderPaneScreen(() => live, snapshot)).toMatchObject({ rows: ['x'], mark: 5, cols: 120 });
     await renderPaneScreen(() => recorded, snapshot);
     expect(seen).toEqual([{ cols: 120, rows: 40 }, { cols: 80, rows: 24 }]);
   });

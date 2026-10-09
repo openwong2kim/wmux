@@ -217,6 +217,13 @@ export interface WebDeviceSummary {
    * Computed by the daemon at list time; never true for a revoked device.
    */
   activeNow?: boolean;
+  /**
+   * The pty session ids this device is streaming right now (the panes it is
+   * looking at). Computed by the daemon at list time, never persisted; empty
+   * for a device watching nothing or revoked. Absent from a daemon that
+   * predates the field, which the UI shows as "unknown", not "nothing".
+   */
+  viewingSessions?: string[];
 }
 
 /** Result of changing one device's input grant. Fail-closed, like the revoke. */

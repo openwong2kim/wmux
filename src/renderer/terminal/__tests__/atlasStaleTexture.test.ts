@@ -4,17 +4,22 @@ import { build } from 'esbuild';
 import { beforeAll, describe, it, expect } from 'vitest';
 
 /**
- * I6 — a texture slot is stale when its page is a different canvas, not only
- * a different version.
+ * I6 — a texture slot must be re-uploaded whenever a different canvas sits at
+ * its page index.
  *
  * GlyphRenderer re-uploads atlas page i only when
- * `pages[i].version !== slot.version`. Every AtlasPage starts at version 0,
- * and a cap merge always puts its merged page at index pages.length - 4 with
- * version 1 (that page never receives more glyphs). So after two cap merges in
- * a row, a renderer that drew a frame in between holds merge #1's texture in
- * that slot with version 1, sees merge #2's page also at version 1, skips the
- * upload, and samples the new texcoords from the old texture: persistent
- * wrong glyphs (Hangul-heavy output hits it first) over a correct buffer.
+ * `pages[i].version !== slot.version`. In addon-webgl 0.19 every AtlasPage
+ * started at version 0 and a cap merge always put its merged page at index
+ * pages.length - 4 with version 1, so after two cap merges in a row a renderer
+ * that drew a frame in between saw the same version on a different canvas,
+ * skipped the upload, and sampled the new texcoords from the old texture:
+ * persistent wrong glyphs (Hangul-heavy output hit it first). wmux patched
+ * 0.19 to compare canvas identity as well.
+ *
+ * 0.20 fixes the root instead: every AtlasPage version comes from one global
+ * monotonic counter, so a new canvas can never carry a version a slot already
+ * recorded. The wmux patch dropped that hunk; this test pins the upstream
+ * mechanism so a regression fails here, not in a Korean user's pane.
  *
  * The behavioural test drives the INSTALLED TextureAtlas source (bundled here
  * with esbuild, as the addon is) into two consecutive cap merges, and runs the
@@ -27,24 +32,18 @@ const BUNDLES = [`${ADDON}/lib/addon-webgl.js`, `${ADDON}/lib/addon-webgl.mjs`];
 const MAX_PAGES = 16;
 
 describe('addon-webgl atlas texture upload (I6) — source pins', () => {
-  it('GlyphRenderer.ts compares canvas identity and records the uploaded canvas', () => {
-    const src = readFileSync(`${ADDON}/src/GlyphRenderer.ts`, 'utf8');
-    expect(src).toContain('page.version !== slot.version || page.canvas !== slot.canvas');
-    expect(src).toContain('this._atlasTextures[i].canvas = atlas.pages[i].canvas;');
-    expect(src).toContain('glTexture.canvas = undefined;');
+  it('TextureAtlas.ts draws every page version from one global counter', () => {
+    const src = readFileSync(`${ADDON}/src/TextureAtlas.ts`, 'utf8');
+    expect(src).toContain('public static nextVersion: number = 0;');
+    expect(src).toContain('public version = ++AtlasPage.nextVersion;');
+    expect(src).toContain('mergedPage.version = ++AtlasPage.nextVersion;');
   });
 
-  it('WebglUtils.ts GLTexture carries the uploaded canvas', () => {
-    const src = readFileSync(`${ADDON}/src/WebglUtils.ts`, 'utf8');
-    expect(src).toContain('public canvas: HTMLCanvasElement | undefined;');
-  });
-
-  it.each(BUNDLES)('%s compares canvas identity in the upload loop', (file) => {
+  it.each(BUNDLES)('%s re-uploads on a version change in the upload loop', (file) => {
     const src = readFileSync(file, 'utf8');
     expect(src).toMatch(
-      /\.pages\[(\w)\]\.version!==this\._atlasTextures\[\1\]\.version\|\|this\._atlas\.pages\[\1\]\.canvas!==this\._atlasTextures\[\1\]\.canvas/,
+      /this\._atlas\.pages\[(\w)\]\.version!==this\._atlasTextures\[\1\]\.version&&this\._bindAtlasPageTexture\(/,
     );
-    expect(src).toMatch(/this\._atlasTextures\[(\w)\]\.canvas=\w\.pages\[\1\]\.canvas/);
   });
 });
 
@@ -150,12 +149,12 @@ function block(src: string, open: number): string {
   throw new Error('unbalanced block');
 }
 function method(src: string, name: string): string {
-  const m = new RegExp(`[;}]${name}\\((\\w+(?:,\\w+)*)\\)\\{`).exec(src);
+  const m = new RegExp(`[;}]${name}\\(((?:\\w+(?:,\\w+)*)?)\\)\\{`).exec(src);
   if (!m) throw new Error(`${name} not found`);
   return `${name}(${m[1]})${block(src, m.index + m[0].length - 1)}`;
 }
 
-interface Slot { texture: unknown; version: number; canvas?: unknown }
+interface Slot { texture: unknown; version: number }
 interface ShippedRenderer {
   _atlas: AtlasLike | undefined;
   _atlasTextures: Slot[];
@@ -165,17 +164,21 @@ interface ShippedRenderer {
 
 function shippedRenderer(file: string): ShippedRenderer {
   const src = readFileSync(file, 'utf8');
-  // GlyphRenderer.render(): the bounded loop that re-uploads stale pages.
-  const loop = /for\(let (\w)=0,(\w)=Math\.min\(this\._atlas\.pages\.length,this\._atlasTextures\.length\);\1<\2;\1\+\+\)[^;]*?&&this\._bindAtlasPageTexture\((\w),this\._atlas,\1\);/.exec(src);
+  // GlyphRenderer.render(): the loop that re-uploads stale pages. 0.20 computes
+  // its bound (pages clamped to the texture slots) in an earlier statement, so
+  // the lifted loop gets the same bound re-declared in front of it.
+  const loop = /for\(let (\w)=0;\1<(\w);\1\+\+\)this\._atlas\.pages\[\1\]\.version!==this\._atlasTextures\[\1\]\.version&&this\._bindAtlasPageTexture\((\w),this\._atlas,\1\);/.exec(src);
   if (!loop) throw new Error(`upload loop not found in ${file}`);
+  const bound = `const ${loop[2]}=Math.min(this._atlas.pages.length,this._atlasTextures.length);`;
   const glVar = loop[3];
   // WebglUtils.GLTexture.
   const tex = /class\{constructor\((\w)\)\{this\.texture=\1,this\.version=-1[^}]*\}\}/.exec(src);
   if (!tex) throw new Error(`GLTexture not found in ${file}`);
   const body = `return {
     ${method(src, 'setAtlas')},
+    ${method(src, 'invalidateAtlasTextures')},
     ${method(src, '_bindAtlasPageTexture')},
-    uploadStalePages(${glVar}){${loop[0]}},
+    uploadStalePages(${glVar}){${bound}${loop[0]}},
     GLTexture: ${tex[0]},
   };`;
   const r = new Function(body)() as ShippedRenderer & { GLTexture: new (t: unknown) => Slot };
@@ -233,26 +236,21 @@ describe('addon-webgl atlas texture upload (I6) — two cap merges in a row', ()
     expect(firstMerge).toBeDefined();
 
     const page = atlas.pages[mergedIndex];
-    // The collision the old version-only check could not see: a different
-    // canvas at the same index carrying the same version.
+    // The case 0.19 got wrong: a different canvas at the same index. It must
+    // now carry a different version, so the version-only check re-uploads.
     expect(page.canvas).not.toBe(firstMerge!.canvas);
-    expect(page.version).toBe(firstMerge!.version);
+    expect(page.version).not.toBe(firstMerge!.version);
 
     // Every texture unit was last given the canvas that is now on its page.
     for (let i = 0; i < atlas.pages.length; i++) {
       expect(uploads.get(i), `texture unit ${i}`).toBe(atlas.pages[i].canvas);
     }
-    for (let i = 0; i < atlas.pages.length; i++) {
-      expect(renderer._atlasTextures[i].canvas, `slot ${i}`).toBe(atlas.pages[i].canvas);
-    }
   });
 
-  it.each(BUNDLES)('%s setAtlas forgets the uploaded canvas', (file) => {
+  it.each(BUNDLES)('%s setAtlas forgets the uploaded versions', (file) => {
     const renderer = shippedRenderer(file);
-    renderer._atlasTextures[0].canvas = {};
     renderer._atlasTextures[0].version = 3;
     renderer.setAtlas({ pages: [] } as unknown as AtlasLike);
     expect(renderer._atlasTextures[0].version).toBe(-1);
-    expect(renderer._atlasTextures[0].canvas).toBeUndefined();
   });
 });

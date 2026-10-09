@@ -22,6 +22,17 @@ export function rankExposedPanes(panes: A2aExposedPane[], myRemote: string | nul
   return [...ranked.filter((r) => r.recommended), ...ranked.filter((r) => !r.recommended)];
 }
 
+/**
+ * The pane the matching dialog can pick by itself: the only choice of my
+ * end's kind, or else the only one on my repo. Null when the person must pick.
+ */
+export function autoPickPane(ranked: RankedPane[] | null, localKind: A2aExposedPane['kind']): A2aExposedPane | null {
+  const choices = (ranked ?? []).filter((r) => r.pane.kind === localKind);
+  if (choices.length === 1) return choices[0].pane;
+  const same = choices.filter((r) => r.recommended);
+  return same.length === 1 ? same[0].pane : null;
+}
+
 /** Both repos are known and differ. Unknown on either side is not a mismatch. */
 export function repoMismatch(a: string | null | undefined, b: string | null | undefined): boolean {
   return !!a && !!b && a !== b;

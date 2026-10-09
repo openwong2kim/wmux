@@ -15,8 +15,47 @@ import { RESIZE_REDRAW_GUARD_MS } from '../main/notification/idleSuppression';
 import { stripReplayQuerySequences } from '../shared/replayQuerySanitizer';
 import { isFreshSessionSource } from '../shared/hooks/signal-types';
 import { ESCAPE_WIN32 } from '../shared/win32InputKeys';
+import { isEscapeChunk } from '../shared/hooks/interruptKeystroke';
 import { titleShowsRunningTurn } from './transcript/chatScreenGate';
 import type { TurnFailure } from '../shared/phoneTurnFailure';
+
+/**
+ * #1965 — the answer the daemon gives the bundled OpenConsole's startup DA1.
+ * The same string the desk renderer's xterm sends with inline images on
+ * (sixel, `4`). OpenConsole does not read it — sixel passes through with or
+ * without the `4`, and with no answer at all — it only waits for one.
+ */
+export const STARTUP_DA1_REPLY = '\x1b[?62;4;9;22c';
+
+/**
+ * How many bytes of escape-only output the startup DA1 scan buffers while
+ * waiting for a sequence split across chunks. OpenConsole's own preamble in
+ * front of its query is 4 bytes (`CSI 1 t`).
+ */
+const STARTUP_DA1_SCAN_BYTES = 64;
+
+// eslint-disable-next-line no-control-regex
+const CSI_SEQUENCE = /^\x1b\[[0-?]*[ -/]*[@-~]/;
+// eslint-disable-next-line no-control-regex
+const CSI_PARTIAL = /^\x1b(?:\[[0-?]*[ -/]*)?$/;
+
+/**
+ * Classify the first bytes a PTY wrote. `'answer'`: a bare DA1 (`CSI c`) came
+ * before any byte that was not part of a CSI sequence. `'closed'`: something
+ * else came first, so whatever follows is the program's, not the pseudo
+ * console's. `'more'`: only CSI sequences so far, possibly one cut short.
+ */
+export function scanStartupDa1(text: string): 'answer' | 'more' | 'closed' {
+  let i = 0;
+  while (i < text.length) {
+    const rest = text.slice(i);
+    const m = CSI_SEQUENCE.exec(rest);
+    if (!m) return CSI_PARTIAL.test(rest) ? 'more' : 'closed';
+    if (m[0] === '\x1b[c') return 'answer';
+    i += m[0].length;
+  }
+  return 'more';
+}
 
 /**
  * Daemon version of PTYBridge.
@@ -93,6 +132,13 @@ export class DaemonPTYBridge extends EventEmitter {
   private static readonly MAX_HELD_BYTES = 256 * 1024;
   /** The unmuted capture path, set by setupDataForwarding; replays held chunks. */
   private captureChunk: ((data: string, buf: Buffer) => void) | null = null;
+
+  /** See armStartupDa1Reply. Null once the startup window has closed. */
+  private startupDa1: {
+    scanned: string;
+    canAnswer: () => boolean;
+    onAnswered?: () => void;
+  } | null = null;
 
   /**
    * Last resize timestamp for this session (daemon-process state — the
@@ -367,10 +413,17 @@ export class DaemonPTYBridge extends EventEmitter {
     // `?1006h`) the digit can arrive glued to SGR mouse reports, and a focus
     // change adds `ESC [ I` / `ESC [ O`. Neither is a keystroke, so both are
     // stripped before the lone-key test.
+    //
+    // ESC counts in every encoding wmux writes (#1901): on Windows the bare
+    // byte can leave the AskUserQuestion picker up (#1915), so whatever really
+    // cancels it arrives as a win32-input-mode record pair. No hook reports a
+    // cancelled question, and on a narrow grid the screen verifier holds the
+    // pane while the question's record is pending, so an unrecognised cancel
+    // left the pane at Needs you until the next prompt.
     const wasAwaiting = this.awaitingHuman;
     const keyProbe = wasAwaiting ? data.replace(DaemonPTYBridge.NON_KEY_INPUT, '') : data;
-    // eslint-disable-next-line no-control-regex
-    const answerKey = wasAwaiting && !this.inputInBracketedPaste && /^(?:[1-9]|\x1b)$/.test(keyProbe);
+    const answerKey = wasAwaiting && !this.inputInBracketedPaste
+      && (/^[1-9]$/.test(keyProbe) || isEscapeChunk(keyProbe));
     const hasSubmitBoundary = this.scanSubmittedInput(data);
     const answered = forceSubmitted || hasSubmitBoundary || answerKey;
     // An unsubmitted draft in the composer: typed or pasted text with no Enter
@@ -1244,6 +1297,10 @@ export class DaemonPTYBridge extends EventEmitter {
 
     // PTY data handler
     const onDataDisposable = ptyProcess.onData((data: string) => {
+      // Ahead of the mute check: a recovered session is muted at spawn, and
+      // its startup query is exactly the one nobody else will answer.
+      if (this.startupDa1) this.checkStartupDa1(data, ptyProcess);
+
       const buf = Buffer.from(data);
 
       // Byte activity is weaker than a detector/hook terminal edge. Process it
@@ -1319,6 +1376,57 @@ export class DaemonPTYBridge extends EventEmitter {
   }
 
   /**
+   * #1965: answer the bundled OpenConsole's startup DA1 from the daemon.
+   *
+   * OpenConsole writes `CSI c` before anything else and then holds all of the
+   * shell's output until a terminal answers, or for about 3 s. A fresh pane's
+   * query lands in the ring before any renderer is receiving live bytes, and
+   * every replay path strips queries (replayQuerySanitizer), so no xterm ever
+   * answers it and each new pane started 3 s late.
+   *
+   * Answered exactly once, and only when all of these hold:
+   *  - the bare `CSI c` is among the PTY's first bytes, with nothing but CSI
+   *    sequences in front of it (any other byte closes the window for good);
+   *  - `canAnswer()` says so at that moment. The session manager makes that
+   *    "bundled backend, and no viewer is receiving this chunk live".
+   *
+   * No race with the renderer under that gate: the decision is made inside
+   * the same synchronous data callback that decides where the chunk goes.
+   * If a viewer receives it live, that viewer's xterm answers and the daemon
+   * does not; if none does, the chunk only ever reaches a viewer through a
+   * replay, which strips the query, so the daemon is the only responder. (An
+   * attach flush's live delta counts as replay: it is written before the
+   * flush-done marker, and the desk sanitizes everything before the marker.)
+   *
+   * The reply goes straight to `ptyProcess.write`, not through `noteInput`:
+   * it is not user input, and nothing that tracks input (drafts, submits,
+   * detector dedup, typed-input or fence events) may see it.
+   */
+  armStartupDa1Reply(canAnswer: () => boolean, onAnswered?: () => void): void {
+    this.startupDa1 = { scanned: '', canAnswer, onAnswered };
+  }
+
+  private checkStartupDa1(data: string, ptyProcess: IPty): void {
+    const pending = this.startupDa1;
+    if (!pending) return;
+    const text = pending.scanned + data;
+    const verdict = scanStartupDa1(text);
+    if (verdict === 'more' && text.length <= STARTUP_DA1_SCAN_BYTES) {
+      pending.scanned = text;
+      return;
+    }
+    // One decision per session, answered or not.
+    this.startupDa1 = null;
+    if (verdict !== 'answer' || !pending.canAnswer()) return;
+    try {
+      ptyProcess.write(STARTUP_DA1_REPLY);
+      pending.onAnswered?.();
+    } catch {
+      // The PTY is already gone: nothing is waiting for the answer.
+    }
+  }
+
+  /**
    * Mute or unmute PTY output capture. While muted, the data handler
    * drops chunks; ringBuffer pre-fill from saved scrollback (set up by
    * the caller before forwarding starts) is preserved.
@@ -1356,7 +1464,8 @@ export class DaemonPTYBridge extends EventEmitter {
 
   /**
    * #1464: forget what was held so far but keep holding. Called right before a
-   * muted PTY is resized to a new geometry — the chunks already held were
+   * muted PTY is resized to a new geometry (not on the bundled ConPTY, which
+   * sends nothing on resize to replace them, #1965) — the chunks already held were
    * produced at the old size, while the shell's SIGWINCH repaint (the prompt
    * at the new size) arrives after it and is what the unmute should release.
    */
@@ -1393,6 +1502,7 @@ export class DaemonPTYBridge extends EventEmitter {
   cleanup(): void {
     this.dataDisposable?.();
     this.dataDisposable = null;
+    this.startupDa1 = null;
 
     this.exitDisposable?.();
     this.exitDisposable = null;

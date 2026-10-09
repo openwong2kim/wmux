@@ -74,13 +74,12 @@
 //            Neither polled signal can see a merge confined to pages BORN AND
 //            DESTROYED between two samples (raised in review on #790), so the
 //            guard also subscribes to upstream's page-removal event and
-//            prefers it. Verified against the installed @xterm/addon-webgl
-//            0.19.0: `_onRemoveTextureAtlasCanvas.fire` has exactly ONE call
-//            site, inside `_mergePages` (TextureAtlas.ts:224) — which only
-//            `_createNewPage`'s merge branch calls — so the event cannot mean
-//            anything but a merge. It fires once per consumed page, just
-//            before the deletes, making it an exact real-time signal with no
-//            sampling gap.
+//            prefers it. In @xterm/addon-webgl 0.19.0 the event had exactly
+//            ONE call site, inside `_mergePages`, so it could mean nothing but
+//            a merge. 0.20 also fires it from `_evictAllPages`, once per page
+//            dropped: on a self-eviction (which also bumps the generation, so
+//            the coherent branch handles it) and on every wipe this guard
+//            itself requests (rebuildGroup consumes the latch for those).
 //
 // Three independent defects made that repair fire 4657 times in one day and
 // achieve nothing — then, once (1) and (2) were fixed, made it start causing
@@ -485,6 +484,12 @@ export function createAtlasGuard(options: AtlasGuardOptions = {}): AtlasGuard {
     // clearAtlasTexture so upstream's page-0-only "already clean" probe cannot
     // silently turn the clear into a no-op (see that function).
     const outcome = clearAtlasTexture(atlas);
+    // Our own wipe is not a merge. addon-webgl 0.20 wipes through
+    // `_evictAllPages`, which fires the page-removal event for every page it
+    // drops; left armed, the latch would read the next poll as a merge and
+    // rebuild again on every poll after that.
+    const latch = removalLatch.get(atlas as object);
+    if (latch) latch.fired = false;
     if (outcome === 'failed') {
       console.warn('[wmux:atlas-guard] clear did not take effect — pool pressure will not drop');
     }
@@ -597,7 +602,9 @@ export function createAtlasGuard(options: AtlasGuardOptions = {}): AtlasGuard {
           genCureStreak.set(key, streak + 1);
           lastGenCureAt.set(key, nowMs());
           console.warn(
-            `[wmux:atlas-guard] cure (${removed ? 'merge' : 'self-eviction'}: gen ${lastGen}->${gen}) — ` +
+            // 0.20 fires the removal event on an eviction too, so a removal
+            // alone no longer proves a merge.
+            `[wmux:atlas-guard] cure (${removed ? 'merge/evict' : 'self-eviction'}: gen ${lastGen}->${gen}) — ` +
               `pages=${used}/${len}, panes=${group.length}, clear=${outcome}`,
           );
           // Re-baseline from the POST-rebuild atlas. Our own wipe bumps the

@@ -34,9 +34,16 @@ export function validatePtyCwdForShell(cwd: string | undefined, shell?: string):
 
 /**
  * Resolve create-time cwd without letting renderer metadata become authority.
- * A known dead-session replacement tries persisted spawnCwd, then its last live
- * cwd; when neither validates, the caller deliberately falls back to home.
- * Ordinary creates retain their existing single-cwd behavior.
+ * A known dead-session replacement tries its last live cwd (the daemon's
+ * shell-tracked `cwd`), then the persisted spawnCwd; when neither validates,
+ * the caller deliberately falls back to home. Ordinary creates retain their
+ * existing single-cwd behavior.
+ *
+ * #1941 — live first, the order every daemon recovery path and the WSL branch
+ * below already use. #762 (issue #650) tried spawnCwd first, so a tombstoned
+ * pane came back where it was spawned rather than where its shell was, and
+ * the Resume pill's cwd-scoped `--continue` ran in that folder. A pane whose
+ * shell never reported a cwd still has `cwd === spawnCwd`, so it is unchanged.
  */
 export function resolvePtyCreateCwd(
   requestedCwd: string | undefined,
@@ -44,14 +51,14 @@ export function resolvePtyCreateCwd(
   validate: (cwd: string | undefined) => string | undefined = validatePtyCwd,
 ): ResolvedPtyCwd {
   if (recovery !== undefined) {
-    const spawnCwd = validate(recovery.spawnCwd);
-    if (spawnCwd) {
-      return { incomingCwd: recovery.spawnCwd, safeCwd: spawnCwd, source: 'recovery-spawnCwd' };
-    }
-
     const liveCwd = validate(recovery.cwd);
     if (liveCwd) {
       return { incomingCwd: recovery.cwd, safeCwd: liveCwd, source: 'recovery-cwd' };
+    }
+
+    const spawnCwd = validate(recovery.spawnCwd);
+    if (spawnCwd) {
+      return { incomingCwd: recovery.spawnCwd, safeCwd: spawnCwd, source: 'recovery-spawnCwd' };
     }
 
     return {

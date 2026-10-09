@@ -336,6 +336,196 @@ describe.runIf(hasPowerShell)('OSC 133 runtime — powershell.exe', () => {
   }, EVENT_TIMEOUT_MS + 2000);
 });
 
+// Issue #1941. The integration reported the cwd only from the prompt, so on
+// 'cd X; <program>' the session's tracked cwd stayed at the folder of the last
+// prompt for as long as the program ran. A daemon that died in that window
+// recovered the pane there (recovery replays meta.cwd).
+describe.runIf(hasPowerShell)('mid-line cwd report — powershell.exe (#1941)', () => {
+  let manager: DaemonSessionManager;
+  let root: string;
+
+  afterEach(() => {
+    if (manager) manager.disposeAll();
+    // The killed shell can hold its cwd open for a moment after disposeAll.
+    try {
+      if (root) fs.rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
+    } catch { /* a leftover temp folder is not a test failure */ }
+  });
+
+  function startPane(tag: string): { managed: ManagedSession; start: string; target: string } {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-1941-'));
+    const start = path.join(root, 'start');
+    // A space and a percent sign: the payload must survive the percent-decode.
+    const target = path.join(root, 'proj one%20x');
+    fs.mkdirSync(start);
+    fs.mkdirSync(target);
+    manager = new DaemonSessionManager();
+    const id = `rt-pwsh-${tag}-${Date.now()}`;
+    manager.createSession({ id, cmd: POWERSHELL, cwd: start });
+    return { managed: manager.getSession(id)!, start, target };
+  }
+
+  // os.tmpdir() can be an 8.3 short path (C:\Users\RUNNER~1\...) while the
+  // shell may report the long form, so compare the real paths.
+  const real = (p: string): string => {
+    try { return fs.realpathSync.native(p).toLowerCase(); } catch { return p.toLowerCase(); }
+  };
+
+  function waitForCwd(managed: ManagedSession, cwd: string, label: string): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const deadline = Date.now() + EVENT_TIMEOUT_MS;
+      const tick = () => {
+        if (real(managed.meta.cwd) === real(cwd)) return resolve();
+        if (Date.now() > deadline) return reject(new Error(`timed out waiting for ${label}; meta.cwd=${managed.meta.cwd}`));
+        setTimeout(tick, 50);
+      };
+      tick();
+    });
+  }
+
+  it('reports the new folder while the program on the same line still runs', async () => {
+    const { managed, start, target } = startPane('cdline');
+    await waitForCwd(managed, start, 'the first prompt to report the spawn folder');
+    const baseline = managed.promptLog.size;
+
+    // The program must still be running when the assertion is made: a prompt
+    // after it would report the folder anyway, which is the old behaviour.
+    managed.ptyProcess.write(`cd '${target}'; & "${CMD_EXE}" /c "ping -n 8 127.0.0.1 > nul"\r`);
+    const cmdStart = await waitForEventAfter(managed, baseline, (e) => e.type === 'command_start', 'command_start');
+    await waitForCwd(managed, target, 'the mid-line report of the cd target');
+    const ended = managed.promptLog.snapshot().slice(baseline)
+      .some((e) => e.type === 'command_end' && e.byteOffset >= cmdStart.byteOffset);
+    expect(ended).toBe(false);
+  }, EVENT_TIMEOUT_MS * 2 + 2000);
+
+  it('disarms on a program launch and inside a function, and keeps a user action', async () => {
+    const { managed, start } = startPane('arm');
+    await waitForCwd(managed, start, 'the first prompt');
+    const probe = (line: string, label: string) => {
+      const before = managed.ringBuffer.readAll().length;
+      managed.ptyProcess.write(line);
+      return waitForOutputAfter(managed, before, /ARMED\[(\w+)\]/, label);
+    };
+    const armed = 'Write-Output "ARMED[$($ExecutionContext.InvokeCommand.PostCommandLookupAction -eq $global:__wmux_lookup)]"';
+
+    // Cmdlets typed on the line keep it armed until the line ends...
+    expect((await probe(`${armed}\r`, 'armed during a line'))[1]).toBe('True');
+    // ...a program launch disarms it...
+    expect((await probe(`& "${CMD_EXE}" /c rem; ${armed}\r`, 'after a program'))[1]).toBe('False');
+    // ...and so does the first lookup inside a function body, so a
+    // command-heavy function does not pay for the hook on every call.
+    expect((await probe(`function F { Get-Date > $null }; F; ${armed}\r`, 'after a function'))[1]).toBe('False');
+
+    // An action the user installed is chained while ours is armed and is the
+    // one left in place afterwards.
+    managed.ptyProcess.write('$global:userAction = { $global:userHits++ }; $ExecutionContext.InvokeCommand.PostCommandLookupAction = $global:userAction\r');
+    const kept = 'Write-Output "ARMED[$(($ExecutionContext.InvokeCommand.PostCommandLookupAction -eq $global:userAction) -and $global:userHits -gt 0)]"';
+    expect((await probe(`& "${CMD_EXE}" /c rem; ${kept}\r`, 'the user action after ours disarmed'))[1]).toBe('True');
+
+    // ...and it keeps running while ours is armed. The property hands back a
+    // delegate, which '&' cannot invoke, so the chained call failed silently
+    // and the user's action missed every lookup of the armed window.
+    const chained = '$h = $global:userHits; Get-Date > $null; Get-Date > $null; Write-Output "ARMED[$($global:userHits - $h -ge 2)]"';
+    expect((await probe(`${chained}\r`, 'the user action while ours is armed'))[1]).toBe('True');
+  }, EVENT_TIMEOUT_MS * 5 + 2000);
+
+  // A user action that runs commands of its own: those lookups land in our
+  // action while it is armed and must be absorbed there, not chained into the
+  // user's action again. The counter bounds the user's own recursion once ours
+  // has disarmed (PowerShell itself does not guard a lookup action).
+  it('runs a chained user action once per lookup when it makes lookups itself', async () => {
+    const { managed, start } = startPane('reentry');
+    await waitForCwd(managed, start, 'the first prompt');
+    managed.ptyProcess.write('$ExecutionContext.InvokeCommand.PostCommandLookupAction = { $global:userHits++; if ($global:userHits -lt 50) { Get-Date > $null; Get-Date > $null } }\r');
+    // Two lookups between the reset and the snapshot: the two Get-Date calls.
+    managed.ptyProcess.write('$global:userHits = 0; Get-Date > $null; Get-Date > $null; $global:snap = $global:userHits\r');
+    const before = managed.ringBuffer.readAll().length;
+    managed.ptyProcess.write('Write-Output "HITS[$global:snap]"\r');
+    const hits = await waitForOutputAfter(managed, before, /HITS\[(\d+)\]/, 'the user action hit count');
+    expect(hits[1]).toBe('2');
+  }, EVENT_TIMEOUT_MS * 2 + 2000);
+
+  // A for/foreach loop typed at the prompt makes top-level lookups, so nothing
+  // in its body disarmed the hook and the loop paid for it on every command.
+  // The hook now disarms after 64 lookups on one line. A cd before that is
+  // still reported at once; a cd after it waits for the next prompt.
+  it('disarms after 64 lookups on one line and reports a later cd at the prompt', async () => {
+    const { managed, start, target } = startPane('cap');
+    await waitForCwd(managed, start, 'the first prompt');
+    const probe = (line: string, label: string) => {
+      const before = managed.ringBuffer.readAll().length;
+      managed.ptyProcess.write(line);
+      return waitForOutputAfter(managed, before, /CAP\[(\w+)\]/, label);
+    };
+    const isOurs = '$($ExecutionContext.InvokeCommand.PostCommandLookupAction -eq $global:__wmux_lookup)';
+
+    // Below the cap the hook stays armed for the whole line...
+    expect((await probe(`for ($i = 0; $i -lt 20; $i++) { Get-Date > $null }; Write-Output "CAP[${isOurs}]"\r`, 'armed below the cap'))[1]).toBe('True');
+    // ...and the cap disarms it inside a long loop typed at the prompt.
+    expect((await probe(`for ($i = 0; $i -lt 200; $i++) { Get-Date > $null }; Write-Output "CAP[${isOurs}]"\r`, 'disarmed by the cap'))[1]).toBe('False');
+
+    // The line's status survives the cap: the prompt reports the failure.
+    const baseline = managed.promptLog.size;
+    managed.ptyProcess.write("for ($i = 0; $i -lt 200; $i++) { Get-Date > $null }; throw 'wmux-cap'\r");
+    const cmdStart = await waitForEventAfter(managed, baseline, (e) => e.type === 'command_start', 'command_start');
+    const cmdEnd = await waitForEventAfter(
+      managed,
+      baseline,
+      (e) => e.type === 'command_end' && e.byteOffset >= cmdStart.byteOffset,
+      'command_end after the cap',
+    );
+    expect(cmdEnd.exitCode).toBe(1);
+
+    // A user action set before the line ran on every lookup, armed or not, and
+    // is the one left in place when the cap disarms ours.
+    managed.ptyProcess.write('$global:userAction = { $global:userHits++ }; $ExecutionContext.InvokeCommand.PostCommandLookupAction = $global:userAction\r');
+    const restored = `$global:userHits = 0; for ($i = 0; $i -lt 200; $i++) { Get-Date > $null }; $h = $global:userHits; Get-Date > $null; Write-Output "CAP[$(($ExecutionContext.InvokeCommand.PostCommandLookupAction -eq $global:userAction) -and $global:userHits -gt $h -and $h -ge 200)]"\r`;
+    expect((await probe(restored, 'the user action after the cap'))[1]).toBe('True');
+
+    // A cd after the cap, then a program that is still running: meta.cwd
+    // stays put until the prompt after the program reports the new folder.
+    // Output markers, not prompt events, tell where the line is: the previous
+    // line's prompt can still be in flight when this one is written. Each
+    // marker is concatenated at run time so the echoed command does not match.
+    managed.ptyProcess.write('$ExecutionContext.InvokeCommand.PostCommandLookupAction = $null\r');
+    const before = managed.ringBuffer.readAll().length;
+    managed.ptyProcess.write(`for ($i = 0; $i -lt 200; $i++) { Get-Date > $null }; cd '${target}'; Write-Output ('PING' + 'START[1]'); & "${CMD_EXE}" /c "ping -n 8 127.0.0.1 > nul"; Write-Output ('PING' + 'DONE[1]')\r`);
+    await waitForOutputAfter(managed, before, /PINGSTART\[1\]/, 'the capped line reaching the program');
+    // The hook would have written OSC 7 ahead of the marker; give the daemon a
+    // moment to parse the stream, while ping -n 8 still runs for about 7 s.
+    await new Promise((r) => setTimeout(r, 500));
+    expect(managed.ringBuffer.readAll().subarray(before).toString('utf8')).not.toMatch(/PINGDONE\[1\]/);
+    expect(real(managed.meta.cwd)).toBe(real(start));
+    await waitForOutputAfter(managed, before, /PINGDONE\[1\]/, 'the program on the capped line ending');
+    await waitForCwd(managed, target, 'the prompt report after the capped line');
+  }, EVENT_TIMEOUT_MS * 8 + 2000);
+
+  // The action runs statements, and every statement sets $? to true. After a
+  // terminating error the host looks up Out-Default and prompt with the action
+  // still armed, so the prompt read $? = true and reported D;0.
+  it('reports a line that ends in a terminating error as failed', async () => {
+    const { managed, start } = startPane('status');
+    await waitForCwd(managed, start, 'the first prompt');
+    const baseline = managed.promptLog.size;
+    managed.ptyProcess.write("throw 'wmux-1942'\r");
+    const cmdStart = await waitForEventAfter(managed, baseline, (e) => e.type === 'command_start', 'command_start');
+    const cmdEnd = await waitForEventAfter(
+      managed,
+      baseline,
+      (e) => e.type === 'command_end' && e.byteOffset >= cmdStart.byteOffset,
+      'command_end for the throw',
+    );
+    expect(cmdEnd.exitCode).toBe(1);
+
+    // The status is re-created without an extra record in $Error: the user's
+    // own error stays $Error[0].
+    const before = managed.ringBuffer.readAll().length;
+    managed.ptyProcess.write('$Error.Clear(); Get-Item Q:\\nope-1942 2>$null; Get-Date > $null; Write-Output "ERRS[$($Error.Count)]"\r');
+    const errs = await waitForOutputAfter(managed, before, /ERRS\[(\d+)\]/, 'the $Error count');
+    expect(errs[1]).toBe('1');
+  }, EVENT_TIMEOUT_MS * 3 + 2000);
+});
+
 describe.runIf(hasGitBash)('OSC 133 runtime — bash.exe (Git Bash)', () => {
   let manager: DaemonSessionManager;
 

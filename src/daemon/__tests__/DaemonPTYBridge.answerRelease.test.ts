@@ -9,6 +9,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { IPty } from 'node-pty';
 import { DaemonPTYBridge } from '../DaemonPTYBridge';
 import { RingBuffer } from '../RingBuffer';
+import { ESCAPE_WIN32 } from '../../shared/win32InputKeys';
 
 function makeFakePty(): { pty: IPty; feed: (data: string) => void } {
   let dataHandler: ((data: string) => void) | null = null;
@@ -50,6 +51,9 @@ describe('DaemonPTYBridge — answering a dialog', () => {
     ['option 2', '2'],
     ['option 3', '3'],
     ['ESC (cancel)', '\x1b'],
+    // #1901: the cancel that closes the picker on Windows (#1915), and kitty's ESC.
+    ['ESC as a win32-input-mode record pair', ESCAPE_WIN32],
+    ['ESC as kitty CSI-u', '\x1b[27u'],
     ['Enter', '\r'],
   ])('%s releases the pane and reports the answer', (_label, key) => {
     bridge.noteAgentStatus('awaiting_input');
@@ -67,6 +71,7 @@ describe('DaemonPTYBridge — answering a dialog', () => {
 
   it.each([
     ['an arrow key', '\x1b[B'],
+    ['an arrow key as a win32-input-mode record', '\x1b[40;80;0;1;0;1_'],
     ['a letter', 'a'],
     ['a pasted digit', '\x1b[200~1\x1b[201~'],
   ])('%s is not an answer', (_label, key) => {

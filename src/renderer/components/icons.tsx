@@ -477,6 +477,27 @@ export function IconCornerUpLeft({ size = 14 }: { size?: number }) {
   );
 }
 
+/** Horizontal ellipsis — a row's overflow menu trigger. */
+export function IconMoreHorizontal({ size = 14 }: { size?: number }) {
+  return (
+    <Icon size={size}>
+      <line x1="3" y1="7" x2="3.1" y2="7" />
+      <line x1="7" y1="7" x2="7.1" y2="7" />
+      <line x1="11" y1="7" x2="11.1" y2="7" />
+    </Icon>
+  );
+}
+
+/** Elbow — a row nested under the one above it (a link under its PC). */
+export function IconElbow({ size = 14 }: { size?: number }) {
+  return <Icon size={size}><path d="M4.5 2.5v4.8a1.8 1.8 0 0 0 1.8 1.8h4.4" /></Icon>;
+}
+
+/** Speech bubble — a message-only link. */
+export function IconMessage({ size = 14 }: { size?: number }) {
+  return <Icon size={size}><path d="M2.2 3h9.6v6.2H6.4L3.8 11.4V9.2H2.2z" /></Icon>;
+}
+
 /** Vertical ellipsis — an overflow menu trigger. */
 export function IconMoreVertical({ size = 14 }: { size?: number }) {
   return (

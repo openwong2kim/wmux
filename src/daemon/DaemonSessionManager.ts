@@ -24,7 +24,13 @@ import { windowsPowerShellPolicyArgs } from '../shared/pwshExecutionPolicy';
 import { buildSafeChildEnv, isNestingMarker } from '../shared/envFilter';
 import { CLAUDE_SANDBOXED_ENV } from '../shared/agentFirstRun';
 import { isMac, parseWindowsBuildNumber } from '../shared/platform';
-import { shouldUseBundledConpty, spawnWithConptyPolicy } from '../shared/conptyWindows';
+import {
+  CONPTY_BACKEND_ENV,
+  type ConptyBackend,
+  parseConptyBackendOverride,
+  shouldUseBundledConpty,
+  spawnWithConptyPolicy,
+} from '../shared/conptyWindows';
 import { getWindowsDefaultShell, resolveBareShellName, resolveLaunchableWindowsExe } from '../shared/shellResolution';
 import { ENV_KEYS } from '../shared/constants';
 import { containsControlChars } from '../shared/cwdShape';
@@ -129,6 +135,18 @@ export interface ManagedSession {
    */
   resizedWhileMuted?: boolean;
   /**
+   * #1965: the ConPTY backend this PTY actually started on, as resolved by
+   * `spawnWithConptyPolicy` (bundled, or in-box including a bundled spawn
+   * that was demoted). Runtime only, never persisted: a recovered session
+   * resolves it again when it respawns. 'inbox' off Windows.
+   *
+   * The bundled OpenConsole differs from the in-box ConPTY in two ways the
+   * daemon has to know about: it emits nothing at all on resize (in-box
+   * answers every resize with a full repaint), and it holds the shell's
+   * output for about 3 s at startup until its DA1 query is answered.
+   */
+  conptyBackend: ConptyBackend;
+  /**
    * #766 — whether a desk renderer is actually SHOWING this pane (workspace +
    * tab active and the window itself visible), as last reported by the
    * renderer. Orthogonal to `meta.state`: an attached pane in a background
@@ -215,6 +233,21 @@ export class DaemonSessionManager extends EventEmitter {
 
   setInvoluntaryExitClassifier(fn: (exitCode: number | null, signal?: number) => boolean): void {
     this.involuntaryExitClassifier = fn;
+  }
+
+  /**
+   * #1965: whether a desk renderer is receiving this session's PTY output
+   * live right now (its session pipe has a client past the initial flush).
+   * Injected by daemon/index.ts, which owns the pipes. Default: never, which
+   * is also the truth for a manager no pipe server is wired to.
+   *
+   * Only desk renderers count. Web and phone viewers never answer terminal
+   * queries (userInputGate), so the bytes reaching them change nothing.
+   */
+  private liveRendererProbe: (id: string) => boolean = () => false;
+
+  setLiveRendererProbe(fn: (id: string) => boolean): void {
+    this.liveRendererProbe = fn;
   }
 
   /** Optionally set config so that session.bufferSizeMb is respected. */
@@ -603,7 +636,12 @@ export class DaemonSessionManager extends EventEmitter {
     // exists to absorb transient ConPTY errors (87) and a broad fallback would
     // silently demote the pane to mouse-less forever.
     let ptyProcess: IPty;
-    const useConptyDll = shouldUseBundledConpty(process.platform, parseWindowsBuildNumber(os.release()));
+    let conptyBackend: ConptyBackend = 'inbox';
+    const useConptyDll = shouldUseBundledConpty(
+      process.platform,
+      parseWindowsBuildNumber(os.release()),
+      parseConptyBackendOverride(process.env[CONPTY_BACKEND_ENV]),
+    );
     try {
       // #910 dogfood: the notices below are what makes a "shipped, still
       // broken" report diagnosable — they say which backend actually started,
@@ -624,6 +662,7 @@ export class DaemonSessionManager extends EventEmitter {
           if (level === 'warn') console.error(line);
           else console.log(line);
         },
+        (backend) => { conptyBackend = backend; },
       );
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
@@ -740,6 +779,7 @@ export class DaemonSessionManager extends EventEmitter {
       deferred,
       recoveredAgentUnconfirmed: deferred,
       firstGeometryPending: deferred,
+      conptyBackend,
       viewerVisible: true,
     };
     this.sessions.set(params.id, managed);
@@ -912,6 +952,16 @@ export class DaemonSessionManager extends EventEmitter {
     if (deferred) {
       bridge.setMuted(true);
     }
+    // #1965: the bundled OpenConsole holds the shell's output until its
+    // startup DA1 is answered (about 3 s otherwise). Answer it here when no
+    // renderer will: the backend is bundled, and the chunk is not reaching a
+    // renderer live — muted (recovery) or no flushed session pipe yet. The
+    // backend is read when the query arrives, not here, so tests can set it.
+    bridge.armStartupDa1Reply(
+      () => managed.conptyBackend === 'bundled'
+        && (bridge.isMuted || !this.liveRendererProbe(params.id)),
+      () => console.log(`[DaemonSessionManager] session ${params.id}: answered the bundled ConPTY startup DA1`),
+    );
     bridge.setupDataForwarding(ptyProcess, ringBuffer, params.id, promptLog);
 
     // #646: stamp the pid's OS creation time so later reaping paths can tell
@@ -1046,12 +1096,18 @@ export class DaemonSessionManager extends EventEmitter {
     const geometryChanged = safeCols !== managed.meta.cols || safeRows !== managed.meta.rows;
     const firstGeometry = managed.firstGeometryPending;
     managed.firstGeometryPending = false;
+    // #1965: the bundled OpenConsole emits nothing at all on resize, so there
+    // is no repaint at the new size to wait for — see activateDeferred.
+    const bundledConpty = managed.conptyBackend === 'bundled';
     if (geometryChanged) {
       // #1464: output held by a still-muted (recovering) session so far was
       // produced at the old size. Drop it BEFORE the resize — node-pty data
       // arrives asynchronously, so the shell's repaint at the new size lands
       // after this and stays held for the unmute to release.
-      managed.bridge.discardHeld();
+      //
+      // Not on the bundled ConPTY: nothing would replace what is dropped, and
+      // the held output is the only copy of the shell's first prompt.
+      if (!bundledConpty) managed.bridge.discardHeld();
       if (managed.bridge.isMuted) managed.resizedWhileMuted = true;
       managed.ptyProcess.resize(safeCols, safeRows);
       managed.meta.cols = safeCols;
@@ -1067,8 +1123,9 @@ export class DaemonSessionManager extends EventEmitter {
     // resize, so capture is already live and the #1464 held-output handling
     // below no longer applies. On Windows, request the same full ConPTY repaint
     // at the new size once the drain delay has passed, so the pane's latest
-    // frame is drawn at the desk's geometry.
-    if (firstGeometry && geometryChanged && !managed.bridge.isMuted && process.platform === 'win32') {
+    // frame is drawn at the desk's geometry. The bundled ConPTY answers that
+    // request with nothing (#1965), so it is not made there.
+    if (firstGeometry && geometryChanged && !managed.bridge.isMuted && process.platform === 'win32' && !bundledConpty) {
       setTimeout(() => this.repaintAtCurrentSize(id, managed), DEFERRED_UNMUTE_DELAY_MS).unref?.();
     }
 
@@ -1127,6 +1184,17 @@ export class DaemonSessionManager extends EventEmitter {
    * whatever the timing of the renderer's resizes. Discarding without it left
    * the pane blank whenever the last repaint landed before this timer fired
    * (4 of 6 panes in the Windows dogfood of #1469).
+   *
+   * #1965, the bundled ConPTY (OpenConsole: Windows 10, or forced with
+   * WMUX_CONPTY_BACKEND): everything above about the repaint is in-box
+   * behaviour. OpenConsole emits 0 bytes for every resize call — same size,
+   * ±1 row or column, back-and-forth — so discarding and asking for a repaint
+   * left a recovered pane blank until a key was pressed. Here the held output
+   * is always replayed (`resizeSession` keeps it too) and no repaint is
+   * requested. Its first frame was drawn at the spawn geometry, so after a
+   * size change the worst case is a prompt wrapped at the old width, not a
+   * blank pane; the ring also stamps those replayed bytes with the new size,
+   * so a later snapshot parses them at that size, with the same worst case.
    */
   activateDeferred(id: string): void {
     const managed = this.sessions.get(id);
@@ -1136,7 +1204,9 @@ export class DaemonSessionManager extends EventEmitter {
     setTimeout(() => {
       // A session destroyed and re-created under the same id is not this one.
       if (this.sessions.get(id) !== managed) return;
-      const conptyRepaint = managed.resizedWhileMuted === true && process.platform === 'win32';
+      const conptyRepaint = managed.resizedWhileMuted === true
+        && process.platform === 'win32'
+        && managed.conptyBackend !== 'bundled';
       managed.resizedWhileMuted = false;
       // setMuted(false) stamps the redraw guard the repaint below relies on.
       managed.bridge.setMuted(false, { replayHeld: !conptyRepaint });
