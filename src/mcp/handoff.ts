@@ -25,10 +25,14 @@ export interface MoaHandoffToolDeps {
   callRpc: (method: RpcMethod, params: Record<string, unknown>, timeoutMs?: number) => Promise<ToolResult>;
   /** WMUX_COMMANDER_TOKEN; undefined outside a brain, and the RPC fails closed. */
   getCommanderToken: () => string | undefined;
+  /** `ptyId` / `paneId` may be a pane name (`#w1-2`, `#backend`); these turn
+   *  it into the id main expects. Absent → values pass through unchanged. */
+  resolvePtyId?: (ref: string) => Promise<string>;
+  resolvePaneId?: (ref: string) => Promise<string>;
 }
 
 export const MOA_PROPOSE_HANDOFF_SHAPE = {
-  ptyId: z.string().optional().describe('Target pane ptyId (pane_list).'),
+  ptyId: z.string().optional().describe('Target pane ptyId or #pane name (pane_list).'),
   paneId: z.string().optional().describe('Target paneId, if you have no ptyId.'),
   body: z.string().describe('The task, as plain instructions to that agent.'),
   title: z.string().max(80).optional().describe('Short card title (≤80 chars).'),
@@ -50,8 +54,8 @@ export function registerMoaHandoffTool(register: McpServer['tool'], deps: MoaHan
     MOA_PROPOSE_HANDOFF_SHAPE,
     async ({ ptyId, paneId, body, title, external_source }) => {
       const params: Record<string, unknown> = { token: deps.getCommanderToken(), body };
-      if (ptyId) params.ptyId = ptyId;
-      if (paneId) params.paneId = paneId;
+      if (ptyId) params.ptyId = deps.resolvePtyId ? await deps.resolvePtyId(ptyId) : ptyId;
+      if (paneId) params.paneId = deps.resolvePaneId ? await deps.resolvePaneId(paneId) : paneId;
       if (title) params.title = title;
       if (external_source !== undefined) params.externalSource = external_source;
       return deps.callRpc('deck.proposeHandoff', params, PROPOSE_HANDOFF_TIMEOUT_MS);

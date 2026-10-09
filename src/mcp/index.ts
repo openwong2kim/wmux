@@ -2183,6 +2183,7 @@ registerChannelTools(
   {
     resolveWorkspaceId: requireWorkspaceId,
     getSenderPtyId: () => verifiedPtyId(),
+    resolvePaneId: async (ref: string) => (await resolvePaneIdRef(ref, paneNameRpc)) ?? ref,
   },
   MCP_CATALOG_OPTIONS,
 );
@@ -2414,6 +2415,8 @@ if (COMMANDER_MODE) {
   registerMoaHandoffTool(registerCommanderOnly, {
     callRpc,
     getCommanderToken: () => ctx.commanderToken,
+    resolvePtyId: async (ref: string) => (await resolvePtyRef(ref, paneNameRpc)) ?? ref,
+    resolvePaneId: async (ref: string) => (await resolvePaneIdRef(ref, paneNameRpc)) ?? ref,
   });
 }
 

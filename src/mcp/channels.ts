@@ -48,6 +48,10 @@ export interface ChannelToolDeps {
    *  (D5) — so a forged client workspace id is ignored. Mutating channel
    *  calls fail closed without a resolvable senderPtyId. */
   getSenderPtyId: () => string;
+  /** A mention's `pane_id` may be a pane name (`#w1-2`, `#backend`); this
+   *  turns it into the paneId before the daemon proves the pane belongs to
+   *  `workspace_id`. Absent → the value is passed through as before. */
+  resolvePaneId?: (ref: string) => Promise<string>;
 }
 
 /** Channel name pattern matches `CHANNEL_NAME_RE` in src/shared/channels.ts:
@@ -159,7 +163,7 @@ const CHANNEL_POST_SHAPE = {
           .string()
           .optional()
           .describe(
-            'Pin the mention to ONE agent pane (paneId from a2a_discover / pane_list). A pinned mention lands in that agent\'s prompt at its next idle moment — the only mention shape that reaches an agent by itself; without it the mention is badge-only and waits for a poll. A pin outside `workspace_id`, or onto a dead session, is refused (reported in `droppedMentions`, mention still lands badge-only), never redirected to a sibling pane. Liveness means a live PTY, not a live agent: a pane at its shell accepts the pin and the text lands at the shell prompt.',
+            'Pin the mention to ONE agent pane (paneId or #pane name from a2a_discover / pane_list). A pinned mention lands in that agent\'s prompt at its next idle moment — the only mention shape that reaches an agent by itself; without it the mention is badge-only and waits for a poll. A pin outside `workspace_id`, or onto a dead session, is refused (reported in `droppedMentions`, mention still lands badge-only), never redirected to a sibling pane. Liveness means a live PTY, not a live agent: a pane at its shell accepts the pin and the text lands at the shell prompt.',
           ),
       }),
     )
@@ -359,7 +363,9 @@ export function createChannelToolCatalog(deps: ChannelToolDeps) {
       };
       if (client_msg_id !== undefined) params['clientMsgId'] = client_msg_id;
       if (mentions !== undefined) {
-        params['mentions'] = mentions.map((m) => ({
+        const resolvePaneId = deps.resolvePaneId ?? (async (ref: string) => ref);
+        const paneIds = await Promise.all(mentions.map((m) => (m.pane_id !== undefined ? resolvePaneId(m.pane_id) : undefined)));
+        params['mentions'] = mentions.map((m, i) => ({
           workspaceId: m.workspace_id,
           name: m.name ?? m.workspace_id,
           ...(m.member_id !== undefined ? { memberId: m.member_id } : {}),
@@ -367,7 +373,7 @@ export function createChannelToolCatalog(deps: ChannelToolDeps) {
           // the daemon fills the route-time pty snapshot from the principal
           // registry after it has proven the pane belongs to workspace_id, so
           // the caller never carries (or forges) a second pane coordinate.
-          ...(m.pane_id !== undefined ? { paneId: m.pane_id } : {}),
+          ...(paneIds[i] !== undefined ? { paneId: paneIds[i] } : {}),
         }));
       }
       return callRpc('a2a.channel.post' as RpcMethod, params);
