@@ -6242,9 +6242,8 @@ export class WebTerminalServer {
    * The match is on `raw` as the request spelled it, byte for byte against the
    * transcript's `input.files[]` (or `input.file_path`); `sentFileParts`
    * separately refuses `.`/`..` segments and doubled separators. A `Read`
-   * grant also matches a spelling whose parent resolves to the recorded
-   * parent's directory (`/tmp` ↔ `/private/tmp`), with the same last
-   * component: the file opened is the same one. Only the PARENT is resolved: the last
+   * grant also matches macOS's `/tmp/` ↔ `/private/tmp/` respelling, as a
+   * string. Only the PARENT is resolved: the last
    * component is opened as named, so `openResolvedFile` refuses it when it is a
    * symlink and checks the handle is the regular file it looked up.
    *
@@ -6262,15 +6261,7 @@ export class WebTerminalServer {
     const projector = this.deps.projector?.() ?? null;
     const before = projector?.sentFileBinding(sessionId) ?? null;
     if (!projector || !before) return null;
-    let realParent: string | undefined;
-    if (tool === 'Read') {
-      try {
-        realParent = await fs.promises.realpath(parts.dir);
-      } catch {
-        return null;
-      }
-    }
-    const sentAt = await this.sentFiles.grantedAt(before.transcriptPath, raw, this.now(), tool, realParent);
+    const sentAt = await this.sentFiles.grantedAt(before.transcriptPath, raw, this.now(), tool);
     if (sentAt === null) return null;
     const after = projector.sentFileBinding(sessionId);
     if (

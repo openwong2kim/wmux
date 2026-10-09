@@ -9227,7 +9227,7 @@ describe('WebTerminalServer', () => {
     const readFile = (
       file: string,
       filePath: string,
-      opts: { at?: number; isError?: boolean; answered?: boolean } = {},
+      opts: { at?: number; isError?: boolean; answered?: boolean; textOnly?: boolean } = {},
     ): void => {
       const id = `toolu_read_${++seq}`;
       const timestamp = new Date(opts.at ?? Date.now()).toISOString();
@@ -9240,8 +9240,8 @@ describe('WebTerminalServer', () => {
           type: 'user', timestamp,
           message: { role: 'user', content: [{
             type: 'tool_result', tool_use_id: id,
-            content: opts.isError
-              ? [{ type: 'text', text: 'File does not exist.' }]
+            content: opts.isError || opts.textOnly
+              ? [{ type: 'text', text: opts.isError ? 'File does not exist.' : 'binary file' }]
               : [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: PNG_1X1.toString('base64') } }],
             ...(opts.isError ? { is_error: true } : {}),
           }] },
@@ -9350,17 +9350,52 @@ describe('WebTerminalServer', () => {
       }
     });
 
-    it('serves a spelling whose parent resolves to the read image\'s folder, with the same name', async () => {
+    it('refuses a Read whose successful result carries no image block', async () => {
+      const file = path.join(scratch, 'text.png');
+      fs.writeFileSync(file, PNG_1X1);
+      readFile(transcript, file, { textOnly: true });
+      const info = await startWithTranscript();
+      const res = await fetch(imageUrl('s1', file), { headers: bearer(info.token as string) });
+      expect(res.status).toBe(404);
+      expect(await res.json()).toEqual({ error: 'image not found' });
+    });
+
+    it('refuses an image rewritten after the Read, once past the clock tolerance', async () => {
+      const file = path.join(scratch, 'rewritten.png');
+      readFile(transcript, file, { at: Date.now() - 10 * 60 * 1000 });
+      // Written now: ten minutes after the call, past the five-minute tolerance.
+      fs.writeFileSync(file, PNG_1X1);
+      const info = await startWithTranscript();
+      const res = await fetch(imageUrl('s1', file), { headers: bearer(info.token as string) });
+      expect(res.status).toBe(404);
+    });
+
+    it('refuses a spelling through a linked parent folder, even when it reaches the read image', async () => {
       const file = path.join(scratch, 'shot.png');
       fs.writeFileSync(file, PNG_1X1);
-      // The `/tmp` ↔ `/private/tmp` case: a directory link to the scratch folder.
       const alias = path.join(path.dirname(scratch), 'alias');
       fs.symlinkSync(scratch, alias, 'dir');
       readFile(transcript, file);
       const info = await startWithTranscript();
       const res = await fetch(imageUrl('s1', path.join(alias, 'shot.png')), { headers: bearer(info.token as string) });
-      expect(res.status).toBe(200);
-      expect(Buffer.from(await res.arrayBuffer()).equals(PNG_1X1)).toBe(true);
+      expect(res.status).toBe(404);
+      expect(await res.json()).toEqual({ error: 'image not found' });
+    });
+
+    it.runIf(process.platform === 'darwin')('serves the /tmp spelling of a Read recorded under /private/tmp, and the reverse', async () => {
+      const root = fs.realpathSync(fs.mkdtempSync('/tmp/wmux-read-alias-'));
+      dirs.push(root);
+      expect(root.startsWith('/private/tmp/')).toBe(true);
+      const a = path.join(root, 'a.png');
+      const b = path.join(root, 'b.png');
+      fs.writeFileSync(a, PNG_1X1);
+      fs.writeFileSync(b, PNG_1X1);
+      readFile(transcript, a);
+      readFile(transcript, b.slice('/private'.length));
+      const info = await startWithTranscript();
+      const h = bearer(info.token as string);
+      expect((await fetch(imageUrl('s1', a.slice('/private'.length)), { headers: h })).status).toBe(200);
+      expect((await fetch(imageUrl('s1', b), { headers: h })).status).toBe(200);
     });
 
     it('refuses a different name that links to a read image, and a read path whose last component is a link', async () => {

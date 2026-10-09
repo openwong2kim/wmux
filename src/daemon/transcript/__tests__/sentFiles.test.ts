@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { SentFileIndex, SENT_FILE_MAX_AGE_MS, sentFileParts } from '../sentFiles';
+import { readGrantSpellings, SentFileIndex, SENT_FILE_MAX_AGE_MS, sentFileParts } from '../sentFiles';
 
 let dir: string;
 let transcript: string;
@@ -43,7 +43,7 @@ afterEach(() => {
 
 describe('SentFileIndex', () => {
   it('records a successful Read of an image path apart from sent files, and skips other Reads', async () => {
-    const read = (filePath: string, isError = false): string => {
+    const read = (filePath: string, isError = false, content: unknown = [{ type: 'image' }]): string => {
       const id = `toolu_${++seq}`;
       const timestamp = new Date(NOW).toISOString();
       return `${[JSON.stringify({
@@ -51,10 +51,13 @@ describe('SentFileIndex', () => {
         message: { role: 'assistant', content: [{ type: 'tool_use', id, name: 'Read', input: { file_path: filePath } }] },
       }), JSON.stringify({
         type: 'user', timestamp,
-        message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: [{ type: 'image' }], ...(isError ? { is_error: true } : {}) }] },
+        message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content, ...(isError ? { is_error: true } : {}) }] },
       })].join('\n')}\n`;
     };
-    fs.writeFileSync(transcript, [read('/s/a.PNG'), read('/s/b.jpeg', true), read('/s/c.ts'), send(['/s/d.png'])].join(''));
+    fs.writeFileSync(transcript, [
+      read('/s/a.PNG'), read('/s/b.jpeg', true), read('/s/c.ts'), send(['/s/d.png']),
+      read('/s/text.png', false, [{ type: 'text', text: 'not loaded' }]), read('/s/str.png', false, 'ok'),
+    ].join(''));
     const index = new SentFileIndex();
     expect(await index.grantedAt(transcript, '/s/a.PNG', NOW, 'Read')).toBe(NOW);
     // A Read grant is not a SendUserFile grant, and the reverse.
@@ -63,6 +66,44 @@ describe('SentFileIndex', () => {
     expect(await index.grantedAt(transcript, '/s/b.jpeg', NOW, 'Read')).toBeNull();
     expect(await index.grantedAt(transcript, '/s/c.ts', NOW, 'Read')).toBeNull();
     expect(await index.grantedAt(transcript, '/s/a.PNG', NOW + SENT_FILE_MAX_AGE_MS + 1, 'Read')).toBeNull();
+    // A success with no image block in it grants nothing.
+    expect(await index.grantedAt(transcript, '/s/text.png', NOW, 'Read')).toBeNull();
+    expect(await index.grantedAt(transcript, '/s/str.png', NOW, 'Read')).toBeNull();
+  });
+
+  it('respells only a leading /tmp/ or /private/tmp/, and only on macOS', () => {
+    expect(readGrantSpellings('/tmp/x/a.png', 'darwin')).toEqual(['/tmp/x/a.png', '/private/tmp/x/a.png']);
+    expect(readGrantSpellings('/private/tmp/x/a.png', 'darwin')).toEqual(['/private/tmp/x/a.png', '/tmp/x/a.png']);
+    expect(readGrantSpellings('/tmpx/a.png', 'darwin')).toEqual(['/tmpx/a.png']);
+    expect(readGrantSpellings('/private/tmpx/a.png', 'darwin')).toEqual(['/private/tmpx/a.png']);
+    expect(readGrantSpellings('/a/tmp/a.png', 'darwin')).toEqual(['/a/tmp/a.png']);
+    expect(readGrantSpellings('/tmp/x/a.png', 'linux')).toEqual(['/tmp/x/a.png']);
+  });
+
+  it('answers a Read under its /tmp alias with the newest grant still inside the window', async () => {
+    const read = (filePath: string, at: number): string => {
+      const id = `toolu_${++seq}`;
+      const timestamp = new Date(at).toISOString();
+      return `${[JSON.stringify({
+        type: 'assistant', timestamp,
+        message: { role: 'assistant', content: [{ type: 'tool_use', id, name: 'Read', input: { file_path: filePath } }] },
+      }), JSON.stringify({
+        type: 'user', timestamp,
+        message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: [{ type: 'image' }] }] },
+      })].join('\n')}\n`;
+    };
+    const old = NOW - SENT_FILE_MAX_AGE_MS - 60_000;
+    fs.writeFileSync(transcript, [
+      read('/private/tmp/s/a.png', old), read('/tmp/s/a.png', NOW),
+      read('/tmp/s/b.png', NOW - 1000), read('/private/tmp/s/b.png', NOW),
+    ].join(''));
+    const mac = new SentFileIndex({ platform: 'darwin' });
+    // The exact spelling's grant is expired; the alias's newer one answers.
+    expect(await mac.grantedAt(transcript, '/private/tmp/s/a.png', NOW, 'Read')).toBe(NOW);
+    expect(await mac.grantedAt(transcript, '/tmp/s/b.png', NOW, 'Read')).toBe(NOW);
+    // Not on other platforms, and never for SendUserFile.
+    const linux = new SentFileIndex({ platform: 'linux' });
+    expect(await linux.grantedAt(transcript, '/private/tmp/s/a.png', NOW, 'Read')).toBeNull();
   });
 
   it('lists every path of a successful call, byte for byte, inside the 24-hour window', async () => {

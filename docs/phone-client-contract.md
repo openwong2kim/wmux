@@ -982,13 +982,19 @@ differences:
 - Rule 1 reads `input.file_path` of a `Read` `tool_use` (in the transcript bound
   to **that pane**) instead of `input.files[]`, and only a path ending in `.png`,
   `.jpg`, `.jpeg`, `.gif` or `.webp` (any case) counts. Send the path exactly as
-  the turn page gave it. One respelling is also accepted: the same last
-  component under a parent folder that resolves to the same directory as the
-  recorded one (`/tmp/…` for a recorded `/private/tmp/…`, or the reverse). Any
-  other respelling — a `.` or `..` segment, a different name that links to the
-  file — is refused.
-- Rule 3: the `Read`'s `tool_result` must be a success (no `is_error: true`); a
-  `Read` of a missing file is an error result and grants nothing.
+  the turn page gave it. On a macOS daemon one respelling is also accepted: the
+  same string with a leading `/tmp/` in place of `/private/tmp/`, or the
+  reverse. It is a text comparison; any other respelling — a `.` or `..`
+  segment, a path through a linked folder, a different name that links to the
+  file — is refused, even when it reaches the same file. When both spellings
+  were read, the newest `Read` still inside the 24-hour window decides.
+- Rule 3: the `Read`'s `tool_result` must be a success (no `is_error: true`)
+  **and** hold an image content block — what Claude Code returns when it loaded
+  the file as an image. A `Read` of a missing file is an error result and grants
+  nothing.
+- A `Read` result is one transcript line holding the image base64-encoded, and
+  a line over 8 MiB is not indexed, so an image larger than about 6 MiB that the
+  agent read is not served this way (`404 image not found`).
 - Rule 6 is measured from the `Read`: an image rewritten after the agent looked
   at it is refused.
 - No audit line: an image the agent read is what the transcript grant already

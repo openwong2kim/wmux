@@ -14,7 +14,10 @@
 // screenshots and renders to a per-session scratch folder outside the spawn
 // cwd and then `Read` them, so this is where most agent-made images live. Only
 // image extensions are indexed: a session reads thousands of source files, and
-// they would crowd image grants out of the per-transcript cap.
+// they would crowd image grants out of the per-transcript cap. A `Read` counts
+// only when its tool_result carries an image block — what Claude Code returns
+// when it actually loaded the file as an image. The one respelling accepted is
+// macOS's `/tmp/` ↔ `/private/tmp/` prefix, compared as strings.
 //
 // Why not `parseEntry`: it projects a tool call into a display body (text,
 // possibly truncated), and this needs the structured `input.files` array. The
@@ -209,6 +212,7 @@ function absorbLine(index: TranscriptIndex, bytes: Buffer, offset: number): void
       if (!call) continue;
       index.pending.delete(block['tool_use_id']);
       if (block['is_error'] === true) continue;
+      if (call.tool === 'Read' && !hasImageBlock(block['content'])) continue;
       const grants = call.tool === TOOL_NAME ? index.sent : index.read;
       for (const file of call.files) {
         const prev = grants.get(file);
@@ -293,30 +297,22 @@ async function fingerprint(handle: fs.promises.FileHandle, index: TranscriptInde
   return head === null || tail === null ? null : { head, tail };
 }
 
+/** Whether a tool_result's content holds an image block. */
+function hasImageBlock(content: unknown): boolean {
+  return Array.isArray(content) && content.some((block) => isObject(block) && block['type'] === 'image');
+}
+
 /**
- * The newest grant whose recorded path has `filePath`'s last component and a
- * parent that resolves to `realParent`, or undefined. Recorded paths of a
- * refused shape never match.
+ * The spellings a `Read` grant for `filePath` may be recorded under: the path
+ * itself and, on macOS, the same path with its leading `/tmp/` swapped for
+ * `/private/tmp/` or the reverse. A string comparison only — no directory is
+ * resolved to decide it.
  */
-async function sameFileGrant(
-  grants: Map<string, SentGrant>,
-  filePath: string,
-  realParent: string,
-): Promise<SentGrant | undefined> {
-  const want = sentFileParts(filePath);
-  if (!want) return undefined;
-  let best: SentGrant | undefined;
-  for (const [recorded, grant] of grants) {
-    if (best && best.at >= grant.at) continue;
-    const parts = sentFileParts(recorded);
-    if (!parts || parts.name !== want.name) continue;
-    try {
-      if ((await fs.promises.realpath(parts.dir)) === realParent) best = grant;
-    } catch {
-      // A parent that no longer resolves names nothing.
-    }
-  }
-  return best;
+export function readGrantSpellings(filePath: string, platform: NodeJS.Platform = process.platform): string[] {
+  if (platform !== 'darwin') return [filePath];
+  if (filePath.startsWith('/tmp/')) return [filePath, `/private${filePath}`];
+  if (filePath.startsWith('/private/tmp/')) return [filePath, filePath.slice('/private'.length)];
+  return [filePath];
 }
 
 const READ_FLAGS =
@@ -331,12 +327,14 @@ export class SentFileIndex {
   private readonly inflight = new Map<string, Promise<TranscriptIndex | null>>();
   private readonly maxScanBytes: number;
   private readonly maxTranscripts: number;
+  private readonly platform: NodeJS.Platform;
   /** Scans that read the file, for tests that pin the cache. */
   scans = 0;
 
-  constructor(opts: { maxScanBytes?: number; maxTranscripts?: number } = {}) {
+  constructor(opts: { maxScanBytes?: number; maxTranscripts?: number; platform?: NodeJS.Platform } = {}) {
     this.maxScanBytes = opts.maxScanBytes ?? DEFAULT_MAX_SCAN_BYTES;
     this.maxTranscripts = opts.maxTranscripts ?? DEFAULT_MAX_TRANSCRIPTS;
+    this.platform = opts.platform ?? process.platform;
   }
 
   /**
@@ -351,31 +349,26 @@ export class SentFileIndex {
   }
 
   /**
-   * `sentAt` for either granting tool. For `Read`, a `realParent` (the
-   * realpath of `filePath`'s parent) also accepts a recorded path with the
-   * same last component whose parent resolves to that same directory — `/tmp`
-   * and `/private/tmp` on macOS. That names the same file the recorded
-   * spelling would open, since the route opens the resolved parent plus the
-   * unresolved name either way.
+   * `sentAt` for either granting tool. A `Read` grant is also found under the
+   * `/tmp/` ↔ `/private/tmp/` respelling on macOS (`readGrantSpellings`); when
+   * both spellings hold one, the newest grant still inside the window wins.
    */
-  async grantedAt(
-    transcriptPath: string,
-    filePath: string,
-    nowMs: number,
-    tool: GrantTool,
-    realParent?: string,
-  ): Promise<number | null> {
+  async grantedAt(transcriptPath: string, filePath: string, nowMs: number, tool: GrantTool): Promise<number | null> {
+    const spellings = tool === 'Read' ? readGrantSpellings(filePath, this.platform) : [filePath];
     for (let attempt = 0; attempt < 2; attempt++) {
       const index = await this.refresh(transcriptPath);
       if (!index) return null;
       const grants = tool === TOOL_NAME ? index.sent : index.read;
-      let grant = grants.get(filePath);
-      if (!grant && tool === 'Read' && realParent !== undefined) {
-        grant = await sameFileGrant(grants, filePath, realParent);
-      }
+      const candidates = spellings
+        .map((spelling) => grants.get(spelling))
+        .filter((grant): grant is SentGrant => {
+          if (!grant) return false;
+          const age = nowMs - grant.at;
+          return age <= SENT_FILE_MAX_AGE_MS && age >= -SENT_FILE_CLOCK_SKEW_MS;
+        })
+        .sort((a, b) => b.at - a.at);
+      const grant = candidates[0];
       if (!grant) return null;
-      const age = nowMs - grant.at;
-      if (age > SENT_FILE_MAX_AGE_MS || age < -SENT_FILE_CLOCK_SKEW_MS) return null;
       if (await this.grantStillOnDisk(transcriptPath, grant)) return grant.at;
       if (this.indexes.get(transcriptPath) === index) this.indexes.delete(transcriptPath);
     }
