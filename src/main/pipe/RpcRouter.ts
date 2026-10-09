@@ -12,7 +12,7 @@ import { isAlwaysEnforcedMethod } from '../mcp/methodCapabilityMap';
 import { isLocalExternalWireContext } from '../mcp/rpcProvenance';
 import { commanderTokenWorkspace } from '../deck/commanderTrust';
 import { COMMANDER_TEARDOWN_DENY } from '../../shared/commanderSurface';
-import { commanderLevelRefusal } from '../deck/moaLevelGate';
+import { commanderLevelRefusal, commanderScopeRefusal } from '../deck/moaLevelGate';
 import type { EnforcementMode } from '../mcp/enforcementMode';
 import type { ApprovalQueue } from '../mcp/ApprovalQueue';
 import {
@@ -365,6 +365,11 @@ export class RpcRouter {
       const levelRefusal = commanderLevelRefusal(request.method, boundWorkspace, request.params);
       if (levelRefusal) {
         return { id: request.id, ok: false, error: levelRefusal };
+      }
+      // While a goal is active, Moa's direct sends stay inside its contract.
+      const scopeRefusal = await commanderScopeRefusal(request.method, boundWorkspace, request.params);
+      if (scopeRefusal) {
+        return { id: request.id, ok: false, error: scopeRefusal };
       }
     }
 

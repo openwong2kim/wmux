@@ -240,6 +240,30 @@ describe('commander role gate — Moa level gate', () => {
     }
   });
 
+  it('under an active goal, input.send to a pane outside the contract is refused before any handler runs', async () => {
+    const owners: Record<string, string> = { 'pty-task': 'ws-task', 'pty-ops': 'ws-ops' };
+    setMoaLevelGate({
+      hqWorkspaceId: () => 'ws-brain',
+      level: () => 2,
+      activeGoal: () => ({ goalId: 'G-abc123', humanOnly: [], scope: ['ws-task'] }),
+      ptyOwner: async (p) => owners[p] ?? null,
+    });
+    router.register('input.send', async () => ({ sent: true }));
+    router.register('input.sendKey', async () => ({ sent: true }));
+    const hq = mintCommanderToken('ws-brain');
+    try {
+      const out = await call(hq, 'input.send', { ptyId: 'pty-ops', text: 'use fixture A', submit: true });
+      expect(out.ok).toBe(false);
+      expect(String((out as { error?: string }).error)).toMatch(/workspace ws-ops is outside the goal's contract/);
+      const key = await call(hq, 'input.sendKey', { ptyId: 'pty-ops', key: 'enter' });
+      expect(String((key as { error?: string }).error)).toMatch(/outside the goal's contract/);
+      const inside = await call(hq, 'input.send', { ptyId: 'pty-task', text: 'use fixture A' });
+      expect(inside.ok).toBe(true);
+    } finally {
+      revokeCommanderToken(hq);
+    }
+  });
+
   it('teardown stays refused at every level (the gate only adds refusals)', async () => {
     setMoaLevelGate({ hqWorkspaceId: () => 'ws-brain', level: () => 3, activeGoal: () => ({ goalId: 'G-1', humanOnly: [] }) });
     const hq = mintCommanderToken('ws-brain');

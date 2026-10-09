@@ -15,6 +15,11 @@ import {
 } from './deckDecisionStore';
 import { getWorkspaceMirror } from '../workspace/WorkspaceMirror';
 import { resolveRepoRoot } from './moaReadGate';
+import { resolvePtyOwnerWorkspace } from '../workspace/ptyOwnership';
+import { sendToRenderer } from '../pipe/handlers/_bridge';
+import { isRemoteTaskId } from '../../shared/a2aRemote';
+
+type GetWindow = Parameters<typeof resolvePtyOwnerWorkspace>[0];
 
 export function createMoaGoalService(opts: { notify: () => void; filePath?: string }): MoaGoalService {
   return new MoaGoalService({
@@ -49,14 +54,65 @@ export function createMoaGoalService(opts: { notify: () => void; filePath?: stri
   });
 }
 
+/** Where the level gate reads a pane's owner and an A2A task's other side. */
+export interface MoaLevelGateLookups {
+  getWindow?: GetWindow;
+  getDaemonClient?: () => { rpc(method: string, params?: unknown): Promise<unknown> } | null;
+}
+
+function isRec(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+function partyWs(v: unknown): string | null {
+  if (typeof v === 'string' && v.length > 0) return v;
+  return isRec(v) && typeof v.workspaceId === 'string' && v.workspaceId.length > 0 ? v.workspaceId : null;
+}
+
+/** The workspace on the other side of `taskId` from `hq`, read from one task
+ *  query reply; null when the task or its parties are not there. Exported for tests. */
+export function counterpartyFromQuery(reply: unknown, hq: string, taskId: string): string | null {
+  const tasks = isRec(reply) ? reply.tasks : null;
+  const list = Array.isArray(tasks) ? tasks : isRec(tasks) && Array.isArray(tasks.tasks) ? tasks.tasks : isRec(tasks) ? [tasks.task ?? tasks] : [];
+  const t = list.find((x: unknown) => isRec(x) && x.id === taskId);
+  if (!isRec(t)) return null;
+  const meta = isRec(t.metadata) ? t.metadata : t;
+  const from = partyWs(meta.from);
+  const to = partyWs(meta.to);
+  if (from === hq) return to;
+  if (to === hq) return from;
+  return null;
+}
+
 /** Install the commander level gate over `goals` (null uninstalls). */
-export function installMoaLevelGate(goals: MoaGoalService | null): void {
+export function installMoaLevelGate(goals: MoaGoalService | null, lookups: MoaLevelGateLookups = {}): void {
   setMoaLevelGate({
     hqWorkspaceId: () => getHqWorkspaceId(),
     level: () => getMoaConfig().level,
     activeGoal: () => {
       const p = goals?.powers();
-      return p && p.ok ? { goalId: p.contract.id, humanOnly: p.contract.humanOnly } : null;
+      return p && p.ok
+        ? {
+            goalId: p.contract.id,
+            humanOnly: p.contract.humanOnly,
+            scope: [...p.contract.workspaceIds, ...p.contract.taskWorkspaceIds],
+          }
+        : null;
+    },
+    ...(lookups.getWindow
+      ? { ptyOwner: (ptyId: string) => resolvePtyOwnerWorkspace(lookups.getWindow as GetWindow, ptyId) }
+      : {}),
+    taskCounterparty: async (hq: string, taskId: string) => {
+      if (isRemoteTaskId(taskId)) return null; // another PC: never inside a contract
+      const q = { workspaceId: hq, view: 'page', taskId };
+      const dc = lookups.getDaemonClient?.() ?? null;
+      if (dc) {
+        const fromDaemon = counterpartyFromQuery(await dc.rpc('a2a.task.query', q).catch(() => null), hq, taskId);
+        if (fromDaemon) return fromDaemon;
+      }
+      if (!lookups.getWindow) return null;
+      const fromRenderer = await sendToRenderer(lookups.getWindow, 'a2a.task.query', q).catch(() => null);
+      return counterpartyFromQuery(fromRenderer, hq, taskId);
     },
   });
 }

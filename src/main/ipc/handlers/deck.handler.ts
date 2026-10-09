@@ -803,7 +803,7 @@ export function registerDeckHandler(
   // the level gate RpcRouter asks on every HQ commander request.
   const moaGoals = createMoaGoalService({ notify: () => emitMoaChanged() });
   setMoaGoalService(moaGoals);
-  installMoaLevelGate(moaGoals);
+  installMoaLevelGate(moaGoals, { getWindow, getDaemonClient: () => opts.getDaemonClient?.() ?? null });
 
   const moaHandoffs = opts.invokeOperatorRpc
     ? createMoaHandoffService({
