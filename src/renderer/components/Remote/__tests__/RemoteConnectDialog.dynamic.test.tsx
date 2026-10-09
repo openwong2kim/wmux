@@ -90,6 +90,16 @@ describe('pasted text', () => {
     expect(maskPasted(`${INVITE}\n${LINK}\nhello`)).not.toMatch(/K7M2QX9P|ABCD2345/);
     expect(maskPasted('https://office.ts.net:7681\nABCD2345')).toBe('https://office.ts.net:7681 ••••••••');
   });
+
+  it('splits a bundle that Ctrl+V into the one-line field joined with a space, but not an address and a code', () => {
+    // Chromium's <input type=text> turns a pasted newline into a space (measured on Windows 11).
+    expect(pastedParts(`${INVITE} ${LINK}`)).toEqual([INVITE, LINK]);
+    expect(pastedKind(`${INVITE} ${LINK}`)).toBe('bundle');
+    expect(maskPasted(`${INVITE} ${LINK}`)).not.toMatch(/K7M2QX9P|ABCD2345/);
+    expect(pastedParts('https://office.ts.net:7681 ABCD2345')).toEqual(['https://office.ts.net:7681 ABCD2345']);
+    expect(pastedKind('https://office.ts.net:7681 ABCD2345')).toBe('link');
+    expect(pastedParts(`${INVITE} hello`)).toEqual([`${INVITE} hello`]);
+  });
 });
 
 describe('Connect a PC dialog', () => {
@@ -366,5 +376,21 @@ describe('one invite for A2A and the workspaces', () => {
     expect(q('remote-connect-message')?.getAttribute('role')).toBe('alert');
     expect(q('remote-connect-pasted')?.textContent).not.toContain('wmux-a2a://');
     expect(q('remote-connect-pasted')?.textContent).toContain('office.ts.net');
+  });
+
+  it('a bundle pasted into the field itself (newline turned into a space) connects both', async () => {
+    stub('', false);
+    await render();
+    const input = q<HTMLInputElement>('remote-connect-input')!;
+    const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+    await act(async () => {
+      setValue.call(input, `${INVITE} ${LINK}`);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await act(async () => { q<HTMLButtonElement>('remote-connect-submit')!.click(); });
+    await settle();
+    expect(a2a.join).toHaveBeenCalledWith(INVITE);
+    expect(remote.hostsPair).toHaveBeenCalledWith('https://office.ts.net', 'ABCD2345');
+    expect(q('remote-connect-message')?.getAttribute('role')).toBe('status');
   });
 });

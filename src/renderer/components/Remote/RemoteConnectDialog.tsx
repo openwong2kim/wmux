@@ -52,10 +52,17 @@ function kindOf(value: string): 'a2a' | 'link' | null {
  * The pieces a paste connects, in order: each line of a bundled invite when
  * every line is one on its own, else the whole text (an address and a code
  * on two lines is still one pairing).
+ *
+ * Ctrl+V into the single-line field turns the bundle's newline into a space
+ * (Chromium does that for `<input type=text>`), so whitespace-separated words
+ * that are each a whole invite or link on their own split the same way.
  */
 export function pastedParts(text: string): string[] {
   const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
-  return lines.length > 1 && lines.every((l) => kindOf(l) !== null) ? lines : [text.trim()];
+  if (lines.length > 1 && lines.every((l) => kindOf(l) !== null)) return lines;
+  const words = text.trim().split(/\s+/).filter(Boolean);
+  if (words.length > 1 && words.every((w) => kindOf(w) !== null)) return words;
+  return [text.trim()];
 }
 
 /** What a pasted text is, for the Paste tab: an A2A invite, a pairing link, both, or nothing usable. */
