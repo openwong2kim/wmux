@@ -79,6 +79,7 @@ export class AutomationClient {
       id: params.id,
       mode: params.mode,
       ...(params.allowedTools ? { allowedTools: params.allowedTools } : {}),
+      ...(params.expectedRevision !== undefined ? { expectedRevision: params.expectedRevision } : {}),
     });
   }
 

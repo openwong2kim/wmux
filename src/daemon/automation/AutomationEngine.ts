@@ -81,11 +81,17 @@ const TRACKER_ARM_AFTER_MS = 10_000;
 const TRACKER_ARM_EVERY_MS = 35_000;
 const MINUTE_MS = 60_000;
 /**
- * A needs-regrant notice is announced only once it has stood this long: the
- * editor's own save is update → grant, and the grant (which withdraws the
- * notice) lands within moments.
+ * A needs-regrant notice is held back this long before it is announced (or
+ * listed): the editor's own save is update → native confirm → grant, and the
+ * grant withdraws the notice. The confirm has no deadline, so this is set well
+ * beyond any plausible time in it rather than at the update → grant RPC gap;
+ * the cost of holding back is nil, because an occurrence actually skipped as
+ * needs_regrant announces its notice at once.
  */
-export const REGRANT_NOTICE_SETTLE_MS = 10_000;
+export const REGRANT_NOTICE_SETTLE_MS = 5 * 60_000;
+
+/** grant() refusal when the schedule changed after the human confirmed. */
+export const GRANT_REVISION_CHANGED = 'The schedule changed while you were confirming; grant it again';
 
 export interface AutomationAgentView {
   slug: AgentSlug | null;
@@ -120,6 +126,11 @@ export interface AutomationEnginePorts {
   hasPendingApproval: (id: string) => boolean;
   /** Newest recorded transcript turn end, ms epoch. */
   transcriptTurnEndAt: (id: string) => number | undefined;
+  /**
+   * Newest transcript event of any kind, ms epoch: the agent is still doing
+   * work (a tool call, a result, a message). Optional; absent = not known.
+   */
+  transcriptLastEventAt?: (id: string) => number | undefined;
   /** Scrollback + viewport as plain text, or null. */
   snapshotText: (id: string) => Promise<string | null>;
   killTree: (pid: number) => Promise<void>;
@@ -134,6 +145,8 @@ interface LiveRun {
   deliveredAt?: number;
   sawRunning: boolean;
   awaitingSince?: number;
+  /** Last time the agent was seen running (detector or hook), ms epoch. */
+  lastRunningAt?: number;
   lingerUntil?: number;
   processExitAt?: number;
 }
@@ -157,7 +170,11 @@ export class AutomationEngine {
   private readonly live = new Map<string, LiveRun>();
   /** Active run registry: pane id → run id. The gate-skip / history-skip key. */
   private readonly panes = new Map<string, string>();
-  /** needs-regrant attention ids already broadcast (queued silently, announced from the tick). */
+  /**
+   * needs-regrant attention ids that are announced: broadcast, and visible in
+   * `list()`. Queued silently first; announced by the tick once settled, by
+   * the first skipped occurrence, or at boot.
+   */
   private readonly announced = new Set<string>();
   private booting = true;
   private lastTickAt: number | null = null;
@@ -189,6 +206,19 @@ export class AutomationEngine {
     this.attention = a.attention;
     this.runs = loadRuns(this.ports.wmuxDir).runs;
     const now = this.now();
+    // A notice that outlived a daemon is settled by definition. A schedule
+    // whose grant is already stale (an update that never got its grant, or a
+    // store from before stale grants were skipped) gets one now: its runs are
+    // skipped from here on, and nobody would otherwise be told why.
+    for (const item of this.attention) if (item.kind === 'needs-regrant') this.announced.add(item.id);
+    let raised = 0;
+    for (const automation of this.automations) {
+      if (!needsRegrant(automation) || this.attention.some((x) => x.automationId === automation.id && x.kind === 'needs-regrant')) continue;
+      this.queueAttention(automation, 'needs-regrant', false);
+      this.announced.add(this.attention[this.attention.length - 1].id);
+      raised++;
+    }
+    if (raised) await this.persistAutomations();
     let settled = 0;
     for (const run of this.runs) {
       if (isFinalRunState(run.state)) continue;
@@ -283,10 +313,11 @@ export class AutomationEngine {
     if (announce) this.ports.emit({ type: 'attention', automationId: automation.id, automationName: automation.name, kind });
   }
 
-  /** Broadcast needs-regrant notices that outlived the editor's update → grant window. */
-  private announceRegrantNotices(now: number): void {
+  /** Broadcast needs-regrant notices that outlived the editor's update → grant window (or all of one schedule's, now). */
+  private announceRegrantNotices(now: number, automationId?: string): void {
     for (const item of this.attention) {
-      if (item.kind !== 'needs-regrant' || this.announced.has(item.id) || now - item.at < REGRANT_NOTICE_SETTLE_MS) continue;
+      if (item.kind !== 'needs-regrant' || this.announced.has(item.id)) continue;
+      if (automationId ? item.automationId !== automationId : now - item.at < REGRANT_NOTICE_SETTLE_MS) continue;
       this.announced.add(item.id);
       this.ports.emit({ type: 'attention', automationId: item.automationId, automationName: item.automationName, kind: item.kind });
     }
@@ -295,7 +326,10 @@ export class AutomationEngine {
   // ── Reads ─────────────────────────────────────────────────────────────────
 
   list(): AutomationListResult {
-    return { automations: this.automations.map(clone), pendingAttention: this.attention.map(clone) };
+    // An unannounced needs-regrant notice is still inside the editor's save
+    // window: a client pulling the queue now must not surface it either.
+    const pending = this.attention.filter((x) => x.kind !== 'needs-regrant' || this.announced.has(x.id));
+    return { automations: this.automations.map(clone), pendingAttention: pending.map(clone) };
   }
 
   listRuns(automationId?: string): AutomationRun[] {
@@ -409,9 +443,14 @@ export class AutomationEngine {
   }
 
   /** Grants `mode` at the CURRENT revision. The only writer of grantedRevision. */
-  async grant(id: unknown, mode: unknown, allowedTools: unknown): Promise<AutomationMutationResult> {
+  async grant(id: unknown, mode: unknown, allowedTools: unknown, expectedRevision?: unknown): Promise<AutomationMutationResult> {
     const automation = this.find(id);
     if (!automation) return { ok: false, error: 'Not found' };
+    // The revision the human confirmed, when the caller pinned one: an edit
+    // that landed while the confirm was open is not what they agreed to.
+    if (expectedRevision !== undefined && expectedRevision !== automation.revision) {
+      return { ok: false, error: GRANT_REVISION_CHANGED };
+    }
     if (!isPermissionMode(mode)) return { ok: false, error: 'Invalid permission mode' };
     if (mode === 'auto' && !AUTOMATION_AGENT_CAPS[automation.action.agent].autoMode) return { ok: false, error: 'Auto mode is for Claude only' };
     const before = effectiveMode(automation);
@@ -573,6 +612,7 @@ export class AutomationEngine {
     const snapshot = clone(automation);
     // Fail closed: a grant that predates an edit never runs as a weaker mode.
     if (needsRegrant(snapshot)) {
+      this.announceRegrantNotices(this.now(), automation.id);
       const skipped = this.recordSkipped(automation, scheduledFor, 'needs_regrant', trigger, snapshot.permission.mode);
       this.pruneAndDrop();
       await this.persistRuns();
@@ -862,7 +902,10 @@ export class AutomationEngine {
     }
 
     const view = this.ports.readAgent(live.ptyId);
-    if (view.status === 'running') live.sawRunning = true;
+    if (view.status === 'running') {
+      live.sawRunning = true;
+      live.lastRunningAt = now;
+    }
     // Completion first: a finished turn must not be read as awaiting.
     const turnEnd = this.ports.transcriptTurnEndAt(live.ptyId);
     if (live.deliveredAt !== undefined && turnEnd !== undefined && turnEnd > live.deliveredAt) {
@@ -885,6 +928,15 @@ export class AutomationEngine {
       }
       const limit = this.awaitTimeoutMs(run);
       if (now - (live.awaitingSince ?? now) > limit) {
+        // One misread "awaiting" must not end a run that is still working:
+        // turn progress since the wait began restarts the clock from there.
+        // Raw PTY output is not progress — a prompt on screen keeps
+        // repainting, and that is exactly the wait this limit ends.
+        const progress = Math.max(live.lastRunningAt ?? 0, this.ports.transcriptLastEventAt?.(live.ptyId) ?? 0);
+        if (progress > (live.awaitingSince ?? now)) {
+          live.awaitingSince = progress;
+          return;
+        }
         await this.terminate(run, 'failed', 'await_timeout');
       }
       return;
@@ -911,7 +963,10 @@ export class AutomationEngine {
       if (isFinalRunState(run.state)) await this.persistRuns();
     }
     if (live.phase !== 'monitoring' || live.deliveredAt === undefined) return;
-    if (signal.status === 'running') live.sawRunning = true;
+    if (signal.status === 'running') {
+      live.sawRunning = true;
+      live.lastRunningAt = this.now();
+    }
     const confirmed = signal.decision === undefined || CONFIRMED_DECISIONS.has(signal.decision);
     if (signal.kind === 'agent.stop_failure' && confirmed) {
       await this.complete(run, live, 'failed', 'agent_error');

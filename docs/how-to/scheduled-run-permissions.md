@@ -4,10 +4,12 @@ A scheduled run starts your own agent CLI in a background terminal at the time y
 
 | Mode | Agents | What the run does |
 |---|---|---|
-| Approval | Claude, Codex | The agent asks before acting and the run waits for you. Use it only when you are at your desk. A run still waiting after 15 minutes ends as "no response in time". |
+| Approval | Claude, Codex | The agent asks before acting and the run waits for you. Use it only when you are at your desk. A run still waiting after 15 minutes with no progress ends as "no response in time". |
 | Scoped | Claude, Codex | Claude: only the tools you list run without asking. Codex: writes are allowed inside the folder's sandbox, with no approval prompts. |
-| Auto | Claude | Claude's own auto mode: Claude approves routine actions itself and stops risky ones. wmux tools that act on other panes (fan-out, typing into or opening panes, messaging other agents, the browser) stay off. |
+| Auto | Claude | Claude's own auto mode: Claude approves routine actions itself and stops risky ones. wmux's own MCP tools are off for the run. |
 | Bypass | Claude, Codex | Every action runs without asking. |
+
+Runs that nobody answers for (Claude Auto and Bypass, Codex Scoped and Bypass) start without wmux's own MCP tools: a scheduled run has no use for panes, channels, delegation, the browser or desktop control. Claude Scoped keeps them, because only the tools you list run without asking.
 
 New schedules start in **Auto** for Claude and **Scoped** for Codex. Saving Auto or Bypass shows a confirmation dialog; the schedule gets that mode only when you confirm.
 
@@ -17,7 +19,7 @@ A permission is granted for exactly what the schedule runs. If its folder, agent
 
 ## Waiting for a response
 
-"Await timeout" under More options sets how long a run may wait for a human. Left empty, it is 15 minutes in Approval and 60 minutes in the other modes. A run that times out ends and frees its slot, so the next occurrence is not skipped as overlapping.
+"Await timeout" under More options sets how long a run may wait for a human. Left empty, it is 15 minutes in Approval and 60 minutes in the other modes. Progress during the wait (the agent running again, or new transcript entries) restarts the clock. A run that times out ends and frees its slot, so the next occurrence is not skipped as overlapping.
 
 ## Auto mode availability
 

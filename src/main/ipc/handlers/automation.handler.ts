@@ -63,13 +63,13 @@ export function autoConfirmCopy(locale: AutomationUiLocale, automationName: stri
   return locale === 'ko'
     ? {
       message: `"${name}"을(를) Claude 자동 모드로 실행할까요?`,
-      detail: '정한 시각에, 자리에 없을 때도 Claude가 일상적인 작업은 스스로 승인하고 위험한 작업은 막습니다. 다른 판을 조작하는 wmux 도구는 꺼집니다.',
+      detail: '정한 시각에, 자리에 없을 때도 Claude가 일상적인 작업은 스스로 승인하고 위험한 작업은 막습니다. 이 실행에서는 wmux 도구가 꺼집니다.',
       confirm: '자동 모드 사용',
       cancel,
     }
     : {
       message: `Run "${name}" in Claude's auto mode?`,
-      detail: 'At the scheduled time, including while you are away, Claude approves routine actions itself and stops risky ones. wmux tools that act on other panes stay off.',
+      detail: "At the scheduled time, including while you are away, Claude approves routine actions itself and stops risky ones. The run gets none of wmux's own tools.",
       confirm: 'Use Auto',
       cancel,
     };
@@ -183,18 +183,29 @@ export function registerAutomationHandlers(
       const a = api();
       if (!a) return refuse();
       if (!isId(id) || !MODES.includes(mode as AutomationPermissionMode)) return refuse('invalid request');
+      let expectedRevision: number | undefined;
       if (mode === 'bypass' || mode === 'auto') {
         const win = event?.sender ? BrowserWindow.fromWebContents(event.sender) : null;
-        let name = '';
+        // Read BEFORE the prompt: the grant is pinned to the revision the
+        // human is confirming, and the daemon refuses it if an edit lands
+        // while the prompt is open.
+        let target: Automation | undefined;
         try {
-          name = (await a.list()).automations.find((x) => x.id === id)?.name ?? '';
-        } catch { /* the name only labels the prompt */ }
-        if (!(await confirmGrant(win, name, mode))) return refuse('cancelled');
+          target = (await a.list()).automations.find((x) => x.id === id);
+        } catch { /* refused below */ }
+        if (!target) return refuse('Not found');
+        expectedRevision = target.revision;
+        if (!(await confirmGrant(win, target.name, mode))) return refuse('cancelled');
       }
       const tools = Array.isArray(allowedTools) && allowedTools.every((t) => typeof t === 'string')
         ? (allowedTools as string[])
         : undefined;
-      return a.grant({ id, mode: mode as AutomationPermissionMode, ...(tools ? { allowedTools: tools } : {}) });
+      return a.grant({
+        id,
+        mode: mode as AutomationPermissionMode,
+        ...(tools ? { allowedTools: tools } : {}),
+        ...(expectedRevision !== undefined ? { expectedRevision } : {}),
+      });
     },
   ));
 

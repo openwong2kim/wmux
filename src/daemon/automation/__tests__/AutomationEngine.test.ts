@@ -111,15 +111,16 @@ describe('AutomationEngine — revision & grants', () => {
     });
     expect(edited.ok && edited.automation.revision).toBe(2);
     expect(edited.ok && edited.automation.permission.grantedRevision).toBe(1);
-    // The update queued the stale-grant notice right away; it is broadcast
-    // only once it outlives the editor's own update → grant window.
-    expect(h.engine.list().pendingAttention?.map((x) => x.kind)).toEqual(['grant-raised', 'needs-regrant']);
+    // The update queued the stale-grant notice right away, held back (not
+    // broadcast, not listed) while the editor's update → confirm → grant runs.
+    expect(h.engine.list().pendingAttention?.map((x) => x.kind)).toEqual(['grant-raised']);
     const regrantEvents = () => h.events.filter((e) => e.type === 'attention' && e.kind === 'needs-regrant');
-    h.engine.tick(h.clock.t + 1_000);
+    h.engine.tick(h.clock.t + 60_000);
     expect(regrantEvents()).toHaveLength(0);
-    h.engine.tick(h.clock.t + 11_000);
-    h.engine.tick(h.clock.t + 12_000);
+    h.engine.tick(h.clock.t + 5 * MIN + 1_000);
+    h.engine.tick(h.clock.t + 5 * MIN + 2_000);
     expect(regrantEvents()).toHaveLength(1);
+    expect(h.engine.list().pendingAttention?.map((x) => x.kind)).toEqual(['grant-raised', 'needs-regrant']);
     // A manual/test run refuses; nothing is spawned.
     expect(await h.engine.runNow(a.automation.id, 'test')).toEqual({ ok: false, error: expect.any(String) });
     // The schedule's own occurrence is recorded skipped, never launched as approval.
@@ -133,7 +134,52 @@ describe('AutomationEngine — revision & grants', () => {
     expect(h.engine.list().pendingAttention?.map((x) => x.kind)).toEqual(['grant-raised', 'grant-raised']);
     expect((await h.engine.runNow(a.automation.id, 'test')).ok).toBe(true);
     await settle();
-    expect(h.created[0].command).toBe('claude --dangerously-skip-permissions');
+    expect(h.created[0].command).toBe('claude --dangerously-skip-permissions --disallowedTools mcp__wmux');
+  });
+
+  it('a skipped occurrence announces its held-back notice at once', async () => {
+    const h = harness();
+    await h.engine.start({ timers: false });
+    const a = await h.engine.create(draft());
+    if (!a.ok) throw new Error();
+    await h.engine.grant(a.automation.id, 'auto', undefined);
+    await h.engine.update(a.automation.id, draft({ action: { kind: 'launch', cwd: '/work/repo', agent: 'claude', prompt: 'edited' } }));
+    await h.engine.startRun(h.engine.list().automations[0], h.clock.t, 'scheduled');
+    expect(h.events.filter((e) => e.type === 'attention' && e.kind === 'needs-regrant')).toHaveLength(1);
+    expect(h.engine.list().pendingAttention?.map((x) => x.kind)).toContain('needs-regrant');
+  });
+
+  it('boot: a schedule already holding a stale grant gets one needs-regrant notice', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-engine-'));
+    fs.writeFileSync(path.join(dir, AUTOMATIONS_FILE), JSON.stringify({
+      version: 1,
+      automations: [
+        { ...draft(), id: 'a1', enabled: true, revision: 3, createdAt: 1, permission: { mode: 'bypass', grantedRevision: 2 } },
+        { ...draft(), id: 'a2', enabled: true, revision: 3, createdAt: 1, permission: { mode: 'bypass', grantedRevision: 3 } },
+      ],
+      attention: [],
+    }));
+    const h = harness({ dir });
+    await h.engine.start({ timers: false });
+    expect(h.engine.list().pendingAttention?.map((x) => [x.automationId, x.kind])).toEqual([['a1', 'needs-regrant']]);
+    // Not queued twice across restarts.
+    const again = harness({ dir });
+    await again.engine.start({ timers: false });
+    expect(again.engine.list().pendingAttention).toHaveLength(1);
+  });
+
+  it('a grant pinned to a revision the schedule has left is refused', async () => {
+    const h = harness();
+    await h.engine.start({ timers: false });
+    const a = await h.engine.create(draft());
+    if (!a.ok) throw new Error();
+    // An edit lands while the native confirm (pinned to revision 1) is open.
+    await h.engine.update(a.automation.id, draft({ action: { kind: 'launch', cwd: '/work/repo', agent: 'claude', prompt: 'edited' } }));
+    const stale = await h.engine.grant(a.automation.id, 'auto', undefined, 1);
+    expect(stale).toEqual({ ok: false, error: expect.stringContaining('changed') });
+    expect(h.engine.list().automations[0].permission).toEqual({ mode: 'approval' });
+    const fresh = await h.engine.grant(a.automation.id, 'auto', undefined, 2);
+    expect(fresh.ok && fresh.automation.permission).toEqual({ mode: 'auto', grantedRevision: 2 });
   });
 
   it('the tick skips a due occurrence whose grant is stale', async () => {
@@ -167,7 +213,7 @@ describe('AutomationEngine — revision & grants', () => {
     const res = await again.engine.runNow(a.automation.id, 'manual');
     expect(res.ok && res.run.effectiveMode).toBe('auto');
     await settle();
-    expect(again.created[0].command).toMatch(/^claude --permission-mode auto --disallowedTools "mcp__wmux__fanout_start,/);
+    expect(again.created[0].command).toBe("claude --permission-mode auto --disallowedTools mcp__wmux");
   });
 
   it('a raised grant queues an attention item', async () => {
@@ -393,7 +439,7 @@ describe('AutomationEngine — completion & caps', () => {
     await bypass.engine.grant(a.automation.id, 'bypass', undefined);
     await bypass.engine.runNow(a.automation.id, 'manual');
     await settle();
-    expect(bypass.created[0].command).toBe('claude --dangerously-skip-permissions');
+    expect(bypass.created[0].command).toBe('claude --dangerously-skip-permissions --disallowedTools mcp__wmux');
     bypass.state.pendingApproval = true;
     await bypass.engine.monitorOnce();
     expect(bypass.engine.listRuns()[0].state).toBe('awaiting');
@@ -412,6 +458,36 @@ describe('AutomationEngine — completion & caps', () => {
     await approval.engine.monitorOnce();
     expect(approval.engine.listRuns()[0]).toMatchObject({ state: 'failed', reason: 'await_timeout', effectiveMode: 'approval' });
     expect(approval.destroyed).toHaveLength(1);
+  });
+
+  it('turn progress during a wait restarts the await clock; repaint-only output does not', async () => {
+    const transcript: { lastEventAt?: number } = {};
+    const h = harness({ ports: { transcriptLastEventAt: () => transcript.lastEventAt } });
+    await startedRun(h);
+    h.state.agent = { ...h.state.agent, status: 'awaiting_input' };
+    await h.engine.monitorOnce();
+    expect(h.engine.listRuns()[0].state).toBe('awaiting');
+    // The transcript moved 10 min into the "wait": the agent is working.
+    transcript.lastEventAt = h.clock.t + 10 * MIN;
+    h.clock.t += 16 * MIN;
+    await h.engine.monitorOnce();
+    expect(h.engine.listRuns()[0].state).toBe('awaiting');
+    // No progress for a full limit after that: it ends.
+    h.clock.t += 10 * MIN;
+    await h.engine.monitorOnce();
+    expect(h.engine.listRuns()[0]).toMatchObject({ state: 'failed', reason: 'await_timeout' });
+  });
+
+  it('a running hook during a misread wait keeps the run alive', async () => {
+    const h = harness();
+    const run = await startedRun(h);
+    h.state.agent = { ...h.state.agent, status: 'awaiting_input' };
+    await h.engine.monitorOnce();
+    h.clock.t += 14 * MIN;
+    await h.engine.onAgentEvent(`auto-${run.id}`, { kind: 'agent.tool_started', status: 'running', decision: 'activity' });
+    h.clock.t += 2 * MIN;
+    await h.engine.monitorOnce();
+    expect(h.engine.listRuns()[0].state).not.toBe('failed');
   });
 
   it('a configured await timeout wins in approval mode too', async () => {
@@ -470,7 +546,7 @@ describe('AutomationEngine — review regressions', () => {
     const edited = h.engine.update(a.automation.id, draft({ action: { kind: 'launch', cwd: '/work/repo', agent: 'claude', prompt: 'new prompt' } }));
     await Promise.all([started, edited]);
     await settle();
-    expect(h.created[0].command).toBe('claude --dangerously-skip-permissions');
+    expect(h.created[0].command).toBe('claude --dangerously-skip-permissions --disallowedTools mcp__wmux');
     expect(h.delivered).toEqual(['do the thing']);
     expect(h.engine.listRuns()[0].revision).toBe(1);
   });

@@ -248,6 +248,12 @@ export interface AutomationGrantParams {
   id: string;
   mode: AutomationPermissionMode;
   allowedTools?: string[];
+  /**
+   * The revision the human confirmed. Main reads it before showing its native
+   * confirm; the daemon refuses the grant when the schedule has moved on, so a
+   * grant never lands on an edit nobody saw.
+   */
+  expectedRevision?: number;
 }
 /** `test` runs once without enabling the schedule. */
 export interface AutomationRunNowParams { id: string; kind: 'manual' | 'test' }

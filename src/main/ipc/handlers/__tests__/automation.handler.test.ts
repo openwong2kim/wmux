@@ -61,6 +61,17 @@ describe('automation IPC handlers', () => {
     expect(rpc).toHaveBeenCalledWith(AUTOMATION_RPC.grant, { id: 'a1', mode: 'auto' });
   });
 
+  it('pins the grant to the revision read before the prompt; an unknown schedule is never prompted', async () => {
+    rpc.mockImplementation(async (method: string) =>
+      method === AUTOMATION_RPC.list ? { automations: [{ id: 'a1', name: 'Nightly', revision: 3 }] } : { ok: true, automation: { id: 'a1' } });
+    confirm.mockResolvedValue(true);
+    await call(IPC.AUTOMATION_GRANT, 'a1', 'auto');
+    expect(rpc).toHaveBeenCalledWith(AUTOMATION_RPC.grant, { id: 'a1', mode: 'auto', expectedRevision: 3 });
+    confirm.mockClear();
+    await expect(call(IPC.AUTOMATION_GRANT, 'gone', 'bypass')).resolves.toEqual({ ok: false, error: 'Not found' });
+    expect(confirm).not.toHaveBeenCalled();
+  });
+
   it('auto copy names the schedule on one line in both locales', () => {
     expect(autoConfirmCopy('en', 'Night\nly').message).toBe('Run "Night ly" in Claude\'s auto mode?');
     expect(autoConfirmCopy('ko', '').message).toContain('"wmux"');

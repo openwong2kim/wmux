@@ -4949,6 +4949,7 @@ function registerRpcHandlers(
     deliverPrompt: (id, slug, incarnationId, prompt) => deliverPromptToSession(id, slug, incarnationId, prompt),
     hasPendingApproval: (id) => approvalRegistry?.list().pending.some((r) => r.sessionId === id) ?? false,
     transcriptTurnEndAt: (id) => transcriptTurnEnd(projector.snapshot(id)?.events, 0)?.at,
+    transcriptLastEventAt: (id) => projector.snapshot(id)?.events.at(-1)?.ts,
     snapshotText: async (id) => {
       const outcome = await queuedTextSnapshot(sessionManager, id, 2000);
       return outcome?.ok ? outcome.rows.map((r) => r.text).join('\n') : null;
