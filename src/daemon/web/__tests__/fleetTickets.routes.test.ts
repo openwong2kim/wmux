@@ -105,6 +105,8 @@ describe('fleet ticket routes', () => {
     expect((await on.get('/api/fleet/tickets/wl-unknown')).status).toBe(404);
     expect((await on.get(`/api/fleet/tickets/${encodeURIComponent('handoff:dec-9')}`)).status).toBe(404);
     expect((await on.get('/api/fleet/tickets/%E0%A4%A')).status).toBe(404);
+    const anonymous = await fetch(`http://127.0.0.1:${server!.status().port}/api/fleet/tickets/wl-1`);
+    expect(anonymous.status).toBe(401);
     await server!.stop();
     const off = await start({ allowTranscript: false });
     expect(await off.get('/api/fleet/tickets/wl-1')).toMatchObject({ status: 403, body: { error: 'transcript-disabled' } });
