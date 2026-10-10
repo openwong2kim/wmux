@@ -156,7 +156,7 @@ import { startMoaIssueProposals } from '../../deck/moaIssueProposalsHost';
 import { setMoaHandoffService } from '../../deck/moaHandoff';
 import { createMoaWakeHandler, setMoaWakeHandler } from '../../deck/moaWake';
 import { createMoaHandoffService } from '../../deck/moaHandoffHost';
-import { renderGoalBlock, setMoaGoalService } from '../../deck/moaGoalContract';
+import { goalAnswerWakePrompt, renderGoalBlock, setMoaGoalService } from '../../deck/moaGoalContract';
 import { createMoaGoalService, installMoaLevelGate } from '../../deck/moaGoalHost';
 import { setMoaLevelGate } from '../../deck/moaLevelGate';
 import { HANDOFF_NOTICE_OPTION, HANDOFF_OPTIONS, type MoaHandoffResolveResult } from '../../../shared/moaHandoff';
@@ -3773,11 +3773,9 @@ export function registerDeckHandler(
   /** Tell Moa how the operator answered its goal card (moaGoalContract.ts). */
   const wakeMoaForGoal = (hq: string, goalId: string, status: 'active' | 'declined', note?: string): void => {
     if (hq !== getHqWorkspaceId()) return;
-    const prompt = status === 'active'
-      ? `[goal] The operator APPROVED goal ${goalId} (see the [goal] block). Start on it now: plan it, fan out in its repository, answer and instruct its tasks, verify the results, then call moa_goal({action:"complete", summary}) and report once. Push, PRs and merges stay the operator's.`
-      : note
-        ? `[goal] Goal ${goalId} was NOT approved: ${note}. Do not act on it. If the work still stands, propose it again with moa_propose_goal so the card shows the current setting.`
-        : `[goal] The operator DECLINED goal ${goalId}. Do not act on it. If the request still stands, ask them what they want instead, or work as before.`;
+    // Re-read: an End can land right after the approval on the same chain.
+    const prompt = goalAnswerWakePrompt(goalId, status, note, moaGoals.get(goalId)?.status);
+    if (!prompt) return;
     void runTurnForWorkspace(prompt, hq, { queued: true }).catch(() => undefined);
   };
   const resumePromptFor = (d: WorkspaceDecision): string =>

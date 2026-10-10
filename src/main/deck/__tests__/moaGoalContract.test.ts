@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { MoaGoalService, renderGoalBlock, type MoaGoalPorts } from '../moaGoalContract';
+import { MoaGoalService, goalAnswerWakePrompt, renderGoalBlock, type MoaGoalPorts } from '../moaGoalContract';
 import type { WorkspaceDecision } from '../deckDecisionStore';
 import type { MoaLevel } from '../../../shared/moa';
 import type { FanoutWorkerPermissionMode } from '../../../shared/workerLaunch';
@@ -526,5 +526,21 @@ describe('moa goal — an end whose save fails stays ended across a restart', ()
     await s.svc.save();
     fs.writeFileSync(`${s.file}.ended`, `${JSON.stringify({ id: next, createdAt: -1, status: 'canceled', endedAt: 1, endNote: 'old' })}\n{torn`);
     expect(rig({}, s.file).svc.current()).toMatchObject({ id: next, status: 'active' });
+  });
+});
+
+// Live dogfood 2026-10-10: Approve and End raced on the card; the goal ended
+// (correct), but Moa was still woken with "APPROVED … Start on it now".
+describe('goalAnswerWakePrompt', () => {
+  it('says APPROVED only while the goal is still active', () => {
+    expect(goalAnswerWakePrompt('G-1', 'active', undefined, 'active')).toMatch(/APPROVED goal G-1/);
+    for (const live of ['canceled', 'completed', 'expired', 'exhausted', 'pending', null, undefined]) {
+      expect(goalAnswerWakePrompt('G-1', 'active', undefined, live)).toBeNull();
+    }
+  });
+
+  it('a decline is always told, with the note when there is one', () => {
+    expect(goalAnswerWakePrompt('G-1', 'declined', undefined, 'declined')).toMatch(/DECLINED goal G-1/);
+    expect(goalAnswerWakePrompt('G-1', 'declined', 'the mode changed', 'declined')).toMatch(/NOT approved: the mode changed/);
   });
 });

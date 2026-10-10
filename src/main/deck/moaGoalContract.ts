@@ -652,3 +652,24 @@ export function renderGoalBlock(view: MoaGoalView | null): string | null {
     `${left}. When the goal is done and verified, call moa_goal({action:"complete", summary}) and report once.`,
   ].join('\n');
 }
+
+/**
+ * The turn that tells Moa how the operator answered its goal card, or null
+ * when there is nothing true to say. `live` is the goal's status when the wake
+ * is sent: an approval that an End overtook (both on the same serial chain,
+ * the End second) must not tell Moa to "start on it now".
+ */
+export function goalAnswerWakePrompt(
+  goalId: string,
+  answer: 'active' | 'declined',
+  note: string | undefined,
+  live: string | null | undefined,
+): string | null {
+  if (answer === 'active') {
+    if (live !== 'active') return null;
+    return `[goal] The operator APPROVED goal ${goalId} (see the [goal] block). Start on it now: plan it, fan out in its repository, answer and instruct its tasks, verify the results, then call moa_goal({action:"complete", summary}) and report once. Push, PRs and merges stay the operator's.`;
+  }
+  return note
+    ? `[goal] Goal ${goalId} was NOT approved: ${note}. Do not act on it. If the work still stands, propose it again with moa_propose_goal so the card shows the current setting.`
+    : `[goal] The operator DECLINED goal ${goalId}. Do not act on it. If the request still stands, ask them what they want instead, or work as before.`;
+}
