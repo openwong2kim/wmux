@@ -9,6 +9,7 @@ import { useStore } from '../../stores';
 import type { StoreState } from '../../stores';
 import { isMoaHqWorkspace, listedWorkspaces, moaHqId } from '../../stores/slices/moaSlice';
 import { t } from '../../i18n';
+import { isShadowWorkspaceId } from '../../../shared/pcRail';
 
 export { listedWorkspaces, moaHqId };
 
@@ -20,6 +21,9 @@ type CloseView = Pick<StoreState, 'moa' | 'workspaces'> & { moaHqSeed?: string |
  *  refusal here; callers already handle it. */
 export function workspaceCloseRefusal(state: CloseView, workspaceId: string): 'moa-hq' | 'last-workspace' | null {
   if (isMoaHqWorkspace(state, workspaceId)) return 'moa-hq';
+  // Closing another computer's (shadow) workspace only detaches its tabs; it
+  // is never one of the operator's own, so it is never the last one.
+  if (isShadowWorkspaceId(workspaceId)) return null;
   if (listedWorkspaces(state.workspaces, moaHqId(state)).length <= 1) return 'last-workspace';
   return null;
 }

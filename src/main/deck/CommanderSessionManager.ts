@@ -79,7 +79,7 @@ export interface CommanderSessionManagerDeps {
   /** Fired whenever a completed turn reports a session id DIFFERENT from the
    *  last one observed (P3a persistence hook). Failures inside the callback are
    *  swallowed — persistence must never break a live turn. */
-  onSessionId?: (sessionId: string, rotatedAccountId: string | null) => void;
+  onSessionId?: (sessionId: string, accountId: string | null | undefined) => void;
   /** Fired AFTER a turn flips busy→idle, on a LATER TICK (never synchronously
    *  from the unwinding `finally`) — the event-push coalescer's flush trigger.
    *  Deferring is load-bearing: a synchronous callback could re-enter `send()`
@@ -95,7 +95,7 @@ export class CommanderSessionManager {
   private readonly adapter: BrainAdapter;
   private readonly sink: BrainEventSink;
   private readonly startOptions: BrainStartOptions;
-  private readonly onSessionId?: (sessionId: string, rotatedAccountId: string | null) => void;
+  private readonly onSessionId?: (sessionId: string, accountId: string | null | undefined) => void;
   private readonly onIdle?: () => void;
   private readonly deferIdle: (fn: () => void) => void;
   private _status: CommanderStatus = 'idle';
@@ -142,11 +142,21 @@ export class CommanderSessionManager {
     return this._turnOrigin;
   }
 
+  private _turnRemoteMoa = false;
+
+  /** The latest accepted turn was a wake carrying another PC's Moa's work
+   *  (a2a.received). Same lifetime as turnOrigin. Under an approved goal,
+   *  fan-out refuses such a turn (fanout.rpc.ts), in code, not in the prompt. */
+  get turnWokenByRemoteMoa(): boolean {
+    return this._turnRemoteMoa;
+  }
+
   /** The human typed a turn into the embedded TUI (it did not go through send). */
   notifyForeignTurnStart(): void {
     if (this._status === 'disposed') return;
     this.foreignTurnGeneration++;
     this._turnOrigin = 'human';
+    this._turnRemoteMoa = false;
   }
 
   getStatus(): CommanderStatusSnapshot {
@@ -187,7 +197,10 @@ export class CommanderSessionManager {
     // Origin grants authority to the provider's live work. A local read only
     // reserves the turn slot; it must not promote earlier autonomous work to
     // operator-authorized work while looking up or showing a status answer.
-    if (!localFirst) this._turnOrigin = opts.origin === 'automation' ? 'automation' : 'human';
+    if (!localFirst) {
+      this._turnOrigin = opts.origin === 'automation' ? 'automation' : 'human';
+      this._turnRemoteMoa = opts.origin === 'automation' && opts.remoteMoa === true;
+    }
     // Round-5 review P1: production adapters (ClaudeSdkAdapter, AcpBrainAdapter)
     // report failures by YIELDING a BrainEvent{type:'error'} — or by ending the
     // stream without a turn-end — rather than throwing, so an exception-only
@@ -253,6 +266,7 @@ export class CommanderSessionManager {
           trimmed = (typeof fallback === 'function' ? fallback() : fallback).trim();
         }
         this._turnOrigin = opts.origin === 'automation' ? 'automation' : 'human';
+        this._turnRemoteMoa = opts.origin === 'automation' && opts.remoteMoa === true;
         if (!this._started) {
           this.adapter.start(this.startOptions);
           this._started = true;
@@ -273,7 +287,7 @@ export class CommanderSessionManager {
         ) {
           this._lastReportedSessionId = ev.sessionId;
           try {
-            this.onSessionId?.(ev.sessionId, this.adapter.rotatedAccountId ?? null);
+            this.onSessionId?.(ev.sessionId, this.adapter.conversationAccountId);
           } catch {
             /* persistence is best-effort — never fail the live turn */
           }
@@ -339,7 +353,7 @@ export class CommanderSessionManager {
     if (!sessionId || sessionId === this._lastReportedSessionId) return;
     this._lastReportedSessionId = sessionId;
     try {
-      this.onSessionId?.(sessionId, this.adapter.rotatedAccountId ?? null);
+      this.onSessionId?.(sessionId, this.adapter.conversationAccountId);
     } catch {
       /* persistence is best-effort — never fail the live turn */
     }

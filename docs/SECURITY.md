@@ -48,6 +48,47 @@ Permission enforcement is a substrate guarantee for plugin access through docume
 
 > Status: Phase 2.1 implementation work item. The contract above is the Phase 0 declaration of intent; enforcement code ships across the v3.0 release window. See `plans/generic-wandering-teapot.md`.
 
+### 1.3.1 Browser calls act on the caller's verified workspace
+
+**Guarantee.** No wmux tool, MCP tool argument, or CLI flag lets an agent
+choose or name the workspace or pane a browser call acts on. Every `browser.*`
+RPC takes its workspace (and, where there is one, its pane) from an identity
+main recorded for the caller:
+
+- a validated commander token (the workspace orchestrator);
+- the plugin host's binding (an iframe plugin);
+- a workspace claim token, which main mints:
+  - from `mcp.claimWorkspace`, for a caller outside every pane (a dedicated
+    workspace);
+  - from main's own walk of the caller's process tree up to a live pane, for
+    an agent in a pane (a pane claim, bound to the workspace and the pane);
+  - from the owner record of a shared Codex app-server thread, for a caller
+    main has seen running under that server. Windows has no owner record, and
+    there the wmux MCP server refuses browser tools under a shared server
+    rather than use the walk, which names the pane that started the server;
+  - for a WSL pane whose agent the daemon follows inside the distro, when the
+    walk does not reach the pane.
+
+A `workspaceId` in the request only narrows that identity: a different one,
+or a call with no recorded identity, is refused in both `mcp.mode`s. A pane
+claim goes stale when the pane moves or closes. The envelope's `callerPtyId`
+picks a pane only for the in-process operator and plugin-host lanes. The
+renderer operator (the person at the window, and the phone browser that acts
+through it) is the one caller that may act across workspaces.
+
+The inputs the MCP server and the CLI send for this — their own process id,
+the calling Codex thread, the pane named in their environment — are routing
+inputs. They come from the calling process itself, never from tool arguments
+or flags, and main checks each against what it can observe itself (the live
+process table, live panes, the thread owner index, the daemon's agent
+tracking) before it mints a claim.
+
+**Out of scope.** Code running as the same OS user that speaks the pipe
+protocol directly. Such code can already read the pipe token, other
+processes, and browser profiles (§3), so it is not confined by this boundary.
+Like §1.3, this is a guarantee for callers that use the documented surfaces —
+agents and the tools they are given — not a defence against same-user code.
+
 ### 1.4 Packaging fuse posture
 
 The shipped Electron build sets these fuses (`forge.config.ts`), recorded here so the disabled ones are on the record and not mistaken for oversights:

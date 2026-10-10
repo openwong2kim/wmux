@@ -39,6 +39,9 @@
  * still owns the modes) drops the owed reset, and `undefined` (no answer yet,
  * or a stale one) keeps it owed and asks again after `recheckMs`. Without the
  * hook (phone page, remote mirror) the prompt mark alone decides, as before.
+ * A `false` answer is kept as a declined debt rather than forgotten: when the
+ * caller later learns the agent died (`processGone()`), the probe is asked
+ * again, since an "alive" reading can come from a lagging agent tracker.
  *
  * Input drop. While a reset is owed but not yet applied (the truth is being
  * asked for, or the reset is queued behind pending output — xterm parses in
@@ -188,6 +191,16 @@ export interface ShellPromptModeReset extends Disposable {
   dropsReport(data: string): boolean;
   /** Forget everything folded so far. Call next to every `terminal.reset()`. */
   reset(): void;
+  /**
+   * Process truth just reported the pane's agent dead (desktop: the agent
+   * tracker's alive→dead edge). If a reset at the current prompt was declined
+   * because the probe answered "alive", ask the probe again: now at a prompt,
+   * or at the next prompt when a command owns the pane. A probe still in
+   * flight (or out of retries) is superseded by a fresh one. This is a hint,
+   * never an order: nothing is written unless the shell still owns the pane,
+   * no new owner armed a mode since, and the probe now answers `true`.
+   */
+  processGone(): void;
 }
 
 interface Installed {
@@ -242,6 +255,19 @@ export function installShellPromptModeReset(
   let focusArmedSincePrompt = false;
   /** A reset is owed: armed by a command that is gone from the stream. Survives a 133;C with no arming. */
   let owed: { focus: boolean } | null = null;
+  /**
+   * A reset the probe declined (`false`: a live process owned the modes then).
+   * Kept, not forgotten, so a later death edge (`processGone()`) can ask again:
+   * the "alive" reading can be a lagging agent tracker (Windows when the CIM
+   * snapshot failed, every WSL pane), and no later prompt re-raises the debt.
+   * Dropped by a new owner (a reporting DECSET), a fresh debt, or reset().
+   */
+  let declined: { focus: boolean } | null = null;
+  /**
+   * processGone() arrived while a command owned the pane: the declined debt is
+   * re-asked at the next prompt instead of being lost. Goes with `declined`.
+   */
+  let goneHint = false;
   let resolution: Resolution = 'idle';
   /** Id of the current resolution; stale probe answers and markers carry an older one. */
   let resolutionId = 0;
@@ -298,7 +324,9 @@ export function installShellPromptModeReset(
         if (leaked()) queueMarker();
         else { owed = null; stopResolving(); }
       } else if (gone === false) {
-        // A live process still owns the modes: it keeps its mouse.
+        // A live process still owns the modes: it keeps its mouse. Remember
+        // the debt for a later death edge (processGone()).
+        declined = owed;
         owed = null;
         stopResolving();
       } else if (probes < (opts.maxProbes ?? 8)) {
@@ -323,6 +351,17 @@ export function installShellPromptModeReset(
     }
   };
 
+  /** Turn the declined debt back into an owed one and ask the probe again. */
+  const reaskDeclined = () => {
+    owed = declined;
+    declined = null;
+    goneHint = false;
+    if (!leaked()) { owed = null; return; }
+    stopResolving();
+    resolution = 'awaiting';
+    askTruth();
+  };
+
   const onPromptMark = (data: string): boolean => {
     // `A`, `B`, `C`, `D;<exit>`, sometimes with `;k=v` options after the kind.
     const kind = data.charAt(0);
@@ -330,6 +369,8 @@ export function installShellPromptModeReset(
       phase = 'prompt';
       if (armedSincePrompt) {
         owed = { focus: focusArmedSincePrompt || (owed?.focus ?? false) };
+        declined = null; // a fresh debt replaces the declined one
+        goneHint = false;
       }
       armedSincePrompt = false;
       focusArmedSincePrompt = false;
@@ -339,6 +380,9 @@ export function installShellPromptModeReset(
         resolution = 'awaiting';
         promptAt = now();
         askTruth();
+      } else if (declined && goneHint && resolution === 'idle') {
+        // The death edge came while a command ran: ask at this prompt.
+        reaskDeclined();
       }
     } else if (kind === 'C') {
       phase = 'command';
@@ -366,6 +410,8 @@ export function installShellPromptModeReset(
         armedSincePrompt = true;
         if (focus) focusArmedSincePrompt = true;
         owed = null;
+        declined = null;
+        goneHint = false;
         if (resolution !== 'idle') stopResolving();
       }
     }
@@ -419,7 +465,27 @@ export function installShellPromptModeReset(
       armedSincePrompt = false;
       focusArmedSincePrompt = false;
       owed = null;
+      declined = null;
+      goneHint = false;
       veto = false;
+    },
+    processGone() {
+      // A probe in flight (or out of retries) may have read the agent alive
+      // before this edge: its late `false` would decline and lose the edge.
+      // Invalidate it and ask again; promptAt stays, so the lag gate holds.
+      if (resolution === 'awaiting') {
+        stopResolving();
+        resolution = 'awaiting';
+        askTruth();
+        return;
+      }
+      // Otherwise only with a declined debt and nothing queued. While a
+      // command owns the pane, keep the hint for its prompt (a new owner
+      // arming a mode in between drops it). The probe, not this hint,
+      // decides whether the arming process is gone.
+      if (!declined || resolution !== 'idle') return;
+      if (phase !== 'prompt') { goneHint = true; return; }
+      reaskDeclined();
     },
     dispose() {
       stopResolving();

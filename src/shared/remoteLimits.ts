@@ -48,6 +48,8 @@ export const REMOTE_LIMITS = {
   shell: 256,
   cwd: 4096,
   agentName: 256,
+  paneName: PHONE_SIDEBAR_LIMITS.paneName,
+  surfaceTitle: PHONE_SIDEBAR_LIMITS.surfaceTitle,
   /** Same ceiling the host's resize route applies (WebTerminalServer). */
   geometryMax: 1000,
   layout: PHONE_SIDEBAR_LIMITS.layout,

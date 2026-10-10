@@ -19,6 +19,39 @@ Settings → Browser picks one. It applies to every workspace.
 `external` is not a degraded mode. It is the right answer when a site is hostile
 to automation, and it is always available as an escape hatch.
 
+## Which workspace a browser call acts on
+
+Every browser call acts on the workspace wmux verifies for the caller, not on a
+workspace the call names:
+
+- an agent in a wmux pane, or the `wmux` CLI run in one: that pane, found by
+  wmux's own walk of the process tree (the claim it issues names the workspace
+  and the pane);
+- the workspace orchestrator: the workspace its commander token is bound to;
+- an agent on a shared Codex app-server: the pane that owns the calling
+  thread, from the owner record wmux's Codex hooks write in that pane. On
+  Windows no owner record is written, so browser tools there are refused with
+  that reason (the server may have been started from another pane);
+- an agent outside every wmux pane (a scheduled run, or one started outside
+  wmux) through the wmux MCP server: a dedicated workspace wmux creates and
+  claims for it, as the terminal tools already do;
+- an iframe plugin: the workspace the plugin host is showing;
+- an external MCP client: the workspace it claimed with `mcp.claimWorkspace`;
+- the wmux window itself (and the phone browser, which acts through it): any
+  workspace, as the person at the keyboard.
+
+A `workspaceId` in the request may only narrow the call to that same workspace;
+a different one is refused. A call with no verified identity is refused with a
+`BROWSER_SCOPE_REFUSED` error that says what is missing. This holds for every
+backend, `external` included: the OS browser belongs to no workspace, but the
+call that hands it a URL still comes from one.
+
+In a WSL pane, the wmux MCP server wmux sets up for the agent runs as a
+Windows process under the pane's `wsl.exe`, so the same walk finds the pane.
+When it does not, wmux accepts the pane only while the daemon follows a live
+agent inside it, and otherwise refuses with that reason. The `wmux browser`
+commands work only from a wmux pane terminal and say so when run anywhere else.
+
 ## Choosing a Chrome profile: three levels of exposure
 
 On the `chrome` backend, each workspace binds to a profile

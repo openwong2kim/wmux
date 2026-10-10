@@ -13,6 +13,8 @@ import { publishPaneClosed } from '../../events/publisher';
 import { panePrincipalId } from '../../../shared/principals';
 import { computePaneAutoName } from '../../utils/paneNaming';
 import { recomputeWorkspacePorts } from './workspacePorts';
+import { isShadowWorkspaceId } from '../../../shared/pcRail';
+import { findRemoteSurface } from '../shadowWorkspace';
 
 export interface SurfaceSlice {
   setSurfaceViewMode: (surfaceId: string, mode: 'terminal' | 'chat') => void;
@@ -148,6 +150,12 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
     else delete state.surfaceGitBranch[ptyId];
   }),
   addSurface: (paneId, ptyId, shell, cwd, workspaceId) => {
+    // PC rail: a shadow shows another computer's sessions only. A local shell
+    // created for one is refused and ended, never parked in that computer's scope.
+    if (isShadowWorkspaceId(workspaceId || get().activeWorkspaceId)) {
+      if (ptyId) window.electronAPI?.pty?.dispose?.(ptyId);
+      return;
+    }
     set((state: StoreState) => {
       const targetWsId = workspaceId || state.activeWorkspaceId;
       const ws = state.workspaces.find((w: Workspace) => w.id === targetWsId);
@@ -182,6 +190,10 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
   }),
 
   addRemoteSurface: (paneId, hostId, sessionId, shell, cwd, workspaceId, owned, remoteWorkspaceId) => set((state: StoreState) => {
+    // One viewer per remote session on this desktop: a session already open
+    // as a tab (here or in a shadow) is not attached a second time, like
+    // addEditorSurface refuses a second tab for an open file.
+    if (findRemoteSurface(state, hostId, sessionId)) return;
     const targetWsId = workspaceId || state.activeWorkspaceId;
     const ws = state.workspaces.find((w: Workspace) => w.id === targetWsId);
     if (!ws) return;
@@ -193,6 +205,8 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
   }),
 
   addEditorSurface: (paneId, filePath) => set((state: StoreState) => {
+    // A local file never opens inside another computer's workspace.
+    if (isShadowWorkspaceId(state.activeWorkspaceId)) return;
     const ws = state.workspaces.find((w: Workspace) => w.id === state.activeWorkspaceId);
     if (!ws) return;
     const pane = findLeafPane(ws.rootPane, paneId);
@@ -219,6 +233,7 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
 
   addDiffSurface: (paneId, taskId, title, workspaceId, ownerWorkspaceId) => set((state: StoreState) => {
     const targetWsId = workspaceId || state.activeWorkspaceId;
+    if (isShadowWorkspaceId(targetWsId)) return;
     const ws = state.workspaces.find((w: Workspace) => w.id === targetWsId);
     if (!ws) return;
     const pane = findLeafPane(ws.rootPane, paneId);
@@ -251,6 +266,7 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
 
   addWorkspaceDiffSurface: (paneId, repoPath, title, workspaceId) => set((state: StoreState) => {
     const targetWsId = workspaceId || state.activeWorkspaceId;
+    if (isShadowWorkspaceId(targetWsId)) return;
     const ws = state.workspaces.find((w: Workspace) => w.id === targetWsId);
     if (!ws) return;
     const pane = findLeafPane(ws.rootPane, paneId);
@@ -327,6 +343,7 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
     if (closedPtyId && state.surfacePendingQuestion) delete state.surfacePendingQuestion[closedPtyId];
     if (closedPtyId && state.surfaceLastMessage) delete state.surfaceLastMessage[closedPtyId];
     if (closedPtyId && state.surfaceQuestionSeen) delete state.surfaceQuestionSeen[closedPtyId];
+    if (closedPtyId && state.surfaceDismissedQuestion) delete state.surfaceDismissedQuestion[closedPtyId];
     // Drop per-surface ports and agent status too (fleet-activity adversarial
     // review): without this, every closed surface leaves a dead ptyId entry
     // behind, and a REUSED ptyId inherits the previous surface's status.

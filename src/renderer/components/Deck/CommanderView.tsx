@@ -939,7 +939,7 @@ function CommanderBrainItem({
           className="text-[12px] font-bold text-[var(--text-main)]"
           {...tokenAttrs('textMain', 'text')}
         >
-          {t('deck.commander') || 'Orchestrator'}
+          {message.localFleet ? t('moa.panel.localFleetLabel') : (t('deck.commander') || 'Orchestrator')}
         </span>
         {/* Which brain wrote this turn. Absent on turns from before the stamp
             existed — an unstamped turn shows no tag rather than a guess. */}

@@ -127,6 +127,17 @@ describe('Git page with another computer selected', () => {
     expect(container.querySelector('[data-git-no-repo]')).toBeNull();
   });
 
+  it('following: the Worktrees summary line goes with the list when another computer is picked', async () => {
+    act(() => root.render(createElement(GitPage)));
+    act(() => worktreesTab().click());
+    await settle();
+    expect(container.querySelector('[data-git-wt-summary]')).not.toBeNull();
+    selectPc('h1');
+    await settle();
+    expect(container.querySelector('[data-git-worktree-list]')).toBeNull();
+    expect(container.querySelector('[data-git-wt-summary]')).toBeNull();
+  });
+
   it('a computer the roster has not named: no line at all, never "no repository"', async () => {
     selectPc('h9', []);
     act(() => root.render(createElement(GitPage)));
@@ -141,6 +152,7 @@ describe('Git page with another computer selected', () => {
     act(() => root.render(createElement(GitPage)));
     await settle();
     expect(container.querySelector('[data-git-repo-group]')).not.toBeNull();
+    expect(container.querySelector('[data-git-wt-summary]')).not.toBeNull();
     expect(container.querySelector('[data-git-remote-files]')).toBeNull();
     expect(container.querySelector('[data-git-current-branch]')).toBeNull();
   });

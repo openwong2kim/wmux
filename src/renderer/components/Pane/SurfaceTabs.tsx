@@ -83,6 +83,10 @@ export function showsEnforcedModelBadge(opts: {
  *  left, with the tabs. */
 export const PANE_ACTIONS_CLUSTER_WIDTH = 142;
 
+/** Pane menu entries a shadow workspace leaves out: its layout belongs to the
+ *  host, so no split, no new pane and (by the `snap-` prefix) no layout snap. */
+const HIDDEN_ON_SHADOW: ReadonlySet<string> = new Set(['split-right', 'split-down', 'new-remote', 'split-right-remote', 'split-down-remote']);
+
 /** Rendered width (px) of the COLLAPSED cluster: the ⋮ trigger alone, which
  *  opens the same actions as a vertical menu. Same outer box as the full
  *  cluster, one child instead of five and no zoom divider:
@@ -685,7 +689,8 @@ export default function SurfaceTabs({
   }, [menu, reloadChromeProfiles]);
   // PC rail: with another computer on screen (or in its shadow workspace) a
   // new browser still opens on this one, so its label says so.
-  const otherPcShown = useStore((s) => s.pcRail.activePcId !== LOCAL_PC_ID) || isShadowWorkspaceId(workspace.id);
+  const shadow = isShadowWorkspaceId(workspace.id);
+  const otherPcShown = useStore((s) => s.pcRail.activePcId !== LOCAL_PC_ID) || shadow;
   const newBrowserLabel = otherPcShown ? t('pcRail.browserThisComputer') : t('pane.newBrowser');
   const menuItems: PaneActionItem[] = useMemo(() => [
     {
@@ -785,12 +790,12 @@ export default function SurfaceTabs({
       separatorBefore: i === 0,
       onSelect: () => { useStore.getState().snapToLayoutTemplate(tmpl.id); },
     })),
-  ], [
+  ].filter((item) => !shadow || !(HIDDEN_ON_SHADOW.has(item.key) || item.key.startsWith('snap-'))), [
     t, onSplitHorizontal, onSplitVertical, onAddBrowser, newBrowserLabel, onAddPrivateBrowser, chromeProfile.mainItems, onAddRemote,
     onSplitHorizontalRemote, onSplitVerticalRemote, startPaneRename,
     menuTabSurface, startRename, canLinkRemote,
     stashChord, stashDisabled, stashTooltip, stashThisPane, isZoomed, toggleZoom,
-    layoutTemplates,
+    layoutTemplates, shadow,
   ]);
 
   const commitPaneRename = () => {
@@ -1184,6 +1189,9 @@ export default function SurfaceTabs({
               in the tab strip above, behind the opt-in paneNewTerminalButton
               setting, because a second terminal in one pane breaks the one pane
               = one terminal concept. Ctrl+T stays bound either way. */}
+          {/* A shadow's layout belongs to the host: no split, and a new
+              browser (it opens on this computer) is left to the ⋮ menu. */}
+          {!shadow && (<>
           <button
             className={`ui-icon-btn ${FOCUS_RING} w-6 h-6`}
             onClick={(e) => { e.stopPropagation(); onSplitHorizontal(); }}
@@ -1211,6 +1219,7 @@ export default function SurfaceTabs({
           >
             <IconBrowser size={14} />
           </button>
+          </>)}
           {/* Stash — take this pane out of the layout, keep the session (#977).
               It sits next to ✕ with the same visual weight while one is fully
               reversible and the other kills an agent, so the tooltip says what

@@ -13,7 +13,7 @@ import {
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import PaneActionsMenu, { type PaneActionItem } from '../Pane/PaneActionsMenu';
-import { IconChevron, IconClock, IconEye, IconEyeOff, IconPencil, IconTerminal, IconUsers, IconX } from '../icons';
+import { IconCheck, IconChevron, IconClock, IconEye, IconEyeOff, IconPencil, IconTerminal, IconUsers, IconX } from '../icons';
 import { paneRoleOptions } from './paneRoleOptions';
 import { updateUsageLimit } from '../../hooks/useUsageLimitBridge';
 import { submitBracketedPasteToPty } from '../../utils/ptyMessageDelivery';
@@ -39,6 +39,9 @@ export interface FleetRowVerbs {
    *  disabled there and the workspace close is the way out. */
   closeEnabled: boolean;
   closeReason?: TranslationKey;
+  /** The row needs you because its agent ended a turn on a question (not a
+   *  live permission dialog), so the question can be dismissed. */
+  dismissQuestion: boolean;
 }
 
 /** Live signals the verbs depend on, read by the caller from the store. */
@@ -54,6 +57,9 @@ export interface FleetRowVerbContext {
   hasAgent?: boolean;
   /** The pane is its workspace's root (single-pane workspace). */
   isRootPane?: boolean;
+  /** The agent itself reports a live prompt (raw surfaceAgent status
+   *  awaiting_input), which waits for an answer and cannot be dismissed. */
+  livePrompt?: boolean;
 }
 
 export function fleetRowVerbs(pane: FleetPane, ctx: FleetRowVerbContext = {}): FleetRowVerbs {
@@ -70,6 +76,7 @@ export function fleetRowVerbs(pane: FleetPane, ctx: FleetRowVerbContext = {}): F
     stashed: !!pane.stashed,
     closeEnabled,
     ...(closeEnabled ? {} : { closeReason: 'fleet.verb.closeRoot' as const }),
+    dismissQuestion: !pane.remote && !!fleetTargetPtyId(pane) && !!ctx.pendingQuestion?.trim() && !ctx.livePrompt,
   };
 }
 
@@ -86,6 +93,7 @@ export function fleetRowVerbsFromState(pane: FleetPane, state: VerbStoreState): 
     commandRunning: state.commandRunningByPtyId[target] === true,
     hasAgent: !!state.surfaceAgent[target]?.name,
     isRootPane: !!ws && ws.rootPane.id === pane.paneId && findParent(ws.rootPane, pane.paneId) === null,
+    livePrompt: state.surfaceAgent[target]?.status === 'awaiting_input',
   });
 }
 
@@ -152,6 +160,16 @@ export function FleetRowMenu({ pane, verbs, onJump, onEdit, onMenuOpenChange }: 
         title: verbs.messageReason ? t(verbs.messageReason) : undefined,
         onSelect: () => onEdit(pane, 'message'),
       },
+    );
+    if (verbs.dismissQuestion) {
+      items.push({
+        key: 'dismiss-question',
+        label: t('fleet.verb.dismissQuestion'),
+        icon: <IconCheck size={12} />,
+        onSelect: () => useStore.getState().dismissPendingQuestion(fleetTargetPtyId(pane)),
+      });
+    }
+    items.push(
       {
         key: 'stash',
         label: verbs.stashed ? t('pane.unstash') : t('pane.stash'),

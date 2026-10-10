@@ -601,11 +601,12 @@ export function registerNavigationTools(server: McpServer, deps: BrowserToolDeps
         let workspaceId: string;
         try {
           workspaceId = await deps.resolveWorkspaceId();
-        } catch {
+        } catch (err) {
+          // The resolver's own message says why and what to do; keep it.
           return tabsToolError(
             browserTabsError(
               'BROWSER_TABS_WORKSPACE_UNRESOLVED',
-              'The calling workspace is unavailable.',
+              err instanceof Error && err.message ? err.message : 'The calling workspace is unavailable.',
             ),
           );
         }

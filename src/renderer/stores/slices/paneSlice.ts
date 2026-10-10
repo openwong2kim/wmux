@@ -263,6 +263,16 @@ export interface PaneSlice {
    */
   surfaceQuestionSeen: Record<string, string>;
   markSurfaceQuestionSeen: (ptyId: string) => void;
+  /**
+   * The pendingQuestion text the user dismissed (a question that needs no
+   * answer), keyed by ptyId. setSurfacePendingQuestion ignores a later delivery
+   * of the SAME text for that pty, so a reconnect or a repeated stop payload
+   * cannot bring it back; a different question, a '' clear, or the agent's
+   * next turn start (markSurfaceTurnOpen) drops the record. Only the pendingQuestion kind is dismissible: a live permission
+   * dialog (surfaceAgent status awaiting_input) is not touched.
+   */
+  surfaceDismissedQuestion: Record<string, string>;
+  dismissPendingQuestion: (ptyId: string) => void;
   // Stamp the "running" freshness clock for a pane WITHOUT an activity string —
   // the byte-based per-PTY 'running' broadcast has no tool name. Same 120s-TTL
   // decay as setSurfaceActivity's stamp; lights background dots from bytes.
@@ -759,6 +769,7 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
   surfacePendingQuestion: {},
   surfaceLastMessage: {},
   surfaceQuestionSeen: {},
+  surfaceDismissedQuestion: {},
   agentClockMs: Date.now(),
 
   bumpAgentClock: () => set((state: StoreState) => {
@@ -798,9 +809,15 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
     if (!ptyId) return;
     // Main already truncated the text. Empty/null clears — every stop writes
     // this field, so an answered pane drops its question on its next turn end.
-    if (question) state.surfacePendingQuestion[ptyId] = question;
-    else {
+    if (question) {
+      // The user dismissed exactly this question: a re-delivery of it stays
+      // dismissed. Any other question is new and shows.
+      if (state.surfaceDismissedQuestion[ptyId] === question) return;
+      delete state.surfaceDismissedQuestion[ptyId];
+      state.surfacePendingQuestion[ptyId] = question;
+    } else {
       delete state.surfacePendingQuestion[ptyId];
+      delete state.surfaceDismissedQuestion[ptyId];
       // #1176 — the seen marker dies with the question it described; a NEW
       // question text simply never matches the old marker, so it reads as
       // unseen with no extra bookkeeping.
@@ -825,6 +842,15 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
     }
   }),
 
+  dismissPendingQuestion: (ptyId) => set((state: StoreState) => {
+    if (!ptyId) return;
+    const question = state.surfacePendingQuestion[ptyId];
+    if (!question) return;
+    state.surfaceDismissedQuestion[ptyId] = question;
+    delete state.surfacePendingQuestion[ptyId];
+    delete state.surfaceQuestionSeen[ptyId];
+  }),
+
   markSurfaceRunning: (ptyId) => set((state: StoreState) => {
     if (!ptyId) return;
     // Byte-based 'running' with no tool name: stamp only the freshness clock,
@@ -844,6 +870,12 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
     // turn, but the silence clock must run from the latest submission.
     state.surfaceTurnOpenAt[ptyId] = Date.now();
     delete state.surfaceTurnEndAt[ptyId];
+    // A dismissal covers one turn's question. A new prompt starts a new turn,
+    // so the same text asked at its end is a new question and must show. Only
+    // this hook-tagged turn start clears it: byte-rate 'running' and activity
+    // lines also fire on reconnect redraws and late transcript reads, which
+    // must not bring a dismissed question back.
+    delete state.surfaceDismissedQuestion[ptyId];
   }),
 
   clearSurfaceTurnOpen: (ptyId) => set((state: StoreState) => {
@@ -1082,6 +1114,7 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
             delete state.surfacePendingQuestion[s.ptyId];
             delete state.surfaceLastMessage[s.ptyId];
             delete state.surfaceQuestionSeen[s.ptyId];
+            delete state.surfaceDismissedQuestion[s.ptyId];
             delete state.surfaceActivityAt[s.ptyId];
             // A reused ptyId must not inherit a dead pane's open turn — the
             // latch outranks the byte heuristic, so a leaked one would pin the

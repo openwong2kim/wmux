@@ -11,7 +11,7 @@ import { useStore } from '../../stores';
 import type { ChannelMember, ChannelMessage } from '../../../shared/channels';
 import { HUMAN_MEMBER_ID, HUMAN_WORKSPACE_ID } from '../../../shared/channels';
 import type { WorkTask } from '../../../shared/workTask';
-import { hydrateChannelsCatalog, loadChannelHistory } from '../../hooks/useChannelsHydration';
+import { hydrateChannelsCatalog, loadChannelHistory, loadChannelMembers, hydratesMembersOf } from '../../hooks/useChannelsHydration';
 import { paneNameForAuthor, paneNamesKey, parsePaneNamesKey } from '../../channels/paneMemberNames';
 import { ChannelMessageRow } from '../Channels/ChannelMessageRow';
 import { TASK_WORKSPACE_PREFIX } from '../../utils/fanoutProvenance';
@@ -116,6 +116,25 @@ export default function TaskConversation({
     void load();
     return () => { disposed = true; };
   }, [channelId]);
+
+  // A closed task's mission channel is archived, and catalog hydration skips
+  // archived rosters: load this one (viewer floor, author chips) on open and on
+  // every catalog refresh while shown, as ChannelView does.
+  const row = useStore((s) => s.channels[channelId]);
+  const lazyRosterRow = row && !hydratesMembersOf(row) ? row : null;
+  useEffect(() => {
+    const bridge = useStore.getState().channelsRpc();
+    if (!bridge || !lazyRosterRow) return undefined;
+    let disposed = false;
+    void loadChannelMembers({
+      rpc: bridge.rpc,
+      channelId,
+      workspaceId: HUMAN_WORKSPACE_ID,
+      apply: useStore.getState().hydrateChannelMembers,
+      isCurrent: () => !disposed,
+    });
+    return () => { disposed = true; };
+  }, [channelId, lazyRosterRow]);
 
   // On screen means read: no unread count piles up behind it.
   const lastSeq = visible.at(-1)?.seq ?? 0;

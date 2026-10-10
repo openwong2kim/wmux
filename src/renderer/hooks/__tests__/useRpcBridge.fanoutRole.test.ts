@@ -169,7 +169,7 @@ describe('useRpcBridge — fan-out task roles', () => {
   it('appends the worker permission flags after the role rewrite and before the marker goes back on', () => {
     const block = fanoutSpawnBlock();
     const bind = block.indexOf('withRoleBinding(seeded, roleBinding, role');
-    const flags = block.indexOf('applyWorkerPermissionFlags(roleBound.initialCommand, workerMode)');
+    const flags = block.indexOf('applyWorkerPermissionFlags(roleBound.initialCommand, workerMode, goalWorker ? goalWorkerDenyRules() : [])');
     const marker = block.indexOf('reattachModelEnvMarker(marker, bound.initialCommand');
     expect(bind).toBeGreaterThan(-1);
     expect(flags).toBeGreaterThan(bind);

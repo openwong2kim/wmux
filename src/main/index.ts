@@ -8,6 +8,7 @@ import { handlePhoneWorkspaces } from './phone/PhoneWorkspaces';
 import { handlePhoneQuickCommands } from './quickCommands/QuickCommandStore';
 import { installPhoneBridge } from './phone/installPhoneBridge';
 import { handlePhoneMoaWake } from './deck/moaWake';
+import { clearGoalWorkerSessions } from './deck/goalWorkerSessions';
 import { MOA_WAKE_COMMAND } from '../shared/moaWake';
 import { handlePhoneAccounts } from './phone/PhoneAccounts';
 // #582: Suppress Electron's dev-only "Insecure Content-Security-Policy"
@@ -111,7 +112,8 @@ import { registerAutomationRpc } from './pipe/handlers/automation.rpc';
 import { registerWorktaskHandlers, type WorktaskServices } from './ipc/handlers/worktask.handler';
 import { registerWorktaskRpc } from './pipe/handlers/worktask.rpc';
 import { TaskAdoptService } from './worktask/TaskAdoptService';
-import { TaskGateRunner } from './worktask/TaskGateRunner';
+import { installE2EHooks } from './e2eHooks';
+import { TaskGateRunner, setSharedTaskGateRunner } from './worktask/TaskGateRunner';
 import { createHostedLedgerPort } from './worktask/ledgerPort';
 import { getProjectConfigStore } from './project/ProjectConfigStore';
 import { createWorkspaceFactsPublisher, invalidateAutonomyCache, registerWorkspaceFactsPublisher } from './workspace/workspaceFactsFeed';
@@ -533,6 +535,8 @@ const autoUpdater = new AutoUpdater(() => mainWindow, {
 // install waiter's post-exit verification (installTeardown.ts) covers it on
 // the update path.
 void app.whenReady().then(() => { try { warnOnInstallIntegrityGap(); } catch { /* best-effort */ } });
+// Dev-build-only e2e seam (e2e/): inert unless WMUX_E2E_HOOKS=1 on an unpackaged build.
+void app.whenReady().then(() => installE2EHooks());
 
 // ── Promoted browser flows: the idle sweep ─────────────────────────────────
 //
@@ -1156,12 +1160,17 @@ registerWorktaskHandlers(() => daemonClient, (services: WorktaskServices) => {
     close: services.close,
     pr: services.pr,
     adopt: new TaskAdoptService(),
-    gate: new TaskGateRunner({
-      // In-process: the TaskLedger is hosted in main, and `recordGate` is a
-      // system-actor write no wire caller may make (see ledgerPort.ts).
-      ledger: createHostedLedgerPort(),
-      project: { getState: (cwd: string) => getProjectConfigStore().getState(cwd) },
-    }),
+    gate: (() => {
+      const runner = new TaskGateRunner({
+        // In-process: the TaskLedger is hosted in main, and `recordGate` is a
+        // system-actor write no wire caller may make (see ledgerPort.ts).
+        ledger: createHostedLedgerPort(),
+        project: { getState: (cwd: string) => getProjectConfigStore().getState(cwd) },
+      });
+      // Moa's goal verifier runs goal tasks' gates through the same runner.
+      setSharedTaskGateRunner(runner);
+      return runner;
+    })(),
   });
 });
 // ── Press-scope fact feed (main → daemon) ───────────────────────────────────
@@ -2061,6 +2070,9 @@ app.on('ready', async () => {
       // surface the original code used; the swap is logged for the
       // race-investigation breadcrumb trail kept by previous fixes.
       logLine('info', 'main', 'handler swap (daemon connect): cleanup begin');
+      // Sessions this daemon recovered are new processes, not the goal worker
+      // spawns main recorded (goalWorkerSessions.ts).
+      clearGoalWorkerSessions();
       cleanupHandlers();
       logLine('info', 'main', 'handler swap (daemon connect): cleanup done, register begin');
       cleanupHandlers = registerAllHandlers(ptyManager, ptyBridge, () => mainWindow, daemonClient, {
@@ -2161,6 +2173,7 @@ app.on('ready', async () => {
         mainWindow.webContents.send('daemon:disconnected');
       }
       logLine('warn', 'main', 'handler swap (daemon disconnect): cleanup begin');
+      clearGoalWorkerSessions();
       cleanupHandlers();
       logLine('warn', 'main', 'handler swap (daemon disconnect): cleanup done, register begin');
       cleanupHandlers = registerAllHandlers(ptyManager, ptyBridge, () => mainWindow, undefined, {

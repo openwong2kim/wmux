@@ -39,6 +39,8 @@ import { ResumeInfoChipGate } from './ResumeInfoChip';
 import { tokenAttrs } from '../../themes';
 import PaneDecorations from '../../plugins/PaneDecorations';
 import { isRemoteMirrorVisible } from '../../stores/slices/remoteWorkspacesSlice';
+import { selectHostPickName } from '../../stores/shadowWorkspace';
+import { isShadowWorkspaceId } from '../../../shared/pcRail';
 
 interface PaneProps {
   pane: PaneLeaf;
@@ -473,7 +475,7 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
   // hides the local area (WorkspaceCenter, display:none) without touching
   // activeWorkspaceId, so this pane still reports isActive while nobody can
   // see it — a question arriving then must stay unseen.
-  const remoteSelected = useStore(isRemoteMirrorVisible);
+  const remoteSelected = useStore((s) => isRemoteMirrorVisible(s) || selectHostPickName(s) !== null);
   useEffect(() => {
     if (isActive && !remoteSelected && activeSurfacePtyId && activePendingQuestion) {
       markSurfaceQuestionSeen(activeSurfacePtyId);
@@ -1447,6 +1449,7 @@ function SplitSurfaceView({
               cwd={surface.cwd}
               isActive={surface.id === activeSurfaceId}
               onTitleChange={updateRemoteSurfaceTitle}
+              fixedFont={isShadowWorkspaceId(workspaceId)}
             />
           ) : (
             <TerminalSurface
@@ -1555,6 +1558,7 @@ function SplitSurfaceView({
             cwd={surface.cwd}
             isActive={surface.id === activeSurfaceId}
             onTitleChange={updateRemoteSurfaceTitle}
+            fixedFont={isShadowWorkspaceId(workspaceId)}
           />
         ) : (
           <EditorPanel

@@ -528,7 +528,10 @@ export const da = {
   'remote.scope.read': "En parret enhed kan læse og søge i outputtet fra alle arbejdsområder på denne computer, også dem der åbnes senere.",
   'remote.scope.viewOnly': "Kun visning blokerer indtastning, men kan stadig besvare prompter på skærmen, der kræver én tast.",
   'remote.scope.input': "Kan skrive lader den også åbne og lukke sessioner og besvare godkendelser.",
-  'remotePage.connect.pasteScope': "Hvis invitationen deler arbejdsområder, kan denne computer læse og søge i alle arbejdsområder på den pc, også dem der åbnes senere. Mens de er parret, tjekker wmux den med få sekunders mellemrum, holder en forbindelse åben til dens advarsler og viser dens notifikationer; slå dem fra via dens ikon i computerkolonnen.",
+  'remotePage.connect.pasteScope': "Hvis invitationen deler arbejdsområder, kan denne computer læse og søge i alle arbejdsområder på den pc, også dem der åbnes senere. Mens de er parret, tjekker wmux den med få sekunders mellemrum, holder en forbindelse åben til dens advarsler og viser dens notifikationer; slå dem fra i computermenuen i sidepanelets titel.",
+  'pcSwitcher.open': "Skift computer",
+  'pcSwitcher.manage': "Indstillinger for {name}",
+  'pcSwitcher.othersNeedYou': "{count} venter på dig på andre computere",
   // Quit and Stop Sessions (main-process native confirm)
   'quitAndStop.message': "Afslut wmux og stop alle sessioner?",
   'quitAndStop.detail': "Kørende agentsessioner: {agents}. Terminaler i alt: {sessions}. De bliver alle stoppet. Almindelig Afslut lader dem køre videre i baggrunden.",

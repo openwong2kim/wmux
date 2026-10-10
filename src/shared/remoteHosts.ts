@@ -66,6 +66,16 @@ export interface RemotePaneSummary {
    * of the same gate.
    */
   agentProcessAlive?: boolean;
+  /**
+   * The host sidebar's name for the pane holding this session: its label, or
+   * its "w1-1" coordinate. Additive-optional (absent from older hosts and
+   * while the host desktop is not attached).
+   */
+  paneName?: string;
+  /** The host tab's title, as the host sidebar's pane row reads it. Same rule. */
+  surfaceTitle?: string;
+  /** Epoch ms of the session's last output on the host, from its ISO stamp. Same rule. */
+  lastActivityAt?: number;
 }
 
 /**

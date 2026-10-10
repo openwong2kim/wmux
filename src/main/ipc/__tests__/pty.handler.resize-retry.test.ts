@@ -146,4 +146,16 @@ describe('pty.handler PTY_RESIZE retry (v2.9.0-rc.2 recovery race)', () => {
     // not optional. The warn line gives a clear breadcrumb.
     expect(block).toMatch(/attach race retry exhausted/);
   });
+
+  it('surfaces a daemon "rate limited" reply as a failure so the renderer re-sends', () => {
+    const block = resizeBlock();
+    // Swallowing it (`if (…'rate limit'…) return;`) resolved the IPC as success,
+    // so useTerminal's sendResize never ran its one delayed re-send and a burst's
+    // final size could be lost. The error must reach `throw err` instead.
+    expect(block).not.toMatch(/rate limit[^\n]*\)\s*return\b/);
+    expect(block).toMatch(/if\s*\(!\s*isNotFound\)\s*throw\s+err/);
+    // The renderer side of the contract: the rejection is recognised by message.
+    const renderer = fs.readFileSync(path.join(__dirname, '..', '..', '..', 'renderer', 'hooks', 'useTerminal.ts'), 'utf-8');
+    expect(renderer).toMatch(/pty\.resize\(targetPtyId, cols, rows\)\.catch[\s\S]{0,200}includes\('rate limited'\)/);
+  });
 });

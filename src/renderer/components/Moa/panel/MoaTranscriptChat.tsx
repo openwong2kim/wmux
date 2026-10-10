@@ -30,6 +30,7 @@ import type { ChatBridgeApi, TurnEvent } from '../../../../shared/transcript/tur
 import type { MoaApproval } from '../../../../shared/moa';
 import '../moa.css';
 import { mergeLocalFleetEvents } from './localFleetEvents';
+import { MoaGoalStrip } from '../MoaGoalStrip';
 
 /** The preload's `deck.moa.transcript` (main reads the HQ brain; no pty id). */
 export type MoaTranscriptApi = NonNullable<NonNullable<NonNullable<Window['electronAPI']>['deck']>['moa']>['transcript'];
@@ -176,7 +177,7 @@ export default function MoaTranscriptChat({ ptyId, busy, onSend, onInterrupt, on
   // `reset`), but not an HQ change: subscribe again when the HQ moves.
   const hqId = useStore((s) => s.moa?.hq.workspaceId ?? null);
   const localMessages = useStore((s) => hqId ? s.brainThreads[hqId]?.messages : undefined);
-  const conversationEvents = useMemo(() => mergeLocalFleetEvents(data.events, localMessages ?? []), [data.events, localMessages]);
+  const conversationEvents = useMemo(() => mergeLocalFleetEvents(data.events, localMessages ?? [], t('moa.panel.localFleetLabel')), [data.events, localMessages]);
   const { retry } = data;
   const firstHq = useRef(hqId);
   useEffect(() => {
@@ -421,6 +422,7 @@ export default function MoaTranscriptChat({ ptyId, busy, onSend, onInterrupt, on
       <AssistantRuntimeProvider runtime={runtime}>
         {activityToggle}
         <div className="flex flex-col flex-1 min-h-0" data-moa-chat data-activity={showActivity ? 'shown' : 'hidden'}>
+          <MoaGoalStrip />
           <Thread
             composer={runtime.thread.composer}
             empty={empty}

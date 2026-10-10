@@ -13,6 +13,7 @@ import type { Message, Part, TaskState, Artifact, AgentSkill, Task, CompletionEv
 import { normalizeCompletionEvidenceWire, isVerifiedItem } from '../../shared/completionEvidence';
 import type { PaneSearchResult, PaneSearchResponse } from '../../shared/types';
 import { generateId } from '../../shared/types';
+import { isShadowWorkspaceId } from '../../shared/pcRail';
 import { isTaskEnded, isVerifiedTaskSender } from '../../shared/a2aReopen';
 import { applyTaskQueryView } from '../../shared/a2aTaskQueryView';
 import { getLeafPanes, getWorkspaceLeafPanes, getWorkspacePtyIds, getWorkspaceRemoteSessions } from '../../shared/paneUtils';
@@ -32,6 +33,7 @@ import {
   reattachModelEnvMarker,
   splitModelEnvMarker,
 } from '../../shared/workerLaunch';
+import { goalWorkerDenyRules, isGoalWorkerLauncher } from '../../shared/moaGoalWorker';
 import { handleCompanyRpc } from '../../company/renderer/rpcHandlers';
 import { t } from '../i18n';
 import { formatA2aMessage, formatA2aBroadcast, sanitizeA2aName, type A2aFormatOptions } from '../utils/a2aFormat';
@@ -1073,10 +1075,17 @@ function isSelectableBrowserPartition(partition: string): boolean {
   );
 }
 
+function withoutShadows<S extends { workspaces: Workspace[] }>(state: S): S {
+  if (!state.workspaces.some((w) => isShadowWorkspaceId(w.id))) return state;
+  return { ...state, workspaces: state.workspaces.filter((w) => !isShadowWorkspaceId(w.id)) };
+}
+
 // Exported for tests only (a2aFormat.delivery.test.ts).
 export async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcResult> {
   // Always read the freshest state via getState() to avoid stale closures.
-  const store = useStore.getState();
+  // The PC rail's shadow workspaces show another computer's panes: no RPC
+  // lists, resolves or targets them, so every walk below sees local ones only.
+  const store = withoutShadows(useStore.getState());
 
   // Fix 0 — block external RPC during startup reconcile. Even read-only
   // RPCs (workspace.list) return surface.ptyId fields that the external
@@ -1487,6 +1496,19 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
         error: `fanout.spawnWorkspace: could not launch ${agentChoice.agent} for this task${swap.note ? ` — ${swap.note}` : ''}`,
       };
     }
+    // A task under an approved Moa goal must carry the goal deny rules, and
+    // only claude takes them (shared/moaGoalWorker.ts). The launcher is final
+    // after the swap, so a role bound to agy or codex — which main cannot see —
+    // is refused here, before any workspace exists. So is a missing mode.
+    const goalWorker = params.goalWorker === true;
+    if (goalWorker && !isGoalWorkerLauncher(commandLauncherStem(swap.command))) {
+      return {
+        error: `fanout.spawnWorkspace: a task under a Moa goal runs only on claude (this one would launch ${commandLauncherStem(swap.command) || 'an unknown command'}), because only claude takes the goal's deny rules`,
+      };
+    }
+    if (goalWorker && !isFanoutWorkerPermissionMode(params.workerPermissionMode)) {
+      return { error: 'fanout.spawnWorkspace: a task under a Moa goal needs its worker permission mode' };
+    }
     if (swap.note) {
       // A refusal (unknown agent, or flags that would not survive the swap) is
       // fail-soft — the task still launches, so the reason must be visible
@@ -1582,7 +1604,7 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
       : undefined;
     const bound =
       workerMode && roleBound.initialCommand
-        ? { ...roleBound, initialCommand: applyWorkerPermissionFlags(roleBound.initialCommand, workerMode) }
+        ? { ...roleBound, initialCommand: applyWorkerPermissionFlags(roleBound.initialCommand, workerMode, goalWorker ? goalWorkerDenyRules() : []) }
         : roleBound;
     // `bound.initialCommand` stays undefined for the "environment only" launch,
     // and it has to: withWorkspaceProfile fills a MISSING command from the

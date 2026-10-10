@@ -158,6 +158,25 @@ describe('FleetView — task conversation', () => {
     expect(conversationTexts()).toEqual(['ch-t1 instruction', 'ch-t1 report']);
   });
 
+  it('an archived mission channel loads its roster on open (catalog hydration skips it)', async () => {
+    act(() => useStore.setState({ channels: { 'ch-t1': { ...channel('ch-t1'), status: 'archived' }, 'ch-t2': channel('ch-t2') } }));
+    rpc.mockImplementation(async (method: string, params: Record<string, unknown>) => {
+      if (method === 'a2a.channel.getMessages') return { ok: true, messages: [message(params.channelId as string, 1, 'hi')] };
+      if (method === 'a2a.channel.getMembers') {
+        return { ok: true, members: [{ workspaceId: 'ws-t1', memberId: 'worker', joinedAt: 0, historyFromSeq: 0 }] };
+      }
+      return { ok: false };
+    });
+    mount();
+    await settle();
+    select('p1');
+    await settle();
+    expect(rpc).toHaveBeenCalledWith('a2a.channel.getMembers', expect.objectContaining({ channelId: 'ch-t1', workspaceId: 'ws-human' }));
+    expect(useStore.getState().channelMembers['ch-t1']?.map((m) => m.memberId)).toEqual(['worker']);
+    // A live channel's roster comes from catalog hydration, not this path.
+    expect(rpc).not.toHaveBeenCalledWith('a2a.channel.getMembers', expect.objectContaining({ channelId: 'ch-t2' }));
+  });
+
   it('Open conversation selects the task on the list', async () => {
     mount();
     await settle();

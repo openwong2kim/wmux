@@ -10,6 +10,7 @@ import { ChromeProfileStore, LIVE_CHROME_PROFILE } from '../../../browser-sessio
 import type { BrowserBackendStore } from '../../../browser-session/BrowserBackendStore';
 import { getWorkspaceMirror, __resetWorkspaceMirrorForTest } from '../../../workspace/WorkspaceMirror';
 import { PANE_PROFILE_UNRESOLVED_CODE } from '../../../../shared/chromePaneBinding';
+import { claimOn, dispatchAsClaimedCaller } from './claimedCaller';
 
 /**
  * Per-pane Chrome profiles at the RPC boundary.
@@ -102,7 +103,7 @@ function makeRegistry(store: ChromeProfileStore) {
 }
 
 function register(registry: ReturnType<typeof makeRegistry>): RpcRouter {
-  const router = new RpcRouter();
+  const router = dispatchAsClaimedCaller(new RpcRouter());
   const cdp = {
     getTarget: vi.fn(() => null),
     listTargets: vi.fn(() => []),
@@ -226,13 +227,17 @@ describe('which Chrome a call drives', () => {
 
     const noPty = await call(router, 'browser.open', { url: 'https://a.test/', workspaceId: 'ws-1' });
     expect(noPty.error).toContain(PANE_PROFILE_UNRESOLVED_CODE);
-    // A PTY of another workspace never resolves into this one (round-trip finds nothing).
+    // A pane claim for a pane that lives in another workspace does not hold:
+    // the call is refused before any profile is chosen.
     const foreign = await call(router, 'browser.cdp.info', { workspaceId: 'ws-1' }, 'pty-c');
-    expect(foreign.error).toContain(PANE_PROFILE_UNRESOLVED_CODE);
-    expect(sendToRendererMock).toHaveBeenCalledWith(expect.anything(), 'surface.list', {
-      workspaceId: 'ws-1',
-      includeStashed: true,
-    });
+    expect(foreign.error).toContain('BROWSER_SCOPE_REFUSED');
+    // A workspace claim with no attested pane cannot pick a pane's profile by
+    // naming one in the unverified envelope field.
+    const response = await router.dispatch(
+      { id: 'u', method: 'browser.cdp.info', params: { workspaceId: 'ws-1' }, callerPtyId: 'pty-a', ...claimOn('ws-1') } as never,
+    );
+    expect(response.ok).toBe(false);
+    expect(String((response as { error?: unknown }).error)).toContain(PANE_PROFILE_UNRESOLVED_CODE);
     // Nothing was opened anywhere: failing closed means no launcher at all.
     expect(registry.forProfile).not.toHaveBeenCalled();
   });

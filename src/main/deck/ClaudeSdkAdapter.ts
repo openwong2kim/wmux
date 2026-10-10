@@ -272,8 +272,8 @@ export const DEFAULT_ALLOWED_TOOLS: string[] = [
   WMUX('surface_new'),
   WMUX('terminal_send'),
   WMUX('terminal_send_key'),
-  // Fan out into N isolated worktrees — create-only, and still gated on the
-  // human approval prompt (see commanderSurface for the full rationale).
+  // Fan out into N isolated worktrees — create-only; the approval prompt runs
+  // only when the operator turned it on (see commanderSurface).
   WMUX('fanout_start'),
   // Channel + A2A messaging — the orchestrator's comms bus.
   WMUX('channel_create'),
@@ -333,6 +333,10 @@ export const DEFAULT_ALLOWED_TOOLS: string[] = [
   // nothing by itself — it raises an operator card (Hand off / Edit / Cancel),
   // and the server refuses any caller that is not the HQ brain.
   WMUX('moa_propose_handoff'),
+  // Commander-only: Moa's goal contract. Auto-allowed for the same reason: the
+  // proposal only raises an operator card, and moa_goal reads or ends it.
+  WMUX('moa_propose_goal'),
+  WMUX('moa_goal'),
 ];
 
 // Built-in CLI tools the orchestrator must NEVER hold. `allowedTools` only
@@ -706,9 +710,11 @@ export function buildCommanderSystemPrompt(
     '  work. The call is ACCEPT-THEN-POLL: it returns {status:"accepted"} and you poll by',
     '  calling again with the SAME idempotency_key (awaiting_approval → running →',
     '  completed). A NEW key spawns a NEW fan-out — never mint one just because a poll was',
-    '  slow. The operator must approve it and is never auto-approved, so denied/timeout is',
-    '  a real outcome to report, not an error to retry around. The repository and owning',
-    '  workspace are derived from your identity; you cannot name them.',
+    '  slow. By default it does NOT ask the operator (it starts at once); only when the',
+    '  operator turned fan-out approval on in Settings does it wait for them, and then',
+    '  denied/timeout is a real outcome to report, not an error to retry around. The',
+    '  repository and owning workspace are derived from your identity (or, under an',
+    '  approved goal, from the goal); you cannot name them.',
     '- roles[] on a fan-out is index-aligned with titles (Builder | Reviewer | Tester |',
     '  Planner) and decides which agent CLI and model THAT task launches on, via the',
     '  operator\'s own role bindings — the same bindings a role-bound pane uses. That is how',
@@ -754,10 +760,12 @@ export class ClaudeSdkAdapter implements BrainAdapter {
    *  mid-turn rebind can't misattribute — 3-way review P1). Null when the session
    *  runs on the default credential (no bound account, or its dir was missing). */
   private _launchAccountId: string | null = null;
-  /** The account this conversation moved to under "Switch accounts by quota";
-   *  null when it runs on the binding. Decided when a conversation starts and
-   *  kept for every resumed turn — the transcript lives in that config dir. */
-  private _rotatedAccountId: string | null = null;
+  /** The account this conversation runs on: an account id, null for the
+   *  default login, undefined when unknown (a session saved before accounts
+   *  were recorded). Decided when a conversation starts and kept for every
+   *  resume — even across a rebind — since the transcript lives in that
+   *  config dir (#2029). */
+  private _conversationAccountId: string | null | undefined = undefined;
   /** A turn is resolving its account (before any query handle exists). An
    *  interrupt() landing then has no handle to forward to, so it is recorded
    *  and the turn ends before spawning. */
@@ -802,8 +810,8 @@ export class ClaudeSdkAdapter implements BrainAdapter {
     return this._sessionId;
   }
 
-  get rotatedAccountId(): string | null {
-    return this._rotatedAccountId;
+  get conversationAccountId(): string | null | undefined {
+    return this._conversationAccountId;
   }
 
   /** Whether a wmux MCP bundle was resolved (fleet tools available). The caller
@@ -823,7 +831,7 @@ export class ClaudeSdkAdapter implements BrainAdapter {
     if (opts.resumeSessionId) {
       this._sessionId = opts.resumeSessionId;
       this._resumeUnvalidated = true;
-      this._rotatedAccountId = opts.resumeAccountId ?? null;
+      this._conversationAccountId = opts.resumeAccountId;
     }
   }
 
@@ -1038,7 +1046,7 @@ export class ClaudeSdkAdapter implements BrainAdapter {
       try {
         launch = await resolveBackgroundLaunch(this._workspaceId, 'claude', {
           resuming: !!this._sessionId,
-          rotatedAccountId: this._rotatedAccountId,
+          conversationAccountId: this._conversationAccountId,
           checkQuota: !this.profile?.authToken,
           onMissing: (acc) => console.warn(
             `[account] orchestrator ws ${this._workspaceId}: bound account "${acc.name}" configDir missing ` +
@@ -1053,7 +1061,7 @@ export class ClaudeSdkAdapter implements BrainAdapter {
         yield { type: 'error', message: launch.message };
         return;
       }
-      if (!this._sessionId) this._rotatedAccountId = launch.rotated ? launch.accountId : null;
+      if (!this._sessionId) this._conversationAccountId = launch.accountId;
       try {
         const options = this.buildOptions(launch);
         turnLaunchAccountId = this._launchAccountId;

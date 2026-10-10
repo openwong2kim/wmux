@@ -12,6 +12,7 @@ import { isAlwaysEnforcedMethod } from '../mcp/methodCapabilityMap';
 import { isLocalExternalWireContext } from '../mcp/rpcProvenance';
 import { commanderTokenWorkspace } from '../deck/commanderTrust';
 import { COMMANDER_TEARDOWN_DENY } from '../../shared/commanderSurface';
+import { commanderLevelRefusal, commanderScopeRefusal } from '../deck/moaLevelGate';
 import type { EnforcementMode } from '../mcp/enforcementMode';
 import type { ApprovalQueue } from '../mcp/ApprovalQueue';
 import {
@@ -360,6 +361,16 @@ export class RpcRouter {
           error: `method ${request.method} is denied for orchestrator brains (teardown gate)`,
         };
       }
+      // Moa's autonomy level (moaLevelGate.ts): refuse-only, HQ token only.
+      const levelRefusal = commanderLevelRefusal(request.method, boundWorkspace, request.params);
+      if (levelRefusal) {
+        return { id: request.id, ok: false, error: levelRefusal };
+      }
+      // While a goal is active, Moa's direct sends stay inside its contract.
+      const scopeRefusal = await commanderScopeRefusal(request.method, boundWorkspace, request.params);
+      if (scopeRefusal) {
+        return { id: request.id, ok: false, error: scopeRefusal };
+      }
     }
 
     // ── #922 PR2: hosted workspace binding ───────────────────────────────
@@ -442,7 +453,7 @@ export class RpcRouter {
       // So anything that is not a live binding is treated as stale.
       ctx.workspaceClaim =
         claim.kind === 'bound'
-          ? { kind: 'bound', workspaceId: claim.workspaceId }
+          ? { kind: 'bound', workspaceId: claim.workspaceId, ...(claim.ptyId && { ptyId: claim.ptyId }) }
           : { kind: 'stale' };
     }
 

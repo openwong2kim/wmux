@@ -66,7 +66,7 @@ beforeEach(() => {
   spawnMock.mockReset();
   spawnMock.mockImplementation(() => proc);
   launchMock.mockReset();
-  launchMock.mockResolvedValue({ kind: 'run', env: {}, accountId: null, rotated: false });
+  launchMock.mockResolvedValue({ kind: 'run', env: {}, accountId: null });
   worker = new ClaudeWorker(() => ({}) as BrowserWindow);
 });
 
@@ -76,7 +76,7 @@ afterEach(() => {
 
 describe('ClaudeWorker account choice', () => {
   it('spawns with the account env the launch resolved', async () => {
-    launchMock.mockResolvedValue({ kind: 'run', env: { CLAUDE_CONFIG_DIR: '/acc/b' }, accountId: 'b', rotated: true });
+    launchMock.mockResolvedValue({ kind: 'run', env: { CLAUDE_CONFIG_DIR: '/acc/b' }, accountId: 'b' });
     await worker.execute('task-1', 'ws-receiver', 'do the thing');
     expect(launchMock).toHaveBeenCalledWith('ws-receiver', 'claude', expect.objectContaining({ resuming: false }));
     expect((spawnMock.mock.calls[0][2] as { env: Record<string, string> }).env.CLAUDE_CONFIG_DIR).toBe('/acc/b');
@@ -99,7 +99,7 @@ describe('ClaudeWorker cancel during the account check', () => {
     const run = worker.execute('task-1', 'ws-receiver', 'do the thing');
     await vi.waitFor(() => expect(launchMock).toHaveBeenCalled());
     expect(worker.cancel('task-1')).toBe(true);
-    resolveLaunch({ kind: 'run', env: {}, accountId: null, rotated: false });
+    resolveLaunch({ kind: 'run', env: {}, accountId: null });
     await run;
     expect(spawnMock).not.toHaveBeenCalled();
     expect(statuses()).toEqual([]);

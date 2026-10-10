@@ -529,7 +529,10 @@ export const bs = {
   'remote.scope.read': "Upareni uređaj može čitati i pretraživati izlaz svakog radnog prostora na ovom računaru, uključujući one otvorene kasnije.",
   'remote.scope.viewOnly': "Samo pregled blokira kucanje, ali i dalje može odgovarati na upite na ekranu koji traže jednu tipku.",
   'remote.scope.input': "Može kucati također dopušta otvaranje i zatvaranje sesija i odgovaranje na odobrenja.",
-  'remotePage.connect.pasteScope': "Ako pozivnica dijeli radne prostore, ovaj računar može čitati i pretraživati svaki radni prostor na tom računaru, uključujući one otvorene kasnije. Dok je uparen, wmux ga provjerava svakih nekoliko sekundi, drži vezu otvorenom za upozorenja i prikazuje njegova obavještenja; utišajte ih s njegove ikone u koloni računara.",
+  'remotePage.connect.pasteScope': "Ako pozivnica dijeli radne prostore, ovaj računar može čitati i pretraživati svaki radni prostor na tom računaru, uključujući one otvorene kasnije. Dok je uparen, wmux ga provjerava svakih nekoliko sekundi, drži vezu otvorenom za upozorenja i prikazuje njegova obavještenja; utišajte ih iz menija računara u naslovu bočne trake.",
+  'pcSwitcher.open': "Promijeni računar",
+  'pcSwitcher.manage': "Postavke: {name}",
+  'pcSwitcher.othersNeedYou': "{count} čeka na vas na drugim računarima",
   // Quit and Stop Sessions (main-process native confirm)
   'quitAndStop.message': "Zatvoriti wmux i zaustaviti sve sesije?",
   'quitAndStop.detail': "Trenutno radi: sesije agenata: {agents}, ukupno terminala: {sessions}. Sve će biti zaustavljene. Obično zatvaranje ih ostavlja da rade u pozadini.",

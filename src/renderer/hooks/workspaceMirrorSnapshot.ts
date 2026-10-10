@@ -17,6 +17,7 @@ import type {
   WorkspaceMirrorPushPayload,
 } from '../../shared/workspaceMirror';
 import { normalizeRoleBinding } from '../../shared/orchestratorRole';
+import { isShadowWorkspaceId } from '../../shared/pcRail';
 import type { StoreState } from '../stores';
 import { selectFleetPanes, surfaceAttentionStatus, type FleetPane, type FleetSelectorState } from '../stores/selectors/fleet';
 
@@ -362,6 +363,11 @@ export function buildWorkspaceMirrorPayload(
   now: () => number = Date.now,
 ): WorkspaceMirrorPushPayload {
   const ts = now();
+  // The PC rail's shadow workspaces show another computer's panes: main and
+  // the daemon never see them (no workspace_list row, fan-out target or pane).
+  if (state.workspaces.some((w) => isShadowWorkspaceId(w.id))) {
+    state = { ...state, workspaces: state.workspaces.filter((w) => !isShadowWorkspaceId(w.id)) };
+  }
   return {
     ts,
     entries: buildWorkspaceListEntries(state.workspaces),

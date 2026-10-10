@@ -121,7 +121,7 @@ describe('useRpcBridge — fanout.spawnWorkspace wiring for agent choices', () =
       /applyRoleAgent\(bareCommand, roleBinding, extraAgents/,
       /withRoleBinding\(seeded, roleBinding, role, extraAgents\)/,
       /applyFanoutAgentFlags\(\s*roleBoundRaw\.initialCommand,\s*agentChoice,\s*cwd,/,
-      /applyWorkerPermissionFlags\(roleBound\.initialCommand, workerMode\)/,
+      /applyWorkerPermissionFlags\(roleBound\.initialCommand, workerMode, goalWorker \? goalWorkerDenyRules\(\) : \[\]\)/,
       /reattachModelEnvMarker\(marker, bound\.initialCommand, seeded\.shell\)/,
     ].map(at);
     expect([...order].sort((a, b) => a - b)).toEqual(order);
@@ -132,6 +132,15 @@ describe('useRpcBridge — fanout.spawnWorkspace wiring for agent choices', () =
       at(/store\.addWorkspace\(name\)/),
     );
     expect(block).toMatch(/could not launch \$\{agentChoice\.agent\} for this task/);
+  });
+
+  it('a task under a Moa goal is refused before any workspace exists unless the final launcher is claude', () => {
+    const refuse = at(/if \(goalWorker && !isGoalWorkerLauncher\(commandLauncherStem\(swap\.command\)\)\)/);
+    // After the swap (the launcher is final), before addWorkspace.
+    expect(refuse).toBeGreaterThan(at(/applyRoleAgent\(bareCommand, roleBinding, extraAgents/));
+    expect(refuse).toBeLessThan(at(/store\.addWorkspace\(name\)/));
+    expect(at(/if \(goalWorker && !isFanoutWorkerPermissionMode\(params\.workerPermissionMode\)\)/)).toBeLessThan(at(/store\.addWorkspace\(name\)/));
+    expect(block).toMatch(/const goalWorker = params\.goalWorker === true;/);
   });
 
   it('builds the codex trust override for the pane platform', () => {

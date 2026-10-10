@@ -96,9 +96,10 @@ describe('Sidebar — Attention order (render)', () => {
     expect(waitRow?.textContent).not.toContain('Needs you');
   });
 
-  // Attached remote workspaces share the one list: sorted by attention with
-  // the local rows, and found by the workspace search on name or host.
-  it('interleaves a remote row that needs you, and filters remote rows by host', () => {
+  // PC rail: attached remote mirrors no longer get local rows (the computer
+  // column lists another computer's workspaces), and a shadow workspace is
+  // never one of this computer's rows.
+  it('lists no attached remote mirror and no shadow workspace among the local rows', () => {
     const remote = (workspaceId: string, agentStatus: string, hostLabel: string) => ({
       key: `h:${workspaceId}`, hostId: 'h', hostLabel, workspaceId, name: workspaceId,
       panes: [{ sessionId: `s-${workspaceId}`, agentName: 'Claude Code', agentStatus }],
@@ -107,16 +108,10 @@ describe('Sidebar — Attention order (render)', () => {
       remoteWorkspaces: [remote('far', 'awaiting_input', 'Mini'), remote('cold', 'idle', 'Studio')],
       activeRemoteKey: null,
     });
+    act(() => useStore.setState((s) => ({ workspaces: [...s.workspaces, { ...ws('shadowed'), id: 'shadow:h:far' }] })));
     act(() => root.render(<Sidebar />));
-    expect(shown()).toEqual(['far', 'done', 'run', 'idle', 'cold']);
-    // The filter field opens on demand from the header button.
-    act(() => (container.querySelector('[data-sidebar-search-toggle]') as HTMLButtonElement).click());
-    const input = container.querySelector('input[type="text"]') as HTMLInputElement;
-    act(() => {
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(input, 'studio');
-      input.dispatchEvent(new Event('input', { bubbles: true }));
-    });
-    expect(shown()).toEqual(['cold']);
+    expect(shown()).toEqual(['done', 'run', 'idle']);
+    expect(container.querySelector('[data-sidebar-total]')?.textContent).toBe('3');
   });
 
   // Ctrl+N follows the stored order: every row always shows its number, in
