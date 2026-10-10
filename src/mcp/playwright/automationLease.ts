@@ -75,6 +75,16 @@ function readAuthorization(res: unknown): BrowserPolicyAuthorization | undefined
   return policy && typeof policy.protected === 'boolean' ? policy : undefined;
 }
 
+/**
+ * Whether two protected authorizations carry the same terms (the site policy).
+ * The epoch also moves for changes that only WIDEN a pane — the operator's
+ * "Always on this pane" consent grant — and those must not fail an operation
+ * already under way; a change of the site policy (or protection itself) does.
+ */
+function sameProtectedTerms(a: BrowserPolicyAuthorization, b: BrowserPolicyAuthorization | undefined): boolean {
+  return !!b && a.protected === b.protected && JSON.stringify(a.hosts ?? null) === JSON.stringify(b.hosts ?? null);
+}
+
 function unconfirmedProtectedError(): BrowserPolicyError {
   return new BrowserPolicyError(
     POLICY_DENIED_CODE,
@@ -464,6 +474,8 @@ export async function withAutomationLease<T>(
   const scope: BrowserTargetScope = protection ? Object.freeze({ ...routed, protection }) : routed;
   /** Set when a late authorization took the pane's permission away mid-operation. */
   let revoked: Error | null = null;
+  /** The epoch this operation's terms were last confirmed at (moves on a grants-only change). */
+  let termsEpoch = protection?.epoch;
 
   if (!token) {
     // No target registered yet (codex P2, PR #528): the tool body may
@@ -486,10 +498,16 @@ export async function withAutomationLease<T>(
             // Already held to deny-all: no later answer is stricter than that.
             && protection !== UNCONFIRMED_PROTECTION
             && (late.protected !== (protection?.protected ?? false)
-              || (late.protected && late.epoch !== protection?.epoch))
+              || (late.protected && late.epoch !== termsEpoch))
           ) {
-            if (late.protected) rememberProtection(scope.workspaceId, true);
-            revoked = unconfirmedProtectedError();
+            if (late.protected && sameProtectedTerms(late, protection)) {
+              // Same site policy at a new epoch: a consent grant, not a
+              // revocation. Continue under the terms already in force.
+              termsEpoch = late.epoch;
+            } else {
+              if (late.protected) rememberProtection(scope.workspaceId, true);
+              revoked = unconfirmedProtectedError();
+            }
           }
           const tok = r?.token ?? null;
           if (!tok) return;
