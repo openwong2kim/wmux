@@ -529,7 +529,7 @@ export const de = {
   'remotePage.connect.pasteScope': "Teilt die Einladung Workspaces, kann dieser Computer jeden Workspace auf jenem PC lesen und durchsuchen, auch später geöffnete. Solange gekoppelt, prüft wmux ihn alle paar Sekunden, hält eine Verbindung für seine Hinweise offen und zeigt seine Benachrichtigungen; stummschalten kannst du sie über sein Symbol in der Computerspalte.",
   // Quit and Stop Sessions (main-process native confirm)
   'quitAndStop.message': "wmux beenden und alle Sitzungen stoppen?",
-  'quitAndStop.detail': "Gerade aktiv: {agents} Agent-Sitzungen, insgesamt {sessions} Terminals. Alle werden gestoppt. Normales Beenden lässt sie im Hintergrund weiterlaufen.",
+  'quitAndStop.detail': "Laufende Agent-Sitzungen: {agents}. Terminals insgesamt: {sessions}. Alle werden gestoppt. Normales Beenden lässt sie im Hintergrund weiterlaufen.",
   'quitAndStop.detailUnknown': "wmux konnte die laufenden Sitzungen nicht zählen. Alle Terminals und Agent-Sitzungen werden gestoppt. Normales Beenden lässt sie im Hintergrund weiterlaufen.",
   'quitAndStop.confirm': "Beenden und Sitzungen stoppen",
 } as const;

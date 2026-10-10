@@ -532,7 +532,7 @@ export const it = {
   'remotePage.connect.pasteScope': "Se l'invito condivide i workspace, questo computer può leggere e cercare ogni workspace su quel PC, compresi quelli aperti in seguito. Finché sono associati, wmux lo controlla ogni pochi secondi, tiene aperta una connessione per i suoi avvisi e mostra le sue notifiche; silenziale dalla sua icona nella colonna dei computer.",
   // Quit and Stop Sessions (main-process native confirm)
   'quitAndStop.message': "Uscire da wmux e arrestare tutte le sessioni?",
-  'quitAndStop.detail': "In esecuzione: {agents} sessioni di agenti, {sessions} terminali in tutto. Verranno arrestate tutte. L'uscita normale le lascia in esecuzione in background.",
+  'quitAndStop.detail': "Sessioni di agenti in esecuzione: {agents}. Terminali in tutto: {sessions}. Verranno arrestate tutte. L'uscita normale le lascia in esecuzione in background.",
   'quitAndStop.detailUnknown': "wmux non è riuscito a contare le sessioni in esecuzione. Tutti i terminali e le sessioni di agenti verranno arrestati. L'uscita normale le lascia in esecuzione in background.",
   'quitAndStop.confirm': "Esci e arresta le sessioni",
 } as const;

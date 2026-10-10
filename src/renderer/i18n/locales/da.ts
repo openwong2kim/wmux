@@ -531,7 +531,7 @@ export const da = {
   'remotePage.connect.pasteScope': "Hvis invitationen deler arbejdsområder, kan denne computer læse og søge i alle arbejdsområder på den pc, også dem der åbnes senere. Mens de er parret, tjekker wmux den med få sekunders mellemrum, holder en forbindelse åben til dens advarsler og viser dens notifikationer; slå dem fra via dens ikon i computerkolonnen.",
   // Quit and Stop Sessions (main-process native confirm)
   'quitAndStop.message': "Afslut wmux og stop alle sessioner?",
-  'quitAndStop.detail': "Kører nu: {agents} agentsessioner, {sessions} terminaler i alt. De bliver alle stoppet. Almindelig Afslut lader dem køre videre i baggrunden.",
+  'quitAndStop.detail': "Kørende agentsessioner: {agents}. Terminaler i alt: {sessions}. De bliver alle stoppet. Almindelig Afslut lader dem køre videre i baggrunden.",
   'quitAndStop.detailUnknown': "wmux kunne ikke tælle de kørende sessioner. Alle terminaler og agentsessioner bliver stoppet. Almindelig Afslut lader dem køre videre i baggrunden.",
   'quitAndStop.confirm': "Afslut og stop sessioner",
 } as const;

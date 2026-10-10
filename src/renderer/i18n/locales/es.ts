@@ -533,7 +533,7 @@ export const es = {
   'remotePage.connect.pasteScope': "Si la invitación comparte espacios de trabajo, este equipo puede leer y buscar todos los espacios de trabajo de ese PC, incluidos los que se abran después. Mientras estén emparejados, wmux lo comprueba cada pocos segundos, mantiene una conexión abierta para sus alertas y muestra sus notificaciones; puedes silenciarlas desde su icono en la columna de equipos.",
   // Quit and Stop Sessions (main-process native confirm)
   'quitAndStop.message': "¿Salir de wmux y detener todas las sesiones?",
-  'quitAndStop.detail': "En ejecución: {agents} sesiones de agentes, {sessions} terminales en total. Se detendrán todas. Salir normalmente las deja en ejecución en segundo plano.",
+  'quitAndStop.detail': "Sesiones de agentes en ejecución: {agents}. Terminales en total: {sessions}. Se detendrán todas. Salir normalmente las deja en ejecución en segundo plano.",
   'quitAndStop.detailUnknown': "wmux no pudo contar las sesiones en ejecución. Se detendrán todas las terminales y sesiones de agentes. Salir normalmente las deja en ejecución en segundo plano.",
   'quitAndStop.confirm': "Salir y detener sesiones",
 } as const;

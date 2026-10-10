@@ -78,8 +78,8 @@ describe('countLiveSessions', () => {
 describe('buildQuitAndStopCopy', () => {
   it('names both counts in English', async () => {
     const copy = await buildQuitAndStopCopy('en', { sessions: 5, agents: 2 });
-    expect(copy.detail).toContain('2 agent sessions');
-    expect(copy.detail).toContain('5 terminals');
+    expect(copy.detail).toContain('Agent sessions running: 2');
+    expect(copy.detail).toContain('Terminals in all: 5');
     expect(copy.confirm).toBe('Quit and Stop Sessions');
     expect(copy.cancel).toBe('Cancel');
   });

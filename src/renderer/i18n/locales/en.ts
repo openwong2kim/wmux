@@ -4318,7 +4318,7 @@ export const en = {
   'remotePage.connect.pasteScope': "If the invite shares workspaces, this computer can read and search every workspace on that PC, including later ones. While paired, wmux checks it every few seconds, keeps a connection open for its alerts and shows its notifications; mute them from its icon in the computer column.",
   // Quit and Stop Sessions (main-process native confirm)
   'quitAndStop.message': "Quit wmux and stop all sessions?",
-  'quitAndStop.detail': "Running now: {agents} agent sessions, {sessions} terminals in all. Every one of them will be stopped. Plain Quit leaves them running in the background.",
+  'quitAndStop.detail': "Agent sessions running: {agents}. Terminals in all: {sessions}. All of them will be stopped. Plain Quit leaves them running in the background.",
   'quitAndStop.detailUnknown': "wmux could not count the running sessions. Every terminal and agent session will be stopped. Plain Quit leaves them running in the background.",
   'quitAndStop.confirm': "Quit and Stop Sessions",
 } as const;
