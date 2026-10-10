@@ -5,8 +5,6 @@ import StatusBar from '../StatusBar/StatusBar';
 import SidebarToggle from './SidebarToggle';
 import { SIDEBAR_COMPACT_WIDTH } from '../../utils/sidebarLayout';
 import { overlayColors } from '../../utils/titlebarOverlay';
-import { selectPcRailVisible } from '../../stores/selectors/pcRail';
-import { PC_RAIL_WIDTH } from '../PcRail/PcRail';
 
 /**
  * Bridge redesign — custom 40px titlebar (DESIGN.md "Titlebar").
@@ -140,9 +138,7 @@ export default function Titlebar() {
   const sidebarWidth = useStore((s) => s.sidebarWidth);
   // The icon rail (48px) always sits on the frame at the left; the open
   // sidebar follows it inside the sheet (+1px for the sheet's edge).
-  // The computer column (48px, only with a paired host) sits left of it.
-  const pcRailWidth = useStore(selectPcRailVisible) ? PC_RAIL_WIDTH : 0;
-  const leftSegmentWidth = sidebarPosition === 'left' ? pcRailWidth + SIDEBAR_COMPACT_WIDTH + (sidebarVisible ? sidebarWidth + 1 : 0) : 0;
+  const leftSegmentWidth = sidebarPosition === 'left' ? SIDEBAR_COMPACT_WIDTH + (sidebarVisible ? sidebarWidth + 1 : 0) : 0;
 
   // macOS 트래픽 라이트 예약: 세그먼트가 충분히 넓으면(확장 240px) 세그먼트
   // "안쪽" 패딩으로 품는다 — 헤더에 걸면 세그먼트 전체가 예약만큼 밀려 아래

@@ -530,5 +530,8 @@ export const tr = {
   'remote.scope.read': "Eşleştirilmiş bir cihaz, bu bilgisayardaki her çalışma alanının çıktısını okuyabilir ve arayabilir; sonradan açılanlar dahil.",
   'remote.scope.viewOnly': "Yalnızca görüntüleme yazmayı engeller, ancak tek tuş isteyen ekran istemlerini yine de yanıtlayabilir.",
   'remote.scope.input': "Yazabilir ayrıca oturum açıp kapatmaya ve onayları yanıtlamaya izin verir.",
-  'remotePage.connect.pasteScope': "Davet çalışma alanlarını paylaşıyorsa bu bilgisayar o PC'deki her çalışma alanını okuyabilir ve arayabilir; sonradan açılanlar dahil. Eşleşik kaldığı sürece wmux onu birkaç saniyede bir denetler, uyarıları için bir bağlantı açık tutar ve bildirimlerini gösterir; bilgisayar sütunundaki simgesinden sessize alın.",
+  'remotePage.connect.pasteScope': "Davet çalışma alanlarını paylaşıyorsa bu bilgisayar o PC'deki her çalışma alanını okuyabilir ve arayabilir; sonradan açılanlar dahil. Eşleşik kaldığı sürece wmux onu birkaç saniyede bir denetler, uyarıları için bir bağlantı açık tutar ve bildirimlerini gösterir; kenar çubuğu başlığındaki bilgisayar menüsünden sessize alın.",
+  'pcSwitcher.open': "Bilgisayar değiştir",
+  'pcSwitcher.manage': "{name} ayarları",
+  'pcSwitcher.othersNeedYou': "Diğer bilgisayarlarda {count} öğe sizi bekliyor",
 } as const;

@@ -18,6 +18,7 @@ import SidebarNavigation from './SidebarNavigation';
 import { workspaceColorHex } from '../../../shared/workspaceColors';
 import PresetPicker from './PresetPicker';
 import RailMoreMenu from './RailMoreMenu';
+import { PcSwitcherRailItem } from './PcSwitcher';
 import { listedWorkspaces, moaHqId as selectMoaHqId } from '../Moa/moaHqGuard';
 import { workspaceShortcutNumber } from '../../../shared/keymap';
 
@@ -164,6 +165,8 @@ export default function MiniSidebar({ rail = false, collapsed = true }: { rail?:
     >
       {!readOnly && <SidebarNavigation compact home={rail} />}
       {showWorkspaces && <>
+      {/* PC switcher, collapsed: one item, only with a paired computer. */}
+      {rail && !readOnly && <PcSwitcherRailItem />}
       {/* Header — new workspace button */}
       {!readOnly && <button
         ref={plusBtnRef}

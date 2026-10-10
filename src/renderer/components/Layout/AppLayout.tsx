@@ -73,7 +73,6 @@ import { useUsageLimitBridge } from '../../hooks/useUsageLimitBridge';
 import { useWorkspaceSettleBridge } from '../../hooks/useWorkspaceSettleBridge';
 import { useRemoteInboxBridge } from '../../hooks/useRemoteInboxBridge';
 import { useRemoteAttachmentsLifecycle } from '../../hooks/useRemoteAttachmentsLifecycle';
-import PcRail from '../PcRail/PcRail';
 import PcRailFeeds from '../PcRail/PcRailFeeds';
 import ShadowWorkspaceSync from '../Remote/ShadowWorkspaceSync';
 import { isShadowWorkspaceId } from '../../../shared/pcRail';
@@ -2093,15 +2092,13 @@ export default function AppLayout() {
           stays when the sidebar collapses (MiniSidebar `rail`); the sheet holds
           the sidebar, the panes and the dock. */}
       <div className={`wmux-frame-row flex flex-1 min-h-0 ${sidebarPosition === 'right' ? 'flex-row-reverse' : ''}`}>
-      {/* The computer column, outside the page rail; absent with no paired
-          host. Appearing narrows the sheet once, so terminals refit once. */}
       <ErrorBoundary name="PcRail">
-        {/* Host roster, feeds and attention. Mounted once the session is
-            restored, so the saved mutes reach main before any toast; the
-            roster arriving is what shows the column (none with 0 hosts). */}
+        {/* Host roster, feeds and attention for the sidebar's PC switcher.
+            Mounted once the session is restored, so the saved mutes reach
+            main before any toast; the roster arriving is what shows the
+            switcher (none with 0 hosts). */}
         {(sessionLoaded || sessionLoadFailed) && <PcRailFeeds />}
         {(sessionLoaded || sessionLoadFailed) && <ShadowWorkspaceSync />}
-        <PcRail />
       </ErrorBoundary>
       <ErrorBoundary name="SidebarRail">
         <MiniSidebar rail collapsed={!sidebarVisible} />

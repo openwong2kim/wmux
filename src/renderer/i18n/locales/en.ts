@@ -4299,7 +4299,7 @@ export const en = {
   'pcRail.browserThisComputer': "Browser (this computer)",
   'pcRail.openElsewhere': "Open in {workspace}",
   'pcRail.jump': "Jump",
-  'pcRail.consent.title': "Show {name} in the computer column?",
+  'pcRail.consent.title': "Show {name} in the sidebar's computer menu?",
   'pcRail.consent.read': "This computer can read and search the output of every workspace on {name}, including workspaces opened later.",
   'pcRail.consent.viewOnly': "View only blocks typing, but this computer can still answer on-screen prompts that take a single key.",
   'pcRail.consent.input': "Can type also allows opening and closing sessions and answering approvals.",
@@ -4311,7 +4311,10 @@ export const en = {
   'remote.scope.read': "A paired device can read and search the output of every workspace on this computer, including workspaces opened later.",
   'remote.scope.viewOnly': "View only blocks typing, but it can still answer on-screen prompts that take a single key.",
   'remote.scope.input': "Can type also lets it open and close sessions and answer approvals.",
-  'remotePage.connect.pasteScope': "If the invite shares workspaces, this computer can read and search every workspace on that PC, including later ones. While paired, wmux checks it every few seconds, keeps a connection open for its alerts and shows its notifications; mute them from its icon in the computer column.",
+  'remotePage.connect.pasteScope': "If the invite shares workspaces, this computer can read and search every workspace on that PC, including later ones. While paired, wmux checks it every few seconds, keeps a connection open for its alerts and shows its notifications; mute them from the computer menu in the sidebar title.",
+  'pcSwitcher.open': "Switch computer",
+  'pcSwitcher.manage': "{name} settings",
+  'pcSwitcher.othersNeedYou': "{count} need you on other computers",
 } as const;
 
 export type TranslationKey = keyof typeof en;

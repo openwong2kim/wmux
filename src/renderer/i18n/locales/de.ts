@@ -526,5 +526,8 @@ export const de = {
   'remote.scope.read': "Ein gekoppeltes Gerät kann die Ausgabe jedes Workspaces auf diesem Computer lesen und durchsuchen, auch von später geöffneten.",
   'remote.scope.viewOnly': "Nur ansehen verhindert das Tippen, kann aber weiterhin Bildschirmabfragen beantworten, die eine einzelne Taste erwarten.",
   'remote.scope.input': "Darf tippen erlaubt außerdem, Sitzungen zu öffnen und zu schließen und Freigaben zu beantworten.",
-  'remotePage.connect.pasteScope': "Teilt die Einladung Workspaces, kann dieser Computer jeden Workspace auf jenem PC lesen und durchsuchen, auch später geöffnete. Solange gekoppelt, prüft wmux ihn alle paar Sekunden, hält eine Verbindung für seine Hinweise offen und zeigt seine Benachrichtigungen; stummschalten kannst du sie über sein Symbol in der Computerspalte.",
+  'remotePage.connect.pasteScope': "Teilt die Einladung Workspaces, kann dieser Computer jeden Workspace auf jenem PC lesen und durchsuchen, auch später geöffnete. Solange gekoppelt, prüft wmux ihn alle paar Sekunden, hält eine Verbindung für seine Hinweise offen und zeigt seine Benachrichtigungen; stummschalten kannst du sie im Computermenü im Titel der Seitenleiste.",
+  'pcSwitcher.open': "Computer wechseln",
+  'pcSwitcher.manage': "Einstellungen für {name}",
+  'pcSwitcher.othersNeedYou': "{count} warten auf dich auf anderen Computern",
 } as const;

@@ -132,6 +132,36 @@
   font-variant-numeric: tabular-nums;
   letter-spacing: normal;
 }
+/* PC switcher: the Workspaces title itself, opening the computer dropdown.
+ * Inherits the band's type; a host name keeps its own case. */
+.wmux-pc-switcher {
+  margin-left: -4px;
+  padding: 2px 4px;
+  color: inherit;
+  font: inherit;
+  text-transform: inherit;
+  letter-spacing: inherit;
+}
+.wmux-pc-switcher:hover { background: var(--selection-hover); }
+.wmux-pc-switcher-name { text-transform: none; letter-spacing: normal; }
+/* Needs-you of the computers not on screen: the attention number badge. */
+.wmux-pc-switcher-badge {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 9999px;
+  background: var(--attention);
+  color: var(--attention-ink);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: normal;
+}
 .wmux-sidebar-footer { min-height: 40px; padding: 4px 8px; }
 .wmux-sidebar-footer .wmux-nav-button { min-height: 32px; }
 /* Card rows. The 1px transparent border reserves the room the needs-you

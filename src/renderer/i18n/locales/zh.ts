@@ -3434,7 +3434,7 @@ export const zh = {
   'pcRail.browserThisComputer': "浏览器（本机）",
   'pcRail.openElsewhere': "已在 {workspace} 中打开",
   'pcRail.jump': "跳转",
-  'pcRail.consent.title': "在电脑栏中显示 {name}？",
+  'pcRail.consent.title': "在侧边栏的电脑菜单中显示 {name}？",
   'pcRail.consent.read': "本机可以读取和搜索 {name} 上所有工作区的输出，包括以后打开的工作区。",
   'pcRail.consent.viewOnly': "仅查看会阻止输入，但本机仍可回答只需按一个键的屏幕提示。",
   'pcRail.consent.input': "可输入还允许打开和关闭会话以及回答审批。",
@@ -3446,5 +3446,8 @@ export const zh = {
   'remote.scope.read': "已配对的设备可以读取和搜索这台电脑上所有工作区的输出，包括之后打开的工作区。",
   'remote.scope.viewOnly': "仅查看会阻止输入，但仍可回应只需按一个键的屏幕提示。",
   'remote.scope.input': "可输入还允许它打开和关闭会话以及回应审批。",
-  'remotePage.connect.pasteScope': "如果邀请共享了工作区，这台电脑可以读取和搜索那台电脑上的所有工作区，包括之后打开的。配对期间，wmux 每隔几秒检查一次，保持连接以接收提醒并显示其通知；可在电脑栏中该电脑的图标上将其静音。",
+  'remotePage.connect.pasteScope': "如果邀请共享了工作区，这台电脑可以读取和搜索那台电脑上的所有工作区，包括之后打开的。配对期间，wmux 每隔几秒检查一次，保持连接以接收提醒并显示其通知；可在侧边栏标题的电脑菜单中将其静音。",
+  'pcSwitcher.open': "切换电脑",
+  'pcSwitcher.manage': "{name} 设置",
+  'pcSwitcher.othersNeedYou': "其他电脑上有 {count} 个需要你",
 } as const;

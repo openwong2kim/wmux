@@ -12,6 +12,7 @@ import SidebarResizeHandle from './SidebarResizeHandle';
 import { resolveTaskLink } from '../../utils/fanoutProvenance';
 import WorkspaceItem from './WorkspaceItem';
 import HostWorkspaceList from './HostWorkspaceList';
+import { PcSwitcherTitle } from './PcSwitcher';
 import OrphanSessions from './OrphanSessions';
 import ArchivedWorkspaces from './ArchivedWorkspaces';
 import MissionsSection from './MissionsSection';
@@ -77,8 +78,8 @@ export default function Sidebar({ chrome = 'full' }: { chrome?: 'full' | 'sheet'
   // or Ctrl+N numbering). While it is the active workspace it shows as its
   // own row above the list, so the operator sees where they are.
   const moaHqId = useStore(selectMoaHqId);
-  // PC rail: shadow workspaces (another computer's, opened from the computer
-  // column) are never this computer's rows, count or Ctrl+N numbers.
+  // PC rail: shadow workspaces (another computer's, opened from the PC
+  // switcher) are never this computer's rows, count or Ctrl+N numbers.
   const listed = useMemo(
     () => listedWorkspaces(workspaces, moaHqId),
     [workspaces, moaHqId],
@@ -89,7 +90,6 @@ export default function Sidebar({ chrome = 'full' }: { chrome?: 'full' | 'sheet'
     const id = s.pcRail.activePcId;
     return id !== LOCAL_PC_ID && s.pcRailHosts.some((h) => h.id === id) ? id : null;
   });
-  const scopedHostLabel = useStore((s) => (scopedHostId ? s.pcRailHosts.find((h) => h.id === scopedHostId)?.label ?? scopedHostId : null));
   const scopedRowCount = useStore((s) => (scopedHostId ? s.pcRailFeeds[scopedHostId]?.workspaces.length ?? 0 : 0));
   const [wsSearch, setWsSearch] = useState('');
   const wsSearchRef = useRef<HTMLInputElement>(null);
@@ -460,13 +460,12 @@ export default function Sidebar({ chrome = 'full' }: { chrome?: 'full' | 'sheet'
       )}
       {scopedHostId ? (
         <div className="wmux-sidebar-section" data-sidebar-scope={scopedHostId}>
-          <span className="min-w-0 truncate">{t('sidebar.workspaces')}</span>
+          <PcSwitcherTitle title={t('sidebar.workspaces')} />
           <span className="wmux-sidebar-total" data-sidebar-total>{scopedRowCount}</span>
-          <span className="ml-auto min-w-0 truncate text-[11px] text-[var(--text-muted)]" data-sidebar-scope-name>{scopedHostLabel}</span>
         </div>
       ) : (
       <div className="wmux-sidebar-section">
-        <span className="min-w-0 truncate">{t('sidebar.workspaces')}</span>
+        <PcSwitcherTitle title={t('sidebar.workspaces')} />
         {/* Filtered, the count is the compact "shown/total" so it never wraps in a
             narrow sidebar; the full sentence stays as the tooltip and as the text a
             screen reader reads (aria-label on a plain span is not exposed). */}

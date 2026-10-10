@@ -40,6 +40,7 @@ import { tokenAttrs } from '../../themes';
 import PaneDecorations from '../../plugins/PaneDecorations';
 import { isRemoteMirrorVisible } from '../../stores/slices/remoteWorkspacesSlice';
 import { selectHostPickName } from '../../stores/shadowWorkspace';
+import { isShadowWorkspaceId } from '../../../shared/pcRail';
 
 interface PaneProps {
   pane: PaneLeaf;
@@ -1423,6 +1424,7 @@ function SplitSurfaceView({
               cwd={surface.cwd}
               isActive={surface.id === activeSurfaceId}
               onTitleChange={updateRemoteSurfaceTitle}
+              fixedFont={isShadowWorkspaceId(workspaceId)}
             />
           ) : (
             <TerminalSurface
@@ -1531,6 +1533,7 @@ function SplitSurfaceView({
             cwd={surface.cwd}
             isActive={surface.id === activeSurfaceId}
             onTitleChange={updateRemoteSurfaceTitle}
+            fixedFont={isShadowWorkspaceId(workspaceId)}
           />
         ) : (
           <EditorPanel

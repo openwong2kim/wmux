@@ -529,5 +529,8 @@ export const fr = {
   'remote.scope.read': "Un appareil appairé peut lire et rechercher la sortie de chaque espace de travail de cet ordinateur, y compris ceux ouverts plus tard.",
   'remote.scope.viewOnly': "Lecture seule empêche la saisie, mais peut encore répondre aux invites à l'écran qui attendent une seule touche.",
   'remote.scope.input': "Peut saisir permet aussi d'ouvrir et de fermer des sessions et de répondre aux approbations.",
-  'remotePage.connect.pasteScope': "Si l'invitation partage des espaces de travail, cet ordinateur peut lire et rechercher chaque espace de travail de ce PC, y compris ceux ouverts plus tard. Tant qu'ils sont appairés, wmux le vérifie toutes les quelques secondes, garde une connexion ouverte pour ses alertes et affiche ses notifications ; coupez-les depuis son icône dans la colonne des ordinateurs.",
+  'remotePage.connect.pasteScope': "Si l'invitation partage des espaces de travail, cet ordinateur peut lire et rechercher chaque espace de travail de ce PC, y compris ceux ouverts plus tard. Tant qu'ils sont appairés, wmux le vérifie toutes les quelques secondes, garde une connexion ouverte pour ses alertes et affiche ses notifications ; coupez-les depuis le menu des ordinateurs dans le titre de la barre latérale.",
+  'pcSwitcher.open': "Changer d'ordinateur",
+  'pcSwitcher.manage': "Réglages de {name}",
+  'pcSwitcher.othersNeedYou': "{count} vous attendent sur d'autres ordinateurs",
 } as const;

@@ -4259,7 +4259,7 @@ export const pl = {
   'pcRail.browserThisComputer': "Przeglądarka (ten komputer)",
   'pcRail.openElsewhere': "Otwarte w {workspace}",
   'pcRail.jump': "Przejdź",
-  'pcRail.consent.title': "Pokazać {name} w kolumnie komputerów?",
+  'pcRail.consent.title': "Pokazać {name} w menu komputerów na pasku bocznym?",
   'pcRail.consent.read': "Ten komputer może czytać i przeszukiwać wyjście każdego obszaru roboczego na {name}, także tych otwartych później.",
   'pcRail.consent.viewOnly': "Tylko podgląd blokuje pisanie, ale ten komputer nadal może odpowiadać na monity ekranowe wymagające jednego klawisza.",
   'pcRail.consent.input': "Może pisać pozwala też otwierać i zamykać sesje oraz odpowiadać na zatwierdzenia.",
@@ -4271,5 +4271,8 @@ export const pl = {
   'remote.scope.read': "Sparowane urządzenie może czytać i przeszukiwać wyjście każdego obszaru roboczego na tym komputerze, także obszarów otwartych później.",
   'remote.scope.viewOnly': "Tylko podgląd blokuje pisanie, ale urządzenie nadal może odpowiadać na monity ekranowe wymagające jednego klawisza.",
   'remote.scope.input': "Może pisać pozwala też otwierać i zamykać sesje oraz odpowiadać na zatwierdzenia.",
-  'remotePage.connect.pasteScope': "Jeśli zaproszenie udostępnia obszary robocze, ten komputer może czytać i przeszukiwać każdy obszar roboczy na tamtym komputerze, także otwarte później. Po sparowaniu wmux sprawdza go co kilka sekund, utrzymuje połączenie dla alertów i pokazuje jego powiadomienia; wycisz je z jego ikony w kolumnie komputerów.",
+  'remotePage.connect.pasteScope': "Jeśli zaproszenie udostępnia obszary robocze, ten komputer może czytać i przeszukiwać każdy obszar roboczy na tamtym komputerze, także otwarte później. Po sparowaniu wmux sprawdza go co kilka sekund, utrzymuje połączenie dla alertów i pokazuje jego powiadomienia; wycisz je z menu komputerów w tytule paska bocznego.",
+  'pcSwitcher.open': "Przełącz komputer",
+  'pcSwitcher.manage': "Ustawienia: {name}",
+  'pcSwitcher.othersNeedYou': "{count} czeka na Ciebie na innych komputerach",
 } as const;
