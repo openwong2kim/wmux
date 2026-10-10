@@ -2,6 +2,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import {
+  getClientIdentity,
   runWithCallerPtyIdSource,
   runWithWorkspaceTokenSource,
   runWithStaleIdentityHandler,
@@ -480,6 +481,13 @@ let codexParentClass: 'shared-server' | 'other' | null = null;
  * threadless call cannot slip past what an earlier call could not verify.
  */
 let codexParentUnverified = false;
+/**
+ * MCP clients known never to run under a shared Codex app-server
+ * (clientInfo.name, as captured in src/main/mcp/firstParty.ts). Their browser
+ * calls skip the Windows parent check entirely; Codex (`codex-mcp-client`),
+ * any other name and a missing clientInfo are checked.
+ */
+const NON_CODEX_CLIENTS: ReadonlySet<string> = new Set(['claude-code', 'opencode']);
 let codexParentHome = '';
 let codexParentCheck: Promise<McpParentClass> | null = null;
 // Where no owner index can exist (Windows today) an 'unknown' parent decides
@@ -1402,8 +1410,11 @@ async function requireBrowserWorkspaceId(opts: { claim?: boolean } = {}): Promis
   if (codexCallScope.getStore()?.mode === 'thread') return requireWorkspaceId();
   // Windows skips the parent inspection for a threadless call (decideCodexMode),
   // so a browser call does it here: a shared server without thread attribution
-  // or an uninspectable parent is refused below. Non-browser calls never pay it.
-  if (!codexOwnerIndexAvailable() && !codexParentClass) await classifyCodexParent();
+  // or an uninspectable parent is refused below. Non-browser calls and known
+  // non-Codex clients never pay it.
+  if (!codexOwnerIndexAvailable() && !codexParentClass && !NON_CODEX_CLIENTS.has(getClientIdentity().name ?? '')) {
+    await classifyCodexParent();
+  }
   if (codexCallScope.getStore()?.mode !== 'thread-or-legacy') refuseUnattributedSharedServer();
   if (codexCallScope.getStore()?.mode !== 'thread-or-legacy' && workspaceResolved && MY_WORKSPACE_ID) {
     return MY_WORKSPACE_ID;

@@ -38,7 +38,7 @@ vi.mock('../../shared/computer/config', () => ({ readComputerUseEnabled: () => t
 
 import { createWmuxServer } from '../index';
 import { codexOwnerIndexAvailable } from '../codexThreadIdentity';
-import { getCallerPtyId, getWorkspaceToken, setWorkspaceToken } from '../wmux-client';
+import { getCallerPtyId, getWorkspaceToken, setClientIdentity, setWorkspaceToken } from '../wmux-client';
 
 const digest = (v: string) => createHash('sha256').update(v).digest('hex');
 const T1 = '019a0000-0000-7000-8000-000000000001';
@@ -89,6 +89,8 @@ beforeEach(() => {
   extraRpc = () => ({});
   stamps = [];
   setWorkspaceToken(undefined);
+  // A client that sends no name must not inherit the previous test's.
+  setClientIdentity(undefined);
   mockSendRpc.mockReset();
   mockSendRpc.mockImplementation(async (method: string, params: Record<string, unknown>) => {
     stamps.push({ method, callerPtyId: getCallerPtyId() });
@@ -110,7 +112,7 @@ afterEach(() => {
   vi.unstubAllEnvs();
 });
 
-async function connect(opts: { envPtyHint?: string; envWorkspaceHint?: string } = {}): Promise<Client> {
+async function connect(opts: { envPtyHint?: string; envWorkspaceHint?: string; clientName?: string } = {}): Promise<Client> {
   const server = createWmuxServer({
     envWorkspaceHint: opts.envWorkspaceHint ?? 'ws-s',
     envPtyHint: opts.envPtyHint ?? 'pty-s',
@@ -121,7 +123,7 @@ async function connect(opts: { envPtyHint?: string; envWorkspaceHint?: string } 
     callerPpid: 4242,
   });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-  const client = new Client({ name: 'codex-mcp-client', version: '1.0.0' }, { capabilities: {} });
+  const client = new Client({ name: opts.clientName ?? 'codex-mcp-client', version: '1.0.0' }, { capabilities: {} });
   await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
   return client;
 }
@@ -628,5 +630,30 @@ describe('shared Codex app-server on win32', () => {
     await client.close();
     expect(res.isError).toBeFalsy();
     expect(parentChain).not.toHaveBeenCalled();
+  });
+
+  it('skips the parent check for Claude Code, even when the lookup would fail', async () => {
+    parentChain.mockResolvedValue([]);
+    const opened: Array<Record<string, unknown>> = [];
+    browserRpc(opened);
+    const client = await connect({ clientName: 'claude-code' });
+    const res = await call(client, 'browser_open', { url: 'https://example.com' });
+    await client.close();
+    expect(res.isError).toBeFalsy();
+    expect(parentChain).not.toHaveBeenCalled();
+    expect(opened.map((p) => p.workspaceId)).toEqual(['ws-s']);
+    expect(getWorkspaceToken()).toBe('claim-starter');
+  });
+
+  it('checks the parent for a client that sends no name', async () => {
+    const opened: Array<Record<string, unknown>> = [];
+    browserRpc(opened);
+    const client = await connect({ clientName: '' });
+    const res = await call(client, 'browser_open', { url: 'https://example.com' });
+    await client.close();
+    expect(parentChain).toHaveBeenCalledTimes(1);
+    expect(res.isError).toBe(true);
+    expect(res.content[0]?.text).toMatch(/shared Codex background server/);
+    expect(opened).toEqual([]);
   });
 });
