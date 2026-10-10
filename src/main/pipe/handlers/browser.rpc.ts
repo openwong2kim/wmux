@@ -987,6 +987,8 @@ export function registerBrowserRpc(
     params: Record<string, unknown>,
     ctx: RpcContext | undefined,
   ): Promise<void> => {
+    // A context may outlive one call; a decision is good for this call only.
+    if (ctx) protectedDecisions.delete(ctx);
     const store = browserPolicy?.store;
     if (!store || !store.hasAnyHistory()) return;
     if (PROTECTED_GATE_EXEMPT.has(method) || !ctx) return;
