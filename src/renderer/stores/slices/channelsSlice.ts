@@ -506,7 +506,7 @@ export const createChannelsSlice: StateCreator<
       // loaded instead of wiping it on every catalog refresh.
       const merged: Record<string, ChannelMember[]> = { ...members };
       for (const ch of channels) {
-        if (ch.status === 'archived' && !(ch.id in members) && state.channelMembers[ch.id]) {
+        if ((ch.status === 'archived' || ch.trashedAt !== undefined) && !(ch.id in members) && state.channelMembers[ch.id]) {
           merged[ch.id] = state.channelMembers[ch.id];
         }
       }
@@ -726,7 +726,11 @@ export const createChannelsSlice: StateCreator<
 
   hydrateChannelMembers: (channelId, members) =>
     set((state: StoreState) => {
-      if (!state.channels[channelId]) return; // left the catalog meanwhile
+      const ch = state.channels[channelId];
+      if (!ch) return; // left the catalog meanwhile
+      // Unarchived since the fetch began: catalog hydration owns this roster
+      // now and may already hold a newer one than this late reply.
+      if (ch.status !== 'archived' && ch.trashedAt === undefined) return;
       state.channelMembers[channelId] = members;
     }),
 

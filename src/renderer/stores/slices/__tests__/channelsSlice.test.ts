@@ -572,6 +572,22 @@ describe('channelsSlice — setChannels (refresh path)', () => {
     store.getState().hydrateChannelMembers('ch-gone', [makeMember()]);
     expect(store.getState().channelMembers['ch-gone']).toBeUndefined();
   });
+
+  it('hydrateChannelMembers drops a late reply for a channel that is live again (hydration owns it)', () => {
+    const store = createTestStore();
+    store.getState().setChannels([makeChannel({ id: 'ch-1' })], { 'ch-1': [makeMember({ memberId: 'fresh' })] });
+    store.getState().hydrateChannelMembers('ch-1', [makeMember({ memberId: 'stale' })]);
+    expect(store.getState().channelMembers['ch-1']?.map((m) => m.memberId)).toEqual(['fresh']);
+  });
+
+  it('keeps a trashed channel roster across a refresh, as for any archived room', () => {
+    const store = createTestStore();
+    const trashed = makeChannel({ id: 'ch-t', status: 'archived', archivedAt: 1, trashedAt: 2 });
+    store.getState().setChannels([trashed], {});
+    store.getState().hydrateChannelMembers('ch-t', [makeMember({ memberId: 'm-t' })]);
+    store.getState().setChannels([trashed], {});
+    expect(store.getState().channelMembers['ch-t']?.map((m) => m.memberId)).toEqual(['m-t']);
+  });
 });
 
 describe('channelsSlice — leaveChannelOptimistic', () => {

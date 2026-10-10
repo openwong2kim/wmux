@@ -104,7 +104,7 @@ describe('reconnectPtyWithRetry (RCA A1 non-destructive contract)', () => {
     expect(reconnect).toHaveBeenCalledTimes(RECONNECT_BACKOFFS_MS.length + RATE_LIMIT_EXTRA_BACKOFFS_MS.length + 1);
     expect(clearPtyId).not.toHaveBeenCalled();
     // The pane stays attach-pending behind the Retry banner.
-    expect(onRecoveryError).toHaveBeenLastCalledWith(expect.stringMatching(/busy/));
+    expect(onRecoveryError).toHaveBeenLastCalledWith(expect.stringMatching(/busy/), { rateLimited: true });
     const total = sleep.mock.calls.reduce((sum, [ms]) => sum + ms, 0);
     // Bounded: the whole wait stays under ~10s (random 0.5 = no jitter here).
     expect(total).toBe([...RECONNECT_BACKOFFS_MS, ...RATE_LIMIT_EXTRA_BACKOFFS_MS].reduce((a, b) => a + b, 0));

@@ -44,7 +44,7 @@ export interface ReconnectDeps {
   /** Invoke the pty.reconnect RPC. */
   reconnect: (id: string) => Promise<ReconnectResult>;
   /** Clear the surface's ptyId so the next mount self-creates. */
-  onRecoveryError?: (message: string | null, info?: { cwdMissing?: boolean }) => void;
+  onRecoveryError?: (message: string | null, info?: { cwdMissing?: boolean; rateLimited?: boolean }) => void;
   clearPtyId: (id: string, recovery?: DeadPaneRecovery) => void;
   /** Sleep between retries. Injectable so tests don't wait real time. */
   sleep?: (ms: number) => Promise<void>;
@@ -135,7 +135,7 @@ export async function reconnectPtyWithRetry(
     // behind the Retry banner, and the next daemon:connected reattaches) rather
     // than self-creating a fresh session over a live one.
     log('error', `[useTerminal] pty.reconnect ${ptyId} still rate limited after ${schedule.length} retries (${lastErr}) — keeping ptyId`);
-    if (isCurrent()) deps.onRecoveryError?.('wmux is busy and could not reattach this terminal yet.');
+    if (isCurrent()) deps.onRecoveryError?.('wmux is busy and could not reattach this terminal yet.', { rateLimited: true });
     return null;
   }
   // Exhausted all retries on transient failures. Clear as a last resort so the

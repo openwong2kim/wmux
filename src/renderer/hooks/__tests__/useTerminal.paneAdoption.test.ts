@@ -102,6 +102,13 @@ describe('#1002 — pane-restructure terminal adoption (source-level)', () => {
     expect(src).toMatch(/reconnectPendingRef\.current = message !== null;/);
   });
 
+  it('a rate-limited give-up reattaches again on a slow timer, cleared on teardown', () => {
+    // No daemon:connected follows a rate limit (the daemon never disconnected),
+    // so without this the pane would wait for a manual Retry.
+    expect(src).toMatch(/if \(info\?\.rateLimited && slowRetry === null\) \{\s*slowRetry = setTimeout\(\(\) => \{ slowRetry = null; void reattach\('rate-limit-retry'\); \}/);
+    expect(src).toMatch(/if \(slowRetry !== null\) clearTimeout\(slowRetry\);\s*if \(off\) off\(\);/);
+  });
+
   it('parks exactly when the ladder found no reason not to', () => {
     expect(mainEffect).toMatch(/const canPark = parkRefusal === null;/);
   });
