@@ -3159,7 +3159,9 @@ export function registerBrowserRpc(
         profile: status.profile,
         partition: null,
         persistent: null,
-        port: status.cdpPort,
+        // A protected pane's CDP port is never shown to an agent: the port is
+        // an attach primitive that would skip every check the lane applies.
+        port: protectedDecisionOf(ctx) ? null : status.cdpPort,
         running: status.running,
         // Only the live profile sets liveAttach (running there = remote-debugging
         // reachable), so the agent reads running:false as "enable it at

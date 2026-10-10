@@ -56,7 +56,7 @@ function makeRegistry(store: ChromeProfileStore) {
     hasPaneBindings: vi.fn((ws?: string) => store.hasPaneBindings(ws)),
     isPaneBound: vi.fn((profile: string) => store.isPaneBound(profile)),
     ownerOfSurface: vi.fn(() => null),
-    statusForProfile: vi.fn(async (profile: string) => ({ profile, running: false, cdpPort: null })),
+    statusForProfile: vi.fn(async (profile: string) => ({ profile, running: true, cdpPort: 19000 })),
     disposeAll: vi.fn(),
   };
 }
@@ -197,6 +197,15 @@ describe('protected-pane gate', () => {
     ] as const) {
       expect((await call(router, method, { workspaceId: 'ws-1', ...extra }, 'pty-a')).error, method).toContain('policy_denied');
     }
+  });
+
+  it('never shows a protected pane its Chrome CDP port', async () => {
+    await protectPaneA();
+    const router = register(profiles, policy);
+    const status = await call(router, 'browser.session.status', { workspaceId: 'ws-1' }, 'pty-a');
+    expect(status.result).toMatchObject({ profile: 'pa', port: null });
+    const neighbour = await call(router, 'browser.session.status', { workspaceId: 'ws-1' }, 'pty-b');
+    expect(neighbour.result).toMatchObject({ profile: 'default', port: 19000 });
   });
 
   it('refuses a protected pane on a non-Chrome backend', async () => {
