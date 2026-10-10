@@ -153,7 +153,7 @@ import { toResumeCommand, resumeGrammarFor, resumeOfferForRecovered, mergeResume
 import type { ResumeBinding } from '../shared/agentResume';
 import { agentDisplayToSlug, AGENT_SLUG_SET, isAgentSlug } from '../shared/agentIdentity';
 import type { AgentEventStatus } from '../main/pty/AgentDetector';
-import { HookIngest, type HookArbitration } from './hooks/HookIngest';
+import { HookIngest, identifiedAgentPid, type HookArbitration } from './hooks/HookIngest';
 import { deriveAgentLiveness } from './hooks/agentLiveness';
 import { classifyClaudeStopFailure, classifyCodexTurnCompleted, type TurnFailure } from '../shared/phoneTurnFailure';
 import { serveTurnFailure } from './turnFailure/serveTurnFailure';
@@ -4333,9 +4333,20 @@ function registerRpcHandlers(
         const tracked = agentProcessTracker.identityFor(id);
         return tracked?.alive ? tracked.slug : undefined;
       },
-      // A live agent's pid only: a just-exited agent's pid must not refuse
-      // the relaunched one's first hook.
-      agentPidFor: (id) => (agentProcessTracker.identityFor(id)?.alive ? agentProcessTracker.pidFor(id) : undefined),
+      // HookIngest re-reads the tracked pid's liveness on a mismatch.
+      agentPidFor: (id) => identifiedAgentPid(agentProcessTracker.identityFor(id), agentProcessTracker.pidFor(id)),
+      isPidRunning: (pid) => {
+        try {
+          process.kill(pid, 0);
+          return true;
+        } catch (err) {
+          return classifyKillOutcome((err as NodeJS.ErrnoException).code) === 'alive';
+        }
+      },
+      onStaleAgentPid: (id) => {
+        const managed = sessionManager.getSession(id);
+        if (managed) agentProcessTracker.rearm(id, managed.meta.pid);
+      },
       log: (level, message) => log(level, message),
       isAutomationPane: (id) => automationEngine?.ownsPane(id) === true,
       // M2 — hook-sourced awaiting_input is the ONLY thing that mints an

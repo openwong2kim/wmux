@@ -3,7 +3,7 @@
 // rebind the pane, end its turn, or touch its hook state — while the pane's own
 // agent keeps rebinding on /clear, /resume and compact.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { HookIngest, type HookAgentEventData, type HookIngestDeps, type HookIngestSession } from '../HookIngest';
+import { HookIngest, identifiedAgentPid, type HookAgentEventData, type HookIngestDeps, type HookIngestSession } from '../HookIngest';
 import { DEFAULT_ALARM_WINDOW_MS } from '../../../shared/hooks/CompletionAlarm';
 import type { AgentSignal } from '../../../shared/hooks/signal-types';
 import type { ResumeBinding } from '../../../shared/agentResume';
@@ -32,7 +32,7 @@ const parent = (o: Partial<AgentSignal> & Extra = {}) => signal({ entrypoint: 'c
 const child = (o: Partial<AgentSignal> & Extra = {}) =>
   signal({ entrypoint: 'sdk-cli', agentPid: CHILD_PID, agentSessionId: CHILD_ID, ...o });
 
-function setup(trackedPid: number | null = AGENT_PID) {
+function setup(trackedPid: number | null = AGENT_PID, running: ((pid: number) => boolean) | null = () => true) {
   const binding: { current?: ResumeBinding } = {};
   const sessions: HookIngestSession[] = [{
     id: 'pty-a',
@@ -45,11 +45,14 @@ function setup(trackedPid: number | null = AGENT_PID) {
   const expired: string[] = [];
   const nudges: string[] = [];
   const logs: Array<[string, string]> = [];
+  const rearmed: string[] = [];
   const deps: HookIngestDeps = {
     listLiveSessions: () => sessions,
     emitAgentEvent: (_id, data) => { emitted.push(data); },
     applyResumeBinding: (_id, b) => { bindings.push(b); binding.current = b; },
     agentPidFor: () => trackedPid ?? undefined,
+    ...(running ? { isPidRunning: running } : {}),
+    onStaleAgentPid: (id) => { rearmed.push(id); },
     onTranscriptNudge: (_id, kind) => { nudges.push(kind); },
     approvals: {
       noteHookAwaitingInput: () => undefined,
@@ -59,7 +62,7 @@ function setup(trackedPid: number | null = AGENT_PID) {
     log: (level, message) => { logs.push([level, message]); },
     now: () => 10_000,
   };
-  return { ingest: new HookIngest(deps), bindings, emitted, expired, nudges, logs };
+  return { ingest: new HookIngest(deps), bindings, emitted, expired, nudges, logs, rearmed };
 }
 
 describe('HookIngest — a nested headless child never speaks for its host pane', () => {
@@ -133,6 +136,38 @@ describe('HookIngest — a nested headless child never speaks for its host pane'
     const untracked = setup(null);
     untracked.ingest.handle(signal({ kind: 'agent.session_start', agentSessionId: PARENT_ID, agentPid: CHILD_PID }));
     expect(untracked.bindings).toHaveLength(1);
+  });
+
+  it('a relaunched agent\'s first SessionStart is accepted while the tracker still holds the exited one', () => {
+    // The cache reads the old pid alive until the next ProcessMonitor poll;
+    // the fresh probe says it is gone, so the new agent rebinds the pane.
+    const RELAUNCHED_PID = 7777;
+    const f = setup(AGENT_PID, (pid) => pid !== AGENT_PID);
+    f.ingest.handle(signal({ kind: 'agent.session_start', agentSessionId: CLEARED_ID, agentPid: RELAUNCHED_PID }));
+    expect(f.bindings.map((b) => b.sessionId)).toEqual([CLEARED_ID]);
+    expect(f.rearmed).toContain('pty-a');
+    // Its permission gate is not failed open either.
+    expect(f.ingest.handlePermissionGate(signal({ kind: 'agent.awaiting_permission', agentPid: RELAUNCHED_PID, payload: { tool_name: 'Bash' } })))
+      .not.toEqual({ ok: false, reason: 'foreign-process' });
+  });
+
+  it('a tracked pid that is not an identified agent never blocks the pane\'s own /clear', () => {
+    // A slugless pick (wrapper, shell, gitstatusd) yields no pid to compare.
+    expect(identifiedAgentPid({ alive: true }, 999)).toBeUndefined();
+    expect(identifiedAgentPid({ alive: false, slug: 'claude' }, AGENT_PID)).toBeUndefined();
+    expect(identifiedAgentPid({ alive: true, slug: 'claude' }, AGENT_PID)).toBe(AGENT_PID);
+
+    const f = setup(identifiedAgentPid({ alive: true }, 999) ?? null);
+    f.ingest.handle(signal({ kind: 'agent.session_start', agentSessionId: PARENT_ID, agentPid: AGENT_PID }));
+    f.ingest.handle(signal({ kind: 'agent.session_start', agentSessionId: CLEARED_ID, agentPid: AGENT_PID }));
+    expect(f.bindings.map((b) => b.sessionId)).toEqual([PARENT_ID, CLEARED_ID]);
+  });
+
+  it('a mismatch is refused only when the fresh probe confirms the tracked agent', () => {
+    // Without the probe nothing confirms the tracked pid, so nothing is refused.
+    const noProbe = setup(AGENT_PID, null);
+    noProbe.ingest.handle(signal({ kind: 'agent.session_start', agentSessionId: CHILD_ID, agentPid: CHILD_PID }));
+    expect(noProbe.bindings).toHaveLength(1);
   });
 
   it('an unknown entrypoint keeps its alarms but never rebinds the pane', () => {

@@ -24,6 +24,12 @@ describe('HookIngest agentPidFor daemon wiring', () => {
   it('passes the tracker pid, next to liveAgentFor', () => {
     const body = constructionBody();
     expect(body).toMatch(/liveAgentFor:/);
-    expect(body).toMatch(/agentPidFor: \(id\) => \(agentProcessTracker\.identityFor\(id\)\?\.alive \? agentProcessTracker\.pidFor\(id\) : undefined\)/);
+    expect(body).toMatch(/agentPidFor: \(id\) => identifiedAgentPid\(agentProcessTracker\.identityFor\(id\), agentProcessTracker\.pidFor\(id\)\)/);
+  });
+
+  it('gives HookIngest a fresh liveness probe and a re-arm for a stale pid', () => {
+    const body = constructionBody();
+    expect(body).toMatch(/isPidRunning: \(pid\) => \{\s*try \{\s*process\.kill\(pid, 0\)/);
+    expect(body).toMatch(/onStaleAgentPid: \(id\) => \{[\s\S]*?agentProcessTracker\.rearm\(id, managed\.meta\.pid\)/);
   });
 });

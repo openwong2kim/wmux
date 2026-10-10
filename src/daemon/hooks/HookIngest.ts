@@ -198,6 +198,18 @@ export interface HookIngestDeps {
    * only the entrypoint decides (see foreignProcessReason).
    */
   agentPidFor?: (ptyId: string) => number | undefined;
+  /**
+   * Fresh liveness of a pid, read now rather than from the tracker's cache
+   * (whose `alive` lags a real exit by up to one ProcessMonitor poll). Asked
+   * only on a pid mismatch; a refusal needs it to answer true. Without it a
+   * mismatch is never refused.
+   */
+  isPidRunning?: (pid: number) => boolean;
+  /**
+   * A mismatched hook was accepted because the tracked pid is gone: the
+   * tracker still holds a dead agent, so re-pick the pane's live one.
+   */
+  onStaleAgentPid?: (ptyId: string) => void;
   log?: (level: 'debug' | 'info' | 'warn' | 'error', message: string) => void;
   /** Injected for test determinism. */
   now?: () => number;
@@ -382,6 +394,19 @@ export function signalEntrypoint(signal: AgentSignal): string | undefined {
 export function signalAgentPid(signal: AgentSignal): number | undefined {
   const value = (signal as unknown as Record<string, unknown>).agentPid;
   return typeof value === 'number' && Number.isSafeInteger(value) && value > 1 ? value : undefined;
+}
+
+/**
+ * The pid HookIngest may compare a hook's process against: only one the
+ * process tracker positively named as an agent (it carries a slug) and still
+ * reads alive. A slugless pick — a wrapper, a shell, a helper like gitstatusd —
+ * is not the agent, so it yields nothing and no pid test runs.
+ */
+export function identifiedAgentPid(
+  tracked: { alive: boolean; slug?: string } | undefined,
+  pid: number | undefined,
+): number | undefined {
+  return tracked?.alive && tracked.slug ? pid : undefined;
 }
 
 function normalizeCwd(p: string): string {
@@ -690,10 +715,14 @@ export class HookIngest {
    *      binding site.
    *   4. No entrypoint (an older bridge or Claude Code): foreign only when the
    *      hook named its process and the tracker attributes a DIFFERENT one to
-   *      the pane. Without either pid there is no evidence, and refusing would
-   *      leave every un-upgraded pane with no recovery binding at all — so
-   *      today's behaviour stands. A WSL hook is never compared: its parent is
-   *      the hook.sh shell, and the tracked pid is a Windows-side view.
+   *      the pane, and that one is running right now. The tracker's cache can
+   *      still hold a just-exited agent when its relaunch reports, so the
+   *      cached pid alone never refuses: it is re-read fresh, and a dead one
+   *      lets the hook through and re-arms the tracker. Without either pid
+   *      there is no evidence, and refusing would leave every un-upgraded pane
+   *      with no recovery binding at all — so today's behaviour stands. A WSL
+   *      hook is never compared: its parent is the hook.sh shell, and the
+   *      tracked pid is a Windows-side view.
    */
   private foreignProcessReason(signal: AgentSignal, sessionId: string): string | null {
     const entrypoint = signalEntrypoint(signal);
@@ -705,6 +734,10 @@ export class HookIngest {
     if (hookPid === undefined) return null;
     const trackedPid = this.deps.agentPidFor?.(sessionId);
     if (trackedPid === undefined || trackedPid === hookPid) return null;
+    if (this.deps.isPidRunning?.(trackedPid) !== true) {
+      this.deps.onStaleAgentPid?.(sessionId);
+      return null;
+    }
     return `process ${hookPid} is not the pane's agent process ${trackedPid}`;
   }
 
