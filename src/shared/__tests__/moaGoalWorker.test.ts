@@ -241,3 +241,52 @@ describe('the goal card shows the worker profile', () => {
     expect(card.context).toMatch(/Workers: Claude Code only, permission mode acceptEdits; push, PR, tag, release, publish and recursive-delete commands denied; GitHub credentials withheld\./);
   });
 });
+
+/**
+ * Review follow-up (#2025): the deny rules against REAL command spellings.
+ * `claudeRuleMatches` models claude's documented prefix/glob rule semantics as
+ * this branch assumes them: the whole command must match, `*` spans any text
+ * INCLUDING spaces. Whether the installed CLI really lets a mid-pattern `*`
+ * span spaces is still on the live dogfood list; this test pins what the rule
+ * set covers under that assumption, and what it knowingly does not.
+ */
+function claudeRuleMatches(rule: string, command: string): boolean {
+  const m = rule.match(/^(?:Bash|PowerShell)\((.*)\)$/);
+  if (!m) return false;
+  const re = new RegExp(`^${m[1].split('*').map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('.*')}$`);
+  return re.test(command.trim());
+}
+const denied = (command: string) => goalWorkerDenyRules().some((r) => r.startsWith('Bash(') && claudeRuleMatches(r, command));
+
+describe('goal worker deny rules against real command spellings (review)', () => {
+  it.each([
+    'git push',
+    'git push origin main',
+    'git push --force-with-lease origin HEAD',
+    'git -C . push',
+    'git -C /repo/sub push origin HEAD',
+    'git -c credential.helper= push',
+    'gh pr create',
+    'gh pr create --fill --base main',
+    'gh pr merge 2025 --squash',
+    'gh release create v1.0.0',
+    'gh api repos/o/r/pulls -f title=x',
+  ])('denies %j', (cmd) => {
+    expect(denied(cmd)).toBe(true);
+  });
+
+  it.each(['git status', 'git log --grep=push', 'git commit -m "push later"', 'gh pr view 2025', 'gh pr list', 'npm test'])(
+    'leaves %j alone', (cmd) => {
+      expect(denied(cmd)).toBe(false);
+    });
+
+  // `sh -c "git push"` is covered by the dogfood block above. A script that
+  // pushes (`bash ./release.sh`) is still out of reach of any literal rule;
+  // the env overlay and push URL are what stop it.
+
+  it('every rule survives claude\'s list split intact, so the matcher above sees the rule as written', () => {
+    const line = workerLaunchFlags('bypassPermissions', goalWorkerDenyRules());
+    const parsed = claudeSplitToolList(disallowedValue(line));
+    for (const r of goalWorkerDenyRules()) expect(parsed).toContain(r);
+  });
+});

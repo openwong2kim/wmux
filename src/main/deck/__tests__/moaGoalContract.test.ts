@@ -357,6 +357,59 @@ describe('moa goal — budget, kill switches, coverage', () => {
   });
 });
 
+// Review follow-up (#2025): nothing is granted before the exact click, and an
+// end or an exhausted budget takes powers away on the very next read (clock
+// injected through ports.now, no real timers).
+describe('moa goal — review scenarios (approval gate and immediate revocation)', () => {
+  it('a pending goal (no "Approve goal" click) grants no fan-out, no coverage', async () => {
+    const r = rig();
+    const p = await r.svc.propose(HQ, GOAL);
+    expect(p.ok).toBe(true);
+    expect(r.svc.powers()).toMatchObject({ ok: false, reason: 'not-active' });
+    expect(r.svc.reserveTasks(1)).toMatchObject({ ok: false });
+    expect(r.svc.covers('ws-a')).toBeNull();
+  });
+
+  it('a declined card grants nothing, ever', async () => {
+    const r = rig();
+    await r.svc.propose(HQ, GOAL);
+    const d = r.slots.get(HQ)!;
+    await r.svc.resolveCard(HQ, d.id, 'Decline');
+    expect(r.svc.powers().ok).toBe(false);
+    expect(r.svc.reserveTasks(1)).toMatchObject({ ok: false });
+  });
+
+  it('operator cancel revokes on the next read: no reserve, no coverage', async () => {
+    const r = rig();
+    const id = await approved(r);
+    r.svc.attachTaskWorkspaces(id, ['ws-task']);
+    expect(r.svc.reserveTasks(1)).toMatchObject({ ok: true });
+    await r.svc.end('operator', 'canceled', 'stop');
+    expect(r.svc.powers().ok).toBe(false);
+    expect(r.svc.reserveTasks(1)).toMatchObject({ ok: false });
+    expect(r.svc.covers('ws-task')).toBeNull();
+    expect(r.svc.covers('ws-a')).toBeNull();
+  });
+
+  it('a spent task budget refuses the next fan-out reservation', async () => {
+    const r = rig();
+    await approved(r);
+    expect(r.svc.reserveTasks(2)).toMatchObject({ ok: true });
+    expect(r.svc.reserveTasks(1)).toMatchObject({ ok: false });
+  });
+
+  it('expiry is exact on the injected clock: one ms before the deadline works, the deadline does not', async () => {
+    const r = rig();
+    const id = await approved(r);
+    const approvedAt = r.svc.get(id)!.approvedAt!;
+    r.state.now = approvedAt + 2 * HOUR - 1;
+    expect(r.svc.powers().ok).toBe(true);
+    expect(r.svc.reserveTasks(1)).toMatchObject({ ok: true });
+    r.state.now = approvedAt + 2 * HOUR;
+    expect(r.svc.powers().ok).toBe(false);
+    expect(r.svc.reserveTasks(1)).toMatchObject({ ok: false });
+  });
+});
 describe('moa goal — approval and end are one at a time (dot review P1-3)', () => {
   function gate(): { wait: Promise<void>; open: () => void } {
     let open = (): void => undefined;
