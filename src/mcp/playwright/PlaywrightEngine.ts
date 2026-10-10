@@ -110,6 +110,10 @@ interface CdpInfoResponse {
    * Chrome instances on two ports.
    */
   profile?: string;
+  /** Protected pane: present (true) only for one. */
+  protected?: boolean;
+  /** The policy epoch the protected pane's connection is good for. */
+  policyEpoch?: number;
   targets: CdpTargetInfo[];
 }
 
@@ -477,6 +481,7 @@ export class PlaywrightEngine {
     this.liveWriteScope = undefined;
     this.connectedWorkspaceId = undefined;
     this.connectedProfile = undefined;
+    this.connectedPolicyEpoch = undefined;
     if (s) {
       await s.detach().catch(() => { /* session may already be gone */ });
     }
@@ -500,6 +505,24 @@ export class PlaywrightEngine {
   /** Whether main has ever reported `profile`. Not cleared on disconnect: it
    *  describes main, not the connection. */
   private mainReportsProfile = false;
+  /** Protected pane: the policy epoch the live connection was made under
+   *  (undefined = an unprotected connection). */
+  private connectedPolicyEpoch: number | undefined;
+
+  /**
+   * Protected pane: deny downloads on this connection's browser. Playwright's
+   * own attach sets the default context to allowAndName, undoing any deny set
+   * before it; main's download guard cancels whatever still begins.
+   */
+  private async denyDownloads(): Promise<void> {
+    if (!this.browser) return;
+    const session = await this.browser.newBrowserCDPSession();
+    try {
+      await session.send('Browser.setDownloadBehavior', { behavior: 'deny' });
+    } finally {
+      await session.detach().catch(() => undefined);
+    }
+  }
 
   async ensureConnected(workspaceId?: string): Promise<void> {
     const reusable =
@@ -521,16 +544,25 @@ export class PlaywrightEngine {
         )) as CdpInfoResponse;
         this.cacheShellUrl(info);
         const profile = typeof info.profile === 'string' ? info.profile : undefined;
-        // Same (workspace, profile): keep the live connection.
-        if (reusable && profile === this.connectedProfile) return;
-        // The profile moved: drop the old browser even if the endpoint looks
-        // the same, so nothing keeps driving the previous account's Chrome.
-        if (this.browser && profile !== this.connectedProfile) await this.disconnect();
+        const policyEpoch = info.protected === true ? (info.policyEpoch ?? -1) : undefined;
+        // Same (workspace, profile, policy epoch): keep the live connection.
+        if (reusable && profile === this.connectedProfile && policyEpoch === this.connectedPolicyEpoch) return;
+        // The profile moved, or a protected pane's policy changed: drop the old
+        // browser and every Page cached on it, even if the endpoint looks the
+        // same, so nothing keeps driving under the previous terms.
+        if (
+          this.browser
+          && (profile !== this.connectedProfile || policyEpoch !== this.connectedPolicyEpoch)
+        ) {
+          await this.disconnect();
+        }
         // Live-Chrome attach reports a ws endpoint instead of a port.
         if (typeof info.wsEndpoint === 'string' && info.wsEndpoint.startsWith('ws')) {
           await this.connect(info.wsEndpoint);
           this.connectedWorkspaceId = workspaceId;
           this.connectedProfile = profile;
+          this.connectedPolicyEpoch = policyEpoch;
+          if (policyEpoch !== undefined) await this.denyDownloads();
           return;
         }
         if (
@@ -547,6 +579,8 @@ export class PlaywrightEngine {
         await this.connect(info.cdpPort);
         this.connectedWorkspaceId = workspaceId;
         this.connectedProfile = profile;
+        this.connectedPolicyEpoch = policyEpoch;
+        if (policyEpoch !== undefined) await this.denyDownloads();
         return;
       } catch (err) {
         if (err instanceof CdpAttachInfoUnavailableError) throw err;

@@ -4,6 +4,12 @@ import { z } from 'zod';
 import { loadPlaywright } from '../lazyPlaywright';
 import { PlaywrightEngine } from '../PlaywrightEngine';
 import { withAutomationLease } from '../automationLease';
+import {
+  isProtectedScope,
+  protectedCookieAllowed,
+  protectedRefusal,
+  protectedUrlAllowed,
+} from '../protectedPane';
 import { matchSensitiveDomain } from '../security';
 import { evalFunctionOrRpc } from '../page-eval';
 import { evaluateIsolated } from '../isolated-eval';
@@ -252,6 +258,15 @@ export function registerStateTools(server: McpServer, deps: BrowserToolDeps): vo
         // site and `addCookies()` plants cookies every tab will send. With the
         // agent-window policy in force there is no tab-sized version of this
         // mutation to allow, so it is refused as a scope refusal.
+        // Protected pane: cookies of the allowed hosts only, on every action and
+        // with or without a URL. The RPC lane is refused by main outright.
+        const isProtected = isProtectedScope(scope);
+        if (isProtected && !page) {
+          throw protectedRefusal('browser_cookies', 'cookies are reachable only through the pane\'s own browser page');
+        }
+        if (isProtected && url && !protectedUrlAllowed(scope, url)) {
+          throw protectedRefusal('browser_cookies', "that host is not on this pane's allowed list");
+        }
         const refuseProfileWideWriteOnLive = async (verb: 'set' | 'clear'): Promise<void> => {
           if (!(await engine.isLiveWriteConfined(scope.workspaceId))) return;
           throw new Error(
@@ -281,7 +296,10 @@ export function registerStateTools(server: McpServer, deps: BrowserToolDeps): vo
                   action: 'get',
                   urls: url ? [url] : [],
                 })).cookies;
-            const safe = allCookies.map((c) => {
+            const visible = isProtected
+              ? allCookies.filter((c) => protectedCookieAllowed(scope, c.domain))
+              : allCookies;
+            const safe = visible.map((c) => {
               const hit = matchSensitiveDomain(c.domain ?? '');
               if (hit && !allowSensitiveDomains) {
                 return { ...c, value: '<REDACTED sensitive-domain>' };
@@ -314,6 +332,14 @@ export function registerStateTools(server: McpServer, deps: BrowserToolDeps): vo
               url: !c.domain ? (url ?? (page ? page.url() : undefined)) : undefined,
             }));
 
+            if (
+              isProtected
+              && cookiesToAdd.some((c) =>
+                c.domain ? !protectedCookieAllowed(scope, c.domain) : !c.url || !protectedUrlAllowed(scope, c.url),
+              )
+            ) {
+              throw protectedRefusal('browser_cookies', "a cookie names a host that is not on this pane's allowed list");
+            }
             if (page) {
               await refuseProfileWideWriteOnLive('set');
               await page.context().addCookies(cookiesToAdd);
@@ -335,7 +361,14 @@ export function registerStateTools(server: McpServer, deps: BrowserToolDeps): vo
           }
 
           case 'clear': {
-            if (page) {
+            if (page && isProtected) {
+              // Only the allowed hosts' cookies, never the whole profile.
+              const context = page.context();
+              for (const c of await context.cookies()) {
+                if (!protectedCookieAllowed(scope, c.domain)) continue;
+                await context.clearCookies({ name: c.name, domain: c.domain, path: c.path });
+              }
+            } else if (page) {
               await refuseProfileWideWriteOnLive('clear');
               await page.context().clearCookies();
             } else {
@@ -378,6 +411,10 @@ export function registerStateTools(server: McpServer, deps: BrowserToolDeps): vo
           .catch(allowScopedRpcFallback);
 
         const storageName = type === 'local' ? 'localStorage' : 'sessionStorage';
+        // Protected pane: storage of an allowed host's page only.
+        if (isProtectedScope(scope) && !protectedUrlAllowed(scope, await currentUrl(page, scope))) {
+          throw protectedRefusal('browser_storage', "the current page is not on this pane's allowed list");
+        }
 
         switch (action) {
           case 'get': {

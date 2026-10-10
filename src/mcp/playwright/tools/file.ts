@@ -7,6 +7,7 @@ import { z } from 'zod';
 import { PlaywrightEngine } from '../PlaywrightEngine';
 import { armDialogAnswer, modalScopeKey, resolveDialogOwner } from '../modalState';
 import { leasedMutation, withAutomationLease } from '../automationLease';
+import { isProtectedScope, protectedRefusal } from '../protectedPane';
 import type { BrowserToolDeps } from '../browserScope';
 import { resolveRef } from '../snapshot';
 import { describeToolError } from '../toolError';
@@ -705,6 +706,11 @@ export function registerFileTools(server: McpServer, deps: BrowserToolDeps): voi
       let originalUrl = '';
       let page: Awaited<ReturnType<typeof engine.getPageForScope>> = null;
       try {
+        // Protected pane: downloads stay off until the consent grant (PR B).
+        // Refused before the click; the browser denies one anyway.
+        if (isProtectedScope(scope)) {
+          throw protectedRefusal('browser_download', 'downloads need a consent grant');
+        }
         // A download starts with a CLICK, so this is a write.
         page = await engine.getPageForScope(scope, { intent: 'write' });
         if (!page) {
@@ -805,6 +811,9 @@ export function registerFileTools(server: McpServer, deps: BrowserToolDeps): voi
       const resolvedTimeout = timeout ?? 30000;
 
       try {
+        if (isProtectedScope(scope)) {
+          throw protectedRefusal('browser_wait_for_download', 'downloads need a consent grant');
+        }
         const page = await engine.getPageForScope(scope);
         if (!page) {
           throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');

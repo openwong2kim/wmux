@@ -1,6 +1,6 @@
 import type { Page } from 'playwright-core';
 import { browserScopeKey, getRefEntry, listRefEntries } from '../playwright/snapshot';
-import type { BrowserTargetScope, BrowserToolDeps } from '../playwright/browserScope';
+import { isProtectedScope, type BrowserTargetScope, type BrowserToolDeps } from '../playwright/browserScope';
 import { redactPasswordParams } from '../playwright/redact';
 import { isActionRecordingSuppressed } from './recordingSuppression';
 import {
@@ -249,6 +249,8 @@ export function recordAction(deps: BrowserToolDeps, input: RecordActionInput): v
   try {
     const ring = ringFor(deps);
     if (!ring || isActionRecordingSuppressed()) return;
+    // Protected pane: nothing it does is remembered (memory is workspace-wide).
+    if (isProtectedScope(input.scope)) return;
     const resolved = axisFor(input.page, input.ref, input.selector, input.refEntry);
     const target = input.targetRef === undefined
       ? undefined
