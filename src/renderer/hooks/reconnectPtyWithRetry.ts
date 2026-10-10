@@ -50,10 +50,27 @@ export interface ReconnectDeps {
   sleep?: (ms: number) => Promise<void>;
   /** Optional structured logger. Defaults to console. */
   log?: (level: 'warn' | 'error', message: string) => void;
+  /** Uniform [0, 1) source for backoff jitter. Injectable for tests. */
+  random?: () => number;
 }
 
-/** Backoff schedule for transient retries. ~2.8s cumulative ceiling. */
+/** Backoff schedule for transient retries. ~2.8s cumulative ceiling (±jitter). */
 export const RECONNECT_BACKOFFS_MS = [400, 900, 1500];
+
+/**
+ * Extra slots used only once the daemon has answered "rate limited" (its
+ * global/per-socket RPC cap). That is load, not a dead session, so the
+ * reconnect keeps waiting — ~10s in all — and never discards the live PTY.
+ */
+export const RATE_LIMIT_EXTRA_BACKOFFS_MS = [1500, 2000, 2500];
+
+/** Each backoff slot is scaled by a factor in [1 - JITTER, 1 + JITTER), so
+ *  many panes reconnecting at once do not retry in lockstep. */
+export const RECONNECT_JITTER = 0.25;
+
+export function isRateLimitedError(message: string | undefined): boolean {
+  return typeof message === 'string' && /rate limit/i.test(message);
+}
 
 export async function reconnectPtyWithRetry(
   ptyId: string,
@@ -66,8 +83,11 @@ export async function reconnectPtyWithRetry(
     console[level](message);
   });
 
+  const random = deps.random ?? Math.random;
+  const schedule = [...RECONNECT_BACKOFFS_MS, ...RATE_LIMIT_EXTRA_BACKOFFS_MS];
   let lastErr = '<no error>';
-  for (let attempt = 0; attempt <= RECONNECT_BACKOFFS_MS.length; attempt++) {
+  let rateLimited = false;
+  for (let attempt = 0; ; attempt++) {
     if (!isCurrent()) return null; // terminal unmounted mid-retry — stop, mutate nothing
     let result: ReconnectResult | undefined;
     try {
@@ -100,11 +120,23 @@ export async function reconnectPtyWithRetry(
       if (isCurrent()) deps.clearPtyId(ptyId, result.recovery);
       return null;
     }
+    if (isRateLimitedError(lastErr)) rateLimited = true;
     // Transient (or unknown): back off and retry unless attempts are exhausted.
-    if (attempt < RECONNECT_BACKOFFS_MS.length) {
-      log('warn', `[useTerminal] pty.reconnect ${ptyId} transient failure (${lastErr}) — retry ${attempt + 1}/${RECONNECT_BACKOFFS_MS.length} after ${RECONNECT_BACKOFFS_MS[attempt]}ms`);
-      await sleep(RECONNECT_BACKOFFS_MS[attempt]);
-    }
+    // A rate-limited run earns the longer schedule.
+    const budget = rateLimited ? schedule.length : RECONNECT_BACKOFFS_MS.length;
+    if (attempt >= budget) break;
+    const delay = Math.round(schedule[attempt] * (1 + RECONNECT_JITTER * (2 * random() - 1)));
+    log('warn', `[useTerminal] pty.reconnect ${ptyId} transient failure (${lastErr}) — retry ${attempt + 1}/${budget} after ${delay}ms`);
+    await sleep(delay);
+  }
+  if (rateLimited) {
+    // The daemon was shedding load, which says nothing about this session's
+    // health. Keep the id, binding and scrollback (the pane stays attach-pending
+    // behind the Retry banner, and the next daemon:connected reattaches) rather
+    // than self-creating a fresh session over a live one.
+    log('error', `[useTerminal] pty.reconnect ${ptyId} still rate limited after ${schedule.length} retries (${lastErr}) — keeping ptyId`);
+    if (isCurrent()) deps.onRecoveryError?.('wmux is busy and could not reattach this terminal yet.');
+    return null;
   }
   // Exhausted all retries on transient failures. Clear as a last resort so the
   // surface doesn't keep a stale ptyId that silently never forwards input.
