@@ -20,9 +20,9 @@ export const FLEET_BOARD_TIMEOUT_MS = 400;
  *  mixed instructions and dates: anything outside it is Moa's to answer. */
 export function fleetIntentCandidate(text: string): FleetIntent | null {
   if (text.length > 160) return null;
-  const q = text.trim().toLowerCase().replace(/[?!.]+$/, '').replace(/\s+/g, ' ');
+  const q = text.trim().toLowerCase().replace(/[?!.]+$/, '').replace(/\s+/g, ' ').trim();
   if (/^(?:(?:which|what) (?:tasks|agents) (?:need me|need my (?:input|attention))|who needs me|what needs my attention|show (?:me )?(?:tasks|agents) (?:that )?need(?:ing)? (?:me|my (?:input|attention))|나를 필요로 하는 작업|내가 봐야 할 작업|내 확인이 필요한 작업|뭐가 나를 필요로 해)$/.test(q)) return 'needs_you';
-  if (/^(?:what(?:'s| is) (?:finished|done|complete)|which (?:tasks|agents) (?:are |have )?(?:finished|done|complete|completed)|show (?:me )?(?:finished|completed) tasks|끝난 작업|완료된 작업|뭐가 끝났어)$/.test(q)) return 'finished';
+  if (/^(?:what(?:(?:'s| is) (?:finished|done|complete)| (?:has )?(?:finished|completed))|which (?:tasks|agents) (?:are |have )?(?:finished|done|complete|completed)|show (?:me )?(?:finished|completed) tasks|끝난 작업|완료된 작업|뭐가 끝났어)$/.test(q)) return 'finished';
   if (/^(?:(?:fleet|task|tasks|agent|agents) status|status|show (?:me )?(?:the )?fleet status|how (?:is|are) (?:the )?(?:fleet|tasks|agents)(?: doing)?|작업 상태|전체 작업 상태|현재 작업 상태|에이전트 상태)$/.test(q)) return 'status';
   return null;
 }
@@ -81,9 +81,12 @@ export function renderFleetAnswer(raw: unknown, intent: FleetIntent, now: number
   const count = (key: 'needsYou' | 'finished' | 'running', rows: BoardRow[]) => rows.length + ((omitted[key] as number | undefined) ?? 0);
   const list = (rows: BoardRow[]) => rows.slice(0, 12).map((r) => `- ${label(r.title)} (${label(r.workspaceName)}): ${REASONS[r.reason]}`).join('\n');
   const rows = intent === 'needs_you' ? raw.needsYou : intent === 'finished' ? raw.finished : [...raw.needsYou, ...raw.finished];
-  const heading = intent === 'needs_you' ? `${count('needsYou', raw.needsYou)} tasks need your attention.`
-    : intent === 'finished' ? `${count('finished', raw.finished)} turns finished. A finished turn does not verify task or test success.`
-      : `${count('needsYou', raw.needsYou)} need you · ${count('finished', raw.finished)} turns finished · ${count('running', raw.running)} running · ${raw.idle.count} idle.`;
+  const needs = count('needsYou', raw.needsYou);
+  const done = count('finished', raw.finished);
+  const turns = (n: number) => `${n} ${n === 1 ? 'turn' : 'turns'} finished`;
+  const heading = intent === 'needs_you' ? `${needs} ${needs === 1 ? 'task needs' : 'tasks need'} your attention.`
+    : intent === 'finished' ? `${turns(done)}. A finished turn does not verify task or test success.`
+      : `${needs} ${needs === 1 ? 'needs' : 'need'} you · ${turns(done)} · ${count('running', raw.running)} running · ${raw.idle.count} idle.`;
   const limited = rows.length > 12 || Object.values(omitted).some((n) => (n as number) > 0);
   return `Fleet snapshot (local data, answered without Moa):\n${heading}${rows.length ? `\n${list(rows)}` : ''}${limited ? '\nSome rows are omitted. Open Fleet for the full board.' : ''}`;
 }
