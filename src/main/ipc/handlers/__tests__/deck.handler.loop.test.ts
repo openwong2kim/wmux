@@ -252,7 +252,7 @@ import {
   modeToPermissionMode,
 } from '../deck.handler';
 import { setMoaEnabled } from '../../../deck/deckHqStore';
-import { overrideFleetFastPathForTests } from '../../../deck/deckFleetFastPathStore';
+import { overrideFleetFastPathForTests, setFleetFastPathEnabled } from '../../../deck/deckFleetFastPathStore';
 import { buildCommanderSystemPrompt } from '../../../deck/ClaudeSdkAdapter';
 import { IPC } from '../../../../shared/constants';
 import type { FleetSnapshot } from '../../../workspace/WorkspaceMirror';
@@ -1528,5 +1528,97 @@ describe('deck:send local Fleet fast path', () => {
     // Untrusted renderer input: a truthy non-boolean lands as OFF.
     expect(await invoke(IPC.DECK_FLEET_FAST_PATH_SET, { enabled: 'yes' })).toEqual({ enabled: false });
     expect(await invoke(IPC.DECK_FLEET_FAST_PATH_GET, {})).toEqual({ enabled: false });
+  });
+});
+
+// Review follow-up (#2024): composer-level scenarios closest to E2E without a
+// UI harness. Real IPC switch (no override), real manager, real fast path;
+// only the renderer's Fleet board and the provider adapter are faked.
+describe('deck:send local Fleet fast path — review scenarios', () => {
+  function register(board: () => Promise<unknown>) {
+    const streamed: BrainEvent[] = [];
+    cleanup?.();
+    cleanup = registerDeckHandler(() => ({ isDestroyed: () => false, webContents: { send: (channel: string, data: { event?: BrainEvent }) => {
+      if (channel === IPC.DECK_STREAM && data.event) streamed.push(data.event);
+    } } } as unknown as import('electron').BrowserWindow), {
+      readFleetBoard: board,
+      createAdapter: (opts) => { const a = new FakeAdapter(opts.workspaceId); adapters.push(a); return a; },
+    });
+    return streamed;
+  }
+  const freshBoard = (extra: Record<string, unknown> = {}) => ({
+    generatedAt: Date.now(), scope: 'fleet', needsYou: [], finished: [], running: [], idle: { count: 0 }, ...extra,
+  });
+  afterEach(async () => {
+    overrideFleetFastPathForTests(null);
+    await setFleetFastPathEnabled(false);
+  });
+
+  it('toggle ON via Settings IPC answers "작업 상태" locally with zero Moa turns; toggle OFF sends a normal turn', async () => {
+    const board = vi.fn(async () => freshBoard({ idle: { count: 2 } }));
+    const streamed = register(board);
+    await invoke(IPC.DECK_FLEET_FAST_PATH_SET, { enabled: true });
+    const on = await invoke(IPC.DECK_SEND, { workspaceId: 'ws-1', text: '작업 상태' });
+    expect(on).toMatchObject({ ok: true, localAnswer: { text: expect.stringContaining('2 idle') } });
+    expect(adapters.flatMap((a) => a.sentTexts)).toEqual([]);
+    expect(streamed.filter((e) => e.type === 'turn-end' && e.localAnswer)).toHaveLength(1);
+
+    await invoke(IPC.DECK_FLEET_FAST_PATH_SET, { enabled: false });
+    const off = await invoke(IPC.DECK_SEND, { workspaceId: 'ws-1', text: '작업 상태' });
+    expect(off).not.toHaveProperty('localAnswer');
+    expect(board).toHaveBeenCalledOnce();
+    expect(adapters.flatMap((a) => a.sentTexts)).toHaveLength(1);
+    expect(adapters.flatMap((a) => a.sentTexts)[0]).toMatch(/작업 상태$/);
+  });
+
+  it.each(['Who needs me? 그리고 PR 만들어줘', '작업 상태 알려주고 머지해줘', 'status; git push'])(
+    'mixed sentence %j falls through to Moa without reading the board', async (text) => {
+      const board = vi.fn(async () => freshBoard());
+      register(board);
+      await invoke(IPC.DECK_FLEET_FAST_PATH_SET, { enabled: true });
+      const result = await invoke(IPC.DECK_SEND, { workspaceId: 'ws-1', text });
+      expect(result).not.toHaveProperty('localAnswer');
+      expect(board).not.toHaveBeenCalled();
+      expect(adapters.flatMap((a) => a.sentTexts)).toHaveLength(1);
+    });
+
+  it('Stop during the board read drops the late answer and starts no Moa turn', async () => {
+    let release: (b: unknown) => void = () => undefined;
+    const board = vi.fn(() => new Promise<unknown>((resolve) => { release = resolve; }));
+    const streamed = register(board);
+    await invoke(IPC.DECK_FLEET_FAST_PATH_SET, { enabled: true });
+    const pending = invoke(IPC.DECK_SEND, { workspaceId: 'ws-1', text: 'who needs me?' });
+    await vi.waitFor(() => expect(board).toHaveBeenCalledOnce());
+    await invoke(IPC.DECK_INTERRUPT, { workspaceId: 'ws-1' });
+    const result = await pending;
+    release(freshBoard({ needsYou: [{ title: 'LATE', workspaceName: 'w', reason: 'input' }] }));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(result).not.toHaveProperty('localAnswer');
+    expect(adapters.flatMap((a) => a.sentTexts)).toEqual([]);
+    expect(streamed.some((e) => e.type === 'text-delta' && String((e as { text?: string }).text).includes('LATE'))).toBe(false);
+    // The slot is free again: the next question is answered normally.
+    release = () => undefined;
+    board.mockImplementation(async () => freshBoard());
+    expect(await invoke(IPC.DECK_SEND, { workspaceId: 'ws-1', text: 'status' })).toMatchObject({ localAnswer: expect.anything() });
+  });
+
+  it('an empty fresh board gets explicit zero-count wording, never a success claim', async () => {
+    register(vi.fn(async () => freshBoard()));
+    await invoke(IPC.DECK_FLEET_FAST_PATH_SET, { enabled: true });
+    const needs = await invoke(IPC.DECK_SEND, { workspaceId: 'ws-1', text: 'who needs me' }) as { localAnswer: { text: string } };
+    expect(needs.localAnswer.text).toContain('0 tasks need your attention.');
+    const done = await invoke(IPC.DECK_SEND, { workspaceId: 'ws-1', text: '끝난 작업' }) as { localAnswer: { text: string } };
+    expect(done.localAnswer.text).toContain('0 turns finished. A finished turn does not verify task or test success.');
+    expect(done.localAnswer.text).not.toContain('Some rows are omitted');
+  });
+
+  it('a stale board (older than 2 s) is never rendered; Moa answers instead', async () => {
+    const board = vi.fn(async () => freshBoard({ generatedAt: Date.now() - 2_500, idle: { count: 9 } }));
+    const streamed = register(board);
+    await invoke(IPC.DECK_FLEET_FAST_PATH_SET, { enabled: true });
+    const result = await invoke(IPC.DECK_SEND, { workspaceId: 'ws-1', text: 'fleet status' });
+    expect(result).not.toHaveProperty('localAnswer');
+    expect(adapters.flatMap((a) => a.sentTexts)).toHaveLength(1);
+    expect(streamed.some((e) => e.type === 'text-delta' && String((e as { text?: string }).text).includes('9 idle'))).toBe(false);
   });
 });
