@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { BrowserWindow } from 'electron';
-import { BROWSER_POLICY_IPC } from '../../../../shared/browserPolicy';
+import { BROWSER_POLICY_IPC, type PanePolicyDecision } from '../../../../shared/browserPolicy';
 import {
   isTrustedMainFrameSender,
   registerBrowserPolicyIpc,
@@ -40,6 +40,7 @@ describe('registerBrowserPolicyIpc', () => {
       fileState: () => 'missing' as const,
       epoch: () => 0,
       entryFor: () => null,
+      decisionFor: vi.fn((): PanePolicyDecision => ({ kind: 'legacy' })),
       write: vi.fn(async () => 1),
     };
     registerBrowserPolicyIpc({ handle: (ch: string, fn: never) => handlers.set(ch, fn) } as never, {
@@ -84,6 +85,18 @@ describe('registerBrowserPolicyIpc', () => {
     expect(await handlers.get(BROWSER_POLICY_IPC.set)!(trusted, write)).toEqual({ ok: false, error: 'changed', code: 'stale' });
     expect(store.write).toHaveBeenCalledWith(expect.objectContaining({ paneId: 'pane-1' }), 'pa', true);
     expect(await handlers.get(BROWSER_POLICY_IPC.get)!(trusted, { workspaceId: 'ws-1', paneId: 'pane-1' }))
-      .toMatchObject({ ok: true, state: 'missing', epoch: 0, currentProfile: 'pa' });
+      .toMatchObject({ ok: true, state: 'missing', epoch: 0, currentProfile: 'pa', decision: 'legacy' });
+  });
+
+  it('reports the decision main would make for the pane', async () => {
+    const { handlers, store, trusted } = setup();
+    const read = () => handlers.get(BROWSER_POLICY_IPC.get)!(trusted, { workspaceId: 'ws-1', paneId: 'pane-1' });
+    store.decisionFor.mockReturnValueOnce({ kind: 'denied', why: 'unreadable' });
+    expect(await read()).toMatchObject({ ok: true, decision: 'denied' });
+    expect(store.decisionFor).toHaveBeenLastCalledWith('pane-1', 'ws-1', 'pa', true);
+    store.decisionFor.mockReturnValueOnce({
+      kind: 'protected', epoch: 2, profileId: 'pa', hosts: { mode: 'allowlist', allow: [], block: [] }, confirmed: false,
+    });
+    expect(await read()).toMatchObject({ decision: 'protected', confirmed: false });
   });
 });

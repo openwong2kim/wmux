@@ -32,7 +32,7 @@ export const UNTRUSTED_SENDER_ERROR = 'refused: this request must come from the 
 
 export interface BrowserPolicyIpcDeps {
   getWindow: GetWindow;
-  store: Pick<BrowserPolicyStore, 'fileState' | 'epoch' | 'entryFor' | 'write'>;
+  store: Pick<BrowserPolicyStore, 'fileState' | 'epoch' | 'entryFor' | 'decisionFor' | 'write'>;
   /** The profile a pane resolves to now (ChromeProfileStore.profileFor). */
   profileFor: (workspaceId: string, paneId: string) => string;
   paneBindings: () => ChromePaneBindings;
@@ -58,12 +58,18 @@ export function registerBrowserPolicyIpc(ipcMain: Pick<IpcMain, 'handle'>, deps:
     const paneId = str(p.paneId);
     const bad = membershipError(workspaceId, paneId);
     if (bad) return { ok: false, error: bad };
+    const currentProfile = deps.profileFor(workspaceId, paneId);
+    // What the gate would decide for this pane right now — with a missing or
+    // unreadable file only main's history knows whether the pane is refused.
+    const decision = deps.store.decisionFor(paneId, workspaceId, currentProfile, !!deps.paneBindings()[paneId]);
     return {
       ok: true,
       state: deps.store.fileState(),
       epoch: deps.store.epoch(),
       policy: deps.store.entryFor(paneId),
-      currentProfile: deps.profileFor(workspaceId, paneId),
+      currentProfile,
+      decision: decision.kind,
+      ...(decision.kind === 'protected' && { confirmed: decision.confirmed }),
     };
   }));
 

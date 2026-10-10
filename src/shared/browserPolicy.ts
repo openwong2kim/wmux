@@ -160,6 +160,10 @@ export interface BrowserPolicyReadResult {
   policy?: PanePolicy | null;
   /** The profile the pane resolves to now — what a write must confirm. */
   currentProfile?: string;
+  /** What browser calls from this pane get right now (PanePolicyDecision). */
+  decision?: PanePolicyDecision['kind'];
+  /** With decision 'protected': false while the site list awaits re-confirmation. */
+  confirmed?: boolean;
 }
 
 /** `browser:policy:set` reply. `code` is set on every failed write. */
