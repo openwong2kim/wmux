@@ -923,6 +923,8 @@ export const ko = {
   'moa.settings.shadowFull': "그림자 판정 기록이 가득 찼습니다(20 MB). 더 이상 판정하지 않습니다. 새로 시작하려면 moa-shadow/decisions.jsonl을 다른 곳으로 옮기세요.",
   'moa.settings.retro': "주간 회고",
   'moa.settings.retroDesc': "Moa가 켜져 있으면 일주일에 한 번 Moa 브리핑에 짧은 요약을 보여 줍니다: 얼마나 자주 물어봤는지, 오래 기다린 일, 반복된 질문, 가장 느린 일.",
+  'moa.settings.fleetFastPath': "Fleet 질문은 이 컴퓨터에서 답하기",
+  'moa.settings.fleetFastPathDesc': "여기에 입력한 \"작업 상태\", \"내가 봐야 할 작업\" 같은 짧은 상태 질문은 Moa 턴 없이 이 컴퓨터의 Fleet 보드로 답합니다. 그 밖의 메시지는 그대로 Moa에게 갑니다.",
   'moa.settings.retroWhenDesc': "현지 시각 기준. 지난 한 주(월요일~일요일)를 돌아봅니다.",
   'moa.settings.retroDay': "회고 요일",
   'moa.settings.retroHour': "회고 시각",

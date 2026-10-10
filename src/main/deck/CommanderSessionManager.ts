@@ -47,7 +47,17 @@ export interface CommanderSendResult {
    *  "died mid-turn" (the re-examine consume) check it; everyone else keys off
    *  `ok` alone. */
   code?: 'busy' | 'disposed' | 'empty' | 'invalid_workspace' | 'moa_off' | 'mode_off' | 'task_workspace' | 'not_hq' | 'hq_missing' | 'hq_unknown' | 'errored';
+  /** A deterministic read-only answer handled without starting the adapter.
+   *  The renderer may retain this alongside a provider-owned transcript. */
+  localAnswer?: { text: string };
 }
+
+/** Optional read-only fast path inside the manager's one-turn reservation.
+ *  A miss or failure falls through to the original adapter turn. Callers must
+ *  observe the signal before doing anything after an asynchronous lookup. */
+export type CommanderLocalFirst = (signal: AbortSignal) => Promise<
+  { text: string } | { fallbackText: string | (() => string) } | null
+>;
 
 export interface CommanderStatusSnapshot {
   status: CommanderStatus;
@@ -90,6 +100,7 @@ export class CommanderSessionManager {
   private _status: CommanderStatus = 'idle';
   private _started = false;
   private _lastReportedSessionId: string | null = null;
+  private localAbort: AbortController | null = null;
 
   constructor(deps: CommanderSessionManagerDeps) {
     this.adapter = deps.adapter;
@@ -149,7 +160,7 @@ export class CommanderSessionManager {
    * (heartbeat / loop / schedule) marks its turn `'automation'` so a brain that
    * can race a human's own input has a chance to re-check before it commits.
    */
-  async send(text: string, opts: BrainSendOptions = {}): Promise<CommanderSendResult> {
+  async send(text: string, opts: BrainSendOptions = {}, localFirst?: CommanderLocalFirst): Promise<CommanderSendResult> {
     if (this._status === 'disposed') {
       this.sink({ type: 'error', message: 'commander session is closed' });
       return { ok: false, code: 'disposed' };
@@ -158,16 +169,19 @@ export class CommanderSessionManager {
       this.sink({ type: 'error', message: 'a command is already running — wait for it to finish' });
       return { ok: false, code: 'busy' };
     }
-    const trimmed = text.trim();
+    let trimmed = text.trim();
     if (!trimmed) return { ok: false, code: 'empty' };
 
-    if (!this._started) {
+    if (!localFirst && !this._started) {
       this.adapter.start(this.startOptions);
       this._started = true;
     }
 
     this._status = 'busy';
-    this._turnOrigin = opts.origin === 'automation' ? 'automation' : 'human';
+    // Origin grants authority to the provider's live work. A local read only
+    // reserves the turn slot; it must not promote earlier autonomous work to
+    // operator-authorized work while looking up or showing a status answer.
+    if (!localFirst) this._turnOrigin = opts.origin === 'automation' ? 'automation' : 'human';
     // Round-5 review P1: production adapters (ClaudeSdkAdapter, AcpBrainAdapter)
     // report failures by YIELDING a BrainEvent{type:'error'} — or by ending the
     // stream without a turn-end — rather than throwing, so an exception-only
@@ -176,6 +190,59 @@ export class CommanderSessionManager {
     let sawTurnEnd = false;
     let sawErrorEvent = false;
     try {
+      if (localFirst) {
+        const controller = new AbortController();
+        this.localAbort = controller;
+        // Stop must finish even when a read-only transport cannot cancel its
+        // underlying request. Its late answer is observed but never emitted.
+        const aborted = Symbol('local-turn-aborted');
+        let onAbort: () => void = () => undefined;
+        const cancelled = new Promise<typeof aborted>((resolve) => {
+          onAbort = () => resolve(aborted);
+          controller.signal.addEventListener('abort', onAbort, { once: true });
+        });
+        let answer: Awaited<ReturnType<CommanderLocalFirst>> | typeof aborted = null;
+        try {
+          answer = await Promise.race([localFirst(controller.signal), cancelled]);
+        } catch {
+          // A local read is an optimization. An unavailable or malformed
+          // source must still get the ordinary adapter path, once.
+        } finally {
+          controller.signal.removeEventListener('abort', onAbort);
+          if (this.localAbort === controller) this.localAbort = null;
+        }
+        if (controller.signal.aborted || answer === aborted) {
+          if ((this._status as CommanderStatus) !== 'disposed') {
+            this.sink({ type: 'error', message: 'command interrupted' });
+          }
+          return { ok: true, code: 'errored' };
+        }
+        if ((this._status as CommanderStatus) === 'disposed') return { ok: true, code: 'errored' };
+        // A human can start typing directly in the TUI while the read awaits.
+        // Neither a local reply nor a fallback may overlap that foreign turn.
+        if (this.adapterBusy) {
+          this.sink({ type: 'error', message: 'a command is already running — wait for it to finish' });
+          return { ok: true, code: 'errored' };
+        }
+        if (answer && 'text' in answer && answer.text.trim()) {
+          this.sink({ type: 'text-delta', text: answer.text });
+          this.sink({ type: 'turn-end', sessionId: this.adapter.sessionId, localAnswer: { prompt: text, text: answer.text } });
+          // No provider turn ran, so neither its session nor persistence hook
+          // is changed by this answer.
+          return { ok: true, localAnswer: { text: answer.text } };
+        }
+        if (answer && 'fallbackText' in answer) {
+          // Context preparation may mutate bookkeeping. Keep it after every
+          // asynchronous gate, in the same synchronous step as adapter send.
+          const fallback = answer.fallbackText;
+          trimmed = (typeof fallback === 'function' ? fallback() : fallback).trim();
+        }
+        this._turnOrigin = opts.origin === 'automation' ? 'automation' : 'human';
+        if (!this._started) {
+          this.adapter.start(this.startOptions);
+          this._started = true;
+        }
+      }
       for await (const ev of this.adapter.send(trimmed, opts)) {
         // Disposed mid-turn (app quitting): stop forwarding. The adapter's
         // interrupt() was already fired by dispose(). Read through a widening
@@ -265,7 +332,9 @@ export class CommanderSessionManager {
 
   /** Abort the in-flight turn (best-effort). No-op when idle/disposed. */
   interrupt(): void {
-    if (this._status === 'busy') this.adapter.interrupt();
+    if (this._status !== 'busy') return;
+    if (this.localAbort) this.localAbort.abort();
+    else this.adapter.interrupt();
   }
 
   /** Tear down the session — called on app quit. Interrupts any live turn and
@@ -273,6 +342,7 @@ export class CommanderSessionManager {
   dispose(): void {
     if (this._status === 'disposed') return;
     this._status = 'disposed';
+    this.localAbort?.abort();
     this.adapter.dispose();
   }
 }

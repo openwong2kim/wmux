@@ -1410,6 +1410,8 @@ export const pl = {
   'moa.settings.shadowFull': "Dziennik sędziego w cieniu jest pełny (20 MB), więc nic więcej nie jest oceniane. Przenieś moa-shadow/decisions.jsonl, aby zacząć nowy.",
   'moa.settings.retro': "Cotygodniowe podsumowanie",
   'moa.settings.retroDesc': "Raz w tygodniu, gdy Moa jest włączona, krótkie podsumowanie w briefingu Moa: jak często Cię pytano, praca, która długo czekała, powtarzające się pytania i najwolniejsza praca.",
+  'moa.settings.fleetFastPath': "Odpowiadaj lokalnie na pytania o Fleet",
+  'moa.settings.fleetFastPathDesc': "Krótkie pytania o stan wpisane tutaj, np. „Who needs me?” lub „Fleet status”, dostają odpowiedź z tablicy Fleet na tym komputerze, bez tury Moa. Wszystko inne nadal trafia do Moa.",
   'moa.settings.retroWhenDesc': "Czas lokalny. Obejmuje ostatni pełny tydzień, od poniedziałku do niedzieli.",
   'moa.settings.retroDay': "Dzień podsumowania",
   'moa.settings.retroHour': "Godzina podsumowania",

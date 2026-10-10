@@ -23,6 +23,9 @@ import { ipcMain, app, type BrowserWindow } from 'electron';
 import { sanitizeClaudeEffort, type ClaudeEffort } from '../../../shared/claudeModels';
 import { IPC } from '../../../shared/constants';
 import { wrapHandler } from '../wrapHandler';
+import { sendToRenderer } from '../../pipe/handlers/_bridge';
+import { answerFleetQuestion, fleetIntentCandidate, FLEET_BOARD_TIMEOUT_MS } from '../../deck/fleetFastPath';
+import { loadFleetFastPathEnabled, setFleetFastPathEnabled } from '../../deck/deckFleetFastPathStore';
 import type { BrainAdapter, BrainEvent } from '../../deck/BrainAdapter';
 import { ClaudeSdkAdapter, buildCommanderSystemPrompt, resolveMcpBundlePath } from '../../deck/ClaudeSdkAdapter';
 import { AcpBrainAdapter } from '../../deck/AcpBrainAdapter';
@@ -213,6 +216,9 @@ import { isStartupDeckReconcileDone, tryStartupDeckReconcile, workLinkOwnerLive 
 type GetWindow = () => BrowserWindow | null;
 
 export interface RegisterDeckHandlerOptions {
+  /** Test seam for the Fleet fast path's board read. Defaults to the
+   *  renderer's `fleet.triage` selector; the board never leaves the machine. */
+  readFleetBoard?: () => Promise<unknown>;
   /** Adapter factory — injected in tests so no SDK subprocess spawns. Defaults
    *  to a fresh ClaudeSdkAdapter (subscription Claude, wmux MCP auto-mounted).
    *  `model` is the orchestrator model override ('' → SDK default);
@@ -367,6 +373,9 @@ export function registerDeckHandler(
   getWindow: GetWindow,
   opts: RegisterDeckHandlerOptions = {},
 ): () => void {
+  const readFleetBoard = opts.readFleetBoard ?? (() =>
+    sendToRenderer(getWindow, 'fleet.triage', {}, { timeoutMs: FLEET_BOARD_TIMEOUT_MS }));
+
   // Adopt one process-wide boot identity for durable work records (#733). The
   // EventBus already mints a per-process UUID at construction, so reusing it
   // keeps "this boot" meaning the same thing to the work store as it does to
@@ -1364,35 +1373,62 @@ export function registerDeckHandler(
     // (dogfood finding, 2026-07-12). Status check + send are one synchronous
     // sequence, so nothing can interleave (same basis as runTurnForWorkspace).
     const idle = mgr.getStatus().status === 'idle';
-    if (idle) {
-      beginTrackedWork(workspaceId, text);
-      coalescer?.notifyHumanSend(workspaceId);
-    }
-    // Awaits the full turn (events stream over DECK_STREAM meanwhile); the
-    // resolved value is only the accept/reject verdict. The loop + decision
-    // blocks ride in front of the typed text — invisible to the renderer's
-    // optimistic user bubble, visible to the brain. If this human turn carried
-    // a resolved decision's block, consume it (id-scoped) so it never re-injects.
-    const injectedDecision = loadBrainDecision(workspaceId);
-    // A human at the composer: no double-check delay — they are waiting on it,
-    // and a turn they typed themselves cannot be racing their own TUI input.
-    moaTranscript.notePrompt(workspaceId, text);
-    // A turn the phone sent has no optimistic bubble in the desktop deck, so
-    // open it there the way a scheduled run does.
-    if (idle && opts.source === 'phone') {
-      emit(workspaceId, { type: 'turn-start', prompt: text, vendor: vendorForWorkspace(workspaceId) });
-    }
+    // Preparation mutates work/context bookkeeping. A local Fleet answer must
+    // never supersede an active job, consume a resolved decision, or enter
+    // Claude's prompt-rewrite history, so all of it runs only once Moa will
+    // actually receive the text. The loop + decision blocks ride in front of
+    // the typed text — invisible to the renderer's optimistic user bubble,
+    // visible to the brain. If this human turn carried a resolved decision's
+    // block, it is consumed (id-scoped) below so it never re-injects.
+    let injectedDecision: ReturnType<typeof loadBrainDecision> = null;
+    const prepareMoa = (): string => {
+      if (idle) {
+        beginTrackedWork(workspaceId, text);
+        coalescer?.notifyHumanSend(workspaceId);
+      }
+      injectedDecision = loadBrainDecision(workspaceId);
+      moaTranscript.notePrompt(workspaceId, text);
+      // A turn the phone sent has no optimistic bubble in the desktop deck, so
+      // open it there the way a scheduled run does.
+      if (idle && opts.source === 'phone') {
+        emit(workspaceId, { type: 'turn-start', prompt: text, vendor: vendorForWorkspace(workspaceId) });
+      }
+      return withLoopContext(workspaceId, text);
+    };
     const tap = idle ? opts.onEvent : undefined;
     if (tap) turnTaps.set(workspaceId, tap);
     let verdict: CommanderSendResult;
+    let usedMoa = false;
     try {
-      verdict = await mgr.send(withLoopContext(workspaceId, text), { origin: 'human' });
+      // Fleet fast path: desktop composer only (phone messages keep their
+      // existing route), opt-in, and only for an allowlisted read-only
+      // question. send reserves the manager synchronously before the board
+      // lookup's first await; any miss falls through to Moa exactly once.
+      if (idle && opts.source === 'desktop' && fleetIntentCandidate(text) !== null && loadFleetFastPathEnabled()) {
+        verdict = await mgr.send(text, { origin: 'human' }, async (signal) => {
+          const local = await answerFleetQuestion(text, readFleetBoard, signal).catch(() => null);
+          if (signal.aborted) return null;
+          // The HQ/mode may have moved while the board was read. Abort the
+          // reserved turn instead of answering or spawning a retired brain.
+          if (refuseWhenModeOff(workspaceId)) { mgr.interrupt(); return null; }
+          if (local) return local;
+          return { fallbackText: () => { usedMoa = true; return prepareMoa(); } };
+        });
+      } else {
+        usedMoa = true;
+        verdict = await mgr.send(prepareMoa(), { origin: 'human' });
+      }
     } finally {
       if (tap && turnTaps.get(workspaceId) === tap) turnTaps.delete(workspaceId);
     }
-    settleAmbient(workspaceId, verdict);
-    if (verdict.ok && injectedDecision?.status === 'resolved') {
-      void clearResolvedDecision(workspaceId, injectedDecision.id).catch(() => { /* ignore */ });
+    if (usedMoa) {
+      settleAmbient(workspaceId, verdict);
+      // The cast undoes TypeScript narrowing the closure-assigned variable to
+      // null. Only a Moa turn received this resolved decision's context.
+      const decision = injectedDecision as ReturnType<typeof loadBrainDecision>;
+      if (verdict.ok && decision?.status === 'resolved') {
+        void clearResolvedDecision(workspaceId, decision.id).catch(() => { /* ignore */ });
+      }
     }
     return verdict;
   };
@@ -3461,6 +3497,32 @@ export function registerDeckHandler(
     }),
   );
 
+  // ── `deck.fleetFastPath` switch (Settings toggle) ─────────────────────────
+  // Reads and writes deck-fleet-fast-path.json, the same file DECK_SEND
+  // consults, so the toggle and the route can never disagree.
+  ipcMain.removeHandler(IPC.DECK_FLEET_FAST_PATH_GET);
+  ipcMain.handle(
+    IPC.DECK_FLEET_FAST_PATH_GET,
+    wrapHandler(IPC.DECK_FLEET_FAST_PATH_GET, async (): Promise<{ enabled: boolean }> => {
+      return { enabled: loadFleetFastPathEnabled() };
+    }),
+  );
+
+  ipcMain.removeHandler(IPC.DECK_FLEET_FAST_PATH_SET);
+  ipcMain.handle(
+    IPC.DECK_FLEET_FAST_PATH_SET,
+    wrapHandler(IPC.DECK_FLEET_FAST_PATH_SET, async (
+      _event: Electron.IpcMainInvokeEvent,
+      raw: unknown,
+    ): Promise<{ enabled: boolean }> => {
+      const req = (raw && typeof raw === 'object' && !Array.isArray(raw))
+        ? (raw as Record<string, unknown>)
+        : {};
+      const enabled = await setFleetFastPathEnabled(req.enabled === true);
+      return { enabled };
+    }),
+  );
+
   // ── Deck status panel: the open task ledger for one owner ─────────────────
   // A projection, never a write. `panesFor` joins the workspace mirror's
   // per-pane agent status onto each task's own workspace, so the panel shows
@@ -4015,6 +4077,8 @@ export function registerDeckHandler(
 
   return () => {
     app.removeListener('before-quit', disposeAll);
+    ipcMain.removeHandler(IPC.DECK_FLEET_FAST_PATH_GET);
+    ipcMain.removeHandler(IPC.DECK_FLEET_FAST_PATH_SET);
     moaIssueProposals.dispose();
     setMoaHandoffService(null);
     setMoaWakeHandler(null);

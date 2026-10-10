@@ -1429,6 +1429,8 @@ export const en = {
   'moa.settings.shadowFull': "The shadow log is full (20 MB), so nothing more is judged. Move moa-shadow/decisions.jsonl aside to start a new one.",
   'moa.settings.retro': "Weekly retro",
   'moa.settings.retroDesc': "Once a week, while Moa is on, a short summary on Moa's briefing: how often you were asked, work that sat waiting, repeated questions and the slowest work.",
+  'moa.settings.fleetFastPath': "Answer Fleet questions locally",
+  'moa.settings.fleetFastPathDesc': "Short status questions typed here, like \"Who needs me?\" or \"Fleet status\", are answered from the Fleet board on this computer without a Moa turn. Anything else still goes to Moa.",
   'moa.settings.retroWhenDesc': "Local time. It reviews the last full week, Monday to Sunday.",
   'moa.settings.retroDay': "Retro day",
   'moa.settings.retroHour': "Retro time",
