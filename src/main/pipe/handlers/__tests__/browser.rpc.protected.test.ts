@@ -333,6 +333,33 @@ describe('protected-pane memory: per-account namespaces', () => {
     expect(missing.error).toContain('policy_denied');
   });
 
+  it('a rebind back to the same profile still starts a fresh namespace', async () => {
+    await protectPaneA();
+    const router = register(profiles, policy);
+    await call(router, 'browser.actionCache.put', { workspaceId: 'ws-1', trace: trace('old'), policyEpoch: policy.epoch() }, 'pty-a');
+    await profiles.create('pb');
+    await profiles.setPaneBinding('pane-a', 'ws-1', 'pb');
+    await policy.onPaneRebind('pane-a');
+    await profiles.setPaneBinding('pane-a', 'ws-1', 'pa');
+    await policy.onPaneRebind('pane-a');
+    await protectPaneA();
+    expect(names(await call(router, 'browser.actionCache.list', { workspaceId: 'ws-1' }, 'pty-a'))).toEqual([]);
+  });
+
+  it('a completion recorded while protected never lands in the workspace memory after protection is turned off', async () => {
+    await protectPaneA();
+    const router = register(profiles, policy);
+    const epoch = policy.epoch();
+    await policy.write(
+      { workspaceId: 'ws-1', paneId: 'pane-a', profileId: 'pa', protected: false, hosts: { mode: 'allowlist', allow: ['a.test'], block: [] }, expectedEpoch: policy.epoch() },
+      'pa',
+      true,
+    );
+    const res = await call(router, 'browser.actionCache.put', { workspaceId: 'ws-1', trace: trace('late'), policyEpoch: epoch }, 'pty-a');
+    expect(res.error).toContain('policy_denied');
+    expect(names(await call(router, 'browser.actionCache.list', { workspaceId: 'ws-1' }, 'pty-b'))).not.toContain('late');
+  });
+
   it('a rebind starts a fresh namespace, and an unconfirmed pane gets no memory at all', async () => {
     await protectPaneA();
     const router = register(profiles, policy);
@@ -444,6 +471,15 @@ describe('scheduled runs acting as a protected pane', () => {
     const run = liveRuns.get('auto-r1')!;
     run.identity = { ...run.identity, paneId: 'pane-b' };
     expect((await asRun(router, 'browser.cdp.info', { workspaceId: 'ws-1' }, 'auto-r1')).error).toContain('policy_denied');
+  });
+
+  it('a run is never left waiting on a person: help requests fail fast', async () => {
+    await protectPaneA();
+    await grantRun('auto-r1');
+    const router = register(profiles, policy);
+    const res = await asRun(router, 'browser.help.request', { workspaceId: 'ws-1', reason: 'captcha' }, 'auto-r1');
+    expect(res.error).toContain('needs_consent');
+    expect(notes.at(-1)).toEqual({ runId: 'r-auto-r1', detail: 'browser_needs_consent' });
   });
 
   it('a run claim may call the browser and nothing else of wmux', async () => {

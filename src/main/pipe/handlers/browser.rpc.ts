@@ -139,7 +139,8 @@ type GetWindow = () => BrowserWindow | null;
 
 /** What main wires in for protected browser panes. */
 export interface BrowserPolicyWiring {
-  store: Pick<BrowserPolicyStore, 'hasAnyHistory' | 'workspaceHasHistory' | 'decisionFor' | 'epoch' | 'entryFor'>;
+  store: Pick<BrowserPolicyStore, 'hasAnyHistory' | 'workspaceHasHistory' | 'decisionFor' | 'epoch' | 'entryFor'>
+    & Partial<Pick<BrowserPolicyStore, 'onChange'>>;
   /** paneId → its exclusive Chrome profile binding (ChromeProfileStore). */
   paneBindings: () => ChromePaneBindings;
 }
@@ -198,6 +199,11 @@ function isRunCaller(ctx: RpcContext | undefined): boolean {
   const claim = ctx?.workspaceClaim;
   if (claim?.kind !== 'bound' || !claim.ptyId) return false;
   return claim.browserOnly === true || isIdentityRunPty(claim.ptyId);
+}
+
+/** Calls that wait for a person (help requests, borrowing the user's tabs). */
+function waitsOnPerson(method: string, params: Record<string, unknown>): boolean {
+  return method === 'browser.help.request' || (method === 'browser.tabs' && params['action'] === 'borrow');
 }
 
 /** The message main throws for a call that needs the operator's consent again. */
@@ -1009,6 +1015,18 @@ export function registerBrowserRpc(
   // pane, refuses what that pane may not do before the handler runs.
   // What the operator's schedule grant reads to capture a browser identity:
   // the same policy store and profile bindings this gate resolves against.
+  // A rebind or a move leaves the pane protected but unconfirmed: its memory
+  // namespace is retired right then, so even a rebind back to the same
+  // profile starts a fresh one.
+  if (browserPolicy?.store.onChange) {
+    const store = browserPolicy.store;
+    const retire = () => {
+      for (const paneId of Object.keys(browserPolicy.paneBindings())) {
+        if (store.entryFor(paneId)?.needsConfirm === true) void getProfileNamespaceStore().retire(paneId);
+      }
+    };
+    store.onChange?.(retire);
+  }
   if (browserPolicy && chromeRegistry) {
     const registry = chromeRegistry;
     setBrowserIdentitySources({
@@ -1080,6 +1098,11 @@ export function registerBrowserRpc(
       && binding.workspaceId === workspaceId
       && binding.profile.toLowerCase() === currentProfile.toLowerCase();
     const pd = store.decisionFor(paneId, workspaceId, currentProfile, !!binding);
+    if (run && waitsOnPerson(method, params)) {
+      // Nobody is at the desk for a scheduled run: never leave it waiting.
+      noteRunBrowserRefusal(run.runId, 'browser_needs_consent');
+      throw new Error(needsConsentMessage(method, 'a scheduled run cannot wait for a person to answer in the browser'));
+    }
     if (run) {
       // The run acts only under the identity the operator granted: the same
       // profile, still protected and confirmed, at the same policy epoch. Any
@@ -2016,7 +2039,15 @@ export function registerBrowserRpc(
     // anything the caller sent. Everyone else keeps the bare workspace key.
     const pd = protectedDecisionOf(ctx);
     const pane = ctx ? protectedPanes.get(ctx) : undefined;
-    if (!pd) return workspaceId;
+    if (!pd) {
+      // Only a protected scope ever names an epoch: a completion that does,
+      // arriving after the pane stopped being protected, belongs to the
+      // account namespace it was recorded in, never the workspace's.
+      if (isMemoryCompletion(method, params) && params['policyEpoch'] !== undefined) {
+        throw new Error(policyDeniedMessage(method, "this pane's browser identity changed since the action was recorded"));
+      }
+      return workspaceId;
+    }
     if (!pd.confirmed || !pane || pane.workspaceId !== workspaceId) {
       throw new Error(policyDeniedMessage(method, "this pane's memory is unavailable until the user confirms its site list again"));
     }

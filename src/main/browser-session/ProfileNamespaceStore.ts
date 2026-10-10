@@ -74,6 +74,8 @@ export class ProfileNamespaceStore {
   private readonly filePath: string;
   private loaded: Loaded | null = null;
   private chain: Promise<unknown> = Promise.resolve();
+  /** Panes whose retirement is not on disk yet: refused until it is. */
+  private readonly retiring = new Set<string>();
 
   constructor(dir: string = getWmuxDir()) {
     this.filePath = path.join(dir, FILE);
@@ -108,6 +110,7 @@ export class ProfileNamespaceStore {
       if (!paneId || isUnsafeKey(paneId) || !LEGACY_MEMORY_KEY_RE.test(workspaceId)) return null;
       const wanted = normalizeMemoryProfile(profile);
       if (!wanted) return null;
+      if (this.retiring.has(paneId)) return null;
       const loaded = this.load();
       if (loaded.kind !== 'ok') return null;
       const hit = loaded.file.panes[paneId];
@@ -127,6 +130,37 @@ export class ProfileNamespaceStore {
       }
       this.loaded = { kind: 'ok', file: next };
       return memoryNamespaceKey(workspaceId, wanted, generation);
+    });
+    this.chain = run.catch(() => undefined);
+    return run;
+  }
+
+  /**
+   * The pane was rebound or moved: its generation is dropped (durably), so
+   * its next protected memory access gets a fresh one — even back in the same
+   * workspace with the same profile. Until the drop is on disk, the pane's
+   * protected memory is refused.
+   */
+  retire(paneId: string): Promise<void> {
+    if (!paneId || isUnsafeKey(paneId)) return Promise.resolve();
+    this.retiring.add(paneId);
+    const run = this.chain.then(async () => {
+      const loaded = this.load();
+      if (loaded.kind !== 'ok') return; // stays refused: the file cannot be trusted anyway
+      if (!loaded.file.panes[paneId]) {
+        this.retiring.delete(paneId);
+        return;
+      }
+      const panes = { ...loaded.file.panes };
+      delete panes[paneId];
+      try {
+        await atomicWriteJSON(this.filePath, { version: VERSION, panes }, { durable: true });
+      } catch (err) {
+        console.warn('[browser-memory] namespace retire failed:', err);
+        return; // stays refused for this process
+      }
+      this.loaded = { kind: 'ok', file: { version: VERSION, panes } };
+      this.retiring.delete(paneId);
     });
     this.chain = run.catch(() => undefined);
     return run;
