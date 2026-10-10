@@ -162,19 +162,22 @@ export function runWithWorkspaceTokenSource<T>(source: () => string | undefined,
 // What a browser call does when main answers that the caller's identity is
 // stale (a pane moved, main restarted): set per tool call by index.ts, so the
 // tool modules that call sendRpc directly get the same recovery as callRpc.
-const staleIdentitySource = new AsyncLocalStorage<(outcome: string) => void>();
+// `failed` is true when main refused the call (the outcome is its error text).
+type StaleIdentityHandler = (outcome: string, failed: boolean) => void;
+const staleIdentitySource = new AsyncLocalStorage<StaleIdentityHandler>();
 
 /** Run `fn` with a stale-identity handler for every browser RPC it makes. */
-export function runWithStaleIdentityHandler<T>(handler: (outcome: string) => void, fn: () => T): T {
+export function runWithStaleIdentityHandler<T>(handler: StaleIdentityHandler, fn: () => T): T {
   return staleIdentitySource.run(handler, fn);
 }
 
-function noteBrowserOutcome(method: string, outcome: unknown): void {
+/** Hand a browser RPC's outcome to the current stale-identity handler (exported for tests). */
+export function noteBrowserOutcome(method: string, outcome: unknown, failed: boolean): void {
   if (!method.startsWith('browser.')) return;
   const handler = staleIdentitySource.getStore();
   if (!handler) return;
   try {
-    handler(typeof outcome === 'string' ? outcome : JSON.stringify(outcome ?? ''));
+    handler(typeof outcome === 'string' ? outcome : JSON.stringify(outcome ?? ''), failed);
   } catch {
     /* recovery is best-effort: it must never change the call's own result */
   }
@@ -359,11 +362,11 @@ export async function sendRpc(
     for (let attempt = 0; attempt < RETRY_COUNT; attempt++) {
       try {
         const result = await attemptRpc(pipePath, token, method, params, timeoutMs);
-        noteBrowserOutcome(method, result);
+        noteBrowserOutcome(method, result, false);
         return result;
       } catch (err) {
         lastError = err as Error;
-        noteBrowserOutcome(method, lastError.message);
+        noteBrowserOutcome(method, lastError.message, true);
         const msg = lastError.message;
         const isRetryable = msg.includes('not running') || msg.includes('unauthorized');
         const isPerm = msg.includes('EPERM');
@@ -384,7 +387,7 @@ export async function sendRpc(
   if (tcpPort) {
     try {
       const result = await attemptRpc({ host: '127.0.0.1', port: tcpPort }, token, method, params, timeoutMs);
-      noteBrowserOutcome(method, result);
+      noteBrowserOutcome(method, result, false);
       return result;
     } catch { /* fall through */ }
   }

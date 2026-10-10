@@ -18,7 +18,7 @@ vi.mock('../wmux-client', async (importOriginal) => {
 });
 
 import { createWmuxServer } from '../index';
-import { getWorkspaceToken, setWorkspaceToken } from '../wmux-client';
+import { getWorkspaceToken, noteBrowserOutcome, setWorkspaceToken } from '../wmux-client';
 import { __resetPaneResolverForTesting } from '../paneResolver';
 
 async function connect(
@@ -147,6 +147,84 @@ describe('browser tools — recovering a walk that produced no claim', () => {
     expect(mockSendRpc.mock.calls.filter(([m]) => m === 'a2a.resolve.identity')).toHaveLength(2);
     // On Windows the client-side walk spawns PowerShell per hop, twice here.
   }, 30_000);
+});
+
+describe('browser tools — a claim that is gone after a wmux restart', () => {
+  const GONE =
+    'browser.close: BROWSER_SCOPE_REFUSED: the workspace you claimed is gone; the wmux MCP server claims ' +
+    'again on its next call, otherwise call mcp.claimWorkspace again to get a new one. Do not retry unchanged.';
+
+  function walkMinting(tokens: string[]) {
+    let walks = 0;
+    return () => ({
+      mappings: {},
+      entries: [],
+      resolved: { workspaceId: 'ws-walk', ptyId: 'pty-1' },
+      workspaceToken: tokens[Math.min(walks++, tokens.length - 1)],
+    });
+  }
+
+  it('runs the call once more with a fresh claim, so the agent never sees the refusal', async () => {
+    const walk = walkMinting(['claim-before-restart', 'claim-after-restart']);
+    mockSendRpc.mockImplementation(async (method: string) => {
+      if (method === 'a2a.resolve.identity') return walk();
+      if (method === 'browser.close') {
+        // What the real sendRpc does with main's refusal of a dead claim.
+        if (getWorkspaceToken() === 'claim-before-restart') {
+          noteBrowserOutcome(method, GONE, true);
+          throw new Error(GONE);
+        }
+        noteBrowserOutcome(method, { ok: true }, false);
+        return { ok: true };
+      }
+      throw new Error(`rpc-down: ${method}`);
+    });
+    const client = await connect();
+
+    const res = await callTool(client, 'browser_close');
+
+    expect(res.isError).toBeFalsy();
+    expect(browserCalls('browser.close')).toHaveLength(2);
+    expect(getWorkspaceToken()).toBe('claim-after-restart');
+  });
+
+  it('runs it at most once more: a second refusal reaches the agent', async () => {
+    const walk = walkMinting(['claim-dead']);
+    mockSendRpc.mockImplementation(async (method: string) => {
+      if (method === 'a2a.resolve.identity') return walk();
+      if (method === 'browser.close') {
+        noteBrowserOutcome(method, GONE, true);
+        throw new Error(GONE);
+      }
+      throw new Error(`rpc-down: ${method}`);
+    });
+    const client = await connect();
+
+    const res = await callTool(client, 'browser_close');
+
+    expect(res.isError).toBe(true);
+    expect(res.text).toMatch(/the workspace you claimed is gone/);
+    expect(browserCalls('browser.close')).toHaveLength(2);
+  });
+
+  it('never re-runs a call main answered, even when the answer quotes a refusal', async () => {
+    const walk = walkMinting(['claim-live']);
+    mockSendRpc.mockImplementation(async (method: string) => {
+      if (method === 'a2a.resolve.identity') return walk();
+      if (method === 'browser.close') {
+        const reply = { ok: true, note: 'the workspace you claimed is gone' };
+        noteBrowserOutcome(method, reply, false);
+        return reply;
+      }
+      throw new Error(`rpc-down: ${method}`);
+    });
+    const client = await connect();
+
+    const res = await callTool(client, 'browser_close');
+
+    expect(res.isError).toBeFalsy();
+    expect(browserCalls('browser.close')).toHaveLength(1);
+  });
 });
 
 describe('browser tools — a caller outside every pane (scheduled run)', () => {

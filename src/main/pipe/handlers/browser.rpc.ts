@@ -752,7 +752,8 @@ const SCOPE_REFUSAL_REMEDY: Record<BrowserScopeShadowReason, string> = {
   'workspace-unresolved':
     'browser calls act on the workspace wmux verifies for the caller, and this call carries no ' +
     'verified workspace (a workspaceId in the params only narrows one). Call from the wmux MCP ' +
-    'server inside a wmux pane, or claim a workspace with mcp.claimWorkspace',
+    'server inside a wmux pane, or claim a workspace with mcp.claimWorkspace. An agent started ' +
+    'before wmux was updated still runs the older wmux MCP server: restart that agent',
 };
 
 export function scopeRefusalError(

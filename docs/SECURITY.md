@@ -63,8 +63,11 @@ main recorded for the caller:
   - from main's own walk of the caller's process tree up to a live pane, for
     an agent in a pane (a pane claim, bound to the workspace and the pane);
   - from the owner record of a shared Codex app-server thread, for a caller
-    main has seen running under that server;
-  - for a WSL pane whose agent the daemon follows inside the distro.
+    main has seen running under that server. Windows has no owner record, and
+    there the wmux MCP server refuses browser tools under a shared server
+    rather than use the walk, which names the pane that started the server;
+  - for a WSL pane whose agent the daemon follows inside the distro, when the
+    walk does not reach the pane.
 
 A `workspaceId` in the request only narrows that identity: a different one,
 or a call with no recorded identity, is refused in both `mcp.mode`s. A pane

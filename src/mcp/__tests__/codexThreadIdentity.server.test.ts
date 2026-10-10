@@ -32,7 +32,7 @@ vi.mock('../codexThreadIdentity', async (importOriginal) => {
 vi.mock('../../shared/computer/config', () => ({ readComputerUseEnabled: () => true }));
 
 import { createWmuxServer } from '../index';
-import { getCallerPtyId } from '../wmux-client';
+import { getCallerPtyId, getWorkspaceToken, setWorkspaceToken } from '../wmux-client';
 
 const digest = (v: string) => createHash('sha256').update(v).digest('hex');
 const T1 = '019a0000-0000-7000-8000-000000000001';
@@ -82,6 +82,7 @@ beforeEach(() => {
   parentChain.mockResolvedValue([MCP_ENTRY, SHARED_SERVER]);
   extraRpc = () => ({});
   stamps = [];
+  setWorkspaceToken(undefined);
   mockSendRpc.mockReset();
   mockSendRpc.mockImplementation(async (method: string, params: Record<string, unknown>) => {
     stamps.push({ method, callerPtyId: getCallerPtyId() });
@@ -357,6 +358,62 @@ describe('shared Codex app-server, no owner index (Windows today)', () => {
     await client.close();
     expect(res.isError).toBeFalsy();
     expect(seen.find((s) => s.method === 'input.readScreen')?.workspaceId).toBe('ws-s');
+  });
+
+  // The walk under a shared server names the pane that STARTED it, so its
+  // claim would scope every thread's browser to that pane's workspace.
+  it('refuses browser tools for an ownerless thread instead of using the starter pane\'s claim', async () => {
+    const opened: Array<Record<string, unknown>> = [];
+    mockSendRpc.mockImplementation(async (method: string, params: Record<string, unknown>) => {
+      if (method === 'a2a.resolve.identity') {
+        return {
+          mappings: Object.fromEntries(ENTRIES.map((e) => [e.pid, e.workspaceId])),
+          entries: ENTRIES,
+          resolved: { workspaceId: 'ws-s', ptyId: 'pty-s' },
+          workspaceToken: 'claim-starter',
+        };
+      }
+      if (method === 'browser.open') opened.push(params);
+      if (method === 'mcp.claimWorkspace') return { workspaceId: 'ws-mcp', ptyId: 'pty-mcp', token: 'tok' };
+      return {};
+    });
+    const client = await connect();
+    // A terminal call first: it walks (and gets the token offered) before any browser call.
+    await call(client, 'a2a_whoami', {}, T1);
+    const res = await call(client, 'browser_open', { url: 'https://example.com' }, T1);
+    await client.close();
+    expect(res.isError).toBe(true);
+    expect(res.content[0]?.text).toMatch(/shared Codex background server/);
+    expect(opened).toEqual([]);
+    expect(getWorkspaceToken()).not.toBe('claim-starter');
+    expect(mockSendRpc.mock.calls.some((c) => c[0] === 'mcp.claimWorkspace')).toBe(false);
+  });
+
+  it('opens the browser in the thread owner\'s workspace when the thread has an owner record', async () => {
+    recordOwner(T1, 'pty-a', 'ws-1');
+    const opened: Array<Record<string, unknown>> = [];
+    mockSendRpc.mockImplementation(async (method: string, params: Record<string, unknown>) => {
+      if (method === 'a2a.resolve.identity') {
+        return {
+          mappings: Object.fromEntries(ENTRIES.map((e) => [e.pid, e.workspaceId])),
+          entries: ENTRIES,
+          resolved: { workspaceId: 'ws-s', ptyId: 'pty-s' },
+          workspaceToken: 'claim-starter',
+          threadClaim: { workspaceId: 'ws-1', ptyId: 'pty-a', workspaceToken: 'claim-a' },
+        };
+      }
+      if (method === 'browser.open') {
+        opened.push(params);
+        return { ok: true, surfaceId: 's-1' };
+      }
+      return {};
+    });
+    const client = await connect();
+    const res = await call(client, 'browser_open', { url: 'https://example.com' }, T1);
+    await client.close();
+    expect(res.isError).toBeFalsy();
+    expect(opened.map((p) => p.workspaceId)).toEqual(['ws-1']);
+    expect(getWorkspaceToken()).not.toBe('claim-starter');
   });
 
   it('still uses a thread owner when one exists, and falls back when its pane is gone', async () => {

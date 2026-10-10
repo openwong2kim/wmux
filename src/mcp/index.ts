@@ -563,12 +563,7 @@ function withCodexCallScope(fn: (...a: unknown[]) => unknown): (...a: unknown[])
         () =>
           runWithWorkspaceTokenSource(
             () => (scope.mode === 'thread' ? scope.workspaceToken ?? '' : undefined),
-            () =>
-              // Every browser RPC this call makes — callRpc or a tool module's
-              // direct sendRpc — drops a stale identity the same way.
-              runWithStaleIdentityHandler((outcome) => {
-                if (isStaleIdentityResult(outcome)) invalidateStaleRoute(getPinnedRoute());
-              }, () => fn(...args)),
+            () => retryOnceAfterClaimRefusal(() => fn(...args)),
           ),
       );
     });
@@ -894,6 +889,41 @@ function isStaleIdentityResult(value: unknown): boolean {
   return /no workspace found|not owned by workspace|the workspace you claimed is gone|carries no verified workspace/i.test(text);
 }
 
+// main's browser refusals for a claim that is gone (main restarted, so every
+// token it minted is) and for a call that carried none.
+function isClaimRefusal(text: string): boolean {
+  return /the workspace you claimed is gone|carries no verified workspace/i.test(text);
+}
+
+/**
+ * Run one tool call with the stale-identity handler: every browser RPC it
+ * makes — callRpc or a tool module's direct sendRpc — drops a stale identity
+ * the same way. When the call's FIRST browser RPC was refused for its claim,
+ * run the call once more: main refuses that before it acts on anything, and
+ * the identity was just dropped, so the second run walks again and carries a
+ * fresh claim. Without it every running agent's first browser call after a
+ * wmux restart failed, with a refusal it had to know to retry.
+ */
+async function retryOnceAfterClaimRefusal(run: () => unknown): Promise<unknown> {
+  for (let attempt = 0; ; attempt++) {
+    const seen: { first?: { outcome: string; failed: boolean } } = {};
+    const handler = (outcome: string, failed: boolean) => {
+      seen.first ??= { outcome, failed };
+      if (isStaleIdentityResult(outcome)) invalidateStaleRoute(getPinnedRoute());
+    };
+    const again = () => attempt === 0 && seen.first?.failed === true && isClaimRefusal(seen.first.outcome);
+    let result: unknown;
+    try {
+      // Awaited here so a refusal the tool rethrows is seen too.
+      result = await runWithStaleIdentityHandler(handler, async () => run());
+    } catch (err) {
+      if (again()) continue;
+      throw err;
+    }
+    if (!again()) return result;
+  }
+}
+
 // Helper: wrap an RPC call as an MCP tool result
 async function callRpc(
   method: RpcMethod,
@@ -1069,12 +1099,13 @@ async function lookupPidMapWorkspace(): Promise<PidMapLookup> {
     // it is how main derives this caller's workspace for browser calls (the
     // `verified` lane) instead of reading the request's workspaceId. Never
     // replaces an external claim's token, which belongs to its pinned route,
-    // and never set from a shared Codex app-server call: the token is
-    // connection-wide, and its walk names the daemon starter's pane, not the
-    // calling thread's.
+    // and never set under a shared Codex app-server, thread call or not: the
+    // token is connection-wide, and its walk names the pane that started the
+    // server, not the calling thread's (on Windows, where no thread owner
+    // index exists, every such call is 'legacy').
     if (
       typeof walkToken === 'string' && walkToken.trim() &&
-      !getPinnedRoute() && !viaThread
+      !getPinnedRoute() && !viaThread && codexParentClass !== 'shared-server'
     ) {
       setWorkspaceToken(walkToken.trim());
     }
@@ -1326,6 +1357,23 @@ async function requireWorkspaceId(): Promise<string> {
 }
 
 /**
+ * A call this server cannot tie to a pane: it runs under a shared Codex
+ * app-server and the call was not resolved by its thread (on Windows there is
+ * no thread owner index, so none is). The walk names the pane that started
+ * the server and a dedicated claim names no pane at all, so either would act
+ * in a workspace that is not the caller's. Refused instead, saying why.
+ */
+function refuseUnattributedSharedServer(): void {
+  if (codexParentClass !== 'shared-server' || threadOnlyScope()) return;
+  throw new Error(
+    'Browser tools are not available in this Codex session. It runs on the shared Codex ' +
+      'background server, and wmux cannot tell which pane started this call there, so the ' +
+      'browser could open in another pane\'s workspace. Run Codex in this pane without the ' +
+      'shared background server, or use Claude Code or the `wmux browser` command in this pane.',
+  );
+}
+
+/**
  * The workspace for browser tools. Only identities main can verify on its own
  * side count: a PID-map walk hit (its claim token rides every envelope), this
  * call's Codex thread, the commander token, or an external claim. The env
@@ -1335,6 +1383,7 @@ async function requireWorkspaceId(): Promise<string> {
  */
 async function requireBrowserWorkspaceId(opts: { claim?: boolean } = {}): Promise<string> {
   if (codexCallScope.getStore()?.mode === 'thread') return requireWorkspaceId();
+  if (codexCallScope.getStore()?.mode !== 'thread-or-legacy') refuseUnattributedSharedServer();
   if (codexCallScope.getStore()?.mode !== 'thread-or-legacy' && workspaceResolved && MY_WORKSPACE_ID) {
     return MY_WORKSPACE_ID;
   }
@@ -1344,6 +1393,8 @@ async function requireBrowserWorkspaceId(opts: { claim?: boolean } = {}): Promis
     if (lookup.status === 'hit') return lookup.wsId;
     throw codexIdentityError(threadScope);
   }
+  // A 'thread-or-legacy' call whose thread did not resolve is 'legacy' now.
+  refuseUnattributedSharedServer();
   if (lookup.status === 'hit') {
     MY_WORKSPACE_ID = lookup.wsId;
     workspaceResolved = true;

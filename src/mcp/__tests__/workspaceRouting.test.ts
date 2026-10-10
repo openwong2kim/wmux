@@ -291,7 +291,9 @@ describe('MCP workspace routing (source-level invariants)', () => {
   });
 
   it('every tool call drops a stale identity on any browser RPC, not only callRpc ones', () => {
-    expect(src).toMatch(/runWithStaleIdentityHandler\(\(outcome\) => \{\s*if \(isStaleIdentityResult\(outcome\)\) invalidateStaleRoute\(/);
+    expect(src).toMatch(/const handler = \(outcome: string, failed: boolean\) => \{\s*seen\.first \?\?= \{ outcome, failed \};\s*if \(isStaleIdentityResult\(outcome\)\) invalidateStaleRoute\(/);
+    expect(src).toMatch(/runWithStaleIdentityHandler\(handler, /);
+    expect(src).toMatch(/\(\) => retryOnceAfterClaimRefusal\(\(\) => fn\(\.\.\.args\)\)/);
   });
 
   it('pane/surface lifecycle tools are wired in with the fail-soft read resolver (#285)', () => {
