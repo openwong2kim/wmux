@@ -279,6 +279,17 @@ describe('MCP workspace routing (source-level invariants)', () => {
     expect(block).not.toMatch(/resolveWorkspaceId\(\)/);
   });
 
+  it('identity routing inputs come from this process, never from tool arguments', () => {
+    // The only a2a.resolve.identity call: its caller pid is this process's own
+    // (ctx.callerPid), its thread is the call's _meta.threadId (set by the MCP
+    // client), and the pane hint is this process's env. No tool handler builds it.
+    expect(src.match(/'a2a\.resolve\.identity'/g) ?? []).toHaveLength(1);
+    expect(src).toMatch(/codexThreadId: codexScope\.threadId, codexCallerPid: ctx\.callerPid/);
+    expect(src).toMatch(/hintedPtyId: ENV_PTY_HINT/);
+    // Every value written into a callerPid field is this process's own pid.
+    expect(src.match(/(?:callerPid|codexCallerPid):\s*(?!number\b)[\w.]+/g)?.every((m) => /ctx\.callerPid$/.test(m))).toBe(true);
+  });
+
   it('every tool call drops a stale identity on any browser RPC, not only callRpc ones', () => {
     expect(src).toMatch(/runWithStaleIdentityHandler\(\(outcome\) => \{\s*if \(isStaleIdentityResult\(outcome\)\) invalidateStaleRoute\(/);
   });

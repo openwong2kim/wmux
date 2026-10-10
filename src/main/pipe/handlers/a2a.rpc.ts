@@ -25,9 +25,12 @@ import { readWindowsAncestry } from './callerAncestry';
 import { getAccountStore } from '../../account/accountStore';
 import {
   CODEX_THREAD_ID_RE,
+  classifyMcpParent,
   codexHome,
   matchOwnerToLiveAnchor,
   readCodexThreadOwner,
+  readParentChain,
+  type McpParentClass,
 } from '../../../mcp/codexThreadIdentity';
 import type { OwningAnchor } from '../../pty/serverSidePidWalk';
 import { recordSentTask, recordTaskState, reopenedState, stateOfTask, workLinkFromSentTask } from '../../workLink/a2aProducer';
@@ -203,14 +206,15 @@ async function readWorkspacePanes(
  *  ignored (older MCP build, or junk) → the handler keeps its legacy behavior. */
 /**
  * Every Codex home the owner record can live in: main's own CODEX_HOME (or
- * the default) and each registered Codex account's config dir, since a thread
- * started under another account's app-server keeps its owner index there.
+ * the default) and each registered account's config dir, since a thread
+ * started under another account's app-server keeps its owner index there. A
+ * dir with no owner index (another agent's account) simply misses.
  */
 function codexHomes(): string[] {
   const homes = new Set<string>([codexHome(process.env), codexHome({ ...process.env, CODEX_HOME: '' })]);
   try {
     for (const account of getAccountStore().listAccounts()) {
-      if (account.vendor === 'codex' && account.configDir) homes.add(account.configDir);
+      if (account.configDir) homes.add(account.configDir);
     }
   } catch {
     /* an unreadable account store leaves the default homes */
@@ -218,11 +222,18 @@ function codexHomes(): string[] {
   return [...homes];
 }
 
-/** The pane a Codex thread's owner record names, with a claim on it, or null. */
+/**
+ * The pane a Codex thread's owner record names, with a claim on it, or null.
+ * Only for a caller main has seen to run under a shared Codex app-server
+ * (`callerIsSharedServerChild`): a thread id is a routing input, and only that
+ * parent hands one to an MCP server.
+ */
 function resolveCodexThreadClaim(
   threadId: unknown,
   entries: ReadonlyArray<{ ptyId: string; workspaceId: string }>,
+  callerIsSharedServerChild: boolean,
 ): { workspaceId: string; ptyId: string; workspaceToken: string } | null {
+  if (!callerIsSharedServerChild) return null;
   if (typeof threadId !== 'string' || !CODEX_THREAD_ID_RE.test(threadId)) return null;
   let owner: ReturnType<typeof readCodexThreadOwner>;
   for (const home of codexHomes()) {
@@ -290,6 +301,8 @@ export function registerA2aRpc(
     createdAt?: (pid: number) => bigint | null;
     /** One caller's ancestry when the snapshot is unavailable; tests inject one. */
     readAncestry?: (pid: number, timeoutMs: number) => Promise<Map<number, number> | null>;
+    /** Who spawned a Codex-thread caller, from its ancestors' argv; tests inject one. */
+    classifyCodexCaller?: (pid: number) => Promise<McpParentClass>;
     remote?: RemoteA2aRpcDeps;
   } = {},
 ): void {
@@ -416,6 +429,27 @@ export function registerA2aRpc(
   const snapshotFn: SnapshotFn = opts.snapshot ?? defaultSnapshot;
   const createdAt = opts.createdAt ?? tryProcessCreatedAt;
   const readAncestry = opts.readAncestry ?? readWindowsAncestry;
+  const classifyCodexCaller = opts.classifyCodexCaller ?? (async (pid: number) => classifyMcpParent(await readParentChain(pid)));
+  // A shared app-server's MCP child lives as long as the server, so a
+  // confirmed answer is kept a minute rather than re-reading argv every call.
+  // 'unknown' is never kept.
+  const codexCallerClass = new Map<number, { cls: McpParentClass; at: number }>();
+  async function isSharedServerChild(pid: number | null): Promise<boolean> {
+    if (pid === null) return false;
+    const hit = codexCallerClass.get(pid);
+    if (hit && Date.now() - hit.at < 60_000) return hit.cls === 'shared-server';
+    let cls: McpParentClass = 'unknown';
+    try {
+      cls = await classifyCodexCaller(pid);
+    } catch {
+      cls = 'unknown';
+    }
+    if (cls !== 'unknown') {
+      if (codexCallerClass.size > 256) codexCallerClass.clear();
+      codexCallerClass.set(pid, { cls, at: Date.now() });
+    }
+    return cls === 'shared-server';
+  }
   let snapInflight: Promise<PortSnapshot> | null = null;
   async function getCoalescedSnapshot(): Promise<PortSnapshot | null> {
     if (!snapInflight) {
@@ -643,7 +677,14 @@ export function registerA2aRpc(
     // comes from the thread's owner record (written by wmux's Codex hooks from
     // inside that pane), joined with the LIVE anchors above. The claim goes
     // back on its own field because the caller stamps it on that call only.
-    const threadClaim = resolveCodexThreadClaim((params as { codexThreadId?: unknown }).codexThreadId, entries);
+    const codexThreadId = (params as { codexThreadId?: unknown }).codexThreadId;
+    const threadClaim = codexThreadId === undefined
+      ? null
+      : resolveCodexThreadClaim(
+          codexThreadId,
+          entries,
+          await isSharedServerChild(normalizeCallerPid((params as { codexCallerPid?: unknown }).codexCallerPid)),
+        );
     // The walk missed but the caller's env names a pane. Main says whether
     // that pane is live, and attests it only when the daemon follows a live
     // agent inside it from WSL — the one pane kind whose processes main cannot

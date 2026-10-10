@@ -228,11 +228,13 @@ type ResolveResult = {
 function setupRouterWithSnapshot(
   ppidByPid: Map<number, number>,
   createdAt: (pid: number) => bigint | null = () => null,
+  classifyCodexCaller: (pid: number) => Promise<'shared-server' | 'other' | 'unknown'> = async () => 'shared-server',
 ): RpcRouter {
   const router = new RpcRouter();
   registerA2aRpc(router, () => fakeWindow, makeWorker(), {
     snapshot: async () => ({ ppidByPid, listeners: [] }),
     createdAt,
+    classifyCodexCaller,
   });
   return router;
 }
@@ -459,17 +461,25 @@ describe('a2a.resolve.identity — pane claims from main\'s own answers', () => 
     process.env.CODEX_HOME = home;
     try {
       const router = setupRouterWithSnapshot(new Map());
-      const hit = (await dispatchResolve(router, { codexThreadId: threadId })) as ResolveResult & {
+      const hit = (await dispatchResolve(router, { codexThreadId: threadId, codexCallerPid: 4242 })) as ResolveResult & {
         threadClaim?: { workspaceId: string; ptyId: string; workspaceToken: string };
       };
       // The LIVE owner workspace, never the id frozen in the record.
       expect(hit.threadClaim).toMatchObject({ workspaceId: 'ws-live', ptyId: 'daemon-shell' });
       expect(lookupWorkspaceClaim(hit.threadClaim?.workspaceToken)).toMatchObject({ kind: 'bound', workspaceId: 'ws-live' });
 
-      const miss = (await dispatchResolve(router, { codexThreadId: '019a0000-0000-7000-8000-0000000000bb' })) as {
+      const miss = (await dispatchResolve(router, { codexThreadId: '019a0000-0000-7000-8000-0000000000bb', codexCallerPid: 4242 })) as {
         threadClaim?: unknown;
       };
       expect(miss.threadClaim).toBeUndefined();
+
+      // Only a caller main sees running under a shared Codex app-server gets
+      // one: a different parent, or no caller pid at all, gets none.
+      const notCodex = setupRouterWithSnapshot(new Map(), () => null, async () => 'other');
+      const other = (await dispatchResolve(notCodex, { codexThreadId: threadId, codexCallerPid: 4242 })) as { threadClaim?: unknown };
+      expect(other.threadClaim).toBeUndefined();
+      const noPid = (await dispatchResolve(router, { codexThreadId: threadId })) as { threadClaim?: unknown };
+      expect(noPid.threadClaim).toBeUndefined();
     } finally {
       if (previous === undefined) delete process.env.CODEX_HOME;
       else process.env.CODEX_HOME = previous;
@@ -549,7 +559,7 @@ describe('a2a.resolve.identity — accounts and the pane the env names', () => {
     fs.writeFileSync(path.join(dir, `thread-${digest(threadId)}.json`), JSON.stringify({ version: 1, id: threadId, env, nonce: 'n2' }));
     fs.writeFileSync(path.join(dir, `pane-${digest(JSON.stringify([suffix, 'daemon-shell']))}.json`), JSON.stringify({ id: threadId, nonce: 'n2' }));
     try {
-      const result = (await dispatchResolve(setupRouterWithSnapshot(new Map()), { codexThreadId: threadId })) as {
+      const result = (await dispatchResolve(setupRouterWithSnapshot(new Map()), { codexThreadId: threadId, codexCallerPid: 4242 })) as {
         threadClaim?: { workspaceId: string; ptyId: string };
       };
       expect(result.threadClaim).toMatchObject({ workspaceId: 'ws-live', ptyId: 'daemon-shell' });

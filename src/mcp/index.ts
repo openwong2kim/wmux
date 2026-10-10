@@ -1000,11 +1000,13 @@ async function lookupPidMapWorkspace(): Promise<PidMapLookup> {
     // thread's owner record and mints a claim for that pane (`threadClaim`).
     const result = await sendRpc(
       'a2a.resolve.identity' as RpcMethod,
+      // `codexCallerPid` only lets main check our parent is a shared Codex
+      // app-server before it trusts the thread; it never drives the walk.
       codexScope?.mode === 'thread'
-        ? (codexScope.threadId ? { codexThreadId: codexScope.threadId } : {})
+        ? (codexScope.threadId ? { codexThreadId: codexScope.threadId, codexCallerPid: ctx.callerPid } : {})
         : {
             callerPid: ctx.callerPid,
-            ...(viaThread && codexScope?.threadId && { codexThreadId: codexScope.threadId }),
+            ...(viaThread && codexScope?.threadId && { codexThreadId: codexScope.threadId, codexCallerPid: ctx.callerPid }),
             ...(ENV_PTY_HINT && { hintedPtyId: ENV_PTY_HINT }),
           },
     );
