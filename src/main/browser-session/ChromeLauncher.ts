@@ -1057,9 +1057,13 @@ export class ChromeLauncher implements ChromeBackendClient {
     guard.on('Browser.downloadWillBegin', (params) => {
       const guid = typeof params.guid === 'string' ? params.guid : '';
       // An operator-approved download (consent): its claimant re-denies itself.
-      if (guid && this.downloadClaimant?.(params) === true) return;
+      const claimant = this.downloadClaimant;
+      if (guid && claimant?.(params) === true) return;
       if (guid) void guard.send('Browser.cancelDownload', { guid }).catch(() => undefined);
-      void deny().catch(() => undefined);
+      // While a claimant holds the guard it owns the behaviour (and restores
+      // deny when it lets go); a stray download is cancelled by guid alone, so
+      // it cannot close the window the operator approved.
+      if (!claimant) void deny().catch(() => undefined);
     });
     guard.on('Browser.downloadProgress', (params) => {
       for (const listener of this.downloadProgress) listener(params);
