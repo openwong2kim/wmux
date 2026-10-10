@@ -11,6 +11,7 @@ import {
   resolvePanePolicy,
   type BrowserPolicyFile,
   type BrowserPolicyFileState,
+  type BrowserPolicyWriteErrorCode,
   type BrowserPolicyWritePayload,
   type PanePolicy,
   type PanePolicyDecision,
@@ -43,7 +44,7 @@ import type { WorkspaceMirror } from '../workspace/WorkspaceMirror';
 
 export class BrowserPolicyWriteError extends Error {
   constructor(
-    readonly code: 'invalid' | 'stale' | 'not-exclusive' | 'io',
+    readonly code: BrowserPolicyWriteErrorCode,
     message: string,
   ) {
     super(message);

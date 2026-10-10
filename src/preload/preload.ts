@@ -9,6 +9,7 @@ import {
   BROWSER_POLICY_IPC,
   type BrowserPolicyReadResult,
   type BrowserPolicyWritePayload,
+  type BrowserPolicyWriteResult,
 } from '../shared/browserPolicy';
 import type {
   AgySensorInstallResult,
@@ -1319,7 +1320,7 @@ const electronAPI = {
     policy: {
       get: (workspaceId: string, paneId: string): Promise<BrowserPolicyReadResult> =>
         ipcRenderer.invoke(BROWSER_POLICY_IPC.get, { workspaceId, paneId }),
-      set: (payload: BrowserPolicyWritePayload): Promise<{ ok: boolean; epoch?: number; error?: string }> =>
+      set: (payload: BrowserPolicyWritePayload): Promise<BrowserPolicyWriteResult> =>
         ipcRenderer.invoke(BROWSER_POLICY_IPC.set, payload),
     },
     onDiscarded: (callback: (surfaceId: string) => void) => {

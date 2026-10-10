@@ -5,7 +5,7 @@ import {
   type BrowserPolicyWritePayload,
 } from '../../../shared/browserPolicy';
 import type { ChromePaneBindings } from '../../../shared/chromePaneBinding';
-import type { BrowserPolicyStore } from '../../browser-session/BrowserPolicyStore';
+import { BrowserPolicyWriteError, type BrowserPolicyStore } from '../../browser-session/BrowserPolicyStore';
 import { wrapHandler } from '../wrapHandler';
 
 type GetWindow = () => BrowserWindow | null;
@@ -85,7 +85,12 @@ export function registerBrowserPolicyIpc(ipcMain: Pick<IpcMain, 'handle'>, deps:
       const epoch = await deps.store.write(p as unknown as BrowserPolicyWritePayload, currentProfile, isExclusive);
       return { ok: true, epoch };
     } catch (err) {
-      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+      // The editor branches on `code`, never on the message text.
+      return {
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
+        code: err instanceof BrowserPolicyWriteError ? err.code : 'io',
+      };
     }
   }));
 }

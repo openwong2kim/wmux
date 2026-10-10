@@ -6,6 +6,7 @@ import {
   registerBrowserPolicyIpc,
   UNTRUSTED_SENDER_ERROR,
 } from '../browserPolicy.handler';
+import { BrowserPolicyWriteError } from '../../../browser-session/BrowserPolicyStore';
 
 function fakeWindow() {
   const mainFrame = { id: 'main-frame' };
@@ -79,6 +80,8 @@ describe('registerBrowserPolicyIpc', () => {
   it('writes for the trusted sender with the exclusive-profile verdict', async () => {
     const { handlers, store, trusted } = setup();
     expect(await handlers.get(BROWSER_POLICY_IPC.set)!(trusted, write)).toEqual({ ok: true, epoch: 1 });
+    store.write.mockRejectedValueOnce(new BrowserPolicyWriteError('stale', 'changed'));
+    expect(await handlers.get(BROWSER_POLICY_IPC.set)!(trusted, write)).toEqual({ ok: false, error: 'changed', code: 'stale' });
     expect(store.write).toHaveBeenCalledWith(expect.objectContaining({ paneId: 'pane-1' }), 'pa', true);
     expect(await handlers.get(BROWSER_POLICY_IPC.get)!(trusted, { workspaceId: 'ws-1', paneId: 'pane-1' }))
       .toMatchObject({ ok: true, state: 'missing', epoch: 0, currentProfile: 'pa' });

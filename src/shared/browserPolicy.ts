@@ -148,7 +148,7 @@ export interface BrowserPolicyAuthorization {
 export const BROWSER_POLICY_IPC = {
   /** payload `{ workspaceId, paneId }` → `BrowserPolicyReadResult`. */
   get: 'browser:policy:get',
-  /** payload `BrowserPolicyWritePayload` → `{ ok, epoch?, error? }`. */
+  /** payload `BrowserPolicyWritePayload` → `BrowserPolicyWriteResult`. */
   set: 'browser:policy:set',
 } as const;
 
@@ -160,6 +160,15 @@ export interface BrowserPolicyReadResult {
   policy?: PanePolicy | null;
   /** The profile the pane resolves to now — what a write must confirm. */
   currentProfile?: string;
+}
+
+/** `browser:policy:set` reply. `code` is set on every failed write. */
+export type BrowserPolicyWriteErrorCode = 'invalid' | 'stale' | 'not-exclusive' | 'io';
+export interface BrowserPolicyWriteResult {
+  ok: boolean;
+  epoch?: number;
+  error?: string;
+  code?: BrowserPolicyWriteErrorCode;
 }
 
 export interface BrowserPolicyWritePayload {
