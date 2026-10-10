@@ -10,7 +10,8 @@ import { createRoot, type Root } from 'react-dom/client';
 
 import SurfaceTabs from '../SurfaceTabs';
 import { useStore } from '../../../stores';
-import type { Workspace } from '../../../../shared/types';
+import type { Surface, Workspace } from '../../../../shared/types';
+import type { BrowserPolicyReadResult } from '../../../../shared/browserPolicy';
 import type { ChromeProfilesListResult } from '../../../../shared/chromePaneBinding';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -27,12 +28,17 @@ const api = {
   bindPane: vi.fn<(paneId: string, workspaceId: string, profile: string | null) => Promise<Reply>>(ok),
   revealPane: vi.fn<(paneId: string, workspaceId: string) => Promise<Reply>>(ok),
 };
+let policyResult: BrowserPolicyReadResult;
+const policyApi = {
+  get: vi.fn<(ws: string, pane: string) => Promise<BrowserPolicyReadResult>>(async () => policyResult),
+  set: vi.fn(async () => ({ ok: true, epoch: 1 })),
+};
 
 function activeWs(): Workspace {
   return useStore.getState().workspaces.find((w) => w.id === useStore.getState().activeWorkspaceId)!;
 }
 
-function mount(): { paneId: string; wsId: string } {
+function mount(surfaces: Surface[] = []): { paneId: string; wsId: string } {
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
@@ -41,8 +47,8 @@ function mount(): { paneId: string; wsId: string } {
   act(() => {
     root.render(
       React.createElement(SurfaceTabs, {
-        surfaces: [],
-        activeSurfaceId: '',
+        surfaces,
+        activeSurfaceId: surfaces[0]?.id ?? '',
         workspace: ws,
         paneId,
         paneActive: true,
@@ -95,8 +101,10 @@ beforeEach(() => {
   useStore.setState({ toasts: [] });
   listResult = { profiles: ['default', 'live', 'shop', 'work'], bindings: {}, paneBindings: {} };
   for (const fn of Object.values(api)) fn.mockClear();
+  for (const fn of Object.values(policyApi)) fn.mockClear();
+  policyResult = { ok: true, state: 'missing', epoch: 0, policy: null, currentProfile: 'default' };
   (window as unknown as { electronAPI: unknown }).electronAPI = {
-    browser: { chromeProfiles: api },
+    browser: { chromeProfiles: api, policy: policyApi },
   };
 });
 
@@ -248,3 +256,68 @@ function mountWithBinding(profile: string): { paneId: string; wsId: string } {
   listResult.paneBindings = { [ws.rootPane.id]: { workspaceId: ws.id, profile } };
   return mount();
 }
+
+describe('SurfaceTabs — browser protection', () => {
+  const browserTab = (id = 'surface-b1'): Surface => ({ id, ptyId: '', title: 'Docs', shell: '', cwd: '', surfaceType: 'browser' } as Surface);
+
+  it('is hidden off the chrome backend and never reads a policy', async () => {
+    useStore.getState().setBrowserBackend('builtin');
+    mount([browserTab()]);
+    await openMenu();
+    expect(item('browser-policy')).toBeNull();
+    expect(policyApi.get).not.toHaveBeenCalled();
+  });
+
+  it('is hidden on a preload without the policy calls', async () => {
+    (window as unknown as { electronAPI: unknown }).electronAPI = { browser: { chromeProfiles: api } };
+    mount();
+    await openMenu();
+    expect(item('browser-profile')).not.toBeNull();
+    expect(item('browser-policy')).toBeNull();
+  });
+
+  it('is disabled with a reason until the pane has its own profile', async () => {
+    mount();
+    await openMenu();
+    const row = item('browser-policy');
+    expect(row?.getAttribute('aria-disabled')).toBe('true');
+    expect(row?.textContent).toContain('Bind a Chrome profile to this pane first');
+    await clickItem('browser-policy');
+    expect(document.querySelector('[data-testid="browser-policy-dialog"]')).toBeNull();
+  });
+
+  it('opens the editor when the pane has its own profile', async () => {
+    mountWithBinding('work');
+    await openMenu();
+    expect(item('browser-policy')?.getAttribute('aria-disabled')).toBeNull();
+    await clickItem('browser-policy');
+    expect(document.querySelector('[data-testid="browser-policy-dialog"]')).not.toBeNull();
+  });
+
+  it('draws a muted lock on a protected pane\'s browser tab only', async () => {
+    const ws = activeWs();
+    policyResult = {
+      ok: true, state: 'ok', epoch: 3, currentProfile: 'work',
+      policy: { workspaceId: ws.id, paneId: ws.rootPane.id, profileId: 'work', protected: true, hosts: { mode: 'off', allow: [], block: [] } },
+    };
+    mount([browserTab()]);
+    await flush();
+    const lock = container.querySelector('[data-protected-browser-tab]');
+    expect(lock?.getAttribute('aria-label')).toBe('Protected browser');
+    expect(policyApi.get).toHaveBeenCalledWith(ws.id, ws.rootPane.id);
+  });
+
+  it('no lock and no read for a pane without a browser tab', async () => {
+    mount();
+    await flush();
+    expect(container.querySelector('[data-protected-browser-tab]')).toBeNull();
+    expect(policyApi.get).not.toHaveBeenCalled();
+  });
+
+  it('no lock on an unprotected pane', async () => {
+    mount([browserTab()]);
+    await flush();
+    expect(policyApi.get).toHaveBeenCalled();
+    expect(container.querySelector('[data-protected-browser-tab]')).toBeNull();
+  });
+});

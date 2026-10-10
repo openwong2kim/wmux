@@ -34,7 +34,15 @@ export function usePaneChromeProfileMenu(opts: {
   allowed: boolean;
   /** Switch the open menu to the profile submenu. */
   openSubmenu: () => void;
-}): { mainItems: PaneActionItem[]; subItems: PaneActionItem[]; reload: () => void } {
+}): {
+  mainItems: PaneActionItem[];
+  subItems: PaneActionItem[];
+  reload: () => void;
+  /** The per-pane rows are offered (chrome backend, not read-only, new preload). */
+  enabled: boolean;
+  /** The pane's own exclusive profile, as of the last reload. */
+  bound: string | undefined;
+} {
   const { paneId, workspaceId, paneLabel, allowed, openSubmenu } = opts;
   const t = useT();
   const isChrome = useStore((s) => s.browserBackend) === 'chrome';
@@ -156,5 +164,5 @@ export function usePaneChromeProfileMenu(opts: {
     ];
   }, [profiles, bound, inUse, t, bindPane, createForPane]);
 
-  return { mainItems, subItems, reload };
+  return { mainItems, subItems, reload, enabled, bound };
 }

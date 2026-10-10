@@ -24,6 +24,8 @@ import { displayPath } from '../../utils/displayPath';
 import { workspaceColorHex } from '../../../shared/workspaceColors';
 import PaneActionsMenu, { PANE_ACTIONS_MENU_WIDTH, type PaneActionItem } from './PaneActionsMenu';
 import { PANE_BROWSER_PROFILE_KEY, usePaneChromeProfileMenu } from './usePaneChromeProfileMenu';
+import { usePaneBrowserPolicyMenu } from './usePaneBrowserPolicyMenu';
+import BrowserPolicyDialog from './BrowserPolicyDialog';
 import {
   bindingEnforcesModel, bindingEnforcesSkipPermissions, bindingSkipPermissionsFlag, type RoleBinding,
 } from '../../../shared/orchestratorRole';
@@ -684,9 +686,23 @@ export default function SurfaceTabs({
     openSubmenu: openBrowserProfileMenu,
   });
   const reloadChromeProfiles = chromeProfile.reload;
+  // Browser protection (needs the pane's own profile — the hook gates itself).
+  const [policyDialogOpen, setPolicyDialogOpen] = useState(false);
+  const openPolicyDialog = useCallback(() => setPolicyDialogOpen(true), []);
+  const browserPolicy = usePaneBrowserPolicyMenu({
+    paneId,
+    workspaceId: workspace.id,
+    enabled: chromeProfile.enabled,
+    boundProfile: chromeProfile.bound,
+    hasBrowserSurface: surfaces.some((s) => s.surfaceType === 'browser'),
+    openDialog: openPolicyDialog,
+  });
+  const reloadBrowserPolicy = browserPolicy.reload;
   useEffect(() => {
-    if (menu === 'main') reloadChromeProfiles();
-  }, [menu, reloadChromeProfiles]);
+    if (menu !== 'main') return;
+    reloadChromeProfiles();
+    reloadBrowserPolicy();
+  }, [menu, reloadChromeProfiles, reloadBrowserPolicy]);
   // PC rail: with another computer on screen (or in its shadow workspace) a
   // new browser still opens on this one, so its label says so.
   const shadow = isShadowWorkspaceId(workspace.id);
@@ -720,6 +736,7 @@ export default function SurfaceTabs({
       onSelect: onAddPrivateBrowser,
     }] : []),
     ...chromeProfile.mainItems,
+    ...browserPolicy.mainItems,
     ...(onAddRemote ? [{
       key: 'new-remote',
       label: t('pane.newRemote'),
@@ -791,7 +808,7 @@ export default function SurfaceTabs({
       onSelect: () => { useStore.getState().snapToLayoutTemplate(tmpl.id); },
     })),
   ].filter((item) => !shadow || !(HIDDEN_ON_SHADOW.has(item.key) || item.key.startsWith('snap-'))), [
-    t, onSplitHorizontal, onSplitVertical, onAddBrowser, newBrowserLabel, onAddPrivateBrowser, chromeProfile.mainItems, onAddRemote,
+    t, onSplitHorizontal, onSplitVertical, onAddBrowser, newBrowserLabel, onAddPrivateBrowser, chromeProfile.mainItems, browserPolicy.mainItems, onAddRemote,
     onSplitHorizontalRemote, onSplitVerticalRemote, startPaneRename,
     menuTabSurface, startRename, canLinkRemote,
     stashChord, stashDisabled, stashTooltip, stashThisPane, isZoomed, toggleZoom,
@@ -1017,6 +1034,17 @@ export default function SurfaceTabs({
           {/* Private browser tab: the same padlock a private channel carries. */}
           {isPrivateBrowserSurface(s) && (
             <span className="shrink-0" role="img" aria-label={t('browser.privateTab')} data-private-browser-tab>
+              <IconLock size={12} />
+            </span>
+          )}
+          {/* Protected pane: the same quiet padlock, muted, on its browser tabs. */}
+          {browserPolicy.isProtected && s.surfaceType === 'browser' && !isPrivateBrowserSurface(s) && (
+            <span
+              className="shrink-0 text-[var(--text-muted)]"
+              role="img"
+              aria-label={t('pane.browserPolicyProtectedTab')}
+              data-protected-browser-tab
+            >
               <IconLock size={12} />
             </span>
           )}
@@ -1311,6 +1339,14 @@ export default function SurfaceTabs({
           onEscape={menu === 'main' ? undefined : backToMainMenu}
           initialFocusKey={menu === 'main' ? menuFocusKey : undefined}
           restoreFocusTo={menuOpenerRef}
+        />
+      )}
+      {policyDialogOpen && (
+        <BrowserPolicyDialog
+          workspaceId={workspace.id}
+          paneId={paneId}
+          onClose={() => setPolicyDialogOpen(false)}
+          onSaved={reloadBrowserPolicy}
         />
       )}
       {linkDialogOpen && (
