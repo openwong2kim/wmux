@@ -994,6 +994,13 @@ const chromeRegistry = new ChromeLauncherRegistry({
   profilesDir: path.join(app.getPath('userData'), 'chrome-profiles'),
   store: chromeProfileStore,
   surfaceStore: chromeSurfaceStore,
+  // Protected panes: a profile bound to a protected pane launches behind
+  // main's filtering proxy (and is restarted when that changes).
+  protection: (profile) =>
+    browserPolicyStore.protectionPlanFor(profile, { paneBindings: () => chromeProfileStore.getPaneBindings() }),
+});
+browserPolicyStore.onChange(() => {
+  void chromeRegistry.reconcileProtection();
 });
 // Phase 2.2 enforcement mode. Production wmux defaults to `enforce`; dev
 // (electron-forge / npm start) defaults to `shadow` so a bad delta doesn't lock

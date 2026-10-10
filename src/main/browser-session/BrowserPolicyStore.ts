@@ -3,7 +3,7 @@ import * as path from 'path';
 import { getWmuxDir } from '../../daemon/config';
 import { atomicWriteJSON } from '../../daemon/util/atomicWrite';
 import { isUnsafeKey } from '../account/accountStore';
-import { parseHostRules, type HostPolicy } from '../../shared/browserHostPolicy';
+import { compileHostPolicy, parseHostRules, type HostMatcher, type HostPolicy } from '../../shared/browserHostPolicy';
 import {
   BROWSER_POLICY_FILE,
   BROWSER_POLICY_HISTORY_FILE,
@@ -290,6 +290,29 @@ export class BrowserPolicyStore {
       return { kind: 'protected', hosts: d.hosts, confirmed: d.confirmed };
     }
     return { kind: 'legacy' };
+  }
+
+  private readonly matcherCache = new Map<string, { key: string; matcher: HostMatcher }>();
+
+  /**
+   * The enforcement plan for a profile's Chrome, or null when it runs legacy.
+   * The matcher re-reads the policy on every call (the proxy asks per
+   * request), compiling only when the hosts actually changed.
+   */
+  protectionPlanFor(profile: string, lookup: PaneBindingLookup): { matcher: () => HostMatcher } | null {
+    if (this.profileDecision(profile, lookup).kind === 'legacy') return null;
+    return { matcher: () => this.currentMatcher(profile, lookup) };
+  }
+
+  private currentMatcher(profile: string, lookup: PaneBindingLookup): HostMatcher {
+    const d = this.profileDecision(profile, lookup);
+    if (d.kind !== 'protected') return compileHostPolicy(null); // no longer protected: deny until restarted
+    const key = JSON.stringify(d.hosts);
+    const hit = this.matcherCache.get(profile);
+    if (hit && hit.key === key) return hit.matcher;
+    const matcher = compileHostPolicy(d.hosts);
+    this.matcherCache.set(profile, { key, matcher });
+    return matcher;
   }
 
   // ── Mutations (serialized) ───────────────────────────────────────────────
