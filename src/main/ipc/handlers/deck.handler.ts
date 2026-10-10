@@ -418,13 +418,26 @@ export function registerDeckHandler(
   // Projected here in main — the brain pane is never a daemon transcript
   // session. Bound only from the HQ brain's own session id and hook hints;
   // every other workspace's report is ignored inside the module.
+  // Workspace → the account its brain's conversation moved to under "Switch
+  // accounts by quota" (from the persisted session and every session-id
+  // report). Absent when the conversation runs on the binding.
+  const rotatedBrainAccounts = new Map<string, string>();
+  const noteRotatedBrainAccount = (workspaceId: string, accountId: string | null | undefined): void => {
+    if (accountId) rotatedBrainAccounts.set(workspaceId, accountId);
+    else rotatedBrainAccounts.delete(workspaceId);
+  };
   const moaTranscript = new MoaTranscript({
     getHqWorkspaceId: () => getHqWorkspaceId(),
     isMoaEnabled: () => isMoaEnabled(),
-    // The brain re-applies its account binding after the env scrub, so its
-    // transcript lives under that account's CLAUDE_CONFIG_DIR — the
-    // containment check has to see the same overlay.
-    getSessionEnv: (workspaceId) => getAccountStore().resolveAccountEnv(workspaceId, 'claude'),
+    // The brain re-applies its account (the binding, or the one quota rotation
+    // moved its conversation to) after the env scrub, so its transcript lives
+    // under that account's CLAUDE_CONFIG_DIR — the containment check has to
+    // see the same overlay.
+    getSessionEnv: (workspaceId) => {
+      const rotatedId = rotatedBrainAccounts.get(workspaceId);
+      const rotated = rotatedId ? getAccountStore().getAccount(rotatedId) : undefined;
+      return rotated ? { CLAUDE_CONFIG_DIR: rotated.configDir } : getAccountStore().resolveAccountEnv(workspaceId, 'claude');
+    },
     emitAppend: (data) => {
       const win = getWindow();
       if (win && !win.isDestroyed()) win.webContents.send(IPC.DECK_MOA_TRANSCRIPT_APPEND, data);
@@ -1058,6 +1071,7 @@ export function registerDeckHandler(
     // app run. A dead id is soft — the adapter falls back to a fresh session.
     const sessionKey = sessionKeyFor(workspaceId, vendor);
     const persisted = loadCommanderSession(sessionKey);
+    noteRotatedBrainAccount(workspaceId, persisted?.rotatedAccountId);
     // Moa's memory lane (moaMemory.ts): the HQ terminal brain reads what the
     // operator approved on a fresh conversation's first turn, and with
     // proposals on may write proposal files (and nothing else). Every other
@@ -1137,11 +1151,15 @@ export function registerDeckHandler(
         }),
         ...(fleetContext ? { fleetContext } : {}),
         ...(persisted ? { resumeSessionId: persisted.sessionId } : {}),
+        ...(persisted?.rotatedAccountId ? { resumeAccountId: persisted.rotatedAccountId } : {}),
       },
-      onSessionId: (sessionId) => {
+      onSessionId: (sessionId, rotatedAccountId) => {
+        // Before noteSessionId: the transcript lookup it triggers must see
+        // the account this conversation runs on.
+        noteRotatedBrainAccount(workspaceId, rotatedAccountId);
         if (claudeRuntime) moaTranscript.noteSessionId(workspaceId, sessionId);
         // Fire-and-forget: a failed persist only costs continuity next run.
-        void saveCommanderSession(sessionKey, sessionId).catch((err) => {
+        void saveCommanderSession(sessionKey, sessionId, undefined, rotatedAccountId).catch((err) => {
           // eslint-disable-next-line no-console
           console.warn('[deck] failed to persist commander session id:', err);
         });

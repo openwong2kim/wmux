@@ -149,6 +149,10 @@ export interface BrainStartOptions {
    *  treat a dead/unknown id as soft: fall back to a fresh session rather than
    *  failing the turn. */
   resumeSessionId?: string;
+  /** The account the persisted conversation moved to under "Switch accounts by
+   *  quota" (saved with its session id). Its transcript lives in that
+   *  account's config dir, so the resume must run there. */
+  resumeAccountId?: string;
 }
 
 /** Per-turn metadata the session manager passes into `send()`. Adapters that
@@ -188,6 +192,11 @@ export interface BrainAdapter {
   /** The current conversation id, or null before the first turn produced one.
    *  Persisted by the session manager for resume (P3). */
   readonly sessionId: string | null;
+
+  /** The account the current conversation moved to under "Switch accounts by
+   *  quota", or null when it runs on the binding. Persisted with the session id
+   *  so a resume after restart lands on the same account. */
+  readonly rotatedAccountId?: string | null;
 }
 
 // ─── SDK → normalized-event mapping (pure, testable) ─────────────────────────

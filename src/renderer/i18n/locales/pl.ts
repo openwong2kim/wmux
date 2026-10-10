@@ -1226,7 +1226,7 @@ export const pl = {
   // Settings — Accounts — quota-driven account choice for Claude/Codex launches
   'accounts.rotateClaude': "Przełączaj konta Claude według limitu",
   'accounts.rotateCodex': "Przełączaj konta Codex według limitu",
-  'accounts.rotateDesc': "Gdy konto przypisane do obszaru roboczego wyczerpie limit, nowy panel Claude lub Codex w tym obszarze startuje na zarejestrowanym koncie z największym pozostałym limitem; samo przypisanie się nie zmienia. Gdy wszystkie konta są wyczerpane, agent nie startuje, dopóki któreś się nie zresetuje. Działające panele pozostają bez zmian. Limit Claude jest odczytywany z punktu końcowego użycia (bez zapytania do modelu), limit Codex z limitów zapisanych w plikach sesji każdego konta.",
+  'accounts.rotateDesc': "Gdy konto przypisane do obszaru roboczego wyczerpie limit, nowy panel Claude lub Codex w tym obszarze startuje na zarejestrowanym koncie z największym pozostałym limitem; samo przypisanie się nie zmienia. Gdy wszystkie konta są wyczerpane, agent nie startuje, dopóki któreś się nie zresetuje. Działające panele pozostają bez zmian. Orkiestrator Command Deck i zadania w tle (A2A) stosują tę samą zasadę, gdy zaczynają nową rozmowę; trwająca rozmowa zostaje na swoim koncie. Limit Claude jest odczytywany z punktu końcowego użycia (bez zapytania do modelu), limit Codex z limitów zapisanych w plikach sesji każdego konta.",
   'accounts.quotaOut': "Brak limitu",
   'accounts.quotaOutUntil': "Ponownie dostępne o {time}",
   'accounts.quotaUnknown': "limit jeszcze niezmierzony",

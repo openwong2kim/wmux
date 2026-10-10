@@ -34,6 +34,17 @@ describe('commanderSessionStore (per-workspace)', () => {
       expect(loadCommanderSession('ws-2', dir)).toBeNull();
     }));
 
+  it('round-trips the rotated account, and an entry saved without one has none', () =>
+    withTempDir(async (dir) => {
+      await saveCommanderSession('ws-1', 'sess-r', dir, 'acc-2');
+      expect(loadCommanderSession('ws-1', dir)?.rotatedAccountId).toBe('acc-2');
+      // A later save on the binding (or a pre-rotation file) carries no account.
+      await saveCommanderSession('ws-1', 'sess-b', dir, null);
+      expect(loadCommanderSession('ws-1', dir)).not.toHaveProperty('rotatedAccountId');
+      writeFileSync(getCommanderSessionPath(dir), JSON.stringify({ sessions: { 'ws-2': { sessionId: 'old', updatedAt: '' } } }));
+      expect(loadCommanderSession('ws-2', dir)).toEqual({ sessionId: 'old', updatedAt: '' });
+    }));
+
   it('clearCommanderSession drops only that workspace; clearing twice / missing file is a no-op', () =>
     withTempDir(async (dir) => {
       await saveCommanderSession('ws-1', 'sess-1', dir);

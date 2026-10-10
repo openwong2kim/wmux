@@ -34,7 +34,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { getWmuxDir } from '../../daemon/config';
-import { getAccountStore } from '../account/accountStore';
+import { resolveBackgroundLaunch } from '../account/backgroundLaunchAccount';
 import { COMMANDER_MODE_ARG, COMMANDER_TOOL_SURFACE, COMMANDER_ONLY_TOOLS } from '../../shared/commanderSurface';
 import { ENV_KEYS, BRAIN_PTY_ID_PREFIX } from '../../shared/constants';
 import { mintCommanderToken, revokeCommanderToken } from './commanderTrust';
@@ -894,6 +894,10 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
   private readonly wmuxDir: string;
 
   private _sessionId: string | null = null;
+  /** The account this conversation moved to under "Switch accounts by quota";
+   *  null when it runs on the binding. Decided when a fresh TUI starts and
+   *  kept for every resume — the transcript lives in that config dir. */
+  private _rotatedAccountId: string | null = null;
   /** A disk-seeded resume id is unproven until the spawned TUI accepts it. */
   private _resumeUnvalidated = false;
   private _startOptions: BrainStartOptions = {};
@@ -1009,6 +1013,10 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
     return this._sessionId;
   }
 
+  get rotatedAccountId(): string | null {
+    return this._rotatedAccountId;
+  }
+
   /** True when the TUI is mid-turn on a prompt the ADAPTER did not send (the
    *  human typed into the embedded terminal). The session manager folds this
    *  into its own status so a heartbeat / loop / schedule tick never pushes a
@@ -1056,6 +1064,7 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
     if (opts.resumeSessionId) {
       this._sessionId = opts.resumeSessionId;
       this._resumeUnvalidated = true;
+      this._rotatedAccountId = opts.resumeAccountId ?? null;
     }
   }
 
@@ -1502,7 +1511,7 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
     return { settingsPath, mcpConfigPath };
   }
 
-  private buildSpawnEnv(): Record<string, string> {
+  private buildSpawnEnv(accountEnv: Record<string, string>): Record<string, string> {
     const env = scrubBrainSpawnEnv(process.env);
     // Force the hook bridge onto MAIN's pipe (`hooks.signal`), not the
     // daemon's. That RPC is where deliverBrainPtyHookSignal claims this pty's
@@ -1528,25 +1537,10 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
     // CLAUDE* var, including the CLAUDE_CONFIG_DIR of an account this
     // workspace is EXPLICITLY bound to — which would silently run the brain on
     // the default account. The scrub exists to drop INHERITED noise, not to
-    // override an operator's binding, so the binding is re-applied here (same
-    // contract as ClaudeSdkAdapter.buildEnv). A missing bound dir resolves to
-    // {} + a warn and falls back to the default credential.
-    if (this._workspaceId) {
-      try {
-        Object.assign(
-          env,
-          getAccountStore().resolveAccountEnv(this._workspaceId, 'claude', (acc) =>
-            console.warn(
-              `[account] terminal brain ws ${this._workspaceId}: bound account "${acc.name}" ` +
-              `configDir missing (${acc.configDir}) — falling back to the default credential.`,
-            ),
-          ),
-        );
-      } catch (err) {
-        // An unreadable account store costs the binding, never the spawn.
-        console.warn('[account] terminal brain could not resolve its account binding:', err);
-      }
-    }
+    // override an operator's choice, so the account spawn() resolved (the
+    // binding, or the one quota rotation chose) is re-applied here (same
+    // contract as ClaudeSdkAdapter.buildEnv).
+    Object.assign(env, accountEnv);
     return env;
   }
 
@@ -1575,6 +1569,20 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
           'the wmux hook bridge could not be located — the terminal brain has no way to observe turn boundaries.',
       };
     }
+    // The account for this TUI. A fresh conversation may move to another
+    // account under "Switch accounts by quota"; a resume stays where its
+    // transcript is. Out of quota → a clear spawn error instead of a TUI that
+    // dies on a quota error. Never throws (falls back to the binding).
+    const launch = await resolveBackgroundLaunch(this._workspaceId, 'claude', {
+      resuming: !!resumeSessionId,
+      rotatedAccountId: this._rotatedAccountId,
+      onMissing: (acc) => console.warn(
+        `[account] terminal brain ws ${this._workspaceId}: bound account "${acc.name}" ` +
+        `configDir missing (${acc.configDir}) — falling back to the default credential.`,
+      ),
+    });
+    if (launch.kind === 'hold') return { error: launch.message };
+    if (!resumeSessionId) this._rotatedAccountId = launch.rotated ? launch.accountId : null;
     // The Moa delegate, read once per spawn: a flip applies to the next TUI.
     const delegateOn = this.resolveDelegateOn();
     let settingsPath: string;
@@ -1675,7 +1683,7 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
       await this.deps.host.createSession({
         id: ptyId,
         cwd: brainHome,
-        env: this.buildSpawnEnv(),
+        env: this.buildSpawnEnv(launch.env),
         command,
         cols: 120,
         rows: 32,

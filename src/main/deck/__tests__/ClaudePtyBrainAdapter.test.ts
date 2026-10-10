@@ -16,16 +16,13 @@ vi.mock('electron', () => ({
 }));
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({ query: vi.fn() }));
 
-// Multi-account binding: empty by default (an unbound workspace), so the env
-// scrub assertions below still see a CLAUDE-free environment.
+// Account resolution (binding / quota rotation — unit-tested on its own in
+// backgroundLaunchAccount.test.ts). Empty env by default (an unbound
+// workspace), so the env scrub assertions below still see a CLAUDE-free
+// environment.
 let boundAccountEnv: Record<string, string> = {};
-vi.mock('../../account/accountStore', () => ({
-  VENDOR_ENV_KEYS: { claude: 'CLAUDE_CONFIG_DIR', codex: 'CODEX_HOME' },
-  getAccountStore: () => ({
-    resolveAccountEnv: () => boundAccountEnv,
-    getBinding: () => null,
-  }),
-}));
+const launchMock = vi.hoisted(() => vi.fn());
+vi.mock('../../account/backgroundLaunchAccount', () => ({ resolveBackgroundLaunch: launchMock }));
 
 import { COMMANDER_TOOL_SURFACE, COMMANDER_ONLY_TOOLS } from '../../../shared/commanderSurface';
 import {
@@ -195,6 +192,8 @@ async function collect(iterable: AsyncIterable<BrainEvent>): Promise<BrainEvent[
 }
 
 beforeEach(() => {
+  launchMock.mockReset();
+  launchMock.mockImplementation(async () => ({ kind: 'run', env: boundAccountEnv, accountId: null, rotated: false }));
   __resetBrainPtyHookBusForTesting();
   __resetCommanderTrustForTesting();
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-brainpty-'));
@@ -273,6 +272,41 @@ describe('scrubBrainSpawnEnv', () => {
       if (prev === undefined) delete process.env.CLAUDE_CONFIG_DIR;
       else process.env.CLAUDE_CONFIG_DIR = prev;
     }
+  });
+});
+
+describe('ClaudePtyBrainAdapter — account choice (quota rotation)', () => {
+  it('starts a fresh TUI on the rotated account and remembers it for resume', async () => {
+    const host = makeHost();
+    launchMock.mockImplementation(async () => ({ kind: 'run', env: { CLAUDE_CONFIG_DIR: '/acc/b' }, accountId: 'b', rotated: true }));
+    const adapter = makeAdapter(host);
+    const turn = collect(adapter.send('hello'));
+    await vi.waitFor(() => expect(host.created.length).toBe(1));
+    expect(host.created[0].env.CLAUDE_CONFIG_DIR).toBe('/acc/b');
+    expect(launchMock).toHaveBeenCalledWith('ws-1', 'claude', expect.objectContaining({ resuming: false }));
+    expect(adapter.rotatedAccountId).toBe('b');
+    adapter.dispose();
+    await turn;
+  });
+
+  it('resumes a persisted conversation on its saved account', async () => {
+    const host = makeHost();
+    const adapter = makeAdapter(host);
+    adapter.start({ resumeSessionId: 'sess-old', resumeAccountId: 'b' });
+    const turn = collect(adapter.send('hello'));
+    await vi.waitFor(() => expect(host.created.length).toBe(1));
+    expect(launchMock).toHaveBeenCalledWith('ws-1', 'claude', expect.objectContaining({ resuming: true, rotatedAccountId: 'b' }));
+    adapter.dispose();
+    await turn;
+  });
+
+  it('reports a held launch as a spawn error and starts no TUI', async () => {
+    const host = makeHost();
+    launchMock.mockImplementation(async () => ({ kind: 'hold', message: 'every account is out' }));
+    const adapter = makeAdapter(host);
+    const events = await collect(adapter.send('hello'));
+    expect(host.created).toHaveLength(0);
+    expect(events).toEqual([{ type: 'error', message: 'every account is out', spawnFailed: true }]);
   });
 });
 

@@ -1,6 +1,6 @@
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import type { BrowserWindow } from 'electron';
-import { getAccountStore } from '../account/accountStore';
+import { resolveBackgroundLaunch } from '../account/backgroundLaunchAccount';
 import { sendToRenderer } from '../pipe/handlers/_bridge';
 import type { CompletionEvidence } from '../../shared/types';
 import { recordTaskState, stateOfTask } from '../workLink/a2aProducer';
@@ -151,6 +151,9 @@ export class ClaudeWorker {
   private readonly sessions = new Map<string, WorkerSession>();
   /** Tasks between the capacity check and their session being registered. */
   private readonly reserved = new Set<string>();
+  /** Reserved tasks cancelled (or stopped on quit) while still resolving their
+   *  account — no process exists yet to kill, so execute() must not start one. */
+  private readonly abandoned = new Set<string>();
   private readonly getWindow: GetWindow;
   private readonly getDaemonClient: GetDaemonClient;
 
@@ -194,8 +197,30 @@ export class ClaudeWorker {
     let proc: ChildProcess;
     let session: WorkerSession;
     try {
+      // Multi-account: this background claude spawn bypasses the PTY path, so
+      // it resolves its account here — the receiving workspace's binding, or
+      // with "Switch accounts by quota" on the account with quota left. A task
+      // is always a new conversation. Missing bound dir → default-credential
+      // fallback + warn. An account that is out fails the task with the reason
+      // instead of a spawn that dies on a quota error.
+      const launch = await resolveBackgroundLaunch(receiverWorkspaceId, 'claude', {
+        resuming: false,
+        onMissing: (acc) => console.warn(
+          `[account] a2a worker ws ${receiverWorkspaceId}: bound account "${acc.name}" configDir missing ` +
+          `(${acc.configDir}) — falling back to the default credential.`,
+        ),
+      });
+      // Cancelled or stopped during the account check: the canceller already
+      // recorded the outcome, so neither spawn nor mark the task working.
+      if (this.abandoned.has(taskId)) return;
+      if (launch.kind === 'hold') {
+        await this.updateTaskStatus(taskId, receiverWorkspaceId, 'failed', launch.message, { summary: launch.message, items: [] });
+        return;
+      }
+
       // Mark task as working
       await this.updateTaskStatus(taskId, receiverWorkspaceId, 'working');
+      if (this.abandoned.has(taskId)) return;
 
       const args = [
         '-p',
@@ -206,20 +231,10 @@ export class ClaudeWorker {
         '--permission-mode', 'bypassPermissions',
       ];
 
-      // Multi-account (M0): this background claude spawn bypasses the PTY path, so
-      // it must honor the receiving workspace's claude account binding too — else
-      // it silently runs on the default account (Codex 3-way review P1). Missing
-      // bound dir → default-credential fallback + warn.
-      const accountEnv = getAccountStore().resolveAccountEnv(receiverWorkspaceId, 'claude', (acc) =>
-        console.warn(
-          `[account] a2a worker ws ${receiverWorkspaceId}: bound account "${acc.name}" configDir missing ` +
-          `(${acc.configDir}) — falling back to the default credential.`,
-        ),
-      );
       proc = spawn('claude', args, {
         cwd: cwd || undefined,
         stdio: ['pipe', 'pipe', 'pipe'],
-        env: { ...process.env, ...accountEnv },
+        env: { ...process.env, ...launch.env },
         // Its own process group, so the whole tree can be stopped (see
         // signalProcessTree). Not on Windows, where it means a new console.
         detached: process.platform !== 'win32',
@@ -239,6 +254,7 @@ export class ClaudeWorker {
       return;
     } finally {
       this.reserved.delete(taskId);
+      this.abandoned.delete(taskId);
     }
 
     // Every path below settles the task at most once: whichever gets here first
@@ -464,6 +480,10 @@ export class ClaudeWorker {
    * Cancel a running task.
    */
   cancel(taskId: string): boolean {
+    if (this.reserved.has(taskId)) {
+      this.abandoned.add(taskId);
+      return true;
+    }
     const session = this.sessions.get(taskId);
     if (!session) return false;
 
@@ -490,6 +510,9 @@ export class ClaudeWorker {
     // anything a SIGTERM did not end would outlive wmux. Kill outright — the
     // results have nowhere left to go — and fail the tasks rather than leave
     // them in `working` (best effort; the daemon may still record it).
+    // A task still resolving its account has no process yet: keep it from
+    // starting one.
+    for (const taskId of this.reserved) this.abandoned.add(taskId);
     for (const session of [...this.sessions.values()]) {
       console.log(`[ClaudeWorker] Stopping task ${session.taskId}`);
       this.endSession(session);

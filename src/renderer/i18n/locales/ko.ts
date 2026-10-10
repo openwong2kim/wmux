@@ -3468,7 +3468,7 @@ export const ko = {
   // Settings — Accounts — quota-driven account choice for Claude/Codex launches
   'accounts.rotateClaude': "할당량에 따라 Claude 계정 전환",
   'accounts.rotateCodex': "할당량에 따라 Codex 계정 전환",
-  'accounts.rotateDesc': "워크스페이스에 연결된 계정의 할당량이 소진되면, 그 워크스페이스의 새 Claude 또는 Codex 패널은 남은 할당량이 가장 많은 등록 계정으로 시작합니다. 연결 자체는 바뀌지 않습니다. 모든 계정이 소진되면 하나가 초기화될 때까지 에이전트를 시작하지 않습니다. 이미 실행 중인 패널은 건드리지 않습니다. Claude 할당량은 사용량 엔드포인트에서(모델 요청 없음), Codex 할당량은 각 계정의 세션 파일에 기록된 한도에서 읽습니다.",
+  'accounts.rotateDesc': "워크스페이스에 연결된 계정의 할당량이 소진되면, 그 워크스페이스의 새 Claude 또는 Codex 패널은 남은 할당량이 가장 많은 등록 계정으로 시작합니다. 연결 자체는 바뀌지 않습니다. 모든 계정이 소진되면 하나가 초기화될 때까지 에이전트를 시작하지 않습니다. 이미 실행 중인 패널은 건드리지 않습니다. 커맨드 덱 오케스트레이터와 백그라운드(A2A) 작업도 새 대화를 시작할 때 같은 규칙을 따르며, 이미 진행 중인 대화는 원래 계정에 남습니다. Claude 할당량은 사용량 엔드포인트에서(모델 요청 없음), Codex 할당량은 각 계정의 세션 파일에 기록된 한도에서 읽습니다.",
   'accounts.quotaOut': "할당량 소진",
   'accounts.quotaOutUntil': "{time}에 다시 사용 가능",
   'accounts.quotaUnknown': "할당량 미측정",

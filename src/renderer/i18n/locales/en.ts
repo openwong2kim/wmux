@@ -1243,7 +1243,7 @@ export const en = {
   // Settings — Accounts — quota-driven account choice for Claude/Codex launches
   'accounts.rotateClaude': "Switch Claude accounts by quota",
   'accounts.rotateCodex': "Switch Codex accounts by quota",
-  'accounts.rotateDesc': "When the account a workspace is bound to is out of quota, a new Claude or Codex pane in it starts on the registered account with the most quota left; the binding itself stays. When every account is out, the agent is not started until one resets. Panes already running are not touched. Claude quota is read from its usage endpoint (no model request); Codex quota from the limits it records in each account's session files.",
+  'accounts.rotateDesc': "When the account a workspace is bound to is out of quota, a new Claude or Codex pane in it starts on the registered account with the most quota left; the binding itself stays. When every account is out, the agent is not started until one resets. Panes already running are not touched. The Command Deck orchestrator and background (A2A) tasks follow the same rule when they start a new conversation; a conversation already under way stays on its account. Claude quota is read from its usage endpoint (no model request); Codex quota from the limits it records in each account's session files.",
   'accounts.quotaOut': "Out of quota",
   'accounts.quotaOutUntil': "Usable again at {time}",
   'accounts.quotaUnknown': "quota not measured yet",

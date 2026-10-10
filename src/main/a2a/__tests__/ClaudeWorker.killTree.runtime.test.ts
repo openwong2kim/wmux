@@ -12,8 +12,8 @@ import type { BrowserWindow } from 'electron';
 
 const { sendToRendererMock } = vi.hoisted(() => ({ sendToRendererMock: vi.fn() }));
 vi.mock('../../pipe/handlers/_bridge', () => ({ sendToRenderer: sendToRendererMock }));
-vi.mock('../../account/accountStore', () => ({
-  getAccountStore: () => ({ resolveAccountEnv: () => ({}) }),
+vi.mock('../../account/backgroundLaunchAccount', () => ({
+  resolveBackgroundLaunch: async () => ({ kind: 'run', env: {}, accountId: null, rotated: false }),
 }));
 vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:child_process')>();
