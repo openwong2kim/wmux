@@ -108,10 +108,11 @@ export interface Harness {
   /** `http://127.0.0.1:<port>/` */
   origin: () => string;
   /**
-   * `http://localhost:<port>/` — the same server under a different SITE, so a
+   * `http://localhost:<port>/` — the same handler under a different SITE, so a
    * frame loaded from here into an `origin()` page is cross-site and Chrome's
    * site isolation puts it in its own process (an OOPIF). A second port would
-   * be same-site and stay in-process.
+   * be same-site and stay in-process. Served on 127.0.0.1 and, where the host
+   * has it, ::1, since `localhost` can resolve to either.
    */
   crossSiteOrigin: () => string;
   /** Mark the running test SKIPPED, with the reason, when Chrome is absent. */
@@ -134,6 +135,7 @@ export function harnessFor(mode: Mode, options: HarnessOptions): Harness {
   let browser: Browser | null = null;
   let browserPid: number | null = null;
   let server: Server | null = null;
+  let server6: Server | null = null;
   let port = 0;
   let skipReason: string | null = null;
 
@@ -225,6 +227,21 @@ export function harnessFor(mode: Mode, options: HarnessOptions): Harness {
     }
     port = address.port;
 
+    // crossSiteOrigin() names `localhost`, which Chrome may resolve to ::1
+    // before 127.0.0.1. Serve the same handler on the IPv6 loopback at the same
+    // port so both answers reach the fixture. Bounded and swallowed: a host
+    // with no IPv6 loopback (or the port taken there) keeps the IPv4 listener,
+    // which is what Chrome falls back to.
+    const v6 = createServer(serve);
+    server6 = await Promise.race([
+      new Promise<Server | null>((resolve) => {
+        v6.once('error', () => resolve(null));
+        v6.listen(port, '::1', () => resolve(v6));
+      }),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 5_000)),
+    ]);
+    if (!server6) v6.close();
+
     if (!mode.headless) {
       // The shipped shape: the window the probe drives is NOT the focused one,
       // because the user is looking at something else. Chrome throttles input
@@ -268,11 +285,13 @@ export function harnessFor(mode: Mode, options: HarnessOptions): Harness {
   // and swallowed" rule setup follows. A close that does not return in time
   // kills the browser process, so Chrome is not left running.
   afterAll(async () => {
-    server?.closeAllConnections();
-    await new Promise<void>((resolve) => {
-      if (!server) return resolve();
-      server.close(() => resolve());
-    });
+    for (const s of [server, server6]) {
+      s?.closeAllConnections();
+      await new Promise<void>((resolve) => {
+        if (!s) return resolve();
+        s.close(() => resolve());
+      });
+    }
     if (!browser) return;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const closed = await Promise.race([

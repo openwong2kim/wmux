@@ -13,7 +13,7 @@
 import { describe, expect, it } from 'vitest';
 import { MODES, harnessFor } from '../../../../test-utils/realBrowserHarness';
 import { StaleRefError, generateScopedSnapshot, generateSnapshot } from '../../snapshot';
-import { CASE_TIMEOUT_MS, clickRef, expectKnownGap, openPage, refFor, serveCorpus } from './_support';
+import { CASE_TIMEOUT_MS, GapObserved, clickRef, expectKnownGap, openPage, refFor, serveCorpus } from './_support';
 
 const clicks = (page: import('playwright-core').Page) =>
   page.evaluate(() => (window as unknown as { __fixtureState: { clicks: number } }).__fixtureState.clicks);
@@ -38,10 +38,12 @@ for (const mode of MODES) {
         expect(refFor(subtree!, 'Increment counter')).toBe(rootRef);
 
         // The root's own ref: getByRole only searches below the scope root.
-        await expectKnownGap('the scope root of a selector-scoped snapshot resolves to nothing', async () => {
-          await clickRef(page, rootRef);
-          expect(await clicks(page)).toBe(1);
-        });
+        await expectKnownGap(
+          'the scope root of a selector-scoped snapshot resolves to nothing',
+          /resolved to nothing/,
+          () => clickRef(page, rootRef),
+        );
+        expect(await clicks(page)).toBe(0);
       } finally {
         await page.close();
       }
@@ -95,10 +97,11 @@ for (const mode of MODES) {
 
           // A selector scope cannot reach into a frame's document, so the
           // frame subtree is taken from the full snapshot's frame refs.
-          await expectKnownGap('a snapshot scoped to an iframe element lists the frame contents', async () => {
-            const scoped = await generateScopedSnapshot(page, '#snapshot-subtree-frame');
-            expect(scoped).toContain(frameMarker);
-            expect(scoped).not.toContain('Host sibling marker');
+          const scoped = await generateScopedSnapshot(page, '#snapshot-subtree-frame');
+          // Whatever it lists, a frame-scoped snapshot never lists the host's siblings.
+          expect(scoped ?? '').not.toContain('Host sibling marker');
+          await expectKnownGap('a snapshot scoped to an iframe element lists the frame contents', /^GapObserved/, async () => {
+            if (!(scoped ?? '').includes(frameMarker)) throw new GapObserved('the frame contents are not listed');
           });
 
           const full = await generateSnapshot(page);

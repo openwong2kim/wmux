@@ -9,6 +9,8 @@
 // Not ported: the per-action receipts and the CDP event log. wmux reports a
 // click without a dialog receipt, so the scenario asserts what the handler
 // saw (type, message, default) and what the page did with the answer.
+// Answering through the registered browser_dialog tool is left to the tests
+// of that tool, which is being reworked separately.
 import { rmSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -64,13 +66,50 @@ async function setUpFixture(page: Page): Promise<void> {
 const resultData = (page: Page) =>
   page.evaluate(() => ({ ...(document.querySelector('#dialog-result') as HTMLElement).dataset }));
 
-/** Answer the next dialog with `answer`, and hand back what it was. */
-function answerNext(page: Page, answer: (dialog: Dialog) => Promise<void>): Promise<Dialog> {
-  return new Promise((resolve) => {
-    page.once('dialog', (dialog) => {
-      void answer(dialog).then(() => resolve(dialog));
-    });
-  });
+/** How long a test waits for the dialog its click should have opened. */
+const DIALOG_WAIT_MS = 5_000;
+
+/**
+ * Answers dialogs on one page, one `next()` at a time.
+ *
+ * Every wait is bounded, an answer that fails rejects the wait instead of
+ * leaving it pending, and `dispose()` (run in each test's finally) removes
+ * whatever listener and timer are still armed, so a failing test leaves
+ * nothing attached to the page and no timer running.
+ */
+function dialogAnswers(page: Page) {
+  const armed = new Set<{ listener: (d: Dialog) => void; timer: ReturnType<typeof setTimeout> }>();
+  const disarm = (entry: { listener: (d: Dialog) => void; timer: ReturnType<typeof setTimeout> }) => {
+    clearTimeout(entry.timer);
+    page.off('dialog', entry.listener);
+    armed.delete(entry);
+  };
+  return {
+    /** Answer the next dialog with `answer`, and hand back what it was. */
+    next(answer: (dialog: Dialog) => Promise<void>): Promise<Dialog> {
+      const waiting = new Promise<Dialog>((resolve, reject) => {
+        const entry = {
+          listener: (dialog: Dialog) => {
+            disarm(entry);
+            answer(dialog).then(() => resolve(dialog), reject);
+          },
+          timer: setTimeout(() => {
+            disarm(entry);
+            reject(new Error(`no dialog opened within ${DIALOG_WAIT_MS} ms`));
+          }, DIALOG_WAIT_MS),
+        };
+        armed.add(entry);
+        page.on('dialog', entry.listener);
+      });
+      // A test that fails before it awaits this must not also raise an
+      // unhandled rejection; awaiting it still sees the rejection.
+      waiting.catch(() => undefined);
+      return waiting;
+    },
+    dispose(): void {
+      for (const entry of [...armed]) disarm(entry);
+    },
+  };
 }
 
 for (const mode of MODES) {
@@ -80,6 +119,7 @@ for (const mode of MODES) {
     it('prompt, confirm and alert are answered and the page resumes with the answer', async (ctx) => {
       if (h.skipUnless(ctx)) return;
       const page = await openPage(h, '/no-frame');
+      const dialogs = dialogAnswers(page);
       try {
         await setUpFixture(page);
         const snapshot = await generateSnapshot(page);
@@ -87,7 +127,7 @@ for (const mode of MODES) {
         await clickRef(page, refFor(snapshot, 'Run without dialog'));
         expect((await resultData(page)).noDialogClicks).toBe('1');
 
-        const prompted = answerNext(page, (d) => d.accept('agent'));
+        const prompted = dialogs.next((d) => d.accept('agent'));
         await clickRef(page, refFor(snapshot, 'Prompt'));
         const prompt = await prompted;
         expect([prompt.type(), prompt.message(), prompt.defaultValue()]).toEqual([
@@ -98,12 +138,12 @@ for (const mode of MODES) {
         await page.waitForFunction(() => (document.querySelector('#dialog-result') as HTMLElement).dataset.prompt === 'agent');
         expect(await page.evaluate(() => document.querySelector('#dialog-result')!.textContent)).toBe('prompt:agent');
 
-        const confirmed = answerNext(page, (d) => d.dismiss());
+        const confirmed = dialogs.next((d) => d.dismiss());
         await clickRef(page, refFor(snapshot, 'Confirm'));
         expect((await confirmed).type()).toBe('confirm');
         await page.waitForFunction(() => (document.querySelector('#dialog-result') as HTMLElement).dataset.confirm === 'false');
 
-        const alerted = answerNext(page, (d) => d.accept());
+        const alerted = dialogs.next((d) => d.accept());
         await clickRef(page, refFor(snapshot, 'Alert'));
         const alert = await alerted;
         expect([alert.type(), alert.message()]).toEqual(['alert', 'Alert from real E2E']);
@@ -113,6 +153,7 @@ for (const mode of MODES) {
         await clickRef(page, refFor(snapshot, 'Run without dialog'));
         expect((await resultData(page)).noDialogClicks).toBe('2');
       } finally {
+        dialogs.dispose();
         await page.close();
       }
     });
@@ -120,13 +161,16 @@ for (const mode of MODES) {
     it('a confirm raised by an upload change handler is answered and keeps the file', async (ctx) => {
       if (h.skipUnless(ctx)) return;
       const uploadPath = join(tmpdir(), `fixture-upload-${process.pid}.txt`);
-      writeFileSync(uploadPath, 'fixture upload\n');
-      const page = await openPage(h, '/no-frame');
+      let page: Page | null = null;
+      let dialogs: ReturnType<typeof dialogAnswers> | null = null;
       try {
+        writeFileSync(uploadPath, 'fixture upload\n');
+        page = await openPage(h, '/no-frame');
+        dialogs = dialogAnswers(page);
         await setUpFixture(page);
         const chooser = page.waitForEvent('filechooser', { timeout: 5_000 });
         await clickRef(page, refFor(await generateSnapshot(page), 'Upload project'));
-        const confirmed = answerNext(page, (d) => d.accept());
+        const confirmed = dialogs.next((d) => d.accept());
         await (await chooser).setFiles(uploadPath);
         const dialog = await confirmed;
         expect([dialog.type(), dialog.message()]).toEqual(['confirm', 'Replace the current project?']);
@@ -135,7 +179,8 @@ for (const mode of MODES) {
         );
         expect((await resultData(page)).uploadFile).toBe(basename(uploadPath));
       } finally {
-        await page.close();
+        dialogs?.dispose();
+        await page?.close();
         rmSync(uploadPath, { force: true });
       }
     });

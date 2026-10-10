@@ -72,20 +72,23 @@ async function addPopupLinks(page: Page, links: Record<string, string>): Promise
 }
 
 /**
- * A click's report names its own popup when it names one at all.
+ * A click's report names the popup that click opened, and only that one.
  *
- * Whether it names one is timing: browser_click waits POPUP_GRACE_MS (50 ms)
- * for the `popup` event, and a headed, unfocused Chrome can take longer to
- * raise it, so a report without the popup is logged as the known gap rather
- * than failed on.
+ * Headless, the popup always arrives inside browser_click's 50 ms grace
+ * (POPUP_GRACE_MS), so the line is required there. A headed, unfocused Chrome
+ * can raise the `popup` event later than that; this is a timing allowance of
+ * the test for that mode, not a wmux gap, and it is logged as such. The
+ * foreign-popup check runs in both modes either way.
  */
-function expectOwnPopup(report: string, query: string): void {
-  if (!report.includes('opened a popup')) {
-    // eslint-disable-next-line no-console
-    console.log(`[egoCorpus known gap] browser_click did not report the popup its click opened (${query}) within its grace period`);
+function expectOwnPopup(report: string, query: string, foreign: string[], headless: boolean): void {
+  for (const other of foreign) expect(report).not.toContain(`popup-waiter=${other}`);
+  if (headless || report.includes('opened a popup')) {
+    expect(report).toContain('opened a popup');
+    expect(report).toContain(`popup-waiter=${query}`);
     return;
   }
-  expect(report).toContain(`popup-waiter=${query}`);
+  // eslint-disable-next-line no-console
+  console.log(`[egoCorpus headed timing] the ${query} popup arrived after browser_click's grace window`);
 }
 
 for (const mode of MODES) {
@@ -126,13 +129,12 @@ for (const mode of MODES) {
         await addPopupLinks(source, { 'old-popup-link': url('old'), 'next-popup-link': url('next') });
         const oldPopup = source.waitForEvent('popup', { timeout: 3_000 });
         const oldReport = await clickTool(source, 'old-popup-link');
-        expectOwnPopup(oldReport, 'old');
+        expectOwnPopup(oldReport, 'old', ['next'], mode.headless);
         await oldPopup;
 
         const nextPopup = source.waitForEvent('popup', { timeout: 3_000 });
         const nextReport = await clickTool(source, 'next-popup-link');
-        expectOwnPopup(nextReport, 'next');
-        expect(nextReport).not.toContain('popup-waiter=old');
+        expectOwnPopup(nextReport, 'next', ['old'], mode.headless);
         const next = await nextPopup;
         await next.waitForURL(/popup-waiter=next/, { timeout: 3_000 });
         expect(next.url()).toContain('popup-waiter=next');

@@ -130,7 +130,7 @@ for (const mode of MODES) {
       await frameReady(page);
       const ref = refFor(await generateSnapshot(page), 'Run iframe action');
       await page.close();
-      await expect(clickRef(page, ref)).rejects.toThrow();
+      await expect(clickRef(page, ref)).rejects.toThrow(/has been closed/);
     });
   });
 }

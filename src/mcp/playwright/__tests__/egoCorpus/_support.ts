@@ -206,15 +206,33 @@ export async function fillRef(page: Page, ref: string, value: string, notes?: st
 }
 
 /**
+ * Thrown by a known-gap scenario that checked for the gap and saw it, so the
+ * gap is reported by what was observed, not by whatever happened to throw.
+ */
+export class GapObserved extends Error {
+  constructor(what: string) {
+    super(`gap observed: ${what}`);
+    this.name = 'GapObserved';
+  }
+}
+
+/**
  * A scenario wmux does not pass today, kept running instead of skipped.
  *
- * The scenario must throw (a failed expectation, or wmux refusing the action);
- * the test then passes and the gap stays listed. When wmux starts passing it,
- * this fails so the case gets promoted to an ordinary assertion. Used instead
- * of `it.fails` so a harness error (Chrome missing on a runner that requires
- * it) is not mistaken for the expected failure.
+ * `expected` names the one failure that IS the gap, matched against
+ * `<error name>: <message>`; any other error is rethrown, so a regression of a
+ * different kind (a harness fault, a wrong element clicked, a new exception)
+ * fails the test instead of being counted as the gap. When the scenario stops
+ * failing, this fails too, so the case gets promoted to a normal assertion.
+ *
+ * Keep the scenario to the one step that shows the gap; the assertions about
+ * what did and did not happen to the page belong outside it.
  */
-export async function expectKnownGap(gap: string, scenario: () => Promise<unknown>): Promise<void> {
+export async function expectKnownGap(
+  gap: string,
+  expected: RegExp,
+  scenario: () => Promise<unknown>,
+): Promise<void> {
   let failure: unknown;
   try {
     await scenario();
@@ -224,6 +242,8 @@ export async function expectKnownGap(gap: string, scenario: () => Promise<unknow
   if (failure === undefined) {
     throw new Error(`known gap now passes, promote it to a normal assertion: ${gap}`);
   }
+  const described = failure instanceof Error ? `${failure.name}: ${failure.message}` : String(failure);
+  if (!expected.test(described)) throw failure;
   // eslint-disable-next-line no-console
-  console.log(`[egoCorpus known gap] ${gap}: ${failure instanceof Error ? failure.message.split('\n')[0] : String(failure)}`);
+  console.log(`[egoCorpus known gap] ${gap}: ${described.split('\n')[0]}`);
 }

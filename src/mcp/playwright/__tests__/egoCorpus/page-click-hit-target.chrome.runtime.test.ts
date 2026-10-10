@@ -107,7 +107,9 @@ for (const mode of MODES) {
           target.addEventListener('click', () => w.__hoverCoveredClicks.target++);
           document.body.append(target);
         });
-        await expect(clickByRef(page, 'Covered after hover', REFUSAL_TIMEOUT_MS)).rejects.toThrow();
+        await expect(clickByRef(page, 'Covered after hover', REFUSAL_TIMEOUT_MS)).rejects.toThrow(
+          /hover-overlay.* intercepts pointer events/,
+        );
         // The approach is what raised the overlay, and it received nothing.
         expect(await page.$('#hover-overlay')).not.toBeNull();
         expect(await read(page, '__hoverCoveredClicks')).toEqual({ target: 0, overlay: 0 });

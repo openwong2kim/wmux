@@ -13,6 +13,7 @@ import { StaleRefError, generateScopedSnapshot, generateSnapshot, resolveRef } f
 import {
   CASE_TIMEOUT_MS,
   clickRef,
+  GapObserved,
   expectKnownGap,
   fillRef,
   openPage,
@@ -57,11 +58,13 @@ for (const mode of MODES) {
         // getByRole searches the descendants of the scope root, never the root
         // itself, so the ref of the element the snapshot was scoped TO has
         // nothing to resolve to while that snapshot is the latest one.
-        await expectKnownGap('the scope root of a selector-scoped snapshot resolves to nothing', async () => {
-          await clickRef(page, secondRef);
-          expect(await clicks(page)).toEqual({ first: 0, second: 1 });
-        });
-        expect((await clicks(page)).first).toBe(0);
+        await expectKnownGap(
+          'the scope root of a selector-scoped snapshot resolves to nothing',
+          /resolved to nothing/,
+          () => clickRef(page, secondRef),
+        );
+        // The refused click reached neither button.
+        expect(await clicks(page)).toEqual({ first: 0, second: 0 });
       } finally {
         await page.close();
       }
@@ -79,13 +82,18 @@ for (const mode of MODES) {
         // resolveRef answers from the LATEST snapshot's ref list, so a node a
         // narrower snapshot left out reads as gone (StaleRefError) even though
         // it is still on the page and its number was never reused.
-        await expectKnownGap('resolveRef refuses a ref the last scoped snapshot omitted', async () => {
-          await clickRef(page, firstRef);
-          await clickRef(page, secondRef);
-          expect(await clicks(page)).toEqual({ first: 1, second: 1 });
-        });
-        // Whatever the gap does, it never lands on the wrong button.
-        expect((await clicks(page)).second).toBeLessThanOrEqual(1);
+        await expectKnownGap(
+          'resolveRef refuses a ref the last scoped snapshot omitted',
+          /^StaleRefError: .*no longer in the page snapshot/,
+          () => clickRef(page, firstRef),
+        );
+        // Refused outright: nothing was clicked in its place.
+        expect(await clicks(page)).toEqual({ first: 0, second: 0 });
+        // A fresh full snapshot gives the same number back to the same node.
+        expect(refFor(await generateSnapshot(page), 'First ref action')).toBe(firstRef);
+        await clickRef(page, firstRef);
+        await clickRef(page, secondRef);
+        expect(await clicks(page)).toEqual({ first: 1, second: 1 });
       } finally {
         await page.close();
       }
@@ -164,13 +172,25 @@ for (const mode of MODES) {
         // resolveRef locates by role + accessible name + position, so a clone
         // with the same role and name in the same place is the same element
         // to it, on the click lane as on the typing lane.
-        await expectKnownGap('a same-role, same-name clone inherits the replaced node\'s ref', async () => {
-          await expect(resolveRef(page, inputRef, { timeout: 500 })).rejects.toBeInstanceOf(StaleRefError);
+        await expectKnownGap('a same-role, same-name clone inherits the replaced node\'s ref', /^GapObserved/, async () => {
+          const el = await resolveRef(page, inputRef, { timeout: 500 }).catch((error: unknown) => {
+            if (error instanceof StaleRefError) return null; // the fixed behaviour
+            throw error;
+          });
+          if (el) throw new GapObserved('the old ref resolved to the clone');
         });
-        await expectKnownGap('a fill through the old ref lands in the replacement', async () => {
-          await expect(fillRef(page, inputRef, 'wrong node')).rejects.toThrow();
-          expect(await page.evaluate(() => document.querySelector('input')!.value)).toBe('M2');
+        await expectKnownGap('a fill through the old ref lands in the replacement', /^GapObserved/, async () => {
+          const filled = await fillRef(page, inputRef, 'wrong node').then(
+            () => true,
+            (error: unknown) => {
+              if (error instanceof StaleRefError) return false; // the fixed behaviour
+              throw error;
+            },
+          );
+          if (filled) throw new GapObserved('the fill landed in the replacement');
         });
+        // Exactly one input on the page, so the fill went nowhere else.
+        expect(await page.locator('input').count()).toBe(1);
       } finally {
         await page.close();
       }

@@ -10,6 +10,7 @@
 import { rmSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { tmpdir } from 'node:os';
+import type { Page } from 'playwright-core';
 import { describe, expect, it } from 'vitest';
 import { MODES, harnessFor } from '../../../../test-utils/realBrowserHarness';
 import { generateScopedSnapshot, generateSnapshot, resolveRef } from '../../snapshot';
@@ -115,9 +116,10 @@ for (const mode of MODES) {
     it('a ref published before a native file chooser still works after the upload', async (ctx) => {
       if (h.skipUnless(ctx)) return;
       const uploadPath = join(tmpdir(), `egoCorpus-upload-${process.pid}.txt`);
-      writeFileSync(uploadPath, 'fixture upload\n');
-      const page = await openPage(h, '/nav-target');
+      let page: Page | null = null;
       try {
+        writeFileSync(uploadPath, 'fixture upload\n');
+        page = await openPage(h, '/nav-target');
         await page.evaluate(() => {
           document.body.innerHTML =
             '<input aria-label="Cell address"><output id="address"></output>' +
@@ -152,7 +154,7 @@ for (const mode of MODES) {
         }));
         expect(result).toEqual({ address: 'M2', uploaded: basename(uploadPath), dialogOpen: false });
       } finally {
-        await page.close();
+        await page?.close();
         rmSync(uploadPath, { force: true });
       }
     });
