@@ -228,12 +228,16 @@ describe('protected Chrome profile (real Chrome)', { timeout: CASE_TIMEOUT_MS },
     if (skipUnless(ctx)) return;
     const p = await newPage(rigA);
     await p.goto(`http://a.test:${port}/download`);
+    // Another client turns downloads back on, as Playwright does on attach.
+    const other = await (rigA.browser as Browser).newBrowserCDPSession();
+    await other.send('Browser.setDownloadBehavior', { behavior: 'allowAndName', downloadPath: rigA.dir, eventsEnabled: true });
+    await settle(600);
     const started = p.waitForEvent('download', { timeout: 5_000 }).catch(() => null);
     await p.click('#d');
     const download = await started;
-    // It starts (Playwright sees it) and is cancelled — never completed.
-    expect(download).not.toBeNull();
-    expect(await download?.failure()).toBe('canceled');
+    // Refused outright, or started and cancelled — never completed.
+    if (download) expect(await download.failure()).toBe('canceled');
+    await other.detach().catch(() => undefined);
     await p.close();
   });
 

@@ -40,6 +40,8 @@ import type { LiveTabOwner } from '../../shared/liveWriteScope';
 // DevToolsActivePort appearance + /json/version readiness poll.
 const READY_TIMEOUT_MS = 10_000;
 const READY_POLL_MS = 250;
+/** How often a protected profile's download guard re-asserts deny. */
+const DOWNLOAD_DENY_REASSERT_MS = 250;
 
 // Tab-target watcher: Chrome 111+ exposes a `tab` target per browser tab, and
 // a tab target's id does NOT change when Chrome swaps the page target inside
@@ -961,6 +963,12 @@ export class ChromeLauncher implements ChromeBackendClient {
    * holds its own browser session with download events on: every download that
    * begins is cancelled at once and the deny re-asserted. Measured against
    * Chrome 155 with Playwright attached: the download ends `canceled`.
+   *
+   * A cancel can lose the race to a small file, and Chrome resets the behaviour
+   * to its default whenever any client that set it detaches. So the guard also
+   * re-asserts deny every DOWNLOAD_DENY_REASSERT_MS: another client's allow
+   * lasts at most one tick, and a download that starts after it is refused
+   * outright.
    */
   private async armDownloadGuard(): Promise<void> {
     if (this.downloadGuard?.isOpen()) return;
@@ -993,6 +1001,11 @@ export class ChromeLauncher implements ChromeBackendClient {
       guard.close();
       throw new Error(PROTECTION_NOT_READY);
     }
+    const reassert = setInterval(() => {
+      if (!guard.isOpen()) return clearInterval(reassert);
+      void deny().catch(() => undefined);
+    }, DOWNLOAD_DENY_REASSERT_MS);
+    reassert.unref?.();
     this.downloadGuard = guard;
   }
 
