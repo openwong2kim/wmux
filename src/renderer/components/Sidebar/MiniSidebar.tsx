@@ -19,6 +19,8 @@ import { workspaceColorHex } from '../../../shared/workspaceColors';
 import PresetPicker from './PresetPicker';
 import RailMoreMenu from './RailMoreMenu';
 import { PcSwitcherRailItem } from './PcSwitcher';
+import { HostRailAvatars } from './HostWorkspaceList';
+import { LOCAL_PC_ID } from '../../../shared/pcRail';
 import { listedWorkspaces, moaHqId as selectMoaHqId } from '../Moa/moaHqGuard';
 import { workspaceShortcutNumber } from '../../../shared/keymap';
 
@@ -106,6 +108,13 @@ export default function MiniSidebar({ rail = false, collapsed = true }: { rail?:
   const readOnly = useStore((s) => s.readOnly);
   // The rail beside an open sidebar shows no workspace list (the sidebar has it).
   const showWorkspaces = !rail || collapsed;
+  // PC switcher: with a paired computer selected the collapsed rail lists its
+  // workspaces, as the expanded sidebar does. Unknown ids read as this computer.
+  const railHostId = useStore((s) => {
+    if (!rail || readOnly) return null;
+    const id = s.pcRail.activePcId;
+    return id !== LOCAL_PC_ID && s.pcRailHosts.some((h) => h.id === id) ? id : null;
+  });
   // Arrow keys move between the rail's buttons; Tab still walks them in order.
   const onRailKeyDown = useCallback((e: KeyboardEvent<HTMLDivElement>) => {
     if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp' && e.key !== 'Home' && e.key !== 'End') return;
@@ -167,8 +176,8 @@ export default function MiniSidebar({ rail = false, collapsed = true }: { rail?:
       {showWorkspaces && <>
       {/* PC switcher, collapsed: one item, only with a paired computer. */}
       {rail && !readOnly && <PcSwitcherRailItem />}
-      {/* Header — new workspace button */}
-      {!readOnly && <button
+      {/* Header — new workspace button (this computer only) */}
+      {!readOnly && !railHostId && <button
         ref={plusBtnRef}
         className={`flex items-center justify-center h-10 text-[var(--text-subtle)] hover:text-[var(--accent-green)] transition-colors duration-150 border-b border-[var(--bg-surface)] font-mono text-lg leading-none ${FOCUS_RING}`}
         style={{ borderColor: 'var(--border-soft)' }}
@@ -185,7 +194,8 @@ export default function MiniSidebar({ rail = false, collapsed = true }: { rail?:
       </button>}
       {pickerOpen && <PresetPicker onClose={closePicker} anchorStyle={pickerAnchor} />}
 
-      {/* Workspace dots */}
+      {/* Workspace dots — a selected paired computer's own, like the expanded list */}
+      {railHostId ? <HostRailAvatars hostId={railHostId} /> : (
       <div className="flex-1 overflow-y-auto py-2 flex flex-col items-center gap-1" onPointerEnter={onRailPointerEnter} onPointerLeave={onRailPointerLeave} onFocusCapture={onRailFocus} onBlurCapture={onRailBlur}>
         {orderedWorkspaces.map((ws, i) => {
           // `i` is the DISPLAY position and drives only the drop indicator.
@@ -359,6 +369,7 @@ export default function MiniSidebar({ rail = false, collapsed = true }: { rail?:
           );
         })}
       </div>
+      )}
       </>}
       {!showWorkspaces && <div className="flex-1" />}
 

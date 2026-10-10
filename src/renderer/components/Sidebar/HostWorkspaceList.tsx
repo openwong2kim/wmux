@@ -222,3 +222,86 @@ function HostWorkspaceRow({ hostId, row, isActive, disabled, tabStop, onOpen }: 
     </div>
   );
 }
+
+/**
+ * The collapsed rail's workspace avatars while a paired computer is selected:
+ * the same rows as the expanded list, drawn as the local avatars are (initial
+ * plus position, colour rail, status mark in the corner). Opening one is the
+ * list's open; nothing local is offered (no drag, no unread, no new workspace).
+ */
+export function HostRailAvatars({ hostId }: { hostId: string }) {
+  const status = useStore((s) => s.pcRailHostStatus[hostId] ?? 'reachable');
+  const rows = useStore((s) => selectPcRailRows(s, hostId));
+  const stale = useStore((s) => selectPcRailFeedStale(s, hostId));
+  const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
+  const state = pcRailHostState(status);
+  const offline = state === 'offline' || state === 'insecure' || stale;
+  const open = useCallback((row: PcRailWorkspaceRow) => {
+    if (offline || row.empty) return;
+    useStore.getState().openShadowWorkspace(hostId, row.id);
+    useStore.getState().setAppRoute('workspaces');
+  }, [hostId, offline]);
+  return (
+    <div className="flex-1 overflow-y-auto py-2 flex flex-col items-center gap-1" data-host-rail={hostId}>
+      {rows.map((row, i) => (
+        <HostRailAvatar
+          key={row.id}
+          hostId={hostId}
+          row={row}
+          position={i + 1}
+          isActive={formatShadowWorkspaceId(hostId, row.id) === activeWorkspaceId}
+          disabled={offline || !!row.empty}
+          onOpen={open}
+        />
+      ))}
+    </div>
+  );
+}
+
+function HostRailAvatar({ hostId, row, position, isActive, disabled, onOpen }: {
+  hostId: string;
+  row: PcRailWorkspaceRow;
+  position: number;
+  isActive: boolean;
+  disabled: boolean;
+  onOpen: (row: PcRailWorkspaceRow) => void;
+}) {
+  const t = useT();
+  const aliasLabel = useStore((s) => selectPcRailRowAlias(s, hostId, row.id)?.label);
+  const aliasColor = useStore((s) => selectPcRailRowAlias(s, hostId, row.id)?.color);
+  const displayName = aliasLabel || row.name || row.id;
+  const tagHex = workspaceColorHex(normalizeWorkspaceColor(aliasColor ?? row.color));
+  const attention = remoteWorkspaceAttentionClass({ panes: row.panes, stale: disabled && !row.empty });
+  const markStatus = MARK_STATUS[attention];
+  const statusText = attention === 'needsYou' ? t('workspace.needsYou')
+    : markStatus !== 'idle' ? t(AGENT_STATUS_ICON[markStatus].labelKey) : undefined;
+  const name = [displayName, statusText].filter(Boolean).join(', ');
+  return (
+    <div className="relative w-8">
+      {tagHex && (
+        <div className="absolute top-1 bottom-1 w-[3px] rounded-full z-[1] pointer-events-none" style={{ left: 0, background: tagHex }} aria-hidden="true" />
+      )}
+      <button
+        type="button"
+        className={`relative w-8 h-8 rounded-md flex items-center justify-center text-[10px] font-bold font-mono select-none transition-colors ${
+          isActive
+            ? 'bg-[var(--selection)] text-[var(--text-main)]'
+            : 'text-[color-mix(in_srgb,var(--text-main)_50%,transparent)] hover:bg-[var(--hover-fill)] hover:text-[var(--text-main)]'
+        } ${disabled ? 'opacity-60' : ''}`}
+        aria-disabled={disabled || undefined}
+        onClick={() => onOpen(row)}
+        title={name}
+        aria-label={name}
+        aria-current={isActive ? 'true' : undefined}
+        data-host-rail-workspace={row.id}
+      >
+        {`${Array.from(displayName)[0]?.toUpperCase() ?? '?'}${position}`}
+        {statusText && (
+          <span className="absolute -bottom-0.5 -right-0.5 flex items-center justify-center rounded-full bg-[var(--bg-mantle)]" data-rail-status>
+            <StatusMarkView status={markStatus} />
+          </span>
+        )}
+      </button>
+    </div>
+  );
+}

@@ -1,5 +1,4 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
-import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import { FOCUS_RING } from '../focusRing';
@@ -7,10 +6,25 @@ import { IconBell, IconChevron, IconComputer, IconServer } from '../icons';
 import PaneActionsMenu, { PANE_ACTIONS_MENU_WIDTH, type PaneActionItem } from '../Pane/PaneActionsMenu';
 import { selectFleetSectionCounts } from '../../stores/selectors/fleet';
 import { selectActivePcId, selectPcRailHosts, selectPcRailVisible } from '../../stores/selectors/pcRail';
-import { LOCAL_PC_ID, type PcRailHost } from '../../../shared/pcRail';
+import { LOCAL_PC_ID, isShadowWorkspaceId, type PcRailHost } from '../../../shared/pcRail';
+import type { Workspace } from '../../../shared/types';
+import type { StoreState } from '../../stores';
 import { accessLines, badgeText, hostSummary, monogram, pcIconState } from '../PcRail/pcRailModel';
 
 type Anchor = { top: number; left: number; right: number; bottom: number };
+
+// This computer's needs-you: Fleet's count over local workspaces only. A
+// shadow workspace's tabs are another computer's, already in its host count.
+// The filtered list is kept per source array so Fleet's own memo still hits.
+let localMemo: { src: Workspace[]; out: Workspace[] } | null = null;
+function localWorkspaces(all: Workspace[]): Workspace[] {
+  if (localMemo?.src === all) return localMemo.out;
+  const out = all.some((w) => isShadowWorkspaceId(w.id)) ? all.filter((w) => !isShadowWorkspaceId(w.id)) : all;
+  localMemo = { src: all, out };
+  return out;
+}
+const selectLocalNeedsYou = (s: StoreState): number =>
+  selectFleetSectionCounts({ ...s, workspaces: localWorkspaces(s.workspaces) }).needsYou;
 type MenuState = { kind: 'main' } | { kind: 'host'; hostId: string };
 
 /**
@@ -28,7 +42,7 @@ function usePcSwitcher() {
   const storedActive = useStore(selectActivePcId);
   // An id that is no longer paired reads as this computer.
   const active = hosts.some((h) => h.id === storedActive) ? storedActive : LOCAL_PC_ID;
-  const localNeeds = useStore(useShallow(selectFleetSectionCounts)).needsYou;
+  const localNeeds = useStore(selectLocalNeedsYou);
   // The selected computer's rows are on screen, so only the others count.
   const othersNeedYou = (active === LOCAL_PC_ID ? 0 : localNeeds)
     + hosts.reduce((sum, h) => sum + (h.id === active ? 0 : h.attention.needsYou), 0);

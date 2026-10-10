@@ -100,14 +100,20 @@ export default function PaneActionsMenu({ anchor, triggerRef, items, onClose, fo
   // the menu to where the trigger USED to be.
   useEffect(() => {
     const onMoved = () => onClose();
+    // The menu's own scroll (a long list, or arrow keys scrolling an item into
+    // view) moves nothing it is anchored to.
+    const onScroll = (e: Event) => {
+      if (e.target instanceof Node && menuRef.current?.contains(e.target)) return;
+      onClose();
+    };
     window.addEventListener('resize', onMoved);
     // Scroll too, and captured — the tab strip's own overflow-x scroll does
     // not bubble. A fixed-position menu whose anchor scrolled away would stay
     // behind, floating detached from the header that opened it.
-    window.addEventListener('scroll', onMoved, true);
+    window.addEventListener('scroll', onScroll, true);
     return () => {
       window.removeEventListener('resize', onMoved);
-      window.removeEventListener('scroll', onMoved, true);
+      window.removeEventListener('scroll', onScroll, true);
     };
   }, [onClose]);
 

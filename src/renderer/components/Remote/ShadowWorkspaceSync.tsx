@@ -69,8 +69,9 @@ export default function ShadowWorkspaceSync() {
         }
       }
       if (state.pcRail.activePcId !== prev.pcRail.activePcId) {
-        firstListSeen.add(pc);
         const st = useStore.getState();
+        // Selected before its first list: leave it to the first-list branch.
+        if (pc === LOCAL_PC_ID || st.pcRailFeeds[pc]?.fetchedAt) firstListSeen.add(pc);
         if (pc === LOCAL_PC_ID) {
           if (isShadowWorkspaceId(st.activeWorkspaceId)) {
             const back = st.workspaces.find((w) => w.id === lastLocal)

@@ -277,7 +277,9 @@ no difference). A2A-only peers stay on the Remote page.
 - **Collapsed sidebar:** with a computer paired, one item at the top of the
   rail's workspace list — the computer glyph for this one, the monogram for
   a host — carrying the same badge and opening the same dropdown beside the
-  rail. Nothing more on the rail.
+  rail. The rail's workspace avatars follow the selection: a paired
+  computer's own workspaces (same avatar look, no new-workspace button),
+  this computer's again when it is selected.
 - **Keys:** rebindable `Alt+Shift+↑/↓` cycles computers (as `Alt+↑/↓`
   cycles workspaces), `Alt+Shift+Home` returns to this computer; they are
   Settings › Shortcuts rows like any built-in, claimed only while a computer
