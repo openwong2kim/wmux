@@ -234,7 +234,8 @@ export function registerAllHandlers(
   const cleanupWeb = registerWebHandlers(() => daemonClient ?? null);
   // Scheduled runs — unconditional like web: with no daemon the calls resolve
   // empty / refused instead of meeting a missing handler.
-  const cleanupAutomation = registerAutomationHandlers(() => daemonClient ?? null);
+  // A browser identity is granted from the main window's top frame only.
+  const cleanupAutomation = registerAutomationHandlers(() => daemonClient ?? null, undefined, getWindow);
 
   // Multi-account registry (M1) — renderer-only, mode-agnostic (main owns
   // accounts.json in both local and daemon mode; spawn env is resolved in main).

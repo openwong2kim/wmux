@@ -544,4 +544,18 @@ export const ru = {
   'quitAndStop.stopFailedDetail': "Демон wmux не остановился, поэтому wmux остаётся открытым, а сеансы продолжают работать. Выполните wmux daemon stop в терминале и завершите работу ещё раз.",
   'quitAndStop.alreadyQuittingMessage': "wmux уже завершает работу.",
   'quitAndStop.alreadyQuittingDetail': "При этом выходе сеансы продолжат работать в фоне. Чтобы остановить их, выполните wmux daemon stop в терминале.",
+  // Scheduled runs: browser identity (protected pane)
+  'schedules.browserIdentity': "Браузерная учётная запись",
+  'schedules.browserIdentityHint': "Запуск использует браузер и аккаунт одной защищённой панели, только с её разрешёнными сайтами. При сохранении wmux попросит подтверждение.",
+  'schedules.browserWorkspace': "Рабочее пространство",
+  'schedules.browserPane': "Защищённая панель",
+  'schedules.browserNone': "Нет",
+  'schedules.browserLoading': "Загрузка панелей…",
+  'schedules.browserPickPane': "Выберите защищённую панель",
+  'schedules.browserNoPanes': "В этом рабочем пространстве нет защищённых панелей",
+  'schedules.browserPaneUnavailable': "Эта панель больше недоступна",
+  'schedules.problem.browserPane': "Выберите защищённую панель или установите «Нет».",
+  'schedules.problem.browserMode': "Расписание Codex с браузерной учётной записью работает в режиме одобрения.",
+  'schedules.detail.browser_needs_consent': "Вызов браузера отклонён: политика панели изменилась после разрешения расписания. Сохраните расписание снова, чтобы разрешить его.",
+  'schedules.detail.browser_policy_denied': "Вызов браузера отклонён политикой сайтов панели.",
 } as const;

@@ -786,8 +786,14 @@ const electronAPI = {
       ipcRenderer.invoke(IPC.AUTOMATION_SET_ENABLED, id, enabled) as Promise<
         import('../shared/automation').AutomationMutationResult
       >,
-    grant: (id: string, mode: import('../shared/automation').AutomationPermissionMode, allowedTools?: string[]) =>
-      ipcRenderer.invoke(IPC.AUTOMATION_GRANT, id, mode, allowedTools) as Promise<
+    // browserIdentity: the operator's pick (main resolves and confirms it), null to remove one.
+    grant: (
+      id: string,
+      mode: import('../shared/automation').AutomationPermissionMode,
+      allowedTools?: string[],
+      browserIdentity?: { workspaceId: string; paneId: string; paneLabel: string } | null,
+    ) =>
+      ipcRenderer.invoke(IPC.AUTOMATION_GRANT, id, mode, allowedTools, ...(browserIdentity === undefined ? [] : [browserIdentity])) as Promise<
         import('../shared/automation').AutomationMutationResult
       >,
     runNow: (id: string, kind: 'manual' | 'test') =>

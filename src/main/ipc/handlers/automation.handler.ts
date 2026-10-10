@@ -2,15 +2,20 @@ import { BrowserWindow, dialog, ipcMain } from 'electron';
 import { IPC } from '../../../shared/constants';
 import { wrapHandler } from '../wrapHandler';
 import type { DaemonClient } from '../../DaemonClient';
-import type {
-  Automation,
-  AutomationDraft,
-  AutomationMutationResult,
-  AutomationOkResult,
-  AutomationPermissionMode,
-  AutomationRunNowResult,
-  AutomationRun,
+import {
+  AUTOMATION_CAPABILITY_BROWSER_IDENTITY,
+  type Automation,
+  type AutomationBrowserIdentity,
+  type AutomationDraft,
+  type AutomationMutationResult,
+  type AutomationOkResult,
+  type AutomationPermissionMode,
+  type AutomationRunNowResult,
+  type AutomationRun,
 } from '../../../shared/automation';
+import { browserIdentitySources, signBrowserIdentity } from '../../automation/runIdentity';
+import { isTrustedMainFrameSender, UNTRUSTED_SENDER_ERROR } from './browserPolicy.handler';
+import { getWorkspaceMirror } from '../../workspace/WorkspaceMirror';
 import { AutomationClient } from '../../automation/AutomationClient';
 import { getAutomationUiLocale, setAutomationUiLocale } from '../../automation/AutomationBridge';
 import { bypassConfirmCopy, type AutomationUiLocale } from '../../automation/toastText';
@@ -75,6 +80,118 @@ export function autoConfirmCopy(locale: AutomationUiLocale, automationName: stri
     };
 }
 
+/** What the native confirm shows for a browser identity (all resolved by main). */
+export interface BrowserIdentityConfirmView {
+  paneLabel: string;
+  profileId: string;
+  hosts: string[];
+  mode: AutomationPermissionMode;
+}
+
+/**
+ * Native confirmation for binding a browser identity to a schedule: the pane,
+ * its Chrome profile and its allowed sites, as main resolved them. Shown in
+ * every permission mode — the identity is a grant of its own.
+ */
+export type IdentityConfirmFn = (win: BrowserWindow | null, automationName: string, view: BrowserIdentityConfirmView) => Promise<boolean>;
+
+/** Main-owned copy for the browser identity confirmation (en / ko, like Bypass). */
+export function identityConfirmCopy(locale: AutomationUiLocale, automationName: string, view: BrowserIdentityConfirmView): {
+  message: string; detail: string; confirm: string; cancel: string;
+} {
+  const { cancel } = bypassConfirmCopy(locale, automationName);
+  const flat = (v: string, max: number) => {
+    // eslint-disable-next-line no-control-regex -- stripping control characters is the point
+    const one = v.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g, ' ').replace(/\s+/g, ' ').trim();
+    const points = Array.from(one);
+    return points.length > max ? `${points.slice(0, max - 1).join('')}…` : one;
+  };
+  const name = flat(automationName, 80) || 'wmux';
+  const pane = flat(view.paneLabel, 80) || 'pane';
+  const profile = flat(view.profileId, 80);
+  const shown = view.hosts.slice(0, 8).map((h) => flat(h, 80));
+  const more = view.hosts.length > shown.length ? view.hosts.length - shown.length : 0;
+  const unattended = view.mode !== 'approval';
+  if (locale === 'ko') {
+    const sites = view.hosts.length === 0 ? '(허용된 사이트 없음)' : `${shown.join(', ')}${more ? ` 외 ${more}개` : ''}`;
+    return {
+      message: `"${name}"이(가) "${pane}" 창의 브라우저를 쓰도록 할까요?`,
+      detail: `Chrome 프로필: ${profile}\n허용 사이트: ${sites}\n\n정한 시각에${unattended ? ', 자리에 없을 때도' : ''} 이 계정으로 위 사이트만 엽니다. 이 실행에서는 wmux 도구 중 브라우저만 쓸 수 있습니다. 창의 정책이 바뀌면 다시 허용할 때까지 브라우저 호출이 거부됩니다.`,
+      confirm: '브라우저 허용',
+      cancel,
+    };
+  }
+  const sites = view.hosts.length === 0 ? '(no allowed sites)' : `${shown.join(', ')}${more ? ` and ${more} more` : ''}`;
+  return {
+    message: `Let "${name}" use the browser of pane "${pane}"?`,
+    detail: `Chrome profile: ${profile}\nAllowed sites: ${sites}\n\nAt the scheduled time${unattended ? ', including while you are away,' : ''} it opens only these sites as this account. The run gets wmux's browser tools and nothing else of wmux. If the pane's policy changes, its browser calls are refused until you grant it again.`,
+    confirm: 'Allow browser',
+    cancel,
+  };
+}
+
+export const confirmIdentityNatively: IdentityConfirmFn = async (win, automationName, view) => {
+  const copy = identityConfirmCopy(getAutomationUiLocale(), automationName, view);
+  const opts = {
+    type: 'question' as const,
+    buttons: [copy.cancel, copy.confirm],
+    defaultId: 0,
+    cancelId: 0,
+    message: copy.message,
+    detail: copy.detail,
+    noLink: true,
+  };
+  const r = win && !win.isDestroyed() ? await dialog.showMessageBox(win, opts) : await dialog.showMessageBox(opts);
+  return r.response === 1;
+};
+
+/** The renderer's pick: a workspace and one of its protected panes. Labels are display only. */
+interface IdentityPick {
+  workspaceId: string;
+  paneId: string;
+  paneLabel: string;
+}
+
+function parseIdentityPick(raw: unknown): IdentityPick | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const r = raw as Record<string, unknown>;
+  const ok = (v: unknown): v is string => typeof v === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(v);
+  if (!ok(r.workspaceId) || !ok(r.paneId)) return null;
+  return {
+    workspaceId: r.workspaceId,
+    paneId: r.paneId,
+    paneLabel: typeof r.paneLabel === 'string' ? r.paneLabel.slice(0, 200) : '',
+  };
+}
+
+/**
+ * Resolve a pick against main's own state: the pane must live in that
+ * workspace now, be protected and confirmed for that workspace, and resolve to
+ * its own exclusive profile — the one its policy was confirmed for.
+ */
+export function resolveIdentityPick(
+  pick: IdentityPick,
+  paneWorkspace: (paneId: string) => string | null,
+): { ok: true; profileId: string; hosts: string[]; policyEpoch: number } | { ok: false; error: string } {
+  const src = browserIdentitySources();
+  if (!src) return { ok: false, error: 'The browser policy is not available' };
+  if (paneWorkspace(pick.paneId) !== pick.workspaceId) return { ok: false, error: 'That pane is not in the chosen workspace' };
+  const entry = src.entryFor(pick.paneId);
+  if (!entry || !entry.protected || entry.needsConfirm || entry.workspaceId !== pick.workspaceId) {
+    return { ok: false, error: 'That pane is not a protected browser pane with a confirmed site list' };
+  }
+  const profile = src.profileFor(pick.workspaceId, pick.paneId);
+  const binding = src.paneBindings()[pick.paneId];
+  if (
+    !profile || profile.toLowerCase() !== entry.profileId.toLowerCase()
+    || !binding || binding.workspaceId !== pick.workspaceId || binding.profile.toLowerCase() !== profile.toLowerCase()
+  ) {
+    return { ok: false, error: "That pane's Chrome profile changed; confirm its browser protection again" };
+  }
+  const hosts = entry.hosts.mode === 'allowlist' ? [...entry.hosts.allow] : ['*'];
+  return { ok: true, profileId: entry.profileId, hosts, policyEpoch: src.epoch() };
+}
+
 export const confirmGrantNatively: GrantConfirmFn = async (win, automationName, mode) => {
   const locale = getAutomationUiLocale();
   const copy = mode === 'auto' ? autoConfirmCopy(locale, automationName) : bypassConfirmCopy(locale, automationName);
@@ -94,6 +211,10 @@ export const confirmGrantNatively: GrantConfirmFn = async (win, automationName, 
 export function registerAutomationHandlers(
   getClient: () => DaemonClient | null,
   confirmGrant: GrantConfirmFn = confirmGrantNatively,
+  /** The main window: a browser identity is granted from its top frame only. */
+  getMainWindow: () => BrowserWindow | null = () => null,
+  confirmIdentity: IdentityConfirmFn = confirmIdentityNatively,
+  paneWorkspace: (paneId: string) => string | null = (paneId) => getWorkspaceMirror().getPaneWorkspaces()?.get(paneId) ?? null,
 ): () => void {
   const api = (): AutomationClient | null => {
     const client = getClient();
@@ -179,13 +300,29 @@ export function registerAutomationHandlers(
       id: unknown,
       mode: unknown,
       allowedTools: unknown,
+      rawIdentity?: unknown,
     ): Promise<AutomationMutationResult> => {
       const a = api();
       if (!a) return refuse();
       if (!isId(id) || !MODES.includes(mode as AutomationPermissionMode)) return refuse('invalid request');
+      // A browser identity (a pick, or null to remove one) is the operator's
+      // alone: only the main window's top frame may ask for it.
+      const identityRequested = rawIdentity !== undefined;
+      if (identityRequested && !isTrustedMainFrameSender(event, getMainWindow)) return refuse(UNTRUSTED_SENDER_ERROR);
+      const pick = rawIdentity === undefined || rawIdentity === null ? null : parseIdentityPick(rawIdentity);
+      if (identityRequested && rawIdentity !== null && !pick) return refuse('invalid browser identity');
       let expectedRevision: number | undefined;
-      if (mode === 'bypass' || mode === 'auto') {
+      let browserIdentity: AutomationBrowserIdentity | null | undefined;
+      if (mode === 'bypass' || mode === 'auto' || identityRequested) {
         const win = event?.sender ? BrowserWindow.fromWebContents(event.sender) : null;
+        if (identityRequested) {
+          // Before anything is sent: an older daemon would drop the identity
+          // and grant the schedule without it. Asked on every grant, so a
+          // daemon replaced since the last one is caught too.
+          if (!(await a.capabilities()).includes(AUTOMATION_CAPABILITY_BROWSER_IDENTITY)) {
+            return refuse('The wmux background service is too old for a browser identity; restart wmux and try again');
+          }
+        }
         // Read BEFORE the prompt: the grant is pinned to the revision the
         // human is confirming, and the daemon refuses it if an edit lands
         // while the prompt is open.
@@ -195,7 +332,32 @@ export function registerAutomationHandlers(
         } catch { /* refused below */ }
         if (!target) return refuse('Not found');
         expectedRevision = target.revision;
-        if (!(await confirmGrant(win, target.name, mode))) return refuse('cancelled');
+        if (pick) {
+          if (target.action.agent === 'codex' && mode !== 'approval') {
+            return refuse('A Codex schedule with a browser identity runs in approval mode only');
+          }
+          const resolved = resolveIdentityPick(pick, paneWorkspace);
+          if (!resolved.ok) return refuse(resolved.error);
+          const view = { paneLabel: pick.paneLabel || pick.paneId, profileId: resolved.profileId, hosts: resolved.hosts, mode: mode as AutomationPermissionMode };
+          // One prompt names the identity and, for Auto/Bypass, the mode.
+          if (!(await confirmIdentity(win, target.name, view))) return refuse('cancelled');
+          // What was confirmed must still be what is granted.
+          const again = resolveIdentityPick(pick, paneWorkspace);
+          if (!again.ok || again.policyEpoch !== resolved.policyEpoch || again.profileId !== resolved.profileId) {
+            return refuse("The pane's browser policy changed while you were confirming; grant it again");
+          }
+          browserIdentity = signBrowserIdentity(target.id, {
+            workspaceId: pick.workspaceId,
+            paneId: pick.paneId,
+            profileId: resolved.profileId,
+            hosts: resolved.hosts,
+            policyEpoch: resolved.policyEpoch,
+            boundRevision: target.revision + 1,
+          });
+        } else {
+          if (identityRequested) browserIdentity = null;
+          if ((mode === 'bypass' || mode === 'auto') && !(await confirmGrant(win, target.name, mode))) return refuse('cancelled');
+        }
       }
       const tools = Array.isArray(allowedTools) && allowedTools.every((t) => typeof t === 'string')
         ? (allowedTools as string[])
@@ -205,6 +367,7 @@ export function registerAutomationHandlers(
         mode: mode as AutomationPermissionMode,
         ...(tools ? { allowedTools: tools } : {}),
         ...(expectedRevision !== undefined ? { expectedRevision } : {}),
+        ...(browserIdentity !== undefined ? { browserIdentity } : {}),
       });
     },
   ));

@@ -543,4 +543,18 @@ export const id = {
   'quitAndStop.stopFailedDetail': "Daemon wmux tidak berhenti, jadi wmux tetap terbuka dan sesi Anda masih berjalan. Jalankan wmux daemon stop di terminal, lalu keluar lagi.",
   'quitAndStop.alreadyQuittingMessage': "wmux sedang keluar.",
   'quitAndStop.alreadyQuittingDetail': "Keluar kali ini membiarkan sesi Anda tetap berjalan di latar belakang. Untuk menghentikannya, jalankan wmux daemon stop di terminal.",
+  // Scheduled runs: browser identity (protected pane)
+  'schedules.browserIdentity': "Identitas browser",
+  'schedules.browserIdentityHint': "Run memakai browser dan akun satu panel terlindungi, terbatas pada situs yang diizinkan panel itu. wmux meminta konfirmasi saat Anda menyimpan.",
+  'schedules.browserWorkspace': "Ruang kerja",
+  'schedules.browserPane': "Panel terlindungi",
+  'schedules.browserNone': "Tidak ada",
+  'schedules.browserLoading': "Memuat panel…",
+  'schedules.browserPickPane': "Pilih panel terlindungi",
+  'schedules.browserNoPanes': "Tidak ada panel terlindungi di ruang kerja ini",
+  'schedules.browserPaneUnavailable': "Panel ini tidak tersedia lagi",
+  'schedules.problem.browserPane': "Pilih panel terlindungi, atau setel identitas browser ke Tidak ada.",
+  'schedules.problem.browserMode': "Jadwal Codex dengan identitas browser berjalan dalam mode persetujuan.",
+  'schedules.detail.browser_needs_consent': "Panggilan browser ditolak: kebijakan panel berubah setelah jadwal ini diizinkan. Simpan jadwal lagi untuk mengizinkannya.",
+  'schedules.detail.browser_policy_denied': "Panggilan browser ditolak oleh kebijakan situs panel.",
 } as const;

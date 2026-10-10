@@ -540,4 +540,18 @@ export const de = {
   'quitAndStop.stopFailedDetail': "Der wmux-Daemon wurde nicht beendet, daher bleibt wmux geöffnet und Ihre Sitzungen laufen weiter. Führen Sie wmux daemon stop in einem Terminal aus und beenden Sie wmux dann erneut.",
   'quitAndStop.alreadyQuittingMessage': "wmux wird bereits beendet.",
   'quitAndStop.alreadyQuittingDetail': "Bei diesem Beenden laufen Ihre Sitzungen im Hintergrund weiter. Um sie zu stoppen, führen Sie wmux daemon stop in einem Terminal aus.",
+  // Scheduled runs: browser identity (protected pane)
+  'schedules.browserIdentity': "Browser-Identität",
+  'schedules.browserIdentityHint': "Der Lauf nutzt den Browser und das Konto eines geschützten Bereichs, beschränkt auf dessen erlaubte Websites. wmux fragt beim Speichern nach.",
+  'schedules.browserWorkspace': "Arbeitsbereich",
+  'schedules.browserPane': "Geschützter Bereich",
+  'schedules.browserNone': "Keine",
+  'schedules.browserLoading': "Bereiche werden geladen…",
+  'schedules.browserPickPane': "Geschützten Bereich wählen",
+  'schedules.browserNoPanes': "Keine geschützten Bereiche in diesem Arbeitsbereich",
+  'schedules.browserPaneUnavailable': "Dieser Bereich ist nicht mehr verfügbar",
+  'schedules.problem.browserPane': "Wähle einen geschützten Bereich oder setze die Browser-Identität auf Keine.",
+  'schedules.problem.browserMode': "Ein Codex-Zeitplan mit Browser-Identität läuft im Genehmigungsmodus.",
+  'schedules.detail.browser_needs_consent': "Ein Browser-Aufruf wurde abgelehnt: Die Browser-Richtlinie des Bereichs hat sich seit der Freigabe geändert. Speichere den Zeitplan erneut, um ihn freizugeben.",
+  'schedules.detail.browser_policy_denied': "Ein Browser-Aufruf wurde von der Website-Richtlinie des Bereichs abgelehnt.",
 } as const;

@@ -544,4 +544,18 @@ export const es = {
   'quitAndStop.stopFailedDetail': "El daemon de wmux no se detuvo, así que wmux sigue abierto y tus sesiones siguen en ejecución. Ejecuta wmux daemon stop en una terminal y vuelve a salir.",
   'quitAndStop.alreadyQuittingMessage': "wmux ya se está cerrando.",
   'quitAndStop.alreadyQuittingDetail': "Este cierre deja tus sesiones en ejecución en segundo plano. Para detenerlas, ejecuta wmux daemon stop en una terminal.",
+  // Scheduled runs: browser identity (protected pane)
+  'schedules.browserIdentity': "Identidad del navegador",
+  'schedules.browserIdentityHint': "La ejecución usa el navegador y la cuenta de un panel protegido, limitada a los sitios permitidos de ese panel. wmux pide confirmación al guardar.",
+  'schedules.browserWorkspace': "Espacio de trabajo",
+  'schedules.browserPane': "Panel protegido",
+  'schedules.browserNone': "Ninguna",
+  'schedules.browserLoading': "Cargando paneles…",
+  'schedules.browserPickPane': "Elige un panel protegido",
+  'schedules.browserNoPanes': "No hay paneles protegidos en este espacio de trabajo",
+  'schedules.browserPaneUnavailable': "Este panel ya no está disponible",
+  'schedules.problem.browserPane': "Elige un panel protegido o deja la identidad del navegador en Ninguna.",
+  'schedules.problem.browserMode': "Una programación de Codex con identidad de navegador se ejecuta en modo de aprobación.",
+  'schedules.detail.browser_needs_consent': "Se rechazó una llamada del navegador: la política del panel cambió después de autorizar la programación. Guárdala de nuevo para autorizarla.",
+  'schedules.detail.browser_policy_denied': "La política de sitios del panel rechazó una llamada del navegador.",
 } as const;

@@ -543,4 +543,18 @@ export const fr = {
   'quitAndStop.stopFailedDetail': "Le démon wmux ne s’est pas arrêté : wmux reste ouvert et vos sessions tournent toujours. Exécutez wmux daemon stop dans un terminal, puis quittez à nouveau.",
   'quitAndStop.alreadyQuittingMessage': "wmux est déjà en train de quitter.",
   'quitAndStop.alreadyQuittingDetail': "Cette fermeture laisse vos sessions tourner en arrière-plan. Pour les arrêter, exécutez wmux daemon stop dans un terminal.",
+  // Scheduled runs: browser identity (protected pane)
+  'schedules.browserIdentity': "Identité de navigateur",
+  'schedules.browserIdentityHint': "L'exécution utilise le navigateur et le compte d'un volet protégé, limité aux sites autorisés de ce volet. wmux demande confirmation à l'enregistrement.",
+  'schedules.browserWorkspace': "Espace de travail",
+  'schedules.browserPane': "Volet protégé",
+  'schedules.browserNone': "Aucune",
+  'schedules.browserLoading': "Chargement des volets…",
+  'schedules.browserPickPane': "Choisir un volet protégé",
+  'schedules.browserNoPanes': "Aucun volet protégé dans cet espace de travail",
+  'schedules.browserPaneUnavailable': "Ce volet n'est plus disponible",
+  'schedules.problem.browserPane': "Choisissez un volet protégé ou réglez l'identité de navigateur sur Aucune.",
+  'schedules.problem.browserMode': "Une planification Codex avec une identité de navigateur s'exécute en mode Approbation.",
+  'schedules.detail.browser_needs_consent': "Un appel du navigateur a été refusé : la politique du volet a changé depuis l'autorisation. Enregistrez à nouveau la planification pour l'autoriser.",
+  'schedules.detail.browser_policy_denied': "Un appel du navigateur a été refusé par la politique de sites du volet.",
 } as const;

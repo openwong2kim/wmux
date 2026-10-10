@@ -4350,6 +4350,20 @@ export const en = {
   'quitAndStop.stopFailedDetail': "The wmux daemon did not stop, so wmux stays open and your sessions are still running. Run wmux daemon stop in a terminal, then quit again.",
   'quitAndStop.alreadyQuittingMessage': "wmux is already quitting.",
   'quitAndStop.alreadyQuittingDetail': "This quit leaves your sessions running in the background. To stop them, run wmux daemon stop in a terminal.",
+  // Scheduled runs: browser identity (protected pane)
+  'schedules.browserIdentity': "Browser identity",
+  'schedules.browserIdentityHint': "Let the run use one protected pane's browser and account, limited to that pane's allowed sites. wmux asks you to confirm when you save.",
+  'schedules.browserWorkspace': "Workspace",
+  'schedules.browserPane': "Protected pane",
+  'schedules.browserNone': "None",
+  'schedules.browserLoading': "Loading panes…",
+  'schedules.browserPickPane': "Choose a protected pane",
+  'schedules.browserNoPanes': "No protected panes in this workspace",
+  'schedules.browserPaneUnavailable': "This pane is no longer available",
+  'schedules.problem.browserPane': "Choose a protected pane, or set the browser identity to None.",
+  'schedules.problem.browserMode': "A Codex schedule with a browser identity runs in Approval mode.",
+  'schedules.detail.browser_needs_consent': "A browser call was refused: the pane's browser policy changed after this schedule was granted. Save the schedule again to grant it.",
+  'schedules.detail.browser_policy_denied': "A browser call was refused by the pane's site policy.",
 } as const;
 
 export type TranslationKey = keyof typeof en;

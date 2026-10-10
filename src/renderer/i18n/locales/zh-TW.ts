@@ -579,4 +579,18 @@ export const zhTW = {
   'quitAndStop.stopFailedDetail': "wmux 常駐程式未停止，因此 wmux 保持開啟，工作階段仍在執行。請在終端機中執行 wmux daemon stop，然後再次結束。",
   'quitAndStop.alreadyQuittingMessage': "wmux 正在結束。",
   'quitAndStop.alreadyQuittingDetail': "這次結束會讓工作階段在背景繼續執行。若要停止，請在終端機中執行 wmux daemon stop。",
+  // Scheduled runs: browser identity (protected pane)
+  'schedules.browserIdentity': "瀏覽器身分",
+  'schedules.browserIdentityHint': "讓此次執行使用一個受保護窗格的瀏覽器與帳號，僅限該窗格允許的網站。儲存時 wmux 會請你確認。",
+  'schedules.browserWorkspace': "工作區",
+  'schedules.browserPane': "受保護的窗格",
+  'schedules.browserNone': "無",
+  'schedules.browserLoading': "正在載入窗格…",
+  'schedules.browserPickPane': "選擇受保護的窗格",
+  'schedules.browserNoPanes': "此工作區沒有受保護的窗格",
+  'schedules.browserPaneUnavailable': "此窗格已無法使用",
+  'schedules.problem.browserPane': "請選擇受保護的窗格，或將瀏覽器身分設為「無」。",
+  'schedules.problem.browserMode': "具瀏覽器身分的 Codex 排程以核准模式執行。",
+  'schedules.detail.browser_needs_consent': "瀏覽器呼叫遭拒：授權此排程後窗格的瀏覽器政策已變更。請重新儲存排程以授權。",
+  'schedules.detail.browser_policy_denied': "窗格的網站政策拒絕了瀏覽器呼叫。",
 } as const;

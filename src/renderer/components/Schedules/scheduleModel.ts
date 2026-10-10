@@ -26,6 +26,13 @@ export interface ScheduleForm {
   maxRunMinutes: string;
   mode: AutomationPermissionMode;
   toolsText: string;
+  /**
+   * Browser identity: the workspace and the protected pane the run acts as.
+   * Both '' = none (the default; the run behaves exactly as without one). Not
+   * part of the draft: main resolves, confirms and binds it at grant time.
+   */
+  browserWorkspaceId: string;
+  browserPaneId: string;
 }
 
 export const DAILY = [0, 1, 2, 3, 4, 5, 6];
@@ -62,6 +69,7 @@ export function emptyForm(): ScheduleForm {
     weekdays: WEEKDAYS.slice(), time: '09:00', model: '', effort: '',
     graceMinutes: String(AUTOMATION_DEFAULTS.graceMinutes), awaitTimeoutMinutes: '', maxRunMinutes: '',
     mode: defaultModeFor('claude'), toolsText: '',
+    browserWorkspaceId: '', browserPaneId: '',
   };
 }
 
@@ -81,6 +89,8 @@ export function formFromAutomation(a: Automation): ScheduleForm {
     maxRunMinutes: a.policy.maxRunMinutes !== undefined ? String(a.policy.maxRunMinutes) : '',
     mode: a.permission.mode,
     toolsText: (a.permission.allowedTools ?? []).join(', '),
+    browserWorkspaceId: a.action.browserIdentity?.workspaceId ?? '',
+    browserPaneId: a.action.browserIdentity?.paneId ?? '',
   };
 }
 
@@ -108,7 +118,9 @@ export function usesToolList(form: Pick<ScheduleForm, 'agent' | 'mode'>): boolea
   return form.mode === 'scoped' && form.agent === 'claude';
 }
 
-export type FormProblem = 'name' | 'prompt' | 'promptTooLong' | 'cwd' | 'weekdays' | 'time' | 'grace' | 'awaitTimeout' | 'tools';
+export type FormProblem =
+  | 'name' | 'prompt' | 'promptTooLong' | 'cwd' | 'weekdays' | 'time' | 'grace' | 'awaitTimeout' | 'tools'
+  | 'browserPane' | 'browserMode';
 
 export function validateForm(form: ScheduleForm): FormProblem[] {
   const problems: FormProblem[] = [];
@@ -124,6 +136,9 @@ export function validateForm(form: ScheduleForm): FormProblem[] {
     const { tools, invalid } = parseToolNames(form.toolsText);
     if (invalid.length > 0 || tools.length === 0) problems.push('tools');
   }
+  if (form.browserWorkspaceId && !form.browserPaneId) problems.push('browserPane');
+  // Codex has no per-tool control: a Codex run with a browser identity is approval-only.
+  if (form.browserPaneId && form.agent === 'codex' && form.mode !== 'approval') problems.push('browserMode');
   return problems;
 }
 
@@ -175,6 +190,13 @@ export function revisionFieldsChanged(original: Automation, form: ScheduleForm):
  * so the schedule is never left skipping as needs_regrant).
  */
 export function grantNeeded(original: Automation | null, form: ScheduleForm, permissionTouched: boolean): boolean {
+  // A browser identity is a grant of its own, in every mode: picking,
+  // changing or removing one, or an edit that changes what runs under one,
+  // is granted (and confirmed by main) in the same save.
+  if (form.browserPaneId || original?.action.browserIdentity) {
+    if (!original || identityChanged(original, form) || permissionTouched) return true;
+    return revisionFieldsChanged(original, form);
+  }
   if (!original) return form.mode !== 'approval';
   if (!permissionTouched) return form.mode !== 'approval' && revisionFieldsChanged(original, form);
   // A pick is granted at the revision the update just produced — including
@@ -251,4 +273,25 @@ export function formFromTemplate(template: ScheduleTemplate, name: string, promp
     weekdays: template.weekdays.slice(),
     time: template.time,
   };
+}
+
+/** Whether the form's browser identity differs from the schedule's. */
+export function identityChanged(original: Automation, form: ScheduleForm): boolean {
+  const id = original.action.browserIdentity;
+  return (id?.workspaceId ?? '') !== form.browserWorkspaceId || (id?.paneId ?? '') !== form.browserPaneId;
+}
+
+/**
+ * What the grant carries for the browser identity: the pick, null to remove
+ * the schedule's one, or undefined when neither has one (today's grant).
+ */
+export function browserIdentityArg(
+  original: Automation | null,
+  form: ScheduleForm,
+  paneLabel: string,
+): { workspaceId: string; paneId: string; paneLabel: string } | null | undefined {
+  if (form.browserWorkspaceId && form.browserPaneId) {
+    return { workspaceId: form.browserWorkspaceId, paneId: form.browserPaneId, paneLabel };
+  }
+  return original?.action.browserIdentity ? null : undefined;
 }

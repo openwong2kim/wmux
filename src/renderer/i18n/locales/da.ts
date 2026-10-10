@@ -542,4 +542,18 @@ export const da = {
   'quitAndStop.stopFailedDetail': "wmux-dæmonen stoppede ikke, så wmux forbliver åben, og dine sessioner kører stadig. Kør wmux daemon stop i en terminal, og afslut igen.",
   'quitAndStop.alreadyQuittingMessage': "wmux er allerede ved at afslutte.",
   'quitAndStop.alreadyQuittingDetail': "Denne afslutning lader dine sessioner køre videre i baggrunden. Kør wmux daemon stop i en terminal for at stoppe dem.",
+  // Scheduled runs: browser identity (protected pane)
+  'schedules.browserIdentity': "Browseridentitet",
+  'schedules.browserIdentityHint': "Kørslen bruger browseren og kontoen fra én beskyttet rude, begrænset til rudens tilladte websteder. wmux beder om bekræftelse, når du gemmer.",
+  'schedules.browserWorkspace': "Arbejdsområde",
+  'schedules.browserPane': "Beskyttet rude",
+  'schedules.browserNone': "Ingen",
+  'schedules.browserLoading': "Indlæser ruder…",
+  'schedules.browserPickPane': "Vælg en beskyttet rude",
+  'schedules.browserNoPanes': "Ingen beskyttede ruder i dette arbejdsområde",
+  'schedules.browserPaneUnavailable': "Denne rude er ikke længere tilgængelig",
+  'schedules.problem.browserPane': "Vælg en beskyttet rude, eller sæt browseridentiteten til Ingen.",
+  'schedules.problem.browserMode': "En Codex-plan med browseridentitet kører i godkendelsestilstand.",
+  'schedules.detail.browser_needs_consent': "Et browserkald blev afvist: rudens politik er ændret, efter planen blev godkendt. Gem planen igen for at godkende den.",
+  'schedules.detail.browser_policy_denied': "Et browserkald blev afvist af rudens webstedspolitik.",
 } as const;

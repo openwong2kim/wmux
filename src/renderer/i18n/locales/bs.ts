@@ -543,4 +543,18 @@ export const bs = {
   'quitAndStop.stopFailedDetail': "wmux daemon se nije zaustavio, pa wmux ostaje otvoren i vaše sesije i dalje rade. Pokrenite wmux daemon stop u terminalu, pa ponovo zatvorite.",
   'quitAndStop.alreadyQuittingMessage': "wmux se već zatvara.",
   'quitAndStop.alreadyQuittingDetail': "Ovo zatvaranje ostavlja sesije da rade u pozadini. Da ih zaustavite, pokrenite wmux daemon stop u terminalu.",
+  // Scheduled runs: browser identity (protected pane)
+  'schedules.browserIdentity': "Identitet preglednika",
+  'schedules.browserIdentityHint': "Pokretanje koristi preglednik i račun jednog zaštićenog okna, ograničeno na njegove dozvoljene stranice. wmux traži potvrdu pri spremanju.",
+  'schedules.browserWorkspace': "Radni prostor",
+  'schedules.browserPane': "Zaštićeno okno",
+  'schedules.browserNone': "Nema",
+  'schedules.browserLoading': "Učitavanje okna…",
+  'schedules.browserPickPane': "Odaberite zaštićeno okno",
+  'schedules.browserNoPanes': "Nema zaštićenih okna u ovom radnom prostoru",
+  'schedules.browserPaneUnavailable': "Ovo okno više nije dostupno",
+  'schedules.problem.browserPane': "Odaberite zaštićeno okno ili postavite identitet preglednika na Nema.",
+  'schedules.problem.browserMode': "Codex raspored s identitetom preglednika radi u načinu odobravanja.",
+  'schedules.detail.browser_needs_consent': "Poziv preglednika je odbijen: pravila okna su se promijenila nakon odobrenja rasporeda. Ponovo spremite raspored da ga odobrite.",
+  'schedules.detail.browser_policy_denied': "Pravila stranica okna odbila su poziv preglednika.",
 } as const;

@@ -309,7 +309,7 @@ export interface RpcContext {
    * Deliberately NOT flattened to `string | undefined`: that collapses `stale`
    * into `unclaimed` and makes the demotion the easy thing to write.
    */
-  workspaceClaim?: { kind: 'bound'; workspaceId: string; ptyId?: string } | { kind: 'stale' };
+  workspaceClaim?: { kind: 'bound'; workspaceId: string; ptyId?: string; browserOnly?: true } | { kind: 'stale' };
   /**
    * The envelope's `callerPtyId`, copied verbatim by RpcRouter (trimmed, empty
    * dropped). Advisory — see `RpcRequest.callerPtyId`.

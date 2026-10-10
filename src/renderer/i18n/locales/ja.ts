@@ -592,4 +592,18 @@ export const ja = {
   'quitAndStop.stopFailedDetail': "wmux デーモンが停止しなかったため、wmux は開いたままです。セッションはまだ実行中です。ターミナルで wmux daemon stop を実行してから、もう一度終了してください。",
   'quitAndStop.alreadyQuittingMessage': "wmux はすでに終了処理中です。",
   'quitAndStop.alreadyQuittingDetail': "この終了ではセッションはバックグラウンドで実行し続けます。停止するには、ターミナルで wmux daemon stop を実行してください。",
+  // Scheduled runs: browser identity (protected pane)
+  'schedules.browserIdentity': "ブラウザ ID",
+  'schedules.browserIdentityHint': "実行に、保護されたペイン 1 つのブラウザとアカウントを使わせます。そのペインで許可されたサイトだけに限られ、保存時に wmux が確認します。",
+  'schedules.browserWorkspace': "ワークスペース",
+  'schedules.browserPane': "保護されたペイン",
+  'schedules.browserNone': "なし",
+  'schedules.browserLoading': "ペインを読み込み中…",
+  'schedules.browserPickPane': "保護されたペインを選択",
+  'schedules.browserNoPanes': "このワークスペースに保護されたペインはありません",
+  'schedules.browserPaneUnavailable': "このペインはもう使用できません",
+  'schedules.problem.browserPane': "保護されたペインを選ぶか、ブラウザ ID を「なし」にしてください。",
+  'schedules.problem.browserMode': "ブラウザ ID を持つ Codex のスケジュールは承認モードで実行されます。",
+  'schedules.detail.browser_needs_consent': "ブラウザの呼び出しが拒否されました: このスケジュールを許可した後にペインのブラウザポリシーが変わりました。スケジュールを保存し直して許可してください。",
+  'schedules.detail.browser_policy_denied': "ペインのサイトポリシーがブラウザの呼び出しを拒否しました。",
 } as const;

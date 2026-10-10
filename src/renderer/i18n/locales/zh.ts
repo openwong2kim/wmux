@@ -3481,4 +3481,18 @@ export const zh = {
   'quitAndStop.stopFailedDetail': "wmux 守护进程未停止，因此 wmux 保持打开，会话仍在运行。请在终端中运行 wmux daemon stop，然后再次退出。",
   'quitAndStop.alreadyQuittingMessage': "wmux 正在退出。",
   'quitAndStop.alreadyQuittingDetail': "此次退出会让会话在后台继续运行。要停止它们，请在终端中运行 wmux daemon stop。",
+  // Scheduled runs: browser identity (protected pane)
+  'schedules.browserIdentity': "浏览器身份",
+  'schedules.browserIdentityHint': "让此次运行使用一个受保护窗格的浏览器和账号，仅限该窗格允许的网站。保存时 wmux 会请你确认。",
+  'schedules.browserWorkspace': "工作区",
+  'schedules.browserPane': "受保护的窗格",
+  'schedules.browserNone': "无",
+  'schedules.browserLoading': "正在加载窗格…",
+  'schedules.browserPickPane': "选择受保护的窗格",
+  'schedules.browserNoPanes': "此工作区中没有受保护的窗格",
+  'schedules.browserPaneUnavailable': "此窗格已不可用",
+  'schedules.problem.browserPane': "请选择受保护的窗格，或将浏览器身份设为“无”。",
+  'schedules.problem.browserMode': "带浏览器身份的 Codex 计划以审批模式运行。",
+  'schedules.detail.browser_needs_consent': "浏览器调用被拒绝：授权此计划后窗格的浏览器策略已更改。请再次保存计划以授权。",
+  'schedules.detail.browser_policy_denied': "窗格的网站策略拒绝了浏览器调用。",
 } as const;

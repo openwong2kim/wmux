@@ -539,4 +539,18 @@ export const hi = {
   'quitAndStop.stopFailedDetail': "wmux डेमन नहीं रुका, इसलिए wmux खुला रहेगा और आपके सत्र अभी भी चल रहे हैं। टर्मिनल में wmux daemon stop चलाएँ, फिर दोबारा बंद करें।",
   'quitAndStop.alreadyQuittingMessage': "wmux पहले से बंद हो रहा है।",
   'quitAndStop.alreadyQuittingDetail': "इस बार बंद करने पर आपके सत्र बैकग्राउंड में चलते रहेंगे। उन्हें रोकने के लिए टर्मिनल में wmux daemon stop चलाएँ।",
+  // Scheduled runs: browser identity (protected pane)
+  'schedules.browserIdentity': "ब्राउज़र पहचान",
+  'schedules.browserIdentityHint': "रन एक सुरक्षित पेन के ब्राउज़र और खाते का उपयोग करता है, केवल उस पेन की अनुमत साइटों तक सीमित। सहेजते समय wmux पुष्टि माँगता है।",
+  'schedules.browserWorkspace': "वर्कस्पेस",
+  'schedules.browserPane': "सुरक्षित पेन",
+  'schedules.browserNone': "कोई नहीं",
+  'schedules.browserLoading': "पेन लोड हो रहे हैं…",
+  'schedules.browserPickPane': "एक सुरक्षित पेन चुनें",
+  'schedules.browserNoPanes': "इस वर्कस्पेस में कोई सुरक्षित पेन नहीं है",
+  'schedules.browserPaneUnavailable': "यह पेन अब उपलब्ध नहीं है",
+  'schedules.problem.browserPane': "एक सुरक्षित पेन चुनें, या ब्राउज़र पहचान को कोई नहीं पर सेट करें।",
+  'schedules.problem.browserMode': "ब्राउज़र पहचान वाला Codex शेड्यूल अनुमोदन मोड में चलता है।",
+  'schedules.detail.browser_needs_consent': "एक ब्राउज़र कॉल अस्वीकार हुई: शेड्यूल को अनुमति देने के बाद पेन की नीति बदल गई। अनुमति देने के लिए शेड्यूल फिर से सहेजें।",
+  'schedules.detail.browser_policy_denied': "पेन की साइट नीति ने एक ब्राउज़र कॉल अस्वीकार की।",
 } as const;

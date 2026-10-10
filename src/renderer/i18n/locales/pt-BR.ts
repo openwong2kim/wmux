@@ -544,4 +544,18 @@ export const ptBR = {
   'quitAndStop.stopFailedDetail': "O daemon do wmux não parou, então o wmux continua aberto e suas sessões ainda estão em execução. Execute wmux daemon stop em um terminal e saia novamente.",
   'quitAndStop.alreadyQuittingMessage': "O wmux já está saindo.",
   'quitAndStop.alreadyQuittingDetail': "Esta saída mantém suas sessões em execução em segundo plano. Para pará-las, execute wmux daemon stop em um terminal.",
+  // Scheduled runs: browser identity (protected pane)
+  'schedules.browserIdentity': "Identidade do navegador",
+  'schedules.browserIdentityHint': "A execução usa o navegador e a conta de um painel protegido, limitada aos sites permitidos dele. O wmux pede confirmação ao salvar.",
+  'schedules.browserWorkspace': "Espaço de trabalho",
+  'schedules.browserPane': "Painel protegido",
+  'schedules.browserNone': "Nenhuma",
+  'schedules.browserLoading': "Carregando painéis…",
+  'schedules.browserPickPane': "Escolha um painel protegido",
+  'schedules.browserNoPanes': "Nenhum painel protegido neste espaço de trabalho",
+  'schedules.browserPaneUnavailable': "Este painel não está mais disponível",
+  'schedules.problem.browserPane': "Escolha um painel protegido ou defina a identidade do navegador como Nenhuma.",
+  'schedules.problem.browserMode': "Um agendamento do Codex com identidade de navegador roda no modo de aprovação.",
+  'schedules.detail.browser_needs_consent': "Uma chamada do navegador foi recusada: a política do painel mudou depois da autorização. Salve o agendamento de novo para autorizá-lo.",
+  'schedules.detail.browser_policy_denied': "Uma chamada do navegador foi recusada pela política de sites do painel.",
 } as const;

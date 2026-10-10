@@ -4310,4 +4310,18 @@ export const pl = {
   'quitAndStop.stopFailedDetail': "Demon wmux się nie zatrzymał, więc wmux pozostaje otwarty, a sesje nadal działają. Uruchom wmux daemon stop w terminalu, a potem zamknij aplikację ponownie.",
   'quitAndStop.alreadyQuittingMessage': "wmux już się zamyka.",
   'quitAndStop.alreadyQuittingDetail': "To zamknięcie pozostawia sesje działające w tle. Aby je zatrzymać, uruchom wmux daemon stop w terminalu.",
+  // Scheduled runs: browser identity (protected pane)
+  'schedules.browserIdentity': "Tożsamość przeglądarki",
+  'schedules.browserIdentityHint': "Uruchomienie korzysta z przeglądarki i konta jednego chronionego panelu, tylko z jego dozwolonymi witrynami. wmux poprosi o potwierdzenie przy zapisie.",
+  'schedules.browserWorkspace': "Obszar roboczy",
+  'schedules.browserPane': "Chroniony panel",
+  'schedules.browserNone': "Brak",
+  'schedules.browserLoading': "Wczytywanie paneli…",
+  'schedules.browserPickPane': "Wybierz chroniony panel",
+  'schedules.browserNoPanes': "Brak chronionych paneli w tym obszarze roboczym",
+  'schedules.browserPaneUnavailable': "Ten panel nie jest już dostępny",
+  'schedules.problem.browserPane': "Wybierz chroniony panel lub ustaw tożsamość przeglądarki na Brak.",
+  'schedules.problem.browserMode': "Harmonogram Codex z tożsamością przeglądarki działa w trybie zatwierdzania.",
+  'schedules.detail.browser_needs_consent': "Wywołanie przeglądarki odrzucono: zasady panelu zmieniły się po udzieleniu zgody. Zapisz harmonogram ponownie, aby go zatwierdzić.",
+  'schedules.detail.browser_policy_denied': "Wywołanie przeglądarki odrzuciły zasady witryn panelu.",
 } as const;

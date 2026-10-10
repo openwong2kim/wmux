@@ -538,4 +538,18 @@ export const th = {
   'quitAndStop.stopFailedDetail': "เดมอนของ wmux ไม่หยุดทำงาน wmux จึงยังเปิดอยู่และเซสชันยังทำงานอยู่ ให้รัน wmux daemon stop ในเทอร์มินัล แล้วออกอีกครั้ง",
   'quitAndStop.alreadyQuittingMessage': "wmux กำลังออกอยู่แล้ว",
   'quitAndStop.alreadyQuittingDetail': "การออกครั้งนี้จะปล่อยให้เซสชันทำงานต่อในเบื้องหลัง หากต้องการหยุด ให้รัน wmux daemon stop ในเทอร์มินัล",
+  // Scheduled runs: browser identity (protected pane)
+  'schedules.browserIdentity': "ข้อมูลประจำตัวเบราว์เซอร์",
+  'schedules.browserIdentityHint': "ให้การรันใช้เบราว์เซอร์และบัญชีของบานหน้าต่างที่ป้องกันไว้หนึ่งบาน จำกัดเฉพาะเว็บไซต์ที่อนุญาต wmux จะขอให้ยืนยันเมื่อบันทึก",
+  'schedules.browserWorkspace': "เวิร์กสเปซ",
+  'schedules.browserPane': "บานหน้าต่างที่ป้องกัน",
+  'schedules.browserNone': "ไม่มี",
+  'schedules.browserLoading': "กำลังโหลดบานหน้าต่าง…",
+  'schedules.browserPickPane': "เลือกบานหน้าต่างที่ป้องกัน",
+  'schedules.browserNoPanes': "ไม่มีบานหน้าต่างที่ป้องกันในเวิร์กสเปซนี้",
+  'schedules.browserPaneUnavailable': "บานหน้าต่างนี้ใช้ไม่ได้แล้ว",
+  'schedules.problem.browserPane': "เลือกบานหน้าต่างที่ป้องกัน หรือตั้งข้อมูลประจำตัวเบราว์เซอร์เป็นไม่มี",
+  'schedules.problem.browserMode': "กำหนดการ Codex ที่มีข้อมูลประจำตัวเบราว์เซอร์จะรันในโหมดอนุมัติ",
+  'schedules.detail.browser_needs_consent': "การเรียกเบราว์เซอร์ถูกปฏิเสธ: นโยบายของบานหน้าต่างเปลี่ยนหลังจากอนุญาตกำหนดการนี้ บันทึกกำหนดการอีกครั้งเพื่ออนุญาต",
+  'schedules.detail.browser_policy_denied': "นโยบายเว็บไซต์ของบานหน้าต่างปฏิเสธการเรียกเบราว์เซอร์",
 } as const;

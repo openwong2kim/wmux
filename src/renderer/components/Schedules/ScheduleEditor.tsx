@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import {
@@ -24,6 +24,7 @@ import {
   draftFromForm,
   emptyForm,
   formFromAutomation,
+  browserIdentityArg,
   grantNeeded,
   modeAfterAgentChange,
   modesFor,
@@ -37,6 +38,7 @@ import {
 } from './scheduleModel';
 import { GRANT_DECLINED, agentLabel, describeDays, folderName, weekdayName } from './format';
 import type { AccountOption } from './useAccounts';
+import { getLeafPanes } from '../../../shared/paneUtils';
 
 type Chip = 'schedule' | 'folder' | 'agent';
 
@@ -51,7 +53,58 @@ const PROBLEM_PLACE: Record<FormProblem, 'prompt' | Chip | 'more'> = {
   grace: 'more',
   awaitTimeout: 'more',
   tools: 'more',
+  browserPane: 'more',
+  browserMode: 'more',
 };
+
+interface ProtectedPaneOption {
+  paneId: string;
+  label: string;
+  profile: string;
+}
+
+/**
+ * The protected panes of one workspace, read from main's policy store (the
+ * same reads the pane's protection editor makes). null while loading. Only a
+ * pane that is protected and confirmed for this workspace is offered; main
+ * checks all of it again at grant time.
+ */
+function useProtectedPanes(workspaceId: string): ProtectedPaneOption[] | null {
+  const workspace = useStore((s) => s.workspaces.find((w) => w.id === workspaceId));
+  const paneLabel = useStore((s) => s.paneLabel);
+  const leaves = useMemo(() => (workspace ? getLeafPanes(workspace.rootPane) : []), [workspace]);
+  const leafKey = leaves.map((l) => l.id).join(',');
+  const [options, setOptions] = useState<ProtectedPaneOption[] | null>(null);
+  useEffect(() => {
+    setOptions(null);
+    if (!workspaceId) return undefined;
+    const policy = window.electronAPI?.browser?.policy;
+    if (!policy || leaves.length === 0) {
+      setOptions([]);
+      return undefined;
+    }
+    let cancelled = false;
+    void Promise.all(leaves.map(async (leaf): Promise<ProtectedPaneOption | null> => {
+      try {
+        const read = await policy.get(workspaceId, leaf.id);
+        const entry = read.ok ? read.policy : null;
+        if (!entry?.protected || entry.needsConfirm || entry.workspaceId !== workspaceId) return null;
+        return {
+          paneId: leaf.id,
+          label: paneLabel?.[leaf.id] || (leaf.ordinal !== undefined ? `#${leaf.ordinal}` : leaf.id),
+          profile: read.currentProfile ?? entry.profileId,
+        };
+      } catch {
+        return null;
+      }
+    })).then((rows) => {
+      if (!cancelled) setOptions(rows.filter((r): r is ProtectedPaneOption => r !== null));
+    });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- the pane set, not its identity, decides the reads
+  }, [workspaceId, leafKey]);
+  return options;
+}
 
 function FolderIcon() {
   return <Icon size={14}><path d="M1.5 4.5v6.5a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1v-5a1 1 0 0 0-1-1H7L5.5 3h-3a1 1 0 0 0-1 1.5Z" /></Icon>;
@@ -98,6 +151,9 @@ export default function ScheduleEditor({ original, review, accounts, initial, on
   const [showProblems, setShowProblems] = useState(false);
   const chipsRef = useRef<HTMLDivElement>(null);
   const api = window.electronAPI?.automation;
+  const workspaces = useStore((s) => s.workspaces);
+  const protectedPanes = useProtectedPanes(form.browserWorkspaceId);
+  const pickedPane = protectedPanes?.find((p) => p.paneId === form.browserPaneId);
 
   const set = <K extends keyof ScheduleForm>(key: K, value: ScheduleForm[K]) =>
     setForm((f) => ({ ...f, [key]: value }));
@@ -173,7 +229,11 @@ export default function ScheduleEditor({ original, review, accounts, initial, on
         setCreated(saved.automation);
       }
       if (needsGrant) {
-        const granted = await api.grant(id, form.mode, usesToolList(form) ? tools.tools : undefined);
+        // No identity involved: exactly the grant the editor always sent.
+        const identity = browserIdentityArg(base, form, pickedPane?.label ?? '');
+        const granted = identity === undefined
+          ? await api.grant(id, form.mode, usesToolList(form) ? tools.tools : undefined)
+          : await api.grant(id, form.mode, usesToolList(form) ? tools.tools : undefined, identity);
         if (!granted.ok && granted.error === GRANT_DECLINED) {
           // The human declined main's Auto/Bypass prompt. A new schedule stays
           // saved and off. An edit keeps whatever permission it had — unless
@@ -371,6 +431,43 @@ export default function ScheduleEditor({ original, review, accounts, initial, on
               {t('schedules.toolsInvalid', { names: tools.invalid.join(', ') })}
             </p>
           )}
+          <Field
+            label={t('schedules.browserIdentity')}
+            description={t('schedules.browserIdentityHint')}
+            layout="stacked"
+          >
+            <div className="wmux-schedule-more-grid">
+              <Select
+                value={form.browserWorkspaceId}
+                onChange={(e) => setForm((f) => ({ ...f, browserWorkspaceId: e.target.value, browserPaneId: '' }))}
+                aria-label={t('schedules.browserWorkspace')}
+                data-schedule-browser-workspace
+              >
+                <option value="">{t('schedules.browserNone')}</option>
+                {workspaces.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
+              </Select>
+              {form.browserWorkspaceId && (
+                <Select
+                  value={form.browserPaneId}
+                  onChange={(e) => set('browserPaneId', e.target.value)}
+                  aria-label={t('schedules.browserPane')}
+                  data-schedule-browser-pane
+                >
+                  <option value="">
+                    {protectedPanes === null
+                      ? t('schedules.browserLoading')
+                      : protectedPanes.length > 0 ? t('schedules.browserPickPane') : t('schedules.browserNoPanes')}
+                  </option>
+                  {(protectedPanes ?? []).map((p) => (
+                    <option key={p.paneId} value={p.paneId}>{`${p.label} · ${p.profile}`}</option>
+                  ))}
+                  {form.browserPaneId && protectedPanes !== null && !pickedPane && (
+                    <option value={form.browserPaneId}>{t('schedules.browserPaneUnavailable')}</option>
+                  )}
+                </Select>
+              )}
+            </div>
+          </Field>
           <div className="wmux-schedule-more-grid">
             <Field label={t('schedules.model')} description={t('schedules.modelHint')} layout="stacked">
               <Input value={form.model} onChange={(e) => set('model', e.target.value)} spellCheck={false} data-schedule-model />
