@@ -139,6 +139,9 @@ import { ShadowRejectionLogger } from './audit/shadowRejectionLog';
 import { LegacyTrafficCounter } from './audit/legacyTrafficCounter';
 import { ApprovalQueue } from './mcp/ApprovalQueue';
 import { createBorrowApprovalRequester } from './browser-session/liveBorrowApproval';
+import { DangerousActionConsent } from './browser-session/dangerousActionConsent';
+import { registerBrowserConsentRpc } from './pipe/handlers/browserConsent.rpc';
+import { registerBrowserConsentGrantsIpc } from './ipc/handlers/browserConsentGrants.handler';
 import type { BorrowApprovalRequester } from '../shared/liveWriteScope';
 import { resolveEnforcementMode } from './mcp/enforcementMode';
 import { setConfiguredFirstPartyClients } from './mcp/firstParty';
@@ -1495,19 +1498,47 @@ liveBorrowRequester = createBorrowApprovalRequester({
   workspaceName: (workspaceId) =>
     getWorkspaceMirror().getEntries()?.find((e) => e.id === workspaceId)?.name ?? workspaceId,
 });
+// Protected browser panes: ask the operator once before a dangerous action
+// (page script, download, sensitive-site cookies). Same queue, same dialog.
+registerBrowserConsentRpc(rpcRouter, {
+  getWindow: () => mainWindow,
+  store: browserPolicyStore,
+  paneBindings: () => chromeProfileStore.getPaneBindings(),
+  chrome: chromeRegistry,
+  backend: () => browserBackendStore.get(),
+  consent: new DangerousActionConsent({
+    store: browserPolicyStore,
+    queue: () => approvalQueue,
+    runOwnership: (ptyId) => automationBridge.runOwnership(ptyId),
+    workspaceName: (workspaceId) => getWorkspaceMirror().getEntries()?.find((e) => e.id === workspaceId)?.name,
+    log: (line) => console.warn(line),
+  }),
+});
+registerBrowserConsentGrantsIpc(ipcMain, {
+  getWindow: () => mainWindow,
+  store: browserPolicyStore,
+  profileFor: (workspaceId, paneId) => chromeProfileStore.profileFor(workspaceId, paneId),
+  paneWorkspace: (paneId) => getWorkspaceMirror().getPaneWorkspaces()?.get(paneId) ?? null,
+});
 
 ipcMain.handle(
   IPC.PERMISSION_PROMPT_RESOLVE,
-  async (event, payload: { promptId: string; approved: boolean }) => {
+  async (event, payload: { promptId: string; approved: boolean; remember?: boolean }) => {
     if (!isTrustedMainFrameSender(event, () => mainWindow)) return { ok: false, error: UNTRUSTED_SENDER_ERROR };
     if (
       !payload ||
       typeof payload.promptId !== 'string' ||
-      typeof payload.approved !== 'boolean'
+      typeof payload.approved !== 'boolean' ||
+      (payload.remember !== undefined && typeof payload.remember !== 'boolean')
     ) {
       return { ok: false, error: 'invalid permission prompt payload' };
     }
-    await approvalQueue.resolvePrompt(payload.promptId, payload.approved);
+    // `remember` rides only when set: every other prompt resolves exactly as before.
+    if (payload.remember === true) {
+      await approvalQueue.resolvePrompt(payload.promptId, payload.approved, { remember: true });
+    } else {
+      await approvalQueue.resolvePrompt(payload.promptId, payload.approved);
+    }
     return { ok: true };
   },
 );

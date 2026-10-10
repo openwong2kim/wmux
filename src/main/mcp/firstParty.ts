@@ -285,6 +285,11 @@ export const FIRST_PARTY_METHODS: ReadonlySet<RpcMethod> = new Set<RpcMethod>([
   'browser.help.request',
   'browser.help.status',
   'browser.help.cancel',
+  // Protected-pane consent (browser_evaluate / downloads / sensitive cookies).
+  // Same packaged-build reason: absent here, the ask would itself be refused.
+  'browser.consent.request',
+  'browser.consent.awaitDownload',
+  'browser.consent.release',
   // agent-to-agent
   'a2a.resolve.identity',
   'a2a.whoami',

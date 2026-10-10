@@ -404,6 +404,11 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
   'browser.help.request':      { capability: 'browser.click', riskClass: 'browser' },
   'browser.help.status':       { capability: 'browser.read',  riskClass: 'browser' },
   'browser.help.cancel':       { capability: 'browser.click', riskClass: 'browser' },
+  // Protected-pane consent: only a client that drives pages has a dangerous
+  // action to ask about, so the tier is the one evaluate itself needs.
+  'browser.consent.request':       { capability: 'browser.evaluate', riskClass: 'browser' },
+  'browser.consent.awaitDownload': { capability: 'browser.evaluate', riskClass: 'browser' },
+  'browser.consent.release':       { capability: 'browser.evaluate', riskClass: 'browser' },
 
   // --- Daemon control. Internal-only; reserved capability.
   'daemon.createSession':    { capability: 'wmux.internal' },

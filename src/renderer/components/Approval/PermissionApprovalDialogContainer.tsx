@@ -17,6 +17,8 @@
 
 import { useStore } from '../../stores';
 import { PermissionApprovalDialogView } from './PermissionApprovalDialog';
+import { findLeaf } from '../../../shared/paneUtils';
+import { leafDisplayName } from '../../utils/paneNaming';
 
 export default function PermissionApprovalDialogContainer() {
   const order = useStore((s) => s.mcpPromptOrder);
@@ -27,11 +29,21 @@ export default function PermissionApprovalDialogContainer() {
   // ever one modal on screen at a time.
   const latest = order[order.length - 1];
   const pending = latest ? prompts[latest] : null;
+  const action = pending?.kind === 'browser-action' ? pending.browserAction : undefined;
+  // The pane's name as its header shows it; main only knows its id.
+  const paneName = useStore((s) => {
+    if (!action) return undefined;
+    const ws = s.workspaces.find((w) => w.id === action.workspaceId);
+    const leaf = ws ? findLeaf(ws.rootPane, action.paneId) : null;
+    return ws && leaf ? leafDisplayName(s.paneLabel, ws, leaf) : undefined;
+  });
 
   if (!pending) return null;
 
-  const respond = (approved: boolean) => {
-    void window.electronAPI.permissionPrompt?.resolve(pending.promptId, approved);
+  const respond = (approved: boolean, remember = false) => {
+    // `remember` is sent only when set, so every other prompt resolves as before.
+    if (remember) void window.electronAPI.permissionPrompt?.resolve(pending.promptId, approved, { remember: true });
+    else void window.electronAPI.permissionPrompt?.resolve(pending.promptId, approved);
     useStore.getState().removeMcpPrompt(pending.promptId);
   };
 
@@ -45,6 +57,8 @@ export default function PermissionApprovalDialogContainer() {
       rationale={pending.rationale}
       {...(pending.title !== undefined && { title: pending.title })}
       {...(pending.kind !== undefined && { kind: pending.kind })}
+      {...(action && { browserAction: action, onApproveAlways: () => respond(true, true) })}
+      {...(paneName !== undefined && { paneName })}
       onApprove={() => respond(true)}
       onDeny={() => respond(false)}
     />

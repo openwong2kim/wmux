@@ -232,6 +232,17 @@ export interface ChromeProtectionPlan {
   onDecision?: (d: { host: string; port: number; allowed: boolean; kind: string }) => void;
 }
 
+/**
+ * The consent service's handle on a protected profile's download guard
+ * (dangerousActionConsent.ts). `claim` installs the one function that may keep
+ * a download the guard would otherwise cancel; null while another holds it.
+ */
+export interface ConsentDownloadGuard {
+  send(method: string, params: Record<string, unknown>): Promise<unknown>;
+  claim(claimant: (params: Record<string, unknown>) => boolean): (() => void) | null;
+  onProgress(listener: (params: Record<string, unknown>) => void): () => void;
+}
+
 /** A protected profile could not be brought up under its enforcement. */
 export const PROTECTION_NOT_READY = 'policy_denied: the protected browser could not be started under its site policy';
 
@@ -305,6 +316,9 @@ export class ChromeLauncher implements ChromeBackendClient {
   /** The guard being armed, so concurrent callers share one socket. */
   private guardArming: Promise<void> | null = null;
   private readonly proxyProbeTimeoutMs: number;
+  /** Consent: may keep ONE download the guard would cancel (see consentDownloadGuard). */
+  private downloadClaimant: ((params: Record<string, unknown>) => boolean) | null = null;
+  private readonly downloadProgress = new Set<(params: Record<string, unknown>) => void>();
 
   constructor(private readonly userDataDir: string, opts?: ChromeLauncherOptions) {
     this.profileLabel = opts?.profileLabel;
@@ -1042,8 +1056,13 @@ export class ChromeLauncher implements ChromeBackendClient {
     const deny = () => guard.send('Browser.setDownloadBehavior', { behavior: 'deny', eventsEnabled: true });
     guard.on('Browser.downloadWillBegin', (params) => {
       const guid = typeof params.guid === 'string' ? params.guid : '';
+      // An operator-approved download (consent): its claimant re-denies itself.
+      if (guid && this.downloadClaimant?.(params) === true) return;
       if (guid) void guard.send('Browser.cancelDownload', { guid }).catch(() => undefined);
       void deny().catch(() => undefined);
+    });
+    guard.on('Browser.downloadProgress', (params) => {
+      for (const listener of this.downloadProgress) listener(params);
     });
     try {
       await deny();
@@ -1098,6 +1117,30 @@ export class ChromeLauncher implements ChromeBackendClient {
       if (targetId) await socket.send('Target.closeTarget', { targetId }).catch(() => undefined);
       socket.close();
     }
+  }
+
+  /** The armed download guard of a protected instance, for the consent
+   *  service; null when this profile is not running protected. */
+  consentDownloadGuard(): ConsentDownloadGuard | null {
+    if (!this.launchedProtected || !this.downloadGuard?.isOpen()) return null;
+    return {
+      send: (method, params) => {
+        const guard = this.downloadGuard;
+        if (!guard?.isOpen()) return Promise.reject(new Error(PROTECTION_NOT_READY));
+        return guard.send(method, params);
+      },
+      claim: (claimant) => {
+        if (this.downloadClaimant) return null;
+        this.downloadClaimant = claimant;
+        return () => {
+          if (this.downloadClaimant === claimant) this.downloadClaimant = null;
+        };
+      },
+      onProgress: (listener) => {
+        this.downloadProgress.add(listener);
+        return () => this.downloadProgress.delete(listener);
+      },
+    };
   }
 
   private async launch(): Promise<number> {

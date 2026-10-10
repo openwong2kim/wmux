@@ -14,7 +14,9 @@
 
 import { DENY_ALL_HOST_POLICY, type HostPolicy } from './browserHostPolicy';
 
-export const BROWSER_POLICY_VERSION = 1;
+export const BROWSER_POLICY_VERSION = 2;
+/** Versions a reader accepts. v1 is v2 without consent grants. */
+export const BROWSER_POLICY_READABLE_VERSIONS: readonly number[] = [1, 2];
 export const BROWSER_POLICY_FILE = 'browser-policy.json';
 /** The independent "was ever protected" marker (see BrowserPolicyStore). */
 export const BROWSER_POLICY_HISTORY_FILE = 'browser-policy-history.json';
@@ -30,7 +32,35 @@ export interface PanePolicy {
   /** Set when the pane was rebound or moved since the operator confirmed it:
    *  protection stays on and every host is refused until a fresh write. */
   needsConfirm?: boolean;
+  /**
+   * Standing consent the operator gave this pane ("Always on this pane").
+   * Absent = none. Written only by the operator, dropped on a rebind or a move.
+   */
+  grants?: PaneConsentGrants;
 }
+
+/** What the operator allowed a protected pane to do without asking again. */
+export interface PaneConsentGrants {
+  /** Run agent-authored page scripts (browser_evaluate). */
+  evaluate?: boolean;
+  /** Let a download through (browser_download / browser_wait_for_download). */
+  download?: boolean;
+  /**
+   * Sensitive hosts (email, banking, auth) whose cookies and storage the agent
+   * may read and change, canonical host names. Per host: approving one never
+   * opens another.
+   */
+  sensitiveHosts?: string[];
+}
+
+/** The dangerous actions a protected pane asks the operator about. */
+export type BrowserConsentAction = 'evaluate' | 'download' | 'sensitive';
+
+/** How long the operator has to answer a consent prompt. A timeout is a deny. */
+export const BROWSER_CONSENT_DEADLINE_MS = 60_000;
+/** The MCP lane's RPC timeout for a consent request: longer than the deadline,
+ *  so main's answer (and never the transport) ends the wait. */
+export const BROWSER_CONSENT_RPC_TIMEOUT_MS = BROWSER_CONSENT_DEADLINE_MS + 15_000;
 
 export interface BrowserPolicyFile {
   version: number;
@@ -150,6 +180,8 @@ export const BROWSER_POLICY_IPC = {
   get: 'browser:policy:get',
   /** payload `BrowserPolicyWritePayload` → `BrowserPolicyWriteResult`. */
   set: 'browser:policy:set',
+  /** payload `BrowserPolicyGrantsPayload` → `BrowserPolicyWriteResult`. */
+  grants: 'browser:policy:grants',
 } as const;
 
 export interface BrowserPolicyReadResult {
@@ -183,5 +215,16 @@ export interface BrowserPolicyWritePayload {
   protected: boolean;
   hosts: HostPolicy;
   /** The epoch the editor read; a stale one is refused. */
+  expectedEpoch: number;
+}
+
+/** `browser:policy:grants` payload: the operator revokes standing consent. */
+export interface BrowserPolicyGrantsPayload {
+  workspaceId: string;
+  paneId: string;
+  /** Must equal the pane's current exclusive profile. */
+  profileId: string;
+  /** The grants after the edit (only revocation is offered in the editor). */
+  grants: PaneConsentGrants;
   expectedEpoch: number;
 }

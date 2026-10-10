@@ -16,6 +16,7 @@
 // on your screen" sits in warning red.
 
 import { type RiskClassCopy } from '../../../main/mcp/methodCapabilityMap';
+import type { BrowserActionPromptInfo } from '../../../main/mcp/ApprovalQueue';
 import { groupCapabilities } from './capabilityGrouping';
 import { useT } from '../../hooks/useT';
 import Dialog, { DialogBody, DialogFooter, DialogHeader } from '../ui/Dialog';
@@ -49,9 +50,15 @@ export interface PermissionApprovalDialogProps {
    */
   title?: string;
   /** What is being asked. Absent (and 'plugin') keeps the plugin layout. */
-  kind?: 'plugin' | 'browser-borrow' | 'computer-app';
+  kind?: 'plugin' | 'browser-borrow' | 'computer-app' | 'browser-action';
+  /** kind 'browser-action': the action, the site and the pane it is for. */
+  browserAction?: BrowserActionPromptInfo;
+  /** kind 'browser-action': the pane's display name (resolved by the container). */
+  paneName?: string;
   /** Called when the user clicks Approve. */
   onApprove: () => void;
+  /** kind 'browser-action': "Always on this pane". Absent hides the button. */
+  onApproveAlways?: () => void;
   /** Called when the user clicks Deny. */
   onDeny: () => void;
 }
@@ -79,7 +86,10 @@ export function PermissionApprovalDialogView(
   // to pick up the new language.
   const t = useT();
   const groups = groupCapabilities(props.declaredCapabilities);
-  const hasCritical = groups.some((g) => g.copy.severity === 'critical');
+  const action = props.kind === 'browser-action' ? props.browserAction : undefined;
+  // A dangerous action on a protected pane is critical by kind: it declares no
+  // capabilities, so the grouping alone would read it as benign.
+  const hasCritical = !!action || groups.some((g) => g.copy.severity === 'critical');
   // The container keys this view by prompt id, so each prompt gets its own
   // guard window and no focus carried over from the one before.
   const guard = useActivationGuard(props.clientName + '\u0000' + props.declaredCapabilities.join(','));
@@ -103,24 +113,42 @@ export function PermissionApprovalDialogView(
             >
               <IconWarning size={16} />
             </span>
-            {props.title ?? t('permission.pluginTitle')}
+            {action
+              ? t(`permission.browserAction.${action.action}`, { host: action.host })
+              : props.title ?? t('permission.pluginTitle')}
           </span>
         }
         description={
           // The label names WHAT is asking. A borrow prompt is a workspace's
           // agent, not a plugin, and calling it one would misattribute the
           // request; a computer-use prompt names the agent itself.
-          <>
-            {t(props.kind === 'browser-borrow'
-              ? 'permission.workspaceLabel'
-              : props.kind === 'computer-app'
-                ? 'permission.agentLabel'
-                : 'permission.pluginLabel')}{' '}
-            <span className="font-mono text-[12px] text-[var(--text-main)]">{props.clientName}</span>
-          </>
+          action ? (
+            <>
+              {t('permission.paneLabel')}{' '}
+              <span className="font-mono text-[12px] text-[var(--text-main)]">
+                {props.paneName ? `${props.clientName} · ${props.paneName}` : props.clientName}
+              </span>
+            </>
+          ) : (
+            <>
+              {t(props.kind === 'browser-borrow'
+                ? 'permission.workspaceLabel'
+                : props.kind === 'computer-app'
+                  ? 'permission.agentLabel'
+                  : 'permission.pluginLabel')}{' '}
+              <span className="font-mono text-[12px] text-[var(--text-main)]">{props.clientName}</span>
+            </>
+          )
         }
       />
       <DialogBody className="!gap-3">
+        {action ? (
+          <div className="ui-group px-3.5 py-3 text-[13px] text-[var(--text-sub)]" data-browser-action={action.action}>
+            <p className="m-0">{t('permission.browserAction.hint')}</p>
+            {/* Agent-authored: rendered as text, never markup. */}
+            {action.detail ? <p className="m-0 mt-2 ui-code break-all">{action.detail}</p> : null}
+          </div>
+        ) : null}
         {props.rationale ? (
           <div className="ui-group px-3.5 py-3 text-[13px] text-[var(--text-sub)]">
             "{props.rationale}"
@@ -168,6 +196,11 @@ export function PermissionApprovalDialogView(
         <Button size="md" variant="secondary" onClick={guard(props.onDeny)}>
           {t('approval.deny')}
         </Button>
+        {action && props.onApproveAlways ? (
+          <Button size="md" variant="secondary" onClick={guard(props.onApproveAlways)}>
+            {t('permission.browserAction.always')}
+          </Button>
+        ) : null}
         {/* Solid red only when the grant reaches the screen or the keyboard —
             that approval is the final confirm of a dangerous grant. */}
         <Button
@@ -179,7 +212,7 @@ export function PermissionApprovalDialogView(
           {/* Severity is not colour alone: in themes whose accent is red, the
               danger and primary fills look alike. */}
           {hasCritical && <IconWarning size={12} />}
-          {t('approval.approve')}
+          {action ? t('permission.browserAction.allowOnce') : t('approval.approve')}
         </Button>
       </DialogFooter>
     </Dialog>

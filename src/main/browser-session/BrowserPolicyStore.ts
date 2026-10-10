@@ -3,16 +3,18 @@ import * as path from 'path';
 import { getWmuxDir } from '../../daemon/config';
 import { atomicWriteJSON } from '../../daemon/util/atomicWrite';
 import { isUnsafeKey } from '../account/accountStore';
-import { compileHostPolicy, parseHostRules, type HostMatcher, type HostPolicy } from '../../shared/browserHostPolicy';
+import { canonicalHost, compileHostPolicy, parseHostRules, type HostMatcher, type HostPolicy } from '../../shared/browserHostPolicy';
 import {
   BROWSER_POLICY_FILE,
   BROWSER_POLICY_HISTORY_FILE,
+  BROWSER_POLICY_READABLE_VERSIONS,
   BROWSER_POLICY_VERSION,
   resolvePanePolicy,
   type BrowserPolicyFile,
   type BrowserPolicyFileState,
   type BrowserPolicyWriteErrorCode,
   type BrowserPolicyWritePayload,
+  type PaneConsentGrants,
   type PanePolicy,
   type PanePolicyDecision,
 } from '../../shared/browserPolicy';
@@ -79,13 +81,44 @@ function validHosts(raw: unknown): HostPolicy | null {
   return { mode: r.mode, allow: allow as string[], block: block as string[] };
 }
 
+/** A stored grants object, or null when malformed. Empty grants read as absent. */
+function validGrants(raw: unknown): PaneConsentGrants | undefined | null {
+  if (raw === undefined) return undefined;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const r = raw as Record<string, unknown>;
+  for (const flag of ['evaluate', 'download'] as const) {
+    if (r[flag] !== undefined && typeof r[flag] !== 'boolean') return null;
+  }
+  let hosts: string[] | undefined;
+  if (r.sensitiveHosts !== undefined) {
+    if (!Array.isArray(r.sensitiveHosts)) return null;
+    hosts = [];
+    for (const h of r.sensitiveHosts) {
+      if (typeof h !== 'string' || canonicalHost(h) !== h) return null;
+      if (!hosts.includes(h)) hosts.push(h);
+    }
+  }
+  return normalizeGrants({ evaluate: r.evaluate === true, download: r.download === true, sensitiveHosts: hosts });
+}
+
+/** Drop false flags and empty lists; undefined when nothing is granted. */
+function normalizeGrants(g: PaneConsentGrants | undefined): PaneConsentGrants | undefined {
+  if (!g) return undefined;
+  const out: PaneConsentGrants = {
+    ...(g.evaluate === true && { evaluate: true }),
+    ...(g.download === true && { download: true }),
+    ...(g.sensitiveHosts && g.sensitiveHosts.length > 0 && { sensitiveHosts: [...g.sensitiveHosts] }),
+  };
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
 /** Parse a whole primary file. Any malformed entry makes the FILE corrupt:
  *  dropping one entry would silently unprotect that pane. */
 function parsePrimary(raw: unknown): { state: BrowserPolicyFileState; file: BrowserPolicyFile } {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { state: 'corrupt', file: emptyFile() };
   const r = raw as Record<string, unknown>;
   if (typeof r.version !== 'number') return { state: 'corrupt', file: emptyFile() };
-  if (r.version !== BROWSER_POLICY_VERSION) return { state: 'unsupported-version', file: emptyFile() };
+  if (!BROWSER_POLICY_READABLE_VERSIONS.includes(r.version)) return { state: 'unsupported-version', file: emptyFile() };
   if (typeof r.epoch !== 'number' || !Number.isSafeInteger(r.epoch) || r.epoch < 0) {
     return { state: 'corrupt', file: emptyFile() };
   }
@@ -99,7 +132,10 @@ function parsePrimary(raw: unknown): { state: BrowserPolicyFileState; file: Brow
     }
     const e = entry as Record<string, unknown>;
     const hosts = validHosts(e.hosts);
+    const grants = validGrants(e.grants);
     if (
+      grants === null
+      ||
       typeof e.workspaceId !== 'string' || !e.workspaceId || isUnsafeKey(e.workspaceId)
       || e.paneId !== paneId
       || typeof e.profileId !== 'string' || !e.profileId
@@ -116,9 +152,15 @@ function parsePrimary(raw: unknown): { state: BrowserPolicyFileState; file: Brow
       protected: e.protected,
       hosts,
       ...(e.needsConfirm === true && { needsConfirm: true }),
+      ...(grants && { grants }),
     };
   }
   return { state: 'ok', file: { version: BROWSER_POLICY_VERSION, epoch: r.epoch, panes } };
+}
+
+function withoutGrants(entry: PanePolicy): PanePolicy {
+  const { grants: _dropped, ...rest } = entry;
+  return rest;
 }
 
 function readJson(filePath: string): { kind: 'missing' } | { kind: 'ok'; raw: unknown } | { kind: 'corrupt' } {
@@ -253,7 +295,14 @@ export class BrowserPolicyStore {
   entryFor(paneId: string): PanePolicy | null {
     this.ensureLoaded();
     const e = this.state === 'ok' ? this.file.panes[paneId] : undefined;
-    return e ? { ...e, hosts: { ...e.hosts, allow: [...e.hosts.allow], block: [...e.hosts.block] } } : null;
+    if (!e) return null;
+    const { grants: stored, ...rest } = e;
+    const grants = normalizeGrants(stored);
+    return {
+      ...rest,
+      hosts: { ...e.hosts, allow: [...e.hosts.allow], block: [...e.hosts.block] },
+      ...(grants && { grants }),
+    };
   }
 
   /**
@@ -395,6 +444,14 @@ export class BrowserPolicyStore {
       // unknowable. Every pane it may have held stays refused through the
       // history until the operator writes that pane again.
       const base = this.state === 'ok' ? this.file : emptyFile();
+      // Standing consent survives an edit of the site list, never a change of
+      // who or where: same workspace, same profile, still protected, confirmed.
+      const prev = base.panes[paneId];
+      const keptGrants =
+        payload.protected && prev?.protected && prev.needsConfirm !== true
+        && prev.workspaceId === workspaceId && prev.profileId === profileId
+          ? normalizeGrants(prev.grants)
+          : undefined;
       if (payload.protected && this.history.panes[paneId] !== workspaceId) {
         await this.commitHistory({ ...this.history.panes, [paneId]: workspaceId });
       }
@@ -403,12 +460,70 @@ export class BrowserPolicyStore {
         epoch: Math.max(base.epoch, payload.expectedEpoch) + 1,
         panes: {
           ...base.panes,
-          [paneId]: { workspaceId, paneId, profileId, protected: payload.protected, hosts },
+          [paneId]: {
+            workspaceId,
+            paneId,
+            profileId,
+            protected: payload.protected,
+            hosts,
+            ...(keptGrants && { grants: keptGrants }),
+          },
         },
       };
       await this.commitPrimary(next);
       this.emit();
       return next.epoch;
+    });
+  }
+
+  /**
+   * The standing consent of a confirmed protected pane, read together with the
+   * epoch it belongs to. Null when the pane is not protected and confirmed for
+   * exactly this workspace and profile.
+   */
+  grantsFor(paneId: string, workspaceId: string, profileId: string): { grants: PaneConsentGrants; epoch: number } | null {
+    this.ensureLoaded();
+    if (this.state !== 'ok') return null;
+    const e = this.file.panes[paneId];
+    if (!e || !e.protected || e.needsConfirm === true || e.workspaceId !== workspaceId || e.profileId !== profileId) {
+      return null;
+    }
+    const g = normalizeGrants(e.grants) ?? {};
+    return { grants: { ...g, ...(g.sensitiveHosts && { sensitiveHosts: [...g.sensitiveHosts] }) }, epoch: this.file.epoch };
+  }
+
+  /**
+   * Change a pane's standing consent (the operator's "Always on this pane", or
+   * a revoke in the editor). Refused unless the pane is still protected and
+   * confirmed for `where` and the file is still at `expectedEpoch`; returns the
+   * new epoch. Operator paths only — agents have no route here.
+   */
+  async setGrants(
+    paneId: string,
+    where: { workspaceId: string; profileId: string },
+    update: (current: PaneConsentGrants) => PaneConsentGrants,
+    expectedEpoch: number,
+  ): Promise<number> {
+    if (!paneId || isUnsafeKey(paneId)) throw new BrowserPolicyWriteError('invalid', 'invalid paneId');
+    if (!Number.isSafeInteger(expectedEpoch)) throw new BrowserPolicyWriteError('invalid', 'expectedEpoch is required');
+    return this.mutate(async () => {
+      if (this.state !== 'ok' || this.file.epoch !== expectedEpoch) {
+        throw new BrowserPolicyWriteError('stale', 'the browser policy changed since it was read; re-read and try again');
+      }
+      const entry = this.file.panes[paneId];
+      if (
+        !entry || !entry.protected || entry.needsConfirm === true
+        || entry.workspaceId !== where.workspaceId || entry.profileId !== where.profileId
+      ) {
+        throw new BrowserPolicyWriteError('stale', "the pane's protection changed; re-read and try again");
+      }
+      const next = validGrants(update(normalizeGrants(entry.grants) ?? {}));
+      if (next === null) throw new BrowserPolicyWriteError('invalid', 'invalid grants');
+      const panes = { ...this.file.panes, [paneId]: { ...withoutGrants(entry), ...(next && { grants: next }) } };
+      const epoch = this.file.epoch + 1;
+      await this.commitPrimary({ version: BROWSER_POLICY_VERSION, epoch, panes });
+      this.emit();
+      return epoch;
     });
   }
 
@@ -433,7 +548,8 @@ export class BrowserPolicyStore {
       if (this.state !== 'ok') return;
       const entry = this.file.panes[paneId];
       const panes = { ...this.file.panes };
-      if (entry?.protected) panes[paneId] = { ...entry, needsConfirm: true };
+      // Rebound: the account changed, so standing consent goes with it.
+      if (entry?.protected) panes[paneId] = { ...withoutGrants(entry), needsConfirm: true };
       await this.commitPrimary({ ...this.file, panes, epoch: this.file.epoch + 1 });
       this.emit();
     });
@@ -484,7 +600,7 @@ export class BrowserPolicyStore {
         const panes: Record<string, PanePolicy> = {};
         for (const [paneId, entry] of Object.entries(this.file.panes)) {
           if (gone.has(paneId)) continue;
-          panes[paneId] = moved.has(paneId) && entry.protected ? { ...entry, needsConfirm: true } : entry;
+          panes[paneId] = moved.has(paneId) && entry.protected ? { ...withoutGrants(entry), needsConfirm: true } : entry;
         }
         await this.commitPrimary({ ...this.file, panes, epoch: this.file.epoch + 1 });
       }

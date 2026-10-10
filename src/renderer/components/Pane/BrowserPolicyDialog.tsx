@@ -21,6 +21,7 @@ import Switch from '../ui/Switch';
 import SegmentedControl from '../ui/SegmentedControl';
 import { IconLock } from '../icons';
 import { paneProtection } from './usePaneBrowserPolicyMenu';
+import type { PaneConsentGrants } from '../../../shared/browserPolicy';
 import { parseHostRule, type HostPolicyMode } from '../../../shared/browserHostPolicy';
 
 /** One host rule per line: trimmed, empty lines dropped. */
@@ -111,6 +112,7 @@ export default function BrowserPolicyDialog({ workspaceId, paneId, onClose, onSa
   const [mode, setMode] = useState<HostPolicyMode>('off');
   const [allowText, setAllowText] = useState('');
   const [blockText, setBlockText] = useState('');
+  const [grants, setGrants] = useState<PaneConsentGrants>({});
   const [busy, setBusy] = useState(false);
 
   const toast = useCallback((level: 'info' | 'error', message: string) => {
@@ -142,6 +144,7 @@ export default function BrowserPolicyDialog({ workspaceId, paneId, onClose, onSa
       setMode(entry?.hosts.mode ?? 'off');
       setAllowText((entry?.hosts.allow ?? []).join('\n'));
       setBlockText((entry?.hosts.block ?? []).join('\n'));
+      setGrants(entry?.grants ?? {});
       return true;
     } catch {
       toast('error', t('pane.browserPolicyLoadFailed'));
@@ -201,6 +204,48 @@ export default function BrowserPolicyDialog({ workspaceId, paneId, onClose, onSa
   }, [loaded, isProtected, mode, allowShown, allowText, blockText, workspaceId, paneId, onClose, onSaved, load, toast, t]);
 
   const emptyAllowlist = mode === 'allowlist' && hostLines(allowText).length === 0;
+
+  // Standing consent ("Always on this pane"), revocable one at a time. Revoking
+  // bumps the epoch; the editor keeps its unsaved edits and adopts the new one.
+  const revoke = useCallback(async (next: PaneConsentGrants) => {
+    const api = window.electronAPI?.browser?.policy;
+    if (!api?.grants || !loaded?.currentProfile) return;
+    setBusy(true);
+    try {
+      const res = await api.grants({
+        workspaceId,
+        paneId,
+        profileId: loaded.currentProfile,
+        grants: next,
+        expectedEpoch: loaded.epoch,
+      });
+      if (res.ok && typeof res.epoch === 'number') {
+        const epoch = res.epoch;
+        setLoaded((l) => (l ? { ...l, epoch } : l));
+        setGrants(next);
+        return;
+      }
+      if (res.code === 'stale') {
+        toast('info', t('pane.browserPolicyStale'));
+        await load();
+        return;
+      }
+      toast('error', res.error || t('pane.browserPolicyRevokeFailed'));
+    } catch {
+      toast('error', t('pane.browserPolicyRevokeFailed'));
+    } finally {
+      setBusy(false);
+    }
+  }, [loaded, workspaceId, paneId, load, toast, t]);
+  const grantRows: Array<{ key: string; label: string; next: PaneConsentGrants }> = [
+    ...(grants.evaluate ? [{ key: 'evaluate', label: t('pane.browserPolicyGrantEvaluate'), next: { ...grants, evaluate: false } }] : []),
+    ...(grants.download ? [{ key: 'download', label: t('pane.browserPolicyGrantDownload'), next: { ...grants, download: false } }] : []),
+    ...(grants.sensitiveHosts ?? []).map((host) => ({
+      key: `sensitive:${host}`,
+      label: t('pane.browserPolicyGrantSensitive', { host }),
+      next: { ...grants, sensitiveHosts: (grants.sensitiveHosts ?? []).filter((h) => h !== host) },
+    })),
+  ];
 
   // Portalled: a pane root is its own stacking context (Pane.tsx `isolate`),
   // so a dialog left inside it would sit under the panes painted after it.
@@ -266,6 +311,28 @@ export default function BrowserPolicyDialog({ workspaceId, paneId, onClose, onSa
             <Field label={t('pane.browserPolicyBlocked')} description={t('pane.browserPolicyBlockedDesc')} layout="stacked">
               <HostList value={blockText} onChange={setBlockText} invalid={blockInvalid} testId="browser-policy-block" />
             </Field>
+            {grantRows.length > 0 && !loaded?.needsConfirm && (
+              <Field label={t('pane.browserPolicyGrants')} description={t('pane.browserPolicyGrantsDesc')} layout="stacked">
+                <div className="ui-group w-full" data-testid="browser-policy-grants">
+                  {grantRows.map((row) => (
+                    <div key={row.key} className="ui-row" data-grant={row.key}>
+                      <div className="ui-row-text">
+                        <p className="ui-row-title">{row.label}</p>
+                      </div>
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        disabled={busy}
+                        onClick={() => { void revoke(row.next); }}
+                        data-testid={`browser-policy-revoke-${row.key}`}
+                      >
+                        {t('pane.browserPolicyRevoke')}
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              </Field>
+            )}
           </>
         )}
         {loaded && isProtected !== loaded.running && (
