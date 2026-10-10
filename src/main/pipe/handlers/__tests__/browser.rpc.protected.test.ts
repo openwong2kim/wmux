@@ -314,6 +314,22 @@ describe('protected-pane memory: per-account namespaces', () => {
     expect(names(await call(router, 'browser.actionCache.list', { workspaceId: 'ws-1' }, 'pty-b'))).toEqual(['legacy-flow']);
   });
 
+  it("a protected pane's navigation failure lands in its own site memory; a stale epoch is refused", async () => {
+    await protectPaneA();
+    const router = register(profiles, policy);
+    const failure = { domain: 'a.test', kind: 'failure', source: 'navigate', urlKey: 'https://a.test/', what: 'navigation failed', cause: 'net::ERR_NAME_NOT_RESOLVED', tryInstead: 'check the host' };
+    expect((await call(router, 'browser.siteMemory.record', { workspaceId: 'ws-1', ...failure, policyEpoch: policy.epoch() }, 'pty-a')).result)
+      .toMatchObject({ ok: true });
+    const mine = await call(router, 'browser.siteMemory.list', { workspaceId: 'ws-1', domain: 'a.test' }, 'pty-a');
+    expect((mine.result as { memory?: { failures?: unknown[] } }).memory?.failures).toHaveLength(1);
+    const neighbour = await call(router, 'browser.siteMemory.list', { workspaceId: 'ws-1', domain: 'a.test' }, 'pty-b');
+    expect((neighbour.result as { memory?: unknown }).memory).toBeNull();
+    const stale = policy.epoch();
+    await protectPaneA(['a.test', 'b.test']);
+    expect((await call(router, 'browser.siteMemory.record', { workspaceId: 'ws-1', ...failure, policyEpoch: stale }, 'pty-a')).error)
+      .toContain('policy_denied');
+  });
+
   it('ignores a workspace or profile the caller names', async () => {
     await protectPaneA();
     const router = register(profiles, policy);

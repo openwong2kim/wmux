@@ -179,3 +179,30 @@ describe('browser_navigate site-memory write hook', () => {
     }
   });
 });
+
+describe('browser_navigate site-memory record on a protected pane', () => {
+  it('names the policy epoch it was authorized at; an unprotected pane names none', async () => {
+    mockSendRpc.mockImplementation((method: string, params: Record<string, unknown>) => {
+      if (method === 'browser.lease.acquire') {
+        return Promise.resolve({ token: 'lease-1', policy: { protected: true, epoch: 9, hosts: { mode: 'allowlist', allow: ['gone.test'], block: [] } } });
+      }
+      if (method === 'browser.siteMemory.record') {
+        siteRecords.push(params);
+        return Promise.resolve({ ok: true });
+      }
+      return Promise.resolve({ entries: [] });
+    });
+    getPageForScope.mockResolvedValue(failingPage(new Error('page.goto: net::ERR_NAME_NOT_RESOLVED at https://gone.test/')));
+    await navigate({ url: 'https://gone.test/' });
+    await settle();
+    expect(siteRecords).toHaveLength(1);
+    expect(siteRecords[0]).toMatchObject({ domain: 'gone.test', kind: 'failure', policyEpoch: 9 });
+  });
+
+  it('an unprotected navigation failure carries no epoch', async () => {
+    getPageForScope.mockResolvedValue(failingPage(new Error('page.goto: net::ERR_NAME_NOT_RESOLVED at https://gone.test/')));
+    await navigate({ url: 'https://gone.test/' });
+    await settle();
+    expect(siteRecords[0]).not.toHaveProperty('policyEpoch');
+  });
+});

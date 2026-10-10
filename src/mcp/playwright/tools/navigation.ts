@@ -8,6 +8,7 @@ import {
   ensureOwnSurfaceScope,
   requireBrowserTargetScope,
   sendScopedBrowserRpc,
+  type BrowserTargetScope,
   type BrowserToolDeps,
 } from '../browserScope';
 import { domainFromUrl } from '../../../shared/browserMemory/siteMemory';
@@ -129,13 +130,19 @@ async function recordNavigationFailure(
   surfaceId: string | undefined,
   url: string,
   error: unknown,
+  leasedScope?: BrowserTargetScope,
 ): Promise<void> {
   const errorClass = navigationErrorClass(error);
   if (!errorClass) return;
   const domain = domainFromUrl(url);
   if (!domain) return;
-  const write = requireBrowserTargetScope(deps, surfaceId).then((scope) =>
+  const scoped = leasedScope ? Promise.resolve(leasedScope) : requireBrowserTargetScope(deps, surfaceId);
+  const write = scoped.then((scope) =>
     sendScopedBrowserRpc('browser.siteMemory.record', scope, {
+      // A protected pane's record names the epoch it was authorized at, like
+      // every other memory completion; main files it in that pane's account
+      // namespace, or refuses it if the identity has changed since.
+      ...(scope.protection?.protected === true && { policyEpoch: scope.protection.epoch }),
       domain,
       kind: 'failure',
       source: 'navigate',
@@ -269,6 +276,9 @@ export function registerNavigationTools(server: McpServer, deps: BrowserToolDeps
       // too: a scope refusal raised before the body reaches that catch, and the
       // trailer there is what says nothing was navigated.
       const effect = createEffectProbe();
+      // The authorized scope, for the failure record in the catch: on a
+      // protected pane it carries the policy epoch main checks the record by.
+      let leasedScope: BrowserTargetScope | undefined;
       try {
         const urlCheck = validateNavigationUrl(url);
         if (!urlCheck.valid) {
@@ -295,6 +305,7 @@ export function registerNavigationTools(server: McpServer, deps: BrowserToolDeps
           deps,
           surfaceId,
           async (scope) => {
+            leasedScope = scope;
             // Protected pane: only the allowed hosts, http(s) only. The proxy
             // refuses the request anyway; this refuses the schemes it never
             // sees (file:, javascript:, data:, chrome:, …) and says why.
@@ -431,7 +442,7 @@ export function registerNavigationTools(server: McpServer, deps: BrowserToolDeps
         //
         // Awaited: the MCP process may exit the moment this response is
         // written, taking an in-flight RPC with it.
-        await recordNavigationFailure(deps, surfaceId, url, error);
+        await recordNavigationFailure(deps, surfaceId, url, error, leasedScope);
         const message = describeToolError(error);
         return withEffectTrailer(
           {
