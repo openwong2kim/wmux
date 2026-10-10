@@ -63,5 +63,10 @@ describe('overlayHostRows', () => {
     expect(view.readOnly).toBe(true);
     expect(view.pcRailHosts).toBe(real.pcRailHosts);
     expect('workspaces' in view && 'theme' in view).toBe(true);
+    // A spread sees the whole state, with the replaced keys.
+    const copy = { ...view };
+    expect(copy.readOnly).toBe(true);
+    expect(copy.pcRailHosts).toBe(real.pcRailHosts);
+    expect(Object.keys(view).length).toBe(Object.keys(real).length);
   });
 });

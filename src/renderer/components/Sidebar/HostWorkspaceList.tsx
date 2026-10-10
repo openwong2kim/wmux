@@ -50,6 +50,7 @@ export default function HostWorkspaceList({ hostId }: { hostId: string }) {
   const open = useCallback((id: string): boolean => {
     const ref = parseShadowWorkspaceId(id);
     if (offline || !ref || ref.hostId !== hostId) return false;
+    if (useStore.getState().pcRailFeeds[hostId]?.workspaces.find((w) => w.id === ref.remoteId)?.empty) return false;
     return useStore.getState().openShadowWorkspace(hostId, ref.remoteId) !== null;
   }, [hostId, offline]);
 

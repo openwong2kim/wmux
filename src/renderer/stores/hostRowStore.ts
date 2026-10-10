@@ -52,6 +52,8 @@ function rowWorkspace(hostId: string, row: PcRailWorkspaceRow, alias: AttachedRe
     const leafId = `${id}#f:`;
     return { id, name, color, metadata, rootPane: { id: leafId, type: 'leaf', surfaces: [], activeSurfaceId: '' }, activePaneId: leafId };
   }
+  // The host's tab titles. With none (an older host) the title is empty, not
+  // the builder's placeholder, so the pane row leads with the agent's name.
   const titles = new Map(row.panes.map((p) => [p.sessionId, p.surfaceTitle ?? '']));
   const retitle = (pane: Pane): Pane => {
     if (pane.type === 'branch') return { ...pane, children: pane.children.map(retitle) };
@@ -131,6 +133,12 @@ export function overlayHostRows(real: StoreState, overrides: HostRowOverrides): 
   return new Proxy({} as StoreState, {
     get: (_target, key) => (own(key) ? overrides[key as keyof HostRowOverrides] : Reflect.get(real, key)),
     has: (_target, key) => own(key) || Reflect.has(real, key),
+    // Keys and descriptors too, so a spread or Object.keys of the view sees
+    // the whole state, not an empty object.
+    ownKeys: () => [...new Set([...Reflect.ownKeys(real), ...Reflect.ownKeys(overrides)])],
+    getOwnPropertyDescriptor: (_target, key) => (own(key) || Object.prototype.hasOwnProperty.call(real, key)
+      ? { configurable: true, enumerable: true, writable: false, value: own(key) ? overrides[key as keyof HostRowOverrides] : Reflect.get(real, key) }
+      : undefined),
   });
 }
 
