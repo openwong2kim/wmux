@@ -128,13 +128,14 @@ describe('admitCodexCapture (#1624)', () => {
 });
 
 describe('gateCodexStop', () => {
-  const stop = (id: string) => ({ agent: 'codex' as const, kind: 'agent.stop' as const, agentSessionId: id, payload: {} as Record<string, unknown> });
+  const stop = (id: string, payload: Record<string, unknown> = {}) => ({ agent: 'codex' as const, kind: 'agent.stop' as const, agentSessionId: id, payload });
   const boundTo = (id: string, transcriptPath: string): ResumeBinding => ({ agent: 'codex', sessionId: id, cwd: '/w', transcriptPath, ts: 1 });
 
-  function gate(id: string, extra: { bound?: ResumeBinding; wsl?: boolean } = {}) {
+  function gate(id: string, extra: { bound?: ResumeBinding; wsl?: boolean; payload?: Record<string, unknown> } = {}) {
+    const { payload, ...rest } = extra;
     const calls: Array<{ kind: 'admit'; path: unknown } | { kind: 'drop' }> = [];
-    const now = gateCodexStop(stop(id), {
-      env, ...extra, graceMs: 60, pollMs: 10,
+    const now = gateCodexStop(stop(id, payload), {
+      env, ...rest, graceMs: 60, pollMs: 10,
       admit: (late) => calls.push({ kind: 'admit', path: late.payload.transcript_path }),
       drop: () => calls.push({ kind: 'drop' }),
     });
@@ -179,6 +180,63 @@ describe('gateCodexStop', () => {
     const { now, calls } = gate(B, { bound: boundTo(A, rollout(A)), wsl: true });
     expect(now).toEqual(stop(B));
     expect(calls).toEqual([]);
+  });
+
+  // #1765 — the bridge's own rollout lookup, from Codex's environment.
+  const held = async (calls: Array<{ kind: string }>) => {
+    await until(() => calls.length > 0);
+    await new Promise((r) => setTimeout(r, 30));
+  };
+
+  it('a WSL title-thread stop the bridge found no rollout for is held, then dropped', async () => {
+    const { now, calls } = gate(T, { wsl: true, payload: { rolloutMissing: true } });
+    expect(now).toBeNull();
+    await held(calls);
+    expect(calls).toEqual([{ kind: 'drop' }]);
+  });
+
+  it('a WSL stop the bridge found a rollout for passes untouched', () => {
+    const { now, calls } = gate(B, { wsl: true, payload: { rolloutMissing: false } });
+    expect(now).toEqual(stop(B, { rolloutMissing: false }));
+    expect(calls).toEqual([]);
+  });
+
+  it('a WSL pane never scans this process\'s root, even for a same-named rollout', async () => {
+    rollout(T);
+    const { now, calls } = gate(T, { wsl: true, payload: { rolloutMissing: true } });
+    expect(now).toBeNull();
+    await held(calls);
+    expect(calls).toEqual([{ kind: 'drop' }]);
+  });
+
+  it('the verdict holds a stop where the pane env does not name the sessions root (CODEX_HOME in a shell rc)', async () => {
+    const { now, calls } = gate(T, { payload: { rolloutMissing: true } });
+    expect(now).toBeNull();
+    await held(calls);
+    expect(calls).toEqual([{ kind: 'drop' }]);
+    // The bridge found it: passes even on a proven pane whose root lacks it.
+    expect(gate(B, { bound: boundTo(A, rollout(A)), payload: { rolloutMissing: false } }).now).toEqual(stop(B, { rolloutMissing: false }));
+  });
+
+  it('a rollout this process finds wins over the bridge\'s verdict', async () => {
+    const file = rollout(A);
+    expect(gate(A, { payload: { rolloutMissing: true } }).now?.payload).toEqual({ rolloutMissing: true, transcript_path: file });
+    const { now, calls } = gate(B, { payload: { rolloutMissing: true } });
+    expect(now).toBeNull();
+    const fileB = rollout(B);
+    await held(calls);
+    expect(calls).toEqual([{ kind: 'admit', path: fileB }]);
+  });
+
+  it('a malformed verdict is no verdict: today\'s behaviour', async () => {
+    for (const rolloutMissing of ['true', 1, null, {}]) {
+      expect(gate(T, { wsl: true, payload: { rolloutMissing } }).now).toEqual(stop(T, { rolloutMissing }));
+      expect(gate(T, { payload: { rolloutMissing } }).now).toEqual(stop(T, { rolloutMissing }));
+    }
+    const { now, calls } = gate(T, { bound: boundTo(A, rollout(A)), payload: { rolloutMissing: 'false' } });
+    expect(now).toBeNull();
+    await held(calls);
+    expect(calls).toEqual([{ kind: 'drop' }]);
   });
 
   it('passes every other signal untouched', () => {

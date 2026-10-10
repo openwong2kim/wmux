@@ -8,7 +8,7 @@ import { randomUUID } from 'node:crypto';
 // The notify bridge is plain .mjs (Codex spawns it with `node`); it exports
 // its pure thread rules so they can be checked without a Codex process.
 import {
-  uuidV7Millis, findRolloutFile, parseSessionMeta, classifyCodexThread,
+  uuidV7Millis, findRolloutFile, parseSessionMeta, classifyCodexThread, codexRolloutMissing,
 } from '../bin/wmux-codex-notify.mjs';
 
 // #1696: a Codex sub-agent thread inherits the pane env, so its
@@ -191,6 +191,46 @@ describe('findRolloutFile / classifyCodexThread', () => {
 });
 
 // End to end: the bridge as Codex runs it, against a fake wmux main pipe.
+// #1765 — the daemon can only scan the pane env's sessions root; the bridge
+// runs in Codex's own environment and forwards what it found.
+describe('codexRolloutMissing', () => {
+  let codexHome: string;
+  beforeEach(() => {
+    codexHome = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-cn-verdict-'));
+  });
+  afterEach(() => fs.rmSync(codexHome, { recursive: true, force: true }));
+
+  it('is false for a thread whose rollout is on disk, true for one with none (the title thread)', () => {
+    writeRollout(path.join(codexHome, 'sessions'), ROOT, meta(ROOT, 'cli', ROOT));
+    expect(codexRolloutMissing(ROOT, { CODEX_HOME: codexHome })).toBe(false);
+    expect(codexRolloutMissing(CHILD, { CODEX_HOME: codexHome })).toBe(true);
+  });
+
+  it('counts a reverted thread\'s rollout-<ts>-<id>_<rollout>.jsonl as found', () => {
+    const dir = dayDir(path.join(codexHome, 'sessions'), BASE_MS);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, `rollout-2026-09-30T09-52-21-${ROOT}_2.jsonl`), `${meta(ROOT, 'cli', ROOT)}\n`);
+    expect(codexRolloutMissing(ROOT, { CODEX_HOME: codexHome })).toBe(false);
+  });
+
+  it('gives no verdict for an id it cannot look up by day', () => {
+    expect(codexRolloutMissing('11111111-2222-4333-8444-555555555555', { CODEX_HOME: codexHome })).toBeUndefined();
+  });
+
+  it('gives no verdict when a day folder cannot be listed', () => {
+    const dir = dayDir(path.join(codexHome, 'sessions'), BASE_MS);
+    fs.mkdirSync(path.dirname(dir), { recursive: true });
+    fs.writeFileSync(dir, ''); // listing it fails with ENOTDIR, not ENOENT
+    expect(codexRolloutMissing(ROOT, { CODEX_HOME: codexHome })).toBeUndefined();
+  });
+
+  it('gives no verdict when the WSL launcher started it: this root is not the distro\'s', () => {
+    for (const key of ['WMUX_WSL_CODEX_HOOK', 'WMUX_CODEX_NOTIFIER_ARGV', 'WMUX_WSL_AGENT_PROC']) {
+      expect(codexRolloutMissing(CHILD, { CODEX_HOME: codexHome, [key]: 'x' })).toBeUndefined();
+    }
+  });
+});
+
 describe('wmux-codex-notify with a sub-agent thread', () => {
   let dir: string;
   let home: string;
@@ -231,7 +271,7 @@ describe('wmux-codex-notify with a sub-agent thread', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  function run(threadId: string): Promise<number | null> {
+  function run(threadId: string, extraEnv: Record<string, string> = {}): Promise<number | null> {
     const payload = JSON.stringify({ type: 'agent-turn-complete', 'thread-id': threadId, 'turn-id': 'turn-1', cwd: dir });
     const env: NodeJS.ProcessEnv = { ...process.env };
     // This suite may itself run inside a wmux pane.
@@ -244,7 +284,7 @@ describe('wmux-codex-notify with a sub-agent thread', () => {
       WMUX_PTY_ID: 'pty-1',
       WMUX_WORKSPACE_ID: 'ws-1',
       WMUX_SURFACE_ID: 'surface-1',
-    });
+    }, extraEnv);
     const proc = spawn(process.execPath, [BRIDGE, payload], { cwd: dir, env, stdio: 'ignore' });
     return new Promise((resolve) => proc.on('exit', (code) => resolve(code)));
   }
@@ -278,6 +318,37 @@ describe('wmux-codex-notify with a sub-agent thread', () => {
       params: expect.objectContaining({ kind: 'agent.stop', agentSessionId: ROOT }),
     })]);
     expect(logLines()[0]).not.toHaveProperty('subagent');
+  }, 20_000);
+
+  it('sends the rollout verdict with an agent.stop (#1765)', async () => {
+    writeRollout(path.join(codexHome, 'sessions'), ROOT, meta(ROOT, 'cli', ROOT));
+    expect(await run(ROOT)).toBe(0);
+    // CHILD has no rollout: Codex's title thread.
+    expect(await run(CHILD)).toBe(0);
+    expect(received.map((r) => r.params?.payload)).toEqual([
+      { 'turn-id': 'turn-1', rolloutMissing: false },
+      { 'turn-id': 'turn-1', rolloutMissing: true },
+    ]);
+  }, 20_000);
+
+  it('looks again before calling a rollout missing (#1765)', async () => {
+    const exited = run(ROOT);
+    await new Promise((r) => setTimeout(r, 600));
+    writeRollout(path.join(codexHome, 'sessions'), ROOT, meta(ROOT, 'cli', ROOT));
+    expect(await exited).toBe(0);
+    expect(received[0].params?.payload).toEqual({ 'turn-id': 'turn-1', rolloutMissing: false });
+  }, 20_000);
+
+  it('sends no verdict when the WSL launcher started it (#1765)', async () => {
+    expect(await run(CHILD, { WMUX_WSL_CODEX_HOOK: '/tmp/codex-hook.sh' })).toBe(0);
+    expect(received).toHaveLength(1);
+    expect(received[0].params?.payload).toEqual({ 'turn-id': 'turn-1' });
+  }, 20_000);
+
+  it('sends no verdict with a sub-agent turn', async () => {
+    writeRollout(path.join(codexHome, 'sessions'), CHILD, meta(CHILD, { subagent: 'review' }));
+    expect(await run(CHILD)).toBe(0);
+    expect(received[0].params?.payload).toEqual({ 'turn-id': 'turn-1' });
   }, 20_000);
 
   it('sends a parentless sub-agent turn without a session id, so it binds nothing', async () => {

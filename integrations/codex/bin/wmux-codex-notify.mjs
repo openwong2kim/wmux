@@ -53,7 +53,7 @@ import { fileURLToPath } from 'node:url';
 import { createConnection } from 'node:net';
 import { randomUUID } from 'node:crypto';
 import {
-  classifyCodexThread, codexSessionsRoot, notifierOrigin, attributeThread,
+  classifyCodexThread, codexSessionsRoot, codexRolloutMissing, notifierOrigin, attributeThread,
 } from './wmux-codex-thread.mjs';
 
 const HOOK_TIMEOUT_MS = 2000; // hard cap so we never stall a Codex turn
@@ -72,7 +72,13 @@ const AGENT_TURN_COMPLETE = 'agent-turn-complete';
 //           root can no longer rebind or replace a pane's resume binding
 //           either way; the rollout scan runs after the shared-server origin
 //           check and reads a bounded number of directory entries.
-const BRIDGE_VERSION = '0.6.0';
+//   0.7.0 — an agent.stop carries `rolloutMissing`, this process's verdict on
+//           the thread's rollout, so the daemon can hold a title-thread stop
+//           it cannot check itself (#1765).
+const BRIDGE_VERSION = '0.7.0';
+// A rollout can land just after the turn-complete notify; look again before
+// telling the daemon it is missing (#1765).
+const ROLLOUT_RECHECK_MS = [250, 500, 750];
 const CONNECT_RETRY_BACKOFFS_MS = [100, 250];
 const TRANSIENT_CONNECT_CODES = new Set([
   'EPERM', 'ECONNREFUSED', 'ECONNRESET', 'EPIPE', 'ETIMEDOUT', 'EBUSY', 'EAGAIN',
@@ -347,7 +353,7 @@ async function sendToTargets(targets, buildRequest) {
 export {
   classifyNotifierOrigin, isSharedServerArgv, claimsPaneIdentity, tokenizeCommandLine,
   parseProcEntry, parsePsEntry, parseHandedArgv,
-  uuidV7Millis, findRolloutFile, parseSessionMeta, classifyCodexThread,
+  uuidV7Millis, findRolloutFile, parseSessionMeta, classifyCodexThread, codexRolloutMissing,
 } from './wmux-codex-thread.mjs';
 
 // ----- Main ---------------------------------------------------------------
@@ -419,6 +425,21 @@ async function main() {
   } catch {
     // Fail open: an unreadable history is today's agent.stop.
   }
+  // #1765 — read before attribution, which may replace the routing env. No
+  // verdict (undefined) leaves the daemon's own check, as before.
+  let rolloutMissing;
+  if (!thread.subagent) {
+    try {
+      rolloutMissing = codexRolloutMissing(sessionId, process.env);
+      for (const wait of ROLLOUT_RECHECK_MS) {
+        if (rolloutMissing !== true) break;
+        await sleep(wait);
+        rolloutMissing = codexRolloutMissing(sessionId, process.env);
+      }
+    } catch {
+      rolloutMissing = undefined;
+    }
+  }
   if (!await attributeThread(origin, thread)) return;
   const envPtyId = nonEmptyStr(process.env.WMUX_PTY_ID);
   const envWorkspaceId = nonEmptyStr(process.env.WMUX_WORKSPACE_ID);
@@ -452,7 +473,8 @@ async function main() {
   // with no agentSessionId (see "Sub-agent threads" above), so it binds
   // nothing. Only non-sensitive, allowlisted metadata rides in
   // signal.payload: official turn-id and the legacy transcript_path used by the
-  // binding's D5 liveness probe. Native input/assistant content is never copied.
+  // binding's D5 liveness probe, and the rollout verdict (#1765). Native
+  // input/assistant content is never copied.
   const envelope = {
     kind: signalKind,
     agent: 'codex',
@@ -465,6 +487,7 @@ async function main() {
     payload: {
       ...(turnId ? { 'turn-id': turnId } : {}),
       ...(transcriptPath ? { transcript_path: transcriptPath } : {}),
+      ...(rolloutMissing !== undefined ? { rolloutMissing } : {}),
     },
     ts: Date.now(),
   };

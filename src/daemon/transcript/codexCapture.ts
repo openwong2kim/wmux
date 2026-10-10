@@ -68,7 +68,8 @@ export interface CodexStopGateOptions<S extends GateSignal> {
   /** The pane's current binding: a stop for the thread it is already bound to needs no scan. */
   bound?: ResumeBinding;
   env?: Record<string, string>;
-  /** A WSL pane: its rollouts live in the distro, which this process does not scan. */
+  /** A WSL pane: its rollouts live in the distro, which this process does not scan;
+   *  only the bridge's verdict can hold its stop. */
   wsl?: boolean;
   /** The rollout appeared within the grace: handle the stop now, late. */
   admit: (signal: S) => void;
@@ -96,23 +97,32 @@ function withRollout<S extends GateSignal>(signal: S, file: string): S {
  * set in a shell rc file, an unreadable root) a missing rollout says nothing
  * about the thread, and the stop passes as before. Dropped, not downgraded: the
  * stop then touches no hook authority, so the screen detector still judges.
+ *
+ * #1765 — the bridge runs in Codex's own environment and says whether it found
+ * the rollout (`payload.rolloutMissing`). When present, that verdict stands in
+ * for the proof above, WSL panes included; a rollout this process does find
+ * still passes. A non-boolean value is no verdict.
  */
 export function gateCodexStop<S extends GateSignal>(signal: S, opts: CodexStopGateOptions<S>): S | null {
   const id = signal.agentSessionId;
-  if (signal.agent !== 'codex' || signal.kind !== 'agent.stop' || !id || opts.wsl) return signal;
+  if (signal.agent !== 'codex' || signal.kind !== 'agent.stop' || !id) return signal;
   // A legacy payload names its own transcript; HookIngest vets that path.
   if (typeof signal.payload?.transcript_path === 'string') return signal;
+  const verdict = signal.payload?.rolloutMissing;
+  const missing = typeof verdict === 'boolean' ? verdict : undefined;
+  if (opts.wsl && missing !== true) return signal;
   const bound = opts.bound?.agent === 'codex' ? opts.bound : undefined;
   if (bound?.transcriptPath && bound.sessionId === id) return withRollout(signal, bound.transcriptPath);
-  const found = findCodexTranscript(id, opts.env);
+  const find = (): string | undefined => (opts.wsl ? undefined : findCodexTranscript(id, opts.env));
+  const found = find();
   if (found) return withRollout(signal, found);
-  const rootProven = !!bound?.transcriptPath
-    && checkNativeTranscriptPath('codex', bound.transcriptPath, bound.sessionId, opts.env).ok;
+  const rootProven = missing ?? (!!bound?.transcriptPath
+    && checkNativeTranscriptPath('codex', bound.transcriptPath, bound.sessionId, opts.env).ok);
   if (!rootProven) return signal;
   const deadline = Date.now() + (opts.graceMs ?? STOP_ROLLOUT_GRACE_MS);
   const pollMs = opts.pollMs ?? STOP_ROLLOUT_POLL_MS;
   const tick = (): void => {
-    const late = findCodexTranscript(id, opts.env);
+    const late = find();
     if (late) opts.admit(withRollout(signal, late));
     else if (Date.now() >= deadline) opts.drop();
     else setTimeout(tick, pollMs).unref?.();

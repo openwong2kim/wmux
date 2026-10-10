@@ -339,9 +339,21 @@ export function uuidV7Millis(id) {
  * rollout (#1697 review).
  */
 export function findRolloutFile(id, sessionsRoot) {
+  return lookupRolloutFile(id, sessionsRoot, false).file;
+}
+
+/**
+ * findRolloutFile's walk. `anyRevision` also accepts the
+ * `rollout-<ts>-<id>_<rollout>.jsonl` a thread/revert writes. `complete` is
+ * false when a day directory could not be listed (anything but ENOENT) or was
+ * cut at the entry cap, so a missing `file` proves nothing.
+ */
+function lookupRolloutFile(id, sessionsRoot, anyRevision) {
   const created = uuidV7Millis(id);
-  if (created === undefined) return undefined;
+  if (created === undefined) return { file: undefined, complete: false };
   const suffix = `-${id}.jsonl`;
+  const revision = `-${id}_`;
+  let complete = true;
   for (const offset of [0, -DAY_MS, DAY_MS]) {
     const d = new Date(created + offset);
     const dir = join(
@@ -353,17 +365,53 @@ export function findRolloutFile(id, sessionsRoot) {
     let entries;
     try {
       entries = readdirSync(dir, { withFileTypes: true });
-    } catch {
+    } catch (error) {
+      if (error?.code !== 'ENOENT') complete = false;
       continue;
     }
     let examined = 0;
     for (const entry of entries) {
-      if (examined++ >= MAX_ROLLOUT_DIR_ENTRIES) break;
+      if (examined++ >= MAX_ROLLOUT_DIR_ENTRIES) {
+        complete = false;
+        break;
+      }
       if (!entry.isFile()) continue;
-      if (entry.name.startsWith('rollout-') && entry.name.endsWith(suffix)) return join(dir, entry.name);
+      if (!entry.name.startsWith('rollout-')) continue;
+      if (entry.name.endsWith(suffix)
+        || (anyRevision && entry.name.includes(revision) && entry.name.endsWith('.jsonl'))) {
+        return { file: join(dir, entry.name), complete: true };
+      }
     }
   }
-  return undefined;
+  return { file: undefined, complete };
+}
+
+// ----- Rollout verdict (#1765) ---------------------------------------------
+// The daemon looks for a thread's rollout only under the pane env's sessions
+// root, which is not where Codex writes when CODEX_HOME is exported in a shell
+// rc file, or in a WSL distro. This process runs in Codex's own environment,
+// so its lookup is the one that knows; an agent.stop carries the answer as
+// `rolloutMissing`, which the daemon gates on instead of its own scan.
+
+// Present only when the WSL launcher (WSL_CODEX_HOOK in
+// src/shared/wslIntegration.ts) ran this bridge: the WSL pane env passes the
+// first through WSLENV, the launcher exports the other two. This is then a
+// Windows process whose own sessions root holds none of the distro's
+// rollouts; the launcher already ran it only for a thread whose rollout it
+// found there.
+const WSL_HAND_OVER_ENV = ['WMUX_WSL_CODEX_HOOK', HANDED_ARGV_ENV, 'WMUX_WSL_AGENT_PROC'];
+
+/**
+ * Is thread `id`'s rollout missing from the sessions root this Codex writes
+ * to? undefined when this process cannot tell: started by the WSL launcher, an
+ * id that is not UUIDv7 (the lookup reads only the day folders a v7 id names),
+ * or a day folder it could not fully list. Exported for tests.
+ */
+export function codexRolloutMissing(id, env) {
+  if (WSL_HAND_OVER_ENV.some((key) => nonEmptyStr(env[key]))) return undefined;
+  const { file, complete } = lookupRolloutFile(id, codexSessionsRoot(env), true);
+  if (file) return false;
+  return complete ? true : undefined;
 }
 
 /** `file`'s first line, or undefined past `SESSION_META_MAX_BYTES` or for
