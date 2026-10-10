@@ -25,6 +25,8 @@
     "build:computer-use-windows": "node native/computer-use-windows/build.mjs",
     "test:computer-use-windows": "dotnet test native/computer-use-windows/tests/WmuxComputerUse.Core.Tests",
     "probe:mcp": "node scripts/probe-commander-surface.mjs",
+    "mcp:baseline:check": "npm run build:mcp && node scripts/probe-commander-surface.mjs",
+    "mcp:baseline:update": "npm run build:mcp && node scripts/probe-commander-surface.mjs --update",
     "mcp": "node dist/mcp/mcp/entry.js",
     "notices": "node scripts/generate-notices.mjs",
     "licenses": "node scripts/check-licenses.mjs",
