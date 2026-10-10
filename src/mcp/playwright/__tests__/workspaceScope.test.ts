@@ -89,6 +89,8 @@ describe('browser tool workspace scope', () => {
         // Once acquired with a workspace scope, the opaque token is the
         // capability used by renew/release. Keep this allowlist exact.
         expect(directBrowserCalls).toEqual([
+          // An older main's unnamed lease, released unheld.
+          "sendRpc('browser.lease.release",
           "sendRpc('browser.lease.release",
           "sendRpc('browser.lease.renew",
           "sendRpc('browser.lease.release",

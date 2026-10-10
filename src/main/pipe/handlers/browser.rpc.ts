@@ -37,7 +37,14 @@ import { normalizeUrlKey, stepsFingerprint } from '../../../shared/browserReplay
 import { HumanBehavior } from '../../browser-session/HumanBehavior';
 import { surfaceOpeners, type OpenerCaller } from '../../browser-session/SurfaceOpeners';
 import { resolvePaneForPty } from '../../workspace/ptyOwnership';
-import { PANE_PROFILE_UNRESOLVED_CODE } from '../../../shared/chromePaneBinding';
+import { PANE_PROFILE_UNRESOLVED_CODE, type ChromePaneBindings } from '../../../shared/chromePaneBinding';
+import {
+  policyDeniedMessage,
+  type BrowserPolicyAuthorization,
+  type PanePolicyDecision,
+} from '../../../shared/browserPolicy';
+import { compileHostPolicy, navigationVerdict, type NavigationVerdict } from '../../../shared/browserHostPolicy';
+import type { BrowserPolicyStore } from '../../browser-session/BrowserPolicyStore';
 import { approachPath, defaultStartPoint, type Point } from '../../../shared/pointerPath';
 import {
   dispatchTouchDrag,
@@ -120,6 +127,66 @@ import { isFirstPartyClient } from '../../mcp/firstParty';
 import { isLocalExternalWireContext } from '../../mcp/rpcProvenance';
 
 type GetWindow = () => BrowserWindow | null;
+
+/** What main wires in for protected browser panes. */
+export interface BrowserPolicyWiring {
+  store: Pick<BrowserPolicyStore, 'hasAnyHistory' | 'workspaceHasHistory' | 'decisionFor'>;
+  /** paneId → its exclusive Chrome profile binding (ChromeProfileStore). */
+  paneBindings: () => ChromePaneBindings;
+}
+
+/** Token-addressed lease bookkeeping: no caller scope, nothing to decide. */
+const PROTECTED_GATE_EXEMPT: ReadonlySet<string> = new Set(['browser.lease.renew', 'browser.lease.release']);
+
+/**
+ * Methods a protected pane may not call at all, with the reason. Agent-authored
+ * page code (evaluate) waits for the consent grant in PR B; profile-wide cookie
+ * access goes through the MCP lane's host-filtered tool instead; the builtin
+ * CDP target lookup has nothing to offer a Chrome-only pane; and the
+ * workspace-wide memory stores (recorded flows, promoted skills, site memory,
+ * site guides) would carry what one account saw to another until PR C keys
+ * them per account.
+ */
+const PROTECTED_DENIED_METHODS: ReadonlyMap<string, string> = new Map([
+  ['browser.evaluate', 'running page scripts needs a consent grant on a protected pane'],
+  ['browser.cookies', 'cookies of a protected pane are reachable only through browser_cookies, limited to its allowed hosts'],
+  ['browser.cdp.target', 'a protected pane has no builtin browser target'],
+  ['browser.actionCache.list', 'recorded flows are off on a protected pane'],
+  ['browser.actionCache.get', 'recorded flows are off on a protected pane'],
+  ['browser.actionCache.put', 'recorded flows are off on a protected pane'],
+  ['browser.actionCache.stats', 'recorded flows are off on a protected pane'],
+  ['browser.actionCache.forget', 'recorded flows are off on a protected pane'],
+  ['browser.actionCache.promote', 'recorded flows are off on a protected pane'],
+  ['browser.actionCache.demote', 'recorded flows are off on a protected pane'],
+  ['browser.actionCache.promoted', 'recorded flows are off on a protected pane'],
+  ['browser.siteMemory.list', 'site memory is off on a protected pane'],
+  ['browser.siteMemory.record', 'site memory is off on a protected pane'],
+  ['browser.siteMemory.forget', 'site memory is off on a protected pane'],
+  ['browser.siteGuides.match', 'site guides are off on a protected pane'],
+]);
+
+/** The navigation target a call would send a protected pane to, or null. */
+function protectedNavigationTarget(method: string, params: Record<string, unknown>): string | null {
+  const url = typeof params['url'] === 'string' ? params['url'] : undefined;
+  switch (method) {
+    case 'browser.navigate':
+      // A missing url is the handler's own error; the gate checks what it gets.
+      return url ?? '';
+    case 'browser.open':
+      return url ?? 'about:blank';
+    case 'browser.tabs':
+      return params['action'] === 'new' && url !== undefined ? url : null;
+    default:
+      return null;
+  }
+}
+
+function navigationRefusal(reason: Exclude<NavigationVerdict, { allowed: true }>['reason'], confirmed: boolean): string {
+  if (!confirmed) return "this pane's site list must be confirmed again by the user before it can browse";
+  if (reason === 'scheme') return 'only http(s) pages on the allowed hosts can be opened in a protected pane';
+  if (reason === 'invalid-url') return 'the address is not a valid URL';
+  return "that host is not on this pane's allowed list";
+}
 
 async function validateUrl(url: string, method: string): Promise<void> {
   const result = await validateResolvedNavigationUrl(url);
@@ -767,7 +834,7 @@ export function scopeRefusalError(
 }
 
 export function registerBrowserRpc(
-  router: RpcRouter,
+  rawRouter: RpcRouter,
   getWindow: GetWindow,
   webviewCdpManager: WebviewCdpManager,
   backendStore?: BrowserBackendStore,
@@ -794,6 +861,10 @@ export function registerBrowserRpc(
   // tabs, through the existing MCP approval pipeline. Absent means nobody can
   // be asked, so `browser_tabs borrow` refuses rather than granting silently.
   requestBorrowApproval?: BorrowApprovalRequester,
+  // Protected browser panes: the main-owned policy store and the pane → profile
+  // bindings it is resolved against. Absent (older wirings, most tests) means no
+  // pane is ever protected and the gate below is never reached.
+  browserPolicy?: BrowserPolicyWiring,
   // Returns the HelpRequests store (browser_request_help) so main/index.ts can
   // wire the renderer's Done/Cancel IPC to the same instance the RPC handlers
   // below opened the request on. A store hung off module scope could not see
@@ -901,8 +972,110 @@ export function registerBrowserRpc(
     return () => (pending ??= resolveChromeClient(method, ctx, workspaceId));
   };
 
+  // ── Protected panes: the upstream gate (every browser.* method) ─────────
+  //
+  // Wraps router.register, so no handler below can be registered around it.
+  // On an install where no pane was ever protected `hasAnyHistory()` is false
+  // and the gate returns before it touches anything else — no pane lookup, no
+  // renderer IPC, no CDP. Otherwise it resolves the CALLING pane from main's
+  // own attestation (callerPaneOf → resolvePaneForPty) and, for a protected
+  // pane, refuses what that pane may not do before the handler runs.
+  const protectedDecisions = new WeakMap<RpcContext, Extract<PanePolicyDecision, { kind: 'protected' }>>();
+
+  const protectedGate = async (
+    method: string,
+    params: Record<string, unknown>,
+    ctx: RpcContext | undefined,
+  ): Promise<void> => {
+    // A context may outlive one call; a decision is good for this call only.
+    if (ctx) protectedDecisions.delete(ctx);
+    const store = browserPolicy?.store;
+    if (!store || !store.hasAnyHistory()) return;
+    if (PROTECTED_GATE_EXEMPT.has(method) || !ctx) return;
+    const decision = callerScope(ctx, params);
+    // A refused caller is refused by the handler's own scopeFor, with its audit.
+    if (decision.kind === 'rejected') return;
+    const workspaceId = decision.workspaceId;
+    const ptyId = callerPaneOf(ctx);
+    // The human at the UI and an approved in-process plugin are not any pane's
+    // agent; with no pane to speak for they act as the workspace, which can
+    // never reach a protected pane's exclusive profile.
+    if ((ctx.operator === true || isHostedCaller(ctx)) && !ptyId) return;
+    if (!workspaceId) return;
+    let paneId: string | null = null;
+    if (ptyId) {
+      try {
+        paneId = await resolvePaneForPty(getWindow, ptyId, workspaceId);
+      } catch {
+        paneId = null;
+      }
+    }
+    if (!paneId) {
+      // Same meaning as PANE_PROFILE_UNRESOLVED: in a workspace that has (or
+      // had) a protected pane, an unidentified caller could be that pane's
+      // agent (an `auto-<runId>` PTY, a workspace-only claim). Never widen it
+      // to the workspace default.
+      if (store.workspaceHasHistory(workspaceId)) {
+        throw new Error(policyDeniedMessage(method, 'the calling pane could not be identified in a workspace with a protected browser pane'));
+      }
+      return;
+    }
+    const currentProfile = chromeRegistry?.profileFor(workspaceId, paneId);
+    const binding = browserPolicy?.paneBindings()[paneId];
+    const ownsProfile =
+      !!currentProfile
+      && !!binding
+      && binding.workspaceId === workspaceId
+      && binding.profile.toLowerCase() === currentProfile.toLowerCase();
+    const pd = store.decisionFor(paneId, workspaceId, currentProfile, !!binding);
+    if (pd.kind === 'legacy') return;
+    if (pd.kind === 'denied') throw new Error(policyDeniedMessage(method, pd.why));
+    if (backend() !== 'chrome') {
+      throw new Error(policyDeniedMessage(method, 'a protected pane runs only on the Chrome browser backend'));
+    }
+    if (!ownsProfile) {
+      throw new Error(policyDeniedMessage(method, 'a protected pane needs a Chrome profile bound to that pane alone'));
+    }
+    if (PROTECTED_DENIED_METHODS.has(method)) {
+      throw new Error(policyDeniedMessage(method, PROTECTED_DENIED_METHODS.get(method) as string));
+    }
+    // A named surface that lives anywhere but this pane's own Chrome — an
+    // in-app browser tab (not behind the proxy, live or discarded) or another
+    // profile's Chrome tab — is refused before any handler resolves it. An id
+    // nothing knows falls through to the handler's own not-found answer.
+    const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : '';
+    const surfaceOwner = surfaceId ? chromeRegistry?.ownerOfSurface(surfaceId) : null;
+    const elsewhere = surfaceOwner
+      ? surfaceOwner.profile.toLowerCase() !== currentProfile?.toLowerCase()
+      : !!surfaceId && (!!webviewCdpManager.getTarget(surfaceId, undefined) || webviewCdpManager.isDiscarded(surfaceId));
+    if (elsewhere) {
+      throw new Error(policyDeniedMessage(method, "that surface is not a tab of this pane's own protected Chrome"));
+    }
+    const target = protectedNavigationTarget(method, params);
+    if (target !== null) {
+      const verdict = navigationVerdict(compileHostPolicy(pd.hosts), target);
+      if (!verdict.allowed) {
+        throw new Error(policyDeniedMessage(method, navigationRefusal(verdict.reason, pd.confirmed)));
+      }
+    }
+    protectedDecisions.set(ctx, pd);
+  };
+
+  /** The protected decision the gate recorded for this call, if any. */
+  const protectedDecisionOf = (ctx: RpcContext | undefined) => (ctx ? protectedDecisions.get(ctx) : undefined);
+
+  const router: Pick<RpcRouter, 'register'> = {
+    register: (method, handler) =>
+      rawRouter.register(method, (params, ctx) => {
+        // Legacy (nothing ever protected): call straight through, not even a
+        // microtask later than before.
+        if (!browserPolicy?.store.hasAnyHistory()) return handler(params, ctx);
+        return protectedGate(method, params, ctx).then(() => handler(params, ctx));
+      }),
+  };
+
   /** The opener-verdict view of a resolved caller. */
-  const openerCaller = (openerKey: string | undefined, chrome?: ChromeProfileChoice): OpenerCaller => ({
+  const openerCaller =(openerKey: string | undefined, chrome?: ChromeProfileChoice): OpenerCaller => ({
     ...(openerKey && { openerKey }),
     ...(chrome?.callerPtyId && { ptyId: chrome.callerPtyId }),
     ...(chrome?.paneBound && { paneBound: true }),
@@ -1999,6 +2172,21 @@ export function registerBrowserRpc(
   router.register('browser.lease.acquire', async (params, ctx) => {
     const scope = scopeFor('browser.lease.acquire', params, ctx);
     const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
+    // The MCP lane's per-operation authorization for protected panes. The gate
+    // above has already refused a pane it must refuse; what is left is to say
+    // whether this caller IS protected, so the lane applies its own checks
+    // (evaluate, cookies, downloads, memory) to the operation. Asked with no
+    // surfaceId it is authorization only: an unnamed acquire would otherwise
+    // lease the workspace's first live session, which may be somebody else's.
+    if (params['authorize'] === true) {
+      const pd = protectedDecisionOf(ctx);
+      const policy: BrowserPolicyAuthorization = pd
+        ? { protected: true, epoch: pd.epoch, hosts: pd.hosts }
+        : { protected: false };
+      if (!surfaceId) return { token: null, policy };
+      const resolvedForAuth = await resolveTargetSurface(surfaceId, scope);
+      return { token: resolvedForAuth ? webviewCdpManager.acquireRpcLease(resolvedForAuth) : null, policy };
+    }
     // Wake a discarded guest so out-of-process (Playwright) automation gets a
     // live target under its lease (#517 slice C). Without surfaceId this
     // defaults to any discarded surface in builtin mode; external mode blocks
@@ -2985,7 +3173,9 @@ export function registerBrowserRpc(
         profile: status.profile,
         partition: null,
         persistent: null,
-        port: status.cdpPort,
+        // A protected pane's CDP port is never shown to an agent: the port is
+        // an attach primitive that would skip every check the lane applies.
+        port: protectedDecisionOf(ctx) ? null : status.cdpPort,
         running: status.running,
         // Only the live profile sets liveAttach (running there = remote-debugging
         // reachable), so the agent reads running:false as "enable it at
@@ -3100,6 +3290,10 @@ export function registerBrowserRpc(
         // or 'default'). The engine keys its CDP connection on it, so a pane
         // that changes profile reconnects to that profile's Chrome.
         profile: chrome.profile,
+        // Protected panes: the policy epoch this connection is good for. The
+        // engine drops its connection (and every cached Page) when it moves,
+        // which is how a rebind or a protection change reaches the MCP lane.
+        ...(protectedDecisionOf(ctx) && { protected: true, policyEpoch: protectedDecisionOf(ctx)?.epoch }),
         // Live only: the write-scope policy in force, so the MCP lane can apply
         // the SAME gate on the writes it drives over CDP without main seeing
         // them. Disclosed unconditionally, unlike wsEndpoint/cdpPort — it is a

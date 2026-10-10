@@ -3,6 +3,7 @@ import type { Page } from 'playwright-core';
 import { z } from 'zod';
 import { PlaywrightEngine } from '../PlaywrightEngine';
 import { withAutomationLease } from '../automationLease';
+import { isProtectedScope, protectedRefusal } from '../protectedPane';
 import {
   DOM_LISTING_PROBE_HOVER_NOTE,
   DOM_LISTING_Q_NOTE,
@@ -920,6 +921,11 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
     BROWSER_EVALUATE_SHAPE,
     async ({ expression, allowDangerous, mainWorld, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
+        // Agent-authored page code on a protected pane waits for the consent
+        // grant (PR B); refused at dispatch, before anything reaches the page.
+        if (isProtectedScope(scope)) {
+          throw protectedRefusal('browser_evaluate', 'running page scripts needs a consent grant');
+        }
         const warnings = detectDangerousPatterns(expression);
         if (warnings.length > 0 && !allowDangerous) {
           const blockedMsg =

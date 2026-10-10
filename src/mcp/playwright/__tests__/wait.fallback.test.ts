@@ -301,7 +301,7 @@ describe('browser_wait RPC fallback', () => {
       (c) => c[0] !== 'browser.lifecycle.get',
     );
     expect(leaseCalls).toEqual([
-      ['browser.lease.acquire', { workspaceId: 'ws-test', surfaceId: 'surface-1' }],
+      ['browser.lease.acquire', { authorize: true, workspaceId: 'ws-test', surfaceId: 'surface-1' }],
       ['browser.lease.release', { token: 'lease-1' }],
     ]);
   });

@@ -5,6 +5,12 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import { IPC } from '../shared/constants';
 import type { PaneLabelRejection } from '../shared/paneLabelRules';
 import { CHROME_PANE_IPC, type ChromePaneBindings } from '../shared/chromePaneBinding';
+import {
+  BROWSER_POLICY_IPC,
+  type BrowserPolicyReadResult,
+  type BrowserPolicyWritePayload,
+  type BrowserPolicyWriteResult,
+} from '../shared/browserPolicy';
 import type {
   AgySensorInstallResult,
   AgySensorStatus,
@@ -1313,6 +1319,14 @@ const electronAPI = {
         ipcRenderer.invoke(CHROME_PANE_IPC.bind, { paneId, workspaceId, profileName }),
       revealPane: (paneId: string, workspaceId: string): Promise<{ ok: boolean; error?: string }> =>
         ipcRenderer.invoke(CHROME_PANE_IPC.reveal, { paneId, workspaceId }),
+    },
+    // Protected browser panes (src/shared/browserPolicy.ts). Operator-only:
+    // main accepts these from the main window's top frame alone.
+    policy: {
+      get: (workspaceId: string, paneId: string): Promise<BrowserPolicyReadResult> =>
+        ipcRenderer.invoke(BROWSER_POLICY_IPC.get, { workspaceId, paneId }),
+      set: (payload: BrowserPolicyWritePayload): Promise<BrowserPolicyWriteResult> =>
+        ipcRenderer.invoke(BROWSER_POLICY_IPC.set, payload),
     },
     onDiscarded: (callback: (surfaceId: string) => void) => {
       const listener = (_e: Electron.IpcRendererEvent, surfaceId: string) => callback(surfaceId);

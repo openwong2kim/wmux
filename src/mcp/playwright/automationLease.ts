@@ -1,12 +1,21 @@
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { sendRpc } from '../wmux-client';
 import {
+  browserCallRefusal,
+  isProtectedScope,
+  lastKnownProtection,
+  rememberProtection,
   leaseSurfaceScope,
   requireBrowserTargetScope,
   sendScopedBrowserRpc,
   type BrowserTargetScope,
   type BrowserToolDeps,
 } from './browserScope';
+import {
+  BrowserPolicyError,
+  POLICY_DENIED_CODE,
+  type BrowserPolicyAuthorization,
+} from '../../shared/browserPolicy';
 
 import { hintBlockMeta } from './hintBlock';
 import { describeToolError } from './toolError';
@@ -31,6 +40,47 @@ import {
   type SiteMemoryRecord,
 } from '../../shared/browserMemory/siteMemory';
 import type { SiteGuideMatch } from '../../shared/browserGuides/siteGuides';
+
+// ---------------------------------------------------------------------------
+// Protected panes: every operation is authorized by main first.
+//
+// The authorization rides the lease acquire the lane already sends
+// (`authorize: true`); an operation with no surface to lease sends it as an
+// authorization-only request. Main's gate refuses a pane it must refuse
+// (policy_denied — rethrown, final) and otherwise says whether the pane is
+// protected, which the tools read off the scope.
+//
+// Fail-open stays exactly as it was for an unprotected scope: an older main or
+// a transport failure proceeds unleased. Once this connection has seen its
+// pane answered as protected, a transport failure DENIES instead — an
+// operation main could not authorize is not run on a protected pane.
+// ---------------------------------------------------------------------------
+
+export { resetProtectionMemoryForTests } from './browserScope';
+
+/**
+ * The scope an operation gets when main could not be asked at all and this
+ * connection has never had an answer: treated as protected with nothing
+ * allowed, so page scripts, cookies, storage, downloads and navigation are
+ * refused for this one operation. Every one of those needs main to work
+ * anyway, so an unprotected pane loses nothing it would otherwise have had.
+ */
+const UNCONFIRMED_PROTECTION: BrowserPolicyAuthorization = Object.freeze({
+  protected: true,
+  hosts: { mode: 'allowlist' as const, allow: [], block: [] },
+});
+
+function readAuthorization(res: unknown): BrowserPolicyAuthorization | undefined {
+  const policy = (res as { policy?: unknown } | null | undefined)?.policy as BrowserPolicyAuthorization | undefined;
+  return policy && typeof policy.protected === 'boolean' ? policy : undefined;
+}
+
+function unconfirmedProtectedError(): BrowserPolicyError {
+  return new BrowserPolicyError(
+    POLICY_DENIED_CODE,
+    "wmux could not confirm this protected pane's browser authorization, so nothing was done. Do not retry unchanged.",
+  );
+}
 
 // Renew well inside main's 30s RPC-lease TTL so a long-running tool op
 // (browser_wait_for, slow page interactions) never lapses mid-flight.
@@ -204,6 +254,9 @@ async function prependReplayHints<T>(
     | null
     | undefined;
   if (!shaped || !Array.isArray(shaped.content)) return result;
+  // Protected pane: the memory stores are workspace-wide and off until they
+  // are keyed per account (main refuses them too); no hint is read or shown.
+  if (isProtectedScope(scope)) return result;
   // A failed tool call is not a landing, and hinting on one would advertise a
   // flow for a page the agent is not on.
   if (shaped.isError === true) return result;
@@ -374,25 +427,43 @@ export async function withAutomationLease<T>(
   // resolves to the workspace's first live session, so under lightweight mode
   // the lease kept ANOTHER connection's guest unthrottled while Playwright
   // drove this caller's own.
-  const scope = await leaseSurfaceScope(await requireBrowserTargetScope(deps, surfaceId));
+  const routed = await leaseSurfaceScope(await requireBrowserTargetScope(deps, surfaceId));
   let token: string | null = null;
+  let protection: BrowserPolicyAuthorization | undefined;
   // Only ever leased BY NAME. Without a surface to name, the acquire would be
   // answered with the workspace's first live session, and holding a lease on
   // somebody else's guest is worse than holding none: it exempts their page
   // from lightweight mode and leaves this caller's own page throttled. The
   // late-acquire loop below covers the body that opens its own surface — it
-  // picks up the pin as soon as there is one.
-  if (scope.surfaceId) {
-    try {
-      const res = await sendScopedBrowserRpc<{ token: string | null }>(
-        'browser.lease.acquire',
-        scope,
-      );
+  // picks up the pin as soon as there is one. Unnamed, the request is
+  // authorization only: main answers it without resolving any surface.
+  try {
+    const res = await sendScopedBrowserRpc<{ token: string | null }>(
+      'browser.lease.acquire',
+      routed,
+      { authorize: true },
+    );
+    protection = readAuthorization(res);
+    if (protection) rememberProtection(routed.workspaceId, protection.protected);
+    if (routed.surfaceId) {
       token = res?.token ?? null;
-    } catch {
-      /* lease unavailable — proceed unleased */
+    } else if (res?.token) {
+      // A main that predates authorization leased its default surface for an
+      // unnamed acquire. Not ours to hold.
+      sendRpc('browser.lease.release', { token: res.token }).catch(() => undefined);
     }
+  } catch (err) {
+    const refusal = browserCallRefusal(err);
+    if (refusal) throw refusal;
+    const known = lastKnownProtection(routed.workspaceId);
+    if (known === true) throw unconfirmedProtectedError();
+    // Never answered: proceed unleased, but under deny-all protection checks.
+    if (known === undefined) protection = UNCONFIRMED_PROTECTION;
+    /* lease unavailable — proceed unleased */
   }
+  const scope: BrowserTargetScope = protection ? Object.freeze({ ...routed, protection }) : routed;
+  /** Set when a late authorization took the pane's permission away mid-operation. */
+  let revoked: Error | null = null;
 
   if (!token) {
     // No target registered yet (codex P2, PR #528): the tool body may
@@ -404,8 +475,22 @@ export async function withAutomationLease<T>(
     let done = false;
     const lateTimer = setInterval(() => {
       if (done || lateToken) return;
-      sendScopedBrowserRpc<{ token: string | null }>('browser.lease.acquire', scope)
+      sendScopedBrowserRpc<{ token: string | null }>('browser.lease.acquire', scope, { authorize: true })
         .then((r) => {
+          // The protection answer is re-read on every late acquire: a pane
+          // that became protected (or changed epoch) under this operation
+          // fails the operation instead of finishing it on the old terms.
+          const late = readAuthorization(r);
+          if (
+            late
+            // Already held to deny-all: no later answer is stricter than that.
+            && protection !== UNCONFIRMED_PROTECTION
+            && (late.protected !== (protection?.protected ?? false)
+              || (late.protected && late.epoch !== protection?.epoch))
+          ) {
+            if (late.protected) rememberProtection(scope.workspaceId, true);
+            revoked = unconfirmedProtectedError();
+          }
           const tok = r?.token ?? null;
           if (!tok) return;
           if (done || lateToken) {
@@ -417,7 +502,11 @@ export async function withAutomationLease<T>(
           }
           lateToken = tok;
         })
-        .catch(() => { /* keep trying until the op ends */ });
+        .catch((err) => {
+          // A refusal is final; anything else keeps trying until the op ends.
+          const refusal = browserCallRefusal(err);
+          if (refusal) revoked = refusal;
+        });
     }, 2_000);
     (lateTimer as { unref?: () => void }).unref?.();
     const lateRenew = setInterval(() => {
@@ -427,6 +516,7 @@ export async function withAutomationLease<T>(
     const lateEvents = await drainLifecycleEvents(scope);
     try {
       const result = prependModalNotes(await fn(scope), scope);
+      if (revoked) throw revoked;
       // Post-drain runs in the return expression, i.e. still inside this
       // finally's lease bracket — browser.lifecycle.get is a leased RPC and
       // must not hit a re-throttled guest.
