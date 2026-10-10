@@ -2,6 +2,9 @@
 import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, memo } from 'react';
 import type { GitSyncStatus, PrStatus, WorkspaceMetadata } from '../../../shared/types';
 import { useStore } from '../../stores';
+import { useRowStore } from '../../stores/rowStore';
+import { remoteAgentKey } from '../../../shared/remoteHosts';
+import { getWorkspaceLeafPanes } from '../../../shared/paneUtils';
 import { selectWorkspaceById } from '../../stores/selectors/workspaceProjections';
 import { formatStaleMinutes, selectWorkspaceAgentStatus, selectWorkspaceUnverifiableMinutes } from '../../stores/selectors/fleet';
 import { createWorkspaceRosterChipSelector } from '../../stores/selectors/workspaceAgentRoster';
@@ -96,6 +99,8 @@ interface WorkspaceItemProps {
 /** Longest question the row keeps (it truncates on screen; the full text is
  *  in the tooltip and Fleet's detail). */
 const ROW_QUESTION_MAX = 240;
+/** Stable empty result for the dismiss-question selector. */
+const NO_PTY_IDS: string[] = [];
 
 /**
  * X1 — PR badge for the current branch. Color encodes state; the trailing
@@ -450,7 +455,7 @@ function shortenPath(path: string, maxLen = 25): string {
 function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutNumber, onSelect, onCtrlSelect, onRename, onClose, onArchive, onCopyInfo, onDuplicate, onReorder, taskRow = false, shortcutHintHidden = false, nestedTaskIds, renderTask, onCloseTask, moaHq = false, tabStop = false }: WorkspaceItemProps) {
   const t = useT();
   // A1: 자기 ws만 구독 — 배경 ws churn/다른 항목 변경에는 리렌더되지 않는다.
-  const workspace = useStore(selectWorkspaceById(workspaceId));
+  const workspace = useRowStore(selectWorkspaceById(workspaceId));
   const [editing, setEditing] = useState(false);
   const [editName, setEditName] = useState(workspace?.name ?? '');
   const [dropIndicator, setDropIndicator] = useState<'above' | 'below' | null>(null);
@@ -472,15 +477,15 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutNumb
   const inputRef = useRef<HTMLInputElement>(null);
   const dragStartTimeRef = useRef<number>(0);
 
-  const unreadCount = useStore((s) =>
+  const unreadCount = useRowStore((s) =>
     s.notifications.filter((n) => !n.read && n.workspaceId === workspaceId).length,
   );
   // Sidebar reorder source index lives in the store, not in dataTransfer.
   // See uiSlice.draggedWorkspaceIndex for why this is out-of-band.
-  const setWorkspaceColor = useStore((s) => s.setWorkspaceColor);
+  const setWorkspaceColor = useRowStore((s) => s.setWorkspaceColor);
   // Browser mirror (wmux web /app): no rename, reorder, context menu or row actions.
-  const readOnly = useStore((s) => s.readOnly);
-  const setDraggedWorkspaceIndex = useStore((s) => s.setDraggedWorkspaceIndex);
+  const readOnly = useRowStore((s) => s.readOnly);
+  const setDraggedWorkspaceIndex = useRowStore((s) => s.setDraggedWorkspaceIndex);
   // Needs-you-first ordering is display-only, so a drop judged against the
   // DISPLAY order would move the row to a different ARRAY index than the
   // indicator promised. Reorder is paused while it is on; Ctrl+N and the
@@ -490,14 +495,14 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutNumb
   // Pinned to top (2026-09-26): the pinned group shows in stored order in
   // every mode, so inside it display and array positions agree and a pinned
   // row can reorder among the other pinned rows even while the rest is sorted.
-  const sortMode = useStore((s) => s.sidebarSortMode);
+  const sortMode = useRowStore((s) => s.sidebarSortMode);
   const sortPaused = sortMode !== 'manual';
-  const pinned = useStore((s) => s.sidebarPinnedIds.includes(workspaceId));
+  const pinned = useRowStore((s) => s.sidebarPinnedIds.includes(workspaceId));
   // A bookmark is a mark for the sidebar filter, never an order: no reorder
   // or settle rule reads it.
-  const bookmarked = useStore((s) => s.sidebarBookmarkedIds.includes(workspaceId));
+  const bookmarked = useRowStore((s) => s.sidebarBookmarkedIds.includes(workspaceId));
   const reorderOff = taskRow || moaHq || (sortPaused && !pinned);
-  const setTerminalTextDropDragActive = useStore((s) => s.setTerminalTextDropDragActive);
+  const setTerminalTextDropDragActive = useRowStore((s) => s.setTerminalTextDropDragActive);
 
   const metadata = workspace?.metadata;
 
@@ -506,19 +511,19 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutNumb
   // derivation the deck Fleet roster + titlebar vitals use. Reading
   // `metadata.agentStatus` directly only ever saw the active pane and never
   // self-healed. Scalar return → Object.is subscription re-renders only on change.
-  const agentStatus = useStore((s) => selectWorkspaceAgentStatus(s, workspaceId));
+  const agentStatus = useRowStore((s) => selectWorkspaceAgentStatus(s, workspaceId));
   // Minutes of silence when this workspace is 'running' but nothing has
   // reported in for the hook-authority window — 0 otherwise. Whole minutes so
   // the scalar subscription settles between ticks instead of re-rendering the
   // row every 2 s for a label that only moves once a minute.
-  const unverifiableMinutes = useStore((s) => selectWorkspaceUnverifiableMinutes(s, workspaceId));
+  const unverifiableMinutes = useRowStore((s) => selectWorkspaceUnverifiableMinutes(s, workspaceId));
   // An agent that is blocked on the user is the one row state the design
   // system lets us paint (DESIGN.md: the only permitted wash is the danger
   // needs-input row). Two renditions and no more — the wash and the label.
   // One rule with Fleet and the Attention order (fleetAttentionClass): a
   // plain `waiting` with no pending question is idle there, so it must not
   // paint a "Needs you" row that sorts to the bottom.
-  const attentionClass = useStore((s) => selectWorkspaceAttentionClasses(s)[workspaceId] ?? 'idle');
+  const attentionClass = useRowStore((s) => selectWorkspaceAttentionClasses(s)[workspaceId] ?? 'idle');
   const needsYou = attentionClass === 'needsYou' && (agentStatus === 'waiting' || agentStatus === 'awaiting_input');
   const markStatus = agentStatus === 'waiting' && attentionClass !== 'needsYou' ? 'idle' : agentStatus;
   // A failed turn is its own tier (fleetAttentionClass): it says "Error" where
@@ -527,7 +532,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutNumb
   const errored = attentionClass === 'error';
   // A needs-you row's second line is what the agent asked — the reason the row
   // is waiting — instead of the branch. Plain text, one line.
-  const rawQuestion = useStore((s) => {
+  const rawQuestion = useRowStore((s) => {
     if (!needsYou) return '';
     const ws = s.workspaces.find((w) => w.id === workspaceId);
     if (!ws) return '';
@@ -538,6 +543,22 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutNumb
     return '';
   });
   const question = needsYou ? sanitizeDisplayText(rawQuestion, ROW_QUESTION_MAX) : undefined;
+  // The panes here that need you because their agent ended a turn on a
+  // question — what the context menu's Dismiss clears. Live permission dialogs
+  // are not in it: those wait for an answer. Read only while the menu is open.
+  const questionPtyIds = useStore(useShallow((s) => {
+    if (!menuPos) return NO_PTY_IDS;
+    const ws = s.workspaces.find((w) => w.id === workspaceId);
+    if (!ws) return NO_PTY_IDS;
+    const ids: string[] = [];
+    for (const surf of collectWorkspaceTerminalSurfaces(ws)) {
+      // A pane whose agent reports a live prompt is skipped even with a
+      // question text: dismissing would leave it needing you anyway.
+      if (surf.ptyId && s.surfacePendingQuestion?.[surf.ptyId]?.trim()
+        && s.surfaceAgent?.[surf.ptyId]?.status !== 'awaiting_input') ids.push(surf.ptyId);
+    }
+    return ids.length > 0 ? ids : NO_PTY_IDS;
+  }));
   // Roving tabindex: the row's own buttons join the Tab order only while the
   // keyboard is on this row, so Tab walks rows' actions one row at a time
   // instead of every hidden button in the list.
@@ -545,20 +566,20 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutNumb
   const innerTab = rowFocusWithin || moaHq ? 0 : -1;
   // A pane here is waiting out a usage limit: when nothing louder is going on
   // the workspace row draws the waiting clock instead of nothing (or a red ✕).
-  const usageWaiting = useStore((s) => workspaceHasUsageLimitWaiting(s, workspaceId));
+  const usageWaiting = useRowStore((s) => workspaceHasUsageLimitWaiting(s, workspaceId));
   // Glance board (2026-09-25): something here changed since it was last in
   // view, and it wants a look. Fleet's changed-dot rule: --text-main, never amber.
-  const unseen = useStore((s) => !!selectSidebarUnseenWorkspaces(s)[workspaceId]);
+  const unseen = useRowStore((s) => !!selectSidebarUnseenWorkspaces(s)[workspaceId]);
   // 2026-10-07 — a turn that finished with no question draws no needs-you
   // border; the unseen dot is its "done" dot, cleared when the workspace is
   // viewed. A turn that ended on a question is needs you, not done.
   const done = unseen && attentionClass === 'finished';
   // Attention blink: a CSS class picked from state (attentionBlink.ts). Never
   // on a row whose workspace is on screen, never under reduced motion.
-  const blinkMode = useStore((s) => s.attentionBlink);
-  const blinkRemindMs = useStore((s) => s.attentionBlinkRemindMs);
-  const blinkFinished = useStore((s) => s.attentionBlinkFinished);
-  const onScreen = useStore((s) => visibleWorkspaceIds(s).has(workspaceId));
+  const blinkMode = useRowStore((s) => s.attentionBlink);
+  const blinkRemindMs = useRowStore((s) => s.attentionBlinkRemindMs);
+  const blinkFinished = useRowStore((s) => s.attentionBlinkFinished);
+  const onScreen = useRowStore((s) => visibleWorkspaceIds(s).has(workspaceId));
   const reducedMotion = usePrefersReducedMotion();
   const visible = isActive || onScreen;
   // Whether this wait has already been on screen: "once" is then spent and
@@ -572,16 +593,16 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutNumb
     needsYou, done, visible, reducedMotion, seenThisWait,
     mode: blinkMode, remindMs: blinkRemindMs, finished: blinkFinished,
   });
-  const toggleSidebarPin = useStore((s) => s.toggleSidebarPin);
-  const toggleSidebarBookmark = useStore((s) => s.toggleSidebarBookmark);
+  const toggleSidebarPin = useRowStore((s) => s.toggleSidebarPin);
+  const toggleSidebarBookmark = useRowStore((s) => s.toggleSidebarBookmark);
   // Settle / snooze (main owns both; the menu only sends the verbs). Scalars,
   // so a push about another workspace does not re-render this row.
-  const workspaceSettled = useStore((s) => !!s.workspaceSettle.states[workspaceId]?.settled);
-  const snoozedUntil = useStore((s) => s.workspaceSettle.states[workspaceId]?.snoozedUntil ?? 0);
+  const workspaceSettled = useRowStore((s) => !!s.workspaceSettle.states[workspaceId]?.settled);
+  const snoozedUntil = useRowStore((s) => s.workspaceSettle.states[workspaceId]?.snoozedUntil ?? 0);
   // Main refuses to settle these (rules (b)/(c)); the item says so up front.
   const settleBlocked = pinned || needsYou || agentStatus === 'running' || agentStatus === 'awaiting_input';
   // The HQ workspace never settles or snoozes (rule (d)).
-  const isHq = useStore((s) => s.workspaceSettle.hqWorkspaceId === workspaceId);
+  const isHq = useRowStore((s) => s.workspaceSettle.hqWorkspaceId === workspaceId);
   // Name first. At rest the row shows the workspace name and the signals that
   // change on their own (status dot, unread, idle, "needs you"); the project
   // badge, the agent count and the shortcut hint are chrome you only look for
@@ -609,8 +630,8 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutNumb
   // folded chip counts them in amber.
   const paneTaskSplit = usePaneTaskSplit(workspaceId, renderTask ? nestedTaskIds : undefined);
   const paneTaskIds = useMemo(() => [...paneTaskSplit.byPane.values()].flat(), [paneTaskSplit]);
-  const paneTaskActive = useStore((s) => !!s.activeWorkspaceId && paneTaskIds.includes(s.activeWorkspaceId));
-  const paneTaskNeedYou = useStore((s) => paneTaskIds.reduce((n, id) => n + (taskNeedsYou(selectWorkspaceAgentStatus(s, id)) ? 1 : 0), 0));
+  const paneTaskActive = useRowStore((s) => !!s.activeWorkspaceId && paneTaskIds.includes(s.activeWorkspaceId));
+  const paneTaskNeedYou = useRowStore((s) => paneTaskIds.reduce((n, id) => n + (taskNeedsYou(selectWorkspaceAgentStatus(s, id)) ? 1 : 0), 0));
   const prevNeedYouRef = useRef(paneTaskNeedYou);
   useEffect(() => {
     if (paneTaskNeedYou > prevNeedYouRef.current) setRosterOpen(true);
@@ -627,7 +648,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutNumb
     () => createWorkspaceRosterChipSelector(workspaceId),
     [workspaceId],
   );
-  const rosterCounts = useStore(rosterChipSelector);
+  const rosterCounts = useRowStore(rosterChipSelector);
   const hasRoster = rosterCounts.agentCount > 0 || rosterCounts.stashedCount > 0;
   /** Rows whose roster summary must not wait for the pointer — see its JSX.
    *  #1481 — the summary now names who is here and what they are doing, which
@@ -656,7 +677,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutNumb
   // delete, so open the list and flash the row once. The pulse lives HERE
   // because its first job is to open the list, and the list is only mounted
   // once open — a pulse owned by the list could never open it.
-  const stashPulse = useStore((s) => s.stashPulse);
+  const stashPulse = useRowStore((s) => s.stashPulse);
   const pulsedPaneId = stashPulse?.workspaceId === workspaceId ? stashPulse.paneId : null;
   const [pulsingPaneId, setPulsingPaneId] = useState<string | null>(null);
 
@@ -680,26 +701,26 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutNumb
   }, [pulsingPaneId]);
 
   // X5 wmux.json badge state for this workspace (transient, probe-driven).
-  const projectState = useStore((s) => s.projectConfigs[workspaceId]);
+  const projectState = useRowStore((s) => s.projectConfigs[workspaceId]);
   // J3 §4 — 태스크 워크스페이스의 페인 cwd가 worktree 경계 밖으로 이탈했는지(경고만).
-  const departedCwd = useStore((s) => s.departedPaneGroups[workspaceId]);
+  const departedCwd = useRowStore((s) => s.departedPaneGroups[workspaceId]);
   // Detach: this workspace is a dependent child task iff its id is an open
   // WorkTask's paneGroupId. When so, surface a "detach from parent" action that
   // releases the mission (non-destructive close) while leaving this workspace,
   // its worktree/branch/PTY and running agent completely untouched.
-  const childMission = useStore((s) => s.missionByPaneGroup[workspaceId]);
-  const detachMissionForPaneGroup = useStore((s) => s.detachMissionForPaneGroup);
+  const childMission = useRowStore((s) => s.missionByPaneGroup[workspaceId]);
+  const detachMissionForPaneGroup = useRowStore((s) => s.detachMissionForPaneGroup);
   const isDependentChild = childMission?.status === 'open';
   // #1481 — provenance for a task row: the audit record (who asked, when) and
   // the owner's current name. Undefined for every other row.
-  const provenance = useStore((s) => (taskRow ? s.fanoutProvenance[workspaceId] : undefined));
-  const spawnOwner = useStore((s) => (taskRow ? s.fanoutSpawnOwner[workspaceId] : undefined));
-  const lineageOwner = useStore((s) => (taskRow ? s.fanoutLineage[workspaceId] : undefined));
+  const provenance = useRowStore((s) => (taskRow ? s.fanoutProvenance[workspaceId] : undefined));
+  const spawnOwner = useRowStore((s) => (taskRow ? s.fanoutSpawnOwner[workspaceId] : undefined));
+  const lineageOwner = useRowStore((s) => (taskRow ? s.fanoutLineage[workspaceId] : undefined));
   const taskOwnerId = taskRow ? childMission?.owner?.verifiedWorkspaceId ?? lineageOwner ?? spawnOwner : undefined;
-  const taskOwnerName = useStore((s) => (taskOwnerId ? s.workspaces.find((w) => w.id === taskOwnerId)?.name : undefined));
+  const taskOwnerName = useRowStore((s) => (taskOwnerId ? s.workspaces.find((w) => w.id === taskOwnerId)?.name : undefined));
   // Who asked for this task — for the fan-out glyph's tooltip. The sidebar
   // shows it by nesting the task under the requesting pane (2026-09-27).
-  const requester = useStore(useShallow((s) => (taskRow ? resolveTaskRequester(s, workspaceId) : undefined)));
+  const requester = useRowStore(useShallow((s) => (taskRow ? resolveTaskRequester(s, workspaceId) : undefined)));
 
   // Idle badge — how long since ANY of this workspace's surfaces last showed
   // life: agent activity (surfaceActivityAt, same stamps the fleet 'running'
@@ -708,7 +729,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutNumb
   // gates). Scalar subscription: re-renders only when the max moves.
   // 0 = no stamp this session (fresh restart) → badge stays hidden rather
   // than lying with a fake "just now".
-  const lastActivityAt = useStore((s) => {
+  const lastActivityAt = useRowStore((s) => {
     const ws = s.workspaces.find((w) => w.id === workspaceId);
     if (!ws) return 0;
     let last = 0;
@@ -719,6 +740,15 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutNumb
       if (!surf.ptyId) continue;
       const at = Math.max(s.surfaceActivityAt[surf.ptyId] ?? 0, s.surfaceOutputAt[surf.ptyId] ?? 0);
       if (at > last) last = at;
+    }
+    // A remote tab's stamp is keyed like its roster row (remote:{host}:{session});
+    // only a host list's store (hostRowStore.ts) carries one.
+    for (const leaf of getWorkspaceLeafPanes(ws)) {
+      for (const surf of leaf.surfaces) {
+        if (surf.surfaceType !== 'remote-terminal' || !surf.remoteHostId || !surf.remoteSessionId) continue;
+        const at = s.surfaceActivityAt[remoteAgentKey(surf.remoteHostId, surf.remoteSessionId)] ?? 0;
+        if (at > last) last = at;
+      }
     }
     return last;
   });
@@ -908,7 +938,8 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutNumb
 
   const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
     // An issue / PR dragged from the Git page: this workspace's agent takes it.
-    if (isOurHandoffDrag(e.dataTransfer)) {
+    // Not on a read-only row (the web mirror, another computer's list).
+    if (!readOnly && isOurHandoffDrag(e.dataTransfer)) {
       e.preventDefault();
       e.dataTransfer.dropEffect = 'copy';
       if (!handoffOver) setHandoffOver(true);
@@ -944,7 +975,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutNumb
   };
 
   const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
-    if (isOurHandoffDrag(e.dataTransfer)) {
+    if (!readOnly && isOurHandoffDrag(e.dataTransfer)) {
       setHandoffOver(false);
       e.preventDefault();
       const taken = takeHandoffDrop(e.dataTransfer);
@@ -1535,6 +1566,22 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutNumb
           style={{ left: menuPos.x, top: menuPos.y, background: 'var(--bg-surface)', border: '1px solid color-mix(in srgb, var(--bg-overlay) 70%, transparent)' }}
           onMouseDown={(e) => e.stopPropagation()}
         >
+          {questionPtyIds.length > 0 && (
+            <button
+              className="w-full text-left px-3 py-1.5 text-xs transition-colors hover:bg-[var(--bg-overlay)]"
+              style={{ color: 'var(--text-main)' }}
+              onClick={() => {
+                setMenuPos(null);
+                const { dismissPendingQuestion } = useStore.getState();
+                for (const ptyId of questionPtyIds) dismissPendingQuestion(ptyId);
+              }}
+              data-workspace-action="dismiss-question"
+            >
+              {questionPtyIds.length > 1
+                ? t('workspace.dismissQuestions', { count: questionPtyIds.length })
+                : t('workspace.dismissQuestion')}
+            </button>
+          )}
           <button
             className="w-full text-left px-3 py-1.5 text-xs transition-colors hover:bg-[var(--bg-overlay)]"
             style={{ color: 'var(--text-main)' }}

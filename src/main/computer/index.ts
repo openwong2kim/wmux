@@ -15,7 +15,7 @@ import { ComputerError } from '../../shared/computer/errors';
 import { helperStatus as rawHelperStatus, writeComputerUseSettings, type ComputerHelperStatus, type ComputerUseSettingsPatch } from './settings';
 import { readAppBundleId } from './appBundleId';
 import { isPermissionOp, requestHelperPermissions, resetHelperPermissions, revealHelper } from './permissions';
-import { ComputerService, computerUseShutDown, type ConsentRequester, type HelperLike } from './ComputerService';
+import { ComputerService, computerUseShutDown, markComputerUseShutDown, type ConsentRequester, type HelperLike } from './ComputerService';
 import { HelperProcess } from './HelperProcess';
 import { StopKey } from './stopKey';
 import { createHelperVerifier } from './verifyHelper';
@@ -226,6 +226,13 @@ export function createComputerService(deps: { requestConsent: ConsentRequester }
       selfExePath: process.execPath.toLowerCase(),
     }),
   });
+  // Built during quit (the first computer.* call of this run landed after
+  // disposeComputerUse): born disposed, so it refuses every call before it
+  // arms the stop key or starts a helper.
+  if (computerUseShutDown()) {
+    service.dispose();
+    return service;
+  }
   liveService = service;
   return service;
 }
@@ -238,6 +245,7 @@ export function disposeComputerUse(service: ComputerService | null): void {
   try {
     service?.dispose();
   } finally {
+    markComputerUseShutDown();
     stopKey?.release();
     liveService = null;
   }

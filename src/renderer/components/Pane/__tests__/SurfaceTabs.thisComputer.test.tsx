@@ -15,12 +15,13 @@ import { DEFAULT_PC_RAIL_PERSISTED } from '../../../../shared/pcRail';
 let container: HTMLDivElement;
 let root: Root;
 
-function mount(): void {
+function mount(workspaceId?: string): void {
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
   const s = useStore.getState();
-  const ws = s.workspaces.find((w) => w.id === s.activeWorkspaceId)!;
+  const found = s.workspaces.find((w) => w.id === s.activeWorkspaceId)!;
+  const ws = workspaceId ? { ...found, id: workspaceId } : found;
   act(() => {
     root.render(React.createElement(SurfaceTabs, {
       surfaces: [],
@@ -66,5 +67,30 @@ describe('SurfaceTabs new browser label (PC rail)', () => {
       useStore.setState({ pcRail: { ...DEFAULT_PC_RAIL_PERSISTED, activePcId: 'host-1' } });
     });
     expect(browserTitle()).toBe('Browser (this computer)');
+  });
+});
+
+describe('SurfaceTabs on a shadow workspace (PC rail)', () => {
+  it('hides split and new browser in the header and split, new pane and snap in the menu', () => {
+    mount('shadow:h1:w1');
+    for (const action of ['split-right', 'split-down', 'new-browser']) {
+      expect(container.querySelector(`[data-pane-action="${action}"]`), action).toBeNull();
+    }
+    expect(container.querySelector('[data-pane-action="stash"]')).not.toBeNull();
+    act(() => {
+      container.firstElementChild!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+    });
+    const keys = [...document.querySelectorAll('[data-pane-menu-action]')].map((el) => el.getAttribute('data-pane-menu-action'));
+    expect(keys).not.toContain('split-right');
+    expect(keys).not.toContain('split-down');
+    expect(keys.some((k) => k?.startsWith('snap-'))).toBe(false);
+    expect(document.querySelector('[data-pane-menu-action="new-browser"]')?.textContent).toContain('Browser (this computer)');
+  });
+
+  it('keeps every action on this computer', () => {
+    mount();
+    for (const action of ['split-right', 'split-down', 'new-browser']) {
+      expect(container.querySelector(`[data-pane-action="${action}"]`), action).not.toBeNull();
+    }
   });
 });

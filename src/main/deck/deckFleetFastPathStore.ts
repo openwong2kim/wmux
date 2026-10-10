@@ -4,12 +4,14 @@
 // ("who needs me?", "작업 상태") is answered from the local Fleet board
 // instead of starting a Moa turn (see fleetFastPath.ts). Default OFF until the
 // owner decides otherwise. Same storage shape, mtime cache and never-throw
-// posture as deck-ledger-gate.json.
+// posture as deck-ledger-gate.json, except that reads never fall back to the
+// `.bak` the atomic writer leaves behind: after ON then OFF that backup still
+// says ON, and an opt-in switch must fail closed to OFF.
 
 import fs from 'node:fs';
 import path from 'node:path';
 import { getWmuxDir } from '../../daemon/config';
-import { atomicReadJSONSync, atomicWriteJSON } from '../../daemon/util/atomicWrite';
+import { atomicWriteJSON } from '../../daemon/util/atomicWrite';
 
 export const DEFAULT_FLEET_FAST_PATH_ENABLED = false;
 
@@ -27,8 +29,15 @@ export function getDeckFleetFastPathPath(dir: string = getWmuxDir()): string {
 /** path → { mtimeMs, value }: re-parsed only when the file's mtime moves. */
 const cache = new Map<string, { mtimeMs: number; value: boolean }>();
 
+/** Primary file only. A missing, unreadable or corrupt primary is OFF, never
+ *  whatever an older generation in `.bak` held. */
 function parseFlag(p: string): boolean {
-  const raw = atomicReadJSONSync<unknown>(p);
+  let raw: unknown;
+  try {
+    raw = JSON.parse(fs.readFileSync(p, 'utf8'));
+  } catch {
+    return DEFAULT_FLEET_FAST_PATH_ENABLED;
+  }
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return DEFAULT_FLEET_FAST_PATH_ENABLED;
   const enabled = (raw as Record<string, unknown>).enabled;
   return typeof enabled === 'boolean' ? enabled : DEFAULT_FLEET_FAST_PATH_ENABLED;

@@ -50,6 +50,30 @@ describe('deckFleetFastPathStore', () => {
     expect(loadFleetFastPathEnabled(dir)).toBe(false);
   });
 
+  // Review P3: the atomic writer keeps the previous generation in `.bak`, so
+  // after ON then OFF the backup says ON. A damaged primary must read OFF.
+  it('fails closed to OFF when the primary is corrupt after ON then OFF', async () => {
+    await setFleetFastPathEnabled(true, dir);
+    await setFleetFastPathEnabled(false, dir);
+    const p = getDeckFleetFastPathPath(dir);
+    expect(JSON.parse(fs.readFileSync(`${p}.bak`, 'utf8'))).toEqual({ enabled: true });
+    expect(loadFleetFastPathEnabled(dir)).toBe(false);
+    fs.writeFileSync(p, 'CORRUPT{', 'utf8');
+    // Move the mtime well clear of the cached write so this is a real re-read.
+    const later = new Date(Date.now() + 60_000);
+    fs.utimesSync(p, later, later);
+    expect(loadFleetFastPathEnabled(dir)).toBe(false);
+  });
+
+  it('fails closed to OFF when the primary is missing and `.bak` says ON', async () => {
+    await setFleetFastPathEnabled(true, dir);
+    await setFleetFastPathEnabled(false, dir);
+    const p = getDeckFleetFastPathPath(dir);
+    expect(JSON.parse(fs.readFileSync(`${p}.bak`, 'utf8'))).toEqual({ enabled: true });
+    fs.rmSync(p);
+    expect(loadFleetFastPathEnabled(dir)).toBe(false);
+  });
+
   it('honours the test override without reading the file', async () => {
     await setFleetFastPathEnabled(false, dir);
     overrideFleetFastPathForTests(true);

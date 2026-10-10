@@ -3,6 +3,7 @@ import type { BrowserWindow } from 'electron';
 import { RpcRouter } from '../../RpcRouter';
 import type { RpcMethod } from '../../../../shared/rpc';
 import { registerBrowserRpc } from '../browser.rpc';
+import { dispatchAsClaimedCaller } from './claimedCaller';
 
 // The packaged lane's half of touch dispatch. A device preset here installs the
 // touch emulation over `webContents.debugger`, so the input that follows has to
@@ -60,7 +61,7 @@ function register() {
     renewRpcLease: vi.fn(() => true),
     releaseRpcLease: vi.fn(() => true),
   };
-  const router = new RpcRouter();
+  const router = dispatchAsClaimedCaller(new RpcRouter());
   registerBrowserRpc(router, () => null as unknown as BrowserWindow, cdp as never);
   return router;
 }

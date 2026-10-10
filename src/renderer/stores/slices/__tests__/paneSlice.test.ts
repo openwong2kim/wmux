@@ -4,6 +4,7 @@ import { immer } from 'zustand/middleware/immer';
 import { createPaneSlice, type PaneSlice, MAX_PANES_PER_WORKSPACE } from '../paneSlice';
 import { createWorkspace, type Workspace, type Surface, type SessionData } from '../../../../shared/types';
 import { findPane, getLeafPanes } from '../../../../shared/paneUtils';
+import { surfaceAttentionStatus } from '../../selectors/fleet';
 
 // Minimal store that satisfies PaneSlice dependencies. Includes a `pushToast`
 // stub because splitPane calls it via get() when the leaf cap is hit.
@@ -998,6 +999,97 @@ describe('surfacePendingQuestion lifecycle', () => {
     store.getState().markSurfaceQuestionSeen('pty-1');
     store.getState().setSurfacePendingQuestion('pty-1', '');
     expect(store.getState().surfaceQuestionSeen['pty-1']).toBeUndefined();
+  });
+});
+
+// Needs you → Dismiss: a question that needs no answer can be dismissed, and
+// a re-delivery of the same text (reconnect, a re-read of the transcript after
+// an app restart, a repeated stop payload) must not bring it back.
+describe('dismissPendingQuestion', () => {
+  it('clears the question and its seen marker, and records the dismissed text', () => {
+    const store = createTestStore();
+    store.getState().setSurfacePendingQuestion('pty-1', 'Shall I merge?');
+    store.getState().markSurfaceQuestionSeen('pty-1');
+    store.getState().dismissPendingQuestion('pty-1');
+    expect(store.getState().surfacePendingQuestion['pty-1']).toBeUndefined();
+    expect(store.getState().surfaceQuestionSeen['pty-1']).toBeUndefined();
+    expect(store.getState().surfaceDismissedQuestion['pty-1']).toBe('Shall I merge?');
+  });
+
+  it('is a no-op without a pending question', () => {
+    const store = createTestStore();
+    store.getState().dismissPendingQuestion('pty-1');
+    expect(store.getState().surfaceDismissedQuestion['pty-1']).toBeUndefined();
+  });
+
+  it('ignores a later delivery of the SAME question', () => {
+    const store = createTestStore();
+    store.getState().setSurfacePendingQuestion('pty-1', 'Shall I merge?');
+    store.getState().dismissPendingQuestion('pty-1');
+    store.getState().setSurfacePendingQuestion('pty-1', 'Shall I merge?');
+    expect(store.getState().surfacePendingQuestion['pty-1']).toBeUndefined();
+    expect(store.getState().surfaceDismissedQuestion['pty-1']).toBe('Shall I merge?');
+  });
+
+  it('shows a DIFFERENT question and drops the record', () => {
+    const store = createTestStore();
+    store.getState().setSurfacePendingQuestion('pty-1', 'Shall I merge?');
+    store.getState().dismissPendingQuestion('pty-1');
+    store.getState().setSurfacePendingQuestion('pty-1', 'Delete the branch?');
+    expect(store.getState().surfacePendingQuestion['pty-1']).toBe('Delete the branch?');
+    expect(store.getState().surfaceDismissedQuestion['pty-1']).toBeUndefined();
+  });
+
+  it("an empty-string clear drops the record, so the same text asked later shows", () => {
+    const store = createTestStore();
+    store.getState().setSurfacePendingQuestion('pty-1', 'Shall I merge?');
+    store.getState().dismissPendingQuestion('pty-1');
+    store.getState().setSurfacePendingQuestion('pty-1', '');
+    expect(store.getState().surfaceDismissedQuestion['pty-1']).toBeUndefined();
+    store.getState().setSurfacePendingQuestion('pty-1', 'Shall I merge?');
+    expect(store.getState().surfacePendingQuestion['pty-1']).toBe('Shall I merge?');
+  });
+
+  it('shows the SAME question again when it is asked in a new turn', () => {
+    const store = createTestStore();
+    store.getState().setSurfacePendingQuestion('pty-1', 'Shall I merge?');
+    store.getState().dismissPendingQuestion('pty-1');
+    store.getState().markSurfaceTurnOpen('pty-1');
+    expect(store.getState().surfaceDismissedQuestion['pty-1']).toBeUndefined();
+    store.getState().setSurfacePendingQuestion('pty-1', 'Shall I merge?');
+    expect(store.getState().surfacePendingQuestion['pty-1']).toBe('Shall I merge?');
+  });
+
+  it('keeps the SAME question dismissed when it is re-delivered without a new turn', () => {
+    const store = createTestStore();
+    store.getState().setSurfacePendingQuestion('pty-1', 'Shall I merge?');
+    store.getState().dismissPendingQuestion('pty-1');
+    // A reconnect redraw: byte-rate running, no prompt submit.
+    store.getState().markSurfaceRunning('pty-1');
+    store.getState().setSurfaceAgentStatus('pty-1', 'running');
+    store.getState().setSurfacePendingQuestion('pty-1', 'Shall I merge?');
+    expect(store.getState().surfacePendingQuestion['pty-1']).toBeUndefined();
+    expect(store.getState().surfaceDismissedQuestion['pty-1']).toBe('Shall I merge?');
+  });
+
+  it('touches only the dismissed pane', () => {
+    const store = createTestStore();
+    store.getState().setSurfacePendingQuestion('pty-1', 'Shall I merge?');
+    store.getState().setSurfacePendingQuestion('pty-2', 'Shall I merge?');
+    store.getState().dismissPendingQuestion('pty-1');
+    expect(store.getState().surfacePendingQuestion['pty-2']).toBe('Shall I merge?');
+  });
+
+  it('leaves a live permission dialog (awaiting_input) needing you', () => {
+    const store = createTestStore();
+    store.getState().setSurfaceAgent('pty-1', 'Claude Code', 'awaiting_input');
+    store.getState().setSurfaceAgentStatus('pty-1', 'awaiting_input');
+    store.getState().setSurfacePendingQuestion('pty-1', 'Shall I merge?');
+    store.getState().dismissPendingQuestion('pty-1');
+    const state = store.getState();
+    expect(state.surfaceAgent['pty-1']?.status).toBe('awaiting_input');
+    expect(state.surfaceAgentStatus['pty-1']).toBe('awaiting_input');
+    expect(surfaceAttentionStatus({ ...state, usageLimitWaiting: {} }, 'pty-1')).toBe('awaiting_input');
   });
 });
 

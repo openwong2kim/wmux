@@ -8,7 +8,7 @@
 // it with a mock `rpc` bridge and a spy `setChannels`.
 
 import { describe, it, expect, vi } from 'vitest';
-import { hydrateChannelsCatalog, loadChannelHistory } from '../useChannelsHydration';
+import { hydrateChannelsCatalog, loadChannelHistory, loadChannelMembers } from '../useChannelsHydration';
 import type { Channel, ChannelMember, ChannelMessage } from '../../../shared/channels';
 import { CHANNELS_EPOCH } from '../../../shared/channels';
 
@@ -306,5 +306,106 @@ describe('hydrateChannelsCatalog — stale-daemon epoch detection (ship review C
       setDaemonStale,
     });
     expect(setDaemonStale).not.toHaveBeenCalled();
+  });
+});
+
+describe('hydrateChannelsCatalog — daemon RPC budget', () => {
+  it('coalesces every trigger during an in-flight run into ONE trailing rerun', async () => {
+    let releaseFirst!: () => void;
+    const firstGate = new Promise<void>((r) => { releaseFirst = r; });
+    let listCalls = 0;
+    const rpc = vi.fn(async (method: string) => {
+      if (method === 'a2a.channel.list') {
+        listCalls++;
+        if (listCalls === 1) await firstGate;
+        return wrap({ ok: true, channelsEpoch: CHANNELS_EPOCH, channels: [makeChannel()] });
+      }
+      return wrap({ ok: true, members: [] });
+    });
+    const setChannels = vi.fn();
+    const deps = { rpc, workspaceId: 'ws-human', setChannels };
+
+    const first = hydrateChannelsCatalog(deps);
+    let queuedSettled = 0;
+    const queued = [1, 2, 3, 4].map(() => hydrateChannelsCatalog(deps).then((n) => { queuedSettled++; return n; }));
+    await Promise.resolve();
+    expect(listCalls).toBe(1);
+    expect(queuedSettled).toBe(0);
+
+    releaseFirst();
+    await first;
+    const results = await Promise.all(queued);
+    expect(listCalls).toBe(2); // 1 in-flight run + exactly 1 trailing rerun
+    expect(setChannels).toHaveBeenCalledTimes(2);
+    expect(results).toEqual([1, 1, 1, 1]);
+
+    // Idle again: the next trigger starts a fresh run immediately.
+    await hydrateChannelsCatalog(deps);
+    expect(listCalls).toBe(3);
+  });
+
+  it('the trailing rerun dispatches while any coalesced caller is live and signals every stale setter', async () => {
+    let releaseFirst!: () => void;
+    const firstGate = new Promise<void>((r) => { releaseFirst = r; });
+    let listCalls = 0;
+    const rpc = vi.fn(async (method: string) => {
+      if (method === 'a2a.channel.list') {
+        listCalls++;
+        if (listCalls === 1) await firstGate;
+        return wrap({ ok: true, channels: [makeChannel()] }); // no epoch → stale daemon
+      }
+      return wrap({ ok: true, members: [] });
+    });
+    const setChannels = vi.fn();
+    const setDaemonStale = vi.fn();
+    const first = hydrateChannelsCatalog({ rpc, workspaceId: 'ws-human', setChannels });
+    // The hook's reconnect trigger (carrying the stale setter) queues first; a
+    // caller that is already disposed and has no setter queues last.
+    const a = hydrateChannelsCatalog({ rpc, workspaceId: 'ws-human', setChannels, setDaemonStale });
+    const b = hydrateChannelsCatalog({ rpc, workspaceId: 'ws-human', setChannels, isCurrent: () => false });
+    releaseFirst();
+    await Promise.all([first, a, b]);
+    expect(setChannels).toHaveBeenCalledTimes(2);
+    expect(setDaemonStale).toHaveBeenCalledWith(true);
+  });
+
+  it('fetches members only for live channels — archived and trashed rooms are skipped', async () => {
+    const channels = [
+      makeChannel({ id: 'ch-live' }),
+      makeChannel({ id: 'ch-arch', status: 'archived', archivedAt: 5 }),
+      makeChannel({ id: 'ch-trash', status: 'archived', archivedAt: 5, trashedAt: 6 }),
+    ];
+    const rpc = makeRpc({
+      list: () => ({ ok: true, channels }),
+      getMembers: (p) => ({ ok: true, members: [makeMember({ memberId: `m-${String(p.channelId)}` })] }),
+    });
+    const setChannels = vi.fn();
+    const n = await hydrateChannelsCatalog({ rpc, workspaceId: 'ws-human', setChannels });
+    expect(n).toBe(3); // every channel still lands in the catalog
+    const memberCalls = rpc.mock.calls.filter(([m]) => m === 'a2a.channel.getMembers');
+    expect(memberCalls.map(([, p]) => p.channelId)).toEqual(['ch-live']);
+    const [dispatchedChannels, dispatchedMembers] = setChannels.mock.calls[0];
+    expect(dispatchedChannels).toHaveLength(3);
+    expect(Object.keys(dispatchedMembers)).toEqual(['ch-live']);
+  });
+});
+
+describe('loadChannelMembers (lazy roster for an opened archived channel)', () => {
+  it('fetches one channel as the self workspace and applies it', async () => {
+    const rpc = makeRpc({ getMembers: () => ({ ok: true, members: [makeMember({ memberId: 'lead' })] }) });
+    const apply = vi.fn();
+    const n = await loadChannelMembers({ rpc, channelId: 'ch-arch', workspaceId: 'ws-human', apply });
+    expect(n).toBe(1);
+    expect(rpc).toHaveBeenCalledWith('a2a.channel.getMembers', {
+      channelId: 'ch-arch', workspaceId: 'ws-human', verifiedWorkspaceId: 'ws-human',
+    });
+    expect(apply).toHaveBeenCalledWith('ch-arch', [makeMember({ memberId: 'lead' })]);
+  });
+
+  it('applies nothing on a failed or disposed fetch', async () => {
+    const apply = vi.fn();
+    await loadChannelMembers({ rpc: makeRpc({ getMembers: () => ({ ok: false }) }), channelId: 'c', workspaceId: 'ws-human', apply });
+    await loadChannelMembers({ rpc: makeRpc({}), channelId: 'c', workspaceId: 'ws-human', apply, isCurrent: () => false });
+    expect(apply).not.toHaveBeenCalled();
   });
 });

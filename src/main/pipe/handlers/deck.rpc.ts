@@ -25,6 +25,7 @@
 // owner lane grants it from the validated token — so the grant and the
 // "untrusted worker text" label stay in one place (ptyOwnership.ts).
 
+import { parseCriterionClaims } from '../../deck/moaGoalVerifier';
 import type { BrowserWindow } from 'electron';
 import type { RpcRouter } from '../RpcRouter';
 import { resolvePtyOwnerWorkspace } from '../../workspace/ptyOwnership';
@@ -39,6 +40,7 @@ import {
   type WorkspaceDecision,
 } from '../../deck/deckDecisionStore';
 import { getMoaHandoffService } from '../../deck/moaHandoff';
+import { getMoaGoalService } from '../../deck/moaGoalContract';
 import { currentMoaReadRoots, refreshMoaReadRoots } from '../../deck/moaReadGate';
 import { plainLanguageRefusal } from '../../deck/plainLanguage';
 import { getHqWorkspaceId } from '../../deck/deckHqStore';
@@ -376,6 +378,54 @@ export function registerDeckRpc(router: RpcRouter, getWindow: GetWindow, deps: D
       title: params['title'],
       externalSource: params['externalSource'],
     });
+  });
+
+  // `deck.proposeGoal` (moa_propose_goal): the HQ brain proposes a goal
+  // contract. Main validates it, vets the repository and raises ONE main-owned
+  // card in the HQ's slot (moaGoalContract.ts). Nothing is granted until the
+  // operator approves that card. HQ only, by the token's workspace.
+  router.register('deck.proposeGoal', async (params) => {
+    const ws = commanderTokenWorkspace(params['token']);
+    if (!ws) {
+      throw new Error('deck.proposeGoal: not a live commander session');
+    }
+    const svc = getMoaGoalService();
+    if (!svc) return { ok: false, error: 'moa_off' };
+    return svc.propose(ws, {
+      goal: params['goal'],
+      repo: params['repo'],
+      workspaceIds: params['workspaceIds'],
+      level: params['level'],
+      budget: params['budget'],
+      humanOnly: params['humanOnly'],
+      doneCriteria: params['doneCriteria'],
+      evidence: params['evidence'],
+      constraints: params['constraints'],
+    });
+  });
+
+  // `deck.goal` (moa_goal): the HQ brain reads its open contract, or ends it.
+  // Ending only takes powers away, so Moa may end its own goal.
+  router.register('deck.goal', async (params) => {
+    const ws = commanderTokenWorkspace(params['token']);
+    if (!ws) {
+      throw new Error('deck.goal: not a live commander session');
+    }
+    const svc = getMoaGoalService();
+    if (!svc) return { ok: false, error: 'moa_off' };
+    if (ws !== getHqWorkspaceId()) return { ok: false, error: 'not_hq' };
+    const action = params['action'];
+    if (action === 'complete' || action === 'cancel') {
+      const summary = typeof params['summary'] === 'string' ? params['summary'] : '';
+      if (action === 'complete' && summary.trim().length < 10) {
+        return { ok: false, error: 'summary_required', message: 'say what was done and how you verified it (≥10 characters)' };
+      }
+      if (action === 'cancel') return svc.end('moa', 'canceled', summary);
+      const claims = parseCriterionClaims(params['criteria']);
+      if ('error' in claims) return { ok: false, error: 'criteria_invalid', message: claims.error };
+      return svc.end('moa', 'completed', summary, claims);
+    }
+    return { ok: true, goal: svc.view() };
   });
 
   // `deck.resolveDecision` is how the commander brain resolves its OWN stale

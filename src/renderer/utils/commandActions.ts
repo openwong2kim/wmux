@@ -3,6 +3,8 @@ import { findLeaf } from '../../shared/paneUtils';
 import { t } from '../i18n';
 import { resolveStartupCwd } from './ptyCreateOptions';
 import { isRemoteMirrorVisible } from '../stores/slices/remoteWorkspacesSlice';
+import { selectOtherPcOnScreen } from '../stores/shadowWorkspace';
+import { isShadowWorkspaceId } from '../../shared/pcRail';
 import { showWorkspaces } from './showWorkspaces';
 
 /**
@@ -30,7 +32,7 @@ export function openMultiTask(): void {
   // Same guard ToolbarHost applies: fan-out targets the LOCAL active
   // workspace, so firing it while a remote view is on screen would dig
   // worktrees in a repo the user is not looking at.
-  if (isRemoteMirrorVisible(state)) return;
+  if (isRemoteMirrorVisible(state) || selectOtherPcOnScreen(state)) return;
   if (!state.activeWorkspaceId) return;
   state.openFanOut(state.activeWorkspaceId, null);
   // The fan-out dialog opens over the Workspaces page.
@@ -53,7 +55,7 @@ export function toggleAgentToolbarPin(): void {
  */
 export function toggleActiveWorkspaceBookmark(): void {
   const state = useStore.getState();
-  if (isRemoteMirrorVisible(state) || !state.activeWorkspaceId) return;
+  if (isRemoteMirrorVisible(state) || selectOtherPcOnScreen(state) || !state.activeWorkspaceId) return;
   state.toggleSidebarBookmark(state.activeWorkspaceId);
 }
 
@@ -74,6 +76,12 @@ export function showGitDiff(): void {
   const leaf = findLeaf(ws.rootPane, ws.activePaneId);
   if (!leaf) return;
   const activeSurface = leaf.surfaces.find((s) => s.id === leaf.activeSurfaceId);
+  // Another computer's pane: its paths name that computer's disk, so git never
+  // runs on this one for it.
+  if (isShadowWorkspaceId(ws.id) || activeSurface?.surfaceType === 'remote-terminal') {
+    state.pushToast({ level: 'warn', message: t('diff.noRepo') });
+    return;
+  }
   // cwd precedence: the active surface's live cwd (OSC 7) > profile
   // startupCwd > the global startup directory.
   const cwd =

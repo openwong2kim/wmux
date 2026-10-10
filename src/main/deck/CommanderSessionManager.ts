@@ -78,7 +78,7 @@ export interface CommanderSessionManagerDeps {
   /** Fired whenever a completed turn reports a session id DIFFERENT from the
    *  last one observed (P3a persistence hook). Failures inside the callback are
    *  swallowed — persistence must never break a live turn. */
-  onSessionId?: (sessionId: string) => void;
+  onSessionId?: (sessionId: string, accountId: string | null | undefined) => void;
   /** Fired AFTER a turn flips busy→idle, on a LATER TICK (never synchronously
    *  from the unwinding `finally`) — the event-push coalescer's flush trigger.
    *  Deferring is load-bearing: a synchronous callback could re-enter `send()`
@@ -94,13 +94,17 @@ export class CommanderSessionManager {
   private readonly adapter: BrainAdapter;
   private readonly sink: BrainEventSink;
   private readonly startOptions: BrainStartOptions;
-  private readonly onSessionId?: (sessionId: string) => void;
+  private readonly onSessionId?: (sessionId: string, accountId: string | null | undefined) => void;
   private readonly onIdle?: () => void;
   private readonly deferIdle: (fn: () => void) => void;
   private _status: CommanderStatus = 'idle';
   private _started = false;
   private _lastReportedSessionId: string | null = null;
   private localAbort: AbortController | null = null;
+  /** Bumped by every foreign (TUI-typed) turn start. A local lookup compares
+   *  it before answering or falling back: a short foreign turn can start and
+   *  end while the board read is pending, leaving `adapterBusy` false again. */
+  private foreignTurnGeneration = 0;
 
   constructor(deps: CommanderSessionManagerDeps) {
     this.adapter = deps.adapter;
@@ -137,10 +141,21 @@ export class CommanderSessionManager {
     return this._turnOrigin;
   }
 
+  private _turnRemoteMoa = false;
+
+  /** The latest accepted turn was a wake carrying another PC's Moa's work
+   *  (a2a.received). Same lifetime as turnOrigin. Under an approved goal,
+   *  fan-out refuses such a turn (fanout.rpc.ts), in code, not in the prompt. */
+  get turnWokenByRemoteMoa(): boolean {
+    return this._turnRemoteMoa;
+  }
+
   /** The human typed a turn into the embedded TUI (it did not go through send). */
   notifyForeignTurnStart(): void {
     if (this._status === 'disposed') return;
+    this.foreignTurnGeneration++;
     this._turnOrigin = 'human';
+    this._turnRemoteMoa = false;
   }
 
   getStatus(): CommanderStatusSnapshot {
@@ -181,7 +196,10 @@ export class CommanderSessionManager {
     // Origin grants authority to the provider's live work. A local read only
     // reserves the turn slot; it must not promote earlier autonomous work to
     // operator-authorized work while looking up or showing a status answer.
-    if (!localFirst) this._turnOrigin = opts.origin === 'automation' ? 'automation' : 'human';
+    if (!localFirst) {
+      this._turnOrigin = opts.origin === 'automation' ? 'automation' : 'human';
+      this._turnRemoteMoa = opts.origin === 'automation' && opts.remoteMoa === true;
+    }
     // Round-5 review P1: production adapters (ClaudeSdkAdapter, AcpBrainAdapter)
     // report failures by YIELDING a BrainEvent{type:'error'} — or by ending the
     // stream without a turn-end — rather than throwing, so an exception-only
@@ -193,6 +211,7 @@ export class CommanderSessionManager {
       if (localFirst) {
         const controller = new AbortController();
         this.localAbort = controller;
+        const generation = this.foreignTurnGeneration;
         // Stop must finish even when a read-only transport cannot cancel its
         // underlying request. Its late answer is observed but never emitted.
         const aborted = Symbol('local-turn-aborted');
@@ -224,6 +243,13 @@ export class CommanderSessionManager {
           this.sink({ type: 'error', message: 'a command is already running — wait for it to finish' });
           return { ok: true, code: 'errored' };
         }
+        // A foreign turn that already came and went still invalidates the
+        // lookup: the answer describes a board from before that turn, and a
+        // fallback would land after it. One gate covers both branches.
+        if (this.foreignTurnGeneration !== generation) {
+          this.sink({ type: 'error', message: 'a terminal turn ran during this lookup — ask again' });
+          return { ok: true, code: 'errored' };
+        }
         if (answer && 'text' in answer && answer.text.trim()) {
           this.sink({ type: 'text-delta', text: answer.text });
           this.sink({ type: 'turn-end', sessionId: this.adapter.sessionId, localAnswer: { prompt: text, text: answer.text } });
@@ -238,6 +264,7 @@ export class CommanderSessionManager {
           trimmed = (typeof fallback === 'function' ? fallback() : fallback).trim();
         }
         this._turnOrigin = opts.origin === 'automation' ? 'automation' : 'human';
+        this._turnRemoteMoa = opts.origin === 'automation' && opts.remoteMoa === true;
         if (!this._started) {
           this.adapter.start(this.startOptions);
           this._started = true;
@@ -258,7 +285,7 @@ export class CommanderSessionManager {
         ) {
           this._lastReportedSessionId = ev.sessionId;
           try {
-            this.onSessionId?.(ev.sessionId);
+            this.onSessionId?.(ev.sessionId, this.adapter.conversationAccountId);
           } catch {
             /* persistence is best-effort — never fail the live turn */
           }
@@ -324,7 +351,7 @@ export class CommanderSessionManager {
     if (!sessionId || sessionId === this._lastReportedSessionId) return;
     this._lastReportedSessionId = sessionId;
     try {
-      this.onSessionId?.(sessionId);
+      this.onSessionId?.(sessionId, this.adapter.conversationAccountId);
     } catch {
       /* persistence is best-effort — never fail the live turn */
     }

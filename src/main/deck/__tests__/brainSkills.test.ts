@@ -106,7 +106,9 @@ describe('buildBrainSkills', () => {
     // The two ways a brain gets this wrong on its own: treating an unfinished
     // fan-out as failed, and minting a fresh key on a slow poll.
     expect(fanout).toContain('idempotency_key');
-    expect(fanout).toContain('never auto-approved');
+    // Truthful since 2026-09-24: no approval by default, the Settings switch
+    // turns it back on.
+    expect(fanout).toContain('does not ask by default');
     // Roles are the multi-agent story; without this the tool reads as
     // "N copies of the same agent".
     expect(fanout).toContain('roles');

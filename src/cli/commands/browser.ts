@@ -1,14 +1,44 @@
-import { sendRequest } from '../client';
+import { sendRequest, setWorkspaceToken } from '../client';
 import { printResult, ensureOk, parseFlag } from '../utils';
-import { resolveSelfContext, getParentPidDefault } from '../identity';
+import { resolveSelfContext, getParentPidDefault, type SelfContext } from '../identity';
 import type { RpcResponse } from '../../shared/rpc';
+
+/**
+ * Resolve this CLI's pane through main's own process-tree walk and carry the
+ * pane claim main returns on every later request. Browser calls act on the
+ * workspace main verifies for the caller; `--workspace` can only narrow it.
+ */
+async function attestBrowserCaller(): Promise<SelfContext> {
+  const ctx = await resolveSelfContext({
+    sendRequest,
+    env: process.env,
+    ppid: process.ppid,
+    getParentPid: getParentPidDefault,
+    callerPid: process.pid,
+  });
+  if (ctx.workspaceToken) {
+    setWorkspaceToken(ctx.workspaceToken);
+    return ctx;
+  }
+  // Nothing to send that wmux would accept: say how to run it instead of
+  // making a call that is refused. A pane found without a claim means the
+  // running wmux app predates pane claims (it answers the walk, mints none).
+  console.error(
+    ctx.workspaceId
+      ? 'Error: this wmux app is older than the wmux CLI and cannot verify the pane for browser ' +
+          'commands. Update the wmux app (and restart it), then run the command again.'
+      : 'Error: wmux browser commands act on the wmux pane they run in, and this terminal is not ' +
+          'one (or wmux could not verify it). Run the command from a wmux pane terminal.',
+  );
+  process.exit(1);
+}
 
 /**
  * wmux open <url> [--workspace <id>]
  *
  * Opens (or reuses — X3 semantics) a browser pane and navigates it to <url>.
- * Inside a wmux pane the browser opens in the caller's own workspace via
- * verified PID-map identity; otherwise the active workspace is used.
+ * The browser opens in the workspace of the wmux pane this runs in, verified
+ * by main; outside a pane the command is refused with how to run it.
  */
 export async function handleOpen(args: string[], jsonMode: boolean): Promise<void> {
   const url = args.find((a) => !a.startsWith('--'));
@@ -17,31 +47,8 @@ export async function handleOpen(args: string[], jsonMode: boolean): Promise<voi
     process.exit(1);
   }
 
-  let workspaceId = parseFlag(args, '--workspace');
-  if (!workspaceId) {
-    const ctx = await resolveSelfContext({
-      sendRequest,
-      env: process.env,
-      ppid: process.ppid,
-      getParentPid: getParentPidDefault,
-    });
-    workspaceId = ctx.workspaceId;
-  }
-    // Outside a wmux pane nothing resolves, and leaving the field absent now
-    // means the server refuses instead of guessing (#922 PR-C folded this
-    // method into the caller-scope table). So ASK for the target the way
-    // `wmux browser navigate` already does: `workspace.current` is the same
-    // active workspace the renderer fallback used to pick, so the documented
-    // behaviour is preserved and the choice is explicit and attributable. A
-    // failed lookup still leaves the field absent and lets the server's own
-    // refusal explain itself, rather than inventing a workspace.
-    if (!workspaceId) {
-      const current = await sendRequest('workspace.current', {});
-      if (current.ok) {
-        const id = (current.result as { id?: unknown } | null)?.id;
-        if (typeof id === 'string' && id.length > 0) workspaceId = id;
-      }
-    }
+  const self = await attestBrowserCaller();
+  const workspaceId = parseFlag(args, '--workspace') ?? self.workspaceId;
 
   const params: Record<string, unknown> = { url };
   if (workspaceId) params.workspaceId = workspaceId;
@@ -100,31 +107,10 @@ export async function handleBrowser(
         console.error('Error: browser navigate requires <url>');
         process.exit(1);
       }
-      // Resolve the caller exactly like `wmux open` / `wmux browser close`.
-      // Inside a wmux pane this prevents a background workspace from
-      // navigating whichever browser target happened to register first.
-      const ctx = await resolveSelfContext({
-        sendRequest,
-        env: process.env,
-        ppid: process.ppid,
-        getParentPid: getParentPidDefault,
-      });
-      // Outside wmux nothing resolves, and this used to send no workspace at
-      // all — which let the main process fall back to "whichever target
-      // registered first". #810 removed that fallback, so ASK for the target
-      // instead of leaving the server to guess: `workspace.current` is the same
-      // active workspace the old renderer fallback would have picked, so the
-      // user-visible behavior is unchanged and the choice is now explicit and
-      // attributable. A failed lookup leaves the field absent and lets the
-      // server's own refusal explain itself, rather than inventing a workspace.
-      let workspaceId = ctx.workspaceId;
-      if (!workspaceId) {
-        const current = await sendRequest('workspace.current', {});
-        if (current.ok) {
-          const id = (current.result as { id?: unknown } | null)?.id;
-          if (typeof id === 'string' && id.length > 0) workspaceId = id;
-        }
-      }
+      // Resolve the caller exactly like `wmux open` / `wmux browser close`:
+      // the pane this runs in, verified by main.
+      const ctx = await attestBrowserCaller();
+      const workspaceId = ctx.workspaceId;
       const params: Record<string, unknown> = { url };
       if (workspaceId) params.workspaceId = workspaceId;
 
@@ -143,33 +129,9 @@ export async function handleBrowser(
       // Mirror `wmux open`: inside a wmux pane the close targets the caller's
       // own workspace via verified PID-map identity, so it can never tear down
       // a browser the user is viewing in another workspace. Outside a pane the
-      // identity resolves to nothing and the active workspace is used (the
-      // pre-fix behavior).
-      let workspaceId = parseFlag(rest, '--workspace');
-      if (!workspaceId) {
-        const ctx = await resolveSelfContext({
-          sendRequest,
-          env: process.env,
-          ppid: process.ppid,
-          getParentPid: getParentPidDefault,
-        });
-        workspaceId = ctx.workspaceId;
-      }
-      // Outside a wmux pane nothing resolves, and leaving the field absent now
-      // means the server refuses instead of guessing (#922 PR-C folded this
-      // method into the caller-scope table). So ASK for the target the way
-      // `wmux browser navigate` already does: `workspace.current` is the same
-      // active workspace the renderer fallback used to pick, so the documented
-      // behaviour is preserved and the choice is explicit and attributable. A
-      // failed lookup still leaves the field absent and lets the server's own
-      // refusal explain itself, rather than inventing a workspace.
-      if (!workspaceId) {
-        const current = await sendRequest('workspace.current', {});
-        if (current.ok) {
-          const id = (current.result as { id?: unknown } | null)?.id;
-          if (typeof id === 'string' && id.length > 0) workspaceId = id;
-        }
-      }
+      // command is refused with how to run it.
+      const self = await attestBrowserCaller();
+      const workspaceId = parseFlag(rest, '--workspace') ?? self.workspaceId;
       const params: Record<string, unknown> = {};
       if (workspaceId) params.workspaceId = workspaceId;
 
@@ -190,6 +152,8 @@ export async function handleBrowser(
         console.log('Usage: wmux browser session <start|stop|status|list>');
         process.exit(0);
       }
+      // Session calls take the caller's workspace from the pane claim too.
+      await attestBrowserCaller();
 
       switch (action) {
         case 'start': {

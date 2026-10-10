@@ -111,11 +111,12 @@ describe('callerScope — verified lane', () => {
     expect(decision).toEqual({ kind: 'scoped', lane: 'pinned', workspaceId: 'ws-brain' });
   });
 
-  it('leaves a caller that never claimed exactly where it was', () => {
+  it('refuses a caller that never claimed, whatever workspace it names', () => {
     expect(callerScope(wireCtx(), { workspaceId: OTHER })).toEqual({
-      kind: 'scoped',
+      kind: 'rejected',
       lane: 'declared',
-      workspaceId: OTHER,
+      reason: 'workspace-unresolved',
+      requestedWorkspaceId: OTHER,
     });
     expect(callerScope(wireCtx(), {})).toEqual({
       kind: 'rejected',
@@ -125,34 +126,25 @@ describe('callerScope — verified lane', () => {
   });
 });
 
-describe('callerScope — legacy lane after ruling (c)', () => {
+describe('callerScope — legacy lane', () => {
   const legacy = (params: Record<string, unknown>) =>
     callerScope({ origin: 'local', externalWire: true }, params);
 
-  // ── REGRESSION 1 of 4: a NAMED legacy caller is byte-identical ────────────
-  it('is unchanged for a legacy caller that names a workspace', () => {
-    // Same kind, same lane, same workspaceId as before the ruling. This is the
-    // half (c) deliberately does not touch.
+  it('refuses a legacy caller that names a workspace, recording the name', () => {
     expect(legacy({ workspaceId: OTHER })).toEqual({
-      kind: 'allowed',
+      kind: 'rejected',
       lane: 'legacy',
-      workspaceId: OTHER,
+      reason: 'legacy-workspace-unresolved',
+      requestedWorkspaceId: OTHER,
     });
   });
 
-  // ── REGRESSION 2 of 4: an OMITTED legacy caller is refused, by name ───────
-  it('refuses a legacy caller that names nothing, with the new reason', () => {
+  it('refuses a legacy caller that names nothing', () => {
     expect(legacy({})).toEqual({
       kind: 'rejected',
       lane: 'legacy',
       reason: 'legacy-workspace-unresolved',
     });
-  });
-
-  it('keeps the grandfather — the lane still ALLOWS, it just requires a scope', () => {
-    // If (c) had closed the lane this would be a rejection regardless of params,
-    // and it would have started a second deprecation clock (#1111 is the first).
-    expect(legacy({ workspaceId: OTHER }).kind).toBe('allowed');
   });
 
   it('treats a blank workspaceId as naming nothing', () => {

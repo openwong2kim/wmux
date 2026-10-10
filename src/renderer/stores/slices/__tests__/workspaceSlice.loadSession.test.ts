@@ -1554,3 +1554,53 @@ describe('loadSession — Fleet layout', () => {
     expect(store.getState().fleetLayout).toBe('list');
   });
 });
+
+// A dismissed pending question must survive an app restart: the daemon keeps
+// the PTY (same ptyId), and its next Stop re-reads the same question from the
+// transcript. The record rides the session and is pruned to bound ptyIds.
+describe('WorkspaceSlice.loadSession — dismissed pending questions', () => {
+  it('restores records for ptyIds the session binds and drops the rest', () => {
+    const store = createTestStore();
+    const ws: Workspace = {
+      id: 'ws-1',
+      name: 'Dismissed',
+      rootPane: {
+        id: 'pane-root',
+        type: 'leaf',
+        surfaces: [{ id: 'term-1', ptyId: 'pty-1', title: 'T', shell: 'bash', cwd: '/', surfaceType: 'terminal' }],
+        activeSurfaceId: 'term-1',
+      },
+      activePaneId: 'pane-root',
+      stashedPanes: [{
+        pane: {
+          id: 'pane-stashed',
+          type: 'leaf',
+          surfaces: [{ id: 'term-2', ptyId: 'pty-2', title: 'S', shell: 'bash', cwd: '/', surfaceType: 'terminal' }],
+          activeSurfaceId: 'term-2',
+        },
+      }],
+    } as unknown as Workspace;
+    const data = {
+      workspaces: [ws],
+      activeWorkspaceId: ws.id,
+      sidebarVisible: true,
+      surfaceDismissedQuestion: { 'pty-1': 'Shall I merge?', 'pty-2': 'Ship it?', 'pty-gone': 'Old?', 'pty-bad': 3 },
+    } as unknown as SessionData;
+
+    store.getState().loadSession(data);
+
+    expect((store.getState() as unknown as { surfaceDismissedQuestion: Record<string, string> }).surfaceDismissedQuestion)
+      .toEqual({ 'pty-1': 'Shall I merge?', 'pty-2': 'Ship it?' });
+  });
+
+  it('a session without the field loads an empty record', () => {
+    const store = createTestStore();
+    const ws: Workspace = {
+      id: 'ws-1', name: 'Plain',
+      rootPane: { id: 'p', type: 'leaf', surfaces: [], activeSurfaceId: '' },
+      activePaneId: 'p',
+    } as unknown as Workspace;
+    store.getState().loadSession({ workspaces: [ws], activeWorkspaceId: ws.id, sidebarVisible: true } as unknown as SessionData);
+    expect((store.getState() as unknown as { surfaceDismissedQuestion: Record<string, string> }).surfaceDismissedQuestion).toEqual({});
+  });
+});

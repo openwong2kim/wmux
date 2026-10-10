@@ -14,6 +14,7 @@ import { createWorkspace } from '../../../shared/types';
 import { MOA_WORKSPACE_NAME, type MoaSetupResult, type MoaState } from '../../../shared/moa';
 import { moaQuestionBlock } from '../../components/Moa/panel/moaPanelMode';
 import { t } from '../../i18n';
+import { isShadowWorkspaceId } from '../../../shared/pcRail';
 
 /** localStorage key holding the last HQ id main reported. Read at boot so the
  *  HQ stays hidden and guarded before the first DECK_MOA_STATE answers. */
@@ -77,9 +78,12 @@ export function isMoaHqWorkspace(state: HqView, workspaceId: string): boolean {
   return !!hq && hq === workspaceId;
 }
 
-/** The workspaces the operator sees (and Ctrl+N counts): all but the HQ. */
+/**
+ * The workspaces the operator sees (and Ctrl+N counts): all but the HQ and
+ * the PC rail's shadow workspaces, which belong to another computer.
+ */
 export function listedWorkspaces<T extends { id: string }>(list: readonly T[], hqId: string | null): T[] {
-  return hqId ? list.filter((w) => w.id !== hqId) : [...list];
+  return list.filter((w) => w.id !== hqId && !isShadowWorkspaceId(w.id));
 }
 
 export const createMoaSlice: StateCreator<StoreState, [['zustand/immer', never]], [], MoaSlice> = (set, get) => {

@@ -5,6 +5,7 @@ import { registerBrowserRpc } from '../browser.rpc';
 import { surfaceOpeners } from '../../../browser-session/SurfaceOpeners';
 import type { BrowserBackendStore } from '../../../browser-session/BrowserBackendStore';
 import { PRIVATE_BROWSER_PARTITION } from '../../../../shared/privateBrowser';
+import { dispatchAsClaimedCaller } from './claimedCaller';
 
 /**
  * Who opened a browser surface, and what main does with that.
@@ -98,7 +99,7 @@ function fakeChromeRegistry() {
 }
 
 function registerChrome(registry: unknown): RpcRouter {
-  const router = new RpcRouter();
+  const router = dispatchAsClaimedCaller(new RpcRouter());
   const cdp = {
     getTarget: vi.fn(() => null),
     listTargets: vi.fn(() => []),
@@ -124,7 +125,7 @@ function registerChrome(registry: unknown): RpcRouter {
 }
 
 function register(): RpcRouter {
-  const router = new RpcRouter();
+  const router = dispatchAsClaimedCaller(new RpcRouter());
   const cdp = {
     getTarget: vi.fn(() => null),
     listTargets: vi.fn(() => []),
@@ -300,7 +301,7 @@ describe('opener reporting', () => {
   });
 
   it('reports an opener VERDICT on cdp.info targets so page selection can use it', async () => {
-    const router = new RpcRouter();
+    const router = dispatchAsClaimedCaller(new RpcRouter());
     const cdp = {
       getTarget: vi.fn(() => null),
       listTargets: vi.fn(() => [

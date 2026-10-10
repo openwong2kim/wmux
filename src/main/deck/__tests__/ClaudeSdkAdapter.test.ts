@@ -47,6 +47,7 @@ const acctMock = vi.hoisted(() => {
 });
 vi.mock('../../account/accountStore', () => ({
   VENDOR_ENV_KEYS: { claude: 'CLAUDE_CONFIG_DIR', codex: 'CODEX_HOME' },
+  isAccessibleDir: () => true,
   getAccountStore: () => ({
     resolveAccountEnv: (_ws: string, _vendor: string) => {
       const id = acctMock.state.binding;
@@ -55,6 +56,25 @@ vi.mock('../../account/accountStore', () => ({
     },
     getBinding: () => acctMock.state.binding ?? undefined,
     getAccount: (id: string) => acctMock.state.accounts[id],
+  }),
+}));
+
+// Quota rotation (background launches). Off by default, so the binding wins
+// and existing tests see the pre-rotation behaviour; rotation tests set it.
+const rotationMock = vi.hoisted(() => ({
+  on: false,
+  decision: { kind: 'keep' } as { kind: 'keep' } | { kind: 'switch'; accountId: string; env: Record<string, string> } | { kind: 'hold'; availableAtMs: number | null },
+  verdicts: {} as Record<string, { usable: boolean; remaining: number | null; availableAtMs: number | null }>,
+  prepareCalls: 0,
+}));
+vi.mock('../../account/AccountRotationService', () => ({
+  getAccountRotationService: () => ({
+    getSettings: () => ({ claude: rotationMock.on, codex: false }),
+    prepareLaunch: async () => {
+      rotationMock.prepareCalls++;
+      return rotationMock.on ? rotationMock.decision : { kind: 'keep' };
+    },
+    cachedVerdict: async (id: string) => rotationMock.verdicts[id] ?? null,
   }),
 }));
 
@@ -89,6 +109,10 @@ async function collect(it: AsyncIterable<BrainEvent>): Promise<BrainEvent[]> {
 describe('ClaudeSdkAdapter', () => {
   beforeEach(() => {
     delete process.env.ANTHROPIC_API_KEY;
+    rotationMock.on = false;
+    rotationMock.decision = { kind: 'keep' };
+    rotationMock.verdicts = {};
+    rotationMock.prepareCalls = 0;
   });
 
   it('streams normalized events for a turn and captures the session id', async () => {
@@ -593,12 +617,26 @@ describe('ClaudeSdkAdapter', () => {
     });
     adapter.start({});
     const turn = collect(adapter.send('x'));
-    // Let the iterator start and register the active handle.
-    await Promise.resolve();
+    // Let the iterator start (account resolution, then the query) and register
+    // the active handle.
+    await new Promise((r) => setTimeout(r, 0));
     adapter.interrupt();
     expect(onInterrupt).toHaveBeenCalled();
     released();
     await turn;
+  });
+
+  it('interrupt() while the turn is still resolving its account ends it before spawning', async () => {
+    const queryFn = vi.fn(() => fakeHandle([{ type: 'result', subtype: 'success', session_id: 's' }]));
+    const adapter = new ClaudeSdkAdapter({ queryFn, mcpBundlePath: '/fake/mcp.js' });
+    adapter.start({});
+    const turn = collect(adapter.send('x'));
+    adapter.interrupt();
+    expect(await turn).toEqual([]);
+    expect(queryFn).not.toHaveBeenCalled();
+    // The next turn is not affected by the earlier interrupt.
+    await collect(adapter.send('y'));
+    expect(queryFn).toHaveBeenCalledTimes(1);
   });
 
   // ─── M1a: durable memory injection (read-only L0) ─────────────────────────
@@ -771,6 +809,97 @@ describe('ClaudeSdkAdapter', () => {
     const limit = events.find((e) => e.type === 'limit') as Extract<BrainEvent, { type: 'limit' }>;
     expect(limit.accountId).toBe('acc-1');
     expect(limit.accountName).toBeUndefined();
+  });
+
+  // ── Quota rotation for the orchestrator (background launch) ───────────────
+
+  it('starts a new conversation on the rotated account and keeps it for resumed turns', async () => {
+    acctMock.state.binding = 'acc-1';
+    acctMock.state.accounts['acc-1'] = { id: 'acc-1', name: 'Work Max', vendor: 'claude', configDir: 'C:/dirs/acc-1' };
+    acctMock.state.accounts['acc-2'] = { id: 'acc-2', name: 'Personal', vendor: 'claude', configDir: 'C:/dirs/acc-2' };
+    rotationMock.on = true;
+    rotationMock.decision = { kind: 'switch', accountId: 'acc-2', env: { CLAUDE_CONFIG_DIR: 'C:/dirs/acc-2' } };
+    const envs: Array<string | undefined> = [];
+    const adapter = new ClaudeSdkAdapter({
+      workspaceId: 'ws-9',
+      queryFn: ({ options }) => {
+        envs.push((options?.env as Record<string, string | undefined>).CLAUDE_CONFIG_DIR);
+        return fakeHandle([{ type: 'result', subtype: 'success', session_id: 'sess-R' }]);
+      },
+      mcpBundlePath: '/fake/mcp.js',
+    });
+    adapter.start({ systemPrompt: 'SYS' });
+    await collect(adapter.send('first'));
+    // The bound account recovers, but the conversation's transcript is on acc-2.
+    rotationMock.decision = { kind: 'keep' };
+    await collect(adapter.send('second'));
+    expect(envs).toEqual(['C:/dirs/acc-2', 'C:/dirs/acc-2']);
+    expect(rotationMock.prepareCalls).toBe(1);
+    expect(adapter.conversationAccountId).toBe('acc-2');
+  });
+
+  it('records the binding as the conversation account and resumes there after a rebind (#2029)', async () => {
+    acctMock.state.binding = 'acc-1';
+    acctMock.state.accounts['acc-1'] = { id: 'acc-1', name: 'Work Max', vendor: 'claude', configDir: 'C:/dirs/acc-1' };
+    acctMock.state.accounts['acc-2'] = { id: 'acc-2', name: 'Personal', vendor: 'claude', configDir: 'C:/dirs/acc-2' };
+    const envs: Array<string | undefined> = [];
+    const adapter = new ClaudeSdkAdapter({
+      workspaceId: 'ws-9',
+      queryFn: ({ options }) => {
+        envs.push((options?.env as Record<string, string | undefined>).CLAUDE_CONFIG_DIR);
+        return fakeHandle([{ type: 'result', subtype: 'success', session_id: 'sess-B' }]);
+      },
+      mcpBundlePath: '/fake/mcp.js',
+    });
+    adapter.start({ systemPrompt: 'SYS' });
+    await collect(adapter.send('first'));
+    expect(adapter.conversationAccountId).toBe('acc-1');
+    acctMock.state.binding = 'acc-2';
+    await collect(adapter.send('second'));
+    expect(envs).toEqual(['C:/dirs/acc-1', 'C:/dirs/acc-1']);
+  });
+
+  it('resumes a persisted rotated conversation on its saved account', async () => {
+    acctMock.state.binding = 'acc-1';
+    acctMock.state.accounts['acc-1'] = { id: 'acc-1', name: 'Work Max', vendor: 'claude', configDir: 'C:/dirs/acc-1' };
+    acctMock.state.accounts['acc-2'] = { id: 'acc-2', name: 'Personal', vendor: 'claude', configDir: 'C:/dirs/acc-2' };
+    let env: string | undefined;
+    const adapter = new ClaudeSdkAdapter({
+      workspaceId: 'ws-9',
+      queryFn: ({ options }) => {
+        env = (options?.env as Record<string, string | undefined>).CLAUDE_CONFIG_DIR;
+        return fakeHandle([{ type: 'result', subtype: 'success', session_id: 'sess-P' }]);
+      },
+      mcpBundlePath: '/fake/mcp.js',
+    });
+    adapter.start({ systemPrompt: 'SYS', resumeSessionId: 'sess-P', resumeAccountId: 'acc-2' });
+    await collect(adapter.send('hi'));
+    expect(env).toBe('C:/dirs/acc-2');
+    expect(rotationMock.prepareCalls).toBe(0);
+  });
+
+  it('errors instead of resuming when the conversation\'s account is out and rotation is on', async () => {
+    acctMock.state.binding = 'acc-1';
+    acctMock.state.accounts['acc-1'] = { id: 'acc-1', name: 'Work Max', vendor: 'claude', configDir: 'C:/dirs/acc-1' };
+    rotationMock.on = true;
+    rotationMock.verdicts['acc-1'] = { usable: false, remaining: 0, availableAtMs: null };
+    const queryFn = vi.fn(() => fakeHandle([{ type: 'result', subtype: 'success', session_id: 's' }]));
+    const adapter = new ClaudeSdkAdapter({ workspaceId: 'ws-9', queryFn, mcpBundlePath: '/fake/mcp.js' });
+    adapter.start({ systemPrompt: 'SYS', resumeSessionId: 'sess-old' });
+    const events = await collect(adapter.send('go'));
+    expect(queryFn).not.toHaveBeenCalled();
+    expect(events).toEqual([{ type: 'error', message: expect.stringMatching(/\("Work Max"\) is out of quota/) }]);
+  });
+
+  it('with rotation off, spawns on the bound account even when its reading says out', async () => {
+    acctMock.state.binding = 'acc-1';
+    acctMock.state.accounts['acc-1'] = { id: 'acc-1', name: 'Work Max', vendor: 'claude', configDir: 'C:/dirs/acc-1' };
+    rotationMock.verdicts['acc-1'] = { usable: false, remaining: 0, availableAtMs: null };
+    const queryFn = vi.fn(() => fakeHandle([{ type: 'result', subtype: 'success', session_id: 's' }]));
+    const adapter = new ClaudeSdkAdapter({ workspaceId: 'ws-9', queryFn, mcpBundlePath: '/fake/mcp.js' });
+    adapter.start({ systemPrompt: 'SYS' });
+    await collect(adapter.send('go'));
+    expect(queryFn).toHaveBeenCalledTimes(1);
   });
 
   it('no account binding → limit event carries no accountId (default credential)', async () => {

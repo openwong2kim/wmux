@@ -873,3 +873,82 @@ describe('moa hand-off — read roots for Moa\'s read gate', () => {
     expect(s.svc.readRootSources()).toEqual([expect.objectContaining({ open: false, paneGone: true })]);
   });
 });
+
+describe('moa hand-off — under an approved goal contract', () => {
+  const covered = (goal: { goalId: string; humanOnly: string[] } | null) => ({
+    goalCovers: (ws: string) => (ws === SEAL ? goal : null),
+  });
+  const G = { goalId: 'G-abc123', humanOnly: ['database migration'] };
+  const msgOf = (r: Rig): string => (r.deliver.mock.calls[0][0] as { message: string }).message;
+
+  it('a covered workspace takes the hand-off without a card during the operator\'s own request, even in assist mode', async () => {
+    const r = rig(covered(G));
+    r.state.operatorRequest = true;
+    const res = await propose(r, 'Answer: use the existing fixture and re-run the login test.');
+    expect(res).toMatchObject({ ok: true, mode: 'auto' });
+    expect(r.slots.size).toBe(0);
+    expect(msgOf(r)).toContain('under goal G-abc123');
+    expect(r.svc.handoffDetail((res as { taskId: string }).taskId)).toMatchObject({ goalId: 'G-abc123' });
+  });
+
+  // W4: the goal path honours record.externalSource exactly like the no-goal
+  // path. A wake (worker output, a PR comment, another PC's Moa) is not the
+  // operator's request, so its hand-off asks with a card.
+  it('from a wake (no live operator request) a covered workspace still gets a card', async () => {
+    const r = rig(covered(G));
+    r.state.operatorRequest = false;
+    const res = await propose(r, 'Answer: use the existing fixture and re-run the login test.');
+    expect(res).toMatchObject({ ok: true, mode: 'card' });
+    expect(r.deliver).not.toHaveBeenCalled();
+    expect(r.slots.get(SEAL)?.origin).toBe('moa-handoff');
+  });
+
+  it('a workspace the goal does not cover asks with a card', async () => {
+    const r = rig({ goalCovers: () => null });
+    expect(await propose(r)).toMatchObject({ mode: 'card' });
+    expect(r.deliver).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['push / PR', 'Fix it, then git push origin main and open a PR.'],
+    ['secret', 'Put the API key from .env into the config.'],
+    ['destructive', 'rm -rf node_modules and git reset --hard'],
+    ['human-only', 'Then run the database migration.'],
+    ['release', 'npm publish when green'],
+  ])('a body that asks for a hard-rule step (%s) asks with a card', async (_label, body) => {
+    const r = rig(covered(G));
+    expect(await propose(r, body)).toMatchObject({ mode: 'card' });
+    expect(r.deliver).not.toHaveBeenCalled();
+  });
+
+  it('a body Moa marked as outside text asks with a card', async () => {
+    const r = rig(covered(G));
+    expect(await propose(r, 'Fix issue #12', { externalSource: true })).toMatchObject({ mode: 'card' });
+  });
+
+  it('the goal ending mid-delivery is caught by the delivery re-check and falls back to the card', async () => {
+    let goal: typeof G | null = G;
+    const r = rig({ goalCovers: (ws) => (ws === SEAL ? goal : null) });
+    r.deliver.mockImplementationOnce(async (args: { guardKey?: string }) => {
+      goal = null;
+      const why = await r.checks.get(args.guardKey!)!.beforeEnter();
+      expect(why).toMatch(/goal/);
+      return { ok: true, delivered: false, assurance: 'unverified', reason: 'guard_refused' };
+    });
+    expect(await propose(r)).toMatchObject({ ok: true, mode: 'card' });
+    expect(r.slots.get(SEAL)?.origin).toBe('moa-handoff');
+  });
+
+  it('keeps the hourly per-target cap', async () => {
+    const r = rig({ ...covered(G), autoPerHour: () => 1, resolveTarget: async (sel) => target({ ptyId: sel.ptyId, paneId: `pane-${sel.ptyId}` }) });
+    expect(await propose(r, undefined, { ptyId: 'pty-1' })).toMatchObject({ mode: 'auto' });
+    expect(await propose(r, undefined, { ptyId: 'pty-2' })).toMatchObject({ mode: 'card' });
+  });
+
+  it('a call from a commander that is not the HQ is refused as before', async () => {
+    const r = rig(covered(G));
+    const res = await r.svc.propose('ws-not-hq', { ptyId: 'pty-1', body: 'x' });
+    expect(res.ok).toBe(false);
+    expect(r.deliver).not.toHaveBeenCalled();
+  });
+});

@@ -34,6 +34,26 @@ describe('commanderSessionStore (per-workspace)', () => {
       expect(loadCommanderSession('ws-2', dir)).toBeNull();
     }));
 
+  it('round-trips the conversation account: an id, null for the default login, absent when unknown', () =>
+    withTempDir(async (dir) => {
+      await saveCommanderSession('ws-1', 'sess-a', dir, 'acc-2');
+      expect(loadCommanderSession('ws-1', dir)?.accountId).toBe('acc-2');
+      await saveCommanderSession('ws-1', 'sess-d', dir, null);
+      expect(loadCommanderSession('ws-1', dir)?.accountId).toBeNull();
+      await saveCommanderSession('ws-1', 'sess-u', dir);
+      expect(loadCommanderSession('ws-1', dir)).not.toHaveProperty('accountId');
+    }));
+
+  it('reads older files: no account → unknown; the pre-#2029 rotatedAccountId → that account', () =>
+    withTempDir((dir) => {
+      writeFileSync(getCommanderSessionPath(dir), JSON.stringify({ sessions: {
+        'ws-1': { sessionId: 'old', updatedAt: '' },
+        'ws-2': { sessionId: 'rot', updatedAt: '', rotatedAccountId: 'acc-2' },
+      } }));
+      expect(loadCommanderSession('ws-1', dir)).toEqual({ sessionId: 'old', updatedAt: '' });
+      expect(loadCommanderSession('ws-2', dir)?.accountId).toBe('acc-2');
+    }));
+
   it('clearCommanderSession drops only that workspace; clearing twice / missing file is a no-op', () =>
     withTempDir(async (dir) => {
       await saveCommanderSession('ws-1', 'sess-1', dir);

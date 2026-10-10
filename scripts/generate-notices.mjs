@@ -433,6 +433,20 @@ const BORROWED_SOURCES = [
       '  src-tauri/src/macos.rs\n' +
       '  Icons are not taken.',
   },
+  {
+    name: 'ego-lite',
+    license: 'MIT License',
+    repo: 'https://github.com/citrolabs/ego-lite',
+    copyright: 'Copyright (c) 2026 CitroLabs',
+    what:
+      'Real-browser end-to-end test scenarios adapted from its source at commit\n' +
+      'dca7003349c5f7132189ba00547cbbd7ff8e597e\n' +
+      '(package/ego-browser/scripts/real-browser-e2e: fixture.mjs and the\n' +
+      'cases it names). The fixture pages and assertions were re-expressed as\n' +
+      'runtime tests of wmux\'s own snapshot and action code in\n' +
+      'src/mcp/playwright/__tests__/egoCorpus; each file names the case it came\n' +
+      'from. Test code only; nothing from it ships in wmux.',
+  },
 ];
 lines.push('ADAPTED SOURCES AND IMPLEMENTATION TECHNIQUES');
 lines.push('');

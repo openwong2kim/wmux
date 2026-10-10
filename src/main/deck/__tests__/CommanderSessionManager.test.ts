@@ -113,6 +113,16 @@ describe('CommanderSessionManager', () => {
     await turn;
   });
 
+  it('persists the account the conversation runs on with its session id', async () => {
+    const adapter = new FakeAdapter();
+    Object.defineProperty(adapter, 'conversationAccountId', { value: 'acc-2' });
+    const onSessionId = vi.fn();
+    const mgr = new CommanderSessionManager({ adapter, sink: vi.fn(), onSessionId });
+    adapter.setScript([{ type: 'turn-end', sessionId: 'sess-1' }]);
+    await mgr.send('one');
+    expect(onSessionId).toHaveBeenCalledWith('sess-1', 'acc-2');
+  });
+
   it('fires onSessionId once per NEW session id (P3a persistence hook)', async () => {
     const adapter = new FakeAdapter();
     const onSessionId = vi.fn();
@@ -121,7 +131,8 @@ describe('CommanderSessionManager', () => {
     adapter.setScript([{ type: 'turn-end', sessionId: 'sess-1' }]);
     await mgr.send('one');
     expect(onSessionId).toHaveBeenCalledTimes(1);
-    expect(onSessionId).toHaveBeenCalledWith('sess-1');
+    // FakeAdapter does not track its account → unknown.
+    expect(onSessionId).toHaveBeenCalledWith('sess-1', undefined);
 
     // Same id again → deduped, no redundant persist.
     await mgr.send('two');
@@ -131,7 +142,7 @@ describe('CommanderSessionManager', () => {
     adapter.setScript([{ type: 'turn-end', sessionId: 'sess-2' }]);
     await mgr.send('three');
     expect(onSessionId).toHaveBeenCalledTimes(2);
-    expect(onSessionId).toHaveBeenLastCalledWith('sess-2');
+    expect(onSessionId).toHaveBeenLastCalledWith('sess-2', undefined);
   });
 
   it('does not re-persist the seed id it was constructed with', async () => {
@@ -334,6 +345,24 @@ describe('CommanderSessionManager — turn origin (the no-click hand-off gate)',
     // A turn the operator typed straight into the TUI.
     mgr.notifyForeignTurnStart();
     expect(mgr.turnOrigin).toBe('human');
+  });
+
+  it('marks a wake that carries another PC\'s Moa for exactly that turn (W5)', async () => {
+    const adapter = new FakeAdapter();
+    adapter.setScript([{ type: 'turn-end', sessionId: null }]);
+    const mgr = new CommanderSessionManager({ adapter, sink: vi.fn() });
+    expect(mgr.turnWokenByRemoteMoa).toBe(false);
+    await mgr.send('remote wake', { origin: 'automation', remoteMoa: true });
+    expect(mgr.turnWokenByRemoteMoa).toBe(true);
+    // A human turn never carries it, even if a caller passed the flag.
+    await mgr.send('operator', { origin: 'human', remoteMoa: true });
+    expect(mgr.turnWokenByRemoteMoa).toBe(false);
+    await mgr.send('remote wake', { origin: 'automation', remoteMoa: true });
+    await mgr.send('local wake', { origin: 'automation' });
+    expect(mgr.turnWokenByRemoteMoa).toBe(false);
+    await mgr.send('remote wake', { origin: 'automation', remoteMoa: true });
+    mgr.notifyForeignTurnStart();
+    expect(mgr.turnWokenByRemoteMoa).toBe(false);
   });
 });
 
@@ -570,6 +599,38 @@ describe('CommanderSessionManager — lazy fallback preparation', () => {
     expect(sink.mock.calls.map(([event]) => event.type)).toEqual(['error']);
   });
 
+  // Review P2: a short TUI turn can start and end while the board read is
+  // pending, so `adapterBusy` alone reads false again by the time it settles.
+  it.each(['local answer', 'fallback'] as const)('a foreign turn that ends before the lookup suppresses a %s', async (outcome) => {
+    const adapter = Object.assign(new FakeAdapter(), { busy: false });
+    const send = vi.spyOn(adapter, 'send');
+    const sink = vi.fn();
+    const onIdle = vi.fn();
+    const mgr = new CommanderSessionManager({ adapter, sink, onIdle, deferIdle: (fn) => fn() });
+    const prepare = vi.fn(() => 'must not prepare');
+    let resolve!: (value: { text: string } | { fallbackText: () => string }) => void;
+    const turn = mgr.send('Who needs me?', { origin: 'human' }, () => new Promise((yes) => { resolve = yes; }));
+    adapter.busy = true;
+    mgr.notifyForeignTurnStart();
+    adapter.busy = false;
+    mgr.notifyForeignTurnEnd();
+    expect(onIdle).not.toHaveBeenCalled();
+    resolve(outcome === 'fallback' ? { fallbackText: prepare } : { text: 'stale answer' });
+    expect(await turn).toEqual({ ok: true, code: 'errored' });
+    expect(prepare).not.toHaveBeenCalled();
+    expect(adapter.started).toBeNull();
+    expect(send).not.toHaveBeenCalled();
+    expect(sink.mock.calls.map(([event]) => event)).toEqual([
+      { type: 'error', message: 'a terminal turn ran during this lookup — ask again' },
+    ]);
+    // The TUI turn itself was the operator's, so its origin stands.
+    expect(mgr.turnOrigin).toBe('human');
+    expect(mgr.getStatus().status).toBe('idle');
+    // The next question is not poisoned by the earlier foreign turn.
+    expect(await mgr.send('Who needs me?', {}, async () => ({ text: 'fresh answer' })))
+      .toEqual({ ok: true, localAnswer: { text: 'fresh answer' } });
+  });
+
   it('does not run lazy preparation after an interrupt inside lookup', async () => {
     const adapter = new FakeAdapter();
     const mgr = new CommanderSessionManager({ adapter, sink: vi.fn() });
@@ -631,6 +692,22 @@ describe('CommanderSessionManager — local reads preserve provider authority', 
     expect(await local).toEqual({ ok: true });
     expect(prepare).toHaveBeenCalledTimes(1);
     expect(mgr.turnOrigin).toBe('human');
+  });
+
+  // W5 (goal contract): the remote-Moa mark moves with the origin. A local
+  // answer leaves it alone; a local miss that reaches the provider clears it.
+  it('keeps the remote-Moa wake mark through a local answer and clears it on a fallback', async () => {
+    const adapter = new FakeAdapter();
+    adapter.setScript([{ type: 'turn-end', sessionId: 'existing' }]);
+    const mgr = new CommanderSessionManager({ adapter, sink: vi.fn() });
+    await mgr.send('remote wake', { origin: 'automation', remoteMoa: true });
+    expect(mgr.turnWokenByRemoteMoa).toBe(true);
+    expect(await mgr.send('Who needs me?', { origin: 'human' }, async () => ({ text: 'Nobody.' })))
+      .toEqual({ ok: true, localAnswer: { text: 'Nobody.' } });
+    expect(mgr.turnWokenByRemoteMoa).toBe(true);
+    expect(await mgr.send('Who needs me?', { origin: 'human' }, async () => ({ fallbackText: 'ctx' })))
+      .toEqual({ ok: true });
+    expect(mgr.turnWokenByRemoteMoa).toBe(false);
   });
 
   it('sets fallback origin immediately before the first provider startup', async () => {

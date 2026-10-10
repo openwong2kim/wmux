@@ -84,6 +84,8 @@ export function createMoaHandoffService(opts: {
   /** The HQ's latest turn was started by the operator (not a wake). */
   operatorTurn?: (hqWorkspaceId: string) => boolean;
   onOperatorCancel?: (r: HandoffRecord) => void;
+  /** The active goal contract covering a workspace (moaGoalContract.covers). */
+  goalCovers?: (workspaceId: string) => { goalId: string; humanOnly: readonly string[] } | null;
 }): MoaHandoffService {
   const links = getWorkLinkStore();
   const linkDeps = {
@@ -174,6 +176,7 @@ export function createMoaHandoffService(opts: {
       return typeof st === 'string' ? st : undefined;
     },
     registerCheck: (key, check) => registerDeliveryCheck(key, check),
+    ...(opts.goalCovers ? { goalCovers: opts.goalCovers } : {}),
     notify: opts.notify,
   });
 }

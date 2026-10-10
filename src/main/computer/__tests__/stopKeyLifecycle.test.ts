@@ -164,6 +164,27 @@ describe('computer-use stop key lifecycle', () => {
     expect(h.shortcuts.has(ACCEL)).toBe(false);
   });
 
+  it('quit before any agent call: a late call builds no live service, takes no chord, starts no helper', async () => {
+    h.enabled.value = true;
+    const { mod, create } = await load();
+    // No computer.* call this run, so main has no service to dispose.
+    mod.disposeComputerUse(null);
+    const service = create();
+    const err = await service.listApps().catch((e: unknown) => e);
+    expect((err as { code?: string }).code).toBe('shutting_down');
+    expect(h.register).not.toHaveBeenCalled();
+    expect(h.shortcuts.has(ACCEL)).toBe(false);
+    expect(h.helperCreated.count).toBe(0);
+  });
+
+  it('quit before any agent call: Settings does not take the chord either', async () => {
+    h.enabled.value = true;
+    const { mod, get } = await load();
+    mod.disposeComputerUse(null);
+    expect((await get()).stopKeyStatus).not.toBe('held');
+    expect(h.register).not.toHaveBeenCalled();
+  });
+
   it('stays free while this build has no helper, even with the switch on', async () => {
     h.helper.value = 'missing';
     h.enabled.value = true;

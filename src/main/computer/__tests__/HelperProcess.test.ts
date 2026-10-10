@@ -267,7 +267,7 @@ describe('HelperProcess', () => {
     });
     expect(await waitFor(() => requests().length > 0)).toBe(true);
     helper.dispose();
-    expect(await codeOf(click)).toBe('helper_unavailable');
+    expect(await codeOf(click)).toBe('shutting_down');
     expect(await waitFor(() => requests().includes('eof-release'), 2_000)).toBe(true);
     expect(requests()).toEqual(['click', 'eof-release']);
   });
@@ -304,6 +304,110 @@ describe('HelperProcess', () => {
     expect(await waitFor(() => live.sent.length === 2)).toBe(true);
     live.say({ id: live.sent[1].id, ok: true, result: { apps: [] } });
     expect(await codeOf(apps)).toBe('resolved');
+  });
+
+  it('keeps a dead helper\'s late stderr out of its replacement\'s exit message', async () => {
+    const children: Array<{ child: ChildProcessWithoutNullStreams; stderr: PassThrough; say: (o: unknown) => void; sent: Array<{ id: number; method: string }> }> = [];
+    const fakeSpawn = () => {
+      const emitter = new EventEmitter() as unknown as ChildProcessWithoutNullStreams;
+      const stdout = new PassThrough();
+      const stdin = new PassThrough();
+      const stderr = new PassThrough();
+      const entry = { child: emitter, stderr, say: (o: unknown) => stdout.write(`${JSON.stringify(o)}\n`), sent: [] as Array<{ id: number; method: string }> };
+      stdin.on('data', (d: Buffer) => { for (const line of String(d).split('\n').filter(Boolean)) entry.sent.push(JSON.parse(line)); });
+      Object.assign(emitter, { stdout, stdin, stderr, exitCode: null, signalCode: null, kill: () => true });
+      children.push(entry);
+      queueMicrotask(() => entry.say({ type: 'hello', protocolVersion: 2, os: 'darwin', helperVersion: 'x', capabilities: { actions: [], modes: [], permissions: {} } }));
+      return emitter;
+    };
+    const helper = new HelperProcess({ command: 'unused', spawn: fakeSpawn, timeoutFor: () => 100 });
+    helpers.push(helper);
+    const click = helper.request('click', { snapshotId: 's', target: TARGET, index: 1, button: 'left', clickCount: 1, modifiers: [] });
+    expect(await codeOf(click)).toBe('timeout');
+    expect(await waitFor(() => children.length === 2 && children[1].sent.length === 1)).toBe(true);
+    const [dead, live] = children;
+    live.say({ id: live.sent[0].id, ok: true, result: { released: true } });
+    const apps = helper.request('listApps', {});
+    expect(await waitFor(() => live.sent.length === 2)).toBe(true);
+    // The killed helper writes to stderr after it was replaced.
+    dead.stderr.write('stale line from the dead helper\n');
+    await new Promise((r) => setTimeout(r, 20));
+    expect(helper.lastStderr).toBe('');
+    (live.child as unknown as EventEmitter).emit('exit', 1, null);
+    const err = await apps.catch((e: unknown) => e);
+    expect((err as ComputerError).code).toBe('helper_unavailable');
+    expect((err as ComputerError).message).not.toContain('stale line');
+  });
+
+  it('logs the helper\'s last stderr line on exit but keeps it out of the agent\'s error', async () => {
+    const children: Array<{ child: ChildProcessWithoutNullStreams; stderr: PassThrough; say: (o: unknown) => void; sent: Array<{ id: number; method: string }> }> = [];
+    const fakeSpawn = () => {
+      const emitter = new EventEmitter() as unknown as ChildProcessWithoutNullStreams;
+      const stdout = new PassThrough();
+      const stdin = new PassThrough();
+      const stderr = new PassThrough();
+      const entry = { child: emitter, stderr, say: (o: unknown) => stdout.write(`${JSON.stringify(o)}\n`), sent: [] as Array<{ id: number; method: string }> };
+      stdin.on('data', (d: Buffer) => { for (const line of String(d).split('\n').filter(Boolean)) entry.sent.push(JSON.parse(line)); });
+      Object.assign(emitter, { stdout, stdin, stderr, exitCode: null, signalCode: null, kill: () => true });
+      children.push(entry);
+      queueMicrotask(() => entry.say({ type: 'hello', protocolVersion: 2, os: 'darwin', helperVersion: 'x', capabilities: { actions: [], modes: [], permissions: {} } }));
+      return emitter;
+    };
+    const logged: string[] = [];
+    const helper = new HelperProcess({ command: 'unused', spawn: fakeSpawn, log: (m) => logged.push(m) });
+    helpers.push(helper);
+    const apps = helper.request('listApps', {});
+    expect(await waitFor(() => children.length === 1 && children[0].sent.length === 1)).toBe(true);
+    children[0].stderr.write('fatal: C:\\Users\\me\\secret path\n');
+    await new Promise((r) => setTimeout(r, 20));
+    (children[0].child as unknown as EventEmitter).emit('exit', 3, null);
+    const err = await apps.catch((e: unknown) => e);
+    expect((err as ComputerError).code).toBe('helper_unavailable');
+    expect((err as ComputerError).message).toBe('the computer-use helper exited (exit code 3)');
+    expect(logged.some((m) => m.includes('secret path'))).toBe(true);
+  });
+
+  it('logs the stderr of a helper that dies before its hello', async () => {
+    const logged: string[] = [];
+    const helper = new HelperProcess({
+      command: 'unused',
+      log: (m) => logged.push(m),
+      spawn: () => {
+        const emitter = new EventEmitter() as unknown as ChildProcessWithoutNullStreams;
+        const stderr = new PassThrough();
+        Object.assign(emitter, { stdout: new PassThrough(), stdin: new PassThrough(), stderr, exitCode: null, signalCode: null, kill: () => true });
+        setTimeout(() => {
+          stderr.write('[computer-use] refusing to run elevated\n');
+          setTimeout(() => (emitter as unknown as EventEmitter).emit('exit', 72, null), 10);
+        }, 0);
+        return emitter;
+      },
+    });
+    helpers.push(helper);
+    expect(await codeOf(helper.request('listApps', {}))).toBe('helper_unavailable');
+    expect(logged.some((m) => m.includes('refusing to run elevated'))).toBe(true);
+  });
+
+  it('a dispose during the start-up configure reports shutting_down', async () => {
+    let child: { say: (o: unknown) => void } | undefined;
+    const helper = new HelperProcess({
+      command: 'unused',
+      configure: () => ({ overlay: true }),
+      spawn: () => {
+        const emitter = new EventEmitter() as unknown as ChildProcessWithoutNullStreams;
+        const stdout = new PassThrough();
+        Object.assign(emitter, { stdout, stdin: new PassThrough(), stderr: new PassThrough(), exitCode: null, signalCode: null, kill: () => true });
+        child = { say: (o) => stdout.write(`${JSON.stringify(o)}\n`) };
+        queueMicrotask(() => child?.say({ type: 'hello', protocolVersion: 2, os: 'darwin', helperVersion: 'x', capabilities: { actions: ['configure'], modes: [], permissions: {} } }));
+        return emitter;
+      },
+    });
+    helpers.push(helper);
+    const apps = helper.request('listApps', {});
+    // The configure request is in flight (never answered) when dispose runs.
+    await new Promise((r) => setTimeout(r, 20));
+    helper.dispose();
+    expect(await codeOf(apps)).toBe('shutting_down');
   });
 
   it('names exactly what the cut-off request sent in the release, never a blanket key list', async () => {
@@ -346,7 +450,7 @@ describe('HelperProcess', () => {
     expect(await waitFor(() => requests().length > 0)).toBe(true);
     helper.dispose();
     helper.abort();
-    expect(await codeOf(click)).toBe('helper_unavailable');
+    expect(await codeOf(click)).toBe('shutting_down');
     await new Promise((r) => setTimeout(r, 300));
     expect(spawns).toBe(1);
     expect(requests()).toEqual(['click']);
@@ -362,7 +466,7 @@ describe('HelperProcess', () => {
     const pending = helper.request('listApps', {});
     await waitFor(() => child !== undefined);
     helper.dispose();
-    expect(await codeOf(pending)).toBe('helper_unavailable');
+    expect(await codeOf(pending)).toBe('shutting_down');
     expect(await waitFor(() => child?.exitCode !== null || child?.signalCode !== null)).toBe(true);
     expect(helper.hello).toBeNull();
   });
@@ -370,6 +474,6 @@ describe('HelperProcess', () => {
   it('refuses work after dispose', async () => {
     const { helper } = makeHelper('ok');
     helper.dispose();
-    expect(await codeOf(helper.request('listApps', {}))).toBe('helper_unavailable');
+    expect(await codeOf(helper.request('listApps', {}))).toBe('shutting_down');
   });
 });

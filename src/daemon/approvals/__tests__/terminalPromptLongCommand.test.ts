@@ -385,8 +385,10 @@ describe('C — decline: one Esc, only for the dialog the phone saw', () => {
 
   it('works on a matched record the phone cannot answer Yes/No (a row the TUI cut)', async () => {
     const h = makeRegistry();
-    // The option label ends in an ellipsis: not answerable, still this call's dialog.
-    h.pane.rows = WIDE.map((r) => (r.includes('/tmp/lcH1/work/scratchpad/dd-main commands') ? `${r}…` : r));
+    // The reason row ends in an ellipsis: not answerable, still this call's dialog.
+    // (A cut command row would not spell the call; a cut option that says it
+    // writes a lasting rule no longer blocks the Yes.)
+    h.pane.rows = WIDE.map((r) => (r === ' /permissions to update rules' ? `${r}…` : r));
     const record = await create(h);
     expect(record).not.toHaveProperty('promptFingerprint');
     settle(h);

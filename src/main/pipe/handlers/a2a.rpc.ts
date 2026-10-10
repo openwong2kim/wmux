@@ -17,12 +17,25 @@ import { EXECUTE_SEND_MAIN_TIMEOUT_MS } from '../../../shared/executeApprovalBou
 import { GATED_DELIVERY_DEADLINE_MARGIN_MS, GATED_NEW_TASK_SEND_MAIN_TIMEOUT_MS, NEW_TASK_SEND_MAIN_TIMEOUT_MS } from '../../../shared/freshContext';
 import { flagOrphanedTask, isPagedTaskQuery, pagedTaskId, shapeTaskQueryResult, summarizeTask } from '../../../shared/a2aTaskQueryView';
 import { defaultSnapshot } from '../../pty/portWatch';
+import { claimTokenForPane } from '../../workspace/workspaceClaimTrust';
 import type { PortSnapshot, SnapshotFn } from '../../pty/portWatch';
 import { walkToOwningAnchor } from '../../pty/serverSidePidWalk';
 import { tryProcessCreatedAt } from '../../pty/winSnapshotNative';
+import { readWindowsAncestry } from './callerAncestry';
+import { getAccountStore } from '../../account/accountStore';
+import {
+  CODEX_THREAD_ID_RE,
+  classifyMcpParent,
+  codexHome,
+  matchOwnerToLiveAnchor,
+  readCodexThreadOwner,
+  readParentChain,
+  type McpParentClass,
+} from '../../../mcp/codexThreadIdentity';
 import type { OwningAnchor } from '../../pty/serverSidePidWalk';
 import { recordSentTask, recordTaskState, reopenedState, stateOfTask, workLinkFromSentTask } from '../../workLink/a2aProducer';
 import { noteTrackReply } from '../../deck/trackRecordFeed';
+import { moaGoalSendScope } from '../../deck/moaLevelGate';
 import { A2A_BRAIN_ALIAS, isRemoteTaskId } from '../../../shared/a2aRemote';
 import {
   isRemoteWorkspaceId,
@@ -192,6 +205,48 @@ async function readWorkspacePanes(
 
 /** Validate an RPC-supplied caller pid. Anything non-positive / non-integer is
  *  ignored (older MCP build, or junk) → the handler keeps its legacy behavior. */
+/**
+ * Every Codex home the owner record can live in: main's own CODEX_HOME (or
+ * the default) and each registered account's config dir, since a thread
+ * started under another account's app-server keeps its owner index there. A
+ * dir with no owner index (another agent's account) simply misses.
+ */
+function codexHomes(): string[] {
+  const homes = new Set<string>([codexHome(process.env), codexHome({ ...process.env, CODEX_HOME: '' })]);
+  try {
+    for (const account of getAccountStore().listAccounts()) {
+      if (account.configDir) homes.add(account.configDir);
+    }
+  } catch {
+    /* an unreadable account store leaves the default homes */
+  }
+  return [...homes];
+}
+
+/**
+ * The pane a Codex thread's owner record names, with a claim on it, or null.
+ * Only for a caller main has seen to run under a shared Codex app-server
+ * (`callerIsSharedServerChild`): a thread id is a routing input, and only that
+ * parent hands one to an MCP server.
+ */
+function resolveCodexThreadClaim(
+  threadId: unknown,
+  entries: ReadonlyArray<{ ptyId: string; workspaceId: string }>,
+  callerIsSharedServerChild: boolean,
+): { workspaceId: string; ptyId: string; workspaceToken: string } | null {
+  if (!callerIsSharedServerChild) return null;
+  if (typeof threadId !== 'string' || !CODEX_THREAD_ID_RE.test(threadId)) return null;
+  let owner: ReturnType<typeof readCodexThreadOwner>;
+  for (const home of codexHomes()) {
+    owner = readCodexThreadOwner(threadId, home);
+    if (owner) break;
+  }
+  const match = matchOwnerToLiveAnchor(threadId, owner, entries, process.env.WMUX_DATA_SUFFIX || '');
+  if (match.status !== 'hit') return null;
+  const workspaceToken = claimTokenForPane(match.wsId, match.ptyId);
+  return workspaceToken ? { workspaceId: match.wsId, ptyId: match.ptyId, workspaceToken } : null;
+}
+
 function normalizeCallerPid(raw: unknown): number | null {
   return typeof raw === 'number' && Number.isInteger(raw) && raw > 0 ? raw : null;
 }
@@ -245,6 +300,10 @@ export function registerA2aRpc(
     getDaemonClient?: () => DaemonClient | null;
     /** Process creation time for the walk's pid-reuse guard; tests inject one. */
     createdAt?: (pid: number) => bigint | null;
+    /** One caller's ancestry when the snapshot is unavailable; tests inject one. */
+    readAncestry?: (pid: number, timeoutMs: number) => Promise<Map<number, number> | null>;
+    /** Who spawned a Codex-thread caller, from its ancestors' argv; tests inject one. */
+    classifyCodexCaller?: (pid: number) => Promise<McpParentClass>;
     remote?: RemoteA2aRpcDeps;
   } = {},
 ): void {
@@ -370,6 +429,28 @@ export function registerA2aRpc(
   // the miss/fallback path re-snaps.
   const snapshotFn: SnapshotFn = opts.snapshot ?? defaultSnapshot;
   const createdAt = opts.createdAt ?? tryProcessCreatedAt;
+  const readAncestry = opts.readAncestry ?? readWindowsAncestry;
+  const classifyCodexCaller = opts.classifyCodexCaller ?? (async (pid: number) => classifyMcpParent(await readParentChain(pid)));
+  // A shared app-server's MCP child lives as long as the server, so a
+  // confirmed answer is kept a minute rather than re-reading argv every call.
+  // 'unknown' is never kept.
+  const codexCallerClass = new Map<number, { cls: McpParentClass; at: number }>();
+  async function isSharedServerChild(pid: number | null): Promise<boolean> {
+    if (pid === null) return false;
+    const hit = codexCallerClass.get(pid);
+    if (hit && Date.now() - hit.at < 60_000) return hit.cls === 'shared-server';
+    let cls: McpParentClass = 'unknown';
+    try {
+      cls = await classifyCodexCaller(pid);
+    } catch {
+      cls = 'unknown';
+    }
+    if (cls !== 'unknown') {
+      if (codexCallerClass.size > 256) codexCallerClass.clear();
+      codexCallerClass.set(pid, { cls, at: Date.now() });
+    }
+    return cls === 'shared-server';
+  }
   let snapInflight: Promise<PortSnapshot> | null = null;
   async function getCoalescedSnapshot(): Promise<PortSnapshot | null> {
     if (!snapInflight) {
@@ -403,6 +484,26 @@ export function registerA2aRpc(
     // instead of one PowerShell spawn per caller. A callerPid still absent after
     // that is a genuine miss the walk handles (parent undefined → null).
     return getCoalescedSnapshot();
+  }
+
+  /** See the `hintedPane` field of `a2a.resolve.identity`. */
+  async function resolveHintedPane(
+    hintedPtyId: unknown,
+    entries: ReadonlyArray<{ ptyId: string; workspaceId: string }>,
+  ): Promise<{ live: boolean; workspaceId?: string; workspaceToken?: string } | null> {
+    if (typeof hintedPtyId !== 'string' || hintedPtyId.length === 0 || hintedPtyId.length > 128) return null;
+    const pane = entries.find((e) => e.ptyId === hintedPtyId);
+    if (!pane) return { live: false };
+    let wslLive = false;
+    try {
+      const res = await getDaemonClient?.()?.rpc('session.wslAgentLive', { sessionId: hintedPtyId }, { timeoutMs: 2000 });
+      wslLive = (res as { live?: unknown } | null)?.live === true;
+    } catch {
+      wslLive = false; // daemon unreachable or older: unattested
+    }
+    if (!wslLive) return { live: true };
+    const workspaceToken = claimTokenForPane(pane.workspaceId, pane.ptyId);
+    return workspaceToken ? { live: true, workspaceId: pane.workspaceId, workspaceToken } : { live: true };
   }
 
   // a2a.resolve.identity — handled in main process (not renderer).
@@ -540,7 +641,15 @@ export function registerA2aRpc(
         RPC_SNAPSHOT_DEADLINE_MS - (Date.now() - startedAt),
         null,
       );
-      if (snapshot) {
+      // No usable snapshot (on Windows: the Win32_Process query failed or ran
+      // out of time, or it predates the caller): read just this caller's chain
+      // instead, so a pane agent still gets its claim. The chain script checks
+      // creation times itself, so the walk needs no separate reuse guard.
+      const ppidByPid =
+        snapshot && snapshot.ppidByPid.has(callerPid)
+          ? snapshot.ppidByPid
+          : await readAncestry(callerPid, RPC_SNAPSHOT_DEADLINE_MS - (Date.now() - startedAt));
+      if (ppidByPid) {
         const anchorByPid = new Map<number, OwningAnchor>();
         for (const e of entries) {
           const pid = Number(e.pid);
@@ -548,18 +657,49 @@ export function registerA2aRpc(
             anchorByPid.set(pid, { ptyId: e.ptyId, workspaceId: e.workspaceId });
           }
         }
-        const parentPid = snapshot.ppidByPid.get(callerPid);
+        const parentPid = ppidByPid.get(callerPid);
         // Creation times reject a reused parent pid: a Codex app-server that
         // updated itself is orphaned, and its dead parent's pid may now be a
         // new pane's shell (Windows only; elsewhere the reader returns null).
         const hit = parentPid !== undefined
-          ? walkToOwningAnchor(parentPid, snapshot.ppidByPid, anchorByPid, { createdAt, child: callerPid })
+          ? walkToOwningAnchor(parentPid, ppidByPid, anchorByPid, { createdAt, child: callerPid })
           : null;
         if (hit) resolved = { workspaceId: hit.anchor.workspaceId, ptyId: hit.anchor.ptyId };
       }
     }
 
-    return { mappings, entries, resolved };
+    // A pane claim from main's own walk: the token binds the walked workspace
+    // and pane, so browser calls carrying it are scoped from what main found
+    // rather than from a workspace the caller names. Additive — a caller that
+    // ignores the field is unaffected. Only for a hit main resolved itself,
+    // never for the client-side walk over `entries`.
+    const workspaceToken = resolved ? claimTokenForPane(resolved.workspaceId, resolved.ptyId) : null;
+    // A call from a shared Codex app-server names its thread instead: the pane
+    // comes from the thread's owner record (written by wmux's Codex hooks from
+    // inside that pane), joined with the LIVE anchors above. The claim goes
+    // back on its own field because the caller stamps it on that call only.
+    const codexThreadId = (params as { codexThreadId?: unknown }).codexThreadId;
+    const threadClaim = codexThreadId === undefined
+      ? null
+      : resolveCodexThreadClaim(
+          codexThreadId,
+          entries,
+          await isSharedServerChild(normalizeCallerPid((params as { codexCallerPid?: unknown }).codexCallerPid)),
+        );
+    // The walk missed but the caller's env names a pane. Main says whether
+    // that pane is live, and attests it only when the daemon follows a live
+    // agent inside it from WSL — the one pane kind whose processes main cannot
+    // walk. A name that is not a live pane (a scheduled run's `auto-` session,
+    // which belongs to no workspace) is reported as such, never as a pane.
+    const hintedPane = resolved ? null : await resolveHintedPane((params as { hintedPtyId?: unknown }).hintedPtyId, entries);
+    return {
+      mappings,
+      entries,
+      resolved,
+      ...(workspaceToken && { workspaceToken }),
+      ...(threadClaim && { threadClaim }),
+      ...(hintedPane && { hintedPane }),
+    };
   });
 
   /**
@@ -948,7 +1088,14 @@ export function registerA2aRpc(
         } catch {
           // a ledger we cannot read grants nothing extra
         }
-        sendParams.hqHandoffOnly = { allowedTargets: [ctx.commanderWorkspace, ...own] };
+        // While a goal is active, only the goal's own workspaces (owner
+        // decision 2, moaLevelGate.ts): an older fan-out task outside the
+        // contract is not reachable directly either.
+        const goalScope = moaGoalSendScope(ctx.commanderWorkspace);
+        const allowed = [ctx.commanderWorkspace, ...own];
+        sendParams.hqHandoffOnly = {
+          allowedTargets: goalScope ? allowed.filter((w) => goalScope.includes(w)) : allowed,
+        };
       }
     }
     // A NEW execute send's reply is held until the user answers the approval

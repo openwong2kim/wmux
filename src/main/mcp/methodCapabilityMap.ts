@@ -312,6 +312,10 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
   // Moa hand-off proposal. Own commander-token auth (HQ brain only) in
   // deck.rpc.ts, and it only raises an operator card, so no capability gate.
   'deck.proposeHandoff': { capability: null },
+  // Moa's goal contract. Own commander-token auth (HQ brain only) in
+  // deck.rpc.ts; the proposal only raises an operator card.
+  'deck.proposeGoal': { capability: null },
+  'deck.goal': { capability: null },
   // Orphan Deck state prune (`wmux deck state --prune --yes`). Runs inside the
   // app so its writes share the stores' in-process locks and caches; it
   // deletes state, so it carries the same internal gate as workspace.close.

@@ -148,6 +148,49 @@ export function runWithCallerPtyIdSource<T>(source: () => string | undefined, fn
   return callerPtyIdSource.run(source, fn);
 }
 
+// The per-call claim of a shared Codex app-server call (#1778): main mints it
+// for the calling thread's pane, so the connection-wide token (if any) must not
+// be stamped instead. Same contract as `callerPtyIdSource`: the call's token,
+// '' for "no claim — omit the field", or undefined to defer to the connection.
+const workspaceTokenSource = new AsyncLocalStorage<() => string | undefined>();
+
+/** Run `fn` with a per-call workspace claim source (see `workspaceTokenSource`). */
+export function runWithWorkspaceTokenSource<T>(source: () => string | undefined, fn: () => T): T {
+  return workspaceTokenSource.run(source, fn);
+}
+
+// What a browser call does when main answers that the caller's identity is
+// stale (a pane moved, main restarted): set per tool call by index.ts, so the
+// tool modules that call sendRpc directly get the same recovery as callRpc.
+// `failed` is true when main refused the call (the outcome is its error text).
+type StaleIdentityHandler = (outcome: string, failed: boolean) => void;
+const staleIdentitySource = new AsyncLocalStorage<StaleIdentityHandler>();
+
+/** Run `fn` with a stale-identity handler for every browser RPC it makes. */
+export function runWithStaleIdentityHandler<T>(handler: StaleIdentityHandler, fn: () => T): T {
+  return staleIdentitySource.run(handler, fn);
+}
+
+/** Hand a browser RPC's outcome to the current stale-identity handler (exported for tests). */
+export function noteBrowserOutcome(method: string, outcome: unknown, failed: boolean): void {
+  if (!method.startsWith('browser.')) return;
+  const handler = staleIdentitySource.getStore();
+  if (!handler) return;
+  try {
+    handler(typeof outcome === 'string' ? outcome : JSON.stringify(outcome ?? ''), failed);
+  } catch {
+    /* recovery is best-effort: it must never change the call's own result */
+  }
+}
+
+/** The workspaceToken the next envelope built in this context will carry. */
+function envelopeWorkspaceToken(connectionToken: string | undefined): string | undefined {
+  const source = workspaceTokenSource.getStore();
+  const fromCall = source ? source() : undefined;
+  if (fromCall !== undefined) return fromCall.length > 0 ? fromCall : undefined;
+  return connectionToken;
+}
+
 // BYOB P4: commander role claim. Set once at startup by index.ts when the
 // process runs with --commander. The value (may be '' when the token env was
 // lost) is stamped on EVERY outbound envelope — presence of the field is the
@@ -218,7 +261,8 @@ function attemptRpc(
     // #922 PR-A. Absent until a claim succeeds, and omitted entirely when
     // there is none — an empty string would read as a presented-but-stale
     // token to the lane PR-B adds, which must refuse rather than demote.
-    if (identity.workspaceToken !== undefined) envelope.workspaceToken = identity.workspaceToken;
+    const workspaceToken = envelopeWorkspaceToken(identity.workspaceToken);
+    if (workspaceToken !== undefined) envelope.workspaceToken = workspaceToken;
     // Omitted, never '', when this caller has no known pane.
     const callerPtyId = getCallerPtyId();
     if (callerPtyId !== undefined) envelope.callerPtyId = callerPtyId;
@@ -317,9 +361,12 @@ export async function sendRpc(
   for (const pipePath of pipePaths) {
     for (let attempt = 0; attempt < RETRY_COUNT; attempt++) {
       try {
-        return await attemptRpc(pipePath, token, method, params, timeoutMs);
+        const result = await attemptRpc(pipePath, token, method, params, timeoutMs);
+        noteBrowserOutcome(method, result, false);
+        return result;
       } catch (err) {
         lastError = err as Error;
+        noteBrowserOutcome(method, lastError.message, true);
         const msg = lastError.message;
         const isRetryable = msg.includes('not running') || msg.includes('unauthorized');
         const isPerm = msg.includes('EPERM');
@@ -339,7 +386,9 @@ export async function sendRpc(
   // TCP localhost fallback — bypasses Windows named pipe ACL issues
   if (tcpPort) {
     try {
-      return await attemptRpc({ host: '127.0.0.1', port: tcpPort }, token, method, params, timeoutMs);
+      const result = await attemptRpc({ host: '127.0.0.1', port: tcpPort }, token, method, params, timeoutMs);
+      noteBrowserOutcome(method, result, false);
+      return result;
     } catch { /* fall through */ }
   }
 

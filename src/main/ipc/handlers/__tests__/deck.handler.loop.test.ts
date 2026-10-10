@@ -1487,6 +1487,39 @@ describe('deck:send local Fleet fast path', () => {
     expect(adapters[0].sentTexts[0]).toMatch(/status and merge the PR$/);
   });
 
+  // Review P2: the whole chain — adapter foreign-turn callbacks, the
+  // handler's lookup callback and the stream — with a TUI turn that starts
+  // and ends while the board read is still pending.
+  it.each(['ok', 'error'] as const)('a foreign turn during a pending lookup drops the stale %s board, with no Moa fallback', async (mode) => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const board = vi.fn(async () => {
+      await gate;
+      if (mode === 'error') throw new Error('renderer timed out');
+      return { generatedAt: Date.now(), scope: 'fleet', needsYou: [], finished: [], running: [], idle: { count: 1 } };
+    });
+    const streamed: BrainEvent[] = [];
+    let foreign!: { onForeignTurnStart: (prompt: string) => void; onForeignTurnEnd: () => void };
+    cleanup?.();
+    cleanup = registerDeckHandler(() => ({ isDestroyed: () => false, webContents: { send: (channel: string, data: { event?: BrainEvent }) => {
+      if (channel === IPC.DECK_STREAM && data.event) streamed.push(data.event);
+    } } } as unknown as import('electron').BrowserWindow), {
+      readFleetBoard: board,
+      createAdapter: (opts) => { foreign = opts; const a = new FakeAdapter(opts.workspaceId); adapters.push(a); return a; },
+    });
+    overrideFleetFastPathForTests(true);
+    const pending = invoke(IPC.DECK_SEND, { workspaceId: 'ws-1', text: 'status' });
+    await vi.waitFor(() => expect(board).toHaveBeenCalledOnce());
+    foreign.onForeignTurnStart('typed into the TUI');
+    foreign.onForeignTurnEnd();
+    release();
+    expect(await pending).toEqual({ ok: true, code: 'errored' });
+    expect(adapters[0].sentTexts).toEqual([]);
+    expect(streamed.some((e) => e.type === 'turn-end' && e.localAnswer)).toBe(false);
+    expect(streamed.some((e) => e.type === 'text-delta')).toBe(false);
+    expect(streamed).toContainEqual(expect.objectContaining({ type: 'error', message: expect.stringContaining('ask again') }));
+  });
+
   it('the settings switch round-trips through IPC', async () => {
     // The data dir is per-test-run (src/test-utils/isolateDataDir.ts).
     await setup();

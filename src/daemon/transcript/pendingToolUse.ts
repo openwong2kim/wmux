@@ -126,10 +126,14 @@ const SHELL_TOOLS: ReadonlySet<string> = new Set(['Bash', 'PowerShell']);
 
 /**
  * The text a tool's permission dialog shows as "the command": a shell tool's
- * `command`, otherwise the path / url / pattern the call acts on.
+ * `command`, WebSearch's `query` (by name: another tool's `query`, such as
+ * ToolSearch's, is not a dialog's), otherwise the path / url / pattern the
+ * call acts on.
  */
 export function commandOfToolInput(name: string, input: Record<string, unknown>): string | undefined {
-  const fields = SHELL_TOOLS.has(name) ? ['command'] : ['file_path', 'notebook_path', 'path', 'url', 'pattern'];
+  const fields = SHELL_TOOLS.has(name)
+    ? ['command']
+    : name === 'WebSearch' ? ['query'] : ['file_path', 'notebook_path', 'path', 'url', 'pattern'];
   for (const field of fields) {
     const value = input[field];
     if (typeof value === 'string' && value.trim()) return value;

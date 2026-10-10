@@ -89,8 +89,11 @@ export interface HookIngestSession {
   env?: Record<string, string>;
   /** ISO 8601. Tie-break when several panes match the same cwd. */
   lastActivity?: string;
-  /** The pane's current resume binding; only `agent` is read, to guard a guessed route. */
-  resumeBinding?: Pick<ResumeBinding, 'agent'>;
+  /**
+   * The pane's current resume binding: `agent` guards a guessed route,
+   * `sessionId` is only logged (old → new on a rebind).
+   */
+  resumeBinding?: Pick<ResumeBinding, 'agent'> & { sessionId?: string };
   /** Canonical agent the detector/process tracker last saw in this pane. */
   lastDetectedAgent?: string;
 }
@@ -187,7 +190,27 @@ export interface HookIngestDeps {
   applyResumeBinding: (ptyId: string, binding: ResumeBinding) => void;
   /** #1823: slug of the agent process alive in the pane right now, if known. */
   liveAgentFor?: (ptyId: string) => string | undefined;
-  log?: (level: 'info' | 'warn' | 'error', message: string) => void;
+  /**
+   * The pid of the pane's tracked top-level agent process
+   * (AgentProcessTracker.pidFor), if one is attributed. Compared with the
+   * bridge's `agentPid` so a hook from another process — a `claude` nested
+   * under the pane's agent — cannot speak for the pane. Optional: without it
+   * only the entrypoint decides (see foreignProcessReason).
+   */
+  agentPidFor?: (ptyId: string) => number | undefined;
+  /**
+   * Fresh liveness of a pid, read now rather than from the tracker's cache
+   * (whose `alive` lags a real exit by up to one ProcessMonitor poll). Asked
+   * only on a pid mismatch; a refusal needs it to answer true. Without it a
+   * mismatch is never refused.
+   */
+  isPidRunning?: (pid: number) => boolean;
+  /**
+   * A mismatched hook was accepted because the tracked pid is gone: the
+   * tracker still holds a dead agent, so re-pick the pane's live one.
+   */
+  onStaleAgentPid?: (ptyId: string) => void;
+  log?: (level: 'debug' | 'info' | 'warn' | 'error', message: string) => void;
   /** Injected for test determinism. */
   now?: () => number;
   /** Dedup-window override, for tests. */
@@ -337,6 +360,53 @@ function isCrossProviderSignal(signal: AgentSignal): boolean {
   if (typeof claimed !== 'string') return false;
   const base = claimed.split(/[\\/]/).pop() ?? '';
   return /^rollout-.*\.jsonl$/i.test(base);
+}
+
+/**
+ * CLAUDE_CODE_ENTRYPOINT, classified. `interactive` is a person's session (the
+ * CLI TUI, the IDE extensions); `headless` is an SDK surface (`claude -p`
+ * reports `sdk-cli`, even when started by an interactive `cli` whose env it
+ * inherits — measured) or `mcp` (`claude mcp serve`); `unknown` is any other
+ * value. Kept equal to classifyEntrypoint in integrations/claude/bin/wmux-bridge.mjs.
+ */
+export function classifyEntrypoint(entrypoint: string | undefined): 'interactive' | 'headless' | 'unknown' | 'absent' {
+  if (!entrypoint) return 'absent';
+  if (entrypoint === 'cli' || entrypoint === 'vscode' || entrypoint === 'jetbrains') return 'interactive';
+  if (entrypoint.startsWith('sdk-') || entrypoint === 'mcp') return 'headless';
+  return 'unknown';
+}
+
+/**
+ * The bridge's `entrypoint` (CLAUDE_CODE_ENTRYPOINT): an envelope key the
+ * shared AgentSignal type does not declare, so it is read defensively.
+ */
+export function signalEntrypoint(signal: AgentSignal): string | undefined {
+  const value = (signal as unknown as Record<string, unknown>).entrypoint;
+  return typeof value === 'string' && value.length > 0 && value.length <= 64 ? value : undefined;
+}
+
+/**
+ * The bridge's `agentPid` — the hook's parent process. OBSERVATIONAL: the
+ * bridge sends it only where that parent is measured to be the agent itself
+ * (macOS); a shell wrapper (WSL hook.sh, Windows) would make it a shell pid.
+ * Undeclared, like `entrypoint`.
+ */
+export function signalAgentPid(signal: AgentSignal): number | undefined {
+  const value = (signal as unknown as Record<string, unknown>).agentPid;
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 1 ? value : undefined;
+}
+
+/**
+ * The pid HookIngest may compare a hook's process against: only one the
+ * process tracker positively named as an agent (it carries a slug) and still
+ * reads alive. A slugless pick — a wrapper, a shell, a helper like gitstatusd —
+ * is not the agent, so it yields nothing and no pid test runs.
+ */
+export function identifiedAgentPid(
+  tracked: { alive: boolean; slug?: string } | undefined,
+  pid: number | undefined,
+): number | undefined {
+  return tracked?.alive && tracked.slug ? pid : undefined;
 }
 
 function normalizeCwd(p: string): string {
@@ -626,6 +696,58 @@ export class HookIngest {
   private readonly answeredRequests = new Set<string>();
   /** #1823: panes already logged for a provider mismatch (log once per pane). */
   private readonly mismatchLogged = new Set<string>();
+  /** Foreign-process senders already logged (`pane|reason`), bounded like the rest. */
+  private readonly foreignLogged = new Set<string>();
+
+  /**
+   * Why this signal does not come from the pane's own top-level agent, or
+   * null when it does (or nothing says otherwise). A headless child — a
+   * `claude -p` the pane's agent ran through Bash — inherits WMUX_PTY_ID and so
+   * names this pane exactly, yet its session is not the pane's conversation:
+   * it must never rebind the pane, mark it hook-governed, or end its turn.
+   *
+   *   1. A known headless entrypoint (`sdk-cli`, …) is foreign.
+   *   2. An interactive entrypoint is the pane's own: a nested child cannot be
+   *      interactive, and a pid test here could refuse a legitimate /clear
+   *      while the tracker still holds a just-exited agent's pid.
+   *   3. An unknown entrypoint keeps its signal (a future interactive surface
+   *      must not lose its alarms); only its binding is refused, at the
+   *      binding site.
+   *   4. No entrypoint (an older bridge or Claude Code): foreign only when the
+   *      hook named its process and the tracker attributes a DIFFERENT one to
+   *      the pane, and that one is running right now. The tracker's cache can
+   *      still hold a just-exited agent when its relaunch reports, so the
+   *      cached pid alone never refuses: it is re-read fresh, and a dead one
+   *      lets the hook through and re-arms the tracker. Without either pid
+   *      there is no evidence, and refusing would leave every un-upgraded pane
+   *      with no recovery binding at all — so today's behaviour stands. A WSL
+   *      hook is never compared: its parent is the hook.sh shell, and the
+   *      tracked pid is a Windows-side view.
+   */
+  private foreignProcessReason(signal: AgentSignal, sessionId: string): string | null {
+    const entrypoint = signalEntrypoint(signal);
+    const entrypointClass = classifyEntrypoint(entrypoint);
+    if (entrypointClass === 'headless') return `entrypoint ${entrypoint} is not interactive`;
+    if (entrypointClass !== 'absent') return null;
+    if (signal.wslAgentProcess !== undefined) return null;
+    const hookPid = signalAgentPid(signal);
+    if (hookPid === undefined) return null;
+    const trackedPid = this.deps.agentPidFor?.(sessionId);
+    if (trackedPid === undefined || trackedPid === hookPid) return null;
+    if (this.deps.isPidRunning?.(trackedPid) !== true) {
+      this.deps.onStaleAgentPid?.(sessionId);
+      return null;
+    }
+    return `process ${hookPid} is not the pane's agent process ${trackedPid}`;
+  }
+
+  private noteForeignProcess(sessionId: string, signal: AgentSignal, reason: string): void {
+    const key = `${sessionId}|${reason}`;
+    if (this.foreignLogged.has(key)) return;
+    this.foreignLogged.add(key);
+    if (this.foreignLogged.size > 1024) this.foreignLogged.delete(this.foreignLogged.values().next().value as string);
+    this.deps.log?.('info', `[hooks] ignored ${signal.agent} signals on ${sessionId} from a process that is not the pane's agent: ${reason}`);
+  }
 
   private noteMismatch(sessionId: string, message: string): void {
     if (this.mismatchLogged.has(sessionId)) return;
@@ -760,6 +882,14 @@ export class HookIngest {
       // Agent running outside any wmux pane, or its claimed pane is gone — fail open.
       this.noteRefusedGate(signal);
       return { ok: false, reason: 'no-workspace-match' };
+    }
+
+    // A nested headless child raises no card for the pane and touches none of
+    // its state; the bridge already skips these, this covers any that arrive.
+    const foreign = this.foreignProcessReason(signal, sessionId);
+    if (foreign) {
+      this.noteForeignProcess(sessionId, signal, foreign);
+      return { ok: false, reason: 'foreign-process' };
     }
 
     // Touch authority on every gate signal — the bridge is alive on this pane.
@@ -923,6 +1053,17 @@ export class HookIngest {
       return { ok: true };
     }
 
+    // A signal from a process that is not the pane's own top-level agent (a
+    // headless `claude -p` the agent started) is dropped HERE, before any of
+    // its effects: hook authority, the completion alarm, approvals expiry on
+    // session_start, the resume binding, the transcript nudge and the event
+    // broadcast. ok:true — the bridge has nothing to retry.
+    const foreign = this.foreignProcessReason(signal, sessionId);
+    if (foreign) {
+      this.noteForeignProcess(sessionId, signal, foreign);
+      return { ok: true };
+    }
+
     // Hook authority: EVERY resolved signal marks the pane hook-governed for
     // this agent, including the non-emit kinds (SessionStart, per-tool
     // activity) — freshness tracks "the bridge is alive on this pane", not
@@ -1030,7 +1171,11 @@ export class HookIngest {
       // cannot take, means the signal is not about this pane's conversation.
       // An exited agent reports no live slug, so switching agents still binds.
       const liveAgent = this.deps.liveAgentFor?.(sessionId);
-      if (liveAgent && liveAgent !== signal.agent) {
+      const entrypoint = signalEntrypoint(signal);
+      if (classifyEntrypoint(entrypoint) === 'unknown') {
+        // The bridge strips these already; an older or foreign sender may not.
+        this.noteMismatch(sessionId, `[hooks] refused ${signal.agent} resume binding on ${sessionId}: entrypoint ${entrypoint} is not a known interactive surface`);
+      } else if (liveAgent && liveAgent !== signal.agent) {
         this.noteMismatch(sessionId, `[hooks] refused ${signal.agent} resume binding on ${sessionId}: ${liveAgent} is the agent running there`);
       } else if (!isPlausibleResumeSessionId(signal.agent, signal.agentSessionId)) {
         this.noteMismatch(sessionId, `[hooks] refused ${signal.agent} resume binding on ${sessionId}: session id is not ${signal.agent}-shaped`);
@@ -1041,6 +1186,7 @@ export class HookIngest {
           `[hooks] kept ${prevAgent} resume binding on ${sessionId}: ${signal.agent} signal was not pane-exact`,
         );
       } else {
+        const prevSessionId = routed?.resumeBinding?.sessionId;
         try {
           this.deps.applyResumeBinding(sessionId, {
             agent: signal.agent,
@@ -1050,6 +1196,14 @@ export class HookIngest {
             ...(transcriptPath ? { transcriptPath } : {}),
             ts: signal.ts,
           });
+          // Refusals are logged above; a rebind is logged too, so a pane that
+          // switched conversations shows which signal moved it.
+          if (prevSessionId !== signal.agentSessionId) {
+            this.deps.log?.(
+              'debug',
+              `[hooks] rebound ${sessionId} (${signal.kind}): ${prevSessionId ?? 'none'} -> ${signal.agentSessionId}`,
+            );
+          }
         } catch (err) {
           // A binding we failed to persist costs an exact resume after a
           // reboot, never the signal itself.

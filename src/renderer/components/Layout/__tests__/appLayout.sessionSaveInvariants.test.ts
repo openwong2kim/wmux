@@ -102,10 +102,34 @@ describe('AppLayout — axis A session-save invariants', () => {
       layoutTemplates: [],
       recentCommands: [],
       toolbarSnippets: [],
+      surfaceDismissedQuestion: {},
     }) }, selectPcRailPersisted);
     const persisted = JSON.parse(JSON.stringify(snapshot));
     expect(Object.hasOwn(persisted, 'anthropicUsageEnabled')).toBe(true);
     expect(persisted.anthropicUsageEnabled).toBe(enabled);
+    // An empty dismissed-question record is left out of the file.
+    expect(Object.hasOwn(persisted, 'surfaceDismissedQuestion')).toBe(false);
+  });
+
+  it('persists dismissed pending questions so a restart cannot bring them back', () => {
+    const tree = ts.createSourceFile('AppLayout.tsx', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+    const builder = tree.statements.find(
+      (node) => ts.isFunctionDeclaration(node) && node.name?.text === 'buildSessionData',
+    );
+    const code = ts.transpileModule(builder!.getText(tree), {
+      compilerOptions: { target: ts.ScriptTarget.ES2022 },
+    }).outputText;
+    const build = new Function('useStore', 'selectPcRailPersisted', `${code}; return buildSessionData(new Map());`);
+    const snapshot = build({ getState: () => ({
+      workspaces: [],
+      archivedWorkspaces: [],
+      orchestratorRoleBindings: {},
+      layoutTemplates: [],
+      recentCommands: [],
+      toolbarSnippets: [],
+      surfaceDismissedQuestion: { 'pty-1': 'Shall I merge?' },
+    }) }, selectPcRailPersisted);
+    expect(JSON.parse(JSON.stringify(snapshot)).surfaceDismissedQuestion).toEqual({ 'pty-1': 'Shall I merge?' });
   });
 
   it('persists the usage-limit auto-resume setting explicitly, including false', () => {

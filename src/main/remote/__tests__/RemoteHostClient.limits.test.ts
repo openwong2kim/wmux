@@ -377,3 +377,25 @@ describe('RemoteHostClient — viewer window', () => {
     client.detachAll();
   });
 });
+
+describe('normalizeWorkspaces — host sidebar pane fields', () => {
+  it('reads the pane name, tab title and last output time, capped, and drops malformed ones', () => {
+    const [ws] = normalizeWorkspaces({
+      workspaces: [{
+        id: 'w1',
+        name: 'api',
+        panes: [
+          { sessionId: 's1', paneName: 'w1-1', surfaceTitle: 'build\u001b[31m', lastActivity: '2026-10-01T00:00:00.000Z' },
+          { sessionId: 's2', paneName: 'x'.repeat(REMOTE_LIMITS.paneName + 50), surfaceTitle: 7, lastActivity: 'not a date' },
+          { sessionId: 's3', paneName: '', lastActivity: 12 },
+        ],
+      }],
+    });
+    expect(ws.panes[0]).toMatchObject({ paneName: 'w1-1', lastActivityAt: Date.parse('2026-10-01T00:00:00.000Z') });
+    expect(ws.panes[0].surfaceTitle).not.toContain('\u001b');
+    expect(ws.panes[1].paneName).toHaveLength(REMOTE_LIMITS.paneName);
+    expect(ws.panes[1]).not.toHaveProperty('surfaceTitle');
+    expect(ws.panes[1]).not.toHaveProperty('lastActivityAt');
+    expect(Object.keys(ws.panes[2])).toEqual(['sessionId']);
+  });
+});

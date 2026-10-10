@@ -2,6 +2,7 @@ import type { StateCreator } from 'zustand';
 import type { StoreState } from '../index';
 import { generateId } from '../../../shared/types';
 import { CHROME_PRESET_VALUES } from '../../../shared/chromePresets';
+import { isShadowWorkspaceId } from '../../../shared/pcRail';
 
 export interface ToolbarSnippet {
   id: string;
@@ -107,6 +108,8 @@ export const createAgentToolbarSlice: StateCreator<
   fanOutWorkspaceId: null,
   fanOutAnchor: null,
   openFanOut: (workspaceId, anchor) => set((draft: StoreState) => {
+    // Fan-out digs worktrees on this computer: never for another computer's (shadow) workspace.
+    if (isShadowWorkspaceId(workspaceId)) return;
     if (draft.fanOutWorkspaceId === workspaceId) {
       draft.fanOutWorkspaceId = null;
       draft.fanOutAnchor = null;

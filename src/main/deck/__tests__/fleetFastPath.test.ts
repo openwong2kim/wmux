@@ -33,6 +33,7 @@ describe('whole-message deterministic candidate boundary', () => {
     ['Which tasks need me?', 'needs_you'],
     ['Which agents need my input?', 'needs_you'],
     ['Who needs me?', 'needs_you'],
+    ['who needs me ?', 'needs_you'],
     ['What needs my attention?', 'needs_you'],
     ['show me tasks needing my attention', 'needs_you'],
     ['내 확인이 필요한 작업', 'needs_you'],
@@ -40,6 +41,8 @@ describe('whole-message deterministic candidate boundary', () => {
     ['나를 필요로 하는 작업', 'needs_you'],
     ['뭐가 나를 필요로 해?', 'needs_you'],
     ["What's finished?", 'finished'],
+    ['What finished?', 'finished'],
+    ['what has finished', 'finished'],
     ['which agents have completed', 'finished'],
     ['show me completed tasks', 'finished'],
     ['끝난 작업', 'finished'],
@@ -81,7 +84,7 @@ describe('answerFleetQuestion', () => {
     const readBoard = vi.fn(async () => board());
     const result = await answerFleetQuestion('Who needs me?', readBoard, freshSignal());
     expect(readBoard).toHaveBeenCalledOnce();
-    expect(result?.text).toContain('1 tasks need your attention.');
+    expect(result?.text).toContain('1 task needs your attention.');
     expect(result?.text).toContain('- Review request (Private workspace): needs input');
     expect(fetch).not.toHaveBeenCalled();
   });
@@ -168,6 +171,13 @@ describe('local Fleet board validation and display', () => {
     expect(renderFleetAnswer(empty, 'status', NOW, NOW)).toContain('0 need you · 0 turns finished · 0 running · 0 idle.');
     expect(renderFleetAnswer(empty, 'needs_you', NOW, NOW)).toContain('0 tasks need your attention.');
     expect(renderFleetAnswer(empty, 'finished', NOW, NOW)).toContain('0 turns finished. A finished turn does not verify task or test success.');
+  });
+
+  it('uses the singular for exactly one row', () => {
+    const one = { ...board(), needsYou: [board().needsYou[0]], finished: [{ title: 'Done', workspaceName: 'W', reason: 'complete' }], running: [], idle: { count: 0 } };
+    expect(renderFleetAnswer(one, 'needs_you', NOW, NOW)).toContain('1 task needs your attention.');
+    expect(renderFleetAnswer(one, 'finished', NOW, NOW)).toContain('1 turn finished. A finished turn');
+    expect(renderFleetAnswer(one, 'status', NOW, NOW)).toContain('1 needs you · 1 turn finished · 0 running · 0 idle.');
   });
 
   it('accepts freshness boundary values only inside documented tolerance', () => {

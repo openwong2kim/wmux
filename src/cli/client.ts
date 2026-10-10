@@ -51,6 +51,14 @@ function readTcpPort(): number | undefined {
   }
 }
 
+// The pane claim a browser command obtained from main's walk (identity.ts),
+// stamped on every later envelope of this process.
+let workspaceToken: string | undefined;
+
+export function setWorkspaceToken(token: string | undefined): void {
+  workspaceToken = token;
+}
+
 function attemptRequest(
   target: string | { host: string; port: number },
   method: RpcMethod,
@@ -63,7 +71,14 @@ function attemptRequest(
     // curated allowlist (internalCli.ts) instead of the envelope-less legacy
     // grandfather (trust-root plan Stage 2). Harmless on the daemon control
     // pipe, which is token-only and ignores the field.
-    const request: RpcRequest = { id, method, params, token, clientName: WMUX_CLI_CLIENT_NAME };
+    const request: RpcRequest = {
+      id,
+      method,
+      params,
+      token,
+      clientName: WMUX_CLI_CLIENT_NAME,
+      ...(workspaceToken && { workspaceToken }),
+    };
 
     const socket =
       typeof target === 'string' ? net.connect(target) : net.connect(target.port, target.host);

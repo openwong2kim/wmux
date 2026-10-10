@@ -39,6 +39,8 @@ import { ResumeInfoChipGate } from './ResumeInfoChip';
 import { tokenAttrs } from '../../themes';
 import PaneDecorations from '../../plugins/PaneDecorations';
 import { isRemoteMirrorVisible } from '../../stores/slices/remoteWorkspacesSlice';
+import { selectHostPickName } from '../../stores/shadowWorkspace';
+import { isShadowWorkspaceId } from '../../../shared/pcRail';
 
 interface PaneProps {
   pane: PaneLeaf;
@@ -473,7 +475,7 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
   // hides the local area (WorkspaceCenter, display:none) without touching
   // activeWorkspaceId, so this pane still reports isActive while nobody can
   // see it — a question arriving then must stay unseen.
-  const remoteSelected = useStore(isRemoteMirrorVisible);
+  const remoteSelected = useStore((s) => isRemoteMirrorVisible(s) || selectHostPickName(s) !== null);
   useEffect(() => {
     if (isActive && !remoteSelected && activeSurfacePtyId && activePendingQuestion) {
       markSurfaceQuestionSeen(activeSurfacePtyId);
@@ -1379,7 +1381,7 @@ function SplitSurfaceView({
 
   if (pane.surfaces.length === 0) {
     return (
-      <div className="flex-1 relative overflow-hidden flex items-center justify-center text-[var(--text-muted)] text-sm" {...tokenAttrs('textMuted', 'text')}>
+      <div className="flex-1 min-h-0 min-w-0 relative overflow-clip flex items-center justify-center text-[var(--text-muted)] text-sm" {...tokenAttrs('textMuted', 'text')}>
         {emptyMessage}
       </div>
     );
@@ -1388,7 +1390,7 @@ function SplitSurfaceView({
   // Only terminals or only browsers — no split needed
   if (!hasBoth) {
     return (
-      <div className="flex-1 relative overflow-hidden">
+      <div className="flex-1 min-h-0 min-w-0 relative overflow-clip">
         {pane.surfaces.map((surface) =>
           surface.surfaceType === 'editor' ? (
             <EditorPanel
@@ -1447,6 +1449,7 @@ function SplitSurfaceView({
               cwd={surface.cwd}
               isActive={surface.id === activeSurfaceId}
               onTitleChange={updateRemoteSurfaceTitle}
+              fixedFont={isShadowWorkspaceId(workspaceId)}
             />
           ) : (
             <TerminalSurface
@@ -1475,11 +1478,11 @@ function SplitSurfaceView({
   // — report it occluded so lightweight mode can throttle it.
   const overlayActive = others.some((s) => s.id === activeSurfaceId);
   return (
-    <div className="flex-1 relative overflow-hidden">
+    <div className="flex-1 min-h-0 min-w-0 relative overflow-clip">
       <Group orientation="horizontal" className="h-full w-full" resizeTargetMinimumSize={{ coarse: 37, fine: 16 }}>
         {/* Terminal panel */}
         <Panel defaultSize={50} minSize={20}>
-          <div className="h-full w-full relative overflow-hidden">
+          <div className="h-full w-full min-h-0 min-w-0 relative overflow-clip">
             {terminals.map((surface) => (
               <TerminalSurface
                 key={surface.id}
@@ -1500,7 +1503,7 @@ function SplitSurfaceView({
 
         {/* Browser panel */}
         <Panel defaultSize={50} minSize={20}>
-          <div className="h-full w-full relative overflow-hidden">
+          <div className="h-full w-full min-h-0 min-w-0 relative overflow-clip">
             {browsers.map((surface) => (
               <BrowserPanel
                 key={`${surface.id}:${surface.browserPartition || 'persist:wmux-default'}`}
@@ -1555,6 +1558,7 @@ function SplitSurfaceView({
             cwd={surface.cwd}
             isActive={surface.id === activeSurfaceId}
             onTitleChange={updateRemoteSurfaceTitle}
+            fixedFont={isShadowWorkspaceId(workspaceId)}
           />
         ) : (
           <EditorPanel
