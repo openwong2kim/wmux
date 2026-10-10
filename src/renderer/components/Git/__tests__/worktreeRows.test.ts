@@ -149,6 +149,8 @@ describe('classifyWorktree — who acts next on a worktree', () => {
   it('a PR list that may be cut off at its cap proves nothing about a missing branch', () => {
     // 'feat' has an open PR past the list's cap.
     expect(classifyWorktree(row('feat'), sig({ prListComplete: false }))).toBe('idle');
+    // Quiet too: never a cleanup candidate on a capped list's silence.
+    expect(classifyWorktree(row('feat', { lastCommitAt: now - 90 * day }), sig({ prListComplete: false }))).toBe('idle');
     // A branch the capped list does hold is still known to have one.
     expect(classifyWorktree(row('open-pr', { lastCommitAt: now - 90 * day }), sig({ prListComplete: false }))).toBe('idle');
   });
@@ -157,8 +159,10 @@ describe('classifyWorktree — who acts next on a worktree', () => {
     expect(classifyWorktree(row('feat'), sig())).toBe('noPr');
     expect(classifyWorktree(row('feat'), sig({ openPrBranches: null }))).toBe('idle');
     expect(classifyWorktree(row('feat'), sig({ openPrBranches: new Set(['feat']) }))).toBe('idle');
-    // Quiet with the PR list unknown: still a candidate, as before.
-    expect(classifyWorktree(row('feat', { lastCommitAt: now - 90 * day }), sig({ openPrBranches: null }))).toBe('cleanup');
+    // Quiet with the PR list unknown: the PR state is unknown, so not a candidate.
+    expect(classifyWorktree(row('feat', { lastCommitAt: now - 90 * day }), sig({ openPrBranches: null }))).toBe('idle');
+    // Detached has no branch to hold a PR: still a candidate without a list.
+    expect(classifyWorktree(row('feat', { branch: null, detached: true }), sig({ openPrBranches: null }))).toBe('cleanup');
     // A fresh worktree on an old branch is not quiet.
     expect(classifyWorktree(row('feat', { lastCommitAt: now - 90 * day, worktreeAt: now - day }), sig())).toBe('noPr');
   });

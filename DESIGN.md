@@ -526,7 +526,8 @@ refresh button. Nothing about branches or worktrees sits above the lists.
   cap, the row stays in No workspace), **Cleanup candidates** (a workspace
   whose PR is merged, with a clean tree and no agent working or asking
   there; or no workspace and prunable; or no workspace, a tree known to be
-  clean, and detached or no commits in 14 days without an open PR),
+  clean, and detached, or no commits in 14 days with a held, complete
+  open PR list that has none from it),
   captioned as something to check before removing, never as safe to
   delete, and **No workspace** (the rest). The main worktree, a locked one
   and a merge session's are never candidates. The sections are judged from

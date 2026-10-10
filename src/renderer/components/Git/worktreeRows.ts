@@ -121,7 +121,8 @@ export const STALE_WORKTREE_DAYS = 14;
 //                and: its workspace's PR is merged (see inUse), or no
 //                workspace and prunable (its folder is gone), or no
 //                workspace, a tree known to be clean, and detached or quiet
-//                for STALE_WORKTREE_DAYS without an open PR. A candidate to
+//                for STALE_WORKTREE_DAYS without an open PR (known only from
+//                a held, complete list; otherwise it stays idle). A candidate to
 //                look at, not a verdict: it may hold unpushed work.
 //   noPr         no workspace, a tree known to be clean, a branch (not the
 //                main worktree), and the repo's open PR list is held and
@@ -170,13 +171,14 @@ export function classifyWorktree(row: GitWorktreeRow, s: WorktreeSignals): Workt
   }
   if (dirty) return 'uncommitted';
   const openPr = !!e.branch && !!s.openPrBranches?.has(e.branch);
+  // "No open PR" is evidence only from a held list that is not cut off at its cap.
+  const prKnownNone = !!e.branch && s.openPrBranches !== null && s.prListComplete && !openPr;
   // The later of the branch tip and the worktree's own git activity (its
   // admin dir), so a fresh worktree on an old branch is not "quiet".
   const lastAt = Math.max(e.lastCommitAt ?? 0, e.worktreeAt ?? 0);
   const quiet = lastAt > 0 && s.now - lastAt > STALE_WORKTREE_DAYS * 24 * 60 * 60 * 1000;
-  if (removable && (e.prunable !== null || (clean && (e.detached || (quiet && !openPr))))) return 'cleanup';
-  const noOpenPr = !!e.branch && s.openPrBranches !== null && s.prListComplete && !openPr;
-  if (clean && !row.isMain && !e.integration && noOpenPr) return 'noPr';
+  if (removable && (e.prunable !== null || (clean && (e.detached || (quiet && prKnownNone))))) return 'cleanup';
+  if (clean && !row.isMain && !e.integration && prKnownNone) return 'noPr';
   return 'idle';
 }
 
