@@ -58,12 +58,19 @@ beforeAll(async () => {
     }),
     extraArgs: ['--headless=new', '--use-mock-keychain', '--password-store=basic'],
   });
+  // Chrome under the isolate setup's temp USERPROFILE refuses remote debugging
+  // on Windows (same as ProtectedChrome.chrome.runtime.test.ts); give it the real one.
+  const savedProfile = process.env.USERPROFILE;
+  const realUserProfile = process.env.WMUX_TEST_REAL_HOME;
+  if (process.platform === 'win32' && realUserProfile) process.env.USERPROFILE = realUserProfile;
   try {
     const { chromium } = await import('playwright-core');
     const cdpPort = await launcher.ensureRunning();
     browser = await chromium.connectOverCDP(`http://127.0.0.1:${cdpPort}`);
   } catch (err) {
     skipReason = `Chrome could not be launched here: ${err instanceof Error ? err.message.split('\n')[0] : String(err)}`;
+  } finally {
+    if (process.platform === 'win32') process.env.USERPROFILE = savedProfile;
   }
 }, 120_000);
 
