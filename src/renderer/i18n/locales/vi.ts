@@ -165,6 +165,7 @@ export const vi = {
   'pane.browserPolicyLoadFailed': "Không đọc được chế độ bảo vệ trình duyệt của ngăn này.",
   'pane.browserPolicySaveFailed': "Không lưu được chế độ bảo vệ trình duyệt.",
   'pane.browserPolicyProtectedTab': "Trình duyệt được bảo vệ",
+  'pane.browserPolicyUnreadable': "Không đọc được chế độ bảo vệ đã lưu. Ngăn này vẫn bị chặn cho đến khi bạn lưu lại cài đặt.",
   'browser.private': "Riêng tư",
   'browser.privateTab': "Tab riêng tư",
   'browser.privateTooltip': "Tab riêng tư: cookie và dữ liệu trang chỉ lưu trong bộ nhớ và bị xóa khi đóng tab riêng tư cuối cùng. Không được khôi phục sau khi khởi động lại.",

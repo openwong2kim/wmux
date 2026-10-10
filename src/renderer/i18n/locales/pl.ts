@@ -1021,6 +1021,7 @@ export const pl = {
   'pane.browserPolicyLoadFailed': "Nie udało się odczytać ochrony przeglądarki tego panelu.",
   'pane.browserPolicySaveFailed': "Nie udało się zapisać ochrony przeglądarki.",
   'pane.browserPolicyProtectedTab': "Chroniona przeglądarka",
+  'pane.browserPolicyUnreadable': "Nie udało się odczytać zapisanej ochrony. Panel pozostaje zablokowany, dopóki ponownie nie zapiszesz ustawień.",
   'browser.private': "Prywatna",
   'browser.privateTab': "Prywatna karta",
   'browser.privateTooltip': "Prywatna karta: pliki cookie i dane witryn są tylko w pamięci i znikają po zamknięciu ostatniej prywatnej karty. Nie jest przywracana po ponownym uruchomieniu.",

@@ -165,6 +165,7 @@ export const ptBR = {
   'pane.browserPolicyLoadFailed': "Não foi possível ler a proteção do navegador deste painel.",
   'pane.browserPolicySaveFailed': "Não foi possível salvar a proteção do navegador.",
   'pane.browserPolicyProtectedTab': "Navegador protegido",
+  'pane.browserPolicyUnreadable': "Não foi possível ler a proteção salva. Este painel fica bloqueado até você salvar as configurações de novo.",
   'browser.private': "Privada",
   'browser.privateTab': "Aba privada",
   'browser.privateTooltip': "Aba privada: cookies e dados de sites ficam só na memória e são apagados quando a última aba privada é fechada. Não é restaurada após reiniciar.",

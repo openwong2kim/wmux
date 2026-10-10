@@ -165,6 +165,7 @@ export const da = {
   'pane.browserPolicyLoadFailed': "Kunne ikke læse rudens browserbeskyttelse.",
   'pane.browserPolicySaveFailed': "Kunne ikke gemme browserbeskyttelse.",
   'pane.browserPolicyProtectedTab': "Beskyttet browser",
+  'pane.browserPolicyUnreadable': "Den gemte beskyttelse kunne ikke læses. Ruden forbliver blokeret, indtil du gemmer indstillingerne igen.",
   'browser.private': "Privat",
   'browser.privateTab': "Privat fane",
   'browser.privateTooltip': "Privat fane: cookies og webstedsdata findes kun i hukommelsen og slettes, når den sidste private fane lukkes. Gendannes ikke efter genstart.",

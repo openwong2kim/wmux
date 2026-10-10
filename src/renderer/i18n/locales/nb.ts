@@ -165,6 +165,7 @@ export const nb = {
   'pane.browserPolicyLoadFailed': "Kunne ikke lese rutens nettleserbeskyttelse.",
   'pane.browserPolicySaveFailed': "Kunne ikke lagre nettleserbeskyttelse.",
   'pane.browserPolicyProtectedTab': "Beskyttet nettleser",
+  'pane.browserPolicyUnreadable': "Den lagrede beskyttelsen kunne ikke leses. Ruten forblir blokkert til du lagrer innstillingene på nytt.",
   'browser.private': "Privat",
   'browser.privateTab': "Privat fane",
   'browser.privateTooltip': "Privat fane: informasjonskapsler og nettstedsdata finnes bare i minnet og slettes når den siste private fanen lukkes. Gjenopprettes ikke etter omstart.",

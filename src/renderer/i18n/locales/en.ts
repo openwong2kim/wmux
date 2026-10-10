@@ -1033,6 +1033,7 @@ export const en = {
   'pane.browserPolicyLoadFailed': "Could not read this pane's browser protection.",
   'pane.browserPolicySaveFailed': "Could not save browser protection.",
   'pane.browserPolicyProtectedTab': "Protected browser",
+  'pane.browserPolicyUnreadable': "The saved protection could not be read. This pane stays blocked until you save its settings again.",
   'browser.private': "Private",
   'browser.privateTab': "Private tab",
   'browser.privateTooltip': "Private tab: cookies and site data stay in memory and are erased when the last private tab closes. Not restored after a restart.",

@@ -165,6 +165,7 @@ export const ms = {
   'pane.browserPolicyLoadFailed': "Tidak dapat membaca perlindungan pelayar anak tetingkap ini.",
   'pane.browserPolicySaveFailed': "Tidak dapat menyimpan perlindungan pelayar.",
   'pane.browserPolicyProtectedTab': "Pelayar dilindungi",
+  'pane.browserPolicyUnreadable': "Perlindungan yang disimpan tidak dapat dibaca. Anak tetingkap ini kekal disekat sehingga anda menyimpan tetapannya semula.",
   'browser.private': "Peribadi",
   'browser.privateTab': "Tab peribadi",
   'browser.privateTooltip': "Tab peribadi: kuki dan data laman hanya disimpan dalam memori dan dipadam apabila tab peribadi terakhir ditutup. Tidak dipulihkan selepas dimulakan semula.",

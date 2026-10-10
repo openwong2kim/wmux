@@ -405,6 +405,7 @@ export const zh = {
   'pane.browserPolicyLoadFailed': "无法读取此窗格的浏览器保护。",
   'pane.browserPolicySaveFailed': "无法保存浏览器保护。",
   'pane.browserPolicyProtectedTab': "受保护的浏览器",
+  'pane.browserPolicyUnreadable': "无法读取已保存的保护设置。在你重新保存之前，此窗格保持阻止。",
   'browser.private': "无痕",
   'browser.privateTab': "无痕标签页",
   'browser.privateTooltip': "无痕标签页：Cookie 和网站数据仅保存在内存中，关闭最后一个无痕标签页时清除。重启后不会恢复。",

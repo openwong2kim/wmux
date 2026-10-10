@@ -165,6 +165,7 @@ export const hi = {
   'pane.browserPolicyLoadFailed': "इस पेन की ब्राउज़र सुरक्षा पढ़ी नहीं जा सकी।",
   'pane.browserPolicySaveFailed': "ब्राउज़र सुरक्षा सहेजी नहीं जा सकी।",
   'pane.browserPolicyProtectedTab': "सुरक्षित ब्राउज़र",
+  'pane.browserPolicyUnreadable': "सहेजी गई सुरक्षा पढ़ी नहीं जा सकी। सेटिंग्स फिर से सहेजने तक यह पेन ब्लॉक रहेगा।",
   'browser.private': "निजी",
   'browser.privateTab': "निजी टैब",
   'browser.privateTooltip': "निजी टैब: कुकी और साइट डेटा केवल मेमोरी में रहते हैं और आखिरी निजी टैब बंद होने पर मिट जाते हैं। पुनः आरंभ के बाद बहाल नहीं होता।",

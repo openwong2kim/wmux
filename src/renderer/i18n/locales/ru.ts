@@ -165,6 +165,7 @@ export const ru = {
   'pane.browserPolicyLoadFailed': "Не удалось прочитать защиту браузера этой панели.",
   'pane.browserPolicySaveFailed': "Не удалось сохранить защиту браузера.",
   'pane.browserPolicyProtectedTab': "Защищённый браузер",
+  'pane.browserPolicyUnreadable': "Не удалось прочитать сохранённую защиту. Панель заблокирована, пока вы снова не сохраните настройки.",
   'browser.private': "Приватно",
   'browser.privateTab': "Приватная вкладка",
   'browser.privateTooltip': "Приватная вкладка: cookie и данные сайтов хранятся только в памяти и удаляются при закрытии последней приватной вкладки. После перезапуска не восстанавливается.",

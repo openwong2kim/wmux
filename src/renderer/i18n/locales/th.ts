@@ -165,6 +165,7 @@ export const th = {
   'pane.browserPolicyLoadFailed': "อ่านการป้องกันเบราว์เซอร์ของแพนนี้ไม่ได้",
   'pane.browserPolicySaveFailed': "บันทึกการป้องกันเบราว์เซอร์ไม่ได้",
   'pane.browserPolicyProtectedTab': "เบราว์เซอร์ที่ป้องกันแล้ว",
+  'pane.browserPolicyUnreadable': "อ่านการป้องกันที่บันทึกไว้ไม่ได้ แพนนี้จะถูกบล็อกจนกว่าคุณจะบันทึกการตั้งค่าอีกครั้ง",
   'browser.private': "ส่วนตัว",
   'browser.privateTab': "แท็บส่วนตัว",
   'browser.privateTooltip': "แท็บส่วนตัว: คุกกี้และข้อมูลเว็บไซต์อยู่ในหน่วยความจำเท่านั้น และจะถูกลบเมื่อปิดแท็บส่วนตัวสุดท้าย ไม่กู้คืนหลังรีสตาร์ท",

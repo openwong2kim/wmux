@@ -167,6 +167,7 @@ export const ja = {
   'pane.browserPolicyLoadFailed': "このペインのブラウザー保護を読み込めませんでした。",
   'pane.browserPolicySaveFailed': "ブラウザー保護を保存できませんでした。",
   'pane.browserPolicyProtectedTab': "保護されたブラウザー",
+  'pane.browserPolicyUnreadable': "保存された保護設定を読み込めませんでした。設定を保存し直すまで、このペインはブロックされます。",
   'browser.private': "シークレット",
   'browser.privateTab': "シークレットタブ",
   'browser.privateTooltip': "シークレットタブ: Cookie とサイトデータはメモリ上にのみ保持され、最後のシークレットタブを閉じると消去されます。再起動後は復元されません。",

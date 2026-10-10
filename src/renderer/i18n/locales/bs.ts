@@ -165,6 +165,7 @@ export const bs = {
   'pane.browserPolicyLoadFailed': "Zaštitu preglednika ovog okna nije moguće pročitati.",
   'pane.browserPolicySaveFailed': "Zaštitu preglednika nije moguće sačuvati.",
   'pane.browserPolicyProtectedTab': "Zaštićeni preglednik",
+  'pane.browserPolicyUnreadable': "Sačuvanu zaštitu nije moguće pročitati. Ovo okno ostaje blokirano dok ponovo ne sačuvate postavke.",
   'browser.private': "Privatno",
   'browser.privateTab': "Privatna kartica",
   'browser.privateTooltip': "Privatna kartica: kolačići i podaci stranica čuvaju se samo u memoriji i brišu se kada se zatvori posljednja privatna kartica. Ne vraća se nakon ponovnog pokretanja.",

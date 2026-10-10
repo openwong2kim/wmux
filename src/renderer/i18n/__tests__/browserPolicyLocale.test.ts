@@ -49,6 +49,7 @@ const KEYS = [
   'pane.browserPolicyLoadFailed',
   'pane.browserPolicySaveFailed',
   'pane.browserPolicyProtectedTab',
+  'pane.browserPolicyUnreadable',
 ] as const;
 
 type BrowserPolicyTranslationKey = (typeof KEYS)[number];

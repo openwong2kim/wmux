@@ -165,6 +165,7 @@ export const ar = {
   'pane.browserPolicyLoadFailed': "تعذّر قراءة حماية المتصفح لهذا الجزء.",
   'pane.browserPolicySaveFailed': "تعذّر حفظ حماية المتصفح.",
   'pane.browserPolicyProtectedTab': "متصفح محمي",
+  'pane.browserPolicyUnreadable': "تعذّرت قراءة الحماية المحفوظة. يبقى هذا الجزء محظورًا حتى تحفظ إعداداته مجددًا.",
   'browser.private': "خاص",
   'browser.privateTab': "علامة تبويب خاصة",
   'browser.privateTooltip': "علامة تبويب خاصة: تبقى ملفات تعريف الارتباط وبيانات المواقع في الذاكرة فقط وتُمحى عند إغلاق آخر علامة تبويب خاصة. لا تتم استعادتها بعد إعادة التشغيل.",

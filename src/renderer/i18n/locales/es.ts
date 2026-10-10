@@ -165,6 +165,7 @@ export const es = {
   'pane.browserPolicyLoadFailed': "No se pudo leer la protección del navegador de este panel.",
   'pane.browserPolicySaveFailed': "No se pudo guardar la protección del navegador.",
   'pane.browserPolicyProtectedTab': "Navegador protegido",
+  'pane.browserPolicyUnreadable': "No se pudo leer la protección guardada. Este panel queda bloqueado hasta que guardes de nuevo su configuración.",
   'browser.private': "Privada",
   'browser.privateTab': "Pestaña privada",
   'browser.privateTooltip': "Pestaña privada: las cookies y los datos de sitios solo se guardan en memoria y se borran al cerrar la última pestaña privada. No se restaura tras reiniciar.",

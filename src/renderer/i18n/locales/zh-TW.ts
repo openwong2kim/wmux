@@ -165,6 +165,7 @@ export const zhTW = {
   'pane.browserPolicyLoadFailed': "無法讀取此窗格的瀏覽器保護。",
   'pane.browserPolicySaveFailed': "無法儲存瀏覽器保護。",
   'pane.browserPolicyProtectedTab': "受保護的瀏覽器",
+  'pane.browserPolicyUnreadable': "無法讀取已儲存的保護設定。在你重新儲存之前，此窗格維持封鎖。",
   'browser.private': "無痕",
   'browser.privateTab': "無痕分頁",
   'browser.privateTooltip': "無痕分頁：Cookie 與網站資料只保存在記憶體中，關閉最後一個無痕分頁時會清除。重新啟動後不會還原。",

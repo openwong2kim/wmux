@@ -92,11 +92,11 @@ afterEach(() => {
 });
 
 describe('host line parsing', () => {
-  it('trims, drops empty lines, and numbers only the non-empty ones', () => {
+  it('trims, drops empty lines, and reports the textarea line of each bad rule', () => {
     expect(hostLines('  a.com \n\n*.b.com\r\n')).toEqual(['a.com', '*.b.com']);
     expect(invalidHostLines('a.com\n\nhttps://x.com/path\nbad host')).toEqual([
-      { line: 2, rule: 'https://x.com/path' },
-      { line: 3, rule: 'bad host' },
+      { line: 3, rule: 'https://x.com/path' },
+      { line: 4, rule: 'bad host' },
     ]);
   });
 });
@@ -207,5 +207,36 @@ describe('BrowserPolicyDialog', () => {
     await mount();
     expect(useStore.getState().toasts.at(-1)).toMatchObject({ level: 'error', message: 'that pane is not in that workspace' });
     expect(onClose).toHaveBeenCalled();
+  });
+
+  it('an unreadable policy file says so, and Save writes even with protection off', async () => {
+    readResult = { ok: true, state: 'corrupt', epoch: 0, policy: null, currentProfile: 'work' };
+    await mount();
+    expect(q('browser-policy-unreadable')).not.toBeNull();
+    await click('browser-policy-save');
+    expect(api.set.mock.calls[0][0]).toMatchObject({ protected: false, expectedEpoch: 0 });
+  });
+
+  it('a hidden invalid list never blocks Save and is sent without its bad lines', async () => {
+    await mount();
+    type('browser-policy-allow', 'example.com\nbad host');
+    chooseMode('Any site');
+    expect(q<HTMLButtonElement>('browser-policy-save')!.disabled).toBe(false);
+    await click('browser-policy-save');
+    expect(api.set.mock.calls[0][0].hosts).toEqual({ mode: 'off', allow: ['example.com'], block: [] });
+  });
+
+  it('turning protection off is not blocked by an invalid block list', async () => {
+    await mount();
+    type('browser-policy-block', 'bad host');
+    await click('browser-policy-protect');
+    await click('browser-policy-save');
+    expect(api.set.mock.calls[0][0]).toMatchObject({ protected: false, hosts: { block: [] } });
+  });
+
+  it('renders outside the pane, on document.body', async () => {
+    await mount();
+    expect(container!.querySelector('[data-testid="browser-policy-dialog"]')).toBeNull();
+    expect(document.body.querySelector('[data-testid="browser-policy-dialog"]')).not.toBeNull();
   });
 });

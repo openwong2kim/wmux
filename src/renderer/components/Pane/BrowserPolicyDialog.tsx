@@ -11,6 +11,7 @@
 // list again — the notice says so, and Save is that confirmation.
 
 import { useCallback, useEffect, useId, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import Dialog, { DialogBody, DialogFooter, DialogHeader } from '../ui/Dialog';
@@ -27,11 +28,18 @@ export function hostLines(text: string): string[] {
   return text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
 }
 
-/** The 1-based line numbers (of the non-empty lines) main would refuse. */
+const isValidRule = (rule: string): boolean => !('error' in parseHostRule(rule));
+
+/** The rules main would refuse, with their 1-based line in the textarea. */
 export function invalidHostLines(text: string): Array<{ line: number; rule: string }> {
-  return hostLines(text)
-    .map((rule, i) => ({ line: i + 1, rule }))
-    .filter(({ rule }) => 'error' in parseHostRule(rule));
+  return text.split(/\r?\n/)
+    .map((raw, i) => ({ line: i + 1, rule: raw.trim() }))
+    .filter(({ rule }) => rule.length > 0 && !isValidRule(rule));
+}
+
+/** Only the valid rules — for a list the operator cannot see right now. */
+function validHostLines(text: string): string[] {
+  return hostLines(text).filter(isValidRule);
 }
 
 /** Whether a refused write lost the epoch race (re-read and try again). */
@@ -42,8 +50,11 @@ function isStale(res: { error?: string; code?: string }): boolean {
 interface Loaded {
   epoch: number;
   currentProfile: string | undefined;
-  /** A stored entry exists (a write is needed even to turn protection off). */
-  hasEntry: boolean;
+  /** A write is needed even to leave protection off: a stored entry exists,
+   *  or the file could not be read (its panes stay refused until written). */
+  mustWrite: boolean;
+  /** The policy file was unreadable: what it held for this pane is unknown. */
+  unreadable: boolean;
   /** Protected, but rebound / moved / pending: every host refused until saved. */
   needsConfirm: boolean;
 }
@@ -119,11 +130,13 @@ export default function BrowserPolicyDialog({ workspaceId, paneId, onClose, onSa
       }
       const epoch = res.epoch ?? 0;
       const entry = res.policy ?? undefined;
+      const unreadable = res.state === 'corrupt' || res.state === 'unsupported-version';
       const decision = resolvePanePolicy(entry, { workspaceId, currentProfile: res.currentProfile }, epoch);
       setLoaded({
         epoch,
         currentProfile: res.currentProfile,
-        hasEntry: !!entry,
+        mustWrite: !!entry || unreadable,
+        unreadable,
         needsConfirm: decision.kind === 'protected' && !decision.confirmed,
       });
       setIsProtected(!!entry?.protected);
@@ -142,16 +155,19 @@ export default function BrowserPolicyDialog({ workspaceId, paneId, onClose, onSa
     // Mount only: the dialog edits one pane.
   }, []);
 
+  // Only what is on screen is validated; a hidden list is sent without its
+  // invalid lines, so an edit the operator can no longer see never blocks Save.
+  const allowShown = isProtected && mode === 'allowlist';
   const allowInvalid = invalidHostLines(allowText);
   const blockInvalid = invalidHostLines(blockText);
-  const valid = allowInvalid.length === 0 && blockInvalid.length === 0;
-  const canSave = !!loaded && !!loaded.currentProfile && !busy && (!isProtected || valid);
+  const valid = (!allowShown || allowInvalid.length === 0) && (!isProtected || blockInvalid.length === 0);
+  const canSave = !!loaded && !!loaded.currentProfile && !busy && valid;
 
   const save = useCallback(async () => {
     const api = window.electronAPI?.browser?.policy;
     if (!api || !loaded?.currentProfile) return;
     // Never protected and staying off: nothing to write, the pane stays legacy.
-    if (!isProtected && !loaded.hasEntry) { onClose(); return; }
+    if (!isProtected && !loaded.mustWrite) { onClose(); return; }
     setBusy(true);
     try {
       const res = await api.set({
@@ -159,7 +175,11 @@ export default function BrowserPolicyDialog({ workspaceId, paneId, onClose, onSa
         paneId,
         profileId: loaded.currentProfile,
         protected: isProtected,
-        hosts: { mode, allow: hostLines(allowText), block: hostLines(blockText) },
+        hosts: {
+          mode,
+          allow: allowShown ? hostLines(allowText) : validHostLines(allowText),
+          block: isProtected ? hostLines(blockText) : validHostLines(blockText),
+        },
         expectedEpoch: loaded.epoch,
       });
       if (res.ok) {
@@ -178,11 +198,13 @@ export default function BrowserPolicyDialog({ workspaceId, paneId, onClose, onSa
     } finally {
       setBusy(false);
     }
-  }, [loaded, isProtected, mode, allowText, blockText, workspaceId, paneId, onClose, onSaved, load, toast, t]);
+  }, [loaded, isProtected, mode, allowShown, allowText, blockText, workspaceId, paneId, onClose, onSaved, load, toast, t]);
 
   const emptyAllowlist = mode === 'allowlist' && hostLines(allowText).length === 0;
 
-  return (
+  // Portalled: a pane root is its own stacking context (Pane.tsx `isolate`),
+  // so a dialog left inside it would sit under the panes painted after it.
+  return createPortal(
     <Dialog onClose={onClose} width={460} data-testid="browser-policy-dialog">
       <DialogHeader title={t('pane.browserPolicyTitle')} description={t('pane.browserPolicyDescription')} />
       <DialogBody className="flex flex-col gap-3">
@@ -193,6 +215,12 @@ export default function BrowserPolicyDialog({ workspaceId, paneId, onClose, onSa
               <span className="text-[13px] text-[var(--text-main)]">{t('pane.browserPolicyRebound')}</span>
               <span className="text-[11px] text-[var(--text-sub)]">{t('pane.browserPolicyReboundDetail')}</span>
             </div>
+          </div>
+        )}
+        {loaded?.unreadable && (
+          <div className="ui-notice flex items-start gap-2.5 px-3.5 py-3" data-testid="browser-policy-unreadable">
+            <span className="shrink-0 mt-0.5 text-[var(--text-muted)]" aria-hidden="true"><IconLock size={12} /></span>
+            <span className="text-[13px] text-[var(--text-main)]">{t('pane.browserPolicyUnreadable')}</span>
           </div>
         )}
         <Field label={t('pane.browserPolicyProtect')} description={t('pane.browserPolicyProtectDesc')}>
@@ -247,6 +275,7 @@ export default function BrowserPolicyDialog({ workspaceId, paneId, onClose, onSa
           {t('pane.browserPolicySave')}
         </Button>
       </DialogFooter>
-    </Dialog>
+    </Dialog>,
+    document.body,
   );
 }

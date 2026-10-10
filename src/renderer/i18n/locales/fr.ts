@@ -165,6 +165,7 @@ export const fr = {
   'pane.browserPolicyLoadFailed': "Impossible de lire la protection du navigateur de ce volet.",
   'pane.browserPolicySaveFailed': "Impossible d'enregistrer la protection du navigateur.",
   'pane.browserPolicyProtectedTab': "Navigateur protégé",
+  'pane.browserPolicyUnreadable': "La protection enregistrée n'a pas pu être lue. Ce volet reste bloqué jusqu'à ce que vous enregistriez à nouveau ses réglages.",
   'browser.private': "Privé",
   'browser.privateTab': "Onglet privé",
   'browser.privateTooltip': "Onglet privé : les cookies et données de site restent en mémoire et sont effacés à la fermeture du dernier onglet privé. Non restauré après un redémarrage.",

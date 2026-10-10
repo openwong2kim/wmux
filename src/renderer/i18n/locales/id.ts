@@ -165,6 +165,7 @@ export const id = {
   'pane.browserPolicyLoadFailed': "Tidak dapat membaca perlindungan browser panel ini.",
   'pane.browserPolicySaveFailed': "Tidak dapat menyimpan perlindungan browser.",
   'pane.browserPolicyProtectedTab': "Browser terlindungi",
+  'pane.browserPolicyUnreadable': "Perlindungan yang tersimpan tidak dapat dibaca. Panel ini tetap diblokir sampai Anda menyimpan pengaturannya lagi.",
   'browser.private': "Privat",
   'browser.privateTab': "Tab privat",
   'browser.privateTooltip': "Tab privat: cookie dan data situs hanya disimpan di memori dan dihapus saat tab privat terakhir ditutup. Tidak dipulihkan setelah mulai ulang.",

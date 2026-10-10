@@ -165,6 +165,7 @@ export const de = {
   'pane.browserPolicyLoadFailed': "Der Browserschutz dieses Bereichs konnte nicht gelesen werden.",
   'pane.browserPolicySaveFailed': "Browserschutz konnte nicht gespeichert werden.",
   'pane.browserPolicyProtectedTab': "Geschützter Browser",
+  'pane.browserPolicyUnreadable': "Der gespeicherte Schutz konnte nicht gelesen werden. Dieser Bereich bleibt blockiert, bis du die Einstellungen erneut speicherst.",
   'browser.private': "Privat",
   'browser.privateTab': "Privater Tab",
   'browser.privateTooltip': "Privater Tab: Cookies und Websitedaten bleiben nur im Speicher und werden gelöscht, wenn der letzte private Tab geschlossen wird. Wird nach einem Neustart nicht wiederhergestellt.",

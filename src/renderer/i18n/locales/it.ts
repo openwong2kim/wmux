@@ -165,6 +165,7 @@ export const it = {
   'pane.browserPolicyLoadFailed': "Impossibile leggere la protezione del browser di questo riquadro.",
   'pane.browserPolicySaveFailed': "Impossibile salvare la protezione del browser.",
   'pane.browserPolicyProtectedTab': "Browser protetto",
+  'pane.browserPolicyUnreadable': "Impossibile leggere la protezione salvata. Questo riquadro resta bloccato finché non salvi di nuovo le impostazioni.",
   'browser.private': "Privata",
   'browser.privateTab': "Scheda privata",
   'browser.privateTooltip': "Scheda privata: cookie e dati dei siti restano solo in memoria e vengono cancellati alla chiusura dell’ultima scheda privata. Non viene ripristinata dopo il riavvio.",

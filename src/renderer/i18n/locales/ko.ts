@@ -754,6 +754,7 @@ export const ko = {
   'pane.browserPolicyLoadFailed': "이 페인의 브라우저 보호 설정을 읽지 못했습니다.",
   'pane.browserPolicySaveFailed': "브라우저 보호 설정을 저장하지 못했습니다.",
   'pane.browserPolicyProtectedTab': "보호된 브라우저",
+  'pane.browserPolicyUnreadable': "저장된 보호 설정을 읽을 수 없습니다. 설정을 다시 저장할 때까지 이 페인은 차단됩니다.",
   'browser.private': "시크릿",
   'browser.privateTab': "시크릿 탭",
   'browser.privateTooltip': "시크릿 탭: 쿠키와 사이트 데이터는 메모리에만 남고 마지막 시크릿 탭을 닫으면 지워집니다. 재시작 후 복원되지 않습니다.",

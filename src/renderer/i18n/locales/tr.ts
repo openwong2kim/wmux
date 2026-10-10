@@ -165,6 +165,7 @@ export const tr = {
   'pane.browserPolicyLoadFailed': "Bu bölmenin tarayıcı koruması okunamadı.",
   'pane.browserPolicySaveFailed': "Tarayıcı koruması kaydedilemedi.",
   'pane.browserPolicyProtectedTab': "Korumalı tarayıcı",
+  'pane.browserPolicyUnreadable': "Kayıtlı koruma okunamadı. Ayarları yeniden kaydedene kadar bu bölme engelli kalır.",
   'browser.private': "Gizli",
   'browser.privateTab': "Gizli sekme",
   'browser.privateTooltip': "Gizli sekme: çerezler ve site verileri yalnızca bellekte tutulur ve son gizli sekme kapatıldığında silinir. Yeniden başlatmadan sonra geri yüklenmez.",

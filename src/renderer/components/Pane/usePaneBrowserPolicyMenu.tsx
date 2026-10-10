@@ -8,6 +8,7 @@
 // writes.
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import { IconLock } from '../icons';
 import type { PaneActionItem } from './PaneActionsMenu';
@@ -28,6 +29,8 @@ export function usePaneBrowserPolicyMenu(opts: {
 }): { mainItems: PaneActionItem[]; isProtected: boolean; reload: () => void } {
   const { paneId, workspaceId, enabled, boundProfile, hasBrowserSurface, openDialog } = opts;
   const t = useT();
+  // t() is one stable function; the locale keys the memo so labels follow it.
+  const locale = useStore((st) => st.locale);
   const available = enabled && !!window.electronAPI?.browser?.policy?.get;
   const [isProtected, setIsProtected] = useState(false);
 
@@ -54,7 +57,7 @@ export function usePaneBrowserPolicyMenu(opts: {
     detail: boundProfile ? undefined : t('pane.browserPolicyNeedsProfile'),
     title: boundProfile ? undefined : t('pane.browserPolicyNeedsProfile'),
     onSelect: openDialog,
-  }] : []), [available, boundProfile, t, openDialog]);
+  }] : []), [available, boundProfile, t, locale, openDialog]);
 
   return { mainItems, isProtected, reload };
 }
