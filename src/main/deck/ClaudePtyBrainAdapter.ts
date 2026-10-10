@@ -894,10 +894,12 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
   private readonly wmuxDir: string;
 
   private _sessionId: string | null = null;
-  /** The account this conversation moved to under "Switch accounts by quota";
-   *  null when it runs on the binding. Decided when a fresh TUI starts and
-   *  kept for every resume — the transcript lives in that config dir. */
-  private _rotatedAccountId: string | null = null;
+  /** The account this conversation runs on: an account id, null for the
+   *  default login, undefined when unknown (a session saved before accounts
+   *  were recorded). Decided when a fresh TUI starts and kept for every
+   *  resume — even across a rebind — since the transcript lives in that
+   *  config dir (#2029). */
+  private _conversationAccountId: string | null | undefined = undefined;
   /** A disk-seeded resume id is unproven until the spawned TUI accepts it. */
   private _resumeUnvalidated = false;
   private _startOptions: BrainStartOptions = {};
@@ -1013,8 +1015,8 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
     return this._sessionId;
   }
 
-  get rotatedAccountId(): string | null {
-    return this._rotatedAccountId;
+  get conversationAccountId(): string | null | undefined {
+    return this._conversationAccountId;
   }
 
   /** True when the TUI is mid-turn on a prompt the ADAPTER did not send (the
@@ -1064,7 +1066,7 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
     if (opts.resumeSessionId) {
       this._sessionId = opts.resumeSessionId;
       this._resumeUnvalidated = true;
-      this._rotatedAccountId = opts.resumeAccountId ?? null;
+      this._conversationAccountId = opts.resumeAccountId;
     }
   }
 
@@ -1575,7 +1577,7 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
     // dies on a quota error. Never throws (falls back to the binding).
     const launch = await resolveBackgroundLaunch(this._workspaceId, 'claude', {
       resuming: !!resumeSessionId,
-      rotatedAccountId: this._rotatedAccountId,
+      conversationAccountId: this._conversationAccountId,
       onMissing: (acc) => console.warn(
         `[account] terminal brain ws ${this._workspaceId}: bound account "${acc.name}" ` +
         `configDir missing (${acc.configDir}) — falling back to the default credential.`,
@@ -1585,7 +1587,7 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
     // PTY) for an adapter that is already gone.
     if (this._disposed) return { error: 'commander session disposed' };
     if (launch.kind === 'hold') return { error: launch.message };
-    if (!resumeSessionId) this._rotatedAccountId = launch.rotated ? launch.accountId : null;
+    if (!resumeSessionId) this._conversationAccountId = launch.accountId;
     // The Moa delegate, read once per spawn: a flip applies to the next TUI.
     const delegateOn = this.resolveDelegateOn();
     let settingsPath: string;

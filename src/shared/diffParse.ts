@@ -140,6 +140,13 @@ export interface DiffReadResult {
   readonly unsupported: readonly string[];
 }
 
+/** diff:status — the count of paths with uncommitted changes (staged,
+ *  unstaged, untracked; an untracked folder counts once). */
+export interface DiffStatusResult {
+  readonly ok: true;
+  readonly files: number;
+}
+
 export interface DiffReadError {
   readonly ok: false;
   readonly error: string;

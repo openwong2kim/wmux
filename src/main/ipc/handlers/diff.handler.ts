@@ -33,6 +33,7 @@ import {
   type DiffReadResult,
   type DiffReadError,
   type DiffSummaryResult,
+  type DiffStatusResult,
   type DiffNumstat,
   type DiffTargetSnapshot,
   type DiffApplyRequest,
@@ -231,6 +232,20 @@ function countFileLines(path: string): Promise<{ lines: number; binary: boolean 
       resolve({ lines: size > 0 && last !== 10 ? lines + 1 : lines, binary: false });
     });
   });
+}
+
+/**
+ * diff:status — whether a worktree has uncommitted changes, for the Git page's
+ * Worktrees tab: one `git status --porcelain` and a count of its entries. No
+ * file is read and nothing is diffed, so a worktree full of large untracked
+ * files costs the same as a clean one.
+ */
+export async function readUncommittedCount(worktreePath: string): Promise<DiffStatusResult | DiffReadError> {
+  const status = await git(['-c', 'core.quotepath=false', 'status', '--porcelain', '-z'], worktreePath);
+  if (status.code !== 0) {
+    return { ok: false, error: `git status failed: ${status.stderr.slice(0, 200)}`, code: 'status-fail' };
+  }
+  return { ok: true, files: parsePorcelainZ(status.stdout).length };
 }
 
 /**
@@ -734,6 +749,20 @@ export function registerDiffHandlers(): () => void {
     ),
   );
 
+  ipcMain.removeHandler(IPC.DIFF_STATUS);
+  ipcMain.handle(
+    IPC.DIFF_STATUS,
+    wrapHandler(IPC.DIFF_STATUS, async (_event: Electron.IpcMainInvokeEvent, worktreePath: unknown): Promise<DiffStatusResult | DiffReadError> => {
+      if (typeof worktreePath !== 'string' || !worktreePath) {
+        return { ok: false, error: 'worktreePath is required.', code: 'bad-args' };
+      }
+      // F2 (#615): confine the renderer path before it reaches `git -C`.
+      const safeWt = await resolveAccessiblePath(worktreePath);
+      if (!safeWt) return { ok: false, error: 'worktreePath is required.', code: 'bad-args' };
+      return readUncommittedCount(safeWt);
+    }),
+  );
+
   // 워크스페이스 diff 진입점 — cwd(서브디렉토리 가능)를 자기 worktree toplevel로
   // 정규화한다. diff:read의 worktreePath 계약(untracked 합성이 repo-root 상대경로를
   // join)이 toplevel을 전제하므로, 렌더러는 이 결과를 diffRepoPath로 영속한다.
@@ -787,6 +816,7 @@ export function registerDiffHandlers(): () => void {
   return () => {
     ipcMain.removeHandler(IPC.DIFF_READ);
     ipcMain.removeHandler(IPC.DIFF_SUMMARY);
+    ipcMain.removeHandler(IPC.DIFF_STATUS);
     ipcMain.removeHandler(IPC.DIFF_RESOLVE_REPO);
     ipcMain.removeHandler(IPC.DIFF_APPLY_HUNKS);
   };
