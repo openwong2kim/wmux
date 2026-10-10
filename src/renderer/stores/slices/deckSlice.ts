@@ -26,6 +26,7 @@ import {
   type DeckBrainMessage,
 } from '../../components/Deck/deckBrain';
 import { generateId, type BrainVendor } from '../../../shared/types';
+import { formatFleetAnswer } from '../../components/Moa/panel/fleetAnswerText';
 
 /** Which dock tab is showing. `commander` is the default (the LLM-less
  *  command composer); `channels` is the classic channel list + conversation.
@@ -181,13 +182,18 @@ export const createDeckSlice: StateCreator<
       thread.messages = applyBrainEvent(thread.messages, event);
       if (event.type === 'turn-end' && event.localAnswer) {
         // Keep the local exchange in this session's existing thread so it
-        // survives panel remounts and a later terminal-brain startup.
+        // survives panel remounts and a later terminal-brain startup. Main
+        // sends the board as data; it is worded here, in the UI language.
         const assistant = thread.messages.findLast((m) => m.role === 'assistant');
         const user = thread.messages.findLast((m) => m.role === 'user');
         if (assistant && user && user.text === event.localAnswer.prompt) {
           assistant.localFleet = true;
-          assistant.text = event.localAnswer.text;
+          assistant.text = formatFleetAnswer(event.localAnswer.fleet);
           user.localFleet = true;
+          // openTurn stamped the selected brain, but no brain ran this turn:
+          // an unstamped turn shows no vendor tag rather than a false one.
+          delete assistant.vendor;
+          delete user.vendor;
         }
       }
       if (event.type === 'turn-end' || event.type === 'error') {

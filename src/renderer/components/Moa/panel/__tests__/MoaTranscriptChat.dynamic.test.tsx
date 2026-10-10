@@ -743,15 +743,16 @@ describe('Moa transcript local Fleet answers', () => {
       await act(async () => root.render(render()));
       await act(async () => {
         useStore.getState().startDeckBrainTurn('fleet-hq', 'fleet status');
-        useStore.getState().applyDeckBrainEvent('fleet-hq', { type: 'text-delta', text: 'Fleet snapshot: 3 running.' });
-        useStore.getState().applyDeckBrainEvent('fleet-hq', { type: 'turn-end', sessionId: 's1', localAnswer: { prompt: 'fleet status', text: 'Fleet snapshot: 3 running.' } });
+        useStore.getState().applyDeckBrainEvent('fleet-hq', { type: 'turn-end', sessionId: 's1', localAnswer: { prompt: 'fleet status', fleet: {
+          intent: 'status', counts: { needsYou: 0, finished: 0, running: 3, idle: 0 }, rows: [], limited: false,
+        } } });
       });
-      expect(host.textContent).toContain('Fleet snapshot: 3 running.');
+      expect(host.textContent).toContain('0 need you · 0 turns finished · 3 running · 0 idle.');
       expect(host.textContent).toContain('Handed it to the api workspace.');
       expect([...host.querySelectorAll('.wmux-chat-user')].filter((n) => n.textContent?.includes('fleet status'))).toHaveLength(1);
       await act(async () => root.render(<div />));
       await act(async () => root.render(render()));
-      expect(host.textContent).toContain('Fleet snapshot: 3 running.');
+      expect(host.textContent).toContain('0 need you · 0 turns finished · 3 running · 0 idle.');
     } finally {
       act(() => useStore.setState({ moa: prev, brainThreads: previousThreads }));
     }

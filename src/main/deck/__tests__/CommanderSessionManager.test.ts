@@ -5,6 +5,15 @@
 import { describe, it, expect, vi } from 'vitest';
 import { CommanderSessionManager } from '../CommanderSessionManager';
 import type { BrainAdapter, BrainEvent, BrainStartOptions } from '../BrainAdapter';
+import type { FleetLocalAnswer } from '../../../shared/fleetLocalAnswer';
+
+/** A distinguishable local Fleet answer (the manager only passes it through). */
+const answerFor = (title: string): FleetLocalAnswer => ({
+  intent: 'needs_you',
+  counts: { needsYou: 1, finished: 0, running: 0, idle: 0 },
+  rows: [{ title, workspaceName: 'Workspace', reason: 'input' }],
+  limited: false,
+});
 
 /** A fake adapter whose send() yields a scripted event list, with hooks to hold
  *  a turn open (for the busy-rejection test) and to observe start/interrupt. */
@@ -376,7 +385,7 @@ describe('CommanderSessionManager — local-first answers', () => {
     return { promise, resolve, reject };
   }
 
-  it('streams a local answer and its original prompt without starting or persisting the adapter', async () => {
+  it('sends a local answer as data with its original prompt without starting or persisting the adapter', async () => {
     const adapter = new FakeAdapter();
     adapter.sessionId = 'existing-session';
     const start = vi.spyOn(adapter, 'start');
@@ -384,17 +393,16 @@ describe('CommanderSessionManager — local-first answers', () => {
     const sink = vi.fn();
     const onSessionId = vi.fn();
     const mgr = new CommanderSessionManager({ adapter, sink, onSessionId });
-    const lookup = deferred<{ text: string }>();
+    const lookup = deferred<{ fleet: FleetLocalAnswer }>();
     const turn = mgr.send('Who needs me?', { origin: 'human' }, () => lookup.promise);
     expect(mgr.getStatus()).toEqual({ status: 'busy', sessionId: 'existing-session' });
     expect(mgr.turnOrigin).toBeNull();
-    lookup.resolve({ text: 'Two panes need your input.' });
-    expect(await turn).toEqual({ ok: true, localAnswer: { text: 'Two panes need your input.' } });
+    lookup.resolve({ fleet: answerFor('Two panes need your input.') });
+    expect(await turn).toEqual({ ok: true, localAnswer: { fleet: answerFor('Two panes need your input.') } });
     expect(sink.mock.calls.map(([event]) => event)).toEqual([
-      { type: 'text-delta', text: 'Two panes need your input.' },
       {
         type: 'turn-end', sessionId: 'existing-session',
-        localAnswer: { prompt: 'Who needs me?', text: 'Two panes need your input.' },
+        localAnswer: { prompt: 'Who needs me?', fleet: answerFor('Two panes need your input.') },
       },
     ]);
     expect(start).not.toHaveBeenCalled();
@@ -406,14 +414,14 @@ describe('CommanderSessionManager — local-first answers', () => {
   it('reserves before awaiting local lookup and rejects concurrent provider and local turns', async () => {
     const adapter = new FakeAdapter();
     const mgr = new CommanderSessionManager({ adapter, sink: vi.fn() });
-    const lookup = deferred<{ text: string }>();
-    const secondLookup = vi.fn(async () => ({ text: 'must not run' }));
+    const lookup = deferred<{ fleet: FleetLocalAnswer }>();
+    const secondLookup = vi.fn(async () => ({ fleet: answerFor('must not run') }));
     const first = mgr.send('first', { origin: 'human' }, () => lookup.promise);
     expect(await mgr.send('wake', { origin: 'automation' })).toEqual({ ok: false, code: 'busy' });
     expect(await mgr.send('second', {}, secondLookup)).toEqual({ ok: false, code: 'busy' });
     expect(secondLookup).not.toHaveBeenCalled();
     expect(mgr.turnOrigin).toBeNull();
-    lookup.resolve({ text: 'first answer' });
+    lookup.resolve({ fleet: answerFor('first answer') });
     await first;
   });
 
@@ -427,7 +435,7 @@ describe('CommanderSessionManager — local-first answers', () => {
     const localFirst = () => {
       if (outcome === 'throw') throw new Error('local sync failure');
       if (outcome === 'reject') return Promise.reject(new Error('renderer timed out'));
-      return Promise.resolve(outcome === 'empty' ? { text: ' ' } : null);
+      return Promise.resolve(outcome === 'empty' ? { fleet: null as unknown as FleetLocalAnswer } : null);
     };
     expect(await mgr.send(' original prompt ', { origin: 'automation' }, localFirst)).toEqual({ ok: true });
     expect(start).toHaveBeenCalledExactlyOnceWith({ systemPrompt: 'rules' });
@@ -451,7 +459,7 @@ describe('CommanderSessionManager — local-first answers', () => {
     const adapter = new FakeAdapter();
     const start = vi.spyOn(adapter, 'start');
     const mgr = new CommanderSessionManager({ adapter, sink: vi.fn(), startOptions: { resumeSessionId: 'saved' } });
-    await mgr.send('local', {}, async () => ({ text: 'answer' }));
+    await mgr.send('local', {}, async () => ({ fleet: answerFor('answer') }));
     expect(start).not.toHaveBeenCalled();
     adapter.setScript([{ type: 'turn-end', sessionId: 'saved' }]);
     await mgr.send('provider');
@@ -484,17 +492,17 @@ describe('CommanderSessionManager — local-first answers', () => {
     const adapter = new FakeAdapter();
     const sink = vi.fn();
     const mgr = new CommanderSessionManager({ adapter, sink });
-    const lookup = deferred<{ text: string } | null>();
+    const lookup = deferred<{ fleet: FleetLocalAnswer } | null>();
     const oldTurn = mgr.send('old', {}, () => lookup.promise);
     mgr.interrupt();
     await oldTurn;
-    const next = await mgr.send('new', {}, async () => ({ text: 'new answer' }));
+    const next = await mgr.send('new', {}, async () => ({ fleet: answerFor('new answer') }));
     const eventsBefore = sink.mock.calls.length;
     if (outcome === 'reject') lookup.reject(new Error('late failure'));
-    else lookup.resolve(outcome === 'answer' ? { text: 'stale answer' } : null);
+    else lookup.resolve(outcome === 'answer' ? { fleet: answerFor('stale answer') } : null);
     await Promise.resolve();
     await Promise.resolve();
-    expect(next).toEqual({ ok: true, localAnswer: { text: 'new answer' } });
+    expect(next).toEqual({ ok: true, localAnswer: { fleet: answerFor('new answer') } });
     expect(sink.mock.calls).toHaveLength(eventsBefore);
     expect(adapter.started).toBeNull();
   });
@@ -505,13 +513,13 @@ describe('CommanderSessionManager — local-first answers', () => {
     const onIdle = vi.fn();
     const deferredIdle: Array<() => void> = [];
     const mgr = new CommanderSessionManager({ adapter, sink, onIdle, deferIdle: (fn) => deferredIdle.push(fn) });
-    const lookup = deferred<{ text: string }>();
+    const lookup = deferred<{ fleet: FleetLocalAnswer }>();
     let signal!: AbortSignal;
     const turn = mgr.send('local', {}, (s) => { signal = s; return lookup.promise; });
     mgr.dispose();
     expect(signal.aborted).toBe(true);
     expect(await turn).toEqual({ ok: true, code: 'errored' });
-    lookup.resolve({ text: 'late answer' });
+    lookup.resolve({ fleet: answerFor('late answer') });
     await Promise.resolve();
     expect(sink).not.toHaveBeenCalled();
     expect(deferredIdle).toHaveLength(0);
@@ -559,7 +567,7 @@ describe('CommanderSessionManager — local-first answers', () => {
     const onIdle = vi.fn();
     const queue: Array<() => void> = [];
     const mgr = new CommanderSessionManager({ adapter: new FakeAdapter(), sink: vi.fn(), onIdle, deferIdle: (fn) => queue.push(fn) });
-    await mgr.send('local', {}, async () => ({ text: 'answer' }));
+    await mgr.send('local', {}, async () => ({ fleet: answerFor('answer') }));
     expect(mgr.getStatus().status).toBe('idle');
     expect(onIdle).not.toHaveBeenCalled();
     expect(queue).toHaveLength(1);
@@ -591,7 +599,7 @@ describe('CommanderSessionManager — lazy fallback preparation', () => {
     const prepare = vi.fn(() => 'must not prepare');
     const turn = mgr.send('original', {}, async () => {
       adapter.busy = true;
-      return outcome === 'fallback' ? { fallbackText: prepare } : { text: 'local answer' };
+      return outcome === 'fallback' ? { fallbackText: prepare } : { fleet: answerFor('local answer') };
     });
     expect(await turn).toEqual({ ok: true, code: 'errored' });
     expect(prepare).not.toHaveBeenCalled();
@@ -608,14 +616,14 @@ describe('CommanderSessionManager — lazy fallback preparation', () => {
     const onIdle = vi.fn();
     const mgr = new CommanderSessionManager({ adapter, sink, onIdle, deferIdle: (fn) => fn() });
     const prepare = vi.fn(() => 'must not prepare');
-    let resolve!: (value: { text: string } | { fallbackText: () => string }) => void;
+    let resolve!: (value: { fleet: FleetLocalAnswer } | { fallbackText: () => string }) => void;
     const turn = mgr.send('Who needs me?', { origin: 'human' }, () => new Promise((yes) => { resolve = yes; }));
     adapter.busy = true;
     mgr.notifyForeignTurnStart();
     adapter.busy = false;
     mgr.notifyForeignTurnEnd();
     expect(onIdle).not.toHaveBeenCalled();
-    resolve(outcome === 'fallback' ? { fallbackText: prepare } : { text: 'stale answer' });
+    resolve(outcome === 'fallback' ? { fallbackText: prepare } : { fleet: answerFor('stale answer') });
     expect(await turn).toEqual({ ok: true, code: 'errored' });
     expect(prepare).not.toHaveBeenCalled();
     expect(adapter.started).toBeNull();
@@ -627,8 +635,8 @@ describe('CommanderSessionManager — lazy fallback preparation', () => {
     expect(mgr.turnOrigin).toBe('human');
     expect(mgr.getStatus().status).toBe('idle');
     // The next question is not poisoned by the earlier foreign turn.
-    expect(await mgr.send('Who needs me?', {}, async () => ({ text: 'fresh answer' })))
-      .toEqual({ ok: true, localAnswer: { text: 'fresh answer' } });
+    expect(await mgr.send('Who needs me?', {}, async () => ({ fleet: answerFor('fresh answer') })))
+      .toEqual({ ok: true, localAnswer: { fleet: answerFor('fresh answer') } });
   });
 
   it('does not run lazy preparation after an interrupt inside lookup', async () => {
@@ -656,17 +664,17 @@ describe('CommanderSessionManager — local reads preserve provider authority', 
       const mgr = new CommanderSessionManager({ adapter, sink });
       await mgr.send('prior autonomous work', { origin: 'automation' });
       expect(mgr.turnOrigin).toBe('automation');
-      let resolve!: (value: { text: string }) => void;
+      let resolve!: (value: { fleet: FleetLocalAnswer }) => void;
       const local = mgr.send('Who needs me?', { origin: 'human' }, () => new Promise((yes) => { resolve = yes; }));
       expect(mgr.getStatus().status).toBe('busy');
       expect(mgr.turnOrigin).toBe('automation');
       if (outcome === 'interrupt') mgr.interrupt();
       else if (outcome === 'dispose') mgr.dispose();
       else if (outcome === 'foreign-busy') adapter.busy = true;
-      resolve({ text: 'Two tasks need input.' });
+      resolve({ fleet: answerFor('Two tasks need input.') });
       const result = await local;
       expect(result).toEqual(outcome === 'answer'
-        ? { ok: true, localAnswer: { text: 'Two tasks need input.' } }
+        ? { ok: true, localAnswer: { fleet: answerFor('Two tasks need input.') } }
         : { ok: true, code: 'errored' });
       expect(mgr.turnOrigin).toBe('automation');
       if (outcome === 'foreign-busy') expect(mgr.getStatus().status).toBe('busy');
@@ -702,8 +710,8 @@ describe('CommanderSessionManager — local reads preserve provider authority', 
     const mgr = new CommanderSessionManager({ adapter, sink: vi.fn() });
     await mgr.send('remote wake', { origin: 'automation', remoteMoa: true });
     expect(mgr.turnWokenByRemoteMoa).toBe(true);
-    expect(await mgr.send('Who needs me?', { origin: 'human' }, async () => ({ text: 'Nobody.' })))
-      .toEqual({ ok: true, localAnswer: { text: 'Nobody.' } });
+    expect(await mgr.send('Who needs me?', { origin: 'human' }, async () => ({ fleet: answerFor('Nobody.') })))
+      .toEqual({ ok: true, localAnswer: { fleet: answerFor('Nobody.') } });
     expect(mgr.turnWokenByRemoteMoa).toBe(true);
     expect(await mgr.send('Who needs me?', { origin: 'human' }, async () => ({ fallbackText: 'ctx' })))
       .toEqual({ ok: true });
