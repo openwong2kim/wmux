@@ -20,7 +20,7 @@ import Field, { useFieldWiring } from '../ui/Field';
 import Switch from '../ui/Switch';
 import SegmentedControl from '../ui/SegmentedControl';
 import { IconLock } from '../icons';
-import { paneProtection, type PolicyRead } from './usePaneBrowserPolicyMenu';
+import { paneProtection } from './usePaneBrowserPolicyMenu';
 import { parseHostRule, type HostPolicyMode } from '../../../shared/browserHostPolicy';
 
 /** One host rule per line: trimmed, empty lines dropped. */
@@ -127,7 +127,7 @@ export default function BrowserPolicyDialog({ workspaceId, paneId, onClose, onSa
       }
       const epoch = res.epoch ?? 0;
       const entry = res.policy ?? undefined;
-      const protection = paneProtection(res as PolicyRead, workspaceId);
+      const protection = paneProtection(res, workspaceId);
       const refused = protection.kind === 'refused';
       const lost = refused && !entry?.protected;
       setLoaded({

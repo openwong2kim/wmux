@@ -21,12 +21,6 @@ import type { HostPolicyMode } from '../../../shared/browserHostPolicy';
 /** Key of the main-menu item that opens the protection editor. */
 export const PANE_BROWSER_POLICY_KEY = 'browser-policy';
 
-/** A read result, with main's own decision when it reports one. */
-export type PolicyRead = BrowserPolicyReadResult & {
-  decision?: 'legacy' | 'denied' | 'protected';
-  confirmed?: boolean;
-};
-
 /** What a pane's protection is right now. */
 export type PaneProtection =
   | { kind: 'off' }
@@ -35,12 +29,11 @@ export type PaneProtection =
   | { kind: 'protected'; mode: HostPolicyMode; allowCount: number };
 
 /**
- * The pane's protection from a policy read. Main's `decision` wins when it is
- * there. Without it, an unreadable policy file counts as refused: main then
- * refuses every pane that was ever protected, and which ones those are is not
- * visible from here.
+ * The pane's protection from a policy read. Main's `decision` is the answer
+ * (it knows which panes were ever protected). Without it (an older main), an
+ * unreadable policy file counts as refused.
  */
-export function paneProtection(res: PolicyRead | undefined, workspaceId: string): PaneProtection {
+export function paneProtection(res: BrowserPolicyReadResult | undefined, workspaceId: string): PaneProtection {
   if (!res?.ok) return { kind: 'off' };
   const entry = res.policy ?? undefined;
   const hosts = entry?.hosts;
@@ -78,7 +71,7 @@ export function usePaneBrowserPolicyMenu(opts: {
     const api = window.electronAPI?.browser?.policy;
     if (!api || !available) return;
     void api.get(workspaceId, paneId).then((res) => {
-      setProtection(paneProtection(res as PolicyRead, workspaceId));
+      setProtection(paneProtection(res, workspaceId));
     }).catch(() => { /* keep the last answer */ });
   }, [available, workspaceId, paneId]);
 

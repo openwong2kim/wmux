@@ -260,7 +260,7 @@ describe('BrowserPolicyDialog', () => {
   });
 
   it("main's legacy decision means no refused notice, even with an unreadable file", async () => {
-    readResult = { ok: true, state: 'corrupt', epoch: 0, policy: null, currentProfile: 'work', decision: 'legacy' } as BrowserPolicyReadResult;
+    readResult = { ok: true, state: 'corrupt', epoch: 0, policy: null, currentProfile: 'work', decision: 'legacy' };
     await mount();
     expect(q('browser-policy-unreadable')).toBeNull();
     await click('browser-policy-save');

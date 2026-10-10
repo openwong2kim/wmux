@@ -388,7 +388,7 @@ describe('SurfaceTabs — browser protection', () => {
   });
 
   it("main's decision wins: legacy draws nothing even with an unreadable file", async () => {
-    policyResult = { ok: true, state: 'corrupt', epoch: 0, policy: null, currentProfile: 'default', decision: 'legacy' } as BrowserPolicyReadResult;
+    policyResult = { ok: true, state: 'corrupt', epoch: 0, policy: null, currentProfile: 'default', decision: 'legacy' };
     mount();
     await flush();
     expect(container.querySelector('[data-protected-pane]')).toBeNull();
