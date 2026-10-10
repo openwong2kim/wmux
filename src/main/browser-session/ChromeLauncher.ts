@@ -4,6 +4,8 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { ORPHAN_TTL_MS, RECORD_TTL_MS, type ChromeSurfaceRecord, type ChromeSurfaceStore } from './ChromeSurfaceStore';
 import { CdpSocket } from './CdpSocket';
+import { ProtectedProxy, protectedChromeArgs } from './ProtectedProxy';
+import type { HostMatcher } from '../../shared/browserHostPolicy';
 import type { LiveTabOwner } from '../../shared/liveWriteScope';
 
 // ---------------------------------------------------------------------------
@@ -38,6 +40,10 @@ import type { LiveTabOwner } from '../../shared/liveWriteScope';
 // DevToolsActivePort appearance + /json/version readiness poll.
 const READY_TIMEOUT_MS = 10_000;
 const READY_POLL_MS = 250;
+/** How often a protected profile's download guard re-asserts deny. */
+const DOWNLOAD_DENY_REASSERT_MS = 250;
+/** How long a fresh protected Chrome has to prove its traffic reaches the proxy. */
+const PROXY_PROBE_TIMEOUT_MS = 5_000;
 
 // Tab-target watcher: Chrome 111+ exposes a `tab` target per browser tab, and
 // a tab target's id does NOT change when Chrome swaps the page target inside
@@ -203,7 +209,31 @@ export interface ChromeLauncherOptions {
   /** Persistence for surface records. Omitted → in-memory only (tests, and
    *  any wiring that predates the store). */
   surfaceStore?: ChromeSurfaceStore;
+  /**
+   * Protected panes: whether this profile must run behind main's filtering
+   * proxy right now, and with which policy. Asked on every ensureRunning, so a
+   * change restarts Chrome under (or out from under) the proxy. Absent or null
+   * = legacy: the launch, adoption and arguments are exactly as before.
+   */
+  protection?: () => ChromeProtectionPlan | null;
+  /** Test seam: extra Chrome flags (e.g. --headless=new). */
+  extraArgs?: string[];
+  /** Test seam: how long the launch waits for the proxy probe. */
+  proxyProbeTimeoutMs?: number;
 }
+
+/** How a protected profile is enforced (see ProtectedProxy). */
+export interface ChromeProtectionPlan {
+  /** The policy as it is now; read per request. */
+  matcher: () => HostMatcher;
+  /** Test seam: where an allowed host:port connects. */
+  resolve?: (host: string, port: number) => { host: string; port: number };
+  /** Test seam: every proxy decision. */
+  onDecision?: (d: { host: string; port: number; allowed: boolean; kind: string }) => void;
+}
+
+/** A protected profile could not be brought up under its enforcement. */
+export const PROTECTION_NOT_READY = 'policy_denied: the protected browser could not be started under its site policy';
 
 /** Mint a stable surface id. Mirrors shared/types.ts `generateId('chrome')`;
  *  kept local so main's browser-session layer does not pull in the shared
@@ -265,11 +295,42 @@ export class ChromeLauncher implements ChromeBackendClient {
   private readonly profileName: string;
   private readonly surfaceStore: ChromeSurfaceStore | undefined;
 
+  private readonly protection: (() => ChromeProtectionPlan | null) | undefined;
+  private readonly extraArgs: string[];
+  /** Whether the running instance was launched behind the proxy. */
+  private launchedProtected = false;
+  private proxy: ProtectedProxy | null = null;
+  /** Main's own browser-level session that keeps downloads denied. */
+  private downloadGuard: CdpSocket | null = null;
+  /** The guard being armed, so concurrent callers share one socket. */
+  private guardArming: Promise<void> | null = null;
+  private readonly proxyProbeTimeoutMs: number;
+
   constructor(private readonly userDataDir: string, opts?: ChromeLauncherOptions) {
     this.profileLabel = opts?.profileLabel;
     this.portEnvVar = opts?.portEnvVar === undefined ? 'WMUX_CHROME_CDP_PORT' : opts.portEnvVar;
     this.profileName = opts?.profileName ?? DEFAULT_CHROME_PROFILE;
     this.surfaceStore = opts?.surfaceStore;
+    this.protection = opts?.protection;
+    this.extraArgs = opts?.extraArgs ?? [];
+    this.proxyProbeTimeoutMs = opts?.proxyProbeTimeoutMs ?? PROXY_PROBE_TIMEOUT_MS;
+  }
+
+  /** The protection this profile needs now (null = legacy). Never throws:
+   *  an unanswerable question is not a reason to run unprotected, so a
+   *  throwing hook reads as "protected, deny everything". */
+  private wantedProtection(): ChromeProtectionPlan | null {
+    if (!this.protection) return null;
+    try {
+      return this.protection();
+    } catch {
+      return { matcher: () => ({ allows: () => false }) };
+    }
+  }
+
+  /** Whether this instance runs (or would run) behind the proxy. */
+  isProtected(): boolean {
+    return this.launchedProtected;
   }
 
   /** True when this launcher opened (and still tracks) the given surface. */
@@ -660,21 +721,53 @@ export class ChromeLauncher implements ChromeBackendClient {
    */
   async ensureRunning(): Promise<number> {
     if (this.disposed) throw new Error('ChromeLauncher: disposed (app is quitting)');
-    if (this.isRunning()) {
-      // Cheap liveness check — the process object survives a crash until the
-      // exit handler runs; /json/version is the truth.
-      try {
-        await this.fetchJson('/json/version');
-        return this.cdpPort;
-      } catch {
-        this.onChildGone();
+    const wanted = this.wantedProtection();
+    if (!wanted && !this.launchedProtected) {
+      if (this.isRunning()) {
+        // Cheap liveness check — the process object survives a crash until the
+        // exit handler runs; /json/version is the truth.
+        try {
+          await this.fetchJson('/json/version');
+          return this.cdpPort;
+        } catch {
+          this.onChildGone();
+        }
+      }
+    } else if (this.isRunning() && !this.launching) {
+      // Protection changed under a running Chrome: it cannot be re-routed in
+      // place, so it is restarted under (or out from under) the proxy.
+      if (!!wanted !== this.launchedProtected || (wanted && !this.proxy?.isRunning())) {
+        await this.stopForProtectionChange();
+      } else {
+        let alive = true;
+        try {
+          await this.fetchJson('/json/version');
+        } catch {
+          alive = false;
+          this.onChildGone();
+        }
+        if (alive) {
+          // Re-armed if its socket dropped; a guard that cannot be re-armed
+          // refuses the call rather than hand out an unguarded profile.
+          await this.armDownloadGuard();
+          return this.cdpPort;
+        }
       }
     }
-    if (this.launching) return this.launching;
-    this.launching = this.launch().finally(() => {
-      this.launching = null;
-    });
-    return this.launching;
+    if (!this.launching) {
+      this.launching = this.launch().finally(() => {
+        this.launching = null;
+      });
+    }
+    if (!this.protection) return this.launching;
+    const port = await this.launching;
+    // A launch already in flight when protection changed was started under the
+    // old terms; it is never handed out under the new ones.
+    if (!!this.wantedProtection() !== this.launchedProtected) {
+      await this.stopForProtectionChange();
+      return this.ensureRunning();
+    }
+    return port;
   }
 
   /** Env-pinned fixed port ('default' profile only), validated. */
@@ -776,9 +869,248 @@ export class ChromeLauncher implements ChromeBackendClient {
     this.persist(true);
   }
 
+  /**
+   * Re-route the profile's protection: stop the running Chrome (ours or an
+   * adopted one) and wait for its endpoint to go away. A Chrome that will not
+   * stop leaves enforcement not ready, which refuses the call.
+   */
+  async stopForProtectionChange(): Promise<void> {
+    const child = this.child;
+    const port = this.cdpPort;
+    if (child) {
+      try {
+        child.kill();
+      } catch {
+        /* already gone */
+      }
+    } else if (port > 0) {
+      await this.closeBrowserAt(port);
+    }
+    if (port > 0 && !(await this.waitEndpointGone(port)) && !(await this.forceKill(port, child))) {
+      throw new Error(PROTECTION_NOT_READY);
+    }
+    this.onChildGone();
+  }
+
+  /**
+   * Last resort for a Chrome that will not stop: kill the browser process
+   * outright (ours by handle, an adopted one by the pid it reports), so it
+   * cannot keep running under the terms it was started with.
+   */
+  private async forceKill(port: number, child: ChildProcess | null): Promise<boolean> {
+    try {
+      if (child) {
+        child.kill('SIGKILL');
+      } else {
+        const url = await this.browserWsUrlAt(port);
+        if (url) {
+          const socket = new CdpSocket(() => url, { label: 'ChromeLauncher force stop', timeoutMs: 3_000 });
+          try {
+            const info = (await socket.send('SystemInfo.getProcessInfo')) as {
+              processInfo?: Array<{ type?: string; id?: number }>;
+            };
+            const pid = info?.processInfo?.find((p) => p.type === 'browser')?.id;
+            if (typeof pid === 'number' && pid > 0) process.kill(pid, 'SIGKILL');
+          } finally {
+            socket.close();
+          }
+        }
+      }
+    } catch {
+      /* fall through to the endpoint check */
+    }
+    return this.waitEndpointGone(port);
+  }
+
+  /** Apply a protection change now rather than at the next call (policy edits). */
+  async reconcileProtection(): Promise<void> {
+    // Open tunnels first: a policy edit applies to connections already made.
+    this.proxy?.revalidate();
+    if (this.launching) await this.launching.catch(() => undefined);
+    if (!this.isRunning() || this.disposed) return;
+    const wanted = this.wantedProtection();
+    if (!!wanted === this.launchedProtected) return;
+    await this.stopForProtectionChange();
+  }
+
+  /** The browser-level CDP endpoint answering on `port`, or null. */
+  private async browserWsUrlAt(port: number): Promise<string | null> {
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/json/version`);
+      const version = (await res.json()) as { webSocketDebuggerUrl?: string };
+      return typeof version.webSocketDebuggerUrl === 'string' && version.webSocketDebuggerUrl.startsWith('ws')
+        ? version.webSocketDebuggerUrl
+        : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private async closeBrowserAt(port: number): Promise<void> {
+    try {
+      const url = await this.browserWsUrlAt(port);
+      if (!url) return;
+      const socket = new CdpSocket(() => url, { label: 'ChromeLauncher evict', timeoutMs: 3_000 });
+      await socket.send('Browser.close').catch(() => undefined);
+      socket.close();
+    } catch {
+      /* nothing answering there */
+    }
+  }
+
+  private async waitEndpointGone(port: number): Promise<boolean> {
+    const deadline = Date.now() + READY_TIMEOUT_MS;
+    while (Date.now() < deadline) {
+      try {
+        await fetch(`http://127.0.0.1:${port}/json/version`);
+      } catch {
+        return true;
+      }
+      await new Promise((r) => setTimeout(r, READY_POLL_MS));
+    }
+    return false;
+  }
+
+  /**
+   * A protected profile never adopts a Chrome it did not launch under its
+   * proxy: whatever still answers on the profile's recorded endpoint is closed
+   * first, and the launch waits for it to be gone.
+   */
+  private async evictExisting(): Promise<void> {
+    const file = this.readPortFile();
+    if (!file) return;
+    try {
+      await fetch(`http://127.0.0.1:${file.port}/json/version`);
+    } catch {
+      return; // stale file, nothing running
+    }
+    await this.closeBrowserAt(file.port);
+    if (!(await this.waitEndpointGone(file.port)) && !(await this.forceKill(file.port, null))) {
+      throw new Error(PROTECTION_NOT_READY);
+    }
+  }
+
+  private async ensureProxy(plan: ChromeProtectionPlan): Promise<number> {
+    if (!this.proxy) {
+      // The proxy reads the CURRENT plan per request, so a policy edit applies
+      // on the next request without a restart.
+      this.proxy = new ProtectedProxy({
+        matcher: () => (this.wantedProtection() ?? { matcher: () => ({ allows: () => false }) }).matcher(),
+        ...(plan.resolve && { resolve: plan.resolve }),
+        ...(plan.onDecision && { onDecision: plan.onDecision }),
+      });
+    }
+    try {
+      return await this.proxy.start();
+    } catch {
+      throw new Error(PROTECTION_NOT_READY);
+    }
+  }
+
+  /**
+   * Keep downloads denied on a protected profile. Playwright's connectOverCDP
+   * sets `Browser.setDownloadBehavior: allowAndName` on the default context
+   * every time it attaches, which overrides any deny set before it. So main
+   * holds its own browser session with download events on: every download that
+   * begins is cancelled at once and the deny re-asserted. Measured against
+   * Chrome 155 with Playwright attached: the download ends `canceled`.
+   *
+   * A cancel can lose the race to a small file, and Chrome resets the behaviour
+   * to its default whenever any client that set it detaches. So the guard also
+   * re-asserts deny every DOWNLOAD_DENY_REASSERT_MS: another client's allow
+   * lasts at most one tick, and a download that starts after it is refused
+   * outright.
+   */
+  private armDownloadGuard(): Promise<void> {
+    if (this.downloadGuard?.isOpen()) return Promise.resolve();
+    this.guardArming ??= this.armDownloadGuardOnce().finally(() => {
+      this.guardArming = null;
+    });
+    return this.guardArming;
+  }
+
+  private async armDownloadGuardOnce(): Promise<void> {
+    this.downloadGuard?.close();
+    this.downloadGuard = null;
+    const url = await this.browserWsUrl();
+    const guard = new CdpSocket(() => url, {
+      label: 'ChromeLauncher download guard',
+      onDisconnect: () => {
+        if (this.downloadGuard === guard) this.downloadGuard = null;
+      },
+    });
+    const deny = () => guard.send('Browser.setDownloadBehavior', { behavior: 'deny', eventsEnabled: true });
+    guard.on('Browser.downloadWillBegin', (params) => {
+      const guid = typeof params.guid === 'string' ? params.guid : '';
+      if (guid) void guard.send('Browser.cancelDownload', { guid }).catch(() => undefined);
+      void deny().catch(() => undefined);
+    });
+    try {
+      await deny();
+    } catch {
+      guard.close();
+      throw new Error(PROTECTION_NOT_READY);
+    }
+    const reassert = setInterval(() => {
+      if (!guard.isOpen()) return clearInterval(reassert);
+      void deny().catch(() => undefined);
+    }, DOWNLOAD_DENY_REASSERT_MS);
+    reassert.unref?.();
+    this.downloadGuard = guard;
+  }
+
+  /** This instance's browser-level CDP endpoint; not-ready when absent. */
+  private async browserWsUrl(): Promise<string> {
+    let endpoint: string | undefined;
+    try {
+      const version = (await this.fetchJson('/json/version')) as { webSocketDebuggerUrl?: string };
+      endpoint = version?.webSocketDebuggerUrl;
+    } catch {
+      endpoint = undefined;
+    }
+    if (typeof endpoint !== 'string' || !endpoint.startsWith('ws')) throw new Error(PROTECTION_NOT_READY);
+    return endpoint;
+  }
+
+  /**
+   * Prove the fresh Chrome's traffic reaches the proxy: open a background tab
+   * on a URL only the proxy answers. A managed proxy policy or a proxy
+   * extension in the profile overrides `--proxy-server`; such a Chrome never
+   * asks the proxy, and is not handed out as protected.
+   */
+  private async verifyProxyRoute(): Promise<void> {
+    const proxy = this.proxy;
+    if (!proxy?.isRunning()) throw new Error(PROTECTION_NOT_READY);
+    const probe = proxy.armProbe();
+    const url = await this.browserWsUrl();
+    const socket = new CdpSocket(() => url, { label: 'ChromeLauncher proxy probe', timeoutMs: this.proxyProbeTimeoutMs });
+    let targetId: string | undefined;
+    try {
+      const created = (await socket.send('Target.createTarget', { url: probe.url, background: true })) as {
+        targetId?: unknown;
+      } | null;
+      targetId = typeof created?.targetId === 'string' ? created.targetId : undefined;
+      if (!(await probe.seen(this.proxyProbeTimeoutMs))) throw new Error(PROTECTION_NOT_READY);
+    } catch {
+      throw new Error(PROTECTION_NOT_READY);
+    } finally {
+      probe.dispose();
+      if (targetId) await socket.send('Target.closeTarget', { targetId }).catch(() => undefined);
+      socket.close();
+    }
+  }
+
   private async launch(): Promise<number> {
-    const adopted = await this.adoptExisting();
-    if (adopted !== null) return adopted;
+    const plan = this.wantedProtection();
+    if (plan) {
+      await this.evictExisting();
+    } else {
+      // Protection is off: the previous instance's proxy has nothing to serve.
+      this.proxy?.close();
+      this.proxy = null;
+      const adopted = await this.adoptExisting();
+      if (adopted !== null) return adopted;
+    }
 
     const binary = discoverChromeBinary();
     if (!binary) {
@@ -809,6 +1141,8 @@ export class ChromeLauncher implements ChromeBackendClient {
         '--disable-blink-features=AutomationControlled',
         '--no-first-run',
         '--no-default-browser-check',
+        ...(plan ? protectedChromeArgs(await this.ensureProxy(plan)) : []),
+        ...this.extraArgs,
       ],
       { stdio: 'ignore' },
     );
@@ -849,8 +1183,26 @@ export class ChromeLauncher implements ChromeBackendClient {
           this.byTargetId.clear();
           this.byTabTargetId.clear();
           void this.surfaceStore?.dropProfile(this.profileName).catch(() => undefined);
+          if (plan) {
+            // Enforcement readiness is part of the launch: no protected
+            // surface is handed out before the download guard holds.
+            this.launchedProtected = true;
+            try {
+              await this.armDownloadGuard();
+              await this.verifyProxyRoute();
+            } catch (err) {
+              try {
+                child.kill();
+              } catch { /* already gone */ }
+              this.onChildGone();
+              throw err;
+            }
+          }
           return candidate;
-        } catch {
+        } catch (err) {
+          // Enforcement that failed is final for this launch: the child is
+          // already stopped, so polling on would only wait out the deadline.
+          if (err instanceof Error && err.message === PROTECTION_NOT_READY) throw err;
           this.cdpPort = 0;
         }
       }
@@ -869,6 +1221,9 @@ export class ChromeLauncher implements ChromeBackendClient {
   private onChildGone(): void {
     this.child = null;
     this.cdpPort = 0;
+    this.launchedProtected = false;
+    this.downloadGuard?.close();
+    this.downloadGuard = null;
     // Records SURVIVE a dead Chrome — the surfaceId an agent holds must not
     // become a dangling reference just because the browser went away. They go
     // unbound instead, and re-bind through adoptExisting()'s /json/list pass
@@ -1033,6 +1388,8 @@ export class ChromeLauncher implements ChromeBackendClient {
     this.disposed = true;
     const child = this.child;
     this.onChildGone();
+    this.proxy?.close();
+    this.proxy = null;
     if (child) {
       try {
         child.kill();
@@ -1083,8 +1440,22 @@ export class ChromeLauncherRegistry {
       /** Persistence for stable surface ids. Optional — omitted keeps the
        *  pre-store in-memory behavior (older wirings, unit tests). */
       surfaceStore?: ChromeSurfaceStore;
+      /** Protected panes: the plan a profile runs under now, or null (legacy). */
+      protection?: (profile: string) => ChromeProtectionPlan | null;
     },
   ) {}
+
+  /** Apply a protection change to every running Chrome now (a policy edit, a
+   *  rebind). Best-effort per profile; the next call re-checks regardless. */
+  async reconcileProtection(): Promise<void> {
+    await Promise.all(
+      [...this.launchers.values()].map((l) =>
+        l instanceof ChromeLauncher
+          ? l.reconcileProtection().catch((err) => console.warn('[ChromeLauncher] protection restart failed:', err))
+          : undefined,
+      ),
+    );
+  }
 
   forProfile(name: string): ChromeBackendClient {
     validateBrowserProfileName(name); // re-validate at the interpolation site
@@ -1105,6 +1476,7 @@ export class ChromeLauncherRegistry {
         profileLabel: `wmux · ${name}`,
         profileName: name,
         ...(this.opts.surfaceStore && { surfaceStore: this.opts.surfaceStore }),
+        ...(this.opts.protection && { protection: () => this.opts.protection?.(name) ?? null }),
       },
     );
     this.launchers.set(name, launcher);

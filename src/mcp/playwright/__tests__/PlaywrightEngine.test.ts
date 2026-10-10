@@ -52,6 +52,7 @@ import {
 } from '../../../shared/browserBackend';
 import { __resetSurfaceRoutingForTesting } from '../surfaceRouting';
 import { createConnectionScope, runInConnectionScope } from '../../connectionScope';
+import { rememberProtection, resetProtectionMemoryForTests } from '../browserScope';
 
 /*
  * Regression tests for app-shell URL detection.
@@ -239,6 +240,34 @@ describe('PlaywrightEngine CDP session lifecycle', () => {
     expect(mockSendRpc).toHaveBeenCalledTimes(1);
     expect(mockSendRpc).toHaveBeenCalledWith('browser.cdp.info', { workspaceId: 'ws-caller' });
     expect(mockConnectOverCDP).not.toHaveBeenCalled();
+  });
+
+  it('protected: keeps the download-deny session attached for the connection, detached on disconnect', async () => {
+    resetProtectionMemoryForTests();
+    const sessions: FakeSession[] = [];
+    mockConnectOverCDP.mockResolvedValue(makeFakeBrowser(sessions));
+    mockSendRpc.mockResolvedValue({ cdpPort: 9222, targets: [], protected: true, policyEpoch: 3 });
+    const engine = PlaywrightEngine.getInstance();
+    await engine.ensureConnected('ws-prot');
+    const deny = sessions.find((x) =>
+      x.send.mock.calls.some((c) => c[0] === 'Browser.setDownloadBehavior' && (c[1] as { behavior?: string }).behavior === 'deny'));
+    expect(deny).toBeDefined();
+    expect(deny?.detach).not.toHaveBeenCalled(); // Chrome drops the setting when its session detaches
+    resetProtectionMemoryForTests();
+  });
+
+  it('refuses when main reports protected but this operation was authorized unprotected', async () => {
+    resetProtectionMemoryForTests();
+    rememberProtection('ws-flip', false); // the last answer the lane holds
+    mockConnectOverCDP.mockResolvedValue(makeFakeBrowser([]));
+    mockSendRpc.mockResolvedValue({ cdpPort: 9222, targets: [], protected: true, policyEpoch: 1 });
+    const engine = PlaywrightEngine.getInstance();
+    await expect(engine.ensureConnected('ws-flip')).rejects.toThrow(/policy_denied/);
+    expect(mockConnectOverCDP).not.toHaveBeenCalled();
+    expect(mockSendRpc).toHaveBeenCalledTimes(1); // a refusal, not retried
+    // The next operation is authorized against the new answer and proceeds.
+    await expect(engine.ensureConnected('ws-flip')).resolves.toBeUndefined();
+    resetProtectionMemoryForTests();
   });
 
   it('propagates unavailable attach info without entering a second page-discovery retry', async () => {
