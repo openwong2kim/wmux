@@ -367,6 +367,49 @@ describe('HelperProcess', () => {
     expect(logged.some((m) => m.includes('secret path'))).toBe(true);
   });
 
+  it('logs the stderr of a helper that dies before its hello', async () => {
+    const logged: string[] = [];
+    const helper = new HelperProcess({
+      command: 'unused',
+      log: (m) => logged.push(m),
+      spawn: () => {
+        const emitter = new EventEmitter() as unknown as ChildProcessWithoutNullStreams;
+        const stderr = new PassThrough();
+        Object.assign(emitter, { stdout: new PassThrough(), stdin: new PassThrough(), stderr, exitCode: null, signalCode: null, kill: () => true });
+        setTimeout(() => {
+          stderr.write('[computer-use] refusing to run elevated\n');
+          setTimeout(() => (emitter as unknown as EventEmitter).emit('exit', 72, null), 10);
+        }, 0);
+        return emitter;
+      },
+    });
+    helpers.push(helper);
+    expect(await codeOf(helper.request('listApps', {}))).toBe('helper_unavailable');
+    expect(logged.some((m) => m.includes('refusing to run elevated'))).toBe(true);
+  });
+
+  it('a dispose during the start-up configure reports shutting_down', async () => {
+    let child: { say: (o: unknown) => void } | undefined;
+    const helper = new HelperProcess({
+      command: 'unused',
+      configure: () => ({ overlay: true }),
+      spawn: () => {
+        const emitter = new EventEmitter() as unknown as ChildProcessWithoutNullStreams;
+        const stdout = new PassThrough();
+        Object.assign(emitter, { stdout, stdin: new PassThrough(), stderr: new PassThrough(), exitCode: null, signalCode: null, kill: () => true });
+        child = { say: (o) => stdout.write(`${JSON.stringify(o)}\n`) };
+        queueMicrotask(() => child?.say({ type: 'hello', protocolVersion: 2, os: 'darwin', helperVersion: 'x', capabilities: { actions: ['configure'], modes: [], permissions: {} } }));
+        return emitter;
+      },
+    });
+    helpers.push(helper);
+    const apps = helper.request('listApps', {});
+    // The configure request is in flight (never answered) when dispose runs.
+    await new Promise((r) => setTimeout(r, 20));
+    helper.dispose();
+    expect(await codeOf(apps)).toBe('shutting_down');
+  });
+
   it('names exactly what the cut-off request sent in the release, never a blanket key list', async () => {
     const cases: Array<[string, () => Promise<unknown>, Record<string, unknown>]> = [];
     const hotkey = makeHelper('hang', { timeoutFor: () => 200 });

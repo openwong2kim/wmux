@@ -384,6 +384,7 @@ export class HelperProcess {
     // Before the request that started it, so its first action already runs
     // with the person's settings (the overlay).
     await this.sendConfigure(running);
+    if (this.disposed) throw new ComputerError('shutting_down', 'computer use is shutting down');
     if (this.running !== running) {
       throw new ComputerError('helper_unavailable', 'the computer-use helper stopped while starting');
     }
@@ -488,6 +489,9 @@ export class HelperProcess {
       });
       child.on('exit', (code, signal) => {
         this.log(`helper exited (code ${code ?? 'null'}, signal ${signal ?? 'null'})`);
+        // Before fail(): a helper that dies before its hello stops being
+        // current there, and its stderr is the only clue to why.
+        this.logStderrTail(child);
         fail(new ComputerError('helper_unavailable', `the computer-use helper exited during start-up (exit code ${code ?? 'none'})`));
         this.onExit(child, code);
       });
@@ -555,12 +559,17 @@ export class HelperProcess {
     });
   }
 
-  private onExit(child: ChildProcessWithoutNullStreams, code: number | null = null): void {
-    // The helper's stderr goes to the log, never to the agent: it is the
-    // helper's own diagnostics (paths, OS error text), not something an agent
-    // can act on.
+  /**
+   * The helper's stderr goes to the log, never to the agent: it is the
+   * helper's own diagnostics (paths, OS error text), not something an agent
+   * can act on.
+   */
+  private logStderrTail(child: ChildProcessWithoutNullStreams): void {
     const tail = this.isCurrent(child) ? this.stderrTail.trim().split('\n').slice(-1)[0] ?? '' : '';
     if (tail) this.log(`helper stderr before exit: ${tail}`);
+  }
+
+  private onExit(child: ChildProcessWithoutNullStreams, code: number | null = null): void {
     this.terminate(child, new ComputerError('helper_unavailable', `the computer-use helper exited${code !== null ? ` (exit code ${code})` : ''}`));
   }
 

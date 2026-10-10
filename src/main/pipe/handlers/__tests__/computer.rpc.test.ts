@@ -170,6 +170,8 @@ describe('computer.rpc', () => {
       { x: 'NaN', y: 2 },
       { index: 1, clickCount: Infinity },
       { snapshotId: 7, index: 1 },
+      { index: 1, constructor: 'x' },
+      { index: 1, toString: 'x' },
     ]) {
       expect((await act(bad))?.code, JSON.stringify(bad)).toBe('invalid_argument');
     }

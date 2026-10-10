@@ -115,7 +115,10 @@ function parseControlParams(params: Record<string, unknown>): ControlParams {
   for (const [field, value] of Object.entries(params)) {
     // The identity was consumed by the wrapper; the action was checked above.
     if (field === 'action' || field === 'senderPtyId' || field === 'callerInstance' || value === undefined) continue;
-    const check = (CONTROL_FIELDS as Record<string, FieldCheck | undefined>)[field];
+    // Own keys only: `constructor` or `toString` must not find Object's.
+    const check = Object.prototype.hasOwnProperty.call(CONTROL_FIELDS, field)
+      ? (CONTROL_FIELDS as Record<string, FieldCheck>)[field]
+      : undefined;
     if (!check) throw new ComputerError('invalid_argument', `${String(params.action)} does not take ${field}`);
     if (!check(value)) throw new ComputerError('invalid_argument', `${field} has the wrong type or value`);
     control[field] = value;
