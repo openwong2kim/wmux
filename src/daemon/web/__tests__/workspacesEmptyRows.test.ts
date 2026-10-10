@@ -90,6 +90,12 @@ describe('GET /api/workspaces empty rows', () => {
     expect(ids).not.toContain('ws-task');
   });
 
+  it('never lists a workspace the desktop still shows a pane for, even with its brain pty gone', async () => {
+    sessions = sessions.filter((s) => s.id !== 'brain-1');
+    sidebar = { ...(sidebar as object), panes: [{ ptyId: 'brain-1', workspaceId: 'ws-brain', paneName: 'w9-1' }] };
+    expect((await list()).workspaces.map((w) => w.id)).toEqual(['ws-live', 'ws-idle']);
+  });
+
   it('keeps activeWorkspaceId to rows with a live terminal', async () => {
     expect((await list()).activeWorkspaceId).toBeUndefined();
   });

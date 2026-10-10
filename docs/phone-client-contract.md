@@ -3297,8 +3297,9 @@ the desktop sidebar shows that has **no live pane**, after the live rows:
   id or leave it out.
 - It carries the desktop fields above (`order`, `pinned`, `color`, `gitBranch`,
   …) but never `layout`, never `paneId`s, and it is never `activeWorkspaceId`.
-- Moa's HQ, a workspace whose only pane is the orchestrator brain, and a fan-out
-  task workspace are never listed this way.
+- Moa's HQ, a workspace whose only pane is the orchestrator brain, a fan-out
+  task workspace, and a workspace the desktop still lists any pane for (one
+  whose session has ended, say) are never listed this way.
 - No desktop (the host app is closed, or its window is locked, occluded or
   headless and the snapshot lapsed): no `empty` rows. The list is then exactly
   the live rows, as before.

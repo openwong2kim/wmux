@@ -9838,7 +9838,7 @@ describe('WebTerminalServer', () => {
     };
     type Row = Record<string, unknown>;
 
-    it('merges the desktop fields by id, never adding rows and never leaking a brain entry', async () => {
+    it('merges the desktop fields by id, adding only empty rows and never leaking a brain entry', async () => {
       live.push({ ...brainRow }, {
         id: 's-task-2', cwd: '/t2', cols: 80, rows: 24, state: 'detached',
         agent: undefined, lastDetectedAgent: undefined, lastActivity: '2020-01-01T00:00:00.000Z',
@@ -9866,7 +9866,8 @@ describe('WebTerminalServer', () => {
         }
 
         const workspaces = workspacesBody.workspaces as Row[];
-        expect(workspaces.map((w) => w.id)).toEqual(['ws-1', 'ws-task-2', 'ws-legacy']);
+        // ws-desktop-only has no terminal: listed last as an empty row.
+        expect(workspaces.map((w) => w.id)).toEqual(['ws-1', 'ws-task-2', 'ws-legacy', 'ws-desktop-only']);
         expect(workspaces[0]).toMatchObject({
           id: 'ws-1', name: 'Workspace 1', order: 0, pinned: true, color: 'teal', gitBranch: 'main', gitIsWorktree: false,
           gitSync: { ahead: 2, behind: 0, hasUpstream: true },
@@ -9889,7 +9890,7 @@ describe('WebTerminalServer', () => {
         for (const leaked of ['brain-abc', 'ws-brain', 'orchestrator title', 'brain-branch', 'ghost', 'ws-unlisted-task']) {
           expect(wire).not.toContain(leaked);
         }
-        expect((workspacesBody.workspaces as Row[]).map((w) => w.id)).not.toContain('ws-desktop-only');
+        expect(workspaces.find((w) => w.id === 'ws-desktop-only')).toEqual({ id: 'ws-desktop-only', name: '', panes: [], empty: true, order: 2, pinned: false });
       } finally {
         live.length = 3;
       }
@@ -10390,7 +10391,7 @@ describe('WebTerminalServer', () => {
         const info = await startRW();
         const token = info.token as string;
         const workspaces = (await getJson(token, '/api/workspaces')).workspaces as Row[];
-        expect(roles(workspaces)).toEqual({ 'ws-1': 'hq', 'ws-legacy': null });
+        expect(roles(workspaces)).toEqual({ 'ws-1': 'hq', 'ws-legacy': null, 'ws-desktop-only': null });
         const sessions = (await getJson(token, '/api/sessions')).sessions as Row[];
         expect(roles(sessions)).toEqual({ s1: 'hq', s2: null, s3: null });
         const registry = (await getJson(token, '/api/desktop-workspaces')).workspaces as Row[];
@@ -10406,7 +10407,7 @@ describe('WebTerminalServer', () => {
         const info = await startRO();
         const token = info.token as string;
         const workspaces = (await getJson(token, '/api/workspaces')).workspaces as Row[];
-        expect(roles(workspaces)).toEqual({ 'ws-1': null, 'ws-legacy': 'hq' });
+        expect(roles(workspaces)).toEqual({ 'ws-1': null, 'ws-legacy': 'hq', 'ws-desktop-only': null });
         const sessions = (await getJson(token, '/api/sessions')).sessions as Row[];
         expect(roles(sessions)).toEqual({ s1: null, s2: 'hq', s3: null });
       });

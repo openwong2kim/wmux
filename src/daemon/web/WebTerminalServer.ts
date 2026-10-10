@@ -3459,10 +3459,13 @@ export class WebTerminalServer {
     // carries neither, and a name only arrives with a session's env), after
     // the live ones. Moa's HQ is never one: its only pane is the brain, which
     // must not synthesize a row, and neither does a fan-out task workspace
-    // (it nests under its owner). No desktop (locked, occluded, headless), no
-    // empty rows: this list cannot know about them.
+    // (it nests under its owner), nor one the desktop still lists a pane for
+    // (a hidden brain pane, or one whose session is gone). No desktop
+    // (locked, occluded, headless), no empty rows: this list cannot know
+    // about them.
+    const paneWorkspaces = new Set(sidebar.panes.map((p) => p.workspaceId));
     const empty = sidebar.workspaces
-      .filter((w) => !byId.has(w.id) && !brainWorkspaces.has(w.id) && w.id !== sidebar.hqWorkspaceId && w.task === undefined)
+      .filter((w) => !byId.has(w.id) && !brainWorkspaces.has(w.id) && !paneWorkspaces.has(w.id) && w.id !== sidebar.hqWorkspaceId && w.task === undefined)
       .map((w) => ({ id: w.id, name: '', panes: [], empty: true as const, ...sidebarWorkspaceFields(w, undefined, undefined, undefined) }));
     // Only an id this reply lists, so the active workspace cannot name one the
     // phone is not allowed to see (a brain-only workspace, for one).
