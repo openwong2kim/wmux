@@ -197,8 +197,10 @@ export interface AutomationRun {
   endedAt?: number;
   /** True once a plain-text output snapshot was written for this run. */
   hasSnapshot?: boolean;
-  /** The browser identity this run launched with (immutable; a later edit never changes it). */
+  /** The browser identity this run launched with (immutable; a later edit never changes it). First-party reads only. */
   browserIdentity?: AutomationBrowserIdentity;
+  /** Set on broadcast run events in place of `browserIdentity`, which the event stream never carries. */
+  hasBrowserIdentity?: true;
 }
 
 /** Terminal states — a run never leaves these. */

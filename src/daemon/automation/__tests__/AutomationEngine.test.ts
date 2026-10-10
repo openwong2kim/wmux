@@ -854,6 +854,10 @@ describe('AutomationEngine — browser identity', () => {
     const ri = h.engine.runIdentity(run.ptyId);
     expect(ri.run).toMatchObject({ runId: run.id, automationId: a.automation.id, revision: 2, browserIdentity: { paneId: 'pane-a' } });
     expect(h.engine.identityRuns().runs).toEqual([{ ptyId: run.ptyId, pid: 4242, workspaceId: 'ws-1' }]);
+    // The broadcast event says only that the run has one.
+    const ev = h.events.filter((e) => e.type === 'run-changed').at(-1) as unknown as { run: Record<string, unknown> };
+    expect(ev.run).not.toHaveProperty('browserIdentity');
+    expect(ev.run.hasBrowserIdentity).toBe(true);
     // A later edit never changes what the running run is.
     await h.engine.grant(a.automation.id, 'auto', undefined, 2, identity(3, { paneId: 'pane-z', mac: 'c'.repeat(64) }));
     expect(h.engine.runIdentity(run.ptyId).run?.browserIdentity.paneId).toBe('pane-a');

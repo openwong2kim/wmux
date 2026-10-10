@@ -193,13 +193,16 @@ export function noteRunBrowserRefusal(runId: string, detail: AutomationNoteRunBr
  */
 const identityRunPtys = new Set<string>();
 
-export function noteRunForIdentity(run: Pick<AutomationRun, 'ptyId' | 'state' | 'browserIdentity'>): void {
+type IdentityRunView = Pick<AutomationRun, 'ptyId' | 'state' | 'browserIdentity' | 'hasBrowserIdentity'>;
+
+export function noteRunForIdentity(run: IdentityRunView): void {
   if (!run?.ptyId) return;
-  if (run.browserIdentity && !AUTOMATION_FINAL_RUN_STATES.includes(run.state)) identityRunPtys.add(run.ptyId);
+  const hasIdentity = !!run.browserIdentity || run.hasBrowserIdentity === true;
+  if (hasIdentity && !AUTOMATION_FINAL_RUN_STATES.includes(run.state)) identityRunPtys.add(run.ptyId);
   else identityRunPtys.delete(run.ptyId);
 }
 
-export function resetIdentityRuns(runs: ReadonlyArray<Pick<AutomationRun, 'ptyId' | 'state' | 'browserIdentity'>>): void {
+export function resetIdentityRuns(runs: ReadonlyArray<IdentityRunView>): void {
   identityRunPtys.clear();
   for (const run of runs) noteRunForIdentity(run);
 }

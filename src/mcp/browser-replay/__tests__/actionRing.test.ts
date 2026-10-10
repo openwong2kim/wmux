@@ -9,7 +9,7 @@ vi.mock('../../playwright/snapshot', () => ({
     `${scope.workspaceId}\u0000${scope.surfaceId ?? ''}`,
 }));
 
-import { ActionRing, recordAction, ringFor, type ActionRingDeps } from '../actionRing';
+import { ActionRing, recordAction, ringFor, ringScopeKey, type ActionRingDeps } from '../actionRing';
 import { ACTION_RING_CAPACITY, MAX_ARG_BYTES } from '../../../shared/browserReplay/actionTrace';
 
 const scope = { workspaceId: 'ws-1', surfaceId: 's1' };
@@ -247,5 +247,18 @@ describe('recordAction', () => {
     const hostile = { url: () => { throw new Error('detached'); } } as never;
     expect(() => recordAction(deps, { scope, tool: 'browser_click', page: hostile, ref: '4' })).not.toThrow();
     expect(ring.all()).toHaveLength(1);
+  });
+});
+
+describe('protected panes: the ring is partitioned by the authorized policy epoch', () => {
+  const at = (epoch: number) => ({ ...scope, protection: { protected: true, epoch, hosts: { mode: 'allowlist' as const, allow: ['example.com'], block: [] } } });
+
+  it('records on a protected pane, but a rebind (new epoch) sees none of it', () => {
+    recordAction(deps, { scope: at(1) as never, tool: 'browser_click', page: fakePage, ref: '4' });
+    expect(ring.tail(ringScopeKey(at(1) as never))).toHaveLength(1);
+    expect(ring.tail(ringScopeKey(at(2) as never))).toEqual([]);
+    // Nor does the same surface read unprotected.
+    expect(ring.tail(ringScopeKey(scope as never))).toEqual([]);
+    expect(ringScopeKey(scope as never)).toBe(SCOPE_KEY);
   });
 });

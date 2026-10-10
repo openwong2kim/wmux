@@ -571,3 +571,52 @@ describe('a2a.resolve.identity — accounts and the pane the env names', () => {
     }
   });
 });
+
+describe('a2a.resolve.identity — scheduled runs with a browser identity', () => {
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    __resetWorkspaceClaimTrustForTesting();
+    dirRef.current = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-pidmap-run-'));
+    const { setRunIdentityTransport } = await import('../../../automation/runIdentity');
+    setRunIdentityTransport({
+      rpc: async (method: string) =>
+        method === 'automation.identityRuns' ? { runs: [{ ptyId: 'auto-r1', pid: 49076, workspaceId: 'ws-1' }] } : null,
+    });
+  });
+  afterEach(async () => {
+    const { setRunIdentityTransport } = await import('../../../automation/runIdentity');
+    setRunIdentityTransport(null);
+    try { fs.rmSync(dirRef.current, { recursive: true, force: true }); } catch { /* best-effort */ }
+  });
+
+  it("walks to a live identity run's shell and hands back a browser-only claim", async () => {
+    const ppidByPid = new Map<number, number>([[39876, 25020], [25020, 49076], [49076, 1]]);
+    const res = await router(ppidByPid);
+    expect(res.resolved).toEqual({ workspaceId: 'ws-1', ptyId: 'auto-r1' });
+    expect(res.entries).toEqual([]);
+    expect(lookupWorkspaceClaim(res.workspaceToken)).toEqual({ kind: 'bound', workspaceId: 'ws-1', ptyId: 'auto-r1', browserOnly: true });
+  });
+
+  it('a caller under no identity run gets no claim', async () => {
+    const res = await router(new Map<number, number>([[11111, 22222], [22222, 1], [49076, 1]]), 11111);
+    expect(res.resolved).toBeNull();
+    expect(res.workspaceToken).toBeUndefined();
+  });
+
+  it('a pane anchor wins: the run list is only read when no pane owns the caller', async () => {
+    fs.writeFileSync(path.join(dirRef.current, '25020'), 'daemon-shell');
+    sendToRendererMock.mockResolvedValue({ workspaceId: 'ws-pane' });
+    const res = await router(new Map<number, number>([[39876, 25020], [25020, 49076], [49076, 1]]));
+    expect(res.resolved).toEqual({ workspaceId: 'ws-pane', ptyId: 'daemon-shell' });
+    const claim = lookupWorkspaceClaim(res.workspaceToken);
+    expect(claim).toMatchObject({ kind: 'bound', ptyId: 'daemon-shell' });
+    expect(claim).not.toHaveProperty('browserOnly');
+  });
+
+  async function router(ppidByPid: Map<number, number>, callerPid = 39876) {
+    const r = setupRouterWithSnapshot(ppidByPid);
+    const res = await r.dispatch({ id: 'rp', method: 'a2a.resolve.identity', params: { callerPid } });
+    expect(res.ok).toBe(true);
+    return (res as { result: ResolveResult & { workspaceToken?: string } }).result;
+  }
+});

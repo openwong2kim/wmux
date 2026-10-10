@@ -307,7 +307,14 @@ export class AutomationEngine {
 
   private emitRun(run: AutomationRun): void {
     const name = this.automations.find((a) => a.id === run.automationId)?.name ?? '';
-    this.ports.emit({ type: 'run-changed', run: clone(run), automationName: name });
+    // The event stream reaches every client: it says THAT a run has a browser
+    // identity, never which pane, account or sites.
+    const { browserIdentity, ...shown } = clone(run);
+    this.ports.emit({
+      type: 'run-changed',
+      run: browserIdentity ? { ...shown, hasBrowserIdentity: true } : shown,
+      automationName: name,
+    });
   }
 
   private emitAutomations(): void {
