@@ -151,8 +151,9 @@ describe('browser tools — a caller outside every pane (scheduled run)', () => 
     let claims = 0;
     mockSendRpc.mockImplementation(async (method: string) => {
       if (method === 'a2a.resolve.identity') {
-        // main is up and has panes, but our process tree reaches none of them
-        return { mappings: { '999999': 'ws-other' }, entries: [{ pid: '999999', ptyId: 'pty-x', workspaceId: 'ws-other' }], resolved: null };
+        // main is up and its walk found no pane above us. An empty pid map, so
+        // no client-side walk runs (on Windows it spawns PowerShell per hop).
+        return { mappings: {}, entries: [], resolved: null };
       }
       if (method === 'mcp.claimWorkspace') {
         claims++;
@@ -178,7 +179,7 @@ describe('browser tools — a pane main cannot verify', () => {
   it('refuses with the reason instead of claiming a workspace elsewhere', async () => {
     mockSendRpc.mockImplementation(async (method: string) => {
       if (method === 'a2a.resolve.identity') {
-        return { mappings: { '999999': 'ws-other' }, entries: [{ pid: '999999', ptyId: 'pty-x', workspaceId: 'ws-other' }], resolved: null };
+        return { mappings: {}, entries: [], resolved: null };
       }
       if (method === 'mcp.claimWorkspace') return { workspaceId: 'ws-claimed', ptyId: 'pty-claimed', workspaceToken: 'claim' };
       if (method === 'browser.close') return { ok: true };
