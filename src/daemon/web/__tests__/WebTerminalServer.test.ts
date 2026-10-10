@@ -9596,9 +9596,9 @@ describe('WebTerminalServer', () => {
       // Named workspace sorts before the unnamed one.
       expect(body.workspaces.map((w) => w.id)).toEqual(['ws-1', 'ws-legacy']);
       expect(body.workspaces[0].name).toBe('Workspace 1');
-      expect(body.workspaces[0].panes).toEqual([{ sessionId: 's1', shell: 'pwsh', cwd: '/x' }]);
+      expect(body.workspaces[0].panes).toEqual([{ sessionId: 's1', shell: 'pwsh', cwd: '/x', lastActivity: '2020-01-01T00:00:00.000Z' }]);
       expect(body.workspaces[1].name).toBe('');
-      expect(body.workspaces[1].panes).toEqual([{ sessionId: 's2', shell: 'pwsh', cwd: '/y' }]);
+      expect(body.workspaces[1].panes).toEqual([{ sessionId: 's2', shell: 'pwsh', cwd: '/y', lastActivity: '2020-01-01T00:00:00.000Z' }]);
       // The env-less session (s3) is omitted entirely.
       expect(body.workspaces.flatMap((w) => w.panes).map((p) => p.sessionId)).not.toContain('s3');
     });

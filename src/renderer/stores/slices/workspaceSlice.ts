@@ -1599,6 +1599,22 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       }
       state.sidebarAttentionFirst = state.sidebarSortMode === 'attention';
       if (data.sidebarWidth !== undefined) state.sidebarWidth = clampSidebarWidth(data.sidebarWidth);
+      // Dismissed pending questions, kept only for ptyIds this session still
+      // binds (a hand-edited or stale entry is dropped, never trusted).
+      const dismissed: Record<string, string> = {};
+      const savedDismissed = data.surfaceDismissedQuestion;
+      if (savedDismissed && typeof savedDismissed === 'object') {
+        const ptyIds = new Set<string>();
+        for (const ws of data.workspaces ?? []) {
+          for (const leaf of getWorkspaceLeafPanes(ws)) {
+            for (const surf of leaf.surfaces) if (surf.ptyId) ptyIds.add(surf.ptyId);
+          }
+        }
+        for (const [ptyId, question] of Object.entries(savedDismissed)) {
+          if (ptyIds.has(ptyId) && typeof question === 'string' && question) dismissed[ptyId] = question;
+        }
+      }
+      state.surfaceDismissedQuestion = dismissed;
       state.sidebarTaskGroupExpanded = pruneTaskGroupExpanded(
         data.sidebarTaskGroupExpanded,
         new Set((data.workspaces ?? []).map((w) => w.id)),

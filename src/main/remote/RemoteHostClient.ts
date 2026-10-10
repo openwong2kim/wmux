@@ -317,6 +317,20 @@ export function normalizeWorkspaces(body: unknown): RemoteWorkspaceSummary[] {
           ...(typeof pane.agentProcessAlive === 'boolean'
             ? { agentProcessAlive: pane.agentProcessAlive }
             : {}),
+          // The host sidebar's pane name, tab title and last output time:
+          // additive-optional, capped like every other host string.
+          ...(() => {
+            const paneName = typeof pane.paneName === 'string' && pane.paneName
+              ? cleanRemoteText(pane.paneName, REMOTE_LIMITS.paneName) : '';
+            const surfaceTitle = typeof pane.surfaceTitle === 'string' && pane.surfaceTitle
+              ? cleanRemoteText(pane.surfaceTitle, REMOTE_LIMITS.surfaceTitle) : '';
+            const at = typeof pane.lastActivity === 'string' ? Date.parse(pane.lastActivity) : NaN;
+            return {
+              ...(paneName ? { paneName } : {}),
+              ...(surfaceTitle ? { surfaceTitle } : {}),
+              ...(Number.isFinite(at) && at > 0 ? { lastActivityAt: at } : {}),
+            };
+          })(),
         });
       }
     }

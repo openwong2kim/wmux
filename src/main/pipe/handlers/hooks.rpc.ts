@@ -876,6 +876,11 @@ export function registerHooksRpc(
             agentStatus: 'running',
             agentName: agentDisplayName(signal.agent),
             agentSlug: signal.agent,
+            // A new prompt supersedes the last turn's question. The '' clear
+            // also drops the renderer's record of a dismissed question, which
+            // the daemon path drops via its tagged turn start; without it the
+            // same question asked at this turn's end would stay hidden.
+            pendingQuestion: '',
           });
         }
       }

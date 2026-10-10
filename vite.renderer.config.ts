@@ -40,6 +40,7 @@ export default defineConfig({
             '@xterm/addon-search',
             '@xterm/addon-unicode11',
             '@xterm/addon-web-links',
+            '@xterm/addon-serialize',
           ],
           'vendor-react': ['react', 'react-dom'],
         },

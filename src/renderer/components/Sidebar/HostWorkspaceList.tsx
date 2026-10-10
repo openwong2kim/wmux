@@ -6,38 +6,65 @@ import { remoteWorkspaceAttentionClass, type FleetAttentionClass } from '../../s
 import type { AgentStatus } from '../../../shared/types';
 import { StatusMarkView } from './AgentMarks';
 import { AGENT_STATUS_ICON } from './agentStatusIcon';
-import { IconGitBranch, IconPin } from '../icons';
-import { formatShadowWorkspaceId, pcRailHostState, type PcRailWorkspaceRow } from '../../../shared/pcRail';
 import { normalizeWorkspaceColor, workspaceColorHex } from '../../../shared/workspaceColors';
+import { RowOpenSurfaceContext, RowStoreContext } from '../../stores/rowStore';
+import { useHostRowStore } from '../../stores/hostRowStore';
+import { focusNotificationTarget } from '../../hooks/useNotificationListener';
+import { useStore as useZustandStore } from 'zustand';
+import WorkspaceItem from './WorkspaceItem';
+import { formatShadowWorkspaceId, parseShadowWorkspaceId, pcRailHostState, type PcRailWorkspaceRow } from '../../../shared/pcRail';
+import { workspaceShortcutNumber } from '../../../shared/keymap';
 import { nextRowIndex } from './sidebarRowKeys';
+import { getWorkspaceLeafPanes } from '../../../shared/paneUtils';
+import { findRemoteSurface } from '../../stores/shadowWorkspace';
 
 function clockTime(at: number): string {
   return new Date(at).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
 }
 
+const noop = () => { /* another computer's row offers no local action */ };
+
 /**
  * PC rail: the Workspaces page scoped to one web-paired computer. Its rows
- * come from the host's own list (pcRailFeeds), in the host's order; opening
- * one builds or activates its shadow workspace. Nothing here creates,
- * closes or renames anything on that computer.
+ * are this computer's own row component (WorkspaceItem, with its pane rows)
+ * reading a read-only projection of that computer (hostRowStore.ts), in the
+ * host's order and numbered as the host numbers them. Opening one builds or
+ * activates its shadow workspace; nothing here creates, closes or renames
+ * anything on that computer.
  */
 export default function HostWorkspaceList({ hostId }: { hostId: string }) {
   const t = useT();
   const host = useStore((s) => s.pcRailHosts.find((h) => h.id === hostId));
   const status = useStore((s) => s.pcRailHostStatus[hostId] ?? 'reachable');
-  const rows = useStore((s) => selectPcRailRows(s, hostId));
   const fetchedAt = useStore((s) => s.pcRailFeeds[hostId]?.fetchedAt ?? null);
   const stale = useStore((s) => selectPcRailFeedStale(s, hostId));
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
+  const rowStore = useHostRowStore(hostId);
+  const rows = useZustandStore(rowStore, (s) => s.workspaces);
   const [keyRowId, setKeyRowId] = useState<string | null>(null);
   const name = host?.label || hostId;
   const state = pcRailHostState(status);
   const offline = state === 'offline' || state === 'insecure' || stale;
 
-  const open = useCallback((row: PcRailWorkspaceRow) => {
-    if (offline || row.empty) return;
-    useStore.getState().openShadowWorkspace(hostId, row.id);
+  // A row with no terminal (`empty`) has no pane to show: nothing opens.
+  const open = useCallback((id: string): boolean => {
+    const ref = parseShadowWorkspaceId(id);
+    if (offline || !ref || ref.hostId !== hostId) return false;
+    if (useStore.getState().pcRailFeeds[hostId]?.workspaces.find((w) => w.id === ref.remoteId)?.empty) return false;
+    return useStore.getState().openShadowWorkspace(hostId, ref.remoteId) !== null;
   }, [hostId, offline]);
+
+  // A pane row: open the workspace, then that tab (the shadow's ids are the
+  // ones the row was drawn with).
+  const openSurface = useCallback((surfaceId: string) => {
+    const ws = rowStore.getState().workspaces.find((w) => getWorkspaceLeafPanes(w).some((l) => l.surfaces.some((s) => s.id === surfaceId)));
+    const sessionId = ws && getWorkspaceLeafPanes(ws).flatMap((l) => l.surfaces).find((s) => s.id === surfaceId)?.remoteSessionId;
+    if (!ws || !sessionId || !open(ws.id)) return;
+    // The shadow may hold that session as an "Open in …" placeholder (it is a
+    // tab elsewhere already): go to the tab that shows it.
+    const hit = findRemoteSurface(useStore.getState(), hostId, sessionId);
+    focusNotificationTarget(() => useStore.getState(), { ptyId: null, surfaceId: hit?.surfaceId ?? surfaceId });
+  }, [hostId, open, rowStore]);
 
   const onKeyDown = useCallback((e: React.KeyboardEvent<HTMLDivElement>) => {
     const target = e.target as HTMLElement;
@@ -61,7 +88,7 @@ export default function HostWorkspaceList({ hostId }: { hostId: string }) {
     notice = { text: t('pcRail.updatedAgo', { time: clockTime(fetchedAt) }) };
   }
 
-  const activeRowId = rows.find((r) => formatShadowWorkspaceId(hostId, r.id) === activeWorkspaceId)?.id;
+  const activeRowId = rows.some((w) => w.id === activeWorkspaceId) ? activeWorkspaceId : undefined;
   const tabStopId = keyRowId ?? activeRowId ?? rows[0]?.id;
 
   return (
@@ -82,26 +109,39 @@ export default function HostWorkspaceList({ hostId }: { hostId: string }) {
           {t('pcRail.noWorkspaces', { name })}
         </p>
       ) : (
-        <div role="tree" aria-label={name} className="space-y-0.5" onKeyDown={onKeyDown}
-          onFocus={(e) => setKeyRowId((e.target as HTMLElement).getAttribute('data-sidebar-row'))}
-          onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setKeyRowId(null); }}
-        >
-          {rows.map((row) => (
-            <HostWorkspaceRow
-              key={row.id}
-              hostId={hostId}
-              row={row}
-              isActive={row.id === activeRowId}
-              disabled={offline || !!row.empty}
-              tabStop={row.id === tabStopId}
-              onOpen={open}
-            />
-          ))}
-        </div>
+        <RowStoreContext.Provider value={rowStore}>
+          <RowOpenSurfaceContext.Provider value={openSurface}>
+            <div role="tree" aria-label={name} className={`space-y-0.5 ${offline ? 'opacity-60' : ''}`} onKeyDown={onKeyDown} data-sidebar-tree
+              onFocus={(e) => setKeyRowId((e.target as HTMLElement).getAttribute('data-sidebar-row'))}
+              onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setKeyRowId(null); }}
+            >
+              {rows.map((ws, i) => (
+                <WorkspaceItem
+                  key={ws.id}
+                  workspaceId={ws.id}
+                  isActive={ws.id === activeRowId}
+                  isMultiview={false}
+                  index={i}
+                  shortcutNumber={workspaceShortcutNumber(i, rows.length)}
+                  onSelect={open}
+                  onCtrlSelect={open}
+                  onRename={noop}
+                  onClose={noop}
+                  onArchive={noop}
+                  onCopyInfo={noop}
+                  onDuplicate={noop}
+                  onReorder={noop}
+                  tabStop={ws.id === tabStopId}
+                />
+              ))}
+            </div>
+          </RowOpenSurfaceContext.Provider>
+        </RowStoreContext.Provider>
       )}
     </div>
   );
 }
+
 
 /** The row's mark: the status of its loudest agent pane, by the same class rule. */
 const MARK_STATUS: Record<FleetAttentionClass, AgentStatus> = {
@@ -113,115 +153,6 @@ const MARK_STATUS: Record<FleetAttentionClass, AgentStatus> = {
   idle: 'idle',
 };
 
-/**
- * One host workspace, drawn with the local row's structure and classes
- * (WorkspaceItem): colour rail, status mark, name line, branch line, the same
- * card states. Only what the host sends is shown — name, colour, pinned, git
- * branch, pane count and the agents' attention. Nothing local is offered:
- * no rename, menu, drag, archive, git sync or unread count.
- */
-function HostWorkspaceRow({ hostId, row, isActive, disabled, tabStop, onOpen }: {
-  hostId: string;
-  row: PcRailWorkspaceRow;
-  isActive: boolean;
-  disabled: boolean;
-  tabStop: boolean;
-  onOpen: (row: PcRailWorkspaceRow) => void;
-}) {
-  const t = useT();
-  // Two primitive reads: the selector builds a fresh object, which is no stable snapshot.
-  const aliasLabel = useStore((s) => selectPcRailRowAlias(s, hostId, row.id)?.label);
-  const aliasColor = useStore((s) => selectPcRailRowAlias(s, hostId, row.id)?.color);
-  // The host's own name; a host that sends none (locked desktop, old build) is named by id.
-  const displayName = aliasLabel || row.name || row.id;
-  const tagHex = workspaceColorHex(normalizeWorkspaceColor(aliasColor ?? row.color));
-  const attention = remoteWorkspaceAttentionClass({ panes: row.panes, stale: disabled && !row.empty });
-  const needsYou = attention === 'needsYou';
-  const errored = attention === 'error';
-  const markStatus = MARK_STATUS[attention];
-  const paneCount = row.panes.length;
-  return (
-    <div className="relative mx-2 sidebar-row-enter">
-      {tagHex && (
-        <div
-          className="absolute top-[3px] bottom-[3px] w-[3px] rounded-full z-[1] pointer-events-none"
-          style={{ left: 0, background: tagHex }}
-          aria-hidden="true"
-        />
-      )}
-      <div
-        className={`sidebar-row px-2.5 py-2 rounded-md select-none ${disabled ? 'cursor-default' : 'cursor-pointer'} ${needsYou ? 'sidebar-row-needs' : ''} ${isActive ? 'sidebar-row-active' : ''}`}
-        onClick={() => onOpen(row)}
-      >
-        <div
-          className="-mx-2.5 -my-2 flex min-w-0 items-start gap-2 px-2.5 py-2"
-          role="treeitem"
-          aria-level={1}
-          tabIndex={tabStop ? 0 : -1}
-          aria-selected={isActive}
-          aria-disabled={disabled || undefined}
-          data-sidebar-row={row.id}
-          data-host-row={row.id}
-          onKeyDown={(e) => {
-            if (e.target !== e.currentTarget) return;
-            if (e.key === 'Enter' || e.key === ' ') {
-              e.preventDefault();
-              onOpen(row);
-            }
-          }}
-        >
-          <span className={`mt-1 flex-none ${disabled ? 'opacity-60' : ''}`}>
-            <StatusMarkView
-              status={markStatus}
-              quiet={needsYou}
-              label={markStatus !== 'idle' ? t(AGENT_STATUS_ICON[markStatus].labelKey) : undefined}
-            />
-          </span>
-          <div className={`flex-1 min-w-0 ${disabled ? 'opacity-60' : ''}`} data-workspace-text>
-            <div className="flex items-center gap-1">
-              <span
-                className="wmux-row-title font-sans text-[13px] leading-snug truncate font-semibold text-[var(--text-main)]"
-                title={displayName}
-              >
-                {displayName}
-              </span>
-              {row.pinned && (
-                <span className="flex-none text-[var(--text-muted)]" role="img" aria-label={t('sidebar.pinned')} title={t('sidebar.pinned')} data-sidebar-pinned>
-                  <IconPin size={10} />
-                </span>
-              )}
-              <span className="ml-auto flex flex-shrink-0 items-center gap-1" data-row-trailing>
-                {paneCount > 0 && !needsYou && !errored && (
-                  <span
-                    className="text-[11px] tabular-nums text-[color-mix(in_srgb,var(--text-main)_45%,transparent)] flex-shrink-0"
-                    title={paneCount === 1 ? t('remote.paneCountOne') : t('remote.paneCount', { count: paneCount })}
-                    data-host-pane-count
-                  >
-                    {paneCount}
-                  </span>
-                )}
-                {needsYou && (
-                  <span className="font-sans text-[11px] font-medium text-[var(--attention-text)] flex-shrink-0" data-row-needs-you>{t('workspace.needsYou')}</span>
-                )}
-                {errored && (
-                  <span className="font-sans text-[11px] font-medium text-[var(--accent-red)] flex-shrink-0" data-row-error>{t('workspace.agentError')}</span>
-                )}
-              </span>
-            </div>
-            {row.gitBranch && (
-              <div className="flex items-center gap-2 mt-1 text-[11px] leading-4 tabular-nums text-[color-mix(in_srgb,var(--text-main)_45%,transparent)] min-w-0" data-git-signal-line>
-                <span className="min-w-0 truncate font-mono" title={row.gitBranch}>
-                  <span className="mr-1 inline-flex align-[-2px]" aria-hidden="true"><IconGitBranch size={12} /></span>
-                  {row.gitBranch}
-                </span>
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
 
 /**
  * The collapsed rail's workspace avatars while a paired computer is selected:

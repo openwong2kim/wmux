@@ -82,6 +82,7 @@ import {
 } from '../terminal/terminalOutputScheduler';
 import { reconnectPtyWithRetry as reconnectPtyWithRetryImpl } from './reconnectPtyWithRetry';
 import { adoptTerminal, parkTerminal, restoreParkedViewport, type ParkedTerminal } from '../terminal/terminalPark';
+import { captureColdFrame, coldFrameFits, dropColdFrame, splitTrailingEscape, takeColdFrame, WarmFrameSwap, FULL_RESET, REPAINT_BEGIN, REPAINT_END, type ColdFrame } from '../terminal/coldFrame';
 
 // One detector for every pane in this renderer: the ESC-pair state is keyed by
 // ptyId, and a per-mount instance would lose a double-tap split across a remount.
@@ -196,7 +197,13 @@ const ptyDataDispatcher = createPtyDispatcher<PtyDataPayload>((cb) =>
     replay: replay === true,
   })));
 const ptyExitDispatcher = createPtyDispatcher<number>((cb) =>
-  window.electronAPI.pty.onExit(cb));
+  window.electronAPI.pty.onExit((ptyId, exitCode) => {
+    // An exited PTY is never reattached, so its cold frame (if its pane was
+    // unmounted) would only ever paint a dead screen. Dropped here because a
+    // parked pane has no per-mount exit listener left to do it.
+    dropColdFrame(ptyId);
+    cb(ptyId, exitCode);
+  }));
 const ptyFlushDispatcher = createPtyDispatcher<number>((cb) =>
   window.electronAPI.pty.onFlushComplete(cb));
 /** Test seam: detach the global IPC listeners and drop all registrations so
@@ -538,10 +545,27 @@ interface ResyncState {
  *  usually retries. */
 const RESYNC_DEGRADED_COOLDOWN_MS = 30_000;
 
+// [wmux:reveal-timing] — how long a freshly mounted, visible pane waits for
+// its screen (the cold-park reveal). A timing window opens at mount and
+// closes at the attach flush marker; each stage logs at most once per window
+// with the elapsed ms since mount, so one reveal costs about five lines.
+// Stages outside a window (a later daemon:connected reattach, a hidden
+// mount at startup) do not log. Mirrored into the main log like the other
+// [wmux:*] lines.
+const revealTimingT0 = new Map<string, number>();
+function revealTiming(ptyId: string, stage: string, extra = ''): void {
+  const t0 = revealTimingT0.get(ptyId);
+  if (t0 === undefined) return;
+  const dt = (performance.now() - t0).toFixed(1);
+  console.log(`[wmux:reveal-timing] ptyId=${ptyId} stage=${stage} +${dt}ms${extra ? ` ${extra}` : ''}`);
+}
+
 // Read-path hydration (MCP pane.search / input.readScreen): a dirty hidden
 // pane must be re-synced before its buffer is scanned, or agents silently read
 // stale output. Keyed by ptyId; registered per mounted terminal.
 const hydrateRegistry = new Map<string, () => Promise<void>>();
+/** Longest a read waits for a painted cold frame to be swapped out. */
+const COLD_FRAME_READ_WAIT_MS = 3000;
 export async function hydrateTerminalForRead(ptyId: string): Promise<void> {
   const fn = hydrateRegistry.get(ptyId);
   if (fn) await fn();
@@ -2693,11 +2717,30 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         terminal.write(STALE_REPLAY_DISPLAY_RESETS);
       }).catch(() => { /* best-effort — a transient list failure just skips the reset */ });
     };
+    // Cold-park reveal: the swap from a painted cold frame to the daemon
+    // replay (coldFrame.ts). Idle unless this mount painted one.
+    const warmSwap = new WarmFrameSwap();
+    // A cold frame taken at mount whose width the first fit did not match yet
+    // (see the paint below); null once painted, given up, or overtaken by output.
+    let deferredColdFrame: ColdFrame | null = null;
     // Phase 3: settle an in-flight resync when its replay flush completes.
-    // reset() runs FIRST — synchronous, and the replay bytes were held in the
-    // resync buffer (never handed to xterm), so nothing can parse ahead of it
-    // — then the held replay lands on the clean buffer. Returns true when the
-    // flush belonged to a resync (callers skip their normal verdict logic).
+    // The reset goes FIRST, in the stream: the replay bytes were held in the
+    // resync buffer (never handed to xterm), so nothing can parse between the
+    // reset and them — the held replay lands on the clean buffer. Returns
+    // true when the flush belonged to a resync (callers skip their normal
+    // verdict logic).
+    //
+    // Cold-park reveal follow-up: the reset used to be a synchronous
+    // terminal.reset() while the replay parsed in a later task, so a render
+    // could land in between and paint the empty screen for a frame or two.
+    // REPAINT_BEGIN is RIS (the same Terminal.reset() xterm runs for
+    // terminal.reset(), so modes, cursor and buffers end up identical) plus a
+    // DEC 2026 hold parsed in the same call; REPAINT_END releases the
+    // finished screen. Bytes xterm had already been handed now parse before
+    // the RIS and are wiped with the stale screen, instead of after it.
+    // The prompt-mode guard is reset when the RIS has actually been parsed
+    // (its write callback), which is the "next to terminal.reset()" point its
+    // contract asks for.
     const completeResyncFromFlush = (recoveredBytes: number): boolean => {
       const st = resyncRef.current;
       if (!st.pending) return false;
@@ -2716,13 +2759,18 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // must stay where they were after the recovered screen lands.
       const fromBottom = Math.max(0, terminal.buffer.active.baseY - terminal.buffer.active.viewportY);
       discardTerminalOutput(terminal); // stale retained backlog + dirty flag
-      terminal.reset();
-      shellPromptModeResetFor(terminal)?.reset();
+      warmSwap.cancel(); // this repaint replaces any pending cold frame
+      terminal.write(REPAINT_BEGIN, () => { shellPromptModeResetFor(terminal)?.reset(); });
       // The scanner labels every held chunk at its source. Historical bytes
       // are muted for their exact parse lifetime; live output is not muted.
-      for (const chunk of st.buffer) {
+      // END goes before an escape sequence the replay ends inside, which the
+      // next live bytes finish (splitTrailingEscape).
+      const held = splitTrailingEscape(st.buffer);
+      for (const chunk of held.complete) {
         writePtyDataImmediately(terminal, chunk, replayMuteRef.current);
       }
+      terminal.write(REPAINT_END);
+      if (held.pending) writePtyDataImmediately(terminal, held.pending, replayMuteRef.current);
       if (fromBottom > 0) {
         // Trailing empty write = parse barrier (callbacks fire in write
         // order); scrollToLine only after the recovered screen is parsed and
@@ -2780,7 +2828,14 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     const restingCursor = new RestingCursorGuard((seq) => {
       deliverPtyData({ data: seq, replay: false });
     });
+    let revealFirstDataLogged = false;
+    const logRevealFirstData = (payload: PtyDataPayload) => {
+      if (revealFirstDataLogged) return;
+      revealFirstDataLogged = true;
+      revealTiming(ptyId, 'first-data', `replay=${payload.replay} chars=${payload.data.length}`);
+    };
     const routePtyData = (payload: PtyDataPayload) => {
+      logRevealFirstData(payload);
       deliverPtyData({ ...payload, data: restingCursor.process(payload.data) });
     };
     const deliverPtyData = (payload: PtyDataPayload) => {
@@ -2802,6 +2857,9 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         if (st.bufferedChars > RESYNC_BUFFER_MAX_CHARS) abortResync('buffer-overflow');
         return;
       }
+      // Cold-park reveal: RIS + DEC 2026 BEGIN in front of the replay's first
+      // chunk (coldFrame.ts), past the resting-cursor guard and the hold-out.
+      const data = warmSwap.onData(payload.data);
       // Output scheduler (multi-workspace stutter fix): visible panes write
       // directly (old path, zero added latency); hidden panes are batched —
       // or, with retention on (daemon sessions), queued without ever being
@@ -2809,11 +2867,21 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // "terminal.write was CALLED"), not at IPC receipt.
       const retain = hiddenRetentionActive();
       if (!isVisibleRef.current) logRetentionGateOnce(retain);
-      writeTerminalOutput(terminal, payload.data, {
+      writeTerminalOutput(terminal, data, {
         foreground: isVisibleRef.current,
         retainWhenHidden: retain,
         onWritten: (chars) => glyphRepaint.onData(chars),
         write: payload.replay ? writeReplayOutput : undefined,
+      });
+    };
+    // Write what the cold-frame swap owes at a flush marker (or after held
+    // payloads), through the scheduler so it stays behind the replay bytes it
+    // closes — queued, retained or discarded together with them.
+    const writeSwapBytes = (bytes: string | null) => {
+      if (bytes === null) return;
+      writeTerminalOutput(terminal, bytes, {
+        foreground: isVisibleRef.current,
+        retainWhenHidden: hiddenRetentionActive(),
       });
     };
 
@@ -2836,6 +2904,11 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       });
 
       removeExitListener = ptyExitDispatcher.register(ptyId, (exitCode) => {
+        // A later resize must not paint a cached live screen over the marker,
+        // and a painted one still waiting for its replay goes now: that
+        // replay's RIS would wipe the marker (coldFrame.ts).
+        deferredColdFrame = null;
+        if (warmSwap.phase === 'warm') { warmSwap.cancel(); writeSwapBytes(FULL_RESET); }
         // Through the scheduler so the exit marker cannot overtake output
         // still queued for this (possibly hidden) pane.
         writeTerminalOutput(terminal, `\r\n${t('terminal.exitedBracket', { code: exitCode })}\r\n`, {
@@ -2844,6 +2917,48 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         });
       });
     };
+
+    // Cold-park reveal: a fresh daemon-mode mount of a pane this renderer
+    // disposed earlier paints the screen that pane last showed, right now,
+    // instead of an empty pane for as long as the daemon takes to rebuild and
+    // ship its snapshot. warmSwap then swaps the replay in over it without an
+    // empty frame (coldFrame.ts). Only after a real fit at the cached width:
+    // a frame written at another width wraps (see coldFrameFits). Viewer
+    // panes (fixedGeometry) mirror another pane's grid and are left alone.
+    const coldFrame = !adopted && !fixedGeometryRef.current && isDaemonModeActive()
+      ? takeColdFrame(ptyId)
+      : null;
+    const paintColdFrame = coldFrame !== null && initialFitRan && coldFrameFits(coldFrame, terminal.cols);
+    if (paintColdFrame) {
+      terminal.write(coldFrame.frame);
+      warmSwap.painted();
+      // The pane has its screen: drop the "Restoring session..." overlay a
+      // scrollbackFile pane raises until first data (same as an adoption).
+      fireFirstData();
+    }
+    // The first fit runs before the WebGL renderer is in, with the DOM
+    // renderer's measured cell; WebGL then rounds the cell to whole device
+    // pixels and refits. At 125 % scaling an 8.2 px cell becomes 8 px, so a
+    // pane captured at 118 columns mounts at 115 and reaches 118 a frame or
+    // two later, long before the replay. Keep a frame the first fit did not
+    // match and paint it at the first resize to its width, unless PTY output
+    // was routed to this mount first (revealFirstDataLogged) or the attach
+    // settled (the flush listeners drop it).
+    deferredColdFrame = coldFrame !== null && !paintColdFrame && initialFitRan ? coldFrame : null;
+    const deferredColdFrameResize = deferredColdFrame ? terminal.onResize(({ cols }) => {
+      const frame = deferredColdFrame;
+      if (!frame || revealFirstDataLogged || !coldFrameFits(frame, cols)) return;
+      deferredColdFrame = null;
+      terminal.write(frame.frame);
+      warmSwap.painted();
+      fireFirstData();
+      revealTiming(ptyId, 'cold-frame-painted', `${cols}x${terminal.rows}`);
+    }) : null;
+    if (isVisibleRef.current) {
+      if (!adopted) revealTimingT0.set(ptyId, performance.now());
+      else revealTimingT0.delete(ptyId);
+      console.log(`[wmux:reveal-timing] ptyId=${ptyId} stage=mount +0.0ms mode=${adopted ? 'adopted' : 'fresh'} cachedFrame=${paintColdFrame ? 'yes' : coldFrame ? `${deferredColdFrame ? 'deferred' : 'skipped'}(${coldFrame.cols}x${coldFrame.rows}->${initialFitRan ? `${terminal.cols}x${terminal.rows}` : 'unfitted'})` : 'no'}`);
+    }
 
     // #1002: an adopted terminal carries its own buffer across the restructure,
     // so the `.txt` restore below would write a second copy of the scrollback
@@ -2869,6 +2984,9 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       });
 
       removeExitListener = ptyExitDispatcher.register(ptyId, (exitCode) => {
+        // See the connectPty exit listener.
+        deferredColdFrame = null;
+        if (warmSwap.phase === 'warm') { warmSwap.cancel(); writeSwapBytes(FULL_RESET); }
         writeTerminalOutput(terminal, `\r\n${t('terminal.exitedBracket', { code: exitCode })}\r\n`, {
           foreground: isVisibleRef.current,
           retainWhenHidden: hiddenRetentionActive(),
@@ -2882,7 +3000,13 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       //    we apply the verdict now.
       removeFlushListener = ptyFlushDispatcher.register(ptyId, (recoveredBytes) => {
         if (terminalRef.current !== terminal) return;
+        revealTiming(ptyId, 'flush-complete', `recoveredBytes=${recoveredBytes} swap=${warmSwap.phase}`);
+        revealTimingT0.delete(ptyId);
+        deferredColdFrame = null; // the attach is settled: too late for a cosmetic frame
         if (completeResyncFromFlush(recoveredBytes)) return;
+        // Cold-park reveal: close the swap opened in front of the replay
+        // (or drop the cached frame when nothing was replayed).
+        writeSwapBytes(warmSwap.onFlush(recoveredBytes));
         // Phase 3 deferral: hidden + retention means the replay just rode
         // pty.onData into the retained queue — flushing it here is exactly
         // the boot flood retention exists to remove. recoveredBytes>0 →
@@ -2993,6 +3117,9 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         for (const payload of pendingData) {
           routePtyData(payload);
         }
+        // A flush marker that overtook these held payloads left the swap's
+        // END owed until now.
+        writeSwapBytes(warmSwap.settleHeld());
         if (pendingData.length > 0) { fireFirstData(); markPaneLive(); }
         pendingData.length = 0;
         // Register with the scrollback autosave only after restore
@@ -3021,6 +3148,9 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         for (const payload of pendingData) {
           routePtyData(payload);
         }
+        // A flush marker that overtook these held payloads left the swap's
+        // END owed until now.
+        writeSwapBytes(warmSwap.settleHeld());
         if (pendingData.length > 0) { fireFirstData(); markPaneLive(); }
         pendingData.length = 0;
         registerTerminal(ptyId, terminal);
@@ -3045,7 +3175,13 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // .txt cache.
       removeFlushListener = ptyFlushDispatcher.register(ptyId, (recoveredBytes) => {
         if (terminalRef.current !== terminal) return;
+        revealTiming(ptyId, 'flush-complete', `recoveredBytes=${recoveredBytes} swap=${warmSwap.phase}`);
+        revealTimingT0.delete(ptyId);
+        deferredColdFrame = null; // the attach is settled: too late for a cosmetic frame
         if (completeResyncFromFlush(recoveredBytes)) return;
+        // Cold-park reveal: close the swap opened in front of the replay
+        // (or drop the cached frame when nothing was replayed).
+        writeSwapBytes(warmSwap.onFlush(recoveredBytes));
         // Phase 3 deferral — see the scrollback-branch handler above.
         if (!isVisibleRef.current && hiddenRetentionActive()) {
           if (recoveredBytes > 0) markTerminalDirty(terminal);
@@ -3088,6 +3224,14 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // would otherwise never call back, and the read would burn its whole RPC
     // deadline and return nothing. See parseBarrier.ts.
     const hydrateForRead = async (): Promise<void> => {
+      if (terminalRef.current !== terminal) return;
+      // Cold-park reveal: a painted cold frame is minutes old. Let the daemon
+      // replay replace it before the buffer is read (bounded: a lost flush
+      // marker reads the frame, as before).
+      const swapDeadline = performance.now() + COLD_FRAME_READ_WAIT_MS;
+      while (warmSwap.phase !== 'idle' && terminalRef.current === terminal && performance.now() < swapDeadline) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
       if (terminalRef.current !== terminal) return;
       if (isTerminalDirty(terminal)) {
         await startResync('hydrate-read');
@@ -3272,6 +3416,19 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       if (ptyId && hydrateRegistry.get(ptyId) === hydrateForRead) {
         hydrateRegistry.delete(ptyId);
       }
+      // Cold-park reveal: keep the screen this pane showed, for the next fresh
+      // mount on this ptyId (coldFrame.ts). Captured in disposeTerminal, so
+      // at final disposal only (an adopted terminal keeps its screen) and
+      // before terminal.dispose(). Not for a stale duplicate instance (a
+      // later mount owns the pane) or a viewer pane.
+      const captureFrame = isDaemonModeActive() && !fixedGeometryRef.current && parkRefusal !== 'not-registry-owner';
+      // A swap still open would leave an adopting mount (which has its own,
+      // idle swap) holding a DEC 2026 frame until xterm's timeout; close it.
+      writeSwapBytes(warmSwap.close());
+      warmSwap.cancel();
+      deferredColdFrameResize?.dispose();
+      deferredColdFrame = null;
+      revealTimingT0.delete(ptyId);
       // Drop any output still queued in the shared scheduler — the terminal
       // is being disposed, parsing the backlog would be wasted work and a
       // post-dispose drain write would throw. A PARKED terminal keeps its
@@ -3290,6 +3447,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         // Invalidate this terminal's mute only at FINAL disposal, not when it
         // is parked for adoption: its xterm write buffer survives the mount.
         disposeTerminalReplayMute(terminal);
+        if (captureFrame) captureColdFrame(ptyId, terminal);
         discardTerminalOutput(terminal);
         disposeWhenDragEnds(() => terminal.dispose());
       };
@@ -3359,6 +3517,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       reconnectInFlightRef.current = true;
       if (slowRetry !== null) { clearTimeout(slowRetry); slowRetry = null; }
       console.log(`[useTerminal] daemon reattach ptyId=${id} (${reason})`);
+      revealTiming(id, 'reattach-start', `reason=${reason}`);
       return reconnectPtyWithRetry(id, () => ptyIdRef.current === id && terminalRef.current !== null, (message, info) => {
         // A non-null message means the attempt settled WITHOUT a session pipe
         // (rate limited, WSL recovery pending); null means it attached.
@@ -3369,6 +3528,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         onRecoveryErrorRef.current?.(message, info);
       })
         .then((stored) => {
+          revealTiming(id, 'reattach-resolved');
           // #882 — the daemon starts every managed session at `viewerVisible:
           // true` and resets to true on detach, so a reattach that lands while
           // this pane is hidden (background workspace, minimized window) leaves

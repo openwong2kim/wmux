@@ -139,3 +139,11 @@ describe('roster row labels', () => {
     });
   });
 });
+
+describe('rosterSecondaryLabel in a paired computer\'s own list', () => {
+  it("draws the host's pane name instead of the @host origin", () => {
+    const r = { agentName: 'Claude Code', paneName: 'w1-1', surfaceIndex: 0, surfaceCount: 1, remote: { hostId: 'h1', hostLabel: 'office-mac' } } as Parameters<typeof rosterSecondaryLabel>[0];
+    expect(rosterSecondaryLabel(r, { showVendor: false })).toBe('@office-mac');
+    expect(rosterSecondaryLabel(r, { showVendor: false, hostView: true })).toBe('w1-1');
+  });
+});

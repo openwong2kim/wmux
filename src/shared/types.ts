@@ -985,6 +985,10 @@ export interface SessionData {
   sidebarWidth?: number;
   /** #1481 — owner workspace id → user-chosen expansion of its fan-out task group. */
   sidebarTaskGroupExpanded?: Record<string, boolean>;
+  /** ptyId → the pending question the user dismissed. Persisted because the
+   *  daemon's PTYs outlive an app restart and a later Stop re-reads the same
+   *  question from the transcript; pruned on load to ptyIds the session holds. */
+  surfaceDismissedQuestion?: Record<string, string>;
   /** How the multiview grid arranges its tiles (#746). Whitelisted on load. */
   multiviewArrangement?: 'auto' | 'columns' | 'rows';
   notificationSoundEnabled?: boolean;
