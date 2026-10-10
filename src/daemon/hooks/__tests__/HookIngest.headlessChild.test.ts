@@ -135,6 +135,25 @@ describe('HookIngest — a nested headless child never speaks for its host pane'
     expect(untracked.bindings).toHaveLength(1);
   });
 
+  it('an unknown entrypoint keeps its alarms but never rebinds the pane', () => {
+    const f = setup();
+    f.ingest.handle(parent({ kind: 'agent.session_start', agentSessionId: PARENT_ID }));
+    f.ingest.handle(signal({ entrypoint: 'future-ide', kind: 'agent.activity', payload: { tool_name: 'Bash' } }));
+    f.ingest.handle(signal({ entrypoint: 'future-ide', agentSessionId: CHILD_ID }));
+    vi.advanceTimersByTime(DEFAULT_ALARM_WINDOW_MS);
+    expect(f.bindings.map((b) => b.sessionId)).toEqual([PARENT_ID]);
+    expect(f.emitted.at(-1)).toMatchObject({ status: 'complete', decision: 'emit' });
+    expect(f.logs.some(([, m]) => m.includes('entrypoint future-ide is not a known interactive surface'))).toBe(true);
+  });
+
+  it('a WSL hook is never pid-compared, so its own /clear still rebinds', () => {
+    // Under WSL the hook's parent is the hook.sh shell, not the agent.
+    const f = setup();
+    f.ingest.handle(signal({ kind: 'agent.session_start', agentSessionId: PARENT_ID, agentPid: CHILD_PID, wslAgentProcess: 'boot\x1e1\x1e2\x1eclaude' }));
+    f.ingest.handle(signal({ kind: 'agent.session_start', agentSessionId: CLEARED_ID, agentPid: CHILD_PID, wslAgentProcess: 'boot\x1e1\x1e2\x1eclaude' }));
+    expect(f.bindings.map((b) => b.sessionId)).toEqual([PARENT_ID, CLEARED_ID]);
+  });
+
   it('a child permission gate raises no card', () => {
     const f = setup();
     expect(f.ingest.handlePermissionGate(child({ kind: 'agent.awaiting_permission', payload: { tool_name: 'Bash' } })))

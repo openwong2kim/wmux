@@ -351,12 +351,18 @@ function isCrossProviderSignal(signal: AgentSignal): boolean {
 }
 
 /**
- * Claude Code entrypoints that are a person's session: the CLI TUI and the IDE
- * extensions. `claude -p` reports `sdk-cli`, even when it was started by an
- * interactive `cli` whose env it inherits (measured). Kept equal to the set in
- * integrations/claude/bin/wmux-bridge.mjs.
+ * CLAUDE_CODE_ENTRYPOINT, classified. `interactive` is a person's session (the
+ * CLI TUI, the IDE extensions); `headless` is an SDK surface (`claude -p`
+ * reports `sdk-cli`, even when started by an interactive `cli` whose env it
+ * inherits — measured) or `mcp` (`claude mcp serve`); `unknown` is any other
+ * value. Kept equal to classifyEntrypoint in integrations/claude/bin/wmux-bridge.mjs.
  */
-const INTERACTIVE_ENTRYPOINTS: ReadonlySet<string> = new Set(['cli', 'vscode', 'jetbrains']);
+export function classifyEntrypoint(entrypoint: string | undefined): 'interactive' | 'headless' | 'unknown' | 'absent' {
+  if (!entrypoint) return 'absent';
+  if (entrypoint === 'cli' || entrypoint === 'vscode' || entrypoint === 'jetbrains') return 'interactive';
+  if (entrypoint.startsWith('sdk-') || entrypoint === 'mcp') return 'headless';
+  return 'unknown';
+}
 
 /**
  * The bridge's `entrypoint` (CLAUDE_CODE_ENTRYPOINT): an envelope key the
@@ -367,7 +373,12 @@ export function signalEntrypoint(signal: AgentSignal): string | undefined {
   return typeof value === 'string' && value.length > 0 && value.length <= 64 ? value : undefined;
 }
 
-/** The bridge's `agentPid` — the process that ran the hook. Undeclared, like `entrypoint`. */
+/**
+ * The bridge's `agentPid` — the hook's parent process. OBSERVATIONAL: the
+ * bridge sends it only where that parent is measured to be the agent itself
+ * (macOS); a shell wrapper (WSL hook.sh, Windows) would make it a shell pid.
+ * Undeclared, like `entrypoint`.
+ */
 export function signalAgentPid(signal: AgentSignal): number | undefined {
   const value = (signal as unknown as Record<string, unknown>).agentPid;
   return typeof value === 'number' && Number.isSafeInteger(value) && value > 1 ? value : undefined;
@@ -670,21 +681,26 @@ export class HookIngest {
    * names this pane exactly, yet its session is not the pane's conversation:
    * it must never rebind the pane, mark it hook-governed, or end its turn.
    *
-   *   1. A known non-interactive entrypoint (`sdk-cli`, …) is foreign.
+   *   1. A known headless entrypoint (`sdk-cli`, …) is foreign.
    *   2. An interactive entrypoint is the pane's own: a nested child cannot be
    *      interactive, and a pid test here could refuse a legitimate /clear
    *      while the tracker still holds a just-exited agent's pid.
-   *   3. No entrypoint (an older bridge or Claude Code): foreign only when the
+   *   3. An unknown entrypoint keeps its signal (a future interactive surface
+   *      must not lose its alarms); only its binding is refused, at the
+   *      binding site.
+   *   4. No entrypoint (an older bridge or Claude Code): foreign only when the
    *      hook named its process and the tracker attributes a DIFFERENT one to
    *      the pane. Without either pid there is no evidence, and refusing would
    *      leave every un-upgraded pane with no recovery binding at all — so
-   *      today's behaviour stands.
+   *      today's behaviour stands. A WSL hook is never compared: its parent is
+   *      the hook.sh shell, and the tracked pid is a Windows-side view.
    */
   private foreignProcessReason(signal: AgentSignal, sessionId: string): string | null {
     const entrypoint = signalEntrypoint(signal);
-    if (entrypoint !== undefined) {
-      return INTERACTIVE_ENTRYPOINTS.has(entrypoint) ? null : `entrypoint ${entrypoint} is not interactive`;
-    }
+    const entrypointClass = classifyEntrypoint(entrypoint);
+    if (entrypointClass === 'headless') return `entrypoint ${entrypoint} is not interactive`;
+    if (entrypointClass !== 'absent') return null;
+    if (signal.wslAgentProcess !== undefined) return null;
     const hookPid = signalAgentPid(signal);
     if (hookPid === undefined) return null;
     const trackedPid = this.deps.agentPidFor?.(sessionId);
@@ -1122,7 +1138,11 @@ export class HookIngest {
       // cannot take, means the signal is not about this pane's conversation.
       // An exited agent reports no live slug, so switching agents still binds.
       const liveAgent = this.deps.liveAgentFor?.(sessionId);
-      if (liveAgent && liveAgent !== signal.agent) {
+      const entrypoint = signalEntrypoint(signal);
+      if (classifyEntrypoint(entrypoint) === 'unknown') {
+        // The bridge strips these already; an older or foreign sender may not.
+        this.noteMismatch(sessionId, `[hooks] refused ${signal.agent} resume binding on ${sessionId}: entrypoint ${entrypoint} is not a known interactive surface`);
+      } else if (liveAgent && liveAgent !== signal.agent) {
         this.noteMismatch(sessionId, `[hooks] refused ${signal.agent} resume binding on ${sessionId}: ${liveAgent} is the agent running there`);
       } else if (!isPlausibleResumeSessionId(signal.agent, signal.agentSessionId)) {
         this.noteMismatch(sessionId, `[hooks] refused ${signal.agent} resume binding on ${sessionId}: session id is not ${signal.agent}-shaped`);

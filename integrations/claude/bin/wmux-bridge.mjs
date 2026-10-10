@@ -662,6 +662,17 @@ function countLeftoverBackgroundTasks(transcriptPath) {
 // hook payload but APPENDS to the SAME transcript file (F3), so the filename is
 // the only stable handle on the origin conversation. Falls back to the passed
 // session_id when no transcript path is available.
+// CLAUDE_CODE_ENTRYPOINT → 'interactive' (a person's session: the CLI TUI or an
+// IDE extension), 'headless' (the SDK surfaces — `claude -p` is `sdk-cli` — and
+// `mcp`, i.e. `claude mcp serve`), 'unknown' (any other value), or 'absent'.
+// Kept equal to the classifier in src/daemon/hooks/HookIngest.ts.
+function classifyEntrypoint(entrypoint) {
+  if (!entrypoint) return 'absent';
+  if (entrypoint === 'cli' || entrypoint === 'vscode' || entrypoint === 'jetbrains') return 'interactive';
+  if (entrypoint.startsWith('sdk-') || entrypoint === 'mcp') return 'headless';
+  return 'unknown';
+}
+
 function sessionIdFromTranscript(transcriptPath, fallback) {
   if (typeof transcriptPath === 'string' && transcriptPath.length > 0) {
     const base = transcriptPath.split(/[\\/]/).pop() ?? '';
@@ -1015,6 +1026,28 @@ async function main() {
     }
   }
 
+  // A headless run nested in a pane (`claude -p` started by the pane's own
+  // agent through Bash, the native chat driver) inherits WMUX_PTY_ID, so its
+  // hooks name the HOST pane. Same measured distinguisher as the gate above:
+  // `claude -p` reports `sdk-cli` even when its parent is an interactive `cli`.
+  //   - Known headless: send NOTHING. Its transcript is not the pane's
+  //     conversation, and even an id-less Stop would raise the host pane's
+  //     completion on an older daemon or on main's fallback path. Checked
+  //     before the activity throttle so it cannot touch the pane's stamp.
+  //   - Unknown (a surface this bridge has not met): send the signal, so its
+  //     alarms keep working, but with no session id or transcript path — an
+  //     unverified process never rebinds the pane or reaches the spool.
+  //   - Absent (an older Claude Code): unchanged; the daemon judges it.
+  const entrypoint = typeof process.env.CLAUDE_CODE_ENTRYPOINT === 'string'
+    && process.env.CLAUDE_CODE_ENTRYPOINT.length > 0
+    ? process.env.CLAUDE_CODE_ENTRYPOINT
+    : undefined;
+  const entrypointClass = classifyEntrypoint(entrypoint);
+  if (entrypointClass === 'headless') {
+    logEvent('headless-skipped', { hook: hookName, entrypoint });
+    return;
+  }
+
   let payload;
   try {
     payload = await readStdin();
@@ -1026,6 +1059,13 @@ async function main() {
   if (payload === null && hookName !== 'SessionStart') {
     logEvent('empty-stdin', { hook: hookName });
     return;
+  }
+  if (entrypointClass === 'unknown' && payload) {
+    // Stripped from the payload too: the daemon reads payload.transcript_path.
+    payload = { ...payload };
+    delete payload.transcript_path;
+    delete payload.session_id;
+    logEvent('unknown-entrypoint', { hook: hookName, entrypoint });
   }
 
   // PreToolUse fires per tool call; we only treat AskUserQuestion as
@@ -1098,27 +1138,6 @@ async function main() {
   // We only do this for stop-class kinds. PostToolUse / SessionStart
   // do not carry final usage and the cost of the read isn't justified
   // per tool call.
-  // A headless run nested in a pane (`claude -p` started by the pane's own
-  // agent through Bash, the native chat driver) inherits WMUX_PTY_ID, so its
-  // hooks name the HOST pane. Its transcript is not the pane's conversation:
-  // reporting it would rebind the pane to the child session (the phone then
-  // shows the child's transcript) and spool that binding for recovery. Same
-  // measured distinguisher as the gate above — `claude -p` reports `sdk-cli`
-  // even when its parent is an interactive `cli`. An ABSENT entrypoint (an
-  // older Claude Code) is not judged here; the daemon decides it.
-  const entrypoint = typeof process.env.CLAUDE_CODE_ENTRYPOINT === 'string'
-    && process.env.CLAUDE_CODE_ENTRYPOINT.length > 0
-    ? process.env.CLAUDE_CODE_ENTRYPOINT
-    : undefined;
-  const headless = entrypoint !== undefined && !INTERACTIVE_ENTRYPOINTS.has(entrypoint);
-  if (headless && payload) {
-    // Stripped from the payload too: a daemon reads payload.transcript_path,
-    // and an older daemon would bind whatever id is left.
-    payload = { ...payload };
-    delete payload.transcript_path;
-    delete payload.session_id;
-  }
-
   const transcriptPath = (payload && typeof payload.transcript_path === 'string' && payload.transcript_path.length > 0)
     ? payload.transcript_path
     : null;
@@ -1206,10 +1225,11 @@ async function main() {
     ptyId: envPtyId,
     ...(wslAgentProcess ? { wslAgentProcess } : {}),
     ...(entrypoint ? { entrypoint } : {}),
-    // The process that ran this hook: Claude Code itself (measured on macOS —
-    // no shell between them). The daemon compares it with the pane's tracked
-    // agent process before letting an entrypoint-less signal rebind the pane.
-    agentPid: process.ppid,
+    // OBSERVATIONAL: the hook's parent process. Sent only on macOS, where it is
+    // measured to be Claude Code itself (no shell between them). Elsewhere it
+    // can be a shell — the WSL hook.sh wrapper, a Windows shell — so it is
+    // omitted rather than mislead the daemon's pid check.
+    ...(process.platform === 'darwin' ? { agentPid: process.ppid } : {}),
     cwd: payloadCwd ?? process.cwd(),
     payload: {
       ...(payload ?? {}),

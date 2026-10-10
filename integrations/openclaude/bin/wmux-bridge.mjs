@@ -302,6 +302,15 @@ function extractPermissionModeFromTranscript(transcriptPath) {
 }
 
 // Derive session id from transcript filename (stable across --resume).
+// CLAUDE_CODE_ENTRYPOINT → 'interactive' | 'headless' | 'unknown' | 'absent';
+// the same classifier as the Claude bridge.
+function classifyEntrypoint(entrypoint) {
+  if (!entrypoint) return 'absent';
+  if (entrypoint === 'cli' || entrypoint === 'vscode' || entrypoint === 'jetbrains') return 'interactive';
+  if (entrypoint.startsWith('sdk-') || entrypoint === 'mcp') return 'headless';
+  return 'unknown';
+}
+
 function sessionIdFromTranscript(transcriptPath, fallback) {
   if (typeof transcriptPath === 'string' && transcriptPath.length > 0) {
     const base = transcriptPath.split(/[\\/]/).pop() ?? '';
@@ -469,6 +478,22 @@ async function main() {
     return; // exit 0 below
   }
 
+  // A headless run nested in a pane (`-p` started by the pane's own agent)
+  // inherits WMUX_PTY_ID, so its hooks name the HOST pane. Same rule as the
+  // Claude bridge: a known headless entrypoint sends nothing (an id-less Stop
+  // would still raise the host pane's completion on an older daemon); an
+  // unknown one is sent without a session id or transcript path; an absent one
+  // is left for the daemon to judge.
+  const entrypoint = typeof process.env.CLAUDE_CODE_ENTRYPOINT === 'string'
+    && process.env.CLAUDE_CODE_ENTRYPOINT.length > 0
+    ? process.env.CLAUDE_CODE_ENTRYPOINT
+    : undefined;
+  const entrypointClass = classifyEntrypoint(entrypoint);
+  if (entrypointClass === 'headless') {
+    logEvent('headless-skipped', { hook: hookName, entrypoint });
+    return;
+  }
+
   let payload;
   try {
     payload = await readStdin();
@@ -503,21 +528,11 @@ async function main() {
     ? payload.cwd
     : null;
 
-  // A headless run nested in a pane (`-p` started by the pane's own agent)
-  // inherits WMUX_PTY_ID, so its hooks name the HOST pane; its transcript is
-  // not the pane's conversation. Same rule as the Claude bridge: a known
-  // non-interactive entrypoint reports no session id and no transcript path,
-  // so it can never rebind the pane (or be spooled for recovery). An absent
-  // entrypoint is left for the daemon to judge.
-  const INTERACTIVE_ENTRYPOINTS = new Set(['cli', 'vscode', 'jetbrains']);
-  const entrypoint = typeof process.env.CLAUDE_CODE_ENTRYPOINT === 'string'
-    && process.env.CLAUDE_CODE_ENTRYPOINT.length > 0
-    ? process.env.CLAUDE_CODE_ENTRYPOINT
-    : undefined;
-  if (entrypoint !== undefined && !INTERACTIVE_ENTRYPOINTS.has(entrypoint) && payload) {
+  if (entrypointClass === 'unknown' && payload) {
     payload = { ...payload };
     delete payload.transcript_path;
     delete payload.session_id;
+    logEvent('unknown-entrypoint', { hook: hookName, entrypoint });
   }
 
   // Token usage extraction from transcript_path.
@@ -566,8 +581,8 @@ async function main() {
     surfaceId: envSurfaceId,
     ptyId: envPtyId,
     ...(entrypoint ? { entrypoint } : {}),
-    // The process that ran this hook (the agent itself); see the Claude bridge.
-    agentPid: process.ppid,
+    // OBSERVATIONAL, macOS only: see the Claude bridge.
+    ...(process.platform === 'darwin' ? { agentPid: process.ppid } : {}),
     cwd: payloadCwd ?? process.cwd(),
     payload: {
       ...(payload ?? {}),

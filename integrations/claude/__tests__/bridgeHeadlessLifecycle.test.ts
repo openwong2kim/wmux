@@ -2,9 +2,10 @@
  * A headless `claude -p` the pane's own agent starts through Bash inherits the
  * pane's WMUX_PTY_ID, so its lifecycle hooks name the host pane. Measured: it
  * reports CLAUDE_CODE_ENTRYPOINT=sdk-cli even when its parent is a `cli`. Its
- * session id and transcript path must never leave the bridge — a daemon would
- * rebind the pane to the child's conversation, and the spool would hand the
- * child's id to recovery. The entrypoint rides the envelope for the daemon.
+ * signals must never leave the bridge — a daemon would rebind the pane to the
+ * child's conversation, the spool would hand the child's id to recovery, and
+ * even an id-less Stop raises the host pane's completion on an older daemon.
+ * An unknown entrypoint is sent without binding fields.
  *
  * Runs both real bridges against a fake daemon socket.
  */
@@ -33,7 +34,7 @@ afterAll(() => {
 });
 
 /** One Stop through the real bridge; `accept: false` makes the daemon refuse it (spool path). */
-async function runStop(bridge: string, entrypoint: string | undefined, accept = true) {
+async function runStop(bridge: string, entrypoint: string | undefined, accept = true, hook = 'Stop') {
   const home = mkdtempSync(path.join(tmp, 'home-'));
   mkdirSync(path.join(home, '.wmux'), { recursive: true });
   writeFileSync(path.join(home, '.wmux', 'daemon-auth-token'), 'test-token\n', 'utf8');
@@ -59,7 +60,7 @@ async function runStop(bridge: string, entrypoint: string | undefined, accept = 
   });
   await new Promise<void>((resolve) => server.listen(sock, resolve));
   const code = await new Promise<number | null>((resolve, reject) => {
-    const child = spawn(process.execPath, [bridge, 'Stop'], {
+    const child = spawn(process.execPath, [bridge, hook], {
       env: {
         PATH: process.env.PATH,
         HOME: home,
@@ -70,35 +71,47 @@ async function runStop(bridge: string, entrypoint: string | undefined, accept = 
     });
     child.on('error', reject);
     child.on('close', resolve);
-    child.stdin.end(JSON.stringify({ session_id: SESSION_ID, transcript_path: transcript, hook_event_name: 'Stop', cwd: home }));
+    child.stdin.end(JSON.stringify({ session_id: SESSION_ID, transcript_path: transcript, hook_event_name: hook, tool_name: 'Bash', cwd: home }));
   });
   await new Promise<void>((resolve) => server.close(() => resolve()));
   const spoolDir = path.join(home, '.wmux', 'resume-spool');
   const spooled = existsSync(spoolDir) ? readdirSync(spoolDir).filter((f) => f.endsWith('.json')) : [];
-  return { code, envelopes, spooled };
+  const stamps = path.join(home, '.wmux', 'activity-stamps');
+  const stamped = existsSync(stamps) ? readdirSync(stamps) : [];
+  return { code, envelopes, spooled, stamped };
 }
 
 // Unix socket fake daemon; the bridges' Windows transport is a named pipe.
 describe.skipIf(process.platform === 'win32').each(BRIDGES)('%s bridge lifecycle under a headless entrypoint', (_name, bridge) => {
-  it('sdk-cli Stop carries the entrypoint and no binding fields', async () => {
-    const { code, envelopes } = await runStop(bridge, 'sdk-cli');
+  it.each(['sdk-cli', 'sdk-ts', 'mcp'])('a %s Stop sends nothing and spools nothing', async (entrypoint) => {
+    // Even an id-less Stop would raise the host pane's completion on an older
+    // daemon or on main's fallback path.
+    const accepted = await runStop(bridge, entrypoint);
+    expect(accepted.code).toBe(0);
+    expect(accepted.envelopes).toHaveLength(0);
+    expect((await runStop(bridge, entrypoint, false)).spooled).toHaveLength(0);
+  });
+
+  it('an unknown entrypoint Stop is sent with the entrypoint and no binding fields, and spools nothing', async () => {
+    const { code, envelopes } = await runStop(bridge, 'future-ide');
     expect(code).toBe(0);
     expect(envelopes).toHaveLength(1);
     const [env] = envelopes;
     expect(env.kind).toBe('agent.stop');
-    expect(env.entrypoint).toBe('sdk-cli');
+    expect(env.entrypoint).toBe('future-ide');
     expect(env.ptyId).toBe('pty-1');
     expect(env.agentSessionId).toBeUndefined();
     expect(env.payload.transcript_path).toBeUndefined();
     expect(env.payload.session_id).toBeUndefined();
-    expect(env.payload.usage).toBeUndefined();
-    expect(typeof env.agentPid).toBe('number');
+    expect((await runStop(bridge, 'future-ide', false)).spooled).toHaveLength(0);
   });
 
   it('an interactive Stop still carries its session and transcript', async () => {
     const { envelopes } = await runStop(bridge, 'cli');
     expect(envelopes[0]).toMatchObject({ entrypoint: 'cli', agentSessionId: SESSION_ID });
     expect(String(envelopes[0].payload.transcript_path)).toMatch(new RegExp(`${SESSION_ID}\\.jsonl$`));
+    // Observational, and only where it is measured to be the agent itself.
+    expect(envelopes[0].agentPid === undefined).toBe(process.platform !== 'darwin');
   });
 
   it('an absent entrypoint keeps today\'s envelope (the daemon judges it)', async () => {
@@ -107,8 +120,15 @@ describe.skipIf(process.platform === 'win32').each(BRIDGES)('%s bridge lifecycle
     expect(envelopes[0].agentSessionId).toBe(SESSION_ID);
   });
 
-  it('a refused sdk-cli Stop spools nothing for recovery; an interactive one does', async () => {
-    expect((await runStop(bridge, 'sdk-cli', false)).spooled).toHaveLength(0);
+  it('a headless PostToolUse never touches the pane\'s activity throttle', async () => {
+    const headless = await runStop(bridge, 'sdk-cli', true, 'PostToolUse');
+    expect(headless.envelopes).toHaveLength(0);
+    expect(headless.stamped).toHaveLength(0);
+    // Control: the Claude bridge's throttle does stamp an interactive one.
+    if (_name === 'claude') expect((await runStop(bridge, 'cli', true, 'PostToolUse')).stamped.length).toBeGreaterThan(0);
+  });
+
+  it('an interactive Stop the daemon refuses is spooled for recovery', async () => {
     expect((await runStop(bridge, 'cli', false)).spooled).toHaveLength(1);
   });
 });
