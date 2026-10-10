@@ -20,9 +20,9 @@ import { DesktopPhoneError } from '../phone/DesktopPhoneBridge';
 export const FLEET_TICKET_ROUTE_PREFIX = '/api/fleet/tickets/';
 
 /**
- * The part of the desktop bridge the detail uses. Method syntax on purpose:
- * DesktopPhoneBridge's `request` takes its closed command union, and this
- * command is announced by the desktop at register (`supports`) instead.
+ * The part of the desktop bridge the detail uses (DesktopPhoneBridge), narrow
+ * so tests can stand in for it. The command is optional: a desktop announces
+ * it at register, and `supports` says whether this one did.
  */
 export interface FleetTicketDesktop {
   supports(command: string): boolean;
