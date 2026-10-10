@@ -37,6 +37,7 @@ vi.mock('../codexThreadIdentity', async (importOriginal) => {
 vi.mock('../../shared/computer/config', () => ({ readComputerUseEnabled: () => true }));
 
 import { createWmuxServer } from '../index';
+import { codexOwnerIndexAvailable } from '../codexThreadIdentity';
 import { recordThreadOwner } from '../../../integrations/codex/bin/wmux-codex-thread.mjs';
 import { getCallerPtyId, getWorkspaceToken, setWorkspaceToken } from '../wmux-client';
 
@@ -487,6 +488,8 @@ describe('shared Codex app-server on win32', () => {
       path.join(codexAccountHome, 'packages', 'app-server-daemon', 'releases', '0.162.1', 'bin', 'codex.exe'),
       'app-server', '--listen', 'unix://', '--managed-daemon',
     ]]);
+    // The server under test sees the real win32 predicate, not a stub.
+    expect(codexOwnerIndexAvailable()).toBe(false);
   });
   afterEach(() => { Object.defineProperty(process, 'platform', { value: realPlatform, configurable: true }); });
 
