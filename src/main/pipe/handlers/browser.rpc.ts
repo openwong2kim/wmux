@@ -45,6 +45,7 @@ import {
 } from '../../../shared/browserPolicy';
 import { compileHostPolicy, navigationVerdict, type NavigationVerdict } from '../../../shared/browserHostPolicy';
 import type { BrowserPolicyStore } from '../../browser-session/BrowserPolicyStore';
+import { getProfileNamespaceStore } from '../../browser-session/ProfileNamespaceStore';
 import { approachPath, defaultStartPoint, type Point } from '../../../shared/pointerPath';
 import {
   dispatchTouchDrag,
@@ -142,28 +143,28 @@ const PROTECTED_GATE_EXEMPT: ReadonlySet<string> = new Set(['browser.lease.renew
  * Methods a protected pane may not call at all, with the reason. Agent-authored
  * page code (evaluate) waits for the consent grant in PR B; profile-wide cookie
  * access goes through the MCP lane's host-filtered tool instead; the builtin
- * CDP target lookup has nothing to offer a Chrome-only pane; and the
- * workspace-wide memory stores (recorded flows, promoted skills, site memory,
- * site guides) would carry what one account saw to another until PR C keys
- * them per account.
+ * CDP target lookup has nothing to offer a Chrome-only pane; and site guides
+ * stay off. The memory stores (recorded flows, promoted skills, site memory)
+ * are served from the pane's own per-account namespace (cacheWorkspace).
  */
 const PROTECTED_DENIED_METHODS: ReadonlyMap<string, string> = new Map([
   ['browser.evaluate', 'running page scripts needs a consent grant on a protected pane'],
   ['browser.cookies', 'cookies of a protected pane are reachable only through browser_cookies, limited to its allowed hosts'],
   ['browser.cdp.target', 'a protected pane has no builtin browser target'],
-  ['browser.actionCache.list', 'recorded flows are off on a protected pane'],
-  ['browser.actionCache.get', 'recorded flows are off on a protected pane'],
-  ['browser.actionCache.put', 'recorded flows are off on a protected pane'],
-  ['browser.actionCache.stats', 'recorded flows are off on a protected pane'],
-  ['browser.actionCache.forget', 'recorded flows are off on a protected pane'],
-  ['browser.actionCache.promote', 'recorded flows are off on a protected pane'],
-  ['browser.actionCache.demote', 'recorded flows are off on a protected pane'],
-  ['browser.actionCache.promoted', 'recorded flows are off on a protected pane'],
-  ['browser.siteMemory.list', 'site memory is off on a protected pane'],
-  ['browser.siteMemory.record', 'site memory is off on a protected pane'],
-  ['browser.siteMemory.forget', 'site memory is off on a protected pane'],
   ['browser.siteGuides.match', 'site guides are off on a protected pane'],
 ]);
+
+/**
+ * Memory writes that complete earlier work (a recorded flow being saved, a
+ * replay's outcome). On a protected pane each must name the policy epoch its
+ * scope was authorized at, so a completion from before a rebind cannot land
+ * in the namespace of the identity that replaced it. Immediate commands
+ * (note, promote, demote, forget) act under the identity attested now.
+ */
+function isMemoryCompletion(method: string, params: Record<string, unknown>): boolean {
+  if (method === 'browser.actionCache.put' || method === 'browser.actionCache.stats') return true;
+  return method === 'browser.siteMemory.record' && params['kind'] !== 'note';
+}
 
 /** The navigation target a call would send a protected pane to, or null. */
 function protectedNavigationTarget(method: string, params: Record<string, unknown>): string | null {
@@ -981,6 +982,8 @@ export function registerBrowserRpc(
   // own attestation (callerPaneOf → resolvePaneForPty) and, for a protected
   // pane, refuses what that pane may not do before the handler runs.
   const protectedDecisions = new WeakMap<RpcContext, Extract<PanePolicyDecision, { kind: 'protected' }>>();
+  /** The attested pane behind a recorded protected decision (memory namespace). */
+  const protectedPanes = new WeakMap<RpcContext, { workspaceId: string; paneId: string }>();
 
   const protectedGate = async (
     method: string,
@@ -988,7 +991,10 @@ export function registerBrowserRpc(
     ctx: RpcContext | undefined,
   ): Promise<void> => {
     // A context may outlive one call; a decision is good for this call only.
-    if (ctx) protectedDecisions.delete(ctx);
+    if (ctx) {
+      protectedDecisions.delete(ctx);
+      protectedPanes.delete(ctx);
+    }
     const store = browserPolicy?.store;
     if (!store || !store.hasAnyHistory()) return;
     if (PROTECTED_GATE_EXEMPT.has(method) || !ctx) return;
@@ -1059,6 +1065,7 @@ export function registerBrowserRpc(
       }
     }
     protectedDecisions.set(ctx, pd);
+    protectedPanes.set(ctx, { workspaceId, paneId });
   };
 
   /** The protected decision the gate recorded for this call, if any. */
@@ -1909,11 +1916,13 @@ export function registerBrowserRpc(
   const actionCache = getActionCacheStore();
   const promotedSkills = getPromotedSkillStore();
 
-  const cacheWorkspace = (
+  const profileNamespaces = getProfileNamespaceStore();
+
+  const cacheWorkspace = async (
     method: RpcMethod,
     params: Record<string, unknown>,
     ctx?: RpcContext,
-  ): string => {
+  ): Promise<string> => {
     const decision = callerScope(ctx, params);
     // 'scoped' is a workspace wmux itself resolved for this caller. The
     // operator lane is the renderer, which is wmux. Everything else — the
@@ -1931,29 +1940,47 @@ export function registerBrowserRpc(
           'could not be verified. Recorded flows are never served on an unverified scope.',
       );
     }
-    return workspaceId;
+    // A protected pane remembers into its own per-account namespace, resolved
+    // from the gate's attestation (workspace, pane, profile) — never from
+    // anything the caller sent. Everyone else keeps the bare workspace key.
+    const pd = protectedDecisionOf(ctx);
+    const pane = ctx ? protectedPanes.get(ctx) : undefined;
+    if (!pd) return workspaceId;
+    if (!pd.confirmed || !pane || pane.workspaceId !== workspaceId) {
+      throw new Error(policyDeniedMessage(method, "this pane's memory is unavailable until the user confirms its site list again"));
+    }
+    // A write recorded under an earlier policy epoch (the pane was rebound,
+    // moved or re-confirmed since) belongs to an identity that is gone.
+    if (isMemoryCompletion(method, params) && params['policyEpoch'] !== pd.epoch) {
+      throw new Error(policyDeniedMessage(method, "this pane's browser identity changed since the action was recorded"));
+    }
+    const key = await profileNamespaces.namespaceFor(workspaceId, pane.paneId, pd.profileId);
+    if (!key) {
+      throw new Error(policyDeniedMessage(method, "this pane's memory namespace could not be established"));
+    }
+    return key;
   };
 
   router.register('browser.actionCache.list', async (params, ctx) => {
-    const workspaceId = cacheWorkspace('browser.actionCache.list', params, ctx);
+    const workspaceId = await cacheWorkspace('browser.actionCache.list', params, ctx);
     const urlKey = typeof params['urlKey'] === 'string' ? params['urlKey'] : undefined;
     const traces = actionCache.list(workspaceId);
     return { traces: urlKey ? traces.filter((t) => t.urlKey === urlKey) : traces };
   });
 
   router.register('browser.actionCache.get', async (params, ctx) => {
-    const workspaceId = cacheWorkspace('browser.actionCache.get', params, ctx);
+    const workspaceId = await cacheWorkspace('browser.actionCache.get', params, ctx);
     const name = typeof params['name'] === 'string' ? params['name'] : '';
     return { trace: actionCache.get(workspaceId, name) };
   });
 
   router.register('browser.actionCache.put', async (params, ctx) => {
-    const workspaceId = cacheWorkspace('browser.actionCache.put', params, ctx);
+    const workspaceId = await cacheWorkspace('browser.actionCache.put', params, ctx);
     return actionCache.put(workspaceId, params['trace']);
   });
 
   router.register('browser.actionCache.stats', async (params, ctx) => {
-    const workspaceId = cacheWorkspace('browser.actionCache.stats', params, ctx);
+    const workspaceId = await cacheWorkspace('browser.actionCache.stats', params, ctx);
     const name = typeof params['name'] === 'string' ? params['name'] : '';
     const failedStep = Number.isInteger(params['failedStep'])
       ? (params['failedStep'] as number)
@@ -1985,7 +2012,7 @@ export function registerBrowserRpc(
   });
 
   router.register('browser.actionCache.forget', async (params, ctx) => {
-    const workspaceId = cacheWorkspace('browser.actionCache.forget', params, ctx);
+    const workspaceId = await cacheWorkspace('browser.actionCache.forget', params, ctx);
     const name = typeof params['name'] === 'string' ? params['name'] : undefined;
     return { removed: await actionCache.forget(workspaceId, name) };
   });
@@ -1999,7 +2026,7 @@ export function registerBrowserRpc(
   // the cache that produced it — so there is no shadow-mode fallback either.
 
   router.register('browser.actionCache.promote', async (params, ctx) => {
-    const workspaceId = cacheWorkspace('browser.actionCache.promote', params, ctx);
+    const workspaceId = await cacheWorkspace('browser.actionCache.promote', params, ctx);
     const name = typeof params['name'] === 'string' ? params['name'] : '';
     const trace = actionCache.get(workspaceId, name);
     if (!trace) return { ok: false, reason: `no flow named "${name}" in this workspace` };
@@ -2025,7 +2052,7 @@ export function registerBrowserRpc(
   });
 
   router.register('browser.actionCache.demote', async (params, ctx) => {
-    const workspaceId = cacheWorkspace('browser.actionCache.demote', params, ctx);
+    const workspaceId = await cacheWorkspace('browser.actionCache.demote', params, ctx);
     const name = typeof params['name'] === 'string' ? params['name'] : '';
     // Resolved by NAME, not by slug: the agent knows the flow by the name it
     // saved it under, and asking it to work out the slug would be asking it to
@@ -2037,7 +2064,7 @@ export function registerBrowserRpc(
   });
 
   router.register('browser.actionCache.promoted', async (params, ctx) => {
-    const workspaceId = cacheWorkspace('browser.actionCache.promoted', params, ctx);
+    const workspaceId = await cacheWorkspace('browser.actionCache.promoted', params, ctx);
     const urlKey = typeof params['urlKey'] === 'string' ? params['urlKey'] : undefined;
     const records = urlKey
       ? promotedSkills.listForUrlKey(workspaceId, urlKey)
@@ -2057,7 +2084,7 @@ export function registerBrowserRpc(
   const siteMemoryOn = (): boolean => readSiteMemoryEnabled() !== false;
 
   router.register('browser.siteMemory.list', async (params, ctx) => {
-    const workspaceId = cacheWorkspace('browser.siteMemory.list', params, ctx);
+    const workspaceId = await cacheWorkspace('browser.siteMemory.list', params, ctx);
     // OFF serves nothing — the hint pipe's whole input is this call, so an
     // empty result IS the feature being off.
     if (!siteMemoryOn()) return { records: [], memory: null };
@@ -2077,7 +2104,7 @@ export function registerBrowserRpc(
   let siteGuidesWereOn = false;
 
   router.register('browser.siteGuides.match', async (params, ctx) => {
-    cacheWorkspace('browser.siteGuides.match', params, ctx);
+    await cacheWorkspace('browser.siteGuides.match', params, ctx);
     // Titles and home-relative paths of local notes are local-only data, so
     // the same disclosure gate as the CDP attach info applies: a third-party
     // wire client or a hosted plugin gets the answer an off setting gives.
@@ -2100,7 +2127,7 @@ export function registerBrowserRpc(
   });
 
   router.register('browser.siteMemory.record', async (params, ctx) => {
-    const workspaceId = cacheWorkspace('browser.siteMemory.record', params, ctx);
+    const workspaceId = await cacheWorkspace('browser.siteMemory.record', params, ctx);
     // OFF is a SILENT no-op, not an error. Every write hook here is
     // fire-and-forget with a `.catch(() => {})`, so an error would be consumed
     // by nobody and would only ever show up as a puzzling log line.
@@ -2154,7 +2181,7 @@ export function registerBrowserRpc(
   });
 
   router.register('browser.siteMemory.forget', async (params, ctx) => {
-    const workspaceId = cacheWorkspace('browser.siteMemory.forget', params, ctx);
+    const workspaceId = await cacheWorkspace('browser.siteMemory.forget', params, ctx);
     // Deliberately NOT gated on the flag. Someone who turns the feature off
     // must still be able to delete what it recorded before they did — a
     // forget that only worked while recording was enabled would be a trap.

@@ -2,7 +2,6 @@ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { sendRpc } from '../wmux-client';
 import {
   browserCallRefusal,
-  isProtectedScope,
   lastKnownProtection,
   rememberProtection,
   leaseSurfaceScope,
@@ -254,9 +253,8 @@ async function prependReplayHints<T>(
     | null
     | undefined;
   if (!shaped || !Array.isArray(shaped.content)) return result;
-  // Protected pane: the memory stores are workspace-wide and off until they
-  // are keyed per account (main refuses them too); no hint is read or shown.
-  if (isProtectedScope(scope)) return result;
+  // A protected pane's hints come from its own per-account namespace, which
+  // main resolves from the pane it attests; nothing is filtered here.
   // A failed tool call is not a landing, and hinting on one would advertise a
   // flow for a page the agent is not on.
   if (shaped.isError === true) return result;

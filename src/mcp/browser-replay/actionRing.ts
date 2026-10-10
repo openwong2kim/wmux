@@ -142,6 +142,17 @@ export interface ActionRingDeps extends BrowserToolDeps {
   actionRing?: ActionRing;
 }
 
+/**
+ * The ring partition of a scope: its surface, plus — on a protected pane — the
+ * policy epoch it was authorized at. A rebind, move or re-confirmation moves
+ * the epoch, so actions recorded under the old identity are never part of a
+ * flow saved under the new one.
+ */
+export function ringScopeKey(scope: BrowserTargetScope): string {
+  const key = browserScopeKey(scope);
+  return isProtectedScope(scope) ? `${key}#protected:${scope.protection?.epoch ?? '?'}` : key;
+}
+
 export function ringFor(deps: BrowserToolDeps): ActionRing | null {
   return (deps as ActionRingDeps).actionRing ?? null;
 }
@@ -249,8 +260,6 @@ export function recordAction(deps: BrowserToolDeps, input: RecordActionInput): v
   try {
     const ring = ringFor(deps);
     if (!ring || isActionRecordingSuppressed()) return;
-    // Protected pane: nothing it does is remembered (memory is workspace-wide).
-    if (isProtectedScope(input.scope)) return;
     const resolved = axisFor(input.page, input.ref, input.selector, input.refEntry);
     const target = input.targetRef === undefined
       ? undefined
@@ -290,7 +299,7 @@ export function recordAction(deps: BrowserToolDeps, input: RecordActionInput): v
     ring.push({
       step,
       urlKey: normalizeUrlKey(input.url ?? pageUrl(input.page)),
-      scopeKey: browserScopeKey(input.scope),
+      scopeKey: ringScopeKey(input.scope),
       surfaceShape: input.page ? refMapShapeHash(listRefEntries(input.page)) : '',
       at: Date.now(),
     });

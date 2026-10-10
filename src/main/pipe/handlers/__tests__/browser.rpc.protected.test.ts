@@ -12,6 +12,7 @@ import type { BrowserBackendStore } from '../../../browser-session/BrowserBacken
 import { getWorkspaceMirror, __resetWorkspaceMirrorForTest } from '../../../workspace/WorkspaceMirror';
 import { BROWSER_POLICY_FILE } from '../../../../shared/browserPolicy';
 import { dispatchAsClaimedCaller } from './claimedCaller';
+import { __resetProfileNamespaceStoreForTest } from '../../../browser-session/ProfileNamespaceStore';
 
 /**
  * Protected panes at the RPC boundary: the upstream gate. Real policy and
@@ -132,6 +133,7 @@ beforeEach(async () => {
   await profiles.create('pa');
   await profiles.setPaneBinding('pane-a', 'ws-1', 'pa');
   policy = new BrowserPolicyStore(dir);
+  __resetProfileNamespaceStoreForTest(dir);
   __resetWorkspaceMirrorForTest();
   getWorkspaceMirror().setSnapshot({
     ts: Date.now(),
@@ -190,15 +192,13 @@ describe('protected-pane gate', () => {
     expect((await call(router, 'browser.open', { workspaceId: 'ws-1', url: 'https://blocked.test/' }, 'pty-b')).error).toBeUndefined();
   });
 
-  it('refuses page scripts, raw cookies, the builtin target and the memory stores', async () => {
+  it('refuses page scripts, raw cookies, the builtin target and site guides', async () => {
     await protectPaneA();
     const router = register(profiles, policy);
     for (const [method, extra] of [
       ['browser.evaluate', { expression: '1' }],
       ['browser.cookies', { action: 'get' }],
       ['browser.cdp.target', {}],
-      ['browser.actionCache.list', {}],
-      ['browser.siteMemory.list', { domain: 'a.test' }],
       ['browser.siteGuides.match', { url: 'https://a.test/' }],
     ] as const) {
       expect((await call(router, method, { workspaceId: 'ws-1', ...extra }, 'pty-a')).error, method).toContain('policy_denied');
@@ -281,5 +281,71 @@ describe('protected-pane gate', () => {
     const router = register(profiles, new BrowserPolicyStore(dir));
     expect((await call(router, 'browser.cdp.info', { workspaceId: 'ws-1' }, 'pty-a')).error).toContain('policy_denied');
     expect((await call(router, 'browser.cdp.info', { workspaceId: 'ws-1' }, 'pty-b')).error).toBeUndefined();
+  });
+});
+
+describe('protected-pane memory: per-account namespaces', () => {
+  const trace = (name: string) => ({
+    id: `tr_${name}`,
+    name,
+    urlKey: 'a.test/',
+    surfaceShape: '',
+    steps: [{ tool: 'browser_navigate', axis: null, args: { url: 'https://a.test/' } }],
+    observedCount: 1,
+    successCount: 0,
+    failCount: 0,
+    createdAt: Date.now(),
+    lastUsedAt: Date.now(),
+  });
+  const names = (r: { result?: unknown }) => ((r.result as { traces?: Array<{ name: string }> })?.traces ?? []).map((t) => t.name);
+
+  it('a protected pane starts empty and never sees the workspace (legacy) memory, nor the reverse', async () => {
+    const router = register(profiles, policy);
+    // Recorded by the unprotected neighbour, under the legacy workspace key.
+    expect((await call(router, 'browser.actionCache.put', { workspaceId: 'ws-1', trace: trace('legacy-flow') }, 'pty-b')).result)
+      .toMatchObject({ ok: true });
+    await protectPaneA();
+    expect(names(await call(router, 'browser.actionCache.list', { workspaceId: 'ws-1' }, 'pty-a'))).toEqual([]);
+    const epoch = policy.epoch();
+    expect((await call(router, 'browser.actionCache.put', { workspaceId: 'ws-1', trace: trace('account-flow'), policyEpoch: epoch }, 'pty-a')).result)
+      .toMatchObject({ ok: true });
+    expect(names(await call(router, 'browser.actionCache.list', { workspaceId: 'ws-1' }, 'pty-a'))).toEqual(['account-flow']);
+    // The neighbour keeps exactly what it had.
+    expect(names(await call(router, 'browser.actionCache.list', { workspaceId: 'ws-1' }, 'pty-b'))).toEqual(['legacy-flow']);
+  });
+
+  it('ignores a workspace or profile the caller names', async () => {
+    await protectPaneA();
+    const router = register(profiles, policy);
+    await call(router, 'browser.actionCache.put', { workspaceId: 'ws-1', trace: trace('mine'), policyEpoch: policy.epoch() }, 'pty-a');
+    const listed = await call(router, 'browser.actionCache.list', { workspaceId: 'ws-1', profile: 'default', profileId: 'other' }, 'pty-a');
+    expect(names(listed)).toEqual(['mine']);
+  });
+
+  it('refuses a completion recorded under an earlier policy epoch', async () => {
+    await protectPaneA();
+    const router = register(profiles, policy);
+    const stale = policy.epoch();
+    await protectPaneA(['a.test', 'b.test']);
+    const res = await call(router, 'browser.actionCache.put', { workspaceId: 'ws-1', trace: trace('late'), policyEpoch: stale }, 'pty-a');
+    expect(res.error).toContain('policy_denied');
+    const missing = await call(router, 'browser.siteMemory.record', { workspaceId: 'ws-1', domain: 'a.test', kind: 'success' }, 'pty-a');
+    expect(missing.error).toContain('policy_denied');
+  });
+
+  it('a rebind starts a fresh namespace, and an unconfirmed pane gets no memory at all', async () => {
+    await protectPaneA();
+    const router = register(profiles, policy);
+    await call(router, 'browser.actionCache.put', { workspaceId: 'ws-1', trace: trace('before'), policyEpoch: policy.epoch() }, 'pty-a');
+    await profiles.create('pa2');
+    await profiles.setPaneBinding('pane-a', 'ws-1', 'pa2');
+    await policy.onPaneRebind('pane-a');
+    expect((await call(router, 'browser.actionCache.list', { workspaceId: 'ws-1' }, 'pty-a')).error).toContain('policy_denied');
+    await policy.write(
+      { workspaceId: 'ws-1', paneId: 'pane-a', profileId: 'pa2', protected: true, hosts: { mode: 'allowlist', allow: ['a.test'], block: [] }, expectedEpoch: policy.epoch() },
+      'pa2',
+      true,
+    );
+    expect(names(await call(router, 'browser.actionCache.list', { workspaceId: 'ws-1' }, 'pty-a'))).toEqual([]);
   });
 });

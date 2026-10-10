@@ -3,6 +3,7 @@ import * as path from 'path';
 import { getWmuxDir } from '../../daemon/config';
 import { atomicWriteJSON, BACKUP_SUFFIXES } from '../../daemon/util/atomicWrite';
 import { isUnsafeKey } from '../account/accountStore';
+import { isMemoryKey } from '../../shared/browserMemoryNamespace';
 import {
   PROMOTED_DELETE_MS,
   PROMOTED_SCHEMA_VERSION,
@@ -77,7 +78,7 @@ export class PromotedSkillStore {
    * caller has to remember to.
    */
   private fileFor(workspaceId: string, slug: string, base: string): string | null {
-    if (!workspaceId || isUnsafeKey(workspaceId) || !/^[A-Za-z0-9_-]{1,128}$/.test(workspaceId)) {
+    if (!workspaceId || isUnsafeKey(workspaceId) || !isMemoryKey(workspaceId)) {
       return null;
     }
     if (toPromotedSlug(slug) !== slug) return null;
