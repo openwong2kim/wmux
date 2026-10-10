@@ -254,7 +254,12 @@ no difference). A2A-only peers stay on the Remote page.
 - **Title:** "Workspaces ▾" while this computer is selected, "Workspaces ·
   office-mac ▾" while a paired computer is; the host name keeps its own case.
   The list below is that computer's workspaces (opened as shadow
-  workspaces), and the count is that list's.
+  workspaces), and the count is that list's. Its rows are the local row
+  (same card, colour rail, status mark, title, branch line and needs-you
+  label), filled only from what the host sends — name, colour, pinned,
+  branch, pane count, attention. What the host does not send (git sync,
+  unread, idle time) and every local-only action (menu, rename, drag,
+  archive) are absent, never faked.
 - **Dropdown** (the pane menu's look): this computer first, then each
   web-paired computer as a monogram row with its state on a second line —
   Online, Offline · last seen 14:02, Not checked yet, needs repair, or not a

@@ -2,7 +2,11 @@ import { useCallback, useState } from 'react';
 import { useT } from '../../hooks/useT';
 import { useStore } from '../../stores';
 import { selectPcRailFeedStale, selectPcRailRowAlias, selectPcRailRows } from '../../stores/selectors/pcRail';
-import { remoteWorkspaceAttentionClass } from '../../stores/selectors/fleet';
+import { remoteWorkspaceAttentionClass, type FleetAttentionClass } from '../../stores/selectors/fleet';
+import type { AgentStatus } from '../../../shared/types';
+import { StatusMarkView } from './AgentMarks';
+import { AGENT_STATUS_ICON } from './agentStatusIcon';
+import { IconGitBranch, IconPin } from '../icons';
 import { formatShadowWorkspaceId, pcRailHostState, type PcRailWorkspaceRow } from '../../../shared/pcRail';
 import { normalizeWorkspaceColor, workspaceColorHex } from '../../../shared/workspaceColors';
 import { nextRowIndex } from './sidebarRowKeys';
@@ -99,6 +103,23 @@ export default function HostWorkspaceList({ hostId }: { hostId: string }) {
   );
 }
 
+/** The row's mark: the status of its loudest agent pane, by the same class rule. */
+const MARK_STATUS: Record<FleetAttentionClass, AgentStatus> = {
+  needsYou: 'awaiting_input',
+  error: 'error',
+  finished: 'complete',
+  running: 'running',
+  unconfirmed: 'running',
+  idle: 'idle',
+};
+
+/**
+ * One host workspace, drawn with the local row's structure and classes
+ * (WorkspaceItem): colour rail, status mark, name line, branch line, the same
+ * card states. Only what the host sends is shown — name, colour, pinned, git
+ * branch, pane count and the agents' attention. Nothing local is offered:
+ * no rename, menu, drag, archive, git sync or unread count.
+ */
 function HostWorkspaceRow({ hostId, row, isActive, disabled, tabStop, onOpen }: {
   hostId: string;
   row: PcRailWorkspaceRow;
@@ -117,45 +138,85 @@ function HostWorkspaceRow({ hostId, row, isActive, disabled, tabStop, onOpen }: 
   const attention = remoteWorkspaceAttentionClass({ panes: row.panes, stale: disabled && !row.empty });
   const needsYou = attention === 'needsYou';
   const errored = attention === 'error';
+  const markStatus = MARK_STATUS[attention];
+  const paneCount = row.panes.length;
   return (
-    <div className="relative mx-2">
+    <div className="relative mx-2 sidebar-row-enter">
+      {tagHex && (
+        <div
+          className="absolute top-[3px] bottom-[3px] w-[3px] rounded-full z-[1] pointer-events-none"
+          style={{ left: 0, background: tagHex }}
+          aria-hidden="true"
+        />
+      )}
       <div
-        role="treeitem"
-        aria-level={1}
-        tabIndex={tabStop ? 0 : -1}
-        aria-selected={isActive}
-        aria-disabled={disabled || undefined}
-        data-sidebar-row={row.id}
-        data-host-row={row.id}
-        className={`group sidebar-row px-2.5 py-2 rounded-md select-none ${disabled ? 'cursor-default' : 'cursor-pointer'} ${needsYou ? 'sidebar-row-needs' : ''} ${isActive ? 'sidebar-row-active' : ''}`}
+        className={`sidebar-row px-2.5 py-2 rounded-md select-none ${disabled ? 'cursor-default' : 'cursor-pointer'} ${needsYou ? 'sidebar-row-needs' : ''} ${isActive ? 'sidebar-row-active' : ''}`}
         onClick={() => onOpen(row)}
-        onKeyDown={(e) => {
-          if (e.target !== e.currentTarget) return;
-          if (e.key === 'Enter' || e.key === ' ') {
-            e.preventDefault();
-            onOpen(row);
-          }
-        }}
       >
-        <div className={`flex min-w-0 items-center gap-2 ${disabled ? 'opacity-60' : ''}`}>
-          <div
-            className="w-1.5 h-1.5 rounded-full flex-shrink-0"
-            style={{ backgroundColor: tagHex ?? (needsYou ? 'var(--attention)' : isActive ? 'var(--accent)' : 'var(--text-muted)') }}
-          />
-          <div className="flex-1 min-w-0">
-            <div className="text-caption font-mono truncate">{displayName}</div>
+        <div
+          className="-mx-2.5 -my-2 flex min-w-0 items-start gap-2 px-2.5 py-2"
+          role="treeitem"
+          aria-level={1}
+          tabIndex={tabStop ? 0 : -1}
+          aria-selected={isActive}
+          aria-disabled={disabled || undefined}
+          data-sidebar-row={row.id}
+          data-host-row={row.id}
+          onKeyDown={(e) => {
+            if (e.target !== e.currentTarget) return;
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              onOpen(row);
+            }
+          }}
+        >
+          <span className={`mt-1 flex-none ${disabled ? 'opacity-60' : ''}`}>
+            <StatusMarkView
+              status={markStatus}
+              quiet={needsYou}
+              label={markStatus !== 'idle' ? t(AGENT_STATUS_ICON[markStatus].labelKey) : undefined}
+            />
+          </span>
+          <div className={`flex-1 min-w-0 ${disabled ? 'opacity-60' : ''}`} data-workspace-text>
+            <div className="flex items-center gap-1">
+              <span
+                className="wmux-row-title font-sans text-[13px] leading-snug truncate font-semibold text-[var(--text-main)]"
+                title={displayName}
+              >
+                {displayName}
+              </span>
+              {row.pinned && (
+                <span className="flex-none text-[var(--text-muted)]" role="img" aria-label={t('sidebar.pinned')} title={t('sidebar.pinned')} data-sidebar-pinned>
+                  <IconPin size={10} />
+                </span>
+              )}
+              <span className="ml-auto flex flex-shrink-0 items-center gap-1" data-row-trailing>
+                {paneCount > 0 && !needsYou && !errored && (
+                  <span
+                    className="text-[11px] tabular-nums text-[color-mix(in_srgb,var(--text-main)_45%,transparent)] flex-shrink-0"
+                    title={paneCount === 1 ? t('remote.paneCountOne') : t('remote.paneCount', { count: paneCount })}
+                    data-host-pane-count
+                  >
+                    {paneCount}
+                  </span>
+                )}
+                {needsYou && (
+                  <span className="font-sans text-[11px] font-medium text-[var(--attention-text)] flex-shrink-0" data-row-needs-you>{t('workspace.needsYou')}</span>
+                )}
+                {errored && (
+                  <span className="font-sans text-[11px] font-medium text-[var(--accent-red)] flex-shrink-0" data-row-error>{t('workspace.agentError')}</span>
+                )}
+              </span>
+            </div>
             {row.gitBranch && (
-              <div className="mt-0.5 text-[11px] font-mono truncate" style={{ color: 'color-mix(in srgb, var(--text-main) 45%, transparent)' }}>
-                {row.gitBranch}
+              <div className="flex items-center gap-2 mt-1 text-[11px] leading-4 tabular-nums text-[color-mix(in_srgb,var(--text-main)_45%,transparent)] min-w-0" data-git-signal-line>
+                <span className="min-w-0 truncate font-mono" title={row.gitBranch}>
+                  <span className="mr-1 inline-flex align-[-2px]" aria-hidden="true"><IconGitBranch size={12} /></span>
+                  {row.gitBranch}
+                </span>
               </div>
             )}
           </div>
-          {needsYou && (
-            <span className="font-sans text-[11px] font-medium text-[var(--attention-text)] flex-shrink-0">{t('workspace.needsYou')}</span>
-          )}
-          {errored && (
-            <span className="font-sans text-[11px] font-medium text-[var(--accent-red)] flex-shrink-0">{t('workspace.agentError')}</span>
-          )}
         </div>
       </div>
     </div>

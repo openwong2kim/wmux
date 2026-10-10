@@ -64,6 +64,25 @@ describe('Sidebar scoped to a paired computer', () => {
     expect(hostRows()[2].getAttribute('aria-disabled')).toBe('true');
   });
 
+  it("draws a host row like a local row from what the host sends, and offers nothing local", () => {
+    act(() => useStore.setState({
+      pcRailFeeds: { h1: { workspaces: [
+        { id: 'rw-p', name: 'api', order: 0, pinned: true, color: 'teal', gitBranch: 'feat/x', panes: [{ sessionId: 's1' }, { sessionId: 's2' }] },
+      ], fetchedAt: Date.now(), failedTicks: 0 } },
+    }));
+    act(() => root.render(<Sidebar />));
+    const row = hostRows()[0];
+    const card = row.closest('.sidebar-row');
+    expect(card).not.toBeNull();
+    expect(row.querySelector('.wmux-row-title')?.textContent).toBe('api');
+    expect(row.querySelector('[data-sidebar-pinned]')).not.toBeNull();
+    expect(row.querySelector('[data-git-signal-line]')?.textContent).toContain('feat/x');
+    expect(row.querySelector('[data-host-pane-count]')?.textContent).toBe('2');
+    expect(card?.getAttribute('draggable')).toBeNull();
+    act(() => { card!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true })); });
+    expect(document.querySelector('[role="menu"]')).toBeNull();
+  });
+
   it("shows the local alias an attached workspace was given before the rail", () => {
     act(() => useStore.setState({
       remoteWorkspaces: [{ key: 'h1:rw-b', hostId: 'h1', hostLabel: 'office-mac', workspaceId: 'rw-b', name: 'beta', panes: [], label: 'Mine', color: 'teal' }],
