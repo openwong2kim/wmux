@@ -145,7 +145,8 @@ describe('browser tools — recovering a walk that produced no claim', () => {
     expect(second.isError).toBeFalsy();
     expect(getWorkspaceToken()).toBe('claim-late');
     expect(mockSendRpc.mock.calls.filter(([m]) => m === 'a2a.resolve.identity')).toHaveLength(2);
-  });
+    // On Windows the client-side walk spawns PowerShell per hop, twice here.
+  }, 30_000);
 });
 
 describe('browser tools — a caller outside every pane (scheduled run)', () => {

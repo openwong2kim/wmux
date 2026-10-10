@@ -327,6 +327,9 @@ describe('a2a.resolve.identity — server-side walk (callerPid)', () => {
     const router = new RpcRouter();
     registerA2aRpc(router, () => fakeWindow, makeWorker(), {
       snapshot: async () => { calls++; throw new Error('powershell unavailable'); },
+      // The single-caller ancestry read is its own fallback (tested below);
+      // here it finds nothing, so only the snapshot's retry policy is measured.
+      readAncestry: async () => null,
     });
 
     const result = await dispatchResolve(router, { callerPid: 39876 });
