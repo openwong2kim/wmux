@@ -428,9 +428,12 @@ export async function openDownloadPass(
     release?.();
     offProgress?.();
     offClose?.();
-    void deny();
-    if ('ok' in outcome) resolveDone(outcome.ok);
-    else rejectDone(new ConsentRefusal('policy_denied', policyDeniedMessage(CONSENT_METHOD, outcome.error)));
+    // Answer only once Chrome has the deny back: a download started the
+    // moment the caller hears "done" must meet the deny, not the old allow.
+    void deny().then(() => {
+      if ('ok' in outcome) resolveDone(outcome.ok);
+      else rejectDone(new ConsentRefusal('policy_denied', policyDeniedMessage(CONSENT_METHOD, outcome.error)));
+    });
   };
   const arm = (ms: number, why: string) => {
     if (timer) clearTimeout(timer);

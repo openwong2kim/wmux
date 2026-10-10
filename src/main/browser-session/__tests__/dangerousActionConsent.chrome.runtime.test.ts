@@ -25,11 +25,24 @@ let skipReason: string | null = null;
 function serve(req: http.IncomingMessage, res: http.ServerResponse): void {
   if (req.url === '/') {
     res.writeHead(200, { 'content-type': 'text/html' });
-    return void res.end('<a id="d" href="/file.bin">file</a>');
+    return void res.end('<a id="d" href="/file.bin">file</a><a id="s" href="/slow.bin">slow</a>');
   }
   if (req.url === '/file.bin') {
     res.writeHead(200, { 'content-type': 'application/octet-stream', 'content-disposition': 'attachment; filename="file.bin"' });
     return void res.end('PAYLOAD');
+  }
+  if (req.url === '/slow.bin') {
+    // Streams for ~2s, so a cancel always lands before it could finish.
+    res.writeHead(200, { 'content-type': 'application/octet-stream', 'content-disposition': 'attachment; filename="slow.bin"' });
+    let n = 0;
+    const t = setInterval(() => {
+      res.write('x'.repeat(1024));
+      if (++n >= 40) {
+        clearInterval(t);
+        res.end();
+      }
+    }, 50);
+    return;
   }
   res.writeHead(404);
   res.end();
@@ -107,7 +120,7 @@ describe('approved download (real Chrome)', { timeout: 60_000 }, () => {
 
     // Another tab first: cancelled, and the pass still waits for its own.
     const otherDl = other.waitForEvent('download', { timeout: 5_000 }).catch(() => null);
-    await other.click('#d');
+    await other.click('#s');
     expect(await (await otherDl)?.failure()).toBe('canceled');
 
     // Longer than the guard's periodic deny re-assert: the approval must hold.
