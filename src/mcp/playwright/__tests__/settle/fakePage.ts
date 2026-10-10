@@ -18,21 +18,23 @@ export function fakeDialog(type: string, message = 'hello', defaultValue = '') {
     type: () => type,
     message: () => message,
     defaultValue: () => defaultValue,
-    accept: vi.fn(async (_text?: string) => undefined),
+    accept: vi.fn(async (text?: string) => {
+      void text;
+    }),
     dismiss: vi.fn(async () => undefined),
   };
 }
 
 /**
  * Just enough of a Playwright Page: real event wiring (on/off/once/emit), a
- * main frame, a load-state waiter the test resolves, and an evaluate whose
- * stall the test controls (an open dialog stalls evaluation).
+ * main frame, a context that can close, and a load-state waiter the test
+ * resolves.
  */
 export function makeFakePage() {
   const emitter = new EventEmitter();
+  const contextEmitter = new EventEmitter();
   const mainFrame = { name: 'main' };
   let resolveLoad: (() => void) | undefined;
-  const state = { evaluateStalls: true };
   const page = {
     on: (event: string, fn: (...a: unknown[]) => void) => {
       emitter.on(event, fn);
@@ -49,18 +51,20 @@ export function makeFakePage() {
     emit: (event: string, ...args: unknown[]) => emitter.emit(event, ...args),
     listenerCount: (event: string) => emitter.listenerCount(event),
     mainFrame: () => mainFrame,
+    context: () => ({
+      on: (event: string, fn: (...a: unknown[]) => void) => contextEmitter.on(event, fn),
+    }),
+    closeContext: () => contextEmitter.emit('close'),
     waitForLoadState: vi.fn(
       () =>
         new Promise<void>((resolve) => {
           resolveLoad = resolve;
         }),
     ),
-    evaluate: vi.fn(() => (state.evaluateStalls ? new Promise(() => {}) : Promise.resolve(1))),
   };
   return {
     page,
     mainFrame,
-    state,
     finishLoad: () => resolveLoad?.(),
   };
 }

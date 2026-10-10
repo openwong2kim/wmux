@@ -15,7 +15,7 @@ import { takeGuideAnnouncement } from './guideAnnounce';
 import { redactPasswordParams } from './redact';
 import { invalidateSnapshotBaseline, invalidateSnapshotBaselineIfStale } from './snapshotCache';
 import { PlaywrightEngine } from './PlaywrightEngine';
-import { beginAgentWindow, pendingModalForScope, renderModalBlock } from './modalState';
+import { drainDialogNotes, renderModalBlock } from './modalState';
 import {
   isServable,
   normalizeUrlKey,
@@ -153,17 +153,15 @@ function prependBrowserEvents<T>(result: T, events: LifecycleEventWire[]): T {
 }
 
 /**
- * Prepend a [modal] block while a dialog or file chooser is open on this
- * surface, error results included: a read that failed because a dialog
- * interrupted its evaluation needs the explanation most. Rendered after the
- * body, so a modal the body itself raised is reported in the same result.
+ * Prepend a [modal] note for each dialog that appeared on this surface since
+ * the last result, error results included. Drained after the body, so a
+ * dialog the body's own action raised is reported in the same result.
  */
-function prependModalBlock<T>(result: T, scope: BrowserTargetScope): T {
-  const modal = pendingModalForScope(scope.workspaceId, scope.surfaceId);
-  if (!modal) return result;
+function prependModalNotes<T>(result: T, scope: BrowserTargetScope): T {
   const shaped = result as { content?: Array<{ type: string; text?: string }> } | null | undefined;
   if (!shaped || !Array.isArray(shaped.content)) return result;
-  shaped.content.unshift({ type: 'text', text: renderModalBlock(modal) });
+  const notes = drainDialogNotes(scope.workspaceId, scope.surfaceId);
+  if (notes.length > 0) shaped.content.unshift({ type: 'text', text: renderModalBlock(notes) });
   return result;
 }
 
@@ -427,9 +425,8 @@ export async function withAutomationLease<T>(
     }, RENEW_INTERVAL_MS);
     (lateRenew as { unref?: () => void }).unref?.();
     const lateEvents = await drainLifecycleEvents(scope);
-    const endAgentWindow = beginAgentWindow(scope.workspaceId, scope.surfaceId);
     try {
-      const result = prependModalBlock(await fn(scope), scope);
+      const result = prependModalNotes(await fn(scope), scope);
       // Post-drain runs in the return expression, i.e. still inside this
       // finally's lease bracket — browser.lifecycle.get is a leased RPC and
       // must not hit a re-throttled guest.
@@ -443,7 +440,6 @@ export async function withAutomationLease<T>(
       );
       return prependReplayHints(withEvents, [...lateEvents, ...postEvents], scope);
     } finally {
-      endAgentWindow();
       done = true;
       clearInterval(lateTimer);
       clearInterval(lateRenew);
@@ -463,9 +459,8 @@ export async function withAutomationLease<T>(
   (renewTimer as { unref?: () => void }).unref?.();
 
   const events = await drainLifecycleEvents(scope);
-  const endAgentWindow = beginAgentWindow(scope.workspaceId, scope.surfaceId);
   try {
-    const result = prependModalBlock(await fn(scope), scope);
+    const result = prependModalNotes(await fn(scope), scope);
     // Post-drain still inside the lease bracket (see the late-acquire branch).
     const postEvents = await drainLifecycleEventsPost(scope);
     const withEvents = prependBrowserEvents(
@@ -474,7 +469,6 @@ export async function withAutomationLease<T>(
     );
     return prependReplayHints(withEvents, [...events, ...postEvents], scope);
   } finally {
-    endAgentWindow();
     clearInterval(renewTimer);
     sendRpc('browser.lease.release', { token: heldToken }).catch(() => {
       /* TTL expiry cleans up */
@@ -504,15 +498,27 @@ export async function leasedMutation<T extends CallToolResult>(
   opts?: AutomationLeaseOpts<T>,
 ): Promise<T | CallToolResult> {
   const effect = createEffectProbe();
+  let settled: BrowserTargetScope | undefined;
   try {
-    return await withAutomationLease(deps, surfaceId, (scope) => body(scope, effect), opts);
+    return await withAutomationLease(
+      deps,
+      surfaceId,
+      (scope) => {
+        settled = scope;
+        return body(scope, effect);
+      },
+      opts,
+    );
   } catch (error) {
-    return withEffectTrailer(
+    const failed = withEffectTrailer(
       {
         content: [{ type: 'text' as const, text: describeToolError(error) }],
         isError: true,
       },
       effect.failure(error),
     );
+    // A body that threw past its own catch skipped the lease's drain; a dialog
+    // its action raised is reported here instead of one call late.
+    return settled ? prependModalNotes(failed, settled) : failed;
   }
 }

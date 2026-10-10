@@ -6,14 +6,13 @@ import {
   SETTLE_CAP_MS,
   settleAfterAction,
 } from '../../actionSettle';
-import { attachModalTracking, beginAgentWindow } from '../../modalState';
-import { fakeDialog, fakeRequest, makeFakePage } from './fakePage';
+import { fakeRequest, makeFakePage } from './fakePage';
 
 /*
  * The settle decision table. Fake timers make every row exact: the claim under
  * test is not "fast enough" but "returns at this tick", which is what the
- * no-regression promise (zero extra wait past the 100ms grace when the action
- * starts no request) actually says.
+ * no-regression promise (nothing past the 100ms grace when the action starts
+ * no request) actually says.
  */
 
 type Fake = ReturnType<typeof makeFakePage>;
@@ -22,9 +21,9 @@ type Fake = ReturnType<typeof makeFakePage>;
 function track(fake: Fake, fn: () => Promise<unknown> = async () => 'done') {
   const started = Date.now();
   let settledAt: number | undefined;
-  const promise = settleAfterAction(fake.page as unknown as Page, fn).then((outcome) => {
+  const promise = settleAfterAction(fake.page as unknown as Page, fn).then((value) => {
     settledAt = Date.now() - started;
-    return outcome;
+    return value;
   });
   return { promise, settledAt: () => settledAt };
 }
@@ -45,12 +44,11 @@ describe('settleAfterAction decision table', () => {
     expect(run.settledAt()).toBeUndefined();
     await vi.advanceTimersByTimeAsync(1);
     expect(run.settledAt()).toBe(REQUEST_GRACE_MS);
-    await expect(run.promise).resolves.toEqual({ interrupted: false, value: 'done' });
+    await expect(run.promise).resolves.toBe('done');
   });
 
   it('a page with no event API runs the action and adds no wait at all', async () => {
-    const outcome = await settleAfterAction({} as Page, async () => 7);
-    expect(outcome).toEqual({ interrupted: false, value: 7 });
+    await expect(settleAfterAction({} as Page, async () => 7)).resolves.toBe(7);
   });
 
   it('an xhr waits past the collect window until it finishes', async () => {
@@ -104,13 +102,31 @@ describe('settleAfterAction decision table', () => {
     expect(run.settledAt()).toBe(60 + COLLECT_WINDOW_MS);
   });
 
-  it('untracked types (image, ping) never hold it past the collect window', async () => {
+  it('images, beacons and pings do not count as traffic: grace tick, not the window', async () => {
     const fake = makeFakePage();
     const run = track(fake, async () => {
       fake.page.emit('request', fakeRequest('image'));
       fake.page.emit('request', fakeRequest('ping'));
+      fake.page.emit('request', fakeRequest('beacon'));
     });
-    await vi.advanceTimersByTimeAsync(COLLECT_WINDOW_MS);
+    await vi.advanceTimersByTimeAsync(REQUEST_GRACE_MS);
+    expect(run.settledAt()).toBe(REQUEST_GRACE_MS);
+  });
+
+  it('requests starting after the collect window are not waited for (polling)', async () => {
+    const fake = makeFakePage();
+    const first = fakeRequest('xhr');
+    const run = track(fake, async () => {
+      fake.page.emit('request', first);
+    });
+    await vi.advanceTimersByTimeAsync(20);
+    fake.page.emit('requestfinished', first);
+    await vi.advanceTimersByTimeAsync(COLLECT_WINDOW_MS - 20 - 1);
+    expect(run.settledAt()).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(1);
+    // The poll fires right after the window closed; it never finishes.
+    fake.page.emit('request', fakeRequest('xhr'));
+    await vi.advanceTimersByTimeAsync(0);
     expect(run.settledAt()).toBe(COLLECT_WINDOW_MS);
   });
 
@@ -125,20 +141,38 @@ describe('settleAfterAction decision table', () => {
     expect(run.settledAt()).toBe(SETTLE_CAP_MS);
   });
 
-  it('a main-frame navigation waits for load', async () => {
+  it('a main-frame navigation waits for its own commit, then for load', async () => {
     const fake = makeFakePage();
     const run = track(fake, async () => {
       fake.page.emit('request', fakeRequest('document', { navigation: true, frame: fake.mainFrame }));
     });
     await vi.advanceTimersByTimeAsync(COLLECT_WINDOW_MS + 300);
+    // Not committed yet: the old document's `load` must not count.
+    expect(fake.page.waitForLoadState).not.toHaveBeenCalled();
+    fake.page.emit('framenavigated', fake.mainFrame);
+    await vi.advanceTimersByTimeAsync(0);
     expect(fake.page.waitForLoadState).toHaveBeenCalledWith('load', expect.any(Object));
     expect(run.settledAt()).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(100);
     fake.finishLoad();
     await vi.advanceTimersByTimeAsync(0);
-    expect(run.settledAt()).toBe(COLLECT_WINDOW_MS + 300);
+    expect(run.settledAt()).toBe(COLLECT_WINDOW_MS + 400);
   });
 
-  it('an iframe navigation does not wait for the main frame to load', async () => {
+  it('a navigation that is aborted before it commits stops the wait', async () => {
+    const fake = makeFakePage();
+    const nav = fakeRequest('document', { navigation: true, frame: fake.mainFrame });
+    const run = track(fake, async () => {
+      fake.page.emit('request', nav);
+    });
+    await vi.advanceTimersByTimeAsync(COLLECT_WINDOW_MS + 50);
+    fake.page.emit('requestfailed', nav);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(run.settledAt()).toBe(COLLECT_WINDOW_MS + 50);
+    expect(fake.page.waitForLoadState).not.toHaveBeenCalled();
+  });
+
+  it('an iframe navigation does not wait for the main frame', async () => {
     const fake = makeFakePage();
     const doc = fakeRequest('document', { navigation: true, frame: { name: 'child' } });
     const run = track(fake, async () => {
@@ -151,20 +185,22 @@ describe('settleAfterAction decision table', () => {
     expect(run.settledAt()).toBe(COLLECT_WINDOW_MS);
   });
 
-  it('the action’s own rejection escapes; a settle wait never does', async () => {
+  it('the action’s own rejection escapes; a settle wait never turns into one', async () => {
     const fake = makeFakePage();
-    const failing = settleAfterAction(fake.page as unknown as Page, async () => {
-      throw new Error('ref vanished');
-    });
-    await expect(failing).rejects.toThrow('ref vanished');
+    await expect(
+      settleAfterAction(fake.page as unknown as Page, async () => {
+        throw new Error('ref vanished');
+      }),
+    ).rejects.toThrow('ref vanished');
 
     const fake2 = makeFakePage();
     fake2.page.waitForLoadState.mockImplementation(() => Promise.reject(new Error('page closed')));
     const run = track(fake2, async () => {
       fake2.page.emit('request', fakeRequest('document', { navigation: true, frame: fake2.mainFrame }));
+      fake2.page.emit('framenavigated', fake2.mainFrame);
     });
     await vi.advanceTimersByTimeAsync(COLLECT_WINDOW_MS);
-    await expect(run.promise).resolves.toEqual({ interrupted: false, value: undefined });
+    await expect(run.promise).resolves.toBeUndefined();
   });
 
   it('detaches every listener it added', async () => {
@@ -172,26 +208,8 @@ describe('settleAfterAction decision table', () => {
     const run = track(fake);
     await vi.advanceTimersByTimeAsync(REQUEST_GRACE_MS);
     await run.promise;
-    for (const event of ['request', 'requestfinished', 'requestfailed']) {
+    for (const event of ['request', 'requestfinished', 'requestfailed', 'framenavigated']) {
       expect(fake.page.listenerCount(event)).toBe(0);
     }
-  });
-
-  it('a dialog opening mid-action returns at once, reported as interrupted', async () => {
-    const fake = makeFakePage();
-    const page = fake.page as unknown as Page;
-    attachModalTracking(page, { scopeKey: 'ws:w:surf:s', fileChooser: false });
-    const end = beginAgentWindow('w', 's');
-    // A click whose dispatch cannot return while the alert is up.
-    const outcome = settleAfterAction(page, () => {
-      fake.page.emit('dialog', fakeDialog('alert', 'Saved!'));
-      return new Promise(() => {});
-    });
-    await vi.advanceTimersByTimeAsync(0);
-    await expect(outcome).resolves.toMatchObject({
-      interrupted: true,
-      modal: { type: 'alert', message: 'Saved!', causedByAgent: true },
-    });
-    end();
   });
 });

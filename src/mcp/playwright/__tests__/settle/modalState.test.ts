@@ -2,182 +2,159 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Page } from 'playwright-core';
 import {
   ARMED_DIALOG_TTL_MS,
-  CAUSE_GRACE_MS,
-  answerModal,
-  assertNoPendingModal,
+  armDialogAnswer,
   attachModalTracking,
-  beginAgentWindow,
-  pendingModal,
-  pendingModalForScope,
+  beginDispatch,
+  drainDialogNotes,
+  modalScopeKey,
   renderModalBlock,
-  takeFileChooser,
 } from '../../modalState';
+import { settleAfterAction } from '../../actionSettle';
 import { effectTagOf } from '../../resultTrailer';
 import { fakeDialog, makeFakePage } from './fakePage';
 
 let n = 0;
-/** A tracked page on its own surface, with an agent call open on it. */
-function trackedPage(opts: { fileChooser?: boolean; agentActive?: boolean } = {}) {
+/** A tracked page on its own surface. */
+function trackedPage() {
   const fake = makeFakePage();
   const surface = `s${++n}`;
   const page = fake.page as unknown as Page;
-  attachModalTracking(page, { scopeKey: `ws:w:surf:${surface}`, fileChooser: opts.fileChooser ?? true });
-  const end = opts.agentActive === false ? () => {} : beginAgentWindow('w', surface);
-  return { fake, page, surface, end };
+  const key = modalScopeKey('w', surface);
+  attachModalTracking(page, key);
+  return { fake, page, surface, key };
 }
 
 afterEach(() => {
   vi.useRealTimers();
 });
 
-describe('pending modal: block and answer', () => {
-  it('an agent-caused alert is pending, shown in the [modal] block, and answerable', async () => {
-    const { fake, page, surface, end } = trackedPage();
+describe('dialogs keep today’s handling and are reported', () => {
+  it('a confirm is dismissed at once and noted for the surface', () => {
+    const { fake, surface } = trackedPage();
     const dialog = fakeDialog('confirm', 'Delete it?');
     fake.page.emit('dialog', dialog);
-    end();
 
-    expect(pendingModalForScope('w', surface)).toMatchObject({ type: 'confirm', causedByAgent: true });
-    const block = renderModalBlock(pendingModal(page)!);
-    expect(block).toContain('[modal]');
-    expect(block).toContain('confirm: "Delete it?"');
-    expect(block).toContain('browser_dialog({accept:true})');
-
-    // Any other write is refused while it is open (the probe stalls: still open).
-    const refusal = await assertNoPendingModal(page).catch((e) => e);
-    expect(refusal).toBeInstanceOf(Error);
-    expect(effectTagOf(refusal)).toEqual({ code: 'dialog_blocked', effect: 'none' });
-
-    await expect(answerModal(page, false)).resolves.toMatchObject({ kind: 'answered' });
     expect(dialog.dismiss).toHaveBeenCalled();
-    expect(pendingModal(page)).toBeUndefined();
-    await expect(assertNoPendingModal(page)).resolves.toBeUndefined();
-  });
-
-  it('a prompt is answered with the given text', async () => {
-    const { fake, page } = trackedPage();
-    const dialog = fakeDialog('prompt', 'Name?', 'anon');
-    fake.page.emit('dialog', dialog);
-    expect(pendingModal(page)).toMatchObject({ type: 'prompt', defaultValue: 'anon' });
-    await answerModal(page, true, 'wmux');
-    expect(dialog.accept).toHaveBeenCalledWith('wmux');
-  });
-
-  it('a dialog closed by hand in the window does not refuse writes forever', async () => {
-    const { fake, page } = trackedPage();
-    fake.page.emit('dialog', fakeDialog('alert'));
-    fake.state.evaluateStalls = false; // the page answers again: the dialog is gone
-    await expect(assertNoPendingModal(page)).resolves.toBeUndefined();
-    expect(pendingModal(page)).toBeUndefined();
-  });
-
-  it('a dialog that was already handled reports already_closed and clears', async () => {
-    const { fake, page } = trackedPage();
-    const dialog = fakeDialog('alert');
-    dialog.accept.mockRejectedValue(new Error('Cannot accept dialog which is already handled!'));
-    fake.page.emit('dialog', dialog);
-    await expect(answerModal(page, true)).resolves.toMatchObject({ kind: 'already_closed' });
-    expect(pendingModal(page)).toBeUndefined();
-  });
-
-  it('a main-frame navigation clears what was pending', () => {
-    const { fake, page } = trackedPage();
-    fake.page.emit('dialog', fakeDialog('alert'));
-    fake.page.emit('framenavigated', fake.mainFrame);
-    expect(pendingModal(page)).toBeUndefined();
-  });
-});
-
-describe('only modals the agent raised are the agent’s to answer', () => {
-  it('a dialog with no agent call in flight is refused, not consumed', async () => {
-    const { fake, page } = trackedPage({ agentActive: false });
-    const dialog = fakeDialog('confirm', 'Leave the meeting?');
-    fake.page.emit('dialog', dialog);
-
-    expect(pendingModal(page)).toMatchObject({ causedByAgent: false });
-    expect(renderModalBlock(pendingModal(page)!)).toContain('left for the person');
-    const refusal = await answerModal(page, true).catch((e) => e);
-    expect(effectTagOf(refusal)?.code).toBe('dialog_blocked');
     expect(dialog.accept).not.toHaveBeenCalled();
-    expect(dialog.dismiss).not.toHaveBeenCalled();
-    expect(pendingModal(page)).toBeDefined();
+    const notes = drainDialogNotes('w', surface);
+    expect(notes).toMatchObject([{ type: 'confirm', message: 'Delete it?', answer: 'dismissed' }]);
+    const block = renderModalBlock(notes);
+    expect(block).toMatch(/^\[modal\]\n- a confirm appeared and was dismissed/);
+    expect(block).toContain('page text: "Delete it?"');
+    expect(block).toContain('browser_dialog({accept:true}) before the action');
+    // Drained: the next result does not repeat it.
+    expect(drainDialogNotes('w', surface)).toEqual([]);
   });
 
-  it('a dialog just after the call ended still counts, one long after does not', () => {
-    vi.useFakeTimers();
-    const a = trackedPage();
-    a.end();
-    vi.advanceTimersByTime(CAUSE_GRACE_MS - 10);
-    a.fake.page.emit('dialog', fakeDialog('alert'));
-    expect(pendingModal(a.page)).toMatchObject({ causedByAgent: true });
-
-    const b = trackedPage();
-    b.end();
-    vi.advanceTimersByTime(CAUSE_GRACE_MS + 10);
-    b.fake.page.emit('dialog', fakeDialog('alert'));
-    expect(pendingModal(b.page)).toMatchObject({ causedByAgent: false });
+  it('beforeunload is accepted and not noted', () => {
+    const { fake, surface } = trackedPage();
+    const dialog = fakeDialog('beforeunload', '');
+    fake.page.emit('dialog', dialog);
+    expect(dialog.accept).toHaveBeenCalled();
+    expect(drainDialogNotes('w', surface)).toEqual([]);
   });
 
-  it('a file chooser the agent did not raise is not handed to browser_file_upload', () => {
-    const { fake, page } = trackedPage({ agentActive: false });
-    fake.page.emit('filechooser', { isMultiple: () => false });
-    expect(() => takeFileChooser(page)).toThrow('did not open from an agent action');
+  it('page text is capped', () => {
+    const { fake, surface } = trackedPage();
+    fake.page.emit('dialog', fakeDialog('alert', 'x'.repeat(5000)));
+    const [note] = drainDialogNotes('w', surface);
+    expect(note.message.length).toBeLessThanOrEqual(201);
   });
 
-  it('an agent-raised file chooser is handed over once', () => {
-    const { fake, page } = trackedPage();
-    const chooser = { isMultiple: () => true };
-    fake.page.emit('filechooser', chooser);
-    expect(pendingModal(page)).toMatchObject({ type: 'filechooser', isMultiple: true });
-    expect(takeFileChooser(page)).toBe(chooser);
-    expect(takeFileChooser(page)).toBeUndefined();
+  it('a closed context drops the scope index', () => {
+    const { fake, surface } = trackedPage();
+    fake.page.emit('dialog', fakeDialog('alert'));
+    fake.page.closeContext();
+    expect(drainDialogNotes('w', surface)).toEqual([]);
   });
 });
 
-describe('defaults kept', () => {
-  it('beforeunload is accepted at once and never becomes pending', () => {
-    const { fake, page } = trackedPage();
-    const dialog = fakeDialog('beforeunload', '');
-    fake.page.emit('dialog', dialog);
-    expect(dialog.accept).toHaveBeenCalled();
-    expect(pendingModal(page)).toBeUndefined();
+describe('browser_dialog pre-arm', () => {
+  it('applies to a dialog raised during the agent’s own dispatch, once', async () => {
+    const { fake, page, key, surface } = trackedPage();
+    armDialogAnswer(page, key, 'agent', true, 'yes');
+
+    const first = fakeDialog('prompt', 'Name?');
+    const end = beginDispatch(page);
+    fake.page.emit('dialog', first);
+    end();
+    expect(first.accept).toHaveBeenCalledWith('yes');
+
+    const second = fakeDialog('prompt', 'Again?');
+    const end2 = beginDispatch(page);
+    fake.page.emit('dialog', second);
+    end2();
+    expect(second.dismiss).toHaveBeenCalled();
+    expect(drainDialogNotes('w', surface).map((x) => x.answer)).toEqual([
+      'accepted (pre-armed)',
+      'dismissed',
+    ]);
   });
 
-  it('beforeunload is accepted even with no agent call in flight', () => {
-    const { fake, page } = trackedPage({ agentActive: false });
-    const dialog = fakeDialog('beforeunload', '');
-    fake.page.emit('dialog', dialog);
-    expect(dialog.accept).toHaveBeenCalled();
-    expect(pendingModal(page)).toBeUndefined();
-  });
-
-  it('a pre-armed answer applies to the next dialog, and lapses after its TTL', async () => {
+  it('a dispatch through settleAfterAction counts as the agent’s action', async () => {
+    const { fake, page, key } = trackedPage();
+    armDialogAnswer(page, key, 'agent', true);
+    const dialog = fakeDialog('confirm');
     vi.useFakeTimers();
-    const a = trackedPage();
-    await expect(answerModal(a.page, false)).resolves.toEqual({ kind: 'armed' });
-    const first = fakeDialog('confirm');
-    a.fake.page.emit('dialog', first);
-    expect(first.dismiss).toHaveBeenCalled();
-    expect(pendingModal(a.page)).toBeUndefined();
+    const run = settleAfterAction(page, async () => {
+      fake.page.emit('dialog', dialog);
+    });
+    await vi.advanceTimersByTimeAsync(100);
+    await run;
+    expect(dialog.accept).toHaveBeenCalled();
+  });
 
-    const b = trackedPage();
-    await answerModal(b.page, true);
+  it('a dialog with no dispatch in flight does not spend it (no time-proximity rule)', () => {
+    const { fake, page, key } = trackedPage();
+    armDialogAnswer(page, key, 'agent', true);
+    const spontaneous = fakeDialog('confirm');
+    fake.page.emit('dialog', spontaneous);
+    expect(spontaneous.dismiss).toHaveBeenCalled();
+
+    const later = fakeDialog('confirm');
+    const end = beginDispatch(page);
+    fake.page.emit('dialog', later);
+    end();
+    expect(later.accept).toHaveBeenCalled();
+  });
+
+  it('beforeunload never consumes it', () => {
+    const { fake, page, key } = trackedPage();
+    armDialogAnswer(page, key, 'agent', false);
+    const end = beginDispatch(page);
+    const leave = fakeDialog('beforeunload', '');
+    fake.page.emit('dialog', leave);
+    expect(leave.accept).toHaveBeenCalled();
+    const confirm = fakeDialog('confirm');
+    fake.page.emit('dialog', confirm);
+    end();
+    expect(confirm.dismiss).toHaveBeenCalled();
+  });
+
+  it('lapses after its TTL', () => {
+    vi.useFakeTimers();
+    const { fake, page, key } = trackedPage();
+    armDialogAnswer(page, key, 'agent', true);
     vi.advanceTimersByTime(ARMED_DIALOG_TTL_MS + 1);
+    const end = beginDispatch(page);
     const late = fakeDialog('confirm');
-    b.fake.page.emit('dialog', late);
+    fake.page.emit('dialog', late);
+    end();
     expect(late.accept).not.toHaveBeenCalled();
-    expect(pendingModal(b.page)).toMatchObject({ type: 'confirm' });
+    expect(late.dismiss).toHaveBeenCalled();
   });
 
-  it('on an untracked page (user or lent tab) the pre-arm is a one-shot listener that expires', async () => {
-    vi.useFakeTimers();
+  it.each(['user', 'borrowed', 'unknown'] as const)('is refused on a %s tab', (owner) => {
     const fake = makeFakePage();
     const page = fake.page as unknown as Page;
-    await expect(answerModal(page, true)).resolves.toEqual({ kind: 'armed' });
-    expect(fake.page.listenerCount('dialog')).toBe(1);
-    vi.advanceTimersByTime(ARMED_DIALOG_TTL_MS + 1);
-    // Gone: Playwright's own default handling is back in charge of the page.
+    let error: unknown;
+    try {
+      armDialogAnswer(page, modalScopeKey('w', `x${++n}`), owner, true);
+    } catch (e) {
+      error = e;
+    }
+    expect(effectTagOf(error)).toEqual({ code: 'scope_refused', effect: 'none' });
+    // Nothing attached: that tab keeps Playwright's own handling.
     expect(fake.page.listenerCount('dialog')).toBe(0);
-    expect(pendingModal(page)).toBeUndefined();
   });
 });

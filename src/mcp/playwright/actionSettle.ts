@@ -1,24 +1,25 @@
 // Adapted from microsoft/playwright@v1.58.2 packages/playwright-core/src/server/agent/context.ts (waitForCompletion), Apache-2.0, modified
 //
 // Modified: reimplemented client-side over Page events (the original runs on
-// the server's progress controller), returns immediately when the action
-// starts no request within REQUEST_GRACE_MS, ignores non-page-state
-// resource types, treats a failed request as done, and stops waiting the
-// moment a dialog or file chooser opens (modalState).
+// the server's progress controller); returns immediately when the action
+// starts no relevant request within REQUEST_GRACE_MS; only document,
+// stylesheet, script, xhr and fetch requests (or a main-frame navigation)
+// count; requests starting after the collect window are ignored; a navigation
+// waits for its own commit before waiting for `load`; a failed request counts
+// as done.
 
 import type { Page, Request } from 'playwright-core';
-import { delayUnlessModal, raceModal, type RaceOutcome } from './modalState';
+import { beginDispatch } from './modalState';
 
-/** No request inside this window after the action means there is nothing to wait for. */
+/** No relevant request inside this window after the action means there is nothing to wait for. */
 export const REQUEST_GRACE_MS = 100;
-/** Once traffic started: how long requests may keep starting before we look at them. */
+/** Once traffic started: how long new requests are still collected, from the action's end. */
 export const COLLECT_WINDOW_MS = 500;
 /** The ceiling on everything settle waits for after the action itself. */
 export const SETTLE_CAP_MS = 5_000;
 
 // What a page's next state depends on. An image, a beacon or a ping does not
-// change what a snapshot will show, and analytics pings would otherwise turn
-// every click into a 500ms one.
+// change what a snapshot will show, and must not cost a click 500ms.
 const TRACKED_TYPES = new Set(['document', 'stylesheet', 'script', 'xhr', 'fetch']);
 
 type EventPage = Pick<Page, 'on' | 'off' | 'mainFrame' | 'waitForLoadState'>;
@@ -28,94 +29,121 @@ function hasEvents(page: unknown): page is EventPage {
   return !!p && typeof p.on === 'function' && typeof p.off === 'function';
 }
 
-function sleep(page: Page, ms: number): Promise<void> {
-  return ms > 0 ? delayUnlessModal(page, ms) : Promise.resolve();
+function sleep(ms: number): Promise<void> {
+  if (ms <= 0) return Promise.resolve();
+  return new Promise((resolve) => {
+    const t = setTimeout(resolve, ms);
+    (t as { unref?: () => void }).unref?.();
+  });
 }
 
 /**
  * Run `fn` (one dispatched page action) and wait until the page has caught up
  * with it, so the next snapshot shows the state the action produced:
- *   - no request within REQUEST_GRACE_MS of the action -> return at once;
- *   - otherwise keep collecting until COLLECT_WINDOW_MS after the action, then
- *     wait for `load` if the main frame navigated, else for every tracked
- *     request to finish or fail;
- *   - never longer than SETTLE_CAP_MS past the action, and never past a modal
- *     opening (the action is reported, the modal is answered next).
+ *   - no relevant request within REQUEST_GRACE_MS of the action -> return;
+ *   - otherwise collect requests until COLLECT_WINDOW_MS after the action,
+ *     then wait for the navigation to commit and reach `load` if the main
+ *     frame navigated, else for every collected request to finish or fail;
+ *   - never longer than SETTLE_CAP_MS past the action.
  *
  * Every wait swallows its own failure: settling is a courtesy, and a page that
- * closed or navigated mid-wait must never turn a dispatched action into a
- * failed one. `fn`'s own rejection is the only error that escapes.
+ * closed mid-wait must never turn a dispatched action into a failed one — nor
+ * a failed one into a success. `fn`'s own rejection is the only error out.
  */
-export async function settleAfterAction<T>(page: Page, fn: () => Promise<T>): Promise<RaceOutcome<T>> {
-  if (!hasEvents(page)) return { interrupted: false, value: await fn() };
+export async function settleAfterAction<T>(page: Page, fn: () => Promise<T>): Promise<T> {
+  if (!hasEvents(page)) return fn();
 
   const inFlight = new Set<Request>();
   let sawRequest = false;
-  let navigated = false;
-  let firstRequest: (() => void) | undefined;
-  let allDone: (() => void) | undefined;
+  let navRequest: Request | undefined;
+  let committed = false;
+  let wake: (() => void) | undefined;
+
+  const isMain = (frame: unknown) => safe(() => frame === page.mainFrame(), false);
   const onRequest = (request: Request) => {
+    const navigation = safe(() => request.isNavigationRequest() && isMain(request.frame()), false);
+    const tracked = safe(() => TRACKED_TYPES.has(request.resourceType()), false);
+    if (!navigation && !tracked) return;
     sawRequest = true;
-    try {
-      if (request.isNavigationRequest() && request.frame() === page.mainFrame()) navigated = true;
-      if (TRACKED_TYPES.has(request.resourceType())) inFlight.add(request);
-    } catch {
-      /* request torn down with its frame */
-    }
-    firstRequest?.();
+    if (navigation) navRequest = request;
+    else inFlight.add(request);
+    wake?.();
   };
   const onDone = (request: Request) => {
     inFlight.delete(request);
-    if (inFlight.size === 0) allDone?.();
+    if (request === navRequest && !committed) navRequest = undefined; // aborted or replaced
+    wake?.();
   };
+  const onNavigated = (frame: unknown) => {
+    if (!isMain(frame)) return;
+    committed = true;
+    wake?.();
+  };
+  /** Resolve on the next event that might change the answer, or after `ms`. */
+  const nextEvent = (ms: number) =>
+    new Promise<void>((resolve) => {
+      const t = setTimeout(resolve, Math.max(0, ms));
+      (t as { unref?: () => void }).unref?.();
+      wake = () => {
+        clearTimeout(t);
+        resolve();
+      };
+    }).finally(() => {
+      wake = undefined;
+    });
 
   page.on('request', onRequest);
   page.on('requestfinished', onDone);
   page.on('requestfailed', onDone);
+  page.on('framenavigated', onNavigated);
+  let collecting = true;
+  const stopCollecting = () => {
+    if (!collecting) return;
+    collecting = false;
+    page.off('request', onRequest);
+  };
   try {
-    const outcome = await raceModal(page, fn());
-    if (outcome.interrupted) return outcome;
+    const endDispatch = beginDispatch(page);
+    let value: T;
+    try {
+      value = await fn();
+    } finally {
+      endDispatch();
+    }
     const actedAt = Date.now();
+    const left = () => SETTLE_CAP_MS - (Date.now() - actedAt);
 
     if (!sawRequest) {
-      await raceModal(
-        page,
-        new Promise<void>((resolve) => {
-          firstRequest = resolve;
-          const t = setTimeout(resolve, REQUEST_GRACE_MS);
-          (t as { unref?: () => void }).unref?.();
-        }),
-      );
-      firstRequest = undefined;
-      if (!sawRequest) return outcome;
+      await nextEvent(REQUEST_GRACE_MS);
+      if (!sawRequest) return value;
     }
+    await sleep(COLLECT_WINDOW_MS - (Date.now() - actedAt));
+    // A polling page keeps starting requests; only the action's are waited for.
+    stopCollecting();
 
-    await sleep(page, COLLECT_WINDOW_MS - (Date.now() - actedAt));
-    const remaining = SETTLE_CAP_MS - (Date.now() - actedAt);
-    if (remaining <= 0) return outcome;
-
-    let capTimer: ReturnType<typeof setTimeout> | undefined;
-    const cap = new Promise<void>((resolve) => {
-      capTimer = setTimeout(resolve, remaining);
-      (capTimer as { unref?: () => void }).unref?.();
-    });
-    try {
-      const target = navigated
-        ? page.waitForLoadState('load', { timeout: remaining }).catch(() => {})
-        : inFlight.size === 0
-          ? Promise.resolve()
-          : new Promise<void>((resolve) => {
-              allDone = resolve;
-            });
-      await raceModal(page, Promise.race([target, cap]));
-    } finally {
-      if (capTimer) clearTimeout(capTimer);
-      allDone = undefined;
+    if (navRequest) {
+      // Wait for THIS navigation to commit first: `load` read before the
+      // commit is the old document's, already reached.
+      while (navRequest && !committed && left() > 0) await nextEvent(left());
+      if (committed && left() > 0) {
+        await page.waitForLoadState('load', { timeout: left() }).catch(() => undefined);
+      }
+      return value;
     }
-    return outcome;
+    while (inFlight.size > 0 && left() > 0) await nextEvent(left());
+    return value;
   } finally {
-    page.off('request', onRequest);
+    stopCollecting();
     page.off('requestfinished', onDone);
     page.off('requestfailed', onDone);
+    page.off('framenavigated', onNavigated);
+  }
+}
+
+function safe<T>(fn: () => T, fallback: T): T {
+  try {
+    return fn();
+  } catch {
+    return fallback;
   }
 }

@@ -1123,25 +1123,13 @@ async function rpcPressKey(key: string, scope: BrowserTargetScope): Promise<void
   });
 }
 
-/** Appended when a dialog or file chooser cut the action short. */
-const MODAL_INTERRUPT_NOTE =
-  ' — a dialog or file chooser opened before the action finished (see [modal]); answer it before the next action.';
-
 /**
  * Dispatch one page action and wait for the page to catch up with it
  * (settleAfterAction), inside the tool body so the lease's post-drain still
- * attributes the navigation it caused to this result. `value` is undefined
- * when a modal opened first; `note` then says so.
+ * attributes the navigation it caused to this result.
  */
-async function settledDispatch<T>(
-  effect: EffectProbe,
-  page: Page,
-  send: () => Promise<T>,
-): Promise<{ value: T | undefined; note: string }> {
-  const outcome = await effect.dispatch(() => settleAfterAction(page, send));
-  return outcome.interrupted
-    ? { value: undefined, note: MODAL_INTERRUPT_NOTE }
-    : { value: outcome.value, note: '' };
+function settledDispatch<T>(effect: EffectProbe, page: Page, send: () => Promise<T>): Promise<T> {
+  return effect.dispatch(() => settleAfterAction(page, send));
 }
 
 /**
@@ -1339,7 +1327,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
               ? watchForPopup(page as unknown as { on: Function; off: Function })
               : null;
           try {
-            const settled = await settledDispatch(effect, page, () =>
+            await settledDispatch(effect, page, () =>
               withModifiers(page, modifierKeys, () =>
                 page.mouse.click(clickX as number, clickY as number, {
                   ...(double && { clickCount: 2 }),
@@ -1359,7 +1347,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
                 content: [
                   {
                     type: 'text' as const,
-                    text: `Clicked${double ? ' (double)' : ''} at viewport CSS px (${clickX}, ${clickY})${imageNote}${modifiersNote(modifierKeys)}${note}${settled.note}`,
+                    text: `Clicked${double ? ' (double)' : ''} at viewport CSS px (${clickX}, ${clickY})${imageNote}${modifiersNote(modifierKeys)}${note}`,
                   },
                 ],
               },
@@ -1399,12 +1387,11 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
               // element resolves through its descriptor and says so (#1355).
               const refNotes: string[] = [];
               const locator = await resolveSmartRefLocator(page, smartRef, { notes: refNotes });
-              const settled = await settledDispatch(effect, page, () =>
+              const dispatch = await settledDispatch(effect, page, () =>
                 withModifiers(page, modifierKeys, () =>
                   clickWithApproach(page as unknown as ApproachPage, locator, !!double, tap),
                 ),
               );
-              const dispatch = settled.value ?? 'mouse';
               // A ref axis, not the css axis this used to record: the CDP
               // lane's stored "locator" is getByRole SOURCE TEXT, which
               // page.locator() cannot parse, so every replay of such a step
@@ -1423,7 +1410,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
               }
               return withEffectTrailer(
                 {
-                  content: [{ type: 'text' as const, text: `Clicked${double ? ' (double)' : ''} element smartRef=${smartRef}${modifiersNote(modifierKeys)}${dispatchNote(!!tapper, double, dispatch)}${settled.note}${refNotes.map((n) => `\n${n}`).join('')}${await popupNote()}` }],
+                  content: [{ type: 'text' as const, text: `Clicked${double ? ' (double)' : ''} element smartRef=${smartRef}${modifiersNote(modifierKeys)}${dispatchNote(!!tapper, double, dispatch)}${refNotes.map((n) => `\n${n}`).join('')}${await popupNote()}` }],
                 },
                 effect.success(),
               );
@@ -1433,12 +1420,11 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
 
             const el = await resolveRef(page, ref);
             if (!el) throw refMissing(ref, page);
-            const settled = await settledDispatch(effect, page, () =>
+            const dispatch = await settledDispatch(effect, page, () =>
               withModifiers(page, modifierKeys, () =>
                 clickWithApproach(page as unknown as ApproachPage, el, !!double, tap),
               ),
             );
-            const dispatch = settled.value ?? 'mouse';
             if (!modifierKeys) {
               recordAction(deps, {
                 scope,
@@ -1450,7 +1436,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
             }
             return withEffectTrailer(
               {
-                content: [{ type: 'text' as const, text: `Clicked${double ? ' (double)' : ''} element ref=${ref}${modifiersNote(modifierKeys)}${dispatchNote(!!tapper, double, dispatch)}${settled.note}${await popupNote()}` }],
+                content: [{ type: 'text' as const, text: `Clicked${double ? ' (double)' : ''} element ref=${ref}${modifiersNote(modifierKeys)}${dispatchNote(!!tapper, double, dispatch)}${await popupNote()}` }],
               },
               effect.success(),
             );
@@ -1507,22 +1493,18 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
         // navigate the page out from under a later lookup.
         let isPassword: boolean;
         let segments: string[];
-        let modalNote = '';
         const refNotes: string[] = [];
 
         if (page) {
           const el = await resolveTypeTarget(page, addr, refNotes);
           isPassword = await isPasswordElement(el);
-          const typed = await settledDispatch(effect, page, () =>
-            typeIntoTarget(page, el, text, { humanlike, newlineKey }),
-          );
-          segments = typed.value ?? [];
-          modalNote = typed.note;
-          // A dialog the typing raised is answered first; pressing Enter into
-          // it would be a keystroke for a page that is not listening.
-          if (submit && !modalNote) {
-            modalNote = (await settledDispatch(effect, page, () => page.keyboard.press('Enter'))).note;
-          }
+          // Typing and its submit Enter settle as one action: the page catches
+          // up once, after the Enter, and Enter is sent whenever submit is set.
+          segments = await settledDispatch(effect, page, async () => {
+            const typed = await typeIntoTarget(page, el, text, { humanlike, newlineKey });
+            if (submit) await page.keyboard.press('Enter');
+            return typed;
+          });
         } else {
           // RPC fallback
           const rpcSelector = rpcSelectorFor(addr, scope);
@@ -1572,7 +1554,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
             content: [
               {
                 type: 'text' as const,
-                text: `Typed "${echoed}" into element ${describeAddress(addr)}${lineNote}${submit ? ' and submitted' : ''}${modalNote}${refNotes.map((n) => `\n${n}`).join('')}`,
+                text: `Typed "${echoed}" into element ${describeAddress(addr)}${lineNote}${submit ? ' and submitted' : ''}${refNotes.map((n) => `\n${n}`).join('')}`,
               },
             ],
           },
@@ -1644,12 +1626,8 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
             }
           }
         };
-        let modalNote = '';
-        if (page) {
-          if ((await settleAfterAction(page, fillAll)).interrupted) modalNote = MODAL_INTERRUPT_NOTE;
-        } else {
-          await fillAll();
-        }
+        if (page) await settleAfterAction(page, fillAll);
+        else await fillAll();
 
         // Recorded only when EVERY field landed: a partially filled form
         // replayed as if it were whole is a wrong run that reports success.
@@ -1670,7 +1648,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
           }
         }
 
-        let resultText = `Filled ${filled}/${fields.length} field(s)${modalNote}.${refNotes.map((n) => `\n${n}`).join('')}`;
+        let resultText = `Filled ${filled}/${fields.length} field(s).${refNotes.map((n) => `\n${n}`).join('')}`;
         if (errors.length > 0) {
           resultText += '\nErrors:\n' + errors.join('\n');
         }
@@ -1712,9 +1690,8 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
       try {
         const page = await engine.getPageForScope(scope, { intent: 'write' }).catch(allowScopedRpcFallback);
 
-        let modalNote = '';
         if (page) {
-          modalNote = (await settledDispatch(effect, page, () => page.keyboard.press(key))).note;
+          await settledDispatch(effect, page, () => page.keyboard.press(key));
         } else {
           await effect.dispatch(() => rpcPressKey(key, scope));
         }
@@ -1722,7 +1699,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
         recordAction(deps, { scope, tool: 'browser_press_key', page, args: { key } });
 
         return withEffectTrailer(
-          { content: [{ type: 'text' as const, text: `Pressed key: ${key}${modalNote}` }] },
+          { content: [{ type: 'text' as const, text: `Pressed key: ${key}` }] },
           effect.success(),
         );
       } catch (error) {
@@ -1965,13 +1942,12 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
     async ({ ref, values, surfaceId }) => leasedMutation(deps, surfaceId, async (scope, effect) => {
       try {
         const page = await engine.getPageForScope(scope, { intent: 'write' }).catch(allowScopedRpcFallback);
-        let selectModalNote = '';
 
         if (page) {
           const el = await resolveRef(page, ref);
           if (!el) throw refMissing(ref, page);
           try {
-            selectModalNote = (await settledDispatch(effect, page, () => el.selectOption(values))).note;
+            await settledDispatch(effect, page, () => el.selectOption(values));
           } catch (error) {
             // Playwright's own message is "Element is not a <select> element",
             // which tells the caller what the element is NOT and leaves them
@@ -2020,7 +1996,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
 
         return withEffectTrailer(
           {
-            content: [{ type: 'text' as const, text: `Selected value(s) [${values.join(', ')}] in element ref=${ref}${selectModalNote}` }],
+            content: [{ type: 'text' as const, text: `Selected value(s) [${values.join(', ')}] in element ref=${ref}` }],
           },
           effect.success(),
         );
