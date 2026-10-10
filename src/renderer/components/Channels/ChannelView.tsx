@@ -23,7 +23,7 @@ import type {
 } from '../../../shared/channels';
 import { useStore } from '../../stores';
 import type { WorkTask } from '../../../shared/workTask';
-import { loadChannelHistory, hydrateChannelsCatalog } from '../../hooks/useChannelsHydration';
+import { loadChannelHistory, hydrateChannelsCatalog, loadChannelMembers, hydratesMembersOf } from '../../hooks/useChannelsHydration';
 import { useT } from '../../hooks/useT';
 import { tokenAttrs } from '../../themes';
 import { FOCUS_RING } from '../focusRing';
@@ -822,6 +822,28 @@ export function ChannelView(): React.ReactElement | null {
   }, [members, channel?.observed]);
 
   // P0: load RECENT message history into the store when a channel is opened.
+  // Catalog hydration skips archived rosters, so an opened archived channel
+  // loads its own: the viewer's history floor, author chips and the member
+  // list all read it.
+  const needsMembers = useStore((s) => {
+    const ch = activeChannelId ? s.channels[activeChannelId] : undefined;
+    return !!ch && !hydratesMembersOf(ch) && s.channelMembers[ch.id] === undefined;
+  });
+  useEffect(() => {
+    if (!activeChannelId || !needsMembers) return;
+    const bridge = useStore.getState().channelsRpc();
+    if (!bridge) return;
+    let disposed = false;
+    void loadChannelMembers({
+      rpc: bridge.rpc,
+      channelId: activeChannelId,
+      workspaceId: HUMAN_WORKSPACE_ID,
+      apply: useStore.getState().hydrateChannelMembers,
+      isCurrent: () => !disposed,
+    });
+    return () => { disposed = true; };
+  }, [activeChannelId, needsMembers]);
+
   // The view renders `store.channelMessages` only (it never calls getMessages
   // itself), so without this an opened channel shows the empty-state even when
   // it has history. `selfWs` MUST match the `viewer` workspace expression above

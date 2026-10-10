@@ -69,14 +69,83 @@ function isOkObject(v: unknown): v is Record<string, unknown> {
   return v !== null && typeof v === 'object' && (v as { ok?: unknown }).ok === true;
 }
 
+/** Whether hydration fetches this channel's roster. Archived (and trashed,
+ *  which is always also archived) channels are skipped: production catalogs
+ *  carry far more archived rooms than live ones, and one `getMembers` per
+ *  channel on every catalog event tripped the daemon's global RPC rate limit.
+ *  Their rosters load lazily when the channel is opened (`loadChannelMembers`). */
+export function hydratesMembersOf(ch: Channel): boolean {
+  return ch.status !== 'archived' && ch.trashedAt === undefined;
+}
+
+interface HydrationFlight {
+  running: Promise<number>;
+  /** At most one queued rerun, shared by every call made while a run was in
+   *  flight. It starts after all of them, so its result is fresh for each. */
+  trailing: { calls: ChannelHydrationDeps[]; promise: Promise<number>; resolve: (n: number) => void } | null;
+}
+
+/** Single-flight state, keyed by the rpc bridge function: production has one
+ *  bridge, so every caller coalesces; each test's mock bridge stays isolated. */
+const flights = new WeakMap<ChannelHydrationDeps['rpc'], HydrationFlight>();
+
+/** One run on behalf of every coalesced call: the newest call's bridge and
+ *  setter, dispatching while ANY caller is still live, and the stale-daemon
+ *  signal delivered to every caller that asked for it. Runs on one flight are
+ *  serialized, so an older run can never land after a newer one. */
+function mergeCalls(calls: ChannelHydrationDeps[]): ChannelHydrationDeps {
+  const latest = calls[calls.length - 1];
+  const staleSetters = [...new Set(calls.map((c) => c.setDaemonStale).filter((f) => f !== undefined))];
+  return {
+    ...latest,
+    isCurrent: () => calls.some((c) => (c.isCurrent ?? (() => true))()),
+    setDaemonStale: staleSetters.length > 0 ? (stale) => { for (const f of staleSetters) f(stale); } : undefined,
+  };
+}
+
+function startFlight(deps: ChannelHydrationDeps): Promise<number> {
+  const flight: HydrationFlight = { running: Promise.resolve(0), trailing: null };
+  flights.set(deps.rpc, flight);
+  const run = (current: ChannelHydrationDeps): Promise<number> =>
+    runHydration(current).catch(() => 0).finally(() => {
+      const next = flight.trailing;
+      if (!next) {
+        if (flights.get(deps.rpc) === flight) flights.delete(deps.rpc);
+        return;
+      }
+      flight.trailing = null;
+      flight.running = run(mergeCalls(next.calls));
+      void flight.running.then(next.resolve);
+    });
+  flight.running = run(deps);
+  return flight.running;
+}
+
 /**
- * Pure hydration: `a2a.channel.list` → per-channel `a2a.channel.getMembers`
- * → `setChannels`. Best-effort throughout — any RPC error, non-ok envelope,
- * malformed shape, missing identity, or a disposed guard short-circuits to a
- * no-op (no partial dispatch). Returns the number of channels hydrated (0 on
- * any early bail) so callers/tests can assert progress.
+ * Hydrate the catalog: `a2a.channel.list` → `a2a.channel.getMembers` for each
+ * live (non-archived) channel → `setChannels`. Best-effort throughout — any RPC
+ * error, non-ok envelope, malformed shape, missing identity, or a disposed
+ * guard short-circuits to a no-op (no partial dispatch). Returns the number of
+ * channels hydrated (0 on any early bail) so callers/tests can assert progress.
+ *
+ * Single-flight: a call while a run is in flight does not start a second one;
+ * it joins exactly one trailing rerun and resolves when that rerun settles, so
+ * a caller that awaits still sees a catalog read that began after its request.
  */
-export async function hydrateChannelsCatalog(deps: ChannelHydrationDeps): Promise<number> {
+export function hydrateChannelsCatalog(deps: ChannelHydrationDeps): Promise<number> {
+  const flight = flights.get(deps.rpc);
+  if (!flight) return startFlight(deps);
+  if (flight.trailing) {
+    flight.trailing.calls.push(deps);
+    return flight.trailing.promise;
+  }
+  let resolve!: (n: number) => void;
+  const promise = new Promise<number>((r) => { resolve = r; });
+  flight.trailing = { calls: [deps], promise, resolve };
+  return promise;
+}
+
+async function runHydration(deps: ChannelHydrationDeps): Promise<number> {
   const { rpc, workspaceId, setChannels } = deps;
   const isCurrent = deps.isCurrent ?? (() => true);
   if (!workspaceId) return 0;
@@ -103,12 +172,13 @@ export async function hydrateChannelsCatalog(deps: ChannelHydrationDeps): Promis
   const epoch = typeof rawEpoch === 'number' && Number.isFinite(rawEpoch) ? rawEpoch : 0;
   deps.setDaemonStale?.(epoch < CHANNELS_EPOCH);
 
-  // Fetch members per channel in parallel (best-effort — a channel whose
+  // Fetch members per live channel in parallel (best-effort — a channel whose
   // getMembers fails hydrates with no member entry and is reconciled on the
-  // next trigger).
+  // next trigger). Archived channels are skipped (see `hydratesMembersOf`);
+  // `setChannels` keeps a roster already loaded for one.
   const members: Record<string, ChannelMember[]> = {};
   await Promise.all(
-    channels.map(async (ch) => {
+    channels.filter(hydratesMembersOf).map(async (ch) => {
       try {
         const mRes = await rpc('a2a.channel.getMembers', {
           channelId: ch.id,
@@ -195,6 +265,42 @@ export async function loadChannelHistory(deps: ChannelHistoryDeps): Promise<numb
   const messages = raw as ChannelMessage[];
   apply(channelId, messages);
   return messages.length;
+}
+
+/** Dependencies for the lazy single-channel roster load. */
+export interface ChannelMembersDeps {
+  rpc: (method: string, params: Record<string, unknown>) => Promise<unknown>;
+  channelId: string;
+  workspaceId: string;
+  /** Store action that sets one channel's roster (`channelsSlice.hydrateChannelMembers`). */
+  apply: (channelId: string, members: ChannelMember[]) => void;
+  isCurrent?: () => boolean;
+}
+
+/**
+ * Load ONE channel's roster on open. Catalog hydration skips archived channels
+ * (see `hydratesMembersOf`), so a view that needs an archived room's members —
+ * the viewer's history floor, author chips, the member list — fetches them here.
+ * Best-effort, same bail rules as `loadChannelHistory`. Returns the number of
+ * members applied, or -1 when nothing was applied.
+ */
+export async function loadChannelMembers(deps: ChannelMembersDeps): Promise<number> {
+  const { rpc, channelId, workspaceId, apply } = deps;
+  const isCurrent = deps.isCurrent ?? (() => true);
+  if (!workspaceId || !channelId) return -1;
+  let res: unknown;
+  try {
+    res = await rpc('a2a.channel.getMembers', { channelId, workspaceId, verifiedWorkspaceId: workspaceId });
+  } catch {
+    return -1; // a later open retries
+  }
+  if (!isCurrent()) return -1;
+  const env = unwrapRpc(res);
+  if (!isOkObject(env)) return -1;
+  const raw = (env as { members?: unknown }).members;
+  if (!Array.isArray(raw)) return -1;
+  apply(channelId, raw as ChannelMember[]);
+  return raw.length;
 }
 
 /** Single-method facade over the channels bridge `useRpcBridge` installs.

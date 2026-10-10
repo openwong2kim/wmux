@@ -11,7 +11,7 @@ import { useStore } from '../../stores';
 import type { ChannelMember, ChannelMessage } from '../../../shared/channels';
 import { HUMAN_MEMBER_ID, HUMAN_WORKSPACE_ID } from '../../../shared/channels';
 import type { WorkTask } from '../../../shared/workTask';
-import { hydrateChannelsCatalog, loadChannelHistory } from '../../hooks/useChannelsHydration';
+import { hydrateChannelsCatalog, loadChannelHistory, loadChannelMembers, hydratesMembersOf } from '../../hooks/useChannelsHydration';
 import { paneNameForAuthor, paneNamesKey, parsePaneNamesKey } from '../../channels/paneMemberNames';
 import { ChannelMessageRow } from '../Channels/ChannelMessageRow';
 import { TASK_WORKSPACE_PREFIX } from '../../utils/fanoutProvenance';
@@ -104,6 +104,19 @@ export default function TaskConversation({
         });
       }
       if (disposed) return;
+      // A closed task's mission channel is archived, and catalog hydration
+      // skips archived rosters: load this one for the viewer floor and chips.
+      const st = useStore.getState();
+      const ch = st.channels[channelId];
+      if (ch && !hydratesMembersOf(ch) && st.channelMembers[channelId] === undefined) {
+        void loadChannelMembers({
+          rpc: bridge.rpc,
+          channelId,
+          workspaceId: HUMAN_WORKSPACE_ID,
+          apply: st.hydrateChannelMembers,
+          isCurrent: () => !disposed,
+        });
+      }
       await loadChannelHistory({
         rpc: bridge.rpc,
         channelId,

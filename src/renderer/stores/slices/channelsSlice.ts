@@ -371,10 +371,15 @@ export interface ChannelsSlice {
   mapRpcError: (raw: unknown, fallbackMessage: string) => ChannelError;
 
   // ── Catalog refresh (called on mount + after lifecycle events) ──
+  /** Replaces the catalog and rosters. An archived channel absent from
+   *  `members` keeps the roster already in state: hydration does not fetch
+   *  archived rosters, which load lazily via `hydrateChannelMembers`. */
   setChannels: (
     channels: Channel[],
     members: Record<string, ChannelMember[]>,
   ) => void;
+  /** Set one catalogued channel's roster (lazy load on open of an archived room). */
+  hydrateChannelMembers: (channelId: string, members: ChannelMember[]) => void;
 
   // ── Event-driven actions (dispatched from the subscription hook) ─
   markChannelRead: (channelId: string) => void;
@@ -497,9 +502,17 @@ export const createChannelsSlice: StateCreator<
       // marks the sender's rows "no answer" for the life of the channel.
       // `setChannels` is the authoritative roster refresh, so it is where the
       // previous cursor and the new one can be compared.
-      clearSettledNudgeExhausted(state, members, liveIds);
+      // Archived rosters are not re-fetched by hydration; keep one already
+      // loaded instead of wiping it on every catalog refresh.
+      const merged: Record<string, ChannelMember[]> = { ...members };
+      for (const ch of channels) {
+        if (ch.status === 'archived' && !(ch.id in members) && state.channelMembers[ch.id]) {
+          merged[ch.id] = state.channelMembers[ch.id];
+        }
+      }
+      clearSettledNudgeExhausted(state, merged, liveIds);
       state.channels = next;
-      state.channelMembers = members;
+      state.channelMembers = merged;
       // A19: drop caches for channels no longer in the catalog (archived out of
       // view, a private channel we were removed from, etc.) — channelMessages was
       // otherwise append-only and leaked these forever. setChannels is the
@@ -709,6 +722,12 @@ export const createChannelsSlice: StateCreator<
             (state.channelMentions[channelId] ?? 0) + 1;
         }
       }
+    }),
+
+  hydrateChannelMembers: (channelId, members) =>
+    set((state: StoreState) => {
+      if (!state.channels[channelId]) return; // left the catalog meanwhile
+      state.channelMembers[channelId] = members;
     }),
 
   hydrateChannelMessages: (channelId, messages) =>

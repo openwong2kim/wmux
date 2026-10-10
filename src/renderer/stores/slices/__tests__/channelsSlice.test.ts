@@ -550,6 +550,28 @@ describe('channelsSlice — setChannels (refresh path)', () => {
     expect(store.getState().channelMessages['ch-1']).toHaveLength(1);
     expect(store.getState().channelMessages['ch-2']).toBeUndefined();
   });
+
+  it('keeps a lazily loaded archived roster that a refresh did not re-fetch; a live one is still replaced', () => {
+    const store = createTestStore();
+    const archived = makeChannel({ id: 'ch-arch', status: 'archived', archivedAt: 1 });
+    store.getState().setChannels([archived, makeChannel({ id: 'ch-live' })], {
+      'ch-live': [makeMember({ memberId: 'm-live' })],
+    });
+    expect(store.getState().channelMembers['ch-arch']).toBeUndefined();
+
+    store.getState().hydrateChannelMembers('ch-arch', [makeMember({ memberId: 'm-arch' })]);
+    // Hydration skips archived rosters, so the next refresh omits ch-arch.
+    store.getState().setChannels([archived, makeChannel({ id: 'ch-live' })], {});
+
+    expect(store.getState().channelMembers['ch-arch']?.map((m) => m.memberId)).toEqual(['m-arch']);
+    expect(store.getState().channelMembers['ch-live']).toBeUndefined();
+  });
+
+  it('hydrateChannelMembers ignores a channel that already left the catalog', () => {
+    const store = createTestStore();
+    store.getState().hydrateChannelMembers('ch-gone', [makeMember()]);
+    expect(store.getState().channelMembers['ch-gone']).toBeUndefined();
+  });
 });
 
 describe('channelsSlice — leaveChannelOptimistic', () => {
