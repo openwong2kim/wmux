@@ -515,8 +515,9 @@ async function main() {
     ? process.env.CLAUDE_CODE_ENTRYPOINT
     : undefined;
   if (entrypoint !== undefined && !INTERACTIVE_ENTRYPOINTS.has(entrypoint) && payload) {
-    const { transcript_path: _path, session_id: _id, ...rest } = payload;
-    payload = rest;
+    payload = { ...payload };
+    delete payload.transcript_path;
+    delete payload.session_id;
   }
 
   // Token usage extraction from transcript_path.

@@ -1114,8 +1114,9 @@ async function main() {
   if (headless && payload) {
     // Stripped from the payload too: a daemon reads payload.transcript_path,
     // and an older daemon would bind whatever id is left.
-    const { transcript_path: _path, session_id: _id, ...rest } = payload;
-    payload = rest;
+    payload = { ...payload };
+    delete payload.transcript_path;
+    delete payload.session_id;
   }
 
   const transcriptPath = (payload && typeof payload.transcript_path === 'string' && payload.transcript_path.length > 0)
