@@ -270,6 +270,8 @@ export interface WorkspaceSlice {
   setActiveWorkspace: (id: string) => void;
   /** PC rail: when each shadow workspace was last active (memory only; LRU input). */
   shadowUsedAt: Record<string, number>;
+  /** PC rail: per shadow, the host sessions it has shown (memory only), so a tab closed here is not re-added. */
+  shadowKnownSessions: Record<string, string[]>;
   /**
    * PC rail: open one workspace of a web-paired computer from its feed row.
    * An open shadow is activated; otherwise one is built from the host's
@@ -347,6 +349,7 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
     phoneWorkspaceRequestIds: [],
     nextWorkspaceOrdinal: 2,
     shadowUsedAt: {},
+    shadowKnownSessions: {},
     lastVisibleAt: {},
     parkedWorkspaceIds: {},
 
@@ -749,6 +752,7 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       // the workspace while inspecting can't leave a stale overlay dangling.
       if (state.inspectModeActive) resetInspectState(state);
       if (removingShadow && state.shadowUsedAt?.[id] !== undefined) delete state.shadowUsedAt[id];
+      if (removingShadow && state.shadowKnownSessions?.[id] !== undefined) delete state.shadowKnownSessions[id];
       });
       // Cross-process failure pointer (publishA2aTask), so the teardown is
       // visible beyond same-process queryTasks (review A8 P1). NOTE: this is a
@@ -832,6 +836,7 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       set((state: StoreState) => {
         if (state.workspaces.some((w) => w.id === ws.id)) return;
         state.workspaces.push(ws);
+        if (state.shadowKnownSessions) state.shadowKnownSessions[ws.id] = row.panes.map((p) => p.sessionId);
       });
       get().setActiveWorkspace(ws.id);
       const after = get();
@@ -850,15 +855,22 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       if (!rows) return;
       const toClose: string[] = [];
       const updates: { id: string; rootPane: Pane; activePaneId: string; name: string }[] = [];
+      const known: Record<string, string[]> = {};
       for (const ws of st.workspaces) {
         const b = shadowBinding(ws);
         if (!b || b.hostId !== hostId) continue;
-        const result = reconcileShadowWorkspace(ws, hostId, rows.find((r) => r.id === b.remoteId) ?? null);
+        const row = rows.find((r) => r.id === b.remoteId) ?? null;
+        const result = reconcileShadowWorkspace(ws, hostId, row, new Set(st.shadowKnownSessions?.[ws.id] ?? []));
         if (result.kind === 'close') toClose.push(ws.id);
         else if (result.kind === 'update') updates.push({ id: ws.id, rootPane: result.rootPane, activePaneId: result.activePaneId, name: result.name });
+        // Every session the row lists is now shown, closed here, or just added.
+        const listed = row ? row.panes.map((p) => p.sessionId) : [];
+        const prev = st.shadowKnownSessions?.[ws.id] ?? [];
+        if (result.kind !== 'close' && (listed.length !== prev.length || listed.some((id, i) => id !== prev[i]))) known[ws.id] = listed;
       }
-      if (updates.length > 0) {
+      if (updates.length > 0 || Object.keys(known).length > 0) {
         set((state: StoreState) => {
+          if (state.shadowKnownSessions) Object.assign(state.shadowKnownSessions, known);
           for (const u of updates) {
             const ws = state.workspaces.find((w) => w.id === u.id);
             if (!ws) continue;

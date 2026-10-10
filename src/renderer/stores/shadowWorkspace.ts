@@ -243,7 +243,9 @@ export type ShadowReconcile =
  * removes a tab):
  *
  *   - a remote tab whose session the row no longer lists is removed
- *   - a listed session no tab shows is added to the first leaf
+ *   - a listed session no tab shows is added to the first leaf, unless it is
+ *     in `known` (sessions this shadow already showed): a tab the user closed
+ *     here stays closed, only a session new to the host appears
  *   - empty leaves collapse; a tree with no remote tab left closes the shadow
  *   - a row the list no longer carries (`row` null) closes it
  *
@@ -253,6 +255,7 @@ export function reconcileShadowWorkspace(
   ws: Workspace,
   hostId: string,
   row: PcRailWorkspaceRow | null,
+  known: ReadonlySet<string> = new Set(),
 ): ShadowReconcile {
   if (!row || row.panes.length === 0) return { kind: 'close' };
   const listed = new Set(row.panes.map((p) => p.sessionId));
@@ -286,7 +289,7 @@ export function reconcileShadowWorkspace(
       }
     }
   }
-  const added = row.panes.filter((p) => !shown.has(p.sessionId) && !placeholders.has(p.sessionId));
+  const added = row.panes.filter((p) => !shown.has(p.sessionId) && !placeholders.has(p.sessionId) && !known.has(p.sessionId));
   if (added.length > 0 && root) {
     const first = leavesOf(root)[0];
     const tabs = added.map((p) => {

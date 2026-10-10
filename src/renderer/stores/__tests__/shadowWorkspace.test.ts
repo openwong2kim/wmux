@@ -267,6 +267,21 @@ describe('shadow workspaces in the store', () => {
     expect(localLeaf.surfaces.some((s) => s.surfaceType === 'remote-terminal')).toBe(false);
   });
 
+  it('keeps a tab closed here closed, and adds only a session new to the host', () => {
+    const id = useStore.getState().openShadowWorkspace('h1', 'rw1')!;
+    const ws = () => useStore.getState().workspaces.find((w) => w.id === id)!;
+    const second = leaves(ws().rootPane)[1];
+    const s2 = second.surfaces.find((s) => s.remoteSessionId === 's2')!;
+    useStore.getState().closeSurface(second.id, s2.id, id);
+    const sessions = () => leaves(ws().rootPane).flatMap((l) => l.surfaces.map((s) => s.remoteSessionId)).filter(Boolean);
+    useStore.getState().reconcileShadowWorkspaces('h1');
+    expect(sessions()).toEqual(['s1']);
+    expect(sessionClose).not.toHaveBeenCalled();
+    useStore.setState((s) => ({ pcRailFeeds: { h1: { ...s.pcRailFeeds.h1, workspaces: s.pcRailFeeds.h1.workspaces.map((w) => (w.id === 'rw1' ? { ...w, panes: [...w.panes, { sessionId: 's5' }] } : w)) } } }));
+    useStore.getState().reconcileShadowWorkspaces('h1');
+    expect(sessions()).toEqual(['s1', 's5']);
+  });
+
   it('reconciles against the feed: a vanished row closes its shadow', () => {
     const id = useStore.getState().openShadowWorkspace('h1', 'rw2')!;
     useStore.setState((s) => ({ pcRailFeeds: { h1: { ...s.pcRailFeeds.h1, workspaces: s.pcRailFeeds.h1.workspaces.filter((w) => w.id !== 'rw2') } } }));
