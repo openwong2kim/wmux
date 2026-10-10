@@ -110,6 +110,8 @@ describe('approved download (real Chrome)', { timeout: 60_000 }, () => {
     await other.click('#d');
     expect(await (await otherDl)?.failure()).toBe('canceled');
 
+    // Longer than the guard's periodic deny re-assert: the approval must hold.
+    await new Promise((r) => setTimeout(r, 600));
     await approved.click('#d');
     const got = await pass.done;
     expect(got.suggestedFilename).toBe('file.bin');

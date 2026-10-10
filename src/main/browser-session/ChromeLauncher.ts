@@ -1080,6 +1080,10 @@ export class ChromeLauncher implements ChromeBackendClient {
     }
     const reassert = setInterval(() => {
       if (!guard.isOpen()) return clearInterval(reassert);
+      // An operator-approved download pass owns the behaviour while it holds
+      // the guard (and restores deny itself); every other download is still
+      // cancelled by guid in the meantime.
+      if (this.downloadClaimant) return;
       void deny().catch(() => undefined);
     }, DOWNLOAD_DENY_REASSERT_MS);
     reassert.unref?.();
