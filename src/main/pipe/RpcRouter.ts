@@ -451,7 +451,12 @@ export class RpcRouter {
       // So anything that is not a live binding is treated as stale.
       ctx.workspaceClaim =
         claim.kind === 'bound'
-          ? { kind: 'bound', workspaceId: claim.workspaceId, ...(claim.ptyId && { ptyId: claim.ptyId }) }
+          ? {
+            kind: 'bound',
+            workspaceId: claim.workspaceId,
+            ...(claim.ptyId && { ptyId: claim.ptyId }),
+            ...(claim.browserOnly && { browserOnly: true as const }),
+          }
           : { kind: 'stale' };
     }
 

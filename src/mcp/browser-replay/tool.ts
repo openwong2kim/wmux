@@ -121,7 +121,7 @@ function recordReplayOutcome(
     void sendScopedBrowserRpc('browser.siteMemory.record', scope, completionParams(scope, {
       domain,
       kind: 'success',
-    })).catch(() => {});
+    })).catch(() => undefined);
     return;
   }
   // An inconclusive run means the PAGE changed shape, not that the flow is

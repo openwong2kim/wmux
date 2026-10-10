@@ -101,7 +101,6 @@ function useProtectedPanes(workspaceId: string): ProtectedPaneOption[] | null {
       if (!cancelled) setOptions(rows.filter((r): r is ProtectedPaneOption => r !== null));
     });
     return () => { cancelled = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- the pane set, not its identity, decides the reads
   }, [workspaceId, leafKey]);
   return options;
 }

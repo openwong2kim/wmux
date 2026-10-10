@@ -349,3 +349,109 @@ describe('protected-pane memory: per-account namespaces', () => {
     expect(names(await call(router, 'browser.actionCache.list', { workspaceId: 'ws-1' }, 'pty-a'))).toEqual([]);
   });
 });
+
+describe('scheduled runs acting as a protected pane', () => {
+  let liveRuns: Map<string, { runId: string; automationId: string; revision: number; identity: Record<string, unknown> }>;
+  const notes: Array<{ runId: string; detail: string }> = [];
+
+  async function grantRun(ptyId: string, over: Record<string, unknown> = {}) {
+    const { signBrowserIdentity } = await import('../../../automation/runIdentity');
+    const identity = signBrowserIdentity('auto-a1', {
+      workspaceId: 'ws-1', paneId: 'pane-a', profileId: 'pa', hosts: ['a.test'], policyEpoch: policy.epoch(), boundRevision: 2,
+      ...over,
+    } as never);
+    liveRuns.set(ptyId, { runId: `r-${ptyId}`, automationId: 'auto-a1', revision: 2, identity: { ...identity } });
+  }
+
+  async function asRun(router: RpcRouter, method: string, params: Record<string, unknown>, ptyId: string) {
+    const { claimTokenForRun } = await import('../../../workspace/workspaceClaimTrust');
+    const token = claimTokenForRun('ws-1', ptyId);
+    const response = await router.dispatch({ id: '1', method, params, workspaceToken: token, callerPtyId: ptyId } as never, { externalWire: true } as never);
+    if (response.ok) return { result: (response as { result?: unknown }).result, error: undefined };
+    return { result: undefined, error: String((response as { error?: unknown }).error ?? '') };
+  }
+
+  beforeEach(async () => {
+    const { __setRunIdentityKeyDirForTest, setRunIdentityTransport } = await import('../../../automation/runIdentity');
+    __setRunIdentityKeyDirForTest(dir);
+    liveRuns = new Map();
+    notes.length = 0;
+    setRunIdentityTransport({
+      rpc: async (method: string, params?: Record<string, unknown>) => {
+        if (method === 'automation.runIdentity') {
+          const run = liveRuns.get(String(params?.['ptyId']));
+          return { run: run ? { runId: run.runId, automationId: run.automationId, revision: run.revision, ptyId: params?.['ptyId'], browserIdentity: run.identity } : null };
+        }
+        if (method === 'automation.noteRunBrowser') {
+          notes.push({ runId: String(params?.['runId']), detail: String(params?.['detail']) });
+          return { ok: true };
+        }
+        return null;
+      },
+    });
+  });
+
+  afterEach(async () => {
+    const { setRunIdentityTransport, __setRunIdentityKeyDirForTest } = await import('../../../automation/runIdentity');
+    setRunIdentityTransport(null);
+    __setRunIdentityKeyDirForTest(null);
+  });
+
+  it("an owned run acts as its snapshot's pane: that pane's profile and hosts", async () => {
+    await protectPaneA();
+    await grantRun('auto-r1');
+    const router = register(profiles, policy);
+    const auth = await asRun(router, 'browser.lease.acquire', { workspaceId: 'ws-1', authorize: true }, 'auto-r1');
+    expect(auth.result).toMatchObject({ policy: { protected: true, hosts: { allow: ['a.test'] } } });
+    const info = await asRun(router, 'browser.cdp.info', { workspaceId: 'ws-1' }, 'auto-r1');
+    expect(info.result).toMatchObject({ profile: 'pa', protected: true });
+    expect((await asRun(router, 'browser.open', { workspaceId: 'ws-1', url: 'https://blocked.test/' }, 'auto-r1')).error)
+      .toContain('policy_denied');
+    expect(notes).toEqual([{ runId: 'r-auto-r1', detail: 'browser_policy_denied' }]);
+  });
+
+  it('a policy change, a protection removal or a rebind after the grant fails fast with needs_consent, recorded on the run', async () => {
+    await protectPaneA();
+    await grantRun('auto-r1');
+    const router = register(profiles, policy);
+    // An added block / revoked host moves the epoch.
+    await protectPaneA(['a.test', 'other.test']);
+    const changed = await asRun(router, 'browser.open', { workspaceId: 'ws-1', url: 'https://a.test/' }, 'auto-r1');
+    expect(changed.error).toContain('needs_consent');
+    expect(notes.at(-1)).toEqual({ runId: 'r-auto-r1', detail: 'browser_needs_consent' });
+    // Protection turned off entirely.
+    await policy.write(
+      { workspaceId: 'ws-1', paneId: 'pane-a', profileId: 'pa', protected: false, hosts: { mode: 'allowlist', allow: ['a.test'], block: [] }, expectedEpoch: policy.epoch() },
+      'pa',
+      true,
+    );
+    await grantRun('auto-r2', { policyEpoch: policy.epoch() });
+    expect((await asRun(router, 'browser.cdp.info', { workspaceId: 'ws-1' }, 'auto-r2')).error).toContain('needs_consent');
+  });
+
+  it('a missing profile fails immediately', async () => {
+    await protectPaneA();
+    await grantRun('auto-r1', { profileId: 'gone' });
+    const router = register(profiles, policy);
+    expect((await asRun(router, 'browser.cdp.info', { workspaceId: 'ws-1' }, 'auto-r1')).error).toContain('needs_consent');
+  });
+
+  it('an auto- PTY the daemon does not vouch for, or with a forged identity, gets nothing', async () => {
+    await protectPaneA();
+    const router = register(profiles, policy);
+    expect((await asRun(router, 'browser.cdp.info', { workspaceId: 'ws-1' }, 'auto-unowned')).error).toContain('policy_denied');
+    await grantRun('auto-r1');
+    const run = liveRuns.get('auto-r1')!;
+    run.identity = { ...run.identity, paneId: 'pane-b' };
+    expect((await asRun(router, 'browser.cdp.info', { workspaceId: 'ws-1' }, 'auto-r1')).error).toContain('policy_denied');
+  });
+
+  it('a run claim may call the browser and nothing else of wmux', async () => {
+    await protectPaneA();
+    await grantRun('auto-r1');
+    const router = register(profiles, policy);
+    router.register('workspace.list' as never, async () => ({ workspaces: [] }));
+    const other = await asRun(router, 'workspace.list', {}, 'auto-r1');
+    expect(other.error).toContain('browser tools only');
+  });
+});
