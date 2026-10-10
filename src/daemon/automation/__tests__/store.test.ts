@@ -155,3 +155,41 @@ describe('store', () => {
     expect(dropped.sort()).toEqual(['r1', 'r5']);
   });
 });
+
+describe('browser identity in the store', () => {
+  const identity = { workspaceId: 'ws-1', paneId: 'pane-a', profileId: 'work', hosts: ['a.test'], policyEpoch: 1, boundRevision: 2, mac: 'a'.repeat(64) };
+  const stored = (over: Record<string, unknown>) => ({
+    id: 'a1', revision: 2, createdAt: 1, enabled: true, ...draft,
+    action: { ...draft.action, browserIdentity: identity },
+    permission: { mode: 'approval', grantedRevision: 2 },
+    ...over,
+  });
+  const load = (entry: unknown) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-store-id-'));
+    fs.writeFileSync(path.join(dir, AUTOMATIONS_FILE), JSON.stringify({ version: 1, automations: [entry] }));
+    return loadAutomations(dir).automations;
+  };
+
+  it('restores a granted identity with its approval grant', () => {
+    const [a] = load(stored({}));
+    expect(a.action.browserIdentity).toEqual(identity);
+    expect(a.permission).toEqual({ mode: 'approval', grantedRevision: 2 });
+    expect(needsRegrant(a)).toBe(false);
+  });
+
+  it('keeps a schedule whose identity is unreadable, but off and ungranted', () => {
+    const [a] = load(stored({ action: { ...draft.action, browserIdentity: { paneId: 'x' } }, permission: { mode: 'bypass', grantedRevision: 2 } }));
+    expect(a.enabled).toBe(false);
+    expect(a.action.browserIdentity).toBeUndefined();
+    expect(a.permission).toEqual({ mode: 'approval' });
+  });
+
+  it('a client draft carrying an identity is refused, not stripped', () => {
+    expect(validateDraft({ ...draft, action: { ...draft.action, browserIdentity: identity } }).ok).toBe(false);
+  });
+
+  it('keeps the launch snapshot on a run record', () => {
+    const run = coerceRun({ id: 'r1', automationId: 'a1', revision: 2, scheduledFor: 1, state: 'running', browserIdentity: identity });
+    expect(run?.browserIdentity).toEqual(identity);
+  });
+});

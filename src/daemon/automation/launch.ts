@@ -68,14 +68,34 @@ const PERMISSION_FLAGS: Record<AutomationAgent, Record<AutomationPermissionMode,
   },
 };
 
+/** Run options that change the launch line. */
+export interface AutomationLaunchOptions {
+  /**
+   * The run acts as a protected pane's browser. Its unattended modes keep the
+   * wmux server so the browser tools are there; main admits only browser
+   * calls from such a run (its walked claim is browser-only), so nothing else
+   * of wmux opens up. Codex has no per-tool control, so a Codex identity run
+   * is approval-only (the grant refuses anything else; refused here too).
+   */
+  browserIdentity?: boolean;
+}
+
 /** Throws on any tool name outside the bare-name grammar, and on codex `auto`. */
 export function permissionFlags(
   agent: AutomationAgent,
   mode: AutomationPermissionMode,
   allowedTools: readonly string[] | undefined,
+  opts: AutomationLaunchOptions = {},
 ): string[] {
   if (mode === 'auto' && !AUTOMATION_AGENT_CAPS[agent].autoMode) throw new Error('Auto mode is claude only');
-  const flags = [...PERMISSION_FLAGS[agent][mode]];
+  if (opts.browserIdentity && agent === 'codex' && mode !== 'approval') {
+    throw new Error('A Codex run with a browser identity is approval-only');
+  }
+  const flags = [...PERMISSION_FLAGS[agent][mode]].filter((flag, i, all) =>
+    // Drop exactly the `--disallowedTools mcp__wmux` pair for an identity run.
+    !(opts.browserIdentity && agent === 'claude'
+      && ((flag === CLAUDE_NO_WMUX_MCP[0] && all[i + 1] === CLAUDE_NO_WMUX_MCP[1])
+        || (flag === CLAUDE_NO_WMUX_MCP[1] && all[i - 1] === CLAUDE_NO_WMUX_MCP[0]))));
   if (agent === 'claude' && mode === 'scoped') {
     const tools = allowedTools ?? [];
     if (tools.length === 0) throw new Error('Scoped mode has no tools');
@@ -93,8 +113,9 @@ export function buildAutomationCommand(
   agent: AutomationAgent,
   mode: AutomationPermissionMode,
   allowedTools: readonly string[] | undefined,
+  opts: AutomationLaunchOptions = {},
 ): string {
-  const flags = permissionFlags(agent, mode, allowedTools);
+  const flags = permissionFlags(agent, mode, allowedTools, opts);
   return flags.length ? `${base} ${flags.join(' ')}` : base;
 }
 

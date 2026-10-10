@@ -27,7 +27,7 @@ import {
   type AutomationRunReason,
   type AutomationRunState,
 } from '../../shared/automation';
-import { isPermissionMode, validateAllowedTools, validateDraft } from './draft';
+import { isPermissionMode, validateAllowedTools, validateBrowserIdentity, validateDraft } from './draft';
 
 export const AUTOMATIONS_FILE = 'automations.json';
 export const AUTOMATION_RUNS_FILE = 'automation-runs.json';
@@ -53,7 +53,13 @@ const RUN_REASONS: ReadonlySet<string> = new Set<AutomationRunReason>([
   'overlap', 'missed', 'daemon_down', 'first_run_blocked', 'launch_failed', 'account_missing',
   'await_timeout', 'timeout', 'agent_error', 'process_exit', 'interrupted', 'cancelled', 'needs_regrant',
 ]);
-const RUN_DETAILS: ReadonlySet<string> = new Set<AutomationRunDetail>(['submit_retried', 'prompt_not_in_composer', 'submit_unconfirmed']);
+const RUN_DETAILS: ReadonlySet<string> = new Set<AutomationRunDetail>([
+  'submit_retried',
+  'prompt_not_in_composer',
+  'submit_unconfirmed',
+  'browser_needs_consent',
+  'browser_policy_denied',
+]);
 const ATTENTION_KINDS: ReadonlySet<string> = new Set<AutomationAttentionKind>(['proposed', 'grant-raised', 'needs-regrant']);
 
 const num = (v: unknown): number | undefined => (typeof v === 'number' && Number.isFinite(v) ? v : undefined);
@@ -65,10 +71,21 @@ export function coerceAutomation(raw: unknown): Automation | null {
   const revision = num(o['revision']);
   const createdAt = num(o['createdAt']);
   if (!id || revision === undefined || !Number.isInteger(revision) || revision < 1 || createdAt === undefined) return null;
-  const draft = validateDraft(o);
+  // The browser identity is checked on its own: validateDraft refuses one
+  // from a client, but a stored one came from a grant.
+  const rawAction = o['action'] && typeof o['action'] === 'object' ? (o['action'] as Record<string, unknown>) : null;
+  const rawIdentity = rawAction?.['browserIdentity'];
+  const draft = validateDraft(rawIdentity === undefined ? o : { ...o, action: { ...rawAction, browserIdentity: undefined } });
   if (!draft.ok) return null;
+  const identity = rawIdentity === undefined ? null : validateBrowserIdentity(rawIdentity);
+  // An unreadable identity is never dropped into a schedule that would then
+  // run without it: the schedule is kept, off and ungranted.
+  const identityLost = identity !== null && !identity.ok;
   const perm = (o['permission'] ?? {}) as Record<string, unknown>;
   let permission: Automation['permission'] = { mode: 'approval' };
+  if (identity?.ok && perm['mode'] === 'approval' && num(perm['grantedRevision']) !== undefined) {
+    permission = { mode: 'approval', grantedRevision: num(perm['grantedRevision']) as number };
+  }
   if (isPermissionMode(perm['mode']) && perm['mode'] !== 'approval') {
     const granted = num(perm['grantedRevision']);
     // codex scoped carries no tool list (a fixed sandbox); auto is claude only.
@@ -77,7 +94,7 @@ export function coerceAutomation(raw: unknown): Automation | null {
     const restorable = perm['mode'] === 'bypass' ||
       (perm['mode'] === 'auto' && caps.autoMode) ||
       (perm['mode'] === 'scoped' && (!caps.toolList || tools?.ok === true));
-    if (granted !== undefined && restorable) {
+    if (granted !== undefined && restorable && !identityLost) {
       permission = {
         mode: perm['mode'],
         grantedRevision: granted,
@@ -89,11 +106,11 @@ export function coerceAutomation(raw: unknown): Automation | null {
   return {
     id,
     name: draft.value.name,
-    enabled: o['enabled'] === true,
+    enabled: o['enabled'] === true && !identityLost,
     ...(o['proposed'] === true ? { proposed: true } : {}),
     revision,
     trigger: draft.value.trigger,
-    action: draft.value.action,
+    action: identity?.ok ? { ...draft.value.action, browserIdentity: identity.value } : draft.value.action,
     permission,
     policy: { overlap: 'skip_if_active', ...draft.value.policy },
     nextRunAt: nextRunAt ?? null,
@@ -119,6 +136,7 @@ export function coerceRun(raw: unknown): AutomationRun | null {
   const agentSessionId = typeof o['agentSessionId'] === 'string' && o['agentSessionId'].length <= 256 ? o['agentSessionId'] : undefined;
   const startedAt = num(o['startedAt']);
   const endedAt = num(o['endedAt']);
+  const runIdentity = o['browserIdentity'] === undefined ? null : validateBrowserIdentity(o['browserIdentity']);
   return {
     id,
     automationId,
@@ -134,6 +152,7 @@ export function coerceRun(raw: unknown): AutomationRun | null {
     ...(startedAt !== undefined ? { startedAt } : {}),
     ...(endedAt !== undefined ? { endedAt } : {}),
     ...(o['hasSnapshot'] === true ? { hasSnapshot: true } : {}),
+    ...(runIdentity?.ok ? { browserIdentity: runIdentity.value } : {}),
   };
 }
 

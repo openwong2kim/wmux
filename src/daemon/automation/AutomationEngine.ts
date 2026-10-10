@@ -23,10 +23,14 @@ import fs from 'node:fs';
 import type { AgentSlug } from '../../shared/agentIdentity';
 import {
   AUTOMATION_AGENT_CAPS,
+  AUTOMATION_CAPABILITY_BROWSER_IDENTITY,
   AUTOMATION_DEFAULTS,
   AUTOMATION_PTY_PREFIX,
   type Automation,
   type AutomationAgent,
+  type AutomationBrowserIdentity,
+  type AutomationIdentityRunsResult,
+  type AutomationRunIdentityResult,
   type AutomationAttention,
   type AutomationEvent,
   type AutomationListResult,
@@ -50,6 +54,7 @@ import {
   modeRaises,
   needsRegrant,
   validateAllowedTools,
+  validateBrowserIdentity,
   validateDraft,
 } from './draft';
 import { buildAutomationCommand, buildAutomationEnv, resolveAccountEnv } from './launch';
@@ -347,6 +352,58 @@ export class AutomationEngine {
       .map(clone);
   }
 
+  capabilities(): { capabilities: string[] } {
+    return { capabilities: [AUTOMATION_CAPABILITY_BROWSER_IDENTITY] };
+  }
+
+  /**
+   * The live run behind `ptyId`, with the identity it launched with — only
+   * while this daemon incarnation runs it (the in-memory pane map, which a
+   * restart empties) and before it reaches a final state.
+   */
+  runIdentity(ptyId: unknown): AutomationRunIdentityResult {
+    if (typeof ptyId !== 'string') return { run: null };
+    const runId = this.panes.get(ptyId);
+    const run = runId ? this.runs.find((r) => r.id === runId) : undefined;
+    if (!run || !this.live.has(run.id) || isFinalRunState(run.state) || !run.browserIdentity || run.ptyId !== ptyId) {
+      return { run: null };
+    }
+    return {
+      run: {
+        runId: run.id,
+        automationId: run.automationId,
+        revision: run.revision,
+        ptyId,
+        browserIdentity: clone(run.browserIdentity),
+      },
+    };
+  }
+
+  /** Live identity runs and their shell pids (main walks callers to these). */
+  identityRuns(): AutomationIdentityRunsResult {
+    const runs: AutomationIdentityRunsResult['runs'] = [];
+    for (const live of this.live.values()) {
+      const run = this.runs.find((r) => r.id === live.runId);
+      if (!run?.browserIdentity || isFinalRunState(run.state)) continue;
+      const pid = this.ports.sessionPid(live.ptyId);
+      if (pid === null) continue;
+      runs.push({ ptyId: live.ptyId, pid, workspaceId: run.browserIdentity.workspaceId });
+    }
+    return { runs };
+  }
+
+  /** Main refused a browser call of a live run: say why on the run. */
+  async noteRunBrowser(runId: unknown, detail: unknown): Promise<AutomationOkResult> {
+    if (detail !== 'browser_needs_consent' && detail !== 'browser_policy_denied') return { ok: false, error: 'Invalid detail' };
+    const run = this.runs.find((r) => r.id === runId);
+    if (!run || !this.live.has(run.id) || isFinalRunState(run.state)) return { ok: false, error: 'Not found' };
+    if (run.detail === detail) return { ok: true };
+    run.detail = detail;
+    this.emitRun(run);
+    await this.persistRuns();
+    return { ok: true };
+  }
+
   snapshot(runId: string): string | null {
     const run = this.runs.find((r) => r.id === runId);
     return run?.hasSnapshot ? readSnapshot(this.ports.wmuxDir, runId) : null;
@@ -401,12 +458,16 @@ export class AutomationEngine {
     const draft = validateDraft(rawDraft);
     if (!draft.ok) return { ok: false, error: draft.error };
     // The revision is the server's: any client-sent revision/grant is ignored
-    // because only the validated draft fields are read.
-    const bumped = changesWhatRuns(automation.action, draft.value.action);
+    // because only the validated draft fields are read. A bound browser
+    // identity is kept (a draft can never carry one); an edit that changes
+    // what runs leaves it ungranted until main grants it again.
+    const identity = automation.action.browserIdentity;
+    const nextAction = identity ? { ...draft.value.action, browserIdentity: identity } : draft.value.action;
+    const bumped = changesWhatRuns(automation.action, nextAction);
     if (bumped) automation.revision += 1;
     automation.name = draft.value.name;
     automation.trigger = draft.value.trigger;
-    automation.action = draft.value.action;
+    automation.action = nextAction;
     automation.policy = { overlap: 'skip_if_active', ...draft.value.policy };
     automation.updatedAt = this.now();
     automation.nextRunAt = automation.enabled ? nextOccurrenceAfter(automation.trigger, this.now()) : null;
@@ -451,7 +512,13 @@ export class AutomationEngine {
   }
 
   /** Grants `mode` at the CURRENT revision. The only writer of grantedRevision. */
-  async grant(id: unknown, mode: unknown, allowedTools: unknown, expectedRevision?: unknown): Promise<AutomationMutationResult> {
+  async grant(
+    id: unknown,
+    mode: unknown,
+    allowedTools: unknown,
+    expectedRevision?: unknown,
+    rawIdentity?: unknown,
+  ): Promise<AutomationMutationResult> {
     const automation = this.find(id);
     if (!automation) return { ok: false, error: 'Not found' };
     // The revision the human confirmed, when the caller pinned one: an edit
@@ -461,9 +528,40 @@ export class AutomationEngine {
     }
     if (!isPermissionMode(mode)) return { ok: false, error: 'Invalid permission mode' };
     if (mode === 'auto' && !AUTOMATION_AGENT_CAPS[automation.action.agent].autoMode) return { ok: false, error: 'Auto mode is for Claude only' };
+    // A browser identity is (re)bound only together with a grant pinned to
+    // the revision the human confirmed; it lands at the NEXT revision, which
+    // main signed into it. A schedule that has one is never granted without it.
+    let identity: AutomationBrowserIdentity | null | undefined;
+    if (rawIdentity !== undefined) {
+      if (typeof expectedRevision !== 'number') return { ok: false, error: 'A browser identity needs a pinned revision' };
+      if (rawIdentity === null) {
+        identity = null;
+      } else {
+        const checked = validateBrowserIdentity(rawIdentity);
+        if (!checked.ok) return { ok: false, error: checked.error };
+        if (checked.value.boundRevision !== automation.revision + 1) return { ok: false, error: GRANT_REVISION_CHANGED };
+        if (automation.action.agent === 'codex' && mode !== 'approval') {
+          return { ok: false, error: 'A Codex schedule with a browser identity runs in approval mode only' };
+        }
+        identity = checked.value;
+      }
+    } else if (automation.action.browserIdentity) {
+      return { ok: false, error: 'Confirm the browser identity again in the desktop app' };
+    }
+    if (identity !== undefined) {
+      if (identity) automation.action = { ...automation.action, browserIdentity: identity };
+      else {
+        const { browserIdentity: _dropped, ...rest } = automation.action;
+        automation.action = rest;
+      }
+      automation.revision += 1;
+    }
     const before = effectiveMode(automation);
     if (mode === 'approval') {
-      automation.permission = { mode: 'approval' };
+      // An identity is a grant of its own: approval records the revision too.
+      automation.permission = automation.action.browserIdentity
+        ? { mode: 'approval', grantedRevision: automation.revision }
+        : { mode: 'approval' };
     } else if (mode === 'scoped' && automation.action.agent === 'codex') {
       // codex scoped = workspace-write sandbox with no approval prompts; it has
       // no per-tool allow-list, so a tool list would promise something unenforced.
@@ -655,6 +753,9 @@ export class AutomationEngine {
       state: 'launching',
       ptyId: `${AUTOMATION_PTY_PREFIX}${id}`,
       startedAt: this.now(),
+      // The identity this run acts as, fixed at launch: main reads it from the
+      // live run, never from the schedule, which may have changed since.
+      ...(snapshot.action.browserIdentity && { browserIdentity: clone(snapshot.action.browserIdentity) }),
     };
     this.runs.push(run);
     this.emitRun(run);
@@ -698,7 +799,9 @@ export class AutomationEngine {
         { agent: action.agent, ...(action.model ? { model: action.model } : {}), ...(action.effort ? { effort: action.effort } : {}) },
         env,
       );
-      command = buildAutomationCommand(base, action.agent, mode, automation.permission.allowedTools);
+      command = buildAutomationCommand(base, action.agent, mode, automation.permission.allowedTools, {
+        browserIdentity: !!action.browserIdentity,
+      });
     } catch (err) {
       this.ports.log('warn', `[automation] run ${run.id} launch refused: ${String(err)}`);
       this.finish(run, 'failed', 'launch_failed');

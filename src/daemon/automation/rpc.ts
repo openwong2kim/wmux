@@ -61,9 +61,14 @@ export function registerAutomationRpc(
 
   onRpc(AUTOMATION_RPC.list, async (_params, ctx) =>
     (isFirstParty(ctx.clientId) ? engine.list() : redactListForThirdParty(engine.list())));
-  onRpc(AUTOMATION_RPC.runs, async (params) => ({
-    runs: engine.listRuns(typeof params?.['automationId'] === 'string' ? params['automationId'] : undefined),
-  }));
+  onRpc(AUTOMATION_RPC.runs, async (params, ctx) => {
+    const runs = engine.listRuns(typeof params?.['automationId'] === 'string' ? params['automationId'] : undefined);
+    // A run's browser identity (pane, profile, sites) is first-party only.
+    return {
+      runs: isFirstParty(ctx.clientId) ? runs : runs.map(({ browserIdentity: _identity, ...run }) => run),
+    };
+  });
+  onRpc(AUTOMATION_RPC.capabilities, async () => engine.capabilities());
   // Output of an agent run: same class as the transcript RPCs.
   onRpc(AUTOMATION_RPC.snapshot, async (params, ctx) => ({
     text: firstPartyOnly(ctx.clientId, AUTOMATION_RPC.snapshot) && typeof params?.['runId'] === 'string'
@@ -75,9 +80,13 @@ export function registerAutomationRpc(
   gated(AUTOMATION_RPC.update, (p) => engine.update(p['id'], p['draft']));
   gated(AUTOMATION_RPC.remove, (p) => engine.remove(p['id']));
   gated(AUTOMATION_RPC.setEnabled, (p) => engine.setEnabled(p['id'], p['enabled']));
-  gated(AUTOMATION_RPC.grant, (p) => engine.grant(p['id'], p['mode'], p['allowedTools'], p['expectedRevision']));
+  gated(AUTOMATION_RPC.grant, (p) =>
+    engine.grant(p['id'], p['mode'], p['allowedTools'], p['expectedRevision'], p['browserIdentity']));
   gated(AUTOMATION_RPC.runNow, (p) => engine.runNow(p['id'], p['kind']));
   gated(AUTOMATION_RPC.cancelRun, (p) => engine.cancelRun(p['runId']));
   gated(AUTOMATION_RPC.propose, (p) => engine.propose(p['draft']));
   gated(AUTOMATION_RPC.ackAttention, (p) => engine.ackAttention(p['ids']));
+  gated(AUTOMATION_RPC.runIdentity, async (p) => engine.runIdentity(p['ptyId']));
+  gated(AUTOMATION_RPC.identityRuns, async () => engine.identityRuns());
+  gated(AUTOMATION_RPC.noteRunBrowser, (p) => engine.noteRunBrowser(p['runId'], p['detail']));
 }
