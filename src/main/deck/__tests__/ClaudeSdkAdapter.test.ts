@@ -835,7 +835,28 @@ describe('ClaudeSdkAdapter', () => {
     await collect(adapter.send('second'));
     expect(envs).toEqual(['C:/dirs/acc-2', 'C:/dirs/acc-2']);
     expect(rotationMock.prepareCalls).toBe(1);
-    expect(adapter.rotatedAccountId).toBe('acc-2');
+    expect(adapter.conversationAccountId).toBe('acc-2');
+  });
+
+  it('records the binding as the conversation account and resumes there after a rebind (#2029)', async () => {
+    acctMock.state.binding = 'acc-1';
+    acctMock.state.accounts['acc-1'] = { id: 'acc-1', name: 'Work Max', vendor: 'claude', configDir: 'C:/dirs/acc-1' };
+    acctMock.state.accounts['acc-2'] = { id: 'acc-2', name: 'Personal', vendor: 'claude', configDir: 'C:/dirs/acc-2' };
+    const envs: Array<string | undefined> = [];
+    const adapter = new ClaudeSdkAdapter({
+      workspaceId: 'ws-9',
+      queryFn: ({ options }) => {
+        envs.push((options?.env as Record<string, string | undefined>).CLAUDE_CONFIG_DIR);
+        return fakeHandle([{ type: 'result', subtype: 'success', session_id: 'sess-B' }]);
+      },
+      mcpBundlePath: '/fake/mcp.js',
+    });
+    adapter.start({ systemPrompt: 'SYS' });
+    await collect(adapter.send('first'));
+    expect(adapter.conversationAccountId).toBe('acc-1');
+    acctMock.state.binding = 'acc-2';
+    await collect(adapter.send('second'));
+    expect(envs).toEqual(['C:/dirs/acc-1', 'C:/dirs/acc-1']);
   });
 
   it('resumes a persisted rotated conversation on its saved account', async () => {

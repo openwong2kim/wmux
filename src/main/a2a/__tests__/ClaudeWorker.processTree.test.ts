@@ -8,7 +8,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 
 vi.mock('../../pipe/handlers/_bridge', () => ({ sendToRenderer: vi.fn() }));
 vi.mock('../../account/backgroundLaunchAccount', () => ({
-  resolveBackgroundLaunch: async () => ({ kind: 'run', env: {}, accountId: null, rotated: false }),
+  resolveBackgroundLaunch: async () => ({ kind: 'run', env: {}, accountId: null }),
 }));
 
 import { terminateProcessTree } from '../ClaudeWorker';

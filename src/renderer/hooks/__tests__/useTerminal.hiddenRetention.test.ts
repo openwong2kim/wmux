@@ -44,11 +44,18 @@ describe('Phase 3 PR-A — useTerminal hidden-pane retention wiring (source-leve
     expect(idx).toBeGreaterThan(0);
     // The source-labelled writer mutes only replay chunks. The ordering
     // contract this test exists for — reset BEFORE held bytes parse — remains.
+    // The reset is in-stream (RIS + DEC 2026 BEGIN, then END after the held
+    // bytes) so no render can paint the empty screen between reset and replay.
     const body = src.slice(idx, idx + 2400);
-    const resetIdx = body.indexOf('terminal.reset()');
+    expect(body).not.toMatch(/terminal\.reset\(\)/);
+    const resetIdx = body.indexOf('terminal.write(REPAINT_BEGIN');
     const writeIdx = body.indexOf('writePtyDataImmediately(terminal, chunk');
+    const endIdx = body.indexOf('terminal.write(REPAINT_END)');
     expect(resetIdx).toBeGreaterThan(0);
     expect(writeIdx).toBeGreaterThan(resetIdx);
+    expect(endIdx).toBeGreaterThan(writeIdx);
+    // The prompt-mode guard resets when the RIS is parsed, not before.
+    expect(body).toMatch(/terminal\.write\(REPAINT_BEGIN, \(\) => \{ shellPromptModeResetFor\(terminal\)\?\.reset\(\); \}\)/);
     // Stale retained backlog + dirty flag die with the old screen state.
     expect(body).toMatch(/discardTerminalOutput\(terminal\)/);
   });
@@ -189,7 +196,8 @@ describe('Phase 3 PR-B — useTerminal snapshot-resync ladder (source-level)', (
       expect(idx).toBeGreaterThan(0);
       const body = src.slice(idx, idx + 2600);
       const capture = body.indexOf('fromBottom = Math.max(0,');
-      const reset = body.indexOf('.reset()');
+      // dead-snapshot resets with term.reset(); flush-complete in-stream.
+      const reset = body.indexOf(name === 'dead-snapshot' ? '.reset()' : 'write(REPAINT_BEGIN');
       // `term.write` (dead-snapshot) / `terminal.write` (flush-complete) —
       // match on the trailing parse-barrier write itself.
       const barrier = body.indexOf(".write('', () =>");
@@ -202,7 +210,6 @@ describe('Phase 3 PR-B — useTerminal snapshot-resync ladder (source-level)', (
       // Restoration is cosmetic and must never take the mount down on a
       // terminal disposed mid-restore.
       expect(body.slice(barrier, restore + 400)).toMatch(/catch/);
-      void name;
     }
   });
 

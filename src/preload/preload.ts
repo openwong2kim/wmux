@@ -1493,6 +1493,11 @@ const electronAPI = {
       ipcRenderer.invoke(IPC.DIFF_SUMMARY, worktreePath, knownStateKey ?? '') as Promise<
         import('../shared/diffParse').DiffSummaryResult | import('../shared/diffParse').DiffReadError
       >,
+    // Git page Worktrees — the count of paths with uncommitted changes (git status only).
+    status: (worktreePath: string) =>
+      ipcRenderer.invoke(IPC.DIFF_STATUS, worktreePath) as Promise<
+        import('../shared/diffParse').DiffStatusResult | import('../shared/diffParse').DiffReadError
+      >,
     // 워크스페이스 diff — 임의 cwd를 자기 worktree toplevel로 정규화(비-git이면 ok:false).
     resolveRepo: (cwd: string) =>
       ipcRenderer.invoke(IPC.DIFF_RESOLVE_REPO, cwd) as Promise<

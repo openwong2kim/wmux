@@ -15,9 +15,12 @@ import {
   clearClientIdentity,
   getCallerPtyId,
   runWithCallerPtyIdSource,
+  runWithStaleIdentityHandler,
+  runWithWorkspaceTokenSource,
   sendRpc,
   setCallerPtyId,
   setClientIdentity,
+  setWorkspaceToken,
 } from '../wmux-client';
 import { createConnectionScope, runInConnectionScope } from '../connectionScope';
 
@@ -93,7 +96,8 @@ describe.skipIf(process.platform === 'win32')('callerPtyId on the envelope', () 
           if (!line.trim()) continue;
           const envelope = JSON.parse(line) as Record<string, unknown>;
           envelopes.push(envelope);
-          socket.write(JSON.stringify({ id: envelope.id, ok: true, result: {} }) + '\n');
+          const reply = (envelope.params as Record<string, unknown> | undefined)?.reply;
+          socket.write(JSON.stringify({ id: envelope.id, ok: true, result: reply ?? {} }) + '\n');
         }
       });
       socket.on('error', () => { /* client destroys the socket after the response */ });
@@ -139,5 +143,71 @@ describe.skipIf(process.platform === 'win32')('callerPtyId on the envelope', () 
     expect('callerPtyId' in envelopes[0]).toBe(false);
     expect(envelopes[1].callerPtyId).toBe('pty-real');
     expect((envelopes[1].params as Record<string, unknown>).callerPtyId).toBe('pty-forged');
+  });
+});
+
+describe.skipIf(process.platform === 'win32')('per-call claim and stale-identity hook on the wire', () => {
+  let tmpHome: string;
+  const saved: Record<string, string | undefined> = {};
+  let server: net.Server | undefined;
+  const envelopes: Array<Record<string, unknown>> = [];
+
+  beforeAll(async () => {
+    tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-claimhook-'));
+    for (const key of ['HOME', 'WMUX_SOCKET_PATH', 'WMUX_DATA_SUFFIX']) saved[key] = process.env[key];
+    process.env.HOME = tmpHome;
+    delete process.env.WMUX_SOCKET_PATH;
+    delete process.env.WMUX_DATA_SUFFIX;
+    fs.writeFileSync(path.join(tmpHome, '.wmux-auth-token'), 'test-token', 'utf8');
+    server = net.createServer((socket) => {
+      let buffer = '';
+      socket.on('data', (chunk) => {
+        buffer += chunk.toString('utf8');
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          const envelope = JSON.parse(line) as Record<string, unknown>;
+          envelopes.push(envelope);
+          const reply = (envelope.params as Record<string, unknown> | undefined)?.reply;
+          socket.write(JSON.stringify({ id: envelope.id, ok: true, result: reply ?? {} }) + '\n');
+        }
+      });
+      socket.on('error', () => { /* client destroys the socket after the response */ });
+    });
+    const activeServer = server;
+    await new Promise<void>((resolve) => activeServer.listen(path.join(tmpHome, '.wmux.sock'), () => resolve()));
+  });
+
+  afterEach(() => {
+    envelopes.length = 0;
+    setWorkspaceToken(undefined);
+  });
+
+  afterAll(async () => {
+    const activeServer = server;
+    if (activeServer) await new Promise<void>((resolve) => activeServer.close(() => resolve()));
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    fs.rmSync(tmpHome, { recursive: true, force: true });
+  });
+
+  it('stamps the per-call claim over the connection one, and omits it on \'\'', async () => {
+    setWorkspaceToken('claim-connection');
+    await runWithWorkspaceTokenSource(() => 'claim-thread', () => sendRpc('browser.navigate' as RpcMethod, {}));
+    await runWithWorkspaceTokenSource(() => '', () => sendRpc('browser.navigate' as RpcMethod, {}));
+    await runWithWorkspaceTokenSource(() => undefined, () => sendRpc('browser.navigate' as RpcMethod, {}));
+    expect(envelopes.map((e) => e.workspaceToken)).toEqual(['claim-thread', undefined, 'claim-connection']);
+  });
+
+  it('hands every browser RPC outcome to the stale-identity hook, and nothing else', async () => {
+    const seen: string[] = [];
+    await runWithStaleIdentityHandler((outcome) => seen.push(outcome), async () => {
+      await sendRpc('browser.navigate' as RpcMethod, { reply: 'the workspace you claimed is gone' });
+      await sendRpc('a2a.discover' as RpcMethod, { reply: 'the workspace you claimed is gone' });
+    });
+    expect(seen).toEqual(['the workspace you claimed is gone']);
   });
 });

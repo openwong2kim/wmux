@@ -51,6 +51,10 @@ export interface RemoteMirrorTerminalProps {
   /** The paired host's id — flags the host's rows when it rejects the
    *  credential, so the workspace view and the sidebar say so too. */
   hostId?: string;
+  /** Keep the user's font size: a grid the box cannot hold scrolls instead of
+   *  shrinking (a shadow workspace — the host owns geometry, the viewer
+   *  letterboxes). The resize request to the host is unchanged. */
+  fixedFont?: boolean;
 }
 
 /** Decode a base64 payload into raw bytes and hand it to xterm as-is — the
@@ -92,7 +96,7 @@ const MIN_REMOTE_RESIZE_ROWS = 8;
  * when it does not — the fallback is not a regression, it is what made this
  * safe to ship without a protocol bump.
  */
-export default function RemoteMirrorTerminal({ attachId, error, insecureTransport = false, readOnly, onTitleChange, hostLabel, hostId }: RemoteMirrorTerminalProps) {
+export default function RemoteMirrorTerminal({ attachId, error, insecureTransport = false, readOnly, onTitleChange, hostLabel, hostId, fixedFont = false }: RemoteMirrorTerminalProps) {
   const t = useT();
   // Ref, same reason as readOnlyRef below: the title subscription is wired
   // once inside the mount-only effect, and a parent re-render passing a new
@@ -220,6 +224,8 @@ export default function RemoteMirrorTerminal({ attachId, error, insecureTranspor
   /** The user's terminal font size is the fit's UPPER BOUND, not its output —
    *  read through a ref so the fit callback can stay identity-stable. */
   const maxFontSizeRef = useRef(terminalFontSize);
+  const fixedFontRef = useRef(fixedFont);
+  fixedFontRef.current = fixedFont;
   maxFontSizeRef.current = terminalFontSize;
 
   /**
@@ -478,6 +484,15 @@ export default function RemoteMirrorTerminal({ attachId, error, insecureTranspor
           }
         }
       }
+    }
+
+    if (fixedFontRef.current) {
+      // No shrink: the box scrolls whatever the user's font cannot hold.
+      if (term.options.fontSize !== ceiling) {
+        term.options.fontSize = ceiling;
+        scheduleFit();
+      }
+      return;
     }
 
     if (boxKey !== state.boxKey) {
@@ -1059,8 +1074,8 @@ export default function RemoteMirrorTerminal({ attachId, error, insecureTranspor
     // exactly the prompt the user was typing into. `runFit` shrinks the font
     // until the grid fits; what remains here absorbs the sub-cell residue and
     // the single frame between a remote resize and the fit that answers it.
-    <div ref={boxRef} className="relative w-full h-full min-h-0 min-w-0 overflow-hidden">
-      <div ref={containerRef} className="absolute inset-0 overflow-hidden" />
+    <div ref={boxRef} className={`relative w-full h-full min-h-0 min-w-0 ${fixedFont ? 'overflow-auto' : 'overflow-hidden'}`} data-mirror-fixed-font={fixedFont || undefined}>
+      <div ref={containerRef} className={`absolute inset-0 ${fixedFont ? 'overflow-visible' : 'overflow-hidden'}`} />
       {error && !insecureTransport && (
         <div
           className="absolute inset-0 flex items-center justify-center text-[11px] font-mono px-2 text-center"

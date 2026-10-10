@@ -78,7 +78,7 @@ export interface CommanderSessionManagerDeps {
   /** Fired whenever a completed turn reports a session id DIFFERENT from the
    *  last one observed (P3a persistence hook). Failures inside the callback are
    *  swallowed — persistence must never break a live turn. */
-  onSessionId?: (sessionId: string, rotatedAccountId: string | null) => void;
+  onSessionId?: (sessionId: string, accountId: string | null | undefined) => void;
   /** Fired AFTER a turn flips busy→idle, on a LATER TICK (never synchronously
    *  from the unwinding `finally`) — the event-push coalescer's flush trigger.
    *  Deferring is load-bearing: a synchronous callback could re-enter `send()`
@@ -94,7 +94,7 @@ export class CommanderSessionManager {
   private readonly adapter: BrainAdapter;
   private readonly sink: BrainEventSink;
   private readonly startOptions: BrainStartOptions;
-  private readonly onSessionId?: (sessionId: string, rotatedAccountId: string | null) => void;
+  private readonly onSessionId?: (sessionId: string, accountId: string | null | undefined) => void;
   private readonly onIdle?: () => void;
   private readonly deferIdle: (fn: () => void) => void;
   private _status: CommanderStatus = 'idle';
@@ -285,7 +285,7 @@ export class CommanderSessionManager {
         ) {
           this._lastReportedSessionId = ev.sessionId;
           try {
-            this.onSessionId?.(ev.sessionId, this.adapter.rotatedAccountId ?? null);
+            this.onSessionId?.(ev.sessionId, this.adapter.conversationAccountId);
           } catch {
             /* persistence is best-effort — never fail the live turn */
           }
@@ -351,7 +351,7 @@ export class CommanderSessionManager {
     if (!sessionId || sessionId === this._lastReportedSessionId) return;
     this._lastReportedSessionId = sessionId;
     try {
-      this.onSessionId?.(sessionId, this.adapter.rotatedAccountId ?? null);
+      this.onSessionId?.(sessionId, this.adapter.conversationAccountId);
     } catch {
       /* persistence is best-effort — never fail the live turn */
     }

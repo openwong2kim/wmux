@@ -530,7 +530,10 @@ export const es = {
   'remote.scope.read': "Un dispositivo emparejado puede leer y buscar la salida de todos los espacios de trabajo de este equipo, incluidos los que se abran después.",
   'remote.scope.viewOnly': "Solo ver impide escribir, pero aún puede responder a avisos en pantalla que piden una sola tecla.",
   'remote.scope.input': "Puede escribir también le permite abrir y cerrar sesiones y responder aprobaciones.",
-  'remotePage.connect.pasteScope': "Si la invitación comparte espacios de trabajo, este equipo puede leer y buscar todos los espacios de trabajo de ese PC, incluidos los que se abran después. Mientras estén emparejados, wmux lo comprueba cada pocos segundos, mantiene una conexión abierta para sus alertas y muestra sus notificaciones; puedes silenciarlas desde su icono en la columna de equipos.",
+  'remotePage.connect.pasteScope': "Si la invitación comparte espacios de trabajo, este equipo puede leer y buscar todos los espacios de trabajo de ese PC, incluidos los que se abran después. Mientras estén emparejados, wmux lo comprueba cada pocos segundos, mantiene una conexión abierta para sus alertas y muestra sus notificaciones; puedes silenciarlas desde el menú de equipos en el título de la barra lateral.",
+  'pcSwitcher.open': "Cambiar de equipo",
+  'pcSwitcher.manage': "Ajustes de {name}",
+  'pcSwitcher.othersNeedYou': "{count} te necesitan en otros equipos",
   // Quit and Stop Sessions (main-process native confirm)
   'quitAndStop.message': "¿Salir de wmux y detener todas las sesiones?",
   'quitAndStop.detail': "Sesiones de agentes en ejecución: {agents}. Terminales en total: {sessions}. Se detendrán todas. Salir normalmente las deja en ejecución en segundo plano.",

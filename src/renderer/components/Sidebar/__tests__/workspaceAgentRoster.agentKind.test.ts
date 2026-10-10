@@ -24,7 +24,7 @@ describe('roster agent kind', () => {
     // agent name, and printing it again would read "Codex CLI Codex CLI".
     expect(rosterSource).toContain('{rosterShowsAgentKind(row) && (');
     // The trailer no longer repeats the vendor.
-    expect(rosterSource).toContain('rosterSecondaryLabel(row, { showVendor: false })');
+    expect(rosterSource).toContain('rosterSecondaryLabel(row, { showVendor: false, hostView })');
     const at = rosterSource.indexOf('data-roster-agent-kind');
     expect(at).toBeGreaterThan(-1);
     const tag = rosterSource.slice(rosterSource.lastIndexOf('<span', at), at);

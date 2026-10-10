@@ -11,13 +11,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../client', () => ({
   sendRequest: vi.fn(),
+  setWorkspaceToken: vi.fn(),
 }));
 vi.mock('../../identity', () => ({
   resolveSelfContext: vi.fn(),
   getParentPidDefault: vi.fn(),
 }));
 
-import { sendRequest } from '../../client';
+import { sendRequest, setWorkspaceToken } from '../../client';
 import { getParentPidDefault, resolveSelfContext } from '../../identity';
 import { handleBrowser, handleOpen } from '../browser';
 
@@ -26,10 +27,23 @@ const selfContext = resolveSelfContext as unknown as ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
   vi.clearAllMocks();
-  selfContext.mockResolvedValue({ ptyId: 'pty-self', workspaceId: 'ws-self' });
+  selfContext.mockResolvedValue({ ptyId: 'pty-self', workspaceId: 'ws-self', workspaceToken: 'claim-self' });
   rpc.mockResolvedValue({ id: 'rpc-ok', ok: true, result: { ok: true } });
   vi.spyOn(console, 'log').mockImplementation(() => undefined);
 });
+
+/** Run a command that must exit; `process.exit` throws so the test can see it. */
+async function expectRefusedOutsidePane(run: () => Promise<void>): Promise<string> {
+  const errors: string[] = [];
+  vi.spyOn(console, 'error').mockImplementation((msg: unknown) => {
+    errors.push(String(msg));
+  });
+  vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+    throw new Error(`exit ${code}`);
+  }) as never);
+  await expect(run()).rejects.toThrow('exit 1');
+  return errors.join('\n');
+}
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -44,6 +58,7 @@ describe('wmux browser navigate caller scoping (#810)', () => {
       env: process.env,
       ppid: process.ppid,
       getParentPid: getParentPidDefault,
+      callerPid: process.pid,
     });
     expect(rpc).toHaveBeenCalledWith('browser.navigate', {
       url: 'https://example.com',
@@ -51,43 +66,11 @@ describe('wmux browser navigate caller scoping (#810)', () => {
     });
   });
 
-  it('names the active workspace when no caller workspace resolves', async () => {
-    // Outside a wmux pane there is no pane identity to walk to. This used to
-    // send no workspace and let the main process fall back to whichever target
-    // registered first; #810 removed that fallback, so the CLI asks which
-    // workspace is active and says so. Same workspace the old fallback picked,
-    // now chosen explicitly by the caller.
+  it('refuses outside a wmux pane and says how to run it, sending nothing', async () => {
     selfContext.mockResolvedValue({});
-    rpc.mockImplementation(async (method: string) =>
-      method === 'workspace.current'
-        ? { id: 'rpc-cur', ok: true, result: { id: 'ws-active', name: 'Active' } }
-        : { id: 'rpc-ok', ok: true, result: { ok: true } },
-    );
-
-    await handleBrowser(['navigate', 'https://example.com/outside'], false);
-
-    expect(rpc).toHaveBeenCalledWith('browser.navigate', {
-      url: 'https://example.com/outside',
-      workspaceId: 'ws-active',
-    });
-  });
-
-  it('omits the field when the active workspace cannot be read', async () => {
-    // Do not invent a workspace to get past the gate — send nothing and let the
-    // server's own refusal explain itself. Guessing here would reintroduce the
-    // "some workspace, who knows which" routing #810 is about.
-    selfContext.mockResolvedValue({});
-    rpc.mockImplementation(async (method: string) =>
-      method === 'workspace.current'
-        ? { id: 'rpc-cur', ok: false, error: 'renderer unavailable' }
-        : { id: 'rpc-ok', ok: true, result: { ok: true } },
-    );
-
-    await handleBrowser(['navigate', 'https://example.com/outside'], false);
-
-    expect(rpc).toHaveBeenCalledWith('browser.navigate', {
-      url: 'https://example.com/outside',
-    });
+    const message = await expectRefusedOutsidePane(() => handleBrowser(['navigate', 'https://example.com/outside'], false));
+    expect(message).toContain('Run the command from a wmux pane terminal');
+    expect(rpc).not.toHaveBeenCalled();
   });
 
   it('does not spend a round trip when the caller workspace already resolved', async () => {
@@ -107,8 +90,8 @@ describe('wmux browser navigate caller scoping (#810)', () => {
  * so outside a wmux pane both documented paths — "otherwise the active
  * workspace is used" / "defaults to your own workspace" — broke under enforce.
  *
- * Same shape as the navigate tests above, deliberately: one fallback, three
- * commands, and no third variant to drift.
+ * Same shape as the navigate tests above, deliberately: one rule for the three
+ * commands — the pane they run in, or a refusal that says so.
  */
 describe('wmux open / browser close caller scoping (#922 PR-C)', () => {
   it.each([
@@ -120,43 +103,14 @@ describe('wmux open / browser close caller scoping (#922 PR-C)', () => {
   });
 
   it.each([
-    ['open', handleOpen, ['https://example.com'], 'browser.open', { url: 'https://example.com' }],
-    ['browser close', handleBrowser, ['close'], 'browser.close', {}],
-  ])('%s names the active workspace when no caller workspace resolves', async (
-    _label, run, argv, method, extra,
-  ) => {
-    // The regression PR-C would otherwise have shipped: outside a pane this
-    // sent no workspace at all and was refused as `workspace-unresolved`.
+    ['open', handleOpen, ['https://example.com']],
+    ['browser close', handleBrowser, ['close']],
+    ['browser close --workspace', handleBrowser, ['close', '--workspace', 'ws-named']],
+  ])('%s refuses outside a wmux pane, sending nothing', async (_label, run, argv) => {
     selfContext.mockResolvedValue({});
-    rpc.mockImplementation(async (m: string) =>
-      m === 'workspace.current'
-        ? { id: 'rpc-cur', ok: true, result: { id: 'ws-active', name: 'Active' } }
-        : { id: 'rpc-ok', ok: true, result: { ok: true } },
-    );
-
-    await run(argv, false);
-
-    expect(rpc).toHaveBeenCalledWith(method, { ...extra, workspaceId: 'ws-active' });
-  });
-
-  it.each([
-    ['open', handleOpen, ['https://example.com'], 'browser.open', { url: 'https://example.com' }],
-    ['browser close', handleBrowser, ['close'], 'browser.close', {}],
-  ])('%s omits the field when the active workspace cannot be read', async (
-    _label, run, argv, method, extra,
-  ) => {
-    // Do not invent a workspace to get past the gate — let the server's own
-    // refusal explain itself, which now carries the remedy text.
-    selfContext.mockResolvedValue({});
-    rpc.mockImplementation(async (m: string) =>
-      m === 'workspace.current'
-        ? { id: 'rpc-cur', ok: false, error: 'renderer unavailable' }
-        : { id: 'rpc-ok', ok: true, result: { ok: true } },
-    );
-
-    await run(argv, false);
-
-    expect(rpc).toHaveBeenCalledWith(method, extra);
+    const message = await expectRefusedOutsidePane(() => run(argv, false));
+    expect(message).toContain('wmux pane');
+    expect(rpc).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -169,10 +123,22 @@ describe('wmux open / browser close caller scoping (#922 PR-C)', () => {
     expect(rpc).not.toHaveBeenCalledWith('workspace.current', expect.anything());
   });
 
-  it('browser close still honours an explicit --workspace without any lookup', async () => {
+  it('browser close sends an explicit --workspace, still resolving the pane claim it narrows', async () => {
     await handleBrowser(['close', '--workspace', 'ws-named'], false);
     expect(rpc).toHaveBeenCalledWith('browser.close', { workspaceId: 'ws-named' });
-    expect(selfContext).not.toHaveBeenCalled();
+    expect(selfContext).toHaveBeenCalledOnce();
     expect(rpc).not.toHaveBeenCalledWith('workspace.current', expect.anything());
+  });
+
+  it('asks to update the app when main finds the pane but mints no claim (older main)', async () => {
+    selfContext.mockResolvedValue({ ptyId: 'pty-self', workspaceId: 'ws-self' });
+    const message = await expectRefusedOutsidePane(() => handleBrowser(['navigate', 'https://example.com'], false));
+    expect(message).toContain('Update the wmux app');
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  it('carries the pane claim main minted on every browser request', async () => {
+    await handleBrowser(['navigate', 'https://example.com'], false);
+    expect(setWorkspaceToken).toHaveBeenCalledWith('claim-self');
   });
 });

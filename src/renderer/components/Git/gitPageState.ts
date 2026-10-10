@@ -2,8 +2,10 @@
 // filter, selected item and list scroll survive leaving the page and coming
 // back. The tab, the repo choice (All repos, a picked repo, or following
 // the active workspace), the All repos layout and its repo chips are also
-// kept per viewer (local storage) across restarts.
+// kept per viewer (local storage) across restarts, and so are the Worktrees
+// tab's snoozed rows.
 import type { IssueFilter } from '../../../shared/issueSurface';
+import type { WorktreeSection, WorktreeSnooze } from './worktreeRows';
 
 export type GitScope = 'repo' | 'all';
 export type GitPageTab = 'prs' | 'issues' | 'worktrees';
@@ -35,6 +37,11 @@ export interface GitPageState {
   /** The flat list's who-acts-next sections the viewer opened or closed;
    *  a section absent here keeps its default (GitTurnSections). */
   turnCollapsed: Partial<Record<import('./gitTurn').GitTurn, boolean>>;
+  /** The Worktrees tab's sections (and its Snoozed group) the viewer opened
+   *  or closed; one choice for every repo shown. */
+  wtCollapsed: Partial<Record<WorktreeSection | 'snoozed', boolean>>;
+  /** Snoozed worktree rows by normalized worktree path. */
+  wtSnooze: Record<string, WorktreeSnooze>;
 }
 
 /** Where a dragged issue / PR came from: the repo and a workspace in it, for
@@ -148,9 +155,39 @@ export function saveGitRepoChips(keys: string[]): void {
   }
 }
 
+/** Where the Worktrees tab's snoozes are kept: a JSON object of WorktreeSnooze by worktree key. */
+export const GIT_WT_SNOOZE_KEY = 'wmux.git.wtSnooze';
+
+const isSnooze = (v: unknown): v is WorktreeSnooze => {
+  const z = v as Partial<WorktreeSnooze> | null;
+  return !!z && typeof z === 'object' && typeof z.sig === 'string' && typeof z.repo === 'string'
+    && (z.until === null || (typeof z.until === 'number' && Number.isFinite(z.until)));
+};
+
+/** The kept snoozes, without malformed ones or ones whose time has passed. */
+export function readGitWtSnoozes(now: number = Date.now()): Record<string, WorktreeSnooze> {
+  try {
+    const v: unknown = JSON.parse(localStorage.getItem(GIT_WT_SNOOZE_KEY) ?? '{}');
+    if (!v || typeof v !== 'object' || Array.isArray(v)) return {};
+    return Object.fromEntries(Object.entries(v).filter(([, z]) => isSnooze(z) && (z.until === null || z.until > now)));
+  } catch {
+    return {};
+  }
+}
+
+export function saveGitWtSnoozes(snoozes: Record<string, WorktreeSnooze>): void {
+  try {
+    if (Object.keys(snoozes).length === 0) localStorage.removeItem(GIT_WT_SNOOZE_KEY);
+    else localStorage.setItem(GIT_WT_SNOOZE_KEY, JSON.stringify(snoozes));
+  } catch {
+    /* no storage: the snoozes last this session */
+  }
+}
+
 export function initialGitPageState(): GitPageState {
   return {
     ...readGitRepoChoice(), tab: readGitTab(), issueFilter: { kind: 'all' }, selected: null, listScroll: {},
     allLayout: readGitAllLayout(), repoChips: readGitRepoChips(), turnCollapsed: {},
+    wtCollapsed: {}, wtSnooze: readGitWtSnoozes(),
   };
 }

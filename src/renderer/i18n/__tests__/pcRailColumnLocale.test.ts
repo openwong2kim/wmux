@@ -4,7 +4,7 @@ import * as path from 'node:path';
 import { en } from '../locales/en';
 
 /**
- * The computer column's own strings and the pairing scope copy ship in every
+ * The PC switcher's own strings and the pairing scope copy ship in every
  * locale, with the English placeholders.
  */
 const KEYS = [
@@ -14,12 +14,15 @@ const KEYS = [
   'remote.scope.viewOnly',
   'remote.scope.input',
   'remotePage.connect.pasteScope',
+  'pcSwitcher.open',
+  'pcSwitcher.manage',
+  'pcSwitcher.othersNeedYou',
 ] as const;
 
 const dir = path.resolve(__dirname, '../locales');
 const placeholders = (v: string): string[] => [...v.matchAll(/\{(\w+)\}/g)].map((m) => m[1]).sort();
 
-describe('PC column strings', () => {
+describe('PC switcher strings', () => {
   const files = fs.readdirSync(dir).filter((f) => f.endsWith('.ts'));
   it('finds every locale', () => expect(files.length).toBeGreaterThanOrEqual(23));
   for (const file of files) {

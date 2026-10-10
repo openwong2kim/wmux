@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { reconnectPtyWithRetry, RECONNECT_BACKOFFS_MS } from '../reconnectPtyWithRetry';
+import { reconnectPtyWithRetry, RECONNECT_BACKOFFS_MS, RATE_LIMIT_EXTRA_BACKOFFS_MS, RECONNECT_JITTER } from '../reconnectPtyWithRetry';
 
 // RCA A1 regression suite. The bug: any pty.reconnect failure immediately
 // cleared the ptyId, replacing a live session with an empty one. These tests
@@ -93,6 +93,56 @@ describe('reconnectPtyWithRetry (RCA A1 non-destructive contract)', () => {
     // initial attempt + one per backoff slot
     expect(reconnect).toHaveBeenCalledTimes(RECONNECT_BACKOFFS_MS.length + 1);
     expect(clearPtyId).toHaveBeenCalledWith('pty-stuck');
+  });
+
+  it('a rate-limited daemon never costs the live PTY: longer retries, then pending instead of clearing', async () => {
+    const clearPtyId = vi.fn();
+    const onRecoveryError = vi.fn();
+    const reconnect = vi.fn(async () => ({ success: false, transient: true, error: 'rate limited (global)' }));
+    const sleep = vi.fn<(ms: number) => Promise<void>>(() => Promise.resolve());
+    await reconnectPtyWithRetry('pty-busy', alwaysCurrent, { reconnect, clearPtyId, onRecoveryError, sleep, log: noLog, random: () => 0.5 });
+    expect(reconnect).toHaveBeenCalledTimes(RECONNECT_BACKOFFS_MS.length + RATE_LIMIT_EXTRA_BACKOFFS_MS.length + 1);
+    expect(clearPtyId).not.toHaveBeenCalled();
+    // The pane stays attach-pending behind the Retry banner.
+    expect(onRecoveryError).toHaveBeenLastCalledWith(expect.stringMatching(/busy/), { rateLimited: true });
+    const total = sleep.mock.calls.reduce((sum, [ms]) => sum + ms, 0);
+    // Bounded: the whole wait stays under ~10s (random 0.5 = no jitter here).
+    expect(total).toBe([...RECONNECT_BACKOFFS_MS, ...RATE_LIMIT_EXTRA_BACKOFFS_MS].reduce((a, b) => a + b, 0));
+    expect(total).toBeLessThanOrEqual(10_000);
+  });
+
+  it('a rate limit earlier in the run still blocks the clear when a later attempt fails differently', async () => {
+    const clearPtyId = vi.fn();
+    let calls = 0;
+    const reconnect = vi.fn(async () => {
+      calls++;
+      return calls === 1
+        ? { success: false, transient: true, error: 'rate limited' }
+        : { success: false, transient: true, error: 'Session pipe not writable after reconnect' };
+    });
+    await reconnectPtyWithRetry('pty-mixed', alwaysCurrent, { reconnect, clearPtyId, sleep: noSleep, log: noLog });
+    expect(clearPtyId).not.toHaveBeenCalled();
+  });
+
+  it('a rate-limited run recovers once the daemon has room again', async () => {
+    const clearPtyId = vi.fn();
+    const onRecoveryError = vi.fn();
+    let calls = 0;
+    const reconnect = vi.fn(async () => {
+      calls++;
+      return calls <= 5 ? { success: false, transient: true, error: 'rate limited' } : { success: true };
+    });
+    await reconnectPtyWithRetry('pty-burst', alwaysCurrent, { reconnect, clearPtyId, onRecoveryError, sleep: noSleep, log: noLog });
+    expect(reconnect).toHaveBeenCalledTimes(6);
+    expect(clearPtyId).not.toHaveBeenCalled();
+    expect(onRecoveryError).toHaveBeenLastCalledWith(null);
+  });
+
+  it('jitters each backoff slot within ±RECONNECT_JITTER', async () => {
+    const sleep = vi.fn<(ms: number) => Promise<void>>(() => Promise.resolve());
+    const reconnect = vi.fn(async () => ({ success: false, transient: true, error: 'still not writable' }));
+    await reconnectPtyWithRetry('pty-j', alwaysCurrent, { reconnect, clearPtyId: vi.fn(), sleep, log: noLog, random: () => 0 });
+    expect(sleep.mock.calls.map(([ms]) => ms)).toEqual(RECONNECT_BACKOFFS_MS.map((ms) => Math.round(ms * (1 - RECONNECT_JITTER))));
   });
 
   it('terminal unmounts mid-retry → bails without clearing', async () => {

@@ -530,7 +530,10 @@ export const ms = {
   'remote.scope.read': "Peranti yang dipasangkan boleh membaca dan mencari output setiap ruang kerja di komputer ini, termasuk yang dibuka kemudian.",
   'remote.scope.viewOnly': "Lihat sahaja menyekat menaip, tetapi masih boleh menjawab gesaan pada skrin yang memerlukan satu kekunci.",
   'remote.scope.input': "Boleh menaip juga membenarkannya membuka dan menutup sesi serta menjawab kelulusan.",
-  'remotePage.connect.pasteScope': "Jika jemputan berkongsi ruang kerja, komputer ini boleh membaca dan mencari setiap ruang kerja di PC itu, termasuk yang dibuka kemudian. Semasa dipasangkan, wmux menyemaknya setiap beberapa saat, mengekalkan sambungan untuk amarannya dan memaparkan pemberitahuannya; senyapkan daripada ikonnya dalam lajur komputer.",
+  'remotePage.connect.pasteScope': "Jika jemputan berkongsi ruang kerja, komputer ini boleh membaca dan mencari setiap ruang kerja di PC itu, termasuk yang dibuka kemudian. Semasa dipasangkan, wmux menyemaknya setiap beberapa saat, mengekalkan sambungan untuk amarannya dan memaparkan pemberitahuannya; senyapkan daripada menu komputer dalam tajuk bar sisi.",
+  'pcSwitcher.open': "Tukar komputer",
+  'pcSwitcher.manage': "Tetapan {name}",
+  'pcSwitcher.othersNeedYou': "{count} menunggu anda di komputer lain",
   // Quit and Stop Sessions (main-process native confirm)
   'quitAndStop.message': "Keluar daripada wmux dan hentikan semua sesi?",
   'quitAndStop.detail': "Sedang berjalan: {agents} sesi ejen, jumlah {sessions} terminal. Semuanya akan dihentikan. Keluar biasa membiarkannya terus berjalan di latar belakang.",

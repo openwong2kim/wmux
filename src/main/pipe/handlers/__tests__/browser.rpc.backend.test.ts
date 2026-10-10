@@ -11,6 +11,7 @@ import {
   EXTERNAL_BACKEND_UNSUPPORTED_MESSAGE,
 } from '../../../../shared/browserBackend';
 import type { BrowserBackendStore } from '../../../browser-session/BrowserBackendStore';
+import { dispatchAsClaimedCaller } from './claimedCaller';
 
 /**
  * #517 backend fork — external mode contract.
@@ -86,7 +87,7 @@ const TARGET = {
 function register(opts: { backend?: Backend; hasTarget?: boolean; withStore?: boolean; launcher?: unknown } = {}): Harness {
   let backend: Backend = opts.backend ?? 'builtin';
   const hasTarget = opts.hasTarget ?? false;
-  const router = new RpcRouter();
+  const router = dispatchAsClaimedCaller(new RpcRouter());
   const cdp = {
     getTarget: vi.fn(() => (hasTarget ? TARGET : null)),
     listTargets: vi.fn(() => (hasTarget ? [TARGET] : [])),

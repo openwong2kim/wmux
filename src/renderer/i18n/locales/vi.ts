@@ -524,7 +524,10 @@ export const vi = {
   'remote.scope.read': "Thiết bị đã ghép có thể đọc và tìm kiếm đầu ra của mọi không gian làm việc trên máy này, kể cả những cái mở sau.",
   'remote.scope.viewOnly': "Chỉ xem chặn việc gõ, nhưng vẫn có thể trả lời các lời nhắc trên màn hình chỉ cần một phím.",
   'remote.scope.input': "Có thể gõ còn cho phép mở và đóng phiên cũng như trả lời các yêu cầu phê duyệt.",
-  'remotePage.connect.pasteScope': "Nếu lời mời chia sẻ không gian làm việc, máy này có thể đọc và tìm kiếm mọi không gian làm việc trên PC đó, kể cả những cái mở sau. Trong khi ghép, wmux kiểm tra nó vài giây một lần, giữ kết nối để nhận cảnh báo và hiển thị thông báo của nó; tắt tiếng từ biểu tượng của nó trong cột máy tính.",
+  'remotePage.connect.pasteScope': "Nếu lời mời chia sẻ không gian làm việc, máy này có thể đọc và tìm kiếm mọi không gian làm việc trên PC đó, kể cả những cái mở sau. Trong khi ghép, wmux kiểm tra nó vài giây một lần, giữ kết nối để nhận cảnh báo và hiển thị thông báo của nó; tắt tiếng từ menu máy tính ở tiêu đề thanh bên.",
+  'pcSwitcher.open': "Đổi máy tính",
+  'pcSwitcher.manage': "Cài đặt {name}",
+  'pcSwitcher.othersNeedYou': "{count} đang chờ bạn trên máy tính khác",
   // Quit and Stop Sessions (main-process native confirm)
   'quitAndStop.message': "Thoát wmux và dừng tất cả phiên?",
   'quitAndStop.detail': "Đang chạy: {agents} phiên agent, tổng cộng {sessions} terminal. Tất cả sẽ bị dừng. Thoát thông thường để chúng tiếp tục chạy ở chế độ nền.",

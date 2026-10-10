@@ -203,25 +203,84 @@ export function openTurnSection(turn: ShownTurn): void {
   });
 }
 
-/** The header line: each non-empty section and its count, each a jump. */
-export function GitTurnSummary({ counts }: { counts: Record<ShownTurn, number> }): React.ReactElement | null {
-  const t = useT();
-  const shown = SHOWN_TURNS.filter((turn) => counts[turn] > 0);
-  if (shown.length === 0) return null;
+/** A header summary line: each entry's name and count, each a jump. The
+ *  flat list's (`turn`) and the Worktrees tab's (`wt`) share it; `kind`
+ *  names the data attributes. */
+export function SectionSummary({ kind, label, entries, onJump }: {
+  kind: 'turn' | 'wt';
+  label: string;
+  entries: readonly { key: string; name: string; count: number }[];
+  onJump: (key: string) => void;
+}): React.ReactElement | null {
+  if (entries.length === 0) return null;
   return (
-    <p className="wmux-git-page-summary wmux-git-turn-summary" aria-label={t('git.turn.summaryLabel')} data-git-turn-summary>
-      {shown.map((turn, i) => (
-        <span key={turn}>
+    <p className="wmux-git-page-summary wmux-git-turn-summary" aria-label={label} {...{ [`data-git-${kind}-summary`]: '' }}>
+      {entries.map((e, i) => (
+        <span key={e.key}>
           {i > 0 && <span aria-hidden="true"> · </span>}
           <button
             type="button"
             className={`wmux-git-turn-jump ${FOCUS_RING}`}
-            onClick={() => openTurnSection(turn)}
-            data-git-turn-jump={turn}
-          >{`${t(`git.turn.${turn}`)} ${counts[turn]}`}</button>
+            onClick={() => onJump(e.key)}
+            {...{ [`data-git-${kind}-jump`]: e.key }}
+          >{`${e.name} ${e.count}`}</button>
         </span>
       ))}
     </p>
+  );
+}
+
+/** The header line: each non-empty section and its count, each a jump. */
+export function GitTurnSummary({ counts }: { counts: Record<ShownTurn, number> }): React.ReactElement | null {
+  const t = useT();
+  const entries = SHOWN_TURNS.filter((turn) => counts[turn] > 0).map((turn) => ({ key: turn, name: t(`git.turn.${turn}`), count: counts[turn] }));
+  return <SectionSummary kind="turn" label={t('git.turn.summaryLabel')} entries={entries} onJump={(k) => openTurnSection(k as ShownTurn)} />;
+}
+
+/** A folding section: its header (fold toggle, an optional mark, name,
+ *  count) over its list. The flat list's (`turn`) and the Worktrees tab's
+ *  (`wt`) share it; `kind` names the data attributes. */
+export function FoldSection({ kind, sectionKey, name, count, collapsed, onToggle, mark, listLabel, listProps, caption, children }: {
+  kind: 'turn' | 'wt';
+  sectionKey: string;
+  name: string;
+  count: number;
+  collapsed: boolean;
+  onToggle: () => void;
+  mark?: React.ReactNode;
+  listLabel: string;
+  /** Extra attributes for the list (its class and data attributes). */
+  listProps?: React.HTMLAttributes<HTMLUListElement> & Record<`data-${string}`, string>;
+  /** A muted line under the header while open. */
+  caption?: React.ReactNode;
+  children: React.ReactNode;
+}): React.ReactElement {
+  return (
+    <section
+      className="wmux-git-turn"
+      aria-label={name}
+      {...{ [`data-git-${kind}-section`]: sectionKey }}
+      data-collapsed={collapsed ? 'true' : undefined}
+    >
+      <button
+        type="button"
+        className={`wmux-git-turn-head ${FOCUS_RING}`}
+        aria-expanded={!collapsed}
+        onClick={onToggle}
+        {...{ [`data-git-${kind}-head`]: '' }}
+      >
+        <span className="wmux-git-chevron" data-open={collapsed ? undefined : 'true'} aria-hidden="true"><IconChevron size={12} /></span>
+        {mark}
+        <span className="wmux-git-turn-name">{name}</span>
+        <span className="wmux-git-turn-count" {...{ [`data-git-${kind}-count`]: '' }}>{count}</span>
+      </button>
+      {!collapsed && caption}
+      {!collapsed && (
+        <ul aria-label={`${name}: ${listLabel}`} {...listProps}>
+          {children}
+        </ul>
+      )}
+    </section>
   );
 }
 
@@ -239,27 +298,21 @@ export function GitTurnSection({ turn, count, listLabel, children }: {
     const cur = useStore.getState().gitPage.turnCollapsed;
     useStore.getState().setGitPage({ turnCollapsed: { ...cur, [turn]: !isTurnCollapsed(turn, cur) } });
   };
-  const name = t(`git.turn.${turn}`);
   return (
-    <section className="wmux-git-turn" aria-label={name} data-git-turn-section={turn} data-collapsed={collapsed ? 'true' : undefined}>
-      <button
-        type="button"
-        className={`wmux-git-turn-head ${FOCUS_RING}`}
-        aria-expanded={!collapsed}
-        onClick={toggle}
-        data-git-turn-head
-      >
-        <span className="wmux-git-chevron" data-open={collapsed ? undefined : 'true'} aria-hidden="true"><IconChevron size={12} /></span>
-        {turn === 'needs_you' && <span className="wmux-git-turn-dot" aria-hidden="true" />}
-        {turn === 'ready_to_merge' && <span className="wmux-git-turn-check" aria-hidden="true"><IconCheck size={12} /></span>}
-        <span className="wmux-git-turn-name">{name}</span>
-        <span className="wmux-git-turn-count" data-git-turn-count>{count}</span>
-      </button>
-      {!collapsed && (
-        <ul className="wmux-git-list" aria-label={`${name}: ${listLabel}`} data-git-flat-rows data-git-turn-rows={turn}>
-          {children}
-        </ul>
-      )}
-    </section>
+    <FoldSection
+      kind="turn"
+      sectionKey={turn}
+      name={t(`git.turn.${turn}`)}
+      count={count}
+      collapsed={collapsed}
+      onToggle={toggle}
+      mark={turn === 'needs_you'
+        ? <span className="wmux-git-turn-dot" aria-hidden="true" />
+        : turn === 'ready_to_merge' ? <span className="wmux-git-turn-check" aria-hidden="true"><IconCheck size={12} /></span> : undefined}
+      listLabel={listLabel}
+      listProps={{ className: 'wmux-git-list', 'data-git-flat-rows': '', 'data-git-turn-rows': turn }}
+    >
+      {children}
+    </FoldSection>
   );
 }

@@ -39,6 +39,8 @@ export interface PaneActionItem {
   separatorBefore?: boolean;
   /** Opens a submenu: aria-haspopup="menu" and a trailing ›. */
   hasPopup?: boolean;
+  /** A muted second line under the label (e.g. a computer's state). */
+  detail?: string;
 }
 
 interface PaneActionsMenuProps {
@@ -98,14 +100,20 @@ export default function PaneActionsMenu({ anchor, triggerRef, items, onClose, fo
   // the menu to where the trigger USED to be.
   useEffect(() => {
     const onMoved = () => onClose();
+    // The menu's own scroll (a long list, or arrow keys scrolling an item into
+    // view) moves nothing it is anchored to.
+    const onScroll = (e: Event) => {
+      if (e.target instanceof Node && menuRef.current?.contains(e.target)) return;
+      onClose();
+    };
     window.addEventListener('resize', onMoved);
     // Scroll too, and captured — the tab strip's own overflow-x scroll does
     // not bubble. A fixed-position menu whose anchor scrolled away would stay
     // behind, floating detached from the header that opened it.
-    window.addEventListener('scroll', onMoved, true);
+    window.addEventListener('scroll', onScroll, true);
     return () => {
       window.removeEventListener('resize', onMoved);
-      window.removeEventListener('scroll', onMoved, true);
+      window.removeEventListener('scroll', onScroll, true);
     };
   }, [onClose]);
 
@@ -252,7 +260,14 @@ export default function PaneActionsMenu({ anchor, triggerRef, items, onClose, fo
                 {item.icon}
               </span>
             )}
-            <span className="flex-1 truncate">{item.label}</span>
+            {item.detail ? (
+              <span className="flex-1 min-w-0 flex flex-col">
+                <span className="truncate">{item.label}</span>
+                <span className="truncate text-[11px]" style={{ color: 'var(--text-subtle)' }} data-pane-menu-detail>{item.detail}</span>
+              </span>
+            ) : (
+              <span className="flex-1 truncate">{item.label}</span>
+            )}
             {item.shortcut && (
               <span
                 className="ml-2 shrink-0 text-[10px] font-mono tabular-nums"

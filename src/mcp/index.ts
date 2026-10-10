@@ -3,6 +3,8 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import {
   runWithCallerPtyIdSource,
+  runWithWorkspaceTokenSource,
+  runWithStaleIdentityHandler,
   sendRpc,
   setCallerPtyId,
   setClientIdentity,
@@ -122,6 +124,8 @@ interface CodexCallScope {
   mode?: 'thread' | 'thread-or-legacy' | 'legacy';
   /** The thread owner's live pane, once resolved for this call. */
   ptyId?: string;
+  /** The claim main minted for that pane from the thread's owner record. */
+  workspaceToken?: string;
   /** Why the thread could not be resolved, for the identity error. */
   miss?: CodexThreadMiss;
 }
@@ -449,6 +453,9 @@ let MY_WORKSPACE_ID = '';
 // back to the weak env hint for the A2A task tools, while a2a.channel.* stays
 // hit-only.
 let MY_PTY_ID = '';
+// main's answer about the pane our env names, from the last walk that missed
+// (see `hintedPane` in a2a.resolve.identity). Read only by the browser resolver.
+let HINTED_PANE: { live: boolean; workspaceId?: string; workspaceToken?: string } | null = null;
 let workspaceResolved = false;
 
 // ── Shared Codex app-server (#1778) ─────────────────────────────────────────
@@ -554,7 +561,11 @@ function withCodexCallScope(fn: (...a: unknown[]) => unknown): (...a: unknown[])
       // pane that started the shared server.
       return runWithCallerPtyIdSource(
         () => (scope.mode === 'thread' ? scope.ptyId ?? '' : undefined),
-        () => fn(...args),
+        () =>
+          runWithWorkspaceTokenSource(
+            () => (scope.mode === 'thread' ? scope.workspaceToken ?? '' : undefined),
+            () => retryOnceAfterClaimRefusal(() => fn(...args)),
+          ),
       );
     });
   };
@@ -872,7 +883,46 @@ if (ROLE_SURFACE) {
 // errors so the next identity-gated call re-resolves the live owner.
 function isStaleIdentityResult(value: unknown): boolean {
   const text = typeof value === 'string' ? value : JSON.stringify(value ?? '');
-  return /no workspace found|not owned by workspace/i.test(text);
+  // The last two are main's browser refusals for a claim whose workspace is
+  // gone and for a call that carried no claim (e.g. the cached id came from the
+  // client-side walk, which yields no token): clearing the route drops both the
+  // token and the cached id, so the next call walks again on main's side.
+  return /no workspace found|not owned by workspace|the workspace you claimed is gone|carries no verified workspace/i.test(text);
+}
+
+// main's browser refusals for a claim that is gone (main restarted, so every
+// token it minted is) and for a call that carried none.
+function isClaimRefusal(text: string): boolean {
+  return /the workspace you claimed is gone|carries no verified workspace/i.test(text);
+}
+
+/**
+ * Run one tool call with the stale-identity handler: every browser RPC it
+ * makes — callRpc or a tool module's direct sendRpc — drops a stale identity
+ * the same way. When the call's FIRST browser RPC was refused for its claim,
+ * run the call once more: main refuses that before it acts on anything, and
+ * the identity was just dropped, so the second run walks again and carries a
+ * fresh claim. Without it every running agent's first browser call after a
+ * wmux restart failed, with a refusal it had to know to retry.
+ */
+async function retryOnceAfterClaimRefusal(run: () => unknown): Promise<unknown> {
+  for (let attempt = 0; ; attempt++) {
+    const seen: { first?: { outcome: string; failed: boolean } } = {};
+    const handler = (outcome: string, failed: boolean) => {
+      seen.first ??= { outcome, failed };
+      if (isStaleIdentityResult(outcome)) invalidateStaleRoute(getPinnedRoute());
+    };
+    const again = () => attempt === 0 && seen.first?.failed === true && isClaimRefusal(seen.first.outcome);
+    let result: unknown;
+    try {
+      // Awaited here so a refusal the tool rethrows is seen too.
+      result = await runWithStaleIdentityHandler(handler, async () => run());
+    } catch (err) {
+      if (again()) continue;
+      throw err;
+    }
+    if (!again()) return result;
+  }
 }
 
 // Helper: wrap an RPC call as an MCP tool result
@@ -962,6 +1012,8 @@ async function lookupPidMapWorkspace(): Promise<PidMapLookup> {
   let mappings: Record<string, string> | undefined;
   let entries: Array<{ pid: string; ptyId: string; workspaceId: string }> | undefined;
   let resolved: { workspaceId?: unknown; ptyId?: unknown } | null | undefined;
+  let walkToken: unknown;
+  let threadClaim: unknown;
   const codexScope = codexCallScope.getStore();
   const viaThread = codexScope?.mode === 'thread' || codexScope?.mode === 'thread-or-legacy';
   // A thread-only call never uses main's server-side walk, so it does not ask
@@ -975,13 +1027,29 @@ async function lookupPidMapWorkspace(): Promise<PidMapLookup> {
     // hints — leaving the client-side walk as its only, blocked, path. Older
     // main builds ignore the field and omit `resolved`, so we fall through to
     // the client-side walk unchanged (graceful degradation).
+    // A thread call sends its thread instead of our pid: main reads the
+    // thread's owner record and mints a claim for that pane (`threadClaim`).
     const result = await sendRpc(
       'a2a.resolve.identity' as RpcMethod,
-      codexScope?.mode === 'thread' ? {} : { callerPid: ctx.callerPid },
+      // `codexCallerPid` only lets main check our parent is a shared Codex
+      // app-server before it trusts the thread; it never drives the walk.
+      codexScope?.mode === 'thread'
+        ? (codexScope.threadId ? { codexThreadId: codexScope.threadId, codexCallerPid: ctx.callerPid } : {})
+        : {
+            callerPid: ctx.callerPid,
+            ...(viaThread && codexScope?.threadId && { codexThreadId: codexScope.threadId, codexCallerPid: ctx.callerPid }),
+            ...(ENV_PTY_HINT && { hintedPtyId: ENV_PTY_HINT }),
+          },
     );
+    if (codexScope?.mode !== 'thread') {
+      const hinted = (result as { hintedPane?: unknown }).hintedPane;
+      HINTED_PANE = hinted && typeof hinted === 'object' ? (hinted as typeof HINTED_PANE) : null;
+    }
+    threadClaim = (result as { threadClaim?: unknown }).threadClaim;
     mappings = (result as { mappings: Record<string, string> }).mappings;
     entries = (result as { entries?: Array<{ pid: string; ptyId: string; workspaceId: string }> }).entries;
     resolved = (result as { resolved?: { workspaceId?: unknown; ptyId?: unknown } | null }).resolved;
+    walkToken = (result as { workspaceToken?: unknown }).workspaceToken;
   } catch {
     logIdentity('resolve.identity rpc-down');
     if (codexScope?.mode === 'thread') {
@@ -996,6 +1064,13 @@ async function lookupPidMapWorkspace(): Promise<PidMapLookup> {
   // leaves the mode unchanged; it is flipped to 'legacy' here).
   if (codexScope && viaThread) {
     const lookup = resolveViaCodexThread(codexScope, entries);
+    // Main's own answer for this thread's pane: carried by this call only.
+    if (lookup.status === 'hit') {
+      const claim = threadClaim as { ptyId?: unknown; workspaceToken?: unknown } | undefined;
+      if (claim && claim.ptyId === lookup.ptyId && typeof claim.workspaceToken === 'string' && claim.workspaceToken) {
+        codexScope.workspaceToken = claim.workspaceToken;
+      }
+    }
     if (codexScope.mode === 'thread') return lookup;
     codexScope.mode = 'legacy';
     codexScope.miss = undefined;
@@ -1021,6 +1096,20 @@ async function lookupPidMapWorkspace(): Promise<PidMapLookup> {
     typeof resolved.ptyId === 'string' && resolved.ptyId
   ) {
     MY_PTY_ID = resolved.ptyId;
+    // A claim main minted for the walked workspace: carried on every envelope,
+    // it is how main derives this caller's workspace for browser calls (the
+    // `verified` lane) instead of reading the request's workspaceId. Never
+    // replaces an external claim's token, which belongs to its pinned route,
+    // and never set under a shared Codex app-server, thread call or not: the
+    // token is connection-wide, and its walk names the pane that started the
+    // server, not the calling thread's (on Windows, where no thread owner
+    // index exists, every such call is 'legacy').
+    if (
+      typeof walkToken === 'string' && walkToken.trim() &&
+      !getPinnedRoute() && !viaThread && codexParentClass !== 'shared-server'
+    ) {
+      setWorkspaceToken(walkToken.trim());
+    }
     syncCallerPtyId();
     logIdentity(`server-walk HIT ws=${resolved.workspaceId} pty=${resolved.ptyId}`);
     return { status: 'hit', wsId: resolved.workspaceId, ptyId: resolved.ptyId };
@@ -1269,6 +1358,94 @@ async function requireWorkspaceId(): Promise<string> {
 }
 
 /**
+ * A call this server cannot tie to a pane: it runs under a shared Codex
+ * app-server and the call was not resolved by its thread (on Windows there is
+ * no thread owner index, so none is). The walk names the pane that started
+ * the server and a dedicated claim names no pane at all, so either would act
+ * in a workspace that is not the caller's. Refused instead, saying why.
+ */
+function refuseUnattributedSharedServer(): void {
+  if (codexParentClass !== 'shared-server' || threadOnlyScope()) return;
+  throw new Error(
+    'Browser tools are not available in this Codex session. It runs on the shared Codex ' +
+      'background server, and wmux cannot tell which pane started this call there, so the ' +
+      'browser could open in another pane\'s workspace. Run Codex in this pane without the ' +
+      'shared background server, or use Claude Code or the `wmux browser` command in this pane.',
+  );
+}
+
+/**
+ * The workspace for browser tools. Only identities main can verify on its own
+ * side count: a PID-map walk hit (its claim token rides every envelope), this
+ * call's Codex thread, the commander token, or an external claim. The env
+ * hint and the unverified last-resort cache are not used: main derives the
+ * browser scope from the envelope and refuses a workspaceId that differs, so a
+ * guessed id could only turn into a refusal.
+ */
+async function requireBrowserWorkspaceId(opts: { claim?: boolean } = {}): Promise<string> {
+  if (codexCallScope.getStore()?.mode === 'thread') return requireWorkspaceId();
+  if (codexCallScope.getStore()?.mode !== 'thread-or-legacy') refuseUnattributedSharedServer();
+  if (codexCallScope.getStore()?.mode !== 'thread-or-legacy' && workspaceResolved && MY_WORKSPACE_ID) {
+    return MY_WORKSPACE_ID;
+  }
+  const lookup = await lookupPidMapWorkspace();
+  const threadScope = threadOnlyScope();
+  if (threadScope) {
+    if (lookup.status === 'hit') return lookup.wsId;
+    throw codexIdentityError(threadScope);
+  }
+  // A 'thread-or-legacy' call whose thread did not resolve is 'legacy' now.
+  refuseUnattributedSharedServer();
+  if (lookup.status === 'hit') {
+    MY_WORKSPACE_ID = lookup.wsId;
+    workspaceResolved = true;
+    return MY_WORKSPACE_ID;
+  }
+  const commanderWs = await resolveCommanderWorkspaceId();
+  if (commanderWs) {
+    MY_WORKSPACE_ID = commanderWs;
+    workspaceResolved = true;
+    return MY_WORKSPACE_ID;
+  }
+  const pinned = getPinnedRoute()?.workspaceId;
+  if (pinned) return pinned;
+  if (lookup.status === 'miss' || lookup.status === 'empty-map') {
+    // The pane our env names, as main sees it. A WSL pane whose agent the
+    // daemon follows comes back attested, with a claim main minted for it.
+    const hinted = ENV_PTY_HINT ? HINTED_PANE : null;
+    if (hinted?.workspaceToken && hinted.workspaceId) {
+      setWorkspaceToken(hinted.workspaceToken);
+      MY_WORKSPACE_ID = hinted.workspaceId;
+      workspaceResolved = true;
+      return MY_WORKSPACE_ID;
+    }
+    // A live pane main could not verify as ours: a dedicated workspace would
+    // silently act somewhere else, so refuse and say why. The hint only
+    // chooses refusing over claiming; it never names a scope.
+    if (hinted?.live) {
+      throw new Error(
+        'Workspace identity unknown. This MCP server runs in a wmux pane that wmux could not verify ' +
+          '(it found no wmux pane among this process\'s ancestors and, for a WSL pane, no live agent ' +
+          'the daemon follows there), so browser tools are not available here. Restart the agent in ' +
+          'that pane, or run it from a native (non-WSL) wmux pane.',
+      );
+    }
+    // Outside every pane (a scheduled run, or an agent started outside wmux):
+    // claim a dedicated workspace, as the terminal tools already do — main
+    // mints the claim, so the browser scope is still one main recorded. Probes
+    // (`claim: false`) never create one.
+    if (opts.claim === false) return '';
+    const route = await claimPinnedRoute({ sendRpc, onWorkspaceToken: setWorkspaceToken });
+    syncCallerPtyId();
+    return route.workspaceId;
+  }
+  throw new Error(
+    'Workspace identity unknown. Browser tools act on the workspace wmux verifies for this MCP ' +
+      'server, and wmux could not be reached to verify it. Retry in a few seconds.',
+  );
+}
+
+/**
  * Resolve the caller's workspace for fail-soft READ tools (surface_list /
  * pane_list). Hardens the omitted-workspace path beyond the weak
  * resolveWorkspaceId (codex P2 follow-ups, #243):
@@ -1365,8 +1542,9 @@ server.tool(
     // resolution THROWS instead of returning '' — which `...(workspaceId && …)`
     // would drop, letting the renderer (useRpcBridge.ts) fall back to
     // store.activeWorkspaceId and open the browser in the wrong (UI-active)
-    // workspace. Matches every other workspace-routed tool.
-    const workspaceId = await requireWorkspaceId();
+    // workspace. The browser resolver drops the env-hint fallback: main scopes
+    // the call from the verified identity and refuses a different workspaceId.
+    const workspaceId = await requireBrowserWorkspaceId();
     // The opener key says who is asking. Main reuses an existing surface only
     // when this connection opened it or nobody claims it, and records the
     // opener on what comes back, so the surface this tool reports is one the
@@ -1397,7 +1575,7 @@ server.tool(
     // An explicit surfaceId is unambiguous (renderer searches all
     // workspaces), but requireWorkspaceId is kept unconditional so both
     // shapes share one identity contract.
-    const workspaceId = await requireWorkspaceId();
+    const workspaceId = await requireBrowserWorkspaceId();
     return callRpc('browser.close', { ...(surfaceId && { surfaceId }), workspaceId });
   },
 );
@@ -1408,7 +1586,7 @@ server.tool(
 // a shared ring would let one agent's actions be cut into another agent's
 // saved flow with nothing in the result to show it happened.
 const browserToolDeps = {
-  resolveWorkspaceId: requireWorkspaceId,
+  resolveWorkspaceId: requireBrowserWorkspaceId,
   actionRing: new ActionRing(),
 };
 // Registration goes through a collecting view of the server so browser_repl
@@ -1434,7 +1612,7 @@ registerBrowserReplTool(server, browserTools, MCP_CATALOG_OPTIONS);
 // above. Inject the strict resolver so the auto-opened surface is pinned to
 // this session's workspace; on a resolve miss the engine fails closed (skips
 // auto-open) rather than opening in an unspecified workspace.
-PlaywrightEngine.getInstance().setWorkspaceIdResolver(requireWorkspaceId);
+PlaywrightEngine.getInstance().setWorkspaceIdResolver(requireBrowserWorkspaceId);
 
 // === Browser session tools ===
 
@@ -1445,30 +1623,32 @@ PlaywrightEngine.getInstance().setWorkspaceIdResolver(requireWorkspaceId);
 
 // No workspaceId: browser.session.start is GLOBAL — on builtin it drives the
 // module-level ProfileManager/PortAllocator, and on chrome/external it only
-// reports how the backend attaches (a workspace-independent live-reachability
-// probe), so requiring identity here would protect no routing and only throw
-// spuriously when the MCP server can't resolve its workspace (e.g. launched
-// outside a wmux terminal). browser_session_stop and browser_session_list are
-// likewise global. browser_session_status is NOT — it scopes per-workspace on
-// the chrome backend, so it resolves and passes its own workspaceId (below).
-const browserSessionStart = async ({ profile }: { profile?: string }) =>
-  callRpc('browser.session.start', profile ? { profile } : {});
+// reports how the backend attaches. browser_session_stop is likewise global.
+// Main requires a verified caller for both, so each resolves identity first
+// (which puts the walk's claim on the envelope) without sending a workspaceId.
+// Only start — an action — may claim a dedicated workspace for a caller
+// outside every pane; stop and the status probe never create one, and a miss
+// is left to main's refusal, which says what is missing. browser_session_list
+// names the configured profiles and needs no identity at all.
+// browser_session_status scopes per-workspace on the chrome backend (below).
+const warmBrowserIdentity = () => requireBrowserWorkspaceId({ claim: false }).catch(() => '');
 
-const browserSessionStop = async () => callRpc('browser.session.stop');
+const browserSessionStart = async ({ profile }: { profile?: string }) => {
+  await requireBrowserWorkspaceId().catch(() => '');
+  return callRpc('browser.session.start', profile ? { profile } : {});
+};
+
+const browserSessionStop = async () => {
+  await warmBrowserIdentity();
+  return callRpc('browser.session.stop');
+};
 
 const browserSessionStatus = async () => {
-  // browser.session.status scopes per-workspace on the chrome backend
-  // (statusForWorkspace), but the server cannot derive the caller's workspace
-  // from the RPC context for a normal agent — callerScope has no ctx→workspace
-  // lane for one — so without an explicit workspaceId it fell back to the
-  // 'default' profile, reporting a builtin default while the workspace was
-  // actually bound to (e.g.) 'live'. Resolve and pass it. This is a workspace-
-  // scoped READ, so it routes through the fail-soft read resolver (the same
-  // one surface_list / pane_list use), NOT requireWorkspaceId: an identity
-  // that is genuinely unresolvable (launched outside a pane) yields '' and we
-  // pass nothing, so the builtin path — where the workspace is irrelevant —
-  // never throws spuriously.
-  const workspaceId = await resolveScopedReadWorkspaceId();
+  // browser.session.status scopes per-workspace on the chrome backend. Main
+  // derives that workspace from the verified identity on the envelope; the
+  // workspaceId sent here only narrows it, so it comes from the browser
+  // resolver (no env hint). A miss sends nothing and main's refusal explains.
+  const workspaceId = await warmBrowserIdentity();
   return callRpc('browser.session.status', workspaceId ? { workspaceId } : {});
 };
 

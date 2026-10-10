@@ -9,6 +9,7 @@ import { isPrefixTrigger, resolveShortcut, type ShortcutActionId } from '../../s
 import { isPcRailAction, pcRailClaimsKey, pcShortcutTarget } from '../components/PcRail/pcRailModel';
 import { currentShortcutBindings, shortcutPressGuard } from '../utils/shortcutBindings';
 import { createTerminalSurface } from '../utils/createTerminalSurface';
+import { selectHostPickName } from '../stores/shadowWorkspace';
 import { openUrlInBrowserPane } from '../utils/browserPaneActions';
 import { PRIVATE_BROWSER_PARTITION } from '../../shared/privateBrowser';
 import {
@@ -642,8 +643,10 @@ export function useKeyboard() {
       // Read prefix mode from store (fresh, no stale closure)
       const prefixMode = store.getState().prefixMode;
       // Another rail page covers the panes: nothing below may reach a PTY or
-      // change the layout (see WORKSPACES_ONLY_ACTIONS).
-      const onWorkspaces = store.getState().appRoute === 'workspaces';
+      // change the layout (see WORKSPACES_ONLY_ACTIONS). Nor while another
+      // computer is selected with none of its workspaces open: this
+      // computer's panes are hidden behind "Pick a workspace" then.
+      const onWorkspaces = store.getState().appRoute === 'workspaces' && selectHostPickName(store.getState()) === null;
 
       // Custom-keybinding dispatch: runs when no built-in owns the combo —
       // including one the user switched off or moved away, so a custom macro

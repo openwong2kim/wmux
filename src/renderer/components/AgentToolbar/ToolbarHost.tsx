@@ -4,6 +4,7 @@ import AgentToolbar, { AGENT_TOOLBAR_HEIGHT } from './AgentToolbar';
 import { useComposeShortcut } from './useComposeShortcut';
 import { useHoverReveal, HOVER_TRIGGER_ZONE_PX } from './useHoverReveal';
 import { isRemoteMirrorVisible } from '../../stores/slices/remoteWorkspacesSlice';
+import { selectOtherPcOnScreen } from '../../stores/shadowWorkspace';
 
 /**
  * Owns the reveal state for AgentToolbar and the element the trigger band is
@@ -29,8 +30,11 @@ export default function ToolbarHost() {
   // #1086 — the same predicate WorkspaceCenter's render gate reads, so chrome
   // and centre can never disagree about which surface is on screen.
   const remoteActive = useStore(isRemoteMirrorVisible);
+  // PC rail: the same holds for another computer's workspace (or the
+  // "pick a workspace" screen while one is selected).
+  const otherPc = useStore(selectOtherPcOnScreen);
 
-  if (!enabled || remoteActive) return null;
+  if (!enabled || remoteActive || otherPc) return null;
   return <RevealHost />;
 }
 

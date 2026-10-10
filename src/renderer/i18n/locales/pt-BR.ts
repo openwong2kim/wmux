@@ -530,7 +530,10 @@ export const ptBR = {
   'remote.scope.read': "Um dispositivo pareado pode ler e pesquisar a saída de todos os workspaces deste computador, inclusive os abertos depois.",
   'remote.scope.viewOnly': "Somente visualização bloqueia a digitação, mas ainda pode responder a prompts na tela que pedem uma única tecla.",
   'remote.scope.input': "Pode digitar também permite abrir e fechar sessões e responder a aprovações.",
-  'remotePage.connect.pasteScope': "Se o convite compartilhar workspaces, este computador pode ler e pesquisar todos os workspaces daquele PC, inclusive os abertos depois. Enquanto pareado, o wmux o verifica a cada poucos segundos, mantém uma conexão aberta para os alertas e mostra as notificações dele; silencie-as pelo ícone dele na coluna de computadores.",
+  'remotePage.connect.pasteScope': "Se o convite compartilhar workspaces, este computador pode ler e pesquisar todos os workspaces daquele PC, inclusive os abertos depois. Enquanto pareado, o wmux o verifica a cada poucos segundos, mantém uma conexão aberta para os alertas e mostra as notificações dele; silencie-as pelo menu de computadores no título da barra lateral.",
+  'pcSwitcher.open': "Trocar de computador",
+  'pcSwitcher.manage': "Configurações de {name}",
+  'pcSwitcher.othersNeedYou': "{count} precisam de você em outros computadores",
   // Quit and Stop Sessions (main-process native confirm)
   'quitAndStop.message': "Sair do wmux e encerrar todas as sessões?",
   'quitAndStop.detail': "Sessões de agentes em execução: {agents}. Terminais no total: {sessions}. Todas serão encerradas. Sair normalmente as mantém rodando em segundo plano.",

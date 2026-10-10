@@ -565,7 +565,10 @@ export const zhTW = {
   'remote.scope.read': "已配對的裝置可以讀取和搜尋這台電腦上所有工作區的輸出，包括之後開啟的工作區。",
   'remote.scope.viewOnly': "僅檢視會阻止輸入，但仍可回應只需按一個鍵的螢幕提示。",
   'remote.scope.input': "可輸入還允許它開啟和關閉工作階段，以及回應核准。",
-  'remotePage.connect.pasteScope': "如果邀請分享了工作區，這台電腦可以讀取和搜尋那台電腦上的所有工作區，包括之後開啟的。配對期間，wmux 每隔幾秒檢查一次，保持連線以接收提醒並顯示其通知；可在電腦欄中該電腦的圖示上將其靜音。",
+  'remotePage.connect.pasteScope': "如果邀請分享了工作區，這台電腦可以讀取和搜尋那台電腦上的所有工作區，包括之後開啟的。配對期間，wmux 每隔幾秒檢查一次，保持連線以接收提醒並顯示其通知；可在側邊欄標題的電腦選單中將其靜音。",
+  'pcSwitcher.open': "切換電腦",
+  'pcSwitcher.manage': "{name} 設定",
+  'pcSwitcher.othersNeedYou': "其他電腦上有 {count} 個需要你",
   // Quit and Stop Sessions (main-process native confirm)
   'quitAndStop.message': "結束 wmux 並停止所有工作階段？",
   'quitAndStop.detail': "正在執行：{agents} 個代理工作階段，共 {sessions} 個終端機。它們都會被停止。一般結束會讓它們在背景繼續執行。",

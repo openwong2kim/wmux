@@ -529,7 +529,10 @@ export const it = {
   'remote.scope.read': "Un dispositivo associato può leggere e cercare l'output di ogni workspace su questo computer, compresi quelli aperti in seguito.",
   'remote.scope.viewOnly': "Solo visualizzazione blocca la digitazione, ma può ancora rispondere ai prompt sullo schermo che richiedono un solo tasto.",
   'remote.scope.input': "Può digitare consente anche di aprire e chiudere sessioni e rispondere alle approvazioni.",
-  'remotePage.connect.pasteScope': "Se l'invito condivide i workspace, questo computer può leggere e cercare ogni workspace su quel PC, compresi quelli aperti in seguito. Finché sono associati, wmux lo controlla ogni pochi secondi, tiene aperta una connessione per i suoi avvisi e mostra le sue notifiche; silenziale dalla sua icona nella colonna dei computer.",
+  'remotePage.connect.pasteScope': "Se l'invito condivide i workspace, questo computer può leggere e cercare ogni workspace su quel PC, compresi quelli aperti in seguito. Finché sono associati, wmux lo controlla ogni pochi secondi, tiene aperta una connessione per i suoi avvisi e mostra le sue notifiche; silenziale dal menu dei computer nel titolo della barra laterale.",
+  'pcSwitcher.open': "Cambia computer",
+  'pcSwitcher.manage': "Impostazioni di {name}",
+  'pcSwitcher.othersNeedYou': "{count} ti aspettano su altri computer",
   // Quit and Stop Sessions (main-process native confirm)
   'quitAndStop.message': "Uscire da wmux e arrestare tutte le sessioni?",
   'quitAndStop.detail': "Sessioni di agenti in esecuzione: {agents}. Terminali in tutto: {sessions}. Verranno arrestate tutte. L'uscita normale le lascia in esecuzione in background.",
