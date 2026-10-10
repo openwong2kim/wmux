@@ -31,6 +31,7 @@ import { clearFanoutPortReservationsForTest } from '../fanoutEnvironment';
 import { TaskLedger } from '../../../daemon/ledger/TaskLedger';
 import { setTaskLedgerForTests } from '../../deck/taskLedgerHost';
 import { FanOutGuards, setFanOutGuardsForTests } from '../fanoutGuards';
+import { GOAL_WORKER_TOKEN_PLACEHOLDER } from '../../../shared/moaGoalWorker';
 
 let metaRoot: string;
 let lineage: FanOutGuards;
@@ -1399,5 +1400,42 @@ describe('per-worker private temp dir', () => {
     expect(registered).toEqual([[`task:${taskA.taskId}`, dirA], ['ws-task-1', dirB]]);
     const spawnB = renderer.spawned.find((p) => p.name.endsWith('Task B'))!;
     expect(spawnB.env).toMatchObject({ TMPDIR: dirB, TMP: dirB, TEMP: dirB });
+  });
+});
+
+describe('the goal worker profile (Moa goal fan-outs only)', () => {
+  it('every task gets the deny-rule request, the credential friction and the goal note', async () => {
+    const renderer = makeRendererFake();
+    const svc = new FanOutService({ daemon: makeDaemonFake().port, renderer: renderer.port, worktrees: makeWorktreesFake() });
+    const res = await svc.start(baseReq({ goalWorker: { goalId: 'G-abc123' } }));
+    expect(res.ok).toBe(true);
+    expect(renderer.spawned).toHaveLength(2);
+    for (const p of renderer.spawned) {
+      expect((p as { goalWorker?: boolean }).goalWorker).toBe(true);
+      expect(p.env).toMatchObject({
+        GH_TOKEN: GOAL_WORKER_TOKEN_PLACEHOLDER,
+        GITHUB_TOKEN: GOAL_WORKER_TOKEN_PLACEHOLDER,
+        GIT_CONFIG_KEY_0: 'credential.helper',
+        GIT_CONFIG_VALUE_0: '',
+        GIT_TERMINAL_PROMPT: '0',
+      });
+      // The gh config dir exists, is empty and sits outside the worktree.
+      const dir = p.env!.GH_CONFIG_DIR;
+      expect(fs.readdirSync(dir)).toEqual([]);
+      expect(dir.startsWith(path.join(metaRoot, 'meta'))).toBe(true);
+      // The prompt file says what stays with the operator.
+      expect(fs.readFileSync(path.join(path.dirname(dir), 'prompt.md'), 'utf8')).toContain('Moa goal G-abc123');
+    }
+  });
+
+  it('a fan-out outside a goal gets none of it (defaults unchanged)', async () => {
+    const renderer = makeRendererFake();
+    const svc = new FanOutService({ daemon: makeDaemonFake().port, renderer: renderer.port, worktrees: makeWorktreesFake() });
+    await svc.start(baseReq());
+    for (const p of renderer.spawned) {
+      expect(p).not.toHaveProperty('goalWorker');
+      expect(p.env?.GH_TOKEN).toBeUndefined();
+      expect(p.env?.GH_CONFIG_DIR).toBeUndefined();
+    }
   });
 });

@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# Fake `gh` for the e2e harness: records pull requests under $HOME/.e2e-gh
+# instead of calling GitHub. Supports `pr create`, `pr close`, `pr merge`.
+set -euo pipefail
+db="${HOME}/.e2e-gh"
+mkdir -p "$db"
+echo "$(date +%s) $*" >> "$db/calls.log"
+[ "${1:-}" = "pr" ] || { echo "fake gh: unsupported: $*" >&2; exit 2; }
+sub="${2:-}"; shift 2
+case "$sub" in
+  create)
+    head=""; base=""; title=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --head) head="$2"; shift 2 ;;
+        --base) base="$2"; shift 2 ;;
+        --title) title="$2"; shift 2 ;;
+        --body) printf '%s' "$2" > "$db/body.tmp"; shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    # The branch must really be on the remote, as on GitHub.
+    git ls-remote --exit-code origin "refs/heads/$head" > /dev/null || { echo "fake gh: $head is not on the remote" >&2; exit 1; }
+    n=$(( $(ls "$db" | grep -c '^pr-' || true) + 1 ))
+    mv "$db/body.tmp" "$db/pr-$n.body"
+    printf '{"number":%d,"head":"%s","base":"%s","title":"%s","state":"open"}\n' "$n" "$head" "$base" "${title//\"/}" > "$db/pr-$n.json"
+    echo "https://github.com/e2e/project/pull/$n" ;;
+  close|merge)
+    n="$1"; [ -f "$db/pr-$n.json" ] || { echo "fake gh: no PR $n" >&2; exit 1; }
+    state=$([ "$sub" = close ] && echo closed || echo merged)
+    sed -i "s/\"state\":\"[a-z]*\"/\"state\":\"$state\"/" "$db/pr-$n.json"
+    echo "fake gh: PR $n $state" ;;
+  *) echo "fake gh: unsupported pr $sub" >&2; exit 2 ;;
+esac

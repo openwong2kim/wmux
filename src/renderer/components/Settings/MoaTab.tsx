@@ -8,6 +8,8 @@
 // Every row renders before the first read answers (controls inert, status
 // "Checking…"), so search can always jump to it.
 
+import { MoaGoalDrafts } from '../Moa/MoaGoalDrafts';
+import { resolveTaskLink } from '../../utils/fanoutProvenance';
 import { useEffect, useState, type ReactNode } from 'react';
 import { useStore } from '../../stores';
 import { isMoaHqWorkspace } from '../../stores/slices/moaSlice';
@@ -300,6 +302,40 @@ export function TabMoa({ registerDialog }: TabMoaProps) {
     await refreshMoa();
   };
 
+  // ── Level and goal (moaLevelGate.ts / moaGoalContract.ts) ──
+  const goal = moa?.goal ?? null;
+  const [goalEndFailed, setGoalEndFailed] = useState(false);
+  const onEndGoal = async () => {
+    setGoalEndFailed(false);
+    try {
+      const r = await window.electronAPI.deck?.moa?.endGoal();
+      if (!r?.ok) setGoalEndFailed(true);
+    } catch {
+      setGoalEndFailed(true);
+    }
+    await refreshMoa();
+  };
+  const [goalRevertFailed, setGoalRevertFailed] = useState(false);
+  const onRevertGoal = async (id: string) => {
+    setGoalRevertFailed(false);
+    try {
+      const r = await window.electronAPI.deck?.moa?.revertGoal(id);
+      if (!r?.ok) setGoalRevertFailed(true);
+    } catch {
+      setGoalRevertFailed(true);
+    }
+    await refreshMoa();
+  };
+  const goalLine = !goal
+    ? t('moa.settings.goalNone')
+    : goal.status === 'pending'
+      ? t('moa.settings.goalPending', { id: goal.id, goal: goal.goal })
+      : goal.status === 'active' && goal.live
+        ? t('moa.settings.goalActive', { id: goal.id, goal: goal.goal, tasks: goal.tasksUsed, maxTasks: goal.maxTasks, turns: goal.turnsUsed, maxTurns: goal.maxTurns })
+        : goal.status === 'active'
+          ? t('moa.settings.goalInert', { id: goal.id, reason: goal.inertReason ?? '' })
+          : t('moa.settings.goalEnded', { id: goal.id, note: goal.endNote ?? goal.status });
+
   const storedCap = moa?.config.maxTurnsPerHour;
   const [capDraft, setCapDraft] = useState('');
   const [capInvalid, setCapInvalid] = useState(false);
@@ -369,6 +405,13 @@ export function TabMoa({ registerDialog }: TabMoaProps) {
 
   // ── Per-workspace modes (every workspace but the HQ) ──
   const modeRows = workspaces.filter((w) => !isMoaHqWorkspace({ moa }, w.id));
+  // Fan-out task worktrees inherit their owner's mode; listing each one beside
+  // the real workspaces buries them, so they sit in one collapsed group.
+  const missionByPaneGroup = useStore((s) => s.missionByPaneGroup);
+  const fanoutLineage = useStore((s) => s.fanoutLineage);
+  const fanoutSpawnOwner = useStore((s) => s.fanoutSpawnOwner);
+  const isTaskRow = (id: string) => resolveTaskLink(missionByPaneGroup[id], fanoutLineage[id], fanoutSpawnOwner[id]) !== null;
+  const [showTaskModes, setShowTaskModes] = useState(false);
   const modeIds = modeRows.map((w) => w.id).join('\n');
   const [modes, setModes] = useState<Record<string, AgentMode>>({});
   const [modeFailed, setModeFailed] = useState(false);
@@ -652,7 +695,27 @@ export function TabMoa({ registerDialog }: TabMoaProps) {
         data-testid="moa-modes"
       >
         {modeRows.length === 0 && <SettingNote>{t('moa.settings.modesEmpty')}</SettingNote>}
-        {modeRows.map((w) => (
+        {modeRows.filter((w) => !isTaskRow(w.id)).map((w) => (
+          <SettingRow key={w.id} label={w.name}>
+            {modes[w.id] ? (
+              <SegmentedControl
+                value={modes[w.id]}
+                options={modeOptions}
+                onValueChange={(m) => onModeChange(w.id, m)}
+                data-testid={`moa-mode-${w.id}`}
+              />
+            ) : (
+              <span className="ui-note">{t('moa.settings.modeLoading')}</span>
+            )}
+          </SettingRow>
+        ))}
+        {modeRows.some((w) => isTaskRow(w.id)) && (
+          <button type="button" className="settings-note ui-note underline text-left" data-tone="muted" data-testid="moa-modes-tasks-toggle"
+            aria-expanded={showTaskModes} onClick={() => setShowTaskModes((v) => !v)}>
+            {t(showTaskModes ? 'moa.settings.modesTasksHide' : 'moa.settings.modesTasksShow', { n: modeRows.filter((w) => isTaskRow(w.id)).length })}
+          </button>
+        )}
+        {showTaskModes && modeRows.filter((w) => isTaskRow(w.id)).map((w) => (
           <SettingRow key={w.id} label={w.name}>
             {modes[w.id] ? (
               <SegmentedControl
@@ -672,6 +735,74 @@ export function TabMoa({ registerDialog }: TabMoaProps) {
       </SettingsSection>
 
       <SettingsSection>
+        <SettingRow id="moalevel" label={t('moa.settings.level')} description={t('moa.settings.levelDesc')}>
+          <MoaSelect
+            value={String(moa?.config.level ?? 1)}
+            onChange={(v) => {
+              const n = Number(v);
+              if (n === 0 || n === 1 || n === 2 || n === 3) void patchConfig({ level: n });
+            }}
+            options={[0, 1, 2, 3].map((n) => ({ value: String(n), label: t(`moa.settings.level${n}`) }))}
+            label={t('moa.settings.level')}
+          />
+        </SettingRow>
+        <SettingRow id="moagoal" label={t('moa.settings.goal')} description={goalLine}>
+          {goal && (goal.status === 'pending' || goal.status === 'active') && (
+            <Button variant="secondary" size="md" onClick={() => { void onEndGoal(); }} disabled={!loaded} data-testid="moa-goal-end">
+              {t('moa.settings.goalEnd')}
+            </Button>
+          )}
+        </SettingRow>
+        {(moa?.learning?.drafts.length ?? 0) > 0 && (
+          <div className="settings-note ui-note" data-tone="muted" data-testid="moa-settings-drafts">
+            <MoaGoalDrafts />
+          </div>
+        )}
+        {(moa?.learning?.flakes ?? 0) > 0 && (
+          <SettingNote data-testid="moa-settings-flakes">{t('moa.drafts.flakes', { n: moa?.learning?.flakes ?? 0 })}</SettingNote>
+        )}
+        {goalEndFailed && (
+          <SettingNote tone="danger" role="alert">{t('moa.settings.goalEndFailed')}</SettingNote>
+        )}
+        {goal && (goal.criteria?.length || goal.problems?.length || goal.delivery) ? (
+          <div className="settings-note ui-note" data-tone="muted" data-testid="moa-goal-detail">
+            {goal.criteria?.map((c) => (
+              <div key={c.n} data-testid={`moa-goal-criterion-${c.n}`} data-state={c.state}>
+                {c.state === 'pass' ? '✓' : c.state === 'fail' ? '✗' : '○'} ({c.n}) {c.text}
+                {c.evidence.length > 0 && <span> — {t('moa.settings.goalEvidence')}: {c.evidence.map((p) => p.split(/[\\/]/).pop()).join(', ')}</span>}
+              </div>
+            ))}
+            {goal.problems?.map((p, i) => (
+              <div key={`p${i}`} data-testid="moa-goal-problem">
+                ✗ {p.text}
+                {p.logPath && (
+                  <button type="button" className="ml-1.5 underline" data-testid="moa-goal-log"
+                    onClick={() => { void window.electronAPI.shell?.openPath?.(p.logPath as string); }}>
+                    {t('moa.goalStrip.openLog')}
+                  </button>
+                )}
+                {p.excerpt && <pre className="m-0 mt-0.5 whitespace-pre-wrap text-[11px] opacity-80" data-testid="moa-goal-log-excerpt">{p.excerpt.join('\n')}</pre>}
+              </div>
+            ))}
+            {goal.delivery?.items.map((d) => (
+              <div key={d.branch || d.prUrl} data-testid="moa-goal-delivery">
+                {d.prUrl ? (
+                  <a href={d.prUrl} onClick={(e) => { e.preventDefault(); void window.electronAPI.shell?.openExternal?.(d.prUrl as string); }}>
+                    {t('moa.settings.goalPr', { n: d.prNumber ?? '?', branch: d.branch })}
+                  </a>
+                ) : d.pushed ? t('moa.settings.goalPushed', { branch: d.branch }) : `✗ ${d.error ?? d.branch}`}
+                {d.prUrl && d.error ? ` (✗ ${d.error})` : ''}
+              </div>
+            ))}
+            {goal.delivery?.reverted && <div data-testid="moa-goal-reverted">{t('moa.settings.goalReverted')}</div>}
+            {goal.status === 'completed' && goal.delivery && !goal.delivery.reverted && goal.delivery.items.some((d) => d.prUrl) && (
+              <Button variant="secondary" size="md" onClick={() => { void onRevertGoal(goal.id); }} disabled={!loaded} data-testid="moa-goal-revert">
+                {t('moa.settings.goalRevert')}
+              </Button>
+            )}
+            {goalRevertFailed && <SettingNote tone="danger" role="alert">{t('moa.settings.goalRevertFailed')}</SettingNote>}
+          </div>
+        ) : null}
         <SettingRow id="moaturncap" label={t('moa.settings.turnCap')} description={t('moa.settings.turnCapDesc')}>
           <Input
             type="number"

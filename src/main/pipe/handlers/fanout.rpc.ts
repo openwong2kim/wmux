@@ -112,6 +112,9 @@ import {
   type FanoutPreset,
 } from '../../../shared/fanoutPreset';
 import { validateFanoutTaskGraph, type FanoutTaskGraph } from '../../../shared/fanoutTaskGraph';
+import { getMoaGoalService, type MoaGoalService } from '../../deck/moaGoalContract';
+import { goalFanoutRefusal, goalWorkerDenyRules } from '../../../shared/moaGoalWorker';
+import { goalTermsOf, type MoaGoalTerms } from '../../../shared/moaGoal';
 
 type GetWindow = () => BrowserWindow | null;
 
@@ -603,6 +606,70 @@ export interface FanOutRpcDeps {
   getDaemonClient?: () => DaemonClient | null;
   /** Injected in tests; defaults to process.platform. */
   platform?: NodeJS.Platform;
+  /** Injected in tests; defaults to the Moa goal contract service
+   *  (deck/moaGoalContract.ts). Null = no goal service, today's anchor. */
+  goal?: () => FanOutGoalPort | null;
+}
+
+/**
+ * The approved Moa goal contract, as fan-out sees it (P2). When the commander
+ * calling is the HQ and its contract is active, the fan-out runs over the
+ * repository the OPERATOR approved in the goal card, not over whatever the
+ * HQ's active pane happens to be in. Every task counts against the goal's
+ * task budget, reserved before anything is asked or spawned.
+ */
+export interface FanOutGoalAnchor {
+  goalId: string;
+  /** The approved repository, or null when the contract names none. */
+  repoRoot: string | null;
+  /** The worker permission mode pinned at approval. */
+  workerPermissionMode?: FanoutWorkerPermissionMode;
+}
+
+export interface FanOutGoalPort {
+  /** The active contract for `commanderWorkspaceId` (its HQ), or null. */
+  anchor(commanderWorkspaceId: string): FanOutGoalAnchor | null;
+  reserve(n: number): { ok: true; goalId: string; terms?: MoaGoalTerms } | { ok: false; reason: string };
+  release(goalId: string, n: number): void;
+  attach(goalId: string, workspaceIds: readonly string[]): void;
+  /** The HQ's current turn was woken by another PC's Moa. Absent = no. */
+  remoteWoken?(commanderWorkspaceId: string): boolean;
+  /** With no active goal: why the HQ's running turn, which started under a
+   *  goal that has since ended or gone inert, may not fan out at all. */
+  turnRefusal?(commanderWorkspaceId: string): string | null;
+}
+
+function defaultGoalPort(): FanOutGoalPort | null {
+  const svc = getMoaGoalService();
+  return svc ? goalPortOf(svc) : null;
+}
+
+/** The fan-out port over a goal service. Exported for tests. */
+export function goalPortOf(svc: MoaGoalService): FanOutGoalPort {
+  return {
+    anchor: (ws) => {
+      const p = svc.powers();
+      if (!p.ok || p.contract.hqWorkspaceId !== ws) return null;
+      return {
+        goalId: p.contract.id,
+        repoRoot: p.contract.repoRoot,
+        ...(p.contract.workerPermissionMode ? { workerPermissionMode: p.contract.workerPermissionMode } : {}),
+      };
+    },
+    remoteWoken: (ws) => svc.turnWokenByRemoteMoa(ws),
+    turnRefusal: (ws) => {
+      const r = svc.turnGoalRefusal(ws);
+      return r
+        ? `this turn started under goal ${r.goalId}, which grants nothing any more (${r.reason}). A goal's turn never falls back to an ordinary fan-out: report to the operator, or fan out in a later turn.`
+        : null;
+    },
+    reserve: (n) => {
+      const r = svc.reserveTasks(n);
+      return r.ok ? { ok: true, goalId: r.contract.id, terms: goalTermsOf(r.contract) } : r;
+    },
+    release: (goalId, n) => svc.releaseTasks(goalId, n),
+    attach: (goalId, ids) => svc.attachTaskWorkspaces(goalId, ids),
+  };
 }
 
 
@@ -996,10 +1063,81 @@ export function registerFanOutRpc(
     // ── R3: repo confinement ─────────────────────────────────────────────
     // A pane agent anchors on its OWN surface; a brain has none, so it anchors
     // on its workspace's active pane (resolved once — see the helper).
-    const anchorPtyId = commanderWorkspaceId
+    // P2 — under an approved Moa goal the HQ fans out over the goal's
+    // repository (the one the operator approved), re-vetted now and again
+    // after the approval. A goal fan-out is always a worktree fan-out.
+    let goalPort: FanOutGoalPort | null = null;
+    try {
+      goalPort = commanderWorkspaceId ? (deps.goal ?? defaultGoalPort)() : null;
+    } catch {
+      goalPort = null;
+    }
+    const goalAnchorOf = (): FanOutGoalAnchor | null => {
+      try {
+        return goalPort?.anchor(commanderWorkspaceId) ?? null;
+      } catch {
+        return null;
+      }
+    };
+    // Read ONCE for this call: the approval decision, the preview, the audit
+    // record, every task's launch AND the goal's pinned-mode check use it.
+    const workerMode = (deps.workerPermissionMode ?? loadFanoutWorkerPermissionMode)();
+    // Under an active goal every fan-out from the HQ is a goal fan-out: it
+    // passes the goal's checks (shared/moaGoalWorker.ts goalFanoutRefusal) or
+    // it is refused. A goal never lets a fan-out run outside its profile.
+    const activeGoal = goalAnchorOf();
+    if (!activeGoal && goalPort?.turnRefusal) {
+      // P1: the goal this turn started under ended (or went inert) mid-turn.
+      // Refused outright, never run over the HQ's own pane with its own agents.
+      let why: string | null;
+      try {
+        why = goalPort.turnRefusal(commanderWorkspaceId);
+      } catch (err) {
+        why = `the goal this turn started under could not be read (${String(err)})`;
+      }
+      if (why) {
+        pending.delete(key);
+        guards.release(key);
+        return deny('FAILED_PRECONDITION', why);
+      }
+    }
+    if (activeGoal) {
+      let remoteWoken = true; // unreadable = refuse (fail closed)
+      try {
+        remoteWoken = goalPort?.remoteWoken?.(commanderWorkspaceId) ?? false;
+      } catch {
+        remoteWoken = true;
+      }
+      const why = goalFanoutRefusal({
+        goalId: activeGoal.goalId,
+        repoRoot: activeGoal.repoRoot,
+        pinnedMode: activeGoal.workerPermissionMode,
+        currentMode: workerMode,
+        worktree,
+        agents: agentChoices,
+        remoteWoken,
+      });
+      if (why) {
+        pending.delete(key);
+        guards.release(key);
+        return deny('FAILED_PRECONDITION', why);
+      }
+    }
+    const goalAnchor = activeGoal && activeGoal.repoRoot
+      ? { goalId: activeGoal.goalId, repoRoot: activeGoal.repoRoot }
+      : null;
+    const deriveGoalRoot = async (anchor: { repoRoot: string }): Promise<{ root: string } | { code: string; message: string }> => {
+      const { root } = await repoRootOf(anchor.repoRoot);
+      return root === anchor.repoRoot
+        ? { root }
+        : { code: 'FAILED_PRECONDITION', message: `the approved goal's repository is no longer a git repository root: ${anchor.repoRoot}` };
+    };
+    const anchorPtyId = commanderWorkspaceId && !goalAnchor
       ? await resolveCommanderAnchorPtyId(getWindow, commanderWorkspaceId)
       : senderPtyId;
-    const preflight = await deriveCallerRepoRoot(getWindow, callerWorkspaceId, anchorPtyId, { requireRepo: worktree, platform: deps.platform, daemonRpc });
+    const preflight = goalAnchor
+      ? await deriveGoalRoot(goalAnchor)
+      : await deriveCallerRepoRoot(getWindow, callerWorkspaceId, anchorPtyId, { requireRepo: worktree, platform: deps.platform, daemonRpc });
     if (!('root' in preflight)) {
       // Nothing was started and nothing was asked, so the key must go back —
       // otherwise a transient renderer miss would brick it until eviction.
@@ -1008,15 +1146,52 @@ export function registerFanOutRpc(
       return deny(preflight.code, preflight.message);
     }
     const callerRepoRoot = preflight.root;
+    // The goal's task budget, reserved before anything is asked or spawned and
+    // given back for every task that never got a workspace.
+    let goalReserved: { goalId: string; left: number; terms?: MoaGoalTerms } | null = null;
+    if (goalAnchor && goalPort) {
+      const r = goalPort.reserve(parsed.titles.length);
+      if (!r.ok) {
+        pending.delete(key);
+        guards.release(key);
+        return deny('FAILED_PRECONDITION', `the approved goal does not allow this fan-out: ${r.reason}`);
+      }
+      goalReserved = { goalId: r.goalId, left: parsed.titles.length, ...(r.terms ? { terms: r.terms } : {}) };
+    }
+    const releaseGoal = (n: number): void => {
+      if (!goalReserved || !goalPort || n <= 0) return;
+      const give = Math.min(n, goalReserved.left);
+      goalReserved.left -= give;
+      try {
+        goalPort.release(goalReserved.goalId, give);
+      } catch {
+        /* the budget only ever errs towards fewer tasks */
+      }
+    };
+    const deferredGoalRefusal = (anchor: { goalId: string; repoRoot: string }): string | null => {
+      const now = goalAnchorOf();
+      if (!now || now.goalId !== anchor.goalId) return `goal ${anchor.goalId} is no longer active`;
+      if (now.repoRoot !== anchor.repoRoot) return `goal ${anchor.goalId} no longer covers ${anchor.repoRoot}`;
+      let modeNow: string;
+      try {
+        modeNow = (deps.workerPermissionMode ?? loadFanoutWorkerPermissionMode)();
+      } catch {
+        return `the fan-out worker permission mode could not be read for goal ${anchor.goalId}`;
+      }
+      if (!now.workerPermissionMode || now.workerPermissionMode !== modeNow) {
+        return `the fan-out worker permission mode is ${modeNow} now, but goal ${anchor.goalId} was approved with ${now.workerPermissionMode ?? 'none'}`;
+      }
+      return null;
+    };
 
     // ── Build the request from SERVER-DERIVED values only ────────────────
     // Note what is absent: agentCmd (R1), verifiedWorkspaceId and memberId
     // (R2), repoPath (R3). The request is constructed field by field — params
     // is never spread — so a field added to the wire later cannot leak through
     // by accident.
-    // Both policy reads happen ONCE, here: the approval decision, the preview,
-    // the audit record and every task's launch all use these same values.
-    const workerMode = (deps.workerPermissionMode ?? loadFanoutWorkerPermissionMode)();
+    // Both policy reads happen ONCE: the approval decision, the preview, the
+    // audit record and every task's launch all use these same values (the
+    // worker mode was read above, before the goal checks).
     const requireApproval = (deps.requireApproval ?? loadFanoutRequireApproval)();
     const req: FanOutRequest = {
       idempotencyKey: key,
@@ -1040,6 +1215,9 @@ export function registerFanOutRpc(
         : { worktree: false, outputFolder: fanoutPresetOutputFolder((selection as { preset: FanoutPreset }).preset) }),
       verifiedWorkspaceId: callerWorkspaceId,
       workerPermissionMode: workerMode,
+      // Under a goal every task carries the goal worker profile (deny rules,
+      // credential friction, claude only): shared/moaGoalWorker.ts.
+      ...(goalReserved ? { goalWorker: { goalId: goalReserved.goalId, ...(goalReserved.terms ? { terms: goalReserved.terms } : {}) } } : {}),
       // Who asked, for each task's lineage stamp — resolved above, the same
       // origin for every task. An unresolvable pane records no requester.
       ...(callerOrigin ? { caller: callerOrigin } : {}),
@@ -1088,7 +1266,7 @@ export function registerFanOutRpc(
                 (worktree ? '' : '\n\nno worktree: each task writes into its own folder under the wmux outputs directory') +
                 // Only when a task can actually run claude: the flags are claude-only.
                 (agentChoices.length === 0 || agentChoices.some((c) => c.agent === 'claude')
-                  ? `\n\nclaude workers launch with: ${workerLaunchFlags(workerMode)}`
+                  ? `\n\nclaude workers launch with: ${workerLaunchFlags(workerMode, goalReserved ? goalWorkerDenyRules() : [])}`
                   : ''),
               // The roles again, as data. The preview prints the role NAME, but
               // what a role resolves to — agent, model, extra args — lives in the
@@ -1110,6 +1288,7 @@ export function registerFanOutRpc(
             !verdict ? 'unavailable' : verdict.outcome === 'timeout' ? 'timeout' : 'declined';
           settle(key, { phase: 'denied', reason });
           guards.release(key);
+          releaseGoal(parsed.titles.length);
           console.warn(`[fanout.rpc] fan-out ${key} denied (${reason})`);
           return;
         }
@@ -1120,10 +1299,17 @@ export function registerFanOutRpc(
         // sibling pane's if the surface reports no cwd of its own). Re-derive and
         // require the same root, or the approval was given for one repo and spent
         // on another.
-        const atApproval = await deriveCallerRepoRoot(getWindow, callerWorkspaceId, anchorPtyId, { requireRepo: worktree, platform: deps.platform, daemonRpc });
+        // Under a goal: the same goal must still be active over the same repo.
+        const goalNow = goalAnchor ? goalAnchorOf() : null;
+        const atApproval = goalAnchor
+          ? goalNow && goalNow.goalId === goalAnchor.goalId && goalNow.repoRoot === goalAnchor.repoRoot
+            ? await deriveGoalRoot(goalAnchor)
+            : { code: 'FAILED_PRECONDITION', message: 'goal ended' }
+          : await deriveCallerRepoRoot(getWindow, callerWorkspaceId, anchorPtyId, { requireRepo: worktree, platform: deps.platform, daemonRpc });
         if (!('root' in atApproval) || atApproval.root !== callerRepoRoot) {
           settle(key, { phase: 'denied', reason: 'repo-moved' });
           guards.release(key);
+          releaseGoal(parsed.titles.length);
           console.warn(`[fanout.rpc] fan-out ${key} denied (repo-moved)`);
           return;
         }
@@ -1156,6 +1342,7 @@ export function registerFanOutRpc(
         } catch (err) {
           settle(key, { phase: 'denied', reason: 'audit-unavailable' });
           guards.release(key);
+          releaseGoal(parsed.titles.length);
           console.warn(`[fanout.rpc] fan-out ${key} denied (audit-unavailable): ${String(err)}`);
           return;
         }
@@ -1175,6 +1362,16 @@ export function registerFanOutRpc(
         // launched with (after the role rewrite and the worker flags). Written
         // once for the first wave, then once per dependent task as it launches.
         const appendLaunched = (tasks: FanOutTaskResult[], outputBatchDir?: string): void => {
+          // The goal owns the task workspaces it paid for: its follow-ups and
+          // answers (P3) are scoped to exactly these.
+          if (goalReserved && goalPort) {
+            const ids = tasks.map((t) => t.workspaceId).filter((w): w is string => typeof w === 'string' && w.length > 0);
+            try {
+              goalPort.attach(goalReserved.goalId, ids);
+            } catch {
+              /* an unattached task is simply not covered: the safe direction */
+            }
+          }
           try {
             guards.appendAudit({
               at: Date.now(),
@@ -1205,10 +1402,32 @@ export function registerFanOutRpc(
           }
         };
         let holdsDependents = false;
+        /** Dependent tasks whose goal reservation was given back. */
+        const goalReturned = new Set<number>();
         try {
           const result = await service.start({
             ...req,
+            // Under a goal, the task workspace joins the goal the moment it
+            // exists, before its agent's first event can wake the HQ.
+            ...(goalReserved && goalPort
+              ? {
+                  onTaskWorkspace: (wsId: string) => {
+                    try {
+                      if (goalReserved) goalPort?.attach(goalReserved.goalId, [wsId]);
+                    } catch {
+                      /* appendLaunched attaches again */
+                    }
+                  },
+                }
+              : {}),
             beforeDeferredLaunch: (index) => {
+              // A dependent launches long after the approval: under a goal it
+              // launches only while that same goal is active over the same
+              // repository and the worker mode is still the one it pinned.
+              if (goalAnchor) {
+                const why = deferredGoalRefusal(goalAnchor);
+                if (why) return { ok: false, message: why };
+              }
               const r = guards.stampDeferredStart(key);
               if (r.ok) stamped.add(index);
               return r;
@@ -1218,6 +1437,12 @@ export function registerFanOutRpc(
             // before its start was never charged.
             onDeferredLaunch: (t, info) => {
               if (stamped.delete(t.index) && !t.workspaceId) guards.refundStart(key, 1);
+              // The goal reserved every task up front: one that never got a
+              // workspace (dropped, refused, failed) gives its task back, once.
+              if (!t.workspaceId && !goalReturned.has(t.index)) {
+                goalReturned.add(t.index);
+                releaseGoal(1);
+              }
               appendLaunched([t], info.outputBatchDir);
               if (info.remaining === 0) guards.settleStarted(key);
             },
@@ -1232,6 +1457,7 @@ export function registerFanOutRpc(
               ? parsed.titles.length - deferredCount
               : result.tasks.filter((t) => !t.workspaceId && !isDeferred(t.index)).length;
           if (unspawned > 0) guards.refundStart(key, unspawned);
+          releaseGoal(unspawned);
           appendLaunched(
             result.tasks.filter((t) => !isDeferred(t.index)),
             result.outputBatchDir,
@@ -1253,6 +1479,7 @@ export function registerFanOutRpc(
         // its cap reservation held until the app restarts.
         if (!terminal.has(key)) settle(key, { phase: 'denied', reason: 'unavailable' });
         guards.release(key);
+        releaseGoal(goalReserved?.left ?? 0);
         console.error(`[fanout.rpc] fan-out ${key} aborted:`, err);
       }
     })();
@@ -1264,6 +1491,7 @@ export function registerFanOutRpc(
       idempotencyKey: callerKey,
       taskCount: parsed.titles.length,
       repoPath: callerRepoRoot,
+      ...(goalReserved ? { goalId: goalReserved.goalId } : {}),
       // The OWNER's workspace — the caller's own, never a task's (no task has
       // a workspace yet; each task's is in the completed poll's result.tasks[]).
       // `workspaceId` is the deprecated alias kept for older callers: an agent

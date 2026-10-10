@@ -37,6 +37,7 @@
     "test:rig:sim": "vitest run --config vitest.rig.config.ts rig/sim",
     "test:rig": "npm run test:rig:sim",
     "test:harness": "vitest run --config vitest.harness.config.ts",
+    "test:e2e": "node e2e/run.mjs",
     "harness:gen-corpus": "vitest run --config vitest.harness.config.ts core/harness/__tests__/baseline-gate.harness.test.ts",
     "spike:sa1:build": "bash core/wmux-term/build.sh",
     "spike:sa1:verify": "bash core/wmux-term/verify.sh"

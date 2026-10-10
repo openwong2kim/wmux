@@ -70,6 +70,7 @@ import {
   MOA_AUTO_DAILY_CAP_RANGE,
   parseIgnoredRepos,
   parseTrustedAuthors,
+  isMoaLevel,
   type MoaLevel,
   type MoaConfig,
   type MoaConfigPatch,
@@ -94,8 +95,14 @@ interface HqFile {
   moaDefault?: 'new-install' | 'existing-brain';
   /** The operator has been through the Moa first-run card. */
   moaOnboarded?: boolean;
-  /** Ramp level: 1 observe and report, 2 delegate on request, 3 autonomous. */
-  moaLevel?: MoaLevel;
+  /** Ramp level as older builds read it: 1, 2 or 3 only (a 0 here would make
+   *  an older build read the whole file as corrupt). Written alongside
+   *  `moaAutonomyLevel` as max(1, level). */
+  moaLevel?: 1 | 2 | 3;
+  /** The enforced autonomy level, 0..3 (moaLevelGate.ts). Absent or invalid
+   *  falls back to `moaLevel`, then 1. Checked on its own, so a bad value never
+   *  marks the file corrupt. */
+  moaAutonomyLevel?: MoaLevel;
   /** Moa's speech-bubble notifications (renderer). Absent = on. */
   moaBubbles?: boolean;
   /** Still Moa's animations regardless of the OS setting. Absent = off. */
@@ -180,6 +187,7 @@ function sanitize(o: Record<string, unknown>): HqFile {
   if (o.moaDefault === 'new-install' || o.moaDefault === 'existing-brain') out.moaDefault = o.moaDefault;
   if (typeof o.moaOnboarded === 'boolean') out.moaOnboarded = o.moaOnboarded;
   if (o.moaLevel === 1 || o.moaLevel === 2 || o.moaLevel === 3) out.moaLevel = o.moaLevel;
+  if (isMoaLevel(o.moaAutonomyLevel)) out.moaAutonomyLevel = o.moaAutonomyLevel;
   if (typeof o.moaBubbles === 'boolean') out.moaBubbles = o.moaBubbles;
   if (typeof o.moaReduceMotion === 'boolean') out.moaReduceMotion = o.moaReduceMotion;
   if (typeof o.hqApprovalPress === 'boolean') out.hqApprovalPress = o.hqApprovalPress;
@@ -433,7 +441,7 @@ export function getMoaConfig(dir?: string): MoaConfig {
   return {
     enabled: !corrupt && file.moaEnabled !== false,
     onboarded: file.moaOnboarded === true,
-    level: file.moaLevel ?? 1,
+    level: file.moaAutonomyLevel ?? file.moaLevel ?? 1,
     maxTurnsPerHour: file.hqMaxTurnsPerHour ?? DEFAULT_HQ_MAX_TURNS_PER_HOUR,
     bubbles: file.moaBubbles !== false,
     reduceMotion: file.moaReduceMotion === true,
@@ -506,7 +514,10 @@ export const HQ_MAX_TURNS_PER_HOUR_RANGE = MOA_MAX_TURNS_PER_HOUR_RANGE;
 export async function setMoaConfig(patch: MoaConfigPatch, dir?: string): Promise<boolean> {
   const next: Partial<HqFile> = {};
   if (typeof patch.onboarded === 'boolean') next.moaOnboarded = patch.onboarded;
-  if (patch.level === 1 || patch.level === 2 || patch.level === 3) next.moaLevel = patch.level;
+  if (isMoaLevel(patch.level)) {
+    next.moaAutonomyLevel = patch.level;
+    next.moaLevel = patch.level === 0 ? 1 : patch.level;
+  }
   if (typeof patch.maxTurnsPerHour === 'number' && Number.isInteger(patch.maxTurnsPerHour)
     && patch.maxTurnsPerHour >= HQ_MAX_TURNS_PER_HOUR_RANGE.min
     && patch.maxTurnsPerHour <= HQ_MAX_TURNS_PER_HOUR_RANGE.max) next.hqMaxTurnsPerHour = patch.maxTurnsPerHour;

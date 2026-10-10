@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { resolveBackgroundLaunch, type BackgroundLaunchDeps } from '../backgroundLaunchAccount';
+import { resolveBackgroundLaunch, resolveConversationAccount, type BackgroundLaunchDeps } from '../backgroundLaunchAccount';
 import type { RotationDecision } from '../AccountRotationService';
 import type { Account } from '../accountStore';
 import type { QuotaVerdict } from '../../../shared/accountQuota';
@@ -132,5 +132,27 @@ describe('resolveBackgroundLaunch', () => {
     const r = await resolveBackgroundLaunch('ws', 'claude', { resuming: false }, d);
     expect(cachedVerdict).not.toHaveBeenCalled();
     expect(r).toEqual({ kind: 'run', env: {}, accountId: null });
+  });
+});
+
+describe('resolveConversationAccount (shared by the resume launch and the Moa transcript lookup)', () => {
+  it('uses the recorded account while its config dir is there', () => {
+    const { d } = deps({ binding: 'b' });
+    expect(resolveConversationAccount('ws', 'claude', 'a', d)).toEqual({
+      run: { kind: 'run', env: { CLAUDE_CONFIG_DIR: '/acc/a' }, accountId: 'a' },
+      fellBack: false,
+    });
+  });
+
+  it('falls back to the binding when the recorded account\'s config dir is missing', () => {
+    const { d } = deps({ binding: 'b' });
+    const r = resolveConversationAccount('ws', 'claude', 'a', { ...d, dirExists: (dir) => dir !== '/acc/a' });
+    expect(r).toEqual({ run: { kind: 'run', env: { CLAUDE_CONFIG_DIR: '/acc/b' }, accountId: 'b' }, fellBack: true });
+  });
+
+  it('uses the default login for null and the binding when unknown', () => {
+    const { d } = deps({ binding: 'b' });
+    expect(resolveConversationAccount('ws', 'claude', null, d).run.env).toEqual({});
+    expect(resolveConversationAccount('ws', 'claude', undefined, d).run.env).toEqual({ CLAUDE_CONFIG_DIR: '/acc/b' });
   });
 });

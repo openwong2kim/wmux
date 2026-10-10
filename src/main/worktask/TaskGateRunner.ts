@@ -676,3 +676,16 @@ export class TaskGateRunner {
     return retry.ok;
   }
 }
+
+// The one runner main creates for the task pipe (index.ts), shared with the
+// Moa goal verifier so a goal's gates and a task's gates take the same
+// per-task slot (a second concurrent run is `busy`, never a second npm).
+let shared: TaskGateRunner | null = null;
+
+export function setSharedTaskGateRunner(r: TaskGateRunner | null): void {
+  shared = r;
+}
+
+export function getSharedTaskGateRunner(): TaskGateRunner | null {
+  return shared;
+}

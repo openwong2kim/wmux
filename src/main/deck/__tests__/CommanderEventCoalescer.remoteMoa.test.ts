@@ -18,11 +18,13 @@ const settle = async (): Promise<void> => {
   await Promise.resolve();
 };
 
-function mk(opts: { autoWake?: boolean; pendingDecision?: boolean; autonomy?: WorkspaceAutonomy; parked?: CoalescerInput[][] } = {}): { c: CommanderEventCoalescer; prompts: string[] } {
+function mk(opts: { autoWake?: boolean; pendingDecision?: boolean; autonomy?: WorkspaceAutonomy; parked?: CoalescerInput[][] } = {}): { c: CommanderEventCoalescer; prompts: string[]; wakes: Array<{ remoteMoa: boolean } | undefined> } {
   const prompts: string[] = [];
+  const wakes: Array<{ remoteMoa: boolean } | undefined> = [];
   const c = new CommanderEventCoalescer({
-    runTurn: async (_ws, prompt) => {
+    runTurn: async (_ws, prompt, wake) => {
       prompts.push(prompt);
+      wakes.push(wake);
       return { ok: true };
     },
     isBusy: () => false,
@@ -36,7 +38,7 @@ function mk(opts: { autoWake?: boolean; pendingDecision?: boolean; autonomy?: Wo
     maxWakesPerMin: 100,
     wakeBudget: 100,
   });
-  return { c, prompts };
+  return { c, prompts, wakes };
 }
 
 const rt = (n: number): string => `rt-${n.toString(16).padStart(32, '0')}`;
@@ -70,6 +72,14 @@ describe('CommanderEventCoalescer — a2a.received (remote Moa)', () => {
     expect(prompts[0]).toContain(`a2a_task_query({ task_id: "${rt(1)}" })`);
     expect(prompts[0]).toContain(`send_message({ task_id: "${rt(1)}", message })`);
     expect(prompts[0]).toContain('Do not fan it out or hand it off');
+  });
+
+  it('tells the caller the wake carries another PC\'s Moa, so the turn can be marked (W5)', async () => {
+    const { c, wakes } = mk();
+    c.push(received(1));
+    vi.advanceTimersByTime(1_000);
+    await settle();
+    expect(wakes).toEqual([{ remoteMoa: true }]);
   });
 
   it('a reply is surfaced as a reply', async () => {

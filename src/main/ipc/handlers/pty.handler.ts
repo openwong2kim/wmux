@@ -59,6 +59,7 @@ import { getDefaultWslDistro } from '../../pty/defaultWslDistro';
 import { SessionPromptScheduler } from '../../pty/SessionPromptScheduler';
 import { stampFanoutTaskPane } from '../../worktask/fanoutGuards';
 import type { FanoutOrigin } from '../../../shared/fanoutOrigin';
+import { forgetGoalWorkerSession, noteGoalWorkerSpawn } from '../../deck/goalWorkerSessions';
 import {
   removeSessionPromptSchedulesForPty,
 } from '../../pty/sessionPromptScheduleStore';
@@ -577,6 +578,11 @@ export function registerPTYHandlers(
 
       // Attach to the session (makes daemon start the SessionPipe server)
       await daemonClient.rpc('daemon.attachSession', { id: sessionId });
+
+      // Under a Moa goal, Moa may type only into a session spawned with the goal
+      // worker profile. Recorded from the env main just handed the daemon and
+      // the launch line it will type, never from what the pane reports.
+      noteGoalWorkerSpawn(sessionId, { env: resolvedEnv, initialCommand: options?.initialCommand, fanoutTaskOf: options?.fanoutTaskOf });
 
       // Daemon sessions have no PTYInstance in this process, so the shell would
       // otherwise be unknowable to main — record it for the clipboard handler's
@@ -1471,6 +1477,7 @@ export function registerPTYHandlers(
       // explicit close would otherwise leave its entry behind for the life of
       // the process (and a recycled id would inherit the dead pane's shell).
       forgetPtyShell(payload.sessionId);
+      forgetGoalWorkerSession(payload.sessionId);
     };
     daemonClient.on('session:died', onDaemonSessionDied);
   }
@@ -1505,6 +1512,8 @@ export function registerPTYHandlers(
     | null = null;
   if (useDaemon && daemonClient) {
     onDaemonSessionRestarted = (payload) => {
+      // A restarted session is a fresh process: no longer the goal worker spawn.
+      forgetGoalWorkerSession(payload.sessionId);
       // P1-3 ordering rule: the old PTY's trailing output must precede the
       // restart marker (the renderer re-attaches on it).
       dataBatcher.flushSession(payload.sessionId);

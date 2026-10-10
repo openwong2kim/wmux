@@ -141,11 +141,21 @@ export class CommanderSessionManager {
     return this._turnOrigin;
   }
 
+  private _turnRemoteMoa = false;
+
+  /** The latest accepted turn was a wake carrying another PC's Moa's work
+   *  (a2a.received). Same lifetime as turnOrigin. Under an approved goal,
+   *  fan-out refuses such a turn (fanout.rpc.ts), in code, not in the prompt. */
+  get turnWokenByRemoteMoa(): boolean {
+    return this._turnRemoteMoa;
+  }
+
   /** The human typed a turn into the embedded TUI (it did not go through send). */
   notifyForeignTurnStart(): void {
     if (this._status === 'disposed') return;
     this.foreignTurnGeneration++;
     this._turnOrigin = 'human';
+    this._turnRemoteMoa = false;
   }
 
   getStatus(): CommanderStatusSnapshot {
@@ -186,7 +196,10 @@ export class CommanderSessionManager {
     // Origin grants authority to the provider's live work. A local read only
     // reserves the turn slot; it must not promote earlier autonomous work to
     // operator-authorized work while looking up or showing a status answer.
-    if (!localFirst) this._turnOrigin = opts.origin === 'automation' ? 'automation' : 'human';
+    if (!localFirst) {
+      this._turnOrigin = opts.origin === 'automation' ? 'automation' : 'human';
+      this._turnRemoteMoa = opts.origin === 'automation' && opts.remoteMoa === true;
+    }
     // Round-5 review P1: production adapters (ClaudeSdkAdapter, AcpBrainAdapter)
     // report failures by YIELDING a BrainEvent{type:'error'} — or by ending the
     // stream without a turn-end — rather than throwing, so an exception-only
@@ -251,6 +264,7 @@ export class CommanderSessionManager {
           trimmed = (typeof fallback === 'function' ? fallback() : fallback).trim();
         }
         this._turnOrigin = opts.origin === 'automation' ? 'automation' : 'human';
+        this._turnRemoteMoa = opts.origin === 'automation' && opts.remoteMoa === true;
         if (!this._started) {
           this.adapter.start(this.startOptions);
           this._started = true;

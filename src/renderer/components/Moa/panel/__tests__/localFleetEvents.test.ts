@@ -29,4 +29,10 @@ describe('local Fleet exchange projection', () => {
     expect(mergeLocalFleetEvents(first, messages)).toEqual(first);
     expect(mergeLocalFleetEvents([], Array.from({ length: 150 }, (_, n) => ({ ...messages[0], id: String(n) })))).toHaveLength(100);
   });
+  it('labels a local answer as Fleet (local), never as Moa or the orchestrator', () => {
+    const result = mergeLocalFleetEvents([], messages, 'Fleet (local)');
+    const answer = result.find((e) => e.id === 'local-fleet:a');
+    expect(answer).toMatchObject({ kind: 'assistant_text', text: '*Fleet (local)*\n\nFleet snapshot' });
+    expect(result.find((e) => e.id === 'local-fleet:u')).toMatchObject({ text: 'status' });
+  });
 });
