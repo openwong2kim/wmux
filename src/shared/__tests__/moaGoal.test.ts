@@ -4,6 +4,8 @@ import {
   buildMoaGoalCard,
   goalHardRuleHit,
   goalHardRuleHitAny,
+  goalTermsLines,
+  goalTermsOf,
   moaGoalPowers,
   parseMoaGoalProposal,
   type MoaGoalContract,
@@ -41,6 +43,9 @@ describe('parseMoaGoalProposal — refuses, never cuts', () => {
       level: 2,
       budget: { maxTasks: MOA_GOAL_LIMITS.TASKS.default, maxHours: MOA_GOAL_LIMITS.HOURS.default, maxTurns: MOA_GOAL_LIMITS.TURNS.default },
       humanOnly: [],
+      doneCriteria: [],
+      evidence: [],
+      constraints: [],
     });
   });
 
@@ -70,7 +75,88 @@ describe('parseMoaGoalProposal — refuses, never cuts', () => {
   });
 });
 
+describe('parseMoaGoalProposal — done criteria, evidence, constraints', () => {
+  it('keeps them one line each, drops blanks and case-insensitive duplicates', () => {
+    const p = parseMoaGoalProposal({
+      goal: 'g',
+      repo: '/r',
+      doneCriteria: ['npm test passes', ' NPM   test passes ', '', 'login\nworks on Windows'],
+      evidence: ['vitest output'],
+      constraints: ['no new dependencies'],
+    });
+    expect(p).toMatchObject({
+      doneCriteria: ['npm test passes', 'login works on Windows'],
+      evidence: ['vitest output'],
+      constraints: ['no new dependencies'],
+    });
+  });
+
+  it.each([
+    ['doneCriteria', 'done_criteria_invalid'],
+    ['evidence', 'evidence_invalid'],
+    ['constraints', 'constraints_invalid'],
+  ])('%s over a bound or of the wrong type is refused (%s)', (field, error) => {
+    const tooMany = Array.from({ length: MOA_GOAL_LIMITS.TERMS_MAX + 1 }, (_, i) => `item ${i}`);
+    const tooLong = ['x'.repeat(MOA_GOAL_LIMITS.TERMS_ITEM_MAX_CHARS + 1)];
+    for (const v of [tooMany, tooLong, 'npm test', [1], { a: 1 }]) {
+      expect(parseMoaGoalProposal({ goal: 'g', repo: '/r', [field]: v })).toEqual({ error });
+    }
+  });
+
+  it('accepts exactly the bounds', () => {
+    const max = Array.from({ length: MOA_GOAL_LIMITS.TERMS_MAX }, (_, i) => `${i}${'y'.repeat(MOA_GOAL_LIMITS.TERMS_ITEM_MAX_CHARS - 1)}`);
+    const p = parseMoaGoalProposal({ goal: 'g', repo: '/r', doneCriteria: max });
+    expect(p).toMatchObject({ doneCriteria: max });
+  });
+});
+
+describe('goalTermsOf / goalTermsLines', () => {
+  it('a record written before the terms existed reads as empty lists', () => {
+    expect(goalTermsOf(contract())).toEqual({ doneCriteria: [], evidence: [], constraints: [] });
+  });
+
+  it('says out loud when no done criteria were stated', () => {
+    expect(goalTermsLines({ doneCriteria: [], evidence: [], constraints: [] })).toEqual([
+      'Done when: (no criteria stated; Moa must say how it verified the goal)',
+    ]);
+  });
+
+  it('numbers the criteria and lists evidence and constraints', () => {
+    expect(goalTermsLines({ doneCriteria: ['a', 'b'], evidence: ['log'], constraints: ['c1', 'c2'] })).toEqual([
+      'Done when: (1) a (2) b',
+      'Evidence: log',
+      'Constraints: c1; c2',
+    ]);
+  });
+});
+
 describe('buildMoaGoalCard', () => {
+  it('shows the done criteria, evidence and constraints the operator approves', () => {
+    const card = buildMoaGoalCard(
+      contract({ doneCriteria: ['npm test passes'], evidence: ['vitest output'], constraints: ['no new dependencies'] }),
+      () => undefined,
+    );
+    expect(card.context).toContain('Done when:\n  (1) npm test passes');
+    expect(card.context).toContain('Evidence:\n  • vitest output');
+    expect(card.context).toContain('Constraints:\n  • no new dependencies');
+    // The criteria come right after the goal, before the boilerplate.
+    expect(card.context.indexOf('Done when:')).toBeLessThan(card.context.indexOf('Moa may'));
+  });
+
+  it('a full contract (8 criteria, 8 evidence, 8 constraints of 200 chars) fits the goal card cap, one line each', () => {
+    const long = (k: string) => Array.from({ length: 8 }, (_, i) => `${k}${i}`.padEnd(200, 'x'));
+    const card = buildMoaGoalCard(
+      contract({ goal: 'g'.repeat(500), doneCriteria: long('c'), evidence: long('e'), constraints: long('k') }),
+      () => undefined,
+    );
+    expect(card.context.length).toBeLessThanOrEqual(8000);
+    expect(card.context.split('\n').filter((l) => /^ {2}\(\d\) /.test(l))).toHaveLength(8);
+  });
+
+  it('a card without criteria says none were stated', () => {
+    expect(buildMoaGoalCard(contract(), () => undefined).context).toContain('Done when: (no criteria stated');
+  });
+
   it('shows everything the contract grants and what stays the operator\'s', () => {
     const card = buildMoaGoalCard(contract({ workspaceIds: ['ws-a'] }), (id) => (id === 'ws-a' ? 'alpha' : undefined));
     expect(card.options).toEqual(['Approve goal', 'Decline']);

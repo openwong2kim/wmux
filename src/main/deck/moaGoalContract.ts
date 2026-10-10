@@ -38,10 +38,15 @@ import {
   moaGoalPowers,
   parseMoaGoalProposal,
   type MoaGoalContract,
+  goalTermsLines,
+  goalTermsOf,
   type MoaGoalInertReason,
   type MoaGoalStatus,
+  type MoaGoalDelivery,
+  type MoaGoalVerification,
   type MoaGoalView,
 } from '../../shared/moaGoal';
+import type { GoalCriterionClaim, MoaGoalVerifyResult } from './moaGoalVerifier';
 import type { FanoutWorkerPermissionMode } from '../../shared/workerLaunch';
 
 const MAX_RECORDS = 50;
@@ -72,6 +77,14 @@ export interface MoaGoalPorts {
   turnWokenByRemoteMoa?: (hqWorkspaceId: string) => boolean;
   /** Something the panel shows moved. */
   notify?: () => void;
+  /** Proves a goal Moa calls completed (moaGoalVerifier.verifyGoal). Absent ⇒
+   *  Moa cannot complete a goal at all (fail closed); the operator still can. */
+  verify?: (contract: MoaGoalContract, claims: readonly GoalCriterionClaim[]) => Promise<MoaGoalVerifyResult>;
+  /** Pushes and opens PRs for a verified goal (moaGoalDelivery.deliverGoal).
+   *  Absent ⇒ a completed goal is not delivered (the operator pushes). */
+  deliver?: (contract: MoaGoalContract, verification: MoaGoalVerification) => Promise<MoaGoalDelivery>;
+  /** "Revert this goal" (moaGoalDelivery.revertDelivery). */
+  revertDelivery?: (contract: MoaGoalContract, delivery: MoaGoalDelivery) => Promise<{ ok: boolean; delivery: MoaGoalDelivery; notes: string[] }>;
   now?: () => number;
   filePath?: string;
   /** Tests: the store's write (default atomicWriteJSON). */
@@ -319,6 +332,7 @@ export class MoaGoalService {
       ...(c.approvedAt !== undefined ? { expiresAt: c.approvedAt + c.budget.maxHours * 3_600_000 } : {}),
       taskWorkspaceIds: [...c.taskWorkspaceIds],
       humanOnly: [...c.humanOnly],
+      ...goalTermsOf(c),
     };
   }
 
@@ -370,6 +384,9 @@ export class MoaGoalService {
       level: parsed.level,
       budget: parsed.budget,
       humanOnly: parsed.humanOnly,
+      doneCriteria: parsed.doneCriteria,
+      evidence: parsed.evidence,
+      constraints: parsed.constraints,
       status: 'pending',
       createdAt: now,
       taskWorkspaceIds: [],
@@ -380,8 +397,8 @@ export class MoaGoalService {
     const card = buildMoaGoalCard(contract, (id) => this.ports.workspaceName(id));
     // The operator approves what the card shows: a contract that does not fit
     // on one card is refused instead of cut.
-    if (card.context.length > DECISION_LIMITS.MAX_CONTEXT_CHARS) {
-      return { ok: false, error: 'card_too_long', message: `the contract does not fit on one card (${card.context.length}/${DECISION_LIMITS.MAX_CONTEXT_CHARS} characters); shorten the goal or the human-only list` };
+    if (card.context.length > DECISION_LIMITS.MAX_GOAL_CONTEXT_CHARS) {
+      return { ok: false, error: 'card_too_long', message: `the contract does not fit on one card (${card.context.length}/${DECISION_LIMITS.MAX_GOAL_CONTEXT_CHARS} characters); shorten the goal or the human-only list` };
     }
     const decision = await this.ports.decisions
       .raiseIfFree(hq, { ...card, origin: 'moa-goal', ref: contract.id })
@@ -597,13 +614,99 @@ export class MoaGoalService {
    *  so it does not share the store write's failure. Retrying the save
    *  instead would not survive the restart that matters. Only when both
    *  writes fail is the end in memory alone, and the caller is told. */
-  end(by: 'moa' | 'operator', status: 'completed' | 'canceled', note: string): Promise<{ ok: boolean; id?: string; code?: string }> {
+  /** Keep the last refused completion on the open goal (the operator's ✗
+   *  list in Settings). */
+  private noteRefusal(id: string, problems: string[]): Promise<void> {
+    return this.lifecycle(async () => {
+      const c = this.current();
+      if (!c || c.id !== id) return;
+      this.put({ ...c, lastCheck: { at: this.now(), problems: problems.slice(0, 20) } });
+      await this.save();
+      this.notify();
+    });
+  }
+
+  /** "Revert this goal": undo what Moa delivered for a completed goal (close
+   *  its open PRs; branches and history stay). */
+  async revert(id: string): Promise<{ ok: boolean; code?: string; notes?: string[] }> {
+    const c = this.get(id);
+    if (!c || c.status !== 'completed') return { ok: false, code: 'not_completed' };
+    if (!c.delivery || !c.delivery.items.some((x) => x.pushed)) return { ok: false, code: 'nothing_delivered' };
+    if (c.delivery.reverted) return { ok: true, notes: c.delivery.reverted.notes };
+    if (!this.ports.revertDelivery) return { ok: false, code: 'unavailable' };
+    let r: { ok: boolean; delivery: MoaGoalDelivery; notes: string[] };
+    try {
+      r = await this.ports.revertDelivery(c, c.delivery);
+    } catch (err) {
+      return { ok: false, code: 'error', notes: [String(err)] };
+    }
+    return this.lifecycle(async () => {
+      const now = this.get(id);
+      if (now) this.put({ ...now, delivery: r.delivery });
+      await this.save();
+      this.notify();
+      return r.ok ? { ok: true, notes: r.notes } : { ok: false, code: 'partial', notes: r.notes };
+    });
+  }
+
+  async end(
+    by: 'moa' | 'operator',
+    status: 'completed' | 'canceled',
+    note: string,
+    claims: readonly GoalCriterionClaim[] = [],
+  ): Promise<{ ok: boolean; id?: string; code?: string; problems?: string[]; delivered?: { branch: string; pushed: boolean; prUrl?: string; error?: string }[] }> {
+    // Moa's `completed` is never a memo: the verifier runs every task gate and
+    // checks every done criterion first (moaGoalVerifier.ts). It runs outside
+    // the lifecycle chain (a gate can take minutes); the end itself then
+    // re-checks that the same goal is still open.
+    let verification: MoaGoalVerification | undefined;
+    let delivery: MoaGoalDelivery | undefined;
+    let verifiedId: string | undefined;
+    if (by === 'moa' && status === 'completed') {
+      const c = this.current();
+      if (!c) return { ok: false, code: 'no_goal' };
+      if (c.status !== 'active') return { ok: false, code: 'unverified', problems: [`goal ${c.id} is ${c.status}, not active`] };
+      if (!this.ports.verify) return { ok: false, code: 'unverified', problems: ['no goal verifier is available, so completion cannot be proved; cancel it or ask the operator'] };
+      let r: Awaited<ReturnType<NonNullable<MoaGoalPorts['verify']>>>;
+      try {
+        r = await this.ports.verify(c, claims);
+      } catch (err) {
+        r = { ok: false, code: 'unverified', problems: [`the verifier failed: ${err instanceof Error ? err.message : String(err)}`] };
+      }
+      if (!r.ok) {
+        await this.noteRefusal(c.id, r.problems);
+        return { ok: false, code: 'unverified', problems: r.problems };
+      }
+      verification = r.verification;
+      verifiedId = c.id;
+      // Delivered before the end is written, so the record carries both. A
+      // delivery never fails the completion: its problems sit on its items.
+      if (this.ports.deliver) {
+        try {
+          delivery = await this.ports.deliver(c, verification);
+        } catch (err) {
+          delivery = { at: this.now(), items: [], revertRecipe: [] };
+          console.warn(`[moa:goal] delivery of ${c.id} failed: ${String(err)}`);
+        }
+      }
+    }
     return this.lifecycle(async () => {
       const c = this.current();
       if (!c) return { ok: false, code: 'no_goal' };
+      if (verifiedId !== undefined && (c.id !== verifiedId || c.status !== 'active')) {
+        return { ok: false, code: 'unverified', problems: ['the goal changed while it was being verified'] };
+      }
       const card = c.status === 'pending' ? c.decisionId : undefined;
       const trimmed = note.replace(/\s+/g, ' ').trim().slice(0, 300);
-      const ended: MoaGoalContract = { ...c, status, endedAt: this.now(), endNote: `${by === 'operator' ? 'operator' : 'Moa'}: ${trimmed || status}`, decisionId: undefined };
+      const ended: MoaGoalContract = {
+        ...c,
+        status,
+        endedAt: this.now(),
+        endNote: `${by === 'operator' ? 'operator' : 'Moa'}: ${trimmed || status}`,
+        decisionId: undefined,
+        ...(verification ? { verification, lastCheck: undefined } : {}),
+        ...(delivery ? { delivery } : {}),
+      };
       const logged = this.logEnd(ended);
       this.put(ended);
       const ok = (await this.save()) || logged;
@@ -614,7 +717,10 @@ export class MoaGoalService {
           await this.ports.decisions.clearPendingIfUnchanged(c.hqWorkspaceId, d).catch(() => false);
         }
       }
-      return ok ? { ok: true, id: c.id } : { ok: false, code: 'error' };
+      if (!ok) return { ok: false, code: 'error' };
+      return delivery
+        ? { ok: true, id: c.id, delivered: delivery.items.map((x) => ({ branch: x.branch, pushed: x.pushed, ...(x.prUrl ? { prUrl: x.prUrl } : {}), ...(x.error ? { error: x.error } : {}) })) }
+        : { ok: true, id: c.id };
     });
   }
 }
@@ -648,8 +754,10 @@ export function renderGoalBlock(view: MoaGoalView | null): string | null {
   return [
     `[goal] ${view.id} — approved by the operator (level ${e.level}). Goal (operator-approved text): "${view.goal}". Scope: ${scope}.`,
     'Inside it you may, without asking: fanout_start (it runs in the goal\'s repository, on claude workers only, with push, PR, release and delete commands denied and GitHub credentials withheld), answer and instruct the tasks it creates (send_message / terminal_send), and hand work to the goal\'s workspaces with moa_propose_handoff (without a card only while the operator\'s own request is live; from a wake it asks with a card). A turn woken by another PC\'s Moa cannot fan out under the goal.',
-    `Never yours, whatever the goal says: push, PRs, merges, releases, secrets, deleting data, critical or permission approvals, other workspaces${view.humanOnly.length ? `, and: ${view.humanOnly.join('; ')}` : ''}. Raise those with deck_ask_decision; wmux refuses them in what you send.`,
-    `${left}. When the goal is done and verified, call moa_goal({action:"complete", summary}) and report once.`,
+    'Delivery is wmux\'s, not yours to do by hand: when moa_goal complete passes the evidence gate, wmux pushes each verified task branch and opens its pull request itself, and reports them in the reply.',
+    `Never yours, whatever the goal says: pushing or opening PRs yourself, merges, force-push, releases, secrets, deleting data, critical or permission approvals, other workspaces${view.humanOnly.length ? `, and: ${view.humanOnly.join('; ')}` : ''}. Raise those with deck_ask_decision; wmux refuses them in what you send.`,
+    ...goalTermsLines(view),
+    `${left}. When the goal is done and verified against the criteria above, call moa_goal({action:"complete", summary, criteria:[{criterion, artifacts}]}) and report once. wmux runs every goal task's gate on its current commit and checks the files you name for each criterion; a memo alone does not complete it.`,
   ].join('\n');
 }
 

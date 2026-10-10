@@ -180,6 +180,20 @@ describe('goal worker environment (friction, not a boundary)', () => {
   });
 });
 
+describe('goalWorkerPromptNote — goal terms', () => {
+  it('without terms it stays the plain note', () => {
+    expect(goalWorkerPromptNote('G-abc123')).not.toContain('Done when');
+  });
+
+  it('with terms it lists them and asks for evidence', () => {
+    const note = goalWorkerPromptNote('G-abc123', { doneCriteria: ['npm test passes'], evidence: ['vitest output'], constraints: ['no new deps'] });
+    expect(note).toContain('Done when: (1) npm test passes');
+    expect(note).toContain('Evidence: vitest output');
+    expect(note).toContain('Constraints: no new deps');
+    expect(note).toMatch(/report the evidence/);
+  });
+});
+
 describe('goalFanoutRefusal', () => {
   const ok = {
     goalId: 'G-abc123',

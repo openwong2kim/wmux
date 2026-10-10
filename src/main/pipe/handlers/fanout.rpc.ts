@@ -114,6 +114,7 @@ import {
 import { validateFanoutTaskGraph, type FanoutTaskGraph } from '../../../shared/fanoutTaskGraph';
 import { getMoaGoalService, type MoaGoalService } from '../../deck/moaGoalContract';
 import { goalFanoutRefusal, goalWorkerDenyRules } from '../../../shared/moaGoalWorker';
+import { goalTermsOf, type MoaGoalTerms } from '../../../shared/moaGoal';
 
 type GetWindow = () => BrowserWindow | null;
 
@@ -628,7 +629,7 @@ export interface FanOutGoalAnchor {
 export interface FanOutGoalPort {
   /** The active contract for `commanderWorkspaceId` (its HQ), or null. */
   anchor(commanderWorkspaceId: string): FanOutGoalAnchor | null;
-  reserve(n: number): { ok: true; goalId: string } | { ok: false; reason: string };
+  reserve(n: number): { ok: true; goalId: string; terms?: MoaGoalTerms } | { ok: false; reason: string };
   release(goalId: string, n: number): void;
   attach(goalId: string, workspaceIds: readonly string[]): void;
   /** The HQ's current turn was woken by another PC's Moa. Absent = no. */
@@ -664,7 +665,7 @@ export function goalPortOf(svc: MoaGoalService): FanOutGoalPort {
     },
     reserve: (n) => {
       const r = svc.reserveTasks(n);
-      return r.ok ? { ok: true, goalId: r.contract.id } : r;
+      return r.ok ? { ok: true, goalId: r.contract.id, terms: goalTermsOf(r.contract) } : r;
     },
     release: (goalId, n) => svc.releaseTasks(goalId, n),
     attach: (goalId, ids) => svc.attachTaskWorkspaces(goalId, ids),
@@ -1147,7 +1148,7 @@ export function registerFanOutRpc(
     const callerRepoRoot = preflight.root;
     // The goal's task budget, reserved before anything is asked or spawned and
     // given back for every task that never got a workspace.
-    let goalReserved: { goalId: string; left: number } | null = null;
+    let goalReserved: { goalId: string; left: number; terms?: MoaGoalTerms } | null = null;
     if (goalAnchor && goalPort) {
       const r = goalPort.reserve(parsed.titles.length);
       if (!r.ok) {
@@ -1155,7 +1156,7 @@ export function registerFanOutRpc(
         guards.release(key);
         return deny('FAILED_PRECONDITION', `the approved goal does not allow this fan-out: ${r.reason}`);
       }
-      goalReserved = { goalId: r.goalId, left: parsed.titles.length };
+      goalReserved = { goalId: r.goalId, left: parsed.titles.length, ...(r.terms ? { terms: r.terms } : {}) };
     }
     const releaseGoal = (n: number): void => {
       if (!goalReserved || !goalPort || n <= 0) return;
@@ -1216,7 +1217,7 @@ export function registerFanOutRpc(
       workerPermissionMode: workerMode,
       // Under a goal every task carries the goal worker profile (deny rules,
       // credential friction, claude only): shared/moaGoalWorker.ts.
-      ...(goalReserved ? { goalWorker: { goalId: goalReserved.goalId } } : {}),
+      ...(goalReserved ? { goalWorker: { goalId: goalReserved.goalId, ...(goalReserved.terms ? { terms: goalReserved.terms } : {}) } } : {}),
       // Who asked, for each task's lineage stamp — resolved above, the same
       // origin for every task. An unresolvable pane records no requester.
       ...(callerOrigin ? { caller: callerOrigin } : {}),

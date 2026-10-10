@@ -19,6 +19,11 @@
 // same renderer-trust basis as the rest of this surface — but the value is
 // format-checked because it keys maps and persisted files.
 
+import { MOA_GOAL_OPTIONS } from '../../../shared/moaGoal';
+import path from 'node:path';
+import { MoaGoalLearning, setMoaGoalLearning } from '../../deck/moaGoalLearning';
+import type { MoaLearningPanel } from '../../../shared/moa';
+import { goalPanelDetail } from '../../deck/moaGoalPanel';
 import { ipcMain, app, type BrowserWindow } from 'electron';
 import { sanitizeClaudeEffort, type ClaudeEffort } from '../../../shared/claudeModels';
 import { IPC } from '../../../shared/constants';
@@ -331,7 +336,7 @@ export const MOA_LEVEL_LINES: Record<0 | 1 | 2 | 3, string> = {
   0: '[moa] Level 0 — observe only: read, summarize and report. wmux refuses every call that writes (panes, messages, fan-out, hand-offs, task tools, approvals); ask the operator with deck_ask_decision instead.',
   1: '[moa] Level 1 — observe and report: surface decisions and completion reports to the human. Delegate work only when the human asks you to, via moa_propose_handoff. A goal contract grants nothing at this level.',
   2: '[moa] Level 2 — delegate: when the human asks for a piece of work, you may propose a goal contract with moa_propose_goal (the operator approves it once); inside an approved goal you plan, fan out, answer and instruct its tasks yourself. Without one, delegate via moa_propose_handoff and track it.',
-  3: '[moa] Level 3 — like level 2 for now (merging under a goal is not enabled yet): propose goals with moa_propose_goal and follow through inside them; push, PRs and merges stay the operator\'s.',
+  3: '[moa] Level 3 — like level 2 for now (merging under a goal is not enabled yet): propose goals with moa_propose_goal and follow through inside them; once a goal is proved done wmux pushes its task branches and opens the PRs, and merges stay the operator\'s.',
 };
 
 export function renderAutonomyBlock(mode: AgentMode): string | null {
@@ -823,10 +828,16 @@ export function registerDeckHandler(
   // decides, never the brain.
   // Moa's goal contract (moaGoalContract.ts): one operator card per goal, and
   // the level gate RpcRouter asks on every HQ commander request.
+  // Learning loop (moaGoalLearning.ts): repeated gate failures become goal
+  // drafts the operator approves or dismisses; flakes are counted apart.
+  const moaLearning = new MoaGoalLearning(path.join(getWmuxDir(), 'moa-goal-learning.json'), Date.now, () => emitMoaChanged());
+  setMoaGoalLearning(moaLearning);
   const moaGoals = createMoaGoalService({
     notify: () => emitMoaChanged(),
     // W5: a wake carrying another PC's Moa's work never fans out on the goal.
     turnWokenByRemoteMoa: (hq) => managers.get(hq)?.manager.turnWokenByRemoteMoa === true,
+    // The goal verifier lists the goal's tasks through the daemon.
+    getDaemonClient: () => (opts.getDaemonClient?.() ?? null) as { rpc(method: string, params?: unknown): Promise<unknown> } | null,
   });
   setMoaGoalService(moaGoals);
   installMoaLevelGate(moaGoals, { getWindow, getDaemonClient: () => opts.getDaemonClient?.() ?? null });
@@ -2711,6 +2722,8 @@ export function registerDeckHandler(
       live,
       ...(view && !view.effective.ok && c.status === 'active' ? { inertReason: view.effective.reason } : {}),
       ...(c.endNote ? { endNote: c.endNote } : {}),
+      ...(c.endedAt !== undefined ? { endedAt: c.endedAt } : {}),
+      ...goalPanelDetail(c),
     };
   };
   const readMoaState = (): {
@@ -2718,6 +2731,7 @@ export function registerDeckHandler(
     goal: MoaGoalPanel | null;
     hq: { workspaceId: string | null; state: 'unset' | 'ok' | 'hq-missing' | 'hq-unknown' | 'hq-store-corrupt' };
     archive: { unacked: number; total: number };
+    learning: MoaLearningPanel;
   } => {
     const hq = getHqWorkspaceId();
     const bad = hqStatusState();
@@ -2727,6 +2741,10 @@ export function registerDeckHandler(
       goal: readGoalPanel(),
       hq: { workspaceId: bad === 'hq-store-corrupt' ? null : hq, state },
       archive: { unacked: countUnackedArchivedDecisions(), total: loadArchivedHqDecisions().length },
+      learning: {
+        drafts: moaLearning.drafts().map((d) => ({ id: d.id, goal: d.goal, summary: d.summary, command: d.command, seen: d.seen.length, doneCriteria: d.doneCriteria })),
+        flakes: moaLearning.flakes().length,
+      },
     };
   };
   ipcMain.removeHandler(IPC.DECK_MOA_STATE);
@@ -2761,6 +2779,54 @@ export function registerDeckHandler(
       const r = await moaGoals.end('operator', 'canceled', 'ended from Settings');
       emitMoaChanged();
       return r.ok ? { ok: true } : { ok: false, code: r.code ?? 'error' };
+    }),
+  );
+
+  // A learning draft (Settings › Moa / the goal strip). Approve is the
+  // operator's click: it proposes the draft as a goal and approves that card
+  // in one step, exactly as if they had pressed "Approve goal" on it.
+  ipcMain.removeHandler(IPC.DECK_MOA_DRAFT_ANSWER);
+  ipcMain.handle(
+    IPC.DECK_MOA_DRAFT_ANSWER,
+    wrapHandler(IPC.DECK_MOA_DRAFT_ANSWER, async (_e: unknown, req: unknown): Promise<{ ok: boolean; code?: string; goalId?: string }> => {
+      const r: Record<string, unknown> = typeof req === 'object' && req !== null && !Array.isArray(req) ? (req as Record<string, unknown>) : {};
+      const id = typeof r.id === 'string' && /^D-[0-9a-f]{6}$/.test(r.id) ? r.id : null;
+      const draft = id ? moaLearning.get(id) : null;
+      if (!draft || draft.status !== 'draft') return { ok: false, code: 'no_draft' };
+      if (r.answer === 'dismiss') {
+        moaLearning.dismiss(draft.id);
+        return { ok: true };
+      }
+      if (r.answer !== 'approve') return { ok: false, code: 'bad_answer' };
+      const hq = getHqWorkspaceId();
+      if (!hq) return { ok: false, code: 'not_hq' };
+      const p = await moaGoals.propose(hq, {
+        goal: draft.goal,
+        ...(draft.repoRoot ? { repo: draft.repoRoot } : {}),
+        doneCriteria: draft.doneCriteria,
+        evidence: draft.evidence,
+        constraints: draft.constraints,
+      });
+      if (!p.ok) return { ok: false, code: p.error };
+      const decisionId = moaGoals.get(p.id)?.decisionId;
+      const a = decisionId ? await moaGoals.resolveCard(hq, decisionId, MOA_GOAL_OPTIONS.approve) : null;
+      if (!a?.ok) return { ok: false, code: a && !a.ok ? a.code : 'not_pending' };
+      moaLearning.markApproved(draft.id, p.id);
+      emitMoaChanged();
+      wakeMoaForGoal(hq, a.id, a.status, a.note);
+      return { ok: true, goalId: p.id };
+    }),
+  );
+
+  // "Revert this goal" (Settings › Moa): undo what Moa delivered.
+  ipcMain.removeHandler(IPC.DECK_MOA_GOAL_REVERT);
+  ipcMain.handle(
+    IPC.DECK_MOA_GOAL_REVERT,
+    wrapHandler(IPC.DECK_MOA_GOAL_REVERT, async (_e: unknown, goalId: unknown): Promise<{ ok: boolean; code?: string; notes?: string[] }> => {
+      if (typeof goalId !== 'string' || !/^G-[0-9a-f]{6}$/.test(goalId)) return { ok: false, code: 'bad_id' };
+      const r = await moaGoals.revert(goalId);
+      emitMoaChanged();
+      return r;
     }),
   );
 
@@ -4258,6 +4324,9 @@ export function registerDeckHandler(
     ipcMain.removeHandler(IPC.DECK_MOA_ARCHIVE_ACK);
     ipcMain.removeHandler(IPC.DECK_MOA_STORE_RESET);
     ipcMain.removeHandler(IPC.DECK_MOA_GOAL_END);
+    ipcMain.removeHandler(IPC.DECK_MOA_GOAL_REVERT);
+    ipcMain.removeHandler(IPC.DECK_MOA_DRAFT_ANSWER);
+    setMoaGoalLearning(null);
     setMoaLevelGate(null);
     setMoaGoalService(null);
     ipcMain.removeHandler(IPC.DECK_MOA_SHADOW_STATS);

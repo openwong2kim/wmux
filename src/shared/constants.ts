@@ -352,6 +352,12 @@ export const IPC = {
   //   DECK_MOA_GOAL_END: the operator ends Moa's open goal contract
   //   (moaGoalContract.ts) from Settings › Moa. Ending only takes powers away.
   DECK_MOA_GOAL_END: 'deck:moa:goal:end',
+  //   DECK_MOA_GOAL_REVERT: "Revert this goal" — close the PRs Moa opened
+  //   for a completed goal (moaGoalDelivery.ts). Branches and history stay.
+  DECK_MOA_GOAL_REVERT: 'deck:moa:goal:revert',
+  //   DECK_MOA_DRAFT_ANSWER: approve or dismiss a learning-loop goal draft
+  //   (moaGoalLearning.ts). Approve proposes and approves it as a goal.
+  DECK_MOA_DRAFT_ANSWER: 'deck:moa:draft:answer',
   //   DECK_MOA_SHADOW_STATS — the shadow judge's readout (MoaShadowStats).
   DECK_MOA_SHADOW_STATS: 'deck:moa:shadow:stats',
   //   DECK_MOA_MEMORY_LIST / _DELETE: what Moa remembers (saved precedents,

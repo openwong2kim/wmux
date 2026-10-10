@@ -63,6 +63,82 @@ export interface MoaGoalBudget {
   maxTurns: number;
 }
 
+/** What "done" means for a goal, agreed on the approval card: checkable
+ *  done criteria, the evidence Moa must show for them, and constraints the
+ *  work must respect. Each list may be empty; a record written before these
+ *  fields existed reads as all-empty (see goalTermsOf). */
+export interface MoaGoalTerms {
+  doneCriteria: string[];
+  evidence: string[];
+  constraints: string[];
+}
+
+/** One task gate that proved a completed goal, pinned to the commit it ran on. */
+export interface MoaGoalVerificationGate {
+  taskId: string;
+  workspaceId: string;
+  /** The worktree HEAD the gate ran on (unchanged through the run). */
+  headSha: string;
+  command: string;
+  exitCode: number | null;
+  at: number;
+  /** The gate output the verifier saved, and its sha256. */
+  logPath: string;
+  logSha256: string;
+  /** Failed once, passed on the one retry (moaGoalLearning.ts): a flake. */
+  flaky?: true;
+}
+
+/** A file named as evidence for a done criterion, hashed when verified. */
+export interface MoaGoalVerificationArtifact {
+  path: string;
+  sha256: string;
+  bytes: number;
+}
+
+/** One task branch delivered after a verified goal (moaGoalDelivery.ts). */
+export interface MoaGoalDeliveryItem {
+  taskId: string;
+  branch: string;
+  /** The verified commit that was pushed. */
+  headSha: string;
+  /** The PR base branch. */
+  base: string;
+  pushed: boolean;
+  prUrl?: string;
+  prNumber?: number;
+  /** Set when the merge path is on: the earliest time it may merge (the
+   *  operator's objection window). Never set while auto-merge is off. */
+  mergeAfter?: number;
+  merged?: boolean;
+  /** Why this item stopped short (push or PR failed). */
+  error?: string;
+}
+
+/** What Moa delivered for a completed goal, and how to undo it. */
+export interface MoaGoalDelivery {
+  at: number;
+  items: MoaGoalDeliveryItem[];
+  /** Human-readable steps that undo the delivery, recorded at delivery time. */
+  revertRecipe: string[];
+  /** Set by "Revert this goal". */
+  reverted?: { at: number; by: 'operator' | 'moa'; notes: string[] };
+}
+
+/** The last time Moa tried to complete and was refused: shown to the
+ *  operator as the per-criterion ✗ list. Cleared by a pass. */
+export interface MoaGoalLastCheck {
+  at: number;
+  problems: string[];
+}
+
+/** What a goal Moa completed showed (moaGoalVerifier.ts). */
+export interface MoaGoalVerification {
+  at: number;
+  gates: MoaGoalVerificationGate[];
+  criteria: { criterion: number; text: string; artifacts: MoaGoalVerificationArtifact[] }[];
+}
+
 export interface MoaGoalContract {
   /** `G-` + 6 hex characters: short enough to read on a card and in a label. */
   id: string;
@@ -79,6 +155,19 @@ export interface MoaGoalContract {
   /** The operator-visible extra human-only entries Moa proposed. The default
    *  list (MOA_GOAL_DEFAULT_HUMAN_ONLY) always applies on top. */
   humanOnly: string[];
+  /** Done criteria (see MoaGoalTerms). Absent on records written before them. */
+  doneCriteria?: string[];
+  /** Evidence Moa must produce for the criteria (test runs, logs, screenshots). */
+  evidence?: string[];
+  /** Constraints the work must respect. */
+  constraints?: string[];
+  /** Set when Moa completed the goal: the gates and evidence that proved it.
+   *  Absent on an operator end and on records from before the gate. */
+  verification?: MoaGoalVerification;
+  /** What Moa pushed and opened after verification (moaGoalDelivery.ts). */
+  delivery?: MoaGoalDelivery;
+  /** The last refused completion, for the operator's ✗ list. */
+  lastCheck?: MoaGoalLastCheck;
   status: MoaGoalStatus;
   /** The card that asks for approval (HQ slot). */
   decisionId?: string;
@@ -102,6 +191,8 @@ export const MOA_GOAL_LIMITS = {
   HUMAN_ONLY_MAX: 8,
   HUMAN_ONLY_ITEM_MAX_CHARS: 60,
   WORKSPACES_MAX: 4,
+  TERMS_MAX: 8,
+  TERMS_ITEM_MAX_CHARS: 200,
   TASKS: { min: 1, max: 16, default: 4 },
   HOURS: { min: 1, max: 24, default: 4 },
   TURNS: { min: 1, max: 200, default: 40 },
@@ -115,7 +206,11 @@ export const MOA_GOAL_OPTIONS = {
 
 /** Always the operator's, whatever a contract says. Shown on every card. */
 export const MOA_GOAL_DEFAULT_HUMAN_ONLY: readonly string[] = [
-  'push, pull requests and merges',
+  // Delivery (moaGoalDelivery.ts): after the evidence gate passes, Moa pushes
+  // the goal's task branches and opens their PRs itself. Merging stays here
+  // until auto-merge is turned on (MOA_GOAL_AUTO_MERGE), and never-force.
+  'merges',
+  'force-push',
   'releases, versions and tags',
   'secrets, tokens and credentials',
   'deleting data or history',
@@ -141,7 +236,33 @@ export function goalOneLine(raw: string): string {
   return raw.replace(/[\x00-\x1f\x7f]+/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
-export interface MoaGoalProposal {
+/** The terms of a contract, empty lists for a record that predates them. */
+export function goalTermsOf(c: Partial<Pick<MoaGoalContract, 'doneCriteria' | 'evidence' | 'constraints'>>): MoaGoalTerms {
+  return {
+    doneCriteria: Array.isArray(c.doneCriteria) ? [...c.doneCriteria] : [],
+    evidence: Array.isArray(c.evidence) ? [...c.evidence] : [],
+    constraints: Array.isArray(c.constraints) ? [...c.constraints] : [],
+  };
+}
+
+/** One list of terms: strings only, one line each, ≤TERMS_ITEM_MAX_CHARS,
+ *  ≤TERMS_MAX items, blanks dropped, case-insensitive duplicates folded.
+ *  Over a bound is a refusal (null), never a silent cut. */
+function parseTermList(raw: unknown): string[] | null {
+  if (raw === undefined || raw === null) return [];
+  if (!Array.isArray(raw) || raw.length > MOA_GOAL_LIMITS.TERMS_MAX) return null;
+  const out: string[] = [];
+  for (const item of raw) {
+    if (typeof item !== 'string') return null;
+    const one = goalOneLine(item);
+    if (!one) continue;
+    if ([...one].length > MOA_GOAL_LIMITS.TERMS_ITEM_MAX_CHARS) return null;
+    if (!out.some((x) => x.toLowerCase() === one.toLowerCase())) out.push(one);
+  }
+  return out;
+}
+
+export interface MoaGoalProposal extends MoaGoalTerms {
   goal: string;
   repo: string | null;
   workspaceIds: string[];
@@ -189,13 +310,19 @@ export function parseMoaGoalProposal(params: Record<string, unknown>): MoaGoalPr
     if ([...one].length > MOA_GOAL_LIMITS.HUMAN_ONLY_ITEM_MAX_CHARS) return { error: 'human_only_invalid' };
     if (!humanOnly.some((x) => x.toLowerCase() === one.toLowerCase())) humanOnly.push(one);
   }
-  return { goal, repo, workspaceIds, level, budget: { maxTasks, maxHours, maxTurns }, humanOnly };
+  const doneCriteria = parseTermList(params.doneCriteria);
+  if (doneCriteria === null) return { error: 'done_criteria_invalid' };
+  const evidence = parseTermList(params.evidence);
+  if (evidence === null) return { error: 'evidence_invalid' };
+  const constraints = parseTermList(params.constraints);
+  if (constraints === null) return { error: 'constraints_invalid' };
+  return { goal, repo, workspaceIds, level, budget: { maxTasks, maxHours, maxTurns }, humanOnly, doneCriteria, evidence, constraints };
 }
 
 /** The approval card's text. Everything the contract grants is on it: a card
  *  whose context had to be cut is refused at proposal time (`card_too_long`). */
 export function buildMoaGoalCard(
-  c: Pick<MoaGoalContract, 'id' | 'goal' | 'repoRoot' | 'workspaceIds' | 'level' | 'budget' | 'humanOnly' | 'workerPermissionMode'>,
+  c: Pick<MoaGoalContract, 'id' | 'goal' | 'repoRoot' | 'workspaceIds' | 'level' | 'budget' | 'humanOnly' | 'workerPermissionMode' | 'doneCriteria' | 'evidence' | 'constraints'>,
   workspaceName: (id: string) => string | undefined,
 ): { question: string; options: string[]; context: string } {
   const ws = c.workspaceIds.map((id) => workspaceName(id) ?? id);
@@ -203,7 +330,9 @@ export function buildMoaGoalCard(
     `Goal: ${c.goal}`,
     `Repository: ${c.repoRoot ?? '(none)'}`,
     ...(ws.length ? [`Workspaces: ${ws.join(', ')}`] : []),
+    ...goalCardTermsLines(goalTermsOf(c)),
     `Moa may, without asking: fan out up to ${c.budget.maxTasks} task${c.budget.maxTasks === 1 ? '' : 's'} in that repository, answer and instruct those tasks${ws.length ? ', hand work to the workspaces above' : ''}. Level ${c.level}; ends after ${c.budget.maxHours} h or ${c.budget.maxTurns} automatic turns.`,
+    'Once proved: Moa pushes task branches and opens PRs itself.',
     `Workers: Claude Code only, permission mode ${c.workerPermissionMode ?? 'unknown'}; push, PR, tag, release, publish and recursive-delete commands denied; GitHub credentials withheld.`,
     `Always yours: ${[...MOA_GOAL_DEFAULT_HUMAN_ONLY, ...c.humanOnly].join('; ')}.`,
   ];
@@ -212,6 +341,31 @@ export function buildMoaGoalCard(
     options: [MOA_GOAL_OPTIONS.approve, MOA_GOAL_OPTIONS.decline],
     context: lines.join('\n'),
   };
+}
+
+/** The card's terms: one line per criterion, so a long list reads as a list
+ *  (the card renders its context with line breaks kept). */
+export function goalCardTermsLines(t: MoaGoalTerms): string[] {
+  return [
+    ...(t.doneCriteria.length
+      ? ['Done when:', ...t.doneCriteria.map((x, i) => `  (${i + 1}) ${x}`)]
+      : ['Done when: (no criteria stated; Moa must say how it verified the goal)']),
+    ...(t.evidence.length ? ['Evidence:', ...t.evidence.map((x) => `  • ${x}`)] : []),
+    ...(t.constraints.length ? ['Constraints:', ...t.constraints.map((x) => `  • ${x}`)] : []),
+  ];
+}
+
+/** The terms as lines for the [goal] block and the worker note.
+ *  An empty done-criteria list is said out loud, so nobody reads silence as
+ *  "anything counts as done". */
+export function goalTermsLines(t: MoaGoalTerms): string[] {
+  return [
+    t.doneCriteria.length
+      ? `Done when: ${t.doneCriteria.map((x, i) => `(${i + 1}) ${x}`).join(' ')}`
+      : 'Done when: (no criteria stated; Moa must say how it verified the goal)',
+    ...(t.evidence.length ? [`Evidence: ${t.evidence.join('; ')}`] : []),
+    ...(t.constraints.length ? [`Constraints: ${t.constraints.join('; ')}`] : []),
+  ];
 }
 
 // ── hard rules on outbound text ─────────────────────────────────────────────
@@ -402,4 +556,14 @@ export interface MoaGoalView {
   expiresAt?: number;
   taskWorkspaceIds: string[];
   humanOnly: string[];
+  doneCriteria: string[];
+  evidence: string[];
+  constraints: string[];
 }
+
+/** Auto-merge after delivery (with a one-hour objection window). OFF for the
+ *  trial: the merge path exists (moaGoalDelivery.ts) but nothing turns it on. */
+export const MOA_GOAL_AUTO_MERGE = false;
+/** How long the operator has to object before an auto-merge, once it is on. */
+export const MOA_GOAL_MERGE_OBJECTION_MS = 60 * 60 * 1000;
+

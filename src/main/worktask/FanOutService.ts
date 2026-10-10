@@ -55,6 +55,7 @@ import {
 } from './fanoutEnvironment';
 import { workerTempEnv } from './fanoutTempDir';
 import { goalWorkerEnv, goalWorkerPromptNote } from '../../shared/moaGoalWorker';
+import type { MoaGoalTerms } from '../../shared/moaGoal';
 import { inheritTaskAutonomy } from './taskAutonomy';
 import { getFanOutGuards, type FanOutGuards } from './fanoutGuards';
 import { loadFanoutWorkerPermissionMode } from './fanoutWorkerPolicy';
@@ -288,7 +289,7 @@ export interface FanOutRequest {
    *  task gets the goal worker profile (shared/moaGoalWorker.ts) — extra deny
    *  rules, credential friction and a prompt note — and a task whose final
    *  launcher is not claude is refused by the renderer. */
-  goalWorker?: { goalId: string };
+  goalWorker?: { goalId: string; terms?: MoaGoalTerms };
 }
 
 /** How long a dependent task may wait before it is dropped. A dependency whose
@@ -1094,7 +1095,7 @@ export class FanOutService {
     /** See FanOutRequest.onTaskWorkspace. */
     onWorkspace?: (workspaceId: string, index: number) => void;
     /** See FanOutRequest.goalWorker. */
-    goalWorker?: { goalId: string };
+    goalWorker?: { goalId: string; terms?: MoaGoalTerms };
   }): Promise<FanOutTaskResult> {
     const base: FanOutTaskResult = { index: ctx.index, title: ctx.title, ok: false };
     if (ctx.agentChoice) base.agent = ctx.agentChoice.agent;
@@ -1204,7 +1205,7 @@ export class FanOutService {
       // A declared scope or dependency is written even with no prompt: the
       // worker must know what it may edit before it edits anything. So is a
       // goal worker's note, which says what stays with the operator.
-      const taskNote = (ctx.taskNote ?? '') + (ctx.goalWorker ? goalWorkerPromptNote(ctx.goalWorker.goalId) : '');
+      const taskNote = (ctx.taskNote ?? '') + (ctx.goalWorker ? goalWorkerPromptNote(ctx.goalWorker.goalId, ctx.goalWorker.terms) : '');
       if (ctx.prompt.length > 0 || taskNote.length > 0) {
         promptPath = path.join(metaDir, 'prompt.md');
         // A3: the caller's prompt verbatim, then the delivery contract (see

@@ -45,6 +45,8 @@
 // goal at all: the fan-out is refused before anything spawns, and the
 // renderer refuses again after a role binding has chosen the final launcher.
 
+import { goalTermsLines, type MoaGoalTerms } from './moaGoal';
+
 /** The launchers a goal worker may run on: the ones that honour the deny list. */
 export const GOAL_WORKER_LAUNCHERS: readonly string[] = ['claude'];
 
@@ -204,6 +206,7 @@ export function goalFanoutRefusal(args: {
 
 /** The note appended to a goal worker's prompt, so the refusals it meets are
  *  not a surprise and its report says what is left for the operator. */
-export function goalWorkerPromptNote(goalId: string): string {
-  return `\n\n---\n\nThis task runs under Moa goal ${goalId}, which the operator approved. Push, pull requests, tags, releases, publishing and deleting data stay with the operator: commands for them are denied in this session and GitHub credentials are withheld. Commit on your branch, report what is ready, and leave those steps to the operator.`;
+export function goalWorkerPromptNote(goalId: string, terms?: MoaGoalTerms): string {
+  const t = terms ? `\n\n${goalTermsLines(terms).join('\n')}\nVerify your part against these and report the evidence (commands run, their results, logs or screenshots) with what is ready.` : '';
+  return `\n\n---\n\nThis task runs under Moa goal ${goalId}, which the operator approved. Push, pull requests, tags, releases, publishing and deleting data stay with the operator: commands for them are denied in this session and GitHub credentials are withheld. Commit on your branch, report what is ready, and leave those steps to the operator.${t}`;
 }

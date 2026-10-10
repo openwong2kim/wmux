@@ -2170,7 +2170,7 @@ describe('the goal a turn started under is the goal its fan-out runs under', () 
     const res = await h.call(brainParams(), COMMANDER);
     expect(res).toMatchObject({ ok: true, repoPath: SIBLING_REPO_ROOT, goalId: id });
     await h.flush();
-    expect(h.request().goalWorker).toEqual({ goalId: id });
+    expect(h.request().goalWorker).toEqual({ goalId: id, terms: { doneCriteria: [], evidence: [], constraints: [] } });
     expect(h.request().repoPath).toBe(SIBLING_REPO_ROOT);
     expect(svc.get(id)?.tasksUsed).toBe(2);
     // The goal ends with the turn.

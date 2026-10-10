@@ -108,11 +108,31 @@ export interface MoaGoalPanel {
   /** Why an active contract grants nothing right now. */
   inertReason?: string;
   endNote?: string;
+  endedAt?: number;
+  /** Per done criterion: proved (✓), refused at the last check (✗), or not
+   *  checked yet, with the evidence files that proved it. */
+  criteria?: { n: number; text: string; state: 'pass' | 'fail' | 'open'; evidence: string[] }[];
+  /** The last refused completion's problems that name no single criterion
+   *  (a failing gate, a missing task). */
+  problems?: { text: string; logPath?: string; excerpt?: string[] }[];
+  /** What Moa pushed and opened, and whether it was reverted. */
+  delivery?: {
+    items: { branch: string; pushed: boolean; prUrl?: string; prNumber?: number; error?: string }[];
+    reverted: boolean;
+    revertNotes?: string[];
+  };
+}
+
+/** Learning-loop drafts awaiting the operator, and the flake count. */
+export interface MoaLearningPanel {
+  drafts: { id: string; goal: string; summary: string; command: string; seen: number; doneCriteria: string[] }[];
+  flakes: number;
 }
 
 export interface MoaState {
   config: MoaConfig;
   goal?: MoaGoalPanel | null;
+  learning?: MoaLearningPanel;
   hq: { workspaceId: string | null; state: MoaHqState };
   /** Decisions the HQ migration archived; `unacked` drives the one-time notice. */
   archive: { unacked: number; total: number };
