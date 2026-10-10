@@ -378,7 +378,7 @@ GET /api/events?since=<cursor>     (Bearer)
 
 ```
 GET /api/config    → {allowInput, allowUpload, allowTranscript, inlineImages?, liveActivityPush?,
-                      gatedTools, gateEnabled?, fleetSidebar?, moaDelegations?, moa?, moaSessionId?, moaWake?,
+                      gatedTools, gateEnabled?, fleetSidebar?, moaDelegations?, fleetTickets?, moa?, moaSessionId?, moaWake?,
                       moaWakeBlocked?, channels?, terminalPromptDetail?,
                       terminalPromptDecline?, protocolVersion, minProtocolVersion,
                       serverVersion, hostPlatform}
@@ -3378,7 +3378,8 @@ not the desktop fields.
   the phone. It disappears on the next poll after the card is answered.
   Omitted, never `null`, when nothing is pending, when the desktop is too old
   to say, and when the desktop's reply was over its size budget (it is cut
-  after the layout trees and `moaDelegations`, before the pane placement).
+  after the layout trees, `fleetTickets` and `moaDelegations`, before the pane
+  placement).
 
 Each `panes[]` entry of `GET /api/workspaces` also carries `paneId` (same
 value and rules as on `GET /api/sessions`) when the desktop places that
@@ -3427,11 +3428,113 @@ wired); like `fleetSidebar` it describes support, not presence. Read-only:
   move it.
 
 The request text, the agent's report, its verification and any transcript are
-never sent. The key is an empty array when the desktop has no such jobs, and
-omitted, never `null`, when the desktop is too old to say, when it could not
-read its job records for this poll, and when its reply was over its size
-budget (the list goes whole, right after the layout trees). Read an absent key
+never sent in `moaDelegations`, and that stays true. The same jobs' text now
+travels only in `fleetTickets` (below), and only from a server started with
+`--allow-transcript`. The key is an empty array when the desktop has no such
+jobs, and omitted, never `null`, when the desktop is too old to say, when it
+could not read its job records for this poll, and when its reply was over its
+size budget (the list goes whole, right after `fleetTickets`). Read an absent key
 as "unknown", not as "no jobs": keep showing what the last poll returned.
+
+#### Fleet tickets (`fleetTickets`, `nextScheduleAt`)
+
+Top level of `GET /api/workspaces`: `fleetTickets` — every delegated job the
+desktop Fleet shows as a ticket, of any origin, for a "what needs doing"
+screen. `/api/config` carries `fleetTickets: true` when this daemon can serve
+the key, the next-run key and the detail route below (a desktop bridge is
+wired); like `moaDelegations` it describes support, not presence. Read-only:
+
+```json
+"fleetTickets": [
+  { "id": "handoff:dec-…", "origin": "handoff", "workspaceId": "ws-…",
+    "workspaceName": "api", "agentName": "Claude Code",
+    "title": "Fix the login redirect", "state": "needs-you",
+    "updatedAt": 1759600000000, "requestLine": "Fix the login redirect" },
+  { "id": "wl-…", "taskId": "task-…", "origin": "manual", "workspaceId": "ws-…",
+    "workspaceName": "wtask: retry test", "agentName": "Codex CLI",
+    "title": "Add the retry test", "state": "done", "updatedAt": 1759590000000,
+    "requestLine": "Add a test for the retry path", "resultSummary": "Added and green",
+    "verification": "3/4" }
+]
+```
+
+- **Which tickets.** The desktop Fleet's own list: every job carried by an A2A
+  task (a send between workspaces, a `wtask` worker, a Git page issue, a Moa
+  hand-off) plus every Moa hand-off still waiting on the operator's click. A
+  plain chat message is never a ticket. Every open ticket however old, plus
+  tickets that ended (`done`, `failed`) within the last 24 hours. At most 30,
+  in the desktop's order: `needs-you` first, then `failed`, `working`,
+  `queued`, `done`, newest `updatedAt` first within each.
+- `id` — the desktop ticket id, stable for the ticket's life; key rows and the
+  detail route by it. A hand-off card's id is `handoff:<decision id>`; once
+  the operator hands it off, that row goes and a new one (the job) appears.
+- `taskId` — the A2A task carrying the job; absent on a hand-off card.
+- `origin` — `moa`, `moa-auto` (handed off without a click), `manual` (a
+  send between workspaces, `wtask` workers included), `issue`, `pr`, or
+  `handoff` (a proposal not yet handed off). Treat an unknown value as
+  `manual`.
+- `workspaceId` — the workspace doing the work; it may not be in
+  `workspaces[]` (finished workers' workspaces are often closed).
+- `workspaceName` — that workspace's name (at most 100 characters). The
+  desktop remembers it after the workspace closes, for as long as it keeps
+  the ticket in memory (it is lost when the desktop restarts). Absent when not
+  known.
+- `agentName` — the agent's display name (at most 64 characters), when known.
+- `title` — one line, at most 80 characters (`Untitled task` when none).
+- `state` — `queued`, `working`, `needs-you`, `done` or `failed`, the
+  desktop's own words. `needs-you` means a decision or an input waits on the
+  operator; send the user to the desktop to answer it. Treat an unknown value
+  as `working`.
+- `updatedAt` — epoch ms the ticket last changed on the desktop's record. A
+  ticket's final report is new when `updatedAt` is: the phone keeps its own
+  "seen" mark per `id` and `updatedAt` (nothing on the server records it).
+- `requestLine` — the request's first non-blank line, at most 160 characters.
+- `resultSummary` — the final report's first non-blank line, at most 240
+  characters; only on `done` and `failed`.
+- `verification` — verified evidence items over all items, e.g. `"3/4"`; only
+  on `done` and `failed`, and only when the worker attached evidence.
+
+`requestLine`, `resultSummary` and `verification` are agent-authored text. A
+server started without `--allow-transcript` (the same gate as history and
+`/turns`) leaves exactly those three fields out and sends the rest. Every
+string is one line with control and bidi characters removed. The key is an
+empty array when there are no tickets, and omitted, never `null`, when the
+desktop is away or too old to say, when it could not read its job records
+for this poll, and when its reply was over its size budget (the three text
+fields go first, then the list whole, right after the layout trees). Read an
+absent key as "unknown": keep showing what the last poll returned.
+
+Top level of `GET /api/workspaces`: `nextScheduleAt` — epoch ms of the
+earliest next run among the enabled schedules, as the desktop's schedule
+list shows it. Omitted when no enabled schedule has a next run, and while the
+desktop is away (the value comes from the desktop's copy of the schedules).
+It can be briefly in the past while a run is starting.
+
+```
+GET /api/fleet/tickets/<id>   (Bearer; id URL-encoded)
+  → 200 {ticket: {id, updatedAt, request?, result?, verification?,
+                  verificationItems?: [{kind, status, summary, command?, location?}]}}
+  → 403 {error: "transcript-disabled"}   server started without --allow-transcript
+  → 404 {error: "ticket-not-found"}      unknown id, or one past the desktop's window
+  → 503 {error: "desktop-unavailable"}   no desktop attached, or one too old for details
+  → 504 {error: "desktop-timeout"} / 502 {error: "desktop-bad-reply"}
+```
+
+One ticket's full text, all of it agent-authored, so the whole route is behind
+`--allow-transcript` (the 403 comes before any lookup, so it says nothing
+about whether the id exists). `request` is the request as sent and `result`
+the final report, both multi-line (`\n` only; other control and bidi
+characters removed) and at most 4000 characters. `verificationItems` holds at
+most 16 evidence items: `kind` is `command`, `inspection` or `artifact`;
+`status` is `passed` / `failed` for a command and `verified` / `unverified`
+otherwise; `summary`, `command` (commands) and `location` (the others) are one
+line, at most 200 characters each. Any field may be absent: a ticket that has
+not ended has no `result`, and the desktop keeps a ticket's text in memory
+only (at most 50 tickets, each for 24 hours after it was last listed), so
+after a desktop restart a finished ticket's request and evidence may be gone
+while its report (kept on the desktop's job record) remains. `updatedAt` is
+the ticket version the detail belongs to; refetch when the list's
+`updatedAt` moves. Responses are `Cache-Control: no-store`.
 
 #### The Moa HQ (`role`, `moa`)
 

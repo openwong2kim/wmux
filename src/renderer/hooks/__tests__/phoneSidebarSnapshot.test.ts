@@ -550,8 +550,10 @@ describe('buildPhoneSidebarSnapshot — Moa delegations', () => {
       { taskId: 'task-1', workspaceId: 'a', agentName: 'Claude Code', title: 'Job 1', state: 'working', since: T },
       { taskId: 'task-auto', workspaceId: 'b', agentName: 'Agent', title: 'Job auto', state: 'working', since: T - 5 },
     ]);
-    expect(JSON.stringify(snap)).not.toContain('secret report');
-    expect(parsePhoneSidebarSnapshot(snap)).toEqual(snap);
+    // The promise is moaDelegations': the report travels only as fleetTickets.
+    expect(JSON.stringify(snap.moaDelegations)).not.toContain('secret report');
+    const { fleetTicketDetails: _details, ...forwarded } = snap;
+    expect(parsePhoneSidebarSnapshot(snap)).toEqual(forwarded);
   });
 
   it('falls back to the link agent slug when the pane has no agent, and bounds the title', () => {
@@ -612,5 +614,105 @@ describe('buildPhoneSidebarSnapshot — Moa delegations', () => {
     expect(build([]).moaDelegations).toEqual([]);
     expect(buildPhoneSidebarSnapshot(state({ workspaces: ws }), undefined, [])).not.toHaveProperty('moaDelegations');
     expect(buildPhoneSidebarSnapshot(state({ workspaces: ws }), undefined, undefined, { links: [link('1')], now: T })).not.toHaveProperty('moaDelegations');
+  });
+});
+
+describe('buildPhoneSidebarSnapshot — Fleet tickets', () => {
+  const T = 1_700_000_000_000;
+  const DAY = 24 * 60 * 60 * 1000;
+  const ws = [workspace('a', [leaf('pa', [surface('sa', 'pty-a')])], { name: 'Alpha' })];
+  const link = (id: string, extra: Partial<WorkLink> = {}): WorkLink => ({
+    id: `wl-${id}`, origin: 'manual', title: `Job ${id}`, a2aTaskId: `task-${id}`, a2aState: 'working',
+    owner: { workspaceId: 'a', paneId: 'pa' }, agent: 'codex', state: 'running', decisionIds: [], createdAt: T, updatedAt: T, ...extra,
+  });
+  const task = (id: string, request: string, status: Record<string, unknown> = { state: 'working' }) => ({
+    id: `task-${id}`, history: [{ role: 'user', parts: [{ kind: 'text', text: request }] }], status, metadata: { title: `Job ${id}` },
+  });
+  const handoff: MoaPendingDecision = {
+    workspaceId: 'a',
+    decision: { id: 'd-h', question: 'Hand this off?', options: ['Hand off', 'Edit', 'Cancel'], context: '', raisedAt: T + 50 },
+    handoff: { body: 'Refactor the parser\nkeep the API', title: 'Parser', agentName: 'Claude Code', targetPaneId: 'pa', targetPtyId: 'pty-a', foldsNewlines: false, willQueue: false },
+  };
+  const build = (links: WorkLink[], extra: Record<string, unknown> = {}, decisions: MoaPendingDecision[] = [], now = T + 1000) =>
+    buildPhoneSidebarSnapshot({ ...state({ workspaces: ws }), automations: [], automationRuns: [], ...extra } as unknown as StoreState, undefined, decisions, { links, now });
+
+  it('lists every origin with one line of request and report, and carries the full text beside the snapshot only', () => {
+    const items = [
+      { kind: 'command', status: 'passed', summary: 'unit tests', command: 'npm test' },
+      { kind: 'inspection', status: 'unverified', summary: 'looked\nat UI', location: 'src/app.tsx' },
+    ];
+    const snap = build([
+      link('wtask', { a2aState: 'completed', state: 'done', updatedAt: T + 10, owner: { workspaceId: 'closed-ws' } }),
+      link('moa', { origin: 'moa', updatedAt: T + 5 }),
+      link('auto', { origin: 'moa-auto', updatedAt: T + 4 }),
+      link('issue', { origin: 'issue', updatedAt: T + 3 }),
+    ], {
+      a2aTasks: {
+        'task-wtask': task('wtask', 'Build the thing\nwith tests', { state: 'completed', evidence: { summary: 'Built it\nall green', items } }),
+        'task-moa': task('moa', 'Moa asks'),
+      },
+    }, [handoff]);
+    const list = snap.fleetTickets ?? [];
+    expect(list.map((t) => [t.id, t.origin, t.state])).toEqual([
+      ['handoff:d-h', 'handoff', 'needs-you'],
+      ['wl-moa', 'moa', 'working'],
+      ['wl-auto', 'moa-auto', 'working'],
+      ['wl-issue', 'issue', 'working'],
+      ['wl-wtask', 'manual', 'done'],
+    ]);
+    expect(list.find((t) => t.id === 'wl-wtask')).toEqual({
+      id: 'wl-wtask', taskId: 'task-wtask', origin: 'manual', workspaceId: 'closed-ws', agentName: 'Codex CLI', title: 'Job wtask',
+      state: 'done', updatedAt: T + 10, requestLine: 'Build the thing', resultSummary: 'Built it', verification: '1/2',
+    });
+    expect(list[0]).toMatchObject({ workspaceName: 'Alpha', agentName: 'Claude Code', requestLine: 'Refactor the parser' });
+    expect(list[0]).not.toHaveProperty('taskId');
+    expect(snap.fleetTicketDetails?.find((d) => d.id === 'wl-wtask')).toEqual({
+      id: 'wl-wtask', updatedAt: T + 10, request: 'Build the thing\nwith tests', result: 'Built it\nall green', verification: '1/2',
+      verificationItems: [
+        { kind: 'command', status: 'passed', summary: 'unit tests', command: 'npm test' },
+        { kind: 'inspection', status: 'unverified', summary: 'looked at UI', location: 'src/app.tsx' },
+      ],
+    });
+    // The details never survive the shared parser, so they cannot reach the daemon.
+    const parsed = parsePhoneSidebarSnapshot(snap);
+    expect(parsed).not.toHaveProperty('fleetTicketDetails');
+    expect(parsed?.fleetTickets).toEqual(list);
+    // moaDelegations still carries Moa's jobs only, with no text.
+    expect(snap.moaDelegations?.map((d) => d.taskId)).toEqual(['task-moa', 'task-auto']);
+  });
+
+  it('keeps finished tickets for 24 h, open ones however old', () => {
+    const snap = build([
+      link('old-done', { a2aState: 'completed', state: 'done', updatedAt: T }),
+      link('fresh-failed', { a2aState: 'failed', state: 'blocked', reason: 'task-failed', updatedAt: T + 20 }),
+      link('old-open', { updatedAt: T - DAY }),
+    ], {}, [], T + DAY + 10);
+    expect(snap.fleetTickets?.map((t) => [t.id, t.state])).toEqual([['wl-fresh-failed', 'failed'], ['wl-old-open', 'working']]);
+  });
+
+  it('caps the list and each text line', () => {
+    const links = Array.from({ length: 40 }, (_, i) => link(String(i), { updatedAt: T + i }));
+    const long = 'r'.repeat(500);
+    const snap = build(links, {
+      a2aTasks: { 'task-39': task('39', long, { state: 'completed', message: { role: 'agent', parts: [{ kind: 'text', text: 's'.repeat(900) }] } }) },
+    });
+    expect(snap.fleetTickets).toHaveLength(PHONE_SIDEBAR_LIMITS.fleetTickets);
+    expect(snap.fleetTicketDetails).toHaveLength(PHONE_SIDEBAR_LIMITS.fleetTickets);
+    const first = snap.fleetTickets![0];
+    expect(first.requestLine).toHaveLength(PHONE_SIDEBAR_LIMITS.fleetTicketRequestLine);
+    expect(snap.fleetTicketDetails![0].request).toHaveLength(500);
+  });
+
+  it('is absent when the links or the decisions could not be read', () => {
+    expect(buildPhoneSidebarSnapshot(state({ workspaces: ws }), undefined, [])).not.toHaveProperty('fleetTickets');
+    expect(buildPhoneSidebarSnapshot(state({ workspaces: ws }), undefined, undefined, { links: [link('1')], now: T })).not.toHaveProperty('fleetTickets');
+  });
+
+  it("names the earliest enabled schedule's next run, and nothing when none is scheduled", () => {
+    const auto = (id: string, enabled: boolean, nextRunAt: number | null) => ({ id, enabled, nextRunAt });
+    expect(build([], { automations: [auto('x', true, T + 900), auto('y', true, T + 500), auto('z', false, T + 100)] }).nextScheduleAt).toBe(T + 500);
+    expect(build([], { automations: [auto('z', false, T + 100), auto('w', true, null)] })).not.toHaveProperty('nextScheduleAt');
+    expect(build([])).not.toHaveProperty('nextScheduleAt');
+    expect(parsePhoneSidebarSnapshot(build([], { automations: [auto('y', true, T + 500)] }))?.nextScheduleAt).toBe(T + 500);
   });
 });

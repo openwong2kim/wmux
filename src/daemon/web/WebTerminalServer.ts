@@ -174,6 +174,7 @@ import {
 } from './chatWire';
 import { MOA_WAKE_RETRY_AFTER, type MoaWakeService, type MoaWakeWire } from '../phone/MoaWakeService';
 import { MOA_WAKE_COMMAND } from '../../shared/moaWake';
+import { FLEET_TICKET_ROUTE_PREFIX, fleetTicketDetailResponse, fleetTicketsFields } from './fleetTickets';
 import type { ChatV2Binding } from '../../shared/chatv2/ipc';
 import { buildWebCsp, WEB_APP_FONT_FILE } from './webCsp';
 // Type only — the channel service implementation stays out of this module.
@@ -2724,6 +2725,10 @@ export class WebTerminalServer {
         // Same meaning as `fleetSidebar`: supported here, present only while
         // a desktop new enough to compute it answers.
         ...(this.deps.desktop ? { moaDelegations: true } : {}),
+        // `/api/workspaces` can carry `fleetTickets` and `nextScheduleAt`,
+        // and `GET /api/fleet/tickets/<id>` answers (see fleetTickets.ts).
+        // Same meaning as `moaDelegations`.
+        ...(this.deps.desktop ? { fleetTickets: true } : {}),
         // Moa (the desktop's HQ main bot) is on and its HQ workspace exists.
         // OMITTED, not false, otherwise — Moa off, no HQ, no desktop attached,
         // or an older desktop or daemon: the phone reads all of them as "no Moa".
@@ -2937,6 +2942,11 @@ export class WebTerminalServer {
     }
     if ((req.method === 'GET' || req.method === 'POST') && p.startsWith('/api/desktop-workspaces/') && p.endsWith('/browser')) {
       void this.handleWorkspaceBrowser(req,res,p.slice('/api/desktop-workspaces/'.length,-'/browser'.length),url,principal);
+      return;
+    }
+    if (req.method === 'GET' && p.startsWith(FLEET_TICKET_ROUTE_PREFIX)) {
+      void fleetTicketDetailResponse(p.slice(FLEET_TICKET_ROUTE_PREFIX.length), { allowTranscript: this.opts?.allowTranscript === true, desktop: this.availableDesktop() })
+        .then(r => this.json(res,r.status,r.body,{'Cache-Control':'no-store'}));
       return;
     }
     if ((req.method === 'GET' && p === '/api/desktop-workspaces') || (req.method === 'POST' && p === '/api/workspaces')) return this.handlePhoneWorkspaces(req,res,url,principal);
@@ -3457,6 +3467,7 @@ export class WebTerminalServer {
       // Not limited to the listed rows: a finished job's workspace is often
       // closed by then, and its id names nothing the phone may not see.
       ...(sidebar.moaDelegations !== undefined ? { moaDelegations: sidebar.moaDelegations } : {}),
+      ...fleetTicketsFields(sidebar, this.opts?.allowTranscript === true),
     });
   }
 
