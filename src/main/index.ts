@@ -157,6 +157,8 @@ import { BrowserBackendStore } from './browser-session/BrowserBackendStore';
 import { ChromeLauncherRegistry } from './browser-session/ChromeLauncher';
 import { ChromeProfileStore, reconcilePaneBindingsFromMirror } from './browser-session/ChromeProfileStore';
 import { CHROME_PANE_IPC } from '../shared/chromePaneBinding';
+import { BrowserPolicyStore, reconcileBrowserPoliciesFromMirror } from './browser-session/BrowserPolicyStore';
+import { isTrustedMainFrameSender, registerBrowserPolicyIpc, UNTRUSTED_SENDER_ERROR } from './ipc/handlers/browserPolicy.handler';
 import { ChromeSurfaceStore } from './browser-session/ChromeSurfaceStore';
 import { getActionCacheStore } from './browser-session/ActionCacheStore';
 import { getPromotedSkillStore } from './browser-session/PromotedSkillStore';
@@ -981,6 +983,9 @@ const browserBackendStore = new BrowserBackendStore(app.getPath('userData'));
 // 'chrome' backend: per-profile real-Chrome instances (Phase 2.5). The
 // 'default' profile keeps the pre-registry dir so existing logins survive.
 const chromeProfileStore = new ChromeProfileStore();
+// Protected browser panes: main-owned, fail-closed policy file. Reading never
+// creates it, so an install that never protects a pane is unchanged.
+const browserPolicyStore = new BrowserPolicyStore();
 // Stable chrome surface ids survive both Chrome swapping the target behind a
 // tab and an app restart, so an agent's tab handle stays valid across either.
 const chromeSurfaceStore = new ChromeSurfaceStore();
@@ -1028,6 +1033,7 @@ const browserHelpRequests = registerBrowserRpc(
   // above uses. Fail-closed while it is unset: a borrow nobody can be asked
   // about is a borrow that does not happen.
   (request) => (liveBorrowRequester ? liveBorrowRequester(request) : Promise.resolve('denied')),
+  { store: browserPolicyStore, paneBindings: () => chromeProfileStore.getPaneBindings() },
 );
 // browser_request_help — the renderer's Done / Cancel. Mirrors
 // PERMISSION_PROMPT_RESOLVE: a shape-validated invoke, and the AUTHORITATIVE
@@ -1485,7 +1491,8 @@ liveBorrowRequester = createBorrowApprovalRequester({
 
 ipcMain.handle(
   IPC.PERMISSION_PROMPT_RESOLVE,
-  async (_event, payload: { promptId: string; approved: boolean }) => {
+  async (event, payload: { promptId: string; approved: boolean }) => {
+    if (!isTrustedMainFrameSender(event, () => mainWindow)) return { ok: false, error: UNTRUSTED_SENDER_ERROR };
     if (
       !payload ||
       typeof payload.promptId !== 'string' ||
@@ -1534,27 +1541,32 @@ ipcMain.handle('browser:clear-private-session', async () => {
   return { ok: true };
 });
 // #517 backend choice — renderer Settings UI reads/writes the main-owned value.
-ipcMain.handle('browser:get-backend', () => browserBackendStore.get());
+ipcMain.handle('browser:get-backend', (event) =>
+  isTrustedMainFrameSender(event, () => mainWindow) ? browserBackendStore.get() : 'builtin');
 // Synchronous boot read: the renderer initializes its mirror from this BEFORE
 // its first render, so no browser-open path (user click or session-restored
 // browser leaf) can spawn an embedded webview during the async-hydration window
 // while the persisted value is 'external' (#517, CodeRabbit).
 ipcMain.on('browser:get-backend-sync', (event) => {
-  event.returnValue = browserBackendStore.get();
+  // Always set returnValue: a sync sender blocks until it is answered.
+  event.returnValue = isTrustedMainFrameSender(event, () => mainWindow) ? browserBackendStore.get() : 'builtin';
 });
-ipcMain.handle('browser:set-backend', (_event, value: unknown) => {
+ipcMain.handle('browser:set-backend', (event, value: unknown) => {
+  if (!isTrustedMainFrameSender(event, () => mainWindow)) return { ok: false, error: UNTRUSTED_SENDER_ERROR };
   if (!isBrowserBackend(value)) return { ok: false };
   browserBackendStore.set(value);
+  void browserPolicyStore.bumpEpoch().catch((err) => console.warn('[browser-policy] epoch bump failed:', err));
   return { ok: true };
 });
 // Phase 2.5 — chrome-backend profiles + workspace bindings (workspace card
 // menu). Validation lives in the store; IPC only shapes the payloads.
-ipcMain.handle('browser:chrome-profiles:list', () => ({
+ipcMain.handle('browser:chrome-profiles:list', (event) => isTrustedMainFrameSender(event, () => mainWindow) ? ({
   profiles: chromeProfileStore.listProfiles(),
   bindings: chromeProfileStore.getBindings(),
   paneBindings: chromeProfileStore.getPaneBindings(),
-}));
-ipcMain.handle('browser:chrome-profiles:create', async (_event, name: unknown) => {
+}) : { profiles: [], bindings: {}, paneBindings: {} });
+ipcMain.handle('browser:chrome-profiles:create', async (event, name: unknown) => {
+  if (!isTrustedMainFrameSender(event, () => mainWindow)) return { ok: false, error: UNTRUSTED_SENDER_ERROR };
   if (typeof name !== 'string') return { ok: false, error: 'invalid name' };
   try {
     await chromeProfileStore.create(name.trim());
@@ -1565,7 +1577,8 @@ ipcMain.handle('browser:chrome-profiles:create', async (_event, name: unknown) =
 });
 ipcMain.handle(
   'browser:chrome-profiles:bind',
-  async (_event, payload: { workspaceId?: unknown; profileName?: unknown } | undefined) => {
+  async (event, payload: { workspaceId?: unknown; profileName?: unknown } | undefined) => {
+    if (!isTrustedMainFrameSender(event, () => mainWindow)) return { ok: false, error: UNTRUSTED_SENDER_ERROR };
     const workspaceId = typeof payload?.workspaceId === 'string' ? payload.workspaceId : '';
     const profileName =
       payload?.profileName === null
@@ -1580,6 +1593,7 @@ ipcMain.handle(
       // user's own Chrome — including a re-bind to live, which is a new decision
       // and not a resumption of the old one.
       chromeRegistry.clearLiveBorrows(workspaceId);
+      void browserPolicyStore.bumpEpoch().catch((err) => console.warn('[browser-policy] epoch bump failed:', err));
       return { ok: true };
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : String(err) };
@@ -1590,7 +1604,8 @@ ipcMain.handle(
 // validation and the exclusivity rule live in the store.
 ipcMain.handle(
   CHROME_PANE_IPC.bind,
-  async (_event, payload: { paneId?: unknown; workspaceId?: unknown; profileName?: unknown } | undefined) => {
+  async (event, payload: { paneId?: unknown; workspaceId?: unknown; profileName?: unknown } | undefined) => {
+    if (!isTrustedMainFrameSender(event, () => mainWindow)) return { ok: false, error: UNTRUSTED_SENDER_ERROR };
     const paneId = typeof payload?.paneId === 'string' ? payload.paneId : '';
     const workspaceId = typeof payload?.workspaceId === 'string' ? payload.workspaceId : '';
     const profileName =
@@ -1602,6 +1617,9 @@ ipcMain.handle(
     if (!paneId || !workspaceId || profileName === undefined) return { ok: false, error: 'invalid payload' };
     try {
       await chromeProfileStore.setPaneBinding(paneId, workspaceId, profileName);
+      // A protected pane rebound to another profile (or unbound) stays
+      // protected and refuses every host until the user confirms it again.
+      await browserPolicyStore.onPaneRebind(paneId);
       return { ok: true };
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : String(err) };
@@ -1610,7 +1628,8 @@ ipcMain.handle(
 );
 ipcMain.handle(
   CHROME_PANE_IPC.reveal,
-  async (_event, payload: { paneId?: unknown; workspaceId?: unknown } | undefined) => {
+  async (event, payload: { paneId?: unknown; workspaceId?: unknown } | undefined) => {
+    if (!isTrustedMainFrameSender(event, () => mainWindow)) return { ok: false, error: UNTRUSTED_SENDER_ERROR };
     const paneId = typeof payload?.paneId === 'string' ? payload.paneId : '';
     const workspaceId = typeof payload?.workspaceId === 'string' ? payload.workspaceId : '';
     if (!paneId || !workspaceId) return { ok: false, error: 'invalid payload' };
@@ -1629,6 +1648,18 @@ getWorkspaceMirror().onSnapshot(() => {
   reconcilePaneBindingsFromMirror(chromeProfileStore, getWorkspaceMirror()).catch((err) => {
     console.warn('[chrome-profiles] pane-binding reconcile failed:', err);
   });
+  reconcileBrowserPoliciesFromMirror(browserPolicyStore, getWorkspaceMirror()).catch((err) => {
+    console.warn('[browser-policy] reconcile failed:', err);
+  });
+});
+// Protected browser panes: the operator's policy editor (A-ui). Agents have no
+// path to these channels; the handler accepts the main window's top frame only.
+registerBrowserPolicyIpc(ipcMain, {
+  getWindow: () => mainWindow,
+  store: browserPolicyStore,
+  profileFor: (workspaceId, paneId) => chromeProfileStore.profileFor(workspaceId, paneId),
+  paneBindings: () => chromeProfileStore.getPaneBindings(),
+  paneWorkspace: (paneId) => getWorkspaceMirror().getPaneWorkspaces()?.get(paneId) ?? null,
 });
 // Discard/wake signals travel main → renderer: the renderer owns the <webview>
 // element, so main can only ask it to unmount (discard) or remount (wake).
