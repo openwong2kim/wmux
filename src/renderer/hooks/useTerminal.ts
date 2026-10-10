@@ -2086,8 +2086,9 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // in-stream, and the store copy is a 15 s poll that can predate a TUI
       // started since. A misattributed pick (a wrapper that exited while its
       // TUI runs on) is still checked twice: a foreground TUI holds the pane
-      // in the command phase, so the guard ignores the hint, and on Windows
-      // the probe's tree walk still sees the TUI as a descendant.
+      // in the command phase, so the guard only keeps the hint for the next
+      // prompt, and on Windows the probe's tree walk still sees the TUI as a
+      // descendant.
       if (gone(state.agentAliveByPtyId[ptyId], prev.agentAliveByPtyId[ptyId])) {
         shellPromptModeResetFor(terminal)?.processGone();
       }

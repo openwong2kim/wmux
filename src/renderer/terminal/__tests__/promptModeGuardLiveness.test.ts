@@ -44,17 +44,18 @@ function manualTimers() {
 function pane(opts: { wsl?: boolean } = {}) {
   let agentAlive = true;
   let clock = 0;
+  let listCalls = 0;
   const ptyWrites: string[] = [];
   const api: PaneForegroundApi = {
     // CIM snapshot failed (or a WSL pane, where it is never asked).
     resources: async () => ({}),
-    list: async () => [{
+    list: async () => { listCalls++; return [{
       id: PTY,
       commandRunning: false,
       ...(opts.wsl ? { wslTarget: { distro: 'Ubuntu' } } : {}),
       agentProcessAlive: agentAlive,
       ...(agentAlive ? { liveAgent: 'claude' } : {}),
-    }],
+    }]; },
   };
   const timers = manualTimers();
   const term = new Terminal({ cols: 120, rows: 24, allowProposedApi: true });
@@ -79,6 +80,7 @@ function pane(opts: { wsl?: boolean } = {}) {
     timers,
     advance: (ms: number) => { clock += ms; },
     agentDies: () => { agentAlive = false; },
+    listCalls: () => listCalls,
   };
 }
 
@@ -170,15 +172,45 @@ describe('prompt-mode guard + paneForegroundProbe: a reset declined as "alive"',
     expect(p.guard.dropping).toBe(false);
   });
 
-  it('ignores the hint while a command owns the pane', async () => {
+  it('a hint that lands mid-command is kept and re-asked at the next prompt', async () => {
     const p = pane();
     await declinedAsAlive(p);
     await p.feed(COMMAND + 'long build output');
     p.agentDies();
     p.guard.processGone();
     await p.settle();
+    // The command owns the pane: nothing happens yet.
     expect(modes(p.term).mouse).toBe('any');
     expect(p.guard.dropping).toBe(false);
+    expect(p.guard.appliedCount).toBe(0);
+    // Its prompt asks the probe again, which now reads the agent dead.
+    await p.feed('\r\n' + PROMPT);
+    await p.settle();
+    expect(modes(p.term)).toEqual({ mouse: 'none', focus: false });
+    expect(p.guard.appliedCount).toBe(1);
+    expect(p.ptyWrites).toEqual([]);
+  });
+
+  it('a kept mid-command hint never resets a TUI that armed the mouse in between', async () => {
+    const p = pane();
+    await declinedAsAlive(p);
+    await p.feed(COMMAND + 'starting a TUI');
+    p.agentDies();
+    p.guard.processGone();
+    // The command is itself a TUI: it arms the mouse after the hint.
+    await p.feed(`${ESC}[?1000h${ESC}[?1006h` + 'tui frame');
+    await p.settle();
+    expect(modes(p.term).mouse).toBe('vt200');
+    expect(p.guard.appliedCount).toBe(0);
+    // It exits cleanly and the prompt returns: the dead agent's debt was
+    // dropped by the new owner, so the probe is not even asked for it.
+    const asked = p.listCalls();
+    await p.feed(`${ESC}[?1000l${ESC}[?1006l` + 'tui exited\r\n' + PROMPT);
+    await p.settle();
+    expect(p.listCalls()).toBe(asked);
+    expect(p.guard.appliedCount).toBe(0);
+    expect(p.guard.dropping).toBe(false);
+    expect(p.ptyWrites).toEqual([]);
   });
 
   it('a running agent with nothing declined is never touched', async () => {
