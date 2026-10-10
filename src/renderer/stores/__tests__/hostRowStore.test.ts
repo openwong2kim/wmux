@@ -3,7 +3,7 @@
 // state reads through, and nothing local is offered.
 import { describe, expect, it } from 'vitest';
 import { useStore, type StoreState } from '../index';
-import { buildHostRowOverrides } from '../hostRowStore';
+import { buildHostRowOverrides, overlayHostRows } from '../hostRowStore';
 import { selectWorkspaceAgentStatus } from '../selectors/fleet';
 import { selectWorkspaceAgentRoster } from '../selectors/workspaceAgentRoster';
 import { remoteAgentKey } from '../../../shared/remoteHosts';
@@ -51,5 +51,16 @@ describe('buildHostRowOverrides', () => {
     const real = state(99);
     const s = { ...real, ...buildHostRowOverrides(real, 'h1') } as StoreState;
     expect(selectWorkspaceAgentStatus(s, 'shadow:h1:rw-a')).toBe('idle');
+  });
+});
+
+describe('overlayHostRows', () => {
+  it('reads the replaced keys over a frozen app state, and everything else through it', () => {
+    const real = Object.freeze(state());
+    const view = overlayHostRows(real, buildHostRowOverrides(real, 'h1'));
+    expect(view.workspaces.map((w) => w.id)[0]).toBe('shadow:h1:rw-a');
+    expect(view.readOnly).toBe(true);
+    expect(view.pcRailHosts).toBe(real.pcRailHosts);
+    expect('workspaces' in view && 'theme' in view).toBe(true);
   });
 });

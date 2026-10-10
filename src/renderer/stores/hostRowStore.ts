@@ -122,13 +122,16 @@ export function buildHostRowOverrides(real: StoreState, hostId: string): HostRow
   };
 }
 
-/** The app state seen through `overrides`. */
-function overlay(real: StoreState, overrides: HostRowOverrides): StoreState {
-  return new Proxy(real, {
-    get: (target, key, receiver) => (Object.prototype.hasOwnProperty.call(overrides, key)
-      ? overrides[key as keyof HostRowOverrides]
-      : Reflect.get(target, key, receiver)),
-    has: (target, key) => Object.prototype.hasOwnProperty.call(overrides, key) || Reflect.has(target, key),
+/**
+ * The app state seen through `overrides`. The proxy's target is an empty
+ * object, not the app state: immer freezes that, and a proxy may not answer a
+ * frozen target's own property with a different value.
+ */
+export function overlayHostRows(real: StoreState, overrides: HostRowOverrides): StoreState {
+  const own = (key: string | symbol) => Object.prototype.hasOwnProperty.call(overrides, key);
+  return new Proxy({} as StoreState, {
+    get: (_target, key) => (own(key) ? overrides[key as keyof HostRowOverrides] : Reflect.get(real, key)),
+    has: (_target, key) => own(key) || Reflect.has(real, key),
   });
 }
 
@@ -140,7 +143,7 @@ function overlay(real: StoreState, overrides: HostRowOverrides): StoreState {
 export function useHostRowStore(hostId: string): StoreApi<StoreState> {
   const api = useMemo(() => {
     const real = useStore.getState();
-    return createStore<StoreState>(() => overlay(real, buildHostRowOverrides(real, hostId)));
+    return createStore<StoreState>(() => overlayHostRows(real, buildHostRowOverrides(real, hostId)));
   }, [hostId]);
   useEffect(() => {
     let inputs: unknown[] = [];
@@ -151,7 +154,7 @@ export function useHostRowStore(hostId: string): StoreApi<StoreState> {
         inputs = next;
         overrides = buildHostRowOverrides(real, hostId);
       }
-      api.setState(overlay(real, overrides), true);
+      api.setState(overlayHostRows(real, overrides), true);
     };
     sync(useStore.getState());
     return useStore.subscribe(sync);
