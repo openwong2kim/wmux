@@ -1581,6 +1581,9 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
         `configDir missing (${acc.configDir}) — falling back to the default credential.`,
       ),
     });
+    // Disposed during the account check: start nothing (no profile files, no
+    // PTY) for an adapter that is already gone.
+    if (this._disposed) return { error: 'commander session disposed' };
     if (launch.kind === 'hold') return { error: launch.message };
     if (!resumeSessionId) this._rotatedAccountId = launch.rotated ? launch.accountId : null;
     // The Moa delegate, read once per spawn: a flip applies to the next TUI.

@@ -94,7 +94,16 @@ export async function resolveBackgroundLaunch(
       if (!run.accountId || opts.checkQuota === false) return run;
       const rotation = deps.rotation ?? getAccountRotationService();
       if (!rotation.getSettings()[vendor]) return run;
-      const verdict = await rotation.cachedVerdict(run.accountId);
+      // A failed quota check must not cost the conversation its account: the
+      // outer catch would fall back to the binding, where the transcript may
+      // not exist. Resume on the chosen account instead.
+      let verdict: Awaited<ReturnType<typeof rotation.cachedVerdict>> = null;
+      try {
+        verdict = await rotation.cachedVerdict(run.accountId);
+      } catch (err) {
+        console.warn(`[account] background ${vendor} resume could not check quota, resuming on its account:`, err);
+        return run;
+      }
       if (verdict && !verdict.usable) {
         return { kind: 'hold', message: resumeHeldMessage(vendor, nameOf(run.accountId), verdict.availableAtMs) };
       }

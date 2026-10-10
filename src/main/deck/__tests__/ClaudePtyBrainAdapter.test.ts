@@ -300,6 +300,19 @@ describe('ClaudePtyBrainAdapter — account choice (quota rotation)', () => {
     await turn;
   });
 
+  it('starts no TUI when disposed while the account is being resolved', async () => {
+    const host = makeHost();
+    let resolveLaunch!: (v: unknown) => void;
+    launchMock.mockImplementation(() => new Promise((r) => { resolveLaunch = r; }));
+    const adapter = makeAdapter(host);
+    const turn = collect(adapter.send('hello'));
+    await vi.waitFor(() => expect(launchMock).toHaveBeenCalled());
+    adapter.dispose();
+    resolveLaunch({ kind: 'run', env: {}, accountId: null, rotated: false });
+    await turn;
+    expect(host.created).toHaveLength(0);
+  });
+
   it('reports a held launch as a spawn error and starts no TUI', async () => {
     const host = makeHost();
     launchMock.mockImplementation(async () => ({ kind: 'hold', message: 'every account is out' }));

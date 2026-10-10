@@ -101,6 +101,13 @@ describe('resolveBackgroundLaunch', () => {
     expect(r).toEqual({ kind: 'run', env: { CLAUDE_CONFIG_DIR: '/acc/b' }, accountId: 'b', rotated: true });
   });
 
+  it('resumes on the moved-to account when its quota check throws', async () => {
+    const { d, cachedVerdict } = deps({ binding: 'a', on: true });
+    cachedVerdict.mockRejectedValueOnce(new Error('boom'));
+    const r = await resolveBackgroundLaunch('ws', 'claude', { resuming: true, rotatedAccountId: 'b' }, d);
+    expect(r).toEqual({ kind: 'run', env: { CLAUDE_CONFIG_DIR: '/acc/b' }, accountId: 'b', rotated: true });
+  });
+
   it('leaves an unbound workspace on the default login', async () => {
     const { d, cachedVerdict } = deps({ on: false });
     const r = await resolveBackgroundLaunch('ws', 'claude', { resuming: false }, d);
