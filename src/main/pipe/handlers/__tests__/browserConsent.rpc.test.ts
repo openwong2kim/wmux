@@ -117,9 +117,13 @@ describe('browser.consent.request', () => {
   it('a download arms one pass; another pane cannot await or release it', async () => {
     const sent: string[] = [];
     guard = {
-      send: async (m, p) => { sent.push(`${m}:${String(p.behavior ?? p.guid ?? '')}`); return {}; },
+      send: async (m, p) => {
+        sent.push(`${m}:${String(p.behavior ?? p.guid ?? '')}`);
+        return m === 'Target.getTargetInfo' ? { targetInfo: { type: 'page', url: 'http://a.test/' } } : {};
+      },
       claim: () => () => undefined,
       onProgress: () => () => undefined,
+      onClose: () => () => undefined,
     };
     const router = register();
     const r = await call(router, 'browser.consent.request', { workspaceId: 'ws-1', action: 'download', url: 'http://a.test/', targetId: 'T1', startTimeoutMs: 1000 }, 'pty-a');
@@ -129,5 +133,24 @@ describe('browser.consent.request', () => {
     expect(other.error).toMatch(/policy_denied/);
     // The impostor's attempt voided the pass: deny is back.
     expect(sent.at(-1)).toBe('Browser.setDownloadBehavior:deny');
+  });
+
+  it('a policy change voids an approved download still in flight', async () => {
+    const sent: string[] = [];
+    guard = {
+      send: async (m, p) => {
+        sent.push(`${m}:${String(p.behavior ?? '')}`);
+        return m === 'Target.getTargetInfo' ? { targetInfo: { type: 'page', url: 'http://a.test/' } } : {};
+      },
+      claim: () => () => undefined,
+      onProgress: () => () => undefined,
+      onClose: () => () => undefined,
+    };
+    const router = register();
+    await call(router, 'browser.consent.request', { workspaceId: 'ws-1', action: 'download', url: 'http://a.test/', targetId: 'T1' }, 'pty-a');
+    await policy.bumpEpoch();
+    expect(sent.at(-1)).toBe('Browser.setDownloadBehavior:deny');
+    const r = await call(router, 'browser.consent.awaitDownload', { workspaceId: 'ws-1', operationId: 'op-1' }, 'pty-a');
+    expect(r.error).toMatch(/policy_denied/);
   });
 });

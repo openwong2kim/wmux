@@ -241,6 +241,8 @@ export interface ConsentDownloadGuard {
   send(method: string, params: Record<string, unknown>): Promise<unknown>;
   claim(claimant: (params: Record<string, unknown>) => boolean): (() => void) | null;
   onProgress(listener: (params: Record<string, unknown>) => void): () => void;
+  /** Called once when this guard goes away (socket dropped, Chrome gone). */
+  onClose(listener: () => void): () => void;
 }
 
 /** A protected profile could not be brought up under its enforcement. */
@@ -319,6 +321,7 @@ export class ChromeLauncher implements ChromeBackendClient {
   /** Consent: may keep ONE download the guard would cancel (see consentDownloadGuard). */
   private downloadClaimant: ((params: Record<string, unknown>) => boolean) | null = null;
   private readonly downloadProgress = new Set<(params: Record<string, unknown>) => void>();
+  private readonly downloadGuardClosed = new Set<() => void>();
 
   constructor(private readonly userDataDir: string, opts?: ChromeLauncherOptions) {
     this.profileLabel = opts?.profileLabel;
@@ -1051,6 +1054,7 @@ export class ChromeLauncher implements ChromeBackendClient {
       label: 'ChromeLauncher download guard',
       onDisconnect: () => {
         if (this.downloadGuard === guard) this.downloadGuard = null;
+        this.dropConsentClaims();
       },
     });
     const deny = () => guard.send('Browser.setDownloadBehavior', { behavior: 'deny', eventsEnabled: true });
@@ -1123,6 +1127,19 @@ export class ChromeLauncher implements ChromeBackendClient {
     }
   }
 
+  /** The guard went away: an approved download cannot be watched or re-denied
+   *  through it, so every pass holding it fails now. */
+  private dropConsentClaims(): void {
+    this.downloadClaimant = null;
+    const listeners = [...this.downloadGuardClosed];
+    this.downloadGuardClosed.clear();
+    for (const l of listeners) {
+      try {
+        l();
+      } catch { /* a listener must not break teardown */ }
+    }
+  }
+
   /** The armed download guard of a protected instance, for the consent
    *  service; null when this profile is not running protected. */
   consentDownloadGuard(): ConsentDownloadGuard | null {
@@ -1143,6 +1160,10 @@ export class ChromeLauncher implements ChromeBackendClient {
       onProgress: (listener) => {
         this.downloadProgress.add(listener);
         return () => this.downloadProgress.delete(listener);
+      },
+      onClose: (listener) => {
+        this.downloadGuardClosed.add(listener);
+        return () => this.downloadGuardClosed.delete(listener);
       },
     };
   }
@@ -1271,6 +1292,7 @@ export class ChromeLauncher implements ChromeBackendClient {
     this.launchedProtected = false;
     this.downloadGuard?.close();
     this.downloadGuard = null;
+    this.dropConsentClaims();
     // Records SURVIVE a dead Chrome — the surfaceId an agent holds must not
     // become a dangling reference just because the browser went away. They go
     // unbound instead, and re-bind through adoptExisting()'s /json/list pass

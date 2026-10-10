@@ -12,6 +12,7 @@ import {
   type DownloadGuardPort,
 } from '../dangerousActionConsent';
 import type { AutomationRunOwnership } from '../../automation/AutomationBridge';
+import { canonicalUrlHost } from '../../pipe/handlers/browserConsent.rpc';
 
 // The consent rules end to end over the real policy store and the real
 // approval queue: grant → silent; attended → one prompt per operation;
@@ -204,6 +205,20 @@ describe('DangerousActionConsent', () => {
     await expect(other).rejects.toMatchObject({ code: 'policy_denied' });
   });
 
+  it('an approval is void when the deadline passes while the caller is re-resolved', async () => {
+    let now = 1_000;
+    const consent = makeConsent({ deadlineMs: 60_000, now: () => now });
+    const pending = consent.authorize(caller(), { action: 'evaluate', hosts: ['a.test'] }, {
+      revalidate: async () => {
+        now += 61_000;
+        return caller();
+      },
+    });
+    await flush();
+    await queue.resolvePrompt(opened[0].promptId, true);
+    await expect(pending).rejects.toMatchObject({ code: 'policy_denied' });
+  });
+
   it('a caller that goes away withdraws its prompt', async () => {
     const ac = new AbortController();
     const pending = makeConsent().authorize(caller(), { action: 'evaluate', hosts: ['a.test'] }, { revalidate, signal: ac.signal });
@@ -225,10 +240,17 @@ describe('openDownloadPass', () => {
     const sent: Array<[string, Record<string, unknown>]> = [];
     let claimant: ((p: Record<string, unknown>) => boolean) | null = null;
     const progress = new Set<(p: Record<string, unknown>) => void>();
+    const closed = new Set<() => void>();
+    const tab = { url: 'http://a.test/files' };
     const guard: DownloadGuardPort = {
       send: async (method, params) => {
         sent.push([method, params]);
+        if (method === 'Target.getTargetInfo') return { targetInfo: { type: 'page', url: tab.url } };
         return {};
+      },
+      onClose: (fn) => {
+        closed.add(fn);
+        return () => closed.delete(fn);
       },
       claim: (fn) => {
         if (claimant) return null;
@@ -249,9 +271,11 @@ describe('openDownloadPass', () => {
       begin: (p: Record<string, unknown>) => claimant?.(p) === true,
       progress: (p: Record<string, unknown>) => progress.forEach((l) => l(p)),
       claimed: () => claimant !== null,
+      tab,
+      close: () => closed.forEach((l) => l()),
     };
   }
-  const opts = { frameId: 'T1', dir: '/tmp/x', startTimeoutMs: 5_000, finishTimeoutMs: 5_000, join: (d: string, n: string) => `${d}/${n}` };
+  const opts = { frameId: 'T1', approvedHost: 'a.test', hostOf: canonicalUrlHost, dir: '/tmp/x', startTimeoutMs: 5_000, finishTimeoutMs: 5_000, join: (d: string, n: string) => `${d}/${n}` };
   const lastBehavior = (sent: Array<[string, Record<string, unknown>]>) =>
     sent.filter(([m]) => m === 'Browser.setDownloadBehavior').at(-1)?.[1].behavior;
 
@@ -286,6 +310,31 @@ describe('openDownloadPass', () => {
     await expect(pass.done).rejects.toMatchObject({ code: 'policy_denied' });
     expect(g.sent.some(([m, p]) => m === 'Browser.cancelDownload' && p.guid === 'g1')).toBe(true);
     expect(lastBehavior(g.sent)).toBe('deny');
+  });
+
+  it('refuses to arm when the tab is not on the approved site', async () => {
+    const g = fakeGuard();
+    g.tab.url = 'http://b.test/';
+    await expect(openDownloadPass(g.guard, opts)).rejects.toMatchObject({ code: 'policy_denied' });
+    expect(lastBehavior(g.sent)).toBeUndefined();
+    expect(g.claimed()).toBe(false);
+  });
+
+  it('a tab that left the approved site before its download began loses it', async () => {
+    const g = fakeGuard();
+    const pass = await openDownloadPass(g.guard, opts);
+    g.tab.url = 'http://b.test/';
+    g.begin({ guid: 'g1', frameId: 'T1' });
+    await expect(pass.done).rejects.toMatchObject({ code: 'policy_denied' });
+    expect(g.sent.some(([m, p]) => m === 'Browser.cancelDownload' && p.guid === 'g1')).toBe(true);
+  });
+
+  it('the guard going away fails the pass and frees the claim', async () => {
+    const g = fakeGuard();
+    const pass = await openDownloadPass(g.guard, opts);
+    g.close();
+    await expect(pass.done).rejects.toMatchObject({ code: 'policy_denied' });
+    expect(g.claimed()).toBe(false);
   });
 
   it('one pass per Chrome at a time', async () => {

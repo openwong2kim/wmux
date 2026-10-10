@@ -42,7 +42,7 @@ type GetWindow = () => BrowserWindow | null;
 
 export interface BrowserConsentRpcDeps {
   getWindow: GetWindow;
-  store: Pick<BrowserPolicyStore, 'decisionFor'>;
+  store: Pick<BrowserPolicyStore, 'decisionFor'> & Partial<Pick<BrowserPolicyStore, 'onChange'>>;
   paneBindings: () => ChromePaneBindings;
   chrome: {
     profileFor(workspaceId: string | undefined, paneId?: string): string;
@@ -155,6 +155,14 @@ function rethrow(err: unknown): never {
 
 export function registerBrowserConsentRpc(router: Pick<RpcRouter, 'register'>, deps: BrowserConsentRpcDeps): void {
   const downloads = new Map<string, PendingDownload>();
+  // Any policy change (a revoke, a site edit, a rebind) voids every approved
+  // download still in flight: it was approved under the old terms.
+  deps.store.onChange?.(() => {
+    for (const [id, pending] of downloads) {
+      pending.pass.cancel("the pane's browser policy changed before the download finished");
+      downloads.delete(id);
+    }
+  });
 
   const guardFor = (profile: string): DownloadGuardPort | null => {
     if (deps.downloadGuardFor) return deps.downloadGuardFor(profile);
@@ -209,6 +217,8 @@ export function registerBrowserConsentRpc(router: Pick<RpcRouter, 'register'>, d
       const dir = deps.makeDownloadDir ? deps.makeDownloadDir() : mkdtempSync(join(tmpdir(), 'wmux-download-'));
       const pass = await openDownloadPass(guard, {
         frameId: targetId,
+        approvedHost: op.hosts[0],
+        hostOf: canonicalUrlHost,
         dir,
         startTimeoutMs: boundedMs(params['startTimeoutMs'], DOWNLOAD_START_DEFAULT_MS, BROWSER_CONSENT_DOWNLOAD_START_MAX_MS),
         finishTimeoutMs: BROWSER_CONSENT_DOWNLOAD_FINISH_MS,

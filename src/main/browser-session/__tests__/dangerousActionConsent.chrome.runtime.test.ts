@@ -8,6 +8,7 @@ import type { Browser, Page } from 'playwright-core';
 import { ChromeLauncher } from '../ChromeLauncher';
 import { openDownloadPass } from '../dangerousActionConsent';
 import { compileHostPolicy } from '../../../shared/browserHostPolicy';
+import { canonicalUrlHost } from '../../pipe/handlers/browserConsent.rpc';
 import { requiredOnThisRunner } from '../../../test-utils/realBrowserHarness';
 
 // The approved download against a REAL protected Chrome (production launcher,
@@ -89,6 +90,8 @@ describe('approved download (real Chrome)', { timeout: 60_000 }, () => {
     const dir = mkdtempSync(join(tmpdir(), 'wmux-consent-dl-'));
     const pass = await openDownloadPass(guard!, {
       frameId: await targetIdOf(approved),
+      approvedHost: 'a.test',
+      hostOf: canonicalUrlHost,
       dir,
       startTimeoutMs: 10_000,
       finishTimeoutMs: 20_000,

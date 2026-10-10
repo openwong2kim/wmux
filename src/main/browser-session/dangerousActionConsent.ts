@@ -271,6 +271,9 @@ export class DangerousActionConsent {
     if (!sameTerms(caller, again) || again.ptyId !== caller.ptyId) {
       throw denied('the pane changed while the operator was being asked');
     }
+    // The re-resolution awaited: the deadline and the caller once more.
+    if (this.now() > deadlineAt) throw denied('the operator answered after the deadline');
+    if (opts.signal?.aborted) throw denied('the call was cancelled');
 
     if (result.remember !== true) return { operationId, epoch: caller.epoch, via: 'once' };
 
@@ -333,6 +336,20 @@ export interface DownloadGuardPort {
   send(method: string, params: Record<string, unknown>): Promise<unknown>;
   claim(claimant: (params: Record<string, unknown>) => boolean): (() => void) | null;
   onProgress(listener: (params: Record<string, unknown>) => void): () => void;
+  onClose(listener: () => void): () => void;
+}
+
+/** The URL a tab shows now, read over the guard's browser session. */
+async function targetUrl(guard: DownloadGuardPort, targetId: string): Promise<string | null> {
+  try {
+    const res = (await guard.send('Target.getTargetInfo', { targetId })) as {
+      targetInfo?: { type?: unknown; url?: unknown };
+    };
+    const info = res?.targetInfo;
+    return info && info.type === 'page' && typeof info.url === 'string' ? info.url : null;
+  } catch {
+    return null;
+  }
 }
 
 export async function openDownloadPass(
@@ -340,6 +357,10 @@ export async function openDownloadPass(
   opts: {
     /** The approved tab's main frame id (its target id). */
     frameId: string;
+    /** The site the operator approved; the tab must be on it at arm and begin. */
+    approvedHost: string;
+    /** Canonical host of a URL (null when it has none). */
+    hostOf: (url: string) => string | null;
     /** Directory the download is written into (main-owned, fresh). */
     dir: string;
     /** How long the download has to begin. */
@@ -367,12 +388,14 @@ export async function openDownloadPass(
 
   let release: (() => void) | null = null;
   let offProgress: (() => void) | null = null;
+  let offClose: (() => void) | null = null;
   const settle = (outcome: { ok: ConsentedDownload } | { error: string }): void => {
     if (state === 'settled') return;
     state = 'settled';
     if (timer) clearTimeout(timer);
     release?.();
     offProgress?.();
+    offClose?.();
     void deny();
     if ('ok' in outcome) resolveDone(outcome.ok);
     else rejectDone(new ConsentRefusal('policy_denied', policyDeniedMessage(CONSENT_METHOD, outcome.error)));
@@ -386,6 +409,16 @@ export async function openDownloadPass(
     timer.unref?.();
   };
 
+  // The tab named must be a page on the approved site now — main's own read,
+  // not the caller's word.
+  const armedUrl = await targetUrl(guard, opts.frameId);
+  if (!armedUrl || opts.hostOf(armedUrl) !== opts.approvedHost) {
+    throw new ConsentRefusal(
+      'policy_denied',
+      policyDeniedMessage(CONSENT_METHOD, 'the tab is not on the site the operator approved'),
+    );
+  }
+
   release = guard.claim((params) => {
     if (state !== 'waiting' || params.frameId !== opts.frameId || typeof params.guid !== 'string' || !params.guid) {
       return false;
@@ -397,6 +430,15 @@ export async function openDownloadPass(
     // This one is kept; nothing after it is (cancelled by guid while the pass
     // holds the guard, then denied once it is under way).
     arm(opts.finishTimeoutMs, 'the approved download did not finish in time');
+    // Still the approved site when it began? Checked as soon as it can be; a
+    // tab that moved loses the download.
+    void targetUrl(guard, opts.frameId).then((url) => {
+      if (state !== 'running') return;
+      if (!url || opts.hostOf(url) !== opts.approvedHost) {
+        void guard.send('Browser.cancelDownload', { guid }).catch(() => undefined);
+        settle({ error: 'the tab left the approved site before the download began' });
+      }
+    });
     return true;
   });
   if (!release) {
@@ -406,6 +448,7 @@ export async function openDownloadPass(
     );
   }
   let underWay = false;
+  offClose = guard.onClose(() => settle({ error: "the protected browser's download guard went away" }));
   offProgress = guard.onProgress((params) => {
     if (!guid || params.guid !== guid) return;
     if (!underWay) {
