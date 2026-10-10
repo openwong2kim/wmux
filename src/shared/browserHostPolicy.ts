@@ -85,6 +85,14 @@ export function canonicalHost(raw: string): string | null {
 /** Validate a hostname the WHATWG parser already produced (lowercase, IDNA). */
 function validHostname(hostname: string): string | null {
   const host = stripTerminalDot(hostname);
+  // An IPv4-mapped IPv6 address is that IPv4 address: `[::ffff:7f00:1]` must
+  // meet the same rules as 127.0.0.1.
+  const mapped = /^\[::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})\]$/.exec(host);
+  if (mapped) {
+    const hi = parseInt(mapped[1], 16);
+    const lo = parseInt(mapped[2], 16);
+    return `${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`;
+  }
   if (host.startsWith('[') && host.endsWith(']')) return host;
   if (IPV4.test(host)) return host;
   return DNS_HOST.test(host) ? host : null;

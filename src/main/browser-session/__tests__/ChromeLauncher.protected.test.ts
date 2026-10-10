@@ -7,7 +7,10 @@ import { EventEmitter } from 'events';
 
 const { spawnMock, state, sockets } = vi.hoisted(() => ({
   spawnMock: vi.fn(),
-  state: { portFiles: {} as Record<string, string> },
+  // proxyPort: the --proxy-server port of the latest spawn. routeViaProxy:
+  // whether the fake Chrome's traffic reaches it (false = a profile whose
+  // proxy setting is overridden).
+  state: { portFiles: {} as Record<string, string>, proxyPort: 0, routeViaProxy: true },
   sockets: [] as Array<{ sent: Array<{ method: string; params: unknown }>; closed: boolean }>,
 }));
 vi.mock('child_process', () => ({ spawn: spawnMock }));
@@ -43,6 +46,22 @@ vi.mock('../CdpSocket', () => ({
     }
     async send(method: string, params: unknown = {}) {
       this.rec.sent.push({ method, params });
+      if (method === 'Target.createTarget' && state.routeViaProxy && state.proxyPort) {
+        // The fake Chrome loads the URL through its proxy, as the real one does.
+        const http = await import('node:http');
+        await new Promise<void>((resolve) => {
+          const req = http.request(
+            { host: '127.0.0.1', port: state.proxyPort, method: 'GET', path: (params as { url: string }).url },
+            (res) => {
+              res.resume();
+              res.on('end', () => resolve());
+            },
+          );
+          req.on('error', () => resolve());
+          req.end();
+        });
+        return { targetId: 'probe-target' };
+      }
       return {};
     }
     close() {
@@ -65,6 +84,8 @@ function spawnWritesPortFile(child: EventEmitter): number {
   spawnMock.mockImplementationOnce((_bin: string, args: string[]) => {
     const dir = (args.find((a) => a.startsWith('--user-data-dir=')) ?? '').slice('--user-data-dir='.length);
     state.portFiles[dir] = `${port}\n/devtools/browser/uuid-${port}\n`;
+    const proxy = args.find((a) => a.startsWith('--proxy-server='));
+    state.proxyPort = proxy ? Number(proxy.split(':').at(-1)) : 0;
     return child;
   });
   return port;
@@ -83,6 +104,8 @@ const denyAll: ChromeProtectionPlan = { matcher: () => ({ allows: () => false })
 beforeEach(() => {
   spawnMock.mockReset();
   state.portFiles = {};
+  state.proxyPort = 0;
+  state.routeViaProxy = true;
   sockets.length = 0;
   dead.clear();
   nextPort = 18001;
@@ -114,10 +137,14 @@ describe('ChromeLauncher — protected profiles', () => {
     expect(args).toContain('--force-webrtc-ip-handling-policy=disable_non_proxied_udp');
     expect(args).toContain('--disable-quic');
     expect(launcher.isProtected()).toBe(true);
-    expect(sockets.at(-1)?.sent[0]).toEqual({
+    expect(sockets.find((x) => x.sent[0]?.method === 'Browser.setDownloadBehavior')?.sent[0]).toEqual({
       method: 'Browser.setDownloadBehavior',
       params: { behavior: 'deny', eventsEnabled: true },
     });
+    // The route was proven: a probe tab was opened through the proxy and closed.
+    const probe = sockets.find((x) => x.sent[0]?.method === 'Target.createTarget');
+    expect(probe?.sent.map((x) => x.method)).toEqual(['Target.createTarget', 'Target.closeTarget']);
+    expect(probe?.closed).toBe(true);
     launcher.dispose();
   });
 
@@ -177,4 +204,74 @@ describe('ChromeLauncher — protected profiles', () => {
     expect(launcher.isProtected()).toBe(true);
     launcher.dispose();
   });
+
+  it('refuses a Chrome whose traffic does not reach the proxy, and stops it', async () => {
+    state.routeViaProxy = false; // e.g. a managed proxy policy overrides --proxy-server
+    const child = makeChild();
+    spawnWritesPortFile(child);
+    const launcher = new ChromeLauncher('/tmp/prot-e', { protection: () => denyAll, proxyProbeTimeoutMs: 100 });
+    await expect(launcher.ensureRunning()).rejects.toThrow(/policy_denied/);
+    expect(child.kill).toHaveBeenCalled();
+    expect(launcher.isProtected()).toBe(false);
+    expect(spawnMock).toHaveBeenCalledTimes(1); // refused at once, not polled to the deadline
+    launcher.dispose();
+  });
+
+  it('concurrent callers re-arm one download guard, not two', async () => {
+    spawnWritesPortFile(makeChild());
+    const launcher = new ChromeLauncher('/tmp/prot-f', { protection: () => denyAll });
+    await launcher.ensureRunning();
+    const guards = () => sockets.filter((x) => x.sent[0]?.method === 'Browser.setDownloadBehavior');
+    guards()[0].closed = true; // the guard's socket dropped
+    await Promise.all([launcher.ensureRunning(), launcher.ensureRunning(), launcher.ensureRunning()]);
+    expect(guards()).toHaveLength(2);
+    expect(guards().filter((g) => !g.closed)).toHaveLength(1);
+    launcher.dispose();
+  });
+
+  it('closes the proxy when protection turns off', async () => {
+    let plan: ChromeProtectionPlan | null = denyAll;
+    const first = makeChild();
+    const firstPort = spawnWritesPortFile(first);
+    first.kill = vi.fn(() => {
+      dead.add(firstPort);
+      first.emit('exit');
+    });
+    const launcher = new ChromeLauncher('/tmp/prot-g', { protection: () => plan });
+    await launcher.ensureRunning();
+    const proxyPort = state.proxyPort;
+    plan = null;
+    spawnWritesPortFile(makeChild());
+    await launcher.ensureRunning();
+    expect(launcher.isProtected()).toBe(false);
+    const net = await import('node:net');
+    const refused = await new Promise<boolean>((resolve) => {
+      const sock = net.connect(proxyPort, '127.0.0.1');
+      sock.once('connect', () => { sock.destroy(); resolve(false); });
+      sock.once('error', () => resolve(true));
+    });
+    expect(refused).toBe(true);
+    launcher.dispose();
+  });
+
+  it('force-stops a Chrome that will not exit when protection turns on', async () => {
+    let plan: ChromeProtectionPlan | null = null;
+    const first = makeChild();
+    const firstPort = spawnWritesPortFile(first);
+    // A polite kill is ignored; only SIGKILL takes it down.
+    first.kill = vi.fn((signal?: string) => {
+      if (signal !== 'SIGKILL') return true;
+      dead.add(firstPort);
+      first.emit('exit');
+      return true;
+    });
+    const launcher = new ChromeLauncher('/tmp/prot-h', { protection: () => plan });
+    await launcher.ensureRunning();
+    plan = denyAll;
+    spawnWritesPortFile(makeChild());
+    await launcher.ensureRunning();
+    expect(first.kill).toHaveBeenCalledWith('SIGKILL');
+    expect(launcher.isProtected()).toBe(true);
+    launcher.dispose();
+  }, 20_000);
 });

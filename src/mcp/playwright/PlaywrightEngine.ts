@@ -13,9 +13,11 @@ import {
   WorkspaceScopeUnresolvedError,
   WORKSPACE_SCOPE_UNRESOLVED_CODE,
   browserCallRefusal,
+  lastKnownProtection,
   rememberProtection,
   type BrowserTargetScope,
 } from './browserScope';
+import { BrowserPolicyError, POLICY_DENIED_CODE } from '../../shared/browserPolicy';
 import { attachPageCapture } from './pageCapture';
 import { trackRequestBaseline } from './actionSettle';
 import {
@@ -483,6 +485,7 @@ export class PlaywrightEngine {
     this.connectedWorkspaceId = undefined;
     this.connectedProfile = undefined;
     this.connectedPolicyEpoch = undefined;
+    this.downloadDenySession = null;
     if (s) {
       await s.detach().catch(() => { /* session may already be gone */ });
     }
@@ -510,19 +513,21 @@ export class PlaywrightEngine {
    *  (undefined = an unprotected connection). */
   private connectedPolicyEpoch: number | undefined;
 
+  /** Protected pane: the session holding this connection's download deny. */
+  private downloadDenySession: CDPSession | null = null;
+
   /**
    * Protected pane: deny downloads on this connection's browser. Playwright's
    * own attach sets the default context to allowAndName, undoing any deny set
-   * before it; main's download guard cancels whatever still begins.
+   * before it; main's download guard cancels whatever still begins. The
+   * session stays attached for the connection's life: Chrome drops a download
+   * setting when the session that made it detaches.
    */
   private async denyDownloads(): Promise<void> {
     if (!this.browser) return;
     const session = await this.browser.newBrowserCDPSession();
-    try {
-      await session.send('Browser.setDownloadBehavior', { behavior: 'deny' });
-    } finally {
-      await session.detach().catch(() => undefined);
-    }
+    this.downloadDenySession = session;
+    await session.send('Browser.setDownloadBehavior', { behavior: 'deny' });
   }
 
   async ensureConnected(workspaceId?: string): Promise<void> {
@@ -546,7 +551,19 @@ export class PlaywrightEngine {
         this.cacheShellUrl(info);
         const profile = typeof info.profile === 'string' ? info.profile : undefined;
         const policyEpoch = info.protected === true ? (info.policyEpoch ?? -1) : undefined;
-        if (workspaceId && info.protected === true) rememberProtection(workspaceId, true);
+        if (workspaceId && info.protected === true) {
+          // This operation was authorized as unprotected (or ran on that answer
+          // after its own authorization failed), but the pane is protected now:
+          // nothing may run on that stale answer.
+          const wasUnprotected = lastKnownProtection(workspaceId) === false;
+          rememberProtection(workspaceId, true);
+          if (wasUnprotected) {
+            throw new BrowserPolicyError(
+              POLICY_DENIED_CODE,
+              "this pane's browser became protected while the call was starting, so nothing was done. Retry the call once.",
+            );
+          }
+        }
         // Same (workspace, profile, policy epoch): keep the live connection.
         if (reusable && profile === this.connectedProfile && policyEpoch === this.connectedPolicyEpoch) return;
         // The profile moved, or a protected pane's policy changed: drop the old

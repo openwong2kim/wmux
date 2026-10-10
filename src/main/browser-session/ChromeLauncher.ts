@@ -42,6 +42,8 @@ const READY_TIMEOUT_MS = 10_000;
 const READY_POLL_MS = 250;
 /** How often a protected profile's download guard re-asserts deny. */
 const DOWNLOAD_DENY_REASSERT_MS = 250;
+/** How long a fresh protected Chrome has to prove its traffic reaches the proxy. */
+const PROXY_PROBE_TIMEOUT_MS = 5_000;
 
 // Tab-target watcher: Chrome 111+ exposes a `tab` target per browser tab, and
 // a tab target's id does NOT change when Chrome swaps the page target inside
@@ -216,6 +218,8 @@ export interface ChromeLauncherOptions {
   protection?: () => ChromeProtectionPlan | null;
   /** Test seam: extra Chrome flags (e.g. --headless=new). */
   extraArgs?: string[];
+  /** Test seam: how long the launch waits for the proxy probe. */
+  proxyProbeTimeoutMs?: number;
 }
 
 /** How a protected profile is enforced (see ProtectedProxy). */
@@ -298,6 +302,9 @@ export class ChromeLauncher implements ChromeBackendClient {
   private proxy: ProtectedProxy | null = null;
   /** Main's own browser-level session that keeps downloads denied. */
   private downloadGuard: CdpSocket | null = null;
+  /** The guard being armed, so concurrent callers share one socket. */
+  private guardArming: Promise<void> | null = null;
+  private readonly proxyProbeTimeoutMs: number;
 
   constructor(private readonly userDataDir: string, opts?: ChromeLauncherOptions) {
     this.profileLabel = opts?.profileLabel;
@@ -306,6 +313,7 @@ export class ChromeLauncher implements ChromeBackendClient {
     this.surfaceStore = opts?.surfaceStore;
     this.protection = opts?.protection;
     this.extraArgs = opts?.extraArgs ?? [];
+    this.proxyProbeTimeoutMs = opts?.proxyProbeTimeoutMs ?? PROXY_PROBE_TIMEOUT_MS;
   }
 
   /** The protection this profile needs now (null = legacy). Never throws:
@@ -878,10 +886,40 @@ export class ChromeLauncher implements ChromeBackendClient {
     } else if (port > 0) {
       await this.closeBrowserAt(port);
     }
-    if (port > 0 && !(await this.waitEndpointGone(port))) {
+    if (port > 0 && !(await this.waitEndpointGone(port)) && !(await this.forceKill(port, child))) {
       throw new Error(PROTECTION_NOT_READY);
     }
     this.onChildGone();
+  }
+
+  /**
+   * Last resort for a Chrome that will not stop: kill the browser process
+   * outright (ours by handle, an adopted one by the pid it reports), so it
+   * cannot keep running under the terms it was started with.
+   */
+  private async forceKill(port: number, child: ChildProcess | null): Promise<boolean> {
+    try {
+      if (child) {
+        child.kill('SIGKILL');
+      } else {
+        const url = await this.browserWsUrlAt(port);
+        if (url) {
+          const socket = new CdpSocket(() => url, { label: 'ChromeLauncher force stop', timeoutMs: 3_000 });
+          try {
+            const info = (await socket.send('SystemInfo.getProcessInfo')) as {
+              processInfo?: Array<{ type?: string; id?: number }>;
+            };
+            const pid = info?.processInfo?.find((p) => p.type === 'browser')?.id;
+            if (typeof pid === 'number' && pid > 0) process.kill(pid, 'SIGKILL');
+          } finally {
+            socket.close();
+          }
+        }
+      }
+    } catch {
+      /* fall through to the endpoint check */
+    }
+    return this.waitEndpointGone(port);
   }
 
   /** Apply a protection change now rather than at the next call (policy edits). */
@@ -895,12 +933,23 @@ export class ChromeLauncher implements ChromeBackendClient {
     await this.stopForProtectionChange();
   }
 
-  private async closeBrowserAt(port: number): Promise<void> {
+  /** The browser-level CDP endpoint answering on `port`, or null. */
+  private async browserWsUrlAt(port: number): Promise<string | null> {
     try {
       const res = await fetch(`http://127.0.0.1:${port}/json/version`);
       const version = (await res.json()) as { webSocketDebuggerUrl?: string };
-      if (typeof version.webSocketDebuggerUrl !== 'string') return;
-      const url = version.webSocketDebuggerUrl;
+      return typeof version.webSocketDebuggerUrl === 'string' && version.webSocketDebuggerUrl.startsWith('ws')
+        ? version.webSocketDebuggerUrl
+        : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private async closeBrowserAt(port: number): Promise<void> {
+    try {
+      const url = await this.browserWsUrlAt(port);
+      if (!url) return;
       const socket = new CdpSocket(() => url, { label: 'ChromeLauncher evict', timeoutMs: 3_000 });
       await socket.send('Browser.close').catch(() => undefined);
       socket.close();
@@ -936,7 +985,9 @@ export class ChromeLauncher implements ChromeBackendClient {
       return; // stale file, nothing running
     }
     await this.closeBrowserAt(file.port);
-    if (!(await this.waitEndpointGone(file.port))) throw new Error(PROTECTION_NOT_READY);
+    if (!(await this.waitEndpointGone(file.port)) && !(await this.forceKill(file.port, null))) {
+      throw new Error(PROTECTION_NOT_READY);
+    }
   }
 
   private async ensureProxy(plan: ChromeProtectionPlan): Promise<number> {
@@ -970,19 +1021,18 @@ export class ChromeLauncher implements ChromeBackendClient {
    * lasts at most one tick, and a download that starts after it is refused
    * outright.
    */
-  private async armDownloadGuard(): Promise<void> {
-    if (this.downloadGuard?.isOpen()) return;
+  private armDownloadGuard(): Promise<void> {
+    if (this.downloadGuard?.isOpen()) return Promise.resolve();
+    this.guardArming ??= this.armDownloadGuardOnce().finally(() => {
+      this.guardArming = null;
+    });
+    return this.guardArming;
+  }
+
+  private async armDownloadGuardOnce(): Promise<void> {
     this.downloadGuard?.close();
     this.downloadGuard = null;
-    let endpoint: string | undefined;
-    try {
-      const version = (await this.fetchJson('/json/version')) as { webSocketDebuggerUrl?: string };
-      endpoint = version?.webSocketDebuggerUrl;
-    } catch {
-      endpoint = undefined;
-    }
-    if (typeof endpoint !== 'string' || !endpoint.startsWith('ws')) throw new Error(PROTECTION_NOT_READY);
-    const url = endpoint;
+    const url = await this.browserWsUrl();
     const guard = new CdpSocket(() => url, {
       label: 'ChromeLauncher download guard',
       onDisconnect: () => {
@@ -1009,11 +1059,55 @@ export class ChromeLauncher implements ChromeBackendClient {
     this.downloadGuard = guard;
   }
 
+  /** This instance's browser-level CDP endpoint; not-ready when absent. */
+  private async browserWsUrl(): Promise<string> {
+    let endpoint: string | undefined;
+    try {
+      const version = (await this.fetchJson('/json/version')) as { webSocketDebuggerUrl?: string };
+      endpoint = version?.webSocketDebuggerUrl;
+    } catch {
+      endpoint = undefined;
+    }
+    if (typeof endpoint !== 'string' || !endpoint.startsWith('ws')) throw new Error(PROTECTION_NOT_READY);
+    return endpoint;
+  }
+
+  /**
+   * Prove the fresh Chrome's traffic reaches the proxy: open a background tab
+   * on a URL only the proxy answers. A managed proxy policy or a proxy
+   * extension in the profile overrides `--proxy-server`; such a Chrome never
+   * asks the proxy, and is not handed out as protected.
+   */
+  private async verifyProxyRoute(): Promise<void> {
+    const proxy = this.proxy;
+    if (!proxy?.isRunning()) throw new Error(PROTECTION_NOT_READY);
+    const probe = proxy.armProbe();
+    const url = await this.browserWsUrl();
+    const socket = new CdpSocket(() => url, { label: 'ChromeLauncher proxy probe', timeoutMs: this.proxyProbeTimeoutMs });
+    let targetId: string | undefined;
+    try {
+      const created = (await socket.send('Target.createTarget', { url: probe.url, background: true })) as {
+        targetId?: unknown;
+      } | null;
+      targetId = typeof created?.targetId === 'string' ? created.targetId : undefined;
+      if (!(await probe.seen(this.proxyProbeTimeoutMs))) throw new Error(PROTECTION_NOT_READY);
+    } catch {
+      throw new Error(PROTECTION_NOT_READY);
+    } finally {
+      probe.dispose();
+      if (targetId) await socket.send('Target.closeTarget', { targetId }).catch(() => undefined);
+      socket.close();
+    }
+  }
+
   private async launch(): Promise<number> {
     const plan = this.wantedProtection();
     if (plan) {
       await this.evictExisting();
     } else {
+      // Protection is off: the previous instance's proxy has nothing to serve.
+      this.proxy?.close();
+      this.proxy = null;
       const adopted = await this.adoptExisting();
       if (adopted !== null) return adopted;
     }
@@ -1095,6 +1189,7 @@ export class ChromeLauncher implements ChromeBackendClient {
             this.launchedProtected = true;
             try {
               await this.armDownloadGuard();
+              await this.verifyProxyRoute();
             } catch (err) {
               try {
                 child.kill();
@@ -1104,7 +1199,10 @@ export class ChromeLauncher implements ChromeBackendClient {
             }
           }
           return candidate;
-        } catch {
+        } catch (err) {
+          // Enforcement that failed is final for this launch: the child is
+          // already stopped, so polling on would only wait out the deadline.
+          if (err instanceof Error && err.message === PROTECTION_NOT_READY) throw err;
           this.cdpPort = 0;
         }
       }

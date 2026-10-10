@@ -75,6 +75,14 @@ describe('compileHostPolicy', () => {
     expect(compileHostPolicy(allow('*.0.0.1')).allows('127.0.0.1', 80)).toBe(false);
   });
 
+  it('an IPv4-mapped IPv6 address is the IPv4 address', () => {
+    expect(canonicalHost('[::ffff:127.0.0.1]')).toBe('127.0.0.1');
+    expect(canonicalHost('[0:0:0:0:0:FFFF:7F00:1]')).toBe('127.0.0.1');
+    const blockLoopback: HostPolicy = { mode: 'off', allow: [], block: ['127.0.0.1'] };
+    expect(compileHostPolicy(blockLoopback).allows('[::ffff:7f00:1]', 80)).toBe(false);
+    expect(compileHostPolicy(allow('[::ffff:10.0.0.1]')).allows('10.0.0.1', 80)).toBe(true);
+  });
+
   it('an empty allowlist blocks everything, block wins, off allows the rest', () => {
     expect(compileHostPolicy(allow()).allows('example.com', 443)).toBe(false);
     const both = compileHostPolicy({ mode: 'allowlist', allow: ['*.example.com'], block: ['ads.example.com'] });

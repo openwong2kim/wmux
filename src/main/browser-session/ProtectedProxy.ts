@@ -1,7 +1,8 @@
 import * as http from 'node:http';
 import * as net from 'node:net';
+import { randomBytes } from 'node:crypto';
 import type { Duplex } from 'node:stream';
-import type { HostMatcher } from '../../shared/browserHostPolicy';
+import { canonicalHost, type HostMatcher } from '../../shared/browserHostPolicy';
 
 // ---------------------------------------------------------------------------
 // The site policy of a protected Chrome profile, enforced at the network.
@@ -62,12 +63,40 @@ function unbracket(host: string): string {
   return host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host;
 }
 
+/** Any spelling that reaches this machine: loopback, `*.localhost`, unspecified. */
+function isLocalHost(host: string): boolean {
+  const h = canonicalHost(host);
+  if (!h) return false;
+  return (
+    h === 'localhost'
+    || h.endsWith('.localhost')
+    || /^127\./.test(h)
+    || h === '0.0.0.0'
+    || h === '[::1]'
+    || h === '[::]'
+  );
+}
+
+/** The reserved name a launch probe asks for; `.invalid` never resolves. */
+const PROBE_DOMAIN = 'wmux-proxy-probe.invalid';
+
+/** A pending check that Chrome's traffic really reaches this proxy. */
+export interface ProxyProbe {
+  /** Load this in the profile; only this proxy can answer it. */
+  url: string;
+  /** Resolves true once the proxy saw the probe, false after `timeoutMs`. */
+  seen: (timeoutMs: number) => Promise<boolean>;
+  dispose: () => void;
+}
+
 export class ProtectedProxy {
   private server: http.Server | null = null;
   private listenPort = 0;
   private readonly sockets = new Set<Duplex>();
   /** Open CONNECT tunnels and the host they were allowed for. */
   private readonly tunnels = new Map<Duplex, { host: string; port: number; upstream: Duplex }>();
+  /** Armed launch probes: probe host → mark it seen. */
+  private readonly probes = new Map<string, () => void>();
 
   constructor(private readonly opts: ProtectedProxyOptions) {}
 
@@ -83,8 +112,9 @@ export class ProtectedProxy {
   private decide(host: string, port: number, kind: 'http' | 'connect' | 'upgrade'): boolean {
     let allowed = false;
     try {
-      // The proxy itself is never a destination, whatever the policy says.
-      const self = (host === '127.0.0.1' || host === 'localhost' || host === '[::1]') && port === this.listenPort;
+      // The proxy itself is never a destination, whatever the policy says or
+      // however its address is spelled.
+      const self = port === this.listenPort && isLocalHost(host);
       allowed = !self && kind !== 'upgrade' && this.opts.matcher().allows(host, port);
     } catch {
       allowed = false;
@@ -154,6 +184,44 @@ export class ProtectedProxy {
     }
   }
 
+  /**
+   * Arm a probe: a URL only this proxy answers. A profile whose traffic does
+   * not reach the proxy (a managed proxy policy or a proxy extension overriding
+   * `--proxy-server`) never asks for it, so the launch can refuse that profile.
+   */
+  armProbe(): ProxyProbe {
+    const host = `p${randomBytes(12).toString('hex')}.${PROBE_DOMAIN}`;
+    let hit = false;
+    let wake: (() => void) | null = null;
+    this.probes.set(host, () => {
+      hit = true;
+      wake?.();
+    });
+    return {
+      url: `http://${host}/`,
+      seen: (timeoutMs) =>
+        new Promise<boolean>((resolve) => {
+          if (hit) return resolve(true);
+          const timer = setTimeout(() => resolve(hit), timeoutMs);
+          wake = () => {
+            clearTimeout(timer);
+            resolve(true);
+          };
+        }),
+      dispose: () => {
+        this.probes.delete(host);
+      },
+    };
+  }
+
+  /** Whether `host` is an armed probe; marks it seen. Never forwarded. */
+  private takeProbe(host: string): boolean {
+    const mark = this.probes.get(host.toLowerCase());
+    if (!mark) return host.toLowerCase().endsWith(`.${PROBE_DOMAIN}`);
+    mark();
+    return true;
+  }
+
   /** Stop listening and cut every open tunnel. */
   close(): void {
     const server = this.server;
@@ -171,6 +239,11 @@ export class ProtectedProxy {
     if (!url || url.protocol !== 'http:' || url.username || url.password) {
       res.writeHead(400, { 'content-type': 'text/plain', connection: 'close' });
       res.end('Bad proxy request');
+      return;
+    }
+    if (this.takeProbe(url.hostname)) {
+      res.writeHead(204, { connection: 'close' });
+      res.end();
       return;
     }
     const port = url.port ? Number(url.port) : DEFAULT_PORT[url.protocol];
@@ -209,7 +282,8 @@ export class ProtectedProxy {
     this.track(socket);
     socket.on('error', () => socket.destroy());
     const authority = parseAuthority(req.url ?? '');
-    if (!authority || !this.decide(authority.host, authority.port, 'connect')) {
+    // A probe upgraded to https still proves the route; it is never tunnelled.
+    if (!authority || this.takeProbe(authority.host) || !this.decide(authority.host, authority.port, 'connect')) {
       socket.end('HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n');
       return;
     }

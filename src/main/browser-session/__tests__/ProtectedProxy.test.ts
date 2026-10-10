@@ -75,6 +75,29 @@ describe('ProtectedProxy', () => {
     expect(await connect('no-port')).toContain('403');
     allow = ['127.0.0.1'];
     expect(await connect(`127.0.0.1:${proxyPort}`)).toContain('403');
+    // Any other spelling of this machine is still the proxy itself.
+    proxy.close();
+    proxy = new ProtectedProxy({ matcher: () => compileHostPolicy({ mode: 'off', allow: [], block: [] }) });
+    proxyPort = await proxy.start();
+    for (const host of ['[::ffff:7f00:1]', '127.0.0.2', '0.0.0.0', 'x.localhost', '[::1]', 'LOCALHOST']) {
+      expect(await connect(`${host}:${proxyPort}`), host).toContain('403');
+    }
+  });
+
+  it('answers an armed probe itself, over http or CONNECT, and never forwards it', async () => {
+    const probe = proxy.armProbe();
+    expect(await probe.seen(10)).toBe(false);
+    expect(await viaProxy(probe.url)).toBe(204);
+    expect(await probe.seen(10)).toBe(true);
+    const viaConnect = proxy.armProbe();
+    const host = new URL(viaConnect.url).hostname;
+    expect(await connect(`${host}:443`)).toContain('403');
+    expect(await viaConnect.seen(10)).toBe(true);
+    // An unarmed probe name is never forwarded either.
+    probe.dispose();
+    allow = ['*.wmux-proxy-probe.invalid'];
+    expect(await viaProxy(probe.url)).toBe(204);
+    expect(hits).toEqual([]);
   });
 
   it('cuts an open tunnel whose host a policy edit revoked', async () => {
