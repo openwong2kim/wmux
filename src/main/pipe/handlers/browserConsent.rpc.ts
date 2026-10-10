@@ -5,7 +5,11 @@ import type { BrowserWindow } from 'electron';
 import type { RpcRouter } from '../RpcRouter';
 import type { RpcContext } from '../../../shared/rpc';
 import type { ChromePaneBindings } from '../../../shared/chromePaneBinding';
-import type { BrowserConsentAction } from '../../../shared/browserPolicy';
+import {
+  BROWSER_CONSENT_DOWNLOAD_FINISH_MS,
+  BROWSER_CONSENT_DOWNLOAD_START_MAX_MS,
+  type BrowserConsentAction,
+} from '../../../shared/browserPolicy';
 import { canonicalHost } from '../../../shared/browserHostPolicy';
 import type { BrowserPolicyStore } from '../../browser-session/BrowserPolicyStore';
 import type { ChromeBackendClient } from '../../browser-session/ChromeLauncher';
@@ -56,9 +60,6 @@ const ACTIONS: ReadonlySet<string> = new Set<BrowserConsentAction>(['evaluate', 
 const MAX_SENSITIVE_HOSTS = 20;
 const MAX_DETAIL_INPUT = 2_000;
 export const DOWNLOAD_START_DEFAULT_MS = 30_000;
-export const DOWNLOAD_START_MAX_MS = 120_000;
-/** A begun download has this long to finish (the tool waits on it). */
-export const DOWNLOAD_FINISH_MAX_MS = 30 * 60_000;
 
 function refuse(why: string): ConsentRefusal {
   return new ConsentRefusal('policy_denied', policyDeniedMessage(CONSENT_METHOD, why));
@@ -209,8 +210,8 @@ export function registerBrowserConsentRpc(router: Pick<RpcRouter, 'register'>, d
       const pass = await openDownloadPass(guard, {
         frameId: targetId,
         dir,
-        startTimeoutMs: boundedMs(params['startTimeoutMs'], DOWNLOAD_START_DEFAULT_MS, DOWNLOAD_START_MAX_MS),
-        finishTimeoutMs: DOWNLOAD_FINISH_MAX_MS,
+        startTimeoutMs: boundedMs(params['startTimeoutMs'], DOWNLOAD_START_DEFAULT_MS, BROWSER_CONSENT_DOWNLOAD_START_MAX_MS),
+        finishTimeoutMs: BROWSER_CONSENT_DOWNLOAD_FINISH_MS,
         join,
       });
       downloads.set(decision.operationId, { caller: { ...caller, epoch: decision.epoch }, pass });

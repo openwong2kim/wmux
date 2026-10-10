@@ -61,6 +61,10 @@ export const BROWSER_CONSENT_DEADLINE_MS = 60_000;
 /** The MCP lane's RPC timeout for a consent request: longer than the deadline,
  *  so main's answer (and never the transport) ends the wait. */
 export const BROWSER_CONSENT_RPC_TIMEOUT_MS = BROWSER_CONSENT_DEADLINE_MS + 15_000;
+/** An approved download has this long to finish once it has begun. */
+export const BROWSER_CONSENT_DOWNLOAD_FINISH_MS = 30 * 60_000;
+/** The longest an approved download may take to begin. */
+export const BROWSER_CONSENT_DOWNLOAD_START_MAX_MS = 120_000;
 
 export interface BrowserPolicyFile {
   version: number;
