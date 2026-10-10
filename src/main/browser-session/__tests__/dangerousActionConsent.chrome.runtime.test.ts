@@ -105,6 +105,10 @@ describe('approved download (real Chrome)', { timeout: 60_000 }, () => {
     const other = await context.newPage();
     await approved.goto(`http://a.test:${port}/`);
     await other.goto(`http://a.test:${port}/`);
+    // What the MCP engine does on a protected connection: a browser session
+    // that set deny once and stays attached for the connection's life.
+    const engineDeny = await browser!.newBrowserCDPSession();
+    await engineDeny.send('Browser.setDownloadBehavior', { behavior: 'deny' });
     const guard = launcher.consentDownloadGuard();
     expect(guard).not.toBeNull();
     const dir = mkdtempSync(join(tmpdir(), 'wmux-consent-dl-'));
@@ -135,5 +139,6 @@ describe('approved download (real Chrome)', { timeout: 60_000 }, () => {
     const again = approved.waitForEvent('download', { timeout: 5_000 }).catch(() => null);
     await approved.click('#d');
     expect(await (await again)?.failure()).toBe('canceled');
+    await engineDeny.detach().catch(() => undefined);
   });
 });
