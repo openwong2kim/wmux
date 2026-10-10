@@ -42,11 +42,6 @@ function validHostLines(text: string): string[] {
   return hostLines(text).filter(isValidRule);
 }
 
-/** Whether a refused write lost the epoch race (re-read and try again). */
-function isStale(res: { error?: string; code?: string }): boolean {
-  return res.code === 'stale' || /re-read/i.test(res.error ?? '');
-}
-
 interface Loaded {
   epoch: number;
   currentProfile: string | undefined;
@@ -187,7 +182,8 @@ export default function BrowserPolicyDialog({ workspaceId, paneId, onClose, onSa
         onClose();
         return;
       }
-      if (isStale(res)) {
+      // Lost the epoch race (another write, a profile rebind): show what is there now.
+      if (res.code === 'stale') {
         toast('info', t('pane.browserPolicyStale'));
         await load();
         return;

@@ -9,7 +9,7 @@ import { createRoot, type Root } from 'react-dom/client';
 
 import BrowserPolicyDialog, { hostLines, invalidHostLines } from '../BrowserPolicyDialog';
 import { useStore } from '../../../stores';
-import type { BrowserPolicyReadResult, BrowserPolicyWritePayload, PanePolicy } from '../../../../shared/browserPolicy';
+import type { BrowserPolicyReadResult, BrowserPolicyWritePayload, BrowserPolicyWriteResult, PanePolicy } from '../../../../shared/browserPolicy';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -19,7 +19,7 @@ const PANE = 'pane-1';
 let container: HTMLDivElement | undefined;
 let root: Root | undefined;
 let readResult: BrowserPolicyReadResult;
-type WriteReply = { ok: boolean; epoch?: number; error?: string; code?: string };
+type WriteReply = BrowserPolicyWriteResult;
 const api = {
   get: vi.fn<(ws: string, pane: string) => Promise<BrowserPolicyReadResult>>(async () => readResult),
   set: vi.fn<(p: BrowserPolicyWritePayload) => Promise<WriteReply>>(async () => ({ ok: true, epoch: 9 })),
@@ -123,7 +123,7 @@ describe('BrowserPolicyDialog', () => {
 
   it('a stale write reloads, toasts, and stays open', async () => {
     await mount();
-    api.set.mockResolvedValueOnce({ ok: false, error: 'the browser policy changed since it was read; re-read and try again' });
+    api.set.mockResolvedValueOnce({ ok: false, code: 'stale', error: 'the browser policy changed since it was read; re-read and try again' });
     readResult = { ...readResult, epoch: 7, policy: entry({ hosts: { mode: 'allowlist', allow: ['other.com'], block: [] } }) };
     await click('browser-policy-save');
     expect(api.get).toHaveBeenCalledTimes(2);
@@ -134,16 +134,17 @@ describe('BrowserPolicyDialog', () => {
     expect(api.set.mock.calls.at(-1)![0].expectedEpoch).toBe(7);
   });
 
-  it('a stale code from main is honoured too', async () => {
+  it('only the stale code reloads, never the message text', async () => {
     await mount();
-    api.set.mockResolvedValueOnce({ ok: false, code: 'stale', error: 'x' });
+    api.set.mockResolvedValueOnce({ ok: false, code: 'invalid', error: 'stale? re-read and try again' });
     await click('browser-policy-save');
-    expect(api.get).toHaveBeenCalledTimes(2);
+    expect(api.get).toHaveBeenCalledTimes(1);
+    expect(useStore.getState().toasts.at(-1)).toMatchObject({ level: 'error' });
   });
 
   it('any other refusal toasts its error and stays open', async () => {
     await mount();
-    api.set.mockResolvedValueOnce({ ok: false, error: 'protection needs a Chrome profile bound to this pane alone' });
+    api.set.mockResolvedValueOnce({ ok: false, code: 'not-exclusive', error: 'protection needs a Chrome profile bound to this pane alone' });
     await click('browser-policy-save');
     expect(useStore.getState().toasts.at(-1)).toMatchObject({
       level: 'error', message: 'protection needs a Chrome profile bound to this pane alone',
