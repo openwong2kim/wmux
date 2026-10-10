@@ -824,6 +824,9 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
   // pane with no session pipe at all. Reset per effect run, like the local
   // in-flight guard it mirrors.
   const reconnectInFlightRef = useRef(false);
+  // True while the last settled reattach left this pane without a session
+  // pipe (rate limited, WSL recovery pending). Also refuses the park.
+  const reconnectPendingRef = useRef(false);
   // #1002 — set by the main effect when this mount adopted a parked terminal.
   // Read by the daemon reattach effect (which runs later in the same commit)
   // to skip its active-at-mount reconnect: the session pipe never detached, so
@@ -3185,6 +3188,11 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         // mount skips its own active-at-mount attempt, so the pane would end up
         // with no session pipe at all.
         : reconnectInFlightRef.current ? 'reconnect-in-flight'
+        // The last reconnect gave up without a session pipe (rate limited, WSL
+        // recovery pending). An adopting mount skips its reconnect and loses
+        // the Retry banner, so it would be stuck unattached; dispose instead
+        // and let the fresh mount reattach.
+        : reconnectPendingRef.current ? 'reconnect-pending'
         // Two live instances on one ptyId (the fast unmount→remount ordering
         // the WebGL pool note describes): if the registry no longer points at
         // us, a later mount already owns this pane and ours is the stale copy.
@@ -3340,12 +3348,18 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // reattaches again. Lives in the effect-run closure so it resets per ptyId.
     let inFlight = false;
     reconnectInFlightRef.current = false;
+    reconnectPendingRef.current = false;
     const reattach = (reason: string) => {
       if (inFlight) return;
       inFlight = true;
       reconnectInFlightRef.current = true;
       console.log(`[useTerminal] daemon reattach ptyId=${id} (${reason})`);
-      return reconnectPtyWithRetry(id, () => ptyIdRef.current === id && terminalRef.current !== null, (message, info) => onRecoveryErrorRef.current?.(message, info))
+      return reconnectPtyWithRetry(id, () => ptyIdRef.current === id && terminalRef.current !== null, (message, info) => {
+        // A non-null message means the attempt settled WITHOUT a session pipe
+        // (rate limited, WSL recovery pending); null means it attached.
+        reconnectPendingRef.current = message !== null;
+        onRecoveryErrorRef.current?.(message, info);
+      })
         .then((stored) => {
           // #882 — the daemon starts every managed session at `viewerVisible:
           // true` and resets to true on detach, so a reattach that lands while

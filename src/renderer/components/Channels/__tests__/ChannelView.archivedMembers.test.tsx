@@ -69,6 +69,30 @@ describe('ChannelView — archived roster loads on open', () => {
     expect(useStore.getState().channelMembers['ch-arch']?.map((m) => m.memberId)).toEqual(['human']);
   });
 
+  it('a failed fetch recovers on the next catalog refresh while the channel is open', async () => {
+    const base = rpc.getMockImplementation()!;
+    let failed = false;
+    rpc.mockImplementation(async (method: string, params: Record<string, unknown>) => {
+      if (method === 'a2a.channel.getMembers' && !failed) {
+        failed = true;
+        throw new Error('rate limited (global)');
+      }
+      return base(method, params);
+    });
+    await openChannel('ch-arch');
+    expect(useStore.getState().channelMembers['ch-arch']).toBeUndefined();
+    // A catalog refresh (hydration skips archived rosters) replaces the row.
+    act(() => {
+      useStore.getState().setChannels(
+        [channel('ch-arch', { status: 'archived', archivedAt: 2 }), channel('ch-live')],
+        { 'ch-live': [] },
+      );
+    });
+    for (let i = 0; i < 3; i++) await act(async () => { await Promise.resolve(); });
+    expect(rpc.mock.calls.filter(([m]) => m === 'a2a.channel.getMembers')).toHaveLength(2);
+    expect(useStore.getState().channelMembers['ch-arch']?.map((m) => m.memberId)).toEqual(['human']);
+  });
+
   it('does not fetch a live channel roster (hydration owns it)', async () => {
     await openChannel('ch-live');
     expect(rpc.mock.calls.some(([m]) => m === 'a2a.channel.getMembers')).toBe(false);

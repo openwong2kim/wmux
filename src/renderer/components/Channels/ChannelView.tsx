@@ -824,13 +824,12 @@ export function ChannelView(): React.ReactElement | null {
   // P0: load RECENT message history into the store when a channel is opened.
   // Catalog hydration skips archived rosters, so an opened archived channel
   // loads its own: the viewer's history floor, author chips and the member
-  // list all read it.
-  const needsMembers = useStore((s) => {
-    const ch = activeChannelId ? s.channels[activeChannelId] : undefined;
-    return !!ch && !hydratesMembersOf(ch) && s.channelMembers[ch.id] === undefined;
-  });
+  // list all read it. Re-read on open and on every catalog refresh while open
+  // (each refresh replaces the channel row), so a failed fetch or a membership
+  // change elsewhere converges like a live channel's roster does.
+  const lazyRosterRow = channel && !hydratesMembersOf(channel) ? channel : null;
   useEffect(() => {
-    if (!activeChannelId || !needsMembers) return;
+    if (!activeChannelId || !lazyRosterRow) return;
     const bridge = useStore.getState().channelsRpc();
     if (!bridge) return;
     let disposed = false;
@@ -842,7 +841,7 @@ export function ChannelView(): React.ReactElement | null {
       isCurrent: () => !disposed,
     });
     return () => { disposed = true; };
-  }, [activeChannelId, needsMembers]);
+  }, [activeChannelId, lazyRosterRow]);
 
   // The view renders `store.channelMessages` only (it never calls getMessages
   // itself), so without this an opened channel shows the empty-state even when

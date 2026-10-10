@@ -104,19 +104,6 @@ export default function TaskConversation({
         });
       }
       if (disposed) return;
-      // A closed task's mission channel is archived, and catalog hydration
-      // skips archived rosters: load this one for the viewer floor and chips.
-      const st = useStore.getState();
-      const ch = st.channels[channelId];
-      if (ch && !hydratesMembersOf(ch) && st.channelMembers[channelId] === undefined) {
-        void loadChannelMembers({
-          rpc: bridge.rpc,
-          channelId,
-          workspaceId: HUMAN_WORKSPACE_ID,
-          apply: st.hydrateChannelMembers,
-          isCurrent: () => !disposed,
-        });
-      }
       await loadChannelHistory({
         rpc: bridge.rpc,
         channelId,
@@ -129,6 +116,25 @@ export default function TaskConversation({
     void load();
     return () => { disposed = true; };
   }, [channelId]);
+
+  // A closed task's mission channel is archived, and catalog hydration skips
+  // archived rosters: load this one (viewer floor, author chips) on open and on
+  // every catalog refresh while shown, as ChannelView does.
+  const row = useStore((s) => s.channels[channelId]);
+  const lazyRosterRow = row && !hydratesMembersOf(row) ? row : null;
+  useEffect(() => {
+    const bridge = useStore.getState().channelsRpc();
+    if (!bridge || !lazyRosterRow) return undefined;
+    let disposed = false;
+    void loadChannelMembers({
+      rpc: bridge.rpc,
+      channelId,
+      workspaceId: HUMAN_WORKSPACE_ID,
+      apply: useStore.getState().hydrateChannelMembers,
+      isCurrent: () => !disposed,
+    });
+    return () => { disposed = true; };
+  }, [channelId, lazyRosterRow]);
 
   // On screen means read: no unread count piles up behind it.
   const lastSeq = visible.at(-1)?.seq ?? 0;
