@@ -442,7 +442,7 @@ export async function withAutomationLease<T>(
     } else if (res?.token) {
       // A main that predates authorization leased its default surface for an
       // unnamed acquire. Not ours to hold.
-      sendRpc('browser.lease.release', { token: res.token }).catch(() => {});
+      sendRpc('browser.lease.release', { token: res.token }).catch(() => undefined);
     }
   } catch (err) {
     const refusal = browserCallRefusal(err);
