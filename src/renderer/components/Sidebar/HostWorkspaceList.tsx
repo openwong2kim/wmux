@@ -108,10 +108,12 @@ function HostWorkspaceRow({ hostId, row, isActive, disabled, tabStop, onOpen }: 
   onOpen: (row: PcRailWorkspaceRow) => void;
 }) {
   const t = useT();
-  const alias = useStore((s) => selectPcRailRowAlias(s, hostId, row.id));
+  // Two primitive reads: the selector builds a fresh object, which is no stable snapshot.
+  const aliasLabel = useStore((s) => selectPcRailRowAlias(s, hostId, row.id)?.label);
+  const aliasColor = useStore((s) => selectPcRailRowAlias(s, hostId, row.id)?.color);
   // The host's own name; a host that sends none (locked desktop, old build) is named by id.
-  const displayName = alias?.label || row.name || row.id;
-  const tagHex = workspaceColorHex(normalizeWorkspaceColor(alias?.color ?? row.color));
+  const displayName = aliasLabel || row.name || row.id;
+  const tagHex = workspaceColorHex(normalizeWorkspaceColor(aliasColor ?? row.color));
   const attention = remoteWorkspaceAttentionClass({ panes: row.panes, stale: disabled && !row.empty });
   const needsYou = attention === 'needsYou';
   const errored = attention === 'error';

@@ -64,6 +64,15 @@ describe('Sidebar scoped to a paired computer', () => {
     expect(hostRows()[2].getAttribute('aria-disabled')).toBe('true');
   });
 
+  it("shows the local alias an attached workspace was given before the rail", () => {
+    act(() => useStore.setState({
+      remoteWorkspaces: [{ key: 'h1:rw-b', hostId: 'h1', hostLabel: 'office-mac', workspaceId: 'rw-b', name: 'beta', panes: [], label: 'Mine', color: 'teal' }],
+    } as never));
+    act(() => root.render(<Sidebar />));
+    expect(hostRows()[1].textContent).toContain('Mine');
+    act(() => useStore.setState({ remoteWorkspaces: [] } as never));
+  });
+
   it('opens a row as a shadow workspace and marks it selected', () => {
     act(() => root.render(<Sidebar />));
     act(() => (hostRows()[1] as HTMLElement).click());

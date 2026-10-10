@@ -232,6 +232,16 @@ describe('shadow workspaces in the store', () => {
     expect(dispose).not.toHaveBeenCalled();
   });
 
+  it('never sends a shadow id to the daemon teardown calls', () => {
+    const purge = vi.fn(async () => undefined);
+    const stale = vi.fn(async () => undefined);
+    useStore.setState({ purgeMembershipDaemon: purge, principalMarkStaleWorkspaceDaemon: stale } as never);
+    const id = useStore.getState().openShadowWorkspace('h1', 'rw1')!;
+    useStore.getState().closeShadowWorkspace(id);
+    expect(purge).not.toHaveBeenCalled();
+    expect(stale).not.toHaveBeenCalled();
+  });
+
   it('never lets a shadow stand in for the last local workspace', () => {
     useStore.getState().openShadowWorkspace('h1', 'rw1');
     useStore.getState().removeWorkspace('ws-2');

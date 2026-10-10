@@ -769,7 +769,9 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       // Optional call: the minimal test store has no channels slice (in the
       // production store it always exists — same convention as the
       // paneNotificationRing guard).
-      if (willRemove) {
+      // A shadow never had channel members, principals, missions or fan-out
+      // state here, and its id must not reach the daemon as a workspace.
+      if (willRemove && !removingShadow) {
         void get().purgeMembershipDaemon?.({ workspaceId: id });
         void get().principalMarkStaleWorkspaceDaemon?.(id);
         // Missions are bound to the lifetime of their fan-out workspace: when

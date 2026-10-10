@@ -5,6 +5,8 @@
 //   - a host left the roster      → close its shadows
 //   - the selected computer moved → show that computer's last workspace, or this one's
 //   - the active workspace moved  → remember it per computer, mark a host's as seen
+//   - after a restart with a computer selected, its first list reopens the
+//     workspace last open there (shadows are not saved, so it is rebuilt)
 //
 // Reconcile reads the slice's feed, never a raw push: a failed tick keeps the
 // previous rows, so an unreachable host never empties a shadow.
@@ -26,7 +28,17 @@ export default function ShadowWorkspaceSync() {
       const st = useStore.getState();
       if (!isShadowWorkspaceId(st.activeWorkspaceId)) lastLocal = st.activeWorkspaceId;
     }
+    // Hosts whose first list after mount was already handled.
+    const firstListSeen = new Set<string>();
     return useStore.subscribe((state, prev) => {
+      const pc = state.pcRail.activePcId;
+      if (pc !== LOCAL_PC_ID && !firstListSeen.has(pc) && state.pcRailFeeds[pc]?.fetchedAt) {
+        firstListSeen.add(pc);
+        const remoteId = state.pcRail.lastWorkspaceByPc[pc];
+        if (remoteId && parseShadowWorkspaceId(state.activeWorkspaceId)?.hostId !== pc) {
+          useStore.getState().openShadowWorkspace(pc, remoteId);
+        }
+      }
       if (state.pcRailFeeds !== prev.pcRailFeeds) {
         for (const hostId of Object.keys(state.pcRailFeeds)) {
           if (state.pcRailFeeds[hostId] !== prev.pcRailFeeds[hostId]) useStore.getState().reconcileShadowWorkspaces(hostId);
@@ -57,7 +69,7 @@ export default function ShadowWorkspaceSync() {
         }
       }
       if (state.pcRail.activePcId !== prev.pcRail.activePcId) {
-        const pc = state.pcRail.activePcId;
+        firstListSeen.add(pc);
         const st = useStore.getState();
         if (pc === LOCAL_PC_ID) {
           if (isShadowWorkspaceId(st.activeWorkspaceId)) {
