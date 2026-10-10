@@ -710,8 +710,8 @@ describe('CommanderSessionManager — local reads preserve provider authority', 
     const mgr = new CommanderSessionManager({ adapter, sink: vi.fn() });
     await mgr.send('remote wake', { origin: 'automation', remoteMoa: true });
     expect(mgr.turnWokenByRemoteMoa).toBe(true);
-    expect(await mgr.send('Who needs me?', { origin: 'human' }, async () => ({ text: 'Nobody.' })))
-      .toEqual({ ok: true, localAnswer: { text: 'Nobody.' } });
+    expect(await mgr.send('Who needs me?', { origin: 'human' }, async () => ({ fleet: answerFor('Nobody.') })))
+      .toEqual({ ok: true, localAnswer: { fleet: answerFor('Nobody.') } });
     expect(mgr.turnWokenByRemoteMoa).toBe(true);
     expect(await mgr.send('Who needs me?', { origin: 'human' }, async () => ({ fallbackText: 'ctx' })))
       .toEqual({ ok: true });
