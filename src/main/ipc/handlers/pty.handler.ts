@@ -923,12 +923,11 @@ export function registerPTYHandlers(
           return;
         } catch (err: unknown) {
           const msg = err instanceof Error ? err.message : String(err);
-          // 데몬 rate-limit(DaemonPipeServer)은 창 리사이즈 burst 중 일시적으로
-          // 발생한다. pty:resize는 연속 이벤트라 이번 것을 조용히 흘려도 곧 다음
-          // resize가 정확한 크기를 싣고 온다(리사이즈 종료 시 빈도가 떨어져
-          // 마지막 이벤트는 통과). 재시도하면 부하만 가중되고, throw하면
-          // '[UNKNOWN] rate limited'가 콘솔을 도배한다 — graceful swallow.
-          if (msg.toLowerCase().includes('rate limit')) return;
+          // A daemon "rate limited" reply is NOT swallowed: it falls through to
+          // the throw below so the renderer's sendResize sees the rejection and
+          // re-sends the live geometry once the window clears. Swallowing it
+          // reported success for a resize that never happened, and the last
+          // resize of a burst (the one carrying the final size) could be lost.
           const isNotFound = msg.includes('not found') || msg.includes('not exist');
           if (!isNotFound) throw err;
           if (attempt === RESIZE_RETRY_ATTEMPTS - 1) {
