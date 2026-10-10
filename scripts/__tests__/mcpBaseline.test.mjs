@@ -47,6 +47,7 @@ describe('MCP protocol baseline guard', () => {
     const raw = fs.readFileSync(file, 'utf8');
     const f = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-base-')), 'b.json');
     writeBaseline(f, JSON.parse(raw));
-    expect(fs.readFileSync(f, 'utf8')).toBe(raw);
+    // A Windows checkout may carry CRLF (core.autocrlf); git stores LF either way.
+    expect(fs.readFileSync(f, 'utf8')).toBe(raw.replace(/\r\n/g, '\n'));
   });
 });
