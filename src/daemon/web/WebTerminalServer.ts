@@ -3359,7 +3359,7 @@ export class WebTerminalServer {
    */
   private async handleWorkspacesList(res: http.ServerResponse): Promise<void> {
     const sidebar = await this.desktopSidebar();
-    const byId = new Map<string, { id: string; name: string; panes: RemotePaneSummary[] }>();
+    const byId = new Map<string, { id: string; name: string; panes: (RemotePaneSummary & { lastActivity?: string })[] }>();
     // Workspaces holding a brain pane, so the empty rows below never list one.
     const brainWorkspaces = new Set<string>();
     for (const s of this.deps.sessionManager.listLiveSessions()) {
@@ -3381,6 +3381,9 @@ export class WebTerminalServer {
         sessionId: s.id,
         ...shellLabelOf(s.cmd),
         ...(s.cwd ? { cwd: s.cwd } : {}),
+        // The session's last output stamp (ISO), so a viewer can draw the
+        // host sidebar's idle label. Additive-optional.
+        ...(typeof s.lastActivity === 'string' && s.lastActivity ? { lastActivity: s.lastActivity } : {}),
         // #1163 — per-session agent metadata, so the attaching desktop's
         // roster can count remote agents. The name is creation-time role
         // metadata, then the daemon's CANONICAL answer (the one
@@ -3451,7 +3454,16 @@ export class WebTerminalServer {
       const extra = fields.get(w.id);
       const panes = w.panes.map((pane) => {
         const label = sidebarPanes.get(pane.sessionId);
-        return label?.paneId !== undefined && label.workspaceId === w.id ? { ...pane, paneId: label.paneId } : pane;
+        // The desktop's own pane name ("w1-1" or its label) and tab title,
+        // as its sidebar draws them. Additive-optional, like paneId.
+        return label?.paneId !== undefined && label.workspaceId === w.id
+          ? {
+              ...pane,
+              paneId: label.paneId,
+              ...(label.paneName ? { paneName: label.paneName } : {}),
+              ...(label.surfaceTitle ? { surfaceTitle: label.surfaceTitle } : {}),
+            }
+          : pane;
       });
       return extra
         ? {
