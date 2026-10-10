@@ -112,3 +112,26 @@ describe('automation RPC boundary', () => {
     expect(() => assertExternalSessionId({ id: 'pane-1' })).not.toThrow();
   });
 });
+
+describe('automation RPC — browser identity', () => {
+  const identity = { workspaceId: 'ws-1', paneId: 'pane-a', boundRevision: 2 };
+
+  it('advertises the capability, and keeps run identities and their lookups first-party', async () => {
+    const { call } = await setup();
+    expect(await call(AUTOMATION_RPC.capabilities, {}, 'mcp')).toEqual({ capabilities: ['browserIdentity'] });
+    const created = (await call(AUTOMATION_RPC.create, { draft }, 'desktop')) as AutomationMutationResult;
+    if (!created.ok) throw new Error();
+    const id = created.automation.id;
+    expect(await call(AUTOMATION_RPC.grant, { id, mode: 'approval', expectedRevision: 1, browserIdentity: identity }, 'mcp'))
+      .toEqual({ ok: false, error: 'Unavailable' });
+    const granted = (await call(AUTOMATION_RPC.grant, { id, mode: 'approval', expectedRevision: 1, browserIdentity: identity }, 'desktop')) as AutomationMutationResult;
+    expect(granted.ok).toBe(true);
+    const listed = (await call(AUTOMATION_RPC.list, {}, 'mcp')) as { automations: Array<{ action: Record<string, unknown> }> };
+    expect(listed.automations[0].action).not.toHaveProperty('browserIdentity');
+    for (const method of [AUTOMATION_RPC.runIdentity, AUTOMATION_RPC.identityRuns, AUTOMATION_RPC.noteRunBrowser]) {
+      expect(await call(method, { ptyId: 'auto-x', runId: 'x', detail: 'browser_needs_consent' }, 'mcp'), method)
+        .toEqual({ ok: false, error: 'Unavailable' });
+    }
+    expect(await call(AUTOMATION_RPC.runIdentity, { ptyId: 'auto-x' }, 'desktop')).toEqual({ run: null });
+  });
+});

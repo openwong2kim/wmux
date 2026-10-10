@@ -543,4 +543,18 @@ export const it = {
   'quitAndStop.stopFailedDetail': "Il daemon di wmux non si è arrestato, quindi wmux resta aperto e le sessioni sono ancora in esecuzione. Esegui wmux daemon stop in un terminale, poi esci di nuovo.",
   'quitAndStop.alreadyQuittingMessage': "wmux è già in chiusura.",
   'quitAndStop.alreadyQuittingDetail': "Questa chiusura lascia le sessioni in esecuzione in background. Per arrestarle, esegui wmux daemon stop in un terminale.",
+  // Scheduled runs: browser identity (protected pane)
+  'schedules.browserIdentity': "Identità del browser",
+  'schedules.browserIdentityHint': "L'esecuzione usa il browser e l'account di un riquadro protetto, limitata ai siti consentiti. wmux chiede conferma al salvataggio.",
+  'schedules.browserWorkspace': "Area di lavoro",
+  'schedules.browserPane': "Riquadro protetto",
+  'schedules.browserNone': "Nessuna",
+  'schedules.browserLoading': "Caricamento riquadri…",
+  'schedules.browserPickPane': "Scegli un riquadro protetto",
+  'schedules.browserNoPanes': "Nessun riquadro protetto in quest'area di lavoro",
+  'schedules.browserPaneUnavailable': "Questo riquadro non è più disponibile",
+  'schedules.problem.browserPane': "Scegli un riquadro protetto o imposta l'identità del browser su Nessuna.",
+  'schedules.problem.browserMode': "Una pianificazione Codex con identità del browser viene eseguita in modalità approvazione.",
+  'schedules.detail.browser_needs_consent': "Una chiamata del browser è stata rifiutata: la policy del riquadro è cambiata dopo l'autorizzazione. Salva di nuovo la pianificazione per autorizzarla.",
+  'schedules.detail.browser_policy_denied': "Una chiamata del browser è stata rifiutata dalla policy dei siti del riquadro.",
 } as const;

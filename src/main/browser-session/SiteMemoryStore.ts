@@ -3,6 +3,7 @@ import * as path from 'path';
 import { getWmuxDir } from '../../daemon/config';
 import { atomicWriteJSON, BACKUP_SUFFIXES } from '../../daemon/util/atomicWrite';
 import { isUnsafeKey } from '../account/accountStore';
+import { isMemoryKey } from '../../shared/browserMemoryNamespace';
 import {
   SITE_MEMORY_MAX_FILE_BYTES,
   bumpProvenFlowCount,
@@ -74,7 +75,7 @@ export class SiteMemoryStore {
    * reaches us from a page. Refused here, once, so no caller has to remember.
    */
   private fileFor(workspaceId: string, slug: string): string | null {
-    if (!workspaceId || isUnsafeKey(workspaceId) || !/^[A-Za-z0-9_-]{1,128}$/.test(workspaceId)) {
+    if (!workspaceId || isUnsafeKey(workspaceId) || !isMemoryKey(workspaceId)) {
       return null;
     }
     if (toDomainSlug(slug) !== slug) return null;

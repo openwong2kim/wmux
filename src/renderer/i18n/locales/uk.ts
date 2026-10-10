@@ -544,4 +544,18 @@ export const uk = {
   'quitAndStop.stopFailedDetail': "Демон wmux не зупинився, тому wmux залишається відкритим, а сеанси й далі працюють. Виконайте wmux daemon stop у терміналі й завершіть роботу ще раз.",
   'quitAndStop.alreadyQuittingMessage': "wmux уже завершує роботу.",
   'quitAndStop.alreadyQuittingDetail': "Під час цього виходу сеанси й далі працюватимуть у фоні. Щоб зупинити їх, виконайте wmux daemon stop у терміналі.",
+  // Scheduled runs: browser identity (protected pane)
+  'schedules.browserIdentity': "Браузерний обліковий запис",
+  'schedules.browserIdentityHint': "Запуск використовує браузер і акаунт однієї захищеної панелі, лише з її дозволеними сайтами. Під час збереження wmux попросить підтвердження.",
+  'schedules.browserWorkspace': "Робочий простір",
+  'schedules.browserPane': "Захищена панель",
+  'schedules.browserNone': "Немає",
+  'schedules.browserLoading': "Завантаження панелей…",
+  'schedules.browserPickPane': "Виберіть захищену панель",
+  'schedules.browserNoPanes': "У цьому робочому просторі немає захищених панелей",
+  'schedules.browserPaneUnavailable': "Ця панель більше недоступна",
+  'schedules.problem.browserPane': "Виберіть захищену панель або встановіть «Немає».",
+  'schedules.problem.browserMode': "Розклад Codex із браузерним обліковим записом працює в режимі схвалення.",
+  'schedules.detail.browser_needs_consent': "Виклик браузера відхилено: політика панелі змінилася після дозволу розкладу. Збережіть розклад знову, щоб дозволити його.",
+  'schedules.detail.browser_policy_denied': "Виклик браузера відхилено політикою сайтів панелі.",
 } as const;

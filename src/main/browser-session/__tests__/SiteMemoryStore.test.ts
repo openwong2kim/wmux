@@ -9,6 +9,7 @@ import {
   buildFailureEntry,
   buildNoteEntry,
 } from '../../../shared/browserMemory/siteMemory';
+import { memoryNamespaceKey } from '../../../shared/browserMemoryNamespace';
 
 const NOW = 1_800_000_000_000;
 let dir: string;
@@ -44,6 +45,25 @@ afterEach(async () => {
 });
 
 describe('SiteMemoryStore', () => {
+  it('keeps a protected namespace apart from the legacy workspace tree, in both directions', async () => {
+    const ns = memoryNamespaceKey('ws-1', 'Work', '0123456789abcdef') as string;
+    await store.recordFailure('ws-1', 'example.com', failureEntry(), NOW);
+    const legacyBytes = fs.readFileSync(fileFor('ws-1', 'example.com'), 'utf8');
+    // A protected namespace starts empty.
+    expect(store.get(ns, 'example.com', NOW)).toBeNull();
+    expect(await store.recordFailure(ns, 'example.com', failureEntry({ what: 'account step' }), NOW)).toBe(true);
+    expect(store.get(ns, 'example.com', NOW)?.workspaceId).toBe(ns);
+    // The legacy record is byte-for-byte what it was.
+    expect(fs.readFileSync(fileFor('ws-1', 'example.com'), 'utf8')).toBe(legacyBytes);
+    // A file copied between namespaces fails the self-check either way.
+    fs.copyFileSync(fileFor('ws-1', 'example.com'), fileFor(ns, 'example.com'));
+    expect(store.get(ns, 'example.com', NOW)).toBeNull();
+    const other = memoryNamespaceKey('ws-1', 'Work', 'fedcba9876543210') as string;
+    fs.mkdirSync(path.dirname(fileFor(other, 'x')), { recursive: true });
+    fs.copyFileSync(fileFor(ns, 'example.com'), fileFor(other, 'example.com'));
+    expect(store.get(other, 'example.com', NOW)).toBeNull();
+  });
+
   it('never serves a record whose workspaceId disagrees with its directory', async () => {
     await store.recordFailure('ws-1', 'example.com', failureEntry(), NOW);
     const file = fileFor('ws-1', 'example.com');

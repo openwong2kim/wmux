@@ -33,9 +33,15 @@ export const AUTOMATION_AGENT_CAPS: Readonly<Record<AutomationAgent, {
   autoMode: boolean;
   toolList: boolean;
   defaultMode: AutomationPermissionMode;
+  /**
+   * An unattended run with a browser identity keeps the wmux server (main
+   * admits only browser calls from it). An agent without per-tool control
+   * of that server runs a browser identity in approval mode only.
+   */
+  unattendedBrowserIdentity: boolean;
 }>> = {
-  claude: { autoMode: true, toolList: true, defaultMode: 'auto' },
-  codex: { autoMode: false, toolList: false, defaultMode: 'scoped' },
+  claude: { autoMode: true, toolList: true, defaultMode: 'auto', unattendedBrowserIdentity: true },
+  codex: { autoMode: false, toolList: false, defaultMode: 'scoped', unattendedBrowserIdentity: false },
 };
 
 export interface AutomationScheduleTrigger {
@@ -47,6 +53,26 @@ export interface AutomationScheduleTrigger {
   /** A missed occurrence still fires if the daemon sees it within this window. */
   graceMinutes: number;
 }
+
+/**
+ * A schedule's browser identity, as the daemon holds it: a REFERENCE to the
+ * snapshot main recorded when the operator confirmed it (keyed by automation
+ * id + `boundRevision` in main's own store). The pane, its Chrome profile and
+ * its allowed sites live in main; `workspaceId` / `paneId` here are display
+ * hints only, never trusted. No create, update or propose payload can carry
+ * one — only `automation.grant` from main.
+ */
+export interface AutomationBrowserIdentity {
+  /** Display hint: the workspace of the identity's pane. */
+  workspaceId: string;
+  /** Display hint: the protected pane. */
+  paneId: string;
+  /** The automation revision this identity was granted at. */
+  boundRevision: number;
+}
+
+/** What a daemon advertises on `automation.capabilities`. */
+export const AUTOMATION_CAPABILITY_BROWSER_IDENTITY = 'browserIdentity';
 
 export interface AutomationLaunchAction {
   kind: 'launch';
@@ -60,6 +86,8 @@ export interface AutomationLaunchAction {
   effort?: string;
   /** Delivered by pasting into the ready agent — never joined into a shell string. */
   prompt: string;
+  /** Absent = no browser identity (the run behaves exactly as before). Daemon-stored from a grant only. */
+  browserIdentity?: AutomationBrowserIdentity;
 }
 
 export interface AutomationPermission {
@@ -136,7 +164,14 @@ export type AutomationRunReason =
  * pressed; `submit_unconfirmed` — the prompt stayed unsubmitted until the
  * readiness deadline.
  */
-export type AutomationRunDetail = 'submit_retried' | 'prompt_not_in_composer' | 'submit_unconfirmed';
+export type AutomationRunDetail =
+  | 'submit_retried'
+  | 'prompt_not_in_composer'
+  | 'submit_unconfirmed'
+  /** A browser call was refused because the pane's identity or policy changed since the grant. */
+  | 'browser_needs_consent'
+  /** A browser call was refused by the pane's policy. */
+  | 'browser_policy_denied';
 
 export interface AutomationRun {
   id: string;
@@ -159,6 +194,10 @@ export interface AutomationRun {
   endedAt?: number;
   /** True once a plain-text output snapshot was written for this run. */
   hasSnapshot?: boolean;
+  /** The browser identity this run launched with (immutable; a later edit never changes it). First-party reads only. */
+  browserIdentity?: AutomationBrowserIdentity;
+  /** Set on broadcast run events in place of `browserIdentity`, which the event stream never carries. */
+  hasBrowserIdentity?: true;
 }
 
 /** Terminal states — a run never leaves these. */
@@ -216,7 +255,41 @@ export const AUTOMATION_RPC = {
   cancelRun: 'automation.cancelRun',
   propose: 'automation.propose',
   ackAttention: 'automation.ackAttention',
+  /** `{ capabilities: string[] }` — an older daemon answers Unknown method. */
+  capabilities: 'automation.capabilities',
+  /** First-party: the live run behind a run PTY of THIS daemon incarnation, or null. */
+  runIdentity: 'automation.runIdentity',
+  /** First-party: the live identity runs (for main's process walk). */
+  identityRuns: 'automation.identityRuns',
+  /** First-party: record a refused browser call on a live run's detail. */
+  noteRunBrowser: 'automation.noteRunBrowser',
 } as const;
+
+export interface AutomationCapabilitiesResult { capabilities: string[] }
+
+/** `automation.runIdentity` params / reply. */
+export interface AutomationRunIdentityParams { ptyId: string }
+export interface AutomationRunIdentityResult {
+  run: {
+    runId: string;
+    automationId: string;
+    revision: number;
+    /** The mode the run launched with (main checks it against what was confirmed). */
+    effectiveMode: AutomationPermissionMode;
+    ptyId: string;
+    browserIdentity: AutomationBrowserIdentity;
+  } | null;
+}
+
+/** `automation.identityRuns` reply: live runs with a browser identity, and their shell pid. */
+export interface AutomationIdentityRunsResult {
+  runs: Array<{ ptyId: string; pid: number; automationId: string; revision: number }>;
+}
+
+export interface AutomationNoteRunBrowserParams {
+  runId: string;
+  detail: Extract<AutomationRunDetail, 'browser_needs_consent' | 'browser_policy_denied'>;
+}
 
 /**
  * `needs-regrant`: an update changed what runs after a non-approval grant, so
@@ -265,6 +338,12 @@ export interface AutomationGrantParams {
    * grant never lands on an edit nobody saw.
    */
   expectedRevision?: number;
+  /**
+   * Main only: the browser identity reference to bind (null removes it). When
+   * present the grant requires `expectedRevision`, bumps the revision by one
+   * and grants at the new revision, which the identity names as `boundRevision`.
+   */
+  browserIdentity?: AutomationBrowserIdentity | null;
 }
 /** `test` runs once without enabling the schedule. */
 export interface AutomationRunNowParams { id: string; kind: 'manual' | 'test' }

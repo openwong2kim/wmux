@@ -10,6 +10,7 @@ import {
   AUTOMATION_DEFAULTS,
   AUTOMATION_TOOL_NAME_RE,
   type Automation,
+  type AutomationBrowserIdentity,
   type AutomationDraft,
   type AutomationPermissionMode,
 } from '../../shared/automation';
@@ -70,6 +71,11 @@ export function validateDraft(raw: unknown): Checked<AutomationDraft> {
 
   const a = d['action'] as Record<string, unknown> | undefined;
   if (!a || typeof a !== 'object' || a['kind'] !== 'launch') return fail('Unsupported action');
+  // Refused, not stripped: a browser identity is bound only by main's grant,
+  // and silently dropping one would save a schedule that runs without it.
+  if (a['browserIdentity'] !== undefined && a['browserIdentity'] !== null) {
+    return fail('A browser identity is set only from the desktop app');
+  }
   const cwd = a['cwd'];
   if (typeof cwd !== 'string' || !cwd || cwd.length > AUTOMATION_CWD_MAX || cwd.includes('\0') || !isAbsoluteAnyPlatform(cwd)) {
     return fail('Folder must be an absolute path');
@@ -116,6 +122,27 @@ export function validateDraft(raw: unknown): Checked<AutomationDraft> {
   };
 }
 
+const ID_TOKEN_RE = /^[A-Za-z0-9_-]{1,128}$/;
+
+/** Shape-check a browser identity reference (main holds what it refers to). */
+export function validateBrowserIdentity(raw: unknown): Checked<AutomationBrowserIdentity> {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return fail('Invalid browser identity');
+  const r = raw as Record<string, unknown>;
+  if (
+    typeof r['workspaceId'] !== 'string' || !ID_TOKEN_RE.test(r['workspaceId'])
+    || typeof r['paneId'] !== 'string' || !ID_TOKEN_RE.test(r['paneId'])
+    || typeof r['boundRevision'] !== 'number' || !Number.isSafeInteger(r['boundRevision']) || r['boundRevision'] < 1
+  ) {
+    return fail('Invalid browser identity');
+  }
+  return { ok: true, value: { workspaceId: r['workspaceId'], paneId: r['paneId'], boundRevision: r['boundRevision'] } };
+}
+
+function sameIdentity(a: AutomationBrowserIdentity | undefined, b: AutomationBrowserIdentity | undefined): boolean {
+  if (!a || !b) return a === b;
+  return a.boundRevision === b.boundRevision && a.workspaceId === b.workspaceId && a.paneId === b.paneId;
+}
+
 /** scoped mode v1: bare tool names only, deduplicated, bounded. */
 export function validateAllowedTools(raw: unknown): Checked<string[]> {
   if (!Array.isArray(raw) || raw.length === 0 || raw.length > AUTOMATION_MAX_ALLOWED_TOOLS) {
@@ -140,16 +167,25 @@ export function changesWhatRuns(before: AutomationDraft['action'], after: Automa
     (before.accountId ?? '') !== (after.accountId ?? '') ||
     before.prompt !== after.prompt ||
     (before.model ?? '') !== (after.model ?? '') ||
-    (before.effort ?? '') !== (after.effort ?? '');
+    (before.effort ?? '') !== (after.effort ?? '') ||
+    !sameIdentity(before.browserIdentity, after.browserIdentity);
 }
+
+type RegrantView = Pick<Automation, 'permission' | 'revision'> & {
+  action?: Pick<Automation['action'], 'browserIdentity'>;
+};
 
 /**
  * A non-approval mode whose grant predates the current revision. Computed,
  * never stored: such a schedule's runs are skipped (`needs_regrant`) until a
  * human grants it again — it never runs in a weaker mode instead.
  */
-export function needsRegrant(automation: Pick<Automation, 'permission' | 'revision'>): boolean {
+export function needsRegrant(automation: RegrantView): boolean {
   const { mode, grantedRevision } = automation.permission;
+  const identity = automation.action?.browserIdentity;
+  // A browser identity is a grant of its own, in every mode: it runs only at
+  // the revision it was granted at, together with the mode.
+  if (identity) return identity.boundRevision !== automation.revision || grantedRevision !== automation.revision;
   return mode !== 'approval' && grantedRevision !== automation.revision;
 }
 

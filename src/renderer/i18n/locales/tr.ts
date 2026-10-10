@@ -544,4 +544,18 @@ export const tr = {
   'quitAndStop.stopFailedDetail': "wmux arka plan hizmeti durmadı; bu yüzden wmux açık kalıyor ve oturumlarınız hâlâ çalışıyor. Bir terminalde wmux daemon stop komutunu çalıştırın, ardından yeniden çıkın.",
   'quitAndStop.alreadyQuittingMessage': "wmux zaten kapanıyor.",
   'quitAndStop.alreadyQuittingDetail': "Bu çıkış oturumlarınızı arka planda çalışır halde bırakır. Durdurmak için bir terminalde wmux daemon stop komutunu çalıştırın.",
+  // Scheduled runs: browser identity (protected pane)
+  'schedules.browserIdentity': "Tarayıcı kimliği",
+  'schedules.browserIdentityHint': "Çalıştırma, korumalı bir bölmenin tarayıcısını ve hesabını yalnızca o bölmenin izinli siteleriyle kullanır. Kaydederken wmux onay ister.",
+  'schedules.browserWorkspace': "Çalışma alanı",
+  'schedules.browserPane': "Korumalı bölme",
+  'schedules.browserNone': "Yok",
+  'schedules.browserLoading': "Bölmeler yükleniyor…",
+  'schedules.browserPickPane': "Korumalı bir bölme seçin",
+  'schedules.browserNoPanes': "Bu çalışma alanında korumalı bölme yok",
+  'schedules.browserPaneUnavailable': "Bu bölme artık kullanılamıyor",
+  'schedules.problem.browserPane': "Korumalı bir bölme seçin veya tarayıcı kimliğini Yok yapın.",
+  'schedules.problem.browserMode': "Tarayıcı kimliği olan bir Codex zamanlaması onay modunda çalışır.",
+  'schedules.detail.browser_needs_consent': "Bir tarayıcı çağrısı reddedildi: zamanlama izin verildikten sonra bölmenin politikası değişti. İzin vermek için zamanlamayı yeniden kaydedin.",
+  'schedules.detail.browser_policy_denied': "Bir tarayıcı çağrısı bölmenin site politikası tarafından reddedildi.",
 } as const;

@@ -2,7 +2,6 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { PlaywrightEngine } from '../playwright/PlaywrightEngine';
 import { withAutomationLease } from '../playwright/automationLease';
-import { browserScopeKey } from '../playwright/snapshot';
 import { describeToolError } from '../playwright/toolError';
 import { isAgentWindowScopeError } from '../../shared/liveWriteScope';
 import {
@@ -33,7 +32,7 @@ import {
 } from '../../shared/browserReplay/promotedSkill';
 import { requireBrowserTargetScope } from '../playwright/browserScope';
 import { domainFromUrl } from '../../shared/browserMemory/siteMemory';
-import { ringFor } from './actionRing';
+import { ringFor, ringScopeKey } from './actionRing';
 import { replayBlockedReason, replayTrace, type ReplayResult } from './replayRunner';
 
 // ---------------------------------------------------------------------------
@@ -85,6 +84,14 @@ const BROWSER_REPLAY_SHAPE = {
 };
 
 /**
+ * A protected pane's memory completions name the policy epoch their scope was
+ * authorized at; main refuses one from an identity that has since changed.
+ */
+function completionParams<T extends Record<string, unknown>>(scope: BrowserTargetScope, params: T): T {
+  return scope.protection?.protected === true ? { ...params, policyEpoch: scope.protection.epoch } : params;
+}
+
+/**
  * Tell the site memory how this replay went. Fire-and-forget, always.
  *
  * The one instruction a failed replay can leave behind that is worth having
@@ -111,17 +118,17 @@ function recordReplayOutcome(
   if (result.ok) {
     // Counter only — never a note. A note carrying the count would hash to a
     // new id on every success and evict the agent's own notes at the cap.
-    void sendScopedBrowserRpc('browser.siteMemory.record', scope, {
+    void sendScopedBrowserRpc('browser.siteMemory.record', scope, completionParams(scope, {
       domain,
       kind: 'success',
-    }).catch(() => {});
+    })).catch(() => undefined);
     return;
   }
   // An inconclusive run means the PAGE changed shape, not that the flow is
   // broken — the same reason it is kept out of the trace's failure streak.
   if (result.inconclusive === true) return;
   const failed = result.steps.filter((s) => !s.ok)[0];
-  void sendScopedBrowserRpc('browser.siteMemory.record', scope, {
+  void sendScopedBrowserRpc('browser.siteMemory.record', scope, completionParams(scope, {
     domain,
     kind: 'failure',
     source: 'replay',
@@ -129,7 +136,7 @@ function recordReplayOutcome(
     what: `replay "${name}" stopped at step ${result.failedStep ?? '?'}`,
     cause: failed?.detail ?? '',
     tryInstead: 'this page needs re-recording — snapshot, finish live, then save again',
-  }).catch(() => {
+  })).catch(() => {
     /* memory is bookkeeping; it never fails a replay */
   });
 }
@@ -405,7 +412,7 @@ export function createReplayToolCatalog(deps: BrowserToolDeps) {
         true,
       );
     }
-    const tail = ring.tail(browserScopeKey(scope), count);
+    const tail = ring.tail(ringScopeKey(scope), count);
     if (tail.length === 0) {
       return text(
         'Nothing to save — no successful browser actions have been recorded on this surface yet.',
@@ -450,7 +457,7 @@ export function createReplayToolCatalog(deps: BrowserToolDeps) {
     const res = await sendScopedBrowserRpc<{ ok: boolean; reason?: string; trace?: TraceRecord }>(
       'browser.actionCache.put',
       scope,
-      { trace },
+      completionParams(scope, { trace }),
     );
     if (!res?.ok || !res.trace) {
       return text(`Could not save "${name}": ${res?.reason ?? 'the store refused the trace'}.`, true);
@@ -551,12 +558,12 @@ export function createReplayToolCatalog(deps: BrowserToolDeps) {
     }
 
     const result = await replayTrace(page, trace, variables);
-    await sendScopedBrowserRpc('browser.actionCache.stats', scope, {
+    await sendScopedBrowserRpc('browser.actionCache.stats', scope, completionParams(scope, {
       name,
       ok: result.ok,
       ...(result.failedStep !== undefined && { failedStep: result.failedStep }),
       ...(result.inconclusive === true && { inconclusive: true }),
-    }).catch(() => {
+    })).catch(() => {
       /* statistics are an optimization for the hint pipe; never fail a run on them */
     });
     recordReplayOutcome(scope, trace, name, result);

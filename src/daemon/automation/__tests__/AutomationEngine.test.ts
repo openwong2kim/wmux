@@ -760,3 +760,127 @@ describe('AutomationEngine — attached finished runs', () => {
     expect(h.destroyed).toEqual([]);
   });
 });
+
+describe('AutomationEngine — browser identity', () => {
+  const identity = (boundRevision: number, over: Record<string, unknown> = {}) => ({
+    workspaceId: 'ws-1',
+    paneId: 'pane-a',
+    boundRevision,
+    ...over,
+  });
+
+  it('no draft path can carry an identity: create, update and propose refuse it', async () => {
+    const h = harness();
+    await h.engine.start({ timers: false });
+    const withIdentity = draft({ action: { kind: 'launch', cwd: '/work/repo', agent: 'claude', prompt: 'p', browserIdentity: identity(1) } });
+    expect(await h.engine.create(withIdentity)).toEqual({ ok: false, error: expect.stringContaining('browser identity') });
+    expect(await h.engine.propose(withIdentity)).toMatchObject({ ok: false });
+    const a = await h.engine.create(draft());
+    if (!a.ok) throw new Error();
+    expect(await h.engine.update(a.automation.id, withIdentity)).toMatchObject({ ok: false });
+    expect(h.engine.list().automations[0].action.browserIdentity).toBeUndefined();
+  });
+
+  it('a grant binds the identity at the next revision, in approval mode too, and only with a pinned revision', async () => {
+    const h = harness();
+    await h.engine.start({ timers: false });
+    const a = await h.engine.create(draft());
+    if (!a.ok) throw new Error();
+    const id = a.automation.id;
+    expect(await h.engine.grant(id, 'approval', undefined, undefined, identity(2))).toMatchObject({ ok: false });
+    expect(await h.engine.grant(id, 'approval', undefined, 1, identity(1))).toMatchObject({ ok: false });
+    const g = await h.engine.grant(id, 'approval', undefined, 1, identity(2));
+    expect(g.ok && g.automation).toMatchObject({
+      revision: 2,
+      permission: { mode: 'approval', grantedRevision: 2 },
+      action: { browserIdentity: { paneId: 'pane-a', boundRevision: 2 } },
+    });
+    // A grant that leaves the identity out cannot change the mode under it.
+    expect(await h.engine.grant(id, 'bypass', undefined, 2)).toMatchObject({ ok: false });
+    // Re-binding the identity is a new revision even when the mode is the same.
+    const again = await h.engine.grant(id, 'auto', undefined, 2, identity(3));
+    expect(again.ok && again.automation).toMatchObject({ revision: 3, permission: { mode: 'auto', grantedRevision: 3 } });
+    // Removing it is a grant too.
+    const removed = await h.engine.grant(id, 'approval', undefined, 3, null);
+    expect(removed.ok && removed.automation.revision).toBe(4);
+    expect(removed.ok && removed.automation.action.browserIdentity).toBeUndefined();
+    expect(removed.ok && removed.automation.permission).toEqual({ mode: 'approval' });
+  });
+
+  it('an edit that changes what runs keeps the identity but leaves it ungranted', async () => {
+    const h = harness();
+    await h.engine.start({ timers: false });
+    const a = await h.engine.create(draft());
+    if (!a.ok) throw new Error();
+    await h.engine.grant(a.automation.id, 'approval', undefined, 1, identity(2));
+    const renamed = await h.engine.update(a.automation.id, draft({ name: 'Renamed' }));
+    expect(renamed.ok && renamed.automation).toMatchObject({ revision: 2, action: { browserIdentity: { boundRevision: 2 } } });
+    expect((await h.engine.runNow(a.automation.id, 'test')).ok).toBe(true);
+    await settleLaunch(h);
+    const edited = await h.engine.update(a.automation.id, draft({ action: { kind: 'launch', cwd: '/work/repo', agent: 'claude', prompt: 'other' } }));
+    expect(edited.ok && edited.automation.revision).toBe(3);
+    expect(edited.ok && edited.automation.action.browserIdentity?.boundRevision).toBe(2);
+    const skipped = await h.engine.startRun(h.engine.list().automations[0], h.clock.t, 'scheduled');
+    expect(skipped).toMatchObject({ state: 'skipped', reason: 'needs_regrant' });
+  });
+
+  it('Codex with an identity is approval-only', async () => {
+    const h = harness();
+    await h.engine.start({ timers: false });
+    const a = await h.engine.create(draft({ action: { kind: 'launch', cwd: '/work/repo', agent: 'codex', prompt: 'p' } }));
+    if (!a.ok) throw new Error();
+    expect(await h.engine.grant(a.automation.id, 'bypass', undefined, 1, identity(2))).toMatchObject({ ok: false });
+    expect((await h.engine.grant(a.automation.id, 'approval', undefined, 1, identity(2))).ok).toBe(true);
+  });
+
+  it('answers the run identity only for a live run of this incarnation, with the snapshot it launched with', async () => {
+    const h = harness();
+    await h.engine.start({ timers: false });
+    const a = await h.engine.create(draft());
+    if (!a.ok) throw new Error();
+    await h.engine.grant(a.automation.id, 'auto', undefined, 1, identity(2));
+    expect((await h.engine.runNow(a.automation.id, 'manual')).ok).toBe(true);
+    await settleLaunch(h);
+    const run = h.engine.listRuns()[0];
+    expect(run.browserIdentity).toMatchObject({ paneId: 'pane-a', boundRevision: 2 });
+    // The unattended run keeps the wmux server (browser-only is main's rule).
+    expect(h.created[0].command).toBe('claude --permission-mode auto');
+    // No workspace hint in its env: its workspace comes from main's walk.
+    expect(h.created[0].env['WMUX_WORKSPACE_ID']).toBeUndefined();
+    const ri = h.engine.runIdentity(run.ptyId);
+    expect(ri.run).toMatchObject({ runId: run.id, automationId: a.automation.id, revision: 2, browserIdentity: { paneId: 'pane-a' } });
+    expect(h.engine.identityRuns().runs).toEqual([{ ptyId: run.ptyId, pid: 4242, automationId: a.automation.id, revision: 2 }]);
+    // The broadcast event says only that the run has one.
+    const ev = h.events.filter((e) => e.type === 'run-changed').at(-1) as unknown as { run: Record<string, unknown> };
+    expect(ev.run).not.toHaveProperty('browserIdentity');
+    expect(ev.run.hasBrowserIdentity).toBe(true);
+    // A later edit never changes what the running run is.
+    await h.engine.grant(a.automation.id, 'auto', undefined, 2, identity(3, { paneId: 'pane-z' }));
+    expect(h.engine.runIdentity(run.ptyId).run?.browserIdentity.paneId).toBe('pane-a');
+    // A refused browser call is recorded on the run.
+    expect(await h.engine.noteRunBrowser(run.id, 'browser_needs_consent')).toEqual({ ok: true });
+    expect(h.engine.listRuns()[0].detail).toBe('browser_needs_consent');
+    // An unknown or ended run gets nothing.
+    expect(h.engine.runIdentity('auto-nope').run).toBeNull();
+    await h.engine.cancelRun(run.id);
+    expect(h.engine.runIdentity(run.ptyId).run).toBeNull();
+    expect(h.engine.identityRuns().runs).toEqual([]);
+    // A fresh daemon incarnation answers nothing for the same PTY.
+    const restarted = harness({ dir: h.dir });
+    await restarted.engine.start({ timers: false });
+    expect(restarted.engine.runIdentity(run.ptyId).run).toBeNull();
+  });
+
+  it('a schedule without an identity launches exactly as before', async () => {
+    const h = harness();
+    await h.engine.start({ timers: false });
+    const a = await h.engine.create(draft());
+    if (!a.ok) throw new Error();
+    await h.engine.grant(a.automation.id, 'auto', undefined);
+    await h.engine.runNow(a.automation.id, 'manual');
+    await settleLaunch(h);
+    expect(h.created[0].command).toBe('claude --permission-mode auto --disallowedTools mcp__wmux');
+    expect(h.engine.listRuns()[0].browserIdentity).toBeUndefined();
+    expect(h.engine.runIdentity(h.engine.listRuns()[0].ptyId).run).toBeNull();
+  });
+});

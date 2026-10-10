@@ -12,9 +12,12 @@ import {
   isWorkspaceScopeUnresolvedError,
   WorkspaceScopeUnresolvedError,
   WORKSPACE_SCOPE_UNRESOLVED_CODE,
-  paneProfileRefusal,
+  browserCallRefusal,
+  lastKnownProtection,
+  rememberProtection,
   type BrowserTargetScope,
 } from './browserScope';
+import { BrowserPolicyError, POLICY_DENIED_CODE } from '../../shared/browserPolicy';
 import { attachPageCapture } from './pageCapture';
 import { trackRequestBaseline } from './actionSettle';
 import {
@@ -110,6 +113,10 @@ interface CdpInfoResponse {
    * Chrome instances on two ports.
    */
   profile?: string;
+  /** Protected pane: present (true) only for one. */
+  protected?: boolean;
+  /** The policy epoch the protected pane's connection is good for. */
+  policyEpoch?: number;
   targets: CdpTargetInfo[];
 }
 
@@ -477,6 +484,8 @@ export class PlaywrightEngine {
     this.liveWriteScope = undefined;
     this.connectedWorkspaceId = undefined;
     this.connectedProfile = undefined;
+    this.connectedPolicyEpoch = undefined;
+    this.downloadDenySession = null;
     if (s) {
       await s.detach().catch(() => { /* session may already be gone */ });
     }
@@ -500,6 +509,26 @@ export class PlaywrightEngine {
   /** Whether main has ever reported `profile`. Not cleared on disconnect: it
    *  describes main, not the connection. */
   private mainReportsProfile = false;
+  /** Protected pane: the policy epoch the live connection was made under
+   *  (undefined = an unprotected connection). */
+  private connectedPolicyEpoch: number | undefined;
+
+  /** Protected pane: the session holding this connection's download deny. */
+  private downloadDenySession: CDPSession | null = null;
+
+  /**
+   * Protected pane: deny downloads on this connection's browser. Playwright's
+   * own attach sets the default context to allowAndName, undoing any deny set
+   * before it; main's download guard cancels whatever still begins. The
+   * session stays attached for the connection's life: Chrome drops a download
+   * setting when the session that made it detaches.
+   */
+  private async denyDownloads(): Promise<void> {
+    if (!this.browser) return;
+    const session = await this.browser.newBrowserCDPSession();
+    this.downloadDenySession = session;
+    await session.send('Browser.setDownloadBehavior', { behavior: 'deny' });
+  }
 
   async ensureConnected(workspaceId?: string): Promise<void> {
     const reusable =
@@ -521,16 +550,38 @@ export class PlaywrightEngine {
         )) as CdpInfoResponse;
         this.cacheShellUrl(info);
         const profile = typeof info.profile === 'string' ? info.profile : undefined;
-        // Same (workspace, profile): keep the live connection.
-        if (reusable && profile === this.connectedProfile) return;
-        // The profile moved: drop the old browser even if the endpoint looks
-        // the same, so nothing keeps driving the previous account's Chrome.
-        if (this.browser && profile !== this.connectedProfile) await this.disconnect();
+        const policyEpoch = info.protected === true ? (info.policyEpoch ?? -1) : undefined;
+        if (workspaceId && info.protected === true) {
+          // This operation was authorized as unprotected (or ran on that answer
+          // after its own authorization failed), but the pane is protected now:
+          // nothing may run on that stale answer.
+          const wasUnprotected = lastKnownProtection(workspaceId) === false;
+          rememberProtection(workspaceId, true);
+          if (wasUnprotected) {
+            throw new BrowserPolicyError(
+              POLICY_DENIED_CODE,
+              "this pane's browser became protected while the call was starting, so nothing was done. Retry the call once.",
+            );
+          }
+        }
+        // Same (workspace, profile, policy epoch): keep the live connection.
+        if (reusable && profile === this.connectedProfile && policyEpoch === this.connectedPolicyEpoch) return;
+        // The profile moved, or a protected pane's policy changed: drop the old
+        // browser and every Page cached on it, even if the endpoint looks the
+        // same, so nothing keeps driving under the previous terms.
+        if (
+          this.browser
+          && (profile !== this.connectedProfile || policyEpoch !== this.connectedPolicyEpoch)
+        ) {
+          await this.disconnect();
+        }
         // Live-Chrome attach reports a ws endpoint instead of a port.
         if (typeof info.wsEndpoint === 'string' && info.wsEndpoint.startsWith('ws')) {
           await this.connect(info.wsEndpoint);
           this.connectedWorkspaceId = workspaceId;
           this.connectedProfile = profile;
+          this.connectedPolicyEpoch = policyEpoch;
+          if (policyEpoch !== undefined) await this.denyDownloads();
           return;
         }
         if (
@@ -547,11 +598,13 @@ export class PlaywrightEngine {
         await this.connect(info.cdpPort);
         this.connectedWorkspaceId = workspaceId;
         this.connectedProfile = profile;
+        this.connectedPolicyEpoch = policyEpoch;
+        if (policyEpoch !== undefined) await this.denyDownloads();
         return;
       } catch (err) {
         if (err instanceof CdpAttachInfoUnavailableError) throw err;
         // A refusal, like the one above: retrying cannot change main's answer.
-        const refusal = paneProfileRefusal(err);
+        const refusal = browserCallRefusal(err);
         if (refusal) throw refusal;
         // The profile check itself failed. A rebind may have landed in the same
         // moment, so the live connection cannot be proven to be this pane's
@@ -753,7 +806,7 @@ export class PlaywrightEngine {
     try {
       info = (await sendRpc('browser.cdp.info', { workspaceId: scope.workspaceId })) as CdpInfoResponse;
     } catch (err) {
-      throw paneProfileRefusal(err) ?? new AgentWindowScopeError(label, targetId);
+      throw browserCallRefusal(err) ?? new AgentWindowScopeError(label, targetId);
     }
     this.cacheShellUrl(info);
     // The policy can have been switched to 'all' since the value was cached;
@@ -1119,7 +1172,7 @@ export class PlaywrightEngine {
                     }
                   } catch (resolveErr) {
                     if (isWorkspaceScopeUnresolvedError(resolveErr)) throw resolveErr;
-                    if (paneProfileRefusal(resolveErr)) throw paneProfileRefusal(resolveErr);
+                    if (browserCallRefusal(resolveErr)) throw browserCallRefusal(resolveErr);
                     console.error(
                       '[PlaywrightEngine] Could not pin the auto-opened surface:',
                       resolveErr instanceof Error ? resolveErr.message : String(resolveErr),
@@ -1131,7 +1184,7 @@ export class PlaywrightEngine {
             }
           } catch (openErr) {
             if (isWorkspaceScopeUnresolvedError(openErr)) throw openErr;
-            if (paneProfileRefusal(openErr)) throw paneProfileRefusal(openErr);
+            if (browserCallRefusal(openErr)) throw browserCallRefusal(openErr);
             console.error('[PlaywrightEngine] Auto-open failed:', openErr instanceof Error ? openErr.message : String(openErr));
           }
         }
@@ -1145,7 +1198,7 @@ export class PlaywrightEngine {
       } catch (err) {
         if (isWorkspaceScopeUnresolvedError(err)) throw err;
         if (err instanceof CdpAttachInfoUnavailableError) throw err;
-        if (paneProfileRefusal(err)) throw paneProfileRefusal(err);
+        if (browserCallRefusal(err)) throw browserCallRefusal(err);
         console.error(
           `[PlaywrightEngine] getPage attempt ${attempt} failed:`,
           err instanceof Error ? err.message : String(err),
@@ -1346,7 +1399,7 @@ export class PlaywrightEngine {
       }
     } catch (err) {
       if (isWorkspaceScopeUnresolvedError(err)) throw err;
-      if (paneProfileRefusal(err)) throw paneProfileRefusal(err);
+      if (browserCallRefusal(err)) throw browserCallRefusal(err);
       console.error('[PlaywrightEngine] findViaTargetDomain error:', err instanceof Error ? err.message : String(err));
       return null;
     }
@@ -1446,7 +1499,7 @@ export class PlaywrightEngine {
       return null;
     } catch (err) {
       if (isWorkspaceScopeUnresolvedError(err)) throw err;
-      if (paneProfileRefusal(err)) throw paneProfileRefusal(err);
+      if (browserCallRefusal(err)) throw browserCallRefusal(err);
       console.error('[PlaywrightEngine] findViaJsonEndpoint error:', err instanceof Error ? err.message : String(err));
       return null;
     }

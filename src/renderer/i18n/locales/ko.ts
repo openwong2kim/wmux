@@ -3832,4 +3832,18 @@ export const ko = {
   'quitAndStop.stopFailedDetail': "wmux 데몬이 멈추지 않아 wmux를 열어 둡니다. 세션은 아직 실행 중입니다. 터미널에서 wmux daemon stop를 실행한 뒤 다시 종료하세요.",
   'quitAndStop.alreadyQuittingMessage': "wmux가 이미 종료하는 중입니다.",
   'quitAndStop.alreadyQuittingDetail': "이번 종료는 세션을 백그라운드에서 계속 실행해 둡니다. 멈추려면 터미널에서 wmux daemon stop를 실행하세요.",
+  // Scheduled runs: browser identity (protected pane)
+  'schedules.browserIdentity': "브라우저 신원",
+  'schedules.browserIdentityHint': "실행이 보호된 창 하나의 브라우저와 계정을 쓰게 합니다. 그 창의 허용 사이트로만 제한되며, 저장할 때 wmux가 확인을 받습니다.",
+  'schedules.browserWorkspace': "워크스페이스",
+  'schedules.browserPane': "보호된 창",
+  'schedules.browserNone': "없음",
+  'schedules.browserLoading': "창을 불러오는 중…",
+  'schedules.browserPickPane': "보호된 창 선택",
+  'schedules.browserNoPanes': "이 워크스페이스에 보호된 창이 없습니다",
+  'schedules.browserPaneUnavailable': "이 창은 더 이상 사용할 수 없습니다",
+  'schedules.problem.browserPane': "보호된 창을 고르거나 브라우저 신원을 없음으로 두세요.",
+  'schedules.problem.browserMode': "브라우저 신원이 있는 Codex 일정은 승인 모드로 실행됩니다.",
+  'schedules.detail.browser_needs_consent': "브라우저 호출이 거부됐습니다: 이 일정을 허용한 뒤 창의 브라우저 정책이 바뀌었습니다. 일정을 다시 저장해 허용하세요.",
+  'schedules.detail.browser_policy_denied': "창의 사이트 정책이 브라우저 호출을 거부했습니다.",
 } as const;

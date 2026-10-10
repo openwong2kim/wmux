@@ -21,6 +21,7 @@ import {
 } from './hostedWorkspaceBinding';
 import type { HostedScopeAuditInput } from '../audit/shadowRejectionLog';
 import { lookupWorkspaceClaim } from '../workspace/workspaceClaimTrust';
+import { isIdentityRunPty } from '../automation/runIdentity';
 
 // Handlers receive a per-request context as an optional second argument.
 // Existing handlers `(params) => ...` keep compiling because the extra
@@ -83,6 +84,14 @@ type HostedScopeSink = (input: HostedScopeAuditInput) => void;
 // Methods that handle plugin identity themselves — they must NOT trigger
 // a parallel legacy write because their own handlers do the right thing
 // (record an `unconfirmed` contact via the resolved name).
+/** What a browser-only caller (a scheduled run's identity) may call. */
+function isRunBrowserMethod(method: string): boolean {
+  return method.startsWith('browser.')
+    || method === 'a2a.resolve.identity'
+    || method === 'mcp.identify'
+    || method === 'mcp.declarePermissions';
+}
+
 const IDENTITY_OWN_METHODS: ReadonlySet<RpcMethod> = new Set<RpcMethod>([
   'mcp.identify',
   'mcp.declarePermissions',
@@ -453,7 +462,12 @@ export class RpcRouter {
       // So anything that is not a live binding is treated as stale.
       ctx.workspaceClaim =
         claim.kind === 'bound'
-          ? { kind: 'bound', workspaceId: claim.workspaceId, ...(claim.ptyId && { ptyId: claim.ptyId }) }
+          ? {
+            kind: 'bound',
+            workspaceId: claim.workspaceId,
+            ...(claim.ptyId && { ptyId: claim.ptyId }),
+            ...(claim.browserOnly && { browserOnly: true as const }),
+          }
           : { kind: 'stale' };
     }
 
@@ -464,6 +478,23 @@ export class RpcRouter {
     if (typeof request.callerPtyId === 'string') {
       const callerPtyId = request.callerPtyId.trim();
       if (callerPtyId.length > 0 && callerPtyId.length <= 128) ctx.callerPtyId = callerPtyId;
+    }
+
+    // A scheduled run acting as a protected pane's browser gets the browser
+    // and nothing else of wmux: its walked claim is browser-only, and a call
+    // stamped from one of those runs' PTYs is held to the same rule even
+    // without the claim. Runs without a browser identity are not affected.
+    if (
+      !firstParty
+      && ((ctx.workspaceClaim?.kind === 'bound' && ctx.workspaceClaim.browserOnly === true)
+        || isIdentityRunPty(ctx.callerPtyId))
+      && !isRunBrowserMethod(request.method)
+    ) {
+      return {
+        id: request.id,
+        ok: false,
+        error: `${request.method}: a scheduled run with a browser identity may use the browser tools only`,
+      };
     }
 
     // Spec §2.2: external-wire requests without `clientName` are recorded as

@@ -2,6 +2,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { PlaywrightEngine } from '../PlaywrightEngine';
 import { withAutomationLease } from '../automationLease';
+import { isProtectedScope, protectedRefusal } from '../protectedPane';
 import { detectDangerousPatterns } from '../security';
 import { rpcEvaluator } from '../page-eval';
 import { waitForIsolated } from '../isolated-eval';
@@ -145,6 +146,17 @@ export function createWaitToolCatalog(deps: BrowserToolDeps) {
     inputSchema: BROWSER_WAIT_SHAPE,
     profiles: ['full'],
     invoke: async ({ url, selector, text, fn, timeout, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
+      // A `fn` predicate is agent-authored page code, held to browser_evaluate's
+      // rule on a protected pane: refused until the consent grant (PR B).
+      if (fn && isProtectedScope(scope)) {
+        return {
+          content: [{
+            type: 'text' as const,
+            text: protectedRefusal('browser_wait', 'a fn predicate runs page scripts, which needs a consent grant').message,
+          }],
+          isError: true,
+        };
+      }
       const resolvedTimeout = timeout ?? 30000;
       // A wait is part of the flow: a replay that skips it acts on the page
       // before the thing the agent waited for has happened (#1193). Recorded

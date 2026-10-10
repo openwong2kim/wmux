@@ -540,4 +540,18 @@ export const ar = {
   'quitAndStop.stopFailedDetail': "لم يتوقف خادم wmux الخلفي، لذا يبقى wmux مفتوحًا وما زالت جلساتك تعمل. شغّل wmux daemon stop في الطرفية، ثم أعد الإنهاء.",
   'quitAndStop.alreadyQuittingMessage': "wmux قيد الإنهاء بالفعل.",
   'quitAndStop.alreadyQuittingDetail': "هذا الإنهاء يترك جلساتك تعمل في الخلفية. لإيقافها، شغّل wmux daemon stop في الطرفية.",
+  // Scheduled runs: browser identity (protected pane)
+  'schedules.browserIdentity': "هوية المتصفح",
+  'schedules.browserIdentityHint': "يستخدم التشغيل متصفح وحساب لوحة محمية واحدة، مقتصرًا على المواقع المسموح بها فيها. يطلب wmux التأكيد عند الحفظ.",
+  'schedules.browserWorkspace': "مساحة العمل",
+  'schedules.browserPane': "لوحة محمية",
+  'schedules.browserNone': "لا شيء",
+  'schedules.browserLoading': "جارٍ تحميل اللوحات…",
+  'schedules.browserPickPane': "اختر لوحة محمية",
+  'schedules.browserNoPanes': "لا توجد لوحات محمية في مساحة العمل هذه",
+  'schedules.browserPaneUnavailable': "لم تعد هذه اللوحة متاحة",
+  'schedules.problem.browserPane': "اختر لوحة محمية أو اضبط هوية المتصفح على لا شيء.",
+  'schedules.problem.browserMode': "يعمل جدول Codex الذي له هوية متصفح في وضع الموافقة.",
+  'schedules.detail.browser_needs_consent': "رُفض استدعاء المتصفح: تغيّرت سياسة اللوحة بعد منح هذا الجدول. احفظ الجدول مرة أخرى لمنحه.",
+  'schedules.detail.browser_policy_denied': "رفضت سياسة مواقع اللوحة استدعاء المتصفح.",
 } as const;

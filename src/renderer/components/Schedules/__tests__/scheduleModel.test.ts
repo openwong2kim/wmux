@@ -17,6 +17,7 @@ import {
   modesFor,
   parseToolNames,
   validateForm,
+  browserIdentityArg,
 } from '../scheduleModel';
 import { automation } from './fixtures';
 
@@ -121,5 +122,39 @@ describe('schedule chip mode', () => {
     expect(toggleDay('custom', [1, 5], 1)).toEqual([5]);
     expect(toggleDay('custom', [5], 5)).toEqual([5]);
     expect(toggleDay('weekly', [1], 4)).toEqual([4]);
+  });
+});
+
+describe('browser identity in the editor model', () => {
+  const identity = { workspaceId: 'ws-1', paneId: 'pane-a', boundRevision: 2 };
+
+  it('defaults to none, and an untouched schedule without one grants exactly as before', async () => {
+    const { automation } = await import('./fixtures');
+    expect(emptyForm()).toMatchObject({ browserWorkspaceId: '', browserPaneId: '' });
+    const a = automation();
+    const form = formFromAutomation(a);
+    expect(browserIdentityArg(a, form, '')).toBeUndefined();
+    expect(draftFromForm(form).action).not.toHaveProperty('browserIdentity');
+  });
+
+  it('picking, changing or removing an identity needs a grant in every mode; a rename does not', async () => {
+    const { automation } = await import('./fixtures');
+    const plain = automation();
+    expect(grantNeeded(plain, { ...formFromAutomation(plain), browserWorkspaceId: 'ws-1', browserPaneId: 'pane-a' }, false)).toBe(true);
+    const bound = automation({ action: { ...plain.action, browserIdentity: identity } });
+    const form = formFromAutomation(bound);
+    expect(form).toMatchObject({ browserWorkspaceId: 'ws-1', browserPaneId: 'pane-a' });
+    expect(grantNeeded(bound, { ...form, name: 'renamed' }, false)).toBe(false);
+    expect(grantNeeded(bound, { ...form, prompt: 'other' }, false)).toBe(true);
+    const removed = { ...form, browserWorkspaceId: '', browserPaneId: '' };
+    expect(grantNeeded(bound, removed, false)).toBe(true);
+    expect(browserIdentityArg(bound, removed, '')).toBeNull();
+    expect(browserIdentityArg(bound, form, 'Shop')).toEqual({ workspaceId: 'ws-1', paneId: 'pane-a', paneLabel: 'Shop' });
+  });
+
+  it('a workspace without a pane, or Codex beyond approval, is a form problem', () => {
+    expect(validateForm({ ...emptyForm(), name: 'n', prompt: 'p', cwd: '/w', browserWorkspaceId: 'ws-1' })).toContain('browserPane');
+    expect(validateForm({ ...emptyForm(), name: 'n', prompt: 'p', cwd: '/w', agent: 'codex', mode: 'scoped', browserWorkspaceId: 'ws-1', browserPaneId: 'p' }))
+      .toContain('browserMode');
   });
 });

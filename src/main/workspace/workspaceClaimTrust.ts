@@ -67,7 +67,7 @@ import { getWorkspaceMirror } from './WorkspaceMirror';
  * token -> the workspace the claim binds its holder to, the pane it was minted
  * for (pane claims only), and when it was issued.
  */
-const live = new Map<string, { workspaceId: string; ptyId?: string; mintedAt: number }>();
+const live = new Map<string, { workspaceId: string; ptyId?: string; mintedAt: number; browserOnly?: true }>();
 
 /**
  * Grace window before `reconcileWorkspaceClaims` may retire a young token.
@@ -123,7 +123,13 @@ export type WorkspaceClaimLookup =
    * set for a pane claim: main minted it from its own process-tree walk, so it
    * also names the pane the holder runs in.
    */
-  | { kind: 'bound'; workspaceId: string; ptyId?: string }
+  | {
+    kind: 'bound';
+    workspaceId: string;
+    ptyId?: string;
+    /** A scheduled run's claim: its holder may make browser calls only (RpcRouter). */
+    browserOnly?: true;
+  }
   /** A token was presented but is unknown, revoked, or its workspace is gone. */
   | { kind: 'stale' };
 
@@ -177,6 +183,33 @@ export function claimTokenForPane(workspaceId: unknown, ptyId: unknown): string 
 }
 
 /**
+ * The claim for a scheduled run that acts as a protected pane's browser,
+ * minted from main's own process walk to that run's shell. It names the
+ * workspace of the run's browser identity and the run's PTY, and it is
+ * browser-only: the RPC router admits nothing else from its holder. Its
+ * liveness is the run's, which the browser gate asks the daemon on every
+ * call, so the mirror (which never lists a run PTY) does not age it.
+ */
+export function claimTokenForRun(workspaceId: unknown, ptyId: unknown): string | null {
+  if (typeof workspaceId !== 'string' || typeof ptyId !== 'string') return null;
+  const ws = workspaceId.trim();
+  const pty = ptyId.trim();
+  if (ws.length === 0 || pty.length === 0) return null;
+  for (const [token, entry] of live) {
+    if (entry.ptyId === pty) {
+      if (entry.workspaceId === ws && entry.browserOnly) {
+        entry.mintedAt = now();
+        return token;
+      }
+      live.delete(token);
+    }
+  }
+  const token = mintWorkspaceClaimToken(ws);
+  if (token) live.set(token, { workspaceId: ws, ptyId: pty, mintedAt: now(), browserOnly: true });
+  return token;
+}
+
+/**
  * How long a pane claim lives when the mirror cannot say where its pane is
  * (no renderer push yet, or an empty one). The holder's next walk re-attests
  * it (`claimTokenForPane` refreshes `mintedAt`), so this only bounds a claim
@@ -190,8 +223,8 @@ const PANE_CLAIM_UNCONFIRMED_TTL_MS = 10 * 60_000;
  * from every workspace after the grace window. With no usable mirror the
  * claim holds until `PANE_CLAIM_UNCONFIRMED_TTL_MS` after its last walk.
  */
-function paneClaimStillHolds(entry: { workspaceId: string; ptyId?: string; mintedAt: number }): boolean {
-  if (entry.ptyId === undefined) return true;
+function paneClaimStillHolds(entry: { workspaceId: string; ptyId?: string; mintedAt: number; browserOnly?: true }): boolean {
+  if (entry.ptyId === undefined || entry.browserOnly) return true;
   const snapshot = getWorkspaceMirror().peek();
   if (snapshot === null || snapshot.entries.length === 0) {
     return entry.mintedAt > now() - PANE_CLAIM_UNCONFIRMED_TTL_MS;
@@ -295,6 +328,7 @@ export function lookupWorkspaceClaim(token: unknown): WorkspaceClaimLookup {
     kind: 'bound',
     workspaceId: entry.workspaceId,
     ...(entry.ptyId !== undefined && { ptyId: entry.ptyId }),
+    ...(entry.browserOnly && { browserOnly: true as const }),
   };
 }
 

@@ -538,4 +538,18 @@ export const vi = {
   'quitAndStop.stopFailedDetail': "Daemon wmux không dừng, nên wmux vẫn mở và các phiên vẫn đang chạy. Hãy chạy wmux daemon stop trong terminal rồi thoát lại.",
   'quitAndStop.alreadyQuittingMessage': "wmux đang thoát.",
   'quitAndStop.alreadyQuittingDetail': "Lần thoát này để các phiên tiếp tục chạy ở chế độ nền. Để dừng chúng, hãy chạy wmux daemon stop trong terminal.",
+  // Scheduled runs: browser identity (protected pane)
+  'schedules.browserIdentity': "Danh tính trình duyệt",
+  'schedules.browserIdentityHint': "Lần chạy dùng trình duyệt và tài khoản của một ô được bảo vệ, chỉ trong các trang được phép của ô đó. wmux sẽ hỏi xác nhận khi bạn lưu.",
+  'schedules.browserWorkspace': "Không gian làm việc",
+  'schedules.browserPane': "Ô được bảo vệ",
+  'schedules.browserNone': "Không",
+  'schedules.browserLoading': "Đang tải các ô…",
+  'schedules.browserPickPane': "Chọn một ô được bảo vệ",
+  'schedules.browserNoPanes': "Không có ô được bảo vệ trong không gian làm việc này",
+  'schedules.browserPaneUnavailable': "Ô này không còn khả dụng",
+  'schedules.problem.browserPane': "Hãy chọn một ô được bảo vệ hoặc đặt danh tính trình duyệt là Không.",
+  'schedules.problem.browserMode': "Lịch Codex có danh tính trình duyệt chạy ở chế độ phê duyệt.",
+  'schedules.detail.browser_needs_consent': "Một lệnh gọi trình duyệt bị từ chối: chính sách của ô đã thay đổi sau khi cấp quyền cho lịch. Hãy lưu lại lịch để cấp quyền.",
+  'schedules.detail.browser_policy_denied': "Chính sách trang của ô đã từ chối một lệnh gọi trình duyệt.",
 } as const;

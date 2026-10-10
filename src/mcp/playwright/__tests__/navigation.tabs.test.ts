@@ -104,7 +104,7 @@ describe('browser navigation MCP workspace contract', () => {
     expect(mockSendRpc.mock.calls).toEqual([
       // Lease bracket with pre/post lifecycle drains (#1063 follow-up)
       // wraps the whole body.
-      ['browser.lease.acquire', { workspaceId: 'ws-caller', surfaceId: 'surface-a' }],
+      ['browser.lease.acquire', { authorize: true, workspaceId: 'ws-caller', surfaceId: 'surface-a' }],
       ['browser.lifecycle.get', { workspaceId: 'ws-caller', surfaceId: 'surface-a' }],
       // Backend resolution (chrome fork, dogfood P2) precedes the RPC lane.
       ['browser.cdp.info', { workspaceId: 'ws-caller' }],

@@ -5,6 +5,12 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import { IPC } from '../shared/constants';
 import type { PaneLabelRejection } from '../shared/paneLabelRules';
 import { CHROME_PANE_IPC, type ChromePaneBindings } from '../shared/chromePaneBinding';
+import {
+  BROWSER_POLICY_IPC,
+  type BrowserPolicyReadResult,
+  type BrowserPolicyWritePayload,
+  type BrowserPolicyWriteResult,
+} from '../shared/browserPolicy';
 import type {
   AgySensorInstallResult,
   AgySensorStatus,
@@ -780,8 +786,14 @@ const electronAPI = {
       ipcRenderer.invoke(IPC.AUTOMATION_SET_ENABLED, id, enabled) as Promise<
         import('../shared/automation').AutomationMutationResult
       >,
-    grant: (id: string, mode: import('../shared/automation').AutomationPermissionMode, allowedTools?: string[]) =>
-      ipcRenderer.invoke(IPC.AUTOMATION_GRANT, id, mode, allowedTools) as Promise<
+    // browserIdentity: the operator's pick (main resolves and confirms it), null to remove one.
+    grant: (
+      id: string,
+      mode: import('../shared/automation').AutomationPermissionMode,
+      allowedTools?: string[],
+      browserIdentity?: { workspaceId: string; paneId: string; paneLabel: string } | null,
+    ) =>
+      ipcRenderer.invoke(IPC.AUTOMATION_GRANT, id, mode, allowedTools, ...(browserIdentity === undefined ? [] : [browserIdentity])) as Promise<
         import('../shared/automation').AutomationMutationResult
       >,
     runNow: (id: string, kind: 'manual' | 'test') =>
@@ -1313,6 +1325,14 @@ const electronAPI = {
         ipcRenderer.invoke(CHROME_PANE_IPC.bind, { paneId, workspaceId, profileName }),
       revealPane: (paneId: string, workspaceId: string): Promise<{ ok: boolean; error?: string }> =>
         ipcRenderer.invoke(CHROME_PANE_IPC.reveal, { paneId, workspaceId }),
+    },
+    // Protected browser panes (src/shared/browserPolicy.ts). Operator-only:
+    // main accepts these from the main window's top frame alone.
+    policy: {
+      get: (workspaceId: string, paneId: string): Promise<BrowserPolicyReadResult> =>
+        ipcRenderer.invoke(BROWSER_POLICY_IPC.get, { workspaceId, paneId }),
+      set: (payload: BrowserPolicyWritePayload): Promise<BrowserPolicyWriteResult> =>
+        ipcRenderer.invoke(BROWSER_POLICY_IPC.set, payload),
     },
     onDiscarded: (callback: (surfaceId: string) => void) => {
       const listener = (_e: Electron.IpcRendererEvent, surfaceId: string) => callback(surfaceId);

@@ -543,4 +543,18 @@ export const nb = {
   'quitAndStop.stopFailedDetail': "wmux-daemonen stoppet ikke, så wmux forblir åpen og øktene dine kjører fortsatt. Kjør wmux daemon stop i en terminal, og avslutt på nytt.",
   'quitAndStop.alreadyQuittingMessage': "wmux avslutter allerede.",
   'quitAndStop.alreadyQuittingDetail': "Denne avslutningen lar øktene kjøre videre i bakgrunnen. Kjør wmux daemon stop i en terminal for å stoppe dem.",
+  // Scheduled runs: browser identity (protected pane)
+  'schedules.browserIdentity': "Nettleseridentitet",
+  'schedules.browserIdentityHint': "Kjøringen bruker nettleseren og kontoen til ett beskyttet panel, begrenset til panelets tillatte nettsteder. wmux ber om bekreftelse når du lagrer.",
+  'schedules.browserWorkspace': "Arbeidsområde",
+  'schedules.browserPane': "Beskyttet panel",
+  'schedules.browserNone': "Ingen",
+  'schedules.browserLoading': "Laster paneler…",
+  'schedules.browserPickPane': "Velg et beskyttet panel",
+  'schedules.browserNoPanes': "Ingen beskyttede paneler i dette arbeidsområdet",
+  'schedules.browserPaneUnavailable': "Dette panelet er ikke lenger tilgjengelig",
+  'schedules.problem.browserPane': "Velg et beskyttet panel, eller sett nettleseridentiteten til Ingen.",
+  'schedules.problem.browserMode': "En Codex-plan med nettleseridentitet kjører i godkjenningsmodus.",
+  'schedules.detail.browser_needs_consent': "Et nettleserkall ble avvist: panelets retningslinjer endret seg etter at planen ble godkjent. Lagre planen på nytt for å godkjenne den.",
+  'schedules.detail.browser_policy_denied': "Et nettleserkall ble avvist av panelets nettstedsregler.",
 } as const;

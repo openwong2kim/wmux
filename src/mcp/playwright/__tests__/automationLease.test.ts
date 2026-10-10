@@ -35,7 +35,7 @@ describe('automation lease workspace scope', () => {
     expect(deps.resolveWorkspaceId).toHaveBeenCalledTimes(1);
     expect(body).toHaveBeenCalledWith({ workspaceId: 'ws-test', surfaceId: 'surface-1' });
     expect(mockSendRpc.mock.calls).toEqual([
-      ['browser.lease.acquire', { workspaceId: 'ws-test', surfaceId: 'surface-1' }],
+      ['browser.lease.acquire', { authorize: true, workspaceId: 'ws-test', surfaceId: 'surface-1' }],
       // Lifecycle drains ride inside the lease bracket: pre-drain before the
       // body, post-drain after it (attributing the body's own events).
       ['browser.lifecycle.get', { workspaceId: 'ws-test', surfaceId: 'surface-1' }],
@@ -101,8 +101,11 @@ describe('automation lease workspace scope', () => {
     });
 
     await vi.advanceTimersByTimeAsync(2_000);
+    // The opening request is authorization only (unnamed); the late loop then
+    // leases. Both carry the workspace, neither names another's surface.
     expect(mockSendRpc.mock.calls.filter(([method]) => method === 'browser.lease.acquire')).toEqual([
-      ['browser.lease.acquire', { workspaceId: 'ws-test' }],
+      ['browser.lease.acquire', { authorize: true, workspaceId: 'ws-test' }],
+      ['browser.lease.acquire', { authorize: true, workspaceId: 'ws-test' }],
     ]);
 
     finishBody();

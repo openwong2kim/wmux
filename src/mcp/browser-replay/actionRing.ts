@@ -1,6 +1,6 @@
 import type { Page } from 'playwright-core';
 import { browserScopeKey, getRefEntry, listRefEntries } from '../playwright/snapshot';
-import type { BrowserTargetScope, BrowserToolDeps } from '../playwright/browserScope';
+import { isProtectedScope, type BrowserTargetScope, type BrowserToolDeps } from '../playwright/browserScope';
 import { redactPasswordParams } from '../playwright/redact';
 import { isActionRecordingSuppressed } from './recordingSuppression';
 import {
@@ -140,6 +140,17 @@ export class ActionRing {
  *  nothing, which is the fail-closed outcome (see the module comment). */
 export interface ActionRingDeps extends BrowserToolDeps {
   actionRing?: ActionRing;
+}
+
+/**
+ * The ring partition of a scope: its surface, plus — on a protected pane — the
+ * policy epoch it was authorized at. A rebind, move or re-confirmation moves
+ * the epoch, so actions recorded under the old identity are never part of a
+ * flow saved under the new one.
+ */
+export function ringScopeKey(scope: BrowserTargetScope): string {
+  const key = browserScopeKey(scope);
+  return isProtectedScope(scope) ? `${key}#protected:${scope.protection?.epoch ?? '?'}` : key;
 }
 
 export function ringFor(deps: BrowserToolDeps): ActionRing | null {
@@ -288,7 +299,7 @@ export function recordAction(deps: BrowserToolDeps, input: RecordActionInput): v
     ring.push({
       step,
       urlKey: normalizeUrlKey(input.url ?? pageUrl(input.page)),
-      scopeKey: browserScopeKey(input.scope),
+      scopeKey: ringScopeKey(input.scope),
       surfaceShape: input.page ? refMapShapeHash(listRefEntries(input.page)) : '',
       at: Date.now(),
     });

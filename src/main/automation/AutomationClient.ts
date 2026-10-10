@@ -80,7 +80,18 @@ export class AutomationClient {
       mode: params.mode,
       ...(params.allowedTools ? { allowedTools: params.allowedTools } : {}),
       ...(params.expectedRevision !== undefined ? { expectedRevision: params.expectedRevision } : {}),
+      ...(params.browserIdentity !== undefined ? { browserIdentity: params.browserIdentity } : {}),
     });
+  }
+
+  /** What the daemon supports; empty for an older daemon (Unknown method) or no answer. */
+  async capabilities(): Promise<string[]> {
+    try {
+      const r = (await this.transport.rpc(AUTOMATION_RPC.capabilities, {})) as { capabilities?: unknown } | null;
+      return Array.isArray(r?.capabilities) ? r.capabilities.filter((c): c is string => typeof c === 'string') : [];
+    } catch {
+      return [];
+    }
   }
 
   async runNow(params: AutomationRunNowParams): Promise<AutomationRunNowResult> {

@@ -544,4 +544,18 @@ export const ms = {
   'quitAndStop.stopFailedDetail': "Daemon wmux tidak berhenti, jadi wmux kekal terbuka dan sesi anda masih berjalan. Jalankan wmux daemon stop dalam terminal, kemudian keluar semula.",
   'quitAndStop.alreadyQuittingMessage': "wmux sedang keluar.",
   'quitAndStop.alreadyQuittingDetail': "Keluar kali ini membiarkan sesi anda terus berjalan di latar belakang. Untuk menghentikannya, jalankan wmux daemon stop dalam terminal.",
+  // Scheduled runs: browser identity (protected pane)
+  'schedules.browserIdentity': "Identiti pelayar",
+  'schedules.browserIdentityHint': "Larian menggunakan pelayar dan akaun satu anak tetingkap dilindungi, terhad kepada tapak yang dibenarkan. wmux meminta pengesahan semasa anda menyimpan.",
+  'schedules.browserWorkspace': "Ruang kerja",
+  'schedules.browserPane': "Anak tetingkap dilindungi",
+  'schedules.browserNone': "Tiada",
+  'schedules.browserLoading': "Memuatkan anak tetingkap…",
+  'schedules.browserPickPane': "Pilih anak tetingkap dilindungi",
+  'schedules.browserNoPanes': "Tiada anak tetingkap dilindungi dalam ruang kerja ini",
+  'schedules.browserPaneUnavailable': "Anak tetingkap ini tidak lagi tersedia",
+  'schedules.problem.browserPane': "Pilih anak tetingkap dilindungi, atau tetapkan identiti pelayar kepada Tiada.",
+  'schedules.problem.browserMode': "Jadual Codex dengan identiti pelayar berjalan dalam mod kelulusan.",
+  'schedules.detail.browser_needs_consent': "Panggilan pelayar ditolak: dasar anak tetingkap berubah selepas jadual ini dibenarkan. Simpan jadual semula untuk membenarkannya.",
+  'schedules.detail.browser_policy_denied': "Panggilan pelayar ditolak oleh dasar tapak anak tetingkap.",
 } as const;
