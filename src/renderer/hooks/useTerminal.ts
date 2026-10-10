@@ -2085,10 +2085,13 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // commandRunning edge is not used: the guard already reads OSC 133
       // in-stream, and the store copy is a 15 s poll that can predate a TUI
       // started since. A misattributed pick (a wrapper that exited while its
-      // TUI runs on) is still checked twice: a foreground TUI holds the pane
-      // in the command phase, so the guard only keeps the hint for the next
-      // prompt, and on Windows the probe's tree walk still sees the TUI as a
-      // descendant.
+      // TUI runs on) gains nothing from the edge: a foreground TUI holds the
+      // pane in the command phase, so the guard only keeps the hint for the
+      // next prompt, and the reset still needs the probe's `true`. On native
+      // Windows that is the tree walk, which still sees the TUI. Where the
+      // tracker is the only truth (POSIX, WSL, a failed CIM snapshot) it is
+      // the same single reading a prompt arriving after the edge already
+      // acts on, so the edge admits nothing the first ask would not.
       if (gone(state.agentAliveByPtyId[ptyId], prev.agentAliveByPtyId[ptyId])) {
         shellPromptModeResetFor(terminal)?.processGone();
       }

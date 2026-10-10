@@ -2964,28 +2964,26 @@ function registerRpcHandlers(
       // The agent the pane's LIVE process is — process truth only, the one
       // tier with a death edge, so the renderer can name a pane whose hook and
       // banner both stayed silent (a resumed Codex) and a dead agent is never
-      // reported. Unlike agentProcessAlive it does not wait for a binding.
+      // reported. agentProcessAlive below carries only liveness, slugless picks too.
       const tracked = agentProcessTracker.identityFor(s.id);
       const withPrompt = tracked?.alive && tracked.slug
         ? { ...withCommand, liveAgent: tracked.slug }
         : withCommand;
-      if (!surfacedBinding) return withPrompt;
-      // Resume-chip edge trigger — process truth for the chip's busy gate,
-      // reported ONLY alongside a surfaced binding (the only consumer). Three
-      // states: true = the agent process is observed alive (chip hidden),
-      // false = it was observed and DIED (the alive→dead edge — chip may
-      // show), undefined = never attributed (renderer keeps its heuristic).
-      // Exec units are their own agent process: while the session lives the
-      // agent runs (its exit kills the session), so they are always `true`;
-      // 'suspended' tombstones hold no live PTY and stay undecided.
+      // Agent process truth — the resume chip's busy gate, and the death edge
+      // the #1794 prompt-mode guard re-asks on (#2030), which an agent with no
+      // resume binding (Codex, an unbound claude) needs too. So it is reported
+      // whether or not a binding surfaces, as readResumeStateForWeb already
+      // does. Three states: true = the agent process is observed alive,
+      // false = it was observed and DIED (the alive→dead edge), undefined =
+      // never attributed (renderer keeps its heuristic). Exec units are their
+      // own agent process: while the session lives the agent runs (its exit
+      // kills the session), so they are always `true`; 'suspended' tombstones
+      // hold no live PTY and stay undecided.
       const agentProcessAlive = s.exec
         ? (s.state === 'attached' || s.state === 'detached' ? true : undefined)
         : agentProcessTracker.statusFor(s.id);
-      return {
-        ...withPrompt,
-        resumeBinding: surfacedBinding,
-        ...(agentProcessAlive !== undefined ? { agentProcessAlive } : {}),
-      };
+      const withAlive = agentProcessAlive !== undefined ? { ...withPrompt, agentProcessAlive } : withPrompt;
+      return surfacedBinding ? { ...withAlive, resumeBinding: surfacedBinding } : withAlive;
     });
 
     // Fix B: when includeSuspended is requested, append cap-skipped suspended

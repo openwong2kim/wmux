@@ -195,7 +195,8 @@ export interface ShellPromptModeReset extends Disposable {
    * Process truth just reported the pane's agent dead (desktop: the agent
    * tracker's alive→dead edge). If a reset at the current prompt was declined
    * because the probe answered "alive", ask the probe again: now at a prompt,
-   * or at the next prompt when a command owns the pane. This is a hint,
+   * or at the next prompt when a command owns the pane. A probe still in
+   * flight (or out of retries) is superseded by a fresh one. This is a hint,
    * never an order: nothing is written unless the shell still owns the pane,
    * no new owner armed a mode since, and the probe now answers `true`.
    */
@@ -469,7 +470,16 @@ export function installShellPromptModeReset(
       veto = false;
     },
     processGone() {
-      // Only with a declined debt and nothing already in flight. While a
+      // A probe in flight (or out of retries) may have read the agent alive
+      // before this edge: its late `false` would decline and lose the edge.
+      // Invalidate it and ask again; promptAt stays, so the lag gate holds.
+      if (resolution === 'awaiting') {
+        stopResolving();
+        resolution = 'awaiting';
+        askTruth();
+        return;
+      }
+      // Otherwise only with a declined debt and nothing queued. While a
       // command owns the pane, keep the hint for its prompt (a new owner
       // arming a mode in between drops it). The probe, not this hint,
       // decides whether the arming process is gone.
