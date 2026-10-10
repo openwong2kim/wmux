@@ -15,11 +15,16 @@ describe('fleetTickets in the sidebar parser', () => {
       row('b', { requestLine: 'two\nlines', verification: 'all', agentName: 'x'.repeat(65) }),
       row('c', { state: 'archived' }),
       row('d', { origin: 'elsewhere' }),
+      row('e', { state: 7 }),
+      row('f', { origin: 'bad\u0007' }),
       row('a'),
     ], drops);
     expect(list).toEqual([
       row('a', { taskId: 'task-a', workspaceName: 'Alpha', agentName: 'Codex', requestLine: 'do it', resultSummary: 'did it', verification: '3/4' }),
       row('b'),
+      // A newer desktop's word reads as the contract says, not as a lost row.
+      row('c', { state: 'working' }),
+      row('d', { origin: 'manual' }),
     ]);
     expect(drops.sort()).toEqual(['fleetTickets.duplicate', 'fleetTickets.row', 'fleetTickets.row']);
   });
@@ -32,8 +37,10 @@ describe('fleetTickets in the sidebar parser', () => {
     expect(drops).toEqual(['fleetTickets.overLimit']);
   });
 
-  it('withoutTicketTranscript strips only the agent-authored fields', () => {
-    expect(withoutTicketTranscript(row('a', { requestLine: 'r', resultSummary: 's', verification: '1/1', agentName: 'A' }) as never)).toEqual(row('a', { agentName: 'A' }));
+  it('withoutTicketTranscript strips the agent-authored fields and replaces the title', () => {
+    expect(withoutTicketTranscript(row('a', { title: 'Fix the secret thing', requestLine: 'r', resultSummary: 's', verification: '1/1', agentName: 'A' }) as never))
+      .toEqual(row('a', { title: 'Task', agentName: 'A' }));
+    expect(withoutTicketTranscript(row('h', { origin: 'handoff' }) as never).title).toBe('Hand-off waiting');
   });
 });
 

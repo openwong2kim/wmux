@@ -39,7 +39,8 @@ describe('fleet ticket routes', () => {
         if (data.command === 'workspaces.list') {
           bridge.complete(clientId, { requestId: data.requestId, ok: true, result: { workspaces: [], sidebar: opts.sidebarReply ?? sidebar() } });
         } else if (data.command === 'workspaces.fleetTicket') {
-          bridge.complete(clientId, { requestId: data.requestId, ok: true, result: data.payload.id === detail.id ? { ticket: detail } : { notFound: true } });
+          const result = data.payload.id === detail.id ? { ticket: detail } : data.payload.id === 'wl-away' ? { unavailable: true } : { notFound: true };
+          bridge.complete(clientId, { requestId: data.requestId, ok: true, result });
         }
       });
       return true;
@@ -86,8 +87,9 @@ describe('fleet ticket routes', () => {
     const off = await start({ allowTranscript: false, sidebarReply: reply });
     const body = (await off.get('/api/workspaces')).body;
     const { requestLine: _r, resultSummary: _s, verification: _v, ...bare } = ticket();
-    expect(body.fleetTickets).toEqual([bare]);
+    expect(body.fleetTickets).toEqual([{ ...bare, title: 'Task' }]);
     expect(JSON.stringify(body)).not.toContain('Please build');
+    expect(JSON.stringify(body)).not.toContain('Build it');
     expect(body.nextScheduleAt).toBe(1_700_000_100_000);
   });
 
@@ -105,6 +107,8 @@ describe('fleet ticket routes', () => {
     expect((await on.get('/api/fleet/tickets/wl-unknown')).status).toBe(404);
     expect((await on.get(`/api/fleet/tickets/${encodeURIComponent('handoff:dec-9')}`)).status).toBe(404);
     expect((await on.get('/api/fleet/tickets/%E0%A4%A')).status).toBe(404);
+    // The desktop is there but its renderer could not read the tickets: not a miss.
+    expect(await on.get('/api/fleet/tickets/wl-away')).toMatchObject({ status: 503, body: { error: 'desktop-unavailable' } });
     const anonymous = await fetch(`http://127.0.0.1:${server!.status().port}/api/fleet/tickets/wl-1`);
     expect(anonymous.status).toBe(401);
     await server!.stop();
@@ -151,6 +155,7 @@ describe('fleetTicketsFields', () => {
     expect(fleetTicketsFields(snap, true)).toEqual({ fleetTickets: [ticket()], nextScheduleAt: 5 });
     const off = fleetTicketsFields(snap, false).fleetTickets![0];
     expect(Object.keys(off).sort()).toEqual(['agentName', 'id', 'origin', 'state', 'taskId', 'title', 'updatedAt', 'workspaceId', 'workspaceName']);
+    expect(off.title).toBe('Task');
     expect(fleetTicketsFields({ activeWorkspaceId: null, workspaces: [], panes: [] }, true)).toEqual({});
   });
 });

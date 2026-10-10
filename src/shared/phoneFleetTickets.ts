@@ -12,7 +12,7 @@
 // asks main for one with `FLEET_TICKET_DETAIL_COMMAND`.
 
 import { clampSidebarString, hasUnsafeSidebarText, isSidebarId } from './phoneFleetSidebar';
-import type { PhoneFleetTicket } from './phoneFleetSidebar';
+import type { PhoneFleetTicket, PhoneFleetTicketOrigin } from './phoneFleetSidebar';
 
 export type { PhoneFleetTicket, PhoneFleetTicketOrigin, PhoneFleetTicketState } from './phoneFleetSidebar';
 export { PHONE_FLEET_TICKET_ORIGINS, PHONE_FLEET_TICKET_RECENT_MS, PHONE_FLEET_TICKET_STATES } from './phoneFleetSidebar';
@@ -173,12 +173,24 @@ export function parsePhoneFleetTicketDetails(value: unknown): PhoneFleetTicketDe
   return out;
 }
 
+/** The fixed title a ticket shows when its own may not be served. */
+export const PHONE_FLEET_TICKET_PLAIN_TITLES: Record<PhoneFleetTicketOrigin, string> = {
+  moa: 'Moa task',
+  'moa-auto': 'Moa task',
+  manual: 'Task',
+  issue: 'Issue task',
+  pr: 'Pull request task',
+  handoff: 'Hand-off waiting',
+};
+
 /**
  * The list as a server without `--allow-transcript` serves it: every
  * agent-authored field (request line, report line, verification) left out,
- * everything else as it is.
+ * and the title replaced by a fixed label for the origin. A title is
+ * agent-derived too: an A2A task without one is titled by its request's
+ * first words.
  */
 export function withoutTicketTranscript(ticket: PhoneFleetTicket): PhoneFleetTicket {
   const { requestLine: _requestLine, resultSummary: _resultSummary, verification: _verification, ...rest } = ticket;
-  return rest;
+  return { ...rest, title: PHONE_FLEET_TICKET_PLAIN_TITLES[ticket.origin] };
 }

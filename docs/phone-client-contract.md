@@ -3378,7 +3378,7 @@ not the desktop fields.
   the phone. It disappears on the next poll after the card is answered.
   Omitted, never `null`, when nothing is pending, when the desktop is too old
   to say, and when the desktop's reply was over its size budget (it is cut
-  after the layout trees, `fleetTickets` and `moaDelegations`, before the pane
+  after `fleetTickets`, the layout trees and `moaDelegations`, before the pane
   placement).
 
 Each `panes[]` entry of `GET /api/workspaces` also carries `paneId` (same
@@ -3433,7 +3433,7 @@ travels only in `fleetTickets` (below), and only from a server started with
 `--allow-transcript`. The key is an empty array when the desktop has no such
 jobs, and omitted, never `null`, when the desktop is too old to say, when it
 could not read its job records for this poll, and when its reply was over its
-size budget (the list goes whole, right after `fleetTickets`). Read an absent key
+size budget (the list goes whole, right after the layout trees). Read an absent key
 as "unknown", not as "no jobs": keep showing what the last poll returned.
 
 #### Fleet tickets (`fleetTickets`, `nextScheduleAt`)
@@ -3481,10 +3481,15 @@ wired); like `moaDelegations` it describes support, not presence. Read-only:
   known.
 - `agentName` — the agent's display name (at most 64 characters), when known.
 - `title` — one line, at most 80 characters (`Untitled task` when none).
+  Agent-derived: a task sent without a title is titled by its request's first
+  words. Without `--allow-transcript` it is replaced by a fixed label for the
+  origin (`Moa task`, `Task`, `Issue task`, `Pull request task`, `Hand-off
+  waiting`).
 - `state` — `queued`, `working`, `needs-you`, `done` or `failed`, the
   desktop's own words. `needs-you` means a decision or an input waits on the
   operator; send the user to the desktop to answer it. Treat an unknown value
-  as `working`.
+  as `working` (this daemon already maps a word from a newer desktop that way,
+  and an unknown `origin` to `manual`, rather than dropping the row).
 - `updatedAt` — epoch ms the ticket last changed on the desktop's record. A
   ticket's final report is new when `updatedAt` is: the phone keeps its own
   "seen" mark per `id` and `updatedAt` (nothing on the server records it).
@@ -3494,14 +3499,16 @@ wired); like `moaDelegations` it describes support, not presence. Read-only:
 - `verification` — verified evidence items over all items, e.g. `"3/4"`; only
   on `done` and `failed`, and only when the worker attached evidence.
 
-`requestLine`, `resultSummary` and `verification` are agent-authored text. A
-server started without `--allow-transcript` (the same gate as history and
-`/turns`) leaves exactly those three fields out and sends the rest. Every
+`title`, `requestLine`, `resultSummary` and `verification` are agent-authored
+text. A server started without `--allow-transcript` (the same gate as history
+and `/turns`) leaves the last three out, sends the fixed label as `title`, and
+sends the rest as is. Every
 string is one line with control and bidi characters removed. The key is an
 empty array when there are no tickets, and omitted, never `null`, when the
 desktop is away or too old to say, when it could not read its job records
-for this poll, and when its reply was over its size budget (the three text
-fields go first, then the list whole, right after the layout trees). Read an
+for this poll, and when its reply was over its size budget (the text fields go
+first — `title` becoming the fixed label — then the list whole, before any
+older field). Read an
 absent key as "unknown": keep showing what the last poll returned.
 
 Top level of `GET /api/workspaces`: `nextScheduleAt` — epoch ms of the
@@ -3516,7 +3523,8 @@ GET /api/fleet/tickets/<id>   (Bearer; id URL-encoded)
                   verificationItems?: [{kind, status, summary, command?, location?}]}}
   → 403 {error: "transcript-disabled"}   server started without --allow-transcript
   → 404 {error: "ticket-not-found"}      unknown id, or one past the desktop's window
-  → 503 {error: "desktop-unavailable"}   no desktop attached, or one too old for details
+  → 503 {error: "desktop-unavailable"}   no desktop attached, one too old for details,
+                                         or one that could not read its tickets just now
   → 504 {error: "desktop-timeout"} / 502 {error: "desktop-bad-reply"}
 ```
 
@@ -3530,7 +3538,8 @@ most 16 evidence items: `kind` is `command`, `inspection` or `artifact`;
 otherwise; `summary`, `command` (commands) and `location` (the others) are one
 line, at most 200 characters each. Any field may be absent: a ticket that has
 not ended has no `result`, and the desktop keeps a ticket's text in memory
-only (at most 50 tickets, each for 24 hours after it was last listed), so
+only (at most 50 tickets; a finished one until 24 hours after it ended, the
+same window as the list, then the route answers 404), so
 after a desktop restart a finished ticket's request and evidence may be gone
 while its report (kept on the desktop's job record) remains. `updatedAt` is
 the ticket version the detail belongs to; refetch when the list's

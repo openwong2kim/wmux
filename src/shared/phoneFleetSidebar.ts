@@ -473,8 +473,15 @@ function parseFleetTicket(value: unknown): PhoneFleetTicket | undefined {
   const workspaceId = idString(value.workspaceId);
   const title = boundedString(value.title, L.fleetTicketTitle);
   const updatedAt = timestamp(value.updatedAt);
-  const state = (PHONE_FLEET_TICKET_STATES as readonly unknown[]).includes(value.state) ? value.state as PhoneFleetTicketState : undefined;
-  const origin = (PHONE_FLEET_TICKET_ORIGINS as readonly unknown[]).includes(value.origin) ? value.origin as PhoneFleetTicketOrigin : undefined;
+  // A word this build does not know (a newer desktop) reads as the contract
+  // tells the phone to read it — a state as `working`, an origin as `manual`
+  // — rather than costing the row.
+  const state = (PHONE_FLEET_TICKET_STATES as readonly unknown[]).includes(value.state)
+    ? value.state as PhoneFleetTicketState
+    : boundedString(value.state, 32) !== undefined ? 'working' : undefined;
+  const origin = (PHONE_FLEET_TICKET_ORIGINS as readonly unknown[]).includes(value.origin)
+    ? value.origin as PhoneFleetTicketOrigin
+    : boundedString(value.origin, 32) !== undefined ? 'manual' : undefined;
   if (id === undefined || workspaceId === undefined || title === undefined || updatedAt === undefined || state === undefined || origin === undefined) return undefined;
   const ticket: PhoneFleetTicket = { id, origin, workspaceId, title, state, updatedAt };
   // Optional fields are dropped one by one: a bad name never costs the row.

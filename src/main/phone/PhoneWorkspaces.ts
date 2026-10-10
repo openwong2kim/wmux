@@ -53,7 +53,10 @@ function takeSidebar(raw: unknown, onDrop: SidebarDropReporter): PhoneSidebarSna
 /**
  * One ticket's detail from main's store. On a miss the renderer is asked for
  * a fresh snapshot once (the phone may open a ticket before any list poll
- * since this desktop started), then the store is read again.
+ * since this desktop started), then the store is read again. A renderer that
+ * does not answer, or cannot compute the tickets, is `unavailable` (the
+ * daemon answers 503), never "not found". A real miss is remembered for a few
+ * seconds, so repeated lookups of a dead id never reach the renderer.
  */
 async function phoneFleetTicketDetail(payload: Record<string, unknown>, getWindow: () => BrowserWindow | null): Promise<unknown> {
   const id = payload.id;
@@ -61,9 +64,16 @@ async function phoneFleetTicketDetail(payload: Record<string, unknown>, getWindo
   const store = getPhoneFleetTicketStore();
   let detail = store.detail(id, Date.now());
   if (!detail) {
-    const raw = await sendToRenderer(getWindow, 'workspace.phoneSidebar', {}, { timeoutMs: PHONE_SIDEBAR_RENDERER_TIMEOUT_MS }).catch(() => null);
-    if (raw !== null) takeSidebar(raw, () => undefined);
+    if (store.recentlyMissed(id, Date.now())) return { notFound: true };
+    let raw: unknown;
+    try {
+      raw = await sendToRenderer(getWindow, 'workspace.phoneSidebar', {}, { timeoutMs: PHONE_SIDEBAR_RENDERER_TIMEOUT_MS });
+    } catch {
+      return { unavailable: true };
+    }
+    if (!takeSidebar(raw, () => undefined)?.fleetTickets) return { unavailable: true };
     detail = store.detail(id, Date.now());
+    if (!detail) store.noteMiss(id, Date.now());
   }
   return detail ? { ticket: detail } : { notFound: true };
 }
@@ -123,9 +133,9 @@ export async function handlePhoneWorkspaces(command: string, payload: Record<str
  * The daemon drops a reply over its per-request byte cap without answering,
  * which would turn every list call into a timeout, so the sidebar must fit.
  * It degrades in steps, cheapest loss first. The per-workspace layout trees
- * go first (largest first; the phone draws that workspace flat), then the
- * tickets' text lines, then the tickets, then Moa's delegated-job list, then
- * the pending hand-off notices (all bounded). The pane placement (every pane
+ * go first (largest first; the phone draws that workspace flat), then Moa's
+ * delegated-job list, then the pending hand-off notices (both bounded). Fleet
+ * tickets, the newest field, go before all of it: their text, then the list. The pane placement (every pane
  * id and every task's pane group) goes before anything the reply carried
  * before it existed, so a sidebar that fit without it still arrives whole;
  * then tab titles, then the pane rows, and only then the whole sidebar. With
@@ -140,6 +150,17 @@ export function fitSidebarToBudget(
 ): PhoneSidebarSnapshot | null {
   const fits = (candidate: PhoneSidebarSnapshot) => Buffer.byteLength(JSON.stringify({ ...base, sidebar: candidate })) <= budget;
   if (fits(sidebar)) return sidebar;
+  // The tickets go before anything older: a phone whose reply fit before they
+  // existed keeps all of it. Their text first, then the list whole — a cut
+  // list would read as jobs that are not there.
+  if (sidebar.fleetTickets !== undefined) {
+    onDrop('budget.fleetTicketText');
+    const withoutTicketText: PhoneSidebarSnapshot = { ...sidebar, fleetTickets: sidebar.fleetTickets.map(withoutTicketTranscript) };
+    if (fits(withoutTicketText)) return withoutTicketText;
+    onDrop('budget.fleetTickets');
+    const { fleetTickets: _fleetTickets, ...withoutTickets } = sidebar;
+    return fitSidebarToBudget(base, withoutTickets, budget, onDrop);
+  }
   // The layout trees go first, largest first and one workspace at a time, so
   // the rest keep theirs. Every later step starts from a snapshot with no tree
   // at all: a tree never rides with pane rows or titles cut under it.
@@ -165,22 +186,10 @@ export function fitSidebarToBudget(
     }
     if (fits(withoutLayout)) return withoutLayout;
   }
-  // The tickets next (bounded, and the newest field): their text lines first,
-  // then the list whole — a cut list would read as jobs that are not there.
-  let withoutTickets = withoutLayout;
-  if (withoutLayout.fleetTickets !== undefined) {
-    onDrop('budget.fleetTicketText');
-    const withoutTicketText: PhoneSidebarSnapshot = { ...withoutLayout, fleetTickets: withoutLayout.fleetTickets.map(withoutTicketTranscript) };
-    if (fits(withoutTicketText)) return withoutTicketText;
-    onDrop('budget.fleetTickets');
-    const { fleetTickets: _fleetTickets, ...rest } = withoutLayout;
-    withoutTickets = rest;
-    if (fits(withoutTickets)) return withoutTickets;
-  }
-  // Moa's delegated jobs next (bounded), whole: a cut list would read as jobs
-  // that are not there.
-  const { moaDelegations: _moaDelegations, ...withoutDelegations } = withoutTickets;
-  if (withoutTickets.moaDelegations !== undefined) {
+  // Moa's delegated jobs next (bounded, and the newest field), whole: a cut
+  // list would read as jobs that are not there.
+  const { moaDelegations: _moaDelegations, ...withoutDelegations } = withoutLayout;
+  if (withoutLayout.moaDelegations !== undefined) {
     onDrop('budget.moaDelegations');
     if (fits(withoutDelegations)) return withoutDelegations;
   }

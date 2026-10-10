@@ -83,6 +83,8 @@ export async function fleetTicketDetailResponse(
   }
   const record = reply !== null && typeof reply === 'object' ? reply as Record<string, unknown> : undefined;
   if (record?.notFound === true) return { status: 404, body: { error: 'ticket-not-found' } };
+  // The desktop is there but could not read its tickets (renderer away or slow).
+  if (record?.unavailable === true) return { status: 503, body: { error: 'desktop-unavailable' } };
   const ticket = parsePhoneFleetTicketDetail(record?.ticket);
   if (!ticket || ticket.id !== id) return { status: 502, body: { error: 'desktop-bad-reply' } };
   return { status: 200, body: { ticket } };

@@ -8,6 +8,7 @@ import type { WorkTask } from '../../../shared/workTask';
 import type { FanoutOrigin } from '../../../shared/fanoutOrigin';
 import type { MoaPendingDecision, MoaState } from '../../../shared/moa';
 import type { WorkLink } from '../../../shared/workLink';
+import { withoutTicketTranscript } from '../../../shared/phoneFleetTickets';
 
 const NOW = 5_000_000;
 
@@ -679,6 +680,19 @@ describe('buildPhoneSidebarSnapshot — Fleet tickets', () => {
     expect(parsed?.fleetTickets).toEqual(list);
     // moaDelegations still carries Moa's jobs only, with no text.
     expect(snap.moaDelegations?.map((d) => d.taskId)).toEqual(['task-moa', 'task-auto']);
+  });
+
+  it('titles an untitled A2A task by its request, and the gate-off list carries none of it', () => {
+    // A send without a title: the task's metadata title is the request's first words.
+    const request = 'Rotate the prod key sk-123 and redeploy';
+    const snap = build([link('bare', { title: undefined })], {
+      a2aTasks: { 'task-bare': { ...task('bare', request), metadata: { title: request.slice(0, 30) } } },
+    });
+    const row = snap.fleetTickets![0];
+    expect(row.title).toBe(request.slice(0, 30));
+    const served = JSON.stringify(withoutTicketTranscript(row));
+    expect(served).not.toContain('sk-123');
+    expect(served).not.toContain('Rotate');
   });
 
   it('keeps finished tickets for 24 h, open ones however old', () => {
