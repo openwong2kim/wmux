@@ -21,10 +21,12 @@ import { createWmuxServer } from '../index';
 import { getWorkspaceToken, setWorkspaceToken } from '../wmux-client';
 import { __resetPaneResolverForTesting } from '../paneResolver';
 
-async function connect(opts: { envWorkspaceHint?: string; commanderToken?: string } = {}): Promise<Client> {
+async function connect(
+  opts: { envWorkspaceHint?: string; envPtyHint?: string; commanderToken?: string } = {},
+): Promise<Client> {
   const server = createWmuxServer({
     envWorkspaceHint: opts.envWorkspaceHint ?? '',
-    envPtyHint: '',
+    envPtyHint: opts.envPtyHint ?? '',
     commanderToken: opts.commanderToken,
     commanderMode: false,
     coreMode: false,
@@ -175,17 +177,45 @@ describe('browser tools — a caller outside every pane (scheduled run)', () => 
   });
 });
 
-describe('browser tools — a pane main cannot verify', () => {
-  it('refuses with the reason instead of claiming a workspace elsewhere', async () => {
+describe('browser tools — the pane the env names', () => {
+  function routing(hintedPane: unknown, extra: (method: string) => unknown = () => undefined) {
     mockSendRpc.mockImplementation(async (method: string) => {
-      if (method === 'a2a.resolve.identity') {
-        return { mappings: {}, entries: [], resolved: null };
-      }
+      if (method === 'a2a.resolve.identity') return { mappings: {}, entries: [], resolved: null, hintedPane };
       if (method === 'mcp.claimWorkspace') return { workspaceId: 'ws-claimed', ptyId: 'pty-claimed', workspaceToken: 'claim' };
       if (method === 'browser.close') return { ok: true };
+      const out = extra(method);
+      if (out !== undefined) return out;
       throw new Error(`rpc-down: ${method}`);
     });
-    const client = await connect({ envWorkspaceHint: 'ws-env' });
+  }
+
+  it('a scheduled run (its auto- session is no live pane) claims a dedicated workspace', async () => {
+    routing({ live: false });
+    const client = await connect({ envPtyHint: 'auto-run-1' });
+
+    const res = await callTool(client, 'browser_close');
+
+    expect(res.isError).toBeFalsy();
+    expect(browserCalls('browser.close')).toEqual([{ workspaceId: 'ws-claimed' }]);
+    const identity = mockSendRpc.mock.calls.find(([m]) => m === 'a2a.resolve.identity');
+    expect(identity?.[1]).toMatchObject({ hintedPtyId: 'auto-run-1' });
+  });
+
+  it('a WSL pane the daemon attests acts in its own workspace with main\'s claim', async () => {
+    routing({ live: true, workspaceId: 'ws-wsl', workspaceToken: 'claim-wsl' });
+    const client = await connect({ envPtyHint: 'pty-wsl', envWorkspaceHint: 'ws-wsl' });
+
+    const res = await callTool(client, 'browser_close');
+
+    expect(res.isError).toBeFalsy();
+    expect(browserCalls('browser.close')).toEqual([{ workspaceId: 'ws-wsl' }]);
+    expect(getWorkspaceToken()).toBe('claim-wsl');
+    expect(mockSendRpc.mock.calls.some(([m]) => m === 'mcp.claimWorkspace')).toBe(false);
+  });
+
+  it('a live pane main cannot attest is refused with the reason, never claimed elsewhere', async () => {
+    routing({ live: true });
+    const client = await connect({ envPtyHint: 'pty-wsl', envWorkspaceHint: 'ws-wsl' });
 
     const res = await callTool(client, 'browser_close');
 
@@ -193,5 +223,15 @@ describe('browser tools — a pane main cannot verify', () => {
     expect(res.text).toMatch(/could not verify/);
     expect(mockSendRpc.mock.calls.some(([m]) => m === 'mcp.claimWorkspace')).toBe(false);
     expect(browserCalls('browser.close')).toHaveLength(0);
+  });
+
+  it('the status probe never creates a workspace for a caller outside every pane', async () => {
+    routing({ live: false }, (method) => (method === 'browser.session.status' ? { backend: 'builtin' } : undefined));
+    const client = await connect();
+
+    const res = await callTool(client, 'browser_session', { action: 'status' });
+
+    expect(res.isError).toBeFalsy();
+    expect(mockSendRpc.mock.calls.some(([m]) => m === 'mcp.claimWorkspace')).toBe(false);
   });
 });

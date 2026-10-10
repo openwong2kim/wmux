@@ -6,6 +6,7 @@ import * as path from 'node:path';
 import { RpcRouter } from '../../RpcRouter';
 import { registerA2aRpc } from '../a2a.rpc';
 import type { ClaudeWorker } from '../../../a2a/ClaudeWorker';
+import type { DaemonClient } from '../../../DaemonClient';
 import { createHash } from 'node:crypto';
 import {
   __resetWorkspaceClaimTrustForTesting,
@@ -13,9 +14,14 @@ import {
 } from '../../../workspace/workspaceClaimTrust';
 
 // Hoisted handles so the module mocks can read values set per-test.
-const { sendToRendererMock, dirRef } = vi.hoisted(() => ({
+const { sendToRendererMock, dirRef, accountsRef } = vi.hoisted(() => ({
   sendToRendererMock: vi.fn(),
   dirRef: { current: '' as string },
+  accountsRef: { current: [] as Array<{ vendor: string; configDir: string }> },
+}));
+
+vi.mock('../../../account/accountStore', () => ({
+  getAccountStore: () => ({ listAccounts: () => accountsRef.current }),
 }));
 
 vi.mock('../_bridge', () => ({
@@ -467,6 +473,87 @@ describe('a2a.resolve.identity — pane claims from main\'s own answers', () => 
     } finally {
       if (previous === undefined) delete process.env.CODEX_HOME;
       else process.env.CODEX_HOME = previous;
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('a2a.resolve.identity — accounts and the pane the env names', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    __resetWorkspaceClaimTrustForTesting();
+    accountsRef.current = [];
+    dirRef.current = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-pidmap-hint-'));
+    fs.writeFileSync(path.join(dirRef.current, '49076'), 'daemon-shell');
+    sendToRendererMock.mockImplementation(
+      (_w: unknown, method: string, p: { ptyId: string }) =>
+        Promise.resolve({
+          workspaceId: method === 'input.findOwnerWorkspace' && p.ptyId === 'daemon-shell' ? 'ws-live' : null,
+        }),
+    );
+  });
+  afterEach(() => {
+    accountsRef.current = [];
+    try { fs.rmSync(dirRef.current, { recursive: true, force: true }); } catch { /* best-effort */ }
+  });
+
+  function routerWithDaemon(wslLive: boolean | 'throws'): { router: RpcRouter; rpc: ReturnType<typeof vi.fn> } {
+    const rpc = vi.fn(async () => {
+      if (wslLive === 'throws') throw new Error('daemon down');
+      return { live: wslLive };
+    });
+    const router = new RpcRouter();
+    registerA2aRpc(router, () => fakeWindow, makeWorker(), {
+      snapshot: async () => ({ ppidByPid: new Map([[39876, 1]]), listeners: [] }),
+      createdAt: () => null,
+      getDaemonClient: () => ({ rpc }) as unknown as DaemonClient,
+    });
+    return { router, rpc };
+  }
+
+  it('reports a hinted name that is no live pane (a scheduled run\'s auto- session) as not live', async () => {
+    const { router, rpc } = routerWithDaemon(true);
+    const result = (await dispatchResolve(router, { callerPid: 39876, hintedPtyId: 'auto-run-1' })) as { hintedPane?: unknown };
+    expect(result.hintedPane).toEqual({ live: false });
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  it('attests a live pane only when the daemon follows a live WSL agent in it', async () => {
+    const attested = routerWithDaemon(true);
+    const yes = (await dispatchResolve(attested.router, { callerPid: 39876, hintedPtyId: 'daemon-shell' })) as {
+      hintedPane?: { live: boolean; workspaceId?: string; workspaceToken?: string };
+    };
+    expect(attested.rpc).toHaveBeenCalledWith('session.wslAgentLive', { sessionId: 'daemon-shell' }, expect.anything());
+    expect(yes.hintedPane).toMatchObject({ live: true, workspaceId: 'ws-live' });
+    expect(lookupWorkspaceClaim(yes.hintedPane?.workspaceToken)).toEqual({ kind: 'bound', workspaceId: 'ws-live', ptyId: 'daemon-shell' });
+
+    for (const answer of [false, 'throws'] as const) {
+      const { router } = routerWithDaemon(answer);
+      const no = (await dispatchResolve(router, { callerPid: 39876, hintedPtyId: 'daemon-shell' })) as { hintedPane?: unknown };
+      expect(no.hintedPane).toEqual({ live: true });
+    }
+  });
+
+  it('finds a Codex thread\'s owner record under a registered Codex account\'s home', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-codex-account-'));
+    accountsRef.current = [{ vendor: 'codex', configDir: home }];
+    const threadId = '019a0000-0000-7000-8000-0000000000cc';
+    const digest = (v: string) => createHash('sha256').update(v).digest('hex');
+    const dir = path.join(home, 'wmux-thread-owners');
+    fs.mkdirSync(dir, { recursive: true });
+    const suffix = process.env.WMUX_DATA_SUFFIX || '';
+    const env = {
+      WMUX_PTY_ID: 'daemon-shell', WMUX_WORKSPACE_ID: 'ws-frozen', WMUX_SURFACE_ID: '', WMUX_DATA_SUFFIX: suffix,
+      WMUX_PIPE_NAME: '', WMUX_HOOKS_TO_MAIN: '',
+    };
+    fs.writeFileSync(path.join(dir, `thread-${digest(threadId)}.json`), JSON.stringify({ version: 1, id: threadId, env, nonce: 'n2' }));
+    fs.writeFileSync(path.join(dir, `pane-${digest(JSON.stringify([suffix, 'daemon-shell']))}.json`), JSON.stringify({ id: threadId, nonce: 'n2' }));
+    try {
+      const result = (await dispatchResolve(setupRouterWithSnapshot(new Map()), { codexThreadId: threadId })) as {
+        threadClaim?: { workspaceId: string; ptyId: string };
+      };
+      expect(result.threadClaim).toMatchObject({ workspaceId: 'ws-live', ptyId: 'daemon-shell' });
+    } finally {
       fs.rmSync(home, { recursive: true, force: true });
     }
   });

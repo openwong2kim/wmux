@@ -180,15 +180,18 @@ function requestedWorkspaceId(params: Record<string, unknown>): string | undefin
 
 /**
  * The caller's pane for pane-level choices (its Chrome profile, the opener
- * record). A pane claim's attested pane wins. The envelope's `callerPtyId` is
- * only a fallback: it is not verified, so it is used only inside a workspace
- * already scoped from a verified identity, and only to pick one of that
- * workspace's own panes — it never widens the scope.
+ * record): only a pane main attested — a pane claim's `ptyId`. The envelope's
+ * `callerPtyId` is not verified, so it counts only for the in-process lanes
+ * (the operator and an iframe plugin), which have no wire envelope to set it.
+ * A wire caller without an attested pane (a workspace claim from
+ * `mcp.claimWorkspace`, a commander token) gets none, and the workspace's
+ * profile policy applies to it.
  */
 export function callerPaneOf(ctx: RpcContext | undefined): string | undefined {
   const claim = ctx?.workspaceClaim;
   if (claim?.kind === 'bound' && claim.ptyId) return claim.ptyId;
-  return ctx?.callerPtyId;
+  if (ctx?.operator === true || isHostedCaller(ctx)) return ctx?.callerPtyId;
+  return undefined;
 }
 
 /**
@@ -2963,7 +2966,6 @@ export function registerBrowserRpc(
    * Return the active profile and CDP port information.
    */
   router.register('browser.session.status', async (params, ctx) => {
-    const ws = scopeFor('browser.session.status', params, ctx);
     const kind = backend();
     // Chrome backend: the Electron-session fields below describe a session the
     // chrome backend does not use, so reporting them alone made the status
@@ -2971,6 +2973,9 @@ export function registerBrowserRpc(
     // port null" while a real Chrome was up on its CDP port). Report the
     // chrome facts instead — via a pure read that never launches Chrome.
     if (kind === 'chrome' && chromeRegistry) {
+      // Scoped only here: this branch reports one workspace's Chrome. The
+      // builtin answer below is the app-wide session, the same for everyone.
+      const ws = scopeFor('browser.session.status', params, ctx);
       // The profile only: a status probe must never create a launcher.
       const { profile } = await resolveChromeProfile('browser.session.status', ctx, ws || undefined);
       const status = await chromeRegistry.statusForProfile(profile);
@@ -3002,8 +3007,9 @@ export function registerBrowserRpc(
    * browser.session.list
    * Return all available profiles.
    */
-  router.register('browser.session.list', async (params, ctx) => {
-    scopeFor('browser.session.list', params, ctx);
+  router.register('browser.session.list', async () => {
+    // The names of the configured profiles, the same for every caller: a probe
+    // with nothing to scope.
     const profiles = profileManager.listProfiles().map((p) => ({
       name: p.name,
       partition: p.partition,

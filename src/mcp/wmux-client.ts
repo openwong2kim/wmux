@@ -159,6 +159,27 @@ export function runWithWorkspaceTokenSource<T>(source: () => string | undefined,
   return workspaceTokenSource.run(source, fn);
 }
 
+// What a browser call does when main answers that the caller's identity is
+// stale (a pane moved, main restarted): set per tool call by index.ts, so the
+// tool modules that call sendRpc directly get the same recovery as callRpc.
+const staleIdentitySource = new AsyncLocalStorage<(outcome: string) => void>();
+
+/** Run `fn` with a stale-identity handler for every browser RPC it makes. */
+export function runWithStaleIdentityHandler<T>(handler: (outcome: string) => void, fn: () => T): T {
+  return staleIdentitySource.run(handler, fn);
+}
+
+function noteBrowserOutcome(method: string, outcome: unknown): void {
+  if (!method.startsWith('browser.')) return;
+  const handler = staleIdentitySource.getStore();
+  if (!handler) return;
+  try {
+    handler(typeof outcome === 'string' ? outcome : JSON.stringify(outcome ?? ''));
+  } catch {
+    /* recovery is best-effort: it must never change the call's own result */
+  }
+}
+
 /** The workspaceToken the next envelope built in this context will carry. */
 function envelopeWorkspaceToken(connectionToken: string | undefined): string | undefined {
   const source = workspaceTokenSource.getStore();
@@ -337,9 +358,12 @@ export async function sendRpc(
   for (const pipePath of pipePaths) {
     for (let attempt = 0; attempt < RETRY_COUNT; attempt++) {
       try {
-        return await attemptRpc(pipePath, token, method, params, timeoutMs);
+        const result = await attemptRpc(pipePath, token, method, params, timeoutMs);
+        noteBrowserOutcome(method, result);
+        return result;
       } catch (err) {
         lastError = err as Error;
+        noteBrowserOutcome(method, lastError.message);
         const msg = lastError.message;
         const isRetryable = msg.includes('not running') || msg.includes('unauthorized');
         const isPerm = msg.includes('EPERM');
@@ -359,7 +383,9 @@ export async function sendRpc(
   // TCP localhost fallback — bypasses Windows named pipe ACL issues
   if (tcpPort) {
     try {
-      return await attemptRpc({ host: '127.0.0.1', port: tcpPort }, token, method, params, timeoutMs);
+      const result = await attemptRpc({ host: '127.0.0.1', port: tcpPort }, token, method, params, timeoutMs);
+      noteBrowserOutcome(method, result);
+      return result;
     } catch { /* fall through */ }
   }
 

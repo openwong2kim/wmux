@@ -8073,6 +8073,18 @@ async function main(): Promise<void> {
     watcher: new WslPidWatcher(),
     isRunning: (agent) => checkWslAgentRunning(agent),
   });
+  // Whether a session is a WSL pane whose agent is live right now, for main's
+  // browser-identity check of a WSL pane (Windows cannot walk Linux processes,
+  // so main asks the daemon, which follows that agent from inside the distro).
+  pipeServer.onRpc('session.wslAgentLive', async (rawParams) => {
+    const id = typeof (rawParams as { sessionId?: unknown }).sessionId === 'string'
+      ? (rawParams as { sessionId: string }).sessionId
+      : '';
+    const live = id.length > 0
+      && !!sessionManager.getSession(id)?.meta.wslTarget
+      && agentProcessTracker.hasLiveWslAgent(id);
+    return { live };
+  });
   // #919 — re-evaluate canonical identity OUTSIDE `session:agent`: the tier
   // inputs change (attribution completes; a watched process dies) while no
   // detector event is in flight, and a wrong label would otherwise sit in

@@ -829,6 +829,14 @@ export class AgentProcessTracker {
     return { ...(s.slug ? { slug: s.slug } : {}), alive: s.alive };
   }
 
+  /** True while the session's agent is a live process inside WSL, attributed
+   *  from its own hook's report (armWsl) and watched from inside the distro.
+   *  Synchronous map read — never probes. */
+  hasLiveWslAgent(sessionId: string): boolean {
+    const s = this.states.get(sessionId);
+    return s?.alive === true && s.wsl !== undefined;
+  }
+
   /** #1307 — the attributed process's pid, for a delivery-time liveness
    *  probe fresher than the cached `alive` flag (a death between
    *  ProcessMonitor polls). undefined = never attributed. */

@@ -130,6 +130,13 @@ describe('wmux open / browser close caller scoping (#922 PR-C)', () => {
     expect(rpc).not.toHaveBeenCalledWith('workspace.current', expect.anything());
   });
 
+  it('asks to update the app when main finds the pane but mints no claim (older main)', async () => {
+    selfContext.mockResolvedValue({ ptyId: 'pty-self', workspaceId: 'ws-self' });
+    const message = await expectRefusedOutsidePane(() => handleBrowser(['navigate', 'https://example.com'], false));
+    expect(message).toContain('Update the wmux app');
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
   it('carries the pane claim main minted on every browser request', async () => {
     await handleBrowser(['navigate', 'https://example.com'], false);
     expect(setWorkspaceToken).toHaveBeenCalledWith('claim-self');

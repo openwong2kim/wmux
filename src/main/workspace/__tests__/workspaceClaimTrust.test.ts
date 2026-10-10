@@ -272,3 +272,17 @@ describe('workspaceClaimTrust — pane claims', () => {
     expect(claimTokenForPane('ws-a', '')).toBeNull();
   });
 });
+
+describe('workspaceClaimTrust — pane claims without a mirror', () => {
+  it('expires an unconfirmed pane claim after the bound, and a repeat walk re-attests it', () => {
+    let clock = 5_000_000;
+    __resetWorkspaceClaimTrustForTesting(() => clock);
+    const token = claimTokenForPane('ws-a', 'pty-1');
+    clock += 9 * 60_000;
+    expect(claimTokenForPane('ws-a', 'pty-1')).toBe(token); // re-walk refreshes
+    clock += 9 * 60_000;
+    expect(lookupWorkspaceClaim(token)).toMatchObject({ kind: 'bound' });
+    clock += 2 * 60_000;
+    expect(lookupWorkspaceClaim(token)).toEqual({ kind: 'stale' });
+  });
+});

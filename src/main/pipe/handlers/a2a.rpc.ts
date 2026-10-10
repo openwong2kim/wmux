@@ -22,6 +22,7 @@ import type { PortSnapshot, SnapshotFn } from '../../pty/portWatch';
 import { walkToOwningAnchor } from '../../pty/serverSidePidWalk';
 import { tryProcessCreatedAt } from '../../pty/winSnapshotNative';
 import { readWindowsAncestry } from './callerAncestry';
+import { getAccountStore } from '../../account/accountStore';
 import {
   CODEX_THREAD_ID_RE,
   codexHome,
@@ -200,13 +201,34 @@ async function readWorkspacePanes(
 
 /** Validate an RPC-supplied caller pid. Anything non-positive / non-integer is
  *  ignored (older MCP build, or junk) → the handler keeps its legacy behavior. */
+/**
+ * Every Codex home the owner record can live in: main's own CODEX_HOME (or
+ * the default) and each registered Codex account's config dir, since a thread
+ * started under another account's app-server keeps its owner index there.
+ */
+function codexHomes(): string[] {
+  const homes = new Set<string>([codexHome(process.env), codexHome({ ...process.env, CODEX_HOME: '' })]);
+  try {
+    for (const account of getAccountStore().listAccounts()) {
+      if (account.vendor === 'codex' && account.configDir) homes.add(account.configDir);
+    }
+  } catch {
+    /* an unreadable account store leaves the default homes */
+  }
+  return [...homes];
+}
+
 /** The pane a Codex thread's owner record names, with a claim on it, or null. */
 function resolveCodexThreadClaim(
   threadId: unknown,
   entries: ReadonlyArray<{ ptyId: string; workspaceId: string }>,
 ): { workspaceId: string; ptyId: string; workspaceToken: string } | null {
   if (typeof threadId !== 'string' || !CODEX_THREAD_ID_RE.test(threadId)) return null;
-  const owner = readCodexThreadOwner(threadId, codexHome(process.env));
+  let owner: ReturnType<typeof readCodexThreadOwner>;
+  for (const home of codexHomes()) {
+    owner = readCodexThreadOwner(threadId, home);
+    if (owner) break;
+  }
   const match = matchOwnerToLiveAnchor(threadId, owner, entries, process.env.WMUX_DATA_SUFFIX || '');
   if (match.status !== 'hit') return null;
   const workspaceToken = claimTokenForPane(match.wsId, match.ptyId);
@@ -429,6 +451,26 @@ export function registerA2aRpc(
     return getCoalescedSnapshot();
   }
 
+  /** See the `hintedPane` field of `a2a.resolve.identity`. */
+  async function resolveHintedPane(
+    hintedPtyId: unknown,
+    entries: ReadonlyArray<{ ptyId: string; workspaceId: string }>,
+  ): Promise<{ live: boolean; workspaceId?: string; workspaceToken?: string } | null> {
+    if (typeof hintedPtyId !== 'string' || hintedPtyId.length === 0 || hintedPtyId.length > 128) return null;
+    const pane = entries.find((e) => e.ptyId === hintedPtyId);
+    if (!pane) return { live: false };
+    let wslLive = false;
+    try {
+      const res = await getDaemonClient?.()?.rpc('session.wslAgentLive', { sessionId: hintedPtyId }, { timeoutMs: 2000 });
+      wslLive = (res as { live?: unknown } | null)?.live === true;
+    } catch {
+      wslLive = false; // daemon unreachable or older: unattested
+    }
+    if (!wslLive) return { live: true };
+    const workspaceToken = claimTokenForPane(pane.workspaceId, pane.ptyId);
+    return workspaceToken ? { live: true, workspaceId: pane.workspaceId, workspaceToken } : { live: true };
+  }
+
   // a2a.resolve.identity — handled in main process (not renderer).
   // Returns PID → CURRENT workspaceId mappings so an MCP server can resolve
   // which workspace it belongs to by walking its own process tree.
@@ -602,12 +644,19 @@ export function registerA2aRpc(
     // inside that pane), joined with the LIVE anchors above. The claim goes
     // back on its own field because the caller stamps it on that call only.
     const threadClaim = resolveCodexThreadClaim((params as { codexThreadId?: unknown }).codexThreadId, entries);
+    // The walk missed but the caller's env names a pane. Main says whether
+    // that pane is live, and attests it only when the daemon follows a live
+    // agent inside it from WSL — the one pane kind whose processes main cannot
+    // walk. A name that is not a live pane (a scheduled run's `auto-` session,
+    // which belongs to no workspace) is reported as such, never as a pane.
+    const hintedPane = resolved ? null : await resolveHintedPane((params as { hintedPtyId?: unknown }).hintedPtyId, entries);
     return {
       mappings,
       entries,
       resolved,
       ...(workspaceToken && { workspaceToken }),
       ...(threadClaim && { threadClaim }),
+      ...(hintedPane && { hintedPane }),
     };
   });
 

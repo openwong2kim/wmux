@@ -1,11 +1,14 @@
 import type { RpcRouter } from '../../RpcRouter';
-import { mintWorkspaceClaimToken } from '../../../workspace/workspaceClaimTrust';
+import { claimTokenForPane, mintWorkspaceClaimToken } from '../../../workspace/workspaceClaimTrust';
 
 /**
  * Browser calls take their workspace from a verified identity, never from the
  * request's `workspaceId`. Suites that test HANDLER behaviour (not the lane
  * table) send each request the way the pane MCP does: holding a claim on the
  * workspace it names, so the `workspaceId` in params only narrows that claim.
+ *
+ * A request that also names its pane (`callerPtyId`) holds a pane claim, the
+ * way main mints one from its process-tree walk.
  *
  * A request that names no workspace is sent as the operator instead: the
  * renderer is the one caller that may still act without a workspace, so it is
@@ -27,7 +30,8 @@ export function dispatchAsClaimedCaller(router: RpcRouter): RpcRouter {
     if (typeof workspaceId !== 'string' || workspaceId.length === 0) {
       return dispatch(request, { operator: true });
     }
-    return dispatch({ ...request, ...claimOn(workspaceId) } as typeof request);
+    const pane = typeof req['callerPtyId'] === 'string' ? req['callerPtyId'] : undefined;
+    return dispatch({ ...request, ...(pane ? paneClaimOn(workspaceId, pane) : claimOn(workspaceId)) } as typeof request);
   }) as RpcRouter['dispatch'];
   return router;
 }
@@ -36,5 +40,12 @@ export function dispatchAsClaimedCaller(router: RpcRouter): RpcRouter {
 export function claimOn(workspaceId: string): { workspaceToken: string } {
   const token = mintWorkspaceClaimToken(workspaceId);
   if (!token) throw new Error(`could not mint a claim on ${workspaceId}`);
+  return { workspaceToken: token };
+}
+
+/** The envelope field for a caller holding a pane claim (workspace + pane). */
+export function paneClaimOn(workspaceId: string, ptyId: string): { workspaceToken: string } {
+  const token = claimTokenForPane(workspaceId, ptyId);
+  if (!token) throw new Error(`could not mint a pane claim on ${workspaceId}/${ptyId}`);
   return { workspaceToken: token };
 }

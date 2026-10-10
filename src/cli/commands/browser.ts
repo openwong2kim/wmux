@@ -21,10 +21,14 @@ async function attestBrowserCaller(): Promise<SelfContext> {
     return ctx;
   }
   // Nothing to send that wmux would accept: say how to run it instead of
-  // making a call that is refused.
+  // making a call that is refused. A pane found without a claim means the
+  // running wmux app predates pane claims (it answers the walk, mints none).
   console.error(
-    'Error: wmux browser commands act on the wmux pane they run in, and this terminal is not ' +
-      'one (or wmux could not verify it). Run the command from a wmux pane terminal.',
+    ctx.workspaceId
+      ? 'Error: this wmux app is older than the wmux CLI and cannot verify the pane for browser ' +
+          'commands. Update the wmux app (and restart it), then run the command again.'
+      : 'Error: wmux browser commands act on the wmux pane they run in, and this terminal is not ' +
+          'one (or wmux could not verify it). Run the command from a wmux pane terminal.',
   );
   process.exit(1);
 }

@@ -161,7 +161,11 @@ export function claimTokenForPane(workspaceId: unknown, ptyId: unknown): string 
   if (ws.length === 0 || pty.length === 0) return null;
   for (const [token, entry] of live) {
     if (entry.ptyId === pty) {
-      if (entry.workspaceId === ws) return token;
+      if (entry.workspaceId === ws) {
+        // Main just walked to this pane again: that re-attests the claim.
+        entry.mintedAt = now();
+        return token;
+      }
       // The pane now lives in another workspace: its old claim names a
       // workspace the pane is no longer in.
       live.delete(token);
@@ -173,15 +177,25 @@ export function claimTokenForPane(workspaceId: unknown, ptyId: unknown): string 
 }
 
 /**
+ * How long a pane claim lives when the mirror cannot say where its pane is
+ * (no renderer push yet, or an empty one). The holder's next walk re-attests
+ * it (`claimTokenForPane` refreshes `mintedAt`), so this only bounds a claim
+ * nobody re-walks, rather than letting it outlive its pane indefinitely.
+ */
+const PANE_CLAIM_UNCONFIRMED_TTL_MS = 10 * 60_000;
+
+/**
  * Whether a pane claim still describes where its pane is, by the renderer's
  * workspace mirror: `false` once the pane is in another workspace, or gone
- * from every workspace after the grace window. No mirror yet means unknown,
- * which keeps the claim.
+ * from every workspace after the grace window. With no usable mirror the
+ * claim holds until `PANE_CLAIM_UNCONFIRMED_TTL_MS` after its last walk.
  */
 function paneClaimStillHolds(entry: { workspaceId: string; ptyId?: string; mintedAt: number }): boolean {
   if (entry.ptyId === undefined) return true;
   const snapshot = getWorkspaceMirror().peek();
-  if (snapshot === null || snapshot.entries.length === 0) return true;
+  if (snapshot === null || snapshot.entries.length === 0) {
+    return entry.mintedAt > now() - PANE_CLAIM_UNCONFIRMED_TTL_MS;
+  }
   for (const w of snapshot.entries) {
     if (w.activePtyId === entry.ptyId || (w.ptyIds ?? []).includes(entry.ptyId)) {
       return w.id === entry.workspaceId;

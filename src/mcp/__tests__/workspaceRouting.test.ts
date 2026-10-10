@@ -273,9 +273,14 @@ describe('MCP workspace routing (source-level invariants)', () => {
     const block = src.match(/const browserSessionStatus = async \(\) => \{[\s\S]*?callRpc\('browser\.session\.status'/)?.[0];
     if (!block) throw new Error('browserSessionStatus handler not found in mcp/index.ts');
     expect(block).toMatch(/warmBrowserIdentity\(\)/);
-    expect(src).toMatch(/const warmBrowserIdentity = \(\) => requireBrowserWorkspaceId\(\)\.catch\(/);
+    // A probe: it never claims a dedicated workspace.
+    expect(src).toMatch(/const warmBrowserIdentity = \(\) => requireBrowserWorkspaceId\(\{ claim: false \}\)\.catch\(/);
     expect(block).not.toMatch(/[^r]requireWorkspaceId\(\)/);
     expect(block).not.toMatch(/resolveWorkspaceId\(\)/);
+  });
+
+  it('every tool call drops a stale identity on any browser RPC, not only callRpc ones', () => {
+    expect(src).toMatch(/runWithStaleIdentityHandler\(\(outcome\) => \{\s*if \(isStaleIdentityResult\(outcome\)\) invalidateStaleRoute\(/);
   });
 
   it('pane/surface lifecycle tools are wired in with the fail-soft read resolver (#285)', () => {
