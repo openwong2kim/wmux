@@ -83,7 +83,6 @@ export default function GitPage() {
   // repos are this computer's and stay as they are.
   const remoteScope = useStore(selectRemoteScopeName);
   const remoteFiles = following && remoteScope !== null;
-  const remoteFilesNote = remoteScope ? t('pcRail.filesNotShown', { name: remoteScope }) : t('git.noRepo');
   // The repo shown in This repo (the gate's repo in All repos).
   const resolved = following
     ? active.repo
@@ -278,7 +277,8 @@ export default function GitPage() {
             )}
           </div>
           {pickMissing && <p className="wmux-git-page-summary" data-git-pick-missing>{t('git.repoMenu.missing')}</p>}
-          {page.scope === 'repo' && remoteFiles && <p className="wmux-git-page-summary" data-git-remote-files>{remoteFilesNote}</p>}
+          {/* A computer the roster has not named yet gets no line, as on the rail pages. */}
+          {page.scope === 'repo' && remoteFiles && remoteScope && <p className="wmux-git-page-summary" data-git-remote-files>{t('pcRail.filesNotShown', { name: remoteScope })}</p>}
           {page.scope === 'repo' && !remoteFiles && !resolved && !resolving && <p className="wmux-git-page-summary" data-git-no-repo>{t('git.noRepo')}</p>}
           {counts.length > 0 && <p className="wmux-git-page-summary" data-git-page-counts>{counts.join(' · ')}</p>}
           {page.scope === 'all' && page.allLayout === 'flat' && page.tab !== 'worktrees' && turnCounts && <GitTurnSummary counts={turnCounts} />}
@@ -332,10 +332,10 @@ export default function GitPage() {
         {page.tab === 'worktrees' ? (
           <div className="wmux-git-scroll" data-git-worktrees-tab>
             {/* The active workspace's branch (Diff, Go to terminal, the ship
-                button), unless a picked repo it is not in is shown. */}
-            {(page.scope === 'all' || following || pickedGroup?.active) && (remoteScope !== null
-              ? <div className="wmux-git-note" data-git-remote-files>{remoteFilesNote}</div>
-              : <GitTab layout="summary" refreshKey={refreshKey} />)}
+                button), unless a picked repo it is not in is shown. With
+                another computer on screen that workspace is not on this one:
+                no card, and the header says why when following it. */}
+            {(page.scope === 'all' || following || pickedGroup?.active) && remoteScope === null && <GitTab layout="summary" refreshKey={refreshKey} />}
             {page.scope === 'all'
               ? <AllWorktrees groups={groups} refreshKey={refreshKey} />
               : following
