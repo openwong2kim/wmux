@@ -91,11 +91,24 @@ describe('BrowserPolicyStore', () => {
     expect(fresh.decisionFor(PANE, WS, PROFILE)).toMatchObject({ kind: 'denied' });
   });
 
-  it('an unreadable history fails closed when the primary cannot answer', () => {
+  it('an unreadable history fails closed for panes with their own profile', () => {
     writeFileSync(history(), 'nope');
     const store = new BrowserPolicyStore(dir);
     expect(store.hasAnyHistory()).toBe(true);
     expect(store.decisionFor('any-pane', WS, PROFILE)).toMatchObject({ kind: 'denied' });
+    // A pane with no profile of its own can never have been protected.
+    expect(store.decisionFor('any-pane', WS, 'default', false)).toEqual({ kind: 'legacy' });
+  });
+
+  it('recovering one pane after both files were lost keeps the other panes refused', async () => {
+    writeFileSync(primary(), '{ torn');
+    writeFileSync(history(), 'nope');
+    const store = new BrowserPolicyStore(dir);
+    await store.write(payload(), PROFILE, true);
+    const fresh = new BrowserPolicyStore(dir);
+    expect(fresh.decisionFor(PANE, WS, PROFILE)).toMatchObject({ kind: 'protected', confirmed: true });
+    expect(fresh.decisionFor('pane-2', WS, 'pb')).toMatchObject({ kind: 'denied' });
+    expect(JSON.parse(readFileSync(history(), 'utf8'))).toMatchObject({ uncertain: true });
   });
 
   it('an unsupported version and a malformed entry both read as unusable', async () => {

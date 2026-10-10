@@ -1021,19 +1021,19 @@ export function registerBrowserRpc(
       return;
     }
     const currentProfile = chromeRegistry?.profileFor(workspaceId, paneId);
-    const pd = store.decisionFor(paneId, workspaceId, currentProfile);
+    const binding = browserPolicy?.paneBindings()[paneId];
+    const ownsProfile =
+      !!currentProfile
+      && !!binding
+      && binding.workspaceId === workspaceId
+      && binding.profile.toLowerCase() === currentProfile.toLowerCase();
+    const pd = store.decisionFor(paneId, workspaceId, currentProfile, !!binding);
     if (pd.kind === 'legacy') return;
     if (pd.kind === 'denied') throw new Error(policyDeniedMessage(method, pd.why));
     if (backend() !== 'chrome') {
       throw new Error(policyDeniedMessage(method, 'a protected pane runs only on the Chrome browser backend'));
     }
-    const binding = browserPolicy?.paneBindings()[paneId];
-    if (
-      !currentProfile
-      || !binding
-      || binding.workspaceId !== workspaceId
-      || binding.profile.toLowerCase() !== currentProfile.toLowerCase()
-    ) {
+    if (!ownsProfile) {
       throw new Error(policyDeniedMessage(method, 'a protected pane needs a Chrome profile bound to that pane alone'));
     }
     if (PROTECTED_DENIED_METHODS.has(method)) {

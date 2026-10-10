@@ -744,11 +744,20 @@ export class ChromeLauncher implements ChromeBackendClient {
         }
       }
     }
-    if (this.launching) return this.launching;
-    this.launching = this.launch().finally(() => {
-      this.launching = null;
-    });
-    return this.launching;
+    if (!this.launching) {
+      this.launching = this.launch().finally(() => {
+        this.launching = null;
+      });
+    }
+    if (!this.protection) return this.launching;
+    const port = await this.launching;
+    // A launch already in flight when protection changed was started under the
+    // old terms; it is never handed out under the new ones.
+    if (!!this.wantedProtection() !== this.launchedProtected) {
+      await this.stopForProtectionChange();
+      return this.ensureRunning();
+    }
+    return port;
   }
 
   /** Env-pinned fixed port ('default' profile only), validated. */
@@ -875,7 +884,10 @@ export class ChromeLauncher implements ChromeBackendClient {
 
   /** Apply a protection change now rather than at the next call (policy edits). */
   async reconcileProtection(): Promise<void> {
-    if (!this.isRunning() || this.launching || this.disposed) return;
+    // Open tunnels first: a policy edit applies to connections already made.
+    this.proxy?.revalidate();
+    if (this.launching) await this.launching.catch(() => undefined);
+    if (!this.isRunning() || this.disposed) return;
     const wanted = this.wantedProtection();
     if (!!wanted === this.launchedProtected) return;
     await this.stopForProtectionChange();

@@ -55,6 +55,13 @@ export class BrowserPolicyWriteError extends Error {
 interface History {
   /** paneId → workspaceId it was last seen in. */
   panes: Record<string, string>;
+  /**
+   * The history was once unreadable, so it may be missing panes that were
+   * protected. Persisted, so a later write cannot quietly forget it: until a
+   * pane is written again, a pane with an exclusive profile and no entry is
+   * refused.
+   */
+  uncertain?: true;
 }
 
 function emptyFile(): BrowserPolicyFile {
@@ -182,6 +189,7 @@ export class BrowserPolicyStore {
           }
           this.history.panes[paneId] = ws;
         }
+        if ((h as { uncertain?: unknown }).uncertain === true) this.historyCorrupt = true;
       }
     }
     this.loaded = true;
@@ -250,12 +258,21 @@ export class BrowserPolicyStore {
 
   /**
    * What `paneId`'s policy means, now that it lives in `workspaceId` and
-   * resolves to `currentProfile`.
+   * resolves to `currentProfile`. `paneBound`: whether the pane has a Chrome
+   * profile of its own — the only kind of pane that can ever have been
+   * protected, so an uncertain history refuses only those (default: assume it
+   * does).
    */
-  decisionFor(paneId: string, workspaceId: string, currentProfile: string | undefined): PanePolicyDecision {
+  decisionFor(
+    paneId: string,
+    workspaceId: string,
+    currentProfile: string | undefined,
+    paneBound = true,
+  ): PanePolicyDecision {
     this.ensureLoaded();
     if (!paneId || isUnsafeKey(paneId)) return { kind: 'denied', why: 'the calling pane could not be identified' };
-    const everProtected = this.historyCorrupt || Object.prototype.hasOwnProperty.call(this.history.panes, paneId);
+    const everProtected =
+      Object.prototype.hasOwnProperty.call(this.history.panes, paneId) || (this.historyCorrupt && paneBound);
     if (this.state !== 'ok') {
       return everProtected
         ? { kind: 'denied', why: `the browser policy file is ${this.state === 'missing' ? 'missing' : 'unreadable'}` }
@@ -265,7 +282,7 @@ export class BrowserPolicyStore {
     if (!entry) {
       // Entries leave the file only together with their history (pane closed).
       // A pane in the history with no entry means the file lost it.
-      return !this.historyCorrupt && everProtected
+      return everProtected
         ? { kind: 'denied', why: "this pane's browser policy is missing" }
         : { kind: 'legacy' };
     }
@@ -327,10 +344,11 @@ export class BrowserPolicyStore {
     return run;
   }
 
-  private async commitHistory(next: History): Promise<void> {
+  private async commitHistory(panes: Record<string, string>): Promise<void> {
+    // An uncertain history stays uncertain: what it may have lost is still lost.
+    const next: History = { panes, ...(this.historyCorrupt && { uncertain: true as const }) };
     await atomicWriteJSON(this.historyPath, next, { durable: true });
-    this.history = next;
-    this.historyCorrupt = false;
+    this.history = { panes };
   }
 
   private async commitPrimary(next: BrowserPolicyFile): Promise<void> {
@@ -378,7 +396,7 @@ export class BrowserPolicyStore {
       // history until the operator writes that pane again.
       const base = this.state === 'ok' ? this.file : emptyFile();
       if (payload.protected && this.history.panes[paneId] !== workspaceId) {
-        await this.commitHistory({ panes: { ...this.history.panes, [paneId]: workspaceId } });
+        await this.commitHistory({ ...this.history.panes, [paneId]: workspaceId });
       }
       const next: BrowserPolicyFile = {
         version: BROWSER_POLICY_VERSION,
@@ -453,14 +471,14 @@ export class BrowserPolicyStore {
     return this.mutate(async () => {
       const { gone, moved } = plan();
       if (gone.size === 0 && moved.size === 0) return { pruned: 0, moved: 0 };
-      if (!this.historyCorrupt) {
+      {
         const panes: Record<string, string> = {};
         for (const [paneId, ws] of Object.entries(this.history.panes)) {
           if (gone.has(paneId)) continue;
           panes[paneId] = moved.get(paneId) ?? ws;
         }
         // History first: a moved pane must never be found protected nowhere.
-        await this.commitHistory({ panes });
+        await this.commitHistory(panes);
       }
       if (this.state === 'ok') {
         const panes: Record<string, PanePolicy> = {};

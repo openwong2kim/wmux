@@ -139,6 +139,27 @@ describe('ChromeLauncher — protected profiles', () => {
     launcher.dispose();
   });
 
+  it('never hands out a launch that was in flight when protection turned on', async () => {
+    let plan: ChromeProtectionPlan | null = null;
+    const first = makeChild();
+    const firstPort = spawnWritesPortFile(first);
+    // A killed Chrome stops answering.
+    first.kill = vi.fn(() => {
+      dead.add(firstPort);
+      first.emit('exit');
+    });
+    const launcher = new ChromeLauncher('/tmp/prot-d', { protection: () => plan });
+    const legacy = launcher.ensureRunning(); // starts unprotected
+    plan = denyAll; // protection lands mid-launch
+    spawnWritesPortFile(makeChild());
+    const protectedCall = launcher.ensureRunning();
+    await Promise.all([legacy, protectedCall]);
+    expect(first.kill).toHaveBeenCalled();
+    expect((spawnMock.mock.calls[1][1] as string[]).some((a) => a.startsWith('--proxy-server='))).toBe(true);
+    expect(launcher.isProtected()).toBe(true);
+    launcher.dispose();
+  });
+
   it('restarts a running Chrome when protection turns on', async () => {
     let plan: ChromeProtectionPlan | null = null;
     const first = makeChild();

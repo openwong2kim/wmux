@@ -74,6 +74,15 @@ describe('withAutomationLease — protected panes', () => {
     await expect(withAutomationLease(deps, 'surface-1', body)).resolves.toBe(false);
   });
 
+  it('a first authorization that gets no answer at all runs the operation under deny-all checks', async () => {
+    answer(() => Promise.reject(new Error('ECONNRESET')));
+    const body = vi.fn(async (scope) => scope.protection);
+    await expect(withAutomationLease(deps, 'surface-1', body)).resolves.toMatchObject({
+      protected: true,
+      hosts: { mode: 'allowlist', allow: [] },
+    });
+  });
+
   it('an older main (no policy field) is legacy, and an unnamed lease it grants is released', async () => {
     mockSendRpc.mockImplementation((method: string) => {
       if (method === 'browser.lease.acquire') return Promise.resolve({ token: 'stray' });

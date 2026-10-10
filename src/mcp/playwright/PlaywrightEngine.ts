@@ -13,6 +13,7 @@ import {
   WorkspaceScopeUnresolvedError,
   WORKSPACE_SCOPE_UNRESOLVED_CODE,
   browserCallRefusal,
+  rememberProtection,
   type BrowserTargetScope,
 } from './browserScope';
 import { attachPageCapture } from './pageCapture';
@@ -545,6 +546,7 @@ export class PlaywrightEngine {
         this.cacheShellUrl(info);
         const profile = typeof info.profile === 'string' ? info.profile : undefined;
         const policyEpoch = info.protected === true ? (info.policyEpoch ?? -1) : undefined;
+        if (workspaceId && info.protected === true) rememberProtection(workspaceId, true);
         // Same (workspace, profile, policy epoch): keep the live connection.
         if (reusable && profile === this.connectedProfile && policyEpoch === this.connectedPolicyEpoch) return;
         // The profile moved, or a protected pane's policy changed: drop the old

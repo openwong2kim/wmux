@@ -66,6 +66,8 @@ export class ProtectedProxy {
   private server: http.Server | null = null;
   private listenPort = 0;
   private readonly sockets = new Set<Duplex>();
+  /** Open CONNECT tunnels and the host they were allowed for. */
+  private readonly tunnels = new Map<Duplex, { host: string; port: number; upstream: Duplex }>();
 
   constructor(private readonly opts: ProtectedProxyOptions) {}
 
@@ -132,6 +134,26 @@ export class ProtectedProxy {
     return this.listenPort;
   }
 
+  /**
+   * Re-decide every open tunnel against the policy as it is now, and cut the
+   * ones it no longer allows. A tunnel is decided when it opens; without this
+   * a revoked host would keep its open HTTPS / WebSocket connections.
+   */
+  revalidate(): void {
+    let matcher: { allows: (h: string, p: number) => boolean } | null = null;
+    try {
+      matcher = this.opts.matcher();
+    } catch {
+      matcher = null;
+    }
+    for (const [client, t] of this.tunnels) {
+      if (matcher?.allows(t.host, t.port)) continue;
+      client.destroy();
+      t.upstream.destroy();
+      this.tunnels.delete(client);
+    }
+  }
+
   /** Stop listening and cut every open tunnel. */
   close(): void {
     const server = this.server;
@@ -139,6 +161,7 @@ export class ProtectedProxy {
     this.listenPort = 0;
     for (const s of this.sockets) s.destroy();
     this.sockets.clear();
+    this.tunnels.clear();
     server?.close();
   }
 
@@ -198,6 +221,8 @@ export class ProtectedProxy {
       socket.pipe(upstream);
     });
     this.track(upstream);
+    this.tunnels.set(socket, { ...authority, upstream });
+    socket.once('close', () => this.tunnels.delete(socket));
     upstream.on('error', () => {
       if (socket.writable) socket.end('HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n');
       socket.destroy();

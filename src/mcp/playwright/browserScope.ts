@@ -100,6 +100,23 @@ export interface BrowserTargetScope {
   readonly protection?: BrowserPolicyAuthorization;
 }
 
+/** workspaceId → whether main last answered this connection's pane as protected
+ *  (lease authorization or cdp.info). */
+const lastKnownProtected = new Map<string, boolean>();
+
+export function rememberProtection(workspaceId: string, isProtected: boolean): void {
+  lastKnownProtected.set(workspaceId, isProtected);
+}
+
+export function lastKnownProtection(workspaceId: string): boolean | undefined {
+  return lastKnownProtected.get(workspaceId);
+}
+
+/** Test seam. */
+export function resetProtectionMemoryForTests(): void {
+  lastKnownProtected.clear();
+}
+
 /** Whether this operation runs on a protected pane. */
 export function isProtectedScope(scope: BrowserTargetScope | undefined): boolean {
   return scope?.protection?.protected === true;

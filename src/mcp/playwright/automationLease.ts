@@ -3,6 +3,8 @@ import { sendRpc } from '../wmux-client';
 import {
   browserCallRefusal,
   isProtectedScope,
+  lastKnownProtection,
+  rememberProtection,
   leaseSurfaceScope,
   requireBrowserTargetScope,
   sendScopedBrowserRpc,
@@ -54,13 +56,19 @@ import type { SiteGuideMatch } from '../../shared/browserGuides/siteGuides';
 // operation main could not authorize is not run on a protected pane.
 // ---------------------------------------------------------------------------
 
-/** workspaceId → whether main last answered this connection's pane as protected. */
-const lastKnownProtected = new Map<string, boolean>();
+export { resetProtectionMemoryForTests } from './browserScope';
 
-/** Test seam. */
-export function resetProtectionMemoryForTests(): void {
-  lastKnownProtected.clear();
-}
+/**
+ * The scope an operation gets when main could not be asked at all and this
+ * connection has never had an answer: treated as protected with nothing
+ * allowed, so page scripts, cookies, storage, downloads and navigation are
+ * refused for this one operation. Every one of those needs main to work
+ * anyway, so an unprotected pane loses nothing it would otherwise have had.
+ */
+const UNCONFIRMED_PROTECTION: BrowserPolicyAuthorization = Object.freeze({
+  protected: true,
+  hosts: { mode: 'allowlist' as const, allow: [], block: [] },
+});
 
 function readAuthorization(res: unknown): BrowserPolicyAuthorization | undefined {
   const policy = (res as { policy?: unknown } | null | undefined)?.policy as BrowserPolicyAuthorization | undefined;
@@ -436,7 +444,7 @@ export async function withAutomationLease<T>(
       { authorize: true },
     );
     protection = readAuthorization(res);
-    if (protection) lastKnownProtected.set(routed.workspaceId, protection.protected);
+    if (protection) rememberProtection(routed.workspaceId, protection.protected);
     if (routed.surfaceId) {
       token = res?.token ?? null;
     } else if (res?.token) {
@@ -447,7 +455,10 @@ export async function withAutomationLease<T>(
   } catch (err) {
     const refusal = browserCallRefusal(err);
     if (refusal) throw refusal;
-    if (lastKnownProtected.get(routed.workspaceId) === true) throw unconfirmedProtectedError();
+    const known = lastKnownProtection(routed.workspaceId);
+    if (known === true) throw unconfirmedProtectedError();
+    // Never answered: proceed unleased, but under deny-all protection checks.
+    if (known === undefined) protection = UNCONFIRMED_PROTECTION;
     /* lease unavailable — proceed unleased */
   }
   const scope: BrowserTargetScope = protection ? Object.freeze({ ...routed, protection }) : routed;
@@ -472,10 +483,12 @@ export async function withAutomationLease<T>(
           const late = readAuthorization(r);
           if (
             late
+            // Already held to deny-all: no later answer is stricter than that.
+            && protection !== UNCONFIRMED_PROTECTION
             && (late.protected !== (protection?.protected ?? false)
               || (late.protected && late.epoch !== protection?.epoch))
           ) {
-            if (late.protected) lastKnownProtected.set(scope.workspaceId, true);
+            if (late.protected) rememberProtection(scope.workspaceId, true);
             revoked = unconfirmedProtectedError();
           }
           const tok = r?.token ?? null;

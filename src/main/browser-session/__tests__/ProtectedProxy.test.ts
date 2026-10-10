@@ -77,6 +77,17 @@ describe('ProtectedProxy', () => {
     expect(await connect(`127.0.0.1:${proxyPort}`)).toContain('403');
   });
 
+  it('cuts an open tunnel whose host a policy edit revoked', async () => {
+    const s = net.connect(proxyPort, '127.0.0.1', () => s.write('CONNECT a.test:1 HTTP/1.1\r\nHost: a.test:1\r\n\r\n'));
+    await new Promise((r) => s.once('data', r));
+    const closed = new Promise((r) => s.once('close', r));
+    proxy.revalidate(); // still allowed: untouched
+    expect(s.destroyed).toBe(false);
+    allow = [];
+    proxy.revalidate();
+    await closed;
+  });
+
   it('is fail-closed when stopped', async () => {
     proxy.close();
     await expect(viaProxy(`http://a.test:${originPort}/`)).rejects.toBeTruthy();
