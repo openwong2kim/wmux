@@ -69,6 +69,18 @@ describe('browser-action prompt', () => {
     expect(resolveMock).toHaveBeenCalledWith('p1', true, { remember: true });
   });
 
+  it('a multi-line script opens to its whole text before approving', () => {
+    const script = `${'x'.repeat(200)}\nreturn document.title;`;
+    act(() => useStore.setState({
+      mcpPrompts: { p1: { ...PROMPT, browserAction: { ...PROMPT.browserAction, action: 'evaluate' as never, detail: script } } },
+      mcpPromptOrder: ['p1'],
+    } as never));
+    const details = container.querySelector('[data-browser-action-script]');
+    expect(details).not.toBeNull();
+    expect(details?.querySelector('pre')?.textContent).toBe(script);
+    expect(details?.querySelector('summary')?.textContent).toContain('Show the whole script');
+  });
+
   it('is critical in the inbox, so a stray Enter cannot approve it', () => {
     const items = selectApprovalInbox(useStore.getState() as never);
     expect(items[0]).toMatchObject({ source: 'mcp', kind: 'browser-action', isCritical: true, browserAction: PROMPT.browserAction });

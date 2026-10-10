@@ -182,6 +182,7 @@ export const zhTW = {
   'permission.browserAction.hint': "此窗格的瀏覽器受保護。這是代理的要求，只有你允許時才會執行。",
   'permission.browserAction.allowOnce': "允許一次",
   'permission.browserAction.always': "此窗格一律允許",
+  'permission.browserAction.showScript': "顯示完整指令碼",
   'fleet.approvals.pane': "窗格",
   'pane.browserPolicyGrants': "不詢問即允許",
   'pane.browserPolicyGrantsDesc': "透過「此窗格一律允許」授予。撤銷後會再次詢問。",

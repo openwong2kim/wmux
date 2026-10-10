@@ -76,6 +76,25 @@ const SENSITIVE_DOMAIN_PATTERNS: RegExp[] = [
   /(^|\.)bitwarden\.com$/i,
 ];
 
+/** The literal host each blocklist entry names (`mail.naver.com`, …). */
+const SENSITIVE_HOST_LITERALS: readonly string[] = SENSITIVE_DOMAIN_PATTERNS.map((p) =>
+  p.source.replace(/^\(\^\|\\\.\)/, '').replace(/\$$/, '').replace(/\\\./g, '.').toLowerCase(),
+);
+
+/**
+ * Whether a cookie for `host` (canonical, no leading dot) is readable by a
+ * sensitive site. A sign-in cookie usually lives on the parent domain
+ * (`.naver.com` for mail.naver.com, `.google.com` for accounts.google.com), so
+ * a domain that is the host itself, below it, or a registrable parent of it
+ * counts. Single-label names never do.
+ */
+export function matchSensitiveCookieDomain(host: string): string | null {
+  if (!host || !host.includes('.')) return null;
+  if (matchSensitiveDomain(host)) return host;
+  const h = host.toLowerCase();
+  return SENSITIVE_HOST_LITERALS.some((lit) => lit.endsWith(`.${h}`)) ? host : null;
+}
+
 /**
  * Return the matched hostname if the URL (or bare hostname) falls on the
  * sensitive-domain blocklist, else null. Used by browser_cookies /

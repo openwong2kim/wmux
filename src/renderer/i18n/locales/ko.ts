@@ -771,6 +771,7 @@ export const ko = {
   'permission.browserAction.hint': "이 판의 브라우저는 보호 중입니다. 에이전트가 요청했으며, 허용할 때만 실행됩니다.",
   'permission.browserAction.allowOnce': "한 번 허용",
   'permission.browserAction.always': "이 판에서 항상",
+  'permission.browserAction.showScript': "스크립트 전체 보기",
   'fleet.approvals.pane': "판",
   'pane.browserPolicyGrants': "묻지 않고 허용",
   'pane.browserPolicyGrantsDesc': "“이 판에서 항상”으로 허용한 항목입니다. 철회하면 다시 묻습니다.",

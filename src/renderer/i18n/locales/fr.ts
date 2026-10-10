@@ -182,6 +182,7 @@ export const fr = {
   'permission.browserAction.hint': "Le navigateur de ce volet est protégé. Un agent l’a demandé ; rien ne s’exécute sans votre accord.",
   'permission.browserAction.allowOnce': "Autoriser une fois",
   'permission.browserAction.always': "Toujours dans ce volet",
+  'permission.browserAction.showScript': "Afficher le script complet",
   'fleet.approvals.pane': "volet",
   'pane.browserPolicyGrants': "Autorisé sans demander",
   'pane.browserPolicyGrantsDesc': "Accordé avec « Toujours dans ce volet ». Révoquez pour être de nouveau sollicité.",

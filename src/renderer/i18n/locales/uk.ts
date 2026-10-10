@@ -182,6 +182,7 @@ export const uk = {
   'permission.browserAction.hint': "Браузер цієї панелі захищений. Запит від агента; виконується лише з вашого дозволу.",
   'permission.browserAction.allowOnce': "Дозволити один раз",
   'permission.browserAction.always': "Завжди в цій панелі",
+  'permission.browserAction.showScript': "Показати весь скрипт",
   'fleet.approvals.pane': "панель",
   'pane.browserPolicyGrants': "Дозволено без запитань",
   'pane.browserPolicyGrantsDesc': "Надано через «Завжди в цій панелі». Відкличте, щоб знову отримувати запит.",

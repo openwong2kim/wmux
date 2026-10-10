@@ -182,6 +182,7 @@ export const th = {
   'permission.browserAction.hint': "เบราว์เซอร์ของบานหน้าต่างนี้ได้รับการป้องกัน เอเจนต์ขอสิ่งนี้ และจะทำงานเมื่อคุณอนุญาตเท่านั้น",
   'permission.browserAction.allowOnce': "อนุญาตครั้งเดียว",
   'permission.browserAction.always': "อนุญาตเสมอในบานหน้าต่างนี้",
+  'permission.browserAction.showScript': "แสดงสคริปต์ทั้งหมด",
   'fleet.approvals.pane': "บานหน้าต่าง",
   'pane.browserPolicyGrants': "อนุญาตโดยไม่ถาม",
   'pane.browserPolicyGrantsDesc': "ให้ไว้ด้วย “อนุญาตเสมอในบานหน้าต่างนี้” เพิกถอนเพื่อให้ถามอีกครั้ง",

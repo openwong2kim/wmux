@@ -1,6 +1,6 @@
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, renameSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import type { BrowserWindow } from 'electron';
 import type { RpcRouter } from '../RpcRouter';
 import type { RpcContext } from '../../../shared/rpc';
@@ -21,6 +21,7 @@ import {
   type ConsentCaller,
   type DangerousActionConsent,
   type DownloadGuardPort,
+  type ConsentedDownload,
   type DownloadPass,
 } from '../../browser-session/dangerousActionConsent';
 import { resolvePaneForPty } from '../../workspace/ptyOwnership';
@@ -58,7 +59,7 @@ export interface BrowserConsentRpcDeps {
 
 const ACTIONS: ReadonlySet<string> = new Set<BrowserConsentAction>(['evaluate', 'download', 'sensitive']);
 const MAX_SENSITIVE_HOSTS = 20;
-const MAX_DETAIL_INPUT = 2_000;
+const MAX_DETAIL_INPUT = 8_000;
 export const DOWNLOAD_START_DEFAULT_MS = 30_000;
 
 function refuse(why: string): ConsentRefusal {
@@ -145,6 +146,25 @@ function boundedMs(raw: unknown, fallback: number, max: number): number {
 interface PendingDownload {
   caller: ConsentCaller;
   pass: DownloadPass;
+  /** The approved file, moved out of the pass directory, once it finished. */
+  result: Promise<ConsentedDownload>;
+}
+
+/**
+ * Move the approved file to a fresh directory of its own and remove the pass
+ * directory. The browser wrote into the pass directory while it allowed
+ * downloads, so anything else that landed there before its cancel took hold
+ * goes with it, and the caller never learns that directory.
+ */
+function collectApproved(passDir: string, got: ConsentedDownload): ConsentedDownload {
+  try {
+    const out = mkdtempSync(join(tmpdir(), 'wmux-download-'));
+    const dest = join(out, basename(got.path));
+    renameSync(got.path, dest);
+    return { ...got, path: dest };
+  } finally {
+    rmSync(passDir, { recursive: true, force: true });
+  }
 }
 
 /** A refusal crosses the pipe as its message (the MCP lane maps the prefix). */
@@ -155,10 +175,19 @@ function rethrow(err: unknown): never {
 
 export function registerBrowserConsentRpc(router: Pick<RpcRouter, 'register'>, deps: BrowserConsentRpcDeps): void {
   const downloads = new Map<string, PendingDownload>();
-  // Any policy change (a revoke, a site edit, a rebind) voids every approved
-  // download still in flight: it was approved under the old terms.
+  // A change of a pane's terms (site edit, protection off, rebind, move) voids
+  // that pane's approved download still in flight; another pane's change, or
+  // a consent grant, does not.
   deps.store.onChange?.(() => {
     for (const [id, pending] of downloads) {
+      const c = pending.caller;
+      const d = deps.store.decisionFor(c.paneId, c.workspaceId, c.profileId);
+      if (
+        d.kind === 'protected' && d.confirmed && d.profileId === c.profileId
+        && JSON.stringify(d.hosts) === JSON.stringify(c.hosts)
+      ) {
+        continue;
+      }
       pending.pass.cancel("the pane's browser policy changed before the download finished");
       downloads.delete(id);
     }
@@ -224,12 +253,17 @@ export function registerBrowserConsentRpc(router: Pick<RpcRouter, 'register'>, d
         finishTimeoutMs: BROWSER_CONSENT_DOWNLOAD_FINISH_MS,
         join,
       });
-      downloads.set(decision.operationId, { caller: { ...caller, epoch: decision.epoch }, pass });
-      // Whatever happens, the record goes when the pass settles.
-      void pass.done.then(
-        () => undefined,
-        () => downloads.delete(decision.operationId),
+      const result = pass.done.then(
+        (got) => collectApproved(dir, got),
+        (err: unknown) => {
+          // Whatever happens, the record and the pass directory go with it.
+          downloads.delete(decision.operationId);
+          rmSync(dir, { recursive: true, force: true });
+          throw err;
+        },
       );
+      result.catch(() => undefined);
+      downloads.set(decision.operationId, { caller: { ...caller, epoch: decision.epoch }, pass, result });
       return { ok: true, operationId: decision.operationId, epoch: decision.epoch, via: decision.via };
     } catch (err) {
       rethrow(err);
@@ -242,7 +276,7 @@ export function registerBrowserConsentRpc(router: Pick<RpcRouter, 'register'>, d
       const onAbort = () => pending.pass.cancel('the call was cancelled');
       ctx?.signal?.addEventListener('abort', onAbort, { once: true });
       try {
-        const result = await pending.pass.done;
+        const result = await pending.result;
         return { ok: true, ...result };
       } finally {
         ctx?.signal?.removeEventListener('abort', onAbort);

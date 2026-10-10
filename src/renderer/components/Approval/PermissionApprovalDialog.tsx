@@ -63,6 +63,9 @@ export interface PermissionApprovalDialogProps {
   onDeny: () => void;
 }
 
+/** How much of a script the collapsed prompt shows. */
+const SCRIPT_PREVIEW_CHARS = 140;
+
 function severityAccent(severity: RiskClassCopy['severity']): string {
   switch (severity) {
     case 'critical':
@@ -145,8 +148,23 @@ export function PermissionApprovalDialogView(
         {action ? (
           <div className="ui-group px-3.5 py-3 text-[13px] text-[var(--text-sub)]" data-browser-action={action.action}>
             <p className="m-0">{t('permission.browserAction.hint')}</p>
-            {/* Agent-authored: rendered as text, never markup. */}
-            {action.detail ? <p className="m-0 mt-2 ui-code break-all">{action.detail}</p> : null}
+            {/* Agent-authored: rendered as text, never markup. A long or
+                multi-line script opens to its whole text before approving. */}
+            {action.detail && (action.detail.length > SCRIPT_PREVIEW_CHARS || action.detail.includes('\n')) ? (
+              <details className="mt-2" data-browser-action-script>
+                <summary className="cursor-pointer ui-code break-all">
+                  {action.detail.replace(/\s+/g, ' ').slice(0, SCRIPT_PREVIEW_CHARS)}… {t('permission.browserAction.showScript')}
+                </summary>
+                <pre
+                  className="m-0 mt-2 ui-code whitespace-pre-wrap break-all overflow-auto"
+                  style={{ maxHeight: 240 }}
+                >
+                  {action.detail}
+                </pre>
+              </details>
+            ) : action.detail ? (
+              <p className="m-0 mt-2 ui-code break-all">{action.detail}</p>
+            ) : null}
           </div>
         ) : null}
         {props.rationale ? (

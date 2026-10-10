@@ -117,11 +117,41 @@ describe('DangerousActionConsent', () => {
       revalidate: async () => c,
     });
     await flush();
-    // …but the file moved on before the grant could be written.
-    await store.bumpEpoch();
+    // …but the pane's site list changed before the grant could be written.
+    await store.write(
+      { workspaceId: WS, paneId: PANE, profileId: PROFILE, protected: true, hosts: { ...HOSTS, allow: ['a.test'] }, expectedEpoch: store.epoch() },
+      PROFILE,
+      true,
+    );
     await queue.resolvePrompt(opened[0].promptId, true, { remember: true });
     await expect(pending).rejects.toMatchObject({ code: 'policy_denied' });
     expect(store.grantsFor(PANE, WS, PROFILE)?.grants).toEqual({});
+  });
+
+  it('another pane’s change (its own "Always", an edit) does not void this pane’s answer', async () => {
+    const consent = makeConsent();
+    const pending = consent.authorize(caller(), { action: 'evaluate', hosts: ['a.test'] }, { revalidate });
+    await flush();
+    await store.write(
+      { workspaceId: WS, paneId: 'pane-2', profileId: 'pb', protected: true, hosts: HOSTS, expectedEpoch: store.epoch() },
+      'pb',
+      true,
+    );
+    await queue.resolvePrompt(opened[0].promptId, true, { remember: true });
+    await expect(pending).resolves.toMatchObject({ via: 'remembered' });
+    expect(store.grantsFor(PANE, WS, PROFILE)?.grants).toEqual({ evaluate: true });
+  });
+
+  it('keeps a script’s lines for the dialog and strips what would hide or reorder text', async () => {
+    const pending = makeConsent().authorize(caller(), {
+      action: 'evaluate',
+      hosts: ['a.test'],
+      detail: 'const a = 1;\nreturn a \u202e// x',
+    }, { revalidate });
+    await flush();
+    expect(opened[0].browserAction?.detail).toBe('const a = 1;\nreturn a  // x');
+    await queue.resolvePrompt(opened[0].promptId, false);
+    await expect(pending).rejects.toBeTruthy();
   });
 
   it('a timeout denies and takes the prompt off screen; a late click is no answer', async () => {

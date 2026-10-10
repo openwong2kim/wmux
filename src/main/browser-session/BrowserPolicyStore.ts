@@ -500,7 +500,7 @@ export class BrowserPolicyStore {
    */
   async setGrants(
     paneId: string,
-    where: { workspaceId: string; profileId: string },
+    where: { workspaceId: string; profileId: string; hosts?: HostPolicy },
     update: (current: PaneConsentGrants) => PaneConsentGrants,
     expectedEpoch: number,
   ): Promise<number> {
@@ -514,6 +514,7 @@ export class BrowserPolicyStore {
       if (
         !entry || !entry.protected || entry.needsConfirm === true
         || entry.workspaceId !== where.workspaceId || entry.profileId !== where.profileId
+        || (where.hosts !== undefined && JSON.stringify(entry.hosts) !== JSON.stringify(where.hosts))
       ) {
         throw new BrowserPolicyWriteError('stale', "the pane's protection changed; re-read and try again");
       }

@@ -182,6 +182,7 @@ export const hi = {
   'permission.browserAction.hint': "इस पेन का ब्राउज़र सुरक्षित है। यह एक एजेंट ने माँगा है; यह तभी चलेगा जब आप अनुमति दें।",
   'permission.browserAction.allowOnce': "एक बार अनुमति दें",
   'permission.browserAction.always': "इस पेन पर हमेशा",
+  'permission.browserAction.showScript': "पूरी स्क्रिप्ट दिखाएँ",
   'fleet.approvals.pane': "पेन",
   'pane.browserPolicyGrants': "बिना पूछे अनुमति",
   'pane.browserPolicyGrantsDesc': "“इस पेन पर हमेशा” से दी गई। फिर से पूछे जाने के लिए रद्द करें।",

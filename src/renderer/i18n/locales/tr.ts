@@ -182,6 +182,7 @@ export const tr = {
   'permission.browserAction.hint': "Bu bölmenin tarayıcısı korumalı. Bunu bir ajan istedi; yalnızca izin verirsen çalışır.",
   'permission.browserAction.allowOnce': "Bir kez izin ver",
   'permission.browserAction.always': "Bu bölmede her zaman",
+  'permission.browserAction.showScript': "Betiğin tamamını göster",
   'fleet.approvals.pane': "bölme",
   'pane.browserPolicyGrants': "Sormadan izin verilenler",
   'pane.browserPolicyGrantsDesc': "“Bu bölmede her zaman” ile verildi. Yeniden sorulması için geri al.",

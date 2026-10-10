@@ -182,6 +182,7 @@ export const id = {
   'permission.browserAction.hint': "Browser panel ini dilindungi. Agen memintanya; hanya berjalan jika Anda mengizinkan.",
   'permission.browserAction.allowOnce': "Izinkan sekali",
   'permission.browserAction.always': "Selalu di panel ini",
+  'permission.browserAction.showScript': "Tampilkan seluruh skrip",
   'fleet.approvals.pane': "panel",
   'pane.browserPolicyGrants': "Diizinkan tanpa bertanya",
   'pane.browserPolicyGrantsDesc': "Diberikan lewat “Selalu di panel ini”. Cabut agar ditanya lagi.",

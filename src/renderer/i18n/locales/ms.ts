@@ -182,6 +182,7 @@ export const ms = {
   'permission.browserAction.hint': "Pelayar panel ini dilindungi. Ejen memintanya; ia hanya berjalan jika anda membenarkan.",
   'permission.browserAction.allowOnce': "Benarkan sekali",
   'permission.browserAction.always': "Sentiasa dalam panel ini",
+  'permission.browserAction.showScript': "Tunjukkan keseluruhan skrip",
   'fleet.approvals.pane': "panel",
   'pane.browserPolicyGrants': "Dibenarkan tanpa bertanya",
   'pane.browserPolicyGrantsDesc': "Diberi melalui “Sentiasa dalam panel ini”. Tarik balik untuk ditanya semula.",

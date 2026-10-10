@@ -182,6 +182,7 @@ export const de = {
   'permission.browserAction.hint': "Der Browser dieses Bereichs ist geschützt. Ein Agent hat das angefragt; es läuft nur, wenn du es erlaubst.",
   'permission.browserAction.allowOnce': "Einmal erlauben",
   'permission.browserAction.always': "Immer in diesem Bereich",
+  'permission.browserAction.showScript': "Ganzes Skript anzeigen",
   'fleet.approvals.pane': "Bereich",
   'pane.browserPolicyGrants': "Ohne Nachfrage erlaubt",
   'pane.browserPolicyGrantsDesc': "Mit „Immer in diesem Bereich“ erteilt. Widerrufen, um wieder gefragt zu werden.",

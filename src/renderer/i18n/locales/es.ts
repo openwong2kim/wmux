@@ -182,6 +182,7 @@ export const es = {
   'permission.browserAction.hint': "El navegador de este panel está protegido. Un agente lo pidió; solo se ejecuta si lo permites.",
   'permission.browserAction.allowOnce': "Permitir una vez",
   'permission.browserAction.always': "Siempre en este panel",
+  'permission.browserAction.showScript': "Ver el script completo",
   'fleet.approvals.pane': "panel",
   'pane.browserPolicyGrants': "Permitido sin preguntar",
   'pane.browserPolicyGrantsDesc': "Concedido con «Siempre en este panel». Revócalo para que se vuelva a preguntar.",

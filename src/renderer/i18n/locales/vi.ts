@@ -182,6 +182,7 @@ export const vi = {
   'permission.browserAction.hint': "Trình duyệt của khung này được bảo vệ. Một tác tử đã yêu cầu; chỉ chạy khi bạn cho phép.",
   'permission.browserAction.allowOnce': "Cho phép một lần",
   'permission.browserAction.always': "Luôn trong khung này",
+  'permission.browserAction.showScript': "Hiện toàn bộ tập lệnh",
   'fleet.approvals.pane': "khung",
   'pane.browserPolicyGrants': "Cho phép không cần hỏi",
   'pane.browserPolicyGrantsDesc': "Được cấp qua “Luôn trong khung này”. Thu hồi để được hỏi lại.",

@@ -182,6 +182,7 @@ export const ru = {
   'permission.browserAction.hint': "Браузер этой панели защищён. Запрос от агента; выполняется только с вашего разрешения.",
   'permission.browserAction.allowOnce': "Разрешить один раз",
   'permission.browserAction.always': "Всегда в этой панели",
+  'permission.browserAction.showScript': "Показать весь скрипт",
   'fleet.approvals.pane': "панель",
   'pane.browserPolicyGrants': "Разрешено без вопросов",
   'pane.browserPolicyGrantsDesc': "Выдано через «Всегда в этой панели». Отзовите, чтобы снова получать запрос.",

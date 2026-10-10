@@ -20,8 +20,8 @@ import {
 } from '../../shared/browserPolicy';
 import { browserCallRefusal, type BrowserTargetScope } from './browserScope';
 
-/** How much of an expression the operator is shown. */
-const DETAIL_PREVIEW_CHARS = 140;
+/** How much of an expression the operator can read (main caps it again). */
+const SCRIPT_DETAIL_CHARS = 4_000;
 
 export interface ConsentGranted {
   operationId: string;
@@ -50,10 +50,10 @@ export function consentHostOf(urlOrDomain: string): string | null {
   }
 }
 
-/** A one-line preview of agent-authored code for the prompt. */
+/** The agent-authored code the operator is asked about (whole, up to a cap). */
 export function codePreview(expression: string): string {
-  const flat = expression.replace(/\s+/g, ' ').trim();
-  return flat.length > DETAIL_PREVIEW_CHARS ? `${flat.slice(0, DETAIL_PREVIEW_CHARS)}…` : flat;
+  const text = expression.trim();
+  return text.length > SCRIPT_DETAIL_CHARS ? `${text.slice(0, SCRIPT_DETAIL_CHARS)}…` : text;
 }
 
 /**

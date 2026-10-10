@@ -182,6 +182,7 @@ export const nb = {
   'permission.browserAction.hint': "Nettleseren i denne ruten er beskyttet. En agent ba om dette; det kjøres bare hvis du tillater det.",
   'permission.browserAction.allowOnce': "Tillat én gang",
   'permission.browserAction.always': "Alltid i denne ruten",
+  'permission.browserAction.showScript': "Vis hele skriptet",
   'fleet.approvals.pane': "rute",
   'pane.browserPolicyGrants': "Tillatt uten å spørre",
   'pane.browserPolicyGrantsDesc': "Gitt med «Alltid i denne ruten». Trekk tilbake for å bli spurt igjen.",

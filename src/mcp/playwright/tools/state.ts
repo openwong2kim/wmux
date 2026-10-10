@@ -10,7 +10,7 @@ import {
   protectedRefusal,
   protectedUrlAllowed,
 } from '../protectedPane';
-import { matchSensitiveDomain } from '../security';
+import { matchSensitiveCookieDomain, matchSensitiveDomain } from '../security';
 import { consentHostOf, requestBrowserConsent } from '../consent';
 import { evalFunctionOrRpc } from '../page-eval';
 import { evaluateIsolated } from '../isolated-eval';
@@ -219,6 +219,13 @@ export function protectedSensitiveHost(urlOrDomain: string | undefined): string 
   return host && matchSensitiveDomain(host) ? host : null;
 }
 
+/** The same for a cookie's domain, which a sensitive site also reads when it
+ *  is that site's parent domain (`.naver.com` for mail.naver.com). */
+export function protectedSensitiveCookieHost(domain: string | undefined): string | null {
+  const host = consentHostOf(domain ?? '');
+  return host ? matchSensitiveCookieDomain(host) : null;
+}
+
 /**
  * On a protected pane the operator answers for sensitive sites; the agent's
  * allowSensitiveDomains flag only asks. One question names every site the
@@ -334,7 +341,7 @@ export function registerStateTools(server: McpServer, deps: BrowserToolDeps): vo
               // redacted and nobody is asked.
               const sensitiveHosts = new Set<string>();
               for (const c of visible) {
-                const h = protectedSensitiveHost(c.domain);
+                const h = protectedSensitiveCookieHost(c.domain);
                 if (h) sensitiveHosts.add(h);
               }
               const urlHost = url ? protectedSensitiveHost(url) : null;
@@ -342,7 +349,7 @@ export function registerStateTools(server: McpServer, deps: BrowserToolDeps): vo
               if (allowSensitiveDomains) await consentToSensitive(scope, 'browser_cookies', sensitiveHosts, 'get');
               const reveal = allowSensitiveDomains === true;
               const shown = visible.map((c) =>
-                protectedSensitiveHost(c.domain) && !reveal ? { ...c, value: '<REDACTED sensitive-domain>' } : c,
+                protectedSensitiveCookieHost(c.domain) && !reveal ? { ...c, value: '<REDACTED sensitive-domain>' } : c,
               );
               return {
                 content: [{ type: 'text' as const, text: JSON.stringify(shown, null, 2) }],
@@ -394,7 +401,7 @@ export function registerStateTools(server: McpServer, deps: BrowserToolDeps): vo
                 scope,
                 'browser_cookies',
                 cookiesToAdd.flatMap((c) => {
-                  const h = protectedSensitiveHost(c.domain ?? c.url);
+                  const h = c.domain ? protectedSensitiveCookieHost(c.domain) : protectedSensitiveHost(c.url);
                   return h ? [h] : [];
                 }),
                 'set',
@@ -430,7 +437,7 @@ export function registerStateTools(server: McpServer, deps: BrowserToolDeps): vo
                 scope,
                 'browser_cookies',
                 targets.flatMap((c) => {
-                  const h = protectedSensitiveHost(c.domain);
+                  const h = protectedSensitiveCookieHost(c.domain);
                   return h ? [h] : [];
                 }),
                 'clear',

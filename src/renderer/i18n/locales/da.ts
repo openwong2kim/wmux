@@ -182,6 +182,7 @@ export const da = {
   'permission.browserAction.hint': "Browseren i denne rude er beskyttet. En agent bad om det; det kører kun, hvis du tillader det.",
   'permission.browserAction.allowOnce': "Tillad én gang",
   'permission.browserAction.always': "Altid i denne rude",
+  'permission.browserAction.showScript': "Vis hele scriptet",
   'fleet.approvals.pane': "rude",
   'pane.browserPolicyGrants': "Tilladt uden at spørge",
   'pane.browserPolicyGrantsDesc': "Givet med “Altid i denne rude”. Tilbagekald for at blive spurgt igen.",

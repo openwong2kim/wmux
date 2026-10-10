@@ -1038,6 +1038,7 @@ export const pl = {
   'permission.browserAction.hint': "Przeglądarka tego panelu jest chroniona. Prosi o to agent; działa tylko, jeśli pozwolisz.",
   'permission.browserAction.allowOnce': "Zezwól raz",
   'permission.browserAction.always': "Zawsze w tym panelu",
+  'permission.browserAction.showScript': "Pokaż cały skrypt",
   'fleet.approvals.pane': "panel",
   'pane.browserPolicyGrants': "Dozwolone bez pytania",
   'pane.browserPolicyGrantsDesc': "Przyznane przez „Zawsze w tym panelu”. Cofnij, aby znów pytać.",

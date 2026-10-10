@@ -1050,6 +1050,7 @@ export const en = {
   'permission.browserAction.hint': "This pane's browser is protected. An agent asked for this; it runs only if you allow it.",
   'permission.browserAction.allowOnce': "Allow once",
   'permission.browserAction.always': "Always on this pane",
+  'permission.browserAction.showScript': "Show the whole script",
   'fleet.approvals.pane': "pane",
   'pane.browserPolicyGrants': "Allowed without asking",
   'pane.browserPolicyGrantsDesc': "Granted with “Always on this pane”. Revoke one to be asked again.",

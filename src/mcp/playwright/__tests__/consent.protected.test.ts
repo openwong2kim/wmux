@@ -11,7 +11,7 @@ const { mockSendRpc, getPage, isolated, resolveRef } = vi.hoisted(() => ({
   resolveRef: vi.fn(),
 }));
 
-const PROTECTED = { protected: true, epoch: 3, hosts: { mode: 'allowlist', allow: ['a.test', 'gmail.com'], block: [] } };
+const PROTECTED = { protected: true, epoch: 3, hosts: { mode: 'allowlist', allow: ['a.test', 'gmail.com', 'naver.com'], block: [] } };
 let policy: unknown = PROTECTED;
 
 vi.mock('../../wmux-client', () => ({
@@ -132,6 +132,8 @@ describe('browser_cookies on a protected pane', () => {
   const cookies = [
     { name: 'a', value: 'A', domain: 'a.test', path: '/' },
     { name: 'm', value: 'SECRET', domain: '.gmail.com', path: '/' },
+    // mail.naver.com's sign-in cookie lives on the parent domain.
+    { name: 'NID_SES', value: 'NAVERSECRET', domain: '.naver.com', path: '/' },
   ];
   const context = { cookies: vi.fn(async () => cookies), addCookies: vi.fn(), clearCookies: vi.fn() };
   beforeEach(() => getPage.mockResolvedValue({ url: () => 'http://a.test/', context: () => context }));
@@ -140,6 +142,7 @@ describe('browser_cookies on a protected pane', () => {
     grantAll();
     const out = await tool('browser_cookies')({ action: 'get', surfaceId: 's1' });
     expect(text(out)).toContain('<REDACTED sensitive-domain>');
+    expect(text(out)).not.toContain('NAVERSECRET');
     expect(consentCalls()).toHaveLength(0);
   });
 
@@ -154,8 +157,8 @@ describe('browser_cookies on a protected pane', () => {
   it('allowSensitiveDomains asks for exactly the sensitive sites present', async () => {
     grantAll();
     const out = await tool('browser_cookies')({ action: 'get', allowSensitiveDomains: true, surfaceId: 's1' });
-    expect(consentCalls()[0][1]).toMatchObject({ action: 'sensitive', hosts: ['gmail.com'] });
-    expect(text(out)).toContain('SECRET');
+    expect(consentCalls()[0][1]).toMatchObject({ action: 'sensitive', hosts: ['gmail.com', 'naver.com'] });
+    expect(text(out)).toContain('NAVERSECRET');
   });
 
   it('a refused consent reveals nothing', async () => {

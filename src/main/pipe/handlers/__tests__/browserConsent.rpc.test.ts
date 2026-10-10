@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { BrowserWindow } from 'electron';
@@ -40,7 +40,7 @@ function register(): RpcRouter {
     chrome: { profileFor: (ws, pane) => profiles.profileFor(ws, pane), forProfile: vi.fn() as never },
     backend: () => backend,
     consent,
-    makeDownloadDir: () => dir,
+    makeDownloadDir: () => mkdtempSync(join(dir, 'pass-')),
     downloadGuardFor: () => guard,
   });
   return router;
@@ -135,6 +135,33 @@ describe('browser.consent.request', () => {
     expect(sent.at(-1)).toBe('Browser.setDownloadBehavior:deny');
   });
 
+  it('returns only the approved file, moved out of the pass directory, which is removed', async () => {
+    let claimant: ((p: Record<string, unknown>) => boolean) | null = null;
+    let progress: ((p: Record<string, unknown>) => void) | null = null;
+    let passDir = '';
+    guard = {
+      send: async (m) => (m === 'Target.getTargetInfo' ? { targetInfo: { type: 'page', url: 'http://a.test/' } } : {}),
+      claim: (fn) => { claimant = fn; return () => { claimant = null; }; },
+      onProgress: (fn) => { progress = fn; return () => { progress = null; }; },
+      onClose: () => () => undefined,
+    };
+    const router = register();
+    const r = await call(router, 'browser.consent.request', { workspaceId: 'ws-1', action: 'download', url: 'http://a.test/', targetId: 'T1' }, 'pty-a');
+    expect(r.error).toBeUndefined();
+    passDir = readdirSync(dir).filter((n) => n.startsWith('pass-')).map((n) => join(dir, n))[0];
+    // A stray file from another tab landed before its cancel took hold.
+    writeFileSync(join(passDir, 'stray-guid'), 'OTHER');
+    writeFileSync(join(passDir, 'g1'), 'PAYLOAD');
+    expect(claimant!({ guid: 'g1', frameId: 'T1', url: 'http://a.test/f', suggestedFilename: 'f.bin' })).toBe(true);
+    progress!({ guid: 'g1', state: 'completed' });
+    const got = await call(router, 'browser.consent.awaitDownload', { workspaceId: 'ws-1', operationId: 'op-1' }, 'pty-a');
+    const path = (got.result as { path: string }).path;
+    expect(readFileSync(path, 'utf8')).toBe('PAYLOAD');
+    expect(path.startsWith(passDir)).toBe(false);
+    expect(existsSync(passDir)).toBe(false);
+    rmSync(join(path, '..'), { recursive: true, force: true });
+  });
+
   it('a policy change voids an approved download still in flight', async () => {
     const sent: string[] = [];
     guard = {
@@ -148,7 +175,15 @@ describe('browser.consent.request', () => {
     };
     const router = register();
     await call(router, 'browser.consent.request', { workspaceId: 'ws-1', action: 'download', url: 'http://a.test/', targetId: 'T1' }, 'pty-a');
+    // A bare epoch move (another pane, a grant) leaves it alone…
     await policy.bumpEpoch();
+    expect(sent.at(-1)).toBe('Browser.setDownloadBehavior:allowAndName');
+    // …a change of this pane's site list voids it.
+    await policy.write(
+      { workspaceId: 'ws-1', paneId: 'pane-a', profileId: 'pa', protected: true, hosts: { mode: 'allowlist', allow: ['a.test', 'b.test'], block: [] }, expectedEpoch: policy.epoch() },
+      'pa',
+      true,
+    );
     expect(sent.at(-1)).toBe('Browser.setDownloadBehavior:deny');
     const r = await call(router, 'browser.consent.awaitDownload', { workspaceId: 'ws-1', operationId: 'op-1' }, 'pty-a');
     expect(r.error).toMatch(/policy_denied/);

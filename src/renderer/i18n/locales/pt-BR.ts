@@ -182,6 +182,7 @@ export const ptBR = {
   'permission.browserAction.hint': "O navegador deste painel está protegido. Um agente pediu isso; só é executado se você permitir.",
   'permission.browserAction.allowOnce': "Permitir uma vez",
   'permission.browserAction.always': "Sempre neste painel",
+  'permission.browserAction.showScript': "Ver o script completo",
   'fleet.approvals.pane': "painel",
   'pane.browserPolicyGrants': "Permitido sem perguntar",
   'pane.browserPolicyGrantsDesc': "Concedido com “Sempre neste painel”. Revogue para ser perguntado de novo.",

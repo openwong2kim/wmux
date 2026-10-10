@@ -10,7 +10,7 @@ import {
   type PaneConsentGrants,
 } from '../../shared/browserPolicy';
 import { cookieDomainAllowed, type HostPolicy } from '../../shared/browserHostPolicy';
-import { sanitizeHelpPrompt } from '../../shared/browserHelp';
+
 
 // ---------------------------------------------------------------------------
 // Consent for dangerous actions on protected browser panes.
@@ -39,8 +39,34 @@ import { sanitizeHelpPrompt } from '../../shared/browserHelp';
 /** The method name refusals are attributed to (the MCP lane maps the prefix). */
 export const CONSENT_METHOD = 'browser.consent.request';
 
-/** Detail text cap: the dialog shows it, it is not a transcript. */
+/** Detail cap: a whole script for evaluate (the operator may expand it), a
+ *  short line otherwise. */
+const SCRIPT_DETAIL_MAX_CHARS = 4_000;
 const DETAIL_MAX_CHARS = 160;
+
+/** Codepoints a renderer would act on or hide: controls (but newline and tab),
+ *  zero-width marks, line/paragraph separators, BOM and bidi overrides. */
+function isHiddenCodePoint(code: number): boolean {
+  if (code === 0x0a || code === 0x09) return false;
+  return (
+    code <= 0x1f
+    || (code >= 0x7f && code <= 0x9f)
+    || (code >= 0x200b && code <= 0x200f)
+    || (code >= 0x202a && code <= 0x202e)
+    || (code >= 0x2066 && code <= 0x2069)
+    || code === 0x2028
+    || code === 0x2029
+    || code === 0xfeff
+  );
+}
+
+/** Agent-authored text for the dialog, rendered as text: hidden codepoints
+ *  replaced, lines kept only for a script. */
+export function sanitizeConsentDetail(raw: string, action: BrowserConsentAction): string {
+  const visible = Array.from(raw, (ch) => (isHiddenCodePoint(ch.codePointAt(0) ?? 0) ? ' ' : ch)).join('');
+  if (action === 'evaluate') return visible.replace(/\t/g, '  ').slice(0, SCRIPT_DETAIL_MAX_CHARS);
+  return visible.replace(/\s+/g, ' ').trim().slice(0, DETAIL_MAX_CHARS);
+}
 
 /** Who is asking, as main resolved it from its own attestation. */
 export interface ConsentCaller {
@@ -121,13 +147,16 @@ export function withGrant(grants: PaneConsentGrants, op: Pick<ConsentOperation, 
   return { ...grants, sensitiveHosts: hosts };
 }
 
-/** Same pane, same account, same policy — the terms the operator answered under. */
+/**
+ * Same pane, same account, same site policy — the terms the operator answered
+ * under. Not the file epoch: that moves for every pane's change, including a
+ * consent grant elsewhere, and would void answers it has nothing to do with.
+ */
 export function sameTerms(a: ConsentCaller, b: ConsentCaller): boolean {
   return (
     a.workspaceId === b.workspaceId
     && a.paneId === b.paneId
     && a.profileId === b.profileId
-    && a.epoch === b.epoch
     && JSON.stringify(a.hosts) === JSON.stringify(b.hosts)
   );
 }
@@ -174,8 +203,10 @@ export class DangerousActionConsent {
       throw denied("that host is not on this pane's allowed list");
     }
 
+    // Per pane, not per file: another pane's edit (its own "Always", say)
+    // moves the file's epoch and must not void this pane's answer.
     const standing = this.deps.store.grantsFor(caller.paneId, caller.workspaceId, caller.profileId);
-    if (!standing || standing.epoch !== caller.epoch) {
+    if (!standing) {
       throw denied("the pane's browser policy changed while the call was being checked; try again");
     }
     if (grantCovers(standing.grants, op)) {
@@ -203,7 +234,7 @@ export class DangerousActionConsent {
     const operationId = this.mint();
     const deadlineAt = this.now() + this.deadlineMs;
     const workspaceName = this.deps.workspaceName?.(caller.workspaceId) || caller.workspaceId;
-    const detail = op.detail ? sanitizeHelpPrompt(op.detail).slice(0, DETAIL_MAX_CHARS) : undefined;
+    const detail = op.detail ? sanitizeConsentDetail(op.detail, op.action) || undefined : undefined;
     let handle;
     try {
       handle = queue.requestConsent({
@@ -275,18 +306,19 @@ export class DangerousActionConsent {
     if (this.now() > deadlineAt) throw denied('the operator answered after the deadline');
     if (opts.signal?.aborted) throw denied('the call was cancelled');
 
-    if (result.remember !== true) return { operationId, epoch: caller.epoch, via: 'once' };
+    if (result.remember !== true) return { operationId, epoch: again.epoch, via: 'once' };
 
-    // Remember: same checks once more, then a write that names the epoch the
-    // caller was resolved under. Only the epoch that write returns is used.
+    // Remember: same checks once more, then a write that names the epoch just
+    // re-read and the pane's terms; the store refuses it if either moved. Only
+    // the epoch that write returns is used.
     if (this.now() > deadlineAt || opts.signal?.aborted) throw denied('the operator answered after the deadline');
     let epoch: number;
     try {
       epoch = await this.deps.store.setGrants(
         caller.paneId,
-        { workspaceId: caller.workspaceId, profileId: caller.profileId },
+        { workspaceId: caller.workspaceId, profileId: caller.profileId, hosts: caller.hosts },
         (current) => withGrant(current, op),
-        caller.epoch,
+        again.epoch,
       );
     } catch {
       throw denied("the pane's browser policy changed before the grant could be saved");

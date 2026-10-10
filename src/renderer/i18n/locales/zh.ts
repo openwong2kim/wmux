@@ -422,6 +422,7 @@ export const zh = {
   'permission.browserAction.hint': "此窗格的浏览器受保护。这是代理的请求，只有你允许时才会执行。",
   'permission.browserAction.allowOnce': "允许一次",
   'permission.browserAction.always': "此窗格始终允许",
+  'permission.browserAction.showScript': "显示完整脚本",
   'fleet.approvals.pane': "窗格",
   'pane.browserPolicyGrants': "无需询问即允许",
   'pane.browserPolicyGrantsDesc': "通过“此窗格始终允许”授予。撤销后会再次询问。",

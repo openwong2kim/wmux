@@ -182,6 +182,7 @@ export const ar = {
   'permission.browserAction.hint': "متصفح هذه اللوحة محمي. طلب ذلك وكيل؛ لا يُنفَّذ إلا إذا سمحت به.",
   'permission.browserAction.allowOnce': "السماح مرة واحدة",
   'permission.browserAction.always': "دائمًا في هذه اللوحة",
+  'permission.browserAction.showScript': "عرض البرنامج النصي كاملًا",
   'fleet.approvals.pane': "لوحة",
   'pane.browserPolicyGrants': "مسموح دون سؤال",
   'pane.browserPolicyGrantsDesc': "مُنح عبر «دائمًا في هذه اللوحة». ألغِه ليُطلب منك مجددًا.",

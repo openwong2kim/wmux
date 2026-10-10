@@ -182,6 +182,7 @@ export const bs = {
   'permission.browserAction.hint': "Preglednik ovog okna je zaštićen. Agent je to zatražio; pokreće se samo ako dozvolite.",
   'permission.browserAction.allowOnce': "Dozvoli jednom",
   'permission.browserAction.always': "Uvijek u ovom oknu",
+  'permission.browserAction.showScript': "Prikaži cijelu skriptu",
   'fleet.approvals.pane': "okno",
   'pane.browserPolicyGrants': "Dozvoljeno bez pitanja",
   'pane.browserPolicyGrantsDesc': "Dato kroz „Uvijek u ovom oknu“. Opozovite da biste ponovo bili pitani.",

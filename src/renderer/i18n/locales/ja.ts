@@ -184,6 +184,7 @@ export const ja = {
   'permission.browserAction.hint': "このペインのブラウザーは保護されています。エージェントの要求で、許可した場合のみ実行されます。",
   'permission.browserAction.allowOnce': "今回のみ許可",
   'permission.browserAction.always': "このペインで常に許可",
+  'permission.browserAction.showScript': "スクリプト全体を表示",
   'fleet.approvals.pane': "ペイン",
   'pane.browserPolicyGrants': "確認なしで許可",
   'pane.browserPolicyGrantsDesc': "「このペインで常に許可」で許可した項目です。取り消すと再び確認します。",

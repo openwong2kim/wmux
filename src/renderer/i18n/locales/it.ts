@@ -182,6 +182,7 @@ export const it = {
   'permission.browserAction.hint': "Il browser di questo riquadro è protetto. Un agente l’ha chiesto; viene eseguito solo se lo consenti.",
   'permission.browserAction.allowOnce': "Consenti una volta",
   'permission.browserAction.always': "Sempre in questo riquadro",
+  'permission.browserAction.showScript': "Mostra lo script completo",
   'fleet.approvals.pane': "riquadro",
   'pane.browserPolicyGrants': "Consentito senza chiedere",
   'pane.browserPolicyGrantsDesc': "Concesso con «Sempre in questo riquadro». Revoca per ricevere di nuovo la richiesta.",
