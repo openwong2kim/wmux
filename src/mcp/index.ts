@@ -127,6 +127,12 @@ interface CodexCallScope {
   workspaceToken?: string;
   /** Why the thread could not be resolved, for the identity error. */
   miss?: CodexThreadMiss;
+  /**
+   * A Codex call (it carries a threadId) whose parent could not be inspected:
+   * it may run under a shared app-server, so the walk's claim, which names
+   * the pane that started that server, must not be adopted for it.
+   */
+  parentUnknown?: boolean;
 }
 
 interface CodexThreadMiss {
@@ -533,7 +539,11 @@ async function decideCodexMode(scope: CodexCallScope): Promise<NonNullable<Codex
     if (!scope.threadId) return 'legacy';
     // Classified before the owner probe: Codex does not pass CODEX_HOME to
     // MCP servers, so a non-default home is only known from the parent's path.
-    if ((await classifyCodexParent()) !== 'shared-server') return 'legacy';
+    const parentClass = await classifyCodexParent();
+    if (parentClass !== 'shared-server') {
+      scope.parentUnknown = parentClass === 'unknown';
+      return 'legacy';
+    }
     return readThreadOwner(scope.threadId) ? 'thread-or-legacy' : 'legacy';
   }
   const parentClass = await classifyCodexParent();
@@ -1105,7 +1115,7 @@ async function lookupPidMapWorkspace(): Promise<PidMapLookup> {
     // index exists, every such call is 'legacy').
     if (
       typeof walkToken === 'string' && walkToken.trim() &&
-      !getPinnedRoute() && !viaThread && codexParentClass !== 'shared-server'
+      !getPinnedRoute() && !viaThread && codexParentClass !== 'shared-server' && !codexScope?.parentUnknown
     ) {
       setWorkspaceToken(walkToken.trim());
     }
@@ -1364,6 +1374,13 @@ async function requireWorkspaceId(): Promise<string> {
  * in a workspace that is not the caller's. Refused instead, saying why.
  */
 function refuseUnattributedSharedServer(): void {
+  if (codexCallScope.getStore()?.parentUnknown) {
+    throw new Error(
+      'Browser tools could not verify this Codex session: wmux could not inspect the process that ' +
+        'started this MCP server, so it cannot tell whether the call comes from the shared Codex ' +
+        'background server. Retry the call in a minute.',
+    );
+  }
   if (codexParentClass !== 'shared-server' || threadOnlyScope()) return;
   throw new Error(
     'Browser tools are not available in this Codex session. It runs on the shared Codex ' +

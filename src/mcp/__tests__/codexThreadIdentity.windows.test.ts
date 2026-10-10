@@ -1,75 +1,16 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import fs from 'node:fs';
-import os from 'node:os';
+import { describe, expect, it } from 'vitest';
 import path from 'node:path';
-// The pane-side writer (hooks bridge) and this module must agree on the v1
-// file protocol byte for byte: digests, pointer names, required env keys.
-import { recordThreadOwner, readThreadOwner } from '../../../integrations/codex/bin/wmux-codex-thread.mjs';
 import {
   classifyMcpParent,
   codexHome,
   codexHomeFromParentChain,
   codexOwnerIndexAvailable,
-  matchOwnerToLiveAnchor,
-  readCodexThreadOwner,
   tokenizeCommandLine,
 } from '../codexThreadIdentity';
 
-// Windows thread-owner index: what the MCP side reads on win32, written by the
-// same writer the pane-side Codex hooks use.
-
-const T1 = '019a0000-0000-7000-8000-000000000001';
-const T2 = '019a0000-0000-7000-8000-000000000002';
-
-let home: string;
-beforeEach(() => { home = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-codex-win-')); });
-afterEach(() => { fs.rmSync(home, { recursive: true, force: true }); });
-
-/** A pane env as wmux stamps it on Windows (named pipe, no HOME). */
-function paneEnv(ptyId: string, workspaceId: string, suffix = ''): NodeJS.ProcessEnv {
-  return {
-    CODEX_HOME: home,
-    WMUX_PTY_ID: ptyId,
-    WMUX_WORKSPACE_ID: workspaceId,
-    WMUX_SURFACE_ID: `surface-${ptyId}`,
-    WMUX_DATA_SUFFIX: suffix,
-    WMUX_PIPE_NAME: `\\\\.\\pipe\\wmux${suffix}`,
-    WMUX_HOOKS_TO_MAIN: '1',
-  };
-}
-
-describe('owner record written by the hooks writer, read by the MCP server', () => {
-  it('round-trips a Windows pane identity', () => {
-    expect(recordThreadOwner(T1, paneEnv('daemon-a', 'ws-a'))).toBe(true);
-    expect(readCodexThreadOwner(T1, home)).toEqual({ ptyId: 'daemon-a', workspaceId: 'ws-a', dataSuffix: '' });
-    // And the writer's own reader agrees on the same files.
-    expect(readThreadOwner(T1, paneEnv('daemon-a', 'ws-a'))?.env.WMUX_PTY_ID).toBe('daemon-a');
-  });
-
-  it('keeps an isolated instance apart through its data suffix', () => {
-    recordThreadOwner(T1, paneEnv('daemon-a', 'ws-a', '-dev'));
-    const owner = readCodexThreadOwner(T1, home);
-    expect(owner?.dataSuffix).toBe('-dev');
-    expect(matchOwnerToLiveAnchor(T1, owner, [{ ptyId: 'daemon-a', workspaceId: 'ws-a' }], '').status).toBe('miss');
-    expect(matchOwnerToLiveAnchor(T1, owner, [{ ptyId: 'daemon-a', workspaceId: 'ws-a' }], '-dev')).toEqual(
-      { status: 'hit', wsId: 'ws-a', ptyId: 'daemon-a' },
-    );
-  });
-
-  it('drops the old thread when the same pane starts another one (/new)', () => {
-    recordThreadOwner(T1, paneEnv('daemon-a', 'ws-a'));
-    recordThreadOwner(T2, paneEnv('daemon-a', 'ws-a'));
-    expect(readCodexThreadOwner(T1, home)).toBeUndefined();
-    expect(readCodexThreadOwner(T2, home)?.ptyId).toBe('daemon-a');
-  });
-
-  it('never resolves a thread nobody recorded', () => {
-    recordThreadOwner(T1, paneEnv('daemon-a', 'ws-a'));
-    const owner = readCodexThreadOwner(T2, home);
-    expect(owner).toBeUndefined();
-    expect(matchOwnerToLiveAnchor(T2, owner, [{ ptyId: 'daemon-a', workspaceId: 'ws-a' }], '').status).toBe('miss');
-  });
-});
+// Windows shapes of the thread-owner lookup. The writer/reader round-trip
+// lives in integrations/codex/__tests__/codexThreadOwnerWindows.test.ts: this
+// directory is compiled into the MCP bundle, which must not take in the .mjs.
 
 describe('Windows shapes', () => {
   it('has no owner index on win32 today, so an ownerless thread is not proof of a foreign caller', () => {
