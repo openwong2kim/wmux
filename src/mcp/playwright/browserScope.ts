@@ -1,7 +1,8 @@
 import type { RpcMethod } from '../../shared/rpc';
 import { sendRpc } from '../wmux-client';
 import { isAgentWindowScopeError } from '../../shared/liveWriteScope';
-import { paneProfileRefusal } from './paneProfileRefusal';
+import { browserCallRefusal } from './paneProfileRefusal';
+import type { BrowserPolicyAuthorization } from '../../shared/browserPolicy';
 // Cycle-safe: surfaceRouting imports the refusal type from here, and both
 // sides touch the other only from inside function bodies, never at module
 // evaluation time.
@@ -12,7 +13,7 @@ import {
   SurfaceNotRegisteredError,
 } from './surfaceRouting';
 
-export { PaneProfileUnresolvedError, paneProfileRefusal } from './paneProfileRefusal';
+export { PaneProfileUnresolvedError, paneProfileRefusal, browserCallRefusal } from './paneProfileRefusal';
 
 /** Stable error code for browser operations whose caller cannot be scoped. */
 export const WORKSPACE_SCOPE_UNRESOLVED_CODE = 'WORKSPACE_SCOPE_UNRESOLVED';
@@ -54,8 +55,9 @@ export function isWorkspaceScopeUnresolvedError(error: unknown): boolean {
  */
 export function allowScopedRpcFallback(error: unknown): null {
   if (isWorkspaceScopeUnresolvedError(error)) throw error;
-  // Nor a pane-profile refusal: main refuses the RPC lane for the same reason.
-  const refusal = paneProfileRefusal(error);
+  // Nor a pane-profile or protected-pane refusal: main refuses the RPC lane
+  // for the same reason, and a protected pane's answer is final.
+  const refusal = browserCallRefusal(error);
   if (refusal) throw refusal;
   if (isAgentWindowScopeError(error)) throw error;
   return null;
@@ -90,6 +92,17 @@ export interface BrowserTargetScope {
    * the caller is up against rather than "nothing is open".
    */
   readonly foreignSurfaces?: number;
+  /**
+   * The protected-pane authorization main gave THIS operation (set by
+   * withAutomationLease before the body runs). Absent or `protected: false`
+   * is the legacy path; tools then behave exactly as before.
+   */
+  readonly protection?: BrowserPolicyAuthorization;
+}
+
+/** Whether this operation runs on a protected pane. */
+export function isProtectedScope(scope: BrowserTargetScope | undefined): boolean {
+  return scope?.protection?.protected === true;
 }
 
 /** Runtime guard for scopes created outside requireBrowserTargetScope(). */
@@ -137,7 +150,7 @@ export async function requireBrowserTargetScope(
   } catch (err) {
     // A refusal, not a routing failure: proceeding on the pin would drive the
     // pane's browser under whichever profile main falls back to.
-    const refusal = paneProfileRefusal(err);
+    const refusal = browserCallRefusal(err);
     if (refusal) throw refusal;
     // Routing failed rather than answered. Swallowing this into "no surface"
     // would silently restore the pre-fix behavior — permanently, on a build
@@ -236,6 +249,8 @@ async function surfaceForScopedRpc(
     // which is main's workspace-blind pick — another connection's tab
     // whenever one exists (#1328).
     if (err instanceof SurfaceNotRegisteredError) throw err;
+    const refusal = browserCallRefusal(err);
+    if (refusal) throw refusal;
     console.error(
       `[browserScope] ${method}: could not open a surface for this caller:`,
       err instanceof Error ? err.message : String(err),
@@ -294,7 +309,7 @@ export async function sendScopedBrowserRpc<T = unknown>(
   try {
     result = await sendRpc(method, scopedParams);
   } catch (err) {
-    throw paneProfileRefusal(err) ?? err;
+    throw browserCallRefusal(err) ?? err;
   }
   return rejectErrorPayload(result) as T;
 }
@@ -397,6 +412,8 @@ export async function leaseSurfaceScope(scope: BrowserTargetScope): Promise<Brow
     // surface against the same broken workspace before failing with the same
     // answer, so the caller pays for two doomed opens to learn one thing.
     if (err instanceof SurfaceNotRegisteredError) throw err;
+    const refusal = browserCallRefusal(err);
+    if (refusal) throw refusal;
     console.error(
       '[browserScope] could not open a surface to lease for this caller:',
       err instanceof Error ? err.message : String(err),

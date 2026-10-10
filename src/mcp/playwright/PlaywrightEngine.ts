@@ -12,7 +12,7 @@ import {
   isWorkspaceScopeUnresolvedError,
   WorkspaceScopeUnresolvedError,
   WORKSPACE_SCOPE_UNRESOLVED_CODE,
-  paneProfileRefusal,
+  browserCallRefusal,
   type BrowserTargetScope,
 } from './browserScope';
 import { attachPageCapture } from './pageCapture';
@@ -551,7 +551,7 @@ export class PlaywrightEngine {
       } catch (err) {
         if (err instanceof CdpAttachInfoUnavailableError) throw err;
         // A refusal, like the one above: retrying cannot change main's answer.
-        const refusal = paneProfileRefusal(err);
+        const refusal = browserCallRefusal(err);
         if (refusal) throw refusal;
         // The profile check itself failed. A rebind may have landed in the same
         // moment, so the live connection cannot be proven to be this pane's
@@ -753,7 +753,7 @@ export class PlaywrightEngine {
     try {
       info = (await sendRpc('browser.cdp.info', { workspaceId: scope.workspaceId })) as CdpInfoResponse;
     } catch (err) {
-      throw paneProfileRefusal(err) ?? new AgentWindowScopeError(label, targetId);
+      throw browserCallRefusal(err) ?? new AgentWindowScopeError(label, targetId);
     }
     this.cacheShellUrl(info);
     // The policy can have been switched to 'all' since the value was cached;
@@ -1119,7 +1119,7 @@ export class PlaywrightEngine {
                     }
                   } catch (resolveErr) {
                     if (isWorkspaceScopeUnresolvedError(resolveErr)) throw resolveErr;
-                    if (paneProfileRefusal(resolveErr)) throw paneProfileRefusal(resolveErr);
+                    if (browserCallRefusal(resolveErr)) throw browserCallRefusal(resolveErr);
                     console.error(
                       '[PlaywrightEngine] Could not pin the auto-opened surface:',
                       resolveErr instanceof Error ? resolveErr.message : String(resolveErr),
@@ -1131,7 +1131,7 @@ export class PlaywrightEngine {
             }
           } catch (openErr) {
             if (isWorkspaceScopeUnresolvedError(openErr)) throw openErr;
-            if (paneProfileRefusal(openErr)) throw paneProfileRefusal(openErr);
+            if (browserCallRefusal(openErr)) throw browserCallRefusal(openErr);
             console.error('[PlaywrightEngine] Auto-open failed:', openErr instanceof Error ? openErr.message : String(openErr));
           }
         }
@@ -1145,7 +1145,7 @@ export class PlaywrightEngine {
       } catch (err) {
         if (isWorkspaceScopeUnresolvedError(err)) throw err;
         if (err instanceof CdpAttachInfoUnavailableError) throw err;
-        if (paneProfileRefusal(err)) throw paneProfileRefusal(err);
+        if (browserCallRefusal(err)) throw browserCallRefusal(err);
         console.error(
           `[PlaywrightEngine] getPage attempt ${attempt} failed:`,
           err instanceof Error ? err.message : String(err),
@@ -1346,7 +1346,7 @@ export class PlaywrightEngine {
       }
     } catch (err) {
       if (isWorkspaceScopeUnresolvedError(err)) throw err;
-      if (paneProfileRefusal(err)) throw paneProfileRefusal(err);
+      if (browserCallRefusal(err)) throw browserCallRefusal(err);
       console.error('[PlaywrightEngine] findViaTargetDomain error:', err instanceof Error ? err.message : String(err));
       return null;
     }
@@ -1446,7 +1446,7 @@ export class PlaywrightEngine {
       return null;
     } catch (err) {
       if (isWorkspaceScopeUnresolvedError(err)) throw err;
-      if (paneProfileRefusal(err)) throw paneProfileRefusal(err);
+      if (browserCallRefusal(err)) throw browserCallRefusal(err);
       console.error('[PlaywrightEngine] findViaJsonEndpoint error:', err instanceof Error ? err.message : String(err));
       return null;
     }
