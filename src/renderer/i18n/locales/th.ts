@@ -530,4 +530,9 @@ export const th = {
   'quitAndStop.detail': "กำลังทำงาน: เซสชันเอเจนต์ {agents} รายการ เทอร์มินัลทั้งหมด {sessions} รายการ ทั้งหมดจะถูกหยุด การออกตามปกติจะปล่อยให้ทำงานต่อในเบื้องหลัง",
   'quitAndStop.detailUnknown': "wmux นับเซสชันที่กำลังทำงานไม่ได้ เทอร์มินัลและเซสชันเอเจนต์ทั้งหมดจะถูกหยุด การออกตามปกติจะปล่อยให้ทำงานต่อในเบื้องหลัง",
   'quitAndStop.confirm': "ออกและหยุดเซสชัน",
+  'quitAndStop.cancel': "ยกเลิก",
+  'quitAndStop.stopFailedMessage': "wmux หยุดเซสชันไม่ได้",
+  'quitAndStop.stopFailedDetail': "เดมอนของ wmux ไม่หยุดทำงาน wmux จึงยังเปิดอยู่และเซสชันยังทำงานอยู่ ให้รัน wmux daemon stop ในเทอร์มินัล แล้วออกอีกครั้ง",
+  'quitAndStop.alreadyQuittingMessage': "wmux กำลังออกอยู่แล้ว",
+  'quitAndStop.alreadyQuittingDetail': "การออกครั้งนี้จะปล่อยให้เซสชันทำงานต่อในเบื้องหลัง หากต้องการหยุด ให้รัน wmux daemon stop ในเทอร์มินัล",
 } as const;

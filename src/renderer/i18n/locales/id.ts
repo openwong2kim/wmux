@@ -535,4 +535,9 @@ export const id = {
   'quitAndStop.detail': "Sedang berjalan: {agents} sesi agen, total {sessions} terminal. Semuanya akan dihentikan. Keluar biasa membiarkannya tetap berjalan di latar belakang.",
   'quitAndStop.detailUnknown': "wmux tidak dapat menghitung sesi yang berjalan. Semua terminal dan sesi agen akan dihentikan. Keluar biasa membiarkannya tetap berjalan di latar belakang.",
   'quitAndStop.confirm': "Keluar dan Hentikan Sesi",
+  'quitAndStop.cancel': "Batal",
+  'quitAndStop.stopFailedMessage': "wmux tidak dapat menghentikan sesi.",
+  'quitAndStop.stopFailedDetail': "Daemon wmux tidak berhenti, jadi wmux tetap terbuka dan sesi Anda masih berjalan. Jalankan wmux daemon stop di terminal, lalu keluar lagi.",
+  'quitAndStop.alreadyQuittingMessage': "wmux sedang keluar.",
+  'quitAndStop.alreadyQuittingDetail': "Keluar kali ini membiarkan sesi Anda tetap berjalan di latar belakang. Untuk menghentikannya, jalankan wmux daemon stop di terminal.",
 } as const;

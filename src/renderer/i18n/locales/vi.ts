@@ -530,4 +530,9 @@ export const vi = {
   'quitAndStop.detail': "Đang chạy: {agents} phiên agent, tổng cộng {sessions} terminal. Tất cả sẽ bị dừng. Thoát thông thường để chúng tiếp tục chạy ở chế độ nền.",
   'quitAndStop.detailUnknown': "wmux không đếm được các phiên đang chạy. Mọi terminal và phiên agent sẽ bị dừng. Thoát thông thường để chúng tiếp tục chạy ở chế độ nền.",
   'quitAndStop.confirm': "Thoát và dừng phiên",
+  'quitAndStop.cancel': "Hủy",
+  'quitAndStop.stopFailedMessage': "wmux không thể dừng các phiên.",
+  'quitAndStop.stopFailedDetail': "Daemon wmux không dừng, nên wmux vẫn mở và các phiên vẫn đang chạy. Hãy chạy wmux daemon stop trong terminal rồi thoát lại.",
+  'quitAndStop.alreadyQuittingMessage': "wmux đang thoát.",
+  'quitAndStop.alreadyQuittingDetail': "Lần thoát này để các phiên tiếp tục chạy ở chế độ nền. Để dừng chúng, hãy chạy wmux daemon stop trong terminal.",
 } as const;

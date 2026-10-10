@@ -571,4 +571,9 @@ export const zhTW = {
   'quitAndStop.detail': "正在執行：{agents} 個代理工作階段，共 {sessions} 個終端機。它們都會被停止。一般結束會讓它們在背景繼續執行。",
   'quitAndStop.detailUnknown': "無法計算正在執行的工作階段。所有終端機與代理工作階段都會被停止。一般結束會讓它們在背景繼續執行。",
   'quitAndStop.confirm': "結束並停止工作階段",
+  'quitAndStop.cancel': "取消",
+  'quitAndStop.stopFailedMessage': "無法停止工作階段。",
+  'quitAndStop.stopFailedDetail': "wmux 常駐程式未停止，因此 wmux 保持開啟，工作階段仍在執行。請在終端機中執行 wmux daemon stop，然後再次結束。",
+  'quitAndStop.alreadyQuittingMessage': "wmux 正在結束。",
+  'quitAndStop.alreadyQuittingDetail': "這次結束會讓工作階段在背景繼續執行。若要停止，請在終端機中執行 wmux daemon stop。",
 } as const;

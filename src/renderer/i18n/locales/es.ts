@@ -536,4 +536,9 @@ export const es = {
   'quitAndStop.detail': "Sesiones de agentes en ejecución: {agents}. Terminales en total: {sessions}. Se detendrán todas. Salir normalmente las deja en ejecución en segundo plano.",
   'quitAndStop.detailUnknown': "wmux no pudo contar las sesiones en ejecución. Se detendrán todas las terminales y sesiones de agentes. Salir normalmente las deja en ejecución en segundo plano.",
   'quitAndStop.confirm': "Salir y detener sesiones",
+  'quitAndStop.cancel': "Cancelar",
+  'quitAndStop.stopFailedMessage': "wmux no pudo detener las sesiones.",
+  'quitAndStop.stopFailedDetail': "El daemon de wmux no se detuvo, así que wmux sigue abierto y tus sesiones siguen en ejecución. Ejecuta wmux daemon stop en una terminal y vuelve a salir.",
+  'quitAndStop.alreadyQuittingMessage': "wmux ya se está cerrando.",
+  'quitAndStop.alreadyQuittingDetail': "Este cierre deja tus sesiones en ejecución en segundo plano. Para detenerlas, ejecuta wmux daemon stop en una terminal.",
 } as const;

@@ -532,4 +532,9 @@ export const ar = {
   'quitAndStop.detail': "جلسات الوكلاء قيد التشغيل: {agents}. إجمالي الطرفيات: {sessions}. سيتم إيقافها جميعًا. الإنهاء العادي يتركها تعمل في الخلفية.",
   'quitAndStop.detailUnknown': "تعذّر على wmux عدّ الجلسات قيد التشغيل. سيتم إيقاف كل الطرفيات وجلسات الوكلاء. الإنهاء العادي يتركها تعمل في الخلفية.",
   'quitAndStop.confirm': "إنهاء وإيقاف الجلسات",
+  'quitAndStop.cancel': "إلغاء",
+  'quitAndStop.stopFailedMessage': "تعذّر على wmux إيقاف الجلسات.",
+  'quitAndStop.stopFailedDetail': "لم يتوقف خادم wmux الخلفي، لذا يبقى wmux مفتوحًا وما زالت جلساتك تعمل. شغّل wmux daemon stop في الطرفية، ثم أعد الإنهاء.",
+  'quitAndStop.alreadyQuittingMessage': "wmux قيد الإنهاء بالفعل.",
+  'quitAndStop.alreadyQuittingDetail': "هذا الإنهاء يترك جلساتك تعمل في الخلفية. لإيقافها، شغّل wmux daemon stop في الطرفية.",
 } as const;

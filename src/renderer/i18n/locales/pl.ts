@@ -4281,4 +4281,9 @@ export const pl = {
   'quitAndStop.detail': "Teraz działa: sesje agentów: {agents}, terminale łącznie: {sessions}. Wszystkie zostaną zatrzymane. Zwykłe zamknięcie zostawia je działające w tle.",
   'quitAndStop.detailUnknown': "wmux nie mógł policzyć działających sesji. Wszystkie terminale i sesje agentów zostaną zatrzymane. Zwykłe zamknięcie zostawia je działające w tle.",
   'quitAndStop.confirm': "Zamknij i zatrzymaj sesje",
+  'quitAndStop.cancel': "Anuluj",
+  'quitAndStop.stopFailedMessage': "wmux nie mógł zatrzymać sesji.",
+  'quitAndStop.stopFailedDetail': "Demon wmux się nie zatrzymał, więc wmux pozostaje otwarty, a sesje nadal działają. Uruchom wmux daemon stop w terminalu, a potem zamknij aplikację ponownie.",
+  'quitAndStop.alreadyQuittingMessage': "wmux już się zamyka.",
+  'quitAndStop.alreadyQuittingDetail': "To zamknięcie pozostawia sesje działające w tle. Aby je zatrzymać, uruchom wmux daemon stop w terminalu.",
 } as const;

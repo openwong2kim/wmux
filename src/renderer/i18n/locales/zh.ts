@@ -3452,4 +3452,9 @@ export const zh = {
   'quitAndStop.detail': "正在运行：{agents} 个智能体会话，共 {sessions} 个终端。它们都将被停止。普通退出会让它们在后台继续运行。",
   'quitAndStop.detailUnknown': "无法统计正在运行的会话。所有终端和智能体会话都将被停止。普通退出会让它们在后台继续运行。",
   'quitAndStop.confirm': "退出并停止会话",
+  'quitAndStop.cancel': "取消",
+  'quitAndStop.stopFailedMessage': "无法停止会话。",
+  'quitAndStop.stopFailedDetail': "wmux 守护进程未停止，因此 wmux 保持打开，会话仍在运行。请在终端中运行 wmux daemon stop，然后再次退出。",
+  'quitAndStop.alreadyQuittingMessage': "wmux 正在退出。",
+  'quitAndStop.alreadyQuittingDetail': "此次退出会让会话在后台继续运行。要停止它们，请在终端中运行 wmux daemon stop。",
 } as const;

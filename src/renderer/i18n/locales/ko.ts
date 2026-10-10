@@ -3763,4 +3763,9 @@ export const ko = {
   'quitAndStop.detail': "지금 실행 중: 에이전트 세션 {agents}개, 터미널 전체 {sessions}개. 모두 멈춥니다. 일반 종료는 세션을 백그라운드에서 계속 실행합니다.",
   'quitAndStop.detailUnknown': "실행 중인 세션 수를 확인하지 못했습니다. 모든 터미널과 에이전트 세션이 멈춥니다. 일반 종료는 세션을 백그라운드에서 계속 실행합니다.",
   'quitAndStop.confirm': "종료하고 세션 멈추기",
+  'quitAndStop.cancel': "취소",
+  'quitAndStop.stopFailedMessage': "세션을 멈추지 못했습니다.",
+  'quitAndStop.stopFailedDetail': "wmux 데몬이 멈추지 않아 wmux를 열어 둡니다. 세션은 아직 실행 중입니다. 터미널에서 wmux daemon stop를 실행한 뒤 다시 종료하세요.",
+  'quitAndStop.alreadyQuittingMessage': "wmux가 이미 종료하는 중입니다.",
+  'quitAndStop.alreadyQuittingDetail': "이번 종료는 세션을 백그라운드에서 계속 실행해 둡니다. 멈추려면 터미널에서 wmux daemon stop를 실행하세요.",
 } as const;

@@ -535,4 +535,9 @@ export const fr = {
   'quitAndStop.detail': "Sessions d'agent en cours : {agents}. Terminaux au total : {sessions}. Toutes seront arrêtées. Quitter normalement les laisse tourner en arrière-plan.",
   'quitAndStop.detailUnknown': "wmux n'a pas pu compter les sessions en cours. Tous les terminaux et sessions d'agent seront arrêtés. Quitter normalement les laisse tourner en arrière-plan.",
   'quitAndStop.confirm': "Quitter et arrêter les sessions",
+  'quitAndStop.cancel': "Annuler",
+  'quitAndStop.stopFailedMessage': "wmux n’a pas pu arrêter les sessions.",
+  'quitAndStop.stopFailedDetail': "Le démon wmux ne s’est pas arrêté : wmux reste ouvert et vos sessions tournent toujours. Exécutez wmux daemon stop dans un terminal, puis quittez à nouveau.",
+  'quitAndStop.alreadyQuittingMessage': "wmux est déjà en train de quitter.",
+  'quitAndStop.alreadyQuittingDetail': "Cette fermeture laisse vos sessions tourner en arrière-plan. Pour les arrêter, exécutez wmux daemon stop dans un terminal.",
 } as const;

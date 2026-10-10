@@ -8,7 +8,7 @@ import type { TranslationKey } from '../../renderer/i18n/locales/en';
  * The strings live in the renderer's locale tables so translators see them
  * next to everything else. Main loads only the one table it needs, at click
  * time: a static import of all 23 tables would roughly double the main bundle
- * for five strings.
+ * for a dozen strings.
  */
 
 type LocaleTable = Partial<Record<TranslationKey, string>>;
@@ -73,11 +73,8 @@ function fill(template: string, vars: Record<string, number>): string {
   return template.replace(/\{(\w+)\}/g, (m, name: string) => (name in vars ? String(vars[name]) : m));
 }
 
-/**
- * Build the confirmation copy. `counts === null` means the daemon could not be
- * asked; the dialog still asks, but never states a number it does not have.
- */
-export async function buildQuitAndStopCopy(locale: string, counts: SessionCounts | null): Promise<QuitAndStopCopy> {
+/** The locale's string lookup, falling back key by key to English. */
+async function translator(locale: string): Promise<(key: TranslationKey) => string> {
   const en = await LOADERS.en();
   let table: LocaleTable = en;
   if (locale !== 'en' && LOADERS[locale]) {
@@ -87,13 +84,39 @@ export async function buildQuitAndStopCopy(locale: string, counts: SessionCounts
       table = en;
     }
   }
-  const tr = (key: TranslationKey): string => table[key] ?? en[key] ?? key;
+  return (key) => table[key] ?? en[key] ?? key;
+}
+
+/**
+ * Build the confirmation copy. `counts === null` means the daemon could not be
+ * asked; the dialog still asks, but never states a number it does not have.
+ */
+export async function buildQuitAndStopCopy(locale: string, counts: SessionCounts | null): Promise<QuitAndStopCopy> {
+  const tr = await translator(locale);
   return {
     message: tr('quitAndStop.message'),
     detail: counts
       ? fill(tr('quitAndStop.detail'), { agents: counts.agents, sessions: counts.sessions })
       : tr('quitAndStop.detailUnknown'),
     confirm: tr('quitAndStop.confirm'),
-    cancel: tr('common.cancel'),
+    cancel: tr('quitAndStop.cancel'),
   };
+}
+
+export type QuitAndStopNoticeKind = 'stopFailed' | 'alreadyQuitting';
+
+/** The error shown when the stop did not happen. Both name the recovery command. */
+export async function buildQuitAndStopNotice(
+  locale: string,
+  kind: QuitAndStopNoticeKind,
+): Promise<{ message: string; detail: string }> {
+  const tr = await translator(locale);
+  return kind === 'stopFailed'
+    ? { message: tr('quitAndStop.stopFailedMessage'), detail: tr('quitAndStop.stopFailedDetail') }
+    : { message: tr('quitAndStop.alreadyQuittingMessage'), detail: tr('quitAndStop.alreadyQuittingDetail') };
+}
+
+/** The menu item's label in `locale` — the same string as the confirm button. */
+export async function quitAndStopLabel(locale: string): Promise<string> {
+  return (await translator(locale))('quitAndStop.confirm');
 }

@@ -535,4 +535,9 @@ export const it = {
   'quitAndStop.detail': "Sessioni di agenti in esecuzione: {agents}. Terminali in tutto: {sessions}. Verranno arrestate tutte. L'uscita normale le lascia in esecuzione in background.",
   'quitAndStop.detailUnknown': "wmux non è riuscito a contare le sessioni in esecuzione. Tutti i terminali e le sessioni di agenti verranno arrestati. L'uscita normale le lascia in esecuzione in background.",
   'quitAndStop.confirm': "Esci e arresta le sessioni",
+  'quitAndStop.cancel': "Annulla",
+  'quitAndStop.stopFailedMessage': "wmux non è riuscito ad arrestare le sessioni.",
+  'quitAndStop.stopFailedDetail': "Il daemon di wmux non si è arrestato, quindi wmux resta aperto e le sessioni sono ancora in esecuzione. Esegui wmux daemon stop in un terminale, poi esci di nuovo.",
+  'quitAndStop.alreadyQuittingMessage': "wmux è già in chiusura.",
+  'quitAndStop.alreadyQuittingDetail': "Questa chiusura lascia le sessioni in esecuzione in background. Per arrestarle, esegui wmux daemon stop in un terminale.",
 } as const;

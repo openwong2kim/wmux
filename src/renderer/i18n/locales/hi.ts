@@ -531,4 +531,9 @@ export const hi = {
   'quitAndStop.detail': "अभी चल रहे हैं: {agents} एजेंट सेशन, कुल {sessions} टर्मिनल। ये सभी रोक दिए जाएंगे। सामान्य Quit इन्हें बैकग्राउंड में चलता छोड़ देता है।",
   'quitAndStop.detailUnknown': "wmux चल रहे सेशन गिन नहीं सका। सभी टर्मिनल और एजेंट सेशन रोक दिए जाएंगे। सामान्य Quit इन्हें बैकग्राउंड में चलता छोड़ देता है।",
   'quitAndStop.confirm': "बंद करें और सेशन रोकें",
+  'quitAndStop.cancel': "रद्द करें",
+  'quitAndStop.stopFailedMessage': "wmux सत्र नहीं रोक सका।",
+  'quitAndStop.stopFailedDetail': "wmux डेमन नहीं रुका, इसलिए wmux खुला रहेगा और आपके सत्र अभी भी चल रहे हैं। टर्मिनल में wmux daemon stop चलाएँ, फिर दोबारा बंद करें।",
+  'quitAndStop.alreadyQuittingMessage': "wmux पहले से बंद हो रहा है।",
+  'quitAndStop.alreadyQuittingDetail': "इस बार बंद करने पर आपके सत्र बैकग्राउंड में चलते रहेंगे। उन्हें रोकने के लिए टर्मिनल में wmux daemon stop चलाएँ।",
 } as const;

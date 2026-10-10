@@ -1668,12 +1668,17 @@ app.on('ready', async () => {
   // itself. A window built during that gap would be governed by the default
   // menu — the exact startup path this change exists to close. App-global and
   // idempotent, so this one call covers those windows too.
-  // "Quit and Stop Sessions" takes the tray's full-shutdown path: flip the
-  // flag, then app.quit(), so before-quit stays the one place that stops the
-  // daemon.
+  // "Quit and Stop Sessions" stops the daemon before quitting (so a failed
+  // stop can keep the app open), then takes the tray's full-shutdown path.
+  // The respawn loop goes first, or it would bring the daemon straight back.
   installApplicationMenu({
     onShutdownAll: () => { fullShutdownRequested = true; },
     getDaemonClient: () => daemonClient,
+    isQuitting: () => isQuitting,
+    prepareStop: () => {
+      daemonRespawnController?.dispose();
+      daemonRespawnController = null;
+    },
   });
 
   // P3 — macOS CLI shim: DMG/ZIP 설치엔 Squirrel 훅이 없으므로 첫 실행 시 1회만

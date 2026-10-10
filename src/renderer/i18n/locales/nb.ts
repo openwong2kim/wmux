@@ -535,4 +535,9 @@ export const nb = {
   'quitAndStop.detail': "Agentøkter som kjører: {agents}. Terminaler totalt: {sessions}. Alle blir stoppet. Vanlig Avslutt lar dem kjøre videre i bakgrunnen.",
   'quitAndStop.detailUnknown': "wmux kunne ikke telle øktene som kjører. Alle terminaler og agentøkter blir stoppet. Vanlig Avslutt lar dem kjøre videre i bakgrunnen.",
   'quitAndStop.confirm': "Avslutt og stopp økter",
+  'quitAndStop.cancel': "Avbryt",
+  'quitAndStop.stopFailedMessage': "wmux kunne ikke stoppe øktene.",
+  'quitAndStop.stopFailedDetail': "wmux-daemonen stoppet ikke, så wmux forblir åpen og øktene dine kjører fortsatt. Kjør wmux daemon stop i en terminal, og avslutt på nytt.",
+  'quitAndStop.alreadyQuittingMessage': "wmux avslutter allerede.",
+  'quitAndStop.alreadyQuittingDetail': "Denne avslutningen lar øktene kjøre videre i bakgrunnen. Kjør wmux daemon stop i en terminal for å stoppe dem.",
 } as const;

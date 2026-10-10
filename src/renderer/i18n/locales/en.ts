@@ -4321,6 +4321,11 @@ export const en = {
   'quitAndStop.detail': "Agent sessions running: {agents}. Terminals in all: {sessions}. All of them will be stopped. Plain Quit leaves them running in the background.",
   'quitAndStop.detailUnknown': "wmux could not count the running sessions. Every terminal and agent session will be stopped. Plain Quit leaves them running in the background.",
   'quitAndStop.confirm': "Quit and Stop Sessions",
+  'quitAndStop.cancel': "Cancel",
+  'quitAndStop.stopFailedMessage': "wmux could not stop the sessions.",
+  'quitAndStop.stopFailedDetail': "The wmux daemon did not stop, so wmux stays open and your sessions are still running. Run wmux daemon stop in a terminal, then quit again.",
+  'quitAndStop.alreadyQuittingMessage': "wmux is already quitting.",
+  'quitAndStop.alreadyQuittingDetail': "This quit leaves your sessions running in the background. To stop them, run wmux daemon stop in a terminal.",
 } as const;
 
 export type TranslationKey = keyof typeof en;

@@ -1,5 +1,8 @@
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { app, BrowserWindow, Menu } from 'electron';
 import { collidesWithKeymap } from '../../shared/keymap';
+import { quitAndStopLabel, readUiLocale } from '../quit/quitAndStopCopy';
 import { quitAndStopSessions, type QuitAndStopCallbacks } from '../quit/quitAndStopSessions';
 
 /**
@@ -168,6 +171,8 @@ export function buildAppMenuTemplate(opts: {
   isDev: boolean;
   /** Present → the menu offers "Quit and Stop Sessions" beside Quit. */
   onQuitAndStopSessions?: () => void;
+  /** That item's label in the UI language; English until the table loads. */
+  quitAndStopLabel?: string;
 }): Electron.MenuItemConstructorOptions[] {
   const isMac = opts.platform === 'darwin';
   const template: Electron.MenuItemConstructorOptions[] = [];
@@ -176,7 +181,7 @@ export function buildAppMenuTemplate(opts: {
   // session is one slip away from Cmd+Q, and the confirm is the safety, not
   // muscle memory.
   const quitAndStop: Electron.MenuItemConstructorOptions | null = opts.onQuitAndStopSessions
-    ? { label: 'Quit and Stop Sessions', click: opts.onQuitAndStopSessions }
+    ? { label: opts.quitAndStopLabel ?? 'Quit and Stop Sessions', click: opts.onQuitAndStopSessions }
     : null;
 
   if (isMac) {
@@ -292,14 +297,45 @@ export function buildAppMenuTemplate(opts: {
  * governed by Electron's default accelerator table.
  */
 export function installApplicationMenu(quitAndStop?: QuitAndStopCallbacks): void {
-  const template = buildAppMenuTemplate({
-    platform: process.platform,
-    // Mirrors tray.ts: resolve via app.isPackaged, not NODE_ENV, which is not
-    // reliably set and could ship the Developer submenu in a release build.
-    isDev: !app.isPackaged,
-    onQuitAndStopSessions: quitAndStop ? () => void quitAndStopSessions(quitAndStop) : undefined,
-  });
-  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+  const install = (label?: string): void => {
+    const template = buildAppMenuTemplate({
+      platform: process.platform,
+      // Mirrors tray.ts: resolve via app.isPackaged, not NODE_ENV, which is not
+      // reliably set and could ship the Developer submenu in a release build.
+      isDev: !app.isPackaged,
+      onQuitAndStopSessions: quitAndStop ? () => void quitAndStopSessions(quitAndStop) : undefined,
+      quitAndStopLabel: label,
+    });
+    Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+  };
+  // Synchronously first, so no window ever sees Electron's default menu; the
+  // localized label follows once its table has loaded.
+  install();
+  if (quitAndStop) localizeQuitAndStop(install);
+}
+
+/** How often the menu re-reads the UI language the renderer persisted. */
+const LOCALE_POLL_MS = 2_000;
+
+/**
+ * Keep the Quit and Stop Sessions label in the UI language. The renderer owns
+ * the language and persists it to session.json; polling that file's stat
+ * (not fs.watch, which loses an atomically replaced file) picks up a change
+ * within a couple of seconds without a new IPC channel.
+ */
+function localizeQuitAndStop(install: (label: string) => void): void {
+  const userData = app.getPath('userData');
+  let current = '';
+  const refresh = (): void => {
+    const locale = readUiLocale(userData, app.getLocale());
+    if (locale === current) return;
+    current = locale;
+    void quitAndStopLabel(locale)
+      .then((label) => { if (locale === current) install(label); })
+      .catch((err: unknown) => console.warn('[Main] menu label localization failed:', err));
+  };
+  refresh();
+  fs.watchFile(path.join(userData, 'session.json'), { interval: LOCALE_POLL_MS, persistent: false }, refresh);
 }
 
 /**

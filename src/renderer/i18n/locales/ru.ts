@@ -536,4 +536,9 @@ export const ru = {
   'quitAndStop.detail': "Сейчас работают: сеансы агентов — {agents}, всего терминалов — {sessions}. Все они будут остановлены. Обычный выход оставляет их работать в фоне.",
   'quitAndStop.detailUnknown': "wmux не удалось подсчитать работающие сеансы. Все терминалы и сеансы агентов будут остановлены. Обычный выход оставляет их работать в фоне.",
   'quitAndStop.confirm': "Выйти и остановить сеансы",
+  'quitAndStop.cancel': "Отмена",
+  'quitAndStop.stopFailedMessage': "wmux не удалось остановить сеансы.",
+  'quitAndStop.stopFailedDetail': "Демон wmux не остановился, поэтому wmux остаётся открытым, а сеансы продолжают работать. Выполните wmux daemon stop в терминале и завершите работу ещё раз.",
+  'quitAndStop.alreadyQuittingMessage': "wmux уже завершает работу.",
+  'quitAndStop.alreadyQuittingDetail': "При этом выходе сеансы продолжат работать в фоне. Чтобы остановить их, выполните wmux daemon stop в терминале.",
 } as const;
