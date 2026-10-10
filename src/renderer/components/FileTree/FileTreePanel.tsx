@@ -3,6 +3,7 @@ import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import { selectActiveWorkspace } from '../../stores/selectors/workspaceProjections';
 import { tokenAttrs } from '../../themes';
+import { selectRemoteScopeName } from '../Git/thisComputerOnly';
 
 interface FileTreePanelProps {
   position: 'left' | 'right';
@@ -275,10 +276,13 @@ export default function FileTreePanel({ position }: FileTreePanelProps) {
   const t = useT();
   // A1: 활성 ws OBJECT만 구독(cwd/pane 트리 파생) — 배경 ws churn 무시.
   const activeWorkspace = useStore(selectActiveWorkspace);
+  // PC rail: another computer on screen ('' while the roster has not named it).
+  // Its folders are on that computer, so no path of it is read from this disk.
+  const remoteScope = useStore(selectRemoteScopeName);
 
   // Resolve CWD: try workspace metadata first, then recursively find from panes
-  let cwd = activeWorkspace?.metadata?.cwd;
-  if (!cwd && activeWorkspace) {
+  let cwd = remoteScope !== null ? undefined : activeWorkspace?.metadata?.cwd;
+  if (!cwd && activeWorkspace && remoteScope === null) {
     const findCwd = (pane: any): string | undefined => {
       if (pane.type === 'leaf') {
         const surface = pane.surfaces?.find((s: any) => s.id === pane.activeSurfaceId);
@@ -303,6 +307,12 @@ export default function FileTreePanel({ position }: FileTreePanelProps) {
   const [previewFile, setPreviewFile] = useState<string | null>(null);
   const [previewContent, setPreviewContent] = useState<string | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
+  // A preview of this computer's file does not stay under another computer's line.
+  useEffect(() => {
+    if (remoteScope === null) return;
+    setPreviewFile(null);
+    setPreviewContent(null);
+  }, [remoteScope]);
 
   // Track previous cwd to detect directory changes vs refreshes
   const prevCwdRef = useRef<string | undefined>(undefined);
@@ -457,7 +467,7 @@ export default function FileTreePanel({ position }: FileTreePanelProps) {
           title={cwd ?? t('filetree.noDirectory')}
           {...tokenAttrs('textSub', 'text')}
         >
-          {cwd ? shortenPath(cwd) : t('filetree.noCwd')}
+          {cwd ? shortenPath(cwd) : remoteScope ? remoteScope : t('filetree.noCwd')}
         </span>
         <button
           className="text-[var(--text-muted)] hover:text-[var(--text-main)] transition-colors text-sm"
@@ -477,8 +487,8 @@ export default function FileTreePanel({ position }: FileTreePanelProps) {
           </div>
         )}
         {!cwd && (
-          <div className="px-3 py-2 text-[var(--text-muted)] text-[10px]">
-            {t('filetree.noCwdDetected')}
+          <div className="px-3 py-2 text-[var(--text-muted)] text-[10px]" {...(remoteScope !== null ? { 'data-filetree-remote': '' } : {})}>
+            {remoteScope ? t('pcRail.filesNotShown', { name: remoteScope }) : t('filetree.noCwdDetected')}
           </div>
         )}
         {tree.map((node) => (
