@@ -53,17 +53,22 @@ export function shortTaskId(taskId: string): string {
  * The provenance line appended to a delivered hand-off. A label for the
  * worker, never proof of anything (see the header).
  */
-export function buildHandoffLabel(taskId: string, auto = false): string {
-  return `${HANDOFF_MARKER}${auto ? ' (auto, danger mode)' : ''} · task ${shortTaskId(taskId)}. When you finish or need input, say so in this pane.)`;
+export function buildHandoffLabel(taskId: string, auto = false, goalId?: string): string {
+  const how = goalId ? ` (under goal ${goalId}, which you approved)` : auto ? ' (auto, danger mode)' : '';
+  return `${HANDOFF_MARKER}${how} · task ${shortTaskId(taskId)}. When you finish or need input, say so in this pane.)`;
 }
 
 /** The text pasted into the worker's pane: the body, a blank line, the label. */
-export function buildHandoffText(body: string, taskId: string, auto = false): string {
-  return `${body.trim()}\n\n${buildHandoffLabel(taskId, auto)}`;
+export function buildHandoffText(body: string, taskId: string, auto = false, goalId?: string): string {
+  return `${body.trim()}\n\n${buildHandoffLabel(taskId, auto, goalId)}`;
 }
 
-/** Room the label takes, with its separator (task ids are bounded). */
-export const HANDOFF_LABEL_RESERVE_CHARS = buildHandoffLabel('x'.repeat(40), true).length + 2;
+/** Room the label takes, with its separator (task ids are bounded): the
+ *  longest of its forms. */
+export const HANDOFF_LABEL_RESERVE_CHARS = Math.max(
+  buildHandoffLabel('x'.repeat(40), true).length,
+  buildHandoffLabel('x'.repeat(40), true, 'G-ffffff').length,
+) + 2;
 
 /** Text as the tripwire compares it: compatibility-normalized (NFKC, so
  *  full-width and other look-alike forms fold), control and format characters

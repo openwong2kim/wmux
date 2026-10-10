@@ -346,6 +346,24 @@ describe('CommanderSessionManager — turn origin (the no-click hand-off gate)',
     mgr.notifyForeignTurnStart();
     expect(mgr.turnOrigin).toBe('human');
   });
+
+  it('marks a wake that carries another PC\'s Moa for exactly that turn (W5)', async () => {
+    const adapter = new FakeAdapter();
+    adapter.setScript([{ type: 'turn-end', sessionId: null }]);
+    const mgr = new CommanderSessionManager({ adapter, sink: vi.fn() });
+    expect(mgr.turnWokenByRemoteMoa).toBe(false);
+    await mgr.send('remote wake', { origin: 'automation', remoteMoa: true });
+    expect(mgr.turnWokenByRemoteMoa).toBe(true);
+    // A human turn never carries it, even if a caller passed the flag.
+    await mgr.send('operator', { origin: 'human', remoteMoa: true });
+    expect(mgr.turnWokenByRemoteMoa).toBe(false);
+    await mgr.send('remote wake', { origin: 'automation', remoteMoa: true });
+    await mgr.send('local wake', { origin: 'automation' });
+    expect(mgr.turnWokenByRemoteMoa).toBe(false);
+    await mgr.send('remote wake', { origin: 'automation', remoteMoa: true });
+    mgr.notifyForeignTurnStart();
+    expect(mgr.turnWokenByRemoteMoa).toBe(false);
+  });
 });
 
 // The local read-only lane shares the normal reservation and stream without
@@ -674,6 +692,22 @@ describe('CommanderSessionManager — local reads preserve provider authority', 
     expect(await local).toEqual({ ok: true });
     expect(prepare).toHaveBeenCalledTimes(1);
     expect(mgr.turnOrigin).toBe('human');
+  });
+
+  // W5 (goal contract): the remote-Moa mark moves with the origin. A local
+  // answer leaves it alone; a local miss that reaches the provider clears it.
+  it('keeps the remote-Moa wake mark through a local answer and clears it on a fallback', async () => {
+    const adapter = new FakeAdapter();
+    adapter.setScript([{ type: 'turn-end', sessionId: 'existing' }]);
+    const mgr = new CommanderSessionManager({ adapter, sink: vi.fn() });
+    await mgr.send('remote wake', { origin: 'automation', remoteMoa: true });
+    expect(mgr.turnWokenByRemoteMoa).toBe(true);
+    expect(await mgr.send('Who needs me?', { origin: 'human' }, async () => ({ text: 'Nobody.' })))
+      .toEqual({ ok: true, localAnswer: { text: 'Nobody.' } });
+    expect(mgr.turnWokenByRemoteMoa).toBe(true);
+    expect(await mgr.send('Who needs me?', { origin: 'human' }, async () => ({ fallbackText: 'ctx' })))
+      .toEqual({ ok: true });
+    expect(mgr.turnWokenByRemoteMoa).toBe(false);
   });
 
   it('sets fallback origin immediately before the first provider startup', async () => {

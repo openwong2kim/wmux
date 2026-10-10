@@ -215,6 +215,10 @@ export const FIRST_PARTY_METHODS: ReadonlySet<RpcMethod> = new Set<RpcMethod>([
   // per-spawn-token auth; the handler refuses any caller that is not the HQ
   // brain, and delivery waits for the operator's card answer.
   'deck.proposeHandoff',
+  // Moa's goal contract (moa_propose_goal / moa_goal). Same per-spawn-token
+  // auth, HQ only; the proposal only raises an operator card.
+  'deck.proposeGoal',
+  'deck.goal',
   // events
   'events.poll',
   // browser (Playwright + packaged CDP/RPC fallbacks)

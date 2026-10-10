@@ -365,7 +365,13 @@ function DecisionRow({
         {decision.question}
       </p>
       {decision.context && (
-        <p className="m-0 mt-0.5 text-[11px] leading-snug text-[var(--text-sub)] break-words">{decision.context}</p>
+        // Line breaks are kept: a Moa goal card is a structured contract (one
+        // line per done criterion), not a paragraph. The whole contract is shown
+        // (never cut), so the operator approves exactly what they read.
+        <p
+          className="m-0 mt-0.5 text-[11px] leading-snug text-[var(--text-sub)] break-words whitespace-pre-line"
+          data-moa-decision-context
+        >{decision.context}</p>
       )}
       {decision.options.length > 0 ? (
         // Stacked, full width: an answer of any length wraps inside its own

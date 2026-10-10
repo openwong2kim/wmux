@@ -85,10 +85,12 @@ export const COMMANDER_TOOL_SURFACE: readonly string[] = [
   // only way a brain can put a worker on its own branch at all — the brain has
   // no shell, so `git worktree add` is not an alternative it could reach. The
   // powers a wire caller might have abused are already server-derived rather
-  // than caller-stated (repository, owning workspace, agent command) and the
-  // spawn is gated on a human approval prompt that is never auto-approved, so
-  // adding it here widens what the brain can ASK for, not what it can do
-  // unattended.
+  // than caller-stated (repository, owning workspace, agent command). Since
+  // the 2026-09-24 owner decision the spawn does NOT ask by default: the
+  // operator's Settings switch turns the approval prompt back on, and the
+  // runaway brakes (depth-1, live/hourly caps, audit record) carry the load
+  // otherwise (fanout.rpc.ts R7/R8). At Moa level 0 it is refused outright
+  // (moaLevelGate.ts).
   'fanout_start',
   // Channel + A2A messaging.
   'channel_create',
@@ -157,6 +159,10 @@ export const COMMANDER_ONLY_TOOLS: readonly string[] = [
   // PROPOSES: main stores the body and the operator approves it with a card
   // (or main delivers it itself in danger mode) — see shared/moaHandoff.ts.
   'moa_propose_handoff',
+  // Moa (HQ) proposes a goal contract the operator approves once with a card
+  // (shared/moaGoal.ts), and reads or ends it. Proposing grants nothing.
+  'moa_propose_goal',
+  'moa_goal',
 ];
 
 /** Names in COMMANDER_ONLY_TOOLS that ALSO exist in full/core under a
@@ -218,6 +224,10 @@ export const COMMANDER_RPC_METHODS: ReadonlySet<string> = new Set<string>([
   // Moa's operator-approved hand-off (moa_propose_handoff). Raises a card;
   // nothing reaches the target pane until the operator answers it.
   'deck.proposeHandoff',
+  // Moa's goal contract (moa_propose_goal / moa_goal). The proposal raises an
+  // operator card; reading or ending it only ever takes powers away.
+  'deck.proposeGoal',
+  'deck.goal',
   // events
   'events.poll',
   // agent-to-agent + channels + missions
@@ -243,8 +253,8 @@ export const COMMANDER_RPC_METHODS: ReadonlySet<string> = new Set<string>([
   'task.mission.start',
   'task.mission.close',
   // fan-out (create-only; the handler resolves the repository and the owning
-  // workspace from the validated commander binding, and every spawn still
-  // passes the approval prompt).
+  // workspace from the validated commander binding; the approval prompt runs
+  // only when the operator turned it on — fanout.rpc.ts R7).
   'task.fanout.start',
   // task ledger (commander-only ledger_list / brain-scoped ledger_update;
   // the brain's own rows — authz is the ledger's canActorSet)

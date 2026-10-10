@@ -147,7 +147,7 @@
     },
     "commander": {
       "maxListBytes": 60000,
-      "wireResultSha256": "9e528d417d40644702797004900683c98afe2e55aa4c3ba27f4b0c6786780e8f",
+      "wireResultSha256": "909b341ac84e04724284427aa046d20da30db6b1245bab34a38e88a4cf96c022",
       "instructionSha256": "a6ca1e79b13dc33fb5d4ce6478ed5019a111254511cb3fe38c43ad7c4f9715f2",
       "toolNames": [
         "terminal_read",
@@ -200,7 +200,9 @@
         "git_log",
         "gh_pr_view",
         "approval_press",
-        "moa_propose_handoff"
+        "moa_propose_handoff",
+        "moa_propose_goal",
+        "moa_goal"
       ]
     }
   }

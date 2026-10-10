@@ -196,11 +196,14 @@ const PERMISSION_FLAG_FOR_WORKER: Readonly<Record<FanoutWorkerPermissionMode, st
 };
 
 /** The flags wmux appends for `mode`, as they appear on the line. */
-export function workerLaunchFlags(mode: FanoutWorkerPermissionMode): string {
+export function workerLaunchFlags(mode: FanoutWorkerPermissionMode, extraDisallowed: readonly string[] = []): string {
+  // Extra rules (the goal worker profile, shared/moaGoalWorker.ts) join the
+  // SAME quoted list: claude splits it on commas and spaces outside
+  // parentheses, so `Bash(git push*)` stays one rule.
   return [
     PERMISSION_FLAG_FOR_WORKER[mode],
     `--allowedTools "${FANOUT_WORKER_ALLOWED_TOOLS.join(',')}"`,
-    `--disallowedTools "${FANOUT_WORKER_DISALLOWED_TOOLS.join(',')}"`,
+    `--disallowedTools "${[...FANOUT_WORKER_DISALLOWED_TOOLS, ...extraDisallowed].join(',')}"`,
   ]
     .filter((p) => p.length > 0)
     .join(' ');
@@ -275,9 +278,15 @@ const TOOL_RULE = /^[A-Za-z_][\w*-]*(\(.*\))?(,[A-Za-z_][\w*-]*(\(.*\))?)*$/;
  * Removal is word-based: a flag spelled inside a quoted argument (a prompt, an
  * --append-system-prompt value) is part of that word and is never matched.
  * `manual` keeps the line's own permission flag and adds none of its own; the
- * tool lists are applied in every mode.
+ * tool lists are applied in every mode. `extraDisallowed` adds deny rules to
+ * the same list (the goal worker profile); a non-claude line gets none of
+ * this, which is why a goal refuses non-claude workers outright.
  */
-export function applyWorkerPermissionFlags(command: string, mode: FanoutWorkerPermissionMode): string {
+export function applyWorkerPermissionFlags(
+  command: string,
+  mode: FanoutWorkerPermissionMode,
+  extraDisallowed: readonly string[] = [],
+): string {
   const words = spans(command);
   const stem = (words[0]?.value.split(/[\\/]/).pop() ?? '').replace(/\.(exe|cmd|bat|ps1)$/i, '').toLowerCase();
   if (stem !== 'claude') return command;
@@ -308,5 +317,5 @@ export function applyWorkerPermissionFlags(command: string, mode: FanoutWorkerPe
     while (from > 0 && /\s/.test(line[from - 1])) from--;
     line = line.slice(0, from) + line.slice(w.end);
   }
-  return `${line} ${workerLaunchFlags(mode)}`;
+  return `${line} ${workerLaunchFlags(mode, extraDisallowed)}`;
 }

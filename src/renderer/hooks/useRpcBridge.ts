@@ -33,6 +33,7 @@ import {
   reattachModelEnvMarker,
   splitModelEnvMarker,
 } from '../../shared/workerLaunch';
+import { goalWorkerDenyRules, isGoalWorkerLauncher } from '../../shared/moaGoalWorker';
 import { handleCompanyRpc } from '../../company/renderer/rpcHandlers';
 import { t } from '../i18n';
 import { formatA2aMessage, formatA2aBroadcast, sanitizeA2aName, type A2aFormatOptions } from '../utils/a2aFormat';
@@ -1495,6 +1496,19 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
         error: `fanout.spawnWorkspace: could not launch ${agentChoice.agent} for this task${swap.note ? ` — ${swap.note}` : ''}`,
       };
     }
+    // A task under an approved Moa goal must carry the goal deny rules, and
+    // only claude takes them (shared/moaGoalWorker.ts). The launcher is final
+    // after the swap, so a role bound to agy or codex — which main cannot see —
+    // is refused here, before any workspace exists. So is a missing mode.
+    const goalWorker = params.goalWorker === true;
+    if (goalWorker && !isGoalWorkerLauncher(commandLauncherStem(swap.command))) {
+      return {
+        error: `fanout.spawnWorkspace: a task under a Moa goal runs only on claude (this one would launch ${commandLauncherStem(swap.command) || 'an unknown command'}), because only claude takes the goal's deny rules`,
+      };
+    }
+    if (goalWorker && !isFanoutWorkerPermissionMode(params.workerPermissionMode)) {
+      return { error: 'fanout.spawnWorkspace: a task under a Moa goal needs its worker permission mode' };
+    }
     if (swap.note) {
       // A refusal (unknown agent, or flags that would not survive the swap) is
       // fail-soft — the task still launches, so the reason must be visible
@@ -1590,7 +1604,7 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
       : undefined;
     const bound =
       workerMode && roleBound.initialCommand
-        ? { ...roleBound, initialCommand: applyWorkerPermissionFlags(roleBound.initialCommand, workerMode) }
+        ? { ...roleBound, initialCommand: applyWorkerPermissionFlags(roleBound.initialCommand, workerMode, goalWorker ? goalWorkerDenyRules() : []) }
         : roleBound;
     // `bound.initialCommand` stays undefined for the "environment only" launch,
     // and it has to: withWorkspaceProfile fills a MISSING command from the

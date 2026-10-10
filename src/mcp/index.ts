@@ -50,6 +50,7 @@ import { registerChannelTools } from './channels';
 import { registerFanOutTools } from './fanout';
 import { registerLedgerUpdateTool, registerLedgerListTool, registerLedgerBrainUpdateTool } from './ledger';
 import { registerMoaHandoffTool } from './handoff';
+import { registerMoaGoalTools } from './goal';
 import { registerWorktaskTools } from './worktask';
 import { registerGitTools } from './git';
 import { registerPaneLifecycleTools } from './paneLifecycle';
@@ -2597,6 +2598,12 @@ if (COMMANDER_MODE) {
     getCommanderToken: () => ctx.commanderToken,
     resolvePtyId: async (ref: string) => (await resolvePtyRef(ref, paneNameRpc)) ?? ref,
     resolvePaneId: async (ref: string) => (await resolvePaneIdRef(ref, paneNameRpc)) ?? ref,
+  });
+  // Moa's goal contract (shared/moaGoal.ts): propose it (one operator card),
+  // read it, end it. After the hand-off tool, matching COMMANDER_ONLY_TOOLS.
+  registerMoaGoalTools(registerCommanderOnly, {
+    callRpc,
+    getCommanderToken: () => ctx.commanderToken,
   });
 }
 

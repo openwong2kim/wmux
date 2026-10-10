@@ -172,6 +172,10 @@ export interface BrainSendOptions {
    *  re-check for a human turn it might have raced (see ClaudePtyBrainAdapter).
    *  Absent means `'human'`. */
   origin?: 'human' | 'automation';
+  /** Main only: this wake carries work another PC's Moa sent (a2a.received).
+   *  CommanderSessionManager records it for the turn (a Moa goal refuses to
+   *  fan out from such a turn); adapters ignore it. */
+  remoteMoa?: boolean;
 }
 
 /**

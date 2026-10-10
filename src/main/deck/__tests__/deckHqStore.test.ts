@@ -402,6 +402,23 @@ describe('deckHqStore — Moa settings', () => {
     expect(getHqMaxTurnsPerHour(dir)).toBe(30);
   });
 
+  it('stores level 0 in its own field, so an older build still reads a valid level', async () => {
+    expect(await setMoaConfig({ level: 0 }, dir)).toBe(true);
+    expect(getMoaConfig(dir).level).toBe(0);
+    const raw = JSON.parse(fs.readFileSync(getDeckHqPath(dir), 'utf8'));
+    expect(raw).toMatchObject({ moaAutonomyLevel: 0, moaLevel: 1 });
+    await setMoaConfig({ level: 3 }, dir);
+    expect(JSON.parse(fs.readFileSync(getDeckHqPath(dir), 'utf8'))).toMatchObject({ moaAutonomyLevel: 3, moaLevel: 3 });
+  });
+
+  it('a bad autonomy level falls back to the legacy level without marking the file corrupt', async () => {
+    await setMoaConfig({ level: 2, onboarded: true }, dir);
+    const raw = JSON.parse(fs.readFileSync(getDeckHqPath(dir), 'utf8'));
+    fs.writeFileSync(getDeckHqPath(dir), JSON.stringify({ ...raw, moaAutonomyLevel: 9 }));
+    __resetHqMemoryForTest();
+    expect(getMoaConfig(dir)).toMatchObject({ level: 2, onboarded: true });
+  });
+
   it('keeps proposals off by default and stores only valid lists and intervals', async () => {
     expect(getMoaConfig(dir)).toMatchObject({ issueProposals: false, trustedAuthors: [], issuePollMinutes: 10, ignoredRepos: [] });
     expect(await setMoaConfig({

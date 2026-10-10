@@ -35,6 +35,7 @@ import {
 import type { OwningAnchor } from '../../pty/serverSidePidWalk';
 import { recordSentTask, recordTaskState, reopenedState, stateOfTask, workLinkFromSentTask } from '../../workLink/a2aProducer';
 import { noteTrackReply } from '../../deck/trackRecordFeed';
+import { moaGoalSendScope } from '../../deck/moaLevelGate';
 import { A2A_BRAIN_ALIAS, isRemoteTaskId } from '../../../shared/a2aRemote';
 import {
   isRemoteWorkspaceId,
@@ -1087,7 +1088,14 @@ export function registerA2aRpc(
         } catch {
           // a ledger we cannot read grants nothing extra
         }
-        sendParams.hqHandoffOnly = { allowedTargets: [ctx.commanderWorkspace, ...own] };
+        // While a goal is active, only the goal's own workspaces (owner
+        // decision 2, moaLevelGate.ts): an older fan-out task outside the
+        // contract is not reachable directly either.
+        const goalScope = moaGoalSendScope(ctx.commanderWorkspace);
+        const allowed = [ctx.commanderWorkspace, ...own];
+        sendParams.hqHandoffOnly = {
+          allowedTargets: goalScope ? allowed.filter((w) => goalScope.includes(w)) : allowed,
+        };
       }
     }
     // A NEW execute send's reply is held until the user answers the approval
