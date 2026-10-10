@@ -1459,11 +1459,12 @@ describe('deck:send local Fleet fast path', () => {
     const { board, streamed } = await setup();
     overrideFleetFastPathForTests(true);
     const result = await invoke(IPC.DECK_SEND, { workspaceId: 'ws-1', text: 'status', fleetContext: 'PRIVATE FLEET CONTEXT' });
-    expect(result).toMatchObject({ ok: true, localAnswer: { text: expect.stringContaining('1 idle') } });
+    expect(result).toMatchObject({ ok: true, localAnswer: { fleet: { intent: 'status', counts: expect.objectContaining({ idle: 1 }) } } });
     expect(adapters[0].sentTexts).toEqual([]);
     expect(board).toHaveBeenCalledOnce();
-    expect(streamed.map((e) => e.type)).toEqual(['text-delta', 'turn-end']);
-    expect(streamed[1]).toMatchObject({ localAnswer: { prompt: 'status' } });
+    // Data only: main sends no English text; the renderer words the answer.
+    expect(streamed.map((e) => e.type)).toEqual(['turn-end']);
+    expect(streamed[0]).toMatchObject({ localAnswer: { prompt: 'status', fleet: { intent: 'status' } } });
   });
 
   it.each(['error', 'malformed', 'stale'] as const)('a %s board goes to Moa exactly once with the original context', async (mode) => {

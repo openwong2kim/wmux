@@ -22,6 +22,7 @@ import type {
   BrainSendOptions,
   BrainStartOptions,
 } from './BrainAdapter';
+import type { FleetLocalAnswer } from '../../shared/fleetLocalAnswer';
 
 export type CommanderStatus = 'idle' | 'busy' | 'disposed';
 
@@ -49,14 +50,14 @@ export interface CommanderSendResult {
   code?: 'busy' | 'disposed' | 'empty' | 'invalid_workspace' | 'moa_off' | 'mode_off' | 'task_workspace' | 'not_hq' | 'hq_missing' | 'hq_unknown' | 'errored';
   /** A deterministic read-only answer handled without starting the adapter.
    *  The renderer may retain this alongside a provider-owned transcript. */
-  localAnswer?: { text: string };
+  localAnswer?: { fleet: FleetLocalAnswer };
 }
 
 /** Optional read-only fast path inside the manager's one-turn reservation.
  *  A miss or failure falls through to the original adapter turn. Callers must
  *  observe the signal before doing anything after an asynchronous lookup. */
 export type CommanderLocalFirst = (signal: AbortSignal) => Promise<
-  { text: string } | { fallbackText: string | (() => string) } | null
+  { fleet: FleetLocalAnswer } | { fallbackText: string | (() => string) } | null
 >;
 
 export interface CommanderStatusSnapshot {
@@ -237,12 +238,13 @@ export class CommanderSessionManager {
           this.sink({ type: 'error', message: 'a terminal turn ran during this lookup — ask again' });
           return { ok: true, code: 'errored' };
         }
-        if (answer && 'text' in answer && answer.text.trim()) {
-          this.sink({ type: 'text-delta', text: answer.text });
-          this.sink({ type: 'turn-end', sessionId: this.adapter.sessionId, localAnswer: { prompt: text, text: answer.text } });
+        if (answer && 'fleet' in answer && answer.fleet) {
+          // No text-delta: main does not know the UI language, so the renderer
+          // words the answer from the data on turn-end.
+          this.sink({ type: 'turn-end', sessionId: this.adapter.sessionId, localAnswer: { prompt: text, fleet: answer.fleet } });
           // No provider turn ran, so neither its session nor persistence hook
           // is changed by this answer.
-          return { ok: true, localAnswer: { text: answer.text } };
+          return { ok: true, localAnswer: { fleet: answer.fleet } };
         }
         if (answer && 'fallbackText' in answer) {
           // Context preparation may mutate bookkeeping. Keep it after every

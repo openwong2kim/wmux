@@ -1,6 +1,8 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { useStore } from '../../index';
 import { createDeckSlice, EMPTY_DECK_BRAIN_THREAD } from '../deckSlice';
+import { setLocale } from '../../../i18n';
+import type { FleetLocalAnswer } from '../../../../shared/fleetLocalAnswer';
 
 const WS_A = 'ws-a';
 const WS_B = 'ws-b';
@@ -161,17 +163,52 @@ describe('deckSlice', () => {
   });
 });
 
+const FLEET: FleetLocalAnswer = {
+  intent: 'needs_you',
+  counts: { needsYou: 1, finished: 0, running: 0, idle: 0 },
+  rows: [{ title: 'Review request', workspaceName: 'Main', reason: 'input' }],
+  limited: false,
+};
+
 describe('local Fleet answer provenance', () => {
-  it('marks only the completed matching exchange, preserving its text and workspace', () => {
+  afterEach(() => setLocale('en'));
+
+  it('marks only the completed matching exchange and words it in the UI language', () => {
     useStore.setState({ brainThreads: {} });
     useStore.getState().startDeckBrainTurn(WS_A, 'status');
-    useStore.getState().applyDeckBrainEvent(WS_A, { type: 'text-delta', text: 'Fleet snapshot' });
-    useStore.getState().applyDeckBrainEvent(WS_A, { type: 'turn-end', sessionId: null, localAnswer: { prompt: 'status', text: 'Fleet snapshot' } });
+    useStore.getState().applyDeckBrainEvent(WS_A, { type: 'turn-end', sessionId: null, localAnswer: { prompt: 'status', fleet: FLEET } });
     expect(threadOf(WS_A).status).toBe('idle');
     expect(threadOf(WS_A).messages.every((m) => m.localFleet)).toBe(true);
+    expect(threadOf(WS_A).messages[1].text).toBe([
+      'Fleet snapshot (local data, answered without Moa):',
+      '1 task needs your attention.',
+      '- Review request (Main): needs input',
+    ].join('\n'));
     expect(threadOf(WS_B).messages).toEqual([]);
     useStore.getState().startDeckBrainTurn(WS_A, 'another request');
     useStore.getState().applyDeckBrainEvent(WS_A, { type: 'turn-end', sessionId: 'real' });
     expect(threadOf(WS_A).messages.slice(-2).some((m) => m.localFleet)).toBe(false);
+  });
+
+  it('uses the locale that is active when the answer arrives', () => {
+    useStore.setState({ brainThreads: {} });
+    setLocale('ko');
+    useStore.getState().startDeckBrainTurn(WS_A, '작업 상태');
+    useStore.getState().applyDeckBrainEvent(WS_A, { type: 'turn-end', sessionId: null, localAnswer: { prompt: '작업 상태', fleet: FLEET } });
+    expect(threadOf(WS_A).messages[1].text).toContain('확인이 필요한 작업: 1개');
+    expect(threadOf(WS_A).messages[1].text).not.toContain('needs your attention');
+  });
+
+  // No brain ran this turn, so it must not carry the selected brain's tag
+  // ("Orchestrator · terminal" in the bubble layout).
+  it('drops the brain vendor stamp from the local exchange only', () => {
+    useStore.setState({ brainThreads: {}, deckBrainVendor: 'claude-pty' });
+    useStore.getState().startDeckBrainTurn(WS_A, 'status');
+    expect(threadOf(WS_A).messages.map((m) => m.vendor)).toEqual(['claude-pty', 'claude-pty']);
+    useStore.getState().applyDeckBrainEvent(WS_A, { type: 'turn-end', sessionId: null, localAnswer: { prompt: 'status', fleet: FLEET } });
+    expect(threadOf(WS_A).messages.map((m) => m.vendor)).toEqual([undefined, undefined]);
+    useStore.getState().startDeckBrainTurn(WS_A, 'a real question');
+    useStore.getState().applyDeckBrainEvent(WS_A, { type: 'turn-end', sessionId: 'real' });
+    expect(threadOf(WS_A).messages.slice(-2).map((m) => m.vendor)).toEqual(['claude-pty', 'claude-pty']);
   });
 });
