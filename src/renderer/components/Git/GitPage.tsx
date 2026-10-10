@@ -329,8 +329,8 @@ export default function GitPage() {
           {page.scope === 'repo' && !remoteFiles && !resolved && !resolving && <p className="wmux-git-page-summary" data-git-no-repo>{t('git.noRepo')}</p>}
           {counts.length > 0 && <p className="wmux-git-page-summary" data-git-page-counts>{counts.join(' · ')}</p>}
           {page.scope === 'all' && page.allLayout === 'flat' && page.tab !== 'worktrees' && turnCounts && <GitTurnSummary counts={turnCounts} />}
-          {/* Follows the same gating as the lists it sums: no line for another computer's workspace. */}
-          {page.tab === 'worktrees' && !remoteFiles && (
+          {/* Same gating as the lists it sums: no line for another computer's workspace when following it. */}
+          {page.tab === 'worktrees' && (page.scope === 'all' || !remoteFiles) && (
             <SectionSummary kind="wt" label={t('git.wt.summaryLabel')} entries={wtTotals} onJump={(k) => openWtSection(k as WorktreeSection)} />
           )}
         </div>

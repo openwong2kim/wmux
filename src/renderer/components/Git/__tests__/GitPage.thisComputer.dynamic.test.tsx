@@ -152,6 +152,7 @@ describe('Git page with another computer selected', () => {
     act(() => root.render(createElement(GitPage)));
     await settle();
     expect(container.querySelector('[data-git-repo-group]')).not.toBeNull();
+    expect(container.querySelector('[data-git-wt-summary]')).not.toBeNull();
     expect(container.querySelector('[data-git-remote-files]')).toBeNull();
     expect(container.querySelector('[data-git-current-branch]')).toBeNull();
   });
