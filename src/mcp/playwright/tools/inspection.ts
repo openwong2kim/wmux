@@ -3,6 +3,8 @@ import type { Page } from 'playwright-core';
 import { z } from 'zod';
 import { PlaywrightEngine } from '../PlaywrightEngine';
 import { withAutomationLease } from '../automationLease';
+import { isProtectedScope, protectedRefusal } from '../protectedPane';
+import { codePreview, consentHostOf, requestBrowserConsent } from '../consent';
 import {
   DOM_LISTING_PROBE_HOVER_NOTE,
   DOM_LISTING_Q_NOTE,
@@ -934,6 +936,28 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
           console.warn(`[browser_evaluate] allowDangerous override for: ${warnings.join(', ')}`);
         }
 
+        // Protected pane: the operator answers for every page script, whatever
+        // the agent passed — allowDangerous never stands in for it. Asked after
+        // the pattern check, so a call that is blocked anyway asks nobody, and
+        // only on the pane's own page (main refuses the RPC lane outright).
+        let protectedPage: Page | null = null;
+        if (isProtectedScope(scope)) {
+          protectedPage = await engine.getPageForScope(scope, { intent: 'write' });
+          if (!protectedPage) {
+            throw protectedRefusal('browser_evaluate', "page scripts run only in this pane's own browser page");
+          }
+          const approvedUrl = protectedPage.url();
+          await requestBrowserConsent(scope, 'browser_evaluate', {
+            action: 'evaluate',
+            url: approvedUrl,
+            detail: codePreview(expression),
+          });
+          // Right before dispatch: still the site the operator approved.
+          if (consentHostOf(protectedPage.url()) !== consentHostOf(approvedUrl)) {
+            throw protectedRefusal('browser_evaluate', 'the page moved to another site while the operator was being asked');
+          }
+        }
+
         let result: unknown;
         // Set when the isolated world was asked for and could not be had, so
         // the answer says which world it actually came from.
@@ -943,7 +967,7 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
         // arbitrary JS in a page is the broadest one there is, and on Live Chrome
         // this lane is the only one that can reach a Chrome tab at all (main's
         // browser.evaluate drives builtin webviews).
-        const page = await engine.getPageForScope(scope, { intent: 'write' }).catch(allowScopedRpcFallback);
+        const page = protectedPage ?? await engine.getPageForScope(scope, { intent: 'write' }).catch(allowScopedRpcFallback);
         if (page) {
           // Isolated world by default: the page can neither see the script nor
           // hand it doctored built-ins. mainWorld:true opts back into the

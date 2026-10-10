@@ -13,6 +13,7 @@ import {
 import { domainFromUrl } from '../../../shared/browserMemory/siteMemory';
 import { normalizeUrlKey } from '../../../shared/browserReplay/actionTrace';
 import { withAutomationLease } from '../automationLease';
+import { assertProtectedNavigation } from '../protectedPane';
 import { describeToolError } from '../toolError';
 import {
   EFFECT_TRAILER_NOTE,
@@ -294,6 +295,10 @@ export function registerNavigationTools(server: McpServer, deps: BrowserToolDeps
           deps,
           surfaceId,
           async (scope) => {
+            // Protected pane: only the allowed hosts, http(s) only. The proxy
+            // refuses the request anyway; this refuses the schemes it never
+            // sees (file:, javascript:, data:, chrome:, …) and says why.
+            assertProtectedNavigation(scope, 'browser_navigate', url);
             // Chrome backend (dogfood P1): the RPC lane cannot target a chrome
             // tab — its fallback would open a NEW tab and report success while
             // the agent keeps reading the old page. Navigate the resolved page

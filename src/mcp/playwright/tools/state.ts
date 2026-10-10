@@ -4,7 +4,14 @@ import { z } from 'zod';
 import { loadPlaywright } from '../lazyPlaywright';
 import { PlaywrightEngine } from '../PlaywrightEngine';
 import { withAutomationLease } from '../automationLease';
-import { matchSensitiveDomain } from '../security';
+import {
+  isProtectedScope,
+  protectedCookieAllowed,
+  protectedRefusal,
+  protectedUrlAllowed,
+} from '../protectedPane';
+import { matchSensitiveCookieDomain, matchSensitiveDomain } from '../security';
+import { consentHostOf, requestBrowserConsent } from '../consent';
 import { evalFunctionOrRpc } from '../page-eval';
 import { evaluateIsolated } from '../isolated-eval';
 import { isChromiumUserAgent } from '../../../shared/uaMetadata';
@@ -200,6 +207,41 @@ async function currentUrl(page: Page | null, scope: BrowserTargetScope): Promise
 }
 
 // ---------------------------------------------------------------------------
+// Protected panes: sensitive sites
+// ---------------------------------------------------------------------------
+
+/**
+ * The sensitive site a URL or cookie domain belongs to, canonical (so a
+ * trailing dot or letter case cannot slip past the list), or null.
+ */
+export function protectedSensitiveHost(urlOrDomain: string | undefined): string | null {
+  const host = consentHostOf(urlOrDomain ?? '');
+  return host && matchSensitiveDomain(host) ? host : null;
+}
+
+/** The same for a cookie's domain, which a sensitive site also reads when it
+ *  is that site's parent domain (`.naver.com` for mail.naver.com). */
+export function protectedSensitiveCookieHost(domain: string | undefined): string | null {
+  const host = consentHostOf(domain ?? '');
+  return host ? matchSensitiveCookieDomain(host) : null;
+}
+
+/**
+ * On a protected pane the operator answers for sensitive sites; the agent's
+ * allowSensitiveDomains flag only asks. One question names every site the
+ * operation touches, and approving it opens those sites alone.
+ */
+async function consentToSensitive(scope: BrowserTargetScope, tool: string, hosts: Iterable<string>, verb: string): Promise<void> {
+  const unique = [...new Set(hosts)];
+  if (unique.length === 0) return;
+  await requestBrowserConsent(scope, tool, {
+    action: 'sensitive',
+    hosts: unique,
+    detail: `${tool} ${verb}`,
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Registration
 // ---------------------------------------------------------------------------
 
@@ -252,6 +294,15 @@ export function registerStateTools(server: McpServer, deps: BrowserToolDeps): vo
         // site and `addCookies()` plants cookies every tab will send. With the
         // agent-window policy in force there is no tab-sized version of this
         // mutation to allow, so it is refused as a scope refusal.
+        // Protected pane: cookies of the allowed hosts only, on every action and
+        // with or without a URL. The RPC lane is refused by main outright.
+        const isProtected = isProtectedScope(scope);
+        if (isProtected && !page) {
+          throw protectedRefusal('browser_cookies', 'cookies are reachable only through the pane\'s own browser page');
+        }
+        if (isProtected && url && !protectedUrlAllowed(scope, url)) {
+          throw protectedRefusal('browser_cookies', "that host is not on this pane's allowed list");
+        }
         const refuseProfileWideWriteOnLive = async (verb: 'set' | 'clear'): Promise<void> => {
           if (!(await engine.isLiveWriteConfined(scope.workspaceId))) return;
           throw new Error(
@@ -265,7 +316,7 @@ export function registerStateTools(server: McpServer, deps: BrowserToolDeps): vo
         switch (action) {
           case 'get': {
             if (url) {
-              const sensitive = matchSensitiveDomain(url);
+              const sensitive = isProtected ? protectedSensitiveHost(url) : matchSensitiveDomain(url);
               if (sensitive && !allowSensitiveDomains) {
                 throw new Error(
                   `browser_cookies get blocked: "${sensitive}" is on the sensitive-domain blocklist (email / banking / auth). ` +
@@ -281,7 +332,30 @@ export function registerStateTools(server: McpServer, deps: BrowserToolDeps): vo
                   action: 'get',
                   urls: url ? [url] : [],
                 })).cookies;
-            const safe = allCookies.map((c) => {
+            const visible = isProtected
+              ? allCookies.filter((c) => protectedCookieAllowed(scope, c.domain))
+              : allCookies;
+            if (isProtected) {
+              // Values of sensitive sites are shown only with the operator's
+              // consent for exactly those sites; without the flag they stay
+              // redacted and nobody is asked.
+              const sensitiveHosts = new Set<string>();
+              for (const c of visible) {
+                const h = protectedSensitiveCookieHost(c.domain);
+                if (h) sensitiveHosts.add(h);
+              }
+              const urlHost = url ? protectedSensitiveHost(url) : null;
+              if (urlHost) sensitiveHosts.add(urlHost);
+              if (allowSensitiveDomains) await consentToSensitive(scope, 'browser_cookies', sensitiveHosts, 'get');
+              const reveal = allowSensitiveDomains === true;
+              const shown = visible.map((c) =>
+                protectedSensitiveCookieHost(c.domain) && !reveal ? { ...c, value: '<REDACTED sensitive-domain>' } : c,
+              );
+              return {
+                content: [{ type: 'text' as const, text: JSON.stringify(shown, null, 2) }],
+              };
+            }
+            const safe = visible.map((c) => {
               const hit = matchSensitiveDomain(c.domain ?? '');
               if (hit && !allowSensitiveDomains) {
                 return { ...c, value: '<REDACTED sensitive-domain>' };
@@ -314,6 +388,25 @@ export function registerStateTools(server: McpServer, deps: BrowserToolDeps): vo
               url: !c.domain ? (url ?? (page ? page.url() : undefined)) : undefined,
             }));
 
+            if (
+              isProtected
+              && cookiesToAdd.some((c) =>
+                c.domain ? !protectedCookieAllowed(scope, c.domain) : !c.url || !protectedUrlAllowed(scope, c.url),
+              )
+            ) {
+              throw protectedRefusal('browser_cookies', "a cookie names a host that is not on this pane's allowed list");
+            }
+            if (isProtected) {
+              await consentToSensitive(
+                scope,
+                'browser_cookies',
+                cookiesToAdd.flatMap((c) => {
+                  const h = c.domain ? protectedSensitiveCookieHost(c.domain) : protectedSensitiveHost(c.url);
+                  return h ? [h] : [];
+                }),
+                'set',
+              );
+            }
             if (page) {
               await refuseProfileWideWriteOnLive('set');
               await page.context().addCookies(cookiesToAdd);
@@ -335,7 +428,24 @@ export function registerStateTools(server: McpServer, deps: BrowserToolDeps): vo
           }
 
           case 'clear': {
-            if (page) {
+            if (page && isProtected) {
+              // Only the allowed hosts' cookies, never the whole profile; a
+              // sensitive site's only with the operator's consent.
+              const context = page.context();
+              const targets = (await context.cookies()).filter((c) => protectedCookieAllowed(scope, c.domain));
+              await consentToSensitive(
+                scope,
+                'browser_cookies',
+                targets.flatMap((c) => {
+                  const h = protectedSensitiveCookieHost(c.domain);
+                  return h ? [h] : [];
+                }),
+                'clear',
+              );
+              for (const c of targets) {
+                await context.clearCookies({ name: c.name, domain: c.domain, path: c.path });
+              }
+            } else if (page) {
               await refuseProfileWideWriteOnLive('clear');
               await page.context().clearCookies();
             } else {
@@ -378,10 +488,33 @@ export function registerStateTools(server: McpServer, deps: BrowserToolDeps): vo
           .catch(allowScopedRpcFallback);
 
         const storageName = type === 'local' ? 'localStorage' : 'sessionStorage';
+        // Protected pane: storage of an allowed host's page only.
+        if (isProtectedScope(scope)) {
+          const pageUrl = await currentUrl(page, scope);
+          if (!protectedUrlAllowed(scope, pageUrl)) {
+            throw protectedRefusal('browser_storage', "the current page is not on this pane's allowed list");
+          }
+          // A sensitive site's storage: reads need the flag to even ask (as
+          // today), and every verb needs the operator's consent.
+          const sensitive = protectedSensitiveHost(pageUrl);
+          if (sensitive) {
+            if (action === 'get' && !allowSensitiveDomains) {
+              throw new Error(
+                `browser_storage get blocked: current page "${sensitive}" is on the sensitive-domain blocklist (email / banking / auth). ` +
+                `Pass allowSensitiveDomains:true if the caller has user consent.`,
+              );
+            }
+            await consentToSensitive(scope, 'browser_storage', [sensitive], action);
+            // Right before dispatch: still that site.
+            if (consentHostOf(await currentUrl(page, scope)) !== consentHostOf(pageUrl)) {
+              throw protectedRefusal('browser_storage', 'the page moved to another site while the operator was being asked');
+            }
+          }
+        }
 
         switch (action) {
           case 'get': {
-            if (!allowSensitiveDomains) {
+            if (!allowSensitiveDomains && !isProtectedScope(scope)) {
               const sensitive = matchSensitiveDomain(await currentUrl(page, scope));
               if (sensitive) {
                 throw new Error(

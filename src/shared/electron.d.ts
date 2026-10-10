@@ -154,6 +154,8 @@ declare global {
         resolve: (
           promptId: string,
           approved: boolean,
+          /** browser-action prompts only: "Always on this pane". */
+          opts?: { remember?: boolean },
         ) => Promise<{ ok: boolean; error?: string }>;
         onClosed: (
           callback: (payload: { promptId: string }) => void,

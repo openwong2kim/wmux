@@ -1,7 +1,17 @@
 import * as crypto from 'crypto';
 import { sendRpc } from '../wmux-client';
 import { getConnectionScope } from '../connectionScope';
-import { paneProfileRefusal, WorkspaceScopeUnresolvedError } from './browserScope';
+import { browserCallRefusal, WorkspaceScopeUnresolvedError } from './browserScope';
+
+/**
+ * A refusal main answered with (pane profile unresolved, protected-pane
+ * policy) is a final answer, never "could not ask": rethrow it from every
+ * catch below that otherwise degrades to unknown / fallback.
+ */
+function rethrowBrowserRefusal(err: unknown): void {
+  const refusal = browserCallRefusal(err);
+  if (refusal) throw refusal;
+}
 
 /**
  * Which browser surface a call that omitted `surfaceId` belongs to.
@@ -250,7 +260,8 @@ async function surfaceListing(
         .map((tab) => tab?.surfaceId)
         .filter((id): id is string => typeof id === 'string'),
     };
-  } catch {
+  } catch (err) {
+    rethrowBrowserRefusal(err);
     return { status: 'unknown' };
   }
 }
@@ -281,7 +292,8 @@ async function unclaimedPaneSurface(
       if (typeof tab?.surfaceId === 'string' && tab.opener === undefined) return tab.surfaceId;
     }
     return undefined;
-  } catch {
+  } catch (err) {
+    rethrowBrowserRefusal(err);
     return undefined;
   }
 }
@@ -296,6 +308,7 @@ async function adoptSurface(workspaceId: string, surfaceId: string): Promise<voi
       openerKey: getOpenerKey(),
     });
   } catch (err) {
+    rethrowBrowserRefusal(err);
     // An older main without the method, or a lane that refuses it: the pin
     // still holds for THIS connection, so the adoption is local-only and the
     // surface stays adoptable by others. Worth a line, never worth failing on.
@@ -420,7 +433,8 @@ async function awaitSurfaceRegistered(
       if (Array.isArray(info?.targets) && info.targets.some((t) => t.surfaceId === surfaceId)) {
         return 'registered';
       }
-    } catch {
+    } catch (err) {
+      rethrowBrowserRefusal(err);
       return 'unconfirmed'; // cannot ask — let the call itself report whatever happens
     }
     if (Date.now() >= deadline) break;
@@ -472,7 +486,8 @@ async function workspaceOwnsSurface(
     )) as Array<{ id?: unknown }> | undefined;
     if (!Array.isArray(rows) || rows.length === 0) return undefined;
     return rows.some((row) => row?.id === surfaceId);
-  } catch {
+  } catch (err) {
+    rethrowBrowserRefusal(err);
     return undefined;
   }
 }
@@ -494,6 +509,7 @@ async function openSurface(workspaceId: string): Promise<string | null> {
     // try the reuse-shaped open behind its back.
     if (created?.ok === false) return null;
   } catch (err) {
+    rethrowBrowserRefusal(err);
     console.error(
       '[surfaceRouting] browser.tabs new unavailable, falling back to browser.open:',
       err instanceof Error ? err.message : String(err),
@@ -543,7 +559,7 @@ export async function resolveDefaultSurface(
     })) as RoutableCdpInfo;
   } catch (err) {
     // main answered, and the answer is a refusal — not "unavailable".
-    const refusal = paneProfileRefusal(err);
+    const refusal = browserCallRefusal(err);
     if (refusal) throw refusal;
     throw new WorkspaceScopeUnresolvedError(
       `browser.cdp.info unavailable: ${err instanceof Error ? err.message : String(err)}`,

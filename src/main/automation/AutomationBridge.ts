@@ -34,6 +34,17 @@ export type AutomationPush =
   /** Queued attention no OS toast could show: surface it in-app instead. */
   | { kind: 'attention'; items: AutomationAttention[] };
 
+/**
+ * Whether a PTY is a scheduled run the daemon owns — an agent nobody is
+ * watching. `unknown` when the bridge has no current answer (no daemon, or the
+ * first pull has not landed); callers that would ask a human must refuse then.
+ */
+export type AutomationRunOwnership = 'owned' | 'not-owned' | 'unknown';
+
+/** The id prefix the daemon reserves for scheduled-run sessions (an external
+ *  client cannot create one), so any other PTY is never a run. */
+const RUN_PTY_PREFIX = 'auto-';
+
 /** What a toast click asks the renderer to open. */
 export interface AutomationOpenRequest {
   automationId: string;
@@ -133,11 +144,34 @@ export class AutomationBridge {
   private client: AutomationBridgeClient | null = null;
   private api: AutomationClient | null = null;
   private cleanups: Array<() => void> = [];
+  /** runId → its PTY, from the snapshot and every run event since. */
+  private runPtys = new Map<string, string | undefined>();
+  /** Whether the run list is known for the current connection. */
+  private hydrated = false;
+  /** Runs an event updated while a snapshot was in flight: the older snapshot
+   *  must not overwrite them. Null when no pull is in flight. */
+  private touchedDuringPull: Set<string> | null = null;
 
   constructor(
     private readonly getWindow: () => BrowserWindow | null,
     private readonly toast: AutomationToastFn,
   ) {}
+
+  /**
+   * Synchronous: is `ptyId` a scheduled run's session? A PTY outside the
+   * reserved `auto-` namespace never is. Inside it, the prefix alone proves
+   * nothing — only a run the daemon reported with that PTY is owned.
+   */
+  runOwnership(ptyId: string | undefined): AutomationRunOwnership {
+    if (!ptyId || !ptyId.startsWith(RUN_PTY_PREFIX)) return 'not-owned';
+    if (!this.hydrated) return 'unknown';
+    for (const pty of this.runPtys.values()) if (pty === ptyId) return 'owned';
+    return 'not-owned';
+  }
+
+  private noteRun(run: AutomationRun): void {
+    this.runPtys.set(run.id, typeof run.ptyId === 'string' && run.ptyId ? run.ptyId : undefined);
+  }
 
   start(client: AutomationBridgeClient): void {
     this.stop();
@@ -160,6 +194,9 @@ export class AutomationBridge {
     this.cleanups = [];
     this.client = null;
     this.api = null;
+    this.hydrated = false;
+    this.runPtys.clear();
+    this.touchedDuringPull = null;
   }
 
   /** Connect-time full pull: snapshot to the renderer, then what needs a human. */
@@ -168,14 +205,22 @@ export class AutomationBridge {
     if (!api || !this.client?.isConnected) return;
     let listed: { automations: Automation[]; pendingAttention: AutomationAttention[] };
     let runs: AutomationRun[];
+    const touched = new Set<string>();
+    this.touchedDuringPull = touched;
     try {
       [listed, runs] = await Promise.all([api.list(), api.runs()]);
     } catch {
       // A daemon without automation.* (older build) answers Unknown method:
-      // there is nothing to show, and nothing to toast.
+      // there is nothing to show, and nothing to toast — and no run can exist.
+      // Any other failure leaves ownership unknown until a pull succeeds.
+      if (api === this.api && this.touchedDuringPull === touched) this.touchedDuringPull = null;
       return;
     }
     if (api !== this.api) return; // stopped or restarted meanwhile
+    if (this.touchedDuringPull === touched) this.touchedDuringPull = null;
+    // An event that arrived while the snapshot was in flight is newer than it.
+    for (const run of runs) if (!touched.has(run.id)) this.noteRun(run);
+    this.hydrated = true;
     this.send({ kind: 'snapshot', automations: listed.automations, runs });
     const names = new Map(listed.automations.map((a) => [a.id, a.name]));
     for (const run of runs) {
@@ -227,6 +272,10 @@ export class AutomationBridge {
   }
 
   private handle(ev: AutomationEvent): void {
+    if (ev.type === 'run-changed') {
+      this.noteRun(ev.run);
+      this.touchedDuringPull?.add(ev.run.id);
+    }
     this.send({ kind: 'event', event: ev });
     if (ev.type === 'run-changed') {
       this.toastRun(ev.run, ev.automationName);

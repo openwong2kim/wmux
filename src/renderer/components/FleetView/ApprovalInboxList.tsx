@@ -350,7 +350,9 @@ export default function ApprovalInboxList({ items, focusedIdx, onResolve, onNavi
                     ? 'fleet.approvals.workspace'
                     : item.kind === 'computer-app'
                       ? 'fleet.approvals.agent'
-                      : 'fleet.approvals.plugin')}:{' '}
+                      : item.kind === 'browser-action'
+                        ? 'fleet.approvals.pane'
+                        : 'fleet.approvals.plugin')}:{' '}
                 </span>
                 {item.clientName}
               </span>

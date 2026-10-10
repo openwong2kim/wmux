@@ -24,10 +24,17 @@ import { resolveExecuteApproval } from './executeApproval';
 //     then the same optimistic local removal as the mcp arm. `approved` maps to
 //     Done and its negation to Cancel, so one keyboard model (Enter / Backspace)
 //     covers all three sources without any arm learning about another's.
-export function resolveInboxItem(item: InboxItem, approved: boolean): void {
+//
+// `opts.remember` ("Always on this pane") rides only for a 'browser-action'
+// approval; every other resolve is sent exactly as before.
+export function resolveInboxItem(item: InboxItem, approved: boolean, opts?: { remember?: boolean }): void {
   switch (item.source) {
     case 'mcp': {
-      void window.electronAPI.permissionPrompt?.resolve(item.promptId, approved);
+      if (approved && opts?.remember === true && item.kind === 'browser-action') {
+        void window.electronAPI.permissionPrompt?.resolve(item.promptId, approved, { remember: true });
+      } else {
+        void window.electronAPI.permissionPrompt?.resolve(item.promptId, approved);
+      }
       useStore.getState().removeMcpPrompt(item.promptId);
       return;
     }

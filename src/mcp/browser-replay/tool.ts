@@ -32,6 +32,7 @@ import {
   type PromotedRecord,
 } from '../../shared/browserReplay/promotedSkill';
 import { requireBrowserTargetScope } from '../playwright/browserScope';
+import { isProtectedScope, protectedRefusal } from '../playwright/protectedPane';
 import { domainFromUrl } from '../../shared/browserMemory/siteMemory';
 import { ringFor } from './actionRing';
 import { replayBlockedReason, replayTrace, type ReplayResult } from './replayRunner';
@@ -240,6 +241,12 @@ export function createReplayToolCatalog(deps: BrowserToolDeps) {
 
       return withAutomationLease(deps, surfaceId, async (scope: BrowserTargetScope) => {
         try {
+          // Protected pane: the recorded flows are workspace-wide memory, off
+          // until it is kept per account. (note / promote / demote above reach
+          // main directly, which refuses them for the same reason.)
+          if (isProtectedScope(scope)) {
+            throw protectedRefusal('browser_replay', 'recorded flows are off on a protected pane');
+          }
           if (action === 'list') return await listTraces(scope);
           if (!isValidTraceName(name)) return nameError();
           if (action === 'forget') {

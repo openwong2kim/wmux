@@ -7,6 +7,15 @@ import { z } from 'zod';
 import { PlaywrightEngine } from '../PlaywrightEngine';
 import { armDialogAnswer, modalScopeKey, resolveDialogOwner } from '../modalState';
 import { leasedMutation, withAutomationLease } from '../automationLease';
+import { isProtectedScope, protectedRefusal } from '../protectedPane';
+import {
+  awaitConsentedDownload,
+  consentHostOf,
+  pageTargetId,
+  releaseConsent,
+  requestBrowserConsent,
+} from '../consent';
+import { BROWSER_CONSENT_DOWNLOAD_FINISH_MS, BROWSER_CONSENT_DOWNLOAD_START_MAX_MS } from '../../../shared/browserPolicy';
 import type { BrowserToolDeps } from '../browserScope';
 import { resolveRef } from '../snapshot';
 import { describeToolError } from '../toolError';
@@ -309,6 +318,42 @@ async function uploadViaCdp(
 
 /** Default wait for the download to START. See BROWSER_DOWNLOAD_SHAPE. */
 const DOWNLOAD_START_TIMEOUT_MS = 30_000;
+
+/**
+ * Protected pane: main lets exactly the approved download through, into a
+ * directory it owns, and reports the file. Playwright's own download object is
+ * not used — its path would point into a directory the browser was not told to
+ * write to. Returns the file the browser wrote and what it called it.
+ */
+async function consentedDownload(
+  scope: Parameters<typeof requestBrowserConsent>[0],
+  tool: string,
+  page: Page,
+  approvedUrl: string,
+  startTimeoutMs: number,
+  trigger: () => Promise<void>,
+): Promise<{ path: string; url: string; suggestedFilename: string }> {
+  const targetId = await pageTargetId(page);
+  const startMs = Math.min(BROWSER_CONSENT_DOWNLOAD_START_MAX_MS, Math.max(1_000, startTimeoutMs));
+  const { operationId } = await requestBrowserConsent(scope, tool, {
+    action: 'download',
+    url: approvedUrl,
+    targetId,
+    startTimeoutMs: startMs,
+  });
+  try {
+    // Right before dispatch: still the site the operator approved.
+    if (consentHostOf(page.url()) !== consentHostOf(approvedUrl)) {
+      throw protectedRefusal(tool, 'the page moved to another site while the operator was being asked');
+    }
+    await trigger();
+    return await awaitConsentedDownload(scope, tool, operationId, startMs + BROWSER_CONSENT_DOWNLOAD_FINISH_MS + 15_000);
+  } catch (err) {
+    // Whatever failed, the pass is withdrawn and the deny restored.
+    releaseConsent(scope, operationId);
+    throw err;
+  }
+}
 
 /** Budget for each half of the restore. Bounded so a failed download does not
  *  also become a hang; the error is already on its way out. */
@@ -717,6 +762,38 @@ export function registerFileTools(server: McpServer, deps: BrowserToolDeps): voi
           throw taggedFailure('ref_not_found', `Could not resolve ref="${ref}" to an element.`);
         }
 
+        // Protected pane: the operator answers for this download first; main
+        // then lets exactly it through (see consentedDownload).
+        if (isProtectedScope(scope)) {
+          const got = await consentedDownload(scope, 'browser_download', page, originalUrl, timeout ?? DOWNLOAD_START_TIMEOUT_MS, async () => {
+            effect.begin();
+            await el.click();
+          });
+          let saved = got.path;
+          if (filename) {
+            const safeName = path.basename(filename);
+            if (!safeName || safeName === '.' || safeName === '..') {
+              throw taggedFailure('invalid_params', 'filename must be a non-empty plain file name');
+            }
+            saved = path.join(os.tmpdir(), safeName);
+            await fs.promises.copyFile(got.path, saved);
+          }
+          return withEffectTrailer(
+            {
+              content: [
+                {
+                  type: 'text' as const,
+                  text:
+                    `Downloaded: ${toAgentPath(saved)}\n` +
+                    `suggestedFilename: ${got.suggestedFilename}\n` +
+                    `url: ${got.url}`,
+                },
+              ],
+            },
+            effect.success(),
+          );
+        }
+
         // Start waiting for download before clicking. The timeout covers the
         // START of the download only — Playwright resolves this event when the
         // transfer begins, and download.path() below then waits out the rest
@@ -808,6 +885,35 @@ export function registerFileTools(server: McpServer, deps: BrowserToolDeps): voi
         const page = await engine.getPageForScope(scope);
         if (!page) {
           throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
+        }
+
+        // Protected pane: the operator answers first; main then lets the next
+        // download of this tab through and reports it.
+        if (isProtectedScope(scope)) {
+          const got = await consentedDownload(scope, 'browser_wait_for_download', page, page.url(), resolvedTimeout, async () => undefined);
+          if (filename && got.suggestedFilename !== filename) {
+            return {
+              content: [
+                {
+                  type: 'text' as const,
+                  text: `Download received but filename mismatch: expected "${filename}", got "${got.suggestedFilename}"`,
+                },
+              ],
+              isError: true,
+            };
+          }
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: JSON.stringify(
+                  { suggestedFilename: got.suggestedFilename, url: got.url, path: toAgentPath(got.path) },
+                  null,
+                  2,
+                ),
+              },
+            ],
+          };
         }
 
         const download = await page.waitForEvent('download', {

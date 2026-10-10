@@ -56,6 +56,8 @@ interface PaneActionsMenuProps {
   onClose: () => void;
   /** Non-interactive text under the items (e.g. the version line). */
   footer?: React.ReactNode;
+  /** An inline form shown under the items (e.g. naming a new profile). */
+  children?: React.ReactNode;
   /** Replaces onClose for Escape (a submenu steps back to its parent). */
   onEscape?: () => void;
   /** The item focused on open, by key. Default: the first item. */
@@ -73,7 +75,7 @@ const ESTIMATED_ITEM_HEIGHT = 27;
  *  this width puts the menu's left edge at the cursor (see SurfaceTabs). */
 export const PANE_ACTIONS_MENU_WIDTH = 216;
 
-export default function PaneActionsMenu({ anchor, triggerRef, items, onClose, footer, onEscape, initialFocusKey, restoreFocusTo }: PaneActionsMenuProps) {
+export default function PaneActionsMenu({ anchor, triggerRef, items, onClose, footer, children, onEscape, initialFocusKey, restoreFocusTo }: PaneActionsMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null);
   const firstItemRef = useRef<HTMLButtonElement>(null);
   // Where focus was when the menu opened — nulled by the outside-click closer,
@@ -144,6 +146,8 @@ export default function PaneActionsMenu({ anchor, triggerRef, items, onClose, fo
   // title can explain why they are unavailable (see aria-disabled below).
   const onMenuKeyDown = (e: React.KeyboardEvent) => {
     if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(e.key)) return;
+    // A text field in the menu keeps its own caret keys.
+    if (e.target instanceof HTMLInputElement) return;
     e.preventDefault();
     e.stopPropagation();
     const buttons = Array.from(
@@ -282,6 +286,7 @@ export default function PaneActionsMenu({ anchor, triggerRef, items, onClose, fo
           </button>
         </div>
       ))}
+      {children}
       {footer && (
         <div
           className="mt-1 mx-2 pt-1.5 pb-1 border-t text-[11px] truncate"

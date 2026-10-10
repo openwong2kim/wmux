@@ -1,5 +1,6 @@
 import type { StoreState } from '../index';
 import { groupCapabilities } from '../../components/Approval/capabilityGrouping';
+import type { BrowserActionPromptInfo } from '../../../main/mcp/ApprovalQueue';
 
 // ─── S-C2 Approval Inbox — unified pending-approval list ──────────────────────
 //
@@ -34,9 +35,11 @@ export type InboxItem =
       isCritical: boolean;
       /** What the prompt is asking for. Absent reads as a plugin declaring
        *  capabilities — every prompt before the live-Chrome tab borrow. */
-      kind?: 'plugin' | 'browser-borrow' | 'computer-app';
+      kind?: 'plugin' | 'browser-borrow' | 'computer-app' | 'browser-action';
       /** The question, when the generic plugin headline would be wrong. */
       title?: string;
+      /** kind 'browser-action': the action, site and pane it is for. */
+      browserAction?: BrowserActionPromptInfo;
     }
   | {
       source: 'browserHelp';
@@ -109,9 +112,11 @@ export function selectApprovalInbox(state: ApprovalInboxState): InboxItem[] {
     // exactly what the prompt would render. A computer-use consent prompt
     // ("let this agent see and control Outlook", risk class `computer`) is
     // critical by kind: it declares no capabilities, so the grouping alone
-    // would read it as benign and let a stray Enter approve it.
+    // would read it as benign and let a stray Enter approve it. A dangerous
+    // action on a protected browser pane is critical by kind for the same reason.
     const isCritical =
       info.kind === 'computer-app' ||
+      info.kind === 'browser-action' ||
       groupCapabilities(info.declaredCapabilities).some((g) => g.copy.severity === 'critical');
     items.push({
       source: 'mcp',
@@ -123,6 +128,7 @@ export function selectApprovalInbox(state: ApprovalInboxState): InboxItem[] {
       isCritical,
       ...(info.kind !== undefined && { kind: info.kind }),
       ...(info.title !== undefined && { title: info.title }),
+      ...(info.kind === 'browser-action' && info.browserAction && { browserAction: info.browserAction }),
     });
   }
 
