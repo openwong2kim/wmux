@@ -12,7 +12,7 @@ import type { PcRailWorkspaceRow } from '../../../shared/pcRail';
 const rows: PcRailWorkspaceRow[] = [
   { id: 'rw-b', name: 'web', order: 1, panes: [{ sessionId: 's2' }] },
   {
-    id: 'rw-a', name: 'api', order: 0, pinned: true, gitBranch: 'main', gitSync: { ahead: 2, behind: 0, hasUpstream: true },
+    id: 'rw-a', name: 'api', order: 0, pinned: true, gitBranch: 'main', gitIsWorktree: true,
     panes: [{ sessionId: 's1', agentName: 'Claude Code', agentStatus: 'awaiting_input', paneName: 'w1-1', surfaceTitle: 'fix login', lastActivityAt: 1_000 }],
   },
   { id: 'rw-e', name: '', order: 2, panes: [], empty: true },
@@ -32,7 +32,8 @@ describe('buildHostRowOverrides', () => {
     expect(o.workspaces.map((w) => w.id)).toEqual(['shadow:h1:rw-a', 'shadow:h1:rw-b', 'shadow:h1:rw-e']);
     expect(o.readOnly).toBe(true);
     expect(o.sidebarPinnedIds).toEqual(['shadow:h1:rw-a']);
-    expect(o.workspaces[0].metadata).toEqual({ gitBranch: 'main', gitSync: { dirty: 0, ahead: 2, behind: 0, hasUpstream: true } });
+    // No gitSync: the host sends no dirty count, and a made-up 0 would draw "clean".
+    expect(o.workspaces[0].metadata).toEqual({ gitBranch: 'main', gitIsWorktree: true });
     expect(o.surfaceActivityAt).toEqual({ [remoteAgentKey('h1', 's1')]: 1_000 });
     expect(Object.values(o.paneLabel)).toEqual(['w1-1']);
     expect(o.notifications).toEqual([]);

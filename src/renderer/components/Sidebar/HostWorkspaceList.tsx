@@ -16,6 +16,7 @@ import { formatShadowWorkspaceId, parseShadowWorkspaceId, pcRailHostState, type 
 import { workspaceShortcutNumber } from '../../../shared/keymap';
 import { nextRowIndex } from './sidebarRowKeys';
 import { getWorkspaceLeafPanes } from '../../../shared/paneUtils';
+import { findRemoteSurface } from '../../stores/shadowWorkspace';
 
 function clockTime(at: number): string {
   return new Date(at).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
@@ -56,8 +57,13 @@ export default function HostWorkspaceList({ hostId }: { hostId: string }) {
   // ones the row was drawn with).
   const openSurface = useCallback((surfaceId: string) => {
     const ws = rowStore.getState().workspaces.find((w) => getWorkspaceLeafPanes(w).some((l) => l.surfaces.some((s) => s.id === surfaceId)));
-    if (ws && open(ws.id)) focusNotificationTarget(() => useStore.getState(), { ptyId: null, surfaceId });
-  }, [open, rowStore]);
+    const sessionId = ws && getWorkspaceLeafPanes(ws).flatMap((l) => l.surfaces).find((s) => s.id === surfaceId)?.remoteSessionId;
+    if (!ws || !sessionId || !open(ws.id)) return;
+    // The shadow may hold that session as an "Open in …" placeholder (it is a
+    // tab elsewhere already): go to the tab that shows it.
+    const hit = findRemoteSurface(useStore.getState(), hostId, sessionId);
+    focusNotificationTarget(() => useStore.getState(), { ptyId: null, surfaceId: hit?.surfaceId ?? surfaceId });
+  }, [hostId, open, rowStore]);
 
   const onKeyDown = useCallback((e: React.KeyboardEvent<HTMLDivElement>) => {
     const target = e.target as HTMLElement;

@@ -257,11 +257,11 @@ no difference). A2A-only peers stay on the Remote page.
   workspaces), and the count is that list's. Its rows ARE the local row
   component (WorkspaceItem and its pane rows) reading a read-only projection
   of that computer: the host's order and 1..n numbering, status mark,
-  needs-you card, idle label, branch line with ahead/behind, and the
+  needs-you card, idle label, branch line, and the
   expandable pane rows ("✳ Claude Code · w1-1") — filled only from what the
   host sends. Inside the host's own list its pane rows carry no "@host"
   origin mark. What the host does not send (unread, the done dot, the
-  question text, dirty count, stashed panes) and every local-only action
+  question text, git sync counts, stashed panes) and every local-only action
   (menu, rename, drag, drop, archive) are absent, never faked.
 - **Dropdown** (the pane menu's look): this computer first, then each
   web-paired computer as a monogram row with its state on a second line —

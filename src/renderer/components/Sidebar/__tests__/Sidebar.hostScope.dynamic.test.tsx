@@ -76,6 +76,25 @@ describe('Sidebar scoped to a paired computer', () => {
     expect(roster?.textContent).toContain('w1-1');
   });
 
+  it('a pane row opens its workspace, and lands on the tab already showing that session elsewhere', () => {
+    act(() => useStore.setState((s) => ({
+      workspaces: s.workspaces.map((w) => (w.id !== 'one' ? w : { ...w, rootPane: { ...(w.rootPane as never as object), surfaces: [
+        ...(w.rootPane as unknown as { surfaces: never[] }).surfaces,
+        { id: 'mine', ptyId: '', title: '', shell: '', cwd: '', surfaceType: 'remote-terminal', remoteHostId: 'h1', remoteSessionId: 's-a' },
+      ] } as never })),
+    })));
+    act(() => root.render(<Sidebar />));
+    const toggle = card(hostRows()[0]).querySelector<HTMLElement>('[aria-controls]')!;
+    act(() => toggle.click());
+    const roster = document.getElementById(toggle.getAttribute('aria-controls')!)!;
+    act(() => roster.querySelector<HTMLButtonElement>('button')!.click());
+    const st = useStore.getState();
+    expect(st.workspaces.some((w) => w.id === 'shadow:h1:rw-a')).toBe(true);
+    // s-a is a tab of 'one' already: the jump goes there, not to the placeholder.
+    expect(st.activeWorkspaceId).toBe('one');
+    expect((st.workspaces.find((w) => w.id === 'one')!.rootPane as { activeSurfaceId: string }).activeSurfaceId).toBe('mine');
+  });
+
   it('draws what the host sends (pinned, branch) and offers nothing local', () => {
     act(() => useStore.setState({
       pcRailFeeds: { h1: { workspaces: [

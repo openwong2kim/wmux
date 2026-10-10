@@ -16,7 +16,7 @@ import { useEffect, useMemo } from 'react';
 import { createStore, type StoreApi } from 'zustand/vanilla';
 import { useStore, type StoreState } from './index';
 import { buildShadowWorkspace } from './shadowWorkspace';
-import { comparePcRailRows, formatShadowWorkspaceId, isPcRailFeedStale, type PcRailWorkspaceRow } from '../../shared/pcRail';
+import { comparePcRailRows, formatShadowWorkspaceId, isPcRailFeedStale, parseShadowWorkspaceId, type PcRailWorkspaceRow } from '../../shared/pcRail';
 import { remoteAgentKey, remoteAttachmentKey } from '../../shared/remoteHosts';
 import type { Pane, PaneLeaf, Workspace } from '../../shared/types';
 import type { AttachedRemoteWorkspace } from './slices/remoteWorkspacesSlice';
@@ -44,7 +44,6 @@ function rowWorkspace(hostId: string, row: PcRailWorkspaceRow, alias: AttachedRe
   const metadata = {
     ...(row.gitBranch ? { gitBranch: row.gitBranch } : {}),
     ...(row.gitIsWorktree !== undefined ? { gitIsWorktree: row.gitIsWorktree } : {}),
-    ...(row.gitSync ? { gitSync: { dirty: 0, ...row.gitSync } } : {}),
   };
   const color = (alias?.color ?? row.color) as Workspace['color'];
   const built = buildShadowWorkspace(hostId, row, COPY, () => null);
@@ -149,8 +148,11 @@ export function useHostRowStore(hostId: string): StoreApi<StoreState> {
     let inputs: unknown[] = [];
     let overrides: HostRowOverrides | null = null;
     const sync = (real: StoreState) => {
-      const next = [real.pcRailFeeds[hostId], real.pcRailHosts, real.remoteWorkspaces, real.workspaces, real.workspaceSettle];
-      if (!overrides || next.some((v, i) => v !== inputs[i])) {
+      // Only this host's open shadows feed the rows (their focused tab), so a
+      // change to a local workspace rebuilds nothing here.
+      const shadows = real.workspaces.filter((w) => parseShadowWorkspaceId(w.id)?.hostId === hostId);
+      const next = [real.pcRailFeeds[hostId], real.pcRailHosts, real.remoteWorkspaces, real.workspaceSettle, ...shadows];
+      if (!overrides || next.length !== inputs.length || next.some((v, i) => v !== inputs[i])) {
         inputs = next;
         overrides = buildHostRowOverrides(real, hostId);
       }
