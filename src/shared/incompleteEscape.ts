@@ -76,3 +76,38 @@ export function splitIncompleteEscape(data: string): { complete: string; pending
     pending: data.slice(lastGround + 1),
   };
 }
+
+/**
+ * splitIncompleteEscape over a stream of chunks: `push` returns what is safe
+ * to write, holding back an unfinished sequence until a later chunk finishes
+ * it. Every char is scanned once, however long the held sequence grows.
+ */
+export class IncompleteEscapeSplitter {
+  private state = ScanState.Ground;
+  private held = '';
+
+  push(data: string): string {
+    let state = this.state;
+    let lastGround = -1;
+    for (let i = 0; i < data.length; i++) {
+      state = advance(state, data.charCodeAt(i));
+      if (state === ScanState.Ground) lastGround = i;
+    }
+    this.state = state;
+    if (lastGround === -1) {
+      this.held += data;
+      return '';
+    }
+    const out = this.held + data.slice(0, lastGround + 1);
+    this.held = data.slice(lastGround + 1);
+    return out;
+  }
+
+  /** The held-back unfinished sequence; the splitter starts over at ground. */
+  take(): string {
+    const held = this.held;
+    this.held = '';
+    this.state = ScanState.Ground;
+    return held;
+  }
+}

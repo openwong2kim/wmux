@@ -153,7 +153,7 @@ import { toResumeCommand, resumeGrammarFor, resumeOfferForRecovered, mergeResume
 import type { ResumeBinding } from '../shared/agentResume';
 import { agentDisplayToSlug, AGENT_SLUG_SET, isAgentSlug } from '../shared/agentIdentity';
 import type { AgentEventStatus } from '../main/pty/AgentDetector';
-import { HookIngest, type HookArbitration } from './hooks/HookIngest';
+import { HookIngest, identifiedAgentPid, type HookArbitration } from './hooks/HookIngest';
 import { deriveAgentLiveness } from './hooks/agentLiveness';
 import { classifyClaudeStopFailure, classifyCodexTurnCompleted, type TurnFailure } from '../shared/phoneTurnFailure';
 import { serveTurnFailure } from './turnFailure/serveTurnFailure';
@@ -2964,28 +2964,26 @@ function registerRpcHandlers(
       // The agent the pane's LIVE process is — process truth only, the one
       // tier with a death edge, so the renderer can name a pane whose hook and
       // banner both stayed silent (a resumed Codex) and a dead agent is never
-      // reported. Unlike agentProcessAlive it does not wait for a binding.
+      // reported. agentProcessAlive below carries only liveness, slugless picks too.
       const tracked = agentProcessTracker.identityFor(s.id);
       const withPrompt = tracked?.alive && tracked.slug
         ? { ...withCommand, liveAgent: tracked.slug }
         : withCommand;
-      if (!surfacedBinding) return withPrompt;
-      // Resume-chip edge trigger — process truth for the chip's busy gate,
-      // reported ONLY alongside a surfaced binding (the only consumer). Three
-      // states: true = the agent process is observed alive (chip hidden),
-      // false = it was observed and DIED (the alive→dead edge — chip may
-      // show), undefined = never attributed (renderer keeps its heuristic).
-      // Exec units are their own agent process: while the session lives the
-      // agent runs (its exit kills the session), so they are always `true`;
-      // 'suspended' tombstones hold no live PTY and stay undecided.
+      // Agent process truth — the resume chip's busy gate, and the death edge
+      // the #1794 prompt-mode guard re-asks on (#2030), which an agent with no
+      // resume binding (Codex, an unbound claude) needs too. So it is reported
+      // whether or not a binding surfaces, as readResumeStateForWeb already
+      // does. Three states: true = the agent process is observed alive,
+      // false = it was observed and DIED (the alive→dead edge), undefined =
+      // never attributed (renderer keeps its heuristic). Exec units are their
+      // own agent process: while the session lives the agent runs (its exit
+      // kills the session), so they are always `true`; 'suspended' tombstones
+      // hold no live PTY and stay undecided.
       const agentProcessAlive = s.exec
         ? (s.state === 'attached' || s.state === 'detached' ? true : undefined)
         : agentProcessTracker.statusFor(s.id);
-      return {
-        ...withPrompt,
-        resumeBinding: surfacedBinding,
-        ...(agentProcessAlive !== undefined ? { agentProcessAlive } : {}),
-      };
+      const withAlive = agentProcessAlive !== undefined ? { ...withPrompt, agentProcessAlive } : withPrompt;
+      return surfacedBinding ? { ...withAlive, resumeBinding: surfacedBinding } : withAlive;
     });
 
     // Fix B: when includeSuspended is requested, append cap-skipped suspended
@@ -4332,6 +4330,20 @@ function registerRpcHandlers(
       liveAgentFor: (id) => {
         const tracked = agentProcessTracker.identityFor(id);
         return tracked?.alive ? tracked.slug : undefined;
+      },
+      // HookIngest re-reads the tracked pid's liveness on a mismatch.
+      agentPidFor: (id) => identifiedAgentPid(agentProcessTracker.identityFor(id), agentProcessTracker.pidFor(id)),
+      isPidRunning: (pid) => {
+        try {
+          process.kill(pid, 0);
+          return true;
+        } catch (err) {
+          return classifyKillOutcome((err as NodeJS.ErrnoException).code) === 'alive';
+        }
+      },
+      onStaleAgentPid: (id) => {
+        const managed = sessionManager.getSession(id);
+        if (managed) agentProcessTracker.rearm(id, managed.meta.pid);
       },
       log: (level, message) => log(level, message),
       isAutomationPane: (id) => automationEngine?.ownsPane(id) === true,
@@ -8058,6 +8070,18 @@ async function main(): Promise<void> {
     isWslSession: (id) => !!sessionManager.getSession(id)?.meta.wslTarget,
     watcher: new WslPidWatcher(),
     isRunning: (agent) => checkWslAgentRunning(agent),
+  });
+  // Whether a session is a WSL pane whose agent is live right now, for main's
+  // browser-identity check of a WSL pane (Windows cannot walk Linux processes,
+  // so main asks the daemon, which follows that agent from inside the distro).
+  pipeServer.onRpc('session.wslAgentLive', async (rawParams) => {
+    const id = typeof (rawParams as { sessionId?: unknown }).sessionId === 'string'
+      ? (rawParams as { sessionId: string }).sessionId
+      : '';
+    const live = id.length > 0
+      && !!sessionManager.getSession(id)?.meta.wslTarget
+      && agentProcessTracker.hasLiveWslAgent(id);
+    return { live };
   });
   // #919 — re-evaluate canonical identity OUTSIDE `session:agent`: the tier
   // inputs change (attribution completes; a watched process dies) while no

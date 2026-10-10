@@ -57,6 +57,57 @@ describe('goal worker deny rules', () => {
     expect(rules).toHaveLength(GOAL_WORKER_DENIED_COMMANDS.length * 2);
   });
 
+  // The 2026-10-10 Windows dogfood (claude 2.1.296): these ran past the list.
+  // `*` is matched here as "any text, or none", over the whole command — what
+  // the dogfood observed (`Remove-Item * -Recurse*` caught both argument
+  // orders, `git push*` the bare command). A model of the CLI's matcher, not
+  // the matcher itself: the live run is still on the dogfood list.
+  describe('the forms the dogfood got past the list', () => {
+    const globMatch = (rule: string, cmd: string): boolean =>
+      new RegExp(`^${rule.split('*').map((x) => x.replace(/[.+?^${}()|[\]\\]/g, '\\$&')).join('.*')}$`, 's').test(cmd);
+    const denied = (cmd: string): boolean => GOAL_WORKER_DENIED_COMMANDS.some((r) => globMatch(r, cmd));
+
+    it.each([
+      'ri .\\junk4 -r -fo',
+      'ri -r -fo .\\junk4',
+      'rm .\\junk -Recurse -Force',
+      'del .\\junk -re',
+      'erase -R junk',
+      'rd junk -r',
+      'rmdir junk -Recurse',
+      'Remove-Item .\\junk -Rec -Force',
+      'Remove-Item -r junk',
+      'cmd /c "rd /s /q junk1"',
+      'cmd.exe /c "rmdir /S /Q junk1"',
+      'cmd /c del /s /q *.log',
+      'cmd /c "erase /q /s junk"',
+      'sh -c "git push origin HEAD"',
+      'bash -c "git -C . push"',
+      // still caught, as before
+      'rm -rf junk',
+      'git push origin main',
+      'git -C . push',
+    ])('denies %s', (cmd) => {
+      expect(denied(cmd)).toBe(true);
+    });
+
+    it.each([
+      'rm junk.txt',
+      'ri junk.txt -Force',
+      'del notes.txt',
+      'cmd /c dir /s',
+      'git status',
+      'git log --grep=push',
+      'sh -c "npm test"',
+    ])('leaves %s alone', (cmd) => {
+      expect(denied(cmd)).toBe(false);
+    });
+
+    it('keeps the launch line under cmd.exe\'s 8191-character limit', () => {
+      expect(workerLaunchFlags('bypassPermissions', goalWorkerDenyRules()).length).toBeLessThan(8000);
+    });
+  });
+
   it('rides the same quoted list and survives claude\'s split as whole rules', () => {
     const line = workerLaunchFlags('auto', goalWorkerDenyRules());
     expect(line.match(/--disallowedTools/g)).toHaveLength(1);
@@ -126,6 +177,20 @@ describe('goal worker environment (friction, not a boundary)', () => {
     const note = goalWorkerPromptNote('G-abc123');
     expect(note).toContain('G-abc123');
     expect(note).toMatch(/Push, pull requests, tags, releases/);
+  });
+});
+
+describe('goalWorkerPromptNote — goal terms', () => {
+  it('without terms it stays the plain note', () => {
+    expect(goalWorkerPromptNote('G-abc123')).not.toContain('Done when');
+  });
+
+  it('with terms it lists them and asks for evidence', () => {
+    const note = goalWorkerPromptNote('G-abc123', { doneCriteria: ['npm test passes'], evidence: ['vitest output'], constraints: ['no new deps'] });
+    expect(note).toContain('Done when: (1) npm test passes');
+    expect(note).toContain('Evidence: vitest output');
+    expect(note).toContain('Constraints: no new deps');
+    expect(note).toMatch(/report the evidence/);
   });
 });
 
@@ -215,10 +280,9 @@ describe('goal worker deny rules against real command spellings (review)', () =>
       expect(denied(cmd)).toBe(false);
     });
 
-  it.each(['sh -c "git push"', 'bash ./scripts/release.sh', 'cd sub && git push'])(
-    'documented gap: %j is NOT caught by literal rules (env friction / push URL is what remains)', (cmd) => {
-      expect(denied(cmd)).toBe(false);
-    });
+  // `sh -c "git push"` is covered by the dogfood block above. A script that
+  // pushes (`bash ./release.sh`) is still out of reach of any literal rule;
+  // the env overlay and push URL are what stop it.
 
   it('every rule survives claude\'s list split intact, so the matcher above sees the rule as written', () => {
     const line = workerLaunchFlags('bypassPermissions', goalWorkerDenyRules());

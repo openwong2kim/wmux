@@ -3,7 +3,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import { registerMoaGoalTools } from '../goal';
+import { MOA_GOAL_COMPLETE_TIMEOUT_MS, registerMoaGoalTools } from '../goal';
 import { COMMANDER_ONLY_TOOLS, COMMANDER_RPC_METHODS } from '../../shared/commanderSurface';
 import { FIRST_PARTY_METHODS } from '../../main/mcp/firstParty';
 
@@ -42,7 +42,15 @@ describe('moa goal tools', () => {
     await handlers.get('moa_goal')!({});
     await handlers.get('moa_goal')!({ action: 'complete', summary: 'fixed and verified by npm test' });
     expect(callRpc.mock.calls[0]).toEqual(['deck.goal', { token: 'tok-hq', action: 'status' }]);
-    expect(callRpc.mock.calls[1]).toEqual(['deck.goal', { token: 'tok-hq', action: 'complete', summary: 'fixed and verified by npm test' }]);
+    // Completing runs the goal's gates, so it waits longer.
+    expect(callRpc.mock.calls[1]).toEqual(['deck.goal', { token: 'tok-hq', action: 'complete', summary: 'fixed and verified by npm test' }, MOA_GOAL_COMPLETE_TIMEOUT_MS]);
+  });
+
+  it('moa_goal complete forwards the per-criterion evidence', async () => {
+    const { callRpc, handlers } = collect();
+    const criteria = [{ criterion: 1, artifacts: ['/repo/test-output.txt'] }];
+    await handlers.get('moa_goal')!({ action: 'complete', summary: 'fixed and verified by npm test', criteria });
+    expect(callRpc.mock.calls[0][1]).toMatchObject({ action: 'complete', criteria });
   });
 
   it('is commander-only, with its RPCs in the commander lane and the first-party set', () => {

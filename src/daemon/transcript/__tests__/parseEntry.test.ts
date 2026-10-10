@@ -875,3 +875,22 @@ describe('parseTranscriptLine — `!` shell mode is never "You"', () => {
     expect([...input, ...output, ...stderrOnly].some((e) => e.kind === 'user_text')).toBe(false);
   });
 });
+
+describe('parseTranscriptLine — compact summary is never "You"', () => {
+  const summary = 'This session is being continued from a previous conversation that ran out of context. Summary: …';
+  it.each([
+    ['string content', summary],
+    ['block content', [{ type: 'text', text: summary }]],
+  ])('emits one quiet meta row for %s, without the summary body', (_name, content) => {
+    const events = parseTranscriptLine(JSON.stringify({
+      type: 'user', uuid: 'c1', isCompactSummary: true, isVisibleInTranscriptOnly: true,
+      timestamp: '2026-10-10T00:00:00.000Z', message: { role: 'user', content },
+    }), 0);
+    expect(events).toEqual([{ id: 'c1', kind: 'meta', subtype: 'caveat', label: 'Conversation compacted', ts: Date.parse('2026-10-10T00:00:00.000Z') }]);
+  });
+
+  it('leaves a user entry without the flag as the user\'s own text', () => {
+    const [event] = parseTranscriptLine(JSON.stringify({ type: 'user', uuid: 'u1', message: { role: 'user', content: summary } }), 0);
+    expect(event).toMatchObject({ kind: 'user_text', text: summary });
+  });
+});

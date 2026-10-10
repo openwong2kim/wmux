@@ -47,6 +47,9 @@
 // rows, asks "Do you want to allow Claude to fetch this content?" — wrapped
 // over two rows in a narrow pane — and draws no footer; "Read file" boxes
 // `Read(<path>)` and asks "Do you want to proceed?" like a Bash dialog.
+// WebSearch (measured on 2.1.296) draws Claude's generic title "Tool use" and
+// boxes `Web Search("<query>")`: the title alone names no tool, the box's
+// first row does (`toolOfDialog`).
 //
 // Biased to refuse, like every screen check that could lead to a keystroke: a
 // grid without the question row followed by option rows numbered 1..n in
@@ -64,6 +67,8 @@ export interface TerminalPromptOption {
   label: string;
   /** The selection cursor is on this row. Not part of the fingerprint. */
   selected: boolean;
+  /** The TUI cut this option's row, or a row its label wrapped onto (it ends in an ellipsis). */
+  cut?: true;
 }
 
 export interface ParsedTerminalPrompt {
@@ -95,6 +100,11 @@ export interface ParsedTerminalPrompt {
   truncated: boolean;
   /** The TUI itself cut a row (it ends in an ellipsis): what is on screen is not the whole text. */
   cut: boolean;
+  /**
+   * A row other than an option row was cut (title, description, command,
+   * reason). `cut` is this OR any option's `cut`.
+   */
+  bodyCut: boolean;
   /** One cursor, the footer right under the options, blank rows after it. */
   active: boolean;
   /** Set only by `parsePlanPrompt`: the ExitPlanMode dialog's own rows. */
@@ -200,10 +210,10 @@ export function parseTerminalPrompt(
   if (q < 0) return null;
   const fullQuestion = normalizePromptText(lines.slice(questionStart, q + 1).join(' '));
 
-  let cut = false;
   // Option rows directly under the question, numbered 1..n in order. A label
-  // the TUI wrapped continues on rows indented past its option's digit.
-  const fullOptions: Array<{ key: string; label: string; selected: boolean }> = [];
+  // the TUI wrapped continues on rows indented past its option's digit; a cut
+  // on such a row is that option's cut.
+  const fullOptions: ParsedOption[] = [];
   let after = q + 1;
   let digitColumn = -1;
   for (; after < lines.length; after++) {
@@ -212,7 +222,7 @@ export function parseTerminalPrompt(
     if (!match) {
       const last = fullOptions[fullOptions.length - 1];
       if (last && line.trim() && indentOf(line) > digitColumn) {
-        if (CUT_ROW.test(line)) cut = true;
+        if (CUT_ROW.test(line)) last.cut = true;
         last.label = normalizePromptText(`${last.label} ${line}`);
         continue;
       }
@@ -220,9 +230,13 @@ export function parseTerminalPrompt(
     }
     const key = match[2]!;
     if (Number(key) !== fullOptions.length + 1) return null;
-    if (CUT_ROW.test(line)) cut = true;
     digitColumn = line.indexOf(key, indentOf(line));
-    fullOptions.push({ key, label: normalizePromptText(match[3]!), selected: match[1] !== undefined });
+    fullOptions.push({
+      key,
+      label: normalizePromptText(match[3]!),
+      selected: match[1] !== undefined,
+      ...(CUT_ROW.test(line) ? { cut: true as const } : {}),
+    });
   }
   if (fullOptions.length === 0 || fullOptions.length > PROMPT_MAX_OPTIONS) return null;
   const selectedCount = fullOptions.filter((o) => o.selected).length;
@@ -251,9 +265,10 @@ export function parseTerminalPrompt(
   // dashed rule, then the reason, all at the prose indent. The rule found
   // above is then the box's LOWER edge, not the dialog's top.
   const boxed = topRuleFound ? boxedCommand(lines, top - 1, questionStart, isTopRule) : null;
-  if (boxed) return parseBoxedPrompt(lines, boxed, questionStart, fullQuestion, fullOptions, cut, activity);
+  if (boxed) return parseBoxedPrompt(lines, boxed, questionStart, fullQuestion, fullOptions, activity);
   const body = lines.slice(topRuleFound ? top : 0, questionStart).filter((line) => line.trim().length > 0);
-  if (body.some((line) => CUT_ROW.test(line))) cut = true;
+  const bodyCut = body.some((line) => CUT_ROW.test(line));
+  const cut = bodyCut || fullOptions.some((o) => o.cut);
   // The prose indent. With the top rule on screen it is the body's own
   // minimum; with the top cut off, the visible rows may all be command rows,
   // so the question row (prose, like the title and the reason) sets it.
@@ -328,9 +343,13 @@ export function parseTerminalPrompt(
     topRuleFound,
     truncated,
     cut,
+    bodyCut,
     active: isActive(activity, fullTitle),
   };
 }
+
+/** An option row as read, before the display caps. */
+type ParsedOption = { key: string; label: string; selected: boolean; cut?: true };
 
 /** The two ways a dialog can read as active (see parseTerminalPrompt). */
 interface Activity {
@@ -396,7 +415,7 @@ function boxedCommand(
     if (DASHED_RULE.test(line.trim())) return null;
     if (allGutter) return { top: i, upper, lower };
     const title = lines.slice(i + 1, upper).find((l) => l.trim().length > 0);
-    return gutter === 0 && title !== undefined && toolFromDialogTitle(normalizePromptText(title)) !== undefined
+    return gutter === 0 && title !== undefined && titleBoxesCommand(normalizePromptText(title))
       ? { top: i, upper, lower }
       : null;
   }
@@ -411,8 +430,7 @@ function parseBoxedPrompt(
   box: BoxedCommand,
   questionStart: number,
   fullQuestion: string,
-  fullOptions: Array<{ key: string; label: string; selected: boolean }>,
-  cutBefore: boolean,
+  fullOptions: ParsedOption[],
   activity: Activity,
 ): ParsedTerminalPrompt {
   const nonBlank = (from: number, to: number): string[] =>
@@ -428,7 +446,8 @@ function parseBoxedPrompt(
   }
   const commandRows = nonBlank(box.upper + 1, box.lower).map((line) => normalizePromptText(line.trim().replace(GUTTER, '')));
   const reasonRows = nonBlank(box.lower + 1, questionStart).map(normalizePromptText);
-  const cut = cutBefore || [...head, ...nonBlank(box.upper + 1, questionStart)].some((line) => CUT_ROW.test(line));
+  const bodyCut = [...head, ...nonBlank(box.upper + 1, questionStart)].some((line) => CUT_ROW.test(line));
+  const cut = bodyCut || fullOptions.some((o) => o.cut);
   let truncated = false;
   const cap = (text: string): string => {
     if (text.length <= PROMPT_MAX_LINE_CHARS) return text;
@@ -463,6 +482,7 @@ function parseBoxedPrompt(
     topRuleFound,
     truncated,
     cut,
+    bodyCut,
     active: isActive(activity, fullTitle),
   };
 }
@@ -628,6 +648,8 @@ export function parsePlanPrompt(
     topRuleFound,
     truncated,
     cut,
+    // The plan dialog has its own answer path; its cut is never split.
+    bodyCut: cut,
     active,
     plan,
   };
@@ -639,6 +661,8 @@ const PLAIN_YES = /^yes$/i;
 const PLAIN_NO = /^no(?:,|$)/i;
 /** Never answerable, whatever else the label says: these write a lasting rule. */
 const LASTING_RULE = /don'?t ask again|\balways\b|for this session/i;
+/** The label as drawn already says it is display-only (a lasting rule or a mode switch). */
+const saysLastingOrModeSwitch = (label: string): boolean => LASTING_RULE.test(label) || PLAN_MODE_SWITCH.test(label);
 
 /** The decision an answerable choice label stands for. */
 export function decisionForChoiceLabel(label: string): 'approve' | 'deny' | null {
@@ -659,8 +683,19 @@ export function decisionForChoiceLabel(label: string): 'approve' | 'deny' | null
  * Only the plain Yes and a plain No (`No`, or `No, …`) are ever answerable.
  * Anything that writes a lasting rule — "Yes, and don't ask again for …
  * commands", "always", "for this session" — or switches the permission mode
- * ("Yes, and switch to auto mode") stays display-only. No plain Yes,
- * or a row the TUI cut: not answerable. How long the command is does not
+ * ("Yes, and switch to auto mode") stays display-only. No plain Yes, or a row
+ * the TUI cut: not answerable. One cut is let through: an option whose
+ * VISIBLE text already says it writes a lasting rule or switches the mode
+ * (WebSearch's `2. Yes, and don't ask again for Web Search commands in
+ * <cwd>…`). It is never offered and its key never pressed, and its cut label
+ * stays in the fingerprint. A cut option that does not say so on screen
+ * (`Yes, and don't a…`, `Yes…`, `No, and tell…`) still refuses the dialog.
+ *
+ * WebSearch offers its Yes only. Its option 2 is `No` in a 50-column pane and
+ * the standing grant in a wider one, and a resize moves no fence the key
+ * write checks, so its deny is the Esc decline, never a digit.
+ *
+ * How long the command is does not
  * matter — the record's summary is capped for display, the binding and the
  * fingerprint take the whole command. Whether the dialog's top may be off
  * screen is the binding's call (`dialogMatchesToolCall` with `topCut`), not
@@ -669,11 +704,16 @@ export function decisionForChoiceLabel(label: string): 'approve' | 'deny' | null
 export function terminalPromptAnswerability(
   parsed: ParsedTerminalPrompt,
 ): { answerable: boolean; choices: Array<{ key: string; label: string }> } {
+  const yesOnly = toolOfDialog(parsed) === 'WebSearch';
   const choices = parsed.options
-    .filter((o) => decisionForChoiceLabel(o.label) !== null)
+    .filter((o) => {
+      const decision = decisionForChoiceLabel(o.label);
+      return decision === 'approve' || (decision === 'deny' && !yesOnly);
+    })
     .map((o) => ({ key: o.key, label: o.label.trim() }));
   const hasYes = choices.some((c) => decisionForChoiceLabel(c.label) === 'approve');
-  const answerable = hasYes && !parsed.cut;
+  const blockingCut = parsed.bodyCut || parsed.options.some((o) => o.cut && !saysLastingOrModeSwitch(o.label));
+  const answerable = hasYes && !blockingCut;
   return { answerable, choices: answerable ? choices : [] };
 }
 
@@ -696,14 +736,70 @@ export function toolFromDialogTitle(title: string | undefined): string | undefin
 }
 
 /**
+ * Claude's generic dialog title (2.1.296), drawn for WebSearch and possibly
+ * for other tools (MCP). It names no tool by itself: only the box's first row
+ * does (BOX_TOOLS).
+ */
+const GENERIC_TITLE = 'Tool use';
+
+/** Under the generic title, the box row that names the tool, exactly as Claude draws it. */
+const BOX_TOOLS: ReadonlyArray<{ firstRow: RegExp; tool: string }> = [
+  { firstRow: /^Web Search\(/, tool: 'WebSearch' },
+];
+
+/** A title whose dialog may box its call without a gutter (see boxedCommand). */
+function titleBoxesCommand(title: string): boolean {
+  return title === GENERIC_TITLE || toolFromDialogTitle(title) !== undefined;
+}
+
+/**
+ * The tool a parsed dialog is for: its title's (`toolFromDialogTitle`), or,
+ * under the exact generic title `Tool use`, the tool its box's first row
+ * names (`Web Search(` → WebSearch). Anything else: undefined.
+ */
+export function toolOfDialog(parsed: Pick<ParsedTerminalPrompt, 'title' | 'commandRows'>): string | undefined {
+  const byTitle = toolFromDialogTitle(parsed.title);
+  if (byTitle !== undefined || parsed.title !== GENERIC_TITLE) return byTitle;
+  const first = parsed.commandRows[0] ?? '';
+  return BOX_TOOLS.find((b) => b.firstRow.test(first))?.tool;
+}
+
+/** A domain as WebSearch's box draws it, measured: letters, digits, dots, hyphens. */
+const WEB_SEARCH_DOMAIN = /^[A-Za-z0-9.-]+$/;
+
+/**
+ * What a WebSearch call's box draws after its query, or null when the call
+ * has a shape not measured yet (it then stays informational). Measured on
+ * 2.1.296: `{query, mode: 'standard'}` draws nothing more (`''`), and one
+ * `allowed_domains` entry draws `, only allowing domains: <d>`. Two or more
+ * domains, `blocked_domains`, an empty list, another `mode` or any other key:
+ * null.
+ */
+export function webSearchDetail(input: Record<string, unknown>): string | null {
+  const keys = Object.keys(input);
+  if (typeof input.query !== 'string') return null;
+  if (keys.some((k) => k !== 'query' && k !== 'mode' && k !== 'allowed_domains')) return null;
+  if ('mode' in input && input.mode !== 'standard') return null;
+  if (!('allowed_domains' in input)) return '';
+  const domains = input.allowed_domains;
+  if (!Array.isArray(domains) || domains.length !== 1) return null;
+  const domain = domains[0];
+  return typeof domain === 'string' && WEB_SEARCH_DOMAIN.test(domain) ? `only allowing domains: ${domain}` : null;
+}
+
+/**
  * What the box of a titled dialog (TITLED_TOOLS) spells for a call, or null
  * when the call cannot be drawn there. `command` is the call's subject
  * (`commandOfToolInput`: the path, the URL), `detail` the second field the
- * box shows (WebFetch's `prompt`). The URL is compared as Claude draws it,
+ * box shows (WebFetch's `prompt`, WebSearch's `webSearchDetail`). The URL is compared as Claude draws it,
  * parsed and re-serialized (`https://example.com` → `https://example.com/`).
  */
 const TITLED_BOX: Readonly<Record<string, (command: string, detail: string | undefined) => string | null>> = {
   Read: (command) => `Read(${command})`,
+  // The query verbatim (Claude does not escape a quote in it), then
+  // `webSearchDetail`. A query with an ellipsis in it is refused: on screen it
+  // cannot be told from a row the TUI cut.
+  WebSearch: (command, detail) => (command.includes('…') ? null : `Web Search("${command}"${detail ? `, ${detail}` : ''})`),
   WebFetch: (command, detail) => {
     if (!detail) return null;
     let href: string;
@@ -785,9 +881,9 @@ function descriptionRowsSpell(rows: readonly string[], description: string): boo
  * screen), and the caller must have bound the call by its exact `tool_use` id
  * — the screen alone cannot say which call a headless dialog is for.
  *
- * A titled dialog (Read, WebFetch) binds only whole, title on screen: its box
- * rows must spell exactly what TITLED_BOX draws for the call (`description`
- * carries WebFetch's `prompt`). The prose above its box ("Claude wants to
+ * A titled dialog (Read, WebFetch, WebSearch) binds only whole, title on
+ * screen: its box rows must spell exactly what TITLED_BOX draws for the call
+ * (`description` carries WebFetch's `prompt`, WebSearch's `webSearchDetail`). The prose above its box ("Claude wants to
  * fetch content from …") is Claude's own and is not compared.
  */
 export function dialogMatchesToolCall(
@@ -798,7 +894,7 @@ export function dialogMatchesToolCall(
   const topCut = opts.topCut === true;
   const titledBox = Object.prototype.hasOwnProperty.call(TITLED_BOX, call.name) ? TITLED_BOX[call.name] : undefined;
   if (titledBox) {
-    if (topCut || !parsed.topRuleFound || toolFromDialogTitle(parsed.title) !== call.name) return false;
+    if (topCut || !parsed.topRuleFound || toolOfDialog(parsed) !== call.name) return false;
     const target = titledBox(call.command, call.description ? normalizePromptText(call.description) : undefined);
     return target !== null && rowsMatchAt(parsed.commandRows, normalizePromptText(target), false) === 0;
   }

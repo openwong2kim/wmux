@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { WorkLink } from '../../../../shared/workLink';
 import type { MoaPendingDecision } from '../../../../shared/moa';
 import type { Task, TaskState } from '../../../../shared/types';
+import { PHONE_FLEET_TICKET_RECENT_MS } from '../../../../shared/phoneFleetTickets';
 import { buildFleetTickets, openTicketFor, ticketAttention, ticketStateOf, TICKET_RECENT_MS } from '../fleetTickets';
 
 const NOW = 1_000_000_000_000;
@@ -130,5 +131,11 @@ describe('ticketAttention — Moa interrupts only for a decision and the final r
     expect(ticketAttention({ ...base, state: 'done' }, { 'wl-1': NOW })).toBeNull();
     // A later report (the job reopened and ended again) asks again.
     expect(ticketAttention({ ...base, state: 'done', updatedAt: NOW + 1 }, { 'wl-1': NOW })).toBe('report');
+  });
+});
+
+describe('the phone window', () => {
+  it("is the desktop's own: a finished ticket leaves the phone list when it leaves Fleet", () => {
+    expect(PHONE_FLEET_TICKET_RECENT_MS).toBe(TICKET_RECENT_MS);
   });
 });

@@ -1,7 +1,8 @@
 // Adapted from MonoCode (hardbeat920/monocode@6bd432ca, src/app/shell/Sidebar.tsx), MIT License, Copyright (c) 2026 Nick
-import { Fragment, memo, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { Fragment, memo, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../../stores';
+import { RowOpenSurfaceContext, useRowStore, useRowStoreApi } from '../../stores/rowStore';
 import {
   agentSurfaceTitle,
   createWorkspaceAgentRosterSelector,
@@ -182,7 +183,7 @@ export function rosterPrimaryLabel(row: WorkspaceAgentRosterRow): string {
  */
 export function rosterSecondaryLabel(
   row: WorkspaceAgentRosterRow,
-  opts: { showVendor?: boolean } = {},
+  opts: { showVendor?: boolean; hostView?: boolean } = {},
 ): string {
   const showVendor = opts.showVendor ?? true;
   const parts: string[] = [];
@@ -190,7 +191,9 @@ export function rosterSecondaryLabel(
   // #1163 — a remote session's local pane coordinate is meaningless (it names
   // the mirror cell, not the agent); the HOST is the "where" that identifies
   // the row and marks its origin.
-  if (row.remote) parts.push(`@${row.remote.hostLabel}`);
+  // In that host's own list (hostView) the host is implied: its pane name,
+  // as the host draws it.
+  if (row.remote && !opts.hostView) parts.push(`@${row.remote.hostLabel}`);
   // #1326 — the roster selector already withholds `paneName` when the
   // sidebarShowPaneCoordinates setting is off AND the pane has no explicit
   // label (empty string, never the coordinate). A real label still comes
@@ -368,7 +371,14 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId, taskIds, renderTask,
     () => createWorkspaceAgentRosterSelector(workspaceId),
     [workspaceId],
   );
-  const roster = useStore(selector);
+  const roster = useRowStore(selector);
+  // Another computer's list (hostRowStore.ts): its stamps, and its pane rows
+  // open that computer's tab instead of focusing a pane here.
+  const rowStoreApi = useRowStoreApi();
+  const openSurface = useContext(RowOpenSurfaceContext);
+  // Rendering a paired computer's own list: its rows are that computer's
+  // rows, so they carry no "elsewhere" marks.
+  const hostView = openSurface !== null;
   // #1481 — the elapsed column. A local ticker rather than a subscription to
   // the per-PTY stamps: those move on every throttled output write, and the
   // label only changes once a minute. Stamps are read at render time.
@@ -383,11 +393,11 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId, taskIds, renderTask,
   // Per-PTY silence, in whole minutes, for the rows whose agent still claims to
   // be running but has reported nothing for the hook-authority window. Keyed by
   // ptyId, which is the id these rows already carry; verifiable panes are absent.
-  const unverifiableMinutesByPtyId = useStore(useShallow(selectUnverifiablePaneMinutes));
+  const unverifiableMinutesByPtyId = useRowStore(useShallow(selectUnverifiablePaneMinutes));
   // Glance board: per-pane "changed since you last looked".
-  const unseenByPtyId = useStore(useShallow(selectSidebarUnseen));
+  const unseenByPtyId = useRowStore(useShallow(selectSidebarUnseen));
   // Browser mirror (wmux web /app): a stashed row cannot be brought back from here.
-  const readOnly = useStore((s) => s.readOnly);
+  const readOnly = useRowStore((s) => s.readOnly);
   // 2026-09-27 — this workspace's tasks, filed under the requesting pane.
   const taskSplit = usePaneTaskSplit(workspaceId, renderTask ? taskIds : undefined);
   // A pane that asked for tasks keeps a row while it is open even after its
@@ -395,13 +405,13 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId, taskIds, renderTask,
   const firstRowOfPane = new Map<string, number>();
   roster.rows.forEach((row, index) => { if (!firstRowOfPane.has(row.paneId)) firstRowOfPane.set(row.paneId, index); });
   const barePaneIds = [...taskSplit.byPane.keys()].filter((paneId) => !firstRowOfPane.has(paneId));
-  const bareRows = useStore(useShallow((s) => barePanesOf(s, workspaceId, barePaneIds)));
+  const bareRows = useRowStore(useShallow((s) => barePanesOf(s, workspaceId, barePaneIds)));
 
   if (roster.agentCount === 0 && roster.stashedCount === 0 && taskSplit.byPane.size === 0) return null;
 
   // Computed once per render, not per row: the vendor column earns its width
   // only when the workspace actually mixes vendors.
-  const stamps = useStore.getState();
+  const stamps = rowStoreApi.getState();
   const stampCtx = {
     now,
     surfaceActivityAt: stamps.surfaceActivityAt,
@@ -455,12 +465,12 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId, taskIds, renderTask,
             // no title either — without this the row would render with no text at
             // all. Visible rows always carry an agent name, so it is a no-op there.
             const primary = rosterPrimaryLabel(row) || t('surface.terminal');
-            const secondary = rosterSecondaryLabel(row, { showVendor: false });
+            const secondary = rosterSecondaryLabel(row, { showVendor: false, hostView });
             const detail = row.pendingQuestion ?? row.activity;
             // #1481 — last activity rides the title line (muted) unless the
             // agent is blocked on a question, which keeps its own red line.
             const inlineActivity = !row.pendingQuestion ? row.activity : undefined;
-            const elapsedMs = row.ptyId && !row.remote ? fleetIdleForMs(row.ptyId, stampCtx) : undefined;
+            const elapsedMs = row.ptyId && (!row.remote || hostView) ? fleetIdleForMs(row.ptyId, stampCtx) : undefined;
             const elapsed = elapsedMs !== undefined && elapsedMs >= IDLE_SHOW_AFTER_MS ? formatIdle(elapsedMs) : undefined;
             const agentLabel = row.agentName || t('surface.terminal');
             // The verb rides the accessible name and the tooltip, NOT the
@@ -512,6 +522,10 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId, taskIds, renderTask,
                   aria-label={rowAriaLabel}
                   onClick={(event) => {
                     event.stopPropagation();
+                    if (openSurface) {
+                      if (!row.stashed) openSurface(row.surfaceId);
+                      return;
+                    }
                     if (row.stashed && readOnly) return;
                     if (row.stashed) {
                       // focusNotificationTarget resolves ptyId → surfaceId and
@@ -561,7 +575,7 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId, taskIds, renderTask,
                       the coordinate (w85-1 etc.) takes at most 40% before it
                       ellipses too. */}
                   <span className="flex min-w-0 flex-1 items-baseline gap-1">
-                    {row.remote && (
+                    {row.remote && !hostView && (
                       // #1163 — origin glyph: this agent runs on another
                       // host. Same steel-not-accent rule as the tab strip's
                       // RemoteSurfaceGlyph (a provenance marker must not read

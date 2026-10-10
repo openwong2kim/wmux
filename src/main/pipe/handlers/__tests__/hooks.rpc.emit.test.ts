@@ -710,6 +710,8 @@ describe('hooks.signal — agent.user_prompt_submit turns the pane running', () 
         agentStatus: 'running',
         agentName: 'Claude Code',
         agentSlug: 'claude',
+        // Clears the last turn's question, and with it any dismissal record.
+        pendingQuestion: '',
       }),
     );
     // Not a turn boundary: no toast, no dedup ledger entry, no lifecycle tee.

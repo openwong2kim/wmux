@@ -28,7 +28,8 @@ import { pathToFileURL } from 'url';
 import { app } from 'electron';
 import { getWmuxDir } from '../../daemon/config';
 import { loadCommanderMemory, getMemoryRootDir } from './commanderMemory';
-import { getAccountStore, VENDOR_ENV_KEYS } from '../account/accountStore';
+import { getAccountStore } from '../account/accountStore';
+import { resolveBackgroundLaunch, type BackgroundLaunch } from '../account/backgroundLaunchAccount';
 import { mintCommanderToken, revokeCommanderToken } from './commanderTrust';
 import { evaluateCommanderToolPermission } from './commanderToolSandbox';
 import { COMMANDER_MODE_ARG, COMMANDER_TOOL_SURFACE, COMMANDER_ONLY_TOOLS } from '../../shared/commanderSurface';
@@ -759,6 +760,17 @@ export class ClaudeSdkAdapter implements BrainAdapter {
    *  mid-turn rebind can't misattribute — 3-way review P1). Null when the session
    *  runs on the default credential (no bound account, or its dir was missing). */
   private _launchAccountId: string | null = null;
+  /** The account this conversation runs on: an account id, null for the
+   *  default login, undefined when unknown (a session saved before accounts
+   *  were recorded). Decided when a conversation starts and kept for every
+   *  resume — even across a rebind — since the transcript lives in that
+   *  config dir (#2029). */
+  private _conversationAccountId: string | null | undefined = undefined;
+  /** A turn is resolving its account (before any query handle exists). An
+   *  interrupt() landing then has no handle to forward to, so it is recorded
+   *  and the turn ends before spawning. */
+  private _launching = false;
+  private _interruptedWhileLaunching = false;
   private _resumeUnvalidated = false;
   private _systemPrompt?: string;
   private _fleetContext?: string;
@@ -798,6 +810,10 @@ export class ClaudeSdkAdapter implements BrainAdapter {
     return this._sessionId;
   }
 
+  get conversationAccountId(): string | null | undefined {
+    return this._conversationAccountId;
+  }
+
   /** Whether a wmux MCP bundle was resolved (fleet tools available). The caller
    *  surfaces a warning when false. */
   get hasFleetTools(): boolean {
@@ -815,6 +831,7 @@ export class ClaudeSdkAdapter implements BrainAdapter {
     if (opts.resumeSessionId) {
       this._sessionId = opts.resumeSessionId;
       this._resumeUnvalidated = true;
+      this._conversationAccountId = opts.resumeAccountId;
     }
   }
 
@@ -824,40 +841,27 @@ export class ClaudeSdkAdapter implements BrainAdapter {
    * process.env then unset the key). A GLM/Z.ai profile injects the compatible
    * base-url / auth-token overrides.
    */
-  private buildEnv(): Record<string, string | undefined> {
+  private buildEnv(launch: Extract<BackgroundLaunch, { kind: 'run' }>): Record<string, string | undefined> {
     const env: Record<string, string | undefined> = { ...process.env };
     // Zero-API: never let an ambient key flip the session onto metered API auth.
     delete env.ANTHROPIC_API_KEY;
     // Multi-account (M0): the orchestrator brain is a claude spawn that bypasses
-    // the PTY path, so it must honor its workspace's claude account binding here
-    // too — otherwise it silently runs on the default account (Codex 3-way review
-    // P1). A missing bound dir falls back to the default credential + a warn.
-    if (this._workspaceId) {
-      const accountEnv = getAccountStore().resolveAccountEnv(this._workspaceId, 'claude', (acc) =>
-        console.warn(
-          `[account] orchestrator ws ${this._workspaceId}: bound account "${acc.name}" configDir missing ` +
-          `(${acc.configDir}) — falling back to the default credential.`,
-        ),
-      );
-      Object.assign(env, accountEnv);
-      // Capture the account the session ACTUALLY launches on for this turn. Only
-      // when the env was applied (accountEnv carries CLAUDE_CONFIG_DIR): a bound
-      // account whose dir was missing fell back to the default credential above,
-      // so it is NOT the launch account. Used to stamp limit events (M3 §1a).
-      this._launchAccountId = accountEnv[VENDOR_ENV_KEYS.claude]
-        ? getAccountStore().getBinding(this._workspaceId, 'claude') ?? null
-        : null;
-    } else {
-      this._launchAccountId = null;
-    }
+    // the PTY path, so it applies the account send() resolved for this turn
+    // (the binding, or the account quota rotation chose) — otherwise it
+    // silently runs on the default account (Codex 3-way review P1).
+    Object.assign(env, launch.env);
+    // Capture the account the session ACTUALLY launches on for this turn — null
+    // when no account env was applied (default credential). Used to stamp limit
+    // events (M3 §1a).
+    this._launchAccountId = launch.accountId;
     if (this.profile?.baseUrl) env.ANTHROPIC_BASE_URL = this.profile.baseUrl;
     if (this.profile?.authToken) env.ANTHROPIC_AUTH_TOKEN = this.profile.authToken;
     return env;
   }
 
-  private buildOptions(): Record<string, unknown> {
+  private buildOptions(launch: Extract<BackgroundLaunch, { kind: 'run' }>): Record<string, unknown> {
     const options: Record<string, unknown> = {
-      env: this.buildEnv(),
+      env: this.buildEnv(launch),
       maxTurns: this.maxTurns,
       // Full power additionally auto-allows the Skill tool — invoking a skill
       // is the point of the mode, and the skill's INNER tool calls still hit
@@ -1031,8 +1035,35 @@ export class ClaudeSdkAdapter implements BrainAdapter {
       // binding the value to this turn's closure means even a hypothetical
       // overlapping send() can't reattribute this turn's limit events.
       let turnLaunchAccountId: string | null = null;
+      // The account for this turn. A new conversation may move to another
+      // account under "Switch accounts by quota"; a resumed one stays where
+      // its transcript is. Out of quota → a clear error instead of a spawn
+      // that dies on a quota error. A profile with its own auth token does not
+      // sign in with the account, so its quota is not checked.
+      this._launching = true;
+      this._interruptedWhileLaunching = false;
+      let launch: BackgroundLaunch;
       try {
-        const options = this.buildOptions();
+        launch = await resolveBackgroundLaunch(this._workspaceId, 'claude', {
+          resuming: !!this._sessionId,
+          conversationAccountId: this._conversationAccountId,
+          checkQuota: !this.profile?.authToken,
+          onMissing: (acc) => console.warn(
+            `[account] orchestrator ws ${this._workspaceId}: bound account "${acc.name}" configDir missing ` +
+            `(${acc.configDir}) — falling back to the default credential.`,
+          ),
+        });
+      } finally {
+        this._launching = false;
+      }
+      if (this._disposed || this._interruptedWhileLaunching) return;
+      if (launch.kind === 'hold') {
+        yield { type: 'error', message: launch.message };
+        return;
+      }
+      if (!this._sessionId) this._conversationAccountId = launch.accountId;
+      try {
+        const options = this.buildOptions(launch);
         turnLaunchAccountId = this._launchAccountId;
         // Packaged builds must target the user's own claude install (the SDK's
         // default resolution needs its 240 MB platform package, which we do not
@@ -1148,6 +1179,7 @@ export class ClaudeSdkAdapter implements BrainAdapter {
   }
 
   interrupt(): void {
+    if (this._launching) this._interruptedWhileLaunching = true;
     const h = this._active;
     if (h?.interrupt) {
       try {

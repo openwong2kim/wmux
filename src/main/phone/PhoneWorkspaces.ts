@@ -4,7 +4,14 @@ import path from 'node:path';
 import type { BrowserWindow } from 'electron';
 import { sendToRenderer } from '../pipe/handlers/_bridge';
 import { getWorkspaceSettleService } from '../workspace/settle/workspaceSettleHost';
-import { createSidebarDropLog, parsePhoneSidebarSnapshot, type PhoneSidebarSnapshot, type SidebarDropReporter } from '../../shared/phoneFleetSidebar';
+import { createSidebarDropLog, isSidebarId, parsePhoneSidebarSnapshot, type PhoneSidebarSnapshot, type SidebarDropReporter } from '../../shared/phoneFleetSidebar';
+import {
+  FLEET_TICKET_DETAIL_COMMAND,
+  PHONE_FLEET_TICKET_DETAILS_KEY,
+  parsePhoneFleetTicketDetails,
+  withoutTicketTranscript,
+} from '../../shared/phoneFleetTickets';
+import { getPhoneFleetTicketStore } from './PhoneFleetTicketStore';
 
 /** How long the list waits for the optional sidebar projection. */
 const PHONE_SIDEBAR_RENDERER_TIMEOUT_MS = 1500;
@@ -26,8 +33,54 @@ function warnSidebar(summary: string): void {
   if (summary) console.warn(`[phone] workspaces.list sidebar: ${summary}`);
 }
 
+/**
+ * Parse the renderer's sidebar reply and fold its ticket details into main's
+ * store. The details ride a key the snapshot parser does not list, so they
+ * are read here, kept, and never forwarded; the forwarded tickets get the
+ * workspace names main remembers for workspaces that have since closed.
+ */
+function takeSidebar(raw: unknown, onDrop: SidebarDropReporter): PhoneSidebarSnapshot | null {
+  const sidebar = parsePhoneSidebarSnapshot(raw, onDrop);
+  if (sidebar?.fleetTickets) {
+    const store = getPhoneFleetTicketStore();
+    const details = parsePhoneFleetTicketDetails((raw as Record<string, unknown>)[PHONE_FLEET_TICKET_DETAILS_KEY]);
+    store.remember(sidebar.fleetTickets, details, Date.now());
+    sidebar.fleetTickets = store.withWorkspaceNames(sidebar.fleetTickets);
+  }
+  return sidebar;
+}
+
+/**
+ * One ticket's detail from main's store. On a miss the renderer is asked for
+ * a fresh snapshot once (the phone may open a ticket before any list poll
+ * since this desktop started), then the store is read again. A renderer that
+ * does not answer, or cannot compute the tickets, is `unavailable` (the
+ * daemon answers 503), never "not found". A real miss is remembered for a few
+ * seconds, so repeated lookups of a dead id never reach the renderer.
+ */
+async function phoneFleetTicketDetail(payload: Record<string, unknown>, getWindow: () => BrowserWindow | null): Promise<unknown> {
+  const id = payload.id;
+  if (!isSidebarId(id)) return { notFound: true };
+  const store = getPhoneFleetTicketStore();
+  let detail = store.detail(id, Date.now());
+  if (!detail) {
+    if (store.recentlyMissed(id, Date.now())) return { notFound: true };
+    let raw: unknown;
+    try {
+      raw = await sendToRenderer(getWindow, 'workspace.phoneSidebar', {}, { timeoutMs: PHONE_SIDEBAR_RENDERER_TIMEOUT_MS });
+    } catch {
+      return { unavailable: true };
+    }
+    if (!takeSidebar(raw, () => undefined)?.fleetTickets) return { unavailable: true };
+    detail = store.detail(id, Date.now());
+    if (!detail) store.noteMiss(id, Date.now());
+  }
+  return detail ? { ticket: detail } : { notFound: true };
+}
+
 /** Named workspace operations only; never forward an arbitrary phone RPC. */
 export async function handlePhoneWorkspaces(command: string, payload: Record<string, unknown>, getWindow: () => BrowserWindow | null): Promise<unknown> {
+  if (command === FLEET_TICKET_DETAIL_COMMAND) return phoneFleetTicketDetail(payload, getWindow);
   if (command === 'workspaces.list') {
     // The sidebar projection rides along, fetched in parallel and optional: a
     // failure or a slow renderer omits it and the list answers as before.
@@ -50,7 +103,7 @@ export async function handlePhoneWorkspaces(command: string, payload: Record<str
         ...(settle[row.id]?.snoozedUntil !== undefined ? { snoozedUntil: settle[row.id].snoozedUntil } : {}),
       })),
     };
-    const sidebar = parsePhoneSidebarSnapshot(sidebarRaw, drops.report);
+    const sidebar = takeSidebar(sidebarRaw, drops.report);
     if (!sidebar && sidebarRaw !== null) drops.report('renderer.notSnapshot');
     const fitted = sidebar ? fitSidebarToBudget(reply, sidebar, PHONE_WORKSPACES_REPLY_BUDGET_BYTES, drops.report) : null;
     if (fitted) reply.sidebar = fitted;
@@ -81,7 +134,8 @@ export async function handlePhoneWorkspaces(command: string, payload: Record<str
  * which would turn every list call into a timeout, so the sidebar must fit.
  * It degrades in steps, cheapest loss first. The per-workspace layout trees
  * go first (largest first; the phone draws that workspace flat), then Moa's
- * delegated-job list, then the pending hand-off notices (both bounded). The pane placement (every pane
+ * delegated-job list, then the pending hand-off notices (both bounded). Fleet
+ * tickets, the newest field, go before all of it: their text, then the list. The pane placement (every pane
  * id and every task's pane group) goes before anything the reply carried
  * before it existed, so a sidebar that fit without it still arrives whole;
  * then tab titles, then the pane rows, and only then the whole sidebar. With
@@ -96,6 +150,17 @@ export function fitSidebarToBudget(
 ): PhoneSidebarSnapshot | null {
   const fits = (candidate: PhoneSidebarSnapshot) => Buffer.byteLength(JSON.stringify({ ...base, sidebar: candidate })) <= budget;
   if (fits(sidebar)) return sidebar;
+  // The tickets go before anything older: a phone whose reply fit before they
+  // existed keeps all of it. Their text first, then the list whole — a cut
+  // list would read as jobs that are not there.
+  if (sidebar.fleetTickets !== undefined) {
+    onDrop('budget.fleetTicketText');
+    const withoutTicketText: PhoneSidebarSnapshot = { ...sidebar, fleetTickets: sidebar.fleetTickets.map(withoutTicketTranscript) };
+    if (fits(withoutTicketText)) return withoutTicketText;
+    onDrop('budget.fleetTickets');
+    const { fleetTickets: _fleetTickets, ...withoutTickets } = sidebar;
+    return fitSidebarToBudget(base, withoutTickets, budget, onDrop);
+  }
   // The layout trees go first, largest first and one workspace at a time, so
   // the rest keep theirs. Every later step starts from a snapshot with no tree
   // at all: a tree never rides with pane rows or titles cut under it.

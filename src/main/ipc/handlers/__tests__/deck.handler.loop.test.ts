@@ -252,6 +252,7 @@ import {
   modeToPermissionMode,
 } from '../deck.handler';
 import { setMoaEnabled } from '../../../deck/deckHqStore';
+import { overrideFleetFastPathForTests } from '../../../deck/deckFleetFastPathStore';
 import { buildCommanderSystemPrompt } from '../../../deck/ClaudeSdkAdapter';
 import { IPC } from '../../../../shared/constants';
 import type { FleetSnapshot } from '../../../workspace/WorkspaceMirror';
@@ -1417,5 +1418,115 @@ describe('Moa hand-off wiring in deck.handler', () => {
     eventBus.emit({ type: 'agent.lifecycle', workspaceId: 'ws-seal', ptyId: 'pty-w', kind: 'agent.awaiting_input', source: 'hook', agent: 'claude', decision: 'emit' } as never);
     await vi.waitFor(() => expect(handoffFake.onWorkerStop).toHaveBeenCalledTimes(1));
     expect(handoffFake.onWorkerStop).toHaveBeenCalledWith('pty-w', 'claude', lastMessage);
+  });
+});
+
+/// Real IPC handler + real manager + real fast path, with only the renderer's
+// Fleet board mocked. Integration tests, not UI E2E.
+describe('deck:send local Fleet fast path', () => {
+  async function setup(mode: 'ok' | 'error' | 'malformed' | 'stale' = 'ok') {
+    const board = vi.fn(async () => {
+      if (mode === 'error') throw new Error('renderer is still booting');
+      if (mode === 'malformed') return { error: 'not ready' };
+      return {
+        generatedAt: mode === 'stale' ? Date.now() - 10_000 : Date.now(),
+        scope: 'fleet', needsYou: [], finished: [], running: [], idle: { count: 1 },
+      };
+    });
+    const streamed: BrainEvent[] = [];
+    cleanup?.();
+    cleanup = registerDeckHandler(() => ({ isDestroyed: () => false, webContents: { send: (channel: string, data: { event?: BrainEvent }) => {
+      if (channel === IPC.DECK_STREAM && data.event) streamed.push(data.event);
+    } } } as unknown as import('electron').BrowserWindow), {
+      readFleetBoard: board,
+      createAdapter: (opts) => { const a = new FakeAdapter(opts.workspaceId); adapters.push(a); return a; },
+    });
+    return { board, streamed };
+  }
+  afterEach(() => overrideFleetFastPathForTests(null));
+
+  it('is off by default: an allowlisted question still goes to Moa and the board is not read', async () => {
+    // No override: the isolated test data dir has no switch file, so this is
+    // the real default.
+    const { board } = await setup();
+    expect(await invoke(IPC.DECK_FLEET_FAST_PATH_GET, {})).toEqual({ enabled: false });
+    await invoke(IPC.DECK_SEND, { workspaceId: 'ws-1', text: 'status' });
+    expect(board).not.toHaveBeenCalled();
+    expect(adapters[0].sentTexts).toHaveLength(1);
+  });
+
+  it('when on, answers locally with no Moa turn', async () => {
+    const { board, streamed } = await setup();
+    overrideFleetFastPathForTests(true);
+    const result = await invoke(IPC.DECK_SEND, { workspaceId: 'ws-1', text: 'status', fleetContext: 'PRIVATE FLEET CONTEXT' });
+    expect(result).toMatchObject({ ok: true, localAnswer: { text: expect.stringContaining('1 idle') } });
+    expect(adapters[0].sentTexts).toEqual([]);
+    expect(board).toHaveBeenCalledOnce();
+    expect(streamed.map((e) => e.type)).toEqual(['text-delta', 'turn-end']);
+    expect(streamed[1]).toMatchObject({ localAnswer: { prompt: 'status' } });
+  });
+
+  it.each(['error', 'malformed', 'stale'] as const)('a %s board goes to Moa exactly once with the original context', async (mode) => {
+    const { streamed } = await setup(mode);
+    overrideFleetFastPathForTests(true);
+    mockPolicyBlock = 'original policy';
+    const result = await invoke(IPC.DECK_SEND, { workspaceId: 'ws-1', text: 'status' });
+    expect(result).toEqual({ ok: true });
+    expect(adapters[0].sentTexts).toHaveLength(1);
+    expect(adapters[0].sentTexts[0]).toContain('original policy');
+    expect(adapters[0].sentTexts[0]).toMatch(/status$/);
+    expect(streamed.some((e) => e.type === 'turn-end' && e.localAnswer)).toBe(false);
+  });
+
+  it('mixed or action requests skip the board and reach Moa once', async () => {
+    const { board } = await setup();
+    overrideFleetFastPathForTests(true);
+    await invoke(IPC.DECK_SEND, { workspaceId: 'ws-1', text: 'status and merge the PR' });
+    expect(board).not.toHaveBeenCalled();
+    expect(adapters[0].sentTexts).toHaveLength(1);
+    expect(adapters[0].sentTexts[0]).toMatch(/status and merge the PR$/);
+  });
+
+  // Review P2: the whole chain — adapter foreign-turn callbacks, the
+  // handler's lookup callback and the stream — with a TUI turn that starts
+  // and ends while the board read is still pending.
+  it.each(['ok', 'error'] as const)('a foreign turn during a pending lookup drops the stale %s board, with no Moa fallback', async (mode) => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const board = vi.fn(async () => {
+      await gate;
+      if (mode === 'error') throw new Error('renderer timed out');
+      return { generatedAt: Date.now(), scope: 'fleet', needsYou: [], finished: [], running: [], idle: { count: 1 } };
+    });
+    const streamed: BrainEvent[] = [];
+    let foreign!: { onForeignTurnStart: (prompt: string) => void; onForeignTurnEnd: () => void };
+    cleanup?.();
+    cleanup = registerDeckHandler(() => ({ isDestroyed: () => false, webContents: { send: (channel: string, data: { event?: BrainEvent }) => {
+      if (channel === IPC.DECK_STREAM && data.event) streamed.push(data.event);
+    } } } as unknown as import('electron').BrowserWindow), {
+      readFleetBoard: board,
+      createAdapter: (opts) => { foreign = opts; const a = new FakeAdapter(opts.workspaceId); adapters.push(a); return a; },
+    });
+    overrideFleetFastPathForTests(true);
+    const pending = invoke(IPC.DECK_SEND, { workspaceId: 'ws-1', text: 'status' });
+    await vi.waitFor(() => expect(board).toHaveBeenCalledOnce());
+    foreign.onForeignTurnStart('typed into the TUI');
+    foreign.onForeignTurnEnd();
+    release();
+    expect(await pending).toEqual({ ok: true, code: 'errored' });
+    expect(adapters[0].sentTexts).toEqual([]);
+    expect(streamed.some((e) => e.type === 'turn-end' && e.localAnswer)).toBe(false);
+    expect(streamed.some((e) => e.type === 'text-delta')).toBe(false);
+    expect(streamed).toContainEqual(expect.objectContaining({ type: 'error', message: expect.stringContaining('ask again') }));
+  });
+
+  it('the settings switch round-trips through IPC', async () => {
+    // The data dir is per-test-run (src/test-utils/isolateDataDir.ts).
+    await setup();
+    expect(await invoke(IPC.DECK_FLEET_FAST_PATH_SET, { enabled: true })).toEqual({ enabled: true });
+    expect(await invoke(IPC.DECK_FLEET_FAST_PATH_GET, {})).toEqual({ enabled: true });
+    // Untrusted renderer input: a truthy non-boolean lands as OFF.
+    expect(await invoke(IPC.DECK_FLEET_FAST_PATH_SET, { enabled: 'yes' })).toEqual({ enabled: false });
+    expect(await invoke(IPC.DECK_FLEET_FAST_PATH_GET, {})).toEqual({ enabled: false });
   });
 });

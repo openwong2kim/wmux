@@ -28,6 +28,7 @@ import { tokenAttrs } from '../../themes';
 import { useT } from '../../hooks/useT';
 import { isOurHandoffDrag, takeHandoffDrop } from '../Git/handoffDrag';
 import { moaHqId } from '../../stores/slices/moaSlice';
+import { selectLocalWorkspaceId } from '../../stores/shadowWorkspace';
 import { DeckTabs } from '../Deck/DeckTabs';
 import { CommanderView } from '../Deck/CommanderView';
 import { MODEL_OPTIONS } from '../Deck/OrchestratorModelChip';
@@ -102,7 +103,9 @@ export default function ChannelDock(): React.ReactElement {
     deckBrainModel === '' ? t('deck.orchestratorModelDefault') : claudeModelLabel(deckBrainModel);
 
   const moa = useStore((s) => s.moa);
-  const activeWorkspaceId = useStore((s) => s.activeWorkspaceId) || '';
+  // With another computer's (shadow) workspace on screen, the orchestrator
+  // still talks to this computer's last workspace, never to the shadow.
+  const activeWorkspaceId = useStore(selectLocalWorkspaceId);
   const mode = useMemo(() => resolveMoaPanelMode(moa, activeWorkspaceId), [moa, activeWorkspaceId]);
   const moaOwnsTab = mode.kind !== 'legacy';
   const { decisions, refresh: refreshDecisions } = useMoaDecisions(mode.kind === 'moa');

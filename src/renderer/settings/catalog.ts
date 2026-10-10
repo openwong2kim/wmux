@@ -170,6 +170,7 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
   { id: 'fullpower', tab: 'moa', labelKey: 'settings.orchestratorFullPower', synonyms: 'full power sdk settings sources tools' },
   { id: 'autowake', tab: 'moa', labelKey: 'settings.autoWake', descKey: 'settings.autoWakeDesc', synonyms: 'autowake wake event push tokens' },
   { id: 'ledgergate', tab: 'moa', labelKey: 'settings.ledgerGate', descKey: 'settings.ledgerGateDesc', synonyms: 'ledger gate stop task orchestrator delegated experimental' },
+  { id: 'fleetfastpath', tab: 'moa', labelKey: 'moa.settings.fleetFastPath', descKey: 'moa.settings.fleetFastPathDesc', synonyms: 'fleet status local fast answer who needs me read only 작업 상태 로컬' },
   { id: 'briefing', tab: 'moa', labelKey: 'settings.briefing', descKey: 'settings.briefingDesc', synonyms: 'briefing welcome home summary' },
 
   { id: 'roles', tab: 'roles', labelKey: 'settings.roleBindings', descKey: 'settings.roleBindingsDesc', synonyms: 'role reviewer tester planner model bind' },

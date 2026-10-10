@@ -60,6 +60,7 @@ function numstatResult(repoPath: string, numstat: { path: string; additions: num
 }
 
 let read: ReturnType<typeof vi.fn>;
+let status: ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
   clearGitCaches();
@@ -71,9 +72,11 @@ beforeEach(() => {
       ])
       : numstatResult(repoPath, []),
   );
+  status = vi.fn(async () => ({ ok: true, files: 0 }));
   (window as unknown as { electronAPI: unknown }).electronAPI = {
     platform: 'win32',
     diff: {
+      status,
       resolveRepo: vi.fn(async (cwd: string) =>
         cwd.startsWith('D:/repo') ? { ok: true, repoPath: cwd } : { ok: false },
       ),
@@ -151,8 +154,11 @@ describe('GitTab — one row per worktree, with the workspaces on it', () => {
     expect(r[2].textContent).toContain('idle');
     // A workspace on another repo is not on any row.
     expect(container.textContent).not.toContain('other-ws');
-    // Idle worktrees are not read (only current + worktrees with a workspace).
+    // A worktree nobody sits on gets a status-only read (no diff, no file
+    // contents), and a clean one shows no stat.
     expect(read).not.toHaveBeenCalledWith(IDLE, '', 'workspace');
+    expect(status).toHaveBeenCalledWith(IDLE);
+    expect(r[2].textContent).not.toContain('clean');
     // The one accent dot is on the active pane's worktree.
     expect(r[1].getAttribute('data-current')).toBe('true');
     expect(r[0].getAttribute('data-current')).toBeNull();

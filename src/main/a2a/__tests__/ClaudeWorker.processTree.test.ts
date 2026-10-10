@@ -7,8 +7,8 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 // These use real processes, so they only run where process groups exist.
 
 vi.mock('../../pipe/handlers/_bridge', () => ({ sendToRenderer: vi.fn() }));
-vi.mock('../../account/accountStore', () => ({
-  getAccountStore: () => ({ resolveAccountEnv: () => ({}) }),
+vi.mock('../../account/backgroundLaunchAccount', () => ({
+  resolveBackgroundLaunch: async () => ({ kind: 'run', env: {}, accountId: null }),
 }));
 
 import { terminateProcessTree } from '../ClaudeWorker';

@@ -132,6 +132,36 @@
   font-variant-numeric: tabular-nums;
   letter-spacing: normal;
 }
+/* PC switcher: the Workspaces title itself, opening the computer dropdown.
+ * Inherits the band's type; a host name keeps its own case. */
+.wmux-pc-switcher {
+  margin-left: -4px;
+  padding: 2px 4px;
+  color: inherit;
+  font: inherit;
+  text-transform: inherit;
+  letter-spacing: inherit;
+}
+.wmux-pc-switcher:hover { background: var(--selection-hover); }
+.wmux-pc-switcher-name { text-transform: none; letter-spacing: normal; }
+/* Needs-you of the computers not on screen: the attention number badge. */
+.wmux-pc-switcher-badge {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 9999px;
+  background: var(--attention);
+  color: var(--attention-ink);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: normal;
+}
 .wmux-sidebar-footer { min-height: 40px; padding: 4px 8px; }
 .wmux-sidebar-footer .wmux-nav-button { min-height: 32px; }
 /* Card rows. The 1px transparent border reserves the room the needs-you
@@ -1009,8 +1039,9 @@ details[open] > .wmux-chatv2-tool-line .wmux-chatv2-chevron { transform: rotate(
 
 /* A rail page fills the sheet over the Workspaces page, which stays mounted
  * underneath at full size, so a page never changes terminal geometry. The
- * sheet's own edge is the page's only boundary. */
-.wmux-page { position: absolute; inset: 0; z-index: 40; display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; background: var(--bg-base); }
+ * sheet's own edge is the page's only boundary. Clip, not hidden: each page
+ * scrolls inside itself, and a caret reveal must not slide the page (#1688). */
+.wmux-page { position: absolute; inset: 0; z-index: 40; display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: clip; background: var(--bg-base); }
 .wmux-page[data-rail-page="fleet"] .wmux-fleet-panel { width: 100%; }
 /* The Remote page's narrow rules (14px sides under a 640px sheet) ask the page
  * around it: a container never matches its own @container query. */
@@ -2448,8 +2479,7 @@ html[data-fullscreen] .wmux-shell-body {
 .wmux-git-branch-chip { font-family: var(--font-mono, ui-monospace, 'SF Mono', Menlo, monospace); font-size: 11px; padding: 1px 6px; border-radius: 6px; background: var(--selection); }
 .wmux-git-detail-empty { display: flex; align-items: center; justify-content: center; height: 100%; min-height: 160px; font-size: 13px; color: var(--text-muted); }
 .wmux-git-worktrees { display: flex; flex-direction: column; gap: 12px; }
-.wmux-git-wt-group .wmux-git-subhead { margin: 0; }
-.wmux-git-wt-caption { margin: 0 4px 4px; font-size: 11px; color: var(--text-muted); }
+.wmux-git-wt-caption { margin: 0 6px 4px; font-size: 11px; color: var(--text-muted); }
 .wmux-git-page-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
 .wmux-git-page-summary { margin: 2px 0 0; font-size: 13px; color: var(--text-sub); }
 .wmux-git-body { display: flex; flex-direction: column; gap: 12px; }
@@ -2585,12 +2615,18 @@ html[data-fullscreen] .wmux-shell-body {
   pointer-events: none;
   transition: opacity var(--motion-feedback, 120ms) ease-out;
 }
-.wmux-git-row:is(:hover, :focus-within) .wmux-git-row-actions { opacity: 1; pointer-events: auto; }
+.wmux-git-row:is(:hover, :focus-within, [data-picking]) .wmux-git-row-actions { opacity: 1; pointer-events: auto; }
 .wmux-git-row:is(:hover, :focus-within) > :is(.wmux-git-stat, .wmux-git-main-badge) { visibility: hidden; }
 .wmux-git-row:is(:hover, :focus-within) [data-git-row-text] {
   -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 176px), transparent calc(100% - 140px));
   mask-image: linear-gradient(to right, #000 calc(100% - 176px), transparent calc(100% - 140px));
 }
+/* A row with Snooze (or its choices) carries one more action. */
+.wmux-git-row[data-wide]:is(:hover, :focus-within, [data-picking]) [data-git-row-text] {
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 276px), transparent calc(100% - 240px));
+  mask-image: linear-gradient(to right, #000 calc(100% - 276px), transparent calc(100% - 240px));
+}
+.wmux-git-row[data-picking] > :is(.wmux-git-stat, .wmux-git-main-badge) { visibility: hidden; }
 .wmux-git-action {
   height: 24px;
   padding: 0 6px;

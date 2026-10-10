@@ -2,6 +2,7 @@ import type { DaemonClient } from '../DaemonClient';
 import type { DaemonEvent } from '../../shared/rpc';
 import { DESKTOP_ACCOUNT_ENV_COMMAND } from '../../shared/phonePaneAccount';
 import { MOA_WAKE_COMMAND } from '../../shared/moaWake';
+import { FLEET_TICKET_DETAIL_COMMAND } from '../../shared/phoneFleetTickets';
 
 export function installPhoneBridge(client: DaemonClient, handle: (command: string, payload: Record<string,unknown>) => Promise<unknown>): () => void {
   let active = true;
@@ -28,6 +29,6 @@ export function installPhoneBridge(client: DaemonClient, handle: (command: strin
   client.on('event',listener);
   // Announce the optional commands this desktop handles; a daemon that predates
   // the announcement ignores the params.
-  void client.rpc('daemon.phone.register',{commands:[DESKTOP_ACCOUNT_ENV_COMMAND,MOA_WAKE_COMMAND]}).catch(() => { /* Older daemon: no capability. */ });
+  void client.rpc('daemon.phone.register',{commands:[DESKTOP_ACCOUNT_ENV_COMMAND,MOA_WAKE_COMMAND,FLEET_TICKET_DETAIL_COMMAND]}).catch(() => { /* Older daemon: no capability. */ });
   return () => { active = false; client.off('event',listener); };
 }

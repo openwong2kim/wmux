@@ -32,6 +32,7 @@
 
 import type { MoaLevel } from '../../shared/moa';
 import { goalHardRuleHit, goalHardRuleHitAny } from '../../shared/moaGoal';
+import { AGENT_SLUG_SET } from '../../shared/agentIdentity';
 
 /** Methods that change something outside Moa's own records. Refused at level 0. */
 export const MOA_L0_REFUSED_METHODS: ReadonlySet<string> = new Set<string>([
@@ -80,9 +81,12 @@ const SCREENED_TEXT_PARAMS: Readonly<Record<string, readonly string[]>> = {
   'task.fanout.start': ['prompt', 'titles', 'taskPrompts'],
 };
 
-/** Keys that submit (or discard) what is typed on a terminal's line. */
+/** Keys that submit (or discard) what is typed on a terminal's line. Only
+ *  ctrl+c discards: Escape is a meta prefix in bash and ctrl+d / ctrl+z do
+ *  not clear a line that holds text, so forgetting the line on them would let
+ *  `git pu`, Escape, `sh` through while the terminal still composes it. */
 const SUBMIT_KEYS: ReadonlySet<string> = new Set(['enter']);
-const DISCARD_KEYS: ReadonlySet<string> = new Set(['ctrl+c', 'escape', 'ctrl+d', 'ctrl+z']);
+const DISCARD_KEYS: ReadonlySet<string> = new Set(['ctrl+c']);
 /** Typed-but-unsubmitted text kept per target, and how much of it. */
 const TYPED_MAX_TARGETS = 64;
 const TYPED_MAX_CHARS = 4000;
@@ -94,12 +98,55 @@ function typedKey(params: Record<string, unknown> | undefined): string | null {
   return typeof ws === 'string' && ws.length > 0 ? `ws:${ws}` : null;
 }
 
+const PACKAGE_RUNNERS: ReadonlySet<string> = new Set(['npx', 'bunx', 'pnpx']);
+
+function stemOf(token: string): string {
+  return (token.split(/[\\/]/).pop() ?? '').replace(/\.(exe|cmd|bat|ps1)$/i, '');
+}
+
+/**
+ * The agent CLI a terminal line starts, or null. Each command on the line
+ * (split at newlines, `;`, `|` and `&`, which also drops PowerShell's call
+ * operator) is read by its first word. A bare word must be the slug as typed,
+ * so a follow-up that opens with "Claude, …" is prose; a quoted word or a path
+ * is matched without case (`'C:\…\claude.cmd'`). `npx`/`bunx` count by the
+ * package they run. A wrapper (`cmd /c`, `powershell -c`, a script) is not
+ * read: like the text screen, this is a tripwire.
+ */
+export function agentLaunchIn(line: string): string | null {
+  for (const segment of line.split(/[\r\n;|&]+/)) {
+    const words = segment.trim().match(/"[^"]*"|'[^']*'|\S+/g) ?? [];
+    const word = (k: number): { raw: string; quoted: boolean } | null => {
+      const w = words[k];
+      if (!w) return null;
+      const quoted = /^(".*"|'.*')$/.test(w);
+      return { raw: quoted ? w.slice(1, -1) : w, quoted };
+    };
+    let i = words[0] === '.' ? 1 : 0;
+    let w = word(i);
+    if (!w) continue;
+    if (PACKAGE_RUNNERS.has(stemOf(w.raw).toLowerCase())) {
+      w = word(++i);
+      if (!w) continue;
+      const pkg = w.raw.toLowerCase();
+      if (/(^|\/)claude-code(@|$)/.test(pkg)) return 'claude';
+      const stem = stemOf(pkg.replace(/@[^/]*$/, ''));
+      if (AGENT_SLUG_SET.has(stem)) return stem;
+      continue;
+    }
+    const stem = stemOf(w.raw);
+    const slug = w.quoted || stem !== w.raw ? stem.toLowerCase() : stem;
+    if (AGENT_SLUG_SET.has(slug)) return slug;
+  }
+  return null;
+}
+
 export interface MoaLevelGateDeps {
   hqWorkspaceId: () => string | null;
   level: () => MoaLevel;
   /** The active contract's id and human-only list when it currently grants
    *  powers; null otherwise. */
-  activeGoal: () => { goalId: string; humanOnly: readonly string[]; scope?: readonly string[] } | null;
+  activeGoal: () => { goalId: string; humanOnly: readonly string[]; scope?: readonly string[]; tasks?: readonly string[] } | null;
   /** Which workspace owns a pane (the same mirror/renderer lookup the input
    *  handlers' ownership check uses). Absent or failing: unknown. */
   ptyOwner?: (ptyId: string) => Promise<string | null>;
@@ -110,6 +157,9 @@ export interface MoaLevelGateDeps {
   paneOwner?: (paneId: string) => Promise<string | null>;
   /** The member workspaces of a channel, read as the HQ; null when unreadable. */
   channelMembers?: (hqWorkspaceId: string, channelId: string) => Promise<string[] | null>;
+  /** Whether a session is the goal worker main spawned (goalWorkerSessions.ts).
+   *  Absent: no session is, so typing into a goal task pane is refused. */
+  goalWorkerSession?: (ptyId: string) => boolean;
   /** What Moa typed into a terminal without submitting it, per target, so a
    *  line split across input.send calls (`git pu` + `sh`) and submitted with
    *  input.sendKey is screened as one line. setMoaLevelGate supplies one;
@@ -136,7 +186,19 @@ export function moaLevelRefusal(
   const goal = deps.activeGoal();
   if (!goal) return null;
   const refuse = (hit: { rule: string; match: string }): string =>
-    `method ${method} is refused under goal ${goal.goalId}: the text asks for something that stays the operator's (${hit.rule}: "${hit.match}"). Leave that step out and raise it with deck_ask_decision.`;
+    hit.rule === 'agent-launch'
+      ? `method ${method} is refused under goal ${goal.goalId}: the line starts an agent CLI (${hit.match}) by hand, and an agent started that way runs without the goal's deny rules and credential friction. Start goal work with fanout_start; to restart a task's agent, ask the operator with deck_ask_decision.`
+      : `method ${method} is refused under goal ${goal.goalId}: the text asks for something that stays the operator's (${hit.rule}: "${hit.match}"). Leave that step out and raise it with deck_ask_decision.`;
+  // A submitted terminal line is screened for the hard rules and for an agent
+  // launch (live dogfood 2026-10-10: a goal worker's shell died, came back as
+  // a plain shell, and Moa typed `claude "…"` into it; that agent's push went
+  // through).
+  const lineHit = (line: string): { rule: string; match: string } | null => {
+    const hit = goalHardRuleHit(line, goal.humanOnly);
+    if (hit) return hit;
+    const agent = agentLaunchIn(line);
+    return agent ? { rule: 'agent-launch', match: agent } : null;
+  };
   const key = typedKey(params);
   const typed = deps.typed;
 
@@ -148,7 +210,7 @@ export function moaLevelRefusal(
     if (SUBMIT_KEYS.has(k)) {
       const line = typed.get(key) ?? '';
       typed.delete(key);
-      const hit = line ? goalHardRuleHit(line, goal.humanOnly) : null;
+      const hit = line ? lineHit(line) : null;
       return hit ? refuse(hit) : null;
     }
     if (DISCARD_KEYS.has(k)) typed.delete(key);
@@ -160,10 +222,21 @@ export function moaLevelRefusal(
   if (method === 'input.send') {
     const text = typeof params?.text === 'string' ? params.text : '';
     const prior = key && typed ? typed.get(key) ?? '' : '';
-    const hit = goalHardRuleHit(prior + text, goal.humanOnly);
+    const submitted = params?.submit === true || /[\r\n]/.test(text);
+    // A launch is read once the line is submitted: `codex` alone may still
+    // grow into prose before Enter, which then screens the whole line.
+    const hit = submitted ? lineHit(prior + text) : goalHardRuleHit(prior + text, goal.humanOnly);
+    if (hit) {
+      // The refused text never reaches the pane, but what was typed before it
+      // is still on the terminal's line: keep it, so retrying the same suffix
+      // is read as the same command again. Only ctrl+c (or Enter, which submits
+      // the harmless prefix) clears it. The gate never writes to the
+      // pane itself to clear the line: it only refuses, and no one key clears
+      // a line in every shell.
+      return `${refuse(hit)}${prior ? ' The line still holds unsubmitted text; send ctrl+c to discard it.' : ''}`;
+    }
     if (key && typed) {
-      const submitted = params?.submit === true || /[\r\n]/.test(text);
-      if (hit || submitted) {
+      if (submitted) {
         typed.delete(key);
       } else {
         typed.delete(key); // re-insert: most recent last, for the size bound
@@ -175,7 +248,7 @@ export function moaLevelRefusal(
         }
       }
     }
-    return hit ? refuse(hit) : null;
+    return null;
   }
 
   const hit = goalHardRuleHitAny((fields ?? []).map((f) => params?.[f]), goal.humanOnly);
@@ -240,12 +313,12 @@ function str(v: unknown): string | null {
 
 /** The workspaces Moa may reach directly under the active goal, or null when
  *  no goal is active for this HQ (today's lane). Pure over `deps`. */
-export function moaGoalScopeOf(deps: MoaLevelGateDeps, workspaceId: string): { goalId: string; scope: string[] } | null {
+export function moaGoalScopeOf(deps: MoaLevelGateDeps, workspaceId: string): { goalId: string; scope: string[]; tasks: string[] } | null {
   const hq = deps.hqWorkspaceId();
   if (!hq || workspaceId !== hq || deps.level() < 2) return null;
   const goal = deps.activeGoal();
   if (!goal) return null;
-  return { goalId: goal.goalId, scope: [...new Set([hq, ...(goal.scope ?? [])])] };
+  return { goalId: goal.goalId, scope: [...new Set([hq, ...(goal.scope ?? [])])], tasks: [...(goal.tasks ?? [])] };
 }
 
 /** The refusal for a direct send outside the contract, or null. */
@@ -282,6 +355,13 @@ export async function moaScopeRefusal(
       } else {
         target = str(p.workspaceId);
         if (!target) return unknown('no pane or workspace was named');
+      }
+      // A task the goal fanned out: only the session the fan-out spawned with
+      // the goal worker profile. A recreated or extra shell in that workspace
+      // has no profile, and an agent Moa starts there would have none either.
+      if (g.scope.includes(target) && g.tasks.includes(target) && !(pty && deps.goalWorkerSession?.(pty) === true)) {
+        return `method ${method} is refused under goal ${g.goalId}: ${pty ? `pane ${pty}` : `the pane Moa would type into in ${target}`} is not the goal worker session the goal's fan-out started (its shell was recreated, or it is another shell in the task's workspace), so it runs without the goal worker profile. `
+          + `${pty ? '' : 'Name the pane with its ptyId. '}Ask the operator with deck_ask_decision; they can restart the task's agent themselves.`;
       }
       break;
     }

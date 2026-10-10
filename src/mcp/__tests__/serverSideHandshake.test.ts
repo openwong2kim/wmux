@@ -24,7 +24,9 @@ describe('MCP server-side identity handshake (source-level invariant)', () => {
     // sends process.pid directly; the shim asserts its pid in the broker
     // handshake (the shim sits in the agent's tree where the old child sat,
     // so the walk main runs is over the same ancestry).
-    expect(src).toMatch(/a2a\.resolve\.identity[\s\S]{0,120}callerPid:\s*ctx\.callerPid/);
+    // A shared Codex app-server thread call sends its thread id instead, so
+    // the pid rides the non-thread branch of the same call.
+    expect(src).toMatch(/a2a\.resolve\.identity[\s\S]{0,240}callerPid:\s*ctx\.callerPid/);
     const entrySrc = fs
       .readFileSync(path.join(__dirname, '..', 'entry.ts'), 'utf-8')
       .replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');

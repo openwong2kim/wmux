@@ -234,6 +234,8 @@ describe('browser navigation MCP workspace contract', () => {
 
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain('[BROWSER_TABS_WORKSPACE_UNRESOLVED]');
+    // The resolver's reason (and what to do about it) reaches the caller.
+    expect(result.content[0].text).toContain('identity unavailable');
     expect(mockSendRpc).not.toHaveBeenCalled();
   });
 

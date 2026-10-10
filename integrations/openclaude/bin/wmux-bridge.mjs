@@ -302,6 +302,15 @@ function extractPermissionModeFromTranscript(transcriptPath) {
 }
 
 // Derive session id from transcript filename (stable across --resume).
+// CLAUDE_CODE_ENTRYPOINT → 'interactive' | 'headless' | 'unknown' | 'absent';
+// the same classifier as the Claude bridge.
+function classifyEntrypoint(entrypoint) {
+  if (!entrypoint) return 'absent';
+  if (entrypoint === 'cli' || entrypoint === 'vscode' || entrypoint === 'jetbrains') return 'interactive';
+  if (entrypoint.startsWith('sdk-') || entrypoint === 'mcp') return 'headless';
+  return 'unknown';
+}
+
 function sessionIdFromTranscript(transcriptPath, fallback) {
   if (typeof transcriptPath === 'string' && transcriptPath.length > 0) {
     const base = transcriptPath.split(/[\\/]/).pop() ?? '';
@@ -469,6 +478,22 @@ async function main() {
     return; // exit 0 below
   }
 
+  // A headless run nested in a pane (`-p` started by the pane's own agent)
+  // inherits WMUX_PTY_ID, so its hooks name the HOST pane. Same rule as the
+  // Claude bridge: a known headless entrypoint sends nothing (an id-less Stop
+  // would still raise the host pane's completion on an older daemon); an
+  // unknown one is sent without a session id or transcript path; an absent one
+  // is left for the daemon to judge.
+  const entrypoint = typeof process.env.CLAUDE_CODE_ENTRYPOINT === 'string'
+    && process.env.CLAUDE_CODE_ENTRYPOINT.length > 0
+    ? process.env.CLAUDE_CODE_ENTRYPOINT
+    : undefined;
+  const entrypointClass = classifyEntrypoint(entrypoint);
+  if (entrypointClass === 'headless') {
+    logEvent('headless-skipped', { hook: hookName, entrypoint });
+    return;
+  }
+
   let payload;
   try {
     payload = await readStdin();
@@ -502,6 +527,13 @@ async function main() {
   const payloadCwd = (payload && typeof payload.cwd === 'string' && payload.cwd.length > 0)
     ? payload.cwd
     : null;
+
+  if (entrypointClass === 'unknown' && payload) {
+    payload = { ...payload };
+    delete payload.transcript_path;
+    delete payload.session_id;
+    logEvent('unknown-entrypoint', { hook: hookName, entrypoint });
+  }
 
   // Token usage extraction from transcript_path.
   const transcriptPath = (payload && typeof payload.transcript_path === 'string' && payload.transcript_path.length > 0)
@@ -548,6 +580,9 @@ async function main() {
     workspaceId: envWorkspaceId,
     surfaceId: envSurfaceId,
     ptyId: envPtyId,
+    ...(entrypoint ? { entrypoint } : {}),
+    // OBSERVATIONAL, macOS only: see the Claude bridge.
+    ...(process.platform === 'darwin' ? { agentPid: process.ppid } : {}),
     cwd: payloadCwd ?? process.cwd(),
     payload: {
       ...(payload ?? {}),

@@ -130,6 +130,15 @@ export function parseTranscriptLineDetailed(
     return single(metaEvent(baseId, ts, 'subagent', 'Subagent thread'), empty);
   }
 
+  // After a compact (`/compact` or auto), Claude Code writes the summary of
+  // the earlier conversation as a `user` entry flagged `isCompactSummary`. The
+  // model wrote it, not the operator: as `user_text` it rendered as a "You"
+  // bubble and opened a new turn. It is a quiet row instead, and its body (a
+  // summary of everything before) does not cross the wire.
+  if (isUser && entry['isCompactSummary'] === true) {
+    return single(metaEvent(baseId, ts, 'caveat', 'Conversation compacted'), empty);
+  }
+
   const content = message?.['content'];
   const parsed = isUser
     ? parseUserEntry(entry, content, baseId, ts, offsetHint)

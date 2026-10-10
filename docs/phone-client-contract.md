@@ -378,7 +378,7 @@ GET /api/events?since=<cursor>     (Bearer)
 
 ```
 GET /api/config    → {allowInput, allowUpload, allowTranscript, inlineImages?, liveActivityPush?,
-                      gatedTools, gateEnabled?, fleetSidebar?, moaDelegations?, moa?, moaSessionId?, moaWake?,
+                      gatedTools, gateEnabled?, fleetSidebar?, moaDelegations?, fleetTickets?, moa?, moaSessionId?, moaWake?,
                       moaWakeBlocked?, channels?, terminalPromptDetail?,
                       terminalPromptDecline?, protocolVersion, minProtocolVersion,
                       serverVersion, hostPlatform}
@@ -1202,6 +1202,7 @@ above and gives the same record; only what the rows must spell differs:
 | `<Tool> command` (`Bash command`) | the tool | the command | the command (and its description) | `Do you want to proceed?` | `Yes`, a plain `No` |
 | `Fetch` | `WebFetch` | the URL | `url: <url>` and `prompt: <prompt>` in the dashed box; the URL as Claude parses it (`https://example.com` → `https://example.com/`) | `Do you want to allow Claude to fetch this content?` | `1. Yes`, `3. No, and tell Claude what to do differently (esc)` |
 | `Read file` | `Read` | the path | `Read(<path>)` in the dashed box | `Do you want to proceed?` | `1. Yes`, `3. No` |
+| `Tool use` (2.1.296), with the box starting `Web Search(` | `WebSearch` | the query, then `(only allowing domains: <domain>)` when the call has one | `Web Search("<query>")` in the dashed box, the query verbatim; one allowed domain adds `, only allowing domains: <domain>` before the `)` | `Do you want to proceed?` | `1. Yes` only: deny with `/decline` (Esc) |
 
 The Fetch dialog draws no `Esc to cancel` footer: it is active when nothing but
 blank rows follows its options, and a narrow pane wraps its question over two
@@ -1209,6 +1210,20 @@ rows (read as one). Fetch and Read dialogs bind only with their title on screen,
 never with the top scrolled off. Their option 2 (`Yes, and don't ask again for
 <host>`, `Yes, allow reading from <dir> during this session`) is never a
 choice. Other titles (`Edit file`, `Create file`) stay informational.
+
+`Tool use` is Claude's generic title: only the box's first row names the tool,
+and a `Tool use` dialog for anything else stays informational. A WebSearch
+record's `choices` hold the Yes alone, in every layout: its option 2 is the
+standing grant in a pane 80 columns or wider and `No` in a 50-column one, so
+the record is denied only with `POST /api/approvals/<id>/decline`. A WebSearch
+call with two or more allowed domains, blocked domains, or another `mode` is
+not a measured shape and stays informational.
+
+A row the TUI cut (ending in `…`) still makes a dialog unanswerable, with one
+exception: an option whose visible text already says it writes a lasting rule
+or switches the permission mode (WebSearch's `2. Yes, and don't ask again for
+Web Search commands in <cwd>…`). It is never a choice, so its cut does not
+hide anything a key would press.
 
 `choices` then holds only the plain `Yes` and a plain `No` (`No`, or `No, …`
 such as "No, and tell Claude what to do differently"). An option that writes a
@@ -3248,8 +3263,9 @@ The pre-existing `GET /api/workspaces` remains the daemon's live-pane roster
 from the input-gated desktop registry. New pane selection uses the live roster's
 IDs even on older hosts; opening a newly created desktop workspace uses
 `/api/desktop-workspaces` to resolve its active pane. While the desktop is
-attached the roster also carries the sidebar fields below; its rows are still
-exactly the workspaces with a live pane.
+attached the roster also carries the sidebar fields below, plus one `empty`
+row for each desktop workspace with no live pane (see *Workspaces with no
+terminal* below).
 
 ### Desktop sidebar fields (phone Fleet)
 
@@ -3276,9 +3292,37 @@ as "the desktop did not say" and fall back to what you draw without it; fields
 may appear or disappear between polls, and may lag the desktop by a second or
 two.
 
-Nothing is added: the fields are merged by id onto rows the daemon already
-lists. A desktop-only workspace with no live pane never becomes a row, and the
-orchestrator brain's pane and workspace stay excluded exactly as before.
+The fields are merged by id onto rows the daemon already lists. The one
+addition is the `empty` row below; the orchestrator brain's pane and workspace
+stay excluded exactly as before.
+
+#### Workspaces with no terminal (`empty: true`)
+
+While the desktop is attached, `GET /api/workspaces` also lists each workspace
+the desktop sidebar shows that has **no live pane**, after the live rows:
+
+```json
+{ "id": "ws-…", "name": "", "panes": [], "empty": true, "order": 3, "pinned": false }
+```
+
+- `empty` is only ever `true`, and then `panes` is `[]`. A row with panes never
+  carries it.
+- `name` is `""`: a workspace name reaches the daemon only in a pane's spawn
+  environment, so a workspace with no pane has none here. Label the row by its
+  id or leave it out.
+- It carries the desktop fields above (`order`, `pinned`, `color`, `gitBranch`,
+  …) but never `layout`, never `paneId`s, and it is never `activeWorkspaceId`.
+- Moa's HQ, a workspace whose only pane is the orchestrator brain, a fan-out
+  task workspace, and a workspace the desktop still lists any pane for (one
+  whose session has ended, say) are never listed this way.
+- No desktop (the host app is closed, or its window is locked, occluded or
+  headless and the snapshot lapsed): no `empty` rows. The list is then exactly
+  the live rows, as before.
+
+Nothing can be opened in an `empty` row. A client that groups host → workspace
+→ pane should either skip rows with `panes: []` or draw them as a quiet,
+non-interactive "no terminal" row; a client that assumed every row had at least
+one pane must not index `panes[0]` on them. Older daemons never send the key.
 
 `GET /api/sessions`, per session:
 
@@ -3378,11 +3422,29 @@ not the desktop fields.
   the phone. It disappears on the next poll after the card is answered.
   Omitted, never `null`, when nothing is pending, when the desktop is too old
   to say, and when the desktop's reply was over its size budget (it is cut
-  after the layout trees and `moaDelegations`, before the pane placement).
+  after `fleetTickets`, the layout trees and `moaDelegations`, before the pane
+  placement).
 
 Each `panes[]` entry of `GET /api/workspaces` also carries `paneId` (same
 value and rules as on `GET /api/sessions`) when the desktop places that
 session in a pane of that workspace.
+
+Beside `paneId`, under the same condition, a `panes[]` entry also carries:
+
+- `paneName` — the desktop sidebar's name for that pane: the user's label, or
+  its `w1-1` coordinate. Same text as `panes[].paneName` in the sidebar
+  snapshot. Absent when the desktop has none for it.
+- `surfaceTitle` — the tab's title as the desktop sidebar's pane row reads it
+  (a tab still titled after the shell that hosts an agent is left out).
+
+And on every `panes[]` entry, desktop or not:
+
+- `lastActivity` — ISO 8601 time of the session's last output (the same stamp
+  `GET /api/sessions` reports as `lastActivity`), for an "idle 10m" label.
+
+All three are additive and optional: older daemons never send them, and a
+pane that has nothing to report omits the key rather than sending an empty
+string. Nothing else in the row changes.
 
 Top level of `GET /api/workspaces`: `activeWorkspaceId` — the workspace the
 desktop is showing, present only when it is one of the listed rows.
@@ -3427,11 +3489,122 @@ wired); like `fleetSidebar` it describes support, not presence. Read-only:
   move it.
 
 The request text, the agent's report, its verification and any transcript are
-never sent. The key is an empty array when the desktop has no such jobs, and
-omitted, never `null`, when the desktop is too old to say, when it could not
-read its job records for this poll, and when its reply was over its size
-budget (the list goes whole, right after the layout trees). Read an absent key
+never sent in `moaDelegations`, and that stays true. The same jobs' text now
+travels only in `fleetTickets` (below), and only from a server started with
+`--allow-transcript`. The key is an empty array when the desktop has no such
+jobs, and omitted, never `null`, when the desktop is too old to say, when it
+could not read its job records for this poll, and when its reply was over its
+size budget (the list goes whole, right after the layout trees). Read an absent key
 as "unknown", not as "no jobs": keep showing what the last poll returned.
+
+#### Fleet tickets (`fleetTickets`, `nextScheduleAt`)
+
+Top level of `GET /api/workspaces`: `fleetTickets` — every delegated job the
+desktop Fleet shows as a ticket, of any origin, for a "what needs doing"
+screen. `/api/config` carries `fleetTickets: true` when this daemon can serve
+the key, the next-run key and the detail route below (a desktop bridge is
+wired); like `moaDelegations` it describes support, not presence. Read-only:
+
+```json
+"fleetTickets": [
+  { "id": "handoff:dec-…", "origin": "handoff", "workspaceId": "ws-…",
+    "workspaceName": "api", "agentName": "Claude Code",
+    "title": "Fix the login redirect", "state": "needs-you",
+    "updatedAt": 1759600000000, "requestLine": "Fix the login redirect" },
+  { "id": "wl-…", "taskId": "task-…", "origin": "manual", "workspaceId": "ws-…",
+    "workspaceName": "wtask: retry test", "agentName": "Codex CLI",
+    "title": "Add the retry test", "state": "done", "updatedAt": 1759590000000,
+    "requestLine": "Add a test for the retry path", "resultSummary": "Added and green",
+    "verification": "3/4" }
+]
+```
+
+- **Which tickets.** The desktop Fleet's own list: every job carried by an A2A
+  task (a send between workspaces, a `wtask` worker, a Git page issue, a Moa
+  hand-off) plus every Moa hand-off still waiting on the operator's click. A
+  plain chat message is never a ticket. Every open ticket however old, plus
+  tickets that ended (`done`, `failed`) within the last 24 hours. At most 30,
+  in the desktop's order: `needs-you` first, then `failed`, `working`,
+  `queued`, `done`, newest `updatedAt` first within each.
+- `id` — the desktop ticket id, stable for the ticket's life; key rows and the
+  detail route by it. A hand-off card's id is `handoff:<decision id>`; once
+  the operator hands it off, that row goes and a new one (the job) appears.
+- `taskId` — the A2A task carrying the job; absent on a hand-off card.
+- `origin` — `moa`, `moa-auto` (handed off without a click), `manual` (a
+  send between workspaces, `wtask` workers included), `issue`, `pr`, or
+  `handoff` (a proposal not yet handed off). Treat an unknown value as
+  `manual`.
+- `workspaceId` — the workspace doing the work; it may not be in
+  `workspaces[]` (finished workers' workspaces are often closed).
+- `workspaceName` — that workspace's name (at most 100 characters). The
+  desktop remembers it after the workspace closes, for as long as it keeps
+  the ticket in memory (it is lost when the desktop restarts). Absent when not
+  known.
+- `agentName` — the agent's display name (at most 64 characters), when known.
+- `title` — one line, at most 80 characters (`Untitled task` when none).
+  Agent-derived: a task sent without a title is titled by its request's first
+  words. Without `--allow-transcript` it is replaced by a fixed label for the
+  origin (`Moa task`, `Task`, `Issue task`, `Pull request task`, `Hand-off
+  waiting`).
+- `state` — `queued`, `working`, `needs-you`, `done` or `failed`, the
+  desktop's own words. `needs-you` means a decision or an input waits on the
+  operator; send the user to the desktop to answer it. Treat an unknown value
+  as `working` (this daemon already maps a word from a newer desktop that way,
+  and an unknown `origin` to `manual`, rather than dropping the row).
+- `updatedAt` — epoch ms the ticket last changed on the desktop's record. A
+  ticket's final report is new when `updatedAt` is: the phone keeps its own
+  "seen" mark per `id` and `updatedAt` (nothing on the server records it).
+- `requestLine` — the request's first non-blank line, at most 160 characters.
+- `resultSummary` — the final report's first non-blank line, at most 240
+  characters; only on `done` and `failed`.
+- `verification` — verified evidence items over all items, e.g. `"3/4"`; only
+  on `done` and `failed`, and only when the worker attached evidence.
+
+`title`, `requestLine`, `resultSummary` and `verification` are agent-authored
+text. A server started without `--allow-transcript` (the same gate as history
+and `/turns`) leaves the last three out, sends the fixed label as `title`, and
+sends the rest as is. Every
+string is one line with control and bidi characters removed. The key is an
+empty array when there are no tickets, and omitted, never `null`, when the
+desktop is away or too old to say, when it could not read its job records
+for this poll, and when its reply was over its size budget (the text fields go
+first — `title` becoming the fixed label — then the list whole, before any
+older field). Read an
+absent key as "unknown": keep showing what the last poll returned.
+
+Top level of `GET /api/workspaces`: `nextScheduleAt` — epoch ms of the
+earliest next run among the enabled schedules, as the desktop's schedule
+list shows it. Omitted when no enabled schedule has a next run, and while the
+desktop is away (the value comes from the desktop's copy of the schedules).
+It can be briefly in the past while a run is starting.
+
+```
+GET /api/fleet/tickets/<id>   (Bearer; id URL-encoded)
+  → 200 {ticket: {id, updatedAt, request?, result?, verification?,
+                  verificationItems?: [{kind, status, summary, command?, location?}]}}
+  → 403 {error: "transcript-disabled"}   server started without --allow-transcript
+  → 404 {error: "ticket-not-found"}      unknown id, or one past the desktop's window
+  → 503 {error: "desktop-unavailable"}   no desktop attached, one too old for details,
+                                         or one that could not read its tickets just now
+  → 504 {error: "desktop-timeout"} / 502 {error: "desktop-bad-reply"}
+```
+
+One ticket's full text, all of it agent-authored, so the whole route is behind
+`--allow-transcript` (the 403 comes before any lookup, so it says nothing
+about whether the id exists). `request` is the request as sent and `result`
+the final report, both multi-line (`\n` only; other control and bidi
+characters removed) and at most 4000 characters. `verificationItems` holds at
+most 16 evidence items: `kind` is `command`, `inspection` or `artifact`;
+`status` is `passed` / `failed` for a command and `verified` / `unverified`
+otherwise; `summary`, `command` (commands) and `location` (the others) are one
+line, at most 200 characters each. Any field may be absent: a ticket that has
+not ended has no `result`, and the desktop keeps a ticket's text in memory
+only (at most 50 tickets; a finished one until 24 hours after it ended, the
+same window as the list, then the route answers 404), so
+after a desktop restart a finished ticket's request and evidence may be gone
+while its report (kept on the desktop's job record) remains. `updatedAt` is
+the ticket version the detail belongs to; refetch when the list's
+`updatedAt` moves. Responses are `Cache-Control: no-store`.
 
 #### The Moa HQ (`role`, `moa`)
 

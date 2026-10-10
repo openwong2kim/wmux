@@ -32,6 +32,10 @@ export interface PersistedCommanderSession {
   sessionId: string;
   /** ISO timestamp of the last persist — surfaced to the P3b greeting later. */
   updatedAt: string;
+  /** The account the conversation runs on: an account id, null for the
+   *  default login, absent when unknown (saved before accounts were recorded).
+   *  A resume runs there even if the workspace was rebound since (#2029). */
+  accountId?: string | null;
 }
 
 interface CommanderSessionsFile {
@@ -41,6 +45,16 @@ interface CommanderSessionsFile {
 
 export function getCommanderSessionPath(dir: string = getWmuxDir()): string {
   return path.join(dir, 'deck-commander.json');
+}
+
+/** The persisted account of one entry. `rotatedAccountId` is the pre-#2029
+ *  key, written only for conversations quota rotation moved; it carries the
+ *  same meaning for those. */
+function readAccountId(o: Record<string, unknown>): Pick<PersistedCommanderSession, 'accountId'> {
+  if (o.accountId === null) return { accountId: null };
+  if (typeof o.accountId === 'string' && o.accountId) return { accountId: o.accountId };
+  if (typeof o.rotatedAccountId === 'string' && o.rotatedAccountId) return { accountId: o.rotatedAccountId };
+  return {};
 }
 
 function readSessionsFile(dir?: string): Record<string, PersistedCommanderSession> {
@@ -62,6 +76,7 @@ function readSessionsFile(dir?: string): Record<string, PersistedCommanderSessio
     out[wsId] = {
       sessionId: o.sessionId,
       updatedAt: typeof o.updatedAt === 'string' ? o.updatedAt : '',
+      ...readAccountId(o),
     };
   }
   return out;
@@ -87,11 +102,16 @@ export async function saveCommanderSession(
   workspaceId: string,
   sessionId: string,
   dir?: string,
+  accountId?: string | null,
 ): Promise<void> {
   if (!workspaceId) return;
   await serialize(async () => {
     const sessions = readSessionsFile(dir);
-    sessions[workspaceId] = { sessionId, updatedAt: new Date().toISOString() };
+    sessions[workspaceId] = {
+      sessionId,
+      updatedAt: new Date().toISOString(),
+      ...(accountId !== undefined ? { accountId } : {}),
+    };
     const record: CommanderSessionsFile = { sessions };
     await atomicWriteJSON(getCommanderSessionPath(dir), record);
   });

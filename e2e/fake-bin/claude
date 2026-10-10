@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Fake `claude` for the e2e harness: no model, no network.
+# --version answers like the real CLI. Started as a fan-out worker (its cwd
+# is a git worktree), it runs the scenario's script $WMUX_E2E_WORKER_SCRIPT
+# (or $HOME/.e2e-worker.sh) once, then idles like an interactive session.
+case "${1:-}" in
+  --version|-v) echo "2.1.300 (Claude Code)"; exit 0 ;;
+esac
+log="${HOME}/.e2e-fake-claude.log"
+echo "$(date +%s) cwd=$PWD args=$*" >> "$log"
+script="${WMUX_E2E_WORKER_SCRIPT:-$HOME/.e2e-worker.sh}"
+if [ -f "$PWD/.git" ] && [ -f "$script" ]; then
+  bash "$script" >> "$log" 2>&1
+  echo "$(date +%s) worker script exit=$?" >> "$log"
+fi
+echo "fake claude idle"
+exec sleep 3600

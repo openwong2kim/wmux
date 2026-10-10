@@ -15,6 +15,7 @@ import { takeGuideAnnouncement } from './guideAnnounce';
 import { redactPasswordParams } from './redact';
 import { invalidateSnapshotBaseline, invalidateSnapshotBaselineIfStale } from './snapshotCache';
 import { PlaywrightEngine } from './PlaywrightEngine';
+import { drainDialogNotes, renderModalBlock } from './modalState';
 import {
   isServable,
   normalizeUrlKey,
@@ -148,6 +149,19 @@ function prependBrowserEvents<T>(result: T, events: LifecycleEventWire[]): T {
     // tool's own first line ("...(24s ago)Navigated to https://...").
     text: `[browser events]\n${lines.join('\n')}\n`,
   });
+  return result;
+}
+
+/**
+ * Prepend a [modal] note for each dialog that appeared on this surface since
+ * the last result, error results included. Drained after the body, so a
+ * dialog the body's own action raised is reported in the same result.
+ */
+function prependModalNotes<T>(result: T, scope: BrowserTargetScope): T {
+  const shaped = result as { content?: Array<{ type: string; text?: string }> } | null | undefined;
+  if (!shaped || !Array.isArray(shaped.content)) return result;
+  const notes = drainDialogNotes(scope.workspaceId, scope.surfaceId);
+  if (notes.length > 0) shaped.content.unshift({ type: 'text', text: renderModalBlock(notes) });
   return result;
 }
 
@@ -412,7 +426,7 @@ export async function withAutomationLease<T>(
     (lateRenew as { unref?: () => void }).unref?.();
     const lateEvents = await drainLifecycleEvents(scope);
     try {
-      const result = await fn(scope);
+      const result = prependModalNotes(await fn(scope), scope);
       // Post-drain runs in the return expression, i.e. still inside this
       // finally's lease bracket — browser.lifecycle.get is a leased RPC and
       // must not hit a re-throttled guest.
@@ -446,7 +460,7 @@ export async function withAutomationLease<T>(
 
   const events = await drainLifecycleEvents(scope);
   try {
-    const result = await fn(scope);
+    const result = prependModalNotes(await fn(scope), scope);
     // Post-drain still inside the lease bracket (see the late-acquire branch).
     const postEvents = await drainLifecycleEventsPost(scope);
     const withEvents = prependBrowserEvents(
@@ -484,15 +498,27 @@ export async function leasedMutation<T extends CallToolResult>(
   opts?: AutomationLeaseOpts<T>,
 ): Promise<T | CallToolResult> {
   const effect = createEffectProbe();
+  let settled: BrowserTargetScope | undefined;
   try {
-    return await withAutomationLease(deps, surfaceId, (scope) => body(scope, effect), opts);
+    return await withAutomationLease(
+      deps,
+      surfaceId,
+      (scope) => {
+        settled = scope;
+        return body(scope, effect);
+      },
+      opts,
+    );
   } catch (error) {
-    return withEffectTrailer(
+    const failed = withEffectTrailer(
       {
         content: [{ type: 'text' as const, text: describeToolError(error) }],
         isError: true,
       },
       effect.failure(error),
     );
+    // A body that threw past its own catch skipped the lease's drain; a dialog
+    // its action raised is reported here instead of one call late.
+    return settled ? prependModalNotes(failed, settled) : failed;
   }
 }

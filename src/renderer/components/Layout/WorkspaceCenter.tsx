@@ -13,8 +13,11 @@ import {
   selectAttachedRemoteWorkspaces,
 } from '../../stores/slices/remoteWorkspacesSlice';
 import SchedulesHost from '../Schedules/SchedulesHost';
+import { selectHostPickName } from '../../stores/shadowWorkspace';
+import { useT } from '../../hooks/useT';
 
 export function WorkspaceCenter() {
+  const t = useT();
   // #1329 — the ephemeral rows behind remote-terminal PANES are poll inputs,
   // not mirrors. Mounting one would open a second RemoteWorkspaceView onto the
   // same host and double-attach the SSE stream the pane is already reading.
@@ -26,6 +29,10 @@ export function WorkspaceCenter() {
   // drops activeRemoteKey in the store (activateLocalWorkspace), so the local
   // tree comes back on the FIRST click.
   const remoteVisible = useStore(isRemoteMirrorVisible);
+  // PC rail: with a paired computer selected, the centre never shows this
+  // computer's panes. Until one of that computer's workspaces is open (its
+  // shadow is active) it asks for one; the local tree stays mounted, hidden.
+  const pickOnHost = useStore(selectHostPickName);
 
   return (
     <div className="wmux-workspace-frame flex-1 min-h-0 relative">
@@ -35,7 +42,7 @@ export function WorkspaceCenter() {
       <div
         className="absolute inset-0 flex flex-col"
         data-pane-grid-wrapper
-        style={{ display: remoteVisible ? 'none' : 'flex' }}
+        style={{ display: remoteVisible || pickOnHost !== null ? 'none' : 'flex' }}
       >
         <WorkspaceViewport />
       </div>
@@ -47,11 +54,16 @@ export function WorkspaceCenter() {
         <div
           key={rw.key}
           className="absolute inset-0 flex flex-col"
-          style={{ display: remoteVisible && rw.key === activeRemoteKey ? 'flex' : 'none' }}
+          style={{ display: remoteVisible && pickOnHost === null && rw.key === activeRemoteKey ? 'flex' : 'none' }}
         >
           <RemoteWorkspaceView workspace={rw} />
         </div>
       ))}
+      {pickOnHost !== null && (
+        <div className="absolute inset-0 flex items-center justify-center" data-pick-on-host>
+          <p className="text-[13px] text-[var(--text-muted)]">{t('pcRail.pickWorkspace', { name: pickOnHost })}</p>
+        </div>
+      )}
       <SchedulesHost />
     </div>
   );

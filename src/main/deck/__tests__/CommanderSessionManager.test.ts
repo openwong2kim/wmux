@@ -113,6 +113,16 @@ describe('CommanderSessionManager', () => {
     await turn;
   });
 
+  it('persists the account the conversation runs on with its session id', async () => {
+    const adapter = new FakeAdapter();
+    Object.defineProperty(adapter, 'conversationAccountId', { value: 'acc-2' });
+    const onSessionId = vi.fn();
+    const mgr = new CommanderSessionManager({ adapter, sink: vi.fn(), onSessionId });
+    adapter.setScript([{ type: 'turn-end', sessionId: 'sess-1' }]);
+    await mgr.send('one');
+    expect(onSessionId).toHaveBeenCalledWith('sess-1', 'acc-2');
+  });
+
   it('fires onSessionId once per NEW session id (P3a persistence hook)', async () => {
     const adapter = new FakeAdapter();
     const onSessionId = vi.fn();
@@ -121,7 +131,8 @@ describe('CommanderSessionManager', () => {
     adapter.setScript([{ type: 'turn-end', sessionId: 'sess-1' }]);
     await mgr.send('one');
     expect(onSessionId).toHaveBeenCalledTimes(1);
-    expect(onSessionId).toHaveBeenCalledWith('sess-1');
+    // FakeAdapter does not track its account → unknown.
+    expect(onSessionId).toHaveBeenCalledWith('sess-1', undefined);
 
     // Same id again → deduped, no redundant persist.
     await mgr.send('two');
@@ -131,7 +142,7 @@ describe('CommanderSessionManager', () => {
     adapter.setScript([{ type: 'turn-end', sessionId: 'sess-2' }]);
     await mgr.send('three');
     expect(onSessionId).toHaveBeenCalledTimes(2);
-    expect(onSessionId).toHaveBeenLastCalledWith('sess-2');
+    expect(onSessionId).toHaveBeenLastCalledWith('sess-2', undefined);
   });
 
   it('does not re-persist the seed id it was constructed with', async () => {
@@ -352,5 +363,374 @@ describe('CommanderSessionManager — turn origin (the no-click hand-off gate)',
     await mgr.send('remote wake', { origin: 'automation', remoteMoa: true });
     mgr.notifyForeignTurnStart();
     expect(mgr.turnWokenByRemoteMoa).toBe(false);
+  });
+});
+
+// The local read-only lane shares the normal reservation and stream without
+// creating, resuming, or modifying a provider conversation.
+describe('CommanderSessionManager — local-first answers', () => {
+  function deferred<T>() {
+    let resolve!: (value: T) => void;
+    let reject!: (error: Error) => void;
+    const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
+    return { promise, resolve, reject };
+  }
+
+  it('streams a local answer and its original prompt without starting or persisting the adapter', async () => {
+    const adapter = new FakeAdapter();
+    adapter.sessionId = 'existing-session';
+    const start = vi.spyOn(adapter, 'start');
+    const send = vi.spyOn(adapter, 'send');
+    const sink = vi.fn();
+    const onSessionId = vi.fn();
+    const mgr = new CommanderSessionManager({ adapter, sink, onSessionId });
+    const lookup = deferred<{ text: string }>();
+    const turn = mgr.send('Who needs me?', { origin: 'human' }, () => lookup.promise);
+    expect(mgr.getStatus()).toEqual({ status: 'busy', sessionId: 'existing-session' });
+    expect(mgr.turnOrigin).toBeNull();
+    lookup.resolve({ text: 'Two panes need your input.' });
+    expect(await turn).toEqual({ ok: true, localAnswer: { text: 'Two panes need your input.' } });
+    expect(sink.mock.calls.map(([event]) => event)).toEqual([
+      { type: 'text-delta', text: 'Two panes need your input.' },
+      {
+        type: 'turn-end', sessionId: 'existing-session',
+        localAnswer: { prompt: 'Who needs me?', text: 'Two panes need your input.' },
+      },
+    ]);
+    expect(start).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+    expect(onSessionId).not.toHaveBeenCalled();
+    expect(mgr.getStatus().status).toBe('idle');
+  });
+
+  it('reserves before awaiting local lookup and rejects concurrent provider and local turns', async () => {
+    const adapter = new FakeAdapter();
+    const mgr = new CommanderSessionManager({ adapter, sink: vi.fn() });
+    const lookup = deferred<{ text: string }>();
+    const secondLookup = vi.fn(async () => ({ text: 'must not run' }));
+    const first = mgr.send('first', { origin: 'human' }, () => lookup.promise);
+    expect(await mgr.send('wake', { origin: 'automation' })).toEqual({ ok: false, code: 'busy' });
+    expect(await mgr.send('second', {}, secondLookup)).toEqual({ ok: false, code: 'busy' });
+    expect(secondLookup).not.toHaveBeenCalled();
+    expect(mgr.turnOrigin).toBeNull();
+    lookup.resolve({ text: 'first answer' });
+    await first;
+  });
+
+  it.each(['miss', 'reject', 'throw', 'empty'] as const)('falls through exactly once on a local %s with the original turn options', async (outcome) => {
+    const adapter = new FakeAdapter();
+    adapter.setScript([{ type: 'turn-end', sessionId: 'provider-session' }]);
+    const start = vi.spyOn(adapter, 'start');
+    const send = vi.spyOn(adapter, 'send');
+    const sink = vi.fn();
+    const mgr = new CommanderSessionManager({ adapter, sink, startOptions: { systemPrompt: 'rules' } });
+    const localFirst = () => {
+      if (outcome === 'throw') throw new Error('local sync failure');
+      if (outcome === 'reject') return Promise.reject(new Error('renderer timed out'));
+      return Promise.resolve(outcome === 'empty' ? { text: ' ' } : null);
+    };
+    expect(await mgr.send(' original prompt ', { origin: 'automation' }, localFirst)).toEqual({ ok: true });
+    expect(start).toHaveBeenCalledExactlyOnceWith({ systemPrompt: 'rules' });
+    expect(send).toHaveBeenCalledExactlyOnceWith('original prompt', { origin: 'automation' });
+    expect(sink.mock.calls.map(([event]) => event)).toEqual([{ type: 'turn-end', sessionId: 'provider-session' }]);
+    expect(mgr.getStatus().status).toBe('idle');
+  });
+
+  it('permits lazy fallback context without adding it to a local answer prompt', async () => {
+    const adapter = new FakeAdapter();
+    adapter.setScript([{ type: 'turn-end', sessionId: null }]);
+    const send = vi.spyOn(adapter, 'send');
+    const mgr = new CommanderSessionManager({ adapter, sink: vi.fn() });
+    const turn = mgr.send('human prompt', { origin: 'human' }, async () => ({ fallbackText: '[rules]\n\nhuman prompt' }));
+    expect(mgr.getStatus().status).toBe('busy');
+    expect(await turn).toEqual({ ok: true });
+    expect(send).toHaveBeenCalledExactlyOnceWith('[rules]\n\nhuman prompt', { origin: 'human' });
+  });
+
+  it('does not consume lazy provider startup when the first turn is local', async () => {
+    const adapter = new FakeAdapter();
+    const start = vi.spyOn(adapter, 'start');
+    const mgr = new CommanderSessionManager({ adapter, sink: vi.fn(), startOptions: { resumeSessionId: 'saved' } });
+    await mgr.send('local', {}, async () => ({ text: 'answer' }));
+    expect(start).not.toHaveBeenCalled();
+    adapter.setScript([{ type: 'turn-end', sessionId: 'saved' }]);
+    await mgr.send('provider');
+    await mgr.send('provider again');
+    expect(start).toHaveBeenCalledExactlyOnceWith({ resumeSessionId: 'saved' });
+  });
+
+  it('finishes an interrupted local lookup even if its transport never settles, without provider fallback', async () => {
+    const adapter = new FakeAdapter();
+    const start = vi.spyOn(adapter, 'start');
+    const send = vi.spyOn(adapter, 'send');
+    const sink = vi.fn();
+    const mgr = new CommanderSessionManager({ adapter, sink });
+    let signal!: AbortSignal;
+    const turn = mgr.send('local', {}, (s) => {
+      signal = s;
+      return new Promise(() => undefined);
+    });
+    mgr.interrupt();
+    expect(signal.aborted).toBe(true);
+    expect(await turn).toEqual({ ok: true, code: 'errored' });
+    expect(sink).toHaveBeenCalledExactlyOnceWith({ type: 'error', message: 'command interrupted' });
+    expect(mgr.getStatus().status).toBe('idle');
+    expect(start).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+    expect(adapter.interruptCount).toBe(0);
+  });
+
+  it.each(['answer', 'miss', 'reject'] as const)('suppresses a late local %s after interrupt and permits the next turn', async (outcome) => {
+    const adapter = new FakeAdapter();
+    const sink = vi.fn();
+    const mgr = new CommanderSessionManager({ adapter, sink });
+    const lookup = deferred<{ text: string } | null>();
+    const oldTurn = mgr.send('old', {}, () => lookup.promise);
+    mgr.interrupt();
+    await oldTurn;
+    const next = await mgr.send('new', {}, async () => ({ text: 'new answer' }));
+    const eventsBefore = sink.mock.calls.length;
+    if (outcome === 'reject') lookup.reject(new Error('late failure'));
+    else lookup.resolve(outcome === 'answer' ? { text: 'stale answer' } : null);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(next).toEqual({ ok: true, localAnswer: { text: 'new answer' } });
+    expect(sink.mock.calls).toHaveLength(eventsBefore);
+    expect(adapter.started).toBeNull();
+  });
+
+  it('aborts a disposed local turn, emits no late events, and never wakes on idle', async () => {
+    const adapter = new FakeAdapter();
+    const sink = vi.fn();
+    const onIdle = vi.fn();
+    const deferredIdle: Array<() => void> = [];
+    const mgr = new CommanderSessionManager({ adapter, sink, onIdle, deferIdle: (fn) => deferredIdle.push(fn) });
+    const lookup = deferred<{ text: string }>();
+    let signal!: AbortSignal;
+    const turn = mgr.send('local', {}, (s) => { signal = s; return lookup.promise; });
+    mgr.dispose();
+    expect(signal.aborted).toBe(true);
+    expect(await turn).toEqual({ ok: true, code: 'errored' });
+    lookup.resolve({ text: 'late answer' });
+    await Promise.resolve();
+    expect(sink).not.toHaveBeenCalled();
+    expect(deferredIdle).toHaveLength(0);
+    expect(onIdle).not.toHaveBeenCalled();
+    expect(mgr.getStatus().status).toBe('disposed');
+    expect(adapter.disposed).toBe(true);
+  });
+
+  it('rechecks foreign adapter activity before fallback', async () => {
+    const adapter = Object.assign(new FakeAdapter(), { busy: false });
+    const start = vi.spyOn(adapter, 'start');
+    const send = vi.spyOn(adapter, 'send');
+    const sink = vi.fn();
+    const mgr = new CommanderSessionManager({ adapter, sink });
+    const lookup = deferred<null>();
+    const turn = mgr.send('local', {}, () => lookup.promise);
+    adapter.busy = true;
+    lookup.resolve(null);
+    expect(await turn).toEqual({ ok: true, code: 'errored' });
+    expect(start).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+    expect(sink).toHaveBeenCalledWith({ type: 'error', message: expect.stringContaining('already running') });
+    expect(mgr.getStatus().status).toBe('busy');
+    adapter.busy = false;
+    expect(mgr.getStatus().status).toBe('idle');
+  });
+
+  it('routes interrupt to the adapter once a miss has fallen through', async () => {
+    const adapter = new FakeAdapter();
+    const provider = deferred<void>();
+    adapter.hold(provider.promise);
+    adapter.setScript([{ type: 'turn-end', sessionId: null }]);
+    const send = vi.spyOn(adapter, 'send');
+    const mgr = new CommanderSessionManager({ adapter, sink: vi.fn() });
+    const turn = mgr.send('local miss', {}, async () => null);
+    // The local promise and race settle on separate microtasks.
+    while (send.mock.calls.length === 0) await Promise.resolve();
+    mgr.interrupt();
+    expect(adapter.interruptCount).toBe(1);
+    provider.resolve();
+    await turn;
+  });
+
+  it('defers the normal idle wake after a local answer', async () => {
+    const onIdle = vi.fn();
+    const queue: Array<() => void> = [];
+    const mgr = new CommanderSessionManager({ adapter: new FakeAdapter(), sink: vi.fn(), onIdle, deferIdle: (fn) => queue.push(fn) });
+    await mgr.send('local', {}, async () => ({ text: 'answer' }));
+    expect(mgr.getStatus().status).toBe('idle');
+    expect(onIdle).not.toHaveBeenCalled();
+    expect(queue).toHaveLength(1);
+    queue[0]();
+    expect(onIdle).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('CommanderSessionManager — lazy fallback preparation', () => {
+  it('prepares the provider context once, while the turn is still reserved', async () => {
+    const adapter = new FakeAdapter();
+    adapter.setScript([{ type: 'turn-end', sessionId: null }]);
+    const send = vi.spyOn(adapter, 'send');
+    const mgr = new CommanderSessionManager({ adapter, sink: vi.fn() });
+    const prepare = vi.fn(() => {
+      expect(mgr.getStatus().status).toBe('busy');
+      expect(adapter.started).toBeNull();
+      return 'context\noriginal';
+    });
+    expect(await mgr.send('original', {}, async () => ({ fallbackText: prepare }))).toEqual({ ok: true });
+    expect(prepare).toHaveBeenCalledTimes(1);
+    expect(send).toHaveBeenCalledExactlyOnceWith('context\noriginal', {});
+  });
+
+  it.each(['local answer', 'fallback'] as const)('a foreign turn suppresses a %s, including lazy work mutations', async (outcome) => {
+    const adapter = Object.assign(new FakeAdapter(), { busy: false });
+    const sink = vi.fn();
+    const mgr = new CommanderSessionManager({ adapter, sink });
+    const prepare = vi.fn(() => 'must not prepare');
+    const turn = mgr.send('original', {}, async () => {
+      adapter.busy = true;
+      return outcome === 'fallback' ? { fallbackText: prepare } : { text: 'local answer' };
+    });
+    expect(await turn).toEqual({ ok: true, code: 'errored' });
+    expect(prepare).not.toHaveBeenCalled();
+    expect(adapter.started).toBeNull();
+    expect(sink.mock.calls.map(([event]) => event.type)).toEqual(['error']);
+  });
+
+  // Review P2: a short TUI turn can start and end while the board read is
+  // pending, so `adapterBusy` alone reads false again by the time it settles.
+  it.each(['local answer', 'fallback'] as const)('a foreign turn that ends before the lookup suppresses a %s', async (outcome) => {
+    const adapter = Object.assign(new FakeAdapter(), { busy: false });
+    const send = vi.spyOn(adapter, 'send');
+    const sink = vi.fn();
+    const onIdle = vi.fn();
+    const mgr = new CommanderSessionManager({ adapter, sink, onIdle, deferIdle: (fn) => fn() });
+    const prepare = vi.fn(() => 'must not prepare');
+    let resolve!: (value: { text: string } | { fallbackText: () => string }) => void;
+    const turn = mgr.send('Who needs me?', { origin: 'human' }, () => new Promise((yes) => { resolve = yes; }));
+    adapter.busy = true;
+    mgr.notifyForeignTurnStart();
+    adapter.busy = false;
+    mgr.notifyForeignTurnEnd();
+    expect(onIdle).not.toHaveBeenCalled();
+    resolve(outcome === 'fallback' ? { fallbackText: prepare } : { text: 'stale answer' });
+    expect(await turn).toEqual({ ok: true, code: 'errored' });
+    expect(prepare).not.toHaveBeenCalled();
+    expect(adapter.started).toBeNull();
+    expect(send).not.toHaveBeenCalled();
+    expect(sink.mock.calls.map(([event]) => event)).toEqual([
+      { type: 'error', message: 'a terminal turn ran during this lookup — ask again' },
+    ]);
+    // The TUI turn itself was the operator's, so its origin stands.
+    expect(mgr.turnOrigin).toBe('human');
+    expect(mgr.getStatus().status).toBe('idle');
+    // The next question is not poisoned by the earlier foreign turn.
+    expect(await mgr.send('Who needs me?', {}, async () => ({ text: 'fresh answer' })))
+      .toEqual({ ok: true, localAnswer: { text: 'fresh answer' } });
+  });
+
+  it('does not run lazy preparation after an interrupt inside lookup', async () => {
+    const adapter = new FakeAdapter();
+    const mgr = new CommanderSessionManager({ adapter, sink: vi.fn() });
+    const prepare = vi.fn(() => 'must not prepare');
+    const turn = mgr.send('original', {}, async () => {
+      mgr.interrupt();
+      return { fallbackText: prepare };
+    });
+    expect(await turn).toEqual({ ok: true, code: 'errored' });
+    expect(prepare).not.toHaveBeenCalled();
+    expect(adapter.started).toBeNull();
+  });
+});
+
+// The hand-off gate reads turnOrigin together with existing live work. A
+// read-only question must never lend operator authority to that old work.
+describe('CommanderSessionManager — local reads preserve provider authority', () => {
+  it.each(['answer', 'interrupt', 'dispose', 'foreign-busy'] as const)(
+    'preserves automation origin during lookup and after %s', async (outcome) => {
+      const adapter = Object.assign(new FakeAdapter(), { busy: false });
+      adapter.setScript([{ type: 'turn-end', sessionId: 'automation-session' }]);
+      const sink = vi.fn();
+      const mgr = new CommanderSessionManager({ adapter, sink });
+      await mgr.send('prior autonomous work', { origin: 'automation' });
+      expect(mgr.turnOrigin).toBe('automation');
+      let resolve!: (value: { text: string }) => void;
+      const local = mgr.send('Who needs me?', { origin: 'human' }, () => new Promise((yes) => { resolve = yes; }));
+      expect(mgr.getStatus().status).toBe('busy');
+      expect(mgr.turnOrigin).toBe('automation');
+      if (outcome === 'interrupt') mgr.interrupt();
+      else if (outcome === 'dispose') mgr.dispose();
+      else if (outcome === 'foreign-busy') adapter.busy = true;
+      resolve({ text: 'Two tasks need input.' });
+      const result = await local;
+      expect(result).toEqual(outcome === 'answer'
+        ? { ok: true, localAnswer: { text: 'Two tasks need input.' } }
+        : { ok: true, code: 'errored' });
+      expect(mgr.turnOrigin).toBe('automation');
+      if (outcome === 'foreign-busy') expect(mgr.getStatus().status).toBe('busy');
+    },
+  );
+
+  it('changes automation origin to human only when a local miss reaches provider send', async () => {
+    const adapter = new FakeAdapter();
+    adapter.setScript([{ type: 'turn-end', sessionId: 'existing' }]);
+    const mgr = new CommanderSessionManager({ adapter, sink: vi.fn() });
+    await mgr.send('autonomous work', { origin: 'automation' });
+    const originalSend = adapter.send.bind(adapter);
+    vi.spyOn(adapter, 'send').mockImplementation(() => {
+      expect(mgr.turnOrigin).toBe('human');
+      return originalSend();
+    });
+    const prepare = vi.fn(() => {
+      expect(mgr.turnOrigin).toBe('automation');
+      return 'provider context\nWho needs me?';
+    });
+    const local = mgr.send('Who needs me?', { origin: 'human' }, async () => ({ fallbackText: prepare }));
+    expect(mgr.turnOrigin).toBe('automation');
+    expect(await local).toEqual({ ok: true });
+    expect(prepare).toHaveBeenCalledTimes(1);
+    expect(mgr.turnOrigin).toBe('human');
+  });
+
+  // W5 (goal contract): the remote-Moa mark moves with the origin. A local
+  // answer leaves it alone; a local miss that reaches the provider clears it.
+  it('keeps the remote-Moa wake mark through a local answer and clears it on a fallback', async () => {
+    const adapter = new FakeAdapter();
+    adapter.setScript([{ type: 'turn-end', sessionId: 'existing' }]);
+    const mgr = new CommanderSessionManager({ adapter, sink: vi.fn() });
+    await mgr.send('remote wake', { origin: 'automation', remoteMoa: true });
+    expect(mgr.turnWokenByRemoteMoa).toBe(true);
+    expect(await mgr.send('Who needs me?', { origin: 'human' }, async () => ({ text: 'Nobody.' })))
+      .toEqual({ ok: true, localAnswer: { text: 'Nobody.' } });
+    expect(mgr.turnWokenByRemoteMoa).toBe(true);
+    expect(await mgr.send('Who needs me?', { origin: 'human' }, async () => ({ fallbackText: 'ctx' })))
+      .toEqual({ ok: true });
+    expect(mgr.turnWokenByRemoteMoa).toBe(false);
+  });
+
+  it('sets fallback origin immediately before the first provider startup', async () => {
+    const adapter = new FakeAdapter();
+    adapter.setScript([{ type: 'turn-end', sessionId: null }]);
+    const mgr = new CommanderSessionManager({ adapter, sink: vi.fn() });
+    const originalStart = adapter.start.bind(adapter);
+    vi.spyOn(adapter, 'start').mockImplementation((opts) => {
+      expect(mgr.turnOrigin).toBe('human');
+      originalStart(opts);
+    });
+    expect(await mgr.send('Who needs me?', {}, async () => null)).toEqual({ ok: true });
+    expect(mgr.turnOrigin).toBe('human');
+  });
+
+  it('does not change authority when lazy provider preparation throws', async () => {
+    const adapter = new FakeAdapter();
+    adapter.setScript([{ type: 'turn-end', sessionId: null }]);
+    const mgr = new CommanderSessionManager({ adapter, sink: vi.fn() });
+    await mgr.send('autonomous work', { origin: 'automation' });
+    expect(await mgr.send('Who needs me?', { origin: 'human' }, async () => ({ fallbackText: () => {
+      throw new Error('context unavailable');
+    } }))).toEqual({ ok: true, code: 'errored' });
+    expect(mgr.turnOrigin).toBe('automation');
   });
 });

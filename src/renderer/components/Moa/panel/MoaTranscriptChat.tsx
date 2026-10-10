@@ -29,6 +29,8 @@ import { FOCUS_RING } from '../../focusRing';
 import type { ChatBridgeApi, TurnEvent } from '../../../../shared/transcript/turnEvents';
 import type { MoaApproval } from '../../../../shared/moa';
 import '../moa.css';
+import { mergeLocalFleetEvents } from './localFleetEvents';
+import { MoaGoalStrip } from '../MoaGoalStrip';
 
 /** The preload's `deck.moa.transcript` (main reads the HQ brain; no pty id). */
 export type MoaTranscriptApi = NonNullable<NonNullable<NonNullable<Window['electronAPI']>['deck']>['moa']>['transcript'];
@@ -174,6 +176,8 @@ export default function MoaTranscriptChat({ ptyId, busy, onSend, onInterrupt, on
   // Main's subscription survives a brain swap (it re-pushes the tail with
   // `reset`), but not an HQ change: subscribe again when the HQ moves.
   const hqId = useStore((s) => s.moa?.hq.workspaceId ?? null);
+  const localMessages = useStore((s) => hqId ? s.brainThreads[hqId]?.messages : undefined);
+  const conversationEvents = useMemo(() => mergeLocalFleetEvents(data.events, localMessages ?? [], t('moa.panel.localFleetLabel')), [data.events, localMessages]);
   const { retry } = data;
   const firstHq = useRef(hqId);
   useEffect(() => {
@@ -183,10 +187,10 @@ export default function MoaTranscriptChat({ ptyId, busy, onSend, onInterrupt, on
   }, [hqId, retry]);
   // Delegated work that finished shows as a result card where it finished.
   const links = useWorkLinks(true, linksApi ?? window.electronAPI?.workLinks);
-  const since = useMemo(() => data.events.find((e) => typeof e.ts === 'number')?.ts, [data.events]);
+  const since = useMemo(() => conversationEvents.find((e) => typeof e.ts === 'number')?.ts, [conversationEvents]);
   // Moa's own hand-offs, decisions, completions and fan-outs read as purpose
   // cards, lifted out before the chat folds tool rows.
-  const lifted = useMemo(() => liftPurposeEvents(hideMoaWakes(data.events)), [data.events]);
+  const lifted = useMemo(() => liftPurposeEvents(hideMoaWakes(conversationEvents)), [conversationEvents]);
   const { decisions: pendingDecisions } = useMoaDecisions(true, decisionsApi);
   // One report per finished job, and only each turn's last reply as a
   // message: narration folds into the activity (moaChatShape).
@@ -229,7 +233,7 @@ export default function MoaTranscriptChat({ ptyId, busy, onSend, onInterrupt, on
   // until an operator message is in view (bounded).
   const autoPages = useRef(0);
   const { hasMore, loading, loadingEarlier, loadEarlier } = data;
-  const operatorShown = useMemo(() => data.events.some((e) => e.kind === 'user_text' && !MOA_WAKE_TEXT.test(e.text)), [data.events]);
+  const operatorShown = useMemo(() => conversationEvents.some((e) => e.kind === 'user_text' && !MOA_WAKE_TEXT.test(e.text)), [conversationEvents]);
   useEffect(() => {
     if (operatorShown || !hasMore || loading || loadingEarlier || autoPages.current >= AUTO_PAGES) return;
     autoPages.current += 1;
@@ -237,8 +241,8 @@ export default function MoaTranscriptChat({ ptyId, busy, onSend, onInterrupt, on
   }, [operatorShown, hasMore, loading, loadingEarlier, loadEarlier]);
   // The latest events, for onNew to read after its await: the closure's copy
   // is from the render that started the send.
-  const eventsRef = useRef(data.events);
-  eventsRef.current = data.events;
+  const eventsRef = useRef(conversationEvents);
+  eventsRef.current = conversationEvents;
 
   // A sent message shows until the transcript records a new prompt (main may
   // wrap the text, so any new user row settles the oldest bubble) or the
@@ -248,12 +252,12 @@ export default function MoaTranscriptChat({ ptyId, busy, onSend, onInterrupt, on
       if (current.length === 0) return current;
       const live = current.filter((p) => !p.failed);
       if (live.length === 0) return current;
-      const fresh = data.events.filter((e) => e.kind === 'user_text' && !live[0].before.has(e.id));
+      const fresh = conversationEvents.filter((e) => e.kind === 'user_text' && !live[0].before.has(e.id));
       if (!fresh.length) return current;
       const settled = new Set(live.slice(0, fresh.length).map((p) => p.id));
       return current.filter((p) => !settled.has(p.id));
     });
-  }, [data.events]);
+  }, [conversationEvents]);
   useEffect(() => {
     if (busy) return;
     const thread = hqId ? useStore.getState().brainThreads[hqId] : undefined;
@@ -275,11 +279,11 @@ export default function MoaTranscriptChat({ ptyId, busy, onSend, onInterrupt, on
   useEffect(() => {
     if (seeded.current || !busy || data.loading || !openTurnText?.trim() || MOA_WAKE_TEXT.test(openTurnText)) return;
     seeded.current = true;
-    const users = data.events.filter((e) => e.kind === 'user_text');
+    const users = conversationEvents.filter((e) => e.kind === 'user_text');
     if (users.some((e) => e.kind === 'user_text' && e.text.trim() === openTurnText.trim())) return;
     setPending((current) => (current.length ? current
       : [{ id: crypto.randomUUID(), text: openTurnText, before: new Set(users.map((e) => e.id)) }]));
-  }, [busy, data.loading, data.events, openTurnText]);
+  }, [busy, data.loading, conversationEvents, openTurnText]);
 
   const onNew = useCallback(async (message: AppendMessage) => {
     const text = message.content.filter((part) => part.type === 'text').map((part) => part.text).join('\n');
@@ -287,7 +291,7 @@ export default function MoaTranscriptChat({ ptyId, busy, onSend, onInterrupt, on
     if (busy) throw new MessageNotSentError(t('moa.panel.busy'));
     // Sending again settles an earlier refusal of the same words.
     setPending((current) => current.filter((p) => !(p.failed !== undefined && p.text === text)));
-    const before = new Set(data.events.filter((e) => e.kind === 'user_text').map((e) => e.id));
+    const before = new Set(conversationEvents.filter((e) => e.kind === 'user_text').map((e) => e.id));
     // /clear and /reset are commands, not messages: nothing to wait for.
     const command = /^\/(clear|reset)$/.test(text.trim());
     // The bubble shows the moment the operator sends, not when the brain's
@@ -304,7 +308,7 @@ export default function MoaTranscriptChat({ ptyId, busy, onSend, onInterrupt, on
     if (eventsRef.current.some((e) => e.kind === 'user_text' && !before.has(e.id))) {
       setPending((current) => current.filter((p) => p.id !== id));
     }
-  }, [busy, data.events, onSend, t]);
+  }, [busy, conversationEvents, onSend, t]);
 
   const runtime = useExternalStoreRuntime({ messages, isRunning: false, isLoading: data.loading, isSendDisabled: busy, onNew });
   // A late refusal puts the words back in the composer (when it is empty),
@@ -418,6 +422,7 @@ export default function MoaTranscriptChat({ ptyId, busy, onSend, onInterrupt, on
       <AssistantRuntimeProvider runtime={runtime}>
         {activityToggle}
         <div className="flex flex-col flex-1 min-h-0" data-moa-chat data-activity={showActivity ? 'shown' : 'hidden'}>
+          <MoaGoalStrip />
           <Thread
             composer={runtime.thread.composer}
             empty={empty}

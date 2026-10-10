@@ -7,14 +7,13 @@ import type { BrowserWindow } from 'electron';
 // stdin to EOF before it starts. Nothing bounded the wait, so the task sat in
 // `working` forever. These drive execute() against a fake child process.
 
-const { sendToRendererMock, spawnMock } = vi.hoisted(() => ({
+const { sendToRendererMock, spawnMock, launchMock } = vi.hoisted(() => ({
   sendToRendererMock: vi.fn(),
   spawnMock: vi.fn(),
+  launchMock: vi.fn(),
 }));
 vi.mock('../../pipe/handlers/_bridge', () => ({ sendToRenderer: sendToRendererMock }));
-vi.mock('../../account/accountStore', () => ({
-  getAccountStore: () => ({ resolveAccountEnv: () => ({}) }),
-}));
+vi.mock('../../account/backgroundLaunchAccount', () => ({ resolveBackgroundLaunch: launchMock }));
 vi.mock('node:child_process', async (importOriginal) => ({
   ...(await importOriginal<typeof import('node:child_process')>()),
   spawn: spawnMock,
@@ -66,11 +65,46 @@ beforeEach(() => {
   proc = fakeProc();
   spawnMock.mockReset();
   spawnMock.mockImplementation(() => proc);
+  launchMock.mockReset();
+  launchMock.mockResolvedValue({ kind: 'run', env: {}, accountId: null });
   worker = new ClaudeWorker(() => ({}) as BrowserWindow);
 });
 
 afterEach(() => {
   vi.useRealTimers();
+});
+
+describe('ClaudeWorker account choice', () => {
+  it('spawns with the account env the launch resolved', async () => {
+    launchMock.mockResolvedValue({ kind: 'run', env: { CLAUDE_CONFIG_DIR: '/acc/b' }, accountId: 'b' });
+    await worker.execute('task-1', 'ws-receiver', 'do the thing');
+    expect(launchMock).toHaveBeenCalledWith('ws-receiver', 'claude', expect.objectContaining({ resuming: false }));
+    expect((spawnMock.mock.calls[0][2] as { env: Record<string, string> }).env.CLAUDE_CONFIG_DIR).toBe('/acc/b');
+  });
+
+  it('fails the task with the reason and spawns nothing when the launch is held', async () => {
+    launchMock.mockResolvedValue({ kind: 'hold', message: 'every account is out' });
+    await worker.execute('task-1', 'ws-receiver', 'do the thing');
+    expect(spawnMock).not.toHaveBeenCalled();
+    expect(statuses()).toEqual([{ status: 'failed', message: 'every account is out' }]);
+    // The capacity slot held across the await is released.
+    expect(worker.isFull).toBe(false);
+  });
+});
+
+describe('ClaudeWorker cancel during the account check', () => {
+  it('a task cancelled while resolving its account never spawns or turns working', async () => {
+    let resolveLaunch!: (v: unknown) => void;
+    launchMock.mockImplementation(() => new Promise((r) => { resolveLaunch = r; }));
+    const run = worker.execute('task-1', 'ws-receiver', 'do the thing');
+    await vi.waitFor(() => expect(launchMock).toHaveBeenCalled());
+    expect(worker.cancel('task-1')).toBe(true);
+    resolveLaunch({ kind: 'run', env: {}, accountId: null });
+    await run;
+    expect(spawnMock).not.toHaveBeenCalled();
+    expect(statuses()).toEqual([]);
+    expect(worker.isFull).toBe(false);
+  });
 });
 
 describe('ClaudeWorker run lifecycle (#1472)', () => {

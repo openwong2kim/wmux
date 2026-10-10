@@ -246,6 +246,15 @@ describe('AgentProcessTracker in a WSL pane', () => {
     expect(states).toEqual([{ slug: 'claude', alive: true }, { slug: 'claude', alive: false }]);
   });
 
+  it('reports a live WSL agent only while the attributed agent is alive', () => {
+    const { tracker, watches } = setup();
+    expect(tracker.hasLiveWslAgent('wsl-1')).toBe(false);
+    tracker.armWsl('wsl-1', LOCATION, reported);
+    expect(tracker.hasLiveWslAgent('wsl-1')).toBe(true);
+    watches.get('agent:wsl-1')!();
+    expect(tracker.hasLiveWslAgent('wsl-1')).toBe(false);
+  });
+
   it('a relaunched agent replaces the old one, and the old death edge is ignored', () => {
     const { tracker, watches } = setup();
     tracker.armWsl('wsl-1', LOCATION, reported);

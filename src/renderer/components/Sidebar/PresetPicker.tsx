@@ -5,6 +5,7 @@ import { useT } from '../../hooks/useT';
 import { createWorkspaceWithRemotePane } from '../../utils/remotePaneWorkspace';
 import { destroyRemoteSessions } from '../../utils/remoteSessionTeardown';
 import AttachRemoteModal from './AttachRemoteModal';
+import { selectPcRailVisible } from '../../stores/selectors/pcRail';
 import AddRemotePaneModal from '../Remote/AddRemotePaneModal';
 import { showWorkspaces } from '../../utils/showWorkspaces';
 
@@ -37,6 +38,10 @@ export default function PresetPicker({ onClose, anchorStyle }: PresetPickerProps
   // the attach dialog open here instead, so the entry never goes dead.
   const remoteHubMounted = useStore((s) => s.remoteHubMounted > 0);
   const openRemoteHub = useStore((s) => s.openRemoteHub);
+  // PC rail: with a computer paired, the computer column lists its
+  // workspaces, so the one-by-one attach entry is retired. With none it stays
+  // as the way in, exactly as before.
+  const pcColumnShown = useStore(selectPcRailVisible);
   const handleAttachRemote = useCallback(() => {
     if (remoteHubMounted) {
       openRemoteHub();
@@ -207,13 +212,13 @@ export default function PresetPicker({ onClose, anchorStyle }: PresetPickerProps
       {/* Remote Workspace Attach entry — opens the Remote hub on "Other
           computers" (or, with no hub mounted, AttachRemoteModal in place of
           this dropdown; see attachRemoteOpen above). */}
-      <button
+      {!pcColumnShown && <button
         className="w-full text-left px-3 py-1.5 hover:bg-[var(--bg-surface)] text-[var(--text-main)] transition-colors"
         onClick={handleAttachRemote}
       >
         <div className="font-semibold">{t('remote.attachTitle')}…</div>
         <div className="text-[var(--text-sub)] text-[11px]">{t('remote.mirrorDescription')}</div>
-      </button>
+      </button>}
 
       {/* #1323 — a blank single pane that runs on a paired computer: the
           remote twin of "Empty" above. Last, so arriving after the host list

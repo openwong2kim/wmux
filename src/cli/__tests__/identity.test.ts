@@ -132,3 +132,25 @@ describe('resolveSelfContext', () => {
     ).toEqual({});
   });
 });
+
+describe('resolveSelfContext — pane claim from main\'s walk', () => {
+  it('sends callerPid and returns the pane claim main minted on its own walk hit', async () => {
+    const sendRequest = vi.fn(async () =>
+      okResponse({
+        mappings: {},
+        entries: [],
+        resolved: { workspaceId: 'ws-walk', ptyId: 'pty-walk' },
+        workspaceToken: 'claim-walk',
+      }),
+    );
+    const ctx = await resolveSelfContext(makeDeps({ sendRequest, callerPid: 4242 }));
+    expect(sendRequest).toHaveBeenCalledWith('a2a.resolve.identity', { callerPid: 4242 });
+    expect(ctx).toEqual({ workspaceId: 'ws-walk', ptyId: 'pty-walk', workspaceToken: 'claim-walk' });
+  });
+
+  it('sends no callerPid unless asked, so other commands cost main no snapshot', async () => {
+    const sendRequest = vi.fn(async () => okResponse({ mappings: {}, entries: [] }));
+    await resolveSelfContext(makeDeps({ sendRequest }));
+    expect(sendRequest).toHaveBeenCalledWith('a2a.resolve.identity', {});
+  });
+});

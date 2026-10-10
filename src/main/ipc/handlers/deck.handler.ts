@@ -19,10 +19,18 @@
 // same renderer-trust basis as the rest of this surface — but the value is
 // format-checked because it keys maps and persisted files.
 
+import { MOA_GOAL_OPTIONS } from '../../../shared/moaGoal';
+import path from 'node:path';
+import { MoaGoalLearning, setMoaGoalLearning } from '../../deck/moaGoalLearning';
+import type { MoaLearningPanel } from '../../../shared/moa';
+import { goalPanelDetail } from '../../deck/moaGoalPanel';
 import { ipcMain, app, type BrowserWindow } from 'electron';
 import { sanitizeClaudeEffort, type ClaudeEffort } from '../../../shared/claudeModels';
 import { IPC } from '../../../shared/constants';
 import { wrapHandler } from '../wrapHandler';
+import { sendToRenderer } from '../../pipe/handlers/_bridge';
+import { answerFleetQuestion, fleetIntentCandidate, FLEET_BOARD_TIMEOUT_MS } from '../../deck/fleetFastPath';
+import { loadFleetFastPathEnabled, setFleetFastPathEnabled } from '../../deck/deckFleetFastPathStore';
 import type { BrainAdapter, BrainEvent } from '../../deck/BrainAdapter';
 import { ClaudeSdkAdapter, buildCommanderSystemPrompt, resolveMcpBundlePath } from '../../deck/ClaudeSdkAdapter';
 import { AcpBrainAdapter } from '../../deck/AcpBrainAdapter';
@@ -162,7 +170,7 @@ import { isSmallTalk } from '../../deck/smallTalk';
 import { computeReadRoots, isAcceptableReadRoot, setMoaReadRoots, setMoaReadRootsRefresher } from '../../deck/moaReadGate';
 import { createSerialChain } from '../../deck/serialChain';
 import { answerMoaApproval, MOA_ANSWER_DELEGATED_PROMPT_RPC, readMoaApproval } from '../../deck/moaApproval';
-import { getAccountStore } from '../../account/accountStore';
+import { resolveConversationAccount } from '../../account/backgroundLaunchAccount';
 import type { MoaApproval, MoaApprovalAnswerResult, MoaDelegatedApproval, MoaPendingDecision } from '../../../shared/moa';
 import { selectDelegatedApprovals } from '../../deck/moaDelegatedApprovals';
 import { resultFromTask, type MoaTaskResult } from '../../../shared/moaResult';
@@ -216,6 +224,9 @@ import { isStartupDeckReconcileDone, tryStartupDeckReconcile, workLinkOwnerLive 
 type GetWindow = () => BrowserWindow | null;
 
 export interface RegisterDeckHandlerOptions {
+  /** Test seam for the Fleet fast path's board read. Defaults to the
+   *  renderer's `fleet.triage` selector; the board never leaves the machine. */
+  readFleetBoard?: () => Promise<unknown>;
   /** Adapter factory — injected in tests so no SDK subprocess spawns. Defaults
    *  to a fresh ClaudeSdkAdapter (subscription Claude, wmux MCP auto-mounted).
    *  `model` is the orchestrator model override ('' → SDK default);
@@ -325,7 +336,7 @@ export const MOA_LEVEL_LINES: Record<0 | 1 | 2 | 3, string> = {
   0: '[moa] Level 0 — observe only: read, summarize and report. wmux refuses every call that writes (panes, messages, fan-out, hand-offs, task tools, approvals); ask the operator with deck_ask_decision instead.',
   1: '[moa] Level 1 — observe and report: surface decisions and completion reports to the human. Delegate work only when the human asks you to, via moa_propose_handoff. A goal contract grants nothing at this level.',
   2: '[moa] Level 2 — delegate: when the human asks for a piece of work, you may propose a goal contract with moa_propose_goal (the operator approves it once); inside an approved goal you plan, fan out, answer and instruct its tasks yourself. Without one, delegate via moa_propose_handoff and track it.',
-  3: '[moa] Level 3 — like level 2 for now (merging under a goal is not enabled yet): propose goals with moa_propose_goal and follow through inside them; push, PRs and merges stay the operator\'s.',
+  3: '[moa] Level 3 — like level 2 for now (merging under a goal is not enabled yet): propose goals with moa_propose_goal and follow through inside them; once a goal is proved done wmux pushes its task branches and opens the PRs, and merges stay the operator\'s.',
 };
 
 export function renderAutonomyBlock(mode: AgentMode): string | null {
@@ -373,6 +384,9 @@ export function registerDeckHandler(
   getWindow: GetWindow,
   opts: RegisterDeckHandlerOptions = {},
 ): () => void {
+  const readFleetBoard = opts.readFleetBoard ?? (() =>
+    sendToRenderer(getWindow, 'fleet.triage', {}, { timeoutMs: FLEET_BOARD_TIMEOUT_MS }));
+
   // Adopt one process-wide boot identity for durable work records (#733). The
   // EventBus already mints a per-process UUID at construction, so reusing it
   // keeps "this boot" meaning the same thing to the work store as it does to
@@ -424,13 +438,24 @@ export function registerDeckHandler(
   // Projected here in main — the brain pane is never a daemon transcript
   // session. Bound only from the HQ brain's own session id and hook hints;
   // every other workspace's report is ignored inside the module.
+  // Workspace → the account its brain's conversation runs on (from the
+  // persisted session and every session-id report): an account id, or null
+  // for the default login. Absent when unknown — the binding then applies.
+  const brainConversationAccounts = new Map<string, string | null>();
+  const noteBrainConversationAccount = (workspaceId: string, accountId: string | null | undefined): void => {
+    if (accountId === undefined) brainConversationAccounts.delete(workspaceId);
+    else brainConversationAccounts.set(workspaceId, accountId);
+  };
   const moaTranscript = new MoaTranscript({
     getHqWorkspaceId: () => getHqWorkspaceId(),
     isMoaEnabled: () => isMoaEnabled(),
-    // The brain re-applies its account binding after the env scrub, so its
-    // transcript lives under that account's CLAUDE_CONFIG_DIR — the
-    // containment check has to see the same overlay.
-    getSessionEnv: (workspaceId) => getAccountStore().resolveAccountEnv(workspaceId, 'claude'),
+    // The brain re-applies its conversation's account after the env scrub, so
+    // its transcript lives under that account's CLAUDE_CONFIG_DIR — the
+    // containment check has to see the same overlay. Same resolver as the
+    // brain's resume, so a recorded account whose dir is missing falls back to
+    // the binding here too.
+    getSessionEnv: (workspaceId) =>
+      resolveConversationAccount(workspaceId, 'claude', brainConversationAccounts.get(workspaceId)).run.env,
     emitAppend: (data) => {
       const win = getWindow();
       if (win && !win.isDestroyed()) win.webContents.send(IPC.DECK_MOA_TRANSCRIPT_APPEND, data);
@@ -801,10 +826,16 @@ export function registerDeckHandler(
   // decides, never the brain.
   // Moa's goal contract (moaGoalContract.ts): one operator card per goal, and
   // the level gate RpcRouter asks on every HQ commander request.
+  // Learning loop (moaGoalLearning.ts): repeated gate failures become goal
+  // drafts the operator approves or dismisses; flakes are counted apart.
+  const moaLearning = new MoaGoalLearning(path.join(getWmuxDir(), 'moa-goal-learning.json'), Date.now, () => emitMoaChanged());
+  setMoaGoalLearning(moaLearning);
   const moaGoals = createMoaGoalService({
     notify: () => emitMoaChanged(),
     // W5: a wake carrying another PC's Moa's work never fans out on the goal.
     turnWokenByRemoteMoa: (hq) => managers.get(hq)?.manager.turnWokenByRemoteMoa === true,
+    // The goal verifier lists the goal's tasks through the daemon.
+    getDaemonClient: () => (opts.getDaemonClient?.() ?? null) as { rpc(method: string, params?: unknown): Promise<unknown> } | null,
   });
   setMoaGoalService(moaGoals);
   installMoaLevelGate(moaGoals, { getWindow, getDaemonClient: () => opts.getDaemonClient?.() ?? null });
@@ -1077,6 +1108,7 @@ export function registerDeckHandler(
     // app run. A dead id is soft — the adapter falls back to a fresh session.
     const sessionKey = sessionKeyFor(workspaceId, vendor);
     const persisted = loadCommanderSession(sessionKey);
+    noteBrainConversationAccount(workspaceId, persisted?.accountId);
     // Moa's memory lane (moaMemory.ts): the HQ terminal brain reads what the
     // operator approved on a fresh conversation's first turn, and with
     // proposals on may write proposal files (and nothing else). Every other
@@ -1156,11 +1188,15 @@ export function registerDeckHandler(
         }),
         ...(fleetContext ? { fleetContext } : {}),
         ...(persisted ? { resumeSessionId: persisted.sessionId } : {}),
+        ...(persisted && persisted.accountId !== undefined ? { resumeAccountId: persisted.accountId } : {}),
       },
-      onSessionId: (sessionId) => {
+      onSessionId: (sessionId, accountId) => {
+        // Before noteSessionId: the transcript lookup it triggers must see
+        // the account this conversation runs on.
+        noteBrainConversationAccount(workspaceId, accountId);
         if (claudeRuntime) moaTranscript.noteSessionId(workspaceId, sessionId);
         // Fire-and-forget: a failed persist only costs continuity next run.
-        void saveCommanderSession(sessionKey, sessionId).catch((err) => {
+        void saveCommanderSession(sessionKey, sessionId, undefined, accountId).catch((err) => {
           // eslint-disable-next-line no-console
           console.warn('[deck] failed to persist commander session id:', err);
         });
@@ -1386,35 +1422,62 @@ export function registerDeckHandler(
     // (dogfood finding, 2026-07-12). Status check + send are one synchronous
     // sequence, so nothing can interleave (same basis as runTurnForWorkspace).
     const idle = mgr.getStatus().status === 'idle';
-    if (idle) {
-      beginTrackedWork(workspaceId, text);
-      coalescer?.notifyHumanSend(workspaceId);
-    }
-    // Awaits the full turn (events stream over DECK_STREAM meanwhile); the
-    // resolved value is only the accept/reject verdict. The loop + decision
-    // blocks ride in front of the typed text — invisible to the renderer's
-    // optimistic user bubble, visible to the brain. If this human turn carried
-    // a resolved decision's block, consume it (id-scoped) so it never re-injects.
-    const injectedDecision = loadBrainDecision(workspaceId);
-    // A human at the composer: no double-check delay — they are waiting on it,
-    // and a turn they typed themselves cannot be racing their own TUI input.
-    moaTranscript.notePrompt(workspaceId, text);
-    // A turn the phone sent has no optimistic bubble in the desktop deck, so
-    // open it there the way a scheduled run does.
-    if (idle && opts.source === 'phone') {
-      emit(workspaceId, { type: 'turn-start', prompt: text, vendor: vendorForWorkspace(workspaceId) });
-    }
+    // Preparation mutates work/context bookkeeping. A local Fleet answer must
+    // never supersede an active job, consume a resolved decision, or enter
+    // Claude's prompt-rewrite history, so all of it runs only once Moa will
+    // actually receive the text. The loop + decision blocks ride in front of
+    // the typed text — invisible to the renderer's optimistic user bubble,
+    // visible to the brain. If this human turn carried a resolved decision's
+    // block, it is consumed (id-scoped) below so it never re-injects.
+    let injectedDecision: ReturnType<typeof loadBrainDecision> = null;
+    const prepareMoa = (): string => {
+      if (idle) {
+        beginTrackedWork(workspaceId, text);
+        coalescer?.notifyHumanSend(workspaceId);
+      }
+      injectedDecision = loadBrainDecision(workspaceId);
+      moaTranscript.notePrompt(workspaceId, text);
+      // A turn the phone sent has no optimistic bubble in the desktop deck, so
+      // open it there the way a scheduled run does.
+      if (idle && opts.source === 'phone') {
+        emit(workspaceId, { type: 'turn-start', prompt: text, vendor: vendorForWorkspace(workspaceId) });
+      }
+      return withLoopContext(workspaceId, text);
+    };
     const tap = idle ? opts.onEvent : undefined;
     if (tap) turnTaps.set(workspaceId, tap);
     let verdict: CommanderSendResult;
+    let usedMoa = false;
     try {
-      verdict = await mgr.send(withLoopContext(workspaceId, text), { origin: 'human' });
+      // Fleet fast path: desktop composer only (phone messages keep their
+      // existing route), opt-in, and only for an allowlisted read-only
+      // question. send reserves the manager synchronously before the board
+      // lookup's first await; any miss falls through to Moa exactly once.
+      if (idle && opts.source === 'desktop' && fleetIntentCandidate(text) !== null && loadFleetFastPathEnabled()) {
+        verdict = await mgr.send(text, { origin: 'human' }, async (signal) => {
+          const local = await answerFleetQuestion(text, readFleetBoard, signal).catch(() => null);
+          if (signal.aborted) return null;
+          // The HQ/mode may have moved while the board was read. Abort the
+          // reserved turn instead of answering or spawning a retired brain.
+          if (refuseWhenModeOff(workspaceId)) { mgr.interrupt(); return null; }
+          if (local) return local;
+          return { fallbackText: () => { usedMoa = true; return prepareMoa(); } };
+        });
+      } else {
+        usedMoa = true;
+        verdict = await mgr.send(prepareMoa(), { origin: 'human' });
+      }
     } finally {
       if (tap && turnTaps.get(workspaceId) === tap) turnTaps.delete(workspaceId);
     }
-    settleAmbient(workspaceId, verdict);
-    if (verdict.ok && injectedDecision?.status === 'resolved') {
-      void clearResolvedDecision(workspaceId, injectedDecision.id).catch(() => { /* ignore */ });
+    if (usedMoa) {
+      settleAmbient(workspaceId, verdict);
+      // The cast undoes TypeScript narrowing the closure-assigned variable to
+      // null. Only a Moa turn received this resolved decision's context.
+      const decision = injectedDecision as ReturnType<typeof loadBrainDecision>;
+      if (verdict.ok && decision?.status === 'resolved') {
+        void clearResolvedDecision(workspaceId, decision.id).catch(() => { /* ignore */ });
+      }
     }
     return verdict;
   };
@@ -1751,6 +1814,9 @@ export function registerDeckHandler(
     if (!token) {
       return { ok: false, code: 'busy' as const };
     }
+    // Set once this turn is counted against the HQ turn cap and an active
+    // goal's turn budget; the goal keeps its powers until the turn ends.
+    let counted = false;
     try {
       // The queued path may have waited up to 120s: the master switch, the HQ
       // or its presence may have changed meanwhile (turning the switch off is
@@ -1833,7 +1899,10 @@ export function registerDeckHandler(
       // event cannot relabel a turn the old brain produced.
       emit(workspaceId, { type: 'turn-start', prompt, vendor: vendorForWorkspace(workspaceId) });
       moaTranscript.notePrompt(workspaceId, prompt);
-      if (!runOpts.human) noteHqTurn(workspaceId);
+      if (!runOpts.human) {
+        noteHqTurn(workspaceId);
+        counted = true;
+      }
       // Every caller of runTurnForWorkspace is an ambient driver (heartbeat,
       // loop, scheduler, decision resume, startup reconcile) — never a human at
       // the composer. Marking the origin lets the terminal brain re-check for a
@@ -1901,6 +1970,8 @@ export function registerDeckHandler(
       // ended (round-5 review P1) — revoke BEFORE the slot release so no other
       // turn can observe a stale lease.
       if (runOpts.reExamine) revokeReExamineLease(workspaceId);
+      // The goal turn this counted is over: a goal whose last turn it was ends now.
+      if (counted) moaGoals.finishTurn(workspaceId);
       // Release the slot once the turn has fully settled (send resolved/rejected)
       // — never on the synchronous path only, or a long turn would free its slot
       // early and let the cap be exceeded. Release is by token: a slot already
@@ -2649,6 +2720,8 @@ export function registerDeckHandler(
       live,
       ...(view && !view.effective.ok && c.status === 'active' ? { inertReason: view.effective.reason } : {}),
       ...(c.endNote ? { endNote: c.endNote } : {}),
+      ...(c.endedAt !== undefined ? { endedAt: c.endedAt } : {}),
+      ...goalPanelDetail(c),
     };
   };
   const readMoaState = (): {
@@ -2656,6 +2729,7 @@ export function registerDeckHandler(
     goal: MoaGoalPanel | null;
     hq: { workspaceId: string | null; state: 'unset' | 'ok' | 'hq-missing' | 'hq-unknown' | 'hq-store-corrupt' };
     archive: { unacked: number; total: number };
+    learning: MoaLearningPanel;
   } => {
     const hq = getHqWorkspaceId();
     const bad = hqStatusState();
@@ -2665,6 +2739,10 @@ export function registerDeckHandler(
       goal: readGoalPanel(),
       hq: { workspaceId: bad === 'hq-store-corrupt' ? null : hq, state },
       archive: { unacked: countUnackedArchivedDecisions(), total: loadArchivedHqDecisions().length },
+      learning: {
+        drafts: moaLearning.drafts().map((d) => ({ id: d.id, goal: d.goal, summary: d.summary, command: d.command, seen: d.seen.length, doneCriteria: d.doneCriteria })),
+        flakes: moaLearning.flakes().length,
+      },
     };
   };
   ipcMain.removeHandler(IPC.DECK_MOA_STATE);
@@ -2699,6 +2777,54 @@ export function registerDeckHandler(
       const r = await moaGoals.end('operator', 'canceled', 'ended from Settings');
       emitMoaChanged();
       return r.ok ? { ok: true } : { ok: false, code: r.code ?? 'error' };
+    }),
+  );
+
+  // A learning draft (Settings › Moa / the goal strip). Approve is the
+  // operator's click: it proposes the draft as a goal and approves that card
+  // in one step, exactly as if they had pressed "Approve goal" on it.
+  ipcMain.removeHandler(IPC.DECK_MOA_DRAFT_ANSWER);
+  ipcMain.handle(
+    IPC.DECK_MOA_DRAFT_ANSWER,
+    wrapHandler(IPC.DECK_MOA_DRAFT_ANSWER, async (_e: unknown, req: unknown): Promise<{ ok: boolean; code?: string; goalId?: string }> => {
+      const r: Record<string, unknown> = typeof req === 'object' && req !== null && !Array.isArray(req) ? (req as Record<string, unknown>) : {};
+      const id = typeof r.id === 'string' && /^D-[0-9a-f]{6}$/.test(r.id) ? r.id : null;
+      const draft = id ? moaLearning.get(id) : null;
+      if (!draft || draft.status !== 'draft') return { ok: false, code: 'no_draft' };
+      if (r.answer === 'dismiss') {
+        moaLearning.dismiss(draft.id);
+        return { ok: true };
+      }
+      if (r.answer !== 'approve') return { ok: false, code: 'bad_answer' };
+      const hq = getHqWorkspaceId();
+      if (!hq) return { ok: false, code: 'not_hq' };
+      const p = await moaGoals.propose(hq, {
+        goal: draft.goal,
+        ...(draft.repoRoot ? { repo: draft.repoRoot } : {}),
+        doneCriteria: draft.doneCriteria,
+        evidence: draft.evidence,
+        constraints: draft.constraints,
+      });
+      if (!p.ok) return { ok: false, code: p.error };
+      const decisionId = moaGoals.get(p.id)?.decisionId;
+      const a = decisionId ? await moaGoals.resolveCard(hq, decisionId, MOA_GOAL_OPTIONS.approve) : null;
+      if (!a?.ok) return { ok: false, code: a && !a.ok ? a.code : 'not_pending' };
+      moaLearning.markApproved(draft.id, p.id);
+      emitMoaChanged();
+      wakeMoaForGoal(hq, a.id, a.status, a.note);
+      return { ok: true, goalId: p.id };
+    }),
+  );
+
+  // "Revert this goal" (Settings › Moa): undo what Moa delivered.
+  ipcMain.removeHandler(IPC.DECK_MOA_GOAL_REVERT);
+  ipcMain.handle(
+    IPC.DECK_MOA_GOAL_REVERT,
+    wrapHandler(IPC.DECK_MOA_GOAL_REVERT, async (_e: unknown, goalId: unknown): Promise<{ ok: boolean; code?: string; notes?: string[] }> => {
+      if (typeof goalId !== 'string' || !/^G-[0-9a-f]{6}$/.test(goalId)) return { ok: false, code: 'bad_id' };
+      const r = await moaGoals.revert(goalId);
+      emitMoaChanged();
+      return r;
     }),
   );
 
@@ -3536,6 +3662,32 @@ export function registerDeckHandler(
     }),
   );
 
+  // ── `deck.fleetFastPath` switch (Settings toggle) ─────────────────────────
+  // Reads and writes deck-fleet-fast-path.json, the same file DECK_SEND
+  // consults, so the toggle and the route can never disagree.
+  ipcMain.removeHandler(IPC.DECK_FLEET_FAST_PATH_GET);
+  ipcMain.handle(
+    IPC.DECK_FLEET_FAST_PATH_GET,
+    wrapHandler(IPC.DECK_FLEET_FAST_PATH_GET, async (): Promise<{ enabled: boolean }> => {
+      return { enabled: loadFleetFastPathEnabled() };
+    }),
+  );
+
+  ipcMain.removeHandler(IPC.DECK_FLEET_FAST_PATH_SET);
+  ipcMain.handle(
+    IPC.DECK_FLEET_FAST_PATH_SET,
+    wrapHandler(IPC.DECK_FLEET_FAST_PATH_SET, async (
+      _event: Electron.IpcMainInvokeEvent,
+      raw: unknown,
+    ): Promise<{ enabled: boolean }> => {
+      const req = (raw && typeof raw === 'object' && !Array.isArray(raw))
+        ? (raw as Record<string, unknown>)
+        : {};
+      const enabled = await setFleetFastPathEnabled(req.enabled === true);
+      return { enabled };
+    }),
+  );
+
   // ── Deck status panel: the open task ledger for one owner ─────────────────
   // A projection, never a write. `panesFor` joins the workspace mirror's
   // per-pane agent status onto each task's own workspace, so the panel shows
@@ -3686,7 +3838,7 @@ export function registerDeckHandler(
   const wakeMoaForGoal = (hq: string, goalId: string, status: 'active' | 'declined', note?: string): void => {
     if (hq !== getHqWorkspaceId()) return;
     const prompt = status === 'active'
-      ? `[goal] The operator APPROVED goal ${goalId} (see the [goal] block). Start on it now: plan it, fan out in its repository, answer and instruct its tasks, verify the results, then call moa_goal({action:"complete", summary}) and report once. Push, PRs and merges stay the operator's.`
+      ? `[goal] The operator APPROVED goal ${goalId} (see the [goal] block). Start on it now: plan it, fan out in its repository, answer and instruct its tasks, verify the results, then call moa_goal({action:"complete", summary, criteria}) with evidence for each done criterion and report once. When it passes, wmux pushes the task branches and opens the PRs; merges stay the operator's.`
       : note
         ? `[goal] Goal ${goalId} was NOT approved: ${note}. Do not act on it. If the work still stands, propose it again with moa_propose_goal so the card shows the current setting.`
         : `[goal] The operator DECLINED goal ${goalId}. Do not act on it. If the request still stands, ask them what they want instead, or work as before.`;
@@ -4120,6 +4272,8 @@ export function registerDeckHandler(
 
   return () => {
     app.removeListener('before-quit', disposeAll);
+    ipcMain.removeHandler(IPC.DECK_FLEET_FAST_PATH_GET);
+    ipcMain.removeHandler(IPC.DECK_FLEET_FAST_PATH_SET);
     moaIssueProposals.dispose();
     setMoaHandoffService(null);
     setMoaWakeHandler(null);
@@ -4170,6 +4324,9 @@ export function registerDeckHandler(
     ipcMain.removeHandler(IPC.DECK_MOA_ARCHIVE_ACK);
     ipcMain.removeHandler(IPC.DECK_MOA_STORE_RESET);
     ipcMain.removeHandler(IPC.DECK_MOA_GOAL_END);
+    ipcMain.removeHandler(IPC.DECK_MOA_GOAL_REVERT);
+    ipcMain.removeHandler(IPC.DECK_MOA_DRAFT_ANSWER);
+    setMoaGoalLearning(null);
     setMoaLevelGate(null);
     setMoaGoalService(null);
     ipcMain.removeHandler(IPC.DECK_MOA_SHADOW_STATS);

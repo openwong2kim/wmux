@@ -84,7 +84,14 @@ export type BrainEvent =
       workspaceId?: string;
     }
   | { type: 'tool-end'; name: string; ok: boolean; toolId?: string }
-  | { type: 'turn-end'; sessionId: string | null; usage?: BrainUsage }
+  | {
+      type: 'turn-end';
+      sessionId: string | null;
+      usage?: BrainUsage;
+      /** A deterministic main-side answer absent from the provider's own
+       *  transcript. The renderer keeps it as a local conversation entry. */
+      localAnswer?: { prompt: string; text: string };
+    }
   | {
       type: 'error';
       message: string;
@@ -149,6 +156,11 @@ export interface BrainStartOptions {
    *  treat a dead/unknown id as soft: fall back to a fresh session rather than
    *  failing the turn. */
   resumeSessionId?: string;
+  /** The account the persisted conversation runs on (saved with its session
+   *  id): an account id, null for the default login, absent when unknown. Its
+   *  transcript lives in that account's config dir, so the resume must run
+   *  there even if the workspace was rebound since (#2029). */
+  resumeAccountId?: string | null;
 }
 
 /** Per-turn metadata the session manager passes into `send()`. Adapters that
@@ -192,6 +204,12 @@ export interface BrainAdapter {
   /** The current conversation id, or null before the first turn produced one.
    *  Persisted by the session manager for resume (P3). */
   readonly sessionId: string | null;
+
+  /** The account the current conversation runs on: an account id, null for
+   *  the default login, undefined when unknown (or for adapters that do not
+   *  track it). Persisted with the session id so a resume after a restart or a
+   *  rebind lands on the same account. */
+  readonly conversationAccountId?: string | null;
 }
 
 // ─── SDK → normalized-event mapping (pure, testable) ─────────────────────────

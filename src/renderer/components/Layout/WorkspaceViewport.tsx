@@ -95,7 +95,7 @@ export const MultiviewWorkspaceSlot = memo(function MultiviewWorkspaceSlot({
   return (
     <div
       ref={tileRef}
-      className="relative flex flex-col min-w-0 min-h-0 overflow-hidden cursor-pointer"
+      className="relative flex flex-col min-w-0 min-h-0 overflow-clip cursor-pointer"
       style={{
         border: isActive ? '2px solid var(--accent-blue)' : '2px solid transparent',
         backgroundColor: 'var(--bg-base)',

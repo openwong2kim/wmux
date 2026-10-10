@@ -234,6 +234,18 @@ export class AccountRotationService {
     return { kind: 'switch', accountId: account.id, env: { [VENDOR_ENV_KEYS[vendor]]: account.configDir } };
   }
 
+  /** One account's verdict from the reading already on hand — no refresh, no
+   *  network. A resumed background conversation (Deck brain) uses it to say
+   *  "this account is out" instead of failing on a quota error, since it cannot
+   *  move to another account. Null for an account that is no longer
+   *  registered. */
+  async cachedVerdict(accountId: string): Promise<QuotaVerdict | null> {
+    const all = this.deps.accounts ? this.deps.accounts() : getAccountStore().listAccounts();
+    const account = all.find((a) => a.id === accountId);
+    if (!account) return null;
+    return evaluateQuota(await this.reading(account), this.now());
+  }
+
   /** Every still-registered account a rotated launch put a `vendor` pane of
    *  this workspace on. Unregistered accounts are dropped here. */
   launchedAccounts(workspaceId: string, vendor: Vendor): string[] {

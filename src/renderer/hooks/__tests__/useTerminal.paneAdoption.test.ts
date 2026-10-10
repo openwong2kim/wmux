@@ -90,9 +90,23 @@ describe('#1002 — pane-restructure terminal adoption (source-level)', () => {
     ['restore-unsettled', /!restoreSettled \? 'restore-unsettled'/],
     ['txt-awaiting-verdict', /didRestoreTxt \? 'txt-awaiting-verdict'/],
     ['reconnect-in-flight', /reconnectInFlightRef\.current \? 'reconnect-in-flight'/],
+    ['reconnect-pending', /reconnectPendingRef\.current \? 'reconnect-pending'/],
     ['not-registry-owner', /terminalRegistry\.get\(ptyId\) !== terminal \? 'not-registry-owner'/],
   ])('refuses to park with reason %s', (_reason, pattern) => {
     expect(refusalLadder).toMatch(pattern as RegExp);
+  });
+
+  it('marks a reattach that settled without a pipe as pending, and clears it on attach', () => {
+    // A rate-limited reconnect keeps the ptyId but has no session pipe; parking
+    // it would hand an unattached terminal to a mount that skips its reconnect.
+    expect(src).toMatch(/reconnectPendingRef\.current = message !== null;/);
+  });
+
+  it('a rate-limited give-up reattaches again on a slow timer, cleared on teardown', () => {
+    // No daemon:connected follows a rate limit (the daemon never disconnected),
+    // so without this the pane would wait for a manual Retry.
+    expect(src).toMatch(/if \(info\?\.rateLimited && slowRetry === null\) \{\s*slowRetry = setTimeout\(\(\) => \{ slowRetry = null; void reattach\('rate-limit-retry'\); \}/);
+    expect(src).toMatch(/if \(slowRetry !== null\) clearTimeout\(slowRetry\);\s*if \(off\) off\(\);/);
   });
 
   it('parks exactly when the ladder found no reason not to', () => {

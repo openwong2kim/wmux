@@ -133,6 +133,41 @@ describe('FleetView — row verbs', () => {
     expect(stashPane).toHaveBeenCalledWith('p1', 'ws-1');
   });
 
+  it('a row that ended on a question offers Dismiss question, which clears it', async () => {
+    act(() => { useStore.setState({ surfacePendingQuestion: { 'pty-1': 'Shall I merge?' } }); });
+    mount();
+    await flushRaf();
+    expect(row('pty-1').dataset.status).toBe('awaiting_input');
+    const items = openMenu('pty-1');
+    expect(items.map((el) => el.dataset.paneMenuAction)).toEqual(['jump', 'message', 'dismiss-question', 'stash', 'label', 'role', 'close']);
+    const dismiss = items.find((el) => el.dataset.paneMenuAction === 'dismiss-question')!;
+    expect(dismiss.textContent).toContain('Dismiss question');
+    act(() => { dismiss.click(); });
+    expect(useStore.getState().surfacePendingQuestion['pty-1']).toBeUndefined();
+    expect(useStore.getState().surfaceDismissedQuestion['pty-1']).toBe('Shall I merge?');
+    expect(row('pty-1').dataset.status).not.toBe('awaiting_input');
+  });
+
+  it('a live permission prompt (no pending question) has no Dismiss question', async () => {
+    mount();
+    await flushRaf();
+    const items = openMenu('pty-4');
+    expect(items.map((el) => el.dataset.paneMenuAction)).not.toContain('dismiss-question');
+  });
+
+  it('a live prompt with a question text has no Dismiss question', async () => {
+    act(() => {
+      useStore.setState((s) => ({
+        surfacePendingQuestion: { 'pty-1': 'Shall I merge?' },
+        surfaceAgent: { ...s.surfaceAgent, 'pty-1': { name: 'Claude Code', status: 'awaiting_input' } },
+      }));
+    });
+    mount();
+    await flushRaf();
+    const items = openMenu('pty-1');
+    expect(items.map((el) => el.dataset.paneMenuAction)).not.toContain('dismiss-question');
+  });
+
   it('a remote row shows Jump only, and the verb keys do nothing on it', async () => {
     mount();
     await flushRaf();

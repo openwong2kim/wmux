@@ -111,12 +111,9 @@ in the terminal whatever the chrome accent.
 └──┴── 8px frame margin ───────────────────────────────────────────────┘
 ```
 
-- **Frame:** the titlebar row, one 48px rail, a conditional 48px **computer
-  column** left of it, and an 8px margin (`--sheet-inset`) on the left,
-  right and bottom, painted `--frame-bg` — a step darker than the sheet in
-  the dark looks, a soft grey in Paper. The computer column is drawn only
-  while at least one computer is web-paired; with none the frame is exactly
-  the one rail (see "Computer column").
+- **Frame:** the titlebar row, the 48px rail and an 8px margin
+  (`--sheet-inset`) on the left, right and bottom, painted `--frame-bg` — a
+  step darker than the sheet in the dark looks, a soft grey in Paper.
 - **Sheet:** one rounded panel (`--sheet-radius` 12px) flush under the
   titlebar, holding the sidebar, the panes and the tools dock. It is set
   off by a 1px `--sheet-edge` hairline and a faint `--sheet-shadow`, nothing
@@ -145,8 +142,8 @@ in the terminal whatever the chrome accent.
 40px (`TITLEBAR_HEIGHT`, shared with main's `titleBarOverlay`). The whole
 bar is a drag region; each interactive child opts out with `no-drag`.
 
-- **Left:** a segment tinted `--bg-mantle` and width-matched to the
-  computer column (when shown), the rail and the sidebar below it, so the top-left reads as one panel: on macOS an 80px
+- **Left:** a segment tinted `--bg-mantle` and width-matched to the rail
+  and sidebar below it, so the top-left reads as one panel: on macOS an 80px
   reserve for the traffic lights (centred in the 40px row, dropped in native
   fullscreen), then, left to right, the `wmux` wordmark and the **sidebar
   toggle** (on Windows and Linux the wordmark is at the far left). The
@@ -247,43 +244,55 @@ navigates through it.
 - The command palette and the notification panel float over any page
   without navigating. The web mirror keeps its own sidebar.
 
-### Computer column
+### PC switcher
 
-A 48px column on the frame, left of the page rail, listing **this computer
-first, then each web-paired computer** (A2A-only peers stay on the Remote
-page). A computer is a **scope**, a page is a destination, so the two never
-share a column. It shares the frame background (no seam), is hidden with 0
-paired hosts (single-PC users see no change), and appearing narrows the
-sheet once, so terminals refit once. The titlebar segment widens to match.
+Another computer is a **scope** of the Workspaces page, not a page and not a
+column: the sidebar title switches it. With **0 web-paired computers** the
+title is the plain "Workspaces" and nothing else changes (single-PC users see
+no difference). A2A-only peers stay on the Remote page.
 
-- **Icon:** 40px, the rail item's grammar. A host is a 2-letter monogram of
-  its label (`office-mac` → `OM`); this computer is the computer glyph.
-  The selected computer is the `--selection` square (`aria-current`).
-- **States:** online is plain; offline and not-yet-checked are muted
-  (a host whose list has not come back yet is never drawn online); offline
-  names "last seen 14:02" in the tooltip; needs repair adds the red ✕ mark;
-  an insecure (plain http) host is muted with its own line.
-- **Badges:** needs-you is the rail's `--attention` number badge; finished
-  is the sidebar's neutral done dot (hosts only: this computer's badge is
-  needs-you only, its finished turns are the sidebar's own done dots). No
-  amber, no wash. **The selected computer shows no badge once its rows are
-  on screen** — the rows are the evidence, so an event keeps at most two
-  renditions. This computer's rows always are; a selected host keeps its
-  badge until the Workspaces page lists that host's rows.
-- **Overflow:** more computers than fit scroll the column (no visible
-  bar); a focused icon is scrolled into view.
+- **Title:** "Workspaces ▾" while this computer is selected, "Workspaces ·
+  office-mac ▾" while a paired computer is; the host name keeps its own case.
+  The list below is that computer's workspaces (opened as shadow
+  workspaces), and the count is that list's. Its rows ARE the local row
+  component (WorkspaceItem and its pane rows) reading a read-only projection
+  of that computer: the host's order and 1..n numbering, status mark,
+  needs-you card, idle label, branch line, and the
+  expandable pane rows ("✳ Claude Code · w1-1") — filled only from what the
+  host sends. Inside the host's own list its pane rows carry no "@host"
+  origin mark. What the host does not send (unread, the done dot, the
+  question text, git sync counts, stashed panes) and every local-only action
+  (menu, rename, drag, drop, archive) are absent, never faked.
+- **Dropdown** (the pane menu's look): this computer first, then each
+  web-paired computer as a monogram row with its state on a second line —
+  Online, Offline · last seen 14:02, Not checked yet, needs repair, or not a
+  secure connection — and its needs-you count. The selected computer is the
+  checked row. Under a divider, one "<name> settings ›" per computer opens
+  Mute / Unmute notifications, Open Remote page and Pair again, with View
+  only or Can type and how to revoke underneath. A host added with its
+  operator link says so and suggests pairing again with a code; for a host
+  paired before the credential kind was recorded, the menu names both ways to
+  revoke and promises neither.
+- **Badge:** one `--attention` number badge beside the title, the sum of
+  the needs-you of the computers **not** selected (this computer's Fleet
+  count counts while a host is selected). The selected computer has none —
+  its rows are the evidence. No amber, no wash.
+- **Collapsed sidebar:** with a computer paired, one item at the top of the
+  rail's workspace list — the computer glyph for this one, the monogram for
+  a host — carrying the same badge and opening the same dropdown beside the
+  rail. The rail's workspace avatars follow the selection: a paired
+  computer's own workspaces (same avatar look, no new-workspace button),
+  this computer's again when it is selected.
 - **Keys:** rebindable `Alt+Shift+↑/↓` cycles computers (as `Alt+↑/↓`
   cycles workspaces), `Alt+Shift+Home` returns to this computer; they are
-  Settings › Shortcuts rows like any built-in. The rail claims a chord only
-  while a computer is paired and no custom keybinding sits on it; otherwise
-  the pane gets it. Never `Ctrl+Alt+digit` (AltGr on Windows). One tab stop; arrows, Home and End
-  rove; Shift+F10, the context-menu key or a right-click opens a host's
-  menu: Mute / Unmute notifications, Open Remote page, Pair again, with
-  View only or Can type and how to revoke underneath. A host added with its
-  operator link says so and suggests pairing again with a code. The desktop
-  records how each credential was issued from now on; for a host paired
-  before that, the menu names both ways to revoke (Paired devices for a
-  code, a new web link for an operator link) and promises neither.
+  Settings › Shortcuts rows like any built-in, claimed only while a computer
+  is paired and no custom keybinding sits on that chord. Never
+  `Ctrl+Alt+digit` (AltGr on Windows). The dropdown walks with the arrows,
+  Home and End; Escape in a settings submenu steps back to the list.
+- **Shadow panes:** no split, no new pane and no layout snap (the host owns
+  the layout); a new browser stays in the ⋮ menu as "Browser (this
+  computer)". A host's terminal keeps the user's font size: a grid the pane
+  cannot hold scrolls inside it (letterbox), never shrinks to fit.
 
 ### Fleet
 
@@ -485,7 +494,8 @@ refresh button. Nothing about branches or worktrees sits above the lists.
   every open workspace grouped by repo (the active repo first; clones of
   one remote are one group), another repo's group opening on demand and
   reading once. The flat list reads every repo once up front; in both,
-  only the active repo's list polls. Worktrees stays grouped. The branch
+  only the active repo's list polls. Worktrees stays grouped by repo, with
+  the sections inside each checkout. The branch
   bar shows on Worktrees only when the active workspace is in the shown
   repo.
 - **List / detail:** Pull requests and Issues are a split, the list ~30%
@@ -516,19 +526,44 @@ refresh button. Nothing about branches or worktrees sits above the lists.
   disclosure labelled by its summary, other tags reduce to their text.
   Nothing selected is one quiet line.
 - **Worktrees tab:** the new-worktree line and, while one runs, the merge
-  session on top, then the worktrees in three groups: **In use** (a
-  workspace on it), **No workspace**, and **Cleanup candidates** (no
-  workspace, and detached, prunable or no commits in 14 days), captioned as
-  something to check before removing, never as safe to delete. The main
-  worktree and a merge session's worktree are never candidates. One row per
+  session on top, then the worktrees in the flat list's who-acts-next
+  grammar, as fold sections in order: **In use** (a workspace on it),
+  **Uncommitted changes** (no workspace, changes on disk: work nobody is
+  on), **No open PR** (no workspace, a tree known to be clean, a branch,
+  and the repo's open PR list the page already holds is complete and has
+  none from it; with no list held, or one that may be cut off at its read
+  cap, the row stays in No workspace), **Cleanup candidates** (a workspace
+  whose PR is merged, with a clean tree and no agent working or asking
+  there; or no workspace and prunable; or no workspace, a tree known to be
+  clean, and detached, or no commits in 14 days with a held, complete
+  open PR list that has none from it),
+  captioned as something to check before removing, never as safe to
+  delete, and **No workspace** (the rest). The main worktree, a locked one
+  and a merge session's are never candidates. The sections are judged from
+  what wmux already reads: the worktree list, every worktree's uncommitted
+  state (the diff counts where a workspace sits, a status-only count
+  elsewhere: local git, once per load, a few reads at a time; a failed
+  read is unknown, never clean), the workspaces on each worktree
+  with their pushed PR status and live agent status, and the open PR list
+  of the header's read or a Pull requests list; the tab reads no PR list
+  of its own. All headers stay neutral (no orange: none of these is a
+  question waiting on the owner), every section starts open, and under the
+  page title a summary line names each non-empty section with its count
+  and jumps to it. A row in Uncommitted changes, No open PR or Cleanup
+  candidates can be **snoozed** (1 hour, 1 day, 1 week, or until it
+  changes): it moves to a folded **Snoozed** group at the end, with
+  Unsnooze, until its time passes or its state changes (another section,
+  a new commit, a different count of changed files), whichever comes
+  first. One row per
   worktree: the branch in mono over the workspaces on it (each a link that
   switches to it) or its folder, the PR, the diff stat (green/red), the
   accent dot only on the active pane's worktree, and Diff / Open / Merge /
   Remove floating over the faded right edge on hover.
 - **Remembered:** the picked repo, tab, issue filter, selected item, list
-  scroll, the All repos layout, its repo chips and its folded sections live in the UI store and
-  survive leaving the page; the picked repo, the tab, the layout and the
-  chips are also kept per viewer across restarts. Anything that lands on a pane (Diff, Open, Go
+  scroll, the All repos layout, its repo chips and its folded sections (the
+  Worktrees tab's too) live in the UI store and
+  survive leaving the page; the picked repo, the tab, the layout, the
+  chips and the Worktrees snoozes are also kept per viewer across restarts. Anything that lands on a pane (Diff, Open, Go
   to terminal, a workspace link) returns to Workspaces.
 - **PR review (detail pane):** under the facts row, in order:
   - **Checks:** a row per check (a green tick for pass, a red mark for fail, a
@@ -992,6 +1027,8 @@ primitives plus `Settings/SettingsLayout.tsx` (`SettingsSection`,
 | 2026-10-09 | Owner decision: on the Git page, All repos shows Issues and Pull requests as one flat list across repos (newest update first) with a neutral repo tag on each row, and a row of repo chips (counts, multi-select, kept per viewer) as the filter; a row's tag toggles its chip. Today's grouped view stays behind a Flat \| By repo toggle. A repo with nothing open keeps a dimmed chip without a digit (an exception to No dead gauges, so a repo never vanishes from the filter); loading and failed reads show on the chip | Repos stacked in one column do not scale to many projects: the owner scrolled one long column hunting for repo headings. A repo becomes a filter, not the first level of the layout |
 | 2026-10-09 | Owner decision: the flat All repos list is split into who-acts-next sections (Needs you · Ready to merge · Agents on it · Waiting on others) with a clickable count summary under the title, judged from wmux's own signals: PR state, the work link to a pane and that pane's live agent status, and the viewer's role per repo. Another author's PR, or an unrouted issue not assigned to the owner, is Needs you only where the viewer can write; a PR with no CI that is mergeable and needs no review is Ready to merge. Settled is deferred | Agents open PRs under the owner's GitHub account, so GitHub's author and review-request fields cannot say whose turn it is. Settled would always be empty because the lists read open items only. An upstream repo the owner does not maintain must not flood Needs you |
 | 2026-10-10 | Owner decision (PC rail): the frame is one 48px rail plus a conditional 48px computer column left of it, hidden with 0 web-paired hosts. Amends the one-rail frame | A computer is a scope and a page is a destination; folding computers into the page rail collides with the collapsed sidebar's workspace list, and single-PC users must see no change |
+| 2026-10-10 | Owner decision (PC rail, same day): no computer column. The frame is one rail again; the sidebar title is the PC switcher ("Workspaces · <PC> ▾", a dropdown with each computer's state, needs-you count and settings), one badge beside it sums the unselected computers' needs-you, and the collapsed sidebar gets one switcher item. Supersedes the row above | A 48px column took width from every window for a scope most sessions never change; the title already names what the list shows |
+| 2026-10-10 | Owner direction (#1987 PR3): the Worktrees tab takes the who-acts-next grammar — In use · Uncommitted changes · No open PR · Cleanup candidates (a merged PR counts) · No workspace — with a summary line, plus snooze (1 hour / 1 day / 1 week / until it changes; any change of state ends it early) kept per viewer. Headers stay neutral; the PR knowledge is only what the page already read, so a repo whose list is not held shows no No open PR | Three groups said where a workspace sat but not what each worktree wanted. Uncommitted work nobody is on, unshipped branches and merged leftovers are the three things a worktree asks of the owner; snooze lets a known one stop asking without deleting it. Reading every repo's PR list for this tab would cost gh calls the page otherwise never makes |
 
 ### Desktop conversation view
 

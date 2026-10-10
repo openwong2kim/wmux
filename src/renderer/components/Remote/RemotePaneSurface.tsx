@@ -15,6 +15,8 @@ export interface RemotePaneSurfaceProps {
    *  invisible instead of overlapping the active one. */
   isActive?: boolean;
   onTitleChange: (surfaceId: string, title: string) => void;
+  /** A shadow workspace's tab: keep the user's font, scroll what does not fit. */
+  fixedFont?: boolean;
 }
 
 /**
@@ -29,7 +31,7 @@ export interface RemotePaneSurfaceProps {
  * an ATTACHED remote workspace); this is its single-surface twin for a pane
  * that lives in a normal workspace.
  */
-export default function RemotePaneSurface({ hostId, sessionId, surfaceId, shell, cwd, isActive = true, onTitleChange }: RemotePaneSurfaceProps) {
+export default function RemotePaneSurface({ hostId, sessionId, surfaceId, shell, cwd, isActive = true, onTitleChange, fixedFont = false }: RemotePaneSurfaceProps) {
   const [attachId, setAttachId] = useState<string | null>(null);
   const [error, setError] = useState<string | undefined>(undefined);
   /** The attach was refused: this host needs HTTPS (its token is withheld). */
@@ -88,6 +90,18 @@ export default function RemotePaneSurface({ hostId, sessionId, surfaceId, shell,
     };
   }, [hostId, sessionId]);
 
+  // The attach's meta (grid plus the host's current screen) can arrive before
+  // the mirror below subscribes to it: the mirror only listens once this
+  // attachId has rendered, and a host on a fast link answers sooner. A child's
+  // effects run before its parent's, so by now the mirror listens; the second
+  // attach for the same session is main's idempotent path, which reopens the
+  // stream and sends a fresh meta and snapshot.
+  useEffect(() => {
+    if (!attachId) return;
+    window.electronAPI?.remote?.paneAttach(hostId, sessionId).catch(() => { /* the first attach already reported */ });
+    // Once per attach: a new hostId or sessionId always brings a new attachId.
+  }, [attachId]);
+
   return (
     <div className="absolute inset-0 flex flex-col" style={{ background: 'var(--bg-base)', display: isActive ? 'flex' : 'none' }}>
       {(shell || cwd) && (
@@ -121,6 +135,7 @@ export default function RemotePaneSurface({ hostId, sessionId, surfaceId, shell,
           hostLabel={hostLabel}
           hostId={hostId}
           onTitleChange={(title) => onTitleChange(surfaceId, title)}
+          fixedFont={fixedFont}
         />
       </div>
     </div>

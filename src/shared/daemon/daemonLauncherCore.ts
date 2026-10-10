@@ -5,7 +5,14 @@ import { spawn, execFileSync } from 'child_process';
 import * as crypto from 'crypto';
 import { getWmuxDir } from '../../daemon/config';
 import { getDaemonPipeName, readDaemonAuthToken } from '../../main/DaemonClient';
-import { DAEMON_EXIT_ALREADY_RUNNING, ENV_KEYS } from '../constants';
+import { DAEMON_EXIT_ALREADY_RUNNING, ENV_KEYS, dataSuffix } from '../constants';
+import {
+  LaunchdUnavailableError,
+  defaultLaunchdRuntime,
+  launchdBaseLabel,
+  startDaemonViaLaunchd,
+  sweepLeftoverDaemonPlists,
+} from './launchdDaemonJob';
 import { classifyTasklistOutput, classifyKillOutcome, type ProcessLiveness } from '../processLiveness';
 
 export interface DaemonInfo {
@@ -74,6 +81,14 @@ export interface DaemonLauncherDeps {
    * real one; the headless CLI omits it and gets a silent no-op via `?.`.
    */
   markBoot?(name: string): void;
+  /**
+   * macOS only: start the daemon as a launchd job (see launchdDaemonJob.ts)
+   * so it is not a LaunchServices subordinate of the launching app and
+   * survives that app quitting. Falls back to the detached spawn when launchd
+   * cannot load the job. Ignored on other platforms. Opt-in so unit tests
+   * that mock `spawn` never bootstrap a real job.
+   */
+  launchViaLaunchdOnDarwin?: boolean;
   /**
    * Diagnostic logging for the spawn/reuse/recovery chain — candidate paths
    * tried, PID found, recovery decisions. Omit to get the historical
@@ -846,92 +861,162 @@ function spawnDaemon(deps: DaemonLauncherDeps): Promise<number> {
     // inherited stale version would poison the staleness gate.
     env[ENV_KEYS.SPAWNED_BY_VERSION] = deps.resolveSpawnedByVersion();
 
-    const child = spawn(nodePath, [daemonScript], {
-      detached: true,
-      stdio: 'ignore',
-      windowsHide: true,
-      env,
-    });
+    // Shared by both launch mechanisms once a process exists: readiness poll
+    // plus fast-fail on an early exit.
+    const watch = (proc: {
+      pid: number;
+      isAlive(): boolean;
+      onExit(cb: (code: number | null) => void): void;
+      dispose(): void;
+    }) => {
+      deps.markBoot?.('daemon-spawned');
+      (deps.log ?? console.log)(`[launcher] Daemon spawned with PID: ${proc.pid}`);
 
-    // `spawn` reports failures asynchronously via 'error' (e.g. EMFILE,
-    // EACCES). Without a listener that emission throws an uncaught exception,
-    // bypassing the reject() contract every caller — including the headless
-    // CLI's `runStart` — relies on to report a clean, non-crashing message.
-    child.on('error', (err) => {
-      const spawnErr = new Error(`Failed to spawn daemon: ${err instanceof Error ? err.message : String(err)}`);
-      // Route through the poll's own cancel once it exists so its timer is
-      // cleared; before that, nothing has started yet and a direct reject
-      // is correct (and `readiness.promise.then(_, reject)` below would
-      // otherwise double-reject the same already-settled promise, which is
-      // harmless but pointless).
-      if (readiness) readiness.cancel(spawnErr);
-      else reject(spawnErr);
-    });
+      // Wait for daemon to be ready. Adaptive cadence + the pipe-file zombie
+      // guard live in pollDaemonReady (extracted so the chain is unit-testable
+      // with fake timers).
+      readiness = pollDaemonReady({
+        budgetMs: 15_000, // wall-clock 15 s fast-path expectation for a warm daemon
+        // Issue #537 — extend the wait while THIS spawned child is still alive.
+        // The daemon writes daemon.pid at boot start but its pipe file only after
+        // `recoverSessions`, and cold-recovering a big session set runs long (~23 s
+        // for 30 ConPTY sessions, and the recovery cap is 40). A live child that
+        // hasn't produced its pipe file yet is recovering, not wedged — waiting is
+        // correct, and it is what stops the replacement/respawn machinery from
+        // declaring a dead-end and dropping every recovered session on the floor.
+        // The ceiling still bounds a genuinely hung boot so the app can fall back.
+        isChildAlive: proc.isAlive,
+        hardCeilingMs: DAEMON_READY_HARD_CEILING_MS,
+        onSlowStart: () => {
+          deps.markBoot?.('daemon-recovery-slow');
+          (deps.warn ?? console.warn)(
+            `[launcher] daemon (PID ${proc.pid}) still booting past 15 s but alive — waiting up to ` +
+              `${Math.round(DAEMON_READY_HARD_CEILING_MS / 1000)} s (large session recovery in progress)`,
+          );
+        },
+        readPipeName: () => readPipeNameFromFile(getWmuxDir()),
+        readToken: readDaemonAuthToken,
+        ping: (pipeName, token) => pingDaemon(pipeName, token, 2000),
+        onPipeFileSeen: () => deps.markBoot?.('daemon-pipe-file-seen'),
+        onPingOk: () => deps.markBoot?.('daemon-first-ping-ok'),
+      });
+      const settled = readiness;
+      settled.promise.then(
+        () => { proc.dispose(); resolve(proc.pid); },
+        (err) => { proc.dispose(); reject(err); },
+      );
 
-    child.unref();
-
-    if (!child.pid) {
-      reject(new Error('Failed to spawn daemon — no PID'));
-      return;
-    }
-
-    deps.markBoot?.('daemon-spawned');
-    (deps.log ?? console.log)(`[launcher] Daemon spawned with PID: ${child.pid}`);
-
-    // Wait for daemon to be ready. Adaptive cadence + the pipe-file zombie
-    // guard live in pollDaemonReady (extracted so the chain is unit-testable
-    // with fake timers).
-    readiness = pollDaemonReady({
-      budgetMs: 15_000, // wall-clock 15 s fast-path expectation for a warm daemon
-      // Issue #537 — extend the wait while THIS spawned child is still alive.
-      // The daemon writes daemon.pid at boot start but its pipe file only after
-      // `recoverSessions`, and cold-recovering a big session set runs long (~23 s
-      // for 30 ConPTY sessions, and the recovery cap is 40). A live child that
-      // hasn't produced its pipe file yet is recovering, not wedged — waiting is
-      // correct, and it is what stops the replacement/respawn machinery from
-      // declaring a dead-end and dropping every recovered session on the floor.
-      // The ceiling still bounds a genuinely hung boot so the app can fall back.
-      isChildAlive: () => child.exitCode === null,
-      hardCeilingMs: DAEMON_READY_HARD_CEILING_MS,
-      onSlowStart: () => {
-        deps.markBoot?.('daemon-recovery-slow');
-        (deps.warn ?? console.warn)(
-          `[launcher] daemon (PID ${child.pid}) still booting past 15 s but alive — waiting up to ` +
-            `${Math.round(DAEMON_READY_HARD_CEILING_MS / 1000)} s (large session recovery in progress)`,
-        );
-      },
-      readPipeName: () => readPipeNameFromFile(getWmuxDir()),
-      readToken: readDaemonAuthToken,
-      ping: (pipeName, token) => pingDaemon(pipeName, token, 2000),
-      onPipeFileSeen: () => deps.markBoot?.('daemon-pipe-file-seen'),
-      onPingOk: () => deps.markBoot?.('daemon-first-ping-ok'),
-    });
-    readiness.promise.then(() => resolve(child.pid!), reject);
-
-    // A redundant second daemon (spawned over a daemon the launcher failed to
-    // detect) yields the canonical pipe to the live owner and exits with
-    // DAEMON_EXIT_ALREADY_RUNNING (split-brain Defect 3). Surface that as a
-    // distinct error so ensureDaemon reconnects to the existing daemon instead
-    // of treating it as a spawn failure. Any OTHER early exit means the boot
-    // genuinely crashed — cancel the readiness poll immediately (Issue #537:
-    // the poll now waits on child liveness, so without this a crash-exit would
-    // otherwise idle out the whole hard ceiling instead of failing fast).
-    child.on('exit', (code) => {
+      // A redundant second daemon (spawned over a daemon the launcher failed to
+      // detect) yields the canonical pipe to the live owner and exits with
+      // DAEMON_EXIT_ALREADY_RUNNING (split-brain Defect 3). Surface that as a
+      // distinct error so ensureDaemon reconnects to the existing daemon instead
+      // of treating it as a spawn failure. Any OTHER early exit means the boot
+      // genuinely crashed — cancel the readiness poll immediately (Issue #537:
+      // the poll now waits on child liveness, so without this a crash-exit would
+      // otherwise idle out the whole hard ceiling instead of failing fast).
       // readiness.cancel routes through the poll's own settled-guard, so a
       // post-ready exit here is a harmless no-op.
-      if (code === DAEMON_EXIT_ALREADY_RUNNING) {
-        const e = new Error(
-          'daemon yielded: another daemon already owns the canonical control pipe',
-        ) as NodeJS.ErrnoException;
-        e.code = 'EDAEMON_ALREADY_RUNNING';
-        readiness.cancel(e);
-      } else {
-        readiness.cancel(
-          new Error(`Daemon process exited during startup (code ${code ?? 'null'}) before becoming ready`),
-        );
+      proc.onExit((code) => settled.cancel(daemonStartupExitError(code)));
+    };
+
+    const spawnDirect = () => {
+      const child = spawn(nodePath, [daemonScript], {
+        detached: true,
+        stdio: 'ignore',
+        windowsHide: true,
+        env,
+      });
+
+      // `spawn` reports failures asynchronously via 'error' (e.g. EMFILE,
+      // EACCES). Without a listener that emission throws an uncaught exception,
+      // bypassing the reject() contract every caller — including the headless
+      // CLI's `runStart` — relies on to report a clean, non-crashing message.
+      child.on('error', (err) => {
+        const spawnErr = new Error(`Failed to spawn daemon: ${err instanceof Error ? err.message : String(err)}`);
+        // Route through the poll's own cancel once it exists so its timer is
+        // cleared; before that, nothing has started yet and a direct reject
+        // is correct (and `readiness.promise.then(_, reject)` below would
+        // otherwise double-reject the same already-settled promise, which is
+        // harmless but pointless).
+        if (readiness) readiness.cancel(spawnErr);
+        else reject(spawnErr);
+      });
+
+      child.unref();
+
+      if (!child.pid) {
+        reject(new Error('Failed to spawn daemon — no PID'));
+        return;
       }
-    });
+
+      watch({
+        pid: child.pid,
+        isAlive: () => child.exitCode === null,
+        onExit: (cb) => { child.on('exit', (code) => cb(code)); },
+        dispose: () => { /* nothing to stop for a direct child */ },
+      });
+    };
+
+    if (shouldLaunchDaemonViaLaunchd(deps)) {
+      // macOS: a launchd job is not a LaunchServices subordinate of this app,
+      // so quitting the app no longer SIGTERMs the daemon. See launchdDaemonJob.ts.
+      const log = deps.log ?? console.log;
+      startDaemonViaLaunchd(
+        {
+          baseLabel: launchdBaseLabel(dataSuffix()),
+          plistDir: path.join(getWmuxDir(), 'launchd'),
+          programArguments: [nodePath, daemonScript],
+          env,
+        },
+        defaultLaunchdRuntime(log),
+      ).then(
+        (job) => {
+          if (job.pid === null) {
+            job.onExit((code) => reject(daemonStartupExitError(code)));
+            return;
+          }
+          const pid = job.pid;
+          watch({ pid, isAlive: job.isAlive, onExit: job.onExit, dispose: job.dispose });
+        },
+        (err) => {
+          if (err instanceof LaunchdUnavailableError) {
+            (deps.warn ?? console.warn)(
+              `[launcher] launchd launch unavailable (${err.message}) — falling back to a detached spawn; ` +
+                'this daemon will not survive quitting the app',
+            );
+            spawnDirect();
+          } else {
+            reject(err);
+          }
+        },
+      );
+    } else {
+      spawnDirect();
+    }
   });
+}
+
+/** The error an exit before readiness maps to — see the watch() exit hook. */
+function daemonStartupExitError(code: number | null): Error {
+  if (code === DAEMON_EXIT_ALREADY_RUNNING) {
+    const e = new Error(
+      'daemon yielded: another daemon already owns the canonical control pipe',
+    ) as NodeJS.ErrnoException;
+    e.code = 'EDAEMON_ALREADY_RUNNING';
+    return e;
+  }
+  return new Error(`Daemon process exited during startup (code ${code ?? 'null'}) before becoming ready`);
+}
+
+/**
+ * Launch strategy: a launchd job on macOS when the host opted in, a detached
+ * child everywhere else (Windows/Linux unchanged).
+ */
+export function shouldLaunchDaemonViaLaunchd(
+  deps: Pick<DaemonLauncherDeps, 'launchViaLaunchdOnDarwin'>,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  return platform === 'darwin' && deps.launchViaLaunchdOnDarwin === true;
 }
 
 function readPipeNameFromFile(wmuxDir: string): string | null {
@@ -996,6 +1081,12 @@ export async function ensureDaemon(deps: DaemonLauncherDeps): Promise<DaemonInfo
   deps.markBoot?.('daemon-ensure-start');
   const wmuxDir = getWmuxDir();
   const pidFile = path.join(wmuxDir, 'daemon.pid');
+  // A launcher that died between writing a launchd plist and deleting it
+  // leaves the spawn env on disk; clear that on every entry, not only on the
+  // next launchd start.
+  if (shouldLaunchDaemonViaLaunchd(deps)) {
+    sweepLeftoverDaemonPlists(launchdBaseLabel(dataSuffix()), path.join(wmuxDir, 'launchd'));
+  }
 
   // 1. Check PID file
   let existingPid: number | null = null;

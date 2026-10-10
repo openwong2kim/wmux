@@ -28,6 +28,7 @@ import {
 } from './ptyCreateOptions';
 import { type IpcResult } from '../hooks/useIpc';
 import { type WorkspaceProfile } from '../../shared/types';
+import { isShadowWorkspaceId } from '../../shared/pcRail';
 
 export interface CreateTerminalSurfaceDeps {
   workspaceId: string;
@@ -50,9 +51,10 @@ export async function createTerminalSurface(deps: CreateTerminalSurfaceDeps): Pr
   // 1 — startup gate.
   if (deps.paneGate !== 'ready') return;
 
-  // 2 — requested workspace must exist.
+  // 2 — requested workspace must exist, and be this computer's: a shadow
+  // workspace shows another computer's panes and never gets a local shell.
   const workspace = deps.workspaces.find((w) => w.id === deps.workspaceId);
-  if (!workspace) return;
+  if (!workspace || isShadowWorkspaceId(workspace.id)) return;
 
   // 3 — resolve starting cwd (profile > global fallback).
   const cwd = resolveStartupCwd({

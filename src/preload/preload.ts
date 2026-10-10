@@ -880,6 +880,10 @@ const electronAPI = {
       archiveAck: () => ipcRenderer.invoke(IPC.DECK_MOA_ARCHIVE_ACK) as Promise<{ ok: boolean }>,
       resetStore: () => ipcRenderer.invoke(IPC.DECK_MOA_STORE_RESET) as Promise<{ ok: boolean }>,
       endGoal: () => ipcRenderer.invoke(IPC.DECK_MOA_GOAL_END) as Promise<{ ok: boolean; code?: string }>,
+      answerDraft: (id: string, answer: 'approve' | 'dismiss') =>
+        ipcRenderer.invoke(IPC.DECK_MOA_DRAFT_ANSWER, { id, answer }) as Promise<{ ok: boolean; code?: string; goalId?: string }>,
+      revertGoal: (goalId: string) =>
+        ipcRenderer.invoke(IPC.DECK_MOA_GOAL_REVERT, goalId) as Promise<{ ok: boolean; code?: string; notes?: string[] }>,
       shadowStats: () =>
         ipcRenderer.invoke(IPC.DECK_MOA_SHADOW_STATS) as Promise<import('../shared/moa').MoaShadowStats>,
       memoryList: () =>
@@ -1046,6 +1050,14 @@ const electronAPI = {
         ipcRenderer.invoke(IPC.DECK_LEDGER_GATE_GET) as Promise<{ enabled: boolean }>,
       set: (enabled: boolean) =>
         ipcRenderer.invoke(IPC.DECK_LEDGER_GATE_SET, { enabled }) as Promise<{ enabled: boolean }>,
+    },
+    // `deck.fleetFastPath` — answer short read-only Fleet questions from the
+    // local Fleet board instead of a Moa turn. Persisted in main, default off.
+    fleetFastPath: {
+      get: () =>
+        ipcRenderer.invoke(IPC.DECK_FLEET_FAST_PATH_GET) as Promise<{ enabled: boolean }>,
+      set: (enabled: boolean) =>
+        ipcRenderer.invoke(IPC.DECK_FLEET_FAST_PATH_SET, { enabled }) as Promise<{ enabled: boolean }>,
     },
     // The Deck status panel's ledger read + its "re-read now" ping. The push
     // carries only the owner workspace: `summary` is the single projection.
@@ -1480,6 +1492,11 @@ const electronAPI = {
     summary: (worktreePath: string, knownStateKey?: string) =>
       ipcRenderer.invoke(IPC.DIFF_SUMMARY, worktreePath, knownStateKey ?? '') as Promise<
         import('../shared/diffParse').DiffSummaryResult | import('../shared/diffParse').DiffReadError
+      >,
+    // Git page Worktrees — the count of paths with uncommitted changes (git status only).
+    status: (worktreePath: string) =>
+      ipcRenderer.invoke(IPC.DIFF_STATUS, worktreePath) as Promise<
+        import('../shared/diffParse').DiffStatusResult | import('../shared/diffParse').DiffReadError
       >,
     // 워크스페이스 diff — 임의 cwd를 자기 worktree toplevel로 정규화(비-git이면 ok:false).
     resolveRepo: (cwd: string) =>

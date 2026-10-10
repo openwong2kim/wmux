@@ -299,6 +299,12 @@ export const IPC = {
   //   renderer-only trust boundary.
   DECK_LEDGER_GATE_GET: 'deck:ledger-gate:get',
   DECK_LEDGER_GATE_SET: 'deck:ledger-gate:set',
+  //   DECK_FLEET_FAST_PATH_* — the `deck.fleetFastPath` switch (Settings
+  //   toggle). ON answers short read-only Fleet questions from the desktop
+  //   composer with the local Fleet board instead of a Moa turn. Backed by
+  //   deck-fleet-fast-path.json (main/deck/deckFleetFastPathStore.ts).
+  DECK_FLEET_FAST_PATH_GET: 'deck:fleet-fast-path:get',
+  DECK_FLEET_FAST_PATH_SET: 'deck:fleet-fast-path:set',
   //   DECK_LEDGER_SUMMARY — the Deck status panel's read: the open task
   //   ledger rows one workspace's brain owns, joined with the workspace
   //   mirror's per-worker agent status. Read-only projection.
@@ -346,6 +352,12 @@ export const IPC = {
   //   DECK_MOA_GOAL_END: the operator ends Moa's open goal contract
   //   (moaGoalContract.ts) from Settings › Moa. Ending only takes powers away.
   DECK_MOA_GOAL_END: 'deck:moa:goal:end',
+  //   DECK_MOA_GOAL_REVERT: "Revert this goal" — close the PRs Moa opened
+  //   for a completed goal (moaGoalDelivery.ts). Branches and history stay.
+  DECK_MOA_GOAL_REVERT: 'deck:moa:goal:revert',
+  //   DECK_MOA_DRAFT_ANSWER: approve or dismiss a learning-loop goal draft
+  //   (moaGoalLearning.ts). Approve proposes and approves it as a goal.
+  DECK_MOA_DRAFT_ANSWER: 'deck:moa:draft:answer',
   //   DECK_MOA_SHADOW_STATS — the shadow judge's readout (MoaShadowStats).
   DECK_MOA_SHADOW_STATS: 'deck:moa:shadow:stats',
   //   DECK_MOA_MEMORY_LIST / _DELETE: what Moa remembers (saved precedents,
@@ -621,6 +633,9 @@ export const IPC = {
   // Fleet Ready to review — a task's change counts only (numstat + untracked),
   // no patch text; answers `unchanged` when the worktree state key matches.
   DIFF_SUMMARY: 'diff:summary',
+  // Git page Worktrees — how many paths have uncommitted changes, from
+  // `git status` alone (no file is read).
+  DIFF_STATUS: 'diff:status',
   // Deck Git 탭 — 워크트리 GUI (list/add/remove; remove는 --force 미제공)
   WORKTREE_LIST: 'worktree:list',
   WORKTREE_ADD: 'worktree:add',

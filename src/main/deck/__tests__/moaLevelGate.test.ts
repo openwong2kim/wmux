@@ -78,7 +78,9 @@ describe('moa level gate', () => {
     const g: MoaLevelGateDeps = { ...deps(2, { goalId: 'G-1', humanOnly: [] }), typed: new Map() };
     expect(moaLevelRefusal(g, 'input.send', HQ, { ptyId: 'p1', text: 'git pu' })).toBeNull();
     expect(moaLevelRefusal(g, 'input.send', HQ, { ptyId: 'p1', text: 'sh origin main' })).toMatch(/remote/);
-    // Refused: the line is forgotten, so the next fragment starts clean.
+    // Refused: the refused text never reached the pane, but `git pu` is still
+    // on its line, so the line keeps it.
+    expect(g.typed!.get('pty:p1')).toBe('git pu');
     expect(moaLevelRefusal(g, 'input.send', HQ, { ptyId: 'p1', text: 'run the tests' })).toBeNull();
     // A submitted line clears; another pane's line is separate.
     expect(moaLevelRefusal(g, 'input.send', HQ, { ptyId: 'p1', text: ' now', submit: true })).toBeNull();
@@ -91,6 +93,63 @@ describe('moa level gate', () => {
     expect(moaLevelRefusal(g, 'input.sendKey', HQ, { ptyId: 'p2', key: 'ctrl+c' })).toBeNull();
     expect(g.typed!.has('pty:p2')).toBe(false);
     expect(moaLevelRefusal(g, 'input.sendKey', HQ, { ptyId: 'p4', key: 'enter' })).toBeNull();
+  });
+
+  // dot review P2: refusing `sh` after `git pu` used to forget `git pu`, so the
+  // same `sh` sent again passed and the terminal composed `git push`.
+  it('a refused suffix sent again is refused again: the prefix still on the line is kept', () => {
+    const g: MoaLevelGateDeps = { ...deps(2, { goalId: 'G-1', humanOnly: [] }), typed: new Map() };
+    expect(moaLevelRefusal(g, 'input.send', HQ, { ptyId: 'p1', text: 'git pu' })).toBeNull();
+    expect(moaLevelRefusal(g, 'input.send', HQ, { ptyId: 'p1', text: 'sh' })).toMatch(/remote.*still holds unsubmitted text/);
+    expect(moaLevelRefusal(g, 'input.send', HQ, { ptyId: 'p1', text: 'sh' })).toMatch(/remote/);
+    // Enter would submit `git pu` alone: screened, and harmless.
+    expect(moaLevelRefusal(g, 'input.send', HQ, { ptyId: 'p1', text: 'sh', submit: true })).toMatch(/remote/);
+    // ctrl+c clears the line; then the same text is just `sh`.
+    expect(moaLevelRefusal(g, 'input.sendKey', HQ, { ptyId: 'p1', key: 'ctrl+c' })).toBeNull();
+    expect(moaLevelRefusal(g, 'input.send', HQ, { ptyId: 'p1', text: 'sh' })).toBeNull();
+  });
+
+  // Owner decision 4: Escape does not clear a bash line (it is a meta prefix),
+  // so it must not make the gate forget what is still typed there.
+  it.each(['escape', 'ctrl+d', 'ctrl+z'])('%s does not discard the typed line: git pu, the key, then sh is refused', (key) => {
+    const g: MoaLevelGateDeps = { ...deps(2, { goalId: 'G-1', humanOnly: [] }), typed: new Map() };
+    expect(moaLevelRefusal(g, 'input.send', HQ, { ptyId: 'p1', text: 'git pu' })).toBeNull();
+    expect(moaLevelRefusal(g, 'input.sendKey', HQ, { ptyId: 'p1', key })).toBeNull();
+    expect(moaLevelRefusal(g, 'input.send', HQ, { ptyId: 'p1', text: 'sh' })).toMatch(/remote/);
+  });
+
+  // Live dogfood 2026-10-10: a goal worker's shell died, the pane came back as
+  // a plain shell, and Moa typed `claude "…"` into it. That claude had no goal
+  // deny rules and the shell no goal env, so its `git push` went through.
+  it('under a goal, typing an agent CLI launch into a pane is refused', () => {
+    const g = () => ({ ...deps(2, { goalId: 'G-1', humanOnly: [] }), typed: new Map<string, string>() });
+    for (const text of [
+      'claude "run steps 1-6 of PROBE.md"',
+      'claude',
+      '  codex exec "fix it"',
+      '& claude --permission-mode auto',
+      String.raw`& 'C:\Users\x\AppData\Roaming\npm\claude.cmd' "go"`,
+      '/usr/local/bin/agy --prompt x',
+      'cd D:/w/task; claude "go"',
+      'git status && claude -c',
+    ]) {
+      expect(moaLevelRefusal(g(), 'input.send', HQ, { ptyId: 'p1', text, submit: true }), text).toMatch(/G-1.*agent/);
+    }
+    // Split across calls and submitted with Enter: still one launch line.
+    const split = g();
+    expect(moaLevelRefusal(split, 'input.send', HQ, { ptyId: 'p1', text: 'cla' })).toBeNull();
+    expect(moaLevelRefusal(split, 'input.send', HQ, { ptyId: 'p1', text: 'ude "go"', submit: true })).toMatch(/agent/);
+    const enter = g();
+    expect(moaLevelRefusal(enter, 'input.send', HQ, { ptyId: 'p1', text: 'codex' })).toBeNull();
+    expect(moaLevelRefusal(enter, 'input.sendKey', HQ, { ptyId: 'p1', key: 'enter' })).toMatch(/agent/);
+    expect(moaLevelRefusal(g(), 'input.send', HQ, { ptyId: 'p1', text: 'npx @anthropic-ai/claude-code "go"', submit: true })).toMatch(/agent/);
+    // A follow-up typed into a running agent's prompt is prose, not a launch.
+    for (const text of ['Claude, please run the tests again.', 'Please continue with step 2.', 'the claude CLI printed an error; read it']) {
+      expect(moaLevelRefusal(g(), 'input.send', HQ, { ptyId: 'p1', text, submit: true }), text).toBeNull();
+    }
+    // Without a goal, or below level 2: today's lane.
+    expect(moaLevelRefusal(deps(2), 'input.send', HQ, { ptyId: 'p1', text: 'claude "go"', submit: true })).toBeNull();
+    expect(moaLevelRefusal(deps(1, { goalId: 'G-1', humanOnly: [] }), 'input.send', HQ, { ptyId: 'p1', text: 'claude "go"' })).toBeNull();
   });
 
   it('the installed gate keeps its own typed-line memory', () => {

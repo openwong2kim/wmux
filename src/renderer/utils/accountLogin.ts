@@ -15,6 +15,7 @@
 import { useStore } from '../stores';
 import { t } from '../i18n';
 import { getWorkspaceLeafPanes } from '../../shared/paneUtils';
+import { isShadowWorkspaceId } from '../../shared/pcRail';
 import { resolveStartupCwd, withDefaultShell, withWorkspaceProfile } from './ptyCreateOptions';
 
 export type LoginVendor = 'claude' | 'codex';
@@ -102,7 +103,8 @@ export async function openTerminalTab(req: {
   const state = useStore.getState();
   if (state.paneGate !== 'ready') return null;
   const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
-  if (!ws) return null;
+  // Another computer's (shadow) workspace never gets a local shell.
+  if (!ws || isShadowWorkspaceId(ws.id)) return null;
   const paneId = ws.activePaneId;
   const cwd = resolveStartupCwd({
     splitInheritsCwd: false,

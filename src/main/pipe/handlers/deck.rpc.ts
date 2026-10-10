@@ -25,6 +25,7 @@
 // owner lane grants it from the validated token — so the grant and the
 // "untrusted worker text" label stay in one place (ptyOwnership.ts).
 
+import { parseCriterionClaims } from '../../deck/moaGoalVerifier';
 import type { BrowserWindow } from 'electron';
 import type { RpcRouter } from '../RpcRouter';
 import { resolvePtyOwnerWorkspace } from '../../workspace/ptyOwnership';
@@ -397,6 +398,9 @@ export function registerDeckRpc(router: RpcRouter, getWindow: GetWindow, deps: D
       level: params['level'],
       budget: params['budget'],
       humanOnly: params['humanOnly'],
+      doneCriteria: params['doneCriteria'],
+      evidence: params['evidence'],
+      constraints: params['constraints'],
     });
   });
 
@@ -416,7 +420,10 @@ export function registerDeckRpc(router: RpcRouter, getWindow: GetWindow, deps: D
       if (action === 'complete' && summary.trim().length < 10) {
         return { ok: false, error: 'summary_required', message: 'say what was done and how you verified it (≥10 characters)' };
       }
-      return svc.end('moa', action === 'complete' ? 'completed' : 'canceled', summary);
+      if (action === 'cancel') return svc.end('moa', 'canceled', summary);
+      const claims = parseCriterionClaims(params['criteria']);
+      if ('error' in claims) return { ok: false, error: 'criteria_invalid', message: claims.error };
+      return svc.end('moa', 'completed', summary, claims);
     }
     return { ok: true, goal: svc.view() };
   });

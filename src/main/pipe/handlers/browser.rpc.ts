@@ -152,13 +152,15 @@ export function canDiscloseBrowserAttachInfo(ctx: RpcContext | undefined): boole
 export type BrowserCallerScopeDecision =
   | {
       kind: 'allowed';
-      lane: 'operator' | 'legacy';
+      lane: 'operator';
       workspaceId?: string;
     }
   | {
       kind: 'scoped';
-      lane: 'pinned' | 'hosted' | 'verified' | 'declared';
+      lane: 'pinned' | 'hosted' | 'verified';
       workspaceId: string;
+      /** The caller's pane, when its claim attests one (a pane claim). */
+      ptyId?: string;
     }
   | {
       kind: 'rejected';
@@ -174,6 +176,22 @@ function requestedWorkspaceId(params: Record<string, unknown>): string | undefin
   return typeof params['workspaceId'] === 'string' && params['workspaceId'].length > 0
     ? params['workspaceId']
     : undefined;
+}
+
+/**
+ * The caller's pane for pane-level choices (its Chrome profile, the opener
+ * record): only a pane main attested — a pane claim's `ptyId`. The envelope's
+ * `callerPtyId` is not verified, so it counts only for the in-process lanes
+ * (the operator and an iframe plugin), which have no wire envelope to set it.
+ * A wire caller without an attested pane (a workspace claim from
+ * `mcp.claimWorkspace`, a commander token) gets none, and the workspace's
+ * profile policy applies to it.
+ */
+export function callerPaneOf(ctx: RpcContext | undefined): string | undefined {
+  const claim = ctx?.workspaceClaim;
+  if (claim?.kind === 'bound' && claim.ptyId) return claim.ptyId;
+  if (ctx?.operator === true || isHostedCaller(ctx)) return ctx?.callerPtyId;
+  return undefined;
 }
 
 /**
@@ -262,16 +280,15 @@ function requestedWorkspaceId(params: Record<string, unknown>): string | undefin
  *           because closing it belongs to the shared grandfather deprecation
  *           with `PermissionEnforcer` (#1111), not to this table. Narrowing the
  *           scope without touching the allow keeps one clock, not two.
- *   OPEN    the `declared` lane still checks that `workspaceId` is PRESENT, not
- *           that it is the caller's own, for a wire caller that never claimed.
- *           Nothing binds a bare clientName to a workspace, and the name is
- *           self-asserted, so binding to it would be no stronger than the
- *           capability check that already keys on it.
- *   CLOSED  the `legacy` lane, at the gate rather than here: #1111 closed
- *           `PermissionEnforcer`'s grandfather, so under enforce mode an
- *           envelope-less wire caller is refused before it reaches this table.
- *           The lane below remains for shadow mode (the dev default), where
- *           the handler still runs after the rejection is logged.
+ *   requires (phase 0 of the per-workspace browser backend) every lane
+ *           to derive the workspace from an identity main recorded: the
+ *           validated commander token, the plugin host's binding, or a claim
+ *           token — which the pane MCP obtains from the server-side PID-map
+ *           walk. A request's `workspaceId` only NARROWS one of those (a
+ *           mismatch is refused); it never names the scope by itself. A wire
+ *           caller with none of them (formerly the `declared` lane) and an
+ *           envelope-less one (formerly `legacy` naming a workspace) are
+ *           refused, in both `mcp.mode`s — see `scopeFor`.
  *
  * The hosted lane closes one caller CLASS, not the general problem: it works
  * only because the plugin host derives both halves of the identity itself. The
@@ -429,37 +446,32 @@ export function callerScope(
         verifiedWorkspaceId,
       };
     }
-    return { kind: 'scoped', lane: 'verified', workspaceId: verifiedWorkspaceId };
+    return {
+      kind: 'scoped',
+      lane: 'verified',
+      workspaceId: verifiedWorkspaceId,
+      ...(ctx.workspaceClaim.ptyId && { ptyId: ctx.workspaceClaim.ptyId }),
+    };
   }
 
-  // #922 (c) — the legacy lane: a caller with no identity envelope is still
-  // scoped here as it always was. Closing the lane was `PermissionEnforcer`'s
-  // job, not this table's, and #1111 did it at the gate — under enforce mode
-  // such a caller no longer gets this far; in shadow mode it still does.
-  // What #922 changed here is only the OMITTED case. A legacy caller that names a
-  // workspace is unchanged, byte for byte — it was already scoped to what it
-  // named. One that names nothing used to reach the workspace-blind "first
-  // registered surface" lookup and get whichever surface happened to register
-  // first; that is what is refused now, with the one refusal message an
-  // unidentified caller can act on.
+  // No identity main recorded. The workspace is derived only from the
+  // verified connection or claim above, so a `workspaceId` in the request
+  // cannot stand in for one: it is recorded for the audit log and the call is
+  // refused. A caller with no identity envelope at all (#1111 refuses it at the
+  // gate under enforce mode) gets the same answer here in either mode.
   if (!ctx.clientName) {
-    if (requested) {
-      return { kind: 'allowed', lane: 'legacy', workspaceId: requested };
-    }
     return {
       kind: 'rejected',
       lane: 'legacy',
       reason: 'legacy-workspace-unresolved',
+      ...(requested && { requestedWorkspaceId: requested }),
     };
   }
-  if (requested) {
-    return { kind: 'scoped', lane: 'declared', workspaceId: requested };
-  }
-
   return {
     kind: 'rejected',
     lane: 'declared',
     reason: 'workspace-unresolved',
+    ...(requested && { requestedWorkspaceId: requested }),
   };
 }
 
@@ -728,15 +740,20 @@ const SCOPE_REFUSAL_REMEDY: Record<BrowserScopeShadowReason, string> = {
   'verified-workspace-mismatch':
     'omit workspaceId and this resolves to the workspace you claimed',
   'verified-claim-stale':
-    'the workspace you claimed is gone; call mcp.claimWorkspace again to get a new one',
-  // The one refusal an UNIDENTIFIED caller can receive, so it is the one that
-  // has to teach rather than just refuse: whoever reads it built against the
-  // documented envelope-less path and has no plugin identity to look up.
+    'the workspace you claimed is gone; the wmux MCP server claims again on its next call, ' +
+    'otherwise call mcp.claimWorkspace again to get a new one',
+  // The two refusals a caller without a recorded identity receives, so they
+  // have to teach rather than just refuse: a workspaceId in the params is not
+  // enough on its own, and the message says what is.
   'legacy-workspace-unresolved':
-    'name the workspace this call belongs to — send workspaceId in the params. ' +
-    'workspace.current returns the one you are in; workspace.list returns every id',
+    'browser calls act on the workspace wmux verifies for the caller, and this call carries no ' +
+    'identity envelope. Call from the wmux MCP server inside a wmux pane, or claim a workspace ' +
+    'with mcp.claimWorkspace',
   'workspace-unresolved':
-    'send the workspaceId of the workspace you are calling from',
+    'browser calls act on the workspace wmux verifies for the caller, and this call carries no ' +
+    'verified workspace (a workspaceId in the params only narrows one). Call from the wmux MCP ' +
+    'server inside a wmux pane, or claim a workspace with mcp.claimWorkspace. An agent started ' +
+    'before wmux was updated still runs the older wmux MCP server: restart that agent',
 };
 
 export function scopeRefusalError(
@@ -755,11 +772,11 @@ export function registerBrowserRpc(
   webviewCdpManager: WebviewCdpManager,
   backendStore?: BrowserBackendStore,
   browserScopeShadowSink?: (input: BrowserScopeShadowInput) => void,
-  // `mcp.mode` is resolved above this registration in main/index.ts; the getter
-  // reads it lazily per call so the two never have to stay adjacent. Defaults
-  // to shadow, so a caller that forgets to wire it keeps observing rather than
-  // silently starting to refuse traffic.
-  getEnforcementMode: () => EnforcementMode = () => 'shadow',
+  // `mcp.mode` getter. Kept in the signature for the existing wiring, but the
+  // browser scope no longer reads it: the workspace comes from the verified
+  // identity in both modes (see `scopeFor`).
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  _getEnforcementMode: () => EnforcementMode = () => 'shadow',
   // 'chrome' backend (Phase 2/2.5): per-profile real-Chrome instances behind
   // a workspace-binding registry. Optional so older wirings/tests keep
   // working; chrome-mode calls without it fail with a clear message.
@@ -836,7 +853,7 @@ export function registerBrowserRpc(
     if (!chromeRegistry) {
       throw new Error(`${method}: browser backend is 'chrome' but no Chrome launcher is wired in this build.`);
     }
-    const callerPtyId = ctx?.callerPtyId;
+    const callerPtyId = callerPaneOf(ctx);
     // The human at the UI (operator lane) and an approved in-process plugin
     // (hosted lane) are not any pane's agent: with no PTY to speak for, they
     // act in the workspace's profile. Only wire callers fail closed below.
@@ -1177,38 +1194,26 @@ export function registerBrowserRpc(
    * The single place a target-resolving browser handler learns which workspace
    * to look a surface up in.
    *
-   * Both modes audit the same decision. They differ in what the caller gets:
-   *
    *        callerScope(ctx, params)
    *                 │
    *      ┌──────────┴────────────┐
    *   rejected                 allowed / scoped
    *      │                        │
-   *   audit-log                   │
-   *      │                        │
-   *      ├─ enforce ─► throw      ├─ enforce ─► decision.workspaceId
-   *      │   (terminal: no        │              (the pinned lane returns the
-   *      │    lookup, wake,       │               TOKEN binding, which is the
-   *      │    lease, or URL       │               point — it may differ from
-   *      │    validation runs)    │               what the caller asked for)
-   *      │                        │
-   *      └─ shadow ──────────────►┴─ shadow ──► requestedWorkspaceId(params)
+   *   audit-log                   └─► decision.workspaceId
+   *      │                            (the verified binding — the pinned,
+   *      └─► throw                     hosted or claim workspace — never the
+   *          (no lookup, wake,         request's own field)
+   *          lease, or URL
+   *          validation runs)
    *
-   * Shadow returns the request-derived workspace on EVERY lane, refused or not.
-   * That is deliberate and load-bearing: shadow is the rollback, so it has to
-   * be pre-#810 behavior exactly, not "pre-#810 except where the new decision
-   * happens to be better". Returning `decision.workspaceId` here would already
-   * re-scope a pinned caller — changing which targets `browser.cdp.info` lists
-   * and whether it sets `targetsScoped` — in the mode whose whole promise is
-   * that it changes nothing.
+   * `mcp.mode` does not change the answer. Shadow mode used to hand back the
+   * request's `workspaceId` on every lane; the workspace now comes only from
+   * the verified identity in both modes, so the scope (and, in phase 1, the
+   * per-workspace backend) is decided the same way on dev and packaged builds.
+   * The permission enforcer still reads `mcp.mode` for its own rollback.
    *
-   * The mode is `mcp.mode`, shared with the permission enforcer rather than a
-   * second knob — both answer "is substrate enforcement live on this install?",
-   * and one switch means one rollback.
-   *
-   * The audit write is best-effort for the same reason as the permission shadow
-   * logger: telemetry must never break a browser call. Note the ordering — the
-   * log happens BEFORE the throw, so an enforced refusal is still evidence.
+   * The audit write is best-effort: telemetry must never break a browser call.
+   * It happens BEFORE the throw, so a refusal is still evidence.
    */
   const scopeFor = (
     method: RpcMethod,
@@ -1216,7 +1221,6 @@ export function registerBrowserRpc(
     ctx: RpcContext | undefined,
   ): string | undefined => {
     const decision = callerScope(ctx, params);
-    const enforcing = getEnforcementMode() === 'enforce';
 
     if (decision.kind === 'rejected') {
       if (browserScopeShadowSink) {
@@ -1242,11 +1246,10 @@ export function registerBrowserRpc(
           /* browser scope audit logging must never affect dispatch */
         }
       }
-      if (enforcing) throw scopeRefusalError(method, decision.reason);
-      return requestedWorkspaceId(params);
+      throw scopeRefusalError(method, decision.reason);
     }
 
-    return enforcing ? decision.workspaceId : requestedWorkspaceId(params);
+    return decision.workspaceId;
   };
 
   // Resolve the guest webview's WebContents for a CDP-backed handler, throwing a
@@ -2390,7 +2393,7 @@ export function registerBrowserRpc(
     if (!isUnclaimedBy(surfaceId, openerCaller(openerKey, chrome))) {
       return { ok: true, owner: 'other' as const };
     }
-    surfaceOpeners.note(surfaceId, openerKey, ctx?.callerPtyId);
+    surfaceOpeners.note(surfaceId, openerKey, callerPaneOf(ctx));
     return { ok: true, owner: 'mine' as const };
   });
 
@@ -2414,15 +2417,11 @@ export function registerBrowserRpc(
     // already gives. So this does not tighten a rule; it stops one method from
     // being the exception to it.
     //
-    // NOT applied on the 'external' branch: that backend hands the url to the
-    // OS browser, which belongs to no workspace, so there is nothing to scope
-    // and refusing an unscoped caller would break a working path for no gain.
-    // That branch returns before this value is used, so it is not computed at
-    // all there — reading the raw request field for it would be dead code, and
-    // keeping it would be the only thing holding this file's "no handler reads
-    // workspaceId out of the body" invariant open.
-    const workspaceId =
-      backend() === 'external' && !wantPrivate ? undefined : scopeFor('browser.open', params, ctx);
+    // Applied on the 'external' branch too. The OS browser belongs to no
+    // workspace, but the call still comes from one: the caller's identity is
+    // verified the same way as on every other backend, and the backend for a
+    // call is chosen from that workspace (per-workspace backends build on it).
+    const workspaceId = scopeFor('browser.open', params, ctx);
     const openerKey = openerKeyOf(params);
     if (wantPrivate && backend() === 'chrome') {
       throw new Error('browser.open: private tabs need the builtin browser backend.');
@@ -2862,7 +2861,10 @@ export function registerBrowserRpc(
    * Start a browser session with an optional profile.
    * params: { profile?: string }
    */
-  router.register('browser.session.start', async (params) => {
+  router.register('browser.session.start', async (params, ctx) => {
+    // Every browser method requires a verified caller, including the ones that
+    // act on no surface: the scope is the same gate, its value unused here.
+    scopeFor('browser.session.start', params, ctx);
     // Only the builtin backend runs an RPC-started Electron session (the
     // partition dance below). chrome/external never touch that partition, so
     // running it there and returning a port MISLED the agent into "a session
@@ -2938,7 +2940,8 @@ export function registerBrowserRpc(
    * browser.session.stop
    * Stop the active browser session and release resources.
    */
-  router.register('browser.session.stop', async () => {
+  router.register('browser.session.stop', async (params, ctx) => {
+    scopeFor('browser.session.stop', params, ctx);
     // Symmetric with session.start: only the builtin backend has an RPC session
     // to stop. On chrome/external the mutations below (active-profile reset +
     // renderer applyProfile) would "tear down" a session that never existed —
@@ -2971,6 +2974,8 @@ export function registerBrowserRpc(
     // port null" while a real Chrome was up on its CDP port). Report the
     // chrome facts instead — via a pure read that never launches Chrome.
     if (kind === 'chrome' && chromeRegistry) {
+      // Scoped only here: this branch reports one workspace's Chrome. The
+      // builtin answer below is the app-wide session, the same for everyone.
       const ws = scopeFor('browser.session.status', params, ctx);
       // The profile only: a status probe must never create a launcher.
       const { profile } = await resolveChromeProfile('browser.session.status', ctx, ws || undefined);
@@ -3004,6 +3009,8 @@ export function registerBrowserRpc(
    * Return all available profiles.
    */
   router.register('browser.session.list', async () => {
+    // The names of the configured profiles, the same for every caller: a probe
+    // with nothing to scope.
     const profiles = profileManager.listProfiles().map((p) => ({
       name: p.name,
       partition: p.partition,
@@ -3021,7 +3028,8 @@ export function registerBrowserRpc(
    * caller (e.g. Playwright MCP) can execute the actual key presses.
    * params: { text: string, selector?: string }
    */
-  router.register('browser.type.humanlike', async (params) => {
+  router.register('browser.type.humanlike', async (params, ctx) => {
+    scopeFor('browser.type.humanlike', params, ctx);
     if (typeof params['text'] !== 'string' || params['text'].length === 0) {
       throw new Error('browser.type.humanlike: missing required param "text"');
     }

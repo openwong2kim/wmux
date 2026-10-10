@@ -47,7 +47,17 @@ export interface CommanderSendResult {
    *  "died mid-turn" (the re-examine consume) check it; everyone else keys off
    *  `ok` alone. */
   code?: 'busy' | 'disposed' | 'empty' | 'invalid_workspace' | 'moa_off' | 'mode_off' | 'task_workspace' | 'not_hq' | 'hq_missing' | 'hq_unknown' | 'errored';
+  /** A deterministic read-only answer handled without starting the adapter.
+   *  The renderer may retain this alongside a provider-owned transcript. */
+  localAnswer?: { text: string };
 }
+
+/** Optional read-only fast path inside the manager's one-turn reservation.
+ *  A miss or failure falls through to the original adapter turn. Callers must
+ *  observe the signal before doing anything after an asynchronous lookup. */
+export type CommanderLocalFirst = (signal: AbortSignal) => Promise<
+  { text: string } | { fallbackText: string | (() => string) } | null
+>;
 
 export interface CommanderStatusSnapshot {
   status: CommanderStatus;
@@ -68,7 +78,7 @@ export interface CommanderSessionManagerDeps {
   /** Fired whenever a completed turn reports a session id DIFFERENT from the
    *  last one observed (P3a persistence hook). Failures inside the callback are
    *  swallowed — persistence must never break a live turn. */
-  onSessionId?: (sessionId: string) => void;
+  onSessionId?: (sessionId: string, accountId: string | null | undefined) => void;
   /** Fired AFTER a turn flips busy→idle, on a LATER TICK (never synchronously
    *  from the unwinding `finally`) — the event-push coalescer's flush trigger.
    *  Deferring is load-bearing: a synchronous callback could re-enter `send()`
@@ -84,12 +94,17 @@ export class CommanderSessionManager {
   private readonly adapter: BrainAdapter;
   private readonly sink: BrainEventSink;
   private readonly startOptions: BrainStartOptions;
-  private readonly onSessionId?: (sessionId: string) => void;
+  private readonly onSessionId?: (sessionId: string, accountId: string | null | undefined) => void;
   private readonly onIdle?: () => void;
   private readonly deferIdle: (fn: () => void) => void;
   private _status: CommanderStatus = 'idle';
   private _started = false;
   private _lastReportedSessionId: string | null = null;
+  private localAbort: AbortController | null = null;
+  /** Bumped by every foreign (TUI-typed) turn start. A local lookup compares
+   *  it before answering or falling back: a short foreign turn can start and
+   *  end while the board read is pending, leaving `adapterBusy` false again. */
+  private foreignTurnGeneration = 0;
 
   constructor(deps: CommanderSessionManagerDeps) {
     this.adapter = deps.adapter;
@@ -138,6 +153,7 @@ export class CommanderSessionManager {
   /** The human typed a turn into the embedded TUI (it did not go through send). */
   notifyForeignTurnStart(): void {
     if (this._status === 'disposed') return;
+    this.foreignTurnGeneration++;
     this._turnOrigin = 'human';
     this._turnRemoteMoa = false;
   }
@@ -159,7 +175,7 @@ export class CommanderSessionManager {
    * (heartbeat / loop / schedule) marks its turn `'automation'` so a brain that
    * can race a human's own input has a chance to re-check before it commits.
    */
-  async send(text: string, opts: BrainSendOptions = {}): Promise<CommanderSendResult> {
+  async send(text: string, opts: BrainSendOptions = {}, localFirst?: CommanderLocalFirst): Promise<CommanderSendResult> {
     if (this._status === 'disposed') {
       this.sink({ type: 'error', message: 'commander session is closed' });
       return { ok: false, code: 'disposed' };
@@ -168,17 +184,22 @@ export class CommanderSessionManager {
       this.sink({ type: 'error', message: 'a command is already running — wait for it to finish' });
       return { ok: false, code: 'busy' };
     }
-    const trimmed = text.trim();
+    let trimmed = text.trim();
     if (!trimmed) return { ok: false, code: 'empty' };
 
-    if (!this._started) {
+    if (!localFirst && !this._started) {
       this.adapter.start(this.startOptions);
       this._started = true;
     }
 
     this._status = 'busy';
-    this._turnOrigin = opts.origin === 'automation' ? 'automation' : 'human';
-    this._turnRemoteMoa = opts.origin === 'automation' && opts.remoteMoa === true;
+    // Origin grants authority to the provider's live work. A local read only
+    // reserves the turn slot; it must not promote earlier autonomous work to
+    // operator-authorized work while looking up or showing a status answer.
+    if (!localFirst) {
+      this._turnOrigin = opts.origin === 'automation' ? 'automation' : 'human';
+      this._turnRemoteMoa = opts.origin === 'automation' && opts.remoteMoa === true;
+    }
     // Round-5 review P1: production adapters (ClaudeSdkAdapter, AcpBrainAdapter)
     // report failures by YIELDING a BrainEvent{type:'error'} — or by ending the
     // stream without a turn-end — rather than throwing, so an exception-only
@@ -187,6 +208,68 @@ export class CommanderSessionManager {
     let sawTurnEnd = false;
     let sawErrorEvent = false;
     try {
+      if (localFirst) {
+        const controller = new AbortController();
+        this.localAbort = controller;
+        const generation = this.foreignTurnGeneration;
+        // Stop must finish even when a read-only transport cannot cancel its
+        // underlying request. Its late answer is observed but never emitted.
+        const aborted = Symbol('local-turn-aborted');
+        let onAbort: () => void = () => undefined;
+        const cancelled = new Promise<typeof aborted>((resolve) => {
+          onAbort = () => resolve(aborted);
+          controller.signal.addEventListener('abort', onAbort, { once: true });
+        });
+        let answer: Awaited<ReturnType<CommanderLocalFirst>> | typeof aborted = null;
+        try {
+          answer = await Promise.race([localFirst(controller.signal), cancelled]);
+        } catch {
+          // A local read is an optimization. An unavailable or malformed
+          // source must still get the ordinary adapter path, once.
+        } finally {
+          controller.signal.removeEventListener('abort', onAbort);
+          if (this.localAbort === controller) this.localAbort = null;
+        }
+        if (controller.signal.aborted || answer === aborted) {
+          if ((this._status as CommanderStatus) !== 'disposed') {
+            this.sink({ type: 'error', message: 'command interrupted' });
+          }
+          return { ok: true, code: 'errored' };
+        }
+        if ((this._status as CommanderStatus) === 'disposed') return { ok: true, code: 'errored' };
+        // A human can start typing directly in the TUI while the read awaits.
+        // Neither a local reply nor a fallback may overlap that foreign turn.
+        if (this.adapterBusy) {
+          this.sink({ type: 'error', message: 'a command is already running — wait for it to finish' });
+          return { ok: true, code: 'errored' };
+        }
+        // A foreign turn that already came and went still invalidates the
+        // lookup: the answer describes a board from before that turn, and a
+        // fallback would land after it. One gate covers both branches.
+        if (this.foreignTurnGeneration !== generation) {
+          this.sink({ type: 'error', message: 'a terminal turn ran during this lookup — ask again' });
+          return { ok: true, code: 'errored' };
+        }
+        if (answer && 'text' in answer && answer.text.trim()) {
+          this.sink({ type: 'text-delta', text: answer.text });
+          this.sink({ type: 'turn-end', sessionId: this.adapter.sessionId, localAnswer: { prompt: text, text: answer.text } });
+          // No provider turn ran, so neither its session nor persistence hook
+          // is changed by this answer.
+          return { ok: true, localAnswer: { text: answer.text } };
+        }
+        if (answer && 'fallbackText' in answer) {
+          // Context preparation may mutate bookkeeping. Keep it after every
+          // asynchronous gate, in the same synchronous step as adapter send.
+          const fallback = answer.fallbackText;
+          trimmed = (typeof fallback === 'function' ? fallback() : fallback).trim();
+        }
+        this._turnOrigin = opts.origin === 'automation' ? 'automation' : 'human';
+        this._turnRemoteMoa = opts.origin === 'automation' && opts.remoteMoa === true;
+        if (!this._started) {
+          this.adapter.start(this.startOptions);
+          this._started = true;
+        }
+      }
       for await (const ev of this.adapter.send(trimmed, opts)) {
         // Disposed mid-turn (app quitting): stop forwarding. The adapter's
         // interrupt() was already fired by dispose(). Read through a widening
@@ -202,7 +285,7 @@ export class CommanderSessionManager {
         ) {
           this._lastReportedSessionId = ev.sessionId;
           try {
-            this.onSessionId?.(ev.sessionId);
+            this.onSessionId?.(ev.sessionId, this.adapter.conversationAccountId);
           } catch {
             /* persistence is best-effort — never fail the live turn */
           }
@@ -268,7 +351,7 @@ export class CommanderSessionManager {
     if (!sessionId || sessionId === this._lastReportedSessionId) return;
     this._lastReportedSessionId = sessionId;
     try {
-      this.onSessionId?.(sessionId);
+      this.onSessionId?.(sessionId, this.adapter.conversationAccountId);
     } catch {
       /* persistence is best-effort — never fail the live turn */
     }
@@ -276,7 +359,9 @@ export class CommanderSessionManager {
 
   /** Abort the in-flight turn (best-effort). No-op when idle/disposed. */
   interrupt(): void {
-    if (this._status === 'busy') this.adapter.interrupt();
+    if (this._status !== 'busy') return;
+    if (this.localAbort) this.localAbort.abort();
+    else this.adapter.interrupt();
   }
 
   /** Tear down the session — called on app quit. Interrupts any live turn and
@@ -284,6 +369,7 @@ export class CommanderSessionManager {
   dispose(): void {
     if (this._status === 'disposed') return;
     this._status = 'disposed';
+    this.localAbort?.abort();
     this.adapter.dispose();
   }
 }

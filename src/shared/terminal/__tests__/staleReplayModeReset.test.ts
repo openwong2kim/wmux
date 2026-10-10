@@ -271,9 +271,10 @@ describe('useTerminal stale-replay reset wiring (source-level lock)', () => {
     const resyncIdx = src.indexOf('const completeResyncFromFlush');
     expect(resyncIdx).toBeGreaterThan(-1);
     // Window widened from 1200: the function gained the #998 comment block
-    // explaining why its buffer flush is muted. The assertion is "the reset is
-    // in this function", not "within N characters of its opening brace".
-    expect(src.slice(resyncIdx, resyncIdx + 2400)).toMatch(/resetStaleReplayModes\(recoveredBytes\)/);
+    // explaining why its buffer flush is muted, and the in-stream reset/END
+    // writes. The assertion is "the reset is in this function", not "within
+    // N characters of its opening brace".
+    expect(src.slice(resyncIdx, resyncIdx + 3400)).toMatch(/resetStaleReplayModes\(recoveredBytes\)/);
   });
 
   it('pairs STALE_REPLAY_DISPLAY_RESETS with STALE_REPLAY_INPUT_MODE_RESETS at both call sites (frozen-scroll-window fix)', () => {

@@ -10,6 +10,7 @@ import { useStore } from '../stores';
 import { withDefaultShell, withWorkspaceProfile, withRoleBinding } from './ptyCreateOptions';
 import { probeProjectConfig } from './projectConfigProbe';
 import type { WmuxProjectCommand } from '../../shared/wmuxProjectConfig';
+import { isShadowWorkspaceId } from '../../shared/pcRail';
 
 export interface RunProjectCommandResult {
   ok: boolean;
@@ -42,7 +43,8 @@ export async function runProjectCommand(
   if (!command) return { ok: false, reason: 'unknown-command' };
 
   const ws = state.workspaces.find((w) => w.id === workspaceId);
-  if (!ws) return { ok: false, reason: 'no-workspace' };
+  // Another computer's (shadow) workspace never gets a local shell.
+  if (!ws || isShadowWorkspaceId(ws.id)) return { ok: false, reason: 'no-workspace' };
   const paneId = ws.activePaneId;
   // D2 — the target pane's role is known here (it is the workspace's active
   // pane), so a role-bound command re-launches with its enforced agent/model.

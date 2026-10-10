@@ -88,6 +88,9 @@ export const DECISION_LIMITS = {
   MAX_OPTIONS: 6,
   MAX_OPTION_CHARS: 200,
   MAX_CONTEXT_CHARS: 800,
+  /** A Moa goal card carries the whole contract (up to 8 criteria, 8 evidence
+   *  items and 8 constraints of 200 chars each), so it gets its own cap. */
+  MAX_GOAL_CONTEXT_CHARS: 8000,
   MAX_RESOLUTION_CHARS: 1000,
 } as const;
 
@@ -123,7 +126,7 @@ function sanitizeDecision(raw: unknown): WorkspaceDecision | null {
     question: question.slice(0, DECISION_LIMITS.MAX_QUESTION_CHARS),
     options: sanitizeOptions(o.options),
     context:
-      typeof o.context === 'string' ? o.context.slice(0, DECISION_LIMITS.MAX_CONTEXT_CHARS) : '',
+      typeof o.context === 'string' ? o.context.slice(0, decisionContextCap(o.origin)) : '',
     status,
     ...(status === 'resolved' && resolution ? { resolution } : {}),
     ...(status === 'resolved' && (o.resolvedBy === 'human' || o.resolvedBy === 'brain')
@@ -267,6 +270,11 @@ function mutate(
  *  stack decisions; this store itself is last-writer-wins. */
 /** The ledger prefix may take at most this share of the context budget, so a
  *  long open-task list can never evict the brain's own context. */
+/** The context cap for a card of this origin. */
+export function decisionContextCap(origin: unknown): number {
+  return origin === 'moa-goal' ? DECISION_LIMITS.MAX_GOAL_CONTEXT_CHARS : DECISION_LIMITS.MAX_CONTEXT_CHARS;
+}
+
 export const DECISION_LEDGER_PREFIX_MAX_CHARS = Math.floor(DECISION_LIMITS.MAX_CONTEXT_CHARS / 4);
 
 /** Prefix first, within ITS budget; then the brain's context in what is left.
@@ -343,7 +351,7 @@ export async function raiseDecisionIfFree(
         id: randomUUID(),
         question: question.slice(0, DECISION_LIMITS.MAX_QUESTION_CHARS),
         options: sanitizeOptions(args.options),
-        context: typeof args.context === 'string' ? args.context.trim().slice(0, DECISION_LIMITS.MAX_CONTEXT_CHARS) : '',
+        context: typeof args.context === 'string' ? args.context.trim().slice(0, decisionContextCap(args.origin)) : '',
         status: 'pending',
         raisedAt: Date.now(),
         ...(args.origin ? { origin: args.origin } : {}),
