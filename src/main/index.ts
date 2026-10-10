@@ -1668,7 +1668,13 @@ app.on('ready', async () => {
   // itself. A window built during that gap would be governed by the default
   // menu — the exact startup path this change exists to close. App-global and
   // idempotent, so this one call covers those windows too.
-  installApplicationMenu();
+  // "Quit and Stop Sessions" takes the tray's full-shutdown path: flip the
+  // flag, then app.quit(), so before-quit stays the one place that stops the
+  // daemon.
+  installApplicationMenu({
+    onShutdownAll: () => { fullShutdownRequested = true; },
+    getDaemonClient: () => daemonClient,
+  });
 
   // P3 — macOS CLI shim: DMG/ZIP 설치엔 Squirrel 훅이 없으므로 첫 실행 시 1회만
   // `/usr/local/bin/wmux`(폴백 `~/.local/bin/wmux`) 심링크 설치를 시도한다.
