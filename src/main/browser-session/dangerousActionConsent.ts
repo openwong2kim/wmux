@@ -302,9 +302,11 @@ export class DangerousActionConsent {
 //   1. claim the guard (one pass per Chrome at a time), then switch the
 //      browser to allowAndName into a main-owned directory;
 //   2. the FIRST download that begins in the approved tab's main frame
-//      (frameId = the tab's target id) is kept, and deny is restored at once —
-//      measured against Chrome: a download already begun completes after the
-//      deny, and every other one is cancelled;
+//      (frameId = the tab's target id) is kept, and deny is restored as soon
+//      as Chrome reports it under way (its first progress event: a deny sent
+//      at begin can reach Chrome before it has settled the target, which
+//      cancels the approved one under load). Until then — and for as long as
+//      the pass holds the guard — every other download is cancelled by guid;
 //   3. any download from another tab, a subframe or a popup, or a second one
 //      from the same tab, is cancelled by the guard as before;
 //   4. deny is restored on every exit: kept, cancelled, timed out before it
@@ -392,8 +394,8 @@ export async function openDownloadPass(
     guid = params.guid;
     url = typeof params.url === 'string' ? params.url : '';
     suggestedFilename = typeof params.suggestedFilename === 'string' ? params.suggestedFilename : '';
-    // This one is kept; nothing after it is.
-    void deny();
+    // This one is kept; nothing after it is (cancelled by guid while the pass
+    // holds the guard, then denied once it is under way).
     arm(opts.finishTimeoutMs, 'the approved download did not finish in time');
     return true;
   });
@@ -403,8 +405,13 @@ export async function openDownloadPass(
       policyDeniedMessage(CONSENT_METHOD, 'another approved download is still running on this pane; wait for it to finish'),
     );
   }
+  let underWay = false;
   offProgress = guard.onProgress((params) => {
     if (!guid || params.guid !== guid) return;
+    if (!underWay) {
+      underWay = true;
+      void deny();
+    }
     if (params.state === 'completed') settle({ ok: { url, suggestedFilename, path: opts.join(opts.dir, guid) } });
     else if (params.state === 'canceled') settle({ error: 'the approved download was cancelled' });
   });

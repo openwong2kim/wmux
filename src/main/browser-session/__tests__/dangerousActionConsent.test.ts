@@ -261,8 +261,10 @@ describe('openDownloadPass', () => {
     expect(lastBehavior(g.sent)).toBe('allowAndName');
     expect(g.begin({ guid: 'other-tab', frameId: 'T2', url: 'http://a.test/x' })).toBe(false);
     expect(g.begin({ guid: 'g1', frameId: 'T1', url: 'http://a.test/f', suggestedFilename: 'f.bin' })).toBe(true);
-    expect(lastBehavior(g.sent)).toBe('deny');
     expect(g.begin({ guid: 'g2', frameId: 'T1', url: 'http://a.test/again' })).toBe(false);
+    // Deny is back as soon as the kept download is under way.
+    g.progress({ guid: 'g1', state: 'inProgress' });
+    expect(lastBehavior(g.sent)).toBe('deny');
     g.progress({ guid: 'g1', state: 'completed' });
     await expect(pass.done).resolves.toEqual({ url: 'http://a.test/f', suggestedFilename: 'f.bin', path: '/tmp/x/g1' });
     expect(g.claimed()).toBe(false);
