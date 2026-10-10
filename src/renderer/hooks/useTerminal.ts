@@ -1985,6 +1985,12 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     const seedState = useStore.getState();
     const parkedKnownGone = seedState.agentAliveByPtyId[ptyId] === false
       || seedState.commandRunningByPtyId[ptyId] === false;
+    // The same park→adopt window can hide the agent's death edge from the
+    // prompt-mode guard (subscription below): re-ask on adopt when process
+    // truth already reads it dead. A no-op unless the guard declined a reset.
+    if (adopted && seedState.agentAliveByPtyId[ptyId] === false) {
+      shellPromptModeResetFor(terminal)?.processGone();
+    }
     const keyboardRef = { current: adopted && !parkedKnownGone
       ? parkedKeyboardByTerminal.get(terminal) ?? INITIAL_REMOTE_KEYBOARD_STATE
       : INITIAL_REMOTE_KEYBOARD_STATE };
@@ -2068,6 +2074,22 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         // xterm keeps the kitty flags a dead app pushed and never popped;
         // drop them with it so the next app gets legacy keys again.
         if (kittyEncoderOn) resetXtermKitty(terminal);
+      }
+      // The #1794 prompt-mode guard may have declined a mouse / focus reset
+      // because process truth read the agent alive at the prompt: on Windows
+      // when the CIM tree snapshot failed (low memory) and the agent tracker
+      // had not caught up yet, and on every WSL pane. Its death edge re-asks
+      // the probe. Only the agentAlive edge: it is the tracker's confirmed
+      // death of the watched pid (ProcessMonitor never reads "unknown" as
+      // dead), so it cannot fire while that process lives. The
+      // commandRunning edge is not used: the guard already reads OSC 133
+      // in-stream, and the store copy is a 15 s poll that can predate a TUI
+      // started since. A misattributed pick (a wrapper that exited while its
+      // TUI runs on) is still checked twice: a foreground TUI holds the pane
+      // in the command phase, so the guard ignores the hint, and on Windows
+      // the probe's tree walk still sees the TUI as a descendant.
+      if (gone(state.agentAliveByPtyId[ptyId], prev.agentAliveByPtyId[ptyId])) {
+        shellPromptModeResetFor(terminal)?.processGone();
       }
     });
 
