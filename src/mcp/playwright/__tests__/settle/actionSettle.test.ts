@@ -130,6 +130,52 @@ describe('settleAfterAction decision table', () => {
     expect(run.settledAt()).toBe(COLLECT_WINDOW_MS);
   });
 
+  it('a URL that starts twice in the window is polling: not waited for', async () => {
+    const fake = makeFakePage();
+    const poll = () => fakeRequest('fetch', { url: 'https://site.test/poll?t=' + Math.random() });
+    const run = track(fake, async () => {
+      fake.page.emit('request', poll());
+    });
+    await vi.advanceTimersByTimeAsync(200);
+    fake.page.emit('request', poll());
+    await vi.advanceTimersByTimeAsync(COLLECT_WINDOW_MS - 200);
+    // Both polls are still open, but neither belongs to the action.
+    expect(run.settledAt()).toBe(COLLECT_WINDOW_MS);
+  });
+
+  it('the action’s own request is still waited for next to a poll', async () => {
+    const fake = makeFakePage();
+    const own = fakeRequest('xhr', { url: 'https://site.test/api/save' });
+    const run = track(fake, async () => {
+      fake.page.emit('request', own);
+      fake.page.emit('request', fakeRequest('fetch', { url: 'https://site.test/poll?a' }));
+      fake.page.emit('request', fakeRequest('fetch', { url: 'https://site.test/poll?b' }));
+    });
+    await vi.advanceTimersByTimeAsync(COLLECT_WINDOW_MS + 100);
+    expect(run.settledAt()).toBeUndefined();
+    fake.page.emit('requestfinished', own);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(run.settledAt()).toBe(COLLECT_WINDOW_MS + 100);
+  });
+
+  it('a navigation whose document finished before the commit still waits for load', async () => {
+    const fake = makeFakePage();
+    const nav = fakeRequest('document', { navigation: true, frame: fake.mainFrame });
+    const run = track(fake, async () => {
+      fake.page.emit('request', nav);
+    });
+    await vi.advanceTimersByTimeAsync(COLLECT_WINDOW_MS + 10);
+    fake.page.emit('requestfinished', nav);
+    await vi.advanceTimersByTimeAsync(20);
+    fake.page.emit('framenavigated', fake.mainFrame);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fake.page.waitForLoadState).toHaveBeenCalled();
+    expect(run.settledAt()).toBeUndefined();
+    fake.finishLoad();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(run.settledAt()).toBe(COLLECT_WINDOW_MS + 30);
+  });
+
   it('a hung request is capped at SETTLE_CAP_MS', async () => {
     const fake = makeFakePage();
     const run = track(fake, async () => {

@@ -24,7 +24,6 @@ vi.mock('../../PlaywrightEngine', async () => {
     PlaywrightEngine: {
       getInstance: () => ({
         drainLocalLifecycle: () => [],
-        dialogOwnerOf: async () => engine.owner,
         getPageForScope: async (scope: { workspaceId?: string; surfaceId?: string }) => {
           const page = engine.page as Page;
           modal.attachModalTracking(page, modal.modalScopeKey(scope.workspaceId, scope.surfaceId));
@@ -67,6 +66,12 @@ beforeEach(() => {
   mockSendRpc.mockImplementation((method: string) => {
     if (method === 'browser.lease.acquire') return Promise.resolve({ token: 'lease-1' });
     if (method === 'browser.lifecycle.get') return Promise.resolve({ entries: [] });
+    if (method === 'browser.cdp.info') {
+      return Promise.resolve({
+        workspaceBackend: 'chrome',
+        targets: [{ targetId: 'tab-1', surfaceId: 'tab-1', owner: engine.owner }],
+      });
+    }
     return Promise.resolve({});
   });
 });

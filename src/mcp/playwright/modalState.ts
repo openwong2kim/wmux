@@ -1,5 +1,6 @@
 import type { Dialog, Page } from 'playwright-core';
 import { taggedFailure } from './resultTrailer';
+import { sendRpc } from '../wmux-client';
 
 // ---------------------------------------------------------------------------
 // Dialog notes for pages the agent writes to.
@@ -44,6 +45,8 @@ const records = new WeakMap<Page, PageRecord>();
 // notes. Strong refs (the MCP bundle targets ES2020, so no WeakRef), dropped
 // when the page or its context closes.
 const pagesByScope = new Map<string, Page>();
+// One 'close' listener per context, however many of its pages are tracked.
+const hookedContexts = new WeakSet<object>();
 
 /** Same key shape as the engine's lifecycle mirror. */
 export function modalScopeKey(workspaceId?: string, surfaceId?: string): string {
@@ -76,13 +79,20 @@ export function attachModalTracking(page: Page, scopeKey: string): void {
     const created: PageRecord = { notes: [], dispatching: 0 };
     records.set(page, created);
     page.on('dialog', (dialog: Dialog) => onDialog(created, dialog));
-    const drop = () => {
+    page.on('close', () => {
       created.armed = undefined;
       forgetPage(page);
-    };
-    page.on('close', drop);
+    });
     // A CDP disconnect closes the context without a page 'close'.
-    safeCall(() => page.context().on('close', drop), undefined);
+    const context = safeCall(() => page.context(), undefined);
+    if (context && typeof context.on === 'function' && !hookedContexts.has(context)) {
+      hookedContexts.add(context);
+      context.on('close', () => {
+        for (const [key, p] of pagesByScope) {
+          if (safeCall(() => p.context() === context, true)) pagesByScope.delete(key);
+        }
+      });
+    }
   }
   pagesByScope.set(scopeKey, page);
 }
@@ -155,6 +165,45 @@ export function renderModalBlock(notes: readonly DialogNote[]): string {
     ? '\n- To accept the next one, call browser_dialog({accept:true}) before the action that opens it.'
     : '';
   return `[modal]\n${lines.join('\n')}${hint}\n`;
+}
+
+interface OwnerInfo {
+  workspaceBackend?: string;
+  targets?: Array<{ targetId?: string; surfaceId?: string; owner?: 'agent' | 'borrowed' | 'user' }>;
+}
+
+/**
+ * Who owns this tab, asked of main fresh: browser_dialog may arm an answer only
+ * on a tab the agent opened. Anything it cannot establish is 'unknown', which
+ * the caller treats as "no". A main that reports no backend at all is the
+ * builtin webview (the codebase's existing reading of an older main), where
+ * every target is wmux's own; Live Chrome always reports its backend and
+ * per-tab owner.
+ */
+export async function resolveDialogOwner(page: Page, workspaceId: string): Promise<DialogOwner> {
+  let info: OwnerInfo | undefined;
+  try {
+    info = (await sendRpc('browser.cdp.info', { workspaceId })) as OwnerInfo | undefined;
+  } catch {
+    return 'unknown';
+  }
+  if (!info) return 'unknown';
+  if (!info.workspaceBackend || info.workspaceBackend === 'builtin') return 'agent';
+  let targetId: string | undefined;
+  try {
+    const session = await page.context().newCDPSession(page);
+    try {
+      const res = (await session.send('Target.getTargetInfo')) as { targetInfo?: { targetId?: string } };
+      targetId = res.targetInfo?.targetId;
+    } finally {
+      await session.detach().catch(ignore);
+    }
+  } catch {
+    return 'unknown';
+  }
+  if (!targetId) return 'unknown';
+  const row = info.targets?.find((t) => t.targetId === targetId || t.surfaceId === targetId);
+  return row?.owner ?? 'unknown';
 }
 
 /**

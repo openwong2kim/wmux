@@ -5,7 +5,7 @@ import type { Page } from 'playwright-core';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { PlaywrightEngine } from '../PlaywrightEngine';
-import { armDialogAnswer, modalScopeKey } from '../modalState';
+import { armDialogAnswer, modalScopeKey, resolveDialogOwner } from '../modalState';
 import { leasedMutation, withAutomationLease } from '../automationLease';
 import type { BrowserToolDeps } from '../browserScope';
 import { resolveRef } from '../snapshot';
@@ -885,7 +885,7 @@ export function registerFileTools(server: McpServer, deps: BrowserToolDeps): voi
         armDialogAnswer(
           page,
           modalScopeKey(scope.workspaceId, scope.surfaceId),
-          await engine.dialogOwnerOf(page, scope),
+          await resolveDialogOwner(page, scope.workspaceId),
           accept,
           text,
         );

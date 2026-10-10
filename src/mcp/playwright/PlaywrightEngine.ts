@@ -20,7 +20,6 @@ import {
   attachModalTracking,
   modalScopeKey,
   rememberModalScope,
-  type DialogOwner,
 } from './modalState';
 import { reassertUserAgentEmulation } from './ua-emulation';
 import {
@@ -758,28 +757,6 @@ export class PlaywrightEngine {
     const row = info.targets.find((t) => t.targetId === targetId || t.surfaceId === targetId);
     if (row && row.owner !== 'user') return;
     throw new AgentWindowScopeError(label, targetId);
-  }
-
-  /**
-   * Who owns this tab, asked of main fresh — for browser_dialog, which may arm
-   * an answer only on a tab the agent opened. Never a gate on its own: an
-   * answer it cannot give is 'unknown', and the caller treats that as "no".
-   * The cached liveWriteScope is not consulted, because an engine that has not
-   * heard from main yet would read "not live" and call a user's tab its own.
-   */
-  async dialogOwnerOf(page: Page, scope: BrowserTargetScope): Promise<DialogOwner> {
-    let info: CdpInfoResponse;
-    try {
-      info = (await sendRpc('browser.cdp.info', { workspaceId: scope.workspaceId })) as CdpInfoResponse;
-    } catch {
-      return 'unknown';
-    }
-    this.cacheShellUrl(info);
-    if (info.workspaceBackend === 'builtin') return 'agent';
-    const targetId = await this.targetIdOf(page);
-    if (!targetId) return 'unknown';
-    const row = info.targets.find((t) => t.targetId === targetId || t.surfaceId === targetId);
-    return row?.owner ?? 'unknown';
   }
 
   /** A Page's CDP target id, over a throwaway session (client-side Pages expose

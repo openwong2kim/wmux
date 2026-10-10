@@ -54,6 +54,9 @@ export async function settleAfterAction<T>(page: Page, fn: () => Promise<T>): Pr
   if (!hasEvents(page)) return fn();
 
   const inFlight = new Set<Request>();
+  // How often each URL (minus query and hash) started during this settle. A
+  // URL that starts twice in one window is the page polling, not the action.
+  const starts = new Map<string, number>();
   let sawRequest = false;
   let navRequest: Request | undefined;
   let committed = false;
@@ -65,13 +68,23 @@ export async function settleAfterAction<T>(page: Page, fn: () => Promise<T>): Pr
     const tracked = safe(() => TRACKED_TYPES.has(request.resourceType()), false);
     if (!navigation && !tracked) return;
     sawRequest = true;
-    if (navigation) navRequest = request;
-    else inFlight.add(request);
+    if (navigation) {
+      navRequest = request;
+    } else {
+      inFlight.add(request);
+      const key = urlKey(request);
+      starts.set(key, (starts.get(key) ?? 0) + 1);
+    }
     wake?.();
   };
-  const onDone = (request: Request) => {
+  const onFinished = (request: Request) => {
+    // A navigation's document arriving is not its commit; that is framenavigated.
     inFlight.delete(request);
-    if (request === navRequest && !committed) navRequest = undefined; // aborted or replaced
+    wake?.();
+  };
+  const onFailed = (request: Request) => {
+    inFlight.delete(request);
+    if (request === navRequest && !committed) navRequest = undefined; // aborted
     wake?.();
   };
   const onNavigated = (frame: unknown) => {
@@ -93,8 +106,8 @@ export async function settleAfterAction<T>(page: Page, fn: () => Promise<T>): Pr
     });
 
   page.on('request', onRequest);
-  page.on('requestfinished', onDone);
-  page.on('requestfailed', onDone);
+  page.on('requestfinished', onFinished);
+  page.on('requestfailed', onFailed);
   page.on('framenavigated', onNavigated);
   let collecting = true;
   const stopCollecting = () => {
@@ -120,6 +133,9 @@ export async function settleAfterAction<T>(page: Page, fn: () => Promise<T>): Pr
     await sleep(COLLECT_WINDOW_MS - (Date.now() - actedAt));
     // A polling page keeps starting requests; only the action's are waited for.
     stopCollecting();
+    for (const request of [...inFlight]) {
+      if ((starts.get(urlKey(request)) ?? 0) > 1) inFlight.delete(request);
+    }
 
     if (navRequest) {
       // Wait for THIS navigation to commit first: `load` read before the
@@ -134,10 +150,16 @@ export async function settleAfterAction<T>(page: Page, fn: () => Promise<T>): Pr
     return value;
   } finally {
     stopCollecting();
-    page.off('requestfinished', onDone);
-    page.off('requestfailed', onDone);
+    page.off('requestfinished', onFinished);
+    page.off('requestfailed', onFailed);
     page.off('framenavigated', onNavigated);
   }
+}
+
+function urlKey(request: Request): string {
+  const url = safe(() => request.url(), '');
+  const cut = url.search(/[?#]/);
+  return cut === -1 ? url : url.slice(0, cut);
 }
 
 function safe<T>(fn: () => T, fallback: T): T {

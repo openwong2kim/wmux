@@ -1,12 +1,16 @@
 import { EventEmitter } from 'node:events';
 import { vi } from 'vitest';
 
+let requestSeq = 0;
+
 /** A request as settleAfterAction reads it. */
 export function fakeRequest(
   resourceType: string,
-  opts: { navigation?: boolean; frame?: unknown } = {},
+  opts: { navigation?: boolean; frame?: unknown; url?: string } = {},
 ) {
+  const url = opts.url ?? `https://site.test/${++requestSeq}`;
   return {
+    url: () => url,
     resourceType: () => resourceType,
     isNavigationRequest: () => opts.navigation === true,
     frame: () => opts.frame,
@@ -35,6 +39,13 @@ export function makeFakePage() {
   const contextEmitter = new EventEmitter();
   const mainFrame = { name: 'main' };
   let resolveLoad: (() => void) | undefined;
+  const context = {
+    on: (event: string, fn: (...a: unknown[]) => void) => contextEmitter.on(event, fn),
+    newCDPSession: async () => ({
+      send: async () => ({ targetInfo: { targetId: 'tab-1' } }),
+      detach: async () => undefined,
+    }),
+  };
   const page = {
     on: (event: string, fn: (...a: unknown[]) => void) => {
       emitter.on(event, fn);
@@ -51,9 +62,7 @@ export function makeFakePage() {
     emit: (event: string, ...args: unknown[]) => emitter.emit(event, ...args),
     listenerCount: (event: string) => emitter.listenerCount(event),
     mainFrame: () => mainFrame,
-    context: () => ({
-      on: (event: string, fn: (...a: unknown[]) => void) => contextEmitter.on(event, fn),
-    }),
+    context: () => context,
     closeContext: () => contextEmitter.emit('close'),
     waitForLoadState: vi.fn(
       () =>
