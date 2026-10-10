@@ -113,13 +113,12 @@ describe('automation grant — browser identity', () => {
     const os = await import('node:os');
     const path = await import('node:path');
     keyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-idkey-'));
-    const { __setRunIdentityKeyDirForTest, setBrowserIdentitySources } = await import('../../../automation/runIdentity');
-    __setRunIdentityKeyDirForTest(keyDir);
+    const { __setRunIdentityStoreDirForTest, setBrowserIdentitySources } = await import('../../../automation/runIdentity');
+    __setRunIdentityStoreDirForTest(keyDir);
     epoch = 7;
     entry = { workspaceId: 'ws-1', paneId: 'pane-a', profileId: 'Work', protected: true, hosts: { mode: 'allowlist', allow: ['a.test'], block: [] } };
     setBrowserIdentitySources({
-      epoch: () => epoch,
-      entryFor: () => entry as never,
+      entryFor: () => ({ ...entry, ...(epoch !== 7 && entry ? { hosts: { mode: 'allowlist', allow: ['changed.test'], block: [] } } : {}) }) as never,
       profileFor: () => 'Work',
       paneBindings: () => ({ 'pane-a': { workspaceId: 'ws-1', profile: 'Work' } }),
     });
@@ -137,7 +136,7 @@ describe('automation grant — browser identity', () => {
   const pick = { workspaceId: 'ws-1', paneId: 'pane-a', paneLabel: 'Shop' };
   const grantCall = () => rpc.mock.calls.find((c) => c[0] === AUTOMATION_RPC.grant);
 
-  it('resolves, confirms and signs the identity at the next revision', async () => {
+  it("records main's snapshot and sends the daemon only a reference at the next revision", async () => {
     confirmIdentity.mockResolvedValue(true);
     await expect(fromMainFrame(IPC.AUTOMATION_GRANT, 'a1', 'auto', undefined, pick)).resolves.toMatchObject({ ok: true });
     expect(confirmIdentity).toHaveBeenCalledWith(null, 'Nightly', { paneLabel: 'Shop', profileId: 'Work', hosts: ['a.test'], mode: 'auto' });
@@ -145,11 +144,11 @@ describe('automation grant — browser identity', () => {
     expect(confirm).not.toHaveBeenCalled();
     const params = grantCall()?.[1] as { expectedRevision: number; browserIdentity: Record<string, unknown> };
     expect(params.expectedRevision).toBe(4);
-    expect(params.browserIdentity).toMatchObject({ workspaceId: 'ws-1', paneId: 'pane-a', profileId: 'Work', hosts: ['a.test'], policyEpoch: 7, boundRevision: 5 });
-    const { verifyBrowserIdentity } = await import('../../../automation/runIdentity');
-    expect(verifyBrowserIdentity('a1', params.browserIdentity as never)).toBe(true);
-    expect(verifyBrowserIdentity('a2', params.browserIdentity as never)).toBe(false);
-    expect(verifyBrowserIdentity('a1', { ...params.browserIdentity, paneId: 'pane-b' } as never)).toBe(false);
+    expect(params.browserIdentity).toEqual({ workspaceId: 'ws-1', paneId: 'pane-a', boundRevision: 5 });
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const stored = JSON.parse(fs.readFileSync(path.join(keyDir, 'browser-run-identities.json'), 'utf8'));
+    expect(stored.entries['a1@5']).toMatchObject({ automationId: 'a1', boundRevision: 5, paneId: 'pane-a', profileId: 'Work', hosts: ['a.test'] });
   });
 
   it('accepts the identity from the main window top frame only', async () => {
@@ -178,6 +177,19 @@ describe('automation grant — browser identity', () => {
     await expect(fromMainFrame(IPC.AUTOMATION_GRANT, 'a1', 'approval', undefined, { ...pick, workspaceId: 'ws-2' })).resolves.toMatchObject({ ok: false });
     expect(confirmIdentity).not.toHaveBeenCalled();
     expect(grantCall()).toBeUndefined();
+  });
+
+  it('drops its snapshot when the daemon refuses the grant', async () => {
+    confirmIdentity.mockResolvedValue(true);
+    rpc.mockImplementation(async (method: string) => {
+      if (method === AUTOMATION_RPC.capabilities) return { capabilities: ['browserIdentity'] };
+      if (method === AUTOMATION_RPC.list) return { automations: [{ id: 'a1', name: 'Nightly', revision: 4, action: { agent: 'claude' } }] };
+      return { ok: false, error: 'changed' };
+    });
+    await fromMainFrame(IPC.AUTOMATION_GRANT, 'a1', 'approval', undefined, pick);
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    expect(JSON.parse(fs.readFileSync(path.join(keyDir, 'browser-run-identities.json'), 'utf8')).entries).toEqual({});
   });
 
   it('refuses when the policy moved while the prompt was open', async () => {

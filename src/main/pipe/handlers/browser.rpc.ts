@@ -50,6 +50,7 @@ import { getProfileNamespaceStore } from '../../browser-session/ProfileNamespace
 import {
   isIdentityRunPty,
   liveRunIdentity,
+  panePolicyFingerprint,
   noteRunBrowserRefusal,
   setBrowserIdentitySources,
   type LiveRunIdentity,
@@ -139,7 +140,7 @@ type GetWindow = () => BrowserWindow | null;
 
 /** What main wires in for protected browser panes. */
 export interface BrowserPolicyWiring {
-  store: Pick<BrowserPolicyStore, 'hasAnyHistory' | 'workspaceHasHistory' | 'decisionFor' | 'epoch' | 'entryFor'>
+  store: Pick<BrowserPolicyStore, 'hasAnyHistory' | 'workspaceHasHistory' | 'decisionFor' | 'entryFor'>
     & Partial<Pick<BrowserPolicyStore, 'onChange'>>;
   /** paneId → its exclusive Chrome profile binding (ChromeProfileStore). */
   paneBindings: () => ChromePaneBindings;
@@ -1030,7 +1031,6 @@ export function registerBrowserRpc(
   if (browserPolicy && chromeRegistry) {
     const registry = chromeRegistry;
     setBrowserIdentitySources({
-      epoch: () => browserPolicy.store.epoch(),
       entryFor: (paneId) => browserPolicy.store.entryFor(paneId),
       profileFor: (workspaceId, paneId) => registry.profileFor(workspaceId, paneId),
       paneBindings: () => browserPolicy.paneBindings(),
@@ -1105,8 +1105,9 @@ export function registerBrowserRpc(
     }
     if (run) {
       // The run acts only under the identity the operator granted: the same
-      // profile, still protected and confirmed, at the same policy epoch. Any
-      // change since needs a new grant — refused now, recorded on the run,
+      // profile, still protected and confirmed, and that pane's policy as it
+      // was (a change to another pane does not matter). Any change since
+      // needs a new grant — refused now, recorded on the run,
       // never waited on.
       const identity = run.identity;
       const why =
@@ -1114,7 +1115,7 @@ export function registerBrowserRpc(
           : pd.kind === 'protected' && !pd.confirmed ? "the pane's site list must be confirmed again"
             : !currentProfile || currentProfile.toLowerCase() !== identity.profileId.toLowerCase()
               ? "the pane's Chrome profile changed after this schedule was granted"
-              : store.epoch() !== identity.policyEpoch
+              : panePolicyFingerprint(store.entryFor(paneId), binding?.profile) !== identity.fingerprint
                 ? "the pane's browser policy changed after this schedule was granted"
                 : null;
       if (why && pd.kind !== 'denied') {

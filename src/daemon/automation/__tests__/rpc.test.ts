@@ -114,7 +114,7 @@ describe('automation RPC boundary', () => {
 });
 
 describe('automation RPC — browser identity', () => {
-  const identity = { workspaceId: 'ws-1', paneId: 'pane-a', profileId: 'work', hosts: ['a.test'], policyEpoch: 1, boundRevision: 2, mac: 'a'.repeat(64) };
+  const identity = { workspaceId: 'ws-1', paneId: 'pane-a', boundRevision: 2 };
 
   it('advertises the capability, and keeps run identities and their lookups first-party', async () => {
     const { call } = await setup();

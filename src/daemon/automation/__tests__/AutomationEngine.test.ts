@@ -765,11 +765,7 @@ describe('AutomationEngine — browser identity', () => {
   const identity = (boundRevision: number, over: Record<string, unknown> = {}) => ({
     workspaceId: 'ws-1',
     paneId: 'pane-a',
-    profileId: 'work',
-    hosts: ['a.test'],
-    policyEpoch: 3,
     boundRevision,
-    mac: 'a'.repeat(64),
     ...over,
   });
 
@@ -802,7 +798,7 @@ describe('AutomationEngine — browser identity', () => {
     // A grant that leaves the identity out cannot change the mode under it.
     expect(await h.engine.grant(id, 'bypass', undefined, 2)).toMatchObject({ ok: false });
     // Re-binding the identity is a new revision even when the mode is the same.
-    const again = await h.engine.grant(id, 'auto', undefined, 2, identity(3, { policyEpoch: 4, mac: 'b'.repeat(64) }));
+    const again = await h.engine.grant(id, 'auto', undefined, 2, identity(3));
     expect(again.ok && again.automation).toMatchObject({ revision: 3, permission: { mode: 'auto', grantedRevision: 3 } });
     // Removing it is a grant too.
     const removed = await h.engine.grant(id, 'approval', undefined, 3, null);
@@ -853,13 +849,13 @@ describe('AutomationEngine — browser identity', () => {
     expect(h.created[0].env['WMUX_WORKSPACE_ID']).toBeUndefined();
     const ri = h.engine.runIdentity(run.ptyId);
     expect(ri.run).toMatchObject({ runId: run.id, automationId: a.automation.id, revision: 2, browserIdentity: { paneId: 'pane-a' } });
-    expect(h.engine.identityRuns().runs).toEqual([{ ptyId: run.ptyId, pid: 4242, workspaceId: 'ws-1' }]);
+    expect(h.engine.identityRuns().runs).toEqual([{ ptyId: run.ptyId, pid: 4242, automationId: a.automation.id, revision: 2 }]);
     // The broadcast event says only that the run has one.
     const ev = h.events.filter((e) => e.type === 'run-changed').at(-1) as unknown as { run: Record<string, unknown> };
     expect(ev.run).not.toHaveProperty('browserIdentity');
     expect(ev.run.hasBrowserIdentity).toBe(true);
     // A later edit never changes what the running run is.
-    await h.engine.grant(a.automation.id, 'auto', undefined, 2, identity(3, { paneId: 'pane-z', mac: 'c'.repeat(64) }));
+    await h.engine.grant(a.automation.id, 'auto', undefined, 2, identity(3, { paneId: 'pane-z' }));
     expect(h.engine.runIdentity(run.ptyId).run?.browserIdentity.paneId).toBe('pane-a');
     // A refused browser call is recorded on the run.
     expect(await h.engine.noteRunBrowser(run.id, 'browser_needs_consent')).toEqual({ ok: true });

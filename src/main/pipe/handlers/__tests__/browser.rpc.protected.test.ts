@@ -382,12 +382,14 @@ describe('scheduled runs acting as a protected pane', () => {
   const notes: Array<{ runId: string; detail: string }> = [];
 
   async function grantRun(ptyId: string, over: Record<string, unknown> = {}) {
-    const { signBrowserIdentity } = await import('../../../automation/runIdentity');
-    const identity = signBrowserIdentity('auto-a1', {
-      workspaceId: 'ws-1', paneId: 'pane-a', profileId: 'pa', hosts: ['a.test'], policyEpoch: policy.epoch(), boundRevision: 2,
+    const { recordRunIdentity, panePolicyFingerprint } = await import('../../../automation/runIdentity');
+    const snapshot = {
+      automationId: 'auto-a1', boundRevision: 2, workspaceId: 'ws-1', paneId: 'pane-a', profileId: 'pa', hosts: ['a.test'],
+      fingerprint: panePolicyFingerprint(policy.entryFor('pane-a'), profiles.getPaneBindings()['pane-a']?.profile),
       ...over,
-    } as never);
-    liveRuns.set(ptyId, { runId: `r-${ptyId}`, automationId: 'auto-a1', revision: 2, identity: { ...identity } });
+    };
+    await recordRunIdentity(snapshot as never);
+    liveRuns.set(ptyId, { runId: `r-${ptyId}`, automationId: snapshot.automationId, revision: 2, identity: { workspaceId: 'ws-1', paneId: 'pane-a', boundRevision: 2 } });
   }
 
   async function asRun(router: RpcRouter, method: string, params: Record<string, unknown>, ptyId: string) {
@@ -399,8 +401,8 @@ describe('scheduled runs acting as a protected pane', () => {
   }
 
   beforeEach(async () => {
-    const { __setRunIdentityKeyDirForTest, setRunIdentityTransport } = await import('../../../automation/runIdentity');
-    __setRunIdentityKeyDirForTest(dir);
+    const { __setRunIdentityStoreDirForTest, setRunIdentityTransport } = await import('../../../automation/runIdentity');
+    __setRunIdentityStoreDirForTest(dir);
     liveRuns = new Map();
     notes.length = 0;
     setRunIdentityTransport({
@@ -419,9 +421,9 @@ describe('scheduled runs acting as a protected pane', () => {
   });
 
   afterEach(async () => {
-    const { setRunIdentityTransport, __setRunIdentityKeyDirForTest } = await import('../../../automation/runIdentity');
+    const { setRunIdentityTransport, __setRunIdentityStoreDirForTest } = await import('../../../automation/runIdentity');
     setRunIdentityTransport(null);
-    __setRunIdentityKeyDirForTest(null);
+    __setRunIdentityStoreDirForTest(null);
   });
 
   it("an owned run acts as its snapshot's pane: that pane's profile and hosts", async () => {
@@ -452,7 +454,7 @@ describe('scheduled runs acting as a protected pane', () => {
       'pa',
       true,
     );
-    await grantRun('auto-r2', { policyEpoch: policy.epoch() });
+    await grantRun('auto-r2', { fingerprint: (await import('../../../automation/runIdentity')).panePolicyFingerprint(policy.entryFor('pane-a'), 'pa') });
     expect((await asRun(router, 'browser.cdp.info', { workspaceId: 'ws-1' }, 'auto-r2')).error).toContain('needs_consent');
   });
 
@@ -463,14 +465,30 @@ describe('scheduled runs acting as a protected pane', () => {
     expect((await asRun(router, 'browser.cdp.info', { workspaceId: 'ws-1' }, 'auto-r1')).error).toContain('needs_consent');
   });
 
-  it('an auto- PTY the daemon does not vouch for, or with a forged identity, gets nothing', async () => {
+  it('an auto- PTY the daemon does not vouch for, or with no snapshot in main, gets nothing', async () => {
     await protectPaneA();
     const router = register(profiles, policy);
     expect((await asRun(router, 'browser.cdp.info', { workspaceId: 'ws-1' }, 'auto-unowned')).error).toContain('policy_denied');
     await grantRun('auto-r1');
+    // The daemon names a revision main never recorded (a reference it made up).
     const run = liveRuns.get('auto-r1')!;
-    run.identity = { ...run.identity, paneId: 'pane-b' };
+    run.revision = 3;
+    run.identity = { ...run.identity, boundRevision: 3 };
     expect((await asRun(router, 'browser.cdp.info', { workspaceId: 'ws-1' }, 'auto-r1')).error).toContain('policy_denied');
+  });
+
+  it("an edit to another pane's policy does not touch the run", async () => {
+    await protectPaneA();
+    await profiles.create('pb');
+    await profiles.setPaneBinding('pane-b', 'ws-1', 'pb');
+    await grantRun('auto-r1');
+    await policy.write(
+      { workspaceId: 'ws-1', paneId: 'pane-b', profileId: 'pb', protected: true, hosts: { mode: 'allowlist', allow: ['b.test'], block: [] }, expectedEpoch: policy.epoch() },
+      'pb',
+      true,
+    );
+    const router = register(profiles, policy);
+    expect((await asRun(router, 'browser.cdp.info', { workspaceId: 'ws-1' }, 'auto-r1')).result).toMatchObject({ profile: 'pa' });
   });
 
   it('a run is never left waiting on a person: help requests fail fast', async () => {

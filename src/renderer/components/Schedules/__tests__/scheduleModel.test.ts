@@ -126,7 +126,7 @@ describe('schedule chip mode', () => {
 });
 
 describe('browser identity in the editor model', () => {
-  const identity = { workspaceId: 'ws-1', paneId: 'pane-a', profileId: 'work', hosts: ['a.test'], policyEpoch: 1, boundRevision: 2, mac: 'a'.repeat(64) };
+  const identity = { workspaceId: 'ws-1', paneId: 'pane-a', boundRevision: 2 };
 
   it('defaults to none, and an untouched schedule without one grants exactly as before', async () => {
     const { automation } = await import('./fixtures');

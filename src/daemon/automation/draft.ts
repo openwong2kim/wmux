@@ -123,45 +123,24 @@ export function validateDraft(raw: unknown): Checked<AutomationDraft> {
 }
 
 const ID_TOKEN_RE = /^[A-Za-z0-9_-]{1,128}$/;
-const MAX_IDENTITY_HOSTS = 256;
 
-/**
- * Shape-check a browser identity. The daemon cannot verify `mac` (main holds
- * the key); it only refuses what could not possibly be one.
- */
+/** Shape-check a browser identity reference (main holds what it refers to). */
 export function validateBrowserIdentity(raw: unknown): Checked<AutomationBrowserIdentity> {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return fail('Invalid browser identity');
   const r = raw as Record<string, unknown>;
-  const hosts = r['hosts'];
   if (
     typeof r['workspaceId'] !== 'string' || !ID_TOKEN_RE.test(r['workspaceId'])
     || typeof r['paneId'] !== 'string' || !ID_TOKEN_RE.test(r['paneId'])
-    || typeof r['profileId'] !== 'string' || !r['profileId'] || r['profileId'].length > 128
-    || !Array.isArray(hosts) || hosts.length > MAX_IDENTITY_HOSTS
-    || !hosts.every((h) => typeof h === 'string' && h.length > 0 && h.length <= 255)
-    || typeof r['policyEpoch'] !== 'number' || !Number.isSafeInteger(r['policyEpoch']) || r['policyEpoch'] < 0
     || typeof r['boundRevision'] !== 'number' || !Number.isSafeInteger(r['boundRevision']) || r['boundRevision'] < 1
-    || typeof r['mac'] !== 'string' || !/^[0-9a-f]{64}$/.test(r['mac'])
   ) {
     return fail('Invalid browser identity');
   }
-  return {
-    ok: true,
-    value: {
-      workspaceId: r['workspaceId'],
-      paneId: r['paneId'],
-      profileId: r['profileId'],
-      hosts: [...(hosts as string[])],
-      policyEpoch: r['policyEpoch'],
-      boundRevision: r['boundRevision'],
-      mac: r['mac'],
-    },
-  };
+  return { ok: true, value: { workspaceId: r['workspaceId'], paneId: r['paneId'], boundRevision: r['boundRevision'] } };
 }
 
 function sameIdentity(a: AutomationBrowserIdentity | undefined, b: AutomationBrowserIdentity | undefined): boolean {
   if (!a || !b) return a === b;
-  return a.mac === b.mac && a.boundRevision === b.boundRevision;
+  return a.boundRevision === b.boundRevision && a.workspaceId === b.workspaceId && a.paneId === b.paneId;
 }
 
 /** scoped mode v1: bare tool names only, deduplicated, bounded. */

@@ -1,11 +1,12 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { createHmac, randomBytes, timingSafeEqual } from 'crypto';
+import { createHash } from 'crypto';
+import { atomicWriteJSON } from '../../daemon/util/atomicWrite';
+import { isUnsafeKey } from '../account/accountStore';
 import { getWmuxDir } from '../../daemon/config';
 import {
   AUTOMATION_FINAL_RUN_STATES,
   AUTOMATION_RPC,
-  type AutomationBrowserIdentity,
   type AutomationIdentityRunsResult,
   type AutomationNoteRunBrowserParams,
   type AutomationRun,
@@ -18,20 +19,20 @@ import type { ChromePaneBindings } from '../../shared/chromePaneBinding';
 // ---------------------------------------------------------------------------
 // Scheduled runs that act as a protected pane's browser — main's half.
 //
-// The daemon stores a run's browser identity and says which runs are live, but
-// the daemon pipe's first-party marking is claimed by the client, so nothing
-// the daemon holds is trusted on its own: the identity is signed here, with a
-// key only main reads, over every field and the automation id, when the
-// operator confirms it. A browser call from a run is attested only when
+// The daemon pipe's first-party marking is claimed by the client, so nothing
+// the daemon holds is trusted on its own. When the operator confirms an
+// identity, main records the snapshot in ITS OWN store, keyed by automation id
+// and the revision the grant lands at; the daemon keeps only a reference. A
+// browser call from a run is attested only when
 //   - main's own process walk placed the caller under that run's shell,
 //   - the daemon answers that the run is live in its current incarnation, and
-//   - the identity it launched with carries main's signature for that
-//     automation at the revision the run executed.
+//   - main's store holds a snapshot for exactly that automation and revision.
 // Nothing here is cached across calls: a run that ended, or a daemon that
 // restarted, answers nothing on the very next call.
 // ---------------------------------------------------------------------------
 
-const KEY_FILE = 'browser-identity.key';
+const STORE_FILE = 'browser-run-identities.json';
+const STORE_VERSION = 1;
 
 let transport: AutomationRpcTransport | null = null;
 
@@ -41,81 +42,166 @@ export function setRunIdentityTransport(next: AutomationRpcTransport | null): vo
   if (!next) identityRunPtys.clear();
 }
 
-// ── Signing ───────────────────────────────────────────────────────────────
+// ── Main's snapshot store ────────────────────────────────────────────────
 
-let keyDir: string | null = null;
-let cachedKey: Buffer | null = null;
-
-/** Tests: sign with a key under `dir`. */
-export function __setRunIdentityKeyDirForTest(dir: string | null): void {
-  keyDir = dir;
-  cachedKey = null;
+/** What the operator confirmed, as main recorded it. */
+export interface RunIdentitySnapshot {
+  automationId: string;
+  boundRevision: number;
+  workspaceId: string;
+  paneId: string;
+  /** The pane's exclusive Chrome profile at grant time. */
+  profileId: string;
+  /** The allowed sites shown in the confirm. */
+  hosts: string[];
+  /** panePolicyFingerprint of the pane at grant time. */
+  fingerprint: string;
 }
 
-function keyPath(): string {
-  return path.join(keyDir ?? getWmuxDir(), KEY_FILE);
+/**
+ * The pane's policy and profile binding, reduced to one value: any change to
+ * that pane (sites, protection, confirmation, workspace, profile) changes it;
+ * a change to another pane does not.
+ */
+export function panePolicyFingerprint(entry: PanePolicy | null, bindingProfile: string | undefined): string {
+  const payload = entry
+    ? [
+      entry.workspaceId,
+      entry.paneId,
+      entry.profileId.toLowerCase(),
+      entry.protected,
+      entry.hosts.mode,
+      [...entry.hosts.allow].sort(),
+      [...entry.hosts.block].sort(),
+      entry.needsConfirm === true,
+      (bindingProfile ?? '').toLowerCase(),
+    ]
+    : null;
+  return createHash('sha256').update(JSON.stringify(payload)).digest('hex');
 }
 
-function readKey(): Buffer | null {
-  if (cachedKey) return cachedKey;
-  try {
-    const hex = fs.readFileSync(keyPath(), 'utf8').trim();
-    if (/^[0-9a-f]{64}$/.test(hex)) cachedKey = Buffer.from(hex, 'hex');
-  } catch {
-    /* missing: nothing was ever signed */
+let storeDir: string | null = null;
+/** null = not read yet; 'corrupt' = unreadable, every lookup refused. */
+let cache: Record<string, RunIdentitySnapshot> | 'corrupt' | null = null;
+let writeChain: Promise<unknown> = Promise.resolve();
+
+/** Tests: keep the store under `dir`. */
+export function __setRunIdentityStoreDirForTest(dir: string | null): void {
+  storeDir = dir;
+  cache = null;
+}
+
+function storePath(): string {
+  return path.join(storeDir ?? getWmuxDir(), STORE_FILE);
+}
+
+const keyOf = (automationId: string, revision: number) => `${automationId}@${revision}`;
+
+function validSnapshot(raw: unknown): RunIdentitySnapshot | null {
+  const r = raw as Record<string, unknown> | null;
+  if (!r || typeof r !== 'object') return null;
+  if (
+    typeof r.automationId !== 'string' || !r.automationId
+    || typeof r.boundRevision !== 'number' || !Number.isSafeInteger(r.boundRevision)
+    || typeof r.workspaceId !== 'string' || typeof r.paneId !== 'string'
+    || typeof r.profileId !== 'string' || !r.profileId
+    || !Array.isArray(r.hosts) || !r.hosts.every((h) => typeof h === 'string')
+    || typeof r.fingerprint !== 'string' || !/^[0-9a-f]{64}$/.test(r.fingerprint)
+  ) {
+    return null;
   }
-  return cachedKey;
+  return {
+    automationId: r.automationId,
+    boundRevision: r.boundRevision,
+    workspaceId: r.workspaceId,
+    paneId: r.paneId,
+    profileId: r.profileId,
+    hosts: [...(r.hosts as string[])],
+    fingerprint: r.fingerprint,
+  };
 }
 
-function ensureKey(): Buffer {
-  const existing = readKey();
-  if (existing) return existing;
-  const file = keyPath();
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  // `wx`: two first signs racing never leave two different keys behind.
+/** Primary file only, fail closed: missing = no identities, unreadable = refuse all. */
+function readStore(): Record<string, RunIdentitySnapshot> | 'corrupt' {
+  if (cache) return cache;
+  let text: string;
   try {
-    fs.writeFileSync(file, randomBytes(32).toString('hex'), { mode: 0o600, flag: 'wx' });
+    text = fs.readFileSync(storePath(), 'utf8');
   } catch (err) {
-    if ((err as NodeJS.ErrnoException)?.code !== 'EEXIST') throw err;
+    cache = (err as NodeJS.ErrnoException)?.code === 'ENOENT' ? {} : 'corrupt';
+    return cache;
   }
-  cachedKey = null;
-  const key = readKey();
-  if (!key) throw new Error('browser identity key is unreadable');
-  return key;
+  try {
+    const raw = JSON.parse(text) as { version?: unknown; entries?: unknown };
+    if (raw?.version !== STORE_VERSION || !raw.entries || typeof raw.entries !== 'object' || Array.isArray(raw.entries)) {
+      cache = 'corrupt';
+      return cache;
+    }
+    const entries: Record<string, RunIdentitySnapshot> = {};
+    for (const [key, value] of Object.entries(raw.entries as Record<string, unknown>)) {
+      const snap = validSnapshot(value);
+      if (!snap || key !== keyOf(snap.automationId, snap.boundRevision) || isUnsafeKey(key)) {
+        cache = 'corrupt';
+        return cache;
+      }
+      entries[key] = snap;
+    }
+    cache = entries;
+  } catch {
+    cache = 'corrupt';
+  }
+  return cache;
 }
 
-type Unsigned = Omit<AutomationBrowserIdentity, 'mac'>;
-
-function canonical(automationId: string, identity: Unsigned): string {
-  return JSON.stringify([
-    'wmux-browser-identity-v1',
-    automationId,
-    identity.workspaceId,
-    identity.paneId,
-    identity.profileId,
-    identity.hosts,
-    identity.policyEpoch,
-    identity.boundRevision,
-  ]);
+function mutateStore(fn: (entries: Record<string, RunIdentitySnapshot>) => Record<string, RunIdentitySnapshot>): Promise<void> {
+  const run = writeChain.then(async () => {
+    cache = null; // decide on what is on disk now
+    const current = readStore();
+    if (current === 'corrupt') throw new Error('the browser identity store is unreadable');
+    const next = fn({ ...current });
+    await atomicWriteJSON(storePath(), { version: STORE_VERSION, entries: next }, { durable: true });
+    try { fs.chmodSync(storePath(), 0o600); } catch { /* best effort (Windows ACLs) */ }
+    cache = next;
+  });
+  writeChain = run.catch(() => undefined);
+  return run;
 }
 
-export function signBrowserIdentity(automationId: string, identity: Unsigned): AutomationBrowserIdentity {
-  const mac = createHmac('sha256', ensureKey()).update(canonical(automationId, identity)).digest('hex');
-  return { ...identity, mac };
+/**
+ * Record the operator-confirmed snapshot BEFORE the grant is sent. It
+ * replaces any other snapshot of that automation: only the newest grant can
+ * ever match the schedule's revision.
+ */
+export function recordRunIdentity(snapshot: RunIdentitySnapshot): Promise<void> {
+  return mutateStore((entries) => {
+    for (const key of Object.keys(entries)) {
+      if (entries[key].automationId === snapshot.automationId) delete entries[key];
+    }
+    entries[keyOf(snapshot.automationId, snapshot.boundRevision)] = snapshot;
+    return entries;
+  });
 }
 
-export function verifyBrowserIdentity(automationId: string, identity: AutomationBrowserIdentity): boolean {
-  const key = readKey();
-  if (!key || typeof identity?.mac !== 'string' || !/^[0-9a-f]{64}$/.test(identity.mac)) return false;
-  const { mac, ...rest } = identity;
-  const expected = createHmac('sha256', key).update(canonical(automationId, rest)).digest();
-  return timingSafeEqual(expected, Buffer.from(mac, 'hex'));
+/** Drop an automation's snapshot(s): the identity was removed, or its grant failed. */
+export function forgetRunIdentity(automationId: string, boundRevision?: number): Promise<void> {
+  return mutateStore((entries) => {
+    for (const key of Object.keys(entries)) {
+      const e = entries[key];
+      if (e.automationId === automationId && (boundRevision === undefined || e.boundRevision === boundRevision)) delete entries[key];
+    }
+    return entries;
+  });
+}
+
+function snapshotFor(automationId: string, revision: number): RunIdentitySnapshot | null {
+  const entries = readStore();
+  if (entries === 'corrupt') return null;
+  return entries[keyOf(automationId, revision)] ?? null;
 }
 
 // ── What the operator's grant reads (wired by registerBrowserRpc) ──────────
 
 export interface BrowserIdentitySources {
-  epoch(): number;
   entryFor(paneId: string): PanePolicy | null;
   /** The profile the pane resolves to now. */
   profileFor(workspaceId: string, paneId: string): string | undefined;
@@ -137,12 +223,12 @@ export function browserIdentitySources(): BrowserIdentitySources | null {
 export interface LiveRunIdentity {
   runId: string;
   automationId: string;
-  identity: AutomationBrowserIdentity;
+  identity: RunIdentitySnapshot;
 }
 
 /**
- * The verified identity of the live run behind `ptyId`, or null — no daemon,
- * an older daemon, no such live run, or an identity main did not sign for that
+ * The identity of the live run behind `ptyId`, or null — no daemon, an older
+ * daemon, no such live run, or no snapshot in main's store for exactly that
  * automation at the revision the run executed.
  */
 export async function liveRunIdentity(ptyId: string): Promise<LiveRunIdentity | null> {
@@ -156,24 +242,29 @@ export async function liveRunIdentity(ptyId: string): Promise<LiveRunIdentity | 
   }
   const run = res?.run;
   if (!run || run.ptyId !== ptyId || typeof run.automationId !== 'string' || !run.browserIdentity) return null;
-  const identity = run.browserIdentity;
-  if (identity.boundRevision !== run.revision) return null;
-  if (!verifyBrowserIdentity(run.automationId, identity)) return null;
+  if (run.browserIdentity.boundRevision !== run.revision) return null;
+  const identity = snapshotFor(run.automationId, run.revision);
+  if (!identity) return null;
   return { runId: run.runId, automationId: run.automationId, identity };
 }
 
-/** Live identity runs with their shell pid, for main's process walk. */
-export async function liveIdentityRunAnchors(): Promise<AutomationIdentityRunsResult['runs']> {
+/** Live identity runs with their shell pid and main's workspace for them (the process walk). */
+export async function liveIdentityRunAnchors(): Promise<Array<{ ptyId: string; pid: number; workspaceId: string }>> {
   const t = transport;
   if (!t) return [];
+  let res: AutomationIdentityRunsResult | null;
   try {
-    const res = (await t.rpc(AUTOMATION_RPC.identityRuns, {}, { timeoutMs: 2000 })) as AutomationIdentityRunsResult | null;
-    return Array.isArray(res?.runs)
-      ? res.runs.filter((r) => typeof r?.ptyId === 'string' && Number.isInteger(r.pid) && r.pid > 0 && typeof r.workspaceId === 'string')
-      : [];
+    res = (await t.rpc(AUTOMATION_RPC.identityRuns, {}, { timeoutMs: 2000 })) as AutomationIdentityRunsResult | null;
   } catch {
     return [];
   }
+  const out: Array<{ ptyId: string; pid: number; workspaceId: string }> = [];
+  for (const r of Array.isArray(res?.runs) ? res.runs : []) {
+    if (typeof r?.ptyId !== 'string' || !Number.isInteger(r.pid) || r.pid <= 0 || typeof r.automationId !== 'string') continue;
+    const snap = snapshotFor(r.automationId, r.revision);
+    if (snap) out.push({ ptyId: r.ptyId, pid: r.pid, workspaceId: snap.workspaceId });
+  }
+  return out;
 }
 
 /** Record a refused browser call on the run (best effort — the call fails either way). */

@@ -13,7 +13,12 @@ import {
   type AutomationRunNowResult,
   type AutomationRun,
 } from '../../../shared/automation';
-import { browserIdentitySources, signBrowserIdentity } from '../../automation/runIdentity';
+import {
+  browserIdentitySources,
+  forgetRunIdentity,
+  panePolicyFingerprint,
+  recordRunIdentity,
+} from '../../automation/runIdentity';
 import { isTrustedMainFrameSender, UNTRUSTED_SENDER_ERROR } from './browserPolicy.handler';
 import { getWorkspaceMirror } from '../../workspace/WorkspaceMirror';
 import { AutomationClient } from '../../automation/AutomationClient';
@@ -172,7 +177,7 @@ function parseIdentityPick(raw: unknown): IdentityPick | null {
 export function resolveIdentityPick(
   pick: IdentityPick,
   paneWorkspace: (paneId: string) => string | null,
-): { ok: true; profileId: string; hosts: string[]; policyEpoch: number } | { ok: false; error: string } {
+): { ok: true; profileId: string; hosts: string[]; fingerprint: string } | { ok: false; error: string } {
   const src = browserIdentitySources();
   if (!src) return { ok: false, error: 'The browser policy is not available' };
   if (paneWorkspace(pick.paneId) !== pick.workspaceId) return { ok: false, error: 'That pane is not in the chosen workspace' };
@@ -189,7 +194,7 @@ export function resolveIdentityPick(
     return { ok: false, error: "That pane's Chrome profile changed; confirm its browser protection again" };
   }
   const hosts = entry.hosts.mode === 'allowlist' ? [...entry.hosts.allow] : ['*'];
-  return { ok: true, profileId: entry.profileId, hosts, policyEpoch: src.epoch() };
+  return { ok: true, profileId: entry.profileId, hosts, fingerprint: panePolicyFingerprint(entry, binding.profile) };
 }
 
 export const confirmGrantNatively: GrantConfirmFn = async (win, automationName, mode) => {
@@ -343,17 +348,26 @@ export function registerAutomationHandlers(
           if (!(await confirmIdentity(win, target.name, view))) return refuse('cancelled');
           // What was confirmed must still be what is granted.
           const again = resolveIdentityPick(pick, paneWorkspace);
-          if (!again.ok || again.policyEpoch !== resolved.policyEpoch || again.profileId !== resolved.profileId) {
+          if (!again.ok || again.fingerprint !== resolved.fingerprint || again.profileId !== resolved.profileId) {
             return refuse("The pane's browser policy changed while you were confirming; grant it again");
           }
-          browserIdentity = signBrowserIdentity(target.id, {
-            workspaceId: pick.workspaceId,
-            paneId: pick.paneId,
-            profileId: resolved.profileId,
-            hosts: resolved.hosts,
-            policyEpoch: resolved.policyEpoch,
-            boundRevision: target.revision + 1,
-          });
+          // Main's own record of what the operator confirmed, written before
+          // the daemon is told: the daemon keeps only a reference to it.
+          const boundRevision = target.revision + 1;
+          try {
+            await recordRunIdentity({
+              automationId: target.id,
+              boundRevision,
+              workspaceId: pick.workspaceId,
+              paneId: pick.paneId,
+              profileId: resolved.profileId,
+              hosts: resolved.hosts,
+              fingerprint: resolved.fingerprint,
+            });
+          } catch (err) {
+            return refuse(err instanceof Error ? err.message : String(err));
+          }
+          browserIdentity = { workspaceId: pick.workspaceId, paneId: pick.paneId, boundRevision };
         } else {
           if (identityRequested) browserIdentity = null;
           if ((mode === 'bypass' || mode === 'auto') && !(await confirmGrant(win, target.name, mode))) return refuse('cancelled');
@@ -362,13 +376,21 @@ export function registerAutomationHandlers(
       const tools = Array.isArray(allowedTools) && allowedTools.every((t) => typeof t === 'string')
         ? (allowedTools as string[])
         : undefined;
-      return a.grant({
+      const result = await a.grant({
         id,
         mode: mode as AutomationPermissionMode,
         ...(tools ? { allowedTools: tools } : {}),
         ...(expectedRevision !== undefined ? { expectedRevision } : {}),
         ...(browserIdentity !== undefined ? { browserIdentity } : {}),
       });
+      // A snapshot the daemon did not take, or an identity it removed, is
+      // dropped from main's store (best effort: an unmatched one never applies).
+      if (browserIdentity && !result.ok) {
+        await forgetRunIdentity(id, browserIdentity.boundRevision).catch(() => undefined);
+      } else if (browserIdentity === null && result.ok) {
+        await forgetRunIdentity(id).catch(() => undefined);
+      }
+      return result;
     },
   ));
 

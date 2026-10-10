@@ -49,29 +49,20 @@ export interface AutomationScheduleTrigger {
 }
 
 /**
- * The browser identity a scheduled run acts as: one protected pane's Chrome
- * profile and the site list the operator confirmed for it.
- *
- * Captured by MAIN from the operator's choice in the editor, confirmed in a
- * native prompt, and signed by main (`mac`, a key the daemon never holds) over
- * every field plus the automation id. The daemon stores it opaquely, binds it
- * to `boundRevision`, and copies it onto each run it launches; main verifies
- * the signature at every browser call such a run makes. No create, update or
- * propose payload can carry one — only `automation.grant` from main.
+ * A schedule's browser identity, as the daemon holds it: a REFERENCE to the
+ * snapshot main recorded when the operator confirmed it (keyed by automation
+ * id + `boundRevision` in main's own store). The pane, its Chrome profile and
+ * its allowed sites live in main; `workspaceId` / `paneId` here are display
+ * hints only, never trusted. No create, update or propose payload can carry
+ * one — only `automation.grant` from main.
  */
 export interface AutomationBrowserIdentity {
+  /** Display hint: the workspace of the identity's pane. */
   workspaceId: string;
+  /** Display hint: the protected pane. */
   paneId: string;
-  /** The pane's exclusive Chrome profile at grant time. */
-  profileId: string;
-  /** The allowed sites the operator saw in the confirm (display; main enforces the live policy). */
-  hosts: string[];
-  /** BrowserPolicyStore epoch at grant time: any later policy change needs a new grant. */
-  policyEpoch: number;
   /** The automation revision this identity was granted at. */
   boundRevision: number;
-  /** Main's signature (hex HMAC-SHA256). */
-  mac: string;
 }
 
 /** What a daemon advertises on `automation.capabilities`. */
@@ -284,7 +275,7 @@ export interface AutomationRunIdentityResult {
 
 /** `automation.identityRuns` reply: live runs with a browser identity, and their shell pid. */
 export interface AutomationIdentityRunsResult {
-  runs: Array<{ ptyId: string; pid: number; workspaceId: string }>;
+  runs: Array<{ ptyId: string; pid: number; automationId: string; revision: number }>;
 }
 
 export interface AutomationNoteRunBrowserParams {
@@ -340,7 +331,7 @@ export interface AutomationGrantParams {
    */
   expectedRevision?: number;
   /**
-   * Main only: the signed browser identity to bind (null removes it). When
+   * Main only: the browser identity reference to bind (null removes it). When
    * present the grant requires `expectedRevision`, bumps the revision by one
    * and grants at the new revision, which the identity names as `boundRevision`.
    */

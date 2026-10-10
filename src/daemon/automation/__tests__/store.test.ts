@@ -157,7 +157,7 @@ describe('store', () => {
 });
 
 describe('browser identity in the store', () => {
-  const identity = { workspaceId: 'ws-1', paneId: 'pane-a', profileId: 'work', hosts: ['a.test'], policyEpoch: 1, boundRevision: 2, mac: 'a'.repeat(64) };
+  const identity = { workspaceId: 'ws-1', paneId: 'pane-a', boundRevision: 2 };
   const stored = (over: Record<string, unknown>) => ({
     id: 'a1', revision: 2, createdAt: 1, enabled: true, ...draft,
     action: { ...draft.action, browserIdentity: identity },

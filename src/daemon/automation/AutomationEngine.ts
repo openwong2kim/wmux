@@ -394,7 +394,7 @@ export class AutomationEngine {
       if (!run?.browserIdentity || isFinalRunState(run.state)) continue;
       const pid = this.ports.sessionPid(live.ptyId);
       if (pid === null) continue;
-      runs.push({ ptyId: live.ptyId, pid, workspaceId: run.browserIdentity.workspaceId });
+      runs.push({ ptyId: live.ptyId, pid, automationId: run.automationId, revision: run.revision });
     }
     return { runs };
   }
