@@ -1039,6 +1039,18 @@ export function registerBrowserRpc(
     if (PROTECTED_DENIED_METHODS.has(method)) {
       throw new Error(policyDeniedMessage(method, PROTECTED_DENIED_METHODS.get(method) as string));
     }
+    // A named surface that lives anywhere but this pane's own Chrome — an
+    // in-app browser tab (not behind the proxy, live or discarded) or another
+    // profile's Chrome tab — is refused before any handler resolves it. An id
+    // nothing knows falls through to the handler's own not-found answer.
+    const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : '';
+    const surfaceOwner = surfaceId ? chromeRegistry?.ownerOfSurface(surfaceId) : null;
+    const elsewhere = surfaceOwner
+      ? surfaceOwner.profile.toLowerCase() !== currentProfile?.toLowerCase()
+      : !!surfaceId && (!!webviewCdpManager.getTarget(surfaceId, undefined) || webviewCdpManager.isDiscarded(surfaceId));
+    if (elsewhere) {
+      throw new Error(policyDeniedMessage(method, "that surface is not a tab of this pane's own protected Chrome"));
+    }
     const target = protectedNavigationTarget(method, params);
     if (target !== null) {
       const verdict = navigationVerdict(compileHostPolicy(pd.hosts), target);

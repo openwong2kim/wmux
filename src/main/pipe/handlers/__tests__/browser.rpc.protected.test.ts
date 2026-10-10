@@ -55,18 +55,23 @@ function makeRegistry(store: ChromeProfileStore) {
     profileFor: vi.fn((ws?: string, paneId?: string) => store.profileFor(ws, paneId)),
     hasPaneBindings: vi.fn((ws?: string) => store.hasPaneBindings(ws)),
     isPaneBound: vi.fn((profile: string) => store.isPaneBound(profile)),
-    ownerOfSurface: vi.fn(() => null),
+    ownerOfSurface: vi.fn((_id: string): unknown => null),
     statusForProfile: vi.fn(async (profile: string) => ({ profile, running: true, cdpPort: 19000 })),
     disposeAll: vi.fn(),
   };
 }
 
 let backend: 'chrome' | 'builtin' = 'chrome';
+let registry: ReturnType<typeof makeRegistry>;
+
+/** Surface ids the fake in-app browser (webview manager) knows. */
+const webviewSurfaces = new Set<string>();
 
 function register(profiles: ChromeProfileStore, policy: BrowserPolicyStore): RpcRouter {
   const router = dispatchAsClaimedCaller(new RpcRouter());
   const cdp = {
-    getTarget: vi.fn(() => null),
+    getTarget: vi.fn((surfaceId?: string) =>
+      surfaceId && webviewSurfaces.has(surfaceId) ? { surfaceId, webContentsId: 1 } : null),
     listTargets: vi.fn(() => []),
     isDiscarded: vi.fn(() => false),
     getCdpPort: vi.fn(() => 18800),
@@ -86,7 +91,7 @@ function register(profiles: ChromeProfileStore, policy: BrowserPolicyStore): Rpc
     { get: () => backend, set: vi.fn(), liveWriteScope: () => 'agent' } as unknown as BrowserBackendStore,
     undefined,
     undefined,
-    makeRegistry(profiles) as never,
+    (registry = makeRegistry(profiles)) as never,
     undefined,
     undefined,
     undefined,
@@ -137,6 +142,7 @@ beforeEach(async () => {
   sendToRendererMock.mockReset();
   sendToRendererMock.mockResolvedValue([]);
   surfaceOpeners.clear();
+  webviewSurfaces.clear();
 });
 
 afterEach(() => {
@@ -206,6 +212,43 @@ describe('protected-pane gate', () => {
     expect(status.result).toMatchObject({ profile: 'pa', port: null });
     const neighbour = await call(router, 'browser.session.status', { workspaceId: 'ws-1' }, 'pty-b');
     expect(neighbour.result).toMatchObject({ profile: 'default', port: 19000 });
+  });
+
+  it('never lets a protected pane drive a surface outside its own Chrome', async () => {
+    await protectPaneA();
+    const router = register(profiles, policy);
+    // An in-app browser tab (a <webview>, not behind the proxy) of the same
+    // workspace, and a tab of the pane's own Chrome.
+    const webviewSurface = 'surface-webview-1';
+    webviewSurfaces.add(webviewSurface);
+    registry.ownerOfSurface.mockImplementation((id: string) =>
+      id === 'pa-sfc-own' || id === 'pb-sfc-other'
+        ? { workspaceId: 'ws-1', profile: id.slice(0, 2), client: registry.forProfile(id.slice(0, 2)) }
+        : null);
+    for (const [method, extra] of [
+      ['browser.navigate', { url: 'https://a.test/' }],
+      ['browser.screenshot', {}],
+      ['browser.type.humanlike', { selector: '#x', text: 'hi' }],
+      ['browser.surface.adopt', {}],
+      ['browser.lease.acquire', { authorize: true }],
+      ['browser.tabs', { action: 'select' }],
+      ['browser.close', {}],
+      ['browser.help.request', { prompt: 'help' }],
+    ] as const) {
+      const res = await call(router, method, { workspaceId: 'ws-1', surfaceId: webviewSurface, ...extra }, 'pty-a');
+      expect(res.error, method).toContain('policy_denied');
+    }
+    // Another profile's Chrome tab is refused too.
+    expect((await call(router, 'browser.navigate', { workspaceId: 'ws-1', surfaceId: 'pb-sfc-other', url: 'https://a.test/' }, 'pty-a')).error)
+      .toContain('policy_denied');
+    // Its own tab, and an id nothing knows (a stale pin), pass the gate; the
+    // unprotected neighbour is unaffected.
+    expect((await call(router, 'browser.navigate', { workspaceId: 'ws-1', surfaceId: 'gone-1', url: 'https://a.test/' }, 'pty-a')).error ?? '')
+      .not.toContain('policy_denied');
+    expect((await call(router, 'browser.navigate', { workspaceId: 'ws-1', surfaceId: 'pa-sfc-own', url: 'https://a.test/' }, 'pty-a')).error ?? '')
+      .not.toContain('policy_denied');
+    expect((await call(router, 'browser.navigate', { workspaceId: 'ws-1', surfaceId: webviewSurface, url: 'https://x.test/' }, 'pty-b')).error ?? '')
+      .not.toContain('policy_denied');
   });
 
   it('refuses a protected pane on a non-Chrome backend', async () => {
