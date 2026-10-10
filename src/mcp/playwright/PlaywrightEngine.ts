@@ -16,6 +16,7 @@ import {
   type BrowserTargetScope,
 } from './browserScope';
 import { attachPageCapture } from './pageCapture';
+import { trackRequestBaseline } from './actionSettle';
 import {
   attachModalTracking,
   modalScopeKey,
@@ -681,6 +682,10 @@ export class PlaywrightEngine {
     } else if (page) {
       rememberModalScope(page, modalScopeKey(scope.workspaceId, scope.surfaceId));
     }
+    // The page's own request rhythm, so a later action's settle can tell a
+    // poll from what the action caused. Passive; started on first resolution
+    // so the history exists before the first click.
+    if (page) trackRequestBaseline(page);
     // Chrome backend: main's webContents-side lifecycle capture cannot see
     // these tabs, so mirror navigations/closes engine-side (dogfood P1 — the
     // #1063 inline events went silent under 'chrome').

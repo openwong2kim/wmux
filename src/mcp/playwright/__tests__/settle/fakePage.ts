@@ -11,6 +11,7 @@ export function fakeRequest(
   const url = opts.url ?? `https://site.test/${++requestSeq}`;
   return {
     url: () => url,
+    method: () => 'GET',
     resourceType: () => resourceType,
     isNavigationRequest: () => opts.navigation === true,
     frame: () => opts.frame,

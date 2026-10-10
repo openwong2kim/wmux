@@ -5,6 +5,7 @@ import {
   REQUEST_GRACE_MS,
   SETTLE_CAP_MS,
   settleAfterAction,
+  trackRequestBaseline,
 } from '../../actionSettle';
 import { fakeRequest, makeFakePage } from './fakePage';
 
@@ -176,6 +177,105 @@ describe('settleAfterAction decision table', () => {
     expect(run.settledAt()).toBe(COLLECT_WINDOW_MS + 30);
   });
 
+  describe('per-page request baseline', () => {
+    const poll = () => fakeRequest('fetch', { url: 'https://site.test/poll?t=' + Math.random() });
+
+    /** The page polls every `period` ms, `count` times, before the action. */
+    async function pollBefore(fake: Fake, period: number, count: number) {
+      trackRequestBaseline(fake.page as unknown as Page);
+      for (let i = 0; i < count; i++) {
+        fake.page.emit('request', poll());
+        await vi.advanceTimersByTimeAsync(period);
+      }
+    }
+
+    it('a poll the page already repeats lands in the grace window: no extra wait', async () => {
+      const fake = makeFakePage();
+      await pollBefore(fake, 150, 3);
+      const run = track(fake);
+      await vi.advanceTimersByTimeAsync(20);
+      fake.page.emit('request', poll()); // the page's next poll, not the click's
+      await vi.advanceTimersByTimeAsync(REQUEST_GRACE_MS - 20);
+      expect(run.settledAt()).toBe(REQUEST_GRACE_MS);
+    });
+
+    it('the action’s own XHR is still waited for on a polling page', async () => {
+      const fake = makeFakePage();
+      await pollBefore(fake, 150, 3);
+      const own = fakeRequest('xhr', { url: 'https://site.test/api/save' });
+      const run = track(fake, async () => {
+        fake.page.emit('request', poll());
+        fake.page.emit('request', own);
+      });
+      await vi.advanceTimersByTimeAsync(COLLECT_WINDOW_MS + 100);
+      expect(run.settledAt()).toBeUndefined();
+      fake.page.emit('requestfinished', own);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(run.settledAt()).toBe(COLLECT_WINDOW_MS + 100);
+    });
+
+    it('a request seen only once before has no rhythm yet and still counts', async () => {
+      const fake = makeFakePage();
+      await pollBefore(fake, 150, 1);
+      const again = poll();
+      const run = track(fake, async () => {
+        fake.page.emit('request', again);
+      });
+      await vi.advanceTimersByTimeAsync(COLLECT_WINDOW_MS + 50);
+      expect(run.settledAt()).toBeUndefined();
+      fake.page.emit('requestfinished', again);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(run.settledAt()).toBe(COLLECT_WINDOW_MS + 50);
+    });
+
+    it('a rhythm that stopped long before the action no longer excuses the request', async () => {
+      const fake = makeFakePage();
+      await pollBefore(fake, 150, 3);
+      await vi.advanceTimersByTimeAsync(5_000);
+      const late = poll();
+      const run = track(fake, async () => {
+        fake.page.emit('request', late);
+      });
+      await vi.advanceTimersByTimeAsync(COLLECT_WINDOW_MS + 50);
+      expect(run.settledAt()).toBeUndefined();
+      fake.page.emit('requestfinished', late);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(run.settledAt()).toBe(COLLECT_WINDOW_MS + 50);
+    });
+
+    it('an agent repeating the same click does not teach the page a rhythm', async () => {
+      const fake = makeFakePage();
+      trackRequestBaseline(fake.page as unknown as Page);
+      for (let i = 0; i < 3; i++) {
+        const own = fakeRequest('xhr', { url: 'https://site.test/api/load' });
+        const run = track(fake, async () => {
+          fake.page.emit('request', own);
+        });
+        await vi.advanceTimersByTimeAsync(COLLECT_WINDOW_MS + 30);
+        // Waited for every time, the third click included.
+        expect(run.settledAt()).toBeUndefined();
+        fake.page.emit('requestfinished', own);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(run.settledAt()).toBe(COLLECT_WINDOW_MS + 30);
+        await vi.advanceTimersByTimeAsync(100);
+      }
+    });
+
+    it('a different method on the same URL is a different request', async () => {
+      const fake = makeFakePage();
+      await pollBefore(fake, 150, 3);
+      const post = { ...poll(), method: () => 'POST' };
+      const run = track(fake, async () => {
+        fake.page.emit('request', post);
+      });
+      await vi.advanceTimersByTimeAsync(COLLECT_WINDOW_MS + 10);
+      expect(run.settledAt()).toBeUndefined();
+      fake.page.emit('requestfinished', post);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(run.settledAt()).toBe(COLLECT_WINDOW_MS + 10);
+    });
+  });
+
   it('a hung request is capped at SETTLE_CAP_MS', async () => {
     const fake = makeFakePage();
     const run = track(fake, async () => {
@@ -249,13 +349,19 @@ describe('settleAfterAction decision table', () => {
     await expect(run.promise).resolves.toBeUndefined();
   });
 
-  it('detaches every listener it added', async () => {
+  it('detaches every per-action listener; only the page baseline stays', async () => {
     const fake = makeFakePage();
     const run = track(fake);
     await vi.advanceTimersByTimeAsync(REQUEST_GRACE_MS);
     await run.promise;
-    for (const event of ['request', 'requestfinished', 'requestfailed', 'framenavigated']) {
+    for (const event of ['requestfinished', 'requestfailed', 'framenavigated']) {
       expect(fake.page.listenerCount(event)).toBe(0);
     }
+    // The baseline's one persistent listener, attached once per page.
+    expect(fake.page.listenerCount('request')).toBe(1);
+    const again = track(fake);
+    await vi.advanceTimersByTimeAsync(REQUEST_GRACE_MS);
+    await again.promise;
+    expect(fake.page.listenerCount('request')).toBe(1);
   });
 });
