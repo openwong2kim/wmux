@@ -3,6 +3,7 @@ import { IPC } from '../../../shared/constants';
 import { wrapHandler } from '../wrapHandler';
 import type { DaemonClient } from '../../DaemonClient';
 import {
+  AUTOMATION_AGENT_CAPS,
   AUTOMATION_CAPABILITY_BROWSER_IDENTITY,
   type Automation,
   type AutomationBrowserIdentity,
@@ -338,7 +339,7 @@ export function registerAutomationHandlers(
         if (!target) return refuse('Not found');
         expectedRevision = target.revision;
         if (pick) {
-          if (target.action.agent === 'codex' && mode !== 'approval') {
+          if (!AUTOMATION_AGENT_CAPS[target.action.agent]?.unattendedBrowserIdentity && mode !== 'approval') {
             return refuse('A Codex schedule with a browser identity runs in approval mode only');
           }
           const resolved = resolveIdentityPick(pick, paneWorkspace);

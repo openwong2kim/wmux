@@ -547,7 +547,7 @@ export class AutomationEngine {
         const checked = validateBrowserIdentity(rawIdentity);
         if (!checked.ok) return { ok: false, error: checked.error };
         if (checked.value.boundRevision !== automation.revision + 1) return { ok: false, error: GRANT_REVISION_CHANGED };
-        if (automation.action.agent === 'codex' && mode !== 'approval') {
+        if (!AUTOMATION_AGENT_CAPS[automation.action.agent].unattendedBrowserIdentity && mode !== 'approval') {
           return { ok: false, error: 'A Codex schedule with a browser identity runs in approval mode only' };
         }
         identity = checked.value;

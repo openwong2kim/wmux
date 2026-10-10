@@ -88,12 +88,12 @@ export function permissionFlags(
   opts: AutomationLaunchOptions = {},
 ): string[] {
   if (mode === 'auto' && !AUTOMATION_AGENT_CAPS[agent].autoMode) throw new Error('Auto mode is claude only');
-  if (opts.browserIdentity && agent === 'codex' && mode !== 'approval') {
+  if (opts.browserIdentity && !AUTOMATION_AGENT_CAPS[agent].unattendedBrowserIdentity && mode !== 'approval') {
     throw new Error('A Codex run with a browser identity is approval-only');
   }
   const flags = [...PERMISSION_FLAGS[agent][mode]].filter((flag, i, all) =>
     // Drop exactly the `--disallowedTools mcp__wmux` pair for an identity run.
-    !(opts.browserIdentity && agent === 'claude'
+    !(opts.browserIdentity && AUTOMATION_AGENT_CAPS[agent].unattendedBrowserIdentity
       && ((flag === CLAUDE_NO_WMUX_MCP[0] && all[i + 1] === CLAUDE_NO_WMUX_MCP[1])
         || (flag === CLAUDE_NO_WMUX_MCP[1] && all[i - 1] === CLAUDE_NO_WMUX_MCP[0]))));
   if (agent === 'claude' && mode === 'scoped') {

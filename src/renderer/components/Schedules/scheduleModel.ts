@@ -138,7 +138,9 @@ export function validateForm(form: ScheduleForm): FormProblem[] {
   }
   if (form.browserWorkspaceId && !form.browserPaneId) problems.push('browserPane');
   // Codex has no per-tool control: a Codex run with a browser identity is approval-only.
-  if (form.browserPaneId && form.agent === 'codex' && form.mode !== 'approval') problems.push('browserMode');
+  if (form.browserPaneId && !AUTOMATION_AGENT_CAPS[form.agent].unattendedBrowserIdentity && form.mode !== 'approval') {
+    problems.push('browserMode');
+  }
   return problems;
 }
 

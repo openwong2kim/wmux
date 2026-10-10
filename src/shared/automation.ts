@@ -33,9 +33,15 @@ export const AUTOMATION_AGENT_CAPS: Readonly<Record<AutomationAgent, {
   autoMode: boolean;
   toolList: boolean;
   defaultMode: AutomationPermissionMode;
+  /**
+   * An unattended run with a browser identity keeps the wmux server (main
+   * admits only browser calls from it). An agent without per-tool control
+   * of that server runs a browser identity in approval mode only.
+   */
+  unattendedBrowserIdentity: boolean;
 }>> = {
-  claude: { autoMode: true, toolList: true, defaultMode: 'auto' },
-  codex: { autoMode: false, toolList: false, defaultMode: 'scoped' },
+  claude: { autoMode: true, toolList: true, defaultMode: 'auto', unattendedBrowserIdentity: true },
+  codex: { autoMode: false, toolList: false, defaultMode: 'scoped', unattendedBrowserIdentity: false },
 };
 
 export interface AutomationScheduleTrigger {
