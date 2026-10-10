@@ -579,7 +579,7 @@ describe('a2a.resolve.identity — scheduled runs with a browser identity', () =
     dirRef.current = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-pidmap-run-'));
     const { setRunIdentityTransport, __setRunIdentityStoreDirForTest, recordRunIdentity } = await import('../../../automation/runIdentity');
     __setRunIdentityStoreDirForTest(fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-runid-')));
-    await recordRunIdentity({ automationId: 'a1', boundRevision: 2, workspaceId: 'ws-1', paneId: 'pane-a', profileId: 'pa', hosts: [], fingerprint: '0'.repeat(64) });
+    await recordRunIdentity({ automationId: 'a1', boundRevision: 2, workspaceId: 'ws-1', paneId: 'pane-a', profileId: 'pa', hosts: [], fingerprint: '0'.repeat(64), mode: 'approval' });
     setRunIdentityTransport({
       rpc: async (method: string) =>
         method === 'automation.identityRuns' ? { runs: [{ ptyId: 'auto-r1', pid: 49076, automationId: 'a1', revision: 2 }] } : null,

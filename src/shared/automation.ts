@@ -274,6 +274,8 @@ export interface AutomationRunIdentityResult {
     runId: string;
     automationId: string;
     revision: number;
+    /** The mode the run launched with (main checks it against what was confirmed). */
+    effectiveMode: AutomationPermissionMode;
     ptyId: string;
     browserIdentity: AutomationBrowserIdentity;
   } | null;

@@ -193,3 +193,25 @@ describe('browser identity in the store', () => {
     expect(run?.browserIdentity).toEqual(identity);
   });
 });
+
+describe('browser identity on disk', () => {
+  it('stores an identity schedule so an older daemon loads it off and ungranted; this one restores it', async () => {
+    const { saveAutomations: save } = await import('../store');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-store-disk-'));
+    const identity = { workspaceId: 'ws-1', paneId: 'pane-a', boundRevision: 2 };
+    const a = {
+      id: 'a1', name: 'N', enabled: true, revision: 2, createdAt: 1, updatedAt: 1, createdBy: 'desktop-ui' as const, nextRunAt: null,
+      trigger: { kind: 'schedule' as const, weekdays: [1], time: '08:30', graceMinutes: 60 },
+      action: { kind: 'launch' as const, cwd: '/w', agent: 'claude' as const, prompt: 'p', browserIdentity: identity },
+      permission: { mode: 'bypass' as const, grantedRevision: 2 },
+      policy: { overlap: 'skip_if_active' as const },
+    };
+    await save(dir, { version: 1, automations: [a], attention: [] } as never);
+    const disk = JSON.parse(fs.readFileSync(path.join(dir, AUTOMATIONS_FILE), 'utf8')).automations[0];
+    // What an older daemon reads: off, and no grantedRevision to restore.
+    expect(disk.enabled).toBe(false);
+    expect(disk.permission.grantedRevision).toBeUndefined();
+    const [back] = loadAutomations(dir).automations;
+    expect(back).toMatchObject({ enabled: true, permission: { mode: 'bypass', grantedRevision: 2 }, action: { browserIdentity: identity } });
+  });
+});

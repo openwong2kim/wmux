@@ -18,6 +18,7 @@ import {
   browserIdentitySources,
   forgetRunIdentity,
   panePolicyFingerprint,
+  pruneRunIdentities,
   recordRunIdentity,
 } from '../../automation/runIdentity';
 import { isTrustedMainFrameSender, UNTRUSTED_SENDER_ERROR } from './browserPolicy.handler';
@@ -118,20 +119,31 @@ export function identityConfirmCopy(locale: AutomationUiLocale, automationName: 
   const shown = view.hosts.slice(0, 8).map((h) => flat(h, 80));
   const more = view.hosts.length > shown.length ? view.hosts.length - shown.length : 0;
   const unattended = view.mode !== 'approval';
+  // This prompt replaces the Auto / Bypass confirm, so it states the mode too.
+  const modeLine = (lang: AutomationUiLocale): string => {
+    if (view.mode === 'bypass') return bypassConfirmCopy(lang, automationName).detail;
+    if (view.mode === 'auto') {
+      return lang === 'ko'
+        ? 'Claude 자동 모드로 실행합니다: 일상적인 작업은 Claude가 스스로 승인하고 위험한 작업은 막습니다.'
+        : "It runs in Claude's auto mode: Claude approves routine actions itself and stops risky ones.";
+    }
+    if (view.mode === 'scoped') return lang === 'ko' ? '지정한 도구만 묻지 않고 실행합니다.' : 'Only the tools you listed run without asking.';
+    return lang === 'ko' ? '각 작업은 승인을 묻습니다.' : 'Each action asks for approval.';
+  };
   if (locale === 'ko') {
     const sites = view.hosts.length === 0 ? '(허용된 사이트 없음)' : `${shown.join(', ')}${more ? ` 외 ${more}개` : ''}`;
     return {
       message: `"${name}"이(가) "${pane}" 창의 브라우저를 쓰도록 할까요?`,
-      detail: `Chrome 프로필: ${profile}\n허용 사이트: ${sites}\n\n정한 시각에${unattended ? ', 자리에 없을 때도' : ''} 이 계정으로 위 사이트만 엽니다. 이 실행에서는 wmux 도구 중 브라우저만 쓸 수 있습니다. 창의 정책이 바뀌면 다시 허용할 때까지 브라우저 호출이 거부됩니다.`,
-      confirm: '브라우저 허용',
+      detail: `Chrome 프로필: ${profile}\n허용 사이트: ${sites}\n\n${modeLine('ko')}\n정한 시각에${unattended ? ', 자리에 없을 때도' : ''} 이 계정으로 위 사이트만 엽니다. 이 실행에서는 wmux 도구 중 브라우저만 쓸 수 있습니다. 창의 정책이 바뀌면 다시 허용할 때까지 브라우저 호출이 거부됩니다.`,
+      confirm: view.mode === 'bypass' ? '바이패스와 브라우저 허용' : view.mode === 'auto' ? '자동 모드와 브라우저 허용' : '브라우저 허용',
       cancel,
     };
   }
   const sites = view.hosts.length === 0 ? '(no allowed sites)' : `${shown.join(', ')}${more ? ` and ${more} more` : ''}`;
   return {
     message: `Let "${name}" use the browser of pane "${pane}"?`,
-    detail: `Chrome profile: ${profile}\nAllowed sites: ${sites}\n\nAt the scheduled time${unattended ? ', including while you are away,' : ''} it opens only these sites as this account. The run gets wmux's browser tools and nothing else of wmux. If the pane's policy changes, its browser calls are refused until you grant it again.`,
-    confirm: 'Allow browser',
+    detail: `Chrome profile: ${profile}\nAllowed sites: ${sites}\n\n${modeLine('en')}\nAt the scheduled time${unattended ? ', including while you are away,' : ''} it opens only these sites as this account. The run gets wmux's browser tools and nothing else of wmux. If the pane's policy changes, its browser calls are refused until you grant it again.`,
+    confirm: view.mode === 'bypass' ? 'Use Bypass and allow browser' : view.mode === 'auto' ? 'Use Auto and allow browser' : 'Allow browser',
     cancel,
   };
 }
@@ -352,6 +364,10 @@ export function registerAutomationHandlers(
           if (!again.ok || again.fingerprint !== resolved.fingerprint || again.profileId !== resolved.profileId) {
             return refuse("The pane's browser policy changed while you were confirming; grant it again");
           }
+          // The daemon may have been replaced while the prompt was open.
+          if (!(await a.capabilities()).includes(AUTOMATION_CAPABILITY_BROWSER_IDENTITY)) {
+            return refuse('The wmux background service is too old for a browser identity; restart wmux and try again');
+          }
           // Main's own record of what the operator confirmed, written before
           // the daemon is told: the daemon keeps only a reference to it.
           const boundRevision = target.revision + 1;
@@ -364,6 +380,7 @@ export function registerAutomationHandlers(
               profileId: resolved.profileId,
               hosts: resolved.hosts,
               fingerprint: resolved.fingerprint,
+              mode: mode as AutomationPermissionMode,
             });
           } catch (err) {
             return refuse(err instanceof Error ? err.message : String(err));
@@ -384,10 +401,15 @@ export function registerAutomationHandlers(
         ...(expectedRevision !== undefined ? { expectedRevision } : {}),
         ...(browserIdentity !== undefined ? { browserIdentity } : {}),
       });
-      // A snapshot the daemon did not take, or an identity it removed, is
-      // dropped from main's store (best effort: an unmatched one never applies).
-      if (browserIdentity && !result.ok) {
-        await forgetRunIdentity(id, browserIdentity.boundRevision).catch(() => undefined);
+      // Main's store follows what the daemon actually took (best effort: a
+      // snapshot that matches no grant never applies).
+      if (browserIdentity) {
+        const landed = result.ok && result.automation.action?.browserIdentity?.boundRevision === browserIdentity.boundRevision;
+        if (!landed) {
+          await forgetRunIdentity(id, browserIdentity.boundRevision).catch(() => undefined);
+          return result.ok ? refuse('The background service did not keep the browser identity; restart wmux and grant it again') : result;
+        }
+        await pruneRunIdentities(id, browserIdentity.boundRevision).catch(() => undefined);
       } else if (browserIdentity === null && result.ok) {
         await forgetRunIdentity(id).catch(() => undefined);
       }

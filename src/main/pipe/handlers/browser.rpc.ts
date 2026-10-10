@@ -1071,7 +1071,14 @@ export function registerBrowserRpc(
     let run: LiveRunIdentity | null = null;
     let paneId: string | null = null;
     if (ptyId && runCaller) {
-      run = await liveRunIdentity(ptyId);
+      const found = await liveRunIdentity(ptyId);
+      if (found && 'unmatched' in found) {
+        // A live identity run main holds no confirmed snapshot for (or under
+        // another mode): refused, and the run says why.
+        noteRunBrowserRefusal(found.runId, 'browser_needs_consent');
+        throw new Error(needsConsentMessage(method, "this schedule's browser identity is not confirmed; grant the schedule again in wmux"));
+      }
+      run = found;
       paneId = run && run.identity.workspaceId === workspaceId ? run.identity.paneId : null;
     } else if (ptyId) {
       try {

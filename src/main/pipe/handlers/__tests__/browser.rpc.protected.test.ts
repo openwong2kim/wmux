@@ -394,7 +394,7 @@ describe('protected-pane memory: per-account namespaces', () => {
 });
 
 describe('scheduled runs acting as a protected pane', () => {
-  let liveRuns: Map<string, { runId: string; automationId: string; revision: number; identity: Record<string, unknown> }>;
+  let liveRuns: Map<string, { runId: string; automationId: string; revision: number; mode?: string; identity: Record<string, unknown> }>;
   const notes: Array<{ runId: string; detail: string }> = [];
 
   async function grantRun(ptyId: string, over: Record<string, unknown> = {}) {
@@ -402,6 +402,7 @@ describe('scheduled runs acting as a protected pane', () => {
     const snapshot = {
       automationId: 'auto-a1', boundRevision: 2, workspaceId: 'ws-1', paneId: 'pane-a', profileId: 'pa', hosts: ['a.test'],
       fingerprint: panePolicyFingerprint(policy.entryFor('pane-a'), profiles.getPaneBindings()['pane-a']?.profile),
+      mode: 'auto',
       ...over,
     };
     await recordRunIdentity(snapshot as never);
@@ -425,7 +426,7 @@ describe('scheduled runs acting as a protected pane', () => {
       rpc: async (method: string, params?: Record<string, unknown>) => {
         if (method === 'automation.runIdentity') {
           const run = liveRuns.get(String(params?.['ptyId']));
-          return { run: run ? { runId: run.runId, automationId: run.automationId, revision: run.revision, ptyId: params?.['ptyId'], browserIdentity: run.identity } : null };
+          return { run: run ? { runId: run.runId, automationId: run.automationId, revision: run.revision, effectiveMode: run.mode ?? 'auto', ptyId: params?.['ptyId'], browserIdentity: run.identity } : null };
         }
         if (method === 'automation.noteRunBrowser') {
           notes.push({ runId: String(params?.['runId']), detail: String(params?.['detail']) });
@@ -490,7 +491,17 @@ describe('scheduled runs acting as a protected pane', () => {
     const run = liveRuns.get('auto-r1')!;
     run.revision = 3;
     run.identity = { ...run.identity, boundRevision: 3 };
-    expect((await asRun(router, 'browser.cdp.info', { workspaceId: 'ws-1' }, 'auto-r1')).error).toContain('policy_denied');
+    expect((await asRun(router, 'browser.cdp.info', { workspaceId: 'ws-1' }, 'auto-r1')).error).toContain('needs_consent');
+    expect(notes.at(-1)).toEqual({ runId: 'r-auto-r1', detail: 'browser_needs_consent' });
+  });
+
+  it('a run in another mode than the confirmed one, or with no snapshot, is refused and recorded', async () => {
+    await protectPaneA();
+    await grantRun('auto-r1');
+    liveRuns.get('auto-r1')!.mode = 'bypass';
+    const router = register(profiles, policy);
+    expect((await asRun(router, 'browser.cdp.info', { workspaceId: 'ws-1' }, 'auto-r1')).error).toContain('needs_consent');
+    expect(notes.at(-1)).toEqual({ runId: 'r-auto-r1', detail: 'browser_needs_consent' });
   });
 
   it("an edit to another pane's policy does not touch the run", async () => {

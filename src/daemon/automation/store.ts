@@ -81,7 +81,13 @@ export function coerceAutomation(raw: unknown): Automation | null {
   // An unreadable identity is never dropped into a schedule that would then
   // run without it: the schedule is kept, off and ungranted.
   const identityLost = identity !== null && !identity.ok;
-  const perm = (o['permission'] ?? {}) as Record<string, unknown>;
+  // On disk a schedule with an identity keeps its grant and on/off state in
+  // fields an older daemon does not read (see toDiskAutomation): such a daemon
+  // loads it off and ungranted rather than running it without the identity.
+  const diskPerm = (o['permission'] ?? {}) as Record<string, unknown>;
+  const perm = identity?.ok && diskPerm['identityGrantedRevision'] !== undefined
+    ? { ...diskPerm, grantedRevision: diskPerm['identityGrantedRevision'] }
+    : diskPerm;
   let permission: Automation['permission'] = { mode: 'approval' };
   if (identity?.ok && perm['mode'] === 'approval' && num(perm['grantedRevision']) !== undefined) {
     permission = { mode: 'approval', grantedRevision: num(perm['grantedRevision']) as number };
@@ -106,7 +112,7 @@ export function coerceAutomation(raw: unknown): Automation | null {
   return {
     id,
     name: draft.value.name,
-    enabled: o['enabled'] === true && !identityLost,
+    enabled: (o['enabled'] === true || (identity?.ok === true && o['identityEnabled'] === true)) && !identityLost,
     ...(o['proposed'] === true ? { proposed: true } : {}),
     revision,
     trigger: draft.value.trigger,
@@ -229,8 +235,27 @@ async function saveJson(file: string, data: unknown): Promise<boolean> {
   }
 }
 
+/**
+ * The on-disk shape of a schedule. One with a browser identity stores its
+ * on/off state and grant under names an older daemon ignores, so a downgrade
+ * loads it off and ungranted instead of running it without the identity.
+ */
+export function toDiskAutomation(a: Automation): Record<string, unknown> {
+  if (!a.action.browserIdentity) return a as unknown as Record<string, unknown>;
+  const { grantedRevision, ...permission } = a.permission;
+  return {
+    ...a,
+    enabled: false,
+    identityEnabled: a.enabled,
+    permission: {
+      ...permission,
+      ...(grantedRevision !== undefined && { identityGrantedRevision: grantedRevision }),
+    },
+  };
+}
+
 export function saveAutomations(wmuxDir: string, state: AutomationsFileState): Promise<boolean> {
-  return saveJson(path.join(wmuxDir, AUTOMATIONS_FILE), state);
+  return saveJson(path.join(wmuxDir, AUTOMATIONS_FILE), { ...state, automations: state.automations.map(toDiskAutomation) });
 }
 
 export function saveRuns(wmuxDir: string, state: AutomationRunsFileState): Promise<boolean> {

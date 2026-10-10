@@ -9,6 +9,7 @@ import {
   AUTOMATION_RPC,
   type AutomationIdentityRunsResult,
   type AutomationNoteRunBrowserParams,
+  type AutomationPermissionMode,
   type AutomationRun,
   type AutomationRunIdentityResult,
 } from '../../shared/automation';
@@ -56,6 +57,8 @@ export interface RunIdentitySnapshot {
   hosts: string[];
   /** panePolicyFingerprint of the pane at grant time. */
   fingerprint: string;
+  /** The permission mode confirmed together with the identity. */
+  mode: AutomationPermissionMode;
 }
 
 /**
@@ -107,6 +110,7 @@ function validSnapshot(raw: unknown): RunIdentitySnapshot | null {
     || typeof r.profileId !== 'string' || !r.profileId
     || !Array.isArray(r.hosts) || !r.hosts.every((h) => typeof h === 'string')
     || typeof r.fingerprint !== 'string' || !/^[0-9a-f]{64}$/.test(r.fingerprint)
+    || (r.mode !== 'approval' && r.mode !== 'scoped' && r.mode !== 'auto' && r.mode !== 'bypass')
   ) {
     return null;
   }
@@ -118,6 +122,7 @@ function validSnapshot(raw: unknown): RunIdentitySnapshot | null {
     profileId: r.profileId,
     hosts: [...(r.hosts as string[])],
     fingerprint: r.fingerprint,
+    mode: r.mode,
   };
 }
 
@@ -168,16 +173,25 @@ function mutateStore(fn: (entries: Record<string, RunIdentitySnapshot>) => Recor
 }
 
 /**
- * Record the operator-confirmed snapshot BEFORE the grant is sent. It
- * replaces any other snapshot of that automation: only the newest grant can
- * ever match the schedule's revision.
+ * Record the operator-confirmed snapshot BEFORE the grant is sent. The
+ * automation's earlier snapshot stays until the grant has landed
+ * (pruneRunIdentities): a refused grant leaves the schedule, and any run of
+ * it still going, on the identity it already had.
  */
 export function recordRunIdentity(snapshot: RunIdentitySnapshot): Promise<void> {
   return mutateStore((entries) => {
-    for (const key of Object.keys(entries)) {
-      if (entries[key].automationId === snapshot.automationId) delete entries[key];
-    }
     entries[keyOf(snapshot.automationId, snapshot.boundRevision)] = snapshot;
+    return entries;
+  });
+}
+
+/** After a grant landed at `keepRevision`: drop the automation's older snapshots. */
+export function pruneRunIdentities(automationId: string, keepRevision: number): Promise<void> {
+  return mutateStore((entries) => {
+    for (const key of Object.keys(entries)) {
+      const e = entries[key];
+      if (e.automationId === automationId && e.boundRevision < keepRevision) delete entries[key];
+    }
     return entries;
   });
 }
@@ -226,12 +240,18 @@ export interface LiveRunIdentity {
   identity: RunIdentitySnapshot;
 }
 
+/** A live identity run main has no matching snapshot for: refused, but recorded on the run. */
+export interface UnmatchedRun {
+  runId: string;
+  unmatched: true;
+}
+
 /**
  * The identity of the live run behind `ptyId`, or null — no daemon, an older
  * daemon, no such live run, or no snapshot in main's store for exactly that
  * automation at the revision the run executed.
  */
-export async function liveRunIdentity(ptyId: string): Promise<LiveRunIdentity | null> {
+export async function liveRunIdentity(ptyId: string): Promise<LiveRunIdentity | UnmatchedRun | null> {
   const t = transport;
   if (!t) return null;
   let res: AutomationRunIdentityResult | null;
@@ -242,9 +262,11 @@ export async function liveRunIdentity(ptyId: string): Promise<LiveRunIdentity | 
   }
   const run = res?.run;
   if (!run || run.ptyId !== ptyId || typeof run.automationId !== 'string' || !run.browserIdentity) return null;
-  if (run.browserIdentity.boundRevision !== run.revision) return null;
-  const identity = snapshotFor(run.automationId, run.revision);
-  if (!identity) return null;
+  if (typeof run.runId !== 'string') return null;
+  const identity = run.browserIdentity.boundRevision === run.revision ? snapshotFor(run.automationId, run.revision) : null;
+  // The mode must be the one confirmed with the identity: a grant raced in
+  // under the same reference does not inherit it.
+  if (!identity || identity.mode !== run.effectiveMode) return { runId: run.runId, unmatched: true };
   return { runId: run.runId, automationId: run.automationId, identity };
 }
 

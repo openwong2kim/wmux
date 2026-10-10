@@ -380,6 +380,7 @@ export class AutomationEngine {
         runId: run.id,
         automationId: run.automationId,
         revision: run.revision,
+        effectiveMode: run.effectiveMode,
         ptyId,
         browserIdentity: clone(run.browserIdentity),
       },

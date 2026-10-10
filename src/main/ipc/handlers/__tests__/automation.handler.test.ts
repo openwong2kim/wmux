@@ -128,7 +128,7 @@ describe('automation grant — browser identity', () => {
     rpc.mockImplementation(async (method: string, params: Record<string, unknown>) => {
       if (method === AUTOMATION_RPC.capabilities) return { capabilities: ['browserIdentity'] };
       if (method === AUTOMATION_RPC.list) return { automations: [{ id: 'a1', name: 'Nightly', revision: 4, action: { agent: 'claude' } }] };
-      return { ok: true, automation: { id: 'a1', params } };
+      return { ok: true, automation: { id: 'a1', action: { browserIdentity: params?.['browserIdentity'] ?? undefined } } };
     });
   });
 
@@ -148,7 +148,50 @@ describe('automation grant — browser identity', () => {
     const fs = await import('node:fs');
     const path = await import('node:path');
     const stored = JSON.parse(fs.readFileSync(path.join(keyDir, 'browser-run-identities.json'), 'utf8'));
-    expect(stored.entries['a1@5']).toMatchObject({ automationId: 'a1', boundRevision: 5, paneId: 'pane-a', profileId: 'Work', hosts: ['a.test'] });
+    expect(stored.entries['a1@5']).toMatchObject({ automationId: 'a1', boundRevision: 5, paneId: 'pane-a', profileId: 'Work', hosts: ['a.test'], mode: 'auto' });
+  });
+
+  it('the identity prompt states the mode it replaces the confirm for', async () => {
+    const { identityConfirmCopy } = await import('../automation.handler');
+    const view = { paneLabel: 'Shop', profileId: 'Work', hosts: ['a.test'] };
+    expect(identityConfirmCopy('en', 'N', { ...view, mode: 'bypass' }).detail).toContain('without asking for approval');
+    expect(identityConfirmCopy('en', 'N', { ...view, mode: 'bypass' }).confirm).toContain('Bypass');
+    expect(identityConfirmCopy('en', 'N', { ...view, mode: 'auto' }).detail).toContain("Claude's auto mode");
+    expect(identityConfirmCopy('en', 'N', { ...view, mode: 'auto' }).detail).not.toContain('none of');
+    expect(identityConfirmCopy('ko', 'N', { ...view, mode: 'bypass' }).detail).toContain('승인을 묻지 않고');
+  });
+
+  it("a refused grant keeps the schedule's earlier snapshot; a landed one prunes it", async () => {
+    confirmIdentity.mockResolvedValue(true);
+    const { recordRunIdentity } = await import('../../../automation/runIdentity');
+    await recordRunIdentity({ automationId: 'a1', boundRevision: 4, workspaceId: 'ws-1', paneId: 'pane-a', profileId: 'Work', hosts: [], fingerprint: '0'.repeat(64), mode: 'approval' });
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const read = () => Object.keys(JSON.parse(fs.readFileSync(path.join(keyDir, 'browser-run-identities.json'), 'utf8')).entries);
+    rpc.mockImplementation(async (method: string) => {
+      if (method === AUTOMATION_RPC.capabilities) return { capabilities: ['browserIdentity'] };
+      if (method === AUTOMATION_RPC.list) return { automations: [{ id: 'a1', name: 'Nightly', revision: 4, action: { agent: 'claude' } }] };
+      return { ok: false, error: 'changed' };
+    });
+    await fromMainFrame(IPC.AUTOMATION_GRANT, 'a1', 'approval', undefined, pick);
+    expect(read()).toEqual(['a1@4']);
+    rpc.mockImplementation(async (method: string, params: Record<string, unknown>) => {
+      if (method === AUTOMATION_RPC.capabilities) return { capabilities: ['browserIdentity'] };
+      if (method === AUTOMATION_RPC.list) return { automations: [{ id: 'a1', name: 'Nightly', revision: 4, action: { agent: 'claude' } }] };
+      return { ok: true, automation: { id: 'a1', action: { browserIdentity: params['browserIdentity'] } } };
+    });
+    await fromMainFrame(IPC.AUTOMATION_GRANT, 'a1', 'approval', undefined, pick);
+    expect(read()).toEqual(['a1@5']);
+  });
+
+  it('refuses when the daemon answers ok but did not keep the identity', async () => {
+    confirmIdentity.mockResolvedValue(true);
+    rpc.mockImplementation(async (method: string) => {
+      if (method === AUTOMATION_RPC.capabilities) return { capabilities: ['browserIdentity'] };
+      if (method === AUTOMATION_RPC.list) return { automations: [{ id: 'a1', name: 'Nightly', revision: 4, action: { agent: 'claude' } }] };
+      return { ok: true, automation: { id: 'a1', action: {} } };
+    });
+    await expect(fromMainFrame(IPC.AUTOMATION_GRANT, 'a1', 'approval', undefined, pick)).resolves.toMatchObject({ ok: false });
   });
 
   it('accepts the identity from the main window top frame only', async () => {
