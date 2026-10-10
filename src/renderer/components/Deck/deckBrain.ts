@@ -13,6 +13,7 @@ import type { BrainVendor, Workspace } from '../../../shared/types';
 import type { AgentSlug } from '../../../shared/events';
 import type { Channel } from '../../../shared/channels';
 import { getWorkspaceLeafPanes } from '../../../shared/paneUtils';
+import { isShadowWorkspaceId } from '../../../shared/pcRail';
 import { computePaneAutoName, paneDisplayName } from '../../utils/paneNaming';
 
 /** A tool call the brain made, shown as a chip. `ok` undefined = still running
@@ -295,7 +296,10 @@ export function buildWorkspaceContextSummary(args: {
   channels: Record<string, Channel>;
   maxChars?: number;
 }): string {
-  const { workspaces, activeWorkspaceId, surfaceAgent, paneLabel, paneRole, channels, maxChars = 2000 } = args;
+  const { activeWorkspaceId, surfaceAgent, paneLabel, paneRole, channels, maxChars = 2000 } = args;
+  // Another computer's (shadow) workspaces are not the orchestrator's: their
+  // names come from that computer and never reach the prompt.
+  const workspaces = args.workspaces.filter((w) => !isShadowWorkspaceId(w.id));
   const own = workspaces.find((w) => w.id === activeWorkspaceId);
   const lines: string[] = [
     own

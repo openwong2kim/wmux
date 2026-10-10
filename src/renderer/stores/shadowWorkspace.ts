@@ -10,9 +10,10 @@
  *   host row (pcRailFeeds) ──buildShadowWorkspace──▶ Workspace (shadow:…)
  *                         ──reconcileShadowWorkspace──▶ same tree, host-owned membership
  *
- * Every id the tree carries is namespaced under the workspace id, so nothing a
- * host sends (pane, split or surface ids) can equal a local id or another
- * host's id, whatever it reports. The host's tree has already passed the
+ * Every id the tree carries is namespaced under the workspace id, and every
+ * host-sent part of it is escaped (`idPart`), so nothing a host sends (pane,
+ * split, surface or session ids) can equal a local id, another host's id, or
+ * another id of the same tree, whatever it reports. The host's tree has already passed the
  * layout bounds (parseRemoteLayout) and been narrowed to the row's own
  * sessions (pcRailFeed.ts) before it reaches the renderer.
  *
@@ -43,6 +44,53 @@ export function isShadowWorkspace(ws: { id: string } | null | undefined): boolea
 /** The host and remote workspace a shadow projects, or null for any other id. */
 export function shadowBinding(ws: { id: string } | null | undefined): ShadowWorkspaceRef | null {
   return ws ? parseShadowWorkspaceId(ws.id) : null;
+}
+
+type PcView = {
+  pcRail: { activePcId: string };
+  pcRailHosts: readonly { id: string; label: string }[];
+  activeWorkspaceId: string;
+};
+
+/**
+ * The selected computer's name while it is another, paired computer and none
+ * of its workspaces is open: the centre asks for one, and this computer's
+ * panes stay mounted but hidden. Null otherwise (falls back to the host id
+ * when it has no label).
+ */
+export function selectHostPickName(s: PcView): string | null {
+  const pc = s.pcRail.activePcId;
+  if (pc === LOCAL_PC_ID) return null;
+  const host = s.pcRailHosts.find((h) => h.id === pc);
+  if (!host) return null;
+  if (parseShadowWorkspaceId(s.activeWorkspaceId)?.hostId === pc) return null;
+  return host.label || pc;
+}
+
+/**
+ * True while what the centre shows is not one of this computer's workspaces:
+ * another computer is selected, or its shadow is active. Verbs that act on
+ * this computer's active workspace (agent toolbar, fan-out, bookmark) stand
+ * down then.
+ */
+export function selectOtherPcOnScreen(s: Pick<PcView, 'pcRail' | 'activeWorkspaceId'>): boolean {
+  return s.pcRail.activePcId !== LOCAL_PC_ID || isShadowWorkspaceId(s.activeWorkspaceId);
+}
+
+/**
+ * The active workspace when it is this computer's; with a shadow active, the
+ * local workspace the PC rail remembers (else the first local one, else '').
+ * What the orchestrator chat talks to: it never runs for another computer.
+ */
+export function selectLocalWorkspaceId(s: {
+  activeWorkspaceId: string;
+  workspaces: readonly { id: string }[];
+  pcRail: { lastWorkspaceByPc: Record<string, string> };
+}): string {
+  if (!isShadowWorkspaceId(s.activeWorkspaceId)) return s.activeWorkspaceId || '';
+  const remembered = s.pcRail.lastWorkspaceByPc[LOCAL_PC_ID];
+  return (s.workspaces.find((w) => w.id === remembered && !isShadowWorkspaceId(w.id))
+    ?? s.workspaces.find((w) => !isShadowWorkspaceId(w.id)))?.id ?? '';
 }
 
 /** Copy the tree uses for tabs it cannot show. */
@@ -91,6 +139,45 @@ export function findRemoteSurface(
   return null;
 }
 
+/**
+ * One host-sent id part, escaped so it carries no `#` or `:`. The separators
+ * (`#p:`, `#s:`, …) then split an id one way only: `a` + `b#p:c` and
+ * `a#p:b` + `c` cannot meet.
+ */
+function idPart(raw: string): string {
+  return encodeURIComponent(raw);
+}
+
+/** The session an "Open in …" placeholder holds the slot of, or null. */
+function openElsewhereSession(s: Surface): string | null {
+  if (s.surfaceType !== 'placeholder') return null;
+  const m = /#u:([^#]*)$/.exec(s.id);
+  if (!m) return null;
+  try { return decodeURIComponent(m[1]); } catch { return null; }
+}
+
+function placeholderFor(wsId: string, sessionId: string, title: string): Surface {
+  return placeholder(`${wsId}#u:${idPart(sessionId)}`, title);
+}
+
+/**
+ * A non-owned remote tab for `sessionId`. The host's cwd is not copied: it
+ * names a folder on that computer, and a local diff, file tree or split must
+ * never read it from this disk.
+ */
+function shadowTab(wsId: string, hostId: string, row: PcRailWorkspaceRow, sessionId: string): Surface {
+  const pane = row.panes.find((p) => p.sessionId === sessionId);
+  const surface = createRemoteSurface(hostId, sessionId, pane?.shell ?? '', '', false, row.id);
+  // Namespaced like every other id in the tree.
+  surface.id = `${wsId}#s:${idPart(sessionId)}`;
+  return surface;
+}
+
+/** True when the tree still shows the host something: a remote tab, or a session open elsewhere. */
+function showsHost(root: Pane): boolean {
+  return leavesOf(root).some((l) => l.surfaces.some((s) => s.surfaceType === 'remote-terminal' || openElsewhereSession(s) !== null));
+}
+
 interface BuildContext {
   wsId: string;
   hostId: string;
@@ -106,16 +193,12 @@ function placeholder(id: string, title: string): Surface {
 }
 
 function remoteTab(ctx: BuildContext, sessionId: string): Surface {
-  const pane = ctx.row.panes.find((p) => p.sessionId === sessionId);
-  const surface = createRemoteSurface(ctx.hostId, sessionId, pane?.shell ?? '', pane?.cwd ?? '', false, ctx.row.id);
-  // Namespaced like every other id in the tree.
-  surface.id = `${ctx.wsId}#s:${sessionId}`;
-  return surface;
+  return shadowTab(ctx.wsId, ctx.hostId, ctx.row, sessionId);
 }
 
 /** One tab of the host's tree, or a placeholder when this desktop cannot show it. */
 function toSurface(ctx: BuildContext, s: PhoneLayoutSurface): Surface {
-  const id = `${ctx.wsId}#t:${s.surfaceId}`;
+  const id = `${ctx.wsId}#t:${idPart(s.surfaceId)}`;
   if (s.kind !== 'terminal') return placeholder(id, ctx.copy.browserNotShown);
   const sessionId = s.ptyId;
   if (!sessionId || ctx.placed.has(sessionId) || !ctx.row.panes.some((p) => p.sessionId === sessionId)) {
@@ -124,7 +207,7 @@ function toSurface(ctx: BuildContext, s: PhoneLayoutSurface): Surface {
   ctx.placed.add(sessionId);
   const other = ctx.elsewhere(sessionId);
   // `#u:<session>` marks the slot so reconcile does not add the session again.
-  if (other !== null) return placeholder(`${ctx.wsId}#u:${sessionId}`, ctx.copy.openElsewhere(other));
+  if (other !== null) return placeholderFor(ctx.wsId, sessionId, ctx.copy.openElsewhere(other));
   return remoteTab(ctx, sessionId);
 }
 
@@ -135,7 +218,7 @@ function toPane(ctx: BuildContext, node: PhoneLayoutNode, path: string, depth = 
     const surfaces = node.surfaces.map((s) => toSurface(ctx, s));
     if (surfaces.length === 0) return null;
     const active = surfaces[node.activeIndex ?? 0] ?? surfaces[0];
-    return { id: `${ctx.wsId}#p:${node.paneId}`, type: 'leaf', surfaces, activeSurfaceId: active.id };
+    return { id: `${ctx.wsId}#p:${idPart(node.paneId)}`, type: 'leaf', surfaces, activeSurfaceId: active.id };
   }
   const kept: { pane: Pane; size: number | undefined }[] = [];
   node.children.forEach((child, i) => {
@@ -157,6 +240,11 @@ function toPane(ctx: BuildContext, node: PhoneLayoutNode, path: string, depth = 
   };
 }
 
+/** The one leaf of a shadow built without the host's layout: its own separator, so no host pane id can name it. */
+function flatLeafId(wsId: string): string {
+  return `${wsId}#f:`;
+}
+
 /** Sessions of the row no leaf placed: appended to the first leaf, in row order. */
 function appendUnplaced(ctx: BuildContext, root: Pane | null): Pane {
   const rest = ctx.row.panes.filter((p) => !ctx.placed.has(p.sessionId));
@@ -165,7 +253,7 @@ function appendUnplaced(ctx: BuildContext, root: Pane | null): Pane {
     ctx.placed.add(p.sessionId);
     const other = ctx.elsewhere(p.sessionId);
     extra.push(other !== null
-      ? placeholder(`${ctx.wsId}#u:${p.sessionId}`, ctx.copy.openElsewhere(other))
+      ? placeholderFor(ctx.wsId, p.sessionId, ctx.copy.openElsewhere(other))
       : remoteTab(ctx, p.sessionId));
   }
   if (root) {
@@ -175,7 +263,7 @@ function appendUnplaced(ctx: BuildContext, root: Pane | null): Pane {
   // No layout (the host's window is locked, occluded or headless) or nothing
   // usable in it: one leaf, one tab per pane.
   return {
-    id: `${ctx.wsId}#p:flat`,
+    id: flatLeafId(ctx.wsId),
     type: 'leaf',
     surfaces: extra,
     activeSurfaceId: extra[0]?.id ?? '',
@@ -199,8 +287,9 @@ export function buildShadowWorkspace(
   const ctx: BuildContext = { wsId, hostId, row, copy, elsewhere, placed: new Set() };
   const root = appendUnplaced(ctx, row.layout ? toPane(ctx, row.layout.root, 'r') : null);
   const leaves = leavesOf(root);
-  if (!leaves.some((l) => l.surfaces.some((s) => s.surfaceType === 'remote-terminal'))) return null;
-  const preferred = row.layout?.activePaneId ? `${wsId}#p:${row.layout.activePaneId}` : undefined;
+  // Every session open elsewhere still builds: its "Open in …" placeholders say where.
+  if (!showsHost(root)) return null;
+  const preferred = row.layout?.activePaneId ? `${wsId}#p:${idPart(row.layout.activePaneId)}` : undefined;
   const activePaneId = leaves.find((l) => l.id === preferred)?.id ?? leaves[0].id;
   return {
     id: wsId,
@@ -242,67 +331,85 @@ export type ShadowReconcile =
  * successful list; a failed tick keeps it, so a transient failure never
  * removes a tab):
  *
- *   - a remote tab whose session the row no longer lists is removed
- *   - a listed session no tab shows is added to the first leaf, unless it is
- *     in `known` (sessions this shadow already showed): a tab the user closed
- *     here stays closed, only a session new to the host appears
- *   - empty leaves collapse; a tree with no remote tab left closes the shadow
- *   - a row the list no longer carries (`row` null) closes it
+ *   - a remote tab whose session the row no longer lists is removed, and so
+ *     is an "Open in …" placeholder for one
+ *   - an "Open in …" placeholder whose session is no longer open elsewhere
+ *     becomes the session's tab, in place
+ *   - a listed session no tab shows is added to the first leaf (a new leaf
+ *     when none is left), unless it is in `known` (sessions this shadow
+ *     already showed): a tab the user closed here stays closed, only a
+ *     session new to the host appears. One open elsewhere is added as its
+ *     "Open in …" placeholder, never as a second tab
+ *   - empty leaves collapse; a tree that shows the host nothing closes the
+ *     shadow, and so does a row the list no longer carries (`row` null)
  *
- * Placeholders and local browser tabs are kept while a remote tab remains.
+ * Other placeholders and local browser tabs are kept while the tree shows the host something.
  */
 export function reconcileShadowWorkspace(
   ws: Workspace,
   hostId: string,
   row: PcRailWorkspaceRow | null,
   known: ReadonlySet<string> = new Set(),
+  elsewhere: (sessionId: string) => string | null = () => null,
+  copy: Pick<ShadowCopy, 'openElsewhere'> = { openElsewhere: (name) => name },
 ): ShadowReconcile {
   if (!row || row.panes.length === 0) return { kind: 'close' };
   const listed = new Set(row.panes.map((p) => p.sessionId));
   let changed = false;
+  // Sessions this tree accounts for: a tab, or an "Open in …" placeholder.
   const shown = new Set<string>();
   const prune = (pane: Pane): Pane => {
     if (pane.type === 'branch') return { ...pane, children: pane.children.map(prune) };
-    const surfaces = pane.surfaces.filter((s) => {
-      if (s.surfaceType !== 'remote-terminal') return true;
+    let touched = false;
+    const surfaces: Surface[] = [];
+    for (const s of pane.surfaces) {
+      const waiting = openElsewhereSession(s);
+      if (waiting !== null) {
+        if (!listed.has(waiting) || shown.has(waiting)) { touched = true; continue; }
+        shown.add(waiting);
+        if (elsewhere(waiting) === null) {
+          // The other tab closed: this slot shows the session now.
+          surfaces.push(shadowTab(ws.id, hostId, row, waiting));
+          touched = true;
+        } else {
+          surfaces.push(s);
+        }
+        continue;
+      }
+      if (s.surfaceType !== 'remote-terminal') { surfaces.push(s); continue; }
       if (s.remoteHostId === hostId && s.remoteSessionId && listed.has(s.remoteSessionId)) {
         shown.add(s.remoteSessionId);
-        return true;
+        surfaces.push(s);
+        continue;
       }
-      changed = true;
-      return false;
-    });
-    if (surfaces.length === pane.surfaces.length) return pane;
+      touched = true;
+    }
+    if (!touched) return pane;
+    changed = true;
     const activeSurfaceId = surfaces.some((s) => s.id === pane.activeSurfaceId) ? pane.activeSurfaceId : (surfaces[0]?.id ?? '');
     return { ...pane, surfaces, activeSurfaceId };
   };
   let root: Pane | null = collapse(prune(ws.rootPane));
   // A local split leaves an empty leaf behind (EmptyLeafFunnel gives it no shell).
-  if (root && leavesOf(root).length !== leavesOf(ws.rootPane).length) changed = true;
-  // Sessions shown as an "Open in …" placeholder count as shown: they are open elsewhere.
-  const placeholders = new Set<string>();
-  if (root) {
-    for (const leaf of leavesOf(root)) {
-      for (const s of leaf.surfaces) {
-        const m = s.surfaceType === 'placeholder' ? /#u:(.+)$/.exec(s.id) : null;
-        if (m) placeholders.add(m[1]);
-      }
-    }
-  }
-  const added = row.panes.filter((p) => !shown.has(p.sessionId) && !placeholders.has(p.sessionId) && !known.has(p.sessionId));
-  if (added.length > 0 && root) {
-    const first = leavesOf(root)[0];
+  if (!root || leavesOf(root).length !== leavesOf(ws.rootPane).length) changed = true;
+  const added = row.panes.filter((p) => !shown.has(p.sessionId) && !known.has(p.sessionId));
+  if (added.length > 0) {
     const tabs = added.map((p) => {
-      const surface = createRemoteSurface(hostId, p.sessionId, p.shell ?? '', p.cwd ?? '', false, row.id);
-      surface.id = `${ws.id}#s:${p.sessionId}`;
-      return surface;
+      const other = elsewhere(p.sessionId);
+      return other !== null
+        ? placeholderFor(ws.id, p.sessionId, copy.openElsewhere(other))
+        : shadowTab(ws.id, hostId, row, p.sessionId);
     });
-    root = replaceLeaf(root, first.id, { ...first, surfaces: [...first.surfaces, ...tabs] });
+    if (root) {
+      const first = leavesOf(root)[0];
+      root = replaceLeaf(root, first.id, { ...first, surfaces: [...first.surfaces, ...tabs] });
+    } else {
+      // The last old session gave way to new ones: a fresh leaf, not a close.
+      root = { id: flatLeafId(ws.id), type: 'leaf', surfaces: tabs, activeSurfaceId: tabs[0].id };
+    }
     changed = true;
   }
-  if (!root || !leavesOf(root).some((l) => l.surfaces.some((s) => s.surfaceType === 'remote-terminal'))) {
-    return { kind: 'close' };
-  }
+  if (!root || !showsHost(root)) return { kind: 'close' };
   const name = row.name || row.id;
   if (!changed && name === ws.name) return { kind: 'unchanged' };
   const leaves = leavesOf(root);

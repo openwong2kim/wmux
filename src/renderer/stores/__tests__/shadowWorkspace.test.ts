@@ -16,6 +16,9 @@ import {
   findRemoteSurface,
   isShadowWorkspace,
   reconcileShadowWorkspace,
+  selectHostPickName,
+  selectLocalWorkspaceId,
+  selectOtherPcOnScreen,
   shadowsToEvict,
   withoutShadowWorkspaces,
   type ShadowCopy,
@@ -25,6 +28,10 @@ import type { PcRailWorkspaceRow } from '../../../shared/pcRail';
 import { getWorkspaceRemoteSessions } from '../../../shared/paneUtils';
 import { listedWorkspaces } from '../slices/moaSlice';
 import { buildWorkspaceMirrorPayload } from '../../hooks/workspaceMirrorSnapshot';
+import { createTerminalSurface } from '../../utils/createTerminalSurface';
+import { buildWorkspaceContextSummary } from '../../components/Deck/deckBrain';
+import { workspaceCloseRefusal } from '../../components/Moa/moaHqGuard';
+import { showGitDiff } from '../../utils/commandActions';
 
 const COPY: ShadowCopy = {
   browserNotShown: 'Browser on office-mac — not shown',
@@ -349,5 +356,102 @@ describe('exclusions outside the store', () => {
 
   it('every RPC reads the store without shadows', () => {
     expect(read('hooks/useRpcBridge.ts')).toMatch(/export async function handleRpcMethod[^{]*\{\s*\/\/[^\n]*\n(?:\s*\/\/[^\n]*\n)*\s*const store = withoutShadows\(useStore\.getState\(\)\);/);
+  });
+});
+
+describe('review fixes', () => {
+  const read = (rel: string) => fs.readFileSync(path.join(__dirname, '..', '..', '..', rel), 'utf-8');
+  const sessionsOf = (p: Pane) => leaves(p).flatMap((l) => l.surfaces.map((s) => s.remoteSessionId ?? s.surfaceType));
+
+  it('starts no local shell for a shadow: the helper never calls pty.create, and main refuses one', async () => {
+    const ptyCreate = vi.fn(async () => ({ id: 'p' }));
+    const addSurface = vi.fn();
+    await createTerminalSurface({
+      workspaceId: 'shadow:h1:rw1', paneId: 'x', paneGate: 'ready', workspaces: [{ id: 'shadow:h1:rw1' }],
+      startupDirectory: '', defaultShell: '', ipcInvoke: async (call) => ({ ok: true, data: await call() }) as never, ptyCreate, addSurface,
+    });
+    expect(ptyCreate).not.toHaveBeenCalled();
+    const handler = read('main/ipc/handlers/pty.handler.ts');
+    expect(handler.match(/if \(isShadowWorkspaceId\(options\?\.workspaceId\)\) \{\s*throw/g)).toHaveLength(2);
+  });
+
+  it("keeps the host's paths off this disk: shadow tabs carry no cwd, and Git diff never resolves one", () => {
+    const ws = buildShadowWorkspace('h1', row(), COPY, none)!;
+    expect(leaves(ws.rootPane).flatMap((l) => l.surfaces.map((s) => s.cwd))).toEqual(['', '']);
+    const resolveRepo = vi.fn(async () => ({ ok: false }));
+    (globalThis as { window: { electronAPI: Record<string, unknown> } }).window.electronAPI.diff = { resolveRepo };
+    useStore.getState().openShadowWorkspace('h1', 'rw1');
+    showGitDiff();
+    expect(resolveRepo).not.toHaveBeenCalled();
+  });
+
+  it('opens no fan-out for a shadow, and the orchestrator neither talks to one nor reads its name', () => {
+    const id = useStore.getState().openShadowWorkspace('h1', 'rw2')!;
+    useStore.getState().openFanOut(id, null);
+    expect(useStore.getState().fanOutWorkspaceId).toBeNull();
+    expect(selectLocalWorkspaceId(useStore.getState())).toBe('ws-1');
+    const summary = buildWorkspaceContextSummary({
+      workspaces: useStore.getState().workspaces, activeWorkspaceId: 'ws-1', surfaceAgent: {}, paneLabel: {}, channels: {},
+    });
+    expect(summary).toContain('ws-2');
+    expect(summary).not.toContain('web');
+  });
+
+  it('a hidden local workspace takes no keys, and choosing a local workspace selects this computer', () => {
+    const st = () => useStore.getState();
+    st().setActivePc('h1');
+    expect(selectHostPickName(st())).toBe('office-mac');
+    expect(selectOtherPcOnScreen(st())).toBe(true);
+    expect(read('renderer/hooks/useKeyboard.ts')).toContain("store.getState().appRoute === 'workspaces' && selectHostPickName(store.getState()) === null");
+    st().openShadowWorkspace('h1', 'rw1');
+    expect(selectHostPickName(st())).toBeNull();
+    expect(st().pcRail.activePcId).toBe('h1');
+    st().setActiveWorkspace('ws-2');
+    expect(st().pcRail.activePcId).toBe('local');
+    expect(selectOtherPcOnScreen(st())).toBe(false);
+  });
+
+  it('adds a new session that is open elsewhere as an "Open in" placeholder, and promotes it once that tab closes', () => {
+    const ws = buildShadowWorkspace('h1', row({ panes: [{ sessionId: 's1' }] }), COPY, none)!;
+    const two = row({ panes: [{ sessionId: 's1' }, { sessionId: 's2' }] });
+    const next = reconcileShadowWorkspace(ws, 'h1', two, new Set(['s1']), (id) => (id === 's2' ? 'Mine' : null), COPY);
+    expect(next.kind).toBe('update');
+    if (next.kind !== 'update') return;
+    expect(sessionsOf(next.rootPane)).toEqual(['s1', 'placeholder']);
+    // The other tab closed: the slot becomes the session, even though s2 is known.
+    const again = reconcileShadowWorkspace({ ...ws, rootPane: next.rootPane }, 'h1', two, new Set(['s1', 's2']), none, COPY);
+    expect(again.kind).toBe('update');
+    if (again.kind === 'update') expect(sessionsOf(again.rootPane)).toEqual(['s1', 's2']);
+  });
+
+  it('still opens when every session is open elsewhere, saying where', () => {
+    const ws = buildShadowWorkspace('h1', row(), COPY, () => 'Mine');
+    expect(ws).not.toBeNull();
+    expect(leaves(ws!.rootPane)[0].surfaces.map((s) => s.title)).toEqual(['Open in Mine', 'Open in Mine']);
+    expect(reconcileShadowWorkspace(ws!, 'h1', row(), new Set(['s1', 's2']), () => 'Mine', COPY).kind).toBe('unchanged');
+  });
+
+  it("escapes the host's id parts, so a pane id cannot forge another workspace's", () => {
+    const a = buildShadowWorkspace('h1', row({ id: 'a', panes: [{ sessionId: 's1' }], layout: { root: { kind: 'leaf', paneId: 'b#p:c', surfaces: [{ surfaceId: 't', kind: 'terminal', ptyId: 's1' }] }, unplaced: [] } }), COPY, none)!;
+    const b = buildShadowWorkspace('h1', row({ id: 'a#p:b', panes: [{ sessionId: 's1' }], layout: { root: { kind: 'leaf', paneId: 'c', surfaces: [{ surfaceId: 't', kind: 'terminal', ptyId: 's1' }] }, unplaced: [] } }), COPY, none)!;
+    const idsA = new Set(allIds(a.rootPane));
+    expect(allIds(b.rootPane).some((id) => idsA.has(id))).toBe(false);
+    const flat = buildShadowWorkspace('h1', row(), COPY, none)!;
+    const named = buildShadowWorkspace('h1', row({ layout: { root: { kind: 'leaf', paneId: 'flat', surfaces: [{ surfaceId: 't', kind: 'terminal', ptyId: 's1' }] }, unplaced: [] } }), COPY, none)!;
+    expect(flat.rootPane.id).not.toBe(named.rootPane.id);
+  });
+
+  it('builds a fresh leaf when the last session gives way to a new one, instead of closing', () => {
+    const ws = buildShadowWorkspace('h1', row({ panes: [{ sessionId: 's1' }] }), COPY, none)!;
+    const next = reconcileShadowWorkspace(ws, 'h1', row({ panes: [{ sessionId: 's9' }] }), new Set(['s1']));
+    expect(next.kind).toBe('update');
+    if (next.kind === 'update') expect(sessionsOf(next.rootPane)).toEqual(['s9']);
+  });
+
+  it('never refuses closing a shadow as "the last workspace"', () => {
+    const id = useStore.getState().openShadowWorkspace('h1', 'rw1')!;
+    useStore.getState().removeWorkspace('ws-2');
+    expect(workspaceCloseRefusal(useStore.getState(), id)).toBeNull();
+    expect(workspaceCloseRefusal(useStore.getState(), 'ws-1')).toBe('last-workspace');
   });
 });

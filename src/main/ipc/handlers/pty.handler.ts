@@ -14,6 +14,7 @@ import { DAEMON_RESYNC_RPC_TIMEOUT_MS } from '../../../shared/timeouts';
 import { writePidMap, removePidMapByPtyId } from '../../pty/pidMap';
 import { DaemonDataBatcher } from '../../pty/DaemonDataBatcher';
 import { sanitizePtyText } from '../../../shared/types';
+import { isShadowWorkspaceId } from '../../../shared/pcRail/shadowId';
 import { resolveSpawnEnv } from '../../pty/resolveSpawnEnv';
 import { withFreshWindowsPath } from '../../../shared/windowsPathEnv';
 import { getAccountStore } from '../../account/accountStore';
@@ -403,6 +404,10 @@ export function registerPTYHandlers(
       if (options?.shell !== undefined && !isAllowedShell(options.shell)) {
         throw new Error(`PTY_CREATE: shell not allowed: ${options.shell}`);
       }
+      // A shadow workspace shows another computer's panes: no local shell, ever.
+      if (isShadowWorkspaceId(options?.workspaceId)) {
+        throw new Error('PTY_CREATE: no local shell in another computer\'s workspace');
+      }
       // Depth-1 lineage for a fan-out task pane: stamped here, inside the
       // create and before the PTY (and the agent) exists. A failed stamp fails
       // the create; the renderer rolls the workspace back.
@@ -637,6 +642,10 @@ export function registerPTYHandlers(
     ipcMain.handle(IPC.PTY_CREATE, wrapHandler(IPC.PTY_CREATE, async (_event: Electron.IpcMainInvokeEvent, options?: PtyCreateOptions) => {
       if (options?.shell !== undefined && !isAllowedShell(options.shell)) {
         throw new Error(`PTY_CREATE: shell not allowed: ${options.shell}`);
+      }
+      // A shadow workspace shows another computer's panes: no local shell, ever.
+      if (isShadowWorkspaceId(options?.workspaceId)) {
+        throw new Error('PTY_CREATE: no local shell in another computer\'s workspace');
       }
       // Depth-1 lineage for a fan-out task pane: stamped here, inside the
       // create and before the PTY (and the agent) exists. A failed stamp fails

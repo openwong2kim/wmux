@@ -13,7 +13,7 @@ import {
   selectAttachedRemoteWorkspaces,
 } from '../../stores/slices/remoteWorkspacesSlice';
 import SchedulesHost from '../Schedules/SchedulesHost';
-import { LOCAL_PC_ID, parseShadowWorkspaceId } from '../../../shared/pcRail';
+import { selectHostPickName } from '../../stores/shadowWorkspace';
 import { useT } from '../../hooks/useT';
 
 export function WorkspaceCenter() {
@@ -32,12 +32,7 @@ export function WorkspaceCenter() {
   // PC rail: with a paired computer selected, the centre never shows this
   // computer's panes. Until one of that computer's workspaces is open (its
   // shadow is active) it asks for one; the local tree stays mounted, hidden.
-  const pickOnHost = useStore((s) => {
-    const pc = s.pcRail.activePcId;
-    if (pc === LOCAL_PC_ID || !s.pcRailHosts.some((h) => h.id === pc)) return null;
-    if (parseShadowWorkspaceId(s.activeWorkspaceId)?.hostId === pc) return null;
-    return s.pcRailHosts.find((h) => h.id === pc)?.label || pc;
-  });
+  const pickOnHost = useStore(selectHostPickName);
 
   return (
     <div className="wmux-workspace-frame flex-1 min-h-0 relative">
@@ -52,10 +47,15 @@ export function WorkspaceCenter() {
         <WorkspaceViewport />
       </div>
 
-      {/* PC rail: the attached-mirror rows are retired, so only the mirror on
-          screen is mounted. Hidden mirrors no longer hold a stream each. */}
-      {remoteVisible && pickOnHost === null && remoteWorkspaces.filter((rw) => rw.key === activeRemoteKey).map((rw) => (
-        <div key={rw.key} className="absolute inset-0 flex flex-col">
+      {/* Every attached remote workspace stays mounted too — unmounting on
+          switch would re-attach every SSE stream and repaint the full
+          snapshot each time. Only the active one is visible. */}
+      {remoteWorkspaces.map((rw) => (
+        <div
+          key={rw.key}
+          className="absolute inset-0 flex flex-col"
+          style={{ display: remoteVisible && pickOnHost === null && rw.key === activeRemoteKey ? 'flex' : 'none' }}
+        >
           <RemoteWorkspaceView workspace={rw} />
         </div>
       ))}

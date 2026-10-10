@@ -340,6 +340,15 @@ function isArchivedLayoutNode(node: unknown, depth: number): boolean {
     && n.children.every((c) => isArchivedLayoutNode(c, depth + 1));
 }
 
+/** The copy a shadow's placeholders use, for a host named `name`. */
+function shadowCopy(name: string) {
+  return {
+    browserNotShown: i18nT('pcRail.browserNotShown', { name }),
+    openElsewhere: (workspace: string) => i18nT('pcRail.openElsewhere', { workspace }),
+    terminal: 'Terminal',
+  };
+}
+
 export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', never]], [], WorkspaceSlice> = (set, get) => {
   const initial = createWorkspace('Workspace 1', 1);
   return {
@@ -825,12 +834,7 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
         st.setActiveWorkspace(open.id);
         return open.id;
       }
-      const name = host.label || hostId;
-      const ws = buildShadowWorkspace(hostId, row, {
-        browserNotShown: i18nT('pcRail.browserNotShown', { name }),
-        openElsewhere: (workspace) => i18nT('pcRail.openElsewhere', { workspace }),
-        terminal: 'Terminal',
-      }, (sessionId) => {
+      const ws = buildShadowWorkspace(hostId, row, shadowCopy(host.label || hostId), (sessionId) => {
         const hit = findRemoteSurface(st, hostId, sessionId);
         return hit ? (st.workspaces.find((w) => w.id === hit.workspaceId)?.name ?? hit.workspaceId) : null;
       });
@@ -858,11 +862,23 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       const toClose: string[] = [];
       const updates: { id: string; rootPane: Pane; activePaneId: string; name: string }[] = [];
       const known: Record<string, string[]> = {};
+      const copy = shadowCopy(st.pcRailHosts?.find((h) => h.id === hostId)?.label || hostId);
+      // Sessions a shadow of this pass is about to show: the duplicate-attach
+      // guard must see them before the store does.
+      const claimed = new Map<string, string>();
       for (const ws of st.workspaces) {
         const b = shadowBinding(ws);
         if (!b || b.hostId !== hostId) continue;
         const row = rows.find((r) => r.id === b.remoteId) ?? null;
-        const result = reconcileShadowWorkspace(ws, hostId, row, new Set(st.shadowKnownSessions?.[ws.id] ?? []));
+        const elsewhere = (sessionId: string): string | null => {
+          const mine = claimed.get(sessionId);
+          if (mine !== undefined) return mine;
+          const hit = findRemoteSurface(st, hostId, sessionId);
+          if (hit) return st.workspaces.find((w) => w.id === hit.workspaceId)?.name ?? hit.workspaceId;
+          claimed.set(sessionId, ws.name);
+          return null;
+        };
+        const result = reconcileShadowWorkspace(ws, hostId, row, new Set(st.shadowKnownSessions?.[ws.id] ?? []), elsewhere, copy);
         if (result.kind === 'close') toClose.push(ws.id);
         else if (result.kind === 'update') updates.push({ id: ws.id, rootPane: result.rootPane, activePaneId: result.activePaneId, name: result.name });
         // Every session the row lists is now shown, closed here, or just added.
@@ -908,7 +924,14 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
         if (state.lastVisibleAt[id] !== undefined) delete state.lastVisibleAt[id];
       }
       activateLocalWorkspace(state, id);
-      if (isShadowWorkspaceId(id) && state.shadowUsedAt) state.shadowUsedAt[id] = Date.now();
+      if (isShadowWorkspaceId(id)) {
+        if (state.shadowUsedAt) state.shadowUsedAt[id] = Date.now();
+      } else if (state.pcRail && state.pcRail.activePcId !== LOCAL_PC_ID) {
+        // PC rail: choosing one of this computer's workspaces (Ctrl+N, the
+        // palette, a notification, an agent) selects this computer too, so
+        // the centre shows it instead of keeping it active behind another's.
+        state.pcRail.activePcId = LOCAL_PC_ID;
+      }
       // D-teardown: a workspace switch invalidates any marked-region queries
       // the inspect overlay is holding, so exit inspect explicitly rather than
       // letting it dangle against a now-unmounted DOM (inspect is preserved as
