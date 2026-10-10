@@ -28,6 +28,11 @@ workspace the call names:
   wmux's own walk of the process tree (the claim it issues names the workspace
   and the pane);
 - the workspace orchestrator: the workspace its commander token is bound to;
+- an agent on a shared Codex app-server: the pane that owns the calling
+  thread, from the owner record wmux's Codex hooks write in that pane;
+- an agent outside every wmux pane (a scheduled run, or one started outside
+  wmux) through the wmux MCP server: a dedicated workspace wmux creates and
+  claims for it, as the terminal tools already do;
 - an iframe plugin: the workspace the plugin host is showing;
 - an external MCP client: the workspace it claimed with `mcp.claimWorkspace`;
 - the wmux window itself (and the phone browser, which acts through it): any
@@ -38,6 +43,11 @@ a different one is refused. A call with no verified identity is refused with a
 `BROWSER_SCOPE_REFUSED` error that says what is missing. This holds for every
 backend, `external` included: the OS browser belongs to no workspace, but the
 call that hands it a URL still comes from one.
+
+A WSL pane is the one pane wmux cannot verify today: Windows cannot see the
+Linux processes inside it. Browser tools there are refused with that reason;
+run the agent from a native pane. The `wmux browser` commands work only from a
+wmux pane terminal and say so when run anywhere else.
 
 ## Choosing a Chrome profile: three levels of exposure
 
