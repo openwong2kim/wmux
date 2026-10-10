@@ -754,10 +754,12 @@ export class ClaudeSdkAdapter implements BrainAdapter {
    *  mid-turn rebind can't misattribute — 3-way review P1). Null when the session
    *  runs on the default credential (no bound account, or its dir was missing). */
   private _launchAccountId: string | null = null;
-  /** The account this conversation moved to under "Switch accounts by quota";
-   *  null when it runs on the binding. Decided when a conversation starts and
-   *  kept for every resumed turn — the transcript lives in that config dir. */
-  private _rotatedAccountId: string | null = null;
+  /** The account this conversation runs on: an account id, null for the
+   *  default login, undefined when unknown (a session saved before accounts
+   *  were recorded). Decided when a conversation starts and kept for every
+   *  resume — even across a rebind — since the transcript lives in that
+   *  config dir (#2029). */
+  private _conversationAccountId: string | null | undefined = undefined;
   /** A turn is resolving its account (before any query handle exists). An
    *  interrupt() landing then has no handle to forward to, so it is recorded
    *  and the turn ends before spawning. */
@@ -802,8 +804,8 @@ export class ClaudeSdkAdapter implements BrainAdapter {
     return this._sessionId;
   }
 
-  get rotatedAccountId(): string | null {
-    return this._rotatedAccountId;
+  get conversationAccountId(): string | null | undefined {
+    return this._conversationAccountId;
   }
 
   /** Whether a wmux MCP bundle was resolved (fleet tools available). The caller
@@ -823,7 +825,7 @@ export class ClaudeSdkAdapter implements BrainAdapter {
     if (opts.resumeSessionId) {
       this._sessionId = opts.resumeSessionId;
       this._resumeUnvalidated = true;
-      this._rotatedAccountId = opts.resumeAccountId ?? null;
+      this._conversationAccountId = opts.resumeAccountId;
     }
   }
 
@@ -1038,7 +1040,7 @@ export class ClaudeSdkAdapter implements BrainAdapter {
       try {
         launch = await resolveBackgroundLaunch(this._workspaceId, 'claude', {
           resuming: !!this._sessionId,
-          rotatedAccountId: this._rotatedAccountId,
+          conversationAccountId: this._conversationAccountId,
           checkQuota: !this.profile?.authToken,
           onMissing: (acc) => console.warn(
             `[account] orchestrator ws ${this._workspaceId}: bound account "${acc.name}" configDir missing ` +
@@ -1053,7 +1055,7 @@ export class ClaudeSdkAdapter implements BrainAdapter {
         yield { type: 'error', message: launch.message };
         return;
       }
-      if (!this._sessionId) this._rotatedAccountId = launch.rotated ? launch.accountId : null;
+      if (!this._sessionId) this._conversationAccountId = launch.accountId;
       try {
         const options = this.buildOptions(launch);
         turnLaunchAccountId = this._launchAccountId;

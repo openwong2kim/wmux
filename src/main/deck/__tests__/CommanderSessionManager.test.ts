@@ -113,9 +113,9 @@ describe('CommanderSessionManager', () => {
     await turn;
   });
 
-  it('persists the account a rotated conversation runs on with its session id', async () => {
+  it('persists the account the conversation runs on with its session id', async () => {
     const adapter = new FakeAdapter();
-    Object.defineProperty(adapter, 'rotatedAccountId', { value: 'acc-2' });
+    Object.defineProperty(adapter, 'conversationAccountId', { value: 'acc-2' });
     const onSessionId = vi.fn();
     const mgr = new CommanderSessionManager({ adapter, sink: vi.fn(), onSessionId });
     adapter.setScript([{ type: 'turn-end', sessionId: 'sess-1' }]);
@@ -131,8 +131,8 @@ describe('CommanderSessionManager', () => {
     adapter.setScript([{ type: 'turn-end', sessionId: 'sess-1' }]);
     await mgr.send('one');
     expect(onSessionId).toHaveBeenCalledTimes(1);
-    // FakeAdapter has no rotatedAccountId → the conversation is on the binding.
-    expect(onSessionId).toHaveBeenCalledWith('sess-1', null);
+    // FakeAdapter does not track its account → unknown.
+    expect(onSessionId).toHaveBeenCalledWith('sess-1', undefined);
 
     // Same id again → deduped, no redundant persist.
     await mgr.send('two');
@@ -142,7 +142,7 @@ describe('CommanderSessionManager', () => {
     adapter.setScript([{ type: 'turn-end', sessionId: 'sess-2' }]);
     await mgr.send('three');
     expect(onSessionId).toHaveBeenCalledTimes(2);
-    expect(onSessionId).toHaveBeenLastCalledWith('sess-2', null);
+    expect(onSessionId).toHaveBeenLastCalledWith('sess-2', undefined);
   });
 
   it('does not re-persist the seed id it was constructed with', async () => {

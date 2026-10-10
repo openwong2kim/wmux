@@ -193,7 +193,7 @@ async function collect(iterable: AsyncIterable<BrainEvent>): Promise<BrainEvent[
 
 beforeEach(() => {
   launchMock.mockReset();
-  launchMock.mockImplementation(async () => ({ kind: 'run', env: boundAccountEnv, accountId: null, rotated: false }));
+  launchMock.mockImplementation(async () => ({ kind: 'run', env: boundAccountEnv, accountId: null }));
   __resetBrainPtyHookBusForTesting();
   __resetCommanderTrustForTesting();
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-brainpty-'));
@@ -278,13 +278,13 @@ describe('scrubBrainSpawnEnv', () => {
 describe('ClaudePtyBrainAdapter — account choice (quota rotation)', () => {
   it('starts a fresh TUI on the rotated account and remembers it for resume', async () => {
     const host = makeHost();
-    launchMock.mockImplementation(async () => ({ kind: 'run', env: { CLAUDE_CONFIG_DIR: '/acc/b' }, accountId: 'b', rotated: true }));
+    launchMock.mockImplementation(async () => ({ kind: 'run', env: { CLAUDE_CONFIG_DIR: '/acc/b' }, accountId: 'b' }));
     const adapter = makeAdapter(host);
     const turn = collect(adapter.send('hello'));
     await vi.waitFor(() => expect(host.created.length).toBe(1));
     expect(host.created[0].env.CLAUDE_CONFIG_DIR).toBe('/acc/b');
     expect(launchMock).toHaveBeenCalledWith('ws-1', 'claude', expect.objectContaining({ resuming: false }));
-    expect(adapter.rotatedAccountId).toBe('b');
+    expect(adapter.conversationAccountId).toBe('b');
     adapter.dispose();
     await turn;
   });
@@ -295,7 +295,7 @@ describe('ClaudePtyBrainAdapter — account choice (quota rotation)', () => {
     adapter.start({ resumeSessionId: 'sess-old', resumeAccountId: 'b' });
     const turn = collect(adapter.send('hello'));
     await vi.waitFor(() => expect(host.created.length).toBe(1));
-    expect(launchMock).toHaveBeenCalledWith('ws-1', 'claude', expect.objectContaining({ resuming: true, rotatedAccountId: 'b' }));
+    expect(launchMock).toHaveBeenCalledWith('ws-1', 'claude', expect.objectContaining({ resuming: true, conversationAccountId: 'b' }));
     adapter.dispose();
     await turn;
   });
@@ -308,7 +308,7 @@ describe('ClaudePtyBrainAdapter — account choice (quota rotation)', () => {
     const turn = collect(adapter.send('hello'));
     await vi.waitFor(() => expect(launchMock).toHaveBeenCalled());
     adapter.dispose();
-    resolveLaunch({ kind: 'run', env: {}, accountId: null, rotated: false });
+    resolveLaunch({ kind: 'run', env: {}, accountId: null });
     await turn;
     expect(host.created).toHaveLength(0);
   });

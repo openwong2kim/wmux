@@ -8,13 +8,12 @@
 //     account while it has quota, else on the registered account with the
 //     most left (AccountRotationService.prepareLaunch). Every account out →
 //     hold.
-//   - A RESUMED conversation stays on the account it started on (its
-//     transcript lives in that account's config dir, so a switch would lose
-//     it). With the switch on it is held with a notice when that account is
-//     out.
-//   - With the switch off nothing is read and nothing is held: the launch
-//     runs on the bound account (or the one a resumed conversation moved to),
-//     exactly as before rotation.
+//   - A RESUMED conversation stays on the account it started on — the one
+//     rotation chose, the binding at the time, or the default login — even if
+//     the workspace was rebound since: its transcript lives in that account's
+//     config dir, so any other account would lose it (#2029). With the switch
+//     on it is held with a notice when that account is out.
+//   - With the switch off nothing is read and nothing is held.
 //
 // Never throws: any failure falls back to the plain binding, the pre-rotation
 // behaviour.
@@ -30,16 +29,16 @@ export type BackgroundLaunch =
     env: Record<string, string>;
     /** The registered account the launch runs on; null for the default login. */
     accountId: string | null;
-    /** True when the account differs from the workspace binding. */
-    rotated: boolean;
   }
   | { kind: 'hold'; message: string };
 
 export interface BackgroundLaunchOptions {
   /** The launch continues an existing conversation. */
   resuming: boolean;
-  /** The account a rotated conversation moved to, persisted with its session. */
-  rotatedAccountId?: string | null;
+  /** The account a resumed conversation runs on, persisted with its session:
+   *  an account id, null for the default login, undefined when unknown (a
+   *  session saved before accounts were recorded → the current binding). */
+  conversationAccountId?: string | null;
   /** Warned when the bound account's config dir is missing. */
   onMissing?: (account: Account) => void;
   /** False when the launch does not authenticate with the account (e.g. a
@@ -66,31 +65,35 @@ export async function resolveBackgroundLaunch(
     store = deps.store ?? getAccountStore();
   } catch (err) {
     console.warn(`[account] background ${vendor} launch could not read the account store:`, err);
-    return { kind: 'run', env: {}, accountId: null, rotated: false };
+    return { kind: 'run', env: {}, accountId: null };
   }
   const bound = (): Extract<BackgroundLaunch, { kind: 'run' }> => {
-    if (!workspaceId) return { kind: 'run', env: {}, accountId: null, rotated: false };
+    if (!workspaceId) return { kind: 'run', env: {}, accountId: null };
     const env = store.resolveAccountEnv(workspaceId, vendor, opts.onMissing);
     const accountId = env[key] ? store.getBinding(workspaceId, vendor) ?? null : null;
-    return { kind: 'run', env, accountId, rotated: false };
+    return { kind: 'run', env, accountId };
   };
-  const onAccount = (account: Account): Extract<BackgroundLaunch, { kind: 'run' }> => {
-    const boundId = workspaceId ? store.getBinding(workspaceId, vendor) : undefined;
-    return { kind: 'run', env: { [key]: account.configDir }, accountId: account.id, rotated: account.id !== boundId };
+  const onAccount = (account: Account): Extract<BackgroundLaunch, { kind: 'run' }> =>
+    ({ kind: 'run', env: { [key]: account.configDir }, accountId: account.id });
+  /** The account a resumed conversation must run on; the binding when unknown
+   *  or when that account is gone. */
+  const conversationAccount = (): Extract<BackgroundLaunch, { kind: 'run' }> => {
+    const id = opts.conversationAccountId;
+    if (id === undefined) return bound();
+    if (id === null) return { kind: 'run', env: {}, accountId: null };
+    const account = store.getAccount(id);
+    if (account && account.vendor === vendor && exists(account.configDir)) return onAccount(account);
+    console.warn(
+      `[account] background ${vendor} resume: the account this conversation runs on (${id}) ` +
+      'is gone or its config dir is missing — resuming on the binding, where the conversation may not be found.',
+    );
+    return bound();
   };
   const nameOf = (id: string) => store.getAccount(id)?.name ?? id;
 
   try {
     if (opts.resuming) {
-      const pinned = opts.rotatedAccountId ? store.getAccount(opts.rotatedAccountId) : undefined;
-      const usable = !!pinned && pinned.vendor === vendor && exists(pinned.configDir);
-      if (opts.rotatedAccountId && !usable) {
-        console.warn(
-          `[account] background ${vendor} resume: the account this conversation moved to (${opts.rotatedAccountId}) ` +
-          'is gone or its config dir is missing — resuming on the binding, where the conversation may not be found.',
-        );
-      }
-      const run = usable && pinned ? onAccount(pinned) : bound();
+      const run = conversationAccount();
       if (!run.accountId || opts.checkQuota === false) return run;
       const rotation = deps.rotation ?? getAccountRotationService();
       if (!rotation.getSettings()[vendor]) return run;
@@ -123,7 +126,7 @@ export async function resolveBackgroundLaunch(
     try {
       return bound();
     } catch {
-      return { kind: 'run', env: {}, accountId: null, rotated: false };
+      return { kind: 'run', env: {}, accountId: null };
     }
   }
 }
