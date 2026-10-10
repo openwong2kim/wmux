@@ -524,4 +524,10 @@ export const fr = {
   'workspace.departed': 'sorti',
   'settings.plainDragSelect': "Sélectionner le texte en faisant glisser, même si l'app utilise la souris",
   'settings.plainDragSelectDesc': "Un simple glisser sélectionne le texte même dans les apps qui utilisent la souris, comme Codex ; un clic reste transmis à l'app. Maintenez Maj (macOS) ou Alt (Windows, Linux) pendant le glisser pour l'envoyer à l'app.",
+  'pcRail.notChecked': "Pas encore vérifié",
+  'pcRail.access.revokeHintUnknown': "Pour révoquer : si cet ordinateur a été appairé avec un code, retirez-le dans Appareils appairés sur {name}. S'il a été ajouté avec le lien web de {name}, seul un nouveau lien (wmux web --new-token) le coupe.",
+  'remote.scope.read': "Un appareil appairé peut lire et rechercher la sortie de chaque espace de travail de cet ordinateur, y compris ceux ouverts plus tard.",
+  'remote.scope.viewOnly': "Lecture seule empêche la saisie, mais peut encore répondre aux invites à l'écran qui attendent une seule touche.",
+  'remote.scope.input': "Peut saisir permet aussi d'ouvrir et de fermer des sessions et de répondre aux approbations.",
+  'remotePage.connect.pasteScope': "Si l'invitation partage des espaces de travail, cet ordinateur peut lire et rechercher chaque espace de travail de ce PC, y compris ceux ouverts plus tard. Tant qu'ils sont appairés, wmux le vérifie toutes les quelques secondes, garde une connexion ouverte pour ses alertes et affiche ses notifications ; coupez-les depuis son icône dans la colonne des ordinateurs.",
 } as const;

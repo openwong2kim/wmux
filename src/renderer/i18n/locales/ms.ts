@@ -525,4 +525,10 @@ export const ms = {
   'workspace.departed': 'keluar',
   'settings.plainDragSelect': "Pilih teks dengan menyeret, walaupun aplikasi menggunakan tetikus",
   'settings.plainDragSelectDesc': "Seretan biasa memilih teks walaupun dalam aplikasi yang menggunakan tetikus, seperti Codex; klik tetap dihantar ke aplikasi. Tahan Shift (macOS) atau Alt (Windows, Linux) semasa menyeret untuk menghantar seretan ke aplikasi.",
+  'pcRail.notChecked': "Belum disemak",
+  'pcRail.access.revokeHintUnknown': "Untuk membatalkan: jika komputer ini dipasangkan dengan kod, buangnya di Peranti dipasangkan pada {name}. Jika ditambah dengan pautan web {name}, hanya pautan baharu (wmux web --new-token) yang memutuskannya.",
+  'remote.scope.read': "Peranti yang dipasangkan boleh membaca dan mencari output setiap ruang kerja di komputer ini, termasuk yang dibuka kemudian.",
+  'remote.scope.viewOnly': "Lihat sahaja menyekat menaip, tetapi masih boleh menjawab gesaan pada skrin yang memerlukan satu kekunci.",
+  'remote.scope.input': "Boleh menaip juga membenarkannya membuka dan menutup sesi serta menjawab kelulusan.",
+  'remotePage.connect.pasteScope': "Jika jemputan berkongsi ruang kerja, komputer ini boleh membaca dan mencari setiap ruang kerja di PC itu, termasuk yang dibuka kemudian. Semasa dipasangkan, wmux menyemaknya setiap beberapa saat, mengekalkan sambungan untuk amarannya dan memaparkan pemberitahuannya; senyapkan daripada ikonnya dalam lajur komputer.",
 } as const;

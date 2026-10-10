@@ -4290,6 +4290,7 @@ export const en = {
   'pcRail.access.viewOnly': "View only",
   'pcRail.access.canType': "Can type",
   'pcRail.access.revokeHint': "To revoke, remove this computer under Paired devices on {name}.",
+  'pcRail.access.revokeHintUnknown': "To revoke: if this computer was paired with a code, remove it under Paired devices on {name}. If it was added with {name}'s web link, only a new link (wmux web --new-token) cuts it off.",
   'pcRail.operatorToken': "Operator link",
   'pcRail.operatorTokenHint': "Added with {name}'s own web link, so it is not listed under Paired devices there. Pair again with a code to use a device credential you can revoke from that list.",
   'pcRail.thisComputerOnly': "This computer · {name} isn't shown here yet",

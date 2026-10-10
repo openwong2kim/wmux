@@ -264,16 +264,24 @@ sheet once, so terminals refit once. The titlebar segment widens to match.
   names "last seen 14:02" in the tooltip; needs repair adds the red ✕ mark;
   an insecure (plain http) host is muted with its own line.
 - **Badges:** needs-you is the rail's `--attention` number badge; finished
-  is the sidebar's neutral done dot. No amber, no wash. **The selected
-  computer shows no badge** — its rows are the evidence, so an event keeps
-  at most two renditions.
+  is the sidebar's neutral done dot (hosts only: this computer's badge is
+  needs-you only, its finished turns are the sidebar's own done dots). No
+  amber, no wash. **The selected computer shows no badge once its rows are
+  on screen** — the rows are the evidence, so an event keeps at most two
+  renditions. This computer's rows always are; a selected host keeps its
+  badge until the Workspaces page lists that host's rows.
+- **Overflow:** more computers than fit scroll the column (no visible
+  bar); a focused icon is scrolled into view.
 - **Keys:** rebindable `Alt+Shift+↑/↓` cycles computers (as `Alt+↑/↓`
   cycles workspaces), `Alt+Shift+Home` returns to this computer. Never
   `Ctrl+Alt+digit` (AltGr on Windows). One tab stop; arrows, Home and End
   rove; Shift+F10, the context-menu key or a right-click opens a host's
   menu: Mute / Unmute notifications, Open Remote page, Pair again, with
   View only or Can type and how to revoke underneath. A host added with its
-  operator link says so and suggests pairing again with a code.
+  operator link says so and suggests pairing again with a code; while the
+  desktop does not know how a host's credential was issued, the menu names
+  both ways to revoke (Paired devices for a code, a new web link for an
+  operator link) and promises neither.
 
 ### Fleet
 

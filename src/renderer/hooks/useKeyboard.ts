@@ -823,24 +823,23 @@ export function useKeyboard() {
         return;
       }
 
+      // ─── Custom keybindings → terminal input ─────────────────────────
+      if (dispatchCustomKeybinding()) return;
+
       // ─── PC rail: Alt+Shift+Up/Down cycles computers, Alt+Shift+Home
       // returns to this one. Only while the computer column is shown, and
-      // only when no built-in above took the combo. Captured before xterm,
-      // so the chord never reaches the pane.
+      // only when no built-in or custom keybinding above took the combo, so
+      // a user's own binding on the chord keeps working. Captured before
+      // xterm, so the chord never reaches the pane.
       const pcAction = pcShortcutAction(comboFromEvent(e));
-      if (pcAction) {
-        const st = store.getState();
-        if (st.pcRailHosts.length > 0) {
-          e.preventDefault();
-          e.stopImmediatePropagation();
-          shortcutPressGuard.noteActed(e);
-          st.setActivePc(pcShortcutTarget(pcAction, st.pcRailHosts.map((h) => h.id), st.pcRail.activePcId));
-          return;
-        }
-      }
-
-      // ─── Custom keybindings → terminal input ─────────────────────────
-      dispatchCustomKeybinding();
+      if (!pcAction) return;
+      const st = store.getState();
+      if (st.pcRailHosts.length === 0) return;
+      if (st.customKeybindings.some((kb) => kb.key === formatKeyCombo(literalCtrl, shift, alt, key))) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      shortcutPressGuard.noteActed(e);
+      st.setActivePc(pcShortcutTarget(pcAction, st.pcRailHosts.map((h) => h.id), st.pcRail.activePcId));
     };
 
     // The guard's view of when a press ends (see ShortcutPressGuard).

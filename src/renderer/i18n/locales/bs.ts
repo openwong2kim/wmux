@@ -524,4 +524,10 @@ export const bs = {
   'workspace.departed': 'napustio',
   'settings.plainDragSelect': "Označi tekst prevlačenjem, čak i kad aplikacija koristi miš",
   'settings.plainDragSelectDesc': "Obično prevlačenje označava tekst čak i u aplikacijama koje koriste miš, poput Codexa; klik i dalje ide aplikaciji. Držite Shift (macOS) ili Alt (Windows, Linux) dok prevlačite da biste prevlačenje poslali aplikaciji.",
+  'pcRail.notChecked': "Još nije provjereno",
+  'pcRail.access.revokeHintUnknown': "Za opoziv: ako je ovaj računar uparen kodom, uklonite ga pod Uparenim uređajima na {name}. Ako je dodan web linkom računara {name}, prekida ga samo novi link (wmux web --new-token).",
+  'remote.scope.read': "Upareni uređaj može čitati i pretraživati izlaz svakog radnog prostora na ovom računaru, uključujući one otvorene kasnije.",
+  'remote.scope.viewOnly': "Samo pregled blokira kucanje, ali i dalje može odgovarati na upite na ekranu koji traže jednu tipku.",
+  'remote.scope.input': "Može kucati također dopušta otvaranje i zatvaranje sesija i odgovaranje na odobrenja.",
+  'remotePage.connect.pasteScope': "Ako pozivnica dijeli radne prostore, ovaj računar može čitati i pretraživati svaki radni prostor na tom računaru, uključujući one otvorene kasnije. Dok je uparen, wmux ga provjerava svakih nekoliko sekundi, drži vezu otvorenom za upozorenja i prikazuje njegova obavještenja; utišajte ih s njegove ikone u koloni računara.",
 } as const;

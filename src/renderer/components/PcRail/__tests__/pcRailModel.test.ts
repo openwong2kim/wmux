@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { LOCAL_PC_ID } from '../../../../shared/pcRail';
-import { badgeText, cyclePc, monogram, pcBadge, pcIconState, pcShortcutAction, pcShortcutTarget } from '../pcRailModel';
+import { accessLines, badgeText, cyclePc, monogram, pcBadge, pcIconState, pcShortcutAction, pcShortcutTarget } from '../pcRailModel';
 
 describe('monogram', () => {
   it('takes the initials of two words, or two letters of one', () => {
@@ -58,5 +58,15 @@ describe('PC shortcuts', () => {
     expect(pcShortcutTarget('nextPc', ['a'], LOCAL_PC_ID)).toBe('a');
     expect(pcShortcutTarget('prevPc', ['a'], LOCAL_PC_ID)).toBe('a');
     expect(pcShortcutTarget('thisPc', ['a'], 'a')).toBe(LOCAL_PC_ID);
+  });
+});
+
+describe('accessLines', () => {
+  const t = (k: string) => k;
+  const host = { id: 'h', label: 'mac', kind: 'web-paired' as const, status: 'reachable' as const, attention: { needsYou: 0, finished: 0 }, lastSeenAt: 1, muted: false };
+  it('promises a revoke path only for a known credential kind', () => {
+    expect(accessLines({ ...host, tokenKind: 'device' }, t)).toEqual(['pcRail.access.revokeHint']);
+    expect(accessLines({ ...host, tokenKind: 'operator' }, t)).toEqual(['pcRail.operatorTokenHint']);
+    expect(accessLines({ ...host, allowInput: true }, t)).toEqual(['pcRail.access.canType', 'pcRail.access.revokeHintUnknown']);
   });
 });

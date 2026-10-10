@@ -519,4 +519,10 @@ export const vi = {
   'workspace.departed': 'đã rời',
   'settings.plainDragSelect': "Kéo để chọn văn bản, kể cả khi ứng dụng dùng chuột",
   'settings.plainDragSelectDesc': "Kéo thông thường sẽ chọn văn bản ngay cả trong ứng dụng dùng chuột như Codex; cú nhấp vẫn được gửi tới ứng dụng. Giữ Shift (macOS) hoặc Alt (Windows, Linux) khi kéo để gửi thao tác kéo tới ứng dụng.",
+  'pcRail.notChecked': "Chưa kiểm tra",
+  'pcRail.access.revokeHintUnknown': "Để thu hồi: nếu máy này được ghép bằng mã, hãy xóa nó trong Thiết bị đã ghép trên {name}. Nếu được thêm bằng liên kết web của {name}, chỉ một liên kết mới (wmux web --new-token) mới cắt được.",
+  'remote.scope.read': "Thiết bị đã ghép có thể đọc và tìm kiếm đầu ra của mọi không gian làm việc trên máy này, kể cả những cái mở sau.",
+  'remote.scope.viewOnly': "Chỉ xem chặn việc gõ, nhưng vẫn có thể trả lời các lời nhắc trên màn hình chỉ cần một phím.",
+  'remote.scope.input': "Có thể gõ còn cho phép mở và đóng phiên cũng như trả lời các yêu cầu phê duyệt.",
+  'remotePage.connect.pasteScope': "Nếu lời mời chia sẻ không gian làm việc, máy này có thể đọc và tìm kiếm mọi không gian làm việc trên PC đó, kể cả những cái mở sau. Trong khi ghép, wmux kiểm tra nó vài giây một lần, giữ kết nối để nhận cảnh báo và hiển thị thông báo của nó; tắt tiếng từ biểu tượng của nó trong cột máy tính.",
 } as const;

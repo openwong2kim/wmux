@@ -521,4 +521,10 @@ export const de = {
   'workspace.departed': 'verlassen',
   'settings.plainDragSelect': "Text per Ziehen markieren, auch wenn die App die Maus nutzt",
   'settings.plainDragSelectDesc': "Einfaches Ziehen markiert Text auch in Apps, die die Maus verwenden, etwa Codex; ein Klick geht weiterhin an die App. Halte beim Ziehen Shift (macOS) oder Alt (Windows, Linux) gedrückt, um das Ziehen an die App zu senden.",
+  'pcRail.notChecked': "Noch nicht geprüft",
+  'pcRail.access.revokeHintUnknown': "Zum Widerrufen: Wurde dieser Computer mit einem Code gekoppelt, entferne ihn unter Gekoppelte Geräte auf {name}. Wurde er mit dem Weblink von {name} hinzugefügt, trennt ihn nur ein neuer Link (wmux web --new-token).",
+  'remote.scope.read': "Ein gekoppeltes Gerät kann die Ausgabe jedes Workspaces auf diesem Computer lesen und durchsuchen, auch von später geöffneten.",
+  'remote.scope.viewOnly': "Nur ansehen verhindert das Tippen, kann aber weiterhin Bildschirmabfragen beantworten, die eine einzelne Taste erwarten.",
+  'remote.scope.input': "Darf tippen erlaubt außerdem, Sitzungen zu öffnen und zu schließen und Freigaben zu beantworten.",
+  'remotePage.connect.pasteScope': "Teilt die Einladung Workspaces, kann dieser Computer jeden Workspace auf jenem PC lesen und durchsuchen, auch später geöffnete. Solange gekoppelt, prüft wmux ihn alle paar Sekunden, hält eine Verbindung für seine Hinweise offen und zeigt seine Benachrichtigungen; stummschalten kannst du sie über sein Symbol in der Computerspalte.",
 } as const;

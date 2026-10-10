@@ -4250,6 +4250,7 @@ export const pl = {
   'pcRail.access.viewOnly': "Tylko podgląd",
   'pcRail.access.canType': "Może pisać",
   'pcRail.access.revokeHint': "Aby cofnąć dostęp, usuń ten komputer w Sparowanych urządzeniach na {name}.",
+  'pcRail.access.revokeHintUnknown': "Aby cofnąć: jeśli ten komputer sparowano kodem, usuń go w Sparowanych urządzeniach na {name}. Jeśli dodano go linkiem webowym {name}, odetnie go tylko nowy link (wmux web --new-token).",
   'pcRail.operatorToken': "Link operatora",
   'pcRail.operatorTokenHint': "Dodano przez własny link webowy {name}, więc nie ma go na liście Sparowanych urządzeń. Sparuj ponownie kodem, aby użyć poświadczenia urządzenia, które można tam cofnąć.",
   'pcRail.thisComputerOnly': "Ten komputer · {name} nie jest tu jeszcze pokazywany",

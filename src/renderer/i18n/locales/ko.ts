@@ -3732,6 +3732,7 @@ export const ko = {
   'pcRail.access.viewOnly': "보기 전용",
   'pcRail.access.canType': "입력 가능",
   'pcRail.access.revokeHint': "해제하려면 {name}의 페어링된 기기에서 이 컴퓨터를 제거하세요.",
+  'pcRail.access.revokeHintUnknown': "해제 방법: 코드로 페어링했다면 {name}의 페어링된 기기에서 이 컴퓨터를 제거하세요. {name}의 웹 링크로 추가했다면 새 링크(wmux web --new-token)를 만들어야만 끊깁니다.",
   'pcRail.operatorToken': "운영자 링크",
   'pcRail.operatorTokenHint': "{name}의 자체 웹 링크로 추가되어 그쪽 페어링된 기기 목록에 없습니다. 그 목록에서 해제할 수 있는 기기 자격 증명을 쓰려면 코드로 다시 페어링하세요.",
   'pcRail.thisComputerOnly': "이 컴퓨터 · {name}은(는) 아직 여기 표시되지 않습니다",

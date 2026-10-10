@@ -573,4 +573,10 @@ export const ja = {
   'plugin.staleGate.copied': 'コマンドをコピーしました。ターミナルで実行し、Claude セッションを再起動してください。',
   'settings.plainDragSelect': "アプリがマウスを使っていてもドラッグでテキストを選択",
   'settings.plainDragSelectDesc': "Codex のようにマウスを使うアプリでも、そのままドラッグするとテキストを選択します。クリックはこれまでどおりアプリに届きます。ドラッグをアプリに送るには、Shift（macOS）または Alt（Windows、Linux）を押しながらドラッグします。",
+  'pcRail.notChecked': "未確認",
+  'pcRail.access.revokeHintUnknown': "取り消し方法：コードでペアリングした場合は、{name} の「ペアリング済みデバイス」からこのコンピュータを削除します。{name} の Web リンクで追加した場合は、新しいリンク（wmux web --new-token）を作るまで切断されません。",
+  'remote.scope.read': "ペアリングしたデバイスは、このコンピュータのすべてのワークスペース（後で開くものを含む）の出力を読み取り、検索できます。",
+  'remote.scope.viewOnly': "表示のみでは入力できませんが、1 つのキーで答える画面上のプロンプトには応答できます。",
+  'remote.scope.input': "入力可能にすると、セッションの開始・終了と承認への応答もできます。",
+  'remotePage.connect.pasteScope': "招待でワークスペースを共有する場合、このコンピュータは相手の PC のすべてのワークスペース（後で開くものを含む）を読み取り、検索できます。ペアリング中、wmux は数秒ごとに確認し、通知用の接続を開いたままにしてその通知を表示します。通知はコンピュータ列のアイコンからミュートできます。",
 } as const;

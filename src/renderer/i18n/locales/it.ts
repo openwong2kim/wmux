@@ -524,4 +524,10 @@ export const it = {
   'workspace.departed': 'uscito',
   'settings.plainDragSelect': "Seleziona il testo trascinando, anche se l'app usa il mouse",
   'settings.plainDragSelectDesc': "Un semplice trascinamento seleziona il testo anche nelle app che usano il mouse, come Codex; un clic arriva comunque all'app. Tieni premuto Maiusc (macOS) o Alt (Windows, Linux) mentre trascini per inviare il trascinamento all'app.",
+  'pcRail.notChecked': "Non ancora controllato",
+  'pcRail.access.revokeHintUnknown': "Per revocare: se questo computer è stato associato con un codice, rimuovilo in Dispositivi associati su {name}. Se è stato aggiunto con il link web di {name}, solo un nuovo link (wmux web --new-token) lo scollega.",
+  'remote.scope.read': "Un dispositivo associato può leggere e cercare l'output di ogni workspace su questo computer, compresi quelli aperti in seguito.",
+  'remote.scope.viewOnly': "Solo visualizzazione blocca la digitazione, ma può ancora rispondere ai prompt sullo schermo che richiedono un solo tasto.",
+  'remote.scope.input': "Può digitare consente anche di aprire e chiudere sessioni e rispondere alle approvazioni.",
+  'remotePage.connect.pasteScope': "Se l'invito condivide i workspace, questo computer può leggere e cercare ogni workspace su quel PC, compresi quelli aperti in seguito. Finché sono associati, wmux lo controlla ogni pochi secondi, tiene aperta una connessione per i suoi avvisi e mostra le sue notifiche; silenziale dalla sua icona nella colonna dei computer.",
 } as const;

@@ -560,4 +560,10 @@ export const zhTW = {
   'workspace.departed': '已越界',
   'settings.plainDragSelect': "應用程式使用滑鼠時也可拖曳選取文字",
   'settings.plainDragSelectDesc': "即使在 Codex 等使用滑鼠的應用程式中，直接拖曳也會選取文字；點擊仍會傳給應用程式。按住 Shift（macOS）或 Alt（Windows、Linux）拖曳，即可將拖曳傳給應用程式。",
+  'pcRail.notChecked': "尚未檢查",
+  'pcRail.access.revokeHintUnknown': "撤銷方式：如果這台電腦是用配對碼配對的，請在 {name} 的已配對裝置中將其移除。如果是用 {name} 的網頁連結加入的，只有產生新連結（wmux web --new-token）才能中斷。",
+  'remote.scope.read': "已配對的裝置可以讀取和搜尋這台電腦上所有工作區的輸出，包括之後開啟的工作區。",
+  'remote.scope.viewOnly': "僅檢視會阻止輸入，但仍可回應只需按一個鍵的螢幕提示。",
+  'remote.scope.input': "可輸入還允許它開啟和關閉工作階段，以及回應核准。",
+  'remotePage.connect.pasteScope': "如果邀請分享了工作區，這台電腦可以讀取和搜尋那台電腦上的所有工作區，包括之後開啟的。配對期間，wmux 每隔幾秒檢查一次，保持連線以接收提醒並顯示其通知；可在電腦欄中該電腦的圖示上將其靜音。",
 } as const;

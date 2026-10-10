@@ -13,6 +13,9 @@ import { accessLines, badgeText, hostSummary, monogram, pcBadge, pcIconState, ty
 /** Column width; the titlebar segment widens by the same amount. */
 export const PC_RAIL_WIDTH = 48;
 
+/** False until the Workspaces page lists a selected host's rows. */
+const HOST_ROWS_SHOWN = false;
+
 function Badge({ badge }: { badge: PcBadge }) {
   if (badge.kind === 'needs-you') {
     // Pushed to the icon's corner: a monogram is wider than a page glyph.
@@ -81,6 +84,8 @@ export default function PcRail() {
       : e.key === 'End' ? buttons.length - 1
       : (at + (e.key === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length;
     buttons[next]?.focus();
+    // The column scrolls when it holds more computers than fit.
+    buttons[next]?.scrollIntoView?.({ block: 'nearest' });
   }, [openMenu]);
 
   if (!visible) return null;
@@ -113,14 +118,18 @@ export default function PcRail() {
   // is not in the column.
   const tabStop = active === LOCAL_PC_ID || hosts.some((h) => h.id === active) ? active : LOCAL_PC_ID;
   const localSelected = tabStop === LOCAL_PC_ID;
+  // This computer's badge is needs-you only (Fleet's count); its finished
+  // turns are the sidebar's done dots. Selected, its rows are on screen.
   const localBadge = pcBadge({ needsYou: localNeeds, finished: 0 }, localSelected);
   const localLines = [t('pcRail.thisComputer'), ...(localBadge.kind === 'needs-you' ? [t('pcRail.needsYouCount', { count: localNeeds })] : [])];
 
   return (
     <nav
       ref={navRef}
-      className="wmux-rail wmux-pc-rail flex flex-col shrink-0 h-full"
-      style={{ width: PC_RAIL_WIDTH }}
+      // Scrolls (no visible bar) once the computers outgrow the window; the
+      // top inset keeps the first badge inside the scroll box's clip.
+      className="wmux-rail wmux-pc-rail flex flex-col shrink-0 h-full min-h-0 overflow-y-auto overflow-x-hidden [scrollbar-width:none]"
+      style={{ width: PC_RAIL_WIDTH, paddingTop: 4 }}
       aria-label={t('pcRail.label')}
       onKeyDown={onKeyDown}
       data-pc-rail
@@ -143,7 +152,10 @@ export default function PcRail() {
         const selected = tabStop === host.id;
         const state = pcIconState(host);
         const dim = state !== 'online';
-        const badge = pcBadge(host.attention, selected);
+        // A selected host keeps its badge until its rows are shown (the
+        // scoped sidebar is a later change); hiding it now would hide the
+        // only rendition.
+        const badge = pcBadge(host.attention, selected && HOST_ROWS_SHOWN);
         const lines = hostSummary(host, feeds[host.id], t);
         return (
           <button

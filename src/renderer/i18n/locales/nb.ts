@@ -524,4 +524,10 @@ export const nb = {
   'workspace.departed': 'forlatt',
   'settings.plainDragSelect': "Merk tekst ved å dra, også når appen bruker musen",
   'settings.plainDragSelectDesc': "Et vanlig dra merker tekst også i apper som bruker musen, som Codex; et klikk går fortsatt til appen. Hold Shift (macOS) eller Alt (Windows, Linux) mens du drar for å sende dra-bevegelsen til appen.",
+  'pcRail.notChecked': "Ikke sjekket ennå",
+  'pcRail.access.revokeHintUnknown': "Slik trekker du tilbake: Hvis denne datamaskinen ble paret med en kode, fjerner du den under Parede enheter på {name}. Hvis den ble lagt til med nettlenken til {name}, er det bare en ny lenke (wmux web --new-token) som kobler den fra.",
+  'remote.scope.read': "En paret enhet kan lese og søke i utdataene fra alle arbeidsområder på denne datamaskinen, også de som åpnes senere.",
+  'remote.scope.viewOnly': "Bare visning blokkerer skriving, men kan fortsatt svare på ledetekster på skjermen som krever én tast.",
+  'remote.scope.input': "Kan skrive lar den også åpne og lukke økter og svare på godkjenninger.",
+  'remotePage.connect.pasteScope': "Hvis invitasjonen deler arbeidsområder, kan denne datamaskinen lese og søke i alle arbeidsområder på den PC-en, også de som åpnes senere. Mens de er paret, sjekker wmux den med noen sekunders mellomrom, holder en tilkobling åpen for varslene og viser varslingene; demp dem fra ikonet i datamaskinkolonnen.",
 } as const;

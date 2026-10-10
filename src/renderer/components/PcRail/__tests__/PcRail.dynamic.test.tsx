@@ -71,13 +71,14 @@ describe('PcRail', () => {
     expect(icon('h1').tabIndex).toBe(-1);
   });
 
-  it('badges an unselected host and hides it once selected', async () => {
+  it('badges a host and keeps the badge when it is selected, until its rows are shown', async () => {
     await act(async () => root.render(<PcRail />));
     expect(icon('h1').querySelector('[data-pc-badge="needs-you"]')?.textContent).toBe('1');
     await act(async () => icon('h1').click());
     expect(useStore.getState().pcRail.activePcId).toBe('h1');
     expect(icon('h1').getAttribute('aria-current')).toBe('true');
-    expect(icon('h1').querySelector('[data-pc-badge]')).toBeNull();
+    // Nothing lists h1's rows yet, so the badge is the only rendition.
+    expect(icon('h1').querySelector('[data-pc-badge="needs-you"]')).not.toBeNull();
   });
 
   it('roves with arrows and opens the host menu on Shift+F10', async () => {
@@ -92,7 +93,11 @@ describe('PcRail', () => {
     });
     const actions = [...document.querySelectorAll('[data-pane-menu-action]')].map((el) => el.getAttribute('data-pane-menu-action'));
     expect(actions).toEqual(['mute', 'remote-page', 'pair-again']);
-    expect(document.querySelector('[data-pc-access]')?.textContent).toContain('View only');
+    const access = document.querySelector('[data-pc-access]')?.textContent ?? '';
+    expect(access).toContain('View only');
+    // The credential kind is unknown: both revoke paths, neither promised.
+    expect(access).toContain('Paired devices');
+    expect(access).toContain('--new-token');
     await act(async () => (document.querySelector('[data-pane-menu-action="mute"]') as HTMLButtonElement).click());
     expect(useStore.getState().pcRail.mutedPcs).toEqual(['h1']);
   });

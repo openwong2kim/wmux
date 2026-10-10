@@ -525,4 +525,10 @@ export const es = {
   'workspace.departed': 'fuera',
   'settings.plainDragSelect': "Seleccionar texto al arrastrar, aunque la app use el ratón",
   'settings.plainDragSelectDesc': "Arrastrar sin más selecciona texto incluso en apps que usan el ratón, como Codex; un clic sigue llegando a la app. Mantén pulsado Shift (macOS) o Alt (Windows, Linux) al arrastrar para enviar el arrastre a la app.",
+  'pcRail.notChecked': "Aún sin comprobar",
+  'pcRail.access.revokeHintUnknown': "Para revocar: si este equipo se emparejó con un código, quítalo en Dispositivos emparejados de {name}. Si se añadió con el enlace web de {name}, solo un enlace nuevo (wmux web --new-token) lo desconecta.",
+  'remote.scope.read': "Un dispositivo emparejado puede leer y buscar la salida de todos los espacios de trabajo de este equipo, incluidos los que se abran después.",
+  'remote.scope.viewOnly': "Solo ver impide escribir, pero aún puede responder a avisos en pantalla que piden una sola tecla.",
+  'remote.scope.input': "Puede escribir también le permite abrir y cerrar sesiones y responder aprobaciones.",
+  'remotePage.connect.pasteScope': "Si la invitación comparte espacios de trabajo, este equipo puede leer y buscar todos los espacios de trabajo de ese PC, incluidos los que se abran después. Mientras estén emparejados, wmux lo comprueba cada pocos segundos, mantiene una conexión abierta para sus alertas y muestra sus notificaciones; puedes silenciarlas desde su icono en la columna de equipos.",
 } as const;

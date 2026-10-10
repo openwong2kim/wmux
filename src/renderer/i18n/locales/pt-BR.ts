@@ -525,4 +525,10 @@ export const ptBR = {
   'workspace.departed': 'fora',
   'settings.plainDragSelect': "Selecionar texto ao arrastar, mesmo quando o app usa o mouse",
   'settings.plainDragSelectDesc': "Arrastar normalmente seleciona texto mesmo em apps que usam o mouse, como o Codex; um clique continua indo para o app. Segure Shift (macOS) ou Alt (Windows, Linux) ao arrastar para enviar o arraste ao app.",
+  'pcRail.notChecked': "Ainda não verificado",
+  'pcRail.access.revokeHintUnknown': "Para revogar: se este computador foi pareado com um código, remova-o em Dispositivos pareados em {name}. Se foi adicionado com o link web de {name}, só um link novo (wmux web --new-token) o desconecta.",
+  'remote.scope.read': "Um dispositivo pareado pode ler e pesquisar a saída de todos os workspaces deste computador, inclusive os abertos depois.",
+  'remote.scope.viewOnly': "Somente visualização bloqueia a digitação, mas ainda pode responder a prompts na tela que pedem uma única tecla.",
+  'remote.scope.input': "Pode digitar também permite abrir e fechar sessões e responder a aprovações.",
+  'remotePage.connect.pasteScope': "Se o convite compartilhar workspaces, este computador pode ler e pesquisar todos os workspaces daquele PC, inclusive os abertos depois. Enquanto pareado, o wmux o verifica a cada poucos segundos, mantém uma conexão aberta para os alertas e mostra as notificações dele; silencie-as pelo ícone dele na coluna de computadores.",
 } as const;

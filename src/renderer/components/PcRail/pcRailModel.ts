@@ -135,13 +135,19 @@ export function hostSummary(host: PcRailHost, feed: PcRailHostFeed | undefined, 
 /**
  * What the PC menu says about this computer's access to `host`: view only or
  * can type, and how to take it back. An operator-link host is not a paired
- * device over there, so it gets the operator note instead of the revoke hint.
+ * device over there, so it gets the operator note instead of the revoke
+ * hint; a host of unknown kind gets both ways out.
  */
 export function accessLines(host: PcRailHost, t: Translate): string[] {
   const lines: string[] = [];
   if (host.allowInput !== undefined) lines.push(host.allowInput ? t('pcRail.access.canType') : t('pcRail.access.viewOnly'));
+  // Only a host known to hold a device credential is revocable from Paired
+  // devices over there. Main does not record the kind yet, so an unknown
+  // kind names both paths instead of promising one.
   lines.push(host.tokenKind === 'operator'
     ? t('pcRail.operatorTokenHint', { name: host.label })
-    : t('pcRail.access.revokeHint', { name: host.label }));
+    : host.tokenKind === 'device'
+      ? t('pcRail.access.revokeHint', { name: host.label })
+      : t('pcRail.access.revokeHintUnknown', { name: host.label }));
   return lines;
 }
