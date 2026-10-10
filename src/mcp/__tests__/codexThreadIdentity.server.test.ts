@@ -17,7 +17,7 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 const { mockSendRpc, parentChain, ownerIndex } = vi.hoisted(() => ({
   mockSendRpc: vi.fn(),
   parentChain: vi.fn(),
-  ownerIndex: { value: true },
+  ownerIndex: { value: true as boolean | undefined },
 }));
 
 vi.mock('../wmux-client', async (importOriginal) => {
@@ -26,12 +26,18 @@ vi.mock('../wmux-client', async (importOriginal) => {
 });
 vi.mock('../codexThreadIdentity', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../codexThreadIdentity')>();
-  return { ...actual, readParentChain: parentChain, codexOwnerIndexAvailable: () => ownerIndex.value };
+  // ownerIndex.value undefined = the real platform predicate (win32 suite below).
+  return {
+    ...actual,
+    readParentChain: parentChain,
+    codexOwnerIndexAvailable: (platform?: NodeJS.Platform) => ownerIndex.value ?? actual.codexOwnerIndexAvailable(platform),
+  };
 });
 
 vi.mock('../../shared/computer/config', () => ({ readComputerUseEnabled: () => true }));
 
 import { createWmuxServer } from '../index';
+import { recordThreadOwner } from '../../../integrations/codex/bin/wmux-codex-thread.mjs';
 import { getCallerPtyId, getWorkspaceToken, setWorkspaceToken } from '../wmux-client';
 
 const digest = (v: string) => createHash('sha256').update(v).digest('hex');
@@ -462,5 +468,80 @@ describe('envelope callerPtyId (per-pane browser profiles)', () => {
     // carries the walked pane (main's server-side walk answers pty-s here).
     expect(stampsFor('a2a.resolve.identity')[0]).toBe('pty-env');
     expect(stampsFor('a2a.whoami')).toEqual(['pty-s']);
+  });
+});
+
+// The #2007 Windows tree, platform-gated for real: MCP ← managed app-server
+// (started by pane B, the walk's answer) while pane A's TUI shares it. Owner
+// records come from the same writer the pane-side Codex hooks use.
+describe('shared Codex app-server on win32', () => {
+  const realPlatform = process.platform;
+  let codexAccountHome: string;
+  beforeEach(() => {
+    ownerIndex.value = undefined;
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+    // Codex passes no CODEX_HOME to MCP servers; the daemon path names the account.
+    vi.stubEnv('CODEX_HOME', '');
+    codexAccountHome = path.join(home, '.codex-work');
+    parentChain.mockResolvedValue([MCP_ENTRY, [
+      path.join(codexAccountHome, 'packages', 'app-server-daemon', 'releases', '0.162.1', 'bin', 'codex.exe'),
+      'app-server', '--listen', 'unix://', '--managed-daemon',
+    ]]);
+  });
+  afterEach(() => { Object.defineProperty(process, 'platform', { value: realPlatform, configurable: true }); });
+
+  const writeOwner = (id: string, ptyId: string, workspaceId: string) => expect(recordThreadOwner(id, {
+    CODEX_HOME: codexAccountHome, WMUX_PTY_ID: ptyId, WMUX_WORKSPACE_ID: workspaceId,
+    WMUX_SURFACE_ID: '', WMUX_DATA_SUFFIX: '', WMUX_PIPE_NAME: '\\\\.\\pipe\\wmux', WMUX_HOOKS_TO_MAIN: '1',
+  })).toBe(true);
+
+  function browserRpc(opened: Array<Record<string, unknown>>, threadClaim?: Record<string, string>) {
+    mockSendRpc.mockImplementation(async (method: string, params: Record<string, unknown>) => {
+      if (method === 'a2a.resolve.identity') {
+        return {
+          mappings: Object.fromEntries(ENTRIES.map((e) => [e.pid, e.workspaceId])),
+          entries: ENTRIES,
+          resolved: { workspaceId: 'ws-s', ptyId: 'pty-s' },
+          workspaceToken: 'claim-starter',
+          ...(threadClaim ? { threadClaim } : {}),
+        };
+      }
+      if (method === 'a2a.whoami') return { echo: params };
+      if (method === 'browser.open') {
+        opened.push(params);
+        return { ok: true, surfaceId: 's-1' };
+      }
+      if (method === 'mcp.claimWorkspace') return { workspaceId: 'ws-mcp', ptyId: 'pty-mcp', token: 'tok' };
+      return {};
+    });
+  }
+
+  it('identifies a recorded thread as its own pane, not the pane that started the server', async () => {
+    writeOwner(T1, 'pty-a', 'ws-1');
+    const opened: Array<Record<string, unknown>> = [];
+    browserRpc(opened, { workspaceId: 'ws-1', ptyId: 'pty-a', workspaceToken: 'claim-a' });
+    const client = await connect();
+    await call(client, 'a2a_whoami', {}, T1);
+    const res = await call(client, 'browser_open', { url: 'https://example.com' }, T1);
+    await client.close();
+    expect(whoamiParams()).toEqual([{ workspaceId: 'ws-1', senderPtyId: 'pty-a' }]);
+    expect(res.isError).toBeFalsy();
+    expect(opened.map((p) => p.workspaceId)).toEqual(['ws-1']);
+    expect(getWorkspaceToken()).not.toBe('claim-starter');
+  });
+
+  it('refuses the browser for a thread with no owner record and never adopts the starter\'s walk claim', async () => {
+    writeOwner(T1, 'pty-a', 'ws-1');
+    const opened: Array<Record<string, unknown>> = [];
+    browserRpc(opened);
+    const client = await connect();
+    await call(client, 'a2a_whoami', {}, T2);
+    const res = await call(client, 'browser_open', { url: 'https://example.com' }, T2);
+    await client.close();
+    expect(res.isError).toBe(true);
+    expect(res.content[0]?.text).toMatch(/shared Codex background server/);
+    expect(opened).toEqual([]);
+    expect(getWorkspaceToken()).not.toBe('claim-starter');
+    expect(mockSendRpc.mock.calls.some((c) => c[0] === 'mcp.claimWorkspace')).toBe(false);
   });
 });
