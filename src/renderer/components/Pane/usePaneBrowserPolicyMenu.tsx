@@ -1,20 +1,62 @@
 // Pane actions menu → "Browser protection…" (src/shared/browserPolicy.ts),
-// and whether the pane is protected now (the tab's lock glyph).
+// and what the pane's protection is now (the pane-level lock).
 //
 // Offered under the same gate as the per-pane profile rows (chrome backend,
 // not read-only, a preload that carries the calls). Protection needs a Chrome
 // profile bound to this pane alone, so without one the row is disabled and
 // says what to do first. The row opens BrowserPolicyDialog; nothing else here
 // writes.
+//
+// Protection covers the pane's own Chrome, not the in-app browser tabs it may
+// also hold, so the lock belongs to the pane, never to one of its tabs.
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import { IconLock } from '../icons';
 import type { PaneActionItem } from './PaneActionsMenu';
+import { resolvePanePolicy, type BrowserPolicyReadResult } from '../../../shared/browserPolicy';
+import type { HostPolicyMode } from '../../../shared/browserHostPolicy';
 
 /** Key of the main-menu item that opens the protection editor. */
 export const PANE_BROWSER_POLICY_KEY = 'browser-policy';
+
+/** A read result, with main's own decision when it reports one. */
+export type PolicyRead = BrowserPolicyReadResult & {
+  decision?: 'legacy' | 'denied' | 'protected';
+  confirmed?: boolean;
+};
+
+/** What a pane's protection is right now. */
+export type PaneProtection =
+  | { kind: 'off' }
+  /** Protected, but every site is refused until the operator confirms. */
+  | { kind: 'refused' }
+  | { kind: 'protected'; mode: HostPolicyMode; allowCount: number };
+
+/**
+ * The pane's protection from a policy read. Main's `decision` wins when it is
+ * there. Without it, an unreadable policy file counts as refused: main then
+ * refuses every pane that was ever protected, and which ones those are is not
+ * visible from here.
+ */
+export function paneProtection(res: PolicyRead | undefined, workspaceId: string): PaneProtection {
+  if (!res?.ok) return { kind: 'off' };
+  const entry = res.policy ?? undefined;
+  const hosts = entry?.hosts;
+  const protectedAs = (): PaneProtection => hosts
+    ? { kind: 'protected', mode: hosts.mode, allowCount: hosts.allow.length }
+    : { kind: 'refused' };
+  if (res.decision !== undefined) {
+    if (res.decision === 'legacy') return { kind: 'off' };
+    if (res.decision === 'denied' || res.confirmed === false) return { kind: 'refused' };
+    return protectedAs();
+  }
+  if (res.state === 'corrupt' || res.state === 'unsupported-version') return { kind: 'refused' };
+  if (!entry?.protected) return { kind: 'off' };
+  const decision = resolvePanePolicy(entry, { workspaceId, currentProfile: res.currentProfile }, res.epoch ?? 0);
+  return decision.kind === 'protected' && decision.confirmed ? protectedAs() : { kind: 'refused' };
+}
 
 export function usePaneBrowserPolicyMenu(opts: {
   paneId: string;
@@ -23,41 +65,52 @@ export function usePaneBrowserPolicyMenu(opts: {
   enabled: boolean;
   /** The pane's own exclusive Chrome profile, if any. */
   boundProfile: string | undefined;
-  /** The pane holds a browser tab — the only place the lock is drawn. */
-  hasBrowserSurface: boolean;
   openDialog: () => void;
-}): { mainItems: PaneActionItem[]; isProtected: boolean; reload: () => void } {
-  const { paneId, workspaceId, enabled, boundProfile, hasBrowserSurface, openDialog } = opts;
+}): { mainItems: PaneActionItem[]; protection: PaneProtection; summary: string | undefined; reload: () => void } {
+  const { paneId, workspaceId, enabled, boundProfile, openDialog } = opts;
   const t = useT();
   // t() is one stable function; the locale keys the memo so labels follow it.
   const locale = useStore((st) => st.locale);
   const available = enabled && !!window.electronAPI?.browser?.policy?.get;
-  const [isProtected, setIsProtected] = useState(false);
+  const [protection, setProtection] = useState<PaneProtection>({ kind: 'off' });
 
   const reload = useCallback(() => {
     const api = window.electronAPI?.browser?.policy;
     if (!api || !available) return;
     void api.get(workspaceId, paneId).then((res) => {
-      setIsProtected(!!res.ok && !!res.policy?.protected);
+      setProtection(paneProtection(res as PolicyRead, workspaceId));
     }).catch(() => { /* keep the last answer */ });
   }, [available, workspaceId, paneId]);
 
-  // Read once a browser tab is there to carry the lock; the menu and a save
-  // re-read it. A pane with no browser tab never asks.
+  // Read on mount (the pane-level lock); the menu and a save re-read it.
   useEffect(() => {
-    if (available && hasBrowserSurface) reload();
-    else if (!available) setIsProtected(false);
-  }, [available, hasBrowserSurface, reload]);
+    if (available) reload();
+    else setProtection({ kind: 'off' });
+  }, [available, reload]);
 
-  const mainItems: PaneActionItem[] = useMemo(() => (available ? [{
-    key: PANE_BROWSER_POLICY_KEY,
-    label: t('pane.browserPolicy'),
-    icon: <IconLock size={14} />,
-    disabled: !boundProfile,
-    detail: boundProfile ? undefined : t('pane.browserPolicyNeedsProfile'),
-    title: boundProfile ? undefined : t('pane.browserPolicyNeedsProfile'),
-    onSelect: openDialog,
-  }] : []), [available, boundProfile, t, locale, openDialog]);
+  const summary = useMemo(() => {
+    if (protection.kind === 'off') return undefined;
+    if (protection.kind === 'refused') return t('pane.browserPolicySummaryRefused');
+    return protection.mode === 'allowlist'
+      ? t('pane.browserPolicySummarySites', { count: protection.allowCount })
+      : t('pane.browserPolicySummaryAny');
+  }, [protection, t, locale]);
 
-  return { mainItems, isProtected, reload };
+  const mainItems: PaneActionItem[] = useMemo(() => {
+    if (!available) return [];
+    // A pane that is protected already stays editable without its own
+    // profile: turning protection off is how a refused pane is lifted.
+    const openable = !!boundProfile || protection.kind !== 'off';
+    return [{
+      key: PANE_BROWSER_POLICY_KEY,
+      label: t('pane.browserPolicy'),
+      icon: <IconLock size={14} />,
+      disabled: !openable,
+      detail: openable ? summary : t('pane.browserPolicyNeedsProfile'),
+      title: openable ? undefined : t('pane.browserPolicyNeedsProfile'),
+      onSelect: openDialog,
+    }];
+  }, [available, boundProfile, protection.kind, summary, t, locale, openDialog]);
+
+  return { mainItems, protection, summary, reload };
 }

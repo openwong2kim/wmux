@@ -240,4 +240,30 @@ describe('BrowserPolicyDialog', () => {
     expect(container!.querySelector('[data-testid="browser-policy-dialog"]')).toBeNull();
     expect(document.body.querySelector('[data-testid="browser-policy-dialog"]')).not.toBeNull();
   });
+
+  it('the switch description follows the toggle and the refused state', async () => {
+    readResult = { ok: true, state: 'corrupt', epoch: 0, policy: null, currentProfile: 'work' };
+    await mount();
+    const desc = () => document.querySelector('[data-testid="browser-policy-dialog"] .ui-field-description')?.textContent;
+    expect(desc()).toBe('Off: saving lifts the block and the pane browses as before.');
+    await click('browser-policy-protect');
+    expect(desc()).toBe("On: agents open only the allowed sites, in this pane's own Chrome profile.");
+  });
+
+  it('warns that Chrome restarts only when the protection would change', async () => {
+    await mount();
+    expect(q('browser-policy-restart')).toBeNull();
+    type('browser-policy-allow', 'other.com');
+    expect(q('browser-policy-restart')).toBeNull();
+    await click('browser-policy-protect');
+    expect(q('browser-policy-restart')?.textContent).toBe('Chrome for this pane restarts when you save, and its open tabs close.');
+  });
+
+  it("main's legacy decision means no refused notice, even with an unreadable file", async () => {
+    readResult = { ok: true, state: 'corrupt', epoch: 0, policy: null, currentProfile: 'work', decision: 'legacy' } as BrowserPolicyReadResult;
+    await mount();
+    expect(q('browser-policy-unreadable')).toBeNull();
+    await click('browser-policy-save');
+    expect(api.set).not.toHaveBeenCalled();
+  });
 });

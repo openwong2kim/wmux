@@ -20,7 +20,7 @@ import Field, { useFieldWiring } from '../ui/Field';
 import Switch from '../ui/Switch';
 import SegmentedControl from '../ui/SegmentedControl';
 import { IconLock } from '../icons';
-import { resolvePanePolicy } from '../../../shared/browserPolicy';
+import { paneProtection, type PolicyRead } from './usePaneBrowserPolicyMenu';
 import { parseHostRule, type HostPolicyMode } from '../../../shared/browserHostPolicy';
 
 /** One host rule per line: trimmed, empty lines dropped. */
@@ -46,12 +46,14 @@ interface Loaded {
   epoch: number;
   currentProfile: string | undefined;
   /** A write is needed even to leave protection off: a stored entry exists,
-   *  or the file could not be read (its panes stay refused until written). */
+   *  or the pane is refused without one (its panes stay refused until written). */
   mustWrite: boolean;
-  /** The policy file was unreadable: what it held for this pane is unknown. */
-  unreadable: boolean;
+  /** Refused, and its stored policy is gone (unreadable or lost file). */
+  lost: boolean;
   /** Protected, but rebound / moved / pending: every host refused until saved. */
   needsConfirm: boolean;
+  /** The pane's Chrome runs protected now (a change restarts it). */
+  running: boolean;
 }
 
 function HostList({
@@ -125,14 +127,16 @@ export default function BrowserPolicyDialog({ workspaceId, paneId, onClose, onSa
       }
       const epoch = res.epoch ?? 0;
       const entry = res.policy ?? undefined;
-      const unreadable = res.state === 'corrupt' || res.state === 'unsupported-version';
-      const decision = resolvePanePolicy(entry, { workspaceId, currentProfile: res.currentProfile }, epoch);
+      const protection = paneProtection(res as PolicyRead, workspaceId);
+      const refused = protection.kind === 'refused';
+      const lost = refused && !entry?.protected;
       setLoaded({
         epoch,
         currentProfile: res.currentProfile,
-        mustWrite: !!entry || unreadable,
-        unreadable,
-        needsConfirm: decision.kind === 'protected' && !decision.confirmed,
+        mustWrite: !!entry || lost,
+        lost,
+        needsConfirm: refused && !!entry?.protected,
+        running: protection.kind !== 'off',
       });
       setIsProtected(!!entry?.protected);
       setMode(entry?.hosts.mode ?? 'off');
@@ -213,13 +217,18 @@ export default function BrowserPolicyDialog({ workspaceId, paneId, onClose, onSa
             </div>
           </div>
         )}
-        {loaded?.unreadable && (
+        {loaded?.lost && (
           <div className="ui-notice flex items-start gap-2.5 px-3.5 py-3" data-testid="browser-policy-unreadable">
             <span className="shrink-0 mt-0.5 text-[var(--text-muted)]" aria-hidden="true"><IconLock size={12} /></span>
             <span className="text-[13px] text-[var(--text-main)]">{t('pane.browserPolicyUnreadable')}</span>
           </div>
         )}
-        <Field label={t('pane.browserPolicyProtect')} description={t('pane.browserPolicyProtectDesc')}>
+        <Field
+          label={t('pane.browserPolicyProtect')}
+          description={t(isProtected
+            ? 'pane.browserPolicyProtectDescOn'
+            : loaded?.lost ? 'pane.browserPolicyProtectDescRefused' : 'pane.browserPolicyProtectDesc')}
+        >
           <Switch
             checked={isProtected}
             onCheckedChange={setIsProtected}
@@ -258,6 +267,11 @@ export default function BrowserPolicyDialog({ workspaceId, paneId, onClose, onSa
               <HostList value={blockText} onChange={setBlockText} invalid={blockInvalid} testId="browser-policy-block" />
             </Field>
           </>
+        )}
+        {loaded && isProtected !== loaded.running && (
+          <p className="text-[11px] leading-4 text-[var(--text-sub)]" data-testid="browser-policy-restart">
+            {t('pane.browserPolicyRestart')}
+          </p>
         )}
       </DialogBody>
       <DialogFooter>

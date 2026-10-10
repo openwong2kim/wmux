@@ -48,9 +48,22 @@ const KEYS = [
   'pane.browserPolicyStale',
   'pane.browserPolicyLoadFailed',
   'pane.browserPolicySaveFailed',
-  'pane.browserPolicyProtectedTab',
+  'pane.browserPolicyProtectDescOn',
+  'pane.browserPolicyProtectDescRefused',
+  'pane.browserPolicyRestart',
+  'pane.browserPolicyPaneLock',
+  'pane.browserPolicySummaryAny',
+  'pane.browserPolicySummarySites',
+  'pane.browserPolicySummaryRefused',
+  'pane.browserPolicyInAppNotCovered',
+  'pane.browserPolicyProfileNameTaken',
   'pane.browserPolicyUnreadable',
 ] as const;
+
+const VARS: Partial<Record<(typeof KEYS)[number], string[]>> = {
+  'pane.browserPolicyInvalidLine': ['{line}', '{rule}'],
+  'pane.browserPolicySummarySites': ['{count}'],
+};
 
 type BrowserPolicyTranslationKey = (typeof KEYS)[number];
 
@@ -95,9 +108,9 @@ describe('browser policy locale contract', () => {
         if (typeof copy !== 'string') throw new Error(`${locale} missing "${key}"`);
         expect(copy).toBeTruthy();
         expect(copy).not.toBe(key);
-        // Only the per-line error interpolates, and only these two names.
+        // Only these keys interpolate, and only with these names.
         const vars = (copy.match(/\{[a-zA-Z]+\}/g) ?? []).sort();
-        expect(vars).toEqual(key === 'pane.browserPolicyInvalidLine' ? ['{line}', '{rule}'] : []);
+        expect(vars).toEqual(VARS[key] ?? []);
       }
     });
   }

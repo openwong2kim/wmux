@@ -495,7 +495,7 @@ export default function SurfaceTabs({
   >(null);
   // 'main' is the action list; 'browser-profile' its Chrome profile submenu,
   // shown in the same popover (the Moa header menu's Model/Mode idiom).
-  const [menu, setMenu] = useState<null | 'main' | 'browser-profile'>(null);
+  const [menu, setMenu] = useState<null | 'main' | 'browser-profile' | 'browser-profile-new'>(null);
   const menuOpen = menu !== null;
   // Where focus was when the menu opened. The submenu remounts the popover, so
   // its own "focus on open" is a main-menu item that is gone by close time.
@@ -510,6 +510,10 @@ export default function SurfaceTabs({
   const closeMenu = useCallback(() => setMenu((m) => (m === 'main' ? null : m)), []);
   const closeSubmenu = useCallback(() => setMenu(null), []);
   const openBrowserProfileMenu = useCallback(() => setMenu('browser-profile'), []);
+  // The submenu's "New profile" row swaps in the name form; the submenu's own
+  // close runs right after and must not undo that (closeMenu's idiom).
+  const closeProfileSubmenu = useCallback(() => setMenu((m) => (m === 'browser-profile' ? null : m)), []);
+  const openNewProfileForm = useCallback(() => setMenu('browser-profile-new'), []);
   // Escape in the submenu steps back to the main menu, on the item that opened it.
   const backToMainMenu = useCallback(() => {
     setMenuFocusKey(PANE_BROWSER_PROFILE_KEY);
@@ -684,6 +688,8 @@ export default function SurfaceTabs({
     paneLabel: paneDisplay,
     allowed: !readOnly,
     openSubmenu: openBrowserProfileMenu,
+    openNewProfileForm,
+    closeMenu: closeSubmenu,
   });
   const reloadChromeProfiles = chromeProfile.reload;
   // Browser protection (needs the pane's own profile — the hook gates itself).
@@ -694,7 +700,6 @@ export default function SurfaceTabs({
     workspaceId: workspace.id,
     enabled: chromeProfile.enabled,
     boundProfile: chromeProfile.bound,
-    hasBrowserSurface: surfaces.some((s) => s.surfaceType === 'browser'),
     openDialog: openPolicyDialog,
   });
   const reloadBrowserPolicy = browserPolicy.reload;
@@ -923,6 +928,20 @@ export default function SurfaceTabs({
         />
       )}
 
+      {/* Protected pane: one muted padlock for the pane (its own Chrome), not
+          on a tab — an in-app browser tab is not covered. */}
+      {browserPolicy.summary && (
+        <span
+          className="shrink-0 ml-1 flex items-center text-[var(--text-muted)]"
+          role="img"
+          aria-label={`${t('pane.browserPolicyPaneLock')} · ${browserPolicy.summary}`}
+          title={`${t('pane.browserPolicyPaneLock')} · ${browserPolicy.summary}`}
+          data-protected-pane
+        >
+          <IconLock size={12} />
+        </span>
+      )}
+
       {/* Scroll region: pane label + tabs share the horizontal overflow so the
           action cluster below stays pinned to the right on narrow panes. */}
       <div className="wmux-surface-tablist flex items-center gap-1 px-1 flex-1 min-w-0 overflow-x-auto h-full">
@@ -1021,7 +1040,13 @@ export default function SurfaceTabs({
           // from the other machine's shell, so it reads exactly like a local
           // one — "C:\Program Files\…\pwsh" on both — and the path it shows
           // does not exist on this machine.
-          title={editingId === s.id ? undefined : surfaceTabTooltip(s, t)}
+          title={editingId === s.id ? undefined : (
+            // Protection covers the pane's own Chrome; an in-app browser tab
+            // beside it is not behind the pane's site policy.
+            browserPolicy.summary && s.surfaceType === 'browser'
+              ? `${surfaceTabTooltip(s, t)}\n${t('pane.browserPolicyInAppNotCovered')}`
+              : surfaceTabTooltip(s, t)
+          )}
         >
           <SurfaceTabStatusDot ptyId={s.ptyId} active={s.id === activeSurfaceId} />
           {/* #1140 dogfood — a remote tab was indistinguishable from a local
@@ -1034,17 +1059,6 @@ export default function SurfaceTabs({
           {/* Private browser tab: the same padlock a private channel carries. */}
           {isPrivateBrowserSurface(s) && (
             <span className="shrink-0" role="img" aria-label={t('browser.privateTab')} data-private-browser-tab>
-              <IconLock size={12} />
-            </span>
-          )}
-          {/* Protected pane: the same quiet padlock, muted, on its browser tabs. */}
-          {browserPolicy.isProtected && s.surfaceType === 'browser' && !isPrivateBrowserSurface(s) && (
-            <span
-              className="shrink-0 text-[var(--text-muted)]"
-              role="img"
-              aria-label={t('pane.browserPolicyProtectedTab')}
-              data-protected-browser-tab
-            >
               <IconLock size={12} />
             </span>
           )}
@@ -1334,12 +1348,14 @@ export default function SurfaceTabs({
           key={menu}
           anchor={menuAnchor}
           triggerRef={overflowBtnRef}
-          items={menu === 'browser-profile' ? chromeProfile.subItems : menuItems}
-          onClose={menu === 'main' ? closeMenu : closeSubmenu}
-          onEscape={menu === 'main' ? undefined : backToMainMenu}
+          items={menu === 'browser-profile' ? chromeProfile.subItems : menu === 'browser-profile-new' ? [] : menuItems}
+          onClose={menu === 'main' ? closeMenu : menu === 'browser-profile' ? closeProfileSubmenu : closeSubmenu}
+          onEscape={menu === 'main' ? undefined : menu === 'browser-profile-new' ? openBrowserProfileMenu : backToMainMenu}
           initialFocusKey={menu === 'main' ? menuFocusKey : undefined}
           restoreFocusTo={menuOpenerRef}
-        />
+        >
+          {menu === 'browser-profile-new' && chromeProfile.newProfileForm}
+        </PaneActionsMenu>
       )}
       {policyDialogOpen && (
         <BrowserPolicyDialog

@@ -87,6 +87,25 @@ async function clickItem(key: string): Promise<void> {
   await flush();
 }
 
+function nameInput(): HTMLInputElement | null {
+  return document.querySelector<HTMLInputElement>('[data-pane-new-profile-input]');
+}
+
+function typeName(value: string): void {
+  const el = nameInput()!;
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+  act(() => {
+    setter.call(el, value);
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+}
+
+async function submitName(): Promise<void> {
+  const form = document.querySelector<HTMLFormElement>('[data-pane-new-profile-form]')!;
+  act(() => { form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })); });
+  await flush();
+}
+
 async function openProfileSubmenu(): Promise<void> {
   await openMenu();
   await clickItem('browser-profile');
@@ -173,36 +192,74 @@ describe('SurfaceTabs — per-pane Chrome profile', () => {
     expect(api.bindPane).toHaveBeenCalledWith(paneId, wsId, 'shop');
   });
 
-  it('New profile: sanitized, de-duplicated name, created then bound', async () => {
+  it('New profile: opens a name field prefilled with the de-duplicated pane name; Create binds it', async () => {
     const ws = activeWs();
     useStore.getState().setPaneLabel(ws.rootPane.id, 'Work');
     const { paneId, wsId } = mount();
     await openProfileSubmenu();
     await clickItem('profile-new');
+    expect(api.create).not.toHaveBeenCalled();
     // 'work' is taken (case-insensitively) → 'Work-2'.
+    expect(nameInput()?.value).toBe('Work-2');
+    await submitName();
     expect(api.create).toHaveBeenCalledWith('Work-2');
     expect(api.bindPane).toHaveBeenCalledWith(paneId, wsId, 'Work-2');
     expect(api.create.mock.invocationCallOrder[0]).toBeLessThan(api.bindPane.mock.invocationCallOrder[0]);
+    expect(document.querySelector('[data-pane-actions-menu]')).toBeNull();
   });
 
-  it('New profile: a failed create toasts its error and never binds', async () => {
+  it('New profile: a typed name is created and bound (name it after the account)', async () => {
+    const { paneId, wsId } = mount();
+    await openProfileSubmenu();
+    await clickItem('profile-new');
+    typeName('  acme-admin ');
+    await submitName();
+    expect(api.create).toHaveBeenCalledWith('acme-admin');
+    expect(api.bindPane).toHaveBeenCalledWith(paneId, wsId, 'acme-admin');
+  });
+
+  it('New profile: an existing name is refused in the form, never created or bound', async () => {
+    mount();
+    await openProfileSubmenu();
+    await clickItem('profile-new');
+    typeName('SHOP');
+    await submitName();
+    expect(api.create).not.toHaveBeenCalled();
+    expect(api.bindPane).not.toHaveBeenCalled();
+    expect(document.querySelector('[data-pane-new-profile-error]')?.textContent).toContain('already exists');
+  });
+
+  it('New profile: a failed create shows its error in the form and never binds', async () => {
     api.create.mockResolvedValueOnce({ ok: false, error: 'at most 20 Chrome profiles' });
     mount();
     await openProfileSubmenu();
     await clickItem('profile-new');
+    await submitName();
     expect(api.bindPane).not.toHaveBeenCalled();
-    const toasts = useStore.getState().toasts;
-    expect(toasts.at(-1)).toMatchObject({ level: 'error', message: 'at most 20 Chrome profiles' });
+    expect(document.querySelector('[data-pane-new-profile-error]')?.textContent).toBe('at most 20 Chrome profiles');
+    expect(nameInput()).not.toBeNull();
   });
 
-  it('New profile: aborts with a toast when the fresh profile list fails', async () => {
+  it('New profile: aborts with an error when the fresh profile list fails', async () => {
     mount();
     await openProfileSubmenu();
-    api.list.mockRejectedValueOnce(new Error('ipc down'));
     await clickItem('profile-new');
+    api.list.mockRejectedValueOnce(new Error('ipc down'));
+    await submitName();
     expect(api.create).not.toHaveBeenCalled();
     expect(api.bindPane).not.toHaveBeenCalled();
-    expect(useStore.getState().toasts.at(-1)).toMatchObject({ level: 'error' });
+    expect(document.querySelector('[data-pane-new-profile-error]')).not.toBeNull();
+  });
+
+  it('New profile: Escape steps back to the profile submenu', async () => {
+    mount();
+    await openProfileSubmenu();
+    await clickItem('profile-new');
+    act(() => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
+    expect(nameInput()).toBeNull();
+    expect(item('profile-new')).not.toBeNull();
   });
 
   it('Use workspace profile unbinds the pane', async () => {
@@ -294,30 +351,54 @@ describe('SurfaceTabs — browser protection', () => {
     expect(document.querySelector('[data-testid="browser-policy-dialog"]')).not.toBeNull();
   });
 
-  it('draws a muted lock on a protected pane\'s browser tab only', async () => {
+  it('draws one muted lock for the pane, never on an in-app browser tab, and says the tab is not covered', async () => {
     const ws = activeWs();
+    policyResult = {
+      ok: true, state: 'ok', epoch: 3, currentProfile: 'work',
+      policy: { workspaceId: ws.id, paneId: ws.rootPane.id, profileId: 'work', protected: true, hosts: { mode: 'allowlist', allow: ['a.com', 'b.com'], block: [] } },
+    };
+    mount([browserTab()]);
+    await flush();
+    const lock = container.querySelector('[data-protected-pane]');
+    expect(lock?.getAttribute('aria-label')).toBe("This pane's Chrome is protected · Protected · 2 allowed");
+    expect(container.querySelector('[role="tab"] [data-protected-pane], [data-protected-browser-tab]')).toBeNull();
+    const tab = [...container.querySelectorAll<HTMLElement>('[title]')].find((el) => el.title.includes('not covered'));
+    expect(tab).toBeDefined();
+    expect(policyApi.get).toHaveBeenCalledWith(ws.id, ws.rootPane.id);
+  });
+
+  it('shows the protection on the menu row', async () => {
+    const ws = activeWs();
+    listResult.paneBindings = { [ws.rootPane.id]: { workspaceId: ws.id, profile: 'work' } };
     policyResult = {
       ok: true, state: 'ok', epoch: 3, currentProfile: 'work',
       policy: { workspaceId: ws.id, paneId: ws.rootPane.id, profileId: 'work', protected: true, hosts: { mode: 'off', allow: [], block: [] } },
     };
-    mount([browserTab()]);
-    await flush();
-    const lock = container.querySelector('[data-protected-browser-tab]');
-    expect(lock?.getAttribute('aria-label')).toBe('Protected browser');
-    expect(policyApi.get).toHaveBeenCalledWith(ws.id, ws.rootPane.id);
+    mount();
+    await openMenu();
+    expect(item('browser-policy')?.querySelector('[data-pane-menu-detail]')?.textContent).toBe('Protected · any site');
   });
 
-  it('no lock and no read for a pane without a browser tab', async () => {
+  it('a pane refused by an unreadable policy file shows the lock and stays editable without a profile', async () => {
+    policyResult = { ok: true, state: 'corrupt', epoch: 0, policy: null, currentProfile: 'default' };
+    mount();
+    await openMenu();
+    expect(container.querySelector('[data-protected-pane]')?.getAttribute('aria-label')).toContain('blocked until you confirm');
+    expect(item('browser-policy')?.getAttribute('aria-disabled')).toBeNull();
+  });
+
+  it("main's decision wins: legacy draws nothing even with an unreadable file", async () => {
+    policyResult = { ok: true, state: 'corrupt', epoch: 0, policy: null, currentProfile: 'default', decision: 'legacy' } as BrowserPolicyReadResult;
     mount();
     await flush();
-    expect(container.querySelector('[data-protected-browser-tab]')).toBeNull();
-    expect(policyApi.get).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-protected-pane]')).toBeNull();
   });
 
-  it('no lock on an unprotected pane', async () => {
+  it('no lock on an unprotected pane, and in-app tabs keep their plain tooltip', async () => {
     mount([browserTab()]);
     await flush();
     expect(policyApi.get).toHaveBeenCalled();
-    expect(container.querySelector('[data-protected-browser-tab]')).toBeNull();
+    expect(container.querySelector('[data-protected-pane]')).toBeNull();
+    expect([...container.querySelectorAll<HTMLElement>('[title]')].some((el) => el.title.includes('not covered'))).toBe(false);
   });
 });
