@@ -6,4 +6,4 @@
   File on Windows and Linux) now has **Quit and Stop Sessions**. It asks first,
   saying how many agent sessions and terminals are running, then stops the
   background service and all of its sessions and quits. Before, only the tray
-  menu could do this. Plain Quit is unchanged.
+  menu could do this. Plain Quit is unchanged. (#2021)
