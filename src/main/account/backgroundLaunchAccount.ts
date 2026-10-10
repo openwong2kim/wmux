@@ -52,42 +52,68 @@ export interface BackgroundLaunchDeps {
   dirExists?: (dir: string) => boolean;
 }
 
+type RunLaunch = Extract<BackgroundLaunch, { kind: 'run' }>;
+type LaunchStore = NonNullable<BackgroundLaunchDeps['store']>;
+
+function boundRun(store: LaunchStore, workspaceId: string | undefined, vendor: Vendor, onMissing?: (account: Account) => void): RunLaunch {
+  if (!workspaceId) return { kind: 'run', env: {}, accountId: null };
+  const env = store.resolveAccountEnv(workspaceId, vendor, onMissing);
+  const accountId = env[VENDOR_ENV_KEYS[vendor]] ? store.getBinding(workspaceId, vendor) ?? null : null;
+  return { kind: 'run', env, accountId };
+}
+
+function accountRun(account: Account, vendor: Vendor): RunLaunch {
+  return { kind: 'run', env: { [VENDOR_ENV_KEYS[vendor]]: account.configDir }, accountId: account.id };
+}
+
+/**
+ * The account a resumed conversation runs on: its recorded account, the
+ * default login for null, or the binding when it is unknown — or when the
+ * recorded account is gone or its config dir is missing (`fellBack`). Shared
+ * by the resume launch and the Moa transcript lookup, so both look in the same
+ * config dir. Sync; never warns (the caller decides).
+ */
+export function resolveConversationAccount(
+  workspaceId: string | undefined,
+  vendor: Vendor,
+  conversationAccountId: string | null | undefined,
+  deps: Pick<BackgroundLaunchDeps, 'store' | 'dirExists'> = {},
+  onMissing?: (account: Account) => void,
+): { run: RunLaunch; fellBack: boolean } {
+  const store = deps.store ?? getAccountStore();
+  if (conversationAccountId === undefined) return { run: boundRun(store, workspaceId, vendor, onMissing), fellBack: false };
+  if (conversationAccountId === null) return { run: { kind: 'run', env: {}, accountId: null }, fellBack: false };
+  const account = store.getAccount(conversationAccountId);
+  const exists = deps.dirExists ?? isAccessibleDir;
+  if (account && account.vendor === vendor && exists(account.configDir)) return { run: accountRun(account, vendor), fellBack: false };
+  return { run: boundRun(store, workspaceId, vendor, onMissing), fellBack: true };
+}
+
 export async function resolveBackgroundLaunch(
   workspaceId: string | undefined,
   vendor: Vendor,
   opts: BackgroundLaunchOptions,
   deps: BackgroundLaunchDeps = {},
 ): Promise<BackgroundLaunch> {
-  const key = VENDOR_ENV_KEYS[vendor];
-  const exists = deps.dirExists ?? isAccessibleDir;
-  let store: NonNullable<BackgroundLaunchDeps['store']>;
+  let store: LaunchStore;
   try {
     store = deps.store ?? getAccountStore();
   } catch (err) {
     console.warn(`[account] background ${vendor} launch could not read the account store:`, err);
     return { kind: 'run', env: {}, accountId: null };
   }
-  const bound = (): Extract<BackgroundLaunch, { kind: 'run' }> => {
-    if (!workspaceId) return { kind: 'run', env: {}, accountId: null };
-    const env = store.resolveAccountEnv(workspaceId, vendor, opts.onMissing);
-    const accountId = env[key] ? store.getBinding(workspaceId, vendor) ?? null : null;
-    return { kind: 'run', env, accountId };
-  };
-  const onAccount = (account: Account): Extract<BackgroundLaunch, { kind: 'run' }> =>
-    ({ kind: 'run', env: { [key]: account.configDir }, accountId: account.id });
+  const bound = (): RunLaunch => boundRun(store, workspaceId, vendor, opts.onMissing);
   /** The account a resumed conversation must run on; the binding when unknown
    *  or when that account is gone. */
-  const conversationAccount = (): Extract<BackgroundLaunch, { kind: 'run' }> => {
-    const id = opts.conversationAccountId;
-    if (id === undefined) return bound();
-    if (id === null) return { kind: 'run', env: {}, accountId: null };
-    const account = store.getAccount(id);
-    if (account && account.vendor === vendor && exists(account.configDir)) return onAccount(account);
-    console.warn(
-      `[account] background ${vendor} resume: the account this conversation runs on (${id}) ` +
-      'is gone or its config dir is missing — resuming on the binding, where the conversation may not be found.',
-    );
-    return bound();
+  const conversationAccount = (): RunLaunch => {
+    const { run, fellBack } = resolveConversationAccount(workspaceId, vendor, opts.conversationAccountId, { store, dirExists: deps.dirExists }, opts.onMissing);
+    if (fellBack) {
+      console.warn(
+        `[account] background ${vendor} resume: the account this conversation runs on (${opts.conversationAccountId}) ` +
+        'is gone or its config dir is missing — resuming on the binding, where the conversation may not be found.',
+      );
+    }
+    return run;
   };
   const nameOf = (id: string) => store.getAccount(id)?.name ?? id;
 
@@ -118,7 +144,7 @@ export async function resolveBackgroundLaunch(
     if (decision.kind === 'hold') return { kind: 'hold', message: allOutMessage(vendor, decision.availableAtMs) };
     if (decision.kind === 'switch') {
       const account = store.getAccount(decision.accountId);
-      if (account) return onAccount(account);
+      if (account) return accountRun(account, vendor);
     }
     return bound();
   } catch (err) {

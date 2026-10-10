@@ -162,7 +162,7 @@ import { isSmallTalk } from '../../deck/smallTalk';
 import { computeReadRoots, isAcceptableReadRoot, setMoaReadRoots, setMoaReadRootsRefresher } from '../../deck/moaReadGate';
 import { createSerialChain } from '../../deck/serialChain';
 import { answerMoaApproval, MOA_ANSWER_DELEGATED_PROMPT_RPC, readMoaApproval } from '../../deck/moaApproval';
-import { getAccountStore } from '../../account/accountStore';
+import { resolveConversationAccount } from '../../account/backgroundLaunchAccount';
 import type { MoaApproval, MoaApprovalAnswerResult, MoaDelegatedApproval, MoaPendingDecision } from '../../../shared/moa';
 import { selectDelegatedApprovals } from '../../deck/moaDelegatedApprovals';
 import { resultFromTask, type MoaTaskResult } from '../../../shared/moaResult';
@@ -440,13 +440,11 @@ export function registerDeckHandler(
     isMoaEnabled: () => isMoaEnabled(),
     // The brain re-applies its conversation's account after the env scrub, so
     // its transcript lives under that account's CLAUDE_CONFIG_DIR — the
-    // containment check has to see the same overlay.
-    getSessionEnv: (workspaceId) => {
-      const accountId = brainConversationAccounts.get(workspaceId);
-      if (accountId === null) return {};
-      const account = accountId ? getAccountStore().getAccount(accountId) : undefined;
-      return account ? { CLAUDE_CONFIG_DIR: account.configDir } : getAccountStore().resolveAccountEnv(workspaceId, 'claude');
-    },
+    // containment check has to see the same overlay. Same resolver as the
+    // brain's resume, so a recorded account whose dir is missing falls back to
+    // the binding here too.
+    getSessionEnv: (workspaceId) =>
+      resolveConversationAccount(workspaceId, 'claude', brainConversationAccounts.get(workspaceId)).run.env,
     emitAppend: (data) => {
       const win = getWindow();
       if (win && !win.isDestroyed()) win.webContents.send(IPC.DECK_MOA_TRANSCRIPT_APPEND, data);
