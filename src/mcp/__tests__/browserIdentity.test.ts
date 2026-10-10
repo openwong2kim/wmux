@@ -34,7 +34,9 @@ async function connect(
     callerPpid: null,
   });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-  const client = new Client({ name: 'test-client', version: '1.0.0' }, { capabilities: {} });
+  // A known non-Codex client: on Windows an unknown name makes the first browser
+  // call inspect this process's real parent, which these tests are not about.
+  const client = new Client({ name: 'claude-code', version: '1.0.0' }, { capabilities: {} });
   await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
   return client;
 }
