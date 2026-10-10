@@ -93,12 +93,16 @@ describe('receipts', () => {
 
   it('never evicts a receipt inside the retention window: a full owner is refused instead', () => {
     let now = 1_000;
-    const r = store(() => now);
+    // Seed a full owner on disk instead of calling begin() 200 times: each
+    // begin is a durable write of the whole file, and 200 of them outlast the
+    // test timeout on Windows runners (#2013).
+    const rows: Record<string, unknown> = {};
     for (let i = 0; i < GIT_WRITE_RECEIPTS_PER_OWNER; i++) {
-      const key = GitWriteReceipts.key('device:a', `id-${i}`);
-      r.begin(key, { ...row, requestId: `id-${i}` });
-      r.settle(key, { state: 'done' });
+      rows[GitWriteReceipts.key('device:a', `id-${i}`)] = { ...row, requestId: `id-${i}`, createdAt: now, state: 'done' };
     }
+    fs.writeFileSync(path.join(dir, PHONE_GIT_WRITE_RECEIPTS_FILE), JSON.stringify({ version: 1, rows }));
+    const r = store(() => now);
+    expect(r.available).toBe(true);
     expect(() => r.begin(GitWriteReceipts.key('device:a', 'one-more'), { ...row, requestId: 'one-more' })).toThrow(GitWriteReceiptCapacityError);
     // The oldest settled receipt is still there to answer a resend.
     expect(r.find(GitWriteReceipts.key('device:a', 'id-0'))).toMatchObject({ state: 'done' });
