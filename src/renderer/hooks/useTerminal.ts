@@ -10,6 +10,7 @@ import { isSafeGeometry } from '../../shared/terminalGeometry';
 import { isPrefixTrigger, resolveShortcut } from '../../shared/keymap';
 import { mentionKeyClaim } from '../utils/agentMention';
 import { currentShortcutBindings, defaultShortcutBindings, shortcutPressGuard } from '../utils/shortcutBindings';
+import { isPcRailAction, pcRailClaimsKey } from '../components/PcRail/pcRailModel';
 import { xtermWindowsBuildNumber } from '../../shared/conptyWindows';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { useStore } from '../stores';
@@ -2224,6 +2225,9 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         }
         return true;
       }
+      // No paired computer, or a custom keybinding on the chord: the PC rail
+      // does not take it, so the pane gets Shift+Alt+Arrow / Home.
+      if (isPcRailAction(shortcut) && !pcRailClaimsKey(useStore.getState(), e)) return true;
       // #1280 — the Rich Input chord bubbles from HERE, instead of merely
       // being preventDefault'd downstream: xterm's own encode path calls
       // stopPropagation (its `cancel()`), so otherwise the chord never reaches

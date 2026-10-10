@@ -5,8 +5,8 @@ import { collectPaneTreePtyIds, findLeaf, getLeafPanes, getWorkspacePtyIds } fro
 import { terminalRegistry } from './useTerminal';
 import { t } from '../i18n';
 import { pastePtyChunked } from '../utils/clipboardChunk';
-import { comboFromEvent, isPrefixTrigger, resolveShortcut, type ShortcutActionId } from '../../shared/keymap';
-import { pcShortcutAction, pcShortcutTarget } from '../components/PcRail/pcRailModel';
+import { isPrefixTrigger, resolveShortcut, type ShortcutActionId } from '../../shared/keymap';
+import { isPcRailAction, pcRailClaimsKey, pcShortcutTarget } from '../components/PcRail/pcRailModel';
 import { currentShortcutBindings, shortcutPressGuard } from '../utils/shortcutBindings';
 import { createTerminalSurface } from '../utils/createTerminalSurface';
 import { openUrlInBrowserPane } from '../utils/browserPaneActions';
@@ -386,6 +386,12 @@ export function useKeyboard() {
       }
     };
 
+    // PC rail: cycle the computer column, or return to this computer.
+    const selectPc = (action: 'prevPc' | 'nextPc' | 'thisPc'): void => {
+      const st = store.getState();
+      st.setActivePc(pcShortcutTarget(action, st.pcRailHosts.map((h) => h.id), st.pcRail.activePcId));
+    };
+
     const builtinActions: Partial<Record<ShortcutActionId, () => void>> = {
       splitHorizontal: () => {
         const ws = activeWorkspace();
@@ -466,6 +472,9 @@ export function useKeyboard() {
       floatingPane: () => { store.getState().toggleFloatingPane(); },
       prevWorkspace: () => { prefixActions.prevWorkspace(); },
       nextWorkspace: () => { prefixActions.nextWorkspace(); },
+      prevPc: () => selectPc('prevPc'),
+      nextPc: () => selectPc('nextPc'),
+      thisPc: () => selectPc('thisPc'),
       workspace1: () => jumpToWorkspace(0),
       workspace2: () => jumpToWorkspace(1),
       workspace3: () => jumpToWorkspace(2),
@@ -809,7 +818,11 @@ export function useKeyboard() {
       const mentionClaim = action === 'mentionAgent'
         ? mentionKeyClaim(store.getState(), e, window.electronAPI?.platform)
         : undefined;
-      if (action && run && mentionClaim !== null) {
+      // A PC rail chord is the rail's only while a computer is paired and no
+      // custom keybinding sits on it; otherwise it goes on (useTerminal lets
+      // xterm encode it), as for a switched-off built-in.
+      const pcUnclaimed = isPcRailAction(action) && !pcRailClaimsKey(store.getState(), e);
+      if (action && run && mentionClaim !== null && !pcUnclaimed) {
         e.preventDefault();
         if (STOP_PROPAGATION_ACTIONS.has(action)) e.stopImmediatePropagation();
         shortcutPressGuard.noteActed(e);
@@ -824,22 +837,7 @@ export function useKeyboard() {
       }
 
       // ─── Custom keybindings → terminal input ─────────────────────────
-      if (dispatchCustomKeybinding()) return;
-
-      // ─── PC rail: Alt+Shift+Up/Down cycles computers, Alt+Shift+Home
-      // returns to this one. Only while the computer column is shown, and
-      // only when no built-in or custom keybinding above took the combo, so
-      // a user's own binding on the chord keeps working. Captured before
-      // xterm, so the chord never reaches the pane.
-      const pcAction = pcShortcutAction(comboFromEvent(e));
-      if (!pcAction) return;
-      const st = store.getState();
-      if (st.pcRailHosts.length === 0) return;
-      if (st.customKeybindings.some((kb) => kb.key === formatKeyCombo(literalCtrl, shift, alt, key))) return;
-      e.preventDefault();
-      e.stopImmediatePropagation();
-      shortcutPressGuard.noteActed(e);
-      st.setActivePc(pcShortcutTarget(pcAction, st.pcRailHosts.map((h) => h.id), st.pcRail.activePcId));
+      dispatchCustomKeybinding();
     };
 
     // The guard's view of when a press ends (see ShortcutPressGuard).

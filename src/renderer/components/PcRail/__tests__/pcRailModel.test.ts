@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { LOCAL_PC_ID } from '../../../../shared/pcRail';
-import { accessLines, badgeText, cyclePc, monogram, pcBadge, pcIconState, pcShortcutAction, pcShortcutTarget } from '../pcRailModel';
+import { accessLines, badgeText, cyclePc, isPcRailAction, monogram, pcBadge, pcIconState, pcRailClaimsKey, pcShortcutTarget } from '../pcRailModel';
 
 describe('monogram', () => {
   it('takes the initials of two words, or two letters of one', () => {
@@ -51,13 +51,18 @@ describe('pcIconState', () => {
 });
 
 describe('PC shortcuts', () => {
-  it('maps the default chords and moves the selection', () => {
-    expect(pcShortcutAction('Shift+Alt+ArrowDown')).toBe('nextPc');
-    expect(pcShortcutAction('Alt+ArrowDown')).toBeUndefined();
-    expect(pcShortcutAction(null)).toBeUndefined();
+  it('moves the selection', () => {
     expect(pcShortcutTarget('nextPc', ['a'], LOCAL_PC_ID)).toBe('a');
     expect(pcShortcutTarget('prevPc', ['a'], LOCAL_PC_ID)).toBe('a');
     expect(pcShortcutTarget('thisPc', ['a'], 'a')).toBe(LOCAL_PC_ID);
+  });
+  it('claims a chord only with a paired computer and no custom keybinding on it', () => {
+    const e = { ctrlKey: false, shiftKey: true, altKey: true, key: 'ArrowDown' };
+    expect(isPcRailAction('nextPc')).toBe(true);
+    expect(isPcRailAction('nextWorkspace')).toBe(false);
+    expect(pcRailClaimsKey({ pcRailHosts: [], customKeybindings: [] }, e)).toBe(false);
+    expect(pcRailClaimsKey({ pcRailHosts: [{}], customKeybindings: [] }, e)).toBe(true);
+    expect(pcRailClaimsKey({ pcRailHosts: [{}], customKeybindings: [{ key: 'Shift+Alt+ArrowDown' }] }, e)).toBe(false);
   });
 });
 

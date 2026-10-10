@@ -273,15 +273,17 @@ sheet once, so terminals refit once. The titlebar segment widens to match.
 - **Overflow:** more computers than fit scroll the column (no visible
   bar); a focused icon is scrolled into view.
 - **Keys:** rebindable `Alt+Shift+↑/↓` cycles computers (as `Alt+↑/↓`
-  cycles workspaces), `Alt+Shift+Home` returns to this computer. Never
-  `Ctrl+Alt+digit` (AltGr on Windows). One tab stop; arrows, Home and End
+  cycles workspaces), `Alt+Shift+Home` returns to this computer; they are
+  Settings › Shortcuts rows like any built-in. The rail claims a chord only
+  while a computer is paired and no custom keybinding sits on it; otherwise
+  the pane gets it. Never `Ctrl+Alt+digit` (AltGr on Windows). One tab stop; arrows, Home and End
   rove; Shift+F10, the context-menu key or a right-click opens a host's
   menu: Mute / Unmute notifications, Open Remote page, Pair again, with
   View only or Can type and how to revoke underneath. A host added with its
-  operator link says so and suggests pairing again with a code; while the
-  desktop does not know how a host's credential was issued, the menu names
-  both ways to revoke (Paired devices for a code, a new web link for an
-  operator link) and promises neither.
+  operator link says so and suggests pairing again with a code. The desktop
+  records how each credential was issued from now on; for a host paired
+  before that, the menu names both ways to revoke (Paired devices for a
+  code, a new web link for an operator link) and promises neither.
 
 ### Fleet
 

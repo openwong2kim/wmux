@@ -16,7 +16,7 @@
 import type { RemoteHost, RemoteHostPublic } from '../../shared/remoteHosts';
 import { REMOTE_POLL_INTERVAL_MS } from '../../shared/remoteHosts';
 import { isCredentialSafeOriginString } from '../../shared/remotePairInput';
-import { PC_RAIL_CONFIG_PROBE_EVERY_TICKS, PC_RAIL_LIMITS, type PcRailAttentionFrameKind } from '../../shared/pcRail';
+import { PC_RAIL_CONFIG_PROBE_EVERY_TICKS, PC_RAIL_LIMITS, type PcRailAttentionFrameKind, type PcRailTokenKind } from '../../shared/pcRail';
 import type { RemoteAttentionNotification } from './remoteAttention';
 import { PcRailAttentionStream, type PcRailStreamState } from './pcRailAttention';
 import { fetchPcRailApprovals, fetchPcRailWorkspaces, probePcRailAllowInput } from './pcRailFeed';
@@ -28,7 +28,8 @@ const FAILURE_BACKOFF_MS = [20_000, 40_000, 60_000];
 const SLOW_RETRY_MS = 60_000;
 
 export interface PcRailHubSources {
-  hosts: { list(): RemoteHostPublic[]; get(id: string): RemoteHost | null };
+  /** `tokenKind`: how the credential was issued, when the store recorded it. */
+  hosts: { list(): RemoteHostPublic[]; get(id: string): (RemoteHost & { tokenKind?: PcRailTokenKind }) | null };
   /** Hosts with an attached remote workspace (their toasts come from the attach path). */
   attachedHostIds(): ReadonlySet<string>;
 }
@@ -136,7 +137,13 @@ export class PcRailHub {
     // ignores feeds for hosts its roster does not list.
     const roster: PcRailHostInfo[] = listed.map((h) => {
       const allowInput = this.pollers.get(h.id)?.allowInput ?? h.allowInput;
-      return { id: h.id, label: h.label, ...(allowInput !== undefined ? { allowInput } : {}) };
+      const tokenKind = this.deps.hosts.get(h.id)?.tokenKind;
+      return {
+        id: h.id,
+        label: h.label,
+        ...(allowInput !== undefined ? { allowInput } : {}),
+        ...(tokenKind === 'device' || tokenKind === 'operator' ? { tokenKind } : {}),
+      };
     });
     if (JSON.stringify(roster) !== JSON.stringify(this.hosts)) {
       this.hosts = roster;

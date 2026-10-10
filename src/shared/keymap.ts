@@ -35,6 +35,8 @@
  * what the resolver and user overrides speak.
  */
 
+import { PC_RAIL_SHORTCUTS } from './pcRail/shortcuts';
+
 /**
  * Every action a built-in shortcut can run. `prefix` is the tmux-style prefix
  * trigger: its key is configured separately (Settings → Prefix mode) and
@@ -47,6 +49,8 @@ export const SHORTCUT_ACTION_IDS = [
   'toggleNotifications', 'richInput', 'viCopyMode', 'renameWorkspace',
   'highlightPane', 'floatingPane',
   'prevWorkspace', 'nextWorkspace',
+  // PC rail (shared/pcRail/shortcuts.ts): cycle computers, back to this one.
+  'prevPc', 'nextPc', 'thisPc',
   'workspace1', 'workspace2', 'workspace3', 'workspace4', 'workspace5',
   'workspace6', 'workspace7', 'workspace8', 'workspace9',
   'closeWorkspace', 'jumpToUnread',
@@ -149,6 +153,12 @@ export const WMUX_KEYMAP: readonly KeymapEntry[] = [
   { action: 'workspace9', combo: 'Ctrl+9', descriptionKey: 'settings.sc.lastWorkspace' },
   { action: 'closeWorkspace', combo: 'Ctrl+Shift+W', descriptionKey: 'settings.sc.closeWorkspace' },
   { action: 'jumpToUnread', combo: 'Ctrl+Shift+U', descriptionKey: 'settings.sc.jumpToUnread' },
+
+  // Computers in the PC rail, as Alt+Up/Down cycles workspaces. Claimed only
+  // while a computer is paired: with none, or with a custom keybinding on the
+  // chord, the key goes on to the pane (useKeyboard, useTerminal). Never
+  // Ctrl+Alt+digit, which is AltGr on Windows.
+  ...PC_RAIL_SHORTCUTS.map((e): KeymapEntry => ({ action: e.action, combo: e.combo, descriptionKey: e.descriptionKey })),
 
   // Tabs and panes.
   { action: 'nextSurface', combo: 'Ctrl+Shift+]', descriptionKey: 'settings.sc.nextSurface' },

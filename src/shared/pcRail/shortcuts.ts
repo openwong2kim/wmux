@@ -1,9 +1,10 @@
 /**
  * Default keys for moving between computers in the PC rail.
  *
- * Kept out of WMUX_KEYMAP until the rail exists (PR3 adds these rows and the
- * action ids there), so nothing claims a key before something handles it.
- * Same field shape as KeymapEntry, so the rows drop into that table as is.
+ * WMUX_KEYMAP spreads these rows into its table (with the action ids in
+ * SHORTCUT_ACTION_IDS), so they are listed, rebindable and conflict-checked
+ * like every built-in. The rail claims them only while a computer is paired
+ * and no custom keybinding sits on the chord; otherwise the pane gets them.
  *
  * Shift+Alt+Up/Down cycles computers the way Alt+Up/Down cycles workspaces;
  * Shift+Alt+Home returns to this computer. No Ctrl+Alt+digit: on Windows that

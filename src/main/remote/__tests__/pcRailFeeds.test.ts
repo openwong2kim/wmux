@@ -97,6 +97,23 @@ function hubWith(hosts: RemoteHost[], fetchImpl: typeof fetch, extra: Partial<Pc
 const flush = () => new Promise((r) => setTimeout(r, 0));
 
 describe('PcRailHub', () => {
+  it('forwards how each credential was issued on the roster, and nothing when unknown', async () => {
+    const fetchImpl = vi.fn(() => new Promise<Response>(() => undefined)) as unknown as typeof fetch;
+    const { hub, feeds } = hubWith([
+      { ...host('op'), tokenKind: 'operator' } as RemoteHost,
+      { ...host('dev'), tokenKind: 'device' } as RemoteHost,
+      host('old'),
+    ], fetchImpl);
+    hub.start();
+    await flush();
+    expect(feeds[0]).toEqual({ type: 'hosts', hosts: [
+      { id: 'op', label: 'op', tokenKind: 'operator' },
+      { id: 'dev', label: 'dev', tokenKind: 'device' },
+      { id: 'old', label: 'old' },
+    ] });
+    hub.stop();
+  });
+
   it('a slow host does not hold back another host', async () => {
     const fetchImpl = vi.fn((url: string) => {
       if (url.startsWith('https://slow.')) return new Promise<Response>(() => undefined);

@@ -4,7 +4,7 @@
 // window is in the background), so the results need a main → renderer push.
 // Type-only, so preload and the renderer can import it.
 
-import { PC_RAIL_IPC } from '../../shared/pcRail';
+import { PC_RAIL_IPC, type PcRailTokenKind } from '../../shared/pcRail';
 import type { RemoteApprovalSummary } from '../../shared/pcRail/attention';
 import type { PcRailWorkspacesResponse } from '../../shared/pcRail/workspaceRow';
 
@@ -18,6 +18,8 @@ export interface PcRailHostInfo {
   id: string;
   label: string;
   allowInput?: boolean;
+  /** How this desktop's credential for the host was issued; absent when unknown. */
+  tokenKind?: PcRailTokenKind;
 }
 
 export type PcRailFeedEvent =

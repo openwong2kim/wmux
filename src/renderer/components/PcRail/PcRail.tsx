@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState, type KeyboardEvent, type MouseEvent } from 'react';
+import { useCallback, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
@@ -47,7 +47,14 @@ function Badge({ badge }: { badge: PcBadge }) {
 export default function PcRail() {
   const t = useT();
   const visible = useStore(selectPcRailVisible);
-  const hosts = useStore(selectPcRailHosts);
+  const railHosts = useStore(selectPcRailHosts);
+  // How each credential was issued comes on main's roster rows; the column's
+  // host rows do not carry it yet, so it is joined here.
+  const roster = useStore((s) => s.pcRailHosts);
+  const hosts = useMemo(() => railHosts.map((h) => {
+    const tokenKind = roster.find((r) => r.id === h.id)?.tokenKind;
+    return tokenKind ? { ...h, tokenKind } : h;
+  }), [railHosts, roster]);
   const active = useStore(selectActivePcId);
   const feeds = useStore((s) => s.pcRailFeeds);
   const localNeeds = useStore(useShallow(selectFleetSectionCounts)).needsYou;

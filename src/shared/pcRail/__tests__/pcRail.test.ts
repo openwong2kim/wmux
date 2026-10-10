@@ -276,7 +276,9 @@ describe('PC rail shortcuts', () => {
 
   it('take no key a built-in already uses, on any platform', () => {
     for (const platform of platforms) {
-      const taken = new Set(WMUX_KEYMAP.map((e) => concreteCombo(e, platform)));
+      // The rail's own rows are in the table now; every other row counts.
+      const pcActions = new Set<string>(PC_RAIL_SHORTCUTS.map((e) => e.action));
+      const taken = new Set(WMUX_KEYMAP.filter((e) => !pcActions.has(e.action)).map((e) => concreteCombo(e, platform)));
       const ours = PC_RAIL_SHORTCUTS.map((e) => concreteCombo(e, platform));
       expect(new Set(ours).size).toBe(ours.length);
       for (const combo of ours) expect(taken.has(combo), `${platform} ${combo}`).toBe(false);

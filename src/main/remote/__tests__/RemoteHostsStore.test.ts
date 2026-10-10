@@ -265,4 +265,29 @@ describe('RemoteHostsStore', () => {
     expect(store.replaceCredential(a.host.id, 'https://b.example:9600', 'z')).toEqual({ ok: false, error: 'already registered' });
     expect(store.get(a.host.id)?.token).toBe('x');
   });
+
+  // How each credential was issued, for the PC rail's operator-link label.
+  it('records the token kind: operator for a pasted link, device for a code exchange or re-pair', () => {
+    const store = new RemoteHostsStore(filePath);
+    const op = store.add('https://a.example:9600/?token=x');
+    const dev = store.addDirect('https://b.example:9600', 'y');
+    if (!op.ok || !dev.ok) throw new Error('add failed');
+    expect(store.get(op.host.id)?.tokenKind).toBe('operator');
+    expect(store.get(dev.host.id)?.tokenKind).toBe('device');
+    store.replaceCredential(op.host.id, 'https://a.example:9600', 'z');
+    expect(store.get(op.host.id)?.tokenKind).toBe('device');
+    expect(new RemoteHostsStore(filePath).get(dev.host.id)?.tokenKind).toBe('device');
+  });
+
+  it('keeps a record with no or an unknown token kind, dropping only the bad field', () => {
+    fs.writeFileSync(filePath, JSON.stringify([
+      { id: 'old', label: 'old', origin: 'https://old.example', token: 't', addedAt: 1 },
+      { id: 'bad', label: 'bad', origin: 'https://bad.example', token: 't', addedAt: 1, tokenKind: 'root' },
+    ]));
+    const store = new RemoteHostsStore(filePath);
+    expect(store.list().map((h) => h.id)).toEqual(['old', 'bad']);
+    expect(store.get('old')?.tokenKind).toBeUndefined();
+    expect(store.get('bad')?.tokenKind).toBeUndefined();
+    expect('tokenKind' in (store.get('bad') ?? {})).toBe(false);
+  });
 });

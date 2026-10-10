@@ -6,7 +6,8 @@
  *   cyclePc       Alt+Shift+Up/Down (and the roving arrows) over the column
  *   pcBadge       which mark an icon wears: needs-you count, done dot or none
  *   pcIconState   online / offline / needs-repair / insecure / unchecked
- *   pcShortcut*   Alt+Shift+Up/Down/Home → the computer to select
+ *   pcRailClaimsKey  whether a resolved PC chord is the rail's or the pane's
+ *   pcShortcutTarget Alt+Shift+Up/Down/Home → the computer to select
  */
 import {
   LOCAL_PC_ID,
@@ -81,13 +82,35 @@ export function pcIconState(host: Pick<PcRailHost, 'status' | 'lastSeenAt'>): Pc
   return state;
 }
 
+const PC_ACTIONS: ReadonlySet<string> = new Set(PC_RAIL_SHORTCUTS.map((e) => e.action));
+
+/** True for the keymap actions the PC rail runs (prevPc, nextPc, thisPc). */
+export function isPcRailAction(action: string | null | undefined): action is PcRailShortcutActionId {
+  return !!action && PC_ACTIONS.has(action);
+}
+
+/** A keydown in the custom keybindings' spelling (literal Ctrl, Shift, Alt, then the key). */
+function customKeyCombo(e: Pick<KeyboardEvent, 'ctrlKey' | 'shiftKey' | 'altKey' | 'key'>): string {
+  const parts: string[] = [];
+  if (e.ctrlKey) parts.push('Ctrl');
+  if (e.shiftKey) parts.push('Shift');
+  if (e.altKey) parts.push('Alt');
+  parts.push(e.key.length === 1 ? e.key.toUpperCase() : e.key);
+  return parts.join('+');
+}
+
 /**
- * The PC rail shortcut a keydown's combo (comboFromEvent's spelling) runs,
- * if any. Read from PC_RAIL_SHORTCUTS until those rows join WMUX_KEYMAP.
+ * Whether the rail takes a keydown its shortcut resolved to. Only while a
+ * computer is paired, and never over a custom keybinding on the same chord;
+ * otherwise the key belongs to the pane (useTerminal lets xterm encode it).
  */
-export function pcShortcutAction(combo: string | null): PcRailShortcutActionId | undefined {
-  if (!combo) return undefined;
-  return PC_RAIL_SHORTCUTS.find((s) => s.combo === combo)?.action;
+export function pcRailClaimsKey(
+  state: { pcRailHosts: readonly unknown[]; customKeybindings: readonly { key: string }[] },
+  e: Pick<KeyboardEvent, 'ctrlKey' | 'shiftKey' | 'altKey' | 'key'>,
+): boolean {
+  if (state.pcRailHosts.length === 0) return false;
+  const combo = customKeyCombo(e);
+  return !state.customKeybindings.some((kb) => kb.key === combo);
 }
 
 /** The computer a PC rail shortcut moves to. */

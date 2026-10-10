@@ -162,7 +162,8 @@ describe('resolveShortcut', () => {
     // also be Meta+Alt+Up, Ctrl+Alt+Up (pane focus) or Shift+Alt+Up.
     const up = ev({ key: 'ArrowUp', code: 'ArrowUp', ctrlKey: false, altKey: true });
     expect(resolveShortcut({ ...up, metaKey: true }, win)).toBeNull();
-    expect(resolveShortcut({ ...up, shiftKey: true }, win)).toBeNull();
+    // Shift+Alt+Up is its own row (the PC rail), never Alt+Up's.
+    expect(resolveShortcut({ ...up, shiftKey: true }, win)).toBe('prevPc');
     expect(resolveShortcut({ ...up, ctrlKey: true }, win)).toBe('focusUpAlt');
     expect(resolveShortcut(ev({ altKey: true }), win)).toBeNull();
     expect(resolveShortcut(ev({ metaKey: true }), win)).toBeNull();

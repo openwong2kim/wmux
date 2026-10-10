@@ -11,6 +11,19 @@ import * as fs from 'fs';
 import type { RemoteHost, RemoteHostPublic } from '../../shared/remoteHosts';
 import { parseWebUrl } from '../../shared/remoteHosts';
 import { reHardenTokenFileAcl, secureWriteTokenFile } from '../../shared/security';
+import type { PcRailTokenKind } from '../../shared/pcRail';
+
+/**
+ * A stored host plus how its credential was issued: `operator` for a pasted
+ * `wmux web` link (the host's own token, not a paired device over there),
+ * `device` for a code exchange. Absent on records written before this was
+ * recorded. Not a secret; it reaches the renderer with the rest of the row.
+ */
+export type StoredRemoteHost = RemoteHost & { tokenKind?: PcRailTokenKind };
+
+function isTokenKind(v: unknown): v is PcRailTokenKind {
+  return v === 'device' || v === 'operator';
+}
 
 function toPublic(host: RemoteHost): RemoteHostPublic {
   const { token: _token, ...rest } = host;
@@ -37,7 +50,7 @@ function isRemoteHostArray(v: unknown): v is RemoteHost[] {
 
 export class RemoteHostsStore {
   private readonly filePath: string;
-  private hosts: RemoteHost[] = [];
+  private hosts: StoredRemoteHost[] = [];
 
   constructor(filePath: string) {
     this.filePath = filePath;
@@ -49,7 +62,7 @@ export class RemoteHostsStore {
   }
 
   /** Returns the full record (token included) — main-internal callers only. */
-  get(id: string): RemoteHost | null {
+  get(id: string): StoredRemoteHost | null {
     return this.hosts.find((h) => h.id === id) ?? null;
   }
 
@@ -69,15 +82,16 @@ export class RemoteHostsStore {
       hostname = parsed.origin;
     }
 
-    const host: RemoteHost = {
+    const host: StoredRemoteHost = {
       id: crypto.randomUUID(),
       label: label ?? hostname,
       origin: parsed.origin,
       token: parsed.token,
       addedAt: Date.now(),
+      tokenKind: 'operator',
     };
 
-    const next = [...this.hosts, host];
+    const next: StoredRemoteHost[] = [...this.hosts, host];
     this.persist(next);
     this.hosts = next;
     return { ok: true, host: toPublic(host) };
@@ -99,15 +113,16 @@ export class RemoteHostsStore {
       hostname = origin;
     }
 
-    const host: RemoteHost = {
+    const host: StoredRemoteHost = {
       id: crypto.randomUUID(),
       label: label ?? hostname,
       origin,
       token,
       addedAt: Date.now(),
+      tokenKind: 'device',
     };
 
-    const next = [...this.hosts, host];
+    const next: StoredRemoteHost[] = [...this.hosts, host];
     this.persist(next);
     this.hosts = next;
     return { ok: true, host: toPublic(host) };
@@ -129,7 +144,8 @@ export class RemoteHostsStore {
     if (this.hosts.some((h) => h.id !== id && h.origin === origin)) {
       return { ok: false, error: 'already registered' };
     }
-    const host: RemoteHost = { ...prev, origin, token, ...(label ? { label } : {}) };
+    // Only the pair-with-code path re-pairs, so the new credential is a device's.
+    const host: StoredRemoteHost = { ...prev, origin, token, tokenKind: 'device', ...(label ? { label } : {}) };
     const next = this.hosts.map((h) => (h.id === id ? host : h));
     this.persist(next);
     this.hosts = next;
@@ -144,7 +160,7 @@ export class RemoteHostsStore {
     return true;
   }
 
-  private persist(hosts: RemoteHost[]): void {
+  private persist(hosts: StoredRemoteHost[]): void {
     secureWriteTokenFile(this.filePath, JSON.stringify(hosts));
   }
 
@@ -157,7 +173,15 @@ export class RemoteHostsStore {
       reHardenTokenFileAcl(this.filePath);
       const raw = fs.readFileSync(this.filePath, 'utf8');
       const parsed: unknown = JSON.parse(raw);
-      this.hosts = isRemoteHostArray(parsed) ? parsed : [];
+      // An unknown tokenKind is dropped from that record, never the record.
+      this.hosts = isRemoteHostArray(parsed)
+        ? parsed.map((h: StoredRemoteHost) => {
+          if (h.tokenKind === undefined || isTokenKind(h.tokenKind)) return h;
+          const { tokenKind: _bad, ...rest } = h;
+          void _bad;
+          return rest;
+        })
+        : [];
     } catch {
       // Missing/corrupt file → empty list, never throw (load-on-construct contract).
       this.hosts = [];

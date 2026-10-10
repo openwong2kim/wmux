@@ -1,11 +1,12 @@
 // @vitest-environment jsdom
 // The computer column: absent with no paired host; this computer first, then
-// each host as a monogram; the selected computer shows no badge; offline and
+// each host as a monogram; a selected host keeps its badge; offline and
 // not-yet-checked hosts are muted; arrows rove; Shift+F10 opens a host's menu
-// (Mute, Remote page, Pair again, access line); the global chord cycles.
+// (Mute, Remote page, Pair again, access line). The global chord is covered
+// in hooks/__tests__/useKeyboard.pcRail.dynamic.test.tsx.
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { useStore } from '../../../stores';
 import PcRail from '../PcRail';
 import { LOCAL_PC_ID } from '../../../../shared/pcRail';
@@ -111,15 +112,3 @@ describe('PcRail', () => {
   });
 });
 
-describe('keyboard', () => {
-  it('cycles computers on Shift+Alt+ArrowDown only while the column is shown', async () => {
-    vi.resetModules();
-    // Exercised through the pure pieces useKeyboard composes.
-    const { pcShortcutAction, pcShortcutTarget } = await import('../pcRailModel');
-    const { comboFromEvent } = await import('../../../../shared/keymap');
-    const e = new KeyboardEvent('keydown', { key: 'ArrowDown', code: 'ArrowDown', shiftKey: true, altKey: true });
-    const action = pcShortcutAction(comboFromEvent(e));
-    expect(action).toBe('nextPc');
-    expect(pcShortcutTarget(action!, ['h1', 'h2'], LOCAL_PC_ID)).toBe('h1');
-  });
-});

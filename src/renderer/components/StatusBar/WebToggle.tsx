@@ -29,6 +29,7 @@ import PairedDevicesModal from './PairedDevicesModal';
 import PhoneConnectWizard, { type WizardSession } from './PhoneConnectWizard';
 import OtherComputersSection from './OtherComputersSection';
 import AttachRemoteModal from '../Sidebar/AttachRemoteModal';
+import PairingScope from '../PcRail/PairingScope';
 import { useStore } from '../../stores';
 import {
   buildDesktopPairLink,
@@ -853,6 +854,8 @@ export function WebPopoverBody({
                 default — read-only is the mistake you can fix from the roster,
                 where a keyboard handed out by accident is not noticed until
                 something has been typed. */}
+            {/* What the device will reach, said where its typing grant is chosen. */}
+            <PairingScope />
             <Field label={t('web.pairAllowInput')}>
               <Checkbox checked={pairAllowInput} onCheckedChange={() => onTogglePairAllowInput()} />
             </Field>
@@ -942,6 +945,9 @@ export function WebPopoverBody({
               aria-label={t('web.computerNameHint')}
               className="w-full text-[13px]"
             />
+            {/* What the other computer will reach, said where its typing
+                grant is chosen. */}
+            <PairingScope />
             <Field label={t('web.pairAllowInput')}>
               <Checkbox checked={computerAllowInput} onCheckedChange={() => onToggleComputerAllowInput()} />
             </Field>
