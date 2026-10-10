@@ -531,4 +531,9 @@ export const tr = {
   'remote.scope.viewOnly': "Yalnızca görüntüleme yazmayı engeller, ancak tek tuş isteyen ekran istemlerini yine de yanıtlayabilir.",
   'remote.scope.input': "Yazabilir ayrıca oturum açıp kapatmaya ve onayları yanıtlamaya izin verir.",
   'remotePage.connect.pasteScope': "Davet çalışma alanlarını paylaşıyorsa bu bilgisayar o PC'deki her çalışma alanını okuyabilir ve arayabilir; sonradan açılanlar dahil. Eşleşik kaldığı sürece wmux onu birkaç saniyede bir denetler, uyarıları için bir bağlantı açık tutar ve bildirimlerini gösterir; bilgisayar sütunundaki simgesinden sessize alın.",
+  // Quit and Stop Sessions (main-process native confirm)
+  'quitAndStop.message': "wmux'tan çıkıp tüm oturumlar durdurulsun mu?",
+  'quitAndStop.detail': "Şu an çalışan: {agents} ajan oturumu, toplam {sessions} terminal. Hepsi durdurulacak. Normal Çıkış onları arka planda çalışır bırakır.",
+  'quitAndStop.detailUnknown': "wmux çalışan oturumları sayamadı. Tüm terminaller ve ajan oturumları durdurulacak. Normal Çıkış onları arka planda çalışır bırakır.",
+  'quitAndStop.confirm': "Çık ve Oturumları Durdur",
 } as const;

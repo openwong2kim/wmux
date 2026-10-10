@@ -579,4 +579,9 @@ export const ja = {
   'remote.scope.viewOnly': "表示のみでは入力できませんが、1 つのキーで答える画面上のプロンプトには応答できます。",
   'remote.scope.input': "入力可能にすると、セッションの開始・終了と承認への応答もできます。",
   'remotePage.connect.pasteScope': "招待でワークスペースを共有する場合、このコンピュータは相手の PC のすべてのワークスペース（後で開くものを含む）を読み取り、検索できます。ペアリング中、wmux は数秒ごとに確認し、通知用の接続を開いたままにしてその通知を表示します。通知はコンピュータ列のアイコンからミュートできます。",
+  // Quit and Stop Sessions (main-process native confirm)
+  'quitAndStop.message': "wmux を終了してすべてのセッションを停止しますか？",
+  'quitAndStop.detail': "実行中: エージェントセッション {agents} 件、ターミナル合計 {sessions} 件。すべて停止します。通常の終了ではバックグラウンドで実行し続けます。",
+  'quitAndStop.detailUnknown': "実行中のセッション数を確認できませんでした。すべてのターミナルとエージェントセッションが停止します。通常の終了ではバックグラウンドで実行し続けます。",
+  'quitAndStop.confirm': "終了してセッションを停止",
 } as const;

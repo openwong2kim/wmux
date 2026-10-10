@@ -531,4 +531,9 @@ export const ms = {
   'remote.scope.viewOnly': "Lihat sahaja menyekat menaip, tetapi masih boleh menjawab gesaan pada skrin yang memerlukan satu kekunci.",
   'remote.scope.input': "Boleh menaip juga membenarkannya membuka dan menutup sesi serta menjawab kelulusan.",
   'remotePage.connect.pasteScope': "Jika jemputan berkongsi ruang kerja, komputer ini boleh membaca dan mencari setiap ruang kerja di PC itu, termasuk yang dibuka kemudian. Semasa dipasangkan, wmux menyemaknya setiap beberapa saat, mengekalkan sambungan untuk amarannya dan memaparkan pemberitahuannya; senyapkan daripada ikonnya dalam lajur komputer.",
+  // Quit and Stop Sessions (main-process native confirm)
+  'quitAndStop.message': "Keluar daripada wmux dan hentikan semua sesi?",
+  'quitAndStop.detail': "Sedang berjalan: {agents} sesi ejen, jumlah {sessions} terminal. Semuanya akan dihentikan. Keluar biasa membiarkannya terus berjalan di latar belakang.",
+  'quitAndStop.detailUnknown': "wmux tidak dapat mengira sesi yang sedang berjalan. Semua terminal dan sesi ejen akan dihentikan. Keluar biasa membiarkannya terus berjalan di latar belakang.",
+  'quitAndStop.confirm': "Keluar dan Hentikan Sesi",
 } as const;

@@ -530,4 +530,9 @@ export const bs = {
   'remote.scope.viewOnly': "Samo pregled blokira kucanje, ali i dalje može odgovarati na upite na ekranu koji traže jednu tipku.",
   'remote.scope.input': "Može kucati također dopušta otvaranje i zatvaranje sesija i odgovaranje na odobrenja.",
   'remotePage.connect.pasteScope': "Ako pozivnica dijeli radne prostore, ovaj računar može čitati i pretraživati svaki radni prostor na tom računaru, uključujući one otvorene kasnije. Dok je uparen, wmux ga provjerava svakih nekoliko sekundi, drži vezu otvorenom za upozorenja i prikazuje njegova obavještenja; utišajte ih s njegove ikone u koloni računara.",
+  // Quit and Stop Sessions (main-process native confirm)
+  'quitAndStop.message': "Zatvoriti wmux i zaustaviti sve sesije?",
+  'quitAndStop.detail': "Trenutno radi: sesije agenata: {agents}, ukupno terminala: {sessions}. Sve će biti zaustavljene. Obično zatvaranje ih ostavlja da rade u pozadini.",
+  'quitAndStop.detailUnknown': "wmux nije mogao prebrojati aktivne sesije. Svi terminali i sesije agenata bit će zaustavljeni. Obično zatvaranje ih ostavlja da rade u pozadini.",
+  'quitAndStop.confirm': "Zatvori i zaustavi sesije",
 } as const;

@@ -531,4 +531,9 @@ export const ptBR = {
   'remote.scope.viewOnly': "Somente visualização bloqueia a digitação, mas ainda pode responder a prompts na tela que pedem uma única tecla.",
   'remote.scope.input': "Pode digitar também permite abrir e fechar sessões e responder a aprovações.",
   'remotePage.connect.pasteScope': "Se o convite compartilhar workspaces, este computador pode ler e pesquisar todos os workspaces daquele PC, inclusive os abertos depois. Enquanto pareado, o wmux o verifica a cada poucos segundos, mantém uma conexão aberta para os alertas e mostra as notificações dele; silencie-as pelo ícone dele na coluna de computadores.",
+  // Quit and Stop Sessions (main-process native confirm)
+  'quitAndStop.message': "Sair do wmux e encerrar todas as sessões?",
+  'quitAndStop.detail': "Em execução: {agents} sessões de agentes, {sessions} terminais no total. Todas serão encerradas. Sair normalmente as mantém rodando em segundo plano.",
+  'quitAndStop.detailUnknown': "O wmux não conseguiu contar as sessões em execução. Todos os terminais e sessões de agentes serão encerrados. Sair normalmente as mantém rodando em segundo plano.",
+  'quitAndStop.confirm': "Sair e encerrar sessões",
 } as const;

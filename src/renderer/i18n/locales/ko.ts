@@ -3758,4 +3758,9 @@ export const ko = {
   'remote.scope.viewOnly': "보기 전용은 입력을 막지만, 키 하나로 답하는 화면 프롬프트에는 응답할 수 있습니다.",
   'remote.scope.input': "입력 가능은 세션 열기·닫기와 승인 응답도 허용합니다.",
   'remotePage.connect.pasteScope': "초대에 워크스페이스 공유가 포함되면 이 컴퓨터는 그 PC의 모든 워크스페이스(나중에 여는 것 포함)를 읽고 검색할 수 있습니다. 페어링된 동안 wmux는 몇 초마다 상태를 확인하고, 알림용 연결을 열어 두며, 그 알림을 표시합니다. 알림은 컴퓨터 열의 해당 아이콘에서 끌 수 있습니다.",
+  // Quit and Stop Sessions (main-process native confirm)
+  'quitAndStop.message': "wmux를 종료하고 모든 세션을 멈출까요?",
+  'quitAndStop.detail': "지금 실행 중: 에이전트 세션 {agents}개, 터미널 전체 {sessions}개. 모두 멈춥니다. 일반 종료는 세션을 백그라운드에서 계속 실행합니다.",
+  'quitAndStop.detailUnknown': "실행 중인 세션 수를 확인하지 못했습니다. 모든 터미널과 에이전트 세션이 멈춥니다. 일반 종료는 세션을 백그라운드에서 계속 실행합니다.",
+  'quitAndStop.confirm': "종료하고 세션 멈추기",
 } as const;

@@ -1,5 +1,6 @@
 import { app, BrowserWindow, Menu } from 'electron';
 import { collidesWithKeymap } from '../../shared/keymap';
+import { quitAndStopSessions, type QuitAndStopCallbacks } from '../quit/quitAndStopSessions';
 
 /**
  * wmux's application menu.
@@ -165,15 +166,43 @@ const EDIT_MENU_MEMBERS = [
 export function buildAppMenuTemplate(opts: {
   platform: NodeJS.Platform;
   isDev: boolean;
+  /** Present → the menu offers "Quit and Stop Sessions" beside Quit. */
+  onQuitAndStopSessions?: () => void;
 }): Electron.MenuItemConstructorOptions[] {
   const isMac = opts.platform === 'darwin';
   const template: Electron.MenuItemConstructorOptions[] = [];
+  // Plain Quit only detaches (the daemon keeps every session running), so the
+  // full stop is its own item. No accelerator: a key that ends every agent
+  // session is one slip away from Cmd+Q, and the confirm is the safety, not
+  // muscle memory.
+  const quitAndStop: Electron.MenuItemConstructorOptions | null = opts.onQuitAndStopSessions
+    ? { label: 'Quit and Stop Sessions', click: opts.onQuitAndStopSessions }
+    : null;
 
   if (isMac) {
     // appMenu carries About / Services / Hide (Cmd+H) / Quit (Cmd+Q). None of
     // those collide: wmux's flash-pane is Cmd+Shift+H and its close-pane is
-    // Cmd+Shift+Q.
-    template.push({ role: 'appMenu' });
+    // Cmd+Shift+Q. A role shorthand cannot take an extra item, so with Quit
+    // and Stop Sessions it is spelled out as the same members Electron builds.
+    template.push(
+      quitAndStop
+        ? {
+            label: 'wmux',
+            submenu: [
+              { role: 'about' },
+              { type: 'separator' },
+              { role: 'services' },
+              { type: 'separator' },
+              { role: 'hide' },
+              { role: 'hideOthers' },
+              { role: 'unhide' },
+              { type: 'separator' },
+              { role: 'quit' },
+              quitAndStop,
+            ],
+          }
+        : { role: 'appMenu' },
+    );
   }
 
   template.push({
@@ -195,7 +224,9 @@ export function buildAppMenuTemplate(opts: {
         // xterm swallows it under terminal focus). Window-close has no menu
         // entry here: Ctrl+W is wmux's close-surface and the native frame
         // already provides the button.
-        [{ role: 'quit' }],
+        quitAndStop
+        ? [{ role: 'quit' }, quitAndStop]
+        : [{ role: 'quit' }],
   });
 
   // Unchanged from Electron's default. The macOS Cmd+V race documented at
@@ -260,12 +291,13 @@ export function buildAppMenuTemplate(opts: {
  * Call this BEFORE the first `createWindow()` so no window is ever briefly
  * governed by Electron's default accelerator table.
  */
-export function installApplicationMenu(): void {
+export function installApplicationMenu(quitAndStop?: QuitAndStopCallbacks): void {
   const template = buildAppMenuTemplate({
     platform: process.platform,
     // Mirrors tray.ts: resolve via app.isPackaged, not NODE_ENV, which is not
     // reliably set and could ship the Developer submenu in a release build.
     isDev: !app.isPackaged,
+    onQuitAndStopSessions: quitAndStop ? () => void quitAndStopSessions(quitAndStop) : undefined,
   });
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
