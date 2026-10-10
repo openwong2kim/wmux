@@ -3248,8 +3248,9 @@ The pre-existing `GET /api/workspaces` remains the daemon's live-pane roster
 from the input-gated desktop registry. New pane selection uses the live roster's
 IDs even on older hosts; opening a newly created desktop workspace uses
 `/api/desktop-workspaces` to resolve its active pane. While the desktop is
-attached the roster also carries the sidebar fields below; its rows are still
-exactly the workspaces with a live pane.
+attached the roster also carries the sidebar fields below, plus one `empty`
+row for each desktop workspace with no live pane (see *Workspaces with no
+terminal* below).
 
 ### Desktop sidebar fields (phone Fleet)
 
@@ -3276,9 +3277,36 @@ as "the desktop did not say" and fall back to what you draw without it; fields
 may appear or disappear between polls, and may lag the desktop by a second or
 two.
 
-Nothing is added: the fields are merged by id onto rows the daemon already
-lists. A desktop-only workspace with no live pane never becomes a row, and the
-orchestrator brain's pane and workspace stay excluded exactly as before.
+The fields are merged by id onto rows the daemon already lists. The one
+addition is the `empty` row below; the orchestrator brain's pane and workspace
+stay excluded exactly as before.
+
+#### Workspaces with no terminal (`empty: true`)
+
+While the desktop is attached, `GET /api/workspaces` also lists each workspace
+the desktop sidebar shows that has **no live pane**, after the live rows:
+
+```json
+{ "id": "ws-…", "name": "", "panes": [], "empty": true, "order": 3, "pinned": false }
+```
+
+- `empty` is only ever `true`, and then `panes` is `[]`. A row with panes never
+  carries it.
+- `name` is `""`: a workspace name reaches the daemon only in a pane's spawn
+  environment, so a workspace with no pane has none here. Label the row by its
+  id or leave it out.
+- It carries the desktop fields above (`order`, `pinned`, `color`, `gitBranch`,
+  …) but never `layout`, never `paneId`s, and it is never `activeWorkspaceId`.
+- Moa's HQ, a workspace whose only pane is the orchestrator brain, and a fan-out
+  task workspace are never listed this way.
+- No desktop (the host app is closed, or its window is locked, occluded or
+  headless and the snapshot lapsed): no `empty` rows. The list is then exactly
+  the live rows, as before.
+
+Nothing can be opened in an `empty` row. A client that groups host → workspace
+→ pane should either skip rows with `panes: []` or draw them as a quiet,
+non-interactive "no terminal" row; a client that assumed every row had at least
+one pane must not index `panes[0]` on them. Older daemons never send the key.
 
 `GET /api/sessions`, per session:
 

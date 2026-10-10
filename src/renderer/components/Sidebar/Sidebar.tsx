@@ -11,15 +11,14 @@ import SidebarTaskGroup, { ClosedPaneTaskGroup } from './SidebarTaskGroup';
 import SidebarResizeHandle from './SidebarResizeHandle';
 import { resolveTaskLink } from '../../utils/fanoutProvenance';
 import WorkspaceItem from './WorkspaceItem';
-import RemoteWorkspaceItem from './RemoteWorkspaceItem';
+import HostWorkspaceList from './HostWorkspaceList';
 import OrphanSessions from './OrphanSessions';
 import ArchivedWorkspaces from './ArchivedWorkspaces';
 import MissionsSection from './MissionsSection';
 import type { Workspace } from '../../../shared/types';
 import { getWorkspacePtyIds } from '../../../shared/paneUtils';
 import { destroyWorkspaceRemoteSessions } from '../../utils/remoteSessionTeardown';
-import { selectAttachedRemoteWorkspaces, remoteWorkspaceDisplayName, type AttachedRemoteWorkspace } from '../../stores/slices/remoteWorkspacesSlice';
-import { remoteWorkspaceAttentionScore } from '../../stores/selectors/fleet';
+import { LOCAL_PC_ID, isShadowWorkspaceId } from '../../../shared/pcRail';
 import { useT } from '../../hooks/useT';
 import { buildWorkspaceMarkdown } from '../../utils/sessionInfoMarkdown';
 import { tokenAttrs } from '../../themes';
@@ -42,8 +41,6 @@ import { COMPANY_MODE_ENABLED } from '../../../shared/featureFlags';
 import { workspaceShortcutNumber } from '../../../shared/keymap';
 import { listedWorkspaces, moaHqId as selectMoaHqId, refuseWorkspaceClose } from '../Moa/moaHqGuard';
 
-/** Namespaces a remote row's id in the shared glance order. */
-const REMOTE_ROW_PREFIX = 'remote:';
 
 
 // 워크스페이스가 소유한 모든 PTY를 dispose
@@ -80,7 +77,20 @@ export default function Sidebar({ chrome = 'full' }: { chrome?: 'full' | 'sheet'
   // or Ctrl+N numbering). While it is the active workspace it shows as its
   // own row above the list, so the operator sees where they are.
   const moaHqId = useStore(selectMoaHqId);
-  const listed = useMemo(() => listedWorkspaces(workspaces, moaHqId), [workspaces, moaHqId]);
+  // PC rail: shadow workspaces (another computer's, opened from the computer
+  // column) are never this computer's rows, count or Ctrl+N numbers.
+  const listed = useMemo(
+    () => listedWorkspaces(workspaces.filter((w) => !isShadowWorkspaceId(w.id)), moaHqId),
+    [workspaces, moaHqId],
+  );
+  // PC rail: with a paired computer selected, the page lists that computer's
+  // workspaces instead (HostWorkspaceList). Unknown ids read as this computer.
+  const scopedHostId = useStore((s) => {
+    const id = s.pcRail.activePcId;
+    return id !== LOCAL_PC_ID && s.pcRailHosts.some((h) => h.id === id) ? id : null;
+  });
+  const scopedHostLabel = useStore((s) => (scopedHostId ? s.pcRailHosts.find((h) => h.id === scopedHostId)?.label ?? scopedHostId : null));
+  const scopedRowCount = useStore((s) => (scopedHostId ? s.pcRailFeeds[scopedHostId]?.workspaces.length ?? 0 : 0));
   const [wsSearch, setWsSearch] = useState('');
   const wsSearchRef = useRef<HTMLInputElement>(null);
   // The header's filter button (or Ctrl/Cmd+F) opens the filter popover: the
@@ -154,48 +164,13 @@ export default function Sidebar({ chrome = 'full' }: { chrome?: 'full' | 'sheet'
       nestedOwnerOf,
     });
   }, [filteredWorkspaces, settleStates, pinnedIds, nestedOwnerOf]);
-  // #1329 — rows that only exist to poll a remote-terminal PANE's host are not
-  // attachments and must not render here: the user never asked for a mirror,
-  // and a row they cannot detach (nothing persists it) would be a ghost.
-  // useShallow, not a bare subscription: those invisible rows are rewritten on
-  // every poll round, and this list must not re-render the sidebar for them.
-  const remoteWorkspaces = useStore(useShallow(selectAttachedRemoteWorkspaces));
-  // Attached mirrors share the one glance list (they are never part of
-  // `workspaces[]` — see remoteWorkspacesSlice — so they keep their own row
-  // type). Row ids are namespaced so they cannot collide with a local id.
-  const remoteByRowId = useMemo(() => {
-    // Same query rule as the local rows above; a remote row also matches on
-    // its host, which it shows under its name.
-    const q = wsSearch.trim() ? wsSearch.toLowerCase() : '';
-    const fallbackHost = t('remote.hostFallback');
-    const byRowId = new Map<string, AttachedRemoteWorkspace>();
-    // Facets describe local workspaces; a remote mirror is hidden while any is on.
-    if (filterOn) return byRowId;
-    for (const rw of remoteWorkspaces) {
-      const name = remoteWorkspaceDisplayName(rw);
-      const host = rw.hostLabel || fallbackHost;
-      if (q && !name.toLowerCase().includes(q) && !host.toLowerCase().includes(q)) continue;
-      byRowId.set(`${REMOTE_ROW_PREFIX}${rw.key}`, rw);
-    }
-    return byRowId;
-  }, [remoteWorkspaces, wsSearch, filterOn, t]);
-  const remoteRows = useMemo(
-    () => [...remoteByRowId].map(([id, rw]) => ({ id, name: remoteWorkspaceDisplayName(rw) })),
-    [remoteByRowId],
-  );
-  const remoteScores = useMemo(
-    () => Object.fromEntries([...remoteByRowId].map(([id, rw]) => [id, remoteWorkspaceAttentionScore(rw)])),
-    [remoteByRowId],
-  );
   const {
     ordered: orderedWorkspaces,
     onPointerEnter: onListPointerEnter,
     onPointerLeave: onListPointerLeave,
     onFocusCapture: onListFocus,
     onBlurCapture: onListBlur,
-  } = useGlanceBoardOrder(settleSplit.main, nestedOwnerOf, remoteRows, remoteScores);
-  // Remote row ids are no workspace: linkOf finds none, so each one is a plain
-  // top-level node in its sorted slot.
+  } = useGlanceBoardOrder(settleSplit.main, nestedOwnerOf);
   const tree = useMemo(() => {
     const byId = new Map(workspaces.map((w) => [w.id, w]));
     return buildSidebarTree(
@@ -220,11 +195,8 @@ export default function Sidebar({ chrome = 'full' }: { chrome?: 'full' | 'sheet'
   const activeRemoteKey = useStore((s) => s.activeRemoteKey);
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
   // While a mirror is on screen the local selection is only remembered, not
-  // shown: with remote rows in the same list, marking both would show two
-  // selected rows. Task-group folding still follows the real selection.
+  // shown. Task-group folding still follows the real selection.
   const shownActiveId = activeRemoteKey ? null : activeWorkspaceId;
-  const setActiveRemoteKey = useStore((s) => s.setActiveRemoteKey);
-  const detachRemoteWorkspace = useStore((s) => s.detachRemoteWorkspace);
   const removeWorkspace = useStore((s) => s.removeWorkspace);
   const archiveWorkspace = useStore((s) => s.archiveWorkspace);
   const setActiveWorkspace = useStore((s) => s.setActiveWorkspace);
@@ -263,8 +235,7 @@ export default function Sidebar({ chrome = 'full' }: { chrome?: 'full' | 'sheet'
   // Ctrl+F terminal-search shortcut (useKeyboard), so this is scoped to the
   // sidebar root via onKeyDown and stops propagation so the global handler
   // does not also fire.
-  // Remote rows share the list and the query, so they count toward showing it.
-  const listedCount = listed.length + remoteWorkspaces.length;
+  const listedCount = listed.length;
   const handleSidebarKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (e.key === 'f' && (e.ctrlKey || e.metaKey) && listedCount >= 3) {
       e.preventDefault();
@@ -327,14 +298,15 @@ export default function Sidebar({ chrome = 'full' }: { chrome?: 'full' | 'sheet'
   const workspaceById = useMemo(() => new Map(workspaces.map((w) => [w.id, w])), [workspaces]);
   // Filtering only changes what the list shows; the header counts what is left.
   const narrowed = filterOn || wsSearch.trim() !== '';
-  const shownCount = filteredWorkspaces.length + remoteByRowId.size;
+  const shownCount = filteredWorkspaces.length;
   const hqActive = !!moaHqId && !activeRemoteKey && activeWorkspaceId === moaHqId
     && workspaces.some((w) => w.id === moaHqId);
   // Bookmarked only, with nothing bookmarked: the empty list says how to
   // bookmark instead of "No workspaces match".
   const noBookmarks = useStore((s) => wsFilter.bookmarked
     && !listed.some((w) => s.sidebarBookmarkedIds.includes(w.id)));
-  const activeHidden = !activeRemoteKey && !hqActive && !filteredWorkspaces.some((w) => w.id === activeWorkspaceId);
+  const activeHidden = !activeRemoteKey && !hqActive && !isShadowWorkspaceId(activeWorkspaceId)
+    && !filteredWorkspaces.some((w) => w.id === activeWorkspaceId);
   const clearFilters = useCallback(() => {
     setWsSearch('');
     useStore.getState().setSidebarFilter(EMPTY_FILTER);
@@ -345,10 +317,10 @@ export default function Sidebar({ chrome = 'full' }: { chrome?: 'full' | 'sheet'
   // screen order, nested task and remote rows included. Each row handles its
   // own Enter, → / ← and Shift+F10 (WorkspaceItem.tsx).
   const [keyRowId, setKeyRowId] = useState<string | null>(null);
-  const activeRowId = activeRemoteKey ? `${REMOTE_ROW_PREFIX}${activeRemoteKey}` : activeWorkspaceId;
+  const activeRowId = activeRemoteKey ? null : activeWorkspaceId;
   const firstRowId = tree.top[0]?.id ?? null;
   const tabStopId = keyRowId
-    ?? (activeRowId && (filteredWorkspaces.some((w) => w.id === activeRowId) || remoteByRowId.has(activeRowId)) ? activeRowId : firstRowId);
+    ?? (activeRowId && filteredWorkspaces.some((w) => w.id === activeRowId) ? activeRowId : firstRowId);
   const onTreeKeyDown = useCallback((e: React.KeyboardEvent<HTMLDivElement>) => {
     const target = e.target as HTMLElement;
     if (!target.hasAttribute('data-sidebar-row')) return;
@@ -412,24 +384,10 @@ export default function Sidebar({ chrome = 'full' }: { chrome?: 'full' | 'sheet'
     />
   ), [tabStopId, shownActiveId, multiviewIds, workspaces, listed, setActiveWorkspace, handleCtrlSelect, renameWorkspace, handleClose, handleArchive, handleCopySessionInfo, duplicateWorkspace, reorderWorkspace]);
 
-  // One top-level node: a remote mirror, a task row whose owner is filtered
-  // out, or a workspace row with its nested tasks. `inSettleGroup` rows sit
-  // out of stored order, so they draw no Ctrl+N hint.
+  // One top-level node: a task row whose owner is filtered out, or a
+  // workspace row with its nested tasks. `inSettleGroup` rows sit out of
+  // stored order, so they draw no Ctrl+N hint.
   const renderNode = (node: SidebarTreeNode, taskIds: ReadonlySet<string>, inSettleGroup = false) => {
-    const rw = remoteByRowId.get(node.id);
-    if (rw) {
-      return (
-        <RemoteWorkspaceItem
-          key={node.id}
-          rowId={node.id}
-          tabStop={node.id === tabStopId}
-          workspace={rw}
-          isActive={rw.key === activeRemoteKey}
-          onSelect={setActiveRemoteKey}
-          onDetach={detachRemoteWorkspace}
-        />
-      );
-    }
     const ws = workspaceById.get(node.id);
     if (!ws) return null;
     // A task whose owner is only hidden by the search filter still
@@ -500,6 +458,13 @@ export default function Sidebar({ chrome = 'full' }: { chrome?: 'full' | 'sheet'
           />
         </div>
       )}
+      {scopedHostId ? (
+        <div className="wmux-sidebar-section" data-sidebar-scope={scopedHostId}>
+          <span className="min-w-0 truncate">{t('sidebar.workspaces')}</span>
+          <span className="wmux-sidebar-total" data-sidebar-total>{scopedRowCount}</span>
+          <span className="ml-auto min-w-0 truncate text-[11px] text-[var(--text-muted)]" data-sidebar-scope-name>{scopedHostLabel}</span>
+        </div>
+      ) : (
       <div className="wmux-sidebar-section">
         <span className="min-w-0 truncate">{t('sidebar.workspaces')}</span>
         {/* Filtered, the count is the compact "shown/total" so it never wraps in a
@@ -545,8 +510,9 @@ export default function Sidebar({ chrome = 'full' }: { chrome?: 'full' | 'sheet'
           aria-expanded={pickerOpen}
         ><IconPlus size={15} /></button>}
       </div>
+      )}
 
-      {listedCount >= 3 && wsSearchOpen && (
+      {!scopedHostId && listedCount >= 3 && wsSearchOpen && (
         <WorkspaceFilterPopover
           query={wsSearch}
           onQuery={setWsSearch}
@@ -557,7 +523,7 @@ export default function Sidebar({ chrome = 'full' }: { chrome?: 'full' | 'sheet'
         />
       )}
       {/* The checks in force, one removable chip each. */}
-      {narrowed && (
+      {!scopedHostId && narrowed && (
         <div className="wmux-ws-filter-chips" data-ws-filter-chips>
           {wsSearch.trim() && (
             <span className="wmux-ws-filter-chip">
@@ -575,10 +541,10 @@ export default function Sidebar({ chrome = 'full' }: { chrome?: 'full' | 'sheet'
           <button type="button" className="wmux-ws-filter-clear" onClick={clearFilters} data-ws-filter-clear>{t('sidebar.filter.clear')}</button>
         </div>
       )}
-      {narrowed && activeHidden && (
+      {!scopedHostId && narrowed && activeHidden && (
         <p className="wmux-ws-filter-note" role="status" data-ws-filter-hidden-active>{t('sidebar.filter.activeHidden')}</p>
       )}
-      {narrowed && shownCount === 0 && (
+      {!scopedHostId && narrowed && shownCount === 0 && (
         <div className="wmux-ws-filter-empty" data-ws-filter-empty>
           <p>{t(noBookmarks ? 'sidebar.filter.noBookmarks' : 'sidebar.filter.noMatch')}</p>
           <button type="button" className="wmux-ws-filter-clear" onClick={clearFilters}>{t('sidebar.filter.clearAll')}</button>
@@ -589,7 +555,9 @@ export default function Sidebar({ chrome = 'full' }: { chrome?: 'full' | 'sheet'
           workspace list. This is the consumer of `sidebarMode` that was
           missing — CompanyPanel was orphaned (never rendered) so the
           palette's company commands had no visible surface. */}
-      {COMPANY_MODE_ENABLED && sidebarMode === 'company' ? (
+      {scopedHostId ? (
+        <HostWorkspaceList hostId={scopedHostId} />
+      ) : COMPANY_MODE_ENABLED && sidebarMode === 'company' ? (
         <CompanyPanel />
       ) : (
       /* The list container absorbs dragover for sidebar-internal reorder

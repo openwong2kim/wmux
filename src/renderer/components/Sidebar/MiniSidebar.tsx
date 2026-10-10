@@ -20,6 +20,7 @@ import PresetPicker from './PresetPicker';
 import RailMoreMenu from './RailMoreMenu';
 import { listedWorkspaces, moaHqId as selectMoaHqId } from '../Moa/moaHqGuard';
 import { workspaceShortcutNumber } from '../../../shared/keymap';
+import { isShadowWorkspaceId } from '../../../shared/pcRail';
 
 /** PresetPicker width (w-52), used to keep the flyout on-screen. */
 const PICKER_MENU_WIDTH = 208;
@@ -45,7 +46,11 @@ export default function MiniSidebar({ rail = false, collapsed = true }: { rail?:
   // numbers) the same rows as the full sidebar. It is reached from its own
   // rail entry instead.
   const moaHqId = useStore(selectMoaHqId);
-  const workspaces = useMemo(() => listedWorkspaces(allWorkspaces, moaHqId), [allWorkspaces, moaHqId]);
+  // PC rail: another computer's shadow workspaces are never rail avatars.
+  const workspaces = useMemo(
+    () => listedWorkspaces(allWorkspaces.filter((w) => !isShadowWorkspaceId(w.id)), moaHqId),
+    [allWorkspaces, moaHqId],
+  );
   // Dot source (agent-status-dot fix): whole-workspace roll-up, same derivation
   // as WorkspaceItem — not the active-pane-only `ws.agentStatus` projection.
   const agentStatusById = useStore(useShallow(selectAllWorkspaceAgentStatus));

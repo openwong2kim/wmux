@@ -13,8 +13,11 @@ import {
   selectAttachedRemoteWorkspaces,
 } from '../../stores/slices/remoteWorkspacesSlice';
 import SchedulesHost from '../Schedules/SchedulesHost';
+import { LOCAL_PC_ID, parseShadowWorkspaceId } from '../../../shared/pcRail';
+import { useT } from '../../hooks/useT';
 
 export function WorkspaceCenter() {
+  const t = useT();
   // #1329 — the ephemeral rows behind remote-terminal PANES are poll inputs,
   // not mirrors. Mounting one would open a second RemoteWorkspaceView onto the
   // same host and double-attach the SSE stream the pane is already reading.
@@ -26,6 +29,15 @@ export function WorkspaceCenter() {
   // drops activeRemoteKey in the store (activateLocalWorkspace), so the local
   // tree comes back on the FIRST click.
   const remoteVisible = useStore(isRemoteMirrorVisible);
+  // PC rail: with a paired computer selected, the centre never shows this
+  // computer's panes. Until one of that computer's workspaces is open (its
+  // shadow is active) it asks for one; the local tree stays mounted, hidden.
+  const pickOnHost = useStore((s) => {
+    const pc = s.pcRail.activePcId;
+    if (pc === LOCAL_PC_ID || !s.pcRailHosts.some((h) => h.id === pc)) return null;
+    if (parseShadowWorkspaceId(s.activeWorkspaceId)?.hostId === pc) return null;
+    return s.pcRailHosts.find((h) => h.id === pc)?.label || pc;
+  });
 
   return (
     <div className="wmux-workspace-frame flex-1 min-h-0 relative">
@@ -35,23 +47,23 @@ export function WorkspaceCenter() {
       <div
         className="absolute inset-0 flex flex-col"
         data-pane-grid-wrapper
-        style={{ display: remoteVisible ? 'none' : 'flex' }}
+        style={{ display: remoteVisible || pickOnHost !== null ? 'none' : 'flex' }}
       >
         <WorkspaceViewport />
       </div>
 
-      {/* Every attached remote workspace stays mounted too — unmounting on
-          switch would re-attach every SSE stream and repaint the full
-          snapshot each time. Only the active one is visible. */}
-      {remoteWorkspaces.map((rw) => (
-        <div
-          key={rw.key}
-          className="absolute inset-0 flex flex-col"
-          style={{ display: remoteVisible && rw.key === activeRemoteKey ? 'flex' : 'none' }}
-        >
+      {/* PC rail: the attached-mirror rows are retired, so only the mirror on
+          screen is mounted. Hidden mirrors no longer hold a stream each. */}
+      {remoteVisible && pickOnHost === null && remoteWorkspaces.filter((rw) => rw.key === activeRemoteKey).map((rw) => (
+        <div key={rw.key} className="absolute inset-0 flex flex-col">
           <RemoteWorkspaceView workspace={rw} />
         </div>
       ))}
+      {pickOnHost !== null && (
+        <div className="absolute inset-0 flex items-center justify-center" data-pick-on-host>
+          <p className="text-[13px] text-[var(--text-muted)]">{t('pcRail.pickWorkspace', { name: pickOnHost })}</p>
+        </div>
+      )}
       <SchedulesHost />
     </div>
   );

@@ -31,6 +31,7 @@ import {
   PROJECT_SUPERVISION_DEFAULT_HEALTHY_UPTIME_SEC,
 } from '../../../shared/wmuxProjectConfig';
 import type { Pane, PaneLeaf } from '../../../shared/types';
+import { isShadowWorkspaceId } from '../../../shared/pcRail';
 
 type LeafPane = PaneLeaf;
 
@@ -71,6 +72,9 @@ export function EmptyLeafFunnel() {
     // this run was scheduled for (eng review).
     const activeWorkspace = useStore.getState().workspaces.find((w) => w.id === activeWorkspaceId);
     if (!activeWorkspace) return;
+    // PC rail: a shadow workspace belongs to another computer. An empty leaf
+    // there (a local split) gets no local shell; reconcile folds it away.
+    if (isShadowWorkspaceId(activeWorkspace.id)) return;
     // Fix 0: wait until startup reconcile finishes before auto-creating
     // PTYs for empty leaves. Without this guard, the default workspace
     // (which has an empty leaf at app construction time) would spawn a
