@@ -141,3 +141,40 @@ function expectSheetClipped(css: string): void {
   });
   if (!clipped) throw new Error('no unconditional .wmux-shell-body rule declares overflow: clip');
 }
+
+// #1688 item 3: the same caret-reveal family inside the sheet. None of these
+// boxes is a real scroller (the terminal, browser and each rail page scroll
+// inside themselves), so they clip instead of hiding.
+describe('pane and page overflow guard (#1688)', () => {
+  const componentsDir = path.join(__dirname, '..', 'components');
+  const read = (...parts: string[]) => fs.readFileSync(path.join(componentsDir, ...parts), 'utf8');
+
+  // Unlike hidden, clip is not a scroll container, so a flex item's automatic
+  // minimum size becomes its content size: without min-h-0/min-w-0 the box
+  // could not shrink below the terminal's current size.
+  const clippedClassLists = (source: string) => [...source.matchAll(/className="([^"]*)"/g)]
+    .map((m) => m[1].split(/\s+/)).filter((classes) => classes.includes('overflow-clip'));
+
+  it('clips the pane content wrappers and lets them shrink', () => {
+    const pane = read('Pane', 'Pane.tsx');
+    expect(pane).not.toMatch(/relative overflow-hidden/);
+    const clipped = clippedClassLists(pane);
+    expect(clipped.length).toBeGreaterThanOrEqual(5);
+    for (const classes of clipped) expect(classes).toEqual(expect.arrayContaining(['min-h-0', 'min-w-0']));
+  });
+
+  it('clips the multiview workspace tile and lets it shrink', () => {
+    const clipped = clippedClassLists(read('Layout', 'WorkspaceViewport.tsx'));
+    expect(clipped.length).toBe(1);
+    expect(clipped[0]).toEqual(expect.arrayContaining(['min-h-0', 'min-w-0']));
+  });
+
+  it('clips the rail page host', () => {
+    const decls: string[] = [];
+    postcss.parse(styles).walkRules((rule) => {
+      if (!rule.selectors.includes('.wmux-page')) return;
+      rule.walkDecls(/^overflow(-[xy])?$/, (decl) => { decls.push(`${decl.prop}: ${decl.value}`); });
+    });
+    expect(decls).toEqual(['overflow: clip']);
+  });
+});

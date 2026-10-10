@@ -113,7 +113,7 @@ async function codeOf(promise: Promise<unknown>): Promise<string> {
 describe('ComputerService', () => {
   it('refuses everything while computer use is turned off, and gives the stop key back', async () => {
     const { service, calls, stopKey } = makeService({ enabled: false });
-    expect(await codeOf(service.listApps())).toBe('helper_unavailable');
+    expect(await codeOf(service.listApps())).toBe('turned_off');
     expect(calls).toHaveLength(0);
     expect(stopKey.release).toHaveBeenCalled();
     expect(stopKey.arm).not.toHaveBeenCalled();
@@ -368,8 +368,8 @@ describe('ComputerService', () => {
     });
     service.dispose();
     expect(computerUseShutDown()).toBe(true);
-    expect(await codeOf(service.listApps())).toBe('helper_unavailable');
-    expect(await codeOf(service.getAppState(AGENT_A, { app: 'Notepad' }))).toBe('helper_unavailable');
+    expect(await codeOf(service.listApps())).toBe('shutting_down');
+    expect(await codeOf(service.getAppState(AGENT_A, { app: 'Notepad' }))).toBe('shutting_down');
     expect(created).toBe(0);
     expect(stopKey.arm).not.toHaveBeenCalled();
   });

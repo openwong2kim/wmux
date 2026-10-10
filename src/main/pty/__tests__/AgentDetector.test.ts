@@ -1234,6 +1234,63 @@ describe('AgentDetector', () => {
         });
       });
 
+      describe('the WebSearch dialog (Claude Code 2.1.296, replayed PTY bytes)', () => {
+        // The dialog frames copied byte-for-byte from a 120x40 pane and the same
+        // dialog redrawn after a resize to 50x24 (main buffer, manual mode).
+        // Its question is the plain "Do you want to proceed?": no new pattern.
+        const WIDE_DRAW =
+          '\u001b[38;2;153;153;153m⏺\u001b[3G\u001b[39m\u001b[1mWeb Search\u001b[22m("xterm.js headless terminal")\r'
+          + '\u001b[2B\u001b[38;2;177;185;249m'
+          + '─'.repeat(120)
+          + '\r'
+          + '\u001b[1B\u001b[39m \u001b[38;2;177;185;249m\u001b[1mTool use\r'
+          + '\u001b[1B\u001b[22m\u001b[39m \u001b[2m│\u001b[22m \u001b[38;2;153;153;153mClaude wants to search the web for: xterm.js headless terminal\u001b[39m\u001b[K\r'
+          + '\u001b[1B\u001b[38;2;80;80;80m'
+          + '╌'.repeat(120)
+          + '\u001b[39m\r\r\n'
+          + '\u001b[2GWeb\u001b[6GSearch("xterm.js\u001b[23Gheadless\u001b[32Gterminal")\r\r\n'
+          + '\u001b[38;2;80;80;80m'
+          + '╌'.repeat(120)
+          + '\u001b[39m\r\r\n'
+          + '\u001b[2GDo\u001b[5Gyou\u001b[9Gwant\u001b[14Gto\u001b[17Gproceed?\r\r\n'
+          + '\u001b[2G\u001b[38;2;177;185;249m❯\u001b[4G\u001b[38;2;153;153;153m1.\u001b[7G\u001b[38;2;177;185;249mYes\u001b[39m\r\r\n'
+          + '\u001b[4G\u001b[38;2;153;153;153m2.\u001b[7G\u001b[39mYes,\u001b[12Gand\u001b[16Gdon\'t\u001b[22Gask\u001b[26Gagain\u001b[32Gfor\u001b[36GWeb\u001b[40GSearch\u001b[47Gcommands\u001b[56Gin\u001b[59G/private/tmp/claude-501/-Users-demouser-Desktop-codin…\r\r\n'
+          + '\u001b[4G\u001b[38;2;153;153;153m3.\u001b[7G\u001b[39mNo\r\r\n'
+          + '\r\r\n'
+          + '\u001b[2G\u001b[38;2;153;153;153mEsc\u001b[6Gto\u001b[9Gcancel\u001b[16G·\u001b[18GTab\u001b[22Gto\u001b[25Gamend\u001b[39m\r\r\n'
+          + '\u001b[1C\u001b[5A';
+        const NARROW_DRAW =
+          '\u001b[38;2;153;153;153m⏺\u001b[3G\u001b[39m\u001b[1mWeb\u001b[7GSearch\u001b[22m("xterm.js\u001b[24Gheadless\u001b[33Gterminal")\r\r\n'
+          + '\r\r\n'
+          + '\u001b[38;2;177;185;249m'
+          + '─'.repeat(50)
+          + '\u001b[39m\r\r\n'
+          + '\u001b[2G\u001b[38;2;177;185;249m\u001b[1mTool\u001b[7Guse\u001b[22m\u001b[39m\r\r\n'
+          + '\u001b[2G\u001b[2m│\u001b[4G\u001b[22m\u001b[38;2;153;153;153mClaude\u001b[11Gwants\u001b[17Gto\u001b[20Gsearch\u001b[27Gthe\u001b[31Gweb\u001b[35Gfor:\u001b[40Gxterm.js\u001b[39m\r\r\n'
+          + '\u001b[2G\u001b[2m│\u001b[4G\u001b[22m\u001b[38;2;153;153;153mheadless\u001b[13Gterminal\u001b[39m\r\r\n'
+          + '\u001b[38;2;80;80;80m'
+          + '╌'.repeat(50)
+          + '\u001b[39m\r\r\n'
+          + '\u001b[2GWeb\u001b[6GSearch("xterm.js\u001b[23Gheadless\u001b[32Gterminal")\r\r\n'
+          + '\u001b[38;2;80;80;80m'
+          + '╌'.repeat(50)
+          + '\u001b[39m\r\r\n'
+          + '\u001b[2GDo\u001b[5Gyou\u001b[9Gwant\u001b[14Gto\u001b[17Gproceed?\r\r\n'
+          + '\u001b[2G\u001b[38;2;177;185;249m❯\u001b[4G\u001b[38;2;153;153;153m1.\u001b[7G\u001b[38;2;177;185;249mYes\u001b[39m\r\r\n'
+          + '\u001b[4G\u001b[38;2;153;153;153m2.\u001b[7G\u001b[39mNo\r\r\n'
+          + '\r\r\n'
+          + '\u001b[2G\u001b[38;2;153;153;153mEsc\u001b[6Gto\u001b[9Gcancel\u001b[16G·\u001b[18GTab\u001b[22Gto\u001b[25Gamend\u001b[39m\r\r\n'
+          + '\u001b[1C\u001b[4A';
+
+        it.each([['120 columns', WIDE_DRAW], ['50 columns', NARROW_DRAW]])('%s: emits awaiting_input once, however the frame is chunked', (_label, draw) => {
+          for (const size of [draw.length, 1, 7, 64, 512]) {
+            const { det, cb } = claudeGated();
+            for (let i = 0; i < draw.length; i += size) det.feed(draw.slice(i, i + size));
+            expect(statuses(cb)).toEqual(APPROVAL);
+          }
+        });
+      });
+
       describe('#1931 — a dialog drawn over cells that already held its characters', () => {
         // The second Bash dialog of a session, copied byte-for-byte from a
         // 100x30 Windows pane (Claude Code 2.1.294, isolated daemon, no

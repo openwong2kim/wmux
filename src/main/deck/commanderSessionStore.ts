@@ -32,6 +32,9 @@ export interface PersistedCommanderSession {
   sessionId: string;
   /** ISO timestamp of the last persist — surfaced to the P3b greeting later. */
   updatedAt: string;
+  /** The account the conversation moved to under "Switch accounts by quota";
+   *  absent when it runs on the workspace binding. */
+  rotatedAccountId?: string;
 }
 
 interface CommanderSessionsFile {
@@ -62,6 +65,7 @@ function readSessionsFile(dir?: string): Record<string, PersistedCommanderSessio
     out[wsId] = {
       sessionId: o.sessionId,
       updatedAt: typeof o.updatedAt === 'string' ? o.updatedAt : '',
+      ...(typeof o.rotatedAccountId === 'string' && o.rotatedAccountId ? { rotatedAccountId: o.rotatedAccountId } : {}),
     };
   }
   return out;
@@ -87,11 +91,16 @@ export async function saveCommanderSession(
   workspaceId: string,
   sessionId: string,
   dir?: string,
+  rotatedAccountId?: string | null,
 ): Promise<void> {
   if (!workspaceId) return;
   await serialize(async () => {
     const sessions = readSessionsFile(dir);
-    sessions[workspaceId] = { sessionId, updatedAt: new Date().toISOString() };
+    sessions[workspaceId] = {
+      sessionId,
+      updatedAt: new Date().toISOString(),
+      ...(rotatedAccountId ? { rotatedAccountId } : {}),
+    };
     const record: CommanderSessionsFile = { sessions };
     await atomicWriteJSON(getCommanderSessionPath(dir), record);
   });

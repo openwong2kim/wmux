@@ -532,4 +532,14 @@ export const da = {
   'pcSwitcher.open': "Skift computer",
   'pcSwitcher.manage': "Indstillinger for {name}",
   'pcSwitcher.othersNeedYou': "{count} venter på dig på andre computere",
+  // Quit and Stop Sessions (main-process native confirm)
+  'quitAndStop.message': "Afslut wmux og stop alle sessioner?",
+  'quitAndStop.detail': "Kørende agentsessioner: {agents}. Terminaler i alt: {sessions}. De bliver alle stoppet. Almindelig Afslut lader dem køre videre i baggrunden.",
+  'quitAndStop.detailUnknown': "wmux kunne ikke tælle de kørende sessioner. Alle terminaler og agentsessioner bliver stoppet. Almindelig Afslut lader dem køre videre i baggrunden.",
+  'quitAndStop.confirm': "Afslut og stop sessioner",
+  'quitAndStop.cancel': "Annuller",
+  'quitAndStop.stopFailedMessage': "wmux kunne ikke stoppe sessionerne.",
+  'quitAndStop.stopFailedDetail': "wmux-dæmonen stoppede ikke, så wmux forbliver åben, og dine sessioner kører stadig. Kør wmux daemon stop i en terminal, og afslut igen.",
+  'quitAndStop.alreadyQuittingMessage': "wmux er allerede ved at afslutte.",
+  'quitAndStop.alreadyQuittingDetail': "Denne afslutning lader dine sessioner køre videre i baggrunden. Kør wmux daemon stop i en terminal for at stoppe dem.",
 } as const;

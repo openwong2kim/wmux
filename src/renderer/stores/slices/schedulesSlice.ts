@@ -80,7 +80,9 @@ export const createSchedulesSlice: StateCreator<
     if (push.kind === 'attention') {
       // No OS toast could show these (main keeps them queued): say it in-app.
       for (const item of push.items) {
-        const word = item.kind === 'proposed' ? t('schedules.toast.proposed') : t('schedules.toast.grantRaised');
+        const word = item.kind === 'proposed' ? t('schedules.toast.proposed')
+          : item.kind === 'needs-regrant' ? t('schedules.toast.needsRegrant')
+            : t('schedules.toast.grantRaised');
         get().pushToast({ level: 'info', message: `${item.automationName || t('schedules.title')} · ${word}` });
       }
       void get().refreshSchedules();

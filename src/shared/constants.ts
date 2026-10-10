@@ -299,6 +299,12 @@ export const IPC = {
   //   renderer-only trust boundary.
   DECK_LEDGER_GATE_GET: 'deck:ledger-gate:get',
   DECK_LEDGER_GATE_SET: 'deck:ledger-gate:set',
+  //   DECK_FLEET_FAST_PATH_* — the `deck.fleetFastPath` switch (Settings
+  //   toggle). ON answers short read-only Fleet questions from the desktop
+  //   composer with the local Fleet board instead of a Moa turn. Backed by
+  //   deck-fleet-fast-path.json (main/deck/deckFleetFastPathStore.ts).
+  DECK_FLEET_FAST_PATH_GET: 'deck:fleet-fast-path:get',
+  DECK_FLEET_FAST_PATH_SET: 'deck:fleet-fast-path:set',
   //   DECK_LEDGER_SUMMARY — the Deck status panel's read: the open task
   //   ledger rows one workspace's brain owns, joined with the workspace
   //   mirror's per-worker agent status. Read-only projection.

@@ -304,6 +304,35 @@ describe('planAutoResume — Claude panes resume themselves on app start', () =>
   });
 });
 
+describe('planAutoResume — never types into a pane whose agent is already running', () => {
+  // The daemon now survives an app quit, so a pane it recovered once keeps its
+  // resume hint across app restarts while the resumed Claude runs in it. Typing
+  // the resume line then lands in Claude's own input box, once per restart.
+  const binding = { agent: 'claude', cwd: 'C:/git/wmux', sessionId: SID };
+  const base = { enabled: true, agent: 'claude', binding, paneCwds: ['C:/git/wmux'], roleBinding: undefined } as const;
+
+  it('stays out while the shell reports a running command or the agent process is alive', () => {
+    expect(planAutoResume({ ...base, commandRunning: true })).toBeNull();
+    expect(planAutoResume({ ...base, agentAlive: true })).toBeNull();
+  });
+
+  it('the Pane effect re-checks liveness right before writing', () => {
+    const source = readFileSync(resolve(__dirname, '../Pane.tsx'), 'utf8');
+    expect(source).toMatch(/commandRunningByPtyId\[ptyId\] === true \|\| agentAliveByPtyId\[ptyId\] === true\) \{[\s\S]{0,200}?clearResumeHint\(ptyId\);\s*return;/);
+  });
+
+  it('the planner gets the live signals, and the pill hides while the agent runs', () => {
+    const source = readFileSync(resolve(__dirname, '../Pane.tsx'), 'utf8');
+    expect(source).toMatch(/commandRunning: useStore\.getState\(\)\.commandRunningByPtyId\[ptyId\],\s*agentAlive: useStore\.getState\(\)\.agentAliveByPtyId\[ptyId\],/);
+    expect(source).toMatch(/\{resumeHint && !resumeAgentLive && /);
+  });
+
+  it('still resumes at an idle prompt, or when neither signal is known', () => {
+    expect(planAutoResume({ ...base, commandRunning: false, agentAlive: false })).toBe(`claude --resume ${SID}`);
+    expect(planAutoResume({ ...base })).toBe(`claude --resume ${SID}`);
+  });
+});
+
 describe('planAutoResume — the opt-in setting (#1826)', () => {
   const binding = { agent: 'claude', cwd: 'C:/git/wmux', sessionId: SID };
 

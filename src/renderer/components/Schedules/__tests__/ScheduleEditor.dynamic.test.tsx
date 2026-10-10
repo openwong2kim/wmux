@@ -55,11 +55,49 @@ function mount(original: Automation | null, onSaved = vi.fn()) {
 }
 
 describe('ScheduleEditor', () => {
-  it('warns before saving an edit that resets a granted permission', () => {
-    mount(automation({ permission: { mode: 'bypass', grantedRevision: 3 } }));
-    expect(q('[data-schedule-reset-warning]')).toBeNull();
+  it('grants the same mode again in the save that changes what runs', async () => {
+    const a = automation({ permission: { mode: 'auto', grantedRevision: 3 } });
+    api.update.mockResolvedValue({ ok: true, automation: { ...a, revision: 4 } });
+    api.grant.mockResolvedValue({ ok: true, automation: { ...a, revision: 4 } });
+    const onSaved = mount(a);
     act(() => type(q<HTMLTextAreaElement>('[data-schedule-prompt]')!, 'A different task'));
-    expect(q('[data-schedule-reset-warning]')!.textContent).toContain('resets permission to Approval');
+    await act(async () => q<HTMLButtonElement>('[data-schedule-save]')!.click());
+    expect(api.grant).toHaveBeenCalledWith('a1', 'auto', undefined);
+    expect(api.update.mock.invocationCallOrder[0]).toBeLessThan(api.grant.mock.invocationCallOrder[0]);
+    expect(onSaved).toHaveBeenCalledWith('a1');
+  });
+
+  it('says the runs are skipped when the re-grant after a what-runs edit is declined', async () => {
+    const a = automation({ permission: { mode: 'auto', grantedRevision: 3 } });
+    api.update.mockResolvedValue({ ok: true, automation: { ...a, revision: 4 } });
+    api.grant.mockResolvedValue({ ok: false, error: 'cancelled' });
+    const onSaved = mount(a);
+    act(() => type(q<HTMLTextAreaElement>('[data-schedule-prompt]')!, 'A different task'));
+    await act(async () => q<HTMLButtonElement>('[data-schedule-save]')!.click());
+    expect(onSaved).not.toHaveBeenCalled();
+    expect(q('[data-schedule-error]')!.textContent)
+      .toBe("Auto was not granted; this schedule's runs are skipped until you grant it again.");
+  });
+
+  it('a renamed schedule keeps its grant without asking again', async () => {
+    const a = automation({ permission: { mode: 'auto', grantedRevision: 3 } });
+    api.update.mockResolvedValue({ ok: true, automation: a });
+    mount(a);
+    act(() => type(q<HTMLInputElement>('[data-schedule-name]')!, 'Renamed'));
+    await act(async () => q<HTMLButtonElement>('[data-schedule-save]')!.click());
+    expect(api.grant).not.toHaveBeenCalled();
+  });
+
+  it('a new schedule defaults to Auto for Claude and Scoped for Codex; Auto is not offered to Codex', () => {
+    mount(null);
+    openMore();
+    expect(radio('Auto').getAttribute('aria-checked')).toBe('true');
+    openChip('agent');
+    act(() => radio('Codex').click());
+    expect(radio('Scoped').getAttribute('aria-checked')).toBe('true');
+    expect(radio('Auto')).toBeUndefined();
+    act(() => radio('Claude').click());
+    expect(radio('Auto').getAttribute('aria-checked')).toBe('true');
   });
 
   it('rejects rule patterns in the scoped tool list and never saves them', async () => {
@@ -129,6 +167,18 @@ describe('ScheduleEditor', () => {
     expect(onSaved).toHaveBeenCalledWith('new1');
   });
 
+  it('turning on a reviewed agent draft keeps it in Approval (no grant)', async () => {
+    const a = automation({ proposed: true, enabled: false });
+    api.update.mockResolvedValue({ ok: true, automation: a });
+    api.setEnabled.mockResolvedValue({ ok: true, automation: a });
+    act(() => root.render(
+      <ScheduleEditor original={a} review accounts={[]} onClose={vi.fn()} onSaved={vi.fn()} />,
+    ));
+    await act(async () => q<HTMLButtonElement>('[data-schedule-save]')!.click());
+    expect(api.grant).not.toHaveBeenCalled();
+    expect(api.setEnabled).toHaveBeenCalledWith('a1', true);
+  });
+
   it('has one primary action and a Cancel — Turn on when reviewing a draft', () => {
     act(() => root.render(
       <ScheduleEditor original={automation({ proposed: true, enabled: false })} review accounts={[]} onClose={vi.fn()} onSaved={vi.fn()} />,
@@ -139,7 +189,7 @@ describe('ScheduleEditor', () => {
       .filter((b) => b.className.includes('ui-btn-primary'))).toHaveLength(1);
   });
 
-  it('keeps a new schedule saved and off when Bypass is declined, with plain copy', async () => {
+  it('keeps a new schedule saved and off when its default Auto is declined, with plain copy', async () => {
     const created = automation({ id: 'new2', enabled: false });
     api.create.mockResolvedValue({ ok: true, automation: created });
     api.grant.mockResolvedValue({ ok: false, error: 'cancelled' });
@@ -148,12 +198,11 @@ describe('ScheduleEditor', () => {
     act(() => type(q<HTMLTextAreaElement>('[data-schedule-prompt]')!, 'Do it'));
     openChip('folder');
     act(() => type(q<HTMLInputElement>('[data-schedule-cwd]')!, '/w'));
-    openMore();
-    act(() => radio('Bypass').click());
     await act(async () => q<HTMLButtonElement>('[data-schedule-save]')!.click());
+    expect(api.grant).toHaveBeenCalledWith('new2', 'auto', undefined);
     expect(api.setEnabled).not.toHaveBeenCalled();
     expect(onSaved).toHaveBeenCalledWith('new2');
-    expect(useStore.getState().toasts.some((x) => x.message.startsWith('Saved turned off'))).toBe(true);
+    expect(useStore.getState().toasts.some((x) => x.message.startsWith('Saved turned off — Auto was not granted'))).toBe(true);
   });
 
   it('says the permission is unchanged when Bypass is declined on an edit', async () => {

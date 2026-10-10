@@ -5,6 +5,7 @@ import type { Page } from 'playwright-core';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { PlaywrightEngine } from '../PlaywrightEngine';
+import { armDialogAnswer, modalScopeKey, resolveDialogOwner } from '../modalState';
 import { leasedMutation, withAutomationLease } from '../automationLease';
 import type { BrowserToolDeps } from '../browserScope';
 import { resolveRef } from '../snapshot';
@@ -871,7 +872,7 @@ export function registerFileTools(server: McpServer, deps: BrowserToolDeps): voi
   // -----------------------------------------------------------------------
   server.tool(
     'browser_dialog',
-    'Pre-register a handler for the NEXT dialog (alert, confirm, prompt, beforeunload); it is accepted or dismissed automatically when it appears.' + EFFECT_TRAILER_NOTE,
+    'Pre-register the answer for the NEXT dialog (alert, confirm, prompt) that one of your actions opens on a tab you opened, within 30s. Without it a dialog is dismissed and reported as a [modal] note; leaving a page (beforeunload) is always accepted. Refused on tabs the user owns or lent.' + EFFECT_TRAILER_NOTE,
     BROWSER_DIALOG_SHAPE,
     async ({ accept, text, surfaceId }) => leasedMutation(deps, surfaceId, async (scope, effect) => {
       try {
@@ -881,13 +882,13 @@ export function registerFileTools(server: McpServer, deps: BrowserToolDeps): voi
           throw taggedFailure('not_supported', 'No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
         }
 
-        page.once('dialog', async (dialog) => {
-          if (accept) {
-            await dialog.accept(text);
-          } else {
-            await dialog.dismiss();
-          }
-        });
+        armDialogAnswer(
+          page,
+          modalScopeKey(scope.workspaceId, scope.surfaceId),
+          await resolveDialogOwner(page, scope.workspaceId),
+          accept,
+          text,
+        );
         // Nothing is sent to the page here — what this tool mutates is the
         // handler armed on it, and that registration is what `committed`
         // reports. The dialog it answers has not happened yet.

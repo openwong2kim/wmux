@@ -48,12 +48,35 @@ describe('scheduled-run command line through the three wrapper shells', () => {
 
   it('fixed flag map for every agent × mode', () => {
     expect(buildAutomationCommand('claude', 'claude', 'approval', undefined)).toBe('claude --permission-mode default');
-    expect(buildAutomationCommand('claude', 'claude', 'bypass', ['Read'])).toBe('claude --dangerously-skip-permissions');
+    expect(buildAutomationCommand('claude', 'claude', 'bypass', ['Read'])).toBe('claude --dangerously-skip-permissions --disallowedTools mcp__wmux');
     expect(buildAutomationCommand('codex', 'codex', 'approval', undefined)).toBe('codex');
     expect(buildAutomationCommand('codex -c model_reasoning_effort=high', 'codex', 'scoped', ['Read']))
-      .toBe('codex -c model_reasoning_effort=high --sandbox workspace-write --ask-for-approval never');
-    expect(buildAutomationCommand('codex', 'codex', 'bypass', undefined)).toBe('codex --dangerously-bypass-approvals-and-sandbox');
+      .toBe('codex -c model_reasoning_effort=high --sandbox workspace-write --ask-for-approval never ' +
+        '-c mcp_servers.wmux.command=wmux-disabled -c mcp_servers.wmux.enabled=false');
+    expect(buildAutomationCommand('codex', 'codex', 'bypass', undefined)).toBe('codex --dangerously-bypass-approvals-and-sandbox ' +
+      '-c mcp_servers.wmux.command=wmux-disabled -c mcp_servers.wmux.enabled=false');
   });
+
+  it('unattended modes carry no wmux MCP server; approval and claude scoped keep it; codex refuses auto', () => {
+    const auto = buildAutomationCommand('claude --model haiku', 'claude', 'auto', ['Read']);
+    expect(auto).toBe('claude --model haiku --permission-mode auto --disallowedTools mcp__wmux');
+    expect(buildExecArgs('/bin/bash', auto)).toEqual(['-lc', auto]);
+    expect(buildExecArgs('pwsh', auto)?.[3]).toBe(`${auto}${PWSH_EXIT_TAIL}`);
+    expect(buildExecArgs('cmd.exe', auto)).toEqual(['/d', '/s', '/c', auto]);
+    for (const [agent, mode] of [['claude', 'auto'], ['claude', 'bypass'], ['codex', 'scoped'], ['codex', 'bypass']] as const) {
+      const line = buildAutomationCommand(agent, agent, mode, ['Read']);
+      expect(line, `${agent} ${mode}`).toMatch(agent === 'claude'
+        ? / --disallowedTools mcp__wmux$/
+        : / -c mcp_servers\.wmux\.command=wmux-disabled -c mcp_servers\.wmux\.enabled=false$/);
+      // Nothing a wrapper shell would expand or split.
+      expect(line).not.toMatch(/["'*,$`]/);
+    }
+    for (const [agent, mode] of [['claude', 'approval'], ['claude', 'scoped'], ['codex', 'approval']] as const) {
+      expect(buildAutomationCommand(agent, agent, mode, ['Read'])).not.toContain('wmux');
+    }
+    expect(() => permissionFlags('codex', 'auto', undefined)).toThrow();
+  });
+
 
   it('refuses any tool name that could reach a shell parser', () => {
     for (const bad of ['Read;rm -rf ~', 'Bash(rm:*)', '$(whoami)', '`id`', 'Read,Edit', 'A&calc', 'A|B', "Read'", 'Read"', '', '1Read', 'Read Edit']) {

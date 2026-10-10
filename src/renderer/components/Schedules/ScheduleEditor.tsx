@@ -25,15 +25,17 @@ import {
   emptyForm,
   formFromAutomation,
   grantNeeded,
+  modeAfterAgentChange,
+  modesFor,
   parseToolNames,
-  shouldWarnPermissionReset,
+  revisionFieldsChanged,
   usesToolList,
   validateForm,
   type FormProblem,
   type SchedulePreset,
   type ScheduleForm,
 } from './scheduleModel';
-import { BYPASS_DECLINED, agentLabel, describeDays, folderName, weekdayName } from './format';
+import { GRANT_DECLINED, agentLabel, describeDays, folderName, weekdayName } from './format';
 import type { AccountOption } from './useAccounts';
 
 type Chip = 'schedule' | 'folder' | 'agent';
@@ -66,7 +68,8 @@ function AgentIcon() {
  * popover; model, effort, permission and the run limits wait behind More
  * options at their defaults. Permission is never part of the draft: saving
  * updates the schedule first and then calls automation.grant, so the grant
- * lands on the revision the update produced.
+ * lands on the revision the update produced — including after an edit that
+ * changes what runs, so a granted mode is never left stale by the editor.
  */
 export default function ScheduleEditor({ original, review, accounts, initial, onClose, onSaved }: {
   original: Automation | null;
@@ -102,7 +105,6 @@ export default function ScheduleEditor({ original, review, accounts, initial, on
     setForm((f) => ({ ...f, prompt, ...(nameTouched ? {} : { name: deriveName(prompt) }) }));
   const problems = validateForm(form);
   const tools = parseToolNames(form.toolsText);
-  const warnReset = shouldWarnPermissionReset(original, form, permissionTouched);
   const vendorAccounts = accounts.filter((a) => a.vendor === form.agent);
   const shown = (place: 'prompt' | Chip | 'more') => (showProblems
     ? problems.filter((p) => PROBLEM_PLACE[p] === place).map((p) => t(`schedules.problem.${p}`)).join(' ')
@@ -118,8 +120,8 @@ export default function ScheduleEditor({ original, review, accounts, initial, on
     return () => document.removeEventListener('mousedown', onDown);
   }, [chip]);
 
-  // Bypass is confirmed by main at grant time (a native prompt no renderer
-  // path can skip), so picking it here only records the choice.
+  // Auto and Bypass are confirmed by main at grant time (a native prompt no
+  // renderer path can skip), so picking one here only records the choice.
   const pickMode = (mode: AutomationPermissionMode) => {
     setPermissionTouched(true);
     set('mode', mode);
@@ -130,11 +132,14 @@ export default function ScheduleEditor({ original, review, accounts, initial, on
     if (picked && picked[0]) set('cwd', picked[0]);
   };
 
+  // A new schedule follows the agent's default mode until the user picks one;
+  // a pick (or an existing schedule's mode) is kept wherever the agent offers it.
   const setAgent = (agent: AutomationAgent) =>
     setForm((f) => ({
       ...f,
       agent,
       accountId: accounts.some((a) => a.id === f.accountId && a.vendor === agent) ? f.accountId : '',
+      mode: modeAfterAgentChange(agent, f.mode, original !== null || permissionTouched),
     }));
 
   const save = async () => {
@@ -169,16 +174,20 @@ export default function ScheduleEditor({ original, review, accounts, initial, on
       }
       if (needsGrant) {
         const granted = await api.grant(id, form.mode, usesToolList(form) ? tools.tools : undefined);
-        if (!granted.ok && granted.error === BYPASS_DECLINED) {
-          // The human declined main's Bypass prompt. A new schedule stays
-          // saved and off; an edit keeps whatever permission it had.
+        if (!granted.ok && granted.error === GRANT_DECLINED) {
+          // The human declined main's Auto/Bypass prompt. A new schedule stays
+          // saved and off. An edit keeps whatever permission it had — unless
+          // the update changed what runs, which left that grant stale: the
+          // schedule is then skipped until it is granted again.
+          const mode = t(`schedules.mode.${form.mode}`);
           if (!original) {
-            useStore.getState().pushToast({ level: 'info', message: t('schedules.bypassDeclinedNew') });
+            useStore.getState().pushToast({ level: 'info', message: t('schedules.grantDeclinedNew', { mode }) });
             void useStore.getState().refreshSchedules();
             onSaved(id);
             return;
           }
-          return fail(t('schedules.bypassDeclinedEdit'), false);
+          const stale = original.permission.mode !== 'approval' && revisionFieldsChanged(original, form);
+          return fail(stale ? t('schedules.grantDeclinedStale', { mode }) : t('schedules.grantDeclinedEdit', { mode }), false);
         }
         if (!granted.ok) return fail(granted.error);
       }
@@ -342,11 +351,7 @@ export default function ScheduleEditor({ original, review, accounts, initial, on
             <SegmentedControl<AutomationPermissionMode>
               value={form.mode}
               ariaLabel={t('schedules.permission')}
-              options={[
-                { value: 'approval', label: t('schedules.mode.approval') },
-                { value: 'scoped', label: t('schedules.mode.scoped') },
-                { value: 'bypass', label: t('schedules.mode.bypass') },
-              ]}
+              options={modesFor(form.agent).map((m) => ({ value: m, label: t(`schedules.mode.${m}`) }))}
               onValueChange={pickMode}
             />
           </Field>
@@ -384,7 +389,6 @@ export default function ScheduleEditor({ original, review, accounts, initial, on
         </div>
       )}
 
-      {warnReset && <p className="ui-note" role="status" data-schedule-reset-warning>{t('schedules.resetWarning')}</p>}
       {error && <p className="ui-row-error" role="alert" data-schedule-error>{error}</p>}
       <div className="wmux-schedule-actions">
         <Button variant="ghost" onClick={onClose} disabled={saving}>{t('schedules.cancel')}</Button>

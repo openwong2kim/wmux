@@ -4,7 +4,7 @@ import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import type { AutomationEvent, AutomationRun } from '../../../shared/automation';
 import type { SessionPromptScheduleResult } from '../../../shared/sessionPromptSchedule';
-import { AutomationEngine, type AutomationAgentView, type AutomationEnginePorts } from '../AutomationEngine';
+import { AutomationEngine, screenShowsPrompt, type AutomationAgentView, type AutomationEnginePorts } from '../AutomationEngine';
 import { AUTOMATION_RUNS_FILE, AUTOMATIONS_FILE, snapshotPath } from '../store';
 
 const MIN = 60_000;
@@ -93,7 +93,7 @@ async function startedRun(h: Harness, over: Record<string, unknown> = {}): Promi
 }
 
 describe('AutomationEngine — revision & grants', () => {
-  it('bumps the revision on a what-runs edit and downgrades a stale grant to approval', async () => {
+  it('bumps the revision on a what-runs edit and skips a stale grant instead of downgrading it', async () => {
     const h = harness();
     await h.engine.start({ timers: false });
     const a = await h.engine.create(draft());
@@ -111,10 +111,109 @@ describe('AutomationEngine — revision & grants', () => {
     });
     expect(edited.ok && edited.automation.revision).toBe(2);
     expect(edited.ok && edited.automation.permission.grantedRevision).toBe(1);
-    const res = await h.engine.runNow(a.automation.id, 'test');
-    expect(res.ok && res.run.effectiveMode).toBe('approval');
+    // The update queued the stale-grant notice right away, held back (not
+    // broadcast, not listed) while the editor's update → confirm → grant runs.
+    expect(h.engine.list().pendingAttention?.map((x) => x.kind)).toEqual(['grant-raised']);
+    const regrantEvents = () => h.events.filter((e) => e.type === 'attention' && e.kind === 'needs-regrant');
+    h.engine.tick(h.clock.t + 60_000);
+    expect(regrantEvents()).toHaveLength(0);
+    h.engine.tick(h.clock.t + 5 * MIN + 1_000);
+    h.engine.tick(h.clock.t + 5 * MIN + 2_000);
+    expect(regrantEvents()).toHaveLength(1);
+    expect(h.engine.list().pendingAttention?.map((x) => x.kind)).toEqual(['grant-raised', 'needs-regrant']);
+    // A manual/test run refuses; nothing is spawned.
+    expect(await h.engine.runNow(a.automation.id, 'test')).toEqual({ ok: false, error: expect.any(String) });
+    // The schedule's own occurrence is recorded skipped, never launched as approval.
+    const skipped = await h.engine.startRun(h.engine.list().automations[0], h.clock.t, 'scheduled');
+    expect(skipped).toMatchObject({ state: 'skipped', reason: 'needs_regrant', effectiveMode: 'bypass', revision: 2 });
     await settle();
-    expect(h.created[0].command).toBe('claude --permission-mode default');
+    expect(h.created).toEqual([]);
+    // Granting again at the new revision clears the stale notice (and is a
+    // raise in its own right) and runs.
+    await h.engine.grant(a.automation.id, 'bypass', undefined);
+    expect(h.engine.list().pendingAttention?.map((x) => x.kind)).toEqual(['grant-raised', 'grant-raised']);
+    expect((await h.engine.runNow(a.automation.id, 'test')).ok).toBe(true);
+    await settle();
+    expect(h.created[0].command).toBe('claude --dangerously-skip-permissions --disallowedTools mcp__wmux');
+  });
+
+  it('a skipped occurrence announces its held-back notice at once', async () => {
+    const h = harness();
+    await h.engine.start({ timers: false });
+    const a = await h.engine.create(draft());
+    if (!a.ok) throw new Error();
+    await h.engine.grant(a.automation.id, 'auto', undefined);
+    await h.engine.update(a.automation.id, draft({ action: { kind: 'launch', cwd: '/work/repo', agent: 'claude', prompt: 'edited' } }));
+    await h.engine.startRun(h.engine.list().automations[0], h.clock.t, 'scheduled');
+    expect(h.events.filter((e) => e.type === 'attention' && e.kind === 'needs-regrant')).toHaveLength(1);
+    expect(h.engine.list().pendingAttention?.map((x) => x.kind)).toContain('needs-regrant');
+  });
+
+  it('boot: a schedule already holding a stale grant gets one needs-regrant notice', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-engine-'));
+    fs.writeFileSync(path.join(dir, AUTOMATIONS_FILE), JSON.stringify({
+      version: 1,
+      automations: [
+        { ...draft(), id: 'a1', enabled: true, revision: 3, createdAt: 1, permission: { mode: 'bypass', grantedRevision: 2 } },
+        { ...draft(), id: 'a2', enabled: true, revision: 3, createdAt: 1, permission: { mode: 'bypass', grantedRevision: 3 } },
+      ],
+      attention: [],
+    }));
+    const h = harness({ dir });
+    await h.engine.start({ timers: false });
+    expect(h.engine.list().pendingAttention?.map((x) => [x.automationId, x.kind])).toEqual([['a1', 'needs-regrant']]);
+    // Not queued twice across restarts.
+    const again = harness({ dir });
+    await again.engine.start({ timers: false });
+    expect(again.engine.list().pendingAttention).toHaveLength(1);
+  });
+
+  it('a grant pinned to a revision the schedule has left is refused', async () => {
+    const h = harness();
+    await h.engine.start({ timers: false });
+    const a = await h.engine.create(draft());
+    if (!a.ok) throw new Error();
+    // An edit lands while the native confirm (pinned to revision 1) is open.
+    await h.engine.update(a.automation.id, draft({ action: { kind: 'launch', cwd: '/work/repo', agent: 'claude', prompt: 'edited' } }));
+    const stale = await h.engine.grant(a.automation.id, 'auto', undefined, 1);
+    expect(stale).toEqual({ ok: false, error: expect.stringContaining('changed') });
+    expect(h.engine.list().automations[0].permission).toEqual({ mode: 'approval' });
+    const fresh = await h.engine.grant(a.automation.id, 'auto', undefined, 2);
+    expect(fresh.ok && fresh.automation.permission).toEqual({ mode: 'auto', grantedRevision: 2 });
+  });
+
+  it('the tick skips a due occurrence whose grant is stale', async () => {
+    const h = harness();
+    await h.engine.start({ timers: false });
+    const a = await h.engine.create(draft());
+    if (!a.ok) throw new Error();
+    await h.engine.grant(a.automation.id, 'auto', undefined);
+    await h.engine.update(a.automation.id, draft({ action: { kind: 'launch', cwd: '/work/repo', agent: 'claude', prompt: 'edited' } }));
+    h.engine.tick(new Date(2026, 8, 29, 8, 31).getTime());
+    await settle();
+    expect(h.created).toEqual([]);
+    expect(h.engine.listRuns()[0]).toMatchObject({ state: 'skipped', reason: 'needs_regrant', trigger: 'scheduled' });
+  });
+
+  it('auto: claude only; the grant survives a restart and launches with the auto flag', async () => {
+    const h = harness();
+    await h.engine.start({ timers: false });
+    const codex = await h.engine.create(draft({ action: { kind: 'launch', cwd: '/work/repo', agent: 'codex', prompt: 'x' } }));
+    if (!codex.ok) throw new Error();
+    expect(await h.engine.grant(codex.automation.id, 'auto', undefined)).toEqual({ ok: false, error: expect.any(String) });
+    const a = await h.engine.create(draft());
+    if (!a.ok) throw new Error();
+    const g = await h.engine.grant(a.automation.id, 'auto', undefined);
+    expect(g.ok && g.automation.permission).toEqual({ mode: 'auto', grantedRevision: 1 });
+    h.engine.stop();
+    const again = harness({ dir: h.dir });
+    await again.engine.start({ timers: false });
+    const restored = again.engine.list().automations.find((x) => x.id === a.automation.id);
+    expect(restored?.permission).toEqual({ mode: 'auto', grantedRevision: 1 });
+    const res = await again.engine.runNow(a.automation.id, 'manual');
+    expect(res.ok && res.run.effectiveMode).toBe('auto');
+    await settle();
+    expect(again.created[0].command).toBe("claude --permission-mode auto --disallowedTools mcp__wmux");
   });
 
   it('a raised grant queues an attention item', async () => {
@@ -146,6 +245,8 @@ describe('AutomationEngine — revision & grants', () => {
     expect(again.engine.list().pendingAttention).toEqual([]);
     const enabled = await again.engine.setEnabled(p.automation.id, true);
     expect(enabled.ok && enabled.automation.proposed).toBeUndefined();
+    // Reviewing a draft keeps it in approval until a human grants more.
+    expect(enabled.ok && enabled.automation.permission).toEqual({ mode: 'approval' });
   });
 });
 
@@ -330,7 +431,7 @@ describe('AutomationEngine — completion & caps', () => {
     expect(h.destroyed).toHaveLength(1);
   });
 
-  it('unattended awaiting beyond the timeout fails; approval mode waits', async () => {
+  it('awaiting beyond the timeout fails: 60 min unattended, 15 min in approval', async () => {
     const bypass = harness();
     await bypass.engine.start({ timers: false });
     const a = await bypass.engine.create(draft());
@@ -338,7 +439,7 @@ describe('AutomationEngine — completion & caps', () => {
     await bypass.engine.grant(a.automation.id, 'bypass', undefined);
     await bypass.engine.runNow(a.automation.id, 'manual');
     await settle();
-    expect(bypass.created[0].command).toBe('claude --dangerously-skip-permissions');
+    expect(bypass.created[0].command).toBe('claude --dangerously-skip-permissions --disallowedTools mcp__wmux');
     bypass.state.pendingApproval = true;
     await bypass.engine.monitorOnce();
     expect(bypass.engine.listRuns()[0].state).toBe('awaiting');
@@ -350,9 +451,79 @@ describe('AutomationEngine — completion & caps', () => {
     await startedRun(approval);
     approval.state.pendingApproval = true;
     await approval.engine.monitorOnce();
-    approval.clock.t += 61 * MIN;
+    approval.clock.t += 14 * MIN;
     await approval.engine.monitorOnce();
     expect(approval.engine.listRuns()[0].state).toBe('awaiting');
+    approval.clock.t += 2 * MIN;
+    await approval.engine.monitorOnce();
+    expect(approval.engine.listRuns()[0]).toMatchObject({ state: 'failed', reason: 'await_timeout', effectiveMode: 'approval' });
+    expect(approval.destroyed).toHaveLength(1);
+  });
+
+  it('turn progress during a wait restarts the await clock; repaint-only output does not', async () => {
+    const transcript: { lastEventAt?: number } = {};
+    const h = harness({ ports: { transcriptLastEventAt: () => transcript.lastEventAt } });
+    await startedRun(h);
+    h.state.agent = { ...h.state.agent, status: 'awaiting_input' };
+    await h.engine.monitorOnce();
+    expect(h.engine.listRuns()[0].state).toBe('awaiting');
+    // The transcript moved 10 min into the "wait": the agent is working.
+    transcript.lastEventAt = h.clock.t + 10 * MIN;
+    h.clock.t += 16 * MIN;
+    await h.engine.monitorOnce();
+    expect(h.engine.listRuns()[0].state).toBe('awaiting');
+    // No progress for a full limit after that: it ends.
+    h.clock.t += 10 * MIN;
+    await h.engine.monitorOnce();
+    expect(h.engine.listRuns()[0]).toMatchObject({ state: 'failed', reason: 'await_timeout' });
+  });
+
+  it('a running hook during a misread wait keeps the run alive', async () => {
+    const h = harness();
+    const run = await startedRun(h);
+    h.state.agent = { ...h.state.agent, status: 'awaiting_input' };
+    await h.engine.monitorOnce();
+    h.clock.t += 14 * MIN;
+    await h.engine.onAgentEvent(`auto-${run.id}`, { kind: 'agent.tool_started', status: 'running', decision: 'activity' });
+    h.clock.t += 2 * MIN;
+    await h.engine.monitorOnce();
+    expect(h.engine.listRuns()[0].state).not.toBe('failed');
+  });
+
+  it('a configured await timeout wins in approval mode too', async () => {
+    const h = harness();
+    await startedRun(h, { policy: { awaitTimeoutMinutes: 1 } });
+    h.state.pendingApproval = true;
+    await h.engine.monitorOnce();
+    h.clock.t += 2 * MIN;
+    await h.engine.monitorOnce();
+    expect(h.engine.listRuns()[0]).toMatchObject({ state: 'failed', reason: 'await_timeout' });
+  });
+
+  it('a finished turn followed by the idle awaiting_input notice stays completed past the approval timeout', async () => {
+    // Hook path: a confirmed Stop, then Claude's idle "waiting for input" notification.
+    const h = harness();
+    const run = await startedRun(h);
+    await h.engine.onAgentEvent(`auto-${run.id}`, { kind: 'agent.stop', status: 'complete', decision: 'emit' });
+    await h.engine.onAgentEvent(`auto-${run.id}`, { kind: 'agent.awaiting_input', status: 'awaiting_input', decision: 'emit' });
+    h.state.agent = { ...h.state.agent, status: 'awaiting_input' };
+    h.clock.t += 16 * MIN;
+    await h.engine.monitorOnce();
+    expect(h.engine.listRuns()[0]).toMatchObject({ state: 'completed' });
+    expect(h.engine.listRuns()[0].reason).toBeUndefined();
+
+    // Monitor path: the Stop was not confirmed and the idle notice arrived
+    // first; the transcript's turn end still completes the run.
+    const m = harness();
+    const run2 = await startedRun(m);
+    await m.engine.onAgentEvent(`auto-${run2.id}`, { kind: 'agent.stop', status: 'complete', decision: 'internal' });
+    await m.engine.onAgentEvent(`auto-${run2.id}`, { kind: 'agent.awaiting_input', status: 'awaiting_input', decision: 'emit' });
+    expect(m.engine.listRuns()[0].state).toBe('awaiting');
+    m.state.agent = { ...m.state.agent, status: 'awaiting_input' };
+    m.state.turnEndAt = m.clock.t + 1;
+    m.clock.t += 16 * MIN;
+    await m.engine.monitorOnce();
+    expect(m.engine.listRuns()[0]).toMatchObject({ state: 'completed' });
   });
 
   it('cancelRun terminates a live run', async () => {
@@ -375,7 +546,7 @@ describe('AutomationEngine — review regressions', () => {
     const edited = h.engine.update(a.automation.id, draft({ action: { kind: 'launch', cwd: '/work/repo', agent: 'claude', prompt: 'new prompt' } }));
     await Promise.all([started, edited]);
     await settle();
-    expect(h.created[0].command).toBe('claude --dangerously-skip-permissions');
+    expect(h.created[0].command).toBe('claude --dangerously-skip-permissions --disallowedTools mcp__wmux');
     expect(h.delivered).toEqual(['do the thing']);
     expect(h.engine.listRuns()[0].revision).toBe(1);
   });
@@ -487,6 +658,62 @@ describe('AutomationEngine — review regressions', () => {
     const h = harness({ ports: { deliverPrompt: async () => { throw new Error('boom'); } } });
     const run = await startedRun(h);
     expect(run).toMatchObject({ state: 'failed', reason: 'launch_failed' });
+  });
+
+  describe('a pasted prompt the delivery did not submit', () => {
+    // The owner's dogfood run: Claude ready, the prompt pasted, then delivery
+    // answered 'error' before Enter (a viewer attached mid-delivery). The
+    // composer held the prompt; the session was fine.
+    const pastedThenError = (h: { state: Harness['state'] }) => async (
+      _id: string, _slug: unknown, _inc: string, prompt: string, onWrite?: (stage: 'paste' | 'submit') => void,
+    ) => {
+      onWrite?.('paste');
+      h.state.screen = `▐▛███▜▌ Claude Code\n──────\n❯ ${prompt}\n──────\n⏵⏵ auto mode on`;
+      return 'error' as const;
+    };
+
+    it('presses Enter again and runs once the agent takes the turn (submit_retried)', async () => {
+      const h = harness();
+      h.engine['ports'].deliverPrompt = pastedThenError(h);
+      h.engine['ports'].sendKey = async (_id, key) => {
+        h.keys.push(key);
+        h.state.agent = { ...h.state.agent, status: 'running' };
+      };
+      const run = await startedRun(h);
+      expect(h.keys).toEqual(['\r']);
+      expect(run).toMatchObject({ state: 'running', detail: 'submit_retried' });
+      expect(h.destroyed).toEqual([]);
+    });
+
+    it('never presses Enter when the prompt is nowhere on screen (prompt_not_in_composer)', async () => {
+      const h = harness();
+      h.engine['ports'].deliverPrompt = async (_id, _slug, _inc, _prompt, onWrite) => { onWrite?.('paste'); return 'error'; };
+      const run = await startedRun(h);
+      expect(h.keys).toEqual([]);
+      expect(run).toMatchObject({ state: 'failed', reason: 'launch_failed', detail: 'prompt_not_in_composer' });
+    });
+
+    it('gives up at the readiness deadline after a bounded number of Enters (submit_unconfirmed)', async () => {
+      const h = harness();
+      h.engine['ports'].deliverPrompt = pastedThenError(h);
+      const run = await startedRun(h);
+      expect(h.keys).toEqual(['\r', '\r', '\r']);
+      expect(run).toMatchObject({ state: 'failed', reason: 'launch_failed', detail: 'submit_unconfirmed' });
+    });
+
+    it('an error before anything was pasted still fails at once, with no Enter', async () => {
+      const h = harness({ ports: { deliverPrompt: async () => 'error' } });
+      const run = await startedRun(h);
+      expect(h.keys).toEqual([]);
+      expect(run).toMatchObject({ state: 'failed', reason: 'launch_failed' });
+      expect(run.detail).toBeUndefined();
+    });
+
+    it('screenShowsPrompt matches across wrapping and a folded paste', () => {
+      expect(screenShowsPrompt('❯ 나에게\n  인사해', '나에게 인사해')).toBe(true);
+      expect(screenShowsPrompt('❯ [Pasted text #1 +40 lines]', 'a\nlong\nprompt')).toBe(true);
+      expect(screenShowsPrompt('❯ ', '나에게 인사해')).toBe(false);
+    });
   });
 
   it('a tick during remove() cannot start a run for the schedule being deleted', async () => {

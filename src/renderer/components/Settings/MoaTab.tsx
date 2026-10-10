@@ -454,6 +454,25 @@ export function TabMoa({ registerDialog }: TabMoaProps) {
       .then((r) => setLedgerGate(r.enabled))
       .catch(() => setLedgerGate(!next));
   };
+  // `deck.fleetFastPath` — persisted in MAIN (deck-fleet-fast-path.json), the
+  // file the desktop send path reads. Default OFF; same optimistic-toggle-
+  // with-echo shape as the ledger gate, so a failed read shows off.
+  const [fleetFastPath, setFleetFastPath] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    window.electronAPI.deck?.fleetFastPath
+      ?.get()
+      .then((r) => { if (!cancelled) setFleetFastPath(r.enabled); })
+      .catch(() => undefined); // keep the default-off rendering
+    return () => { cancelled = true; };
+  }, []);
+  const onFleetFastPathChange = (next: boolean) => {
+    setFleetFastPath(next);
+    window.electronAPI.deck?.fleetFastPath
+      ?.set(next)
+      .then((r) => setFleetFastPath(r.enabled))
+      .catch(() => setFleetFastPath(!next));
+  };
   // D1 briefing toggles — persisted in MAIN (deck-briefing.json). Read on mount;
   // optimistic toggle with echo reconciliation (mirrors auto-wake).
   const [briefingEnabled, setBriefingEnabled] = useState(true);
@@ -817,6 +836,14 @@ export function TabMoa({ registerDialog }: TabMoaProps) {
             <Badge title={t('settings.ledgerGateDesc')}>{t('settings.mcpExperimental')}</Badge>
             <Switch checked={ledgerGate} onCheckedChange={onLedgerGateChange} aria-label={t('settings.ledgerGate')} />
           </div>
+        </SettingRow>
+        <SettingRow id="fleetfastpath" label={t('moa.settings.fleetFastPath')} description={t('moa.settings.fleetFastPathDesc')}>
+          <Switch
+            checked={fleetFastPath}
+            onCheckedChange={onFleetFastPathChange}
+            aria-label={t('moa.settings.fleetFastPath')}
+            data-testid="moa-fleet-fast-path-switch"
+          />
         </SettingRow>
         <SettingRow label={t('settings.channelsTabVisible')} description={t('settings.channelsTabVisibleDesc')}>
           <Switch

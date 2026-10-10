@@ -56,6 +56,7 @@ function makePage(opts: { noDownload?: boolean } = {}) {
   return {
     url: () => START_URL,
     once: vi.fn(),
+    on: vi.fn(),
     waitForEvent: vi.fn(async () => {
       if (opts.noDownload) {
         throw new Error('Timeout 30000ms exceeded while waiting for event "download"');
@@ -135,7 +136,7 @@ describe('browser_dialog effect trailer', () => {
     expect(text(result)).toBe(
       'Dialog handler set. Next dialog will be accepted.\n\neffect_state: committed',
     );
-    expect(page.once).toHaveBeenCalledWith('dialog', expect.any(Function));
+    expect(page.on).toHaveBeenCalledWith('dialog', expect.any(Function));
   });
 });
 

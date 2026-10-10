@@ -1039,8 +1039,9 @@ details[open] > .wmux-chatv2-tool-line .wmux-chatv2-chevron { transform: rotate(
 
 /* A rail page fills the sheet over the Workspaces page, which stays mounted
  * underneath at full size, so a page never changes terminal geometry. The
- * sheet's own edge is the page's only boundary. */
-.wmux-page { position: absolute; inset: 0; z-index: 40; display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; background: var(--bg-base); }
+ * sheet's own edge is the page's only boundary. Clip, not hidden: each page
+ * scrolls inside itself, and a caret reveal must not slide the page (#1688). */
+.wmux-page { position: absolute; inset: 0; z-index: 40; display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: clip; background: var(--bg-base); }
 .wmux-page[data-rail-page="fleet"] .wmux-fleet-panel { width: 100%; }
 /* The Remote page's narrow rules (14px sides under a 640px sheet) ask the page
  * around it: a container never matches its own @container query. */

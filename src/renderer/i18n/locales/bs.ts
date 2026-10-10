@@ -533,4 +533,14 @@ export const bs = {
   'pcSwitcher.open': "Promijeni računar",
   'pcSwitcher.manage': "Postavke: {name}",
   'pcSwitcher.othersNeedYou': "{count} čeka na vas na drugim računarima",
+  // Quit and Stop Sessions (main-process native confirm)
+  'quitAndStop.message': "Zatvoriti wmux i zaustaviti sve sesije?",
+  'quitAndStop.detail': "Trenutno radi: sesije agenata: {agents}, ukupno terminala: {sessions}. Sve će biti zaustavljene. Obično zatvaranje ih ostavlja da rade u pozadini.",
+  'quitAndStop.detailUnknown': "wmux nije mogao prebrojati aktivne sesije. Svi terminali i sesije agenata bit će zaustavljeni. Obično zatvaranje ih ostavlja da rade u pozadini.",
+  'quitAndStop.confirm': "Zatvori i zaustavi sesije",
+  'quitAndStop.cancel': "Otkaži",
+  'quitAndStop.stopFailedMessage': "wmux nije mogao zaustaviti sesije.",
+  'quitAndStop.stopFailedDetail': "wmux daemon se nije zaustavio, pa wmux ostaje otvoren i vaše sesije i dalje rade. Pokrenite wmux daemon stop u terminalu, pa ponovo zatvorite.",
+  'quitAndStop.alreadyQuittingMessage': "wmux se već zatvara.",
+  'quitAndStop.alreadyQuittingDetail': "Ovo zatvaranje ostavlja sesije da rade u pozadini. Da ih zaustavite, pokrenite wmux daemon stop u terminalu.",
 } as const;

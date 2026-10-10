@@ -130,7 +130,7 @@ export function validateAllowedTools(raw: unknown): Checked<string[]> {
 }
 
 export function isPermissionMode(raw: unknown): raw is AutomationPermissionMode {
-  return raw === 'approval' || raw === 'scoped' || raw === 'bypass';
+  return raw === 'approval' || raw === 'scoped' || raw === 'auto' || raw === 'bypass';
 }
 
 /** The fields whose change means a different thing runs — and so a new revision. */
@@ -143,14 +143,29 @@ export function changesWhatRuns(before: AutomationDraft['action'], after: Automa
     (before.effort ?? '') !== (after.effort ?? '');
 }
 
-/** A non-approval mode is honoured only at the revision it was granted at. */
+/**
+ * A non-approval mode whose grant predates the current revision. Computed,
+ * never stored: such a schedule's runs are skipped (`needs_regrant`) until a
+ * human grants it again — it never runs in a weaker mode instead.
+ */
+export function needsRegrant(automation: Pick<Automation, 'permission' | 'revision'>): boolean {
+  const { mode, grantedRevision } = automation.permission;
+  return mode !== 'approval' && grantedRevision !== automation.revision;
+}
+
+/**
+ * A non-approval mode is honoured only at the revision it was granted at;
+ * otherwise this reads `approval`. The engine checks `needsRegrant` first and
+ * does not launch such a schedule at all.
+ */
 export function effectiveMode(automation: Pick<Automation, 'permission' | 'revision'>): AutomationPermissionMode {
   const { mode, grantedRevision } = automation.permission;
   if (mode === 'approval') return 'approval';
   return grantedRevision === automation.revision ? mode : 'approval';
 }
 
-const MODE_RANK: Record<AutomationPermissionMode, number> = { approval: 0, scoped: 1, bypass: 2 };
+/** auto ranks above scoped: Claude may approve tools beyond a scoped list. */
+const MODE_RANK: Record<AutomationPermissionMode, number> = { approval: 0, scoped: 1, auto: 2, bypass: 3 };
 
 export function modeRaises(from: AutomationPermissionMode, to: AutomationPermissionMode): boolean {
   return MODE_RANK[to] > MODE_RANK[from];

@@ -13,10 +13,10 @@ import type {
 } from '../../../shared/automation';
 import { AutomationClient } from '../../automation/AutomationClient';
 import { getAutomationUiLocale, setAutomationUiLocale } from '../../automation/AutomationBridge';
-import { bypassConfirmCopy } from '../../automation/toastText';
+import { bypassConfirmCopy, type AutomationUiLocale } from '../../automation/toastText';
 
 const NO_DAEMON = 'daemon unavailable';
-const MODES: readonly AutomationPermissionMode[] = ['approval', 'scoped', 'bypass'];
+const MODES: readonly AutomationPermissionMode[] = ['approval', 'scoped', 'auto', 'bypass'];
 
 function isId(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0 && value.length <= 128;
@@ -38,15 +38,46 @@ function isDraft(value: unknown): value is AutomationDraft {
  * draft may contain lives daemon-side; this only rejects malformed shapes.
  * `automation.propose` is deliberately absent — that is the MCP path.
  */
-/**
- * Native confirmation for a Bypass grant, owned by main so no renderer path
- * (editor, "Grant again", a direct IPC call) can raise a schedule to Bypass
- * without the human seeing it. Resolves true only on an explicit confirm.
- */
-export type BypassConfirmFn = (win: BrowserWindow | null, automationName: string) => Promise<boolean>;
+/** The modes that run with no human answering prompts, so main confirms them natively. */
+export type ConfirmedGrantMode = Extract<AutomationPermissionMode, 'auto' | 'bypass'>;
 
-export const confirmBypassNatively: BypassConfirmFn = async (win, automationName) => {
-  const copy = bypassConfirmCopy(getAutomationUiLocale(), automationName);
+/**
+ * Native confirmation for an Auto or Bypass grant, owned by main so no
+ * renderer path (editor, "Grant again", a direct IPC call) can raise a
+ * schedule to either without the human seeing it. A mode pre-selected in the
+ * editor is not consent; this prompt is. Resolves true only on an explicit
+ * confirm.
+ */
+export type GrantConfirmFn = (win: BrowserWindow | null, automationName: string, mode: ConfirmedGrantMode) => Promise<boolean>;
+
+/** Main-owned copy for the native Auto confirmation (en / ko, like Bypass). */
+export function autoConfirmCopy(locale: AutomationUiLocale, automationName: string): {
+  message: string; detail: string; confirm: string; cancel: string;
+} {
+  const { cancel } = bypassConfirmCopy(locale, automationName);
+  // One line, bounded by code point, like the Bypass copy's name.
+  // eslint-disable-next-line no-control-regex -- stripping control characters is the point
+  const flat = automationName.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g, ' ').replace(/\s+/g, ' ').trim();
+  const points = Array.from(flat);
+  const name = (points.length > 80 ? `${points.slice(0, 79).join('')}…` : flat) || 'wmux';
+  return locale === 'ko'
+    ? {
+      message: `"${name}"을(를) Claude 자동 모드로 실행할까요?`,
+      detail: '정한 시각에, 자리에 없을 때도 Claude가 일상적인 작업은 스스로 승인하고 위험한 작업은 막습니다. 이 실행에서는 wmux 도구가 꺼집니다.',
+      confirm: '자동 모드 사용',
+      cancel,
+    }
+    : {
+      message: `Run "${name}" in Claude's auto mode?`,
+      detail: "At the scheduled time, including while you are away, Claude approves routine actions itself and stops risky ones. The run gets none of wmux's own tools.",
+      confirm: 'Use Auto',
+      cancel,
+    };
+}
+
+export const confirmGrantNatively: GrantConfirmFn = async (win, automationName, mode) => {
+  const locale = getAutomationUiLocale();
+  const copy = mode === 'auto' ? autoConfirmCopy(locale, automationName) : bypassConfirmCopy(locale, automationName);
   const opts = {
     type: 'question' as const,
     buttons: [copy.cancel, copy.confirm],
@@ -62,7 +93,7 @@ export const confirmBypassNatively: BypassConfirmFn = async (win, automationName
 
 export function registerAutomationHandlers(
   getClient: () => DaemonClient | null,
-  confirmBypass: BypassConfirmFn = confirmBypassNatively,
+  confirmGrant: GrantConfirmFn = confirmGrantNatively,
 ): () => void {
   const api = (): AutomationClient | null => {
     const client = getClient();
@@ -139,7 +170,7 @@ export function registerAutomationHandlers(
     return a.setEnabled({ id, enabled });
   });
 
-  // Registered by hand: the Bypass prompt is parented to the invoking window.
+  // Registered by hand: the Auto/Bypass prompt is parented to the invoking window.
   ipcMain.removeHandler(IPC.AUTOMATION_GRANT);
   ipcMain.handle(IPC.AUTOMATION_GRANT, wrapHandler(
     IPC.AUTOMATION_GRANT,
@@ -152,18 +183,29 @@ export function registerAutomationHandlers(
       const a = api();
       if (!a) return refuse();
       if (!isId(id) || !MODES.includes(mode as AutomationPermissionMode)) return refuse('invalid request');
-      if (mode === 'bypass') {
+      let expectedRevision: number | undefined;
+      if (mode === 'bypass' || mode === 'auto') {
         const win = event?.sender ? BrowserWindow.fromWebContents(event.sender) : null;
-        let name = '';
+        // Read BEFORE the prompt: the grant is pinned to the revision the
+        // human is confirming, and the daemon refuses it if an edit lands
+        // while the prompt is open.
+        let target: Automation | undefined;
         try {
-          name = (await a.list()).automations.find((x) => x.id === id)?.name ?? '';
-        } catch { /* the name only labels the prompt */ }
-        if (!(await confirmBypass(win, name))) return refuse('cancelled');
+          target = (await a.list()).automations.find((x) => x.id === id);
+        } catch { /* refused below */ }
+        if (!target) return refuse('Not found');
+        expectedRevision = target.revision;
+        if (!(await confirmGrant(win, target.name, mode))) return refuse('cancelled');
       }
       const tools = Array.isArray(allowedTools) && allowedTools.every((t) => typeof t === 'string')
         ? (allowedTools as string[])
         : undefined;
-      return a.grant({ id, mode: mode as AutomationPermissionMode, ...(tools ? { allowedTools: tools } : {}) });
+      return a.grant({
+        id,
+        mode: mode as AutomationPermissionMode,
+        ...(tools ? { allowedTools: tools } : {}),
+        ...(expectedRevision !== undefined ? { expectedRevision } : {}),
+      });
     },
   ));
 

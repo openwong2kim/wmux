@@ -11,9 +11,9 @@ describe('scheduled runs locale coverage', () => {
     const built = [
       ...['launching', 'running', 'awaiting', 'completed', 'failed', 'skipped', 'unknown'].map((s) => `schedules.state.${s}`),
       ...['overlap', 'missed', 'daemon_down', 'first_run_blocked', 'launch_failed', 'account_missing', 'await_timeout',
-        'timeout', 'agent_error', 'process_exit', 'interrupted', 'cancelled'].map((r) => `schedules.reason.${r}`),
-      ...['approval', 'scoped', 'bypass'].flatMap((m) => [`schedules.mode.${m}`, `schedules.modeDesc.${m}`]),
-      ...['awaiting', 'failed', 'proposed', 'grantRaised'].map((k) => `schedules.toast.${k}`),
+        'timeout', 'agent_error', 'process_exit', 'interrupted', 'cancelled', 'needs_regrant'].map((r) => `schedules.reason.${r}`),
+      ...['approval', 'scoped', 'auto', 'bypass'].flatMap((m) => [`schedules.mode.${m}`, `schedules.modeDesc.${m}`]),
+      ...['awaiting', 'failed', 'proposed', 'grantRaised', 'needsRegrant'].map((k) => `schedules.toast.${k}`),
     ];
     for (const key of built) expect(scheduleKeys).toContain(key);
   });

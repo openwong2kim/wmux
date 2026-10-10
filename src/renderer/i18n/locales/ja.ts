@@ -582,4 +582,14 @@ export const ja = {
   'pcSwitcher.open': "コンピュータを切り替え",
   'pcSwitcher.manage': "{name} の設定",
   'pcSwitcher.othersNeedYou': "他のコンピュータで {count} 件が対応待ち",
+  // Quit and Stop Sessions (main-process native confirm)
+  'quitAndStop.message': "wmux を終了してすべてのセッションを停止しますか？",
+  'quitAndStop.detail': "実行中: エージェントセッション {agents} 件、ターミナル合計 {sessions} 件。すべて停止します。通常の終了ではバックグラウンドで実行し続けます。",
+  'quitAndStop.detailUnknown': "実行中のセッション数を確認できませんでした。すべてのターミナルとエージェントセッションが停止します。通常の終了ではバックグラウンドで実行し続けます。",
+  'quitAndStop.confirm': "終了してセッションを停止",
+  'quitAndStop.cancel': "キャンセル",
+  'quitAndStop.stopFailedMessage': "セッションを停止できませんでした。",
+  'quitAndStop.stopFailedDetail': "wmux デーモンが停止しなかったため、wmux は開いたままです。セッションはまだ実行中です。ターミナルで wmux daemon stop を実行してから、もう一度終了してください。",
+  'quitAndStop.alreadyQuittingMessage': "wmux はすでに終了処理中です。",
+  'quitAndStop.alreadyQuittingDetail': "この終了ではセッションはバックグラウンドで実行し続けます。停止するには、ターミナルで wmux daemon stop を実行してください。",
 } as const;

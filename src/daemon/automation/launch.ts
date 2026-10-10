@@ -11,12 +11,33 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {
+  AUTOMATION_AGENT_CAPS,
   AUTOMATION_TOOL_NAME_RE,
   type AutomationAgent,
   type AutomationPermissionMode,
 } from '../../shared/automation';
 import { CLAUDE_SANDBOXED_ENV } from '../../shared/agentFirstRun';
 import { buildWebPaneEnv } from '../web/webPaneEnv';
+
+/**
+ * Unattended runs (claude auto/bypass, codex scoped/bypass) get no wmux MCP
+ * tools at all: a scheduled run has no use for panes, channels, delegation,
+ * the browser or desktop control, and nobody is there to answer for them.
+ * wmux registers its server at user scope, so a scheduled agent would
+ * otherwise see every one of them.
+ *
+ * claude: the server-level rule `mcp__wmux` matches every tool of the server
+ * (a plain token: nothing for `bash -lc`, `pwsh -Command` or `cmd /c` to
+ * expand). `--disallowedTools` is variadic, so it closes its flag group.
+ *
+ * codex: switch the server off by config override. The command override keeps
+ * the entry a valid transport when the account's config has no `wmux` server
+ * (an `enabled` key alone would be an invalid server and codex would not
+ * start); `wmux-disabled` is not valid TOML, so codex reads it as a literal
+ * string and it needs no quoting in any wrapper shell.
+ */
+const CLAUDE_NO_WMUX_MCP = ['--disallowedTools', 'mcp__wmux'] as const;
+const CODEX_NO_WMUX_MCP = ['-c', 'mcp_servers.wmux.command=wmux-disabled', '-c', 'mcp_servers.wmux.enabled=false'] as const;
 
 /**
  * Permission flags per agent and effective mode. `scoped` for claude is
@@ -32,22 +53,28 @@ const PERMISSION_FLAGS: Record<AutomationAgent, Record<AutomationPermissionMode,
     // Pinned before the variadic tool list: a user default mode that
     // auto-approves would otherwise grant more than the scoped policy.
     scoped: ['--permission-mode', 'default', '--allowedTools'],
-    bypass: ['--dangerously-skip-permissions'],
+    // Scoped keeps the wmux server: every tool that runs unasked is one the
+    // human listed by name at grant time, and anything else still prompts.
+    auto: ['--permission-mode', 'auto', ...CLAUDE_NO_WMUX_MCP],
+    bypass: ['--dangerously-skip-permissions', ...CLAUDE_NO_WMUX_MCP],
   },
   codex: {
     // No pin: codex approval runs use the user's own codex approval config.
     approval: [],
-    scoped: ['--sandbox', 'workspace-write', '--ask-for-approval', 'never'],
-    bypass: ['--dangerously-bypass-approvals-and-sandbox'],
+    scoped: ['--sandbox', 'workspace-write', '--ask-for-approval', 'never', ...CODEX_NO_WMUX_MCP],
+    // Codex has no auto mode; permissionFlags refuses it before this is read.
+    auto: [],
+    bypass: ['--dangerously-bypass-approvals-and-sandbox', ...CODEX_NO_WMUX_MCP],
   },
 };
 
-/** Throws on any tool name outside the bare-name grammar. */
+/** Throws on any tool name outside the bare-name grammar, and on codex `auto`. */
 export function permissionFlags(
   agent: AutomationAgent,
   mode: AutomationPermissionMode,
   allowedTools: readonly string[] | undefined,
 ): string[] {
+  if (mode === 'auto' && !AUTOMATION_AGENT_CAPS[agent].autoMode) throw new Error('Auto mode is claude only');
   const flags = [...PERMISSION_FLAGS[agent][mode]];
   if (agent === 'claude' && mode === 'scoped') {
     const tools = allowedTools ?? [];

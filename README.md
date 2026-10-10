@@ -114,7 +114,7 @@ When Claude Code or Codex hits its usage limit, the pane pauses: its header and 
 
 | Area | What you get |
 |------|--------------|
-| Agents | Claude Code, Codex CLI, Gemini CLI, agy, Aider, OpenCode, GitHub Copilot CLI, Kiro CLI and more are detected for status; any other CLI runs in a pane too. |
+| Agents | **Claude Code** and **Codex CLI** get the full set: status, chat view, approvals from your phone and resume. **OpenCode** and **OpenClaude** report status through their hooks, and so do **Kiro CLI** and **GitHub Copilot CLI** after a one-time setup (`wmux setup-hooks --agent copilot`). **agy**'s status is read from its screen. **Gemini CLI**, **Aider** and **Grok** start from the pickers, but their status detection is not verified yet. Any other CLI runs in a pane too. |
 | MCP tools | Browser, terminal, pane, channel, A2A and fan-out tools register themselves; the `full` profile has all of them, the slimmer `core` and `commander` profiles leave out the browser tools — [inventory](docs/api/inventory.md). |
 | CLI & API | Script the `wmux` CLI or the token-authenticated socket — [connect to wmux](docs/how-to/connect-to-wmux.md), [react to events](docs/how-to/react-to-events.md). |
 | Delegation | Hand work to an agent in another pane and know whether it arrived — [delegate to agents](docs/how-to/delegate-to-agents.md). |

@@ -33,8 +33,10 @@ import {
   EFFECT_TRAILER_NOTE,
   taggedFailure,
   withEffectTrailer,
+  type EffectProbe,
   type EffectState,
 } from '../resultTrailer';
+import { settleAfterAction } from '../actionSettle';
 import {
   PASSWORD_FIELD_PREDICATE_JS,
   REDACTED_PASSWORD,
@@ -1122,6 +1124,15 @@ async function rpcPressKey(key: string, scope: BrowserTargetScope): Promise<void
 }
 
 /**
+ * Dispatch one page action and wait for the page to catch up with it
+ * (settleAfterAction), inside the tool body so the lease's post-drain still
+ * attributes the navigation it caused to this result.
+ */
+function settledDispatch<T>(effect: EffectProbe, page: Page, send: () => Promise<T>): Promise<T> {
+  return effect.dispatch(() => settleAfterAction(page, send));
+}
+
+/**
  * Grace period for a popup that Chrome reports a beat after the click resolves.
  * Deliberately tiny and one-shot: `waitForEvent('popup')` would tax EVERY click
  * with its full timeout, and a click that opens nothing is the common case.
@@ -1316,7 +1327,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
               ? watchForPopup(page as unknown as { on: Function; off: Function })
               : null;
           try {
-            await effect.dispatch(() =>
+            await settledDispatch(effect, page, () =>
               withModifiers(page, modifierKeys, () =>
                 page.mouse.click(clickX as number, clickY as number, {
                   ...(double && { clickCount: 2 }),
@@ -1376,7 +1387,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
               // element resolves through its descriptor and says so (#1355).
               const refNotes: string[] = [];
               const locator = await resolveSmartRefLocator(page, smartRef, { notes: refNotes });
-              const dispatch = await effect.dispatch(() =>
+              const dispatch = await settledDispatch(effect, page, () =>
                 withModifiers(page, modifierKeys, () =>
                   clickWithApproach(page as unknown as ApproachPage, locator, !!double, tap),
                 ),
@@ -1409,7 +1420,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
 
             const el = await resolveRef(page, ref);
             if (!el) throw refMissing(ref, page);
-            const dispatch = await effect.dispatch(() =>
+            const dispatch = await settledDispatch(effect, page, () =>
               withModifiers(page, modifierKeys, () =>
                 clickWithApproach(page as unknown as ApproachPage, el, !!double, tap),
               ),
@@ -1487,10 +1498,13 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
         if (page) {
           const el = await resolveTypeTarget(page, addr, refNotes);
           isPassword = await isPasswordElement(el);
-          segments = await effect.dispatch(() =>
-            typeIntoTarget(page, el, text, { humanlike, newlineKey }),
-          );
-          if (submit) await page.keyboard.press('Enter');
+          // Typing and its submit Enter settle as one action: the page catches
+          // up once, after the Enter, and Enter is sent whenever submit is set.
+          segments = await settledDispatch(effect, page, async () => {
+            const typed = await typeIntoTarget(page, el, text, { humanlike, newlineKey });
+            if (submit) await page.keyboard.press('Enter');
+            return typed;
+          });
         } else {
           // RPC fallback
           const rpcSelector = rpcSelectorFor(addr, scope);
@@ -1585,29 +1599,35 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
         const isPassword: boolean[] = [];
         const refNotes: string[] = [];
 
-        for (let i = 0; i < fields.length; i++) {
-          const field = fields[i];
-          const addr: RefAddress = {
-            ...(field.ref !== undefined && { ref: field.ref }),
-            ...(field.smartRef !== undefined && { smartRef: field.smartRef }),
-          };
-          try {
-            requireOneTarget(addr, 'browser_fill', ['ref', 'smartRef']);
-            if (page) {
-              const el = await resolveTypeTarget(page, addr, refNotes);
-              isPassword[i] = await isPasswordElement(el);
-              await effect.dispatch(() => el.fill(field.value));
-            } else {
-              const rpcSelector = rpcSelectorFor(addr, scope);
-              isPassword[i] = await rpcIsPasswordElement(rpcSelector, scope);
-              await effect.dispatch(() => rpcFill(rpcSelector, field.value, scope));
+        // One settle for the whole form, not one per field: the page catches
+        // up once, after the last value went in.
+        const fillAll = async (): Promise<void> => {
+          for (let i = 0; i < fields.length; i++) {
+            const field = fields[i];
+            const addr: RefAddress = {
+              ...(field.ref !== undefined && { ref: field.ref }),
+              ...(field.smartRef !== undefined && { smartRef: field.smartRef }),
+            };
+            try {
+              requireOneTarget(addr, 'browser_fill', ['ref', 'smartRef']);
+              if (page) {
+                const el = await resolveTypeTarget(page, addr, refNotes);
+                isPassword[i] = await isPasswordElement(el);
+                await effect.dispatch(() => el.fill(field.value));
+              } else {
+                const rpcSelector = rpcSelectorFor(addr, scope);
+                isPassword[i] = await rpcIsPasswordElement(rpcSelector, scope);
+                await effect.dispatch(() => rpcFill(rpcSelector, field.value, scope));
+              }
+              filled++;
+            } catch (err) {
+              if (firstError === undefined) firstError = err;
+              errors.push(describeToolError(err));
             }
-            filled++;
-          } catch (err) {
-            if (firstError === undefined) firstError = err;
-            errors.push(describeToolError(err));
           }
-        }
+        };
+        if (page) await settleAfterAction(page, fillAll);
+        else await fillAll();
 
         // Recorded only when EVERY field landed: a partially filled form
         // replayed as if it were whole is a wrong run that reports success.
@@ -1671,7 +1691,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
         const page = await engine.getPageForScope(scope, { intent: 'write' }).catch(allowScopedRpcFallback);
 
         if (page) {
-          await effect.dispatch(() => page.keyboard.press(key));
+          await settledDispatch(effect, page, () => page.keyboard.press(key));
         } else {
           await effect.dispatch(() => rpcPressKey(key, scope));
         }
@@ -1927,7 +1947,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
           const el = await resolveRef(page, ref);
           if (!el) throw refMissing(ref, page);
           try {
-            await effect.dispatch(() => el.selectOption(values));
+            await settledDispatch(effect, page, () => el.selectOption(values));
           } catch (error) {
             // Playwright's own message is "Element is not a <select> element",
             // which tells the caller what the element is NOT and leaves them

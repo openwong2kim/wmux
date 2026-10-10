@@ -350,8 +350,16 @@ export function planAutoResume(args: {
   binding: { agent?: string; cwd: string; sessionId?: string; permissionMode?: Parameters<typeof permissionFlagFor>[0] } | undefined;
   paneCwds: ReadonlyArray<string | undefined>;
   roleBinding: RoleBinding | undefined;
+  /** OSC 133: the shell is running a command, not sitting at its prompt. */
+  commandRunning?: boolean;
+  /** Process truth: the pane's agent process is alive. */
+  agentAlive?: boolean;
 }): string | null {
   if (!args.enabled || args.agent !== 'claude') return null;
+  // The daemon outlives an app quit, so a pane it recovered once keeps its
+  // resume hint across app restarts while the resumed agent runs in it. Typing
+  // then would land in the agent's own input box. Unknown signals do not block.
+  if (args.commandRunning === true || args.agentAlive === true) return null;
   const { binding } = args;
   // Validate the session id before typing it: only a well-formed Claude session
   // id is ever put on the line; anything else leaves the pane to the pill.
@@ -704,6 +712,13 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
   const resumeHint = useStore((s) =>
     activeSurfacePtyId ? s.resumeHintByPtyId[activeSurfacePtyId] : undefined,
   );
+  // The pane's agent is running right now (process truth or OSC 133). A hint
+  // can outlive the resume it asked for when the daemon outlives an app quit;
+  // the pill must not offer a resume into that running agent.
+  const resumeAgentLive = useStore((s) =>
+    !!activeSurfacePtyId &&
+    (s.agentAliveByPtyId[activeSurfacePtyId] === true || s.commandRunningByPtyId[activeSurfacePtyId] === true),
+  );
   const resumeBinding = useStore((s) =>
     activeSurfacePtyId ? s.resumeBindingByPtyId[activeSurfacePtyId] : undefined,
   );
@@ -735,12 +750,22 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
       binding: resumeBinding,
       paneCwds: autoResumeCwds,
       roleBinding: paneRoleBinding,
+      commandRunning: useStore.getState().commandRunningByPtyId[ptyId],
+      agentAlive: useStore.getState().agentAliveByPtyId[ptyId],
     });
     if (!line) return;
     // A beat after the first output, so the prompt is up and reading input.
     const timer = setTimeout(() => {
       if (!useStore.getState().claudeResumeOnStart) return; // turned off meanwhile
       if (useStore.getState().resumeHintByPtyId[ptyId] !== 'claude') return; // typed into / dismissed meanwhile
+      // Re-checked here, not only when planning: the liveness snapshot lands
+      // with the session list, which can arrive after the pane is ready.
+      const { commandRunningByPtyId, agentAliveByPtyId } = useStore.getState();
+      if (commandRunningByPtyId[ptyId] === true || agentAliveByPtyId[ptyId] === true) {
+        // The agent is already running in this pane: the hint is stale.
+        useStore.getState().clearResumeHint(ptyId);
+        return;
+      }
       if (!claimAutoResume(ptyId)) return; // resumed already, or the pill was clicked meanwhile
       window.electronAPI.pty.write(ptyId, `${line}\r`);
       useStore.getState().clearResumeHint(ptyId);
@@ -972,7 +997,7 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
           resumePtyReady: it then takes its height before the recovered pane's
           first fit instead of shrinking the terminal (a resize, a SIGWINCH)
           once the pane is live. Only the button waits for readiness. */}
-      {resumeHint && !supervision && activeSurfacePtyId && !chatV2OwnsPane && (() => {
+      {resumeHint && !resumeAgentLive && !supervision && activeSurfacePtyId && !chatV2OwnsPane && (() => {
         const ptyId = activeSurfacePtyId;
         const launcher = resumeHint; // slug doubles as the launcher stem ('claude'/'codex')
         const agentName = launcher.charAt(0).toUpperCase() + launcher.slice(1);
@@ -1356,7 +1381,7 @@ function SplitSurfaceView({
 
   if (pane.surfaces.length === 0) {
     return (
-      <div className="flex-1 relative overflow-hidden flex items-center justify-center text-[var(--text-muted)] text-sm" {...tokenAttrs('textMuted', 'text')}>
+      <div className="flex-1 min-h-0 min-w-0 relative overflow-clip flex items-center justify-center text-[var(--text-muted)] text-sm" {...tokenAttrs('textMuted', 'text')}>
         {emptyMessage}
       </div>
     );
@@ -1365,7 +1390,7 @@ function SplitSurfaceView({
   // Only terminals or only browsers — no split needed
   if (!hasBoth) {
     return (
-      <div className="flex-1 relative overflow-hidden">
+      <div className="flex-1 min-h-0 min-w-0 relative overflow-clip">
         {pane.surfaces.map((surface) =>
           surface.surfaceType === 'editor' ? (
             <EditorPanel
@@ -1453,11 +1478,11 @@ function SplitSurfaceView({
   // — report it occluded so lightweight mode can throttle it.
   const overlayActive = others.some((s) => s.id === activeSurfaceId);
   return (
-    <div className="flex-1 relative overflow-hidden">
+    <div className="flex-1 min-h-0 min-w-0 relative overflow-clip">
       <Group orientation="horizontal" className="h-full w-full" resizeTargetMinimumSize={{ coarse: 37, fine: 16 }}>
         {/* Terminal panel */}
         <Panel defaultSize={50} minSize={20}>
-          <div className="h-full w-full relative overflow-hidden">
+          <div className="h-full w-full min-h-0 min-w-0 relative overflow-clip">
             {terminals.map((surface) => (
               <TerminalSurface
                 key={surface.id}
@@ -1478,7 +1503,7 @@ function SplitSurfaceView({
 
         {/* Browser panel */}
         <Panel defaultSize={50} minSize={20}>
-          <div className="h-full w-full relative overflow-hidden">
+          <div className="h-full w-full min-h-0 min-w-0 relative overflow-clip">
             {browsers.map((surface) => (
               <BrowserPanel
                 key={`${surface.id}:${surface.browserPartition || 'persist:wmux-default'}`}

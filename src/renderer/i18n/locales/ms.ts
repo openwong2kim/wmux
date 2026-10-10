@@ -534,4 +534,14 @@ export const ms = {
   'pcSwitcher.open': "Tukar komputer",
   'pcSwitcher.manage': "Tetapan {name}",
   'pcSwitcher.othersNeedYou': "{count} menunggu anda di komputer lain",
+  // Quit and Stop Sessions (main-process native confirm)
+  'quitAndStop.message': "Keluar daripada wmux dan hentikan semua sesi?",
+  'quitAndStop.detail': "Sedang berjalan: {agents} sesi ejen, jumlah {sessions} terminal. Semuanya akan dihentikan. Keluar biasa membiarkannya terus berjalan di latar belakang.",
+  'quitAndStop.detailUnknown': "wmux tidak dapat mengira sesi yang sedang berjalan. Semua terminal dan sesi ejen akan dihentikan. Keluar biasa membiarkannya terus berjalan di latar belakang.",
+  'quitAndStop.confirm': "Keluar dan Hentikan Sesi",
+  'quitAndStop.cancel': "Batal",
+  'quitAndStop.stopFailedMessage': "wmux tidak dapat menghentikan sesi.",
+  'quitAndStop.stopFailedDetail': "Daemon wmux tidak berhenti, jadi wmux kekal terbuka dan sesi anda masih berjalan. Jalankan wmux daemon stop dalam terminal, kemudian keluar semula.",
+  'quitAndStop.alreadyQuittingMessage': "wmux sedang keluar.",
+  'quitAndStop.alreadyQuittingDetail': "Keluar kali ini membiarkan sesi anda terus berjalan di latar belakang. Untuk menghentikannya, jalankan wmux daemon stop dalam terminal.",
 } as const;

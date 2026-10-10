@@ -530,4 +530,14 @@ export const de = {
   'pcSwitcher.open': "Computer wechseln",
   'pcSwitcher.manage': "Einstellungen für {name}",
   'pcSwitcher.othersNeedYou': "{count} warten auf dich auf anderen Computern",
+  // Quit and Stop Sessions (main-process native confirm)
+  'quitAndStop.message': "wmux beenden und alle Sitzungen stoppen?",
+  'quitAndStop.detail': "Laufende Agent-Sitzungen: {agents}. Terminals insgesamt: {sessions}. Alle werden gestoppt. Normales Beenden lässt sie im Hintergrund weiterlaufen.",
+  'quitAndStop.detailUnknown': "wmux konnte die laufenden Sitzungen nicht zählen. Alle Terminals und Agent-Sitzungen werden gestoppt. Normales Beenden lässt sie im Hintergrund weiterlaufen.",
+  'quitAndStop.confirm': "Beenden und Sitzungen stoppen",
+  'quitAndStop.cancel': "Abbrechen",
+  'quitAndStop.stopFailedMessage': "wmux konnte die Sitzungen nicht stoppen.",
+  'quitAndStop.stopFailedDetail': "Der wmux-Daemon wurde nicht beendet, daher bleibt wmux geöffnet und Ihre Sitzungen laufen weiter. Führen Sie wmux daemon stop in einem Terminal aus und beenden Sie wmux dann erneut.",
+  'quitAndStop.alreadyQuittingMessage': "wmux wird bereits beendet.",
+  'quitAndStop.alreadyQuittingDetail': "Bei diesem Beenden laufen Ihre Sitzungen im Hintergrund weiter. Um sie zu stoppen, führen Sie wmux daemon stop in einem Terminal aus.",
 } as const;

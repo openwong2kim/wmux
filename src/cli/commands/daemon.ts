@@ -101,6 +101,9 @@ const cliDaemonDeps: DaemonLauncherDeps = {
   // The headless CLI is never Electron — plain `node`/`node.exe` already
   // understands the daemon bundle without ELECTRON_RUN_AS_NODE.
   isElectronHost: () => false,
+  // Same reason as the app (src/main/daemon/launcher.ts): a daemon started
+  // from a terminal must not be ended when that terminal app quits.
+  launchViaLaunchdOnDarwin: true,
   // Both routed to stderr, in both --json and text mode: `runStart --json`
   // prints exactly one JSON object on stdout as its contract, and text mode
   // already has its own human-readable status lines — neither has room for

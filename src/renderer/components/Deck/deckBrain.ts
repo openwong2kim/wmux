@@ -51,6 +51,8 @@ export interface DeckLimitNotice {
 }
 
 export interface DeckBrainMessage {
+  /** Read-only local Fleet exchange, absent from the provider transcript. */
+  localFleet?: true;
   id: string;
   role: DeckBrainRole;
   text: string;

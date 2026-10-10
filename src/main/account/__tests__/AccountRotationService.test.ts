@@ -63,6 +63,15 @@ describe('AccountRotationService', () => {
     expect(refreshNow).not.toHaveBeenCalled();
   });
 
+  it('cachedVerdict judges from the reading on hand, never refreshing', async () => {
+    const stale = NOW - 60 * 60 * 1000;
+    const s = make([acct('a', 'claude')]);
+    usageEntries = [usage('a', 100, stale)];
+    expect((await s.cachedVerdict('a'))?.usable).toBe(false);
+    expect(await s.cachedVerdict('gone')).toBeNull();
+    expect(refreshNow).not.toHaveBeenCalled();
+  });
+
   it('switches a Claude pane to the account with quota and records it', async () => {
     const s = make([acct('a', 'claude'), acct('b', 'claude'), acct('c', 'claude')]);
     await s.setEnabled('claude', true);

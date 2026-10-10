@@ -51,6 +51,21 @@ export interface ScheduledPromptDeliveryDeps {
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
+/**
+ * The input fence a delivery reads: KEY input only. A viewer that attaches
+ * while the prompt is being pasted makes its terminal answer the agent's
+ * startup queries and report focus; those replies are written to the PTY but
+ * type nothing, and counting them read as "someone else typed" and refused the
+ * Enter after the paste was already in the composer. Chat sends fence the
+ * same way (#1680).
+ */
+export function deliveryInputFence(bridge: { getKeyInputRevision(): number; isKeyInputQuiet(): boolean }): {
+  inputRevision: number;
+  inputQuiet: boolean;
+} {
+  return { inputRevision: bridge.getKeyInputRevision(), inputQuiet: bridge.isKeyInputQuiet() };
+}
+
 function isReady(status: AgentStatus): boolean {
   return status === 'idle' || status === 'waiting' || status === 'complete';
 }

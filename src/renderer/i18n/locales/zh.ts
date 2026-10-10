@@ -468,7 +468,7 @@ export const zh = {
   // Settings — Accounts — quota-driven account choice for Claude/Codex launches
   'accounts.rotateClaude': "按配额切换 Claude 账号",
   'accounts.rotateCodex': "按配额切换 Codex 账号",
-  'accounts.rotateDesc': "当工作区绑定的账号配额用完时，该工作区中新的 Claude 或 Codex 面板会以剩余配额最多的已注册账号启动；绑定本身不变。所有账号都用完时，在其中一个重置前不会启动智能体。已在运行的面板不受影响。Claude 配额读取自其用量接口（不发送模型请求），Codex 配额读取自每个账号会话文件中记录的限额。",
+  'accounts.rotateDesc': "当工作区绑定的账号配额用完时，该工作区中新的 Claude 或 Codex 面板会以剩余配额最多的已注册账号启动；绑定本身不变。所有账号都用完时，在其中一个重置前不会启动智能体。已在运行的面板不受影响。Command Deck 编排器和后台（A2A）任务在开始新对话时遵循同样的规则；进行中的对话保留在原账号上。Claude 配额读取自其用量接口（不发送模型请求），Codex 配额读取自每个账号会话文件中记录的限额。",
   'accounts.quotaOut': "配额已用完",
   'accounts.quotaOutUntil': "{time} 后可再次使用",
   'accounts.quotaUnknown': "尚未测量配额",
@@ -1546,6 +1546,8 @@ export const zh = {
   'moa.settings.shadowFull': "影子判定记录已满（20 MB），不再进行判定。将 moa-shadow/decisions.jsonl 移走即可重新开始。",
   'moa.settings.retro': "每周回顾",
   'moa.settings.retroDesc': "Moa 开启时，每周在 Moa 的简报中显示一段简短总结：你被询问的次数、等待过久的工作、重复的问题和最慢的工作。",
+  'moa.settings.fleetFastPath': "在本机回答 Fleet 问题",
+  'moa.settings.fleetFastPathDesc': "在这里输入的简短状态问题，例如 \"Who needs me?\" 或 \"Fleet status\"，会直接用本机的 Fleet 看板回答，不启动 Moa 回合。其他消息仍然交给 Moa。",
   'moa.settings.retroWhenDesc': "本地时间。回顾上一个完整的星期（周一到周日）。",
   'moa.settings.retroDay': "回顾星期",
   'moa.settings.retroHour': "回顾时间",
@@ -3450,4 +3452,14 @@ export const zh = {
   'pcSwitcher.open': "切换电脑",
   'pcSwitcher.manage': "{name} 设置",
   'pcSwitcher.othersNeedYou': "其他电脑上有 {count} 个需要你",
+  // Quit and Stop Sessions (main-process native confirm)
+  'quitAndStop.message': "退出 wmux 并停止所有会话？",
+  'quitAndStop.detail': "正在运行：{agents} 个智能体会话，共 {sessions} 个终端。它们都将被停止。普通退出会让它们在后台继续运行。",
+  'quitAndStop.detailUnknown': "无法统计正在运行的会话。所有终端和智能体会话都将被停止。普通退出会让它们在后台继续运行。",
+  'quitAndStop.confirm': "退出并停止会话",
+  'quitAndStop.cancel': "取消",
+  'quitAndStop.stopFailedMessage': "无法停止会话。",
+  'quitAndStop.stopFailedDetail': "wmux 守护进程未停止，因此 wmux 保持打开，会话仍在运行。请在终端中运行 wmux daemon stop，然后再次退出。",
+  'quitAndStop.alreadyQuittingMessage': "wmux 正在退出。",
+  'quitAndStop.alreadyQuittingDetail': "此次退出会让会话在后台继续运行。要停止它们，请在终端中运行 wmux daemon stop。",
 } as const;

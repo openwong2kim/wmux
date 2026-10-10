@@ -180,6 +180,9 @@ const electronDeps: DaemonLauncherDeps = {
   resolveSpawnedByVersion: () => app.getVersion(),
   askUserToRecoverFromStalePid,
   isElectronHost: () => true,
+  // macOS: run the daemon as a launchd job so quitting the app (which
+  // LaunchServices treats as ending its subordinate processes) keeps it alive.
+  launchViaLaunchdOnDarwin: true,
   markBoot,
 };
 

@@ -534,4 +534,14 @@ export const tr = {
   'pcSwitcher.open': "Bilgisayar değiştir",
   'pcSwitcher.manage': "{name} ayarları",
   'pcSwitcher.othersNeedYou': "Diğer bilgisayarlarda {count} öğe sizi bekliyor",
+  // Quit and Stop Sessions (main-process native confirm)
+  'quitAndStop.message': "wmux'tan çıkıp tüm oturumlar durdurulsun mu?",
+  'quitAndStop.detail': "Şu an çalışan: {agents} ajan oturumu, toplam {sessions} terminal. Hepsi durdurulacak. Normal Çıkış onları arka planda çalışır bırakır.",
+  'quitAndStop.detailUnknown': "wmux çalışan oturumları sayamadı. Tüm terminaller ve ajan oturumları durdurulacak. Normal Çıkış onları arka planda çalışır bırakır.",
+  'quitAndStop.confirm': "Çık ve Oturumları Durdur",
+  'quitAndStop.cancel': "İptal",
+  'quitAndStop.stopFailedMessage': "wmux oturumları durduramadı.",
+  'quitAndStop.stopFailedDetail': "wmux arka plan hizmeti durmadı; bu yüzden wmux açık kalıyor ve oturumlarınız hâlâ çalışıyor. Bir terminalde wmux daemon stop komutunu çalıştırın, ardından yeniden çıkın.",
+  'quitAndStop.alreadyQuittingMessage': "wmux zaten kapanıyor.",
+  'quitAndStop.alreadyQuittingDetail': "Bu çıkış oturumlarınızı arka planda çalışır halde bırakır. Durdurmak için bir terminalde wmux daemon stop komutunu çalıştırın.",
 } as const;

@@ -1046,6 +1046,14 @@ const electronAPI = {
       set: (enabled: boolean) =>
         ipcRenderer.invoke(IPC.DECK_LEDGER_GATE_SET, { enabled }) as Promise<{ enabled: boolean }>,
     },
+    // `deck.fleetFastPath` — answer short read-only Fleet questions from the
+    // local Fleet board instead of a Moa turn. Persisted in main, default off.
+    fleetFastPath: {
+      get: () =>
+        ipcRenderer.invoke(IPC.DECK_FLEET_FAST_PATH_GET) as Promise<{ enabled: boolean }>,
+      set: (enabled: boolean) =>
+        ipcRenderer.invoke(IPC.DECK_FLEET_FAST_PATH_SET, { enabled }) as Promise<{ enabled: boolean }>,
+    },
     // The Deck status panel's ledger read + its "re-read now" ping. The push
     // carries only the owner workspace: `summary` is the single projection.
     ledger: {

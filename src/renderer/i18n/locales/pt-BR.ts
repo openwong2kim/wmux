@@ -534,4 +534,14 @@ export const ptBR = {
   'pcSwitcher.open': "Trocar de computador",
   'pcSwitcher.manage': "Configurações de {name}",
   'pcSwitcher.othersNeedYou': "{count} precisam de você em outros computadores",
+  // Quit and Stop Sessions (main-process native confirm)
+  'quitAndStop.message': "Sair do wmux e encerrar todas as sessões?",
+  'quitAndStop.detail': "Sessões de agentes em execução: {agents}. Terminais no total: {sessions}. Todas serão encerradas. Sair normalmente as mantém rodando em segundo plano.",
+  'quitAndStop.detailUnknown': "O wmux não conseguiu contar as sessões em execução. Todos os terminais e sessões de agentes serão encerrados. Sair normalmente as mantém rodando em segundo plano.",
+  'quitAndStop.confirm': "Sair e encerrar sessões",
+  'quitAndStop.cancel': "Cancelar",
+  'quitAndStop.stopFailedMessage': "O wmux não conseguiu parar as sessões.",
+  'quitAndStop.stopFailedDetail': "O daemon do wmux não parou, então o wmux continua aberto e suas sessões ainda estão em execução. Execute wmux daemon stop em um terminal e saia novamente.",
+  'quitAndStop.alreadyQuittingMessage': "O wmux já está saindo.",
+  'quitAndStop.alreadyQuittingDetail': "Esta saída mantém suas sessões em execução em segundo plano. Para pará-las, execute wmux daemon stop em um terminal.",
 } as const;

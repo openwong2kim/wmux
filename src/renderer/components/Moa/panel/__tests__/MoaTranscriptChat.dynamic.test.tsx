@@ -730,3 +730,30 @@ describe('MoaTranscriptChat — review fixes (#1808)', () => {
     }
   });
 });
+
+describe('Moa transcript local Fleet answers', () => {
+  it('renders a local answer after a real transcript exists and preserves it on panel remount', async () => {
+    const { useStore } = await import('../../../../stores');
+    const prev = useStore.getState().moa;
+    const previousThreads = useStore.getState().brainThreads;
+    const { api } = fakeApi();
+    try {
+      useStore.setState({ moa: { ...prev, hq: { state: 'ok', workspaceId: 'fleet-hq' } } as never, brainThreads: {} });
+      const render = () => <MoaTranscriptChat ptyId="pty-hq" busy={false} onSend={vi.fn()} onInterrupt={vi.fn()} onTerminal={vi.fn()} api={api} />;
+      await act(async () => root.render(render()));
+      await act(async () => {
+        useStore.getState().startDeckBrainTurn('fleet-hq', 'fleet status');
+        useStore.getState().applyDeckBrainEvent('fleet-hq', { type: 'text-delta', text: 'Fleet snapshot: 3 running.' });
+        useStore.getState().applyDeckBrainEvent('fleet-hq', { type: 'turn-end', sessionId: 's1', localAnswer: { prompt: 'fleet status', text: 'Fleet snapshot: 3 running.' } });
+      });
+      expect(host.textContent).toContain('Fleet snapshot: 3 running.');
+      expect(host.textContent).toContain('Handed it to the api workspace.');
+      expect([...host.querySelectorAll('.wmux-chat-user')].filter((n) => n.textContent?.includes('fleet status'))).toHaveLength(1);
+      await act(async () => root.render(<div />));
+      await act(async () => root.render(render()));
+      expect(host.textContent).toContain('Fleet snapshot: 3 running.');
+    } finally {
+      act(() => useStore.setState({ moa: prev, brainThreads: previousThreads }));
+    }
+  });
+});

@@ -4,6 +4,7 @@ import {
   AUTOMATION_EVENT,
   type Automation,
   type AutomationAttention,
+  type AutomationAttentionKind,
   type AutomationEvent,
   type AutomationRun,
 } from '../../shared/automation';
@@ -15,6 +16,16 @@ import {
   type AutomationToastKind,
   type AutomationUiLocale,
 } from './toastText';
+
+const ATTENTION_TOAST_KIND: Record<AutomationAttentionKind, AutomationToastKind> = {
+  proposed: 'proposed',
+  'grant-raised': 'grantRaised',
+  'needs-regrant': 'needsRegrant',
+};
+
+function isAttentionKind(kind: unknown): kind is AutomationAttentionKind {
+  return typeof kind === 'string' && Object.prototype.hasOwnProperty.call(ATTENTION_TOAST_KIND, kind);
+}
 
 /** What main pushes to the renderer on IPC.AUTOMATION_PUSH. */
 export type AutomationPush =
@@ -100,7 +111,7 @@ export function parseAutomationEvent(data: unknown): AutomationEvent | null {
   }
   if (ev.type === 'attention') {
     if (typeof ev.automationId !== 'string') return null;
-    if (ev.kind !== 'proposed' && ev.kind !== 'grant-raised') return null;
+    if (!isAttentionKind(ev.kind)) return null;
     return {
       type: 'attention',
       automationId: ev.automationId,
@@ -186,7 +197,7 @@ export class AutomationBridge {
     const inApp: AutomationAttention[] = [];
     for (const item of items) {
       if (!item || typeof item.id !== 'string' || typeof item.automationId !== 'string') continue;
-      if (item.kind !== 'proposed' && item.kind !== 'grant-raised') continue;
+      if (!isAttentionKind(item.kind)) continue;
       const key = `attention:${item.id}`;
       if (toasted.has(key)) continue;
       remember(key);
@@ -240,12 +251,13 @@ export class AutomationBridge {
     this.toast(automationToastText(name, kind, toastLabelsFor(locale)), () => this.open(request), { ignoreToastSetting: false });
   }
 
-  private toastAttention(automationId: string, name: string, kind: 'proposed' | 'grant-raised'): boolean {
+  private toastAttention(automationId: string, name: string, kind: AutomationAttentionKind): boolean {
     // Detection is the control for drafts and raised grants (anyone holding the
     // daemon token could write them), so these ignore the toast toggle — the
-    // same exemption the daemon's security notices get.
+    // same exemption the daemon's security notices get. A stale grant rides
+    // along: its schedule's runs are being skipped until a human acts.
     return this.toast(
-      automationToastText(name, kind === 'proposed' ? 'proposed' : 'grantRaised', toastLabelsFor(locale)),
+      automationToastText(name, ATTENTION_TOAST_KIND[kind], toastLabelsFor(locale)),
       () => this.open({ automationId }),
       { ignoreToastSetting: true },
     );

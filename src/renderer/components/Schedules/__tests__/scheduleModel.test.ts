@@ -13,8 +13,9 @@ import {
   emptyForm,
   formFromAutomation,
   grantNeeded,
+  modeAfterAgentChange,
+  modesFor,
   parseToolNames,
-  shouldWarnPermissionReset,
   validateForm,
 } from '../scheduleModel';
 import { automation } from './fixtures';
@@ -38,31 +39,32 @@ describe('parseToolNames (scoped mode)', () => {
   });
 });
 
-describe('permission reset warning', () => {
+describe('permission defaults and re-grant', () => {
   const granted = automation({ permission: { mode: 'bypass', grantedRevision: 3 } });
 
-  it('warns before saving a revision-bumping edit of a non-approval schedule', () => {
-    const form = formFromAutomation(granted);
-    expect(shouldWarnPermissionReset(granted, form, false)).toBe(false);
-    expect(shouldWarnPermissionReset(granted, { ...form, name: 'Renamed' }, false)).toBe(false);
-    expect(shouldWarnPermissionReset(granted, { ...form, prompt: 'Something else' }, false)).toBe(true);
-    expect(shouldWarnPermissionReset(granted, { ...form, cwd: '/elsewhere' }, false)).toBe(true);
-    expect(shouldWarnPermissionReset(granted, { ...form, model: 'opus' }, false)).toBe(true);
+  it('a new schedule defaults to Claude auto, Codex scoped; auto is offered to Claude only', () => {
+    expect(emptyForm()).toMatchObject({ agent: 'claude', mode: 'auto' });
+    expect(modesFor('codex')).not.toContain('auto');
+    expect(modeAfterAgentChange('codex', 'auto', false)).toBe('scoped');
+    expect(modeAfterAgentChange('claude', 'scoped', false)).toBe('auto');
+    // A pick is kept where it still applies; auto falls back on Codex.
+    expect(modeAfterAgentChange('codex', 'approval', true)).toBe('approval');
+    expect(modeAfterAgentChange('codex', 'auto', true)).toBe('scoped');
   });
 
-  it('does not warn for approval schedules, new schedules or a fresh permission pick', () => {
-    const approval = automation();
-    expect(shouldWarnPermissionReset(approval, { ...formFromAutomation(approval), prompt: 'x' }, false)).toBe(false);
-    expect(shouldWarnPermissionReset(null, emptyForm(), false)).toBe(false);
-    expect(shouldWarnPermissionReset(granted, { ...formFromAutomation(granted), prompt: 'x' }, true)).toBe(false);
-  });
-
-  it('grants only for a new non-approval schedule or an explicit pick', () => {
+  it('grants for a new non-approval schedule, an explicit pick, or a what-runs edit of a granted mode', () => {
     expect(grantNeeded(null, { ...emptyForm(), mode: 'approval' }, false)).toBe(false);
-    expect(grantNeeded(null, { ...emptyForm(), mode: 'bypass' }, false)).toBe(true);
-    expect(grantNeeded(granted, formFromAutomation(granted), false)).toBe(false);
-    expect(grantNeeded(granted, formFromAutomation(granted), true)).toBe(true);
-    expect(grantNeeded(granted, { ...formFromAutomation(granted), mode: 'approval' }, true)).toBe(true);
+    expect(grantNeeded(null, emptyForm(), false)).toBe(true);
+    const form = formFromAutomation(granted);
+    expect(grantNeeded(granted, form, false)).toBe(false);
+    expect(grantNeeded(granted, { ...form, name: 'Renamed' }, false)).toBe(false);
+    expect(grantNeeded(granted, { ...form, prompt: 'Something else' }, false)).toBe(true);
+    expect(grantNeeded(granted, { ...form, cwd: '/elsewhere' }, false)).toBe(true);
+    expect(grantNeeded(granted, { ...form, model: 'opus' }, false)).toBe(true);
+    expect(grantNeeded(granted, form, true)).toBe(true);
+    expect(grantNeeded(granted, { ...form, mode: 'approval' }, true)).toBe(true);
+    const approval = automation();
+    expect(grantNeeded(approval, { ...formFromAutomation(approval), prompt: 'x' }, false)).toBe(false);
   });
 });
 
@@ -102,7 +104,7 @@ describe('schedule composer helpers', () => {
   it('fills a template into a valid form once a folder is known', () => {
     const tpl = SCHEDULE_TEMPLATES.find((x) => x.id === 'triage')!;
     const form = formFromTemplate(tpl, 'Issue triage', 'Sort new issues', '/repo');
-    expect(form).toMatchObject({ name: 'Issue triage', prompt: 'Sort new issues', cwd: '/repo', weekdays: WEEKDAYS, time: '09:30', mode: 'approval' });
+    expect(form).toMatchObject({ name: 'Issue triage', prompt: 'Sort new issues', cwd: '/repo', weekdays: WEEKDAYS, time: '09:30', mode: 'auto' });
     expect(validateForm(form)).toEqual([]);
     expect(validateForm({ ...form, cwd: '' })).toEqual(['cwd']);
   });

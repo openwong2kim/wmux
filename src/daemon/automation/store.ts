@@ -9,17 +9,21 @@
 //
 // Threat model: a same-user process that edits these files directly is out of
 // scope (crontab-equivalent). The permission grant is still bound to the
-// revision, so an edited prompt without a matching grant runs in approval mode.
+// revision, so an edited prompt without a matching grant is not started at all
+// (skipped as `needs_regrant`) until a human grants it again.
 
 import fs from 'node:fs';
 import path from 'node:path';
 import { atomicReadJSONSync, atomicWriteJSON } from '../util/atomicWrite';
 import {
+  AUTOMATION_AGENT_CAPS,
   AUTOMATION_DEFAULTS,
   AUTOMATION_FINAL_RUN_STATES,
   type Automation,
   type AutomationAttention,
+  type AutomationAttentionKind,
   type AutomationRun,
+  type AutomationRunDetail,
   type AutomationRunReason,
   type AutomationRunState,
 } from '../../shared/automation';
@@ -47,8 +51,10 @@ const RUN_STATES: ReadonlySet<string> = new Set<AutomationRunState>([
 ]);
 const RUN_REASONS: ReadonlySet<string> = new Set<AutomationRunReason>([
   'overlap', 'missed', 'daemon_down', 'first_run_blocked', 'launch_failed', 'account_missing',
-  'await_timeout', 'timeout', 'agent_error', 'process_exit', 'interrupted', 'cancelled',
+  'await_timeout', 'timeout', 'agent_error', 'process_exit', 'interrupted', 'cancelled', 'needs_regrant',
 ]);
+const RUN_DETAILS: ReadonlySet<string> = new Set<AutomationRunDetail>(['submit_retried', 'prompt_not_in_composer', 'submit_unconfirmed']);
+const ATTENTION_KINDS: ReadonlySet<string> = new Set<AutomationAttentionKind>(['proposed', 'grant-raised', 'needs-regrant']);
 
 const num = (v: unknown): number | undefined => (typeof v === 'number' && Number.isFinite(v) ? v : undefined);
 
@@ -65,8 +71,13 @@ export function coerceAutomation(raw: unknown): Automation | null {
   let permission: Automation['permission'] = { mode: 'approval' };
   if (isPermissionMode(perm['mode']) && perm['mode'] !== 'approval') {
     const granted = num(perm['grantedRevision']);
-    const tools = perm['mode'] === 'scoped' ? validateAllowedTools(perm['allowedTools']) : null;
-    if (granted !== undefined && (perm['mode'] === 'bypass' || tools?.ok)) {
+    // codex scoped carries no tool list (a fixed sandbox); auto is claude only.
+    const caps = AUTOMATION_AGENT_CAPS[draft.value.action.agent];
+    const tools = perm['mode'] === 'scoped' && caps.toolList ? validateAllowedTools(perm['allowedTools']) : null;
+    const restorable = perm['mode'] === 'bypass' ||
+      (perm['mode'] === 'auto' && caps.autoMode) ||
+      (perm['mode'] === 'scoped' && (!caps.toolList || tools?.ok === true));
+    if (granted !== undefined && restorable) {
       permission = {
         mode: perm['mode'],
         grantedRevision: granted,
@@ -103,6 +114,7 @@ export function coerceRun(raw: unknown): AutomationRun | null {
   if (!id || !automationId || revision === undefined || scheduledFor === undefined || !state) return null;
   const trigger = o['trigger'] === 'manual' || o['trigger'] === 'test' ? o['trigger'] : 'scheduled';
   const reason = typeof o['reason'] === 'string' && RUN_REASONS.has(o['reason']) ? (o['reason'] as AutomationRunReason) : undefined;
+  const detail = typeof o['detail'] === 'string' && RUN_DETAILS.has(o['detail']) ? (o['detail'] as AutomationRunDetail) : undefined;
   const ptyId = typeof o['ptyId'] === 'string' && ID_RE.test(o['ptyId']) ? o['ptyId'] : undefined;
   const agentSessionId = typeof o['agentSessionId'] === 'string' && o['agentSessionId'].length <= 256 ? o['agentSessionId'] : undefined;
   const startedAt = num(o['startedAt']);
@@ -116,6 +128,7 @@ export function coerceRun(raw: unknown): AutomationRun | null {
     trigger,
     state,
     ...(reason ? { reason } : {}),
+    ...(detail ? { detail } : {}),
     ...(ptyId ? { ptyId } : {}),
     ...(agentSessionId ? { agentSessionId } : {}),
     ...(startedAt !== undefined ? { startedAt } : {}),
@@ -130,8 +143,14 @@ function coerceAttention(raw: unknown): AutomationAttention | null {
   const at = num(o['at']);
   if (typeof o['id'] !== 'string' || !ID_RE.test(o['id']) || typeof o['automationId'] !== 'string' ||
       typeof o['automationName'] !== 'string' || at === undefined ||
-      (o['kind'] !== 'proposed' && o['kind'] !== 'grant-raised')) return null;
-  return { id: o['id'], automationId: o['automationId'], automationName: o['automationName'].slice(0, 120), kind: o['kind'], at };
+      typeof o['kind'] !== 'string' || !ATTENTION_KINDS.has(o['kind'])) return null;
+  return {
+    id: o['id'],
+    automationId: o['automationId'],
+    automationName: o['automationName'].slice(0, 120),
+    kind: o['kind'] as AutomationAttentionKind,
+    at,
+  };
 }
 
 function readJson(file: string): unknown {

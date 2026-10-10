@@ -172,6 +172,20 @@ describe('AutomationBridge', () => {
     expect(client.attention).toEqual([]);
   });
 
+  it('surfaces a stale-grant notice like any other attention, live and from the queue', async () => {
+    const { toast, bridge, client } = setup();
+    client.attention = [{ id: 'at1', automationId: 'a1', automationName: 'Old', kind: 'needs-regrant', at: 1 }];
+    bridge.start(client);
+    await flush();
+    await flush();
+    client.attention = [{ id: 'at2', automationId: 'a2', automationName: 'Edited', kind: 'needs-regrant', at: 2 }];
+    client.emit('event', { type: AUTOMATION_EVENT, sessionId: '', data: { type: 'attention', automationId: 'a2', automationName: 'Edited', kind: 'needs-regrant' } });
+    await flush();
+    await flush();
+    expect(toast.mock.calls.map((c) => c[0])).toEqual(['Old · Needs permission again', 'Edited · Needs permission again']);
+    expect(client.attention).toEqual([]);
+  });
+
   it('opens the run from a toast click and uses the renderer-supplied labels', async () => {
     const { send, toast, bridge, client } = setup();
     setAutomationUiLocale('ko');
