@@ -80,7 +80,7 @@ export default function Sidebar({ chrome = 'full' }: { chrome?: 'full' | 'sheet'
   // PC rail: shadow workspaces (another computer's, opened from the computer
   // column) are never this computer's rows, count or Ctrl+N numbers.
   const listed = useMemo(
-    () => listedWorkspaces(workspaces.filter((w) => !isShadowWorkspaceId(w.id)), moaHqId),
+    () => listedWorkspaces(workspaces, moaHqId),
     [workspaces, moaHqId],
   );
   // PC rail: with a paired computer selected, the page lists that computer's

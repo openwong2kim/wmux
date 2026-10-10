@@ -23,6 +23,8 @@ import {
 import type { Pane, PaneLeaf, SessionData, Workspace } from '../../../shared/types';
 import type { PcRailWorkspaceRow } from '../../../shared/pcRail';
 import { getWorkspaceRemoteSessions } from '../../../shared/paneUtils';
+import { listedWorkspaces } from '../slices/moaSlice';
+import { buildWorkspaceMirrorPayload } from '../../hooks/workspaceMirrorSnapshot';
 
 const COPY: ShadowCopy = {
   browserNotShown: 'Browser on office-mac — not shown',
@@ -325,9 +327,27 @@ describe('exclusions outside the store', () => {
     expect(withoutShadowWorkspaces(plain, {})).toBe(plain);
   });
 
-  it('the empty-leaf funnel spawns no shell in a shadow, and the sidebars list none', () => {
+  it('the empty-leaf funnel spawns no shell in a shadow', () => {
     expect(read('components/Layout/EmptyLeafFunnel.tsx')).toMatch(/if \(isShadowWorkspaceId\(activeWorkspace\.id\)\) return;/);
-    expect(read('components/Sidebar/Sidebar.tsx')).toContain('workspaces.filter((w) => !isShadowWorkspaceId(w.id))');
-    expect(read('components/Sidebar/MiniSidebar.tsx')).toContain('allWorkspaces.filter((w) => !isShadowWorkspaceId(w.id))');
+  });
+
+  it('the listed workspaces (sidebars, Ctrl+N, Alt+Up/Down, last-workspace guard) drop shadows and the HQ', () => {
+    const list = [local('ws-1'), { ...local('x'), id: 'shadow:h1:rw1' }, local('hq')];
+    expect(listedWorkspaces(list, 'hq').map((w) => w.id)).toEqual(['ws-1']);
+    expect(listedWorkspaces(list, null).map((w) => w.id)).toEqual(['ws-1', 'hq']);
+  });
+
+  it('the workspace mirror (workspace_list, fan-out targets, pane ids) carries no shadow', () => {
+    useStore.getState().openShadowWorkspace('h1', 'rw1');
+    const state = useStore.getState();
+    expect(state.activeWorkspaceId).toBe('shadow:h1:rw1');
+    const payload = buildWorkspaceMirrorPayload(state as never, () => 1);
+    expect(payload.entries.map((e) => e.id)).toEqual(['ws-1', 'ws-2']);
+    expect((payload.paneIds ?? []).some((id) => id.startsWith('shadow:'))).toBe(false);
+    expect(payload.viewed).toBeUndefined();
+  });
+
+  it('every RPC reads the store without shadows', () => {
+    expect(read('hooks/useRpcBridge.ts')).toMatch(/export async function handleRpcMethod[^{]*\{\s*\/\/[^\n]*\n(?:\s*\/\/[^\n]*\n)*\s*const store = withoutShadows\(useStore\.getState\(\)\);/);
   });
 });

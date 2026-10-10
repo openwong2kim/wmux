@@ -20,7 +20,6 @@ import PresetPicker from './PresetPicker';
 import RailMoreMenu from './RailMoreMenu';
 import { listedWorkspaces, moaHqId as selectMoaHqId } from '../Moa/moaHqGuard';
 import { workspaceShortcutNumber } from '../../../shared/keymap';
-import { isShadowWorkspaceId } from '../../../shared/pcRail';
 
 /** PresetPicker width (w-52), used to keep the flyout on-screen. */
 const PICKER_MENU_WIDTH = 208;
@@ -48,7 +47,7 @@ export default function MiniSidebar({ rail = false, collapsed = true }: { rail?:
   const moaHqId = useStore(selectMoaHqId);
   // PC rail: another computer's shadow workspaces are never rail avatars.
   const workspaces = useMemo(
-    () => listedWorkspaces(allWorkspaces.filter((w) => !isShadowWorkspaceId(w.id)), moaHqId),
+    () => listedWorkspaces(allWorkspaces, moaHqId),
     [allWorkspaces, moaHqId],
   );
   // Dot source (agent-status-dot fix): whole-workspace roll-up, same derivation

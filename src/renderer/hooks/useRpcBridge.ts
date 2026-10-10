@@ -13,6 +13,7 @@ import type { Message, Part, TaskState, Artifact, AgentSkill, Task, CompletionEv
 import { normalizeCompletionEvidenceWire, isVerifiedItem } from '../../shared/completionEvidence';
 import type { PaneSearchResult, PaneSearchResponse } from '../../shared/types';
 import { generateId } from '../../shared/types';
+import { isShadowWorkspaceId } from '../../shared/pcRail';
 import { isTaskEnded, isVerifiedTaskSender } from '../../shared/a2aReopen';
 import { applyTaskQueryView } from '../../shared/a2aTaskQueryView';
 import { getLeafPanes, getWorkspaceLeafPanes, getWorkspacePtyIds, getWorkspaceRemoteSessions } from '../../shared/paneUtils';
@@ -1073,10 +1074,17 @@ function isSelectableBrowserPartition(partition: string): boolean {
   );
 }
 
+function withoutShadows<S extends { workspaces: Workspace[] }>(state: S): S {
+  if (!state.workspaces.some((w) => isShadowWorkspaceId(w.id))) return state;
+  return { ...state, workspaces: state.workspaces.filter((w) => !isShadowWorkspaceId(w.id)) };
+}
+
 // Exported for tests only (a2aFormat.delivery.test.ts).
 export async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcResult> {
   // Always read the freshest state via getState() to avoid stale closures.
-  const store = useStore.getState();
+  // The PC rail's shadow workspaces show another computer's panes: no RPC
+  // lists, resolves or targets them, so every walk below sees local ones only.
+  const store = withoutShadows(useStore.getState());
 
   // Fix 0 — block external RPC during startup reconcile. Even read-only
   // RPCs (workspace.list) return surface.ptyId fields that the external
