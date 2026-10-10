@@ -577,4 +577,56 @@ describe('shared Codex app-server on win32', () => {
     expect(opened.map((p) => p.workspaceId)).toEqual(['ws-s']);
     expect(getWorkspaceToken()).toBe('claim-starter');
   });
+
+  const PANE_CODEX = ['C:\\Users\\u\\AppData\\Roaming\\npm\\node_modules\\@openai\\codex\\vendor\\codex.exe'];
+
+  it('refuses the first threadless browser call under a shared parent', async () => {
+    const opened: Array<Record<string, unknown>> = [];
+    browserRpc(opened);
+    const client = await connect();
+    const res = await call(client, 'browser_open', { url: 'https://example.com' });
+    await client.close();
+    expect(res.isError).toBe(true);
+    expect(res.content[0]?.text).toMatch(/shared Codex background server/);
+    expect(opened).toEqual([]);
+    expect(getWorkspaceToken()).not.toBe('claim-starter');
+  });
+
+  it('keeps refusing threadless browser calls after the parent could not be inspected', async () => {
+    parentChain.mockResolvedValue([]);
+    const opened: Array<Record<string, unknown>> = [];
+    browserRpc(opened);
+    const client = await connect();
+    // An earlier threaded call saw the unknown parent; a later one sees it itself.
+    await call(client, 'a2a_whoami', {}, T1);
+    const first = await call(client, 'browser_open', { url: 'https://example.com' });
+    const again = await call(client, 'browser_open', { url: 'https://example.com' });
+    await client.close();
+    for (const res of [first, again]) {
+      expect(res.isError).toBe(true);
+      expect(res.content[0]?.text).toMatch(/could not inspect the process that started this MCP server/);
+    }
+    expect(opened).toEqual([]);
+    expect(getWorkspaceToken()).not.toBe('claim-starter');
+  });
+
+  it('allows a threadless browser call under a pane-side codex', async () => {
+    parentChain.mockResolvedValue([MCP_ENTRY, PANE_CODEX]);
+    const opened: Array<Record<string, unknown>> = [];
+    browserRpc(opened);
+    const client = await connect();
+    const res = await call(client, 'browser_open', { url: 'https://example.com' });
+    await client.close();
+    expect(res.isError).toBeFalsy();
+    expect(opened.map((p) => p.workspaceId)).toEqual(['ws-s']);
+    expect(getWorkspaceToken()).toBe('claim-starter');
+  });
+
+  it('does no parent lookup for a threadless non-browser call (Claude Code)', async () => {
+    const client = await connect();
+    const res = await call(client, 'a2a_whoami', {});
+    await client.close();
+    expect(res.isError).toBeFalsy();
+    expect(parentChain).not.toHaveBeenCalled();
+  });
 });
