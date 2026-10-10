@@ -35,6 +35,7 @@ let root: Root;
 interface MountOpts {
   onJoinDiscoverable?: (id: string) => void;
   onSelect?: (id: string) => void;
+  channelMentions?: Record<string, number>;
 }
 
 function mount(opts: MountOpts = {}): void {
@@ -46,7 +47,7 @@ function mount(opts: MountOpts = {}): void {
           pub: makeChannel({ id: 'pub', name: 'browse-me', visibility: 'public' }),
         },
         channelUnread: {},
-        channelMentions: {},
+        channelMentions: opts.channelMentions ?? {},
         activeChannelId: null,
         company: null,
         // self ws is a member of `joined` only → `pub` is discoverable
@@ -107,6 +108,19 @@ describe('ChannelsPanelView — discovery group (jsdom)', () => {
     click(joinBtn);
     expect(onJoinDiscoverable).toHaveBeenCalledTimes(1);
     expect(onJoinDiscoverable).toHaveBeenCalledWith('pub');
+  });
+
+  it('#1318: a mention of the human in an unjoined channel shows the @ mark on the collapsed header and on its row', () => {
+    mount();
+    expect(q('[data-channels-discover-toggle] [data-channel-mention]')).toBeNull();
+    act(() => root.unmount());
+    root = createRoot(container);
+    mount({ channelMentions: { pub: 1 } });
+    expect(q('[data-channels-discover-toggle] [data-channel-mention="true"]')).not.toBeNull();
+    click(must('[data-channels-discover-toggle]', 'discover toggle')); // expand
+    expect(
+      q('[data-channels-discover-item][data-channel-id="pub"] [data-channel-mention="true"]'),
+    ).not.toBeNull();
   });
 
   it('clicking the discoverable name previews via onSelect (without joining)', () => {

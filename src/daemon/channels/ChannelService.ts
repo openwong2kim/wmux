@@ -50,7 +50,7 @@ import { HUMAN_SELF_PRINCIPAL_ID } from '../../shared/principals';
 import { CHANNELS_EPOCH, EMPTY_CHANNEL_STATE } from '../../shared/channels';
 import { makeEnvelope, type AuthContext } from '../../shared/eventlog';
 import { ChannelStateWriter, reapEmptyChannels } from './ChannelStateWriter';
-import { applyChannelEvent, type ChannelEventPayload } from './channelEvents';
+import { applyChannelEvent, noteHumanSeatTaken, type ChannelEventPayload } from './channelEvents';
 import type { AppendOnlyLog } from '../eventlog/AppendOnlyLog';
 import type { SnapshotStore } from '../eventlog/SnapshotStore';
 import { CHANNEL_PROJECTION_REF } from '../eventlog/SnapshotStore';
@@ -135,12 +135,7 @@ export type ChannelErrorCode =
   /** `destroy` was called on a channel that is not in the trash. Permanent
    *  deletion is reachable only THROUGH the trash, so the undo window can
    *  never be skipped. */
-  | 'CHANNEL_NOT_TRASHED'
-  /** Phone channel Inbox (contract §9) — ackAsPhone reached a channel with no
-   *  human seat (observed-only). The cursor belongs to the seat, so there is
-   *  nothing to advance. Observing is legal (distinct from 404); moving the
-   *  cursor presupposes a seat. */
-  | 'NO_SEAT';
+  | 'CHANNEL_NOT_TRASHED';
 
 export interface ChannelError {
   code: ChannelErrorCode;
@@ -171,9 +166,14 @@ export interface PhoneChannelRow {
   oldestRetainedSeq: number;
   /** Seated only: messages past the cursor were evicted unread; `unread` counts the retained ones. */
   gap?: true;
+  /** Seated only — the seat's cursor and counts. Their presence means "seated". */
   lastReadSeq?: number;
   unread?: number;
   unreadMentions?: number;
+  /** #1318, seatless only: mentions of the human past its observer cursor. */
+  observerUnreadMentions?: number;
+  /** #1318, seatless only: the observer cursor, once it has moved. */
+  observerLastReadSeq?: number;
 }
 
 /** A `GET /api/channels/<id>/messages` row (contract §9). `mentions` is the
@@ -1435,6 +1435,7 @@ export class ChannelService {
         const prevMembers = this.state.members[channel.id];
         const prevMessages = this.state.messages[channel.id];
         const prevIdem = this.state.idempotency[channel.id];
+        const prevObserverCursor = this.state.observerCursors?.[channel.id];
         const prevIndex = this.state.channels.indexOf(channel);
         applyChannelEvent(this.state, payload);
         if (!this.saveOrFail()) {
@@ -1442,6 +1443,7 @@ export class ChannelService {
           if (prevMembers !== undefined) this.state.members[channel.id] = prevMembers;
           if (prevMessages !== undefined) this.state.messages[channel.id] = prevMessages;
           if (prevIdem !== undefined) this.state.idempotency[channel.id] = prevIdem;
+          if (prevObserverCursor !== undefined) (this.state.observerCursors ??= {})[channel.id] = prevObserverCursor;
           return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist channel deletion' } };
         }
       }
@@ -1745,10 +1747,13 @@ export class ChannelService {
         }
         members.push(joinedRow);
         this.state.members[channel.id] = members;
+        const previousObserverCursor = this.state.observerCursors?.[channel.id];
+        noteHumanSeatTaken(this.state, channel.id, joinedRow);
         if (!this.saveOrFail()) {
           // Roll back the push AND restore the prior emptySince tag.
           members.pop();
           channel.emptySince = previousEmptySince;
+          this.restoreObserverCursor(channel.id, previousObserverCursor);
           return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist channel join' } };
         }
       }
@@ -1864,6 +1869,8 @@ export class ChannelService {
         if (channel.emptySince !== undefined) delete channel.emptySince;
         members.push(seatRow);
         this.state.members[channel.id] = members;
+        const previousObserverCursor = this.state.observerCursors?.[channel.id];
+        noteHumanSeatTaken(this.state, channel.id, seatRow);
         channel.nextSeq++;
         (this.state.messages[channel.id] ??= []).push(systemMessage);
         if (!this.saveOrFail()) {
@@ -1872,6 +1879,7 @@ export class ChannelService {
           channel.nextSeq--;
           members.pop();
           channel.emptySince = previousEmptySince;
+          this.restoreObserverCursor(channel.id, previousObserverCursor);
           return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist operator join' } };
         }
       }
@@ -2570,9 +2578,20 @@ export class ChannelService {
       // Build the member-workspace lookup ONCE so membership is O(1) per mention
       // (O(n + m) overall) instead of O(mentions x members) under the lock.
       const memberWorkspaces = new Set(members.map((m) => m.workspaceId));
+      // #1318 — the human is the one non-member a mention may still reach: the
+      // human observes every channel it can see (W1), and the mention is how it
+      // learns it is wanted. Without this a human who sat in no channel (a
+      // phone-only one above all) never heard any mention aimed at it. Nothing
+      // about membership, seqs or member cursors changes — the observer's own
+      // cursor (observerCursors) counts it, and promoteHumanMention and the
+      // desktop badge deliver it. Any memberId on it is the human's one seat id
+      // (mapped below, as the 1c ladder maps a seated human's single row), so a
+      // post naming the human twice can never report it dropped AND deliver it.
+      const observedHuman = !this.humanSeatOf(channel.id) && this.isObservableByPhone(channel);
       for (const mn of params.mentions ?? []) {
         if (!mn || typeof mn.workspaceId !== 'string') continue;
-        if (!memberWorkspaces.has(mn.workspaceId)) {
+        const toObservedHuman = observedHuman && mn.workspaceId === HUMAN_WORKSPACE_ID;
+        if (!memberWorkspaces.has(mn.workspaceId) && !toObservedHuman) {
           // Was a SILENT drop. Record it (deduped per workspace) so the post
           // result tells the SENDER the mention didn't land — you cannot ping a
           // workspace that isn't in the room. Silent mis-route was the dominant
@@ -2686,7 +2705,9 @@ export class ChannelService {
         // one). Same ladder as the sender: exact row wins, a single-row
         // workspace maps, multi-row stays verbatim (never guess a seat).
         let mnMemberId = typeof mn.memberId === 'string' ? mn.memberId : undefined;
-        if (mnMemberId !== undefined) {
+        if (toObservedHuman) {
+          if (mnMemberId !== undefined) mnMemberId = HUMAN_MEMBER_ID;
+        } else if (mnMemberId !== undefined) {
           const targetRows = members.filter((m) => m.workspaceId === mn.workspaceId);
           const exact = targetRows.some((m) => m.memberId === mnMemberId);
           if (!exact && targetRows.length === 1) {
@@ -2983,171 +3004,190 @@ export class ChannelService {
     memberId?: string;
   }): Promise<Result<{ acked: number; lastReadSeq?: number }>> {
     return this.withChannelLock(params.channelId, async () => {
-      const channel = this.state.channels.find((c) => c.id === params.channelId);
-      // Symmetric existence-hiding with get/getMessages: a non-member of a
-      // private channel sees CHANNEL_NOT_FOUND, never its existence.
-      if (!channel || !this.isVisibleTo(channel, params.verifiedWorkspaceId)) {
-        return { ok: false, error: { code: 'CHANNEL_NOT_FOUND', message: 'No such channel' } };
+      // #1318 — the desktop's open-channel ack on a channel the human reads
+      // without a seat: there are no receipts to flip (the human is no
+      // recipient), but it is the human reading, so it moves the human's
+      // observer cursor — the same cursor the phone's ack moves, so a mention
+      // read at the desk is not reported unread on the phone.
+      if (params.verifiedWorkspaceId === HUMAN_WORKSPACE_ID && params.memberId === undefined) {
+        const observed = await this.ackAsObserverLocked(params.channelId, params.uptoSeq);
+        if (observed) return observed.ok ? { ok: true, acked: 0 } : observed;
       }
-      const msgs = this.state.messages[params.channelId] ?? [];
-      // Collect-then-apply so a persist failure can ROLL BACK (mirrors post): we
-      // snapshot each flip's prior values, apply, persist, and on failure restore
-      // — otherwise memory would be left flipped while we return PERSIST_FAILED,
-      // and a retry would be a no-op (entry already delivered) = permanent split
-      // (GLM review P1).
-      const flips: Array<{
-        entry: ChannelRecipientStatus;
-        prevEntryStatus: ChannelRecipientStatus['status'];
-        prevLastAttemptAt: number | undefined;
-        msg: ChannelMessage;
-        prevMsgStatus: ChannelMessage['deliveryStatus'];
-      }> = [];
-      for (const m of msgs) {
-        if (m.seq > params.uptoSeq) continue;
-        // A workspace may have MULTIPLE member rows in one channel (several
-        // agents from the same workspace each join with a distinct memberId), so
-        // the frozen recipientSnapshot can carry more than one entry for this
-        // workspaceId. The ack is workspace-scoped (the renderer never identifies
-        // a memberId), so flip EVERY pending row for this workspace — a `find()`
-        // would leave the siblings permanently 'pending', and a repeat ack would
-        // keep re-finding the first, already-delivered row (Codex review).
-        for (const entry of m.recipientSnapshot ?? []) {
-          // Anything not already `delivered` — `target_gone` included. A failed
-          // wake nudge records one moment's dead pane; an ack is the receiver
-          // saying it read the thing. Leaving target_gone alone would let one
-          // dead pane pin a message as undelivered forever.
-          if (entry.workspaceId === params.verifiedWorkspaceId && entry.status !== 'delivered') {
-            flips.push({
-              entry,
-              prevEntryStatus: entry.status,
-              prevLastAttemptAt: entry.lastAttemptAt,
-              msg: m,
-              prevMsgStatus: m.deliveryStatus,
-            });
-          }
+      return this.ackLocked(params);
+    });
+  }
+
+  /** ack()'s body; the caller holds the channel lock. */
+  private async ackLocked(params: {
+    channelId: string;
+    verifiedWorkspaceId: string;
+    uptoSeq: number;
+    memberId?: string;
+  }): Promise<Result<{ acked: number; lastReadSeq?: number }>> {
+    const channel = this.state.channels.find((c) => c.id === params.channelId);
+    // Symmetric existence-hiding with get/getMessages: a non-member of a
+    // private channel sees CHANNEL_NOT_FOUND, never its existence.
+    if (!channel || !this.isVisibleTo(channel, params.verifiedWorkspaceId)) {
+      return { ok: false, error: { code: 'CHANNEL_NOT_FOUND', message: 'No such channel' } };
+    }
+    const msgs = this.state.messages[params.channelId] ?? [];
+    // Collect-then-apply so a persist failure can ROLL BACK (mirrors post): we
+    // snapshot each flip's prior values, apply, persist, and on failure restore
+    // — otherwise memory would be left flipped while we return PERSIST_FAILED,
+    // and a retry would be a no-op (entry already delivered) = permanent split
+    // (GLM review P1).
+    const flips: Array<{
+      entry: ChannelRecipientStatus;
+      prevEntryStatus: ChannelRecipientStatus['status'];
+      prevLastAttemptAt: number | undefined;
+      msg: ChannelMessage;
+      prevMsgStatus: ChannelMessage['deliveryStatus'];
+    }> = [];
+    for (const m of msgs) {
+      if (m.seq > params.uptoSeq) continue;
+      // A workspace may have MULTIPLE member rows in one channel (several
+      // agents from the same workspace each join with a distinct memberId), so
+      // the frozen recipientSnapshot can carry more than one entry for this
+      // workspaceId. The ack is workspace-scoped (the renderer never identifies
+      // a memberId), so flip EVERY pending row for this workspace — a `find()`
+      // would leave the siblings permanently 'pending', and a repeat ack would
+      // keep re-finding the first, already-delivered row (Codex review).
+      for (const entry of m.recipientSnapshot ?? []) {
+        // Anything not already `delivered` — `target_gone` included. A failed
+        // wake nudge records one moment's dead pane; an ack is the receiver
+        // saying it read the thing. Leaving target_gone alone would let one
+        // dead pane pin a message as undelivered forever.
+        if (entry.workspaceId === params.verifiedWorkspaceId && entry.status !== 'delivered') {
+          flips.push({
+            entry,
+            prevEntryStatus: entry.status,
+            prevLastAttemptAt: entry.lastAttemptAt,
+            msg: m,
+            prevMsgStatus: m.deliveryStatus,
+          });
         }
       }
-      // Channels v2 — advance the durable per-member read cursor alongside the
-      // legacy recipientSnapshot flips. Advance-only, clamped to the channel
-      // head: an ack can never mark the future read nor move backwards.
-      //
-      // Cursor advance is MEMBER-SCOPED ONLY (Codex re-review P1): the
-      // renderer's open-channel ack carries no memberId — it is a human READ
-      // RECEIPT (deliveryStatus), never an agent's consumption claim.
-      // Advancing every workspace row on it let a human's glance clear an
-      // agent's cursor: unread hit zero, the wake worker went silent, and the
-      // agent's work was silently dropped. No memberId ⇒ receipts only.
-      const cursorTarget = Math.min(params.uptoSeq, channel.nextSeq - 1);
-      const cursorFlips: Array<{ row: ChannelMember; prev: number | undefined }> = [];
-      if (params.memberId !== undefined) {
-        const wsRows = (this.state.members[params.channelId] ?? []).filter(
-          (m) => m.workspaceId === params.verifiedWorkspaceId,
-        );
-        // A narrowed ack that matches NO row is a caller bug (stale
-        // $WMUX_MEMBER_ID, typo) — fail loudly instead of returning a
-        // success that consumed nothing while the wake worker keeps
-        // re-nudging (Codex re-review).
-        if (!wsRows.some((m) => m.memberId === params.memberId)) {
-          return {
-            ok: false,
-            error: {
-              code: 'NOT_A_MEMBER',
-              message: `No member row "${params.memberId}" for this workspace in the channel`,
+    }
+    // Channels v2 — advance the durable per-member read cursor alongside the
+    // legacy recipientSnapshot flips. Advance-only, clamped to the channel
+    // head: an ack can never mark the future read nor move backwards.
+    //
+    // Cursor advance is MEMBER-SCOPED ONLY (Codex re-review P1): the
+    // renderer's open-channel ack carries no memberId — it is a human READ
+    // RECEIPT (deliveryStatus), never an agent's consumption claim.
+    // Advancing every workspace row on it let a human's glance clear an
+    // agent's cursor: unread hit zero, the wake worker went silent, and the
+    // agent's work was silently dropped. No memberId ⇒ receipts only.
+    const cursorTarget = Math.min(params.uptoSeq, channel.nextSeq - 1);
+    const cursorFlips: Array<{ row: ChannelMember; prev: number | undefined }> = [];
+    if (params.memberId !== undefined) {
+      const wsRows = (this.state.members[params.channelId] ?? []).filter(
+        (m) => m.workspaceId === params.verifiedWorkspaceId,
+      );
+      // A narrowed ack that matches NO row is a caller bug (stale
+      // $WMUX_MEMBER_ID, typo) — fail loudly instead of returning a
+      // success that consumed nothing while the wake worker keeps
+      // re-nudging (Codex re-review).
+      if (!wsRows.some((m) => m.memberId === params.memberId)) {
+        return {
+          ok: false,
+          error: {
+            code: 'NOT_A_MEMBER',
+            message: `No member row "${params.memberId}" for this workspace in the channel`,
+          },
+        };
+      }
+      for (const row of wsRows) {
+        if (row.memberId !== params.memberId) continue;
+        const current = typeof row.lastReadSeq === 'number' ? row.lastReadSeq : -1;
+        if (cursorTarget > current) {
+          cursorFlips.push({ row, prev: row.lastReadSeq });
+        }
+      }
+    }
+    const now = this.now();
+    if (flips.length > 0 || cursorFlips.length > 0) {
+      if (this.eventLog) {
+        // G1 append-then-apply: 수집(collect)은 위에서 읽기 전용으로 끝났고,
+        // 적용은 배리어 성공 후 적용기가 수행한다 — 적용기의 재수집(delivered가
+        // 아닌 행만 플립·advance-only 커서)은 뮤텍스 하에서 위 수집과 결정론적
+        // 으로 동일하다. 실패 = 무적용(롤백 없음).
+        if (
+          !(await this.commitAndApply(
+            {
+              kind: 'ack',
+              channelId: params.channelId,
+              workspaceId: params.verifiedWorkspaceId,
+              ...(params.memberId !== undefined ? { memberId: params.memberId } : {}),
+              uptoSeq: params.uptoSeq,
+              ackedAt: now,
             },
-          };
+            {
+              verifiedWorkspaceId: params.verifiedWorkspaceId,
+              ...(params.memberId !== undefined ? { principalId: params.memberId } : {}),
+            },
+          ))
+        ) {
+          return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist ack' } };
         }
-        for (const row of wsRows) {
-          if (row.memberId !== params.memberId) continue;
-          const current = typeof row.lastReadSeq === 'number' ? row.lastReadSeq : -1;
-          if (cursorTarget > current) {
-            cursorFlips.push({ row, prev: row.lastReadSeq });
-          }
+      } else {
+        // 레거시 모드(1비트 불변): 적용 → 동기 저장 → 실패 시 롤백.
+        for (const f of flips) {
+          f.entry.status = 'delivered';
+          f.entry.lastAttemptAt = now;
+          // ≥1 recipient delivered ⇒ message delivered (DeliveryResult.ok semantics
+          // — "at least one", NOT "all": a still-pending peer does not block it, and
+          // per-recipient detail remains in recipientSnapshot for callers who need it).
+          if (f.msg.deliveryStatus !== 'delivered') f.msg.deliveryStatus = 'delivered';
         }
-      }
-      const now = this.now();
-      if (flips.length > 0 || cursorFlips.length > 0) {
-        if (this.eventLog) {
-          // G1 append-then-apply: 수집(collect)은 위에서 읽기 전용으로 끝났고,
-          // 적용은 배리어 성공 후 적용기가 수행한다 — 적용기의 재수집(delivered가
-          // 아닌 행만 플립·advance-only 커서)은 뮤텍스 하에서 위 수집과 결정론적
-          // 으로 동일하다. 실패 = 무적용(롤백 없음).
-          if (
-            !(await this.commitAndApply(
-              {
-                kind: 'ack',
-                channelId: params.channelId,
-                workspaceId: params.verifiedWorkspaceId,
-                ...(params.memberId !== undefined ? { memberId: params.memberId } : {}),
-                uptoSeq: params.uptoSeq,
-                ackedAt: now,
-              },
-              {
-                verifiedWorkspaceId: params.verifiedWorkspaceId,
-                ...(params.memberId !== undefined ? { principalId: params.memberId } : {}),
-              },
-            ))
-          ) {
-            return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist ack' } };
-          }
-        } else {
-          // 레거시 모드(1비트 불변): 적용 → 동기 저장 → 실패 시 롤백.
+        for (const f of cursorFlips) {
+          f.row.lastReadSeq = cursorTarget;
+        }
+        if (!this.saveOrFail()) {
+          // Roll back the in-memory flips so memory ↔ disk stay consistent.
           for (const f of flips) {
-            f.entry.status = 'delivered';
-            f.entry.lastAttemptAt = now;
-            // ≥1 recipient delivered ⇒ message delivered (DeliveryResult.ok semantics
-            // — "at least one", NOT "all": a still-pending peer does not block it, and
-            // per-recipient detail remains in recipientSnapshot for callers who need it).
-            if (f.msg.deliveryStatus !== 'delivered') f.msg.deliveryStatus = 'delivered';
+            f.entry.status = f.prevEntryStatus;
+            f.entry.lastAttemptAt = f.prevLastAttemptAt;
+            f.msg.deliveryStatus = f.prevMsgStatus;
           }
           for (const f of cursorFlips) {
-            f.row.lastReadSeq = cursorTarget;
+            f.row.lastReadSeq = f.prev;
           }
-          if (!this.saveOrFail()) {
-            // Roll back the in-memory flips so memory ↔ disk stay consistent.
-            for (const f of flips) {
-              f.entry.status = f.prevEntryStatus;
-              f.entry.lastAttemptAt = f.prevLastAttemptAt;
-              f.msg.deliveryStatus = f.prevMsgStatus;
-            }
-            for (const f of cursorFlips) {
-              f.row.lastReadSeq = f.prev;
-            }
-            return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist ack' } };
-          }
+          return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist ack' } };
         }
       }
-      // A cursor advance changes the roster's "N behind" badges, which
-      // hydrate from the catalog — without a signal an agent's ack leaves
-      // every open roster stale until some unrelated membership event lands
-      // (Codex re-review). Reason 'cursor' is advisory; receivers re-hydrate
-      // regardless. Receipt-only acks (no cursor movement) stay silent — the
-      // renderer fires one on every channel open.
-      if (cursorFlips.length > 0) {
-        this.emitCatalog(
-          params.channelId,
-          params.verifiedWorkspaceId,
-          (this.state.members[params.channelId] ?? []).map((m) => m.workspaceId),
-          'cursor',
-        );
-      }
-      // Echo the row's ACTUAL post-ack cursor, not the clamped request
-      // target: a stale/backward ack (row already past uptoSeq) performs no
-      // flip and must not report a rewind it never did — cursors are
-      // advance-only and clients trust this echo (Codex round-3). Only
-      // meaningful for a member-scoped ack (receipt-only moves no cursor).
-      let echoedCursor: number | undefined;
-      if (params.memberId !== undefined) {
-        const row = (this.state.members[params.channelId] ?? []).find(
-          (m) => m.workspaceId === params.verifiedWorkspaceId && m.memberId === params.memberId,
-        );
-        echoedCursor = row && typeof row.lastReadSeq === 'number' ? row.lastReadSeq : cursorTarget;
-      }
-      return {
-        ok: true,
-        acked: flips.length,
-        ...(echoedCursor !== undefined ? { lastReadSeq: echoedCursor } : {}),
-      };
-    });
+    }
+    // A cursor advance changes the roster's "N behind" badges, which
+    // hydrate from the catalog — without a signal an agent's ack leaves
+    // every open roster stale until some unrelated membership event lands
+    // (Codex re-review). Reason 'cursor' is advisory; receivers re-hydrate
+    // regardless. Receipt-only acks (no cursor movement) stay silent — the
+    // renderer fires one on every channel open.
+    if (cursorFlips.length > 0) {
+      this.emitCatalog(
+        params.channelId,
+        params.verifiedWorkspaceId,
+        (this.state.members[params.channelId] ?? []).map((m) => m.workspaceId),
+        'cursor',
+      );
+    }
+    // Echo the row's ACTUAL post-ack cursor, not the clamped request
+    // target: a stale/backward ack (row already past uptoSeq) performs no
+    // flip and must not report a rewind it never did — cursors are
+    // advance-only and clients trust this echo (Codex round-3). Only
+    // meaningful for a member-scoped ack (receipt-only moves no cursor).
+    let echoedCursor: number | undefined;
+    if (params.memberId !== undefined) {
+      const row = (this.state.members[params.channelId] ?? []).find(
+        (m) => m.workspaceId === params.verifiedWorkspaceId && m.memberId === params.memberId,
+      );
+      echoedCursor = row && typeof row.lastReadSeq === 'number' ? row.lastReadSeq : cursorTarget;
+    }
+    return {
+      ok: true,
+      acked: flips.length,
+      ...(echoedCursor !== undefined ? { lastReadSeq: echoedCursor } : {}),
+    };
   }
 
   /**
@@ -3356,9 +3396,7 @@ export class ChannelService {
     // isObservableByPhone for why).
     for (const channel of this.list(HUMAN_WORKSPACE_ID)) {
       if (channel.trashedAt !== undefined) continue;
-      const seat = (this.state.members[channel.id] ?? []).find(
-        (m) => m.workspaceId === HUMAN_WORKSPACE_ID && m.memberId === HUMAN_MEMBER_ID,
-      );
+      const seat = this.humanSeatOf(channel.id);
       const msgs = this.state.messages[channel.id] ?? [];
       const last = msgs.length > 0 ? msgs[msgs.length - 1] : null;
       const row: PhoneChannelRow = {
@@ -3381,8 +3419,15 @@ export class ChannelService {
         // unread counts only what is still retained — say so rather than let
         // the under-count pass as the whole truth.
         if ((unread?.trimmedBeforeCursor ?? 0) > 0) row.gap = true;
-      } else if (channel.observed === true) {
-        row.observed = true;
+      } else {
+        if (channel.observed === true) row.observed = true;
+        // #1318 — a mention reaches the human here without a seat; the observer
+        // cursor keeps it counted until the human reads it on either surface.
+        // Own field names: the seat fields' presence still means "seated" to
+        // clients built before this.
+        row.observerUnreadMentions = this.observerMentionUnread(channel.id);
+        const observerCursor = this.state.observerCursors?.[channel.id];
+        if (observerCursor !== undefined) row.observerLastReadSeq = observerCursor;
       }
       rows.push(row);
     }
@@ -3449,42 +3494,30 @@ export class ChannelService {
    * `POST /api/channels/<id>/ack` — advance the human seat's lastReadSeq.
    * Reuses ack({memberId: HUMAN_MEMBER_ID}): clamped to the head, advance-only
    * (moving backwards is a no-op that echoes the current cursor), and the read
-   * receipts flip with it. A seatless observed channel is NO_SEAT (400
-   * no-seat) — observing is legal, but the cursor belongs to a seat.
+   * receipts flip with it. Without a seat (#1318) it advances the human's
+   * observer cursor the same way — that is what clears the row's
+   * observerUnreadMentions.
    */
   async ackAsPhone(channelId: string, lastReadSeq: number): Promise<Result<{ lastReadSeq: number }>> {
-    const channel = this.state.channels.find((c) => c.id === channelId);
-    if (!channel || !this.isObservableByPhone(channel)) {
-      return { ok: false, error: { code: 'CHANNEL_NOT_FOUND', message: 'No such channel' } };
-    }
-    const seat = (this.state.members[channelId] ?? []).find(
-      (m) => m.workspaceId === HUMAN_WORKSPACE_ID && m.memberId === HUMAN_MEMBER_ID,
-    );
-    if (!seat) {
-      return {
-        ok: false,
-        error: { code: 'NO_SEAT', message: 'No human seat in this channel' },
-      };
-    }
-    const res = await this.ack({
-      channelId,
-      verifiedWorkspaceId: HUMAN_WORKSPACE_ID,
-      uptoSeq: lastReadSeq,
-      memberId: HUMAN_MEMBER_ID,
-    });
-    if (!res.ok) {
-      // The seat check above is advisory, outside the lock — if the seat goes
-      // away in between (a desktop leave), ack() returns NOT_A_MEMBER. That is
-      // no-seat too (contract §9: 400). Passing it through would hit the web
-      // adapter's default mapping and leak out as a 500 internal, sending the
-      // phone into a retry loop.
-      if (res.error.code === 'NOT_A_MEMBER') {
-        return { ok: false, error: { code: 'NO_SEAT', message: 'No human seat in this channel' } };
+    // Seat vs observer is decided under the lock: a seat taken or left while
+    // the ack waited must not send it to the wrong cursor.
+    return this.withChannelLock(channelId, async () => {
+      const channel = this.state.channels.find((c) => c.id === channelId);
+      if (!channel || !this.isObservableByPhone(channel)) {
+        return { ok: false, error: { code: 'CHANNEL_NOT_FOUND', message: 'No such channel' } };
       }
-      return res;
-    }
-    // A member-scoped ack on a confirmed seat always echoes lastReadSeq.
-    return { ok: true, lastReadSeq: res.lastReadSeq ?? Math.min(lastReadSeq, channel.nextSeq - 1) };
+      const observed = await this.ackAsObserverLocked(channelId, lastReadSeq);
+      if (observed) return observed;
+      const res = await this.ackLocked({
+        channelId,
+        verifiedWorkspaceId: HUMAN_WORKSPACE_ID,
+        uptoSeq: lastReadSeq,
+        memberId: HUMAN_MEMBER_ID,
+      });
+      if (!res.ok) return res;
+      // A member-scoped ack on a confirmed seat always echoes lastReadSeq.
+      return { ok: true, lastReadSeq: res.lastReadSeq ?? Math.min(lastReadSeq, channel.nextSeq - 1) };
+    });
   }
 
   /**
@@ -3655,17 +3688,116 @@ export class ChannelService {
   }
 
   /**
+   * #1318 — the human's seat: THE (ws-human, local-ui) row. One definition for
+   * the mention gate, both acks and the phone list, so a channel is never
+   * seated for one of them and seatless for another.
+   */
+  private humanSeatOf(channelId: string): ChannelMember | undefined {
+    return (this.state.members[channelId] ?? []).find(
+      (m) => m.workspaceId === HUMAN_WORKSPACE_ID && m.memberId === HUMAN_MEMBER_ID,
+    );
+  }
+
+  /**
+   * #1318 — the human reading a channel it has no seat in, from either
+   * surface (the phone ack, the desktop's open-channel ack). The caller holds
+   * the channel lock. Null when this is not the observer's read — the human
+   * holds a seat, or cannot observe the channel (trashed / unknown) — so the
+   * caller takes its own path.
+   */
+  private async ackAsObserverLocked(
+    channelId: string,
+    uptoSeq: number,
+  ): Promise<Result<{ lastReadSeq: number }> | null> {
+    const channel = this.state.channels.find((c) => c.id === channelId);
+    if (!channel || this.humanSeatOf(channelId) || !this.isObservableByPhone(channel)) return null;
+    const cursor = await this.advanceObserverCursor(channel, uptoSeq);
+    if (cursor === null) {
+      return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist ack' } };
+    }
+    return { ok: true, lastReadSeq: cursor };
+  }
+
+  /** Legacy-mode rollback of an observer cursor to its value before a write. */
+  private restoreObserverCursor(channelId: string, previous: number | undefined): void {
+    if (!this.state.observerCursors) return;
+    if (previous === undefined) delete this.state.observerCursors[channelId];
+    else this.state.observerCursors[channelId] = previous;
+  }
+
+  /**
+   * #1318 — advance the human's observer cursor on a channel it observes
+   * without a seat. The caller holds the channel lock. Clamped to the head and
+   * advance-only, like a seat cursor; returns the resulting cursor, or null
+   * when the advance could not be persisted (nothing applied).
+   */
+  private async advanceObserverCursor(channel: Channel, uptoSeq: number): Promise<number | null> {
+    const current = this.state.observerCursors?.[channel.id] ?? 0;
+    const target = Math.min(uptoSeq, channel.nextSeq - 1);
+    if (target <= current) return current;
+    if (this.eventLog) {
+      const committed = await this.commitAndApply(
+        { kind: 'observer-ack', channelId: channel.id, lastReadSeq: target },
+        { verifiedWorkspaceId: HUMAN_WORKSPACE_ID, principalId: HUMAN_SELF_PRINCIPAL_ID },
+      );
+      return committed ? target : null;
+    }
+    const previous = this.state.observerCursors?.[channel.id];
+    (this.state.observerCursors ??= {})[channel.id] = target;
+    if (!this.saveOrFail()) {
+      this.restoreObserverCursor(channel.id, previous);
+      return null;
+    }
+    return target;
+  }
+
+  /**
+   * #1318 — mentions of the human on a channel it observes without a seat that
+   * it has not read: past the observer cursor (0 when there is none), and
+   * posted while the human held no seat. A message whose recipientSnapshot
+   * names the seat was posted while it was held, and that seat's cursor was
+   * the one to count it — so state from before this existed (where a seatless
+   * mention was always dropped) adds nothing. Messages are seq-ordered, so the
+   * scan starts past the cursor instead of walking read history on every list.
+   */
+  private observerMentionUnread(channelId: string): number {
+    const cursor = this.state.observerCursors?.[channelId] ?? 0;
+    const msgs = this.state.messages[channelId] ?? [];
+    let lo = 0;
+    let hi = msgs.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1;
+      if (msgs[mid].seq <= cursor) lo = mid + 1;
+      else hi = mid;
+    }
+    let count = 0;
+    for (let i = lo; i < msgs.length; i++) {
+      const m = msgs[i];
+      if (m.systemKind || m.workspaceId === HUMAN_WORKSPACE_ID) continue;
+      if ((m.recipientSnapshot ?? []).some((r) => r.workspaceId === HUMAN_WORKSPACE_ID && r.memberId === HUMAN_MEMBER_ID)) {
+        continue;
+      }
+      if ((m.mentions ?? []).some((mn) => this.mentionsHuman(mn))) count += 1;
+    }
+    return count;
+  }
+
+  /** A mention aimed at the human: the human workspace, unscoped or at the human seat. */
+  private mentionsHuman(mn: ChannelMention): boolean {
+    return mn.workspaceId === HUMAN_WORKSPACE_ID && (mn.memberId === undefined || mn.memberId === HUMAN_MEMBER_ID);
+  }
+
+  /**
    * Phone channel Inbox (contract §9) — after a successful post, decide whether
    * to promote it to `channel.mention`.
    *
-   * Three conditions: (1) the server-verified mentions include the human
-   * workspace, (2) the post is not the human's own (aligned with unreadFor's
-   * self-authored exemption — below), and (3) a human seat exists. (3) is in
-   * practice a defensive duplicate — post's mention validation drops a mention
-   * of a non-member workspace outright (the not_a_member branch above), so
-   * ws-human in the verified mentions already proves the seat. A ws-human
-   * mention in a seatless channel never reaches `mentions`; it goes back to the
-   * sender only as droppedMentions (D7: droppedMentions raise no event).
+   * Two conditions: (1) the server-verified mentions include the human
+   * workspace, and (2) the post is not the human's own (aligned with unreadFor's
+   * self-authored exemption — below). Whether the human may be reached at all
+   * was decided by post's mention validation: ws-human is in the verified
+   * mentions only when it holds a seat or (#1318) observes the channel.
+   * Otherwise the mention never reaches `mentions`; it goes back to the sender
+   * only as droppedMentions (D7: droppedMentions raise no event).
    * memberId matching follows the same rule as unreadFor's mention count.
    *
    * The payload text is a ≤PHONE_MENTION_EXCERPT_MAX excerpt — the event is the
@@ -3674,12 +3806,7 @@ export class ChannelService {
    */
   private promoteHumanMention(message: ChannelMessage, mentions: ChannelMention[]): void {
     if (this.mentionListeners.size === 0) return;
-    const mentioned = mentions.some(
-      (mn) =>
-        mn.workspaceId === HUMAN_WORKSPACE_ID &&
-        (mn.memberId === undefined || mn.memberId === HUMAN_MEMBER_ID),
-    );
-    if (!mentioned) return;
+    if (!mentions.some((mn) => this.mentionsHuman(mn))) return;
     // Aligned with unreadFor's exemption: a self-authored message is not owed.
     // A post the human wrote at the desktop (judged by the full row identity —
     // a mention by a same-workspace sibling is still an event) does not wake
@@ -3687,10 +3814,6 @@ export class ChannelService {
     // unreadMentions at 0 while a channel.mention still arrives — the badge and
     // the event forking.
     if (message.workspaceId === HUMAN_WORKSPACE_ID && message.memberId === HUMAN_MEMBER_ID) return;
-    const hasSeat = (this.state.members[message.channelId] ?? []).some(
-      (m) => m.workspaceId === HUMAN_WORKSPACE_ID && m.memberId === HUMAN_MEMBER_ID,
-    );
-    if (!hasSeat) return;
     const notification: ChannelMentionNotification = {
       channelId: message.channelId,
       seq: message.seq,

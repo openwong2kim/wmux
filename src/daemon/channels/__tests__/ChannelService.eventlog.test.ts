@@ -223,6 +223,45 @@ describe('ChannelService × 이벤트로그 (§5 커밋경로 반전)', () => {
     h2.log.close();
   });
 
+  it('#1318 observer cursor: a seatless human mention + observer-ack commit one envelope each and survive a reboot', async () => {
+    const h = makeHarness();
+    const created = await h.svc.create({
+      name: 'secret',
+      visibility: 'private',
+      createdBy: { workspaceId: 'ws-agent', memberId: 'agent-1' },
+      verifiedWorkspaceId: 'ws-agent',
+    });
+    if (!created.ok) throw new Error('create failed');
+    const chId = created.channel.id;
+    const mention = (text: string) =>
+      h.svc.post({
+        channelId: chId,
+        sender: { workspaceId: 'ws-agent', memberId: 'agent-1' },
+        text,
+        verifiedWorkspaceId: 'ws-agent',
+        mentions: [{ workspaceId: 'ws-human', name: 'Operator' }],
+      });
+    expect((await mention('@operator one')).ok).toBe(true); // seq 1
+    expect((await mention('@operator two')).ok).toBe(true); // seq 2
+    // Snapshot here, so the ack below is replayed from the tail.
+    h.snapshots.flushSync();
+    expect(await h.svc.ackAsPhone(chId, 1)).toEqual({ ok: true, lastReadSeq: 1 });
+    // A backwards ack commits nothing.
+    expect(await h.svc.ackAsPhone(chId, 0)).toEqual({ ok: true, lastReadSeq: 1 });
+    const kinds = h.log.readAllRecords().map((r) => (r.payload as { kind: string }).kind);
+    expect(kinds).toEqual(['create', 'post', 'post', 'observer-ack']);
+    const row = h.svc.listForPhone().find((r) => r.channelId === chId);
+    expect(row).toMatchObject({ observed: true, observerUnreadMentions: 1, observerLastReadSeq: 1 });
+    expect(h.svc.getMembers(chId, 'ws-human').some((m) => m.workspaceId === 'ws-human')).toBe(false);
+    const live = stateOf(h.svc);
+    h.log.close();
+
+    const h2 = makeHarness();
+    expect(stateOf(h2.svc)).toEqual(live);
+    expect(h2.svc.listForPhone().find((r) => r.channelId === chId)).toEqual(row);
+    h2.log.close();
+  });
+
   it('재부트(스냅샷 가속): flush된 스냅샷 + tail replay가 수렴', async () => {
     const h = makeHarness();
     const chId = await runBattery(h.svc);

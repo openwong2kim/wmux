@@ -7,7 +7,7 @@
 // Click → setActiveChannel; no context menu in v1 (archive / rename are
 // deferred per plan §Scope Boundaries).
 //
-// Single export (`ChannelItemView`): pure presentational — every prop
+// `ChannelItemView` (plus its `ChannelBadge`): pure presentational — every prop
 // is a primitive or a stable callback. The parent (`ChannelsPanel`)
 // resolves `isActive` and `unreadCount` from the store and passes them
 // in as props, so this component can be tested via `renderToStaticMarkup`
@@ -58,6 +58,31 @@ export interface ChannelItemViewProps {
     /** Label/tooltip shown while armed. Falls back to `label`. */
     confirmLabel?: string;
   };
+}
+
+/** The unread badge: the count, promoted to a red `@` badge when the channel
+ *  mentions the human. Exported for the Discover group (#1318), whose unjoined
+ *  rows are not ChannelItems but carry the same mention signal. */
+export function ChannelBadge({
+  unreadCount,
+  mentioned,
+}: {
+  unreadCount: number;
+  mentioned: boolean;
+}): React.ReactElement {
+  return (
+    <span
+      data-channel-mention={mentioned ? 'true' : undefined}
+      className={`text-[var(--bg-base)] text-[10px] font-bold min-w-[16px] h-4 flex items-center justify-center rounded-full px-1 flex-shrink-0 ${
+        mentioned ? 'bg-[var(--accent-red)]' : 'bg-[var(--accent)]'
+      }`}
+      {...tokenAttrs(mentioned ? 'danger' : 'accent', 'accent')}
+      {...tokenAttrs('bgBase', 'bg')}
+    >
+      {mentioned && <span aria-hidden="true">@</span>}
+      {unreadCount > 0 ? (unreadCount > 99 ? '99+' : unreadCount) : ''}
+    </span>
+  );
 }
 
 /** Sidebar row for a single channel. Renders `#name`, an unread badge
@@ -120,19 +145,7 @@ export function ChannelItemView({
           {observedLabel}
         </span>
       )}
-      {showBadge && (
-        <span
-          data-channel-mention={mentioned ? 'true' : undefined}
-          className={`text-[var(--bg-base)] text-[10px] font-bold min-w-[16px] h-4 flex items-center justify-center rounded-full px-1 flex-shrink-0 ${
-            mentioned ? 'bg-[var(--accent-red)]' : 'bg-[var(--accent)]'
-          }`}
-          {...tokenAttrs(mentioned ? 'danger' : 'accent', 'accent')}
-          {...tokenAttrs('bgBase', 'bg')}
-        >
-          {mentioned && <span aria-hidden="true">@</span>}
-          {unreadCount > 0 ? (unreadCount > 99 ? '99+' : unreadCount) : ''}
-        </span>
-      )}
+      {showBadge && <ChannelBadge unreadCount={unreadCount} mentioned={mentioned} />}
       {action && (
         <button
           type="button"

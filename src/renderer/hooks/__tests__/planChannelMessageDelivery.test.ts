@@ -91,6 +91,19 @@ describe('planChannelMessageDelivery — W1 operator observation', () => {
     expect(plan.appendToDisplay).toBe(false);
   });
 
+  it('#1318: appends a post that mentions the human in a channel it has not joined (public, not observed-flagged)', () => {
+    // The daemon keeps ws-human in the verified mentions only where the human
+    // can observe, so the red @ badge follows one rule on desktop and phone.
+    const plan = planChannelMessageDelivery('ws-agent', [ACTIVE, BG], [HUMAN], LOCAL, false);
+    expect(plan.appendToDisplay).toBe(true);
+    expect(plan.routeWorkspaces).toEqual([]);
+  });
+
+  it('#1318: an agent-to-agent mention in such a channel still does not append', () => {
+    const plan = planChannelMessageDelivery('ws-agent', [ACTIVE, BG], [BG], LOCAL, false);
+    expect(plan.appendToDisplay).toBe(false);
+  });
+
   it('observation does not affect mention routing (still real local workspaces only)', () => {
     const plan = planChannelMessageDelivery('ws-agent', [ACTIVE, BG], [BG], LOCAL, true);
     expect(plan.routeWorkspaces).toEqual([BG]);

@@ -358,6 +358,15 @@ export interface ChannelState {
    * check O(1) amortized).
    */
   idempotency: Record<string, Record<string, number>>;
+  /**
+   * #1318 — channelId → the human's read cursor (last read seq) on a channel
+   * it OBSERVES without a seat. A mention of the human now lands in such a
+   * channel, and this is what keeps it unread until the human reads it on
+   * either surface, so an offline phone does not lose it. Advance-only. A
+   * seated channel uses its seat's `lastReadSeq` instead. Optional: state
+   * written before it existed has no observer cursors, which reads as 0.
+   */
+  observerCursors?: Record<string, number>;
 }
 
 /** Default empty state. Returned by `load()` on first-run / no-file. */

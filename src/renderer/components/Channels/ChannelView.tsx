@@ -874,9 +874,11 @@ export function ChannelView(): React.ReactElement | null {
       // doesn't mark messages received. NOTE: the flip is persisted on the daemon
       // and visible to the sender's NEXT poll/reopen (agents poll getMessages, so
       // they see it); live push to an already-open sender view is a follow-up.
-      // W1: on an OBSERVED channel this ack is an intentional no-op (ws-human has
-      // no member row → the daemon rejects it, swallowed by the catch below); the
-      // local unread badge still clears via setActiveChannel, so nothing piles up.
+      // W1/#1318: on a channel the human reads without a seat (observed private,
+      // or public unjoined) there are no receipts to flip; the daemon advances
+      // the human's observer cursor instead, which is what clears that channel's
+      // unread mentions on the phone too. The local badge clears via
+      // setActiveChannel either way.
       if (disposed || !loaded) return;
       // Compute uptoSeq from the messages ACTUALLY in the store, not the catalog
       // row's nextSeq: appendMessageFromEvent/hydrateChannelMessages never advance

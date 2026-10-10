@@ -206,7 +206,7 @@ describe('phone channels routes — seam result → HTTP mapping', () => {
     expect(calls.messages).toEqual([['ch-1', '4', '7']]);
   });
 
-  it('404 not-found / 400 no-seat (+detail) / 400 archived / join success shape', async () => {
+  it('404 not-found / 400 (+detail) / 400 archived / join success shape', async () => {
     const { channels, box } = makeChannelsFake();
     const server = makeServer(channels);
     const { base, headers } = await start(server, true);
@@ -216,14 +216,14 @@ describe('phone channels routes — seam result → HTTP mapping', () => {
     expect(missing.status).toBe(404);
     expect(await missing.json()).toEqual({ error: 'not-found' });
 
-    box.ackResult = { ok: false, error: { status: 400, error: 'no-seat', detail: 'No human seat' } };
-    const noSeat = await fetch(`${base}/api/channels/ch-1/ack`, {
+    box.ackResult = { ok: false, error: { status: 400, error: 'invalid-body', detail: 'bad seq' } };
+    const badAck = await fetch(`${base}/api/channels/ch-1/ack`, {
       method: 'POST',
       headers,
       body: '{"lastReadSeq":3}',
     });
-    expect(noSeat.status).toBe(400);
-    expect(await noSeat.json()).toEqual({ error: 'no-seat', detail: 'No human seat' });
+    expect(badAck.status).toBe(400);
+    expect(await badAck.json()).toEqual({ error: 'invalid-body', detail: 'bad seq' });
 
     box.joinResult = { ok: false, error: { status: 400, error: 'archived' } };
     const archived = await fetch(`${base}/api/channels/ch-1/join`, { method: 'POST', headers });

@@ -57,7 +57,9 @@ is what keeps the pin from being a way to paste text into someone else's pane.
 
 **Always read `droppedMentions` on the result.** A mention of a workspace that is
 not a channel member is reported there too (`not_a_member`). It is the only
-signal that your ping did not land the way you asked.
+signal that your ping did not land the way you asked. The human (`ws-human`) is
+the exception: it is reachable in any channel it can see, seat or not, so a
+mention of the human is not reported as dropped.
 
 ## If you are the worker
 

@@ -169,7 +169,7 @@ const CHANNEL_POST_SHAPE = {
       }),
     )
     .optional()
-    .describe('@-mentions to ping specific members; each must be a current channel member. A non-member target comes back in `droppedMentions`, never silently dropped. Mentioned workspaces are notified via their a2a inbox; add `pane_id` to actually reach an idle agent.'),
+    .describe('@-mentions to ping specific members; each must be a current channel member. The one exception is the human (`ws-human`), who is reachable in any channel it can observe, seat or not. A non-member target comes back in `droppedMentions`, never silently dropped. Mentioned workspaces are notified via their a2a inbox; add `pane_id` to actually reach an idle agent.'),
 };
 
 const CHANNEL_JOIN_SHAPE = {

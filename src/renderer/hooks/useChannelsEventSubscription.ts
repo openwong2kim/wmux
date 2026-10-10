@@ -152,8 +152,16 @@ export function planChannelMessageDelivery(
   // has no ws-human recipient row, so append its live messages when its mirror
   // row is daemon-flagged `observed` (the caller resolves that flag; see the
   // JSDoc for why mirror PRESENCE alone would over-append).
+  // #1318: a post that @-mentions the human is displayed wherever it lands — a
+  // public channel the human has not joined included — so the red @ badge has
+  // one rule on the desktop and the phone (human-observable channels). Safe to
+  // trust: the daemon keeps ws-human in a message's mentions only when the
+  // human holds a seat or can observe the channel, and agent-to-agent mentions
+  // never carry it.
   const appendToDisplay =
-    recipientWorkspaceIds.includes(HUMAN_WORKSPACE_ID) || isObservedChannel;
+    recipientWorkspaceIds.includes(HUMAN_WORKSPACE_ID) ||
+    isObservedChannel ||
+    mentionWorkspaceIds.includes(HUMAN_WORKSPACE_ID);
   const mentionWs = new Set(mentionWorkspaceIds);
   const routeWorkspaces = localIds.filter((id) => mentionWs.has(id));
   return { appendToDisplay, routeWorkspaces };

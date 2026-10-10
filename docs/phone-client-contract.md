@@ -2731,9 +2731,14 @@ row:
 `lastReadSeq`/`unread`/`unreadMentions` are present only when the human holds
 a **seat** (member row) in that channel, and `unread`/`unreadMentions` are
 computed server-side against that seat — the phone never derives them from raw
-messages. A channel observed without a seat carries `"observed": true` and
-omits the cursor fields: render it read-only with no badge, mirroring the
-desktop's observed-channel treatment. An **archived** channel keeps reporting
+messages. Their presence still means "seated". A channel the human reads
+without a seat (a private one carries `"observed": true`; render it read-only,
+mirroring the desktop) omits them and carries `observerUnreadMentions`
+instead: mentions of the human there are delivered too (below) and counted
+server-side against the human's **observer cursor**, which
+`observerLastReadSeq` reports once it has moved. The two pairs never appear on
+the same row. A client that predates them ignores the observer fields and sees
+the seatless row exactly as before. An **archived** channel keeps reporting
 its seat's real `unread`/`unreadMentions` (archiving freezes a channel; it does
 not read it for you), and acking it works as on any other channel.
 
@@ -2745,14 +2750,21 @@ past the human's cursor were evicted before they were read: `unread` and
 missed than the number says. The key is omitted when there is no gap. The human takes a seat **explicitly** —
 at the desktop GUI, or from the phone via the join route below — never
 implicitly as a side effect of reading.
-**The seat is a precondition for mentions, not just for badges:** a post's
-mentions are validated against the channel's current member set, and a mention
-of a workspace that holds no seat is dropped at post time — you cannot ping a
-workspace that isn't in the room. A channel the human only observes therefore
-never raises `channel.mention` and never grows `unreadMentions`: its
-notification value begins the moment the human joins, and not before. The
-reserved human workspace cannot be invited (P5) — the join is always the
-human's own act, on either surface.
+**Mentions of the human do not need a seat.** A post's mentions are validated
+against the channel's current member set, and a mention of a workspace that
+holds no seat is dropped at post time — you cannot ping a workspace that isn't
+in the room. The human is the one exception: a mention of the human in any
+channel this list shows is kept even without a seat, raises `channel.mention`
+and counts in that row's `observerUnreadMentions` until the human reads past
+it. Any member id on such a mention is the human's one seat id, so a post never
+reports the human dropped while also delivering it.
+Nothing about membership changes — no seat, no system message, no member
+cursor. Reading moves the human's observer cursor instead: the ack route below,
+or opening the channel at the desktop (one cursor for both surfaces). Joining
+still gives the full seat (`unread` and all), its cursor starting at the head
+as before, so mentions from before the join count as read. The reserved human
+workspace cannot be invited (P5) — the join is always the human's own act, on
+either surface.
 
 `POST /api/channels/<id>/join` — takes the seat the desktop's join takes:
 the same constant `(ws-human)` row with **full history** (`historyFromSeq`
@@ -2801,13 +2813,18 @@ indistinguishable from a missing one (404), the same collapse `get()` applies.
 The value is clamped to the channel head and the cursor is advance-only:
 acking backwards is a no-op that returns the current cursor, not an error.
 No 409 — reading is idempotent. `lastReadSeq` must be a non-negative safe
-integer, or the answer is `400 invalid-body`. A seatless (observed-only)
-channel has no cursor to advance: it answers 400 `{error: 'no-seat'}`.
+integer, or the answer is `400 invalid-body`. On a channel the human reads
+without a seat it advances the human's observer cursor instead (same clamping,
+advance-only; the response's `lastReadSeq` is that cursor), which is what
+clears that row's `observerUnreadMentions`. Seat or observer is decided when
+the ack runs, so an ack that races a join or a leave lands on whichever the
+channel has by then. Older daemons answered a seatless ack with
+`400 {error: 'no-seat'}`; this one never does.
 
 ### `channel.mention` — a recorded SSE event, unlike the nudges
 
 When a posted message's server-verified mentions include the human workspace
-and the human holds a seat in that channel, the daemon raises:
+— seated or not (above) — the daemon raises:
 
 ```json
 {
@@ -2830,9 +2847,10 @@ and the human holds a seat in that channel, the daemon raises:
 This event **is** in the backlog — but replay is delivery, not durability. The
 recorded window is bounded (100 entries / 30 minutes, §4), so a phone that was
 away past the window gets the standard `reset` and nothing from the log. The
-durable record of an unread mention is the **server-side seat cursor**: the
-next `GET /api/channels` reports `unreadMentions` regardless of what the
-backlog still holds. Refetch on reconnect is what must not be skipped, not the
+durable record of an unread mention is the **server-side cursor** (the seat's,
+or the human's observer cursor on a channel without a seat): the next
+`GET /api/channels` reports `unreadMentions` (or `observerUnreadMentions`)
+regardless of what the backlog still holds. Refetch on reconnect is what must not be skipped, not the
 replay. Emission is mention-only for exactly this reason: a busy channel's
 ordinary traffic must not churn the bounded ring and push a pending `approval`
 out of it.
@@ -2862,7 +2880,7 @@ version bump.
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | route-specific | Listed / paged / acked (clamped) |
-| 400 | `{error: 'invalid-cursor' \| 'invalid-body' \| 'no-seat' \| 'archived'}` | `since`/`limit` malformed, an ack body that is not a non-negative integer, an ack against a seatless observed channel, or a join against an archived channel |
+| 400 | `{error: 'invalid-cursor' \| 'invalid-body' \| 'archived'}` | `since`/`limit` malformed, an ack body that is not a non-negative integer, or a join against an archived channel |
 | 401 | auth failure | Bearer credential missing or rejected — same as every route; an ack whose device was revoked mid-request answers `{error: 'authorization-expired'}` |
 | 403 | `{error: 'read-only: …', detail}` | Join without this caller's input grant (server or device); same shape as every input route |
 | 404 | `{error: 'not-found'}` | No such channel, or one the principal cannot observe — indistinguishable by design |

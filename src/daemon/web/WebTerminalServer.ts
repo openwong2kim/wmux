@@ -308,7 +308,8 @@ function decodeTurnCursor(
  *                              cursor-paged channel messages (oldest-first,
  *                              default 50 / max 200)
  *   POST /api/channels/:id/ack  advance the human seat's read cursor
- *                              (clamped, advance-only; no-seat → 400)
+ *                              (clamped, advance-only; the observer cursor
+ *                              when there is no seat)
  *   POST /api/channels/:id/join take the human seat (idempotent, full
  *                              history, archived → 400); input grant required
  *

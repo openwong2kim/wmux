@@ -35,7 +35,7 @@ export type { ChannelMentionNotification };
 
 /** The error a route sends over HTTP: the 400/404/500 rows of the §9 response table. */
 export type PhoneChannelsError =
-  | { status: 400; error: 'invalid-cursor' | 'invalid-body' | 'no-seat' | 'archived'; detail?: string }
+  | { status: 400; error: 'invalid-cursor' | 'invalid-body' | 'archived'; detail?: string }
   | { status: 404; error: 'not-found'; detail?: string }
   | { status: 500; error: 'internal'; detail?: string };
 
@@ -100,8 +100,6 @@ function mapServiceError(error: ChannelError): PhoneChannelsError {
     case 'CHANNEL_NOT_FOUND':
       // Unobservable and missing are indistinguishable (the same collapse get() applies).
       return { status: 404, error: 'not-found' };
-    case 'NO_SEAT':
-      return { status: 400, error: 'no-seat' };
     case 'CHANNEL_ARCHIVED':
       return { status: 400, error: 'archived' };
     default:

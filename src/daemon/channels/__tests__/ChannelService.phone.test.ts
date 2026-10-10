@@ -38,6 +38,7 @@ function makeFakeWriter() {
     idempotency: Object.fromEntries(
       Object.entries(state.idempotency).map(([k, v]) => [k, { ...v }]),
     ),
+    ...(state.observerCursors ? { observerCursors: { ...state.observerCursors } } : {}),
   });
   return {
     saveImmediate: vi.fn((state: ChannelState): boolean => {
@@ -114,17 +115,28 @@ describe('phone channel Inbox — listForPhone (D1, D2)', () => {
     const observed = rows.find((r) => r.channelId === observedId)!;
     const joined = rows.find((r) => r.channelId === joinedId)!;
 
-    // Public + no seat: neither an observed stamp nor a cursor (withObservedFlag rule).
+    // Public + no seat: neither an observed stamp nor a seat cursor (withObservedFlag rule).
+    // #1318: mentions reach the human without a seat, so the row counts them —
+    // under their own field, so the seat fields still mean "seated".
     expect(pub.visibility).toBe('public');
     expect('observed' in pub).toBe(false);
     expect('lastReadSeq' in pub).toBe(false);
+    expect('unreadMentions' in pub).toBe(false);
+    expect(pub.observerUnreadMentions).toBe(0);
 
-    // Private without a seat: observed:true, all cursor/unread fields absent.
+    // Private without a seat: observed:true, all seat cursor/unread fields absent;
+    // #1318 adds observerUnreadMentions (the observer cursor has not moved yet →
+    // no observerLastReadSeq).
     expect(observed.visibility).toBe('private');
     expect(observed.observed).toBe(true);
     expect('lastReadSeq' in observed).toBe(false);
     expect('unread' in observed).toBe(false);
     expect('unreadMentions' in observed).toBe(false);
+    expect('observerLastReadSeq' in observed).toBe(false);
+    expect(observed.observerUnreadMentions).toBe(0);
+
+    // Seated rows never carry the observer fields.
+    expect('observerUnreadMentions' in joined).toBe(false);
 
     // Joined (seated): cursor/unread fields present, no observed.
     expect(joined.lastReadSeq).toBe(0); // head at join time (before seq 1 = operator-join system message)
@@ -270,32 +282,42 @@ describe('phone channel Inbox — ackAsPhone (D5, D6)', () => {
     expect(svc.listForPhone().find((r) => r.channelId === id)!.unread).toBe(0);
   });
 
-  it('D6: ack on an observed channel without a seat → NO_SEAT (observing is legal; a cursor requires a seat)', async () => {
+  it('D6 (#1318): ack on an observed channel without a seat advances the observer cursor — clamped, advance-only, no seat created', async () => {
     const { svc } = makeService();
     const id = await createChannel(svc, 'secret', 'private');
-    const res = await svc.ackAsPhone(id, 1);
-    expect(res).toMatchObject({ ok: false, error: { code: 'NO_SEAT' } });
+    await post(svc, id, 'one'); // seq 1
+    await post(svc, id, 'two'); // seq 2
+    await expect(svc.ackAsPhone(id, 99)).resolves.toEqual({ ok: true, lastReadSeq: 2 });
+    await expect(svc.ackAsPhone(id, 1)).resolves.toEqual({ ok: true, lastReadSeq: 2 });
+    expect(svc.listForPhone().find((r) => r.channelId === id)).toMatchObject({ observed: true, observerLastReadSeq: 2 });
+    expect(svc.getMembers(id, HUMAN_WORKSPACE_ID).some((m) => m.workspaceId === HUMAN_WORKSPACE_ID)).toBe(false);
   });
 });
 
 describe('phone channel Inbox — mention promotion (D7)', () => {
-  it('D7: a mention post fires channel.mention only when a human seat exists — without a seat the mention itself is dropped (droppedMentions, no event)', async () => {
+  it('D7: a mention post fires channel.mention for the human — a channel the human cannot observe (trashed) carries no mention and no event', async () => {
     const { svc } = makeService();
     const seatedId = await createChannel(svc, 'seated', 'private');
     await takeSeat(svc, seatedId);
-    const seatlessId = await createChannel(svc, 'seatless', 'private');
+    // #1318: a seat is no longer required, observation is. The one live
+    // channel the human cannot observe is a trashed one, and the trash also
+    // archives it, so the post itself is refused — nothing to deliver or count.
+    const trashedId = await createChannel(svc, 'trashed', 'private');
+    expect((await svc.trash({ channelId: trashedId, verifiedWorkspaceId: HUMAN_WORKSPACE_ID })).ok).toBe(true);
 
     const seen: ChannelMentionNotification[] = [];
     svc.onMention((n) => seen.push(n));
 
-    // Seatless channel: the mention is dropped at post time and no event fires.
-    const dropped = await post(svc, seatlessId, '@operator mention with no seat', [
-      { workspaceId: HUMAN_WORKSPACE_ID, name: 'Operator' },
-    ]);
-    expect(dropped.droppedMentions).toEqual([
-      { workspaceId: HUMAN_WORKSPACE_ID, reason: 'not_a_member', name: 'Operator' },
-    ]);
+    const refused = await svc.post({
+      channelId: trashedId,
+      sender: AGENT,
+      text: '@operator mention nobody can see',
+      verifiedWorkspaceId: AGENT.workspaceId,
+      mentions: [{ workspaceId: HUMAN_WORKSPACE_ID, name: 'Operator' }],
+    });
+    expect(refused).toMatchObject({ ok: false, error: { code: 'CHANNEL_ARCHIVED' } });
     expect(seen).toHaveLength(0);
+    expect(svc.listForPhone().some((r) => r.channelId === trashedId)).toBe(false);
 
     // Seated channel: stays in the verified mentions and the event fires.
     const fired = await post(svc, seatedId, '@operator deploy done', [
@@ -347,11 +369,11 @@ describe('phone channel Inbox — joinAsPhone (D11, D12, D13)', () => {
 
     const seen: ChannelMentionNotification[] = [];
     svc.onMention((n) => seen.push(n));
-    // Mentions before the seat are dropped — notification value starts at join (contract §9).
+    // #1318: a mention before the seat already reaches the observing human.
     await post(svc, id, '@operator (before join)', [{ workspaceId: HUMAN_WORKSPACE_ID }]);
-    expect(seen).toHaveLength(0);
+    expect(seen).toHaveLength(1);
 
-    // join: the dropped pre-join mention consumed seq 3 and the system message
+    // join: the pre-join mention consumed seq 3 and the system message
     // consumes seq 4 — the seat cursor sits just before it (3).
     const joined = await svc.joinAsPhone(id);
     expect(joined).toMatchObject({ ok: true, alreadyMember: false, lastReadSeq: 3 });
@@ -371,14 +393,14 @@ describe('phone channel Inbox — joinAsPhone (D11, D12, D13)', () => {
       msgs.ok && msgs.messages.some((m) => m.seq === 4 && m.text === OPERATOR_JOIN_SYSTEM_TEXT),
     ).toBe(true);
 
-    // Mentions fire from join onward.
+    // Mentions keep firing after the join.
     await post(svc, id, '@operator visible now', [{ workspaceId: HUMAN_WORKSPACE_ID }]);
-    expect(seen).toHaveLength(1);
+    expect(seen).toHaveLength(2);
 
     // Idempotent re-join — alreadyMember rather than an error, and no event.
     const again = await svc.joinAsPhone(id);
     expect(again).toMatchObject({ ok: true, alreadyMember: true, lastReadSeq: 3 });
-    expect(seen).toHaveLength(1);
+    expect(seen).toHaveLength(2);
   });
 
   it('D12: join on an archived channel → CHANNEL_ARCHIVED / absent → CHANNEL_NOT_FOUND', async () => {
@@ -444,30 +466,35 @@ describe('phone channel Inbox — review-fix regressions (trash filter, TOCTOU, 
     });
   });
 
-  it('if the seat vanishes between the check and the ack, NOT_A_MEMBER also maps to NO_SEAT — no 500 internal leak', async () => {
+  it('#1318: seat vs observer is decided under the lock — a seat taken while the ack waits gets the ack', async () => {
     const { svc } = makeService();
-    const id = await createChannel(svc, 'race', 'private');
-    await takeSeat(svc, id);
+    const id = await createChannel(svc, 'race-join', 'private');
+    await post(svc, id, '@operator before', [{ workspaceId: HUMAN_WORKSPACE_ID }]); // seq 1
+    // The join holds the channel lock first; the ack queues behind it.
+    const joining = takeSeat(svc, id); // seat cursor 1, system message seq 2
+    const acking = svc.ackAsPhone(id, 2);
+    expect((await joining).ok).toBe(true);
+    await expect(acking).resolves.toEqual({ ok: true, lastReadSeq: 2 });
+    const row = svc.listForPhone().find((r) => r.channelId === id)!;
+    expect(row.lastReadSeq).toBe(2);
+    expect('observerLastReadSeq' in row).toBe(false);
+  });
 
-    // ackAsPhone's outer seat check is advisory. This reproduces ack() returning
-    // NOT_A_MEMBER after the seat is gone: remove the seat, then call ack — the
-    // service layer must fold that error into NO_SEAT (contract §9: 400 no-seat).
-    const leave = await svc.leave({
+  it('#1318: a seat left while the ack waits sends it to the observer cursor, not an error', async () => {
+    const { svc } = makeService();
+    const id = await createChannel(svc, 'race-leave', 'private');
+    await takeSeat(svc, id); // system message seq 1
+    await post(svc, id, 'chatter'); // seq 2
+    const leaving = svc.leave({
       channelId: id,
       workspaceId: HUMAN_WORKSPACE_ID,
       memberId: HUMAN_MEMBER_ID,
       verifiedWorkspaceId: HUMAN_WORKSPACE_ID,
     });
-    expect(leave.ok).toBe(true);
-
-    // Ack without a seat — must answer with the same error code as the path that
-    // slips past the outer check. (The service re-checks the seat before ack, so
-    // the normal path yields NO_SEAT too; what this test pins is the contract that
-    // NOT_A_MEMBER never leaks out as a 500 — the mapping happens inside ackAsPhone.)
-    await expect(svc.ackAsPhone(id, 1)).resolves.toMatchObject({
-      ok: false,
-      error: { code: 'NO_SEAT' },
-    });
+    const acking = svc.ackAsPhone(id, 2);
+    expect((await leaving).ok).toBe(true);
+    await expect(acking).resolves.toEqual({ ok: true, lastReadSeq: 2 });
+    expect(svc.listForPhone().find((r) => r.channelId === id)).toMatchObject({ observerLastReadSeq: 2 });
   });
 
   it('the excerpt never cuts a surrogate pair (emoji) in half', async () => {
@@ -566,5 +593,189 @@ describe('phone channel Inbox — panel-review fixes (retention gap, archived un
     const id = await createChannel(svc, 'quiet', 'public');
     await post(svc, id, 'only'); // seq 1
     expect(svc.messagesForPhone(id, 500, 50)).toMatchObject({ ok: true, messages: [], nextSince: 1, gap: false });
+  });
+});
+
+describe('a mention reaches the observing human without a seat (#1318)', () => {
+  const mentionHuman = [{ workspaceId: HUMAN_WORKSPACE_ID }];
+  const humanRows = (svc: ChannelService, id: string) =>
+    svc.getMembers(id, HUMAN_WORKSPACE_ID).filter((m) => m.workspaceId === HUMAN_WORKSPACE_ID);
+  const rowOf = (svc: ChannelService, id: string) => svc.listForPhone().find((r) => r.channelId === id);
+
+  it('kept, delivered and counted on the observed row — membership, seqs and member cursors untouched', async () => {
+    const { svc, emit } = makeService();
+    const id = await createChannel(svc, 'mission', 'private');
+    await post(svc, id, 'before'); // seq 1
+    const seen: ChannelMentionNotification[] = [];
+    svc.onMention((n) => seen.push(n));
+
+    const res = await post(svc, id, '@operator build is green', mentionHuman);
+
+    expect(res.droppedMentions).toBeUndefined();
+    expect(res.message.seq).toBe(2);
+    expect(res.message.mentions).toEqual([{ workspaceId: HUMAN_WORKSPACE_ID, name: 'Operator' }]);
+    // Not a recipient, not a member, no system row.
+    expect(res.message.recipientSnapshot?.map((r) => r.workspaceId)).toEqual([AGENT.workspaceId]);
+    expect(humanRows(svc, id)).toEqual([]);
+    expect(svc.getMessages(id, 0, HUMAN_WORKSPACE_ID).some((m) => m.systemKind)).toBe(false);
+    // A caught-up sender still rides its cursor over its own post.
+    expect(svc.getMembers(id, AGENT.workspaceId)[0].lastReadSeq).toBe(2);
+    // Delivered: the phone event, and the same mentions on the desktop's channel.message.
+    expect(seen.map((n) => [n.channelId, n.seq])).toEqual([[id, 2]]);
+    const event = emit.mock.calls.map((c) => c[0]).find((e) => e.type === 'channel.message' && e.seq === 2);
+    expect(event && 'message' in event ? event.message.mentions : undefined).toEqual(res.message.mentions);
+    // Counted for the observer until read.
+    expect(rowOf(svc, id)).toMatchObject({ observed: true, observerUnreadMentions: 1 });
+    expect('unread' in rowOf(svc, id)!).toBe(false);
+  });
+
+  it('the phone ack clears it; a later mention counts again', async () => {
+    const { svc } = makeService();
+    const id = await createChannel(svc, 'room', 'public');
+    const first = await post(svc, id, '@operator one', mentionHuman);
+    expect(rowOf(svc, id)?.observerUnreadMentions).toBe(1);
+    await expect(svc.ackAsPhone(id, first.message.seq)).resolves.toEqual({ ok: true, lastReadSeq: first.message.seq });
+    expect(rowOf(svc, id)).toMatchObject({ observerUnreadMentions: 0, observerLastReadSeq: first.message.seq });
+    await post(svc, id, 'plain chatter');
+    await post(svc, id, '@operator two', mentionHuman);
+    expect(rowOf(svc, id)?.observerUnreadMentions).toBe(1);
+  });
+
+  it('opening the channel at the desktop moves the same observer cursor (one read state for both surfaces)', async () => {
+    const { svc } = makeService();
+    const id = await createChannel(svc, 'room', 'private');
+    const m = await post(svc, id, '@operator ping', mentionHuman);
+    // The renderer's open-channel ack: ws-human, no memberId.
+    await expect(
+      svc.ack({ channelId: id, verifiedWorkspaceId: HUMAN_WORKSPACE_ID, uptoSeq: m.message.seq }),
+    ).resolves.toEqual({ ok: true, acked: 0 });
+    expect(rowOf(svc, id)).toMatchObject({ observerUnreadMentions: 0, observerLastReadSeq: m.message.seq });
+    expect(humanRows(svc, id)).toEqual([]);
+  });
+
+  it('a mention from while the human held a seat is not re-counted after it leaves', async () => {
+    const { svc } = makeService();
+    const id = await createChannel(svc, 'room', 'private');
+    await takeSeat(svc, id);
+    await post(svc, id, '@operator seated-era', mentionHuman);
+    expect(
+      (
+        await svc.leave({
+          channelId: id,
+          workspaceId: HUMAN_WORKSPACE_ID,
+          memberId: HUMAN_MEMBER_ID,
+          verifiedWorkspaceId: HUMAN_WORKSPACE_ID,
+        })
+      ).ok,
+    ).toBe(true);
+    expect(rowOf(svc, id)).toMatchObject({ observed: true, observerUnreadMentions: 0 });
+  });
+
+  it('a mention from before a join stays read after the human leaves again (joining moves the observer cursor)', async () => {
+    for (const join of ['operatorJoin', 'join'] as const) {
+      const { svc } = makeService();
+      const id = await createChannel(svc, `cycle-${join}`, 'public');
+      await post(svc, id, '@operator before the join', mentionHuman);
+      expect(rowOf(svc, id)?.observerUnreadMentions).toBe(1);
+      const joined =
+        join === 'operatorJoin'
+          ? await takeSeat(svc, id)
+          : await svc.join({
+              channelId: id,
+              member: { workspaceId: HUMAN_WORKSPACE_ID, memberId: HUMAN_MEMBER_ID },
+              verifiedWorkspaceId: HUMAN_WORKSPACE_ID,
+            });
+      expect(joined.ok).toBe(true);
+      const left = await svc.leave({
+        channelId: id,
+        workspaceId: HUMAN_WORKSPACE_ID,
+        memberId: HUMAN_MEMBER_ID,
+        verifiedWorkspaceId: HUMAN_WORKSPACE_ID,
+      });
+      expect(left.ok).toBe(true);
+      expect(rowOf(svc, id)?.observerUnreadMentions).toBe(0);
+      // A mention after the leave counts again.
+      await post(svc, id, '@operator after the leave', mentionHuman);
+      expect(rowOf(svc, id)?.observerUnreadMentions).toBe(1);
+    }
+  });
+
+  it('the desktop open of a trashed channel writes no observer cursor', async () => {
+    const { svc } = makeService();
+    const id = await createChannel(svc, 'binned', 'public');
+    await post(svc, id, '@operator ping', mentionHuman);
+    expect((await svc.trash({ channelId: id, verifiedWorkspaceId: HUMAN_WORKSPACE_ID })).ok).toBe(true);
+    await svc.ack({ channelId: id, verifiedWorkspaceId: HUMAN_WORKSPACE_ID, uptoSeq: 1 });
+    expect((svc as unknown as { state: ChannelState }).state.observerCursors?.[id]).toBeUndefined();
+  });
+
+  it('only the human is exempt: a mention of another non-member workspace is still dropped', async () => {
+    const { svc } = makeService();
+    const id = await createChannel(svc, 'room', 'private');
+    const other = await post(svc, id, '@other', [{ workspaceId: 'ws-other' }]);
+    expect(other.droppedMentions?.map((d) => d.workspaceId)).toEqual(['ws-other']);
+    expect(other.message.mentions).toBeUndefined();
+    expect(rowOf(svc, id)?.observerUnreadMentions).toBe(0);
+  });
+
+  it('mixed scopes for the human in one post: delivered once, never also reported dropped (either order)', async () => {
+    for (const order of ['scoped-first', 'unscoped-first'] as const) {
+      const { svc } = makeService();
+      const id = await createChannel(svc, `room-${order}`, 'private');
+      const seen: ChannelMentionNotification[] = [];
+      svc.onMention((n) => seen.push(n));
+      const scoped = { workspaceId: HUMAN_WORKSPACE_ID, memberId: 'someone-else', name: 'X' };
+      const unscoped = { workspaceId: HUMAN_WORKSPACE_ID, name: 'Operator' };
+      const res = await svc.post({
+        channelId: id,
+        sender: AGENT,
+        text: '@operator @X',
+        verifiedWorkspaceId: AGENT.workspaceId,
+        mentions: order === 'scoped-first' ? [scoped, unscoped] : [unscoped, scoped],
+      });
+      if (!res.ok) throw new Error(res.error.code);
+      expect(res.droppedMentions).toBeUndefined();
+      expect(res.message.mentions?.map((m) => m.workspaceId)).toEqual([HUMAN_WORKSPACE_ID]);
+      // Any scope on a seatless human mention is the human's one seat id.
+      expect([undefined, HUMAN_MEMBER_ID]).toContain(res.message.mentions?.[0].memberId);
+      expect(seen).toHaveLength(1);
+      expect(rowOf(svc, id)?.observerUnreadMentions).toBe(1);
+    }
+  });
+
+  it('a trashed channel is not observable to the phone: left out of the list, its ack is CHANNEL_NOT_FOUND', async () => {
+    const { svc } = makeService();
+    const id = await createChannel(svc, 'doomed', 'public');
+    await post(svc, id, '@operator before the trash', mentionHuman);
+    expect(rowOf(svc, id)?.observerUnreadMentions).toBe(1);
+    expect((await svc.trash({ channelId: id, verifiedWorkspaceId: HUMAN_WORKSPACE_ID })).ok).toBe(true);
+    expect(rowOf(svc, id)).toBeUndefined();
+    await expect(svc.ackAsPhone(id, 1)).resolves.toMatchObject({ ok: false, error: { code: 'CHANNEL_NOT_FOUND' } });
+  });
+
+  it('the observer cursor survives a restart (legacy state reload)', async () => {
+    const { svc, writer } = makeService();
+    const id = await createChannel(svc, 'room', 'private');
+    const first = await post(svc, id, '@operator one', mentionHuman);
+    await post(svc, id, '@operator two', mentionHuman);
+    await svc.ackAsPhone(id, first.message.seq);
+    expect(rowOf(svc, id)).toMatchObject({ observerUnreadMentions: 1, observerLastReadSeq: first.message.seq });
+
+    const reloaded = makeService(writer.load()).svc;
+    expect(rowOf(reloaded, id)).toMatchObject({ observed: true, observerUnreadMentions: 1, observerLastReadSeq: first.message.seq });
+  });
+
+  it('state written before observer cursors existed loads: no cursor reads as 0, nothing new is counted', async () => {
+    const { svc, writer } = makeService();
+    const id = await createChannel(svc, 'room', 'private');
+    await post(svc, id, 'plain');
+    const old = writer.load();
+    delete old.observerCursors;
+    expect('observerCursors' in old).toBe(false);
+    const reloaded = makeService(old).svc;
+    expect(rowOf(reloaded, id)).toMatchObject({ observed: true, observerUnreadMentions: 0 });
+    expect('observerLastReadSeq' in rowOf(reloaded, id)!).toBe(false);
+    // And the first ack on it starts the map.
+    await expect(reloaded.ackAsPhone(id, 1)).resolves.toEqual({ ok: true, lastReadSeq: 1 });
   });
 });

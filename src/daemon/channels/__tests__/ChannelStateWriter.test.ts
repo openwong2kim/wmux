@@ -594,6 +594,24 @@ describe('ChannelStateWriter', () => {
     expect(loaded.idempotency).toEqual({});
   });
 
+  it('#1318: observerCursors round-trips, its absence (older state) loads, and a malformed map is rejected', () => {
+    const ch = makeChannel({ id: 'ch-obs', emptySince: undefined });
+    const members = { 'ch-obs': [makeMember()] };
+    writer.saveImmediate({ ...makeState([ch], members), observerCursors: { 'ch-obs': 4 } });
+    expect(writer.load().observerCursors).toEqual({ 'ch-obs': 4 });
+
+    writer.saveImmediate(makeState([ch], members));
+    const old = writer.load();
+    expect(old.channels.map((c) => c.id)).toEqual(['ch-obs']);
+    expect(old.observerCursors).toBeUndefined();
+
+    for (const bad of [[], { 'ch-obs': -1 }, { 'ch-obs': 1.5 }, { 'ch-obs': '3' }]) {
+      expect(
+        ChannelStateWriter.isChannelState({ ...makeState([ch], members), observerCursors: bad }),
+      ).toBe(false);
+    }
+  });
+
   // ── U2 prototype-pollution hardening ─────────────────────────────
 
   it('load rejects a channel whose id is a prototype-chain key (__proto__)', () => {

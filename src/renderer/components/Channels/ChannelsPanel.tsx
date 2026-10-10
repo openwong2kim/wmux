@@ -60,7 +60,7 @@ import {
 import type { WorkTask } from '../../../shared/workTask';
 import type { Company } from '../../../company/types';
 import { useStore } from '../../stores';
-import ChannelItem from './ChannelItem';
+import ChannelItem, { ChannelBadge } from './ChannelItem';
 import { IconPlus, IconChevron, IconChevronDir, IconRefresh, IconLock, IconArchive } from '../icons';
 import { hydrateChannelsCatalog } from '../../hooks/useChannelsHydration';
 import { FOCUS_RING } from '../focusRing';
@@ -747,6 +747,11 @@ export function ChannelsPanelView(props: ChannelsPanelViewProps): React.ReactEle
                 <span>
                   {t('channels.discover') || 'Discover'} ({discoverable.length})
                 </span>
+                {/* #1318: the group is collapsed by default, so a mention of the
+                    human in an unjoined channel must show on the header too. */}
+                {discoverable.some((ch) => (channelMentions[ch.id] ?? 0) > 0) && (
+                  <ChannelBadge unreadCount={0} mentioned />
+                )}
               </button>
               {discoverExpanded && (
                 <div className="space-y-0.5">
@@ -765,6 +770,7 @@ export function ChannelsPanelView(props: ChannelsPanelViewProps): React.ReactEle
                       >
                         #{ch.name}
                       </button>
+                      {(channelMentions[ch.id] ?? 0) > 0 && <ChannelBadge unreadCount={0} mentioned />}
                       {onJoinDiscoverable && (
                         <button
                           type="button"

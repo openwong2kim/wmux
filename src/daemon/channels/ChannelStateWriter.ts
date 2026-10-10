@@ -343,6 +343,8 @@ export class ChannelStateWriter {
     if (!isRecordOfArrays(obj['members'])) return false;
     if (!isRecordOfArrays(obj['messages'])) return false;
     if (!isRecordOfRecords(obj['idempotency'])) return false;
+    // #1318 — optional (absent in state written before it existed).
+    if (obj['observerCursors'] !== undefined && !isRecordOfSeqs(obj['observerCursors'])) return false;
 
     for (const ch of obj['channels'] as unknown[]) {
       if (typeof ch !== 'object' || ch === null) return false;
@@ -392,6 +394,9 @@ export class ChannelStateWriter {
     for (const key of Object.keys(
       obj['idempotency'] as Record<string, unknown>,
     )) {
+      if (!isSafeObjectKey(key)) return false;
+    }
+    for (const key of Object.keys((obj['observerCursors'] ?? {}) as Record<string, unknown>)) {
       if (!isSafeObjectKey(key)) return false;
     }
 
@@ -453,6 +458,7 @@ export function reapEmptyChannels(
   state.members = pruneKeys(state.members, survivingIds);
   state.messages = pruneKeys(state.messages, survivingIds);
   state.idempotency = pruneKeys(state.idempotency, survivingIds);
+  if (state.observerCursors) state.observerCursors = pruneKeys(state.observerCursors, survivingIds);
 }
 
 /**
@@ -487,6 +493,14 @@ function isRecordOfRecords(
     }
   }
   return true;
+}
+
+/** #1318 — the observer cursor map: a non-array object of non-negative integer seqs. */
+function isRecordOfSeqs(v: unknown): v is Record<string, number> {
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) return false;
+  return Object.values(v as Record<string, unknown>).every(
+    (seq) => typeof seq === 'number' && Number.isSafeInteger(seq) && seq >= 0,
+  );
 }
 
 /**
