@@ -19,7 +19,7 @@ for (const mode of MODES) {
       try {
         await pulse.evaluate(() => {
           (window as unknown as { __pulse: ReturnType<typeof setInterval> }).__pulse = setInterval(
-            () => fetch('/api/slow?ms=2000&pulse=' + Date.now()).catch(() => {}),
+            () => fetch('/api/slow?ms=2000&pulse=' + Date.now()).catch(() => undefined),
             50,
           );
         });
