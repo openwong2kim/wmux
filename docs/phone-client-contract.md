@@ -3429,6 +3429,23 @@ Each `panes[]` entry of `GET /api/workspaces` also carries `paneId` (same
 value and rules as on `GET /api/sessions`) when the desktop places that
 session in a pane of that workspace.
 
+Beside `paneId`, under the same condition, a `panes[]` entry also carries:
+
+- `paneName` — the desktop sidebar's name for that pane: the user's label, or
+  its `w1-1` coordinate. Same text as `panes[].paneName` in the sidebar
+  snapshot. Absent when the desktop has none for it.
+- `surfaceTitle` — the tab's title as the desktop sidebar's pane row reads it
+  (a tab still titled after the shell that hosts an agent is left out).
+
+And on every `panes[]` entry, desktop or not:
+
+- `lastActivity` — ISO 8601 time of the session's last output (the same stamp
+  `GET /api/sessions` reports as `lastActivity`), for an "idle 10m" label.
+
+All three are additive and optional: older daemons never send them, and a
+pane that has nothing to report omits the key rather than sending an empty
+string. Nothing else in the row changes.
+
 Top level of `GET /api/workspaces`: `activeWorkspaceId` — the workspace the
 desktop is showing, present only when it is one of the listed rows.
 

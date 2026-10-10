@@ -25,6 +25,10 @@ export interface PcRailWorkspaceRow extends RemoteWorkspaceSummary {
   pinned?: boolean;
   color?: WorkspaceColorId;
   gitBranch?: string;
+  /** The branch is a linked worktree on the host. */
+  gitIsWorktree?: boolean;
+  /** Commits ahead of / behind the upstream on the host. */
+  gitSync?: { ahead: number; behind: number; hasUpstream: boolean };
   /** The host's split tree, after the layout bounds check. Absent when the host desktop sent none. */
   layout?: PhoneWorkspaceLayout;
   /**
@@ -41,10 +45,14 @@ export interface PcRailWorkspacesResponse {
   activeWorkspaceId?: string;
 }
 
-export type PcRailWorkspaceExtras = Pick<PcRailWorkspaceRow, 'order' | 'pinned' | 'color' | 'gitBranch' | 'empty'>;
+export type PcRailWorkspaceExtras = Pick<PcRailWorkspaceRow, 'order' | 'pinned' | 'color' | 'gitBranch' | 'gitIsWorktree' | 'gitSync' | 'empty'>;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isCount(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 && value <= 1_000_000;
 }
 
 /**
@@ -67,6 +75,11 @@ export function parsePcRailWorkspaceExtras(raw: unknown, paneCount: number): PcR
   if (color) out.color = color;
   const gitBranch = clampSidebarString(typeof raw.gitBranch === 'string' ? raw.gitBranch : undefined, PHONE_SIDEBAR_LIMITS.gitBranch);
   if (gitBranch) out.gitBranch = gitBranch;
+  if (typeof raw.gitIsWorktree === 'boolean') out.gitIsWorktree = raw.gitIsWorktree;
+  const sync = raw.gitSync;
+  if (isRecord(sync) && typeof sync.hasUpstream === 'boolean' && isCount(sync.ahead) && isCount(sync.behind)) {
+    out.gitSync = { ahead: sync.ahead, behind: sync.behind, hasUpstream: sync.hasUpstream };
+  }
   if (empty) out.empty = true;
   return out;
 }
