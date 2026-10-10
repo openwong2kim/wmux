@@ -101,6 +101,10 @@ export class CommanderSessionManager {
   private _started = false;
   private _lastReportedSessionId: string | null = null;
   private localAbort: AbortController | null = null;
+  /** Bumped by every foreign (TUI-typed) turn start. A local lookup compares
+   *  it before answering or falling back: a short foreign turn can start and
+   *  end while the board read is pending, leaving `adapterBusy` false again. */
+  private foreignTurnGeneration = 0;
 
   constructor(deps: CommanderSessionManagerDeps) {
     this.adapter = deps.adapter;
@@ -140,6 +144,7 @@ export class CommanderSessionManager {
   /** The human typed a turn into the embedded TUI (it did not go through send). */
   notifyForeignTurnStart(): void {
     if (this._status === 'disposed') return;
+    this.foreignTurnGeneration++;
     this._turnOrigin = 'human';
   }
 
@@ -193,6 +198,7 @@ export class CommanderSessionManager {
       if (localFirst) {
         const controller = new AbortController();
         this.localAbort = controller;
+        const generation = this.foreignTurnGeneration;
         // Stop must finish even when a read-only transport cannot cancel its
         // underlying request. Its late answer is observed but never emitted.
         const aborted = Symbol('local-turn-aborted');
@@ -222,6 +228,13 @@ export class CommanderSessionManager {
         // Neither a local reply nor a fallback may overlap that foreign turn.
         if (this.adapterBusy) {
           this.sink({ type: 'error', message: 'a command is already running — wait for it to finish' });
+          return { ok: true, code: 'errored' };
+        }
+        // A foreign turn that already came and went still invalidates the
+        // lookup: the answer describes a board from before that turn, and a
+        // fallback would land after it. One gate covers both branches.
+        if (this.foreignTurnGeneration !== generation) {
+          this.sink({ type: 'error', message: 'a terminal turn ran during this lookup — ask again' });
           return { ok: true, code: 'errored' };
         }
         if (answer && 'text' in answer && answer.text.trim()) {

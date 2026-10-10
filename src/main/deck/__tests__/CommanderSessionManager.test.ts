@@ -570,6 +570,38 @@ describe('CommanderSessionManager — lazy fallback preparation', () => {
     expect(sink.mock.calls.map(([event]) => event.type)).toEqual(['error']);
   });
 
+  // Review P2: a short TUI turn can start and end while the board read is
+  // pending, so `adapterBusy` alone reads false again by the time it settles.
+  it.each(['local answer', 'fallback'] as const)('a foreign turn that ends before the lookup suppresses a %s', async (outcome) => {
+    const adapter = Object.assign(new FakeAdapter(), { busy: false });
+    const send = vi.spyOn(adapter, 'send');
+    const sink = vi.fn();
+    const onIdle = vi.fn();
+    const mgr = new CommanderSessionManager({ adapter, sink, onIdle, deferIdle: (fn) => fn() });
+    const prepare = vi.fn(() => 'must not prepare');
+    let resolve!: (value: { text: string } | { fallbackText: () => string }) => void;
+    const turn = mgr.send('Who needs me?', { origin: 'human' }, () => new Promise((yes) => { resolve = yes; }));
+    adapter.busy = true;
+    mgr.notifyForeignTurnStart();
+    adapter.busy = false;
+    mgr.notifyForeignTurnEnd();
+    expect(onIdle).not.toHaveBeenCalled();
+    resolve(outcome === 'fallback' ? { fallbackText: prepare } : { text: 'stale answer' });
+    expect(await turn).toEqual({ ok: true, code: 'errored' });
+    expect(prepare).not.toHaveBeenCalled();
+    expect(adapter.started).toBeNull();
+    expect(send).not.toHaveBeenCalled();
+    expect(sink.mock.calls.map(([event]) => event)).toEqual([
+      { type: 'error', message: 'a terminal turn ran during this lookup — ask again' },
+    ]);
+    // The TUI turn itself was the operator's, so its origin stands.
+    expect(mgr.turnOrigin).toBe('human');
+    expect(mgr.getStatus().status).toBe('idle');
+    // The next question is not poisoned by the earlier foreign turn.
+    expect(await mgr.send('Who needs me?', {}, async () => ({ text: 'fresh answer' })))
+      .toEqual({ ok: true, localAnswer: { text: 'fresh answer' } });
+  });
+
   it('does not run lazy preparation after an interrupt inside lookup', async () => {
     const adapter = new FakeAdapter();
     const mgr = new CommanderSessionManager({ adapter, sink: vi.fn() });
