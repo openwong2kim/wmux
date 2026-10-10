@@ -4333,6 +4333,9 @@ function registerRpcHandlers(
         const tracked = agentProcessTracker.identityFor(id);
         return tracked?.alive ? tracked.slug : undefined;
       },
+      // A live agent's pid only: a just-exited agent's pid must not refuse
+      // the relaunched one's first hook.
+      agentPidFor: (id) => (agentProcessTracker.identityFor(id)?.alive ? agentProcessTracker.pidFor(id) : undefined),
       log: (level, message) => log(level, message),
       isAutomationPane: (id) => automationEngine?.ownsPane(id) === true,
       // M2 — hook-sourced awaiting_input is the ONLY thing that mints an
