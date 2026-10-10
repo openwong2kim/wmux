@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { BASELINE_HINT, createBaselineGuard, writeBaseline } from '../mcpBaseline.mjs';
 
@@ -42,7 +43,7 @@ describe('MCP protocol baseline guard', () => {
   });
 
   it('the checked-in baseline round-trips through writeBaseline unchanged', () => {
-    const file = path.join(path.dirname(new URL(import.meta.url).pathname), '..', 'mcp-protocol-baseline.json');
+    const file = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'mcp-protocol-baseline.json');
     const raw = fs.readFileSync(file, 'utf8');
     const f = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-base-')), 'b.json');
     writeBaseline(f, JSON.parse(raw));
