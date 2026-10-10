@@ -148,6 +148,25 @@ export function runWithCallerPtyIdSource<T>(source: () => string | undefined, fn
   return callerPtyIdSource.run(source, fn);
 }
 
+// The per-call claim of a shared Codex app-server call (#1778): main mints it
+// for the calling thread's pane, so the connection-wide token (if any) must not
+// be stamped instead. Same contract as `callerPtyIdSource`: the call's token,
+// '' for "no claim — omit the field", or undefined to defer to the connection.
+const workspaceTokenSource = new AsyncLocalStorage<() => string | undefined>();
+
+/** Run `fn` with a per-call workspace claim source (see `workspaceTokenSource`). */
+export function runWithWorkspaceTokenSource<T>(source: () => string | undefined, fn: () => T): T {
+  return workspaceTokenSource.run(source, fn);
+}
+
+/** The workspaceToken the next envelope built in this context will carry. */
+function envelopeWorkspaceToken(connectionToken: string | undefined): string | undefined {
+  const source = workspaceTokenSource.getStore();
+  const fromCall = source ? source() : undefined;
+  if (fromCall !== undefined) return fromCall.length > 0 ? fromCall : undefined;
+  return connectionToken;
+}
+
 // BYOB P4: commander role claim. Set once at startup by index.ts when the
 // process runs with --commander. The value (may be '' when the token env was
 // lost) is stamped on EVERY outbound envelope — presence of the field is the
@@ -218,7 +237,8 @@ function attemptRpc(
     // #922 PR-A. Absent until a claim succeeds, and omitted entirely when
     // there is none — an empty string would read as a presented-but-stale
     // token to the lane PR-B adds, which must refuse rather than demote.
-    if (identity.workspaceToken !== undefined) envelope.workspaceToken = identity.workspaceToken;
+    const workspaceToken = envelopeWorkspaceToken(identity.workspaceToken);
+    if (workspaceToken !== undefined) envelope.workspaceToken = workspaceToken;
     // Omitted, never '', when this caller has no known pane.
     const callerPtyId = getCallerPtyId();
     if (callerPtyId !== undefined) envelope.callerPtyId = callerPtyId;

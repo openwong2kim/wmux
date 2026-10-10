@@ -3,6 +3,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import {
   runWithCallerPtyIdSource,
+  runWithWorkspaceTokenSource,
   sendRpc,
   setCallerPtyId,
   setClientIdentity,
@@ -121,6 +122,8 @@ interface CodexCallScope {
   mode?: 'thread' | 'thread-or-legacy' | 'legacy';
   /** The thread owner's live pane, once resolved for this call. */
   ptyId?: string;
+  /** The claim main minted for that pane from the thread's owner record. */
+  workspaceToken?: string;
   /** Why the thread could not be resolved, for the identity error. */
   miss?: CodexThreadMiss;
 }
@@ -553,7 +556,11 @@ function withCodexCallScope(fn: (...a: unknown[]) => unknown): (...a: unknown[])
       // pane that started the shared server.
       return runWithCallerPtyIdSource(
         () => (scope.mode === 'thread' ? scope.ptyId ?? '' : undefined),
-        () => fn(...args),
+        () =>
+          runWithWorkspaceTokenSource(
+            () => (scope.mode === 'thread' ? scope.workspaceToken ?? '' : undefined),
+            () => fn(...args),
+          ),
       );
     });
   };
@@ -966,6 +973,7 @@ async function lookupPidMapWorkspace(): Promise<PidMapLookup> {
   let entries: Array<{ pid: string; ptyId: string; workspaceId: string }> | undefined;
   let resolved: { workspaceId?: unknown; ptyId?: unknown } | null | undefined;
   let walkToken: unknown;
+  let threadClaim: unknown;
   const codexScope = codexCallScope.getStore();
   const viaThread = codexScope?.mode === 'thread' || codexScope?.mode === 'thread-or-legacy';
   // A thread-only call never uses main's server-side walk, so it does not ask
@@ -979,10 +987,15 @@ async function lookupPidMapWorkspace(): Promise<PidMapLookup> {
     // hints — leaving the client-side walk as its only, blocked, path. Older
     // main builds ignore the field and omit `resolved`, so we fall through to
     // the client-side walk unchanged (graceful degradation).
+    // A thread call sends its thread instead of our pid: main reads the
+    // thread's owner record and mints a claim for that pane (`threadClaim`).
     const result = await sendRpc(
       'a2a.resolve.identity' as RpcMethod,
-      codexScope?.mode === 'thread' ? {} : { callerPid: ctx.callerPid },
+      codexScope?.mode === 'thread'
+        ? (codexScope.threadId ? { codexThreadId: codexScope.threadId } : {})
+        : { callerPid: ctx.callerPid, ...(viaThread && codexScope?.threadId && { codexThreadId: codexScope.threadId }) },
     );
+    threadClaim = (result as { threadClaim?: unknown }).threadClaim;
     mappings = (result as { mappings: Record<string, string> }).mappings;
     entries = (result as { entries?: Array<{ pid: string; ptyId: string; workspaceId: string }> }).entries;
     resolved = (result as { resolved?: { workspaceId?: unknown; ptyId?: unknown } | null }).resolved;
@@ -1001,6 +1014,13 @@ async function lookupPidMapWorkspace(): Promise<PidMapLookup> {
   // leaves the mode unchanged; it is flipped to 'legacy' here).
   if (codexScope && viaThread) {
     const lookup = resolveViaCodexThread(codexScope, entries);
+    // Main's own answer for this thread's pane: carried by this call only.
+    if (lookup.status === 'hit') {
+      const claim = threadClaim as { ptyId?: unknown; workspaceToken?: unknown } | undefined;
+      if (claim && claim.ptyId === lookup.ptyId && typeof claim.workspaceToken === 'string' && claim.workspaceToken) {
+        codexScope.workspaceToken = claim.workspaceToken;
+      }
+    }
     if (codexScope.mode === 'thread') return lookup;
     codexScope.mode = 'legacy';
     codexScope.miss = undefined;
@@ -1318,9 +1338,30 @@ async function requireBrowserWorkspaceId(): Promise<string> {
   }
   const pinned = getPinnedRoute()?.workspaceId;
   if (pinned) return pinned;
+  // Confirmed outside every pane (main is up and our process tree reaches no
+  // pane) — a scheduled run, or an agent started outside wmux. Claim a
+  // dedicated workspace, as the terminal tools already do for this caller:
+  // main mints the claim, so the browser scope is still one main recorded.
+  if (lookup.status === 'miss' || lookup.status === 'empty-map') {
+    // The env says we run in a pane, but main could not find that pane above
+    // us. A dedicated workspace would silently act somewhere else, so refuse
+    // and say why. The hint only chooses refusing over claiming; it never
+    // names a scope.
+    if (ENV_WORKSPACE_HINT || ENV_PTY_HINT) {
+      throw new Error(
+        'Workspace identity unknown. This MCP server runs in a wmux pane that wmux could not verify ' +
+          '(it found no wmux pane among this process\'s ancestors — for example a WSL pane, whose Linux ' +
+          'processes Windows cannot see), so browser tools are not available here. Run the agent from a ' +
+          'native (non-WSL) wmux pane.',
+      );
+    }
+    const route = await claimPinnedRoute({ sendRpc, onWorkspaceToken: setWorkspaceToken });
+    syncCallerPtyId();
+    return route.workspaceId;
+  }
   throw new Error(
     'Workspace identity unknown. Browser tools act on the workspace wmux verifies for this MCP ' +
-      'server, and none could be verified. Run the agent from a wmux pane terminal.',
+      'server, and wmux could not be reached to verify it. Retry in a few seconds.',
   );
 }
 

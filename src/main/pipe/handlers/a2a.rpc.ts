@@ -21,6 +21,13 @@ import { claimTokenForPane } from '../../workspace/workspaceClaimTrust';
 import type { PortSnapshot, SnapshotFn } from '../../pty/portWatch';
 import { walkToOwningAnchor } from '../../pty/serverSidePidWalk';
 import { tryProcessCreatedAt } from '../../pty/winSnapshotNative';
+import { readWindowsAncestry } from './callerAncestry';
+import {
+  CODEX_THREAD_ID_RE,
+  codexHome,
+  matchOwnerToLiveAnchor,
+  readCodexThreadOwner,
+} from '../../../mcp/codexThreadIdentity';
 import type { OwningAnchor } from '../../pty/serverSidePidWalk';
 import { recordSentTask, recordTaskState, reopenedState, stateOfTask, workLinkFromSentTask } from '../../workLink/a2aProducer';
 import { noteTrackReply } from '../../deck/trackRecordFeed';
@@ -193,6 +200,19 @@ async function readWorkspacePanes(
 
 /** Validate an RPC-supplied caller pid. Anything non-positive / non-integer is
  *  ignored (older MCP build, or junk) → the handler keeps its legacy behavior. */
+/** The pane a Codex thread's owner record names, with a claim on it, or null. */
+function resolveCodexThreadClaim(
+  threadId: unknown,
+  entries: ReadonlyArray<{ ptyId: string; workspaceId: string }>,
+): { workspaceId: string; ptyId: string; workspaceToken: string } | null {
+  if (typeof threadId !== 'string' || !CODEX_THREAD_ID_RE.test(threadId)) return null;
+  const owner = readCodexThreadOwner(threadId, codexHome(process.env));
+  const match = matchOwnerToLiveAnchor(threadId, owner, entries, process.env.WMUX_DATA_SUFFIX || '');
+  if (match.status !== 'hit') return null;
+  const workspaceToken = claimTokenForPane(match.wsId, match.ptyId);
+  return workspaceToken ? { workspaceId: match.wsId, ptyId: match.ptyId, workspaceToken } : null;
+}
+
 function normalizeCallerPid(raw: unknown): number | null {
   return typeof raw === 'number' && Number.isInteger(raw) && raw > 0 ? raw : null;
 }
@@ -246,6 +266,8 @@ export function registerA2aRpc(
     getDaemonClient?: () => DaemonClient | null;
     /** Process creation time for the walk's pid-reuse guard; tests inject one. */
     createdAt?: (pid: number) => bigint | null;
+    /** One caller's ancestry when the snapshot is unavailable; tests inject one. */
+    readAncestry?: (pid: number, timeoutMs: number) => Promise<Map<number, number> | null>;
     remote?: RemoteA2aRpcDeps;
   } = {},
 ): void {
@@ -371,6 +393,7 @@ export function registerA2aRpc(
   // the miss/fallback path re-snaps.
   const snapshotFn: SnapshotFn = opts.snapshot ?? defaultSnapshot;
   const createdAt = opts.createdAt ?? tryProcessCreatedAt;
+  const readAncestry = opts.readAncestry ?? readWindowsAncestry;
   let snapInflight: Promise<PortSnapshot> | null = null;
   async function getCoalescedSnapshot(): Promise<PortSnapshot | null> {
     if (!snapInflight) {
@@ -541,7 +564,15 @@ export function registerA2aRpc(
         RPC_SNAPSHOT_DEADLINE_MS - (Date.now() - startedAt),
         null,
       );
-      if (snapshot) {
+      // No usable snapshot (on Windows: the Win32_Process query failed or ran
+      // out of time, or it predates the caller): read just this caller's chain
+      // instead, so a pane agent still gets its claim. The chain script checks
+      // creation times itself, so the walk needs no separate reuse guard.
+      const ppidByPid =
+        snapshot && snapshot.ppidByPid.has(callerPid)
+          ? snapshot.ppidByPid
+          : await readAncestry(callerPid, RPC_SNAPSHOT_DEADLINE_MS - (Date.now() - startedAt));
+      if (ppidByPid) {
         const anchorByPid = new Map<number, OwningAnchor>();
         for (const e of entries) {
           const pid = Number(e.pid);
@@ -549,12 +580,12 @@ export function registerA2aRpc(
             anchorByPid.set(pid, { ptyId: e.ptyId, workspaceId: e.workspaceId });
           }
         }
-        const parentPid = snapshot.ppidByPid.get(callerPid);
+        const parentPid = ppidByPid.get(callerPid);
         // Creation times reject a reused parent pid: a Codex app-server that
         // updated itself is orphaned, and its dead parent's pid may now be a
         // new pane's shell (Windows only; elsewhere the reader returns null).
         const hit = parentPid !== undefined
-          ? walkToOwningAnchor(parentPid, snapshot.ppidByPid, anchorByPid, { createdAt, child: callerPid })
+          ? walkToOwningAnchor(parentPid, ppidByPid, anchorByPid, { createdAt, child: callerPid })
           : null;
         if (hit) resolved = { workspaceId: hit.anchor.workspaceId, ptyId: hit.anchor.ptyId };
       }
@@ -566,7 +597,18 @@ export function registerA2aRpc(
     // ignores the field is unaffected. Only for a hit main resolved itself,
     // never for the client-side walk over `entries`.
     const workspaceToken = resolved ? claimTokenForPane(resolved.workspaceId, resolved.ptyId) : null;
-    return { mappings, entries, resolved, ...(workspaceToken && { workspaceToken }) };
+    // A call from a shared Codex app-server names its thread instead: the pane
+    // comes from the thread's owner record (written by wmux's Codex hooks from
+    // inside that pane), joined with the LIVE anchors above. The claim goes
+    // back on its own field because the caller stamps it on that call only.
+    const threadClaim = resolveCodexThreadClaim((params as { codexThreadId?: unknown }).codexThreadId, entries);
+    return {
+      mappings,
+      entries,
+      resolved,
+      ...(workspaceToken && { workspaceToken }),
+      ...(threadClaim && { threadClaim }),
+    };
   });
 
   /**

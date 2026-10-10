@@ -6,6 +6,11 @@ import * as path from 'node:path';
 import { RpcRouter } from '../../RpcRouter';
 import { registerA2aRpc } from '../a2a.rpc';
 import type { ClaudeWorker } from '../../../a2a/ClaudeWorker';
+import { createHash } from 'node:crypto';
+import {
+  __resetWorkspaceClaimTrustForTesting,
+  lookupWorkspaceClaim,
+} from '../../../workspace/workspaceClaimTrust';
 
 // Hoisted handles so the module mocks can read values set per-test.
 const { sendToRendererMock, dirRef } = vi.hoisted(() => ({
@@ -386,5 +391,83 @@ describe('a2a.resolve.identity — server-side walk (callerPid)', () => {
 
     const result = await dispatchResolve(setupRouterWithSnapshot(ppidByPid, (pid) => created[pid] ?? null), { callerPid: 10000 });
     expect(result.resolved).toBeNull();
+  });
+});
+
+describe('a2a.resolve.identity — pane claims from main\'s own answers', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    __resetWorkspaceClaimTrustForTesting();
+    dirRef.current = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-pidmap-claim-'));
+    fs.writeFileSync(path.join(dirRef.current, '49076'), 'daemon-shell');
+    sendToRendererMock.mockImplementation(
+      (_w: unknown, method: string, p: { ptyId: string }) =>
+        Promise.resolve({
+          workspaceId: method === 'input.findOwnerWorkspace' && p.ptyId === 'daemon-shell' ? 'ws-live' : null,
+        }),
+    );
+  });
+  afterEach(() => {
+    try { fs.rmSync(dirRef.current, { recursive: true, force: true }); } catch { /* best-effort */ }
+  });
+
+  it('mints a pane claim for a walk hit, bound to the walked workspace and pane', async () => {
+    const ppidByPid = new Map<number, number>([[39876, 49076], [49076, 1]]);
+    const result = (await dispatchResolve(setupRouterWithSnapshot(ppidByPid), { callerPid: 39876 })) as ResolveResult & {
+      workspaceToken?: string;
+    };
+    expect(typeof result.workspaceToken).toBe('string');
+    expect(lookupWorkspaceClaim(result.workspaceToken)).toEqual({ kind: 'bound', workspaceId: 'ws-live', ptyId: 'daemon-shell' });
+  });
+
+  it('reads the caller\'s own ancestry when the process snapshot fails', async () => {
+    const readAncestry = vi.fn(async () => new Map<number, number>([[39876, 25020], [25020, 49076]]));
+    const router = new RpcRouter();
+    registerA2aRpc(router, () => fakeWindow, makeWorker(), {
+      snapshot: async () => { throw new Error('Win32_Process query failed'); },
+      createdAt: () => null,
+      readAncestry,
+    });
+
+    const result = (await dispatchResolve(router, { callerPid: 39876 })) as ResolveResult & { workspaceToken?: string };
+
+    expect(readAncestry).toHaveBeenCalledWith(39876, expect.any(Number));
+    expect(result.resolved).toEqual({ workspaceId: 'ws-live', ptyId: 'daemon-shell' });
+    expect(typeof result.workspaceToken).toBe('string');
+  });
+
+  it('mints a thread claim from the Codex thread owner record, for that thread\'s pane only', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-codex-home-'));
+    const threadId = '019a0000-0000-7000-8000-0000000000aa';
+    const digest = (v: string) => createHash('sha256').update(v).digest('hex');
+    const dir = path.join(home, 'wmux-thread-owners');
+    fs.mkdirSync(dir, { recursive: true });
+    const suffix = process.env.WMUX_DATA_SUFFIX || '';
+    const env = {
+      WMUX_PTY_ID: 'daemon-shell', WMUX_WORKSPACE_ID: 'ws-frozen', WMUX_SURFACE_ID: '', WMUX_DATA_SUFFIX: suffix,
+      WMUX_PIPE_NAME: '', WMUX_HOOKS_TO_MAIN: '',
+    };
+    fs.writeFileSync(path.join(dir, `thread-${digest(threadId)}.json`), JSON.stringify({ version: 1, id: threadId, env, nonce: 'n1' }));
+    fs.writeFileSync(path.join(dir, `pane-${digest(JSON.stringify([suffix, 'daemon-shell']))}.json`), JSON.stringify({ id: threadId, nonce: 'n1' }));
+    const previous = process.env.CODEX_HOME;
+    process.env.CODEX_HOME = home;
+    try {
+      const router = setupRouterWithSnapshot(new Map());
+      const hit = (await dispatchResolve(router, { codexThreadId: threadId })) as ResolveResult & {
+        threadClaim?: { workspaceId: string; ptyId: string; workspaceToken: string };
+      };
+      // The LIVE owner workspace, never the id frozen in the record.
+      expect(hit.threadClaim).toMatchObject({ workspaceId: 'ws-live', ptyId: 'daemon-shell' });
+      expect(lookupWorkspaceClaim(hit.threadClaim?.workspaceToken)).toMatchObject({ kind: 'bound', workspaceId: 'ws-live' });
+
+      const miss = (await dispatchResolve(router, { codexThreadId: '019a0000-0000-7000-8000-0000000000bb' })) as {
+        threadClaim?: unknown;
+      };
+      expect(miss.threadClaim).toBeUndefined();
+    } finally {
+      if (previous === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = previous;
+      fs.rmSync(home, { recursive: true, force: true });
+    }
   });
 });
