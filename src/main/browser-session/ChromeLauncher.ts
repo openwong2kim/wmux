@@ -42,8 +42,8 @@ const READY_TIMEOUT_MS = 10_000;
 const READY_POLL_MS = 250;
 /** How often a protected profile's download guard re-asserts deny. */
 const DOWNLOAD_DENY_REASSERT_MS = 250;
-/** How long a fresh protected Chrome has to prove its traffic reaches the proxy. */
-const PROXY_PROBE_TIMEOUT_MS = 5_000;
+/** Why a launch probe ended (main/browser-session/ChromeLauncher.ts verifyProxyRoute). */
+type ProbeOutcome = 'routed' | 'navigation-failed' | 'tab-gone' | 'no-tab' | 'no-answer' | 'cdp-error';
 
 // Tab-target watcher: Chrome 111+ exposes a `tab` target per browser tab, and
 // a tab target's id does NOT change when Chrome swaps the page target inside
@@ -317,7 +317,7 @@ export class ChromeLauncher implements ChromeBackendClient {
   private downloadGuard: CdpSocket | null = null;
   /** The guard being armed, so concurrent callers share one socket. */
   private guardArming: Promise<void> | null = null;
-  private readonly proxyProbeTimeoutMs: number;
+  private readonly proxyProbeTimeoutMs: number | undefined;
   /** Consent: may keep ONE download the guard would cancel (see consentDownloadGuard). */
   private downloadClaimant: ((params: Record<string, unknown>) => boolean) | null = null;
   private readonly downloadProgress = new Set<(params: Record<string, unknown>) => void>();
@@ -330,7 +330,7 @@ export class ChromeLauncher implements ChromeBackendClient {
     this.surfaceStore = opts?.surfaceStore;
     this.protection = opts?.protection;
     this.extraArgs = opts?.extraArgs ?? [];
-    this.proxyProbeTimeoutMs = opts?.proxyProbeTimeoutMs ?? PROXY_PROBE_TIMEOUT_MS;
+    this.proxyProbeTimeoutMs = opts?.proxyProbeTimeoutMs;
   }
 
   /** The protection this profile needs now (null = legacy). Never throws:
@@ -1108,26 +1108,66 @@ export class ChromeLauncher implements ChromeBackendClient {
    * on a URL only the proxy answers. A managed proxy policy or a proxy
    * extension in the profile overrides `--proxy-server`; such a Chrome never
    * asks the proxy, and is not handed out as protected.
+   *
+   * The answer comes from what Chrome DID, not from a clock: the proxy saw the
+   * probe (routed), or Chrome finished the probe tab's navigation some other
+   * way — an error page, because `.invalid` never resolves without the proxy —
+   * or lost the tab (not routed). A fixed few-second wait used to decide "not
+   * routed" while a cold Chrome (a fresh profile on a busy Windows runner) had
+   * not even issued the request yet, refusing a correctly routed browser.
+   * `deadlineMs` (the launch's own deadline) only bounds a Chrome that never
+   * reports anything.
    */
-  private async verifyProxyRoute(): Promise<void> {
+  private async verifyProxyRoute(deadlineMs: number): Promise<void> {
     const proxy = this.proxy;
     if (!proxy?.isRunning()) throw new Error(PROTECTION_NOT_READY);
     const probe = proxy.armProbe();
     const url = await this.browserWsUrl();
-    const socket = new CdpSocket(() => url, { label: 'ChromeLauncher proxy probe', timeoutMs: this.proxyProbeTimeoutMs });
+    const socket = new CdpSocket(() => url, { label: 'ChromeLauncher proxy probe', timeoutMs: Math.max(1, deadlineMs - Date.now()) });
     let targetId: string | undefined;
+    let settle: ((why: ProbeOutcome) => void) | null = null;
+    const outcome = new Promise<ProbeOutcome>((resolve) => { settle = resolve; });
+    const unsubscribe = [
+      socket.on('Target.targetInfoChanged', (params) => {
+        const info = params.targetInfo as { targetId?: unknown; url?: unknown } | undefined;
+        if (targetId && info?.targetId === targetId && typeof info.url === 'string' && info.url.startsWith('chrome-error:')) {
+          settle?.('navigation-failed');
+        }
+      }),
+      socket.on('Target.targetDestroyed', (params) => {
+        if (targetId && params.targetId === targetId) settle?.('tab-gone');
+      }),
+      socket.on('Target.targetCrashed', (params) => {
+        if (targetId && params.targetId === targetId) settle?.('tab-gone');
+      }),
+    ];
+    let why: ProbeOutcome = 'no-answer';
     try {
+      await socket.send('Target.setDiscoverTargets', { discover: true });
       const created = (await socket.send('Target.createTarget', { url: probe.url, background: true })) as {
         targetId?: unknown;
       } | null;
       targetId = typeof created?.targetId === 'string' ? created.targetId : undefined;
-      if (!(await probe.seen(this.proxyProbeTimeoutMs))) throw new Error(PROTECTION_NOT_READY);
+      if (!targetId) why = 'no-tab';
+      else {
+        // An explicit override wins (tests); otherwise wait for Chrome to say.
+        const budget = this.proxyProbeTimeoutMs ?? Math.max(0, deadlineMs - Date.now());
+        why = await Promise.race([probe.seen(budget).then((seen) => (seen ? 'routed' : 'no-answer') as ProbeOutcome), outcome]);
+        // A failed navigation can be reported a beat before the proxy's own
+        // accounting; a probe the proxy did see is still routed.
+        if (why !== 'routed' && (await probe.seen(0))) why = 'routed';
+      }
     } catch {
-      throw new Error(PROTECTION_NOT_READY);
+      why = 'cdp-error';
     } finally {
+      for (const off of unsubscribe) off();
       probe.dispose();
       if (targetId) await socket.send('Target.closeTarget', { targetId }).catch(() => undefined);
       socket.close();
+    }
+    if (why !== 'routed') {
+      console.warn(`[ChromeLauncher] ${this.profileName}: proxy route not proven (${why}); refusing the protected profile`);
+      throw new Error(PROTECTION_NOT_READY);
     }
   }
 
@@ -1261,7 +1301,8 @@ export class ChromeLauncher implements ChromeBackendClient {
             this.launchedProtected = true;
             try {
               await this.armDownloadGuard();
-              await this.verifyProxyRoute();
+              // Its own bound from now: a slow start must not eat the probe's turn.
+              await this.verifyProxyRoute(Date.now() + READY_TIMEOUT_MS);
             } catch (err) {
               try {
                 child.kill();

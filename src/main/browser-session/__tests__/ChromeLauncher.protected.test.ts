@@ -10,7 +10,7 @@ const { spawnMock, state, sockets } = vi.hoisted(() => ({
   // proxyPort: the --proxy-server port of the latest spawn. routeViaProxy:
   // whether the fake Chrome's traffic reaches it (false = a profile whose
   // proxy setting is overridden).
-  state: { portFiles: {} as Record<string, string>, proxyPort: 0, routeViaProxy: true },
+  state: { portFiles: {} as Record<string, string>, proxyPort: 0, routeViaProxy: true, probeDelayMs: 0, reportErrorPage: false },
   sockets: [] as Array<{ sent: Array<{ method: string; params: unknown }>; closed: boolean }>,
 }));
 vi.mock('child_process', () => ({ spawn: spawnMock }));
@@ -35,30 +35,45 @@ vi.mock('node:fs', async (orig) => {
 vi.mock('../CdpSocket', () => ({
   CdpSocket: class {
     rec = { sent: [] as Array<{ method: string; params: unknown }>, closed: false };
+    handlers = new Map<string, (p: Record<string, unknown>) => void>();
     constructor() {
       sockets.push(this.rec);
     }
     isOpen() {
       return !this.rec.closed;
     }
-    on() {
-      return () => undefined;
+    on(method: string, h: (p: Record<string, unknown>) => void) {
+      this.handlers.set(method, h);
+      return () => this.handlers.delete(method);
     }
     async send(method: string, params: unknown = {}) {
       this.rec.sent.push({ method, params });
+      if (method === 'Target.createTarget' && !state.routeViaProxy && state.reportErrorPage) {
+        // Not routed: `.invalid` fails to resolve and Chrome shows its error page.
+        setTimeout(() => this.handlers.get('Target.targetInfoChanged')?.({
+          targetInfo: { targetId: 'probe-target', url: 'chrome-error://chromewebdata/' },
+        }), 20);
+        return { targetId: 'probe-target' };
+      }
       if (method === 'Target.createTarget' && state.routeViaProxy && state.proxyPort) {
-        // The fake Chrome loads the URL through its proxy, as the real one does.
+        // The fake Chrome loads the URL through its proxy, as the real one does
+        // (after `probeDelayMs`, like a cold Chrome on a busy runner).
         const http = await import('node:http');
-        await new Promise<void>((resolve) => {
+        const delay = state.probeDelayMs;
+        const go = (done: () => void = () => undefined) => {
           const req = http.request(
             { host: '127.0.0.1', port: state.proxyPort, method: 'GET', path: (params as { url: string }).url },
             (res) => {
               res.resume();
-              res.on('end', () => resolve());
+              res.on('end', () => done());
             },
           );
-          req.on('error', () => resolve());
+          req.on('error', () => done());
           req.end();
+        };
+        await new Promise<void>((resolve) => {
+          if (delay) { setTimeout(() => go(), delay); resolve(); return; }
+          go(resolve);
         });
         return { targetId: 'probe-target' };
       }
@@ -106,6 +121,8 @@ beforeEach(() => {
   state.portFiles = {};
   state.proxyPort = 0;
   state.routeViaProxy = true;
+  state.probeDelayMs = 0;
+  state.reportErrorPage = false;
   sockets.length = 0;
   dead.clear();
   nextPort = 18001;
@@ -142,8 +159,8 @@ describe('ChromeLauncher — protected profiles', () => {
       params: { behavior: 'deny', eventsEnabled: true },
     });
     // The route was proven: a probe tab was opened through the proxy and closed.
-    const probe = sockets.find((x) => x.sent[0]?.method === 'Target.createTarget');
-    expect(probe?.sent.map((x) => x.method)).toEqual(['Target.createTarget', 'Target.closeTarget']);
+    const probe = sockets.find((x) => x.sent.some((m) => m.method === 'Target.createTarget'));
+    expect(probe?.sent.map((x) => x.method)).toEqual(['Target.setDiscoverTargets', 'Target.createTarget', 'Target.closeTarget']);
     expect(probe?.closed).toBe(true);
     launcher.dispose();
   });
@@ -216,6 +233,28 @@ describe('ChromeLauncher — protected profiles', () => {
     expect(spawnMock).toHaveBeenCalledTimes(1); // refused at once, not polled to the deadline
     launcher.dispose();
   });
+
+  it('refuses at once when Chrome reports the probe failed to load (not routed), without waiting out a clock', async () => {
+    state.routeViaProxy = false;
+    state.reportErrorPage = true;
+    const child = makeChild();
+    spawnWritesPortFile(child);
+    const launcher = new ChromeLauncher('/tmp/prot-g', { protection: () => denyAll });
+    const t0 = Date.now();
+    await expect(launcher.ensureRunning()).rejects.toThrow(/policy_denied/);
+    expect(Date.now() - t0).toBeLessThan(2_000);
+    expect(child.kill).toHaveBeenCalled();
+    launcher.dispose();
+  });
+
+  it('accepts a routed Chrome that is slow to issue the probe (cold start past the old 5 s cutoff)', async () => {
+    state.probeDelayMs = 5_500;
+    spawnWritesPortFile(makeChild());
+    const launcher = new ChromeLauncher('/tmp/prot-h', { protection: () => denyAll });
+    await expect(launcher.ensureRunning()).resolves.toBeGreaterThan(0);
+    expect(launcher.isProtected()).toBe(true);
+    launcher.dispose();
+  }, 15_000);
 
   it('concurrent callers re-arm one download guard, not two', async () => {
     spawnWritesPortFile(makeChild());
