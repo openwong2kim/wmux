@@ -8,6 +8,7 @@
 // stale button cannot push a branch that is behind, open a PR from the
 // default branch, commit into a merge, or land on a branch an agent switched
 // to while the dialog was open.
+import { ensureSecretHook } from '../../git/secretHookHost';
 import { ipcMain } from 'electron';
 import { IPC } from '../../../shared/constants';
 import { wrapHandler } from '../wrapHandler';
@@ -98,6 +99,9 @@ export function registerGitShipHandlers(): () => void {
       if (typeof repoPath !== 'string' || !repoPath) return { ok: false, error: 'repoPath required' };
       const cwd = await resolveAccessiblePath(repoPath);
       if (!cwd) return { ok: false, error: 'repoPath required' };
+      // A repository opened in wmux gets the pre-commit secret check, so a
+      // commit from any terminal is checked too (once per repo per run).
+      ensureSecretHook(cwd);
       return shipActions.status(cwd);
     }),
   );

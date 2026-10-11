@@ -19,6 +19,7 @@ import { handleMcp } from './commands/mcp';
 import { handleSetupHooks } from './commands/setupHooks';
 import { handleSetupStatusline } from './commands/setupStatusline';
 import { handleDoctor } from './commands/doctor';
+import { handleSecrets } from './commands/secretsCheck';
 import { handleRole } from './commands/role';
 import { handleDeck } from './commands/deck';
 import { handleChannel } from './commands/channel';
@@ -156,6 +157,9 @@ DIAGNOSTICS
                                     the hook, from the opt-in local log
                                     (diagnostics.detectionAgreement in config.json)
          [--since <7d>] [--grace <5s>] [--sample <n>]
+  secrets check-staged              Refuse a commit that adds a .env file, a
+                                    private key or an API key (the pre-commit
+                                    hook wmux installs runs this)
 
 ROLES
   role resolve <Role>               Print what a role is bound to in Settings
@@ -290,6 +294,8 @@ async function main(): Promise<void> {
       handleGate(rest[0] ?? '--list', rest.slice(1), jsonMode);
     } else if (cmd === 'setup-statusline') {
       await handleSetupStatusline(rest, jsonMode);
+    } else if (cmd === 'secrets') {
+      await handleSecrets(rest);
     } else if (cmd === 'doctor') {
       await handleDoctor(rest, jsonMode);
     } else if (cmd === 'role') {

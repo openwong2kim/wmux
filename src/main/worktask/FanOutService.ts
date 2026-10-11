@@ -25,6 +25,7 @@
  * in-flight 중복=거부.
  */
 
+import { ensureSecretHook } from '../git/secretHookHost';
 import { allowAgyTrustFor } from '../agents/agyTrust';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -496,7 +497,7 @@ export class FanOutService {
   constructor(opts: FanOutServiceOptions) {
     this.daemon = opts.daemon;
     this.renderer = opts.renderer;
-    this.worktrees = opts.worktrees ?? new TaskWorktreeManager();
+    this.worktrees = opts.worktrees ?? new TaskWorktreeManager({ onCreated: ensureSecretHook });
     this.project = opts.project;
     this.firstRun = opts.firstRun;
     this.autonomy = opts.autonomy;

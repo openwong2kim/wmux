@@ -195,7 +195,12 @@ export class TaskWorktreeManager {
   /** 주입 가능한 git 러너(테스트) — 기본 execFile. */
   private readonly runGit: RunGit;
 
-  constructor(opts?: { runGit?: RunGit }) {
+  /** Called with the repository root after a task worktree is created
+   *  (the app installs its pre-commit secret check there). */
+  private onCreated?: (repoRoot: string) => void;
+
+  constructor(opts?: { runGit?: RunGit; onCreated?: (repoRoot: string) => void }) {
+    this.onCreated = opts?.onCreated;
     this.runGit =
       opts?.runGit ??
       (async (args, cwd, runOpts) => {
@@ -476,6 +481,11 @@ export class TaskWorktreeManager {
         await this.runGit(args, plan.repoRoot);
       } catch (err) {
         return { ok: false, error: `createWorktree: git worktree add failed: ${(err as Error).message}` };
+      }
+      try {
+        this.onCreated?.(plan.repoRoot);
+      } catch {
+        /* best-effort: never fails a created worktree */
       }
       return { ok: true, worktreePath: safePath, branch: safeBranch };
     });

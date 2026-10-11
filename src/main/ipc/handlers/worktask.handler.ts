@@ -11,6 +11,7 @@
 // projection(task.mission.list)에서 역참조한다 — 렌더러가 stale 필드를 실어보내
 // 엉뚱한 worktree를 건드리는 표면을 없앤다(단일 정본).
 
+import { ensureSecretHook } from '../../git/secretHookHost';
 import { ipcMain } from 'electron';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -74,7 +75,7 @@ export function registerWorktaskHandlers(
   // 프로세스 수명 단일 인스턴스: TaskWorktreeManager는 repoHash 단위 뮤텍스 체인을
   // 유지해야 하므로(index.lock 경합 차단) 재사용한다. fan-out과는 별도 인스턴스지만
   // 크로스 인스턴스 worktree add/remove 경합은 git 자체의 index.lock이 backstop.
-  const worktrees = new TaskWorktreeManager();
+  const worktrees = new TaskWorktreeManager({ onCreated: ensureSecretHook });
   const closeService = new TaskCloseService({
     daemon: daemonPort,
     worktrees,
