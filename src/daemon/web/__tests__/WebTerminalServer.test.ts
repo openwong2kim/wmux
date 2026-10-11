@@ -10885,6 +10885,8 @@ describe('WebTerminalServer', () => {
       beforeEach(async () => {
         const actual = await vi.importActual<typeof import('../../HeadlessSnapshot')>('../../HeadlessSnapshot');
         vi.mocked(generateSnapshotUnqueued).mockImplementation(actual.generateSnapshotUnqueued);
+        // Calls from earlier tests would satisfy a "the render started" wait.
+        vi.mocked(generateSnapshotUnqueued).mockClear();
       });
 
       /** Every row a fresh client terminal holds after replaying `bytes`, scrollback first. */
@@ -10989,6 +10991,8 @@ describe('WebTerminalServer', () => {
           ac.abort();
         }
 
+        // The rendered path, not the raw window (which is gap-free too).
+        expect(metas(text)[0]).toMatchObject({ truncated: false, omittedBytes: 0 });
         const live = [...text.matchAll(/event: data\ndata: ([^\n]*)\n/g)]
           .map((m) => Buffer.from(m[1], 'base64').toString('utf8'));
         expect(live).toEqual(['after 1\r\n']);
@@ -10998,6 +11002,38 @@ describe('WebTerminalServer', () => {
         }
         const reference = await render(ring.readAll().toString('utf8'), cols, rows);
         expect(viewportOf(client, rows)).toEqual(viewportOf(reference, rows));
+      });
+
+      it('attaches nothing for a client that left while its screen was rendering', async () => {
+        let filler = '';
+        for (let i = 0; filler.length < 300 * 1024; i++) filler += `filler line ${i}\r\n`;
+        stage(filler, 80, 24);
+        const actual = await vi.importActual<typeof import('../../HeadlessSnapshot')>('../../HeadlessSnapshot');
+        let release!: () => void;
+        const held = new Promise<void>((r) => { release = r; });
+        let rendered = false;
+        vi.mocked(generateSnapshotUnqueued).mockImplementationOnce(async (req) => {
+          await held;
+          const outcome = await actual.generateSnapshotUnqueued(req);
+          rendered = true;
+          return outcome;
+        });
+        const listeners = (): number[] => ['data', 'exit', 'resize'].map((e) => bridge.listenerCount(e));
+        const before = listeners();
+
+        const info = await startRO();
+        const ac = new AbortController();
+        await fetch(
+          `${base()}/api/stream?session=s1&token=${encodeURIComponent(info.token as string)}`,
+          { signal: ac.signal },
+        );
+        await vi.waitFor(() => expect(generateSnapshotUnqueued).toHaveBeenCalled());
+        ac.abort();
+        await new Promise((r) => setTimeout(r, 50));
+        release();
+        await vi.waitFor(() => expect(rendered).toBe(true));
+        await new Promise((r) => setTimeout(r, 20));
+        expect(listeners()).toEqual(before);
       });
     });
 
