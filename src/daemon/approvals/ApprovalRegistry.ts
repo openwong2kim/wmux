@@ -3327,7 +3327,7 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
         // that looked up can be told apart from a screen that really changed.
         this.deps.log?.(
           'info',
-          `[approvals] questions screen shape outcome=${outcome} record=${record.id} rows=${first.rows.length} `
+          `[approvals] questions screen shape outcome=${outcome} record=${record.id} drawn=${first.rows.length} `
             + `cols=${first.cols ?? '-'} tail=[${askScreenShape(first.rows, ASK_SHAPE_LOG_ROWS)}]`,
         );
       }
