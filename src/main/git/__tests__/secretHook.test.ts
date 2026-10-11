@@ -6,7 +6,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { buildPreCommitHook, installSecretHook, SECRET_HOOK_MARKER, USER_HOOK_NAME, type SecretHookRuntime } from '../secretHook';
+import { buildPreCommitHook, filePrefs, installSecretHook, SecretHookInstaller, SECRET_HOOK_MARKER, uninstallSecretHook, USER_HOOK_NAME, type SecretHookRuntime } from '../secretHook';
 import { checkStaged, formatBlockedCommit } from '../../../cli/commands/secretsCheck';
 
 const git = (args: string[], cwd: string) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
@@ -115,6 +115,56 @@ describe('installSecretHook', () => {
     expect(h).toContain(`WMUX_RUNTIME='C:/Program Files/wmux'\\''s/wmux.exe'`);
     expect(h).toContain(`WMUX_CLI='/x y/cli.js'`);
     expect(h).toContain(`exec "$USER_HOOK" "$@"`);
+  });
+});
+
+describe('turning the automatic install off', () => {
+  const USER = '#!/bin/sh\necho "user hook ran" >&2\nexit 0\n';
+
+  it("uninstall puts the user's original hook back byte for byte, and commits work as before", async () => {
+    fs.writeFileSync(path.join(hooks(), 'pre-commit'), USER, { mode: 0o755 });
+    await installSecretHook(repo, rt, { git: gitPort });
+    expect(await uninstallSecretHook(repo, { git: gitPort })).toEqual({ ok: true, removed: true, restored: true });
+    expect(fs.readFileSync(path.join(hooks(), 'pre-commit'), 'utf8')).toBe(USER);
+    expect(fs.existsSync(path.join(hooks(), USER_HOOK_NAME))).toBe(false);
+    fs.writeFileSync(path.join(repo, '.env'), 'X=1\n');
+    git(['add', '.env'], repo);
+    expect(commit().status).toBe(0); // no wmux check any more
+  });
+
+  it('uninstall with no user hook leaves no pre-commit, and never touches a hook that is not wmux\'s', async () => {
+    await installSecretHook(repo, rt, { git: gitPort });
+    expect(await uninstallSecretHook(repo, { git: gitPort })).toEqual({ ok: true, removed: true, restored: false });
+    expect(fs.existsSync(path.join(hooks(), 'pre-commit'))).toBe(false);
+    fs.writeFileSync(path.join(hooks(), 'pre-commit'), USER, { mode: 0o755 });
+    expect(await uninstallSecretHook(repo, { git: gitPort })).toEqual({ ok: true, removed: false, restored: false });
+    expect(fs.readFileSync(path.join(hooks(), 'pre-commit'), 'utf8')).toBe(USER);
+  });
+
+  it('the setting defaults on, survives a restart, and off uninstalls everywhere and stops new installs', async () => {
+    const file = path.join(dir, 'home', 'secret-hook.json');
+    const make = () => new SecretHookInstaller(() => rt, { git: gitPort }, filePrefs(file));
+    const a = make();
+    expect(a.autoInstall).toBe(true);
+    fs.writeFileSync(path.join(hooks(), 'pre-commit'), USER, { mode: 0o755 });
+    expect(await a.ensure(repo)).toMatchObject({ ok: true, chained: true });
+
+    expect(await make().setAutoInstall(false)).toEqual({ autoInstall: false, failed: [] });
+    expect(fs.readFileSync(path.join(hooks(), 'pre-commit'), 'utf8')).toBe(USER);
+    const b = make(); // a restart
+    expect(b.autoInstall).toBe(false);
+    expect(b.ensure(repo)).toBeNull();
+    expect(fs.readFileSync(path.join(hooks(), 'pre-commit'), 'utf8')).toBe(USER);
+
+    await b.setAutoInstall(true);
+    expect(await b.ensure(repo)).toMatchObject({ ok: true });
+    expect(fs.readFileSync(path.join(hooks(), 'pre-commit'), 'utf8')).toContain(SECRET_HOOK_MARKER);
+  });
+
+  it('a broken prefs file means the default (on)', () => {
+    const file = path.join(dir, 'bad.json');
+    fs.writeFileSync(file, '{nope');
+    expect(filePrefs(file).load()).toEqual({ autoInstall: true, repos: [] });
   });
 });
 

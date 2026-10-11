@@ -1430,6 +1430,10 @@ const electronAPI = {
     // Ship button: the current branch's status and its writes (each re-checked in main).
     shipStatus: (repoPath: string) =>
       ipcRenderer.invoke(IPC.GIT_SHIP_STATUS, repoPath) as Promise<import('../main/git/shipActions').ShipStatusResult>,
+    // Settings: automatic pre-commit secret check (off also uninstalls it, restoring the user's hook).
+    secretHookGet: () => ipcRenderer.invoke(IPC.GIT_SECRET_HOOK_GET) as Promise<{ autoInstall: boolean }>,
+    secretHookSet: (on: boolean) =>
+      ipcRenderer.invoke(IPC.GIT_SECRET_HOOK_SET, on) as Promise<{ autoInstall: boolean; failed: string[] }>,
     // Each write names the branch + HEAD it was asked for; main refuses if either moved.
     shipCommit: (repoPath: string, message: string, expect: import('../main/git/shipActions').ShipExpect) =>
       ipcRenderer.invoke(IPC.GIT_SHIP_COMMIT, repoPath, message, expect) as Promise<import('../main/git/shipActions').ShipActionResult>,

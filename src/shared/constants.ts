@@ -688,6 +688,9 @@ export const IPC = {
   GIT_SHIP_COMMIT: 'gitShip:commit',
   GIT_SHIP_PUSH: 'gitShip:push',
   GIT_SHIP_CREATE_PR: 'gitShip:createPr',
+  // Settings: install the pre-commit secret check automatically (default on)
+  GIT_SECRET_HOOK_GET: 'gitShip:secretHookGet',
+  GIT_SECRET_HOOK_SET: 'gitShip:secretHookSet',
   // Git page hand-off: an issue / PR to an agent pane, or to a new worktree
   GIT_HANDOFF_SEND: 'gitHandoff:send',
   GIT_HANDOFF_START_WORKTREE: 'gitHandoff:startWorktree',

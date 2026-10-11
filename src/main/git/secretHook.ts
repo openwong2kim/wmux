@@ -60,7 +60,7 @@ export type SecretHookInstall =
 export interface SecretHookPorts {
   /** git in `cwd`; stdout, or null on failure. */
   git: (args: string[], cwd: string) => Promise<string | null>;
-  fs?: Pick<typeof fs, 'existsSync' | 'readFileSync' | 'writeFileSync' | 'renameSync' | 'mkdirSync' | 'chmodSync'>;
+  fs?: Pick<typeof fs, 'existsSync' | 'readFileSync' | 'writeFileSync' | 'renameSync' | 'mkdirSync' | 'chmodSync' | 'unlinkSync'>;
 }
 
 /** Installs (or refreshes) the wmux pre-commit hook for the repository at `cwd`. */
@@ -101,24 +101,119 @@ export async function installSecretHook(cwd: string, rt: SecretHookRuntime, port
   }
 }
 
-/** Installs once per repository per run; later calls for the same repo reuse the answer. */
+export type SecretHookUninstall =
+  | { ok: true; removed: boolean; restored: boolean }
+  | { ok: false; message: string };
+
+/** Removes the wmux hook from the repository at `cwd` and puts the user's
+ *  original pre-commit (kept as pre-commit.wmux-user) back in its place. A
+ *  pre-commit that is not wmux's is never touched. */
+export async function uninstallSecretHook(cwd: string, ports: SecretHookPorts): Promise<SecretHookUninstall> {
+  const f = ports.fs ?? fs;
+  const common = (await ports.git(['rev-parse', '--path-format=absolute', '--git-common-dir'], cwd))?.trim();
+  if (!common) return { ok: false, message: 'not a git repository' };
+  const dir = path.join(path.resolve(cwd, common), 'hooks');
+  const hook = path.join(dir, 'pre-commit');
+  const user = path.join(dir, USER_HOOK_NAME);
+  try {
+    const ours = f.existsSync(hook) && f.readFileSync(hook, 'utf8').includes(SECRET_HOOK_MARKER);
+    if (f.existsSync(hook) && !ours) return { ok: true, removed: false, restored: false };
+    if (ours) f.unlinkSync(hook);
+    const restored = f.existsSync(user);
+    if (restored) f.renameSync(user, hook);
+    return { ok: true, removed: ours, restored };
+  } catch (err) {
+    return { ok: false, message: (err as Error).message };
+  }
+}
+
+/** The saved choice and the repositories wmux installed into (so turning the
+ *  setting off can take the hook back out everywhere). */
+export interface SecretHookPrefs {
+  autoInstall: boolean;
+  repos: string[];
+}
+
+export interface SecretHookPrefsStore {
+  load(): SecretHookPrefs;
+  save(p: SecretHookPrefs): void;
+}
+
+/** Installs once per repository per run, only while the setting is on
+ *  (default on); turning it off uninstalls from every repo it installed. */
 export class SecretHookInstaller {
   private done = new Map<string, Promise<SecretHookInstall>>();
 
-  constructor(private runtime: () => SecretHookRuntime | null, private ports: SecretHookPorts) {}
+  constructor(
+    private runtime: () => SecretHookRuntime | null,
+    private ports: SecretHookPorts,
+    private prefs: SecretHookPrefsStore = memoryPrefs(),
+  ) {}
+
+  get autoInstall(): boolean {
+    return this.prefs.load().autoInstall;
+  }
 
   ensure(cwd: string): Promise<SecretHookInstall> | null {
+    if (!this.prefs.load().autoInstall) return null;
     const rt = this.runtime();
     if (!rt) return null;
     const key = path.resolve(cwd);
     let hit = this.done.get(key);
     if (!hit) {
       hit = installSecretHook(cwd, rt, this.ports).then((r) => {
-        if (!r.ok && r.reason !== 'hooks-path') console.warn(`[secret-hook] ${cwd}: ${r.message}`);
+        if (r.ok) {
+          const p = this.prefs.load();
+          const repo = path.dirname(path.dirname(r.hook));
+          if (!p.repos.includes(repo)) this.prefs.save({ ...p, repos: [...p.repos, repo] });
+        } else if (r.reason !== 'hooks-path') console.warn(`[secret-hook] ${cwd}: ${r.message}`);
         return r;
       });
       this.done.set(key, hit);
     }
     return hit;
   }
+
+  /** Saves the choice; turning it off removes the hook from every repository
+   *  wmux installed it in and restores each user's original hook. */
+  async setAutoInstall(on: boolean): Promise<{ autoInstall: boolean; failed: string[] }> {
+    const p = this.prefs.load();
+    if (on) {
+      this.prefs.save({ ...p, autoInstall: true });
+      return { autoInstall: true, failed: [] };
+    }
+    await Promise.allSettled([...this.done.values()]);
+    this.done.clear();
+    const failed: string[] = [];
+    const repos = this.prefs.load().repos;
+    for (const repo of repos) {
+      const r = await uninstallSecretHook(repo, this.ports);
+      if (!r.ok && r.message !== 'not a git repository') failed.push(repo);
+    }
+    this.prefs.save({ autoInstall: false, repos: failed });
+    return { autoInstall: false, failed };
+  }
+}
+
+function memoryPrefs(): SecretHookPrefsStore {
+  let v: SecretHookPrefs = { autoInstall: true, repos: [] };
+  return { load: () => v, save: (p) => { v = p; } };
+}
+
+/** File-backed prefs; a missing or broken file means the default (on). */
+export function filePrefs(file: string, f: Pick<typeof fs, 'readFileSync' | 'writeFileSync' | 'mkdirSync'> = fs): SecretHookPrefsStore {
+  return {
+    load() {
+      try {
+        const j = JSON.parse(f.readFileSync(file, 'utf8')) as Partial<SecretHookPrefs>;
+        return { autoInstall: j.autoInstall !== false, repos: Array.isArray(j.repos) ? j.repos.filter((r) => typeof r === 'string') : [] };
+      } catch {
+        return { autoInstall: true, repos: [] };
+      }
+    },
+    save(p) {
+      f.mkdirSync(path.dirname(file), { recursive: true });
+      f.writeFileSync(file, JSON.stringify(p, null, 2));
+    },
+  };
 }

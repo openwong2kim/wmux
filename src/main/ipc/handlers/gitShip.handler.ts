@@ -8,7 +8,7 @@
 // stale button cannot push a branch that is behind, open a PR from the
 // default branch, commit into a merge, or land on a branch an agent switched
 // to while the dialog was open.
-import { ensureSecretHook } from '../../git/secretHookHost';
+import { ensureSecretHook, secretHooks } from '../../git/secretHookHost';
 import { ipcMain } from 'electron';
 import { IPC } from '../../../shared/constants';
 import { wrapHandler } from '../wrapHandler';
@@ -90,8 +90,20 @@ async function guarded(
 }
 
 export function registerGitShipHandlers(): () => void {
-  const channels = [IPC.GIT_SHIP_STATUS, IPC.GIT_SHIP_COMMIT, IPC.GIT_SHIP_PUSH, IPC.GIT_SHIP_CREATE_PR];
+  const channels = [IPC.GIT_SHIP_STATUS, IPC.GIT_SHIP_COMMIT, IPC.GIT_SHIP_PUSH, IPC.GIT_SHIP_CREATE_PR, IPC.GIT_SECRET_HOOK_GET, IPC.GIT_SECRET_HOOK_SET];
   for (const c of channels) ipcMain.removeHandler(c);
+
+  ipcMain.handle(
+    IPC.GIT_SECRET_HOOK_GET,
+    wrapHandler(IPC.GIT_SECRET_HOOK_GET, async () => ({ autoInstall: secretHooks.autoInstall })),
+  );
+  ipcMain.handle(
+    IPC.GIT_SECRET_HOOK_SET,
+    wrapHandler(IPC.GIT_SECRET_HOOK_SET, async (_e: Electron.IpcMainInvokeEvent, on: unknown) => {
+      if (typeof on !== 'boolean') throw new Error('on must be a boolean');
+      return secretHooks.setAutoInstall(on);
+    }),
+  );
 
   ipcMain.handle(
     IPC.GIT_SHIP_STATUS,

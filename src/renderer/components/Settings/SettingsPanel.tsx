@@ -1,4 +1,5 @@
 import { QuickCommandsSection } from './QuickCommandsSection';
+import { SecretHookSetting } from './SecretHookSetting';
 import { createContext, useContext, useEffect, useMemo, useRef, useState, useCallback, type ReactNode } from 'react';
 import { BROWSER_BACKENDS, isBrowserBackend } from '../../../shared/browserBackend';
 import { isWslShellPath } from '../../../shared/wslDistro';
@@ -1853,6 +1854,7 @@ function TabGeneral() {
         <SettingRow id="secretguard" label={t('settings.secretGuard')} description={t('settings.secretGuardDesc')}>
           <Toggle checked={secretGuardEnabled} onChange={setSecretGuardEnabled} label={t('settings.secretGuard')} />
         </SettingRow>
+        <SecretHookSetting />
       </SettingsSection>
 
       {/* Startup — win32(레지스트리 Run 키) + darwin(로그인 항목). 그 외 숨김. */}
