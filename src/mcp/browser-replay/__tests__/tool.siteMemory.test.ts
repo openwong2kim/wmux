@@ -29,7 +29,6 @@ vi.mock('../../playwright/browserScope', async (importOriginal) => {
       rpcCalls.push({ method, params });
       if (method === 'browser.actionCache.get') return { trace: getResponse };
       if (method === 'browser.actionCache.promoted') return { promoted: [] };
-      if (method === 'browser.tabs') return tabsResponse;
       if (method === 'browser.siteMemory.record') {
         if (siteMemoryRejects) throw new Error('main does not know this method');
         return recordResponse;
@@ -38,6 +37,27 @@ vi.mock('../../playwright/browserScope', async (importOriginal) => {
     },
   };
 });
+
+// main's browser.tabs handler, as far as `list` goes: it answers the
+// workspace's tabs, and refuses `list` that names a surfaceId (#2064). Every
+// other method is unreachable here, as it is with no main to connect to.
+const tabsListCalls: Array<Record<string, unknown>> = [];
+vi.mock('../../wmux-client', () => ({
+  sendRpc: async (method: string, params: Record<string, unknown> = {}) => {
+    if (method !== 'browser.tabs') throw new Error('wmux main is not reachable');
+    tabsListCalls.push(params);
+    if (params['surfaceId']) {
+      return {
+        ok: false,
+        error: {
+          code: 'BROWSER_TABS_INVALID_ARGUMENT',
+          message: 'browser_tabs list does not accept surfaceId.',
+        },
+      };
+    }
+    return tabsResponse;
+  },
+}));
 
 vi.mock('../../playwright/automationLease', () => ({
   withAutomationLease: async (
@@ -119,6 +139,7 @@ async function siteRecords(): Promise<Array<Record<string, unknown>>> {
 
 beforeEach(() => {
   rpcCalls.length = 0;
+  tabsListCalls.length = 0;
   getResponse = trace();
   siteMemoryRejects = false;
   recordResponse = { ok: true };
@@ -219,6 +240,32 @@ describe('browser_replay note', () => {
     expect(res.isError).toBe(true);
     expect(res.content[0].text).toContain('long-token');
     expect(res.content[0].text).not.toContain('QUJDREVG');
+  });
+
+  it('note finds the site of a named surface, which main refuses to list by (#2064)', async () => {
+    tabsResponse = {
+      ok: true,
+      action: 'list',
+      tabs: [
+        { surfaceId: 's1', url: 'https://other.test/', selected: true },
+        { surfaceId: 's2', url: 'https://shop.test/cart', selected: false },
+      ],
+    };
+    const res = await invoke({ action: 'note', note: 'checkout needs a login', surfaceId: 's2' });
+    expect(res.isError).toBeUndefined();
+    // The listing names no surface, and stays confined to this workspace.
+    expect(tabsListCalls).toEqual([{ action: 'list', workspaceId: 'ws-1' }]);
+    const records = await siteRecords();
+    expect(records).toHaveLength(1);
+    // The named surface's host, not the selected tab's.
+    expect(records[0]).toMatchObject({ domain: 'shop.test', kind: 'note' });
+  });
+
+  it('note never falls back to another tab when the named surface is not listed', async () => {
+    const res = await invoke({ action: 'note', note: 'something worth knowing', surfaceId: 's-gone' });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain('which site');
+    expect(await siteRecords()).toHaveLength(0);
   });
 
   it('note says which site it could not identify rather than guessing', async () => {

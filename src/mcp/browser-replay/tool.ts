@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { PlaywrightEngine } from '../playwright/PlaywrightEngine';
 import { withAutomationLease } from '../playwright/automationLease';
 import { describeToolError } from '../playwright/toolError';
+import { sendRpc } from '../wmux-client';
 import { isAgentWindowScopeError } from '../../shared/liveWriteScope';
 import {
   sendScopedBrowserRpc,
@@ -276,12 +277,20 @@ export function createReplayToolCatalog(deps: BrowserToolDeps) {
    * would make writing one depend on a live automation target.
    */
   async function landedHost(scope: BrowserTargetScope): Promise<string | null> {
-    const res = await sendScopedBrowserRpc<{
+    // Plain sendRpc, not sendScopedBrowserRpc: the scoped helper always names
+    // the scope's (or the pinned) surface, and main refuses `list` with a
+    // surfaceId, so every note came back "could not tell which site" (#2064).
+    // The listing stays confined to this workspace; the surface is picked below.
+    // sendRpc does not reject `{ ok: false, error }`, hence the `ok` check.
+    const res = (await sendRpc('browser.tabs', {
+      action: 'list',
+      workspaceId: scope.workspaceId,
+    }).catch(() => null)) as {
       ok?: boolean;
       action?: string;
       tabs?: Array<{ surfaceId?: string; url?: string; selected?: boolean }>;
-    }>('browser.tabs', scope, { action: 'list' }).catch(() => null);
-    const tabs = res?.tabs ?? [];
+    } | null;
+    const tabs = res?.ok === true && Array.isArray(res.tabs) ? res.tabs : [];
     if (tabs.length === 0) return null;
     const tab = scope.surfaceId
       ? tabs.filter((t) => t.surfaceId === scope.surfaceId)[0]
