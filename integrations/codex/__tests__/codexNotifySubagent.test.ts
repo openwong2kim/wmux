@@ -190,7 +190,6 @@ describe('findRolloutFile / classifyCodexThread', () => {
   });
 });
 
-// End to end: the bridge as Codex runs it, against a fake wmux main pipe.
 // #1765 — the daemon can only scan the pane env's sessions root; the bridge
 // runs in Codex's own environment and forwards what it found.
 describe('codexRolloutMissing', () => {
@@ -231,6 +230,7 @@ describe('codexRolloutMissing', () => {
   });
 });
 
+// End to end: the bridge as Codex runs it, against a fake wmux main pipe.
 describe('wmux-codex-notify with a sub-agent thread', () => {
   let dir: string;
   let home: string;
@@ -271,8 +271,10 @@ describe('wmux-codex-notify with a sub-agent thread', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  function run(threadId: string, extraEnv: Record<string, string> = {}): Promise<number | null> {
-    const payload = JSON.stringify({ type: 'agent-turn-complete', 'thread-id': threadId, 'turn-id': 'turn-1', cwd: dir });
+  function run(threadId: string, extraEnv: Record<string, string> = {}, legacy?: { transcript_path: string }): Promise<number | null> {
+    const payload = JSON.stringify(legacy
+      ? { session_id: threadId, cwd: dir, ...legacy }
+      : { type: 'agent-turn-complete', 'thread-id': threadId, 'turn-id': 'turn-1', cwd: dir });
     const env: NodeJS.ProcessEnv = { ...process.env };
     // This suite may itself run inside a wmux pane.
     for (const key of Object.keys(env)) if (key.startsWith('WMUX_')) delete env[key];
@@ -337,6 +339,30 @@ describe('wmux-codex-notify with a sub-agent thread', () => {
     writeRollout(path.join(codexHome, 'sessions'), ROOT, meta(ROOT, 'cli', ROOT));
     expect(await exited).toBe(0);
     expect(received[0].params?.payload).toEqual({ 'turn-id': 'turn-1', rolloutMissing: false });
+  }, 20_000);
+
+  it('reclassifies a rollout that lands after the first look: a late sub-agent is not a pane stop (#1765)', async () => {
+    writeRollout(path.join(codexHome, 'sessions'), ROOT, meta(ROOT, 'cli', ROOT));
+    const exited = run(CHILD);
+    await new Promise((r) => setTimeout(r, 600));
+    writeRollout(path.join(codexHome, 'sessions'), CHILD, meta(CHILD, spawnSource(ROOT), ROOT));
+    expect(await exited).toBe(0);
+    expect(received).toHaveLength(1);
+    expect(received[0].params).toEqual(expect.objectContaining({ kind: 'agent.subagent_stop', payload: { 'turn-id': 'turn-1' } }));
+    expect(received[0].params).not.toHaveProperty('agentSessionId');
+  }, 20_000);
+
+  it('sends no verdict with a legacy payload that names its own transcript (#1765)', async () => {
+    const transcript = path.join(dir, 'legacy.jsonl');
+    expect(await run(CHILD, {}, { transcript_path: transcript })).toBe(0);
+    expect(received[0].params?.payload).toEqual({ transcript_path: transcript });
+  }, 20_000);
+
+  it('does not spool a thread with no rollout when no wmux endpoint exists (#1765)', async () => {
+    fs.rmSync(path.join(home, '.wmux-auth-token'), { force: true });
+    expect(await run(CHILD)).toBe(0);
+    expect(spoolFiles()).toEqual([]);
+    expect(logLines()).toEqual([expect.objectContaining({ outcome: 'no-auth-token' })]);
   }, 20_000);
 
   it('sends no verdict when the WSL launcher started it (#1765)', async () => {

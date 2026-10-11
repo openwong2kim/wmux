@@ -309,7 +309,6 @@ export function readAncestorChain(startPid = process.ppid) {
 // root" instead of guessing.
 
 const THREAD_ID_RE = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
-const DAY_MS = 24 * 60 * 60 * 1000;
 // session_meta carries the base instructions, measured ~20 KB; this cap only
 // bounds a malformed file.
 const SESSION_META_MAX_BYTES = 1024 * 1024;
@@ -354,8 +353,11 @@ function lookupRolloutFile(id, sessionsRoot, anyRevision) {
   const suffix = `-${id}.jsonl`;
   const revision = `-${id}_`;
   let complete = true;
-  for (const offset of [0, -DAY_MS, DAY_MS]) {
-    const d = new Date(created + offset);
+  const c = new Date(created);
+  // Calendar days, not ±24 h: across a DST change a 24 h step can skip the
+  // neighbouring day, and a missed folder would read as a missing rollout.
+  for (const offset of [0, -1, 1]) {
+    const d = new Date(c.getFullYear(), c.getMonth(), c.getDate() + offset);
     const dir = join(
       sessionsRoot,
       String(d.getFullYear()),

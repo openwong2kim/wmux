@@ -307,12 +307,16 @@ The shared module is shipped and installed beside both entry points.
 The notify bridge's `agent.stop` also carries `payload.rolloutMissing` (#1765):
 whether its exact-id lookup, in Codex's own sessions root, found the thread's
 rollout. The daemon can only look under the pane env's root, which is not where
-a WSL distro or a `CODEX_HOME` exported in a shell rc writes, so it holds a
-stop marked `true` (Codex's title thread) as it holds one it can prove itself.
-The bridge looks again for up to 1.5 s before it sends `true`. The field is
-omitted when the bridge cannot tell: a non-UUIDv7 id, a day folder it cannot
-list, or a bridge started by the WSL launcher, which runs it only for a rollout
-it found in the distro.
+a `CODEX_HOME` exported in a shell rc writes, and an unbound pane gives it no
+proof that the root is the right one, so it holds a stop marked `true` (Codex's
+title thread) as it holds one it can prove itself. The bridge looks again for
+up to 1.5 s before it sends `true`, and does not spool a resume binding for
+such a thread. The field is omitted when the bridge cannot tell (a non-UUIDv7
+id, a day folder it cannot list), for a sub-agent turn, for a legacy payload
+that names its own `transcript_path`, and from a bridge started by the WSL
+launcher. WSL panes are not gated on it: the launcher runs the bridge only for
+a resumable thread whose rollout it found in the distro, so a title thread
+never reaches the daemon from WSL.
 
 ### MCP and A2A identity under the shared server (#1778)
 

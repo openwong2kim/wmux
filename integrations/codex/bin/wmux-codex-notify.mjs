@@ -53,10 +53,12 @@ import { fileURLToPath } from 'node:url';
 import { createConnection } from 'node:net';
 import { randomUUID } from 'node:crypto';
 import {
-  classifyCodexThread, codexSessionsRoot, codexRolloutMissing, notifierOrigin, attributeThread,
+  inspectCodexThread, codexSessionsRoot, codexRolloutMissing, notifierOrigin, attributeThread,
 } from './wmux-codex-thread.mjs';
 
-const HOOK_TIMEOUT_MS = 2000; // hard cap so we never stall a Codex turn
+// Hard cap on the RPC walk so we never stall a Codex turn. Only a stop whose
+// rollout is not on disk yet waits longer, by ROLLOUT_RECHECK_MS (#1765).
+const HOOK_TIMEOUT_MS = 2000;
 const AGENT_TURN_COMPLETE = 'agent-turn-complete';
 // Stamped on every codex-notify.log line; bump on behavior changes.
 //   0.2.0 — daemon-first targeting (daemon.hooks.signal → hooks.signal).
@@ -419,28 +421,40 @@ async function main() {
   // agentSessionId (see "Sub-agent threads" above) — never agent.stop under
   // its own id, which would replace the pane's resume binding with a thread
   // the user cannot type into.
-  let thread = { subagent: false, rootId: sessionId };
-  try {
-    thread = classifyCodexThread(sessionId, codexSessionsRoot(process.env));
-  } catch {
-    // Fail open: an unreadable history is today's agent.stop.
-  }
-  // #1765 — read before attribution, which may replace the routing env. No
-  // verdict (undefined) leaves the daemon's own check, as before.
-  let rolloutMissing;
-  if (!thread.subagent) {
+  const classify = () => {
     try {
-      rolloutMissing = codexRolloutMissing(sessionId, process.env);
+      return inspectCodexThread(sessionId, codexSessionsRoot(process.env));
+    } catch {
+      // Fail open: an unreadable history is today's agent.stop.
+      return { subagent: false, rootId: sessionId, confirmed: false };
+    }
+  };
+  let { confirmed, ...thread } = classify();
+  // #1765 — the verdict reads the env Codex spawned us with; attribution may
+  // replace the routing env (and drops the WSL launcher's marker).
+  const spawnEnv = { ...process.env };
+  if (!await attributeThread(origin, thread)) return;
+  // No verdict (undefined) leaves the daemon's own check, as before. A legacy
+  // payload names its own transcript, which the daemon checks instead.
+  let rolloutMissing;
+  if (!thread.subagent && !transcriptPathClaimed) {
+    try {
+      // A confirmed top-level thread was read from its rollout just now.
+      rolloutMissing = confirmed ? false : codexRolloutMissing(sessionId, spawnEnv);
       for (const wait of ROLLOUT_RECHECK_MS) {
         if (rolloutMissing !== true) break;
         await sleep(wait);
-        rolloutMissing = codexRolloutMissing(sessionId, process.env);
+        rolloutMissing = codexRolloutMissing(sessionId, spawnEnv);
+      }
+      // A rollout that landed after the first look may be a sub-agent's.
+      if (rolloutMissing === false && !confirmed) {
+        ({ confirmed, ...thread } = classify());
+        if (thread.subagent) rolloutMissing = undefined;
       }
     } catch {
       rolloutMissing = undefined;
     }
   }
-  if (!await attributeThread(origin, thread)) return;
   const envPtyId = nonEmptyStr(process.env.WMUX_PTY_ID);
   const envWorkspaceId = nonEmptyStr(process.env.WMUX_WORKSPACE_ID);
   const envSurfaceId = nonEmptyStr(process.env.WMUX_SURFACE_ID);
@@ -460,8 +474,9 @@ async function main() {
     logEvent('no-auth-token', { origin, ...threadLog, paths: [getDaemonAuthTokenPath(), getAuthTokenPath()] });
     // Still spool so a later daemon boot reconciles the capture. A sub-agent
     // completion carries no id to spool (#1697 review, "should fix" #5): it
-    // must never replace an older, valid agent.stop spool for this pane.
-    if (envPtyId && !thread.subagent) {
+    // must never replace an older, valid agent.stop spool for this pane, and
+    // neither must a thread with no rollout (#1765).
+    if (envPtyId && !thread.subagent && rolloutMissing !== true) {
       spoolResumeBinding({ ptyId: envPtyId, agent: 'codex', sessionId, cwd, transcriptPath, ts: Date.now() });
     }
     return;
@@ -519,8 +534,9 @@ async function main() {
     // Anything but a durable success would lose the capture. Spool it (needs
     // the exact per-pane key) so the daemon reconciles it on its next boot —
     // except a sub-agent completion, which carries nothing to spool and must
-    // never replace an older, valid agent.stop spool for this pane.
-    if (envPtyId && !thread.subagent) {
+    // never replace an older, valid agent.stop spool for this pane, nor may a
+    // thread with no rollout (#1765).
+    if (envPtyId && !thread.subagent && rolloutMissing !== true) {
       spoolResumeBinding({ ptyId: envPtyId, agent: 'codex', sessionId, cwd, transcriptPath, ts: envelope.ts });
     }
   }

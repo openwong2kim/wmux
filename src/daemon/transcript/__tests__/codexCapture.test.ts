@@ -188,25 +188,12 @@ describe('gateCodexStop', () => {
     await new Promise((r) => setTimeout(r, 30));
   };
 
-  it('a WSL title-thread stop the bridge found no rollout for is held, then dropped', async () => {
-    const { now, calls } = gate(T, { wsl: true, payload: { rolloutMissing: true } });
-    expect(now).toBeNull();
-    await held(calls);
-    expect(calls).toEqual([{ kind: 'drop' }]);
-  });
-
-  it('a WSL stop the bridge found a rollout for passes untouched', () => {
-    const { now, calls } = gate(B, { wsl: true, payload: { rolloutMissing: false } });
-    expect(now).toEqual(stop(B, { rolloutMissing: false }));
-    expect(calls).toEqual([]);
-  });
-
-  it('a WSL pane never scans this process\'s root, even for a same-named rollout', async () => {
-    rollout(T);
-    const { now, calls } = gate(T, { wsl: true, payload: { rolloutMissing: true } });
-    expect(now).toBeNull();
-    await held(calls);
-    expect(calls).toEqual([{ kind: 'drop' }]);
+  it('a WSL pane ignores the verdict: the managed WSL hook already drops title threads', () => {
+    for (const rolloutMissing of [true, false]) {
+      const { now, calls } = gate(T, { wsl: true, payload: { rolloutMissing } });
+      expect(now).toEqual(stop(T, { rolloutMissing }));
+      expect(calls).toEqual([]);
+    }
   });
 
   it('the verdict holds a stop where the pane env does not name the sessions root (CODEX_HOME in a shell rc)', async () => {
