@@ -11,7 +11,9 @@ import {
   answersConfirmed,
   askAnswerSteps,
   askOtherMaxWidth,
+  askPickerOnScreen,
   askPickerUntouched,
+  askScreenShape,
   askScreenMeets,
   countAnsweredBlocks,
   isFreeTextPlaceholder,
@@ -217,6 +219,16 @@ describe('parseAskPicker on the measured screens', () => {
     expect(field?.view === 'question' && field.options[3]).toEqual({ key: '4', label: 'Type something.', cursor: true });
     const pasted = parseAskPicker(SINGLE.otherPasted);
     expect(pasted?.view === 'question' && pasted.options[3]).toEqual({ key: '4', label: 'teal please', cursor: true });
+  });
+
+  it('logs a screen as shapes only: marks, option rows and the hint, never the text', () => {
+    const shape = askScreenShape(SINGLE.initial.slice(0, 27), 16);
+    expect(shape).toBe('0:─:100 1:☐:8 _ 0:a:33 _ 0:❯N.:8 5:a:9 2:N.:10 5:a:9 2:N.:9 5:a:9 2:N.:20 0:─:100 2:N.:20 _ 0:H:49');
+    expect(shape).not.toMatch(/Color|Red|Which|Enter/);
+    // The hint with a cell missing is no longer the hint.
+    const cut = [...SINGLE.initial.slice(0, 26), 'Enter to select · ↑/↓ to navigate · Esc to  ancel'];
+    expect(askScreenShape(cut, 1)).toBe('0:a:49');
+    expect(askPickerOnScreen(cut)).toBe(false);
   });
 
   it('finds no picker once it is answered, and none in text that is not a picker', () => {

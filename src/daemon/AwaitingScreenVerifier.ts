@@ -44,7 +44,8 @@
 //     the screen alone decides, as before. A record ending (or the agent
 //     exiting) re-runs the verification without waiting for new output.
 
-import { capSnapshot } from './web/snapshotWindow';
+import type { RingBuffer, ReplayGeometry } from './RingBuffer';
+import { readRingTailWithModesAndGeometry, readRingWithModesAndGeometry } from './sessionTextReplay';
 import { screenShowsActiveDialog, screenShowsPermissionDialog } from './transcript/chatScreenGate';
 import { isNativeDecision, type ApprovalRequest } from './approvals/types';
 
@@ -309,19 +310,19 @@ export function questionInFlight(input: {
     && (!!r.question || !!r.form || (r.choices?.length ?? 0) > 0 || (r.options?.length ?? 0) > 0));
 }
 
-/** Bytes of the ring's tail a verification (or a prompt read) replays. */
+/** Bytes of the ring's tail a read replays when the whole ring did not parse in time. */
 export const AWAITING_RENDER_WINDOW_BYTES = 256 * 1024;
 
 /** The slice of a daemon pane `renderPaneScreen` reads. `ManagedSession` satisfies it. */
 export interface RenderablePane {
   meta: { cols?: number; rows?: number };
   ptyProcess: { cols?: number; rows?: number };
-  ringBuffer: { readonly totalBytesWritten: number; readAll(): Buffer };
+  ringBuffer: Pick<RingBuffer, 'readAllWithGeometry'>;
   bridge: { readonly isMuted: boolean; readonly outputModes?: { preamble(windowStart: number): string } | null };
 }
 
-type TextSnapshot = (req: { cols: number; rows: number; scrollback: number; initial: Buffer }) =>
-  Promise<{ ok: true; rows: Array<{ text: string }> } | { ok: false }>;
+type TextSnapshot = (req: { cols: number; rows: number; scrollback: number; initial: Buffer; geometry?: ReplayGeometry }) =>
+  Promise<{ ok: true; rows: Array<{ text: string }> } | { ok: false; reason?: string }>;
 
 /**
  * The pane's live geometry: the PTY's own size when node-pty reports it (the
@@ -350,14 +351,22 @@ export async function renderPaneScreen(
   if (!pane || pane.bridge.isMuted) return null;
   const geometry = liveGeometry(pane);
   if (!geometry) return null;
-  // The mark is taken at the same instant the ring is read. Only a bounded
-  // tail is replayed (the window a phone's stream paints from), prefixed by the
-  // terminal-mode preamble so an alt screen entered before the window still is.
-  const mark = pane.ringBuffer.totalBytesWritten;
-  const tail = capSnapshot(pane.ringBuffer.readAll(), { maxBytes: AWAITING_RENDER_WINDOW_BYTES });
-  const preamble = pane.bridge.outputModes?.preamble(mark - tail.bytes.length) ?? '';
-  const initial = preamble ? Buffer.concat([Buffer.from(preamble, 'utf8'), tail.bytes]) : tail.bytes;
-  const outcome = await snapshot({ ...geometry, scrollback: 0, initial });
+  // The mark is taken at the same instant the ring is read. The whole ring is
+  // replayed, each stretch at the size it was written at: Claude Code's
+  // fullscreen renderer repaints by cell diff and skips a cell that already
+  // holds the right character, so a replay of only the newest bytes leaves
+  // such a cell blank (a picker's hint read `Esc to  ancel`, and a picker that
+  // was up was refused as gone). Only when the whole ring does not parse in
+  // time is the newest stretch read instead.
+  const outputModes = pane.bridge.outputModes ?? null;
+  const whole = readRingWithModesAndGeometry(pane.ringBuffer, outputModes);
+  const mark = whole.writtenAt;
+  let outcome = await snapshot({ ...geometry, scrollback: 0, initial: whole.replay, geometry: whole.geometry });
+  if (!outcome.ok && outcome.reason === 'budget') {
+    const tail = readRingTailWithModesAndGeometry(pane.ringBuffer, outputModes, AWAITING_RENDER_WINDOW_BYTES);
+    if (tail.writtenAt !== mark) return null;
+    outcome = await snapshot({ ...geometry, scrollback: 0, initial: tail.replay, geometry: tail.geometry });
+  }
   if (!outcome.ok) return null;
   if (getPane() !== pane) return null;
   const after = liveGeometry(pane);

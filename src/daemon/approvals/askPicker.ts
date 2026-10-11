@@ -450,6 +450,38 @@ export function askPickerOnScreen(rawRows: readonly string[]): boolean {
   return false;
 }
 
+/** Leading characters a shape names as themselves: picker rules, marks and gutters, never text. */
+const SHAPE_MARKS: ReadonlySet<string> = new Set(['─', '❯', '☐', '☒', '✔', '⏺', '│', '●', '→', '←', '⎿', '↓', '·']);
+
+/**
+ * The shape of the grid's last `count` rows for a log line, without the rows'
+ * text (it is the user's): per row `indent:lead:length`, `_` for a blank row.
+ * `lead` is the first character when it is one of the picker's own marks
+ * (`─`, `❯`, `☐`, `⏺`, …), `N.` (or `❯N.`) for a numbered option row, `H`
+ * for the key hint, else only its class: `a` ASCII, `w` other text.
+ * `length` counts characters. Trailing blank rows are not counted in `count`;
+ * `+N_` at the end says how many there were.
+ */
+export function askScreenShape(rawRows: readonly string[], count: number): string {
+  let end = rawRows.length;
+  while (end > 0 && !rawRows[end - 1]!.trim()) end--;
+  const shapes = rawRows.slice(Math.max(0, end - count), end).map((raw) => {
+    const row = raw.replace(/\s+$/, '');
+    if (!row) return '_';
+    const text = row.trimStart();
+    const indent = row.length - text.length;
+    const option = OPTION_ROW.exec(row.slice(Math.max(0, indent - 2)));
+    const first = [...text][0]!;
+    const lead = HINT.test(normalize(text)) ? 'H'
+      : option ? `${option[1] === '❯ ' ? '❯' : ''}N.`
+        : SHAPE_MARKS.has(first) ? first
+          : /^[\x21-\x7e]$/.test(first) ? 'a' : 'w';
+    return `${indent}:${lead}:${[...row].length}`;
+  });
+  if (end < rawRows.length) shapes.push(`+${rawRows.length - end}_`);
+  return shapes.join(' ');
+}
+
 /**
  * The grid shows Claude's own report that the question was declined (Esc at
  * the picker: `⏺ User declined to answer questions`, measured on 2.1.296).

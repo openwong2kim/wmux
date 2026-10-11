@@ -134,6 +134,7 @@ import {
   askOtherMaxWidth,
   askPickerOnScreen,
   askPickerUntouched,
+  askScreenShape,
   askConfirmBaseline,
   askReviewOf,
   askScreenMeets,
@@ -190,6 +191,8 @@ const isNative = (r: ApprovalRequest): boolean => isNativeDecision(r);
 /** How long a settled native request is remembered, so a late re-notify cannot resurrect its card. */
 const NATIVE_SETTLED_MEMORY_MS = 10 * 60_000;
 const NATIVE_SETTLED_MEMORY_MAX = 1024;
+/** Grid rows whose shape is logged when a questions answer finds no readable picker. */
+const ASK_SHAPE_LOG_ROWS = 24;
 /**
  * One agent request's identity. Codex request ids are small integers that
  * every pane on an account server shares and that restart at 0 with it, so a
@@ -3317,7 +3320,17 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
         audit(gone.ok ? 'ok' : gone.reason);
         return gone;
       }
-      audit(`prompt-changed:${picker ? 'picker-differs' : hint ? 'picker-unreadable' : 'no-picker'}`);
+      const outcome = picker ? 'picker-differs' : hint ? 'picker-unreadable' : 'no-picker';
+      audit(`prompt-changed:${outcome}`);
+      if (!picker) {
+        // What the read saw, as shapes only, so the next refusal of a picker
+        // that looked up can be told apart from a screen that really changed.
+        this.deps.log?.(
+          'info',
+          `[approvals] questions screen shape outcome=${outcome} record=${record.id} rows=${first.rows.length} `
+            + `cols=${first.cols ?? '-'} tail=[${askScreenShape(first.rows, ASK_SHAPE_LOG_ROWS)}]`,
+        );
+      }
       return { ok: false, reason: 'prompt-changed', request: copyRequest(record) };
     }
     // The echo check reads the whole text back off its row.

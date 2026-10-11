@@ -857,6 +857,22 @@ describe('other prompts on the pane while the answer runs', () => {
 });
 
 describe('what is refused before any key', () => {
+  it('a picker whose hint does not read, logging the screen as shapes only', async () => {
+    const lines: string[] = [];
+    const hint = SINGLE.initial.findIndex((row) => row.startsWith('Enter to select'));
+    const garbled = SINGLE.initial.map((row, i) => (i === hint ? row.replace('cancel', ' ancel') : row));
+    const h = makeRegistry({ log: (_level, message) => lines.push(message) }, garbled);
+    const record = await create(h, COLOR_PAYLOAD);
+    const result = await answer(h, record, { answers: [{ questionId: 'q0', keys: ['3'] }] });
+    expect(result).toMatchObject({ ok: false, reason: 'prompt-changed' });
+    expect(h.stepKeys).toEqual([]);
+    const shape = lines.find((line) => line.includes('questions screen shape'));
+    expect(shape).toContain('outcome=no-picker');
+    expect(shape).toContain('1:☐:8 _ 0:a:33 _ 0:❯N.:8');
+    expect(shape).toContain('2:N.:20 _ 0:a:49 +13_]');
+    expect(shape).not.toMatch(/Color|Red|Which|Enter/);
+  });
+
   it('a picker someone already touched', async () => {
     const h = makeRegistry({}, SINGLE.down);
     const record = await create(h, COLOR_PAYLOAD);

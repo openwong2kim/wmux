@@ -17,6 +17,7 @@ import { DaemonPTYBridge } from '../DaemonPTYBridge';
 import { RingBuffer } from '../RingBuffer';
 import { generateTextSnapshot } from '../HeadlessSnapshot';
 import { screenShowsActiveDialog, screenShowsAgentDialog } from '../transcript/chatScreenGate';
+import { askPickerOnScreen, parseAskPicker } from '../approvals/askPicker';
 import type { ApprovalRequest } from '../approvals/types';
 
 // ── Replay fixtures ──────────────────────────────────────────────────────────
@@ -551,6 +552,81 @@ describe('renderPaneScreen', () => {
     expect(await renderPaneScreen(() => renderablePane({ bridge: { isMuted: true } }), ok)).toBeNull();
     expect(await renderPaneScreen(() => undefined, ok)).toBeNull();
     expect(await renderPaneScreen(() => renderablePane(), async () => ({ ok: false as const }))).toBeNull();
+  });
+
+  it('replays each stretch of the ring at the size it was written at', async () => {
+    const ring = new RingBuffer(4096);
+    ring.noteGeometry(132, 43);
+    ring.write(Buffer.from('wide'));
+    ring.noteGeometry(86, 59);
+    ring.write(Buffer.from('narrow'));
+    const seen: unknown[] = [];
+    const snapshot = async (req: { geometry?: unknown }) => {
+      seen.push(req.geometry);
+      return { ok: true as const, rows: [{ text: 'x' }] };
+    };
+    const pane = renderablePane({ ringBuffer: ring, ptyProcess: { cols: 86, rows: 59 } });
+    expect(await renderPaneScreen(() => pane, snapshot)).toMatchObject({ mark: 10, cols: 86 });
+    expect(seen).toEqual([{ start: { cols: 132, rows: 43 }, changes: [{ offset: 4, cols: 86, rows: 59 }] }]);
+  });
+
+  // Claude Code's fullscreen renderer repaints by cell diff: a cell that
+  // already holds the right character is skipped with a cursor jump. A picker
+  // drawn once and then redrawn after a long stretch of other output skips the
+  // cells that did not change. Measured on 2.1.296: the hint row was redrawn as
+  // `Esc to ` + CHA + `ancel`, its `c` left from the first paint.
+  describe('a picker redrawn by cell diff long after its first paint', () => {
+    const cols = 86;
+    const rows = 30;
+    const rule = '─'.repeat(cols);
+    const picker = [
+      rule,
+      ' ☐ Color',
+      '',
+      'Which color should the button be?',
+      '',
+      '❯ 1. Red',
+      '     warm',
+      '  2. Green',
+      '     calm',
+      '  3. Type something.',
+      rule,
+      '  4. Chat about this',
+      '',
+      'Enter to select · ↑/↓ to navigate · Esc to cancel',
+    ];
+    const top = rows - picker.length + 1; // 1-based row of the top rule
+    const hintRow = top + picker.length - 1;
+    const paint = (lines: readonly string[]): string =>
+      lines.map((line, i) => `\x1b[${top + i};1H${line}\x1b[K`).join('');
+    // The redraw: every row again, but the hint's `c` of `cancel` is skipped.
+    const diffRedraw = paint(picker.slice(0, -1))
+      + `\x1b[${hintRow};1HEnter to select · ↑/↓ to navigate · Esc to \x1b[45Gancel\x1b[K`;
+    // More than the old 256 KB tail of status-line repaints on row 1, between the two.
+    let filler = '';
+    for (let i = 0; filler.length < 300 * 1024; i++) filler += `\x1b[1;1H✻ Working ${i}\x1b[K`;
+
+    const paneWith = (stream: string): RenderablePane => {
+      const ring = new RingBuffer(1024 * 1024);
+      ring.noteGeometry(cols, rows);
+      ring.write(Buffer.from(stream));
+      return { meta: { cols, rows }, ptyProcess: { cols, rows }, ringBuffer: ring, bridge: { isMuted: false } };
+    };
+
+    it('reads the whole picker, the skipped cell included', async () => {
+      const pane = paneWith(`\x1b[2J\x1b[H${paint(picker)}${filler}${diffRedraw}`);
+      const frame = await renderPaneScreen(() => pane, generateTextSnapshot);
+      expect(frame?.rows[hintRow - 1]).toBe('Enter to select · ↑/↓ to navigate · Esc to cancel');
+      expect(parseAskPicker(frame!.rows)).toMatchObject({ view: 'question', question: 'Which color should the button be?' });
+    });
+
+    it('still reads no picker once a later frame replaced it', async () => {
+      const replaced = picker.map((_, i) => (i === 0 ? 'Do you want to proceed?' : i === 1 ? '❯ 1. Yes' : i === 2 ? '  2. No' : ''));
+      const pane = paneWith(`\x1b[2J\x1b[H${paint(picker)}${filler}${diffRedraw}${paint(replaced)}`);
+      const frame = await renderPaneScreen(() => pane, generateTextSnapshot);
+      expect(parseAskPicker(frame!.rows)).toBeNull();
+      expect(askPickerOnScreen(frame!.rows)).toBe(false);
+    });
   });
 });
 
