@@ -96,7 +96,12 @@ describe('planChannelMessageDelivery — W1 operator observation', () => {
     // can observe, so the red @ badge follows one rule on desktop and phone.
     const plan = planChannelMessageDelivery('ws-agent', [ACTIVE, BG], [HUMAN], LOCAL, false);
     expect(plan.appendToDisplay).toBe(true);
+    // Only the @ badge: the channel's other traffic is not shown, so no unread.
+    expect(plan.countUnread).toBe(false);
     expect(plan.routeWorkspaces).toEqual([]);
+    // A channel the human is in (or observes) still counts unread as before.
+    expect(planChannelMessageDelivery('ws-agent', [HUMAN], [HUMAN], LOCAL).countUnread).toBe(true);
+    expect(planChannelMessageDelivery('ws-agent', [ACTIVE], [HUMAN], LOCAL, true).countUnread).toBe(true);
   });
 
   it('#1318: an agent-to-agent mention in such a channel still does not append', () => {

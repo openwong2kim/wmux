@@ -383,7 +383,9 @@ export interface ChannelsSlice {
 
   // ── Event-driven actions (dispatched from the subscription hook) ─
   markChannelRead: (channelId: string) => void;
-  appendMessageFromEvent: (message: ChannelMessage) => void;
+  /** `countUnread: false` (#1318) appends without bumping the unread count —
+   *  a channel the human has not joined, shown only for a mention of it. */
+  appendMessageFromEvent: (message: ChannelMessage, opts?: { countUnread?: boolean }) => void;
   /** Hydrate a channel's message history (P0). Merges the daemon's
    *  `getMessages` result with any live/optimistic rows already in the
    *  store, deduped by `seq` (existing rows win — a live event may carry a
@@ -526,6 +528,14 @@ export const createChannelsSlice: StateCreator<
       for (const id of Object.keys(state.channelMentions)) {
         if (!liveIds.has(id)) delete state.channelMentions[id];
       }
+      // #1318: a channel the human reads without a seat carries the daemon's
+      // count of unread mentions of the human (its observer cursor) — the same
+      // number the phone shows, so a read on either surface clears both. The
+      // open channel is being read, so it stays clear.
+      for (const ch of channels) {
+        if (ch.observerUnreadMentions === undefined) continue;
+        state.channelMentions[ch.id] = ch.id === state.activeChannelId ? 0 : ch.observerUnreadMentions;
+      }
     }),
 
   createChannelOptimistic: (params) => {
@@ -663,7 +673,7 @@ export const createChannelsSlice: StateCreator<
     return { ok: true, value: archivedChannel };
   },
 
-  appendMessageFromEvent: (message) =>
+  appendMessageFromEvent: (message, opts) =>
     set((state: StoreState) => {
       const channelId = message.channelId;
       const list = state.channelMessages[channelId] ?? [];
@@ -709,7 +719,7 @@ export const createChannelsSlice: StateCreator<
         // message as unread noise. TRADEOFF (ws-level unread limit): in a
         // single-ws multi-agent setup a SIBLING pane's post is also muted here —
         // pane-level unread would distinguish them, but the badge is ws-scoped.
-        if (message.workspaceId !== selfWs) {
+        if (message.workspaceId !== selfWs && opts?.countUnread !== false) {
           state.channelUnread[channelId] =
             (state.channelUnread[channelId] ?? 0) + 1;
         }

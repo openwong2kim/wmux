@@ -903,6 +903,31 @@ export function ChannelView(): React.ReactElement | null {
     };
   }, [activeChannelId]);
 
+  // #1318: a mention of the human that arrives while a seatless channel is open
+  // is read on arrival — ack it then, so the observer cursor (and the phone's
+  // count) follows instead of waiting for the next open.
+  const readsAsObserver = channel?.observerUnreadMentions !== undefined;
+  const latestHumanMentionSeq = useMemo(() => {
+    let seq = 0;
+    for (const m of messages) {
+      if (m.seq > seq && m.mentions?.some((mn) => mn.workspaceId === HUMAN_WORKSPACE_ID)) seq = m.seq;
+    }
+    return seq;
+  }, [messages]);
+  useEffect(() => {
+    if (!activeChannelId || !readsAsObserver || latestHumanMentionSeq < 1) return;
+    const bridge = useStore.getState().channelsRpc();
+    if (!bridge) return;
+    void bridge
+      .mutateLocal('a2a.channel.ack', {
+        channelId: activeChannelId,
+        workspaceId: HUMAN_WORKSPACE_ID,
+        verifiedWorkspaceId: HUMAN_WORKSPACE_ID,
+        uptoSeq: latestHumanMentionSeq,
+      })
+      .catch(() => undefined);
+  }, [activeChannelId, readsAsObserver, latestHumanMentionSeq]);
+
   if (!activeChannelId || !channel) {
     // The activeChannelId-but-channel-undefined case can fire on a
     // catalog refresh that dropped the channel. Treat it as a

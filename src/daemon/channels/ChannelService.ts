@@ -50,7 +50,7 @@ import { HUMAN_SELF_PRINCIPAL_ID } from '../../shared/principals';
 import { CHANNELS_EPOCH, EMPTY_CHANNEL_STATE } from '../../shared/channels';
 import { makeEnvelope, type AuthContext } from '../../shared/eventlog';
 import { ChannelStateWriter, reapEmptyChannels } from './ChannelStateWriter';
-import { applyChannelEvent, noteHumanSeatTaken, type ChannelEventPayload } from './channelEvents';
+import { applyChannelEvent, noteHumanSeatCursor, type ChannelEventPayload } from './channelEvents';
 import type { AppendOnlyLog } from '../eventlog/AppendOnlyLog';
 import type { SnapshotStore } from '../eventlog/SnapshotStore';
 import { CHANNEL_PROJECTION_REF } from '../eventlog/SnapshotStore';
@@ -606,6 +606,11 @@ export class ChannelService {
     workspaceId: string,
     paneId: string,
   ) => { ptyId?: string } | undefined;
+  /** #1318 — observerMentionUnread's per-channel memo. In memory only. */
+  private readonly observerMentionMemo = new Map<
+    string,
+    { msgs: ChannelMessage[]; cursor: number; oldestSeq: number; scannedTo: number; count: number }
+  >();
   /**
    * Phone channel Inbox — human-mention promotion listeners (the same shape as
    * the approvals onEvent pattern). Called each time post() commits a verified
@@ -767,7 +772,7 @@ export class ChannelService {
   list(verifiedWorkspaceId: string): Channel[] {
     return this.state.channels
       .filter((channel) => this.isObservableBy(channel, verifiedWorkspaceId))
-      .map((channel) => this.withObservedFlag(channel, verifiedWorkspaceId));
+      .map((channel) => this.withObserverMentions(this.withObservedFlag(channel, verifiedWorkspaceId), verifiedWorkspaceId));
   }
 
   /**
@@ -787,7 +792,7 @@ export class ChannelService {
     // P3): a renderer path that fills its mirror from get() must see the same
     // caller-relative flag, or the read-only banner would silently vanish.
     if (!this.isObservableBy(channel, verifiedWorkspaceId)) return null;
-    return this.withObservedFlag(channel, verifiedWorkspaceId);
+    return this.withObserverMentions(this.withObservedFlag(channel, verifiedWorkspaceId), verifiedWorkspaceId);
   }
 
   /**
@@ -961,6 +966,18 @@ export class ChannelService {
       return { ...channel, observed: true };
     }
     return channel;
+  }
+
+  /**
+   * #1318 — stamp `observerUnreadMentions` for the human on a channel it reads
+   * without a seat (and can observe — not trashed), on a shallow copy so the
+   * live row never carries it. Every other caller and every seated channel
+   * gets the row untouched.
+   */
+  private withObserverMentions(channel: Channel, verifiedWorkspaceId: string): Channel {
+    if (verifiedWorkspaceId !== HUMAN_WORKSPACE_ID) return channel;
+    if (this.humanSeatOf(channel.id) || !this.isObservableByPhone(channel)) return channel;
+    return { ...channel, observerUnreadMentions: this.observerMentionUnread(channel.id) };
   }
 
   // ── Mutating (per-channel mutex) ──────────────────────────────────
@@ -1748,7 +1765,7 @@ export class ChannelService {
         members.push(joinedRow);
         this.state.members[channel.id] = members;
         const previousObserverCursor = this.state.observerCursors?.[channel.id];
-        noteHumanSeatTaken(this.state, channel.id, joinedRow);
+        noteHumanSeatCursor(this.state, channel.id, joinedRow);
         if (!this.saveOrFail()) {
           // Roll back the push AND restore the prior emptySince tag.
           members.pop();
@@ -1812,7 +1829,7 @@ export class ChannelService {
       const members = this.state.members[channel.id] ?? [];
       // duplicate 게이트 — 사람 좌석은 (HUMAN_WORKSPACE_ID, HUMAN_MEMBER_ID) 상수라
       // caller 입력과 무관하게 이 한 행의 존재로 판정한다.
-      if (members.some((m) => m.workspaceId === HUMAN_WORKSPACE_ID && m.memberId === HUMAN_MEMBER_ID)) {
+      if (this.humanSeatOf(channel.id)) {
         return { ok: false, error: { code: 'DUPLICATE_MEMBER', message: 'Already a member' } };
       }
       const now = this.now();
@@ -1870,7 +1887,7 @@ export class ChannelService {
         members.push(seatRow);
         this.state.members[channel.id] = members;
         const previousObserverCursor = this.state.observerCursors?.[channel.id];
-        noteHumanSeatTaken(this.state, channel.id, seatRow);
+        noteHumanSeatCursor(this.state, channel.id, seatRow);
         channel.nextSeq++;
         (this.state.messages[channel.id] ??= []).push(systemMessage);
         if (!this.saveOrFail()) {
@@ -1968,11 +1985,14 @@ export class ChannelService {
           channel.emptySince = this.now();
         }
         this.state.members[channel.id] = members;
+        const previousObserverCursor = this.state.observerCursors?.[channel.id];
+        noteHumanSeatCursor(this.state, channel.id, removed);
         if (!this.saveOrFail()) {
           // Roll back: re-insert at the original index.
           members.splice(idx, 0, removed);
           // Clear the emptySince stamp we just set.
           if (members.length === 1) delete channel.emptySince;
+          this.restoreObserverCursor(channel.id, previousObserverCursor);
           return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist channel leave' } };
         }
       }
@@ -2075,10 +2095,13 @@ export class ChannelService {
           channel.emptySince = this.now();
         }
         this.state.members[channel.id] = members;
+        const previousObserverCursor = this.state.observerCursors?.[channel.id];
+        noteHumanSeatCursor(this.state, channel.id, removed);
         if (!this.saveOrFail()) {
           // Roll back: re-insert at the original index, clear the emptySince we set.
           members.splice(idx, 0, removed);
           if (members.length === 1) delete channel.emptySince;
+          this.restoreObserverCursor(channel.id, previousObserverCursor);
           return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist channel kick' } };
         }
       }
@@ -2161,10 +2184,13 @@ export class ChannelService {
           if (survivors.length === 0 && channel.emptySince === undefined) {
             channel.emptySince = this.now();
           }
+          const previousObserverCursor = this.state.observerCursors?.[channel.id];
+          for (const m of removed) noteHumanSeatCursor(this.state, channel.id, m);
           if (!this.saveOrFail()) {
             // Per-channel rollback — same symmetric recovery as leave().
             this.state.members[channel.id] = members;
             channel.emptySince = previousEmptySince;
+            this.restoreObserverCursor(channel.id, previousObserverCursor);
             return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist membership purge' } };
           }
         }
@@ -2629,7 +2655,11 @@ export class ChannelService {
         //     receiving renderer needs both), so there is nothing to preserve.
         //   - The pair is all-or-nothing: a mention leaves here with BOTH paneId
         //     and ptyId, or with neither. No half-pin can reach the renderer.
-        const requestedPaneId = typeof mn.paneId === 'string' ? mn.paneId : '';
+        // #1318: the human owns no panes, so a pin on a human mention can never
+        // be proven — it is dropped quietly instead of reporting the human in
+        // droppedMentions while the mention itself is delivered.
+        const requestedPaneId =
+          typeof mn.paneId === 'string' && mn.workspaceId !== HUMAN_WORKSPACE_ID ? mn.paneId : '';
         let paneId = requestedPaneId;
         let panePtyId = '';
         if (requestedPaneId.length > 0) {
@@ -3009,9 +3039,15 @@ export class ChannelService {
       // recipient), but it is the human reading, so it moves the human's
       // observer cursor — the same cursor the phone's ack moves, so a mention
       // read at the desk is not reported unread on the phone.
+      // Receipts still flip as before: a public channel the human once sat in
+      // can hold pending ws-human receipts from that time.
       if (params.verifiedWorkspaceId === HUMAN_WORKSPACE_ID && params.memberId === undefined) {
         const observed = await this.ackAsObserverLocked(params.channelId, params.uptoSeq);
-        if (observed) return observed.ok ? { ok: true, acked: 0 } : observed;
+        if (observed && !observed.ok) return observed;
+        if (observed) {
+          const channel = this.state.channels.find((c) => c.id === params.channelId);
+          if (!channel || !this.isVisibleTo(channel, HUMAN_WORKSPACE_ID)) return { ok: true, acked: 0 };
+        }
       }
       return this.ackLocked(params);
     });
@@ -3425,7 +3461,7 @@ export class ChannelService {
         // cursor keeps it counted until the human reads it on either surface.
         // Own field names: the seat fields' presence still means "seated" to
         // clients built before this.
-        row.observerUnreadMentions = this.observerMentionUnread(channel.id);
+        row.observerUnreadMentions = channel.observerUnreadMentions ?? 0;
         const observerCursor = this.state.observerCursors?.[channel.id];
         if (observerCursor !== undefined) row.observerLastReadSeq = observerCursor;
       }
@@ -3537,9 +3573,7 @@ export class ChannelService {
     }
     const res = await this.operatorJoin({ channelId, verifiedWorkspaceId: HUMAN_WORKSPACE_ID });
     const seatCursor = (): number => {
-      const seat = (this.state.members[channelId] ?? []).find(
-        (m) => m.workspaceId === HUMAN_WORKSPACE_ID && m.memberId === HUMAN_MEMBER_ID,
-      );
+      const seat = this.humanSeatOf(channelId);
       const head = (this.state.channels.find((c) => c.id === channelId) ?? channel).nextSeq - 1;
       return seat && typeof seat.lastReadSeq === 'number' ? seat.lastReadSeq : head;
     };
@@ -3740,14 +3774,18 @@ export class ChannelService {
         { kind: 'observer-ack', channelId: channel.id, lastReadSeq: target },
         { verifiedWorkspaceId: HUMAN_WORKSPACE_ID, principalId: HUMAN_SELF_PRINCIPAL_ID },
       );
-      return committed ? target : null;
+      if (!committed) return null;
+    } else {
+      const previous = this.state.observerCursors?.[channel.id];
+      (this.state.observerCursors ??= {})[channel.id] = target;
+      if (!this.saveOrFail()) {
+        this.restoreObserverCursor(channel.id, previous);
+        return null;
+      }
     }
-    const previous = this.state.observerCursors?.[channel.id];
-    (this.state.observerCursors ??= {})[channel.id] = target;
-    if (!this.saveOrFail()) {
-      this.restoreObserverCursor(channel.id, previous);
-      return null;
-    }
+    // The desktop's @ badge for this channel hydrates from the cursor — a read
+    // on the phone must clear it there too.
+    this.emitCatalog(channel.id, HUMAN_WORKSPACE_ID, [HUMAN_WORKSPACE_ID], 'cursor');
     return target;
   }
 
@@ -3758,19 +3796,34 @@ export class ChannelService {
    * names the seat was posted while it was held, and that seat's cursor was
    * the one to count it — so state from before this existed (where a seatless
    * mention was always dropped) adds nothing. Messages are seq-ordered, so the
-   * scan starts past the cursor instead of walking read history on every list.
+   * scan starts past the cursor, and a memo (observerMentionMemo) means a list
+   * call only scans what arrived since the last one.
    */
   private observerMentionUnread(channelId: string): number {
     const cursor = this.state.observerCursors?.[channelId] ?? 0;
     const msgs = this.state.messages[channelId] ?? [];
+    const oldestSeq = msgs.length > 0 ? msgs[0].seq : 0;
+    const headSeq = msgs.length > 0 ? msgs[msgs.length - 1].seq : 0;
+    // Resume from the memo when nothing it counted can have changed: same
+    // cursor, same retained array (a trim or a destroy replaces it) and the
+    // same oldest message. Messages are append-only otherwise, and the fields
+    // read here never change after a post.
+    const memo = this.observerMentionMemo.get(channelId);
+    const resume =
+      memo !== undefined &&
+      memo.msgs === msgs &&
+      memo.cursor === cursor &&
+      memo.oldestSeq === oldestSeq &&
+      memo.scannedTo <= headSeq;
+    const from = resume ? Math.max(cursor, memo.scannedTo) : cursor;
+    let count = resume ? memo.count : 0;
     let lo = 0;
     let hi = msgs.length;
     while (lo < hi) {
       const mid = (lo + hi) >>> 1;
-      if (msgs[mid].seq <= cursor) lo = mid + 1;
+      if (msgs[mid].seq <= from) lo = mid + 1;
       else hi = mid;
     }
-    let count = 0;
     for (let i = lo; i < msgs.length; i++) {
       const m = msgs[i];
       if (m.systemKind || m.workspaceId === HUMAN_WORKSPACE_ID) continue;
@@ -3779,6 +3832,7 @@ export class ChannelService {
       }
       if ((m.mentions ?? []).some((mn) => this.mentionsHuman(mn))) count += 1;
     }
+    this.observerMentionMemo.set(channelId, { msgs, cursor, oldestSeq, scannedTo: headSeq, count });
     return count;
   }
 

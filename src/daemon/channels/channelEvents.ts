@@ -202,15 +202,16 @@ function idemKey(workspaceId: string, clientMsgId: string): string {
  * 모든 분기가 멱등 — 파일 헤더의 불변식 참조.
  */
 /**
- * #1318 — the human took its seat. The seat's cursor starts at the head
- * (joining reads), so the observer cursor moves there too: a mention from
- * before the join must not count again after a later leave. A derived effect
- * of the seat row the record already carries — no new payload field, and
- * advance-only, so re-applying it is a no-op. Messages posted while seated are
- * the seat's to count (the observer count skips them), so a leave moves
- * nothing.
+ * #1318 — the human took or gave up its seat: carry the seat's cursor over to
+ * the observer cursor. On a join the seat starts at the head (joining reads),
+ * so a mention from before the join does not count again after a later leave;
+ * on a leave the seat's reads while seated carry over, so the seatless row
+ * does not report a cursor far behind what the human read. A derived effect of
+ * the row the record already carries (join/operator-join) or removes
+ * (leave/kick/purge) — no new payload field — and advance-only, so re-applying
+ * it is a no-op.
  */
-export function noteHumanSeatTaken(state: ChannelState, channelId: string, member: ChannelMember): void {
+export function noteHumanSeatCursor(state: ChannelState, channelId: string, member: ChannelMember): void {
   if (member.workspaceId !== HUMAN_WORKSPACE_ID || member.memberId !== HUMAN_MEMBER_ID) return;
   if (typeof member.lastReadSeq !== 'number') return;
   if (member.lastReadSeq <= (state.observerCursors?.[channelId] ?? 0)) return;
@@ -287,7 +288,7 @@ export function applyChannelEvent(state: ChannelState, payload: unknown): void {
       state.members[p.channelId] = members;
       // 라이브 경로는 join/invite 시 emptySince를 무조건 해제한다.
       delete ch.emptySince;
-      noteHumanSeatTaken(state, p.channelId, p.member);
+      noteHumanSeatCursor(state, p.channelId, p.member);
       return;
     }
     case 'leave':
@@ -315,6 +316,7 @@ export function applyChannelEvent(state: ChannelState, payload: unknown): void {
       };
       const survivors = members.filter((m) => !matches(m));
       if (survivors.length === members.length) return; // 멱등: 이미 제거됨
+      for (const m of members) if (matches(m)) noteHumanSeatCursor(state, p.channelId, m);
       state.members[p.channelId] = survivors;
       if (
         p.emptySince !== undefined &&
@@ -451,7 +453,7 @@ export function applyChannelEvent(state: ChannelState, payload: unknown): void {
         state.members[p.channelId] = members;
         // operatorJoin은 leave 후 재진입도 "새 좌석" → join과 동일하게 emptySince 해제.
         delete ch.emptySince;
-        noteHumanSeatTaken(state, p.channelId, p.member);
+        noteHumanSeatCursor(state, p.channelId, p.member);
       }
       // 2) 시스템 메시지 append — seq 존재/trim된 과거 seq 가드(post 적용기와 동형).
       //    clientMsgId·cursorRide·nameRefresh 없음(시스템 마커).

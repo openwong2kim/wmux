@@ -279,7 +279,7 @@ describe('applyChannelEvent — 멱등 replay 적용기', () => {
     expect(s.observerCursors).toEqual({});
   });
 
-  it('#1318 a human seat taken by join / operator-join moves the observer cursor to the seat cursor; an agent join does not', () => {
+  it('#1318 a human seat taken (join / operator-join) or given up (leave) carries its cursor to the observer cursor; an agent join does not', () => {
     const s = freshState();
     applyChannelEvent(s, { kind: 'create', channel: { ...ch('c1'), nextSeq: 6 }, members: [member('ws-1', 'm-1')] });
     applyChannelEvent(s, { kind: 'join', channelId: 'c1', member: { ...member('ws-2', 'm-2'), lastReadSeq: 5 } });
@@ -294,5 +294,9 @@ describe('applyChannelEvent — 멱등 replay 적용기', () => {
       message: { ...msg('c1', 8, 'ws-human', 'local-ui'), systemKind: 'operator-join' },
     });
     expect(s.observerCursors).toEqual({ c1: 7 });
+    // A leave carries the seat's reads over (advance-only, idempotent).
+    s.members['c1'].find((m) => m.workspaceId === 'ws-human')!.lastReadSeq = 12;
+    expectIdempotent(s, { kind: 'leave', channelId: 'c1', workspaceId: 'ws-human', memberId: 'local-ui' });
+    expect(s.observerCursors).toEqual({ c1: 12 });
   });
 });

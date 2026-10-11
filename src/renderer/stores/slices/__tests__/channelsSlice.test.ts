@@ -1601,3 +1601,46 @@ describe('channelsSlice — channelNudgeExhausted (C-2)', () => {
     expect(store.getState().channelNudgeExhausted['ch-3']).toEqual({ 'm-2': 2 });
   });
 });
+
+describe('channelsSlice — the human reading without a seat (#1318)', () => {
+  it('setChannels takes the @ badge of a seatless channel from the daemon count; the open channel stays clear', () => {
+    const store = createTestStore();
+    store.getState().setChannels(
+      [
+        makeChannel({ id: 'pub', observerUnreadMentions: 2 }),
+        makeChannel({ id: 'open', observerUnreadMentions: 1 }),
+        makeChannel({ id: 'seated' }),
+      ],
+      {},
+    );
+    store.getState().setActiveChannel('open');
+    store.getState().setChannels(
+      [
+        makeChannel({ id: 'pub', observerUnreadMentions: 2 }),
+        makeChannel({ id: 'open', observerUnreadMentions: 1 }),
+        makeChannel({ id: 'seated' }),
+      ],
+      {},
+    );
+    let s = store.getState();
+    expect(s.channelMentions['pub']).toBe(2);
+    expect(s.channelMentions['open']).toBe(0);
+    expect(s.channelMentions['seated']).toBeUndefined();
+    // A read elsewhere (the phone) brings the count to 0 on the next hydration.
+    store.getState().setChannels([makeChannel({ id: 'pub', observerUnreadMentions: 0 })], {});
+    s = store.getState();
+    expect(s.channelMentions['pub']).toBe(0);
+  });
+
+  it('countUnread:false appends a mention without bumping unread (an unjoined channel shows only the @)', () => {
+    const store = createTestStore();
+    store.getState().setChannels([makeChannel({ id: 'pub' })], {});
+    store.getState().appendMessageFromEvent(
+      makeMessage('pub', 1, { mentions: [{ workspaceId: 'ws-human', name: 'Operator' }] }),
+      { countUnread: false },
+    );
+    const s = store.getState();
+    expect(s.channelUnread['pub'] ?? 0).toBe(0);
+    expect(s.channelMentions['pub']).toBe(1);
+  });
+});

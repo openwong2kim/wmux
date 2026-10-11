@@ -97,6 +97,14 @@ export interface Channel {
    * field never lands in `channels.json` (list stamps it on a shallow copy).
    */
   observed?: boolean;
+  /**
+   * #1318 — caller-relative, NOT persisted, ws-human only: on a channel the
+   * human reads WITHOUT a seat, the mentions of the human past its observer
+   * cursor (`ChannelState.observerCursors`). The desktop's @ badge for such a
+   * channel hydrates from it, so desktop and phone show one count. Stamped by
+   * list()/get() on a shallow copy, like `observed`.
+   */
+  observerUnreadMentions?: number;
 }
 
 /**

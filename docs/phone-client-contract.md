@@ -2762,7 +2762,11 @@ Nothing about membership changes — no seat, no system message, no member
 cursor. Reading moves the human's observer cursor instead: the ack route below,
 or opening the channel at the desktop (one cursor for both surfaces). Joining
 still gives the full seat (`unread` and all), its cursor starting at the head
-as before, so mentions from before the join count as read. The reserved human
+as before, so mentions from before the join count as read; leaving carries the
+seat's cursor back to the observer cursor. The desktop's @ badge on such a
+channel shows the same server-side count, so a read on either surface clears
+both. A pane pin on a mention of the human is dropped quietly (the human owns
+no panes). The reserved human
 workspace cannot be invited (P5) — the join is always the human's own act, on
 either surface.
 

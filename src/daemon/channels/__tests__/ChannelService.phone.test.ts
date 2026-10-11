@@ -700,6 +700,74 @@ describe('a mention reaches the observing human without a seat (#1318)', () => {
     }
   });
 
+  it('the desktop open of a seatless channel still flips the human receipts left from a seat it gave up', async () => {
+    const { svc } = makeService();
+    const id = await createChannel(svc, 'once-seated', 'public');
+    await takeSeat(svc, id); // seq 1 (system)
+    const posted = await post(svc, id, 'while seated'); // seq 2, ws-human receipt pending
+    expect(posted.message.recipientSnapshot?.some((r) => r.workspaceId === HUMAN_WORKSPACE_ID && r.status === 'pending')).toBe(true);
+    await svc.leave({ channelId: id, workspaceId: HUMAN_WORKSPACE_ID, memberId: HUMAN_MEMBER_ID, verifiedWorkspaceId: HUMAN_WORKSPACE_ID });
+    await expect(svc.ack({ channelId: id, verifiedWorkspaceId: HUMAN_WORKSPACE_ID, uptoSeq: 2 })).resolves.toMatchObject({ ok: true, acked: 1 });
+    const msg = svc.getMessages(id, 0, HUMAN_WORKSPACE_ID).find((m) => m.seq === 2);
+    expect(msg?.recipientSnapshot?.find((r) => r.workspaceId === HUMAN_WORKSPACE_ID)?.status).toBe('delivered');
+    expect(rowOf(svc, id)).toMatchObject({ observerLastReadSeq: 2 });
+  });
+
+  it('a leave carries the seat cursor over, so the seatless row is not left behind what the human read', async () => {
+    const { svc } = makeService();
+    const id = await createChannel(svc, 'read-then-leave', 'public');
+    await takeSeat(svc, id); // seat cursor 0, system seq 1
+    for (const t of ['a', 'b', 'c']) await post(svc, id, t); // seq 2..4
+    await svc.ackAsPhone(id, 4); // seat cursor 4
+    await svc.leave({ channelId: id, workspaceId: HUMAN_WORKSPACE_ID, memberId: HUMAN_MEMBER_ID, verifiedWorkspaceId: HUMAN_WORKSPACE_ID });
+    expect(rowOf(svc, id)).toMatchObject({ observerUnreadMentions: 0, observerLastReadSeq: 4 });
+  });
+
+  it('a pane-pinned mention of the human is delivered without reporting the human dropped', async () => {
+    const { svc } = makeService();
+    const id = await createChannel(svc, 'pinned', 'private');
+    const res = await svc.post({
+      channelId: id,
+      sender: AGENT,
+      text: '@operator',
+      verifiedWorkspaceId: AGENT.workspaceId,
+      mentions: [{ workspaceId: HUMAN_WORKSPACE_ID, paneId: 'p1', name: 'Operator' }],
+    });
+    if (!res.ok) throw new Error(res.error.code);
+    expect(res.droppedMentions).toBeUndefined();
+    expect(res.message.mentions).toEqual([{ workspaceId: HUMAN_WORKSPACE_ID, name: 'Operator' }]);
+    expect(rowOf(svc, id)?.observerUnreadMentions).toBe(1);
+  });
+
+  it('the desktop catalog carries the same count (ws-human only, seatless only) and a read signals it to re-hydrate', async () => {
+    const { svc, emit } = makeService();
+    const seatless = await createChannel(svc, 'seatless', 'public');
+    const seated = await createChannel(svc, 'seated', 'public');
+    await takeSeat(svc, seated);
+    await post(svc, seatless, '@operator one', mentionHuman);
+    await post(svc, seatless, 'chatter');
+    await post(svc, seatless, '@operator two', mentionHuman);
+    const human = svc.list(HUMAN_WORKSPACE_ID);
+    expect(human.find((c) => c.id === seatless)?.observerUnreadMentions).toBe(2);
+    expect('observerUnreadMentions' in human.find((c) => c.id === seated)!).toBe(false);
+    expect('observerUnreadMentions' in svc.list(AGENT.workspaceId).find((c) => c.id === seatless)!).toBe(false);
+    expect(svc.get(seatless, HUMAN_WORKSPACE_ID)?.observerUnreadMentions).toBe(2);
+    // The live row is never stamped (the field must not persist).
+    expect('observerUnreadMentions' in (svc as unknown as { state: ChannelState }).state.channels.find((c) => c.id === seatless)!).toBe(false);
+
+    emit.mockClear();
+    await svc.ackAsPhone(seatless, 1);
+    expect(svc.list(HUMAN_WORKSPACE_ID).find((c) => c.id === seatless)?.observerUnreadMentions).toBe(1);
+    expect(
+      emit.mock.calls.some(
+        ([e]) => e.type === 'channel.catalog' && e.channelId === seatless && e.recipientWorkspaceIds.includes(HUMAN_WORKSPACE_ID),
+      ),
+    ).toBe(true);
+    // More posts after the ack are counted on top (the count resumes, not rescans).
+    await post(svc, seatless, '@operator three', mentionHuman);
+    expect(rowOf(svc, seatless)?.observerUnreadMentions).toBe(2);
+  });
+
   it('the desktop open of a trashed channel writes no observer cursor', async () => {
     const { svc } = makeService();
     const id = await createChannel(svc, 'binned', 'public');
