@@ -21,7 +21,18 @@ import { GIT_HARDENING_CONFIG, type GitRunner } from '../sessionDiff';
 import { MIN_PHONE_PROTOCOL_VERSION, PHONE_PROTOCOL_VERSION } from '../protocolVersion';
 import { OutputModeTracker } from '../../util/outputModeTracker';
 import { capSnapshot } from '../snapshotWindow';
+import { RingBuffer } from '../../RingBuffer';
+import { generateSnapshotUnqueued } from '../../HeadlessSnapshot';
+import { Terminal } from '@xterm/headless';
+import { applyUnicodeWidthModel } from '../../../shared/terminalUnicode';
 import type { TurnFailure } from '../../../shared/phoneTurnFailure';
+
+// Passes through to the real parse; the stream tests below hold it (handoff)
+// or fail it (the raw-window fallback) on purpose.
+vi.mock('../../HeadlessSnapshot', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../HeadlessSnapshot')>();
+  return { ...actual, generateSnapshotUnqueued: vi.fn(actual.generateSnapshotUnqueued) };
+});
 
 /** A directory that exists on every CI platform: `POST /api/sessions` refuses a cwd that doesn't. */
 const EXISTING_DIR = fs.realpathSync(os.tmpdir());
@@ -65,6 +76,10 @@ function makeDeps() {
       // keeping it a getter means a test that restages readAll gets a
       // consistent counter for free.
       get totalBytesWritten(): number { return this.readAll().length; },
+      readAllWithGeometry(): { data: Buffer; geometry: undefined; writtenAt: number } {
+        const data = this.readAll();
+        return { data, geometry: undefined, writtenAt: data.length };
+      },
     },
     bridge,
     ptyProcess: { write },
@@ -497,7 +512,7 @@ describe('WebTerminalServer', () => {
     viewerVisible: boolean;
     // Reassigned by the snapshot-preamble tests to stage a ring larger than the
     // 256 KB window.
-    ringBuffer: { readAll: () => Buffer; readonly totalBytesWritten: number };
+    ringBuffer: Pick<RingBuffer, 'readAll' | 'totalBytesWritten' | 'readAllWithGeometry'>;
   };
   let live: ReturnType<typeof makeDeps>['live'];
   let uploadsDir: string;
@@ -10643,6 +10658,17 @@ describe('WebTerminalServer', () => {
   // interleave with scrollback. The daemon reconstructs the mode state instead
   // (OutputModeTracker) and prepends a preamble to the snapshot payload.
   describe('stream snapshot mode preamble', () => {
+    // These rings exceed the window, so the stream first tries the screen
+    // rendered from the whole ring (#2125). Failing that render here pins the
+    // raw window these tests describe, which is also its fallback.
+    beforeEach(() => {
+      vi.mocked(generateSnapshotUnqueued).mockResolvedValue({ ok: false, reason: 'budget' });
+    });
+    afterEach(async () => {
+      const actual = await vi.importActual<typeof import('../../HeadlessSnapshot')>('../../HeadlessSnapshot');
+      vi.mocked(generateSnapshotUnqueued).mockImplementation(actual.generateSnapshotUnqueued);
+    });
+
     /** Read the SSE body until `until` holds (or 2s), then return the text. */
     const readStream = async (
       url: string,
@@ -10829,6 +10855,8 @@ describe('WebTerminalServer', () => {
       // NOT escape the request handler, because an uncaught exception in a
       // daemon request handler ends the daemon, not the request.
       managed.ringBuffer.readAll = () => { throw new Error('Array buffer allocation failed'); };
+      // A ring within the window: its frame is built inside the handler's try.
+      Object.defineProperty(managed.ringBuffer, 'totalBytesWritten', { get: () => 0 });
       const info = await startRO();
       const ac = new AbortController();
       const res = await fetch(
@@ -10846,6 +10874,131 @@ describe('WebTerminalServer', () => {
         headers: { Authorization: `Bearer ${info.token as string}` },
       });
       expect(after.status).toBe(200);
+    });
+
+    // ── #2125: the screen rendered from the whole ring ──────────────────
+    //
+    // Claude Code's fullscreen renderer repaints by cell diff and skips a cell
+    // that already holds the right character. Once the first full draw is
+    // older than the window, the window alone paints that cell blank.
+    describe('rendered first screen (#2125)', () => {
+      beforeEach(async () => {
+        const actual = await vi.importActual<typeof import('../../HeadlessSnapshot')>('../../HeadlessSnapshot');
+        vi.mocked(generateSnapshotUnqueued).mockImplementation(actual.generateSnapshotUnqueued);
+      });
+
+      /** Every row a fresh client terminal holds after replaying `bytes`, scrollback first. */
+      const render = async (bytes: string, cols: number, rows: number): Promise<string[]> => {
+        const term = new Terminal({ cols, rows, scrollback: 5000, allowProposedApi: true });
+        applyUnicodeWidthModel(term);
+        await new Promise<void>((r) => term.write(bytes, r));
+        const buf = term.buffer.active;
+        const out: string[] = [];
+        for (let i = 0; i < buf.baseY + rows; i++) out.push(buf.getLine(i)?.translateToString(true) ?? '');
+        term.dispose();
+        return out;
+      };
+      const viewportOf = (all: string[], rows: number): string[] => all.slice(-rows);
+
+      /** Stage a real ring at `cols`×`rows` holding `stream`. */
+      const stage = (stream: string, cols: number, rows: number): RingBuffer => {
+        const ring = new RingBuffer(1024 * 1024);
+        ring.noteGeometry(cols, rows);
+        ring.write(Buffer.from(stream, 'utf8'));
+        managed.ringBuffer = ring;
+        managed.meta.cols = cols;
+        managed.meta.rows = rows;
+        return ring;
+      };
+
+      it('★ paints a picker whose first draw is older than the window, skipped cell included', async () => {
+        const cols = 86;
+        const rows = 30;
+        const rule = '─'.repeat(cols);
+        const picker = [
+          rule, ' ☐ Color', '', 'Which color should the button be?', '',
+          '❯ 1. Red', '     warm', '  2. Green', '     calm', '  3. Type something.',
+          rule, '  4. Chat about this', '', 'Enter to select · ↑/↓ to navigate · Esc to cancel',
+        ];
+        const top = rows - picker.length + 1;
+        const hintRow = top + picker.length - 1;
+        const paint = (lines: readonly string[]): string =>
+          lines.map((line, i) => `\x1b[${top + i};1H${line}\x1b[K`).join('');
+        // The redraw skips the `c` of `cancel`, which the first paint left there.
+        const diffRedraw = paint(picker.slice(0, -1))
+          + `\x1b[${hintRow};1HEnter to select · ↑/↓ to navigate · Esc to \x1b[45Gancel\x1b[K`;
+        let filler = '';
+        for (let i = 0; filler.length < 300 * 1024; i++) filler += `\x1b[1;1H✻ Working ${i}\x1b[K`;
+        const ring = stage(`\x1b[?1049h\x1b[2J\x1b[H${paint(picker)}${filler}${diffRedraw}`, cols, rows);
+
+        const meta = await firstSnapshotMeta();
+        expect(meta).toMatchObject({ cols, rows, truncated: false, omittedBytes: 0 });
+        const screen = viewportOf(await render(await firstSnapshot(), cols, rows), rows);
+        expect(screen[hintRow - 1]).toBe('Enter to select · ↑/↓ to navigate · Esc to cancel');
+        expect(screen[top - 1]).toBe(rule);
+        // Non-vacuous: the raw window alone shows the gap this fixes.
+        const window = viewportOf(await render(capSnapshot(ring.readAll()).bytes.toString('utf8'), cols, rows), rows);
+        expect(window[hintRow - 1]).toBe('Enter to select · ↑/↓ to navigate · Esc to  ancel');
+      });
+
+      it('★ continues live output from the render\'s ring offset, with no gap and no repeat', async () => {
+        const cols = 80;
+        const rows = 24;
+        let filler = '';
+        for (let i = 0; filler.length < 300 * 1024; i++) filler += `filler line ${i}\r\n`;
+        const ring = stage(filler, cols, rows);
+        // What DaemonPTYBridge does per chunk: ring first, then the tee.
+        const capture = (text: string): void => {
+          const buf = Buffer.from(text, 'utf8');
+          ring.write(buf);
+          bridge.emit('data', buf);
+        };
+        // Hold the parse so output lands between the ring read and the attach.
+        const actual = await vi.importActual<typeof import('../../HeadlessSnapshot')>('../../HeadlessSnapshot');
+        let release!: () => void;
+        const held = new Promise<void>((r) => { release = r; });
+        vi.mocked(generateSnapshotUnqueued).mockImplementationOnce(async (req) => {
+          await held;
+          return actual.generateSnapshotUnqueued(req);
+        });
+
+        const info = await startRO();
+        const ac = new AbortController();
+        const res = await fetch(
+          `${base()}/api/stream?session=s1&token=${encodeURIComponent(info.token as string)}`,
+          { signal: ac.signal },
+        );
+        const reader = (res.body as ReadableStream<Uint8Array>).getReader();
+        let text = '';
+        void (async () => {
+          for (;;) {
+            const next = await reader.read().catch(() => ({ done: true as const, value: undefined }));
+            if (next.done) return;
+            text += Buffer.from(next.value).toString('utf8');
+          }
+        })();
+        try {
+          await vi.waitFor(() => expect(generateSnapshotUnqueued).toHaveBeenCalled());
+          capture('during 1\r\n');
+          capture('during 2\r\n');
+          release();
+          await vi.waitFor(() => expect(snapshots(text)).toHaveLength(1));
+          capture('after 1\r\n');
+          await vi.waitFor(() => expect(text).toContain('event: data'));
+        } finally {
+          ac.abort();
+        }
+
+        const live = [...text.matchAll(/event: data\ndata: ([^\n]*)\n/g)]
+          .map((m) => Buffer.from(m[1], 'base64').toString('utf8'));
+        expect(live).toEqual(['after 1\r\n']);
+        const client = await render(snapshots(text)[0] + live.join(''), cols, rows);
+        for (const line of ['during 1', 'during 2', 'after 1']) {
+          expect(client.filter((row) => row === line)).toHaveLength(1);
+        }
+        const reference = await render(ring.readAll().toString('utf8'), cols, rows);
+        expect(viewportOf(client, rows)).toEqual(viewportOf(reference, rows));
+      });
     });
 
     // ── resize propagation ──────────────────────────────────────────────

@@ -114,7 +114,8 @@ import { agentDisplayToSlug } from '../../shared/agentIdentity';
 import { isWslShell } from '../../shared/imagePaste';
 import { normalizeResumeCwd, type ResumeBinding } from '../../shared/agentResume';
 import { assistantPreview } from '../../shared/assistantPreview';
-import { capSnapshot } from './snapshotWindow';
+import { capSnapshot, DEFAULT_SNAPSHOT_WINDOW_BYTES } from './snapshotWindow';
+import { renderStreamScreen, type StreamScreen } from './streamScreen';
 import { revokeDeviceAndDisconnect } from './deviceRevoke';
 import type { DeviceActor } from './deviceAudit';
 import {
@@ -1425,6 +1426,8 @@ export class WebTerminalServer {
   private token = '';
   private opts: WebTerminalStartOptions | null = null;
   private readonly clients = new Set<SseClient>();
+  /** `/api/stream` opens waiting on their first screen (#2125), not yet in `clients`. */
+  private readonly pendingStreams = new Set<SseClient>();
   /** Live `/api/events` subscribers — fleet attention, no pane stream attached. */
   private readonly eventClients = new Set<EventClient>();
   /** The Moa pane id the last `moa` event carried. */
@@ -2174,9 +2177,12 @@ export class WebTerminalServer {
       if (held.deviceId === deviceId) this.streamTickets.delete(ticket);
     }
     let closed = 0;
-    for (const client of [...this.clients]) {
+    // A stream still building its first screen (#2125) holds no listeners yet,
+    // but it must not survive the revocation to attach once the parse lands.
+    for (const client of [...this.clients, ...this.pendingStreams]) {
       if (!isTarget(client.principal)) continue;
       this.clients.delete(client);
+      this.pendingStreams.delete(client);
       closed += 1;
       try {
         client.detach();
@@ -6953,13 +6959,72 @@ export class WebTerminalServer {
     // live" signal, and it must not wait on the snapshot work below.
     res.flushHeaders();
 
+    // A ring that fits the snapshot window is the whole history, and replaying
+    // it paints the true screen. A longer one opens with the screen rendered
+    // from the whole ring instead (#2125), which takes a parse: the stream
+    // attaches once it lands, from the ring offset it was rendered at.
+    if (managed.ringBuffer.totalBytesWritten <= DEFAULT_SNAPSHOT_WINDOW_BYTES) {
+      this.openStream(req, res, sessionId, managed, principal, null);
+      return;
+    }
+    const bridge = managed.bridge;
+    // The exit listener attaches with the rest only after the parse; an exit
+    // during it is remembered and sent after the first frame.
+    let exited = false;
+    const noteExit = (): void => {
+      exited = true;
+    };
+    bridge.setMaxListeners(0);
+    bridge.once('exit', noteExit);
+    const pending: SseClient = { res, sessionId, detach: () => bridge.removeListener('exit', noteExit), principal };
+    this.pendingStreams.add(pending);
+    const gone = (): boolean => res.destroyed || res.writableEnded;
+    void renderStreamScreen(
+      {
+        ringBuffer: managed.ringBuffer,
+        outputModes: bridge.outputModes ?? null,
+        cols: managed.meta.cols,
+        rows: managed.meta.rows,
+      },
+      gone,
+    ).then((screen) => {
+      pending.detach();
+      // Revoked or closed while the parse ran.
+      if (!this.pendingStreams.delete(pending) || gone()) return;
+      if (!screen.ok && screen.reason !== 'gone') {
+        this.deps.log('info', `[web] stream ${sessionId} opens from the raw window: screen render failed (${screen.reason})`);
+      }
+      if (this.openStream(req, res, sessionId, managed, principal, screen.ok ? screen : null) && exited) {
+        try {
+          writeSse(res, 'exit', '1');
+        } catch {
+          /* client stream broken — the 'close' handler cleans up */
+        }
+      }
+    });
+  }
+
+  /**
+   * Paint the stream's first frame — `screen` when it still holds, else the
+   * raw window — and attach the live tee. Synchronous from the ring read to the
+   * listener attach, so no PTY chunk falls between the frame and the tee.
+   * False when the frame could not be built and the stream was ended.
+   */
+  private openStream(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    sessionId: string,
+    managed: ManagedSession,
+    principal: WebPrincipal,
+    screen: Extract<StreamScreen, { ok: true }> | null,
+  ): boolean {
     // The headers are already out, so there is no status code left to send on
     // failure — but `readAll()` + `Buffer.concat` on a ring of up to 64 MB can
     // throw (allocation), and an exception escaping a request handler reaches
     // `uncaughtException` and takes the whole daemon with it. One client's
     // initial paint is not worth the fleet.
     try {
-      this.writeSnapshotFrame(res, managed);
+      this.writeSnapshotFrame(res, managed, screen);
     } catch (err) {
       this.deps.log('warn', `[web] initial snapshot failed for ${sessionId}: ${errMsg(err)}`);
       try {
@@ -6967,7 +7032,7 @@ export class WebTerminalServer {
       } catch {
         /* socket already gone — the end state we wanted either way */
       }
-      return;
+      return false;
     }
 
     // Live tee off the bridge. This is a SECOND, independent listener — it does
@@ -7045,6 +7110,7 @@ export class WebTerminalServer {
       detach();
       this.clients.delete(client);
     });
+    return true;
   }
 
   /**
@@ -7070,13 +7136,33 @@ export class WebTerminalServer {
    * frontend that predates it replays it as ordinary bytes — which is exactly
    * what it is. `omittedBytes` still counts only the ring bytes dropped from
    * the front; the preamble was never in the ring.
+   *
+   * With `screen` (#2125) the payload is instead the screen rendered from the
+   * whole ring, followed by the ring bytes written since that render read it,
+   * so the live tee attached right after continues it without a gap or a
+   * repeat. Nothing of the screen is then missing: `truncated` is false.
    */
-  private writeSnapshotFrame(res: http.ServerResponse, managed: ManagedSession): void {
+  private writeSnapshotFrame(
+    res: http.ServerResponse,
+    managed: ManagedSession,
+    screen: Extract<StreamScreen, { ok: true }> | null,
+  ): void {
+    const raw = managed.ringBuffer.readAll();
+    // The bytes since the render are the ring's newest, located by its
+    // lifetime counter. The screen is dropped for the raw window when more
+    // arrived than the ring still holds, or when the pane was resized since
+    // (the screen describes a grid the pane no longer has).
+    const since = screen ? managed.ringBuffer.totalBytesWritten - screen.writtenAt : 0;
+    const rendered =
+      screen && since >= 0 && since <= raw.length
+        && screen.cols === managed.meta.cols && screen.rows === managed.meta.rows
+        ? Buffer.concat([screen.payload, raw.subarray(raw.length - since)])
+        : null;
     // Capped to a window — the ring is 8 MB by default and up to 64 MB, and
     // base64 inflates it by a third, which a phone reconnecting at every tunnel
     // would pull each time. The truncation rides `meta` rather than a new event
     // name, so a cached frontend that predates it is unaffected.
-    const snapshot = capSnapshot(managed.ringBuffer.readAll());
+    const snapshot = capSnapshot(raw);
     // The shared staleReplayResetLevel gate's inputs (src/shared/terminal),
     // read at the same instant as the ring so they describe THIS snapshot, and
     // from the same sources `pty.list` gives the desktop:
@@ -7089,8 +7175,8 @@ export class WebTerminalServer {
     //    mouse/focus reset only: the recovered shell is alive and owns ?2004.
     const resume = this.deps.resumeState?.(managed.meta.id);
     const meta = this.streamMeta(managed, {
-      truncated: snapshot.truncated,
-      omittedBytes: snapshot.omittedBytes,
+      truncated: rendered ? false : snapshot.truncated,
+      omittedBytes: rendered ? 0 : snapshot.omittedBytes,
       // The server's image switch, on the frame the client paints from: a
       // reconnect after `wmux web --[no-]inline-images` must load or drop the
       // image addon BEFORE it replays this snapshot, which an /api/config
@@ -7106,11 +7192,16 @@ export class WebTerminalServer {
     // util/outputModeTracker.ts). Derived from the ring's own monotonic
     // counter, which is stable across wraps and counts a recovered session's
     // pre-filled scrollback, so both sides speak the same coordinates.
-    const windowStart = managed.ringBuffer.totalBytesWritten - snapshot.bytes.length;
-    const preamble = managed.bridge.outputModes?.preamble(windowStart) ?? '';
-    const payload = preamble
-      ? Buffer.concat([Buffer.from(preamble, 'utf8'), snapshot.bytes])
-      : snapshot.bytes;
+    let payload: Buffer;
+    if (rendered) {
+      payload = rendered;
+    } else {
+      const windowStart = managed.ringBuffer.totalBytesWritten - snapshot.bytes.length;
+      const preamble = managed.bridge.outputModes?.preamble(windowStart) ?? '';
+      payload = preamble
+        ? Buffer.concat([Buffer.from(preamble, 'utf8'), snapshot.bytes])
+        : snapshot.bytes;
+    }
     writeSse(res, 'meta', JSON.stringify(meta));
     writeSse(res, 'snapshot', payload.toString('base64'));
   }
