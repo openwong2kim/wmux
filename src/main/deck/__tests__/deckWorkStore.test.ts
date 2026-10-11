@@ -31,6 +31,7 @@ import {
   loadLiveDeckWorks,
   unparkDeckWork,
   operatorDecisionContext,
+  withdrawUndeliveredDeckWork,
 } from '../deckWorkStore';
 
 let dir: string;
@@ -658,3 +659,30 @@ describe('operatorDecisionContext', () => {
   });
 });
 
+
+describe('deckWorkStore — a turn the brain never received', () => {
+  it('drops a fresh request so the next launch has nothing to Resume/Drop', () => {
+    const work = beginOrContinueDeckWork('ws-1', 'add a usage section', dir)!.work;
+    expect(withdrawUndeliveredDeckWork('ws-1', work.id, 'add a usage section', dir)).toBe(true);
+    expect(loadActiveDeckWork('ws-1', dir)).toBeNull();
+    // After a restart there is no parked record to raise a blocking decision.
+    setDeckWorkBootId('boot-next');
+    expect(loadActiveDeckWorks(dir)).toEqual({});
+  });
+
+  it('pops only the undelivered follow-up of a live request', () => {
+    const work = beginOrContinueDeckWork('ws-1', 'build it', dir)!.work;
+    beginOrContinueDeckWork('ws-1', 'also add tests', dir);
+    expect(withdrawUndeliveredDeckWork('ws-1', work.id, 'also add tests', dir)).toBe(true);
+    const after = loadActiveDeckWork('ws-1', dir)!;
+    expect(after.objective).toBe('build it');
+    expect(after.followUps).toEqual([]);
+  });
+
+  it('leaves a record that changed hands or already delegated work', () => {
+    const work = beginOrContinueDeckWork('ws-1', 'build it', dir)!.work;
+    expect(withdrawUndeliveredDeckWork('ws-1', 'work-other', 'build it', dir)).toBe(false);
+    expect(withdrawUndeliveredDeckWork('ws-1', work.id, 'something else', dir)).toBe(false);
+    expect(loadActiveDeckWork('ws-1', dir)?.id).toBe(work.id);
+  });
+});

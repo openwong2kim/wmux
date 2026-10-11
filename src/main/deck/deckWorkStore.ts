@@ -340,6 +340,41 @@ export function beginOrContinueDeckWork(
   return superseded ? { work: next, superseded } : { work: next };
 }
 
+/** Take back a human turn that never reached the brain (Claude was not found,
+ * or a first-run / trust dialog refused the send before the prompt was typed).
+ * Such a turn asked for nothing the brain ever saw, so it must not survive as
+ * a "request from before this session" that blocks the composer behind a
+ * Resume/Drop decision on the next launch.
+ *
+ * Scoped to the exact record and text this turn wrote: a fresh record with no
+ * delegated work is removed; a follow-up appended to a live request is popped.
+ * Anything else (the record changed hands, workers were delegated) is left. */
+export function withdrawUndeliveredDeckWork(
+  workspaceId: string,
+  workId: string,
+  text: string,
+  dir?: string,
+): boolean {
+  const file = loadFile(dir);
+  const current = file.active[workspaceId];
+  if (!current || current.id !== workId) return false;
+  if (Object.keys(current.a2aTasks).length > 0) return false;
+  const cleaned = cleanText(text, MAX_OBJECTIVE_CHARS);
+  if (!cleaned) return false;
+  if (current.followUps.length === 0 && current.objective === cleaned) {
+    delete file.active[workspaceId];
+    saveFile(file, dir);
+    return true;
+  }
+  const followUp = cleanText(cleaned, MAX_FOLLOW_UP_CHARS);
+  if (followUp && current.followUps.at(-1) === followUp) {
+    file.active[workspaceId] = { ...current, followUps: current.followUps.slice(0, -1) };
+    saveFile(file, dir);
+    return true;
+  }
+  return false;
+}
+
 /** Project an A2A transition into the active human request. Events older than
  * the request cannot be adopted; they belong to earlier work.
  *
