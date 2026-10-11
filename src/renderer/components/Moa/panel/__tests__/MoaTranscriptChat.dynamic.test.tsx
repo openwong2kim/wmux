@@ -692,7 +692,36 @@ describe('MoaTranscriptChat — review fixes (#1808)', () => {
     } finally {
       useStore.setState({ moa: prev.moa, brainThreads: prev.brainThreads });
     }
+  });  it('a turn Moa never received (claude not found) gives the typed words back and leaves the composer open', async () => {
+    const { useStore } = await import('../../../../stores');
+    const prev = useStore.getState();
+    try {
+      useStore.setState({ moa: { ...(prev.moa ?? {}), hq: { workspaceId: 'ws-hq', state: 'ok' } } as never, brainThreads: {} });
+      const { api } = fakeApi();
+      // The composer's verdict window passed: the send reads as accepted.
+      const onSend = vi.fn(async () => ({ ok: true }));
+      await act(async () => root.render(<MoaTranscriptChat ptyId="pty-hq" busy={false} onSend={onSend} onInterrupt={vi.fn()} onTerminal={vi.fn()} api={api} />));
+      await type('Check the release');
+      await act(async () => input().dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })));
+      await act(async () => root.render(<MoaTranscriptChat ptyId="pty-hq" busy onSend={onSend} onInterrupt={vi.fn()} onTerminal={vi.fn()} api={api} />));
+      // Main refuses late: the store's open turn closes with an error.
+      await act(async () => {
+        useStore.setState({ brainThreads: { 'ws-hq': { status: 'idle', messages: [
+          { id: 'm1', role: 'user', text: 'Check the release', ts: Date.now() },
+          { id: 'm2', role: 'assistant', text: '', ts: Date.now(), status: 'error', errorText: 'Claude Code not found' },
+        ] } } as never });
+        root.render(<MoaTranscriptChat ptyId="pty-hq" busy={false} onSend={onSend} onInterrupt={vi.fn()} onTerminal={vi.fn()} api={api} />);
+      });
+      const bubble = host.querySelector('[data-moa-chat-pending]') as HTMLElement;
+      expect(bubble?.textContent).toContain('Check the release');
+      expect(bubble.querySelector('[data-moa-chat-not-sent]')?.textContent).toContain('moa.panel.notSentReason');
+      expect(input().value).toBe('Check the release');
+      expect(input().disabled).toBe(false);
+    } finally {
+      useStore.setState({ moa: prev.moa, brainThreads: prev.brainThreads });
+    }
   });
+
 
   it('a send refused by a dialog only the TUI shows says what it asks and opens the terminal view', async () => {
     const { useStore } = await import('../../../../stores');

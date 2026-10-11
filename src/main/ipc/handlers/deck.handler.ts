@@ -385,6 +385,11 @@ export function modeToPermissionMode(
   }
 }
 
+/** The startup card for a request that outlived the last shutdown. */
+export const PARKED_WORK_QUESTION =
+  'A request from before this wmux session is still on the books. Resume it, or drop it?';
+export const PARKED_WORK_DROP = 'Drop it';
+
 export function registerDeckHandler(
   getWindow: GetWindow,
   opts: RegisterDeckHandlerOptions = {},
@@ -4016,6 +4021,15 @@ export function registerDeckHandler(
       // and wait" — at the exact moment the human has answered. The resolution
       // itself rides the prompt, so a "drop it" answer is the brain's to act on;
       // un-parking grants permission to act, not a decision about what to do.
+      // "Drop it" on the startup parked-request card is main's to act on, not
+      // the brain's: the brain may be exactly what cannot start (claude
+      // missing, setup unanswered), and a drop that waits on it leaves the
+      // request — and the card — in place. Clear the record here, no turn.
+      if (decision.question === PARKED_WORK_QUESTION && (decision.resolution ?? resolution).trim().toLowerCase() === PARKED_WORK_DROP.toLowerCase()) {
+        clearActiveDeckWork(workspaceId);
+        await clearResolvedDecision(workspaceId, decision.id).catch(() => undefined);
+        return { ok: true, decision };
+      }
       unparkDeckWork(workspaceId);
       // A human answering IS a human turn for the stop gate's purposes (rule
       // 5): the resume turn that carries this answer must meet an ARMED gate,
@@ -4231,9 +4245,8 @@ export function registerDeckHandler(
         // last-writer-wins: a real question raised before this timer fired must
         // never be clobbered by our bookkeeping.
         await raiseDecision(workspaceId, {
-          question:
-            'A request from before this wmux session is still on the books. Resume it, or drop it?',
-          options: ['Resume it', 'Drop it'],
+          question: PARKED_WORK_QUESTION,
+          options: ['Resume it', PARKED_WORK_DROP],
           context: renderActiveDeckWorkBlock(work),
         }).catch(() => {
           /* best-effort — the record stays parked either way */

@@ -89,6 +89,11 @@ vi.mock('../../../deck/deckDecisionStore', async (orig) => {
     loadWorkspaceDecision: vi.fn(() => null),
     hasPendingDecision: vi.fn(() => pendingRef.current),
     hasBrainBlockingDecision: vi.fn(() => pendingRef.current),
+    resolveDecision: vi.fn(async (_ws: string, id: string, resolution: string) => ({
+      id, question: 'A request from before this wmux session is still on the books. Resume it, or drop it?',
+      status: 'resolved', resolution, createdAt: Date.now(), resolvedAt: Date.now(),
+    })),
+    clearResolvedDecision: vi.fn(async () => undefined),
     raiseDecision: vi.fn(async (workspaceId: string, args: Omit<RaisedDecision, 'workspaceId'>) => {
       raised.push({ workspaceId, ...args });
       return null;
@@ -106,6 +111,7 @@ import {
 } from '../../../deck/deckWorkStore';
 import type { BrainAdapter, BrainEvent, BrainStartOptions } from '../../../deck/BrainAdapter';
 
+const sends = { count: 0 };
 const outcome: { current: 'ok' | 'spawn-failed' | 'first-run' | 'error' } = { current: 'ok' };
 
 class FakeAdapter implements BrainAdapter {
@@ -114,6 +120,7 @@ class FakeAdapter implements BrainAdapter {
     /* nothing to start in the fake */
   }
   async *send(_text: string): AsyncIterable<BrainEvent> {
+    sends.count++;
     if (outcome.current === 'spawn-failed') {
       yield { type: 'error', message: 'Claude Code not found', spawnFailed: true } as BrainEvent;
       return;
@@ -156,6 +163,7 @@ beforeEach(() => {
   captured.clear();
   raised.length = 0;
   outcome.current = 'ok';
+  sends.count = 0;
   pendingRef.current = false;
   workDirRef.current = mkdtempSync(path.join(tmpdir(), 'wmux-undelivered-'));
   setDeckWorkBootId('boot-current');
@@ -199,5 +207,20 @@ describe('deck handler — a turn the brain never received', () => {
     const after = loadActiveDeckWork(WS)!;
     expect(after.objective).toBe('build the page');
     expect(after.followUps).toEqual([]);
+  });
+});
+
+describe('deck handler — "Drop it" on the startup card for an old request', () => {
+  it('clears the record in main without waiting on a brain turn', { timeout: 30_000 }, async () => {
+    // A record left by an older version: it never reached the brain, and the
+    // brain may still be unable to start.
+    beginOrContinueDeckWork(WS, 'add a usage section to README');
+    setDeckWorkBootId('boot-next');
+    outcome.current = 'spawn-failed';
+    const r = await captured.get(IPC.DECK_DECISION_RESOLVE)!({}, { workspaceId: WS, id: 'dec-1', resolution: 'Drop it' }) as { ok: boolean };
+    expect(r.ok).toBe(true);
+    expect(loadActiveDeckWork(WS)).toBeNull();
+    await new Promise((res) => setTimeout(res, 50));
+    expect(sends.count).toBe(0);
   });
 });
