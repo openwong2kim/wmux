@@ -768,6 +768,18 @@ describe('a mention reaches the observing human without a seat (#1318)', () => {
     expect(rowOf(svc, seatless)?.observerUnreadMentions).toBe(2);
   });
 
+  it('destroying a channel drops its observer-count memo (no message array kept alive)', async () => {
+    const { svc } = makeService();
+    const id = await createChannel(svc, 'short-lived', 'public');
+    await post(svc, id, '@operator ping', mentionHuman);
+    expect(rowOf(svc, id)?.observerUnreadMentions).toBe(1);
+    const memo = (svc as unknown as { observerMentionMemo: Map<string, unknown> }).observerMentionMemo;
+    expect(memo.has(id)).toBe(true);
+    expect((await svc.trash({ channelId: id, verifiedWorkspaceId: HUMAN_WORKSPACE_ID })).ok).toBe(true);
+    expect((await svc.destroy({ channelId: id, verifiedWorkspaceId: HUMAN_WORKSPACE_ID })).ok).toBe(true);
+    expect(memo.has(id)).toBe(false);
+  });
+
   it('the desktop open of a trashed channel writes no observer cursor', async () => {
     const { svc } = makeService();
     const id = await createChannel(svc, 'binned', 'public');

@@ -2898,10 +2898,11 @@ version bump.
   not a download state.
 - A channel deleted at the desktop answers 404 on the next fetch; drop it and
   its unread badge without an error surface.
-- Join is the human's explicit act and the start of a channel's notification
-  value: before it, the channel renders observed (read-only, no badge) and its
-  mentions of the human are dropped at post time. After it, unread and
-  `channel.mention` begin from the join point.
+- Join is the human's explicit act and the start of a channel's `unread`
+  count: before it, the channel renders read-only (`observed` on a private one)
+  and badges only mentions of the human — `observerUnreadMentions`, with
+  `channel.mention` raised for each. After it, the seat's `unread` and
+  `unreadMentions` begin from the join point.
 - On `gap: true` (a list row or a page), say that older messages are gone;
   never render the retained tail as if it were contiguous with your cursor.
 - Posting from the phone does not exist yet. There is no route to try, and

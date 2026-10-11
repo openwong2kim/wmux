@@ -1469,6 +1469,8 @@ export class ChannelService {
       // without this the entries (up to 1000 per channel) outlive the channel
       // for the daemon's whole lifetime.
       this.idempotency.delete(channel.id);
+      // The observer-count memo holds the channel's message array.
+      this.observerMentionMemo.delete(channel.id);
       this.emitCatalog(channel.id, params.verifiedWorkspaceId, recipients, 'archived');
       return { ok: true };
     });
