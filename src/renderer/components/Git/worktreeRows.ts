@@ -15,6 +15,8 @@ export type WorktreeRowUI = WorktreeEntry & { merging?: boolean; integration?: b
 
 /** Uncommitted changes of one worktree (summed `diff:read` numstat). */
 export interface DiffStat {
+  /** Changed paths: `git status` entries (`diff:status`), or the numstat
+   *  count when that is larger. Zero means clean. */
   files: number;
   additions: number;
   deletions: number;
@@ -113,9 +115,10 @@ export const STALE_WORKTREE_DAYS = 14;
 //
 // The Worktrees tab's sections, the worktree form of the flat list's
 // who-acts-next grammar. First match wins:
-//   inUse        a workspace sits on it (someone is on it), unless its PR is
-//                merged, its tree is clean and no agent there is working or
-//                asking: then it is a cleanup candidate (below).
+//   inUse        a workspace sits on it, or an agent works in it from any
+//                local tab (someone is on it), unless its PR is merged, its
+//                tree is clean and no agent there is working or asking: then
+//                it is a cleanup candidate (below).
 //   uncommitted  no workspace, and uncommitted changes: work nobody is on.
 //   cleanup      not the main worktree, not locked, not a merge session's,
 //                and: its workspace's PR is merged (see inUse), or no
@@ -156,6 +159,9 @@ export interface WorktreeSignals {
   prListComplete: boolean;
   /** Workspaces where an agent is working or asking. */
   busyWorkspaces: ReadonlySet<string>;
+  /** Rows (keys) a local tab with an agent working or asking sits in, a
+   *  background tab included, whichever workspace it belongs to. */
+  busyWorktrees: ReadonlySet<string>;
 }
 
 /** The section a worktree row belongs in. Pure. */
@@ -164,9 +170,10 @@ export function classifyWorktree(row: GitWorktreeRow, s: WorktreeSignals): Workt
   const clean = row.stat !== null && row.stat.error === null && row.stat.files === 0;
   const dirty = row.stat !== null && row.stat.error === null && row.stat.files > 0;
   const removable = !row.isMain && !e.integration && e.locked === null;
-  if (row.workspaces.length > 0) {
+  const agentThere = s.busyWorktrees.has(row.key);
+  if (row.workspaces.length > 0 || agentThere) {
     const merged = row.workspaces.some((w) => w.pr?.state === 'merged');
-    const busy = row.workspaces.some((w) => s.busyWorkspaces.has(w.workspaceId));
+    const busy = agentThere || row.workspaces.some((w) => s.busyWorkspaces.has(w.workspaceId));
     return merged && clean && !busy && removable ? 'cleanup' : 'inUse';
   }
   if (dirty) return 'uncommitted';

@@ -10,8 +10,13 @@
 //
 // Nothing here talks to the network. The question and the board never leave
 // the machine.
+//
+// The answer leaves here as data, not prose: the renderer words it in the
+// operator's UI language (shared/fleetLocalAnswer.ts).
 
-export type FleetIntent = 'needs_you' | 'finished' | 'status';
+import { FLEET_ANSWER_MAX_ROWS, type FleetAnswerReason, type FleetAnswerRow, type FleetIntent, type FleetLocalAnswer } from '../../shared/fleetLocalAnswer';
+
+export type { FleetIntent, FleetLocalAnswer } from '../../shared/fleetLocalAnswer';
 
 /** Board lookup budget. A miss falls back to Moa, so keep it short. */
 export const FLEET_BOARD_TIMEOUT_MS = 400;
@@ -38,7 +43,7 @@ export async function answerFleetQuestion(
   readBoard: () => Promise<unknown>,
   signal: AbortSignal,
   now: () => number = Date.now,
-): Promise<{ text: string } | null> {
+): Promise<{ fleet: FleetLocalAnswer } | null> {
   const intent = fleetIntentCandidate(text);
   if (!intent || signal.aborted) return null;
   const requestedAt = now();
@@ -49,8 +54,8 @@ export async function answerFleetQuestion(
     return null;
   }
   if (signal.aborted) return null;
-  const answer = renderFleetAnswer(board, intent, now(), requestedAt);
-  return answer ? { text: answer } : null;
+  const fleet = buildFleetAnswer(board, intent, now(), requestedAt);
+  return fleet ? { fleet } : null;
 }
 
 interface BoardRow { title: string; workspaceName: string; reason: string }
@@ -63,13 +68,13 @@ function validRows(rows: unknown): rows is BoardRow[] {
     && typeof row.reason === 'string' && ['input', 'error', 'unconfirmed', 'supervisionStopped', 'complete', 'running', 'idle'].includes(row.reason));
 }
 // Strip untrusted display controls rather than interpreting terminal labels.
+// Empty when nothing displayable is left: the renderer words "untitled".
 // eslint-disable-next-line no-control-regex
-const label = (s: string) => s.replace(/[\x00-\x1f\x7f\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff[\]()*_`<>\\]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 80) || '(untitled)';
-const REASONS: Record<string, string> = { input: 'needs input', error: 'error', unconfirmed: 'unconfirmed', supervisionStopped: 'supervision stopped', complete: 'turn finished', running: 'running', idle: 'idle' };
+const label = (s: string) => s.replace(/[\x00-\x1f\x7f\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff[\]()*_`<>\\]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 80);
 
 /** Reports the Fleet board only: never certifies task success or runs an
  *  action. Null for a board that is malformed, scoped or not fresh. */
-export function renderFleetAnswer(raw: unknown, intent: FleetIntent, now: number, requestedAt: number): string | null {
+export function buildFleetAnswer(raw: unknown, intent: FleetIntent, now: number, requestedAt: number): FleetLocalAnswer | null {
   if (!isObject(raw) || raw.scope !== 'fleet' || typeof raw.generatedAt !== 'number' || !Number.isFinite(raw.generatedAt)
     || raw.generatedAt > now + 1000 || now - raw.generatedAt > 2000 || raw.generatedAt < requestedAt - 1000
     || !validRows(raw.needsYou) || !validRows(raw.finished) || !validRows(raw.running)
@@ -79,14 +84,22 @@ export function renderFleetAnswer(raw: unknown, intent: FleetIntent, now: number
   const omitted = raw.omitted === undefined ? {} : raw.omitted;
   if (!isObject(omitted) || Object.keys(omitted).some((k) => !['needsYou', 'finished', 'running', 'idle'].includes(k) || !Number.isSafeInteger(omitted[k]) || (omitted[k] as number) < 0)) return null;
   const count = (key: 'needsYou' | 'finished' | 'running', rows: BoardRow[]) => rows.length + ((omitted[key] as number | undefined) ?? 0);
-  const list = (rows: BoardRow[]) => rows.slice(0, 12).map((r) => `- ${label(r.title)} (${label(r.workspaceName)}): ${REASONS[r.reason]}`).join('\n');
   const rows = intent === 'needs_you' ? raw.needsYou : intent === 'finished' ? raw.finished : [...raw.needsYou, ...raw.finished];
-  const needs = count('needsYou', raw.needsYou);
-  const done = count('finished', raw.finished);
-  const turns = (n: number) => `${n} ${n === 1 ? 'turn' : 'turns'} finished`;
-  const heading = intent === 'needs_you' ? `${needs} ${needs === 1 ? 'task needs' : 'tasks need'} your attention.`
-    : intent === 'finished' ? `${turns(done)}. A finished turn does not verify task or test success.`
-      : `${needs} ${needs === 1 ? 'needs' : 'need'} you · ${turns(done)} · ${count('running', raw.running)} running · ${raw.idle.count} idle.`;
-  const limited = rows.length > 12 || Object.values(omitted).some((n) => (n as number) > 0);
-  return `Fleet snapshot (local data, answered without Moa):\n${heading}${rows.length ? `\n${list(rows)}` : ''}${limited ? '\nSome rows are omitted. Open Fleet for the full board.' : ''}`;
+  const listed = rows.slice(0, FLEET_ANSWER_MAX_ROWS).map((r): FleetAnswerRow => ({
+    title: label(r.title),
+    workspaceName: label(r.workspaceName),
+    // Validated above: Needs you rows carry a Needs you reason, finished rows `complete`.
+    reason: r.reason as FleetAnswerReason,
+  }));
+  return {
+    intent,
+    counts: {
+      needsYou: count('needsYou', raw.needsYou),
+      finished: count('finished', raw.finished),
+      running: count('running', raw.running),
+      idle: raw.idle.count as number,
+    },
+    rows: listed,
+    limited: rows.length > FLEET_ANSWER_MAX_ROWS || Object.values(omitted).some((n) => (n as number) > 0),
+  };
 }

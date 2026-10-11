@@ -57,6 +57,36 @@ async function clickTool(page: Page, name: string): Promise<string> {
   return text;
 }
 
+/** How long a popup may take to appear once the click has returned. */
+const POPUP_AFTER_CLICK_MS = 3_000;
+
+/**
+ * Arm a popup waiter now; its clock starts only when `afterClick()` is called.
+ * `page.waitForEvent('popup', { timeout })` started counting before
+ * clickTool's own snapshot and tool work, so on a loaded runner the window
+ * could run out before the click even happened — the tool saw its popup, the
+ * test's waiter had already given up.
+ */
+function armPopupWaiter(page: Page): { afterClick: () => Promise<Page> } {
+  const popup = new Promise<Page>((resolve) => page.once('popup', resolve));
+  return {
+    afterClick: async () => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const late = new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`no popup within ${POPUP_AFTER_CLICK_MS} ms after the click returned`)),
+          POPUP_AFTER_CLICK_MS,
+        );
+      });
+      try {
+        return await Promise.race([popup, late]);
+      } finally {
+        clearTimeout(timer);
+      }
+    },
+  };
+}
+
 async function addPopupLinks(page: Page, links: Record<string, string>): Promise<void> {
   await page.evaluate((entries) => {
     for (const [id, url] of Object.entries(entries)) {
@@ -109,9 +139,9 @@ for (const mode of MODES) {
           document.body.prepend(button);
         }, url('explicit'));
 
-        const pending = source.waitForEvent('popup', { timeout: 3_000 });
+        const pending = armPopupWaiter(source);
         await clickTool(source, 'Open delayed popup');
-        const popup = await pending;
+        const popup = await pending.afterClick();
         await popup.waitForURL(/popup-waiter=explicit/, { timeout: 3_000 });
         expect(popup.url()).toContain('popup-waiter=explicit');
         await popup.close();
@@ -127,15 +157,15 @@ for (const mode of MODES) {
       source.context().on('page', (p) => opened.push(p as Page));
       try {
         await addPopupLinks(source, { 'old-popup-link': url('old'), 'next-popup-link': url('next') });
-        const oldPopup = source.waitForEvent('popup', { timeout: 3_000 });
+        const oldPopup = armPopupWaiter(source);
         const oldReport = await clickTool(source, 'old-popup-link');
         expectOwnPopup(oldReport, 'old', ['next'], mode.headless);
-        await oldPopup;
+        await oldPopup.afterClick();
 
-        const nextPopup = source.waitForEvent('popup', { timeout: 3_000 });
+        const nextPopup = armPopupWaiter(source);
         const nextReport = await clickTool(source, 'next-popup-link');
         expectOwnPopup(nextReport, 'next', ['old'], mode.headless);
-        const next = await nextPopup;
+        const next = await nextPopup.afterClick();
         await next.waitForURL(/popup-waiter=next/, { timeout: 3_000 });
         expect(next.url()).toContain('popup-waiter=next');
       } finally {

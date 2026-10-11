@@ -2,6 +2,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import {
+  getClientIdentity,
   runWithCallerPtyIdSource,
   runWithWorkspaceTokenSource,
   runWithStaleIdentityHandler,
@@ -473,6 +474,21 @@ const codexCallScope = new AsyncLocalStorage<CodexCallScope>();
 // or 'other'). 'unknown' (lookup timeout, ps/CIM failure) is never remembered,
 // so the next call asks again.
 let codexParentClass: 'shared-server' | 'other' | null = null;
+/**
+ * Where no owner index exists (Windows): a parent inspection came back
+ * 'unknown', so this connection may run under a shared app-server, whose walk
+ * names the pane that started it. Until an inspection succeeds, browser calls
+ * are refused and the walk's claim is not adopted. Per connection, so a later
+ * threadless call cannot slip past what an earlier call could not verify.
+ */
+let codexParentUnverified = false;
+/**
+ * MCP clients known never to run under a shared Codex app-server
+ * (clientInfo.name, as captured in src/main/mcp/firstParty.ts). Their browser
+ * calls skip the Windows parent check entirely; Codex (`codex-mcp-client`),
+ * any other name and a missing clientInfo are checked.
+ */
+const NON_CODEX_CLIENTS: ReadonlySet<string> = new Set(['claude-code', 'opencode']);
 let codexParentHome = '';
 let codexParentCheck: Promise<McpParentClass> | null = null;
 // Where no owner index can exist (Windows today) an 'unknown' parent decides
@@ -492,8 +508,10 @@ function classifyCodexParent(): Promise<McpParentClass> {
       if (parentClass !== 'unknown') {
         codexParentClass = parentClass;
         codexParentHome = codexHomeFromParentChain(chain);
+        codexParentUnverified = false;
       } else if (!codexOwnerIndexAvailable()) {
         codexParentUnknownUntil = Date.now() + CODEX_PARENT_UNKNOWN_MEMO_MS;
+        codexParentUnverified = true;
       }
       logIdentity(`parent ${parentClass}`);
       return parentClass;
@@ -1106,7 +1124,7 @@ async function lookupPidMapWorkspace(): Promise<PidMapLookup> {
     // index exists, every such call is 'legacy').
     if (
       typeof walkToken === 'string' && walkToken.trim() &&
-      !getPinnedRoute() && !viaThread && codexParentClass !== 'shared-server'
+      !getPinnedRoute() && !viaThread && codexParentClass !== 'shared-server' && !codexParentUnverified
     ) {
       setWorkspaceToken(walkToken.trim());
     }
@@ -1365,6 +1383,13 @@ async function requireWorkspaceId(): Promise<string> {
  * in a workspace that is not the caller's. Refused instead, saying why.
  */
 function refuseUnattributedSharedServer(): void {
+  if (codexParentUnverified && !codexParentClass) {
+    throw new Error(
+      'Browser tools could not verify this Codex session: wmux could not inspect the process that ' +
+        'started this MCP server, so it cannot tell whether the call comes from the shared Codex ' +
+        'background server. Retry the call in a minute.',
+    );
+  }
   if (codexParentClass !== 'shared-server' || threadOnlyScope()) return;
   throw new Error(
     'Browser tools are not available in this Codex session. It runs on the shared Codex ' +
@@ -1384,6 +1409,13 @@ function refuseUnattributedSharedServer(): void {
  */
 async function requireBrowserWorkspaceId(opts: { claim?: boolean } = {}): Promise<string> {
   if (codexCallScope.getStore()?.mode === 'thread') return requireWorkspaceId();
+  // Windows skips the parent inspection for a threadless call (decideCodexMode),
+  // so a browser call does it here: a shared server without thread attribution
+  // or an uninspectable parent is refused below. Non-browser calls and known
+  // non-Codex clients never pay it.
+  if (!codexOwnerIndexAvailable() && !codexParentClass && !NON_CODEX_CLIENTS.has(getClientIdentity().name ?? '')) {
+    await classifyCodexParent();
+  }
   if (codexCallScope.getStore()?.mode !== 'thread-or-legacy') refuseUnattributedSharedServer();
   if (codexCallScope.getStore()?.mode !== 'thread-or-legacy' && workspaceResolved && MY_WORKSPACE_ID) {
     return MY_WORKSPACE_ID;

@@ -17,7 +17,7 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 const { mockSendRpc, parentChain, ownerIndex } = vi.hoisted(() => ({
   mockSendRpc: vi.fn(),
   parentChain: vi.fn(),
-  ownerIndex: { value: true },
+  ownerIndex: { value: true as boolean | undefined },
 }));
 
 vi.mock('../wmux-client', async (importOriginal) => {
@@ -26,13 +26,19 @@ vi.mock('../wmux-client', async (importOriginal) => {
 });
 vi.mock('../codexThreadIdentity', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../codexThreadIdentity')>();
-  return { ...actual, readParentChain: parentChain, codexOwnerIndexAvailable: () => ownerIndex.value };
+  // ownerIndex.value undefined = the real platform predicate (win32 suite below).
+  return {
+    ...actual,
+    readParentChain: parentChain,
+    codexOwnerIndexAvailable: (platform?: NodeJS.Platform) => ownerIndex.value ?? actual.codexOwnerIndexAvailable(platform),
+  };
 });
 
 vi.mock('../../shared/computer/config', () => ({ readComputerUseEnabled: () => true }));
 
 import { createWmuxServer } from '../index';
-import { getCallerPtyId, getWorkspaceToken, setWorkspaceToken } from '../wmux-client';
+import { codexOwnerIndexAvailable } from '../codexThreadIdentity';
+import { getCallerPtyId, getWorkspaceToken, setClientIdentity, setWorkspaceToken } from '../wmux-client';
 
 const digest = (v: string) => createHash('sha256').update(v).digest('hex');
 const T1 = '019a0000-0000-7000-8000-000000000001';
@@ -83,6 +89,8 @@ beforeEach(() => {
   extraRpc = () => ({});
   stamps = [];
   setWorkspaceToken(undefined);
+  // A client that sends no name must not inherit the previous test's.
+  setClientIdentity(undefined);
   mockSendRpc.mockReset();
   mockSendRpc.mockImplementation(async (method: string, params: Record<string, unknown>) => {
     stamps.push({ method, callerPtyId: getCallerPtyId() });
@@ -104,7 +112,7 @@ afterEach(() => {
   vi.unstubAllEnvs();
 });
 
-async function connect(opts: { envPtyHint?: string; envWorkspaceHint?: string } = {}): Promise<Client> {
+async function connect(opts: { envPtyHint?: string; envWorkspaceHint?: string; clientName?: string } = {}): Promise<Client> {
   const server = createWmuxServer({
     envWorkspaceHint: opts.envWorkspaceHint ?? 'ws-s',
     envPtyHint: opts.envPtyHint ?? 'pty-s',
@@ -115,7 +123,7 @@ async function connect(opts: { envPtyHint?: string; envWorkspaceHint?: string } 
     callerPpid: 4242,
   });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-  const client = new Client({ name: 'codex-mcp-client', version: '1.0.0' }, { capabilities: {} });
+  const client = new Client({ name: opts.clientName ?? 'codex-mcp-client', version: '1.0.0' }, { capabilities: {} });
   await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
   return client;
 }
@@ -462,5 +470,190 @@ describe('envelope callerPtyId (per-pane browser profiles)', () => {
     // carries the walked pane (main's server-side walk answers pty-s here).
     expect(stampsFor('a2a.resolve.identity')[0]).toBe('pty-env');
     expect(stampsFor('a2a.whoami')).toEqual(['pty-s']);
+  });
+});
+
+// The #2007 Windows tree, platform-gated for real: MCP ← managed app-server
+// (started by pane B, the walk's answer) while pane A's TUI shares it.
+describe('shared Codex app-server on win32', () => {
+  const realPlatform = process.platform;
+  let codexAccountHome: string;
+  beforeEach(() => {
+    ownerIndex.value = undefined;
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+    // Codex passes no CODEX_HOME to MCP servers; the daemon path names the account.
+    vi.stubEnv('CODEX_HOME', '');
+    codexAccountHome = path.join(home, '.codex-work');
+    parentChain.mockResolvedValue([MCP_ENTRY, [
+      path.join(codexAccountHome, 'packages', 'app-server-daemon', 'releases', '0.162.1', 'bin', 'codex.exe'),
+      'app-server', '--listen', 'unix://', '--managed-daemon',
+    ]]);
+    // The server under test sees the real win32 predicate, not a stub.
+    expect(codexOwnerIndexAvailable()).toBe(false);
+  });
+  afterEach(() => { Object.defineProperty(process, 'platform', { value: realPlatform, configurable: true }); });
+
+  const writeOwner = (id: string, ptyId: string, workspaceId: string) => {
+    const saved = home;
+    home = codexAccountHome;
+    try { recordOwner(id, ptyId, workspaceId); } finally { home = saved; }
+  };
+
+  function browserRpc(opened: Array<Record<string, unknown>>, threadClaim?: Record<string, string>) {
+    mockSendRpc.mockImplementation(async (method: string, params: Record<string, unknown>) => {
+      if (method === 'a2a.resolve.identity') {
+        return {
+          mappings: Object.fromEntries(ENTRIES.map((e) => [e.pid, e.workspaceId])),
+          entries: ENTRIES,
+          resolved: { workspaceId: 'ws-s', ptyId: 'pty-s' },
+          workspaceToken: 'claim-starter',
+          ...(threadClaim ? { threadClaim } : {}),
+        };
+      }
+      if (method === 'a2a.whoami') return { echo: params };
+      if (method === 'browser.open') {
+        opened.push(params);
+        return { ok: true, surfaceId: 's-1' };
+      }
+      if (method === 'mcp.claimWorkspace') return { workspaceId: 'ws-mcp', ptyId: 'pty-mcp', token: 'tok' };
+      return {};
+    });
+  }
+
+  it('identifies a recorded thread as its own pane, not the pane that started the server', async () => {
+    writeOwner(T1, 'pty-a', 'ws-1');
+    const opened: Array<Record<string, unknown>> = [];
+    browserRpc(opened, { workspaceId: 'ws-1', ptyId: 'pty-a', workspaceToken: 'claim-a' });
+    const client = await connect();
+    await call(client, 'a2a_whoami', {}, T1);
+    const res = await call(client, 'browser_open', { url: 'https://example.com' }, T1);
+    await client.close();
+    expect(whoamiParams()).toEqual([{ workspaceId: 'ws-1', senderPtyId: 'pty-a' }]);
+    expect(res.isError).toBeFalsy();
+    expect(opened.map((p) => p.workspaceId)).toEqual(['ws-1']);
+    expect(getWorkspaceToken()).not.toBe('claim-starter');
+  });
+
+  it('refuses the browser for a thread with no owner record and never adopts the starter\'s walk claim', async () => {
+    writeOwner(T1, 'pty-a', 'ws-1');
+    const opened: Array<Record<string, unknown>> = [];
+    browserRpc(opened);
+    const client = await connect();
+    await call(client, 'a2a_whoami', {}, T2);
+    const res = await call(client, 'browser_open', { url: 'https://example.com' }, T2);
+    await client.close();
+    expect(res.isError).toBe(true);
+    expect(res.content[0]?.text).toMatch(/shared Codex background server/);
+    expect(opened).toEqual([]);
+    expect(getWorkspaceToken()).not.toBe('claim-starter');
+    expect(mockSendRpc.mock.calls.some((c) => c[0] === 'mcp.claimWorkspace')).toBe(false);
+  });
+
+  it('refuses the browser when a Codex call\'s parent cannot be inspected, and keeps other tools working', async () => {
+    // A CIM/PowerShell lookup that fails or times out: the server may be shared,
+    // so the walk's claim (the starter pane's) must not be adopted.
+    parentChain.mockResolvedValue([]);
+    writeOwner(T1, 'pty-a', 'ws-1');
+    const opened: Array<Record<string, unknown>> = [];
+    browserRpc(opened);
+    const client = await connect();
+    const who = await call(client, 'a2a_whoami', {}, T1);
+    const res = await call(client, 'browser_open', { url: 'https://example.com' }, T1);
+    await client.close();
+    expect(who.isError).toBeFalsy();
+    expect(res.isError).toBe(true);
+    expect(res.content[0]?.text).toMatch(/could not inspect the process that started this MCP server/);
+    expect(opened).toEqual([]);
+    expect(getWorkspaceToken()).not.toBe('claim-starter');
+    expect(mockSendRpc.mock.calls.some((c) => c[0] === 'mcp.claimWorkspace')).toBe(false);
+  });
+
+  it('keeps the browser for a pane-side Codex (its parent is the pane\'s own codex process)', async () => {
+    parentChain.mockResolvedValue([MCP_ENTRY, ['C:\\Users\\u\\AppData\\Roaming\\npm\\node_modules\\@openai\\codex\\vendor\\codex.exe', 'exec', 'hi']]);
+    const opened: Array<Record<string, unknown>> = [];
+    browserRpc(opened);
+    const client = await connect();
+    const res = await call(client, 'browser_open', { url: 'https://example.com' }, T1);
+    await client.close();
+    expect(res.isError).toBeFalsy();
+    expect(opened.map((p) => p.workspaceId)).toEqual(['ws-s']);
+    expect(getWorkspaceToken()).toBe('claim-starter');
+  });
+
+  const PANE_CODEX = ['C:\\Users\\u\\AppData\\Roaming\\npm\\node_modules\\@openai\\codex\\vendor\\codex.exe'];
+
+  it('refuses the first threadless browser call under a shared parent', async () => {
+    const opened: Array<Record<string, unknown>> = [];
+    browserRpc(opened);
+    const client = await connect();
+    const res = await call(client, 'browser_open', { url: 'https://example.com' });
+    await client.close();
+    expect(res.isError).toBe(true);
+    expect(res.content[0]?.text).toMatch(/shared Codex background server/);
+    expect(opened).toEqual([]);
+    expect(getWorkspaceToken()).not.toBe('claim-starter');
+  });
+
+  it('keeps refusing threadless browser calls after the parent could not be inspected', async () => {
+    parentChain.mockResolvedValue([]);
+    const opened: Array<Record<string, unknown>> = [];
+    browserRpc(opened);
+    const client = await connect();
+    // An earlier threaded call saw the unknown parent; a later one sees it itself.
+    await call(client, 'a2a_whoami', {}, T1);
+    const first = await call(client, 'browser_open', { url: 'https://example.com' });
+    const again = await call(client, 'browser_open', { url: 'https://example.com' });
+    await client.close();
+    for (const res of [first, again]) {
+      expect(res.isError).toBe(true);
+      expect(res.content[0]?.text).toMatch(/could not inspect the process that started this MCP server/);
+    }
+    expect(opened).toEqual([]);
+    expect(getWorkspaceToken()).not.toBe('claim-starter');
+  });
+
+  it('allows a threadless browser call under a pane-side codex', async () => {
+    parentChain.mockResolvedValue([MCP_ENTRY, PANE_CODEX]);
+    const opened: Array<Record<string, unknown>> = [];
+    browserRpc(opened);
+    const client = await connect();
+    const res = await call(client, 'browser_open', { url: 'https://example.com' });
+    await client.close();
+    expect(res.isError).toBeFalsy();
+    expect(opened.map((p) => p.workspaceId)).toEqual(['ws-s']);
+    expect(getWorkspaceToken()).toBe('claim-starter');
+  });
+
+  it('does no parent lookup for a threadless non-browser call (Claude Code)', async () => {
+    const client = await connect();
+    const res = await call(client, 'a2a_whoami', {});
+    await client.close();
+    expect(res.isError).toBeFalsy();
+    expect(parentChain).not.toHaveBeenCalled();
+  });
+
+  it('skips the parent check for Claude Code, even when the lookup would fail', async () => {
+    parentChain.mockResolvedValue([]);
+    const opened: Array<Record<string, unknown>> = [];
+    browserRpc(opened);
+    const client = await connect({ clientName: 'claude-code' });
+    const res = await call(client, 'browser_open', { url: 'https://example.com' });
+    await client.close();
+    expect(res.isError).toBeFalsy();
+    expect(parentChain).not.toHaveBeenCalled();
+    expect(opened.map((p) => p.workspaceId)).toEqual(['ws-s']);
+    expect(getWorkspaceToken()).toBe('claim-starter');
+  });
+
+  it('checks the parent for a client that sends no name', async () => {
+    const opened: Array<Record<string, unknown>> = [];
+    browserRpc(opened);
+    const client = await connect({ clientName: '' });
+    const res = await call(client, 'browser_open', { url: 'https://example.com' });
+    await client.close();
+    expect(parentChain).toHaveBeenCalledTimes(1);
+    expect(res.isError).toBe(true);
+    expect(res.content[0]?.text).toMatch(/shared Codex background server/);
+    expect(opened).toEqual([]);
   });
 });

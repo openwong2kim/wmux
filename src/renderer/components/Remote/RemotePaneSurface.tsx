@@ -94,11 +94,17 @@ export default function RemotePaneSurface({ hostId, sessionId, surfaceId, shell,
   // the mirror below subscribes to it: the mirror only listens once this
   // attachId has rendered, and a host on a fast link answers sooner. A child's
   // effects run before its parent's, so by now the mirror listens; the second
-  // attach for the same session is main's idempotent path, which reopens the
+  // attach for the same session is main's join path, which reopens the
   // stream and sends a fresh meta and snapshot.
   useEffect(() => {
     if (!attachId) return;
-    window.electronAPI?.remote?.paneAttach(hostId, sessionId).catch(() => { /* the first attach already reported */ });
+    const remote = window.electronAPI?.remote;
+    // #1323 — that join is a viewer of its own (main closes the stream when
+    // the last viewer detaches), and nothing here reads through it: let it go
+    // at once, or the stream would outlive this tab.
+    remote?.paneAttach(hostId, sessionId)
+      .then((res) => { if (res.ok && res.attachId !== attachId) return remote.paneDetach(res.attachId); })
+      .catch(() => { /* the first attach already reported */ });
     // Once per attach: a new hostId or sessionId always brings a new attachId.
   }, [attachId]);
 

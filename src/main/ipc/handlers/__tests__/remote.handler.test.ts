@@ -764,7 +764,7 @@ describe('remote.handler — pane attach/detach/write push routing', () => {
     expect(sender.send).not.toHaveBeenCalled();
   });
 
-  it('a duplicate attach for the same (sender, host, session) returns the existing attachId without a second SSE open', async () => {
+  it('a duplicate attach for the same (sender, host, session) joins the existing stream without a second SSE open', async () => {
     const store = fakeStore([host]);
     const client = fakeClient(host);
     registerRemoteHandlers({ store: store as never, attachments: fakeAttachments() as never, clientFactory: () => client });
@@ -773,11 +773,86 @@ describe('remote.handler — pane attach/detach/write push routing', () => {
     const first = await getHandler(IPC.REMOTE_PANE_ATTACH)({ sender }, 'h1', 'session-1') as { ok: true; attachId: string };
     const second = await getHandler(IPC.REMOTE_PANE_ATTACH)({ sender }, 'h1', 'session-1') as { ok: true; attachId: string };
 
-    expect(second.attachId).toBe(first.attachId);
+    // #1323 — its own viewer id on the same stream.
+    expect(second.attachId).not.toBe(first.attachId);
     expect(client.attach).toHaveBeenCalledTimes(1);
     // The second viewer gets its own meta + snapshot through a fresh stream.
     expect((client as unknown as { refresh: ReturnType<typeof vi.fn> }).refresh)
       .toHaveBeenCalledWith(first.attachId);
+  });
+
+  // #1323 — a mirror-grid cell and the tab opened from it view one session in
+  // one window. Each view's teardown must end only its own view.
+  it('two viewers of one session: each gets every event under its own id, and writes reach the one stream', async () => {
+    const store = fakeStore([host]);
+    const client = fakeClient(host);
+    registerRemoteHandlers({ store: store as never, attachments: fakeAttachments() as never, clientFactory: () => client });
+
+    const sender = fakeSender(112);
+    const a = await getHandler(IPC.REMOTE_PANE_ATTACH)({ sender }, 'h1', 'session-1') as { attachId: string };
+    const b = await getHandler(IPC.REMOTE_PANE_ATTACH)({ sender }, 'h1', 'session-1') as { attachId: string };
+
+    client.emitData({ attachId: a.attachId, dataB64: 'BB==' });
+    expect(sender.sent).toEqual([
+      { channel: IPC.REMOTE_PANE_DATA, payload: { attachId: a.attachId, dataB64: 'BB==' } },
+      { channel: IPC.REMOTE_PANE_DATA, payload: { attachId: b.attachId, dataB64: 'BB==' } },
+    ]);
+
+    getListener(IPC.REMOTE_PANE_WRITE)({}, b.attachId, 'hello');
+    expect(client.write).toHaveBeenCalledWith(a.attachId, 'hello');
+  });
+
+  it('detaching one viewer (even twice) keeps the other viewer streaming; the last detach closes the stream', async () => {
+    const store = fakeStore([host]);
+    const client = fakeClient(host);
+    registerRemoteHandlers({ store: store as never, attachments: fakeAttachments() as never, clientFactory: () => client });
+
+    const sender = fakeSender(113);
+    const a = await getHandler(IPC.REMOTE_PANE_ATTACH)({ sender }, 'h1', 'session-1') as { attachId: string };
+    const b = await getHandler(IPC.REMOTE_PANE_ATTACH)({ sender }, 'h1', 'session-1') as { attachId: string };
+
+    // A view detaches its id twice on unmount (its owner and its mirror both do).
+    await getHandler(IPC.REMOTE_PANE_DETACH)({}, a.attachId);
+    await getHandler(IPC.REMOTE_PANE_DETACH)({}, a.attachId);
+    expect(client.detach).not.toHaveBeenCalled();
+
+    client.emitData({ attachId: a.attachId, dataB64: 'CC==' });
+    expect(sender.sent).toEqual([
+      { channel: IPC.REMOTE_PANE_DATA, payload: { attachId: b.attachId, dataB64: 'CC==' } },
+    ]);
+    getListener(IPC.REMOTE_PANE_WRITE)({}, a.attachId, 'stale');
+    expect(client.write).not.toHaveBeenCalled();
+
+    await getHandler(IPC.REMOTE_PANE_DETACH)({}, b.attachId);
+    expect(client.detach).toHaveBeenCalledTimes(1);
+    expect(client.detach).toHaveBeenCalledWith(a.attachId);
+
+    // The key is free again: the next attach opens a fresh stream.
+    await getHandler(IPC.REMOTE_PANE_ATTACH)({ sender }, 'h1', 'session-1');
+    expect(client.attach).toHaveBeenCalledTimes(2);
+  });
+
+  it('an exit ends the stream for every viewer at once', async () => {
+    const store = fakeStore([host]);
+    const client = fakeClient(host);
+    registerRemoteHandlers({ store: store as never, attachments: fakeAttachments() as never, clientFactory: () => client });
+
+    const sender = fakeSender(114);
+    const a = await getHandler(IPC.REMOTE_PANE_ATTACH)({ sender }, 'h1', 'session-1') as { attachId: string };
+    const b = await getHandler(IPC.REMOTE_PANE_ATTACH)({ sender }, 'h1', 'session-1') as { attachId: string };
+
+    client.emitExit({ attachId: a.attachId });
+
+    expect(sender.sent).toEqual([
+      { channel: IPC.REMOTE_PANE_EXIT, payload: { attachId: a.attachId } },
+      { channel: IPC.REMOTE_PANE_EXIT, payload: { attachId: b.attachId } },
+    ]);
+    expect(client.detach).toHaveBeenCalledTimes(1);
+    // Neither id addresses anything any more.
+    getListener(IPC.REMOTE_PANE_WRITE)({}, b.attachId, 'late');
+    expect(client.write).not.toHaveBeenCalled();
+    await getHandler(IPC.REMOTE_PANE_DETACH)({}, b.attachId);
+    expect(client.detach).toHaveBeenCalledTimes(1);
   });
 
   it('a different session on the same sender opens a distinct attach', async () => {

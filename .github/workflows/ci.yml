@@ -28,18 +28,19 @@ jobs:
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          # Node 22 runtime, npm 11 package manager — deliberately split. The
-          # lockfile lineage needs npm 11 (npm 10's `npm ci` rejects an
-          # npm-11-written lock, which is how all five Dependabot PRs arrived
-          # dead); the Node 24 runtime is NOT needed for that and kills one
-          # vitest fork per run on windows-latest (#984). Recouple when #984
-          # is resolved.
-          node-version: 22
+          # The floor is the fix for #984: official Node 24.16.0-24.20.0 ship
+          # libuv 1.52.1 without libuv/libuv#5152 and abort on a directory
+          # watch under the runner's 8.3 `%TEMP%` (C:\Users\RUNNER~1),
+          # killing a vitest fork. 24.21.0 carries the fix. A bare `24` is not
+          # enough: it resolved from the runner's tool cache to 24.19.0.
+          node-version: '>=24.21.0 <25'
           cache: npm
 
-      # npm 11 owns package-lock.json (see CONTRIBUTING). Node 22 bundles npm
-      # 10, so the lineage the lock is written in has to be installed, not
-      # assumed.
+      # npm 11 owns package-lock.json (see CONTRIBUTING; npm 10's `npm ci`
+      # rejects an npm-11-written lock). Node 24 bundles an npm 11 minor that
+      # moves with the Node patch; installing the latest npm 11 keeps the
+      # lineage guard below on the same npm as release.yml, perf.yml and
+      # CONTRIBUTING.
       - name: Use npm 11
         run: npm install -g npm@11
 
@@ -105,7 +106,7 @@ jobs:
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 22
+          node-version: '>=24.21.0 <25'
           cache: npm
 
       - name: Use npm 11
@@ -140,7 +141,8 @@ jobs:
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 22
+          # Same Node as validate (see the comment there, #984).
+          node-version: '>=24.21.0 <25'
 
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:

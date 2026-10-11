@@ -1474,6 +1474,32 @@ export const en = {
   'moa.settings.retroDesc': "Once a week, while Moa is on, a short summary on Moa's briefing: how often you were asked, work that sat waiting, repeated questions and the slowest work.",
   'moa.settings.fleetFastPath': "Answer Fleet questions locally",
   'moa.settings.fleetFastPathDesc': "Short status questions typed here, like \"Who needs me?\" or \"Fleet status\", are answered from the Fleet board on this computer without a Moa turn. Anything else still goes to Moa.",
+  // Moa Fleet fast path: the local answer, worded here from main's counts.
+  // Counted phrases are `.one`/`.other` pairs picked by Intl.PluralRules;
+  // each `.other` must read right for every count `.one` does not take.
+  'moa.fleetAnswer.intro': "Fleet snapshot (local data, answered without Moa):",
+  'moa.fleetAnswer.needsYou.one': "{count} task needs your attention.",
+  'moa.fleetAnswer.needsYou.other': "{count} tasks need your attention.",
+  'moa.fleetAnswer.finished.one': "{count} turn finished. A finished turn does not verify task or test success.",
+  'moa.fleetAnswer.finished.other': "{count} turns finished. A finished turn does not verify task or test success.",
+  'moa.fleetAnswer.status.needsYou.one': "{count} needs you",
+  'moa.fleetAnswer.status.needsYou.other': "{count} need you",
+  'moa.fleetAnswer.status.finished.one': "{count} turn finished",
+  'moa.fleetAnswer.status.finished.other': "{count} turns finished",
+  'moa.fleetAnswer.status.running.one': "{count} running",
+  'moa.fleetAnswer.status.running.other': "{count} running",
+  'moa.fleetAnswer.status.idle.one': "{count} idle",
+  'moa.fleetAnswer.status.idle.other': "{count} idle",
+  'moa.fleetAnswer.status.join': " · ",
+  'moa.fleetAnswer.status.sentence': "{clauses}.",
+  'moa.fleetAnswer.row': "{title} ({workspace}): {reason}",
+  'moa.fleetAnswer.reason.input': "needs input",
+  'moa.fleetAnswer.reason.error': "error",
+  'moa.fleetAnswer.reason.unconfirmed': "unconfirmed",
+  'moa.fleetAnswer.reason.supervisionStopped': "supervision stopped",
+  'moa.fleetAnswer.reason.complete': "turn finished",
+  'moa.fleetAnswer.untitled': "(untitled)",
+  'moa.fleetAnswer.omitted': "Some rows are omitted. Open Fleet for the full board.",
   'moa.settings.retroWhenDesc': "Local time. It reviews the last full week, Monday to Sunday.",
   'moa.settings.retroDay': "Retro day",
   'moa.settings.retroHour': "Retro time",
@@ -3933,6 +3959,12 @@ export const en = {
   'remote.mirrorDescription': 'Mirror a workspace from another wmux',
   'remote.labelOptional': 'Label (optional)',
   'remote.paneCount': '{count} panes',
+  // #1323 — a mirror-grid session opened as a tab in one of your workspaces.
+  'remote.openAsTab': 'Open as tab',
+  'remote.openAsTabLabel': 'Open {session} as a tab',
+  'remote.openAsTabDescription': 'Add {session} to one of your workspaces as a tab. It keeps running on {host}: closing the tab only stops showing it there.',
+  'remote.openAsTabFailed': 'Could not open {session} as a tab in that workspace',
+  'remote.goToTab': 'Go to tab',
 
   // ─── Remote Workspace Attach: pair-with-code ──────────────────────────────
   'remote.pairTab': 'Pair with code',
@@ -4379,6 +4411,7 @@ export const en = {
   'remotePage.connect.pasteScope': "If the invite shares workspaces, this computer can read and search every workspace on that PC, including later ones. While paired, wmux checks it every few seconds, keeps a connection open for its alerts and shows its notifications; mute them from the computer menu in the sidebar title.",
   'pcSwitcher.open': "Switch computer",
   'pcSwitcher.manage': "{name} settings",
+  'app.portableData.notice': "This copy of wmux is running outside Applications, so it uses separate data. Move it to Applications to see your existing sessions.",
   'pcSwitcher.othersNeedYou': "{count} need you on other computers",
   // Quit and Stop Sessions (main-process native confirm)
   'quitAndStop.message': "Quit wmux and stop all sessions?",

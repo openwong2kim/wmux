@@ -17,6 +17,7 @@ import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { BASELINE_HINT, createBaselineGuard, writeBaseline } from './mcpBaseline.mjs';
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(SCRIPT_DIR, '..');
@@ -56,6 +57,9 @@ const packageJson = JSON.parse(readFileSync(PACKAGE_PATH, 'utf8'));
 //   invariant to "commander ⊆ core ∪ COMMANDER_ONLY_TOOLS", at which point
 //   this number is the one that binds.
 const baseline = JSON.parse(readFileSync(BASELINE_PATH, 'utf8'));
+// `--update` (npm run mcp:baseline:update): adopt the measured hashes and tool
+// names instead of failing on them, then rewrite the baseline file.
+const guard = createBaselineGuard({ update: process.argv.includes('--update') });
 // The commander-only SSOT (src/shared/commanderSurface.ts), read from the tsc
 // output the bundle is built from — the same list the MCP entry registers
 // against, never a copy typed into this script.
@@ -149,18 +153,14 @@ async function readSdkProfile(profile, config) {
       Buffer.byteLength(instructions, 'utf8') <= 2 * 1024,
       `${profile}: server instructions exceed the 2 KiB host budget`,
     );
-    assert.equal(
-      sha256(instructions),
-      config.instructionSha256,
-      `${profile}: server instructions changed`,
-    );
+    guard.expect(config, 'instructionSha256', sha256(instructions), `${profile}: server instructions changed`);
     assert.equal(first.nextCursor, undefined, `${profile}: tool pagination is not supported yet`);
     assert.equal(
       uniqueNames.size,
       names.length,
       `${profile}: tools/list contains duplicate tool names`,
     );
-    assert.deepEqual(names, config.toolNames, `${profile}: tool surface changed`);
+    guard.expect(config, 'toolNames', names, `${profile}: tool surface changed`);
     assert.ok(
       sdkViewBytes <= config.maxListBytes,
       `${profile}: SDK tools/list view is ${sdkViewBytes} bytes ` +
@@ -207,11 +207,7 @@ async function readHandshake(entryPath, label, config) {
       { name: 'wmux', version: packageJson.version },
       `${label}: handshake serverInfo must match package.json`,
     );
-    assert.equal(
-      sha256(client.getInstructions() ?? ''),
-      config.instructionSha256,
-      `${label}: server instructions changed`,
-    );
+    guard.expect(config, 'instructionSha256', sha256(client.getInstructions() ?? ''), `${label}: server instructions changed`);
   } finally {
     await client.close();
   }
@@ -355,11 +351,7 @@ async function readRawProfile(profile, config, protocolVersion) {
           protocolVersion,
           `${label}: raw probe must negotiate the requested protocol`,
         );
-        assert.equal(
-          sha256(initialized?.instructions ?? ''),
-          config.instructionSha256,
-          `${label}: raw server instructions changed`,
-        );
+        guard.expect(config, 'instructionSha256', sha256(initialized?.instructions ?? ''), `${label}: raw server instructions changed`);
         assert.equal(
           firstResultRaw,
           secondResultRaw,
@@ -367,7 +359,7 @@ async function readRawProfile(profile, config, protocolVersion) {
         );
 
         const names = firstResult.tools.map((tool) => tool.name);
-        assert.deepEqual(names, config.toolNames, `${label}: raw tool surface changed`);
+        guard.expect(config, 'toolNames', names, `${label}: raw tool surface changed`);
         const wireResultBytes = Buffer.byteLength(firstResultRaw, 'utf8');
         const wireResultSha256 = sha256(firstResultRaw);
         assert.ok(
@@ -375,11 +367,7 @@ async function readRawProfile(profile, config, protocolVersion) {
           `${label}: raw tools/list result is ${wireResultBytes} bytes ` +
             `(budget ${config.maxListBytes})`,
         );
-        assert.equal(
-          wireResultSha256,
-          config.wireResultSha256,
-          `${label}: raw tool schemas, descriptions, or ordering changed`,
-        );
+        guard.expect(config, 'wireResultSha256', wireResultSha256, `${label}: raw tool schemas, descriptions, or ordering changed`);
 
         settled = true;
         if (timeout) clearTimeout(timeout);
@@ -559,8 +547,20 @@ async function main() {
   }, null, 2));
 }
 
-main().catch((error) => {
+main().then(() => {
+  if (!guard.update) return;
+  if (guard.changes.length === 0) {
+    console.error('[wmux-mcp-probe] baseline already up to date');
+    return;
+  }
+  writeBaseline(BASELINE_PATH, baseline);
+  console.error(`[wmux-mcp-probe] baseline updated (${guard.changes.length} value(s)): ${path.relative(REPO_ROOT, BASELINE_PATH)}`);
+  for (const c of guard.changes) console.error(`  - ${c.key}: ${c.label}`);
+}).catch((error) => {
   console.error('[wmux-mcp-probe] failed:', error);
+  // Every surface-hash mismatch carries the fix; repeat it as the last line so
+  // it is the first thing a CI log reader sees.
+  if (!guard.update && /changed/.test(String(error?.message ?? error))) console.error(`\n[wmux-mcp-probe] ${BASELINE_HINT}`);
   process.exitCode = 1;
 }).finally(() => {
   rmSync(PROBE_HOME, { recursive: true, force: true });

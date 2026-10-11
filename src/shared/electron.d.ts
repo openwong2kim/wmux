@@ -137,6 +137,8 @@ declare global {
           }>,
         ) => void,
       ) => () => void;
+      /** True once per portable data dir: this macOS copy uses separate data. */
+      claimPortableDataNotice?: () => Promise<boolean>;
       /**
        * Phase 2.2 — MCP plugin permission approval. Main fires `onOpen`
        * with the prompt payload; renderer resolves via `resolve(promptId,

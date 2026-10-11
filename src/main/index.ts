@@ -48,7 +48,7 @@ import { markBoot, emitBootSummary } from './util/bootTrace';
 import * as path from 'path';
 import * as os from 'os';
 import { app, BrowserWindow, dialog, ipcMain, powerMonitor } from 'electron';
-import { checkUserDataIsolation } from './dataIsolation';
+import { checkUserDataIsolation, claimPortableDataNotice, PORTABLE_DATA_SUFFIX, shouldUsePortableData } from './dataIsolation';
 import { createWindow, loadMainRenderer } from './window/createWindow';
 import { attachDesktopPresenceReporter, reportDesktopPresence } from './window/desktopPresence';
 import { PTYManager } from './pty/PTYManager';
@@ -378,6 +378,22 @@ function appInit(): void {
 // setPath('userData')는 app ready 전에 호출해야 효력이 있으므로 lock 체크보다 먼저 둔다.
 if (!app.isPackaged && !process.env.WMUX_DATA_SUFFIX) {
   process.env.WMUX_DATA_SUFFIX = '-dev';
+}
+// A packaged copy run outside /Applications (DMG, AppTranslocation, forge out/,
+// Downloads) gets its own data too, so it cannot take over the installed app's
+// daemon, socket, token or CLI shim. One realpath; see shouldUsePortableData.
+let portableDataForced = false;
+if (process.platform === 'darwin' && app.isPackaged && !process.env.WMUX_DATA_SUFFIX) {
+  let realExecPath = process.execPath;
+  try { realExecPath = require('fs').realpathSync(process.execPath); } catch { /* keep execPath */ }
+  if (shouldUsePortableData(realExecPath, os.homedir(), process.env)) {
+    portableDataForced = true;
+    process.env.WMUX_DATA_SUFFIX = PORTABLE_DATA_SUFFIX;
+    console.log(
+      `[Main] packaged copy outside /Applications (${realExecPath}) → isolated data ` +
+      `(WMUX_DATA_SUFFIX=${PORTABLE_DATA_SUFFIX}); set WMUX_ALLOW_PRODUCTION_DATA=1 to use production data`,
+    );
+  }
 }
 if (process.env.WMUX_DATA_SUFFIX) {
   const suffix = process.env.WMUX_DATA_SUFFIX;
@@ -716,6 +732,12 @@ ipcMain.handle('detection:resolveAgent', async (_e, ptyId: string) => {
   if (!id) return null;
   return (await daemonClient?.getAgentName(id)) ?? null;
 });
+
+// The renderer asks once it is mounted, so the marker is claimed only when the
+// toast is about to show: a push could land before anyone listens and be lost.
+ipcMain.handle(IPC.PORTABLE_DATA_NOTICE_CLAIM, () =>
+  claimPortableDataNotice(portableDataForced, path.join(getWmuxHomeDir(), 'portable-notice-shown')),
+);
 
 ipcMain.handle('daemon:get-ready-state', async () => {
   if (!daemonReadyDecided) {
@@ -1696,7 +1718,8 @@ app.on('ready', async () => {
   // 안 가리키면"(DMG/ZIP 임시 경로에서 첫 설치 후 볼륨 제거·앱 이동으로 죽은
   // 링크가 됨, issue #505) 복구를 위해 재실행한다. 부팅 경로를 막지 않게 지연
   // 실행, 전체 best-effort.
-  if (process.platform === 'darwin' && app.isPackaged) {
+  // A portable copy must not repoint the installed app's shim at itself.
+  if (process.platform === 'darwin' && app.isPackaged && process.env.WMUX_DATA_SUFFIX !== PORTABLE_DATA_SUFFIX) {
     const shimTimer = setTimeout(() => {
       try {
         const fs = require('fs') as typeof import('fs');
@@ -1751,7 +1774,8 @@ app.on('ready', async () => {
   // 낡은 채로 두라는 게 아니다. bridge refresh는 플러그인 캐시본(마켓플레이스가
   // 버전 디렉터리로 따로 관리)은 건드리지 않고 오직 plugin-LESS 복사본만 담당한다.
   // 부팅 경로를 막지 않게 지연 실행, 전체 best-effort.
-  if (app.isPackaged) {
+  // Not from a portable copy: these scripts live at suffix-blind ~/.wmux paths.
+  if (app.isPackaged && process.env.WMUX_DATA_SUFFIX !== PORTABLE_DATA_SUFFIX) {
     const refreshTimer = setTimeout(() => {
       try {
         const sl = refreshStatuslineScript(defaultStatuslinePaths());

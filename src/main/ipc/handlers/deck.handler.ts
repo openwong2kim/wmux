@@ -66,6 +66,7 @@ import { DeckScheduler } from '../../deck/DeckScheduler';
 import { DeckHeartbeat } from '../../deck/DeckHeartbeat';
 import { CommanderEventCoalescer, type CoalescerInput } from '../../deck/CommanderEventCoalescer';
 import { notifyFanoutCaller, shouldNotifyCaller, installFanoutCallerLedgerNotify } from '../../deck/fanoutCallerNotify';
+import { startFanoutWorkerWatch } from '../../deck/fanoutWorkerWatchHost';
 import { runHqAutoPress, takeHqPressPointer } from '../../deck/hqApprovalLane';
 import { getMoaShadowStats, runMoaShadow } from '../../deck/moaShadowHost';
 import { trackContextMemory } from '../../deck/trackRecordFeed';
@@ -210,6 +211,7 @@ import {
   type DeckBriefingConfig,
 } from '../../deck/deckBriefingStore';
 import { eventBus, type EventBusSubscriber } from '../../events/EventBus';
+import { createFanoutCallerStopNotify } from '../../deck/fanoutCallerStopNotify';
 import {
   loadDeckSchedules,
   mutateDeckSchedules,
@@ -2066,6 +2068,7 @@ export function registerDeckHandler(
   // not the brain, so it runs whatever Moa's switch says.
   const ledgerReconcileTimer = setInterval(() => {
     void reconcileTaskLedger().catch(() => undefined);
+    void workerWatch.tick().catch(() => undefined);
   }, 60_000);
   ledgerReconcileTimer.unref?.();
   // Lane F step 5: every ledger transition is posted to the task's mission
@@ -2133,6 +2136,21 @@ export function registerDeckHandler(
     });
   };
   const disposeCallerLedgerNotify = installFanoutCallerLedgerNotify(ownerHasBrain, notifyCaller);
+  // A worker whose agent exited, whose PTY ended, or that sits idle long after
+  // its last turn moves to input_required, which the line above tells the caller.
+  // Also, with Moa's runtime off, a brainless parent still hears its workers'
+  // turn ends (fanoutCallerStopNotify.ts); with it on, onBusEvent does that.
+  const workerWatch = startFanoutWorkerWatch(
+    getWindow,
+    () => opts.getDaemonClient?.() ?? null,
+    ownerHasBrain,
+    createFanoutCallerStopNotify({
+      deckRuntimeActive: () => offBus !== null,
+      hasBrain: ownerHasBrain,
+      notify: notifyCaller,
+      reconcile: reconcileTaskLedger,
+    }),
+  );
   // The pane that owns a PR, told about CI / review / conflict when no brain
   // listens (prOwnerNotify.ts). The coalescer push below is unchanged.
   setPrOwnerSink((ev) => {
@@ -4291,6 +4309,7 @@ export function registerDeckHandler(
     disposeLedgerEmitter();
     disposeLedgerPush();
     disposeCallerLedgerNotify();
+    workerWatch.dispose();
     setPrOwnerSink(null);
     ledgerPushCoalescer.dispose();
     globalTurnGate.dispose();

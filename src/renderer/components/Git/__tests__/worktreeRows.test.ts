@@ -97,7 +97,7 @@ describe('classifyWorktree — who acts next on a worktree', () => {
     workspaceId: id, name: id, pr: state ? { number: 1, state, checks: null, url: 'u' } : null,
   });
   const sig = (over: Partial<WorktreeSignals> = {}): WorktreeSignals => ({
-    now, openPrBranches: new Set(['open-pr']), prListComplete: true, busyWorkspaces: new Set(), ...over,
+    now, openPrBranches: new Set(['open-pr']), prListComplete: true, busyWorkspaces: new Set(), busyWorktrees: new Set(), ...over,
   });
 
   it('sorts rows into the five sections, first match wins', () => {
@@ -138,6 +138,11 @@ describe('classifyWorktree — who acts next on a worktree', () => {
     expect(classifyWorktree(merged({ stat: null }), sig())).toBe('inUse');
     expect(classifyWorktree(merged({ stat: { ...clean, error: 'boom' } }), sig())).toBe('inUse');
     expect(classifyWorktree(merged({}), sig({ busyWorkspaces: new Set(['w']) }))).toBe('inUse');
+    // An agent in a tab sitting in the worktree (a background one, or another
+    // workspace's): in use, and a quiet detached one with nobody on it too.
+    expect(classifyWorktree(merged({}), sig({ busyWorktrees: new Set(['feat']) }))).toBe('inUse');
+    expect(classifyWorktree(row('gone', { branch: null, detached: true }), sig({ busyWorktrees: new Set(['gone']) }))).toBe('inUse');
+    expect(classifyWorktree(merged({}), sig({ busyWorktrees: new Set(['other']) }))).toBe('cleanup');
     // An open or closed PR keeps a workspace's worktree in use.
     expect(classifyWorktree(row('feat', {}, { workspaces: [ws('w', 'open')] }), sig())).toBe('inUse');
     expect(classifyWorktree(row('feat', {}, { workspaces: [ws('w', 'closed')] }), sig())).toBe('inUse');

@@ -38,6 +38,8 @@ const wt = (name: string) => `/code/alpha-wt/${name}`;
 let heads: Record<string, string>;
 let dirty: Record<string, number>;
 let statusFails: Set<string>;
+// Paths only git status lists (a change staged and then reverted in the tree).
+let statusOnly: Record<string, number>;
 const worktrees = () => [
   { path: MAIN, branch: 'main' },
   { path: wt('feat'), branch: 'feat' },
@@ -62,6 +64,7 @@ beforeEach(() => {
   heads = {};
   dirty = { [wt('wip')]: 2 };
   statusFails = new Set();
+  statusOnly = {};
   try { localStorage.clear(); } catch { /* none */ }
   prList = vi.fn(async () => ({ ok: true, prs: [pr(7, 'feat'), pr(8, 'review')] }));
   list = vi.fn(async (p: string) => ({ ok: true, repoPath: p, mainPath: MAIN, worktrees: worktrees() }));
@@ -69,7 +72,7 @@ beforeEach(() => {
     platform: 'linux',
     diff: {
       resolveRepo: vi.fn(async (cwd: string) => (cwd.startsWith('/code/alpha') ? { ok: true, repoPath: cwd } : { ok: false })),
-      status: vi.fn(async (p: string) => (statusFails.has(p) ? { ok: false, error: 'git status failed' } : { ok: true, files: dirty[p] ?? 0 })),
+      status: vi.fn(async (p: string) => (statusFails.has(p) ? { ok: false, error: 'git status failed' } : { ok: true, files: (dirty[p] ?? 0) + (statusOnly[p] ?? 0) })),
       read: vi.fn(async (p: string) => ({
         ok: true, files: [],
         numstat: Array.from({ length: dirty[p] ?? 0 }, (_, i) => ({ path: `f${i}.ts`, additions: 1, deletions: 0 })),
@@ -93,7 +96,7 @@ beforeEach(() => {
       workspace('b', wt('feat')),
       workspace('d', wt('done'), { metadata: { pr: { number: 9, state: 'merged', checks: null, url: 'https://github.com/o/alpha/pull/9' } } } as Partial<Workspace>),
     ],
-    activeWorkspaceId: 'a', startupDirectory: '', appRoute: 'git', paneGate: 'pending',
+    activeWorkspaceId: 'a', startupDirectory: '', appRoute: 'git', paneGate: 'pending', surfaceTurnOpenAt: {},
     gitPage: { ...initialGitPageState(), tab: 'worktrees' },
   }));
   container = document.createElement('div');
@@ -174,6 +177,46 @@ describe('Git page Worktrees: who acts next', () => {
     expect(section('noPr')).toBeNull();
     expect(branchesIn('cleanup')).toEqual(['done']);
     expect(branchesIn('idle')).toEqual(['ship', 'review']);
+  });
+
+  it('a merged worktree whose change was staged and then reverted is not clean: git status decides, not the diff', async () => {
+    // `git diff HEAD` sees nothing (numstat empty); git status lists the path.
+    statusOnly = { [wt('done')]: 1 };
+    await mount();
+    expect(section('cleanup')).toBeNull();
+    // Dirty rows sort first.
+    expect(branchesIn('inUse')).toEqual(['done', 'main', 'feat']);
+    const diff = (window as unknown as { electronAPI: { diff: { status: ReturnType<typeof vi.fn> } } }).electronAPI.diff;
+    expect(diff.status).toHaveBeenCalledWith(wt('done'));
+  });
+
+  it('the current-branch card agrees with its row on a staged-then-reverted tree', async () => {
+    statusOnly = { [MAIN]: 1 };
+    await mount();
+    expect(container.querySelector('[data-git-changes]')?.textContent).toBe('1 files·1');
+  });
+
+  it('a failed status read on a merged worktree whose diff saw nothing is unknown, not clean; with diff changes the row keeps its counts', async () => {
+    statusFails = new Set([wt('done'), wt('feat')]);
+    dirty = { [wt('wip')]: 2, [wt('feat')]: 1 };
+    await mount();
+    expect(section('cleanup')).toBeNull();
+    const row = (b: string) => [...container.querySelectorAll('[data-git-worktree-row]')].find((el) => el.querySelector('.wmux-git-branch')?.textContent === b)!;
+    expect(row('done').querySelector('.wmux-git-stat')!.textContent).toBe('—');
+    expect(row('feat').querySelector('.wmux-git-stat')!.textContent).toBe('+1');
+  });
+
+  it('an agent working in a background tab keeps a merged, clean worktree out of Cleanup', async () => {
+    const d = workspace('d', wt('done'), { metadata: { pr: { number: 9, state: 'merged', checks: null, url: 'https://github.com/o/alpha/pull/9' } } } as Partial<Workspace>);
+    const leaf = d.rootPane as Extract<Workspace['rootPane'], { type: 'leaf' }>;
+    leaf.surfaces.push({ id: 's-d2', ptyId: 'pty-d2', title: 'agent', shell: 'zsh', cwd: wt('done'), surfaceType: 'terminal' });
+    act(() => useStore.setState({
+      workspaces: [workspace('a', MAIN), workspace('b', wt('feat')), d],
+      surfaceTurnOpenAt: { 'pty-d2': Date.now() },
+    } as never));
+    await mount();
+    expect(section('cleanup')).toBeNull();
+    expect(branchesIn('inUse')).toEqual(['main', 'feat', 'done']);
   });
 
   it('snooze: pick a time, the row folds into Snoozed, is kept per viewer, and Unsnooze brings it back', async () => {

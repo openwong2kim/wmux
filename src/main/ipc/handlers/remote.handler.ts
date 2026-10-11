@@ -101,6 +101,9 @@ interface AttachRecord {
   sessionId: string;
   senderId: number;
   sender: WebContents;
+  /** #1323 — the ids handed to the renderer for this one stream, one per
+   *  REMOTE_PANE_ATTACH call. The first is the stream's own attachId. */
+  viewers: Set<string>;
 }
 
 /** A failed client call as an IPC result. A rejected credential carries its
@@ -278,6 +281,15 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
   const allowInputCache = new Map<string, boolean>(); // hostId -> allowInput
   const attachByKey = new Map<string, string>(); // `${senderId}:${hostId}:${sessionId}` -> attachId
   const attachRecords = new Map<string, AttachRecord>(); // attachId -> record
+  // #1323 — two views in one window can show the same session (a mirror-grid
+  // cell and a tab opened from it). They share one SSE stream (the
+  // (sender, host, session) key above), but each attach call gets its own
+  // viewer id, and the stream closes only when its LAST viewer detaches. A
+  // shared id could not be counted: each view detaches its id twice (the
+  // owner and RemoteMirrorTerminal both do, on unmount), so one view's
+  // teardown would have ended the other's stream.
+  const viewerStreams = new Map<string, string>(); // viewer id -> stream attachId
+  let viewerSeq = 0;
   const trackedSenders = new Set<number>();
 
   // #1391 — the liveness-poll tick. Keyed by WebContents id so a renderer that
@@ -361,11 +373,29 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
     return `${senderId}:${hostId}:${sessionId}`;
   }
 
-  function pushToOwner(attachId: string, channel: string, payload: unknown): void {
+  /** A stream event, sent once per viewer under that viewer's own id. */
+  function pushToOwner(attachId: string, channel: string, payload: { attachId: string }): void {
     const record = attachRecords.get(attachId);
     if (!record) return;
     if (record.sender.isDestroyed()) return;
-    record.sender.send(channel, payload);
+    for (const viewer of record.viewers) {
+      record.sender.send(channel, viewer === attachId ? payload : { ...payload, attachId: viewer });
+    }
+  }
+
+  /** The stream a renderer-held id reads from, or undefined once detached. */
+  function streamRecord(viewer: string): AttachRecord | undefined {
+    const attachId = viewerStreams.get(viewer);
+    return attachId === undefined ? undefined : attachRecords.get(attachId);
+  }
+
+  /** One viewer is done. Idempotent per id; the last one closes the stream. */
+  function releaseViewer(viewer: string): void {
+    const record = streamRecord(viewer);
+    viewerStreams.delete(viewer);
+    if (!record) return;
+    record.viewers.delete(viewer);
+    if (record.viewers.size === 0) detachAttach(record.attachId);
   }
 
   /**
@@ -478,6 +508,7 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
     if (!record) return;
     clients.get(record.hostId)?.detach(attachId);
     attachRecords.delete(attachId);
+    for (const viewer of record.viewers) viewerStreams.delete(viewer);
     attachByKey.delete(attachKey(record.senderId, record.hostId, record.sessionId));
   }
 
@@ -888,8 +919,8 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
       const sender = event.sender;
 
       // Idempotent: a second attach for the same (sender, host, session) —
-      // e.g. React StrictMode's double-effect — returns the existing
-      // attachId rather than opening a second SSE stream.
+      // e.g. React StrictMode's double-effect — joins the existing SSE stream
+      // rather than opening a second one.
       const key = attachKey(sender.id, id, session);
       const existingAttachId = attachByKey.get(key);
       if (existingAttachId) {
@@ -899,9 +930,15 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
         // newcomer gets the grid and a snapshot too, instead of a blank
         // terminal that never learns the remote's geometry.
         const record = attachRecords.get(existingAttachId);
-        const existingClient = record ? clients.get(record.hostId) : undefined;
-        existingClient?.refresh(existingAttachId);
-        return { ok: true, attachId: existingAttachId };
+        if (record) {
+          // #1323 — a viewer of its own: detaching it leaves the others' stream.
+          viewerSeq += 1;
+          const viewer = `${existingAttachId}~${viewerSeq}`;
+          record.viewers.add(viewer);
+          viewerStreams.set(viewer, existingAttachId);
+          clients.get(record.hostId)?.refresh(existingAttachId);
+          return { ok: true, attachId: viewer };
+        }
       }
 
       const client = getOrCreateClient(id);
@@ -914,7 +951,8 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
 
       installSenderCleanup(sender);
       const attachId = client.attach(session);
-      attachRecords.set(attachId, { attachId, hostId: id, sessionId: session, senderId: sender.id, sender });
+      attachRecords.set(attachId, { attachId, hostId: id, sessionId: session, senderId: sender.id, sender, viewers: new Set([attachId]) });
+      viewerStreams.set(attachId, attachId);
       attachByKey.set(key, attachId);
       return { ok: true, attachId };
     }));
@@ -922,7 +960,7 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
   ipcMain.removeHandler(IPC.REMOTE_PANE_DETACH);
   ipcMain.handle(IPC.REMOTE_PANE_DETACH, wrapHandler(IPC.REMOTE_PANE_DETACH,
     async (_e: IpcMainInvokeEvent, attachId: unknown): Promise<void> => {
-      detachAttach(assertString(attachId, 'attachId'));
+      releaseViewer(assertString(attachId, 'attachId'));
     }));
 
   // remote:pane:write — fire-and-forget like pty:write. Errors (dead
@@ -931,11 +969,11 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
   ipcMain.removeAllListeners(IPC.REMOTE_PANE_WRITE);
   ipcMain.on(IPC.REMOTE_PANE_WRITE, (_e, attachId: unknown, data: unknown) => {
     if (typeof attachId !== 'string' || typeof data !== 'string') return;
-    const record = attachRecords.get(attachId);
+    const record = streamRecord(attachId);
     if (!record) return;
     const client = clients.get(record.hostId);
     if (!client) return;
-    client.write(attachId, data).catch(() => { /* see doc comment above */ });
+    client.write(record.attachId, data).catch(() => { /* see doc comment above */ });
   });
 
   // #1322 — a remote-terminal mirror's own fit-to-box request, resolved
@@ -960,7 +998,7 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
       if (clampRemoteGeometry(cols, rows) === null) {
         return { ok: false, reason: 'cols and rows must be numbers' };
       }
-      const record = attachRecords.get(id);
+      const record = streamRecord(id);
       if (!record) return { ok: false, reason: 'unknown attach' };
       const client = clients.get(record.hostId);
       if (!client) return { ok: false, reason: 'unknown host' };

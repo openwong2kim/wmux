@@ -238,10 +238,13 @@ function countFileLines(path: string): Promise<{ lines: number; binary: boolean 
  * diff:status — whether a worktree has uncommitted changes, for the Git page's
  * Worktrees tab: one `git status --porcelain` and a count of its entries. No
  * file is read and nothing is diffed, so a worktree full of large untracked
- * files costs the same as a clean one.
+ * files costs the same as a clean one. Untracked files are asked for
+ * explicitly: with the user's `status.showUntrackedFiles=no` a worktree
+ * holding only new files would read as clean. `normal`, not `all`: a new
+ * folder counts once and is not walked file by file.
  */
 export async function readUncommittedCount(worktreePath: string): Promise<DiffStatusResult | DiffReadError> {
-  const status = await git(['-c', 'core.quotepath=false', 'status', '--porcelain', '-z'], worktreePath);
+  const status = await git(['-c', 'core.quotepath=false', 'status', '--porcelain', '--untracked-files=normal', '-z'], worktreePath);
   if (status.code !== 0) {
     return { ok: false, error: `git status failed: ${status.stderr.slice(0, 200)}`, code: 'status-fail' };
   }

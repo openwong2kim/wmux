@@ -6,6 +6,7 @@ import { useStore } from '../../stores';
 import {
   FANOUT_NUDGE_COALESCE_MS,
   POINTER_TTL_MS,
+  STOP_COOLDOWN_MS,
   noteFanoutCallerLifecycle,
   noteFanoutCallerTurnEnd,
   receiveFanoutCallerEvent,
@@ -175,6 +176,18 @@ describe('fan-out caller nudge', () => {
     receiveFanoutCallerEvent(pointer('t1', 2, 'ledger.review_requested'));
     await windowElapses();
     expect(submit).toHaveBeenCalledTimes(3);
+  });
+
+  it('a busy worker yields at most one "updated" line per stop cooldown window', async () => {
+    for (let seq = 1; seq <= 4; seq++) {
+      receiveFanoutCallerEvent(pointer('t1', seq));
+      await windowElapses();
+    }
+    expect(submit).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(STOP_COOLDOWN_MS);
+    receiveFanoutCallerEvent(pointer('t1', 5));
+    await windowElapses();
+    expect(submit).toHaveBeenCalledTimes(2);
   });
 
   it('waits for the turn end while the caller is busy', async () => {

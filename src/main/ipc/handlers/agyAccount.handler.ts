@@ -11,6 +11,7 @@ import { AgyAccountError, getAgyAccountService } from '../../account/AgyAccountS
 import type { AgyAccountsSnapshot } from '../../../shared/agyAccounts';
 import os from 'node:os';
 import { refreshInstalledAgyQuotaSink } from '../../quota/installAgyQuotaSensor';
+import { PORTABLE_DATA_SUFFIX } from '../../dataIsolation';
 
 const UNSAFE_KEYS: ReadonlySet<string> = new Set(['__proto__', 'constructor', 'prototype']);
 
@@ -36,10 +37,13 @@ export function registerAgyAccountHandlers(getWindow: () => BrowserWindow | null
   ];
   for (const c of channels) ipcMain.removeHandler(c);
   const service = getAgyAccountService();
-  // Per-account quota needs the current sink; refresh an installed copy.
-  try {
-    if (refreshInstalledAgyQuotaSink(os.homedir()) === 'updated') console.log('[agy-accounts] refreshed the installed agy quota sink');
-  } catch { /* best-effort */ }
+  // Per-account quota needs the current sink; refresh an installed copy. Not
+  // from a portable copy: the sink lives at the suffix-blind ~/.wmux/bin.
+  if (process.env.WMUX_DATA_SUFFIX !== PORTABLE_DATA_SUFFIX) {
+    try {
+      if (refreshInstalledAgyQuotaSink(os.homedir()) === 'updated') console.log('[agy-accounts] refreshed the installed agy quota sink');
+    } catch { /* best-effort */ }
+  }
 
   const unsubscribe = service.onChange(() => {
     const win = getWindow();

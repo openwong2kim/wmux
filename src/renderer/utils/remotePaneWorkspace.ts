@@ -10,8 +10,11 @@
 // Store surface injected (browserPane.ts pattern) so the ordering contract is
 // testable against a plain object as well as the real store.
 
-import type { Pane } from '../../shared/types';
-import type { RemoteSessionRef } from '../../shared/paneUtils';
+import type { Pane, Workspace } from '../../shared/types';
+import { findLeaf, getLeafPanes, type RemoteSessionRef } from '../../shared/paneUtils';
+import { isShadowWorkspaceId } from '../../shared/pcRail';
+import { findRemoteSurface } from '../stores/shadowWorkspace';
+import { moaHqId } from '../stores/slices/moaSlice';
 
 /** The session AddRemotePaneModal minted, exactly as its onCreated reports it. */
 export interface MintedRemoteSession {
@@ -74,4 +77,52 @@ export function createWorkspaceWithRemotePane(
   // destroys it on the host (#1129).
   getState().addRemoteSurface(ws.rootPane.id, hostId, sessionId, undefined, undefined, ws.id, true, remoteWorkspaceId);
   return ws.id;
+}
+
+// ─── A mirror-grid session opened as a tab (#1323 item 2) ────────────────────
+// The mirror grid (RemoteWorkspaceView) only watches another computer's
+// workspace. #1091 left one bridge for later: "open this session as a tab in
+// my workspace". This is it, on the same store action as every other remote
+// tab, with one difference: nothing is minted. The session is someone's
+// running work on the host, so the tab is a view of it and NOT owned —
+// closing the tab detaches and never destroys the session (#1129).
+
+/** A session the mirror grid is showing. */
+export interface MirroredRemoteSession {
+  hostId: string;
+  sessionId: string;
+  /** The host-side workspace the mirror is attached to (#1329's roster feed). */
+  remoteWorkspaceId: string;
+}
+
+/** Structural subset of StoreState — the caller passes useStore.getState. */
+export type RemoteSessionTabStoreApi = Parameters<typeof moaHqId>[0] & {
+  workspaces: readonly Workspace[];
+  addRemoteSurface: RemotePaneWorkspaceStoreApi['addRemoteSurface'];
+};
+
+/**
+ * Add `session` as a remote-terminal tab to the active pane of `workspaceId`
+ * (its first pane when the active id does not resolve). Returns the id of the
+ * tab that shows the session, or null when the workspace is not one of the
+ * operator's own (unknown, the Moa HQ, or another computer's shadow).
+ *
+ * A session already open as a tab is not opened twice (addRemoteSurface's
+ * one-viewer rule): the tab that already shows it is returned instead.
+ */
+export function openRemoteSessionAsTab(
+  getState: () => RemoteSessionTabStoreApi,
+  workspaceId: string,
+  session: MirroredRemoteSession,
+): string | null {
+  const { hostId, sessionId, remoteWorkspaceId } = session;
+  if (isShadowWorkspaceId(workspaceId) || workspaceId === moaHqId(getState())) return null;
+  const ws = getState().workspaces.find((w) => w.id === workspaceId);
+  if (!ws) return null;
+  const pane = findLeaf(ws.rootPane, ws.activePaneId) ?? getLeafPanes(ws.rootPane)[0];
+  if (!pane) return null;
+  // owned: false — see the section comment. The host-side workspace id rides
+  // along so the tab gets its agent in the sidebar roster and pane_list (#1329).
+  getState().addRemoteSurface(pane.id, hostId, sessionId, undefined, undefined, ws.id, false, remoteWorkspaceId);
+  return findRemoteSurface(getState(), hostId, sessionId)?.surfaceId ?? null;
 }

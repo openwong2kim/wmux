@@ -33,7 +33,9 @@ import { useStore } from '../../stores';
 import type { StoreState } from '../../stores';
 import { useT } from '../../hooks/useT';
 import { FOCUS_RING } from '../focusRing';
-import type { Pane, PaneLeaf } from '../../../shared/types';
+import type { AgentStatus, Pane, PaneLeaf } from '../../../shared/types';
+import { getWorkspaceLeafPanes } from '../../../shared/paneUtils';
+import { selectHookRunningByPtyId, surfaceAttentionStatus } from '../../stores/selectors/fleet';
 import type { WorktreeEntry } from '../../../shared/worktreeParse';
 import type { MergeSessionStatus } from '../../../main/git/mergeSession';
 import type { DiffReadResult, DiffReadError, DiffStatusResult } from '../../../shared/diffParse';
@@ -199,15 +201,30 @@ export function openWtSection(key: WorktreeSection): void {
   });
 }
 
-/** The workspaces where an agent is working or asking, as one string so the
- *  selector re-renders only when the set changes. */
-export function selectBusyWorkspaces(s: StoreState): string {
+/** Where an agent is working or asking, as one string so the selector
+ *  re-renders only when it changes: `w:<workspaceId>` for each such workspace
+ *  and `c:<cwd>` for each such local tab's folder. The workspace roll-up keys
+ *  each pane on its active tab, so every local tab of every pane (stashed ones
+ *  included) is read here too, with the same running and asking rule: an
+ *  agent in a background tab keeps its worktree out of Cleanup. */
+export function selectBusyParties(s: StoreState): string {
+  const busy = (a: AgentStatus | undefined) => a === 'running' || a === 'awaiting_input';
   const st = selectAgentStatusByParty(s);
-  return Object.keys(st)
-    .filter((k) => k.startsWith('w:') && (st[k] === 'running' || st[k] === 'awaiting_input'))
-    .map((k) => k.slice(2))
-    .sort()
-    .join('\0');
+  const out = new Set(Object.keys(st).filter((k) => k.startsWith('w:') && busy(st[k])));
+  const hookRunning = selectHookRunningByPtyId(s);
+  const plat = hostPlatform();
+  for (const ws of s.workspaces) {
+    // Another computer's workspace: its folders are not on this disk.
+    if (isShadowWorkspaceId(ws.id)) continue;
+    for (const leaf of getWorkspaceLeafPanes(ws)) {
+      for (const surf of leaf.surfaces) {
+        if (!surf.ptyId || !(hookRunning[surf.ptyId] || busy(surfaceAttentionStatus(s, surf.ptyId)))) continue;
+        out.add(`w:${ws.id}`);
+        if (surf.cwd && isPlausibleCwd(surf.cwd, plat)) out.add(`c:${surf.cwd}`);
+      }
+    }
+  }
+  return [...out].sort().join('\0');
 }
 
 /** Diff counts, coloured like a diff; the changed-path count when only untracked files changed. */
@@ -436,9 +453,19 @@ export function GitTab({
     const readOne = async (path: string): Promise<DiffStat | null> => {
       if (!readDiff) return null;
       try {
-        const diff = await withStatReadSlot(() => readDiff(path, '', 'workspace'));
+        // The line counts come from the diff; the changed paths also from git
+        // status, as on every other row (and on the card, so the two agree):
+        // `git diff HEAD` misses a change that
+        // was staged and then reverted in the tree, which would read as clean.
+        // Either read seeing a change makes the tree not clean. A failed
+        // status read leaves it unknown only when the diff saw nothing.
+        const [diff, st] = await withStatReadSlot(() => Promise.all([
+          readDiff(path, '', 'workspace'),
+          readStatus ? readStatus(path) : null,
+        ]));
         if (!diff.ok) return { files: 0, additions: 0, deletions: 0, error: diff.error };
-        const stat: DiffStat = { files: diff.numstat.length, additions: 0, deletions: 0, error: null };
+        if (st && !st.ok && diff.numstat.length === 0) return { files: 0, additions: 0, deletions: 0, error: st.error };
+        const stat: DiffStat = { files: Math.max(st?.ok ? st.files : 0, diff.numstat.length), additions: 0, deletions: 0, error: null };
         for (const n of diff.numstat) {
           stat.additions += n.additions ?? 0;
           stat.deletions += n.deletions ?? 0;
@@ -704,17 +731,26 @@ export function GitTab({
   // Who acts next on each row: the repo's open PR list as the page holds it
   // (nothing is read for it here) and which workspaces have an agent
   // working or asking.
-  const busyKey = useStore((s) => (showSections ? selectBusyWorkspaces(s) : ''));
+  const busyKey = useStore((s) => (showSections ? selectBusyParties(s) : ''));
   const [tick, setTick] = useState(0);
   const now = Date.now();
   const openPrBranches = prList && prList !== 'gated' ? new Set(prList.prs.map((p) => p.headRefName)) : null;
+  const busyParties = busyKey ? busyKey.split('\0') : [];
+  const busyWorkspaces = new Set(busyParties.filter((k) => k.startsWith('w:')).map((k) => k.slice(2)));
+  const busyWorktrees = new Set<string>();
+  for (const k of busyParties) {
+    if (!k.startsWith('c:')) continue;
+    const wt = worktreeContaining(k.slice(2), worktrees.map((w) => w.path), hostPlatform());
+    if (wt !== null) busyWorktrees.add(normWorktreePath(wt, hostPlatform()));
+  }
   const classified = rows.map((row) => ({
     row,
     section: classifyWorktree(row, {
       now,
       openPrBranches,
       prListComplete: !!prList && prList !== 'gated' && prList.complete,
-      busyWorkspaces: new Set(busyKey ? busyKey.split('\0') : []),
+      busyWorkspaces,
+      busyWorktrees,
     }),
   }));
   // Snoozes: judged against a row's state only once the list and its stats

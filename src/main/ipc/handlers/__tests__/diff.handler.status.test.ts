@@ -64,6 +64,21 @@ describe('diff:status', () => {
     expect(await status(repo)).toEqual({ ok: true, files: 3 });
   });
 
+  it('counts a staged change reverted in the tree, and untracked files the user hides from status', async () => {
+    // Staged, then the file put back to HEAD: `git diff HEAD` sees nothing.
+    writeFileSync(join(repo, 'a.txt'), 'changed\n');
+    g(repo, ['add', 'a.txt']);
+    writeFileSync(join(repo, 'a.txt'), 'a\n');
+    expect(g(repo, ['diff', 'HEAD', '--numstat'])).toBe('');
+    expect(await status(repo)).toEqual({ ok: true, files: 1 });
+    g(repo, ['reset', '-q', '--hard']);
+    // status.showUntrackedFiles=no would hide an untracked-only worktree.
+    g(repo, ['config', 'status.showUntrackedFiles', 'no']);
+    mkdirSync(join(repo, 'new'));
+    writeFileSync(join(repo, 'new', 'x.txt'), 'x\n');
+    expect(await status(repo)).toEqual({ ok: true, files: 1 });
+  });
+
   it('a folder that is not a worktree is an error, not clean', async () => {
     const plain = join(base, 'plain');
     mkdirSync(plain);

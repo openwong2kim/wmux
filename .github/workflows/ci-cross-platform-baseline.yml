@@ -50,10 +50,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Setup Node.js 22.x + npm 11
+      - name: Setup Node.js + npm 11
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 22
+          # Windows takes the ci.yml floor (see the comment there, #984). The
+          # libuv bug is Windows-only, so the other legs stay on 22: on Node 24
+          # macOS rejects the >104-byte unix socket paths the SessionPipe and
+          # DaemonClient tests build under its long $TMPDIR (EINVAL), where
+          # Node 22 truncated them silently. That is its own follow-up.
+          node-version: ${{ runner.os == 'Windows' && '>=24.21.0 <25' || '22' }}
           cache: npm
 
       - name: Use npm 11

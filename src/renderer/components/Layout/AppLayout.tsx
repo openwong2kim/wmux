@@ -1834,6 +1834,14 @@ export default function AppLayout() {
     return () => off?.();
   }, []);
 
+  // A macOS copy run outside Applications uses separate data; say so once per
+  // portable data dir so an empty app is not mistaken for data loss.
+  useEffect(() => {
+    void window.electronAPI.claimPortableDataNotice?.().then((show) => {
+      if (show) useStore.getState().pushToast({ level: 'info', persist: true, message: t('app.portableData.notice') });
+    }).catch(() => undefined);
+  }, []);
+
   // X8 pane supervision — keep the renderer supervision slice in sync with the
   // daemon's PaneSupervisor. Three inputs:
   //   - pty.onSupervisionChanged: sticky status flip (guard-trip / rearm /

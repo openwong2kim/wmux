@@ -27,6 +27,7 @@
 // live model and no SDK subprocess.
 
 import type { BrainVendor } from '../../shared/types';
+import type { FleetLocalAnswer } from '../../shared/fleetLocalAnswer';
 
 /** Token / cost accounting for a completed turn (best-effort — a fake or an
  *  older CLI may omit fields). Surfaced for a future usage meter; the deck does
@@ -89,8 +90,9 @@ export type BrainEvent =
       sessionId: string | null;
       usage?: BrainUsage;
       /** A deterministic main-side answer absent from the provider's own
-       *  transcript. The renderer keeps it as a local conversation entry. */
-      localAnswer?: { prompt: string; text: string };
+       *  transcript. The renderer words it in the UI language and keeps it
+       *  as a local conversation entry. */
+      localAnswer?: { prompt: string; fleet: FleetLocalAnswer };
     }
   | {
       type: 'error';

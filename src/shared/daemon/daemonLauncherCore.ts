@@ -12,6 +12,7 @@ import {
   launchdBaseLabel,
   startDaemonViaLaunchd,
   sweepLeftoverDaemonPlists,
+  withDaemonStartLock,
 } from './launchdDaemonJob';
 import { classifyTasklistOutput, classifyKillOutcome, type ProcessLiveness } from '../processLiveness';
 
@@ -871,6 +872,8 @@ function spawnDaemon(deps: DaemonLauncherDeps): Promise<number> {
     }) => {
       deps.markBoot?.('daemon-spawned');
       (deps.log ?? console.log)(`[launcher] Daemon spawned with PID: ${proc.pid}`);
+      // pid the ready ping came from (absent from a daemon older than Step ③).
+      let responderPid: number | undefined;
 
       // Wait for daemon to be ready. Adaptive cadence + the pipe-file zombie
       // guard live in pollDaemonReady (extracted so the chain is unit-testable
@@ -896,13 +899,26 @@ function spawnDaemon(deps: DaemonLauncherDeps): Promise<number> {
         },
         readPipeName: () => readPipeNameFromFile(getWmuxDir()),
         readToken: readDaemonAuthToken,
-        ping: (pipeName, token) => pingDaemon(pipeName, token, 2000),
+        ping: async (pipeName, token) => {
+          const pong = await daemonPing(pipeName, token, 2000);
+          responderPid = pong?.pid;
+          return pong !== null;
+        },
         onPipeFileSeen: () => deps.markBoot?.('daemon-pipe-file-seen'),
         onPingOk: () => deps.markBoot?.('daemon-first-ping-ok'),
       });
       const settled = readiness;
       settled.promise.then(
-        () => { proc.dispose(); resolve(proc.pid); },
+        () => {
+          proc.dispose();
+          // POSIX: another daemon answered (ours lost the lock and is exiting).
+          // Report that one through the reconnect path, not our dead pid.
+          if (process.platform !== 'win32' && typeof responderPid === 'number' && responderPid !== proc.pid) {
+            reject(daemonStartupExitError(DAEMON_EXIT_ALREADY_RUNNING));
+          } else {
+            resolve(proc.pid);
+          }
+        },
         (err) => { proc.dispose(); reject(err); },
       );
 
@@ -1077,7 +1093,46 @@ function readBootMarker(wmuxDir: string): string | null {
   }
 }
 
+/**
+ * POSIX: the pid named by daemon.lock or daemon.pid when it is a live process
+ * other than `judgedPid` (the one ensureDaemon already dealt with) and other
+ * than ourselves, else null. Such files belong to a running daemon, not a
+ * crashed one, and must not be cleaned as stale.
+ */
+export function liveDaemonFileOwner(wmuxDir: string, judgedPid: number | null): number | null {
+  for (const name of ['daemon.lock', 'daemon.pid']) {
+    let pid: number;
+    try {
+      pid = parseInt(fs.readFileSync(path.join(wmuxDir, name), 'utf8').trim(), 10);
+    } catch { continue; }
+    if (pid > 0 && pid !== judgedPid && pid !== process.pid && checkProcessLiveness(pid) !== 'dead') return pid;
+  }
+  return null;
+}
+
+/** Longest a launcher holds its lock: it may wait out a recovering daemon,
+ *  then spawn and wait for readiness — each up to DAEMON_READY_HARD_CEILING_MS.
+ *  An older lock is taken over; waiters give up a little later. */
+const LAUNCHER_LOCK_HOLD_MS = 2 * DAEMON_READY_HARD_CEILING_MS + 60_000;
+
 export async function ensureDaemon(deps: DaemonLauncherDeps): Promise<DaemonInfo> {
+  if (process.platform === 'win32') return ensureDaemonUnlocked(deps);
+  // POSIX: one launcher at a time per data dir (app start, respawn, `wmux
+  // daemon start`). A second starter then finds the first one's daemon and
+  // reuses it, instead of cleaning its lock/pid files as stale and starting a
+  // second daemon that rebinds the socket and strands the first.
+  const wmuxDir = getWmuxDir();
+  fs.mkdirSync(wmuxDir, { recursive: true, mode: 0o700 });
+  return withDaemonStartLock(
+    path.join(wmuxDir, 'launcher'),
+    defaultLaunchdRuntime(deps.log ?? console.log),
+    () => ensureDaemonUnlocked(deps),
+    LAUNCHER_LOCK_HOLD_MS + 10_000,
+    LAUNCHER_LOCK_HOLD_MS,
+  );
+}
+
+async function ensureDaemonUnlocked(deps: DaemonLauncherDeps): Promise<DaemonInfo> {
   deps.markBoot?.('daemon-ensure-start');
   const wmuxDir = getWmuxDir();
   const pidFile = path.join(wmuxDir, 'daemon.pid');
@@ -1430,9 +1485,21 @@ export async function ensureDaemon(deps: DaemonLauncherDeps): Promise<DaemonInfo
   (deps.log ?? console.log)('[launcher] No running daemon found. Cleaning stale files...');
   // 'daemon-booting' (#546) joins the list: a marker left by a daemon that
   // crashed mid-recovery must not outlive it into the fresh spawn.
-  const staleFiles = ['daemon.lock', 'daemon.pid', 'daemon-pipe', 'daemon-booting'];
-  for (const name of staleFiles) {
-    try { fs.unlinkSync(path.join(wmuxDir, name)); } catch { /* ignore */ }
+  const liveOwner = process.platform === 'win32' ? null : liveDaemonFileOwner(wmuxDir, existingPid);
+  if (liveOwner !== null) {
+    // A live process holds these files (the daemon's pid file was lost, or a
+    // starter outside the launcher lock ran it). Keep them, point daemon.pid
+    // at it, and run detection again: the reuse / boot-wait / verified-kill
+    // path above then judges that pid like any other, and this branch cannot
+    // repeat for it (it becomes the judged pid).
+    (deps.warn ?? console.warn)(`[launcher] daemon files name live PID ${liveOwner} — not cleaning them`);
+    fs.writeFileSync(pidFile, String(liveOwner), { encoding: 'utf-8', mode: 0o600 });
+    return ensureDaemonUnlocked(deps);
+  } else {
+    const staleFiles = ['daemon.lock', 'daemon.pid', 'daemon-pipe', 'daemon-booting'];
+    for (const name of staleFiles) {
+      try { fs.unlinkSync(path.join(wmuxDir, name)); } catch { /* ignore */ }
+    }
   }
 
   let pid: number;
