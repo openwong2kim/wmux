@@ -4,6 +4,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { spawnSync } from 'child_process';
 import { writeJsonAtomic } from '../../shared/settingsFile';
+import { dataSuffix } from '../../shared/constants';
 import { FANOUT_WORKER_ALLOWED_TOOLS } from '../../shared/workerLaunch';
 
 /**
@@ -847,6 +848,32 @@ export function refreshHookBridge(paths: SetupHooksPaths): BridgeRefreshOutcome 
   }
 }
 
+/**
+ * #2104 — the hook bridge and the statusline script live at suffix-BLIND paths
+ * (`~/.wmux/hooks/`) that the global `~/.claude/settings.json` references, so
+ * an isolated instance (WMUX_DATA_SUFFIX set) has no copy of its own to keep:
+ * its agents already run the production bridge, which reads the suffix from
+ * the pane env at runtime. Refreshing from an isolated instance would only
+ * overwrite the production install with this build's scripts. So the implicit
+ * boot refresh skips, and the explicit `setup-hooks` / `setup-statusline`
+ * commands warn and proceed — the same split as #1151's MCP registration.
+ * Returns null on the unsuffixed (production) instance.
+ */
+export function isolatedScriptsNotice(): string | null {
+  const suffix = dataSuffix();
+  if (suffix === '') return null;
+  return `warning: WMUX_DATA_SUFFIX=${suffix} is set — this is an isolated instance, but ` +
+    'the hook bridge, statusline script and ~/.claude/settings.json are shared with your ' +
+    'production wmux, so this changes the production install';
+}
+
+/** Boot-time entry for `refreshHookBridge`: never touches the shared bridge
+ *  from an isolated instance (#2104, see isolatedScriptsNotice). */
+export function refreshHookBridgeAtBoot(paths: SetupHooksPaths): BridgeRefreshOutcome | 'isolated' {
+  if (dataSuffix() !== '') return 'isolated';
+  return refreshHookBridge(paths);
+}
+
 // ----- Remove -------------------------------------------------------------
 
 export interface RemoveOutcome {
@@ -1557,6 +1584,11 @@ export async function handleSetupHooks(args: string[], jsonMode: boolean): Promi
     process.exit(1);
     return;
   }
+
+  // #2104 — explicit user action, so warn rather than skip. stderr in both
+  // modes so --json consumers see it without polluting stdout.
+  const isolatedNotice = status ? null : isolatedScriptsNotice();
+  if (isolatedNotice) console.error(isolatedNotice);
 
   // #1904 — `--agent <flavour>` is its own opt-in lane: it touches only that
   // CLI's hook config and the shared bridge, never Claude/Codex/OpenCode.

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -6,6 +6,7 @@ import {
   installStatusline,
   removeStatusline,
   refreshStatuslineScript,
+  refreshStatuslineScriptAtBoot,
   statusStatusline,
   readClaudeAccountTargets,
   classifyStatusLine,
@@ -326,6 +327,22 @@ describe('refreshStatuslineScript', () => {
     bumpSource(paths);
     expect(refreshStatuslineScript(paths)).toBe('refreshed');
     expect(fs.readFileSync(paths.scriptDest, 'utf8')).toBe('// statusline stub v2\n');
+  });
+
+  it('#2104 — the boot entry leaves the production script untouched when WMUX_DATA_SUFFIX is set', () => {
+    const paths = makePaths([target('acc-a')]);
+    installStatusline(paths);
+    const before = fs.readFileSync(paths.scriptDest, 'utf8');
+    bumpSource(paths);
+    vi.stubEnv('WMUX_DATA_SUFFIX', '-dogfood');
+    try {
+      expect(refreshStatuslineScriptAtBoot(paths)).toBe('isolated');
+      expect(fs.readFileSync(paths.scriptDest, 'utf8')).toBe(before);
+      vi.stubEnv('WMUX_DATA_SUFFIX', '');
+      expect(refreshStatuslineScriptAtBoot(paths)).toBe('refreshed');
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it('never touches settings.json — only the script file', () => {

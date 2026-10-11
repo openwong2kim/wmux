@@ -205,11 +205,11 @@ import * as cliShim from './cliShim';
 import * as shortcutHygiene from './shortcutHygiene';
 import { isFreshProfile, runPostInstallReconcile } from './postInstallReconcile';
 import {
-  refreshStatuslineScript,
+  refreshStatuslineScriptAtBoot,
   defaultPaths as defaultStatuslinePaths,
 } from '../cli/commands/setupStatusline';
 import {
-  refreshHookBridge,
+  refreshHookBridgeAtBoot,
   defaultPaths as defaultHooksPaths,
 } from '../cli/commands/setupHooks';
 import { detectStalePluginGates } from './hooks/stalePluginGate';
@@ -1861,22 +1861,23 @@ app.on('ready', async () => {
   // 낡은 채로 두라는 게 아니다. bridge refresh는 플러그인 캐시본(마켓플레이스가
   // 버전 디렉터리로 따로 관리)은 건드리지 않고 오직 plugin-LESS 복사본만 담당한다.
   // 부팅 경로를 막지 않게 지연 실행, 전체 best-effort.
-  // Not from a portable copy: these scripts live at suffix-blind ~/.wmux paths.
-  if (app.isPackaged && process.env.WMUX_DATA_SUFFIX !== PORTABLE_DATA_SUFFIX) {
+  // Not from any isolated instance (#2104): these scripts live at suffix-blind
+  // ~/.wmux paths, so the *AtBoot wrappers skip whenever WMUX_DATA_SUFFIX is set.
+  if (app.isPackaged) {
     const refreshTimer = setTimeout(() => {
       try {
-        const sl = refreshStatuslineScript(defaultStatuslinePaths());
+        const sl = refreshStatuslineScriptAtBoot(defaultStatuslinePaths());
         // 정상 무동작(up-to-date/not-installed)은 로그 소음이라 남기지 않는다.
         // refreshed는 info, failed(실제 IO 실패)·no-source(설치 레이아웃 이상)는
         // 정상과 섞이지 않게 warn으로 올린다.
-        if (sl === 'refreshed') logLine('info', 'main', `statusline script refresh: ${sl}`);
+        if (sl === 'refreshed' || sl === 'isolated') logLine('info', 'main', `statusline script refresh: ${sl}`);
         else if (sl === 'failed' || sl === 'no-source') logLine('warn', 'main', `statusline script refresh: ${sl}`);
       } catch (err) {
         console.warn('[statusline] script refresh failed (non-fatal):', err);
       }
       try {
-        const br = refreshHookBridge(defaultHooksPaths());
-        if (br === 'refreshed') logLine('info', 'main', `hook bridge refresh: ${br}`);
+        const br = refreshHookBridgeAtBoot(defaultHooksPaths());
+        if (br === 'refreshed' || br === 'isolated') logLine('info', 'main', `hook bridge refresh: ${br}`);
         else if (br === 'failed' || br === 'no-source') logLine('warn', 'main', `hook bridge refresh: ${br}`);
       } catch (err) {
         console.warn('[hooks] bridge refresh failed (non-fatal):', err);

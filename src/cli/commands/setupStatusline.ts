@@ -4,6 +4,8 @@ import * as path from 'path';
 import { createHash } from 'crypto';
 import { writeJsonAtomic, copyFileAtomic } from '../../shared/settingsFile';
 import type { StatuslineTargetOutcome } from '../../shared/statuslineOutcome';
+import { dataSuffix } from '../../shared/constants';
+import { isolatedScriptsNotice } from './setupHooks';
 
 /**
  * `wmux setup-statusline` — install the wmux usage statusline into Claude Code.
@@ -514,6 +516,13 @@ export function refreshStatuslineScript(paths: SetupStatuslinePaths): RefreshOut
   }
 }
 
+/** Boot-time entry for `refreshStatuslineScript`: never touches the shared
+ *  script from an isolated instance (#2104, see setupHooks.isolatedScriptsNotice). */
+export function refreshStatuslineScriptAtBoot(paths: SetupStatuslinePaths): RefreshOutcome | 'isolated' {
+  if (dataSuffix() !== '') return 'isolated';
+  return refreshStatuslineScript(paths);
+}
+
 export function removeStatusline(paths: SetupStatuslinePaths): StatuslineOutcome {
   const targets: TargetReport[] = [];
   for (const t of paths.targets) {
@@ -702,6 +711,9 @@ export async function handleSetupStatusline(args: string[], jsonMode: boolean): 
     printStatus(statusStatusline(paths), jsonMode);
     return;
   }
+  // #2104 — explicit user action: warn (stderr, both modes) and proceed.
+  const isolatedNotice = isolatedScriptsNotice();
+  if (isolatedNotice) console.error(isolatedNotice);
   const outcome =
     parsed.action === 'remove' ? removeStatusline(paths) : installStatusline(paths, { force: parsed.force });
   printOutcome(outcome, jsonMode, 'installed');

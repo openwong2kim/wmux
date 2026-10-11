@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -6,6 +6,7 @@ import {
   installHooks,
   removeHooks,
   refreshHookBridge,
+  refreshHookBridgeAtBoot,
   statusHooks,
   findBridgeSourceFrom,
   detectProfile,
@@ -872,6 +873,30 @@ describe('refreshHookBridge', () => {
     fs.writeFileSync(bridgeSource, 'BRIDGE_CONTENT_V2\n', 'utf8');
     expect(refreshHookBridge(paths())).toBe('not-installed');
     expect(fs.readFileSync(bridgeDest, 'utf8')).toBe('BRIDGE_CONTENT_V1\n');
+  });
+});
+
+describe('refreshHookBridgeAtBoot (#2104)', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('leaves the production bridge untouched when WMUX_DATA_SUFFIX is set', () => {
+    installHooks(paths());
+    const settingsBefore = fs.readFileSync(settingsPath, 'utf8');
+    fs.writeFileSync(bridgeSource, 'BRIDGE_CONTENT_V2\n', 'utf8');
+    vi.stubEnv('WMUX_DATA_SUFFIX', '-dogfood');
+    expect(refreshHookBridgeAtBoot(paths())).toBe('isolated');
+    expect(fs.readFileSync(bridgeDest, 'utf8')).toBe('BRIDGE_CONTENT_V1\n');
+    expect(fs.readFileSync(settingsPath, 'utf8')).toBe(settingsBefore);
+  });
+
+  it('refreshes as before on the unsuffixed (production) instance', () => {
+    installHooks(paths());
+    fs.writeFileSync(bridgeSource, 'BRIDGE_CONTENT_V2\n', 'utf8');
+    vi.stubEnv('WMUX_DATA_SUFFIX', '');
+    expect(refreshHookBridgeAtBoot(paths())).toBe('refreshed');
+    expect(fs.readFileSync(bridgeDest, 'utf8')).toBe('BRIDGE_CONTENT_V2\n');
   });
 });
 
