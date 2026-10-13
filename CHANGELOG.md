@@ -1,5 +1,176 @@
 ## [Unreleased]
 
+## [4.4.0] — 2026-10-13
+
+### Added
+
+- **Commits, pushes and PRs refuse passwords and keys.** Commit, Push and
+  Create PR on the Git page, adopting a task into its parent, and Moa's
+  delivery now stop a change that adds a `.env` / `.env.local` file, a private
+  key or keystore, a credential store, or a key-shaped value (OpenAI,
+  Anthropic, GitHub, GitLab, AWS, Stripe, Slack, npm and Twilio keys, private
+  key blocks, a long random value assigned to a key/secret/token/password).
+  Every commit a push or PR sends is read on its own, and the message names
+  the file and line without repeating the value. Templates (`.env.example`),
+  public certificates, Keynote files, debug keystores and `.env.production`
+  files without secrets go through as before; a file already in the
+  repository is judged by what is added to it. The check is on by default and
+  can be turned off in Settings › General. (#2107)
+
+- **Commits from any terminal, editor or agent are checked for passwords and
+  keys.** wmux installs a `pre-commit` hook in the repository shown on the Git
+  page and in the repository behind every Moa / fan-out task worktree, so a
+  commit made outside wmux's own buttons is stopped by the same rules, with a
+  plain message that names the file and line but never the value. A
+  `pre-commit` hook you already had is kept and still runs after the check;
+  repositories that set `core.hooksPath` (husky, lefthook) are left alone. On
+  by default; turning it off in Settings › General › Git removes the hook and
+  puts yours back. (#2110)
+
+- **The weekly retro shows how often you had to step in per finished task.**
+  Each task Moa tracks now counts the times you acted on it: decisions you
+  answered, approvals you pressed, and posts you made in its mission channel.
+  Answers and presses from agents, Moa's approval lane and the brain are not
+  counted. The retro details then show the median for the tasks finished that
+  week. Before, the retro only had weekly totals of decisions and approvals,
+  with no link to the tasks they were about. (#2126)
+
+- **Sidebar port numbers can be hidden.** A "Show port numbers" switch under
+  Appearance > Sidebar, on by default; the choice survives a restart. (#2132)
+
+- **Hide the sidebar row's folder and copy buttons.** Settings › Appearance
+  has two new switches, on by default, that remove "Open in File Explorer" and
+  "Copy session info" from a workspace row's hover buttons. The row's
+  right-click "Open with" menu still opens the folder. (#2135)
+
+- **A pane no longer stays "running" after you interrupt Claude Code.** Claude
+  Code fires no `Stop` hook when you press Esc mid-turn, so a hook-tracked pane
+  stayed `running` until your next prompt. The new optional `wmux-turn-signals`
+  mod (Claude Code 2.1.296+, installed with
+  `/plugin install wmux-turn-signals@wmux`) reports the interrupt through the
+  existing hook bridge, and the pane settles within about a second. wmux treats
+  it as a turn you stopped yourself, so no "work finished" alarm plays. When a
+  queued prompt starts the next turn right after the interrupt, the mod sends
+  nothing and that turn keeps the pane. (#2137)
+
+- **Open a link in a new browser tab.** Ctrl/Cmd+Shift-click a link in the
+  terminal, or run `wmux open --new <url>`, to open it in a new tab of the
+  browser pane instead of replacing the page you are on. `wmux open --new`
+  opens the tab in the background, so you keep typing in the terminal.
+  (#2147)
+
+- **The browser can fill a split pane without closing the terminal.** When a
+  pane holds a terminal and a browser, they sit side by side and neither side
+  could go below 20%, so giving the browser the whole pane meant closing the
+  terminal. The browser toolbar now has an expand toggle: the terminal side
+  hides (its program keeps running at the same size) and the browser fills
+  the pane. Show terminal, or picking the terminal's tab, brings the split
+  back at the same widths. (#2151)
+
+### Changed
+
+- Internal: the Token usage inventory readers for Claude Code, Codex and Antigravity are split into one function per kind of item and share one collector, skill scanner and wmux-tool step (cognitive complexity 314, 255 and 149 down to 9, 6 and 6). Golden-file tests pin each reader's full output first; what the Surfaces panel lists is unchanged. (#2138)
+
+- Internal: the Claude Code settings writer is split into one step per kind of item, hook removal and restore into one step per phase, and the writer's apply into a write step per file (cognitive complexity 187, 163 and 72 down to 9, 2 and 5). One shared deep-equality helper replaces two copies. Golden-file tests pin the full outcome first; what the Token usage tab writes is unchanged. (#2148)
+
+### Removed
+
+- Removed 21 unreachable duplicate files of company mode (`src/company/core`, `src/company/main`, `src/company/renderer`, `src/main/company`, `src/renderer/company`; 4,383 lines) that no build entry imports, even with `COMPANY_MODE_ENABLED` on. The company slice test now exercises the live slice instead of the dead copy. No behaviour change. (#2134)
+
+- Internal: removed `src/main/autostart/BrewDetector.ts` and its test (a Homebrew Cask check added in April that nothing ever called; wmux ships no cask) and the unused `mergeStream` alias of `joinStreamText` in `src/shared/chatv2/streamText.ts`. No behaviour change. (#2149)
+
+### Fixed
+
+- **The phone's Moa chat shows what you sent, not Moa's instructions.** Your
+  message to Moa used to appear wrapped in `<pasted_content>` with every
+  context block Moa receives, the prompts wmux sends Moa on its own (pane
+  events, active-work reminders) showed up as if you had typed them, and every
+  tool call sat in the conversation. The phone now gets the same view as the
+  desktop panel: your message as you wrote it, wmux's own prompts hidden, and
+  Moa's tool calls and in-between notes marked to fold away. (#2121)
+
+- **A second copy of wmux no longer overwrites your main install's hook
+  bridge and statusline.** When started with `WMUX_DATA_SUFFIX` set (a
+  dogfood copy or a side-by-side install), wmux used to refresh
+  `~/.wmux/hooks/wmux-bridge.mjs` and the statusline script on boot,
+  replacing the files your main install's agents run. Only the macOS portable
+  copy skipped this. Now any copy with a data suffix leaves these shared files
+  alone at boot. Running `wmux setup-hooks` or `wmux setup-statusline` from
+  such a copy still works, but first warns that it changes the main install.
+  (#2122)
+
+- **`browser_replay` `note` works again.** Writing a site note always failed
+  with "could not tell which site you are on", on any page and even with a
+  `surfaceId`. It now records the note against the site that surface is on. (#2123)
+
+- **A question answered from the phone is no longer refused while it is on
+  screen.** After a long stretch of output, an AskUserQuestion picker that was
+  plainly up could come back as "the prompt changed", leaving you to answer it
+  in the terminal. wmux misread a picker that Claude Code had redrawn only in
+  part. It now reads the pane the way Claude Code drew it, so the answer goes
+  through. (#2124)
+
+- **The phone's terminal view opens on the pane's real screen.** After a long
+  stretch of output, a Claude Code pane opened on the phone could show gaps
+  until Claude repainted it in full: a picker missing its top border, or a hint
+  reading "Esc to  ancel". The phone used to start from only the newest output,
+  which Claude Code draws on top of characters already on screen. wmux now
+  sends the screen rebuilt from the pane's whole history, then continues with
+  live output from that exact point. (#2129)
+
+- **A stopped agent no longer hides a running sibling's dot.** In a workspace
+  where one agent was working and another had stopped without a question, the
+  row showed no running indicator. (#2132)
+
+- Stopped seven intermittent Windows CI timeouts in the Deck, deck CLI and surface writer suites: store-logic cases now write without fsync through one shared test helper, and the end-to-end writer cases that keep real fsync'd writes have explicit time budgets. (#2133)
+
+- **A turn started from a `!` shell command shows as running.** Claude Code
+  fires no prompt hook for the turn it starts after a `!` command, so a long
+  tool call in that turn read as finished in the sidebar. The pane's first
+  tool call now marks the turn as running. (#2141)
+
+- **A pane stays running while its Claude Code turn leaves a monitor, a
+  timed-out command or a background agent going.** Only background Bash
+  shells used to keep the running dot after the turn ended. (#2142)
+
+- **F11 leaves fullscreen again while a terminal has focus.** The
+  terminal used to take the key, so a window restored in fullscreen could
+  not leave it from the keyboard. (#2143)
+
+- **An agent can use a pane's Chrome again after you close its window.** On
+  macOS, closing every window of a wmux Chrome keeps Chrome running with no
+  window, and an agent's next browser action failed with "Failed to connect
+  after 3 attempts". wmux now opens a blank tab for a moment to reconnect,
+  then closes it. (#2144)
+
+- **The Startup toggle no longer says "Windows" on macOS.** Settings › General
+  › Startup is shown on Windows and macOS, and the toggle registers a login item
+  on both, but its label read "Start on Windows startup" in English, Korean,
+  Polish and Chinese. It now reads "Start at login" ("Launch wmux automatically
+  when you sign in"), and the same platform-neutral wording is used in the
+  translated locales. (#2145)
+
+- **Ctrl+Alt+letter reaches the terminal on Windows.** xterm.js reads every
+  Ctrl+Alt key on Windows as AltGr and waits for the character AltGr would
+  type. When the layout has none for that key (Ctrl+Alt+D on most layouts),
+  nothing was sent, so a TUI shortcut such as pi's Ctrl+Alt+D did nothing.
+  wmux now sends ESC + the control byte, the same bytes the terminal sends on
+  Linux and macOS. AltGr characters (`@`, `€`, `ł`, …) still type as before. (#2146)
+
+- **A message Moa never received no longer blocks the chat later.** If Moa
+  could not start (Claude Code not found, or Claude's first-time setup was
+  still open), your message was still remembered as an open request. The next
+  time you opened wmux, Moa asked "A request from before this wmux session is
+  still on the books. Resume it, or drop it?" and would not take new messages
+  until you answered. A message that never reached Moa is now forgotten right
+  away, so you can just send again.
+
+- **"Drop it" clears an old request right away.** If an older version already
+  left such a request behind, choosing "Drop it" on Moa's card now removes it
+  immediately, even when Moa itself cannot start yet. Before, the drop waited
+  on Moa, so the card could never go away. Your typed message also stays in
+  the box when Moa could not receive it, so you can send it again.
+
 ## [4.3.0] — 2026-10-11
 
 ### Added
