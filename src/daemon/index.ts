@@ -52,6 +52,7 @@ import {
   getWmuxDir,
   readNotifySinks,
   readPushPresenceSuppression,
+  DAEMON_SUPERVISED_ENV,
 } from './config';
 import { createDaemonLogWriter } from './logWriter';
 import { DaemonSessionManager, type ManagedSession } from './DaemonSessionManager';
@@ -1677,6 +1678,9 @@ async function isOurShellProcess(pid: number, expectedCmd: string): Promise<bool
   }
 }
 
+/** Set when acquireLock() refused because a daemon confirmed ALIVE holds the lock. */
+let lockHeldByLiveDaemon = false;
+
 async function acquireLock(): Promise<boolean> {
   const dir = getWmuxDir();
   if (!fs.existsSync(dir)) {
@@ -1702,6 +1706,7 @@ async function acquireLock(): Promise<boolean> {
           const liveness = await processLiveness(existingPid);
           if (!lockOwnerIsReclaimable(liveness)) {
             log('error', `Another daemon holds the lock (PID ${existingPid}, liveness=${liveness})`);
+            lockHeldByLiveDaemon = liveness === 'alive';
             return false;
           }
           // tasklist says not running — but could be a tasklist failure.
@@ -7359,7 +7364,10 @@ async function main(): Promise<void> {
 
   // 1. Single-instance check
   if (!(await acquireLock())) {
-    process.exit(1);
+    // Under a service manager, a live daemon already running is not a crash:
+    // DAEMON_EXIT_ALREADY_RUNNING is the code the unit's restart policy skips.
+    // The desktop launcher's path keeps exit 1 here.
+    process.exit(lockHeldByLiveDaemon && process.env[DAEMON_SUPERVISED_ENV] === '1' ? DAEMON_EXIT_ALREADY_RUNNING : 1);
   }
   markDaemonBoot('lock-acquired');
 
@@ -8428,7 +8436,8 @@ async function main(): Promise<void> {
     ? configuredIdleMinutes * 60_000
     : 5 * 60_000;
   const idleConfig = {
-    idleTimeoutMs: idleEnvMs ?? safeConfigIdleMs,
+    // 0 = disabled: a supervised daemon (`wmux daemon run`) stays up for its service manager.
+    idleTimeoutMs: process.env[DAEMON_SUPERVISED_ENV] === '1' ? 0 : idleEnvMs ?? safeConfigIdleMs,
     graceMs: graceEnvMs ?? 60_000,
     startTime,
   };

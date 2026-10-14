@@ -51,6 +51,19 @@ describe('web start transport and credential policy', () => {
     });
   });
 
+  it('keeps every paired device when a restarted daemon re-runs the same loopback server (SSH host)', () => {
+    // The daemon came back (idle exit, crash, reboot) with nothing live, and
+    // bootstrap re-runs `wmux web --allow-input` on the same loopback port.
+    expect(decide({ live: undefined, previous: previous({ allowInput: true }) })).toEqual({
+      tls: undefined,
+      token: 'previous-token',
+      rotateCredentials: false,
+    });
+    // Over a server that is still running, with the same flags: the same.
+    const live = { tls: undefined, tailscale: false, host: '127.0.0.1', token: 'live-token' };
+    expect(decide({ live })).toEqual({ tls: undefined, token: 'live-token', rotateCredentials: false });
+  });
+
   it('preserves persisted native TLS for an option-only caller', () => {
     expect(decide({ previous: previous({ tls: TLS }) })).toEqual({
       tls: TLS,

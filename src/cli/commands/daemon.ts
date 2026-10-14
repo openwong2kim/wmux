@@ -1,5 +1,6 @@
-import { readFileSync } from 'fs';
+import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
+import { spawn } from 'child_process';
 import { sendDaemonStringRequest, isDefinitelyNotRunning } from '../client';
 import { printResult, ensureOk } from '../utils';
 import {
@@ -8,6 +9,14 @@ import {
 } from '../../shared/daemon/daemonLauncherCore';
 import type { RpcResponse } from '../../shared/rpc';
 import type { DaemonStatusJson } from '../../shared/sshPcContract';
+import { ENV_KEYS } from '../../shared/constants';
+import { DAEMON_SUPERVISED_ENV } from '../../daemon/config';
+import {
+  defaultDaemonServiceDeps,
+  installDaemonService,
+  uninstallDaemonService,
+  type DaemonServiceResult,
+} from '../daemonService';
 
 /**
  * `wmux daemon start | stop | status` — headless daemon lifecycle (#1001).
@@ -245,6 +254,66 @@ async function runStop(jsonMode: boolean): Promise<void> {
   console.log('wmux daemon stopped.');
 }
 
+/**
+ * `wmux daemon run` — the daemon in the FOREGROUND, for a service manager.
+ *
+ * `start` detaches (ensureDaemon); a supervisor needs a process that lives as
+ * long as the daemon does. This runs the same daemon script with the same
+ * version stamp, plus DAEMON_SUPERVISED_ENV so it never exits on idle, and
+ * relays the supervisor's stop signal to it. Exits with the daemon's code, so
+ * DAEMON_EXIT_ALREADY_RUNNING reaches the supervisor unchanged.
+ */
+function runForeground(): void {
+  const script = resolveDaemonScriptCandidates().find((c) => existsSync(c));
+  if (!script) {
+    console.error('wmux daemon run: the daemon script was not found next to this CLI');
+    process.exitCode = 1;
+    return;
+  }
+  const child = spawn(process.execPath, [script], {
+    stdio: 'inherit',
+    env: {
+      ...process.env,
+      [ENV_KEYS.SPAWNED_BY_VERSION]: resolveSpawnedByVersion(),
+      [DAEMON_SUPERVISED_ENV]: '1',
+    },
+  });
+  // Relay, then wait for the daemon's own exit. The CLI's global SIGINT
+  // handler would exit at once and leave the daemon running unsupervised.
+  for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP'] as const) {
+    process.removeAllListeners(signal);
+    process.on(signal, () => { child.kill(signal); });
+  }
+  child.on('error', (err) => {
+    console.error(`wmux daemon run: ${err.message}`);
+    process.exit(1);
+  });
+  child.on('exit', (code, signal) => {
+    process.exit(code ?? (signal ? 1 : 0));
+  });
+}
+
+function printService(result: DaemonServiceResult, jsonMode: boolean, verb: string): void {
+  if (!result.ok) process.exitCode = 1;
+  if (jsonMode) {
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+  const out = result.ok ? console.log : console.error;
+  out(`wmux daemon ${verb}: ${result.ok ? 'ok' : `failed${result.error ? ` — ${result.error}` : ''}`} (${result.manager})`);
+  if (result.unitPath) out(`  unit: ${result.unitPath}`);
+  if (result.enabled !== undefined) out(`  enabled: ${result.enabled}  active: ${result.active}  linger: ${result.linger}`);
+  if (result.hint) out(`  ${result.hint}`);
+}
+
+async function daemonAnswers(): Promise<boolean> {
+  try {
+    return (await sendDaemonStringRequest('daemon.ping', {})).ok;
+  } catch {
+    return false;
+  }
+}
+
 export async function handleDaemon(sub: string | undefined, _rest: string[], jsonMode: boolean): Promise<void> {
   switch (sub) {
     case 'start':
@@ -253,11 +322,17 @@ export async function handleDaemon(sub: string | undefined, _rest: string[], jso
       return runStatus(jsonMode);
     case 'stop':
       return runStop(jsonMode);
+    case 'run':
+      return runForeground();
+    case 'install-service':
+      return printService(await installDaemonService(defaultDaemonServiceDeps(daemonAnswers)), jsonMode, sub);
+    case 'uninstall-service':
+      return printService(await uninstallDaemonService(defaultDaemonServiceDeps(daemonAnswers)), jsonMode, sub);
     default:
       if (jsonMode) {
         console.log(JSON.stringify({ ok: false, error: `unknown subcommand: ${sub ?? '(none)'}` }, null, 2));
       } else {
-        console.error(`Usage: wmux daemon start | stop | status`);
+        console.error(`Usage: wmux daemon start | stop | status | run | install-service | uninstall-service`);
       }
       process.exitCode = 1;
   }

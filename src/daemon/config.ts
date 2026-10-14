@@ -25,6 +25,13 @@ import {
   type PushPresenceSuppressionConfig,
 } from './push/presence';
 
+/**
+ * Set by `wmux daemon run`, the foreground entry a service manager (systemd)
+ * starts. A supervised daemon never exits on idle: the supervisor is there to
+ * keep it reachable, and an idle exit would not be restarted.
+ */
+export const DAEMON_SUPERVISED_ENV = 'WMUX_DAEMON_SUPERVISED';
+
 /** ~/.wmux directory (인스턴스 격리 suffix 반영 — main에서 상속된 WMUX_DATA_SUFFIX) */
 export function getWmuxDir(): string {
   const home = os.homedir();

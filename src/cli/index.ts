@@ -73,6 +73,11 @@ DAEMON (headless lifecycle, no Electron/GUI required)
   daemon start                      Start the daemon if not already running
   daemon status                     Ping the daemon; reports whether it's up
   daemon stop                       Gracefully shut the daemon down
+  daemon run                        Run the daemon in the foreground, for a
+                                    service manager (never exits on idle)
+  daemon install-service            Linux: start the daemon at boot and keep it
+                                    after logout (systemd --user unit)
+  daemon uninstall-service          Remove that unit (the running daemon stays)
 
 WEB ACCESS (browser / PWA)
   web                               Serve wmux panes to a browser (read-only,
