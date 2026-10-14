@@ -254,3 +254,28 @@ function stripRulePort(rule: string): string {
   const host = parsed.wildcard ? `*.${parsed.host}` : parsed.host;
   return host;
 }
+
+/**
+ * The allow rule an operator's "Allow" on a recently blocked host adds
+ * (#2063): the bare host for the web's default ports (80 and 443 — a bare
+ * rule covers both, so an http → https hop is not blocked again) and
+ * `host:port` for any other port. Null when `host` is not a valid host.
+ */
+export function allowRuleForHost(host: string, port: number): string | null {
+  const canonical = canonicalHost(host);
+  if (!canonical || !Number.isInteger(port) || port < 1 || port > 65535) return null;
+  return port === 80 || port === 443 ? canonical : `${canonical}:${port}`;
+}
+
+/**
+ * `allow` with `host:port` allowed. When a rule already covers it (the exact
+ * entry, a `*.` parent, a portless rule) `allow` comes back unchanged, so an
+ * Allow never duplicates an entry. Null when `host:port` is not expressible.
+ */
+export function allowListWithHost(allow: readonly string[], host: string, port: number): string[] | null {
+  const rule = allowRuleForHost(host, port);
+  if (!rule) return null;
+  const list = [...allow];
+  if (compileHostPolicy({ mode: 'allowlist', allow: list, block: [] }).allows(host, port)) return list;
+  return [...list, rule];
+}

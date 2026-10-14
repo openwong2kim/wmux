@@ -1049,6 +1049,9 @@ const chromeRegistry = new ChromeLauncherRegistry({
     browserPolicyStore.protectionPlanFor(profile, { paneBindings: () => chromeProfileStore.getPaneBindings() }),
 });
 browserPolicyStore.onChange(() => {
+  // #2063: every policy change (an Allow included) starts the recently-blocked
+  // lists over; what was refused under the old policy may not be any more.
+  chromeRegistry.clearBlockedHosts();
   void chromeRegistry.reconcileProtection();
 });
 // Phase 2.2 enforcement mode. Production wmux defaults to `enforce`; dev
@@ -1729,6 +1732,7 @@ registerBrowserPolicyIpc(ipcMain, {
   profileFor: (workspaceId, paneId) => chromeProfileStore.profileFor(workspaceId, paneId),
   paneBindings: () => chromeProfileStore.getPaneBindings(),
   paneWorkspace: (paneId) => getWorkspaceMirror().getPaneWorkspaces()?.get(paneId) ?? null,
+  blockedHostsFor: (profile) => chromeRegistry.blockedHostsFor(profile),
 });
 // Discard/wake signals travel main → renderer: the renderer owns the <webview>
 // element, so main can only ask it to unmount (discard) or remount (wake).

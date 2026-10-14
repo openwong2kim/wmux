@@ -186,7 +186,33 @@ export const BROWSER_POLICY_IPC = {
   set: 'browser:policy:set',
   /** payload `BrowserPolicyGrantsPayload` → `BrowserPolicyWriteResult`. */
   grants: 'browser:policy:grants',
+  /** payload `{ workspaceId, paneId }` → `BrowserPolicyBlockedResult`. Read only:
+   *  an Allow goes through `set` like every other policy write. */
+  blocked: 'browser:policy:blocked',
 } as const;
+
+/**
+ * A host the pane's protected proxy refused recently (#2063). Main keeps a
+ * short list per protected profile, in memory only, cleared whenever the
+ * policy changes or the profile's Chrome launches again. Operator-only: no
+ * agent path reads it.
+ */
+export interface BlockedHost {
+  /** Canonical host (lowercase ASCII, IPv6 in brackets). */
+  host: string;
+  port: number;
+  /** Epoch ms of the latest refusal. */
+  lastSeen: number;
+  /** Refusals since the list was last cleared. */
+  count: number;
+}
+
+/** `browser:policy:blocked` reply; `hosts` newest first. */
+export interface BrowserPolicyBlockedResult {
+  ok: boolean;
+  error?: string;
+  hosts?: BlockedHost[];
+}
 
 export interface BrowserPolicyReadResult {
   ok: boolean;

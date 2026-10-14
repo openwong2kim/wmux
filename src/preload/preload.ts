@@ -17,6 +17,7 @@ import {
   type BrowserPolicyWritePayload,
   type BrowserPolicyGrantsPayload,
   type BrowserPolicyWriteResult,
+  type BrowserPolicyBlockedResult,
 } from '../shared/browserPolicy';
 import type {
   AgySensorInstallResult,
@@ -1011,6 +1012,9 @@ const electronAPI = {
       // Revoke standing consent ("Always on this pane"); revocation only.
       grants: (payload: BrowserPolicyGrantsPayload): Promise<BrowserPolicyWriteResult> =>
         ipcRenderer.invoke(BROWSER_POLICY_IPC.grants, payload),
+      // Hosts the pane's protected proxy refused recently (#2063); read only.
+      blocked: (workspaceId: string, paneId: string): Promise<BrowserPolicyBlockedResult> =>
+        ipcRenderer.invoke(BROWSER_POLICY_IPC.blocked, { workspaceId, paneId }),
     },
     onDiscarded: (callback: (surfaceId: string) => void) => {
       const listener = (_e: Electron.IpcRendererEvent, surfaceId: string) => callback(surfaceId);

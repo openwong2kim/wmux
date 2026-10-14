@@ -11,7 +11,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import SurfaceTabs from '../SurfaceTabs';
 import { useStore } from '../../../stores';
 import type { Surface, Workspace } from '../../../../shared/types';
-import type { BrowserPolicyReadResult } from '../../../../shared/browserPolicy';
+import type { BrowserPolicyBlockedResult, BrowserPolicyReadResult } from '../../../../shared/browserPolicy';
 import type { ChromeProfilesListResult } from '../../../../shared/chromePaneBinding';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -29,9 +29,11 @@ const api = {
   revealPane: vi.fn<(paneId: string, workspaceId: string) => Promise<Reply>>(ok),
 };
 let policyResult: BrowserPolicyReadResult;
+let blockedResult: BrowserPolicyBlockedResult;
 const policyApi = {
   get: vi.fn<(ws: string, pane: string) => Promise<BrowserPolicyReadResult>>(async () => policyResult),
   set: vi.fn(async () => ({ ok: true, epoch: 1 })),
+  blocked: vi.fn<(ws: string, pane: string) => Promise<BrowserPolicyBlockedResult>>(async () => blockedResult),
 };
 
 function activeWs(): Workspace {
@@ -122,6 +124,7 @@ beforeEach(() => {
   for (const fn of Object.values(api)) fn.mockClear();
   for (const fn of Object.values(policyApi)) fn.mockClear();
   policyResult = { ok: true, state: 'missing', epoch: 0, policy: null, currentProfile: 'default' };
+  blockedResult = { ok: true, hosts: [] };
   (window as unknown as { electronAPI: unknown }).electronAPI = {
     browser: { chromeProfiles: api, policy: policyApi },
   };
@@ -377,6 +380,32 @@ describe('SurfaceTabs — browser protection', () => {
     mount();
     await openMenu();
     expect(item('browser-policy')?.querySelector('[data-pane-menu-detail]')?.textContent).toBe('Protected · any site');
+    // "Any site" never offers an Allow, so it never asks for the blocked list.
+    expect(policyApi.blocked).not.toHaveBeenCalled();
+  });
+
+  it('says on the menu row how many recently blocked sites could be allowed (#2063)', async () => {
+    const ws = activeWs();
+    listResult.paneBindings = { [ws.rootPane.id]: { workspaceId: ws.id, profile: 'work' } };
+    policyResult = {
+      ok: true, state: 'ok', epoch: 3, currentProfile: 'work',
+      policy: { workspaceId: ws.id, paneId: ws.rootPane.id, profileId: 'work', protected: true, hosts: { mode: 'allowlist', allow: ['a.com'], block: [] } },
+    };
+    blockedResult = {
+      ok: true,
+      hosts: [
+        { host: 'cdn.a.net', port: 443, lastSeen: 2, count: 4 },
+        { host: 'a.com', port: 443, lastSeen: 1, count: 1 }, // already allowed: not counted
+      ],
+    };
+    mount();
+    await openMenu();
+    expect(policyApi.blocked).toHaveBeenCalledWith(ws.id, ws.rootPane.id);
+    expect(item('browser-policy')?.querySelector('[data-pane-menu-detail]')?.textContent)
+      .toBe('Protected · 1 allowed · 1 blocked recently');
+    // The lock keeps the plain summary.
+    expect(container.querySelector('[data-protected-pane]')?.getAttribute('aria-label'))
+      .toBe("This pane's Chrome is protected · Protected · 1 allowed");
   });
 
   it('a pane refused by an unreadable policy file shows the lock and stays editable without a profile', async () => {

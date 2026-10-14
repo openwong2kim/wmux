@@ -111,6 +111,40 @@ describe('ProtectedProxy', () => {
     await closed;
   });
 
+  it('reports refused real destinations to onBlocked — never allowed hosts, itself, local hosts, probes or upgrades', async () => {
+    proxy.close();
+    const blocked: string[] = [];
+    const decisions: string[] = [];
+    proxy = new ProtectedProxy({
+      matcher: () => compileHostPolicy({ mode: 'allowlist', allow, block: [] }),
+      resolve: (_host, port) => ({ host: '127.0.0.1', port: port === 1 ? originPort : port }),
+      onBlocked: (host, port) => blocked.push(`${host}:${port}`),
+      // The decision seam keeps working alongside.
+      onDecision: (d) => decisions.push(`${d.host}:${d.port}:${d.allowed}`),
+    });
+    proxyPort = await proxy.start();
+    expect(await connect('a.test:1')).toContain('200');
+    expect(await connect('cdn.blocked.test:443')).toContain('403');
+    expect(await viaProxy('http://api.blocked.test:8080/x')).toBe(403);
+    expect(await connect(`127.0.0.1:${proxyPort}`)).toContain('403');
+    expect(await connect('localhost:3000')).toContain('403');
+    expect(await connect('[::1]:3000')).toContain('403');
+    const probe = proxy.armProbe();
+    expect(await viaProxy(probe.url)).toBe(204);
+    // A refused upgrade on a plain request: no allow rule would let it through.
+    await new Promise<void>((resolve) => {
+      const req = http.request({
+        host: '127.0.0.1', port: proxyPort, path: 'http://ws.blocked.test/', headers: { connection: 'upgrade', upgrade: 'websocket' },
+      });
+      req.on('error', () => resolve());
+      req.on('close', () => resolve());
+      req.end();
+    });
+    expect(blocked).toEqual(['cdn.blocked.test:443', 'api.blocked.test:8080']);
+    expect(decisions).toContain('a.test:1:true');
+    expect(decisions).toContain('cdn.blocked.test:443:false');
+  });
+
   it('is fail-closed when stopped', async () => {
     proxy.close();
     await expect(viaProxy(`http://a.test:${originPort}/`)).rejects.toBeTruthy();

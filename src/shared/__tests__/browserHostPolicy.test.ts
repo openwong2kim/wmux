@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
+  allowListWithHost,
+  allowRuleForHost,
   canonicalHost,
   compileHostPolicy,
   cookieDomainAllowed,
@@ -153,5 +155,56 @@ describe('canonicalHost', () => {
     expect(canonicalHost('a.test:80')).toBeNull();
     expect(canonicalHost('*.a.test')).toBeNull();
     expect(canonicalHost('A.Test.')).toBe('a.test');
+  });
+});
+
+describe('allowing a recently blocked host (#2063)', () => {
+  const allowsAfter = (list: string[], host: string, port: number): boolean => {
+    const next = allowListWithHost(list, host, port);
+    return !!next && compileHostPolicy(allow(...next)).allows(host, port);
+  };
+
+  it('adds the bare host for 80 and 443, and host:port for any other port', () => {
+    expect(allowRuleForHost('CDN.Example.com', 443)).toBe('cdn.example.com');
+    expect(allowRuleForHost('cdn.example.com', 80)).toBe('cdn.example.com');
+    expect(allowRuleForHost('api.example.com', 8443)).toBe('api.example.com:8443');
+    expect(allowRuleForHost('[2001:db8::1]', 9000)).toBe('[2001:db8::1]:9000');
+    expect(allowRuleForHost('10.0.0.5', 443)).toBe('10.0.0.5');
+    expect(allowRuleForHost('bad host', 443)).toBeNull();
+    expect(allowRuleForHost('a.test', 0)).toBeNull();
+  });
+
+  it('after Allow, the matcher allows the recorded host:port', () => {
+    for (const [host, port] of [
+      ['cdn.example.com', 443],
+      ['cdn.example.com', 80],
+      ['api.example.com', 8443],
+      ['[2001:db8::1]', 9000],
+      ['10.0.0.5', 443],
+      ['xn--bcher-kva.example', 443],
+    ] as const) {
+      expect(compileHostPolicy(allow('example.com')).allows(host, port), `${host}:${port} before`).toBe(false);
+      expect(allowsAfter(['example.com'], host, port), `${host}:${port} after`).toBe(true);
+    }
+  });
+
+  it('a non-default-port Allow opens that port only', () => {
+    const next = allowListWithHost(['example.com'], 'api.example.com', 8443)!;
+    expect(next).toEqual(['example.com', 'api.example.com:8443']);
+    expect(compileHostPolicy(allow(...next)).allows('api.example.com', 443)).toBe(false);
+  });
+
+  it('never duplicates an entry a rule already covers', () => {
+    const list = ['cdn.example.com', '*.static.test', 'api.example.com:8443'];
+    expect(allowListWithHost(list, 'CDN.example.com', 443)).toEqual(list);
+    expect(allowListWithHost(list, 'img.static.test', 443)).toEqual(list);
+    expect(allowListWithHost(list, 'api.example.com', 8443)).toEqual(list);
+    // Another port of a port-pinned rule is not covered.
+    expect(allowListWithHost(list, 'api.example.com', 9443)).toEqual([...list, 'api.example.com:9443']);
+  });
+
+  it('leaves a block rule in charge', () => {
+    const next = allowListWithHost([], 'ads.example.com', 443)!;
+    expect(compileHostPolicy({ mode: 'allowlist', allow: next, block: ['ads.example.com'] }).allows('ads.example.com', 443)).toBe(false);
   });
 });

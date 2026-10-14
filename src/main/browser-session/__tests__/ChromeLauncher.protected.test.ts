@@ -314,3 +314,67 @@ describe('ChromeLauncher — protected profiles', () => {
     launcher.dispose();
   }, 20_000);
 });
+
+describe('ChromeLauncher — recently blocked hosts (#2063)', () => {
+  /** What the fake Chrome's CONNECT through the profile's proxy gets back. */
+  async function connectViaProxy(authority: string): Promise<string> {
+    const net = await import('node:net');
+    return new Promise((resolve) => {
+      const s = net.connect(state.proxyPort, '127.0.0.1', () => s.write(`CONNECT ${authority} HTTP/1.1\r\nHost: ${authority}\r\n\r\n`));
+      s.once('data', (d) => {
+        resolve(d.toString().split('\r\n')[0]);
+        s.destroy();
+      });
+      s.on('error', () => resolve('error'));
+    });
+  }
+
+  it("records the proxy's refusals of real hosts, and starts over when Chrome launches again", async () => {
+    const first = makeChild();
+    const firstPort = spawnWritesPortFile(first);
+    const launcher = new ChromeLauncher('/tmp/blocked-a', { protection: () => denyAll });
+    await launcher.ensureRunning();
+    expect(await connectViaProxy('cdn.blocked.test:443')).toContain('403');
+    expect(await connectViaProxy('cdn.blocked.test:443')).toContain('403');
+    expect(await connectViaProxy('localhost:3000')).toContain('403');
+    expect(launcher.blockedHosts()).toEqual([
+      expect.objectContaining({ host: 'cdn.blocked.test', port: 443, count: 2 }),
+    ]);
+    // The probe that proved the route is never on the list.
+    expect(launcher.blockedHosts().some((b) => b.host.endsWith('.invalid'))).toBe(false);
+
+    // Chrome goes away and is launched again on demand.
+    dead.add(firstPort);
+    first.emit('exit');
+    spawnWritesPortFile(makeChild());
+    await launcher.ensureRunning();
+    expect(spawnMock).toHaveBeenCalledTimes(2);
+    expect(launcher.blockedHosts()).toEqual([]);
+    expect(await connectViaProxy('api.blocked.test:8443')).toContain('403');
+    expect(launcher.blockedHosts().map((b) => `${b.host}:${b.port}`)).toEqual(['api.blocked.test:8443']);
+    launcher.dispose();
+  });
+
+  it('the registry answers per profile and clears every list on a policy change', async () => {
+    const { ChromeLauncherRegistry } = await import('../ChromeLauncher');
+    // The 'default' profile runs in `defaultDir` as given, which the fake
+    // DevToolsActivePort reader matches on every platform.
+    const registry = new ChromeLauncherRegistry({
+      defaultDir: '/tmp/blocked-default',
+      profilesDir: '/tmp/blocked-profiles',
+      store: { profileFor: () => 'default', hasPaneBindings: () => true, isPaneBound: () => true },
+      protection: () => denyAll,
+    });
+    expect(registry.blockedHostsFor('default')).toEqual([]); // no launcher yet, none created
+    expect(registry.peekLauncher('default')).toBeUndefined();
+    spawnWritesPortFile(makeChild());
+    const launcher = registry.forProfile('default') as ChromeLauncher;
+    await launcher.ensureRunning();
+    expect(await connectViaProxy('login.blocked.test:443')).toContain('403');
+    expect(registry.blockedHostsFor('default').map((b) => b.host)).toEqual(['login.blocked.test']);
+    expect(registry.blockedHostsFor('other')).toEqual([]);
+    registry.clearBlockedHosts();
+    expect(registry.blockedHostsFor('default')).toEqual([]);
+    launcher.dispose();
+  });
+});

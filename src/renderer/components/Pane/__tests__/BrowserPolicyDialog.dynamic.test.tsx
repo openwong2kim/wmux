@@ -9,7 +9,13 @@ import { createRoot, type Root } from 'react-dom/client';
 
 import BrowserPolicyDialog, { hostLines, invalidHostLines } from '../BrowserPolicyDialog';
 import { useStore } from '../../../stores';
-import type { BrowserPolicyReadResult, BrowserPolicyWritePayload, BrowserPolicyWriteResult, PanePolicy } from '../../../../shared/browserPolicy';
+import type {
+  BrowserPolicyBlockedResult,
+  BrowserPolicyReadResult,
+  BrowserPolicyWritePayload,
+  BrowserPolicyWriteResult,
+  PanePolicy,
+} from '../../../../shared/browserPolicy';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -19,10 +25,12 @@ const PANE = 'pane-1';
 let container: HTMLDivElement | undefined;
 let root: Root | undefined;
 let readResult: BrowserPolicyReadResult;
+let blockedResult: BrowserPolicyBlockedResult;
 type WriteReply = BrowserPolicyWriteResult;
 const api = {
   get: vi.fn<(ws: string, pane: string) => Promise<BrowserPolicyReadResult>>(async () => readResult),
   set: vi.fn<(p: BrowserPolicyWritePayload) => Promise<WriteReply>>(async () => ({ ok: true, epoch: 9 })),
+  blocked: vi.fn<(ws: string, pane: string) => Promise<BrowserPolicyBlockedResult>>(async () => blockedResult),
 };
 const onClose = vi.fn();
 const onSaved = vi.fn();
@@ -75,8 +83,10 @@ function chooseMode(label: string): void {
 
 beforeEach(() => {
   readResult = { ok: true, state: 'ok', epoch: 4, policy: entry(), currentProfile: 'work' };
+  blockedResult = { ok: true, hosts: [] };
   api.get.mockClear();
   api.set.mockClear();
+  api.blocked.mockClear();
   onClose.mockClear();
   onSaved.mockClear();
   useStore.setState({ toasts: [] });
@@ -265,5 +275,97 @@ describe('BrowserPolicyDialog', () => {
     expect(q('browser-policy-unreadable')).toBeNull();
     await click('browser-policy-save');
     expect(api.set).not.toHaveBeenCalled();
+  });
+});
+
+describe('BrowserPolicyDialog — recently blocked (#2063)', () => {
+  const rows = () => [...document.querySelectorAll<HTMLElement>('[data-blocked-host]')].map((r) => r.dataset.blockedHost);
+
+  beforeEach(() => {
+    blockedResult = {
+      ok: true,
+      hosts: [
+        { host: 'cdn.example.net', port: 443, lastSeen: 30, count: 3 },
+        { host: 'api.example.net', port: 8443, lastSeen: 20, count: 1 },
+        // Already covered by the stored list: nothing to allow.
+        { host: 'example.com', port: 443, lastSeen: 10, count: 1 },
+      ],
+    };
+  });
+
+  it('lists the hosts an Allow would open, the port only when not 80/443, with their count', async () => {
+    await mount();
+    expect(api.blocked).toHaveBeenCalledWith(WS, PANE);
+    expect(rows()).toEqual(['cdn.example.net', 'api.example.net:8443']);
+    const section = q('browser-policy-recently-blocked')!;
+    expect(section.textContent).toContain('Blocked 3×');
+    expect(section.textContent).toContain('Blocked 1×');
+  });
+
+  it('Allow writes the stored list plus that host through set, with the epoch it read', async () => {
+    await mount();
+    type('browser-policy-allow', 'example.com\nunsaved.example');
+    // Main empties its list on the policy change.
+    blockedResult = { ok: true, hosts: [] };
+    await click('browser-policy-allow-host-api.example.net:8443');
+    expect(api.set).toHaveBeenCalledTimes(1);
+    expect(api.set.mock.calls[0][0]).toEqual({
+      workspaceId: WS,
+      paneId: PANE,
+      profileId: 'work',
+      protected: true,
+      hosts: { mode: 'allowlist', allow: ['example.com', 'api.example.net:8443'], block: [] },
+      expectedEpoch: 4,
+    });
+    expect(onSaved).toHaveBeenCalledWith(true);
+    expect(onClose).not.toHaveBeenCalled();
+    // The unsaved edit stays, and the allowed host joins it.
+    expect(q<HTMLTextAreaElement>('browser-policy-allow')!.value).toBe('example.com\nunsaved.example\napi.example.net:8443');
+    expect(api.blocked).toHaveBeenCalledTimes(2);
+    expect(q('browser-policy-recently-blocked')).toBeNull();
+    // The next write names the epoch the Allow produced.
+    await click('browser-policy-save');
+    expect(api.set.mock.calls[1][0].expectedEpoch).toBe(9);
+  });
+
+  it('a stale Allow reloads and toasts', async () => {
+    await mount();
+    api.set.mockResolvedValueOnce({ ok: false, code: 'stale', error: 'changed' });
+    await click('browser-policy-allow-host-cdn.example.net');
+    expect(api.get).toHaveBeenCalledTimes(2);
+    expect(useStore.getState().toasts.at(-1)).toMatchObject({ level: 'info', message: 'Changed elsewhere — reloaded' });
+  });
+
+  it('is not drawn when nothing was blocked', async () => {
+    blockedResult = { ok: true, hosts: [] };
+    await mount();
+    expect(q('browser-policy-recently-blocked')).toBeNull();
+  });
+
+  it('is not offered on a pane awaiting confirmation, in "Any site" mode, or with protection being turned off', async () => {
+    readResult = { ok: true, state: 'ok', epoch: 5, policy: entry({ profileId: 'old' }), currentProfile: 'work' };
+    await mount();
+    expect(q('browser-policy-rebound')).not.toBeNull();
+    expect(q('browser-policy-recently-blocked')).toBeNull();
+    act(() => { root!.unmount(); });
+    container?.remove();
+
+    readResult = { ok: true, state: 'ok', epoch: 4, policy: entry(), currentProfile: 'work' };
+    await mount();
+    expect(q('browser-policy-recently-blocked')).not.toBeNull();
+    chooseMode('Any site');
+    expect(q('browser-policy-recently-blocked')).toBeNull();
+    chooseMode('Only these sites');
+    await click('browser-policy-protect');
+    expect(q('browser-policy-recently-blocked')).toBeNull();
+  });
+
+  it('a host a block rule refuses is not offered', async () => {
+    readResult = {
+      ...readResult,
+      policy: entry({ hosts: { mode: 'allowlist', allow: ['example.com'], block: ['cdn.example.net'] } }),
+    };
+    await mount();
+    expect(rows()).toEqual(['api.example.net:8443']);
   });
 });
