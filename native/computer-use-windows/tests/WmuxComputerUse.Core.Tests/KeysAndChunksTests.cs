@@ -122,4 +122,31 @@ public class GeometryTests
         Assert.Equal(65535, Geometry.NormalizeVirtualDesk(99999, -1280, 3200));
         Assert.Equal(0, Geometry.NormalizeVirtualDesk(double.NaN, 0, 1920));
     }
+
+    [Fact]
+    public void ADpiVirtualizedWindowPaintsAtItsOwnDpi()
+    {
+        // #1886: a DPI-unaware window (96) on a 125 % monitor (120).
+        Assert.Equal((506, 213), Geometry.PaintSize(632, 266, 96, 120));
+        // A system-aware window (120) moved to a 100 % monitor paints larger.
+        Assert.Equal((600, 300), Geometry.PaintSize(480, 240, 120, 96));
+        // PerMonitorV2, or a DPI that could not be read: unchanged.
+        Assert.Equal((632, 266), Geometry.PaintSize(632, 266, 120, 120));
+        Assert.Equal((632, 266), Geometry.PaintSize(632, 266, 0, 120));
+        Assert.Equal((632, 266), Geometry.PaintSize(632, 266, 96, 0));
+        Assert.Equal((1, 1), Geometry.PaintSize(1, 1, 96, 192));
+    }
+
+    [Fact]
+    public void TheFrameCropScalesIntoPaintSpace()
+    {
+        var crop = new Rect(7, 0, 618, 259);
+        Assert.Equal(crop, Geometry.PaintCrop(crop, 632, 266, 632, 266));
+        // Widened to whole pixels: 7 * 506/632 = 5.6 -> 5, 625 * 506/632 = 500.4 -> 501,
+        // 259 * 213/266 = 207.4 -> 208.
+        var paint = Geometry.PaintCrop(crop, 632, 266, 506, 213);
+        Assert.Equal(new Rect(5, 0, 496, 208), paint);
+        // Never outside the paint.
+        Assert.Equal(new Rect(0, 0, 506, 213), Geometry.PaintCrop(new Rect(0, 0, 632, 266), 632, 266, 506, 213));
+    }
 }

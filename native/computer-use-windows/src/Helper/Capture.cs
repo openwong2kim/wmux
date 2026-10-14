@@ -4,6 +4,10 @@
 // extended frame bounds (no invisible border, no shadow), scaled to the shared
 // screenshot budget and encoded as JPEG quality 80, all through GDI and WIC.
 //
+// A DPI-virtualized window (DPI-unaware, or system-aware on a monitor of
+// another DPI) paints at its own DPI and only DWM stretches it on screen, so
+// it is captured at that paint size and scaled to its physical size here.
+//
 // Windows.Graphics.Capture is not used: an unpackaged exe cannot hide its
 // yellow capture border.
 
@@ -16,6 +20,7 @@ using Windows.Win32.Storage.Xps;
 using Windows.Win32.System.Com;
 using Windows.Win32.System.Com.StructuredStorage;
 using Windows.Win32.System.Variant;
+using Windows.Win32.UI.HiDpi;
 using Windows.Win32.UI.WindowsAndMessaging;
 using WmuxComputerUse.Core;
 
@@ -77,6 +82,11 @@ internal static unsafe class Capture
         // The visible frame inside the window rectangle.
         var crop = new Rect(frame.X - outer.X, frame.Y - outer.Y, frame.Width, frame.Height).Intersection(new Rect(0, 0, w, h));
         if (crop.IsEmpty) crop = new Rect(0, 0, w, h);
+        // PrintWindow gets the window's own paint, at the window's DPI.
+        var (pw, ph) = Geometry.PaintSize(w, h, PInvoke.GetDpiForWindow(hwnd), MonitorDpi(hwnd));
+        if (pw > 16384 || ph > 16384 || (long)pw * ph > MaxPixels) throw new HelperError("screenshot_failed", "the window is too large to capture; make it smaller");
+        var paintCrop = Geometry.PaintCrop(crop, w, h, pw, ph);
+        if (paintCrop.IsEmpty) paintCrop = new Rect(0, 0, pw, ph);
 
         if (Volatile.Read(ref stuckCaptures) >= MaxStuckCaptures) throw NotResponding();
         // The GDI part runs on a thread of its own, so a window that hangs
@@ -84,7 +94,7 @@ internal static unsafe class Capture
         // not the helper. The job owns everything it touches (its DC, bitmap
         // and pixel copy); an abandoned job finishes on its own and is never
         // read. Only the copied pixels come back to the STA thread for WIC.
-        var job = new CaptureJob(hwnd, w, h, crop);
+        var job = new CaptureJob(hwnd, pw, ph, paintCrop);
         var thread = new Thread(job.Run) { IsBackground = true, Name = "computer-use capture" };
         thread.Start();
         long deadline = Environment.TickCount64 + CaptureDeadlineMs;
@@ -99,11 +109,19 @@ internal static unsafe class Capture
             Sta.Sleep(5);
         }
         if (job.Error != null) throw new HelperError("screenshot_failed", job.Error);
-        int cw = (int)crop.Width;
+        int pcw = (int)paintCrop.Width;
         fixed (byte* pixels = job.Pixels)
         {
-            return Encode(pixels, cw * 4, new Rect(0, 0, cw, crop.Height));
+            return Encode(pixels, pcw * 4, new Rect(0, 0, pcw, paintCrop.Height), (int)crop.Width, (int)crop.Height);
         }
+    }
+
+    /// <summary>The effective DPI of the monitor the window is on; 0 when it cannot be read.</summary>
+    private static uint MonitorDpi(HWND hwnd)
+    {
+        var monitor = PInvoke.MonitorFromWindow(hwnd, MONITOR_FROM_FLAGS.MONITOR_DEFAULTTONEAREST);
+        if (monitor.IsNull) return 0;
+        return PInvoke.GetDpiForMonitor(monitor, MONITOR_DPI_TYPE.MDT_EFFECTIVE_DPI, out var dpiX, out _).Succeeded ? dpiX : 0;
     }
 
     private static HelperError NotResponding() =>
@@ -201,11 +219,12 @@ internal static unsafe class Capture
         }
     }
 
-    private static JsonObject Encode(byte* bits, int stride, Rect crop)
+    /// <summary>Encodes `crop` of the captured pixels as the image of a `width` x `height` (physical) frame.</summary>
+    private static JsonObject Encode(byte* bits, int stride, Rect crop, int width, int height)
     {
         int cw = (int)crop.Width, ch = (int)crop.Height;
-        double scale = Geometry.ScreenshotScale(cw, ch);
-        var (tw, th) = Geometry.ScaledSize(cw, ch, scale);
+        double scale = Geometry.ScreenshotScale(width, height);
+        var (tw, th) = Geometry.ScaledSize(width, height, scale);
         var start = bits + (long)crop.Y * stride + (long)crop.X * 4;
         uint size = (uint)((ch - 1) * stride + cw * 4);
 
@@ -274,8 +293,8 @@ internal static unsafe class Capture
                 ["data"] = base64,
                 ["width"] = tw,
                 ["height"] = th,
-                // Image pixels per window pixel, from what was actually encoded.
-                ["scale"] = (double)tw / cw,
+                // Image pixels per (physical) window pixel, from what was actually encoded.
+                ["scale"] = (double)tw / width,
             };
         }
         catch (HelperError)

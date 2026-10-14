@@ -382,6 +382,10 @@ At 125 % and 150 % display scaling, and with a second monitor placed left of
 the primary one (negative coordinates), click a Notepad menu item by index and
 by screenshot coordinates. The click lands on the intended item every time.
 
+At 125 %, a `getAppState` vision screenshot of a DPI-unaware window (a
+WinForms window with no DPI manifest) shows the whole window at its physical
+size, with no black band on the right or bottom.
+
 ### 6. Packaged build
 
 1. Build a packaged wmux with a staged, unsigned helper:

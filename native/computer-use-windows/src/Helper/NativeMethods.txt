@@ -83,6 +83,9 @@ DispatchMessage
 SetConsoleCtrlHandler
 // Capture
 PrintWindow
+GetDpiForWindow
+MonitorFromWindow
+GetDpiForMonitor
 IsHungAppWindow
 SendMessageTimeout
 CreateCompatibleDC
