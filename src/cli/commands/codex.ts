@@ -18,7 +18,8 @@ export async function handleCodex(args:string[]):Promise<void> {
   if (!self.ptyId || !self.workspaceToken) throw new Error('Run wmux codex directly in a wmux terminal pane.');
   setWorkspaceToken(self.workspaceToken);
   const codeHome = path.resolve(process.env.CODEX_HOME || path.join(os.homedir(),'.codex'));
-  const response = await sendRequest('codex.relay.prepare',{codeHome});
+  // Outlive main's 100s deadline and the runtime's lock/version/start/probe bounds.
+  const response = await sendRequest('codex.relay.prepare',{codeHome},110_000);
   if (!response.ok) throw new Error(response.error);
   const lease = response.result as {url?:unknown;authToken?:unknown;leaseId?:unknown};
   if (typeof lease?.leaseId !== 'string') throw new Error('wmux returned no Codex pane lease.');

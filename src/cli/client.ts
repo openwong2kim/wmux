@@ -64,6 +64,7 @@ function attemptRequest(
   method: RpcMethod,
   params: Record<string, unknown>,
   token: string | undefined,
+  timeoutMs = TIMEOUT_MS,
 ): Promise<RpcResponse> {
   return new Promise((resolve, reject) => {
     const id = crypto.randomUUID();
@@ -89,9 +90,9 @@ function attemptRequest(
       if (!settled) {
         settled = true;
         socket.destroy();
-        reject(new Error('Request timed out after 5 seconds.'));
+        reject(new Error(`Request timed out after ${timeoutMs / 1000} seconds.`));
       }
-    }, TIMEOUT_MS);
+    }, timeoutMs);
 
     socket.on('connect', () => {
       socket.write(JSON.stringify(request) + '\n');
@@ -175,6 +176,7 @@ export function isDefinitelyNotRunning(err: unknown): boolean {
 export async function sendRequest(
   method: RpcMethod,
   params: Record<string, unknown> = {},
+  timeoutMs = TIMEOUT_MS,
 ): Promise<RpcResponse> {
   const token = resolveAuthToken();
 
@@ -187,7 +189,7 @@ export async function sendRequest(
   let lastError: unknown;
   for (const pipePath of pipePaths) {
     try {
-      return await attemptRequest(pipePath, method, params, token);
+      return await attemptRequest(pipePath, method, params, token, timeoutMs);
     } catch (err) {
       lastError = err;
       if (!isConnectFailure(err)) throw err;
@@ -200,7 +202,7 @@ export async function sendRequest(
     const tcpPort = readTcpPort();
     if (tcpPort) {
       try {
-        return await attemptRequest({ host: '127.0.0.1', port: tcpPort }, method, params, token);
+        return await attemptRequest({ host: '127.0.0.1', port: tcpPort }, method, params, token, timeoutMs);
       } catch {
         // fall through to the pipe error — it names the real failure
       }

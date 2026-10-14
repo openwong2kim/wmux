@@ -19,7 +19,7 @@ export function registerCodexRpc(router:RpcRouter, getWindow:()=>BrowserWindow|n
       return daemon.rpc(`daemon.${method}`,{
         id:claim.ptyId,
         ...(method === 'codex.relay.prepare' ? {codeHome:params.codeHome} : {leaseId:params.leaseId}),
-      },{timeoutMs:12000});
+      },{timeoutMs:method === 'codex.relay.prepare' ? 100_000 : 10_000});
     });
   }
 }

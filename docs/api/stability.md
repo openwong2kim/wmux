@@ -8,6 +8,10 @@
 
 ## What this document is
 
+The native Windows `wmux codex` launcher's `codex.relay.prepare` / `codex.relay.close`
+and corresponding `daemon.codex.relay.*` methods are **internal**, outside the
+stable substrate contract. See [the inventory](inventory.md#native-codex-launcher-internal).
+
 The v3.0 substrate contract is a *subset* of the inventory. This file lists every surface that ships with `stable` guarantees, plus the precise scope of what's guaranteed for each.
 
 A v3.0 `stable` surface is:

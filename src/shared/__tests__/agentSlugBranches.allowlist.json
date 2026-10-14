@@ -3,6 +3,7 @@
   "files": {
     "src/cli/commands/role.ts": 2,
     "src/cli/commands/setupStatusline.ts": 1,
+    "src/cli/index.ts": 1,
     "src/daemon/approvals/ApprovalRegistry.ts": 4,
     "src/daemon/approvals/openCodeDecisions.ts": 2,
     "src/daemon/approvals/terminalPrompt.ts": 1,

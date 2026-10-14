@@ -31,6 +31,17 @@ Transport (see `src/shared/constants.ts` `getPipeName`/`getAuthTokenPath`/`getTc
 
 The MCP host hosts these as tools (see [MCP tools](#mcp-tools) below). An *in-pane* plugin (spawned inside a wmux PTY) reads the token and endpoint from the injected env vars `WMUX_AUTH_TOKEN` / `WMUX_SOCKET_PATH` instead of the file. An *external-terminal* plugin reads `~/.wmux-auth-token` and derives the pipe name itself. Wire framing, rate limits, and the full security model are in [`../PROTOCOL.md`](../PROTOCOL.md) §5.
 
+### Native Codex launcher (internal)
+
+| Method | Params | Tier | Notes |
+|---|---|---|---|
+| `codex.relay.prepare` | `{ codeHome?: string }` | internal | Bundled Windows CLI only; requires main's live non-browser pane claim. Returns `{ url, authToken, leaseId }` for that pane's authenticated loopback link. Never log the bearer. No target pane or workspace argument. |
+| `codex.relay.close` | `{ leaseId: string }` | internal | Releases only the matching lease of the claimed pane. A stale lease cannot close its replacement. |
+
+Both use the reserved `wmux.internal` capability and the curated CLI lane; no
+new MCP tool or declarable capability is exposed. Main forwards to first-party-only
+`daemon.codex.relay.prepare` / `daemon.codex.relay.close` on the control pipe.
+
 ### Performance diagnostics
 
 | Method | Params | Tier | Notes |
