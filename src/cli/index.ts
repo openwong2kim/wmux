@@ -25,12 +25,17 @@ import { handleDeck } from './commands/deck';
 import { handleChannel } from './commands/channel';
 import { handleWeb } from './commands/web';
 import { handleDaemon } from './commands/daemon';
+import { handleCodex } from './commands/codex';
 
 const HELP_TEXT = `
 wmux CLI
 
 USAGE
   wmux <command> [options]
+
+CODEX (NATIVE WINDOWS)
+  codex [TUI options]               Launch Codex with this pane's identity
+  codex resume                     Resume through the pane's shared-server link
 
 WORKSPACE COMMANDS
   list-workspaces                   List all workspaces
@@ -267,6 +272,16 @@ const SYSTEM_CMDS = new Set([
 async function main(): Promise<void> {
   // process.argv = ['node', 'index.js', ...userArgs]
   const argv = process.argv.slice(2);
+
+  // Codex owns its flags and terminal signals; do not consume --help/--json
+  // or exit the parent before its relay cleanup can run.
+  if (argv[0] === 'codex') {
+    process.removeAllListeners('SIGINT');
+    process.on('SIGINT', () => { /* the foreground TUI handles Ctrl-C */ });
+    try { await handleCodex(argv.slice(1)); }
+    catch (error) { console.error(error instanceof Error ? error.message : String(error)); process.exitCode = 1; }
+    return;
+  }
 
   if (argv.length === 0 || hasFlag(argv, '--help') || hasFlag(argv, '-h')) {
     process.stdout.write(HELP_TEXT);

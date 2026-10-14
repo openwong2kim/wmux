@@ -272,6 +272,8 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
   //     what version of wmux they're talking to or what capabilities are
   //     exposed. No data leak; less than what a probe-by-error would yield.
   'system.identify':     { capability: null },
+  'codex.relay.prepare': { capability: 'wmux.internal' },
+  'codex.relay.close':   { capability: 'wmux.internal' },
   'system.capabilities': { capability: null },
 
   // --- Performance diagnostics (P0-5c, `wmux doctor --performance`).

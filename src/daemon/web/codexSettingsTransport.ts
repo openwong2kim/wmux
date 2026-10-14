@@ -1,6 +1,7 @@
 import path from 'node:path';
 import os from 'node:os';
 import WebSocket from 'ws';
+import {openCodexAccountSocket,validCodexAccountPath} from './codexAccountSocket';
 import type { CodexSettingsMethod, CodexSettingsRPC } from './codexLiveSettings';
 
 const METHODS = new Set<CodexSettingsMethod>(['thread/read','model/list','thread/settings/update']);
@@ -13,8 +14,8 @@ export async function connectCodexSettings(options: {codeHome?:string; cwd:strin
       options.codeHome !== undefined && (!path.isAbsolute(options.codeHome) || options.codeHome.includes('\0'))) throw new Error('Invalid Codex account scope');
   const socketPath = path.join(options.codeHome ?? path.join(os.homedir(), '.codex'), 'app-server-control', 'app-server-control.sock');
   // ws+unix parses ':' as its path separator; reject ambiguous account paths.
-  if (socketPath.includes(':')) throw new Error('Invalid Codex account scope');
-  const socket = new WebSocket(`ws+unix://${socketPath}:/`, {
+  if (!validCodexAccountPath(socketPath)) throw new Error('Invalid Codex account scope');
+  const socket = openCodexAccountSocket(socketPath, {
     handshakeTimeout:5000,maxPayload:2 * 1024 * 1024,perMessageDeflate:false,followRedirects:false,
   });
   const connection = new SettingsTransport(socket);

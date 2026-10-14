@@ -4278,6 +4278,26 @@ function registerRpcHandlers(
     return { ok: false, error };
   });
 
+  pipeServer.onRpc('daemon.codex.relay.prepare', async (params, ctx) => {
+    if (!firstPartyOnly(ctx.clientId, 'codex.relay.prepare') || process.platform !== 'win32') throw new Error('Unavailable');
+    const id = typeof params.id === 'string' ? params.id : '';
+    const owner = sessionManager.getSession(id);
+    if (!owner || !['attached','detached'].includes(owner.meta.state)) throw new Error('Terminal is no longer live');
+    const codeHome = typeof params.codeHome === 'string' ? params.codeHome : owner.meta.env?.CODEX_HOME;
+    if (codeHome !== undefined && (!path.isAbsolute(codeHome) || codeHome.includes('\0'))) throw new Error('Invalid Codex account scope');
+    const relay = await codexPaneRelays.prepare(id,codeHome);
+    if (sessionManager.getSession(id) !== owner || !relay.commit(owner)) {
+      await relay.close();
+      throw new Error('Terminal changed during launch');
+    }
+    return {url:relay.url,authToken:relay.authToken,leaseId:codexPaneRelays.leaseId(id)};
+  });
+  pipeServer.onRpc('daemon.codex.relay.close', async (params, ctx) => {
+    if (!firstPartyOnly(ctx.clientId, 'codex.relay.close') || typeof params.id !== 'string' || typeof params.leaseId !== 'string') throw new Error('Unavailable');
+    await codexPaneRelays.release(params.id,params.leaseId);
+    return {ok:true};
+  });
+
   pipeServer.onRpc('daemon.transcript.status', async (params, ctx) => {
     if (!firstPartyOnly(ctx.clientId, 'status')) {
       return { available: false, reason: 'not-authorized' };

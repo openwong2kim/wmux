@@ -441,6 +441,8 @@ export type RpcMethod =
   | 'meta.setProgress'
   | 'ui.decoratePane'
   | 'system.identify'
+  | 'codex.relay.prepare'
+  | 'codex.relay.close'
   | 'system.capabilities'
   // Performance diagnostics (P0-5c) — aggregate reveal-mechanism counters
   // for `wmux doctor --performance`. Read-only, no terminal content.
@@ -779,6 +781,8 @@ export const ALL_RPC_METHODS = [
   'meta.setProgress',
   'ui.decoratePane',
   'system.identify',
+  'codex.relay.prepare',
+  'codex.relay.close',
   'system.capabilities',
   'perf.status',
   'computer.capabilities',
