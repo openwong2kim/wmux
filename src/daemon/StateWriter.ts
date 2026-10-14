@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import type { DaemonState } from './types';
+import type { DaemonSession, DaemonState } from './types';
 import {
   atomicReadJSONSync,
   atomicWriteJSON,
@@ -14,6 +14,7 @@ import { stripCredentialValues } from '../shared/envFilter';
 import { isPidAlive } from './phantomExit';
 import { isUsableResumeBinding, isPlausibleResumeSessionId } from '../shared/agentResume';
 import { healCrossProviderBinding } from './transcript/healResumeBinding';
+import { REMOTE_DURABLE_MARKER, REMOTE_DURABLE_TTL_HOURS } from '../shared/sshPcContract';
 
 /**
  * 영속 직전 자격증명 *값*을 제거한 DaemonState fresh 사본. 모든 sessions.json write
@@ -116,6 +117,17 @@ const SUSPENDED_TTL_HOURS_DEFAULT = 7 * 24;
 // workday gap and kills overnight orphans; the per-instance config
 // (config.session.detachedTtlHours) overrides this at the daemon.
 const DETACHED_TTL_HOURS_DEFAULT = 8;
+
+/**
+ * Idle-detached retention for one session. A pane created through the web API
+ * carries REMOTE_DURABLE_MARKER and gets REMOTE_DURABLE_TTL_HOURS instead: a
+ * remote client is normally detached for a whole night, and reaping its shell
+ * at 8 h would end the work it came back for. Still bounded, so abandoned
+ * remote shells age out. Shared by this load path and the daemon's hourly sweep.
+ */
+export function detachedTtlHoursFor(session: Pick<DaemonSession, typeof REMOTE_DURABLE_MARKER>, detachedTtlHours: number): number {
+  return session[REMOTE_DURABLE_MARKER] ? Math.max(detachedTtlHours, REMOTE_DURABLE_TTL_HOURS) : detachedTtlHours;
+}
 
 // #1305: retention bound for a SUSPENDED entry that carries `recoveryError` —
 // a WSL pane whose recovery failed and which is waiting for an explicit user
@@ -484,7 +496,7 @@ export class StateWriter {
         // plain shell has supervision without exec), so both must exempt —
         // matches the supervised-unit predicate in agentResume.ts.
         if (s.exec || s.supervision) return true;
-        return sinceMs < this.detachedTtlHours * 60 * 60 * 1000;
+        return sinceMs < detachedTtlHoursFor(s, this.detachedTtlHours) * 60 * 60 * 1000;
       }
       return true; // attached: in active use, never TTL-reaped
     });

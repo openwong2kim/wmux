@@ -11,6 +11,7 @@ import type { PhoneDecisionsConfig } from './approvals/decisionConfig';
 import type { NotifySinkConfig } from './push/WebhookSink';
 import type { PushPresenceSuppressionConfig } from './push/presence';
 import type { PaneAccountVendor, StoredHandoffFrom } from '../shared/phonePaneAccount';
+import type { REMOTE_DURABLE_MARKER } from '../shared/sshPcContract';
 
 /** Session lifecycle state */
 export type DaemonSessionState = 'detached' | 'attached' | 'dead' | 'suspended';
@@ -151,6 +152,14 @@ export interface DaemonSession {
    * that runs on the workspace binding. Carried across recovery.
    */
   paneAccount?: { vendor: PaneAccountVendor };
+  /**
+   * Set once at `POST /api/sessions` (a pane a remote client created) and
+   * carried across recovery. A detached pane carrying it ages out after
+   * REMOTE_DURABLE_TTL_HOURS instead of the ordinary detached TTL, so a
+   * remote shell survives a night with no client attached. Absent on every
+   * other pane.
+   */
+  [REMOTE_DURABLE_MARKER]?: true;
 }
 
 /** Top-level schema for ~/.wmux/sessions.json */

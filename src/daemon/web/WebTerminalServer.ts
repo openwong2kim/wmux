@@ -735,9 +735,9 @@ interface WebTerminalServerDeps {
   log: (level: 'info' | 'warn' | 'error', msg: string) => void;
   /**
    * Per-device credential store (M3). Optional, like `approvals`: a daemon that
-   * could not build one still serves every route on the operator token, and
-   * `/api/pair` degrades to the pre-M3 shared-token response with a warning
-   * rather than leaving the operator unable to pair anything at all.
+   * could not build one still serves every route on the operator token, but
+   * `/api/pair` refuses (503). Handing out the shared operator token instead
+   * would give a remote client a credential nobody can revoke per device.
    */
   devices?: WebDeviceResolver;
   /**
@@ -9602,13 +9602,13 @@ export class WebTerminalServer {
 
     const devices = this.deps.devices;
     if (!devices) {
-      // No identity core wired (a daemon that failed to build one). Falling
-      // back to the shared token keeps pairing possible instead of bricking it,
-      // but it is a real downgrade — per-device revocation does not exist on
-      // this server — so say so out loud rather than degrading silently.
-      this.deps.log('warn', '[web] pairing without a device store — issuing the shared operator token');
-      this.burnPairCode();
-      return this.json(res, 200, { token: this.token });
+      // No identity core wired (a daemon that failed to build one). Fail
+      // closed: the shared operator token is not revocable per device, and a
+      // remote pairing (an SSH-added PC) would hold it for good. 503 because
+      // this is the server's condition, not the caller's. The code is NOT
+      // burned, for the same reason as the transport refusal above.
+      this.deps.log('error', '[web] pairing refused — no device store on this server');
+      return this.json(res, 503, { error: 'pairing-unavailable' });
     }
 
     // Claim the slot BEFORE the await: the mint is async, and in that window

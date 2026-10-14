@@ -3417,7 +3417,7 @@ describe('WebTerminalServer', () => {
     expect(bare.status()).toEqual({ running: false });
   });
 
-  it('falls back to the shared token on a daemon that wired no device store', async () => {
+  it('refuses to pair on a daemon that wired no device store, never handing out the shared token', async () => {
     const bare = new WebTerminalServer({
       sessionManager,
       log: () => { /* silent */ },
@@ -3426,10 +3426,11 @@ describe('WebTerminalServer', () => {
     const info = await bare.start({ port: 0, host: '127.0.0.1', allowInput: false, allowUpload: false });
     try {
       const res = await fetch(`http://127.0.0.1:${info.port}/api/pair?code=${info.pairCode}`);
-      expect(res.status).toBe(200);
-      // Degraded, not broken: pairing still works, but there is no per-device
-      // identity to revoke on this server.
-      expect(await res.json()).toEqual({ token: info.token });
+      // Fail closed: the operator token cannot be revoked per device.
+      expect(res.status).toBe(503);
+      const body = await res.json() as Record<string, unknown>;
+      expect(body).toEqual({ error: 'pairing-unavailable' });
+      expect(JSON.stringify(body)).not.toContain(info.token as string);
       // And a device-shaped credential authenticates nothing here.
       const dev = await fetch(`http://127.0.0.1:${info.port}/api/sessions`, { headers: bearer('dev-1.s3cr3t-1') });
       expect(dev.status).toBe(401);

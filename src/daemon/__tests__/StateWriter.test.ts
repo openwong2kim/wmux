@@ -2,7 +2,8 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { StateWriter } from '../StateWriter';
+import { StateWriter, detachedTtlHoursFor } from '../StateWriter';
+import { REMOTE_DURABLE_MARKER, REMOTE_DURABLE_TTL_HOURS } from '../../shared/sshPcContract';
 import type { DaemonState, DaemonSession } from '../types';
 import { waitForCondition } from './_waitForFile';
 
@@ -568,6 +569,27 @@ describe('StateWriter', () => {
     expect(ids).toContain('supervised-detached');
     expect(ids).toContain('supervision-only-detached');
     expect(ids).not.toContain('plain-detached');
+  });
+
+  it('load keeps a remote-durable detached session past 8 h but drops it after the 7-day bound', () => {
+    const now = Date.now();
+    const HOUR = 60 * 60 * 1000;
+    const at = (hours: number) => new Date(now - hours * HOUR).toISOString();
+    writer.saveImmediate(makeState([
+      makeSession({ id: 'remote-9h', lastActivity: at(9), [REMOTE_DURABLE_MARKER]: true }),
+      makeSession({ id: 'plain-9h', lastActivity: at(9) }),
+      makeSession({ id: 'remote-8d', lastActivity: at(8 * 24), [REMOTE_DURABLE_MARKER]: true }),
+    ]));
+
+    const ids = writer.load().sessions.map((s) => s.id);
+    expect(ids).toEqual(['remote-9h']);
+  });
+
+  it('detachedTtlHoursFor gives the hourly sweep the same bound as load', () => {
+    expect(detachedTtlHoursFor({}, 8)).toBe(8);
+    expect(detachedTtlHoursFor({ [REMOTE_DURABLE_MARKER]: true }, 8)).toBe(REMOTE_DURABLE_TTL_HOURS);
+    // A configured detached TTL longer than the remote bound is never shortened.
+    expect(detachedTtlHoursFor({ [REMOTE_DURABLE_MARKER]: true }, 400)).toBe(400);
   });
 
   it('load uses suspended TTL even when deadTtlHours is short', () => {

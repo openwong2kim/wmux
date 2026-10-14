@@ -447,6 +447,8 @@ export class DaemonSessionManager extends EventEmitter {
     handoffFrom?: StoredHandoffFrom;
     /** Vendor of the account chosen for this phone pane (its directory is in `env`). */
     paneAccount?: { vendor: PaneAccountVendor };
+    /** Created through the web API: the longer detached retention applies. */
+    remoteDurable?: true;
     /**
      * X8 supervision policy + sticky status. Fresh creates pass
      * status:'armed'; recovery replays the persisted value so a
@@ -749,6 +751,7 @@ export class DaemonSessionManager extends EventEmitter {
     }
     if (params.handoffFrom) meta.handoffFrom = { ...params.handoffFrom };
     if (params.paneAccount) meta.paneAccount = { vendor: params.paneAccount.vendor };
+    if (params.remoteDurable) meta.remoteDurable = true;
     if (params.supervision) {
       // Own copy — meta is persisted via buildState and must not alias
       // caller-held objects (recovery replays the persisted blob verbatim).

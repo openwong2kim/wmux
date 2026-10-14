@@ -85,7 +85,7 @@ import { screenShowsAgentDialog } from './transcript/chatScreenGate';
 import { ApprovalPushRouter } from './push/approvalPushRouter';
 import { readPendingToolUse } from './transcript/pendingToolUse';
 import { isClaudeFamilyAgent } from './approvals/terminalPrompt';
-import { StateWriter, scrubPersistedCredentials } from './StateWriter';
+import { StateWriter, scrubPersistedCredentials, detachedTtlHoursFor } from './StateWriter';
 import { stripCredentialValues } from '../shared/envFilter';
 import { LanLinkInbox } from './lanlink/inbox';
 import { LanLinkController } from './lanlink/controller';
@@ -2185,6 +2185,7 @@ async function recoverSessions(
       }
       if (persisted.handoffFrom && !managed.meta.handoffFrom) managed.meta.handoffFrom = persisted.handoffFrom;
       if (persisted.paneAccount && !managed.meta.paneAccount) managed.meta.paneAccount = persisted.paneAccount;
+      if (persisted.remoteDurable) managed.meta.remoteDurable = true;
     }
     // Build combined state: recovered (live) sessions + everything we
     // intentionally left untouched (originally-dead within TTL, plus
@@ -2330,6 +2331,7 @@ async function restartSupervisedSession(
     if (meta.codexRelayResume && !fresh.meta.codexRelayResume) fresh.meta.codexRelayResume = meta.codexRelayResume;
     if (meta.handoffFrom && !fresh.meta.handoffFrom) fresh.meta.handoffFrom = meta.handoffFrom;
     if (meta.paneAccount && !fresh.meta.paneAccount) fresh.meta.paneAccount = meta.paneAccount;
+    if (meta.remoteDurable) fresh.meta.remoteDurable = true;
   }
 
   // Same external-death safety net as the create/recovery paths.
@@ -2402,7 +2404,7 @@ function registerRpcHandlers(
   // (see sessionLifecycle below). A phone-spawned pane must be the same kind of
   // object as a GUI-spawned one — process-monitored, supervised, persisted,
   // snapshotted — and the only way to guarantee that is for both to run this.
-  const createSessionRpc = async (params: Record<string, unknown>, local?: {execLaunchCommand?:string;handoffFrom?:StoredHandoffFrom;paneAccount?:{vendor:PaneAccountVendor}}): Promise<unknown> => {
+  const createSessionRpc = async (params: Record<string, unknown>, local?: {execLaunchCommand?:string;handoffFrom?:StoredHandoffFrom;paneAccount?:{vendor:PaneAccountVendor};remoteDurable?:true}): Promise<unknown> => {
     // B′ auto-replace (Codex #1): shutdown() snapshots the managed-session
     // list once, so a session created AFTER that snapshot would be disposed
     // without any durable suspended record — silent data loss. shutdown()
@@ -2442,6 +2444,7 @@ function registerRpcHandlers(
       execLaunchCommand: local?.execLaunchCommand,
       ...(local?.handoffFrom ? { handoffFrom: local.handoffFrom } : {}),
       ...(local?.paneAccount ? { paneAccount: local.paneAccount } : {}),
+      ...(local?.remoteDurable ? { remoteDurable: true as const } : {}),
       supervision: p.supervision
         ? {
             restart: p.supervision.restart,
@@ -2647,6 +2650,8 @@ function registerRpcHandlers(
           ...(handoffFrom ? {handoffFrom} : {}),
           // Which vendor's key is the pane's own choice: chat/launch re-applies it.
           ...(account ? {paneAccount:{vendor:account.vendor}} : {}),
+          // A remote client's pane outlives the ordinary detached TTL (bounded).
+          remoteDurable: true,
         });
         if (relay) {
           const managed = sessionManager.getSession(id);
@@ -3152,6 +3157,7 @@ function registerRpcHandlers(
         // Lineage is where the pane came from, not a resume offer: kept either way.
         if (session.handoffFrom && !promotedSession.meta.handoffFrom) promotedSession.meta.handoffFrom = session.handoffFrom;
         if (session.paneAccount && !promotedSession.meta.paneAccount) promotedSession.meta.paneAccount = session.paneAccount;
+        if (session.remoteDurable) promotedSession.meta.remoteDurable = true;
         // A fresh start drops the binding outright. It names a conversation in
         // the directory that no longer exists, and the pane did not resume it —
         // keeping it would leave the pane advertising a resume offer for a
@@ -8766,7 +8772,7 @@ async function main(): Promise<void> {
         // optional fields, so exempt on either.
         if (managed.meta.exec || managed.meta.supervision) continue;
         const idleSince = new Date(managed.meta.lastActivity).getTime();
-        const ttlMs = config.session.detachedTtlHours * 60 * 60 * 1000;
+        const ttlMs = detachedTtlHoursFor(managed.meta, config.session.detachedTtlHours) * 60 * 60 * 1000;
         if (Date.now() - idleSince >= ttlMs) {
           // Mirror the dead branch: drop any leftover buffer dump from a prior
           // suspend cycle before destroying, or it leaks until the next boot.

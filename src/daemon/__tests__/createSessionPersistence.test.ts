@@ -135,6 +135,23 @@ describe('A1a invariant — saveImmediate persists synchronously', () => {
     manager.destroySession(session.id);
   });
 
+  it('a web-created pane persists the remote-durable marker and is still destroyed on close', () => {
+    const filePath = path.join(tmpDir, 'sessions.json');
+    const session = manager.createSession({
+      id: 'web-durable', cmd: 'bash', cwd: tmpDir, env: {}, cols: 80, rows: 24, remoteDurable: true,
+    });
+    writer.saveImmediate(buildState());
+    const persisted = JSON.parse(fs.readFileSync(filePath, 'utf-8')) as DaemonState;
+    expect(persisted.sessions).toContainEqual(expect.objectContaining({ id: 'web-durable', remoteDurable: true }));
+
+    // DELETE /api/sessions/:id (RemoteHostClient.closeSession) ends in destroySession:
+    // the marker only lengthens the idle reap, it never keeps a closed pane.
+    manager.destroySession(session.id);
+    writer.saveImmediate(buildState());
+    const after = JSON.parse(fs.readFileSync(filePath, 'utf-8')) as DaemonState;
+    expect(after.sessions.map((s) => s.id)).not.toContain('web-durable');
+  });
+
   // Source-level guard — addresses codex review P3 (2026-05-15 session
   // 019e2af8). The behavioral tests above replay the production sequence but
   // do not invoke the actual RPC handler. A handler-level refactor that
