@@ -12243,8 +12243,8 @@ SOFTWARE.
 
 PROJECTS THAT INSPIRED THE DESIGN
 
-wmux's agent features were inspired by ideas from the projects below. No code
-or text was taken from them; they are listed as an acknowledgement.
+Parts of wmux were inspired by ideas from the projects below. No code or text
+was taken from them; they are listed as an acknowledgement.
 
 OpenBot (MIT License) - https://github.com/CopilotKit/OpenBot
 Bot-to-bot handoffs routed by the system rather than the model, with a
@@ -12269,5 +12269,21 @@ A dedicated merge step that lands agent work in order.
 Anneal (MIT License) - https://github.com/mosonlab/anneal
 A mechanical, model-free merge step and a review that does not see the
 earlier review.
+
+Orca (MIT License) - https://github.com/stablyai/orca
+Rebuilding the terminal glyph atlas at wake and visibility boundaries, a
+30-minute staleness window for hook-reported agent status, a larger write
+budget for a visible pane's queued output, settings search that matches
+words typed in another language, icon tabs in the deck header, and quiet
+navigation for task records.
+
+cmux (GNU General Public License v3.0 or later) - https://github.com/manaflow-ai/cmux
+Keeping the notification panel's scroll position across close and
+reopen, and skipping a notification only when the app is frontmost, the
+tab is selected and the pane is focused.
+
+claude-replay (MIT License) - https://github.com/es617/claude-replay
+Removing the tool-error wrapper from a failed tool's output when
+reading a Claude Code transcript.
 
 ================================================================================

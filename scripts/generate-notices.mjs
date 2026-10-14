@@ -532,11 +532,36 @@ const INSPIRED_BY = [
     what: 'A mechanical, model-free merge step and a review that does not see the\n' +
       'earlier review.',
   },
+  {
+    name: 'Orca',
+    license: 'MIT License',
+    repo: 'https://github.com/stablyai/orca',
+    what: 'Rebuilding the terminal glyph atlas at wake and visibility boundaries, a\n' +
+      '30-minute staleness window for hook-reported agent status, a larger write\n' +
+      'budget for a visible pane\'s queued output, settings search that matches\n' +
+      'words typed in another language, icon tabs in the deck header, and quiet\n' +
+      'navigation for task records.',
+  },
+  {
+    name: 'cmux',
+    license: 'GNU General Public License v3.0 or later',
+    repo: 'https://github.com/manaflow-ai/cmux',
+    what: 'Keeping the notification panel\'s scroll position across close and\n' +
+      'reopen, and skipping a notification only when the app is frontmost, the\n' +
+      'tab is selected and the pane is focused.',
+  },
+  {
+    name: 'claude-replay',
+    license: 'MIT License',
+    repo: 'https://github.com/es617/claude-replay',
+    what: 'Removing the tool-error wrapper from a failed tool\'s output when\n' +
+      'reading a Claude Code transcript.',
+  },
 ];
 lines.push('PROJECTS THAT INSPIRED THE DESIGN');
 lines.push('');
-lines.push('wmux\'s agent features were inspired by ideas from the projects below. No code');
-lines.push('or text was taken from them; they are listed as an acknowledgement.');
+lines.push('Parts of wmux were inspired by ideas from the projects below. No code or text');
+lines.push('was taken from them; they are listed as an acknowledgement.');
 lines.push('');
 for (const p of INSPIRED_BY) {
   lines.push(`${p.name} (${p.license}) - ${p.repo}`);
