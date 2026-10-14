@@ -9,6 +9,8 @@ import {
   type DaemonServiceDeps,
 } from '../daemonService';
 
+// systemd and the ~/.wmux/runtime layout are POSIX; the fixtures are POSIX paths.
+const POSIX_ONLY = process.platform === 'win32';
 const HOME = '/home/ada';
 const RUNTIME = `${HOME}/.wmux/runtime`;
 
@@ -50,7 +52,7 @@ function fakeDeps(over: Partial<DaemonServiceDeps> & {
   return { deps, calls, files };
 }
 
-describe('wmux daemon install-service (systemd --user)', () => {
+describe.skipIf(POSIX_ONLY)('wmux daemon install-service (systemd --user)', () => {
   it('writes a foreground unit through the current link, starts it, and names the linger fix', async () => {
     const { deps, calls, files } = fakeDeps();
     const result = await installDaemonService(deps);
@@ -116,7 +118,7 @@ describe('wmux daemon install-service (systemd --user)', () => {
   });
 });
 
-describe('unit file and runtime path', () => {
+describe.skipIf(POSIX_ONLY)('unit file and runtime path', () => {
   it('keeps a dev or app layout as is, and only follows current when it points at that version', () => {
     const deps = fakeDeps().deps;
     expect(preferCurrentRuntime('/repo/dist/cli-bundle/index.js', deps)).toBe('/repo/dist/cli-bundle/index.js');
