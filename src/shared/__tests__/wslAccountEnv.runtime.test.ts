@@ -5,7 +5,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
 import { buildWslInjection } from '../wslIntegration';
 
@@ -77,4 +77,51 @@ describe.runIf(enabled)('WSL account-home transport', () => {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   }, 60_000);
+
+  // #2202: a UNC home into this same distro translates; another distro's does not.
+  it('carries a \\\\wsl.localhost home inside this distro and drops another distro\'s with a note', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-wsl-unc-'));
+    const wsl = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'wsl.exe');
+    const distroArgs = process.env.WMUX_TEST_WSL_DISTRO ? ['-d', process.env.WMUX_TEST_WSL_DISTRO] : [];
+    const execute = (args: string[]) => execFileSync(wsl, [...distroArgs, '--exec', ...args], {
+      encoding: 'utf8', timeout: 30_000, windowsHide: true,
+    });
+    const linuxHome = `/tmp/wmux-unc-${process.pid}`;
+    try {
+      const [distribution, user] = execute(['/bin/sh', '-c', 'printf "%s\\0%s" "$WSL_DISTRO_NAME" "$(id -un)"']).split('\0');
+      execute(['mkdir', '-p', linuxHome]);
+      const cwd = execute(['wslpath', '-u', dir]).trim();
+      const base = { SystemRoot: process.env.SystemRoot ?? 'C:\\Windows', PATH: process.env.PATH ?? '', WMUX_SHELL_INTEGRATION: '0' };
+      const run = (home: string, execCommand?: string) => {
+        const injected = buildWslInjection({
+          target: { distribution, user }, cwd, integrationDir: dir, wslAccountLoginEnvKey: 'CODEX_HOME',
+          env: { ...base, CODEX_HOME: home }, bashInit: '', mcpEntryPath: null,
+          ...(execCommand === undefined ? {} : { execCommand }),
+        });
+        return spawnSync(wsl, injected.args, {
+          env: injected.env, encoding: 'utf8', timeout: 30_000, windowsHide: true,
+          ...(execCommand === undefined ? { input: 'exit\n' } : {}),
+        });
+      };
+      const write = `set -eu; printf '%s|%s' "\${CODEX_HOME-}" "\${WMUX_WSL_ACCOUNT_HOME_UNREACHABLE-}"; printf '{}' > "\${CODEX_HOME:-/nonexistent}/auth.json"`;
+
+      const same = run(`\\\\wsl.localhost\\${distribution}${linuxHome.replace(/\//g, '\\')}`, write);
+      expect(same.stdout).toBe(`${linuxHome}|`);
+      expect(same.stderr).not.toMatch(/Failed to translate/);
+      expect(execute(['cat', `${linuxHome}/auth.json`])).toBe('{}');
+
+      const otherHome = '\\\\wsl.localhost\\wmux-no-such-distro\\home\\someone';
+      const peek = `printf '%s|%s' "\${CODEX_HOME-}" "\${WMUX_WSL_ACCOUNT_HOME_UNREACHABLE-}"`;
+      const other = run(otherHome, peek);
+      expect(other.stdout).toBe(`|CODEX_HOME (${otherHome})`);
+      expect(other.stderr).not.toMatch(/Failed to translate/);
+      // The interactive login tab says why the login cannot reach the account.
+      const tab = run(otherHome);
+      expect(tab.stderr).toContain(`wmux: CODEX_HOME (${otherHome}) cannot be opened from this WSL distro`);
+      expect(tab.stderr).not.toMatch(/Failed to translate/);
+    } finally {
+      try { execute(['rm', '-rf', linuxHome]); } catch { /* best effort */ }
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }, 90_000);
 });

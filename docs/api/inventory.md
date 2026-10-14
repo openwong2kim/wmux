@@ -165,6 +165,8 @@ or `CODEX_HOME`). Settings login tabs set it to transfer only that vendor's sele
 account home through WSLENV. Ordinary workspace/account-bound panes omit it and
 retain their existing Linux profile selection and user WSLENV entries. Login
 tabs normalize flags only for the selected account key. This is not a workspace/profile setting.
+A home WSL cannot translate (a UNC path into another distro or a network share) is not
+forwarded; the login tab prints why instead of leaving the login on the default home.
 
 ### Company Mode (deferred to Phase 4 gate)
 

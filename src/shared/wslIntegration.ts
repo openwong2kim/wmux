@@ -352,6 +352,20 @@ function wslMcpConfig(): string {
   return JSON.stringify({ mcpServers: { wmux: { type: 'stdio', command: '/bin/sh', args: ['-c', WSL_MCP_LAUNCH] } } });
 }
 
+/**
+ * The WSLENV flags that carry a login tab's account home into `distribution`,
+ * or null when WSL cannot translate it. A drive path and a UNC path into this
+ * same distro (`\\wsl.localhost\<distro>\…`, `\\wsl$\<distro>\…`) translate;
+ * another distro's or a network share's UNC path does not, and WSL would drop
+ * the variable. Anything else is passed through as a Linux path.
+ */
+export function accountHomeWslFlags(home: string, distribution: string): 'pu' | 'u' | null {
+  if (/^[a-z]:[\\/]/i.test(home)) return 'pu';
+  if (!/^[\\/]{2}/.test(home)) return 'u';
+  const unc = /^[\\/]{2}(wsl\.localhost|wsl\$)[\\/]([^\\/]+)(?:[\\/]|$)/i.exec(home);
+  return unc && unc[2].toLowerCase() === distribution.toLowerCase() ? 'pu' : null;
+}
+
 export function buildWslInjection(options: {
   target: WslTarget;
   cwd: string;
@@ -392,6 +406,11 @@ if [ "\${WMUX_SHELL_INTEGRATION:-1}" = 0 ]; then
 else
   . "$WMUX_WSL_BASHRC.integration"
 fi
+# A login tab whose selected account folder this distro cannot open: say so
+# instead of letting the login land in the default home unnoticed.
+if [ -n "$WMUX_WSL_ACCOUNT_HOME_UNREACHABLE" ]; then
+  printf 'wmux: %s cannot be opened from this WSL distro, so this login will not be saved to the selected account. Use an account folder on a local drive or inside this distro.\\n' "$WMUX_WSL_ACCOUNT_HOME_UNREACHABLE" >&2
+fi
 # An explicit workspace directory wins over a cd in the user's startup files.
 if [ -z "$WMUX_WSL_CWD" ] || ! builtin cd -- "$WMUX_WSL_CWD"; then
   printf 'wmux: cannot enter WSL directory "%s"; check the directory and WSLENV transport, then retry.\\n' "$WMUX_WSL_CWD" >&2
@@ -427,11 +446,24 @@ fi
   // contain Windows-only notify/MCP/hooks. Only forward the login's vendor.
   const loginKey = options.wslAccountLoginEnvKey;
   const home = loginKey ? env[loginKey] : undefined;
+  let unreachableKey: string | null = null;
   if ((loginKey === 'CODEX_HOME' || loginKey === 'CLAUDE_CONFIG_DIR') && home) {
-    const windowsPath = /^[a-z]:[\\/]/i.test(home) || home.startsWith('\\\\') || home.startsWith('//');
-    entries.push(`${loginKey}/${windowsPath ? 'pu' : 'u'}`);
+    const flags = accountHomeWslFlags(home, target.distribution);
+    if (flags) {
+      entries.push(`${loginKey}/${flags}`);
+    } else {
+      // wsl.exe would print "Failed to translate" into the tab and drop the
+      // variable anyway; leave it out and let the tab explain why.
+      unreachableKey = loginKey;
+      env.WMUX_WSL_ACCOUNT_HOME_UNREACHABLE = `${loginKey} (${home})`;
+      entries.push('WMUX_WSL_ACCOUNT_HOME_UNREACHABLE');
+    }
   }
   env.WSLENV = mergeWslEnv(env.WSLENV, entries);
+  if (unreachableKey) {
+    const key = unreachableKey.toUpperCase();
+    env.WSLENV = env.WSLENV.split(':').filter((s) => s.split('/')[0].toUpperCase() !== key).join(':');
+  }
   // WSL runs bash explicitly so --rcfile reaches Linux, never wsl.exe. The
   // interactive init sources ~/.bashrc first. Exec units avoid startup output.
   const bootstrap = options.execCommand === undefined

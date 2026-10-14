@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { buildWslInjection, WSL_HOOK, wslClaudeHooks } from '../wslIntegration';
+import { accountHomeWslFlags, buildWslInjection, WSL_HOOK, wslClaudeHooks } from '../wslIntegration';
 import { HOOK_SPECS } from '../../cli/commands/setupHooks';
 import { parseWslAgentReport, pickReportedAgent } from '../../daemon/wslAgentProcess';
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -89,11 +89,42 @@ describe('WSL per-launch Claude integration', () => {
       expect(injected.env.WSLENV.split(':')).toContain('OTHER/u');
     });
 
-    it.each(['D:/account profiles/selected', '\\\\server\\share\\selected', '//server/share/selected'])(
-      'translates the Windows path %s', (home) => {
-        expect(inject({ CODEX_HOME: home }, 'CODEX_HOME').env.WSLENV.split(':')).toContain('CODEX_HOME/pu');
-      },
-    );
+    it.each([
+      'D:/account profiles/selected',
+      '\\\\wsl.localhost\\Ubuntu\\home\\developer\\selected',
+      '\\\\wsl$\\ubuntu\\home\\developer\\selected',
+      '//wsl.localhost/Ubuntu/home/developer/selected',
+    ])('translates the Windows path %s', (home) => {
+      const injected = inject({ CODEX_HOME: home }, 'CODEX_HOME');
+      expect(injected.env.WSLENV.split(':')).toContain('CODEX_HOME/pu');
+      expect(injected.env.WMUX_WSL_ACCOUNT_HOME_UNREACHABLE).toBeUndefined();
+    });
+
+    // #2202: WSL cannot translate these, prints "Failed to translate" into the
+    // tab and drops the variable, so the login would land in the default home.
+    it.each([
+      '\\\\server\\share\\selected',
+      '//server/share/selected',
+      '\\\\wsl.localhost\\Debian\\home\\developer\\selected',
+      '\\\\wsl$\\Ubuntu-24.04\\home\\developer\\selected',
+    ])('does not forward the untranslatable path %s and tells the tab why', (home) => {
+      const injected = inject({ CODEX_HOME: home, WSLENV: 'MY_VAR/p:CODEX_HOME/p' }, 'CODEX_HOME');
+      const wslenv = injected.env.WSLENV.split(':');
+      expect(wslenv.some((entry) => entry.split('/')[0] === 'CODEX_HOME')).toBe(false);
+      expect(wslenv).toContain('MY_VAR/p');
+      expect(wslenv).toContain('WMUX_WSL_ACCOUNT_HOME_UNREACHABLE');
+      expect(injected.env.WMUX_WSL_ACCOUNT_HOME_UNREACHABLE).toBe(`CODEX_HOME (${home})`);
+      expect(injected.env.CODEX_HOME).toBe(home);
+    });
+
+    it('maps account home shapes to WSLENV flags', () => {
+      expect(accountHomeWslFlags('C:\\accounts\\one', 'Ubuntu')).toBe('pu');
+      expect(accountHomeWslFlags('/home/developer/one', 'Ubuntu')).toBe('u');
+      expect(accountHomeWslFlags('\\\\WSL.LOCALHOST\\UBUNTU\\home', 'Ubuntu')).toBe('pu');
+      expect(accountHomeWslFlags('\\\\wsl.localhost\\Ubuntu', 'Ubuntu')).toBe('pu');
+      expect(accountHomeWslFlags('\\\\wsl.localhost\\UbuntuX\\home', 'Ubuntu')).toBeNull();
+      expect(accountHomeWslFlags('\\\\server\\share', 'Ubuntu')).toBeNull();
+    });
 
     it.each(['claude', 'codex'] as const)('keeps two %s logins on their selected accounts without transferring the other vendor', (vendor) => {
       const first = inject({ CODEX_HOME: 'C:\\accounts\\one', CLAUDE_CONFIG_DIR: '/home/developer/claude-one' }, vendor === 'codex' ? 'CODEX_HOME' : 'CLAUDE_CONFIG_DIR');
