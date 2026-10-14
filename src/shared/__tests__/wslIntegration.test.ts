@@ -60,6 +60,29 @@ describe('WSL per-launch Claude integration', () => {
     expect(fs.readFileSync(path.join(dir, 'wsl', 'bin', 'claude'), 'utf8')).toContain('"$real" --settings "$WMUX_WSL_SETTINGS" ${WMUX_WSL_MCP_CONFIG:+--mcp-config="$WMUX_WSL_MCP_CONFIG"} "$@"');
   });
 
+  // #2127 — a codex login tab or account-bound pane on a WSL shell.
+  it('carries a pane-assigned CODEX_HOME into Linux, but not an inherited one', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-wsl-codex-home-')); dirs.push(dir);
+    const build = (env: Record<string, string>) => buildWslInjection({
+      target: { distribution: 'Ubuntu', user: 'developer' }, cwd: '/home/developer',
+      env, integrationDir: dir, bashInit: '', runtimePath: 'C:\\wmux\\wmux.exe', bridgePath: 'C:\\wmux\\wmux-bridge.mjs',
+    }).env.WSLENV.split(':');
+    const account = 'C:\\Users\\dev\\.wmux\\accounts\\codex-1a2b3c4d';
+    expect(build({ CODEX_HOME: account })).toContain('CODEX_HOME/p');
+    expect(build({ CODEX_HOME: '/home/developer/.codex-work' })).toContain('CODEX_HOME/u');
+    // A user's own WSLENV entry for it is replaced, not duplicated.
+    expect(build({ CODEX_HOME: account, WSLENV: 'CODEX_HOME:MY_VAR/p' }).filter((e) => e.startsWith('CODEX_HOME'))).toEqual(['CODEX_HOME/p']);
+    expect(build({}).some((e) => e.startsWith('CODEX_HOME'))).toBe(false);
+    const inherited = process.env.CODEX_HOME;
+    process.env.CODEX_HOME = 'C:\\Users\\dev\\.codex';
+    try {
+      expect(build({ CODEX_HOME: 'C:\\Users\\dev\\.codex' }).some((e) => e.startsWith('CODEX_HOME'))).toBe(false);
+      expect(build({ CODEX_HOME: account })).toContain('CODEX_HOME/p');
+    } finally {
+      if (inherited === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = inherited;
+    }
+  });
+
   it('mounts the Windows wmux MCP server per launch, and skips it without a bundle', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-wsl-mcp-')); dirs.push(dir);
     const base = { target: { distribution: 'Ubuntu', user: 'developer' }, cwd: '/home/developer',

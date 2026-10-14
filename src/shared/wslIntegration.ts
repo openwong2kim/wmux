@@ -421,6 +421,16 @@ fi
     'WMUX_WSL_CWD/u', 'WMUX_WSL_SETTINGS/p', 'WMUX_WSL_BIN/p', 'WMUX_WSL_BASHRC/p', 'WMUX_SHELL_INTEGRATION',
     ...(mcpEntry ? ['WMUX_WSL_MCP/u', 'WMUX_WSL_MCP_CONFIG/p'] : []),
   ];
+  // #2127 — Linux sees a Windows variable only when WSLENV names it. A
+  // CODEX_HOME this pane was given (its bound account, or the login tab of a
+  // new one) must reach Linux codex, or the login lands in ~/.codex where the
+  // account's auth.json is never written. One merely inherited from the
+  // Windows environment stays out, so codex keeps its own ~/.codex as before.
+  const codexHome = env.CODEX_HOME;
+  if (codexHome && codexHome !== process.env.CODEX_HOME) {
+    // A Windows dir is translated (/mnt/c/...); a Linux one passes verbatim.
+    entries.push(/^[A-Za-z]:[\\/]|^\\\\/.test(codexHome) ? 'CODEX_HOME/p' : 'CODEX_HOME/u');
+  }
   env.WSLENV = mergeWslEnv(env.WSLENV, entries);
   // WSL runs bash explicitly so --rcfile reaches Linux, never wsl.exe. The
   // interactive init sources ~/.bashrc first. Exec units avoid startup output.
