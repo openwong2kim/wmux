@@ -863,8 +863,8 @@ async function restoreWebServer(sessionManager: DaemonSessionManager): Promise<v
         resumeState: (id) => readResumeStateForWeb?.(id),
         // The scrollback scope of GET /api/search.
         sessionText: sessionTextReader(sessionManager),
-        // M3 — without this, /pair degrades to handing out the shared operator
-        // token and nothing is individually revocable. Injected at BOTH
+        // M3 — without this, /pair refuses (503) and nothing can be paired
+        // with an individually revocable credential. Injected at BOTH
         // construction sites: a restored server serves paired phones on their
         // own credentials, exactly like one the operator just started.
         devices: getDeviceStore(),

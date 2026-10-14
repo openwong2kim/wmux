@@ -3429,7 +3429,9 @@ describe('WebTerminalServer', () => {
       // Fail closed: the operator token cannot be revoked per device.
       expect(res.status).toBe(503);
       const body = await res.json() as Record<string, unknown>;
-      expect(body).toEqual({ error: 'pairing-unavailable' });
+      expect(body).toMatchObject({ error: 'pairing-unavailable' });
+      // And the operator surface refuses up front instead of showing a code that cannot work.
+      expect(bare.startPairing({ name: 'Laptop', flow: 'computer' })).toMatchObject({ ok: false });
       expect(JSON.stringify(body)).not.toContain(info.token as string);
       // And a device-shaped credential authenticates nothing here.
       const dev = await fetch(`http://127.0.0.1:${info.port}/api/sessions`, { headers: bearer('dev-1.s3cr3t-1') });

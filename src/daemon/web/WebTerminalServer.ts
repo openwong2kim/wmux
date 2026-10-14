@@ -443,12 +443,11 @@ export interface WebTerminalInfo {
    * Whether per-device credentials are armed, i.e. whether a device store was
    * wired in.
    *
-   * False means pairing still works but hands out the SHARED token exactly as
-   * 3.34.0 shipped it — not a downgrade from that release, but not the upgrade
-   * either, and critically there is nothing to revoke one device at a time. An
-   * operator who believes revocation is available when it is not would keep a
-   * lost phone's access alive while thinking they had cut it, so this is
-   * surfaced rather than left to a daemon log nobody reads.
+   * False means pairing is refused (`/api/pair` answers 503): without a
+   * roster there is nothing to revoke one device at a time, and handing out
+   * the SHARED token instead would give every paired device a credential only
+   * a full rotation can take back. Surfaced rather than left to a daemon log
+   * nobody reads.
    */
   deviceCredentials?: boolean;
   /**
@@ -2084,6 +2083,8 @@ export class WebTerminalServer {
     params: { name?: string; allowInput?: boolean; flow?: PairFlow } = {},
   ): WebPairStartResult {
     if (!this.server) return { ok: false, error: 'the web server is not running — start it first' };
+    // Same refusal as /api/pair, said before the operator reads a code that cannot be redeemed.
+    if (!this.deps.devices) return { ok: false, error: 'pairing is unavailable — the device roster could not be loaded; check the daemon log' };
     const refusal = this.mintRefusal();
     if (refusal) return { ok: false, error: refusal };
     // A caller that predates flows is the phone card, which is all there was.
@@ -9608,7 +9609,10 @@ export class WebTerminalServer {
       // this is the server's condition, not the caller's. The code is NOT
       // burned, for the same reason as the transport refusal above.
       this.deps.log('error', '[web] pairing refused — no device store on this server');
-      return this.json(res, 503, { error: 'pairing-unavailable' });
+      return this.json(res, 503, {
+        error: 'pairing-unavailable',
+        detail: 'this server has no device roster, so it cannot issue a revocable credential',
+      });
     }
 
     // Claim the slot BEFORE the await: the mint is async, and in that window

@@ -45,7 +45,7 @@ interface WebInfo {
   /** Present instead of `pairCode` when this bind could never redeem one. */
   pairRefusal?: { reason: string; detail: string };
   pairExpiresAt?: number;
-  /** False when the device roster is unavailable — pairing falls back to the shared token. */
+  /** False when the device roster is unavailable — pairing is refused. */
   deviceCredentials?: boolean;
   /** Accepted Host names: reverse-proxy fronts or a native certificate name. */
   allowedHosts?: string[];
@@ -437,9 +437,9 @@ export function deviceCredentialWarning(info: Pick<WebInfo, 'deviceCredentials'>
   if (info.deviceCredentials !== false) return null;
   return [
     '  ⚠ Per-device credentials are OFF — the device roster could not be',
-    '    loaded, so pairing hands out the SHARED token and `wmux web` has',
-    '    nothing to revoke one device at a time. `--new-token` still',
-    '    rotates everyone at once. Check the daemon log for the reason.',
+    '    loaded, so pairing is refused: a device could only be given the',
+    '    shared token, which nothing can revoke one device at a time.',
+    '    Check the daemon log for the reason.',
   ];
 }
 
