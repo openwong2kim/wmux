@@ -127,6 +127,10 @@ WEB ACCESS (browser / PWA)
         [--status]                  Show whether the web server is running
         [--stop]                    Stop the web server and revoke all web
                                     credentials
+  web pair --name <device>          Start a pairing on the RUNNING web server
+        [--kind desktop|phone]      and print its code (never restarts it, never
+                                    prints the access token). desktop also lets
+                                    that computer open new workspaces
 
 NOTIFICATION COMMANDS
   notify <title> [body]             Show a notification in wmux

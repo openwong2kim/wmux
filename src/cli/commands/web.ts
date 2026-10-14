@@ -14,6 +14,7 @@ import { isPermissionGateInstalled } from './setupHooks';
 import { planWebStart, type PreviousWebShape } from '../webStartPlan';
 import { getWmuxDir } from '../../daemon/config';
 import { loadWebState } from '../../daemon/web/webStateStore';
+import type { WebPairCliResult } from '../../shared/sshPcContract';
 
 const DEFAULT_PORT = 7681;
 const LOOPBACK_HOST = '127.0.0.1';
@@ -82,6 +83,64 @@ export function resolveWebTlsConfig(
 }
 
 /**
+ * `wmux web pair --name <device> [--kind desktop|phone] [--json]` — start a
+ * pairing for one named device on the server that is ALREADY running, and
+ * print its code. Written for a computer adding this host over SSH, which
+ * reads `--json` off stdout:
+ *
+ *  - prints only a WebPairCliResult — never the operator token, which
+ *    `--status --json` carries;
+ *  - never starts, restarts or reconfigures the server: a transport change
+ *    revokes every device paired on this host, so a server that is not
+ *    running is an error here, not something to fix;
+ *  - `--kind desktop` pairs through the computer card and asks for the
+ *    workspace-create grant; `phone` (the default) never carries it.
+ */
+async function runWebPair(args: string[], jsonMode: boolean): Promise<void> {
+  const fail = (error: string): void => {
+    if (jsonMode) console.log(JSON.stringify({ ok: false, error }, null, 2));
+    else console.error(`Error: ${error}`);
+    process.exitCode = 1;
+  };
+  const name = parseFlag(args, '--name')?.trim();
+  if (!name) return fail('--name <device> is required');
+  const kind = parseFlag(args, '--kind') ?? 'phone';
+  if (kind !== 'desktop' && kind !== 'phone') return fail('--kind must be desktop or phone');
+  try {
+    const status = await sendDaemonStringRequest('daemon.web.status', {});
+    if (!status.ok) return fail(status.error);
+    const info = (status.result ?? {}) as WebInfo;
+    if (!info.running || typeof info.port !== 'number') {
+      return fail('wmux web is not running — start it first with `wmux web`');
+    }
+    const started = await sendDaemonStringRequest('daemon.web.pairStart', {
+      name,
+      flow: kind === 'desktop' ? 'computer' : 'phone',
+      ...(kind === 'desktop' ? { grantCreateWorkspace: true } : {}),
+    });
+    if (!started.ok) return fail(started.error);
+    const pair = (started.result ?? {}) as { ok?: boolean; code?: unknown; expiresAt?: unknown; error?: unknown };
+    if (pair.ok !== true || typeof pair.code !== 'string' || typeof pair.expiresAt !== 'number') {
+      return fail(typeof pair.error === 'string' ? pair.error : 'pairing could not be started');
+    }
+    const result: WebPairCliResult = {
+      code: pair.code,
+      expiresAt: pair.expiresAt,
+      port: info.port,
+      allowInput: info.allowInput === true,
+    };
+    if (jsonMode) {
+      console.log(JSON.stringify(result, null, 2));
+      return;
+    }
+    console.log(`Pairing code for "${name}": ${result.code}`);
+    console.log(`  expires: ${new Date(result.expiresAt).toLocaleTimeString()}  port: ${result.port}  input: ${result.allowInput ? 'allowed' : 'read-only'}`);
+  } catch (error) {
+    fail(error instanceof Error ? error.message : String(error));
+  }
+}
+
+/**
  * `wmux web` — expose wmux terminal panes to a browser / PWA.
  *
  * Safe defaults: read-only (execute-impossible stays the default) AND
@@ -90,6 +149,8 @@ export function resolveWebTlsConfig(
  * and never contends with the desktop for a pane.
  */
 export async function handleWeb(args: string[], jsonMode: boolean): Promise<void> {
+  // `pair` reads the running server and never (re)starts it — see runWebPair.
+  if (args[0] === 'pair') return runWebPair(args.slice(1), jsonMode);
   // --status / --stop are control verbs; otherwise we (re)start.
   if (hasFlag(args, '--status')) {
     const response = await sendDaemonStringRequest('daemon.web.status', {});

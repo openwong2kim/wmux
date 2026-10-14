@@ -4,6 +4,7 @@ import path from 'node:path';
 import { scheduleTokenFileReHarden, secureWriteTokenFile } from '../../shared/security';
 import { DeviceAuditLog, type DeviceActor } from './deviceAudit';
 import { normalizeDeviceKind, type DeviceKind } from '../../shared/web';
+import { DEVICE_GRANT_CREATE_WORKSPACE } from '../../shared/sshPcContract';
 
 /**
  * M3 — the per-device credential roster for `wmux web` (`devices.json`).
@@ -62,7 +63,7 @@ const STATE_FILE = 'devices.json';
  * tell a guesser which half of the credential was right.
  */
 export type DeviceAuthResult =
-  | { ok: true; deviceId: string; name?: string; allowInput: boolean }
+  | { ok: true; deviceId: string; name?: string; allowInput: boolean; canCreateWorkspace?: true }
   | { ok: false; reason: 'unknown' | 'revoked' };
 
 export type DeviceBatchRevocationCause =
@@ -329,6 +330,13 @@ interface DeviceRecord {
    * ignores it. Display only — never consulted by `resolve`.
    */
   kind?: Exclude<DeviceKind, 'unknown'>;
+  /**
+   * DEVICE_GRANT_CREATE_WORKSPACE: may spawn into a workspace id no live pane
+   * runs under yet. Minted only for a computer paired through
+   * `wmux web pair --kind desktop`, never for a phone. Unlike `allowInput`,
+   * absent means NOT granted: no device has been creating workspaces all along.
+   */
+  [DEVICE_GRANT_CREATE_WORKSPACE]?: true;
 }
 
 /** Resolve a record's grant, applying the grandfather rule in one place. */
@@ -461,7 +469,7 @@ export class DeviceStore {
    * HTTP handler awaits this, and a promise-returning signature leaves room to
    * move the write off the event loop later without touching that call site.
    */
-  async mint(params: { name?: string; allowInput?: boolean; kind?: DeviceKind } = {}): Promise<MintedDevice> {
+  async mint(params: { name?: string; allowInput?: boolean; kind?: DeviceKind; canCreateWorkspace?: boolean } = {}): Promise<MintedDevice> {
     const name = params.name ?? '';
     // Written EXPLICITLY on every new record, never left absent. That is what
     // keeps an absent field meaning "roster predates this field" rather than
@@ -494,6 +502,7 @@ export class DeviceStore {
     };
     const kind = normalizeDeviceKind(params.kind);
     if (kind !== 'unknown') record.kind = kind;
+    if (params.canCreateWorkspace === true) record.canCreateWorkspace = true;
     this.derivations += 1;
 
     this.devices.set(deviceId, record);
@@ -513,7 +522,8 @@ export class DeviceStore {
     this.audit.append({ event: 'pair', deviceId, name: record.name });
     this.log(
       'info',
-      `[web] paired device "${record.name}" (${deviceId}) — input ${allowInput ? 'ALLOWED' : 'read-only'}`,
+      `[web] paired device "${record.name}" (${deviceId}) — input ${allowInput ? 'ALLOWED' : 'read-only'}` +
+        (record.canCreateWorkspace ? ', may open new workspaces' : ''),
     );
     return { deviceId, deviceSecret: secret, name: record.name, createdAt: at, allowInput };
   }
@@ -1043,7 +1053,10 @@ export class DeviceStore {
       this.audit.append({ event: 'auth-failure', deviceId, reason: 'unknown' }, { coalesceKey: deviceId });
       return REJECT_UNKNOWN;
     }
-    return { ok: true, deviceId, name: record.name, allowInput: recordAllowsInput(record) };
+    return {
+      ok: true, deviceId, name: record.name, allowInput: recordAllowsInput(record),
+      ...(record.canCreateWorkspace === true ? { canCreateWorkspace: true as const } : {}),
+    };
   }
 
   /**
@@ -1403,6 +1416,8 @@ function coerceDevice(raw: unknown): DeviceRecord | null {
   // all this display-only field can safely say about it.
   const kind = normalizeDeviceKind(o['kind']);
   if (kind !== 'unknown') record.kind = kind;
+  // Exactly `true` or nothing: a malformed value grants nothing.
+  if (o[DEVICE_GRANT_CREATE_WORKSPACE] === true) record.canCreateWorkspace = true;
   // Any truthy finite revokedAt keeps the device refused. A malformed one is
   // treated as REVOKED rather than active: fail-closed is the only safe read of
   // "this record may have been revoked".

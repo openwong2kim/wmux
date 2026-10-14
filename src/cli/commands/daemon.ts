@@ -7,6 +7,7 @@ import {
   type DaemonLauncherDeps,
 } from '../../shared/daemon/daemonLauncherCore';
 import type { RpcResponse } from '../../shared/rpc';
+import type { DaemonStatusJson } from '../../shared/sshPcContract';
 
 /**
  * `wmux daemon start | stop | status` — headless daemon lifecycle (#1001).
@@ -145,6 +146,28 @@ async function runStart(jsonMode: boolean): Promise<void> {
   }
 }
 
+/**
+ * The `web` field of `daemon status --json` (DaemonStatusJson): whether the
+ * web server runs, and on which port with which grant. PICKED field by field
+ * from `daemon.web.status`, never spread — that answer carries the operator
+ * token, and this output is read over SSH. Absent when the daemon cannot say.
+ */
+async function readWebSummary(): Promise<DaemonStatusJson['web'] | undefined> {
+  try {
+    const res = await sendDaemonStringRequest('daemon.web.status', {});
+    if (!res.ok || !res.result || typeof res.result !== 'object') return undefined;
+    const info = res.result as { running?: unknown; port?: unknown; allowInput?: unknown };
+    if (info.running !== true) return { running: false };
+    return {
+      running: true,
+      ...(typeof info.port === 'number' ? { port: info.port } : {}),
+      allowInput: info.allowInput === true,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
 async function runStatus(jsonMode: boolean): Promise<void> {
   let response: RpcResponse;
   try {
@@ -171,7 +194,13 @@ async function runStatus(jsonMode: boolean): Promise<void> {
     if (!response.ok) {
       return printResult(response);
     }
-    console.log(JSON.stringify({ ok: true, running: true, ...(response.result as Record<string, unknown> | undefined) }, null, 2));
+    const web = await readWebSummary();
+    console.log(JSON.stringify({
+      ok: true,
+      running: true,
+      ...(response.result as Record<string, unknown> | undefined),
+      ...(web ? { web } : {}),
+    }, null, 2));
     return;
   }
   ensureOk(response);

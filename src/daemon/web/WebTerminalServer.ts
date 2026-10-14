@@ -110,6 +110,7 @@ import {
   type WebTlsConfig,
 } from '../../shared/web';
 import type { RemotePaneSummary, RemoteResumeInfo } from '../../shared/remoteHosts';
+import { HOST_CAPABILITIES, type HostCapability } from '../../shared/sshPcContract';
 import { agentDisplayToSlug } from '../../shared/agentIdentity';
 import { isWslShell } from '../../shared/imagePaste';
 import { normalizeResumeCwd, type ResumeBinding } from '../../shared/agentResume';
@@ -494,7 +495,7 @@ export type DeviceAuthResult =
    * The daemon injects the real store here, which is where the two shapes are
    * checked against each other.
    */
-  | { ok: true; deviceId: string; name?: string; allowInput: boolean }
+  | { ok: true; deviceId: string; name?: string; allowInput: boolean; canCreateWorkspace?: true }
   | { ok: false; reason: 'unknown' | 'revoked' };
 
 /**
@@ -518,7 +519,7 @@ export type DeviceAuthResult =
  */
 export interface WebDeviceResolver {
   resolve(deviceId: string, secret: string): Promise<DeviceAuthResult> | DeviceAuthResult;
-  mint(params: { name?: string; allowInput?: boolean; kind?: DeviceKind }): Promise<{ deviceId: string; deviceSecret: string }>;
+  mint(params: { name?: string; allowInput?: boolean; kind?: DeviceKind; canCreateWorkspace?: boolean }): Promise<{ deviceId: string; deviceSecret: string }>;
   /**
    * Record a successful auth. Optional because it is bookkeeping, not
    * authorization: a store that does not track `lastSeenAt` is still a valid
@@ -640,7 +641,7 @@ export type WebPrincipal =
    * A paired device. `allowInput` is ITS grant, not the server's — the server
    * flag remains the ceiling and is applied on top by `mayInput`.
    */
-  | { kind: 'device'; deviceId: string; name?: string; allowInput: boolean };
+  | { kind: 'device'; deviceId: string; name?: string; allowInput: boolean; canCreateWorkspace?: true };
 
 /** Authenticated identity, or why the credential was refused. */
 type AuthOutcome = { ok: true; principal: WebPrincipal } | { ok: false; reason: 'unknown' | 'revoked' };
@@ -988,6 +989,9 @@ const MAX_UPLOAD_DIR_BYTES = 200 * 1024 * 1024;
  * from one phone, and caps the exposure at 40 MB.
  */
 const MAX_CONCURRENT_UPLOADS = 4;
+/** What `/api/config` advertises as `capabilities`. */
+const HOST_CAPABILITY_LIST: readonly HostCapability[] = Object.values(HOST_CAPABILITIES);
+
 /** Pairing code lifetime — long enough to walk to the phone, short enough to matter. */
 const PAIR_TTL_MS = 10 * 60 * 1000;
 /** Wrong-code attempts before the pairing code is burned. */
@@ -1610,6 +1614,13 @@ export class WebTerminalServer {
    */
   private pendingDeviceAllowInput = false;
   /**
+   * DEVICE_GRANT_CREATE_WORKSPACE for the device the CURRENT code will
+   * register. Decided by the operator at pairStart (the computer card only,
+   * and only when asked for), never by the redeeming request: its kind header
+   * is caller-written. Held, replaced and cleared with the name and grant above.
+   */
+  private pendingDeviceCanCreateWorkspace = false;
+  /**
    * Which card the pending name and grant belong to. Held, replaced and
    * cleared together with them, so a re-mint on expiry or a burned attempt
    * budget can never carry the phone card's name onto a computer link (or the
@@ -1848,6 +1859,7 @@ export class WebTerminalServer {
     this.pendingPairFlow = undefined;
     // AFTER `this.opts` is set — the default reads the flag from it.
     this.pendingDeviceAllowInput = this.defaultPendingGrant();
+    this.pendingDeviceCanCreateWorkspace = false;
     this.generatePairCode();
 
     // A malformed request or a client that drops mid-handshake must not crash
@@ -1872,6 +1884,7 @@ export class WebTerminalServer {
         this.pendingDeviceName = undefined;
         this.pendingPairFlow = undefined;
         this.pendingDeviceAllowInput = false;
+        this.pendingDeviceCanCreateWorkspace = false;
         reject(err);
       };
       const onListening = () => {
@@ -1969,6 +1982,7 @@ export class WebTerminalServer {
     this.pendingDeviceName = undefined;
     this.pendingPairFlow = undefined;
     this.pendingDeviceAllowInput = false;
+    this.pendingDeviceCanCreateWorkspace = false;
     // Capabilities against a server that is going away. Nothing to preserve.
     this.streamTickets.clear();
 
@@ -2080,7 +2094,7 @@ export class WebTerminalServer {
    * have minted anything.
    */
   startPairing(
-    params: { name?: string; allowInput?: boolean; flow?: PairFlow } = {},
+    params: { name?: string; allowInput?: boolean; flow?: PairFlow; grantCreateWorkspace?: boolean } = {},
   ): WebPairStartResult {
     if (!this.server) return { ok: false, error: 'the web server is not running — start it first' };
     // Same refusal as /api/pair, said before the operator reads a code that cannot be redeemed.
@@ -2107,6 +2121,9 @@ export class WebTerminalServer {
     // `false` stays false. Collapsing those two would either mute the GUI's
     // unticked box or mute every headless pairing.
     this.pendingDeviceAllowInput = params.allowInput ?? this.defaultPendingGrant();
+    // A phone never gets it, whatever the caller asked for; and a nameless
+    // pairing has no flow to hold it.
+    this.pendingDeviceCanCreateWorkspace = !!label && flow === 'computer' && params.grantCreateWorkspace === true;
     return { ok: true, code: this.pairCode, expiresAt: this.pairExpiresAt };
   }
 
@@ -2680,6 +2697,9 @@ export class WebTerminalServer {
         // Contract v-next item 1: `failure` on /turns, the session rows,
         // agent.liveness and history. Always, on every daemon that serves it.
         turnFailure: true,
+        // Host features gated per capability (sshPcContract), not by protocol
+        // version. Every one listed is implemented by this daemon and CLI.
+        capabilities: HOST_CAPABILITY_LIST,
         agentLaunch: this.mayInput(principal) && this.deps.agentLaunchOptions !== undefined,
         // Contract v-next item 4. OMITTED, not false: `paneAccount` needs both
         // grants and a desktop that announced the account command on this connection.
@@ -6914,7 +6934,11 @@ export class WebTerminalServer {
    * that argument is about `mayInput`, which a device already has. The operator
    * is the thing that owns the workspace registry (the renderer mints and files
    * these ids today), so it is the thing allowed to extend it; a paired device
-   * still cannot claim an id nothing is running under. Stated limitation so
+   * still cannot claim an id nothing is running under — unless it holds
+   * DEVICE_GRANT_CREATE_WORKSPACE, which the operator gives a computer it
+   * pairs with `wmux web pair --kind desktop` so that computer can open new
+   * workspaces on a headless host. `caller` is the post-body re-authentication,
+   * so a revoked device has lost the grant by the time this runs. Stated limitation so
    * this is not mistaken for a hard boundary: it is an audit-and-revocability
    * one — a shell on the daemon's own host can already read the operator
    * token, and a phone-only headless bootstrap still needs that operator
@@ -6931,6 +6955,7 @@ export class WebTerminalServer {
       };
     }
     if (principal.kind === 'operator') return null;
+    if (principal.canCreateWorkspace === true) return null;
     const known = this.deps.sessionManager
       .listLiveSessions()
       .some((s) => s.env?.[ENV_KEYS.WORKSPACE_ID] === workspaceId);
@@ -9539,6 +9564,10 @@ export class WebTerminalServer {
     this.pairExpiresAt = Date.now() + PAIR_TTL_MS;
     this.pairAttempts = PAIR_MAX_ATTEMPTS;
     this.pairGeneration += 1;
+    // The workspace-create grant belongs to the ONE code pairStart returned:
+    // a refreshed or lazily re-minted code may be read off the GUI's phone card,
+    // so it never inherits it. startPairing sets it again after minting.
+    this.pendingDeviceCanCreateWorkspace = false;
     // Deliberately does NOT clear `pendingDeviceName`. A replacement minted
     // after a burned attempt budget is still the same operator pairing the same
     // device, so the name has to survive it — see the test that burns five
@@ -9625,6 +9654,7 @@ export class WebTerminalServer {
       attempts: this.pairAttempts,
       name: this.pendingDeviceName,
       allowInput: this.pendingDeviceAllowInput,
+      canCreateWorkspace: this.pendingDeviceCanCreateWorkspace,
       flow: this.pendingPairFlow,
       kind: this.redeemingDeviceKind(req),
     };
@@ -9633,7 +9663,10 @@ export class WebTerminalServer {
 
     let minted: { deviceId: string; deviceSecret: string };
     try {
-      minted = await devices.mint({ name: claimed.name, allowInput: claimed.allowInput, kind: claimed.kind });
+      minted = await devices.mint({
+        name: claimed.name, allowInput: claimed.allowInput, kind: claimed.kind,
+        ...(claimed.canCreateWorkspace ? { canCreateWorkspace: true } : {}),
+      });
     } catch (err) {
       // The roster could not be persisted. Do NOT fall back to the shared
       // token: a credential the daemon cannot remember is one the operator
@@ -9646,6 +9679,7 @@ export class WebTerminalServer {
         this.pairAttempts = claimed.attempts;
         this.pendingDeviceName = claimed.name;
         this.pendingDeviceAllowInput = claimed.allowInput;
+        this.pendingDeviceCanCreateWorkspace = claimed.canCreateWorkspace;
         this.pendingPairFlow = claimed.flow;
         this.pairGeneration += 1;
       }
@@ -9687,6 +9721,7 @@ export class WebTerminalServer {
     // Back to the server's default rather than to `false`: a redeemed code
     // must not leave the NEXT device on this host worse off than the first.
     this.pendingDeviceAllowInput = this.defaultPendingGrant();
+    this.pendingDeviceCanCreateWorkspace = false;
   }
 
   // --- helpers ------------------------------------------------------------
@@ -9824,6 +9859,7 @@ export class WebTerminalServer {
         deviceId: result.deviceId,
         ...(result.name ? { name: result.name } : {}),
         allowInput: result.allowInput,
+        ...(result.canCreateWorkspace === true ? { canCreateWorkspace: true as const } : {}),
       },
     };
   }

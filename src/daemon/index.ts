@@ -1088,6 +1088,20 @@ initDaemonLogSink(wmuxDir);
 const SPAWNED_BY_VERSION: string =
   process.env[ENV_KEYS.SPAWNED_BY_VERSION] || 'unknown';
 
+// The release this daemon's own code belongs to, for `wmux daemon status
+// --json`. The bundle sits at `<root>/daemon-bundle/index.js` in a dev checkout
+// and at `<ver>/resources/daemon-bundle/index.js` in the server runtime, so
+// `../../package.json` is the release's in both. Omitted when there is none
+// (the desktop app's resources carry no package.json): absent, never a guess.
+const DAEMON_VERSION: string | undefined = (() => {
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'package.json'), 'utf-8')) as { version?: unknown };
+    return typeof pkg.version === 'string' && pkg.version ? pkg.version : undefined;
+  } catch {
+    return undefined;
+  }
+})();
+
 // Recovery soft-cap ceiling. The hard PTY ceiling is now configurable
 // (config.session.maxSessions, default 200); recovery derives its own cap
 // as min(maxSessions, 40) in main(). This 40 is the startup-headroom
@@ -3509,6 +3523,8 @@ function registerRpcHandlers(
       name,
       flow,
       ...(typeof allowInput === 'boolean' ? { allowInput } : {}),
+      // `wmux web pair --kind desktop` only; the server ignores it on a phone pairing.
+      ...(params['grantCreateWorkspace'] === true ? { grantCreateWorkspace: true } : {}),
     });
   });
 
@@ -5334,8 +5350,12 @@ function registerRpcHandlers(
       pid: process.pid,
       uptime,
       sessions: sessions.length,
+      // Sessions with a running PTY (attached or detached). An upgrade over SSH
+      // restarts the daemon only when this is 0.
+      liveSessions: sessionManager.listLiveSessions().length,
       eventLoopLagMs,
       bootTrace: { jsStartEpochMs: DAEMON_BOOT.jsStartEpochMs, marks: DAEMON_BOOT.marks },
+      ...(DAEMON_VERSION ? { version: DAEMON_VERSION } : {}),
       spawnedByVersion: SPAWNED_BY_VERSION,
       channelsEpoch: CHANNELS_EPOCH,
       ...pingFormatVersionField(activeEventLogFormatVersion),
