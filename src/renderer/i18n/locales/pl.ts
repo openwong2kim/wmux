@@ -1546,6 +1546,7 @@ export const pl = {
   'botsPage.profile.workspace': "Obszar roboczy",
   'botsPage.profile.repo': "Repozytorium",
   'botsPage.profile.noRepo': "Brak",
+  'botsPage.profile.repoFailed': "Nie udało się zmienić repozytorium.",
   'botsPage.profile.state': "Stan",
   'botsPage.profile.on': "Włączony",
   'botsPage.profile.off': "Wyłączony",

@@ -68,7 +68,7 @@ import { deliveryLine, deliveryTaken, roomPostParams, sentFrom, useMentionPicks,
 import { actorLabel, botKindLabel, cardTone, isRefThread, kindLabel, ownerCardText, planTextWithNames, requestTitles, threadLabel, threadRef, type IdLabels } from '../Room/roomFormat';
 import { BOT_JOB_MAX, botTemplate, normalizeBotJob } from '../../../shared/bot';
 import { DEFAULT_BOT_WORKER_AGENT, botWorkerAgentLabel, type BotWorkerAgentOption } from '../../../shared/botWorkerAgent';
-import { templateJob } from '../Settings/FactoryTab';
+import { pickFolderDialog, templateJob } from '../Settings/FactoryTab';
 import BotAvatar, { botIdentityColor } from '../Room/BotAvatar';
 import { RoomAvatar } from './BotsAvatar';
 import { awaitsApproval, conversationCards, groupViewCards, livePlanIds, taskBubbles, conversationTurns, type BotTreeRow, type BotWorker, type Conversation, type RoomEntry } from './botsModel';
@@ -1510,6 +1510,52 @@ function JobLine({ row, t, jobPort }: { row: FactoryBotRow; t: T; jobPort?: Pick
   );
 }
 
+/** The bot's repository, with Change: the folder picker Add bot uses; main
+ *  resolves the folder and checks it as it does at creation (its origin's
+ *  owner/repo, never a local path; one repository per workspace). */
+function RepoLine({ row, t, port, pickFolder = pickFolderDialog }: { row: FactoryBotRow; t: T; port?: Pick<FactoryBotPort, 'update'>; pickFolder?: () => Promise<string | null> }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const update = port?.update;
+  const change = async () => {
+    if (!update) return;
+    setError(null);
+    try {
+      const folder = await pickFolder();
+      if (!folder) return;
+      setBusy(true);
+      const r = await update(row.bot.id, { repoFolder: folder });
+      if (!r.ok) setError(r.message || t('botsPage.profile.repoFailed'));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="flex items-baseline gap-3 py-1 text-[12px]" data-bots-profile-repo>
+      <span className="w-[112px] shrink-0 text-[var(--text-muted)]">{t('botsPage.profile.repo')}</span>
+      <div className="min-w-0 flex-1">
+        <div className="flex min-w-0 items-baseline gap-2">
+          <span data-bots-profile-repo-key className="min-w-0 truncate text-[var(--text-main)]" title={row.bot.repo?.repoPath}>{row.bot.repo?.repoKey ?? t('botsPage.profile.noRepo')}</span>
+          {update && (
+            <button
+              type="button"
+              data-testid="bots-profile-repo-change"
+              disabled={busy}
+              onClick={() => void change()}
+              className={`shrink-0 text-[11px] text-[var(--text-muted)] hover:text-[var(--text-main)] disabled:opacity-50 ${FOCUS_RING}`}
+            >
+              {t(row.bot.repo ? 'settings.factory.addBotChangeFolder' : 'settings.factory.addBotChooseFolder')}
+            </button>
+          )}
+        </div>
+        {error && <p role="alert" data-bots-profile-repo-error className="mt-1 text-[11px] text-[var(--accent-red)]">{error}</p>}
+      </div>
+    </div>
+  );
+}
+
 /** What the bot's workers run on: the default (the presets' engine) or an
  *  installed engine that has a worker guard, saved as the owner. Read-only
  *  text when the port cannot update or list the engines. */
@@ -1594,7 +1640,7 @@ function BotProfile({ row, workers, workspaceName, t, stopPort, jobPort }: { row
       <ProfileLine label={t('botsPage.profile.template')} value={<span data-bots-profile-template>{botKindLabel(row.bot, t)}</span>} />
       <JobLine key={`${row.bot.id}:${row.bot.job ?? ''}`} row={row} t={t} jobPort={jobPort} />
       <ProfileLine label={t('botsPage.profile.workspace')} value={workspaceName} />
-      <ProfileLine label={t('botsPage.profile.repo')} value={row.bot.repo?.repoKey ?? t('botsPage.profile.noRepo')} />
+      <RepoLine row={row} t={t} port={jobPort} />
       <WorkerEngineLine row={row} t={t} port={jobPort} />
       <ProfileLine label={t('botsPage.profile.state')} value={`${t(row.bot.enabled ? 'botsPage.profile.on' : 'botsPage.profile.off')} · ${t(`room.presence.${botPresence(row)}`)}`} />
       {typeof left === 'number' && (

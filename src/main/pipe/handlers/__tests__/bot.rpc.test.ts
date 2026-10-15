@@ -189,6 +189,16 @@ describe('bot.setJob', () => {
     // The owner's profile edit gives one too.
     expect(await (r.handlers.get('bot.update') as Handler)({ botId: r.botId, patch: { job: 'Triage issues.' } }, OPERATOR)).toMatchObject({ ok: true });
     expect(r.given).toEqual([r.botId, r.botId]);
+    // A repository change goes through the folder, resolved as Add bot does.
+    const update = r.handlers.get('bot.update') as Handler;
+    const plain = fs.mkdtempSync(path.join(os.tmpdir(), 'lfui-botrepo-'));
+    try {
+      expect(await update({ botId: r.botId, patch: { repoFolder: plain } }, OPERATOR)).toMatchObject({ ok: false, code: 'not_a_repo' });
+      expect(await update({ botId: r.botId, patch: { repoFolder: plain, repo: { repoKey: 'github.com/a/b', repoPath: plain } } }, OPERATOR)).toMatchObject({ ok: false, code: 'invalid_argument' });
+      expect(r.store.get(r.botId)?.repo).toBeUndefined();
+    } finally {
+      fs.rmSync(plain, { recursive: true, force: true });
+    }
     await r.store.flush();
   });
 });

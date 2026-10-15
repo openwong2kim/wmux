@@ -1105,6 +1105,33 @@ describe('Bots page', () => {
     expect(moa.querySelector('[data-bots-profile-workers]')?.textContent).toBe('0 running');
   });
 
+  it('the profile changes the repository through the folder picker, as Add bot does, and says why main refused', async () => {
+    const update = vi.fn(async (_id: string, patch: { repoFolder?: string }) => (patch.repoFolder === '/src/other'
+      ? { ok: false, message: "This workspace's other bots work on github.com/acme/api." }
+      : { ok: true }));
+    setFactoryBotPort({ ...port, update } as unknown as FactoryBotPort);
+    const pickFolder = vi.fn(async () => ['/src/api-2']);
+    vi.stubGlobal('electronAPI', { web: { status: vi.fn(async () => ({ running: false })) }, dialog: { pickFolder } });
+    seedRooms();
+    await render(<BotsPage />);
+    act(() => q(`[data-bots-row="bot:${LEAD}"]`)!.click());
+    act(() => q('[data-bots-pill]')!.click());
+    const profile = q(`[data-bots-profile="${LEAD}"]`)!;
+    expect(profile.querySelector('[data-bots-profile-repo-key]')?.textContent).toBe('github.com/acme/api');
+    const change = profile.querySelector<HTMLButtonElement>('[data-testid="bots-profile-repo-change"]')!;
+    expect(change.textContent).toBe('Change…');
+    await act(async () => change.click());
+    expect(update).toHaveBeenCalledWith(LEAD, { repoFolder: '/src/api-2' });
+    expect(profile.querySelector('[data-bots-profile-repo-error]')).toBeNull();
+    pickFolder.mockResolvedValueOnce(['/src/other']);
+    await act(async () => change.click());
+    expect(profile.querySelector('[data-bots-profile-repo-error]')?.textContent).toContain('github.com/acme/api');
+    // Cancelling the picker sends nothing.
+    pickFolder.mockResolvedValueOnce([]);
+    await act(async () => change.click());
+    expect(update).toHaveBeenCalledTimes(2);
+  });
+
   it('the profile shows the template and the job, and edits the job through the bot port', async () => {
     const update = vi.fn(async () => ({ ok: true }));
     setFactoryBotPort({ ...port, update } as FactoryBotPort);

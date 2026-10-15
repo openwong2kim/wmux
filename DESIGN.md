@@ -408,7 +408,8 @@ status bar badges, `fleet_triage` or the phone's sidebar.
   between. A group's pill opens its settings (Group chats, above); a bot's
   pill opens
   the bot's profile (template, job — the owner's words, with Edit —
-  workspace, repository, what its workers run on — a native Select:
+  workspace, repository — with Change, Add bot's folder picker, checked
+  as at creation (a refusal says why in one line) — what its workers run on — a native Select:
   Default (the presets' engine) or an installed engine that has a worker
   guard, one not installed listed but disabled — on/off and presence, turns used and left today,
   its routines, its connections — each library connection that applies to

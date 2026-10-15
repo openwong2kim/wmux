@@ -122,6 +122,33 @@ export async function createBotFromFolder(
   return created.ok ? { ok: true, bot: created.bot } : created;
 }
 
+/** The repo patch for an existing bot's "Change" (the Bots page profile):
+ *  the folder resolved exactly as "Add bot" resolves it (git root, origin's
+ *  owner/repo, never a local-path origin), refused when another bot of its
+ *  workspace works on another repository (a workspace works on one). */
+export async function botRepoFromFolder(
+  store: BotStore,
+  botId: string,
+  folder: unknown,
+  deps: BotRepoDeps = {},
+): Promise<BotRepoResult | { ok: false; code: 'not_found' | 'repo_mismatch'; message: string }> {
+  const bot = store.get(botId);
+  if (!bot) return { ok: false, code: 'not_found', message: `no bot ${botId}` };
+  const resolved = await resolveBotRepo(folder, deps);
+  if (!resolved.ok) return resolved;
+  // Read after the await: a bot changed meanwhile counts.
+  const others = store.list({ workspaceId: bot.workspaceId }).filter((b) => b.id !== botId && b.repo).sort((a, b) => a.createdAt - b.createdAt);
+  const current = others[0]?.repo;
+  if (current && current.repoKey !== resolved.repo.repoKey) {
+    return {
+      ok: false,
+      code: 'repo_mismatch',
+      message: `This workspace's other bots work on ${current.repoKey} (${current.repoPath}); ${resolved.repo.repoPath} is ${resolved.repo.repoKey}. A workspace works on one repository.`,
+    };
+  }
+  return resolved;
+}
+
 /** "Add team": the five team bots, coordinator first, one repository. */
 export async function createTeamFromFolder(
   store: BotStore | null,

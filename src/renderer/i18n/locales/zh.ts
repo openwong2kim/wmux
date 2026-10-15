@@ -1667,6 +1667,7 @@ export const zh = {
   'botsPage.profile.workspace': "工作区",
   'botsPage.profile.repo': "仓库",
   'botsPage.profile.noRepo': "无",
+  'botsPage.profile.repoFailed': "无法更改仓库。",
   'botsPage.profile.state': "状态",
   'botsPage.profile.on': "开启",
   'botsPage.profile.off': "关闭",

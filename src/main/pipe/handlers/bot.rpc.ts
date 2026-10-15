@@ -40,11 +40,11 @@ import { installBotFanoutWake } from '../../deck/fanoutCallerNotify';
 import { isVerifyReport } from '../../factory/verifyPreset';
 import { getTaskLedger } from '../../deck/taskLedgerHost';
 import type { WakeTaskSummary } from '../../factory/wakePrompt';
-import { greetNewBot } from '../../factory/botCreate';
+import { botRepoFromFolder, greetNewBot } from '../../factory/botCreate';
 import { getHandoffRouter } from '../../factory/handoffRouter';
 import { getRoomWriter, resolveRoomPorts, runningWake, runningWakeThread, wakeReplyTo } from '../../factory/roomWriter';
 
-type Refusal = FactoryRefusal<'not_authorized' | 'not_started' | 'invalid_argument' | 'not_found' | 'not_running' | 'too_many_bots' | 'dropped' | 'not_owner_words'>;
+type Refusal = FactoryRefusal<'not_authorized' | 'not_started' | 'invalid_argument' | 'not_found' | 'not_running' | 'too_many_bots' | 'dropped' | 'not_owner_words' | 'not_a_repo' | 'no_remote' | 'repo_mismatch'>;
 
 function refuse(code: Refusal['code'], message: string): Refusal {
   return { ok: false, code, message };
@@ -234,15 +234,24 @@ export function registerBotRpcHandlers(router: FactoryRouter, live: () => Live |
     return { ok: true, bot: pipeProfile(r.bot), status: l.runtime.status(r.bot.id) };
   });
 
-  operatorOnly(BOT_RPC.update, (l, params) => {
+  operatorOnly(BOT_RPC.update, async (l, params) => {
     const botId = botIdParam(params);
     if (!botId) return refuse('invalid_argument', 'botId must be a bot id');
-    const patch = params['patch'];
-    if (!patch || typeof patch !== 'object' || Array.isArray(patch)) return refuse('invalid_argument', 'patch must be an object');
-    const r = l.store.update(botId, patch as Record<string, unknown>);
+    const raw = params['patch'];
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return refuse('invalid_argument', 'patch must be an object');
+    let patch = raw as Record<string, unknown>;
+    // A picked folder becomes the repo as "Add bot" resolves it (botCreate.ts).
+    if ('repoFolder' in patch) {
+      const { repoFolder, ...rest } = patch;
+      if ('repo' in rest) return refuse('invalid_argument', 'send repo or repoFolder, not both');
+      const resolved = await botRepoFromFolder(l.store, botId, repoFolder);
+      if (!resolved.ok) return refuse(resolved.code, resolved.message);
+      patch = { ...rest, repo: resolved.repo };
+    }
+    const r = l.store.update(botId, patch);
     if (!r.ok) return refuse(r.code, r.message);
     l.runtime.profileChanged(botId);
-    if ('job' in (patch as Record<string, unknown>) && r.bot.job) setJobPorts.jobGiven?.(botId);
+    if ('job' in patch && r.bot.job) setJobPorts.jobGiven?.(botId);
     return { ok: true, bot: pipeProfile(r.bot), status: l.runtime.status(botId) };
   });
 

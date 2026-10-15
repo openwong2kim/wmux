@@ -11,7 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('electron', () => ({ ipcMain: { handle: vi.fn(), removeHandler: vi.fn() } }));
 
 import { BotStore, botsFilePath } from '../botStore';
-import { createBotFromFolder, createTeamFromFolder, greetNewBot, homeShortPath, resolveBotRepo, suggestBotRepo, workspaceFolder, workspaceRepo } from '../botCreate';
+import { botRepoFromFolder, createBotFromFolder, createTeamFromFolder, greetNewBot, homeShortPath, resolveBotRepo, suggestBotRepo, workspaceFolder, workspaceRepo } from '../botCreate';
 import { DEFAULT_FACTORY_SETTINGS, type FactorySettings } from '../factorySettings';
 import { factoryBotCreateHandler, factoryBotCreateTeamHandler, factoryBotSuggestRepoHandler, factorySettingsSetHandler } from '../../ipc/handlers/factory.handler';
 import type { WorkspaceListEntry } from '../../../shared/workspaceMirror';
@@ -136,6 +136,32 @@ describe('createBotFromFolder', () => {
 
   it('answers not_started before the factory runs', async () => {
     expect(await createBotFromFolder(null, { workspaceId: 'ws-1', role: 'lead' }, deps)).toMatchObject({ ok: false, code: 'not_started' });
+  });
+});
+
+describe('botRepoFromFolder: an existing bot\'s repository', () => {
+  const app = { git: fakeGit(ok('/src/app\n'), ok('https://github.com/acme/app.git\n')), realpath: (p: string) => p };
+  const api = { git: fakeGit(ok('/src/api\n'), ok('git@github.com:acme/api.git\n')), realpath: (p: string) => p };
+
+  it('resolves the folder as Add bot does, local-path origins refused', async () => {
+    const made = await createBotFromFolder(store, { workspaceId: 'ws-1', role: 'lead' }, app);
+    if (!made.ok) throw new Error('not made');
+    expect(await botRepoFromFolder(store, made.bot.id, '/src/app', app)).toEqual({ ok: true, repo: { repoKey: 'github.com/acme/app', repoPath: '/src/app' } });
+    const local = { git: fakeGit(ok('/src/app\n'), ok('/srv/git/app.git\n')), realpath: (p: string) => p };
+    expect(await botRepoFromFolder(store, made.bot.id, '/src/app', local)).toMatchObject({ ok: false, code: 'no_remote' });
+    expect(await botRepoFromFolder(store, made.bot.id, 'relative/dir', app)).toMatchObject({ ok: false, code: 'invalid_argument' });
+    expect(await botRepoFromFolder(store, 'bot-00000fff', '/src/app', app)).toMatchObject({ ok: false, code: 'not_found' });
+  });
+
+  it('a bot alone on its repository may move to another; one sharing the workspace\'s may not', async () => {
+    const lead = await createBotFromFolder(store, { workspaceId: 'ws-1', role: 'lead', repoFolder: '/src/app' }, app);
+    if (!lead.ok) throw new Error('not made');
+    expect(await botRepoFromFolder(store, lead.bot.id, '/src/api', api)).toMatchObject({ ok: true, repo: { repoKey: 'github.com/acme/api' } });
+    const dev = await createBotFromFolder(store, { workspaceId: 'ws-1', template: 'developer' }, app);
+    if (!dev.ok) throw new Error('not made');
+    const r = await botRepoFromFolder(store, dev.bot.id, '/src/api', api);
+    expect(r).toMatchObject({ ok: false, code: 'repo_mismatch' });
+    if (!r.ok) expect(r.message).toContain('github.com/acme/app');
   });
 });
 
