@@ -446,7 +446,10 @@ status bar badges, `fleet_triage` or the phone's sidebar.
   workspace, repository — with Change, Add bot's folder picker, checked
   as at creation (a refusal says why in one line) — what its workers run on — a native Select:
   Default (the presets' engine) or an installed engine that has a worker
-  guard, one not installed listed but disabled — on/off and presence, turns used and left today,
+  guard, one not installed listed but disabled — on/off and presence (a
+  parked bot adds one muted line under it saying why — out of turns,
+  stopped after errors, paused by the owner — with a secondary Resume),
+  turns used and left today,
   its routines, its connections — each library connection that applies to
   it, an every-bot one with a switch that turns it off for this bot alone,
   a picked one with Edit and Remove from this bot, then Add connection and
@@ -455,7 +458,9 @@ status bar badges, `fleet_triage` or the phone's sidebar.
   per-bot settings — whom it reports to (You), and its workers now; last,
   Stop — the bot's turn and its workers — a
   destructive secondary that asks in place, the solid red only on its
-  final confirm, never a window dialog) as a popover that fits the chat: on a
+  final confirm, never a window dialog; under it Delete bot, the same
+  destructive secondary asking in place, its confirm saying what happens:
+  its messages stay, its running workers stop, its routines go) as a popover that fits the chat: on a
   short window it scrolls inside (16px off the chat's foot), so Stop at its
   end stays reachable. A stop's result is a
   toast naming what stopped (counts at zero left out). The pill floats
@@ -1175,7 +1180,8 @@ always neutral (the fill ladder).
   `--text-main`, so it darkens on light looks and lightens on dark ones
   and reads as text on the page; a Mochi character's body wears its slot's
   hue unmixed (2026-10-16). Identity colour never fills a surface, a row or a control, and never
-  marks a state.
+  marks a state. A removed bot keeps its colour, picture and name on the
+  messages it wrote, its name followed by "(removed)".
 - **Sidebar and pane marks** — shape first, colour second, one shared helper
   (`AGENT_STATUS_ICON.mark`): running = filled muted dot · needs input =
   `--attention` ring · error = red ✕ (SVG) · complete = muted check ·

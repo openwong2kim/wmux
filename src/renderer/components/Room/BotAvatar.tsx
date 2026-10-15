@@ -105,8 +105,23 @@ export function noteBotIdentities(bots: readonly IdentityBot[], complete = false
   }
 }
 
+// A removed bot's colour, from its tombstone (main's bots.json `removed`):
+// its old cards keep the face it had.
+const removedHues = new Map<string, number>();
+
+/** Records removed bots' colour slots (useRoomSync loadRoomActors, and the
+ *  Bots page as it removes one). */
+export function noteRemovedBotHues(entries: Iterable<readonly [string, number]>): void {
+  for (const [id, index] of entries) if (Number.isInteger(index) && index >= 0 && index < BOT_IDENTITY_HUES.length) removedHues.set(id, index);
+}
+
 function hueIndex(botId: string): number {
-  return assigned.get(botId)?.index ?? idHash(botId) % BOT_IDENTITY_HUES.length;
+  return assigned.get(botId)?.index ?? removedHues.get(botId) ?? idHash(botId) % BOT_IDENTITY_HUES.length;
+}
+
+/** A bot's colour slot now (kept with it when it is removed). */
+export function botHueIndex(botId: string): number {
+  return hueIndex(botId);
 }
 
 /** A bot's identity colour, as CSS (the same bot, the same colour). */

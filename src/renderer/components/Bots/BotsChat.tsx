@@ -63,17 +63,18 @@ import { RoomCard, useIdLabels } from '../Room/RoomCard';
 import { CardAnswers, useWorkspaceNames } from '../Room/CardAnswers';
 import { ApprovePendingChip } from '../Room/ApprovalAnswers';
 import { pendingForChip, useApprovals } from '../Room/approvalsStore';
-import { PresenceDot, botPresence } from '../Room/BotChips';
+import { PresenceDot, botActionsFor, botPresence } from '../Room/BotChips';
 import { deliveryLine, deliveryTaken, roomPostParams, sentFrom, useMentionPicks, type SentTo } from '../Room/RoomComposer';
-import { actorLabel, botKindLabel, cardResumeTaskId, cardTone, isRefThread, kindLabel, ownerCardText, planTextWithNames, requestTitles, threadLabel, threadRef, type IdLabels } from '../Room/roomFormat';
+import { actorLabel, botKindLabel, cardResumeTaskId, cardTone, isRefThread, kindLabel, ownerCardText, planTextWithNames, requestTitles, threadLabel, threadRef, type IdLabels, type RoomActorView } from '../Room/roomFormat';
 import { BOT_JOB_MAX, botTemplate, normalizeBotJob } from '../../../shared/bot';
 import { DEFAULT_BOT_WORKER_AGENT, botWorkerAgentLabel, type BotWorkerAgentOption } from '../../../shared/botWorkerAgent';
 import { pickFolderDialog, templateJob } from '../Settings/FactoryTab';
-import BotAvatar, { botIdentityColor } from '../Room/BotAvatar';
+import BotAvatar, { botHueIndex, botIdentityColor, noteRemovedBotHues } from '../Room/BotAvatar';
 import { RoomAvatar } from './BotsAvatar';
 import { awaitsApproval, conversationCards, groupViewCards, livePlanIds, taskBubbles, conversationTurns, type BotTreeRow, type BotWorker, type Conversation, type RoomEntry } from './botsModel';
 import { treeRowState } from './BotsWorkerTree';
 import { loadWholeThread } from './useBots';
+import { loadRoomActors } from '../../hooks/useRoomSync';
 import { useShallow } from 'zustand/react/shallow';
 import type { BotTaskView } from '../../../shared/botTask';
 import { botCanDo } from './botsProfile';
@@ -309,7 +310,7 @@ function JobChangeUndo({ card, t, jobPort }: { card: RoomCardData; t: T; jobPort
 interface RowCtx {
   t: T;
   bots: readonly FactoryBotRow[];
-  actors: Readonly<Record<string, { role: FactoryBotRow['bot']['role'] }>>;
+  actors: Readonly<Record<string, RoomActorView>>;
   api?: RoomsApi | null;
   now?: number;
   /** The bots are off: no answers. */
@@ -415,8 +416,10 @@ function MessageRow({ item, ctx, group }: { item: Extract<TimelineItem, { kind: 
   const role = botRow?.bot.role ?? ctx.actors[botId]?.role;
   const showName = group || (!!ctx.selfBot && !!botId && botId !== ctx.selfBot);
   const name = human ? t('room.actor.you') : actorLabel(card.actor, t, ctx.bots, ctx.actors);
-  // A bot the runtime no longer lists still gets a face: its name as the room knows it.
-  const face = botRow?.bot ?? (role ? { id: botId, name, role } : null);
+  // A bot the runtime no longer lists still gets a face: its name, picture
+  // and colour as the room knows them (a removed bot's from its tombstone).
+  const known = ctx.actors[botId];
+  const face = botRow?.bot ?? (role ? { id: botId, name: known?.name ?? name, role, ...(known?.avatar ? { avatar: known.avatar } : {}) } : null);
   // An open question is the room's own card (its own header and border,
   // answered in place); with the bots off it reads as a bubble.
   const question = card.kind === 'question' && !ctx.readOnly;
@@ -1466,6 +1469,84 @@ function StopBot({ row, port, t }: { row: FactoryBotRow; port: BotsStopPort; t: 
   );
 }
 
+/** The verbs the profile sends through the bot port beyond the job editor:
+ *  Resume and Delete bot (absent ones show no control). */
+type BotAdminPort = Partial<Pick<FactoryBotPort, 'act' | 'remove'>>;
+
+/** A parked bot's line: why it takes no turn (out of turns, stopped after
+ *  errors, parked by the owner) and Resume, which lets every wake waiting
+ *  for it run now, past its limits if need be. */
+function ParkedLine({ row, port, t }: { row: FactoryBotRow; port?: BotAdminPort; t: T }) {
+  const [busy, setBusy] = useState(false);
+  const act = port?.act;
+  if (!botActionsFor(row).resume) return null;
+  const reason = row.bot.parked?.reason ?? 'human';
+  const resume = async () => {
+    if (!act) return;
+    setBusy(true);
+    try {
+      const r = await act('resume', row.bot.id);
+      if (!r.ok) useStore.getState().pushToast({ message: t('room.bot.actionFailed', { name: row.bot.name, reason: r.message ?? '' }), level: 'error' });
+    } catch (err) {
+      useStore.getState().pushToast({ message: t('room.bot.actionFailed', { name: row.bot.name, reason: err instanceof Error ? err.message : String(err) }), level: 'error' });
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="flex items-center gap-3 py-1 text-[12px]" data-bots-profile-parked={reason}>
+      <span className="w-[112px] shrink-0" aria-hidden="true" />
+      <span className="min-w-0 flex-1 text-[var(--text-sub)]">{t(`botsPage.profile.parked.${reason}`)}</span>
+      {act && <Button size="sm" variant="secondary" data-testid="bots-resume-bot" disabled={busy} onClick={() => void resume()}>{t('room.bot.resume')}</Button>}
+    </div>
+  );
+}
+
+/** Delete bot, after an inline confirm that says what happens: its history
+ *  stays, its running workers are stopped, its routines are removed. Its
+ *  colour goes with its tombstone, so its old cards keep its face. */
+function DeleteBot({ row, port, t }: { row: FactoryBotRow; port?: BotAdminPort; t: T }) {
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const remove = port?.remove;
+  if (!remove) return null;
+  const run = async () => {
+    setBusy(true);
+    try {
+      const hue = botHueIndex(row.bot.id);
+      noteRemovedBotHues([[row.bot.id, hue]]);
+      const r = await remove(row.bot.id, hue);
+      if (r.ok) {
+        useStore.getState().pushToast({ message: t('botsPage.delete.done', { name: row.bot.name }), level: 'info' });
+        void loadRoomActors();
+      } else {
+        useStore.getState().pushToast({ message: t('botsPage.delete.failed', { name: row.bot.name, reason: r.message ?? '' }), level: 'error' });
+      }
+    } catch (err) {
+      useStore.getState().pushToast({ message: t('botsPage.delete.failed', { name: row.bot.name, reason: err instanceof Error ? err.message : String(err) }), level: 'error' });
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="mt-1.5" data-bots-delete-bot={row.bot.id}>
+      {confirming ? (
+        <InlineConfirm
+          text={t('botsPage.delete.confirm', { name: row.bot.name })}
+          confirmLabel={t('botsPage.delete.bot')}
+          cancelLabel={t('room.hq.cancel')}
+          busy={busy}
+          onConfirm={() => void run()}
+          onCancel={() => setConfirming(false)}
+          testId="bots-delete-bot"
+        />
+      ) : (
+        <Button size="sm" variant="destructive" data-testid="bots-delete-bot" onClick={() => setConfirming(true)}>{t('botsPage.delete.bot')}</Button>
+      )}
+    </div>
+  );
+}
+
 /** The bot's job in its profile: the text, and Edit when the bot port can
  *  update (saved as the owner; an empty job clears it). */
 function JobLine({ row, t, jobPort }: { row: FactoryBotRow; t: T; jobPort?: Pick<FactoryBotPort, 'update'> }) {
@@ -1656,7 +1737,7 @@ function WorkerEngineLine({ row, t, port }: { row: FactoryBotRow; t: T; port?: P
  *  workspace, repo, what its workers run on, on/off, turns used and left today, its routines
  *  (read-only), its connections, then what it can do (the shared powers,
  *  read-only), whom it reports to, its workers now, and Stop. */
-function BotProfile({ row, workers, workspaceName, t, stopPort, jobPort }: { row: FactoryBotRow; workers: readonly BotWorker[]; workspaceName: string; t: T; stopPort: BotsStopPort; jobPort?: Pick<FactoryBotPort, 'update' | 'workerAgents'> }) {
+function BotProfile({ row, workers, workspaceName, t, stopPort, jobPort, adminPort }: { row: FactoryBotRow; workers: readonly BotWorker[]; workspaceName: string; t: T; stopPort: BotsStopPort; jobPort?: Pick<FactoryBotPort, 'update' | 'workerAgents'>; adminPort?: BotAdminPort }) {
   const left = row.status?.budgetLeft?.turnsDay;
   const routines = (useBotRoutines()?.routines ?? []).filter((r) => r.botId === row.bot.id);
   const canDo = botCanDo(row.bot);
@@ -1670,6 +1751,7 @@ function BotProfile({ row, workers, workspaceName, t, stopPort, jobPort }: { row
       <RepoLine row={row} t={t} port={jobPort} />
       <WorkerEngineLine row={row} t={t} port={jobPort} />
       <ProfileLine label={t('botsPage.profile.state')} value={`${t(row.bot.enabled ? 'botsPage.profile.on' : 'botsPage.profile.off')} · ${t(`room.presence.${botPresence(row)}`)}`} />
+      <ParkedLine row={row} port={adminPort} t={t} />
       {typeof left === 'number' && (
         <ProfileLine
           label={t('botsPage.profile.turnsToday')}
@@ -1708,6 +1790,7 @@ function BotProfile({ row, workers, workspaceName, t, stopPort, jobPort }: { row
         />
       </div>
       <StopBot row={row} port={stopPort} t={t} />
+      <DeleteBot row={row} port={adminPort} t={t} />
     </div>
   );
 }
@@ -1735,8 +1818,9 @@ export function BotsChat({ conversation, roomCards, bots, title, workspaceName, 
   /** The stop verbs (botsStop.ts); absent ones show no control. */
   stopPort?: BotsStopPort;
   /** The bot port's update: the profile's job editor and a job_changed
-   *  card's Undo (absent: neither). */
-  jobPort?: Pick<FactoryBotPort, 'update' | 'workerAgents'>;
+   *  card's Undo (absent: neither); its act and remove: the profile's
+   *  Resume and Delete bot. */
+  jobPort?: Pick<FactoryBotPort, 'update' | 'workerAgents'> & BotAdminPort;
   /** The bot port's resumeWorker: a done worker's Resume (absent: none). */
   resumePort?: Pick<FactoryBotPort, 'resumeWorker'>;
   /** Opens a bot's 1:1 (absent: no link). */
@@ -2026,7 +2110,7 @@ export function BotsChat({ conversation, roomCards, bots, title, workspaceName, 
         </button>
       </div>
       {profileOpen && conversation.kind === 'bot' && (
-        <div className="wmux-bots-profile" ref={profileRef}><BotProfile row={conversation.row} workers={workers} workspaceName={workspaceName} t={t} stopPort={stopPort} jobPort={readOnly ? undefined : jobPort} /></div>
+        <div className="wmux-bots-profile" ref={profileRef}><BotProfile row={conversation.row} workers={workers} workspaceName={workspaceName} t={t} stopPort={stopPort} jobPort={readOnly ? undefined : jobPort} adminPort={readOnly ? (jobPort?.remove ? { remove: jobPort.remove } : undefined) : jobPort} /></div>
       )}
 
       <div className="wmux-bots-scroll-wrap">

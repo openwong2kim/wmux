@@ -167,6 +167,7 @@ const NOTICE_CODES: ReadonlyMap<string, boolean> = new Map([
   ['gate.skipped', false], ['gate.busy', true], ['gate.noBase', true], ['gate.refused', false],
   ['gate.notRunNoBot', true], ['gate.notRunNoWorktree', true], ['gate.notRunNoBaseRef', true],
   ['research.completed', true], ['research.notCompleted', false],
+  ['budget.exhausted', true], ['budget.held', true],
 ]);
 
 /** The notice codes that tell the owner a stopped worker can resume. */
@@ -186,12 +187,35 @@ const NOTICE_WORDS: Readonly<Record<string, ReadonlySet<string>>> = {
   status: new Set(['completed', 'cancelled', 'failed']),
   by: new Set(['owner', 'bot']),
   where: new Set(['folder', 'newPane']),
+  limit: new Set(['turns_hour', 'turns_day', 'concurrent_workers', 'worker_hours_day', 'factory_workers']),
 };
+
+/** A notice's clock time: the time today, else a short date and the time. */
+export function formatNoticeTime(at: number, now: number = Date.now()): string {
+  const d = new Date(at);
+  const time = d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+  return d.toDateString() === new Date(now).toDateString()
+    ? time
+    : `${d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} ${time}`;
+}
+
+/** The title and body keys of a budget notice: which limit, and when the
+ *  bot picks up again (a time, else what lifts it). */
+function budgetNoticeKeys(code: string, args: Readonly<Record<string, string | number>>): { title: string; body: string } | null {
+  const timed = typeof args.until === 'number';
+  if (code === 'budget.held') return { title: 'room.notice.budget.held', body: timed ? 'room.notice.budget.held.at' : 'room.notice.budget.held.manual' };
+  if (code !== 'budget.exhausted' || args.limit === undefined) return null;
+  const turns = args.limit === 'turns_hour' || args.limit === 'turns_day';
+  return {
+    title: `room.notice.budget.exhausted.${args.limit}`,
+    body: timed ? 'room.notice.budget.exhausted.at' : turns ? 'room.notice.budget.exhausted.manual' : 'room.notice.budget.exhausted.workers',
+  };
+}
 
 /** A system card's words in the reader's language, from its stable code
  *  (RoomCard.notice); null for a card with none or a code this build does
  *  not know (its English title and body are shown). Pure over `t`. */
-export function noticeText(card: Pick<RoomCard, 'actor' | 'body' | 'notice'>, t: T): { title: string; body: string } | null {
+export function noticeText(card: Pick<RoomCard, 'actor' | 'body' | 'notice'>, t: T, now: number = Date.now()): { title: string; body: string } | null {
   const notice = card.actor.kind === 'system' ? card.notice : undefined;
   const wordedBody = notice ? NOTICE_CODES.get(notice.code) : undefined;
   if (!notice || wordedBody === undefined) return null;
@@ -209,6 +233,9 @@ export function noticeText(card: Pick<RoomCard, 'actor' | 'body' | 'notice'>, t:
   }
   if (args.by !== undefined) vars.who = t(`room.notice.by.${args.by}`);
   if (args.where !== undefined) vars.place = t(`room.notice.where.${args.where}`);
+  if (typeof args.until === 'number') vars.time = formatNoticeTime(args.until, now);
+  const budget = budgetNoticeKeys(notice.code, args);
+  if (budget) return { title: t(budget.title, vars), body: t(budget.body, vars) };
   const key = `room.notice.${notice.code}`;
   return { title: t(key, vars), body: wordedBody ? t(`${key}.body`, vars) : (card.body ?? '') };
 }
@@ -250,20 +277,28 @@ export function botKindLabel(bot: { role: BotRole; template?: BotTemplate }, t: 
   return templateLabel(botTemplate(bot), t);
 }
 
-/** Who wrote a card: the bot's name from the bot runtime, else its role
- *  from main's bot store, else "Bot". */
+/** A card author as main's bot store knows it (room.handler.ts RoomActor):
+ *  a removed bot keeps its name, marked `removed`. */
+export interface RoomActorView { role: BotRole; name?: string; removed?: boolean; avatar?: string; hue?: number }
+
+/** Who wrote a card: the bot's name from the bot runtime, else the name
+ *  main's bot store keeps (a removed bot's marked so), else its role, else
+ *  "Bot". */
 export function actorLabel(
   actor: Party,
   t: T,
   bots: readonly FactoryBotRow[],
-  actors: Readonly<Record<string, { role: BotRole }>> = {},
+  actors: Readonly<Record<string, RoomActorView>> = {},
 ): string {
   if (actor.kind === 'human') return t('room.actor.you');
   if (actor.kind === 'system') return t('room.actor.system');
   const row = bots.find((b) => b.bot.id === actor.botId);
   if (row) return row.bot.name;
   const known = actors[actor.botId];
-  return known ? roleLabel(known.role, t) : t('room.actor.bot');
+  if (!known) return t('room.actor.bot');
+  const name = known.name?.trim();
+  if (!name) return roleLabel(known.role, t);
+  return known.removed ? t('room.actor.removed', { name }) : name;
 }
 
 export function kindLabel(kind: CardKind, t: T): string {

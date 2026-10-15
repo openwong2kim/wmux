@@ -1194,6 +1194,10 @@ const electronAPI = {
       factoryBotCall(`bot.${action}`, { botId }),
     updateBot: (botId: string, patch: Record<string, unknown>) =>
       factoryBotCall('bot.update', { botId, patch }),
+    // Remove a bot: its work is stopped, its routines go, its history stays
+    // (`hue`: its colour slot, kept for the cards it wrote).
+    removeBot: (botId: string, hue?: number) =>
+      factoryBotCall('bot.remove', { botId, ...(hue !== undefined ? { hue } : {}) }),
     createBot: (req: import('../shared/botCreate').FactoryBotCreateRequest) =>
       ipcRenderer.invoke(IPC.FACTORY_BOT_CREATE, req) as Promise<import('../shared/botCreate').FactoryBotCreateResult>,
     createBotTeam: (req: import('../shared/botCreate').FactoryBotCreateTeamRequest) =>

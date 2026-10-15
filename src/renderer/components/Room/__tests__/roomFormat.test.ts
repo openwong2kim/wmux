@@ -3,7 +3,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import type { RoomCard } from '../../../../shared/room';
 import { setLocale, t as i18nT } from '../../../i18n';
-import { cardResumeTaskId, noticeText, ownerCardText, requestTitles, routineCardBody, threadLabel, withoutInternalIds, withoutReasonCodes, withoutRoleTags } from '../roomFormat';
+import { actorLabel, cardResumeTaskId, formatNoticeTime, noticeText, ownerCardText, requestTitles, routineCardBody, threadLabel, withoutInternalIds, withoutReasonCodes, withoutRoleTags } from '../roomFormat';
 
 const t = (key: string) => key;
 const system = { kind: 'system' as const };
@@ -127,6 +127,32 @@ describe('factory system cards in the reader\'s language (RoomCard.notice)', () 
     expect(ownerCardText(card({ notice: { code: 'worker.someday' } }), [], undefined, i18nT)).toEqual({ title: 'English title', body: 'English body' });
   });
 
+  it('a budget card says which limit and when the bot picks up again, in the reader\'s language', () => {
+    const now = new Date(2026, 9, 16, 1, 38).getTime();
+    const until = new Date(2026, 9, 16, 2, 37).getTime();
+    const hour = card({ kind: 'budget', notice: { code: 'budget.exhausted', args: { bot: 'Reviewer', limit: 'turns_hour', until } } });
+    const en = noticeText(hour, i18nT, now);
+    expect(en?.title).toBe('Reviewer is out of turns for this hour');
+    expect(en?.body).toContain(`It picks up again at ${formatNoticeTime(until, now)}`);
+    expect(en?.title).not.toContain('turns_hour');
+    // No time: what lifts it; a worker limit: when a worker ends.
+    expect(noticeText(card({ notice: { code: 'budget.exhausted', args: { bot: 'Reviewer', limit: 'turns_day' } } }), i18nT, now)?.body).toMatch(/raise its limit or resume it/);
+    expect(noticeText(card({ notice: { code: 'budget.exhausted', args: { bot: 'Reviewer', limit: 'concurrent_workers' } } }), i18nT, now)?.body).toMatch(/one of the running ones ends/);
+    setLocale('ko');
+    const ko = noticeText(hour, i18nT, now);
+    expect(ko?.title).toBe('Reviewer: 이번 시간의 턴을 모두 썼습니다');
+    expect(ko?.body).toContain(formatNoticeTime(until, now));
+    expect(noticeText(card({ notice: { code: 'budget.held', args: { bot: 'Reviewer', until } } }), i18nT, now)?.title).toBe('대기 중: Reviewer의 턴이 소진됐습니다');
+    // A limit this build does not know keeps the English.
+    expect(noticeText(card({ notice: { code: 'budget.exhausted', args: { bot: 'Reviewer', limit: 'tokens_week' } } }), i18nT, now)).toBeNull();
+  });
+
+  it('formatNoticeTime: the time today, the date and time on another day', () => {
+    const now = new Date(2026, 9, 16, 1, 0).getTime();
+    expect(formatNoticeTime(new Date(2026, 9, 16, 2, 5).getTime(), now)).not.toMatch(/Oct|10/);
+    expect(formatNoticeTime(new Date(2026, 9, 17, 2, 5).getTime(), now)).toMatch(/17/);
+  });
+
   it('English words match what main writes', () => {
     expect(noticeText(card({ notice: { code: 'worker.done', args: { status: 'failed' } } }), i18nT)?.body)
       .toBe('Task failed: its Claude stopped to free memory. Its pane stays open until you have looked at it, then closes. The worktree is kept; no conversation was recorded to resume.');
@@ -140,5 +166,15 @@ describe('factory system cards in the reader\'s language (RoomCard.notice)', () 
     expect(cardResumeTaskId(card({ notice: { code: 'worker.pausedResumable' } }), () => true)).toBeNull();
     expect(cardResumeTaskId(card({ notice: { code: 'worker.paused' }, refs: { taskId: 'wtask-a' } }), () => true)).toBeNull();
     expect(cardResumeTaskId(card({ actor: bot, notice: { code: 'worker.doneResumable' }, refs: { taskId: 'wtask-a' } }), () => true)).toBeNull();
+  });
+});
+
+describe('actorLabel', () => {
+  const botActor = { kind: 'bot' as const, workspaceId: 'ws-1', botId: 'bot-0000000d' };
+  it('names a bot the runtime no longer lists by the name main keeps, a removed one marked so; never its legacy role', () => {
+    expect(actorLabel(botActor, i18nT, [], { 'bot-0000000d': { role: 'lead', name: 'Developer' } })).toBe('Developer');
+    expect(actorLabel(botActor, i18nT, [], { 'bot-0000000d': { role: 'lead', name: 'Developer', removed: true } })).toBe('Developer (removed)');
+    expect(actorLabel(botActor, i18nT, [], { 'bot-0000000d': { role: 'lead' } })).toBe(i18nT('room.role.lead'));
+    expect(actorLabel(botActor, i18nT, [], {})).toBe('Bot');
   });
 });
