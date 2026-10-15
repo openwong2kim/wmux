@@ -21,7 +21,7 @@ export function formatBlockedCommit(findings: readonly SecretFinding[]): string 
   for (const f of findings) {
     lines.push(f.what === 'file'
       ? `  - ${f.path}: this file holds ${KIND_WORDS[f.kind]}.`
-      : `  - ${f.path}${f.line ? ` line ${f.line}` : ''}: this looks like ${KIND_WORDS[f.kind]}.`);
+      : `  - ${f.path}${f.line ? ` line ${f.line}` : ''}: this looks like ${f.kind === 'random' ? 'a password or key' : KIND_WORDS[f.kind]}.`);
   }
   lines.push(
     '',
