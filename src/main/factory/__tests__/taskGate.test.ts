@@ -267,6 +267,16 @@ describe('the system gate on a bot task report', () => {
     expect(ledger.get('carded')?.status).toBe('review_requested');
   });
 
+  it('restart: a carded pass whose completion did not land is gated again, not only woken', async () => {
+    await register('passed');
+    await report('passed');
+    await ledger.recordGate('passed', PASS, { kind: 'system', workspaceId: 'ws-daemon' });
+    const r = rig({ noted: () => true });
+    await flush();
+    expect(r.runGate.mock.calls.map((c) => c[0].taskId)).toEqual(['passed']);
+    expect(ledger.get('passed')?.status).toBe('completed');
+  });
+
   it('restart: the catch-up waits while the room cannot be read, and runs as before when it never can', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     try {

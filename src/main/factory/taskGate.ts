@@ -354,7 +354,10 @@ export function installTaskGate(ports: TaskGatePorts): () => void {
       if (running.has(entry.id)) continue;
       // This rev was gated and carded already (before a restart): the bot is
       // woken again (the queue drops a delivered wake), nothing runs again.
-      if (carded(entry) === true) wake(entry);
+      // A carded pass is not: its completion did not land, so it is gated
+      // again below, as any pass at install is.
+      const passed = reportWasGated(entry) && isSystemGatePass(entry.gate);
+      if (carded(entry) === true && !passed) wake(entry);
       // Not gated, or gated with a pass that may belong to an older report:
       // gate it (again). A gate that did not pass (its card is already up)
       // wakes the bot again, which the queue drops once delivered.
