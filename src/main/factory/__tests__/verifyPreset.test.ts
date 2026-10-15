@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { LedgerEntry } from '../../../shared/ledger';
 import { DEFAULT_BOT_BUDGETS, type BotProfile } from '../../../shared/bot';
 import type { GateRunInput, GateRunResult } from '../../worktask/TaskGateRunner';
-import { describeGateRun, installVerifyGate, isVerifyReport, originDefaultRef, verifyGateFactId, worktreeFromMissions, type VerifyGatePorts } from '../verifyPreset';
+import { describeGateRun, installVerifyGate, isVerifyReport, originDefaultRef, taskFolderFromMissions, verifyGateFactId, worktreeFromMissions, type VerifyGatePorts } from '../verifyPreset';
 
 const SHA = 'a'.repeat(40);
 const BOT_ID = 'bot-0a1b2c3d';
@@ -157,6 +157,11 @@ describe('verify gate', () => {
     expect(rpc).toHaveBeenCalledWith('task.mission.list', { verifiedWorkspaceId: 'ws-v' });
     expect(await worktreeFromMissions(null, entry())).toBeNull();
     expect(await worktreeFromMissions(async () => ({ ok: false }), entry())).toBeNull();
+    // A research task has no worktree: its worker is found (and reclaimed) in its output folder.
+    const research = vi.fn(async () => ({ ok: true, tasks: [{ id: 'task-1', outputDir: '/bots/b/research/batch/1-claude-x' }] }));
+    expect(await worktreeFromMissions(research, entry())).toBeNull();
+    expect(await taskFolderFromMissions(research, entry())).toBe('/bots/b/research/batch/1-claude-x');
+    expect(await taskFolderFromMissions(rpc, entry())).toBe('/wt/1');
     const git = async (args: string[]) => (args[0] === 'symbolic-ref' ? { stdout: 'refs/remotes/origin/trunk\n', code: 0 } : { stdout: '', code: 1 });
     expect(await originDefaultRef(git, '/r')).toBe('origin/trunk');
     const noHead = async (args: string[]) => (args[0] === 'symbolic-ref' ? { stdout: '', code: 1 } : args[3]?.includes('master') ? { stdout: SHA, code: 0 } : { stdout: '', code: 1 });

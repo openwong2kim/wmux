@@ -123,7 +123,9 @@ import { getConnectorStore, isConnectionKey, type ConnectorStore } from '../../f
 import { CONNECTOR_LIMITS, CONNECTOR_NAME_RE, CONNECTOR_WORKER_AGENTS, type Connector } from '../../../shared/botConnector';
 import { codexConnectorRefusal } from '../../../shared/codexWorkerGuard';
 import { BOT_SECRET_LIMITS } from '../../../shared/botSecret';
-import { getBotRuntime } from '../../factory/BotRuntime';
+import { botCwd, getBotRuntime } from '../../factory/BotRuntime';
+import { getWmuxDir } from '../../../daemon/config';
+import { RESEARCH_PRESET } from '../../../shared/ledger';
 import { GENERAL_THREAD, parseThreadId, taskOriginThread, type ThreadId } from '../../../shared/room';
 import { getFactorySettings } from '../../factory/factorySettings';
 import { getBotFanoutReceipts } from '../../factory/botFanoutReceipts';
@@ -648,6 +650,9 @@ export interface FanOutRpcDeps {
   connectors?: () => ConnectorStore | null;
   /** The platform workers run on (default: this process's). */
   workerPlatform?: NodeJS.Platform;
+  /** The wmux data folder a bot's research scratch folders go under
+   *  (default: getWmuxDir()). Injected in tests. */
+  wmuxDir?: () => string;
 }
 
 /**
@@ -1342,6 +1347,8 @@ export function registerFanOutRpc(
     let botPresetName: string | undefined;
     /** The preset's worker prompt + the bot's prompt (bot callers only). */
     let botWorkerPrompt: string | undefined;
+    /** A bot's research task: no repository, no worktree (botFanoutPresets.ts). */
+    let botResearch = false;
     if (bot && selection.kind !== 'preset') {
       return deny('NOT_AUTHORIZED', `a bot fans out only through a bot preset (${SHARED_SURFACE.fanoutPresets.join(', ')}); roles and agents are refused`);
     }
@@ -1361,7 +1368,9 @@ export function registerFanOutRpc(
       if (!botPresetName) {
         return deny('NOT_AUTHORIZED', `a bot may fan out only with ${allowed.map((p) => `preset "${p}"`).join(', ')}`);
       }
-      if (!worktree) return deny('NOT_AUTHORIZED', 'a bot fans out only into worktrees (worktree:false is refused)');
+      botResearch = botPresetName === RESEARCH_PRESET;
+      // Only the research preset runs without a worktree (its own table row).
+      if (!worktree && !botResearch) return deny('NOT_AUTHORIZED', 'a bot fans out only into worktrees (worktree:false is refused)');
       // verify: a detached checkout of one commit; every other preset: none.
       const checkoutRefusal = botPresetCheckoutRefusal(botPresetName, checkout);
       if (checkoutRefusal) return deny('INVALID_ARGUMENT', checkoutRefusal);
@@ -1375,7 +1384,11 @@ export function registerFanOutRpc(
       if (checkout && (params['files'] !== undefined || params['dependsOn'] !== undefined)) {
         return deny('INVALID_ARGUMENT', 'checkout cannot be combined with files or dependsOn');
       }
-      if (!botProfile?.repo) return deny('FAILED_PRECONDITION', 'this bot has no repository to fan out in (set its repo)');
+      // Every preset that changes code needs the bot's repository; research
+      // runs in a scratch folder and needs none.
+      if (!botResearch && !botProfile?.repo) {
+        return deny('FAILED_PRECONDITION', `this bot has no repository to fan out in (set its repo); a question that needs no code runs with preset "${RESEARCH_PRESET}"`);
+      }
     }
 
     // ── Global caps (live + rolling hour), reserved in this same tick ────
@@ -1442,7 +1455,11 @@ export function registerFanOutRpc(
     // A bot has no pane: it fans out in the repository its profile names,
     // which must still be a git repository root.
     const botRepoPath = bot ? botProfile?.repo?.repoPath ?? '' : '';
+    // A research task's scratch folders: under the bot's own data folder,
+    // never in a repository (FanOutService.runOutputTasks makes the batch).
+    const botResearchRoot = bot && botResearch ? path.join(botCwd((deps.wmuxDir ?? getWmuxDir)(), bot.botId), 'research') : '';
     const deriveBotRoot = async (): Promise<{ root: string } | { code: string; message: string }> => {
+      if (botResearchRoot) return { root: botResearchRoot };
       let expected = botRepoPath;
       try {
         expected = fs.realpathSync(botRepoPath);
@@ -1471,7 +1488,8 @@ export function registerFanOutRpc(
     const callerRepoRoot = preflight.root;
     // A bot's workers may not push to this repository's own default branch:
     // read it before they launch (main and master are covered regardless).
-    if (bot) {
+    // A research task has no repository.
+    if (bot && !botResearch) {
       const note = await (deps.botDefaultBranch ?? noteBotRepoDefaultBranch)(callerRepoRoot).catch((): DefaultBranchNote => ({ name: null, recorded: false }));
       const refusal = defaultBranchRefusal(note);
       if (refusal) {
@@ -1509,7 +1527,11 @@ export function registerFanOutRpc(
       ...(agentChoices.length > 0 ? { agents: agentChoices } : {}),
       ...(worktree
         ? {}
-        : { worktree: false, outputFolder: fanoutPresetOutputFolder((selection as { preset: FanoutPreset }).preset) }),
+        : {
+            worktree: false,
+            outputFolder: fanoutPresetOutputFolder((selection as { preset: FanoutPreset }).preset),
+            ...(botResearchRoot ? { outputRoot: botResearchRoot } : {}),
+          }),
       verifiedWorkspaceId: callerWorkspaceId,
       workerPermissionMode: workerMode,
       // Who asked, for each task's lineage stamp — resolved above, the same
@@ -1578,7 +1600,9 @@ export function registerFanOutRpc(
               // the permission mode and tool rules, not just the prompt.
               promptPreview:
                 buildFanOutPreview(sharedPrompt, parsed.titles, parsed.taskPrompts, parsed.roles, agentLabels, graph) +
-                (worktree ? '' : '\n\nno worktree: each task writes into its own folder under the wmux outputs directory') +
+                (worktree ? '' : botResearchRoot
+                  ? `\n\nno worktree: a research task; each task works in its own scratch folder under ${botResearchRoot}`
+                  : '\n\nno worktree: each task writes into its own folder under the wmux outputs directory') +
                 // Only when a task can actually run claude: the flags are claude-only.
                 (agentChoices.length === 0 || agentChoices.some((c) => c.agent === 'claude')
                   ? `\n\nclaude workers launch with: ${workerLaunchFlags(workerMode, [])}`

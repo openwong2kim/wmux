@@ -81,8 +81,8 @@ import type { LedgerEntry } from '../../shared/ledger';
 import { git } from '../git/git';
 import { getSharedTaskGateRunner } from '../worktask/TaskGateRunner';
 import { isPidAlive, stopSessionsInDir } from '../worktask/stopSessionsInDir';
-import { originDefaultRef, worktreeFromMissions } from './verifyPreset';
-import { completeCheckedTask, installTaskGate } from './taskGate';
+import { originDefaultRef, taskFolderFromMissions, worktreeFromMissions } from './verifyPreset';
+import { completeCheckedTask, completeResearchTask, installTaskGate } from './taskGate';
 import { TaskBranchCache, setBotTaskSources } from './botTasks';
 import { installLateStopSweep, setFactoryStopPorts, type FactoryStopPorts } from './factoryStop';
 import { getRoutineStore } from './routines';
@@ -431,11 +431,12 @@ export function daemonRpc(client: () => Daemon | null): ((method: string, params
 }
 
 /** Stop the processes of a bot task's worker: the daemon sessions started in
- *  its worktree, as a task close stops them (the worktree is kept). */
+ *  its worktree (a research task's scratch folder), as a task close stops
+ *  them (the folder is kept). */
 export async function stopTaskWorker(entry: LedgerEntry, client: () => Daemon | null): Promise<number> {
   const rpc = daemonRpc(client);
   if (!rpc) throw new Error('the daemon is not connected');
-  const worktree = await worktreeFromMissions(rpc, entry);
+  const worktree = await taskFolderFromMissions(rpc, entry);
   if (!worktree) throw new Error('the task worktree is not known');
   const stopped = await stopSessionsInDir(worktree, {
     listSessions: async () => {
@@ -619,6 +620,7 @@ export function createFactoryWiring(deps: Pick<FactoryHostDeps, 'wmuxDir'> & Par
             return runner.run(input);
           },
           complete: (taskId) => completeCheckedTask(ledger, taskId),
+          completeResearch: (taskId) => completeResearchTask(ledger, taskId),
           wake: (input) => {
             const q = getWakeQueue();
             if (!q) console.info(`[factory] wake queue not running; ${input.botId} was not woken`);

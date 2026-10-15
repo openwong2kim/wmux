@@ -19,7 +19,7 @@ import { getBotRuntime } from './BotRuntime';
 import { getBotStore } from './botStore';
 import { getFactorySettings } from './factorySettings';
 import { getRoomWriter } from './roomWriter';
-import { worktreeFromMissions } from './verifyPreset';
+import { taskFolderFromMissions } from './verifyPreset';
 import { AgentSlots, rowHoldsAgentSlot, setAgentSlots, setSlotLiveness, type SlotLiveness } from './agentSlots';
 import { checkWorkers, recordWorkerEnd, recordWorkerStart } from './budget';
 import { runningWakeTainted } from './wakeTaint';
@@ -189,7 +189,7 @@ export function startWorkerLifecycle(deps: WorkerLifecycleDeps): () => void {
       allRows: () => ledger.list({}),
       row: (taskId) => ledger.get(taskId),
       store: reclaimed,
-      worktreeOf: (entry) => worktreeFromMissions((m, p) => rpc(m, (p ?? {}) as Record<string, unknown>), entry),
+      worktreeOf: (entry) => taskFolderFromMissions((m, p) => rpc(m, (p ?? {}) as Record<string, unknown>), entry),
       listSessions,
       stopAgent: async (sessionId) => (await rpc('session.stopAgent', { sessionId })) as { ok?: boolean; stopped?: boolean; code?: string },
       note,

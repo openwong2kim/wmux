@@ -44,7 +44,7 @@ export const COMMON_POWERS: Readonly<Record<string, string>> = {
   routine_list: 'list your routines and when each fires next.',
   routine_pause: 'pause or resume one of your routines.',
   stop_my_work: 'stop your own running workers and pause your routines, when the owner asks you to stop.',
-  fanout_start: 'start workers in fresh worktrees of your repository: each implements, gates and reports in its ledger row, and the preset decides what it is for ("default" to implement and open a pull request, "repro" to reproduce an issue, "verify" to grade one PR head, "maintain" to keep the feature map current).',
+  fanout_start: 'start workers in fresh worktrees of your repository: each implements, gates and reports in its ledger row, and the preset decides what it is for ("default" to implement and open a pull request, "repro" to reproduce an issue, "verify" to grade one PR head, "maintain" to keep the feature map current). A question that needs no code takes preset "research": a scratch folder instead of a worktree, so it runs without a repository too.',
   ledger_update: 'settle a task you have read: completed once its system gate passed, failed or cancelled otherwise, input_required to send it back with a note.',
   terminal_read: 'read the pane of a worker you started when its ledger row or question needs more context.',
   worker_resume: 'a finished task\'s worker stops and its pane closes to free memory; resume it (same conversation, same worktree, in a new pane when the old one closed) when its work needs a follow-up, with the message it should act on. The task stays ended in the ledger, so read the result in its pane.',

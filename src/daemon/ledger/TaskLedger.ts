@@ -24,7 +24,9 @@
 //     the gate runner); `update` ignores a caller-supplied gate.
 //   - `completed`: only by a `brain`, only from `review_requested` (table),
 //     only with a SYSTEM-recorded gate whose exitCode is exactly 0 — unless
-//     `force: true` with a non-empty `reason`, which is logged on the entry.
+//     `force: true` with a non-empty `reason`, which is logged on the entry,
+//     or the row is a bot's research task (`isResearchDispatch`: main wrote
+//     its dispatch; it changes no code, so there is no gate to run).
 //   - CAS: every update names the `expectedRev` it read; a stale one is
 //     refused.
 //   - WorkTask closed/detached → `closeTask` forces `cancelled` unless the
@@ -49,6 +51,7 @@ import {
   canActorSet,
   canTransition,
   isLedgerStatus,
+  isResearchDispatch,
   type LedgerActor,
   type LedgerDispatch,
   type LedgerEntry,
@@ -443,7 +446,7 @@ export class TaskLedger {
       // gate runner (system). A gate that arrived on the wire never counts.
       const gate = entry.gate;
       const gatePassed = gate !== undefined && gate.recordedBy === 'system' && gate.exitCode === 0;
-      if (!gatePassed) {
+      if (!gatePassed && !isResearchDispatch(entry.dispatch)) {
         if (input.force !== true) {
           return {
             ok: false,

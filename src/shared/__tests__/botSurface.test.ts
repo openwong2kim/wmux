@@ -50,7 +50,7 @@ describe('ROLE_SURFACES', () => {
     for (const tool of ['fanout_start', 'pr_verdict', 'plan_propose', 'bot_list', 'issue_read', 'pr_read', 'ci_read']) {
       expect(SHARED_SURFACE.tools.has(tool), tool).toBe(true);
     }
-    expect([...SHARED_SURFACE.fanoutPresets].sort()).toEqual(['default', 'maintain', 'repro', 'verify']);
+    expect([...SHARED_SURFACE.fanoutPresets].sort()).toEqual(['default', 'maintain', 'repro', 'research', 'verify']);
     expect(SHARED_SURFACE.rpc.has('task.fanout.start')).toBe(true);
     expect(SHARED_SURFACE.rpc.has('verify.recordVerdict')).toBe(true);
   });

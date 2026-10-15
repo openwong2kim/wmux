@@ -1,5 +1,6 @@
 // The built-in bot presets: each role preset exists, runs unattended on a
-// worktree, and only verify takes a checkout — a detached one of one commit.
+// worktree (research: a scratch folder), and only verify takes a checkout —
+// a detached one of one commit.
 import { describe, expect, it } from 'vitest';
 import { ROLE_SURFACES } from '../../../shared/botSurface';
 import { BOT_ROLES } from '../../../shared/bot';
@@ -21,9 +22,9 @@ describe('bot fan-out presets', () => {
     expect([...named].sort()).toEqual([...BOT_FANOUT_PRESET_NAMES].sort());
   });
 
-  it('runs unattended, on a worktree, on claude', () => {
+  it('runs unattended, on claude, on a worktree for every preset but research', () => {
     for (const p of botFanoutPresetList()) {
-      expect(p.worktree).toBe(true);
+      expect(p.worktree).toBe(p.name !== 'research');
       expect(p.items.length).toBe(BOT_FANOUT_PRESETS[p.name as keyof typeof BOT_FANOUT_PRESETS].maxTasks);
       expect(p.items.every((i) => i.agent === 'claude')).toBe(true);
     }
@@ -42,7 +43,7 @@ describe('bot fan-out presets', () => {
   });
 
   it('the other presets refuse any checkout; an unknown preset is refused', () => {
-    for (const name of ['repro', 'maintain', 'default']) {
+    for (const name of ['repro', 'maintain', 'default', 'research']) {
       expect(botPresetCheckoutRefusal(name, undefined)).toBeNull();
       expect(botPresetCheckoutRefusal(name, { sha: SHA, detached: true })).toMatch(/checkout is for verify/);
     }

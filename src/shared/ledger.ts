@@ -125,6 +125,17 @@ export interface LedgerDispatch {
   connectors?: string[];
 }
 
+/** The bot fan-out preset of a research task: no repository, no worktree,
+ *  no code (main/worktask/botFanoutPresets.ts). */
+export const RESEARCH_PRESET = 'research';
+
+/** Whether a row is a bot's research task: main wrote its dispatch with the
+ *  research preset. Such a task changes no code, so there is no gate to run
+ *  and its report completes it without one (TaskLedger.update). Pure. */
+export function isResearchDispatch(d: LedgerDispatch | undefined): boolean {
+  return d?.origin.kind === 'bot' && typeof d.origin.botId === 'string' && d.origin.botId.length > 0 && d.preset === RESEARCH_PRESET;
+}
+
 // Lifecycle rules the writer enforces (stated here so the three consumers
 // agree):
 // - When the WorkTask is closed or detached, the writer force-terminates its

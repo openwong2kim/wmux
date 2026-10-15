@@ -162,7 +162,7 @@ export const SHARED_SURFACE_TOOLS: readonly BotToolName[] = [
 ];
 
 /** Every bot fan-out preset (all Claude). */
-export const SHARED_FANOUT_PRESETS: readonly string[] = ['default', 'repro', 'verify', 'maintain'];
+export const SHARED_FANOUT_PRESETS: readonly string[] = ['default', 'repro', 'verify', 'maintain', 'research'];
 
 function buildSurface(tools: readonly BotToolName[]): BotSurface {
   const rpc = new Set<string>(BOT_BASE_RPC);

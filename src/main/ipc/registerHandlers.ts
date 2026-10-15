@@ -225,8 +225,10 @@ export function registerAllHandlers(
   // the daemon). Without a DaemonClient there is no control pipe to forward to, so
   // the handlers stay unregistered and the Settings section hides itself.
   const cleanupLanLink = daemonClient ? registerLanLinkHandlers(daemonClient) : null;
-  // Cross-host A2A control plane — daemon-mode only, same reason as LanLink.
-  const cleanupA2aRemote = daemonClient ? registerA2aRemoteHandlers(daemonClient) : null;
+  // Cross-host A2A control plane — daemon-mode only (its state lives in the
+  // daemon), but registered before the daemon connects too: the renderer
+  // reads the Remote feed at start, and its reads wait for the client.
+  const cleanupA2aRemote = registerA2aRemoteHandlers(daemonClient ?? null);
 
   // TASK-6 Fleet View resource attribution — daemon-mode only (the shell PIDs
   // live in the daemon session list). Renderer polls this ONLY while Fleet View

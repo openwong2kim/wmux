@@ -292,6 +292,10 @@ export interface FanOutRequest {
   worktree?: boolean;
   /** worktree:false only — the folder under outputs/ (one path segment). */
   outputFolder?: string;
+  /** worktree:false only — an absolute folder main derived (a bot's research
+   *  scratch folder, under its own data folder) that holds the batch instead
+   *  of `<outputs>/<outputFolder>`. Never from a caller. */
+  outputRoot?: string;
   /** 렌더러 신뢰 신원(channelLocal과 동일 trust basis — 프로세스 경계). */
   verifiedWorkspaceId: string;
   /** 미션 채널 멤버 좌표(생성자 memberId — 기본 verifiedWorkspaceId). */
@@ -1035,9 +1039,12 @@ export class FanOutService {
     const folder = typeof req.outputFolder === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(req.outputFolder)
       ? req.outputFolder
       : 'fanout';
-    let batchDir = path.join(this.outputsRoot, folder, outputBatchName());
+    const parent = typeof req.outputRoot === 'string' && path.isAbsolute(req.outputRoot)
+      ? req.outputRoot
+      : path.join(this.outputsRoot, folder);
+    let batchDir = path.join(parent, outputBatchName());
     try {
-      fs.mkdirSync(path.join(this.outputsRoot, folder), { recursive: true });
+      fs.mkdirSync(parent, { recursive: true });
       fs.mkdirSync(batchDir); // non-recursive: an existing batch is a collision, not a merge
       // Realpath'd: this is the pane's cwd, and a CLI that keys per-folder
       // trust on its realpath'd cwd (codex) must see the same string wmux
@@ -1064,6 +1071,15 @@ export class FanOutService {
         output: { batchDir },
         ...(entries[k].role ? { role: entries[k].role } : {}),
         ...(entries[k].agent ? { agentChoice: entries[k].agent } : {}),
+        // A bot's research task runs here: its preset, thread, handoff,
+        // launch check, agent slot and secrets as on a worktree.
+        ...(req.preset ? { preset: req.preset } : {}),
+        ...(req.threadId ? { threadId: req.threadId } : {}),
+        ...(req.handoffId ? { handoffId: req.handoffId } : {}),
+        ...(req.mayLaunch ? { mayLaunch: req.mayLaunch } : {}),
+        ...(req.awaitLaunchSlot ? { awaitLaunchSlot: req.awaitLaunchSlot } : {}),
+        ...(req.secretNames && req.secretNames.length > 0 ? { secretNames: req.secretNames } : {}),
+        ...(req.connectors && req.connectors.length > 0 ? { connectors: req.connectors } : {}),
         workerMode,
         requester,
         taskNote: taskGraphNote(k, graph, done),

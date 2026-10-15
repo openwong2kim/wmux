@@ -29,15 +29,21 @@
 //   default   a bot's plain task: implement, gate, open a pull request — or,
 //             for a task that asks a question (research), report the
 //             findings with their sources and open no pull request.
+//   research  a question that needs no code: the worker runs in a scratch
+//             folder under the bot's own data folder (no repository, no
+//             worktree, no git, no push), searches and reads, and reports
+//             its findings with their sources. The only preset a bot without
+//             a repository can start; its report completes the task without
+//             a gate (shared/ledger.ts isResearchDispatch).
 
 import type { FanoutAgentChoice, FanoutPreset } from '../../shared/fanoutPreset';
 import { fanoutPresetKey } from '../../shared/fanoutPreset';
 import type { FanoutWorkerPermissionMode } from '../../shared/workerLaunch';
 import { FANOUT_MAX_TASKS } from '../../shared/workTask';
 
-export type BotFanoutPresetName = 'verify' | 'repro' | 'maintain' | 'default';
+export type BotFanoutPresetName = 'verify' | 'repro' | 'maintain' | 'default' | 'research';
 
-export const BOT_FANOUT_PRESET_NAMES: readonly BotFanoutPresetName[] = ['verify', 'repro', 'maintain', 'default'];
+export const BOT_FANOUT_PRESET_NAMES: readonly BotFanoutPresetName[] = ['verify', 'repro', 'maintain', 'default', 'research'];
 
 export interface BotPresetCheckout {
   sha: string;
@@ -56,6 +62,8 @@ export interface BotFanoutPreset {
   agent: FanoutAgentChoice;
   /** `required`: a detached checkout of one commit; `none`: a fresh branch. */
   checkout: 'required' | 'none';
+  /** false: no repository and no worktree — a scratch folder (research). */
+  worktree: boolean;
   /** Most tasks one fan-out of this preset may start. */
   maxTasks: number;
 }
@@ -109,6 +117,16 @@ const MAINTAIN_PROMPT = (): string => [
   'What you hand back (ledger summary, status review_requested): the entries you changed, the recipes you ran and their outcome, and the PR link; or `no-drift` when every entry already matched.',
 ].join('\n');
 
+const RESEARCH_PROMPT = (): string => [
+  '# Research worker',
+  '',
+  'You are a research worker dispatched by a factory bot. Your current directory is an empty scratch folder: it is not a repository, and there is no branch, no commit, no push and no pull request for this task.',
+  '',
+  'What you can do here: search the web, read the sources, and keep notes or downloads in this folder if they help.',
+  '',
+  'What you hand back (ledger summary, status review_requested): your findings, each with a link to its source, and what they mean for the question. That report completes the task. If the question needs a change to code, say so in the summary instead of making one.',
+].join('\n');
+
 const DEFAULT_PROMPT = (): string => [
   '# Task worker',
   '',
@@ -128,6 +146,7 @@ export const BOT_FANOUT_PRESETS: Readonly<Record<BotFanoutPresetName, BotFanoutP
     permissionMode: UNATTENDED,
     agent: CLAUDE,
     checkout: 'required',
+    worktree: true,
     maxTasks: 1,
   },
   repro: {
@@ -137,6 +156,7 @@ export const BOT_FANOUT_PRESETS: Readonly<Record<BotFanoutPresetName, BotFanoutP
     permissionMode: UNATTENDED,
     agent: CLAUDE,
     checkout: 'none',
+    worktree: true,
     maxTasks: 1,
   },
   maintain: {
@@ -146,6 +166,7 @@ export const BOT_FANOUT_PRESETS: Readonly<Record<BotFanoutPresetName, BotFanoutP
     permissionMode: UNATTENDED,
     agent: CLAUDE,
     checkout: 'none',
+    worktree: true,
     maxTasks: 1,
   },
   default: {
@@ -155,6 +176,17 @@ export const BOT_FANOUT_PRESETS: Readonly<Record<BotFanoutPresetName, BotFanoutP
     permissionMode: UNATTENDED,
     agent: CLAUDE,
     checkout: 'none',
+    worktree: true,
+    maxTasks: FANOUT_MAX_TASKS,
+  },
+  research: {
+    name: 'research',
+    description: 'Answer a question that needs no code: search, read, report findings with sources. No repository needed.',
+    workerPrompt: RESEARCH_PROMPT,
+    permissionMode: UNATTENDED,
+    agent: CLAUDE,
+    checkout: 'none',
+    worktree: false,
     maxTasks: FANOUT_MAX_TASKS,
   },
 };
@@ -166,7 +198,7 @@ export function botFanoutPreset(name: string): BotFanoutPreset | null {
 }
 
 /** The presets as fan-out's preset table reads them (one agent row per task
- *  the preset allows; always a worktree). */
+ *  the preset allows; a worktree for every preset but research). */
 export function botFanoutPresetList(): FanoutPreset[] {
   return BOT_FANOUT_PRESET_NAMES.map((name) => {
     const p = BOT_FANOUT_PRESETS[name];
@@ -174,7 +206,7 @@ export function botFanoutPresetList(): FanoutPreset[] {
       name: p.name,
       description: p.description,
       items: Array.from({ length: p.maxTasks }, () => ({ ...p.agent })),
-      worktree: true,
+      worktree: p.worktree,
     };
   });
 }

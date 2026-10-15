@@ -18,6 +18,10 @@
 //     system-recorded pass: the system adds no power a bot lacks;
 //   - anything else (a failing, killed, skipped or refused gate, no worktree,
 //     no base branch) leaves the task open.
+// A research task (the `research` preset: a scratch folder, no repository,
+// no code) has no gate to run: its report completes it at once, written as
+// the task's owner the same way (the ledger lets a brain complete such a row
+// without a gate), with one card and one wake like a gated report.
 // Either way one system card in the task's thread says what happened, and the
 // bot that started the task is woken once (`task.gated:<taskId>@<rev>`, the
 // id the wake queue dedupes on) to read the settled row. That wake replaces
@@ -33,7 +37,7 @@
 // last day wakes its bot again too, in case the quit fell between the
 // completion and the wake (same id, so a delivered wake is dropped).
 
-import type { LedgerEntry } from '../../shared/ledger';
+import { isResearchDispatch, type LedgerEntry } from '../../shared/ledger';
 import type { BotProfile } from '../../shared/bot';
 import { isSystemGatePass } from '../../shared/botTask';
 import { taskThreadOf, type ThreadId } from '../../shared/room';
@@ -53,6 +57,34 @@ export function isTaskGateReport(entry: LedgerEntry, to: string): boolean {
 /** Whether a reported row's newest write is a system gate (the report was gated). */
 export function reportWasGated(entry: LedgerEntry): boolean {
   return entry.gate?.recordedBy === 'system' && entry.updatedBy.kind === 'system';
+}
+
+/**
+ * Complete a bot's research task on its report: only a row still in
+ * review_requested whose dispatch is a research task, written as the task's
+ * owner with no force (the ledger completes such a row without a gate). One
+ * retry on a write that landed in between. Never throws.
+ */
+export async function completeResearchTask(ledger: CheckedTaskLedger, taskId: string): Promise<{ entry: LedgerEntry } | { entry: null; why: string }> {
+  try {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const row = ledger.get(taskId);
+      if (!row) return { entry: null, why: 'the task is gone' };
+      if (row.status !== 'review_requested') return { entry: null, why: `the task moved to ${row.status}` };
+      if (!isResearchDispatch(row.dispatch)) return { entry: null, why: 'the task is not a research task' };
+      const r = await ledger.update({
+        id: taskId,
+        status: 'completed',
+        actor: { kind: 'brain', workspaceId: row.ownerWorkspaceId },
+        expectedRev: row.rev,
+      });
+      if (r.ok) return { entry: r.entry };
+      if (r.error !== 'stale_rev') return { entry: null, why: r.message };
+    }
+  } catch (err) {
+    return { entry: null, why: String(err) };
+  }
+  return { entry: null, why: 'the task kept changing' };
 }
 
 /** The ledger calls completing a checked task makes (TaskLedger). */
@@ -105,6 +137,8 @@ export interface TaskGatePorts {
   runGate: (input: GateRunInput) => Promise<GateRunResult>;
   /** completeCheckedTask over the hosted ledger. */
   complete: (taskId: string) => Promise<{ entry: LedgerEntry } | { entry: null; why: string }>;
+  /** completeResearchTask over the hosted ledger. */
+  completeResearch?: (taskId: string) => Promise<{ entry: LedgerEntry } | { entry: null; why: string }>;
   wake: (input: { botId: string; workspaceId: string; reason: WakeReason; priority: 1; threadId: ThreadId }) => unknown;
   /** A system card in the task's thread (best effort). */
   note?: (workspaceId: string, threadId: ThreadId, title: string, body: string) => void;
@@ -183,6 +217,22 @@ export function installTaskGate(ports: TaskGatePorts): () => void {
   const run = async (taskId: string): Promise<void> => {
     const entry = stillReported(taskId);
     if (!entry) return;
+    // A research task changed no code: nothing to gate.
+    if (isResearchDispatch(entry.dispatch)) {
+      const done = ports.completeResearch
+        ? await ports.completeResearch(entry.id)
+        : { entry: null, why: 'research tasks cannot be completed here' };
+      if (done.entry) {
+        note(done.entry, 'Research reported: task completed', 'A research task changes no code, so no gate runs on it.');
+        wake(done.entry);
+        return;
+      }
+      const now = stillReported(entry.id);
+      if (!now) return;
+      note(now, 'Research reported: task not completed', done.why);
+      wake(now);
+      return;
+    }
     const bot = ports.bot(entry.dispatch?.origin.botId ?? '');
     const repoPath = bot?.repo?.repoPath;
     if (!bot || !repoPath) {
@@ -256,7 +306,8 @@ export function installTaskGate(ports: TaskGatePorts): () => void {
   const since = (ports.now ?? Date.now)() - COMPLETION_REWAKE_MS;
   for (const entry of all) {
     if (entry.status !== 'completed' || entry.updatedAt < since || entry.updatedBy.kind !== 'brain') continue;
-    if (!isTaskGateReport(entry, 'review_requested') || !isSystemGatePass(entry.gate)) continue;
+    if (!isTaskGateReport(entry, 'review_requested')) continue;
+    if (!isSystemGatePass(entry.gate) && !isResearchDispatch(entry.dispatch)) continue;
     wake(entry);
   }
   return off;

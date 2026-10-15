@@ -191,6 +191,26 @@ export async function worktreeFromMissions(rpc: Rpc | null, entry: LedgerEntry):
   return null;
 }
 
+/** The folder a task's worker runs in: its worktree, or the output folder of
+ *  a task without one (a research task's scratch folder), or null. */
+export async function taskFolderFromMissions(rpc: Rpc | null, entry: LedgerEntry): Promise<string | null> {
+  if (!rpc) return null;
+  let reply: unknown;
+  try {
+    reply = await rpc('task.mission.list', { verifiedWorkspaceId: entry.ownerWorkspaceId });
+  } catch {
+    return null;
+  }
+  const tasks = (reply as { ok?: unknown; tasks?: unknown } | null);
+  if (!tasks || tasks.ok !== true || !Array.isArray(tasks.tasks)) return null;
+  for (const t of tasks.tasks as Array<Record<string, unknown>>) {
+    if (!t || t.id !== entry.id) continue;
+    if (typeof t.worktreePath === 'string' && t.worktreePath) return t.worktreePath;
+    if (typeof t.outputDir === 'string' && t.outputDir) return t.outputDir;
+  }
+  return null;
+}
+
 /** origin's default branch (`origin/<name>`): origin/HEAD, else main or master. */
 export async function originDefaultRef(git: Git, repoPath: string): Promise<string | null> {
   try {

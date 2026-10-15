@@ -132,6 +132,36 @@ describe('FanOutService — worktree:false', () => {
     expect(fs.readdirSync(a.outputDir!)).toEqual([]);
   });
 
+  it('a bot research task: its batch goes under the folder main named, and the bot\'s launch check still runs', async () => {
+    const daemon = daemonFake();
+    const renderer = rendererFake();
+    const scratch = path.join(root, 'factory', 'bots', 'bot-0000000a', 'research');
+    const mayLaunch = vi.fn((): string | null => null);
+    const res = await service(daemon.port, renderer.port).start({
+      idempotencyKey: 'k-research',
+      prompt: 'compare',
+      titles: ['q one', 'q two'],
+      repoPath: scratch,
+      agentCmd: 'claude',
+      verifiedWorkspaceId: 'ws-owner',
+      worktree: false,
+      outputFolder: 'research',
+      outputRoot: scratch,
+      preset: 'research',
+      mayLaunch,
+    });
+    expect(res.ok).toBe(true);
+    expect(path.dirname(res.outputBatchDir as string)).toBe(fs.realpathSync(scratch));
+    expect(renderer.spawned.map((p) => path.dirname(p.cwd))).toEqual([res.outputBatchDir, res.outputBatchDir]);
+    expect(mayLaunch).toHaveBeenCalledTimes(2);
+    // Refused at launch: nothing spawns.
+    const refused = await service(daemon.port, rendererFake().port).start({
+      idempotencyKey: 'k-research-2', prompt: 'x', titles: ['q'], repoPath: scratch, agentCmd: 'claude', verifiedWorkspaceId: 'ws-owner',
+      worktree: false, outputRoot: scratch, mayLaunch: () => 'the factory is off',
+    });
+    expect(refused.tasks[0]).toMatchObject({ ok: false, error: 'not launched: the factory is off' });
+  });
+
   it('a claude row keeps claude first-run env', async () => {
     const renderer = rendererFake();
     await service(daemonFake().port, renderer.port).start({

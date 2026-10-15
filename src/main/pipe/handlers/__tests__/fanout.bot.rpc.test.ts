@@ -31,6 +31,7 @@ import { ConnectorStore } from '../../../factory/connectorStore';
 import { setSecretGrantSource } from '../../../factory/secretGrants';
 
 const REPO = nodePath.resolve('/repo');
+const WMUX_DIR = nodePath.resolve('/wmux-data');
 const SHA = 'a'.repeat(40);
 const BOT_ID = 'bot-0a1b2c3d';
 type Handler = (params: Record<string, unknown>, ctx?: RpcContext) => Promise<unknown>;
@@ -142,6 +143,7 @@ function rig(role: BotRole, over: Partial<BotProfile> = {}, opts: { builtinPrese
     ...(opts.connectors ? { connectors: opts.connectors } : {}),
     ...(opts.platform ? { workerPlatform: opts.platform } : {}),
     bot: () => port,
+    wmuxDir: () => WMUX_DIR,
     botDefaultBranch: async (root) => {
       defaultBranchReads.push({ root, startedBefore: start.mock.calls.length });
       return defaultBranchNote;
@@ -539,6 +541,41 @@ describe('task.fanout.start — bot origin', () => {
       expect(req.worktree).toBeUndefined();
       expect(req.prompt.startsWith('# Task worker')).toBe(true);
       expect(req.checkout).toBeUndefined();
+    });
+
+    it('a bot without a repository runs a research task in a scratch folder under its own data folder', async () => {
+      const r = rig('lead', { repo: undefined, template: 'researcher' }, { builtinPresets: true });
+      const res = await r.call({ idempotencyKey: 'wake:w-1:1', titles: ['who else does this'], prompt: 'compare the competitors', preset: 'research' }, botCtx('lead'));
+      expect(res.status).toBe('accepted');
+      await r.flush();
+      const req = r.start.mock.calls[0][0] as FanOutRequest;
+      const root = nodePath.join(WMUX_DIR, 'factory', 'bots', BOT_ID, 'research');
+      expect(req).toMatchObject({ worktree: false, outputRoot: root, repoPath: root, preset: 'research' });
+      expect(req.prompt.startsWith('# Research worker')).toBe(true);
+      expect(req.prompt.endsWith('compare the competitors')).toBe(true);
+      // No repository: no default branch to read, no git at all.
+      expect(r.defaultBranchReads).toEqual([]);
+      expect(git).not.toHaveBeenCalled();
+    });
+
+    it('every preset that changes code still needs the repository, and says research does not', async () => {
+      const r = rig('lead', { repo: undefined }, { builtinPresets: true });
+      for (const preset of ['default', 'repro', 'maintain']) {
+        const err = errorOf(await r.call({ idempotencyKey: 'wake:w-1:1', titles: ['x'], prompt: 'p', preset }, botCtx('lead')));
+        expect(err.code).toBe('FAILED_PRECONDITION');
+        expect(err.message).toMatch(/no repository[\s\S]*preset "research"/);
+      }
+      expect(r.start).not.toHaveBeenCalled();
+    });
+
+    it('a bot with a repository runs research outside it too', async () => {
+      const r = rig('lead', {}, { builtinPresets: true });
+      expect((await r.call({ idempotencyKey: 'wake:w-1:1', titles: ['q'], prompt: 'q', preset: 'research' }, botCtx('lead'))).status).toBe('accepted');
+      await r.flush();
+      const req = r.start.mock.calls[0][0] as FanOutRequest;
+      expect(req.worktree).toBe(false);
+      expect(req.repoPath).not.toBe(REPO);
+      expect(r.defaultBranchReads).toEqual([]);
     });
 
     it('every task runs on the engine the owner picked for the bot; the preset\'s own engine otherwise', async () => {

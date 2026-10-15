@@ -10,7 +10,7 @@ import { TaskLedger } from '../../../daemon/ledger/TaskLedger';
 import { DEFAULT_BOT_BUDGETS, type BotProfile } from '../../../shared/bot';
 import type { LedgerEntry, LedgerGateResult } from '../../../shared/ledger';
 import type { GateRunInput, GateRunResult } from '../../worktask/TaskGateRunner';
-import { completeCheckedTask, describeTaskGate, installTaskGate, isTaskGateReport, reportWasGated, type TaskGatePorts } from '../taskGate';
+import { completeCheckedTask, completeResearchTask, describeTaskGate, installTaskGate, isTaskGateReport, reportWasGated, type TaskGatePorts } from '../taskGate';
 import { verifyGateFactId } from '../verifyPreset';
 import { countOpenBotWorkers } from '../../pipe/handlers/fanout.rpc';
 
@@ -77,6 +77,7 @@ function rig(over: Partial<TaskGatePorts> = {}, runGate: ReturnType<typeof vi.fn
     baseRef: async () => 'origin/main',
     runGate,
     complete: (id) => completeCheckedTask(ledger, id),
+    completeResearch: (id) => completeResearchTask(ledger, id),
     wake,
     note,
     ...over,
@@ -281,6 +282,35 @@ describe('the system gate on a bot task report', () => {
     await report();
     await flush();
     expect(r.runGate).not.toHaveBeenCalled();
+  });
+});
+
+describe('a research task (no repository, no code)', () => {
+  it('its report completes it without a gate, as its owner and unforced, even for a bot with no repository; one card, one wake', async () => {
+    await register('task-1', 'research');
+    const r = rig({ bot: (id) => (id === BOT ? { ...lead, repo: undefined } : null), worktreeOf: async () => null });
+    await report();
+    await flush();
+    expect(r.runGate).not.toHaveBeenCalled();
+    const row = ledger.get('task-1') as LedgerEntry;
+    expect(row.status).toBe('completed');
+    expect(row.updatedBy).toEqual({ kind: 'brain', workspaceId: 'ws-lead' });
+    expect(row.summary).toBe('done'); // no [forced: …]
+    expect(r.note.mock.calls.map((c) => c[2])).toEqual(['Research reported: task completed']);
+    expect(r.wake).toHaveBeenCalledTimes(1);
+    expect(r.wake.mock.calls[0][0].reason.factIds).toEqual([verifyGateFactId('task-1', row.rev)]);
+  });
+
+  it('the ledger completes only a bot\'s research row without a gate: a pane task named "research" still needs one', async () => {
+    await register('task-1', 'research');
+    await register('task-2', 'research', { kind: 'pane' });
+    await register('task-3', 'default');
+    for (const id of ['task-1', 'task-2', 'task-3']) await report(id);
+    expect((await completeResearchTask(ledger, 'task-1')).entry?.status).toBe('completed');
+    expect(await completeResearchTask(ledger, 'task-3')).toMatchObject({ entry: null, why: 'the task is not a research task' });
+    const pane = ledger.get('task-2') as LedgerEntry;
+    const forced = await ledger.update({ id: 'task-2', status: 'completed', actor: { kind: 'brain', workspaceId: 'ws-lead' }, expectedRev: pane.rev });
+    expect(forced).toMatchObject({ ok: false, error: 'gate_required' });
   });
 });
 
