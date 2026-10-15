@@ -12,7 +12,8 @@ import { TaskLedger } from '../../../daemon/ledger/TaskLedger';
 import type { LedgerEntry } from '../../../shared/ledger';
 import { installBotFanoutWake } from '../../deck/fanoutCallerNotify';
 import { STOPPED_BY_OWNER, STOPPED_WAKE_KEEP_MS, __lateStopCountForTesting, __resetFactoryStopForTesting, installLateStopSweep, isOpenBotTask, isWakeStoppedByOwner, stopFactoryWork, type FactoryStopPorts } from '../factoryStop';
-import { factoryStopHandler } from '../../ipc/handlers/factory.handler';
+import { factorySettingsSetHandler, factoryStopHandler } from '../../ipc/handlers/factory.handler';
+import { DEFAULT_FACTORY_SETTINGS, type FactorySettings, type FactorySettingsStore } from '../factorySettings';
 
 const LEAD = 'bot-0000000a';
 const TRIAGE = 'bot-0000000b';
@@ -92,7 +93,7 @@ describe('stopFactoryWork', () => {
     await task('t-failed', LEAD, 'failed');
     const r = ports();
     const res = await stopFactoryWork(r.p);
-    expect(res).toEqual({ ok: true, botsInterrupted: 1, workersStopped: 3, gatesCancelled: 1 });
+    expect(res).toEqual({ ok: true, botsInterrupted: 1, workersStopped: 3, tasksCancelled: 3, gatesCancelled: 1 });
     expect(r.runtime.interrupt).toHaveBeenCalledWith(LEAD);
     // The stopped wake launches nothing more, before its turn has even ended.
     expect(isWakeStoppedByOwner(`w-${LEAD}`)).toBe(true);
@@ -112,7 +113,7 @@ describe('stopFactoryWork', () => {
     await task('t-work', LEAD);
     const r = ports();
     await stopFactoryWork(r.p);
-    expect(await stopFactoryWork(r.p)).toEqual({ ok: true, botsInterrupted: 0, workersStopped: 0, gatesCancelled: 0 });
+    expect(await stopFactoryWork(r.p)).toEqual({ ok: true, botsInterrupted: 0, workersStopped: 0, tasksCancelled: 0, gatesCancelled: 0 });
     expect(r.stopWorker).toHaveBeenCalledTimes(2);
   });
 
@@ -121,10 +122,11 @@ describe('stopFactoryWork', () => {
     const r = ports();
     r.stopWorker.mockRejectedValueOnce(new Error('daemon gone'));
     const first = await stopFactoryWork(r.p);
-    // The row is cancelled (the task is stopped), the stop reports it was partial.
-    expect(first).toMatchObject({ ok: false, code: 'partial', workersStopped: 1 });
+    // The row is cancelled (the task is stopped), the stop reports it was
+    // partial, and a worker not confirmed gone is not counted.
+    expect(first).toMatchObject({ ok: false, code: 'partial', workersStopped: 0, tasksCancelled: 1 });
     expect(ledger.get('t-work')?.status).toBe('cancelled');
-    expect(await stopFactoryWork(r.p)).toEqual({ ok: true, botsInterrupted: 0, workersStopped: 1, gatesCancelled: 0 });
+    expect(await stopFactoryWork(r.p)).toEqual({ ok: true, botsInterrupted: 0, workersStopped: 1, tasksCancelled: 0, gatesCancelled: 0 });
   });
 
   it('a task the stopped bot\'s fan-out was still launching is stopped when it registers', async () => {
@@ -148,7 +150,7 @@ describe('stopFactoryWork', () => {
     await task('t-lead', LEAD);
     await task('t-triage', TRIAGE);
     const r = ports();
-    expect(await stopFactoryWork(r.p, { botId: TRIAGE })).toEqual({ ok: true, botsInterrupted: 0, workersStopped: 1, gatesCancelled: 0 });
+    expect(await stopFactoryWork(r.p, { botId: TRIAGE })).toEqual({ ok: true, botsInterrupted: 0, workersStopped: 1, tasksCancelled: 1, gatesCancelled: 0 });
     expect(r.runtime.interrupt).not.toHaveBeenCalled();
     expect(ledger.get('t-lead')?.status).toBe('working');
     expect(ledger.get('t-triage')?.status).toBe('cancelled');
@@ -157,7 +159,7 @@ describe('stopFactoryWork', () => {
   it('a worker that cannot be stopped, and no runtime or gate runner, still cancel the task', async () => {
     await task('t-work', LEAD);
     const r = ports({ runtime: () => null, gates: () => null, stopWorker: vi.fn(async (): Promise<number> => { throw new Error('daemon gone'); }) });
-    expect(await stopFactoryWork(r.p)).toMatchObject({ ok: false, code: 'partial', botsInterrupted: 0, workersStopped: 1, gatesCancelled: 0 });
+    expect(await stopFactoryWork(r.p)).toMatchObject({ ok: false, code: 'partial', botsInterrupted: 0, workersStopped: 0, tasksCancelled: 1, gatesCancelled: 0 });
     expect(ledger.get('t-work')?.status).toBe('cancelled');
   });
 
@@ -258,7 +260,7 @@ describe('factoryStopHandler (IPC guard)', () => {
   const mainFrame = { id: 'top' };
   const webContents = { mainFrame };
   const win = { isDestroyed: () => false, webContents } as unknown as Electron.BrowserWindow;
-  const NONE = { botsInterrupted: 0, workersStopped: 0, gatesCancelled: 0 };
+  const NONE = { botsInterrupted: 0, workersStopped: 0, tasksCancelled: 0, gatesCancelled: 0 };
 
   it('answers only the main window\'s top frame', async () => {
     await task('t-work', LEAD);
@@ -268,7 +270,7 @@ describe('factoryStopHandler (IPC guard)', () => {
     expect(await stopAll({ sender: webContents, senderFrame: { id: 'sub' } })).toMatchObject({ ok: false, code: 'operator_only' });
     expect(await factoryStopHandler(() => null, 'all', () => r.p)({ sender: webContents, senderFrame: mainFrame })).toMatchObject({ ok: false, code: 'operator_only' });
     expect(ledger.get('t-work')?.status).toBe('working');
-    expect(await stopAll({ sender: webContents, senderFrame: mainFrame })).toEqual({ ok: true, botsInterrupted: 1, workersStopped: 1, gatesCancelled: 0 });
+    expect(await stopAll({ sender: webContents, senderFrame: mainFrame })).toEqual({ ok: true, botsInterrupted: 1, workersStopped: 1, tasksCancelled: 1, gatesCancelled: 0 });
   });
 
   it('stop-bot needs a bot id; before the factory started there is nothing to stop', async () => {
@@ -279,7 +281,7 @@ describe('factoryStopHandler (IPC guard)', () => {
     expect(await stopBot(ok, {})).toMatchObject({ ok: false, code: 'invalid_argument' });
     expect(await stopBot(ok, { botId: '../x' })).toMatchObject({ ok: false, code: 'invalid_argument' });
     expect(await factoryStopHandler(() => win, 'all', () => null)(ok)).toEqual({ ok: false, ...NONE, code: 'not_started', message: 'The factory is not running.' });
-    expect(await stopBot(ok, { botId: TRIAGE })).toEqual({ ok: true, botsInterrupted: 0, workersStopped: 1, gatesCancelled: 0 });
+    expect(await stopBot(ok, { botId: TRIAGE })).toEqual({ ok: true, botsInterrupted: 0, workersStopped: 1, tasksCancelled: 1, gatesCancelled: 0 });
   });
 });
 
@@ -327,5 +329,110 @@ describe('late stops and stopped wakes (review fixes, PR #2164)', () => {
     await stopFactoryWork(r.p, {});
     expect(isWakeStoppedByOwner('w-1')).toBe(false);
     expect(isWakeStoppedByOwner(`w-${wake}`)).toBe(true);
+  });
+});
+
+describe('stop hardening (owner decision 2026-10-15)', () => {
+  it('a turn that could not be interrupted, or a gate that could not be cancelled, makes the stop partial', async () => {
+    const stuck = ports({ runtime: () => ({ currentTurn: () => ({ wakeId: 'w-x' }), interrupt: () => ({ ok: false, code: 'refused' }) }), botIds: () => [LEAD] });
+    expect(await stopFactoryWork(stuck.p)).toMatchObject({ ok: false, code: 'partial', botsInterrupted: 0 });
+    // A turn that ended by itself in between is no failure.
+    const ended = ports({ runtime: () => ({ currentTurn: () => ({ wakeId: 'w-y' }), interrupt: () => ({ ok: false, code: 'not_running' }) }), botIds: () => [LEAD] });
+    expect(await stopFactoryWork(ended.p)).toMatchObject({ ok: true });
+    await task('t-gated', LEAD, 'review_requested');
+    const gate = ports({ gates: () => ({ isRunning: () => true, cancel: () => false }) });
+    expect(await stopFactoryWork(gate.p)).toMatchObject({ ok: false, code: 'partial', gatesCancelled: 0, tasksCancelled: 1 });
+  });
+
+  it('a task that ended by itself during the stop keeps its worker on Stop all, but not when bots are switched off', async () => {
+    await task('t-race', LEAD);
+    const open = ledger.get('t-race') as LedgerEntry;
+    // The row was open when listed and ended before its cancel.
+    const racing = { list: () => [open], get: () => ({ ...open, status: 'completed' as const }), update: ledger.update.bind(ledger) };
+    const stop = ports({ ledger: racing });
+    expect(await stopFactoryWork(stop.p)).toMatchObject({ ok: true, tasksCancelled: 0, workersStopped: 0 });
+    expect(stop.stopWorker).not.toHaveBeenCalled();
+    const off = ports({ ledger: racing });
+    expect(await stopFactoryWork(off.p, { off: true })).toMatchObject({ ok: true, tasksCancelled: 0, workersStopped: 1 });
+    expect(off.stopWorker).toHaveBeenCalledTimes(1);
+  });
+
+  it('while bots are off, a bot task that registers is stopped however late; once on again, new work runs', async () => {
+    let now = 1_000;
+    let isOff = true;
+    const r = ports({ now: () => now, isOff: () => isOff, launchesInFlight: () => [] });
+    const offSweep = installLateStopSweep({ ...r.p, onTransition: (fn) => ledger.onTransition(fn) });
+    await stopFactoryWork(r.p, { off: true });
+    now += 10 * 60_000; // far past the late-stop window
+    await task('t-delayed', LEAD);
+    await vi.waitFor(() => expect(ledger.get('t-delayed')).toMatchObject({ status: 'cancelled', summary: STOPPED_BY_OWNER }));
+    isOff = false;
+    await task('t-after', LEAD);
+    await new Promise((res) => setTimeout(res, 30));
+    expect(ledger.get('t-after')?.status).toBe('working');
+    offSweep();
+  });
+});
+
+describe('"Run bots" off stops the work (factorySettingsSetHandler)', () => {
+  const mainFrame = { id: 'top' };
+  const webContents = { mainFrame };
+  const win = { isDestroyed: () => false, webContents } as unknown as Electron.BrowserWindow;
+  const ok = { sender: webContents, senderFrame: mainFrame };
+
+  /** A settings store whose switch is live before its write lands, like the real one. */
+  function settingsStore(enabled: boolean) {
+    let current: FactorySettings = { ...DEFAULT_FACTORY_SETTINGS, enabled };
+    const store = {
+      get: () => ({ ...current }),
+      update: vi.fn(async (patch: unknown) => {
+        current = { ...current, ...(patch as Partial<FactorySettings>) };
+        await new Promise((res) => setTimeout(res, 5));
+        return { ...current };
+      }),
+    };
+    return { store, handle: () => store as unknown as FactorySettingsStore };
+  }
+
+  it('off: the switch is written first, then the same stop as Stop all runs; the answer says what it stopped', async () => {
+    await task('t-work', LEAD);
+    await task('t-ask', TRIAGE, 'input_required');
+    const s = settingsStore(true);
+    const seenEnabled: boolean[] = [];
+    const stopWorker = vi.fn(async () => {
+      seenEnabled.push(s.store.get().enabled);
+      return 1;
+    });
+    const r = ports({ stopWorker });
+    const set = factorySettingsSetHandler(() => win, s.handle, () => r.p);
+    const res = await set(ok, { enabled: false });
+    expect(res).toMatchObject({ enabled: false, stoppedWork: { workers: 2, tasks: 2, ok: true } });
+    expect(seenEnabled).toEqual([false, false]);
+    expect(r.runtime.interrupt).toHaveBeenCalledWith(LEAD);
+    for (const id of ['t-work', 't-ask']) expect(ledger.get(id)).toMatchObject({ status: 'cancelled', summary: STOPPED_BY_OWNER });
+    // Nothing to stop, or a change that is not a switch-off: no stoppedWork.
+    expect(await set(ok, { enabled: false })).not.toHaveProperty('stoppedWork');
+    expect(stopWorker).toHaveBeenCalledTimes(2);
+  });
+
+  it('off then on at once: cancelled tasks stay cancelled, the stopped wake stays refused, and on stops nothing', async () => {
+    await task('t-work', LEAD);
+    await task('t-gated', LEAD, 'review_requested');
+    const s = settingsStore(true);
+    const r = ports();
+    const set = factorySettingsSetHandler(() => win, s.handle, () => r.p);
+    const [offRes, onRes] = await Promise.all([set(ok, { enabled: false }), set(ok, { enabled: true })]);
+    // The switch-off is carried out although the switch-on landed while it ran.
+    expect(offRes).toMatchObject({ stoppedWork: { tasks: 2, ok: true } });
+    expect(onRes).toMatchObject({ enabled: true });
+    expect(onRes).not.toHaveProperty('stoppedWork');
+    expect(s.store.get().enabled).toBe(true);
+    for (const id of ['t-work', 't-gated']) expect(ledger.get(id)).toMatchObject({ status: 'cancelled', summary: STOPPED_BY_OWNER });
+    expect(isWakeStoppedByOwner(`w-${LEAD}`)).toBe(true);
+    // A cancelled task cannot be moved back to work.
+    const row = ledger.get('t-work') as LedgerEntry;
+    expect((await ledger.update({ id: 't-work', status: 'working', actor: { kind: 'brain', workspaceId: 'ws-1' }, expectedRev: row.rev })).ok).toBe(false);
+    // On again stops nothing more.
+    expect(r.stopWorker).toHaveBeenCalledTimes(2);
   });
 });

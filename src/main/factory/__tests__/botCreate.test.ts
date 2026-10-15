@@ -354,7 +354,7 @@ describe('factorySettingsSetHandler (IPC guard)', () => {
     const webContents = { mainFrame };
     const win = { isDestroyed: () => false, webContents } as unknown as Electron.BrowserWindow;
     const update = vi.fn(async (p: unknown) => ({ ...settings(), ...(p as object) }));
-    const handler = factorySettingsSetHandler(() => win, () => ({ update }) as unknown as FactorySettingsStore);
+    const handler = factorySettingsSetHandler(() => win, () => ({ update, get: () => settings() }) as unknown as FactorySettingsStore);
     expect(await handler({ sender: {}, senderFrame: mainFrame }, { enabled: true })).toBeNull();
     expect(await handler({ sender: webContents, senderFrame: { id: 'sub' } }, { enabled: true })).toBeNull();
     expect(update).not.toHaveBeenCalled();

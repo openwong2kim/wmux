@@ -28,6 +28,7 @@ import {
   resolveFactsFrom,
   routedFactLog,
   runningWakeOf,
+  stopTaskWorker,
   taskWakeHandoff,
   threadTail,
 } from '../factoryWiring';
@@ -618,5 +619,53 @@ describe('a bot task that stops waiting for input (A5)', () => {
     expect(botTaskStoppedWaiting({ from: 'working', to: 'input_required', entry: bot })).toBe(false);
     expect(botTaskStoppedWaiting({ from: 'input_required', to: 'working', entry: { dispatch: { origin: { kind: 'orchestrator' } } } })).toBe(false);
     expect(botTaskStoppedWaiting({ from: null, to: 'working', entry: bot })).toBe(false);
+  });
+});
+
+describe('stopTaskWorker (a stop of a bot task\'s worker)', () => {
+  const entry = { id: 'wtask-1', ownerWorkspaceId: 'ws-owner', taskWorkspaceId: 'ws-task' } as LedgerEntry;
+  function daemon(stopAgent: (id: string) => unknown = () => ({ ok: true, stopped: true })) {
+    const wt = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-stop-worker-'));
+    const calls: string[] = [];
+    let sessions = [
+      { id: 'own', spawnCwd: wt },
+      { id: 'owner-terminal', spawnCwd: wt },
+      { id: 'elsewhere', spawnCwd: os.tmpdir() },
+    ];
+    const rpc = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'task.mission.list') return { ok: true, tasks: [{ id: 'wtask-1', worktreePath: wt }] };
+      if (method === 'daemon.listSessions') return sessions;
+      if (method === 'session.stopAgent') {
+        calls.push(`stopAgent:${String(params?.sessionId)}`);
+        return stopAgent(String(params?.sessionId));
+      }
+      if (method === 'daemon.destroySession') {
+        calls.push(`destroy:${String(params?.id)}`);
+        sessions = sessions.filter((x) => x.id !== params?.id);
+        return { ok: true };
+      }
+      throw new Error(method);
+    });
+    return { client: () => ({ rpc }) as never, calls, wt };
+  }
+
+  it('stops the agent tree first, then the pane, and only the task workspace\'s own panes', async () => {
+    const d = daemon();
+    try {
+      expect(await stopTaskWorker(entry, d.client, (ws) => (ws === 'ws-task' ? ['own'] : []))).toBe(1);
+      expect(d.calls).toEqual(['stopAgent:own', 'destroy:own']);
+    } finally {
+      fs.rmSync(d.wt, { recursive: true, force: true });
+    }
+  });
+
+  it('an agent the daemon could not stop fails the stop and destroys nothing', async () => {
+    const d = daemon(() => ({ ok: false, code: 'still_running' }));
+    try {
+      await expect(stopTaskWorker(entry, d.client, () => ['own'])).rejects.toThrow(/still_running/);
+      expect(d.calls).toEqual(['stopAgent:own']);
+    } finally {
+      fs.rmSync(d.wt, { recursive: true, force: true });
+    }
   });
 });

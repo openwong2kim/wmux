@@ -83,7 +83,7 @@ export async function factoryBotRowsWithTasks(
   }
 }
 
-const STOP_NONE = { botsInterrupted: 0, workersStopped: 0, gatesCancelled: 0 } as const;
+const STOP_NONE = { botsInterrupted: 0, workersStopped: 0, tasksCancelled: 0, gatesCancelled: 0 } as const;
 
 /** FACTORY_STOP_ALL / FACTORY_STOP_BOT's body: the sender check, the bot id
  *  (stop-bot only), then factoryStop. A stop of a bot the store no longer
@@ -288,19 +288,51 @@ export function factoryBotSetAvatarHandler(
   };
 }
 
+/** What switching "Run bots" off stopped (FACTORY_SETTINGS_SET's answer,
+ *  present when it stopped something or could not stop everything). */
+export interface FactoryOffStopped {
+  /** Workers whose processes were confirmed gone. */
+  workers: number;
+  /** Open bot tasks cancelled ("stopped by owner"). */
+  tasks: number;
+  ok: boolean;
+}
+
 /** FACTORY_SETTINGS_SET's body: the sender check, then the settings store.
- *  null = not written. */
+ *  null = not written. Switching "Run bots" off stops the bots' running
+ *  work (factoryStop.ts, `off`): the switch is written first, so nothing new
+ *  launches, then the same stop as Stop all runs. */
 export function factorySettingsSetHandler(
   getWindow: () => BrowserWindow | null,
   store: typeof getFactorySettingsStore = getFactorySettingsStore,
-): (e: { sender?: unknown; senderFrame?: unknown }, patch: unknown) => Promise<FactorySettings | null> {
+  stopPorts: () => FactoryStopPorts | null = getFactoryStopPorts,
+): (e: { sender?: unknown; senderFrame?: unknown }, patch: unknown) => Promise<(FactorySettings & { stoppedWork?: FactoryOffStopped }) | null> {
   return async (e, patch) => {
     if (!isMainWindowSender(e, getWindow())) return null;
     const s = store();
     if (!s) return null;
-    const next = await s.update(patch);
+    const wasOn = s.get().enabled;
+    // The owner's switch-off is carried out even when a switch-on lands
+    // right after it (both are live before their writes finish).
+    const switchingOff = wasOn && !!patch && typeof patch === 'object' && (patch as { enabled?: unknown }).enabled === false;
+    let next: FactorySettings | null = null;
+    let failure: unknown = null;
+    try {
+      next = await s.update(patch);
+    } catch (err) {
+      // The switch is live before the write lands: a write that failed after
+      // switching off still stops the work below.
+      failure = err;
+    }
     getBotRuntime()?.kick();
-    return next;
+    let stoppedWork: FactoryOffStopped | undefined;
+    const ports = switchingOff ? stopPorts() : null;
+    if (ports) {
+      const r = await stopFactoryWork(ports, { off: true });
+      if (r.workersStopped > 0 || r.tasksCancelled > 0 || !r.ok) stoppedWork = { workers: r.workersStopped, tasks: r.tasksCancelled, ok: r.ok };
+    }
+    if (!next) throw failure;
+    return stoppedWork ? { ...next, stoppedWork } : next;
   };
 }
 
