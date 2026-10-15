@@ -60,6 +60,7 @@ import { decideViewerVisibility } from '../terminal/viewerVisibility';
 import { useWindowDisplayed } from './useWindowDisplayed';
 import { createDeadInputWatchdog, describeDeclinedKey, readXtermCompositionState } from '../terminal/deadInputWatchdog';
 import { formatModifiers, modifiersOf, sharedModifierPressTracker } from '../terminal/modifierPressTracker';
+import { createStaleMetaNotice, resolveStaleMetaText } from '../terminal/staleMetaKey';
 import { awaitParseBarrier } from '../terminal/parseBarrier';
 import { STALE_REPLAY_INPUT_MODE_RESETS, STALE_REPLAY_ALIVE_SHELL_RESETS, STALE_REPLAY_DISPLAY_RESETS, staleReplayResetLevel } from '../../shared/terminal/staleReplayModeReset';
 import { installShellPromptModeReset, shellPromptModeResetFor } from '../../shared/terminal/shellPromptModeReset';
@@ -88,6 +89,8 @@ import { captureColdFrame, clearPersistedColdFrames, coldFrameFits, dropColdFram
 // One detector for every pane in this renderer: the ESC-pair state is keyed by
 // ptyId, and a per-mount instance would lose a double-tap split across a remount.
 const interruptKeystrokes = new InterruptKeystrokeDetector();
+// One per window: the stale Meta it reports is window-wide key state (#1950).
+const staleMetaNotice = createStaleMetaNotice();
 
 // #1228 review — keyboard-protocol state parked with the Terminal instance so
 // a restructure-driven unmount/remount (park → adopt, #1002) keeps the
@@ -2404,6 +2407,33 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         if (customKeybindings.some((kb) => kb.key === combo)) {
           return false; // let useKeyboard handle it
         }
+      }
+
+      // #1950: a printable key carrying a Meta flag this window never saw
+      // pressed (Windows keeps a released Win key in its key state). xterm
+      // encodes nothing for it, so Space and letters died in every pane until
+      // a restart. Type the plain character instead, below the shortcut checks
+      // so every binding still wins. See terminal/staleMetaKey.ts.
+      const staleMods = e.metaKey ? modifierPresses.staleModifiers(e) : [];
+      const staleMetaText = resolveStaleMetaText(e, {
+        platform: window.electronAPI?.platform,
+        staleMods,
+        xtermEncodes: xtermEncodesKey(e, kittyNegotiated()),
+      });
+      if (staleMetaText !== null) {
+        e.preventDefault();
+        if (staleMetaNotice.shouldLog(modifierPresses.focusSession())) {
+          console.warn(
+            `[wmux:stale-meta] pty=${ptyIdRef.current} typed through a stale Meta flag ` +
+            `keyCode=${e.keyCode} code=${e.code} mods=[${formatModifiers(modifiersOf(e))}] ` +
+            `stale=[${staleMods.join(',')}] docFocus=${document.hasFocus() ? 1 : 0}`,
+          );
+        }
+        compositionCommitGate.runAfterCommit(() => {
+          window.electronAPI.pty.write(ptyId, staleMetaText);
+          noteUserKeystroke(staleMetaText);
+        });
+        return false;
       }
 
       // ⌘Backspace deletes to the start of the line (xterm encodes no ⌘ chord).

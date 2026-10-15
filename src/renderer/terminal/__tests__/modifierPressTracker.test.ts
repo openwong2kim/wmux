@@ -34,6 +34,13 @@ describe('modifierPressTracker (#1950 diagnostics)', () => {
     expect(t.staleModifiers(flags())).toEqual([]);
   });
 
+  it('counts focus sessions by blur', () => {
+    const t = createModifierPressTracker();
+    expect(t.focusSession()).toBe(0);
+    t.onBlur();
+    expect(t.focusSession()).toBe(1);
+  });
+
   it('a held modifier is not stale until its keyup', () => {
     const t = createModifierPressTracker();
     t.onKeyDown({ code: 'MetaLeft' });

@@ -85,13 +85,14 @@ describe('useTerminal ctrl-letter encoding + keyboard-state lifecycle (source-le
     expect(passThrough).toBeGreaterThan(encode);
   });
 
-  it('all six direct-write sites feed noteUserKeystroke (C2)', () => {
+  it('all seven direct-write sites feed noteUserKeystroke (C2)', () => {
     // Helper definition lives before attachCustomKeyEventHandler, so exactly
-    // the six call sites (newline, Escape, released ctrl, ⌘Backspace line
-    // delete, Windows Ctrl+Alt+letter, catch-all ctrl) are inside the handler
-    // slice.
+    // the seven call sites (newline, Escape, released ctrl, stale-Meta text
+    // (#1950), ⌘Backspace line delete, Windows Ctrl+Alt+letter, catch-all
+    // ctrl) are inside the handler slice.
     const calls = HANDLER.match(/noteUserKeystroke\(/g) ?? [];
-    expect(calls.length).toBe(6);
+    expect(calls.length).toBe(7);
+    expect(HANDLER).toMatch(/noteUserKeystroke\(staleMetaText\);/);
     expect(HANDLER).toMatch(/noteUserKeystroke\(ctrlAltBytes\);/);
     expect(HANDLER).toMatch(/noteUserKeystroke\(lineDeleteByte\);/);
     expect(HANDLER).toMatch(/noteUserKeystroke\(newlineByte\);/);
