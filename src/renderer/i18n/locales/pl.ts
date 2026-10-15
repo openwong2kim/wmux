@@ -1518,6 +1518,7 @@ export const pl = {
   'botsPage.hq': "Centrala",
   'botsPage.you': "Ty: {text}",
   'botsPage.noMessages': "Brak wiadomości",
+  'botsPage.inGroup': "W {group}: {text}",
   'botsPage.choose': "Wybierz rozmowę",
   'botsPage.back': "Wróć do rozmów",
   'botsPage.messageTo': "Wiadomość do: {name}",

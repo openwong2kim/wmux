@@ -30,7 +30,7 @@ import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import { selectWorkspaceIdName } from '../../stores/selectors/workspaceProjections';
 import { refreshRoomStatus, type RoomsApi } from '../../hooks/useRoomSync';
-import type { RoomCard } from '../../../shared/room';
+import type { RoomCard, ThreadId } from '../../../shared/room';
 import { FOCUS_RING } from '../focusRing';
 import Button from '../ui/Button';
 import { IconMoreHorizontal, IconPlus, IconSearch } from '../icons';
@@ -77,13 +77,27 @@ export function conversationTitle(c: Conversation, workspaceName: (id: string) =
   return c.group.name || (workspaceName(c.workspaceId) ?? c.workspaceId);
 }
 
-/** The row's one-line preview of the newest message. Pure. */
+/** The card a row's preview and time show: the newest message, or a bot's
+ *  newer post in a group chat. Pure. */
+export function previewCard(c: Conversation): RoomCard | null {
+  if (c.kind === 'bot' && c.elsewhere) return c.elsewhere.card;
+  return c.last;
+}
+
+/** The row's one-line preview of the newest message: for a bot whose
+ *  newest post is in a group chat, that post, prefixed with the group's
+ *  name. Pure. */
 export function conversationPreview(
   c: Conversation,
   t: (key: string, vars?: Record<string, string | number>) => string,
   bots: readonly FactoryBotRow[],
   actors: Readonly<Record<string, { role: FactoryBotRow['bot']['role'] }>> = {},
+  titleOf: (conversationId: string) => string | null = () => null,
 ): string {
+  if (c.kind === 'bot' && c.elsewhere) {
+    const group = titleOf(c.elsewhere.conversationId);
+    return group ? t('botsPage.inGroup', { group, text: c.elsewhere.card.title }) : c.elsewhere.card.title;
+  }
   const last: RoomCard | null = c.last;
   if (!last) return t('botsPage.noMessages');
   if (last.actor.kind === 'human') return t('botsPage.you', { text: last.title });
@@ -123,6 +137,7 @@ function ConversationRow({ c, title, preview, selected, t, onSelect, now, unread
   const needsText = c.needsYou > 0 ? t('sidebar.fleetNeedsYou', { count: c.needsYou }) : '';
   const unreadText = c.needsYou <= 0 && unread > 0 ? t('botsPage.chat.unread', { count: unread }) : '';
   const name = [title, needsText, unreadText, preview].filter(Boolean).join(', ');
+  const shownAt = previewCard(c)?.at ?? null;
   return (
     <button
       type="button"
@@ -142,7 +157,7 @@ function ConversationRow({ c, title, preview, selected, t, onSelect, now, unread
       <span className="min-w-0 flex-1">
         <span className="flex items-baseline gap-1.5">
           <span className="min-w-0 truncate text-[13px] font-[var(--title-weight,500)] text-[var(--text-main)]">{title}</span>
-          {c.last && <span className="ml-auto shrink-0 text-[11px] tabular-nums text-[var(--text-muted)]">{formatCardTime(c.last.at, now)}</span>}
+          {shownAt !== null && <span className="ml-auto shrink-0 text-[11px] tabular-nums text-[var(--text-muted)]">{formatCardTime(shownAt, now)}</span>}
         </span>
         <span className={`flex items-center gap-1.5 ${toggleRoom ? 'pr-[34px]' : ''}`}>
           <span className={`min-w-0 flex-1 truncate text-[12px] ${unread > 0 ? 'text-[var(--text-sub)]' : 'text-[var(--text-muted)]'}`}>{preview}</span>
@@ -527,11 +542,15 @@ export default function BotsPage({ onAddBot, port, api, now, settings, stop, eng
   const roomThreads = useStore((s) => s.roomThreads);
   const rows = useMemo(() => model.conversations.map((c) => {
     const since = seenAt[c.id] ?? BOTS_SESSION_START;
+    const titleOf = (id: string) => {
+      const other = model.conversations.find((x) => x.id === id);
+      return other ? conversationTitle(other, nameOf) : null;
+    };
     const own = c.kind === 'bot' ? conversationCards(everyCard, c.row.bot.id, { lone: c.lone, threads: roomThreads }) : groupViewCards(cardsByWs.get(c.workspaceId) ?? [], c.group, roomThreads);
     return {
       c,
       title: conversationTitle(c, nameOf),
-      preview: conversationPreview(c, t, bots, actors),
+      preview: conversationPreview(c, t, bots, actors, titleOf),
       unread: unreadCount(own, since),
     };
   }), [model.conversations, nameOf, t, bots, actors, seenAt, everyCard, cardsByWs, roomThreads]);
@@ -541,6 +560,20 @@ export default function BotsPage({ onAddBot, port, api, now, settings, stop, eng
   const select = (id: string) => {
     setSelectedId(id);
     setView('chat');
+  };
+  // A bot row whose waiting cards are all in a group chat leads there, with
+  // the newest one's thread beside the group's chat (its own thread is the
+  // chat itself): the needs-you count on the row is answered where it is.
+  const [threadAsk, setThreadAsk] = useState<{ conversationId: string; workspaceId: string; threadId: ThreadId; nonce: number } | null>(null);
+  const openRow = (c: Conversation) => {
+    const at = c.kind === 'bot' && c.needsYou > 0 ? c.needsAt : undefined;
+    const group = at ? model.conversations.find((x) => x.id === at.conversationId) : undefined;
+    if (!at || group?.kind !== 'room') {
+      select(c.id);
+      return;
+    }
+    select(group.id);
+    setThreadAsk(at.threadId !== group.threadId ? { ...at, nonce: Date.now() } : null);
   };
 
   // Each bot's workers nest under its row (BotsWorkerTree): open under the
@@ -762,7 +795,7 @@ export default function BotsPage({ onAddBot, port, api, now, settings, stop, eng
                       t={t}
                       now={now}
                       unread={r.unread}
-                      onSelect={() => select(r.c.id)}
+                      onSelect={() => openRow(r.c)}
                       toggleRoom={tree.length > 0}
                     />
                     {tree.length > 0 && (
@@ -810,6 +843,7 @@ export default function BotsPage({ onAddBot, port, api, now, settings, stop, eng
             jobPort={botPort}
             resumePort={botPort}
             onOpenBot={(botId) => select(botConversationId(botId))}
+            {...(threadAsk && threadAsk.conversationId === selected.c.id ? { threadAsk } : {})}
             {...(shownGroup && groupsPort.available ? { onEditGroup: () => setGroupDialog({ kind: 'edit', group: shownGroup }) } : {})}
           />
         ) : (

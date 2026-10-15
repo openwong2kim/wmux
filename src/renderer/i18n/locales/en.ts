@@ -1540,6 +1540,7 @@ export const en = {
   'botsPage.hq': "HQ",
   'botsPage.you': "You: {text}",
   'botsPage.noMessages': "No messages yet",
+  'botsPage.inGroup': "In {group}: {text}",
   'botsPage.choose': "Choose a conversation",
   'botsPage.back': "Back to conversations",
   'botsPage.messageTo': "Message {name}",

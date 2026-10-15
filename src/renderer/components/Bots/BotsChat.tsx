@@ -1646,7 +1646,7 @@ export function waitsOnOwner(card: RoomCardData, livePlans: ReadonlySet<string>)
   return card.kind === 'question' || awaitsApproval(card, livePlans);
 }
 
-export function BotsChat({ conversation, roomCards, bots, title, workspaceName, t, onBack, api, now, readOnly = false, stopPort = {}, jobPort, resumePort, onOpenBot, onEditGroup }: {
+export function BotsChat({ conversation, roomCards, bots, title, workspaceName, t, onBack, api, now, readOnly = false, stopPort = {}, jobPort, resumePort, onOpenBot, onEditGroup, threadAsk }: {
   conversation: Conversation;
   roomCards: readonly RoomCardData[];
   /** Every bot (names for senders and the addressee check). */
@@ -1671,6 +1671,9 @@ export function BotsChat({ conversation, roomCards, bots, title, workspaceName, 
   /** A group chat's pill: rename it, change its bots or delete it (absent:
    *  the pill does nothing). */
   onEditGroup?: () => void;
+  /** A thread to open beside the chat (a bot row led here to what it asks);
+   *  a new nonce opens it again. */
+  threadAsk?: { workspaceId: string; threadId: ThreadId; nonce: number };
 }): React.ReactElement {
   const [profileOpen, setProfileOpen] = useState(false);
   const [sent, setSent] = useState<Record<string, SentTo[] | null>>({});
@@ -1850,6 +1853,11 @@ export function BotsChat({ conversation, roomCards, bots, title, workspaceName, 
       else if (r.workspaceId && useStore.getState().botsWorkerPanel === asked) useStore.getState().setBotsWorkerPanel({ workspaceId: r.workspaceId, conversationId });
     }).catch((err: unknown) => useStore.getState().pushToast({ message: String(err), level: 'error' }));
   }, [resumePort, conversationId, t]);
+  const askedNonce = threadAsk?.nonce;
+  useEffect(() => {
+    if (threadAsk) onThread(threadAsk.workspaceId, threadAsk.threadId);
+    // Only a new ask opens it: closing the panel is not undone on re-render.
+  }, [askedNonce]);
   // A worker picked in the list while a thread is open takes the side.
   useEffect(() => { if (shownId) setOpenThread(null); }, [shownId]);
   const tree = conversation.kind === 'bot' ? conversation.tree : EMPTY_TREE;

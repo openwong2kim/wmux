@@ -1060,6 +1060,7 @@ export const ko = {
   'botsPage.hq': "HQ",
   'botsPage.you': "나: {text}",
   'botsPage.noMessages': "아직 메시지가 없어요",
+  'botsPage.inGroup': "{group}에서: {text}",
   'botsPage.choose': "대화를 고르세요",
   'botsPage.back': "대화 목록으로",
   'botsPage.messageTo': "{name}에게 메시지 보내기",

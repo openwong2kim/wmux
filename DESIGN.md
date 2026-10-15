@@ -326,7 +326,8 @@ status bar badges, `fleet_triage` or the phone's sidebar.
   of the page; Search opens a filter field under the header (Escape closes
   and clears it). One row per conversation (8px 10px padding, inset 8px): a 32px avatar, the 13px/500 name
   with the newest message's time, and one 12px muted preview line (the
-  owner's own as "You: …", a group's prefixed with who spoke). Every bot is
+  owner's own as "You: …", a group's prefixed with who spoke; a bot whose
+  newest post is in a group, "In <group>: …"). Every bot is
   a 1:1, and the rest are the **group chats the owner made** (owner
   decision 2026-10-15, the reference messenger's model): no workspace has a
   room by itself, however many bots it has, and no bot ever makes one. A
@@ -396,7 +397,9 @@ status bar badges, `fleet_triage` or the phone's sidebar.
   open is superseded) and open proposals, plus its workers waiting on the
   owner — a waiting worker its bot's open question already asks about (the
   question's task) counts once. What a bot asks in a group counts on that
-  bot's row too. Group rows carry none (every question has a bot that asked it), and the
+  bot's row too, and while nothing it waits on is in its 1:1 the row leads
+  to it: a click opens that group with the newest waiting card's thread
+  beside the chat. Group rows carry none (every question has a bot that asked it), and the
   rail badge is the sum of the bot rows — one count, read from one model.
   While the bots are paused nothing on the page can be answered, so
   nothing is counted (rows and rail alike).

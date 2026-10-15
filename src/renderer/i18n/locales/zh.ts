@@ -1639,6 +1639,7 @@ export const zh = {
   'botsPage.hq': "总部",
   'botsPage.you': "你：{text}",
   'botsPage.noMessages': "还没有消息",
+  'botsPage.inGroup': "在 {group}：{text}",
   'botsPage.choose': "选择一个对话",
   'botsPage.back': "返回对话列表",
   'botsPage.messageTo': "给 {name} 发消息",

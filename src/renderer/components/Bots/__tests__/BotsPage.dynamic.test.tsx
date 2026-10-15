@@ -1556,6 +1556,24 @@ describe('Bots page', () => {
     expect(q<HTMLTextAreaElement>('[data-testid="bots-composer-input"]')?.value).toBe('Give me a status update.');
   });
 
+  it('a bot row whose question is only in a group\'s handoff thread opens that group with the thread beside it', async () => {
+    const G = 'group:grp-000000c1' as const;
+    groups = [{ id: 'grp-000000c1', workspaceId: 'w1', name: 'Ship it', memberIds: [LEAD, VERIFIER], threadId: G, createdAt: 3_000, updatedAt: 3_000 }];
+    const ask = card({ workspaceId: 'w1', actor: { kind: 'human' }, kind: 'human', threadId: G, refs: { botIds: [LEAD] }, title: 'Plan the release', at: 3_100 });
+    const open = card({ workspaceId: 'w1', actor: { kind: 'system' }, kind: 'fact', threadId: 'handoff:h-1', refs: { handoffId: 'h-1', requestCardId: ask.id }, at: 3_120 });
+    const question = card({ workspaceId: 'w1', actor: by('w1', LEAD), kind: 'question', state: 'open', threadId: 'handoff:h-1', title: 'Which branch?', at: 3_200 });
+    cards = [cards[0], ask, open, question];
+    seedRooms();
+    await render(<BotsPage groupPort={groupPort} />);
+    const row = q(`[data-bots-row="bot:${LEAD}"]`)!;
+    expect(row.querySelector('[data-bots-needs]')?.textContent).toBe('1');
+    // Its preview says where it spoke, not "No messages yet".
+    expect(row.textContent).toContain('In Ship it: Which branch?');
+    await act(async () => row.click());
+    expect(q('[data-bots-chat]')!.getAttribute('data-bots-chat')).toBe('group:grp-000000c1');
+    expect(q('[data-bots-thread-panel="handoff:h-1"]')!.textContent).toContain('Which branch?');
+  });
+
   it('a reply landing in the 1:1 the owner is reading draws no "New" divider above it', async () => {
     seedRooms();
     await render(<BotsPage />);

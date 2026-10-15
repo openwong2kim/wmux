@@ -100,6 +100,12 @@ export interface BotConversation extends ConversationBase {
   /** No group chat lives in its workspace's General (a bot alone there
    *  never has one): its 1:1 shows everything it says (see the header). */
   lone: boolean;
+  /** Where the owner answers it when every card it waits on is in a group
+   *  chat (none in its 1:1): the group and the newest card's thread. */
+  needsAt?: { conversationId: string; workspaceId: string; threadId: ThreadId };
+  /** Its newest post in a group chat, when newer than its 1:1's newest
+   *  message (the row's preview says where it spoke). */
+  elsewhere?: { card: RoomCard; conversationId: string };
 }
 
 /** A worker row under its bot in the list, as the Sidebar draws a task. */
@@ -620,12 +626,22 @@ export function buildBots(input: BotsInput): BotsModel {
     // What it asks the owner in a group chat waits on its row too (a group
     // row counts nothing: every question has a bot that asked it).
     const ownIds = new Set(own.map((c) => c.id));
-    const asked = [...own, ...rooms
+    const inGroups = rooms
       .filter((r) => r.workspaceId === row.bot.workspaceId)
-      .flatMap((r) => groupViewCards(input.cards.get(r.workspaceId) ?? [], r.group, input.threads))
-      .filter((c) => c.actor.kind === 'bot' && c.actor.botId === row.bot.id && !ownIds.has(c.id))];
+      .flatMap((r) => groupViewCards(input.cards.get(r.workspaceId) ?? [], r.group, input.threads)
+        .filter((c) => c.actor.kind === 'bot' && c.actor.botId === row.bot.id && !ownIds.has(c.id))
+        .map((card) => ({ card, conversationId: r.id })));
+    const asked = [...own, ...inGroups.map((g) => g.card)];
     const openQuestions = openQuestionsBy(asked, row.bot.id, input.threads);
     const openApprovals = openApprovalsBy(asked, row.bot.id);
+    // The row leads where the owner answers: its 1:1 while anything it
+    // waits on is there, else the group holding the newest such card.
+    const live = livePlanIds(asked);
+    const waits = (c: RoomCard): boolean => isOpenQuestion(c, input.threads) || awaitsApproval(c, live);
+    const groupWait = own.some((c) => c.actor.kind === 'bot' && c.actor.botId === row.bot.id && waits(c))
+      ? undefined
+      : newestOf(inGroups.filter((g) => waits(g.card)));
+    const lastGroupPost = newestOf(inGroups);
     const workers = botWorkers(row.bot.id, input.botTaskOf, input.workerClass, input.workspaceName, row.tasks);
     return {
       kind: 'bot',
@@ -639,6 +655,8 @@ export function buildBots(input: BotsInput): BotsModel {
       workers,
       tree: botWorkerTree(row.bot.id, workers, row.tasks, input.workspaceName, input.botTaskOf, input.workerClass),
       lone,
+      ...(groupWait ? { needsAt: { conversationId: groupWait.conversationId, workspaceId: groupWait.card.workspaceId, threadId: groupWait.card.threadId } } : {}),
+      ...(lastGroupPost && (!last || lastGroupPost.card.at > last.at) ? { elsewhere: lastGroupPost } : {}),
       // A waiting worker whose question the bot already asked counts once.
       needsYou: input.readOnly ? 0 : openQuestions + openApprovals + waitingWorkers(workers, openQuestionTasks(asked, row.bot.id, input.threads)),
     };
@@ -651,6 +669,21 @@ export function buildBots(input: BotsInput): BotsModel {
   const conversations: Conversation[] = [...rooms, ...oneToOne]
     .sort((a, b) => b.lastAt - a.lastAt || a.id.localeCompare(b.id));
   return { conversations, needsYou: botsNeedsYou(oneToOne) };
+}
+
+/** Whether a card is a question still open (its thread's summary, re-read
+ *  on focus, may say it was answered elsewhere). Pure. */
+function isOpenQuestion(c: RoomCard, threads: BotsInput['threads']): boolean {
+  if (c.kind !== 'question' || c.state !== 'open') return false;
+  const summary = threads[c.workspaceId]?.find((th) => th.threadId === c.threadId);
+  return !(summary && summary.openQuestions === 0);
+}
+
+/** The newest of some cards, each with where it is. */
+function newestOf<E extends { card: RoomCard }>(list: readonly E[]): E | undefined {
+  let best: E | undefined;
+  for (const e of list) if (!best || e.card.at > best.card.at || (e.card.at === best.card.at && e.card.seq > best.card.seq)) best = e;
+  return best;
 }
 
 /** The workers waiting on the owner that no open question already asks

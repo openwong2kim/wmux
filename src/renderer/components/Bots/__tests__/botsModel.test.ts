@@ -347,6 +347,23 @@ describe('group chats the owner made (owner decision 2026-10-15)', () => {
     expect(m.conversations.find((c) => c.id === 'group:grp-000000c1')?.needsYou).toBe(0);
     expect(m.needsYou).toBe(1);
   });
+
+  it('a bot row whose question is only in a group\'s handoff thread leads there, and previews its group post', () => {
+    const ask = card({ workspaceId: 'w1', actor: { kind: 'human' }, kind: 'human', threadId: G, refs: { botIds: [LEAD] }, at: 3_100 });
+    const open = card({ workspaceId: 'w1', actor: { kind: 'system' }, kind: 'fact', threadId: 'handoff:h-1' as ThreadId, refs: { handoffId: 'h-1', requestCardId: ask.id }, at: 3_120 });
+    const q = card({ workspaceId: 'w1', actor: bot('w1', LEAD), kind: 'question', state: 'open', threadId: 'handoff:h-1' as ThreadId, title: 'Which branch?', at: 3_200 });
+    const m = buildBots(input({ groups: [SHIP], cards: new Map([['w1', [ask, open, q]]]) }));
+    const lead = m.conversations.find((c) => c.id === `bot:${LEAD}`);
+    expect(lead?.kind === 'bot' && lead.last).toBeNull();
+    expect(lead?.kind === 'bot' && lead.needsAt).toEqual({ conversationId: 'group:grp-000000c1', workspaceId: 'w1', threadId: 'handoff:h-1' });
+    expect(lead?.kind === 'bot' && lead.elsewhere).toEqual({ card: q, conversationId: 'group:grp-000000c1' });
+    // Something it waits on in its 1:1 keeps the row there.
+    const dmQ = card({ workspaceId: 'w1', actor: bot('w1', LEAD), kind: 'question', state: 'open', threadId: `dm:${LEAD}` as ThreadId, at: 3_300 });
+    const both = buildBots(input({ groups: [SHIP], cards: new Map([['w1', [ask, open, q, dmQ]]]) })).conversations.find((c) => c.id === `bot:${LEAD}`);
+    expect(both?.kind === 'bot' && both.needsAt).toBeUndefined();
+    expect(both?.kind === 'bot' && both.elsewhere).toBeUndefined();
+    expect(both?.needsYou).toBe(2);
+  });
 });
 
 describe('buildBots', () => {
