@@ -463,12 +463,16 @@ function AddMenu({ t, onAddBot, onNewGroup }: { t: T; onAddBot: () => void; onNe
  *  with the team (the bots alone make no room), until used or dismissed. */
 function TeamNotice({ t, workspace, onMake, onDismiss }: { t: T; workspace: string; onMake: () => void; onDismiss: () => void }) {
   return (
-    <div data-bots-team-notice role="status" className="mx-3 mb-2 flex items-center gap-2 rounded-[10px] bg-[var(--selection-subtle)] px-3 py-2">
-      <p className="min-w-0 flex-1 text-[12px] leading-snug text-[var(--text-sub)]">{t('botsPage.group.teamAdded', { workspace })}</p>
-      <Button size="sm" variant="secondary" data-bots-team-group onClick={onMake}>{t('botsPage.group.fromTeam')}</Button>
-      <button type="button" data-bots-team-dismiss aria-label={t('settings.close')} title={t('settings.close')} onClick={onDismiss} className={`wmux-bots-icon-button ${FOCUS_RING}`}>
-        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" aria-hidden="true"><line x1="3" y1="3" x2="9" y2="9" /><line x1="9" y1="3" x2="3" y2="9" /></svg>
-      </button>
+    <div data-bots-team-notice role="status" className="mx-3 mb-2 flex flex-col items-start gap-2 rounded-[10px] bg-[var(--selection-subtle)] px-3 py-2">
+      {/* The list column is narrow: the line and × share the first row and
+          the action takes its own, so neither squeezes the text. */}
+      <div className="flex w-full items-center gap-2">
+        <p data-bots-team-text className="min-w-0 flex-1 text-[12px] leading-snug text-[var(--text-sub)]">{t('botsPage.group.teamAdded', { workspace })}</p>
+        <button type="button" data-bots-team-dismiss aria-label={t('settings.close')} title={t('settings.close')} onClick={onDismiss} className={`wmux-bots-icon-button shrink-0 ${FOCUS_RING}`}>
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" aria-hidden="true"><line x1="3" y1="3" x2="9" y2="9" /><line x1="9" y1="3" x2="3" y2="9" /></svg>
+        </button>
+      </div>
+      <Button size="sm" variant="secondary" className="max-w-full shrink-0 whitespace-normal text-left" data-bots-team-group onClick={onMake}>{t('botsPage.group.fromTeam')}</Button>
     </div>
   );
 }

@@ -597,8 +597,9 @@ status bar badges, `fleet_triage` or the phone's sidebar.
   name field needed; only the lead greets, in its 1:1, and its chat opens.
   Its tooltip names the five and says the owner talks to the lead. Add
   team makes the bots only, never a group (owner decision 2026-10-15):
-  then one row under the list header, on the `--selection-subtle` fill,
-  says the team was added and offers **Make a group chat with this team**
+  then one notice under the list header, on the `--selection-subtle` fill,
+  says the team was added (that line and its × on the first row) and offers
+  **Make a group chat with this team** on its own row below
   ("이 팀으로 그룹 채팅 만들기", secondary; × dismisses it), which opens New
   group chat filled in — the workspace's name and the five ticked.
 - **First run (owner decision 2026-10-14):** with no bot yet the page is

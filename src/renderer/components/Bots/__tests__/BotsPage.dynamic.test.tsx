@@ -309,6 +309,15 @@ describe('Bots page', () => {
     // No group was made; the list offers one.
     expect(groupCalls).toEqual([]);
     expect(q('[data-bots-team-notice]')!.textContent).toContain('Make a group chat with this team');
+    // The narrow column: the line and × share a row, the action has its own
+    // and never shrinks the line to a word per row.
+    const notice = q('[data-bots-team-notice]')!;
+    const line = q('[data-bots-team-text]')!;
+    expect(line.parentElement!.contains(q('[data-bots-team-dismiss]'))).toBe(true);
+    expect(line.parentElement!.contains(q('[data-bots-team-group]'))).toBe(false);
+    expect(q('[data-bots-team-group]')!.parentElement).toBe(notice);
+    expect(q('[data-bots-team-group]')!.className).toContain('shrink-0');
+    expect(notice.className).toContain('flex-col');
     act(() => q('[data-bots-team-group]')!.click());
     const dialog = document.querySelector('[data-testid="bots-group-dialog"]')!;
     expect(dialog.querySelector<HTMLInputElement>('[data-bots-group-name]')!.value).toBe('api');
