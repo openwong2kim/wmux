@@ -568,6 +568,22 @@ describe('task.fanout.start — bot origin', () => {
       expect(r.start).not.toHaveBeenCalled();
     });
 
+    it('a research task is tainted even from a clean wake (its worker reads the web)', async () => {
+      const r = rig('lead', {}, { builtinPresets: true });
+      r.setTainted(false);
+      expect((await r.call({ idempotencyKey: 'wake:w-1:1', titles: ['q'], prompt: 'q', preset: 'research' }, botCtx('lead'))).status).toBe('accepted');
+      await r.flush();
+      expect((r.start.mock.calls[0][0] as FanOutRequest).caller).toEqual({ kind: 'bot', botId: BOT_ID, tainted: true });
+    });
+
+    it('a bot whose workers run on codex is told research needs claude workers', async () => {
+      const r = rig('lead', { repo: undefined, workerAgent: { agent: 'codex', model: 'gpt-6.1-sol', effort: 'low' } }, { builtinPresets: true });
+      const err = errorOf(await r.call({ idempotencyKey: 'wake:w-1:1', titles: ['q'], prompt: 'q', preset: 'research' }, botCtx('lead')));
+      expect(err.code).toBe('FAILED_PRECONDITION');
+      expect(err.message).toMatch(/claude workers only[\s\S]*codex/);
+      expect(r.start).not.toHaveBeenCalled();
+    });
+
     it('a bot with a repository runs research outside it too', async () => {
       const r = rig('lead', {}, { builtinPresets: true });
       expect((await r.call({ idempotencyKey: 'wake:w-1:1', titles: ['q'], prompt: 'q', preset: 'research' }, botCtx('lead'))).status).toBe('accepted');
