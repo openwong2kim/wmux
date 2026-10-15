@@ -22,8 +22,18 @@ export function dubiousOwnership(stderr: string, path: string): { command: strin
 }
 
 /** One sentence for the owner: why git refused `path`, and what to run if
- *  they trust it. */
-export function dubiousOwnershipMessage(path: string, command: string): string {
+ *  they trust it. `taskFolders`: wmux's task worktree root. Git for Windows
+ *  checks a task worktree whose repository is inside WSL by the worktree's
+ *  own path, so one `'<root>/*'` entry (git 2.46+ reads a trailing `/*` as
+ *  "everything under") covers every task folder instead of one per task. */
+export function dubiousOwnershipMessage(path: string, command: string, taskFolders?: string): string {
+  const all = taskFolders ? `git config --global --add safe.directory '${taskFolders.replace(/\\/g, '/').replace(/\/+$/, '')}/*'` : '';
   return `git refuses to use ${path} because another user owns it ("dubious ownership"; Git for Windows sees every repository inside WSL that way). `
-    + `If you trust this repository, run \`${command}\` and try again. wmux does not add this exception itself.`;
+    + `If you trust this repository, run \`${command}\` and try again.`
+    + (all ? ` Its task folders need one more, once for all of them: \`${all}\`.` : '')
+    + ' wmux does not add this exception itself.';
 }
+
+/** A read git refused over ownership: its message is the explanation, so a
+ *  caller puts it first. */
+export class DubiousOwnershipError extends Error {}

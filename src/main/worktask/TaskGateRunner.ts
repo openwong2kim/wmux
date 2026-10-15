@@ -105,9 +105,10 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { spawn as nodeSpawn } from 'node:child_process';
 import { getExecEnv } from '../../shared/execEnv';
+import { getWmuxHomeDir } from '../../shared/constants';
 import { LEDGER_GATE_TAIL_MAX_BYTES, type LedgerGateResult } from '../../shared/ledger';
 import { runWorkerGitRead as git } from './workerGit';
-import { dubiousOwnership, dubiousOwnershipMessage } from '../git/dubiousOwnership';
+import { DubiousOwnershipError, dubiousOwnership, dubiousOwnershipMessage } from '../git/dubiousOwnership';
 import type { LedgerPort } from './ledgerPort';
 
 /** 15 minutes. A gate is a lint+test run, not a build farm; past this the
@@ -365,13 +366,20 @@ async function defaultReadHead(worktreePath: string): Promise<string | null> {
   return r.code === 0 && /^[0-9a-f]{40}([0-9a-f]{24})?$/.test(sha) ? sha : null;
 }
 
+/** wmux's task worktree root when `worktreePath` is under it, else undefined. */
+function taskFolderRootOf(worktreePath: string): string | undefined {
+  const root = path.join(getWmuxHomeDir(), 'worktrees');
+  const rel = path.relative(root, path.resolve(worktreePath));
+  return rel && !rel.startsWith('..') && !path.isAbsolute(rel) ? root : undefined;
+}
+
 async function defaultReadBaseFile(worktreePath: string, ref: string, file: string): Promise<string | null> {
   const commit = await git(['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], worktreePath);
   if (commit.code !== 0) {
     // A worktree whose gitdir another user owns (a repository inside WSL, for
     // Git for Windows): say so, with the command, not "cannot be read".
     const untrusted = dubiousOwnership(commit.stderr, worktreePath);
-    if (untrusted) throw new Error(dubiousOwnershipMessage(worktreePath, untrusted.command));
+    if (untrusted) throw new DubiousOwnershipError(dubiousOwnershipMessage(worktreePath, untrusted.command, taskFolderRootOf(worktreePath)));
     throw new Error(`the base ref ${ref} cannot be read`);
   }
   const exists = await git(['cat-file', '-e', `${ref}:${file}`], worktreePath);
@@ -581,6 +589,8 @@ export class TaskGateRunner {
       try {
         raw = await this.readBaseFile(worktreePath, baseRef, 'package.json');
       } catch (err) {
+        // Git refusing the folder over ownership is the whole story: it leads.
+        if (err instanceof DubiousOwnershipError) return { unavailable: err.message };
         return { unavailable: `package.json on ${baseRef} could not be read (${err instanceof Error ? err.message : String(err)})` };
       }
       const base = raw === null ? {} : scriptsOf(raw);
@@ -604,6 +614,7 @@ export class TaskGateRunner {
         try {
           npmrc = await this.readBaseFile(worktreePath, baseRef, '.npmrc');
         } catch (err) {
+          if (err instanceof DubiousOwnershipError) return { unavailable: err.message };
           return { unavailable: `.npmrc on ${baseRef} could not be read (${err instanceof Error ? err.message : String(err)})` };
         }
         const here = this.fileExists(path.join(worktreePath, '.npmrc'));

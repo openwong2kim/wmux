@@ -14,7 +14,9 @@ vi.mock('../workerGit', async (importOriginal) => {
   };
 });
 
+import path from 'node:path';
 import { TaskGateRunner } from '../TaskGateRunner';
+import { getWmuxHomeDir } from '../../../shared/constants';
 
 describe('the gate on a worktree git will not open', () => {
   it('is unavailable with the ownership reason and the exact command', async () => {
@@ -27,7 +29,23 @@ describe('the gate on a worktree git will not open', () => {
     const r = await runner.resolveSteps('/tmp/wt', '/repo', 'origin/main');
     expect(r).toHaveProperty('unavailable');
     const why = (r as { unavailable: string }).unavailable;
-    expect(why).toMatch(/^package\.json on origin\/main could not be read \(git refuses to use \/tmp\/wt because another user owns it/);
+    // The ownership refusal leads: it is the whole reason.
+    expect(why).toMatch(/^git refuses to use \/tmp\/wt because another user owns it/);
     expect(why).toContain('`git config --global --add safe.directory C:/Users/me/.wmux/worktrees/r/t-1`');
+    // Not a wmux task folder: no hint for all of them.
+    expect(why).not.toContain('/*');
+  });
+
+  it('a wmux task folder also gets the one entry that covers every task folder', async () => {
+    const runner = new TaskGateRunner({
+      ledger: { update: vi.fn() } as never,
+      readPackageScripts: () => ({ lint: 'eslint .', test: 'vitest run' }),
+      depsState: () => 'ok' as const,
+      now: () => 1,
+    });
+    const root = path.join(getWmuxHomeDir(), 'worktrees');
+    const r = await runner.resolveSteps(path.join(root, 'abc123', 'task-1'), '/repo', 'origin/main');
+    const why = (r as { unavailable: string }).unavailable;
+    expect(why).toContain(`\`git config --global --add safe.directory '${root.replace(/\\/g, '/')}/*'\``);
   });
 });

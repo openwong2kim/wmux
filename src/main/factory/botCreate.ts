@@ -32,6 +32,7 @@ import { TEAM_TEMPLATES, type FactoryBotCreateResult, type FactoryBotCreateTeamR
 import { BOTS_MAX } from './botStore';
 import type { WakeItem } from '../../shared/wake';
 import { normalizeRepoKey } from '../../shared/repoKey';
+import { getWmuxHomeDir } from '../../shared/constants';
 import { dmThreadId } from '../../shared/room';
 import { git as runGit, type GitResult } from '../git/git';
 import { dubiousOwnership, dubiousOwnershipMessage } from '../git/dubiousOwnership';
@@ -49,6 +50,13 @@ export type BotRepoResult =
   | { ok: true; repo: { repoKey: string; repoPath: string } }
   | { ok: false; code: 'invalid_argument' | 'not_a_repo' | 'repo_untrusted' | 'no_remote'; message: string };
 
+/** A repository inside WSL (`\\wsl.localhost\<distro>\…`, `\\wsl$\…`): its bot's
+ *  task worktrees on Windows are checked by their own path too, so the hint
+ *  names wmux's task folder root. */
+function taskFoldersFor(folder: string): string | undefined {
+  return /^(?:\\\\|\/\/)(?:wsl\$|wsl\.localhost)[\\/]/i.test(folder) ? path.join(getWmuxHomeDir(), 'worktrees') : undefined;
+}
+
 /** The bot repo a picked folder names: its git root and origin's repo key. */
 export async function resolveBotRepo(folder: unknown, deps: BotRepoDeps = {}): Promise<BotRepoResult> {
   if (typeof folder !== 'string' || folder.length === 0 || folder.length > 4096 || !path.isAbsolute(folder)) {
@@ -62,7 +70,7 @@ export async function resolveBotRepo(folder: unknown, deps: BotRepoDeps = {}): P
     // A repository git will not open (another user's: every WSL one, for Git
     // for Windows) is not "not a checkout": say what to run.
     const untrusted = top ? dubiousOwnership(top.stderr, folder) : null;
-    if (untrusted) return { ok: false, code: 'repo_untrusted', message: dubiousOwnershipMessage(folder, untrusted.command) };
+    if (untrusted) return { ok: false, code: 'repo_untrusted', message: dubiousOwnershipMessage(folder, untrusted.command, taskFoldersFor(folder)) };
     return { ok: false, code: 'not_a_repo', message: `${folder} is not a git checkout.` };
   }
   let repoPath = root;
@@ -74,7 +82,7 @@ export async function resolveBotRepo(folder: unknown, deps: BotRepoDeps = {}): P
   const remote = await git(['remote', 'get-url', 'origin'], repoPath).catch(() => null);
   const url = remote && remote.code === 0 ? remote.stdout.trim() : '';
   const untrustedRoot = !url && remote ? dubiousOwnership(remote.stderr, repoPath) : null;
-  if (untrustedRoot) return { ok: false, code: 'repo_untrusted', message: dubiousOwnershipMessage(repoPath, untrustedRoot.command) };
+  if (untrustedRoot) return { ok: false, code: 'repo_untrusted', message: dubiousOwnershipMessage(repoPath, untrustedRoot.command, taskFoldersFor(repoPath)) };
   if (!url) return { ok: false, code: 'no_remote', message: `${repoPath} has no origin remote.` };
   const repoKey = normalizeRepoKey(parseRemoteKey(url));
   if (!repoKey) return { ok: false, code: 'no_remote', message: `The origin remote of ${repoPath} does not name an owner/repo repository.` };

@@ -41,5 +41,8 @@ describe('dubiousOwnership', () => {
     expect(m).toContain('\\\\wsl.localhost\\Ubuntu\\home\\dev\\r');
     expect(m).toContain("`git config --global --add safe.directory '/x'`");
     expect(m).toMatch(/wmux does not add this exception itself/);
+    expect(m).not.toContain('/*');
+    const all = dubiousOwnershipMessage('C:\\Users\\me\\.wmux\\worktrees\\h\\t', "git config --global --add safe.directory 'C:/x'", 'C:\\Users\\me\\.wmux\\worktrees\\');
+    expect(all).toContain("`git config --global --add safe.directory 'C:/Users/me/.wmux/worktrees/*'`");
   });
 });
