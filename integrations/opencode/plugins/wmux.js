@@ -757,7 +757,9 @@ export function setupV2(ctx) {
     const data = event?.data ?? {};
     if (typeof type !== 'string') return;
     const sessionId = nonEmptyStr(data.sessionID) ?? nonEmptyStr(data.form?.sessionID);
-    const claim = () => claimEvent(nonEmptyStr(event.id) ? `${event.id}` : `${type}:${sessionId}:${data.id ?? data.requestID ?? data.form?.id ?? ''}`);
+    // Every 2.x event carries an id. One without it is never claimed: a
+    // made-up key would also match the next turn of the same session.
+    const claim = () => claimEvent(nonEmptyStr(event.id));
 
     if (type === 'session.execution.succeeded' || type === 'session.execution.failed'
       || (type === 'session.execution.interrupted' && STOP_ON_INTERRUPT.has(data.reason))) {
