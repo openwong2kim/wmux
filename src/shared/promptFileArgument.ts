@@ -76,7 +76,29 @@ const escapeRegExp = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/
 const POSIX_PROMPT_ARGUMENT = /"\$\(cat '(?:[^']|'\\'')*'\)"/.source;
 const WIN_PROMPT_ARGUMENT =
   /"\$\(Get-Content -Raw -Encoding UTF8 -LiteralPath '(?:[^']|'')*' \| /.source + escapeRegExp(PS_LEGACY_ARGV_QUOTE) + /\)"/.source;
-const PROMPT_FILE_ARGUMENT = new RegExp(`(^|\\s)(?:${POSIX_PROMPT_ARGUMENT}|${WIN_PROMPT_ARGUMENT})(?=\\s|$)`, 'g');
+/** #2231 — cmd.exe evaluates no `$(…)`, so a cmd pane's claude was handed the
+ *  PowerShell expression as its prompt. There the argument names the file
+ *  instead (cmdPromptFileArgument). */
+const CMD_PROMPT_LEAD = 'Read your task from this file and follow it: ';
+// A drive path with forward slashes and nothing any shell would expand or end
+// the quoted word on: `"`, `%`, `!` (cmd), `$` and a backtick (PowerShell,
+// POSIX) — the guards strip this shape as wmux's own, so it must stay inert.
+const CMD_PROMPT_ARGUMENT = `"${escapeRegExp(CMD_PROMPT_LEAD)}[A-Za-z]:/[^"%!$\`\\r\\n]*"`;
+const PROMPT_FILE_ARGUMENT = new RegExp(`(^|\\s)(?:${POSIX_PROMPT_ARGUMENT}|${WIN_PROMPT_ARGUMENT}|${CMD_PROMPT_ARGUMENT})(?=\\s|$)`, 'g');
+
+/**
+ * The prompt argument for a cmd.exe pane: a short prompt naming the prompt
+ * file, `"Read your task from this file and follow it: C:/…/prompt.md"`.
+ * cmd has no command substitution, and a prompt's text (`" & % ^ < > |`,
+ * newlines) cannot ride a cmd command line intact, so the text stays in its
+ * file and claude reads it from there. Null when the path cannot be written
+ * that way: not a drive path, or holding `"`, `%` or `!`. Pure.
+ */
+export function cmdPromptFileArgument(promptPath: string): string | null {
+  const p = promptPath.replace(/\\/g, '/');
+  if (!/^[A-Za-z]:\//.test(p) || /["%!$`\r\n]/.test(p)) return null;
+  return `"${CMD_PROMPT_LEAD}${p}"`;
+}
 
 /** The line with every prompt-file argument wmux builds taken out, so what is
  *  left can be checked for a user's own command chain. */
@@ -102,10 +124,20 @@ const WIN_PROMPT_ARGUMENT_PATH = new RegExp(
  * other line and every other shell: PowerShell reads the shape it was built
  * for. Pure.
  */
-export function promptFileArgumentForShell(line: string, opts: { wsl: boolean }): string {
-  if (!opts.wsl) return line;
+export function promptFileArgumentForShell(line: string, opts: { wsl: boolean; cmd?: boolean }): string {
+  if (!opts.wsl && !opts.cmd) return line;
   return line.replace(WIN_PROMPT_ARGUMENT_PATH, (whole, lead: string, quoted: string) => {
-    const mounted = toWslPath(quoted.replace(/''/g, "'"));
+    const file = quoted.replace(/''/g, "'");
+    if (opts.cmd) {
+      const named = cmdPromptFileArgument(file);
+      return named === null ? whole : `${lead}${named}`;
+    }
+    const mounted = toWslPath(file);
     return mounted === null ? whole : `${lead}${promptFileArgument(mounted, 'linux')}`;
   });
+}
+
+/** A cmd.exe shell path (`cmd`, `cmd.exe`, `C:\\Windows\\System32\\cmd.exe`). Pure. */
+export function isCmdShellPath(shell: string | undefined | null): boolean {
+  return typeof shell === 'string' && /(^|[\\/])cmd(\.exe)?$/i.test(shell.trim());
 }

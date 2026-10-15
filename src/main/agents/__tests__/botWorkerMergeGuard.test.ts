@@ -339,7 +339,7 @@ describe('pty:create applies the guard (source-level lock)', () => {
     // The stages, in order: quota, the tool level (or, for a bot worker's
     // claude line, the guard's own wmux server), codex guard, merge guard, pin.
     expect(src).toContain('let staged = await withAccountQuota(options);');
-    expect(src).toContain('const wsl = isWslShell(createShell(options));');
+    expect(src).toContain('const wsl = isWslShell(shellPath);');
     expect(src).toMatch(/withBotWorkerMergeGuard\(await guardCodexBotWorker\(staged, botWorker\), botWorker, \{\}, \{ wsl,/);
     expect(src).toContain('return { options: withLaunchSessionPin(guarded), launch: { ...launchOfCodex(guarded), ...guardedLaunchOf(guarded) } };');
     expect(src.split('stampFanoutTaskPane(options);').length - 1).toBe(2);
@@ -353,7 +353,7 @@ describe('pty:create applies the guard (source-level lock)', () => {
     expect(src).toContain('launch: { ...launchOfCodex(guarded), ...guardedLaunchOf(guarded) }');
     expect(src.split('forgetBotWorkerSession(id);').length - 1).toBe(2);
     // A resume line typed through main gets the session guard.
-    expect(src).toMatch(/IPC\.PTY_WRITE_LAUNCH[\s\S]{0,1400}const shaped = promptFileArgumentForShell\(text, \{ wsl: isWslShell\(getPtyShell\(id\)\) \}\);\s+const line = sanitizePtyText\(await guardBotWorkerSessionText\(id, shaped, 'write-launch', folders/);
+    expect(src).toMatch(/IPC\.PTY_WRITE_LAUNCH[\s\S]{0,1400}const shaped = promptFileArgumentForShell\(text, \{ wsl: isWslShell\(getPtyShell\(id\)\), cmd: process\.platform === 'win32' && isCmdShellPath\(getPtyShell\(id\)\) \}\);\s+const line = sanitizePtyText\(await guardBotWorkerSessionText\(id, shaped, 'write-launch', folders/);
   });
 
   it('the resume writers type through main, and fan-out marks a bot\'s spawn around the renderer round trip', () => {
