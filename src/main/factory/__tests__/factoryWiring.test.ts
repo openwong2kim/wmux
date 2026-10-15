@@ -661,6 +661,31 @@ describe('stopTaskWorker (a stop of a bot task\'s worker)', () => {
     }
   });
 
+  it('counts only panes whose agent it stopped: a plain shell pane is closed but is no worker', async () => {
+    const d = daemon(() => ({ ok: true, stopped: false }));
+    try {
+      expect(await stopTaskWorker(entry, d.client, () => ['own'])).toBe(0);
+      expect(d.calls).toEqual(['stopAgent:own', 'destroy:own']);
+    } finally {
+      fs.rmSync(d.wt, { recursive: true, force: true });
+    }
+  });
+
+  it('agentsOnly (a task stopped before): stops a leftover agent and keeps every pane', async () => {
+    const left = daemon();
+    const shell = daemon(() => ({ ok: true, stopped: false }));
+    try {
+      expect(await stopTaskWorker(entry, left.client, () => ['own'], { agentsOnly: true })).toBe(1);
+      expect(left.calls).toEqual(['stopAgent:own']);
+      // Only a plain shell is left: nothing stopped, nothing counted, the pane stays.
+      expect(await stopTaskWorker(entry, shell.client, () => ['own'], { agentsOnly: true })).toBe(0);
+      expect(shell.calls).toEqual(['stopAgent:own']);
+    } finally {
+      fs.rmSync(left.wt, { recursive: true, force: true });
+      fs.rmSync(shell.wt, { recursive: true, force: true });
+    }
+  });
+
   it('an agent the daemon could not stop fails the stop and destroys nothing', async () => {
     const d = daemon(() => ({ ok: false, code: 'still_running' }));
     try {

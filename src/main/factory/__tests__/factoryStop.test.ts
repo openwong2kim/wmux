@@ -306,6 +306,25 @@ describe('stopFactoryWork and resumed workers', () => {
   });
 });
 
+describe('a task stopped before (Bots off after a Stop)', () => {
+  it('re-stops only a leftover agent, keeps its panes, and counts nothing when none was left', async () => {
+    await task('t-old', LEAD);
+    await task('t-live', LEAD);
+    const first = ports();
+    await stopFactoryWork(first.p, { botId: LEAD });
+    await task('t-run', LEAD);
+    // t-old's pane was reopened as a plain shell; t-live's agent outlived the stop.
+    const stopWorker = vi.fn(async (entry: LedgerEntry, opts?: { agentsOnly?: boolean }): Promise<number> => {
+      if (opts?.agentsOnly === true) return entry.id === 't-live' ? 1 : 0;
+      return 1;
+    });
+    const r = ports({ stopWorker });
+    expect(await stopFactoryWork(r.p, { off: true })).toMatchObject({ ok: true, workersStopped: 2, tasksCancelled: 1 });
+    for (const id of ['t-old', 't-live']) expect(stopWorker).toHaveBeenCalledWith(expect.objectContaining({ id }), { agentsOnly: true });
+    expect(stopWorker.mock.calls.find((c) => c[0].id === 't-run')?.[1]).toBeUndefined();
+  });
+});
+
 describe('late stops and stopped wakes (review fixes, PR #2164)', () => {
   it('stops only the tasks whose launch was under way at the stop; new work the bot starts right after runs', async () => {
     const r = ports({ now: () => 1_000, launchesInFlight: (botId) => (botId === LEAD ? ['t-late'] : []) });

@@ -441,11 +441,18 @@ export function daemonRpc(client: () => Daemon | null): ((method: string, params
  *  the panes a workspace owns, null when the workspace tree is not known (a
  *  session started in the folder then counts). A pane in another workspace,
  *  such as a terminal the owner opened in the folder, is never touched.
- *  How many sessions were confirmed stopped; throws when one was not. */
+ *  `agentsOnly` (the re-stop of a task stopped before): only a leftover
+ *  agent is stopped; the panes, plain shells included, stay.
+ *  How many workers were confirmed stopped: panes whose agent this call
+ *  stopped (a pane with no agent left, such as a plain shell, does not
+ *  count), plus, outside `agentsOnly`, panes whose agent the daemon cannot
+ *  stop by itself (WSL, an exec unit) that the pane stop ended. Throws when
+ *  one was not stopped. */
 export async function stopTaskWorker(
   entry: LedgerEntry,
   client: () => Daemon | null,
   workspacePtys?: (workspaceId: string) => readonly string[] | null,
+  opts: { agentsOnly?: boolean } = {},
 ): Promise<number> {
   const rpc = daemonRpc(client);
   if (!rpc) throw new Error('the daemon is not connected');
@@ -457,13 +464,21 @@ export async function stopTaskWorker(
     const all = Array.isArray(sessions) ? (sessions as Array<{ id: string; pid?: number; spawnCwd?: string }>) : [];
     return own ? all.filter((x) => own.includes(x.id)) : all;
   };
+  let agents = 0;
+  const unsupported = new Set<string>();
   for (const id of await sessionsStartedIn([worktree], { listSessions })) {
-    const r = (await rpc('session.stopAgent', { sessionId: id })) as { ok?: boolean; code?: string } | null;
+    const r = (await rpc('session.stopAgent', { sessionId: id })) as { ok?: boolean; stopped?: boolean; code?: string } | null;
+    if (r?.ok === true && r.stopped === true) agents++;
+    if (r?.code === 'unsupported') unsupported.add(id);
     // Gone already, or a pane whose agent the daemon cannot stop this way
     // (WSL, an exec unit): the pane's own stop below ends it.
     if (r?.ok !== true && r?.code !== 'no_session' && r?.code !== 'unsupported') {
       throw new Error(`the agent in ${id} was not stopped (${r?.code ?? 'no answer'})`);
     }
+  }
+  if (opts.agentsOnly === true) {
+    if (agents > 0) console.log(`[factory] stopped ${agents} leftover agent(s) of task ${entry.id}`);
+    return agents;
   }
   const stopped = await stopSessionsInDir(worktree, {
     listSessions,
@@ -475,7 +490,7 @@ export async function stopTaskWorker(
     log: (message) => console.warn(message),
   });
   if (stopped.length > 0) console.log(`[factory] stopped ${stopped.length} session(s) of task ${entry.id}`);
-  return stopped.length;
+  return agents + stopped.filter((id) => unsupported.has(id)).length;
 }
 
 /** The panes (daemon sessions) a workspace owns, stashed ones included; []
@@ -698,7 +713,7 @@ export function createFactoryWiring(deps: Pick<FactoryHostDeps, 'wmuxDir'> & Par
         botIds: () => getBotStore()?.list({}).map((b) => b.id) ?? [],
         ledger,
         gates: getSharedTaskGateRunner,
-        stopWorker: (entry) => stopTaskWorker(entry, daemon, taskWorkspacePtys),
+        stopWorker: (entry, opts) => stopTaskWorker(entry, daemon, taskWorkspacePtys, opts),
         isOff: () => !settings().enabled,
         pauseRoutines: (botId) => getRoutineStore()?.pauseFor(botId, 'stop') ?? 0,
         stopResumed: async (botId) => {
