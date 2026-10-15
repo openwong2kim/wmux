@@ -25,6 +25,7 @@ import {
 } from '../../shared/conptyWindows';
 import { ShellDetector } from '../../shared/ShellDetector';
 import { forgetPtyShell, recordPtyShell } from './ptyShellRegistry';
+import { applyWslWorkerGit, type WslWorkerGitPlan } from '../agents/wslWorkerGit';
 import { windowsPowerShellPolicyArgs } from '../../shared/pwshExecutionPolicy';
 
 export type ShellType = 'powershell' | 'bash' | 'cmd' | 'unknown';
@@ -213,6 +214,8 @@ export class PTYManager {
 
   private spawnPrepared(options?: {
     wslAccountLoginEnvKey?: 'CLAUDE_CONFIG_DIR' | 'CODEX_HOME';
+    /** #2231 — a WSL fan-out task pane's worktree git location. */
+    wslTaskGit?: { plan: WslWorkerGitPlan; autocrlf: string | null };
     shell?: string;
     /**
      * #1103 — validated WSL distro selection (`['-d', '<name>']`), prepended
@@ -305,6 +308,8 @@ export class PTYManager {
 
     // Detect shell type and inject hook
     const shellType = this.detectShellType(shell);
+    // #2231 — a fan-out task pane's worktree git location (main/agents/wslWorkerGit.ts).
+    if (wsl && options?.wslTaskGit) applyWslWorkerGit(env, options.wslTaskGit.plan, options.wslTaskGit.autocrlf);
     const hookInjection = wsl
       ? buildWslInjection({ target: wsl.target, cwd, env, integrationDir: getWmuxDir(), bashInit: BASH_INIT, wslAccountLoginEnvKey: options?.wslAccountLoginEnvKey })
       : this.buildHookInjection(shellType, env, shell);

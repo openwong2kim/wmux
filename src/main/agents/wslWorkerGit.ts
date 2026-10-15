@@ -16,6 +16,9 @@
 // GIT_DIR. Git for Windows' effective core.autocrlf goes along: its system
 // config sets `true`, the worktree is checked out with CRLF, and Linux git
 // without it reads every text file as modified.
+//
+// The pane's git is pinned to the task worktree (a `git -C <elsewhere>` there
+// still works on the task's repository): the pane exists for that task.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -58,10 +61,12 @@ function trimSlashes(p: string): string {
   return p.length > 1 ? p.replace(/\/+$/, '') : p;
 }
 
-/** The core.autocrlf value worth handing on: set and not `false`. Pure. */
+/** The core.autocrlf value to hand on: any value Git for Windows has set,
+ *  `false` included (a Linux global `true` must not convert a worktree that
+ *  was checked out without conversion). Unset: nothing. Pure. */
 export function autocrlfToPass(value: string | null | undefined): string | null {
   const v = (value ?? '').trim();
-  return v && v.toLowerCase() !== 'false' ? v : null;
+  return v || null;
 }
 
 /**
@@ -101,11 +106,18 @@ function readDotGitFile(cwd: string): string | null {
  * read is left as it was. Returns whether the environment was changed.
  */
 export async function withWslWorkerGit(env: Record<string, string>, cwd: string, distro: string | null, deps: WslWorkerGitDeps = {}): Promise<boolean> {
-  const plan = wslWorkerGitPlan(cwd, (deps.readDotGit ?? readDotGitFile)(cwd), distro);
-  if (!plan) return false;
-  // Git for Windows' effective value (system, global and local config): the
-  // one the worktree was checked out with.
-  const r = await (deps.git ?? runGit)(['config', '--get', 'core.autocrlf'], cwd).catch(() => null);
-  applyWslWorkerGit(env, plan, r && r.code === 0 ? r.stdout : null);
+  const found = await resolveWslWorkerGit(cwd, distro, deps);
+  if (!found) return false;
+  applyWslWorkerGit(env, found.plan, found.autocrlf);
   return true;
+}
+
+/** The plan for `cwd` and Git for Windows' effective core.autocrlf there
+ *  (system, global and local config: the one the worktree was checked out
+ *  with), or null when there is nothing to fix. */
+export async function resolveWslWorkerGit(cwd: string, distro: string | null, deps: WslWorkerGitDeps = {}): Promise<{ plan: WslWorkerGitPlan; autocrlf: string | null } | null> {
+  const plan = wslWorkerGitPlan(cwd, (deps.readDotGit ?? readDotGitFile)(cwd), distro);
+  if (!plan) return null;
+  const r = await (deps.git ?? runGit)(['config', '--get', 'core.autocrlf'], cwd).catch(() => null);
+  return { plan, autocrlf: r && r.code === 0 ? r.stdout : null };
 }

@@ -52,10 +52,9 @@ describe('the pane environment', () => {
     expect(env.GIT_WORK_TREE).toBeUndefined();
   });
 
-  it('core.autocrlf only when it is set and not false', () => {
+  it('core.autocrlf whenever it is set, false included; nothing when unset', () => {
     expect(autocrlfToPass('input')).toBe('input');
-    expect(autocrlfToPass('false')).toBeNull();
-    expect(autocrlfToPass('FALSE\n')).toBeNull();
+    expect(autocrlfToPass('false\n')).toBe('false');
     expect(autocrlfToPass('')).toBeNull();
     expect(autocrlfToPass(null)).toBeNull();
     const env: Record<string, string> = {};

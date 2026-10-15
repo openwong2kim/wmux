@@ -32,7 +32,7 @@ import { withheldCredentialNames } from '../../../shared/envFilter';
 import { getShellUtf8Locale } from '../../pty/shellLocale';
 import { forgetPtyShell, getPtyShell, recordPtyShell } from '../../pty/ptyShellRegistry';
 import { promptFileArgumentForShell } from '../../../shared/promptFileArgument';
-import { withWslWorkerGit } from '../../agents/wslWorkerGit';
+import { resolveWslWorkerGit, withWslWorkerGit } from '../../agents/wslWorkerGit';
 import { withDaemonCreateRollback } from './daemonCreateRollback';
 import { getWorkspaceMirror } from '../../workspace/WorkspaceMirror';
 import { scheduleInitialCommand } from './scheduleInitialCommand';
@@ -824,7 +824,11 @@ export function registerPTYHandlers(
       // #1103 — same distro injection as the daemon branch, so both modes
       // boot the same WSL distro for the same setting.
       const wslArgs = wslDistroArgs(shell, getDefaultWslDistro());
-      const instance = await ptyManager.createAsync({ shell, ...(wslArgs ? { shellArgs: wslArgs } : {}), cols, rows, workspaceId, surfaceId, env, cwd: effectiveCwd, spawnKind, wslAccountLoginEnvKey });
+      // #2231 — as the daemon branch: a WSL fan-out task pane's worktree git location.
+      const wslTaskGit = (botWorker || options?.fanoutTaskOf) && isWslShell(shell) && safeCwd
+        ? await resolveWslWorkerGit(safeCwd, wslArgs?.[1] ?? null).catch(() => null)
+        : null;
+      const instance = await ptyManager.createAsync({ shell, ...(wslArgs ? { shellArgs: wslArgs } : {}), cols, rows, workspaceId, surfaceId, env, cwd: effectiveCwd, spawnKind, wslAccountLoginEnvKey, ...(wslTaskGit ? { wslTaskGit } : {}) });
       logCwdResolution(instance.id, cwdResolution.incomingCwd, safeCwd, cwdResolution.source);
       if (botWorker) {
         try {
