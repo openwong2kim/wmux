@@ -751,7 +751,7 @@ function ChatIntro({ row, t, onPick, readOnly }: { row: FactoryBotRow; t: T; onP
   const job = row.bot.job ?? templateJob(botTemplate(row.bot), t);
   return (
     <div className="wmux-bots-intro" data-bots-intro={row.bot.id}>
-      <BotAvatar bot={row.bot} size={48} />
+      <BotAvatar bot={row.bot} size={48} working={botPresence(row) === 'running'} />
       <p className="mt-2 text-[16px] font-[var(--title-weight,500)] text-[var(--text-main)]">{t('botsPage.chat.introTitle', { name: row.bot.name })}</p>
       {job && <p className="mt-0.5 line-clamp-2 text-[13px] text-[var(--text-muted)]">{job}</p>}
       {!readOnly && (

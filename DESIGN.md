@@ -379,16 +379,29 @@ status bar badges, `fleet_triage` or the phone's sidebar.
   written in before group chats became a group named after its workspace,
   with that workspace's bots, reading on in General; a room the owner never
   wrote in is just no longer listed.
-- **Avatars (owner decision 2026-10-14, replaces the initials tiles):** a
-  bot's avatar is the picture the owner set for it, else the bot's own
-  mark: its **identity colour** and one of four shapes (circle, rounded
-  square, hexagon, rounded diamond). The shape comes from the bot's id; the
-  colour is per room, oldest bot first, in a fixed spread order (teal,
-  violet, magenta, blue, slate, then the rest) so a room's bots never share
-  one while the eight last and its first five read apart; a bot keeps its
-  colour while it exists. The mark carries a small friendly face (two dot
-  eyes and a smile in `--bg-base`) — the shared `BotAvatar`, the same mark
-  everywhere. A room stacks two of its
+- **Avatars (owner decision 2026-10-16, the Mochi crew; replaces the
+  2026-10-14 shapes):** a bot's avatar is the picture the owner set for it —
+  the picture always wins — else its **Mochi character**, one of eight
+  (Loaf, Nova, Plume, Wink, Momo, Pip, Koa, Nub; "Mochi Orb Crew v2", drawn
+  by Grok). The character is the bot's **identity colour slot**: slot *i* of
+  `BOT_IDENTITY_HUES` is character *i*, whose body wears that colour, so each
+  character keeps its designed colour. The slot is per room, oldest bot
+  first, in a fixed spread order (teal, violet, magenta, blue, slate, then
+  the rest), so a room's bots never share a character while the eight last
+  and its first five read apart; a bot keeps its character while it exists.
+  The characters' own colours are the same on light and dark looks; the
+  bot's name keeps the identity colour mixed toward `--text-main`. The add
+  form's not-yet-made bot is a still, neutral grey mochi (`--text-muted`),
+  never an identity. One shared `BotAvatar`, the same character everywhere;
+  each instance owns its gradient ids, so repeats and hidden panels never
+  share one. **Motion** (the one perpetual avatar motion, owner-approved
+  with the art): at rest a character breathes, blinks on its own stagger and
+  makes one signature twitch every few seconds; while its bot is running
+  (`working`, passed only where it reads as "busy now": the list row and an
+  empty 1:1's intro) it hops and twitches quicker. Transform only. At 24px
+  and under it only blinks, working or not, so pills and stacks stay still.
+  An avatar off screen or in a hidden panel is paused, and
+  `prefers-reduced-motion` stops all of it. A room stacks two of its
   bots' avatars and "+N" for the rest (the chat's centred pill shows up to
   three overlapping in a row) — a group chat's, its bots'. A bot's presence dot (the room's presence
   grammar; not reported is a hollow ring) sits on its avatar's corner.
@@ -1488,6 +1501,7 @@ primitives plus `Settings/SettingsLayout.tsx` (`SettingsSection`,
 | 2026-10-15 | Owner decision: the Bots rail item is listed only while the bots are on; they are turned on in Settings › Bots, whose switch description says so, and the item appears at once without leaving Settings. Turning them off while the Bots page is open returns to Workspaces; the Toggle Bots shortcut and the palette's Open Bots open Settings › Bots while they are off. The first-run panel is reached only with the bots on. Amends Rail and pages, Bots off, Add bot and First run | A Bots item on the rail from the first launch advertised a feature the owner had not chosen, and opened a page that could do nothing until the bots were on. Settings stays open after the switch because Settings › Bots has its own add form and the plan and connection settings the owner may be setting up |
 | 2026-10-15 | Owner decision: settings type and spacing were too large and loud. Settings gets its own calmer scale: regular-weight 14px row labels over quiet 12px descriptions, a 22px/500 page title, 12px nav group labels and 13px section headings in `--text-sub`, the selected nav row in the look's own selection treatment instead of a fixed accent edge, hover on `--hover-fill`, a 30×18 switch with a 24px-tall hit area, a narrower 6px select and a 680px column. Scoped to the Settings page's own rows; the shared Field recipe, dialogs, popovers and listboxes are unchanged | Bold 13px labels over 11px descriptions made every row shout at the same volume, and a fixed accent edge on the nav added a second mark for one selection. Weight and size carry the hierarchy now, with the secondary colour kept at body contrast, so a long settings page reads calmly |
 | 2026-10-15 | Owner decision: the agent bar drops Attach, Broadcast and New chat, and its Files button now toggles the file tree column (its own path-picker popover is gone); the titlebar's file tree icon is removed | The owner barely used them, and each duplicated a better home: dropping a file on a terminal or the tree's Insert path covers Attach, Multi Task covers fan-out work without pasting into plain shells, typing `/clear` covers New chat, and two file browsers (a popover and the column) plus two toggles for one column was one too many |
+| 2026-10-16 | Owner decision: a bot without a picture is its Mochi character ("Mochi Orb Crew v2", drawn by Grok), the one of its identity colour slot, replacing the four shapes with a face. The characters move: idle breath, blink and one signature twitch; a quicker hop while the bot runs; blink only at 24px and under; paused off screen; still under reduced motion. Amends Avatars and the Motion rule's "only perpetual motion" | The owner picked the crew from a design contest ("go ahead as it is"); a character tells bots apart better than a coloured shape, and its motion says which bot is busy without a word |
 
 ### Desktop conversation view
 

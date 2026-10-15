@@ -1,17 +1,20 @@
 // @vitest-environment jsdom
 //
 // Bots look like members: BotAvatar draws the owner's picture or the bot's
-// own mark — an identity colour and a shape fixed by the bot id, with a
-// small face; Settings › Factory's Add bot takes
+// Mochi character — the one of its identity colour slot, moving (idle, or
+// hopping while it works); Settings › Factory's Add bot takes
 // a name and a picture (a preview from main), the profile editor changes or
 // removes the picture on Save, and the bot list and chips show the avatar.
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createElement, act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { useStore } from '../../../stores';
 import { BOT_NAME_MAX, DEFAULT_BOT_BUDGETS, type BotProfile } from '../../../../shared/bot';
 import type { FactoryBotAvatarPickResult, FactoryBotCreateRequest } from '../../../../shared/botCreate';
-import BotAvatar, { BOT_AVATAR_SHAPES, BOT_IDENTITY_HUES, botAvatarShape, botIdentityColor, botInitials, IDENTITY_SPREAD, identityHueIndexes, noteBotIdentities } from '../BotAvatar';
+import BotAvatar, { BOT_IDENTITY_HUES, botCharacter, botIdentityColor, botInitials, IDENTITY_SPREAD, identityHueIndexes, noteBotIdentities } from '../BotAvatar';
+import { MOCHI_CHARACTERS } from '../mochiCharacters';
 import { BotChips } from '../BotChips';
 import { RoomCard } from '../RoomCard';
 import type { RoomCard as RoomCardData } from '../../../../shared/room';
@@ -93,14 +96,14 @@ function hueOf(hex: string): { h: number; s: number } {
 }
 
 describe('bot identity', () => {
-  it('a bot keeps its colour and shape; bots differ; no identity colour is a state colour', () => {
+  it('a bot keeps its colour and character; bots differ; no identity colour is a state colour', () => {
     const ids = Array.from({ length: 40 }, (_, i) => `bot-${i.toString(16).padStart(8, '0')}`);
     for (const id of ids) {
       expect(botIdentityColor(id)).toBe(botIdentityColor(id));
-      expect(BOT_AVATAR_SHAPES).toContain(botAvatarShape(id));
+      expect(botCharacter(id)).toBe(botCharacter(id));
     }
     expect(new Set(ids.map(botIdentityColor)).size).toBeGreaterThan(4);
-    expect(new Set(ids.map(botAvatarShape)).size).toBeGreaterThan(2);
+    expect(new Set(ids.map((id) => botCharacter(id).name)).size).toBeGreaterThan(4);
     // Red, orange, yellow and green (0–170°) mean error, needs you,
     // caution and done: every saturated identity hue sits outside them.
     for (const hex of BOT_IDENTITY_HUES) {
@@ -137,6 +140,20 @@ describe('bot identity', () => {
     expect(roomA.slice(1).map((b) => botIdentityColor(b.id))).toEqual(before.slice(1));
     expect(botIdentityColor(added.id)).toBe(before[0]);
   });
+
+  it('a bot\'s character is the one of its colour slot: each character wears its own designed colour', () => {
+    expect(MOCHI_CHARACTERS.map((c) => c.body)).toEqual([...BOT_IDENTITY_HUES]);
+    expect(new Set(MOCHI_CHARACTERS.map((c) => c.name)).size).toBe(BOT_IDENTITY_HUES.length);
+    // A room's bots never share a character while there are eight or fewer.
+    const room = Array.from({ length: 8 }, (_, i) => ({ id: `bot-char-${i}`, createdAt: i, workspaceId: 'ws-char' }));
+    noteBotIdentities(room);
+    const at = identityHueIndexes(room);
+    for (const b of room) {
+      expect(botCharacter(b.id)).toBe(MOCHI_CHARACTERS[at.get(b.id)!]);
+      expect(botIdentityColor(b.id)).toContain(botCharacter(b.id).body);
+    }
+    expect(new Set(room.map((b) => botCharacter(b.id).name)).size).toBe(8);
+  });
 });
 
 describe('BotAvatar', () => {
@@ -149,14 +166,87 @@ describe('BotAvatar', () => {
     expect(el.getAttribute('aria-hidden')).toBe('true');
   });
 
-  it('without a picture draws the bot\'s mark in its colour and shape, and names itself when asked', async () => {
+  it('without a picture draws the bot\'s character, and names itself when asked', async () => {
     await render(createElement(BotAvatar, { bot: { id: 'bot-00000002', name: ' ', role: 'verifier' }, size: 16, t: roleT, alt: 'Verifier' }));
     const el = container.querySelector<HTMLElement>('[data-bot-avatar]')!;
     expect(el.dataset.botAvatar).toBe('face');
-    expect(el.dataset.avatarShape).toBe(botAvatarShape('bot-00000002'));
-    expect(el.querySelector('svg g')?.getAttribute('style')).toContain('color-mix');
+    expect(el.dataset.avatarCharacter).toBe(botCharacter('bot-00000002').name);
+    expect(el.querySelector(`stop[stop-color="${botCharacter('bot-00000002').body}"]`)).not.toBeNull();
     expect(el.getAttribute('role')).toBe('img');
     expect(el.getAttribute('aria-label')).toBe('Verifier');
+  });
+
+  it('two of the same character on a page never share a gradient id, and each resolves inside its own svg', async () => {
+    const bot = { id: 'bot-00000004', name: 'Ada', role: 'lead' as const };
+    await render(createElement('div', null, createElement(BotAvatar, { bot, size: 32 }), createElement(BotAvatar, { bot, size: 32 })));
+    const svgs = [...container.querySelectorAll('svg')];
+    expect(svgs).toHaveLength(2);
+    const ids = [...container.querySelectorAll('[id]')].map((n) => n.id);
+    expect(ids.length).toBeGreaterThanOrEqual(2);
+    expect(new Set(ids).size).toBe(ids.length);
+    for (const svg of svgs) {
+      const refs = [...svg.querySelectorAll('[fill]')].map((n) => n.getAttribute('fill')!).filter((f) => f.startsWith('url(#')).map((f) => f.slice(5, -1));
+      expect(refs.length).toBeGreaterThan(0);
+      for (const ref of refs) expect(svg.querySelector(`[id="${ref}"]`)).not.toBeNull();
+    }
+  });
+
+  it('working hops: the prop toggles the class; small avatars are marked to only blink', async () => {
+    const bot = { id: 'bot-00000005', name: 'Ada', role: 'lead' as const };
+    await render(createElement(BotAvatar, { bot, size: 32 }));
+    const el = () => container.querySelector<HTMLElement>('[data-bot-avatar]')!;
+    expect(el().classList.contains('wmux-mochi')).toBe(true);
+    expect(el().classList.contains('is-working')).toBe(false);
+    expect(el().hasAttribute('data-avatar-small')).toBe(false);
+    await render(createElement(BotAvatar, { bot, size: 32, working: true }));
+    expect(el().classList.contains('is-working')).toBe(true);
+    await render(createElement(BotAvatar, { bot, size: 20, working: true }));
+    expect(el().hasAttribute('data-avatar-small')).toBe(true);
+  });
+
+  it('an offscreen avatar is paused, and only animated ones are watched', async () => {
+    const observed: Element[] = [];
+    let report: ((entries: { target: Element; isIntersecting: boolean }[]) => void) | null = null;
+    vi.resetModules();
+    vi.stubGlobal('IntersectionObserver', class {
+      constructor(cb: typeof report) { report = cb; }
+      observe(el: Element) { observed.push(el); }
+      unobserve(el: Element) { observed.splice(observed.indexOf(el), 1); }
+      disconnect() { observed.length = 0; }
+    });
+    const { default: Fresh } = await import('../BotAvatar');
+    await render(createElement('div', null,
+      createElement(Fresh, { bot: { id: 'bot-00000006', name: 'Ada', role: 'lead' }, size: 32 }),
+      createElement(Fresh, { bot: { id: 'bot-00000007', name: 'Ada', role: 'lead', avatar: PICTURE }, size: 32 }),
+      createElement(Fresh, { bot: { id: 'bot-00000008', name: 'Ada', role: 'lead' }, size: 32, placeholder: true })));
+    expect(observed).toHaveLength(1);
+    const face = container.querySelector('[data-bot-avatar="face"]')!;
+    expect(observed[0]).toBe(face);
+    act(() => report!([{ target: face, isIntersecting: false }]));
+    expect(face.hasAttribute('data-avatar-offscreen')).toBe(true);
+    act(() => report!([{ target: face, isIntersecting: true }]));
+    expect(face.hasAttribute('data-avatar-offscreen')).toBe(false);
+  });
+
+  it('the motion stylesheet stops everything under reduced motion and pauses offscreen avatars', () => {
+    const css = readFileSync(join(__dirname, '..', 'botAvatar.css'), 'utf8');
+    const reduced = css.slice(css.indexOf('@media (prefers-reduced-motion: reduce)'));
+    expect(reduced.length).toBeLessThan(css.length);
+    for (const cls of ['.wmux-mochi-body', '.wmux-mochi-eye', '.wmux-mochi-sig']) expect(reduced).toContain(cls);
+    expect(reduced).toContain('animation: none !important');
+    expect(css).toMatch(/\[data-avatar-offscreen\][^{]*\{\s*animation-play-state: paused/);
+    // Every character's animated parts carry the shared role classes the rules key on.
+    for (let i = 1; i <= 8; i++) expect(css).toContain(`.wmux-mochi.is-working .wmux-mo${i}-root`);
+  });
+
+  it('the add form\'s placeholder is a neutral, still mochi', async () => {
+    await render(createElement(BotAvatar, { bot: { id: 'bot-00000009', name: 'Ada', role: 'lead' }, size: 32, placeholder: true }));
+    const el = container.querySelector<HTMLElement>('[data-bot-avatar]')!;
+    expect(el.dataset.botAvatar).toBe('placeholder');
+    expect(el.hasAttribute('data-avatar-character')).toBe(false);
+    expect(el.classList.contains('wmux-mochi')).toBe(false);
+    expect(el.querySelector('[id], [class]')).toBeNull();
+    expect(el.querySelector('g')?.getAttribute('style')).toContain('var(--text-muted)');
   });
 
   it('never uses something other than a PNG data URL as an image', async () => {

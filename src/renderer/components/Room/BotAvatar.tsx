@@ -1,16 +1,21 @@
 // ─── A bot's avatar ──────────────────────────────────────────────────────────
 //
 // The owner's picture for the bot (BotProfile.avatar, a small square PNG main
-// wrote), or, without one, the bot's own mark: its identity colour and
-// shape, picked from the bot id, with a small friendly face (owner decision
-// 2026-10-14), so a bot keeps its mark everywhere (DESIGN.md, Bots page:
-// Avatars). Identity colours are never state colours, so a mark can never
+// wrote), or, without one, the bot's Mochi character (owner decision
+// 2026-10-16): the character of its identity colour slot, so a bot keeps its
+// character everywhere and a room's bots never share one while the eight
+// last (DESIGN.md, Bots page: Avatars). It breathes, blinks and twitches at
+// rest and hops while its bot works (`working`); botAvatar.css holds the
+// motion. Identity colours are never state colours, so a character can never
 // read as a status. `botInitials` stays for the places that write a name's
 // letters.
 //
 // Decorative by default (the name is always written beside it); pass `alt`
 // where the avatar stands alone.
+import { useEffect, useId, useRef } from 'react';
 import type { BotProfile } from '../../../shared/bot';
+import { MOCHI_CHARACTERS, type MochiCharacter } from './mochiCharacters';
+import './botAvatar.css';
 
 type T = (key: string, vars?: Record<string, string | number>) => string;
 
@@ -34,18 +39,14 @@ export function botInitials(name: string, fallback: string): string {
 
 /**
  * Bot identity colours (owner decision 2026-10-14: each bot is told apart by
- * its own colour and shape, as in the reference messenger). An identity
+ * its own colour, as in the reference messenger; since 2026-10-16 each colour
+ * is a Mochi character's body, MOCHI_CHARACTERS in the same order). An identity
  * colour is never a state colour: no red, orange, yellow or green — the
  * error, needs-you, caution and done meanings keep those. Each hue is mixed
  * toward the look's `--text-main`, so it darkens on a light look and lightens
- * on a dark one and reads on `--bg-base` as a name, and `--bg-base` reads on
- * it as the face.
+ * on a dark one and reads on `--bg-base` as a name.
  */
 export const BOT_IDENTITY_HUES = ['#3d6ff5', '#5b5bd6', '#7c4ddb', '#9d3fd1', '#c0359f', '#0b8fb0', '#2a8fd8', '#5a6b8c'] as const;
-
-/** The avatar's shapes (SVG, 24×24 box). */
-export const BOT_AVATAR_SHAPES = ['circle', 'square', 'hexagon', 'diamond'] as const;
-export type BotAvatarShape = (typeof BOT_AVATAR_SHAPES)[number];
 
 function idHash(botId: string): number {
   let h = 0;
@@ -114,18 +115,44 @@ export function botIdentityColor(botId: string): string {
   return `color-mix(in oklab, ${hue} 72%, var(--text-main))`;
 }
 
-/** A bot's avatar shape (the same id, the same shape). */
-export function botAvatarShape(botId: string): BotAvatarShape {
-  return BOT_AVATAR_SHAPES[Math.floor(idHash(botId) / BOT_IDENTITY_HUES.length) % BOT_AVATAR_SHAPES.length];
+/** A bot's character: the one of its identity colour slot (the same bot,
+ *  the same character and colour). */
+export function botCharacter(botId: string): MochiCharacter {
+  return MOCHI_CHARACTERS[hueIndex(botId)];
 }
 
-function ShapePath({ shape }: { shape: BotAvatarShape }) {
-  switch (shape) {
-    case 'circle': return <circle cx="12" cy="12" r="12" />;
-    case 'square': return <rect width="24" height="24" rx="6.5" />;
-    case 'hexagon': return <path d="M12 .6c.5 0 1 .1 1.4.4l8.2 4.7c.9.5 1.4 1.4 1.4 2.4v7.8c0 1-.5 1.9-1.4 2.4L13.4 23c-.9.5-1.9.5-2.8 0l-8.2-4.7C1.5 17.8 1 16.9 1 15.9V8.1c0-1 .5-1.9 1.4-2.4L10.6 1c.4-.3.9-.4 1.4-.4z" />;
-    case 'diamond': return <rect x="3.5" y="3.5" width="17" height="17" rx="5" transform="rotate(45 12 12)" />;
-  }
+/** At this edge and under, a character only blinks: pill stacks and tiny
+ *  marks stay still. */
+export const SMALL_AVATAR_PX = 24;
+
+// One observer for every animated avatar: an avatar off screen (or in a
+// hidden panel) is paused, so a long list costs nothing. Without
+// IntersectionObserver every avatar plays.
+let observer: IntersectionObserver | null = null;
+function offscreenObserver(): IntersectionObserver | null {
+  if (typeof IntersectionObserver === 'undefined') return null;
+  observer ??= new IntersectionObserver((entries) => {
+    for (const e of entries) e.target.toggleAttribute('data-avatar-offscreen', !e.isIntersecting);
+  });
+  return observer;
+}
+
+/** The neutral mark of a bot not made yet: a grey mochi, still. */
+function PlaceholderMochi() {
+  return (
+    <>
+      <g style={{ fill: 'var(--text-muted)' }}>
+        <ellipse cx="8.4" cy="21.5" rx="3" ry="1.65" />
+        <ellipse cx="15.6" cy="21.5" rx="3" ry="1.65" />
+        <circle cx="12" cy="13.4" r="8.4" />
+      </g>
+      <g style={{ fill: 'var(--bg-base)' }}>
+        <ellipse cx="9.1" cy="12.6" rx="1.5" ry="1.8" />
+        <ellipse cx="14.9" cy="12.6" rx="1.5" ry="1.8" />
+        <path d="M9.7 15.55C10.55 17.4 13.45 17.4 14.3 15.55C13.2 16.5 10.8 16.5 9.7 15.55Z" />
+      </g>
+    </>
+  );
 }
 
 export interface BotAvatarProps {
@@ -137,40 +164,62 @@ export interface BotAvatarProps {
   alt?: string;
   /** Kept for callers that pass a translator; the mark has no words. */
   t?: T;
-  /** A bot not made yet (the add form): its colour and shape come from the
-   *  id main gives it, so the face shows in a neutral circle. */
+  /** A bot not made yet (the add form): a neutral grey mochi, no identity
+   *  and no motion. */
   placeholder?: boolean;
+  /** The bot is running now: its character hops (not at SMALL_AVATAR_PX and
+   *  under). Pass it only where it reads as "busy now". */
+  working?: boolean;
 }
 
-export default function BotAvatar({ bot, size, className, alt, placeholder = false }: BotAvatarProps): React.ReactElement {
+export default function BotAvatar({ bot, size, className, alt, placeholder = false, working = false }: BotAvatarProps): React.ReactElement {
+  const ref = useRef<HTMLSpanElement>(null);
+  // This instance's own gradient id: the same character can be on the page
+  // many times, some in hidden panels, so ids are never shared.
+  const gid = `bot-avatar-${useId().replace(/[^\w-]/g, '')}`;
+  const picture = typeof bot.avatar === 'string' && bot.avatar.startsWith(AVATAR_PREFIX) ? bot.avatar : null;
+  const animated = picture === null && !placeholder;
+  useEffect(() => {
+    const el = ref.current;
+    const obs = animated ? offscreenObserver() : null;
+    if (!el || !obs) return;
+    obs.observe(el);
+    return () => {
+      obs.unobserve(el);
+      el.removeAttribute('data-avatar-offscreen');
+    };
+  }, [animated]);
   const radius = Math.max(3, Math.round(size * 0.22));
   const a11y = alt ? { role: 'img', 'aria-label': alt } : { 'aria-hidden': true as const };
   const box = { width: size, height: size, borderRadius: radius };
-  if (typeof bot.avatar === 'string' && bot.avatar.startsWith(AVATAR_PREFIX)) {
+  if (picture !== null) {
     return (
       <span {...a11y} data-bot-avatar="image" className={`inline-block shrink-0 overflow-hidden ${className ?? ''}`} style={box}>
-        <img src={bot.avatar} alt="" draggable={false} width={size} height={size} className="block w-full h-full object-cover" />
+        <img src={picture} alt="" draggable={false} width={size} height={size} className="block w-full h-full object-cover" />
       </span>
     );
   }
-  // No picture: the bot's own colour and shape with a small friendly face.
-  const shape = placeholder ? 'circle' : botAvatarShape(bot.id);
+  if (placeholder) {
+    return (
+      <span {...a11y} data-bot-avatar="placeholder" className={`inline-flex shrink-0 ${className ?? ''}`} style={{ width: size, height: size }}>
+        <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true"><PlaceholderMochi /></svg>
+      </span>
+    );
+  }
+  // No picture: the bot's own character, moving.
+  const character = botCharacter(bot.id);
+  const { Art } = character;
   return (
     <span
+      ref={ref}
       {...a11y}
-      data-bot-avatar={placeholder ? 'placeholder' : 'face'}
-      data-avatar-shape={shape}
-      className={`inline-flex shrink-0 ${className ?? ''}`}
+      data-bot-avatar="face"
+      data-avatar-character={character.name}
+      data-avatar-small={size <= SMALL_AVATAR_PX ? '' : undefined}
+      className={`wmux-mochi inline-flex shrink-0${working ? ' is-working' : ''} ${className ?? ''}`}
       style={{ width: size, height: size }}
     >
-      <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true">
-        <g style={{ fill: placeholder ? 'var(--text-muted)' : botIdentityColor(bot.id) }}><ShapePath shape={shape} /></g>
-        <g style={{ fill: 'var(--bg-base)', stroke: 'var(--bg-base)' }}>
-          <circle cx="9" cy="10.5" r="1.5" stroke="none" />
-          <circle cx="15" cy="10.5" r="1.5" stroke="none" />
-          <path d="M8.6 14.4c1.9 2 4.9 2 6.8 0" fill="none" strokeWidth="1.6" strokeLinecap="round" />
-        </g>
-      </svg>
+      <svg width={size} height={size} viewBox="0 0 24 24" overflow="visible" aria-hidden="true"><Art gid={gid} /></svg>
     </span>
   );
 }

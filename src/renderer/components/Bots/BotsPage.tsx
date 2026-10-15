@@ -149,7 +149,7 @@ function ConversationRow({ c, title, preview, selected, t, onSelect, now, unread
       className={`wmux-bots-row-button ${selected ? 'is-selected' : ''} ${FOCUS_RING}`}
     >
       <span className="relative shrink-0">
-        {c.kind === 'bot' ? <BotAvatar bot={c.row.bot} size={32} /> : <RoomAvatar bots={c.bots} size={32} />}
+        {c.kind === 'bot' ? <BotAvatar bot={c.row.bot} size={32} working={botPresence(c.row) === 'running'} /> : <RoomAvatar bots={c.bots} size={32} />}
         {c.kind === 'bot' && (
           <span className="absolute -right-0.5 -bottom-0.5 inline-flex rounded-full bg-[var(--bg-mantle)] p-[2px]"><PresenceDot presence={botPresence(c.row)} /></span>
         )}
