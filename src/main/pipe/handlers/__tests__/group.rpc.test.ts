@@ -9,9 +9,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('electron', () => ({ app: { getPath: () => '/tmp', isPackaged: false, on: vi.fn() }, ipcMain: { handle: vi.fn(), removeHandler: vi.fn(), on: vi.fn() }, BrowserWindow: class {} }));
 
+vi.mock('../../../ipc/mainWindowSender', () => ({ isMainWindowSender: () => true }));
+
+import { ipcMain } from 'electron';
 import { RoomWriter } from '../../../factory/roomWriter';
-import { GroupStore, groupsFilePath, type GroupBotRef } from '../../../factory/groupStore';
-import { createGroup, listGroups, migrateRoomsToGroups, removeGroup, updateGroup } from '../group.rpc';
+import { GroupStore, getGroupStore, groupsFilePath, type GroupBotRef } from '../../../factory/groupStore';
+import { BOT_GROUP_IPC } from '../../../../shared/botGroup';
+import { createGroup, createGroupModule, listGroups, migrateRoomsToGroups, removeGroup, updateGroup } from '../group.rpc';
 
 let dir = '';
 /** Stores made by a test: their queued writes land before the dir goes. */
@@ -94,5 +98,43 @@ describe('group IPC', () => {
     expect(removeGroup({ id: made.group.id }, deps)).toEqual({ ok: true });
     expect(removeGroup({ id: made.group.id }, deps)).toMatchObject({ ok: false, code: 'not_found' });
     expect(listGroups({}, { store: () => null })).toMatchObject({ ok: false, code: 'not_started' });
+  });
+});
+
+describe('group IPC at boot (before the factory starts)', () => {
+  type Handler = (e: unknown, req: unknown) => Promise<unknown>;
+  const handlerFor = (channel: string): Handler => {
+    const calls = vi.mocked(ipcMain.handle).mock.calls.filter((c) => c[0] === channel);
+    return calls[calls.length - 1][1] as unknown as Handler;
+  };
+
+  it('is registered with the module; a list waits for the store and answers once it starts, a change refuses until then', async () => {
+    vi.mocked(ipcMain.handle).mockClear();
+    const send = vi.fn();
+    const win = { isDestroyed: () => false, webContents: { send } };
+    const mod = createGroupModule({ wmuxDir: () => dir, getMainWindow: () => win as never }, { waitMs: 5_000 });
+    try {
+      expect(vi.mocked(ipcMain.handle).mock.calls.map((c) => c[0])).toEqual(expect.arrayContaining(Object.values(BOT_GROUP_IPC)));
+      expect(getGroupStore()).toBeNull();
+      const listed = handlerFor(BOT_GROUP_IPC.list)({}, {});
+      expect(await handlerFor(BOT_GROUP_IPC.create)({}, { workspaceId: 'w', name: 'n', memberIds: [] })).toMatchObject({ ok: false, code: 'not_started' });
+      await mod.start?.();
+      expect(await listed).toEqual({ ok: true, groups: [] });
+      // A list that gave up waiting is told to read again.
+      expect(send).toHaveBeenCalledWith(expect.any(String), { type: 'groups-changed' });
+    } finally {
+      await getGroupStore()?.flush().catch(() => undefined);
+      await mod.dispose?.();
+    }
+  });
+
+  it('a list that waited too long answers not_started', async () => {
+    vi.mocked(ipcMain.handle).mockClear();
+    const mod = createGroupModule({ wmuxDir: () => dir, getMainWindow: () => null }, { waitMs: 20 });
+    try {
+      expect(await handlerFor(BOT_GROUP_IPC.list)({}, {})).toMatchObject({ ok: false, code: 'not_started' });
+    } finally {
+      await mod.dispose?.();
+    }
   });
 });

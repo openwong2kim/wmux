@@ -11,6 +11,11 @@
 // the workspace, with that workspace's bots, living on in the room's
 // `general` and its threads (nothing is moved or deleted). A room the owner
 // never wrote in is simply no longer listed. Room files are never touched.
+//
+// The IPC handlers are registered with the module (at boot, before any
+// window), not when it starts: the Bots page lists groups as it mounts, which
+// can be before the factory has started. Until the store is loaded a list
+// waits for it (bounded), and a change answers `not_started` at once.
 
 import path from 'node:path';
 import { ipcMain, type BrowserWindow } from 'electron';
@@ -31,7 +36,13 @@ import { isMainWindowSender } from '../../ipc/mainWindowSender';
 
 export interface GroupIpcDeps {
   store: () => GroupStore | null;
+  /** Resolves once the store is loaded, or after `timeoutMs` (absent: a list
+   *  before the store answers `not_started` at once). */
+  ready?: (timeoutMs: number) => Promise<void>;
 }
+
+/** How long a list made before the factory started waits for the store. */
+export const GROUP_STORE_WAIT_MS = 15_000;
 
 function params(raw: unknown): Record<string, unknown> {
   return raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
@@ -85,22 +96,28 @@ export function removeGroup(raw: unknown, deps: GroupIpcDeps): BotGroupRemoveRes
   return { ok: true };
 }
 
+/** listGroups, after waiting (bounded) for a store that is not loaded yet. */
+export async function listGroupsWhenReady(raw: unknown, deps: GroupIpcDeps, timeoutMs: number = GROUP_STORE_WAIT_MS): Promise<BotGroupListResult> {
+  if (!deps.store() && deps.ready) await deps.ready(timeoutMs);
+  return listGroups(raw, deps);
+}
+
 /** The main-window IPC handlers. Each answers only the main window's top
  *  frame and never throws. */
-export function registerGroupIpc(getWindow: () => BrowserWindow | null, deps: GroupIpcDeps): () => void {
+export function registerGroupIpc(getWindow: () => BrowserWindow | null, deps: GroupIpcDeps, opts: { waitMs?: number } = {}): () => void {
   const channels = Object.values(BOT_GROUP_IPC);
   for (const c of channels) ipcMain.removeHandler(c);
   const denied = { ok: false, code: 'not_authorized', message: 'only the wmux window may do this' } as const;
-  const guard = <R>(fn: (req: unknown) => R) =>
+  const guard = <R>(fn: (req: unknown) => R | Promise<R>) =>
     async (e: Electron.IpcMainInvokeEvent, req: unknown): Promise<R | typeof denied | { ok: false; code: 'error'; message: string }> => {
       if (!isMainWindowSender(e, getWindow())) return denied;
       try {
-        return fn(req);
+        return await fn(req);
       } catch {
         return { ok: false, code: 'error', message: 'The request failed.' };
       }
     };
-  ipcMain.handle(BOT_GROUP_IPC.list, guard((req) => listGroups(req, deps)));
+  ipcMain.handle(BOT_GROUP_IPC.list, guard((req) => listGroupsWhenReady(req, deps, opts.waitMs)));
   ipcMain.handle(BOT_GROUP_IPC.create, guard((req) => createGroup(req, deps)));
   ipcMain.handle(BOT_GROUP_IPC.update, guard((req) => updateGroup(req, deps)));
   ipcMain.handle(BOT_GROUP_IPC.remove, guard((req) => removeGroup(req, deps)));
@@ -144,29 +161,52 @@ function botRefs(): GroupBotRef[] | null {
   return bots ? bots.list().map((b) => ({ id: b.id, workspaceId: b.workspaceId, createdAt: b.createdAt })) : null;
 }
 
-export function createGroupModule(deps: Pick<FactoryHostDeps, 'wmuxDir' | 'getMainWindow'>): FactoryModuleHandle {
-  let offIpc: (() => void) | null = null;
+export function createGroupModule(deps: Pick<FactoryHostDeps, 'wmuxDir' | 'getMainWindow'>, opts: { waitMs?: number } = {}): FactoryModuleHandle {
+  /** Lists waiting for the store. */
+  let waiters: Array<() => void> = [];
+  const release = (): void => {
+    const all = waiters;
+    waiters = [];
+    for (const done of all) done();
+  };
+  const ready = (timeoutMs: number): Promise<void> => new Promise((resolve) => {
+    if (getGroupStore()) {
+      resolve();
+      return;
+    }
+    const done = (): void => {
+      clearTimeout(timer);
+      waiters = waiters.filter((w) => w !== done);
+      resolve();
+    };
+    const timer = setTimeout(done, timeoutMs);
+    timer.unref?.();
+    waiters.push(done);
+  });
+  // Registered now, before the factory starts (see the header).
+  let offIpc: (() => void) | null = registerGroupIpc(deps.getMainWindow, { store: getGroupStore, ready }, opts);
+  const notify = (): void => {
+    const win = deps.getMainWindow();
+    if (win && !win.isDestroyed()) win.webContents.send(BOT_EVENT, { type: 'groups-changed' });
+  };
   return {
     start() {
       if (getGroupStore()) return;
       const file = groupsFilePath(deps.wmuxDir());
-      const store = new GroupStore(file, {
-        bots: botRefs,
-        onChange: () => {
-          const win = deps.getMainWindow();
-          if (win && !win.isDestroyed()) win.webContents.send(BOT_EVENT, { type: 'groups-changed' });
-        },
-      });
+      const store = new GroupStore(file, { bots: botRefs, onChange: notify });
       store.load();
       setGroupStore(store);
       const made = migrateRoomsToGroups(store, botRefs(), getRoomWriter());
-      offIpc = registerGroupIpc(deps.getMainWindow, { store: getGroupStore });
+      release();
+      // A list that gave up waiting reads again.
+      notify();
       console.log(`[factory] groups: ${store.list().length} loaded from ${path.basename(file)}${made.length > 0 ? ` (${made.length} made from rooms)` : ''}`);
     },
     dispose() {
       offIpc?.();
       offIpc = null;
       setGroupStore(null);
+      release();
     },
   };
 }
