@@ -37,6 +37,7 @@
 // no coalescing, no fast path, no fallback tiers. That is why the flood meter
 // below reports every signal as `fastPathed` and never `degraded`.
 
+import { isInternalForkPayload } from '../../shared/hooks/internalFork';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { HookSignalRouter } from '../../shared/hooks/HookSignalRouter';
@@ -919,7 +920,13 @@ export class HookIngest {
     // gated and ungated outcome share it, which is the point: an agent about
     // to run ANY tool is working, and this cue must rebut any open completion
     // window before the tool's own output arrives.
-    this.alarm.observe(sessionId, signal.agent, normalizeHookCue(signal));
+    // Not a tool of Claude Code's own post-turn fork (the recap, the prompt
+    // suggestion): it runs about 2 s after the Stop, and as working evidence
+    // it rebutted that Stop's completion, leaving the pane running for good
+    // (the fork's SubagentStop is skipped). Its gated tool still raises a
+    // dialog below, which is evidence of its own.
+    const internalFork = isInternalForkPayload(signal.payload);
+    if (!internalFork) this.alarm.observe(sessionId, signal.agent, normalizeHookCue(signal));
 
     // Transcript nudge: a PreToolUse means the agent is active.
     try {
@@ -969,7 +976,9 @@ export class HookIngest {
 
     if (!isGated) {
       // Non-gated tool (or a bypass session) — emit tool_started for the phone
-      // liveness header, allow.
+      // liveness header, allow. An internal fork's tool says nothing: the
+      // pane's turn is over.
+      if (internalFork) return { ok: true, sessionId };
       this.broadcast(sessionId, {
         agent: agentSlugToDisplay(signal.agent),
         status: 'running',
@@ -983,6 +992,7 @@ export class HookIngest {
     }
 
     // Gated tool — create a gate record and broadcast awaiting_permission.
+    if (internalFork) this.alarm.observe(sessionId, signal.agent, normalizeHookCue(signal));
     const workspaceId = sessions.find((s) => s.id === sessionId)?.env?.[ENV_KEYS.WORKSPACE_ID];
     const toolInputSummary = summarizeToolInput(signal.payload);
     const gateId = this.deps.approvals?.noteGateAwaiting({

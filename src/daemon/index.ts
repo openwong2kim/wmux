@@ -1,5 +1,6 @@
 // Must stay the first import: turns off working-directory executable lookup (Windows) before any module runs.
 import '../shared/exeSearchGuard';
+import { isInternalForkPayload } from '../shared/hooks/internalFork';
 import { terminalCoreRuntime, terminalCoreSelection } from '../shared/terminalCoreSettings';
 import { collectDaemonMemoryDiagnostics } from './memoryDiagnostics';
 import { loadChatSkills } from './transcript/chatSkills';
@@ -4561,7 +4562,9 @@ function registerRpcHandlers(
       // The module-level binding, not the captured `webServer` const: the
       // restore path can assign the instance after this handler is registered.
       if (!gateAnswerable()) {
-        ingest.handle({ ...signal, kind: 'agent.tool_started' });
+        // Claude Code's own post-turn fork (recap, prompt suggestion) is not
+        // the pane's turn: as tool_started it relit an idle pane for good.
+        if (!isInternalForkPayload(signal.payload)) ingest.handle({ ...signal, kind: 'agent.tool_started' });
         return { ok: true };
       }
       const gate = ingest.handlePermissionGate(signal);

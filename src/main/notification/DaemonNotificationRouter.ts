@@ -1,4 +1,5 @@
 import { HOOK_ACTIVITY_KINDS } from '../../shared/hooks/hookActivityKinds';
+import { isInternalForkPayload } from '../../shared/hooks/internalFork';
 import type { BrowserWindow } from 'electron';
 import type { DaemonClient } from '../DaemonClient';
 import type { AgentStatus } from '../../shared/types';
@@ -44,14 +45,6 @@ const AGENT_EVENT_SUPPRESSION_MS = 10_000;
  *  while the lead's question is still on screen. */
 const TURN_ENDED_STATUSES: ReadonlySet<string> = new Set(['complete', 'error', 'idle']);
 
-/** Claude Code's own forked agents carry an agent_id and no agent_type; a real
- *  subagent always carries both. Mirrors the bridge's skip-internal-fork test. */
-function isInternalForkPayload(payload: Record<string, unknown> | undefined): boolean {
-  const agentId = payload?.['agent_id'];
-  const agentType = payload?.['agent_type'];
-  return typeof agentId === 'string' && agentId.length > 0
-    && !(typeof agentType === 'string' && agentType.length > 0);
-}
 
 /**
  * The OSC 133 markers that mean the pane's shell is back at its OWN prompt:
