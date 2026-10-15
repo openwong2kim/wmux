@@ -35,7 +35,6 @@ import {
   ROOM_LIMITS,
   ROOM_RPC,
   dmThreadBot,
-  groupThreadGroup,
   parseThreadId,
   type CardKind,
   type RoomCard,
@@ -44,7 +43,6 @@ import {
   type RoomReadResult,
   type RoomResolveParams,
   type RoomThreadsParams,
-  type ThreadId,
 } from '../../../shared/room';
 import type { RpcContext } from '../../../shared/rpc';
 import { resolveThreadDecision } from '../../deck/deckDecisionStore';
@@ -57,6 +55,7 @@ import {
   getRoomWriter,
   isClientId,
   isRoomWorkspaceId,
+  namesOthersGroup,
   oneLine,
   resolveRoomPorts,
   runningWake,
@@ -165,9 +164,7 @@ export async function handleRoomPost(raw: unknown, ctx: RpcContext | undefined, 
     const wakeThread = runningWakeThread(ports, bot.botId);
     const dmOf = dmThreadBot(namedThread);
     if (dmOf && dmOf !== bot.botId && namedThread !== wakeThread) return refusal('invalid', 'a bot posts in its own 1:1 thread only');
-    if (groupThreadGroup(namedThread) && namedThread !== wakeThread && !isGroupMember(ports, bot, namedThread)) {
-      return refusal('invalid', 'a bot posts in a group chat it is in');
-    }
+    if (namesOthersGroup(ports, bot, namedThread)) return refusal('invalid', 'a bot posts in a group chat it is in');
     const threadId = namedThread ?? wakeThread ?? GENERAL_THREAD;
     const wake = runningWake(ports, bot.botId);
     const clientPostId = p.clientPostId ?? wakeOrdinals.next(wake, 'post');
@@ -233,15 +230,6 @@ export async function handleRoomPost(raw: unknown, ctx: RpcContext | undefined, 
     }
   }
   return posted;
-}
-
-/** The bot is a member of the live group chat whose thread this is. */
-export function isGroupMember(ports: Partial<FactoryRoomPorts>, bot: BotBinding, threadId: ThreadId | undefined): boolean {
-  try {
-    return ports.groups?.byThread(bot.workspaceId, threadId)?.memberIds.includes(bot.botId) === true;
-  } catch {
-    return false;
-  }
 }
 
 /** A bot card's mentions split into the bots that wake (existing, enabled,

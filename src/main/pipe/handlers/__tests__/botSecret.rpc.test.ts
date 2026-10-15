@@ -94,6 +94,16 @@ describe('secret_request', () => {
     expect(writer.get('ws-1', b.cardId)?.replyTo).toBeUndefined();
   });
 
+  it('a key or login request names a group chat\'s thread only when the bot is in that group (or its wake runs there)', () => {
+    const G = 'group:grp-0000aaaa';
+    const group = (members: string[]) => ({ byThread: (ws: string, t: unknown) => (ws === 'ws-1' && t === G ? { id: 'grp-0000aaaa', workspaceId: 'ws-1', name: 'x', memberIds: members, threadId: G, createdAt: 1, updatedAt: 1 } as never : null) });
+    deps = { ...deps, ports: () => ({ groups: group(['bot-0000ffff', 'bot-0000eeee']) }) };
+    expect(handleSecretRequest({ name: 'NPM_TOKEN', label: 'l', why: 'w', threadId: G }, botCtx, deps)).toMatchObject({ ok: false, code: 'invalid' });
+    expect(handleLoginRequest({ service: 'github', why: 'push', threadId: G }, botCtx, deps)).toMatchObject({ ok: false, code: 'invalid' });
+    deps = { ...deps, ports: () => ({ groups: group([BOT.botId, 'bot-0000eeee']) }) };
+    expect(handleSecretRequest({ name: 'NPM_TOKEN', label: 'l', why: 'w', threadId: G }, botCtx, deps)).toMatchObject({ ok: true, threadId: G });
+  });
+
   it('reaches the phone as a name: a stored value in the bot\'s words is redacted, and refs carry the name only', () => {
     store.set('NPM_TOKEN', 'abcdefgh12345678');
     const a = handleSecretRequest({ name: 'NPM_TOKEN', label: 'npm token abcdefgh12345678', why: 'publish with abcdefgh12345678', refs: { value: 'abcdefgh12345678' } }, botCtx, deps) as { cardId: string };

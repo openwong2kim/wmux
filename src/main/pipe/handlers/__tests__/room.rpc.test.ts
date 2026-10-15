@@ -344,6 +344,9 @@ describe('room.post', () => {
       const s = withGroup([a, b, late], [a.id, b.id], 'general');
       await handleRoomPost({ workspaceId: 'ws1', title: 'Hi' }, OPERATOR, s.deps);
       expect(s.wakes.map((w) => w.botId)).toEqual([a.id, b.id]);
+      // A post that names its bot by role still reaches that bot alone.
+      await handleRoomPost({ workspaceId: 'ws1', title: 'Verifier?', to: 'verifier' }, OPERATOR, s.deps);
+      expect(s.wakes.slice(2).map((w) => w.botId)).toEqual([b.id]);
     });
 
     it('a bot posts in a group it is in, or where its wake runs; never in another group', async () => {

@@ -116,6 +116,7 @@ import {
   isRoomWorkspaceId,
   oneLine,
   runningWake,
+  namesOthersGroup,
   runningWakeThread,
   sanitizeParty,
   sanitizeRefs,
@@ -1327,18 +1328,9 @@ export class HandoffRouter {
    *  not in, unless its running wake is in it (a bot asked there answers
    *  there). */
   private othersDm(sender: BotBinding, threadId: ThreadId | undefined): boolean {
+    if (namesOthersGroup(this.opts.ports(), sender, threadId)) return true;
     const of = dmThreadBot(threadId);
-    const group = groupThreadGroup(threadId);
-    if (!of && !group) return false;
-    if (of === sender.botId || threadId === runningWakeThread(this.opts.ports(), sender.botId)) return false;
-    if (group) {
-      try {
-        return this.opts.ports().groups?.byThread(sender.workspaceId, threadId)?.memberIds.includes(sender.botId) !== true;
-      } catch {
-        return true;
-      }
-    }
-    return true;
+    return !!of && of !== sender.botId && threadId !== runningWakeThread(this.opts.ports(), sender.botId);
   }
 
   // ── ask_person ──

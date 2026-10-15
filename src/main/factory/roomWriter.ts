@@ -271,6 +271,18 @@ export function runningWakeThread(ports: Partial<FactoryRoomPorts>, botId: strin
   }
 }
 
+/** A group chat's thread the bot may not name: a live group it is not in,
+ *  unless its running wake is in that thread (a bot asked there answers
+ *  there). */
+export function namesOthersGroup(ports: Partial<FactoryRoomPorts>, bot: { workspaceId: string; botId: string }, threadId: ThreadId | null | undefined): boolean {
+  if (!groupThreadGroup(threadId) || threadId === runningWakeThread(ports, bot.botId)) return false;
+  try {
+    return ports.groups?.byThread(bot.workspaceId, threadId)?.memberIds.includes(bot.botId) !== true;
+  } catch {
+    return true;
+  }
+}
+
 // ── JSONL files ────────────────────────────────────────────────────────────
 
 /** Whether appending to `file` needs a newline first: its last byte is not

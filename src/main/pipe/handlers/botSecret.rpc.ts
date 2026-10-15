@@ -35,6 +35,7 @@ import {
   getRoomWriter,
   isClientId,
   isRoomWorkspaceId,
+  namesOthersGroup,
   oneLine,
   resolveRoomPorts,
   runningWake,
@@ -97,6 +98,7 @@ function botCardPlace(
 ): { threadId: ThreadId; clientPostId?: string; replyTo?: string } | FactoryRefusal<'invalid'> {
   const named = p.threadId === undefined ? undefined : parseThreadId(p.threadId);
   if (named === null) return refusal('invalid', 'threadId is not a thread id');
+  if (namesOthersGroup(ports, bot, named)) return refusal('invalid', 'a bot posts in a group chat it is in');
   if (p.clientRequestId !== undefined && !isClientId(p.clientRequestId)) return refusal('invalid', 'clientRequestId is not a valid key');
   const threadId = named ?? runningWakeThread(ports, bot.botId) ?? GENERAL_THREAD;
   const wake = runningWake(ports, bot.botId);

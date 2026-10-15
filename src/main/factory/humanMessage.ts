@@ -23,8 +23,9 @@
 // A message posted in a group chat's thread (shared/botGroup.ts: its own
 // `group:<id>`, or `general` for a group made from the room) is for the
 // group's members: those it `mentions` (every one a member, else the post
-// is refused), else every enabled member (the oldest MENTIONS_MAX). A group
-// thread with no live group takes no post.
+// is refused), else the bot `toBotId` or `to` names (as above), else every
+// enabled member (the oldest MENTIONS_MAX). A group thread with no live
+// group takes no post.
 //
 // The card keeps the addressees main settled on (`refs.botIds`, and
 // `refs.botId` when there is exactly one, so a 1:1 stays a 1:1). Every wake
@@ -242,7 +243,7 @@ export function postHumanMessage(writer: RoomWriter, ports: Partial<FactoryRoomP
     return { ok: false, code: 'invalid', message: 'a group chat\'s message names its own bots only' };
   }
   const addressing = dmBot ? { mentions: [dmBot] }
-    : group ? { mentions: input.mentions, members: group.memberIds }
+    : group ? { mentions: input.mentions, toBotId: input.toBotId, to: input.to, members: group.memberIds }
     : { mentions: input.mentions, toBotId: input.toBotId, to: input.to };
   const { bots: to } = humanAddressees(ports.bots, workspaceId, addressing);
   const botIds = to.map((b) => b.id);
