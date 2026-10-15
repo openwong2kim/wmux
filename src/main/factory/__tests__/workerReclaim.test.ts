@@ -13,6 +13,7 @@ import {
   isReclaimableReport,
   isReclaimedSince,
   clearVerdict,
+  paneTurnEnded,
   noteWorkerAgentExit,
   reclaimWorker,
   reclaimedSessionOf,
@@ -32,6 +33,16 @@ import { STOPPED_BY_OWNER } from '../factoryStop';
 import { taskFolderFromMissions } from '../verifyPreset';
 import { RESEARCH_PRESET } from '../../../shared/ledger';
 import { TaskLedger } from '../../../daemon/ledger/TaskLedger';
+import { holdsUnsettledRunningClaim } from '../../notification/turnSettle';
+
+// The status funnel main keeps per pane (metadata.handler.ts), in memory: the
+// real module pulls in electron.
+const paneStatus = vi.hoisted(() => ({ status: new Map<string, string>(), claims: new Set<string>() }));
+vi.mock('../../ipc/handlers/metadata.handler', () => ({
+  getLastBroadcastAgentStatus: (id: string) => paneStatus.status.get(id),
+  hasOutstandingRunningClaim: (id: string) => paneStatus.claims.has(id),
+  broadcastMetadataUpdate: () => undefined,
+}));
 
 const BOT = 'bot-0000000a';
 const UUID = '2eca904b-b4cc-4243-81d3-67a121351892';
@@ -155,6 +166,45 @@ async function settled(store: ReclaimedWorkers): Promise<void> {
 }
 
 describe('a reported task whose worker sat idle (refused or failed gate)', () => {
+  it('paneTurnEnded: a reported end outweighs an outstanding claim; a running turn or a prompt does not', () => {
+    expect(paneTurnEnded('complete', false, false)).toBe(true);
+    expect(paneTurnEnded('waiting', false, false)).toBe(true);
+    expect(paneTurnEnded('running', false, false)).toBe(false);
+    expect(paneTurnEnded('awaiting_input', false, false)).toBe(false);
+    expect(paneTurnEnded('idle', true, false)).toBe(false);
+    expect(paneTurnEnded(undefined, false, false)).toBe(false);
+    expect(paneTurnEnded(undefined, false, true)).toBe(true);
+  });
+
+  it('a worker whose last hook status is complete, with its running claim still outstanding, is stopped after the 5-minute window', async () => {
+    // The Stop hook's `complete` carries no settle, so the claim the turn's
+    // 'running' made stays outstanding.
+    paneStatus.status.set('daemon-1', 'complete');
+    paneStatus.claims.add('daemon-1');
+    try {
+      const store = ReclaimedWorkers.at(dir);
+      const current = row('review_requested', { updatedAt: 1_000 });
+      const turnEnded = () => ['daemon-1'].every((id) => paneTurnEnded(paneStatus.status.get(id), holdsUnsettledRunningClaim(id), false));
+      const { ports, stopAgent } = reclaimPorts(store, [session()], { allRows: () => [current], row: () => current, turnEnded });
+      // Inside the window: nothing yet.
+      let off = installWorkerReclaim({ ...ports, now: () => 1_000 + 4 * 60_000 });
+      await new Promise((r) => setTimeout(r, 10));
+      expect(stopAgent).not.toHaveBeenCalled();
+      off();
+      off = installWorkerReclaim({ ...ports, now: () => 1_000 + 5 * 60_000 + 1 });
+      await vi.waitFor(() => expect(store.get(current.id)?.state).toBe('stopped'));
+      off();
+      expect(stopAgent).toHaveBeenCalledWith('daemon-1');
+      // The same claim while the turn still runs keeps the worker.
+      paneStatus.status.set('daemon-1', 'running');
+      expect(turnEnded()).toBe(false);
+      await settled(store);
+    } finally {
+      paneStatus.status.clear();
+      paneStatus.claims.clear();
+    }
+  });
+
   const reported = (over: Partial<LedgerEntry> = {}) => row('review_requested', { updatedAt: 1_000, ...over });
 
   it('isReclaimableReport: a bot task in review_requested, never a verify task or a pane task', () => {

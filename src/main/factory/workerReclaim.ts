@@ -326,6 +326,19 @@ export interface WorkerReclaimPorts {
   workspacePanes?: (workspaceId: string) => readonly string[] | null;
 }
 
+/** Whether one pane of a reported task's workspace ended its turn, from the
+ *  last agent status main broadcast for it. A turn that reported its end
+ *  (`complete`, `waiting`, `error`) is over even while a 'running' claim it
+ *  made is still outstanding: the Claude Stop hook's `complete` does not
+ *  withdraw that claim, which would otherwise hold until the unseen-status
+ *  window. A claim with no result after it (`unsettledClaim`), a running
+ *  turn and a prompt waiting on the owner are not idle. A status main has
+ *  not seen counts only once the report is `longAgo`. Pure. */
+export function paneTurnEnded(status: string | undefined, unsettledClaim: boolean, longAgo: boolean): boolean {
+  if (unsettledClaim || status === 'running' || status === 'awaiting_input') return false;
+  return status !== undefined || longAgo;
+}
+
 /** Attempts per ended task before the reclaim gives it up. */
 export const RECLAIM_ATTEMPTS_MAX = 3;
 
