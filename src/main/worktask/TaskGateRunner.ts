@@ -107,6 +107,7 @@ import { spawn as nodeSpawn } from 'node:child_process';
 import { getExecEnv } from '../../shared/execEnv';
 import { LEDGER_GATE_TAIL_MAX_BYTES, type LedgerGateResult } from '../../shared/ledger';
 import { runWorkerGitRead as git } from './workerGit';
+import { dubiousOwnership, dubiousOwnershipMessage } from '../git/dubiousOwnership';
 import type { LedgerPort } from './ledgerPort';
 
 /** 15 minutes. A gate is a lint+test run, not a build farm; past this the
@@ -366,7 +367,13 @@ async function defaultReadHead(worktreePath: string): Promise<string | null> {
 
 async function defaultReadBaseFile(worktreePath: string, ref: string, file: string): Promise<string | null> {
   const commit = await git(['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], worktreePath);
-  if (commit.code !== 0) throw new Error(`the base ref ${ref} cannot be read`);
+  if (commit.code !== 0) {
+    // A worktree whose gitdir another user owns (a repository inside WSL, for
+    // Git for Windows): say so, with the command, not "cannot be read".
+    const untrusted = dubiousOwnership(commit.stderr, worktreePath);
+    if (untrusted) throw new Error(dubiousOwnershipMessage(worktreePath, untrusted.command));
+    throw new Error(`the base ref ${ref} cannot be read`);
+  }
   const exists = await git(['cat-file', '-e', `${ref}:${file}`], worktreePath);
   if (exists.code !== 0) return null;
   const r = await git(['show', `${ref}:${file}`], worktreePath);

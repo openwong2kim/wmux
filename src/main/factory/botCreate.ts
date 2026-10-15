@@ -34,6 +34,7 @@ import type { WakeItem } from '../../shared/wake';
 import { normalizeRepoKey } from '../../shared/repoKey';
 import { dmThreadId } from '../../shared/room';
 import { git as runGit, type GitResult } from '../git/git';
+import { dubiousOwnership, dubiousOwnershipMessage } from '../git/dubiousOwnership';
 import { parseRemoteKey } from '../github/PrProvider';
 import type { WorkspaceListEntry } from '../../shared/workspaceMirror';
 import type { BotStore } from './botStore';
@@ -46,7 +47,7 @@ export interface BotRepoDeps {
 
 export type BotRepoResult =
   | { ok: true; repo: { repoKey: string; repoPath: string } }
-  | { ok: false; code: 'invalid_argument' | 'not_a_repo' | 'no_remote'; message: string };
+  | { ok: false; code: 'invalid_argument' | 'not_a_repo' | 'repo_untrusted' | 'no_remote'; message: string };
 
 /** The bot repo a picked folder names: its git root and origin's repo key. */
 export async function resolveBotRepo(folder: unknown, deps: BotRepoDeps = {}): Promise<BotRepoResult> {
@@ -57,7 +58,13 @@ export async function resolveBotRepo(folder: unknown, deps: BotRepoDeps = {}): P
   const realpath = deps.realpath ?? ((p: string) => fs.realpathSync(p));
   const top = await git(['rev-parse', '--show-toplevel'], folder).catch(() => null);
   const root = top && top.code === 0 ? top.stdout.trim() : '';
-  if (!root) return { ok: false, code: 'not_a_repo', message: `${folder} is not a git checkout.` };
+  if (!root) {
+    // A repository git will not open (another user's: every WSL one, for Git
+    // for Windows) is not "not a checkout": say what to run.
+    const untrusted = top ? dubiousOwnership(top.stderr, folder) : null;
+    if (untrusted) return { ok: false, code: 'repo_untrusted', message: dubiousOwnershipMessage(folder, untrusted.command) };
+    return { ok: false, code: 'not_a_repo', message: `${folder} is not a git checkout.` };
+  }
   let repoPath = root;
   try {
     repoPath = realpath(root);
@@ -66,6 +73,8 @@ export async function resolveBotRepo(folder: unknown, deps: BotRepoDeps = {}): P
   }
   const remote = await git(['remote', 'get-url', 'origin'], repoPath).catch(() => null);
   const url = remote && remote.code === 0 ? remote.stdout.trim() : '';
+  const untrustedRoot = !url && remote ? dubiousOwnership(remote.stderr, repoPath) : null;
+  if (untrustedRoot) return { ok: false, code: 'repo_untrusted', message: dubiousOwnershipMessage(repoPath, untrustedRoot.command) };
   if (!url) return { ok: false, code: 'no_remote', message: `${repoPath} has no origin remote.` };
   const repoKey = normalizeRepoKey(parseRemoteKey(url));
   if (!repoKey) return { ok: false, code: 'no_remote', message: `The origin remote of ${repoPath} does not name an owner/repo repository.` };
