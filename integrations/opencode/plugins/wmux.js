@@ -506,6 +506,7 @@ function createRequestTracker({ lookup, signal }) {
     requests.set(permId, entry);
     return entry;
   };
+  let disposed = false;
   const step = (entry, fn) => {
     entry.chain = entry.chain.then(fn).catch((err) => logEvent('permission-signal-error', { error: String(err) }));
     return entry.chain;
@@ -523,14 +524,21 @@ function createRequestTracker({ lookup, signal }) {
           const grand = own.ok && own.parent ? await lookup(own.parent) : { ok: true, parent: undefined };
           if (!own.ok || !grand.ok) { entry.done = true; logEvent('skip-permission-lookup-failed', { sessionId, permId }); return; }
           if (grand.parent) { entry.done = true; logEvent('skip-child-permission', { sessionId, permId }); return; }
-          // Answered while the session was looked up: nothing to raise.
-          if (entry.answered) return;
+          // Answered while the session was looked up, or the plugin was
+          // unloaded meanwhile: nothing to raise.
+          if (entry.answered || disposed) return;
           entry.signalled = true;
           entry.cwd = own.cwd;
           await signal('agent.awaiting_input', { sessionId, cwd: own.cwd, payload: title ? { title, permId } : { permId } }, 'opencode-perm');
         });
       }, PERMISSION_SETTLE_MS);
       entry.timer.unref?.();
+    },
+    /** Unload: no pending settle timer may signal from a retired instance. */
+    dispose() {
+      disposed = true;
+      for (const entry of requests.values()) if (entry.timer) clearTimeout(entry.timer);
+      requests.clear();
     },
     answered(permId, sessionId) {
       const entry = permId ? requests.get(permId) : undefined;
@@ -793,7 +801,10 @@ export function setupV2(ctx) {
       if (!abort.signal.aborted) logEvent('subscribe-error', { error: String(err) });
     }
   })();
-  return () => abort.abort();
+  return () => {
+    abort.abort();
+    tracker.dispose();
+  };
 }
 
 // One default export serves both runtimes. OpenCode 1.4+ reads `server`;

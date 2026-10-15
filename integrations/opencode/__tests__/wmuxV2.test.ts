@@ -81,15 +81,17 @@ function serverRig(sessions: Record<string, Session>, argv: string[]) {
     await vi.advanceTimersByTimeAsync(0);
   };
   const settle = () => vi.advanceTimersByTimeAsync(600);
+  /** Unload every instance, as OpenCode does when the plugin file changes. */
+  const unload = () => { for (const c of cleanups.splice(0)) c(); };
   const close = () => {
-    for (const c of cleanups) c();
+    unload();
     process.argv = savedArgv;
     for (const k of keys) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]; }
     rmSync(home, { recursive: true, force: true });
   };
   const log = () => readFileSync(join(dir, 'opencode-bridge.log'), 'utf8');
   const sent = () => net.signals.map((s) => ({ kind: s.kind, cwd: s.cwd, ptyId: s.ptyId, workspaceId: s.workspaceId, surfaceId: s.surfaceId, payload: s.payload }));
-  return { instance, emit, settle, close, sent, log };
+  return { instance, emit, settle, close, unload, sent, log };
 }
 
 const SESSIONS: Record<string, Session> = {
@@ -205,6 +207,17 @@ describe('OpenCode 2.x lifecycle signals', () => {
         ['agent.input_answered', '/proj/a', { permId: 'per_1' }],
         ['agent.input_answered', '/proj/b', { permId: 'frm_1' }],
       ]);
+    } finally { r.close(); }
+  });
+
+  it('an unload inside the settle window cancels the pending awaiting_input', async () => {
+    const r = serverRig(SESSIONS, ['serve', '--service']);
+    try {
+      r.instance('/proj/a');
+      await r.emit('permission.asked', { id: 'per_reload', sessionID: 'ses_a', action: 'shell', resources: ['ls'] });
+      r.unload();
+      await r.settle();
+      expect(r.sent()).toEqual([]);
     } finally { r.close(); }
   });
 

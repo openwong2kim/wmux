@@ -98,5 +98,9 @@ session's events, so each event is handled once per process.
 plugin looks up the session via the SDK `client` and drops anything with a
 `parentID` (a sub-agent session), so the orchestrator wakes on the top-level
 turn, not every internal sub-turn (mirrors opencode-notify's
-`notifyChildSessions=false`). If the lookup can't run (no client / offline) it
-fails open and treats the session as root, so a real completion is never lost.
+`notifyChildSessions=false`). On OpenCode 1.x, if the lookup can't run (no
+client / offline) the stop fails open and treats the session as root, so a real
+completion is never lost. In OpenCode 2.x's shared service a failed lookup also
+loses the session's directory, so the plugin drops that stop (logged as
+`skip-no-session-cwd`) rather than hand it to a guessed pane. A permission or
+question whose lookup failed raises nothing on either version.
