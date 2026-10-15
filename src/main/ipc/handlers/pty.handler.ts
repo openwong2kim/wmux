@@ -20,7 +20,7 @@ import { withFreshWindowsPath } from '../../../shared/windowsPathEnv';
 import { getAccountStore } from '../../account/accountStore';
 import { withAccountQuota } from '../../account/accountQuotaGate';
 import { botWorkerForCreate, clearedLaunchLine, forgetBotWorkerSession, guardedClaudeCwdRefusal, guardedCodexCwdRefusal, guardedCodexLaunch, guardedLaunchOf, isBotWorkerSession, noteBotWorkerSession, paneLaunchFolders, setWorkerMcpResolvers, withBotWorkerMergeGuard, type BotWorkerCreate } from '../../agents/botWorkerMergeGuard';
-import { namesClaude } from '../../../shared/botWorkerGuard';
+import { isPlainCmdLaunchLine, namesClaude } from '../../../shared/botWorkerGuard';
 import { namesCodex } from '../../../shared/codexWorkerGuard';
 import { getMcpTarget } from '../../../shared/mcpTargets';
 import { readTargetStatus } from '../../../shared/mcpRegistration';
@@ -219,6 +219,10 @@ async function stageCreate(options: PtyCreateOptions | undefined, botWorker: Bot
     staged = withWmuxTools(staged);
   }
   const guarded = withBotWorkerMergeGuard(await guardCodexBotWorker(staged, botWorker), botWorker, {}, { wsl, ...(level ? { level } : {}) });
+  // A bot worker's line in a cmd.exe pane is read by cmd's own rules.
+  if (botWorker && process.platform === 'win32' && isCmdShellPath(shellPath) && guarded?.initialCommand && !isPlainCmdLaunchLine(guarded.initialCommand)) {
+    throw new Error('PTY_CREATE: a bot\'s worker line for a Command Prompt pane holds characters cmd would read as more than one command');
+  }
   return { options: withLaunchSessionPin(guarded), launch: { ...launchOfCodex(guarded), ...guardedLaunchOf(guarded) } };
 }
 
@@ -972,7 +976,11 @@ export function registerPTYHandlers(
     if (botPane && !dc && namesClaude(text)) throw new Error('PTY_WRITE_LAUNCH: a bot worker\'s claude starts again only with the wmux daemon');
     const folders = dc && botPane ? await paneLaunchFolders(id, (m, p) => dc.rpc(m, p)) : undefined;
     const shaped = promptFileArgumentForShell(text, { wsl: isWslShell(getPtyShell(id)), cmd: process.platform === 'win32' && isCmdShellPath(getPtyShell(id)) });
-    const line = sanitizePtyText(await guardBotWorkerSessionText(id, shaped, 'write-launch', folders ? { folders } : {})) + (submit === true ? '\r' : '');
+    const guardedText = await guardBotWorkerSessionText(id, shaped, 'write-launch', folders ? { folders } : {});
+    if (botPane && process.platform === 'win32' && isCmdShellPath(getPtyShell(id)) && !isPlainCmdLaunchLine(guardedText)) {
+      throw new Error('PTY_WRITE_LAUNCH: a bot worker\'s line for a Command Prompt pane holds characters cmd would read as more than one command');
+    }
+    const line = sanitizePtyText(guardedText) + (submit === true ? '\r' : '');
     if (useDaemon && daemonClient) {
       if (!daemonClient.writeToSession(id, line)) throw new Error('PTY_WRITE_LAUNCH: the session is not live');
     } else {

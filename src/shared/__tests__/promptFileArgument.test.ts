@@ -135,3 +135,24 @@ describe('launchLineForShell', () => {
     expect(launchLineForShell(winLine, 'wsl.exe', 'darwin')).toBe(winLine);
   });
 });
+
+describe('a Command Prompt launch line', () => {
+  const arg = '"Read your task from this file and follow it: C:/p/prompt.md"';
+  it('passes as wmux builds it, and with any cmd metacharacter outside the argument is refused', async () => {
+    const { isPlainCmdLaunchLine } = await import('../botWorkerGuard');
+    expect(isPlainCmdLaunchLine(`claude --settings="C:\\Users\\me\\.wmux\\factory\\worker-settings\\a.json" --mcp-config="C:\\x\\b.json" --strict-mcp-config ${arg}`)).toBe(true);
+    expect(isPlainCmdLaunchLine(`claude --allowedTools "mcp__wmux__ledger_update,mcp__wmux__task_push" ${arg}`)).toBe(true);
+    for (const line of [
+      `claude 'x & calc & rem ' ${arg}`,
+      `claude ${arg} & calc`,
+      `claude ${arg} && calc`,
+      `claude ${arg} | calc`,
+      `claude ^& calc ${arg}`,
+      `claude "%COMSPEC%" ${arg}`,
+      `claude "!X!" ${arg}`,
+      `claude ${arg} > out.txt`,
+      `claude ${arg}\r\ncalc`,
+      `claude "x & calc" ${arg}`,
+    ]) expect(isPlainCmdLaunchLine(line), line).toBe(false);
+  });
+});

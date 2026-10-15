@@ -353,7 +353,7 @@ describe('pty:create applies the guard (source-level lock)', () => {
     expect(src).toContain('launch: { ...launchOfCodex(guarded), ...guardedLaunchOf(guarded) }');
     expect(src.split('forgetBotWorkerSession(id);').length - 1).toBe(2);
     // A resume line typed through main gets the session guard.
-    expect(src).toMatch(/IPC\.PTY_WRITE_LAUNCH[\s\S]{0,1400}const shaped = promptFileArgumentForShell\(text, \{ wsl: isWslShell\(getPtyShell\(id\)\), cmd: process\.platform === 'win32' && isCmdShellPath\(getPtyShell\(id\)\) \}\);\s+const line = sanitizePtyText\(await guardBotWorkerSessionText\(id, shaped, 'write-launch', folders/);
+    expect(src).toMatch(/IPC\.PTY_WRITE_LAUNCH[\s\S]{0,1400}const shaped = promptFileArgumentForShell\(text, \{ wsl: isWslShell\(getPtyShell\(id\)\), cmd: process\.platform === 'win32' && isCmdShellPath\(getPtyShell\(id\)\) \}\);\s+const guardedText = await guardBotWorkerSessionText\(id, shaped, 'write-launch', folders[\s\S]{0,400}isPlainCmdLaunchLine\(guardedText\)[\s\S]{0,300}const line = sanitizePtyText\(guardedText\)/);
   });
 
   it('the resume writers type through main, and fan-out marks a bot\'s spawn around the renderer round trip', () => {
