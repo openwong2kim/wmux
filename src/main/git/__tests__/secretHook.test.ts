@@ -6,7 +6,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { buildPreCommitHook, filePrefs, installSecretHook, SecretHookInstaller, SECRET_HOOK_MARKER, uninstallSecretHook, USER_HOOK_NAME, type SecretHookRuntime } from '../secretHook';
+import { buildPreCommitHook, WSL_HOOK_LINES, filePrefs, installSecretHook, SecretHookInstaller, SECRET_HOOK_MARKER, uninstallSecretHook, USER_HOOK_NAME, type SecretHookRuntime } from '../secretHook';
 import { checkStaged, formatBlockedCommit } from '../../../cli/commands/secretsCheck';
 
 const git = (args: string[], cwd: string) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
@@ -189,5 +189,45 @@ describe('wmux secrets check-staged', () => {
 
   it('formats one line per finding', () => {
     expect(formatBlockedCommit([{ path: 'certs/x.pem', what: 'file', kind: 'private-key' }])).toContain('certs/x.pem: this file holds a private key.');
+  });
+});
+
+// #2231 — the hook under WSL: Windows paths through their /mnt mount, the
+// Windows app through interop. Real sh; no /mnt on this machine, so the
+// translation is checked on its own and the fallback must still refuse.
+describe.skipIf(process.platform === 'win32')('the hook in a WSL shell', () => {
+  const fn = WSL_HOOK_LINES.slice(WSL_HOOK_LINES.findIndex((l) => l.includes('wmux_mnt() {')), WSL_HOOK_LINES.findIndex((l) => l.trim() === '}') + 1).join('\n');
+  const mnt = (p: string) => execFileSync('/bin/sh', ['-c', `${fn}\nwmux_mnt "$1"`, 'sh', p], { encoding: 'utf8' });
+
+  it('reads an X:/ path through /mnt/x and leaves every other path alone', () => {
+    expect(mnt('D:/wmux-work/out/wmux.exe')).toBe('/mnt/d/wmux-work/out/wmux.exe');
+    expect(mnt('C:/Users/me/AppData/Local/wmux/app-4.5.0/resources/cli-bundle/index.js')).toBe('/mnt/c/Users/me/AppData/Local/wmux/app-4.5.0/resources/cli-bundle/index.js');
+    expect(mnt("/Applications/wmux.app/it's/x")).toBe("/Applications/wmux.app/it's/x");
+  });
+
+  it('a mount that is not there keeps the guard: no wmux to run, the commit is refused', () => {
+    const hook = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-wslhook-')), 'pre-commit');
+    fs.writeFileSync(hook, buildPreCommitHook({ runtime: 'D:\\nowhere\\wmux.exe', cli: 'D:\\nowhere\\cli-bundle\\index.js' }), { mode: 0o755 });
+    const r = spawnSync('/bin/sh', [hook], { encoding: 'utf8', env: { PATH: '/usr/bin:/bin', WSL_DISTRO_NAME: 'Ubuntu' } });
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain('wmux could not check this commit');
+  });
+
+  it('runs the app it found with the Windows CLI path, and hands ELECTRON_RUN_AS_NODE over WSLENV', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-wslhook-'));
+    const runtime = path.join(dir, 'wmux.exe');
+    const cli = path.join(dir, 'index.js');
+    fs.writeFileSync(cli, '');
+    // A stand-in for the app: records what it was run with.
+    fs.writeFileSync(runtime, '#!/bin/sh\nprintf "%s|%s|%s" "$1" "$ELECTRON_RUN_AS_NODE" "$WSLENV" > "$0.log"\n', { mode: 0o755 });
+    // The hook as built, with the mount helper pointed at this folder.
+    const script = buildPreCommitHook({ runtime: 'D:/app/wmux.exe', cli: 'D:/app/index.js' })
+      .replace("printf '/mnt/%s/%s'", `printf '${dir}/%.0s%s'`)
+      .replace('"${1#?:/}"', '"$(basename "$1")"');
+    const hook = path.join(dir, 'pre-commit');
+    fs.writeFileSync(hook, script, { mode: 0o755 });
+    const r = spawnSync('/bin/sh', [hook], { encoding: 'utf8', env: { PATH: '/usr/bin:/bin', WSL_DISTRO_NAME: 'Ubuntu', WSLENV: 'FOO/p', GIT_INDEX_FILE: '/mnt/d/r/.git/index.lock' } });
+    expect(r.status).toBe(0);
+    expect(fs.readFileSync(`${runtime}.log`, 'utf8')).toBe('D:/app/index.js|1|FOO/p:ELECTRON_RUN_AS_NODE/w:GIT_INDEX_FILE/p');
   });
 });

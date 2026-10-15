@@ -27,6 +27,37 @@ export interface SecretHookRuntime {
 const shq = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
 const posix = (s: string) => s.replace(/\\/g, '/');
 
+/**
+ * #2231 — a commit made in a WSL shell runs this hook under Linux, where the
+ * Windows paths it names (`D:/…/wmux.exe`) do not exist and the distro has no
+ * `wmux`: every commit was refused. Under WSL (WSL_DISTRO_NAME, or
+ * "microsoft" in /proc/version) each `X:/…` path is looked up through its
+ * `/mnt/x/…` mount and the Windows app runs through interop, with
+ * ELECTRON_RUN_AS_NODE (and the commit's GIT_INDEX_FILE) handed over by
+ * WSLENV; the CLI path it is given stays the Windows one, which is what a
+ * Windows program reads. A mount that is not there leaves the path as it was,
+ * so Git for Windows' own sh is never sent elsewhere, and a check that still
+ * cannot run refuses the commit as before.
+ */
+export const WSL_HOOK_LINES: readonly string[] = [
+  'if [ -n "${WSL_DISTRO_NAME:-}" ] || grep -qi microsoft /proc/version 2>/dev/null; then',
+  '  wmux_mnt() {',
+  '    case "$1" in',
+  '      [A-Za-z]:/*) printf \'/mnt/%s/%s\' "$(printf \'%s\' "$1" | cut -c1 | tr \'A-Z\' \'a-z\')" "${1#?:/}" ;;',
+  '      *) printf \'%s\' "$1" ;;',
+  '    esac',
+  '  }',
+  '  WMUX_RUNTIME_MNT="$(wmux_mnt "$WMUX_RUNTIME")"',
+  '  WMUX_CLI_MNT="$(wmux_mnt "$WMUX_CLI")"',
+  '  if [ -f "$WMUX_RUNTIME_MNT" ] && [ -f "$WMUX_CLI_MNT" ]; then',
+  '    WMUX_RUNTIME="$WMUX_RUNTIME_MNT"',
+  '    WMUX_CLI="$WMUX_CLI_MNT"',
+  '    WSLENV="${WSLENV:+$WSLENV:}ELECTRON_RUN_AS_NODE/w${GIT_INDEX_FILE:+:GIT_INDEX_FILE/p}"',
+  '    export WSLENV',
+  '  fi',
+  'fi',
+];
+
 /** The hook script (POSIX sh; Git for Windows runs it with its own sh). */
 export function buildPreCommitHook(rt: SecretHookRuntime): string {
   return [
@@ -36,8 +67,10 @@ export function buildPreCommitHook(rt: SecretHookRuntime): string {
     `# Your previous pre-commit hook (if you had one) is kept as ${USER_HOOK_NAME} and still runs.`,
     `WMUX_RUNTIME=${shq(posix(rt.runtime))}`,
     `WMUX_CLI=${shq(posix(rt.cli))}`,
+    'WMUX_CLI_ARG="$WMUX_CLI"',
+    ...WSL_HOOK_LINES,
     'if [ -f "$WMUX_RUNTIME" ] && [ -f "$WMUX_CLI" ]; then',
-    '  ELECTRON_RUN_AS_NODE=1 "$WMUX_RUNTIME" "$WMUX_CLI" secrets check-staged || exit 1',
+    '  ELECTRON_RUN_AS_NODE=1 "$WMUX_RUNTIME" "$WMUX_CLI_ARG" secrets check-staged || exit 1',
     'elif command -v wmux >/dev/null 2>&1; then',
     '  wmux secrets check-staged || exit 1',
     'else',
