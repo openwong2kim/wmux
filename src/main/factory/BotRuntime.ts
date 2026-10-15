@@ -241,6 +241,11 @@ export interface BotRuntimePorts {
   /** A turn finished: the bot's open questions the owner's words in it
    *  answered close (handoffRouter.ts closeAnsweredInChat). */
   onTurnDone?: (profile: BotProfile, item: WakeItem) => void;
+  /** A turn finished with words but no room_post: post those words as the
+   *  bot's card in its wake's thread, through room.post, unless the bot
+   *  wrote a card there since `since` (room.rpc.ts postTurnText). Called
+   *  while the wake still runs. */
+  postTurnText?: (profile: BotProfile, item: WakeItem, text: string, since: number) => Promise<unknown> | void;
   /** Whether the modules a wake prompt reads from (rooms, handoffs,
    *  routines) have started. Until then no turn starts, for at most
    *  CONTEXT_WAIT_MS. Absent: ready. */
@@ -871,6 +876,7 @@ export class BotRuntime {
   private async runTurn(profile: BotProfile, item: WakeItem): Promise<void> {
     const botId = profile.id;
     const run = this.running.get(botId);
+    const turnStartedAt = run?.startedAt ?? this.now();
     let outcome: 'done' | 'failed' | 'interrupted' | 'engine' = 'failed';
     let errorMessage = '';
     try {
@@ -891,6 +897,16 @@ export class BotRuntime {
         if (sessionId) {
           const accountId = s.live.adapter.conversationAccountId;
           this.deps.sessions.set(botId, { sessionId, ...(accountId !== undefined ? { accountId } : {}), repoPath: profile.repo?.repoPath ?? null, updatedAt: this.now() });
+        }
+        // A reply the bot wrote as plain text instead of a room_post would
+        // reach nobody: it becomes the bot's card, while the wake still runs
+        // (room.post pins its thread and the owner message it answers).
+        if (result.text.trim() && ports.postTurnText) {
+          try {
+            await ports.postTurnText(profile, item, result.text, turnStartedAt);
+          } catch (err) {
+            console.warn(`[factory] the reply of ${item.id} was not posted: ${String(err)}`);
+          }
         }
       } else {
         errorMessage = result.error;
@@ -920,7 +936,7 @@ export class BotRuntime {
     timeoutMs: number,
     interrupted: () => boolean,
     stopped: Promise<'stop'> = new Promise<'stop'>(() => undefined),
-  ): Promise<{ ok: true; sessionId: string | null } | { ok: false; error: string; timedOut?: true; freshSession?: true }> {
+  ): Promise<{ ok: true; sessionId: string | null; text: string } | { ok: false; error: string; timedOut?: true; freshSession?: true }> {
     // A stored bot secret never reaches a bot's prompt (secretRedaction.ts).
     const iterator = live.adapter.send(redactStoredSecrets(prompt))[Symbol.asyncIterator]();
     let timer: unknown = null;
@@ -929,6 +945,8 @@ export class BotRuntime {
     });
     let error = '';
     let freshSession = false;
+    // The turn's last assistant message: the text after its last tool call.
+    let text = '';
     try {
       for (;;) {
         const next = await Promise.race([iterator.next(), timeout, stopped]);
@@ -950,8 +968,10 @@ export class BotRuntime {
         if (ev.type === 'turn-end') {
           // Let the adapter's own cleanup run (its generator is parked on this yield).
           await Promise.resolve(iterator.return?.()).catch(() => undefined);
-          return { ok: true, sessionId: ev.sessionId };
+          return { ok: true, sessionId: ev.sessionId, text };
         }
+        if (ev.type === 'text-delta') text += ev.text;
+        else if (ev.type === 'tool-start') text = '';
         if (ev.type === 'error') {
           error = ev.message;
           if (ev.botTools) freshSession = true;

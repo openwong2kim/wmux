@@ -1,7 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { setLocale } from '../../../i18n';
 import type { RoomCard } from '../../../../shared/room';
 import type { RoomEntry } from '../botsModel';
-import { LIVE_ARRIVAL_MS, RUN_WINDOW_MS, SEPARATOR_GAP_MS, buildTimeline, elapsed, liveNewAfter, separatorLabel, splitThreads, threadCards, unreadCount } from '../botsTimeline';
+import { LIVE_ARRIVAL_MS, RUN_WINDOW_MS, SEPARATOR_GAP_MS, buildTimeline, clockTime, elapsed, fullTime, liveNewAfter, separatorLabel, splitThreads, threadCards, unreadCount } from '../botsTimeline';
 
 let seq = 0;
 function card(p: Partial<RoomCard> = {}): RoomCard {
@@ -115,6 +116,24 @@ describe('splitThreads', () => {
 });
 
 describe('time and counts', () => {
+  it('a run header\'s clock and its tooltip use the app\'s language, not the system\'s (round 7)', () => {
+    const at = new Date(2026, 9, 16, 5, 44).getTime();
+    const time = vi.spyOn(Date.prototype, 'toLocaleTimeString');
+    const full = vi.spyOn(Date.prototype, 'toLocaleString');
+    try {
+      setLocale('ko');
+      expect(clockTime(at)).toBe(new Date(at).toLocaleTimeString('ko', { hour: '2-digit', minute: '2-digit' }));
+      fullTime(at);
+      expect(time.mock.calls[0][0]).toBe('ko');
+      expect(full.mock.calls[0][0]).toBe('ko');
+      expect(clockTime(0)).toBe('');
+    } finally {
+      setLocale('en');
+      time.mockRestore();
+      full.mockRestore();
+    }
+  });
+
   it('labels a separator with the weekday, date and time in the reader\'s language, and elapsed time as m:ss', () => {
     expect(separatorLabel(new Date(2026, 9, 11, 20, 37).getTime(), T0, t, 'en-US')).toBe('botsPage.chat.dateTime(Sun, Oct 11|8:37 PM)');
     // The day period's wording depends on the ICU data present (Electron's says 오후).

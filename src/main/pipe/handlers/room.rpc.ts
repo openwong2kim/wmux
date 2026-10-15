@@ -25,7 +25,7 @@
 // Any other caller — no bot binding and not the operator — is refused.
 
 import path from 'node:path';
-import type { BotBinding, BotRole } from '../../../shared/bot';
+import type { BotBinding, BotProfile, BotRole } from '../../../shared/bot';
 import { isBotRole, isCoordinatorBot } from '../../../shared/bot';
 import { SHARED_SURFACE, type BotToolName, type FactoryRefusal } from '../../../shared/botSurface';
 import {
@@ -45,13 +45,16 @@ import {
   type RoomThreadsParams,
 } from '../../../shared/room';
 import type { RpcContext } from '../../../shared/rpc';
+import type { WakeItem } from '../../../shared/wake';
 import { resolveThreadDecision } from '../../deck/deckDecisionStore';
+import { setBotRuntimePorts } from '../../factory/BotRuntime';
 import { registerFactoryRpcModule, type FactoryHostDeps, type FactoryModuleHandle, type FactoryRouter } from '../../factory/factoryHost';
 import { getHandoffRouter } from '../../factory/handoffRouter';
 import { HUMAN_RETRY_WINDOW_MS } from '../../factory/wakeQueue';
 import {
   ROOMS_DIRNAME,
   RoomWriter,
+  capBody,
   getRoomWriter,
   isClientId,
   isRoomWorkspaceId,
@@ -230,6 +233,41 @@ export async function handleRoomPost(raw: unknown, ctx: RpcContext | undefined, 
     }
   }
   return posted;
+}
+
+/** A bot's turn that ended with words but wrote no card of its own in its
+ *  wake's thread since `since`: those words become its card there, through
+ *  handleRoomPost as the bot (the same surface, thread, reply link and
+ *  checks as a room_post). The first line is the title, the rest the body,
+ *  capped as a card's. Call it while the wake still runs. */
+export async function postTurnText(
+  profile: Pick<BotProfile, 'id' | 'workspaceId' | 'role'>,
+  item: Pick<WakeItem, 'id'>,
+  text: string,
+  since: number,
+  deps: RoomHandlerDeps,
+): Promise<unknown> {
+  const writer = deps.writer();
+  const trimmed = capBody(text).trim();
+  if (!writer || !trimmed) return null;
+  const threadId = runningWakeThread(deps.ports(), profile.id) ?? GENERAL_THREAD;
+  // A card the bot wrote in this thread during the turn (a room_post, a
+  // question, a handoff) already answered: nothing more.
+  const own = writer.read(profile.workspaceId, { threadId, limit: ROOM_LIMITS.PAGE }).cards
+    .some((c) => c.actor.kind === 'bot' && c.actor.botId === profile.id && c.at >= since);
+  if (own) return null;
+  const nl = trimmed.indexOf('\n');
+  const first = nl < 0 ? trimmed : trimmed.slice(0, nl);
+  const line = oneLine(first, ROOM_LIMITS.CARD_BODY_MAX);
+  const title = line.slice(0, ROOM_LIMITS.TITLE_MAX).trim();
+  if (!title) return null;
+  // A first line longer than a title keeps the whole text in the body.
+  const body = line.length > title.length ? trimmed : (nl < 0 ? '' : trimmed.slice(nl + 1).trim());
+  return handleRoomPost(
+    { kind: 'status', title, ...(body ? { body } : {}), clientPostId: `wake:${item.id}:text` },
+    { origin: 'local', bot: { workspaceId: profile.workspaceId, botId: profile.id, role: profile.role } },
+    deps,
+  );
 }
 
 /** A bot card's mentions split into the bots that wake (existing, enabled,
@@ -412,6 +450,9 @@ export function createRoomModule(
         },
       });
       setRoomWriter(writer);
+      setBotRuntimePorts({
+        postTurnText: (profile, item, text, since) => postTurnText(profile, item, text, since, { writer: getRoomWriter, ports: resolve, wmuxDir: deps.wmuxDir }),
+      });
       const ports = resolve();
       if (ports.factLog) {
         offs.push(ports.factLog.subscribe((fact) => {

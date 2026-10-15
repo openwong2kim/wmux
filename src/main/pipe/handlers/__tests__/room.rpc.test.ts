@@ -6,7 +6,10 @@ import type { BotBinding, BotProfile, BotRole } from '../../../../shared/bot';
 import type { Fact, FactDraft } from '../../../../shared/facts';
 import type { RpcContext } from '../../../../shared/rpc';
 import type { WakeItem } from '../../../../shared/wake';
-import type { RoomCard, ThreadId } from '../../../../shared/room';
+import { ROOM_LIMITS, type RoomCard, type ThreadId } from '../../../../shared/room';
+
+const ROOM_TITLE_MAX = ROOM_LIMITS.TITLE_MAX;
+const ROOM_BODY_MAX = ROOM_LIMITS.CARD_BODY_MAX;
 import { loadThreadDecision } from '../../../deck/deckDecisionStore';
 import { HANDOFFS_FILENAME, HandoffRouter, deckDecisionPort, setHandoffRouter } from '../../../factory/handoffRouter';
 import { RoomWriter, type FactoryRoomPorts } from '../../../factory/roomWriter';
@@ -20,6 +23,7 @@ import {
   handleRoomThreads,
   humanAddressee,
   onRoomCardResolved,
+  postTurnText,
   resolutionCorrection,
   type RoomHandlerDeps,
 } from '../room.rpc';
@@ -411,6 +415,65 @@ describe('room.post', () => {
     const dirOf = (bots: BotProfile[]) => ({ listEnabled: () => bots, get: () => null });
     expect(humanAddressee(dirOf([moa]), 'hq', undefined)).toMatchObject({ bot: { id: moa.id }, role: 'moa' });
     expect(humanAddressee(dirOf([moa]), 'ws1', undefined)).toEqual({ bot: null, role: null });
+  });
+});
+
+describe('a turn that ended with plain text: its words become the bot\'s card (round 7)', () => {
+  function rig(bots: BotProfile[], threadId: ThreadId) {
+    const s = setup(bots);
+    s.wake.thread = threadId;
+    s.wake.id = { wakeId: 'w-1', attempt: 1 };
+    const since = Date.now();
+    const text = (b: BotProfile, words: string) => postTurnText(b, { id: 'w-1' }, words, since, s.deps);
+    const cards = () => s.writer.read('ws1', { threadId }).cards;
+    return { ...s, since, text, cards };
+  }
+
+  it('a 1:1: the words are one status card from the bot in its thread; the first line is the title', async () => {
+    const dev = bot('ws1', 'maintainer');
+    const r = rig([dev], `dm:${dev.id}` as ThreadId);
+    const res = await r.text(dev, 'All green.\n\nThe CI run passed.\u0000') as { ok: boolean };
+    expect(res.ok).toBe(true);
+    expect(r.cards()).toEqual([expect.objectContaining({
+      kind: 'status', threadId: `dm:${dev.id}`, title: 'All green.', body: 'The CI run passed.',
+      actor: { kind: 'bot', workspaceId: 'ws1', botId: dev.id }, clientPostId: 'wake:w-1:text',
+    })]);
+    // The same turn handed over twice still makes one card.
+    await r.text(dev, 'All green.');
+    expect(r.cards()).toHaveLength(1);
+  });
+
+  it('a group chat: posted in the group\'s thread; a long first line keeps the whole text, capped like a room_post body', async () => {
+    const GROUP = 'group:grp-0000aaaa' as ThreadId;
+    const a = bot('ws1', 'lead');
+    const r = rig([a], GROUP);
+    r.ports.groups = { byThread: (ws, t) => (t === GROUP ? { id: 'grp-0000aaaa', workspaceId: ws, name: 'Ship', memberIds: [a.id], threadId: GROUP, createdAt: 1, updatedAt: 1 } : null) };
+    const long = 'x'.repeat(ROOM_TITLE_MAX + 50) + '\n' + 'y'.repeat(20_000);
+    await r.text(a, long);
+    const [card] = r.cards();
+    expect(card).toMatchObject({ threadId: GROUP, kind: 'status' });
+    expect(card.title).toHaveLength(ROOM_TITLE_MAX);
+    expect(card.body?.length).toBe(ROOM_BODY_MAX);
+    expect(card.body?.startsWith('x')).toBe(true);
+  });
+
+  it('a turn that already posted in the thread, or ended with no words, adds nothing', async () => {
+    const dev = bot('ws1', 'maintainer');
+    const r = rig([dev], `dm:${dev.id}` as ThreadId);
+    expect(await r.text(dev, '   \n ')).toBeNull();
+    expect(r.cards()).toEqual([]);
+    await handleRoomPost({ kind: 'report', title: 'Done', clientPostId: 'own-key' }, asBot(dev), r.deps);
+    expect(await r.text(dev, 'Done, see the report.')).toBeNull();
+    expect(r.cards().map((c) => c.title)).toEqual(['Done']);
+  });
+
+  it('another bot\'s card in the thread is not this bot\'s answer', async () => {
+    const dev = bot('ws1', 'maintainer');
+    const other = bot('ws1', 'lead');
+    const r2 = rig([dev, other], `dm:${dev.id}` as ThreadId);
+    r2.writer.post({ workspaceId: 'ws1', threadId: `dm:${dev.id}` as ThreadId, kind: 'status', actor: { kind: 'bot', workspaceId: 'ws1', botId: other.id }, title: 'hello' });
+    await r2.text(dev, 'Here is my answer.');
+    expect(r2.cards().map((c) => c.title)).toEqual(['hello', 'Here is my answer.']);
   });
 });
 

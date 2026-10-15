@@ -51,7 +51,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import type { LedgerEntry } from '../../shared/ledger';
+import { isResearchDispatch, type LedgerEntry } from '../../shared/ledger';
 import { taskThreadOf, type CardNotice, type ThreadId } from '../../shared/room';
 import { isPlausibleResumeSessionId, normalizeResumeCwd, permissionFlagFor, type PermissionMode } from '../../shared/agentResume';
 import { sessionsStartedIn } from '../worktask/stopSessionsInDir';
@@ -478,6 +478,9 @@ export async function reclaimWorker(ports: WorkerReclaimPorts, entry: LedgerEntr
     // task is open again, and its open row counts what still runs).
     if (attempted < panes.length) return ports.store.get(entry.id);
     const resumable = panes.some((p) => resumeLineFor(p) !== null);
+    // A research task works in a task folder, not a worktree.
+    const research = isResearchDispatch(entry.dispatch);
+    const keptText = `${research ? 'task folder' : 'worktree'} and the conversation are kept`;
     const pane = ended === 'failed'
       ? 'Its pane stays open until you have looked at it, then closes.'
       : 'Its pane closes.';
@@ -488,9 +491,9 @@ export async function reclaimWorker(ports: WorkerReclaimPorts, entry: LedgerEntr
           taskThreadOf(entry),
           resumable ? 'Worker paused (resumable)' : 'Worker paused',
           resumable
-            ? 'The task is reported for review and its worker sat idle: its Claude stopped to free memory and its agent slot. The task stays open for review and its pane stays; the worktree and the conversation are kept, and Resume continues the same conversation.'
+            ? `The task is reported for review and its worker sat idle: its Claude stopped to free memory and its agent slot. The task stays open for review and its pane stays; the ${keptText}, and Resume continues the same conversation.`
             : 'The task is reported for review and its worker sat idle: its Claude stopped to free memory and its agent slot. The task stays open for review and its pane stays; the worktree is kept, but no conversation was recorded to resume.',
-          { code: resumable ? 'worker.pausedResumable' : 'worker.paused' },
+          resumable && research ? { code: 'worker.pausedResumable', args: { kind: 'research' } } : { code: resumable ? 'worker.pausedResumable' : 'worker.paused' },
           entry.id,
         );
       } else {
@@ -499,9 +502,9 @@ export async function reclaimWorker(ports: WorkerReclaimPorts, entry: LedgerEntr
           taskThreadOf(entry),
           resumable ? 'Worker done (resumable)' : 'Worker done',
           resumable
-            ? `Task ${ended}: its Claude stopped to free memory. ${pane} The worktree and the conversation are kept; Resume continues the same conversation.`
+            ? `Task ${ended}: its Claude stopped to free memory. ${pane} The ${keptText}; Resume continues the same conversation.`
             : `Task ${ended}: its Claude stopped to free memory. ${pane} The worktree is kept; no conversation was recorded to resume.`,
-          { code: resumable ? 'worker.doneResumable' : 'worker.done', args: { status: ended } },
+          { code: resumable ? 'worker.doneResumable' : 'worker.done', args: { status: ended, ...(resumable && research ? { kind: 'research' } : {}) } },
           entry.id,
         );
       }

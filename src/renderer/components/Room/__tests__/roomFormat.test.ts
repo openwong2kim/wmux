@@ -1,9 +1,9 @@
 // What the owner reads of a card or a thread: names, never internal ids,
 // role tags or machine codes.
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { RoomCard } from '../../../../shared/room';
 import { setLocale, t as i18nT } from '../../../i18n';
-import { actorLabel, cardResumeTaskId, formatNoticeTime, noticeText, ownerCardText, requestTitles, routineCardBody, threadLabel, withoutInternalIds, withoutReasonCodes, withoutRoleTags } from '../roomFormat';
+import { actorLabel, cardResumeTaskId, formatCardTime, formatNoticeTime, noticeText, ownerCardText, requestTitles, routineCardBody, threadLabel, withoutInternalIds, withoutReasonCodes, withoutRoleTags } from '../roomFormat';
 
 const t = (key: string) => key;
 const system = { kind: 'system' as const };
@@ -184,6 +184,52 @@ describe('factory system cards in the reader\'s language (RoomCard.notice)', () 
     const now = new Date(2026, 9, 16, 1, 0).getTime();
     expect(formatNoticeTime(new Date(2026, 9, 16, 2, 5).getTime(), now)).not.toMatch(/Oct|10/);
     expect(formatNoticeTime(new Date(2026, 9, 17, 2, 5).getTime(), now)).toMatch(/17/);
+  });
+
+  it('clock times follow the app\'s language, not the system\'s (round 7)', () => {
+    const now = new Date(2026, 9, 16, 1, 0).getTime();
+    const at = new Date(2026, 9, 16, 5, 44).getTime();
+    const timeLocales = vi.spyOn(Date.prototype, 'toLocaleTimeString');
+    const dateLocales = vi.spyOn(Date.prototype, 'toLocaleDateString');
+    try {
+      setLocale('ko');
+      expect(formatNoticeTime(at, now)).toBe(new Date(at).toLocaleTimeString('ko', { hour: '2-digit', minute: '2-digit' }));
+      formatNoticeTime(new Date(2026, 9, 17, 2, 5).getTime(), now);
+      formatCardTime(at, now);
+      formatCardTime(new Date(2026, 9, 17, 2, 5).getTime(), now);
+      noticeText(card({ notice: { code: 'budget.held', args: { bot: 'Reviewer', until: at } } }), i18nT, now);
+      expect(timeLocales.mock.calls.map((c) => c[0])).not.toContain(undefined);
+      expect(dateLocales.mock.calls.map((c) => c[0])).toEqual(['ko', 'ko']);
+      expect(new Set(timeLocales.mock.calls.map((c) => c[0]))).toEqual(new Set(['ko']));
+      setLocale('en');
+      timeLocales.mockClear();
+      formatNoticeTime(at, now);
+      expect(timeLocales.mock.calls.map((c) => c[0])).toEqual(['en']);
+    } finally {
+      timeLocales.mockRestore();
+      dateLocales.mockRestore();
+    }
+  });
+
+  it('a resumable research worker\'s card speaks of its task folder, not a worktree', () => {
+    for (const code of ['worker.doneResumable', 'worker.pausedResumable']) {
+      const args: Record<string, string> = code === 'worker.doneResumable' ? { status: 'completed' } : {};
+      setLocale('ko');
+      expect(noticeText(card({ notice: { code, args: { ...args, kind: 'research' } } }), i18nT)?.body).toContain('작업 폴더와 대화');
+      expect(noticeText(card({ notice: { code, args: { ...args, kind: 'research' } } }), i18nT)?.body).not.toContain('워크트리');
+      expect(noticeText(card({ notice: { code, args } }), i18nT)?.body).toContain('워크트리와 대화');
+      setLocale('en');
+      expect(noticeText(card({ notice: { code, args: { ...args, kind: 'research' } } }), i18nT)?.body).toContain('task folder and the conversation are kept');
+      for (const loc of ['pl', 'zh'] as const) {
+        setLocale(loc);
+        const research = noticeText(card({ notice: { code, args: { ...args, kind: 'research' } } }), i18nT)?.body;
+        expect(research).toBeTruthy();
+        expect(research).not.toBe(noticeText(card({ notice: { code, args } }), i18nT)?.body);
+      }
+      setLocale('en');
+    }
+    // A kind this build does not know keeps the card's English.
+    expect(noticeText(card({ notice: { code: 'worker.doneResumable', args: { status: 'completed', kind: 'quantum' } } }), i18nT)).toBeNull();
   });
 
   it('English words match what main writes', () => {

@@ -4,6 +4,7 @@ import { BOT_ROLES, botTemplate, type BotRole, type BotTemplate } from '../../..
 import type { Party } from '../../../shared/handoff';
 import type { CardKind, RoomCard, ThreadId, ThreadSummary } from '../../../shared/room';
 import type { FactoryBotRow } from './factoryPorts';
+import { getLocale } from '../../i18n';
 
 type T = (key: string, vars?: Record<string, string | number>) => string;
 
@@ -190,18 +191,22 @@ const NOTICE_WORDS: Readonly<Record<string, ReadonlySet<string>>> = {
   by: new Set(['owner', 'bot']),
   where: new Set(['folder', 'newPane']),
   limit: new Set(['turns_hour', 'turns_day', 'concurrent_workers', 'worker_hours_day', 'factory_workers']),
+  // The task a resumable worker card is about: a research task has a task
+  // folder, not a worktree.
+  kind: new Set(['research']),
 };
 
 /** Why a gate was skipped (TaskGateRunner.ts GateSkipReason). */
 const GATE_SKIP_REASONS: ReadonlySet<string> = new Set(['deps_missing', 'no_gate_command', 'gate_unavailable']);
 
-/** A notice's clock time: the time today, else a short date and the time. */
-export function formatNoticeTime(at: number, now: number = Date.now()): string {
+/** A notice's clock time in the app's language: the time today, else a
+ *  short date and the time. */
+export function formatNoticeTime(at: number, now: number = Date.now(), locale: string = getLocale()): string {
   const d = new Date(at);
-  const time = d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+  const time = d.toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit' });
   return d.toDateString() === new Date(now).toDateString()
     ? time
-    : `${d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} ${time}`;
+    : `${d.toLocaleDateString(locale, { month: 'short', day: 'numeric' })} ${time}`;
 }
 
 /** What holds the agent slots on a slot-wait card, in the reader's
@@ -274,7 +279,8 @@ export function noticeText(card: Pick<RoomCard, 'actor' | 'body' | 'notice'>, t:
   const budget = budgetNoticeKeys(notice.code, args);
   if (budget) return { title: t(budget.title, vars), body: t(budget.body, vars) };
   const key = `room.notice.${notice.code}`;
-  return { title: t(key, vars), body: wordedBody ? t(`${key}.body`, vars) : (card.body ?? '') };
+  const bodyKey = args.kind === 'research' && RESUMABLE_NOTICE_CODES.has(notice.code) ? `${key}.body.research` : `${key}.body`;
+  return { title: t(key, vars), body: wordedBody ? t(bodyKey, vars) : (card.body ?? '') };
 }
 
 /** A card's title and body as the owner reads them: a factory system card
@@ -367,15 +373,15 @@ export function cardTone(card: Pick<RoomCard, 'kind' | 'title' | 'closes'>): Car
   return null;
 }
 
-/** Clock time today, else a short date. */
-export function formatCardTime(at: number, now: number = Date.now()): string {
+/** Clock time today, else a short date, in the app's language. */
+export function formatCardTime(at: number, now: number = Date.now(), locale: string = getLocale()): string {
   if (!Number.isFinite(at) || at <= 0) return '';
   const d = new Date(at);
   const n = new Date(now);
   const sameDay = d.getFullYear() === n.getFullYear() && d.getMonth() === n.getMonth() && d.getDate() === n.getDate();
   return sameDay
-    ? d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
-    : d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+    ? d.toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit' })
+    : d.toLocaleDateString(locale, { month: 'short', day: 'numeric' });
 }
 
 /** The first line of a message, as a card title (≤ 200 characters). */

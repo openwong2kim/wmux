@@ -22,6 +22,7 @@
 // Pure; times are local.
 import { dmThreadBot, groupThreadGroup, type RoomCard, type ThreadId } from '../../../shared/room';
 import type { RoomEntry } from './botsModel';
+import { getLocale } from '../../i18n';
 
 type T = (key: string, vars?: Record<string, string | number>) => string;
 
@@ -178,16 +179,16 @@ export function hasKindWord(card: RoomCard): boolean {
   return !PLAIN_KINDS.has(card.kind);
 }
 
-/** A run header's time: the clock. */
-export function clockTime(at: number): string {
+/** A run header's time: the clock, in the app's language. */
+export function clockTime(at: number, locale: string = getLocale()): string {
   if (!Number.isFinite(at) || at <= 0) return '';
-  return new Date(at).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+  return new Date(at).toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit' });
 }
 
-/** A time in full, for a tooltip. */
-export function fullTime(at: number): string {
+/** A time in full, for a tooltip, in the app's language. */
+export function fullTime(at: number, locale: string = getLocale()): string {
   if (!Number.isFinite(at) || at <= 0) return '';
-  return new Date(at).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+  return new Date(at).toLocaleString(locale, { dateStyle: 'medium', timeStyle: 'short' });
 }
 
 /** A separator's label in the reader's language: the date with its weekday

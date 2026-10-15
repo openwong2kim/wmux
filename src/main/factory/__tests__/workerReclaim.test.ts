@@ -289,8 +289,12 @@ describe('a research task (scratch folder, no worktree)', () => {
     const research = row('completed', { dispatch: { origin: { kind: 'bot', botId: BOT }, preset: RESEARCH_PRESET } });
     // The mission names the scratch folder as its outputDir; there is no worktreePath.
     const rpc = async () => ({ ok: true, tasks: [{ id: research.id, outputDir: wt }] });
-    const { ports } = reclaimPorts(store, [session()], { worktreeOf: (entry) => taskFolderFromMissions(rpc, entry) });
+    const { ports, note } = reclaimPorts(store, [session()], { worktreeOf: (entry) => taskFolderFromMissions(rpc, entry) });
     expect(await reclaimWorker(ports, research, 'completed')).toMatchObject({ state: 'stopped', sessions: [{ cwd: wt, resumeSessionId: UUID }] });
+    // Its card speaks of a task folder, not a worktree, and says so in its code.
+    expect(note.mock.calls[0][3]).toContain('The task folder and the conversation are kept');
+    expect(note.mock.calls[0][3]).not.toContain('worktree');
+    expect(note.mock.calls[0][4]).toEqual({ code: 'worker.doneResumable', args: { status: 'completed', kind: 'research' } });
 
     // In its own pane.
     const typeLine = vi.fn(() => true);
