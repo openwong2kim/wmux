@@ -247,24 +247,95 @@ describe('BotRuntime', () => {
     expect(hooks.some((h) => h.type === 'wake.interrupted')).toBe(false);
   });
 
-  it('budget refusal drops the wake, parks the bot and emits a hook; the park lifts when the window slides', async () => {
+  it('budget refusal keeps the wake queued, parks the bot and reports when it frees; the wake runs when the window slides', async () => {
     const r = rig({ mode: 'ok' });
+    const first = clock;
     const id = createBot(r, 'maintainer', 'ws-1', { maxTurnsPerHour: 2 }); // 2 turns / hour
     r.runtime.wake(id);
     await settle();
     r.runtime.wake(id);
     await settle();
-    r.runtime.wake(id);
+    const third = must(r.runtime.wake(id));
     await settle();
-    expect(r.queue.list({ botId: id, states: ['dropped'] })[0].dropped).toEqual({ code: 'budget' });
+    expect(r.queue.get(third.id)?.state).toBe('queued');
+    expect(r.queue.list({ botId: id, states: ['dropped'] })).toHaveLength(0);
     expect(r.store.get(id)?.parked?.reason).toBe('budget');
     expect(r.runtime.status(id)?.presence).toBe('parked');
-    expect(hooks).toContainEqual(expect.objectContaining({ type: 'bot.budget_exhausted', botId: id, reason: 'turns_hour' }));
+    expect(hooks).toContainEqual(expect.objectContaining({ type: 'bot.budget_exhausted', botId: id, reason: 'turns_hour', wakeId: third.id, until: first + HOUR_MS }));
     clock += HOUR_MS + 1;
-    r.runtime.wake(id);
+    r.runtime.kick();
     await settle();
     expect(r.store.get(id)?.parked).toBeUndefined();
     expect(r.adapters[0].prompts).toHaveLength(3);
+    expect(r.queue.get(third.id)?.state).toBe('done');
+  });
+
+  it('a profile edit that raises the cap lifts a budget park and runs what waited; an error park stays', async () => {
+    const r = rig({ mode: 'ok' });
+    const id = createBot(r, 'maintainer', 'ws-1', { maxTurnsPerHour: 2 });
+    r.runtime.wake(id);
+    await settle();
+    r.runtime.wake(id);
+    await settle();
+    const held = must(r.runtime.wake(id));
+    await settle();
+    expect(r.store.get(id)?.parked?.reason).toBe('budget');
+    // Raised: the park lifts at once and the held wake runs.
+    r.store.update(id, { budget: { maxTurnsPerHour: 5 } });
+    r.runtime.profileChanged(id);
+    expect(r.store.get(id)?.parked).toBeUndefined();
+    await settle();
+    expect(r.queue.get(held.id)?.state).toBe('done');
+    // An error park is the owner's to lift.
+    r.store.setParked(id, { reason: 'error', at: clock });
+    r.store.update(id, { budget: { maxTurnsPerHour: 9 } });
+    r.runtime.profileChanged(id);
+    expect(r.store.get(id)?.parked?.reason).toBe('error');
+  });
+
+  it('a budget park with nothing queued lifts by itself once the window allows a turn', async () => {
+    const timers: Array<{ fn: () => void; at: number }> = [];
+    const r = rig({ mode: 'ok', timers });
+    const first = clock;
+    const id = createBot(r, 'maintainer', 'ws-1', { maxTurnsPerHour: 1 });
+    r.runtime.wake(id);
+    await settle();
+    // Parked with an empty queue (the held owner message ran past the cap).
+    r.store.setParked(id, { reason: 'budget', at: clock });
+    r.runtime.kick();
+    await settle();
+    expect(r.store.get(id)?.parked?.reason).toBe('budget');
+    const timer = must(timers.find((t) => t.at === first + HOUR_MS));
+    clock = first + HOUR_MS;
+    timer.fn();
+    await settle();
+    expect(r.store.get(id)?.parked).toBeUndefined();
+    expect(r.runtime.status(id)?.presence).not.toBe('parked');
+  });
+
+  it('a routine held by the budget waits as its newest firing only', async () => {
+    const r = rig({ mode: 'ok' });
+    const id = createBot(r, 'maintainer', 'ws-1', { maxTurnsPerHour: 1 });
+    r.runtime.wake(id);
+    await settle();
+    const older = must(r.queue.enqueue({ botId: id, workspaceId: 'ws-1', reason: { kind: 'routine', routineId: 'r-1', dueAt: clock }, priority: 1 }));
+    await settle();
+    const newer = must(r.queue.enqueue({ botId: id, workspaceId: 'ws-1', reason: { kind: 'routine', routineId: 'r-1', dueAt: clock + 60_000 }, priority: 1 }));
+    const other = must(r.queue.enqueue({ botId: id, workspaceId: 'ws-1', reason: { kind: 'routine', routineId: 'r-2', dueAt: clock }, priority: 1 }));
+    r.runtime.kick();
+    await settle();
+    expect(r.store.get(id)?.parked?.reason).toBe('budget');
+    expect(r.queue.get(older.id)).toMatchObject({ state: 'dropped', dropped: { code: 'duplicate' } });
+    expect(r.queue.get(newer.id)?.state).toBe('queued');
+    expect(r.queue.get(other.id)?.state).toBe('queued');
+    // A firing that lands just before the cap rises is folded too: the
+    // newest runs, never the older one first.
+    const latest = must(r.queue.enqueue({ botId: id, workspaceId: 'ws-1', reason: { kind: 'routine', routineId: 'r-1', dueAt: clock + 120_000 }, priority: 1 }));
+    r.store.update(id, { budget: { maxTurnsPerHour: 9 } });
+    r.runtime.profileChanged(id);
+    await settle(10);
+    expect(r.queue.get(newer.id)).toMatchObject({ state: 'dropped', dropped: { code: 'duplicate' } });
+    expect(r.queue.get(latest.id)?.state).toBe('done');
   });
 
   describe('out of turns, the owner\'s words are held, never dropped', () => {
@@ -299,10 +370,11 @@ describe('BotRuntime', () => {
       expect(r.store.usageOf(id).turns).toHaveLength(3);
       expect(r.store.get(id)?.parked).toBeUndefined();
       expect(budgetHooks(id)).toHaveLength(0);
-      // A bot's own wake still meets the refusal.
+      // A bot's own wake meets the refusal and waits queued.
       const manual = must(r.runtime.wake(id));
       await settle();
-      expect(r.queue.get(manual.id)).toMatchObject({ state: 'dropped', dropped: { code: 'budget' } });
+      expect(r.queue.get(manual.id)?.state).toBe('queued');
+      expect(r.store.get(id)?.parked?.reason).toBe('budget');
     });
 
     it('an answer waits queued with a held report; the bot parks once; it runs when the window allows a turn', async () => {
@@ -335,16 +407,16 @@ describe('BotRuntime', () => {
       expect(r.store.get(id)?.parked).toBeUndefined();
     });
 
-    it('a manual or fact wake meeting the refusal is still dropped `budget`', async () => {
+    it('a manual wake meeting the refusal waits queued, with no held report (not the owner\'s words)', async () => {
       const r = rig({ mode: 'ok' });
       const id = await spent(r);
       const manual = must(r.runtime.wake(id));
       await settle();
-      expect(r.queue.get(manual.id)).toMatchObject({ state: 'dropped', dropped: { code: 'budget' } });
+      expect(r.queue.get(manual.id)?.state).toBe('queued');
       expect(heldHooks(manual.id)).toHaveLength(0);
     });
 
-    it('handoffs: an answer, an owner-backed dispatch and an unreadable one are held; a bot result is dropped', async () => {
+    it('handoffs: every one waits queued; an answer, an owner-backed dispatch and an unreadable one get a held report', async () => {
       const summaries: Record<string, { kind: string; ownerWords?: boolean } | null> = {
         'h-answer': { kind: 'answer', ownerWords: true },
         'h-dispatch': { kind: 'dispatch', ownerWords: true },
@@ -363,12 +435,12 @@ describe('BotRuntime', () => {
         const item = must(r.queue.enqueue({ botId: id, workspaceId: `ws-${n + 1}`, reason: { kind: 'handoff', handoffId }, priority: 1 }));
         await settle();
         const held = handoffId !== 'h-result';
-        expect(r.queue.get(item.id)?.state, handoffId).toBe(held ? 'queued' : 'dropped');
+        expect(r.queue.get(item.id)?.state, handoffId).toBe('queued');
         expect(heldHooks(item.id).length > 0, handoffId).toBe(held);
       }
     });
 
-    it('resume lets the held owner words run over budget; other wakes still meet the refusal', async () => {
+    it('resume lets every wake waiting at that moment run over budget; a later one waits again', async () => {
       answers('h-one', 'h-two');
       const r = rig({ mode: 'ok' });
       const id = await spent(r);
@@ -382,17 +454,17 @@ describe('BotRuntime', () => {
       expect(r.runtime.resume(id).ok).toBe(true);
       await settle(10);
       expect(r.queue.get(msg.id)?.state).toBe('done');
-      expect(r.adapters[0].prompts.at(-1)).toContain('answer h-one');
-      expect(r.store.usageOf(id).turns).toHaveLength(3);
-      // The resume did not lift the budget for anything else.
-      expect(r.queue.get(manual.id)).toMatchObject({ state: 'dropped', dropped: { code: 'budget' } });
-      expect(r.store.get(id)?.parked?.reason).toBe('budget');
-      // An answer after the resume waits again.
+      expect(r.adapters[0].prompts.some((p) => p.includes('answer h-one'))).toBe(true);
+      // The owner chose to spend: the bot's own wake of that moment ran too.
+      expect(r.queue.get(manual.id)?.state).toBe('done');
+      expect(r.store.usageOf(id).turns).toHaveLength(4);
+      // A wake after the resume meets the budget again and waits.
       const later = must(r.queue.enqueue({ botId: id, workspaceId: 'ws-1', reason: { kind: 'handoff', handoffId: 'h-two' }, priority: 1 }));
       r.runtime.kick();
       await settle();
       expect(r.queue.get(later.id)?.state).toBe('queued');
-      expect(r.adapters[0].prompts).toHaveLength(3);
+      expect(r.store.get(id)?.parked?.reason).toBe('budget');
+      expect(r.adapters[0].prompts).toHaveLength(4);
     });
 
     it('what a resume let through is forgotten when the bot is turned off or removed', async () => {

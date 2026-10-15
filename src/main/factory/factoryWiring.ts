@@ -238,7 +238,7 @@ export function factoryTrust(settings: () => FactorySettings, ownerLogin: () => 
 export function factFromBotHook(ev: BotHookEvent): FactDraft | null {
   const base = { at: ev.at, workspaceId: ev.workspaceId, ref: { botId: ev.botId }, actor: { kind: 'bot' as const, id: ev.botId } };
   if (ev.type === 'bot.budget_exhausted') {
-    return { kind: 'bot.budget_exhausted', ...base, payload: { reason: ev.reason, ...(ev.wakeId ? { wakeId: ev.wakeId } : {}) } };
+    return { kind: 'bot.budget_exhausted', ...base, payload: { reason: ev.reason, ...(ev.wakeId ? { wakeId: ev.wakeId } : {}), ...(ev.until !== undefined ? { until: ev.until } : {}) } };
   }
   if (ev.type === 'bot.error') {
     return { kind: 'bot.error', ...base, payload: { message: ev.message.slice(0, 500), ...(ev.wakeId ? { wakeId: ev.wakeId } : {}) } };

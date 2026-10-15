@@ -4,6 +4,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { BotConnectionsSection } from '../BotConnectionsSection';
+import { ConnectionDialog } from '../ConnectionDialog';
 import { BotConnections, profileConnections } from '../../Bots/BotConnections';
 import type { BotConnectorPort } from '../../Room/botConnectors';
 import type { ConnectorView } from '../../../../shared/botConnector';
@@ -87,6 +88,19 @@ describe('BotConnectionsSection', () => {
     expect(req.keyValues).toEqual({ GITHUB_MCP_TOKEN: 'ghp_typed_value_0123456789' });
     // The dialog closed and holds no value.
     expect(q('[data-testid="connection-dialog"]')).toBeNull();
+  });
+
+  it('picking bots: each bot\'s checkbox has its own id, and the Scope label names none of them', async () => {
+    const row = (id: string, name: string) => ({ bot: { id, name, role: 'lead', workspaceId: 'ws-1', version: 1, engine: { kind: 'claude-sdk' }, triggers: [], budget: {}, enabled: true, createdAt: 1, updatedAt: 1 }, status: null }) as unknown as FactoryBotRow;
+    const bots = [row('bot-0000000a', 'A'), row('bot-0000000b', 'B'), row('bot-0000000c', 'C')];
+    // Added from a bot's profile: the scope starts as the bots picked.
+    await mount(<ConnectionDialog t={t} bots={bots} presetBotId="bot-0000000a" onClose={() => undefined} port={fakePort([])} />);
+    const boxes = [...document.querySelectorAll('[data-testid="connection-scope-bots"] [role="checkbox"]')];
+    expect(boxes).toHaveLength(3);
+    const ids = boxes.map((b) => b.id);
+    expect(new Set(ids).size).toBe(3);
+    expect(ids.every((id) => id.length > 0)).toBe(true);
+    for (const label of document.querySelectorAll('label[for]')) expect(ids).not.toContain(label.getAttribute('for'));
   });
 
   it('Custom starts as only the tools listed', async () => {

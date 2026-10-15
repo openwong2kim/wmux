@@ -157,7 +157,12 @@ export function RoomCard({ card, workspaceId, t, bots, replyToCard, decisionApi,
       <div className="flex items-center gap-1.5 text-[11px] text-[var(--text-muted)] min-w-0">
         {author && authorRole && (
           <BotAvatar
-            bot={authorRow?.bot ?? { id: author.botId, name: roleLabel(authorRole, t), role: authorRole }}
+            bot={authorRow?.bot ?? {
+              id: author.botId,
+              name: actors[author.botId]?.name ?? roleLabel(authorRole, t),
+              role: authorRole,
+              ...(actors[author.botId]?.avatar ? { avatar: actors[author.botId]?.avatar } : {}),
+            }}
             size={16}
             t={t}
           />

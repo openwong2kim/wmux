@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { BotProfile } from '../../../shared/bot';
 import type { Fact, FactKind } from '../../../shared/facts';
 import { ROOM_LIMITS, type RoomCard } from '../../../shared/room';
+import { STOPPED_BY_OWNER } from '../factoryStop';
 import {
   RoomWriter,
   WakeOrdinals,
@@ -374,6 +375,35 @@ describe('facts → system cards', () => {
     expect(w.read('ws1', { threadId: 'general' }).cards).toHaveLength(0);
   });
 
+  it('a task card carries a notice code; a cancelled task reads Cancelled (stopped by owner when the owner\'s stop did it), never Failed', () => {
+    expect(STOPPED_BY_OWNER).toBe('stopped by owner');
+    const w = writer();
+    const one = (id: string, kind: FactKind, payload: Record<string, unknown>) =>
+      writeFactCards(w, fact(kind, { id, workspaceId: 'ws1', ref: { taskId: `wt-${id}` }, payload: { title: 'fix login', ...payload } }), bots)[0];
+    expect(one('a', 'task.done', {})).toMatchObject({ title: 'Task done: fix login', notice: { code: 'task.done', args: { title: 'fix login' } } });
+    expect(one('b', 'task.failed', { status: 'failed', summary: 'tests red' })).toMatchObject({ title: 'Task failed: fix login', body: 'tests red', notice: { code: 'task.failed' } });
+    const stopped = one('c', 'task.failed', { status: 'cancelled', by: 'system', summary: STOPPED_BY_OWNER });
+    expect(stopped).toMatchObject({ title: 'Task cancelled · stopped by owner: fix login', notice: { code: 'task.stoppedByOwner', args: { title: 'fix login' } } });
+    expect(stopped).not.toHaveProperty('body');
+    expect(one('d', 'task.failed', { status: 'cancelled', by: 'bot', summary: 'not needed' })).toMatchObject({ title: 'Task cancelled: fix login', body: 'not needed', notice: { code: 'task.cancelled' } });
+    expect(one('e', 'task.input_required', {})).toMatchObject({ title: 'Task needs input: fix login', notice: { code: 'task.inputRequired' } });
+  });
+
+  it('a budget card says which limit and when the bot picks up again, in words and as a notice; an unknown limit keeps no notice', () => {
+    const w = writer();
+    const until = now + 42 * 60_000;
+    const [card] = writeFactCards(w, fact('bot.budget_exhausted', { workspaceId: 'ws1', ref: { botId: 'bot-00000001' }, payload: { reason: 'turns_hour', until } }), bots);
+    expect(card.title).toMatch(/ is out of turns for this hour; it picks up again at \d\d:\d\d$/);
+    expect(card.title).not.toContain('turns_hour');
+    expect(card.notice).toEqual({ code: 'budget.exhausted', args: { bot: expect.any(String), limit: 'turns_hour', until } });
+    const [workers] = writeFactCards(w, fact('bot.budget_exhausted', { id: 'f-w', workspaceId: 'ws1', ref: { botId: 'bot-00000001' }, payload: { reason: 'concurrent_workers' } }), bots);
+    expect(workers.title).toMatch(/ is running as many workers as it may at once$/);
+    expect(workers.notice).toEqual({ code: 'budget.exhausted', args: { bot: expect.any(String), limit: 'concurrent_workers' } });
+    const [odd] = writeFactCards(w, fact('bot.budget_exhausted', { id: 'f-o', workspaceId: 'ws1', ref: { botId: 'bot-00000001' }, payload: { reason: 'something_new' } }), bots);
+    expect(odd.title).toMatch(/ is out of budget$/);
+    expect(odd).not.toHaveProperty('notice');
+  });
+
   it('a held owner message gets one status card in its thread, across repeats and a restart', () => {
     const w = writer();
     const until = now + 30 * 60_000;
@@ -381,6 +411,7 @@ describe('facts → system cards', () => {
     const card = writeBotHookCard(w, ev, bots) as RoomCard;
     expect(card).toMatchObject({ kind: 'budget', threadId: 'issue:github.com/acme/app#3', actor: { kind: 'system' }, refs: { botId: 'bot-00000001' } });
     expect(card.title).toMatch(/^Queued: .+ is out of turns until \d\d:\d\d; resume it in its profile$/);
+    expect(card.notice).toEqual({ code: 'budget.held', args: { bot: expect.any(String), until } });
     expect(writeBotHookCard(w, ev, bots)).toBeNull();
     expect(writeBotHookCard(writer(), ev, bots)).toBeNull();
     expect(w.read('ws1', { threadId: 'issue:github.com/acme/app#3' }).cards.filter((c) => c.kind === 'budget')).toHaveLength(1);
@@ -388,6 +419,7 @@ describe('facts → system cards', () => {
     const other = writeBotHookCard(w, { ...ev, wakeId: 'w10', threadId: undefined, until: null }, bots) as RoomCard;
     expect(other).toMatchObject({ threadId: 'general' });
     expect(other.title).toMatch(/^Queued: .+ is out of turns; resume it in its profile$/);
+    expect(other.notice?.args).not.toHaveProperty('until');
     // The same seam still writes the interrupted card.
     expect(writeBotHookCard(w, { type: 'wake.interrupted', botId: 'bot-00000001', workspaceId: 'ws1', wakeId: 'w1', at: now }, bots)?.title).toMatch(/interrupted/);
   });

@@ -23,6 +23,7 @@ import type { Conversation } from '../botsModel';
 import { refreshApprovals, setApprovalsApiForTests, type ApprovalsApi } from '../../Room/approvalsStore';
 import { setBotGroupPort, type BotGroupPort } from '../../Room/botGroups';
 import type { BotGroup } from '../../../../shared/botGroup';
+import { botHueIndex } from '../../Room/BotAvatar';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -527,6 +528,69 @@ describe('Bots page', () => {
     await act(async () => { q('[data-testid="bots-stop-bot-confirm"]')!.click(); });
     expect(stop.stopBot).toHaveBeenCalledWith(LEAD);
     expect(useStore.getState().toasts.at(-1)?.message).toBe('Stopped Lead and 2 of its workers.');
+  });
+
+  it('a parked bot\'s profile says why and offers Resume (budget or errors); a bot that is not parked shows none', async () => {
+    const act$ = vi.fn(async () => ({ ok: true }));
+    bots[1] = { ...bots[1], bot: { ...bots[1].bot, parked: { reason: 'budget', at: 1 } }, status: { ...bots[1].status!, presence: 'parked' } };
+    bots[2] = { ...bots[2], bot: { ...bots[2].bot, parked: { reason: 'error', at: 1 } }, status: { ...bots[2].status!, presence: 'parked' } };
+    setFactoryBotPort({ ...port, act: act$ });
+    seedRooms();
+    await render(<BotsPage />);
+    act(() => q(`[data-bots-row="bot:${LEAD}"]`)!.click());
+    act(() => q('[data-bots-pill]')!.click());
+    expect(q('[data-bots-profile-parked="budget"]')?.textContent).toContain('Out of turns');
+    await act(async () => { q<HTMLButtonElement>('[data-testid="bots-resume-bot"]')!.click(); });
+    expect(act$).toHaveBeenCalledWith('resume', LEAD);
+    act(() => q(`[data-bots-row="bot:${VERIFIER}"]`)!.click());
+    act(() => q('[data-bots-pill]')!.click());
+    expect(q('[data-bots-profile-parked="error"]')?.textContent).toContain('Stopped after errors');
+    await act(async () => { q<HTMLButtonElement>('[data-testid="bots-resume-bot"]')!.click(); });
+    expect(act$).toHaveBeenLastCalledWith('resume', VERIFIER);
+    act(() => q(`[data-bots-row="bot:${MOA}"]`)!.click());
+    act(() => q('[data-bots-pill]')!.click());
+    expect(q('[data-bots-profile-parked]')).toBeNull();
+    expect(q('[data-testid="bots-resume-bot"]')).toBeNull();
+  });
+
+  it('Delete bot asks in place, saying what happens, then removes it with its colour slot', async () => {
+    const remove = vi.fn(async () => ({ ok: true }));
+    setFactoryBotPort({ ...port, remove });
+    seedRooms();
+    act(() => useStore.setState({ toasts: [] } as never));
+    await render(<BotsPage />);
+    const slot = botHueIndex(LEAD);
+    act(() => q(`[data-bots-row="bot:${LEAD}"]`)!.click());
+    act(() => q('[data-bots-pill]')!.click());
+    act(() => q('[data-testid="bots-delete-bot"]')!.click());
+    expect(remove).not.toHaveBeenCalled();
+    const text = q('[data-testid="bots-delete-bot-confirm-row"]')?.textContent ?? '';
+    expect(text).toContain('Delete Lead?');
+    expect(text).toContain('messages stay');
+    expect(text).toContain('running workers are stopped');
+    expect(text).toContain('routines are removed');
+    act(() => q('[data-testid="bots-delete-bot-cancel"]')!.click());
+    expect(q('[data-testid="bots-delete-bot-confirm-row"]')).toBeNull();
+    act(() => q('[data-testid="bots-delete-bot"]')!.click());
+    await act(async () => { q('[data-testid="bots-delete-bot-confirm"]')!.click(); });
+    expect(remove).toHaveBeenCalledWith(LEAD, slot);
+    expect(useStore.getState().toasts.at(-1)?.message).toBe('Lead was deleted.');
+  });
+
+  it('a removed bot\'s messages keep its name, marked removed, never its legacy role', async () => {
+    const GONE = 'bot-0000000d';
+    cards.push(card({ workspaceId: 'w1', actor: by('w1', GONE), title: 'I built the login page', at: 500 }));
+    const withGone = api();
+    withGone.actors = vi.fn(async () => ({ actors: { [GONE]: { role: 'lead' as BotRole, name: 'Developer', removed: true as const, hue: 2 } } }));
+    setRoomsApiForTests(withGone);
+    seedRooms();
+    await render(<BotsPage />);
+    act(() => q('[data-bots-row="group:grp-000000a1"]')!.click());
+    const chat = q('[data-bots-chat]')?.textContent ?? '';
+    expect(chat).toContain('Developer (removed)');
+    // Its face keeps the colour slot its tombstone carries.
+    expect(botHueIndex(GONE)).toBe(2);
+    expect(chat).not.toMatch(/\bLead\b.*I built the login page/);
   });
 
   it('Stop all bots: the header menu, an inline confirm, then the counts that are not zero', async () => {

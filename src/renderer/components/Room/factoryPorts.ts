@@ -18,6 +18,8 @@
 //         // bot.wake | bot.park | bot.resume | bot.interrupt (shared/bot.ts BOT_RPC), as the operator
 //     updateBot(botId: string, patch: BotProfilePatch): Promise<{ ok: boolean; message?: string; code?: string }>
 //         // bot.update, as the operator (optional: without it the profile rows are read-only)
+//     removeBot(botId: string, hue?: number): Promise<{ ok: boolean; message?: string; code?: string }>
+//         // bot.remove, as the operator (optional: without it the profile has no Delete bot)
 //     createBot(req: FactoryBotCreateRequest): Promise<FactoryBotCreateResult>
 //         // IPC.FACTORY_BOT_CREATE (optional: without it Settings › Factory cannot add a bot)
 //     createBotTeam(req: FactoryBotCreateTeamRequest): Promise<FactoryBotCreateTeamResult>
@@ -101,6 +103,9 @@ export interface FactoryBotPort {
   act(action: BotAction, botId: string): Promise<{ ok: boolean; message?: string; code?: string }>;
   /** Absent: profiles are read-only here. */
   update?(botId: string, patch: BotProfilePatch): Promise<{ ok: boolean; message?: string; code?: string }>;
+  /** Absent: no bot can be removed here. Stops its work, removes its
+   *  routines, keeps its history (`hue`: its colour slot, for its cards). */
+  remove?(botId: string, hue?: number): Promise<{ ok: boolean; message?: string; code?: string }>;
   /** Absent: no bot can be added here. */
   create?(req: FactoryBotCreateRequest): Promise<FactoryBotCreateResult>;
   /** Absent: no team can be added here. */
@@ -165,6 +170,7 @@ interface FactoryBridge {
   onBotEvent?: (cb: () => void) => () => void;
   botAction?: (action: BotAction, botId: string) => Promise<{ ok: boolean; message?: string; code?: string }>;
   updateBot?: (botId: string, patch: BotProfilePatch) => Promise<{ ok: boolean; message?: string; code?: string }>;
+  removeBot?: (botId: string, hue?: number) => Promise<{ ok: boolean; message?: string; code?: string }>;
   createBot?: (req: FactoryBotCreateRequest) => Promise<FactoryBotCreateResult>;
   createBotTeam?: (req: FactoryBotCreateTeamRequest) => Promise<FactoryBotCreateTeamResult>;
   pickBotAvatar?: () => Promise<FactoryBotAvatarPickResult>;
@@ -210,6 +216,7 @@ export function bridgeBotPort(): FactoryBotPort {
     subscribe: (fn) => b.onBotEvent?.(fn) ?? (() => undefined),
     act: (action, botId) => b.botAction?.(action, botId) ?? Promise.resolve({ ok: false, message: 'no bot runtime' }),
     ...(b.updateBot ? { update: b.updateBot } : {}),
+    ...(b.removeBot ? { remove: b.removeBot } : {}),
     ...(b.createBot ? { create: b.createBot } : {}),
     ...(b.createBotTeam ? { createTeam: b.createBotTeam } : {}),
     ...(b.pickBotAvatar ? { pickAvatar: b.pickBotAvatar } : {}),

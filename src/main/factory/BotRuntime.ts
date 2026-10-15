@@ -4,7 +4,8 @@
 //
 //   unknown ──(first wake)──▶ spawning ──▶ idle ◀──▶ running ──(turn end)──▶ idle
 //      └─(disabled)─▶ stopped          └─(failed ×2)─▶ parked{error}
-//   idle ──(budget)──▶ parked{budget}  (lifted by itself once the window allows)
+//   idle ──(budget)──▶ parked{budget}  (lifted by itself once the window allows,
+//                                      or at once when a profile edit raises the cap)
 //   park / resume / interrupt from bot.* RPC; dispose on quit.
 //
 // Nothing spawns at start: every enabled bot is `unknown` until its first
@@ -25,15 +26,18 @@
 // A turn the owner interrupts ends `interrupted` and is not replayed.
 //
 // Out of turns, the bot is parked `budget` with one `bot.budget_exhausted`
-// hook. The owner's own message still runs (counted as a turn): the budget
-// bounds what bots start — each other, routines, facts — not what the owner
-// asks. Nor does the budget drop the owner's other words: a wake carrying
-// them (an answer to a question, a dispatch the owner approved or asked for)
-// stays queued — on disk, so it survives a restart — with a `wake.held` hook
-// for the room's status card, and runs when the window allows a turn again
-// (a timer is armed for that time) or when the owner resumes the bot: resume
-// lets every held wake of that moment run even over budget. Any other wake
-// that meets the refusal (a mention, a routine, facts) is dropped `budget`.
+// hook (carrying when the window allows a turn again). The owner's own
+// message still runs (counted as a turn): the budget bounds what bots start
+// — each other, routines, facts — not what the owner asks. No wake is
+// dropped by the budget: every wake that meets the refusal stays queued — on
+// disk, so it survives a restart — and runs when the window allows a turn
+// again (a timer is armed for that time), when a profile edit raises the
+// cap, or when the owner resumes the bot: resume lets every queued wake of
+// that moment run even over budget. A held routine waits as its newest
+// firing only. A wake carrying the owner's words (an answer to a question, a
+// dispatch the owner approved or asked for) gets a `wake.held` hook for the
+// room's status card. A budget park with nothing queued is lifted by itself
+// once the window allows a turn.
 //
 // Switching the factory off stops spending at once: every running turn is
 // cancelled and ends `interrupted` with a `wake.interrupted` hook, as a turn
@@ -427,14 +431,14 @@ export class BotRuntime {
   }
 
   /** Lift any park; the bot's parked wakes go back to the queue, and every
-   *  queued wake carrying the owner's words may run even out of turns. */
+   *  queued wake of this moment may run even out of turns: the owner chose
+   *  to spend them (else a budget park would come straight back). */
   resume(botId: string): BotActionResult {
     if (!this.deps.store.setParked(botId, null)) return notFound(botId);
     this.lastError.delete(botId);
     this.deps.queue.unparkAll(botId);
-    for (const item of this.deps.queue.list({ botId, states: ['queued'] })) {
-      if (this.carriesOwnerWords(item)) this.released.add(item.id);
-    }
+    this.dedupeHeldRoutines(botId);
+    for (const item of this.deps.queue.list({ botId, states: ['queued'] })) this.released.add(item.id);
     this.lifecycle(botId, 'resumed');
     this.kick();
     this.pushStatus(botId);
@@ -456,7 +460,9 @@ export class BotRuntime {
   }
 
   /** A profile changed (bot.update): a disabled bot loses its session and
-   *  its queue; an engine or repository change respawns on the next turn. */
+   *  its queue; an engine or repository change respawns on the next turn; a
+   *  budget park the new limits no longer call for is lifted (an error park
+   *  waits for the owner's resume). */
   profileChanged(botId: string): void {
     const profile = this.deps.store.get(botId);
     if (!profile || !profile.enabled) {
@@ -465,6 +471,7 @@ export class BotRuntime {
       this.forgetReleased(botId);
       if (profile) this.lifecycle(botId, 'disabled');
     } else {
+      this.liftBudgetPark(profile, this.now());
       this.lifecycle(botId, 'enabled');
       const live = this.live.get(botId);
       if (live && live.engineKey !== sessionKey(profile) && !this.running.has(botId)) this.endSession(botId);
@@ -474,8 +481,11 @@ export class BotRuntime {
   }
 
   /** bot.remove: end the session (its token is revoked), drop its wakes and
-   *  its saved session id, and delete the profile. The bot's folder is kept. */
-  remove(botId: string): boolean {
+   *  its saved session id, and delete the profile (the store keeps a
+   *  tombstone, so its cards keep its name; `hue`: its colour slot). The
+   *  bot's folder is kept. Its workers are stopped by the caller
+   *  (bot.rpc.ts, factoryStop's per-bot stop). */
+  remove(botId: string, opts: { hue?: number } = {}): boolean {
     if (!this.deps.store.get(botId)) return false;
     const run = this.running.get(botId);
     if (run) {
@@ -487,7 +497,7 @@ export class BotRuntime {
     this.forgetReleased(botId);
     this.deps.sessions.delete(botId);
     this.lastError.delete(botId);
-    const removed = this.deps.store.remove(botId);
+    const removed = this.deps.store.remove(botId, opts);
     if (removed) this.lifecycle(botId, 'removed');
     return removed;
   }
@@ -560,6 +570,7 @@ export class BotRuntime {
     if (!this.contextReady()) return;
     const cap = settings.globalConcurrentBots;
     const now = this.now();
+    this.sweepBudgetParks(now);
     // Bots with work, most urgent next item first.
     const ready: Array<{ profile: BotProfile; item: WakeItem }> = [];
     for (const botId of this.deps.queue.botsWithQueued()) {
@@ -597,6 +608,9 @@ export class BotRuntime {
         continue;
       }
       if (profile.parked) {
+        // Lifted here (the window slid, the cap rose): what waited runs as
+        // its newest routine firing only.
+        this.dedupeHeldRoutines(botId);
         this.deps.store.setParked(botId, null);
         delete profile.parked;
       }
@@ -705,19 +719,65 @@ export class BotRuntime {
       .sort((a, b) => a.priority - b.priority || a.enqueuedAt - b.enqueuedAt)[0] ?? null;
   }
 
-  /** The bot just ran out of turns at `head`: park it, report it once, and
-   *  drop `head` unless it carries the owner's words (then it waits queued). */
+  /** The bot just ran out of turns at `head`: park it and report it once,
+   *  with when the window allows a turn again. `head` stays queued. */
   private outOfTurns(profile: BotProfile, head: WakeItem, reason: BudgetRefusalReason, now: number): void {
-    if (!this.carriesOwnerWords(head)) this.deps.queue.drop(head.id, 'budget');
     this.deps.store.setParked(profile.id, { reason: 'budget', at: now });
     profile.parked = { reason: 'budget', at: now };
-    emitBotHook({ type: 'bot.budget_exhausted', botId: profile.id, workspaceId: profile.workspaceId, reason, wakeId: head.id, at: now });
+    const until = nextTurnAllowedAt(profile.budget, this.deps.store.usageOf(profile.id), now);
+    emitBotHook({
+      type: 'bot.budget_exhausted', botId: profile.id, workspaceId: profile.workspaceId, reason, wakeId: head.id,
+      ...(Number.isFinite(until) ? { until } : {}),
+      at: now,
+    });
     this.pushStatus(profile.id);
+  }
+
+  /** Lift a budget park the bot's limits no longer call for. True when lifted. */
+  private liftBudgetPark(profile: BotProfile, now: number): boolean {
+    if (profile.parked?.reason !== 'budget') return false;
+    if (!checkTurn(profile.budget, this.deps.store.usageOf(profile.id), now).ok) return false;
+    this.dedupeHeldRoutines(profile.id);
+    this.deps.store.setParked(profile.id, null);
+    delete profile.parked;
+    this.pushStatus(profile.id);
+    return true;
+  }
+
+  /** A budget-parked bot with nothing queued is not visited by the pass
+   *  below: lift its park once the window allows, else wake up then. */
+  private sweepBudgetParks(now: number): void {
+    for (const profile of this.deps.store.list()) {
+      if (profile.parked?.reason !== 'budget' || this.deps.queue.depth(profile.id) > 0) continue;
+      if (this.liftBudgetPark(profile, now)) continue;
+      const until = nextTurnAllowedAt(profile.budget, this.deps.store.usageOf(profile.id), now);
+      if (Number.isFinite(until)) this.armHeldTimer(until);
+    }
+  }
+
+  /** A routine held by the budget waits as its newest firing: an older
+   *  queued firing of the same routine is dropped `duplicate`. */
+  private dedupeHeldRoutines(botId: string): void {
+    const newest = new Map<string, WakeItem>();
+    for (const item of this.deps.queue.list({ botId, states: ['queued'] })) {
+      if (item.reason.kind !== 'routine') continue;
+      const id = item.reason.routineId;
+      const prev = newest.get(id);
+      if (!prev) {
+        newest.set(id, item);
+        continue;
+      }
+      const prevDue = prev.reason.kind === 'routine' ? prev.reason.dueAt : 0;
+      const older = item.reason.dueAt > prevDue ? prev : item;
+      if (older === prev) newest.set(id, item);
+      this.deps.queue.drop(older.id, 'duplicate');
+    }
   }
 
   /** Out of turns: report each wake held for the owner (the room keeps one
    *  card per wake) and wake up when the budget allows a turn again. */
   private noticeHeld(profile: BotProfile, now: number): void {
+    this.dedupeHeldRoutines(profile.id);
     const until = nextTurnAllowedAt(profile.budget, this.deps.store.usageOf(profile.id), now);
     const finite = Number.isFinite(until);
     if (finite) this.armHeldTimer(until);

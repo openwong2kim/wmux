@@ -989,7 +989,30 @@ export function factRooms(fact: Fact, bots: BotDirectoryApi | undefined): string
   return [...out];
 }
 
-interface SystemCard { workspaces: string[]; threadId: ThreadId; kind: CardKind; title: string; body?: string; refs?: RoomCard['refs']; closes?: true; }
+interface SystemCard { workspaces: string[]; threadId: ThreadId; kind: CardKind; title: string; body?: string; refs?: RoomCard['refs']; closes?: true; notice?: CardNotice }
+
+/** factoryStop.ts STOPPED_BY_OWNER: the summary of a task the owner's stop
+ *  cancelled (not imported: the stop pulls in the fan-out notifier). */
+const STOPPED_BY_OWNER_SUMMARY = 'stopped by owner';
+
+/** A task card's label in the English the card keeps, by its notice code. */
+const TASK_CARD_LABEL: Readonly<Record<string, string>> = {
+  'task.done': 'Task done',
+  'task.failed': 'Task failed',
+  'task.cancelled': 'Task cancelled',
+  'task.stoppedByOwner': 'Task cancelled · stopped by owner',
+  'task.inputRequired': 'Task needs input',
+};
+
+/** What a budget refusal stopped, in the English the card keeps (the
+ *  reader's language comes from its notice, roomFormat.ts). */
+const BUDGET_LIMIT_TEXT: Readonly<Record<string, string>> = {
+  turns_hour: 'is out of turns for this hour',
+  turns_day: 'is out of turns for today',
+  concurrent_workers: 'is running as many workers as it may at once',
+  worker_hours_day: 'has used its worker hours for today',
+  factory_workers: 'waits: the bots run as many workers as they may at once',
+};
 
 /** The system card(s) a fact becomes, or null for kinds the room does not
  *  show (PR / issue / CI edges other than the closing ones — the bots post
@@ -1038,13 +1061,23 @@ export function systemCardForFact(fact: Fact, bots?: BotDirectoryApi): SystemCar
     case 'task.done':
     case 'task.failed':
     case 'task.input_required': {
-      const label = fact.kind === 'task.done' ? 'Task done' : fact.kind === 'task.failed' ? 'Task failed' : 'Task needs input';
+      // A task cancelled before it reported comes as task.failed (factIngest.ts)
+      // but is not a failure: it says Cancelled, and stopped by owner when
+      // the owner's stop ended it (factoryStop.ts).
+      const cancelled = fact.kind === 'task.failed' && p.status === 'cancelled';
+      const byOwner = cancelled && p.by === 'system' && p.summary === STOPPED_BY_OWNER_SUMMARY;
+      const code = fact.kind === 'task.done' ? 'task.done'
+        : byOwner ? 'task.stoppedByOwner'
+          : cancelled ? 'task.cancelled'
+            : fact.kind === 'task.failed' ? 'task.failed' : 'task.inputRequired';
       const gate = typeof p.gateExit === 'number' ? `gate exit ${p.gateExit}${p.gateHeadSha ? ` at ${sha7(p.gateHeadSha)}` : ''}` : '';
-      const body = [capBody(p.summary, 2000), gate].filter(Boolean).join('\n\n');
+      const body = [byOwner ? '' : capBody(p.summary, 2000), gate].filter(Boolean).join('\n\n');
       const threadId = taskThread(fact);
+      const title = str(p.title) || fact.ref?.taskId || 'task';
       return {
         workspaces: factRooms(fact, bots), threadId, kind: 'fact',
-        title: `${label}: ${str(p.title) || fact.ref?.taskId || 'task'}`,
+        title: `${TASK_CARD_LABEL[code]}: ${title}`,
+        notice: { code, args: { title } },
         ...(body ? { body } : {}), refs: baseRefs,
         // A task's end closes only its own thread: in the issue, PR or other
         // thread it was started from, the subject is still open.
@@ -1095,12 +1128,20 @@ export function systemCardForFact(fact: Fact, bots?: BotDirectoryApi): SystemCar
         title: `${botLabel(bots, fact.ref?.botId)} was refused ${str(fact.ref?.method) || 'a call'} (${str(p.reason) || 'surface'})`,
         refs: baseRefs,
       };
-    case 'bot.budget_exhausted':
+    case 'bot.budget_exhausted': {
+      // Which limit, and when the bot picks up again (a turn limit frees by
+      // itself as its window slides; BotRuntime computes the time).
+      const name = botLabel(bots, fact.ref?.botId);
+      const reason = str(p.reason);
+      const until = typeof p.until === 'number' && Number.isFinite(p.until) && p.until > 0 ? p.until : null;
+      const limit = BUDGET_LIMIT_TEXT[reason] ?? 'is out of budget';
       return {
         workspaces: factRooms(fact, bots), threadId: GENERAL_THREAD, kind: 'budget',
-        title: `${botLabel(bots, fact.ref?.botId)} is out of budget (${str(p.reason) || 'budget'})`,
+        title: `${name} ${limit}${until !== null ? `; it picks up again at ${formatHeldUntil(until, fact.at)}` : ''}`,
         refs: baseRefs,
+        ...(reason in BUDGET_LIMIT_TEXT ? { notice: { code: 'budget.exhausted', args: { bot: name, limit: reason, ...(until !== null ? { until } : {}) } } } : {}),
       };
+    }
     case 'bot.notice': {
       // Main's own line to one bot; the owner sees it only when it says so
       // (a worker that could not start), in the thread it is about, title only.
@@ -1143,6 +1184,7 @@ export function writeFactCards(writer: RoomWriter, fact: Fact, bots?: BotDirecto
       ...(spec.body ? { body: spec.body } : {}),
       ...(spec.refs ? { refs: spec.refs } : {}),
       ...(spec.closes ? { closes: true as const } : {}),
+      ...(spec.notice ? { notice: spec.notice } : {}),
       at: fact.at,
     });
     if (card) out.push(card);
@@ -1181,7 +1223,8 @@ export function writeHeldWakeCard(writer: RoomWriter, ev: RoomBotHookEvent, bots
   if (ev.type !== 'wake.held' || !('wakeId' in ev) || !isRoomWorkspaceId(ev.workspaceId)) return null;
   const threadId = parseThreadId(ev.threadId) ?? GENERAL_THREAD;
   const name = botLabel(bots, ev.botId);
-  const until = 'until' in ev && typeof ev.until === 'number' ? ` until ${formatHeldUntil(ev.until, ev.at)}` : '';
+  const at = 'until' in ev && typeof ev.until === 'number' ? ev.until : null;
+  const until = at !== null ? ` until ${formatHeldUntil(at, ev.at)}` : '';
   const r = writer.post({
     workspaceId: ev.workspaceId,
     threadId,
@@ -1189,6 +1232,7 @@ export function writeHeldWakeCard(writer: RoomWriter, ev: RoomBotHookEvent, bots
     actor: { kind: 'system' },
     title: `Queued: ${name} is out of turns${until}; resume it in its profile`,
     refs: { botId: ev.botId },
+    notice: { code: 'budget.held', args: { bot: name, ...(at !== null ? { until: at } : {}) } },
     clientPostId: `held:${ev.wakeId}`,
   });
   return r.ok && !r.duplicate ? r.card : null;

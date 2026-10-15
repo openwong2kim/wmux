@@ -18,6 +18,9 @@ export type BotHookEvent =
       /** Which window refused. */
       reason: 'turns_hour' | 'turns_day' | 'concurrent_workers' | 'worker_hours_day' | 'factory_workers';
       wakeId?: string;
+      /** When the window allows a turn again (a turn refusal only; absent:
+       *  not by itself, or not known). */
+      until?: number;
       at: number;
     }
   | { type: 'bot.error'; botId: string; workspaceId: string; message: string; wakeId?: string; at: number }

@@ -224,6 +224,19 @@ describe('plan.propose', () => {
     expect(await handlePlanPropose({ title: 'Plan for Monday', items: [ITEM] }, ctxOf(MOA), d)).toMatchObject({ duplicate: true });
   });
 
+  it('a newer plan supersedes the bot\'s older plan still open; another bot\'s stays open', async () => {
+    let key = 0;
+    const d = deps({ postKey: () => `wake:w-${++key}:1` });
+    const writer = d.rooms() as RoomWriter;
+    const first = (await handlePlanPropose({ title: 'Plan one', items: [ITEM] }, ctxOf(MOA), d)) as { card: { id: string } };
+    const other = writer.append({ workspaceId: 'ws-hq', threadId: 'plan:p-other', kind: 'plan', actor: { kind: 'bot', workspaceId: 'ws-hq', botId: 'bot-0000beef' }, title: 'Not mine', state: 'open' })!;
+    const second = (await handlePlanPropose({ title: 'Plan two', items: [ITEM] }, ctxOf(MOA), d)) as { card: { id: string; state: string } };
+    expect(second.card.state).toBe('open');
+    expect(writer.get('ws-hq', first.card.id)?.state).toBe('resolved');
+    expect(writer.get('ws-hq', other.id)?.state).toBe('open');
+    expect(writer.get('ws-hq', second.card.id)?.state).toBe('open');
+  });
+
   it('needs the live, enabled bot behind the binding', async () => {
     const ghost: RpcContext = { origin: 'local', bot: { workspaceId: 'ws-hq', botId: 'bot-0000ffff', role: 'moa' } };
     expect(await handlePlanPropose({ title: 't', items: [ITEM] }, ghost, deps())).toMatchObject({ ok: false, code: 'not_attributed' });

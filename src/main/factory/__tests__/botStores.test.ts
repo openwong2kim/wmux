@@ -196,6 +196,26 @@ describe('BotStore', () => {
     expect(s.create({ workspaceId: 'ws-4', role: 'lead', triggers: [{ kind: 'pr.opened', filter: { repoKey: 'h/a//c' } }] }).ok).toBe(false);
   });
 
+  it('a removed bot leaves a tombstone (name, role, colour slot) that survives a reload; a bad slot is not kept', async () => {
+    const s = newStore();
+    const a = s.create({ workspaceId: 'ws-1', template: 'developer', name: 'Developer' });
+    const b = s.create({ workspaceId: 'ws-1', name: 'Other' });
+    if (!a.ok || !b.ok) throw new Error('create');
+    expect(s.remove(a.bot.id, { hue: 3 })).toBe(true);
+    expect(s.remove(b.bot.id, { hue: 99 })).toBe(true);
+    expect(s.remove(a.bot.id)).toBe(false);
+    expect(s.get(a.bot.id)).toBeNull();
+    expect(s.listRemoved()).toEqual([
+      { id: a.bot.id, workspaceId: 'ws-1', role: 'lead', template: 'developer', name: 'Developer', hue: 3, removedAt: clock },
+      { id: b.bot.id, workspaceId: 'ws-1', role: 'lead', template: 'custom', name: 'Other', removedAt: clock },
+    ]);
+    await s.flush();
+    const t = newStore();
+    t.load();
+    expect(t.list()).toHaveLength(0);
+    expect(t.listRemoved().map((r) => [r.name, r.hue])).toEqual([['Developer', 3], ['Other', undefined]]);
+  });
+
   it('persists profiles and usage, and refuses a file of another version', async () => {
     const s = newStore();
     const r = s.create({ workspaceId: 'ws-1', role: 'triage' });

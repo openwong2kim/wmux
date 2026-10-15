@@ -15,6 +15,7 @@ import { useStore } from '../stores';
 import type { ElectronAPI } from '../../preload/preload';
 import type { ThreadId } from '../../shared/room';
 import { ALL_THREADS, timelineKey, type TimelineThread } from '../stores/slices/roomSlice';
+import { noteRemovedBotHues } from '../components/Room/BotAvatar';
 
 export type RoomsApi = ElectronAPI['rooms'];
 
@@ -55,7 +56,10 @@ export async function loadRoomActors(): Promise<void> {
   if (!api?.actors) return;
   try {
     const r = await api.actors();
-    if ('actors' in r) useStore.getState().setRoomActors(r.actors);
+    if ('actors' in r) {
+      noteRemovedBotHues(Object.entries(r.actors).flatMap(([id, a]) => (a.removed && a.hue !== undefined ? [[id, a.hue] as [string, number]] : [])));
+      useStore.getState().setRoomActors(r.actors);
+    }
   } catch {
     // keep the last answer
   }

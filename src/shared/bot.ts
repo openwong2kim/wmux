@@ -175,6 +175,26 @@ export interface BotProfile {
 
 export const BOT_ID_RE = /^bot-[0-9a-f]{8}$/;
 
+/** How many identity colour slots a bot's face takes from (the renderer's
+ *  BOT_IDENTITY_HUES). */
+export const BOT_IDENTITY_SLOTS = 8;
+
+/** What is kept of a removed bot (bots.json `removed`): enough for the cards
+ *  it wrote to keep its name and face, marked as removed. */
+export interface RemovedBot {
+  id: string;
+  workspaceId: string;
+  role: BotRole;
+  template?: BotTemplate;
+  name: string;
+  /** Its picture, when it had one (BotProfile.avatar). */
+  avatar?: string;
+  /** Its identity colour slot, 0..BOT_IDENTITY_SLOTS-1, when the remover
+   *  knew it (the Bots page does). */
+  hue?: number;
+  removedAt: number;
+}
+
 /** Edge of the stored avatar PNG, in pixels. */
 export const BOT_AVATAR_PX = 128;
 

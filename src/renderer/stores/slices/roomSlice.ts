@@ -17,6 +17,10 @@ import type { BotRole } from '../../../shared/bot';
 import { isTerminalOnlyWorkspace } from './workspaceSlice';
 
 /** The timeline key for "every card of the room". */
+
+/** A card author main knows (room.handler.ts RoomActor). */
+export interface RoomActorEntry { role: BotRole; name: string; removed?: true; avatar?: string; hue?: number }
+
 export const ALL_THREADS = '*' as const;
 export type TimelineThread = ThreadId | typeof ALL_THREADS;
 
@@ -51,9 +55,11 @@ export interface RoomSlice {
    *  was last pushed: a page read that started before a push never undoes it. */
   roomPushCount: number;
   roomPushedAt: Record<string, number>;
-  /** Bot authors by id (role and name), from main's bot store. */
-  roomActors: Record<string, { role: BotRole; name: string }>;
-  setRoomActors: (actors: Record<string, { role: BotRole; name: string }>) => void;
+  /** Bot authors by id (role and name), from main's bot store; a removed
+   *  bot from its tombstone (marked `removed`, with its picture and colour
+   *  slot). */
+  roomActors: Record<string, RoomActorEntry>;
+  setRoomActors: (actors: Record<string, RoomActorEntry>) => void;
   setRoomStatus: (status: RoomStatusView | null) => void;
   setRoomThreads: (workspaceId: string, threads: ThreadSummary[]) => void;
   /** Store a page: `replace` for a first read, `append` for a page after
