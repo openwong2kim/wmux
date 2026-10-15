@@ -139,6 +139,31 @@ fi
 exec "$real" --settings "$WMUX_WSL_SETTINGS" \${WMUX_WSL_MCP_CONFIG:+--mcp-config="$WMUX_WSL_MCP_CONFIG"} "$@"
 `;
 
+/**
+ * #2231 — a fan-out task worktree on a Windows drive, worked on by Linux git.
+ * Git for Windows wrote its `.git` file as `gitdir: D:/…`, which Linux git
+ * reads as a relative path, so every git command in the worker failed. Main
+ * hands the pane the gitdir and the worktree as Linux paths
+ * (`WMUX_WSL_GIT_DIR`, `WMUX_WSL_GIT_WORK_TREE`; main/agents/wslWorkerGit.ts)
+ * and they become GIT_DIR / GIT_WORK_TREE here, inside Linux only: nothing is
+ * written to the repository, and no Windows process started from the pane
+ * inherits them. `WMUX_WSL_GIT_AUTOCRLF` carries Git for Windows' effective
+ * core.autocrlf (its system config sets `true`, so the worktree is checked out
+ * with CRLF and Linux git without it reads every text file as modified); it is
+ * appended to the GIT_CONFIG_COUNT list the user's startup files left, never
+ * written over it. After the user's rc files, so they cannot undo it.
+ */
+export const WSL_TASK_GIT_ENV = `# A task worktree on a Windows drive: its gitdir by Linux paths (#2231).
+if [ -n "\${WMUX_WSL_GIT_DIR:-}" ] && [ -n "\${WMUX_WSL_GIT_WORK_TREE:-}" ]; then
+  export GIT_DIR="$WMUX_WSL_GIT_DIR" GIT_WORK_TREE="$WMUX_WSL_GIT_WORK_TREE"
+  if [ -n "\${WMUX_WSL_GIT_AUTOCRLF:-}" ]; then
+    __wmux_n=\${GIT_CONFIG_COUNT:-0}
+    case "$__wmux_n" in ''|*[!0-9]*) __wmux_n=0 ;; esac
+    export "GIT_CONFIG_KEY_$__wmux_n=core.autocrlf" "GIT_CONFIG_VALUE_$__wmux_n=$WMUX_WSL_GIT_AUTOCRLF" "GIT_CONFIG_COUNT=$((__wmux_n + 1))"
+    unset __wmux_n
+  fi
+fi`;
+
 export const WSL_CODEX_HOOK = `#!/bin/sh
 export ELECTRON_RUN_AS_NODE=1
 export WSLENV="\${WSLENV:+$WSLENV:}ELECTRON_RUN_AS_NODE/w"
@@ -411,6 +436,7 @@ fi
 if [ -n "$WMUX_WSL_ACCOUNT_HOME_UNREACHABLE" ]; then
   printf 'wmux: %s cannot be opened from this WSL distro, so this login will not be saved to the selected account. Use an account folder on a local drive or inside this distro.\\n' "$WMUX_WSL_ACCOUNT_HOME_UNREACHABLE" >&2
 fi
+${WSL_TASK_GIT_ENV}
 # An explicit workspace directory wins over a cd in the user's startup files.
 if [ -z "$WMUX_WSL_CWD" ] || ! builtin cd -- "$WMUX_WSL_CWD"; then
   printf 'wmux: cannot enter WSL directory "%s"; check the directory and WSLENV transport, then retry.\\n' "$WMUX_WSL_CWD" >&2

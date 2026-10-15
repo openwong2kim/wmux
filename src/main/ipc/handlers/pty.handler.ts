@@ -32,6 +32,7 @@ import { withheldCredentialNames } from '../../../shared/envFilter';
 import { getShellUtf8Locale } from '../../pty/shellLocale';
 import { forgetPtyShell, getPtyShell, recordPtyShell } from '../../pty/ptyShellRegistry';
 import { promptFileArgumentForShell } from '../../../shared/promptFileArgument';
+import { withWslWorkerGit } from '../../agents/wslWorkerGit';
 import { withDaemonCreateRollback } from './daemonCreateRollback';
 import { getWorkspaceMirror } from '../../workspace/WorkspaceMirror';
 import { scheduleInitialCommand } from './scheduleInitialCommand';
@@ -638,6 +639,13 @@ export function registerPTYHandlers(
       // native-terminal freshness. No-op off win32 / on failure. (Recovery replays
       // the persisted create-time env verbatim; refreshing that is a follow-up.)
       const resolvedEnv = resolveSpawnEnv(withFreshWindowsPath(globalThis.process.env), options?.env, identity, getShellUtf8Locale(), envPolicy, accountEnv);
+      // #2231 — a fan-out task pane in WSL on a Windows-drive worktree: Linux
+      // git gets the worktree's gitdir by its Linux path (wslWorkerGit.ts).
+      if ((botWorker || options?.fanoutTaskOf) && isWslShell(shell) && safeCwd) {
+        await withWslWorkerGit(resolvedEnv, safeCwd, wslArgs?.[1] ?? null).catch((err) => {
+          console.warn(`[pty:create] ${sessionId}: WSL task git location not set: ${String(err)}`);
+        });
+      }
       // 관측 floor: gated pane에서 자격증명을 withheld하면 로컬 로그 1줄.
       if (envPolicy === 'gated') {
         const withheld = withheldCredentialNames(globalThis.process.env);

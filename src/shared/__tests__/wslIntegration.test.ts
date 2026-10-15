@@ -29,6 +29,23 @@ describe('WSL per-launch Claude integration', () => {
     expect(output[2].startsWith(injected.env.WMUX_WSL_BIN + ':')).toBe(enabled === '1');
   });
 
+  it.skipIf(process.platform === 'win32')('a task pane gets its worktree\'s Linux git location after the user\'s rc files (#2231)', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-wsl-test-')); dirs.push(dir);
+    fs.writeFileSync(path.join(dir, '.bashrc'), 'export GIT_DIR=/user/rc GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=user.name GIT_CONFIG_VALUE_0=me\n');
+    const injected = buildWslInjection({
+      target: { distribution: 'test', user: 'test' }, cwd: dir,
+      env: { HOME: dir, PATH: '/usr/bin:/bin', WMUX_WSL_GIT_DIR: '/mnt/d/r/.git/worktrees/t-1', WMUX_WSL_GIT_WORK_TREE: '/mnt/c/w/t-1',
+        WMUX_WSL_GIT_AUTOCRLF: 'true', WSLENV: 'WMUX_WSL_GIT_DIR/u:WMUX_WSL_GIT_WORK_TREE/u:WMUX_WSL_GIT_AUTOCRLF/u' },
+      integrationDir: dir, bashInit: BASH_INIT, runtimePath: process.execPath, bridgePath: '/unused-bridge',
+    });
+    // The pane's own WSLENV entries survive the injection's.
+    expect(injected.env.WSLENV.split(':')).toEqual(expect.arrayContaining(['WMUX_WSL_GIT_DIR/u', 'WMUX_WSL_GIT_WORK_TREE/u', 'WMUX_WSL_GIT_AUTOCRLF/u', 'WMUX_WSL_CWD/u']));
+    const output = execFileSync('/bin/bash', ['-c', '. "$WMUX_WSL_BASHRC"; printf "%s\\0" "$GIT_DIR" "$GIT_WORK_TREE" "$GIT_CONFIG_COUNT" "$GIT_CONFIG_KEY_1" "$GIT_CONFIG_VALUE_1" "$GIT_CONFIG_KEY_0"'], {
+      encoding: 'utf8', env: injected.env,
+    }).split('\0');
+    expect(output.slice(0, 6)).toEqual(['/mnt/d/r/.git/worktrees/t-1', '/mnt/c/w/t-1', '2', 'core.autocrlf', 'true', 'user.name']);
+  });
+
   it('uses scoped settings and the existing Windows bridge without writing user settings', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-wsl-test-')); dirs.push(dir);
     const injected = buildWslInjection({
