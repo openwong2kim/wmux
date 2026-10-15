@@ -8,7 +8,7 @@
 import { useMemo, useRef, useState } from 'react';
 import Dialog, { DialogBody, DialogFooter, DialogHeader } from '../ui/Dialog';
 import Button from '../ui/Button';
-import Field from '../ui/Field';
+import Field, { FieldOwnIds } from '../ui/Field';
 import Input from '../ui/Input';
 import Checkbox from '../ui/Checkbox';
 import SegmentedControl from '../ui/SegmentedControl';
@@ -310,19 +310,21 @@ export function ConnectionDialog({ t, bots, editing, presetBotId, onClose, port 
               />
               {form.scope === 'all' && <p className="text-[11px] text-[var(--text-sub)]">{t('settings.factory.connections.scopeAllHint', { count: bots.length })}</p>}
               {form.scope === 'bots' && (
-                <div className="flex flex-col gap-1" data-testid="connection-scope-bots">
-                  {bots.length === 0 && <p className="text-[11px] text-[var(--text-muted)]">{t('settings.factory.noBots')}</p>}
-                  {bots.map((b) => {
-                    const on = form.botIds.includes(b.bot.id);
-                    return (
-                      <label key={b.bot.id} className="flex items-center gap-2 text-[13px] text-[var(--text-main)] cursor-pointer" data-connection-scope-bot={b.bot.id}>
-                        <Checkbox checked={on} aria-label={b.bot.name} onCheckedChange={(v) => set('botIds', v ? [...form.botIds, b.bot.id] : form.botIds.filter((x) => x !== b.bot.id))} />
-                        <BotAvatar bot={b.bot} size={16} t={t} />
-                        <span className="truncate">{b.bot.name}</span>
-                      </label>
-                    );
-                  })}
-                </div>
+                <FieldOwnIds>
+                  <div className="flex flex-col gap-1" data-testid="connection-scope-bots">
+                    {bots.length === 0 && <p className="text-[11px] text-[var(--text-muted)]">{t('settings.factory.noBots')}</p>}
+                    {bots.map((b) => {
+                      const on = form.botIds.includes(b.bot.id);
+                      return (
+                        <label key={b.bot.id} className="flex items-center gap-2 text-[13px] text-[var(--text-main)] cursor-pointer" data-connection-scope-bot={b.bot.id}>
+                          <Checkbox id={`connection-scope-${b.bot.id}`} checked={on} aria-label={b.bot.name} onCheckedChange={(v) => set('botIds', v ? [...form.botIds, b.bot.id] : form.botIds.filter((x) => x !== b.bot.id))} />
+                          <BotAvatar bot={b.bot} size={16} t={t} />
+                          <span className="truncate">{b.bot.name}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                </FieldOwnIds>
               )}
             </div>
           </Field>
