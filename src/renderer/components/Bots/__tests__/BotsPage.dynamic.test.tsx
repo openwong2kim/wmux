@@ -929,8 +929,9 @@ describe('Bots page', () => {
     }));
     seedRooms();
     bots[1] = { ...bots[1], tasks: [{
+      // In review for two days: past what the rail lists, still resumable.
       taskId, taskWorkspaceId: 't1', ownerWorkspaceId: 'w1', botId: LEAD, title: 'Paused one',
-      status: 'review_requested' as const, stage: 'coded' as const, worker: 'resumable' as const, updatedAt: Date.now(),
+      status: 'review_requested' as const, stage: 'coded' as const, worker: 'resumable' as const, updatedAt: Date.now() - 2 * 86_400_000,
     }] };
     const resumeWorker = vi.fn(async () => ({ ok: true, workspaceId: 't1' }));
     setFactoryBotPort({ ...port, resumeWorker });

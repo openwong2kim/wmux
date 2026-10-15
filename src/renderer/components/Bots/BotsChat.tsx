@@ -1916,13 +1916,22 @@ export function BotsChat({ conversation, roomCards, bots, title, workspaceName, 
   // the old was cleared) takes the panel; a failure is a toast.
   // An answer that comes after the owner moved on (another worker, Close,
   // another conversation) leaves the panel as it is now.
+  // A chat that closed or moved to another conversation since opens nothing.
+  const shownChat = useRef({ mounted: true, conversationId });
+  shownChat.current.conversationId = conversationId;
+  useEffect(() => {
+    shownChat.current.mounted = true;
+    return () => { shownChat.current.mounted = false; };
+  }, []);
   const resumeShown = useCallback(async (taskId: string): Promise<void> => {
     const resume = resumePort?.resumeWorker;
     if (!resume) return;
     const asked = useStore.getState().botsWorkerPanel;
     await resume(taskId).then((r) => {
       if (!r.ok) useStore.getState().pushToast({ message: r.message || t('botsPage.worker.resume'), level: 'error' });
-      else if (r.workspaceId && useStore.getState().botsWorkerPanel === asked) useStore.getState().setBotsWorkerPanel({ workspaceId: r.workspaceId, conversationId });
+      else if (r.workspaceId && shownChat.current.mounted && shownChat.current.conversationId === conversationId && useStore.getState().botsWorkerPanel === asked) {
+        useStore.getState().setBotsWorkerPanel({ workspaceId: r.workspaceId, conversationId });
+      }
     }).catch((err: unknown) => useStore.getState().pushToast({ message: String(err), level: 'error' }));
   }, [resumePort, conversationId, t]);
   const askedNonce = threadAsk?.nonce;
@@ -1975,10 +1984,11 @@ export function BotsChat({ conversation, roomCards, bots, title, workspaceName, 
   }), [cards, roomThreads, onThread, pattern, bots]);
   // The Resume on a system card saying a stopped worker can resume: the
   // same resume as the panel's menu.
+  // Every task the bots list, not only the few the rail shows.
   const cardResume = useMemo((): RowCtx['resume'] => (readOnly || !resumePort?.resumeWorker ? undefined : {
-    resumable: (taskId) => tasks.some((task) => task.taskId === taskId && task.worker === 'resumable'),
+    resumable: (taskId) => taskRows.some((row) => (row.tasks ?? []).some((task) => task.taskId === taskId && task.worker === 'resumable')),
     run: resumeShown,
-  }), [readOnly, resumePort, tasks, resumeShown]);
+  }), [readOnly, resumePort, taskRows, resumeShown]);
   const ctx: RowCtx = { t, bots, actors, api, now, readOnly, jobPort: readOnly ? undefined : jobPort, nameOf, botNames, taskTitle, requestTitle, idLabels, sent, started, onThread, onOpenBot, markdown, ...(conversation.kind === 'bot' ? { selfBot: conversation.row.bot.id } : {}), ...(cardResume ? { resume: cardResume } : {}) };
   // The open thread is read whole, from its first card (the cached room
   // timeline holds only its newest page), and shown from every card read
