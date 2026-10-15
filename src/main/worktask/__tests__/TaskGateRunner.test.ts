@@ -861,7 +861,8 @@ describe('TaskGateRunner — a project with nothing to install', () => {
 });
 
 describe('TaskGateRunner — base ref and HEAD on a real repository', () => {
-  it('reads the base with git, refuses a diverged worktree, and pins HEAD', async () => {
+  // Real git processes: sized for a loaded CI runner (4.97 s of 5 s on Windows).
+  it('reads the base with git, refuses a diverged worktree, and pins HEAD', { timeout: 30_000 }, async () => {
     const { execFileSync } = await import('node:child_process');
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-gate-base-'));
     const g = (...args: string[]) => execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', '-c', 'commit.gpgsign=false', ...args], { cwd: dir, encoding: 'utf8' }).trim();
