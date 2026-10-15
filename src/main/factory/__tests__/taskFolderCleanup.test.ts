@@ -14,6 +14,7 @@ import {
   cleanTaskFolder,
   cleanTaskFolders,
   gitRepoInfo,
+  holdTaskFolder,
   installTaskFolderCleanup,
   restoreTaskFolder,
   taskFolderKind,
@@ -190,6 +191,87 @@ describe('cleanTaskFolder', () => {
   });
 });
 
+describe('review safeguards', () => {
+  it('a resume holding the folder keeps it; a hold taken during a removal waits for it, then the folder comes back', async () => {
+    const mgr = new TaskWorktreeManager();
+    const wt = await taskWorktree(mgr);
+    let entered: () => void = () => undefined;
+    const removalStarted = new Promise<void>((resolve) => { entered = resolve; });
+    const p = ports({
+      worktrees: {
+        removeWorktree: async (root, hash, folder) => {
+          entered();
+          return mgr.removeWorktree(root, hash, folder);
+        },
+        restoreWorktree: (root, hash, folder, ref, detached) => mgr.restoreWorktree(root, hash, folder, ref, detached),
+      },
+    });
+    const mission = { folder: wt, branch: 'wtask/perf-a-12345678' };
+    const release = await holdTaskFolder('wtask-abc-12345678');
+    try {
+      expect(await cleanTaskFolder(p, row('completed'), mission, [])).toBe('skipped');
+    } finally {
+      release();
+    }
+    // A removal already past its checks: the resume's hold waits for it.
+    const removing = cleanTaskFolder(p, row('completed'), mission, []);
+    await removalStarted;
+    const held = await holdTaskFolder('wtask-abc-12345678');
+    try {
+      expect(fs.existsSync(wt)).toBe(false);
+      expect(await removing).toBe('removed');
+      expect(await restoreTaskFolder(p, 'wtask-abc-12345678', wt)).toBe(true);
+    } finally {
+      held();
+    }
+  });
+
+  it('waits while a gate runs on the task; leaves a detached task\'s worktree to the owner', async () => {
+    const wt = await taskWorktree(new TaskWorktreeManager());
+    const mission = { folder: wt, branch: 'wtask/perf-a-12345678' };
+    expect(await cleanTaskFolder(ports({ gateRunning: () => true }), row('cancelled'), mission, [])).toBe('busy');
+    expect(await cleanTaskFolder(ports(), row('cancelled'), { ...mission, detached: true }, [])).toBe('skipped');
+    expect(fs.existsSync(wt)).toBe(true);
+  });
+
+  it('never removes through a link: a research batch replaced by a link to elsewhere is left alone', async () => {
+    const outside = path.join(dir, 'outside', 'task-1');
+    fs.mkdirSync(outside, { recursive: true });
+    fs.writeFileSync(path.join(outside, 'precious.txt'), 'keep');
+    const research = path.join(wmuxDir, 'factory', 'bots', BOT, 'research');
+    fs.mkdirSync(research, { recursive: true });
+    fs.symlinkSync(path.dirname(outside), path.join(research, 'batch-1'), 'dir');
+    const scratch = path.join(research, 'batch-1', 'task-1');
+    const research_row = row('completed', { dispatch: { origin: { kind: 'bot', botId: BOT }, preset: 'research' } });
+    expect(await cleanTaskFolder(ports(), research_row, { folder: scratch }, [])).toBe('skipped');
+    expect(fs.existsSync(path.join(outside, 'precious.txt'))).toBe(true);
+  });
+
+  it('a detached checkout (a verify task) comes back on its commit; how to put it back is written before the folder goes', async () => {
+    const mgr = new TaskWorktreeManager();
+    const tip = git(repo, 'rev-parse', 'HEAD');
+    const wt = path.join(home, 'worktrees', 'h', 'verify-1');
+    expect((await mgr.createDetachedWorktree({ repoRoot: repo, repoHash: 'h', taskSlug: 'verify-1', metaDir: path.join(dir, 'meta'), worktreePath: wt, branch: 'wtask/verify-1' }, tip)).ok).toBe(true);
+    const store = TaskFolders.at(wmuxDir);
+    let stateAtRemoval: string | undefined;
+    const p = ports({
+      store,
+      worktrees: {
+        removeWorktree: async (root, hash, folder) => {
+          stateAtRemoval = store.get('wtask-abc-12345678')?.state;
+          return mgr.removeWorktree(root, hash, folder);
+        },
+        restoreWorktree: (root, hash, folder, ref, detached) => mgr.restoreWorktree(root, hash, folder, ref, detached),
+      },
+    });
+    expect(await cleanTaskFolder(p, row('completed'), { folder: wt }, [])).toBe('removed');
+    expect(stateAtRemoval).toBe('removing');
+    expect(store.get('wtask-abc-12345678')).toMatchObject({ state: 'removed', head: tip });
+    expect(await restoreTaskFolder(p, 'wtask-abc-12345678', wt)).toBe(true);
+    expect(git(wt, 'rev-parse', 'HEAD')).toBe(tip);
+  });
+});
+
 describe('the automatic pass and Settings › Bots', () => {
   it('a folder put back for a resume is left alone while its pane opens, then removed again once its worker stopped', async () => {
     const wt = await taskWorktree(new TaskWorktreeManager());
@@ -260,10 +342,14 @@ describe('resume after removal', () => {
     const p: WorkerResumePorts = {
       store, listSessions: async () => [], typeLine: vi.fn(() => true), respawn,
       restoreFolder: (taskId, folder) => restoreTaskFolder(folderPorts, taskId, folder),
+      holdFolder: holdTaskFolder,
     };
     expect(await resumeWorker(p, 'wtask-abc-12345678', { kind: 'bot', botId: BOT })).toMatchObject({ ok: true, workspaceId: 'ws-new' });
     expect(respawn).toHaveBeenCalledWith(expect.objectContaining({ cwd: wt }));
     expect(folderAtSpawn).toBe(true);
+    // The resume's hold is released: a cleanup may look at the folder again
+    // (its resumed worker keeps it now).
+    expect(await cleanTaskFolder(ports({ workerState: () => 'stopped', now: () => 50_000 + 10 * 60_000 }), row('completed'), { folder: wt, branch: 'wtask/perf-a-12345678' }, [])).toBe('removed');
     // Without the cleanup's record, a gone folder still refuses.
     const other = ReclaimedWorkers.at(path.join(dir, 'other'));
     await other.put({ ...rec, state: 'stopped', taskId: 'wtask-gone-12345678', sessions: [{ ...rec.sessions[0], sessionId: 'daemon-5', cwd: path.join(dir, 'gone') }] });

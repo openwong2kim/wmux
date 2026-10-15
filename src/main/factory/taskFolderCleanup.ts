@@ -57,12 +57,16 @@ export interface TaskFolderRecord {
   taskId: string;
   kind: TaskFolderKind;
   path: string;
-  /** removed · kept (uncommitted changes) · put back for a resume. */
-  state: 'removed' | 'kept_dirty' | 'restored';
-  /** A worktree's repository and branch, recorded at removal. */
+  /** being removed (written before the folder goes, so a crash keeps how to
+   *  put it back) · removed · kept (uncommitted changes) · put back for a
+   *  resume. */
+  state: 'removing' | 'removed' | 'kept_dirty' | 'restored';
+  /** A worktree's repository, and its branch or (a detached checkout, such
+   *  as a verify task's) its commit, recorded before removal. */
   repoRoot?: string;
   repoHash?: string;
   branch?: string;
+  head?: string;
   at: number;
 }
 
@@ -70,7 +74,7 @@ function isRecord(v: unknown): v is TaskFolderRecord {
   if (!v || typeof v !== 'object') return false;
   const r = v as Record<string, unknown>;
   return typeof r.taskId === 'string' && (r.kind === 'worktree' || r.kind === 'research') && typeof r.path === 'string'
-    && (r.state === 'removed' || r.state === 'kept_dirty' || r.state === 'restored') && typeof r.at === 'number';
+    && (r.state === 'removing' || r.state === 'removed' || r.state === 'kept_dirty' || r.state === 'restored') && typeof r.at === 'number';
 }
 
 export class TaskFolders {
@@ -147,6 +151,8 @@ export function taskFolderKind(folder: string, branch: string | undefined, botId
 export interface TaskMission {
   folder: string;
   branch?: string;
+  /** The task was detached: its worktree was handed to the owner. */
+  detached?: boolean;
 }
 
 export interface TaskFolderSession {
@@ -167,10 +173,14 @@ export interface TaskFolderPorts {
   workerState: (taskId: string) => 'stopping' | 'stopped' | 'resumed' | null;
   worktrees: {
     removeWorktree(repoRoot: string, repoHash: string, worktreePath: string): Promise<{ ok: true } | { ok: false; error: string; dirty?: boolean }>;
-    restoreWorktree(repoRoot: string, repoHash: string, worktreePath: string, branch: string): Promise<{ ok: true } | { ok: false; error: string }>;
+    restoreWorktree(repoRoot: string, repoHash: string, worktreePath: string, ref: string, detached?: boolean): Promise<{ ok: true } | { ok: false; error: string }>;
   };
-  /** A worktree's main repository root and its hash (the manager's lock key). */
-  repoInfo: (worktreePath: string) => Promise<{ repoRoot: string; repoHash: string } | null>;
+  /** A worktree's main repository root, its hash (the manager's lock key)
+   *  and its checked-out commit. */
+  repoInfo: (worktreePath: string) => Promise<{ repoRoot: string; repoHash: string; head?: string } | null>;
+  /** Whether a task gate's process runs for this task now (its own spawn,
+   *  not a daemon session). Absent: none. */
+  gateRunning?: (taskId: string) => boolean;
   /** Default: fs. */
   removeDir?: (dir: string) => Promise<void>;
   makeDir?: (dir: string) => Promise<void>;
@@ -209,42 +219,110 @@ function folderInUse(folder: string, sessions: readonly TaskFolderSession[]): bo
   return sessions.some((s) => [s.spawnCwd, s.cwd].some((d) => typeof d === 'string' && d.length > 0 && (isInside(d, folder) || isInside(d, real))));
 }
 
+/** taskId → the cleanup running on its folder (one at a time per task). */
+const folderOps = new Map<string, Promise<unknown>>();
+/** taskId → resumes holding its folder: no cleanup removes it meanwhile. */
+const folderHolds = new Map<string, number>();
+
+/**
+ * A resume holds the task's folder while it relaunches the worker: a cleanup
+ * that starts meanwhile leaves the folder alone, and one already running is
+ * waited for (its folder is then put back by the resume). Returns the
+ * release; once the worker runs, its pane and its `resumed` state keep the
+ * folder.
+ */
+export async function holdTaskFolder(taskId: string): Promise<() => void> {
+  folderHolds.set(taskId, (folderHolds.get(taskId) ?? 0) + 1);
+  await (folderOps.get(taskId) ?? Promise.resolve()).catch(() => undefined);
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    const n = (folderHolds.get(taskId) ?? 1) - 1;
+    if (n <= 0) folderHolds.delete(taskId);
+    else folderHolds.set(taskId, n);
+  };
+}
+
+/** Whether the folder is where its root says, through no link: the real
+ *  path relative to the root's real path is the path as written. */
+function throughNoLink(folder: string, root: string): boolean {
+  try {
+    const realRoot = fs.realpathSync(root);
+    const realFolder = fs.realpathSync(folder);
+    const rel = path.relative(realRoot, realFolder);
+    return !!rel && !rel.startsWith('..') && !path.isAbsolute(rel) && rel === path.relative(path.resolve(root), path.resolve(folder));
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Remove one ended bot task's folder when the rules allow it. `force`: the
  * owner's Clean up now (a folder kept dirty is looked at again). Never
- * throws. `skipped`: not a bot task's folder, not ended, already handled, or
- * a worker still runs; `busy`: a session still uses the folder.
+ * throws. `skipped`: not a bot task's folder, not ended, detached, already
+ * handled, held by a resume, or a worker still runs; `busy`: a session or a
+ * gate still uses the folder.
  */
-export async function cleanTaskFolder(
+export function cleanTaskFolder(
   ports: TaskFolderPorts,
   entry: LedgerEntry,
   mission: TaskMission | null,
   sessions: readonly TaskFolderSession[],
   opts: { force?: boolean } = {},
 ): Promise<TaskFolderOutcome> {
+  const prev = folderOps.get(entry.id) ?? Promise.resolve();
+  const run = prev.catch(() => undefined).then(() => cleanTaskFolderNow(ports, entry, mission, sessions, opts));
+  folderOps.set(entry.id, run);
+  void run.finally(() => {
+    if (folderOps.get(entry.id) === run) folderOps.delete(entry.id);
+  }).catch(() => undefined);
+  return run;
+}
+
+async function cleanTaskFolderNow(
+  ports: TaskFolderPorts,
+  entry: LedgerEntry,
+  mission: TaskMission | null,
+  sessions: readonly TaskFolderSession[],
+  opts: { force?: boolean },
+): Promise<TaskFolderOutcome> {
   const now = ports.now ?? Date.now;
   const log = ports.log ?? ((m: string) => console.warn(m));
   const exists = ports.exists ?? defaultExists;
-  if (!isEndedBotTask(entry) || !mission) return 'skipped';
+  if (!isEndedBotTask(entry) || !mission || mission.detached === true) return 'skipped';
   const botId = entry.dispatch?.origin.botId ?? '';
   const kind = taskFolderKind(mission.folder, mission.branch, botId, ports.roots);
   if (!kind) return 'skipped';
+  if ((folderHolds.get(entry.id) ?? 0) > 0) return 'skipped';
   const prior = ports.store.get(entry.id);
   if (prior?.state === 'removed') return 'skipped';
   if (prior?.state === 'kept_dirty' && opts.force !== true) return 'skipped';
   if (prior?.state === 'restored' && now() - prior.at < TASK_FOLDER_RESTORE_HOLD_MS) return 'skipped';
   const worker = ports.workerState(entry.id);
   if (worker === 'resumed' || worker === 'stopping') return 'skipped';
+  const keep = {
+    ...(prior?.repoRoot ? { repoRoot: prior.repoRoot } : {}),
+    ...(prior?.repoHash ? { repoHash: prior.repoHash } : {}),
+    ...(prior?.head ? { head: prior.head } : {}),
+    ...(mission.branch ? { branch: mission.branch } : prior?.branch ? { branch: prior.branch } : {}),
+  };
   if (!exists(mission.folder)) {
     // Gone already (by hand, or a removal that finished before a crash).
-    await ports.store.put({ taskId: entry.id, kind, path: mission.folder, state: 'removed', ...(prior?.repoRoot ? { repoRoot: prior.repoRoot } : {}), ...(prior?.repoHash ? { repoHash: prior.repoHash } : {}), ...(mission.branch ? { branch: mission.branch } : {}), at: now() }).catch(() => undefined);
+    await ports.store.put({ taskId: entry.id, kind, path: mission.folder, state: 'removed', ...keep, at: now() }).catch(() => undefined);
     return 'skipped';
   }
   if (folderInUse(mission.folder, sessions)) return 'busy';
+  if (ports.gateRunning?.(entry.id) === true) return 'busy';
+  const root = kind === 'research' ? path.join(ports.roots.wmuxDir, 'factory', 'bots', botId, 'research') : ports.roots.worktrees;
+  if (!throughNoLink(mission.folder, root)) {
+    log(`[factory] folder of ${entry.id} left alone: it is not where its root says (a link)`);
+    return 'skipped';
+  }
   if (kind === 'research') {
     try {
-      // Never through a link: the folder itself must be a real directory.
       if (!fs.lstatSync(mission.folder).isDirectory()) return 'skipped';
+      await ports.store.put({ taskId: entry.id, kind, path: mission.folder, state: 'removing', at: now() });
       await (ports.removeDir ?? ((d: string) => fs.promises.rm(d, { recursive: true })))(mission.folder);
     } catch (err) {
       log(`[factory] research folder of ${entry.id} not removed: ${String(err)}`);
@@ -255,22 +333,32 @@ export async function cleanTaskFolder(
     return 'removed';
   }
   const repo = await ports.repoInfo(mission.folder).catch(() => null);
-  if (!repo) {
+  // A detached checkout comes back on its commit, so it needs one.
+  if (!repo || (!mission.branch && !repo.head)) {
     log(`[factory] worktree of ${entry.id} not removed: its repository could not be read`);
     return 'failed';
   }
+  if ((folderHolds.get(entry.id) ?? 0) > 0) return 'skipped';
+  const base = {
+    taskId: entry.id, kind, path: mission.folder, repoRoot: repo.repoRoot, repoHash: repo.repoHash,
+    ...(mission.branch ? { branch: mission.branch } : {}), ...(repo.head ? { head: repo.head } : {}), at: now(),
+  };
+  // How to put it back is on disk before the folder goes.
+  try {
+    await ports.store.put({ ...base, state: 'removing' });
+  } catch (err) {
+    log(`[factory] worktree of ${entry.id} not removed: its record could not be written: ${String(err)}`);
+    return 'failed';
+  }
   const r = await ports.worktrees.removeWorktree(repo.repoRoot, repo.repoHash, mission.folder).catch((err: unknown) => ({ ok: false as const, error: String(err) }));
-  const base = { taskId: entry.id, kind, path: mission.folder, repoRoot: repo.repoRoot, repoHash: repo.repoHash, ...(mission.branch ? { branch: mission.branch } : {}), at: now() };
   if (r.ok) {
     await ports.store.put({ ...base, state: 'removed' }).catch(() => undefined);
     ports.changed?.();
     return 'removed';
   }
   if ('dirty' in r && r.dirty === true) {
-    if (prior?.state !== 'kept_dirty') {
-      await ports.store.put({ ...base, state: 'kept_dirty' }).catch(() => undefined);
-      ports.changed?.();
-    }
+    await ports.store.put({ ...base, state: 'kept_dirty' }).catch(() => undefined);
+    if (prior?.state !== 'kept_dirty') ports.changed?.();
     return 'kept_dirty';
   }
   log(`[factory] worktree of ${entry.id} not removed: ${r.error}`);
@@ -314,7 +402,7 @@ export async function cleanTaskFolders(ports: TaskFolderPorts, rows: readonly Le
  */
 export async function restoreTaskFolder(ports: TaskFolderPorts, taskId: string, folder: string): Promise<boolean> {
   const rec = ports.store.get(taskId);
-  if (!rec || rec.state !== 'removed' || path.resolve(rec.path) !== path.resolve(folder)) return false;
+  if (!rec || (rec.state !== 'removed' && rec.state !== 'removing') || path.resolve(rec.path) !== path.resolve(folder)) return false;
   const exists = ports.exists ?? defaultExists;
   if (exists(rec.path)) return false;
   const now = ports.now ?? Date.now;
@@ -325,8 +413,9 @@ export async function restoreTaskFolder(ports: TaskFolderPorts, taskId: string, 
       return false;
     }
   } else {
-    if (!rec.repoRoot || !rec.repoHash || !rec.branch) return false;
-    const r = await ports.worktrees.restoreWorktree(rec.repoRoot, rec.repoHash, rec.path, rec.branch).catch(() => ({ ok: false as const, error: 'threw' }));
+    const ref = rec.branch ?? rec.head;
+    if (!rec.repoRoot || !rec.repoHash || !ref) return false;
+    const r = await ports.worktrees.restoreWorktree(rec.repoRoot, rec.repoHash, rec.path, ref, !rec.branch).catch(() => ({ ok: false as const, error: 'threw' }));
     if (!r.ok) {
       (ports.log ?? ((m: string) => console.warn(m)))(`[factory] worktree of ${taskId} not put back: ${r.error}`);
       return false;
@@ -384,7 +473,7 @@ export async function taskFolderUsage(ports: TaskFolderPorts, rows: readonly Led
     if (origin?.kind !== 'bot' || !origin.botId) continue;
     if (!byOwner.has(row.ownerWorkspaceId)) byOwner.set(row.ownerWorkspaceId, await ports.missions(row.ownerWorkspaceId).catch(() => null));
     const mission = byOwner.get(row.ownerWorkspaceId)?.get(row.id);
-    if (!mission || !taskFolderKind(mission.folder, mission.branch, origin.botId, ports.roots)) continue;
+    if (!mission || mission.detached === true || !taskFolderKind(mission.folder, mission.branch, origin.botId, ports.roots)) continue;
     const key = path.resolve(mission.folder);
     if (seen.has(key) || !exists(key)) continue;
     seen.add(key);
@@ -427,7 +516,7 @@ export function installTaskFolderCleanup(ports: TaskFolderPorts & {
         const due = rows.filter((r) => {
           if (!isEndedBotTask(r)) return false;
           const rec = ports.store.get(r.id);
-          if (rec && rec.state !== 'restored') return false;
+          if (rec && rec.state !== 'restored' && rec.state !== 'removing') return false;
           if (!rec && r.updatedAt < since) return false;
           return (attempts.get(`${r.id}@${r.rev}`) ?? 0) < TASK_FOLDER_ATTEMPTS_MAX;
         });
@@ -477,10 +566,11 @@ export function installTaskFolderCleanup(ports: TaskFolderPorts & {
 
 const execFileAsync = promisify(execFile);
 
-/** A worktree's main repository root (the parent of its common git dir)
- *  and the hash TaskWorktreeManager keys its repository lock by (the root's
- *  realpath, sha256, 12 characters). Null when git cannot tell. */
-export async function gitRepoInfo(worktreePath: string): Promise<{ repoRoot: string; repoHash: string } | null> {
+/** A worktree's main repository root (the parent of its common git dir),
+ *  the hash TaskWorktreeManager keys its repository lock by (the root's
+ *  realpath, sha256, 12 characters) and its HEAD commit. Null when git
+ *  cannot tell. */
+export async function gitRepoInfo(worktreePath: string): Promise<{ repoRoot: string; repoHash: string; head?: string } | null> {
   try {
     const opts = { cwd: worktreePath, timeout: 30_000, windowsHide: true, env: getExecEnv() };
     const common = (await execFileAsync('git', ['rev-parse', '--git-common-dir'], opts)).stdout.trim();
@@ -493,7 +583,8 @@ export async function gitRepoInfo(worktreePath: string): Promise<{ repoRoot: str
     } catch {
       /* hashed as given */
     }
-    return { repoRoot: top, repoHash: crypto.createHash('sha256').update(real).digest('hex').slice(0, 12) };
+    const head = (await execFileAsync('git', ['rev-parse', 'HEAD'], opts).catch(() => ({ stdout: '' }))).stdout.trim();
+    return { repoRoot: top, repoHash: crypto.createHash('sha256').update(real).digest('hex').slice(0, 12), ...(/^[0-9a-f]{40,64}$/.test(head) ? { head } : {}) };
   } catch {
     return null;
   }
