@@ -65,6 +65,9 @@ export function hibernationBlocker(
   if (ringBuffer.size <= (deps.minBytes ?? HIBERNATE_MIN_BYTES)) return 'small';
   const lastOutput = Date.parse(meta.lastActivity);
   if (!Number.isFinite(lastOutput) || now - lastOutput < idleHours * 3_600_000) return 'recent-output';
+  // Something reads this pane (a phone poll, a pane search): releasing it
+  // again would only reload it from disk on the next read.
+  if (now - ringBuffer.lastWakeAt < idleHours * 3_600_000) return 'recent-wake';
   // An exec unit is its own agent process for as long as the session lives.
   if (meta.exec) return 'agent';
   if (deps.agentProcessAlive(meta.id) === true) return 'agent';

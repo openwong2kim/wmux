@@ -10,7 +10,7 @@ import type { ManagedSession } from '../DaemonSessionManager';
 
 const MB = 1024 * 1024;
 const HOUR = 3_600_000;
-const NOW = Date.parse('2026-10-16T12:00:00Z');
+const NOW = Date.now();
 
 interface FakeSession {
   meta: { id: string; state: string; lastActivity: string; exec?: unknown };
@@ -242,18 +242,23 @@ describe('buffer hibernation', () => {
     expect(ring.readAll().equals(before)).toBe(true);
   });
 
-  it('re-hibernates after a read-only wake without rewriting the .buf', async () => {
+  it('a read-only wake holds the ring for an idle window, then it re-hibernates without rewriting the .buf', async () => {
     const ring = new RingBuffer(8 * MB, 'node');
     fillRing(ring);
     sessions.push(fakeSession('p1', ring));
-    const hibernation = createBufferHibernation(deps());
+    let now = NOW;
+    const hibernation = createBufferHibernation(deps({ now: () => now }));
     await hibernation.sweep();
     const bufPath = path.join(dir, 'buffers', 'p1.buf');
-    const marker = new Date(NOW - 10 * HOUR);
+    const marker = new Date(Math.floor((NOW - 10 * HOUR) / 1000) * 1000);
     fs.utimesSync(bufPath, marker, marker);
 
-    ring.readAll(); // e.g. a pane search woke it
+    ring.readAll(); // e.g. a phone screen poll woke it
     expect(ring.isHibernated).toBe(false);
+    expect(hibernationBlocker(sessions[0] as unknown as ManagedSession, deps(), now)).toBe('recent-wake');
+    expect((await hibernation.sweep()).hibernated).toBe(0);
+
+    now = NOW + 25 * HOUR; // no read for a whole idle window
     expect((await hibernation.sweep()).hibernated).toBe(1);
     expect(fs.statSync(bufPath).mtimeMs).toBe(marker.getTime());
   });
@@ -291,7 +296,9 @@ describe('buffer hibernation', () => {
       fs.chmodSync(bufPath, 0o000); // a transient read failure (EACCES)
 
       // Output still lands, a read serves what it can, nothing is overwritten.
-      ring.write(Buffer.from('during'));
+      const failuresBefore = RingBuffer.wakeFailures;
+      for (const ch of 'during') ring.write(Buffer.from(ch));
+      expect(RingBuffer.wakeFailures).toBe(failuresBefore + 1); // one episode, one count
       expect(ring.isHibernated).toBe(true);
       expect(ring.readAll().toString()).toBe('during');
       expect(ring.readAllWithGeometry()).toMatchObject({ geometry: undefined, writtenAt: before.length + 6 });

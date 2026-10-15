@@ -116,6 +116,9 @@ export class RingBuffer {
   private pending: Buffer[] = [];
   private pendingBytes = 0;
   private appendedBytes = 0;
+  private wakeFailing = false; // the current failure episode is counted
+  private nextWriteWakeAt = 0; // output retries a failing wake at most this often
+  private wokeAt = 0;
   private mutations = 0; // bumps on every content change, including clear()
   private lastDump: { path: string; mutations: number } | null = null;
 
@@ -174,7 +177,7 @@ export class RingBuffer {
     if (this.native) { this.native.write(data); return; }
     const dataLen = data.length;
     if (dataLen === 0) return;
-    if (!this.wake()) { this.writeWhileAsleep(data); return; }
+    if (!this.wake(false)) { this.writeWhileAsleep(data); return; }
     this.mutations++;
 
     this.totalWritten += dataLen;
@@ -521,12 +524,14 @@ export class RingBuffer {
    * this first; call it directly before deleting that `.buf`. Synchronous, so
    * no caller can observe a half-woken ring. Returns false, and stays
    * hibernated with the file untouched, when the file exists but cannot be
-   * read right now (EMFILE, a sharing violation): the next access retries.
+   * read right now (EMFILE, a sharing violation): the next access retries,
+   * and PTY output (`retryNow` false) at most once a second.
    * A file that is gone cannot come back, so the ring wakes without it.
    */
-  wake(): boolean {
+  wake(retryNow = true): boolean {
     const file = this.hibernatedPath;
     if (file === null) return true;
+    if (!retryNow && this.wakeFailing && Date.now() < this.nextWriteWakeAt) return false;
     // Only the bytes the ring can still hold are read: the newest part of the
     // released history, up to `capacity` with the output held since.
     const base = this.hibernatedFileBytes;
@@ -550,8 +555,12 @@ export class RingBuffer {
         closeSync(fd);
       }
     } catch (err) {
-      RingBuffer.wakeFailures++;
-      if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') return false;
+      if (!this.wakeFailing) RingBuffer.wakeFailures++;
+      if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') {
+        this.wakeFailing = true;
+        this.nextWriteWakeAt = Date.now() + 1000;
+        return false;
+      }
       stored = Buffer.alloc(0);
       fileBytes = 0;
     }
@@ -560,7 +569,14 @@ export class RingBuffer {
       this.lastDump = null;
     }
     this.restore(this.pendingBytes > 0 ? Buffer.concat([stored, ...this.pending]) : stored);
+    this.wakeFailing = false;
+    this.wokeAt = Date.now();
     return true;
+  }
+
+  /** When the ring last came back from its `.buf` (epoch ms; 0 = never). */
+  get lastWakeAt(): number {
+    return this.wokeAt;
   }
 
   /** Leave hibernation holding exactly `data` (its newest `capacity` bytes). */
