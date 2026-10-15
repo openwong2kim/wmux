@@ -158,6 +158,15 @@ describe('botWorkers from the bot\'s tasks', () => {
     ]);
   });
 
+  it('a task the owner stopped is cancelled, a neutral state with no error mark; a failed one stays failed', () => {
+    const tasks = [
+      view('a', 't1', 'closed', { updatedAt: 2, stage: 'cancelled', status: 'cancelled' }),
+      view('b', 't2', 'closed', { updatedAt: 1, stage: 'failed', status: 'failed' }),
+    ];
+    const tree = botWorkerTree(LEAD, [], tasks, names);
+    expect(tree.map((r) => [r.workspaceId, r.state])).toEqual([['t1', 'cancelled'], ['t2', 'failed']]);
+  });
+
   it('a done task\'s pane whose agent still reads running is done, not a live worker (one state for row, panel and chat)', () => {
     const tasks = [view('a', 't1', 'coded', { status: 'review_requested' })];
     const live = botWorkers(LEAD, { t1: LEAD }, { t1: 'running' }, names, tasks);

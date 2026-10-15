@@ -112,8 +112,9 @@ export interface BotConversation extends ConversationBase {
 export interface BotTreeRow {
   workspaceId: string;
   title: string;
-  /** running · waits on the owner · errored, live; done · failed, ended. */
-  state: 'running' | 'needsYou' | 'error' | 'done' | 'failed';
+  /** running · waits on the owner · errored, live; done · failed ·
+   *  cancelled (stopped by the owner: not an error), ended. */
+  state: 'running' | 'needsYou' | 'error' | 'done' | 'failed' | 'cancelled';
   taskId?: string;
   /** An ended task whose stopped worker can resume the same conversation. */
   resumable: boolean;
@@ -555,7 +556,7 @@ export function botWorkerTree(
     out.push({
       workspaceId,
       title: task.title || name,
-      state: task.stage === 'failed' || task.stage === 'cancelled' ? 'failed' : 'done',
+      state: task.stage === 'failed' ? 'failed' : task.stage === 'cancelled' ? 'cancelled' : 'done',
       taskId: task.taskId,
       resumable: task.worker === 'resumable',
     });

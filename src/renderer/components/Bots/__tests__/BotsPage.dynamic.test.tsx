@@ -921,6 +921,23 @@ describe('Bots page', () => {
     act(() => useStore.getState().setBotsWorkerPanel(null));
   });
 
+  it('a task the owner stopped reads Cancelled with no error mark, not Failed', async () => {
+    seedRooms();
+    bots[1] = { ...bots[1], tasks: [{
+      taskId: 'wtask-stop-00000001', taskWorkspaceId: 't1', ownerWorkspaceId: 'w1', botId: LEAD, title: 'Stopped one',
+      status: 'cancelled' as const, stage: 'cancelled' as const, updatedAt: Date.now(),
+    }] };
+    await render(<BotsPage />);
+    act(() => q(`[data-bots-row="bot:${LEAD}"]`)!.click());
+    const row = q('[data-bots-tree] [data-bots-worker="t1"]')!;
+    expect(row.getAttribute('data-worker-state')).toBe('cancelled');
+    expect(row.getAttribute('aria-label')).toBe('Stopped one, Cancelled');
+    // No red cross: the status mark's box is empty.
+    const mark = row.querySelector('[role="img"]');
+    expect(mark?.getAttribute('aria-label')).toBe('Cancelled');
+    expect(mark?.querySelector('svg')).toBeNull();
+  });
+
   it('a worker waiting on input is a tree row with what it asks, though its pane reads idle', async () => {
     seedRooms();
     const now = Date.now();

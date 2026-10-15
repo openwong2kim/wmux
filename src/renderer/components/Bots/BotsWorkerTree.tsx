@@ -27,6 +27,8 @@ const ROW_STATUS: Record<BotTreeRow['state'], AgentStatus> = {
   error: 'error',
   done: 'complete',
   failed: 'error',
+  // Stopped by the owner: no colour, no mark (red is for errors).
+  cancelled: 'idle',
 };
 
 /** A tree row's state in words. */
@@ -37,6 +39,7 @@ export function treeRowState(row: BotTreeRow, t: T): string {
     case 'error': return t('botsPage.worker.errored');
     case 'done': return t('botsPage.worker.done');
     case 'failed': return t('botsPage.worker.failed');
+    case 'cancelled': return t('taskStatus.cancelled');
   }
 }
 
@@ -64,7 +67,7 @@ function TreeRow({ row, selected, t, onOpen }: { row: BotTreeRow; selected: bool
           <span className="flex-none text-[var(--text-muted)]" aria-hidden="true"><IconFanOut size={10} /></span>
           {/* The worker shown in the panel reads in the title weight, as the
               Sidebar marks its focused task: no second fill inside the group. */}
-          <span className={`min-w-0 truncate text-[12px] ${selected ? 'font-[var(--title-weight,500)] text-[var(--text-main)]' : row.state === 'done' || row.state === 'failed' ? 'text-[var(--text-sub)]' : 'text-[var(--text-main)]'}`}>{row.title}</span>
+          <span className={`min-w-0 truncate text-[12px] ${selected ? 'font-[var(--title-weight,500)] text-[var(--text-main)]' : row.state === 'done' || row.state === 'failed' || row.state === 'cancelled' ? 'text-[var(--text-sub)]' : 'text-[var(--text-main)]'}`}>{row.title}</span>
         </span>
         {/* What a worker waiting on input asks, in the needs-you text. */}
         {row.summary && (

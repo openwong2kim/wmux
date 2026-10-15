@@ -347,10 +347,11 @@ status bar badges, `fleet_triage` or the phone's sidebar.
   under its row the way the Sidebar nests a workspace's fan-out tasks: an
   indented row each on a `--stroke` guide under the avatar — the Sidebar's
   status mark (running a muted dot, waiting on the owner the attention
-  ring, an error a cross, done a check), the fan-out mark and the task's
+  ring, an error a cross, done a check, a task the owner stopped no mark
+  and the neutral word "Cancelled"), the fan-out mark and the task's
   title in 12px, what a worker waiting on input asks in the needs-you text,
   and under it the branch with its `+N −N` diff counts. Live workers come
-  first, then ended tasks (done or failed) while their workspace is still
+  first, then ended tasks (done, failed or cancelled) while their workspace is still
   open; a row drops off when its workspace is cleared. A fold toggle — the
   count and a chevron — sits inside the bot row's right edge, under its
   time. **The open conversation is one group** (the Sidebar's selected
