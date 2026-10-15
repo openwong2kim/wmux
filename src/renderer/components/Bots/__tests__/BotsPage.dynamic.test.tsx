@@ -888,6 +888,36 @@ describe('Bots page', () => {
     expect(q('[data-bots-worker-panel]')).toBeNull();
   });
 
+  it('the chat header opens the bot\'s worker tree, so the narrow layout reaches a worker without the list (#2231)', async () => {
+    seedRooms();
+    act(() => useStore.setState({
+      workspaces: [ws('hq', 'Headquarters'), ws('w1', 'api'), {
+        ...ws('t1', 'wtask: fix login'),
+        rootPane: { id: 't1-p', type: 'leaf', ordinal: 1, surfaces: [{ id: 's', ptyId: 'pty-t1', title: '', shell: 'zsh', cwd: '/', surfaceType: 'terminal' }], activeSurfaceId: 's' },
+      } as Workspace],
+      surfaceAgent: { 'pty-t1': { name: 'Claude Code', status: 'running' } },
+      surfaceAgentStatus: { 'pty-t1': 'running' },
+    } as never));
+    await render(<BotsPage />);
+    // A group has no workers button; a bot with workers has one, with the count.
+    act(() => q('[data-bots-row="group:grp-000000a1"]')!.click());
+    expect(q('[data-bots-chat] [data-bots-head-workers]')).toBeNull();
+    act(() => q(`[data-bots-row="bot:${LEAD}"]`)!.click());
+    const button = q(`[data-bots-chat="bot:${LEAD}"] [data-bots-head-workers]`)!;
+    expect(button.textContent).toBe('1');
+    expect(button.getAttribute('aria-expanded')).toBe('false');
+    act(() => button.click());
+    expect(button.getAttribute('aria-expanded')).toBe('true');
+    const row = q(`[data-bots-chat="bot:${LEAD}"] [data-bots-tree] [data-bots-worker="t1"]`)!;
+    expect(row.textContent).toContain('fix login');
+    // A worker picked there shows its terminal beside the chat, and the popover closes.
+    act(() => row.click());
+    expect(useStore.getState().botsWorkerPanel).toEqual({ workspaceId: 't1', conversationId: `bot:${LEAD}` });
+    expect(q('[data-bots-worker-panel="t1"]')).not.toBeNull();
+    expect(q(`[data-bots-chat="bot:${LEAD}"] [data-bots-tree]`)).toBeNull();
+    expect(useStore.getState().activeWorkspaceId).toBe('hq');
+  });
+
   it('a done task is a tree row while its pane is open (Resume in the panel\'s menu); a cleared one offers Resume in the rail, which shows the new pane', async () => {
     seedRooms();
     const now = Date.now();

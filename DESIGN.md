@@ -339,7 +339,9 @@ status bar badges, `fleet_triage` or the phone's sidebar.
   headers — the list's, the chat's name-pill row and the panel's — are one
   44px band ending on the same line, with no rule under the chat's. Under an 800px-wide page (an
   ~860px window) it is one column: the list first; choosing a conversation opens the chat over
-  it, with a round back button left of the name pill.
+  it, with a round back button left of the name pill and, for a bot with workers, a round
+  workers button (an icon and the count) right of it that opens the bot's worker tree as a
+  popover, so a worker is reached without going back to the list.
 - **List:** the 16px title with Search, `⋯` (the page menu: Stop all
   bots, when main offers it) and `+` (a menu: Add bot — the Settings add
   form in a dialog; the bot it adds is selected — and New group chat) as
