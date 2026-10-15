@@ -51,7 +51,7 @@ interface Rig {
   run: (b: BotProfile, reason: WakeItem['reason'], extra?: Partial<RunningWake>, thread?: ThreadId | null) => void;
 }
 
-async function rig(bots: BotProfile[], opts: { slowFlush?: boolean } = {}): Promise<Rig> {
+async function rig(bots: BotProfile[], opts: { slowFlush?: boolean; groups?: FactoryRoomPorts['groups'] } = {}): Promise<Rig> {
   const facts: Fact[] = [];
   const subs = new Set<(f: Fact) => void>();
   const rooms = new RoomWriter({ dir: path.join(dir, 'factory', 'rooms'), now: () => now, log: () => undefined });
@@ -88,6 +88,7 @@ async function rig(bots: BotProfile[], opts: { slowFlush?: boolean } = {}): Prom
     },
     currentWakeThread: (botId) => running.get(botId)?.thread ?? null,
     currentWake: (botId) => running.get(botId)?.wake ?? null,
+    ...(opts.groups ? { groups: opts.groups } : {}),
   };
   factLog.subscribe((f) => void writeFactCards(rooms, f, directory));
   let router: HandoffRouter | null = null;
@@ -555,6 +556,42 @@ describe('the General card that points at a coordinator\'s thread', () => {
     expect(again.router.get(d.handoffId)?.openedIn).toBe(dm);
     // A bot names another bot's 1:1 only from a wake running in it.
     expect(r.router.send(binding(t.dev), { kind: 'message', toBotId: t.lead.id, title: 'hi', body: '', threadId: dm })).toMatchObject({ ok: false });
+  });
+
+  it('work the lead takes on in a group chat opens its own thread, linked to the group; its pointer lands in the group; only members name the group', async () => {
+    const t = team();
+    const GROUP = 'group:grp-00000001' as ThreadId;
+    const groups = { byThread: (ws: string, th: ThreadId | null | undefined) => (ws === 'ws1' && th === GROUP
+      ? { id: 'grp-00000001', workspaceId: 'ws1', name: 'Ship', memberIds: [t.lead.id, t.dev.id], threadId: GROUP, createdAt: 1, updatedAt: 1 }
+      : null) };
+    const r = await rig(t.all, { groups });
+    const request = r.rooms.append({ workspaceId: 'ws1', threadId: GROUP, kind: 'human', actor: { kind: 'human' }, title: 'Add a --version flag', refs: { botIds: [t.lead.id, t.dev.id] } })!;
+    r.run(t.lead, owner(), { runId: `run-${request.id}` }, GROUP);
+    const d = r.router.send(binding(t.lead), { kind: 'dispatch', toBotId: t.dev.id, title: 'Add the flag', body: 'b' });
+    if (!d.ok) throw new Error('refused');
+    r.running.delete(t.lead.id);
+    await r.router.idle();
+    const root = r.router.get(d.handoffId)!;
+    expect(root).toMatchObject({ threadId: `handoff:${d.handoffId}`, opensThread: true, openedIn: GROUP });
+    expect(r.rooms.read('ws1', { threadId: root.threadId }).cards[0].refs).toMatchObject({ requestCardId: request.id, threadId: GROUP });
+    const res = answer(r, t.dev, root, 'Added');
+    if (!res.ok) throw new Error('refused');
+    await r.router.idle();
+    expect(r.rooms.read('ws1', { threadId: GROUP }).cards.filter((c) => c.refs?.threadId === root.threadId))
+      .toEqual([expect.objectContaining({ title: 'Finished: Add the flag', replyTo: request.id })]);
+    expect(pointers(r, root.threadId)).toEqual([]);
+    const summaries = r.rooms.threads('ws1');
+    expect(summaries.find((th) => th.threadId === root.threadId)).toMatchObject({ groupId: 'grp-00000001' });
+    expect(summaries.find((th) => th.threadId === root.threadId)?.dmBotId).toBeUndefined();
+    expect(summaries.find((th) => th.threadId === GROUP)?.groupId).toBe('grp-00000001');
+    expect(summaries.find((th) => th.threadId === 'general')?.groupId).toBeUndefined();
+    // The group it was opened from survives a restart.
+    const again = await rig(t.all, { groups });
+    await again.router.idle();
+    expect(again.router.get(d.handoffId)?.openedIn).toBe(GROUP);
+    // A member names the group's thread; a bot outside it does not.
+    expect(r.router.send(binding(t.dev), { kind: 'message', toBotId: t.lead.id, title: 'hi', body: '', threadId: GROUP })).toMatchObject({ ok: true });
+    expect(r.router.send(binding(t.iss), { kind: 'message', toBotId: t.lead.id, title: 'hi', body: '', threadId: GROUP })).toMatchObject({ ok: false });
   });
 
   it('a stopped relay points there too, once: "Stopped: <title>"', async () => {

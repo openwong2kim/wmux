@@ -72,15 +72,16 @@ export interface Handoff {
   /** The coordinator's wake for a stopped relay is on disk. Main-written. */
   relayStopTold?: true;
   /** dispatch: the router opened its thread (a coordinator's parentless
-   *  dispatch said in General, or in its own 1:1). Main-written. */
+   *  dispatch said in General, in its own 1:1, or in a group chat).
+   *  Main-written. */
   opensThread?: true;
   /** dispatch that opened its thread: the coordinator's 1:1 thread
-   *  (`dm:<botId>`) it was said in; absent: General. The card pointing at
-   *  the thread, and the owner's request it answers, are in that one.
-   *  Main-written. */
+   *  (`dm:<botId>`) or the group chat's thread (`group:<id>`) it was said
+   *  in; absent: General. The card pointing at the thread, and the owner's
+   *  request it answers, are in that one. Main-written. */
   openedIn?: ThreadId;
   /** result / refusal: the card pointing at its thread (in General, or the
-   *  1:1 it was opened from) is written. Main-written. */
+   *  1:1 or group it was opened from) is written. Main-written. */
   pointed?: true;
   createdAt: number;
   updatedAt: number;

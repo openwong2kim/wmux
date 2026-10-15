@@ -39,7 +39,8 @@
 //            the result the relay could not pass on (a bot no longer
 //            enabled, a limit, a wake not taken). A parentless dispatch a
 //            coordinator sends from `general` (or from its own 1:1 thread,
-//            `dm:<botId>`) opens a thread of its own; once its last result
+//            `dm:<botId>`, or a group chat's, `group:<id>`) opens a thread of
+//            its own; once its last result
 //            is in, the thread it was said in gets one card pointing at
 //            that thread, replying to the owner's message.
 //
@@ -95,7 +96,7 @@ import {
   type HandoffStatus,
   type Party,
 } from '../../shared/handoff';
-import { GENERAL_THREAD, ROOM_LIMITS, dmThreadBot, parseThreadId, type RoomCard, type ThreadId } from '../../shared/room';
+import { GENERAL_THREAD, ROOM_LIMITS, dmThreadBot, groupThreadGroup, parseThreadId, type RoomCard, type ThreadId } from '../../shared/room';
 import { humanCardIdOfRun } from './humanMessage';
 import {
   DECISION_LIMITS,
@@ -328,10 +329,10 @@ export function parseHandoff(raw: unknown): Handoff | null {
   };
 }
 
-/** A stored `openedIn`: a 1:1 thread, or nothing (General). */
+/** A stored `openedIn`: a 1:1 or group chat thread, or nothing (General). */
 function storedOpenedIn(raw: unknown): { openedIn?: ThreadId } {
   const t = parseThreadId(raw);
-  return t && dmThreadBot(t) ? { openedIn: t } : {};
+  return t && (dmThreadBot(t) || groupThreadGroup(t)) ? { openedIn: t } : {};
 }
 
 /** A stored `next`: distinct bot ids, at most MAX_RELAY, or nothing. */
@@ -396,7 +397,7 @@ export interface HandoffRouterOptions {
   file: string;
   decisions: AskDecisionPort;
   /** fact log, wake queue, bot directory (resolved on use). */
-  ports: () => Partial<Pick<FactoryRoomPorts, 'factLog' | 'wakes' | 'bots' | 'currentWakeThread' | 'currentWake'>>;
+  ports: () => Partial<Pick<FactoryRoomPorts, 'factLog' | 'wakes' | 'bots' | 'currentWakeThread' | 'currentWake' | 'groups'>>;
   rooms: () => RoomWriter | null;
   /** The taint tracker (wakeTaint.ts), when it runs: sends are marked as
    *  they are made, and a relay's dispatch before it is stored. */
@@ -674,7 +675,7 @@ export class HandoffRouter {
     if (!title) return invalid('title is required');
     const namedThread = params.threadId === undefined ? undefined : parseThreadId(params.threadId);
     if (namedThread === null) return invalid('threadId is not a thread id');
-    if (this.othersDm(sender, namedThread)) return invalid('a bot names its own 1:1 thread only');
+    if (this.othersDm(sender, namedThread)) return invalid('a bot names its own 1:1 thread, or a group chat it is in, only');
     if (params.toWorkspaceId !== undefined && !isRoomWorkspaceId(params.toWorkspaceId)) return invalid('toWorkspaceId is not a workspace id');
     if (params.toBotId !== undefined && (typeof params.toBotId !== 'string' || !BOT_ID_RE.test(params.toBotId))) return invalid('toBotId is not a bot id');
     if (kind === 'message' && params.toBotId === undefined) return invalid('a message needs toBotId');
@@ -788,14 +789,16 @@ export class HandoffRouter {
       updatedAt: this.now(),
     };
     // A coordinator's new piece of work said in General — or in its own
-    // 1:1 — gets a thread of its own: the whole flow (hops, workers, the
-    // report) stays together there, and the 1:1 stays the owner's talk.
+    // 1:1, or a group chat's thread — gets a thread of its own: the whole
+    // flow (hops, workers, the report) stays together there, and the 1:1 or
+    // the group stays the owner's talk.
     const saidIn = draft.threadId;
     const ownDm = dmThreadBot(saidIn) === sender.botId;
-    if (kind === 'dispatch' && coordinator && !spec.namedThread && !parent && (saidIn === GENERAL_THREAD || ownDm)) {
+    const inGroup = !!groupThreadGroup(saidIn);
+    if (kind === 'dispatch' && coordinator && !spec.namedThread && !parent && (saidIn === GENERAL_THREAD || ownDm || inGroup)) {
       draft.threadId = `handoff:${id}` as ThreadId;
       draft.opensThread = true;
-      if (ownDm) draft.openedIn = saidIn;
+      if (ownDm || inGroup) draft.openedIn = saidIn;
     }
 
     if (!surfaceAllows(sender, 'handoff_send')) return this.refuse(draft, 'surface', 'the bot surface has no handoff_send');
@@ -1320,11 +1323,22 @@ export class HandoffRouter {
     return bot ? bot.name || bot.role : p.botId;
   }
 
-  /** A thread a bot may not name: another bot's 1:1, unless its running
-   *  wake is in it (a bot asked there answers there). */
+  /** A thread a bot may not name: another bot's 1:1, or a group chat it is
+   *  not in, unless its running wake is in it (a bot asked there answers
+   *  there). */
   private othersDm(sender: BotBinding, threadId: ThreadId | undefined): boolean {
     const of = dmThreadBot(threadId);
-    return !!of && of !== sender.botId && threadId !== runningWakeThread(this.opts.ports(), sender.botId);
+    const group = groupThreadGroup(threadId);
+    if (!of && !group) return false;
+    if (of === sender.botId || threadId === runningWakeThread(this.opts.ports(), sender.botId)) return false;
+    if (group) {
+      try {
+        return this.opts.ports().groups?.byThread(sender.workspaceId, threadId)?.memberIds.includes(sender.botId) !== true;
+      } catch {
+        return true;
+      }
+    }
+    return true;
   }
 
   // ── ask_person ──
@@ -1341,7 +1355,7 @@ export class HandoffRouter {
       if (!title) return invalid('title is required');
       const namedThread = params.threadId === undefined ? undefined : parseThreadId(params.threadId);
       if (namedThread === null) return invalid('threadId is not a thread id');
-      if (this.othersDm(sender, namedThread)) return invalid('a bot names its own 1:1 thread only');
+      if (this.othersDm(sender, namedThread)) return invalid('a bot names its own 1:1 thread, or a group chat it is in, only');
       if (params.clientHandoffId !== undefined && (!isClientId(params.clientHandoffId) || params.clientHandoffId.startsWith('mention:') || params.clientHandoffId.startsWith('forward:'))) {
         return invalid('clientHandoffId is not a valid key');
       }

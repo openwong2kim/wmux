@@ -86,6 +86,7 @@ import { completeCheckedTask, completeResearchTask, installTaskGate } from './ta
 import { TaskBranchCache, setBotTaskSources } from './botTasks';
 import { installLateStopSweep, setFactoryStopPorts, type FactoryStopPorts } from './factoryStop';
 import { getRoutineStore } from './routines';
+import { getGroupStore } from './groupStore';
 import { getAgentSlots } from './agentSlots';
 import { getWorkerResumePorts, reclaimedWorkerState, stopResumedWorkers, workerWorkspaceOf } from './workerReclaim';
 
@@ -528,6 +529,7 @@ export function createFactoryWiring(deps: Pick<FactoryHostDeps, 'wmuxDir'> & Par
     botHooks: hooks,
     currentWakeThread,
     currentWake: runningWakeOf,
+    groups: getGroupStore() ?? undefined,
   });
   setFactoryRoomPorts(roomPorts);
 
@@ -539,6 +541,7 @@ export function createFactoryWiring(deps: Pick<FactoryHostDeps, 'wmuxDir'> & Par
     approvals: (workspaceId) => getApprovalService()?.listForOperator(workspaceId) ?? [],
     botName: (botId) => getBotDirectory()?.get(botId)?.name || null,
     uiLocale: uiLocaleNow,
+    group: (workspaceId, threadId) => getGroupStore()?.byThread(workspaceId, threadId) ?? null,
   });
   setBotRuntimePorts({
     resolveFacts: (ids) => resolveFactsFrom(getFactLog(), ids),

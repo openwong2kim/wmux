@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { DEFAULT_BOT_BUDGETS, type BotProfile } from '../../../shared/bot';
 import type { RoomCard, ThreadId } from '../../../shared/room';
 import type { WakeItem } from '../../../shared/wake';
-import { localeLanguageName, scriptLanguage, wakeApprovals, wakeClock, wakeContext, wakeLanguage, wakeRunReplies, type WakeContextPorts } from '../wakeContext';
+import { localeLanguageName, scriptLanguage, wakeApprovals, wakeClock, wakeContext, wakeGroup, wakeLanguage, wakeRunReplies, type WakeContextPorts } from '../wakeContext';
 
 const me: BotProfile = {
   version: 1, id: 'bot-0000000a', workspaceId: 'ws1', role: 'lead', name: 'Wmux Dev', engine: { kind: 'claude-sdk' }, triggers: [],
@@ -29,6 +29,18 @@ function ports(cards: RoomCard[], over: Partial<WakeContextPorts> = {}): WakeCon
 const wake = (reason: WakeItem['reason'], threadId?: ThreadId): WakeItem => ({ id: 'w', botId: me.id, workspaceId: 'ws1', reason, priority: 0, enqueuedAt: 1, attempts: 1, state: 'running', ...(threadId ? { threadId } : {}) });
 
 describe('wakeContext', () => {
+  it('a wake in a group chat\'s thread carries the group and whether the bot spoke there (across the whole room)', () => {
+    const G = 'group:grp-00000001' as ThreadId;
+    const group = (_ws: string, t: ThreadId) => (t === G ? { id: 'grp-00000001', workspaceId: 'ws1', name: 'Ship', memberIds: [me.id, 'bot-0000000b'], threadId: G, createdAt: 1, updatedAt: 1 } : null);
+    const fresh = [owner('Hi team', { threadId: G }), said('bot-0000000b', 'Hello', { threadId: G }), said(me.id, 'elsewhere')];
+    expect(wakeGroup(ports(fresh, { group }), me, wake({ kind: 'human', text: 'Hi team', source: 'desktop' }, G))).toEqual({ name: 'Ship', memberIds: [me.id, 'bot-0000000b'], spoke: false });
+    // An introduction long ago (older than any newest page) still counts.
+    const old = [said(me.id, 'I am Wmux Dev', { threadId: G }), ...Array.from({ length: 300 }, () => owner('x', { threadId: G }))];
+    expect(wakeGroup(ports(old, { group }), me, wake({ kind: 'human', text: 'x', source: 'desktop' }, G))?.spoke).toBe(true);
+    expect(wakeGroup(ports(fresh, { group }), me, wake({ kind: 'human', text: 'x', source: 'desktop' }, 'general'))).toBeNull();
+    expect(wakeGroup(ports(fresh), me, wake({ kind: 'human', text: 'x', source: 'desktop' }, G))).toBeNull();
+  });
+
   it('reads a language from the script; a UI locale as its English name', () => {
     expect(scriptLanguage('머지할거 머지해')).toBe('Korean');
     expect(scriptLanguage('マージして')).toBe('Japanese');

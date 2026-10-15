@@ -30,24 +30,38 @@ export function groupHiReplies(snap, expect) {
   return out;
 }
 
-/** coordinator-room-wakes-lead-only: in a room with a coordinator, a
- *  message to the room wakes the coordinator alone, as a direct message. */
-export function coordinatorRoomWakesLeadOnly(snap, expect) {
+/** group-chat-wakes-its-members: an untagged message in the owner's group
+ *  chat wakes every member (a coordinator is a bot like any other), in the
+ *  group's thread, never a bot outside it; a message that picks one member
+ *  wakes that one alone. */
+export function groupChatWakesItsMembers(snap, expect) {
+  const made = arr(snap.records).find((r) => r.label === 'make the group')?.result ?? null;
+  const thread = made?.ok ? made.group?.threadId : null;
   const msg = injected(snap, expect.message);
   const card = arr(snap.cards).find((c) => c.id === msg?.id) ?? null;
-  const lead = botId(snap, expect.lead);
-  const human = arr(snap.wakes).filter((w) => w.reason?.kind === 'human');
+  const ids = (expect.members ?? []).map((k) => botId(snap, k));
+  const human = arr(snap.wakes).filter((w) => w.reason?.kind === 'human' && w.reason.runId === runOf(msg?.id));
   const facts = factsOfKind(snap, 'human.message').filter((f) => f.payload?.cardId === msg?.id);
+  const picked = injected(snap, expect.picked);
+  const pickedWakes = arr(snap.wakes).filter((w) => w.reason?.kind === 'human' && w.reason.runId === runOf(picked?.id));
+  const pickedId = botId(snap, expect.pickedBot);
   const out = [
-    criterion('card_names_the_lead', !!card && JSON.stringify(card.refs?.botIds ?? null) === JSON.stringify([lead]) && card.refs?.botId === lead,
-      JSON.stringify(card?.refs ?? null)),
-    criterion('only_the_lead_woken', human.length === 1 && human[0].botId === lead && human[0].state === 'done' && human[0].priority === 0,
-      human.map((w) => `${w.botId}:${w.state}`).join(', ') || 'no wake'),
-    criterion('direct_not_room_wide', human.length === 1 && human[0].reason.room === undefined && human[0].reason.lead === true && human[0].reason.runId === runOf(msg?.id),
-      human.map((w) => `${w.reason.runId}/${w.reason.room}/${w.reason.lead}`).join(', ') || 'no wake'),
-    criterion('one_directed_fact', facts.length === 1 && facts[0].ref?.botId === lead, `${facts.length} fact(s)`),
-    criterion('lead_answered', botCards(snap, expect.lead).length === 1, `${botCards(snap, expect.lead).length} card(s)`),
+    criterion('group_made', !!thread && /^group:grp-[0-9a-f]{8}$/.test(thread) && [...arr(made.group.memberIds)].sort().join() === [...ids].sort().join(),
+      JSON.stringify(made ?? null).slice(0, 200)),
+    criterion('card_in_group_names_every_member', !!card && card.threadId === thread && [...arr(card.refs?.botIds)].sort().join() === [...ids].sort().join() && card.refs?.botId === undefined,
+      JSON.stringify(card ? { threadId: card.threadId, refs: card.refs ?? null } : null)),
+    criterion('one_wake_per_member', human.length === ids.length && ids.every((id) => human.filter((w) => w.botId === id).length === 1),
+      human.map((w) => w.botId).join(', ') || 'no wake'),
+    criterion('wakes_pinned_to_group', human.length > 0 && human.every((w) => w.threadId === thread && w.reason.room === true && w.reason.lead === undefined && w.priority === 0),
+      human.map((w) => `${w.threadId}/${w.reason.room}/${w.reason.lead}`).join(', ') || 'no wake'),
+    criterion('one_directed_fact_each', facts.length === ids.length && ids.every((id) => facts.some((f) => f.ref?.botId === id)), `${facts.length} fact(s)`),
+    criterion('picked_wakes_one', pickedWakes.length === 1 && pickedWakes[0].botId === pickedId && pickedWakes[0].reason.room === undefined && pickedWakes[0].threadId === thread,
+      pickedWakes.map((w) => `${w.botId}/${w.reason.room}`).join(', ') || 'no wake'),
   ];
+  for (const key of expect.members ?? []) {
+    const cards = botCards(snap, key);
+    out.push(criterion(`${key}_answered_in_group`, cards.length >= 1 && cards.every((c) => c.threadId === thread), cards.map((c) => c.threadId).join(', ') || 'no card'));
+  }
   for (const key of expect.silent ?? []) {
     out.push(criterion(`${key}_not_woken`, wakesOf(snap, key).length === 0 && botCards(snap, key).length === 0, `${wakesOf(snap, key).length} wake(s)`));
   }

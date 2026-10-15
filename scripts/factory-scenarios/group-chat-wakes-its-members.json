@@ -1,9 +1,9 @@
 {
-  "name": "coordinator-room-wakes-lead-only",
+  "name": "group-chat-wakes-its-members",
   "layer": "regression",
   "runs": 1,
   "model": "stub",
-  "description": "In a room with an enabled coordinator, the owner posts to the room with no bot named: only the coordinator wakes (one directed fact, a direct wake without the room flag), the other bots stay asleep, and the card names the coordinator as its one addressee.",
+  "description": "The owner makes a group chat of the coordinator and the developer (owner decision 2026-10-15: groups are the owner's, a coordinator is a bot like any other). An untagged message in the group's thread wakes every member once (one directed fact each, one shared run, the room flag on each wake, pinned to the group's thread), never a bot outside the group; each member answers in the group's thread; the card records both members. Then a message that picks the developer alone wakes only it.",
   "setup": {
     "bots": [
       {
@@ -44,6 +44,18 @@
                   }
                 }
               ]
+            },
+            {
+              "steps": [
+                {
+                  "tool": "room_post",
+                  "args": {
+                    "kind": "opinion",
+                    "title": "Hi from developer",
+                    "body": "developer here."
+                  }
+                }
+              ]
             }
           ]
         }
@@ -73,12 +85,45 @@
   },
   "actions": [
     {
+      "do": "api",
+      "label": "make the group",
+      "fn": "factory.groups.create",
+      "args": [
+        {
+          "workspaceId": "{{ws}}",
+          "name": "Ship it",
+          "memberIds": [
+            "{{bot.lead}}",
+            "{{bot.developer}}"
+          ]
+        }
+      ],
+      "record": true,
+      "save": {
+        "groupThread": "group.threadId"
+      }
+    },
+    {
       "do": "post",
       "label": "hi",
       "post": {
+        "threadId": "{{saved.groupThread}}",
         "title": "Hi team",
         "body": "Can someone look at the login bug?"
       }
+    },
+    {
+      "do": "waitFor",
+      "label": "both members answered",
+      "cond": {
+        "wakes": {
+          "bot": "developer",
+          "reason": "human",
+          "state": "done"
+        }
+      },
+      "timeoutMs": 60000,
+      "required": true
     },
     {
       "do": "waitFor",
@@ -92,6 +137,18 @@
       },
       "timeoutMs": 60000,
       "required": true
+    },
+    {
+      "do": "post",
+      "label": "dev only",
+      "post": {
+        "threadId": "{{saved.groupThread}}",
+        "title": "Developer only",
+        "body": "Just the developer, please.",
+        "mentions": [
+          "{{bot.developer}}"
+        ]
+      }
     },
     {
       "do": "waitFor",
@@ -111,9 +168,13 @@
       "wakes"
     ],
     "message": "hi",
-    "lead": "lead",
+    "picked": "dev only",
+    "members": [
+      "lead",
+      "developer"
+    ],
+    "pickedBot": "developer",
     "silent": [
-      "developer",
       "issue"
     ]
   }

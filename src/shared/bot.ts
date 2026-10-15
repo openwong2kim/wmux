@@ -295,14 +295,16 @@ export interface BotSetJobParams {
  *  - `secrets-changed`: the stored secret names or their use changed
  *    (shared/botSecret.ts);
  *  - `connectors-changed`: the connection library changed
- *    (shared/botConnector.ts). */
+ *    (shared/botConnector.ts);
+ *  - `groups-changed`: the owner's group chats changed (shared/botGroup.ts). */
 export type BotEventPayload =
   | { type: 'bot.status'; status: BotStatus }
   | { type: 'bots-changed' }
   | { type: 'approvals-changed'; workspaceId?: string }
   | { type: 'routines-changed'; botId?: string }
   | { type: 'secrets-changed' }
-  | { type: 'connectors-changed' };
+  | { type: 'connectors-changed' }
+  | { type: 'groups-changed' };
 
 export const BOT_EVENT = 'bot.event';
 

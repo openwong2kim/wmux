@@ -2,7 +2,8 @@
 //
 // A room is one workspace's timeline (`getWmuxDir()/factory/rooms/<ws>.jsonl`,
 // main-owned). A thread is the room's sub-timeline for one PR, issue, task,
-// handoff, plan or report, or a bot's 1:1 with the owner (`dm:<botId>`);
+// handoff, plan or report, a bot's 1:1 with the owner (`dm:<botId>`), or a
+// group chat the owner made (`group:<groupId>`, shared/botGroup.ts);
 // `general` is the room itself. Bots write cards
 // with `room.post`; facts become compact `fact` cards; an `ask_person` lands
 // as a `question` card backed by a WorkspaceDecision in the same thread.
@@ -21,11 +22,16 @@ export type ThreadId =
   | `report:${string}`
   /** A bot's 1:1 with the owner (`dm:<botId>`), in the bot's own room. */
   | `dm:${string}`
+  /** A group chat the owner made (`group:<groupId>`), in its bots' room. */
+  | `group:${string}`
   | 'general';
 
 export const GENERAL_THREAD: ThreadId = 'general';
 
 const OPAQUE_RE = /^[A-Za-z0-9_.:-]{1,128}$/;
+
+/** A group chat's id (shared/botGroup.ts). */
+export const GROUP_ID_RE = /^grp-[0-9a-f]{8}$/;
 
 /** A thread id from disk or the wire, or null when it is not one. A PR or
  *  issue thread comes back in its canonical spelling (the repo key
@@ -44,6 +50,8 @@ export function parseThreadId(value: unknown): ThreadId | null {
   if (opaque) return OPAQUE_RE.test(opaque[2]) ? (value as ThreadId) : null;
   const dm = /^dm:(.+)$/.exec(value);
   if (dm) return BOT_ID_RE.test(dm[1]) ? (value as ThreadId) : null;
+  const group = /^group:(.+)$/.exec(value);
+  if (group) return GROUP_ID_RE.test(group[1]) ? (value as ThreadId) : null;
   return null;
 }
 
@@ -58,6 +66,19 @@ export function dmThreadBot(threadId: unknown): string | null {
   if (typeof threadId !== 'string' || !threadId.startsWith('dm:')) return null;
   const botId = threadId.slice(3);
   return BOT_ID_RE.test(botId) ? botId : null;
+}
+
+/** A group chat's own thread (an owner-made group; a group migrated from
+ *  a workspace room keeps `general`, shared/botGroup.ts). */
+export function groupThreadId(groupId: string): ThreadId {
+  return `group:${groupId}`;
+}
+
+/** The group whose own thread this is, or null when it is no group thread. */
+export function groupThreadGroup(threadId: unknown): string | null {
+  if (typeof threadId !== 'string' || !threadId.startsWith('group:')) return null;
+  const groupId = threadId.slice(6);
+  return GROUP_ID_RE.test(groupId) ? groupId : null;
 }
 
 /** A repo key as a thread names it (shared/repoKey.ts normalizeRepoKey) —
@@ -188,6 +209,9 @@ export interface ThreadSummary {
    *  it (a coordinator's request thread: main's card links the 1:1 or sits
    *  in it pointing here). Absent: the room's own thread. */
   dmBotId?: string;
+  /** The group whose own thread this is (`group:<groupId>`), or whose
+   *  thread started it (a coordinator's request thread opened there). */
+  groupId?: string;
 }
 
 export const ROOM_RPC = { post: 'room.post', read: 'room.read', threads: 'room.threads', resolve: 'room.resolve' } as const;

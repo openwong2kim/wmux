@@ -4042,8 +4042,9 @@ In 5.0 the desktop's Moa becomes the HQ bot of an **agent factory**: long-lived
 bots bound to workspaces by role (`lead`, `triage`, `verifier`, `maintainer`,
 and the HQ's `moa`). Bots have no pane and no terminal. What they say lands in
 the workspace's **room**, a timeline of typed cards split into threads (one per
-PR, issue, task, handoff, plan or report, plus `general`, and one per bot that
-has talked with the owner: its 1:1, `dm:<botId>`). A desktop whose
+PR, issue, task, handoff, plan or report, plus `general`, one per bot that
+has talked with the owner: its 1:1, `dm:<botId>`, and one per group chat the
+owner made, `group:<groupId>`). A desktop whose
 factory is switched off keeps the Moa behaviour above unchanged.
 
 **`/api/config`.**
@@ -4185,6 +4186,16 @@ arrival order (`seq`, increasing; never sort by `at`).
   card lands here instead of `general`); the desktop never shows
   it in the room. It is listed by `/threads` like any thread, with no
   `pr`/`issue` reference; name it after the bot, never by its id.
+  `group:<groupId>` (`grp-` and 8 hex digits) is a group chat the owner made
+  on the desktop: its name and its bots live in the desktop only (no route
+  serves them), so name it generically ("Group chat"), never by its id. It
+  holds the owner's messages to that group, the bots' answers and the cards
+  of the work started there (a coordinator's `handoff:` thread opened there
+  points back to it). Since the desktop's group chats (2026-10-15) a
+  workspace's room is no conversation by itself: `general` keeps every
+  earlier card, and a workspace whose room the owner had written in reads
+  on as a group chat in `general`. Additive: no field, route or answer
+  changed; a client that draws threads generically shows it like any other.
 - `sinceSeq` — cards with a larger `seq`. Omitted: the newest page. Read
   forward from `0` for the whole history.
 - `limit` — 1–100, default 50.

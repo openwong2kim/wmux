@@ -37,6 +37,7 @@ import {
   GENERAL_THREAD,
   ROOM_LIMITS,
   dmThreadBot,
+  groupThreadGroup,
   parseThreadId,
   issueThreadId,
   prThreadId,
@@ -50,6 +51,7 @@ import { normalizeRepoKey } from './repoWatch';
 import { formatLaneRefusal } from './laneRefusalText';
 import { redactStoredSecrets, redactStoredSecretsDeep } from './secretRedaction';
 import type { BotDirectoryApi, FactLogApi, WakeSinkApi } from './triggerEngine';
+import type { BotGroup } from '../../shared/botGroup';
 
 export const ROOMS_DIRNAME = 'rooms';
 
@@ -99,6 +101,9 @@ export interface FactoryRoomPorts {
    *  handoff the wake delivers (WakeReason handoff), which a handoff sent
    *  from that turn continues (run, depth) even without a replyTo. */
   currentWake?: (botId: string) => RunningWake | null;
+  /** The owner's group chats (groupStore.ts): the live group a thread of a
+   *  room is. Missing: no group thread takes a post. */
+  groups?: { byThread(workspaceId: string, threadId: ThreadId | null | undefined): BotGroup | null };
 }
 
 /** `handoffId`: the handoff the wake delivers (a handoff or a mention), or
@@ -802,7 +807,8 @@ export class RoomWriter {
     let status: ThreadSummary['status'] = 'open';
     if (threadId !== GENERAL_THREAD && openItems === 0 && cards.some((c) => c.closes)) status = 'closed';
     else if (openItems === 0 && last && this.now() - last.at > ROOM_LIMITS.QUIET_DAYS * DAY_MS) status = 'quiet';
-    const dmBotId = state ? threadDmBot(state.cards, threadId) : null;
+    const dmBotId = state ? threadLinked(state.cards, threadId, dmThreadBot) : null;
+    const groupId = state && !dmBotId ? threadLinked(state.cards, threadId, groupThreadGroup) : null;
     return {
       threadId,
       title: threadId === GENERAL_THREAD ? threadTitle(threadId) : redactStoredSecrets(cards[0]?.title ?? threadTitle(threadId)),
@@ -815,6 +821,7 @@ export class RoomWriter {
       unread: through === undefined ? null : cards.filter((c) => c.seq > through).length,
       ...(cards[0] ? { firstAt: cards[0].at } : {}),
       ...(dmBotId ? { dmBotId } : {}),
+      ...(groupId ? { groupId } : {}),
     };
   }
 
@@ -837,19 +844,21 @@ export class RoomWriter {
   }
 }
 
-/** The bot whose 1:1 a thread is, or started it: its own `dm:<botId>`, or a
- *  thread one of main's cards ties to a 1:1 — the opening hop linking it
- *  (`refs.threadId`), or the pointer card in it linking this thread. */
-function threadDmBot(cards: readonly RoomCard[], threadId: ThreadId): string | null {
-  const own = dmThreadBot(threadId);
-  if (own || threadId === GENERAL_THREAD) return own;
+/** The bot whose 1:1 a thread is, or started it (`of` = dmThreadBot), or
+ *  the group chat's (`of` = groupThreadGroup): its own `dm:<botId>` /
+ *  `group:<id>`, or a thread one of main's cards ties to one — the opening
+ *  hop linking it (`refs.threadId`), or the pointer card in it linking this
+ *  thread. */
+function threadLinked(cards: readonly RoomCard[], threadId: ThreadId, of: (t: unknown) => string | null): string | null {
+  const own = of(threadId);
+  if (own || threadId === GENERAL_THREAD || dmThreadBot(threadId) || groupThreadGroup(threadId)) return own;
   for (const c of cards) {
     if (c.actor.kind !== 'system') continue;
     if (c.threadId === threadId) {
-      const linked = dmThreadBot(c.refs?.threadId);
+      const linked = of(c.refs?.threadId);
       if (linked) return linked;
     } else if (c.refs?.threadId === threadId) {
-      const from = dmThreadBot(c.threadId);
+      const from = of(c.threadId);
       if (from) return from;
     }
   }
@@ -960,9 +969,10 @@ export function systemCardForFact(fact: Fact, bots?: BotDirectoryApi): SystemCar
       const title = str(p.title) || 'handoff';
       const to = str(p.toLabel) || botLabel(bots, fact.ref?.botId);
       const kind = str(p.handoffKind);
-      // A thread opened from a coordinator's 1:1: the opening hop links it.
+      // A thread opened from a coordinator's 1:1 or a group chat: the opening
+      // hop links it.
       const openedIn = parseThreadId(p.openedIn);
-      const dmLink = openedIn && dmThreadBot(openedIn) ? { threadId: openedIn } : {};
+      const dmLink = openedIn && (dmThreadBot(openedIn) || groupThreadGroup(openedIn)) ? { threadId: openedIn } : {};
       if (fact.kind === 'handoff.refused') {
         return {
           workspaces: [...new Set(workspaces)], threadId, kind: 'refusal',

@@ -62,7 +62,7 @@ export const GRADERS = {
   'team-relay-limit': handoffs.teamRelayLimit,
   'team-relay-owner-tags-researcher': handoffs.teamRelayOwnerTagsResearcher,
   'taint-relay-lane-refused': approvals.taintRelayLaneRefused,
-  'coordinator-room-wakes-lead-only': group.coordinatorRoomWakesLeadOnly,
+  'group-chat-wakes-its-members': group.groupChatWakesItsMembers,
   'taint-research-lane-refused': approvals.taintLaneRefused,
   'connector-worker-launch': connectors.connectorWorkerLaunch,
   'connector-off-for-bot-refused': connectors.connectorOffForBotRefused,

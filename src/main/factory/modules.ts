@@ -15,6 +15,7 @@ import './factoryWiring';
 import './triggerEngine';
 import './wakeTaintModule';
 import '../pipe/handlers/room.rpc';
+import '../pipe/handlers/group.rpc';
 import '../pipe/handlers/handoff.rpc';
 import './roles';
 import './mergeLaneHost';

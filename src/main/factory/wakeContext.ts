@@ -13,7 +13,10 @@
 //               a wake on that message, its words for the model to match),
 //               else the app's UI language before the owner has written;
 //   clock       the owner's time zone and local time, so times in bot text
-//               are the owner's, never UTC.
+//               are the owner's, never UTC;
+//   group       in a group chat's thread, the group (its name and members,
+//               the roster the wake shows) and whether the bot has spoken
+//               there before (a bot introduces itself the first time).
 //
 // Every read is best effort: what cannot be read is left out.
 
@@ -21,7 +24,8 @@ import { getConnectorStore, type ConnectorStore } from './connectorStore';
 import type { BotProfile } from '../../shared/bot';
 import type { RoomCard, ThreadId } from '../../shared/room';
 import type { WakeItem } from '../../shared/wake';
-import type { WakeApprovalSummary, WakeClock, WakeConnectorSummary, WakeLanguage, WakePromptInput, WakeRunReply } from './wakePrompt';
+import type { BotGroup } from '../../shared/botGroup';
+import type { WakeApprovalSummary, WakeClock, WakeConnectorSummary, WakeGroup, WakeLanguage, WakePromptInput, WakeRunReply } from './wakePrompt';
 
 export const WAKE_CONTEXT_LIMITS = {
   /** Approval requests a wake lists. */
@@ -52,6 +56,8 @@ export interface WakeContextPorts {
   botName: (botId: string) => string | null;
   /** The app's UI locale (e.g. "ko", "en", "zh-TW"). */
   uiLocale?: () => string;
+  /** The live group chat a thread of a room is (groupStore.ts). */
+  group?: (workspaceId: string, threadId: ThreadId) => BotGroup | null;
   /** The owner's IANA time zone. */
   timeZone?: () => string;
   now?: () => number;
@@ -211,8 +217,25 @@ export function wakeContext(ports: WakeContextPorts, profile: BotProfile, item: 
     language: wakeLanguage(ports, profile, item),
     clock: wakeClock(now, ports.timeZone?.()),
     connectors: wakeConnectors(ports, profile),
+    group: wakeGroup(ports, profile, item),
     now,
   };
+}
+
+/** The group chat the wake's thread is, or null: its name, its members and
+ *  whether the bot has posted there before (searched over the whole room,
+ *  so an early introduction is not missed). */
+export function wakeGroup(ports: WakeContextPorts, profile: BotProfile, item: WakeItem): WakeGroup | null {
+  const threadId = item.threadId;
+  if (!threadId || !ports.group) return null;
+  try {
+    const g = ports.group(item.workspaceId, threadId);
+    if (!g) return null;
+    const spoke = ports.findCard(item.workspaceId, (c) => c.threadId === threadId && c.actor.kind === 'bot' && c.actor.botId === profile.id) !== null;
+    return { name: g.name, memberIds: [...g.memberIds], spoke };
+  } catch {
+    return null;
+  }
 }
 
 /** The connections this bot's workers may use (connectorsForBot): names and

@@ -11,7 +11,8 @@
 //                 card into the named workspace's room, which is also a
 //                 `human.message` fact and a priority-0 wake for each bot it is
 //                 for (humanMessage.ts: the `mentions`, else the `to` role,
-//                 else every bot of the room). Addressing is a field, never
+//                 else every bot of the room; in a group chat's thread, its
+//                 members or those it names). Addressing is a field, never
 //                 text: an `@name` in a card wakes nobody. Posts are
 //                 idempotent by clientPostId.
 //   room.read     a bot: its own room (a Coordinator-template bot, by its live
@@ -34,6 +35,7 @@ import {
   ROOM_LIMITS,
   ROOM_RPC,
   dmThreadBot,
+  groupThreadGroup,
   parseThreadId,
   type CardKind,
   type RoomCard,
@@ -42,6 +44,7 @@ import {
   type RoomReadResult,
   type RoomResolveParams,
   type RoomThreadsParams,
+  type ThreadId,
 } from '../../../shared/room';
 import type { RpcContext } from '../../../shared/rpc';
 import { resolveThreadDecision } from '../../deck/deckDecisionStore';
@@ -157,10 +160,14 @@ export async function handleRoomPost(raw: unknown, ctx: RpcContext | undefined, 
       return refusal('cross_workspace', 'a bot posts into its own workspace\'s room');
     }
     // Main pins the thread: the one named, else the running wake's. Another
-    // bot's 1:1 is named only from the wake running in it.
+    // bot's 1:1 is named only from the wake running in it; a group chat's
+    // thread by its members, or from the wake running in it.
     const wakeThread = runningWakeThread(ports, bot.botId);
     const dmOf = dmThreadBot(namedThread);
     if (dmOf && dmOf !== bot.botId && namedThread !== wakeThread) return refusal('invalid', 'a bot posts in its own 1:1 thread only');
+    if (groupThreadGroup(namedThread) && namedThread !== wakeThread && !isGroupMember(ports, bot, namedThread)) {
+      return refusal('invalid', 'a bot posts in a group chat it is in');
+    }
     const threadId = namedThread ?? wakeThread ?? GENERAL_THREAD;
     const wake = runningWake(ports, bot.botId);
     const clientPostId = p.clientPostId ?? wakeOrdinals.next(wake, 'post');
@@ -226,6 +233,15 @@ export async function handleRoomPost(raw: unknown, ctx: RpcContext | undefined, 
     }
   }
   return posted;
+}
+
+/** The bot is a member of the live group chat whose thread this is. */
+export function isGroupMember(ports: Partial<FactoryRoomPorts>, bot: BotBinding, threadId: ThreadId | undefined): boolean {
+  try {
+    return ports.groups?.byThread(bot.workspaceId, threadId)?.memberIds.includes(bot.botId) === true;
+  } catch {
+    return false;
+  }
 }
 
 /** A bot card's mentions split into the bots that wake (existing, enabled,

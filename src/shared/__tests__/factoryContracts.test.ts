@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { FACT_KINDS, factDedupeKey, isFactKind, type FactKind } from '../facts';
-import { dmThreadBot, dmThreadId, parseThreadId, prThreadId, issueThreadId, taskOriginThread, taskThreadOf } from '../room';
+import { dmThreadBot, dmThreadId, groupThreadGroup, groupThreadId, parseThreadId, prThreadId, issueThreadId, taskOriginThread, taskThreadOf } from '../room';
 import { normalizeRepoKey } from '../repoKey';
 import {
   BOT_JOB_MAX,
@@ -85,6 +85,14 @@ describe('thread ids', () => {
     expect(dmThreadBot('dm:bot-0a1b2c3d')).toBe('bot-0a1b2c3d');
     for (const v of ['dm:', 'dm:bot-XYZ', 'dm:moa', 'dm:bot-0a1b2c3d/x']) expect(parseThreadId(v), v).toBeNull();
     for (const v of ['general', 'task:t-1', 'dm:nope', undefined]) expect(dmThreadBot(v)).toBeNull();
+  });
+
+  it('a group chat\'s thread is group:<group id>, and nothing else after group: parses', () => {
+    expect(groupThreadId('grp-0a1b2c3d')).toBe('group:grp-0a1b2c3d');
+    expect(parseThreadId('group:grp-0a1b2c3d')).toBe('group:grp-0a1b2c3d');
+    expect(groupThreadGroup('group:grp-0a1b2c3d')).toBe('grp-0a1b2c3d');
+    for (const v of ['group:', 'group:grp-XYZ', 'group:bot-0a1b2c3d', 'group:grp-0a1b2c3d/x']) expect(parseThreadId(v), v).toBeNull();
+    for (const v of ['general', 'dm:bot-0a1b2c3d', 'group:nope', undefined]) expect(groupThreadGroup(v)).toBeNull();
   });
 
   it('one PR is one thread however its repo key is spelled', () => {

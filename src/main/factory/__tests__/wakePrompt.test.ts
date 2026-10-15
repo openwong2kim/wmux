@@ -41,18 +41,30 @@ describe('buildWakePrompt — group rooms and routines', () => {
   const item = (reason: WakeItem['reason']): WakeItem => ({ id: 'w-1', botId: profile.id, workspaceId: 'ws1', reason, priority: 0, enqueuedAt: 1, attempts: 1, state: 'running' });
   const roster = [{ botId: 'bot-00000002', name: 'Wmux Dev' }, { botId: 'bot-00000003', name: 'Wmux; Issue=x' }];
 
-  it('a message to the room says every bot got it and lists who to mention', () => {
+  it('a message to several bots says each got it and lists who to mention', () => {
     const text = buildWakePrompt({ item: item({ kind: 'human', text: 'Hi', source: 'desktop', runId: 'run-c-1', room: true }), profile, roster });
     expect(text).toContain('Message from the owner (desktop):\nHi');
-    expect(text).toMatch(/every bot in it got this message/);
+    expect(text).toMatch(/The owner wrote to more than one bot: each of them got this message/);
     expect(text).toContain('put its id in room_post mentions: a name in the text reaches nobody');
     expect(text).toContain('Other bots in this room (mention them by id): Wmux Dev = bot-00000002; Wmux Issue x = bot-00000003');
-    // A message to this bot alone says nothing of the room.
-    expect(buildWakePrompt({ item: item({ kind: 'human', text: 'Hi', source: 'desktop' }), profile, roster })).not.toMatch(/every bot in it/);
-    // A message to a room with a coordinator reaches it alone, and says so.
+    // A message to this bot alone says nothing of the others.
+    expect(buildWakePrompt({ item: item({ kind: 'human', text: 'Hi', source: 'desktop' }), profile, roster })).not.toMatch(/more than one bot/);
+    // A stored wake from before (the coordinator-only room) reads as a message to this bot.
     const lead = buildWakePrompt({ item: item({ kind: 'human', text: 'Hi', source: 'desktop', lead: true }), profile, roster });
-    expect(lead).toMatch(/you alone got this message/);
-    expect(lead).not.toMatch(/every bot in it/);
+    expect(lead).not.toMatch(/coordinator, so you alone|more than one bot/);
+  });
+
+  it('a group chat wake names the group, lists its members only, and asks a bot new to it to introduce itself (no canned card)', () => {
+    const wake = item({ kind: 'human', text: 'Hi team', source: 'desktop', room: true });
+    const first = buildWakePrompt({ item: wake, profile, roster, group: { name: 'Ship it', memberIds: ['bot-00000003'], spoke: false } });
+    expect(first).toContain('This thread is the owner\'s group chat "Ship it"; you are one of its bots.');
+    expect(first).toMatch(/more than one bot in the group/);
+    expect(first).toContain('Other bots in this group chat (mention them by id): Wmux Issue x = bot-00000003');
+    expect(first).not.toContain('bot-00000002');
+    expect(first).toMatch(/You have not spoken in this group chat yet: begin your answer with one short line that introduces you/);
+    const again = buildWakePrompt({ item: wake, profile, roster, group: { name: '', memberIds: ['bot-00000003'], spoke: true } });
+    expect(again).toContain('This thread is the owner\'s group chat; you are one of its bots.');
+    expect(again).not.toMatch(/not spoken in this group/);
   });
 
   it('the roster names each bot\'s template and job line; a handoff wake and every coordinator wake show it', () => {

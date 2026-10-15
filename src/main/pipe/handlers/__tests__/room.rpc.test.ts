@@ -6,6 +6,7 @@ import type { BotBinding, BotProfile, BotRole } from '../../../../shared/bot';
 import type { Fact, FactDraft } from '../../../../shared/facts';
 import type { RpcContext } from '../../../../shared/rpc';
 import type { WakeItem } from '../../../../shared/wake';
+import type { RoomCard, ThreadId } from '../../../../shared/room';
 import { loadThreadDecision } from '../../../deck/deckDecisionStore';
 import { HANDOFFS_FILENAME, HandoffRouter, deckDecisionPort, setHandoffRouter } from '../../../factory/handoffRouter';
 import { RoomWriter, type FactoryRoomPorts } from '../../../factory/roomWriter';
@@ -243,7 +244,7 @@ describe('room.post', () => {
     expect(s.writer.read('ws1').cards).toHaveLength(1);
   });
 
-  it('a room message keeps the mode it was posted with on a retry, whatever the room has become', async () => {
+  it('a room message keeps its addressees on a retry, whatever the room has become; a coordinator is no special addressee', async () => {
     const dev = bot('ws1', 'lead');
     const issue = bot('ws1', 'triage');
     const bots = [dev, issue];
@@ -252,18 +253,18 @@ describe('room.post', () => {
     const enqueue = s.ports.wakes!.enqueue;
     s.ports.wakes = { enqueue: (i) => (full.has(i.botId) ? null : enqueue(i)) };
     expect(await handleRoomPost({ workspaceId: 'ws1', title: 'Hi', clientPostId: 'cm-mode' }, OPERATOR, s.deps)).toMatchObject({ ok: false, code: 'queue_full' });
-    // A coordinator joins before the retry: the first card still went to the whole room.
-    bots.push(bot('ws1', 'moa'));
+    // A bot joins before the retry: the first card still names its two.
+    bots.push(bot('ws1', 'moa', { template: 'coordinator' }));
     full.clear();
     expect(await handleRoomPost({ workspaceId: 'ws1', title: 'Hi', clientPostId: 'cm-mode' }, OPERATOR, s.deps)).toMatchObject({ ok: true, duplicate: true });
     expect(s.wakes.map((w) => [w.botId, w.reason.kind === 'human' && w.reason.room, w.reason.kind === 'human' && w.reason.lead])).toEqual([[dev.id, true, undefined], [issue.id, true, undefined]]);
-    // A message to a room with a coordinator wakes it alone, marked as the room's lead.
-    const lead = await handleRoomPost({ workspaceId: 'ws1', title: 'Next task', clientPostId: 'cm-lead' }, OPERATOR, s.deps);
-    expect(lead).toMatchObject({ ok: true, addressees: [{ botId: bots[2].id }] });
-    expect(s.wakes[2].reason).toMatchObject({ kind: 'human', lead: true });
-    // Its fact says so too (typed approval reads it as the room's words).
-    expect(s.facts.at(-1)?.payload).toMatchObject({ lead: true });
-    expect((s.wakes[2].reason as { room?: true }).room).toBeUndefined();
+    // An untagged message wakes every bot of the room, the coordinator too
+    // (owner decision 2026-10-15: no hidden coordinator-only routing).
+    const next = await handleRoomPost({ workspaceId: 'ws1', title: 'Next task', clientPostId: 'cm-lead' }, OPERATOR, s.deps);
+    expect(next).toMatchObject({ ok: true, addressees: [{ botId: dev.id }, { botId: issue.id }, { botId: bots[2].id }] });
+    expect(s.wakes.slice(2).map((w) => w.reason)).toEqual([0, 1, 2].map(() => expect.objectContaining({ kind: 'human', room: true })));
+    expect(s.wakes.slice(2).some((w) => w.reason.kind === 'human' && w.reason.lead)).toBe(false);
+    expect(s.facts.at(-1)?.payload).not.toHaveProperty('lead');
   });
 
   it('humanAddressees: mentions win, then the phone\'s toBotId (enabled only), then the role, else the whole room', () => {
@@ -283,19 +284,79 @@ describe('room.post', () => {
     expect(room.bots.map((b) => b.id)).toEqual(many.slice(0, 16).map((b) => b.id));
   });
 
-  it('humanAddressees: a room with an enabled coordinator talks to it alone; mentions and toBotId still win', () => {
+  it('humanAddressees: a coordinator is a bot like any other; members bound an unnamed message, at most MENTIONS_MAX', () => {
     const dev = bot('ws1', 'lead', { createdAt: 1 });
     const lead = bot('ws1', 'lead', { template: 'coordinator', createdAt: 2 });
     const younger = bot('ws1', 'moa', { createdAt: 3 });
     const far = bot('ws2', 'moa', { createdAt: 0 });
-    const offLead = bot('ws3', 'moa', { enabled: false });
-    const ws3dev = bot('ws3', 'lead');
-    const ports = { listEnabled: () => [far, younger, dev, lead, offLead, ws3dev] } as unknown as FactoryRoomPorts['bots'];
-    expect(humanAddressees(ports, 'ws1', {})).toEqual({ bots: [lead], room: false, lead: true });
-    expect(humanAddressees(ports, 'ws1', { mentions: [dev.id] })).toEqual({ bots: [dev], room: false });
-    expect(humanAddressees(ports, 'ws1', { toBotId: dev.id })).toEqual({ bots: [dev], room: false });
-    // A disabled coordinator, or one in another workspace, leaves the room as it was.
-    expect(humanAddressees(ports, 'ws3', {})).toEqual({ bots: [ws3dev], room: true });
+    const ports = { listEnabled: () => [far, younger, dev, lead] } as unknown as FactoryRoomPorts['bots'];
+    expect(humanAddressees(ports, 'ws1', {})).toEqual({ bots: [dev, lead, younger], room: true });
+    expect(humanAddressees(ports, 'ws1', { members: [younger.id, lead.id, far.id] })).toEqual({ bots: [lead, younger], room: true });
+    expect(humanAddressees(ports, 'ws1', { mentions: [dev.id], members: [lead.id] })).toEqual({ bots: [dev], room: false });
+    const many = Array.from({ length: 17 }, () => bot('ws3', 'lead'));
+    const group = humanAddressees({ listEnabled: () => [...many].reverse() } as unknown as FactoryRoomPorts['bots'], 'ws3', { members: many.map((b) => b.id) });
+    expect(group.bots.map((b) => b.id)).toEqual(many.slice(0, 16).map((b) => b.id));
+  });
+
+  describe('a group chat\'s thread (owner decision 2026-10-15)', () => {
+    const GROUP = 'group:grp-0000aaaa' as ThreadId;
+    function withGroup(bots: BotProfile[], memberIds: string[], threadId: ThreadId = GROUP) {
+      const s = setup(bots);
+      const live = { on: true };
+      s.ports.groups = {
+        byThread: (ws, t) => (live.on && ws === 'ws1' && t === threadId
+          ? { id: 'grp-0000aaaa', workspaceId: 'ws1', name: 'Ship', memberIds, threadId, createdAt: 1, updatedAt: 1 }
+          : null),
+      };
+      return { ...s, live };
+    }
+
+    it('an untagged message goes to every enabled member, pinned to the group; others in the workspace sleep', async () => {
+      const a = bot('ws1', 'lead', { createdAt: 1 });
+      const b = bot('ws1', 'verifier', { template: 'coordinator', createdAt: 2 });
+      const c = bot('ws1', 'triage', { createdAt: 3 });
+      const off = bot('ws1', 'maintainer', { enabled: false, createdAt: 4 });
+      const s = withGroup([a, b, c, off], [b.id, a.id, off.id]);
+      const r = await handleRoomPost({ workspaceId: 'ws1', threadId: GROUP, title: 'Hi all' }, OPERATOR, s.deps) as { ok: boolean; card: RoomCard };
+      expect(r).toMatchObject({ ok: true, card: { threadId: GROUP, refs: { botIds: [a.id, b.id] } } });
+      expect(r.card.refs?.botId).toBeUndefined();
+      expect(s.wakes.map((w) => [w.botId, w.threadId, w.reason.kind === 'human' && w.reason.room])).toEqual([[a.id, GROUP, true], [b.id, GROUP, true]]);
+      expect(s.facts.map((f) => f.ref?.botId)).toEqual([a.id, b.id]);
+    });
+
+    it('picked (or typed @) bots only; a bot outside the group is refused; a deleted group takes no post', async () => {
+      const a = bot('ws1', 'lead', { createdAt: 1 });
+      const b = bot('ws1', 'verifier', { createdAt: 2 });
+      const c = bot('ws1', 'triage', { createdAt: 3 });
+      const s = withGroup([a, b, c], [a.id, b.id]);
+      expect(await handleRoomPost({ workspaceId: 'ws1', threadId: GROUP, title: 'B only', mentions: [b.id] }, OPERATOR, s.deps)).toMatchObject({ ok: true, card: { refs: { botId: b.id, botIds: [b.id] } } });
+      expect(s.wakes.map((w) => [w.botId, w.reason.kind === 'human' && w.reason.room])).toEqual([[b.id, undefined]]);
+      expect(await handleRoomPost({ workspaceId: 'ws1', threadId: GROUP, title: 'C?', mentions: [a.id, c.id] }, OPERATOR, s.deps)).toMatchObject({ ok: false, code: 'invalid' });
+      s.live.on = false;
+      expect(await handleRoomPost({ workspaceId: 'ws1', threadId: GROUP, title: 'gone' }, OPERATOR, s.deps)).toMatchObject({ ok: false, code: 'invalid' });
+      expect(s.wakes).toHaveLength(1);
+    });
+
+    it('a group made from the room lives on in General: an untagged message there goes to its members', async () => {
+      const a = bot('ws1', 'lead', { createdAt: 1 });
+      const b = bot('ws1', 'verifier', { createdAt: 2 });
+      const late = bot('ws1', 'triage', { createdAt: 3 });
+      const s = withGroup([a, b, late], [a.id, b.id], 'general');
+      await handleRoomPost({ workspaceId: 'ws1', title: 'Hi' }, OPERATOR, s.deps);
+      expect(s.wakes.map((w) => w.botId)).toEqual([a.id, b.id]);
+    });
+
+    it('a bot posts in a group it is in, or where its wake runs; never in another group', async () => {
+      const a = bot('ws1', 'lead');
+      const b = bot('ws1', 'verifier');
+      const outsider = bot('ws1', 'triage');
+      const s = withGroup([a, b, outsider], [a.id, b.id]);
+      expect(await handleRoomPost({ kind: 'status', title: 'in', threadId: GROUP }, asBot(a), s.deps)).toMatchObject({ ok: true, card: { threadId: GROUP } });
+      expect(await handleRoomPost({ kind: 'status', title: 'out', threadId: GROUP }, asBot(outsider), s.deps)).toMatchObject({ ok: false, code: 'invalid' });
+      // Mentioned into the group's work, its wake runs there: it answers there.
+      s.wake.thread = GROUP;
+      expect(await handleRoomPost({ kind: 'status', title: 'asked', threadId: GROUP }, asBot(outsider), s.deps)).toMatchObject({ ok: true });
+    });
   });
 
   it('a bot card\'s mentions are settled by main and routed through the handoff router, once per card', async () => {

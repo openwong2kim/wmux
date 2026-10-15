@@ -9,6 +9,7 @@ import { BOT_EVENT } from '../shared/bot';
 import { BOT_APPROVAL_IPC } from '../shared/botApproval';
 import { BOT_SECRET_IPC } from '../shared/botSecret';
 import { CONNECTOR_IPC } from '../shared/botConnector';
+import { BOT_GROUP_IPC } from '../shared/botGroup';
 import type { PaneLabelRejection } from '../shared/paneLabelRules';
 import { CHROME_PANE_IPC, type ChromePaneBindings } from '../shared/chromePaneBinding';
 import {
@@ -1246,6 +1247,18 @@ const electronAPI = {
         ipcRenderer.invoke(CONNECTOR_IPC.setOffForBot, req) as Promise<import('../shared/botConnector').ConnectorSimpleResult>,
       setEnabled: (req: { id: string; enabled: boolean }) =>
         ipcRenderer.invoke(CONNECTOR_IPC.setEnabled, req) as Promise<import('../shared/botConnector').ConnectorSimpleResult>,
+    },
+    // The owner's group chats (shared/botGroup.ts); changes arrive as
+    // BOT_EVENT {type:'groups-changed'}.
+    groups: {
+      list: (req?: { workspaceId?: string }) =>
+        ipcRenderer.invoke(BOT_GROUP_IPC.list, req ?? {}) as Promise<import('../shared/botGroup').BotGroupListResult>,
+      create: (req: import('../shared/botGroup').BotGroupCreateRequest) =>
+        ipcRenderer.invoke(BOT_GROUP_IPC.create, req) as Promise<import('../shared/botGroup').BotGroupResult>,
+      update: (req: import('../shared/botGroup').BotGroupUpdateRequest) =>
+        ipcRenderer.invoke(BOT_GROUP_IPC.update, req) as Promise<import('../shared/botGroup').BotGroupResult>,
+      remove: (id: string) =>
+        ipcRenderer.invoke(BOT_GROUP_IPC.remove, { id }) as Promise<import('../shared/botGroup').BotGroupRemoveResult>,
     },
   },
   // Owner approvals of what bots ask for (main/ipc/handlers/approval.handler.ts:

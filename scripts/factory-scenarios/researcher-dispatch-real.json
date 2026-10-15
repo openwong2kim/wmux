@@ -34,7 +34,7 @@
     ]
   },
   "actions": [
-    { "do": "post", "label": "ask", "post": { "title": "What npm scripts does the app have?", "body": "Ask the researcher." } },
+    { "do": "post", "label": "ask", "post": { "title": "What npm scripts does the app have?", "body": "Ask the researcher.", "mentions": ["{{bot.lead}}"] } },
     { "do": "waitFor", "label": "researcher settled", "cond": { "wakes": { "bot": "researcher", "reason": "handoff", "state": ["done", "parked"] } }, "timeoutMs": 600000, "required": true },
     { "do": "waitFor", "label": "quiet", "cond": { "idle": true, "quietMs": 5000 }, "timeoutMs": 120000 }
   ],
