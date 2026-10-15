@@ -467,6 +467,12 @@ fi
     'WMUX_WSL_CODEX_BRIDGE/u', 'WMUX_WSL_CODEX_CONFIG/u', 'WMUX_WSL_CODEX_HOOK/p',
     'WMUX_WSL_CWD/u', 'WMUX_WSL_SETTINGS/p', 'WMUX_WSL_BIN/p', 'WMUX_WSL_BASHRC/p', 'WMUX_SHELL_INTEGRATION',
     ...(mcpEntry ? ['WMUX_WSL_MCP/u', 'WMUX_WSL_MCP_CONFIG/p'] : []),
+    // A fan-out or automation pane's claude skips the workspace-trust dialog
+    // (shared/agentFirstRun.ts CLAUDE_SANDBOXED_ENV). wsl.exe passes only the
+    // variables WSLENV names, so without this Linux claude in a WSL task pane
+    // stopped on "Is this a project you created or one you trust?" (#2231).
+    // Only a pane that carries it: an ordinary WSL pane keeps the dialog.
+    ...(options.env.CLAUDE_CODE_SANDBOXED ? ['CLAUDE_CODE_SANDBOXED/u'] : []),
   ];
   // Ordinary WSL panes keep their Linux profiles: copied Windows config can
   // contain Windows-only notify/MCP/hooks. Only forward the login's vendor.

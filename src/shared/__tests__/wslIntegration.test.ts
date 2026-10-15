@@ -46,6 +46,16 @@ describe('WSL per-launch Claude integration', () => {
     expect(output.slice(0, 6)).toEqual(['/mnt/d/r/.git/worktrees/t-1', '/mnt/c/w/t-1', '2', 'core.autocrlf', 'true', 'user.name']);
   });
 
+  it('a task pane\'s workspace-trust skip reaches Linux claude; an ordinary pane keeps the dialog (#2231)', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-wsl-test-')); dirs.push(dir);
+    const build = (env: Record<string, string>) => buildWslInjection({
+      target: { distribution: 'test', user: 'test' }, cwd: dir, env: { HOME: dir, PATH: '/usr/bin:/bin', ...env },
+      integrationDir: dir, bashInit: BASH_INIT, runtimePath: process.execPath, bridgePath: '/unused-bridge',
+    }).env.WSLENV.split(':');
+    expect(build({ CLAUDE_CODE_SANDBOXED: '1' })).toContain('CLAUDE_CODE_SANDBOXED/u');
+    expect(build({}).some((e) => e.startsWith('CLAUDE_CODE_SANDBOXED'))).toBe(false);
+  });
+
   it('uses scoped settings and the existing Windows bridge without writing user settings', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-wsl-test-')); dirs.push(dir);
     const injected = buildWslInjection({
