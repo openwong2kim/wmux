@@ -218,3 +218,15 @@ export function unreadCount(cards: readonly RoomCard[], since: number): number {
   for (const c of cards) if (c.actor.kind === 'bot' && c.at > since) n += 1;
   return n;
 }
+
+/** The "New" divider's boundary after cards arrive in an open chat (`before`:
+ *  the newest card's time before they came). A card that lands while the
+ *  owner has the chat in view is read as it arrives: when nothing before it
+ *  was new, the boundary moves past it, so no divider is drawn above a live
+ *  reply. Out of view it stays new, and a divider already drawn for what was
+ *  unread when the chat opened stays where it is. Pure. */
+export function liveNewAfter(cards: readonly RoomCard[], newAfter: number, before: number, inView: boolean): number {
+  if (!inView) return newAfter;
+  if (cards.some((c) => c.actor.kind !== 'human' && c.at > newAfter && c.at <= before)) return newAfter;
+  return cards.reduce((m, c) => Math.max(m, c.at), newAfter);
+}

@@ -462,7 +462,8 @@ status bar badges, `fleet_triage` or the phone's sidebar.
   11일 (일) 오후 8:37"; the year only when it is not this one) at each new
   day and after an hour's quiet; the label alone divides, no rule. A chat
   opened again marks what arrived since it was last read to its end with a
-  muted "New" label and one `--stroke` hairline. Scrolled up when
+  muted "New" label and one `--stroke` hairline; what arrives while the
+  chat is in view is read as it lands and gets none. Scrolled up when
   something arrives, a floating "N new" pill (the name pill's look) above
   the composer goes back to the end. The read position is kept for the
   session only.

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { RoomCard } from '../../../../shared/room';
 import type { RoomEntry } from '../botsModel';
-import { RUN_WINDOW_MS, SEPARATOR_GAP_MS, buildTimeline, elapsed, separatorLabel, splitThreads, threadCards, unreadCount } from '../botsTimeline';
+import { RUN_WINDOW_MS, SEPARATOR_GAP_MS, buildTimeline, elapsed, liveNewAfter, separatorLabel, splitThreads, threadCards, unreadCount } from '../botsTimeline';
 
 let seq = 0;
 function card(p: Partial<RoomCard> = {}): RoomCard {
@@ -59,6 +59,21 @@ describe('buildTimeline', () => {
     const kinds = buildTimeline(entries([old, mine, fresh, fresher]), { waits: never, newAfter: T0 + 5 }).map((i) => i.kind);
     expect(kinds).toEqual(['day', 'message', 'message', 'new', 'message', 'message']);
     expect(buildTimeline(entries([old]), { waits: never, newAfter: null }).some((i) => i.kind === 'new')).toBe(false);
+  });
+
+  it('draws no "New" above a reply that lands while the chat is in view', () => {
+    const asked = card({ at: T0 + 10, actor: { kind: 'human' }, kind: 'human' });
+    const read = card({ at: T0 });
+    const reply = card({ at: T0 + 20 });
+    // Opened with everything read (boundary T0); the reply arrives in view.
+    const after = liveNewAfter([read, asked, reply], T0, T0 + 10, true);
+    expect(after).toBe(T0 + 20);
+    expect(buildTimeline(entries([read, asked, reply]), { waits: never, newAfter: after }).some((i) => i.kind === 'new')).toBe(false);
+    // Out of view it stays new.
+    expect(liveNewAfter([read, asked, reply], T0, T0 + 10, false)).toBe(T0);
+    // What was unread when the chat opened keeps its divider.
+    const unread = card({ at: T0 + 5 });
+    expect(liveNewAfter([read, unread, asked, reply], T0, T0 + 10, true)).toBe(T0);
   });
 });
 

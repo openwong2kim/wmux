@@ -1556,6 +1556,21 @@ describe('Bots page', () => {
     expect(q<HTMLTextAreaElement>('[data-testid="bots-composer-input"]')?.value).toBe('Give me a status update.');
   });
 
+  it('a reply landing in the 1:1 the owner is reading draws no "New" divider above it', async () => {
+    seedRooms();
+    await render(<BotsPage />);
+    act(() => q(`[data-bots-row="bot:${LEAD}"]`)!.click());
+    expect(q('[data-bots-new-divider]')).toBeNull();
+    const reply = card({ workspaceId: 'w1', actor: by('w1', LEAD), threadId: `dm:${LEAD}`, title: 'Here is the answer', at: Date.now() + 1_000 });
+    const key = timelineKey('w1', ALL_THREADS);
+    await act(async () => {
+      const tl = useStore.getState().roomTimelines[key];
+      useStore.setState({ roomTimelines: { ...useStore.getState().roomTimelines, [key]: { ...tl, cards: [...tl.cards, reply] } } } as never);
+    });
+    expect(q('[data-bots-messages]')!.textContent).toContain('Here is the answer');
+    expect(q('[data-bots-new-divider]')).toBeNull();
+  });
+
   it('Toggle Bots opens the Bots page and, pressed there, returns to Workspaces', () => {
     act(() => useStore.setState({ appRoute: 'workspaces' } as never));
     act(() => useStore.getState().toggleBotsView());

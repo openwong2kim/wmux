@@ -84,7 +84,7 @@ import BotsWorkerPanel from './BotsWorkerPanel';
 import { displayWorkspaceName } from '../../utils/fanoutProvenance';
 import { BOTS_SESSION_START, selectWorkerPanelHost } from '../../stores/slices/roomSlice';
 import { routineScheduleText, routineStateText, useBotRoutines } from '../Schedules/BotRoutines';
-import { buildTimeline, clockTime, elapsed, fullTime, hasKindWord, separatorLabel, splitThreads, threadCards, type ThreadView, type TimelineItem } from './botsTimeline';
+import { buildTimeline, clockTime, elapsed, fullTime, hasKindWord, liveNewAfter, separatorLabel, splitThreads, threadCards, type ThreadView, type TimelineItem } from './botsTimeline';
 import '../Chat/chatMono.css';
 
 const EMPTY_TREE: readonly BotTreeRow[] = [];
@@ -1709,12 +1709,13 @@ export function BotsChat({ conversation, roomCards, bots, title, workspaceName, 
   // The session's "New" divider: what arrived since this conversation was
   // last read to its end, as it stood when the chat opened.
   const conversationId = conversation.id;
-  const [seenBefore] = useState(() => useStore.getState().botsSeenAt[conversationId] ?? BOTS_SESSION_START);
+  // Cards that land while the chat is in view are not "new" (liveNewAfter).
+  const [newAfter, setNewAfter] = useState(() => useStore.getState().botsSeenAt[conversationId] ?? BOTS_SESSION_START);
   const { main, threads, surfaced } = useMemo(() => splitThreads(cards, waits), [cards, waits]);
   const items = useMemo(() => {
     const entries: RoomEntry[] = main.map((card) => ({ kind: 'card' as const, card }));
-    return buildTimeline(entries, { waits, threads, surfaced, newAfter: seenBefore });
-  }, [main, threads, surfaced, waits, seenBefore]);
+    return buildTimeline(entries, { waits, threads, surfaced, newAfter });
+  }, [main, threads, surfaced, waits, newAfter]);
   const botNames = useMemo(() => bots.map((b) => b.bot.name), [bots]);
   const taskTitle = useMemo(() => {
     const byId = new Map<string, string>();
@@ -1731,26 +1732,33 @@ export function BotsChat({ conversation, roomCards, bots, title, workspaceName, 
   // the window and the chat are in view, wherever it is scrolled (the
   // "N new" pill keeps the scroll position's own count).
   const newestAt = useMemo(() => cards.reduce((m, c) => (c.actor.kind === 'bot' && c.at > m ? c.at : m), 0), [cards]);
-  const markSeen = useCallback(() => {
-    if (newestAt <= 0) return;
-    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+  const inView = useCallback((): boolean => {
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return false;
     // The narrow layout keeps the chat mounted but hidden behind the list.
     const el = scrollRef.current;
-    if (el && typeof el.checkVisibility === 'function' && !el.checkVisibility()) return;
+    return !(el && typeof el.checkVisibility === 'function' && !el.checkVisibility());
+  }, []);
+  const markSeen = useCallback(() => {
+    if (newestAt <= 0 || !inView()) return;
     useStore.getState().markBotsSeen(conversationId, newestAt);
-  }, [conversationId, newestAt]);
+  }, [conversationId, newestAt, inView]);
   // "N new" while scrolled up: the cards from others newer than any seen
   // before (older history read in later is not new).
   const [newCount, setNewCount] = useState(0);
   const newestSeen = useRef(cards.reduce((m, c) => Math.max(m, c.at), 0));
   useEffect(() => {
-    const added = cards.filter((c) => c.actor.kind !== 'human' && c.at > newestSeen.current).length;
-    newestSeen.current = cards.reduce((m, c) => Math.max(m, c.at), newestSeen.current);
+    const before = newestSeen.current;
+    const added = cards.filter((c) => c.actor.kind !== 'human' && c.at > before).length;
+    newestSeen.current = cards.reduce((m, c) => Math.max(m, c.at), before);
+    if (added > 0) {
+      const visible = inView();
+      setNewAfter((cur) => liveNewAfter(cards, cur, before, visible));
+    }
     const el = scrollRef.current;
     if (el && atBottom.current) el.scrollTop = el.scrollHeight;
     else if (added > 0) setNewCount((n) => n + added);
     markSeen();
-  }, [lastId, workers.length, markSeen, cards]);
+  }, [lastId, workers.length, markSeen, cards, inView]);
   useEffect(() => {
     const onVisible = () => markSeen();
     document.addEventListener('visibilitychange', onVisible);
