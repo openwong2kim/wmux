@@ -75,12 +75,18 @@ export function factFromBusEvent(ev: WmuxEvent, findTask: (taskWorkspaceId: stri
   return null;
 }
 
+/** factoryStop.ts STOPPED_BY_OWNER (not imported: the stop pulls in the
+ *  fan-out notifier). */
+const STOPPED_BY_OWNER_SUMMARY = 'stopped by owner';
+
 /**
  * A ledger transition → draft. review_requested (the worker's done) and
- * completed → task.done (one per task: the key is the task id); failed →
- * task.failed; input_required → task.input_required. A task cancelled before
- * it reported done stopped without a result → task.failed; cancelled after
- * review_requested is the normal close of a delivered task → no fact.
+ * completed → task.done (one per task: the key is the task id; its status
+ * tells the room's card apart); failed → task.failed; input_required →
+ * task.input_required. A task cancelled before it reported done stopped
+ * without a result → task.failed; cancelled after review_requested is the
+ * normal close of a delivered task → no fact, unless the owner's stop
+ * cancelled it (task.failed, which the room shows as stopped by owner).
  * A task a bot started names that bot in ref.botId: the bot's wake for it
  * comes from the fan-out path (installBotFanoutWake), and the trigger
  * engine is not handed these facts (factoryWiring.ts).
@@ -91,6 +97,7 @@ export function factFromLedgerTransition(t: LedgerTransition): FactDraft | null 
   if (t.to === 'review_requested' || t.to === 'completed') kind = 'task.done';
   else if (t.to === 'failed') kind = 'task.failed';
   else if (t.to === 'cancelled' && t.from !== 'review_requested' && t.from !== 'completed') kind = 'task.failed';
+  else if (t.to === 'cancelled' && t.from === 'review_requested' && t.by.kind === 'system' && (t.summary ?? t.entry.summary) === STOPPED_BY_OWNER_SUMMARY) kind = 'task.failed';
   else if (t.to === 'input_required') kind = 'task.input_required';
   else return null;
   const e = t.entry;

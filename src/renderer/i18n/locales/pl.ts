@@ -1790,6 +1790,7 @@ export const pl = {
   'room.notice.holders.more': "{names} i {count} więcej",
   'room.notice.holders.none': "nic, co fabryka umie nazwać",
   'room.notice.task.done': "Zadanie ukończone: {title}",
+  'room.notice.task.reported': "Zadanie zgłoszone · czeka na przegląd: {title}",
   'room.notice.task.failed': "Zadanie nieudane: {title}",
   'room.notice.task.cancelled': "Zadanie anulowane: {title}",
   'room.notice.task.stoppedByOwner': "Zadanie anulowane · zatrzymane przez ciebie: {title}",

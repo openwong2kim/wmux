@@ -1913,6 +1913,7 @@ export const zh = {
   'room.notice.holders.more': "{names} 等，另有 {count} 个",
   'room.notice.holders.none': "无法识别的占用",
   'room.notice.task.done': "任务完成：{title}",
+  'room.notice.task.reported': "任务已报告 · 待审查：{title}",
   'room.notice.task.failed': "任务失败：{title}",
   'room.notice.task.cancelled': "任务已取消：{title}",
   'room.notice.task.stoppedByOwner': "任务已取消 · 由你停止：{title}",

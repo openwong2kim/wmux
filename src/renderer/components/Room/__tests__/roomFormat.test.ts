@@ -165,6 +165,7 @@ describe('factory system cards in the reader\'s language (RoomCard.notice)', () 
     setLocale('ko');
     expect(noticeText(card({ notice: { code: 'task.done', args: { title: 'fix login' } } }), i18nT)).toEqual({ title: '작업 완료: fix login', body: 'English body' });
     expect(noticeText(card({ notice: { code: 'task.stoppedByOwner', args: { title: 'fix login' } } }), i18nT)?.title).toBe('작업 취소됨 · 직접 중지함: fix login');
+    expect(noticeText(card({ notice: { code: 'task.reported', args: { title: 'fix login' } } }), i18nT)).toEqual({ title: '작업 보고됨 · 검토 대기: fix login', body: 'English body' });
     setLocale('en');
     expect(noticeText(card({ notice: { code: 'task.cancelled', args: { title: 'fix login' } } }), i18nT)?.title).toBe('Task cancelled: fix login');
   });

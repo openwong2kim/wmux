@@ -1812,6 +1812,7 @@ export const en = {
   'room.notice.holders.more': "{names} and {count} more",
   'room.notice.holders.none': "nothing the factory can name",
   'room.notice.task.done': "Task done: {title}",
+  'room.notice.task.reported': "Task reported · in review: {title}",
   'room.notice.task.failed': "Task failed: {title}",
   'room.notice.task.cancelled': "Task cancelled: {title}",
   'room.notice.task.stoppedByOwner': "Task cancelled · stopped by owner: {title}",

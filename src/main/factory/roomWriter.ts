@@ -998,6 +998,7 @@ const STOPPED_BY_OWNER_SUMMARY = 'stopped by owner';
 /** A task card's label in the English the card keeps, by its notice code. */
 const TASK_CARD_LABEL: Readonly<Record<string, string>> = {
   'task.done': 'Task done',
+  'task.reported': 'Task reported · in review',
   'task.failed': 'Task failed',
   'task.cancelled': 'Task cancelled',
   'task.stoppedByOwner': 'Task cancelled · stopped by owner',
@@ -1066,7 +1067,8 @@ export function systemCardForFact(fact: Fact, bots?: BotDirectoryApi): SystemCar
       // the owner's stop ended it (factoryStop.ts).
       const cancelled = fact.kind === 'task.failed' && p.status === 'cancelled';
       const byOwner = cancelled && p.by === 'system' && p.summary === STOPPED_BY_OWNER_SUMMARY;
-      const code = fact.kind === 'task.done' ? 'task.done'
+      // A worker that reported is not done: the task waits on review.
+      const code = fact.kind === 'task.done' ? (p.status === 'review_requested' ? 'task.reported' : 'task.done')
         : byOwner ? 'task.stoppedByOwner'
           : cancelled ? 'task.cancelled'
             : fact.kind === 'task.failed' ? 'task.failed' : 'task.inputRequired';

@@ -1336,6 +1336,7 @@ export const ko = {
   'room.notice.holders.more': "{names} 외 {count}개",
   'room.notice.holders.none': "이름을 알 수 없는 작업",
   'room.notice.task.done': "작업 완료: {title}",
+  'room.notice.task.reported': "작업 보고됨 · 검토 대기: {title}",
   'room.notice.task.failed': "작업 실패: {title}",
   'room.notice.task.cancelled': "작업 취소됨: {title}",
   'room.notice.task.stoppedByOwner': "작업 취소됨 · 직접 중지함: {title}",

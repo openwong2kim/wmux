@@ -103,6 +103,13 @@ describe('factFromLedgerTransition', () => {
     expect(d?.kind ?? null).toBe(kind);
   });
 
+  it('a task in review that the owner\'s stop cancelled → task.failed (stopped by owner); a plain close stays silent', () => {
+    const stop = { ...transition('review_requested', 'cancelled', { summary: 'stopped by owner' }), by: { kind: 'system', workspaceId: 'ws-daemon' } } as LedgerTransition;
+    expect(factFromLedgerTransition(stop)).toMatchObject({ kind: 'task.failed', payload: { status: 'cancelled', from: 'review_requested', by: 'system', summary: 'stopped by owner' } });
+    expect(factFromLedgerTransition({ ...stop, entry: { ...stop.entry, summary: 'closed' } })).toBeNull();
+    expect(factFromLedgerTransition({ ...stop, by: { kind: 'worker', workspaceId: 'ws-task' } } as LedgerTransition)).toBeNull();
+  });
+
   it('scopes to the owner workspace, keys on the task, and caps text', () => {
     const d = factFromLedgerTransition({
       ...transition('working', 'review_requested', {
