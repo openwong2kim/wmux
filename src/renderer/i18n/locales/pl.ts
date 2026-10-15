@@ -1510,6 +1510,7 @@ export const pl = {
   'botsPage.group.recipients': "Kto dostanie tę wiadomość",
   'botsPage.group.recipientsHint': "Nic nie zaznaczono: każdy bot tutaj. Wybór znika po wysłaniu.",
   'botsPage.group.empty': "Napisz pierwszą wiadomość: każdy bot tutaj odpowie i się przedstawi.",
+  'botsPage.group.noneOn': "Żaden bot tej grupy nie jest włączony.",
   'botsPage.group.teamAdded': "Zespół dodano do {workspace}.",
   'botsPage.group.fromTeam': "Utwórz czat grupowy z tym zespołem",
   'botsPage.noMatch': "Żadna rozmowa nie pasuje.",

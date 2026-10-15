@@ -1631,6 +1631,7 @@ export const zh = {
   'botsPage.group.recipients': "谁会收到这条消息",
   'botsPage.group.recipientsHint': "不勾选：发给这里的每个机器人。发送后选择会重置。",
   'botsPage.group.empty': "写下第一条消息：这里的每个机器人都会回答并介绍自己。",
+  'botsPage.group.noneOn': "这个群里没有开启的机器人。",
   'botsPage.group.teamAdded': "已将团队添加到 {workspace}。",
   'botsPage.group.fromTeam': "用这个团队创建群聊",
   'botsPage.noMatch': "没有匹配的对话。",

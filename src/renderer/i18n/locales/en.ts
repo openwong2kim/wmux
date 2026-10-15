@@ -1532,6 +1532,7 @@ export const en = {
   'botsPage.group.recipients': "Who gets this message",
   'botsPage.group.recipientsHint': "None ticked: every bot here. Picks reset after you send.",
   'botsPage.group.empty': "Write the first message: every bot here answers and introduces itself.",
+  'botsPage.group.noneOn': "No bot of this group is on.",
   'botsPage.group.teamAdded': "The team was added to {workspace}.",
   'botsPage.group.fromTeam': "Make a group chat with this team",
   'botsPage.noMatch': "No conversation matches.",

@@ -719,6 +719,15 @@ describe('Bots page', () => {
     expect(posted.at(-1)!.mentions).toBeUndefined();
   });
 
+  it('a group with no bot on takes no message, and says why', async () => {
+    bots = bots.map((r) => (r.bot.workspaceId === 'w1' ? { ...r, bot: { ...r.bot, enabled: false } } : r));
+    seedRooms();
+    await render(<BotsPage />);
+    act(() => q('[data-bots-row="group:grp-000000a1"]')!.click());
+    expect(q('[data-testid="bots-composer-status"]')!.textContent).toBe('No bot of this group is on.');
+    expect(q<HTMLButtonElement>('[data-testid="bots-composer-send"]')!.disabled).toBe(true);
+  });
+
   it('"+" New group chat: a name and bots of one workspace; one with fewer than two bots says so; the group made opens', async () => {
     seedRooms();
     await render(<BotsPage groupPort={groupPort} />);

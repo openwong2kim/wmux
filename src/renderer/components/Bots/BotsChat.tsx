@@ -1051,7 +1051,11 @@ function BotsComposer({ conversation, threadId, workspaceId: workspaceOverride, 
     () => (conversation.kind === 'room' && picked.length === 0 && threadId !== conversation.threadId ? roomCandidates.map((r) => r.bot.id) : picked),
     [conversation, picked, threadId, roomCandidates],
   );
-  const refusal = readOnly ? t('botsPage.pausedComposer') : conversation.kind === 'bot' ? oneToOneRefusal(conversation.row, t) : null;
+  // A group with no bot on takes no message (main would read a thread's
+  // unaddressed reply as the whole workspace's).
+  const refusal = readOnly ? t('botsPage.pausedComposer')
+    : conversation.kind === 'bot' ? oneToOneRefusal(conversation.row, t)
+      : roomCandidates.length === 0 ? t('botsPage.group.noneOn') : null;
 
   const submit = useCallback(async (e?: FormEvent) => {
     e?.preventDefault();

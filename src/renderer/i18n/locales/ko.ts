@@ -1052,6 +1052,7 @@ export const ko = {
   'botsPage.group.recipients': "이 메시지를 받을 봇",
   'botsPage.group.recipientsHint': "아무것도 고르지 않으면 모두에게 가요. 보내면 선택이 풀려요.",
   'botsPage.group.empty': "첫 메시지를 써 보세요. 모든 봇이 자기소개와 함께 답해요.",
+  'botsPage.group.noneOn': "이 그룹에 켜진 봇이 없어요.",
   'botsPage.group.teamAdded': "{workspace}에 팀을 추가했어요.",
   'botsPage.group.fromTeam': "이 팀으로 그룹 채팅 만들기",
   'botsPage.noMatch': "맞는 대화가 없어요.",
