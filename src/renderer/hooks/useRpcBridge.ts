@@ -1324,11 +1324,11 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
 
     const newWsId = newWs.id;
     const paneId = newWs.activePaneId;
+
     // The empty-leaf funnel must not start a shell in the leaf this spawn is
     // about to fill (reservedLeaves.ts); released once the worker is in it,
     // or the workspace is rolled back.
     const releaseLeaf = reserveLeaf(paneId);
-
     let ptyId: string;
     try {
       const created = await window.electronAPI.pty.create(
@@ -1336,11 +1336,11 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
       );
       ptyId = created.id;
     } catch (err) {
-      releaseLeaf();
       // Roll back: remove the empty workspace so we don't leave orphans.
       const rollback = useStore.getState();
       rollback.removeWorkspace(newWsId);
       rollback.setActiveWorkspace(previousActiveId);
+      releaseLeaf();
       return { error: `mcp.claimWorkspace: PTY create failed — ${err instanceof Error ? err.message : String(err)}` };
     }
 
@@ -1348,10 +1348,10 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
     const afterPty = useStore.getState();
     const freshWs = afterPty.workspaces.find((w) => w.id === newWsId);
     if (!freshWs || !findPaneById(freshWs.rootPane, paneId)) {
-      releaseLeaf();
       try { await window.electronAPI.pty.dispose(ptyId); } catch { /* best-effort */ }
       afterPty.removeWorkspace(newWsId);
       afterPty.setActiveWorkspace(previousActiveId);
+      releaseLeaf();
       return { error: 'mcp.claimWorkspace: pane disappeared during PTY creation' };
     }
     afterPty.addSurface(paneId, ptyId, '', '');
@@ -1540,10 +1540,6 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
     }
     const newWsId = newWs.id;
     const paneId = newWs.activePaneId;
-    // The empty-leaf funnel must not start a shell in the leaf this spawn is
-    // about to fill (reservedLeaves.ts); released once the worker is in it,
-    // or the workspace is rolled back.
-    const releaseLeaf = reserveLeaf(paneId);
 
     // Depth-1 lineage: main stamps this workspace as a task of its owner
     // INSIDE pty.create, before the PTY (and the agent) exists; a failed stamp
@@ -1621,6 +1617,10 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
     // after the marker decision, and after the profile has had its say.
     const launchCommand = createOptions.initialCommand ?? '';
 
+    // The empty-leaf funnel must not start a shell in the leaf this spawn is
+    // about to fill (reservedLeaves.ts); released once the worker is in it,
+    // or the workspace is rolled back.
+    const releaseLeaf = reserveLeaf(paneId);
     let ptyId: string;
     try {
       const created = await window.electronAPI.pty.create(
@@ -1628,20 +1628,20 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
       );
       ptyId = created.id;
     } catch (err) {
-      releaseLeaf();
       const rollback = useStore.getState();
       rollback.removeWorkspace(newWsId);
       rollback.setActiveWorkspace(previousActiveId);
+      releaseLeaf();
       return { error: `fanout.spawnWorkspace: PTY create failed — ${err instanceof Error ? err.message : String(err)}` };
     }
 
     const afterPty = useStore.getState();
     const freshWs = afterPty.workspaces.find((w) => w.id === newWsId);
     if (!freshWs || !findPaneById(freshWs.rootPane, paneId)) {
-      releaseLeaf();
       try { await window.electronAPI.pty.dispose(ptyId); } catch { /* best-effort */ }
       afterPty.removeWorkspace(newWsId);
       afterPty.setActiveWorkspace(previousActiveId);
+      releaseLeaf();
       return { error: 'fanout.spawnWorkspace: pane disappeared during PTY creation' };
     }
     afterPty.addSurface(paneId, ptyId, '', cwd, newWsId);
