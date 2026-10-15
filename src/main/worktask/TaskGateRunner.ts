@@ -252,8 +252,10 @@ export type GateRunResult =
     }
   /** A gate for this task is already running. */
   | { ok: false; status: 'busy'; taskId: string }
-  /** The project declared a gate this runner will not execute. */
-  | { ok: false; status: 'refused'; taskId: string; error: string };
+  /** The project declared a gate this runner will not execute. `code`
+   *  `no_base_gate`: the base ref has none of the npm gate scripts the task
+   *  worktree adds (a new repository), so there is no gate to run yet. */
+  | { ok: false; status: 'refused'; taskId: string; error: string; code?: 'no_base_gate' };
 
 export interface GateRunInput {
   taskId: string;
@@ -531,7 +533,7 @@ export class TaskGateRunner {
     worktreePath: string,
     configRoot: string = worktreePath,
     baseRef?: string,
-  ): Promise<{ steps: GateStep[] } | { refused: string } | { unavailable: string }> {
+  ): Promise<{ steps: GateStep[] } | { refused: string; code?: 'no_base_gate' } | { unavailable: string }> {
     if (baseRef !== undefined && !BASE_REF_RE.test(baseRef)) {
       return { refused: `'${baseRef.slice(0, 80)}' is not a ref name the gate runner reads` };
     }
@@ -577,6 +579,16 @@ export class TaskGateRunner {
       const base = raw === null ? {} : scriptsOf(raw);
       if (base === null) return { unavailable: `package.json on ${baseRef} could not be parsed, so whether this project has a gate is unknown` };
       const differs = GATE_NPM_SCRIPTS.filter((s) => base[s] !== scripts?.[s]);
+      // The base has none of the scripts the worktree differs on: the task
+      // adds the gate itself (a repository with no test script yet). Still
+      // refused: the worktree's own script is never what grades the task.
+      if (differs.length > 0 && differs.every((s) => typeof base[s] !== 'string')) {
+        return {
+          refused: `${baseRef} has no npm ${differs.join(' or ')} script yet and the task worktree adds ${differs.length > 1 ? 'them' : 'one'}; `
+            + `the gate runs only the scripts already on ${baseRef} (a task never brings the check that grades it), so there is no gate to run on this task`,
+          code: 'no_base_gate',
+        };
+      }
       if (differs.length > 0) {
         return { refused: `the task worktree's npm ${differs.join(' and ')} ${differs.length > 1 ? 'scripts differ' : 'script differs'} from ${baseRef}'s; the gate runs the base's own` };
       }
@@ -651,7 +663,7 @@ export class TaskGateRunner {
       // exists to remove, reintroduced one step earlier.
       const before = await this.readHead(worktreePath).catch(() => null);
       const resolved = await this.resolveSteps(worktreePath, input.projectRoot ?? worktreePath, input.gateBaseRef);
-      if ('refused' in resolved) return { ok: false, status: 'refused', taskId, error: resolved.refused };
+      if ('refused' in resolved) return { ok: false, status: 'refused', taskId, error: resolved.refused, ...(resolved.code ? { code: resolved.code } : {}) };
       if ('unavailable' in resolved) {
         return { ok: true, status: 'skipped', taskId, skipped: 'gate_unavailable', detail: resolved.unavailable };
       }

@@ -711,6 +711,22 @@ describe('TaskGateRunner — gate from a base ref', () => {
     }
   });
 
+  it('a base with no test script (a new repository) whose task adds one is refused as no_base_gate, never run; a base that has one stays a plain refusal', async () => {
+    // No scripts, no package.json at all, or a lint script but no test script.
+    for (const raw of [pkg({}), null, pkg({ lint: npmProject.lint })]) {
+      const runner = new TaskGateRunner({ ...base, readPackageScripts: () => ({ ...npmProject }), readBaseFile: baseFiles(raw) });
+      const r = await runner.resolveSteps(WT, REPO, 'origin/main');
+      expect(r).toMatchObject({ code: 'no_base_gate', refused: expect.stringContaining('origin/main has no npm') });
+      const run = await runner.run({ taskId: 'wtask-1', worktreePath: WT, systemWorkspaceId: 'ws-daemon', gateBaseRef: 'origin/main' });
+      expect(run).toMatchObject({ ok: false, status: 'refused', code: 'no_base_gate' });
+    }
+    // The base has a test script and the worktree changed it: the plain refusal, no greenfield code.
+    const changed = new TaskGateRunner({ ...base, readPackageScripts: () => ({ ...npmProject, test: 'true' }), readBaseFile: baseFiles(pkg(npmProject)) });
+    const r = await changed.resolveSteps(WT, REPO, 'origin/main');
+    expect(r).toMatchObject({ refused: expect.stringContaining('test script differs') });
+    expect(r).not.toHaveProperty('code');
+  });
+
   it('the worktree must carry the base\'s .npmrc (or neither has one)', async () => {
     const noneHere = { ...base, readPackageScripts: () => npmProject, fileExists: () => false };
     expect(await new TaskGateRunner({ ...noneHere, readBaseFile: baseFiles(pkg(npmProject)) }).resolveSteps(WT, REPO, 'origin/main')).toMatchObject({ steps: [{}, {}] });
