@@ -44,5 +44,7 @@ describe('dubiousOwnership', () => {
     expect(m).not.toContain('/*');
     const all = dubiousOwnershipMessage('C:\\Users\\me\\.wmux\\worktrees\\h\\t', "git config --global --add safe.directory 'C:/x'", 'C:\\Users\\me\\.wmux\\worktrees\\');
     expect(all).toContain("`git config --global --add safe.directory 'C:/Users/me/.wmux/worktrees/*'`");
+    // An apostrophe in the home folder: double quotes.
+    expect(dubiousOwnershipMessage('x', 'c', "C:\\Users\\O'Brien\\.wmux\\worktrees")).toContain('`git config --global --add safe.directory "C:/Users/O\'Brien/.wmux/worktrees/*"`');
   });
 });

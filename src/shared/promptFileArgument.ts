@@ -83,7 +83,11 @@ const CMD_PROMPT_LEAD = 'Read your task from this file and follow it: ';
 // A drive path with forward slashes and nothing any shell would expand or end
 // the quoted word on: `"`, `%`, `!` (cmd), `$` and a backtick (PowerShell,
 // POSIX) — the guards strip this shape as wmux's own, so it must stay inert.
-const CMD_PROMPT_ARGUMENT = `"${escapeRegExp(CMD_PROMPT_LEAD)}[A-Za-z]:/[^"%!$\`\\r\\n]*"`;
+// PowerShell also ends a double-quoted string on the typographic quotes
+// U+201C-U+201E (and U+2018-U+201B are its single quotes), so every one of
+// them is out too, as is any control character.
+const CMD_PROMPT_UNSAFE = '"%!$`\\u2018-\\u201f\\u0000-\\u001f\\u007f';
+const CMD_PROMPT_ARGUMENT = `"${escapeRegExp(CMD_PROMPT_LEAD)}[A-Za-z]:/[^${CMD_PROMPT_UNSAFE}]*"`;
 const PROMPT_FILE_ARGUMENT = new RegExp(`(^|\\s)(?:${POSIX_PROMPT_ARGUMENT}|${WIN_PROMPT_ARGUMENT}|${CMD_PROMPT_ARGUMENT})(?=\\s|$)`, 'g');
 
 /**
@@ -96,7 +100,7 @@ const PROMPT_FILE_ARGUMENT = new RegExp(`(^|\\s)(?:${POSIX_PROMPT_ARGUMENT}|${WI
  */
 export function cmdPromptFileArgument(promptPath: string): string | null {
   const p = promptPath.replace(/\\/g, '/');
-  if (!/^[A-Za-z]:\//.test(p) || /["%!$`\r\n]/.test(p)) return null;
+  if (!/^[A-Za-z]:\//.test(p) || new RegExp(`[${CMD_PROMPT_UNSAFE}]`).test(p)) return null;
   return `"${CMD_PROMPT_LEAD}${p}"`;
 }
 

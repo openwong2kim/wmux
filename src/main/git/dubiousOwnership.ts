@@ -27,7 +27,11 @@ export function dubiousOwnership(stderr: string, path: string): { command: strin
  *  own path, so one `'<root>/*'` entry (git 2.46+ reads a trailing `/*` as
  *  "everything under") covers every task folder instead of one per task. */
 export function dubiousOwnershipMessage(path: string, command: string, taskFolders?: string): string {
-  const all = taskFolders ? `git config --global --add safe.directory '${taskFolders.replace(/\\/g, '/').replace(/\/+$/, '')}/*'` : '';
+  const root = taskFolders ? `${taskFolders.replace(/\\/g, '/').replace(/\/+$/, '')}/*` : '';
+  // Single-quoted unless the path has one (then double: cmd, PowerShell and
+  // Git Bash all read a plain path that way); a path with both is not offered.
+  const quoted = !root ? '' : !root.includes("'") ? `'${root}'` : /["$`]/.test(root) ? '' : `"${root}"`;
+  const all = quoted ? `git config --global --add safe.directory ${quoted}` : '';
   return `git refuses to use ${path} because another user owns it ("dubious ownership"; Git for Windows sees every repository inside WSL that way). `
     + `If you trust this repository, run \`${command}\` and try again.`
     + (all ? ` Its task folders need one more, once for all of them: \`${all}\`.` : '')

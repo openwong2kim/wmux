@@ -47,7 +47,7 @@ describe('the cmd.exe prompt argument (#2231)', () => {
   });
 
   it('the special characters stay in the file: a path cmd or another shell could expand keeps the old line', () => {
-    for (const bad of ['C:\\100%\\prompt.md', 'C:\\a"b\\prompt.md', 'C:\\wow!\\prompt.md', 'C:\\$(calc)\\prompt.md', 'C:\\a`b\\prompt.md', '\\\\server\\share\\prompt.md']) {
+    for (const bad of ['C:\\a\u201db\\prompt.md', 'C:\\a\nb\\prompt.md', 'C:\\100%\\prompt.md', 'C:\\a"b\\prompt.md', 'C:\\wow!\\prompt.md', 'C:\\$(calc)\\prompt.md', 'C:\\a`b\\prompt.md', '\\\\server\\share\\prompt.md']) {
       expect(cmdPromptFileArgument(bad), bad).toBeNull();
       const line = `claude ${promptFileArgument(bad, 'win32')}`;
       expect(promptFileArgumentForShell(line, { wsl: false, cmd: true })).toBe(line);
@@ -63,6 +63,9 @@ describe('the cmd.exe prompt argument (#2231)', () => {
       'claude "Read your task from this file and follow it: C:/`calc`"',
       'claude "Read your task from this file and follow it: C:/%PATH%"',
       'claude "Read your task from this file and follow it: /etc/x"',
+      // PowerShell ends a double-quoted string on a typographic quote too.
+      'claude "Read your task from this file and follow it: C:/\u201d; Write-Output PWN; #"',
+      'claude "Read your task from this file and follow it: C:/\u201c; calc"',
     ]) expect(stripPromptFileArgument(forged), forged).toBe(forged);
   });
 
