@@ -557,14 +557,16 @@ export default function BotsPage({ onAddBot, port, api, now, settings, stop, eng
   const q = query.trim().toLowerCase();
   const shown = q ? rows.filter((r) => r.title.toLowerCase().includes(q) || r.preview.toLowerCase().includes(q)) : rows;
 
+  const [threadAsk, setThreadAsk] = useState<{ conversationId: string; workspaceId: string; threadId: ThreadId; nonce: number } | null>(null);
   const select = (id: string) => {
     setSelectedId(id);
     setView('chat');
+    // A thread a bot row asked to open is opened once, never on a later visit.
+    setThreadAsk(null);
   };
   // A bot row whose waiting cards are all in a group chat leads there, with
   // the newest one's thread beside the group's chat (its own thread is the
   // chat itself): the needs-you count on the row is answered where it is.
-  const [threadAsk, setThreadAsk] = useState<{ conversationId: string; workspaceId: string; threadId: ThreadId; nonce: number } | null>(null);
   const openRow = (c: Conversation) => {
     const at = c.kind === 'bot' && c.needsYou > 0 ? c.needsAt : undefined;
     const group = at ? model.conversations.find((x) => x.id === at.conversationId) : undefined;
@@ -583,14 +585,14 @@ export default function BotsPage({ onAddBot, port, api, now, settings, stop, eng
   const [unfolded, setUnfolded] = useState<Readonly<Record<string, boolean>>>({});
   const panel = useStore((s) => s.botsWorkerPanel);
   // A worker shown from elsewhere (a notification's jump while this page is
-  // up) brings its bot's chat forward, where the panel lives.
-  const panelConversation = panel?.conversationId ?? null;
-  const shownPanel = useRef(panelConversation);
+  // up) brings its bot's chat forward, where the panel lives — each time it
+  // is asked, the narrow layout's list included.
+  const shownPanel = useRef(panel);
   useEffect(() => {
-    if (panelConversation && panelConversation !== shownPanel.current) select(panelConversation);
-    shownPanel.current = panelConversation;
-    // `select` is a fresh closure each render; only the panel moving matters.
-  }, [panelConversation]);
+    if (panel && panel !== shownPanel.current) select(panel.conversationId);
+    shownPanel.current = panel;
+    // `select` is a fresh closure each render; only a new panel request matters.
+  }, [panel]);
   const openWorker = (botId: string, workspaceId: string) => {
     const conversationId = botConversationId(botId);
     select(conversationId);

@@ -1801,7 +1801,8 @@ export function BotsChat({ conversation, roomCards, bots, title, workspaceName, 
     newestSeen.current = cards.reduce((m, c) => Math.max(m, c.at), before);
     if (added > 0) {
       const visible = inView();
-      setNewAfter((cur) => liveNewAfter(cards, cur, before, visible));
+      const at = Date.now();
+      setNewAfter((cur) => liveNewAfter(cards, cur, before, visible, at));
     }
     const el = scrollRef.current;
     if (el && atBottom.current) el.scrollTop = el.scrollHeight;

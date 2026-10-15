@@ -612,7 +612,15 @@ describe('focusNotificationTarget', () => {
       expect(setAppRoute).not.toHaveBeenCalled();
       expect(h.spies.setActiveWorkspace).not.toHaveBeenCalled();
       expect(setBotsWorkerPanel).toHaveBeenCalledWith({ workspaceId: 'ws-b', conversationId: 'bot:bot-0000000a' });
+      // The target tab comes forward in that workspace, not as the active one.
+      if (payload.workspaceId !== 'ws-b') expect(h.spies.setActiveSurface).toHaveBeenCalledWith('pane-b', 'sf-b', 'ws-b');
     }
+    // Its unread notifications are read and the ring cleared.
+    const read = makeJumpHarness({ workspaces: [wsA(), wsB()], activeWorkspaceId: 'ws-a', notifications: [{ id: 'n1', read: false, surfaceId: 'sf-b' }] });
+    Object.assign(read.state, { appRoute: 'bots', setBotsWorkerPanel: vi.fn(), fanoutOrigin: { 'ws-b': { kind: 'bot', botId: 'bot-0000000a' } } });
+    focusNotificationTarget(read.getState, { ptyId: 'pty-b' });
+    expect(read.spies.markRead).toHaveBeenCalledWith('n1');
+    expect(read.spies.setPaneNotificationRing).toHaveBeenCalledWith('pane-b', null);
     // Not a bot's worker, or the panel's own Open in Workspaces: the page is left.
     const h = makeJumpHarness({ workspaces: [wsA(), wsB()], activeWorkspaceId: 'ws-a' });
     const setAppRoute = vi.fn();

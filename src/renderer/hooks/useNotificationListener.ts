@@ -258,6 +258,24 @@ export function focusNotificationTarget(
 ): boolean {
   const state = getState();
   const keepBots = (workspaceId: string): boolean => !opts.reveal && showInBotsPanel(state, workspaceId);
+  // The Bots panel shows the worker's workspace as it is: the jump brings
+  // the target tab forward there and reads its notifications, as a jump on
+  // Workspaces does, without making that workspace the active one.
+  const showSurfaceInBots = (workspaceId: string, paneId: string, surfaceId: string, stashed = false): boolean => {
+    if (!keepBots(workspaceId)) return false;
+    if (stashed) state.unstashPane?.(paneId, workspaceId);
+    const fresh = getState();
+    fresh.setActiveSurface(paneId, surfaceId, workspaceId);
+    let markedAny = false;
+    for (const n of fresh.notifications) {
+      if (!n.read && n.surfaceId !== undefined && n.surfaceId === surfaceId) {
+        fresh.markRead(n.id);
+        markedAny = true;
+      }
+    }
+    if (markedAny) fresh.setPaneNotificationRing(paneId, null);
+    return true;
+  };
   const showWorkspaces = (): void => revealWorkspaces(state);
   // Shared tail of both resolver branches: jump (workspace + pane +
   // surface + zoom coherence), then mark this surface's unread
@@ -289,7 +307,7 @@ export function focusNotificationTarget(
     for (const ws of state.workspaces) {
       const found = findWorkspaceSurfaceByPtyId(ws, payload.ptyId);
       if (!found) continue;
-      if (keepBots(ws.id)) return true;
+      if (showSurfaceInBots(ws.id, found.paneId, found.surfaceId, found.stashed)) return true;
       jumpToSurface(ws.id, found.paneId, found.surfaceId, found.stashed);
       return true;
     }
@@ -300,7 +318,7 @@ export function focusNotificationTarget(
     for (const ws of state.workspaces) {
       const found = findWorkspaceSurfaceById(ws, payload.surfaceId);
       if (!found) continue;
-      if (keepBots(ws.id)) return true;
+      if (showSurfaceInBots(ws.id, found.paneId, payload.surfaceId, found.stashed)) return true;
       jumpToSurface(ws.id, found.paneId, payload.surfaceId, found.stashed);
       return true;
     }

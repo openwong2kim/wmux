@@ -1600,6 +1600,12 @@ describe('Bots page', () => {
     await act(async () => row.click());
     expect(q('[data-bots-chat]')!.getAttribute('data-bots-chat')).toBe('group:grp-000000c1');
     expect(q('[data-bots-thread-panel="handoff:h-1"]')!.textContent).toContain('Which branch?');
+    // Closed, then the group opened again from its own row: the thread stays closed.
+    await act(async () => q('[data-bots-thread-close]')!.click());
+    await act(async () => q(`[data-bots-row="bot:${VERIFIER}"]`)!.click());
+    await act(async () => q('[data-bots-row="group:grp-000000c1"]')!.click());
+    expect(q('[data-bots-chat]')!.getAttribute('data-bots-chat')).toBe('group:grp-000000c1');
+    expect(q('[data-bots-thread-panel]')).toBeNull();
   });
 
   it('a notification jump to a bot worker keeps the Bots page and shows the worker beside its bot\'s chat', async () => {
@@ -1611,6 +1617,11 @@ describe('Bots page', () => {
     expect(useStore.getState().activeWorkspaceId).toBe('hq');
     expect(useStore.getState().botsWorkerPanel).toEqual({ workspaceId: 't1', conversationId: `bot:${LEAD}` });
     expect(q('[data-bots-chat]')!.getAttribute('data-bots-chat')).toBe(`bot:${LEAD}`);
+    // Back to the list (the narrow layout), then another jump to the same worker: the chat comes back.
+    act(() => q('[data-bots-back]')!.click());
+    expect(q('[data-bots-page]')!.getAttribute('data-view')).toBe('list');
+    await act(async () => { focusNotificationTarget(() => useStore.getState(), { workspaceId: 't1' }); });
+    expect(q('[data-bots-page]')!.getAttribute('data-view')).toBe('chat');
   });
 
   it('a reply landing in the 1:1 the owner is reading draws no "New" divider above it', async () => {
