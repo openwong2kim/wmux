@@ -186,6 +186,20 @@ export type HookProfile = 'full' | 'signals-only';
  *  single source `installHooks` writes and `statusHooks` checks against. */
 export const HOOK_SPECS: readonly HookSpec[] = [...SIGNAL_SPECS, PERMISSION_REQUEST_SPEC, PERMISSION_GATE_SPEC];
 
+/**
+ * #2231 — the wmux hook groups for a claude launch configured by its own
+ * `--settings` file (a bot worker of an isolated instance): the signals-only
+ * profile, run by `bridgePath` — that build's own bridge, not the shared copy
+ * under ~/.wmux/hooks the global settings name. Pure.
+ */
+export function bridgeHookGroups(bridgePath: string): Record<string, Array<{ matcher: string; hooks: Array<{ type: 'command'; command: string }> }>> {
+  const out: Record<string, Array<{ matcher: string; hooks: Array<{ type: 'command'; command: string }> }>> = {};
+  for (const spec of specsFor('signals-only')) {
+    (out[spec.event] ??= []).push({ matcher: spec.matcher, hooks: [{ type: 'command', command: bridgeCommand(bridgePath, spec.event, spec.extraArgs) }] });
+  }
+  return out;
+}
+
 /** The specs a given profile installs. */
 function specsFor(profile: HookProfile): readonly HookSpec[] {
   return profile === 'signals-only' ? [...SIGNAL_SPECS, PERMISSION_REQUEST_SPEC] : HOOK_SPECS;

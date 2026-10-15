@@ -59,7 +59,7 @@ export function guardBotWorkerLaunch(
     // The daemon cannot tell whether a recorded connection is still the
     // bot's: a launch with connections starts only from main.
     if (carriesConnections(rec.launch.mcpConfigFile)) return null;
-    const strict = spliceWorkerLaunch(head, rec.launch.settingsFile, rec.launch.mcpConfigFile);
+    const strict = spliceWorkerLaunch(head, rec.launch.settingsFile, rec.launch.mcpConfigFile, rec.launch.settingSources);
     return strict === null ? null : strict + tail;
   }
   // Only a WSL pane launches with the settings file alone. Any other record

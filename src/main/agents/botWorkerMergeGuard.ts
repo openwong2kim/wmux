@@ -55,6 +55,8 @@ import { getTaskLedger } from '../deck/taskLedgerHost';
 import { getConnectorStore } from '../factory/connectorStore';
 import { launchesCodex, namesCodex } from '../../shared/codexWorkerGuard';
 import { toWslPath } from '../../shared/imagePaste';
+import { dataSuffix } from '../../shared/constants';
+import { bridgeHookGroups, findBridgeSourceFrom } from '../../cli/commands/setupHooks';
 
 // The pure parts live in shared/ (the daemon guards a phone's launches too).
 export {
@@ -78,6 +80,11 @@ export interface BotWorkerGuardDeps {
   /** The wmux MCP bundle a worker's server runs (default: the resolver
    *  pty.handler registers). */
   mcpEntry?: () => string | null;
+  /** #2231 — this build's own hook bridge when the instance is isolated
+   *  (WMUX_DATA_SUFFIX set), else null: an isolated instance's worker loads
+   *  no user settings and runs wmux's hooks on that bridge, not on the
+   *  shared ~/.wmux/hooks copy the installed app keeps. */
+  isolatedBridge?: () => string | null;
   /** The level of the owner's registered claude wmux server, if any. */
   registeredLevel?: () => string | null;
   /** A recorded session's connections now (default: its task's, from the
@@ -374,11 +381,11 @@ function guardLaunchLine(where: string, line: string, deps: BotWorkerGuardDeps, 
   if (!entry) throw guardError(where, 'the wmux MCP bundle was not found, so the worker could not report');
   let files: BotWorkerLaunchFiles;
   try {
-    files = writeWorkerLaunchFiles(dir, entry, plan.level, plan.connectors, plan.strayKeys);
+    files = writeWorkerLaunchFiles(dir, entry, plan.level, plan.connectors, plan.strayKeys, (deps.isolatedBridge ?? defaultIsolatedBridge)());
   } catch (err) {
     throw guardError(where, `the worker's MCP and rules files could not be written: ${String(err)}`);
   }
-  const guarded = spliceWorkerLaunch(line, files.settingsFile, files.mcpConfigFile);
+  const guarded = spliceWorkerLaunch(line, files.settingsFile, files.mcpConfigFile, files.settingSources);
   if (guarded === null) throw guardError(where, 'the launch line cannot carry the worker\'s MCP config and rules');
   return { line: guarded, files };
 }
@@ -386,18 +393,26 @@ function guardLaunchLine(where: string, line: string, deps: BotWorkerGuardDeps, 
 /** A worker launch's two files under `<dir>/factory/` (0600, folders 0700),
  *  named by their content, and each stdio connection's run folder with its
  *  empty npm user config. They hold names and paths only. */
-export function writeWorkerLaunchFiles(dir: string, entry: string, level: WorkerWmuxLevel, connectors: readonly Connector[], strayKeys: readonly string[] = []): BotWorkerLaunchFiles {
+export function writeWorkerLaunchFiles(dir: string, entry: string, level: WorkerWmuxLevel, connectors: readonly Connector[], strayKeys: readonly string[] = [], ownBridge: string | null = null): BotWorkerLaunchFiles {
   const factory = path.join(dir, 'factory');
   const { runDir, npmrc } = prepareConnectorRunDirs(dir, connectors);
   const mcp = `${JSON.stringify(buildWorkerMcpConfig({ entry, level, connectors, runDir, npmrc, strayKeys }), null, 2)}\n`;
   const connectionKeys = [...new Set([...connectors.flatMap((c) => c.secrets.map((s) => s.secret)), ...strayKeys])];
-  const settings = `${JSON.stringify(buildWorkerSettings(connectors), null, 2)}\n`;
+  const settings = `${JSON.stringify(buildWorkerSettings(connectors, ownBridge ? bridgeHookGroups(ownBridge) : undefined), null, 2)}\n`;
   return {
     settingsFile: writeContentFile(path.join(factory, 'worker-settings'), settings),
     mcpConfigFile: writeContentFile(path.join(factory, 'worker-mcp'), mcp),
     level,
     ...(connectionKeys.length > 0 ? { connectionKeys } : {}),
+    // Its hooks are in its own file: the user's (which name the shared
+    // bridge) are not loaded.
+    ...(ownBridge ? { settingSources: 'project' as const } : {}),
   };
+}
+
+/** This build's hook bridge in an isolated instance, else null. */
+function defaultIsolatedBridge(): string | null {
+  return dataSuffix() !== '' ? findBridgeSourceFrom(__dirname) : null;
 }
 
 /** Each stdio connection's run folder under `<dir>/factory/connector-run/`

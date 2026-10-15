@@ -42,7 +42,7 @@ afterEach(() => {
 const BOT = { kind: 'bot', botId: 'bot-lead-1' };
 const ENTRY = '/opt/wmux/mcp/index.js';
 /** The guard's resolvers as pty.handler sets them. */
-const mcp = () => ({ mcpEntry: () => ENTRY, registeredLevel: () => null });
+const mcp = () => ({ mcpEntry: () => ENTRY, registeredLevel: () => null, isolatedBridge: () => null });
 /** The three words a strict claude launch carries, read back from a line. */
 function strictFiles(line: string): { settings: string; mcp: string } {
   const m = /--settings="([^"]+)" --mcp-config="([^"]+)" --strict-mcp-config/.exec(line);

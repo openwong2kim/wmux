@@ -354,6 +354,10 @@ export interface BotWorkerLaunchFiles {
   /** The connection keys the launch's environment was given (names), kept
    *  out of every other connection's server on a re-fire or resume. */
   connectionKeys?: string[];
+  /** `project`: the launch loads no user settings (`--setting-sources
+   *  project`), its hooks come from its own settings file — an isolated
+   *  instance's worker, run on that build's hook bridge (#2231). */
+  settingSources?: 'project';
 }
 
 /** One bot worker session. `workspaceId` and `at` are the version-1 record
@@ -387,7 +391,8 @@ export function isWorkerLaunchFiles(raw: unknown, dir: string): raw is BotWorker
     && path.dirname(p) === path.join(dir, 'factory', sub) && /^[0-9a-f]{12}\.json$/.test(path.basename(p));
   const keys = r.connectionKeys === undefined
     || (Array.isArray(r.connectionKeys) && r.connectionKeys.length <= 32 && r.connectionKeys.every((k) => typeof k === 'string' && /^[A-Z_][A-Z0-9_]{0,63}$/.test(k)));
-  return inside(r.settingsFile, 'worker-settings') && inside(r.mcpConfigFile, 'worker-mcp') && (r.level === 'core' || r.level === 'full') && keys;
+  return inside(r.settingsFile, 'worker-settings') && inside(r.mcpConfigFile, 'worker-mcp') && (r.level === 'core' || r.level === 'full') && keys
+    && (r.settingSources === undefined || r.settingSources === 'project');
 }
 
 export function botWorkerSessionsPath(dir: string): string {
@@ -407,7 +412,7 @@ export function readBotWorkerSessions(dir: string): { sessions: Map<string, BotW
       // Launch files that are not main's own are not used (the launch is then
       // guarded as a record without them).
       const launch = isWorkerLaunchFiles(r.launch, dir)
-        ? { settingsFile: r.launch.settingsFile, mcpConfigFile: r.launch.mcpConfigFile, level: r.launch.level, ...(r.launch.connectionKeys?.length ? { connectionKeys: [...r.launch.connectionKeys] } : {}) }
+        ? { settingsFile: r.launch.settingsFile, mcpConfigFile: r.launch.mcpConfigFile, level: r.launch.level, ...(r.launch.connectionKeys?.length ? { connectionKeys: [...r.launch.connectionKeys] } : {}), ...(r.launch.settingSources ? { settingSources: r.launch.settingSources } : {}) }
         : undefined;
       out.set(id, {
         workspaceId: r.workspaceId,

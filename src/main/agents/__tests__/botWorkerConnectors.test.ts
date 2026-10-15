@@ -51,7 +51,7 @@ const files = con({
 });
 
 let dir: string;
-const deps = () => ({ dir, mcpEntry: () => ENTRY, registeredLevel: () => null });
+const deps = () => ({ dir, mcpEntry: () => ENTRY, registeredLevel: () => null, isolatedBridge: () => null });
 function wordsOf(line: string): { settings: string; mcp: string } {
   const m = /--settings="([^"]+)" --mcp-config="([^"]+)" --strict-mcp-config/.exec(line);
   if (!m) throw new Error(`not strict: ${line}`);
@@ -200,6 +200,44 @@ describe('the session record carries the launch', () => {
     // A session with no folder on record is not re-fired.
     noteBotWorkerSession('pty-nofolder', 'ws-task', dir);
     expect(() => guardRefireLine('pty-nofolder', LINE, deps())).toThrow(/no folder on record/);
+  });
+
+  it('an isolated instance\'s worker runs its own hook bridge and loads no user settings; the installed app\'s is unchanged (#2231)', () => {
+    const BRIDGE = '/opt/wmux-under-test/resources/cli-bundle/wmux-bridge.mjs';
+    const isolated = { ...deps(), isolatedBridge: () => BRIDGE };
+    const guarded = withBotWorkerMergeGuard({ initialCommand: LINE, cwd: dir }, { workspaceId: 'ws-task', strict: false }, isolated)!;
+    const w = wordsOf(guarded.initialCommand!);
+    expect(guarded.initialCommand).toBe(`claude --settings="${w.settings}" --mcp-config="${w.mcp}" --strict-mcp-config --setting-sources=project --dangerously-skip-permissions "$(cat '/w/.wtask/prompt.md')"`);
+    const hooks = readJson(w.settings).hooks as Record<string, Array<{ matcher: string; hooks: Array<{ command: string }> }>>;
+    expect(readJson(w.settings).disableAllHooks).toBe(false);
+    expect(Object.keys(hooks).sort()).toEqual(['PermissionRequest', 'PostToolUse', 'PreToolUse', 'SessionStart', 'Stop', 'StopFailure', 'SubagentStop', 'UserPromptSubmit']);
+    expect(hooks.Stop[0].hooks[0].command).toBe(`node "${BRIDGE}" Stop`);
+    // Signals only: no per-tool-call gate.
+    expect(hooks.PreToolUse.map((g) => g.matcher)).toEqual(['AskUserQuestion']);
+    expect(guardedLaunchOf(guarded).launch?.settingSources).toBe('project');
+    // Re-fire, resume and the daemon's phone launch carry the same words.
+    noteBotWorkerSession('pty-iso', 'ws-task', dir, guardedLaunchOf(guarded));
+    reloadBotWorkerSessionsForTests();
+    expect(guardRefireLine('pty-iso', LINE, isolated)).toBe(guarded.initialCommand);
+    expect(readBotWorkerSessions(dir)).toMatchObject({ sessions: expect.any(Map) });
+    const head = 'claude --resume 11111111-2222-3333-4444-555555555555';
+    expect(guardBotWorkerLaunch('pty-iso', head, head, dir)).toBe(`claude --settings="${w.settings}" --mcp-config="${w.mcp}" --strict-mcp-config --setting-sources=project --resume 11111111-2222-3333-4444-555555555555`);
+    // The installed app (no bridge of its own to prefer): today's line, word for word.
+    const installed = withBotWorkerMergeGuard({ initialCommand: LINE, cwd: dir }, { workspaceId: 'ws-task', strict: false }, deps())!;
+    expect(installed.initialCommand).not.toContain('--setting-sources');
+    expect(readJson(wordsOf(installed.initialCommand!).settings)).not.toHaveProperty('hooks');
+  });
+
+  it('spliceWorkerLaunch: the setting-sources word is ours too, and a foreign one is refused', () => {
+    const S = '/d/factory/worker-settings/aaaaaaaaaaaa.json';
+    const M = '/d/factory/worker-mcp/bbbbbbbbbbbb.json';
+    const once = spliceWorkerLaunch(LINE, S, M, 'project')!;
+    expect(spliceWorkerLaunch(once, S, M, 'project')).toBe(once);
+    // Recorded without it, or with it, the other way round: not the same launch.
+    expect(spliceWorkerLaunch(once, S, M)).toBeNull();
+    expect(spliceWorkerLaunch(spliceWorkerLaunch(LINE, S, M)!, S, M, 'project')).toBeNull();
+    expect(spliceWorkerLaunch('claude --setting-sources=user', S, M)).toBeNull();
+    expect(spliceWorkerLaunch('claude --setting-sources user', S, M, 'project')).toBeNull();
   });
 
   it('a re-fire or resume carries the task\'s connections that are still the bot\'s, and leaves out the rest', () => {
