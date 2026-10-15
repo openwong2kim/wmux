@@ -151,17 +151,28 @@ exec "$real" --settings "$WMUX_WSL_SETTINGS" \${WMUX_WSL_MCP_CONFIG:+--mcp-confi
  * core.autocrlf (its system config sets `true`, so the worktree is checked out
  * with CRLF and Linux git without it reads every text file as modified); it is
  * appended to the GIT_CONFIG_COUNT list the user's startup files left, never
- * written over it. After the user's rc files, so they cannot undo it.
+ * written over it. With it go `core.filemode=false` (drvfs reads every file as
+ * 0777, so Linux git saw a mode change on every file and committed new ones
+ * as executable) and Git for Windows' own `user.name` / `user.email` when set
+ * (`WMUX_WSL_GIT_FILEMODE`, `WMUX_WSL_GIT_USER_NAME`, `WMUX_WSL_GIT_USER_EMAIL`).
+ * After the user's rc files, so they cannot undo it.
  */
 export const WSL_TASK_GIT_ENV = `# A task worktree on a Windows drive: its gitdir by Linux paths (#2231).
 if [ -n "\${WMUX_WSL_GIT_DIR:-}" ] && [ -n "\${WMUX_WSL_GIT_WORK_TREE:-}" ]; then
   export GIT_DIR="$WMUX_WSL_GIT_DIR" GIT_WORK_TREE="$WMUX_WSL_GIT_WORK_TREE"
-  if [ -n "\${WMUX_WSL_GIT_AUTOCRLF:-}" ]; then
+  # One git setting, appended to the GIT_CONFIG_COUNT list; an empty value adds nothing.
+  __wmux_git_config() {
+    [ -n "$2" ] || return 0
     __wmux_n=\${GIT_CONFIG_COUNT:-0}
     case "$__wmux_n" in ''|*[!0-9]*) __wmux_n=0 ;; esac
-    export "GIT_CONFIG_KEY_$__wmux_n=core.autocrlf" "GIT_CONFIG_VALUE_$__wmux_n=$WMUX_WSL_GIT_AUTOCRLF" "GIT_CONFIG_COUNT=$((__wmux_n + 1))"
+    export "GIT_CONFIG_KEY_$__wmux_n=$1" "GIT_CONFIG_VALUE_$__wmux_n=$2" "GIT_CONFIG_COUNT=$((__wmux_n + 1))"
     unset __wmux_n
-  fi
+  }
+  __wmux_git_config core.autocrlf "\${WMUX_WSL_GIT_AUTOCRLF:-}"
+  __wmux_git_config core.filemode "\${WMUX_WSL_GIT_FILEMODE:-}"
+  __wmux_git_config user.name "\${WMUX_WSL_GIT_USER_NAME:-}"
+  __wmux_git_config user.email "\${WMUX_WSL_GIT_USER_EMAIL:-}"
+  unset -f __wmux_git_config
 fi`;
 
 export const WSL_CODEX_HOOK = `#!/bin/sh

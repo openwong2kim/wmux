@@ -69,20 +69,36 @@ export function autocrlfToPass(value: string | null | undefined): string | null 
   return v || null;
 }
 
+/** Git for Windows' own settings a WSL worker's git takes over: its
+ *  effective core.autocrlf (see autocrlfToPass) and identity, when set. */
+export interface WslWorkerGitConfig {
+  autocrlf?: string | null;
+  userName?: string | null;
+  userEmail?: string | null;
+}
+
 /**
  * Add the plan to a pane's (already resolved) environment: the WMUX_WSL_GIT_*
- * values and their WSLENV entries, keeping every other WSLENV entry. Mutates
- * `env`.
+ * values and their WSLENV entries, keeping every other WSLENV entry. Always
+ * `core.filemode=false`: drvfs reads every file on a Windows drive as 0777,
+ * so Linux git sees a mode change on every tracked file and commits new ones
+ * as executable. Mutates `env`.
  */
-export function applyWslWorkerGit(env: Record<string, string>, plan: WslWorkerGitPlan, autocrlf: string | null): void {
+export function applyWslWorkerGit(env: Record<string, string>, plan: WslWorkerGitPlan, config: WslWorkerGitConfig | string | null = {}): void {
+  const cfg: WslWorkerGitConfig = typeof config === 'string' || config === null ? { autocrlf: config } : config;
   env.WMUX_WSL_GIT_DIR = plan.gitDir;
   env.WMUX_WSL_GIT_WORK_TREE = plan.workTree;
-  const entries = ['WMUX_WSL_GIT_DIR/u', 'WMUX_WSL_GIT_WORK_TREE/u'];
-  const pass = autocrlfToPass(autocrlf);
-  if (pass) {
-    env.WMUX_WSL_GIT_AUTOCRLF = pass;
-    entries.push('WMUX_WSL_GIT_AUTOCRLF/u');
-  }
+  env.WMUX_WSL_GIT_FILEMODE = 'false';
+  const entries = ['WMUX_WSL_GIT_DIR/u', 'WMUX_WSL_GIT_WORK_TREE/u', 'WMUX_WSL_GIT_FILEMODE/u'];
+  const add = (key: string, value: string | null | undefined) => {
+    const v = (value ?? '').replace(/[\r\n]+$/, '');
+    if (!v || /[\0\r\n]/.test(v)) return;
+    env[key] = v;
+    entries.push(`${key}/u`);
+  };
+  add('WMUX_WSL_GIT_AUTOCRLF', autocrlfToPass(cfg.autocrlf));
+  add('WMUX_WSL_GIT_USER_NAME', cfg.userName);
+  add('WMUX_WSL_GIT_USER_EMAIL', cfg.userEmail);
   env.WSLENV = mergeWslEnv(env.WSLENV, entries);
 }
 
@@ -108,16 +124,20 @@ function readDotGitFile(cwd: string): string | null {
 export async function withWslWorkerGit(env: Record<string, string>, cwd: string, distro: string | null, deps: WslWorkerGitDeps = {}): Promise<boolean> {
   const found = await resolveWslWorkerGit(cwd, distro, deps);
   if (!found) return false;
-  applyWslWorkerGit(env, found.plan, found.autocrlf);
+  applyWslWorkerGit(env, found.plan, found.config);
   return true;
 }
 
-/** The plan for `cwd` and Git for Windows' effective core.autocrlf there
- *  (system, global and local config: the one the worktree was checked out
- *  with), or null when there is nothing to fix. */
-export async function resolveWslWorkerGit(cwd: string, distro: string | null, deps: WslWorkerGitDeps = {}): Promise<{ plan: WslWorkerGitPlan; autocrlf: string | null } | null> {
+/** The plan for `cwd` and Git for Windows' effective settings there (system,
+ *  global and local config: core.autocrlf the worktree was checked out with,
+ *  and user.name / user.email), or null when there is nothing to fix. */
+export async function resolveWslWorkerGit(cwd: string, distro: string | null, deps: WslWorkerGitDeps = {}): Promise<{ plan: WslWorkerGitPlan; config: WslWorkerGitConfig } | null> {
   const plan = wslWorkerGitPlan(cwd, (deps.readDotGit ?? readDotGitFile)(cwd), distro);
   if (!plan) return null;
-  const r = await (deps.git ?? runGit)(['config', '--get', 'core.autocrlf'], cwd).catch(() => null);
-  return { plan, autocrlf: r && r.code === 0 ? r.stdout : null };
+  const get = async (key: string): Promise<string | null> => {
+    const r = await (deps.git ?? runGit)(['config', '--get', key], cwd).catch(() => null);
+    return r && r.code === 0 ? r.stdout : null;
+  };
+  const [autocrlf, userName, userEmail] = await Promise.all([get('core.autocrlf'), get('user.name'), get('user.email')]);
+  return { plan, config: { autocrlf, userName, userEmail } };
 }

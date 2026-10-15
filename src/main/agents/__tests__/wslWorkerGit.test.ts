@@ -43,7 +43,8 @@ describe('the pane environment', () => {
       WMUX_WSL_GIT_DIR: plan.gitDir,
       WMUX_WSL_GIT_WORK_TREE: plan.workTree,
       WMUX_WSL_GIT_AUTOCRLF: 'true',
-      WSLENV: 'FOO/p:BAR:WMUX_WSL_GIT_DIR/u:WMUX_WSL_GIT_WORK_TREE/u:WMUX_WSL_GIT_AUTOCRLF/u',
+      WMUX_WSL_GIT_FILEMODE: 'false',
+      WSLENV: 'FOO/p:BAR:WMUX_WSL_GIT_DIR/u:WMUX_WSL_GIT_WORK_TREE/u:WMUX_WSL_GIT_FILEMODE/u:WMUX_WSL_GIT_AUTOCRLF/u',
       // The Windows side's own list is not touched.
       GIT_CONFIG_COUNT: '1',
     });
@@ -60,7 +61,7 @@ describe('the pane environment', () => {
     const env: Record<string, string> = {};
     applyWslWorkerGit(env, plan, null);
     expect(env.WMUX_WSL_GIT_AUTOCRLF).toBeUndefined();
-    expect(env.WSLENV).toBe('WMUX_WSL_GIT_DIR/u:WMUX_WSL_GIT_WORK_TREE/u');
+    expect(env.WSLENV).toBe('WMUX_WSL_GIT_DIR/u:WMUX_WSL_GIT_WORK_TREE/u:WMUX_WSL_GIT_FILEMODE/u');
   });
 
   it('reads the .git file and Git for Windows\' effective core.autocrlf in the worktree', async () => {
@@ -71,7 +72,8 @@ describe('the pane environment', () => {
       git: async (args, cwd) => { calls.push({ args, cwd }); return { stdout: 'true\n', stderr: '', code: 0 }; },
     });
     expect(changed).toBe(true);
-    expect(calls).toEqual([{ args: ['config', '--get', 'core.autocrlf'], cwd: CWD }]);
+    expect(calls.map((c) => c.args[2]).sort()).toEqual(['core.autocrlf', 'user.email', 'user.name']);
+    expect(calls.every((c) => c.cwd === CWD)).toBe(true);
     expect(env.WMUX_WSL_GIT_AUTOCRLF).toBe('true');
     // Unset (git exits 1): nothing passed.
     const unset: Record<string, string> = {};
@@ -82,6 +84,25 @@ describe('the pane environment', () => {
     const none: Record<string, string> = {};
     expect(await withWslWorkerGit(none, '/home/dev/wt', null, { readDotGit: () => DOT_GIT })).toBe(false);
     expect(none).toEqual({});
+  });
+});
+
+describe('identity and file mode (#2231)', () => {
+  it('passes Git for Windows\' user.name and user.email when set, and core.filemode=false always', async () => {
+    const env: Record<string, string> = {};
+    const values: Record<string, string> = { 'core.autocrlf': 'true\n', 'user.name': 'Kim Wong\n', 'user.email': 'me@example.com\n' };
+    await withWslWorkerGit(env, CWD, null, {
+      readDotGit: () => DOT_GIT,
+      git: async (args) => (values[args[2]] ? { stdout: values[args[2]], stderr: '', code: 0 } : { stdout: '', stderr: '', code: 1 }),
+    });
+    expect(env).toMatchObject({ WMUX_WSL_GIT_FILEMODE: 'false', WMUX_WSL_GIT_USER_NAME: 'Kim Wong', WMUX_WSL_GIT_USER_EMAIL: 'me@example.com' });
+    expect(env.WSLENV.split(':')).toEqual(expect.arrayContaining(['WMUX_WSL_GIT_USER_NAME/u', 'WMUX_WSL_GIT_USER_EMAIL/u', 'WMUX_WSL_GIT_FILEMODE/u']));
+    // Unset on the Windows side: nothing is made up.
+    const none: Record<string, string> = {};
+    await withWslWorkerGit(none, CWD, null, { readDotGit: () => DOT_GIT, git: async () => ({ stdout: '', stderr: '', code: 1 }) });
+    expect(none.WMUX_WSL_GIT_USER_NAME).toBeUndefined();
+    expect(none.WMUX_WSL_GIT_USER_EMAIL).toBeUndefined();
+    expect(none.WMUX_WSL_GIT_FILEMODE).toBe('false');
   });
 });
 
@@ -105,6 +126,15 @@ printf '%s|%s|%s|%s|%s|%s|%s\\n' "\${GIT_DIR-}" "\${GIT_WORK_TREE-}" "\${GIT_CON
   it('appends to a GIT_CONFIG_COUNT list already there, never over it', () => {
     expect(run({ ...where, WMUX_WSL_GIT_AUTOCRLF: 'input', GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'user.name', GIT_CONFIG_VALUE_0: 'me' }))
       .toBe('/mnt/d/r/.git/worktrees/t 1|/mnt/c/w/t 1|2|user.name|me|core.autocrlf|input');
+  });
+
+  it('appends file mode and identity after autocrlf, values kept as they are', () => {
+    const out = execFileSync('/bin/bash', ['-c', `${WSL_TASK_GIT_ENV}
+for i in 0 1 2 3; do eval "printf '%s=%s;' \\"\\$GIT_CONFIG_KEY_$i\\" \\"\\$GIT_CONFIG_VALUE_$i\\""; done; printf '%s' "$GIT_CONFIG_COUNT"`], {
+      env: { PATH: process.env.PATH ?? '/usr/bin:/bin', ...where, WMUX_WSL_GIT_AUTOCRLF: 'true', WMUX_WSL_GIT_FILEMODE: 'false', WMUX_WSL_GIT_USER_NAME: "Kim 'W' $(x)", WMUX_WSL_GIT_USER_EMAIL: 'me@example.com' },
+      encoding: 'utf8',
+    });
+    expect(out).toBe("core.autocrlf=true;core.filemode=false;user.name=Kim 'W' $(x);user.email=me@example.com;4");
   });
 
   it('does nothing in an ordinary pane', () => {
