@@ -333,7 +333,10 @@ export default function BrowserPolicyDialog({ workspaceId, paneId, onClose, onSa
   return createPortal(
     <Dialog onClose={onClose} width={460} data-testid="browser-policy-dialog">
       <DialogHeader title={t('pane.browserPolicyTitle')} description={t('pane.browserPolicyDescription')} />
-      <DialogBody className="flex flex-col gap-3">
+      {/* Fields keep their height so a long body scrolls instead of the
+          fields shrinking over one another (.ui-dialog-body only pins a
+          direct .ui-group; these groups sit inside a Field). */}
+      <DialogBody className="flex flex-col gap-3 [&>*]:shrink-0">
         {loaded?.needsConfirm && (
           <div className="ui-notice flex items-start gap-2.5 px-3.5 py-3" data-testid="browser-policy-rebound">
             <span className="shrink-0 mt-0.5 text-[var(--text-muted)]" aria-hidden="true"><IconLock size={12} /></span>
@@ -395,7 +398,9 @@ export default function BrowserPolicyDialog({ workspaceId, paneId, onClose, onSa
                 description={t('pane.browserPolicyRecentlyBlockedDesc')}
                 layout="stacked"
               >
-                <div className="ui-group w-full" data-testid="browser-policy-recently-blocked">
+                {/* Up to 20 hosts, Chrome's own background hosts among them:
+                    the list scrolls on its own so the fields below stay near. */}
+                <div className="ui-group w-full max-h-[240px] overflow-y-auto" data-testid="browser-policy-recently-blocked">
                   {blockedRows.map((row) => (
                     <div key={row.rule} className="ui-row" data-blocked-host={row.rule}>
                       <div className="ui-row-text">
