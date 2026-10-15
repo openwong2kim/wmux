@@ -14,10 +14,14 @@ import { GroupStore, groupsFilePath, type GroupBotRef } from '../../../factory/g
 import { createGroup, listGroups, migrateRoomsToGroups, removeGroup, updateGroup } from '../group.rpc';
 
 let dir = '';
+/** Stores made by a test: their queued writes land before the dir goes. */
+let stores: GroupStore[] = [];
 beforeEach(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wp2-group-rpc-'));
+  stores = [];
 });
-afterEach(() => {
+afterEach(async () => {
+  await Promise.all(stores.map((s) => s.flush().catch(() => undefined)));
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
@@ -38,6 +42,7 @@ const BOTS: GroupBotRef[] = [
 function rig() {
   const store = new GroupStore(groupsFilePath(dir), { bots: () => BOTS, log: () => undefined });
   store.load();
+  stores.push(store);
   const writer = new RoomWriter({ dir: path.join(dir, 'factory', 'rooms'), log: () => undefined });
   return { store, writer };
 }

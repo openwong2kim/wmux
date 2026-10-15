@@ -8,10 +8,14 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { GroupStore, groupsFilePath, type GroupBotRef } from '../groupStore';
 
 let dir = '';
+/** Stores made by a test: their queued writes land before the dir goes. */
+let stores: GroupStore[] = [];
 beforeEach(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wp2-groups-'));
+  stores = [];
 });
-afterEach(() => {
+afterEach(async () => {
+  await Promise.all(stores.map((s) => s.flush().catch(() => undefined)));
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
@@ -19,6 +23,11 @@ const A = 'bot-0000000a';
 const B = 'bot-0000000b';
 const C = 'bot-0000000c';
 const FAR = 'bot-000000ff';
+
+function track(s: GroupStore): GroupStore {
+  stores.push(s);
+  return s;
+}
 
 function rig(bots: GroupBotRef[] = [
   { id: A, workspaceId: 'ws1', createdAt: 1 },
@@ -30,13 +39,13 @@ function rig(bots: GroupBotRef[] = [
   let changes = 0;
   const list = [...bots];
   const file = groupsFilePath(dir);
-  const make = () => new GroupStore(file, {
+  const make = () => track(new GroupStore(file, {
     now: () => 100 + n,
     newId: () => `grp-${(++n).toString(16).padStart(8, '0')}`,
     bots: () => list,
     onChange: () => { changes += 1; },
     log: () => undefined,
-  });
+  }));
   const store = make();
   store.load();
   return { store, list, file, make, changes: () => changes };
