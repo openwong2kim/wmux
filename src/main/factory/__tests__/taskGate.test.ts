@@ -10,7 +10,8 @@ import { TaskLedger } from '../../../daemon/ledger/TaskLedger';
 import { DEFAULT_BOT_BUDGETS, type BotProfile } from '../../../shared/bot';
 import type { LedgerEntry, LedgerGateResult } from '../../../shared/ledger';
 import type { GateRunInput, GateRunResult } from '../../worktask/TaskGateRunner';
-import { completeCheckedTask, completeResearchTask, describeTaskGate, installTaskGate, isTaskGateReport, reportWasGated, type TaskGatePorts } from '../taskGate';
+import { completeCheckedTask, completeResearchTask, describeTaskGate, gateCardNoted, installTaskGate, isTaskGateReport, reportWasGated, type TaskGatePorts } from '../taskGate';
+import type { RoomCard } from '../../../shared/room';
 import { verifyGateFactId } from '../verifyPreset';
 import { countOpenBotWorkers } from '../../pipe/handlers/fanout.rpc';
 
@@ -241,6 +242,67 @@ describe('the system gate on a bot task report', () => {
     expect(r.wake).toHaveBeenCalledTimes(4);
   });
 
+  it('restart: a refused report whose rev was already carded is not gated or carded again, only woken; one that was not carded is gated', async () => {
+    const refuse = recordingRunner(null, (i) => ({ ok: false, status: 'refused', taskId: i.taskId, error: 'the worktree scripts differ from the base' }));
+    await register('carded');
+    await register('uncarded');
+    // Before the restart: both reports were refused, and one card each was written.
+    const cards = new Set<string>();
+    const first = rig({ note: (_ws, _t, _title, _body, key) => { cards.add(key); } }, refuse);
+    await report('carded');
+    await flush();
+    first.off();
+    expect(cards).toEqual(new Set([verifyGateFactId('carded', (ledger.get('carded') as LedgerEntry).rev)]));
+    await report('uncarded');
+
+    const r = rig({ noted: (_ws, _t, key) => cards.has(key) }, refuse);
+    await flush();
+    expect(refuse.mock.calls.map((c) => c[0].taskId)).toEqual(['carded', 'uncarded']); // 'carded' only before the restart
+    expect(r.note.mock.calls.map((c) => c[4])).toEqual([verifyGateFactId('uncarded', (ledger.get('uncarded') as LedgerEntry).rev)]);
+    expect(r.wake.mock.calls.map((c) => c[0].reason.factIds[0]).sort()).toEqual([
+      verifyGateFactId('carded', (ledger.get('carded') as LedgerEntry).rev),
+      verifyGateFactId('uncarded', (ledger.get('uncarded') as LedgerEntry).rev),
+    ].sort());
+    expect(ledger.get('carded')?.status).toBe('review_requested');
+  });
+
+  it('restart: the catch-up waits while the room cannot be read, and runs as before when it never can', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      await register();
+      await report();
+      let readable = false;
+      const r = rig({ noted: () => (readable ? true : null), notedWaitMs: 1_000 });
+      await vi.advanceTimersByTimeAsync(500);
+      expect(r.runGate).not.toHaveBeenCalled();
+      expect(r.wake).not.toHaveBeenCalled();
+      readable = true;
+      await vi.advanceTimersByTimeAsync(300);
+      expect(r.runGate).not.toHaveBeenCalled();
+      expect(r.wake).toHaveBeenCalledTimes(1);
+      r.off();
+
+      const never = rig({ noted: () => null, notedWaitMs: 1_000 });
+      await vi.advanceTimersByTimeAsync(1_500);
+      expect(never.runGate).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('gateCardNoted: only a system card in the task thread with the key counts', () => {
+    const card = (over: Partial<RoomCard>): RoomCard => ({
+      version: 1, id: 'c', seq: 1, workspaceId: 'ws-lead', threadId: 'task:t' as RoomCard['threadId'], kind: 'fact', at: 1, actor: { kind: 'system' }, title: 't', clientPostId: 'k', ...over,
+    });
+    const findIn = (cards: RoomCard[]) => (_ws: string, m: (c: RoomCard) => boolean) => cards.find(m) ?? null;
+    const thread = 'task:t' as RoomCard['threadId'];
+    expect(gateCardNoted(null, 'ws-lead', thread, 'k')).toBeNull();
+    expect(gateCardNoted(findIn([card({})]), 'ws-lead', thread, 'k')).toBe(true);
+    expect(gateCardNoted(findIn([card({ actor: { kind: 'bot', botId: BOT } as RoomCard['actor'] })]), 'ws-lead', thread, 'k')).toBe(false);
+    expect(gateCardNoted(findIn([card({ threadId: 'general' as RoomCard['threadId'] })]), 'ws-lead', thread, 'k')).toBe(false);
+    expect(gateCardNoted(findIn([card({ clientPostId: 'other' })]), 'ws-lead', thread, 'k')).toBe(false);
+  });
+
   it('restart: a task the system completed in the last day wakes its bot again with the same id; older ones and other completions do not', async () => {
     await register('done');
     await report('done');
@@ -343,6 +405,15 @@ describe('completeCheckedTask', () => {
 });
 
 describe('describeTaskGate', () => {
+  it('a base with no gate script yet says what the owner can do', () => {
+    const d = describeTaskGate({ ok: false, status: 'refused', taskId: 't', code: 'no_base_gate', error: 'origin/main has no npm test script yet and the task worktree adds one' });
+    expect(d.title).toBe('No gate on the default branch yet: task left open');
+    expect(d.body).toContain('origin/main has no npm test script yet');
+    expect(d.body).toContain('merge a test script into the default branch first');
+    expect(d.body).toContain('cancel it');
+    expect(describeTaskGate({ ok: false, status: 'refused', taskId: 't', error: 'x' }).title).toBe('Gate refused: task left open');
+  });
+
   it('names a killed gate and an unrecorded receipt', () => {
     const killed = describeTaskGate({ ok: true, status: 'completed', taskId: 't', recorded: false, result: { exitCode: null, tail: '', at: 1, command: 'npm test' } });
     expect(killed.title).toBe('Gate was killed: task left open');

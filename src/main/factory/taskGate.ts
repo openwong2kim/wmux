@@ -28,8 +28,13 @@
 // the worker's own review_requested wake (fanoutCallerNotify.ts skips it), so
 // a report is one bot turn, after the gate, never one before it.
 //
+// Every card carries the id of the row it was written about
+// (`task.gated:<taskId>@<rev>`, the card's clientPostId).
 // At install (start, after a restart) every open row in this state is caught
-// up: a report with no gate after it is gated now; one whose newest write is
+// up: one whose current rev already has its card (a refused, skipped or
+// not-run gate records nothing in the ledger, so the card is the only trace)
+// wakes the bot again and is neither gated nor carded again; otherwise a
+// report with no gate after it is gated now; one whose newest write is
 // a passing gate is gated again (a quit can land between a gate recorded for
 // an older report and the run for the newer one, so that pass is not trusted
 // for completion); one whose gate did not pass wakes the bot again (the queue
@@ -40,7 +45,7 @@
 import { isResearchDispatch, type LedgerEntry } from '../../shared/ledger';
 import type { BotProfile } from '../../shared/bot';
 import { isSystemGatePass } from '../../shared/botTask';
-import { taskThreadOf, type ThreadId } from '../../shared/room';
+import { taskThreadOf, type RoomCard, type ThreadId } from '../../shared/room';
 import type { WakeReason } from '../../shared/wake';
 import type { LedgerUpdateInput, LedgerUpdateResult } from '../../daemon/ledger/TaskLedger';
 import type { GateRunInput, GateRunResult } from '../worktask/TaskGateRunner';
@@ -140,10 +145,35 @@ export interface TaskGatePorts {
   /** completeResearchTask over the hosted ledger. */
   completeResearch?: (taskId: string) => Promise<{ entry: LedgerEntry } | { entry: null; why: string }>;
   wake: (input: { botId: string; workspaceId: string; reason: WakeReason; priority: 1; threadId: ThreadId }) => unknown;
-  /** A system card in the task's thread (best effort). */
-  note?: (workspaceId: string, threadId: ThreadId, title: string, body: string) => void;
+  /** A system card in the task's thread (best effort), keyed by the row it
+   *  is about (`verifyGateFactId(taskId, rev)`): a key already carded writes
+   *  nothing. */
+  note?: (workspaceId: string, threadId: ThreadId, title: string, body: string, key: string) => void;
+  /** Whether a system card with this key is in the task's thread; null when
+   *  the room cannot be read yet (the install catch-up waits for it). */
+  noted?: (workspaceId: string, threadId: ThreadId, key: string) => boolean | null;
+  /** How long the install catch-up waits for `noted` to answer (default
+   *  NOTED_WAIT_MS); after that it runs as if nothing was carded. */
+  notedWaitMs?: number;
   log?: (msg: string) => void;
 }
+
+/** Whether the task's thread holds a system card with this key (a bot's
+ *  post cannot claim one: only system cards count). Null while the rooms
+ *  cannot be read. Pure over `find`. */
+export function gateCardNoted(
+  find: ((workspaceId: string, match: (c: RoomCard) => boolean) => RoomCard | null) | null,
+  workspaceId: string,
+  threadId: ThreadId,
+  key: string,
+): boolean | null {
+  if (!find) return null;
+  return find(workspaceId, (c) => c.threadId === threadId && c.actor.kind === 'system' && c.clientPostId === key) !== null;
+}
+
+/** How long the install catch-up waits for the room to be readable. */
+export const NOTED_WAIT_MS = 10_000;
+const NOTED_POLL_MS = 250;
 
 /** The card for a gate run that did not complete the task. */
 export function describeTaskGate(r: GateRunResult): { title: string; body: string } {
@@ -158,6 +188,14 @@ export function describeTaskGate(r: GateRunResult): { title: string; body: strin
     return { title: `Gate skipped (${r.skipped}): task left open`, body: r.detail };
   }
   if (!r.ok && r.status === 'busy') return { title: 'Gate already running: task left open', body: 'Another gate run holds this task; its result is in the task\'s ledger row when it ends.' };
+  if (!r.ok && r.code === 'no_base_gate') {
+    return {
+      title: 'No gate on the default branch yet: task left open',
+      body: `${r.error}.\n\nThis task cannot be completed by the gate as it stands. To finish it, either merge a test script into the default branch first `
+        + '(its own small PR), then have the bot send the task back so its worker reports again and the gate runs; or end the task: '
+        + 'ask the bot to cancel it, or close its workspace. The task\'s branch and worktree are kept either way.',
+    };
+  }
   return { title: 'Gate refused: task left open', body: r.ok ? '' : r.error };
 }
 
@@ -173,7 +211,7 @@ export function installTaskGate(ports: TaskGatePorts): () => void {
 
   const note = (entry: LedgerEntry, title: string, body: string): void => {
     try {
-      ports.note?.(entry.ownerWorkspaceId, taskThreadOf(entry), title, body);
+      ports.note?.(entry.ownerWorkspaceId, taskThreadOf(entry), title, body, verifyGateFactId(entry.id, entry.rev));
     } catch {
       /* the card is best effort */
     }
@@ -283,20 +321,48 @@ export function installTaskGate(ports: TaskGatePorts): () => void {
     if (isTaskGateReport(t.entry, t.to)) start(t.entry.id);
   });
 
-  let open: LedgerEntry[] = [];
-  try {
-    open = ports.openRows?.() ?? [];
-  } catch {
-    open = [];
-  }
-  for (const entry of open) {
-    if (!isTaskGateReport(entry, entry.status)) continue;
-    // Not gated, or gated with a pass that may belong to an older report:
-    // gate it (again). A gate that did not pass (its card is already up)
-    // wakes the bot again, which the queue drops once delivered.
-    if (!reportWasGated(entry) || isSystemGatePass(entry.gate)) start(entry.id);
-    else wake(entry);
-  }
+  /** Whether this rev of the row already has its card; null: unknown yet. */
+  const carded = (entry: LedgerEntry): boolean | null => {
+    if (!ports.noted) return false;
+    try {
+      return ports.noted(entry.ownerWorkspaceId, taskThreadOf(entry), verifyGateFactId(entry.id, entry.rev));
+    } catch {
+      return null;
+    }
+  };
+  let disposed = false;
+  let sweepTimer: ReturnType<typeof setTimeout> | null = null;
+  const sweepOpen = (waitedMs: number): void => {
+    sweepTimer = null;
+    if (disposed) return;
+    let open: LedgerEntry[] = [];
+    try {
+      open = (ports.openRows?.() ?? []).filter((e) => isTaskGateReport(e, e.status));
+    } catch {
+      open = [];
+    }
+    // The room is not readable yet (its module starts after this one): wait
+    // for it rather than gate and card a report again.
+    const waitMs = ports.notedWaitMs ?? NOTED_WAIT_MS;
+    if (waitedMs < waitMs && open.some((e) => carded(e) === null)) {
+      sweepTimer = setTimeout(() => sweepOpen(waitedMs + NOTED_POLL_MS), NOTED_POLL_MS);
+      sweepTimer.unref?.();
+      return;
+    }
+    for (const entry of open) {
+      // A report that arrived while the sweep waited is being gated already.
+      if (running.has(entry.id)) continue;
+      // This rev was gated and carded already (before a restart): the bot is
+      // woken again (the queue drops a delivered wake), nothing runs again.
+      if (carded(entry) === true) wake(entry);
+      // Not gated, or gated with a pass that may belong to an older report:
+      // gate it (again). A gate that did not pass (its card is already up)
+      // wakes the bot again, which the queue drops once delivered.
+      else if (!reportWasGated(entry) || isSystemGatePass(entry.gate)) start(entry.id);
+      else wake(entry);
+    }
+  };
+  sweepOpen(0);
   let all: LedgerEntry[] = [];
   try {
     all = ports.allRows?.() ?? [];
@@ -310,5 +376,9 @@ export function installTaskGate(ports: TaskGatePorts): () => void {
     if (!isSystemGatePass(entry.gate) && !isResearchDispatch(entry.dispatch)) continue;
     wake(entry);
   }
-  return off;
+  return () => {
+    disposed = true;
+    if (sweepTimer) clearTimeout(sweepTimer);
+    off();
+  };
 }

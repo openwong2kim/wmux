@@ -82,7 +82,7 @@ import { git } from '../git/git';
 import { getSharedTaskGateRunner } from '../worktask/TaskGateRunner';
 import { isPidAlive, stopSessionsInDir } from '../worktask/stopSessionsInDir';
 import { originDefaultRef, taskFolderFromMissions, worktreeFromMissions } from './verifyPreset';
-import { completeCheckedTask, completeResearchTask, installTaskGate } from './taskGate';
+import { completeCheckedTask, completeResearchTask, gateCardNoted, installTaskGate } from './taskGate';
 import { TaskBranchCache, setBotTaskSources } from './botTasks';
 import { installLateStopSweep, setFactoryStopPorts, type FactoryStopPorts } from './factoryStop';
 import { getRoutineStore } from './routines';
@@ -478,11 +478,6 @@ function uiLocaleNow(): string {
   }
 }
 
-/** A system card in a room thread (best effort). */
-function systemNote(workspaceId: string, threadId: ThreadId, title: string, body: string): void {
-  getRoomWriter()?.append({ workspaceId, threadId, kind: 'fact', actor: { kind: 'system' }, title, body });
-}
-
 // ── Module ─────────────────────────────────────────────────────────────────
 
 export function createFactoryWiring(deps: Pick<FactoryHostDeps, 'wmuxDir'> & Partial<Pick<FactoryHostDeps, 'getDaemonClient' | 'getMainWindow' | 'fanOutService'>>): FactoryModuleHandle {
@@ -629,7 +624,15 @@ export function createFactoryWiring(deps: Pick<FactoryHostDeps, 'wmuxDir'> & Par
             if (!q) console.info(`[factory] wake queue not running; ${input.botId} was not woken`);
             return q?.enqueue(input) ?? null;
           },
-          note: systemNote,
+          note: (workspaceId, threadId, title, body, key) => {
+            const writer = getRoomWriter();
+            if (!writer || gateCardNoted((ws, m) => writer.find(ws, m), workspaceId, threadId, key)) return;
+            writer.append({ workspaceId, threadId, kind: 'fact', actor: { kind: 'system' }, title, body }, { clientPostId: key });
+          },
+          noted: (workspaceId, threadId, key) => {
+            const writer = getRoomWriter();
+            return gateCardNoted(writer ? (ws, m) => writer.find(ws, m) : null, workspaceId, threadId, key);
+          },
         }));
       });
       offTasks.push(() => clearImmediate(gateTimer));
