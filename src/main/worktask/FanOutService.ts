@@ -71,7 +71,8 @@ import {
   splitModelEnvMarker,
   type FanoutWorkerPermissionMode,
 } from '../../shared/workerLaunch';
-import { promptFileArgument } from '../../shared/promptFileArgument';
+import { launchLineForShell, promptFileArgument } from '../../shared/promptFileArgument';
+import { getPtyShell } from '../pty/ptyShellRegistry';
 import type { Connector } from '../../shared/botConnector';
 import { AGENT_SLUG_SET } from '../../shared/agentIdentity';
 import {
@@ -1757,9 +1758,12 @@ export class FanOutService {
       task.ok = false;
       // The line itself goes in the task's error only: on Windows it is a
       // long PowerShell expression, and the warning should stay one readable line.
+      // The line as that pane's shell takes it (a WSL or cmd pane gets its
+      // own prompt argument, as pty:create typed it).
+      const rerun = task.initialCommand ? launchLineForShell(task.initialCommand, getPtyShell(ptyId)) : '';
       task.error =
         `${launchFailedHeadline(ptyId, seconds)}` +
-        (task.initialCommand ? `; re-run the launch line there: ${task.initialCommand}` : '');
+        (rerun ? `; re-run the launch line there: ${rerun}` : '');
       await this.markLaunchFailed(task.taskId, ownerWorkspaceId, ptyId, seconds);
       try {
         onLaunchFailed?.(task);
