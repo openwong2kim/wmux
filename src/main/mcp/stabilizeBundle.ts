@@ -1,3 +1,4 @@
+import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -26,7 +27,8 @@ import * as path from 'path';
  * (~1.7MB) pulls in siblings at runtime via `path.join(__dirname, …)`
  * (`playwright-chunk.js` ~4.7MB, `playwright-core-package.json`). So the whole
  * directory must travel together, and — because that is ~6MB — the copy is
- * gated on a version marker so a warm boot pays nothing.
+ * gated on a version marker and a content hash, so a warm boot pays one read
+ * of the bundle and no copy.
  *
  * Pure (fs + path only) so the security-relevant copy/gate logic has direct
  * unit coverage without an Electron/`process.resourcesPath` harness; the tiny
@@ -36,6 +38,25 @@ import * as path from 'path';
 
 /** Marker file that records which app version last synced the stable bundle. */
 export const MCP_VERSION_MARKER = '.wmux-mcp-version';
+
+/** Marker file that records the content hash of the bundle last synced. A
+ *  separate file: the version marker is read as a bare version by the MCP
+ *  server itself (mcp/serverMetadata.ts). */
+export const MCP_CONTENT_MARKER = '.wmux-mcp-content';
+
+/** sha256 over the bundle directory's files (names and bytes, in name order),
+ *  marker files left out. */
+export function bundleContentHash(sourceDir: string): string {
+  const hash = crypto.createHash('sha256');
+  const files = fs.readdirSync(sourceDir, { withFileTypes: true })
+    .filter((e) => e.isFile() && e.name !== MCP_VERSION_MARKER && e.name !== MCP_CONTENT_MARKER)
+    .map((e) => e.name)
+    .sort();
+  for (const name of files) {
+    hash.update(name).update('\0').update(fs.readFileSync(path.join(sourceDir, name))).update('\0');
+  }
+  return hash.digest('hex');
+}
 
 export interface StabilizeResult {
   /** Absolute path to register: the stable copy on success, the original
@@ -78,18 +99,23 @@ export function stabilizeMcpBundle(
     const basename = path.basename(sourceScript);
     const stableScript = path.join(stableDir, basename);
     const markerPath = path.join(stableDir, MCP_VERSION_MARKER);
+    const contentPath = path.join(stableDir, MCP_CONTENT_MARKER);
 
-    // Version-marker gate + repair-on-missing: skip the ~6MB directory copy
-    // when the stable dir already carries THIS app version AND the entry we're
-    // about to register is present. A missing entry (partial prior copy, manual
-    // deletion) forces a re-sync even when the marker matches.
-    let marker: string | null = null;
-    try {
-      marker = fs.readFileSync(markerPath, 'utf8').trim();
-    } catch {
-      marker = null;
-    }
-    if (marker === version && fs.existsSync(stableScript)) {
+    // Version + content gate, and repair-on-missing: skip the ~6MB directory
+    // copy when the stable dir already carries THIS app version, THIS bundle's
+    // content, and the entry we're about to register. The content hash is what
+    // catches a same-version dev or test build (PRs never bump the version):
+    // gated on the version alone, its workers ran the released bundle. A
+    // missing entry (partial prior copy, manual deletion) forces a re-sync.
+    const read = (p: string): string | null => {
+      try {
+        return fs.readFileSync(p, 'utf8').trim();
+      } catch {
+        return null;
+      }
+    };
+    const content = bundleContentHash(sourceDir);
+    if (read(markerPath) === version && read(contentPath) === content && fs.existsSync(stableScript)) {
       return { scriptPath: stableScript, stabilized: true, synced: false };
     }
 
@@ -100,7 +126,7 @@ export function stabilizeMcpBundle(
     fs.mkdirSync(stableDir, { recursive: true });
     const entries = fs.readdirSync(sourceDir, { withFileTypes: true });
     for (const entry of entries) {
-      if (!entry.isFile() || entry.name === MCP_VERSION_MARKER) continue;
+      if (!entry.isFile() || entry.name === MCP_VERSION_MARKER || entry.name === MCP_CONTENT_MARKER) continue;
       const src = path.join(sourceDir, entry.name);
       const dest = path.join(stableDir, entry.name);
       const tmp = `${dest}.${process.pid}.tmp`;
@@ -111,6 +137,7 @@ export function stabilizeMcpBundle(
     // Marker written LAST: a crash mid-copy leaves marker !== version, so the
     // next boot re-syncs rather than trusting an incomplete directory.
     fs.writeFileSync(markerPath, version, 'utf8');
+    fs.writeFileSync(contentPath, content, 'utf8');
 
     if (!fs.existsSync(stableScript)) {
       // The source dir existed but didn't actually contain the entry we were

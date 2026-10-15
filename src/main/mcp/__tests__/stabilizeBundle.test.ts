@@ -3,7 +3,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { stabilizeMcpBundle, MCP_VERSION_MARKER } from '../stabilizeBundle';
+import { stabilizeMcpBundle, MCP_CONTENT_MARKER, MCP_VERSION_MARKER } from '../stabilizeBundle';
 
 // Real fs against a per-test temp dir — the copy/gate logic is the whole point,
 // so mocking fs would test nothing. `src` stands in for the versioned
@@ -59,17 +59,42 @@ describe('stabilizeMcpBundle', () => {
     expect(fs.existsSync(r.scriptPath)).toBe(true);
   });
 
-  it('warm boot (same version, entry present): no re-copy', () => {
+  it('warm boot (same version, same content, entry present): no re-copy', () => {
     const source = makeBundle(srcDir, 'INDEX_V1');
     stabilizeMcpBundle(source, stableDir, '1.0.0');
-    // Mutate the SOURCE after the first sync; a warm boot must NOT re-copy.
-    fs.writeFileSync(source, 'INDEX_MUTATED', 'utf8');
+    // A copy would rewrite the stable file; mark it to see that none ran.
+    fs.writeFileSync(path.join(stableDir, 'playwright-chunk.js'), 'UNTOUCHED', 'utf8');
 
     const r = stabilizeMcpBundle(source, stableDir, '1.0.0');
     expect(r.stabilized).toBe(true);
     expect(r.synced).toBe(false);
-    // Stable copy is untouched (still V1) because the version gate short-circuited.
-    expect(fs.readFileSync(path.join(stableDir, 'index.js'), 'utf8')).toBe('INDEX_V1');
+    expect(fs.readFileSync(path.join(stableDir, 'playwright-chunk.js'), 'utf8')).toBe('UNTOUCHED');
+  });
+
+  it('same version, different content (a dev or test build): re-syncs (#2231)', () => {
+    const source = makeBundle(srcDir, 'INDEX_RELEASED');
+    stabilizeMcpBundle(source, stableDir, '1.0.0');
+    // A build under test at the released version: PRs never bump it.
+    fs.writeFileSync(source, 'INDEX_UNDER_TEST', 'utf8');
+
+    const r = stabilizeMcpBundle(source, stableDir, '1.0.0');
+    expect(r.synced).toBe(true);
+    expect(fs.readFileSync(path.join(stableDir, 'index.js'), 'utf8')).toBe('INDEX_UNDER_TEST');
+    // A sibling counts too (index.js loads it at runtime).
+    fs.writeFileSync(path.join(srcDir, 'playwright-chunk.js'), 'CHUNK_2', 'utf8');
+    expect(stabilizeMcpBundle(source, stableDir, '1.0.0').synced).toBe(true);
+    expect(fs.readFileSync(path.join(stableDir, 'playwright-chunk.js'), 'utf8')).toBe('CHUNK_2');
+    // The version marker stays a bare version (the MCP server reads it as one).
+    expect(fs.readFileSync(path.join(stableDir, MCP_VERSION_MARKER), 'utf8')).toBe('1.0.0');
+    expect(stabilizeMcpBundle(source, stableDir, '1.0.0').synced).toBe(false);
+  });
+
+  it('a stable copy synced before the content marker existed is synced once more', () => {
+    const source = makeBundle(srcDir, 'INDEX_V1');
+    stabilizeMcpBundle(source, stableDir, '1.0.0');
+    fs.rmSync(path.join(stableDir, MCP_CONTENT_MARKER));
+    expect(stabilizeMcpBundle(source, stableDir, '1.0.0').synced).toBe(true);
+    expect(stabilizeMcpBundle(source, stableDir, '1.0.0').synced).toBe(false);
   });
 
   it('version change: re-syncs the stable copy to the new bundle', () => {
