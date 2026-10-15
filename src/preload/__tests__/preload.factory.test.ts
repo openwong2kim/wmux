@@ -21,8 +21,8 @@ vi.mock('electron', () => ({
 type Factory = {
   listBots: (req?: { workspaceId?: string }) => Promise<unknown>;
   onBotEvent: (cb: () => void) => () => void;
-  botAction: (action: string, botId: string) => Promise<{ ok: boolean; message?: string }>;
-  updateBot: (botId: string, patch: Record<string, unknown>) => Promise<{ ok: boolean; message?: string }>;
+  botAction: (action: string, botId: string) => Promise<{ ok: boolean; message?: string; code?: string }>;
+  updateBot: (botId: string, patch: Record<string, unknown>) => Promise<{ ok: boolean; message?: string; code?: string }>;
   getSettings: () => Promise<unknown>;
   setSettings: (patch: Record<string, unknown>) => Promise<unknown>;
 };
@@ -42,7 +42,12 @@ describe('preload factory bridge', () => {
     expect(await f.botAction('wake', 'bot-0000000a')).toEqual({ ok: true });
     expect(invoke).toHaveBeenLastCalledWith('rpc:invoke', 'bot.wake', { botId: 'bot-0000000a' });
     invoke.mockResolvedValueOnce({ id: 'x', ok: true, result: { ok: false, code: 'not_running', message: 'not running a turn' } });
-    expect(await f.botAction('interrupt', 'bot-0000000a')).toEqual({ ok: false, message: 'not running a turn' });
+    expect(await f.botAction('interrupt', 'bot-0000000a')).toEqual({ ok: false, message: 'not running a turn', code: 'not_running' });
+    // A repository refusal keeps its code, so the renderer can tell them apart.
+    invoke.mockResolvedValueOnce({ id: 'x', ok: true, result: { ok: false, code: 'repo_mismatch', message: 'another repository' } });
+    expect(await f.updateBot('bot-0000000a', { repo: '/r' })).toEqual({ ok: false, message: 'another repository', code: 'repo_mismatch' });
+    invoke.mockResolvedValueOnce({ id: 'x', ok: true, result: { ok: false, message: 'no code' } });
+    expect(await f.updateBot('bot-0000000a', { repo: '/r' })).toEqual({ ok: false, message: 'no code' });
     invoke.mockResolvedValueOnce({ id: 'x', ok: false, error: 'denied' });
     expect(await f.updateBot('bot-0000000a', { name: 'V' })).toEqual({ ok: false, message: 'denied' });
     expect(invoke).toHaveBeenLastCalledWith('rpc:invoke', 'bot.update', { botId: 'bot-0000000a', patch: { name: 'V' } });

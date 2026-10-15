@@ -143,12 +143,18 @@ export interface McpRegisterTargetResult {
 
 
 /** A bot.* call as the operator, with the router's envelope and the
- *  handler's refusal flattened to {ok, message?}. */
-async function factoryBotCall(method: string, params: Record<string, unknown>): Promise<{ ok: boolean; message?: string }> {
+ *  handler's refusal flattened to {ok, message?, code?}: the refusal's code
+ *  (repo_mismatch, no_remote…) lets the renderer tell refusals apart. */
+async function factoryBotCall(method: string, params: Record<string, unknown>): Promise<{ ok: boolean; message?: string; code?: string }> {
   const resp = (await ipcRenderer.invoke(IPC.RPC_INVOKE, method, params)) as { ok?: unknown; result?: unknown; error?: unknown } | null;
   if (!resp || resp.ok !== true) return { ok: false, message: typeof resp?.error === 'string' ? resp.error : 'the bot call failed' };
-  const result = (resp.result ?? {}) as { ok?: unknown; message?: unknown };
-  return result.ok === false ? { ok: false, message: typeof result.message === 'string' ? result.message : 'refused' } : { ok: true };
+  const result = (resp.result ?? {}) as { ok?: unknown; message?: unknown; code?: unknown };
+  if (result.ok !== false) return { ok: true };
+  return {
+    ok: false,
+    message: typeof result.message === 'string' ? result.message : 'refused',
+    ...(typeof result.code === 'string' && result.code ? { code: result.code } : {}),
+  };
 }
 
 const chat: ChatBridgeApi = {
