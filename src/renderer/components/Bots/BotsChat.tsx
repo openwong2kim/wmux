@@ -1,7 +1,8 @@
 // ─── One Bots conversation, as a chat ────────────────────────────────────
 //
 // A 1:1 conversation is a bot's own room cards and the owner's messages to
-// it; a group is a workspace's whole room (botsModel.ts). Messages are
+// it; a group chat is the owner's, its own thread of its workspace's room
+// (botsModel.ts). Messages are
 // bubbles in runs, as the reference messenger draws them (owner decision
 // 2026-10-14): a bot's on the left in soft fills — in a room its name above
 // the run's first bubble — and its avatar once, beside the run's last; the
@@ -28,23 +29,25 @@
 //
 // The owner never reads an internal id: a thread chip names a task by its
 // title (a request, plan or report by its kind word), a routine card shows
-// its schedule, a refusal its plain sentences (roomFormat.ts). In a room a
-// bot's greeting is a one-line "joined" notice with the way to its 1:1,
-// where the greeting itself is answered. An empty 1:1 opens with the bot's
-// face, job and a few first messages to pick from.
+// its schedule, a refusal its plain sentences (roomFormat.ts). A bot's
+// greeting is its 1:1's; a group chat shows no greeting and no "joined"
+// line — its bots introduce themselves when the owner first writes there.
+// An empty 1:1 opens with the bot's face, job and a few first messages to
+// pick from.
 //
 // While the bots are off the conversation is read-only: no answers and no
 // composer, only the reason under it.
 //
 // Sending: a 1:1 message is a post in the bot's 1:1 thread (`dm:<botId>`) of
 // its workspace's room that mentions that one bot (main wakes it alone, in
-// that thread). A group message goes to the whole room
-// — main wakes every bot of the workspace — unless bots are picked: the chip
-// row under the box, or an `@Name` of a room bot anywhere in the text
-// (resolved here at send; main reads only the field). Typing `@` in a room
-// suggests its bots.
+// that thread). A group chat's message is a post in its thread that goes to
+// every bot of the group — main wakes each — unless bots are picked: the
+// recipients control above the box ("To: everyone ▾", a checkbox per bot),
+// or an `@Name` of a group bot anywhere in the text (resolved here at send;
+// main reads only the field). The picks reset after each send. Typing `@`
+// in a group suggests its bots.
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
-import { dmThreadBot, dmThreadId, type RoomCard as RoomCardData, type ThreadId, type ThreadSummary } from '../../../shared/room';
+import { dmThreadBot, dmThreadId, groupThreadGroup, type RoomCard as RoomCardData, type ThreadId, type ThreadSummary } from '../../../shared/room';
 import { FOCUS_RING } from '../focusRing';
 import Button from '../ui/Button';
 import Select from '../ui/Select';
@@ -61,14 +64,14 @@ import { CardAnswers, useWorkspaceNames } from '../Room/CardAnswers';
 import { ApprovePendingChip } from '../Room/ApprovalAnswers';
 import { pendingForChip, useApprovals } from '../Room/approvalsStore';
 import { PresenceDot, botPresence } from '../Room/BotChips';
-import { MentionChips, deliveryLine, deliveryTaken, roomBots, roomPostParams, sentFrom, useMentionPicks, type SentTo } from '../Room/RoomComposer';
+import { deliveryLine, deliveryTaken, roomPostParams, sentFrom, useMentionPicks, type SentTo } from '../Room/RoomComposer';
 import { actorLabel, botKindLabel, cardTone, isRefThread, kindLabel, ownerCardText, planTextWithNames, requestTitles, threadLabel, threadRef, type IdLabels } from '../Room/roomFormat';
 import { BOT_JOB_MAX, botTemplate, normalizeBotJob } from '../../../shared/bot';
 import { DEFAULT_BOT_WORKER_AGENT, botWorkerAgentLabel, type BotWorkerAgentOption } from '../../../shared/botWorkerAgent';
 import { templateJob } from '../Settings/FactoryTab';
 import BotAvatar, { botIdentityColor } from '../Room/BotAvatar';
 import { RoomAvatar } from './BotsAvatar';
-import { awaitsApproval, conversationCards, greetingCardIds, roomViewCards, livePlanIds, roomEntries, taskBubbles, conversationTurns, type BotTreeRow, type BotWorker, type Conversation, type RoomEntry } from './botsModel';
+import { awaitsApproval, conversationCards, groupViewCards, livePlanIds, taskBubbles, conversationTurns, type BotTreeRow, type BotWorker, type Conversation, type RoomEntry } from './botsModel';
 import { treeRowState } from './BotsWorkerTree';
 import { loadWholeThread } from './useBots';
 import { useShallow } from 'zustand/react/shallow';
@@ -101,16 +104,21 @@ export function chatCards(
   thread: ThreadId | null,
   threads: Readonly<Record<string, readonly ThreadSummary[] | undefined>> = {},
 ): RoomCardData[] {
-  // A 1:1 is handed every room's cards (botConversationCards); a group its
-  // own, without the 1:1 threads and what they started.
-  const own = conversation.kind === 'bot' ? conversationCards(roomCards, conversation.row.bot.id, { lone: conversation.lone, threads }) : roomViewCards(roomCards, threads);
+  // A 1:1 is handed every room's cards (botConversationCards); a group chat
+  // its room's, of which it shows its own thread and what that started.
+  const own = conversation.kind === 'bot' ? conversationCards(roomCards, conversation.row.bot.id, { lone: conversation.lone, threads }) : groupViewCards(roomCards, conversation.group, threads);
   return thread ? own.filter((c) => c.threadId === thread || c.refs?.threadId === thread) : own;
+}
+
+/** General, a 1:1 or a group chat: a conversation, never a thread to open. */
+function isConversationThread(threadId: ThreadId): boolean {
+  return threadId === 'general' || !!dmThreadBot(threadId) || !!groupThreadGroup(threadId);
 }
 
 /** The thread a card links besides its own (its subject's), or null. */
 function linkedThread(card: RoomCardData): ThreadId | null {
   const linked = card.refs?.threadId;
-  return linked && linked !== card.threadId && linked !== 'general' && !dmThreadBot(linked) ? linked : null;
+  return linked && linked !== card.threadId && !isConversationThread(linked) ? linked : null;
 }
 
 /** Why a 1:1 message cannot be sent right now, or null: the bot is off. The
@@ -251,7 +259,7 @@ export function mentionSuggestions(candidates: readonly FactoryBotRow[], query: 
  *  in the tooltip. */
 function ThreadChip({ threadId, t, onPick, taskTitle, requestTitle }: { threadId: ThreadId; t: T; onPick: (id: ThreadId) => void; taskTitle?: TaskTitleOf; requestTitle?: RequestTitleOf }) {
   // General and a 1:1 are conversations, never a thread to open.
-  if (threadId === 'general' || dmThreadBot(threadId)) return null;
+  if (isConversationThread(threadId)) return null;
   const label = threadLabel(threadId, t, taskTitle, requestTitle);
   const ref = isRefThread(threadId);
   return (
@@ -419,7 +427,7 @@ function MessageRow({ item, ctx, group }: { item: Extract<TimelineItem, { kind: 
   // leads nowhere its summary line does not.
   const named = isRefThread(card.threadId) || (/^task:/.test(card.threadId) && !!ctx.taskTitle(card.threadId.slice(5)))
     || (/^handoff:/.test(card.threadId) && !!ctx.requestTitle(card.threadId));
-  const own = card.threadId !== 'general' && !dmThreadBot(card.threadId) && card.threadId !== ctx.hideThread && !(thread && !named);
+  const own = !isConversationThread(card.threadId) && card.threadId !== ctx.hideThread && !(thread && !named);
   const link = linked && linked !== ctx.hideThread ? linked : null;
   const chips = (own || link || line) && (
     <div className={`mt-0.5 flex min-w-0 flex-wrap items-center gap-1.5 ${human ? 'justify-end' : ''}`}>
@@ -554,7 +562,6 @@ function TimelineView({ items, ctx, group = false }: { items: readonly TimelineI
         switch (item.kind) {
           case 'day': return <DayDivider key={item.key} at={item.at} ctx={ctx} />;
           case 'new': return <div key={item.key} className="wmux-bots-new" data-bots-new-divider role="separator"><span>{ctx.t('botsPage.chat.new')}</span></div>;
-          case 'joined': return <JoinedLine key={item.key} row={item.row} t={ctx.t} onOpen={ctx.onOpenBot} />;
           case 'system': return <SystemGroup key={item.key} cards={item.cards} thread={item.thread} ctx={ctx} />;
           case 'message': return <MessageRow key={item.key} item={item} ctx={ctx} group={group} />;
         }
@@ -936,7 +943,7 @@ function SystemLine({ card, t, onThread, now, botNames = [], taskTitle, requestT
   const { title, body } = ownerCardText(card, botNames);
   const foldable = body.length > SYSTEM_FOLD_CHARS || body.includes('\n');
   const word = card.kind === 'refusal' || card.kind === 'budget' ? kindLabel(card.kind, t) : null;
-  const chip = card.threadId !== 'general' && !dmThreadBot(card.threadId) && card.threadId !== hideThread;
+  const chip = !isConversationThread(card.threadId) && card.threadId !== hideThread;
   // One alignment per line: a bare line is centred; one with evidence under
   // it reads left, header and chip with it.
   const align = body ? 'justify-start' : 'justify-center';
@@ -962,28 +969,6 @@ function SystemLine({ card, t, onThread, now, botNames = [], taskTitle, requestT
             )}
             {chip && <ThreadChip threadId={card.threadId} t={t} onPick={onThread} taskTitle={taskTitle} requestTitle={requestTitle} />}
           </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-/** A bot added to the room: one quiet line, with the way to its 1:1 (where
- *  its greeting waits). */
-function JoinedLine({ row, t, onOpen }: { row: FactoryBotRow; t: T; onOpen?: (botId: string) => void }) {
-  return (
-    <div className="wmux-bots-row wmux-bots-row-system" data-bots-joined={row.bot.id}>
-      <div className="wmux-bots-system flex items-baseline justify-center gap-1.5">
-        <span className="min-w-0 break-words text-[var(--text-sub)]">{t('botsPage.joined', { name: row.bot.name })}</span>
-        {onOpen && (
-          <button
-            type="button"
-            data-bots-joined-open={row.bot.id}
-            onClick={() => onOpen(row.bot.id)}
-            className={`shrink-0 text-[11px] text-[var(--text-muted)] underline-offset-2 hover:text-[var(--text-main)] hover:underline ${FOCUS_RING}`}
-          >
-            {t('botsPage.openChat')}
-          </button>
         )}
       </div>
     </div>
@@ -1050,13 +1035,21 @@ function BotsComposer({ conversation, threadId, workspaceId: workspaceOverride, 
   const pendingIds = useMemo(() => (readOnly ? [] : pendingForChip(approvals, cards, scopeBot ? { botId: scopeBot } : { workspaceId })
     .map((r) => r.requestId)), [approvals, cards, readOnly, scopeBot, workspaceId]);
   const picks = useMentionPicks(bots, workspaceId);
-  const roomCandidates = useMemo(() => (conversation.kind === 'room' ? roomBots(bots, workspaceId) : []), [conversation.kind, bots, workspaceId]);
-  // A room message goes to the chips picked and every room bot named by an
+  // A group's bots that can take a message (oldest first).
+  const roomCandidates = useMemo(() => (conversation.kind === 'room' ? conversation.bots.filter((r) => r.bot.enabled) : []), [conversation]);
+  // A group message goes to the bots picked and every group bot named by an
   // `@Name` anywhere in the text (main reads the field, never the text).
   const typed = useMemo(() => textMentions(text, roomCandidates, bots.filter((r) => r.bot.enabled)), [text, roomCandidates, bots]);
+  const picked: string[] = useMemo(
+    () => (conversation.kind === 'bot' ? [conversation.row.bot.id] : [...new Set([...picks.picked, ...typed])].filter((id) => roomCandidates.some((r) => r.bot.id === id))),
+    [conversation, picks.picked, typed, roomCandidates],
+  );
+  // Nobody picked: the group's own thread goes to every bot of it (main's
+  // rule); a thread it started names them all, since main reads a thread
+  // other than the group's as the workspace's.
   const mentions: string[] = useMemo(
-    () => (conversation.kind === 'bot' ? [conversation.row.bot.id] : [...new Set([...picks.picked, ...typed])]),
-    [conversation, picks.picked, typed],
+    () => (conversation.kind === 'room' && picked.length === 0 && threadId !== conversation.threadId ? roomCandidates.map((r) => r.bot.id) : picked),
+    [conversation, picked, threadId, roomCandidates],
   );
   const refusal = readOnly ? t('botsPage.pausedComposer') : conversation.kind === 'bot' ? oneToOneRefusal(conversation.row, t) : null;
 
@@ -1252,6 +1245,9 @@ function BotsComposer({ conversation, threadId, workspaceId: workspaceOverride, 
           ))}
         </Popover>
       )}
+      {conversation.kind === 'room' && !refusal && (
+        <RecipientsControl candidates={roomCandidates} picked={picked} onToggle={picks.toggle} t={t} />
+      )}
     <form
       onSubmit={(e) => void submit(e)}
       data-testid="bots-composer"
@@ -1314,13 +1310,79 @@ function BotsComposer({ conversation, threadId, workspaceId: workspaceOverride, 
           </svg>
         </button>
     </form>
-      {conversation.kind === 'room' && !refusal && (
-        <MentionChips candidates={roomCandidates} bots={bots} picked={mentions} onToggle={picks.toggle} t={t} testId="bots-composer" />
-      )}
       {line && (
         <p role={error ? 'alert' : 'status'} data-testid="bots-composer-status" className={`text-[11px] ${error ? 'text-[var(--accent-red)]' : 'text-[var(--text-muted)]'}`}>
           {line}
         </p>
+      )}
+    </div>
+  );
+}
+
+/** Whom a group message goes to, above the box: "To: everyone ▾", or the
+ *  bots picked; it opens a checkbox per bot of the group. A typed `@Name`
+ *  shows checked too. The picks reset after each send. */
+function RecipientsControl({ candidates, picked, onToggle, t }: {
+  candidates: readonly FactoryBotRow[];
+  picked: readonly string[];
+  onToggle: (botId: string) => void;
+  t: T;
+}) {
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => { if (!wrapRef.current?.contains(e.target as Node)) setOpen(false); };
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, [open]);
+  const names = candidates.filter((r) => picked.includes(r.bot.id)).map((r) => r.bot.name);
+  const label = names.length === 0 ? t('botsPage.group.toEveryone') : t('botsPage.group.toSome', { names: names.join(', ') });
+  return (
+    <div ref={wrapRef} className="relative flex min-w-0 items-center">
+      <button
+        ref={buttonRef}
+        type="button"
+        data-bots-recipients
+        aria-haspopup="true"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+        className={`inline-flex h-[24px] max-w-full items-center gap-1 rounded-[var(--chip-radius)] px-2 text-[12px] ${names.length > 0 ? 'bg-[var(--selection-emphasis)] text-[var(--text-main)]' : 'text-[var(--text-sub)] hover:bg-[var(--hover-fill)]'} ${FOCUS_RING}`}
+      >
+        <span className="min-w-0 truncate">{label}</span>
+        <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><polyline points="2.5,4 5,6.5 7.5,4" /></svg>
+      </button>
+      {open && (
+        <Popover
+          role="group"
+          aria-label={t('botsPage.group.recipients')}
+          data-bots-recipients-list
+          className="wmux-bots-composer-menu"
+          onKeyDown={(e) => {
+            if (e.key !== 'Escape') return;
+            e.preventDefault();
+            e.stopPropagation();
+            setOpen(false);
+            buttonRef.current?.focus();
+          }}
+        >
+          <p className="px-3 pb-1 pt-2 text-[11px] text-[var(--text-muted)]">{t('botsPage.group.recipientsHint')}</p>
+          {candidates.map((r, i) => (
+            <label key={r.bot.id} className="ui-section-row w-full cursor-pointer text-left text-[13px]">
+              <input
+                type="checkbox"
+                data-bots-recipient={r.bot.id}
+                autoFocus={i === 0}
+                checked={picked.includes(r.bot.id)}
+                onChange={() => onToggle(r.bot.id)}
+                className={FOCUS_RING}
+              />
+              <BotAvatar bot={r.bot} size={20} />
+              <span className="min-w-0 truncate">{r.bot.name}</span>
+            </label>
+          ))}
+        </Popover>
       )}
     </div>
   );
@@ -1580,7 +1642,7 @@ export function waitsOnOwner(card: RoomCardData, livePlans: ReadonlySet<string>)
   return card.kind === 'question' || awaitsApproval(card, livePlans);
 }
 
-export function BotsChat({ conversation, roomCards, bots, title, workspaceName, t, onBack, api, now, readOnly = false, stopPort = {}, jobPort, resumePort, onOpenBot }: {
+export function BotsChat({ conversation, roomCards, bots, title, workspaceName, t, onBack, api, now, readOnly = false, stopPort = {}, jobPort, resumePort, onOpenBot, onEditGroup }: {
   conversation: Conversation;
   roomCards: readonly RoomCardData[];
   /** Every bot (names for senders and the addressee check). */
@@ -1600,8 +1662,11 @@ export function BotsChat({ conversation, roomCards, bots, title, workspaceName, 
   jobPort?: Pick<FactoryBotPort, 'update' | 'workerAgents'>;
   /** The bot port's resumeWorker: a done worker's Resume (absent: none). */
   resumePort?: Pick<FactoryBotPort, 'resumeWorker'>;
-  /** Opens a bot's 1:1 (a room's "joined" line; absent: no link). */
+  /** Opens a bot's 1:1 (absent: no link). */
   onOpenBot?: (botId: string) => void;
+  /** A group chat's pill: rename it, change its bots or delete it (absent:
+   *  the pill does nothing). */
+  onEditGroup?: () => void;
 }): React.ReactElement {
   const [profileOpen, setProfileOpen] = useState(false);
   const [sent, setSent] = useState<Record<string, SentTo[] | null>>({});
@@ -1642,18 +1707,10 @@ export function BotsChat({ conversation, roomCards, bots, title, workspaceName, 
   const conversationId = conversation.id;
   const [seenBefore] = useState(() => useStore.getState().botsSeenAt[conversationId] ?? BOTS_SESSION_START);
   const { main, threads, surfaced } = useMemo(() => splitThreads(cards, waits), [cards, waits]);
-  // In a room a bot's greeting is its "joined" line (its 1:1 keeps it).
   const items = useMemo(() => {
-    let entries: RoomEntry[];
-    if (conversation.kind !== 'room') entries = main.map((card) => ({ kind: 'card' as const, card }));
-    else {
-      const greetings = greetingCardIds(roomCards, conversation.bots);
-      const greeted = new Set<string>();
-      for (const c of roomCards) if (greetings.has(c.id) && c.actor.kind === 'bot') greeted.add(c.actor.botId);
-      entries = roomEntries(main.filter((c) => !greetings.has(c.id)), conversation.bots, greeted);
-    }
+    const entries: RoomEntry[] = main.map((card) => ({ kind: 'card' as const, card }));
     return buildTimeline(entries, { waits, threads, surfaced, newAfter: seenBefore });
-  }, [main, threads, surfaced, roomCards, conversation, waits, seenBefore]);
+  }, [main, threads, surfaced, waits, seenBefore]);
   const botNames = useMemo(() => bots.map((b) => b.bot.name), [bots]);
   const taskTitle = useMemo(() => {
     const byId = new Map<string, string>();
@@ -1846,8 +1903,10 @@ export function BotsChat({ conversation, roomCards, bots, title, workspaceName, 
           ref={pillRef}
           data-bots-pill
           aria-expanded={conversation.kind === 'bot' ? profileOpen : undefined}
-          onClick={() => setProfileOpen((v) => !v)}
-          disabled={conversation.kind !== 'bot'}
+          aria-haspopup={conversation.kind === 'room' && onEditGroup ? 'dialog' : undefined}
+          title={conversation.kind === 'room' && onEditGroup ? t('botsPage.group.edit') : undefined}
+          onClick={() => (conversation.kind === 'bot' ? setProfileOpen((v) => !v) : onEditGroup?.())}
+          disabled={conversation.kind !== 'bot' && !onEditGroup}
           className={`wmux-bots-pill ${FOCUS_RING}`}
         >
           {conversation.kind === 'bot' ? <BotAvatar bot={conversation.row.bot} size={20} /> : <RoomAvatar bots={conversation.bots} size={20} layout="row" />}
@@ -1882,7 +1941,7 @@ export function BotsChat({ conversation, roomCards, bots, title, workspaceName, 
               <ChatIntro row={conversation.row} t={t} readOnly={readOnly} onPick={(text) => setPrefill({ text, nonce: Date.now() })} />
             )}
             {empty && conversation.kind === 'room' && (
-              <p data-bots-empty-chat className="py-8 text-center text-[12px] text-[var(--text-muted)]">{t('botsPage.noMessages')}</p>
+              <p data-bots-empty-chat className="py-8 text-center text-[12px] text-[var(--text-muted)]">{t('botsPage.group.empty')}</p>
             )}
             <TimelineView items={items} ctx={ctx} group={group} />
           </div>
@@ -1899,7 +1958,7 @@ export function BotsChat({ conversation, roomCards, bots, title, workspaceName, 
         <div className="wmux-bots-composer">
           <BotsComposer
             conversation={conversation}
-            threadId={conversation.kind === 'bot' ? dmThreadId(conversation.row.bot.id) : 'general'}
+            threadId={conversation.kind === 'bot' ? dmThreadId(conversation.row.bot.id) : conversation.threadId}
             bots={bots}
             placeholder={composerHint(conversation, cards.length, title, t)}
             t={t}

@@ -8,11 +8,13 @@ import type { FactoryBotRow } from './factoryPorts';
 type T = (key: string, vars?: Record<string, string | number>) => string;
 
 /** A thread's reference, short: `owner/repo#12` (github.com dropped), a
- *  task or handoff id, or the localized General (or 1:1). */
+ *  task or handoff id, or the localized General (or 1:1, or group chat). */
 export function threadRef(threadId: ThreadId, t: T): string {
   if (threadId === 'general') return t('room.thread.general');
   // A bot's 1:1 with the owner: never its id.
   if (threadId.startsWith('dm:')) return t('room.thread.dm');
+  // A group chat the owner made: never its id.
+  if (threadId.startsWith('group:')) return t('room.thread.group');
   const numbered = /^(pr|issue):(.+)#(\d+)$/.exec(threadId);
   if (numbered) {
     const repo = numbered[2].replace(/^github\.com\//, '');
@@ -54,8 +56,8 @@ export function requestTitles(cards: readonly RoomCard[]): Map<ThreadId, string>
     // Only main's line for the hop that opened this very thread names it.
     if (!id || out.has(c.threadId) || c.actor.kind !== 'system' || c.threadId !== `handoff:${c.refs?.handoffId}`) continue;
     const request = byId.get(id);
-    // The request was said in General, or in a coordinator's 1:1.
-    const own = request?.kind === 'human' && (request.threadId === 'general' || request.threadId.startsWith('dm:')) && request.workspaceId === c.workspaceId;
+    // The request was said in General, a coordinator's 1:1 or a group chat.
+    const own = request?.kind === 'human' && (request.threadId === 'general' || request.threadId.startsWith('dm:') || request.threadId.startsWith('group:')) && request.workspaceId === c.workspaceId;
     const line = own ? request.title.split('\n')[0].trim() : '';
     if (line) out.set(c.threadId, line);
   }

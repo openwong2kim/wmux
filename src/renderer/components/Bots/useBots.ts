@@ -21,6 +21,8 @@ import { CATCH_UP_MAX_PAGES, catchUpRoomTimeline, loadRoomActors, loadRoomThread
 import type { ThreadId, ThreadSummary } from '../../../shared/room';
 import { getFactoryBotPort, type FactoryBotPort, type FactoryBotRow } from '../Room/factoryPorts';
 import { useFactoryBots } from '../Room/useFactoryBots';
+import { useBotGroups, type BotGroupPort } from '../Room/botGroups';
+import type { BotGroup } from '../../../shared/botGroup';
 import { buildBots, botsRooms, EMPTY_BOTS, latestThreadOf, roomCardsByWorkspace, type BotsModel } from './botsModel';
 import { selectBotTaskOwners } from '../Sidebar/botTasks';
 import { displayWorkspaceName } from '../../utils/fanoutProvenance';
@@ -47,9 +49,11 @@ export interface BotsState {
   /** The bot list has been read at least once (before that, an empty list
    *  does not mean there is no bot). */
   listed: boolean;
+  /** The owner's group chats. */
+  groups: readonly BotGroup[];
 }
 
-export function useBots(port?: FactoryBotPort): BotsState {
+export function useBots(port?: FactoryBotPort, groupPort?: BotGroupPort): BotsState {
   const status = useStore((s) => s.roomStatus);
   const bots = useFactoryBots(null, port);
   // useFactoryBots hands back its initial empty list until the first read
@@ -63,12 +67,14 @@ export function useBots(port?: FactoryBotPort): BotsState {
   const workerClass = useStore(useShallow(selectBotWorkerClasses));
   const names = useStore(useShallow(selectWorkspaceIdName));
   const on = !!status?.enabled;
+  const { groups } = useBotGroups(groupPort);
   const model = useMemo(() => {
     if (!status) return EMPTY_BOTS;
     // A worker's task workspace reads without its `wtask: ` prefix.
     const byId = new Map(names.map((w) => [w.id, displayWorkspaceName(w.name, true)]));
     return buildBots({
       bots,
+      groups,
       cards: roomCardsByWorkspace(timelines),
       threads,
       botTaskOf,
@@ -76,8 +82,8 @@ export function useBots(port?: FactoryBotPort): BotsState {
       workspaceName: (id) => byId.get(id) ?? null,
       readOnly: !on,
     });
-  }, [status, on, bots, timelines, threads, botTaskOf, workerClass, names]);
-  return { status, bots, model, on, listed };
+  }, [status, on, bots, groups, timelines, threads, botTaskOf, workerClass, names]);
+  return { status, bots, model, on, listed, groups };
 }
 
 /** Read one thread from its first card, page by page (CATCH_UP_MAX_PAGES

@@ -2,7 +2,7 @@
 //
 // Messages are bubbles in runs, as the reference messenger draws them: the
 // history becomes a list of items — a date and time separator, the
-// session's "New" divider, a bot's "joined" line, a system line
+// session's "New" divider, a system line
 // (consecutive system cards of one thread merged into one), and messages. A
 // message continues the run above it when the same author wrote it less
 // than ten minutes after the previous one with nothing between them; a run
@@ -20,8 +20,7 @@
 // owner reads a finished task's answer without opening the thread.
 //
 // Pure; times are local.
-import { dmThreadBot, type RoomCard, type ThreadId } from '../../../shared/room';
-import type { FactoryBotRow } from '../Room/factoryPorts';
+import { dmThreadBot, groupThreadGroup, type RoomCard, type ThreadId } from '../../../shared/room';
 import type { RoomEntry } from './botsModel';
 
 type T = (key: string, vars?: Record<string, string | number>) => string;
@@ -48,7 +47,6 @@ export interface ThreadView {
 export type TimelineItem =
   | { kind: 'day'; key: string; at: number }
   | { kind: 'new'; key: string }
-  | { kind: 'joined'; key: string; row: FactoryBotRow }
   | { kind: 'system'; key: string; cards: RoomCard[]; thread?: ThreadView }
   | { kind: 'message'; key: string; card: RoomCard; continuation: boolean; runEnd: boolean; waiting: boolean; thread?: ThreadView; inThread?: boolean };
 
@@ -59,7 +57,8 @@ export function threadKey(workspaceId: string, threadId: ThreadId): string {
 }
 
 /** The main timeline's cards and the threads behind them: General cards
- *  (and a 1:1 thread's: the conversation itself), each thread's root (first
+ *  (and a 1:1's or a group chat's thread: the conversation itself), each
+ *  thread's root (first
  *  card) with its summary, any thread card that waits on the owner, and
  *  each thread's newest bot reply (`surfaced`). */
 export function splitThreads(cards: readonly RoomCard[], waits: (card: RoomCard) => boolean): { main: RoomCard[]; threads: Map<string, ThreadView>; surfaced: Set<string> } {
@@ -67,7 +66,7 @@ export function splitThreads(cards: readonly RoomCard[], waits: (card: RoomCard)
   const byKey = new Map<string, ThreadView>();
   const rootOf = new Map<string, string>();
   const lastBotReply = new Map<string, string>();
-  const inMain = (card: RoomCard) => card.threadId === 'general' || dmThreadBot(card.threadId) !== null;
+  const inMain = (card: RoomCard) => card.threadId === 'general' || dmThreadBot(card.threadId) !== null || groupThreadGroup(card.threadId) !== null;
   for (const card of cards) {
     if (inMain(card)) continue;
     const key = threadKey(card.workspaceId, card.threadId);
@@ -114,7 +113,7 @@ export function dayKey(at: number): string {
 }
 
 function entryAt(entry: RoomEntry): number {
-  return entry.kind === 'card' ? entry.card.at : entry.row.bot.createdAt;
+  return entry.card.at;
 }
 
 /**
@@ -145,10 +144,6 @@ export function buildTimeline(entries: readonly RoomEntry[], opts: {
     if (!newPlaced && entry.kind === 'card' && entry.card.actor.kind !== 'human' && at > (opts.newAfter as number)) {
       newPlaced = true;
       out.push({ kind: 'new', key: 'new' });
-    }
-    if (entry.kind === 'joined') {
-      out.push({ kind: 'joined', key: `joined:${entry.row.bot.id}`, row: entry.row });
-      continue;
     }
     const card = entry.card;
     const prev = out[out.length - 1];

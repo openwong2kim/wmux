@@ -1,10 +1,11 @@
 // ─── The Bots page's conversations (pure) ────────────────────────────────
 //
 // The page reads like a messenger: one conversation per bot (1:1) and one per
-// workspace room (a group). Nothing here is a second source of truth: every
+// group chat the owner made. Nothing here is a second source of truth: every
 // conversation is derived from what the stores already hold —
 //
 //   bots      the factory bot port's list (profile + runtime status)
+//   groups    the owner's group chats (Room/botGroups.ts)
 //   cards     the room timelines already read (room slice), per workspace
 //   workers   the bot's tasks whose worker is still at work or waits on
 //             input (`row.tasks`, main's ledger stage) while the worker's
@@ -23,24 +24,32 @@
 // the first card of any 1:1 thread (read, or its summary's `firstAt`; none
 // yet: all of them) that are the bot's own, the owner's messages
 // addressed to it (`refs.botId`) or the system cards about its work (naming
-// the bot, or in a thread other than General it wrote in). A bot alone in its
-// workspace has no room row, so its 1:1 keeps that filter over every card
-// outside the 1:1 threads, whatever its age: nothing it says is out of view.
+// the bot, or in a thread other than General it wrote in). A workspace whose
+// General is no group chat's (no workspace room is listed by itself, owner
+// decision 2026-10-15) shows its bots' General in their 1:1s: such a bot's
+// 1:1 keeps that filter over every card outside the 1:1 and group threads,
+// whatever its age: nothing it says is out of view.
 //
-// A group is its workspace's room without the 1:1 threads and the threads
-// they started, listed once the workspace has two or more bots (a team).
-// Every conversation is ordered by latest activity; no room is special
+// A group chat is the owner's (shared/botGroup.ts): its own thread,
+// `group:<id>`, and the threads it started (a coordinator's request thread,
+// linked as a 1:1's is; main's summaries say `groupId`). A group made from a
+// workspace's room lives on in General: the room without the 1:1 and group
+// threads and the threads they started. A bot's greeting is said in its 1:1,
+// so a group view leaves an old greeting out and adds no "joined" line.
+// Every conversation is ordered by latest activity; nothing is pinned
 // (2026-10-14: the HQ is a workspace like any other).
 //
 // Needs you lives on the 1:1 rows only — a bot's open questions, its open
 // plan (the newest one; an older plan left open is superseded) and open
-// proposals, plus its workers waiting on the owner (a worker its bot's open
+// proposals, in its 1:1 or a group chat, plus its workers waiting on the
+// owner (a worker its bot's open
 // question already asks about, by task, is that question) — so each waiting
 // thing is counted once, and the rail badge is the sum of those rows
 // (botsNeedsYou). While the bots are paused the page is read-only and
 // nothing on it is counted.
 
-import { dmThreadBot, type RoomCard, type ThreadSummary } from '../../../shared/room';
+import { dmThreadBot, groupThreadGroup, groupThreadId, type RoomCard, type ThreadId, type ThreadSummary } from '../../../shared/room';
+import type { BotGroup } from '../../../shared/botGroup';
 import type { FleetAttentionClass } from '../../stores/selectors/fleet';
 import type { RoomTimeline } from '../../stores/slices/roomSlice';
 import type { FactoryBotRow } from '../Room/factoryPorts';
@@ -68,7 +77,7 @@ export interface BotWorker {
 }
 
 interface ConversationBase {
-  /** `bot:<botId>` or `room:<workspaceId>`. */
+  /** `bot:<botId>` or `group:<groupId>`. */
   id: string;
   workspaceId: string;
   /** The newest card's time, wmux's own lines too (a bot without any: its
@@ -88,8 +97,8 @@ export interface BotConversation extends ConversationBase {
   workers: BotWorker[];
   /** The rows nested under the bot in the list (botWorkerTree). */
   tree: BotTreeRow[];
-  /** The bot is its workspace's only one: no room row, so its 1:1 shows
-   *  everything it says (see the header). */
+  /** No group chat lives in its workspace's General (a bot alone there
+   *  never has one): its 1:1 shows everything it says (see the header). */
   lone: boolean;
 }
 
@@ -108,11 +117,15 @@ export interface BotTreeRow {
   summary?: string;
 }
 
+/** A group chat the owner made (shared/botGroup.ts). */
 export interface RoomConversation extends ConversationBase {
   kind: 'room';
-  /** The room's bots, oldest first. */
+  group: BotGroup;
+  /** The thread the group lives in: its own, or General (made from the room). */
+  threadId: ThreadId;
+  /** The group's bots, oldest first. */
   bots: FactoryBotRow[];
-  /** The room's bots' live workers. */
+  /** The group's bots' live workers. */
   workers: BotWorker[];
 }
 
@@ -120,6 +133,8 @@ export type Conversation = BotConversation | RoomConversation;
 
 export interface BotsInput {
   bots: readonly FactoryBotRow[];
+  /** The owner's live group chats. */
+  groups?: readonly BotGroup[];
   /** Every card read for a workspace's room, in seq order (roomCardsByWorkspace). */
   cards: ReadonlyMap<string, readonly RoomCard[]>;
   threads: Readonly<Record<string, readonly ThreadSummary[] | undefined>>;
@@ -144,8 +159,8 @@ export function botConversationId(botId: string): string {
   return `bot:${botId}`;
 }
 
-export function roomConversationId(workspaceId: string): string {
-  return `room:${workspaceId}`;
+export function groupConversationId(groupId: string): string {
+  return `group:${groupId}`;
 }
 
 /** Every card read for each room — the whole-room timeline and any thread
@@ -248,11 +263,58 @@ function dmOwnerOf(card: RoomCard, started: ReadonlyMap<string, string>): string
   return dmThreadBot(card.threadId) ?? started.get(threadKeyOf(card)) ?? null;
 }
 
-/** A room's own cards: every card but the 1:1 threads and the threads they
- *  started. Pure. */
+/** The threads a group chat started (a coordinator's request thread opened
+ *  there), by thread key, to the group's own thread — known as a 1:1's are
+ *  (dmStartedThreads): the summary's `groupId`, main's opening hop linking
+ *  the group or naming the owner's request in it, or main's pointer card in
+ *  the group. Pure. */
+export function groupStartedThreads(cards: readonly RoomCard[], threads: ThreadsByWorkspace = {}): Map<string, ThreadId> {
+  const byId = new Map(cards.map((c) => [c.id, c]));
+  const out = new Map<string, ThreadId>();
+  for (const [workspaceId, list] of Object.entries(threads)) {
+    for (const th of list ?? []) {
+      if (th.groupId && !groupThreadGroup(th.threadId)) out.set(threadKeyOf({ workspaceId, threadId: th.threadId }), groupThreadId(th.groupId));
+    }
+  }
+  for (const c of cards) {
+    if (c.actor.kind !== 'system') continue;
+    const inGroup = groupThreadGroup(c.threadId) ? c.threadId : null;
+    const linked = c.refs?.threadId;
+    if (inGroup && linked?.startsWith('handoff:')) {
+      out.set(threadKeyOf({ workspaceId: c.workspaceId, threadId: linked }), inGroup);
+      continue;
+    }
+    if (!c.threadId.startsWith('handoff:')) continue;
+    const request = c.refs?.requestCardId ? byId.get(c.refs.requestCardId) : undefined;
+    const owner = groupThreadGroup(linked) ? linked as ThreadId
+      : request && request.workspaceId === c.workspaceId && groupThreadGroup(request.threadId) ? request.threadId : null;
+    if (owner) out.set(threadKeyOf(c), owner);
+  }
+  return out;
+}
+
+/** The group chat thread a card belongs to — its own or one it started —
+ *  or null. */
+function groupOwnerOf(card: RoomCard, started: ReadonlyMap<string, ThreadId>): ThreadId | null {
+  return (groupThreadGroup(card.threadId) ? card.threadId : null) ?? started.get(threadKeyOf(card)) ?? null;
+}
+
+/** A room's own cards: every card but the 1:1 and group threads and the
+ *  threads they started. Pure. */
 export function roomViewCards(cards: readonly RoomCard[], threads: ThreadsByWorkspace = {}): RoomCard[] {
   const started = dmStartedThreads(cards, threads);
-  return cards.filter((c) => dmOwnerOf(c, started) === null);
+  const groups = groupStartedThreads(cards, threads);
+  return cards.filter((c) => dmOwnerOf(c, started) === null && groupOwnerOf(c, groups) === null);
+}
+
+/** A group chat's cards (see the header): its thread and the threads it
+ *  started, or — made from its workspace's room — the room's own cards; a
+ *  bot's greeting is its 1:1's. Pure. */
+export function groupViewCards(cards: readonly RoomCard[], group: Pick<BotGroup, 'workspaceId' | 'threadId'>, threads: ThreadsByWorkspace = {}): RoomCard[] {
+  const here = cards.filter((c) => c.workspaceId === group.workspaceId && !(c.greeting === true && c.kind === 'question'));
+  if (!groupThreadGroup(group.threadId)) return roomViewCards(here, threads);
+  const started = groupStartedThreads(here, threads);
+  return here.filter((c) => groupOwnerOf(c, started) === group.threadId);
 }
 
 /** A bot's 1:1 conversation (see the header): its 1:1 thread and the
@@ -263,6 +325,7 @@ export function roomViewCards(cards: readonly RoomCard[], threads: ThreadsByWork
 export function conversationCards(cards: readonly RoomCard[], botId: string, opts: { lone?: boolean; threads?: ThreadsByWorkspace } = {}): RoomCard[] {
   const threads = opts.threads ?? {};
   const started = dmStartedThreads(cards, threads);
+  const groups = groupStartedThreads(cards, threads);
   const mine = new Set<RoomCard>();
   const rest: RoomCard[] = [];
   let firstDm = Infinity;
@@ -271,8 +334,9 @@ export function conversationCards(cards: readonly RoomCard[], botId: string, opt
   }
   for (const c of cards) {
     const owner = dmOwnerOf(c, started);
-    if (owner === null) rest.push(c);
-    else if (owner === botId) mine.add(c);
+    if (owner === null) {
+      if (groupOwnerOf(c, groups) === null) rest.push(c);
+    } else if (owner === botId) mine.add(c);
     if (dmThreadBot(c.threadId)) firstDm = Math.min(firstDm, c.at);
   }
   const earlier = opts.lone ? rest : rest.filter((c) => c.at < firstDm);
@@ -284,28 +348,41 @@ export function conversationCards(cards: readonly RoomCard[], botId: string, opt
 /** The bots whose running turn shows in this conversation (its busy lines):
  *  a turn answers in the conversation its thread belongs to. A 1:1 thread,
  *  or a thread a 1:1 started (a dispatch sent from it: another bot may run
- *  that turn), belongs to that bot's 1:1; any other thread to the room. A
- *  turn whose thread is not known shows wherever its bot does, and a lone
- *  bot's 1:1 (its whole room) shows every turn of its own. Pure. */
+ *  that turn), belongs to that bot's 1:1; a group chat's thread, or one it
+ *  started, to that group; any other thread to the room's General (a group
+ *  living there). A turn whose thread is not known shows in its bot's 1:1,
+ *  and a bot whose General is no group's shows its General turns there too.
+ *  Pure. */
 export function conversationTurns(conversation: Conversation, bots: readonly FactoryBotRow[], cards: readonly RoomCard[], threads: ThreadsByWorkspace = {}): FactoryBotRow[] {
   const started = dmStartedThreads(cards, threads);
+  const fromGroups = groupStartedThreads(cards, threads);
   const running = (r: FactoryBotRow): boolean => r.status?.presence === 'running';
-  /** The bot whose 1:1 the turn's thread belongs to, null for the room,
-   *  undefined when the turn names no thread. */
+  /** The conversation thread the turn's thread belongs to (`dm:<bot>` or
+   *  `group:<id>`), null for General, undefined when the turn names none. */
   const owner = (r: FactoryBotRow): string | null | undefined => {
-    const threadId = r.status?.currentTurn?.threadId;
+    const threadId = r.status?.currentTurn?.threadId as ThreadId | undefined;
     if (!threadId) return undefined;
-    return dmThreadBot(threadId) ?? started.get(threadKeyOf({ workspaceId: r.bot.workspaceId, threadId: threadId as RoomCard['threadId'] })) ?? null;
+    if (groupThreadGroup(threadId)) return threadId;
+    const key = threadKeyOf({ workspaceId: r.bot.workspaceId, threadId });
+    const dm = dmThreadBot(threadId) ?? started.get(key);
+    if (dm) return `dm:${dm}`;
+    return fromGroups.get(key) ?? null;
   };
-  if (conversation.kind === 'room') return conversation.bots.filter((r) => running(r) && !owner(r));
+  if (conversation.kind === 'room') {
+    const general = !groupThreadGroup(conversation.threadId);
+    return conversation.bots.filter((r) => running(r) && (general ? !owner(r) : owner(r) === conversation.threadId));
+  }
   const me = conversation.row;
-  const mine = running(me) && (conversation.lone || owner(me) === undefined || owner(me) === me.bot.id) ? [me] : [];
-  return [...mine, ...bots.filter((r) => r.bot.id !== me.bot.id && running(r) && owner(r) === me.bot.id)];
+  const dm = `dm:${me.bot.id}`;
+  const own = owner(me);
+  const mine = running(me) && (own === undefined || own === dm || (conversation.lone && own === null)) ? [me] : [];
+  return [...mine, ...bots.filter((r) => r.bot.id !== me.bot.id && running(r) && owner(r) === dm)];
 }
 
-/** Whether a bot is its workspace's only one (no room row). Pure. */
-export function isLoneBot(bots: readonly FactoryBotRow[], workspaceId: string): boolean {
-  return bots.filter((r) => r.bot.workspaceId === workspaceId).length < 2;
+/** Whether no group chat lives in a workspace's General: its bots' 1:1s
+ *  show what they say there (see the header). Pure. */
+export function isRoomless(groups: readonly Pick<BotGroup, 'workspaceId' | 'threadId'>[], workspaceId: string): boolean {
+  return !groups.some((g) => g.workspaceId === workspaceId && g.threadId === 'general');
 }
 
 /** Every card read, across rooms, oldest first (rooms number their cards
@@ -504,34 +581,51 @@ function lastOf(cards: readonly RoomCard[]): RoomCard | null {
 /** The conversations, newest first. */
 export function buildBots(input: BotsInput): BotsModel {
   const bots = [...input.bots].sort((a, b) => a.bot.createdAt - b.bot.createdAt || a.bot.id.localeCompare(b.bot.id));
-  // A room is listed once its workspace has a team (two or more bots).
-  const rooms: RoomConversation[] = botsRooms(bots).filter((ws) => !isLoneBot(bots, ws)).map((workspaceId) => {
+  const groups = input.groups ?? [];
+  // One row per group chat the owner made; no workspace has one by itself.
+  const rooms: RoomConversation[] = groups.map((group) => {
+    const workspaceId = group.workspaceId;
     const all = input.cards.get(workspaceId) ?? [];
-    const started = dmStartedThreads(all, input.threads);
-    const cards = all.filter((c) => dmOwnerOf(c, started) === null);
+    const cards = groupViewCards(all, group, input.threads);
     const last = lastOf(cards);
+    const general = !groupThreadGroup(group.threadId);
+    const started = general ? dmStartedThreads(all, input.threads) : null;
+    const fromGroups = general ? groupStartedThreads(all, input.threads) : null;
     const threadLast = (input.threads[workspaceId] ?? [])
-      .filter((th) => !dmThreadBot(th.threadId) && !started.has(threadKeyOf({ workspaceId, threadId: th.threadId })))
+      .filter((th) => (general
+        ? !dmThreadBot(th.threadId) && !groupThreadGroup(th.threadId) && !started!.has(threadKeyOf({ workspaceId, threadId: th.threadId }))
+          && !fromGroups!.has(threadKeyOf({ workspaceId, threadId: th.threadId }))
+        : th.threadId === group.threadId || th.groupId === group.id))
       .reduce((m, th) => Math.max(m, th.lastAt), 0);
     return {
       kind: 'room',
-      id: roomConversationId(workspaceId),
+      id: groupConversationId(group.id),
       workspaceId,
-      bots: bots.filter((r) => r.bot.workspaceId === workspaceId),
+      group,
+      threadId: group.threadId,
+      bots: bots.filter((r) => r.bot.workspaceId === workspaceId && group.memberIds.includes(r.bot.id)),
       workers: [],
       last,
-      lastAt: Math.max(cards.at(-1)?.at ?? 0, threadLast),
+      // A group with nothing said yet sorts by when it was made.
+      lastAt: Math.max(cards.at(-1)?.at ?? group.createdAt, threadLast),
       needsYou: 0,
     };
   });
 
   const every = allRoomCards(input.cards);
   const oneToOne: BotConversation[] = bots.map((row) => {
-    const lone = isLoneBot(bots, row.bot.workspaceId);
+    const lone = isRoomless(groups, row.bot.workspaceId);
     const own = conversationCards(every, row.bot.id, { lone, threads: input.threads });
     const last = lastOf(own);
-    const openQuestions = openQuestionsBy(own, row.bot.id, input.threads);
-    const openApprovals = openApprovalsBy(own, row.bot.id);
+    // What it asks the owner in a group chat waits on its row too (a group
+    // row counts nothing: every question has a bot that asked it).
+    const ownIds = new Set(own.map((c) => c.id));
+    const asked = [...own, ...rooms
+      .filter((r) => r.workspaceId === row.bot.workspaceId)
+      .flatMap((r) => groupViewCards(input.cards.get(r.workspaceId) ?? [], r.group, input.threads))
+      .filter((c) => c.actor.kind === 'bot' && c.actor.botId === row.bot.id && !ownIds.has(c.id))];
+    const openQuestions = openQuestionsBy(asked, row.bot.id, input.threads);
+    const openApprovals = openApprovalsBy(asked, row.bot.id);
     const workers = botWorkers(row.bot.id, input.botTaskOf, input.workerClass, input.workspaceName, row.tasks);
     return {
       kind: 'bot',
@@ -546,7 +640,7 @@ export function buildBots(input: BotsInput): BotsModel {
       tree: botWorkerTree(row.bot.id, workers, row.tasks, input.workspaceName, input.botTaskOf, input.workerClass),
       lone,
       // A waiting worker whose question the bot already asked counts once.
-      needsYou: input.readOnly ? 0 : openQuestions + openApprovals + waitingWorkers(workers, openQuestionTasks(own, row.bot.id, input.threads)),
+      needsYou: input.readOnly ? 0 : openQuestions + openApprovals + waitingWorkers(workers, openQuestionTasks(asked, row.bot.id, input.threads)),
     };
   });
 
@@ -580,8 +674,8 @@ export function latestThreadOf(threads: readonly ThreadSummary[], prefix: 'plan:
   return best;
 }
 
-/** The rooms the page reads: every bot's workspace (its 1:1 is a thread of
- *  that room; the room is listed only for a team, buildBots). */
+/** The rooms the page reads: every bot's workspace (its 1:1 and its group
+ *  chats are threads of that room). */
 export function botsRooms(bots: readonly FactoryBotRow[]): string[] {
   const out: string[] = [];
   for (const row of bots) if (!out.includes(row.bot.workspaceId)) out.push(row.bot.workspaceId);
@@ -606,35 +700,5 @@ export function taskBubbles(tasks: readonly BotTaskView[] | undefined, now: numb
   return [...waiting, ...resumable];
 }
 
-/** The greeting each of these bots posted when it was added: the question
- *  card main marks `greeting` (asked in the bot's intro wake). A room shows
- *  a one-line "joined" notice instead; the bot's 1:1 keeps the greeting.
- *  Card ids. Pure. */
-export function greetingCardIds(cards: readonly RoomCard[], bots: readonly FactoryBotRow[]): Set<string> {
-  const ids = new Set(bots.map((r) => r.bot.id));
-  const out = new Set<string>();
-  for (const c of cards) {
-    if (c.greeting === true && c.kind === 'question' && c.actor.kind === 'bot' && ids.has(c.actor.botId)) out.add(c.id);
-  }
-  return out;
-}
-
-export type RoomEntry = { kind: 'card'; card: RoomCard } | { kind: 'joined'; row: FactoryBotRow };
-
-/** A room's timeline with each of its bots' "joined" notices placed at the
- *  time the bot was added: a bot whose greeting was read (`greeted`, the
- *  notice stands in for it), or one added after the oldest card shown. A bot
- *  added before the page's oldest card with no greeting read gets none — its
- *  place is not on the page. Pure. */
-export function roomEntries(cards: readonly RoomCard[], bots: readonly FactoryBotRow[], greeted: ReadonlySet<string> = new Set()): RoomEntry[] {
-  const oldest = cards.length > 0 ? cards[0].at : -Infinity;
-  const joined = bots.filter((r) => greeted.has(r.bot.id) || r.bot.createdAt >= oldest).sort((a, b) => a.bot.createdAt - b.bot.createdAt);
-  const out: RoomEntry[] = [];
-  let j = 0;
-  for (const card of cards) {
-    while (j < joined.length && joined[j].bot.createdAt <= card.at) out.push({ kind: 'joined', row: joined[j++] });
-    out.push({ kind: 'card', card });
-  }
-  while (j < joined.length) out.push({ kind: 'joined', row: joined[j++] });
-  return out;
-}
+/** One entry of a conversation's timeline. */
+export type RoomEntry = { kind: 'card'; card: RoomCard };

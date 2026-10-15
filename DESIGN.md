@@ -320,20 +320,24 @@ status bar badges, `fleet_triage` or the phone's sidebar.
   ~860px window) it is one column: the list first; choosing a conversation opens the chat over
   it, with a round back button left of the name pill.
 - **List:** the 16px title with Search, `⋯` (the page menu: Stop all
-  bots, when main offers it) and `+` (Add bot: the Settings add form in a
-  dialog; the bot it adds is selected) as 28px icon buttons, in every state
+  bots, when main offers it) and `+` (a menu: Add bot — the Settings add
+  form in a dialog; the bot it adds is selected — and New group chat) as
+  28px icon buttons, in every state
   of the page; Search opens a filter field under the header (Escape closes
   and clears it). One row per conversation (8px 10px padding, inset 8px): a 32px avatar, the 13px/500 name
   with the newest message's time, and one 12px muted preview line (the
-  owner's own as "You: …", a room's prefixed with who spoke). Every bot is
-  a 1:1, and a workspace with two or more bots (a team) has its room as a
-  group conversation; a lone bot has only its 1:1. The two are separate
-  conversations, never mirrors (owner decision 2026-10-15): a 1:1 is its own
-  thread of the bot's room — what the owner and the bot say there, and the
-  work it starts there — and the room never shows it; what a bot posts in
-  the room (a team greeting) stays in the room. Rooms and
-  bots follow by latest activity; nothing is pinned (the workspace an
-  earlier version made the HQ is a room like any other). The selected row is the `--selection` pill
+  owner's own as "You: …", a group's prefixed with who spoke). Every bot is
+  a 1:1, and the rest are the **group chats the owner made** (owner
+  decision 2026-10-15, the reference messenger's model): no workspace has a
+  room by itself, however many bots it has, and no bot ever makes one. A
+  1:1 and a group are separate conversations, never mirrors: a 1:1 is its
+  own thread of the bot's room — what the owner and the bot say there, and
+  the work it starts there — and a group is its own thread too
+  (`group:<id>`) with the work started from it; neither shows the other. A
+  workspace whose General is no group's shows what its bots say there in
+  their 1:1s. Groups and bots follow by latest activity; nothing is pinned
+  (the workspace an earlier version made the HQ is a workspace like any
+  other). The selected row is the `--selection` pill
   (10px radius), hover `--hover-fill`. A row with unread bot messages
   (this session) carries a neutral count — a 16px `--selection-emphasis`
   pill — and its preview in `--text-sub`; when the row needs the owner the
@@ -356,8 +360,24 @@ status bar badges, `fleet_triage` or the phone's sidebar.
   worker shown there reads in the title weight beside its state mark — no
   second fill. The panel never opens by itself — a new row with its running
   dot is the signal. A worker row carries one dot, its state mark: the git
-  line shows the diff counts, not its clean dot. A room row lists none
+  line shows the diff counts, not its clean dot. A group row lists none
   (each worker sits under its bot once).
+- **Group chats (owner decision 2026-10-15):** the owner makes them — `+` ›
+  New group chat opens a dialog: the workspace (those with bots), a name
+  and a checkbox per bot of that workspace, with one muted line saying a
+  group's bots are that workspace's only (they share its repository and
+  room); a workspace with fewer than two bots says so and Create stays off,
+  as it does with no name or fewer than two bots ticked. The group made
+  opens. A group's name pill opens the same dialog to rename it, change its
+  bots, or Delete group (asked in place: its messages stay saved, the row
+  goes). A group with nothing said yet reads "Write the first message:
+  every bot here answers and introduces itself." Nobody greets first in a
+  group and no "joined" line is drawn: each bot the owner's first message
+  reaches introduces itself in its answer (its wake asks it to; no canned
+  card), and a bot's greeting stays in its 1:1. A room the owner had
+  written in before group chats became a group named after its workspace,
+  with that workspace's bots, reading on in General; a room the owner never
+  wrote in is just no longer listed.
 - **Avatars (owner decision 2026-10-14, replaces the initials tiles):** a
   bot's avatar is the picture the owner set for it, else the bot's own
   mark: its **identity colour** and one of four shapes (circle, rounded
@@ -369,19 +389,21 @@ status bar badges, `fleet_triage` or the phone's sidebar.
   eyes and a smile in `--bg-base`) — the shared `BotAvatar`, the same mark
   everywhere. A room stacks two of its
   bots' avatars and "+N" for the rest (the chat's centred pill shows up to
-  three overlapping in a row). A bot's presence dot (the room's presence
+  three overlapping in a row) — a group chat's, its bots'. A bot's presence dot (the room's presence
   grammar; not reported is a hollow ring) sits on its avatar's corner.
 - **Needs you:** the one coloured mark is the attention badge on a bot's
   row: its open questions, its open plan (its newest; an older plan left
   open is superseded) and open proposals, plus its workers waiting on the
   owner — a waiting worker its bot's open question already asks about (the
-  question's task) counts once. Rooms carry none (every question has a bot that asked it), and the
+  question's task) counts once. What a bot asks in a group counts on that
+  bot's row too. Group rows carry none (every question has a bot that asked it), and the
   rail badge is the sum of the bot rows — one count, read from one model.
   While the bots are paused nothing on the page can be answered, so
   nothing is counted (rows and rail alike).
-- **Chat:** a centred name pill (avatar, name, presence; a room's bot
+- **Chat:** a centred name pill (avatar, name, presence; a group's bot
   count) in the chat's 44px header row, the messages under it with no rule
-  between. The pill opens
+  between. A group's pill opens its settings (Group chats, above); a bot's
+  pill opens
   the bot's profile (template, job — the owner's words, with Edit —
   workspace, repository, what its workers run on — a native Select:
   Default (the presets' engine) or an installed engine that has a worker
@@ -518,24 +540,27 @@ status bar badges, `fleet_triage` or the phone's sidebar.
   chip style) that fill the composer (they never send by themselves).
 - **Composer:** one rounded pill at the foot (22px radius, a `--line`
   hairline, `--line-strong` while focused): "+" on the left — a menu of
-  first messages to put in the box and, in a room, the bots to address —
+  first messages to put in the box and, in a group, the bots to address —
   the text ("Message <name>"; "Reply in thread" in a thread), and the
   round primary send on the right. No microphone. A 1:1
-  message is addressed to that bot alone. A room's message goes to every bot
-  of the room (they may answer each other) — or, in a room with a
-  coordinator, to the coordinator alone, which hands the work on — unless
-  bots are picked: a row of `@name` chips under the box (the room's bots,
-  26px, the selection fills; pressed = `--selection-emphasis`), with a muted
-  "To everyone here" ("To <lead>" in a room with a coordinator) while none
-  is picked; an `@` and a room bot's name anywhere in the message addresses
-  that bot too (its chip shows pressed), and an `@` naming no bot of the
-  room is plain text (owner decision 2026-10-15). Typing `@` and the start
-  of a name lists the room's bots that match in a popover over the box
+  message is addressed to that bot alone. A group's message goes to every
+  bot of the group (they may answer each other; a coordinator is a bot like
+  any other, its job saying it leads — owner decision 2026-10-15) unless
+  bots are picked: the **recipients control** right above the pill, a 24px
+  chip "To: everyone ▾" ("받는 봇: 모두 ▾"; "To: <names>" in the
+  `--selection-emphasis` fill once some are picked) that opens a checkbox
+  per bot of the group (the "+" menu's popover place) with one muted line:
+  none ticked goes to everyone, and the picks reset after each send. An `@`
+  and a group bot's name anywhere in the message ticks that bot too, and an
+  `@` naming no bot of the group is plain text (owner decision
+  2026-10-15). A reply in a thread the group started goes to the picked
+  bots or the whole group. Typing `@` and the start
+  of a name lists the group's bots that match in a popover over the box
   (the "+" menu's place and rows, the caret staying in the box): the
   arrows move, Enter, Tab or a click puts `@Name ` in, Escape closes. A bot that
   is off says so under the box and sends nothing. While a bot's approval
-  request waits and its card is in the conversation — a room's whole view,
-  or the asking bot's 1:1 — an "Approve N pending" chip sits above the box,
+  request waits and its card is in the conversation — a group's view, or
+  the asking bot's 1:1 — an "Approve N pending" chip sits above the box,
   whatever thread the card is in.
 - **Bots off (owner decision 2026-10-15):** the page and its rail item
   exist only while the bots are on. They are turned on in Settings › Bots
@@ -562,16 +587,20 @@ status bar badges, `fleet_triage` or the phone's sidebar.
   disabled Add says why in one muted line (no name, an invalid name, no
   workspace). After Add the new bot's chat opens at once with "Starting
   <name>…" until its greeting arrives. The new bot greets the owner and asks
-  what to do, with choices, in its 1:1; its room shows, at the time it was
-  added, one centred muted line, "<name> joined", with Open chat (to that
-  1:1), instead of the greeting (the question main marks as the bot's
-  greeting). A bot's `job_changed` card carries
+  what to do, with choices, in its 1:1 (the question main marks as the
+  bot's greeting); no group shows it, and no group draws a "joined" line.
+  A bot's `job_changed` card carries
   Undo (secondary). **Add team** (a ghost button beside Cancel, while the
   chosen workspace has no coordinator) adds five bots at once to that
   workspace and repository — the lead (a coordinator) first, then research,
   developer, issues and reviewer, named in the owner's language — with no
-  name field needed; only the lead greets, and its chat opens. Its tooltip
-  names the five and says the owner talks to the lead.
+  name field needed; only the lead greets, in its 1:1, and its chat opens.
+  Its tooltip names the five and says the owner talks to the lead. Add
+  team makes the bots only, never a group (owner decision 2026-10-15):
+  then one row under the list header, on the `--selection-subtle` fill,
+  says the team was added and offers **Make a group chat with this team**
+  ("이 팀으로 그룹 채팅 만들기", secondary; × dismisses it), which opens New
+  group chat filled in — the workspace's name and the five ticked.
 - **First run (owner decision 2026-10-14):** with no bot yet the page is
   one centred panel: "Name your first bot", one muted line (it works in
   <the current workspace>, greets you and asks what to do), a name field
@@ -581,7 +610,8 @@ status bar badges, `fleet_triage` or the phone's sidebar.
   one line and offers Log in to Claude (and Check again); Start waits until
   it can. A build that cannot tell never blocks Start. Beside Start, a
   secondary **Add a team (lead + 4 roles)** does the same for the five-bot
-  team (no name to type) and opens the lead's chat.
+  team (no name to type), opens the lead's chat and offers the group chat
+  row (Add bot, above).
 
 ### Fleet
 
@@ -1423,6 +1453,7 @@ primitives plus `Settings/SettingsLayout.tsx` (`SettingsSection`,
 | 2026-10-15 | Owner decision (bot connections): MCP servers for bots' workers live in one library, Settings › Bots › Connections (one row each: name, purpose, who gets it, Key missing in the needs-you text, on/off, Edit, Remove asked in place), scoped to every bot by default or to the bots picked; a bot's profile lists the ones that apply to it with a per-bot off switch for every-bot ones. Amends the profile's item list only | Grok-Bot-style connectors without a per-bot settings page: defined once, the owner sees every connection in one place, and a bot's profile answers what its workers can reach |
 | 2026-10-15 | Owner decision (dogfood of 4.5.0): in a room, an `@Name` of one of its bots anywhere in the message addresses that bot (with any chips picked), and typing `@` suggests the room's bots. Amends the Composer's "an `@name` inside a sentence is plain text" | The owner typed `@대장` in the workspace room and the message did not reach that bot: a mention that works only at the very start of the message reads as broken |
 | 2026-10-15 | Owner decision (dogfood of 4.5.0, recommended option): a bot's 1:1 and its workspace room are separate conversations. The 1:1 is its own thread of the room (`dm:<botId>`): the owner's messages there, the bot's answers, its greeting and the work it starts there (a coordinator's request thread); the room never shows them, and a bot's room posts never show in its 1:1. The room is listed once the workspace has two or more bots; a lone bot has only its 1:1, which also keeps what it says in the room. Cards from before 1:1 threads keep the old 1:1 filter. Amends List and System lines | The 1:1 was a filter of the room, so the coordinator's greeting showed in both and every 1:1 message showed in the room: the owner read them as mirrors, and a room appeared for a single bot on its own |
+| 2026-10-15 | Owner decision (modelled on the reference messenger the owner uses): group chats are the owner's. No workspace has a room by itself and no bot makes one; `+` › New group chat takes a name and two or more bots of one workspace (they share its repository and room), and a group's pill renames it, changes its bots or deletes it (its messages stay saved). A group lives in its own thread (`group:<id>`) with the work started from it. A group message goes to every bot in it unless bots are picked in the recipients control above the composer ("To: everyone ▾", a checkbox per bot; a typed `@Name` ticks its bot; the picks reset after each send); the coordinator-only routing of an untagged room message is gone. Nobody greets first in a group and no "joined" line is drawn: a bot new to the group introduces itself in its first answer. Add team makes the bots only, then offers Make a group chat with this team. A room the owner had written in became a group named after its workspace, reading on in General. Amends List, Avatars, Needs you, Chat, Composer, Add bot and First run, and the same day's 1:1-and-room row; supersedes the same day's coordinator-only routing and its "To <lead>" line | The owner asked how they would even know who the coordinator is: a hidden rule that sent untagged room messages to one bot read as the room ignoring the rest, and a room that appeared on its own for every team was not a conversation the owner had chosen |
 | 2026-10-15 | Owner decision: the Bots rail item is listed only while the bots are on; they are turned on in Settings › Bots, whose switch description says so, and the item appears at once without leaving Settings. Turning them off while the Bots page is open returns to Workspaces; the Toggle Bots shortcut and the palette's Open Bots open Settings › Bots while they are off. The first-run panel is reached only with the bots on. Amends Rail and pages, Bots off, Add bot and First run | A Bots item on the rail from the first launch advertised a feature the owner had not chosen, and opened a page that could do nothing until the bots were on. Settings stays open after the switch because Settings › Bots has its own add form and the plan and connection settings the owner may be setting up |
 
 ### Desktop conversation view

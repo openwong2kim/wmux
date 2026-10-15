@@ -1,12 +1,14 @@
 // ─── The Bots rail page (owner decision 2026-10-13) ──────────────────────
 //
 // The factory's bots, as a messenger: a conversation list on the left (search
-// and "+" in its header; each row an avatar, the name and a one-line preview
-// of the newest message, a needs-you badge on a bot that waits on the owner)
-// and the selected conversation as a chat on the right (BotsChat). Rooms
-// and bots follow by latest activity; no workspace is special (2026-10-14:
-// the HQ is a workspace like any other). On a narrow sheet the list comes
-// first and a conversation opens over it with a back button.
+// and "+" in its header — Add bot, New group chat; each row an avatar, the
+// name and a one-line preview of the newest message, a needs-you badge on a
+// bot that waits on the owner) and the selected conversation as a chat on
+// the right (BotsChat). The list holds each bot's 1:1 and the group chats
+// the owner made (owner decision 2026-10-15: no workspace has a room by
+// itself), by latest activity; nothing is pinned. Add team makes the bots
+// only, then offers "Make a group chat with this team". On a narrow sheet
+// the list comes first and a conversation opens over it with a back button.
 //
 // The page covers the whole sheet, the room dock included: the conversation
 // is the page here. Everything shown is derived from the room, bot and
@@ -51,7 +53,10 @@ import { selectBotTaskOwners, withoutBotTasks } from '../Sidebar/botTasks';
 import { blocksStart, bridgeEnginePort, useEngineReadiness, type EnginePort } from './botsEngine';
 import { BOT_NAME_MAX, normalizeBotName, type BotProfile } from '../../../shared/bot';
 import { listedWorkspaces } from '../../stores/slices/moaSlice';
-import { allRoomCards, botConversationId, conversationCards, roomCardsByWorkspace, roomViewCards, type Conversation } from './botsModel';
+import { allRoomCards, botConversationId, conversationCards, groupConversationId, groupViewCards, roomCardsByWorkspace, type Conversation } from './botsModel';
+import BotsGroupDialog, { type GroupDialogStart } from './BotsGroupDialog';
+import { getBotGroupPort, type BotGroupPort } from '../Room/botGroups';
+import type { BotGroup } from '../../../shared/botGroup';
 import { unreadCount } from './botsTimeline';
 import { BOTS_SESSION_START } from '../../stores/slices/roomSlice';
 import { useBots, useBotsSync } from './useBots';
@@ -65,10 +70,11 @@ type T = ReturnType<typeof useT>;
  *  and coming back opens it again). */
 let lastSelected: string | null = null;
 
-/** A conversation's name: the bot's own, or the room's workspace. */
+/** A conversation's name: the bot's own, or the group's (a group made from
+ *  a workspace's room: the workspace's). */
 export function conversationTitle(c: Conversation, workspaceName: (id: string) => string | null): string {
   if (c.kind === 'bot') return c.row.bot.name;
-  return workspaceName(c.workspaceId) ?? c.workspaceId;
+  return c.group.name || (workspaceName(c.workspaceId) ?? c.workspaceId);
 }
 
 /** The row's one-line preview of the newest message. Pure. */
@@ -190,7 +196,7 @@ function engineLine(r: ReturnType<typeof useEngineReadiness>['readiness'], t: T)
  *  Bots › First run). The page is reached with the bots on; Start adds the
  *  bot to the current workspace (turning the bots on first only if they went
  *  off meanwhile). */
-function FirstBotPanel({ t, workspace, botPort, settings, confirmOn, on, engine, onStarted }: {
+function FirstBotPanel({ t, workspace, botPort, settings, confirmOn, on, engine, onStarted, onTeam }: {
   t: T;
   workspace: { id: string; name: string } | null;
   botPort: FactoryBotPort;
@@ -200,6 +206,8 @@ function FirstBotPanel({ t, workspace, botPort, settings, confirmOn, on, engine,
   on: boolean;
   engine: EnginePort;
   onStarted: (bot: BotProfile) => void;
+  /** A team was added: the page offers a group chat with it. */
+  onTeam: (team: readonly BotProfile[]) => void;
 }) {
   const [name, setName] = useState('');
   const [busy, setBusy] = useState(false);
@@ -248,7 +256,10 @@ function FirstBotPanel({ t, workspace, botPort, settings, confirmOn, on, engine,
         if (r !== 'on') { setError(t('settings.factory.notStarted')); return; }
       }
       const r = await botPort.createTeam({ workspaceId: workspace.id, names, ...(repo.repoFolder ? { repoFolder: repo.repoFolder } : {}) });
-      if (r.ok) onStarted(r.bots[0]);
+      if (r.ok) {
+        onTeam(r.bots);
+        onStarted(r.bots[0]);
+      }
       else setError(r.message || t('settings.factory.addTeamFailed'));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -399,7 +410,70 @@ function HeaderMenu({ t, onStopAll }: { t: T; onStopAll: () => void }) {
   );
 }
 
-export default function BotsPage({ onAddBot, port, api, now, settings, stop, engine }: {
+/** "+": Add bot or New group chat. */
+function AddMenu({ t, onAddBot, onNewGroup }: { t: T; onAddBot: () => void; onNewGroup: (() => void) | null }) {
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLSpanElement>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => { if (!wrapRef.current?.contains(e.target as Node)) setOpen(false); };
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, [open]);
+  const close = () => { setOpen(false); buttonRef.current?.focus(); };
+  const item = `ui-section-row w-full text-left text-[13px] ${FOCUS_RING}`;
+  return (
+    <span ref={wrapRef} className="relative inline-flex">
+      <button
+        ref={buttonRef}
+        type="button"
+        data-bots-add
+        aria-label={t('botsPage.add.menu')}
+        title={t('botsPage.add.menu')}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+        className={`wmux-bots-icon-button ${open ? 'is-open' : ''} ${FOCUS_RING}`}
+      >
+        <IconPlus size={16} />
+      </button>
+      {open && (
+        <Popover
+          role="menu"
+          aria-label={t('botsPage.add.menu')}
+          className="absolute right-0 top-full z-40 mt-1 min-w-[180px]"
+          onKeyDown={(e) => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(); } }}
+        >
+          <button type="button" role="menuitem" data-bots-add-bot autoFocus className={item} onClick={() => { setOpen(false); onAddBot(); }}>
+            {t('botsPage.addBot')}
+          </button>
+          {onNewGroup && (
+            <button type="button" role="menuitem" data-bots-new-group className={item} onClick={() => { setOpen(false); onNewGroup(); }}>
+              {t('botsPage.group.new')}
+            </button>
+          )}
+        </Popover>
+      )}
+    </span>
+  );
+}
+
+/** After Add team: one line under the list header offering a group chat
+ *  with the team (the bots alone make no room), until used or dismissed. */
+function TeamNotice({ t, workspace, onMake, onDismiss }: { t: T; workspace: string; onMake: () => void; onDismiss: () => void }) {
+  return (
+    <div data-bots-team-notice role="status" className="mx-3 mb-2 flex items-center gap-2 rounded-[10px] bg-[var(--selection-subtle)] px-3 py-2">
+      <p className="min-w-0 flex-1 text-[12px] leading-snug text-[var(--text-sub)]">{t('botsPage.group.teamAdded', { workspace })}</p>
+      <Button size="sm" variant="secondary" data-bots-team-group onClick={onMake}>{t('botsPage.group.fromTeam')}</Button>
+      <button type="button" data-bots-team-dismiss aria-label={t('settings.close')} title={t('settings.close')} onClick={onDismiss} className={`wmux-bots-icon-button ${FOCUS_RING}`}>
+        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" aria-hidden="true"><line x1="3" y1="3" x2="9" y2="9" /><line x1="9" y1="3" x2="3" y2="9" /></svg>
+      </button>
+    </div>
+  );
+}
+
+export default function BotsPage({ onAddBot, port, api, now, settings, stop, engine, groupPort }: {
   /** What "+" does instead of the in-page add form (tests). */
   onAddBot?: () => void;
   /** Tests: the bot port and the rooms bridge. */
@@ -411,9 +485,12 @@ export default function BotsPage({ onAddBot, port, api, now, settings, stop, eng
   stop?: BotsStopPort;
   /** Tests: the engine's readiness and login (default: the preload's). */
   engine?: EnginePort;
+  /** Tests: the group chats port (default: the preload's). */
+  groupPort?: BotGroupPort;
 } = {}): React.ReactElement {
   const t = useT();
-  const botsState = useBots(port);
+  const groupsPort = groupPort ?? getBotGroupPort();
+  const botsState = useBots(port, groupsPort);
   useBotsSync(botsState, { focus: false, paused: true });
   // The factory may have been switched on since the status was read (in
   // Settings): opening the page asks again.
@@ -446,7 +523,7 @@ export default function BotsPage({ onAddBot, port, api, now, settings, stop, eng
   const roomThreads = useStore((s) => s.roomThreads);
   const rows = useMemo(() => model.conversations.map((c) => {
     const since = seenAt[c.id] ?? BOTS_SESSION_START;
-    const own = c.kind === 'bot' ? conversationCards(everyCard, c.row.bot.id, { lone: c.lone, threads: roomThreads }) : roomViewCards(cardsByWs.get(c.workspaceId) ?? [], roomThreads);
+    const own = c.kind === 'bot' ? conversationCards(everyCard, c.row.bot.id, { lone: c.lone, threads: roomThreads }) : groupViewCards(cardsByWs.get(c.workspaceId) ?? [], c.group, roomThreads);
     return {
       c,
       title: conversationTitle(c, nameOf),
@@ -546,8 +623,27 @@ export default function BotsPage({ onAddBot, port, api, now, settings, stop, eng
       setStopping(false);
     }
   };
-  const finishAdd = (bot?: BotProfile) => {
+  // Group chats: New group chat ("+"), a group's settings (its pill), and
+  // the one action Add team leaves under the header.
+  const [groupDialog, setGroupDialog] = useState<GroupDialogStart | null>(null);
+  const [teamMade, setTeamMade] = useState<{ workspaceId: string; botIds: string[] } | null>(null);
+  const onTeam = (team: readonly BotProfile[]) => {
+    if (team.length >= 2) setTeamMade({ workspaceId: team[0].workspaceId, botIds: team.map((b) => b.id) });
+  };
+  const newGroup = groupsPort.available
+    ? () => setGroupDialog({ kind: 'new', workspaceId: selected?.c.workspaceId ?? currentWorkspace?.id ?? null })
+    : null;
+  const shownGroup = selected?.c.kind === 'room' ? selected.c.group : null;
+  const groupDone = (group: BotGroup | null) => {
+    setGroupDialog(null);
+    if (group) {
+      setTeamMade(null);
+      select(groupConversationId(group.id));
+    }
+  };
+  const finishAdd = (bot?: BotProfile, team?: readonly BotProfile[]) => {
     setAdding(false);
+    if (team) onTeam(team);
     if (bot) started(bot);
   };
 
@@ -565,6 +661,7 @@ export default function BotsPage({ onAddBot, port, api, now, settings, stop, eng
         on={on}
         engine={enginePort}
         onStarted={started}
+        onTeam={onTeam}
       />
     );
   } else if (status && (listed || bots.length > 0 || !!pending)) {
@@ -593,17 +690,16 @@ export default function BotsPage({ onAddBot, port, api, now, settings, stop, eng
               <IconSearch size={16} />
             </button>
             {stopPort.stopAll && <HeaderMenu t={t} onStopAll={() => setConfirmStopAll(true)} />}
-            <button
-              type="button"
-              data-bots-add
-              aria-label={t('botsPage.addBot')}
-              title={t('botsPage.addBot')}
-              onClick={startAdd}
-              className={`wmux-bots-icon-button ${FOCUS_RING}`}
-            >
-              <IconPlus size={16} />
-            </button>
+            <AddMenu t={t} onAddBot={startAdd} onNewGroup={newGroup} />
           </div>
+          {teamMade && newGroup && (
+            <TeamNotice
+              t={t}
+              workspace={nameOf(teamMade.workspaceId) ?? teamMade.workspaceId}
+              onMake={() => setGroupDialog({ kind: 'new', workspaceId: teamMade.workspaceId, name: nameOf(teamMade.workspaceId) ?? '', memberIds: teamMade.botIds })}
+              onDismiss={() => setTeamMade(null)}
+            />
+          )}
           {confirmStopAll && (
             <div className="px-4 pb-3">
               <InlineConfirm
@@ -709,6 +805,7 @@ export default function BotsPage({ onAddBot, port, api, now, settings, stop, eng
             jobPort={botPort}
             resumePort={botPort}
             onOpenBot={(botId) => select(botConversationId(botId))}
+            {...(shownGroup && groupsPort.available ? { onEditGroup: () => setGroupDialog({ kind: 'edit', group: shownGroup }) } : {})}
           />
         ) : (
           <p className="wmux-bots-chat flex items-center justify-center text-[12px] text-[var(--text-muted)]">{t('botsPage.choose')}</p>
@@ -735,6 +832,17 @@ export default function BotsPage({ onAddBot, port, api, now, settings, stop, eng
             />
           </DialogBody>
         </Dialog>
+      )}
+      {groupDialog && (
+        <BotsGroupDialog
+          start={groupDialog}
+          bots={bots}
+          workspaces={addWorkspaces}
+          port={groupsPort}
+          t={t}
+          onDone={groupDone}
+          onClose={() => setGroupDialog(null)}
+        />
       )}
       {consent.dialog}
     </div>

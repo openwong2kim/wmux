@@ -321,8 +321,9 @@ type Workspaces = readonly { id: string; name: string }[];
 const NO_LIST_PORT: FactoryBotPort = { available: false, list: async () => [], subscribe: () => () => undefined, act: async () => ({ ok: false }) };
 
 export interface AddBotFormProps {
-  /** Called with the new bot after it was added, and with nothing on Cancel. */
-  onDone: (bot?: BotProfile) => void;
+  /** Called with the new bot after it was added (a team: its lead, and the
+   *  whole team), and with nothing on Cancel. */
+  onDone: (bot?: BotProfile, team?: readonly BotProfile[]) => void;
   /** The rest default to the app's own: the bot port, its bots, the store's
    *  workspaces (the active one first picked) and the folder dialog. */
   t?: T;
@@ -518,7 +519,7 @@ export function AddBotForm(props: AddBotFormProps): React.ReactElement {
       }
       const r = await port.createTeam({ workspaceId, names: teamNames(t), ...(repo.repoFolder ? { repoFolder: repo.repoFolder } : {}) });
       // The team's lead is the one to talk to: its chat opens.
-      if (r.ok) onDone(r.bots[0]);
+      if (r.ok) onDone(r.bots[0], r.bots);
       else setError(r.message || t('settings.factory.addTeamFailed'));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));

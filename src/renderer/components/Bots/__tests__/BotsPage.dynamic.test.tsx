@@ -20,6 +20,8 @@ import MiniSidebar from '../../Sidebar/MiniSidebar';
 import { chatCards, composerHint, fitSideSplit, oneToOneRefusal } from '../BotsChat';
 import type { Conversation } from '../botsModel';
 import { refreshApprovals, setApprovalsApiForTests, type ApprovalsApi } from '../../Room/approvalsStore';
+import { setBotGroupPort, type BotGroupPort } from '../../Room/botGroups';
+import type { BotGroup } from '../../../../shared/botGroup';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -48,6 +50,31 @@ const ws = (id: string, name: string): Workspace => ({ id, name, wsOrdinal: 1, r
 
 let bots: FactoryBotRow[];
 let cards: RoomCard[];
+/** The owner's group chats: w1's room made into a group (it had the owner's messages). */
+let groups: BotGroup[];
+let groupCalls: Array<{ op: string; req: unknown }>;
+const groupPort: BotGroupPort = {
+  available: true,
+  list: async () => ({ ok: true, groups }),
+  create: async (req) => {
+    groupCalls.push({ op: 'create', req });
+    const g: BotGroup = { id: `grp-${(0xb0 + groups.length).toString(16).padStart(8, '0')}`, workspaceId: req.workspaceId, name: req.name, memberIds: [...req.memberIds], threadId: `group:grp-${(0xb0 + groups.length).toString(16).padStart(8, '0')}`, createdAt: 5_000, updatedAt: 5_000 };
+    groups = [...groups, g];
+    return { ok: true, group: g };
+  },
+  update: async (req) => {
+    groupCalls.push({ op: 'update', req });
+    const g = groups.find((x) => x.id === req.id)!;
+    const next = { ...g, ...(req.name !== undefined ? { name: req.name } : {}), ...(req.memberIds ? { memberIds: [...req.memberIds] } : {}) };
+    groups = groups.map((x) => (x.id === g.id ? next : x));
+    return { ok: true, group: next };
+  },
+  remove: async (id) => {
+    groupCalls.push({ op: 'remove', req: id });
+    groups = groups.filter((x) => x.id !== id);
+    return { ok: true };
+  },
+};
 let posted: Parameters<RoomsApi['post']>[0][];
 let container: HTMLDivElement;
 let root: Root;
@@ -110,7 +137,10 @@ beforeEach(() => {
     card({ workspaceId: 'w1', actor: by('w1', LEAD), title: 'Merge #1 now?', kind: 'question', state: 'open', threadId: 'pr:github.com/acme/api#1', at: 400 }),
     card({ workspaceId: 'w1', actor: { kind: 'system' }, kind: 'fact', title: 'CI green on #1', at: 410 }),
   ];
+  groups = [{ id: 'grp-000000a1', workspaceId: 'w1', name: '', memberIds: [LEAD, VERIFIER], threadId: 'general', createdAt: 1, updatedAt: 1 }];
+  groupCalls = [];
   setFactoryBotPort(port);
+  setBotGroupPort(groupPort);
   setRoomsApiForTests(api());
   vi.stubGlobal('electronAPI', { web: { status: vi.fn(async () => ({ running: false })) } });
   container = document.createElement('div');
@@ -121,11 +151,17 @@ afterEach(() => {
   act(() => root.unmount());
   container.remove();
   setFactoryBotPort(null);
+  setBotGroupPort(null);
   setRoomsApiForTests(undefined);
   vi.unstubAllGlobals();
 });
 
 const q = <E extends Element = HTMLElement>(sel: string) => container.querySelector<E & HTMLElement>(sel);
+/** "+" is a menu: Add bot, New group chat. */
+function openAddBot() {
+  act(() => q('[data-bots-add]')!.click());
+  act(() => q('[data-bots-add-bot]')!.click());
+}
 const rowIds = () => [...container.querySelectorAll('[data-bots-row]')].map((el) => el.getAttribute('data-bots-row'));
 /** Answers the plan consent dialog that turning the bots on asks first. */
 async function acceptPlanConsent() {
@@ -161,7 +197,7 @@ describe('Bots page', () => {
     expect(q('[data-bots-paused]')?.textContent).toContain('Bots are off');
     expect(q('[data-bots-run]')?.textContent).toBe('Turn bots on');
     // The list is all there, "+" too, and nothing is counted.
-    expect(rowIds()).toEqual(['room:w1', `bot:${LEAD}`, `bot:${VERIFIER}`, `bot:${MOA}`]);
+    expect(rowIds()).toEqual(['group:grp-000000a1', `bot:${LEAD}`, `bot:${VERIFIER}`, `bot:${MOA}`]);
     expect(q('[data-bots-add]')).not.toBeNull();
     expect(container.querySelectorAll('[data-bots-needs]')).toHaveLength(0);
     act(() => q(`[data-bots-row="bot:${LEAD}"]`)!.click());
@@ -256,11 +292,39 @@ describe('Bots page', () => {
     expect(q('[data-bots-chat]')?.getAttribute('data-bots-chat')).toBe('bot:bot-0000000e');
   });
 
+  it('Add team makes the bots only, no group; then one action makes a group chat with the team, filled in', async () => {
+    seedRooms();
+    const lead = { ...botRow('bot-0000000e', 'lead', 'w1', 9, 'Team Lead').bot, template: 'coordinator' as const };
+    const dev = { ...botRow('bot-0000000f', 'lead', 'w1', 10, 'Team Dev').bot, template: 'developer' as const };
+    const createTeam = vi.fn(async () => {
+      bots.push({ bot: lead, status: null }, { bot: dev, status: null });
+      return { ok: true as const, bots: [lead, dev] };
+    });
+    setFactoryBotPort({ ...port, create: vi.fn(), createTeam } as unknown as FactoryBotPort);
+    await render(<BotsPage groupPort={groupPort} />);
+    act(() => q(`[data-bots-row="bot:${LEAD}"]`)!.click());
+    openAddBot();
+    await act(async () => { document.querySelector<HTMLButtonElement>('[data-testid="bots-add-bot"] [data-testid="factory-add-team"]')!.click(); });
+    expect(createTeam).toHaveBeenCalled();
+    // No group was made; the list offers one.
+    expect(groupCalls).toEqual([]);
+    expect(q('[data-bots-team-notice]')!.textContent).toContain('Make a group chat with this team');
+    act(() => q('[data-bots-team-group]')!.click());
+    const dialog = document.querySelector('[data-testid="bots-group-dialog"]')!;
+    expect(dialog.querySelector<HTMLInputElement>('[data-bots-group-name]')!.value).toBe('api');
+    expect(dialog.querySelector<HTMLInputElement>(`[data-bots-group-member="${lead.id}"]`)!.checked).toBe(true);
+    expect(dialog.querySelector<HTMLInputElement>(`[data-bots-group-member="${dev.id}"]`)!.checked).toBe(true);
+    expect(dialog.querySelector<HTMLInputElement>(`[data-bots-group-member="${LEAD}"]`)!.checked).toBe(false);
+    await act(async () => { dialog.querySelector<HTMLButtonElement>('[data-bots-group-save]')!.click(); });
+    expect(groupCalls).toEqual([{ op: 'create', req: { workspaceId: 'w1', name: 'api', memberIds: [lead.id, dev.id] } }]);
+    expect(q('[data-bots-team-notice]')).toBeNull();
+  });
+
   it('"+" offers Add team while the chosen workspace has no coordinator', async () => {
     seedRooms();
     setFactoryBotPort({ ...port, create: vi.fn(), createTeam: vi.fn() } as unknown as FactoryBotPort);
     await render(<BotsPage />);
-    act(() => q('[data-bots-add]')!.click());
+    openAddBot();
     await act(async () => { await Promise.resolve(); });
     expect(document.querySelector('[data-testid="bots-add-bot"] [data-testid="factory-add-team"]')).not.toBeNull();
     // A workspace with a coordinator already: no Add team.
@@ -269,7 +333,7 @@ describe('Bots page', () => {
     bots = [...bots, { ...botRow('bot-0000000f', 'lead', 'w1', 4, 'Boss'), bot: { ...botRow('bot-0000000f', 'lead', 'w1', 4, 'Boss').bot, template: 'coordinator' } }];
     act(() => useStore.setState({ activeWorkspaceId: 'w1' } as never));
     await render(<BotsPage />);
-    act(() => q('[data-bots-add]')!.click());
+    openAddBot();
     await act(async () => { await Promise.resolve(); });
     expect(document.querySelector('[data-testid="bots-add-bot"] [data-testid="factory-add-team"]')).toBeNull();
   });
@@ -329,7 +393,7 @@ describe('Bots page', () => {
     setFactoryBotPort({ ...port, create } as unknown as FactoryBotPort);
     const settings = { available: true, get: vi.fn(async () => null), set: vi.fn(async () => ({ enabled: true }) as never) };
     await render(<BotsPage settings={settings} />);
-    act(() => q('[data-bots-add]')!.click());
+    openAddBot();
     const dialog = document.querySelector('[data-testid="bots-add-bot"]')!;
     const name = dialog.querySelector<HTMLInputElement>('[data-testid="factory-add-bot-name"]')!;
     act(() => {
@@ -374,8 +438,9 @@ describe('Bots page', () => {
   });
 
   it('a plan is answered on the Bots page with the room dock\'s own answers, naming workspaces', async () => {
-    // A second HQ bot makes the HQ a team, so its room is listed.
+    // The HQ's room was made a group chat (it had the owner's words).
     bots.push(botRow('bot-0000000e', 'verifier', 'hq', 4, 'HQ Helper'));
+    groups.push({ id: 'grp-000000a2', workspaceId: 'hq', name: '', memberIds: [MOA, 'bot-0000000e'], threadId: 'general', createdAt: 1, updatedAt: 1 });
     const resolve = vi.fn(async () => ({ ok: true as const, card: cards[0] }));
     const plan = card({
       workspaceId: 'hq', actor: by('hq', MOA), kind: 'plan', state: 'open', threadId: 'plan:p-1', at: 500,
@@ -398,7 +463,7 @@ describe('Bots page', () => {
     await act(async () => { bubble.querySelector<HTMLButtonElement>('[data-testid="hq-plan-approve"]')!.click(); });
     expect(resolve).toHaveBeenCalledWith({ workspaceId: 'hq', cardId: plan.id, resolution: 'approve' });
     // The HQ group shows the same answers.
-    act(() => q('[data-bots-row="room:hq"]')!.click());
+    act(() => q('[data-bots-row="group:grp-000000a2"]')!.click());
     expect(q(`[data-room-card-id="${plan.id}"] [data-card-answers="plan"]`)).not.toBeNull();
     // Editing, then the bots pause: the answers leave and the body is back.
     act(() => q<HTMLButtonElement>(`[data-room-card-id="${plan.id}"] [data-testid="hq-plan-edit"]`)!.click());
@@ -414,7 +479,7 @@ describe('Bots page', () => {
     const refusalId = cards[cards.length - 1].id;
     seedRooms();
     await render(<BotsPage />);
-    act(() => q('[data-bots-row="room:w1"]')!.click());
+    act(() => q('[data-bots-row="group:grp-000000a1"]')!.click());
     // It is a reply in the PR's thread: the thread's root says so, and the
     // thread opens beside the chat.
     expect(q(`[data-bots-messages] [data-room-card-id="${refusalId}"]`)).toBeNull();
@@ -481,17 +546,17 @@ describe('Bots page', () => {
   it('lists rooms and bots by latest activity (the HQ room is not pinned), with needs-you on the bot that asked', async () => {
     seedRooms();
     await render(<BotsPage />);
-    expect(rowIds()).toEqual(['room:w1', `bot:${LEAD}`, `bot:${VERIFIER}`, `bot:${MOA}`]);
+    expect(rowIds()).toEqual(['group:grp-000000a1', `bot:${LEAD}`, `bot:${VERIFIER}`, `bot:${MOA}`]);
     expect(container.textContent).not.toContain('HQ');
     // Lead: one open question and its worker t1 (status not reported: not live).
     expect(q(`[data-bots-row="bot:${LEAD}"] [data-bots-needs]`)?.textContent).toBe('1');
     expect(q(`[data-bots-row="bot:${VERIFIER}"] [data-bots-needs]`)).toBeNull();
-    expect(q('[data-bots-row="room:w1"] [data-bots-needs]')).toBeNull();
+    expect(q('[data-bots-row="group:grp-000000a1"] [data-bots-needs]')).toBeNull();
     // Previews: the newest message, the owner's as "You: …" — never wmux's
     // own line, though it still orders the list (room w1 is first).
     expect(q(`[data-bots-row="bot:${VERIFIER}"]`)?.textContent).toContain('PR #1 passes');
-    expect(q('[data-bots-row="room:w1"]')?.textContent).toContain('Lead: Merge #1 now?');
-    expect(q('[data-bots-row="room:w1"]')?.textContent).not.toContain('CI green on #1');
+    expect(q('[data-bots-row="group:grp-000000a1"]')?.textContent).toContain('Lead: Merge #1 now?');
+    expect(q('[data-bots-row="group:grp-000000a1"]')?.textContent).not.toContain('CI green on #1');
   });
 
   it('a 1:1 shows only that bot\'s cards and the owner\'s messages to it; a group shows the room', async () => {
@@ -503,7 +568,7 @@ describe('Bots page', () => {
     expect(shown()).toEqual(['c2', 'c3', 'c5']);
     expect(q('[data-bots-bubble="owner"]')?.textContent).toContain('Thanks lead');
     expect(q<HTMLTextAreaElement>('[data-testid="bots-composer-input"]')?.placeholder).toBe('Message Lead');
-    act(() => q('[data-bots-row="room:w1"]')!.click());
+    act(() => q('[data-bots-row="group:grp-000000a1"]')!.click());
     expect(shown()).toEqual(['c2', 'c3', 'c4', 'c5', 'c6']);
     expect(q<HTMLTextAreaElement>('[data-testid="bots-composer-input"]')?.placeholder).toBe('Message api');
     // Back (the narrow layout's list) and the profile under the pill.
@@ -514,7 +579,7 @@ describe('Bots page', () => {
   it('a thread chip opens the thread beside the chat; the main timeline stays as it was', async () => {
     seedRooms();
     await render(<BotsPage />);
-    act(() => q('[data-bots-row="room:w1"]')!.click());
+    act(() => q('[data-bots-row="group:grp-000000a1"]')!.click());
     const shown = (scope: string) => [...container.querySelectorAll(`${scope} [data-room-card-id]`)].map((el) => el.getAttribute('data-room-card-id'));
     // The thread's root (the verdict) and its open question (it waits on the
     // owner) both stay in the main timeline; the root says how many replies.
@@ -559,7 +624,7 @@ describe('Bots page', () => {
     );
     seedRooms();
     await render(<BotsPage />);
-    act(() => q('[data-bots-row="room:w1"]')!.click());
+    act(() => q('[data-bots-row="group:grp-000000a1"]')!.click());
     const chat = () => q('[data-bots-messages]')?.textContent ?? '';
     expect(chat()).toContain('Team, hello');
     expect(chat()).not.toContain('Private');
@@ -575,33 +640,142 @@ describe('Bots page', () => {
     expect(heads).not.toContain('Lead');
   });
 
-  it('a group message goes to the whole room unless a bot is picked (a chip, or a typed @name)', async () => {
+  it('a group message goes to every bot of the group unless some are picked: "To: everyone ▾", a ticked box or a typed @name; picks reset after send', async () => {
     seedRooms();
     await render(<BotsPage />);
-    act(() => q('[data-bots-row="room:w1"]')!.click());
+    act(() => q('[data-bots-row="group:grp-000000a1"]')!.click());
     const input = q<HTMLTextAreaElement>('[data-testid="bots-composer-input"]')!;
-    await act(async () => {
-      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(input, 'Status?');
-      input.dispatchEvent(new Event('input', { bubbles: true }));
-    });
+    const typeText = async (value: string) => {
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(input, value);
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+    };
+    const to = () => q('[data-bots-recipients]')!.textContent;
+    expect(to()).toBe('To: everyone');
+    await typeText('Status?');
     await act(async () => { q('[data-testid="bots-composer-send"]')!.click(); });
-    expect(posted[0]).toMatchObject({ workspaceId: 'w1', title: 'Status?' });
+    // A group made from the room lives in General; main sends it to every member.
+    expect(posted[0]).toMatchObject({ workspaceId: 'w1', threadId: 'general', title: 'Status?' });
     expect(posted[0].to).toBeUndefined();
     expect(posted[0].mentions).toBeUndefined();
-    expect(q('[data-testid="bots-composer-to-room"]')).not.toBeNull();
-    await act(async () => {
-      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(input, '@Lead rebase please');
-      input.dispatchEvent(new Event('input', { bubbles: true }));
-    });
-    expect(q(`[data-testid="bots-composer-bot"][data-bot-id="${LEAD}"]`)?.getAttribute('aria-pressed')).toBe('true');
+    // A typed @Name ticks that bot.
+    await typeText('@Lead rebase please');
+    expect(to()).toBe('To: Lead');
+    act(() => q('[data-bots-recipients]')!.click());
+    expect(q<HTMLInputElement>(`[data-bots-recipient="${LEAD}"]`)!.checked).toBe(true);
+    expect(q<HTMLInputElement>(`[data-bots-recipient="${VERIFIER}"]`)!.checked).toBe(false);
     await act(async () => { q('[data-testid="bots-composer-send"]')!.click(); });
     expect(posted[1]).toMatchObject({ workspaceId: 'w1', mentions: [LEAD] });
+    // Reset after the send: everyone again.
+    expect(to()).toBe('To: everyone');
+    // A ticked box picks that bot alone (the list is still open).
+    expect(q('[data-bots-recipients-list]')).not.toBeNull();
+    act(() => q<HTMLInputElement>(`[data-bots-recipient="${VERIFIER}"]`)!.click());
+    expect(to()).toBe('To: Verifier');
+    await typeText('Check #1');
+    await act(async () => { q('[data-testid="bots-composer-send"]')!.click(); });
+    expect(posted[2]).toMatchObject({ workspaceId: 'w1', mentions: [VERIFIER] });
+    expect(to()).toBe('To: everyone');
+  });
+
+  it('a group chat the owner made shows only its thread and the work started there; its messages post to that thread', async () => {
+    const G = 'group:grp-000000c1' as const;
+    groups.push({ id: 'grp-000000c1', workspaceId: 'w1', name: 'Ship it', memberIds: [LEAD, VERIFIER], threadId: G, createdAt: 2_000, updatedAt: 2_000 });
+    cards.push(
+      card({ workspaceId: 'w1', actor: { kind: 'human' }, kind: 'human', threadId: G, title: 'Ship the widget', refs: { botIds: [LEAD, VERIFIER] }, at: 2_100 }),
+      card({ workspaceId: 'w1', actor: by('w1', LEAD), threadId: G, title: 'I am Lead; on it', at: 2_110 }),
+      // The lead's request thread, opened from the group.
+      card({ workspaceId: 'w1', actor: { kind: 'system' }, kind: 'fact', threadId: 'handoff:h-0000000c1', title: 'dispatch → Verifier: Build it', refs: { handoffId: 'h-0000000c1', threadId: G }, at: 2_120 }),
+      card({ workspaceId: 'w1', actor: by('w1', VERIFIER), title: 'Room talk elsewhere', at: 2_130 }),
+    );
+    seedRooms();
+    await render(<BotsPage />);
+    expect(rowIds()).toContain('group:grp-000000c1');
+    expect(q('[data-bots-row="group:grp-000000c1"]')!.textContent).toContain('Ship it');
+    act(() => q('[data-bots-row="group:grp-000000c1"]')!.click());
+    const chat = () => q('[data-bots-messages]')?.textContent ?? '';
+    expect(chat()).toContain('Ship the widget');
+    expect(chat()).toContain('I am Lead; on it');
+    expect(chat()).toContain('Build it');
+    expect(chat()).not.toContain('Room talk elsewhere');
+    expect(chat()).not.toContain('Started a worker on login');
+    // No "joined" line, no thread chip for the group itself.
+    expect(container.querySelector('[data-bots-joined]')).toBeNull();
+    expect(q(`[data-bots-thread-chip="${G}"]`)).toBeNull();
+    // The room's General (the other group) does not show this group's thread.
+    act(() => q('[data-bots-row="group:grp-000000a1"]')!.click());
+    expect(chat()).not.toContain('Ship the widget');
+    expect(chat()).not.toContain('Build it');
+    expect(chat()).toContain('Room talk elsewhere');
+    act(() => q('[data-bots-row="group:grp-000000c1"]')!.click());
+    const input = q<HTMLTextAreaElement>('[data-testid="bots-composer-input"]')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(input, 'Go');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await act(async () => { q('[data-testid="bots-composer-send"]')!.click(); });
+    expect(posted.at(-1)).toMatchObject({ workspaceId: 'w1', threadId: G, title: 'Go' });
+    expect(posted.at(-1)!.mentions).toBeUndefined();
+  });
+
+  it('"+" New group chat: a name and bots of one workspace; one with fewer than two bots says so; the group made opens', async () => {
+    seedRooms();
+    await render(<BotsPage groupPort={groupPort} />);
+    act(() => q('[data-bots-add]')!.click());
+    act(() => q('[data-bots-new-group]')!.click());
+    const dialog = () => document.querySelector('[data-testid="bots-group-dialog"]');
+    expect(dialog()).not.toBeNull();
+    const pick = (sel: string) => document.querySelector<HTMLElement>(sel)!;
+    const set = async (sel: string, value: string) => {
+      const el = pick(sel) as HTMLInputElement | HTMLSelectElement;
+      await act(async () => {
+        const proto = el instanceof HTMLSelectElement ? HTMLSelectElement.prototype : HTMLInputElement.prototype;
+        Object.getOwnPropertyDescriptor(proto, 'value')!.set!.call(el, value);
+        el.dispatchEvent(new Event(el instanceof HTMLSelectElement ? 'change' : 'input', { bubbles: true }));
+      });
+    };
+    // The HQ has one bot: it cannot make a group.
+    await set('[data-bots-group-workspace]', 'hq');
+    expect(pick('[data-bots-group-blocked]').textContent).toContain('fewer than two bots');
+    expect((pick('[data-bots-group-save]') as HTMLButtonElement).disabled).toBe(true);
+    // w1's bots only.
+    await set('[data-bots-group-workspace]', 'w1');
+    expect([...document.querySelectorAll('[data-bots-group-member]')].map((el) => el.getAttribute('data-bots-group-member'))).toEqual([LEAD, VERIFIER]);
+    await set('[data-bots-group-name]', 'Release crew');
+    expect(pick('[data-bots-group-blocked]').textContent).toBe('Pick two or more bots.');
+    act(() => pick(`[data-bots-group-member="${LEAD}"]`).click());
+    act(() => pick(`[data-bots-group-member="${VERIFIER}"]`).click());
+    await act(async () => { pick('[data-bots-group-save]').click(); });
+    expect(groupCalls).toEqual([{ op: 'create', req: { workspaceId: 'w1', name: 'Release crew', memberIds: [LEAD, VERIFIER] } }]);
+    expect(dialog()).toBeNull();
+  });
+
+  it('a group\'s pill opens its settings: rename, change bots, delete (asked in place)', async () => {
+    groups.push({ id: 'grp-000000c2', workspaceId: 'w1', name: 'Ship it', memberIds: [LEAD, VERIFIER], threadId: 'group:grp-000000c2', createdAt: 9_000, updatedAt: 9_000 });
+    seedRooms();
+    await render(<BotsPage groupPort={groupPort} />);
+    act(() => q('[data-bots-row="group:grp-000000c2"]')!.click());
+    act(() => q('[data-bots-pill]')!.click());
+    const pick = (sel: string) => document.querySelector<HTMLElement>(sel)!;
+    expect((pick('[data-bots-group-name]') as HTMLInputElement).value).toBe('Ship it');
+    expect(document.querySelector('[data-bots-group-workspace]')).toBeNull();
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(pick('[data-bots-group-name]'), 'Release');
+      pick('[data-bots-group-name]').dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await act(async () => { pick('[data-bots-group-save]').click(); });
+    expect(groupCalls.at(-1)).toEqual({ op: 'update', req: { id: 'grp-000000c2', name: 'Release', memberIds: [LEAD, VERIFIER] } });
+    act(() => q('[data-bots-pill]')!.click());
+    act(() => pick('[data-bots-group-delete]').click());
+    await act(async () => { pick('[data-testid="bots-group-delete-confirm"]').click(); });
+    expect(groupCalls.at(-1)).toEqual({ op: 'remove', req: 'grp-000000c2' });
   });
 
   it('in a room, @ suggests its bots: Enter puts the name in, and a typed @Name anywhere addresses that bot', async () => {
     seedRooms();
     await render(<BotsPage />);
-    act(() => q('[data-bots-row="room:w1"]')!.click());
+    act(() => q('[data-bots-row="group:grp-000000a1"]')!.click());
     const input = q<HTMLTextAreaElement>('[data-testid="bots-composer-input"]')!;
     const typeText = async (value: string) => {
       await act(async () => {
@@ -621,7 +795,7 @@ describe('Bots page', () => {
     expect(options()).toEqual([]);
     expect(posted).toHaveLength(0);
     await typeText('please @Verifier check #1');
-    expect(q(`[data-testid="bots-composer-bot"][data-bot-id="${VERIFIER}"]`)?.getAttribute('aria-pressed')).toBe('true');
+    expect(q('[data-bots-recipients]')!.textContent).toBe('To: Verifier');
     await act(async () => { q('[data-testid="bots-composer-send"]')!.click(); });
     expect(posted[0]).toMatchObject({ workspaceId: 'w1', title: 'please @Verifier check #1', mentions: [VERIFIER] });
     // Escape closes the list without touching the text.
@@ -656,13 +830,13 @@ describe('Bots page', () => {
     await render(<BotsPage />);
     expect(q(`[data-bots-row="bot:${LEAD}"] [data-bots-needs]`)?.textContent).toBe('2');
     // Folded under a bot whose chat is not open: the toggle says how many.
-    act(() => q('[data-bots-row="room:w1"]')!.click());
+    act(() => q('[data-bots-row="group:grp-000000a1"]')!.click());
     expect(q('[data-bots-worker="t1"]')).toBeNull();
     expect(q(`[data-bots-entry="bot:${LEAD}"] [data-bots-tree-toggle]`)?.getAttribute('aria-expanded')).toBe('false');
     // Open under the bot whose chat is open, its row and tree one group.
     act(() => q(`[data-bots-row="bot:${LEAD}"]`)!.click());
     expect(q(`[data-bots-entry="bot:${LEAD}"]`)?.classList.contains('is-open')).toBe(true);
-    expect(q('[data-bots-entry="room:w1"]')?.classList.contains('is-open')).toBe(false);
+    expect(q('[data-bots-entry="group:grp-000000a1"]')?.classList.contains('is-open')).toBe(false);
     // Under the bot's row in the list, not in the rail or the history.
     const worker = q(`[data-bots-entry="bot:${LEAD}"] [data-bots-tree] [data-bots-worker="t1"]`);
     expect(worker?.textContent).toContain('fix login');
@@ -690,7 +864,7 @@ describe('Bots page', () => {
     act(() => q('[data-bots-worker-panel-close]')!.click());
     expect(q('[data-bots-worker-panel]')).toBeNull();
     act(() => q('[data-bots-worker="t1"]')!.click());
-    act(() => q('[data-bots-row="room:w1"]')!.click());
+    act(() => q('[data-bots-row="group:grp-000000a1"]')!.click());
     expect(useStore.getState().botsWorkerPanel).toBeNull();
     expect(q('[data-bots-worker-panel]')).toBeNull();
   });
@@ -747,7 +921,7 @@ describe('Bots page', () => {
     expect(q('[data-bots-worker="t-gone"]')).toBeNull();
     // From a room (the bot's tree unfolded by hand), the row opens its bot's
     // 1:1 with the terminal beside it.
-    act(() => q('[data-bots-row="room:w1"]')!.click());
+    act(() => q('[data-bots-row="group:grp-000000a1"]')!.click());
     act(() => q(`[data-bots-entry="bot:${LEAD}"] [data-bots-tree-toggle]`)!.click());
     act(() => q('[data-bots-worker="t1"]')!.click());
     expect(useStore.getState().activeWorkspaceId).toBe('hq');
@@ -757,34 +931,20 @@ describe('Bots page', () => {
     act(() => useStore.getState().setBotsWorkerPanel(null));
   });
 
-  it('in a room a new bot\'s greeting is a "joined" line that opens its 1:1, where the greeting is', async () => {
+  it('a group shows no greeting and no "joined" line; the greeting is in the bot\'s 1:1', async () => {
     const NEW = 'bot-0000000e';
     bots.push(botRow(NEW, 'lead', 'w1', 500, 'Wmux Dev'));
+    groups[0] = { ...groups[0], memberIds: [LEAD, VERIFIER, NEW] };
     cards.push(card({ workspaceId: 'w1', actor: by('w1', NEW), kind: 'question', state: 'open', title: 'Hi, what should I work on?', threadId: 'handoff:h-0000000001', at: 520, greeting: true }));
     cards.push(card({ workspaceId: 'w1', actor: by('w1', NEW), title: 'Later note', at: 900_000 }));
     seedRooms();
     await render(<BotsPage />);
-    act(() => q('[data-bots-row="room:w1"]')!.click());
+    act(() => q('[data-bots-row="group:grp-000000a1"]')!.click());
     const greeting = cards.find((c) => c.title.startsWith('Hi,'))!;
     expect(q(`[data-bots-messages] [data-room-card-id="${greeting.id}"]`)).toBeNull();
-    const joined = q(`[data-bots-joined="${NEW}"]`)!;
-    expect(joined.textContent).toContain('Wmux Dev joined');
-    // Placed by time: after the room's earlier cards, before the bot's later note.
-    const order = [...container.querySelectorAll('[data-bots-messages] [data-room-card-id], [data-bots-joined]')]
-      .map((el) => el.getAttribute('data-bots-joined') ? 'joined' : el.getAttribute('data-room-card-id'));
-    expect(order.indexOf('joined')).toBe(order.length - 2);
-    // A room whose first card is the greeting still shows the joined line.
-    const W2 = 'bot-0000000f';
-    bots.push(botRow(W2, 'lead', 'w2', 50_000, 'Wmux Issue'), botRow('bot-00000010', 'verifier', 'w2', 40_000, 'Wmux Review'));
-    cards.push(card({ workspaceId: 'w2', actor: by('w2', W2), kind: 'question', state: 'open', title: 'Hello', threadId: 'handoff:h-0000000009', at: 50_100, greeting: true }));
-    cards.push(card({ workspaceId: 'w2', actor: { kind: 'human' }, kind: 'human', title: 'Hi', at: 60_000 }));
-    act(() => useStore.setState({ workspaces: [...useStore.getState().workspaces, ws('w2', 'web')], roomThreads: { ...useStore.getState().roomThreads, w2: [] }, roomTimelines: { ...useStore.getState().roomTimelines, [timelineKey('w2', ALL_THREADS)]: { cards: cards.filter((c) => c.workspaceId === 'w2'), nextSinceSeq: 0, hasMore: false } } } as never));
-    await render(<BotsPage />);
-    act(() => q('[data-bots-row="room:w2"]')!.click());
-    expect(q(`[data-bots-joined="${W2}"]`)).not.toBeNull();
-    act(() => q('[data-bots-row="room:w1"]')!.click());
-    act(() => q(`[data-bots-joined-open="${NEW}"]`)!.click());
-    expect(q(`[data-bots-chat="bot:${NEW}"]`)).not.toBeNull();
+    expect(container.querySelector('[data-bots-joined]')).toBeNull();
+    expect(q('[data-bots-messages]')!.textContent).not.toContain('joined');
+    act(() => q(`[data-bots-row="bot:${NEW}"]`)!.click());
     expect(q(`[data-bots-messages] [data-room-card-id="${greeting.id}"]`)).not.toBeNull();
   });
 
@@ -796,7 +956,7 @@ describe('Bots page', () => {
     bots[1] = { ...bots[1], tasks: [{ taskId: 'wtask-abc-00000001', taskWorkspaceId: 'tx', ownerWorkspaceId: 'w1', botId: LEAD, title: 'README title', status: 'working', stage: 'working', updatedAt: 1 }] };
     seedRooms();
     await render(<BotsPage />);
-    act(() => q('[data-bots-row="room:w1"]')!.click());
+    act(() => q('[data-bots-row="group:grp-000000a1"]')!.click());
     const taskChip = q('[data-bots-thread-chip="task:wtask-abc-00000001"]')!;
     expect(taskChip.textContent).toBe('README title');
     expect(taskChip.getAttribute('title')).toContain('wtask-abc-00000001');
@@ -816,7 +976,7 @@ describe('Bots page', () => {
     cards.push(card({ workspaceId: 'w1', actor: { kind: 'system' }, kind: 'fact', title: 'dispatch → Verifier: Ship it', threadId: 'handoff:h-0000000003', refs: { handoffId: 'h-0000000003', requestCardId: request.id }, at: 610 }));
     seedRooms();
     await render(<BotsPage />);
-    act(() => q('[data-bots-row="room:w1"]')!.click());
+    act(() => q('[data-bots-row="group:grp-000000a1"]')!.click());
     const chip = q('[data-bots-thread-chip="handoff:h-0000000003"]')!;
     expect(chip.textContent).toBe('Add a --version flag');
     act(() => chip.click());
@@ -844,7 +1004,7 @@ describe('Bots page', () => {
     });
     setRoomsApiForTests(a);
     await render(<BotsPage />);
-    act(() => q('[data-bots-row="room:w1"]')!.click());
+    act(() => q('[data-bots-row="group:grp-000000a1"]')!.click());
     await act(async () => { q('[data-bots-thread-chip="pr:github.com/acme/api#9"]')!.click(); });
     expect(reads).toEqual(expect.arrayContaining([{ workspaceId: 'w1', threadId: 'pr:github.com/acme/api#9', sinceSeq: 0 }]));
     const panel = q('[data-bots-thread-panel="pr:github.com/acme/api#9"]')!;
@@ -870,7 +1030,7 @@ describe('Bots page', () => {
       await render(<BotsPage />);
       await act(async () => { await refreshApprovals(); });
       // The room's whole view (the owner is talking in General).
-      act(() => q('[data-bots-row="room:w1"]')!.click());
+      act(() => q('[data-bots-row="group:grp-000000a1"]')!.click());
       expect(q('[data-testid="approve-pending-chip"]')?.getAttribute('data-approve-ids')).toBe('apr-0000000001 apr-0000000002');
       // The card in General carries its PR thread's chip; narrowed there, it
       // is shown and counted, the other PR's is not.
@@ -1027,7 +1187,7 @@ describe('Bots page', () => {
     const create = vi.fn(async () => ({ ok: true as const, bot: added }));
     setFactoryBotPort({ ...port, create } as unknown as FactoryBotPort);
     await render(<BotsPage />);
-    act(() => q('[data-bots-add]')!.click());
+    openAddBot();
     const dialog = () => document.querySelector('[data-testid="bots-add-bot"]');
     expect(dialog()).not.toBeNull();
     expect(dialog()?.textContent).toContain('Add bot');
@@ -1108,7 +1268,7 @@ describe('Bots page', () => {
     setFactoryBotPort({ ...port, create } as unknown as FactoryBotPort);
     const settings = { available: true, get: vi.fn(async () => null), set: vi.fn(async () => ({ enabled: true }) as never) };
     await render(<BotsPage settings={settings} />);
-    act(() => q('[data-bots-add]')!.click());
+    openAddBot();
     const dialog = document.querySelector('[data-testid="bots-add-bot"]')!;
     const name = dialog.querySelector<HTMLInputElement>('[data-testid="factory-add-bot-name"]')!;
     act(() => {
@@ -1147,7 +1307,7 @@ describe('Bots page', () => {
   it('"+" without a create port opens the factory settings page', async () => {
     seedRooms();
     await render(<BotsPage />);
-    act(() => q('[data-bots-add]')!.click());
+    openAddBot();
     expect(useStore.getState().appRoute).toBe('settings');
     expect(useStore.getState().settingsInitialTab).toBe('factory');
   });
@@ -1156,7 +1316,7 @@ describe('Bots page', () => {
     seedRooms();
     const onAddBot = vi.fn();
     await render(<BotsPage onAddBot={onAddBot} />);
-    act(() => q('[data-bots-add]')!.click());
+    openAddBot();
     expect(onAddBot).toHaveBeenCalledTimes(1);
   });
 
@@ -1205,7 +1365,7 @@ describe('Bots page', () => {
     cards.splice(2, 0, { ...card({ workspaceId: 'w1', actor: by('w1', LEAD), title: 'And the second part, @Verifier please check', at: 205 }), seq: 2.5 });
     seedRooms();
     await render(<BotsPage />);
-    act(() => q('[data-bots-row="room:w1"]')!.click());
+    act(() => q('[data-bots-row="group:grp-000000a1"]')!.click());
     const first = q('[data-room-card-id="c2"]')!;
     const next = q(`[data-room-card-id="${cards[2].id}"]`)!;
     expect(first.querySelector('[data-bots-msg-head]')?.textContent).toBe('Lead');
@@ -1282,7 +1442,7 @@ describe('Bots page', () => {
     await render(<BotsPage />);
     act(() => q(`[data-bots-row="bot:${LEAD}"]`)!.click());
     expect(q(`[data-bots-rail] [data-bots-turn="${LEAD}"]`)).not.toBeNull();
-    act(() => q('[data-bots-row="room:w1"]')!.click());
+    act(() => q('[data-bots-row="group:grp-000000a1"]')!.click());
     expect(q(`[data-bots-turn="${LEAD}"]`)).toBeNull();
   });
 
@@ -1290,10 +1450,28 @@ describe('Bots page', () => {
     bots[1] = { ...bots[1], status: { ...bots[1].status!, presence: 'running', currentTurn: { wakeId: 'w-1', startedAt: Date.now(), threadId: 'general' }, queueDepth: 0 } };
     seedRooms();
     await render(<BotsPage />);
-    act(() => q('[data-bots-row="room:w1"]')!.click());
+    act(() => q('[data-bots-row="group:grp-000000a1"]')!.click());
     expect(q(`[data-bots-turn="${LEAD}"]`)).not.toBeNull();
     act(() => q(`[data-bots-row="bot:${LEAD}"]`)!.click());
     expect(q(`[data-bots-turn="${LEAD}"]`)).toBeNull();
+  });
+
+  it('a turn in a group chat\'s thread (or work it started) shows in that group, never in the 1:1s or General', async () => {
+    const G = 'group:grp-000000c1';
+    groups.push({ id: 'grp-000000c1', workspaceId: 'w1', name: 'Ship it', memberIds: [LEAD, VERIFIER], threadId: G, createdAt: 2_000, updatedAt: 2_000 });
+    bots[1] = { ...bots[1], status: { ...bots[1].status!, presence: 'running', currentTurn: { wakeId: 'w-1', startedAt: Date.now(), threadId: G }, queueDepth: 0 } };
+    bots[2] = { ...bots[2], status: { ...bots[2].status!, presence: 'running', currentTurn: { wakeId: 'w-2', startedAt: Date.now(), threadId: 'handoff:h-9' }, queueDepth: 0 } };
+    seedRooms();
+    act(() => useStore.setState({ roomThreads: { hq: [], w1: [{ threadId: 'handoff:h-9', title: 'Build', lastAt: 1, lastSeq: 1, cardCount: 1, openQuestions: 0, lastKind: 'handoff', status: 'open', unread: null, groupId: 'grp-000000c1' }] } } as never));
+    await render(<BotsPage />);
+    act(() => q(`[data-bots-row="${G}"]`)!.click());
+    expect(q(`[data-bots-turn="${LEAD}"]`)).not.toBeNull();
+    expect(q(`[data-bots-turn="${VERIFIER}"]`)).not.toBeNull();
+    act(() => q(`[data-bots-row="bot:${LEAD}"]`)!.click());
+    expect(q(`[data-bots-turn="${LEAD}"]`)).toBeNull();
+    act(() => q('[data-bots-row="group:grp-000000a1"]')!.click());
+    expect(q(`[data-bots-turn="${LEAD}"]`)).toBeNull();
+    expect(q(`[data-bots-turn="${VERIFIER}"]`)).toBeNull();
   });
 
   it('a turn another bot runs on a dispatch sent from a 1:1 shows in that 1:1', async () => {
@@ -1303,12 +1481,12 @@ describe('Bots page', () => {
     await render(<BotsPage />);
     act(() => q(`[data-bots-row="bot:${LEAD}"]`)!.click());
     expect(q(`[data-bots-turn="${VERIFIER}"]`)).not.toBeNull();
-    act(() => q('[data-bots-row="room:w1"]')!.click());
+    act(() => q('[data-bots-row="group:grp-000000a1"]')!.click());
     expect(q(`[data-bots-turn="${VERIFIER}"]`)).toBeNull();
     act(() => q(`[data-bots-row="bot:${VERIFIER}"]`)!.click());
     expect(q(`[data-bots-turn="${VERIFIER}"]`)).toBeNull();
     // The page remembers the open conversation across mounts: leave the room open.
-    act(() => q('[data-bots-row="room:w1"]')!.click());
+    act(() => q('[data-bots-row="group:grp-000000a1"]')!.click());
   });
 
   it('a list row counts unread bot messages in neutral, and the orange needs-you count wins', async () => {
@@ -1423,7 +1601,8 @@ describe('BotsChat helpers', () => {
   });
 
   it('chatCards narrows to a thread', () => {
-    const room: Conversation = { kind: 'room', id: 'room:w1', workspaceId: 'w1', bots: [], workers: [], last: null, lastAt: 0, needsYou: 0 };
+    const group = { id: 'grp-000000a1', workspaceId: 'w1', name: '', memberIds: [], threadId: 'general' as const, createdAt: 1, updatedAt: 1 };
+    const room: Conversation = { kind: 'room', id: 'group:grp-000000a1', workspaceId: 'w1', group, threadId: 'general', bots: [], workers: [], last: null, lastAt: 0, needsYou: 0 };
     const a = card({ workspaceId: 'w1', actor: by('w1', LEAD) });
     const b = card({ workspaceId: 'w1', actor: by('w1', LEAD), threadId: 'task:t1' });
     expect(chatCards(room, [a, b], null)).toEqual([a, b]);

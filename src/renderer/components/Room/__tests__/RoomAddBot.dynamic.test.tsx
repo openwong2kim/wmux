@@ -386,7 +386,8 @@ describe('Add team', () => {
         issue: 'botsPage.teamName.issue', reviewer: 'botsPage.teamName.reviewer',
       },
     });
-    expect(onDone).toHaveBeenCalledWith(lead);
+    // The lead opens; the whole team goes along (the page offers a group chat with it).
+    expect(onDone).toHaveBeenCalledWith(lead, [lead]);
   });
 
   it('is not offered in a workspace that already has a coordinator; with the bots off it asks first', async () => {
