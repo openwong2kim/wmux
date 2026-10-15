@@ -154,13 +154,74 @@ export function withoutInternalIds(text: string, labels: IdLabels): string {
   }).join('\n');
 }
 
-/** A card's title and body as the owner reads them: a routine's schedule
- *  (not the bot's own instructions), a refusal's plain sentences (not their
- *  codes), no role tag after a bot's name in what main wrote, and in a bot's
- *  own words the ids it cites shown as what they stand for (`labels`). Pure. */
-export function ownerCardText(card: Pick<RoomCard, 'kind' | 'title' | 'body' | 'actor'>, botNames: readonly string[], labels?: IdLabels): { title: string; body: string } {
-  let title = card.title;
-  let body = (card.body ?? '').trim();
+/** The factory system cards this build words in the reader's language
+ *  (RoomCard.notice): code → whether its body is worded too (true) or is the
+ *  evidence the card carries (a command, an error), kept as written. */
+const NOTICE_CODES: ReadonlyMap<string, boolean> = new Map([
+  ['worker.paused', true], ['worker.pausedResumable', true],
+  ['worker.done', true], ['worker.doneResumable', true],
+  ['worker.resumed', true], ['worker.waiting', true],
+  ['worker.noReport', true], ['worker.stillNoReport', true],
+  ['gate.checked', false], ['gate.passedNotCompleted', false],
+  ['gate.passed', false], ['gate.killed', false], ['gate.failed', false],
+  ['gate.skipped', false], ['gate.busy', true], ['gate.noBase', true], ['gate.refused', false],
+  ['gate.notRunNoBot', true], ['gate.notRunNoWorktree', true], ['gate.notRunNoBaseRef', true],
+  ['research.completed', true], ['research.notCompleted', false],
+]);
+
+/** The notice codes that tell the owner a stopped worker can resume. */
+export const RESUMABLE_NOTICE_CODES: ReadonlySet<string> = new Set(['worker.pausedResumable', 'worker.doneResumable']);
+
+/** The task a system card offers Resume for: a card saying a stopped
+ *  worker can resume (by its notice code), whose task's worker is still
+ *  resumable now (`resumable`: an older card for a worker resumed since
+ *  offers nothing). Null otherwise. Pure. */
+export function cardResumeTaskId(card: Pick<RoomCard, 'actor' | 'notice' | 'refs'>, resumable: (taskId: string) => boolean): string | null {
+  if (card.actor.kind !== 'system' || !card.notice || !RESUMABLE_NOTICE_CODES.has(card.notice.code)) return null;
+  const taskId = card.refs?.taskId;
+  return taskId && resumable(taskId) ? taskId : null;
+}
+
+const NOTICE_WORDS: Readonly<Record<string, ReadonlySet<string>>> = {
+  status: new Set(['completed', 'cancelled', 'failed']),
+  by: new Set(['owner', 'bot']),
+  where: new Set(['folder', 'newPane']),
+};
+
+/** A system card's words in the reader's language, from its stable code
+ *  (RoomCard.notice); null for a card with none or a code this build does
+ *  not know (its English title and body are shown). Pure over `t`. */
+export function noticeText(card: Pick<RoomCard, 'actor' | 'body' | 'notice'>, t: T): { title: string; body: string } | null {
+  const notice = card.actor.kind === 'system' ? card.notice : undefined;
+  const wordedBody = notice ? NOTICE_CODES.get(notice.code) : undefined;
+  if (!notice || wordedBody === undefined) return null;
+  const args = notice.args ?? {};
+  const vars: Record<string, string | number> = { ...args };
+  // A word the template needs, worded too; one this build does not know
+  // keeps the card's English.
+  for (const [key, known] of Object.entries(NOTICE_WORDS)) {
+    if (args[key] === undefined) continue;
+    if (!known.has(String(args[key]))) return null;
+  }
+  if (args.status !== undefined) {
+    vars.status = t(`room.notice.status.${args.status}`);
+    vars.pane = t(args.status === 'failed' ? 'room.notice.pane.stays' : 'room.notice.pane.closes');
+  }
+  if (args.by !== undefined) vars.who = t(`room.notice.by.${args.by}`);
+  if (args.where !== undefined) vars.place = t(`room.notice.where.${args.where}`);
+  const key = `room.notice.${notice.code}`;
+  return { title: t(key, vars), body: wordedBody ? t(`${key}.body`, vars) : (card.body ?? '') };
+}
+
+/** A card's title and body as the owner reads them: a factory system card
+ *  in the reader's language (`t`, noticeText), a routine's schedule (not the
+ *  bot's own instructions), a refusal's plain sentences (not their codes), no
+ *  role tag after a bot's name in what main wrote, and in a bot's own words
+ *  the ids it cites shown as what they stand for (`labels`). Pure. */
+export function ownerCardText(card: Pick<RoomCard, 'kind' | 'title' | 'body' | 'actor' | 'notice'>, botNames: readonly string[], labels?: IdLabels, t?: T): { title: string; body: string } {
+  const worded = t ? noticeText(card, t) : null;
+  let title = worded?.title ?? card.title;
+  let body = (worded?.body ?? card.body ?? '').trim();
   if (card.kind === 'routine') body = routineCardBody(body);
   if (card.kind === 'refusal') body = withoutReasonCodes(body);
   if (card.actor.kind === 'system') {

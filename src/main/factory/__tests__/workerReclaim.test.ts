@@ -247,6 +247,8 @@ describe('a reported task whose worker sat idle (refused or failed gate)', () =>
     expect(rec).toMatchObject({ ended: 'reported', endRev: 3 });
     expect(reclaimedWorkerState(rec)).toBe('resumable');
     expect(note.mock.calls.map((c) => c[2])).toEqual(['Worker paused (resumable)']);
+    // Its stable code (worded in the reader's language) and the task its Resume acts on.
+    expect(note.mock.calls[0].slice(4)).toEqual([{ code: 'worker.pausedResumable' }, 'wtask-abc-12345678']);
     // Its workspace stays open (closing it would cancel the task).
     expect(clearVerdict(rec, true, 'ws-elsewhere')).toBe('keep');
     // The task completes later: the record follows the end, with no second stop and no second card.

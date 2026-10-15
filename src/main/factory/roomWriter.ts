@@ -43,6 +43,7 @@ import {
   prThreadId,
   taskOriginThread,
   type CardKind,
+  type CardNotice,
   type RoomCard,
   type ThreadId,
   type ThreadSummary,
@@ -400,6 +401,26 @@ export function sanitizeJobChange(value: unknown): RoomCard['jobChange'] {
   return { botId: j.botId, previous, next };
 }
 
+const NOTICE_CODE_RE = /^[a-z][a-zA-Z0-9.]{0,63}$/;
+const NOTICE_ARG_KEY_RE = /^[a-zA-Z][a-zA-Z0-9]{0,31}$/;
+const NOTICE_ARGS_MAX = 8;
+
+/** A system card's notice (RoomCard.notice), or undefined. */
+export function sanitizeNotice(value: unknown): CardNotice | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const n = value as Record<string, unknown>;
+  if (typeof n.code !== 'string' || !NOTICE_CODE_RE.test(n.code)) return undefined;
+  const args: Record<string, string | number> = {};
+  if (n.args && typeof n.args === 'object' && !Array.isArray(n.args)) {
+    for (const [k, v] of Object.entries(n.args as Record<string, unknown>).slice(0, NOTICE_ARGS_MAX)) {
+      if (!NOTICE_ARG_KEY_RE.test(k)) continue;
+      if (typeof v === 'number' && Number.isFinite(v)) args[k] = v;
+      else if (typeof v === 'string') args[k] = capBody(v);
+    }
+  }
+  return Object.keys(args).length > 0 ? { code: n.code, args } : { code: n.code };
+}
+
 /** A card read from disk, or null when it is not one of this room's. */
 export function parseCardLine(raw: unknown, workspaceId: string): RoomCard | null {
   if (!raw || typeof raw !== 'object') return null;
@@ -416,6 +437,7 @@ export function parseCardLine(raw: unknown, workspaceId: string): RoomCard | nul
   const body = typeof c.body === 'string' ? capBody(c.body) : undefined;
   const refs = sanitizeRefs(c.refs);
   const jobChange = c.kind === 'job_changed' ? sanitizeJobChange(c.jobChange) : undefined;
+  const notice = actor.kind === 'system' ? sanitizeNotice(c.notice) : undefined;
   return {
     version: 1,
     id: c.id,
@@ -434,6 +456,7 @@ export function parseCardLine(raw: unknown, workspaceId: string): RoomCard | nul
     ...(c.closes === true ? { closes: true as const } : {}),
     ...(jobChange ? { jobChange } : {}),
     ...(c.greeting === true && c.kind === 'question' ? { greeting: true as const } : {}),
+    ...(notice ? { notice } : {}),
   };
 }
 
@@ -468,6 +491,8 @@ export interface RoomCardInput {
   jobChange?: RoomCard['jobChange'];
   /** `question` cards only (RoomCard.greeting). */
   greeting?: true;
+  /** System cards only (RoomCard.notice). */
+  notice?: CardNotice;
 }
 
 /** A post from a bot or the owner: idempotent by clientPostId, and a replyTo
@@ -678,6 +703,7 @@ export class RoomWriter {
     const body = capBody(typeof input.body === 'string' ? redactStoredSecrets(input.body) : input.body);
     const refs = sanitizeRefs(redactStoredSecretsDeep(input.refs));
     const jobChange = input.kind === 'job_changed' ? sanitizeJobChange(redactStoredSecretsDeep(input.jobChange)) : undefined;
+    const notice = actor.kind === 'system' ? sanitizeNotice(redactStoredSecretsDeep(input.notice)) : undefined;
     // A fact delivered twice (a re-subscribe, a replay) writes one card.
     const factKey = refs?.factId ? factCardKey({ refs, threadId, kind: input.kind }) : null;
     if (factKey && state.seenFacts.has(factKey)) return null;
@@ -697,6 +723,7 @@ export class RoomWriter {
       ...(input.closes ? { closes: true as const } : {}),
       ...(jobChange ? { jobChange } : {}),
       ...(input.greeting === true && input.kind === 'question' ? { greeting: true as const } : {}),
+      ...(notice ? { notice } : {}),
       ...(extra?.replyTo ? { replyTo: extra.replyTo } : {}),
       ...(extra?.clientPostId ? { clientPostId: extra.clientPostId } : {}),
     };

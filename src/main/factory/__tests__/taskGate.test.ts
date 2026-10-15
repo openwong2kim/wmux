@@ -442,4 +442,12 @@ describe('describeTaskGate', () => {
     expect(killed.body).toContain('NOT recorded');
     expect(describeTaskGate({ ok: false, status: 'busy', taskId: 't' }).title).toBe('Gate already running: task left open');
   });
+
+  it('carries a stable code and the values its words need, the evidence left in the body', () => {
+    const failed = describeTaskGate({ ok: true, status: 'completed', taskId: 't', recorded: true, result: { exitCode: 2, tail: '', at: 1, command: 'npm test' } });
+    expect(failed.notice).toEqual({ code: 'gate.failed', args: { exit: 2 } });
+    expect(describeTaskGate({ ok: false, status: 'refused', taskId: 't', code: 'no_base_gate', error: 'no script' }).notice).toEqual({ code: 'gate.noBase', args: { detail: 'no script' } });
+    expect(describeTaskGate({ ok: false, status: 'busy', taskId: 't' }).notice).toEqual({ code: 'gate.busy' });
+    expect(describeTaskGate({ ok: false, status: 'refused', taskId: 't', error: 'x' }).notice).toEqual({ code: 'gate.refused' });
+  });
 });

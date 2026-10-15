@@ -16,7 +16,7 @@
 
 import type { LedgerEntry } from '../../shared/ledger';
 import type { LedgerUpdateInput, LedgerUpdateResult } from '../../daemon/ledger/TaskLedger';
-import { taskThreadOf, type ThreadId } from '../../shared/room';
+import { taskThreadOf, type CardNotice, type ThreadId } from '../../shared/room';
 import { registerDeliveryCheck } from '../pipe/deliveryGuards';
 
 /** How long a worker's pane must stay idle after a turn end before a nudge. */
@@ -38,7 +38,7 @@ export interface ReportNudgePorts {
   isRunning: (ptyId: string) => boolean;
   /** Paste the line + Enter into the pane (gated); true when it was sent. */
   submit: (ptyId: string, text: string) => Promise<boolean>;
-  note?: (workspaceId: string, threadId: ThreadId, title: string, body: string) => void;
+  note?: (workspaceId: string, threadId: ThreadId, title: string, body: string, notice?: CardNotice) => void;
   graceMs?: number;
   setTimer?: (fn: () => void, ms: number) => unknown;
   log?: (msg: string) => void;
@@ -69,9 +69,9 @@ export function installReportNudge(ports: ReportNudgePorts): ReportNudger {
   const pending = new Set<string>();
   let disposed = false;
 
-  const note = (row: LedgerEntry, title: string, body: string): void => {
+  const note = (row: LedgerEntry, title: string, body: string, notice: CardNotice): void => {
     try {
-      ports.note?.(row.ownerWorkspaceId, taskThreadOf(row), title, body);
+      ports.note?.(row.ownerWorkspaceId, taskThreadOf(row), title, body, notice);
     } catch {
       /* best effort */
     }
@@ -85,7 +85,7 @@ export function installReportNudge(ports: ReportNudgePorts): ReportNudger {
       const sent = await ports.submit(ptyId, reportNudgeText(row.id, row.rev)).catch(() => false);
       if (!sent) return; // held (someone typing, an approval): the next turn end tries again
       nudged.set(taskId, ptyId);
-      note(row, 'Worker answered without reporting its task', 'wmux reminded it once to record the result in the task ledger.');
+      note(row, 'Worker answered without reporting its task', 'wmux reminded it once to record the result in the task ledger.', { code: 'worker.noReport' });
       return;
     }
     if (sentTo !== ptyId || surfaced.has(taskId)) return;
@@ -106,7 +106,7 @@ export function installReportNudge(ports: ReportNudgePorts): ReportNudger {
       surfaced.delete(taskId);
       return;
     }
-    if (!r.noop) note(row, 'Worker still has not reported its task', 'The task needs a look: the worker answered twice without recording a result. It keeps running.');
+    if (!r.noop) note(row, 'Worker still has not reported its task', 'The task needs a look: the worker answered twice without recording a result. It keeps running.', { code: 'worker.stillNoReport' });
   };
 
   return {

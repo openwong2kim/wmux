@@ -52,7 +52,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { LedgerEntry } from '../../shared/ledger';
-import { taskThreadOf, type ThreadId } from '../../shared/room';
+import { taskThreadOf, type CardNotice, type ThreadId } from '../../shared/room';
 import { isPlausibleResumeSessionId, normalizeResumeCwd, permissionFlagFor, type PermissionMode } from '../../shared/agentResume';
 import { sessionsStartedIn } from '../worktask/stopSessionsInDir';
 import { createFilePersister, readVersionedFile, type FilePersister } from './versionedFile';
@@ -303,7 +303,7 @@ export interface WorkerReclaimPorts {
   listSessions: () => Promise<WorkerSessionInfo[]>;
   /** daemon `session.stopAgent`. */
   stopAgent: (sessionId: string) => Promise<{ ok?: boolean; stopped?: boolean; code?: string }>;
-  note?: (workspaceId: string, threadId: ThreadId, title: string, body: string) => void;
+  note?: (workspaceId: string, threadId: ThreadId, title: string, body: string, notice?: CardNotice, taskId?: string) => void;
   /** The Bots page re-reads (BOT_EVENT). */
   changed?: () => void;
   now?: () => number;
@@ -490,6 +490,8 @@ export async function reclaimWorker(ports: WorkerReclaimPorts, entry: LedgerEntr
           resumable
             ? 'The task is reported for review and its worker sat idle: its Claude stopped to free memory and its agent slot. The task stays open for review and its pane stays; the worktree and the conversation are kept, and Resume continues the same conversation.'
             : 'The task is reported for review and its worker sat idle: its Claude stopped to free memory and its agent slot. The task stays open for review and its pane stays; the worktree is kept, but no conversation was recorded to resume.',
+          { code: resumable ? 'worker.pausedResumable' : 'worker.paused' },
+          entry.id,
         );
       } else {
         ports.note?.(
@@ -499,6 +501,8 @@ export async function reclaimWorker(ports: WorkerReclaimPorts, entry: LedgerEntr
           resumable
             ? `Task ${ended}: its Claude stopped to free memory. ${pane} The worktree and the conversation are kept; Resume continues the same conversation.`
             : `Task ${ended}: its Claude stopped to free memory. ${pane} The worktree is kept; no conversation was recorded to resume.`,
+          { code: resumable ? 'worker.doneResumable' : 'worker.done', args: { status: ended } },
+          entry.id,
         );
       }
     } catch {
@@ -640,7 +644,7 @@ export interface WorkerResumePorts {
   rebindTask?: (taskId: string, workspaceId: string) => Promise<{ from: number; to: number } | null>;
   /** Whether a folder exists (default: fs). */
   folderExists?: (dir: string) => boolean;
-  note?: (workspaceId: string, threadId: ThreadId, title: string, body: string) => void;
+  note?: (workspaceId: string, threadId: ThreadId, title: string, body: string, notice?: CardNotice, taskId?: string) => void;
   changed?: () => void;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
@@ -799,7 +803,7 @@ async function resumeOnce(
     typed = false;
   }
   if (!typed) return refuse('not_typed', 'the resume line could not be typed into the worker\'s pane');
-  return launched(ports, rec, pane.sessionId, pane.resumeSessionId, workerWorkspaceOf(rec), by, message, onLaunched, 'in the task folder');
+  return launched(ports, rec, pane.sessionId, pane.resumeSessionId, workerWorkspaceOf(rec), by, message, onLaunched, 'folder');
 }
 
 /** The worker's pane is gone: open a new task workspace in the worktree. */
@@ -859,7 +863,7 @@ async function respawnOnce(
     await stopRelaunched(ports, rec.taskId, r.sessionId);
     return refuse('not_now', 'the bot\'s work was stopped while this resume was under way');
   }
-  return launched(ports, rec, r.sessionId, pane.resumeSessionId, r.workspaceId, by, message, onLaunched, 'in a new pane in the task worktree');
+  return launched(ports, rec, r.sessionId, pane.resumeSessionId, r.workspaceId, by, message, onLaunched, 'newPane');
 }
 
 /** The task's ledger row names `workspaceId` (written now when it named
@@ -903,13 +907,13 @@ async function launched(
   by: { kind: 'owner' } | { kind: 'bot'; botId: string },
   message: string | undefined,
   onLaunched: (() => void) | undefined,
-  where: string,
+  where: 'folder' | 'newPane',
 ): Promise<WorkerResumeResult> {
   const now = ports.now ?? Date.now;
   ports.store.setState(rec.taskId, 'resumed', now());
   onLaunched?.();
   try {
-    ports.note?.(rec.ownerWorkspaceId, rec.threadId, 'Worker resumed', `${by.kind === 'owner' ? 'The owner' : 'The bot'} resumed the same conversation ${where}.`);
+    ports.note?.(rec.ownerWorkspaceId, rec.threadId, 'Worker resumed', `${by.kind === 'owner' ? 'The owner' : 'The bot'} resumed the same conversation ${where === 'folder' ? 'in the task folder' : 'in a new pane in the task worktree'}.`, { code: 'worker.resumed', args: { by: by.kind, where } }, rec.taskId);
   } catch {
     /* best effort */
   }

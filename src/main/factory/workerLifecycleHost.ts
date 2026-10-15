@@ -8,7 +8,7 @@
 import { getConnectorStore } from './connectorStore';
 import type { BrowserWindow } from 'electron';
 import type { DaemonClient } from '../DaemonClient';
-import type { ThreadId } from '../../shared/room';
+import type { CardNotice, ThreadId } from '../../shared/room';
 import { BOT_EVENT } from '../../shared/bot';
 import { sanitizePtyText } from '../../shared/types';
 import { eventBus } from '../events/EventBus';
@@ -71,8 +71,12 @@ const HOLDERS_SHOWN_MAX = 6;
 /** The renderer's workspace.close answers this fast or not at all. */
 const CLOSE_TIMEOUT_MS = 10_000;
 
-function note(workspaceId: string, threadId: ThreadId, title: string, body: string): void {
-  getRoomWriter()?.append({ workspaceId, threadId, kind: 'fact', actor: { kind: 'system' }, title, body });
+function note(workspaceId: string, threadId: ThreadId, title: string, body: string, notice?: CardNotice, taskId?: string): void {
+  getRoomWriter()?.append({
+    workspaceId, threadId, kind: 'fact', actor: { kind: 'system' }, title, body,
+    ...(notice ? { notice } : {}),
+    ...(taskId ? { refs: { taskId } } : {}),
+  });
 }
 
 /** Start everything; returns the stop. */
@@ -358,6 +362,7 @@ export function startWorkerLifecycle(deps: WorkerLifecycleDeps): () => void {
       (w.threadId ?? `task:${w.taskId}`) as ThreadId,
       'Worker waiting, not started',
       `"${w.title}" is waiting for an agent slot and has not started; it starts when one frees. ${inUse} of ${cap} in use: ${slotHolders(inUse)}.`,
+      { code: 'worker.waiting', args: { title: w.title, inUse, cap, holders: slotHolders(inUse) } },
     ),
     changed,
   });

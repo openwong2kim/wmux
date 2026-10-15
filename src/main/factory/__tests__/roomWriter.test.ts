@@ -72,6 +72,19 @@ describe('RoomWriter store', () => {
     expect(again.append({ workspaceId: 'ws1', kind: 'status', actor: SYS, title: 'three' })!.seq).toBe(3);
   });
 
+  it('a system card keeps its notice code and values across a restart; a bot card or a malformed notice keeps none', () => {
+    const w = writer();
+    const card = w.append({
+      workspaceId: 'ws1', threadId: 'task:t1', kind: 'fact', actor: SYS, title: 'Worker done',
+      notice: { code: 'worker.done', args: { status: 'cancelled', exit: 1, 'bad key': 'x', nested: { a: 1 } as never } },
+    })!;
+    expect(card.notice).toEqual({ code: 'worker.done', args: { status: 'cancelled', exit: 1 } });
+    expect(writer().read('ws1').cards[0].notice).toEqual({ code: 'worker.done', args: { status: 'cancelled', exit: 1 } });
+    const botCard = w.append({ workspaceId: 'ws1', kind: 'status', actor: { kind: 'bot', workspaceId: 'ws1', botId: 'bot-0a1b2c3d' }, title: 'b', notice: { code: 'worker.done' } })!;
+    expect(botCard).not.toHaveProperty('notice');
+    expect(w.append({ workspaceId: 'ws1', kind: 'fact', actor: SYS, title: 'c', notice: { code: 'Not A Code' } })).not.toHaveProperty('notice');
+  });
+
   it('refuses a workspace id that is not filename-safe and an invalid thread', () => {
     const w = writer();
     expect(w.append({ workspaceId: '../x', kind: 'status', actor: SYS, title: 't' })).toBeNull();
