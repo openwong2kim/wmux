@@ -213,7 +213,10 @@ export async function createCodexTuiRelay(options:{codeHome?:string; onRequestMe
     const authenticated = !authToken || supplied.length === expected.length && timingSafeEqual(supplied,expected);
     // One TUI: the first claim, and again only while a lost link waits for it.
     if (!authenticated || retired || claimed || everClaimed && !loss || request.headers.origin || !['/','/rpc'].includes(request.url ?? '')) {
-      socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
+      // Close the socket once the refusal is flushed: an upgraded socket is
+      // half-open after end() until the peer closes its side, and it still
+      // counts toward maxConnections and holds server.close().
+      socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n',()=>socket.destroy());
       return;
     }
     claimed = true;
