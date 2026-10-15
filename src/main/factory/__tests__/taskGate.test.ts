@@ -12,6 +12,7 @@ import type { LedgerEntry, LedgerGateResult } from '../../../shared/ledger';
 import type { GateRunInput, GateRunResult } from '../../worktask/TaskGateRunner';
 import { completeCheckedTask, completeResearchTask, describeTaskGate, gateCardNoted, installTaskGate, isTaskGateReport, reportWasGated, type TaskGatePorts } from '../taskGate';
 import type { RoomCard } from '../../../shared/room';
+import { RoomWriter } from '../roomWriter';
 import { verifyGateFactId } from '../verifyPreset';
 import { countOpenBotWorkers } from '../../pipe/handlers/fanout.rpc';
 
@@ -288,6 +289,17 @@ describe('the system gate on a bot task report', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('a gate card\'s key survives a restart of the room (written, then read back from disk)', () => {
+    const rooms = path.join(dir, 'rooms');
+    const key = verifyGateFactId('wtask-a1b2c3d4-0123456789abcdef', 123456);
+    const thread = 'task:wtask-a1b2c3d4-0123456789abcdef' as RoomCard['threadId'];
+    const before = new RoomWriter({ dir: rooms, log: () => undefined });
+    expect(before.append({ workspaceId: 'ws-lead', threadId: thread, kind: 'fact', actor: { kind: 'system' }, title: 'Gate refused: task left open' }, { clientPostId: key })).not.toBeNull();
+    const after = new RoomWriter({ dir: rooms, log: () => undefined });
+    expect(gateCardNoted((ws, m) => after.find(ws, m), 'ws-lead', thread, key)).toBe(true);
+    expect(gateCardNoted((ws, m) => after.find(ws, m), 'ws-lead', thread, verifyGateFactId('wtask-a1b2c3d4-0123456789abcdef', 123457))).toBe(false);
   });
 
   it('gateCardNoted: only a system card in the task thread with the key counts', () => {

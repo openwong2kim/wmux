@@ -26,6 +26,7 @@ import { runningWakeTainted } from './wakeTaint';
 import { installReportNudge, submitToWorkerPane } from './workerReportNudge';
 import { setWorkerLivePane } from './workerMessage';
 import {
+  REPORTED_UNSEEN_IDLE_MS,
   ReclaimedWorkers,
   createWorkerClear,
   installWorkerReclaim,
@@ -40,6 +41,7 @@ import {
   workerWorkspaceOf,
 } from './workerReclaim';
 import { getWorkspaceMirror } from '../workspace/WorkspaceMirror';
+import { STOPPED_BY_OWNER } from './factoryStop';
 import { getFanOutGuards, setDormantTaskWorkspaces } from '../worktask/fanoutGuards';
 import type { FanOutService } from '../worktask/FanOutService';
 import { sendToRenderer } from '../pipe/handlers/_bridge';
@@ -199,14 +201,17 @@ export function startWorkerLifecycle(deps: WorkerLifecycleDeps): () => void {
       },
       retryMs: RESUMED_SWEEP_MS,
       // A reported task's worker is stopped once every pane of its
-      // workspace was seen to end its turn (a status not known yet, as right
-      // after a restart, is no evidence), and only those panes are stopped.
+      // workspace was seen to end its turn, and only those panes are
+      // stopped. A status main has not seen yet (right after a restart) is
+      // taken as idle only for a task reported long ago.
       turnEnded: (entry) => {
         const ws = mirror.getEntries()?.find((e) => e.id === entry.taskWorkspaceId);
         const ptys = ws && Array.isArray(ws.ptyIds) ? ws.ptyIds : [];
+        const longAgo = Date.now() - entry.updatedAt >= REPORTED_UNSEEN_IDLE_MS;
         return ptys.length > 0 && ptys.every((id) => {
           const st = getLastBroadcastAgentStatus(id);
-          return st !== undefined && st !== 'running' && st !== 'awaiting_input' && !hasOutstandingRunningClaim(id);
+          if (hasOutstandingRunningClaim(id) || st === 'running' || st === 'awaiting_input') return false;
+          return st !== undefined || longAgo;
         });
       },
       workspacePanes: (workspaceId) => {
@@ -277,6 +282,10 @@ export function startWorkerLifecycle(deps: WorkerLifecycleDeps): () => void {
       // task started from outside text (unknown counts as outside text).
       taskTainted: (taskId) => ledger.get(taskId)?.dispatch?.origin.tainted !== false,
       senderTainted: runningWakeTainted,
+      stoppedByOwner: (taskId) => {
+        const row = ledger.get(taskId);
+        return !!row && row.status === 'cancelled' && row.summary === STOPPED_BY_OWNER && row.updatedBy.kind === 'system';
+      },
       // A bot's resume starts a worker: its own worker budget applies.
       botWorkerRefusal: (botId, starting) => {
         const store = getBotStore();

@@ -110,7 +110,7 @@ export async function deliverWorkerMessage(
   const origin = row?.dispatch?.origin;
   if (!row || origin?.kind !== 'bot' || origin.botId !== botId) return refuse('not_found', 'no task you started has this id');
   if (row.status !== 'working' && row.status !== 'input_required') {
-    return refuse('not_running', `the task is ${row.status}: its worker is not taking messages (worker_resume restarts an ended task's worker)`);
+    return refuse('not_running', `the task is ${row.status}: its worker is not taking messages (worker_resume restarts the stopped worker of an ended or reported task)`);
   }
   // Read in the same tick as the task: the wake that sends is the one asking.
   if (origin.tainted === false) {

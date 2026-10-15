@@ -252,6 +252,17 @@ describe('a research task (scratch folder, no worktree)', () => {
     expect(respawn).toHaveBeenCalledWith(expect.objectContaining({ cwd: wt, line: `claude --resume ${UUID} --dangerously-skip-permissions` }));
     await settled(store);
   });
+
+  it('a bot does not start the worker of a task the owner stopped again; the owner can', async () => {
+    const store = ReclaimedWorkers.at(dir);
+    await reclaimWorker(reclaimPorts(store, [session()], { row: () => row('review_requested'), turnEnded: () => true }).ports, row('review_requested'), 'reported');
+    const typeLine = vi.fn(() => true);
+    const ports: WorkerResumePorts = { store, listSessions: async () => [session({ agentProcessAlive: false, commandRunning: false })], typeLine, now: () => 9_000, stoppedByOwner: () => true };
+    expect(await resumeWorker(ports, 'wtask-abc-12345678', { kind: 'bot', botId: BOT })).toMatchObject({ ok: false, code: 'not_now' });
+    expect(typeLine).not.toHaveBeenCalled();
+    expect(await resumeWorker(ports, 'wtask-abc-12345678', { kind: 'owner' })).toMatchObject({ ok: true });
+    await settled(store);
+  });
 });
 
 describe('resumeWorker', () => {

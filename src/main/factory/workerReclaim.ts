@@ -64,6 +64,9 @@ export const RECLAIMED_WORKERS_VERSION = 1 as const;
 export const RECLAIM_CATCHUP_MS = 24 * 3_600_000;
 /** How long a reported task's worker sits idle before it is stopped. */
 export const REPORTED_IDLE_MS = 5 * 60_000;
+/** A pane whose turn status main has not seen (as after a restart) counts
+ *  as idle only once its task was reported this long ago. */
+export const REPORTED_UNSEEN_IDLE_MS = 30 * 60_000;
 /** Records kept (oldest dropped first). */
 export const RECLAIMED_WORKERS_MAX = 500;
 /** How long a resume waits for the relaunched agent before a message. */
@@ -640,6 +643,9 @@ export interface WorkerResumePorts {
    *  (a bot's resume starts a worker like its fan-out does). `starting`:
    *  the bot's other resumes under way, not yet counted as resumed. */
   botWorkerRefusal?: (botId: string, starting: number) => string | null;
+  /** Whether the owner stopped this task (Stop, or bots switched off): a
+   *  bot does not start its worker again. Absent: never. */
+  stoppedByOwner?: (taskId: string) => boolean;
 }
 
 /** The bot's resumed workers still live outside an open ledger row (the
@@ -724,6 +730,9 @@ async function resumeOnce(
   const rec = ports.store.get(taskId);
   if (!rec) return refuse('not_reclaimed', 'this task\'s worker was not stopped by wmux, so there is nothing to resume');
   if (by.kind === 'bot' && rec.botId !== by.botId) return refuse('not_yours', 'a bot resumes only the workers of tasks it started');
+  if (by.kind === 'bot' && ports.stoppedByOwner?.(taskId) === true) {
+    return refuse('not_now', 'the owner stopped this task; its worker is not started again by a bot');
+  }
   if (rec.state === 'resumed') return refuse('already_running', 'this worker was resumed already');
   if (rec.state === 'stopping') return refuse('busy', 'this worker is still being stopped; try again in a moment');
   // Read in the same tick as the request: a stop of resumed workers from
