@@ -401,6 +401,26 @@ describe('FactoryTab', () => {
     expect(settingsPort.get).not.toHaveBeenCalled();
   });
 
+  it('shows the space bot task folders use, and Clean up now says what it did and reads the space again', async () => {
+    const view = {
+      version: 1 as const, enabled: true, hqWorkspaceId: null, trustedAuthors: [], morning: { hour: 9, weekdays: [1, 2, 3, 4, 5] },
+      verifierOnOwnerPrs: true, defaultEngine: { kind: 'claude-sdk' as const }, globalConcurrentBots: 2, laneAutoMerge: false, laneDailyCap: 5,
+    };
+    const usage = vi.fn()
+      .mockResolvedValueOnce({ bytes: 3 * 1024 ** 3, folders: 4, dirty: 1 })
+      .mockResolvedValueOnce({ bytes: 512 * 1024 ** 2, folders: 1, dirty: 1 });
+    const cleanTaskFolders = vi.fn(async () => ({ ok: true as const, removed: 3, keptDirty: 1, busy: 0, failed: 0 }));
+    const settingsPort = { available: true, get: vi.fn(async () => view), set: vi.fn(async () => view), taskFolderUsage: usage, cleanTaskFolders };
+    const botPort: FactoryBotPort = { available: true, list: async () => [], subscribe: () => () => undefined, act: async () => ({ ok: true }) };
+    await render(createElement(FactoryTab, { settingsPort, botPort }));
+    const line = () => container.querySelector('[data-testid="factory-task-folders-usage"]')?.textContent;
+    expect(line()).toBe('Folders: 4, 3 GB · kept with uncommitted changes: 1');
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="factory-task-folders-clean"]')!.click());
+    expect(cleanTaskFolders).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('[data-testid="factory-task-folders-note"]')?.textContent).toBe('Removed 3. Kept 1 with uncommitted changes and 0 still in use.');
+    expect(line()).toBe('Folders: 1, 512 MB · kept with uncommitted changes: 1');
+  });
+
   it('with a factory, turning it on writes enabled through the port', async () => {
     const view = {
       version: 1 as const, enabled: false, hqWorkspaceId: null, trustedAuthors: [], morning: { hour: 9, weekdays: [1, 2, 3, 4, 5] },

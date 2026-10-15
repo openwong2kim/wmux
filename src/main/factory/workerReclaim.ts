@@ -644,6 +644,11 @@ export interface WorkerResumePorts {
   rebindTask?: (taskId: string, workspaceId: string) => Promise<{ from: number; to: number } | null>;
   /** Whether a folder exists (default: fs). */
   folderExists?: (dir: string) => boolean;
+  /** Put the task's folder back at this path when its end removed it
+   *  (taskFolderCleanup.ts: the worktree on its kept branch, or an empty
+   *  research folder); true when it is there now. Absent: a removed folder
+   *  refuses the resume. */
+  restoreFolder?: (taskId: string, folder: string) => Promise<boolean>;
   note?: (workspaceId: string, threadId: ThreadId, title: string, body: string, notice?: CardNotice, taskId?: string) => void;
   changed?: () => void;
   now?: () => number;
@@ -825,6 +830,9 @@ async function respawnOnce(
   } catch {
     exists = false;
   }
+  // A folder the task's end removed comes back at the same path, so the
+  // agent's per-folder conversation resumes there.
+  if (!exists && ports.restoreFolder) exists = await ports.restoreFolder(rec.taskId, pane.cwd).catch(() => false);
   if (!exists) return refuse('worktree_gone', 'the task\'s worktree is gone, so there is no folder to resume the worker in; start a new task instead');
   // Another pane already runs an agent in the worktree: a second process on
   // the same conversation is never started.

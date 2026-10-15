@@ -525,4 +525,10 @@ describe('taskBubbles', () => {
     expect(taskBubbles(tasks, now).map((t) => t.taskId)).toEqual(['wait', 'r4', 'r3', 'r2']);
     expect(taskBubbles(undefined, now)).toEqual([]);
   });
+
+  it('also lists an ended task whose folder was kept for uncommitted changes, though its worker cannot resume', () => {
+    const now = 100_000_000;
+    const tasks = [view('kept', { worker: 'stopped', folder: 'kept_dirty', updatedAt: now - 1 }), view('plain', { worker: 'stopped', updatedAt: now })];
+    expect(taskBubbles(tasks, now).map((t) => t.taskId)).toEqual(['kept']);
+  });
 });

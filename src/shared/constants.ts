@@ -461,6 +461,10 @@ export const IPC = {
   // The engines a bot's workers may run on that are installed here
   // (shared/botWorkerAgent.ts); main window only.
   FACTORY_WORKER_AGENTS: 'factory:worker:agents',
+  // The space ended and running bot tasks' folders use, and Clean up now
+  // (main/factory/taskFolderCleanup.ts); main window only.
+  FACTORY_TASK_FOLDERS_USAGE: 'factory:taskFolders:usage',
+  FACTORY_TASK_FOLDERS_CLEAN: 'factory:taskFolders:clean',
   TRACK_RECORD_CHANGED: 'trackRecord:changed',
   // Git page ship button: the branch's status, commit / push / create PR
   GIT_SHIP_STATUS: 'gitShip:status',
