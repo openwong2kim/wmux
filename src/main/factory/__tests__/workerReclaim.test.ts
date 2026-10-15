@@ -53,7 +53,9 @@ beforeEach(() => {
   fs.mkdirSync(wt);
 });
 afterEach(() => {
-  fs.rmSync(dir, { recursive: true, force: true });
+  // A record write a test did not wait for may still land while the folder
+  // goes (ENOTEMPTY): retried.
+  fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
 });
 
 function session(over: Partial<WorkerSessionInfo> = {}): WorkerSessionInfo {
