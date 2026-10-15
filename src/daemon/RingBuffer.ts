@@ -1,8 +1,10 @@
 import { terminalCoreSelection } from '../shared/terminalCoreSettings';
 import { writeFile, rename, unlink } from 'node:fs/promises';
 import {
+  appendFileSync,
   readFileSync,
   statSync,
+  truncateSync,
   writeFileSync,
   renameSync,
   unlinkSync,
@@ -394,9 +396,7 @@ export class RingBuffer {
     // Hibernated to this very file: it already holds the bytes. Reading them
     // back would wake the ring on every forced snapshot tick.
     if (this.hibernatedPath === filePath && this.pendingBytes === 0) return;
-    // Never overwrite the only full copy with the partial bytes readAll()
-    // serves while that copy cannot be read back.
-    if (!this.wake()) throw new Error('hibernated ring buffer could not be read back');
+    if (!this.wake()) { this.appendPendingTo(filePath); return; }
     // Captured here (inside the chain) rather than at enqueue time: a slightly
     // fresher snapshot is never wrong for recovery, and the snapshotRunner's
     // dirty-tracking captures totalBytesWritten BEFORE calling us, so a fresher
@@ -449,7 +449,7 @@ export class RingBuffer {
   dumpToFileSyncAtomic(filePath: string): void {
     if (this.disposed) return;
     if (this.hibernatedPath === filePath && this.pendingBytes === 0) return; // see doDumpToFile
-    if (!this.wake()) throw new Error('hibernated ring buffer could not be read back');
+    if (!this.wake()) { this.appendPendingTo(filePath); return; }
     const data = this.readAll();
     const tmpPath = `${filePath}.tmp.${crypto.randomBytes(6).toString('hex')}`;
     try {
@@ -528,6 +528,9 @@ export class RingBuffer {
     if (stored.length !== this.hibernatedFileBytes) {
       if (stored.length > 0) RingBuffer.wakeFailures++;
       this.lastDump = null;
+      // Longer only after a partial append that could not be undone: its
+      // bytes are still in `pending`, so keep the known prefix.
+      if (stored.length > this.hibernatedFileBytes) stored = stored.subarray(0, this.hibernatedFileBytes);
     }
     this.restore(this.pendingBytes > 0 ? Buffer.concat([stored, ...this.pending]) : stored);
     return true;
@@ -548,6 +551,27 @@ export class RingBuffer {
     this.physical = physical;
     this.length = data.length;
     this.writePos = data.length % physical;
+  }
+
+  /**
+   * A dump while the `.buf` cannot be read back: that file is the only full
+   * copy, so it is never replaced with the partial bytes readAll() serves.
+   * The output that arrived since is appended to it instead, so the file (and
+   * a recovery from it) still holds every byte. Throws when that fails too,
+   * like any failed dump.
+   */
+  private appendPendingTo(filePath: string): void {
+    if (this.hibernatedPath !== filePath) throw new Error('hibernated ring buffer could not be read back');
+    try {
+      appendFileSync(filePath, Buffer.concat(this.pending));
+    } catch (err) {
+      // Drop a partial append so a retry cannot repeat its bytes.
+      try { truncateSync(filePath, this.hibernatedFileBytes); } catch { /* wake() reads only the known prefix */ }
+      throw err;
+    }
+    this.hibernatedFileBytes += this.pendingBytes;
+    this.pending = [];
+    this.pendingBytes = 0;
   }
 
   /** Output for a ring whose `.buf` cannot be read back right now. */

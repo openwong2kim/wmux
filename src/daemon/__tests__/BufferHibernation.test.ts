@@ -294,13 +294,24 @@ describe('buffer hibernation', () => {
       ring.write(Buffer.from('during'));
       expect(ring.isHibernated).toBe(true);
       expect(ring.readAll().toString()).toBe('during');
-      await expect(ring.dumpToFile(bufPath)).rejects.toThrow(/could not be read back/);
+      // Neither readable nor writable: the dump fails and the file is untouched.
+      await expect(ring.dumpToFile(bufPath)).rejects.toThrow();
       expect(ring.wake()).toBe(false); // session:died keeps the file
       expect(ring.totalBytesWritten).toBe(before.length + 6);
 
+      // A shutdown dump appends the new bytes instead of replacing the file,
+      // so a recovery from it holds every byte.
+      fs.chmodSync(bufPath, 0o200); // writable, still unreadable
+      await ring.dumpToFile(bufPath);
+      expect(ring.isHibernated).toBe(true);
       fs.chmodSync(bufPath, 0o600);
-      expect(ring.readAll().equals(Buffer.concat([before, Buffer.from('during')]))).toBe(true);
+      const full = Buffer.concat([before, Buffer.from('during')]);
+      expect(fs.readFileSync(bufPath).equals(full)).toBe(true);
+
+      ring.write(Buffer.from('+after'));
+      expect(ring.readAll().equals(Buffer.concat([full, Buffer.from('+after')]))).toBe(true);
       expect(ring.isHibernated).toBe(false);
+      expect(ring.totalBytesWritten).toBe(full.length + 6);
     },
   );
 
