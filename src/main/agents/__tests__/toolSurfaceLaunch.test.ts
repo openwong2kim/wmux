@@ -106,13 +106,44 @@ describe.each([
     const stable = p.join(home, '.wmux', 'mcp', 'index.js');
     const versioned = p.join(res, 'mcp-bundle', 'index.js');
     const legacy = p.join(res, 'mcp', 'mcp', 'index.js');
-    const base = { home, isPackaged: true, resourcesPath: res, pathApi: p };
+    const base = { home, isPackaged: true, resourcesPath: res, pathApi: p, isolated: false };
     expect(locateWmuxMcpEntry({ ...base, exists: has(stable, versioned) })).toBe(stable);
     expect(locateWmuxMcpEntry({ ...base, exists: has(versioned) })).toBe(versioned);
     expect(locateWmuxMcpEntry({ ...base, exists: has(legacy) })).toBe(legacy);
     expect(locateWmuxMcpEntry({ ...base, exists: has() })).toBeNull();
     // A suffixed data dir is never where the bundle is.
     expect(locateWmuxMcpEntry({ ...base, exists: has(p.join(home, '.wmux-dev', 'mcp', 'index.js')) })).toBeNull();
+  });
+
+  it('packaged, isolated instance: its own bundle first (the stable copy is the installed app\'s), the copy as fallback', () => {
+    const stable = p.join(home, '.wmux', 'mcp', 'index.js');
+    const versioned = p.join(res, 'mcp-bundle', 'index.js');
+    const legacy = p.join(res, 'mcp', 'mcp', 'index.js');
+    const base = { home, isPackaged: true, resourcesPath: res, pathApi: p, isolated: true };
+    expect(locateWmuxMcpEntry({ ...base, exists: has(stable, versioned) })).toBe(versioned);
+    expect(locateWmuxMcpEntry({ ...base, exists: has(stable, legacy) })).toBe(legacy);
+    expect(locateWmuxMcpEntry({ ...base, exists: has(stable) })).toBe(stable);
+  });
+
+  it('packaged: a data suffix in the environment counts as isolated', () => {
+    const stable = p.join(home, '.wmux', 'mcp', 'index.js');
+    const versioned = p.join(res, 'mcp-bundle', 'index.js');
+    const base = { home, isPackaged: true, resourcesPath: res, pathApi: p, exists: has(stable, versioned) };
+    const saved = { suffix: process.env.WMUX_DATA_SUFFIX, external: process.env.WMUX_MCP_REGISTER_EXTERNAL };
+    try {
+      process.env.WMUX_DATA_SUFFIX = '-e2e';
+      delete process.env.WMUX_MCP_REGISTER_EXTERNAL;
+      expect(locateWmuxMcpEntry(base)).toBe(versioned);
+      // An instance that claims the registration slot also syncs the copy.
+      process.env.WMUX_MCP_REGISTER_EXTERNAL = '1';
+      expect(locateWmuxMcpEntry(base)).toBe(stable);
+      delete process.env.WMUX_DATA_SUFFIX;
+      delete process.env.WMUX_MCP_REGISTER_EXTERNAL;
+      expect(locateWmuxMcpEntry(base)).toBe(stable);
+    } finally {
+      if (saved.suffix === undefined) delete process.env.WMUX_DATA_SUFFIX; else process.env.WMUX_DATA_SUFFIX = saved.suffix;
+      if (saved.external === undefined) delete process.env.WMUX_MCP_REGISTER_EXTERNAL; else process.env.WMUX_MCP_REGISTER_EXTERNAL = saved.external;
+    }
   });
 
   it('dev: dist/mcp/mcp/entry.js under the app path or a parent', () => {
