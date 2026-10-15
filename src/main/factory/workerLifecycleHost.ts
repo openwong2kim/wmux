@@ -46,7 +46,8 @@ import { getWorkspaceMirror } from '../workspace/WorkspaceMirror';
 import path from 'node:path';
 import { getWmuxHomeDir } from '../../shared/constants';
 import { TaskWorktreeManager } from '../worktask/TaskWorktreeManager';
-import { TaskFolders, gitRepoInfo, installTaskFolderCleanup, restoreTaskFolder, setTaskFolderPorts, type TaskMission } from './taskFolderCleanup';
+import { TaskFolders, gitRepoInfo, holdTaskFolder, installTaskFolderCleanup, restoreTaskFolder, setTaskFolderPorts, type TaskMission } from './taskFolderCleanup';
+import { getSharedTaskGateRunner } from '../worktask/TaskGateRunner';
 import { STOPPED_BY_OWNER } from './factoryStop';
 import { getFanOutGuards, setDormantTaskWorkspaces } from '../worktask/fanoutGuards';
 import type { FanOutService } from '../worktask/FanOutService';
@@ -256,7 +257,14 @@ export function startWorkerLifecycle(deps: WorkerLifecycleDeps): () => void {
         const out = new Map<string, TaskMission>();
         for (const t of reply.tasks as Array<Record<string, unknown>>) {
           const folder = typeof t?.worktreePath === 'string' && t.worktreePath ? t.worktreePath : typeof t?.outputDir === 'string' && t.outputDir ? t.outputDir : '';
-          if (typeof t?.id === 'string' && folder) out.set(t.id, { folder, ...(typeof t.branch === 'string' && t.branch ? { branch: t.branch } : {}) });
+          if (typeof t?.id === 'string' && folder) {
+            out.set(t.id, {
+              folder,
+              ...(typeof t.branch === 'string' && t.branch ? { branch: t.branch } : {}),
+              // A detached task's worktree is the owner's now.
+              ...(typeof t.detachedAt === 'number' ? { detached: true } : {}),
+            });
+          }
         }
         return out;
       },
@@ -264,6 +272,7 @@ export function startWorkerLifecycle(deps: WorkerLifecycleDeps): () => void {
       workerState: (taskId: string) => reclaimed.get(taskId)?.state ?? null,
       worktrees: folderWorktrees,
       repoInfo: gitRepoInfo,
+      gateRunning: (taskId: string) => getSharedTaskGateRunner()?.isRunning(taskId) === true,
       changed,
       allRows: () => ledger.list({}),
     } : null;
@@ -283,7 +292,7 @@ export function startWorkerLifecycle(deps: WorkerLifecycleDeps): () => void {
     setWorkerResumePorts({
       store: reclaimed,
       listSessions,
-      ...(folderPorts ? { restoreFolder: (taskId: string, folder: string) => restoreTaskFolder(folderPorts, taskId, folder) } : {}),
+      ...(folderPorts ? { restoreFolder: (taskId: string, folder: string) => restoreTaskFolder(folderPorts, taskId, folder), holdFolder: holdTaskFolder } : {}),
       // The same stage a resume typed from the pane takes (pty:write-launch):
       // a bot worker's line carries its settings file, or this throws.
       typeLine: (sessionId, line) => {

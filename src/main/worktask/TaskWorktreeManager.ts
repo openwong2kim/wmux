@@ -618,28 +618,30 @@ export class TaskWorktreeManager {
 
   /**
    * Put a removed task worktree back at the same path, on its kept branch
-   * (`git worktree add <path> <branch>`: no new branch, no reset). Refused
-   * when the branch is gone or the path is taken. The same folder is what
-   * lets an agent's per-folder conversation resume there.
+   * (`git worktree add <path> <branch>`: no new branch, no reset), or, for a
+   * detached checkout (`detached`: `ref` is a commit), on that commit.
+   * Refused when the branch or commit is gone or the path is taken. The same
+   * folder is what lets an agent's per-folder conversation resume there.
    */
-  async restoreWorktree(repoRoot: string, repoHash: string, worktreePath: string, branch: string): Promise<CreateResult> {
+  async restoreWorktree(repoRoot: string, repoHash: string, worktreePath: string, ref: string, detached = false): Promise<CreateResult> {
     return this.withRepoLock(repoHash, async () => {
-      const safeBranch = validateGitRef(branch, 'branch');
+      const safeRef = validateGitRef(ref, detached ? 'commit' : 'branch');
+      if (detached && !/^[0-9a-f]{40,64}$/.test(safeRef)) return { ok: false, error: 'restoreWorktree: not a commit id' };
       const safePath = validatePath(worktreePath, 'worktreePath');
       if (fs.existsSync(safePath)) return { ok: false, error: 'restoreWorktree: the path is already taken' };
       try {
-        await this.runGit(['rev-parse', '--verify', '--quiet', `refs/heads/${safeBranch}`], repoRoot);
+        await this.runGit(['rev-parse', '--verify', '--quiet', detached ? `${safeRef}^{commit}` : `refs/heads/${safeRef}`], repoRoot);
       } catch {
-        return { ok: false, error: `restoreWorktree: the branch is gone: ${safeBranch}` };
+        return { ok: false, error: `restoreWorktree: ${detached ? 'the commit' : 'the branch'} is gone: ${safeRef}` };
       }
       try {
         // A stale record of the removed folder would make git refuse the path.
         await this.runGit(['worktree', 'prune'], repoRoot);
-        await this.runGit(['worktree', 'add', safePath, safeBranch], repoRoot);
+        await this.runGit(detached ? ['worktree', 'add', '--detach', safePath, safeRef] : ['worktree', 'add', safePath, safeRef], repoRoot);
       } catch (err) {
         return { ok: false, error: `restoreWorktree: git worktree add failed: ${(err as Error).message}` };
       }
-      return { ok: true, worktreePath: safePath, branch: safeBranch };
+      return { ok: true, worktreePath: safePath, branch: detached ? '' : safeRef };
     });
   }
 
