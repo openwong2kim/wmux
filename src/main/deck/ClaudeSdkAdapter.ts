@@ -123,6 +123,44 @@ export async function loadSdkQueryFn(): Promise<SdkQueryFn> {
 // vendored binary is too heavy to ship). Resolution lives in one shared module
 // so Moa and the first-run wizard agree on whether claude is installed.
 import { resolveClaudeExecutable } from '../claude/resolveClaudeExecutable';
+
+/** The SDK's warning that bare `allowedTools` names bypass `canUseTool`. */
+export const CAN_USE_TOOL_SHADOWED = 'CLAUDE_SDK_CAN_USE_TOOL_SHADOWED';
+let shadowedWarned = false;
+
+/**
+ * Run `fn` (one SDK `query()` call) with the SDK's CAN_USE_TOOL_SHADOWED
+ * warning let through once per process. The warning is by design here: the
+ * bare `mcp__wmux__*` names in `allowedTools` are meant to skip `canUseTool`
+ * (the D2 auto-allow list below); `canUseTool` gates only what is left (the
+ * Write sandbox, a bot's repository reads). The SDK warns on every `query()`,
+ * that is every brain and bot turn, and a plain Node warning is never
+ * deduplicated. Only that code is filtered, and only during the synchronous
+ * call; every other warning passes. Exported for tests.
+ */
+export function withShadowedWarningOnce<T>(fn: () => T, proc: Pick<NodeJS.Process, 'emitWarning'> = process): T {
+  const original = proc.emitWarning;
+  const filtered = function (this: unknown, warning: string | Error, ...rest: unknown[]): void {
+    const opts = rest[0];
+    const code = opts && typeof opts === 'object' ? (opts as { code?: unknown }).code : rest[1];
+    if (code === CAN_USE_TOOL_SHADOWED) {
+      if (shadowedWarned) return;
+      shadowedWarned = true;
+    }
+    (original as (...a: unknown[]) => void).call(proc, warning, ...rest);
+  };
+  proc.emitWarning = filtered as NodeJS.Process['emitWarning'];
+  try {
+    return fn();
+  } finally {
+    if (proc.emitWarning === filtered) proc.emitWarning = original;
+  }
+}
+
+/** Tests only. */
+export function __resetShadowedWarningForTesting(): void {
+  shadowedWarned = false;
+}
 export { resolveClaudeExecutable };
 
 /** GLM / Z.ai (or any Anthropic-compatible) endpoint profile. When set, the
@@ -1145,7 +1183,7 @@ export class ClaudeSdkAdapter implements BrainAdapter {
             return;
           }
         }
-        handle = queryFn({ prompt, options });
+        handle = withShadowedWarningOnce(() => queryFn({ prompt, options }));
       } catch (err) {
         this.disposeHandoff();
         if (resumingUnvalidated && attempt === 0) {

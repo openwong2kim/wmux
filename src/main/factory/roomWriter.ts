@@ -989,7 +989,17 @@ export function factRooms(fact: Fact, bots: BotDirectoryApi | undefined): string
   return [...out];
 }
 
-interface SystemCard { workspaces: string[]; threadId: ThreadId; kind: CardKind; title: string; body?: string; refs?: RoomCard['refs']; closes?: true; }
+interface SystemCard { workspaces: string[]; threadId: ThreadId; kind: CardKind; title: string; body?: string; refs?: RoomCard['refs']; closes?: true; notice?: CardNotice }
+
+/** What a budget refusal stopped, in the English the card keeps (the
+ *  reader's language comes from its notice, roomFormat.ts). */
+const BUDGET_LIMIT_TEXT: Readonly<Record<string, string>> = {
+  turns_hour: 'is out of turns for this hour',
+  turns_day: 'is out of turns for today',
+  concurrent_workers: 'is running as many workers as it may at once',
+  worker_hours_day: 'has used its worker hours for today',
+  factory_workers: 'waits: the bots run as many workers as they may at once',
+};
 
 /** The system card(s) a fact becomes, or null for kinds the room does not
  *  show (PR / issue / CI edges other than the closing ones — the bots post
@@ -1095,12 +1105,20 @@ export function systemCardForFact(fact: Fact, bots?: BotDirectoryApi): SystemCar
         title: `${botLabel(bots, fact.ref?.botId)} was refused ${str(fact.ref?.method) || 'a call'} (${str(p.reason) || 'surface'})`,
         refs: baseRefs,
       };
-    case 'bot.budget_exhausted':
+    case 'bot.budget_exhausted': {
+      // Which limit, and when the bot picks up again (a turn limit frees by
+      // itself as its window slides; BotRuntime computes the time).
+      const name = botLabel(bots, fact.ref?.botId);
+      const reason = str(p.reason);
+      const until = typeof p.until === 'number' && Number.isFinite(p.until) && p.until > 0 ? p.until : null;
+      const limit = BUDGET_LIMIT_TEXT[reason] ?? 'is out of budget';
       return {
         workspaces: factRooms(fact, bots), threadId: GENERAL_THREAD, kind: 'budget',
-        title: `${botLabel(bots, fact.ref?.botId)} is out of budget (${str(p.reason) || 'budget'})`,
+        title: `${name} ${limit}${until !== null ? `; it picks up again at ${formatHeldUntil(until, fact.at)}` : ''}`,
         refs: baseRefs,
+        ...(reason in BUDGET_LIMIT_TEXT ? { notice: { code: 'budget.exhausted', args: { bot: name, limit: reason, ...(until !== null ? { until } : {}) } } } : {}),
       };
+    }
     case 'bot.notice': {
       // Main's own line to one bot; the owner sees it only when it says so
       // (a worker that could not start), in the thread it is about, title only.
@@ -1143,6 +1161,7 @@ export function writeFactCards(writer: RoomWriter, fact: Fact, bots?: BotDirecto
       ...(spec.body ? { body: spec.body } : {}),
       ...(spec.refs ? { refs: spec.refs } : {}),
       ...(spec.closes ? { closes: true as const } : {}),
+      ...(spec.notice ? { notice: spec.notice } : {}),
       at: fact.at,
     });
     if (card) out.push(card);
@@ -1181,7 +1200,8 @@ export function writeHeldWakeCard(writer: RoomWriter, ev: RoomBotHookEvent, bots
   if (ev.type !== 'wake.held' || !('wakeId' in ev) || !isRoomWorkspaceId(ev.workspaceId)) return null;
   const threadId = parseThreadId(ev.threadId) ?? GENERAL_THREAD;
   const name = botLabel(bots, ev.botId);
-  const until = 'until' in ev && typeof ev.until === 'number' ? ` until ${formatHeldUntil(ev.until, ev.at)}` : '';
+  const at = 'until' in ev && typeof ev.until === 'number' ? ev.until : null;
+  const until = at !== null ? ` until ${formatHeldUntil(at, ev.at)}` : '';
   const r = writer.post({
     workspaceId: ev.workspaceId,
     threadId,
@@ -1189,6 +1209,7 @@ export function writeHeldWakeCard(writer: RoomWriter, ev: RoomBotHookEvent, bots
     actor: { kind: 'system' },
     title: `Queued: ${name} is out of turns${until}; resume it in its profile`,
     refs: { botId: ev.botId },
+    notice: { code: 'budget.held', args: { bot: name, ...(at !== null ? { until: at } : {}) } },
     clientPostId: `held:${ev.wakeId}`,
   });
   return r.ok && !r.duplicate ? r.card : null;

@@ -20,7 +20,7 @@ import type { BrowserWindow } from 'electron';
 import { isMainWindowSender } from '../mainWindowSender';
 import { ipcMain } from 'electron';
 import { IPC } from '../../../shared/constants';
-import type { BotProfile, BotRole } from '../../../shared/bot';
+import type { BotProfile, BotRole, RemovedBot } from '../../../shared/bot';
 import { getBotStore } from '../../factory/botStore';
 import type { RoomCard } from '../../../shared/room';
 import { wrapHandler } from '../wrapHandler';
@@ -58,10 +58,13 @@ export interface RoomIpcPorts {
   decisions?: (workspaceId: string) => WorkspaceDecision[];
   /** Every bot profile (the bot store), for naming card authors. */
   bots?: () => readonly Pick<BotProfile, 'id' | 'role' | 'name'>[];
+  /** The removed bots' tombstones (botStore.ts listRemoved). */
+  removedBots?: () => readonly RemovedBot[];
 }
 
-/** A bot as a card author. */
-export interface RoomActor { role: BotRole; name: string }
+/** A bot as a card author. A removed one (`removed`) keeps its name, its
+ *  picture and its colour slot, from its tombstone. */
+export interface RoomActor { role: BotRole; name: string; removed?: true; avatar?: string; hue?: number }
 
 /** A refused room call (the handlers' typed refusal). */
 export interface RoomRefusal { ok: false; code: string; message: string }
@@ -126,6 +129,7 @@ export function registerRoomIpcHandlers(getWindow: () => BrowserWindow | null, p
     return unwrapRpc(await ports.invoke(method, obj(raw)));
   };
   const bots = ports.bots ?? (() => getBotStore()?.list() ?? []);
+  const removedBots = ports.removedBots ?? (() => getBotStore()?.listRemoved() ?? []);
   const channels = [IPC.ROOM_STATUS, IPC.ROOM_READ, IPC.ROOM_THREADS, IPC.ROOM_POST, IPC.ROOM_RESOLVE, IPC.ROOM_DECISION, IPC.ROOM_ACTORS];
   for (const c of channels) ipcMain.removeHandler(c);
 
@@ -158,6 +162,9 @@ export function registerRoomIpcHandlers(getWindow: () => BrowserWindow | null, p
   // name its author before the bot runtime's own bridge lists the bots.
   ipcMain.handle(IPC.ROOM_ACTORS, wrapHandler(IPC.ROOM_ACTORS, operatorOnly((): { actors: Record<string, RoomActor> } => {
     const actors: Record<string, RoomActor> = {};
+    for (const r of removedBots()) {
+      actors[r.id] = { role: r.role, name: r.name, removed: true, ...(r.avatar ? { avatar: r.avatar } : {}), ...(r.hue !== undefined ? { hue: r.hue } : {}) };
+    }
     for (const b of bots()) actors[b.id] = { role: b.role, name: b.name };
     return { actors };
   })));

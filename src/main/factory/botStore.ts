@@ -19,6 +19,11 @@
 // (shared/bot.ts templateOfRole), and keeps it on the next write; bots.json
 // stays version 1. A stored hourly turn cap of 0 is read as no hourly cap
 // (BotBudget.maxTurnsPerHour is never 0) and refused on write.
+//
+// A removed bot leaves a tombstone (`removed`, shared/bot.ts RemovedBot: its
+// id, name, role, picture and colour slot), so the cards it wrote keep its
+// name and face after a restart. A build without it drops the list on its
+// next write; bots.json stays version 1.
 
 import { randomBytes } from 'node:crypto';
 import path from 'node:path';
@@ -40,6 +45,8 @@ import {
   type BotRole,
   type BotTemplate,
   type BotTrigger,
+  type RemovedBot,
+  BOT_IDENTITY_SLOTS,
 } from '../../shared/bot';
 import { CLAUDE_EFFORT_LEVELS } from '../../shared/claudeModels';
 import { isFactKind, type FactFilter } from '../../shared/facts';
@@ -56,6 +63,8 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 
 export const BOTS_FILE_VERSION = 1 as const;
 export const BOTS_MAX = 64;
+/** Removed bots remembered (bots.json `removed`), newest kept. */
+export const REMOVED_BOTS_MAX = 64;
 const NAME_MAX = BOT_NAME_MAX;
 const TRIGGERS_MAX = 32;
 const ACP_COMMAND_MAX = 512;
@@ -214,6 +223,28 @@ function sanitizeParked(raw: unknown): BotProfile['parked'] | null {
 }
 
 /** A profile read from disk, fully validated (a fresh object), or null. */
+/** A removed bot's tombstone, validated (null: dropped). */
+export function parseRemovedBot(raw: unknown): RemovedBot | null {
+  if (!isRecord(raw)) return null;
+  if (typeof raw.id !== 'string' || !BOT_ID_RE.test(raw.id)) return null;
+  if (typeof raw.workspaceId !== 'string' || raw.workspaceId.length === 0 || raw.workspaceId.length > 200) return null;
+  if (!isBotRole(raw.role)) return null;
+  const name = normalizeBotName(raw.name);
+  if (!name || !Number.isSafeInteger(raw.removedAt)) return null;
+  const avatar = raw.avatar === undefined ? null : parseBotAvatar(raw.avatar);
+  const hue = Number.isInteger(raw.hue) && (raw.hue as number) >= 0 && (raw.hue as number) < BOT_IDENTITY_SLOTS ? (raw.hue as number) : undefined;
+  return {
+    id: raw.id,
+    workspaceId: raw.workspaceId,
+    role: raw.role,
+    ...(isBotTemplate(raw.template) ? { template: raw.template } : {}),
+    name,
+    ...(avatar ? { avatar } : {}),
+    ...(hue !== undefined ? { hue } : {}),
+    removedAt: raw.removedAt as number,
+  };
+}
+
 export function parseBotProfile(raw: unknown): BotProfile | null {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
   const r = raw as Record<string, unknown>;
@@ -343,6 +374,7 @@ export function botsFilePath(wmuxDir: string): string {
 export class BotStore implements BotDirectoryApi {
   private bots = new Map<string, BotProfile>();
   private usage = new Map<string, BotUsage>();
+  private removed: RemovedBot[] = [];
   private readonly persister: FilePersister;
   private readonly now: () => number;
   private readonly newId: () => string;
@@ -367,7 +399,14 @@ export class BotStore implements BotDirectoryApi {
     const raw = readVersionedFile(this.file, BOTS_FILE_VERSION);
     this.bots.clear();
     this.usage.clear();
+    this.removed = [];
     if (!raw) return;
+    if (Array.isArray(raw.removed)) {
+      for (const entry of raw.removed.slice(-REMOVED_BOTS_MAX)) {
+        const r = parseRemovedBot(entry);
+        if (r) this.removed.push(r);
+      }
+    }
     const list = Array.isArray(raw.bots) ? raw.bots : [];
     let migrated = false;
     this.migrated = [];
@@ -410,7 +449,7 @@ export class BotStore implements BotDirectoryApi {
   private snapshot(): unknown {
     const usage: Record<string, BotUsage> = {};
     for (const [id, u] of this.usage) usage[id] = u;
-    return { version: BOTS_FILE_VERSION, bots: [...this.bots.values()], usage };
+    return { version: BOTS_FILE_VERSION, bots: [...this.bots.values()], usage, ...(this.removed.length > 0 ? { removed: this.removed } : {}) };
   }
 
   /** Resolves once the current state is on disk. */
@@ -606,11 +645,24 @@ export class BotStore implements BotDirectoryApi {
     return { ok: true, bot: copyProfile(next) };
   }
 
-  remove(botId: string): boolean {
-    if (!this.bots.delete(botId)) return false;
+  /** Delete a profile, keeping its tombstone (`hue`: its colour slot). */
+  remove(botId: string, opts: { hue?: number } = {}): boolean {
+    const cur = this.bots.get(botId);
+    if (!cur || !this.bots.delete(botId)) return false;
     this.usage.delete(botId);
+    const tomb = parseRemovedBot({
+      id: cur.id, workspaceId: cur.workspaceId, role: cur.role, template: cur.template, name: cur.name,
+      avatar: cur.avatar, hue: opts.hue, removedAt: this.now(),
+    });
+    this.removed = this.removed.filter((r) => r.id !== botId);
+    if (tomb) this.removed = [...this.removed, tomb].slice(-REMOVED_BOTS_MAX);
     this.changed();
     return true;
+  }
+
+  /** The removed bots remembered, oldest first (copies). */
+  listRemoved(): RemovedBot[] {
+    return this.removed.map((r) => ({ ...r }));
   }
 
   /** Park (or, with null, unpark) a bot. */

@@ -95,6 +95,73 @@ describe('bot.* auth matrix', () => {
   });
 });
 
+describe('bot.remove', () => {
+  function rigRemove(withStop: boolean) {
+    const store = new BotStore(botsFilePath(dir));
+    const created = store.create({ workspaceId: 'ws-1', template: 'developer', name: 'Developer' });
+    if (!created.ok) throw new Error('create');
+    const botId = created.bot.id;
+    const order: string[] = [];
+    const runtime = {
+      remove: (id: string, opts: { hue?: number }) => {
+        order.push('remove');
+        return store.remove(id, opts);
+      },
+      currentTurn: () => null,
+      interrupt: () => ({ ok: false, code: 'not_running' }),
+    } as unknown as BotRuntime;
+    // Two open tasks: this bot's and another bot's.
+    const rows = [
+      { id: 'task-mine', rev: 1, status: 'working', dispatch: { origin: { kind: 'bot', botId } } },
+      { id: 'task-other', rev: 1, status: 'working', dispatch: { origin: { kind: 'bot', botId: 'bot-ffffffff' } } },
+    ];
+    const updates: Array<{ id: string; status: string; summary?: string }> = [];
+    const workersStopped: string[] = [];
+    const stopPorts = withStop ? {
+      runtime: () => runtime,
+      botIds: () => store.list().map((b) => b.id),
+      ledger: {
+        list: (f: { openOnly?: boolean }) => (f.openOnly ? rows : []),
+        get: (id: string) => rows.find((x) => x.id === id) ?? null,
+        update: async (u: { id: string; status: string; summary?: string }) => {
+          order.push(`cancel ${u.id}`);
+          updates.push(u);
+          const row = rows.find((x) => x.id === u.id);
+          if (row) row.status = u.status;
+          return { ok: true };
+        },
+      },
+      gates: () => null,
+      stopWorker: async (e: { id: string }) => { workersStopped.push(e.id); return 1; },
+      stopResumed: async () => 0,
+      launchesInFlight: () => [],
+      log: () => undefined,
+    } : null;
+    const { router, handlers } = captureRouter();
+    registerBotRpcHandlers(router, () => ({ store, runtime, queue: {} as WakeQueue }), undefined, { stopPorts: () => stopPorts as never });
+    const call = (p: Record<string, unknown>) => (handlers.get('bot.remove') as Handler)(p, OPERATOR);
+    return { store, botId, order, updates, workersStopped, call };
+  }
+
+  it('stops that bot\'s work as Stop does (its tasks end "stopped by owner"), then removes it with a tombstone', async () => {
+    const r = rigRemove(true);
+    expect(await r.call({ botId: r.botId, hue: 4 })).toMatchObject({ ok: true, botId: r.botId, stopped: { ok: true, workersStopped: 1, tasksCancelled: 1 } });
+    expect(r.order).toEqual(['cancel task-mine', 'remove']);
+    expect(r.updates).toEqual([expect.objectContaining({ id: 'task-mine', status: 'cancelled', summary: 'stopped by owner' })]);
+    expect(r.workersStopped).toEqual(['task-mine']);
+    expect(r.store.get(r.botId)).toBeNull();
+    expect(r.store.listRemoved()).toEqual([expect.objectContaining({ id: r.botId, name: 'Developer', hue: 4 })]);
+  });
+
+  it('refuses a bad colour slot or an unknown bot; without a stop it still removes', async () => {
+    const r = rigRemove(false);
+    expect(await r.call({ botId: r.botId, hue: 8 })).toMatchObject({ ok: false, code: 'invalid_argument' });
+    expect(await r.call({ botId: 'bot-ffffffff' })).toMatchObject({ ok: false, code: 'not_found' });
+    expect(await r.call({ botId: r.botId })).toMatchObject({ ok: true });
+    expect(r.order).toEqual(['remove']);
+  });
+});
+
 describe('bot.setJob', () => {
   type Posted = Parameters<SetJobPorts['post']>[0];
   type Wake = { state: string; reason: { kind: string }; owner?: 'other' } | null;
