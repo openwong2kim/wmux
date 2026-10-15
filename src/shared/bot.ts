@@ -167,6 +167,12 @@ export interface BotProfile {
    *  square PNG at most BOT_AVATAR_PX wide, written only by main. Absent =
    *  the UI draws the name's initials. */
   avatar?: string;
+  /** Its identity colour slot, 0..BOT_IDENTITY_SLOTS-1 (its character):
+   *  given by main at create, the first slot free among its workspace's
+   *  bots in IDENTITY_SPREAD order, and kept for its life, so a relaunch or
+   *  another bot's removal never moves it. Absent only on a profile written
+   *  before slots were stored (the store fills it on load). */
+  hue?: number;
   enabled: boolean;
   parked?: { reason: 'budget' | 'error' | 'human'; at: number };
   createdAt: number;
@@ -178,6 +184,44 @@ export const BOT_ID_RE = /^bot-[0-9a-f]{8}$/;
 /** How many identity colour slots a bot's face takes from (the renderer's
  *  BOT_IDENTITY_HUES). */
 export const BOT_IDENTITY_SLOTS = 8;
+
+/** The order a room's bots take the identity colours in: each next colour
+ *  far from those before it (teal, violet, magenta, blue, slate, …), never
+ *  the palette's neighbour, so a room's first five bots read apart. */
+export const IDENTITY_SPREAD = [5, 2, 4, 0, 7, 3, 6, 1] as const;
+
+export type IdentityBot = Pick<BotProfile, 'id' | 'createdAt' | 'workspaceId'>;
+
+/** Each bot's colour slot among `bots`, per room (workspace): oldest first
+ *  (then by id), a bot takes the first slot of IDENTITY_SPREAD that the
+ *  fewest bots of its room hold (`taken`: slots its room's bots already
+ *  hold) — two bots of a room never share one while the palette lasts. Pure. */
+export function identityHueIndexes(bots: readonly IdentityBot[], taken: readonly { workspaceId: string; index: number }[] = []): Map<string, number> {
+  const n = BOT_IDENTITY_SLOTS;
+  const order = [...bots].sort((a, b) => a.createdAt - b.createdAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  const used = new Map<string, number[]>();
+  const usedIn = (ws: string) => {
+    let u = used.get(ws);
+    if (!u) { u = new Array<number>(n).fill(0); used.set(ws, u); }
+    return u;
+  };
+  for (const t of taken) usedIn(t.workspaceId)[t.index] += 1;
+  const out = new Map<string, number>();
+  for (const b of order) {
+    if (out.has(b.id)) continue;
+    const u = usedIn(b.workspaceId);
+    const least = Math.min(...u);
+    const pick = IDENTITY_SPREAD.find((i) => u[i] === least) ?? IDENTITY_SPREAD[0];
+    u[pick] += 1;
+    out.set(b.id, pick);
+  }
+  return out;
+}
+
+/** Whether a value is an identity colour slot. */
+export function isIdentitySlot(v: unknown): v is number {
+  return Number.isInteger(v) && (v as number) >= 0 && (v as number) < BOT_IDENTITY_SLOTS;
+}
 
 /** What is kept of a removed bot (bots.json `removed`): enough for the cards
  *  it wrote to keep its name and face, marked as removed. */

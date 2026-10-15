@@ -47,6 +47,8 @@ import {
   type BotTrigger,
   type RemovedBot,
   BOT_IDENTITY_SLOTS,
+  identityHueIndexes,
+  isIdentitySlot,
 } from '../../shared/bot';
 import { CLAUDE_EFFORT_LEVELS } from '../../shared/claudeModels';
 import { isFactKind, type FactFilter } from '../../shared/facts';
@@ -283,6 +285,7 @@ export function parseBotProfile(raw: unknown): BotProfile | null {
     budget,
     ...(repo ? { repo } : {}),
     ...(avatar ? { avatar } : {}),
+    ...(isIdentitySlot(r.hue) ? { hue: r.hue } : {}),
     enabled: r.enabled,
     ...(parked ? { parked } : {}),
     createdAt: r.createdAt as number,
@@ -434,6 +437,16 @@ export class BotStore implements BotDirectoryApi {
       if (legacy || entry.template !== bot.template) migrated = true;
       this.bots.set(bot.id, bot);
     }
+    // A profile from before identity slots were stored gets the slot the
+    // Bots page computed for it (oldest first, among its workspace's bots),
+    // written back once, so no bot's character changes with the upgrade.
+    const live = [...this.bots.values()];
+    const missing = live.filter((b) => b.hue === undefined);
+    if (missing.length > 0) {
+      const taken = live.filter((b) => b.hue !== undefined).map((b) => ({ workspaceId: b.workspaceId, index: b.hue as number }));
+      for (const [id, hue] of identityHueIndexes(missing, taken)) (this.bots.get(id) as BotProfile).hue = hue;
+      migrated = true;
+    }
     const usage = raw.usage && typeof raw.usage === 'object' && !Array.isArray(raw.usage)
       ? (raw.usage as Record<string, unknown>)
       : {};
@@ -525,6 +538,12 @@ export class BotStore implements BotDirectoryApi {
     for (let i = 0; this.bots.has(id) && i < 8; i++) id = this.newId();
     if (!BOT_ID_RE.test(id) || this.bots.has(id)) return refuse('invalid_argument', 'could not mint a bot id');
     const now = this.now();
+    // The first slot free among the workspace's live bots, in the spread
+    // order; a removed bot's slot is free again.
+    const taken = [...this.bots.values()]
+      .filter((b) => b.workspaceId === workspaceId && b.hue !== undefined)
+      .map((b) => ({ workspaceId, index: b.hue as number }));
+    const hue = identityHueIndexes([{ id, createdAt: now, workspaceId }], taken).get(id);
     const bot: BotProfile = {
       version: 1,
       id,
@@ -538,6 +557,7 @@ export class BotStore implements BotDirectoryApi {
       budget,
       ...(repo ? { repo } : {}),
       ...(avatar ? { avatar } : {}),
+      ...(hue !== undefined ? { hue } : {}),
       enabled: input.enabled ?? true,
       createdAt: now,
       updatedAt: now,
@@ -645,14 +665,15 @@ export class BotStore implements BotDirectoryApi {
     return { ok: true, bot: copyProfile(next) };
   }
 
-  /** Delete a profile, keeping its tombstone (`hue`: its colour slot). */
+  /** Delete a profile, keeping its tombstone with its colour slot (its
+   *  stored one; `hue`, the remover's, only for a profile without one). */
   remove(botId: string, opts: { hue?: number } = {}): boolean {
     const cur = this.bots.get(botId);
     if (!cur || !this.bots.delete(botId)) return false;
     this.usage.delete(botId);
     const tomb = parseRemovedBot({
       id: cur.id, workspaceId: cur.workspaceId, role: cur.role, template: cur.template, name: cur.name,
-      avatar: cur.avatar, hue: opts.hue, removedAt: this.now(),
+      avatar: cur.avatar, hue: cur.hue ?? opts.hue, removedAt: this.now(),
     });
     this.removed = this.removed.filter((r) => r.id !== botId);
     if (tomb) this.removed = [...this.removed, tomb].slice(-REMOVED_BOTS_MAX);

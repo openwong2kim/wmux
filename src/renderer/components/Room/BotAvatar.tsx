@@ -13,7 +13,7 @@
 // Decorative by default (the name is always written beside it); pass `alt`
 // where the avatar stands alone.
 import { useEffect, useId, useRef } from 'react';
-import type { BotProfile } from '../../../shared/bot';
+import { IDENTITY_SPREAD, identityHueIndexes, isIdentitySlot, type BotProfile, type IdentityBot as SharedIdentityBot } from '../../../shared/bot';
 import { MOCHI_CHARACTERS, type MochiCharacter } from './mochiCharacters';
 import './botAvatar.css';
 
@@ -54,41 +54,16 @@ function idHash(botId: string): number {
   return h;
 }
 
-/** The order a room's bots take the identity colours in: each next colour
- *  far from those before it (teal, violet, magenta, blue, slate, …), never
- *  the palette's neighbour, so a room's first five bots read apart. */
-export const IDENTITY_SPREAD = [5, 2, 4, 0, 7, 3, 6, 1] as const;
+// The spread order and the pure assignment live in shared/bot.ts, where main
+// gives each bot its slot at create (BotProfile.hue).
+export { IDENTITY_SPREAD, identityHueIndexes };
 
-type IdentityBot = Pick<BotProfile, 'id' | 'createdAt' | 'workspaceId'>;
+type IdentityBot = SharedIdentityBot & Pick<BotProfile, 'hue'>;
 
-/** Each bot's colour among `bots`, per room (workspace): oldest first (then
- *  by id), a bot takes the first colour of IDENTITY_SPREAD that the fewest
- *  bots of its room hold (`taken`: colours its room's bots already hold) —
- *  two bots of a room never share one while the palette lasts. Pure. */
-export function identityHueIndexes(bots: readonly IdentityBot[], taken: readonly { workspaceId: string; index: number }[] = []): Map<string, number> {
-  const n = BOT_IDENTITY_HUES.length;
-  const order = [...bots].sort((a, b) => a.createdAt - b.createdAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
-  const used = new Map<string, number[]>();
-  const usedIn = (ws: string) => {
-    let u = used.get(ws);
-    if (!u) { u = new Array<number>(n).fill(0); used.set(ws, u); }
-    return u;
-  };
-  for (const t of taken) usedIn(t.workspaceId)[t.index] += 1;
-  const out = new Map<string, number>();
-  for (const b of order) {
-    if (out.has(b.id)) continue;
-    const u = usedIn(b.workspaceId);
-    const least = Math.min(...u);
-    const pick = IDENTITY_SPREAD.find((i) => u[i] === least) ?? IDENTITY_SPREAD[0];
-    u[pick] += 1;
-    out.set(b.id, pick);
-  }
-  return out;
-}
-
-// Each listed bot's colour in this window. A bot keeps its colour while it
-// exists; a removed bot's colour is free again for the next one added.
+// Each listed bot's colour in this window: the slot main stored with it
+// (BotProfile.hue), else, for a profile without one, computed here. A bot
+// keeps its colour while it exists; a removed bot's colour is free again for
+// the next one added.
 const assigned = new Map<string, { index: number; workspaceId: string }>();
 
 /** Records listed bots, so their colours are told apart (useFactoryBots).
@@ -98,6 +73,7 @@ export function noteBotIdentities(bots: readonly IdentityBot[], complete = false
     const listed = new Set(bots.map((b) => b.id));
     for (const id of [...assigned.keys()]) if (!listed.has(id)) assigned.delete(id);
   }
+  for (const b of bots) if (isIdentitySlot(b.hue)) assigned.set(b.id, { index: b.hue, workspaceId: b.workspaceId });
   const fresh = bots.filter((b) => !assigned.has(b.id));
   if (fresh.length === 0) return;
   for (const [id, index] of identityHueIndexes(fresh, [...assigned.values()])) {
