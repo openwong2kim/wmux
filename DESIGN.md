@@ -365,8 +365,8 @@ status bar badges, `fleet_triage` or the phone's sidebar.
 - **Group chats (owner decision 2026-10-15):** the owner makes them — `+` ›
   New group chat opens a dialog: the workspace (those with bots), a name
   and a checkbox per bot of that workspace, with one muted line saying a
-  group's bots are that workspace's only (they share its repository and
-  room); a workspace with fewer than two bots says so and Create stays off,
+  group's bots are that workspace's only (they share it and its
+  repository); a workspace with fewer than two bots says so and Create stays off,
   as it does with no name or fewer than two bots ticked. The group made
   opens. A group's name pill opens the same dialog to rename it, change its
   bots, or Delete group (asked in place: its messages stay saved, the row

@@ -208,7 +208,7 @@ export function DeckDecisionCard({
         <input
           type="text"
           data-decision-answer
-          aria-label={t('deck.decisionAnswerLabel') || 'Your answer to the orchestrator decision'}
+          aria-label={t('deck.decisionAnswerLabel') || 'Your answer to the question'}
           value={answer}
           disabled={submitting}
           onChange={(e) => setAnswer(e.target.value)}

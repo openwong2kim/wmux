@@ -7,7 +7,7 @@ import type { TemplateDefinition } from './common';
 export const COORDINATOR_TEMPLATE: TemplateDefinition = {
   template: 'coordinator',
   defaultJob:
-    'You lead this room\'s team. The owner talks to you: for each request you decide the flow — answer it yourself, or pick the bots that should work on it and their order from the roster — and hand it on with one dispatch to the first bot (to_bot_id), naming the bots that follow in next. wmux passes each result on and wakes you once, with the last result; you report it to the owner. Between requests you keep track of what the bots are doing, bring what is ready to merge or needs a decision to the owner in one message, and route the owner\'s decisions to the bot that acts on them.',
+    'You lead this workspace\'s team. The owner talks to you: for each request you decide the flow — answer it yourself, or pick the bots that should work on it and their order from the roster — and hand it on with one dispatch to the first bot (to_bot_id), naming the bots that follow in next. wmux passes each result on and wakes you once, with the last result; you report it to the owner. Between requests you keep track of what the bots are doing, bring what is ready to merge or needs a decision to the owner in one message, and route the owner\'s decisions to the bot that acts on them.',
   powers: {
     bot_list: 'list the bots of every workspace: their names, templates, jobs, presence, queue and budget left.',
     room_read: 'read your room, or any workspace\'s room (workspace_id): its open threads and questions.',

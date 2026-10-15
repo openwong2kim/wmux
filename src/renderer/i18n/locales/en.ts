@@ -1518,7 +1518,7 @@ export const en = {
   'botsPage.group.name': "Name",
   'botsPage.group.namePlaceholder': "e.g. Release crew",
   'botsPage.group.bots': "Bots",
-  'botsPage.group.sameWorkspace': "Bots of {workspace} only: a group's bots share its repository and room.",
+  'botsPage.group.sameWorkspace': "Bots of {workspace} only: a group's bots share that workspace and its repository.",
   'botsPage.group.needTwoBots': "{workspace} has fewer than two bots. Add another bot there first.",
   'botsPage.group.needName': "Name the group.",
   'botsPage.group.pickTwo': "Pick two or more bots.",
@@ -1794,7 +1794,7 @@ export const en = {
   'settings.factory.notInstalled': "Bots aren't installed in this build, so these settings are off.",
   'settings.factory.notStarted': "Bots haven't started yet. Try again in a moment.",
   'settings.factory.enabled': "Bots on",
-  'settings.factory.enabledDesc': "Turn on to add Bots to the sidebar. Bots start working in each workspace's room, waking on new events and on your messages.",
+  'settings.factory.enabledDesc': "Turn on to add Bots to the sidebar. Bots start working in their workspaces, waking on new events and on your messages in a 1:1 or a group chat.",
   'settings.factory.trustedAuthors': "Trusted authors",
   'settings.factory.trustedAuthorsDesc': "GitHub logins whose pull requests the Verifier checks, separated by commas.",
   'settings.factory.morning': "Morning report",
@@ -3684,7 +3684,7 @@ export const en = {
   'deck.decisionHandoffElsewhere': "Moa proposed a hand-off here. Answer it in Moa's panel.",
   'deck.decisionResolve': 'Resolve',
   'deck.decisionPlaceholder': 'Type your answer…',
-  'deck.decisionAnswerLabel': 'Your answer to the orchestrator decision',
+  'deck.decisionAnswerLabel': 'Your answer to the question',
   // Command Deck D1 — the deterministic "welcome home" briefing card.
   // The headline and the while-away line are assembled in the RENDERER from
   // structured counts, so every fragment below is a whole sentence/clause with a

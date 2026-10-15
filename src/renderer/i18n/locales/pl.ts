@@ -1496,7 +1496,7 @@ export const pl = {
   'botsPage.group.name': "Nazwa",
   'botsPage.group.namePlaceholder': "np. Ekipa wydania",
   'botsPage.group.bots': "Boty",
-  'botsPage.group.sameWorkspace': "Tylko boty z {workspace}: boty grupy dzielą jej repozytorium i pokój.",
+  'botsPage.group.sameWorkspace': "Tylko boty z {workspace}: boty grupy dzielą ten obszar roboczy i jego repozytorium.",
   'botsPage.group.needTwoBots': "{workspace} ma mniej niż dwa boty. Najpierw dodaj tam kolejnego bota.",
   'botsPage.group.needName': "Nazwij grupę.",
   'botsPage.group.pickTwo': "Wybierz co najmniej dwa boty.",
@@ -1772,7 +1772,7 @@ export const pl = {
   'settings.factory.notInstalled': "Ta wersja nie zawiera botów, więc te ustawienia są wyłączone.",
   'settings.factory.notStarted': "Boty jeszcze się nie uruchomiły. Spróbuj za chwilę.",
   'settings.factory.enabled': "Uruchom boty",
-  'settings.factory.enabledDesc': "Włącz, aby dodać Boty do paska bocznego. Boty zaczynają pracować w pokoju każdego obszaru roboczego i budzą się na nowe zdarzenia oraz Twoje wiadomości.",
+  'settings.factory.enabledDesc': "Włącz, aby dodać Boty do paska bocznego. Boty zaczynają pracować w swoich obszarach roboczych i budzą się na nowe zdarzenia oraz Twoje wiadomości na czacie 1:1 lub grupowym.",
   'settings.factory.trustedAuthors': "Zaufani autorzy",
   'settings.factory.trustedAuthorsDesc': "Loginy GitHub, których pull requesty sprawdza Weryfikator, oddzielone przecinkami.",
   'settings.factory.morning': "Poranny raport",
@@ -3657,7 +3657,7 @@ export const pl = {
   'deck.decisionHandoffElsewhere': "Moa zaproponowała tu przekazanie. Odpowiedz w panelu Moa.",
   'deck.decisionResolve': 'Rozstrzygnij',
   'deck.decisionPlaceholder': 'Wpisz swoją odpowiedź…',
-  'deck.decisionAnswerLabel': 'Twoja odpowiedź na decyzję orkiestratora',
+  'deck.decisionAnswerLabel': 'Twoja odpowiedź na pytanie',
   // Command Deck D1 — the deterministic "welcome home" briefing card.
   // The headline and the while-away line are assembled in the RENDERER from
   // structured counts, so every fragment below is a whole sentence/clause with a
