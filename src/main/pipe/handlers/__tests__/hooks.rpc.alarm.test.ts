@@ -222,6 +222,20 @@ describe('hooks.signal — local verdict gate (CompletionAlarm)', () => {
     expect(pollLifecycle()).toHaveLength(0);
   });
 
+  it('Claude Code\'s post-turn fork calling a tool inside the window does not rebut the stop', async () => {
+    const r = rig();
+    await primeWorking(r);
+
+    await r.dispatch({ kind: 'agent.stop' });
+    // The recap / prompt suggestion fork: agent_id, no agent_type.
+    await r.dispatch({ kind: 'agent.awaiting_permission', payload: { tool_name: 'Read', agent_id: 'a1b2c3', agent_type: '' } });
+
+    vi.advanceTimersByTime(DEFAULT_ALARM_WINDOW_MS);
+
+    expect(r.recordHook).toHaveBeenCalledTimes(1);
+    expect(sendNotificationMock).toHaveBeenCalledTimes(1);
+  });
+
   it('a stop with no prior working evidence is rejected — internal trace, no toast', async () => {
     const r = rig();
 

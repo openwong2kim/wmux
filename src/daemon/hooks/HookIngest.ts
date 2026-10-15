@@ -914,19 +914,21 @@ export class HookIngest {
       this.deps.log?.('warn', `[hooks] authority-touch callback failed for ${sessionId}: ${String(err)}`);
     }
 
+    // A tool of Claude Code's own post-turn fork (the recap, the prompt
+    // suggestion), about 2 s after the Stop, is not the pane's turn: as
+    // working evidence it rebutted that Stop's completion, and its running
+    // broadcast lit the pane for good (the fork's SubagentStop is skipped).
+    // It gets no opinion here, so it follows the session's own permission
+    // flow, and touches no pane state.
+    if (isInternalForkPayload(signal.payload)) return { ok: true, sessionId };
+
     // Verdict-gate feed (R4): PreToolUse never reaches `handle()` — the RPC
     // interceptor routes awaiting_permission straight here — so this is the
     // ONLY working-evidence feed for tool calls on the daemon path. Both the
     // gated and ungated outcome share it, which is the point: an agent about
     // to run ANY tool is working, and this cue must rebut any open completion
     // window before the tool's own output arrives.
-    // Not a tool of Claude Code's own post-turn fork (the recap, the prompt
-    // suggestion): it runs about 2 s after the Stop, and as working evidence
-    // it rebutted that Stop's completion, leaving the pane running for good
-    // (the fork's SubagentStop is skipped). Its gated tool still raises a
-    // dialog below, which is evidence of its own.
-    const internalFork = isInternalForkPayload(signal.payload);
-    if (!internalFork) this.alarm.observe(sessionId, signal.agent, normalizeHookCue(signal));
+    this.alarm.observe(sessionId, signal.agent, normalizeHookCue(signal));
 
     // Transcript nudge: a PreToolUse means the agent is active.
     try {
@@ -976,9 +978,7 @@ export class HookIngest {
 
     if (!isGated) {
       // Non-gated tool (or a bypass session) — emit tool_started for the phone
-      // liveness header, allow. An internal fork's tool says nothing: the
-      // pane's turn is over.
-      if (internalFork) return { ok: true, sessionId };
+      // liveness header, allow.
       this.broadcast(sessionId, {
         agent: agentSlugToDisplay(signal.agent),
         status: 'running',
@@ -992,7 +992,6 @@ export class HookIngest {
     }
 
     // Gated tool — create a gate record and broadcast awaiting_permission.
-    if (internalFork) this.alarm.observe(sessionId, signal.agent, normalizeHookCue(signal));
     const workspaceId = sessions.find((s) => s.id === sessionId)?.env?.[ENV_KEYS.WORKSPACE_ID];
     const toolInputSummary = summarizeToolInput(signal.payload);
     const gateId = this.deps.approvals?.noteGateAwaiting({

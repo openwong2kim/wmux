@@ -1048,6 +1048,14 @@ describe('HookIngest', () => {
       expect(fixture.emitted.at(-1)?.data).toMatchObject({ hookKind: 'agent.stop', decision: 'emit', status: 'complete' });
     });
 
+    it('a fork\'s gated tool raises no gate card: it follows the session\'s own permission flow', () => {
+      let gates = 0;
+      const gating = new HookIngest({ ...fixture.deps, gateConfig: () => ({ gatedTools: ['Bash'] }), approvals: { ...fixture.deps.approvals, noteGateAwaiting: () => { gates += 1; return 'gate-id'; } } });
+      expect(gating.handlePermissionGate(makeSignal({ kind: 'agent.awaiting_permission', ptyId: 'pty-a', payload: { tool_name: 'Bash', ...fork } }))).toEqual({ ok: true, sessionId: 'pty-a' });
+      expect(gates).toBe(0);
+      expect(gating.handlePermissionGate(makeSignal({ kind: 'agent.awaiting_permission', ptyId: 'pty-a', payload: { tool_name: 'Bash' } }))).toMatchObject({ ok: true, gateId: 'gate-id' });
+    });
+
     it('the lead\'s own tool and a real subagent\'s still mark the turn running and rebut the Stop', () => {
       ingest.handle(makeSignal({ ptyId: 'pty-a', kind: 'agent.user_prompt_submit' }));
       ingest.handle(makeSignal({ ptyId: 'pty-a' }));
