@@ -198,14 +198,22 @@ export function startWorkerLifecycle(deps: WorkerLifecycleDeps): () => void {
         reconcile();
       },
       retryMs: RESUMED_SWEEP_MS,
-      // A reported task's worker is stopped once no turn runs in its panes.
+      // A reported task's worker is stopped once every pane of its
+      // workspace was seen to end its turn (a status not known yet, as right
+      // after a restart, is no evidence), and only those panes are stopped.
       turnEnded: (entry) => {
         const ws = mirror.getEntries()?.find((e) => e.id === entry.taskWorkspaceId);
         const ptys = ws && Array.isArray(ws.ptyIds) ? ws.ptyIds : [];
         return ptys.length > 0 && ptys.every((id) => {
           const st = getLastBroadcastAgentStatus(id);
-          return st !== 'running' && st !== 'awaiting_input' && !hasOutstandingRunningClaim(id);
+          return st !== undefined && st !== 'running' && st !== 'awaiting_input' && !hasOutstandingRunningClaim(id);
         });
+      },
+      workspacePanes: (workspaceId) => {
+        const entries = mirror.getEntries();
+        if (!entries) return null;
+        const ws = entries.find((e) => e.id === workspaceId);
+        return ws && Array.isArray(ws.ptyIds) ? ws.ptyIds : [];
       },
     }));
     // The viewed workspace moving (and every other tree push) may make a

@@ -415,13 +415,18 @@ describe('"Run bots" off stops the work (factorySettingsSetHandler)', () => {
     expect(stopWorker).toHaveBeenCalledTimes(2);
   });
 
-  it('off then on at once: cancelled tasks stay cancelled, the stopped wake stays refused, and on stops nothing', async () => {
+  it('off then on at once: cancelled tasks stay cancelled, the stopped wake stays refused, on stops nothing, and work started after on runs', async () => {
     await task('t-work', LEAD);
     await task('t-gated', LEAD, 'review_requested');
     const s = settingsStore(true);
-    const r = ports();
+    // A slow worker stop: the switch-on and new work land while the stop runs.
+    const r = ports({ stopWorker: vi.fn(async () => { await new Promise((res) => setTimeout(res, 20)); return 1; }) });
     const set = factorySettingsSetHandler(() => win, s.handle, () => r.p);
-    const [offRes, onRes] = await Promise.all([set(ok, { enabled: false }), set(ok, { enabled: true })]);
+    const offing = set(ok, { enabled: false });
+    const onRes = await set(ok, { enabled: true });
+    await task('t-new', LEAD);
+    const offRes = await offing;
+    expect(ledger.get('t-new')?.status).toBe('working');
     // The switch-off is carried out although the switch-on landed while it ran.
     expect(offRes).toMatchObject({ stoppedWork: { tasks: 2, ok: true } });
     expect(onRes).toMatchObject({ enabled: true });
@@ -433,6 +438,18 @@ describe('"Run bots" off stops the work (factorySettingsSetHandler)', () => {
     const row = ledger.get('t-work') as LedgerEntry;
     expect((await ledger.update({ id: 't-work', status: 'working', actor: { kind: 'brain', workspaceId: 'ws-1' }, expectedRev: row.rev })).ok).toBe(false);
     // On again stops nothing more.
-    expect(r.stopWorker).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(r.p.stopWorker)).toHaveBeenCalledTimes(2);
+  });
+
+  it('a gate an earlier stop could not cancel is cancelled by the next stop', async () => {
+    await task('t-gated', LEAD, 'review_requested');
+    let cancellable = false;
+    let running = true;
+    const gates = { isRunning: () => running, cancel: () => { if (cancellable) running = false; return cancellable; } };
+    const r = ports({ gates: () => gates });
+    expect(await stopFactoryWork(r.p)).toMatchObject({ ok: false, code: 'partial', gatesCancelled: 0 });
+    cancellable = true;
+    expect(await stopFactoryWork(r.p)).toMatchObject({ ok: true, gatesCancelled: 1 });
+    expect(running).toBe(false);
   });
 });

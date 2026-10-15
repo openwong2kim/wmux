@@ -312,23 +312,26 @@ export function factorySettingsSetHandler(
     const s = store();
     if (!s) return null;
     const wasOn = s.get().enabled;
-    // The owner's switch-off is carried out even when a switch-on lands
-    // right after it (both are live before their writes finish).
-    const switchingOff = wasOn && !!patch && typeof patch === 'object' && (patch as { enabled?: unknown }).enabled === false;
+    // The store applies a patch before its write lands, so the switch is
+    // live once update() is called. The stop starts in the same tick and
+    // reads what it stops right away: a switch-on that lands while it runs
+    // (or while the write is pending) keeps the work started after it.
+    const writing = s.update(patch);
+    const switchingOff = wasOn && !s.get().enabled;
+    getBotRuntime()?.kick();
+    const ports = switchingOff ? stopPorts() : null;
+    const stopping = ports ? stopFactoryWork(ports, { off: true }) : null;
     let next: FactorySettings | null = null;
     let failure: unknown = null;
     try {
-      next = await s.update(patch);
+      next = await writing;
     } catch (err) {
-      // The switch is live before the write lands: a write that failed after
-      // switching off still stops the work below.
+      // A write that failed after switching off still stops the work.
       failure = err;
     }
-    getBotRuntime()?.kick();
     let stoppedWork: FactoryOffStopped | undefined;
-    const ports = switchingOff ? stopPorts() : null;
-    if (ports) {
-      const r = await stopFactoryWork(ports, { off: true });
+    if (stopping) {
+      const r = await stopping;
       if (r.workersStopped > 0 || r.tasksCancelled > 0 || !r.ok) stoppedWork = { workers: r.workersStopped, tasks: r.tasksCancelled, ok: r.ok };
     }
     if (!next) throw failure;

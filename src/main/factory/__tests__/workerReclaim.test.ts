@@ -146,6 +146,12 @@ describe('installWorkerReclaim', () => {
   });
 });
 
+/** Wait for the store's queued writes (they run in order) before its folder goes. */
+async function settled(store: ReclaimedWorkers): Promise<void> {
+  const any = store.all()[0];
+  if (any) await store.put(any);
+}
+
 describe('a reported task whose worker sat idle (refused or failed gate)', () => {
   const reported = (over: Partial<LedgerEntry> = {}) => row('review_requested', { updatedAt: 1_000, ...over });
 
@@ -199,6 +205,19 @@ describe('a reported task whose worker sat idle (refused or failed gate)', () =>
     expect(after).toMatchObject({ ended: 'completed', endRev: 5, state: 'stopped', sessions: rec.sessions });
     expect(stopAgent).not.toHaveBeenCalled();
     expect(note).toHaveBeenCalledTimes(1);
+    await settled(store);
+  });
+
+  it('stops only the panes of the task\'s own workspace, never another pane opened in its folder; an unknown tree stops nothing', async () => {
+    const store = ReclaimedWorkers.at(dir);
+    const owners = session({ id: 'daemon-2' }); // the owner's pane in another workspace, same folder
+    const { ports, stopAgent } = reclaimPorts(store, [session(), owners], { row: () => row('review_requested'), turnEnded: () => true, workspacePanes: (ws) => (ws === 'ws-task' ? ['daemon-1'] : []) });
+    expect(await reclaimWorker(ports, row('review_requested'), 'reported')).toMatchObject({ ended: 'reported', sessions: [{ sessionId: 'daemon-1' }] });
+    expect(stopAgent.mock.calls).toEqual([['daemon-1']]);
+    const unknown = reclaimPorts(ReclaimedWorkers.at(path.join(dir, 'u')), [session()], { row: () => row('review_requested'), turnEnded: () => true, workspacePanes: () => null });
+    expect(await reclaimWorker(unknown.ports, row('review_requested'), 'reported')).toBeNull();
+    expect(unknown.stopAgent).not.toHaveBeenCalled();
+    await settled(store);
   });
 
   it('a report that moved on (sent back, a newer rev) before the stop has nothing stopped', async () => {
@@ -231,6 +250,7 @@ describe('a research task (scratch folder, no worktree)', () => {
     const fresh = await resumeWorker({ store, listSessions: async () => [], typeLine, respawn, now: () => 11_000 }, research.id, { kind: 'owner' });
     expect(fresh).toMatchObject({ ok: true, sessionId: 'daemon-9', workspaceId: 'ws-new' });
     expect(respawn).toHaveBeenCalledWith(expect.objectContaining({ cwd: wt, line: `claude --resume ${UUID} --dangerously-skip-permissions` }));
+    await settled(store);
   });
 });
 

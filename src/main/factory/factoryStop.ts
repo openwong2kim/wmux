@@ -309,6 +309,25 @@ export async function stopFactoryWork(ports: FactoryStopPorts, scope: { botId?: 
     log(`[factory] stop: the task ledger could not be read: ${String(err)}`);
     failures++;
   }
+  // 5–6 begin here, before the first await: everything this stop acts on
+  // is read at the moment of the stop, so work started after it (bots
+  // switched on again while it runs) is left alone.
+  let routinesPaused: number | undefined;
+  if (ports.pauseRoutines) {
+    try {
+      routinesPaused = ports.pauseRoutines(scope.botId);
+    } catch (err) {
+      failures++;
+      log(`[factory] stop: routines were not paused: ${String(err)}`);
+    }
+  }
+  let resumed: Promise<number | { stopped: number; failed: number }> | null = null;
+  try {
+    resumed = ports.stopResumed?.(scope.botId) ?? null;
+  } catch (err) {
+    failures++;
+    log(`[factory] stop: resumed workers were not stopped: ${String(err)}`);
+  }
   for (const row of open) {
     const r = await stopTask(ports, row, scope.botId, log, off);
     if (r.cancelled) tasksCancelled++;
@@ -317,6 +336,20 @@ export async function stopFactoryWork(ports: FactoryStopPorts, scope: { botId?: 
     if (r.failed) failures++;
   }
   for (const row of retry) {
+    // A gate an earlier stop could not cancel is cancelled now.
+    try {
+      const gates = ports.gates();
+      if (gates?.isRunning(row.id)) {
+        if (gates.cancel(row.id)) gatesCancelled++;
+        else {
+          failures++;
+          log(`[factory] stop: the gate of ${row.id} was not cancelled`);
+        }
+      }
+    } catch (err) {
+      failures++;
+      log(`[factory] stop: the gate of ${row.id} was not cancelled: ${String(err)}`);
+    }
     try {
       if ((await ports.stopWorker(row)) > 0) workersStopped++;
     } catch (err) {
@@ -324,9 +357,9 @@ export async function stopFactoryWork(ports: FactoryStopPorts, scope: { botId?: 
       log(`[factory] stop: the worker of ${row.id} was not stopped: ${String(err)}`);
     }
   }
-  if (ports.stopResumed) {
+  if (resumed) {
     try {
-      const r = await ports.stopResumed(scope.botId);
+      const r = await resumed;
       if (typeof r === 'number') workersStopped += r;
       else {
         workersStopped += r.stopped;
@@ -338,15 +371,6 @@ export async function stopFactoryWork(ports: FactoryStopPorts, scope: { botId?: 
     } catch (err) {
       failures++;
       log(`[factory] stop: resumed workers were not stopped: ${String(err)}`);
-    }
-  }
-  let routinesPaused: number | undefined;
-  if (ports.pauseRoutines) {
-    try {
-      routinesPaused = ports.pauseRoutines(scope.botId);
-    } catch (err) {
-      failures++;
-      log(`[factory] stop: routines were not paused: ${String(err)}`);
     }
   }
   const counts = { botsInterrupted, workersStopped, tasksCancelled, gatesCancelled, ...(routinesPaused !== undefined ? { routinesPaused } : {}) };

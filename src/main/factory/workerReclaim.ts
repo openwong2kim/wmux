@@ -316,6 +316,11 @@ export interface WorkerReclaimPorts {
   /** How long a reported task sits before its idle worker is stopped
    *  (default REPORTED_IDLE_MS). */
   reportedIdleMs?: number;
+  /** The panes a workspace owns, null when not known. A reported task's
+   *  stop reaches only its own workspace's panes (whose turns turnEnded
+   *  checked), never another pane opened in its folder; unknown: nothing is
+   *  stopped. Absent: every pane started in the folder, as for an end. */
+  workspacePanes?: (workspaceId: string) => readonly string[] | null;
 }
 
 /** Attempts per ended task before the reclaim gives it up. */
@@ -363,6 +368,16 @@ export async function reclaimWorker(ports: WorkerReclaimPorts, entry: LedgerEntr
     }
     const sessions = await ports.listSessions();
     const ids = new Set(await sessionsStartedIn([worktree], { listSessions: async () => sessions }));
+    if (ended === 'reported' && ports.workspacePanes) {
+      let own: readonly string[] | null = null;
+      try {
+        own = ports.workspacePanes(entry.taskWorkspaceId);
+      } catch {
+        own = null;
+      }
+      if (!own) return null;
+      for (const id of [...ids]) if (!own.includes(id)) ids.delete(id);
+    }
     const panes = sessions.filter((s) => ids.has(s.id)).map(reclaimedSessionOf).filter((s): s is ReclaimedSession => !!s);
     if (movedOn(ports, entry, ended)) return null;
     const prior = ports.store.get(entry.id);
@@ -924,8 +939,10 @@ export async function stopResumedWorkers(ports: WorkerResumePorts, botId?: strin
     if (rec.state !== 'resumed' || (botId !== undefined && rec.botId !== botId)) continue;
     let ok = true;
     for (const s of rec.sessions) {
-      const r = await ports.stopAgent(s.sessionId).catch(() => ({ ok: false }));
-      if (r.ok !== true) ok = false;
+      const r: { ok?: boolean; code?: string } = await ports.stopAgent(s.sessionId).catch(() => ({ ok: false }));
+      // A pane that is gone took its agent with it (a stop of its open task
+      // may have closed it first).
+      if (r.ok !== true && r.code !== 'no_session') ok = false;
     }
     if (!ok) failed++;
     else if (ports.store.setState(rec.taskId, 'stopped', now())) n++;
