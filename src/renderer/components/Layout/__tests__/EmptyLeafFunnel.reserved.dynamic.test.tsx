@@ -45,13 +45,13 @@ describe('EmptyLeafFunnel and a reserved leaf', () => {
   it('starts no shell in a leaf a spawn reserved', () => {
     const paneId = emptyWorkspace();
     const release = reserveLeaf(paneId);
-    try {
-      act(() => root.render(createElement(EmptyLeafFunnel)));
-      expect(create).not.toHaveBeenCalled();
-    } finally {
-      release();
-    }
+    act(() => root.render(createElement(EmptyLeafFunnel)));
+    expect(create).not.toHaveBeenCalled();
+    // The spawn failed and could not remove the workspace: on release the
+    // still-empty leaf gets its shell.
+    act(() => release());
     expect(isLeafReserved(paneId)).toBe(false);
+    expect(create).toHaveBeenCalledTimes(1);
   });
 
   it('an unreserved empty leaf still gets its shell', () => {

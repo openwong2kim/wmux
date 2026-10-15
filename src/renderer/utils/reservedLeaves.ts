@@ -8,14 +8,36 @@
 // stray home-folder pane beside the worker (#2231 Windows run 4). A leaf the
 // spawn reserves is skipped by the funnel until the spawn releases it.
 
-const reserved = new Set<string>();
+import { useSyncExternalStore } from 'react';
 
-/** Reserve an empty leaf for a spawn already on its way; returns the release. */
+const reserved = new Set<string>();
+let version = 0;
+const listeners = new Set<() => void>();
+
+/** Reserve an empty leaf for a spawn already on its way; returns the release.
+ *  A release is observable (useReservedLeavesVersion): a leaf a failed spawn
+ *  could not roll back (the last workspace) gets its shell then. */
 export function reserveLeaf(paneId: string): () => void {
   reserved.add(paneId);
+  let released = false;
   return () => {
+    if (released) return;
+    released = true;
     reserved.delete(paneId);
+    version += 1;
+    for (const fn of listeners) fn();
   };
+}
+
+/** Changes on every release, for the funnel's effect to run again. */
+export function useReservedLeavesVersion(): number {
+  return useSyncExternalStore(
+    (fn) => {
+      listeners.add(fn);
+      return () => listeners.delete(fn);
+    },
+    () => version,
+  );
 }
 
 /** Whether a spawn has reserved this leaf. */
