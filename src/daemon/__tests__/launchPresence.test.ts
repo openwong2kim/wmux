@@ -79,6 +79,31 @@ describe('decideLaunchPresence', () => {
       expect(decideLaunchPresence({ ...base, idleShell }).presence).toBe('unknown');
     }
   });
+
+  it('a WSL pane whose bash came back to its prompt failing → absent (#2231)', () => {
+    // The PowerShell prompt argument typed into bash: a parse error, status 2.
+    expect(decideLaunchPresence({ ...base, isWsl: true, exitAfterPrompt: 2 })).toEqual({
+      presence: 'absent',
+      reason: 'wsl-launch-failed',
+    });
+    // claude not installed in the distro.
+    expect(decideLaunchPresence({ ...base, isWsl: true, exitAfterPrompt: 127, commandRunning: false }).presence).toBe('absent');
+    expect(launchPresenceNeedsProcessRead({ ...base, isWsl: true, exitAfterPrompt: 2 })).toBe(false);
+  });
+
+  it('a WSL pane with no failing return to the prompt stays unknown', () => {
+    // Still loading (no second prompt), or a clean exit: no evidence.
+    expect(decideLaunchPresence({ ...base, isWsl: true }).reason).toBe('wsl-pane');
+    expect(decideLaunchPresence({ ...base, isWsl: true, exitAfterPrompt: 0 }).reason).toBe('wsl-pane');
+    // Something runs in the foreground: never absent.
+    expect(decideLaunchPresence({ ...base, isWsl: true, exitAfterPrompt: 2, commandRunning: true }).presence).toBe('unknown');
+    // A name or a live agent process still wins.
+    expect(decideLaunchPresence({ ...base, isWsl: true, exitAfterPrompt: 2, agentName: 'Claude Code' }).presence).toBe('running');
+  });
+
+  it('the failing return counts only in a WSL pane (others read the process table)', () => {
+    expect(decideLaunchPresence({ ...base, exitAfterPrompt: 2 })).toEqual({ presence: 'unknown', reason: 'not-probed' });
+  });
 });
 
 // Source-shape guard: the handler is a closure inside the daemon's RPC
@@ -99,6 +124,7 @@ describe('daemon.getLaunchPresence wiring', () => {
     expect(body).toMatch(/commandRunning: session\?\.promptLog\.commandRunningIfKnown\(\)/);
     expect(body).toMatch(/isWsl: !!session\?\.meta\.wslTarget/);
     expect(body).toMatch(/isExec: !!session\?\.meta\.exec/);
+    expect(body).toMatch(/exitAfterPrompt: session\?\.promptLog\.exitAfterPrompt\(\)/);
   });
 
   it('reads the process table only when asked and still undecided, and a failed read is unknown', () => {

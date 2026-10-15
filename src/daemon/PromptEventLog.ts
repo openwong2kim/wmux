@@ -120,6 +120,30 @@ export class PromptEventLog {
     return this.sawCommandStart ? this.isCommandRunning() : undefined;
   }
 
+  /**
+   * The exit code the shell reported when it came back to a prompt after a
+   * command line, while nothing has started since; undefined otherwise.
+   *
+   * "After a command line" means a `command_end` (D) that follows a
+   * `prompt_start` (A): the shell drew a prompt, read a line, and drew the
+   * next prompt. The very first D of a session (bash emits `D;$? A` before
+   * its first prompt, `$?` being whatever the rc files left) has no A before
+   * it and never counts. Works without command-start: a line bash cannot
+   * parse never shows PS0 (no C), but its D carries status 2.
+   */
+  exitAfterPrompt(): number | undefined {
+    for (let i = this.events.length - 1; i >= 0; i--) {
+      const e = this.events[i];
+      if (e.type === 'command_start') return undefined;
+      if (e.type !== 'command_end') continue;
+      for (let j = i - 1; j >= 0; j--) {
+        if (this.events[j].type === 'prompt_start') return e.exitCode;
+      }
+      return undefined;
+    }
+    return undefined;
+  }
+
   get size(): number {
     return this.events.length;
   }

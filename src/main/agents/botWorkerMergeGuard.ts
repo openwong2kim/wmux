@@ -54,6 +54,7 @@ import type { Connector } from '../../shared/botConnector';
 import { getTaskLedger } from '../deck/taskLedgerHost';
 import { getConnectorStore } from '../factory/connectorStore';
 import { launchesCodex, namesCodex } from '../../shared/codexWorkerGuard';
+import { toWslPath } from '../../shared/imagePaste';
 
 // The pure parts live in shared/ (the daemon guards a phone's launches too).
 export {
@@ -361,7 +362,9 @@ function guardLaunchLine(where: string, line: string, deps: BotWorkerGuardDeps, 
     } catch (err) {
       throw guardError(where, `the worker settings could not be written: ${String(err)}`);
     }
-    const guarded = spliceSettingsFlag(line, settingsPath);
+    // The legacy plan is a WSL pane's: Linux claude opens the file through
+    // its /mnt mount, never by the Windows path.
+    const guarded = spliceSettingsFlag(line, toWslPath(settingsPath) ?? settingsPath);
     if (guarded === null) throw guardError(where, 'the launch line cannot carry the worker settings');
     return { line: guarded };
   }

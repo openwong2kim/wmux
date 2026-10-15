@@ -30,7 +30,8 @@ import { guardBotWorkerSessionText, guardCodexBotWorker } from '../../agents/cod
 import { resolveEnvPolicy, type SpawnKind } from '../../../shared/spawnKind';
 import { withheldCredentialNames } from '../../../shared/envFilter';
 import { getShellUtf8Locale } from '../../pty/shellLocale';
-import { forgetPtyShell, recordPtyShell } from '../../pty/ptyShellRegistry';
+import { forgetPtyShell, getPtyShell, recordPtyShell } from '../../pty/ptyShellRegistry';
+import { promptFileArgumentForShell } from '../../../shared/promptFileArgument';
 import { withDaemonCreateRollback } from './daemonCreateRollback';
 import { getWorkspaceMirror } from '../../workspace/WorkspaceMirror';
 import { scheduleInitialCommand } from './scheduleInitialCommand';
@@ -197,6 +198,14 @@ function registeredClaudeLevel(): string | null {
  * dropped. Returns what the guarded launch carried, for its session record.
  */
 async function stageCreate(options: PtyCreateOptions | undefined, botWorker: BotWorkerCreate | null): Promise<{ options: PtyCreateOptions | undefined; launch: ReturnType<typeof guardedLaunchOf> & ReturnType<typeof launchOfCodex> }> {
+  // A fan-out line's prompt argument was built for the platform; the pane's
+  // shell decides its form (a WSL pane runs bash).
+  const wsl = isWslShell(createShell(options));
+  const line0 = options?.initialCommand;
+  if (options && line0) {
+    const rewritten = promptFileArgumentForShell(line0, { wsl });
+    if (rewritten !== line0) options = { ...options, initialCommand: rewritten };
+  }
   let staged = await withAccountQuota(options);
   let level: string | undefined;
   const line = staged?.initialCommand;
@@ -207,7 +216,7 @@ async function stageCreate(options: PtyCreateOptions | undefined, botWorker: Bot
   } else {
     staged = withWmuxTools(staged);
   }
-  const guarded = withBotWorkerMergeGuard(await guardCodexBotWorker(staged, botWorker), botWorker, {}, { wsl: isWslShell(createShell(options)), ...(level ? { level } : {}) });
+  const guarded = withBotWorkerMergeGuard(await guardCodexBotWorker(staged, botWorker), botWorker, {}, { wsl, ...(level ? { level } : {}) });
   return { options: withLaunchSessionPin(guarded), launch: { ...launchOfCodex(guarded), ...guardedLaunchOf(guarded) } };
 }
 
@@ -949,7 +958,8 @@ export function registerPTYHandlers(
     // claude is not started again there.
     if (botPane && !dc && namesClaude(text)) throw new Error('PTY_WRITE_LAUNCH: a bot worker\'s claude starts again only with the wmux daemon');
     const folders = dc && botPane ? await paneLaunchFolders(id, (m, p) => dc.rpc(m, p)) : undefined;
-    const line = sanitizePtyText(await guardBotWorkerSessionText(id, text, 'write-launch', folders ? { folders } : {})) + (submit === true ? '\r' : '');
+    const shaped = promptFileArgumentForShell(text, { wsl: isWslShell(getPtyShell(id)) });
+    const line = sanitizePtyText(await guardBotWorkerSessionText(id, shaped, 'write-launch', folders ? { folders } : {})) + (submit === true ? '\r' : '');
     if (useDaemon && daemonClient) {
       if (!daemonClient.writeToSession(id, line)) throw new Error('PTY_WRITE_LAUNCH: the session is not live');
     } else {

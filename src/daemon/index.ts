@@ -4893,6 +4893,7 @@ function registerRpcHandlers(
       commandRunning: session?.promptLog.commandRunningIfKnown(),
       isExec: !!session?.meta.exec,
       isWsl: !!session?.meta.wslTarget,
+      exitAfterPrompt: session?.promptLog.exitAfterPrompt(),
     };
     let idleShell: IdleShellRead | undefined;
     if (session && params['probeProcess'] === true && launchPresenceNeedsProcessRead(inputs)) {

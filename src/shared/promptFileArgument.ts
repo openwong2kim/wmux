@@ -7,6 +7,8 @@
 // command substitution, but wmux's own read of a single-quoted path, not a
 // command the user chained after the launch. Pure; shared by main and tests.
 
+import { toWslPath } from './imagePaste';
+
 /**
  * #1490 — the PowerShell pipeline stage that turns the prompt file's text into
  * the string PowerShell hands to the agent as ONE intact argv entry.
@@ -80,4 +82,30 @@ const PROMPT_FILE_ARGUMENT = new RegExp(`(^|\\s)(?:${POSIX_PROMPT_ARGUMENT}|${WI
  *  left can be checked for a user's own command chain. */
 export function stripPromptFileArgument(command: string): string {
   return command.replace(PROMPT_FILE_ARGUMENT, '$1');
+}
+
+// The Windows shape again, with the path captured (PowerShell's `''` escape
+// still in it).
+const WIN_PROMPT_ARGUMENT_PATH = new RegExp(
+  `(^|\\s)"\\$\\(Get-Content -Raw -Encoding UTF8 -LiteralPath '((?:[^']|'')*)' \\| ${escapeRegExp(PS_LEGACY_ARGV_QUOTE)}\\)"(?=\\s|$)`,
+  'g',
+);
+
+/**
+ * The launch line for the shell its pane really runs. FanOutService builds
+ * the prompt argument from the platform before any pane exists, so on Windows
+ * it is always the PowerShell shape; a pane whose shell is WSL (Settings ›
+ * Terminal › Default shell) runs bash, which rejects that shape outright
+ * (`syntax error near unexpected token '('`). There the argument becomes the
+ * POSIX one, `"$(cat '/mnt/<drive>/…')"`, on the same file as WSL mounts it.
+ * A path WSL cannot name that way (a UNC share) is left alone, as is every
+ * other line and every other shell: PowerShell reads the shape it was built
+ * for. Pure.
+ */
+export function promptFileArgumentForShell(line: string, opts: { wsl: boolean }): string {
+  if (!opts.wsl) return line;
+  return line.replace(WIN_PROMPT_ARGUMENT_PATH, (whole, lead: string, quoted: string) => {
+    const mounted = toWslPath(quoted.replace(/''/g, "'"));
+    return mounted === null ? whole : `${lead}${promptFileArgument(mounted, 'linux')}`;
+  });
 }
