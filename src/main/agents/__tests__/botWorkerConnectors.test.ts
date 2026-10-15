@@ -28,6 +28,7 @@ import { MODEL_ENV_MARKER } from '../../../shared/workerLaunch';
 import { SecretStore, setSecretStore } from '../../factory/secretStore';
 import { ConnectorStore, setConnectorStore } from '../../factory/connectorStore';
 import { __resetSecretGrantsForTesting, mintSecretGrant, resolveSecretGrant, setSecretGrantSource } from '../../factory/secretGrants';
+import { toWslPath } from '../../../shared/imagePaste';
 
 const ENTRY = '/opt/wmux/mcp/index.js';
 const LINE = `claude --dangerously-skip-permissions "$(cat '/w/.wtask/prompt.md')"`;
@@ -194,7 +195,8 @@ describe('the session record carries the launch', () => {
     const w = wordsOf(guarded.initialCommand!);
     expect(wordsOf(guardRefireLine('pty-1', LINE, deps()))).toEqual(w);
     expect(wordsOf(guardSessionLaunch('pty-1', 'claude --resume 11111111-2222-3333-4444-555555555555', deps()))).toEqual(w);
-    expect(guardRefireLine('pty-wsl', LINE, deps())).toBe(`claude --settings="${botWorkerSettingsPath(dir)}" --dangerously-skip-permissions "$(cat '/w/.wtask/prompt.md')"`);
+    // Linux claude reads it by its /mnt path (a Windows temp dir is a drive path).
+    expect(guardRefireLine('pty-wsl', LINE, deps())).toBe(`claude --settings="${toWslPath(botWorkerSettingsPath(dir)) ?? botWorkerSettingsPath(dir)}" --dangerously-skip-permissions "$(cat '/w/.wtask/prompt.md')"`);
     // A session with no folder on record is not re-fired.
     noteBotWorkerSession('pty-nofolder', 'ws-task', dir);
     expect(() => guardRefireLine('pty-nofolder', LINE, deps())).toThrow(/no folder on record/);

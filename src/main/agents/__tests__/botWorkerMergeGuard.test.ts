@@ -27,6 +27,7 @@ import { withRoleBinding } from '../../../renderer/utils/ptyCreateOptions';
 import { workerLaunchCommand } from '../../worktask/FanOutService';
 import { TaskLedger } from '../../../daemon/ledger/TaskLedger';
 import { setTaskLedgerForTests } from '../../deck/taskLedgerHost';
+import { toWslPath } from '../../../shared/imagePaste';
 
 let dir: string;
 beforeEach(() => {
@@ -195,7 +196,7 @@ describe('which creates are a bot\'s workers: main\'s records, never the rendere
       expect(JSON.parse(fs.readFileSync(files.settings, 'utf8')).permissions.deny).toEqual([...BOT_WORKER_DENY]);
       expect(JSON.parse(fs.readFileSync(files.mcp, 'utf8'))).toEqual({ mcpServers: { wmux: { type: 'stdio', command: 'node', args: [ENTRY] } } });
       // A WSL shell keeps the worker settings file alone, as before.
-      expect(withBotWorkerMergeGuard(opts, worker, { dir, ...mcp() }, { wsl: true })!.initialCommand).toBe(`claude --settings="${botWorkerSettingsPath(dir)}" --dangerously-skip-permissions "$(cat '/w/.wtask/prompt.md')"`);
+      expect(withBotWorkerMergeGuard(opts, worker, { dir, ...mcp() }, { wsl: true })!.initialCommand).toBe(`claude --settings="${toWslPath(botWorkerSettingsPath(dir)) ?? botWorkerSettingsPath(dir)}" --dangerously-skip-permissions "$(cat '/w/.wtask/prompt.md')"`);
       // On Windows the file is handed to Linux claude by its /mnt path.
       const winSettings = 'C:\\Users\\me\\.wmux-e2e\\factory\\worker-settings.json';
       expect(withBotWorkerMergeGuard(opts, worker, { dir, ...mcp(), writeSettings: () => winSettings }, { wsl: true })!.initialCommand)

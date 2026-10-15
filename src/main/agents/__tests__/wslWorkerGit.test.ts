@@ -85,8 +85,8 @@ describe('the pane environment', () => {
   });
 });
 
-// The bashrc half, run by a real bash.
-describe('WSL_TASK_GIT_ENV', () => {
+// The bashrc half, run by a real bash (none at /bin/bash on Windows).
+describe.skipIf(process.platform === 'win32')('WSL_TASK_GIT_ENV', () => {
   const run = (env: Record<string, string>) => execFileSync('/bin/bash', ['-c', `${WSL_TASK_GIT_ENV}
 printf '%s|%s|%s|%s|%s|%s|%s\\n' "\${GIT_DIR-}" "\${GIT_WORK_TREE-}" "\${GIT_CONFIG_COUNT-}" "\${GIT_CONFIG_KEY_0-}" "\${GIT_CONFIG_VALUE_0-}" "\${GIT_CONFIG_KEY_1-}" "\${GIT_CONFIG_VALUE_1-}"`], {
     env: { PATH: process.env.PATH ?? '/usr/bin:/bin', ...env },
