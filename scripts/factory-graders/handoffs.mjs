@@ -151,6 +151,35 @@ export function leadTaskSystemGate(snap, expect) {
   ];
 }
 
+/** research-no-repo-closes: a repo-less researcher's research task runs in
+ *  a scratch folder under the bot's data folder and its report completes it
+ *  without a gate; the researcher takes one turn after it. */
+export function researchNoRepoCloses(snap, expect) {
+  const id = botId(snap, expect.researcher);
+  const bot = arr(snap.bots).find((b) => b.id === id) ?? null;
+  const tasks = arr(snap.ledger).filter((e) => e.dispatch?.origin?.botId === id);
+  const task = tasks.length === 1 ? tasks[0] : null;
+  const reports = arr(snap.workers).filter((e) => e.event === 'ledger_update');
+  const folders = arr(snap.workers).filter((e) => e.event === 'start').map((e) => String(e.cwd ?? ''));
+  const taskWakes = wakesOf(snap, expect.researcher).filter((w) => w.reason?.kind === 'facts' && arr(w.reason.factIds).some((f) => /^task\./.test(f)));
+  const settles = stubTools(snap, expect.researcher, 'ledger_update');
+  const closed = arr(snap.cards).filter((c) => c.actor?.kind === 'system' && c.title === 'Research reported: task completed');
+  return [
+    criterion('bot_has_no_repo', !!bot && !bot.repo, bot ? `repo ${bot.repo ? 'set' : 'none'}` : 'no bot'),
+    criterion('one_research_task', !!task && task.dispatch?.preset === 'research', `${tasks.length} task(s), preset ${task?.dispatch?.preset ?? '-'}`),
+    criterion('scratch_folder_under_bot', folders.length >= 1 && folders.every((f) => f.includes(`/factory/bots/${id}/research/`)), folders.join(', ') || 'no worker start'),
+    criterion('worker_reported', reports.length >= 1, `${reports.length} worker report(s)`),
+    criterion('completed_without_gate', task?.status === 'completed' && !task.gate && task.updatedBy?.kind === 'brain' && !String(task.summary ?? '').includes('[forced:'),
+      task ? `${task.status} by ${task.updatedBy?.kind}, gate ${task.gate ? 'recorded' : 'none'}` : 'no task'),
+    criterion('research_is_tainted', task?.dispatch?.origin?.tainted === true, String(task?.dispatch?.origin?.tainted)),
+    criterion('woken_once_after_report', taskWakes.length === 1 && taskWakes[0].state === 'done', taskWakes.map((w) => `${arr(w.reason.factIds).join('+')}:${w.state}`).join(', ') || 'no task wake'),
+    criterion('bot_did_not_settle', settles.length === 0, `${settles.length} ledger_update call(s) by the bot`),
+    criterion('closed_card', closed.length === 1, `${closed.length} card(s)`),
+    // Reclaim found the worker in its scratch folder and stopped its agent.
+    criterion('worker_reclaimed', arr(snap.cards).some((c) => c.actor?.kind === 'system' && String(c.title ?? '').startsWith('Worker done')), 'no "Worker done" card'),
+  ];
+}
+
 /** chain-survives-worker: a result sent from a task wake answers the
  *  dispatch the task was started for, in the owner's run. */
 export function chainSurvivesWorker(snap, expect) {
