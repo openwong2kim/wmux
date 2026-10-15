@@ -1,18 +1,11 @@
 import { useEffect, useLayoutEffect, useState, type ReactNode, type TransitionEvent } from 'react';
 import { holdFits, onFitsReleased, releaseFits } from '../../utils/layoutTransitionGate';
+import { prefersReducedMotion } from '../../utils/reducedMotion';
 
 /** Must match `.wmux-sidebar-slot[data-animating]` in ui.css. */
 export const SIDEBAR_TOGGLE_MS = 190;
 /** Releases the fit hold when transitionend never arrives (hidden window …). */
 export const SIDEBAR_TOGGLE_FALLBACK_MS = SIDEBAR_TOGGLE_MS + 150;
-
-function prefersReducedMotion(): boolean {
-  try {
-    return window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
-  } catch {
-    return false;
-  }
-}
 
 /**
  * The sheet's sidebar column. A toggle animates the column's width while the

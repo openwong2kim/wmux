@@ -1,25 +1,14 @@
 import { useEffect, useState } from 'react';
 import type { MediaClip } from '../../assets/media';
+import { prefersReducedMotion, subscribeReducedMotion } from '../../utils/reducedMotion';
 
-const REDUCED_MOTION = '(prefers-reduced-motion: reduce)';
-
-function readReducedMotion(): boolean {
-  try {
-    return typeof window !== 'undefined' && !!window.matchMedia?.(REDUCED_MOTION).matches;
-  } catch {
-    return false;
-  }
-}
-
-/** Live `prefers-reduced-motion` state (false where matchMedia is missing). */
+/** Live reduced-motion state: `prefers-reduced-motion`, or Windows' setting
+ *  (utils/reducedMotion.ts); false where neither can be read. */
 export function usePrefersReducedMotion(): boolean {
-  const [reduce, setReduce] = useState(readReducedMotion);
+  const [reduce, setReduce] = useState(prefersReducedMotion);
   useEffect(() => {
-    const mql = typeof window !== 'undefined' ? window.matchMedia?.(REDUCED_MOTION) : undefined;
-    if (!mql) return;
-    const onChange = () => setReduce(mql.matches);
-    mql.addEventListener?.('change', onChange);
-    return () => mql.removeEventListener?.('change', onChange);
+    setReduce(prefersReducedMotion());
+    return subscribeReducedMotion(() => setReduce(prefersReducedMotion()));
   }, []);
   return reduce;
 }

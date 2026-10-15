@@ -98,3 +98,11 @@
     transition: none !important;
   }
 }
+/* Windows: the system animation setting, which the media query misses there (utils/reducedMotion.ts). */
+:root[data-reduced-motion] .onboarding-spotlight,
+:root[data-reduced-motion] .onboarding-tooltip-card {
+  animation: none;
+}
+:root[data-reduced-motion] .onboarding-spotlight {
+  transition: none !important;
+}

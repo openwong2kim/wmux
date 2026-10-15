@@ -165,6 +165,11 @@ button.settings-kbd:hover { color: var(--text-main); background: var(--surface-f
 @media (prefers-reduced-motion: reduce) {
   .settings-nav-row, .settings-theme-card { transition: none; }
 }
+/* Windows: the system animation setting, which the media query misses there (utils/reducedMotion.ts). */
+:root[data-reduced-motion] .settings-nav-row,
+:root[data-reduced-motion] .settings-theme-card {
+  transition: none;
+}
 
 /* Native radios / checkboxes that tests or forms depend on, drawn neutral. */
 .settings-radio { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text-main); cursor: pointer; }
