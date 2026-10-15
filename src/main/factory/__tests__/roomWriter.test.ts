@@ -381,6 +381,9 @@ describe('facts → system cards', () => {
     const one = (id: string, kind: FactKind, payload: Record<string, unknown>) =>
       writeFactCards(w, fact(kind, { id, workspaceId: 'ws1', ref: { taskId: `wt-${id}` }, payload: { title: 'fix login', ...payload } }), bots)[0];
     expect(one('a', 'task.done', {})).toMatchObject({ title: 'Task done: fix login', notice: { code: 'task.done', args: { title: 'fix login' } } });
+    expect(one('a2', 'task.done', { status: 'completed' })).toMatchObject({ notice: { code: 'task.done' } });
+    // A worker that reported waits on review: not done.
+    expect(one('r', 'task.done', { status: 'review_requested' })).toMatchObject({ title: 'Task reported · in review: fix login', notice: { code: 'task.reported', args: { title: 'fix login' } } });
     expect(one('b', 'task.failed', { status: 'failed', summary: 'tests red' })).toMatchObject({ title: 'Task failed: fix login', body: 'tests red', notice: { code: 'task.failed' } });
     const stopped = one('c', 'task.failed', { status: 'cancelled', by: 'system', summary: STOPPED_BY_OWNER });
     expect(stopped).toMatchObject({ title: 'Task cancelled · stopped by owner: fix login', notice: { code: 'task.stoppedByOwner', args: { title: 'fix login' } } });

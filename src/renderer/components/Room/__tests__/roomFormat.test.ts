@@ -161,10 +161,21 @@ describe('factory system cards in the reader\'s language (RoomCard.notice)', () 
     expect(old).toContain('bot in a turn Dev');
   });
 
+  it('a skipped gate\'s reason in the reader\'s language; an unknown reason stays as written', () => {
+    setLocale('ko');
+    expect(noticeText(card({ notice: { code: 'gate.skipped', args: { reason: 'gate_unavailable' } } }), i18nT)?.title).toBe('게이트 건너뜀 (게이트 명령을 시작하지 못함): 작업은 열린 채로 둠');
+    expect(noticeText(card({ notice: { code: 'gate.skipped', args: { reason: 'no_gate_command' } } }), i18nT)?.title).not.toContain('no_gate_command');
+    expect(noticeText(card({ notice: { code: 'gate.skipped', args: { reason: 'deps_missing' } } }), i18nT)?.title).not.toContain('deps_missing');
+    expect(noticeText(card({ notice: { code: 'gate.skipped', args: { reason: 'brand_new' } } }), i18nT)?.title).toBe('게이트 건너뜀 (brand_new): 작업은 열린 채로 둠');
+    setLocale('en');
+    expect(noticeText(card({ notice: { code: 'gate.skipped', args: { reason: 'gate_unavailable' } } }), i18nT)?.title).toBe('Gate skipped (the gate command could not start): task left open');
+  });
+
   it('a task card\'s label in the reader\'s language, a stopped task Cancelled, its evidence body kept', () => {
     setLocale('ko');
     expect(noticeText(card({ notice: { code: 'task.done', args: { title: 'fix login' } } }), i18nT)).toEqual({ title: '작업 완료: fix login', body: 'English body' });
     expect(noticeText(card({ notice: { code: 'task.stoppedByOwner', args: { title: 'fix login' } } }), i18nT)?.title).toBe('작업 취소됨 · 직접 중지함: fix login');
+    expect(noticeText(card({ notice: { code: 'task.reported', args: { title: 'fix login' } } }), i18nT)).toEqual({ title: '작업 보고됨 · 검토 대기: fix login', body: 'English body' });
     setLocale('en');
     expect(noticeText(card({ notice: { code: 'task.cancelled', args: { title: 'fix login' } } }), i18nT)?.title).toBe('Task cancelled: fix login');
   });

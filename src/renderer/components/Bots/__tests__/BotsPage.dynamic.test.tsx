@@ -180,6 +180,48 @@ async function render(node: React.ReactNode) {
 }
 
 describe('Bots page', () => {
+  it('a deleted bot\'s 1:1 stays reachable at the bottom, muted and marked (removed), read-only with no composer', async () => {
+    const GONE = 'bot-0000000d';
+    const gone = { role: 'lead' as BotRole, name: 'Old', removed: true as const, workspaceId: 'w1', hue: 2 };
+    cards.push(
+      card({ workspaceId: 'w1', actor: { kind: 'human' }, kind: 'human', title: 'Old, are you there?', threadId: `dm:${GONE}`, refs: { botId: GONE }, at: 500 }),
+      card({ workspaceId: 'w1', actor: by('w1', GONE), title: 'Here, wrapping up', threadId: `dm:${GONE}`, at: 510 }),
+    );
+    const withActors = api();
+    withActors.actors = vi.fn(async () => ({ actors: { [GONE]: gone } })) as unknown as RoomsApi['actors'];
+    setRoomsApiForTests(withActors);
+    seedRooms(true);
+    act(() => useStore.setState({ roomActors: { [GONE]: gone } } as never));
+    await render(<BotsPage />);
+    expect(rowIds().at(-1)).toBe(`bot:${GONE}`);
+    const row = q(`[data-bots-row="bot:${GONE}"]`)!;
+    expect(row.getAttribute('data-bots-removed')).toBe('true');
+    expect(row.textContent).toContain('Old (removed)');
+    act(() => row.click());
+    expect(q('[data-bots-chat]')?.getAttribute('data-bots-chat')).toBe(`bot:${GONE}`);
+    expect(q('[data-bots-messages]')?.textContent).toContain('Here, wrapping up');
+    // Nothing to send or change: no composer, no profile.
+    expect(q('[data-testid="bots-composer-send"]')).toBeNull();
+    expect(q('[data-bots-removed-note]')?.textContent).toContain('This bot was deleted');
+    expect(q<HTMLButtonElement>('[data-bots-pill]')!.disabled).toBe(true);
+  });
+
+  it('with every bot deleted, a kept 1:1 still lists (no first-bot screen), its room read from the actors', async () => {
+    const GONE = 'bot-0000000d';
+    const gone = { role: 'lead' as BotRole, name: 'Old', removed: true as const, workspaceId: 'w1', hue: 2 };
+    bots = [];
+    cards.push(card({ workspaceId: 'w1', actor: by('w1', GONE), title: 'Last words', threadId: `dm:${GONE}`, at: 510 }));
+    const withActors = api();
+    withActors.actors = vi.fn(async () => ({ actors: { [GONE]: gone } })) as unknown as RoomsApi['actors'];
+    setRoomsApiForTests(withActors);
+    seedRooms(true);
+    await render(<BotsPage />);
+    for (let i = 0; i < 5 && !q(`[data-bots-row="bot:${GONE}"]`); i++) await act(async () => { await Promise.resolve(); });
+    expect(withActors.actors).toHaveBeenCalled();
+    expect(rowIds()).toContain(`bot:${GONE}`);
+    expect(q('[data-bots-chat]')).not.toBeNull();
+  });
+
   it('bots off: the conversations and live workers stay, read-only, under a banner whose Turn bots on turns them on', async () => {
     // Opening the page asks main for the factory's state again.
     const off = api();

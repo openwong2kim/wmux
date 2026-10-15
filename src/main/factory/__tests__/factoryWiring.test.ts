@@ -298,6 +298,9 @@ describe('runtime hooks', () => {
       .toMatchObject({ kind: 'bot.budget_exhausted', workspaceId: 'ws-1', ref: { botId: 'bot-1' }, actor: { kind: 'bot', id: 'bot-1' }, payload: { reason: 'turns_hour', wakeId: 'w-1' } });
     expect(factFromBotHook({ type: 'bot.budget_exhausted', botId: 'bot-1', workspaceId: 'ws-1', reason: 'turns_hour', until: at + 60_000, at })?.payload)
       .toEqual({ reason: 'turns_hour', until: at + 60_000 });
+    // A park carries when it began: its dedupe key is per park.
+    expect(factFromBotHook({ type: 'bot.budget_exhausted', botId: 'bot-1', workspaceId: 'ws-1', reason: 'turns_hour', parkedAt: at, at })?.payload)
+      .toEqual({ reason: 'turns_hour', parkedAt: at });
     expect(factFromBotHook({ type: 'bot.error', botId: 'bot-1', workspaceId: 'ws-1', message: 'x'.repeat(900), at })?.payload.message).toHaveLength(500);
     expect(factFromBotHook({ type: 'wake.interrupted', botId: 'bot-1', workspaceId: 'ws-1', wakeId: 'w-1', at })).toBeNull();
     expect(log.append(factFromBotHook({ type: 'bot.error', botId: 'bot-1', workspaceId: 'ws-1', message: 'boom', at }) as never)).not.toBeNull();
@@ -626,14 +629,15 @@ describe('a bot task that stops waiting for input (A5)', () => {
 
 describe('stopTaskWorker (a stop of a bot task\'s worker)', () => {
   const entry = { id: 'wtask-1', ownerWorkspaceId: 'ws-owner', taskWorkspaceId: 'ws-task' } as LedgerEntry;
-  function daemon(stopAgent: (id: string) => unknown = () => ({ ok: true, stopped: true })) {
+  function daemon(stopAgent: (id: string) => unknown = () => ({ ok: true, stopped: true }), live: readonly string[] = []) {
     const wt = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-stop-worker-'));
     const calls: string[] = [];
-    let sessions = [
+    let sessions: Array<{ id: string; spawnCwd: string; agentProcessAlive?: boolean }> = [
       { id: 'own', spawnCwd: wt },
+      { id: 'own-codex', spawnCwd: wt },
       { id: 'owner-terminal', spawnCwd: wt },
       { id: 'elsewhere', spawnCwd: os.tmpdir() },
-    ];
+    ].map((x) => (live.includes(x.id) ? { ...x, agentProcessAlive: true } : x));
     const rpc = vi.fn(async (method: string, params?: Record<string, unknown>) => {
       if (method === 'task.mission.list') return { ok: true, tasks: [{ id: 'wtask-1', worktreePath: wt }] };
       if (method === 'daemon.listSessions') return sessions;
@@ -658,6 +662,46 @@ describe('stopTaskWorker (a stop of a bot task\'s worker)', () => {
       expect(d.calls).toEqual(['stopAgent:own', 'destroy:own']);
     } finally {
       fs.rmSync(d.wt, { recursive: true, force: true });
+    }
+  });
+
+  it('counts only panes whose agent it stopped: a plain shell pane is closed but is no worker', async () => {
+    const d = daemon(() => ({ ok: true, stopped: false }));
+    try {
+      expect(await stopTaskWorker(entry, d.client, () => ['own'])).toBe(0);
+      expect(d.calls).toEqual(['stopAgent:own', 'destroy:own']);
+    } finally {
+      fs.rmSync(d.wt, { recursive: true, force: true });
+    }
+  });
+
+  it('agentsOnly (a task stopped before): stops a leftover agent and keeps every pane', async () => {
+    const left = daemon();
+    const shell = daemon(() => ({ ok: true, stopped: false }));
+    try {
+      expect(await stopTaskWorker(entry, left.client, () => ['own'], { agentsOnly: true })).toBe(1);
+      expect(left.calls).toEqual(['stopAgent:own']);
+      // Only a plain shell is left: nothing stopped, nothing counted, the pane stays.
+      expect(await stopTaskWorker(entry, shell.client, () => ['own'], { agentsOnly: true })).toBe(0);
+      expect(shell.calls).toEqual(['stopAgent:own']);
+    } finally {
+      fs.rmSync(left.wt, { recursive: true, force: true });
+      fs.rmSync(shell.wt, { recursive: true, force: true });
+    }
+  });
+
+  it('an agent the claude stop does not reach (Codex): counted by the daemon\'s liveness; agentsOnly closes only its pane', async () => {
+    const full = daemon(() => ({ ok: true, stopped: false }), ['own-codex']);
+    const left = daemon(() => ({ ok: true, stopped: false }), ['own-codex']);
+    try {
+      expect(await stopTaskWorker(entry, full.client, () => ['own', 'own-codex'])).toBe(1);
+      expect(full.calls.filter((c) => c.startsWith('destroy:')).sort()).toEqual(['destroy:own', 'destroy:own-codex']);
+      // The re-stop: the live Codex pane is closed, the plain shell stays.
+      expect(await stopTaskWorker(entry, left.client, () => ['own', 'own-codex'], { agentsOnly: true })).toBe(1);
+      expect(left.calls.filter((c) => c.startsWith('destroy:'))).toEqual(['destroy:own-codex']);
+    } finally {
+      fs.rmSync(full.wt, { recursive: true, force: true });
+      fs.rmSync(left.wt, { recursive: true, force: true });
     }
   });
 

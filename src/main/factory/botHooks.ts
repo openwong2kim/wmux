@@ -21,6 +21,9 @@ export type BotHookEvent =
       /** When the window allows a turn again (a turn refusal only; absent:
        *  not by itself, or not known). */
       until?: number;
+      /** When the bot was parked for it (a turn refusal: one report per
+       *  park). Absent: no park (a worker start refused). */
+      parkedAt?: number;
       at: number;
     }
   | { type: 'bot.error'; botId: string; workspaceId: string; message: string; wakeId?: string; at: number }

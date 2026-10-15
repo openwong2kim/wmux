@@ -30,7 +30,8 @@ import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import { selectWorkspaceIdName } from '../../stores/selectors/workspaceProjections';
 import { refreshRoomStatus, type RoomsApi } from '../../hooks/useRoomSync';
-import type { RoomCard, ThreadId } from '../../../shared/room';
+import { dmThreadId, type RoomCard, type ThreadId } from '../../../shared/room';
+import { timelineKey } from '../../stores/slices/roomSlice';
 import { FOCUS_RING } from '../focusRing';
 import Button from '../ui/Button';
 import { IconMoreHorizontal, IconPlus, IconSearch } from '../icons';
@@ -59,7 +60,7 @@ import { getBotGroupPort, type BotGroupPort } from '../Room/botGroups';
 import type { BotGroup } from '../../../shared/botGroup';
 import { unreadCount } from './botsTimeline';
 import { BOTS_SESSION_START } from '../../stores/slices/roomSlice';
-import { useBots, useBotsSync } from './useBots';
+import { loadWholeThread, useBots, useBotsSync } from './useBots';
 import { botsStopPort, stopAllSummary, toastStoppedWork, type BotsStopPort } from './botsStop';
 import { InlineConfirm } from './InlineConfirm';
 import './bots.css';
@@ -138,11 +139,14 @@ function ConversationRow({ c, title, preview, selected, t, onSelect, now, unread
   const unreadText = c.needsYou <= 0 && unread > 0 ? t('botsPage.chat.unread', { count: unread }) : '';
   const name = [title, needsText, unreadText, preview].filter(Boolean).join(', ');
   const shownAt = previewCard(c)?.at ?? null;
+  // A deleted bot's 1:1: read-only, its name muted, no presence.
+  const removed = c.kind === 'bot' && c.removed === true;
   return (
     <button
       type="button"
       data-bots-row={c.id}
       data-bots-kind={c.kind}
+      data-bots-removed={removed ? 'true' : undefined}
       aria-current={selected ? 'true' : undefined}
       aria-label={name}
       onClick={onSelect}
@@ -150,13 +154,13 @@ function ConversationRow({ c, title, preview, selected, t, onSelect, now, unread
     >
       <span className="relative shrink-0">
         {c.kind === 'bot' ? <BotAvatar bot={c.row.bot} size={32} working={botPresence(c.row) === 'running'} /> : <RoomAvatar bots={c.bots} size={32} />}
-        {c.kind === 'bot' && (
+        {c.kind === 'bot' && !removed && (
           <span className="absolute -right-0.5 -bottom-0.5 inline-flex rounded-full bg-[var(--bg-mantle)] p-[2px]"><PresenceDot presence={botPresence(c.row)} /></span>
         )}
       </span>
       <span className="min-w-0 flex-1">
         <span className="flex items-baseline gap-1.5">
-          <span className="min-w-0 truncate text-[13px] font-[var(--title-weight,500)] text-[var(--text-main)]">{title}</span>
+          <span className={`min-w-0 truncate text-[13px] font-[var(--title-weight,500)] ${removed ? 'text-[var(--text-muted)]' : 'text-[var(--text-main)]'}`}>{title}</span>
           {shownAt !== null && <span className="ml-auto shrink-0 text-[11px] tabular-nums text-[var(--text-muted)]">{formatCardTime(shownAt, now)}</span>}
         </span>
         <span className={`flex items-center gap-1.5 ${toggleRoom ? 'pr-[34px]' : ''}`}>
@@ -549,7 +553,7 @@ export default function BotsPage({ onAddBot, port, api, now, settings, stop, eng
     const own = c.kind === 'bot' ? conversationCards(everyCard, c.row.bot.id, { lone: c.lone, threads: roomThreads }) : groupViewCards(cardsByWs.get(c.workspaceId) ?? [], c.group, roomThreads);
     return {
       c,
-      title: conversationTitle(c, nameOf),
+      title: c.kind === 'bot' && c.removed ? t('room.actor.removed', { name: c.row.bot.name }) : conversationTitle(c, nameOf),
       preview: conversationPreview(c, t, bots, actors, titleOf),
       unread: unreadCount(own, since),
     };
@@ -619,6 +623,15 @@ export default function BotsPage({ onAddBot, port, api, now, settings, stop, eng
   };
   const starting = pending && pendingStarting && selectedId === pendingId ? pending.bot : null;
   const selected = starting ? null : rows.find((r) => r.c.id === selectedId) ?? rows[0] ?? null;
+
+  // A deleted bot's 1:1 is read whole when opened: its messages may be
+  // older than the room's newest page.
+  const removedOpen = selected?.c.kind === 'bot' && selected.c.removed ? selected.c.row.bot : null;
+  useEffect(() => {
+    if (removedOpen && !useStore.getState().roomTimelines[timelineKey(removedOpen.workspaceId, dmThreadId(removedOpen.id))]) {
+      void loadWholeThread(removedOpen.workspaceId, dmThreadId(removedOpen.id));
+    }
+  }, [removedOpen?.id, removedOpen?.workspaceId]);
 
   const selectedKey = starting ? pendingId : selected?.c.id ?? null;
   useEffect(() => {
@@ -698,7 +711,8 @@ export default function BotsPage({ onAddBot, port, api, now, settings, stop, eng
 
   let body: React.ReactNode = null;
   // No bot yet (the list read): the first screen.
-  const firstRun = !!status && listed && bots.length === 0 && !pending && canCreate && !onAddBot;
+  // A deleted bot's kept 1:1 still lists.
+  const firstRun = !!status && listed && bots.length === 0 && !model.conversations.some((c) => c.kind === 'bot' && c.removed) && !pending && canCreate && !onAddBot;
   if (firstRun) {
     body = (
       <FirstBotPanel

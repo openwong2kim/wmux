@@ -141,6 +141,19 @@ describe('bot identity', () => {
     expect(botIdentityColor(added.id)).toBe(before[0]);
   });
 
+  it('a bot with a stored slot (BotProfile.hue) keeps it, whatever the others and their order; one without falls back to the spread', () => {
+    const kept = [
+      { id: 'bot-kept-b', createdAt: 2, workspaceId: 'ws-kept', hue: IDENTITY_SPREAD[1] },
+      { id: 'bot-kept-c', createdAt: 3, workspaceId: 'ws-kept', hue: IDENTITY_SPREAD[2] },
+    ];
+    noteBotIdentities(kept, true);
+    expect(botCharacter('bot-kept-b')).toBe(MOCHI_CHARACTERS[IDENTITY_SPREAD[1]]);
+    expect(botCharacter('bot-kept-c')).toBe(MOCHI_CHARACTERS[IDENTITY_SPREAD[2]]);
+    const legacy = { id: 'bot-kept-old', createdAt: 9, workspaceId: 'ws-kept' };
+    noteBotIdentities([...kept, legacy], true);
+    expect(botCharacter(legacy.id)).toBe(MOCHI_CHARACTERS[IDENTITY_SPREAD[0]]);
+  });
+
   it('a bot\'s character is the one of its colour slot: each character wears its own designed colour', () => {
     expect(MOCHI_CHARACTERS.map((c) => c.body)).toEqual([...BOT_IDENTITY_HUES]);
     expect(new Set(MOCHI_CHARACTERS.map((c) => c.name)).size).toBe(BOT_IDENTITY_HUES.length);

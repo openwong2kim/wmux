@@ -34,9 +34,11 @@
 // and only such a task: new work the bot starts afterwards runs. 3 and 4 run
 // even when the row could not be
 // written. Rows that ended by themselves are left alone (on "Run bots" off
-// their worker is stopped all the same); a task stopped before has its
-// worker stopped again (a session that outlived that stop), counted only
-// when one was left, so a second stop counts nothing. Only workers whose
+// their worker is stopped all the same); a task stopped before has a
+// leftover agent stopped again (one that outlived that stop), its panes
+// kept, counted only when one was left, so a second stop counts nothing.
+// A worker counts only when an agent of it was stopped: a pane left with a
+// plain shell is no worker. Only workers whose
 // processes were confirmed gone are counted, and a turn that could not be
 // interrupted or a gate that could not be cancelled makes the stop partial.
 
@@ -79,9 +81,10 @@ export interface FactoryStopPorts {
   };
   /** The shared gate runner (isRunning / cancel), or null before it is up. */
   gates: () => { isRunning(taskId: string): boolean; cancel(taskId: string): boolean } | null;
-  /** Stop the processes of a task's worker; how many sessions it confirmed
-   *  stopped (0: none were left). Throws when it could not. */
-  stopWorker: (entry: LedgerEntry) => Promise<number>;
+  /** Stop the processes of a task's worker; how many agents it confirmed
+   *  stopped (0: none were running). `agentsOnly`: a leftover agent only,
+   *  its panes kept (a task stopped before). Throws when it could not. */
+  stopWorker: (entry: LedgerEntry, opts?: { agentsOnly?: boolean }) => Promise<number>;
   /** Whether "Run bots" is off now: while it is, every bot task that
    *  registers is stopped (installLateStopSweep). Absent: never. */
   isOff?: () => boolean;
@@ -354,7 +357,9 @@ export async function stopFactoryWork(ports: FactoryStopPorts, scope: { botId?: 
       log(`[factory] stop: the gate of ${row.id} was not cancelled: ${String(err)}`);
     }
     try {
-      if ((await ports.stopWorker(row)) > 0) stoppedTasks.add(row.id);
+      // Only an agent that outlived that stop: the task's panes, a plain
+      // shell the owner kept or reopened, stay (its card says so).
+      if ((await ports.stopWorker(row, { agentsOnly: true })) > 0) stoppedTasks.add(row.id);
     } catch (err) {
       failures++;
       log(`[factory] stop: the worker of ${row.id} was not stopped: ${String(err)}`);

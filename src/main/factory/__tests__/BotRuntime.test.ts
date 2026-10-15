@@ -261,7 +261,7 @@ describe('BotRuntime', () => {
     expect(r.queue.list({ botId: id, states: ['dropped'] })).toHaveLength(0);
     expect(r.store.get(id)?.parked?.reason).toBe('budget');
     expect(r.runtime.status(id)?.presence).toBe('parked');
-    expect(hooks).toContainEqual(expect.objectContaining({ type: 'bot.budget_exhausted', botId: id, reason: 'turns_hour', wakeId: third.id, until: first + HOUR_MS }));
+    expect(hooks).toContainEqual(expect.objectContaining({ type: 'bot.budget_exhausted', botId: id, reason: 'turns_hour', wakeId: third.id, until: first + HOUR_MS, parkedAt: expect.any(Number) }));
     clock += HOUR_MS + 1;
     r.runtime.kick();
     await settle();

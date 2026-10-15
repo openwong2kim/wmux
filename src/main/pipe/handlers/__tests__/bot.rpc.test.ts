@@ -150,13 +150,16 @@ describe('bot.remove', () => {
 
   it('stops that bot\'s work as Stop does (its tasks end "stopped by owner"), then removes it with a tombstone', async () => {
     const r = rigRemove(true);
+    const stored = r.store.get(r.botId)?.hue;
+    expect(stored).toEqual(expect.any(Number));
     expect(await r.call({ botId: r.botId, hue: 4 })).toMatchObject({ ok: true, botId: r.botId, stopped: { ok: true, workersStopped: 1, tasksCancelled: 1 } });
     // Off before the stop snapshots, so nothing new starts meanwhile.
     expect(r.order).toEqual(['off false', 'cancel task-mine', 'remove']);
     expect(r.updates).toEqual([expect.objectContaining({ id: 'task-mine', status: 'cancelled', summary: 'stopped by owner' })]);
     expect(r.workersStopped).toEqual(['task-mine']);
     expect(r.store.get(r.botId)).toBeNull();
-    expect(r.store.listRemoved()).toEqual([expect.objectContaining({ id: r.botId, name: 'Developer', hue: 4 })]);
+    // Its stored slot, not the caller's.
+    expect(r.store.listRemoved()).toEqual([expect.objectContaining({ id: r.botId, name: 'Developer', hue: stored })]);
   });
 
   it('a stop that could not stop everything keeps the bot, switched off, and says to delete again', async () => {

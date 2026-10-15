@@ -16,14 +16,14 @@ import { useShallow } from 'zustand/react/shallow';
 import { useStore, type StoreState } from '../../stores';
 import { selectWorkspaceAttentionClasses, type FleetAttentionClass } from '../../stores/selectors/fleet';
 import { selectWorkspaceIdName } from '../../stores/selectors/workspaceProjections';
-import { ALL_THREADS, timelineKey, type RoomStatusView } from '../../stores/slices/roomSlice';
+import { ALL_THREADS, timelineKey, type RoomActorEntry, type RoomStatusView } from '../../stores/slices/roomSlice';
 import { CATCH_UP_MAX_PAGES, catchUpRoomTimeline, loadRoomActors, loadRoomThreads, loadRoomTimeline, roomsApi } from '../../hooks/useRoomSync';
 import type { ThreadId, ThreadSummary } from '../../../shared/room';
 import { getFactoryBotPort, type FactoryBotPort, type FactoryBotRow } from '../Room/factoryPorts';
 import { useFactoryBots } from '../Room/useFactoryBots';
 import { useBotGroups, type BotGroupPort } from '../Room/botGroups';
 import type { BotGroup } from '../../../shared/botGroup';
-import { buildBots, botsRooms, EMPTY_BOTS, latestThreadOf, roomCardsByWorkspace, type BotsModel } from './botsModel';
+import { buildBots, botsRooms, EMPTY_BOTS, latestThreadOf, roomCardsByWorkspace, type BotsModel, type RemovedBotRef } from './botsModel';
 import { selectBotTaskOwners } from '../Sidebar/botTasks';
 import { displayWorkspaceName } from '../../utils/fanoutProvenance';
 
@@ -68,6 +68,8 @@ export function useBots(port?: FactoryBotPort, groupPort?: BotGroupPort): BotsSt
   const names = useStore(useShallow(selectWorkspaceIdName));
   const on = !!status?.enabled;
   const { groups } = useBotGroups(groupPort);
+  const actors = useStore((s) => s.roomActors);
+  const removed = useMemo(() => removedBotRefs(actors), [actors]);
   const model = useMemo(() => {
     if (!status) return EMPTY_BOTS;
     // A worker's task workspace reads without its `wtask: ` prefix.
@@ -81,8 +83,9 @@ export function useBots(port?: FactoryBotPort, groupPort?: BotGroupPort): BotsSt
       workerClass,
       workspaceName: (id) => byId.get(id) ?? null,
       readOnly: !on,
+      removed,
     });
-  }, [status, on, bots, groups, timelines, threads, botTaskOf, workerClass, names]);
+  }, [status, on, bots, groups, timelines, threads, botTaskOf, workerClass, names, removed]);
   return { status, bots, model, on, listed, groups };
 }
 
@@ -132,14 +135,29 @@ export function threadsToRead(
   return out;
 }
 
+/** The deleted bots the room's actors remember, with their workspace. Pure. */
+export function removedBotRefs(actors: Readonly<Record<string, RoomActorEntry>>): RemovedBotRef[] {
+  return Object.entries(actors).flatMap(([id, a]) => (a.removed && a.workspaceId
+    ? [{ id, workspaceId: a.workspaceId, name: a.name, role: a.role, ...(a.avatar ? { avatar: a.avatar } : {}), ...(a.hue !== undefined ? { hue: a.hue } : {}) }]
+    : []));
+}
+
 /** Keep the page's rooms read (see the file header). */
 export function useBotsSync(state: Pick<BotsState, 'status' | 'bots' | 'on'>, opts: { focus: boolean; paused?: boolean }): void {
   const known = !!state.status && (state.on || !!opts.paused);
+  // A deleted bot's room too, so its 1:1 can still be read.
+  const actors = useStore((s) => s.roomActors);
+  const removedRooms = useMemo(() => [...new Set(removedBotRefs(actors).map((r) => r.workspaceId))].sort().join('\u0000'), [actors]);
   const rooms = useMemo(
-    () => (known ? botsRooms(state.bots) : []),
-    [known, state.bots],
+    () => (known ? [...new Set([...botsRooms(state.bots), ...(removedRooms ? removedRooms.split('\u0000') : [])])] : []),
+    [known, state.bots, removedRooms],
   );
   const roomsKey = rooms.join('\u0000');
+  // The actors name the deleted bots, whose rooms join the list above: read
+  // them even while no live bot gives a room.
+  useEffect(() => {
+    if (known) void loadRoomActors();
+  }, [known]);
   useEffect(() => {
     const list = roomsKey ? roomsKey.split('\u0000') : [];
     if (list.length === 0) return;

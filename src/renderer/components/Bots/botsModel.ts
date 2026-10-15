@@ -48,7 +48,8 @@
 // (botsNeedsYou). While the bots are paused the page is read-only and
 // nothing on it is counted.
 
-import { dmThreadBot, groupThreadGroup, groupThreadId, type RoomCard, type ThreadId, type ThreadSummary } from '../../../shared/room';
+import { dmThreadBot, dmThreadId, groupThreadGroup, groupThreadId, type RoomCard, type ThreadId, type ThreadSummary } from '../../../shared/room';
+import { DEFAULT_BOT_BUDGETS, type BotProfile } from '../../../shared/bot';
 import type { BotGroup } from '../../../shared/botGroup';
 import type { FleetAttentionClass } from '../../stores/selectors/fleet';
 import type { RoomTimeline } from '../../stores/slices/roomSlice';
@@ -106,6 +107,20 @@ export interface BotConversation extends ConversationBase {
   /** Its newest post in a group chat, when newer than its 1:1's newest
    *  message (the row's preview says where it spoke). */
   elsewhere?: { card: RoomCard; conversationId: string };
+  /** The bot was deleted: its 1:1 stays to read (its messages stay), at the
+   *  bottom of the list, with nothing to send or change. `row` then holds
+   *  only what its tombstone kept. */
+  removed?: true;
+}
+
+/** A deleted bot as its tombstone keeps it (the room's actors). */
+export interface RemovedBotRef {
+  id: string;
+  workspaceId: string;
+  name: string;
+  role: BotProfile['role'];
+  avatar?: string;
+  hue?: number;
 }
 
 /** A worker row under its bot in the list, as the Sidebar draws a task. */
@@ -157,6 +172,8 @@ export interface BotsInput {
   workspaceName: (workspaceId: string) => string | null;
   /** The bots are paused: the page is read-only, so nothing waits on it. */
   readOnly?: boolean;
+  /** Deleted bots: each whose 1:1 holds messages gets a read-only row. */
+  removed?: readonly RemovedBotRef[];
 }
 
 export interface BotsModel {
@@ -678,7 +695,45 @@ export function buildBots(input: BotsInput): BotsModel {
   }
   const conversations: Conversation[] = [...rooms, ...oneToOne]
     .sort((a, b) => b.lastAt - a.lastAt || a.id.localeCompare(b.id));
-  return { conversations, needsYou: botsNeedsYou(oneToOne) };
+  // A deleted bot's 1:1 stays reachable below every live conversation.
+  const gone = removedConversations(input, new Set(bots.map((r) => r.bot.id)), every)
+    .sort((a, b) => b.lastAt - a.lastAt || a.id.localeCompare(b.id));
+  return { conversations: [...conversations, ...gone], needsYou: botsNeedsYou(oneToOne) };
+}
+
+/** The read-only 1:1 of each deleted bot that has messages (its cards, or
+ *  its 1:1 thread in the room's thread list). Pure. */
+function removedConversations(input: BotsInput, live: ReadonlySet<string>, every: readonly RoomCard[]): BotConversation[] {
+  const out: BotConversation[] = [];
+  for (const r of input.removed ?? []) {
+    if (live.has(r.id)) continue;
+    const own = conversationCards(every, r.id, { threads: input.threads });
+    const dm = (input.threads[r.workspaceId] ?? []).find((th) => th.threadId === dmThreadId(r.id));
+    if (own.length === 0 && !dm) continue;
+    const bot: BotProfile = {
+      version: 1, id: r.id, workspaceId: r.workspaceId, role: r.role, name: r.name,
+      ...(r.avatar ? { avatar: r.avatar } : {}),
+      ...(r.hue !== undefined ? { hue: r.hue } : {}),
+      engine: { kind: 'claude-sdk' }, triggers: [], budget: DEFAULT_BOT_BUDGETS[r.role],
+      enabled: false, createdAt: 0, updatedAt: 0,
+    };
+    out.push({
+      kind: 'bot',
+      id: botConversationId(r.id),
+      workspaceId: r.workspaceId,
+      row: { bot, status: null },
+      last: lastOf(own),
+      lastAt: Math.max(own.at(-1)?.at ?? 0, dm?.lastAt ?? 0),
+      openQuestions: 0,
+      openApprovals: 0,
+      workers: [],
+      tree: [],
+      lone: false,
+      needsYou: 0,
+      removed: true,
+    });
+  }
+  return out;
 }
 
 /** Whether a card is a question still open (its thread's summary, re-read

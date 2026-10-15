@@ -25,7 +25,7 @@ import {
 } from '../budget';
 import { FactorySettingsStore, factorySettingsPath, mergeFactorySettings, DEFAULT_FACTORY_SETTINGS } from '../factorySettings';
 import { __resetBotHooksForTesting, onBotHook, type BotHookEvent } from '../botHooks';
-import { DEFAULT_BOT_BUDGETS } from '../../../shared/bot';
+import { DEFAULT_BOT_BUDGETS, IDENTITY_SPREAD } from '../../../shared/bot';
 import { WAKE_LIMITS } from '../../../shared/wake';
 import { BOTS_PLAN_CONSENT_VERSION } from '../../../shared/factorySettings';
 
@@ -196,24 +196,68 @@ describe('BotStore', () => {
     expect(s.create({ workspaceId: 'ws-4', role: 'lead', triggers: [{ kind: 'pr.opened', filter: { repoKey: 'h/a//c' } }] }).ok).toBe(false);
   });
 
-  it('a removed bot leaves a tombstone (name, role, colour slot) that survives a reload; a bad slot is not kept', async () => {
+  it('a removed bot leaves a tombstone (name, role, its stored colour slot) that survives a reload', async () => {
     const s = newStore();
     const a = s.create({ workspaceId: 'ws-1', template: 'developer', name: 'Developer' });
     const b = s.create({ workspaceId: 'ws-1', name: 'Other' });
     if (!a.ok || !b.ok) throw new Error('create');
+    expect([a.bot.hue, b.bot.hue]).toEqual([IDENTITY_SPREAD[0], IDENTITY_SPREAD[1]]);
+    // The store's slot wins over the remover's.
     expect(s.remove(a.bot.id, { hue: 3 })).toBe(true);
     expect(s.remove(b.bot.id, { hue: 99 })).toBe(true);
     expect(s.remove(a.bot.id)).toBe(false);
     expect(s.get(a.bot.id)).toBeNull();
     expect(s.listRemoved()).toEqual([
-      { id: a.bot.id, workspaceId: 'ws-1', role: 'lead', template: 'developer', name: 'Developer', hue: 3, removedAt: clock },
-      { id: b.bot.id, workspaceId: 'ws-1', role: 'lead', template: 'custom', name: 'Other', removedAt: clock },
+      { id: a.bot.id, workspaceId: 'ws-1', role: 'lead', template: 'developer', name: 'Developer', hue: IDENTITY_SPREAD[0], removedAt: clock },
+      { id: b.bot.id, workspaceId: 'ws-1', role: 'lead', template: 'custom', name: 'Other', hue: IDENTITY_SPREAD[1], removedAt: clock },
     ]);
     await s.flush();
     const t = newStore();
     t.load();
     expect(t.list()).toHaveLength(0);
-    expect(t.listRemoved().map((r) => [r.name, r.hue])).toEqual([['Developer', 3], ['Other', undefined]]);
+    expect(t.listRemoved().map((r) => [r.name, r.hue])).toEqual([['Developer', IDENTITY_SPREAD[0]], ['Other', IDENTITY_SPREAD[1]]]);
+  });
+
+  it('identity slots: kept across a relaunch after a delete, a new bot takes the freed slot, rooms count apart', async () => {
+    const s = newStore();
+    const made = ['A', 'B', 'C'].map((name) => {
+      const r = s.create({ workspaceId: 'ws-1', name });
+      if (!r.ok) throw new Error('create');
+      clock += 1;
+      return r.bot;
+    });
+    expect(made.map((b) => b.hue)).toEqual(IDENTITY_SPREAD.slice(0, 3));
+    expect(s.remove(made[0].id)).toBe(true);
+    await s.flush();
+    const t = newStore();
+    t.load();
+    // The survivors keep their characters after the relaunch.
+    expect(t.list().map((b) => [b.name, b.hue])).toEqual([['B', IDENTITY_SPREAD[1]], ['C', IDENTITY_SPREAD[2]]]);
+    // A new bot takes the removed bot's slot (the tombstone does not block it).
+    const d = t.create({ workspaceId: 'ws-1', name: 'D' });
+    const other = t.create({ workspaceId: 'ws-2', name: 'E' });
+    if (!d.ok || !other.ok) throw new Error('create');
+    expect(d.bot.hue).toBe(IDENTITY_SPREAD[0]);
+    expect(other.bot.hue).toBe(IDENTITY_SPREAD[0]);
+  });
+
+  it('identity slots: a file from before slots gets them once, in creation order, written back', async () => {
+    const base = { version: 1, role: 'lead', template: 'custom', engine: { kind: 'claude-sdk' }, triggers: [], budget: DEFAULT_BOT_BUDGETS.lead, enabled: true, updatedAt: 1 };
+    fs.mkdirSync(path.dirname(botsFilePath(dir)), { recursive: true });
+    fs.writeFileSync(botsFilePath(dir), JSON.stringify({
+      version: 1,
+      bots: [
+        { ...base, id: 'bot-0a0a0a03', workspaceId: 'ws-1', name: 'Third', createdAt: 30 },
+        { ...base, id: 'bot-0a0a0a01', workspaceId: 'ws-1', name: 'First', createdAt: 10 },
+        { ...base, id: 'bot-0a0a0a02', workspaceId: 'ws-1', name: 'Second', createdAt: 20, hue: IDENTITY_SPREAD[0] },
+      ],
+    }));
+    const s = newStore();
+    s.load();
+    expect(Object.fromEntries(s.list().map((b) => [b.name, b.hue]))).toEqual({ Second: IDENTITY_SPREAD[0], First: IDENTITY_SPREAD[1], Third: IDENTITY_SPREAD[2] });
+    await s.flush();
+    const onDisk = JSON.parse(fs.readFileSync(botsFilePath(dir), 'utf8')) as { bots: Array<{ name: string; hue?: number }> };
+    expect(onDisk.bots.every((b) => b.hue !== undefined)).toBe(true);
   });
 
   it('persists profiles and usage, and refuses a file of another version', async () => {
