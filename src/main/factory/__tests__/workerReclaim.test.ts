@@ -442,10 +442,20 @@ describe('resume safety (review fixes)', () => {
     const p = ports(store, [dead()], { stopAgent });
     await resumeWorker(p, 'wtask-abc-12345678', { kind: 'bot', botId: BOT }, undefined, onLaunched);
     expect(onLaunched).toHaveBeenCalledTimes(1);
-    expect(await stopResumedWorkers(p, 'bot-0000000b')).toEqual({ stopped: 0, failed: 0 });
-    expect(await stopResumedWorkers(p, BOT)).toEqual({ stopped: 1, failed: 0 });
+    expect(await stopResumedWorkers(p, 'bot-0000000b')).toEqual({ stopped: 0, failed: 0, taskIds: [] });
+    expect(await stopResumedWorkers(p, BOT)).toEqual({ stopped: 1, failed: 0, taskIds: ['wtask-abc-12345678'] });
     expect(stopAgent).toHaveBeenCalledWith('daemon-1');
     expect(store.get('wtask-abc-12345678')?.state).toBe('stopped');
+  });
+
+  it('a resumed worker whose pane or agent was already gone is marked stopped, not counted, and is no failure', async () => {
+    for (const answer of [{ ok: false, code: 'no_session' }, { ok: true, stopped: false }]) {
+      const store = await reclaimedStore();
+      const p = ports(store, [dead()], { stopAgent: vi.fn(async () => answer) });
+      expect(await resumeWorker(p, 'wtask-abc-12345678', { kind: 'owner' })).toMatchObject({ ok: true });
+      expect(await stopResumedWorkers(p, BOT)).toEqual({ stopped: 0, failed: 0, taskIds: [] });
+      expect(store.get('wtask-abc-12345678')?.state).toBe('stopped');
+    }
   });
 
   it('a record that cannot be written stops nothing', async () => {
@@ -572,7 +582,7 @@ describe('reclaim state and reopen (review fixes, PR #2164)', () => {
     await reclaimWorker(reclaimPorts(store, [session()]).ports, row('completed'), 'completed');
     const p: WorkerResumePorts = { store, typeLine: vi.fn(() => true), listSessions: async () => [dead()], stopAgent: vi.fn(async () => ({ ok: false, code: 'still_running' })) };
     expect(await resumeWorker(p, ID, { kind: 'owner' })).toMatchObject({ ok: true });
-    expect(await stopResumedWorkers(p)).toEqual({ stopped: 0, failed: 1 });
+    expect(await stopResumedWorkers(p)).toEqual({ stopped: 0, failed: 1, taskIds: [] });
     expect(store.get(ID)?.state).toBe('resumed');
   });
 

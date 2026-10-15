@@ -948,29 +948,38 @@ export function reclaimedWorkerState(rec: ReclaimedWorker | null): 'resumable' |
 /** Stop the resumed workers of one bot, or of every bot (the owner's stop,
  *  a bot's stop_my_work): their rows ended long ago, so the ledger stop does
  *  not reach them. A resume still under way launches nothing more. How many
- *  it stopped, and how many it could not (still resumed: a later stop tries
- *  again). */
-export async function stopResumedWorkers(ports: WorkerResumePorts, botId?: string): Promise<{ stopped: number; failed: number }> {
+ *  this call stopped (`taskIds`: their tasks, so a stop that also reached
+ *  the task by its row counts the worker once), and how many it could not
+ *  (still resumed: a later stop tries again). A worker whose agent was
+ *  already gone (its pane closed, its agent exited) is marked stopped but
+ *  not counted. */
+export async function stopResumedWorkers(ports: WorkerResumePorts, botId?: string): Promise<{ stopped: number; failed: number; taskIds: string[] }> {
   if (botId === undefined) stopAllSeq++;
   else botStopSeq.set(botId, (botStopSeq.get(botId) ?? 0) + 1);
-  if (!ports.stopAgent) return { stopped: 0, failed: 0 };
+  if (!ports.stopAgent) return { stopped: 0, failed: 0, taskIds: [] };
   const now = ports.now ?? Date.now;
-  let n = 0;
+  const taskIds: string[] = [];
+  let marked = false;
   let failed = 0;
   for (const rec of ports.store.all()) {
     if (rec.state !== 'resumed' || (botId !== undefined && rec.botId !== botId)) continue;
     let ok = true;
+    let stoppedHere = false;
     for (const s of rec.sessions) {
-      const r: { ok?: boolean; code?: string } = await ports.stopAgent(s.sessionId).catch(() => ({ ok: false }));
+      const r: { ok?: boolean; stopped?: boolean; code?: string } = await ports.stopAgent(s.sessionId).catch(() => ({ ok: false }));
       // A pane that is gone took its agent with it (a stop of its open task
       // may have closed it first).
       if (r.ok !== true && r.code !== 'no_session') ok = false;
+      if (r.ok === true && r.stopped === true) stoppedHere = true;
     }
     if (!ok) failed++;
-    else if (ports.store.setState(rec.taskId, 'stopped', now())) n++;
+    else if (ports.store.setState(rec.taskId, 'stopped', now())) {
+      marked = true;
+      if (stoppedHere) taskIds.push(rec.taskId);
+    }
   }
-  if (n > 0) ports.changed?.();
-  return { stopped: n, failed };
+  if (marked) ports.changed?.();
+  return { stopped: taskIds.length, failed, taskIds };
 }
 
 /** A resumed worker whose agent exited is stopped again (resumable). */
