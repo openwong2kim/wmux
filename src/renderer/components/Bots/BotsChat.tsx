@@ -68,7 +68,7 @@ import { DEFAULT_BOT_WORKER_AGENT, botWorkerAgentLabel, type BotWorkerAgentOptio
 import { templateJob } from '../Settings/FactoryTab';
 import BotAvatar, { botIdentityColor } from '../Room/BotAvatar';
 import { RoomAvatar } from './BotsAvatar';
-import { awaitsApproval, conversationCards, greetingCardIds, roomViewCards, livePlanIds, roomEntries, taskBubbles, turnShowsIn, type BotTreeRow, type BotWorker, type Conversation, type RoomEntry } from './botsModel';
+import { awaitsApproval, conversationCards, greetingCardIds, roomViewCards, livePlanIds, roomEntries, taskBubbles, conversationTurns, type BotTreeRow, type BotWorker, type Conversation, type RoomEntry } from './botsModel';
 import { treeRowState } from './BotsWorkerTree';
 import { loadWholeThread } from './useBots';
 import { useShallow } from 'zustand/react/shallow';
@@ -1634,8 +1634,9 @@ export function BotsChat({ conversation, roomCards, bots, title, workspaceName, 
   // A room lists its bots' tasks the same way.
   const taskRows = conversation.kind === 'bot' ? [conversation.row] : conversation.bots;
   const tasks = taskRows.flatMap((r) => taskBubbles(r.tasks, now ?? Date.now()));
-  // Busy where the turn answers: a turn in a 1:1 shows in that 1:1, not in the room.
-  const turns = taskRows.filter((r) => botPresence(r) === 'running' && turnShowsIn(conversation, r, roomCards, roomThreads));
+  // Busy where the turn answers: a turn in a 1:1 (or in a dispatch sent
+  // from it, whichever bot runs it) shows in that 1:1, not in the room.
+  const turns = conversationTurns(conversation, bots, roomCards, roomThreads);
   // The session's "New" divider: what arrived since this conversation was
   // last read to its end, as it stood when the chat opened.
   const conversationId = conversation.id;

@@ -1296,6 +1296,21 @@ describe('Bots page', () => {
     expect(q(`[data-bots-turn="${LEAD}"]`)).toBeNull();
   });
 
+  it('a turn another bot runs on a dispatch sent from a 1:1 shows in that 1:1', async () => {
+    bots[2] = { ...bots[2], status: { ...bots[2].status!, presence: 'running', currentTurn: { wakeId: 'w-2', startedAt: Date.now(), threadId: 'handoff:h-1' }, queueDepth: 0 } };
+    seedRooms();
+    act(() => useStore.setState({ roomThreads: { hq: [], w1: [{ threadId: 'handoff:h-1', title: 'Check', lastAt: 1, lastSeq: 1, cardCount: 1, openQuestions: 0, lastKind: 'handoff', status: 'open', unread: null, dmBotId: LEAD }] } } as never));
+    await render(<BotsPage />);
+    act(() => q(`[data-bots-row="bot:${LEAD}"]`)!.click());
+    expect(q(`[data-bots-turn="${VERIFIER}"]`)).not.toBeNull();
+    act(() => q('[data-bots-row="room:w1"]')!.click());
+    expect(q(`[data-bots-turn="${VERIFIER}"]`)).toBeNull();
+    act(() => q(`[data-bots-row="bot:${VERIFIER}"]`)!.click());
+    expect(q(`[data-bots-turn="${VERIFIER}"]`)).toBeNull();
+    // The page remembers the open conversation across mounts: leave the room open.
+    act(() => q('[data-bots-row="room:w1"]')!.click());
+  });
+
   it('a list row counts unread bot messages in neutral, and the orange needs-you count wins', async () => {
     cards.push(card({ workspaceId: 'w1', actor: by('w1', VERIFIER), title: 'Fresh news', at: Date.now() + 1000 }));
     seedRooms();
