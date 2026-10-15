@@ -1032,6 +1032,7 @@ export const ko = {
   'settings.tabFactory': "봇",
   'botsPage.title': "봇",
   'botsPage.conversations': "대화",
+  'botsPage.removedChat': "삭제된 봇이에요. 메시지는 여기 남아 읽을 수 있고, 보낼 수는 없어요.",
   'botsPage.search': "대화 검색",
   'botsPage.addBot': "봇 추가",
   'botsPage.add.menu': "추가",

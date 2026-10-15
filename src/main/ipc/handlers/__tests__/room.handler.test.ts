@@ -138,12 +138,12 @@ describe('room.handler', () => {
     expect(await s.call(IPC.ROOM_ACTORS)).toEqual({ actors: { 'bot-00000001': { role: 'verifier', name: 'Verifier' } } });
   });
 
-  it('a removed bot keeps its name, picture and colour slot, marked removed', async () => {
+  it('a removed bot keeps its name, picture, colour slot and workspace (its 1:1), marked removed', async () => {
     const s = setup({ removed: [{ id: 'bot-0000000d', workspaceId: WS, role: 'lead', template: 'developer', name: 'Developer', hue: 2, removedAt: 5 }] });
     dirs.push(s.dir);
     expect(await s.call(IPC.ROOM_ACTORS)).toEqual({ actors: {
       'bot-00000001': { role: 'verifier', name: 'Verifier' },
-      'bot-0000000d': { role: 'lead', name: 'Developer', removed: true, hue: 2 },
+      'bot-0000000d': { role: 'lead', name: 'Developer', removed: true, hue: 2, workspaceId: WS },
     } });
   });
 

@@ -1815,7 +1815,7 @@ export function waitsOnOwner(card: RoomCardData, livePlans: ReadonlySet<string>)
   return card.kind === 'question' || awaitsApproval(card, livePlans);
 }
 
-export function BotsChat({ conversation, roomCards, bots, title, workspaceName, t, onBack, api, now, readOnly = false, stopPort = {}, jobPort, resumePort, onOpenBot, onEditGroup, threadAsk }: {
+export function BotsChat({ conversation, roomCards, bots, title, workspaceName, t, onBack, api, now, readOnly: pausedView = false, stopPort = {}, jobPort, resumePort, onOpenBot, onEditGroup, threadAsk }: {
   conversation: Conversation;
   roomCards: readonly RoomCardData[];
   /** Every bot (names for senders and the addressee check). */
@@ -1845,6 +1845,9 @@ export function BotsChat({ conversation, roomCards, bots, title, workspaceName, 
    *  a new nonce opens it again. */
   threadAsk?: { workspaceId: string; threadId: ThreadId; nonce: number };
 }): React.ReactElement {
+  // A deleted bot's 1:1 is read only: no composer, profile or answers.
+  const removedBot = conversation.kind === 'bot' && conversation.removed === true;
+  const readOnly = pausedView || removedBot;
   const [profileOpen, setProfileOpen] = useState(false);
   const [sent, setSent] = useState<Record<string, SentTo[] | null>>({});
   const [started, setStarted] = useState<ReadonlySet<string>>(() => new Set());
@@ -1983,7 +1986,7 @@ export function BotsChat({ conversation, roomCards, bots, title, workspaceName, 
       document.removeEventListener('keydown', onKey, true);
     };
   }, [profileOpen]);
-  const presence = conversation.kind === 'bot' ? botPresence(conversation.row) : null;
+  const presence = conversation.kind === 'bot' && !removedBot ? botPresence(conversation.row) : null;
   const group = conversation.kind === 'room';
   // One side panel at a time: a worker's terminal or a thread. The worker
   // panel belongs to the conversation it was opened from: another
@@ -2112,11 +2115,11 @@ export function BotsChat({ conversation, roomCards, bots, title, workspaceName, 
           type="button"
           ref={pillRef}
           data-bots-pill
-          aria-expanded={conversation.kind === 'bot' ? profileOpen : undefined}
+          aria-expanded={conversation.kind === 'bot' && !removedBot ? profileOpen : undefined}
           aria-haspopup={conversation.kind === 'room' && onEditGroup ? 'dialog' : undefined}
           title={conversation.kind === 'room' && onEditGroup ? t('botsPage.group.edit') : undefined}
           onClick={() => (conversation.kind === 'bot' ? setProfileOpen((v) => !v) : onEditGroup?.())}
-          disabled={conversation.kind !== 'bot' && !onEditGroup}
+          disabled={removedBot || (conversation.kind !== 'bot' && !onEditGroup)}
           className={`wmux-bots-pill ${FOCUS_RING}`}
         >
           {conversation.kind === 'bot' ? <BotAvatar bot={conversation.row.bot} size={20} /> : <RoomAvatar bots={conversation.bots} size={20} layout="row" />}
@@ -2125,7 +2128,7 @@ export function BotsChat({ conversation, roomCards, bots, title, workspaceName, 
           {group && <span className="shrink-0 text-[11px] text-[var(--text-muted)]">{conversation.bots.length === 1 ? t('botsPage.botCountOne') : t('botsPage.botCount', { count: conversation.bots.length })}</span>}
         </button>
       </div>
-      {profileOpen && conversation.kind === 'bot' && (
+      {profileOpen && conversation.kind === 'bot' && !removedBot && (
         <div className="wmux-bots-profile" ref={profileRef}><BotProfile row={conversation.row} workers={workers} workspaceName={workspaceName} t={t} stopPort={stopPort} jobPort={readOnly ? undefined : jobPort} adminPort={readOnly ? (jobPort?.remove ? { remove: jobPort.remove } : undefined) : jobPort} /></div>
       )}
 
@@ -2147,7 +2150,7 @@ export function BotsChat({ conversation, roomCards, bots, title, workspaceName, 
           }}
         >
           <div className="wmux-bots-column">
-            {empty && conversation.kind === 'bot' && (
+            {empty && conversation.kind === 'bot' && !removedBot && (
               <ChatIntro row={conversation.row} t={t} readOnly={readOnly} onPick={(text) => setPrefill({ text, nonce: Date.now() })} />
             )}
             {empty && conversation.kind === 'room' && (
@@ -2165,6 +2168,9 @@ export function BotsChat({ conversation, roomCards, bots, title, workspaceName, 
 
       <div className="wmux-bots-column wmux-bots-foot">
         <WorkingRail turns={turns} tasks={railTasks} t={t} now={now} readOnly={readOnly} resumePort={resumePort} shownId={shownId} onOpen={openWorker} />
+        {removedBot ? (
+          <p data-bots-removed-note className="py-3 text-center text-[12px] text-[var(--text-muted)]">{t('botsPage.removedChat')}</p>
+        ) : (
         <div className="wmux-bots-composer">
           <BotsComposer
             conversation={conversation}
@@ -2179,6 +2185,7 @@ export function BotsChat({ conversation, roomCards, bots, title, workspaceName, 
             prefill={prefill}
           />
         </div>
+        )}
       </div>
     </section>
     {((openThread && threadShown) || (shownId && shown)) && <SideSplitter areaRef={areaRef} split={split} t={t} onChange={onSplit} />}

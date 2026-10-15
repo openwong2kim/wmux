@@ -1486,6 +1486,7 @@ export const pl = {
   'settings.tabFactory': "Boty",
   'botsPage.title': "Boty",
   'botsPage.conversations': "Rozmowy",
+  'botsPage.removedChat': "Ten bot został usunięty. Jego wiadomości zostają tu do przeczytania; nie można nic wysłać.",
   'botsPage.search': "Szukaj rozmów",
   'botsPage.addBot': "Dodaj bota",
   'botsPage.add.menu': "Dodaj",

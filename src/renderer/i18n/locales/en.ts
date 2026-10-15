@@ -1508,6 +1508,7 @@ export const en = {
   'settings.tabFactory': "Bots",
   'botsPage.title': "Bots",
   'botsPage.conversations': "Conversations",
+  'botsPage.removedChat': "This bot was deleted. Its messages stay here to read; nothing can be sent.",
   'botsPage.search': "Search conversations",
   'botsPage.addBot': "Add a bot",
   'botsPage.add.menu': "Add",

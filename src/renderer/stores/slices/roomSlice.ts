@@ -19,7 +19,7 @@ import { isTerminalOnlyWorkspace } from './workspaceSlice';
 /** The timeline key for "every card of the room". */
 
 /** A card author main knows (room.handler.ts RoomActor). */
-export interface RoomActorEntry { role: BotRole; name: string; removed?: true; avatar?: string; hue?: number }
+export interface RoomActorEntry { role: BotRole; name: string; removed?: true; avatar?: string; hue?: number; workspaceId?: string }
 
 export const ALL_THREADS = '*' as const;
 export type TimelineThread = ThreadId | typeof ALL_THREADS;

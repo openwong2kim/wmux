@@ -512,6 +512,35 @@ describe('buildBots', () => {
   });
 });
 
+describe('a deleted bot\'s 1:1', () => {
+  const GONE = 'bot-0000000d';
+  const SILENT = 'bot-0000000e';
+  it('stays as a read-only row below every live conversation, when it holds messages', () => {
+    const asked = card({ workspaceId: 'w1', actor: { kind: 'human' }, kind: 'human', threadId: `dm:${GONE}`, refs: { botId: GONE }, at: 9_000 });
+    const answer = card({ workspaceId: 'w1', actor: bot('w1', GONE), threadId: `dm:${GONE}`, at: 9_001 });
+    const m = buildBots(input({
+      cards: new Map([['w1', [asked, answer]]]),
+      removed: [
+        { id: GONE, workspaceId: 'w1', name: 'Old', role: 'lead', hue: 2 },
+        { id: SILENT, workspaceId: 'w1', name: 'Silent', role: 'lead' },
+      ],
+    }));
+    const ids = m.conversations.map((c) => c.id);
+    // Newest message of all, yet last; a deleted bot that never spoke has no row.
+    expect(ids.at(-1)).toBe(`bot:${GONE}`);
+    expect(ids).not.toContain(`bot:${SILENT}`);
+    const gone = m.conversations.at(-1);
+    expect(gone).toMatchObject({ kind: 'bot', removed: true, needsYou: 0, tree: [], row: { bot: { id: GONE, name: 'Old', hue: 2, enabled: false } } });
+    expect(gone?.last?.id).toBe(answer.id);
+  });
+
+  it('a live bot is never shown as deleted', () => {
+    const m = buildBots(input({ removed: [{ id: LEAD, workspaceId: 'w1', name: 'lead', role: 'lead' }] }));
+    expect(m.conversations.filter((c) => c.id === `bot:${LEAD}`)).toHaveLength(1);
+    expect(m.conversations.some((c) => c.kind === 'bot' && c.removed)).toBe(false);
+  });
+});
+
 describe('roomCardsByWorkspace', () => {
   it('merges the whole-room and thread timelines by id in seq order; an answer is never undone by an older copy', () => {
     const thread: ThreadId = 'task:t1';

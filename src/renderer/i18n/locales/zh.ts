@@ -1609,6 +1609,7 @@ export const zh = {
   'settings.tabFactory': "机器人",
   'botsPage.title': "机器人",
   'botsPage.conversations': "对话",
+  'botsPage.removedChat': "该机器人已删除。它的消息保留在这里供查看，无法再发送消息。",
   'botsPage.search': "搜索对话",
   'botsPage.addBot': "添加机器人",
   'botsPage.add.menu': "添加",
