@@ -63,7 +63,7 @@ describe('A6 — useTerminal async restore race cancel (source-level)', () => {
     const loadIdx = src.indexOf('scrollback.load(scrollbackFile)');
     const body = src.slice(loadIdx, loadIdx + 6000);
     expect(body).toMatch(/didRestoreTxt\s*=\s*true/);
-    expect(body).toMatch(/window\.electronAPI\.daemon\.onConnected\(/);
+    expect(body).toMatch(/onDaemonConnected\(/);
     // The listener resets the terminal and clears the flag.
     expect(body).toMatch(/terminal\.reset\(\)/);
     // Cleanup unregisters the listener.

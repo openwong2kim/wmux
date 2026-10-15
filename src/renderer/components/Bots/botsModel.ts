@@ -281,6 +281,18 @@ export function conversationCards(cards: readonly RoomCard[], botId: string, opt
   return cards.filter((c) => mine.has(c) || legacy.has(c));
 }
 
+/** Whether a bot's running turn shows in this conversation (its busy line):
+ *  a turn answering in a 1:1 thread, or in a thread a 1:1 started, shows in
+ *  that bot's 1:1; any other turn in its room. A turn whose thread is not
+ *  known, and a lone bot's (its 1:1 is its whole room), show wherever the
+ *  bot does. Pure. */
+export function turnShowsIn(conversation: Conversation, row: FactoryBotRow, cards: readonly RoomCard[], threads: ThreadsByWorkspace = {}): boolean {
+  const threadId = row.status?.currentTurn?.threadId;
+  if (!threadId || (conversation.kind === 'bot' && conversation.lone)) return true;
+  const owner = dmThreadBot(threadId) ?? dmStartedThreads(cards, threads).get(threadKeyOf({ workspaceId: row.bot.workspaceId, threadId: threadId as RoomCard['threadId'] })) ?? null;
+  return conversation.kind === 'bot' ? owner === row.bot.id : owner === null;
+}
+
 /** Whether a bot is its workspace's only one (no room row). Pure. */
 export function isLoneBot(bots: readonly FactoryBotRow[], workspaceId: string): boolean {
   return bots.filter((r) => r.bot.workspaceId === workspaceId).length < 2;

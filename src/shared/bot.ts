@@ -214,7 +214,9 @@ export interface BotStatus {
   botId: string;
   presence: BotPresence;
   sessionId?: string;
-  currentTurn?: { wakeId: string; startedAt: number };
+  /** `threadId`: the room thread the running turn answers in (absent: none,
+   *  or `general`), so a busy line shows in that conversation only. */
+  currentTurn?: { wakeId: string; startedAt: number; threadId?: string };
   queueDepth: number;
   /** turnsHour is null when the bot has no hourly cap. */
   budgetLeft: { turnsHour: number | null; turnsDay: number; workerHoursDay: number };

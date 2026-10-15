@@ -247,12 +247,27 @@ const ptyExitDispatcher = createPtyDispatcher<number>((cb) =>
   }));
 const ptyFlushDispatcher = createPtyDispatcher<number>((cb) =>
   window.electronAPI.pty.onFlushComplete(cb));
+interface PtyRestartedPayload { ptyId: string; restartCount: number; exitCode: number | null }
+const ptyRestartedDispatcher = createPtyDispatcher<PtyRestartedPayload>((cb) =>
+  window.electronAPI.pty.onRestarted((payload) => cb(payload.ptyId, payload)));
+// `daemon:connected` carries no ptyId: every terminal registers under one key,
+// so the renderer holds ONE IPC listener for it however many panes are open
+// (a listener per terminal tripped MaxListenersExceededWarning past ten).
+const DAEMON_CONNECTED_KEY = '*';
+const daemonConnectedDispatcher = createPtyDispatcher<null>((cb) =>
+  window.electronAPI.daemon.onConnected(() => cb(DAEMON_CONNECTED_KEY, null)));
+/** Run `fn` on every `daemon:connected`; returns the unsubscribe. */
+export function onDaemonConnected(fn: () => void): () => void {
+  return daemonConnectedDispatcher.register(DAEMON_CONNECTED_KEY, () => fn());
+}
 /** Test seam: detach the global IPC listeners and drop all registrations so
  *  per-test electronAPI mocks don't leak across cases. */
 export function __resetPtyDispatchersForTests(): void {
   ptyDataDispatcher.reset();
   ptyExitDispatcher.reset();
   ptyFlushDispatcher.reset();
+  ptyRestartedDispatcher.reset();
+  daemonConnectedDispatcher.reset();
 }
 
 // === #582: terminal mouse-drag dispose guard =================================
@@ -3197,7 +3212,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
           // recoveredBytes=0 (cap-skipped session or fresh create) leaves
           // the .txt cache on screen — degraded gracefully instead of
           // wiping to a blank prompt.
-          removeDaemonConnectedForRestore = window.electronAPI.daemon.onConnected(() => {
+          removeDaemonConnectedForRestore = onDaemonConnected(() => {
             if (!didRestoreTxt) return;
             if (terminalRef.current !== terminal) return;
             didRestoreTxt = false;
@@ -3693,7 +3708,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // gating here would drop the only reattach for that generation; (b) a latch
     // would skip every generation after the first (a respawn would leave the
     // pane attached to a dead session). The event itself is the connect signal.
-    const off = window.electronAPI.daemon.onConnected(() => reattach('daemon:connected'));
+    const off = onDaemonConnected(() => reattach('daemon:connected'));
     // X8 — a supervised restart re-created THIS session under the same id with a
     // fresh PTY. The daemon:connected reattach trigger above does NOT fire (the
     // daemon never disconnected), so PTY_RESTARTED is the dedicated signal:
@@ -3705,8 +3720,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     //       attach + SessionPipe + pid-map re-anchor all happen.
     // onExit only prints (no "dead" UI state to clear), so a restart needs no
     // extra teardown reversal — just the marker + reattach.
-    const offRestarted = window.electronAPI.pty.onRestarted((payload) => {
-      if (payload.ptyId !== id) return;
+    const offRestarted = ptyRestartedDispatcher.register(id, (payload) => {
       const term = terminalRef.current;
       if (term && ptyIdRef.current === id) {
         const line = payload.exitCode !== null

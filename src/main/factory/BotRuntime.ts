@@ -359,7 +359,7 @@ export class BotRuntime {
       botId,
       presence,
       ...(sessionId ? { sessionId } : {}),
-      ...(run ? { currentTurn: { wakeId: run.item.id, startedAt: run.startedAt } } : {}),
+      ...(run ? { currentTurn: { wakeId: run.item.id, startedAt: run.startedAt, ...(run.item.threadId ? { threadId: run.item.threadId } : {}) } } : {}),
       queueDepth: this.deps.queue.depth(botId),
       budgetLeft: { turnsHour: left.turnsHour, turnsDay: left.turnsDay, workerHoursDay: left.workerHoursDay },
       ...(err ? { lastError: { ...err } } : {}),

@@ -158,6 +158,17 @@ describe('BotRuntime', () => {
     expect(r.queue.list({ botId: id })[0].state).toBe('done');
   });
 
+  it('the running turn\'s status names the thread it answers in (the page shows it busy there only)', async () => {
+    const r = rig();
+    const id = createBot(r);
+    r.runtime.wake(id, { text: 'hello', threadId: `dm:${id}` });
+    await settle();
+    expect(r.runtime.status(id)?.currentTurn).toMatchObject({ threadId: `dm:${id}` });
+    r.adapters[0].end();
+    await settle();
+    expect(r.runtime.status(id)?.currentTurn).toBeUndefined();
+  });
+
   it('queues a human message while the bot is busy and runs it next on the same session', async () => {
     const r = rig();
     const id = createBot(r);
