@@ -328,6 +328,14 @@ describe('BotRuntime', () => {
     expect(r.queue.get(older.id)).toMatchObject({ state: 'dropped', dropped: { code: 'duplicate' } });
     expect(r.queue.get(newer.id)?.state).toBe('queued');
     expect(r.queue.get(other.id)?.state).toBe('queued');
+    // A firing that lands just before the cap rises is folded too: the
+    // newest runs, never the older one first.
+    const latest = must(r.queue.enqueue({ botId: id, workspaceId: 'ws-1', reason: { kind: 'routine', routineId: 'r-1', dueAt: clock + 120_000 }, priority: 1 }));
+    r.store.update(id, { budget: { maxTurnsPerHour: 9 } });
+    r.runtime.profileChanged(id);
+    await settle(10);
+    expect(r.queue.get(newer.id)).toMatchObject({ state: 'dropped', dropped: { code: 'duplicate' } });
+    expect(r.queue.get(latest.id)?.state).toBe('done');
   });
 
   describe('out of turns, the owner\'s words are held, never dropped', () => {

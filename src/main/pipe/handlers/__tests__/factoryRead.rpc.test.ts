@@ -224,7 +224,7 @@ describe('plan.propose', () => {
     expect(await handlePlanPropose({ title: 'Plan for Monday', items: [ITEM] }, ctxOf(MOA), d)).toMatchObject({ duplicate: true });
   });
 
-  it('a newer plan supersedes the bot\'s older plan still open; an answered one and another bot\'s stay as they are', async () => {
+  it('a newer plan supersedes the bot\'s older plan still open; another bot\'s stays open', async () => {
     let key = 0;
     const d = deps({ postKey: () => `wake:w-${++key}:1` });
     const writer = d.rooms() as RoomWriter;

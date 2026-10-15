@@ -437,6 +437,7 @@ export class BotRuntime {
     if (!this.deps.store.setParked(botId, null)) return notFound(botId);
     this.lastError.delete(botId);
     this.deps.queue.unparkAll(botId);
+    this.dedupeHeldRoutines(botId);
     for (const item of this.deps.queue.list({ botId, states: ['queued'] })) this.released.add(item.id);
     this.lifecycle(botId, 'resumed');
     this.kick();
@@ -607,6 +608,9 @@ export class BotRuntime {
         continue;
       }
       if (profile.parked) {
+        // Lifted here (the window slid, the cap rose): what waited runs as
+        // its newest routine firing only.
+        this.dedupeHeldRoutines(botId);
         this.deps.store.setParked(botId, null);
         delete profile.parked;
       }
@@ -733,6 +737,7 @@ export class BotRuntime {
   private liftBudgetPark(profile: BotProfile, now: number): boolean {
     if (profile.parked?.reason !== 'budget') return false;
     if (!checkTurn(profile.budget, this.deps.store.usageOf(profile.id), now).ok) return false;
+    this.dedupeHeldRoutines(profile.id);
     this.deps.store.setParked(profile.id, null);
     delete profile.parked;
     this.pushStatus(profile.id);

@@ -96,7 +96,7 @@ describe('bot.* auth matrix', () => {
 });
 
 describe('bot.remove', () => {
-  function rigRemove(withStop: boolean) {
+  function rigRemove(withStop: boolean, workerStops = true) {
     const store = new BotStore(botsFilePath(dir));
     const created = store.create({ workspaceId: 'ws-1', template: 'developer', name: 'Developer' });
     if (!created.ok) throw new Error('create');
@@ -107,6 +107,7 @@ describe('bot.remove', () => {
         order.push('remove');
         return store.remove(id, opts);
       },
+      profileChanged: (id: string) => { order.push(`off ${String(store.get(id)?.enabled)}`); },
       currentTurn: () => null,
       interrupt: () => ({ ok: false, code: 'not_running' }),
     } as unknown as BotRuntime;
@@ -132,7 +133,11 @@ describe('bot.remove', () => {
         },
       },
       gates: () => null,
-      stopWorker: async (e: { id: string }) => { workersStopped.push(e.id); return 1; },
+      stopWorker: async (e: { id: string }) => {
+        if (!workerStops) throw new Error('still running');
+        workersStopped.push(e.id);
+        return 1;
+      },
       stopResumed: async () => 0,
       launchesInFlight: () => [],
       log: () => undefined,
@@ -146,11 +151,20 @@ describe('bot.remove', () => {
   it('stops that bot\'s work as Stop does (its tasks end "stopped by owner"), then removes it with a tombstone', async () => {
     const r = rigRemove(true);
     expect(await r.call({ botId: r.botId, hue: 4 })).toMatchObject({ ok: true, botId: r.botId, stopped: { ok: true, workersStopped: 1, tasksCancelled: 1 } });
-    expect(r.order).toEqual(['cancel task-mine', 'remove']);
+    // Off before the stop snapshots, so nothing new starts meanwhile.
+    expect(r.order).toEqual(['off false', 'cancel task-mine', 'remove']);
     expect(r.updates).toEqual([expect.objectContaining({ id: 'task-mine', status: 'cancelled', summary: 'stopped by owner' })]);
     expect(r.workersStopped).toEqual(['task-mine']);
     expect(r.store.get(r.botId)).toBeNull();
     expect(r.store.listRemoved()).toEqual([expect.objectContaining({ id: r.botId, name: 'Developer', hue: 4 })]);
+  });
+
+  it('a stop that could not stop everything keeps the bot, switched off, and says to delete again', async () => {
+    const r = rigRemove(true, false);
+    expect(await r.call({ botId: r.botId })).toMatchObject({ ok: false, code: 'stop_failed' });
+    expect(r.store.get(r.botId)?.enabled).toBe(false);
+    expect(r.order).not.toContain('remove');
+    expect(r.store.listRemoved()).toEqual([]);
   });
 
   it('refuses a bad colour slot or an unknown bot; without a stop it still removes', async () => {
@@ -158,7 +172,7 @@ describe('bot.remove', () => {
     expect(await r.call({ botId: r.botId, hue: 8 })).toMatchObject({ ok: false, code: 'invalid_argument' });
     expect(await r.call({ botId: 'bot-ffffffff' })).toMatchObject({ ok: false, code: 'not_found' });
     expect(await r.call({ botId: r.botId })).toMatchObject({ ok: true });
-    expect(r.order).toEqual(['remove']);
+    expect(r.order).toEqual(['off false', 'remove']);
   });
 });
 

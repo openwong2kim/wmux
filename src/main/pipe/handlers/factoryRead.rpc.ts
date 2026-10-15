@@ -418,7 +418,7 @@ export async function handlePlanPropose(raw: unknown, ctx: RpcContext | undefine
   // open state (no answer is routed for them; the room counts only the
   // newest anyway, botsModel.ts livePlanIds).
   if (!r.duplicate) {
-    for (let n = 0; n < 50; n++) {
+    for (;;) {
       const older = writer.find(bot.workspaceId, (c) => c.kind === 'plan' && c.state === 'open' && c.id !== card.id
         && c.actor.kind === 'bot' && c.actor.botId === bot.botId);
       if (!older || !writer.setState(bot.workspaceId, older.id, 'resolved')) break;

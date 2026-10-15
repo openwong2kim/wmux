@@ -45,7 +45,7 @@ import { getHandoffRouter } from '../../factory/handoffRouter';
 import { getRoomWriter, resolveRoomPorts, runningWake, runningWakeThread, wakeReplyTo } from '../../factory/roomWriter';
 import { getFactoryStopPorts, stopFactoryWork, type FactoryStopPorts, type FactoryStopResult } from '../../factory/factoryStop';
 
-type Refusal = FactoryRefusal<'not_authorized' | 'not_started' | 'invalid_argument' | 'not_found' | 'not_running' | 'too_many_bots' | 'dropped' | 'not_owner_words' | 'not_a_repo' | 'no_remote' | 'repo_mismatch'>;
+type Refusal = FactoryRefusal<'not_authorized' | 'not_started' | 'invalid_argument' | 'not_found' | 'not_running' | 'too_many_bots' | 'dropped' | 'not_owner_words' | 'not_a_repo' | 'no_remote' | 'repo_mismatch' | 'stop_failed'>;
 
 function refuse(code: Refusal['code'], message: string): Refusal {
   return { ok: false, code, message };
@@ -271,6 +271,10 @@ export function registerBotRpcHandlers(
   // by owner", its workers and gates are stopped and its routines paused —
   // then the profile goes (its routines with it, routine.rpc.ts) and a
   // tombstone keeps its name for the cards it wrote. `hue`: its colour slot.
+  // The bot is switched off before the stop takes its snapshot, so no turn
+  // (and no worker) starts while the stop waits. A stop that could
+  // not stop everything keeps the bot, off, and says so: deleting again
+  // retries.
   operatorOnly(BOT_RPC.remove, async (l, params) => {
     const botId = botIdParam(params);
     if (!botId) return refuse('invalid_argument', 'botId must be a bot id');
@@ -279,16 +283,24 @@ export function registerBotRpcHandlers(
       return refuse('invalid_argument', `hue must be an integer 0-${BOT_IDENTITY_SLOTS - 1}`);
     }
     if (!l.store.get(botId)) return refuse('not_found', `no bot ${botId}`);
+    // Off first (its queue goes, no new turn starts; a running turn is
+    // still there for the stop to mark and interrupt), then the stop.
+    if (l.store.get(botId)?.enabled) {
+      l.store.update(botId, { enabled: false });
+      l.runtime.profileChanged(botId);
+    }
     const ports = removePorts.stopPorts();
+    let stopping: Promise<FactoryStopResult> | null = null;
+    if (ports) stopping = stopFactoryWork(ports, { botId });
+    else console.warn(`[factory] bot.remove: the factory stop is not running; ${botId}'s workers were not stopped`);
     let stopped: FactoryStopResult | null = null;
-    if (ports) {
+    if (stopping) {
       try {
-        stopped = await stopFactoryWork(ports, { botId });
+        stopped = await stopping;
       } catch (err) {
-        console.warn(`[factory] bot.remove: stopping ${botId}'s work failed: ${String(err)}`);
+        return refuse('stop_failed', `Some of the bot's work could not be stopped (${String(err)}); it is off now. Delete it again to retry.`);
       }
-    } else {
-      console.warn(`[factory] bot.remove: the factory stop is not running; ${botId}'s workers were not stopped`);
+      if (!stopped.ok) return refuse('stop_failed', 'Some of the bot\'s work could not be stopped; it is off now. Delete it again to retry.');
     }
     if (!l.runtime.remove(botId, rawHue !== undefined ? { hue: rawHue as number } : {})) return refuse('not_found', `no bot ${botId}`);
     return {
