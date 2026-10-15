@@ -39,12 +39,25 @@ describe('dubiousOwnership', () => {
   it('the message names the folder and the command, and says wmux does not add it', () => {
     const m = dubiousOwnershipMessage('\\\\wsl.localhost\\Ubuntu\\home\\dev\\r', "git config --global --add safe.directory '/x'");
     expect(m).toContain('\\\\wsl.localhost\\Ubuntu\\home\\dev\\r');
-    expect(m).toContain("`git config --global --add safe.directory '/x'`");
+    expect(m).toContain('`git config --global --add safe.directory "/x"`');
     expect(m).toMatch(/wmux does not add this exception itself/);
     expect(m).not.toContain('/*');
     const all = dubiousOwnershipMessage('C:\\Users\\me\\.wmux\\worktrees\\h\\t', "git config --global --add safe.directory 'C:/x'", 'C:\\Users\\me\\.wmux\\worktrees\\');
-    expect(all).toContain("`git config --global --add safe.directory 'C:/Users/me/.wmux/worktrees/*'`");
+    expect(all).toContain('`git config --global --add safe.directory "C:/Users/me/.wmux/worktrees/*"`');
     // An apostrophe in the home folder: double quotes.
     expect(dubiousOwnershipMessage('x', 'c', "C:\\Users\\O'Brien\\.wmux\\worktrees")).toContain('`git config --global --add safe.directory "C:/Users/O\'Brien/.wmux/worktrees/*"`');
+  });
+});
+
+describe('a safe.directory command for any shell', () => {
+  it('double quotes a plain path, so Command Prompt stores it right too', async () => {
+    const { pasteable } = await import('../dubiousOwnership');
+    expect(pasteable("git config --global --add safe.directory 'C:/Users/me/.wmux/worktrees/h/t 1'"))
+      .toBe('`git config --global --add safe.directory "C:/Users/me/.wmux/worktrees/h/t 1"`');
+    // git's own %(prefix)/ form would be expanded by cmd: shown as git printed it, for PowerShell or Git Bash.
+    expect(pasteable("git config --global --add safe.directory '%(prefix)///wsl.localhost/Ubuntu/home/dev/r'"))
+      .toBe("`git config --global --add safe.directory '%(prefix)///wsl.localhost/Ubuntu/home/dev/r'` (in PowerShell or Git Bash)");
+    // Unquoted (git on Linux or macOS): as printed.
+    expect(pasteable('git config --global --add safe.directory /home/dev/r')).toBe('`git config --global --add safe.directory /home/dev/r`');
   });
 });

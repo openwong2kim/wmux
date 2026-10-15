@@ -28,14 +28,34 @@ export function dubiousOwnership(stderr: string, path: string): { command: strin
  *  "everything under") covers every task folder instead of one per task. */
 export function dubiousOwnershipMessage(path: string, command: string, taskFolders?: string): string {
   const root = taskFolders ? `${taskFolders.replace(/\\/g, '/').replace(/\/+$/, '')}/*` : '';
-  // Single-quoted unless the path has one (then double: cmd, PowerShell and
-  // Git Bash all read a plain path that way); a path with both is not offered.
-  const quoted = !root ? '' : !root.includes("'") ? `'${root}'` : /["$`]/.test(root) ? '' : `"${root}"`;
-  const all = quoted ? `git config --global --add safe.directory ${quoted}` : '';
+  const all = root ? safeDirectoryFor(root) : '';
   return `git refuses to use ${path} because another user owns it ("dubious ownership"; Git for Windows sees every repository inside WSL that way). `
-    + `If you trust this repository, run \`${command}\` and try again.`
-    + (all ? ` Its task folders need one more, once for all of them: \`${all}\`.` : '')
+    + `If you trust this repository, run ${pasteable(command)} and try again.`
+    + (all ? ` Its task folders need one more, once for all of them: ${all}.` : '')
     + ' wmux does not add this exception itself.';
+}
+
+const SAFE_DIRECTORY_ADD = 'git config --global --add safe.directory ';
+
+/**
+ * A safe.directory command the owner can paste into whichever shell they
+ * use. Command Prompt keeps single quotes as part of the value, so a path
+ * that needs no escaping anywhere (no `"`, `%`, `!`, `$` or backtick) is
+ * given in double quotes, which cmd, PowerShell and Git Bash all read the
+ * same way. Any other command is shown as it is, marked for PowerShell or Git
+ * Bash. Returned in backticks. Pure.
+ */
+export function pasteable(command: string): string {
+  const m = /^git config --global --add safe\.directory '([^']*)'$/.exec(command.trim());
+  if (m) return safeDirectoryFor(m[1]) || `\`${command}\` (in PowerShell or Git Bash)`;
+  return `\`${command}\``;
+}
+
+/** The command for one path, as pasteable says; '' when no quoting works. */
+function safeDirectoryFor(dir: string): string {
+  if (!/["%!$`\r\n]/.test(dir)) return `\`${SAFE_DIRECTORY_ADD}"${dir}"\``;
+  if (!dir.includes("'")) return `\`${SAFE_DIRECTORY_ADD}'${dir}'\` (in PowerShell or Git Bash)`;
+  return '';
 }
 
 /** A read git refused over ownership: its message is the explanation, so a

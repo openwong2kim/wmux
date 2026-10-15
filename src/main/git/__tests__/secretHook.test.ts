@@ -187,6 +187,12 @@ describe('wmux secrets check-staged', () => {
     expect(await checkStaged(repo, (a) => gitPort(a, repo), () => undefined)).toBe(0);
   });
 
+  it('words a found value once ("this looks like a password or key")', () => {
+    const text = formatBlockedCommit([{ path: 'src/a.ts', what: 'value', line: 3, kind: 'random' }]);
+    expect(text).toContain('src/a.ts line 3: this looks like a password or key.');
+    expect(text).not.toContain('looks like what looks like');
+  });
+
   it('formats one line per finding', () => {
     expect(formatBlockedCommit([{ path: 'certs/x.pem', what: 'file', kind: 'private-key' }])).toContain('certs/x.pem: this file holds a private key.');
   });

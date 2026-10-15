@@ -46,6 +46,6 @@ describe('the gate on a worktree git will not open', () => {
     const root = path.join(getWmuxHomeDir(), 'worktrees');
     const r = await runner.resolveSteps(path.join(root, 'abc123', 'task-1'), '/repo', 'origin/main');
     const why = (r as { unavailable: string }).unavailable;
-    expect(why).toContain(`\`git config --global --add safe.directory '${root.replace(/\\/g, '/')}/*'\``);
+    expect(why).toContain(`\`git config --global --add safe.directory "${root.replace(/\\/g, '/')}/*"\``);
   });
 });
