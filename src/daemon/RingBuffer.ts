@@ -1,10 +1,15 @@
 import { terminalCoreSelection } from '../shared/terminalCoreSettings';
 import { writeFile, rename, unlink } from 'node:fs/promises';
 import {
-  appendFileSync,
+  closeSync,
+  constants as fsConstants,
+  fstatSync,
+  ftruncateSync,
+  openSync,
   readFileSync,
+  readSync,
   statSync,
-  truncateSync,
+  writeSync,
   writeFileSync,
   renameSync,
   unlinkSync,
@@ -102,12 +107,15 @@ export class RingBuffer {
   // memory, so every offset consumer is unaffected; the bytes come back
   // synchronously on the first read or write (wake()).
   private hibernatedPath: string | null = null;
-  private hibernatedFileBytes = 0; // what that `.buf` holds
+  private hibernatedFileBytes = 0; // what that `.buf` held when it was released
   private releasedBytes = 0;
   // Output that arrived while the `.buf` could not be read back: it follows
-  // the file's bytes and joins them on the next successful wake.
+  // the file's bytes and joins them on the next successful wake. Always fewer
+  // than `capacity` bytes (it replaces the file once it fills the ring), and
+  // kept even after a dump writes it to the file (`appendedBytes` of it).
   private pending: Buffer[] = [];
   private pendingBytes = 0;
+  private appendedBytes = 0;
   private mutations = 0; // bumps on every content change, including clear()
   private lastDump: { path: string; mutations: number } | null = null;
 
@@ -227,7 +235,7 @@ export class RingBuffer {
     this.buffer = Buffer.alloc(0); this.length = 0; this.physical = 0; this.writePos = 0;
     this.geometry = [];
     this.hibernatedPath = null;
-    this.pending = []; this.pendingBytes = 0;
+    this.pending = []; this.pendingBytes = 0; this.appendedBytes = 0;
   }
 
   /**
@@ -397,7 +405,7 @@ export class RingBuffer {
     if (this.disposed) return;
     // Hibernated to this very file: it already holds the bytes. Reading them
     // back would wake the ring on every forced snapshot tick.
-    if (this.hibernatedPath === filePath && this.pendingBytes === 0) return;
+    if (this.hibernatedPath === filePath && this.appendedBytes === this.pendingBytes) return;
     if (!this.wake()) { this.appendPendingTo(filePath); return; }
     // Captured here (inside the chain) rather than at enqueue time: a slightly
     // fresher snapshot is never wrong for recovery, and the snapshotRunner's
@@ -450,7 +458,7 @@ export class RingBuffer {
    */
   dumpToFileSyncAtomic(filePath: string): void {
     if (this.disposed) return;
-    if (this.hibernatedPath === filePath && this.pendingBytes === 0) return; // see doDumpToFile
+    if (this.hibernatedPath === filePath && this.appendedBytes === this.pendingBytes) return; // see doDumpToFile
     if (!this.wake()) { this.appendPendingTo(filePath); return; }
     const data = this.readAll();
     const tmpPath = `${filePath}.tmp.${crypto.randomBytes(6).toString('hex')}`;
@@ -519,20 +527,37 @@ export class RingBuffer {
   wake(): boolean {
     const file = this.hibernatedPath;
     if (file === null) return true;
+    // Only the bytes the ring can still hold are read: the newest part of the
+    // released history, up to `capacity` with the output held since.
+    const base = this.hibernatedFileBytes;
+    const want = Math.min(base, this.capacity - this.pendingBytes);
     let stored: Buffer;
+    let fileBytes: number;
     try {
-      stored = readFileSync(file);
+      const fd = openSync(file, 'r');
+      try {
+        fileBytes = fstatSync(fd).size;
+        const end = Math.min(base, fileBytes);
+        stored = Buffer.alloc(Math.min(want, end));
+        let got = 0;
+        while (got < stored.length) {
+          const n = readSync(fd, stored, got, stored.length - got, end - stored.length + got);
+          if (n === 0) break;
+          got += n;
+        }
+        stored = stored.subarray(0, got);
+      } finally {
+        closeSync(fd);
+      }
     } catch (err) {
       RingBuffer.wakeFailures++;
       if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') return false;
       stored = Buffer.alloc(0);
+      fileBytes = 0;
     }
-    if (stored.length !== this.hibernatedFileBytes) {
-      if (stored.length > 0) RingBuffer.wakeFailures++;
+    if (fileBytes < base + this.appendedBytes) {
+      if (fileBytes > 0) RingBuffer.wakeFailures++;
       this.lastDump = null;
-      // Longer only after a partial append that could not be undone: its
-      // bytes are still in `pending`, so keep the known prefix.
-      if (stored.length > this.hibernatedFileBytes) stored = stored.subarray(0, this.hibernatedFileBytes);
     }
     this.restore(this.pendingBytes > 0 ? Buffer.concat([stored, ...this.pending]) : stored);
     return true;
@@ -548,6 +573,7 @@ export class RingBuffer {
     this.releasedBytes = 0;
     this.pending = [];
     this.pendingBytes = 0;
+    this.appendedBytes = 0;
     this.buffer = Buffer.alloc(physical);
     data.copy(this.buffer, 0);
     this.physical = physical;
@@ -558,22 +584,29 @@ export class RingBuffer {
   /**
    * A dump while the `.buf` cannot be read back: that file is the only full
    * copy, so it is never replaced with the partial bytes readAll() serves.
-   * The output that arrived since is appended to it instead, so the file (and
-   * a recovery from it) still holds every byte. Throws when that fails too,
-   * like any failed dump.
+   * The output held since is written after the released history instead, so
+   * the file (and a recovery from it) still holds every byte. The write is
+   * positional at the committed length: a retry after a partial write
+   * overwrites it rather than repeating it. The file stays under
+   * 2 × capacity, since `pending` replaces it once it fills the ring.
+   * Throws when the write fails, like any failed dump.
    */
   private appendPendingTo(filePath: string): void {
     if (this.hibernatedPath !== filePath) throw new Error('hibernated ring buffer could not be read back');
+    const unwritten = Buffer.concat(this.pending).subarray(this.appendedBytes);
+    const offset = this.hibernatedFileBytes + this.appendedBytes;
+    const fd = openSync(filePath, fsConstants.O_WRONLY); // no read access needed, no truncate, no append mode
     try {
-      appendFileSync(filePath, Buffer.concat(this.pending));
-    } catch (err) {
-      // Drop a partial append so a retry cannot repeat its bytes.
-      try { truncateSync(filePath, this.hibernatedFileBytes); } catch { /* wake() reads only the known prefix */ }
-      throw err;
+      let done = 0;
+      while (done < unwritten.length) {
+        done += writeSync(fd, unwritten, done, unwritten.length - done, offset + done);
+      }
+      // Drop anything a failed attempt left past the end.
+      ftruncateSync(fd, offset + unwritten.length);
+    } finally {
+      closeSync(fd);
     }
-    this.hibernatedFileBytes += this.pendingBytes;
-    this.pending = [];
-    this.pendingBytes = 0;
+    this.appendedBytes = this.pendingBytes;
   }
 
   /** Output for a ring whose `.buf` cannot be read back right now. */
@@ -584,7 +617,7 @@ export class RingBuffer {
     this.pending.push(Buffer.from(data));
     this.pendingBytes += data.length;
     // Once the new bytes alone fill the ring, the file holds nothing that
-    // would survive a wake: stop depending on it.
+    // would survive a wake: stop depending on it. The next dump replaces it.
     if (this.pendingBytes >= this.capacity) this.restore(Buffer.concat(this.pending));
   }
 

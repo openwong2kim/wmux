@@ -316,6 +316,63 @@ describe('buffer hibernation', () => {
     },
   );
 
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
+    'a dump retried after a partial write overwrites it instead of repeating it',
+    async () => {
+      const ring = new RingBuffer(8 * MB, 'node');
+      fillRing(ring);
+      const before = ring.readAll();
+      sessions.push(fakeSession('p1', ring));
+      await createBufferHibernation(deps()).sweep();
+      const bufPath = path.join(dir, 'buffers', 'p1.buf');
+      fs.chmodSync(bufPath, 0o200); // writable, unreadable
+
+      ring.write(Buffer.from('ABCD'));
+      // A first attempt wrote 'AB' and then failed, rollback included.
+      fs.appendFileSync(bufPath, 'AB');
+      await ring.dumpToFile(bufPath);
+      ring.write(Buffer.from('EF'));
+      fs.appendFileSync(bufPath, 'E'); // and once more, past the committed end
+      await ring.dumpToFile(bufPath);
+
+      fs.chmodSync(bufPath, 0o600);
+      const full = Buffer.concat([before, Buffer.from('ABCDEF')]);
+      expect(fs.readFileSync(bufPath).equals(full)).toBe(true);
+      expect(ring.readAll().equals(full)).toBe(true);
+    },
+  );
+
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
+    'an unreadable .buf stays bounded while output keeps arriving, and the wake keeps only what fits',
+    async () => {
+      const capacity = 2 * MB;
+      const ring = new RingBuffer(capacity, 'node');
+      fillRing(ring);
+      let stream = ring.readAll();
+      sessions.push(fakeSession('p1', ring));
+      await createBufferHibernation(deps({ minBytes: MB })).sweep();
+      expect(ring.isHibernated).toBe(true);
+      const bufPath = path.join(dir, 'buffers', 'p1.buf');
+      fs.chmodSync(bufPath, 0o200);
+
+      let maxFile = 0;
+      for (let i = 0; i < 20; i++) {
+        const chunk = Buffer.alloc(300 * 1024, 0x41 + (i % 26));
+        ring.write(chunk);
+        stream = Buffer.concat([stream, chunk]).subarray(-capacity);
+        await ring.dumpToFile(bufPath); // the 30 s snapshot
+        maxFile = Math.max(maxFile, fs.statSync(bufPath).size);
+        expect(ring.allocatedBytes).toBeLessThanOrEqual(capacity);
+      }
+
+      expect(maxFile).toBeLessThan(2 * capacity);
+      fs.chmodSync(bufPath, 0o600);
+      expect(ring.readAll().equals(stream)).toBe(true);
+      await ring.dumpToFile(bufPath);
+      expect(fs.statSync(bufPath).size).toBe(capacity);
+    },
+  );
+
   it('skips rust rings', () => {
     const ring = new RingBuffer(8 * MB, 'node');
     fillRing(ring);
