@@ -602,6 +602,30 @@ describe('focusNotificationTarget', () => {
     expect(setAppRoute).not.toHaveBeenCalled();
   });
 
+  it('J-bots: on the Bots page a bot worker\'s jump opens the page\'s worker panel and stays', () => {
+    for (const payload of [{ ptyId: 'pty-b', workspaceId: null }, { surfaceId: 'sf-b' }, { ptyId: null, workspaceId: 'ws-b' }]) {
+      const h = makeJumpHarness({ workspaces: [wsA(), wsB()], activeWorkspaceId: 'ws-a' });
+      const setAppRoute = vi.fn();
+      const setBotsWorkerPanel = vi.fn();
+      Object.assign(h.state, { appRoute: 'bots', setAppRoute, setBotsWorkerPanel, fanoutOrigin: { 'ws-b': { kind: 'bot', botId: 'bot-0000000a' } } });
+      expect(focusNotificationTarget(h.getState, payload)).toBe(true);
+      expect(setAppRoute).not.toHaveBeenCalled();
+      expect(h.spies.setActiveWorkspace).not.toHaveBeenCalled();
+      expect(setBotsWorkerPanel).toHaveBeenCalledWith({ workspaceId: 'ws-b', conversationId: 'bot:bot-0000000a' });
+    }
+    // Not a bot's worker, or the panel's own Open in Workspaces: the page is left.
+    const h = makeJumpHarness({ workspaces: [wsA(), wsB()], activeWorkspaceId: 'ws-a' });
+    const setAppRoute = vi.fn();
+    const setBotsWorkerPanel = vi.fn();
+    Object.assign(h.state, { appRoute: 'bots', setAppRoute, setBotsWorkerPanel, fanoutOrigin: { 'ws-b': { kind: 'bot', botId: 'bot-0000000a' } } });
+    focusNotificationTarget(h.getState, { ptyId: 'pty-a', workspaceId: null });
+    expect(setAppRoute).toHaveBeenCalledWith('workspaces');
+    setAppRoute.mockClear();
+    focusNotificationTarget(h.getState, { workspaceId: 'ws-b' }, { reveal: true });
+    expect(setAppRoute).toHaveBeenCalledWith('workspaces');
+    expect(setBotsWorkerPanel).not.toHaveBeenCalled();
+  });
+
   it('J3: unread notifications for the target surface are marked read and the ring cleared', () => {
     const h = makeJumpHarness({
       workspaces: [wsA()],

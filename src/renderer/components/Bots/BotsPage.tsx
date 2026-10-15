@@ -582,6 +582,15 @@ export default function BotsPage({ onAddBot, port, api, now, settings, stop, eng
   // panel never opens on its own.
   const [unfolded, setUnfolded] = useState<Readonly<Record<string, boolean>>>({});
   const panel = useStore((s) => s.botsWorkerPanel);
+  // A worker shown from elsewhere (a notification's jump while this page is
+  // up) brings its bot's chat forward, where the panel lives.
+  const panelConversation = panel?.conversationId ?? null;
+  const shownPanel = useRef(panelConversation);
+  useEffect(() => {
+    if (panelConversation && panelConversation !== shownPanel.current) select(panelConversation);
+    shownPanel.current = panelConversation;
+    // `select` is a fresh closure each render; only the panel moving matters.
+  }, [panelConversation]);
   const openWorker = (botId: string, workspaceId: string) => {
     const conversationId = botConversationId(botId);
     select(conversationId);

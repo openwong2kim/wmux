@@ -519,7 +519,8 @@ status bar badges, `fleet_triage` or the phone's sidebar.
   resumable with their pane cleared — one 28px row each with Resume; three
   rows, then "+N more". No spinner or shimmer. With nothing working it is
   not drawn.
-- **Worker panel:** a worker row in the list (and a Resume that started)
+- **Worker panel:** a worker row in the list (and a Resume that started,
+  or a notification about a bot's worker opened while the page is up)
   shows the worker's terminal in a panel beside the chat, on the Bots page,
   and never switches the active workspace (owner decision 2026-10-14): a
   44px header on one line — the worker's name in 13px/500, "· its state" in

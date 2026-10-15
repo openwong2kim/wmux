@@ -22,7 +22,7 @@ import { IconMoreHorizontal, IconX } from '../icons';
 
 type T = (key: string, vars?: Record<string, string | number>) => string;
 
-const openInWorkspaces = (workspaceId: string) => focusNotificationTarget(() => useStore.getState(), { workspaceId });
+const openInWorkspaces = (workspaceId: string) => focusNotificationTarget(() => useStore.getState(), { workspaceId }, { reveal: true });
 
 /** The header's ⋮: Open in Workspaces, and Resume for an ended task whose
  *  stopped worker can resume the same conversation. */

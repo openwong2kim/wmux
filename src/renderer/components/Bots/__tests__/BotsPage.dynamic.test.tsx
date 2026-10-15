@@ -17,6 +17,7 @@ import type { Pane, Workspace } from '../../../../shared/types';
 import BotsPage, { isStillStarting } from '../BotsPage';
 import type { EnginePort } from '../botsEngine';
 import MiniSidebar from '../../Sidebar/MiniSidebar';
+import { focusNotificationTarget } from '../../../hooks/useNotificationListener';
 import { chatCards, composerHint, fitSideSplit, oneToOneRefusal } from '../BotsChat';
 import type { Conversation } from '../botsModel';
 import { refreshApprovals, setApprovalsApiForTests, type ApprovalsApi } from '../../Room/approvalsStore';
@@ -1599,6 +1600,17 @@ describe('Bots page', () => {
     await act(async () => row.click());
     expect(q('[data-bots-chat]')!.getAttribute('data-bots-chat')).toBe('group:grp-000000c1');
     expect(q('[data-bots-thread-panel="handoff:h-1"]')!.textContent).toContain('Which branch?');
+  });
+
+  it('a notification jump to a bot worker keeps the Bots page and shows the worker beside its bot\'s chat', async () => {
+    seedRooms();
+    await render(<BotsPage />);
+    act(() => q(`[data-bots-row="bot:${VERIFIER}"]`)!.click());
+    await act(async () => { focusNotificationTarget(() => useStore.getState(), { workspaceId: 't1' }); });
+    expect(useStore.getState().appRoute).toBe('bots');
+    expect(useStore.getState().activeWorkspaceId).toBe('hq');
+    expect(useStore.getState().botsWorkerPanel).toEqual({ workspaceId: 't1', conversationId: `bot:${LEAD}` });
+    expect(q('[data-bots-chat]')!.getAttribute('data-bots-chat')).toBe(`bot:${LEAD}`);
   });
 
   it('a reply landing in the 1:1 the owner is reading draws no "New" divider above it', async () => {
