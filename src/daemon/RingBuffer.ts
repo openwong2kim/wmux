@@ -266,7 +266,9 @@ export class RingBuffer {
     const data = this.readAll();
     const writtenAt = this.totalWritten;
     this.pruneGeometry();
-    if (this.geometry.length === 0) return { data, geometry: undefined, writtenAt };
+    // Still hibernated: `data` is only the newest bytes, which the marks
+    // (kept for the full window) do not line up with.
+    if (this.geometry.length === 0 || this.hibernatedPath !== null) return { data, geometry: undefined, writtenAt };
     const windowStart = this.totalWritten - data.length;
     const [first, ...rest] = this.geometry;
     return {

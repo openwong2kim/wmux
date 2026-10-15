@@ -294,6 +294,7 @@ describe('buffer hibernation', () => {
       ring.write(Buffer.from('during'));
       expect(ring.isHibernated).toBe(true);
       expect(ring.readAll().toString()).toBe('during');
+      expect(ring.readAllWithGeometry()).toMatchObject({ geometry: undefined, writtenAt: before.length + 6 });
       // Neither readable nor writable: the dump fails and the file is untouched.
       await expect(ring.dumpToFile(bufPath)).rejects.toThrow();
       expect(ring.wake()).toBe(false); // session:died keeps the file
