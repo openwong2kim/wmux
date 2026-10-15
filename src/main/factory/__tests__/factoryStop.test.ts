@@ -294,6 +294,16 @@ describe('stopFactoryWork and resumed workers', () => {
     const failing = ports({ stopResumed: async () => { throw new Error('daemon gone'); } });
     expect(await stopFactoryWork(failing.p, {})).toMatchObject({ ok: false, code: 'partial' });
   });
+
+  it('a resumed worker of an open task is counted once, though both its row and the resumed-worker stop reach it', async () => {
+    await task('t-resumed', TRIAGE, 'review_requested');
+    await task('t-other', TRIAGE, 'completed');
+    // The resumed-worker stop reached the open task's worker and another
+    // whose task ended long ago.
+    const r = ports({ stopResumed: async () => ({ stopped: 2, failed: 0, taskIds: ['t-resumed', 't-other'] }) });
+    expect(await stopFactoryWork(r.p, { botId: TRIAGE, off: true })).toMatchObject({ ok: true, workersStopped: 2, tasksCancelled: 1 });
+    expect(r.stopWorker).toHaveBeenCalledWith(expect.objectContaining({ id: 't-resumed' }));
+  });
 });
 
 describe('late stops and stopped wakes (review fixes, PR #2164)', () => {

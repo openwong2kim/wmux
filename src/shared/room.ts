@@ -183,6 +183,20 @@ export interface RoomCard {
   /** `job_changed` only: whose job changed and from what, so Undo restores
    *  `previous` (null: there was none). */
   jobChange?: { botId: string; previous: string | null; next: string | null };
+  /** Main-written, system cards only: what the card says as a stable code
+   *  and its values, so the reader's language words it (CardNotice). The
+   *  title and body stay the English text, shown for a code the reader does
+   *  not know. */
+  notice?: CardNotice;
+}
+
+/** A factory system card's stable code: the task gate's and the worker
+ *  lifecycle's cards. `args` are the values the words need (a status, an
+ *  exit code, a task title); evidence a card carries (a command, an error)
+ *  stays in its body. */
+export interface CardNotice {
+  code: string;
+  args?: Record<string, string | number>;
 }
 
 /** Derived, never stored: `closed` once a closing card is the latest word

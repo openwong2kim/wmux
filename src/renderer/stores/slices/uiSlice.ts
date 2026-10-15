@@ -98,6 +98,7 @@ import {
 } from '../../components/Sidebar/attentionBlink';
 import { initialGitPageState, type GitDragContext, type GitHandoffOpen, type GitPageState } from '../../components/Git/gitPageState';
 import { multiviewColumnCount, type MultiviewArrangement } from '../../utils/multiviewGrid';
+import { DEFAULT_WINDOW_GLASS, type WindowGlassLevel } from '../../utils/windowGlass';
 import {
   normalizeRoleBinding,
   type OrchestratorRoleBindings,
@@ -683,6 +684,11 @@ export interface UISlice {
   setAttentionBlink: (mode: AttentionBlinkMode) => void;
   setAttentionBlinkRemindMs: (ms: AttentionRemindMs) => void;
   setAttentionBlinkFinished: (mode: AttentionBlinkFinished) => void;
+
+  /** Window glass on macOS: how translucent the frame and the sidebar are
+   *  over the window material. Per user, persisted in the session. */
+  windowGlass: WindowGlassLevel;
+  setWindowGlass: (level: WindowGlassLevel) => void;
 
   // ─── Toast / ring notification UI ────────────────────────────────────────
   toastEnabled: boolean;
@@ -1878,6 +1884,12 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
   setAttentionBlink: (mode) => set((state) => { state.attentionBlink = mode; }),
   setAttentionBlinkRemindMs: (ms) => set((state) => { state.attentionBlinkRemindMs = ms; }),
   setAttentionBlinkFinished: (mode) => set((state) => { state.attentionBlinkFinished = mode; }),
+
+  windowGlass: DEFAULT_WINDOW_GLASS,
+  setWindowGlass: (level) => {
+    document.documentElement.setAttribute('data-glass-level', level);
+    set((state) => { state.windowGlass = level; });
+  },
 
   // ─── Toast / ring notification UI ────────────────────────────────────────
   toastEnabled: true,

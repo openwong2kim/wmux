@@ -1,8 +1,9 @@
 // What the owner reads of a card or a thread: names, never internal ids,
 // role tags or machine codes.
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import type { RoomCard } from '../../../../shared/room';
-import { ownerCardText, requestTitles, routineCardBody, threadLabel, withoutInternalIds, withoutReasonCodes, withoutRoleTags } from '../roomFormat';
+import { setLocale, t as i18nT } from '../../../i18n';
+import { cardResumeTaskId, noticeText, ownerCardText, requestTitles, routineCardBody, threadLabel, withoutInternalIds, withoutReasonCodes, withoutRoleTags } from '../roomFormat';
 
 const t = (key: string) => key;
 const system = { kind: 'system' as const };
@@ -96,5 +97,48 @@ describe('owner text', () => {
     expect(ownerCardText(card, [], labels)).toEqual({ title: 'PR #2 approval', body: 'task Verify PR #1' });
     expect(ownerCardText(card, [])).toEqual({ title: 'apr-NQMvlIDZu05W', body: 'task `wtask-mv6yznk5-tv3qhcng`' });
     expect(ownerCardText(base({ title: 'apr-NQMvlIDZu05W' }), [], labels).title).toBe('apr-NQMvlIDZu05W');
+  });
+});
+
+describe('factory system cards in the reader\'s language (RoomCard.notice)', () => {
+  const card = (over: Partial<RoomCard>): Pick<RoomCard, 'kind' | 'title' | 'body' | 'actor' | 'notice' | 'refs'> => ({ kind: 'fact', title: 'English title', body: 'English body', actor: system, ...over });
+  afterEach(() => setLocale('en'));
+
+  it('words a known code in Korean, its values worded too; evidence bodies stay as written', () => {
+    setLocale('ko');
+    expect(noticeText(card({ notice: { code: 'worker.pausedResumable' } }), i18nT)?.title).toBe('워커 일시 중지됨 (이어서 가능)');
+    const done = noticeText(card({ notice: { code: 'worker.done', args: { status: 'cancelled' } } }), i18nT);
+    expect(done?.body).toContain('작업 취소됨:');
+    expect(done?.body).toContain('창은 닫혀요.');
+    expect(noticeText(card({ notice: { code: 'gate.noBase', args: { detail: 'origin/main has no npm test script' } } }), i18nT)?.body)
+      .toMatch(/^origin\/main has no npm test script\.\n\n지금 상태로는/);
+    // The gate's evidence (its command, an error) is not reworded.
+    expect(noticeText(card({ body: '`npm test` at abc1234', notice: { code: 'gate.failed', args: { exit: 2 } } }), i18nT))
+      .toEqual({ title: '게이트 실패 (종료 코드 2): 작업은 열린 채로 둠', body: '`npm test` at abc1234' });
+    expect(ownerCardText(card({ notice: { code: 'research.completed' } }), [], undefined, i18nT).title).toBe('조사 보고됨: 작업 완료');
+  });
+
+  it('keeps the English for no code, an unknown code or value, and a card that is not the system\'s', () => {
+    setLocale('ko');
+    expect(noticeText(card({}), i18nT)).toBeNull();
+    expect(noticeText(card({ notice: { code: 'worker.someday' } }), i18nT)).toBeNull();
+    expect(noticeText(card({ notice: { code: 'worker.done', args: { status: 'exploded' } } }), i18nT)).toBeNull();
+    expect(noticeText(card({ actor: bot, notice: { code: 'worker.paused' } }), i18nT)).toBeNull();
+    expect(ownerCardText(card({ notice: { code: 'worker.someday' } }), [], undefined, i18nT)).toEqual({ title: 'English title', body: 'English body' });
+  });
+
+  it('English words match what main writes', () => {
+    expect(noticeText(card({ notice: { code: 'worker.done', args: { status: 'failed' } } }), i18nT)?.body)
+      .toBe('Task failed: its Claude stopped to free memory. Its pane stays open until you have looked at it, then closes. The worktree is kept; no conversation was recorded to resume.');
+  });
+
+  it('a card saying a stopped worker can resume offers Resume while its task\'s worker is resumable', () => {
+    const paused = card({ notice: { code: 'worker.pausedResumable' }, refs: { taskId: 'wtask-a' } });
+    expect(cardResumeTaskId(paused, (id) => id === 'wtask-a')).toBe('wtask-a');
+    // Resumed since, or no task named: nothing.
+    expect(cardResumeTaskId(paused, () => false)).toBeNull();
+    expect(cardResumeTaskId(card({ notice: { code: 'worker.pausedResumable' } }), () => true)).toBeNull();
+    expect(cardResumeTaskId(card({ notice: { code: 'worker.paused' }, refs: { taskId: 'wtask-a' } }), () => true)).toBeNull();
+    expect(cardResumeTaskId(card({ actor: bot, notice: { code: 'worker.doneResumable' }, refs: { taskId: 'wtask-a' } }), () => true)).toBeNull();
   });
 });

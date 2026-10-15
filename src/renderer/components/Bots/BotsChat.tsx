@@ -65,7 +65,7 @@ import { ApprovePendingChip } from '../Room/ApprovalAnswers';
 import { pendingForChip, useApprovals } from '../Room/approvalsStore';
 import { PresenceDot, botPresence } from '../Room/BotChips';
 import { deliveryLine, deliveryTaken, roomPostParams, sentFrom, useMentionPicks, type SentTo } from '../Room/RoomComposer';
-import { actorLabel, botKindLabel, cardTone, isRefThread, kindLabel, ownerCardText, planTextWithNames, requestTitles, threadLabel, threadRef, type IdLabels } from '../Room/roomFormat';
+import { actorLabel, botKindLabel, cardResumeTaskId, cardTone, isRefThread, kindLabel, ownerCardText, planTextWithNames, requestTitles, threadLabel, threadRef, type IdLabels } from '../Room/roomFormat';
 import { BOT_JOB_MAX, botTemplate, normalizeBotJob } from '../../../shared/bot';
 import { DEFAULT_BOT_WORKER_AGENT, botWorkerAgentLabel, type BotWorkerAgentOption } from '../../../shared/botWorkerAgent';
 import { pickFolderDialog, templateJob } from '../Settings/FactoryTab';
@@ -337,6 +337,10 @@ interface RowCtx {
   /** How message text renders: links (PR and issue links as chips), rich
    *  code blocks. */
   markdown: MarkdownOptions;
+  /** A stopped worker's Resume on the system card that says it can resume
+   *  (absent: none, as while the bots are off): whether the task's worker
+   *  is resumable now, and the resume. */
+  resume?: { resumable: (taskId: string) => boolean; run: (taskId: string) => Promise<void> };
 }
 
 /** A bot message's prose: the title and the body as one text in one colour,
@@ -504,10 +508,16 @@ function SystemGroup({ cards, thread, ctx }: { cards: RoomCardData[]; thread?: T
     </div>
   ) : null;
   const hide = summary ? thread!.threadId : ctx.hideThread;
-  if (cards.length === 1 || open) {
+  const resume = ctx.resume;
+  const resumeOf = (c: RoomCardData): string | null => (resume ? cardResumeTaskId(c, resume.resumable) : null);
+  // A run holding a card with a Resume shows its lines, so the button shows.
+  if (cards.length === 1 || open || cards.some((c) => resumeOf(c) !== null)) {
     return (
       <div data-bots-system-group={cards.length > 1 ? cards.length : undefined}>
-        {cards.map((c) => <SystemLine key={c.id} card={c} t={t} onThread={onThread} now={ctx.now} botNames={ctx.botNames} taskTitle={ctx.taskTitle} requestTitle={ctx.requestTitle} hideThread={hide} />)}
+        {cards.map((c) => {
+          const taskId = resumeOf(c);
+          return <SystemLine key={c.id} card={c} t={t} onThread={onThread} now={ctx.now} botNames={ctx.botNames} taskTitle={ctx.taskTitle} requestTitle={ctx.requestTitle} hideThread={hide} onResume={taskId && resume ? () => resume.run(taskId) : undefined} />;
+        })}
         {summary}
         {open && (
           <div className="wmux-bots-row wmux-bots-row-system">
@@ -533,7 +543,7 @@ function SystemGroup({ cards, thread, ctx }: { cards: RoomCardData[]; thread?: T
             <span key={c.id} className="min-w-0 truncate">
               {i > 0 && <span aria-hidden="true">{' · '}</span>}
               {word && <span className={c.kind === 'refusal' ? 'text-[var(--accent-red)]' : 'text-[var(--accent-yellow)]'}>{`${word} `}</span>}
-              <span className="text-[var(--text-sub)]">{ownerCardText(c, ctx.botNames).title}</span>
+              <span className="text-[var(--text-sub)]">{ownerCardText(c, ctx.botNames, undefined, t).title}</span>
             </span>
           );
         }).slice(0, 3)}
@@ -938,9 +948,10 @@ function BotsThreadPanel({ conversation, cards, workspaceId, threadId, ctx: pare
  *  result, a task's end, an error), as a centred line with its body folded
  *  to two lines under Show more (by height: a markdown list does not
  *  line-clamp). */
-function SystemLine({ card, t, onThread, now, botNames = [], taskTitle, requestTitle, hideThread }: { card: RoomCardData; t: T; onThread: (id: ThreadId) => void; now?: number; botNames?: readonly string[]; taskTitle?: TaskTitleOf; requestTitle?: RequestTitleOf; hideThread?: ThreadId }) {
+function SystemLine({ card, t, onThread, now, botNames = [], taskTitle, requestTitle, hideThread, onResume }: { card: RoomCardData; t: T; onThread: (id: ThreadId) => void; now?: number; botNames?: readonly string[]; taskTitle?: TaskTitleOf; requestTitle?: RequestTitleOf; hideThread?: ThreadId; onResume?: () => Promise<void> }) {
   const [expanded, setExpanded] = useState(false);
-  const { title, body } = ownerCardText(card, botNames);
+  const [resuming, setResuming] = useState(false);
+  const { title, body } = ownerCardText(card, botNames, undefined, t);
   const foldable = body.length > SYSTEM_FOLD_CHARS || body.includes('\n');
   const word = card.kind === 'refusal' || card.kind === 'budget' ? kindLabel(card.kind, t) : null;
   const chip = !isConversationThread(card.threadId) && card.threadId !== hideThread;
@@ -960,8 +971,22 @@ function SystemLine({ card, t, onThread, now, botNames = [], taskTitle, requestT
             {renderBrainMarkdown(body, { links: true, richCode: true })}
           </div>
         )}
-        {(foldable || chip) && (
+        {(foldable || chip || onResume) && (
           <div className={`mt-0.5 flex items-center ${align} gap-2`}>
+            {onResume && (
+              <Button
+                size="sm"
+                variant="secondary"
+                data-bots-card-resume
+                disabled={resuming}
+                onClick={() => {
+                  setResuming(true);
+                  void onResume().finally(() => setResuming(false));
+                }}
+              >
+                {t('botsPage.worker.resume')}
+              </Button>
+            )}
             {foldable && (
               <button type="button" data-card-more aria-expanded={expanded} onClick={() => setExpanded((v) => !v)} className={`text-[11px] text-[var(--text-muted)] hover:text-[var(--text-main)] ${FOCUS_RING}`}>
                 {expanded ? t('room.showLess') : t('room.showMore')}
@@ -1891,13 +1916,22 @@ export function BotsChat({ conversation, roomCards, bots, title, workspaceName, 
   // the old was cleared) takes the panel; a failure is a toast.
   // An answer that comes after the owner moved on (another worker, Close,
   // another conversation) leaves the panel as it is now.
-  const resumeShown = useCallback((taskId: string) => {
+  // A chat that closed or moved to another conversation since opens nothing.
+  const shownChat = useRef({ mounted: true, conversationId });
+  shownChat.current.conversationId = conversationId;
+  useEffect(() => {
+    shownChat.current.mounted = true;
+    return () => { shownChat.current.mounted = false; };
+  }, []);
+  const resumeShown = useCallback(async (taskId: string): Promise<void> => {
     const resume = resumePort?.resumeWorker;
     if (!resume) return;
     const asked = useStore.getState().botsWorkerPanel;
-    void resume(taskId).then((r) => {
+    await resume(taskId).then((r) => {
       if (!r.ok) useStore.getState().pushToast({ message: r.message || t('botsPage.worker.resume'), level: 'error' });
-      else if (r.workspaceId && useStore.getState().botsWorkerPanel === asked) useStore.getState().setBotsWorkerPanel({ workspaceId: r.workspaceId, conversationId });
+      else if (r.workspaceId && shownChat.current.mounted && shownChat.current.conversationId === conversationId && useStore.getState().botsWorkerPanel === asked) {
+        useStore.getState().setBotsWorkerPanel({ workspaceId: r.workspaceId, conversationId });
+      }
     }).catch((err: unknown) => useStore.getState().pushToast({ message: String(err), level: 'error' }));
   }, [resumePort, conversationId, t]);
   const askedNonce = threadAsk?.nonce;
@@ -1948,7 +1982,14 @@ export function BotsChat({ conversation, roomCards, bots, title, workspaceName, 
       return <RefChip url={url} label={label} title={summary?.title ?? null} onOpen={holder ? () => onThread(holder.workspaceId, threadId) : null} />;
     },
   }), [cards, roomThreads, onThread, pattern, bots]);
-  const ctx: RowCtx = { t, bots, actors, api, now, readOnly, jobPort: readOnly ? undefined : jobPort, nameOf, botNames, taskTitle, requestTitle, idLabels, sent, started, onThread, onOpenBot, markdown, ...(conversation.kind === 'bot' ? { selfBot: conversation.row.bot.id } : {}) };
+  // The Resume on a system card saying a stopped worker can resume: the
+  // same resume as the panel's menu.
+  // Every task the bots list, not only the few the rail shows.
+  const cardResume = useMemo((): RowCtx['resume'] => (readOnly || !resumePort?.resumeWorker ? undefined : {
+    resumable: (taskId) => taskRows.some((row) => (row.tasks ?? []).some((task) => task.taskId === taskId && task.worker === 'resumable')),
+    run: resumeShown,
+  }), [readOnly, resumePort, taskRows, resumeShown]);
+  const ctx: RowCtx = { t, bots, actors, api, now, readOnly, jobPort: readOnly ? undefined : jobPort, nameOf, botNames, taskTitle, requestTitle, idLabels, sent, started, onThread, onOpenBot, markdown, ...(conversation.kind === 'bot' ? { selfBot: conversation.row.bot.id } : {}), ...(cardResume ? { resume: cardResume } : {}) };
   // The open thread is read whole, from its first card (the cached room
   // timeline holds only its newest page), and shown from every card read
   // for the room — not only this conversation's.

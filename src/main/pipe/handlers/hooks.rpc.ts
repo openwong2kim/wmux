@@ -40,6 +40,7 @@
 // IPC.SIGNAL_HEALTH_UPDATE (1Hz throttle). The renderer feeds them into
 // uiSlice.setHookSignalHealth for the Settings → Claude integration card.
 
+import { isInternalForkPayload } from '../../../shared/hooks/internalFork';
 import type { BrowserWindow } from 'electron';
 import type { RpcRouter } from '../RpcRouter';
 import { sendToRenderer } from './_bridge';
@@ -848,7 +849,10 @@ export function registerHooksRpc(
       // reset (session_start), and the answered cues that cancel a pending
       // attention window. These kinds return here, so this is their only feed
       // site on the local path.
-      alarm?.observe(ptyId, signal.agent, normalizeHookCue(signal));
+      // Not a tool of Claude Code's own post-turn fork (its permission gate
+      // reaches here): it would rebut the Stop's completion (HookIngest's
+      // handlePermissionGate skips it the same way).
+      if (!isInternalForkPayload(signal.payload)) alarm?.observe(ptyId, signal.agent, normalizeHookCue(signal));
       // #1680 — fresh-context evidence, the daemon-unreachable twin of
       // DaemonNotificationRouter's session_start replay.
       if (signal.kind === 'agent.session_start') hookRouter.noteSessionStart(ptyId, signal, receivedAt);

@@ -37,6 +37,7 @@
 // no coalescing, no fast path, no fallback tiers. That is why the flood meter
 // below reports every signal as `fastPathed` and never `degraded`.
 
+import { isInternalForkPayload } from '../../shared/hooks/internalFork';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { HookSignalRouter } from '../../shared/hooks/HookSignalRouter';
@@ -912,6 +913,14 @@ export class HookIngest {
     } catch (err) {
       this.deps.log?.('warn', `[hooks] authority-touch callback failed for ${sessionId}: ${String(err)}`);
     }
+
+    // A tool of Claude Code's own post-turn fork (the recap, the prompt
+    // suggestion), about 2 s after the Stop, is not the pane's turn: as
+    // working evidence it rebutted that Stop's completion, and its running
+    // broadcast lit the pane for good (the fork's SubagentStop is skipped).
+    // It gets no opinion here, so it follows the session's own permission
+    // flow, and touches no pane state.
+    if (isInternalForkPayload(signal.payload)) return { ok: true, sessionId };
 
     // Verdict-gate feed (R4): PreToolUse never reaches `handle()` — the RPC
     // interceptor routes awaiting_permission straight here — so this is the

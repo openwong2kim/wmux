@@ -41,10 +41,10 @@ for a session that never chose a theme; a saved choice is always kept.
 | Theme | Polarity | Accent | UI face | Chip radius | Selection | Active tab | Glass |
 |---|---|---|---|---|---|---|---|
 | Tint | dark, faint violet | `#9B8CFF` | Geist | 7px | fill (text 9%) | fill | yes |
-| Zinc | dark, neutral | `#FAFAFA` | Geist | 6px | fill + 1px ring | fill | no |
-| Graphite | dark, cool | `#4C8DFF` | IBM Plex Sans | full round | fill (`#1B2433`) | fill + 2px accent underline | no |
-| Paper | light | `#5B5BD6` | Figtree | 7px | fill (`#E4E4EA`) | fill | no |
-| Amber Line | dark, warm | `#E8A33D` | Geist | 6px | 2px accent left bar | fill + 2px accent underline | no |
+| Zinc | dark, neutral | `#FAFAFA` | Geist | 6px | fill + 1px ring | fill | yes |
+| Graphite | dark, cool | `#4C8DFF` | IBM Plex Sans | full round | fill (`#1B2433`) | fill + 2px accent underline | yes |
+| Paper | light | `#5B5BD6` | Figtree | 7px | fill (`#E4E4EA`) | fill | yes |
+| Amber Line | dark, warm | `#E8A33D` | Geist | 6px | 2px accent left bar | fill + 2px accent underline | yes |
 
 Two neutral themes ship beside them, Mono and Mono Light (zero-saturation
 greys, one blue accent). The other themes (Amber, Catppuccin, Stars &
@@ -93,7 +93,11 @@ and `--sheet-edge`. A new knob is added to `ThemeStyle`, emitted by
 
 **Terminal content owns its palette.** Each look has its own opaque
 terminal palette (`BUILTIN_XTERM_PALETTE`); diffs are green and errors red
-in the terminal whatever the chrome accent.
+in the terminal whatever the chrome accent. A theme that borrows another
+theme's palette with a visibly different background (Stars & Stripes, Red
+Dynasty, Nightowl) keeps its ANSI
+colours but puts the terminal on its own `--bg-base`, so the terminal never
+reads as a second, differently tinted panel.
 
 ## Window: frame and sheet
 
@@ -107,35 +111,52 @@ in the terminal whatever the chrome accent.
 │i │ (mantle)  │  terminal grid (THE HERO)                           │ │
 │l │           │                                                     │ │
 │48│           │  [agent bar — overlay, on approach]                 │ │
-│  │╰───────────────────────────────────────────────────────────────╯ │
-└──┴── 8px frame margin ───────────────────────────────────────────────┘
+│  │╰───────────────────────────────────────────────────────────────────┤
+└──┴── sheet flush with the window's edges on macOS (8px elsewhere) ───┘
 ```
 
-- **Frame:** the titlebar row, the 48px rail and an 8px margin
-  (`--sheet-inset`) on the left, right and bottom, painted `--frame-bg` — a
-  step darker than the sheet in the dark looks, a soft grey in Paper.
+- **Frame:** the titlebar row and the 48px rail, painted `--frame-bg` — a
+  step darker than the sheet in the dark looks, a soft grey in Paper. On
+  macOS, whose windows have rounded corners, the sheet has no margin: it
+  meets the window's edges, its own rounded corners kept. Windows and Linux
+  keep an 8px margin (`--sheet-inset`) on the sides away from the rail and
+  the bottom, so no frame notch shows in a square window corner.
 - **Sheet:** one rounded panel (`--sheet-radius` 12px) flush under the
   titlebar, holding the sidebar and the panes (and the file tree column
   when it is shown). Nothing docks opposite the sidebar (the Bots page's
   right split — a worker's terminal or a thread beside the chat — is part of
   that page's body, not a dock). It is set
   off by a 1px `--sheet-edge` hairline and a faint `--sheet-shadow`, nothing
-  else. Inside, the sidebar keeps its mantle tone and meets the body at a
-  single seam.
+  else. Inside, the sidebar keeps its mantle tone; the pane column rounds
+  off where it meets the sidebar (`--sheet-radius` on its two inner
+  corners) with a 1px `--sheet-edge` hairline along the curve, and that
+  line is the one seam. With the sidebar hidden the pane column drops both,
+  leaving the sheet's own edge as the only boundary.
 - **Native fullscreen** (any platform): the sheet drops its margins and
   radius. The rail stays.
 - **Terminal geometry is untouched** by the frame: margin changes, a sidebar
   collapse and fullscreen each refit the terminals once, never per frame.
-- **Window glass (macOS, dark looks, `--theme-glass: 1`):** the window gets
-  an under-window vibrancy material behind a transparent background, and
-  `data-glass` on `<html>` makes the **frame only** paint at 85% over it. The
-  sheet, the panes and every terminal stay opaque, so the hero never changes
-  with the wallpaper. Glass needs macOS itself to be dark too: the material
-  follows the system appearance, and changing that is app-wide (it would
-  flip browser surfaces' `prefers-color-scheme` and the native menus), so a
-  dark look on a light Mac keeps an opaque frame. Light looks, looks with
-  `glass: false`, and Windows and Linux are opaque. The page fades through `color-mix(… 0%, transparent)`, never the
-  `transparent` keyword (which interpolates through black).
+- **Window glass (macOS, every theme, `--theme-glass: 1`):** the window gets
+  the `sidebar` vibrancy material behind a transparent background. The
+  renderer sets the app's appearance from the theme (a dark theme, the dark
+  material; a light theme, the light one — app-wide, so native menus and the
+  in-app browser's `prefers-color-scheme` follow the theme), and `data-glass`
+  on `<html>` is set once the two agree. The frame then paints
+  `--glass-frame` of `--frame-bg` over the material and the sheet adds
+  `--glass-sheet` of the mantle under the sidebar; the panes and every
+  terminal stay opaque, so the hero never changes with the wallpaper. The
+  user picks Off, Soft (default) or Clear in Settings › Appearance ›
+  Interface. Coverage of the sidebar, frame and sheet stacked: dark themes
+  about 29% Soft / 14% Clear; strongly hued themes (Stars & Stripes, Red
+  Dynasty, Catppuccin) about 64% / 43% so their colour survives the grey
+  material; light themes, whose material is milkier, about 14% / 3%.
+  Windows and Linux are opaque. The page fades through
+  `color-mix(… 0%, transparent)`, never the `transparent` keyword (which
+  interpolates through black). `data-glass` carries the material's
+  appearance (`dark` or `light`), which is how the light tuning applies to
+  any light theme, custom ones included. With glass Off the app returns to
+  the system appearance, and glass is only installed once the saved theme
+  and level are loaded, so a launch never flips the appearance twice.
 - `BrowserWindow.backgroundColor` follows the default look so the first
   frame never flashes white; no native menu bar is visible
   (`autoHideMenuBar`; accelerators keep working).
@@ -347,10 +368,11 @@ status bar badges, `fleet_triage` or the phone's sidebar.
   under its row the way the Sidebar nests a workspace's fan-out tasks: an
   indented row each on a `--stroke` guide under the avatar — the Sidebar's
   status mark (running a muted dot, waiting on the owner the attention
-  ring, an error a cross, done a check), the fan-out mark and the task's
+  ring, an error a cross, done a check, a task the owner stopped no mark
+  and the neutral word "Cancelled"), the fan-out mark and the task's
   title in 12px, what a worker waiting on input asks in the needs-you text,
   and under it the branch with its `+N −N` diff counts. Live workers come
-  first, then ended tasks (done or failed) while their workspace is still
+  first, then ended tasks (done, failed or cancelled) while their workspace is still
   open; a row drops off when its workspace is cleared. A fold toggle — the
   count and a chevron — sits inside the bot row's right edge, under its
   time. **The open conversation is one group** (the Sidebar's selected
@@ -1504,6 +1526,7 @@ primitives plus `Settings/SettingsLayout.tsx` (`SettingsSection`,
 | 2026-10-15 | Owner decision: the Bots rail item is listed only while the bots are on; they are turned on in Settings › Bots, whose switch description says so, and the item appears at once without leaving Settings. Turning them off while the Bots page is open returns to Workspaces; the Toggle Bots shortcut and the palette's Open Bots open Settings › Bots while they are off. The first-run panel is reached only with the bots on. Amends Rail and pages, Bots off, Add bot and First run | A Bots item on the rail from the first launch advertised a feature the owner had not chosen, and opened a page that could do nothing until the bots were on. Settings stays open after the switch because Settings › Bots has its own add form and the plan and connection settings the owner may be setting up |
 | 2026-10-15 | Owner decision: settings type and spacing were too large and loud. Settings gets its own calmer scale: regular-weight 14px row labels over quiet 12px descriptions, a 22px/500 page title, 12px nav group labels and 13px section headings in `--text-sub`, the selected nav row in the look's own selection treatment instead of a fixed accent edge, hover on `--hover-fill`, a 30×18 switch with a 24px-tall hit area, a narrower 6px select and a 680px column. Scoped to the Settings page's own rows; the shared Field recipe, dialogs, popovers and listboxes are unchanged | Bold 13px labels over 11px descriptions made every row shout at the same volume, and a fixed accent edge on the nav added a second mark for one selection. Weight and size carry the hierarchy now, with the secondary colour kept at body contrast, so a long settings page reads calmly |
 | 2026-10-15 | Owner decision: the agent bar drops Attach, Broadcast and New chat, and its Files button now toggles the file tree column (its own path-picker popover is gone); the titlebar's file tree icon is removed | The owner barely used them, and each duplicated a better home: dropping a file on a terminal or the tree's Insert path covers Attach, Multi Task covers fan-out work without pasting into plain shells, typing `/clear` covers New chat, and two file browsers (a popover and the column) plus two toggles for one column was one too many |
+| 2026-10-15 | Owner decision (dogfood): window glass on every theme, in either appearance, with an Off / Soft / Clear setting; the sheet loses its right and bottom margins and the pane column rounds off against the sidebar with a hairline; borrowed terminal palettes sit on their theme's own base. Amends Themes, Frame, Sheet and Window glass | Glass only on a dark Mac read as a missing feature for anyone on a light one, and a fixed 85% frame was barely translucent. The 8px margins spent space on a frame the eye did not need, while the sidebar and panes met with no visible edge. A navy or red theme over a borrowed grey terminal looked like two different apps |
 | 2026-10-16 | Owner decision: a bot without a picture is its Mochi character ("Mochi Orb Crew v2", drawn by Grok), the one of its identity colour slot, replacing the four shapes with a face. The characters move: idle breath, blink and one signature twitch; a quicker hop while the bot runs; blink only at 24px and under; paused off screen; still under reduced motion. Amends Avatars and the Motion rule's "only perpetual motion" | The owner picked the crew from a design contest ("go ahead as it is"); a character tells bots apart better than a coloured shape, and its motion says which bot is busy without a word |
 
 ### Desktop conversation view

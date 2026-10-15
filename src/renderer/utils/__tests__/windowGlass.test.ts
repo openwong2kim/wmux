@@ -1,13 +1,18 @@
 import { describe, it, expect } from 'vitest';
-import { shouldUseGlass } from '../windowGlass';
+import { resolveWindowGlass, shouldUseGlass, themeAppearance } from '../windowGlass';
 
 describe('shouldUseGlass', () => {
-  it('is on for a dark theme on macOS', () => {
-    expect(shouldUseGlass('darwin', '#171717')).toBe(true);
+  it('is on for a dark theme once the appearance is dark', () => {
+    expect(shouldUseGlass('darwin', '#171717', '1', true)).toBe(true);
   });
 
-  it('is off for a light theme on macOS', () => {
-    expect(shouldUseGlass('darwin', '#F7F7F7')).toBe(false);
+  it('is on for a light theme once the appearance is light', () => {
+    expect(shouldUseGlass('darwin', '#F7F7F7', '1', false)).toBe(true);
+  });
+
+  it('stays off while the appearance does not match the theme yet', () => {
+    expect(shouldUseGlass('darwin', '#1A171D', '1', false)).toBe(false);
+    expect(shouldUseGlass('darwin', '#F7F7F7', '1', true)).toBe(false);
   });
 
   it('is off on Windows and Linux whatever the theme', () => {
@@ -21,13 +26,30 @@ describe('shouldUseGlass', () => {
     expect(shouldUseGlass('darwin', '#1A171D', '1')).toBe(true);
   });
 
+  it('is off when the user turns glass off', () => {
+    expect(shouldUseGlass('darwin', '#1A171D', '1', true, 'off')).toBe(false);
+    expect(shouldUseGlass('darwin', '#1A171D', '1', true, 'clear')).toBe(true);
+  });
+
   it('is off when the base colour cannot be read', () => {
     expect(shouldUseGlass('darwin', '')).toBe(false);
     expect(shouldUseGlass('darwin', ' #171717 ')).toBe(true);
   });
+});
 
-  it('stays off on a light Mac, so nothing has to flip the app-wide appearance', () => {
-    expect(shouldUseGlass('darwin', '#1A171D', '1', false)).toBe(false);
-    expect(shouldUseGlass('darwin', '#1A171D', '1', true)).toBe(true);
+describe('themeAppearance', () => {
+  it('reads the polarity from the base colour', () => {
+    expect(themeAppearance('#1A171D')).toBe('dark');
+    expect(themeAppearance('#FFFFFF')).toBe('light');
+    expect(themeAppearance('var(--x)')).toBeNull();
+  });
+});
+
+describe('resolveWindowGlass', () => {
+  it('keeps a known level and falls back to Soft otherwise', () => {
+    expect(resolveWindowGlass('clear')).toBe('clear');
+    expect(resolveWindowGlass('off')).toBe('off');
+    expect(resolveWindowGlass('transparent')).toBe('soft');
+    expect(resolveWindowGlass(undefined)).toBe('soft');
   });
 });

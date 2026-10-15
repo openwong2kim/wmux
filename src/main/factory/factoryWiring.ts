@@ -655,10 +655,10 @@ export function createFactoryWiring(deps: Pick<FactoryHostDeps, 'wmuxDir'> & Par
             if (!q) console.info(`[factory] wake queue not running; ${input.botId} was not woken`);
             return q?.enqueue(input) ?? null;
           },
-          note: (workspaceId, threadId, title, body, key) => {
+          note: (workspaceId, threadId, title, body, key, notice) => {
             const writer = getRoomWriter();
             if (!writer || gateCardNoted((ws, m) => writer.find(ws, m), workspaceId, threadId, key)) return;
-            writer.append({ workspaceId, threadId, kind: 'fact', actor: { kind: 'system' }, title, body }, { clientPostId: key });
+            writer.append({ workspaceId, threadId, kind: 'fact', actor: { kind: 'system' }, title, body, ...(notice ? { notice } : {}) }, { clientPostId: key });
           },
           noted: (workspaceId, threadId, key) => {
             const writer = getRoomWriter();

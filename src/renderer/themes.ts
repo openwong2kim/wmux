@@ -428,9 +428,14 @@ export const BUILTIN_XTERM_PALETTE: Record<BuiltinThemeId, XtermPaletteId> = {
   taegeuk: 'paper-light',
 };
 
+// A borrowed palette keeps its ANSI colours but sits on the theme's own base,
+// so the terminal does not read as a second, differently tinted panel.
+const XTERM_ON_THEME_BASE: ReadonlySet<BuiltinThemeId> = new Set(['stars-and-stripes', 'red-dynasty', 'nightowl']);
+
 // Populate XTERM_THEMES from the palette map (for legacy consumers).
 for (const id of Object.keys(UI_THEME_TOKENS) as BuiltinThemeId[]) {
-  XTERM_THEMES[id] = XTERM_PALETTES[BUILTIN_XTERM_PALETTE[id]];
+  const palette = XTERM_PALETTES[BUILTIN_XTERM_PALETTE[id]];
+  XTERM_THEMES[id] = XTERM_ON_THEME_BASE.has(id) ? { ...palette, background: UI_THEME_TOKENS[id].bgBase } : palette;
 }
 
 // ─── Per-theme style knobs ──────────────────────────────────────────────────
@@ -459,7 +464,7 @@ export interface ThemeStyle {
   groupLabel?: { uppercase: boolean; tracking: string };
   /** Active tab marker: a fill only, or a fill plus an accent underline. */
   tabIndicator?: 'fill' | 'underline';
-  /** May the window chrome go translucent (macOS, dark)? Default true. */
+  /** May the window chrome go translucent (macOS)? Default true. */
   glass?: boolean;
   /** Hairline colour. Default: the content-mix --stroke. */
   stroke?: string;
@@ -485,27 +490,27 @@ export const THEME_STYLES: Partial<Record<BuiltinThemeId, ThemeStyle>> = {
   },
   zinc: {
     uiFont: GEIST, chipRadius: 6, selection: 'fill-ring', selectionFill: '#18181B', selectionRing: '#27272A',
-    groupLabel: { uppercase: false, tracking: 'normal' }, tabIndicator: 'fill', glass: false,
+    groupLabel: { uppercase: false, tracking: 'normal' }, tabIndicator: 'fill', glass: true,
     stroke: '#27272A', primary: { fill: '#FAFAFA', ink: '#09090B' }, titleWeight: 500,
     frame: '#000000', sheetEdge: '#27272A',
   },
   graphite: {
     uiFont: "'IBM Plex Sans', system-ui, -apple-system, 'Segoe UI', sans-serif", chipRadius: 999,
     selection: 'fill', selectionFill: '#1B2433',
-    groupLabel: { uppercase: true, tracking: '0.06em' }, tabIndicator: 'underline', glass: false,
+    groupLabel: { uppercase: true, tracking: '0.06em' }, tabIndicator: 'underline', glass: true,
     stroke: '#1D1F24', primary: { fill: '#4C8DFF', ink: '#FFFFFF' }, titleWeight: 500,
     frame: '#060708', sheetEdge: '#23262C',
   },
   paper: {
     uiFont: "'Figtree', system-ui, -apple-system, 'Segoe UI', sans-serif", chipRadius: 7,
     selection: 'fill', selectionFill: '#E4E4EA',
-    groupLabel: { uppercase: false, tracking: 'normal' }, tabIndicator: 'fill', glass: false,
+    groupLabel: { uppercase: false, tracking: 'normal' }, tabIndicator: 'fill', glass: true,
     stroke: '#E6E6EA', primary: { fill: '#17171C', ink: '#FFFFFF' }, titleWeight: 500,
     frame: '#ECECEF', sheetEdge: '#DADAE0',
   },
   'amber-line': {
     uiFont: GEIST, chipRadius: 6, selection: 'left-bar', selectionFill: '#24221F',
-    groupLabel: { uppercase: false, tracking: 'normal' }, tabIndicator: 'underline', glass: false,
+    groupLabel: { uppercase: false, tracking: 'normal' }, tabIndicator: 'underline', glass: true,
     stroke: '#262523', primary: { fill: '#E8A33D', ink: '#1A1408' }, titleWeight: 500,
     frame: '#0B0B0B', sheetEdge: '#2C2B29',
   },
@@ -726,6 +731,7 @@ export function builtinToCustom(themeId: BuiltinThemeId): CustomThemeColors {
   return {
     ...ui,
     xtermPaletteId: BUILTIN_XTERM_PALETTE[themeId],
+    ...(XTERM_ON_THEME_BASE.has(themeId) ? { xtermOverrides: { background: ui.bgBase } } : {}),
   };
 }
 

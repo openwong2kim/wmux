@@ -52,7 +52,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { LedgerEntry } from '../../shared/ledger';
-import { taskThreadOf, type ThreadId } from '../../shared/room';
+import { taskThreadOf, type CardNotice, type ThreadId } from '../../shared/room';
 import { isPlausibleResumeSessionId, normalizeResumeCwd, permissionFlagFor, type PermissionMode } from '../../shared/agentResume';
 import { sessionsStartedIn } from '../worktask/stopSessionsInDir';
 import { createFilePersister, readVersionedFile, type FilePersister } from './versionedFile';
@@ -303,7 +303,7 @@ export interface WorkerReclaimPorts {
   listSessions: () => Promise<WorkerSessionInfo[]>;
   /** daemon `session.stopAgent`. */
   stopAgent: (sessionId: string) => Promise<{ ok?: boolean; stopped?: boolean; code?: string }>;
-  note?: (workspaceId: string, threadId: ThreadId, title: string, body: string) => void;
+  note?: (workspaceId: string, threadId: ThreadId, title: string, body: string, notice?: CardNotice, taskId?: string) => void;
   /** The Bots page re-reads (BOT_EVENT). */
   changed?: () => void;
   now?: () => number;
@@ -324,6 +324,19 @@ export interface WorkerReclaimPorts {
    *  checked), never another pane opened in its folder; unknown: nothing is
    *  stopped. Absent: every pane started in the folder, as for an end. */
   workspacePanes?: (workspaceId: string) => readonly string[] | null;
+}
+
+/** Whether one pane of a reported task's workspace ended its turn, from the
+ *  last agent status main broadcast for it. A turn that reported its end
+ *  (`complete`, `waiting`, `error`) is over even while a 'running' claim it
+ *  made is still outstanding: the Claude Stop hook's `complete` does not
+ *  withdraw that claim, which would otherwise hold until the unseen-status
+ *  window. A claim with no result after it (`unsettledClaim`), a running
+ *  turn and a prompt waiting on the owner are not idle. A status main has
+ *  not seen counts only once the report is `longAgo`. Pure. */
+export function paneTurnEnded(status: string | undefined, unsettledClaim: boolean, longAgo: boolean): boolean {
+  if (unsettledClaim || status === 'running' || status === 'awaiting_input') return false;
+  return status !== undefined || longAgo;
 }
 
 /** Attempts per ended task before the reclaim gives it up. */
@@ -477,6 +490,8 @@ export async function reclaimWorker(ports: WorkerReclaimPorts, entry: LedgerEntr
           resumable
             ? 'The task is reported for review and its worker sat idle: its Claude stopped to free memory and its agent slot. The task stays open for review and its pane stays; the worktree and the conversation are kept, and Resume continues the same conversation.'
             : 'The task is reported for review and its worker sat idle: its Claude stopped to free memory and its agent slot. The task stays open for review and its pane stays; the worktree is kept, but no conversation was recorded to resume.',
+          { code: resumable ? 'worker.pausedResumable' : 'worker.paused' },
+          entry.id,
         );
       } else {
         ports.note?.(
@@ -486,6 +501,8 @@ export async function reclaimWorker(ports: WorkerReclaimPorts, entry: LedgerEntr
           resumable
             ? `Task ${ended}: its Claude stopped to free memory. ${pane} The worktree and the conversation are kept; Resume continues the same conversation.`
             : `Task ${ended}: its Claude stopped to free memory. ${pane} The worktree is kept; no conversation was recorded to resume.`,
+          { code: resumable ? 'worker.doneResumable' : 'worker.done', args: { status: ended } },
+          entry.id,
         );
       }
     } catch {
@@ -627,7 +644,7 @@ export interface WorkerResumePorts {
   rebindTask?: (taskId: string, workspaceId: string) => Promise<{ from: number; to: number } | null>;
   /** Whether a folder exists (default: fs). */
   folderExists?: (dir: string) => boolean;
-  note?: (workspaceId: string, threadId: ThreadId, title: string, body: string) => void;
+  note?: (workspaceId: string, threadId: ThreadId, title: string, body: string, notice?: CardNotice, taskId?: string) => void;
   changed?: () => void;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
@@ -786,7 +803,7 @@ async function resumeOnce(
     typed = false;
   }
   if (!typed) return refuse('not_typed', 'the resume line could not be typed into the worker\'s pane');
-  return launched(ports, rec, pane.sessionId, pane.resumeSessionId, workerWorkspaceOf(rec), by, message, onLaunched, 'in the task folder');
+  return launched(ports, rec, pane.sessionId, pane.resumeSessionId, workerWorkspaceOf(rec), by, message, onLaunched, 'folder');
 }
 
 /** The worker's pane is gone: open a new task workspace in the worktree. */
@@ -846,7 +863,7 @@ async function respawnOnce(
     await stopRelaunched(ports, rec.taskId, r.sessionId);
     return refuse('not_now', 'the bot\'s work was stopped while this resume was under way');
   }
-  return launched(ports, rec, r.sessionId, pane.resumeSessionId, r.workspaceId, by, message, onLaunched, 'in a new pane in the task worktree');
+  return launched(ports, rec, r.sessionId, pane.resumeSessionId, r.workspaceId, by, message, onLaunched, 'newPane');
 }
 
 /** The task's ledger row names `workspaceId` (written now when it named
@@ -890,13 +907,13 @@ async function launched(
   by: { kind: 'owner' } | { kind: 'bot'; botId: string },
   message: string | undefined,
   onLaunched: (() => void) | undefined,
-  where: string,
+  where: 'folder' | 'newPane',
 ): Promise<WorkerResumeResult> {
   const now = ports.now ?? Date.now;
   ports.store.setState(rec.taskId, 'resumed', now());
   onLaunched?.();
   try {
-    ports.note?.(rec.ownerWorkspaceId, rec.threadId, 'Worker resumed', `${by.kind === 'owner' ? 'The owner' : 'The bot'} resumed the same conversation ${where}.`);
+    ports.note?.(rec.ownerWorkspaceId, rec.threadId, 'Worker resumed', `${by.kind === 'owner' ? 'The owner' : 'The bot'} resumed the same conversation ${where === 'folder' ? 'in the task folder' : 'in a new pane in the task worktree'}.`, { code: 'worker.resumed', args: { by: by.kind, where } }, rec.taskId);
   } catch {
     /* best effort */
   }
@@ -935,29 +952,38 @@ export function reclaimedWorkerState(rec: ReclaimedWorker | null): 'resumable' |
 /** Stop the resumed workers of one bot, or of every bot (the owner's stop,
  *  a bot's stop_my_work): their rows ended long ago, so the ledger stop does
  *  not reach them. A resume still under way launches nothing more. How many
- *  it stopped, and how many it could not (still resumed: a later stop tries
- *  again). */
-export async function stopResumedWorkers(ports: WorkerResumePorts, botId?: string): Promise<{ stopped: number; failed: number }> {
+ *  this call stopped (`taskIds`: their tasks, so a stop that also reached
+ *  the task by its row counts the worker once), and how many it could not
+ *  (still resumed: a later stop tries again). A worker whose agent was
+ *  already gone (its pane closed, its agent exited) is marked stopped but
+ *  not counted. */
+export async function stopResumedWorkers(ports: WorkerResumePorts, botId?: string): Promise<{ stopped: number; failed: number; taskIds: string[] }> {
   if (botId === undefined) stopAllSeq++;
   else botStopSeq.set(botId, (botStopSeq.get(botId) ?? 0) + 1);
-  if (!ports.stopAgent) return { stopped: 0, failed: 0 };
+  if (!ports.stopAgent) return { stopped: 0, failed: 0, taskIds: [] };
   const now = ports.now ?? Date.now;
-  let n = 0;
+  const taskIds: string[] = [];
+  let marked = false;
   let failed = 0;
   for (const rec of ports.store.all()) {
     if (rec.state !== 'resumed' || (botId !== undefined && rec.botId !== botId)) continue;
     let ok = true;
+    let stoppedHere = false;
     for (const s of rec.sessions) {
-      const r: { ok?: boolean; code?: string } = await ports.stopAgent(s.sessionId).catch(() => ({ ok: false }));
+      const r: { ok?: boolean; stopped?: boolean; code?: string } = await ports.stopAgent(s.sessionId).catch(() => ({ ok: false }));
       // A pane that is gone took its agent with it (a stop of its open task
       // may have closed it first).
       if (r.ok !== true && r.code !== 'no_session') ok = false;
+      if (r.ok === true && r.stopped === true) stoppedHere = true;
     }
     if (!ok) failed++;
-    else if (ports.store.setState(rec.taskId, 'stopped', now())) n++;
+    else if (ports.store.setState(rec.taskId, 'stopped', now())) {
+      marked = true;
+      if (stoppedHere) taskIds.push(rec.taskId);
+    }
   }
-  if (n > 0) ports.changed?.();
-  return { stopped: n, failed };
+  if (marked) ports.changed?.();
+  return { stopped: taskIds.length, failed, taskIds };
 }
 
 /** A resumed worker whose agent exited is stopped again (resumable). */

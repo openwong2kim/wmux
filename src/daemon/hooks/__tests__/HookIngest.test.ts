@@ -1034,6 +1034,39 @@ describe('HookIngest', () => {
     });
   });
 
+  describe('Claude Code\'s post-turn fork through the permission gate', () => {
+    const fork = { agent_id: 'a1b2c3', agent_type: '' };
+    const gate = (payload: Record<string, unknown>) => makeSignal({ kind: 'agent.awaiting_permission', ptyId: 'pty-a', payload: { tool_name: 'Read', ...payload } });
+
+    it('a fork\'s tool ~2 s after the Stop neither cancels the completion nor marks the pane running', () => {
+      ingest.handle(makeSignal({ ptyId: 'pty-a', kind: 'agent.user_prompt_submit' }));
+      ingest.handle(makeSignal({ ptyId: 'pty-a' }));
+      fixture.advance(2_000);
+      expect(ingest.handlePermissionGate(gate(fork))).toEqual({ ok: true, sessionId: 'pty-a' });
+      expect(fixture.emitted.filter((e) => e.data.hookKind === 'agent.tool_started')).toHaveLength(0);
+      vi.advanceTimersByTime(DEFAULT_ALARM_WINDOW_MS * 2);
+      expect(fixture.emitted.at(-1)?.data).toMatchObject({ hookKind: 'agent.stop', decision: 'emit', status: 'complete' });
+    });
+
+    it('a fork\'s gated tool raises no gate card: it follows the session\'s own permission flow', () => {
+      let gates = 0;
+      const gating = new HookIngest({ ...fixture.deps, gateConfig: () => ({ gatedTools: ['Bash'] }), approvals: { ...fixture.deps.approvals, noteGateAwaiting: () => { gates += 1; return 'gate-id'; } } });
+      expect(gating.handlePermissionGate(makeSignal({ kind: 'agent.awaiting_permission', ptyId: 'pty-a', payload: { tool_name: 'Bash', ...fork } }))).toEqual({ ok: true, sessionId: 'pty-a' });
+      expect(gates).toBe(0);
+      expect(gating.handlePermissionGate(makeSignal({ kind: 'agent.awaiting_permission', ptyId: 'pty-a', payload: { tool_name: 'Bash' } }))).toMatchObject({ ok: true, gateId: 'gate-id' });
+    });
+
+    it('the lead\'s own tool and a real subagent\'s still mark the turn running and rebut the Stop', () => {
+      ingest.handle(makeSignal({ ptyId: 'pty-a', kind: 'agent.user_prompt_submit' }));
+      ingest.handle(makeSignal({ ptyId: 'pty-a' }));
+      ingest.handlePermissionGate(gate({}));
+      ingest.handlePermissionGate(gate({ agent_id: 'sub-1', agent_type: 'general-purpose' }));
+      expect(fixture.emitted.filter((e) => e.data.hookKind === 'agent.tool_started' && e.data.status === 'running')).toHaveLength(2);
+      vi.advanceTimersByTime(DEFAULT_ALARM_WINDOW_MS * 2);
+      expect(fixture.emitted.filter((e) => e.data.hookKind === 'agent.stop' && e.data.decision === 'emit')).toHaveLength(0);
+    });
+  });
+
   describe('permission gate vs the session permission mode', () => {
     // Build an ingest whose gate config actually gates Bash, and count the
     // gate records it opens. The shared fixture leaves gateConfig unset (=

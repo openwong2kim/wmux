@@ -978,6 +978,8 @@ export interface SessionData {
   attentionBlink?: string;
   attentionBlinkRemindMs?: number;
   attentionBlinkFinished?: string;
+  /** macOS window glass level ('off' | 'soft' | 'clear'). Whitelisted on load (windowGlass.ts). */
+  windowGlass?: string;
   /** #1481 — workspace list order ('manual' | 'attention' | 'recent'). Absent in
    *  older sessions; `sidebarAttentionFirst` then decides. Whitelisted on load. */
   sidebarSortMode?: string;

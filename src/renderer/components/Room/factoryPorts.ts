@@ -16,7 +16,7 @@
 //         // BOT_EVENT (shared/bot.ts) pushes; payload not read, the list is re-read
 //     botAction(action: BotAction, botId: string): Promise<{ ok: boolean; message?: string }>
 //         // bot.wake | bot.park | bot.resume | bot.interrupt (shared/bot.ts BOT_RPC), as the operator
-//     updateBot(botId: string, patch: BotProfilePatch): Promise<{ ok: boolean; message?: string }>
+//     updateBot(botId: string, patch: BotProfilePatch): Promise<{ ok: boolean; message?: string; code?: string }>
 //         // bot.update, as the operator (optional: without it the profile rows are read-only)
 //     createBot(req: FactoryBotCreateRequest): Promise<FactoryBotCreateResult>
 //         // IPC.FACTORY_BOT_CREATE (optional: without it Settings › Factory cannot add a bot)
@@ -97,9 +97,10 @@ export interface FactoryBotPort {
   list(workspaceId?: string): Promise<FactoryBotRow[]>;
   /** Told on any bot change; returns the unsubscribe. */
   subscribe(onChange: () => void): () => void;
-  act(action: BotAction, botId: string): Promise<{ ok: boolean; message?: string }>;
+  /** A refusal carries the handler's code (repo_mismatch, no_remote…). */
+  act(action: BotAction, botId: string): Promise<{ ok: boolean; message?: string; code?: string }>;
   /** Absent: profiles are read-only here. */
-  update?(botId: string, patch: BotProfilePatch): Promise<{ ok: boolean; message?: string }>;
+  update?(botId: string, patch: BotProfilePatch): Promise<{ ok: boolean; message?: string; code?: string }>;
   /** Absent: no bot can be added here. */
   create?(req: FactoryBotCreateRequest): Promise<FactoryBotCreateResult>;
   /** Absent: no team can be added here. */
@@ -157,8 +158,8 @@ export interface FactorySettingsPort {
 interface FactoryBridge {
   listBots?: (req?: { workspaceId?: string }) => Promise<{ bots: FactoryBotRow[] }>;
   onBotEvent?: (cb: () => void) => () => void;
-  botAction?: (action: BotAction, botId: string) => Promise<{ ok: boolean; message?: string }>;
-  updateBot?: (botId: string, patch: BotProfilePatch) => Promise<{ ok: boolean; message?: string }>;
+  botAction?: (action: BotAction, botId: string) => Promise<{ ok: boolean; message?: string; code?: string }>;
+  updateBot?: (botId: string, patch: BotProfilePatch) => Promise<{ ok: boolean; message?: string; code?: string }>;
   createBot?: (req: FactoryBotCreateRequest) => Promise<FactoryBotCreateResult>;
   createBotTeam?: (req: FactoryBotCreateTeamRequest) => Promise<FactoryBotCreateTeamResult>;
   pickBotAvatar?: () => Promise<FactoryBotAvatarPickResult>;

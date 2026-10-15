@@ -8,11 +8,12 @@
 import { getConnectorStore } from './connectorStore';
 import type { BrowserWindow } from 'electron';
 import type { DaemonClient } from '../DaemonClient';
-import type { ThreadId } from '../../shared/room';
+import type { CardNotice, ThreadId } from '../../shared/room';
 import { BOT_EVENT } from '../../shared/bot';
 import { sanitizePtyText } from '../../shared/types';
 import { eventBus } from '../events/EventBus';
 import { getLastBroadcastAgentStatus, hasOutstandingRunningClaim } from '../ipc/handlers/metadata.handler';
+import { holdsUnsettledRunningClaim } from '../notification/turnSettle';
 import { guardSessionLaunch } from '../agents/botWorkerMergeGuard';
 import { getTaskLedger } from '../deck/taskLedgerHost';
 import { getBotRuntime } from './BotRuntime';
@@ -33,6 +34,7 @@ import {
   isReclaimedSince,
   isTaskWorkspaceOf,
   noteWorkerAgentExit,
+  paneTurnEnded,
   setResumedLiveCount,
   setWorkerResumePorts,
   type WorkerRespawnInput,
@@ -69,8 +71,12 @@ const HOLDERS_SHOWN_MAX = 6;
 /** The renderer's workspace.close answers this fast or not at all. */
 const CLOSE_TIMEOUT_MS = 10_000;
 
-function note(workspaceId: string, threadId: ThreadId, title: string, body: string): void {
-  getRoomWriter()?.append({ workspaceId, threadId, kind: 'fact', actor: { kind: 'system' }, title, body });
+function note(workspaceId: string, threadId: ThreadId, title: string, body: string, notice?: CardNotice, taskId?: string): void {
+  getRoomWriter()?.append({
+    workspaceId, threadId, kind: 'fact', actor: { kind: 'system' }, title, body,
+    ...(notice ? { notice } : {}),
+    ...(taskId ? { refs: { taskId } } : {}),
+  });
 }
 
 /** Start everything; returns the stop. */
@@ -208,11 +214,7 @@ export function startWorkerLifecycle(deps: WorkerLifecycleDeps): () => void {
         const ws = mirror.getEntries()?.find((e) => e.id === entry.taskWorkspaceId);
         const ptys = ws && Array.isArray(ws.ptyIds) ? ws.ptyIds : [];
         const longAgo = Date.now() - entry.updatedAt >= REPORTED_UNSEEN_IDLE_MS;
-        return ptys.length > 0 && ptys.every((id) => {
-          const st = getLastBroadcastAgentStatus(id);
-          if (hasOutstandingRunningClaim(id) || st === 'running' || st === 'awaiting_input') return false;
-          return st !== undefined || longAgo;
-        });
+        return ptys.length > 0 && ptys.every((id) => paneTurnEnded(getLastBroadcastAgentStatus(id), holdsUnsettledRunningClaim(id), longAgo));
       },
       workspacePanes: (workspaceId) => {
         const entries = mirror.getEntries();
@@ -360,6 +362,7 @@ export function startWorkerLifecycle(deps: WorkerLifecycleDeps): () => void {
       (w.threadId ?? `task:${w.taskId}`) as ThreadId,
       'Worker waiting, not started',
       `"${w.title}" is waiting for an agent slot and has not started; it starts when one frees. ${inUse} of ${cap} in use: ${slotHolders(inUse)}.`,
+      { code: 'worker.waiting', args: { title: w.title, inUse, cap, holders: slotHolders(inUse) } },
     ),
     changed,
   });

@@ -921,6 +921,45 @@ describe('Bots page', () => {
     act(() => useStore.getState().setBotsWorkerPanel(null));
   });
 
+  it('the "Worker paused (resumable)" card offers Resume while its task\'s worker is resumable', async () => {
+    const taskId = 'wtask-paus-00000001';
+    cards.push(card({
+      workspaceId: 'w1', actor: { kind: 'system' }, kind: 'fact', title: 'Worker paused (resumable)', body: 'The task is reported for review.',
+      refs: { taskId }, notice: { code: 'worker.pausedResumable' }, at: 500,
+    }));
+    seedRooms();
+    bots[1] = { ...bots[1], tasks: [{
+      // In review for two days: past what the rail lists, still resumable.
+      taskId, taskWorkspaceId: 't1', ownerWorkspaceId: 'w1', botId: LEAD, title: 'Paused one',
+      status: 'review_requested' as const, stage: 'coded' as const, worker: 'resumable' as const, updatedAt: Date.now() - 2 * 86_400_000,
+    }] };
+    const resumeWorker = vi.fn(async () => ({ ok: true, workspaceId: 't1' }));
+    setFactoryBotPort({ ...port, resumeWorker });
+    await render(<BotsPage />);
+    act(() => q('[data-bots-row="group:grp-000000a1"]')!.click());
+    const line = q('[data-bots-bubble="system"] [data-bots-card-resume]')!.closest('[data-bots-bubble="system"]')!;
+    expect(line.textContent).toContain('Worker paused (resumable)');
+    await act(async () => { (line.querySelector('[data-bots-card-resume]') as HTMLButtonElement).click(); });
+    expect(resumeWorker).toHaveBeenCalledWith(taskId);
+  });
+
+  it('a task the owner stopped reads Cancelled with no error mark, not Failed', async () => {
+    seedRooms();
+    bots[1] = { ...bots[1], tasks: [{
+      taskId: 'wtask-stop-00000001', taskWorkspaceId: 't1', ownerWorkspaceId: 'w1', botId: LEAD, title: 'Stopped one',
+      status: 'cancelled' as const, stage: 'cancelled' as const, updatedAt: Date.now(),
+    }] };
+    await render(<BotsPage />);
+    act(() => q(`[data-bots-row="bot:${LEAD}"]`)!.click());
+    const row = q('[data-bots-tree] [data-bots-worker="t1"]')!;
+    expect(row.getAttribute('data-worker-state')).toBe('cancelled');
+    expect(row.getAttribute('aria-label')).toBe('Stopped one, Cancelled');
+    // No red cross: the status mark's box is empty.
+    const mark = row.querySelector('[role="img"]');
+    expect(mark?.getAttribute('aria-label')).toBe('Cancelled');
+    expect(mark?.querySelector('svg')).toBeNull();
+  });
+
   it('a worker waiting on input is a tree row with what it asks, though its pane reads idle', async () => {
     seedRooms();
     const now = Date.now();

@@ -45,7 +45,7 @@
 import { isResearchDispatch, type LedgerEntry } from '../../shared/ledger';
 import type { BotProfile } from '../../shared/bot';
 import { isSystemGatePass } from '../../shared/botTask';
-import { taskThreadOf, type RoomCard, type ThreadId } from '../../shared/room';
+import { taskThreadOf, type CardNotice, type RoomCard, type ThreadId } from '../../shared/room';
 import type { WakeReason } from '../../shared/wake';
 import type { LedgerUpdateInput, LedgerUpdateResult } from '../../daemon/ledger/TaskLedger';
 import type { GateRunInput, GateRunResult } from '../worktask/TaskGateRunner';
@@ -148,7 +148,7 @@ export interface TaskGatePorts {
   /** A system card in the task's thread (best effort), keyed by the row it
    *  is about (`verifyGateFactId(taskId, rev)`): a key already carded writes
    *  nothing. */
-  note?: (workspaceId: string, threadId: ThreadId, title: string, body: string, key: string) => void;
+  note?: (workspaceId: string, threadId: ThreadId, title: string, body: string, key: string, notice?: CardNotice) => void;
   /** Whether a system card with this key is in the task's thread; null when
    *  the room cannot be read yet (the install catch-up waits for it). */
   noted?: (workspaceId: string, threadId: ThreadId, key: string) => boolean | null;
@@ -175,28 +175,37 @@ export function gateCardNoted(
 export const NOTED_WAIT_MS = 10_000;
 const NOTED_POLL_MS = 250;
 
+/** A gate card: its English words and its stable code (RoomCard.notice). */
+export interface GateCard {
+  title: string;
+  body: string;
+  notice: CardNotice;
+}
+
 /** The card for a gate run that did not complete the task. */
-export function describeTaskGate(r: GateRunResult): { title: string; body: string } {
+export function describeTaskGate(r: GateRunResult): GateCard {
   if (r.ok && r.status === 'completed') {
     const g = r.result;
     const verdict = g.exitCode === 0 ? 'passed' : g.exitCode === null ? 'was killed' : `failed (exit ${g.exitCode})`;
     const head = g.headSha ? `at ${g.headSha}` : 'with no pinned head (the tree changed or HEAD moved during the run)';
     const receipt = r.recorded ? 'recorded in the ledger' : 'NOT recorded (ledger unreachable)';
-    return { title: `Gate ${verdict}: task left open`, body: `\`${g.command}\` ${head}; ${receipt}.` };
+    const notice: CardNotice = g.exitCode === 0 ? { code: 'gate.passed' } : g.exitCode === null ? { code: 'gate.killed' } : { code: 'gate.failed', args: { exit: g.exitCode } };
+    return { title: `Gate ${verdict}: task left open`, body: `\`${g.command}\` ${head}; ${receipt}.`, notice };
   }
   if (r.ok && r.status === 'skipped') {
-    return { title: `Gate skipped (${r.skipped}): task left open`, body: r.detail };
+    return { title: `Gate skipped (${r.skipped}): task left open`, body: r.detail, notice: { code: 'gate.skipped', args: { reason: r.skipped } } };
   }
-  if (!r.ok && r.status === 'busy') return { title: 'Gate already running: task left open', body: 'Another gate run holds this task; its result is in the task\'s ledger row when it ends.' };
+  if (!r.ok && r.status === 'busy') return { title: 'Gate already running: task left open', body: 'Another gate run holds this task; its result is in the task\'s ledger row when it ends.', notice: { code: 'gate.busy' } };
   if (!r.ok && r.code === 'no_base_gate') {
     return {
+      notice: { code: 'gate.noBase', args: { detail: r.error } },
       title: 'No gate on the default branch yet: task left open',
       body: `${r.error}.\n\nThis task cannot be completed by the gate as it stands. To finish it, either merge a test script into the default branch first `
         + '(its own small PR), then have the bot send the task back so its worker reports again and the gate runs; or end the task: '
         + 'ask the bot to cancel it, or close its workspace. The task\'s branch and worktree are kept either way.',
     };
   }
-  return { title: 'Gate refused: task left open', body: r.ok ? '' : r.error };
+  return { title: 'Gate refused: task left open', body: r.ok ? '' : r.error, notice: { code: 'gate.refused' } };
 }
 
 /** How far back a completion is woken again at install. */
@@ -209,9 +218,9 @@ export function installTaskGate(ports: TaskGatePorts): () => void {
   /** Reports that arrived while their task's gate ran: gated again after. */
   const again = new Set<string>();
 
-  const note = (entry: LedgerEntry, title: string, body: string): void => {
+  const note = (entry: LedgerEntry, title: string, body: string, notice: CardNotice): void => {
     try {
-      ports.note?.(entry.ownerWorkspaceId, taskThreadOf(entry), title, body, verifyGateFactId(entry.id, entry.rev));
+      ports.note?.(entry.ownerWorkspaceId, taskThreadOf(entry), title, body, verifyGateFactId(entry.id, entry.rev), notice);
     } catch {
       /* the card is best effort */
     }
@@ -233,22 +242,22 @@ export function installTaskGate(ports: TaskGatePorts): () => void {
     return row && isTaskGateReport(row, row.status) ? row : null;
   };
   /** Settle a gated report: complete on a pass, else leave it open; wake once. */
-  const settle = async (row: LedgerEntry, failure: { title: string; body: string } | null): Promise<void> => {
+  const settle = async (row: LedgerEntry, failure: GateCard | null): Promise<void> => {
     if (!failure) {
       const done = await ports.complete(row.id);
       if (done.entry) {
         const g = done.entry.gate;
-        note(done.entry, 'Task checked: gate passed, task completed', `\`${g?.command ?? 'gate'}\` ${g?.headSha ? `at ${g.headSha}` : 'with no pinned head'}.`);
+        note(done.entry, 'Task checked: gate passed, task completed', `\`${g?.command ?? 'gate'}\` ${g?.headSha ? `at ${g.headSha}` : 'with no pinned head'}.`, { code: 'gate.checked' });
         wake(done.entry);
         return;
       }
       const now = stillReported(row.id);
       if (!now) return;
-      note(now, 'Gate passed: task not completed', done.why);
+      note(now, 'Gate passed: task not completed', done.why, { code: 'gate.passedNotCompleted' });
       wake(now);
       return;
     }
-    note(row, failure.title, failure.body);
+    note(row, failure.title, failure.body, failure.notice);
     wake(row);
   };
 
@@ -261,20 +270,20 @@ export function installTaskGate(ports: TaskGatePorts): () => void {
         ? await ports.completeResearch(entry.id)
         : { entry: null, why: 'research tasks cannot be completed here' };
       if (done.entry) {
-        note(done.entry, 'Research reported: task completed', 'A research task changes no code, so no gate runs on it.');
+        note(done.entry, 'Research reported: task completed', 'A research task changes no code, so no gate runs on it.', { code: 'research.completed' });
         wake(done.entry);
         return;
       }
       const now = stillReported(entry.id);
       if (!now) return;
-      note(now, 'Research reported: task not completed', done.why);
+      note(now, 'Research reported: task not completed', done.why, { code: 'research.notCompleted' });
       wake(now);
       return;
     }
     const bot = ports.bot(entry.dispatch?.origin.botId ?? '');
     const repoPath = bot?.repo?.repoPath;
     if (!bot || !repoPath) {
-      await settle(entry, { title: 'Gate not run: task left open', body: 'The bot that started this task is gone or has no repository.' });
+      await settle(entry, { title: 'Gate not run: task left open', body: 'The bot that started this task is gone or has no repository.', notice: { code: 'gate.notRunNoBot' } });
       return;
     }
     const [worktree, baseRef] = await Promise.all([ports.worktreeOf(entry), ports.baseRef(repoPath)]);
@@ -285,6 +294,7 @@ export function installTaskGate(ports: TaskGatePorts): () => void {
       await settle(before, {
         title: 'Gate not run: task left open',
         body: !worktree ? 'The task worktree is not on disk.' : 'origin\'s default branch could not be resolved, so there is no base gate to run.',
+        notice: { code: !worktree ? 'gate.notRunNoWorktree' : 'gate.notRunNoBaseRef' },
       });
       return;
     }

@@ -127,7 +127,7 @@ export function RoomCard({ card, workspaceId, t, bots, replyToCard, decisionApi,
   const nameOf = useWorkspaceNames();
   const plan = card.kind === 'plan';
   const idLabels = useIdLabels(bots, t);
-  const shown = ownerCardText(card, bots.map((b) => b.bot.name), idLabels);
+  const shown = ownerCardText(card, bots.map((b) => b.bot.name), idLabels, t);
   const title = plan ? planTextWithNames(shown.title, nameOf, t) : shown.title;
   const body = (plan ? planTextWithNames(shown.body, nameOf, t) : shown.body).trim();
   const foldable = body.length > BODY_FOLD_CHARS;

@@ -1150,28 +1150,63 @@ select option {
   .sidebar-row-enter, .sidebar-popover-enter { animation: none; }
 }
 
-/* ─── Window glass (macOS, dark themes) ──────────────────────────────────────
+/* ─── Window glass (macOS) ────────────────────────────────────────────────────
  * Adapted from MonoCode (hardbeat920/monocode@6bd432ca, src/styles/index.css),
  * MIT License, Copyright (c) 2026 Nick. Main gives the macOS window a vibrancy
- * material; `data-glass` (utils/windowGlass.ts) is set only while the theme is
- * dark. The page then stops painting an opaque backdrop and the chrome — the
- * titlebar, the sidebar column and the tools dock — paints the mantle at 85%
- * over the material. The workspace frame and every terminal keep an opaque
- * base, so the hero never changes with the wallpaper. The page fades through
- * `color-mix(… 0%, transparent)` rather than the `transparent` keyword, which
- * interpolates through black. */
+ * material in the theme's appearance; `data-glass` (utils/windowGlass.ts) is
+ * set while the theme and the material agree and the user's glass level is
+ * not Off. The page then stops painting an opaque backdrop: the frame (the
+ * titlebar row and the rail) and the sheet's sidebar tone paint part-way over
+ * the material, Soft or Clear. The panes and every terminal keep
+ * an opaque base, so the hero never changes with the wallpaper. The page fades
+ * through `color-mix(… 0%, transparent)` rather than the `transparent`
+ * keyword, which interpolates through black. */
+/* The sheet's tint stacks on the frame's, so the sidebar's coverage is
+ * 1 - (1 - frame)(1 - sheet): about 29% on Soft and 14% on Clear. Keep the
+ * sheet step small, or the sidebar turns opaque long before the frame does. */
+html[data-glass] {
+  --glass-frame: 25%;
+  --glass-sheet: 6%;
+}
+html[data-glass][data-glass-level="clear"] {
+  --glass-frame: 10%;
+  --glass-sheet: 5%;
+}
+/* A strongly hued look (navy, red, violet) keeps more of its own colour over
+ * the grey material, or its frame turns a neutral grey beside a hued sheet. */
+html[data-glass]:is([data-theme="stars-and-stripes"], [data-theme="red-dynasty"], [data-theme="catppuccin-mocha"]) {
+  --glass-frame: 55%;
+  --glass-sheet: 20%;
+}
+html[data-glass]:is([data-theme="stars-and-stripes"], [data-theme="red-dynasty"], [data-theme="catppuccin-mocha"])[data-glass-level="clear"] {
+  --glass-frame: 35%;
+  --glass-sheet: 12%;
+}
+/* The light material is milkier than the dark one, so a light look paints
+ * less over it to read as see-through as a dark look does. */
+html[data-glass="light"] {
+  --glass-frame: 10%;
+  --glass-sheet: 4%;
+}
+html[data-glass="light"][data-glass-level="clear"] {
+  --glass-frame: 0%;
+  --glass-sheet: 3%;
+}
 html[data-glass],
 html[data-glass] body,
 html[data-glass] #root {
   background-color: color-mix(in srgb, var(--bg-base) 0%, transparent);
 }
 html[data-glass] .wmux-app-root {
-  background-color: color-mix(in srgb, var(--frame-bg) 85%, transparent);
+  background-color: color-mix(in srgb, var(--frame-bg) var(--glass-frame), transparent);
 }
-/* Glass is the frame's only: the sheet (sidebar, panes, dock) stays opaque. */
-html[data-glass] .wmux-app-root .wmux-titlebar,
-html[data-glass] .wmux-app-root .wmux-titlebar-segment {
-  background-color: transparent;
+/* The sheet's sidebar tone stacks on the frame's tint; the sidebar itself
+ * paints nothing more, and the panes keep their opaque base. */
+html[data-glass] .wmux-shell-body {
+  background-color: color-mix(in srgb, var(--bg-mantle) var(--glass-sheet), transparent);
+}
+html[data-glass] .wmux-sidebar {
+  background-color: color-mix(in srgb, var(--bg-mantle) 0%, transparent);
 }
 
 /* ─── Mono layout tones ───────────────────────────────────────────────────────
@@ -1291,7 +1326,7 @@ html[data-glass] .wmux-app-root .wmux-titlebar-segment {
   --group-case: none;
   --group-track: normal;
   --tab-underline: 0px;
-  --theme-glass: 0;
+  --theme-glass: 1;
   --stroke: #27272A;
   --primary-fill: #FAFAFA;
   --primary-ink: #09090B;
@@ -1332,7 +1367,7 @@ html[data-glass] .wmux-app-root .wmux-titlebar-segment {
   --group-case: uppercase;
   --group-track: 0.06em;
   --tab-underline: 2px;
-  --theme-glass: 0;
+  --theme-glass: 1;
   --stroke: #1D1F24;
   --primary-fill: #4C8DFF;
   --primary-ink: #FFFFFF;
@@ -1373,7 +1408,7 @@ html[data-glass] .wmux-app-root .wmux-titlebar-segment {
   --group-case: none;
   --group-track: normal;
   --tab-underline: 0px;
-  --theme-glass: 0;
+  --theme-glass: 1;
   --stroke: #E6E6EA;
   --primary-fill: #17171C;
   --primary-ink: #FFFFFF;
@@ -1414,7 +1449,7 @@ html[data-glass] .wmux-app-root .wmux-titlebar-segment {
   --group-case: none;
   --group-track: normal;
   --tab-underline: 2px;
-  --theme-glass: 0;
+  --theme-glass: 1;
   --stroke: #262523;
   --primary-fill: #E8A33D;
   --primary-ink: #1A1408;

@@ -10,6 +10,7 @@ import {
   THEME_OPTIONS,
   BUILTIN_XTERM_PALETTE,
   XTERM_PALETTES,
+  XTERM_THEMES,
   themeStyleCssVars,
   type BuiltinThemeId,
 } from '../themes';
@@ -71,7 +72,15 @@ describe('theme style knobs', () => {
     }
   });
 
-  it('only the tint look allows window glass', () => {
-    expect(LOOKS.filter((id) => THEME_STYLES[id]?.glass)).toEqual(['tint']);
+  it('a hued theme borrowing a palette puts its terminal on its own base colour', () => {
+    for (const id of ['stars-and-stripes', 'red-dynasty', 'nightowl'] as BuiltinThemeId[]) {
+      expect(XTERM_THEMES[id].background, id).toBe(UI_THEME_TOKENS[id].bgBase);
+      // The ANSI colours still come from the borrowed palette.
+      expect(XTERM_THEMES[id].red, id).toBe(XTERM_PALETTES[BUILTIN_XTERM_PALETTE[id]].red);
+    }
+  });
+
+  it('every look allows window glass', () => {
+    expect(LOOKS.filter((id) => !THEME_STYLES[id]?.glass)).toEqual([]);
   });
 });
