@@ -262,6 +262,13 @@ form[data-channel-composer] .wmux-channel-send.wmux-chat-send:disabled,
   [data-chat-view] .wmux-chat-activity > summary svg,
   [data-chat-view] .wmux-chat-tool-label strong { transition: none; }
 }
+/* Windows: the system animation setting, which the media query misses there (utils/reducedMotion.ts). */
+:root[data-reduced-motion] [data-chat-view] .wmux-chat-composer,
+:root[data-reduced-motion] form[data-channel-composer].wmux-chat-composer,
+:root[data-reduced-motion] [data-chat-view] .wmux-chat-activity > summary svg,
+:root[data-reduced-motion] [data-chat-view] .wmux-chat-tool-label strong {
+  transition: none;
+}
 [data-chat-view] .wmux-chat-assistant > .wmux-chat-receipt { padding-left: 0; padding-right: 0; }
 
 /* ─── One boundary per element ────────────────────────────────────────────────

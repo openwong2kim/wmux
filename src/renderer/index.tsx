@@ -3,6 +3,7 @@ import App from './App';
 import { useStore } from './stores';
 import { installChromeScrollPin } from './utils/pinChromeScroll';
 import { installWindowGlass } from './utils/windowGlass';
+import { installSystemReducedMotion } from './utils/reducedMotion';
 import './styles/globals.css';
 import './styles/ui.css';
 import './styles/onboarding.css';
@@ -15,6 +16,9 @@ import './styles/onboarding.css';
 document.documentElement.setAttribute('data-theme', useStore.getState().theme);
 document.documentElement.setAttribute('data-glass-level', useStore.getState().windowGlass);
 document.documentElement.setAttribute('data-platform', window.electronAPI?.platform ?? '');
+
+// Windows' Animation effects off, which the media query misses there.
+installSystemReducedMotion();
 
 // Undo any programmatic scroll of the page chrome (#1679) — see pinChromeScroll.
 installChromeScrollPin();

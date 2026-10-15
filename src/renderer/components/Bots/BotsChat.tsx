@@ -72,7 +72,7 @@ import { pickFolderDialog, templateJob } from '../Settings/FactoryTab';
 import BotAvatar, { botHueIndex, botIdentityColor, noteRemovedBotHues } from '../Room/BotAvatar';
 import { RoomAvatar } from './BotsAvatar';
 import { awaitsApproval, conversationCards, groupViewCards, livePlanIds, taskBubbles, conversationTurns, type BotTreeRow, type BotWorker, type Conversation, type RoomEntry } from './botsModel';
-import BotsWorkerTree, { treeRowState } from './BotsWorkerTree';
+import BotsWorkerTree, { treeRowLabel } from './BotsWorkerTree';
 import { loadWholeThread } from './useBots';
 import { loadRoomActors } from '../../hooks/useRoomSync';
 import { useShallow } from 'zustand/react/shallow';
@@ -643,6 +643,18 @@ function TurnLine({ row, t, now, readOnly }: { row: FactoryBotRow; t: T; now?: n
   );
 }
 
+/** A rail task's state in words: waiting for a slot, or how it ended
+ *  (cancelled, failed, in review, done), and whether its worker can resume. */
+function taskRailState(task: BotTaskView, t: T): string {
+  if (task.stage === 'waiting_slot') return t('botsPage.worker.waitingSlot');
+  const state = task.stage === 'cancelled' ? 'taskStatus.cancelled'
+    : task.stage === 'failed' ? 'botsPage.worker.failed'
+      : task.stage === 'coded' ? 'botsPage.worker.inReview'
+        : null;
+  if (!state) return t(task.worker === 'resumable' ? 'botsPage.worker.resumable' : 'botsPage.worker.done');
+  return task.worker === 'resumable' ? `${t(state)} · ${t('botsPage.worker.canResume')}` : t(state);
+}
+
 /** A bot's task that is not a live worker, in the rail: waiting for an agent
  *  slot, or done with a stopped worker that can resume the same
  *  conversation. Open shows only while the worker's pane is still open; a
@@ -668,7 +680,7 @@ function TaskRow({ task, t, resumePort, readOnly, shownId, onOpen }: { task: Bot
       <span aria-hidden="true" className="inline-block h-[6px] w-[6px] shrink-0 rounded-full border-[1.5px] border-[var(--text-muted)]" />
       <span className="min-w-0 flex-1 truncate text-[12px]">
         <span className="text-[var(--text-main)]">{task.title}</span>
-        <span className="text-[var(--text-muted)]">{` · ${error ?? t(waiting ? 'botsPage.worker.waitingSlot' : resumable ? 'botsPage.worker.resumable' : 'botsPage.worker.done')}`}</span>
+        <span className="text-[var(--text-muted)]">{` · ${error ?? taskRailState(task, t)}`}</span>
         {!waiting && task.folder === 'kept_dirty' && <span data-bots-task-folder-kept className="text-[var(--text-muted)]">{` · ${t('botsPage.worker.folderKept')}`}</span>}
       </span>
       {!waiting && paneOpen && (
@@ -973,7 +985,7 @@ function SystemLine({ card, t, onThread, now, botNames = [], taskTitle, requestT
         </div>
         {body && (
           <div data-card-body data-clamped={foldable && !expanded ? 'true' : undefined} className={`mt-0.5 text-left text-[12px] leading-relaxed text-[var(--text-sub)] break-words ${foldable && !expanded ? 'max-h-[39px] overflow-hidden' : ''}`}>
-            {renderBrainMarkdown(body, { links: true, richCode: true })}
+            {renderBrainMarkdown(body, { links: true, richCode: true, strictEmphasis: true })}
           </div>
         )}
         {(foldable || chip || onResume) && (
@@ -1012,15 +1024,16 @@ function workerState(worker: BotWorker): string {
 
 /** What the worker panel's header says for the shown workspace: a live
  *  worker's name and state (needs-you text while it waits), else its row in
- *  the list's tree (an ended task: done or failed, and whether it can
- *  resume), else a task's title, else its workspace's name with no state. */
+ *  the list's tree (in review, done, failed or cancelled, with its folder
+ *  note, and whether it can resume), else a task's rail state, else its
+ *  workspace's name with no state. */
 function workerPanelView(workspaceId: string, workers: readonly BotWorker[], tree: readonly BotTreeRow[], tasks: readonly BotTaskView[], t: T): { name: string; state: string | null; attention: boolean; resumeTaskId?: string } {
   const live = workers.find((w) => w.workspaceId === workspaceId);
   if (live) return { name: live.name, state: t(workerState(live)), attention: live.waiting };
   const row = tree.find((r) => r.workspaceId === workspaceId);
-  if (row) return { name: row.title, state: treeRowState(row, t), attention: row.state === 'needsYou', ...(row.resumable && row.taskId ? { resumeTaskId: row.taskId } : {}) };
+  if (row) return { name: row.title, state: treeRowLabel(row, t), attention: row.state === 'needsYou', ...(row.resumable && row.taskId ? { resumeTaskId: row.taskId } : {}) };
   const task = tasks.find((x) => (x.workerWorkspaceId ?? x.taskWorkspaceId) === workspaceId);
-  if (task) return { name: task.title, state: t(task.stage === 'waiting_slot' ? 'botsPage.worker.waitingSlot' : 'botsPage.worker.resumable'), attention: false };
+  if (task) return { name: task.title, state: taskRailState(task, t), attention: false };
   const ws = useStore.getState().workspaces.find((w) => w.id === workspaceId);
   return { name: displayWorkspaceName(ws?.name ?? '', true), state: null, attention: false };
 }
@@ -2094,6 +2107,9 @@ export function BotsChat({ conversation, roomCards, bots, title, workspaceName, 
   const markdown = useMemo((): MarkdownOptions => ({
     links: true,
     richCode: true,
+    // Worker and bot text carries code-like runs (2**31): `*` between
+    // letters or digits is never emphasis here.
+    strictEmphasis: true,
     ...(pattern ? {
       mention: {
         pattern,

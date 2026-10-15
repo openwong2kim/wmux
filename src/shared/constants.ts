@@ -288,6 +288,9 @@ export const IPC = {
   // state that sleep may have invalidated (shared glyph atlas — see
   // terminal/atlasWakeRecovery.ts).
   SYSTEM_RESUMED: 'system:resumed',
+  /** Windows' "Animation effects" off, which Chromium's
+   *  prefers-reduced-motion misses there (main/reducedMotion.ts). */
+  SYSTEM_REDUCED_MOTION: 'system:reduced-motion',
   // Phase 4: Auto updater
   UPDATE_CHECK: 'update:check',
   UPDATE_AVAILABLE: 'update:available',

@@ -471,6 +471,9 @@ const electronAPI = {
       ipcRenderer.on(IPC.SYSTEM_RESUMED, listener);
       return () => { ipcRenderer.removeListener(IPC.SYSTEM_RESUMED, listener); };
     },
+    /** Windows: the system asks for reduced motion (Animation effects off).
+     *  False elsewhere, where the media query already says it. */
+    getReducedMotion: () => ipcRenderer.invoke(IPC.SYSTEM_REDUCED_MOTION) as Promise<boolean>,
   },
   settings: {
     getTerminalCore: () => ipcRenderer.invoke(IPC.TERMINAL_CORE_SETTINGS_GET) as Promise<TerminalCoreSettings>,

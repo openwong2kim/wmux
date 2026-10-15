@@ -277,6 +277,10 @@
 @media (prefers-reduced-motion: reduce) {
   .wmux-sidebar .sidebar-row.sidebar-row-pulse::after { animation: none; }
 }
+/* Windows: the system animation setting, which the media query misses there (utils/reducedMotion.ts). */
+:root[data-reduced-motion] .wmux-sidebar .sidebar-row.sidebar-row-pulse::after {
+  animation: none;
+}
 /* Keyboard focus: the app's ring (accent, inside the row), never the
  * browser's default. The row's line is the focus stop (WorkspaceItem). */
 .wmux-sidebar [data-sidebar-row] { border-radius: 10px; outline: none; }
@@ -312,6 +316,11 @@
 @media (prefers-reduced-motion: reduce) {
   .wmux-nav-button, .wmux-sidebar .sidebar-row { transition: none; }
 }
+/* Windows: the system animation setting, which the media query misses there (utils/reducedMotion.ts). */
+:root[data-reduced-motion] .wmux-nav-button,
+:root[data-reduced-motion] .wmux-sidebar .sidebar-row {
+  transition: none;
+}
 
 /* Sidebar collapse/expand (SidebarSlot). The transition exists only while a
  * toggle runs ([data-animating]), so a drag-resize of the width never eases.
@@ -319,6 +328,10 @@
 .wmux-sidebar-slot[data-animating] { transition: width 190ms ease-out; }
 @media (prefers-reduced-motion: reduce) {
   .wmux-sidebar-slot[data-animating] { transition: none; }
+}
+/* Windows: the system animation setting, which the media query misses there (utils/reducedMotion.ts). */
+:root[data-reduced-motion] .wmux-sidebar-slot[data-animating] {
+  transition: none;
 }
 
 /* ─── Buttons: shared base ──────────────────────────────────────────────── */
@@ -602,6 +615,15 @@
     transition: none;
   }
 }
+/* Windows: the system animation setting, which the media query misses there (utils/reducedMotion.ts). */
+:root[data-reduced-motion] .ui-btn,
+:root[data-reduced-motion] .ui-icon-btn,
+:root[data-reduced-motion] .ui-toggle,
+:root[data-reduced-motion] .ui-row-ghost,
+:root[data-reduced-motion] .ui-input,
+:root[data-reduced-motion] .ui-search-bar {
+  transition: none;
+}
 
 /* The titlebar names the panel it controls instead of an ambiguous chevron. */
 .wmux-panel-toggle {
@@ -681,6 +703,11 @@
 }
 @media (prefers-reduced-motion: reduce) {
   .wmux-chat-composer, .wmux-chat-icon-button { transition: none; }
+}
+/* Windows: the system animation setting, which the media query misses there (utils/reducedMotion.ts). */
+:root[data-reduced-motion] .wmux-chat-composer,
+:root[data-reduced-motion] .wmux-chat-icon-button {
+  transition: none;
 }
 
 /* Chat v2 — driver-owned conversation view. Tokens only (themes restyle it);
@@ -810,6 +837,17 @@ details[open] > .wmux-chatv2-tool-line .wmux-chatv2-chevron { transform: rotate(
   .wmux-chatv2-btn, .wmux-chatv2-composer, .wmux-chatv2-send, .wmux-chatv2-tool-title, .wmux-chatv2-chevron { transition: none; }
   .wmux-chatv2-column [data-enter] { animation: none; }
 }
+/* Windows: the system animation setting, which the media query misses there (utils/reducedMotion.ts). */
+:root[data-reduced-motion] .wmux-chatv2-btn,
+:root[data-reduced-motion] .wmux-chatv2-composer,
+:root[data-reduced-motion] .wmux-chatv2-send,
+:root[data-reduced-motion] .wmux-chatv2-tool-title,
+:root[data-reduced-motion] .wmux-chatv2-chevron {
+  transition: none;
+}
+:root[data-reduced-motion] .wmux-chatv2-column [data-enter] {
+  animation: none;
+}
 
 /* Named tabs distinguish navigation from the adjacent web action. */
 .wmux-deck-tabs { display: flex; align-items: center; flex-wrap: wrap; flex-shrink: 0; gap: 6px; padding: 8px; border-bottom: 1px solid var(--border-soft); }
@@ -824,6 +862,8 @@ details[open] > .wmux-chatv2-tool-line .wmux-chatv2-chevron { transform: rotate(
 .wmux-deck-header-tools { display: flex; align-items: center; margin-left: auto; padding-left: 6px; border-left: 1px solid var(--border-soft); }
 .wmux-deck-header-tools button { border-radius: 7px; }
 @media (prefers-reduced-motion: reduce) { .wmux-deck-tab { transition: none; } }
+/* Windows: the system animation setting, which the media query misses there (utils/reducedMotion.ts). */
+:root[data-reduced-motion] .wmux-deck-tab { transition: none; }
 
 /* Agent dock: conversation first, compact context and progressive automation. */
 .wmux-agent-tools-toggle { display: inline-flex; align-items: center; gap: 6px; padding: 6px 8px; border-radius: 6px; color: var(--text-sub); font-size: 12px; }
@@ -1286,6 +1326,8 @@ details[open] > .wmux-chatv2-tool-line .wmux-chatv2-chevron { transform: rotate(
   .wmux-fleet-toolbar { gap: 6px; }
 }
 @media (prefers-reduced-motion: reduce) { .wmux-fleet-card, .wmux-fleet-idle-chevron { transition: none; } }
+/* Windows: the system animation setting, which the media query misses there (utils/reducedMotion.ts). */
+:root[data-reduced-motion] .wmux-fleet-card, :root[data-reduced-motion] .wmux-fleet-idle-chevron { transition: none; }
 
 .wmux-chat-progress { flex-shrink: 0; padding: 10px 16px; border-bottom: 1px solid var(--border-soft); font-size: 12px; }
 .wmux-chat-progress-label { display: flex; align-items: center; gap: 7px; color: var(--text-main); font-weight: 500; }
@@ -1351,6 +1393,8 @@ details[open] > .wmux-chatv2-tool-line .wmux-chatv2-chevron { transform: rotate(
 .wmux-channel-send.wmux-chat-send { width: 28px; height: 28px; background: var(--accent); color: var(--bg-base); margin-bottom: 2px; }
 .wmux-channel-composer [data-channel-record-hint], .wmux-channel-composer [data-channel-mention-hint] { font-family: var(--font-ui); font-size: 11px; line-height: 1.5; color: var(--text-sub); }
 @media (prefers-reduced-motion: reduce) { .wmux-record-row, .wmux-record-disclosure svg { transition: none; } }
+/* Windows: the system animation setting, which the media query misses there (utils/reducedMotion.ts). */
+:root[data-reduced-motion] .wmux-record-row, :root[data-reduced-motion] .wmux-record-disclosure svg { transition: none; }
 
 .wmux-channel-composer { display: flex; flex-shrink: 0; flex-direction: column; gap: 8px; padding: 8px; border: 1px solid var(--border-soft); border-radius: 16px; background: var(--bg-mantle); transition: border-color 150ms; }
 .wmux-channel-composer:focus-within { border-color: var(--text-sub); }
@@ -1360,6 +1404,8 @@ details[open] > .wmux-chatv2-tool-line .wmux-chatv2-chevron { transform: rotate(
 .wmux-channel-send:hover:not(:disabled) { opacity: .8; }
 .wmux-channel-send:disabled { opacity: .3; cursor: not-allowed; }
 @media (prefers-reduced-motion: reduce) { .wmux-channel-composer, .wmux-channel-send { transition: none; } }
+/* Windows: the system animation setting, which the media query misses there (utils/reducedMotion.ts). */
+:root[data-reduced-motion] .wmux-channel-composer, :root[data-reduced-motion] .wmux-channel-send { transition: none; }
 
 /* ─── Dialogs & forms: quiet surfaces (owner, 2026-09-24) ───────────────────
  * ui/Dialog, the onboarding tour card and the form primitives. Window chrome
@@ -1762,6 +1808,14 @@ details[open] > .wmux-chatv2-tool-line .wmux-chatv2-chevron { transform: rotate(
 
 @media (prefers-reduced-motion: reduce) {
   .ui-switch, .ui-switch-knob, .ui-checkbox, .ui-select > select, .ui-segment { transition: none; }
+}
+/* Windows: the system animation setting, which the media query misses there (utils/reducedMotion.ts). */
+:root[data-reduced-motion] .ui-switch,
+:root[data-reduced-motion] .ui-switch-knob,
+:root[data-reduced-motion] .ui-checkbox,
+:root[data-reduced-motion] .ui-select > select,
+:root[data-reduced-motion] .ui-segment {
+  transition: none;
 }
 
 /* Provider-independent chat controls; uses the existing wmux theme. */

@@ -110,3 +110,9 @@
     animation: none !important;
   }
 }
+/* Windows: the system animation setting, which the media query misses there (utils/reducedMotion.ts). */
+:root[data-reduced-motion] .wmux-mochi .wmux-mochi-body,
+:root[data-reduced-motion] .wmux-mochi .wmux-mochi-eye,
+:root[data-reduced-motion] .wmux-mochi .wmux-mochi-sig {
+  animation: none !important;
+}

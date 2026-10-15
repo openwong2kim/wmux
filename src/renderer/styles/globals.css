@@ -851,6 +851,10 @@ select option {
     transition: none;
   }
 }
+/* Windows: the system animation setting, which the media query misses there (utils/reducedMotion.ts). */
+:root[data-reduced-motion] .pane-ring-flash {
+  transition: none;
+}
 
 /* Forced-colors (Windows high-contrast): opacity-based glow disappears
  * against system-managed colors, so promote to a visible 2px border and
@@ -935,6 +939,19 @@ select option {
     opacity: 1;
   }
 }
+/* Windows: the system animation setting, which the media query misses there (utils/reducedMotion.ts). */
+:root[data-reduced-motion] .pane-complete-blink::after {
+  animation: none;
+  opacity: 1;
+}
+:root[data-reduced-motion] .notification-ring::before {
+  animation: none;
+  opacity: 1;
+}
+:root[data-reduced-motion] .tab-status-blink {
+  animation: none;
+  opacity: 1;
+}
 
 /* Forced-colors (Windows high-contrast): the green ring's box-shadow is
  * system-overridden, so fall back to a thicker border to stay visible. */
@@ -983,6 +1000,10 @@ select option {
   .wmux-pane-maximize-btn {
     transition: none;
   }
+}
+/* Windows: the system animation setting, which the media query misses there (utils/reducedMotion.ts). */
+:root[data-reduced-motion] .wmux-pane-maximize-btn {
+  transition: none;
 }
 
 /* ─── Sidebar polish: depth + motion (refined-terminal pass) ────────────────
@@ -1112,6 +1133,12 @@ select option {
     opacity: 1;
   }
 }
+/* Windows: the system animation setting, which the media query misses there (utils/reducedMotion.ts). */
+:root[data-reduced-motion] .sidebar-dot-running::after,
+:root[data-reduced-motion] .sidebar-dot-waiting::after {
+  animation: none;
+  opacity: 1;
+}
 /* Forced-colors: 상태 색(running=amber, needs-you=red 등)이 시스템 색으로
  * 덮이면 상태 구분이 사라지므로 점의 배경색을 보존한다. 글로우(box-shadow)는
  * 어차피 제거되니 애니메이션만 끈다. */
@@ -1148,6 +1175,20 @@ select option {
     box-shadow: 0 0 5px 0 var(--sidebar-dot-glow);
   }
   .sidebar-row-enter, .sidebar-popover-enter { animation: none; }
+}
+/* Windows: the system animation setting, which the media query misses there (utils/reducedMotion.ts). */
+:root[data-reduced-motion] .sidebar-row,
+:root[data-reduced-motion] .sidebar-dot {
+  transition: none;
+}
+:root[data-reduced-motion] .sidebar-dot-running,
+:root[data-reduced-motion] .sidebar-dot-waiting {
+  animation: none;
+  box-shadow: 0 0 5px 0 var(--sidebar-dot-glow);
+}
+:root[data-reduced-motion] .sidebar-row-enter,
+:root[data-reduced-motion] .sidebar-popover-enter {
+  animation: none;
 }
 
 /* ─── Window glass (macOS) ────────────────────────────────────────────────────

@@ -289,3 +289,36 @@ describe('renderBrainMarkdown richCode (the Bots chat)', () => {
     expect(container.querySelector('pre[data-brain-md-code]')?.className).toContain('border');
   });
 });
+
+describe('renderBrainMarkdown strictEmphasis (worker text in the Bots chat)', () => {
+  function renderWith(source: string, strictEmphasis: boolean): void {
+    act(() => {
+      root.render(createElement('div', null, renderBrainMarkdown(source, { links: true, strictEmphasis })));
+    });
+  }
+
+  it('keeps code-like `**` and `*` between letters or digits as written', () => {
+    const text = '|0 wraps past 2^31 (2**31|0=-2147483648, (2**32+5)|0=5) and a*b*c stays';
+    renderWith(text, true);
+    expect(container.querySelector('strong')).toBeNull();
+    expect(container.querySelector('em')).toBeNull();
+    expect(container.textContent).toBe(text);
+  });
+
+  it('still reads emphasis at word boundaries, a Korean particle right after bold included', () => {
+    renderWith('**파일**을 고쳤고 *mostly* done, **index.js**에 추가 (**bold**).', true);
+    expect([...container.querySelectorAll('strong')].map((n) => n.textContent)).toEqual(['파일', 'index.js', 'bold']);
+    expect(container.querySelector('em')?.textContent).toBe('mostly');
+  });
+
+  it('a delimiter with a space on its inner side is no emphasis', () => {
+    renderWith('2 * 3 * 4 and ** loose **', true);
+    expect(container.querySelector('em')).toBeNull();
+    expect(container.querySelector('strong')).toBeNull();
+  });
+
+  it('without the option, emphasis reads as before', () => {
+    renderWith('(2**31|0=-2147483648, (2**32+5)|0=5)', false);
+    expect(container.querySelector('strong')?.textContent).toBe('31|0=-2147483648, (2');
+  });
+});
