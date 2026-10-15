@@ -154,8 +154,31 @@ describe('botWorkers from the bot\'s tasks', () => {
       ['t1', 'task a', 'running', false],
       ['t5', 'wtask: t5', 'error', false],
       ['t3', 'task c', 'failed', false],
-      ['t2', 'task b', 'done', true],
+      ['t2', 'task b', 'review', true],
     ]);
+  });
+
+  it('a task reported for review is open, not done: In review, with its worker paused once it was stopped', () => {
+    const tasks = [
+      view('a', 't1', 'coded', { status: 'review_requested', worker: 'resumable', updatedAt: 3 }),
+      view('b', 't2', 'coded', { status: 'review_requested', updatedAt: 2 }),
+      view('c', 't3', 'closed', { status: 'completed', stage: 'checked', worker: 'resumable', updatedAt: 1 }),
+    ];
+    const tree = botWorkerTree(LEAD, [], tasks, names);
+    expect(tree.map((r) => [r.workspaceId, r.state, !!r.workerPaused])).toEqual([
+      ['t1', 'review', true],
+      ['t2', 'review', false],
+      ['t3', 'done', false],
+    ]);
+  });
+
+  it('an ended task whose folder was kept for uncommitted changes says so on its row while its workspace is open', () => {
+    const tasks = [
+      view('a', 't1', 'closed', { status: 'cancelled', stage: 'cancelled', folder: 'kept_dirty', updatedAt: 2 }),
+      view('b', 't2', 'closed', { status: 'cancelled', stage: 'cancelled', updatedAt: 1 }),
+    ];
+    const tree = botWorkerTree(LEAD, [], tasks, names);
+    expect(tree.map((r) => [r.workspaceId, r.state, !!r.folderKept])).toEqual([['t1', 'cancelled', true], ['t2', 'cancelled', false]]);
   });
 
   it('a task the owner stopped is cancelled, a neutral state with no error mark; a failed one stays failed', () => {
@@ -167,11 +190,11 @@ describe('botWorkers from the bot\'s tasks', () => {
     expect(tree.map((r) => [r.workspaceId, r.state])).toEqual([['t1', 'cancelled'], ['t2', 'failed']]);
   });
 
-  it('a done task\'s pane whose agent still reads running is done, not a live worker (one state for row, panel and chat)', () => {
+  it('a reported task\'s pane whose agent still reads running is in review, not a live worker (one state for row, panel and chat)', () => {
     const tasks = [view('a', 't1', 'coded', { status: 'review_requested' })];
     const live = botWorkers(LEAD, { t1: LEAD }, { t1: 'running' }, names, tasks);
     expect(live).toEqual([]);
-    expect(botWorkerTree(LEAD, live, tasks, names).map((r) => [r.workspaceId, r.state])).toEqual([['t1', 'done']]);
+    expect(botWorkerTree(LEAD, live, tasks, names).map((r) => [r.workspaceId, r.state])).toEqual([['t1', 'review']]);
   });
 
   it('every open workspace the bot\'s fan-out made is listed, even one whose task is older than the task list', () => {
@@ -181,12 +204,12 @@ describe('botWorkers from the bot\'s tasks', () => {
     expect(botWorkerTree(LEAD, [], [], names, { t3: LEAD }, { t3: 'error' })[0].state).toBe('error');
   });
 
-  it('a resumed worker of an ended task is live while its pane\'s agent runs, done once it stops', () => {
+  it('a resumed worker of a reported task is live while its pane\'s agent runs, in review once it stops', () => {
     const tasks = [view('a', 't1', 'coded', { worker: 'resumed', workerWorkspaceId: 't2' })];
     expect(botWorkers(LEAD, {}, { t2: 'needsYou' }, names, tasks).map((w) => [w.workspaceId, w.waiting])).toEqual([['t2', true]]);
     const stopped = botWorkers(LEAD, {}, { t2: 'idle' }, names, tasks);
     expect(stopped).toEqual([]);
-    expect(botWorkerTree(LEAD, stopped, tasks, names).map((r) => [r.workspaceId, r.state])).toEqual([['t2', 'done']]);
+    expect(botWorkerTree(LEAD, stopped, tasks, names).map((r) => [r.workspaceId, r.state])).toEqual([['t2', 'review']]);
   });
 
   it('a task workspace already listed from its task is not listed again from its origin', () => {

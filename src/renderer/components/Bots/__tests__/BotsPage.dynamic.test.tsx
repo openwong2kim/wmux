@@ -975,6 +975,60 @@ describe('Bots page', () => {
     expect(mark?.querySelector('svg')).toBeNull();
   });
 
+  it('a stopped task whose folder was kept says so on its tree row and in the worker panel\'s header while its workspace is open', async () => {
+    seedRooms();
+    bots[1] = { ...bots[1], tasks: [{
+      taskId: 'wtask-kept-00000001', taskWorkspaceId: 't1', ownerWorkspaceId: 'w1', botId: LEAD, title: 'Kept one',
+      status: 'cancelled' as const, stage: 'cancelled' as const, worker: 'stopped' as const, folder: 'kept_dirty' as const, updatedAt: Date.now(),
+    }] };
+    await render(<BotsPage />);
+    act(() => q(`[data-bots-row="bot:${LEAD}"]`)!.click());
+    // The rail leaves out a task whose workspace is open: the row carries the note.
+    expect(q('[data-bots-task="wtask-kept-00000001"]')).toBeNull();
+    const row = q('[data-bots-tree] [data-bots-worker="t1"]')!;
+    const note = row.querySelector('[data-bots-worker-folder-kept]')!;
+    expect(note.textContent).toBe('Folder kept: uncommitted changes');
+    // A neutral note: muted, never the needs-you or error colour.
+    expect(note.className).toContain('text-[var(--text-muted)]');
+    expect(row.getAttribute('aria-label')).toBe('Kept one, Cancelled · Folder kept: uncommitted changes');
+    act(() => row.click());
+    expect(q('[data-bots-worker-panel-state]')?.textContent).toBe('· Cancelled · Folder kept: uncommitted changes');
+    act(() => useStore.getState().setBotsWorkerPanel(null));
+  });
+
+  it('a task reported for review whose worker was paused reads In review on its row and in the panel, never Done', async () => {
+    seedRooms();
+    bots[1] = { ...bots[1], tasks: [{
+      taskId: 'wtask-rev-000000001', taskWorkspaceId: 't1', ownerWorkspaceId: 'w1', botId: LEAD, title: 'Reported one',
+      status: 'review_requested' as const, stage: 'coded' as const, worker: 'resumable' as const, updatedAt: Date.now(),
+    }] };
+    await render(<BotsPage />);
+    act(() => q(`[data-bots-row="bot:${LEAD}"]`)!.click());
+    const row = q('[data-bots-tree] [data-bots-worker="t1"]')!;
+    expect(row.getAttribute('data-worker-state')).toBe('review');
+    expect(row.getAttribute('aria-label')).toBe('Reported one, In review · worker paused');
+    // Still open: no done check.
+    const mark = row.querySelector('[role="img"]');
+    expect(mark?.getAttribute('aria-label')).toBe('In review · worker paused');
+    expect(mark?.querySelector('svg')).toBeNull();
+    act(() => row.click());
+    expect(q('[data-bots-worker-panel-state]')?.textContent).toBe('· In review · worker paused');
+    act(() => useStore.getState().setBotsWorkerPanel(null));
+  });
+
+  it('a cleared task the owner stopped reads Cancelled in the rail, not Done', async () => {
+    seedRooms();
+    bots[1] = { ...bots[1], tasks: [{
+      taskId: 'wtask-stop-00000002', taskWorkspaceId: 't-gone', ownerWorkspaceId: 'w1', botId: LEAD, title: 'Stopped one',
+      status: 'cancelled' as const, stage: 'cancelled' as const, worker: 'resumable' as const, updatedAt: Date.now(),
+    }] };
+    await render(<BotsPage />);
+    act(() => q(`[data-bots-row="bot:${LEAD}"]`)!.click());
+    const rail = q('[data-bots-task="wtask-stop-00000002"]')!;
+    expect(rail.textContent).toContain('Stopped one · Cancelled · resumable');
+    expect(rail.textContent).not.toContain('Done');
+  });
+
   it('a worker waiting on input is a tree row with what it asks, though its pane reads idle', async () => {
     seedRooms();
     const now = Date.now();

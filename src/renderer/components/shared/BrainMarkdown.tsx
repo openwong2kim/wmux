@@ -43,6 +43,29 @@ export interface MarkdownOptions {
   /** Draw `@Name` mentions in plain text as something else (the Bots chat's
    *  bot marks). `pattern` matches the whole mention, group 1 the name. */
   mention?: { pattern: RegExp; render: (name: string, key: string) => React.ReactNode };
+  /** `*` and `**` emphasis only at word boundaries: no emphasis where the
+   *  delimiter sits between two ASCII letters or digits (CommonMark's rule
+   *  for `_`, applied to `*`), and none whose delimiter touches a space on
+   *  its inner side. Code-like text (`2**31`, `a*b*c`) stays as written;
+   *  bold followed by a Korean particle (`**파일**을`) is still bold. */
+  strictEmphasis?: boolean;
+}
+
+const ASCII_ALNUM = /[A-Za-z0-9]/;
+
+/** Whether an emphasis match (`**x**` or `*x*` at `index` in `text`) may
+ *  open and close under `strictEmphasis`. */
+function emphasisAtBoundaries(text: string, index: number, m: string): boolean {
+  const n = m.startsWith('**') ? 2 : 1;
+  const before = text[index - 1] ?? '';
+  const after = text[index + m.length] ?? '';
+  const first = m[n];
+  const last = m[m.length - n - 1];
+  const between = (a: string, b: string) => ASCII_ALNUM.test(a) && ASCII_ALNUM.test(b);
+  if (before === '*' || after === '*') return false;
+  if (/\s/.test(first) || between(before, first)) return false;
+  if (/\s/.test(last) || between(last, after)) return false;
+  return true;
 }
 
 /** Plain text, with its mentions drawn by `opts.mention` when given. */
@@ -194,8 +217,16 @@ function renderInline(raw: string, keyPrefix: string, opts: MarkdownOptions = {}
   let lastIndex = 0;
   let match: RegExpExecArray | null;
   while ((match = regex.exec(text)) !== null) {
-    if (match.index > lastIndex) parts.push(...plainText(text.slice(lastIndex, match.index), `${keyPrefix}p${lastIndex}`, opts));
     const m = match[0];
+    if (opts.strictEmphasis && m.startsWith('*') && !emphasisAtBoundaries(text, match.index, m)) {
+      // Not emphasis: the whole `*` run stays text (in the next plain
+      // slice), and the scan goes on after it (a later run may still open).
+      let run = 1;
+      while (text[match.index + run] === '*') run++;
+      regex.lastIndex = match.index + run;
+      continue;
+    }
+    if (match.index > lastIndex) parts.push(...plainText(text.slice(lastIndex, match.index), `${keyPrefix}p${lastIndex}`, opts));
     if (m.startsWith('`')) {
       parts.push(
         // Mono on a faint surface, no accent: inline code is a machine token

@@ -112,12 +112,17 @@ export interface BotConversation extends ConversationBase {
 export interface BotTreeRow {
   workspaceId: string;
   title: string;
-  /** running · waits on the owner · errored, live; done · failed ·
-   *  cancelled (stopped by the owner: not an error), ended. */
-  state: 'running' | 'needsYou' | 'error' | 'done' | 'failed' | 'cancelled';
+  /** running · waits on the owner · errored, live; review (reported for
+   *  review: still open, its worker not running); done · failed · cancelled
+   *  (stopped by the owner: not an error), ended. */
+  state: 'running' | 'needsYou' | 'error' | 'review' | 'done' | 'failed' | 'cancelled';
   taskId?: string;
   /** An ended task whose stopped worker can resume the same conversation. */
   resumable: boolean;
+  /** A review task's worker was stopped (paused) while it waits. */
+  workerPaused?: boolean;
+  /** Its folder was kept because something in it is not committed. */
+  folderKept?: boolean;
   /** The task's ledger says its worker asked for input. */
   needsInput?: boolean;
   /** What a worker waiting on input waits for (its task's summary). */
@@ -517,7 +522,8 @@ export function botWorkers(
   return out.sort((a, b) => a.name.localeCompare(b.name) || a.workspaceId.localeCompare(b.workspaceId));
 }
 
-/** A task that ended: its worker no longer runs for it. */
+/** A task that ended, or was reported for review (`coded`, still open): its
+ *  worker no longer runs for it. */
 const ENDED_STAGE: ReadonlySet<BotTaskView['stage']> = new Set<BotTaskView['stage']>(['coded', 'checked', 'waiting_to_merge', 'merged', 'closed', 'failed', 'cancelled']);
 
 /** The worker rows nested under a bot in the list (owner decision
@@ -553,12 +559,15 @@ export function botWorkerTree(
     const name = workspaceId ? workspaceName(workspaceId) : null;
     if (!workspaceId || name === null || seen.has(workspaceId)) continue;
     seen.add(workspaceId);
+    const review = task.stage === 'coded';
     out.push({
       workspaceId,
       title: task.title || name,
-      state: task.stage === 'failed' ? 'failed' : task.stage === 'cancelled' ? 'cancelled' : 'done',
+      state: review ? 'review' : task.stage === 'failed' ? 'failed' : task.stage === 'cancelled' ? 'cancelled' : 'done',
       taskId: task.taskId,
       resumable: task.worker === 'resumable',
+      ...(review && (task.worker === 'resumable' || task.worker === 'stopped') ? { workerPaused: true } : {}),
+      ...(task.folder === 'kept_dirty' ? { folderKept: true } : {}),
     });
   }
   const others: BotTreeRow[] = [];
