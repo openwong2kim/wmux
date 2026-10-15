@@ -127,7 +127,9 @@ export default function ToastContainer() {
   const t = useT();
   const toasts = useStore((s) => s.toasts);
   // The Bots page keeps its composer and working rail at the bottom right:
-  // toasts drop from under the titlebar there instead of covering them.
+  // toasts drop from the top there instead of covering them, below the
+  // titlebar (40px) AND the page's 44px header band, whose right end holds the
+  // narrow layout's workers button and the worker panel's controls (#2231).
   const top = useStore((s) => s.appRoute === 'bots');
 
   if (toasts.length === 0) return null;
@@ -135,7 +137,7 @@ export default function ToastContainer() {
   return (
     <div
       data-toast-edge={top ? 'top' : 'bottom'}
-      className={`fixed ${top ? 'top-[52px]' : 'bottom-4'} right-4 z-[var(--z-toast)] flex flex-col gap-2 pointer-events-none`}
+      className={`fixed ${top ? 'top-[92px]' : 'bottom-4'} right-4 z-[var(--z-toast)] flex flex-col gap-2 pointer-events-none`}
       aria-label={t('toast.notifications')}
     >
       {/* `toast`, not `t` — the translator is in scope here now, and shadowing
