@@ -3791,7 +3791,8 @@ live panes, so its rows still come back. One additive key marks them:
   ticket's or a delegation's `taskId`. Absent until the desktop has the record.
 - Absent means one of: the row is not a bot's worker, the desktop's snapshot
   does not have it yet (no desktop attached, or the first poll after start),
-  or an older desktop. Treat an absent key exactly as before this key existed.
+  the desktop's reply was over its size budget (this list is the first thing
+  cut, all at once), or an older desktop. Treat an absent key exactly as before this key existed.
 - A task workspace the owner fanned out themselves is never marked: it keeps
   `ownerWorkspaceId` / `nested` as described above. No row carries both
   `botWorker` and `ownerWorkspaceId`.

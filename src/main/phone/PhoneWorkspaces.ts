@@ -145,8 +145,9 @@ export async function handlePhoneWorkspaces(command: string, payload: Record<str
  * It degrades in steps, cheapest loss first. The per-workspace layout trees
  * go first (largest first; the phone draws that workspace flat), then Moa's
  * delegated-job list, then the pending hand-off notices (both bounded). The
- * factory's per-workspace bots and question counts go first of all, then Fleet
- * tickets: their text, then the list. The pane placement (every pane
+ * bot-worker list goes first of all (the phone then lists those workspaces
+ * unmarked, as before it existed), then the factory's per-workspace bots and
+ * question counts, then Fleet tickets: their text, then the list. The pane placement (every pane
  * id and every task's pane group) goes before anything the reply carried
  * before it existed, so a sidebar that fit without it still arrives whole;
  * then tab titles, then the pane rows, and only then the whole sidebar. With
@@ -161,6 +162,13 @@ export function fitSidebarToBudget(
 ): PhoneSidebarSnapshot | null {
   const fits = (candidate: PhoneSidebarSnapshot) => Buffer.byteLength(JSON.stringify({ ...base, sidebar: candidate })) <= budget;
   if (fits(sidebar)) return sidebar;
+  // The bot-worker list is the newest field: it goes first, whole (a cut list
+  // would mark some workers and not others).
+  if (sidebar.botWorkers !== undefined) {
+    onDrop('budget.botWorkers');
+    const { botWorkers: _botWorkers, ...withoutWorkers } = sidebar;
+    return fitSidebarToBudget(base, withoutWorkers, budget, onDrop);
+  }
   // The factory's per-workspace bots and question counts are the newest
   // fields: they go first, all at once (the small `factory` block stays).
   if (sidebar.workspaces.some((row) => row.bots !== undefined || row.openQuestions !== undefined)) {

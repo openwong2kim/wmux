@@ -165,6 +165,33 @@ describe('phone workspace bridge', () => {
     expect(fitted.panes).toEqual(sidebar.panes);
     expect(reasons).toEqual(['budget.moaHandoff']);
   });
+  it('drops the bot-worker list whole before anything else, and only when over budget', () => {
+    const base = { workspaces: [{ id: 'ws-1', name: 'One', sessionId: 'pty-0' }] };
+    const sidebar: PhoneSidebarSnapshot = {
+      activeWorkspaceId: null,
+      workspaces: [{ id: 'ws-1', order: 0, pinned: false, bots: [{ id: 'bot-1a2b3c4d', role: 'lead', presence: 'idle', queueDepth: 0 }] }],
+      panes: [{ ptyId: 'pty-0', workspaceId: 'ws-1', paneId: 'p-0', surfaceTitle: 'title' }],
+      botWorkers: [{ workspaceId: 'ws-w1', botId: 'bot-1a2b3c4d', taskId: 'wtask-1' }, { workspaceId: 'ws-w2', botId: 'bot-1a2b3c4d' }],
+    };
+    const size = (candidate: PhoneSidebarSnapshot) => Buffer.byteLength(JSON.stringify({ ...base, sidebar: candidate }));
+    expect(fitSidebarToBudget(base, sidebar, size(sidebar))).toBe(sidebar);
+    const reasons: string[] = [];
+    const fitted = fitSidebarToBudget(base, sidebar, size(sidebar) - 1, (r) => reasons.push(r))!;
+    expect(fitted).not.toHaveProperty('botWorkers');
+    expect(fitted.workspaces).toEqual(sidebar.workspaces);
+    expect(fitted.panes).toEqual(sidebar.panes);
+    expect(reasons).toEqual(['budget.botWorkers']);
+  });
+  it('forwards the bot-worker list through the allowlist', async () => {
+    send.mockImplementation(async (_getWindow: unknown, method: string) => method === 'workspace.list' ? [{ id: 'ws-1', name: 'One', activePtyId: 's1' }] : {
+      activeWorkspaceId: 'ws-1',
+      workspaces: [{ id: 'ws-1', order: 0, pinned: false }],
+      panes: [],
+      botWorkers: [{ workspaceId: 'ws-w1', botId: 'bot-1a2b3c4d', taskId: 'wtask-1', secret: 'x' }],
+    });
+    const reply = await handlePhoneWorkspaces('workspaces.list', {}, () => null) as { sidebar?: PhoneSidebarSnapshot };
+    expect(reply.sidebar?.botWorkers).toEqual([{ workspaceId: 'ws-w1', botId: 'bot-1a2b3c4d', taskId: 'wtask-1' }]);
+  });
   it("drops Moa's delegated jobs whole after the layout trees, before the hand-off notices", () => {
     const base = { workspaces: [{ id: 'ws-1', name: 'One', sessionId: 'pty-0' }] };
     const sidebar: PhoneSidebarSnapshot = {
