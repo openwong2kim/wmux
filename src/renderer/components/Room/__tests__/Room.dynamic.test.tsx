@@ -419,6 +419,37 @@ describe('FactoryTab', () => {
     expect(settingsPort.set).toHaveBeenCalledWith({ enabled: true, planConsent: expect.objectContaining({ version: 1 }) });
     expect(container.querySelector('[data-testid="factory-not-installed"]')).toBeNull();
   });
+
+  it('turning it off says how many workers main stopped, and offers Try again when the stop failed', async () => {
+    const view = {
+      version: 1 as const, enabled: true, hqWorkspaceId: null, trustedAuthors: [], morning: { hour: 9, weekdays: [1, 2, 3, 4, 5] },
+      verifierOnOwnerPrs: true, defaultEngine: { kind: 'claude-sdk' as const }, globalConcurrentBots: 2, laneAutoMerge: false, laneDailyCap: 5,
+    };
+    let stoppedWork: { workers: number; tasks: number; ok: boolean } = { workers: 3, tasks: 2, ok: true };
+    const settingsPort = { available: true, get: vi.fn(async () => view), set: vi.fn(async (p: object) => ({ ...view, ...p, stoppedWork })) };
+    setRoomsApiForTests(fakeApi() as unknown as RoomsApi);
+    const stopAll = vi.fn(async () => ({ ok: true, botsInterrupted: 1, workersStopped: 1, gatesCancelled: 0 }));
+    const botPort = { available: true, list: async () => [], subscribe: () => () => undefined, act: async () => ({ ok: true }), stopAll } as FactoryBotPort;
+    useStore.setState({ toasts: [] });
+    await render(createElement(FactoryTab, { settingsPort, botPort }));
+    const sw = container.querySelector<HTMLButtonElement>('[data-testid="factory-enabled"]')!;
+    await act(async () => sw.click());
+    expect(settingsPort.set).toHaveBeenCalledWith({ enabled: false });
+    expect(useStore.getState().toasts.map((x) => x.message)).toEqual(['Stopped 3 workers. Saved work is kept.']);
+    // The stop failed (a fresh tab, the bots on again): an error toast whose
+    // action runs Stop all.
+    act(() => root.unmount());
+    root = createRoot(container);
+    useStore.setState({ toasts: [] });
+    stoppedWork = { workers: 0, tasks: 0, ok: false };
+    await render(createElement(FactoryTab, { settingsPort, botPort }));
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="factory-enabled"]')!.click());
+    const failed = useStore.getState().toasts.find((x) => x.level === 'error');
+    expect(failed?.message).toBe('Bots are off, but their running work could not be stopped.');
+    expect(failed?.action?.label).toBe('Try again');
+    await act(async () => { failed!.action!.onClick(); });
+    expect(stopAll).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('FactoryTab engine', () => {

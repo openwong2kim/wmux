@@ -42,14 +42,20 @@ export async function botsOnPatch(
 export async function confirmBotsAlreadyOn(
   settings: FactorySettingsPort,
   ask: (mode: BotsPlanConsentMode) => Promise<BotsPlanConsentAnswer>,
+  /** Told what the write answered after Turn bots off (it says what work
+   *  stopped). */
+  onTurnedOff?: (result: unknown) => void,
 ): Promise<void> {
   if (!settings.available) return;
   const current = await settings.get().catch(() => null);
   if (!current?.enabled || hasBotsPlanConsent(current)) return;
   const answer = await ask('keep');
   if (answer === 'dismiss') return;
-  await settings.set(answer === 'confirm' ? { planConsent: botsPlanConsentNow() } : { enabled: false });
-  if (answer === 'cancel') await refreshRoomStatus();
+  const result = await settings.set(answer === 'confirm' ? { planConsent: botsPlanConsentNow() } : { enabled: false });
+  if (answer === 'cancel') {
+    onTurnedOff?.(result);
+    await refreshRoomStatus();
+  }
 }
 
 export function BotsPlanConsentDialog({ t, mode, onAnswer }: {

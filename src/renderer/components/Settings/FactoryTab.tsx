@@ -54,6 +54,7 @@ import { selectBotTaskOwners, withoutBotTasks } from '../Sidebar/botTasks';
 import { listedWorkspaces } from '../../stores/slices/moaSlice';
 import { createBot, turnBotsOn, type TurnBotsOnResult } from '../Bots/botsAddBot';
 import { botsOnPatch, useBotsPlanConsent } from '../Bots/BotsPlanConsent';
+import { botsStopPort, toastStoppedWork } from '../Bots/botsStop';
 
 type T = (key: string, vars?: Record<string, string | number>) => string;
 
@@ -769,6 +770,8 @@ export function FactoryTab({ settingsPort, botPort, pickFolder }: FactoryTabProp
       const next = await sPort.set(p);
       if (next) setSettings(next);
       else setError(t('settings.factory.notStarted'));
+      // Off stops the bots' running work too: main says what it stopped.
+      if (p.enabled === false) toastStoppedWork(next, t, useStore.getState(), botsStopPort(bPort));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }

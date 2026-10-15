@@ -60,7 +60,7 @@ import type { BotGroup } from '../../../shared/botGroup';
 import { unreadCount } from './botsTimeline';
 import { BOTS_SESSION_START } from '../../stores/slices/roomSlice';
 import { useBots, useBotsSync } from './useBots';
-import { botsStopPort, stopAllSummary, type BotsStopPort } from './botsStop';
+import { botsStopPort, stopAllSummary, toastStoppedWork, type BotsStopPort } from './botsStop';
 import { InlineConfirm } from './InlineConfirm';
 import './bots.css';
 
@@ -609,7 +609,8 @@ export default function BotsPage({ onAddBot, port, api, now, settings, stop, eng
   const consent = useBotsPlanConsent(t);
   const { ask: askConsent, confirmOn } = consent;
   useEffect(() => {
-    void confirmBotsAlreadyOn(settingsPort, askConsent).catch(() => undefined);
+    void confirmBotsAlreadyOn(settingsPort, askConsent, (r) => toastStoppedWork(r, t, useStore.getState(), stopPort)).catch(() => undefined);
+    // Asked once per opening: a new language or stop port must not ask again.
   }, [settingsPort, askConsent]);
   const enginePort = useMemo(() => engine ?? bridgeEnginePort(), [engine]);
   const [confirmStopAll, setConfirmStopAll] = useState(false);
