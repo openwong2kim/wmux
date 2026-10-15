@@ -192,6 +192,9 @@ const NOTICE_WORDS: Readonly<Record<string, ReadonlySet<string>>> = {
   limit: new Set(['turns_hour', 'turns_day', 'concurrent_workers', 'worker_hours_day', 'factory_workers']),
 };
 
+/** Why a gate was skipped (TaskGateRunner.ts GateSkipReason). */
+const GATE_SKIP_REASONS: ReadonlySet<string> = new Set(['deps_missing', 'no_gate_command', 'gate_unavailable']);
+
 /** A notice's clock time: the time today, else a short date and the time. */
 export function formatNoticeTime(at: number, now: number = Date.now()): string {
   const d = new Date(at);
@@ -260,6 +263,10 @@ export function noticeText(card: Pick<RoomCard, 'actor' | 'body' | 'notice'>, t:
   if (args.by !== undefined) vars.who = t(`room.notice.by.${args.by}`);
   if (args.where !== undefined) vars.place = t(`room.notice.where.${args.where}`);
   if (typeof args.until === 'number') vars.time = formatNoticeTime(args.until, now);
+  // Why a gate did not run, worded; a reason this build does not know stays as written.
+  if (notice.code === 'gate.skipped' && typeof args.reason === 'string' && GATE_SKIP_REASONS.has(args.reason)) {
+    vars.reason = t(`room.notice.gate.reason.${args.reason}`);
+  }
   if (notice.code === 'worker.waiting') {
     const holders = slotHoldersText(args, t);
     if (holders !== null) vars.holders = holders;
