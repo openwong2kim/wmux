@@ -9106,6 +9106,13 @@ export class WebTerminalServer {
     this.deliverChatEvent(event.sessionId, () => ({ event: 'chat.cancel', body }), (principal) => chatOwner(principal) === event.owner);
   }
 
+  /** A web or phone client streams this pane (or is opening one) or watches its turns. */
+  hasPaneViewer(sessionId: string): boolean {
+    for (const client of this.clients) if (client.sessionId === sessionId) return true;
+    for (const client of this.pendingStreams) if (client.sessionId === sessionId) return true;
+    return (this.transcriptWatchers.get(sessionId)?.size ?? 0) > 0;
+  }
+
   emitTranscriptNudge(sessionId: string): void {
     if (this.eventClients.size === 0) return;
     // N3 — a new transcript row can open or close an OpenCode dialog.

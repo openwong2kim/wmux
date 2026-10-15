@@ -80,6 +80,8 @@ const SUSPENDED_TTL_CAP_HOURS = 24 * 365; // 1 year — "permanent" = large, not
 // widen that window). Cap mirrors suspended so "permanent" stays possible.
 const DETACHED_TTL_FLOOR_HOURS = 1;
 const DETACHED_TTL_CAP_HOURS = 24 * 365;
+/** Idle window for ring hibernation (BufferHibernation.ts): 0 = off, capped at a year. */
+const HIBERNATE_IDLE_CAP_HOURS = 24 * 365;
 const MEM_WARN_FLOOR_MB = 128;
 const MEM_REAP_FLOOR_MB = 192;
 const MEM_BLOCK_FLOOR_MB = 256;
@@ -140,6 +142,7 @@ export function createDefaultConfig(): DaemonConfig {
       // lastActivity is bumped on PTY output, so an active detached session
       // (e.g. a running build) never hits this.
       detachedTtlHours: 8,
+      hibernateIdleHours: 24,
     },
     // Channel retention — the trash empties itself after 30 days (it only
     // finishes deletions a human started), while auto-trashing archived
@@ -473,6 +476,13 @@ export function loadConfig(): DaemonConfig {
       config.session.detachedTtlHours, defaults.session.detachedTtlHours,
       DETACHED_TTL_FLOOR_HOURS, DETACHED_TTL_CAP_HOURS,
     );
+    // 0 = off, so it cannot go through clampLifecycle's floor; fractions are
+    // kept (a short window is how the feature is exercised by hand).
+    const hibernateIdleHours = config.session.hibernateIdleHours;
+    config.session.hibernateIdleHours =
+      typeof hibernateIdleHours === 'number' && Number.isFinite(hibernateIdleHours) && hibernateIdleHours >= 0
+        ? Math.min(hibernateIdleHours, HIBERNATE_IDLE_CAP_HOURS)
+        : defaults.session.hibernateIdleHours;
     // app-weight P1 idle-CPU knobs — same per-field backfill + clamp.
     config.daemon.livenessIntervalSec = clampLifecycle(
       config.daemon.livenessIntervalSec, defaults.daemon.livenessIntervalSec!,

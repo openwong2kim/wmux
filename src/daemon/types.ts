@@ -263,6 +263,14 @@ export interface DaemonConfig {
      * the default when absent/garbage. See #557.
      */
     detachedTtlHours: number;
+    /**
+     * Hours without PTY output after which an open pane that no one is
+     * viewing and no agent runs in moves its ring buffer to its recovery
+     * `.buf` and frees the memory (BufferHibernation.ts). The shell keeps
+     * running and the bytes come back on the next read or write. `0` turns
+     * it off. Fractions are allowed. Backfilled from the default when absent.
+     */
+    hibernateIdleHours?: number;
   };
   /**
    * Channel retention policy. OPTIONAL — old config.json files predate it, so

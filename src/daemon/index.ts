@@ -145,6 +145,7 @@ import {
   shouldReconcileTombstone,
 } from './phantomExit';
 import { createSnapshotRunner } from './snapshotRunner';
+import { createBufferHibernation } from './BufferHibernation';
 import { RingBuffer } from './RingBuffer';
 import { GitContextWatcher } from '../main/pty/gitContextWatch';
 import { PortWatcher } from '../main/pty/portWatch';
@@ -6408,8 +6409,11 @@ function wireEvents(
       log('warn', `session:died unwatch failed for ${payload.id}:`, err);
     }
 
-    // Clean up buffer dump file — dead sessions don't need snapshots
+    // Clean up buffer dump file — dead sessions don't need snapshots. A
+    // hibernated ring's bytes live only in that file: the dead pane keeps its
+    // scrollback in memory until its TTL, so bring them back first.
     try {
+      sessionManager.getSession(payload.id)?.ringBuffer.wake();
       const bufPath = stateWriter.getBufferDumpPath(payload.id);
       if (fs.existsSync(bufPath)) fs.unlinkSync(bufPath);
     } catch { /* ignore */ }
@@ -8866,8 +8870,21 @@ async function main(): Promise<void> {
     },
   });
   runSnapshotOnceRef = runSnapshotOnce;
+  // Idle-pane buffer hibernation rides the same tick, after the dumps (it
+  // reuses a dump that is still current instead of writing again).
+  const bufferHibernation = createBufferHibernation({
+    sessions: () => sessionManager.listManagedSessions(),
+    bufferPath: (id) => stateWriter.getBufferDumpPath(id),
+    ensureBufferDir: () => stateWriter.ensureBufferDir(),
+    idleHours: () => config.session.hibernateIdleHours ?? 0,
+    agentProcessAlive: (id) => agentProcessTracker.statusFor(id),
+    remoteViewer: (id) => webTerminalServer?.hasPaneViewer(id) === true,
+    log: (level, msg) => log(level, msg),
+  });
   const snapshotInterval = setInterval(() => {
-    void runSnapshotOnce();
+    void runSnapshotOnce()
+      .then(() => bufferHibernation.sweep())
+      .catch((err) => log('warn', '[hibernate] sweep failed:', err));
   }, (config.daemon.snapshotIntervalSec ?? 30) * 1000); // app-weight P1 knob (clamped 10–600 s)
   snapshotInterval.unref();
 

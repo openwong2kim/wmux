@@ -2,6 +2,7 @@ import { terminalCoreSelection } from '../shared/terminalCoreSettings';
 import { writeFile, rename, unlink } from 'node:fs/promises';
 import {
   readFileSync,
+  statSync,
   writeFileSync,
   renameSync,
   unlinkSync,
@@ -93,6 +94,15 @@ export class RingBuffer {
   private length: number;     // bytes currently stored (<= physical)
   private totalWritten: number; // monotonic lifetime count (used as byte offset for PromptEventLog)
   private geometry: GeometryMark[] = []; // size changes, oldest first (see ReplayGeometry)
+  // Idle hibernation (node backend only, see BufferHibernation.ts): while
+  // `hibernatedPath` is set, `buffer` is released and the stored bytes live
+  // only in that `.buf`. `length`, `totalWritten` and `geometry` stay in
+  // memory, so every offset consumer is unaffected; the bytes come back
+  // synchronously on the first read or write (wake()).
+  private hibernatedPath: string | null = null;
+  private releasedBytes = 0;
+  private mutations = 0; // bumps on every content change, including clear()
+  private lastDump: { path: string; mutations: number } | null = null;
 
   constructor(capacityBytes: number, backend: 'node' | 'rust' = terminalCoreSelection() === 'rust' ? 'rust' : 'node') {
     if (capacityBytes <= 0 || !Number.isInteger(capacityBytes)) {
@@ -149,6 +159,8 @@ export class RingBuffer {
     if (this.native) { this.native.write(data); return; }
     const dataLen = data.length;
     if (dataLen === 0) return;
+    this.wake();
+    this.mutations++;
 
     this.totalWritten += dataLen;
 
@@ -207,6 +219,7 @@ export class RingBuffer {
     this.native?.dispose();
     this.buffer = Buffer.alloc(0); this.length = 0; this.physical = 0; this.writePos = 0;
     this.geometry = [];
+    this.hibernatedPath = null;
   }
 
   /**
@@ -278,6 +291,7 @@ export class RingBuffer {
    */
   readAll(): Buffer {
     if (this.native) return this.native.readAll();
+    this.wake();
     if (this.length === 0) {
       return Buffer.alloc(0);
     }
@@ -299,6 +313,8 @@ export class RingBuffer {
   clear(): void {
     if (this.disposed) throw new Error('Ring disposed');
     if (this.native) { this.native.clear(); return; }
+    this.wake();
+    this.mutations++;
     this.buffer.fill(0);
     this.writePos = 0;
     this.length = 0;
@@ -368,16 +384,21 @@ export class RingBuffer {
     // A queued dump can outlive explicit session removal. Never replace a
     // valid dump with the now-disposed ring's empty storage.
     if (this.disposed) return;
+    // Hibernated to this very file: it already holds the bytes. Reading them
+    // back would wake the ring on every forced snapshot tick.
+    if (this.hibernatedPath === filePath) return;
     // Captured here (inside the chain) rather than at enqueue time: a slightly
     // fresher snapshot is never wrong for recovery, and the snapshotRunner's
     // dirty-tracking captures totalBytesWritten BEFORE calling us, so a fresher
     // readAll at worst leaves the session marked dirty for one extra tick.
     const data = this.readAll();
+    const mutations = this.mutations;
     const tmpPath = `${filePath}.tmp.${crypto.randomBytes(6).toString('hex')}`;
     try {
       // mode is a no-op on Windows; use icacls for NTFS ACLs.
       await writeFile(tmpPath, data, { mode: 0o600 });
       await RingBuffer.renameWithRetry(tmpPath, filePath);
+      this.lastDump = { path: filePath, mutations };
     } catch (err) {
       try { await unlink(tmpPath); } catch { /* tmp may already be gone */ }
       throw err;
@@ -417,15 +438,100 @@ export class RingBuffer {
    */
   dumpToFileSyncAtomic(filePath: string): void {
     if (this.disposed) return;
+    if (this.hibernatedPath === filePath) return; // see doDumpToFile
     const data = this.readAll();
     const tmpPath = `${filePath}.tmp.${crypto.randomBytes(6).toString('hex')}`;
     try {
       writeFileSync(tmpPath, data, { mode: 0o600 });
       renameSync(tmpPath, filePath);
+      this.lastDump = { path: filePath, mutations: this.mutations };
     } catch (err) {
       try { unlinkSync(tmpPath); } catch { /* tmp may already be gone */ }
       throw err;
     }
+  }
+
+  /** True while the stored bytes live only in the `.buf` (see hibernate). */
+  get isHibernated(): boolean {
+    return this.hibernatedPath !== null;
+  }
+
+  /** Bytes of backing storage the current hibernation released (0 when awake). */
+  get hibernatedBytes(): number {
+    return this.releasedBytes;
+  }
+
+  /**
+   * Move the stored bytes to `filePath` (the session's recovery `.buf`, via
+   * the same atomic dump) and release the backing storage. Returns the bytes
+   * released, or 0 when nothing was released.
+   *
+   * Race-free by construction: the ring stays fully in memory until the dump
+   * has landed, and the release happens synchronously right after, only if no
+   * byte was written or cleared meanwhile and `stillIdle()` (re-checked at
+   * that instant) holds. A reader during the write reads memory; a reader
+   * after it wakes the ring from the file. A failed dump throws and releases
+   * nothing. The rust backend is never hibernated.
+   */
+  async hibernate(filePath: string, stillIdle: () => boolean): Promise<number> {
+    if (this.native || this.disposed || this.hibernatedPath !== null || this.length === 0) return 0;
+    const mark = this.mutations;
+    // Skip the write when this ring's last dump to the same file is still
+    // current (a periodic snapshot, or the dump of an earlier hibernation that
+    // a read woke from) and the file still holds every byte.
+    if (!(this.lastDump?.path === filePath && this.lastDump.mutations === mark && RingBuffer.fileSize(filePath) === this.length)) {
+      await this.dumpToFile(filePath);
+    }
+    if (this.disposed || this.hibernatedPath !== null || this.mutations !== mark || this.length === 0) return 0;
+    if (this.lastDump?.path !== filePath || this.lastDump.mutations !== mark) return 0;
+    if (!stillIdle()) return 0;
+    const released = this.physical;
+    this.hibernatedPath = filePath;
+    this.releasedBytes = released;
+    this.buffer = Buffer.alloc(0);
+    this.physical = 0;
+    this.writePos = 0;
+    return released;
+  }
+
+  /**
+   * Bring hibernated bytes back from the `.buf`. Every read and write calls
+   * this first; call it directly before deleting that `.buf`. Synchronous, so
+   * no caller can observe a half-woken ring. A missing or unreadable file
+   * cannot throw out of the PTY data path: the ring comes back with what
+   * could be read (possibly nothing) and the failure is counted.
+   */
+  wake(): void {
+    const file = this.hibernatedPath;
+    if (file === null) return;
+    this.hibernatedPath = null;
+    this.releasedBytes = 0;
+    let data: Buffer;
+    try {
+      data = readFileSync(file);
+    } catch {
+      data = Buffer.alloc(0);
+    }
+    if (data.length !== this.length) {
+      RingBuffer.wakeFailures++;
+      this.lastDump = null;
+    }
+    if (data.length > this.capacity) data = data.subarray(data.length - this.capacity);
+    let physical = Math.min(INITIAL_PHYSICAL_BYTES, this.capacity);
+    while (physical < data.length && physical < this.capacity) physical *= 2;
+    physical = Math.min(physical, this.capacity);
+    this.buffer = Buffer.alloc(physical);
+    data.copy(this.buffer, 0);
+    this.physical = physical;
+    this.length = data.length;
+    this.writePos = data.length % physical;
+  }
+
+  /** Wakes whose `.buf` was missing or did not hold the expected bytes. */
+  static wakeFailures = 0;
+
+  private static fileSize(filePath: string): number {
+    try { return statSync(filePath).size; } catch { return -1; }
   }
 
   /** Create a RingBuffer pre-filled with data loaded from a file. */
