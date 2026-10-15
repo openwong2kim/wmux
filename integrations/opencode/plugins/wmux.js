@@ -3,8 +3,9 @@
 //
 // OpenCode plugins are IN-PROCESS modules loaded by the `opencode` CLI at
 // startup from `.opencode/plugins/` (project) or `~/.config/opencode/plugins/`
-// (global). One file serves OpenCode 1.4+ and 2.x (see "OpenCode 2.x" below). Unlike the Codex bridge (a spawned `notify` program) this runs
+// (global). Unlike the Codex bridge (a spawned `notify` program) this runs
 // inside the long-lived opencode process and subscribes to its event stream.
+// One file serves OpenCode 1.4+ and 2.x (see "OpenCode 2.x" below).
 //
 // Why this exists: the wmux orchestrator (Command Deck) wakes on
 // `agent.stop` lifecycle events. Claude Code emits them via its hook plugin and
@@ -467,7 +468,6 @@ async function sendSignal(envelope, idPrefix) {
     spoolStopResumeBinding(envelope);
   }
 }
-
 
 // ----- Plugin export -------------------------------------------------------
 
