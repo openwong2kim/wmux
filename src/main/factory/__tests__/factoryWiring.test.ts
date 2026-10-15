@@ -298,6 +298,9 @@ describe('runtime hooks', () => {
       .toMatchObject({ kind: 'bot.budget_exhausted', workspaceId: 'ws-1', ref: { botId: 'bot-1' }, actor: { kind: 'bot', id: 'bot-1' }, payload: { reason: 'turns_hour', wakeId: 'w-1' } });
     expect(factFromBotHook({ type: 'bot.budget_exhausted', botId: 'bot-1', workspaceId: 'ws-1', reason: 'turns_hour', until: at + 60_000, at })?.payload)
       .toEqual({ reason: 'turns_hour', until: at + 60_000 });
+    // A park carries when it began: its dedupe key is per park.
+    expect(factFromBotHook({ type: 'bot.budget_exhausted', botId: 'bot-1', workspaceId: 'ws-1', reason: 'turns_hour', parkedAt: at, at })?.payload)
+      .toEqual({ reason: 'turns_hour', parkedAt: at });
     expect(factFromBotHook({ type: 'bot.error', botId: 'bot-1', workspaceId: 'ws-1', message: 'x'.repeat(900), at })?.payload.message).toHaveLength(500);
     expect(factFromBotHook({ type: 'wake.interrupted', botId: 'bot-1', workspaceId: 'ws-1', wakeId: 'w-1', at })).toBeNull();
     expect(log.append(factFromBotHook({ type: 'bot.error', botId: 'bot-1', workspaceId: 'ws-1', message: 'boom', at }) as never)).not.toBeNull();

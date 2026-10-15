@@ -728,6 +728,7 @@ export class BotRuntime {
     emitBotHook({
       type: 'bot.budget_exhausted', botId: profile.id, workspaceId: profile.workspaceId, reason, wakeId: head.id,
       ...(Number.isFinite(until) ? { until } : {}),
+      parkedAt: now,
       at: now,
     });
     this.pushStatus(profile.id);

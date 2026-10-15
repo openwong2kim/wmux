@@ -47,6 +47,19 @@ describe('factDedupeKey', () => {
       .toBe(`bot.refused:bot-0000beef:input.send:${MINUTE}`);
   });
 
+  it('a budget park is reported once per park: a second park in the same hour gets its own key', () => {
+    const bot = { botId: 'bot-0000beef' };
+    const first = factDedupeKey({ kind: 'bot.budget_exhausted', at: AT, ref: bot, payload: { reason: 'turns_hour', parkedAt: AT } });
+    const again = factDedupeKey({ kind: 'bot.budget_exhausted', at: AT, ref: bot, payload: { reason: 'turns_hour', parkedAt: AT } });
+    const second = factDedupeKey({ kind: 'bot.budget_exhausted', at: AT + 600_000, ref: bot, payload: { reason: 'turns_hour', parkedAt: AT + 600_000 } });
+    expect(first).toBe(`bot.budget_exhausted:bot-0000beef:park:${AT}`);
+    expect(again).toBe(first);
+    expect(second).not.toBe(first);
+    // No park (a worker start refused): one per hour, as before.
+    expect(factDedupeKey({ kind: 'bot.budget_exhausted', at: AT, ref: bot, payload: { reason: 'concurrent_workers' } }))
+      .toBe(`bot.budget_exhausted:bot-0000beef:${Math.floor(AT / 3_600_000)}`);
+  });
+
   it('a verdict from a pane (no bot) keys on its workspace', () => {
     expect(factDedupeKey({ kind: 'verdict.recorded', at: AT, repoKey: 'a/b', workspaceId: 'ws-1', ref: { pr: 1, headSha: 'f' } }))
       .toBe('verdict.recorded:a/b#1:f:ws-1');
