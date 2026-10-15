@@ -96,6 +96,9 @@ export function getLocale(): Locale {
 }
 
 export function setLocale(locale: Locale): void {
+  // The page's language follows the app's, so screen readers, hyphenation
+  // and CJK glyph choice read the UI as written.
+  if (typeof document !== 'undefined') document.documentElement.lang = locale;
   if (locale === currentLocale) return;
   currentLocale = locale;
 }
