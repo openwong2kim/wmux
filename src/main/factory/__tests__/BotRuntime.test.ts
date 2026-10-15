@@ -1011,6 +1011,30 @@ describe('room-wide owner messages, wake context and turn ends', () => {
     expect(posted).toHaveLength(1);
   });
 
+  it('only a wake answering an owner message posts its plain text; a routine, fact, handoff, intro or manual wake stays silent', async () => {
+    const r = rig();
+    const posted: string[] = [];
+    setBotRuntimePorts({ postTurnText: (_p, item) => { posted.push(item.reason.kind); } });
+    const id = createBot(r, 'lead');
+    const reasons = [
+      { kind: 'routine', routineId: 'rt-1', dueAt: clock },
+      { kind: 'facts', factIds: ['f-1'], trigger: { kind: 'pr.opened' } },
+      { kind: 'handoff', handoffId: 'h-1' },
+      { kind: 'intro' },
+      { kind: 'manual', by: 'human' },
+      { kind: 'human', text: 'Hi all', source: 'desktop', runId: 'run-c-9', room: true, clientMessageId: 'cp-room' },
+    ] as const;
+    for (const reason of reasons) {
+      must(r.queue.enqueue({ botId: id, workspaceId: 'ws-1', reason: reason as never, priority: 0, threadId: 'general' }));
+      r.runtime.kick();
+      await settle();
+      r.adapters[0].end([{ type: 'text-delta', text: 'Nothing to add.' }, { type: 'turn-end', sessionId: 'sess-1' }]);
+      await settle();
+    }
+    // The room-wide owner message is the only one.
+    expect(posted).toEqual(['human']);
+  });
+
   it('an interrupted turn posts nothing, nor does a post that throws fail the turn', async () => {
     const r = rig();
     const posted: string[] = [];

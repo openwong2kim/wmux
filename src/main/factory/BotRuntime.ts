@@ -241,8 +241,9 @@ export interface BotRuntimePorts {
   /** A turn finished: the bot's open questions the owner's words in it
    *  answered close (handoffRouter.ts closeAnsweredInChat). */
   onTurnDone?: (profile: BotProfile, item: WakeItem) => void;
-  /** A turn finished with words but no room_post: post those words as the
-   *  bot's card in its wake's thread, through room.post, unless the bot
+  /** A turn answering an owner message finished with words but no
+   *  room_post: post those words as the bot's card in its wake's thread,
+   *  through room.post, unless the bot
    *  wrote a card there since `since` (room.rpc.ts postTurnText). Called
    *  while the wake still runs. */
   postTurnText?: (profile: BotProfile, item: WakeItem, text: string, since: number) => Promise<unknown> | void;
@@ -898,10 +899,11 @@ export class BotRuntime {
           const accountId = s.live.adapter.conversationAccountId;
           this.deps.sessions.set(botId, { sessionId, ...(accountId !== undefined ? { accountId } : {}), repoPath: profile.repo?.repoPath ?? null, updatedAt: this.now() });
         }
-        // A reply the bot wrote as plain text instead of a room_post would
-        // reach nobody: it becomes the bot's card, while the wake still runs
-        // (room.post pins its thread and the owner message it answers).
-        if (result.text.trim() && ports.postTurnText) {
+        // A reply to the owner the bot wrote as plain text instead of a
+        // room_post would reach nobody: it becomes the bot's card, while the
+        // wake still runs (room.post pins its thread and the owner message it
+        // answers). Any other wake stays silent without a room_post.
+        if (item.reason.kind === 'human' && result.text.trim() && ports.postTurnText) {
           try {
             await ports.postTurnText(profile, item, result.text, turnStartedAt);
           } catch (err) {
