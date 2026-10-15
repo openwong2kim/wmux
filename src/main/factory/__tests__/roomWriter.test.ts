@@ -493,3 +493,14 @@ describe('card fields for owner requests and worker notices', () => {
     expect(systemCardForFact({ ...notice({ topic: 'worker.start_failed', title: 't', card: true }), workspaceId: undefined })).toBeNull();
   });
 });
+
+describe('inputRequiredWhy (#2231)', () => {
+  it('knows the summaries wmux writes, and nothing else', async () => {
+    const { inputRequiredWhy } = await import('../roomWriter');
+    expect(inputRequiredWhy("worker is waiting on Claude Code's workspace trust dialog; it needs a keypress in the pane")).toBe('trustDialog');
+    expect(inputRequiredWhy("worker is waiting on Claude Code's codex folder trust dialog; it needs a keypress in the pane")).toBe('trustDialog');
+    expect(inputRequiredWhy("worker is waiting on Claude Code's auto-mode onboarding; it needs a keypress in the pane")).toBe('firstRun');
+    expect(inputRequiredWhy("launch failed: no agent started in pane daemon-70a64bc2 within 45s, so the pane sits at its shell prompt; re-run the task's launch line in that pane (the fan-out result carries it)")).toBe('launchFailed');
+    expect(inputRequiredWhy('I need the staging API key')).toBeNull();
+  });
+});

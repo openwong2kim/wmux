@@ -104,6 +104,17 @@ describe('factory system cards in the reader\'s language (RoomCard.notice)', () 
   const card = (over: Partial<RoomCard>): Pick<RoomCard, 'kind' | 'title' | 'body' | 'actor' | 'notice' | 'refs'> => ({ kind: 'fact', title: 'English title', body: 'English body', actor: system, ...over });
   afterEach(() => setLocale('en'));
 
+  it('a task wmux moved to input_required says why in the reader\'s language; a worker\'s own words stay (#2231)', () => {
+    setLocale('ko');
+    const trust = noticeText(card({ body: "worker is waiting on Claude Code's workspace trust dialog; it needs a keypress in the pane", notice: { code: 'task.inputRequired', args: { title: 'add', why: 'trustDialog' } } }), i18nT);
+    expect(trust?.title).toBe('작업 입력 필요: add');
+    expect(trust?.body).toContain('신뢰하는지');
+    expect(noticeText(card({ notice: { code: 'task.inputRequired', args: { title: 'add', why: 'launchFailed' } } }), i18nT)?.body).toContain('셸 프롬프트');
+    // The worker's own reason (no why), or a why this build does not know: as written.
+    expect(noticeText(card({ body: 'need the API key', notice: { code: 'task.inputRequired', args: { title: 'add' } } }), i18nT)?.body).toBe('need the API key');
+    expect(noticeText(card({ body: 'x', notice: { code: 'task.inputRequired', args: { title: 'add', why: 'later' } } }), i18nT)?.body).toBe('x');
+  });
+
   it('words a known code in Korean, its values worded too; evidence bodies stay as written', () => {
     setLocale('ko');
     expect(noticeText(card({ notice: { code: 'worker.pausedResumable' } }), i18nT)?.title).toBe('워커 일시 중지됨 (이어서 가능)');

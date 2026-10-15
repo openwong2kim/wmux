@@ -996,6 +996,16 @@ interface SystemCard { workspaces: string[]; threadId: ThreadId; kind: CardKind;
 const STOPPED_BY_OWNER_SUMMARY = 'stopped by owner';
 
 /** A task card's label in the English the card keeps, by its notice code. */
+/** #2231 — why wmux itself moved a task to input_required, from the summary
+ *  it wrote (FanOutService), so the room can word it in the reader's
+ *  language; null for a worker's own words. Pure. */
+export function inputRequiredWhy(summary: string): 'trustDialog' | 'firstRun' | 'launchFailed' | null {
+  if (/^worker is waiting on Claude Code's (?:workspace|codex folder) trust dialog;/.test(summary)) return 'trustDialog';
+  if (/^worker is waiting on Claude Code's [^;]+; it needs a keypress in the pane$/.test(summary)) return 'firstRun';
+  if (/^launch failed: no agent started in pane \S+ within \d+s/.test(summary)) return 'launchFailed';
+  return null;
+}
+
 const TASK_CARD_LABEL: Readonly<Record<string, string>> = {
   'task.done': 'Task done',
   'task.reported': 'Task reported · in review',
@@ -1076,10 +1086,11 @@ export function systemCardForFact(fact: Fact, bots?: BotDirectoryApi): SystemCar
       const body = [byOwner ? '' : capBody(p.summary, 2000), gate].filter(Boolean).join('\n\n');
       const threadId = taskThread(fact);
       const title = str(p.title) || fact.ref?.taskId || 'task';
+      const why = code === 'task.inputRequired' ? inputRequiredWhy(str(p.summary)) : null;
       return {
         workspaces: factRooms(fact, bots), threadId, kind: 'fact',
         title: `${TASK_CARD_LABEL[code]}: ${title}`,
-        notice: { code, args: { title } },
+        notice: { code, args: { title, ...(why ? { why } : {}) } },
         ...(body ? { body } : {}), refs: baseRefs,
         // A task's end closes only its own thread: in the issue, PR or other
         // thread it was started from, the subject is still open.
