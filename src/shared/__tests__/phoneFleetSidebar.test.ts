@@ -470,3 +470,37 @@ describe("Moa's delegated jobs", () => {
     expect(reasons.at(-1)).toBe('moaDelegations');
   });
 });
+
+describe('bot workers', () => {
+  const snap = (botWorkers: unknown, workspaces: unknown[] = []) => ({ activeWorkspaceId: null, panes: [], workspaces, botWorkers });
+  const worker = (workspaceId: string, extra: Record<string, unknown> = {}) => ({ workspaceId, botId: 'bot-1', ...extra });
+
+  it('keeps workspaceId, botId and an optional taskId, nothing else', () => {
+    const parsed = parsePhoneSidebarSnapshot(snap([worker('ws-1', { taskId: 'wtask-1', secret: 'x' }), worker('ws-2')]))!;
+    expect(parsed.botWorkers).toEqual([{ workspaceId: 'ws-1', botId: 'bot-1', taskId: 'wtask-1' }, { workspaceId: 'ws-2', botId: 'bot-1' }]);
+    expect(JSON.stringify(parsed)).not.toContain('secret');
+    expect(parsePhoneSidebarSnapshot(snap(undefined))).not.toHaveProperty('botWorkers');
+  });
+
+  it('drops a malformed entry on its own, a bad taskId alone, a duplicate and an owner row', () => {
+    const reasons: string[] = [];
+    const bad = [worker(''), worker('ws-x', { botId: 7 }), { botId: 'bot-1' }, worker('__proto__'), worker('a\nb'), 'nope', null];
+    const parsed = parsePhoneSidebarSnapshot(
+      snap([...bad, worker('ws-1', { taskId: 'x'.repeat(PHONE_SIDEBAR_LIMITS.id + 1) }), worker('ws-1', { botId: 'bot-2' }), worker('ws-own')], [{ id: 'ws-own', order: 0, pinned: false }]),
+      (r) => reasons.push(r),
+    )!;
+    expect(parsed.botWorkers).toEqual([{ workspaceId: 'ws-1', botId: 'bot-1' }]);
+    expect(reasons.filter((r) => r === 'botWorkers.row')).toHaveLength(bad.length);
+    expect(reasons).toEqual(expect.arrayContaining(['botWorkers.taskId', 'botWorkers.duplicate', 'botWorkers.ownerRow']));
+    expect(parsePhoneSidebarSnapshot(snap({ workspaceId: 'ws-1' }), (r) => reasons.push(r))).not.toHaveProperty('botWorkers');
+    expect(reasons.at(-1)).toBe('botWorkers');
+  });
+
+  it('stops at the cap', () => {
+    const reasons: string[] = [];
+    const many = Array.from({ length: PHONE_SIDEBAR_LIMITS.botWorkers + 3 }, (_, i) => worker(`ws-${i}`));
+    const parsed = parsePhoneSidebarSnapshot(snap(many), (r) => reasons.push(r))!;
+    expect(parsed.botWorkers).toHaveLength(PHONE_SIDEBAR_LIMITS.botWorkers);
+    expect(reasons).toEqual(['botWorkers.overLimit']);
+  });
+});

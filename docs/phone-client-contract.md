@@ -3768,6 +3768,37 @@ Approvals and decisions raised by the HQ's panes are not filtered: they reach
 workspace's do, so answer them from the approvals inbox as usual even while
 the HQ's rows are hidden.
 
+#### Bot workers (`botWorker`)
+
+A fan-out task workspace that an agent factory bot started is that bot's
+worker. The desktop shows it on its Bots page only: it is not in the desktop's
+workspace sidebar or Fleet, and it carries none of this section's sidebar
+fields (`order`, `ownerWorkspaceId`, `nested`, …). The daemon still lists its
+live panes, so its rows still come back. One additive key marks them:
+
+```json
+"botWorker": { "botId": "bot-1a2b3c4d", "taskId": "wtask-0b6c1f2e-5d4a-4e1b-9c3d-2a7f8e6b1c90" }
+```
+
+- On every `GET /api/workspaces` row of a bot's worker workspace, and on every
+  `GET /api/sessions` row whose `workspaceId` is that workspace (by the
+  daemon's own record, so every pane and tab of the worker carries it).
+- `botId` — the bot that started the fan-out: the same id as a `bots[]`
+  entry on the row of the workspace that bot belongs to (see *The agent
+  factory* below). Always present.
+- `taskId` — optional: the desktop's task record for the workspace
+  (`wtask-…`). It is **not** an A2A task id, so it never matches a Fleet
+  ticket's or a delegation's `taskId`. Absent until the desktop has the record.
+- Absent means one of: the row is not a bot's worker, the desktop's snapshot
+  does not have it yet (no desktop attached, or the first poll after start),
+  or an older desktop. Treat an absent key exactly as before this key existed.
+- A task workspace the owner fanned out themselves is never marked: it keeps
+  `ownerWorkspaceId` / `nested` as described above. No row carries both
+  `botWorker` and `ownerWorkspaceId`.
+- Nothing is removed: keep the rows for typing and for resuming a pane, and
+  decide how to show them (hide them from the workspace list, or group them
+  under the bot) by this key alone.
+
 #### The Moa pane (`moaSessionId`)
 
 The Moa pane is the HQ's orchestrator brain: the terminal Moa itself runs in.

@@ -3568,6 +3568,7 @@ export class WebTerminalServer {
       }
     }
     const nesting = phoneTaskNesting(sidebar.workspaces, new Set(byId.keys()), listedPanes);
+    const botWorkers = botWorkerIndex(sidebar);
     const merged = workspaces.map((w) => {
       const extra = fields.get(w.id);
       const panes = w.panes.map((pane) => {
@@ -3591,8 +3592,9 @@ export class WebTerminalServer {
             // The tree may name only this row's own sessions (see phoneWorkspaceLayout).
             ...(extra.layout ? { layout: phoneWorkspaceLayout(extra.layout, w.panes.map((pane) => pane.sessionId)) } : {}),
             ...hqRole(sidebar, w.id),
+            ...botWorkerField(botWorkers, w.id),
           }
-        : { ...w, panes, ...hqRole(sidebar, w.id) };
+        : { ...w, panes, ...hqRole(sidebar, w.id), ...botWorkerField(botWorkers, w.id) };
     });
     // Workspaces the desktop shows that have no live terminal: listed as
     // `empty: true` rows with no panes (and no name or layout — the snapshot
@@ -3631,11 +3633,13 @@ export class WebTerminalServer {
     const sessions = this.listSessions(principal);
     if (!sidebar) return this.json(res, 200, { sessions });
     const labels = new Map(sidebar.panes.map((p) => [p.ptyId, p]));
+    const botWorkers = botWorkerIndex(sidebar);
     return this.json(res, 200, {
       sessions: sessions.map((s) => {
         const pane = labels.get(s.id);
-        // By the daemon's own record of the session's workspace, label or not.
-        const role = hqRole(sidebar, s.workspaceId);
+        // By the daemon's own record of the session's workspace, label or not
+        // (a bot worker's panes are never labeled: the desktop leaves them out).
+        const role = { ...hqRole(sidebar, s.workspaceId), ...botWorkerField(botWorkers, s.workspaceId) };
         if (!pane) return { ...s, ...role };
         return {
           ...s,
@@ -10225,6 +10229,21 @@ type MoaWriteKind = 'send' | 'cancel';
  */
 function hqRole(sidebar: PhoneSidebarSnapshot | null, workspaceId: unknown): { role?: 'hq' } {
   return sidebar?.hqWorkspaceId !== undefined && workspaceId === sidebar.hqWorkspaceId ? { role: 'hq' } : {};
+}
+
+/** The snapshot's bot workers by workspace id, for `botWorkerField`. */
+function botWorkerIndex(sidebar: PhoneSidebarSnapshot): Map<string, { botId: string; taskId?: string }> {
+  return new Map((sidebar.botWorkers ?? []).map((w) => [w.workspaceId, { botId: w.botId, ...(w.taskId !== undefined ? { taskId: w.taskId } : {}) }]));
+}
+
+/**
+ * `botWorker: {botId, taskId?}` on a row of a factory bot's worker workspace,
+ * nothing for any other row. The desktop keeps those workspaces out of its
+ * sidebar; the phone still lists them and decides how to show them by this.
+ */
+function botWorkerField(index: ReadonlyMap<string, { botId: string; taskId?: string }>, workspaceId: unknown): { botWorker?: { botId: string; taskId?: string } } {
+  const worker = typeof workspaceId === 'string' ? index.get(workspaceId) : undefined;
+  return worker ? { botWorker: worker } : {};
 }
 
 /** A pane's extracted scrollback is current while nothing was written and the geometry held. */
