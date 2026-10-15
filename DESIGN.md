@@ -1144,15 +1144,15 @@ Colour carries **state only**. Surfaces, controls, selection and hover are
 always neutral (the fill ladder).
 
 - **The one exception: bot identity colours** (owner decision 2026-10-14).
-  On the Bots page a bot's avatar mark, its name above its run and its
+  On the Bots page a bot's Mochi character, its name above its run and its
   `@name` mentions wear the bot's own colour, so bots are told apart at a
   glance as in the reference messenger. The identity palette
   (`BOT_IDENTITY_HUES`) holds blues, indigo, violets, purple, magenta, cyan
   and a slate — never red, orange, yellow or green, which keep error,
   needs you, caution and done — and each hue is mixed 72% with the look's
   `--text-main`, so it darkens on light looks and lightens on dark ones
-  and reads as text on the page and as a fill under the `--bg-base` face.
-  Identity colour never fills a surface, a row or a control, and never
+  and reads as text on the page; a Mochi character's body wears its slot's
+  hue unmixed (2026-10-16). Identity colour never fills a surface, a row or a control, and never
   marks a state.
 - **Sidebar and pane marks** — shape first, colour second, one shared helper
   (`AGENT_STATUS_ICON.mark`): running = filled muted dot · needs input =
@@ -1374,10 +1374,13 @@ primitives plus `Settings/SettingsLayout.tsx` (`SettingsSection`,
 
 ## Motion
 
-- Minimal-functional. Spinners and the blinking cursor are the only
-  perpetual motion; the welcome dialog and onboarding tour clips loop only
+- Minimal-functional. Spinners, the blinking cursor and bot avatars are the
+  only perpetual motion; the welcome dialog and onboarding tour clips loop only
   while on screen and never under reduced motion. The one opt-in exception is
   the Attention blink setting's Continuous option (below): the user chose it.
+- **Bot avatars** (owner decision 2026-10-16; Bots page, Avatars): a Mochi
+  character breathes and blinks at rest and hops while its bot works; it is
+  paused off screen, and `prefers-reduced-motion` turns it off.
 - **Attention blink** (Settings → Appearance → Sidebar, per user). A sidebar
   row that waits on you (an open dialog, or a turn that ended on a question)
   pulses: Off
