@@ -16,6 +16,7 @@ import {
   gitRepoInfo,
   holdTaskFolder,
   installTaskFolderCleanup,
+  removeEmptyResearchBatch,
   restoreTaskFolder,
   taskFolderKind,
   taskFolderUsage,
@@ -185,9 +186,35 @@ describe('cleanTaskFolder', () => {
     const research = row('completed', { dispatch: { origin: { kind: 'bot', botId: BOT }, preset: 'research' } });
     expect(await cleanTaskFolder(p, research, { folder: scratch }, [])).toBe('removed');
     expect(fs.existsSync(scratch)).toBe(false);
-    expect(fs.existsSync(path.dirname(scratch))).toBe(true);
+    // Its batch held nothing else: it went too.
+    expect(fs.existsSync(path.dirname(scratch))).toBe(false);
     expect(await restoreTaskFolder(p, research.id, scratch)).toBe(true);
     expect(fs.readdirSync(scratch)).toEqual([]);
+  });
+
+  it('removes a research batch once its task folders are gone and its .meta holds only removed tasks; never while a task of it is open', async () => {
+    const batch = path.join(wmuxDir, 'factory', 'bots', BOT, 'research', 'batch-2');
+    const one = path.join(batch, '1-claude-11111111');
+    const two = path.join(batch, '2-claude-22222222');
+    for (const f of [one, two, path.join(batch, '.meta', '1-claude-11111111'), path.join(batch, '.meta', '2-claude-22222222')]) fs.mkdirSync(f, { recursive: true });
+    fs.writeFileSync(path.join(batch, '.meta', '1-claude-11111111', 'prompt.md'), 'look');
+    const p = ports();
+    const research = (id: string) => row('completed', { id, dispatch: { origin: { kind: 'bot', botId: BOT }, preset: 'research' } });
+    // The first ends: the second task's folder (and its .meta) keep the batch.
+    expect(await cleanTaskFolder(p, research('wtask-one-11111111'), { folder: one }, [])).toBe('removed');
+    expect(fs.existsSync(batch)).toBe(true);
+    // The second's folder gone by hand, its task still open: its .meta keeps the batch.
+    fs.rmSync(two, { recursive: true });
+    const third = path.join(batch, '3-claude-33333333');
+    fs.mkdirSync(third);
+    expect(await cleanTaskFolder(p, research('wtask-three-33333333'), { folder: third }, [])).toBe('removed');
+    expect(fs.existsSync(path.join(batch, '.meta', '2-claude-22222222'))).toBe(true);
+    // Once that task ended and was handled, the next removal in the batch takes it.
+    await p.store.put({ taskId: 'wtask-two-22222222', kind: 'research', path: two, state: 'removed', at: 1 });
+    const fourth = path.join(batch, '4-claude-44444444');
+    fs.mkdirSync(fourth);
+    expect(await cleanTaskFolder(p, research('wtask-four-44444444'), { folder: fourth }, [])).toBe('removed');
+    expect(fs.existsSync(batch)).toBe(false);
   });
 });
 
@@ -245,6 +272,14 @@ describe('review safeguards', () => {
     const research_row = row('completed', { dispatch: { origin: { kind: 'bot', botId: BOT }, preset: 'research' } });
     expect(await cleanTaskFolder(ports(), research_row, { folder: scratch }, [])).toBe('skipped');
     expect(fs.existsSync(path.join(outside, 'precious.txt'))).toBe(true);
+    // Nor its batch, emptied or not, nor a folder deeper than one batch.
+    fs.rmSync(outside, { recursive: true });
+    expect(removeEmptyResearchBatch(new TaskFolders(path.join(dir, 'tf.json')), path.join(research, 'batch-1'), research)).toBe(false);
+    expect(fs.existsSync(path.dirname(outside))).toBe(true);
+    const deep = path.join(research, 'batch-3', 'nested');
+    fs.mkdirSync(deep, { recursive: true });
+    expect(removeEmptyResearchBatch(new TaskFolders(path.join(dir, 'tf.json')), deep, research)).toBe(false);
+    expect(fs.existsSync(deep)).toBe(true);
   });
 
   it('a detached checkout (a verify task) comes back on its commit; how to put it back is written before the folder goes', async () => {

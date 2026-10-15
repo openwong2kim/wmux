@@ -132,6 +132,28 @@ describe('FanOutService — worktree:false', () => {
     expect(fs.readdirSync(a.outputDir!)).toEqual([]);
   });
 
+  it('a later task re-creates its batch folder when it is gone (an emptied batch is cleaned up)', async () => {
+    const daemon = daemonFake();
+    const renderer = rendererFake();
+    const spawn = renderer.port.spawnWorkspace;
+    renderer.port.spawnWorkspace = vi.fn(async (p) => {
+      const r = await spawn(p);
+      // The first task's folder and its batch are removed before the second starts.
+      if (renderer.spawned.length === 1 && p.cwd) fs.rmSync(path.dirname(p.cwd), { recursive: true, force: true });
+      return r;
+    });
+    const res = await service(daemon.port, renderer.port).start({
+      idempotencyKey: 'k-gone', prompt: 'look into it', titles: ['one', 'two'], repoPath: '', agentCmd: 'claude',
+      verifiedWorkspaceId: 'ws-owner', agents: [{ agent: 'codex' }, { agent: 'codex' }], worktree: false, outputFolder: 'research',
+    });
+    expect(res.ok).toBe(true);
+    expect(res.tasks[1].ok).toBe(true);
+    expect(fs.statSync(res.tasks[1].outputDir!).isDirectory()).toBe(true);
+    expect(path.dirname(res.tasks[1].outputDir!)).toBe(res.outputBatchDir);
+    // An existing task folder is still a collision, not a merge.
+    expect(fs.existsSync(res.tasks[0].outputDir!)).toBe(false);
+  });
+
   it('a bot research task: its batch goes under the folder main named, and the bot\'s launch check still runs', async () => {
     const daemon = daemonFake();
     const renderer = rendererFake();

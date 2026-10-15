@@ -1251,6 +1251,9 @@ export class FanOutService {
       cwd = path.join(ctx.output.batchDir, leaf);
       metaDir = path.join(ctx.output.batchDir, '.meta', leaf);
       try {
+        // The batch may be gone: the cleanup removes an emptied batch, and a
+        // task that waited on another one starts after it.
+        fs.mkdirSync(ctx.output.batchDir, { recursive: true });
         fs.mkdirSync(cwd); // non-recursive: an existing folder is a collision
       } catch (err) {
         await this.compensate(taskId, ctx.verifiedWorkspaceId);

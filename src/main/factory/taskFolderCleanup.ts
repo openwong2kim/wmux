@@ -329,6 +329,7 @@ async function cleanTaskFolderNow(
       return 'failed';
     }
     await ports.store.put({ taskId: entry.id, kind, path: mission.folder, state: 'removed', at: now() }).catch(() => undefined);
+    removeEmptyResearchBatch(ports.store, path.dirname(mission.folder), root, log);
     ports.changed?.();
     return 'removed';
   }
@@ -363,6 +364,37 @@ async function cleanTaskFolderNow(
   }
   log(`[factory] worktree of ${entry.id} not removed: ${r.error}`);
   return 'failed';
+}
+
+/**
+ * A research batch (`research/<batch>/`) whose task folders are all gone:
+ * removed with its `.meta` once nothing else is in it and every `.meta/<task>`
+ * belongs to a task this module removed (so none of the batch's tasks is
+ * still open). A task of the batch that starts later re-creates the batch
+ * (FanOutService). Only a batch right under the bot's research root, reached
+ * through no link. Synchronous on purpose: main's fan-out creates task
+ * folders synchronously too, so no task folder can appear between the check
+ * and the removal. Never throws.
+ */
+export function removeEmptyResearchBatch(store: Pick<TaskFolders, 'all'>, batch: string, root: string, log: (m: string) => void = () => undefined): boolean {
+  try {
+    const rel = path.relative(path.resolve(root), path.resolve(batch));
+    if (!rel || rel.startsWith('..') || path.isAbsolute(rel) || rel.includes(path.sep) || rel.includes('/')) return false;
+    if (!throughNoLink(batch, root)) return false;
+    const entries = fs.readdirSync(batch);
+    if (entries.some((e) => e !== '.meta')) return false;
+    if (entries.length > 0) {
+      const meta = path.join(batch, '.meta');
+      if (!fs.lstatSync(meta).isDirectory()) return false;
+      const removed = new Set(store.all().filter((r) => r.kind === 'research' && r.state === 'removed').map((r) => path.resolve(r.path)));
+      if (fs.readdirSync(meta).some((leaf) => !removed.has(path.resolve(batch, leaf)))) return false;
+    }
+    fs.rmSync(batch, { recursive: true });
+    return true;
+  } catch (err) {
+    log(`[factory] research batch ${batch} not removed: ${String(err)}`);
+    return false;
+  }
 }
 
 /** What a pass over many tasks did. */
