@@ -252,9 +252,12 @@ export async function postTurnText(
   if (!writer || !trimmed) return null;
   const threadId = runningWakeThread(deps.ports(), profile.id) ?? GENERAL_THREAD;
   // A card the bot wrote in this thread during the turn (a room_post, a
-  // question, a handoff) already answered: nothing more.
-  const own = writer.read(profile.workspaceId, { threadId, limit: ROOM_LIMITS.PAGE }).cards
-    .some((c) => c.actor.kind === 'bot' && c.actor.botId === profile.id && c.at >= since);
+  // question, a handoff), or in an earlier attempt of the same wake (a
+  // retried room_post returns that card), already answered: nothing more.
+  const attemptKey = `wake:${item.id}:`;
+  const own = writer.find(profile.workspaceId, (c) => c.threadId === threadId
+    && c.actor.kind === 'bot' && c.actor.botId === profile.id
+    && (c.at > since || c.clientPostId?.startsWith(attemptKey) === true));
   if (own) return null;
   const nl = trimmed.indexOf('\n');
   const first = nl < 0 ? trimmed : trimmed.slice(0, nl);

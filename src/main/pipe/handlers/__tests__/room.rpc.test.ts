@@ -423,7 +423,8 @@ describe('a turn that ended with plain text: its words become the bot\'s card (r
     const s = setup(bots);
     s.wake.thread = threadId;
     s.wake.id = { wakeId: 'w-1', attempt: 1 };
-    const since = Date.now();
+    // The turn began before anything in the test is written.
+    const since = Date.now() - 1;
     const text = (b: BotProfile, words: string) => postTurnText(b, { id: 'w-1' }, words, since, s.deps);
     const cards = () => s.writer.read('ws1', { threadId }).cards;
     return { ...s, since, text, cards };
@@ -465,6 +466,23 @@ describe('a turn that ended with plain text: its words become the bot\'s card (r
     await handleRoomPost({ kind: 'report', title: 'Done', clientPostId: 'own-key' }, asBot(dev), r.deps);
     expect(await r.text(dev, 'Done, see the report.')).toBeNull();
     expect(r.cards().map((c) => c.title)).toEqual(['Done']);
+  });
+
+  it('a card from an earlier attempt of the wake answered it; a card from an earlier wake did not; a busy thread hides nothing', async () => {
+    const dev = bot('ws1', 'maintainer');
+    const r = rig([dev], `dm:${dev.id}` as ThreadId);
+    const dm = `dm:${dev.id}` as ThreadId;
+    const actor = { kind: 'bot' as const, workspaceId: 'ws1', botId: dev.id };
+    // The previous wake's answer, written as this turn began.
+    r.writer.post({ workspaceId: 'ws1', threadId: dm, kind: 'status', actor, title: 'old', at: r.since, clientPostId: 'wake:w-0:1' });
+    // An earlier attempt of this wake posted, then failed; then a hundred more cards.
+    r.writer.post({ workspaceId: 'ws1', threadId: dm, kind: 'status', actor, title: 'first try', at: r.since - 10, clientPostId: 'wake:w-1:1' });
+    for (let i = 0; i < ROOM_LIMITS.PAGE + 5; i++) r.writer.append({ workspaceId: 'ws1', threadId: dm, kind: 'fact', actor: { kind: 'system' }, title: `f${i}` });
+    expect(await r.text(dev, 'Same answer again.')).toBeNull();
+    // Without that attempt's card, the reply is posted.
+    const r2 = rig([dev], 'general' as ThreadId);
+    r2.writer.post({ workspaceId: 'ws1', threadId: 'general' as ThreadId, kind: 'status', actor, title: 'old', at: r2.since, clientPostId: 'wake:w-0:1' });
+    expect(await r2.text(dev, 'New answer.')).toMatchObject({ ok: true });
   });
 
   it('another bot\'s card in the thread is not this bot\'s answer', async () => {
