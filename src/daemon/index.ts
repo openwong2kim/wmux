@@ -6411,11 +6411,12 @@ function wireEvents(
 
     // Clean up buffer dump file — dead sessions don't need snapshots. A
     // hibernated ring's bytes live only in that file: the dead pane keeps its
-    // scrollback in memory until its TTL, so bring them back first.
+    // scrollback in memory until its TTL, so bring them back first, and keep
+    // the file (the TTL reaper removes it) when they cannot be read yet.
     try {
-      sessionManager.getSession(payload.id)?.ringBuffer.wake();
       const bufPath = stateWriter.getBufferDumpPath(payload.id);
-      if (fs.existsSync(bufPath)) fs.unlinkSync(bufPath);
+      const awake = sessionManager.getSession(payload.id)?.ringBuffer.wake() !== false;
+      if (awake && fs.existsSync(bufPath)) fs.unlinkSync(bufPath);
     } catch { /* ignore */ }
 
     // Save state. This is the persistence anchor: even if every other step

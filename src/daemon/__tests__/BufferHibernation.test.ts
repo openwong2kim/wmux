@@ -98,7 +98,7 @@ describe('buffer hibernation', () => {
     expect(fs.readFileSync(path.join(dir, 'buffers', 'p1.buf')).equals(before.data)).toBe(true);
 
     const diag = collectDaemonMemoryDiagnostics(sessions as unknown as ManagedSession[], new Map());
-    expect(diag.hibernation).toEqual({ sessions: 1, freedBytes: result.freedBytes });
+    expect(diag.hibernation).toMatchObject({ sessions: 1, freedBytes: result.freedBytes });
     expect(diag.sessions[0].ringHibernated).toBe(true);
     expect(ring.isHibernated).toBe(true);
 
@@ -278,6 +278,31 @@ describe('buffer hibernation', () => {
     const recovered = RingBuffer.loadFromFile(writer.getBufferDumpPath('live'), 8 * MB);
     expect(recovered.readAll().equals(before)).toBe(true);
   });
+
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
+    'keeps the .buf and the hibernation when the file cannot be read back yet',
+    async () => {
+      const ring = new RingBuffer(8 * MB, 'node');
+      fillRing(ring);
+      const before = ring.readAll();
+      sessions.push(fakeSession('p1', ring));
+      await createBufferHibernation(deps()).sweep();
+      const bufPath = path.join(dir, 'buffers', 'p1.buf');
+      fs.chmodSync(bufPath, 0o000); // a transient read failure (EACCES)
+
+      // Output still lands, a read serves what it can, nothing is overwritten.
+      ring.write(Buffer.from('during'));
+      expect(ring.isHibernated).toBe(true);
+      expect(ring.readAll().toString()).toBe('during');
+      await expect(ring.dumpToFile(bufPath)).rejects.toThrow(/could not be read back/);
+      expect(ring.wake()).toBe(false); // session:died keeps the file
+      expect(ring.totalBytesWritten).toBe(before.length + 6);
+
+      fs.chmodSync(bufPath, 0o600);
+      expect(ring.readAll().equals(Buffer.concat([before, Buffer.from('during')]))).toBe(true);
+      expect(ring.isHibernated).toBe(false);
+    },
+  );
 
   it('skips rust rings', () => {
     const ring = new RingBuffer(8 * MB, 'node');

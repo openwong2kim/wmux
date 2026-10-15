@@ -100,7 +100,12 @@ export class RingBuffer {
   // memory, so every offset consumer is unaffected; the bytes come back
   // synchronously on the first read or write (wake()).
   private hibernatedPath: string | null = null;
+  private hibernatedFileBytes = 0; // what that `.buf` holds
   private releasedBytes = 0;
+  // Output that arrived while the `.buf` could not be read back: it follows
+  // the file's bytes and joins them on the next successful wake.
+  private pending: Buffer[] = [];
+  private pendingBytes = 0;
   private mutations = 0; // bumps on every content change, including clear()
   private lastDump: { path: string; mutations: number } | null = null;
 
@@ -159,7 +164,7 @@ export class RingBuffer {
     if (this.native) { this.native.write(data); return; }
     const dataLen = data.length;
     if (dataLen === 0) return;
-    this.wake();
+    if (!this.wake()) { this.writeWhileAsleep(data); return; }
     this.mutations++;
 
     this.totalWritten += dataLen;
@@ -220,6 +225,7 @@ export class RingBuffer {
     this.buffer = Buffer.alloc(0); this.length = 0; this.physical = 0; this.writePos = 0;
     this.geometry = [];
     this.hibernatedPath = null;
+    this.pending = []; this.pendingBytes = 0;
   }
 
   /**
@@ -291,7 +297,8 @@ export class RingBuffer {
    */
   readAll(): Buffer {
     if (this.native) return this.native.readAll();
-    this.wake();
+    // The `.buf` is unreadable right now: serve the newest bytes, keep the file.
+    if (!this.wake()) return Buffer.concat(this.pending);
     if (this.length === 0) {
       return Buffer.alloc(0);
     }
@@ -313,7 +320,7 @@ export class RingBuffer {
   clear(): void {
     if (this.disposed) throw new Error('Ring disposed');
     if (this.native) { this.native.clear(); return; }
-    this.wake();
+    if (this.hibernatedPath !== null) this.restore(Buffer.alloc(0)); // nothing to read back
     this.mutations++;
     this.buffer.fill(0);
     this.writePos = 0;
@@ -337,7 +344,7 @@ export class RingBuffer {
   /** Bytes currently committed for backing storage (grows on demand toward the ceiling). */
   get allocatedBytes(): number {
     if (this.native) return this.native.allocatedBytes;
-    return this.physical;
+    return this.physical + this.pendingBytes;
   }
 
   /** Whether replay needs resize-aware parsing, without copying the byte buffer. */
@@ -386,7 +393,10 @@ export class RingBuffer {
     if (this.disposed) return;
     // Hibernated to this very file: it already holds the bytes. Reading them
     // back would wake the ring on every forced snapshot tick.
-    if (this.hibernatedPath === filePath) return;
+    if (this.hibernatedPath === filePath && this.pendingBytes === 0) return;
+    // Never overwrite the only full copy with the partial bytes readAll()
+    // serves while that copy cannot be read back.
+    if (!this.wake()) throw new Error('hibernated ring buffer could not be read back');
     // Captured here (inside the chain) rather than at enqueue time: a slightly
     // fresher snapshot is never wrong for recovery, and the snapshotRunner's
     // dirty-tracking captures totalBytesWritten BEFORE calling us, so a fresher
@@ -438,7 +448,8 @@ export class RingBuffer {
    */
   dumpToFileSyncAtomic(filePath: string): void {
     if (this.disposed) return;
-    if (this.hibernatedPath === filePath) return; // see doDumpToFile
+    if (this.hibernatedPath === filePath && this.pendingBytes === 0) return; // see doDumpToFile
+    if (!this.wake()) throw new Error('hibernated ring buffer could not be read back');
     const data = this.readAll();
     const tmpPath = `${filePath}.tmp.${crypto.randomBytes(6).toString('hex')}`;
     try {
@@ -487,6 +498,7 @@ export class RingBuffer {
     if (!stillIdle()) return 0;
     const released = this.physical;
     this.hibernatedPath = filePath;
+    this.hibernatedFileBytes = this.length;
     this.releasedBytes = released;
     this.buffer = Buffer.alloc(0);
     this.physical = 0;
@@ -497,34 +509,57 @@ export class RingBuffer {
   /**
    * Bring hibernated bytes back from the `.buf`. Every read and write calls
    * this first; call it directly before deleting that `.buf`. Synchronous, so
-   * no caller can observe a half-woken ring. A missing or unreadable file
-   * cannot throw out of the PTY data path: the ring comes back with what
-   * could be read (possibly nothing) and the failure is counted.
+   * no caller can observe a half-woken ring. Returns false, and stays
+   * hibernated with the file untouched, when the file exists but cannot be
+   * read right now (EMFILE, a sharing violation): the next access retries.
+   * A file that is gone cannot come back, so the ring wakes without it.
    */
-  wake(): void {
+  wake(): boolean {
     const file = this.hibernatedPath;
-    if (file === null) return;
-    this.hibernatedPath = null;
-    this.releasedBytes = 0;
-    let data: Buffer;
+    if (file === null) return true;
+    let stored: Buffer;
     try {
-      data = readFileSync(file);
-    } catch {
-      data = Buffer.alloc(0);
-    }
-    if (data.length !== this.length) {
+      stored = readFileSync(file);
+    } catch (err) {
       RingBuffer.wakeFailures++;
+      if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') return false;
+      stored = Buffer.alloc(0);
+    }
+    if (stored.length !== this.hibernatedFileBytes) {
+      if (stored.length > 0) RingBuffer.wakeFailures++;
       this.lastDump = null;
     }
+    this.restore(this.pendingBytes > 0 ? Buffer.concat([stored, ...this.pending]) : stored);
+    return true;
+  }
+
+  /** Leave hibernation holding exactly `data` (its newest `capacity` bytes). */
+  private restore(data: Buffer): void {
     if (data.length > this.capacity) data = data.subarray(data.length - this.capacity);
     let physical = Math.min(INITIAL_PHYSICAL_BYTES, this.capacity);
     while (physical < data.length && physical < this.capacity) physical *= 2;
     physical = Math.min(physical, this.capacity);
+    this.hibernatedPath = null;
+    this.releasedBytes = 0;
+    this.pending = [];
+    this.pendingBytes = 0;
     this.buffer = Buffer.alloc(physical);
     data.copy(this.buffer, 0);
     this.physical = physical;
     this.length = data.length;
     this.writePos = data.length % physical;
+  }
+
+  /** Output for a ring whose `.buf` cannot be read back right now. */
+  private writeWhileAsleep(data: Buffer): void {
+    this.mutations++;
+    this.totalWritten += data.length;
+    this.length = Math.min(this.length + data.length, this.capacity);
+    this.pending.push(Buffer.from(data));
+    this.pendingBytes += data.length;
+    // Once the new bytes alone fill the ring, the file holds nothing that
+    // would survive a wake: stop depending on it.
+    if (this.pendingBytes >= this.capacity) this.restore(Buffer.concat(this.pending));
   }
 
   /** Wakes whose `.buf` was missing or did not hold the expected bytes. */

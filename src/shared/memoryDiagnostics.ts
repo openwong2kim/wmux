@@ -19,7 +19,7 @@ export interface DaemonMemoryDiagnostics {
     ringHibernated?: boolean;
   }>;
   /** Idle panes whose ring sits in its `.buf`, and the ring memory that freed. Absent from older daemons. */
-  hibernation?: { sessions: number; freedBytes: number };
+  hibernation?: { sessions: number; freedBytes: number; wakeFailures?: number };
 }
 
 export interface AppMemoryDiagnostics {
@@ -40,7 +40,8 @@ export function isDaemonMemoryDiagnostics(value: unknown): value is DaemonMemory
     Array.isArray(value.sessions) && value.sessions.every((session: unknown) =>
       record(session) && typeof session.id === 'string' && typeof session.state === 'string' &&
       counters(session, ['ringStoredBytes', 'ringAllocatedBytes', 'ringCapacityBytes', 'socketQueuedBytes', 'socketPeakQueuedBytes', 'resyncQueuedBytes'])) &&
-    (value.hibernation === undefined || (record(value.hibernation) && counters(value.hibernation, ['sessions', 'freedBytes'])));
+    (value.hibernation === undefined || (record(value.hibernation) && counters(value.hibernation, ['sessions', 'freedBytes']) &&
+      (value.hibernation.wakeFailures === undefined || counters(value.hibernation, ['wakeFailures']))));
 }
 
 export function isAppMemoryDiagnostics(value: unknown): value is AppMemoryDiagnostics {
