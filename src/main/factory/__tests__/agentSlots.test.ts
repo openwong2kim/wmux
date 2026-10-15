@@ -1,7 +1,7 @@
 // One budget for bots and workers: a bot's new worker past it waits for a
 // slot, first come first served, and a stop ends the wait.
 import { describe, expect, it, vi } from 'vitest';
-import { AgentSlots, SLOT_GRANT_MAX_MS, SLOT_ROW_GRACE_MS, rowHoldsAgentSlot, type AgentSlotPorts, type SlotLiveness } from '../agentSlots';
+import { AgentSlots, SLOT_GRANT_MAX_MS, SLOT_HOLDERS_SHOWN_MAX, SLOT_ROW_GRACE_MS, rowHoldsAgentSlot, slotHolderArgs, type AgentSlotPorts, type SlotLiveness } from '../agentSlots';
 
 function slots(over: Partial<AgentSlotPorts> & { bots?: () => number; workers?: () => number } = {}) {
   let now = 0;
@@ -176,5 +176,24 @@ describe('rowHoldsAgentSlot', () => {
     rows.pop();
     const g = await s.acquire({ taskId: 't', title: 't', botId: 'bot-0000000a', ownerWorkspaceId: 'ws-1' });
     expect(g.ok).toBe(true);
+  });
+});
+
+describe('slotHolderArgs', () => {
+  it('names the holders in English and as values the reader\'s language words', () => {
+    const r = slotHolderArgs(['구현'], ['fix login', 'add tests'], 4);
+    expect(r).toEqual({
+      holders: 'bot in a turn 구현; workers "fix login", "add tests"; 1 other worker starting, resumed or not yet reclaimed',
+      bots: '구현', botCount: 1, workers: 'fix login\nadd tests', workerCount: 2,
+    });
+    expect(slotHolderArgs([], [], 0).holders).toBe('nothing the factory can name');
+  });
+
+  it('cuts each list at the shown maximum but keeps the full count', () => {
+    const many = Array.from({ length: SLOT_HOLDERS_SHOWN_MAX + 2 }, (_, i) => `w${i}`);
+    const r = slotHolderArgs([], many, many.length);
+    expect(r.workerCount).toBe(many.length);
+    expect(r.workers.split('\n')).toHaveLength(SLOT_HOLDERS_SHOWN_MAX);
+    expect(r.holders).toMatch(/ and 2 more$/);
   });
 });

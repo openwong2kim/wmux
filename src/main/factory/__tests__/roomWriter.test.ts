@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { BotProfile } from '../../../shared/bot';
 import type { Fact, FactKind } from '../../../shared/facts';
 import { ROOM_LIMITS, type RoomCard } from '../../../shared/room';
+import { STOPPED_BY_OWNER } from '../factoryStop';
 import {
   RoomWriter,
   WakeOrdinals,
@@ -372,6 +373,20 @@ describe('facts → system cards', () => {
     const card = writeInterruptedWakeCard(w, { type: 'wake.interrupted', botId: 'bot-00000001', workspaceId: 'ws1', wakeId: 'w1', threadId: 'task:long', at: now }, bots) as RoomCard;
     expect(card).toMatchObject({ kind: 'fact', threadId: 'task:long' });
     expect(w.read('ws1', { threadId: 'general' }).cards).toHaveLength(0);
+  });
+
+  it('a task card carries a notice code; a cancelled task reads Cancelled (stopped by owner when the owner\'s stop did it), never Failed', () => {
+    expect(STOPPED_BY_OWNER).toBe('stopped by owner');
+    const w = writer();
+    const one = (id: string, kind: FactKind, payload: Record<string, unknown>) =>
+      writeFactCards(w, fact(kind, { id, workspaceId: 'ws1', ref: { taskId: `wt-${id}` }, payload: { title: 'fix login', ...payload } }), bots)[0];
+    expect(one('a', 'task.done', {})).toMatchObject({ title: 'Task done: fix login', notice: { code: 'task.done', args: { title: 'fix login' } } });
+    expect(one('b', 'task.failed', { status: 'failed', summary: 'tests red' })).toMatchObject({ title: 'Task failed: fix login', body: 'tests red', notice: { code: 'task.failed' } });
+    const stopped = one('c', 'task.failed', { status: 'cancelled', by: 'system', summary: STOPPED_BY_OWNER });
+    expect(stopped).toMatchObject({ title: 'Task cancelled · stopped by owner: fix login', notice: { code: 'task.stoppedByOwner', args: { title: 'fix login' } } });
+    expect(stopped).not.toHaveProperty('body');
+    expect(one('d', 'task.failed', { status: 'cancelled', by: 'bot', summary: 'not needed' })).toMatchObject({ title: 'Task cancelled: fix login', body: 'not needed', notice: { code: 'task.cancelled' } });
+    expect(one('e', 'task.input_required', {})).toMatchObject({ title: 'Task needs input: fix login', notice: { code: 'task.inputRequired' } });
   });
 
   it('a budget card says which limit and when the bot picks up again, in words and as a notice; an unknown limit keeps no notice', () => {

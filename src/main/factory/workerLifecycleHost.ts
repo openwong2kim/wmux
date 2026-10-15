@@ -21,7 +21,7 @@ import { getBotStore } from './botStore';
 import { getFactorySettings } from './factorySettings';
 import { getRoomWriter } from './roomWriter';
 import { taskFolderFromMissions } from './verifyPreset';
-import { AgentSlots, rowHoldsAgentSlot, setAgentSlots, setSlotLiveness, type SlotLiveness } from './agentSlots';
+import { AgentSlots, rowHoldsAgentSlot, setAgentSlots, setSlotLiveness, slotHolderArgs, type SlotLiveness } from './agentSlots';
 import { checkWorkers, recordWorkerEnd, recordWorkerStart } from './budget';
 import { runningWakeTainted } from './wakeTaint';
 import { installReportNudge, submitToWorkerPane } from './workerReportNudge';
@@ -70,8 +70,6 @@ export interface WorkerLifecycleDeps {
 
 /** Which open workspaces run no agent any more is read at most this often. */
 const LIVENESS_REFRESH_MS = 10_000;
-/** Holders a slot-wait card names, at most. */
-const HOLDERS_SHOWN_MAX = 6;
 
 /** A workspace tree push looks for freed task folders at most this often. */
 const FOLDER_KICK_MIN_MS = 10_000;
@@ -421,29 +419,20 @@ export function startWorkerLifecycle(deps: WorkerLifecycleDeps): () => void {
     // and still no row names it.
     stillHeld: (workspaceId) => !ledger.findByTaskWorkspace(workspaceId)
       && (getWorkspaceMirror().getEntries()?.some((e) => e.id === workspaceId) ?? true),
-    onWaiting: (w, inUse, cap) => note(
-      w.ownerWorkspaceId,
-      (w.threadId ?? `task:${w.taskId}`) as ThreadId,
-      'Worker waiting, not started',
-      `"${w.title}" is waiting for an agent slot and has not started; it starts when one frees. ${inUse} of ${cap} in use: ${slotHolders(inUse)}.`,
-      { code: 'worker.waiting', args: { title: w.title, inUse, cap, holders: slotHolders(inUse) } },
-    ),
+    onWaiting: (w, inUse, cap) => {
+      // What holds the slots: bots in a turn, then workers by title — in
+      // English, and as values the reader's language words.
+      const held = slotHolderArgs(runningBotNames(), slotRows().map((r) => r.title), inUse);
+      note(
+        w.ownerWorkspaceId,
+        (w.threadId ?? `task:${w.taskId}`) as ThreadId,
+        'Worker waiting, not started',
+        `"${w.title}" is waiting for an agent slot and has not started; it starts when one frees. ${inUse} of ${cap} in use: ${held.holders}.`,
+        { code: 'worker.waiting', args: { title: w.title, inUse, cap, ...held } },
+      );
+    },
     changed,
   });
-  /** What holds the slots, in words: bots in a turn, then workers by title. */
-  function slotHolders(inUse: number): string {
-    const bots = runningBotNames();
-    const workers = slotRows().map((r) => `"${r.title}"`);
-    const parts: string[] = [];
-    const list = (names: string[]): string => names.length <= HOLDERS_SHOWN_MAX
-      ? names.join(', ')
-      : `${names.slice(0, HOLDERS_SHOWN_MAX).join(', ')} and ${names.length - HOLDERS_SHOWN_MAX} more`;
-    if (bots.length > 0) parts.push(`${bots.length === 1 ? 'bot' : 'bots'} in a turn ${list(bots)}`);
-    if (workers.length > 0) parts.push(`${workers.length === 1 ? 'worker' : 'workers'} ${list(workers)}`);
-    const rest = inUse - bots.length - workers.length;
-    if (rest > 0) parts.push(`${rest} other ${rest === 1 ? 'worker' : 'workers'} starting, resumed or not yet reclaimed`);
-    return parts.length > 0 ? parts.join('; ') : 'nothing the factory can name';
-  }
   setAgentSlots(slots);
   offs.push(ledger.onTransition(() => slots.kick()));
   offs.push(() => {

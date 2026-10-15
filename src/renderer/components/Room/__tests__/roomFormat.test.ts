@@ -147,6 +147,28 @@ describe('factory system cards in the reader\'s language (RoomCard.notice)', () 
     expect(noticeText(card({ notice: { code: 'budget.exhausted', args: { bot: 'Reviewer', limit: 'tokens_week' } } }), i18nT, now)).toBeNull();
   });
 
+  it('a slot-wait card words its holders in the reader\'s language; an older card keeps its English holders', () => {
+    const args = { title: 'fix login', inUse: 4, cap: 4, holders: 'bot in a turn Dev; workers "a", "b"; 1 other worker starting, resumed or not yet reclaimed', bots: 'Dev', botCount: 1, workers: 'a\nb', workerCount: 2 };
+    expect(noticeText(card({ notice: { code: 'worker.waiting', args } }), i18nT)?.body).toContain(': bot in a turn Dev; workers "a", "b"; 1 other worker starting, resumed or not yet reclaimed.');
+    setLocale('ko');
+    const ko = noticeText(card({ notice: { code: 'worker.waiting', args } }), i18nT)?.body ?? '';
+    expect(ko).toContain('턴 진행 중인 봇 Dev; 워커 "a", "b"; 시작 중이거나 재개됐거나 아직 회수되지 않은 다른 워커 1개');
+    expect(ko).not.toContain('bot in a turn');
+    // More than shown: the rest is counted in the reader's words.
+    const more = noticeText(card({ notice: { code: 'worker.waiting', args: { ...args, inUse: 9, workerCount: 8 } } }), i18nT)?.body ?? '';
+    expect(more).toContain('워커 "a", "b" 외 6개');
+    const old = noticeText(card({ notice: { code: 'worker.waiting', args: { title: 'x', inUse: 1, cap: 1, holders: 'bot in a turn Dev' } } }), i18nT)?.body ?? '';
+    expect(old).toContain('bot in a turn Dev');
+  });
+
+  it('a task card\'s label in the reader\'s language, a stopped task Cancelled, its evidence body kept', () => {
+    setLocale('ko');
+    expect(noticeText(card({ notice: { code: 'task.done', args: { title: 'fix login' } } }), i18nT)).toEqual({ title: '작업 완료: fix login', body: 'English body' });
+    expect(noticeText(card({ notice: { code: 'task.stoppedByOwner', args: { title: 'fix login' } } }), i18nT)?.title).toBe('작업 취소됨 · 직접 중지함: fix login');
+    setLocale('en');
+    expect(noticeText(card({ notice: { code: 'task.cancelled', args: { title: 'fix login' } } }), i18nT)?.title).toBe('Task cancelled: fix login');
+  });
+
   it('formatNoticeTime: the time today, the date and time on another day', () => {
     const now = new Date(2026, 9, 16, 1, 0).getTime();
     expect(formatNoticeTime(new Date(2026, 9, 16, 2, 5).getTime(), now)).not.toMatch(/Oct|10/);

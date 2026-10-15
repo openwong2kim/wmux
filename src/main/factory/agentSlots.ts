@@ -39,6 +39,36 @@ export interface SlotLiveness {
   now: number;
 }
 
+/** Holders a slot-wait card names, at most, per kind. */
+export const SLOT_HOLDERS_SHOWN_MAX = 6;
+
+/** What holds the agent slots, for a slot-wait card: the English words
+ *  (`holders`, kept for a reader that cannot word the rest) and the same as
+ *  values the reader's language words (roomFormat.ts): the bots in a turn
+ *  and the workers by title, each list newline-joined and cut at
+ *  SLOT_HOLDERS_SHOWN_MAX, with their full counts. Pure. */
+export function slotHolderArgs(bots: readonly string[], workers: readonly string[], inUse: number): {
+  holders: string; bots: string; botCount: number; workers: string; workerCount: number;
+} {
+  const shown = (names: readonly string[]): string[] => names.slice(0, SLOT_HOLDERS_SHOWN_MAX);
+  const list = (names: readonly string[]): string => names.length <= SLOT_HOLDERS_SHOWN_MAX
+    ? names.join(', ')
+    : `${shown(names).join(', ')} and ${names.length - SLOT_HOLDERS_SHOWN_MAX} more`;
+  const quoted = workers.map((w) => `"${w}"`);
+  const parts: string[] = [];
+  if (bots.length > 0) parts.push(`${bots.length === 1 ? 'bot' : 'bots'} in a turn ${list(bots)}`);
+  if (workers.length > 0) parts.push(`${workers.length === 1 ? 'worker' : 'workers'} ${list(quoted)}`);
+  const rest = inUse - bots.length - workers.length;
+  if (rest > 0) parts.push(`${rest} other ${rest === 1 ? 'worker' : 'workers'} starting, resumed or not yet reclaimed`);
+  return {
+    holders: parts.length > 0 ? parts.join('; ') : 'nothing the factory can name',
+    bots: shown(bots).join('\n'),
+    botCount: bots.length,
+    workers: shown(workers).join('\n'),
+    workerCount: workers.length,
+  };
+}
+
 /** Whether a ledger row holds an agent slot: a bot's task (the owner's own
  *  fan-outs do not count), whose workspace is open and whose agent still
  *  runs — or recent enough that its worker may still be coming up. Pure. */
