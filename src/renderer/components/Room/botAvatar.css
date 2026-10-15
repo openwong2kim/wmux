@@ -8,6 +8,15 @@
  * reduced motion stops everything. Rule order matters: idle, working, small,
  * then reduced motion. Art and classes: mochiCharacters.tsx. */
 
+@keyframes wmux-mo1-bob{0%,100%{transform:translateY(0) scale(1,1)}50%{transform:translateY(.3px) scale(1.03,.97)}}
+@keyframes wmux-mo1-work{0%,100%{transform:translateY(0) scale(1,1)}30%{transform:translateY(-1.35px) scale(.98,1.05)}58%{transform:translateY(.18px) scale(1.04,.96)}}
+@keyframes wmux-mo1-blink{0%,7%,9.2%,100%{transform:scaleY(1)}8.1%{transform:scaleY(.1)}}
+@keyframes wmux-mo1-sig{0%,71%,87%,100%{transform:rotate(0deg)}75%{transform:rotate(-12deg)}80%{transform:rotate(5deg)}84%{transform:rotate(-2deg)}}
+@keyframes wmux-mo2-bob{0%,100%{transform:translateY(0) scale(1,1)}50%{transform:translateY(.28px) scale(1.025,.975)}}
+@keyframes wmux-mo2-work{0%,100%{transform:translateY(0) scale(1,1)}32%{transform:translateY(-1.4px) scale(.98,1.05)}60%{transform:translateY(.16px) scale(1.035,.965)}}
+@keyframes wmux-mo2-blink{0%,7%,9.2%,100%{transform:scaleY(1)}8.1%{transform:scaleY(.1)}}
+@keyframes wmux-mo2-sig{0%,69%,88%,100%{transform:rotate(0deg)}74%{transform:rotate(12deg)}80%{transform:rotate(-8deg)}84%{transform:rotate(3deg)}}
+@keyframes wmux-mo3-bob{0%,100%{transform:translateY(0) scale(1,1)}50%{transform:translateY(.32px) scale(1.03,.97)}}
 @keyframes wmux-mo3-work{0%,100%{transform:translateY(0) scale(1,1)}28%{transform:translateY(-1.3px) scale(.985,1.045)}55%{transform:translateY(.2px) scale(1.04,.96)}}
 @keyframes wmux-mo3-blink{0%,7%,9.2%,100%{transform:scaleY(1)}8.1%{transform:scaleY(.1)}}
 @keyframes wmux-mo3-sig{0%,66%,90%,100%{transform:rotate(0deg)}72%{transform:rotate(16deg)}78%{transform:rotate(-7deg)}84%{transform:rotate(4deg)}}

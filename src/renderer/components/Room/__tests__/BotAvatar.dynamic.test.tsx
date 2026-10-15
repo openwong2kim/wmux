@@ -237,6 +237,11 @@ describe('BotAvatar', () => {
     expect(css).toMatch(/\[data-avatar-offscreen\][^{]*\{\s*animation-play-state: paused/);
     // Every character's animated parts carry the shared role classes the rules key on.
     for (let i = 1; i <= 8; i++) expect(css).toContain(`.wmux-mochi.is-working .wmux-mo${i}-root`);
+    // Every animation the rules name has its keyframes (a missing one leaves a character still).
+    const defined = new Set([...css.matchAll(/@keyframes ([\w-]+)/g)].map((m) => m[1]));
+    const used = [...css.matchAll(/animation:\s*([\w-]+)/g)].map((m) => m[1]).filter((n) => n !== 'none');
+    expect(used.length).toBeGreaterThan(16);
+    expect(used.filter((n) => !defined.has(n))).toEqual([]);
   });
 
   it('the add form\'s placeholder is a neutral, still mochi', async () => {
