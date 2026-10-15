@@ -442,12 +442,13 @@ export function daemonRpc(client: () => Daemon | null): ((method: string, params
  *  session started in the folder then counts). A pane in another workspace,
  *  such as a terminal the owner opened in the folder, is never touched.
  *  `agentsOnly` (the re-stop of a task stopped before): only a leftover
- *  agent is stopped; the panes, plain shells included, stay.
- *  How many workers were confirmed stopped: panes whose agent this call
- *  stopped (a pane with no agent left, such as a plain shell, does not
- *  count), plus, outside `agentsOnly`, panes whose agent the daemon cannot
- *  stop by itself (WSL, an exec unit) that the pane stop ended. Throws when
- *  one was not stopped. */
+ *  agent is stopped; a pane is closed only when it still runs an agent the
+ *  daemon cannot stop by itself (Codex, WSL, an exec unit), so a plain
+ *  shell the owner kept stays.
+ *  How many workers were confirmed stopped: panes that ran an agent (the
+ *  daemon's `agentProcessAlive`, or a claude this call stopped) whose agent
+ *  or pane this call confirmed gone; a pane with no agent, such as a plain
+ *  shell, does not count. Throws when one was not stopped. */
 export async function stopTaskWorker(
   entry: LedgerEntry,
   client: () => Daemon | null,
@@ -459,29 +460,31 @@ export async function stopTaskWorker(
   const worktree = await taskFolderFromMissions(rpc, entry);
   if (!worktree) throw new Error('the task worktree is not known');
   const own = workspacePtys?.(entry.taskWorkspaceId) ?? null;
-  const listSessions = async (): Promise<Array<{ id: string; pid?: number; spawnCwd?: string }>> => {
+  type Session = { id: string; pid?: number; spawnCwd?: string; agentProcessAlive?: boolean };
+  const listSessions = async (): Promise<Session[]> => {
     const sessions = await rpc('daemon.listSessions', {});
-    const all = Array.isArray(sessions) ? (sessions as Array<{ id: string; pid?: number; spawnCwd?: string }>) : [];
+    const all = Array.isArray(sessions) ? (sessions as Session[]) : [];
     return own ? all.filter((x) => own.includes(x.id)) : all;
   };
-  let agents = 0;
-  const unsupported = new Set<string>();
-  for (const id of await sessionsStartedIn([worktree], { listSessions })) {
+  const before = await listSessions();
+  const agentLive = new Set(before.filter((x) => x.agentProcessAlive === true).map((x) => x.id));
+  const stoppedAgents = new Set<string>();
+  for (const id of await sessionsStartedIn([worktree], { listSessions: async () => before })) {
     const r = (await rpc('session.stopAgent', { sessionId: id })) as { ok?: boolean; stopped?: boolean; code?: string } | null;
-    if (r?.ok === true && r.stopped === true) agents++;
-    if (r?.code === 'unsupported') unsupported.add(id);
+    if (r?.ok === true && r.stopped === true) stoppedAgents.add(id);
     // Gone already, or a pane whose agent the daemon cannot stop this way
     // (WSL, an exec unit): the pane's own stop below ends it.
     if (r?.ok !== true && r?.code !== 'no_session' && r?.code !== 'unsupported') {
       throw new Error(`the agent in ${id} was not stopped (${r?.code ?? 'no answer'})`);
     }
   }
-  if (opts.agentsOnly === true) {
-    if (agents > 0) console.log(`[factory] stopped ${agents} leftover agent(s) of task ${entry.id}`);
-    return agents;
-  }
+  // agentsOnly: only panes still running an agent the stop above did not
+  // reach are closed; every other pane stays.
+  const agentsOnly = opts.agentsOnly === true;
   const stopped = await stopSessionsInDir(worktree, {
-    listSessions,
+    listSessions: agentsOnly
+      ? async () => (await listSessions()).filter((x) => agentLive.has(x.id) && !stoppedAgents.has(x.id))
+      : listSessions,
     destroySession: async (id) => {
       await rpc('daemon.destroySession', { id });
     },
@@ -490,7 +493,9 @@ export async function stopTaskWorker(
     log: (message) => console.warn(message),
   });
   if (stopped.length > 0) console.log(`[factory] stopped ${stopped.length} session(s) of task ${entry.id}`);
-  return agents + stopped.filter((id) => unsupported.has(id)).length;
+  const workers = new Set([...stoppedAgents, ...stopped.filter((id) => agentLive.has(id))]);
+  if (agentsOnly && workers.size > 0) console.log(`[factory] stopped ${workers.size} leftover agent(s) of task ${entry.id}`);
+  return workers.size;
 }
 
 /** The panes (daemon sessions) a workspace owns, stashed ones included; []

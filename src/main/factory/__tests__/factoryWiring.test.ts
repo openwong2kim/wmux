@@ -629,14 +629,15 @@ describe('a bot task that stops waiting for input (A5)', () => {
 
 describe('stopTaskWorker (a stop of a bot task\'s worker)', () => {
   const entry = { id: 'wtask-1', ownerWorkspaceId: 'ws-owner', taskWorkspaceId: 'ws-task' } as LedgerEntry;
-  function daemon(stopAgent: (id: string) => unknown = () => ({ ok: true, stopped: true })) {
+  function daemon(stopAgent: (id: string) => unknown = () => ({ ok: true, stopped: true }), live: readonly string[] = []) {
     const wt = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-stop-worker-'));
     const calls: string[] = [];
-    let sessions = [
+    let sessions: Array<{ id: string; spawnCwd: string; agentProcessAlive?: boolean }> = [
       { id: 'own', spawnCwd: wt },
+      { id: 'own-codex', spawnCwd: wt },
       { id: 'owner-terminal', spawnCwd: wt },
       { id: 'elsewhere', spawnCwd: os.tmpdir() },
-    ];
+    ].map((x) => (live.includes(x.id) ? { ...x, agentProcessAlive: true } : x));
     const rpc = vi.fn(async (method: string, params?: Record<string, unknown>) => {
       if (method === 'task.mission.list') return { ok: true, tasks: [{ id: 'wtask-1', worktreePath: wt }] };
       if (method === 'daemon.listSessions') return sessions;
@@ -686,6 +687,21 @@ describe('stopTaskWorker (a stop of a bot task\'s worker)', () => {
     } finally {
       fs.rmSync(left.wt, { recursive: true, force: true });
       fs.rmSync(shell.wt, { recursive: true, force: true });
+    }
+  });
+
+  it('an agent the claude stop does not reach (Codex): counted by the daemon\'s liveness; agentsOnly closes only its pane', async () => {
+    const full = daemon(() => ({ ok: true, stopped: false }), ['own-codex']);
+    const left = daemon(() => ({ ok: true, stopped: false }), ['own-codex']);
+    try {
+      expect(await stopTaskWorker(entry, full.client, () => ['own', 'own-codex'])).toBe(1);
+      expect(full.calls.filter((c) => c.startsWith('destroy:')).sort()).toEqual(['destroy:own', 'destroy:own-codex']);
+      // The re-stop: the live Codex pane is closed, the plain shell stays.
+      expect(await stopTaskWorker(entry, left.client, () => ['own', 'own-codex'], { agentsOnly: true })).toBe(1);
+      expect(left.calls.filter((c) => c.startsWith('destroy:'))).toEqual(['destroy:own-codex']);
+    } finally {
+      fs.rmSync(full.wt, { recursive: true, force: true });
+      fs.rmSync(left.wt, { recursive: true, force: true });
     }
   });
 

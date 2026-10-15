@@ -153,6 +153,11 @@ export function useBotsSync(state: Pick<BotsState, 'status' | 'bots' | 'on'>, op
     [known, state.bots, removedRooms],
   );
   const roomsKey = rooms.join('\u0000');
+  // The actors name the deleted bots, whose rooms join the list above: read
+  // them even while no live bot gives a room.
+  useEffect(() => {
+    if (known) void loadRoomActors();
+  }, [known]);
   useEffect(() => {
     const list = roomsKey ? roomsKey.split('\u0000') : [];
     if (list.length === 0) return;

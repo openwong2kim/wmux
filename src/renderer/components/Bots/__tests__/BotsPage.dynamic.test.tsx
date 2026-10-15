@@ -206,6 +206,22 @@ describe('Bots page', () => {
     expect(q<HTMLButtonElement>('[data-bots-pill]')!.disabled).toBe(true);
   });
 
+  it('with every bot deleted, a kept 1:1 still lists (no first-bot screen), its room read from the actors', async () => {
+    const GONE = 'bot-0000000d';
+    const gone = { role: 'lead' as BotRole, name: 'Old', removed: true as const, workspaceId: 'w1', hue: 2 };
+    bots = [];
+    cards.push(card({ workspaceId: 'w1', actor: by('w1', GONE), title: 'Last words', threadId: `dm:${GONE}`, at: 510 }));
+    const withActors = api();
+    withActors.actors = vi.fn(async () => ({ actors: { [GONE]: gone } })) as unknown as RoomsApi['actors'];
+    setRoomsApiForTests(withActors);
+    seedRooms(true);
+    await render(<BotsPage />);
+    for (let i = 0; i < 5 && !q(`[data-bots-row="bot:${GONE}"]`); i++) await act(async () => { await Promise.resolve(); });
+    expect(withActors.actors).toHaveBeenCalled();
+    expect(rowIds()).toContain(`bot:${GONE}`);
+    expect(q('[data-bots-chat]')).not.toBeNull();
+  });
+
   it('bots off: the conversations and live workers stay, read-only, under a banner whose Turn bots on turns them on', async () => {
     // Opening the page asks main for the factory's state again.
     const off = api();

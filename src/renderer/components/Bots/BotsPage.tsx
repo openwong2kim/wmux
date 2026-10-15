@@ -711,7 +711,8 @@ export default function BotsPage({ onAddBot, port, api, now, settings, stop, eng
 
   let body: React.ReactNode = null;
   // No bot yet (the list read): the first screen.
-  const firstRun = !!status && listed && bots.length === 0 && !pending && canCreate && !onAddBot;
+  // A deleted bot's kept 1:1 still lists.
+  const firstRun = !!status && listed && bots.length === 0 && !model.conversations.some((c) => c.kind === 'bot' && c.removed) && !pending && canCreate && !onAddBot;
   if (firstRun) {
     body = (
       <FirstBotPanel
