@@ -44,7 +44,7 @@
 
 import type { BotEngine, BotProfile, BotStatus, BotWorkerAgent } from '../../../shared/bot';
 import type { BotWorkerAgentOption } from '../../../shared/botWorkerAgent';
-import type { BotTaskView } from '../../../shared/botTask';
+import type { BotTaskView, FactoryTaskFolderCleanResult, FactoryTaskFolderUsage } from '../../../shared/botTask';
 import type { BotsPlanConsent } from '../../../shared/factorySettings';
 import type {
   FactoryBotAvatarPickResult,
@@ -153,6 +153,11 @@ export interface FactorySettingsPort {
   readonly available: boolean;
   get(): Promise<FactorySettingsView | null>;
   set(patch: Partial<FactorySettingsView>): Promise<FactorySettingsView | null>;
+  /** Absent: no task folder line. The space bot task folders use (null:
+   *  the factory is not running). */
+  taskFolderUsage?(): Promise<FactoryTaskFolderUsage | null>;
+  /** Absent: no Clean up now. The task-end rules over every ended bot task. */
+  cleanTaskFolders?(): Promise<FactoryTaskFolderCleanResult>;
 }
 
 interface FactoryBridge {
@@ -171,6 +176,8 @@ interface FactoryBridge {
   stopBot?: (botId: string) => Promise<FactoryStopResult>;
   resumeWorker?: (taskId: string) => Promise<{ ok: boolean; message?: string; workspaceId?: string }>;
   workerAgents?: () => Promise<BotWorkerAgentOption[]>;
+  taskFolderUsage?: () => Promise<FactoryTaskFolderUsage | null>;
+  cleanTaskFolders?: () => Promise<FactoryTaskFolderCleanResult>;
 }
 
 function bridge(): FactoryBridge | null {
@@ -220,7 +227,13 @@ export function bridgeSettingsPort(): FactorySettingsPort {
   const b = bridge();
   if (!b?.getSettings || !b.setSettings) return NO_SETTINGS;
   const { getSettings, setSettings } = b;
-  return { available: true, get: () => getSettings(), set: (patch) => setSettings(patch) };
+  return {
+    available: true,
+    get: () => getSettings(),
+    set: (patch) => setSettings(patch),
+    ...(b.taskFolderUsage ? { taskFolderUsage: b.taskFolderUsage } : {}),
+    ...(b.cleanTaskFolders ? { cleanTaskFolders: b.cleanTaskFolders } : {}),
+  };
 }
 
 let botPort: FactoryBotPort | null = null;

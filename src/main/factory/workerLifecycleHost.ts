@@ -43,6 +43,10 @@ import {
   workerWorkspaceOf,
 } from './workerReclaim';
 import { getWorkspaceMirror } from '../workspace/WorkspaceMirror';
+import path from 'node:path';
+import { getWmuxHomeDir } from '../../shared/constants';
+import { TaskWorktreeManager } from '../worktask/TaskWorktreeManager';
+import { TaskFolders, gitRepoInfo, installTaskFolderCleanup, restoreTaskFolder, setTaskFolderPorts, type TaskMission } from './taskFolderCleanup';
 import { STOPPED_BY_OWNER } from './factoryStop';
 import { getFanOutGuards, setDormantTaskWorkspaces } from '../worktask/fanoutGuards';
 import type { FanOutService } from '../worktask/FanOutService';
@@ -67,6 +71,12 @@ export interface WorkerLifecycleDeps {
 const LIVENESS_REFRESH_MS = 10_000;
 /** Holders a slot-wait card names, at most. */
 const HOLDERS_SHOWN_MAX = 6;
+
+/** A workspace tree push looks for freed task folders at most this often. */
+const FOLDER_KICK_MIN_MS = 10_000;
+/** The task folder cleanup's worktree manager (its per-repository lock
+ *  orders its own removals and restores). */
+const folderWorktrees = new TaskWorktreeManager();
 
 /** The renderer's workspace.close answers this fast or not at all. */
 const CLOSE_TIMEOUT_MS = 10_000;
@@ -226,9 +236,54 @@ export function startWorkerLifecycle(deps: WorkerLifecycleDeps): () => void {
     // The viewed workspace moving (and every other tree push) may make a
     // deferred clear due; a pass with nothing due reads nothing.
     offs.push(mirror.onSnapshot(reconcile));
+    // An ended bot task's folder goes once nothing runs in it and nothing in
+    // it is uncommitted (taskFolderCleanup.ts); a resume puts it back. A
+    // record file this version cannot read leaves the cleanup off.
+    const folders = TaskFolders.at(deps.wmuxDir());
+    let foldersOn = true;
+    try {
+      folders.load();
+    } catch (err) {
+      foldersOn = false;
+      console.warn(`[factory] task folder cleanup off: ${String(err)}`);
+    }
+    const folderPorts = foldersOn ? {
+      store: folders,
+      roots: { worktrees: path.join(getWmuxHomeDir(), 'worktrees'), wmuxDir: deps.wmuxDir() },
+      missions: async (owner: string) => {
+        const reply = (await rpc('task.mission.list', { verifiedWorkspaceId: owner })) as { ok?: unknown; tasks?: unknown } | null;
+        if (!reply || reply.ok !== true || !Array.isArray(reply.tasks)) return null;
+        const out = new Map<string, TaskMission>();
+        for (const t of reply.tasks as Array<Record<string, unknown>>) {
+          const folder = typeof t?.worktreePath === 'string' && t.worktreePath ? t.worktreePath : typeof t?.outputDir === 'string' && t.outputDir ? t.outputDir : '';
+          if (typeof t?.id === 'string' && folder) out.set(t.id, { folder, ...(typeof t.branch === 'string' && t.branch ? { branch: t.branch } : {}) });
+        }
+        return out;
+      },
+      listSessions,
+      workerState: (taskId: string) => reclaimed.get(taskId)?.state ?? null,
+      worktrees: folderWorktrees,
+      repoInfo: gitRepoInfo,
+      changed,
+      allRows: () => ledger.list({}),
+    } : null;
+    if (folderPorts) {
+      const cleanup = installTaskFolderCleanup({ ...folderPorts, onTransition: (fn) => ledger.onTransition(fn), retryMs: RESUMED_SWEEP_MS });
+      offs.push(cleanup.dispose);
+      // A workspace closing may free a folder (at most every 10 s).
+      let kickedAt = 0;
+      offs.push(mirror.onSnapshot(() => {
+        if (Date.now() - kickedAt < FOLDER_KICK_MIN_MS) return;
+        kickedAt = Date.now();
+        cleanup.kick();
+      }));
+      setTaskFolderPorts(folderPorts);
+      offs.push(() => setTaskFolderPorts(null));
+    }
     setWorkerResumePorts({
       store: reclaimed,
       listSessions,
+      ...(folderPorts ? { restoreFolder: (taskId: string, folder: string) => restoreTaskFolder(folderPorts, taskId, folder) } : {}),
       // The same stage a resume typed from the pane takes (pty:write-launch):
       // a bot worker's line carries its settings file, or this throws.
       typeLine: (sessionId, line) => {

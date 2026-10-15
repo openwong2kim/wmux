@@ -90,6 +90,7 @@ import { getRoutineStore } from './routines';
 import { getGroupStore } from './groupStore';
 import { getAgentSlots } from './agentSlots';
 import { getWorkerResumePorts, reclaimedWorkerState, stopResumedWorkers, workerWorkspaceOf } from './workerReclaim';
+import { getTaskFolderPorts } from './taskFolderCleanup';
 
 // ── Trigger cursor ─────────────────────────────────────────────────────────
 
@@ -687,6 +688,7 @@ export function createFactoryWiring(deps: Pick<FactoryHostDeps, 'wmuxDir'> & Par
           const rec = getWorkerResumePorts()?.store.get(taskId);
           return rec ? workerWorkspaceOf(rec) : null;
         },
+        folderKept: (taskId) => getTaskFolderPorts()?.store.get(taskId)?.state === 'kept_dirty',
         waiting: () => getAgentSlots()?.waiting() ?? [],
         branches: (rows) => branches.branches(rows),
         prFacts: () => prFactsOf(getFactLog()),

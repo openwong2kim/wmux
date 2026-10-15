@@ -138,6 +138,8 @@ export interface BotTaskSources {
   workerState?: (taskId: string) => BotTaskView['worker'] | null;
   /** The workspace a reclaimed worker's pane was last in, or null. */
   workerWorkspace?: (taskId: string) => string | null;
+  /** Whether the ended task's folder was kept for uncommitted changes. */
+  folderKept?: (taskId: string) => boolean;
   /** Bot workers waiting for an agent slot (agentSlots.ts), oldest first. */
   waiting?: () => ReadonlyArray<{ taskId: string; title: string; botId: string; ownerWorkspaceId: string; since: number }>;
   branches: (rows: readonly LedgerEntry[]) => Promise<Map<string, string | null>>;
@@ -207,7 +209,13 @@ export async function botTaskViews(
       } catch {
         worker = null;
       }
-      if (v) views.push(worker ? { ...v, worker, ...(workerWorkspaceId ? { workerWorkspaceId } : {}) } : v);
+      let kept = false;
+      try {
+        kept = sources.folderKept?.(r.id) === true;
+      } catch {
+        kept = false;
+      }
+      if (v) views.push({ ...v, ...(worker ? { worker, ...(workerWorkspaceId ? { workerWorkspaceId } : {}) } : {}), ...(kept ? { folder: 'kept_dirty' as const } : {}) });
     }
     if (views.length > 0) out.set(b.id, views);
   }

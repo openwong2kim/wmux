@@ -722,13 +722,14 @@ const RESUMABLE_SHOWN_MS = 24 * 3_600_000;
 const RESUMABLE_SHOWN_MAX = 3;
 
 /** The tasks a bot's chat lists at its foot besides its live workers: every
- *  worker still waiting for an agent slot, and the newest stopped workers of
- *  ended tasks that can resume the same conversation. Pure. */
+ *  worker still waiting for an agent slot, and the newest ended tasks whose
+ *  stopped worker can resume the same conversation or whose folder was kept
+ *  for uncommitted changes. Pure. */
 export function taskBubbles(tasks: readonly BotTaskView[] | undefined, now: number): BotTaskView[] {
   const list = tasks ?? [];
   const waiting = list.filter((t) => t.stage === 'waiting_slot');
   const resumable = list
-    .filter((t) => t.worker === 'resumable' && now - t.updatedAt <= RESUMABLE_SHOWN_MS)
+    .filter((t) => (t.worker === 'resumable' || t.folder === 'kept_dirty') && t.stage !== 'waiting_slot' && now - t.updatedAt <= RESUMABLE_SHOWN_MS)
     .sort((a, b) => b.updatedAt - a.updatedAt)
     .slice(0, RESUMABLE_SHOWN_MAX);
   return [...waiting, ...resumable];

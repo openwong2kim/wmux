@@ -15,7 +15,8 @@ import { DEFAULT_FACTORY_SETTINGS } from '../../../shared/factorySettings';
 import { ReclaimedWorkers, type WorkerResumePorts } from '../workerReclaim';
 import { AgentSlots } from '../agentSlots';
 import { registerWorkerResumeRpc } from '../../pipe/handlers/workerResume.rpc';
-import { factoryWorkerResumeHandler } from '../../ipc/handlers/factory.handler';
+import { factoryTaskFoldersCleanHandler, factoryTaskFoldersUsageHandler, factoryWorkerResumeHandler } from '../../ipc/handlers/factory.handler';
+import { TaskFolders } from '../taskFolderCleanup';
 import { botTaskViews } from '../botTasks';
 import { mergeFactorySettings } from '../factorySettings';
 
@@ -88,6 +89,28 @@ describe('FACTORY_WORKER_RESUME (IPC guard)', () => {
     expect(await factoryWorkerResumeHandler(() => win, () => null)(ok, { taskId: TASK })).toMatchObject({ ok: false, code: 'not_started' });
     expect(p.typeLine).not.toHaveBeenCalled();
     expect(await handler(ok, { taskId: TASK })).toMatchObject({ ok: true });
+  });
+});
+
+describe('FACTORY_TASK_FOLDERS_* (IPC guard)', () => {
+  const mainFrame = { id: 'top' };
+  const webContents = { mainFrame };
+  const win = { isDestroyed: () => false, webContents } as unknown as Electron.BrowserWindow;
+
+  it('the space and Clean up now answer only the main window, once the factory runs', async () => {
+    const p = {
+      store: TaskFolders.at(dir), roots: { worktrees: path.join(dir, 'wt'), wmuxDir: dir },
+      missions: async () => new Map(), listSessions: async () => [], workerState: () => null,
+      worktrees: { removeWorktree: vi.fn(), restoreWorktree: vi.fn() }, repoInfo: async () => null, allRows: () => [],
+    };
+    const ok = { sender: webContents, senderFrame: mainFrame };
+    const other = { sender: {}, senderFrame: mainFrame };
+    expect(await factoryTaskFoldersUsageHandler(() => win, () => p)(other)).toBeNull();
+    expect(await factoryTaskFoldersUsageHandler(() => win, () => null)(ok)).toBeNull();
+    expect(await factoryTaskFoldersUsageHandler(() => win, () => p)(ok)).toEqual({ bytes: 0, folders: 0, dirty: 0 });
+    expect(await factoryTaskFoldersCleanHandler(() => win, () => p)(other)).toMatchObject({ ok: false, code: 'operator_only' });
+    expect(await factoryTaskFoldersCleanHandler(() => win, () => null)(ok)).toMatchObject({ ok: false, code: 'not_started' });
+    expect(await factoryTaskFoldersCleanHandler(() => win, () => p)(ok)).toEqual({ ok: true, removed: 0, keptDirty: 0, busy: 0, failed: 0 });
   });
 });
 

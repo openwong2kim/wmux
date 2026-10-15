@@ -657,14 +657,16 @@ function TaskRow({ task, t, resumePort, readOnly, shownId, onOpen }: { task: Bot
     return () => { live.current.mounted = false; };
   }, []);
   const waiting = task.stage === 'waiting_slot';
+  const resumable = task.worker === 'resumable';
   const paneWorkspaceId = task.workerWorkspaceId ?? task.taskWorkspaceId;
   const paneOpen = useStore((s) => !!paneWorkspaceId && s.workspaces.some((w) => w.id === paneWorkspaceId));
   return (
-    <div className="wmux-bots-rail-row" data-bots-task={task.taskId} data-task-state={waiting ? 'waiting_slot' : 'resumable'}>
+    <div className="wmux-bots-rail-row" data-bots-task={task.taskId} data-task-state={waiting ? 'waiting_slot' : resumable ? 'resumable' : 'done'}>
       <span aria-hidden="true" className="inline-block h-[6px] w-[6px] shrink-0 rounded-full border-[1.5px] border-[var(--text-muted)]" />
       <span className="min-w-0 flex-1 truncate text-[12px]">
         <span className="text-[var(--text-main)]">{task.title}</span>
-        <span className="text-[var(--text-muted)]">{` · ${error ?? t(waiting ? 'botsPage.worker.waitingSlot' : 'botsPage.worker.resumable')}`}</span>
+        <span className="text-[var(--text-muted)]">{` · ${error ?? t(waiting ? 'botsPage.worker.waitingSlot' : resumable ? 'botsPage.worker.resumable' : 'botsPage.worker.done')}`}</span>
+        {!waiting && task.folder === 'kept_dirty' && <span data-bots-task-folder-kept className="text-[var(--text-muted)]">{` · ${t('botsPage.worker.folderKept')}`}</span>}
       </span>
       {!waiting && paneOpen && (
         <Button
@@ -678,7 +680,7 @@ function TaskRow({ task, t, resumePort, readOnly, shownId, onOpen }: { task: Bot
           {t('botsPage.worker.open')}
         </Button>
       )}
-      {!waiting && !readOnly && resumeWorker && (
+      {!waiting && resumable && !readOnly && resumeWorker && (
         <Button
           size="sm"
           variant="secondary"

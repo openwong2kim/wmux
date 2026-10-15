@@ -1224,6 +1224,10 @@ const electronAPI = {
     // The engines a bot's workers may run on, and which are installed here.
     workerAgents: () =>
       ipcRenderer.invoke(IPC.FACTORY_WORKER_AGENTS) as Promise<import('../shared/botWorkerAgent').BotWorkerAgentOption[]>,
+    taskFolderUsage: () =>
+      ipcRenderer.invoke(IPC.FACTORY_TASK_FOLDERS_USAGE) as Promise<import('../shared/botTask').FactoryTaskFolderUsage | null>,
+    cleanTaskFolders: () =>
+      ipcRenderer.invoke(IPC.FACTORY_TASK_FOLDERS_CLEAN) as Promise<import('../shared/botTask').FactoryTaskFolderCleanResult>,
     // Every bot's routines, read-only (routine.list as the operator).
     listRoutines: async (): Promise<import('../shared/botRoutine').BotRoutine[]> => {
       const resp = (await ipcRenderer.invoke(IPC.RPC_INVOKE, 'routine.list', {})) as { ok?: unknown; result?: { ok?: unknown; routines?: unknown } } | null;

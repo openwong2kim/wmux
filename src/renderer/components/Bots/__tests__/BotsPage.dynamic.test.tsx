@@ -943,6 +943,21 @@ describe('Bots page', () => {
     expect(resumeWorker).toHaveBeenCalledWith(taskId);
   });
 
+  it('a cleared task whose folder was kept for uncommitted changes says so in the rail, with no Resume when its worker cannot resume', async () => {
+    seedRooms();
+    bots[1] = { ...bots[1], tasks: [{
+      taskId: 'wtask-kept-00000001', taskWorkspaceId: 't-gone', ownerWorkspaceId: 'w1', botId: LEAD, title: 'Kept one',
+      status: 'cancelled' as const, stage: 'cancelled' as const, worker: 'stopped' as const, folder: 'kept_dirty' as const, updatedAt: Date.now(),
+    }] };
+    setFactoryBotPort({ ...port, resumeWorker: vi.fn(async () => ({ ok: true })) });
+    await render(<BotsPage />);
+    act(() => q(`[data-bots-row="bot:${LEAD}"]`)!.click());
+    const rail = q('[data-bots-task="wtask-kept-00000001"]')!;
+    expect(rail.querySelector('[data-bots-task-folder-kept]')?.textContent).toContain('Folder kept: uncommitted changes');
+    expect(rail.querySelector('[data-bots-task-resume]')).toBeNull();
+    expect(rail.getAttribute('data-task-state')).toBe('done');
+  });
+
   it('a task the owner stopped reads Cancelled with no error mark, not Failed', async () => {
     seedRooms();
     bots[1] = { ...bots[1], tasks: [{

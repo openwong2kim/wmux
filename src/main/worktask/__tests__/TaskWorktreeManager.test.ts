@@ -589,4 +589,51 @@ describe('T3 worktree base — origin default branch pinned to an OID, --no-trac
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
+  it('real git: a clean task worktree removed keeps its branch and comes back at the same path; a dirty one is kept', { timeout: 30_000 }, async () => {
+    const { TaskWorktreeManager } = await loadModule();
+    const { execFileSync } = await import('node:child_process');
+    const git = (cwd: string, ...args: string[]) =>
+      execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'init.defaultBranch=main', ...args], {
+        cwd,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+      }).trim();
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-twm-restore-'));
+    try {
+      const repo = path.join(root, 'repo');
+      fs.mkdirSync(repo);
+      git(repo, 'init');
+      fs.writeFileSync(path.join(repo, '.gitignore'), 'node_modules/\n');
+      git(repo, 'add', '.gitignore');
+      git(repo, 'commit', '-m', 'one');
+      const mgr = new TaskWorktreeManager();
+      const wt = path.join(root, 'wt', 's1');
+      const plan = { repoRoot: repo, repoHash: 'real', taskSlug: 's1', metaDir: path.join(root, 'm'), worktreePath: wt, branch: 'wtask/s1' };
+      expect((await mgr.createWorktree(plan)).ok).toBe(true);
+      fs.writeFileSync(path.join(wt, 'a.txt'), 'work');
+      git(wt, 'add', 'a.txt');
+      git(wt, 'commit', '-m', 'task work');
+      const tip = git(wt, 'rev-parse', 'HEAD');
+      // Ignored files do not make it dirty, and go with the folder.
+      fs.mkdirSync(path.join(wt, 'node_modules'));
+      fs.writeFileSync(path.join(wt, 'node_modules', 'x.js'), '1');
+      expect(await mgr.removeWorktree(repo, 'real', wt)).toEqual({ ok: true });
+      expect(fs.existsSync(wt)).toBe(false);
+      expect(git(repo, 'rev-parse', 'refs/heads/wtask/s1')).toBe(tip);
+
+      expect(await mgr.restoreWorktree(repo, 'real', wt, 'wtask/s1')).toMatchObject({ ok: true });
+      expect(git(wt, 'rev-parse', 'HEAD')).toBe(tip);
+      expect(git(wt, 'rev-parse', '--abbrev-ref', 'HEAD')).toBe('wtask/s1');
+      // The path is taken now; a gone branch is refused.
+      expect(await mgr.restoreWorktree(repo, 'real', wt, 'wtask/s1')).toMatchObject({ ok: false });
+      expect(await mgr.restoreWorktree(repo, 'real', path.join(root, 'wt', 's2'), 'wtask/nope')).toMatchObject({ ok: false });
+
+      // Uncommitted work keeps the folder.
+      fs.writeFileSync(path.join(wt, 'b.txt'), 'draft');
+      expect(await mgr.removeWorktree(repo, 'real', wt)).toMatchObject({ ok: false, dirty: true, preserved: true });
+      expect(fs.existsSync(path.join(wt, 'b.txt'))).toBe(true);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
