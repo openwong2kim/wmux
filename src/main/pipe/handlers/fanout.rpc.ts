@@ -1372,11 +1372,13 @@ export function registerFanOutRpc(
       // Only the research preset runs without a worktree (its own table row).
       if (!worktree && !botResearch) return deny('NOT_AUTHORIZED', 'a bot fans out only into worktrees (worktree:false is refused)');
       if (botResearch) {
-        // A codex worker's launch guard needs a git worktree; a scratch
-        // folder has none.
-        const other = agentChoices.find((c) => c.agent !== 'claude');
+        // Research runs on its preset's own engine: another engine's launch
+        // guard may need a git worktree (codex's does), and a scratch folder
+        // has none.
+        const engine = botFanoutPreset(RESEARCH_PRESET)?.agent.agent;
+        const other = agentChoices.find((c) => c.agent !== engine);
         if (other) {
-          return deny('FAILED_PRECONDITION', `research tasks run on claude workers only, and this bot's workers run on ${other.agent}; pick claude for its workers in the bot's profile to research`);
+          return deny('FAILED_PRECONDITION', `research tasks run on ${engine} workers only, and this bot's workers run on ${other.agent}; pick ${engine} for its workers in the bot's profile to research`);
         }
         // A research worker reads the web: its task is outside text whatever
         // woke the bot.
