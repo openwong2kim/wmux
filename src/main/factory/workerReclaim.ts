@@ -18,9 +18,19 @@
 //     workspace until the owner has looked at it (the evidence is there), and
 //     a workspace the owner is viewing closes only after they move away.
 //     Only the task's own workspace is ever closed (createWorkerClear).
-// Never on anything else: a row that is working, needs input or was reported
-// for review keeps its worker however long it is quiet, and a task the owner
-// stopped is left to that stop (factoryStop.ts ends its panes itself).
+// A task that was reported for review (`review_requested`) and whose worker
+// then sat idle (its turn ended, nothing typed since) for REPORTED_IDLE_MS has
+// its worker's agent stopped and recorded the same way, so a report whose
+// gate did not complete it (refused, failed) holds no memory and no agent
+// slot. The task stays `review_requested` and its workspace stays open:
+// closing that workspace closes the task's mission, which cancels the task.
+// Resume continues the same conversation in the same pane. A record made for
+// a report follows the task when it later ends (no second stop, no second
+// card); a task that moved on from the report (sent back, a newer report)
+// before the stop has nothing stopped.
+// Never on anything else: a row that is working or needs input keeps its
+// worker however long it is quiet, and a task the owner stopped is left to
+// that stop (factoryStop.ts ends its panes itself).
 //
 // Resume (the owner's Resume, or the bot that started the task) types
 // `claude --resume <that session> [its permission flag]` into the same pane,
@@ -52,6 +62,8 @@ export const RECLAIMED_WORKERS_FILENAME = 'reclaimed-workers.json';
 export const RECLAIMED_WORKERS_VERSION = 1 as const;
 /** How far back an ended task is reclaimed at install. */
 export const RECLAIM_CATCHUP_MS = 24 * 3_600_000;
+/** How long a reported task's worker sits idle before it is stopped. */
+export const REPORTED_IDLE_MS = 5 * 60_000;
 /** Records kept (oldest dropped first). */
 export const RECLAIMED_WORKERS_MAX = 500;
 /** How long a resume waits for the relaunched agent before a message. */
@@ -79,8 +91,9 @@ export interface ReclaimedWorker {
   title: string;
   /** The task's room thread (taskThreadOf at the reclaim). */
   threadId: ThreadId;
-  /** The ledger status the task ended in. */
-  ended: 'completed' | 'cancelled' | 'failed';
+  /** The ledger status the task ended in; `reported`: the task was still
+   *  `review_requested` (open) when its idle worker was stopped. */
+  ended: 'completed' | 'cancelled' | 'failed' | 'reported';
   sessions: ReclaimedSession[];
   /** stopping: recorded, its agent not yet known to be stopped (a later look
    *  tries again; it still counts as live); stopped: the agent was stopped
@@ -125,6 +138,15 @@ export function isReclaimableEnd(entry: LedgerEntry, to: string): to is 'complet
   return !(to === 'cancelled' && entry.summary === STOPPED_BY_OWNER && entry.updatedBy.kind === 'system');
 }
 
+/** Whether a row is a bot task reported for review whose idle worker this
+ *  module stops (a verify task is closed by its verdict instead). Pure. */
+export function isReclaimableReport(entry: LedgerEntry): boolean {
+  const d = entry.dispatch;
+  return entry.status === 'review_requested'
+    && d?.origin.kind === 'bot' && typeof d.origin.botId === 'string' && d.origin.botId.length > 0
+    && d.preset !== 'verify';
+}
+
 /** The resume line for one recorded pane, or null without a conversation. Pure. */
 export function resumeLineFor(s: ReclaimedSession): string | null {
   if (!s.resumeSessionId || !isPlausibleResumeSessionId('claude', s.resumeSessionId)) return null;
@@ -152,7 +174,7 @@ function isRecord(v: unknown): v is ReclaimedWorker {
   const r = v as Record<string, unknown>;
   return typeof r.taskId === 'string' && typeof r.botId === 'string' && typeof r.ownerWorkspaceId === 'string'
     && typeof r.taskWorkspaceId === 'string' && typeof r.title === 'string' && typeof r.threadId === 'string'
-    && (r.ended === 'completed' || r.ended === 'cancelled' || r.ended === 'failed') && (r.state === 'stopping' || r.state === 'stopped' || r.state === 'resumed')
+    && (r.ended === 'completed' || r.ended === 'cancelled' || r.ended === 'failed' || r.ended === 'reported') && (r.state === 'stopping' || r.state === 'stopped' || r.state === 'resumed')
     && typeof r.at === 'number' && Array.isArray(r.sessions)
     && r.sessions.every((s) => !!s && typeof (s as ReclaimedSession).sessionId === 'string' && typeof (s as ReclaimedSession).cwd === 'string')
     && (r.paneWorkspaceId === undefined || typeof r.paneWorkspaceId === 'string')
@@ -284,22 +306,41 @@ export interface WorkerReclaimPorts {
   now?: () => number;
   log?: (msg: string) => void;
   /** Look again this often for recent ends that were not reclaimed (the
-   *  daemon was not connected yet); each task at most RECLAIM_ATTEMPTS_MAX
-   *  times. Absent: only at install. */
+   *  daemon was not connected yet) and for reported tasks gone idle; each
+   *  task at most RECLAIM_ATTEMPTS_MAX times per rev. Absent: only at install. */
   retryMs?: number;
+  /** Whether the turn of every pane in the task's workspace has ended (no
+   *  agent turn running or waiting on a prompt). Absent: a reported task's
+   *  worker is never stopped. */
+  turnEnded?: (entry: LedgerEntry) => boolean;
+  /** How long a reported task sits before its idle worker is stopped
+   *  (default REPORTED_IDLE_MS). */
+  reportedIdleMs?: number;
 }
 
 /** Attempts per ended task before the reclaim gives it up. */
 export const RECLAIM_ATTEMPTS_MAX = 3;
 
-/** Whether the task's row is open now (it reopened since it ended). Pure
- *  over its read; a row that cannot be read is not counted as open. */
-function reopened(ports: Pick<WorkerReclaimPorts, 'row'>, taskId: string): boolean {
+/** Whether the task moved on from the state its worker is being stopped
+ *  for. An end: its row is open again (it reopened since it ended); a row
+ *  that cannot be read is not counted as open. A report: its row is no
+ *  longer that report (another status or rev, unreadable) or a turn runs
+ *  again in its panes. Pure over its reads. */
+function movedOn(ports: Pick<WorkerReclaimPorts, 'row' | 'turnEnded'>, entry: LedgerEntry, ended: ReclaimedWorker['ended']): boolean {
+  if (ended === 'reported' && !ports.row) return false;
   let now: LedgerEntry | null = null;
   try {
-    now = ports.row?.(taskId) ?? null;
+    now = ports.row?.(entry.id) ?? null;
   } catch {
     now = null;
+  }
+  if (ended === 'reported') {
+    if (!now || now.status !== 'review_requested' || now.rev !== entry.rev) return true;
+    try {
+      return ports.turnEnded?.(now) === false;
+    } catch {
+      return true;
+    }
   }
   return !!now && (now.status === 'working' || now.status === 'input_required' || now.status === 'review_requested');
 }
@@ -311,7 +352,7 @@ function reopened(ports: Pick<WorkerReclaimPorts, 'row'>, taskId: string): boole
  * A record whose stops did not all succeed stays `stopping` (still live) and
  * is tried again.
  */
-export async function reclaimWorker(ports: WorkerReclaimPorts, entry: LedgerEntry, ended: 'completed' | 'cancelled' | 'failed'): Promise<ReclaimedWorker | null> {
+export async function reclaimWorker(ports: WorkerReclaimPorts, entry: LedgerEntry, ended: ReclaimedWorker['ended']): Promise<ReclaimedWorker | null> {
   const log = ports.log ?? ((m: string) => console.warn(m));
   const now = ports.now ?? Date.now;
   try {
@@ -323,10 +364,18 @@ export async function reclaimWorker(ports: WorkerReclaimPorts, entry: LedgerEntr
     const sessions = await ports.listSessions();
     const ids = new Set(await sessionsStartedIn([worktree], { listSessions: async () => sessions }));
     const panes = sessions.filter((s) => ids.has(s.id)).map(reclaimedSessionOf).filter((s): s is ReclaimedSession => !!s);
-    if (reopened(ports, entry.id)) return null;
+    if (movedOn(ports, entry, ended)) return null;
+    const prior = ports.store.get(entry.id);
+    // Stopped already for a report, and no agent runs in its panes since:
+    // the record follows the task (a gate written after the stop, the end
+    // that came later), with no second stop and no second card.
+    if (prior?.ended === 'reported' && prior.state === 'stopped' && !sessions.some((s) => ids.has(s.id) && s.agentProcessAlive === true)) {
+      await ports.store.put({ ...prior, ended, endRev: entry.rev, at: now() });
+      ports.changed?.();
+      return ports.store.get(entry.id);
+    }
     // An earlier attempt that did not finish: its recorded conversations are
     // kept (a stopped agent may no longer show its binding).
-    const prior = ports.store.get(entry.id);
     const kept = prior?.state === 'stopping' ? prior.sessions : [];
     for (const p of panes) {
       const old = kept.find((k) => k.sessionId === p.sessionId);
@@ -365,8 +414,9 @@ export async function reclaimWorker(ports: WorkerReclaimPorts, entry: LedgerEntr
     let failed = 0;
     let attempted = 0;
     for (const p of panes) {
-      // The task reopened meanwhile: what still runs is its worker again.
-      if (reopened(ports, entry.id)) break;
+      // The task reopened (or moved on from its report) meanwhile: what
+      // still runs is its worker again.
+      if (movedOn(ports, entry, ended)) break;
       attempted++;
       try {
         const r = await ports.stopAgent(p.sessionId);
@@ -401,14 +451,25 @@ export async function reclaimWorker(ports: WorkerReclaimPorts, entry: LedgerEntr
       ? 'Its pane stays open until you have looked at it, then closes.'
       : 'Its pane closes.';
     try {
-      ports.note?.(
-        entry.ownerWorkspaceId,
-        taskThreadOf(entry),
-        resumable ? 'Worker done (resumable)' : 'Worker done',
-        resumable
-          ? `Task ${ended}: its Claude stopped to free memory. ${pane} The worktree and the conversation are kept; Resume continues the same conversation.`
-          : `Task ${ended}: its Claude stopped to free memory. ${pane} The worktree is kept; no conversation was recorded to resume.`,
-      );
+      if (ended === 'reported') {
+        ports.note?.(
+          entry.ownerWorkspaceId,
+          taskThreadOf(entry),
+          resumable ? 'Worker paused (resumable)' : 'Worker paused',
+          resumable
+            ? 'The task is reported for review and its worker sat idle: its Claude stopped to free memory and its agent slot. The task stays open for review and its pane stays; the worktree and the conversation are kept, and Resume continues the same conversation.'
+            : 'The task is reported for review and its worker sat idle: its Claude stopped to free memory and its agent slot. The task stays open for review and its pane stays; the worktree is kept, but no conversation was recorded to resume.',
+        );
+      } else {
+        ports.note?.(
+          entry.ownerWorkspaceId,
+          taskThreadOf(entry),
+          resumable ? 'Worker done (resumable)' : 'Worker done',
+          resumable
+            ? `Task ${ended}: its Claude stopped to free memory. ${pane} The worktree and the conversation are kept; Resume continues the same conversation.`
+            : `Task ${ended}: its Claude stopped to free memory. ${pane} The worktree is kept; no conversation was recorded to resume.`,
+        );
+      }
     } catch {
       /* the card is best effort */
     }
@@ -433,7 +494,7 @@ export function installWorkerReclaim(ports: WorkerReclaimPorts): () => void {
   const now = ports.now ?? Date.now;
   const inFlight = new Set<string>();
   const attempts = new Map<string, number>();
-  const run = (entry: LedgerEntry, ended: 'completed' | 'cancelled' | 'failed'): void => {
+  const run = (entry: LedgerEntry, ended: ReclaimedWorker['ended']): void => {
     if (inFlight.has(entry.id) || isReclaimedSince(ports.store.get(entry.id), entry)) return;
     // Per end: a task that reopened and ended again is tried afresh.
     const key = `${entry.id}@${entry.rev}`;
@@ -446,6 +507,13 @@ export function installWorkerReclaim(ports: WorkerReclaimPorts): () => void {
   const off = ports.onTransition((t) => {
     if (isReclaimableEnd(t.entry, t.to)) run(t.entry, t.to);
   });
+  const turnEndedIn = (e: LedgerEntry): boolean => {
+    try {
+      return ports.turnEnded?.(e) === true;
+    } catch {
+      return false;
+    }
+  };
   const catchUp = (): void => {
     let rows: LedgerEntry[] = [];
     try {
@@ -453,9 +521,12 @@ export function installWorkerReclaim(ports: WorkerReclaimPorts): () => void {
     } catch {
       rows = [];
     }
-    const since = now() - RECLAIM_CATCHUP_MS;
+    const at = now();
+    const since = at - RECLAIM_CATCHUP_MS;
+    const idleSince = at - (ports.reportedIdleMs ?? REPORTED_IDLE_MS);
     for (const e of rows) {
       if (e.updatedAt >= since && isReclaimableEnd(e, e.status)) run(e, e.status as 'completed' | 'cancelled' | 'failed');
+      else if (ports.turnEnded && e.updatedAt <= idleSince && isReclaimableReport(e) && turnEndedIn(e)) run(e, 'reported');
     }
   };
   catchUp();
@@ -883,13 +954,16 @@ export type ClearVerdict = 'clear' | 'defer' | 'keep' | 'gone';
  * What to do with a reclaimed worker's workspace now. Pure. `open`: whether
  * that workspace is still open; `viewed`: the workspace the owner views, null
  * when unknown (nothing closes then).
- *   keep  — a resumed worker, or a `failed` task the owner has not looked at;
+ *   keep  — a resumed worker, a task still open for review (`reported`), or
+ *           a `failed` task the owner has not looked at;
  *   defer — the owner is viewing it (or what they view is unknown);
  *   gone  — already closed;
  *   clear — close it.
  */
 export function clearVerdict(rec: ReclaimedWorker, open: boolean, viewed: string | null): ClearVerdict {
-  if (rec.state !== 'stopped') return 'keep';
+  // A reported task is still open: closing its workspace would close its
+  // mission, and that cancels the task.
+  if (rec.state !== 'stopped' || rec.ended === 'reported') return 'keep';
   if (!open) return 'gone';
   if (viewed === null || viewed === workerWorkspaceOf(rec)) return 'defer';
   if (rec.ended === 'failed' && rec.seenAt === undefined) return 'keep';

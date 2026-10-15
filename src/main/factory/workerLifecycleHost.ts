@@ -198,6 +198,15 @@ export function startWorkerLifecycle(deps: WorkerLifecycleDeps): () => void {
         reconcile();
       },
       retryMs: RESUMED_SWEEP_MS,
+      // A reported task's worker is stopped once no turn runs in its panes.
+      turnEnded: (entry) => {
+        const ws = mirror.getEntries()?.find((e) => e.id === entry.taskWorkspaceId);
+        const ptys = ws && Array.isArray(ws.ptyIds) ? ws.ptyIds : [];
+        return ptys.length > 0 && ptys.every((id) => {
+          const st = getLastBroadcastAgentStatus(id);
+          return st !== 'running' && st !== 'awaiting_input' && !hasOutstandingRunningClaim(id);
+        });
+      },
     }));
     // The viewed workspace moving (and every other tree push) may make a
     // deferred clear due; a pass with nothing due reads nothing.
@@ -275,7 +284,9 @@ export function startWorkerLifecycle(deps: WorkerLifecycleDeps): () => void {
     // A reclaimed worker's workspace still open (a failed task the owner has
     // not looked at, one they are viewing, one with a busy pane) runs no
     // agent: it holds no live fan-out slot (unless its task reopened).
-    setDormantTaskWorkspaces(() => new Set(reclaimed.all().filter((r) => r.state === 'stopped' && !taskOpen(r.taskId)).map((r) => workerWorkspaceOf(r))));
+    // So does a reported task's stopped worker while its task waits for review.
+    setDormantTaskWorkspaces(() => new Set(reclaimed.all().filter((r) => r.state === 'stopped'
+      && (!taskOpen(r.taskId) || (r.ended === 'reported' && ledger.get(r.taskId)?.status === 'review_requested'))).map((r) => workerWorkspaceOf(r))));
     offs.push(() => setDormantTaskWorkspaces(null));
     offs.push(() => setWorkerResumePorts(null));
     // A resumed worker runs on its bot's worker budget: counted live by the

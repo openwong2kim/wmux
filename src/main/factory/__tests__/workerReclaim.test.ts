@@ -10,7 +10,9 @@ import {
   createWorkerClear,
   installWorkerReclaim,
   isReclaimableEnd,
+  isReclaimableReport,
   isReclaimedSince,
+  clearVerdict,
   noteWorkerAgentExit,
   reclaimWorker,
   reclaimedSessionOf,
@@ -27,6 +29,8 @@ import {
   type WorkerSessionInfo,
 } from '../workerReclaim';
 import { STOPPED_BY_OWNER } from '../factoryStop';
+import { taskFolderFromMissions } from '../verifyPreset';
+import { RESEARCH_PRESET } from '../../../shared/ledger';
 import { TaskLedger } from '../../../daemon/ledger/TaskLedger';
 
 const BOT = 'bot-0000000a';
@@ -139,6 +143,94 @@ describe('installWorkerReclaim', () => {
     fire(row('completed'), 'completed');
     await vi.waitFor(() => expect(stopAgent).toHaveBeenCalledTimes(1));
     off();
+  });
+});
+
+describe('a reported task whose worker sat idle (refused or failed gate)', () => {
+  const reported = (over: Partial<LedgerEntry> = {}) => row('review_requested', { updatedAt: 1_000, ...over });
+
+  it('isReclaimableReport: a bot task in review_requested, never a verify task or a pane task', () => {
+    expect(isReclaimableReport(reported())).toBe(true);
+    expect(isReclaimableReport(row('working'))).toBe(false);
+    expect(isReclaimableReport(reported({ dispatch: { origin: { kind: 'bot', botId: BOT }, preset: 'verify' } }))).toBe(false);
+    expect(isReclaimableReport(reported({ dispatch: { origin: { kind: 'pane' } } }))).toBe(false);
+  });
+
+  it('stops the idle worker once it sat long enough, keeps the task open and its pane, and is resumable', async () => {
+    const store = ReclaimedWorkers.at(dir);
+    let current = reported();
+    let ended = true;
+    const live = [session()];
+    const { ports, stopAgent, note } = reclaimPorts(store, live, {
+      allRows: () => [current],
+      row: () => current,
+      turnEnded: () => ended,
+      reportedIdleMs: 3_000,
+      now: () => 5_000,
+    });
+    // A turn still runs: nothing is stopped.
+    ended = false;
+    let off = installWorkerReclaim(ports);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(stopAgent).not.toHaveBeenCalled();
+    off();
+    // Not idle long enough: nothing either.
+    ended = true;
+    off = installWorkerReclaim({ ...ports, reportedIdleMs: 10_000 });
+    await new Promise((r) => setTimeout(r, 10));
+    expect(stopAgent).not.toHaveBeenCalled();
+    off();
+    off = installWorkerReclaim(ports);
+    await vi.waitFor(() => expect(store.get(current.id)?.state).toBe('stopped'));
+    off();
+    expect(stopAgent).toHaveBeenCalledWith('daemon-1');
+    const rec = store.get(current.id);
+    if (!rec) throw new Error('not recorded');
+    expect(rec).toMatchObject({ ended: 'reported', endRev: 3 });
+    expect(reclaimedWorkerState(rec)).toBe('resumable');
+    expect(note.mock.calls.map((c) => c[2])).toEqual(['Worker paused (resumable)']);
+    // Its workspace stays open (closing it would cancel the task).
+    expect(clearVerdict(rec, true, 'ws-elsewhere')).toBe('keep');
+    // The task completes later: the record follows the end, with no second stop and no second card.
+    live[0] = session({ agentProcessAlive: false, resumeBinding: undefined });
+    stopAgent.mockClear();
+    current = row('completed', { rev: 5, updatedAt: 4_500 });
+    const after = await reclaimWorker(ports, current, 'completed');
+    expect(after).toMatchObject({ ended: 'completed', endRev: 5, state: 'stopped', sessions: rec.sessions });
+    expect(stopAgent).not.toHaveBeenCalled();
+    expect(note).toHaveBeenCalledTimes(1);
+  });
+
+  it('a report that moved on (sent back, a newer rev) before the stop has nothing stopped', async () => {
+    const store = ReclaimedWorkers.at(dir);
+    const { ports, stopAgent } = reclaimPorts(store, [session()], { row: () => row('working', { rev: 4 }), turnEnded: () => true });
+    expect(await reclaimWorker(ports, row('review_requested'), 'reported')).toBeNull();
+    expect(stopAgent).not.toHaveBeenCalled();
+    expect(store.all()).toEqual([]);
+  });
+});
+
+describe('a research task (scratch folder, no worktree)', () => {
+  it('its stopped worker resumes through worker_resume, in its pane or in a new pane in the scratch folder', async () => {
+    const store = ReclaimedWorkers.at(dir);
+    const research = row('completed', { dispatch: { origin: { kind: 'bot', botId: BOT }, preset: RESEARCH_PRESET } });
+    // The mission names the scratch folder as its outputDir; there is no worktreePath.
+    const rpc = async () => ({ ok: true, tasks: [{ id: research.id, outputDir: wt }] });
+    const { ports } = reclaimPorts(store, [session()], { worktreeOf: (entry) => taskFolderFromMissions(rpc, entry) });
+    expect(await reclaimWorker(ports, research, 'completed')).toMatchObject({ state: 'stopped', sessions: [{ cwd: wt, resumeSessionId: UUID }] });
+
+    // In its own pane.
+    const typeLine = vi.fn(() => true);
+    const inPane = await resumeWorker({ store, listSessions: async () => [session({ agentProcessAlive: false, commandRunning: false })], typeLine, now: () => 9_000 }, research.id, { kind: 'bot', botId: BOT });
+    expect(inPane).toMatchObject({ ok: true, sessionId: 'daemon-1', resumeSessionId: UUID });
+    expect(typeLine).toHaveBeenCalledWith('daemon-1', `claude --resume ${UUID} --dangerously-skip-permissions`);
+
+    // Its pane closed since: a new pane opens in the scratch folder.
+    noteWorkerAgentExit(store, 'daemon-1', 10_000);
+    const respawn = vi.fn(async () => ({ ok: true as const, workspaceId: 'ws-new', sessionId: 'daemon-9' }));
+    const fresh = await resumeWorker({ store, listSessions: async () => [], typeLine, respawn, now: () => 11_000 }, research.id, { kind: 'owner' });
+    expect(fresh).toMatchObject({ ok: true, sessionId: 'daemon-9', workspaceId: 'ws-new' });
+    expect(respawn).toHaveBeenCalledWith(expect.objectContaining({ cwd: wt, line: `claude --resume ${UUID} --dangerously-skip-permissions` }));
   });
 });
 
