@@ -155,7 +155,9 @@ export function registerTaskPushRpc(router: RpcRouter, deps: TaskPushRpcDeps): v
   };
 
   router.register('task.push', async (params, ctx?: RpcContext) => {
-    const r = await resolveWorkerTask('task.push', params, ctx, { worker: 'pushes its branch', branch: 'to publish', repo: 'to push to' });
+    // task_push applies the same remote and ref checks as task_fetch: the
+    // origin main recorded for the task.
+    const r = await resolveWorkerTask('task.push', params, ctx, { worker: 'pushes its branch', branch: 'to publish', repo: 'to push to' }, { recordedRepo: true });
     if (!r.ok) return r;
     // Main's own record of what was published: the no-changes check reads it
     // (factory/noChangesCheck.ts) and answers `unknown` while this push is
