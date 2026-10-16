@@ -189,6 +189,23 @@ export function isTaskOwnWorkerPane(
   }
 }
 
+/** A conversation whose mode no hook carried (a WSL worker whose task ended
+ *  at its own report, before its first Stop) resumes in the mode wmux
+ *  launched it in: only the conversation the pane's own launch line pinned.
+ *  Fills `panes` in place. */
+export function fillLaunchedModes(panes: ReclaimedSession[], launchedConversation: WorkerReclaimPorts['launchedConversation']): void {
+  for (const p of panes) {
+    if (!p.resumeSessionId || p.permissionMode) continue;
+    let launched: { sessionId: string; permissionMode?: PermissionMode } | null = null;
+    try {
+      launched = launchedConversation?.(p.sessionId) ?? null;
+    } catch {
+      launched = null;
+    }
+    if (launched?.permissionMode && launched.sessionId === p.resumeSessionId) p.permissionMode = launched.permissionMode;
+  }
+}
+
 /** Whether a ledger move ends a bot task this module reclaims. Pure. */
 export function isReclaimableEnd(entry: LedgerEntry, to: string): to is 'completed' | 'cancelled' | 'failed' {
   const origin = entry.dispatch?.origin;
@@ -850,19 +867,7 @@ export async function reclaimWorker(
         if (old.permissionMode) p.permissionMode = old.permissionMode;
       }
     }
-    // A conversation whose mode no hook carried (a WSL worker whose task ended
-    // at its own report, before its first Stop) resumes in the mode wmux
-    // launched it in: only the conversation the pane's own launch line pinned.
-    for (const p of panes) {
-      if (!p.resumeSessionId || p.permissionMode) continue;
-      let launched: { sessionId: string; permissionMode?: PermissionMode } | null = null;
-      try {
-        launched = ports.launchedConversation?.(p.sessionId) ?? null;
-      } catch {
-        launched = null;
-      }
-      if (launched?.permissionMode && launched.sessionId === p.resumeSessionId) p.permissionMode = launched.permissionMode;
-    }
+    fillLaunchedModes(panes, ports.launchedConversation);
     const rec: ReclaimedWorker = {
       taskId: entry.id,
       botId: entry.dispatch?.origin.botId ?? '',
@@ -1239,6 +1244,17 @@ export function resumedWorkersLive(botId?: string): number {
  *  cleared: one of either at a time per task. */
 const resuming = new Set<string>();
 const clearing = new Set<string>();
+/** Hold a task's worker panes for a close made elsewhere (deadWorkerPanes.ts),
+ *  as a clear holds them: a resume of the task waits until the close is over.
+ *  null while a resume or a clear of it is under way. Returns the release. */
+export function holdWorkerPanes(taskId: string): (() => void) | null {
+  if (resuming.has(taskId) || clearing.has(taskId)) return null;
+  clearing.add(taskId);
+  return () => {
+    clearing.delete(taskId);
+  };
+}
+
 /** botId → its resumes past the budget check, until each is counted as
  *  resumed or ends. */
 const botStarting = new Map<string, number>();

@@ -58,6 +58,7 @@ import {
   workerWorkspaceOf,
 } from './workerReclaim';
 import { getWorkspaceMirror } from '../workspace/WorkspaceMirror';
+import { createDeadPaneSweep } from './deadWorkerPanes';
 import path from 'node:path';
 import { getWmuxHomeDir } from '../../shared/constants';
 import { TaskWorktreeManager } from '../worktask/TaskWorktreeManager';
@@ -68,6 +69,7 @@ import { getFanOutGuards, setDormantTaskWorkspaces } from '../worktask/fanoutGua
 import type { FanOutService } from '../worktask/FanOutService';
 import { sendToRenderer } from '../pipe/handlers/_bridge';
 import { isFanoutWorkerPermissionMode } from '../../shared/workerLaunch';
+import type { PermissionMode } from '../../shared/agentResume';
 
 /** A resumed worker is checked for an exited agent this often. */
 const RESUMED_SWEEP_MS = 60_000;
@@ -97,6 +99,12 @@ const folderWorktrees = new TaskWorktreeManager();
 
 /** The renderer's workspace.close answers this fast or not at all. */
 const CLOSE_TIMEOUT_MS = 10_000;
+
+/** The first look for dead bot task shells, once recovery had time to settle
+ *  (the 60 s sweep looks again). */
+const DEAD_PANES_FIRST_PASS_MS = 20_000;
+/** One read of a pane's key input from the daemon waits this long. */
+const KEY_INPUT_READ_TIMEOUT_MS = 5_000;
 
 function note(workspaceId: string, threadId: ThreadId, title: string, body: string, notice?: CardNotice, taskId?: string): void {
   getRoomWriter()?.append({
@@ -200,6 +208,16 @@ export function startWorkerLifecycle(deps: WorkerLifecycleDeps): () => void {
   if (reclaimOn) {
     // Clear: an ended task's workspace closes once its agent is stopped.
     const mirror = getWorkspaceMirror();
+    const isTaskWorkspace = (rec: Parameters<typeof isTaskWorkspaceOf>[0], workspaceId: string): boolean => isTaskWorkspaceOf(
+      rec,
+      workspaceId,
+      (ws) => ledger.findByTaskWorkspace(ws)?.id ?? null,
+      (ws) => getFanOutGuards().lineageFor([ws])[ws] ?? null,
+    );
+    const closeWorkspace = async (workspaceId: string): Promise<boolean> => {
+      const res = await sendToRenderer(() => deps.getMainWindow?.() ?? null, 'workspace.close', { id: workspaceId }, { timeoutMs: CLOSE_TIMEOUT_MS });
+      return !!res && typeof res === 'object' && (res as { ok?: unknown }).ok === true;
+    };
     const clear = createWorkerClear({
       store: reclaimed,
       openWorkspaces: () => {
@@ -213,16 +231,8 @@ export function startWorkerLifecycle(deps: WorkerLifecycleDeps): () => void {
       },
       listSessions,
       taskOpen,
-      isTaskWorkspace: (rec, workspaceId) => isTaskWorkspaceOf(
-        rec,
-        workspaceId,
-        (ws) => ledger.findByTaskWorkspace(ws)?.id ?? null,
-        (ws) => getFanOutGuards().lineageFor([ws])[ws] ?? null,
-      ),
-      closeWorkspace: async (workspaceId) => {
-        const res = await sendToRenderer(() => deps.getMainWindow?.() ?? null, 'workspace.close', { id: workspaceId }, { timeoutMs: CLOSE_TIMEOUT_MS });
-        return !!res && typeof res === 'object' && (res as { ok?: unknown }).ok === true;
-      },
+      isTaskWorkspace,
+      closeWorkspace,
       changed,
     });
     const reconcile = (): void => {
@@ -262,6 +272,10 @@ export function startWorkerLifecycle(deps: WorkerLifecycleDeps): () => void {
       readState: async (id) => (await daemon()?.getAgentState(id, { timeoutMs: TURN_SEED_READ_TIMEOUT_MS })) ?? null,
       liveEvidence: (id) => lastTurnEnd(id) !== undefined || lastHookTurnStart(id) !== undefined,
     });
+    const launchedConversation = (sessionId: string): { sessionId: string; permissionMode?: PermissionMode } | null => {
+      const r = botWorkerSessionRecord(sessionId);
+      return r?.launchSessionId ? { sessionId: r.launchSessionId, ...(r.permissionMode ? { permissionMode: r.permissionMode } : {}) } : null;
+    };
     const seedTurns = (): void => {
       void turnSeed.pass().catch(() => undefined);
     };
@@ -300,10 +314,7 @@ export function startWorkerLifecycle(deps: WorkerLifecycleDeps): () => void {
       closePane: async (sessionId) => {
         await rpc('daemon.destroySession', { id: sessionId });
       },
-      launchedConversation: (sessionId) => {
-        const r = botWorkerSessionRecord(sessionId);
-        return r?.launchSessionId ? { sessionId: r.launchSessionId, ...(r.permissionMode ? { permissionMode: r.permissionMode } : {}) } : null;
-      },
+      launchedConversation,
       // A WSL pane counts as the task's worker only when identified (#2266).
       sessionRecordOf: botWorkerSessionRecord,
       note,
@@ -506,8 +517,41 @@ export function startWorkerLifecycle(deps: WorkerLifecycleDeps): () => void {
       else if (from === 'resumed') store.mutateUsage(rec.botId, (u) => { recordWorkerEnd(u, rec.taskId, at); });
     };
     offs.push(() => { reclaimed.onStateChange = null; });
+    // Dead shells in bot task workspaces (a daemon cold start respawns every
+    // pane as a plain shell; an ended task may keep one): deadWorkerPanes.ts.
+    const deadPanes = createDeadPaneSweep({
+      rows: () => ledger.list({}),
+      store: reclaimed,
+      ready: () => daemon()?.isConnected === true,
+      listSessions,
+      keyInput: async (id) => (await daemon()?.getAgentState(id, { timeoutMs: KEY_INPUT_READ_TIMEOUT_MS })) ?? null,
+      workspacePtys,
+      isTaskWorkspace,
+      viewedWorkspace: () => mirror.getViewed()?.workspaceId ?? null,
+      viewed,
+      launchedTask: (id) => botWorkerSessionRecord(id)?.taskId ?? null,
+      launchedConversation,
+      closeWorkspace,
+      closePane: async (ptyId) => {
+        const paneId = mirror.peekPaneForPty(ptyId)?.paneId;
+        if (!paneId) return false;
+        const res = await sendToRenderer(() => deps.getMainWindow?.() ?? null, 'pane.close', { id: paneId }, { timeoutMs: CLOSE_TIMEOUT_MS });
+        return !!res && typeof res === 'object' && (res as { ok?: unknown }).ok === true;
+      },
+      changed: () => {
+        changed();
+        getAgentSlots()?.kick();
+      },
+    });
+    const sweepDeadPanes = (): void => {
+      void deadPanes.pass();
+    };
+    const firstDeadPass = setTimeout(sweepDeadPanes, DEAD_PANES_FIRST_PASS_MS);
+    firstDeadPass.unref?.();
+    offs.push(() => clearTimeout(firstDeadPass));
     const sweep = setInterval(() => {
       seedTurns();
+      sweepDeadPanes();
       const resumed = reclaimed.all().filter((r) => r.state === 'resumed' && Date.now() - r.at >= RESUMED_SETTLE_MS);
       if (resumed.length === 0) {
         reconcile();

@@ -1,0 +1,318 @@
+// ─── Dead shells in a bot task's own workspace ─────────────────────────────
+//
+// When the daemon restarts (a cold start, e.g. after a reboot) it respawns
+// every recovered pane as a fresh shell: a bot task's worker pane comes back
+// with no agent in it (listSessions `recoveredAgentUnconfirmed`). And a task
+// that ended keeps a plain shell in its workspace wherever the clear does not
+// close it (a failed task the owner never opened, a task the owner stopped).
+// Those shells hold nothing; this sweep is their housekeeping. Only a bot
+// task's own workspace (its ledger row names it, workerReclaim.ts
+// isTaskWorkspaceOf) is ever looked at, never an owner fan-out, a phone or a
+// hand-made workspace. Nothing is posted in a room; one log line per pane.
+//
+//   - Task ended (completed, cancelled, failed, stopped by the owner): each
+//     pane that runs no agent and no command (a shell at its prompt, or one
+//     respawned at the restart with nothing seen in it since) is closed
+//     through the renderer, and the whole workspace when every pane in it is
+//     such a shell. Folders are left to taskFolderCleanup.ts.
+//   - Task open (review_requested, working) whose worker pane is a shell
+//     respawned at the restart, or whose agent was seen to exit: the worker's
+//     resume record is written (workerReclaim.ts, the same record the idle
+//     reclaim writes: the conversation, its permission mode, the pane), so it
+//     holds no agent slot and Resume relaunches the same conversation. The
+//     pane stays: a renderer cannot remove a workspace's last pane, a
+//     destroyed session leaves a frozen tab, and a Resume into a new
+//     workspace would leave the old one bound to the task's mission (closing
+//     it later cancels the task).
+//
+// Never a pane that runs a command or a live agent, one typed into since its
+// agent left (or since the restart), or one in the workspace the owner views
+// (or the Bots worker panel shows); nothing while what the owner views is not
+// known, and nothing while a resume or a clear of the task is under way.
+// Idempotent: a closed pane leaves the daemon's list, a written record covers
+// the row's rev.
+
+import type { LedgerEntry } from '../../shared/ledger';
+import { taskThreadOf } from '../../shared/room';
+import { STOPPED_BY_OWNER } from './factoryStop';
+import {
+  CLEAR_RETRY_MS,
+  fillLaunchedModes,
+  holdWorkerPanes,
+  isReclaimedSince,
+  reclaimedSessionOf,
+  workerWorkspaceOf,
+  type ReclaimedSession,
+  type ReclaimedWorker,
+  type ReclaimedWorkers,
+  type WorkerReclaimPorts,
+  type WorkerSessionInfo,
+} from './workerReclaim';
+
+/** The daemon's session fields this sweep reads (daemon.listSessions). */
+export interface DeadPaneSession extends WorkerSessionInfo {
+  state?: unknown;
+  /** The daemon respawned the pane at its own restart and has seen no agent
+   *  there since. */
+  recoveredAgentUnconfirmed?: unknown;
+}
+
+/** One pane's key input as the daemon reports it (DaemonClient.getAgentState):
+ *  focus, pointer motion and terminal replies are not counted. */
+export interface PaneKeyInput {
+  /** Key writes since the pane's shell started (0: none). */
+  keyInputRevision?: number;
+  /** Milliseconds since the last of them. */
+  keyInputIdleMs?: number;
+}
+
+/** Whether a task was stopped by the owner (factoryStop.ts). Pure. */
+export function isStoppedByOwner(row: Pick<LedgerEntry, 'status' | 'summary' | 'updatedBy'>): boolean {
+  return row.status === 'cancelled' && row.summary === STOPPED_BY_OWNER && row.updatedBy.kind === 'system';
+}
+
+/** A shell the daemon respawned at its restart, with no agent and no command
+ *  seen in it since. Pure. */
+export function isRespawnedShell(s: DeadPaneSession | undefined): boolean {
+  return !!s && !s.exec && s.recoveredAgentUnconfirmed === true && s.agentProcessAlive !== true && s.commandRunning !== true;
+}
+
+/** A shell at its prompt (OSC 133) with no agent running. Pure. */
+export function isIdleShell(s: DeadPaneSession | undefined): boolean {
+  return !!s && !s.exec && s.agentProcessAlive !== true && s.commandRunning === false;
+}
+
+/** A shell whose agent was seen to exit, at its prompt. Pure. */
+function isAgentExitedShell(s: DeadPaneSession | undefined): boolean {
+  return !!s && !s.exec && s.agentProcessAlive === false && s.commandRunning === false;
+}
+
+/** Whether someone typed into a pane since `floor` (the agent left): a
+ *  respawned shell counts any key since the restart. A read without an
+ *  answer counts as typed. Pure. */
+export function typedSince(input: PaneKeyInput | null, floor: number, readAt: number, respawned: boolean): boolean {
+  if (!input || input.keyInputRevision === undefined) return true;
+  if (input.keyInputRevision === 0) return false;
+  if (respawned || input.keyInputIdleMs === undefined) return true;
+  return readAt - input.keyInputIdleMs >= floor;
+}
+
+export interface DeadPaneSweepPorts {
+  /** Every ledger row. */
+  rows: () => LedgerEntry[];
+  store: ReclaimedWorkers;
+  /** Whether the daemon can be asked now. */
+  ready: () => boolean;
+  listSessions: () => Promise<DeadPaneSession[]>;
+  /** A pane's key input, null when it could not be read. */
+  keyInput: (ptyId: string) => Promise<PaneKeyInput | null>;
+  /** Every pty a workspace owns (stashed panes included); [] when it is not
+   *  open; null while the tree is not known. */
+  workspacePtys: (workspaceId: string) => readonly string[] | null;
+  /** Whether `workspaceId` is the task's own workspace (isTaskWorkspaceOf). */
+  isTaskWorkspace: (rec: Pick<ReclaimedWorker, 'taskId' | 'botId' | 'ownerWorkspaceId' | 'paneWorkspaceId'>, workspaceId: string) => boolean;
+  /** The workspace the owner views, null when unknown (nothing closes). */
+  viewedWorkspace: () => string | null;
+  /** Whether the owner views the workspace (the active one, or the Bots
+   *  worker panel's). */
+  viewed: (workspaceId: string) => boolean;
+  /** The task whose own launch created the pane (the bot worker session
+   *  record), or null. */
+  launchedTask: (ptyId: string) => string | null;
+  launchedConversation?: WorkerReclaimPorts['launchedConversation'];
+  /** Close a workspace through the renderer's workspace.close; true when it closed. */
+  closeWorkspace: (workspaceId: string) => Promise<boolean>;
+  /** Close the pane holding `ptyId` through the renderer's pane.close; true when it closed. */
+  closePane: (ptyId: string) => Promise<boolean>;
+  changed?: () => void;
+  now?: () => number;
+  log?: (msg: string) => void;
+}
+
+export interface DeadPaneSweep {
+  /** One look at every bot task. Never throws; how many panes it closed
+   *  and how many resume records it wrote. A call during a pass does nothing. */
+  pass(): Promise<{ closed: number; recorded: number }>;
+}
+
+const ENDED: ReadonlySet<string> = new Set(['completed', 'cancelled', 'failed']);
+const OPEN: ReadonlySet<string> = new Set(['review_requested', 'working']);
+
+export function createDeadPaneSweep(ports: DeadPaneSweepPorts): DeadPaneSweep {
+  const now = ports.now ?? Date.now;
+  const log = ports.log ?? ((m: string) => console.log(m));
+  /** workspace → not before (a refused close). */
+  const notBefore = new Map<string, number>();
+  let running = false;
+
+  const safe = <T>(fn: () => T, fallback: T): T => {
+    try {
+      return fn();
+    } catch {
+      return fallback;
+    }
+  };
+
+  /** The panes among `ids` nobody typed into since `floor`. */
+  const untyped = async (ids: readonly string[], byId: Map<string, DeadPaneSession>, floor: number): Promise<string[]> => {
+    const reads = await Promise.all(ids.map((id) => ports.keyInput(id).catch(() => null)));
+    const at = now();
+    return ids.filter((id, i) => !typedSince(reads[i], floor, at, isRespawnedShell(byId.get(id))));
+  };
+
+  const closeEnded = async (row: LedgerEntry, rec: ReclaimedWorker | null, ws: string, ptys: readonly string[], byId: Map<string, DeadPaneSession>): Promise<number> => {
+    const gone = (id: string): boolean => {
+      const s = byId.get(id);
+      return !s || s.state === 'dead';
+    };
+    const shells = ptys.filter((id) => !gone(id) && (isRespawnedShell(byId.get(id)) || isIdleShell(byId.get(id))));
+    if (shells.length === 0) return 0;
+    // Typed into since the task ended (or since its worker last stopped):
+    // the owner's now.
+    const floor = Math.max(row.updatedAt, rec?.at ?? 0);
+    const closable = await untyped(shells, byId, floor);
+    if (closable.length === 0) return 0;
+    const release = holdWorkerPanes(row.id);
+    if (!release) return 0;
+    try {
+      // Read right before the close: the owner may have opened it meanwhile.
+      if (safe(() => ports.viewedWorkspace(), null) === null || safe(() => ports.viewed(ws), true)) return 0;
+      const why = isStoppedByOwner(row) ? 'stopped by owner' : row.status;
+      if (ptys.every((id) => gone(id) || closable.includes(id))) {
+        let ok = false;
+        try {
+          ok = await ports.closeWorkspace(ws);
+        } catch (err) {
+          log(`[factory] dead panes: ${ws} (task ${row.id}) was not closed: ${String(err)}`);
+        }
+        if (!ok) {
+          notBefore.set(ws, now() + CLEAR_RETRY_MS);
+          return 0;
+        }
+        for (const id of closable) log(`[factory] dead panes: closed ${id} with its workspace ${ws} (task ${row.id}, ${why})`);
+        notBefore.delete(ws);
+        return closable.length;
+      }
+      let closed = 0;
+      for (const id of closable) {
+        let ok = false;
+        try {
+          ok = await ports.closePane(id);
+        } catch {
+          ok = false;
+        }
+        if (ok) {
+          closed++;
+          log(`[factory] dead panes: closed ${id} in ${ws} (task ${row.id}, ${why})`);
+        } else {
+          notBefore.set(ws, now() + CLEAR_RETRY_MS);
+        }
+      }
+      return closed;
+    } finally {
+      release();
+    }
+  };
+
+  const recordOpen = async (row: LedgerEntry, rec: ReclaimedWorker | null, ws: string, ptys: readonly string[], byId: Map<string, DeadPaneSession>): Promise<boolean> => {
+    // A record that covers this rev already, or a worker being stopped or
+    // running again.
+    if (rec && (rec.state !== 'stopped' || isReclaimedSince(rec, row))) return false;
+    // An agent alive anywhere in the workspace: the worker may be that one.
+    if (ptys.some((id) => byId.get(id)?.agentProcessAlive === true)) return false;
+    // Only the task's own worker panes: recorded for it, or created by its launch.
+    const own = ptys.filter((id) => rec?.sessions.some((s) => s.sessionId === id) || safe(() => ports.launchedTask(id), null) === row.id);
+    const dead = own.filter((id) => isRespawnedShell(byId.get(id)) || isAgentExitedShell(byId.get(id)));
+    if (dead.length === 0 || dead.length < own.length) return false;
+    const quiet = await untyped(dead, byId, Math.max(row.updatedAt, rec?.at ?? 0));
+    if (quiet.length < dead.length) return false;
+    const panes = dead.map((id) => byId.get(id)).filter((s): s is DeadPaneSession => !!s).map(reclaimedSessionOf).filter((s): s is ReclaimedSession => !!s);
+    if (panes.length === 0) return false;
+    // A conversation an earlier record held stays (a respawned shell may not
+    // show its binding any more).
+    for (const p of panes) {
+      const old = rec?.sessions.find((k) => k.sessionId === p.sessionId);
+      if (!p.resumeSessionId && old?.resumeSessionId) {
+        p.resumeSessionId = old.resumeSessionId;
+        if (old.permissionMode) p.permissionMode = old.permissionMode;
+      }
+    }
+    fillLaunchedModes(panes, ports.launchedConversation);
+    const holds = holdWorkerPanes(row.id);
+    if (!holds) return false;
+    try {
+      // The row again: one that moved on meanwhile is left to the next pass.
+      const cur = safe(() => ports.rows().find((r) => r.id === row.id) ?? null, null);
+      if (!cur || cur.rev !== row.rev || cur.status !== row.status) return false;
+      await ports.store.put({
+        taskId: row.id,
+        botId: row.dispatch?.origin.botId ?? '',
+        ownerWorkspaceId: row.ownerWorkspaceId,
+        taskWorkspaceId: row.taskWorkspaceId,
+        title: row.title,
+        threadId: taskThreadOf(row),
+        // Still open: recorded like a reported task's paused worker.
+        ended: 'reported',
+        sessions: panes,
+        state: 'stopped',
+        at: now(),
+        endRev: row.rev,
+        ...(rec?.paneWorkspaceId ? { paneWorkspaceId: rec.paneWorkspaceId } : {}),
+      });
+    } catch (err) {
+      log(`[factory] dead panes: the worker of ${row.id} was not recorded: ${String(err)}`);
+      return false;
+    } finally {
+      holds();
+    }
+    for (const p of panes) log(`[factory] dead panes: recorded the worker of ${row.id} in ${p.sessionId} (${ws}) for Resume; its pane stays (task ${row.status})`);
+    return true;
+  };
+
+  const pass = async (): Promise<{ closed: number; recorded: number }> => {
+    let closed = 0;
+    let recorded = 0;
+    if (!ports.ready() || safe(() => ports.viewedWorkspace(), null) === null) return { closed, recorded };
+    const sessions = await ports.listSessions();
+    const byId = new Map(sessions.map((s) => [s.id, s]));
+    const at = now();
+    for (const row of ports.rows()) {
+      const origin = row.dispatch?.origin;
+      if (origin?.kind !== 'bot' || typeof origin.botId !== 'string' || !origin.botId) continue;
+      const ended = ENDED.has(row.status);
+      if (!ended && !OPEN.has(row.status)) continue;
+      const rec = ports.store.get(row.id);
+      // A resumed worker runs; a stop under way is the reclaim's.
+      if (rec && rec.state !== 'stopped') continue;
+      const ws = rec ? workerWorkspaceOf(rec) : row.taskWorkspaceId;
+      if (!ws || (notBefore.get(ws) ?? 0) > at) continue;
+      const id = { taskId: row.id, botId: origin.botId, ownerWorkspaceId: row.ownerWorkspaceId, ...(rec?.paneWorkspaceId ? { paneWorkspaceId: rec.paneWorkspaceId } : {}) };
+      if (!safe(() => ports.isTaskWorkspace(id, ws), false)) continue;
+      const ptys = safe(() => ports.workspacePtys(ws), null);
+      if (!ptys || ptys.length === 0) continue;
+      if (ended) {
+        if (safe(() => ports.viewed(ws), true)) continue;
+        closed += await closeEnded(row, rec, ws, ptys, byId);
+      } else if (await recordOpen(row, rec, ws, ptys, byId)) {
+        recorded++;
+      }
+    }
+    if (closed > 0 || recorded > 0) ports.changed?.();
+    return { closed, recorded };
+  };
+
+  return {
+    async pass() {
+      if (running) return { closed: 0, recorded: 0 };
+      running = true;
+      try {
+        return await pass();
+      } catch (err) {
+        log(`[factory] dead panes pass failed: ${String(err)}`);
+        return { closed: 0, recorded: 0 };
+      } finally {
+        running = false;
+      }
+    },
+  };
+}
