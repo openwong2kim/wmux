@@ -65,7 +65,8 @@ describe('where the spawns reserve the leaf (source shape)', () => {
   it('right before the awaited pty.create, released after any rollback', async () => {
     const fs = await import('node:fs');
     const path = await import('node:path');
-    const src = fs.readFileSync(path.resolve(process.cwd(), 'src/renderer/hooks/useRpcBridge.ts'), 'utf8');
+    // A Windows checkout has CRLF line ends.
+    const src = fs.readFileSync(path.resolve(process.cwd(), 'src/renderer/hooks/useRpcBridge.ts'), 'utf8').replace(/\r\n/g, '\n');
     const at = [...src.matchAll(/const releaseLeaf = reserveLeaf\(paneId\);\n\s+let ptyId: string;\n\s+try \{\n\s+const created = await window\.electronAPI\.pty\.create\(/g)];
     expect(at).toHaveLength(2);
     // Every rollback releases after the workspace is gone.
