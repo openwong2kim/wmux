@@ -319,6 +319,35 @@ describe('DaemonClient', () => {
       await mockServer.stop();
     });
 
+    it('passes the title and open-turn fields through, sanitized, and omits malformed ones (#2263)', async () => {
+      const pipeName = testPipeName('agent-state-title');
+      let extra: Record<string, unknown> = { title: '✳ build\x07 fix', turnOpen: true };
+      mockServer = createMockDaemonServer(pipeName, AUTH_TOKEN, {
+        'daemon.getAgentState': () => ({
+          agentName: 'Claude Code',
+          agentVerified: true,
+          agentStatus: 'idle',
+          inputQuiet: true,
+          inputRevision: 12,
+          incarnationId: 'incarnation-1',
+          ...extra,
+        }),
+      });
+      await mockServer.start();
+
+      client = new DaemonClient(pipeName, AUTH_TOKEN);
+      await client.connect();
+      await expect(client.getAgentState('sess-1')).resolves.toMatchObject({ title: '✳ build fix', turnOpen: true });
+      extra = { title: 7, turnOpen: 'yes' };
+      const malformed = await client.getAgentState('sess-1');
+      expect(malformed).not.toBeNull();
+      expect(malformed).not.toHaveProperty('title');
+      expect(malformed).not.toHaveProperty('turnOpen');
+
+      await client.disconnect();
+      await mockServer.stop();
+    });
+
     it('parses agentVerified as false, never null, when an older daemon omits it (#1307)', async () => {
       const pipeName = testPipeName('agent-state-unverified-field');
       mockServer = createMockDaemonServer(pipeName, AUTH_TOKEN, {

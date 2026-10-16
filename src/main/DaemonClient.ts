@@ -35,6 +35,7 @@ import { stripReplayQuerySequences } from '../shared/replayQuerySanitizer';
 import { createSessionPipeMarkers } from '../daemon/sessionPipeMarkers';
 import { SessionPipeStreamScanner } from './daemon/sessionPipeStreamScanner';
 import { DAEMON_RPC_TIMEOUT_MS } from '../shared/timeouts';
+import { sanitizeTitle } from './pty/titleDetect';
 import {
   getDaemonAuthTokenPath,
   getDaemonSocketPath,
@@ -709,6 +710,10 @@ export class DaemonClient extends EventEmitter {
     hasDraft?: boolean;
     /** Milliseconds since the last key input. Absent on an older daemon. */
     keyInputIdleMs?: number;
+    /** #2263 — the latest window title ('' = none yet). Absent on an older daemon. */
+    title?: string;
+    /** #2263 — a turn is open (a quiet one reads `idle` in agentStatus). Absent on an older daemon. */
+    turnOpen?: boolean;
   } | null> {
     try {
       const result = await (opts.timeoutMs !== undefined
@@ -725,6 +730,8 @@ export class DaemonClient extends EventEmitter {
         hookReports?: unknown;
         hasDraft?: unknown;
         keyInputIdleMs?: unknown;
+        title?: unknown;
+        turnOpen?: unknown;
       };
       const validStatuses: AgentStatus[] = [
         'running',
@@ -764,6 +771,8 @@ export class DaemonClient extends EventEmitter {
         ...(typeof result.keyInputIdleMs === 'number' && Number.isFinite(result.keyInputIdleMs) && result.keyInputIdleMs >= 0
           ? { keyInputIdleMs: result.keyInputIdleMs }
           : {}),
+        ...(typeof result.title === 'string' ? { title: sanitizeTitle(result.title) } : {}),
+        ...(typeof result.turnOpen === 'boolean' ? { turnOpen: result.turnOpen } : {}),
       };
     } catch {
       return null;

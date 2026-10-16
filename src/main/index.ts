@@ -178,6 +178,7 @@ import { DaemonClient, getDaemonPipeName, readDaemonAuthToken } from './DaemonCl
 import { raceDaemonShutdown } from './daemonShutdownRace';
 import { migrateScrollbackOnce } from './scrollback/legacyMigration';
 import { DaemonNotificationRouter } from './notification/DaemonNotificationRouter';
+import { resyncAfterResubscribe } from './notification/resubscribeResync';
 import { markRendererNotificationListenerNotReady } from './notification/rendererNotificationReadiness';
 import { RemoteInboxBridge } from './lanlink/RemoteInboxBridge';
 import { RemoteA2aBridge } from './a2a/RemoteA2aBridge';
@@ -2296,6 +2297,24 @@ app.on('ready', async () => {
           );
         }
       }
+    },
+    // #2263 — the daemon dropped our event subscription and the health probe
+    // subscribed again; correct the panes from a fresh read of their state.
+    onEventsResubscribed: (client) => {
+      void resyncAfterResubscribe({
+        listSessionIds: async () => {
+          const sessions = (await client.rpc('daemon.listSessions', {})) as Array<{ id?: unknown }>;
+          return sessions.map((s) => s.id).filter((id): id is string => typeof id === 'string' && id.length > 0);
+        },
+        readState: (id) => client.getAgentState(id),
+        emitTitle: (id, title) => { client.emit('session:title', { sessionId: id, title }); },
+        hookRouter: hookSignalRouter,
+        win: mainWindow && !mainWindow.isDestroyed() ? mainWindow : null,
+      }).then((r) => {
+        logLine('info', 'daemon-respawn', `resync after resubscribe: ${r.panes} panes, ${r.statusesCorrected} statuses corrected, ${r.titles} titles`);
+      }, (err: unknown) => {
+        logLine('warn', 'daemon-respawn', `resync after resubscribe failed: ${err instanceof Error ? err.message : String(err)}`);
+      });
     },
     logger: {
       info: (msg) => { logLine('info', 'daemon-respawn', msg); },

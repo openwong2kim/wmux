@@ -500,6 +500,32 @@ describe('DaemonRespawnController health probe', () => {
     expect(h.deps.onUninstall).not.toHaveBeenCalled();
   });
 
+  it('asks the owner to resync once the dropped subscription is restored (#2263)', async () => {
+    const h = makeHarness({
+      config: { healthIntervalMs: 1000, healthTimeoutMs: 5000, baseBackoffMs: 50, budget: 5 },
+    });
+    const onEventsResubscribed = vi.fn();
+    h.deps.onEventsResubscribed = onEventsResubscribed;
+    const c1 = new FakeDaemonClient();
+    h.clientQueue.push(c1);
+    let subscribed = true;
+    c1.rpcImpl = async (method) =>
+      method === 'daemon.ping' ? { status: 'ok', eventsSubscribed: subscribed } : {};
+
+    await h.controller.bootstrap();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(onEventsResubscribed).not.toHaveBeenCalled();
+
+    subscribed = false;
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(onEventsResubscribed).toHaveBeenCalledTimes(1);
+    expect(onEventsResubscribed).toHaveBeenCalledWith(c1);
+
+    subscribed = true;
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(onEventsResubscribed).toHaveBeenCalledTimes(1);
+  });
+
   it('leaves an older daemon that does not report the subscription alone', async () => {
     const h = makeHarness({
       config: { healthIntervalMs: 1000, healthTimeoutMs: 5000, baseBackoffMs: 50, budget: 5 },

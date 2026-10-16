@@ -4955,6 +4955,11 @@ function registerRpcHandlers(
       // whether the composer holds a draft, and how long keys have been quiet.
       hasDraft: bridge.hasDraft(),
       keyInputIdleMs: bridge.keyInputIdleMs(),
+      // #2263 — additive, for main's resync after it subscribes to events
+      // again: the latest window title, which it may have missed meanwhile,
+      // and whether a turn is open (a quiet turn reads `idle` above).
+      title: bridge.getTitle().title,
+      turnOpen: bridge.isTurnOpen(),
     };
   });
   // #1594 — what main's terminal_send needs to paste into a session: the agent
