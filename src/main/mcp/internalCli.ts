@@ -73,6 +73,9 @@ export const WMUX_CLI_METHODS: ReadonlySet<RpcMethod> = new Set<RpcMethod>([
   'notify',
   // a2a identity resolution (`wmux` resolves its own pane identity)
   'a2a.resolve.identity',
+  // A native Codex launch in this CLI's verified pane, never an arbitrary target.
+  'codex.relay.prepare',
+  'codex.relay.close',
   // browser control (`wmux browser ...`)
   'browser.open',
   'browser.navigate',

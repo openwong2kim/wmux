@@ -1,5 +1,29 @@
 # wmux ↔ Codex CLI
 
+## Native Windows shared-daemon sessions
+
+Run `wmux codex` in a PowerShell terminal pane to start a conversation bound to
+that pane, or `wmux codex resume` to use Codex's resume picker. Other TUI options
+are forwarded to the account's installed managed Codex binary. This path requires
+Codex with `app-server proxy`, `--remote` and `--remote-auth-token-env` (verified
+with 0.162.1), and a matching wmux app/daemon/CLI build.
+
+The launcher obtains a pane claim from main's process-tree walk. The daemon
+reserves that pane's existing relay, exposes an authenticated loopback WebSocket,
+and connects to the running Codex account socket through its native proxy. The
+confirmed start/resume/fork response writes the existing thread-owner index before
+the TUI receives it. MCP resolves each `_meta.threadId` against that index and a
+live pane anchor; the shared server's inherited starter-pane environment does not
+choose the sender. The launcher closes only its own lease when the TUI exits.
+
+This does not restart the shared Codex server or intercept plain `codex` commands.
+Existing sessions must exit normally and be resumed with `wmux codex resume` to
+use the link. A thread still loaded elsewhere is refused by the existing relay
+policy. Explicit `--no-daemon` or a custom `--remote` belong to native `codex`, not
+this launcher. Existing Windows behavior for sessions without an owner is unchanged.
+
+## Lifecycle bridges
+
 Two independent bridges live here. They report the same turn boundary by
 different routes, and you want **one** of them, not both.
 
@@ -339,7 +363,7 @@ The parent's argv comes from `/proc` on Linux and from `ps` `comm` plus
 `args` elsewhere, so an executable path with spaces stays one token; an argv
 line that cannot be aligned counts as uninspectable, not as another parent.
 
-Where an owner can be recorded (the pane relay, off Windows), a call from a
+On POSIX, a call from a
 shared server is identified by its thread only. The PID walks, the cached
 identity, the commander token, the `WMUX_WORKSPACE_ID` / `WMUX_PTY_ID` env
 hints, the external-client terminal claim and the process-wide computer-use
@@ -360,17 +384,17 @@ script run by Codex's shell tool, an external MCP client — cannot claim a
 thread id and keeps the existing resolution. A call without a thread id whose
 parent could not be inspected also keeps it.
 
-On Windows the pane relay is not used, so no owner is recorded for a session
-behind the shared server. There a call whose thread has no owner record keeps
-the existing resolution: the walk to the pane that started the server, which is
-right for a single Codex pane. A thread that does have a live owner still
-resolves to it. A Windows owner writer is a separate follow-up.
+On Windows, `wmux codex` records an owner through the pane relay. A thread with
+a live owner resolves to it. For compatibility, sessions without an owner keep
+the existing resolution: the walk to the pane that started the server. Plain
+`codex` in PowerShell does not use the relay; use the launcher described above
+for shared-daemon sessions that need pane-specific identity.
 
 Diagnostics go to the MCP server's stderr: `identity: parent shared-server`,
 `identity: codex-thread HIT ws=… pty=…` or `identity: codex-thread MISS <reason>`.
 
 A thread has an owner only when a pane recorded one: wmux's own Codex launches
-(through the pane relay, off Windows) and a pane-side `SessionStart` do. A
+(through the pane relay, including `wmux codex` on Windows) and a pane-side `SessionStart` do. A
 `codex` typed in a shell that starts or joins the shared server records none
 (the shell guard from #1584 covers bash and zsh only), so off Windows its A2A
 calls fail closed until it is started through wmux or with `--no-daemon`.

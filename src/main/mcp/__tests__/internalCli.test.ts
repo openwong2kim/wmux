@@ -121,6 +121,9 @@ describe('WMUX_CLI_METHODS source invariant', () => {
       // through the stores' in-process locks (the CLI could already do this
       // by writing the files directly, so the grant adds no new reach).
       'deck.state.prune',
+      // Launcher-only; main requires its own live pane claim, no target argument.
+      'codex.relay.prepare',
+      'codex.relay.close',
     ]);
     const leaked = reserved
       .filter((m) => WMUX_CLI_METHODS.has(m))

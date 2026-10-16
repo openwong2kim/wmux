@@ -69,6 +69,7 @@ import { registerDeckRpc } from './pipe/handlers/deck.rpc';
 import { registerNotifyRpc } from './pipe/handlers/notify.rpc';
 import { registerMetaRpc } from './pipe/handlers/meta.rpc';
 import { registerSystemRpc } from './pipe/handlers/system.rpc';
+import { registerCodexRpc } from './pipe/handlers/codex.rpc';
 import { registerPerfRpc } from './pipe/handlers/perf.rpc';
 import { registerComputerRpc } from './pipe/handlers/computer.rpc';
 import { resolvePtyOwnerWorkspace } from './workspace/ptyOwnership';
@@ -998,6 +999,7 @@ registerDeckRpc(rpcRouter, () => mainWindow);
 registerNotifyRpc(rpcRouter, () => mainWindow);
 registerMetaRpc(rpcRouter, () => mainWindow);
 registerSystemRpc(rpcRouter);
+registerCodexRpc(rpcRouter, () => mainWindow, () => daemonClient);
 registerPerfRpc(rpcRouter);
 // Desktop computer use. Built on first call, so an install that never opts in
 // (Settings › Computer use) never constructs it or spawns a helper. Consent rides

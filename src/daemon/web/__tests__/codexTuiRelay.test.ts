@@ -1,4 +1,5 @@
 import {createServer} from 'node:http';
+import net from 'node:net';
 import {spawn} from 'node:child_process';
 import {mkdtemp,mkdir,rm,stat,access,symlink,writeFile,unlink} from 'node:fs/promises';
 import {readFileSync} from 'node:fs';
@@ -158,6 +159,18 @@ describe.skipIf(process.platform === 'win32')('pane-owned Codex Unix relay',()=>
       client.send('{bad json}');await closed;
       expect(f.relay.current()).toBeUndefined();
     } finally {await f.cleanup();}
+  });
+  it('closes a refused upgrade socket right away, so the relay can still close',async()=>{
+    const f=await fixture();
+    // A peer that never closes its own side: the refused socket must not wait for it.
+    const raw=net.connect({path:f.relay.url.replace('unix://',''),allowHalfOpen:true});
+    try {
+      const response=new Promise<string>(resolve=>{let text='';raw.on('data',bytes=>{text+=bytes.toString();});raw.once('end',()=>resolve(text));});
+      raw.write('GET /rpc HTTP/1.1\r\nHost: localhost\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nOrigin: https://untrusted.invalid\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n');
+      expect(await response).toMatch(/^HTTP\/1\.1 403 /);
+      const closed=await Promise.race([f.relay.close().then(()=>'closed'),new Promise<string>(resolve=>setTimeout(()=>resolve('still open'),2000))]);
+      expect(closed).toBe('closed');
+    } finally {raw.destroy();await f.cleanup();}
   });
   it('publishes the new selection before the correlated response reaches the TUI',async()=>{
     // Ordering is only observable through the refusal barrier: a response whose

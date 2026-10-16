@@ -1,10 +1,12 @@
 import {createServer} from 'node:http';
+import {randomBytes, timingSafeEqual} from 'node:crypto';
 import {chmod,lstat,realpath,mkdtemp,rm} from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import WebSocket,{WebSocketServer,type RawData} from 'ws';
 import {CodexTuiSelectionTracker} from './codexTuiSelection';
 import {connectCodexSettings} from './codexSettingsTransport';
+import {openCodexAccountSocket,windowsCodexSocketIdentity,validCodexAccountPath} from './codexAccountSocket';
 import {classify,reviewClientFrame,threadIdsFromResponse,type PolicyContext} from './codexRelayPolicy';
 import {codexDecisionFromRequest,type CodexDecisionAnswer,type CodexDecisionRequest} from './codexDecisions';
 
@@ -100,7 +102,7 @@ export async function createCodexTuiRelay(options:{codeHome?:string; onRequestMe
   ensureUpstream?:()=>Promise<void>;
   reconnect?:CodexRelayReconnect}) {
   const codeHome = options.codeHome ?? path.join(os.homedir(),'.codex');
-  if (!path.isAbsolute(codeHome) || codeHome.includes('\0') || codeHome.includes(':')) throw new Error('Invalid Codex account scope');
+  if (!validCodexAccountPath(codeHome)) throw new Error('Invalid Codex account scope');
   const upstreamPath = codexUpstreamPath(codeHome);
   const createdOn = await verifyUpstreamSocket(upstreamPath);
   // A socket inode alone does not prove a running/compatible account server.
@@ -113,6 +115,7 @@ export async function createCodexTuiRelay(options:{codeHome?:string; onRequestMe
   try {await probeUpstream();} catch {throw new CodexRelayUnavailableError();}
   const directory = await mkdtemp(path.join(os.tmpdir(),'wmux-tui-'));
   const socketPath = path.join(directory,'tui.sock');
+  const authToken = process.platform === 'win32' ? randomBytes(32).toString('hex') : undefined;
   const tracker = new CodexTuiSelectionTracker();
   const server = createServer({maxHeaderSize:8192,headersTimeout:5000,requestTimeout:5000,keepAliveTimeout:1000},(_req,res)=>{res.writeHead(404);res.end();});
   server.maxConnections = 4;
@@ -139,6 +142,7 @@ export async function createCodexTuiRelay(options:{codeHome?:string; onRequestMe
   // Ends the current connection, answering what it never sent upstream.
   let endCurrent:(()=>void) | undefined;
   let closing:Promise<void> | undefined;
+  let unclaimedTimer:ReturnType<typeof setTimeout> | undefined;
   // The live connection's phone-answer path; none before a TUI connects.
   let answerOnConnection:((threadId:string,requestId:string,decision:CodexDecisionAnswer)=>Promise<CodexAnswerOutcome>) | undefined;
   // Turn identity as the pane's own stream reports it (`turn/started`,
@@ -186,6 +190,7 @@ export async function createCodexTuiRelay(options:{codeHome?:string; onRequestMe
   };
   const close = ():Promise<void> => {
     if (closing) return closing;
+    if (unclaimedTimer) clearTimeout(unclaimedTimer);
     retired = true;
     if (loss) { clearTimeout(loss.deadline);loss = undefined; }
     tracker.close();
@@ -203,13 +208,20 @@ export async function createCodexTuiRelay(options:{codeHome?:string; onRequestMe
     return closing;
   };
   server.on('upgrade',(request,socket,head)=>{
+    const supplied = Buffer.from(request.headers.authorization ?? '');
+    const expected = Buffer.from(`Bearer ${authToken}`);
+    const authenticated = !authToken || supplied.length === expected.length && timingSafeEqual(supplied,expected);
     // One TUI: the first claim, and again only while a lost link waits for it.
-    if (retired || claimed || everClaimed && !loss || request.headers.origin || !['/','/rpc'].includes(request.url ?? '')) {
-      socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
+    if (!authenticated || retired || claimed || everClaimed && !loss || request.headers.origin || !['/','/rpc'].includes(request.url ?? '')) {
+      // Close the socket once the refusal is flushed: an upgraded socket is
+      // half-open after end() until the peer closes its side, and it still
+      // counts toward maxConnections and holds server.close().
+      socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n',()=>socket.destroy());
       return;
     }
     claimed = true;
     everClaimed = true;
+    if (unclaimedTimer) clearTimeout(unclaimedTimer);
     wss.handleUpgrade(request,socket,head,client=>wss.emit('connection',client));
   });
   wss.on('connection',client=>{
@@ -598,7 +610,9 @@ export async function createCodexTuiRelay(options:{codeHome?:string; onRequestMe
         } catch {retryLater();return;}
         if (!alive || retired) return;
       }
-      const attempt = new WebSocket(`ws+unix://${upstreamPath}:/`,{handshakeTimeout:5000,maxPayload:MAX_FRAME,perMessageDeflate:false,followRedirects:false});
+      let attempt:WebSocket;
+      try {attempt = openCodexAccountSocket(upstreamPath,{handshakeTimeout:5000,maxPayload:MAX_FRAME,perMessageDeflate:false,followRedirects:false});}
+      catch {if (rejoining) retryLater();else {endConnection();retire();}return;}
       upstream = attempt;sockets.add(attempt);
       let over = false;
       const failed = () => {
@@ -632,18 +646,26 @@ export async function createCodexTuiRelay(options:{codeHome?:string; onRequestMe
     void dial();
   });
   try {
-    await chmod(directory,0o700);
-    if (Buffer.byteLength(socketPath) > 100) throw new Error('Codex relay socket path too long');
+    if (!authToken) await chmod(directory,0o700);
+    if (!authToken && Buffer.byteLength(socketPath) > 100) throw new Error('Codex relay socket path too long');
     await new Promise<void>((resolve,reject)=>{
       server.once('error',reject);
-      server.listen(socketPath,()=>{server.removeListener('error',reject);resolve();});
+      const listening = ()=>{server.removeListener('error',reject);resolve();};
+      if (authToken) server.listen(0,'127.0.0.1',listening);
+      else server.listen(socketPath,listening);
     });
     server.on('error',()=>{void close().catch(()=> { /* noop */ });});
-    await chmod(socketPath,0o600);
+    if (!authToken) await chmod(socketPath,0o600);
+    const address = server.address();
+    const url = authToken && address && typeof address !== 'string' ? `ws://127.0.0.1:${address.port}` : `unix://${socketPath}`;
+    if (authToken && !everClaimed) {
+      unclaimedTimer = setTimeout(()=>{void close().catch(()=> { /* noop */ });},30_000);
+      unclaimedTimer.unref?.();
+    }
     // `retired` lets the owner tell "this relay is live and nothing is selected"
     // from "this relay is gone" — after close() the tracker reports no selection
     // either way, and only the former may erase a durable recovery hint.
-    return {url:`unix://${socketPath}`,current:()=>tracker.current(),retired:()=>retired,close,
+    return {url,...(authToken ? {authToken} : {}),current:()=>tracker.current(),retired:()=>retired,close,
       /** The TUI's server link was lost and no new one has opened yet: nothing here is live. */
       disconnected:()=>!retired && !!loss,
       /** A TUI linked to the server through this relay at least once. */
@@ -698,6 +720,7 @@ export const codexUpstreamPath = (codeHome:string):string => path.join(codeHome,
  * again before every re-dial; returns which socket it is.
  */
 async function verifyUpstreamSocket(upstreamPath:string):Promise<string> {
+  if (process.platform === 'win32') return windowsCodexSocketIdentity(upstreamPath);
   const link = await lstat(upstreamPath);
   const target = link.isSymbolicLink() ? await realpath(upstreamPath) : upstreamPath;
   const stat = await lstat(target);
@@ -749,7 +772,7 @@ export function interruptUpstream(upstreamPath:string, threadId:string, turnId:s
 function requestUpstream(upstreamPath:string, method:string, params:Record<string,unknown>, timeoutMs:number):Promise<unknown> {
   return new Promise((resolve,reject)=>{
     let sent = false;
-    const socket = new WebSocket(`ws+unix://${upstreamPath}:/`,{handshakeTimeout:timeoutMs,maxPayload:MAX_FRAME,perMessageDeflate:false,followRedirects:false});
+    const socket = openCodexAccountSocket(upstreamPath,{handshakeTimeout:timeoutMs,maxPayload:MAX_FRAME,perMessageDeflate:false,followRedirects:false});
     let done = false;
     const finish = (error:Error|undefined, value?:unknown) => {
       if (done) return; done = true; clearTimeout(timer);

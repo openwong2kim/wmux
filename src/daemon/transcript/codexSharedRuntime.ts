@@ -5,6 +5,7 @@ import path from 'node:path';
 import { runCli } from '../../shared/runCli';
 import { codexRuntimeEnv } from './terminalLaunch';
 import { agentExecEnv } from '../../shared/execEnv';
+import { windowsCodexSocketIdentity } from '../web/codexAccountSocket';
 
 /**
  * The shared, per-account Codex background server, as wmux sees it.
@@ -43,7 +44,7 @@ export interface CodexSharedRuntimeDeps {
   /** Shared by every wmux instance of this user (not suffixed per instance). */
   stateDir: string;
   /** Identity of a socket file (inode + mtime), or undefined when absent. */
-  socketIdentity?(socketPath: string): string | undefined;
+  socketIdentity?(socketPath: string): string | undefined | Promise<string | undefined>;
   notice(paneId: string | undefined, title: string, body: string): void;
   log(level: 'info' | 'warn', message: string): void;
   now?(): number;
@@ -76,8 +77,11 @@ export function parseDaemonReport(stdout: string): DaemonReport {
   return {};
 }
 
-function defaultSocketIdentity(socketPath: string): string | undefined {
+async function defaultSocketIdentity(socketPath: string): Promise<string | undefined> {
   try {
+    // Native Windows AF_UNIX reparse points reject Node stat with EACCES.
+    // Use the same exact socket metadata as the relay, including after restart.
+    if (process.platform === 'win32') return await windowsCodexSocketIdentity(socketPath);
     const st = fs.statSync(socketPath);
     return `${st.ino}:${Math.trunc(st.mtimeMs)}`;
   } catch {
@@ -150,13 +154,13 @@ export function createCodexSharedRuntime(deps: CodexSharedRuntimeDeps) {
     const before = await deps.runDaemon('version', env).then(parseDaemonReport, (): DaemonReport => ({}));
     const socketPath = before.socketPath ?? path.join(home, 'app-server-control', 'app-server-control.sock');
     if (before.status === 'running') {
-      const id = socketPath ? socketIdentity(socketPath) : undefined;
+      const id = socketPath ? await socketIdentity(socketPath) : undefined;
       return id && readRecord(home) === id ? { kind: 'clean' } : { kind: 'unproven' };
     }
-    const socketBefore = socketPath ? socketIdentity(socketPath) : undefined;
+    const socketBefore = socketPath ? await socketIdentity(socketPath) : undefined;
     const started = parseDaemonReport(await deps.runDaemon('start', env));
     const startedPath = started.socketPath ?? socketPath;
-    const socketAfter = startedPath ? socketIdentity(startedPath) : undefined;
+    const socketAfter = startedPath ? await socketIdentity(startedPath) : undefined;
     // Proof of creation: this call's start says it started the server, and the
     // socket it serves is new. Anything else (a start that raced ours from
     // outside wmux, a missing socket) stays unproven.
