@@ -153,6 +153,9 @@ describe('a Command Prompt launch line', () => {
       `claude ${arg} > out.txt`,
       `claude ${arg}\r\ncalc`,
       `claude "x & calc" ${arg}`,
+      // A prompt path cmd cannot be handed (UNC, `%`, `!`) keeps the PowerShell shape.
+      `claude ${promptFileArgument('\\\\srv\\share\\prompt.md', 'win32')}`,
+      `claude ${promptFileArgument('/mnt/c/p/prompt.md', 'linux')}`,
     ]) expect(isPlainCmdLaunchLine(line), line).toBe(false);
   });
 });
