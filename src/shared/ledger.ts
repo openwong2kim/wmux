@@ -117,10 +117,12 @@ export interface LedgerDispatch {
    *  and cards go there; absent (no thread, `general`, or a row written
    *  before it existed) = the task's own `task:<id>` thread. */
   threadId?: string;
-  /** A bot's task: the handoff the wake that started it delivered (a
-   *  dispatch it was given), read from main's own wake state at dispatch.
-   *  The task's wakes answer that handoff: a `result` sent from them, with no
-   *  replyTo, is that handoff's result. Absent = none. */
+  /** A bot's task: the handoff it belongs to, settled by main at dispatch
+   *  (HandoffRouter.taskHandoff): the one the wake that started it
+   *  delivered, unless the task's subject (named thread, checked-out PR) is
+   *  another open dispatch's to this bot. The task's wakes answer that
+   *  handoff: a `result` sent from them, with no replyTo, is that handoff's
+   *  result. Absent = none. */
   handoffId?: string;
   /** A bot's task: the connections its worker was started with (names). */
   connectors?: string[];

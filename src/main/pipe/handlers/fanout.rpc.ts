@@ -132,6 +132,7 @@ import { getBotFanoutReceipts } from '../../factory/botFanoutReceipts';
 import { noticeWorkerStarts, plainStartFailure, type BotWorkerStartOutcome } from '../../factory/botNotices';
 import { runningWakeTainted } from '../../factory/wakeTaint';
 import { botThreadRefusal, resolveRoomPorts, runningWake } from '../../factory/roomWriter';
+import { getHandoffRouter } from '../../factory/handoffRouter';
 import { emitBotHook } from '../../factory/botHooks';
 import { checkWorkers, recordWorkerStart, type BotUsage, type BudgetRefusalReason } from '../../factory/budget';
 import { getTaskLedger } from '../../deck/taskLedgerHost';
@@ -687,6 +688,10 @@ export interface FanOutBotPort {
    *  or the one its task wake answers), or null. Its tasks record it, so
    *  their wakes still answer it. */
   currentWakeHandoff?(botId: string): string | null;
+  /** The handoff a task the bot starts now belongs to, or null for none
+   *  (HandoffRouter.taskHandoff): the wake's own unless the task's subject
+   *  (a named thread, a checked-out PR) is another one's. Absent: the wake's. */
+  taskHandoff?(bot: { workspaceId: string; botId: string }, subject: { threadId?: ThreadId; pr?: { number: number; threadId: ThreadId } }, wakeHandoffId: string | undefined): string | null;
   /** Whether that running wake carried outside text (factory/wakeTaint.ts);
    *  true when it cannot be told. Its tasks' dispatch carries the mark. */
   currentWakeTainted(botId: string): boolean;
@@ -823,6 +828,10 @@ function defaultBotPort(): FanOutBotPort | null {
     currentWakeHandoff: (botId) => {
       const wake = runningWake(resolveRoomPorts(), botId);
       return wake && wake.wakeId === runtime.currentTurn(botId)?.wakeId ? wake.handoffId ?? null : null;
+    },
+    taskHandoff: (bot, subject, wakeHandoffId) => {
+      const router = getHandoffRouter();
+      return router ? router.taskHandoff(bot, subject, wakeHandoffId) : wakeHandoffId ?? null;
     },
     refreshLiveness: refreshSlotLiveness,
     // Open bot tasks whose worker still runs, plus resumed workers whose task
@@ -1263,9 +1272,27 @@ export function registerFanOutRpc(
       // The PR a task checks out is its subject, unless the wake is a
       // conversation (a handoff's, a 1:1, a group chat) the flow stays in.
       const inConversation = /^(handoff|dm|group):/.test(botWakeThread ?? '');
-      const pr = inConversation ? undefined : /^pull\/([1-9][0-9]*)\/head$/.exec(checkout?.fetchRef ?? '')?.[1];
+      const checkoutPr = /^pull\/([1-9][0-9]*)\/head$/.exec(checkout?.fetchRef ?? '')?.[1];
+      const pr = inConversation ? undefined : checkoutPr;
       const repoKey = botProfile?.repo?.repoKey;
       const prThread = pr && repoKey ? parseThreadId(prThreadId(repoKey, Number(pr))) ?? undefined : undefined;
+      // The handoff the tasks answer: the wake's, unless their subject is
+      // another one's (the reviewer's wake about PR #Y starting the queued
+      // worker for #X binds it to #X's dispatch, else to none).
+      const subjectThread = botNamedThread ?? prThread;
+      const namedPr = Number(/^pr:.+#([1-9][0-9]*)$/.exec(subjectThread ?? '')?.[1]);
+      const subjectPr = checkoutPr ? Number(checkoutPr) : repoKey && namedPr && subjectThread === prThreadId(repoKey, namedPr) ? namedPr : undefined;
+      const subjectPrThread = subjectPr && repoKey ? parseThreadId(prThreadId(repoKey, subjectPr)) : null;
+      if (botPort?.taskHandoff) {
+        botWakeHandoff = botPort.taskHandoff(
+          { workspaceId: bot.workspaceId, botId: bot.botId },
+          {
+            ...(subjectThread ? { threadId: subjectThread } : {}),
+            ...(subjectPr && subjectPrThread ? { pr: { number: subjectPr, threadId: subjectPrThread } } : {}),
+          },
+          botWakeHandoff,
+        ) ?? undefined;
+      }
       // General names no subject: such tasks keep a thread of their own, as
       // from a wake in General.
       botWakeThread = taskOriginThread(botNamedThread ?? prThread ?? botWakeThread);

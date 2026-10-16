@@ -644,6 +644,38 @@ export class HandoffRouter {
     };
   }
 
+  /** The handoff a worker a bot starts now belongs to, recorded on its task
+   *  (LedgerDispatch.handoffId), or null for none. `wakeHandoffId` is the
+   *  handoff of the wake starting it; `subject` is the thread the bot named or
+   *  the PR derived from its checkout (and that PR's thread). With no
+   *  subject, or one the wake's handoff is about, the wake's handoff, as
+   *  before. Otherwise the one open dispatch addressed to this bot that is
+   *  about the subject (its thread, or the PR by thread or refs.pr); with
+   *  several, none. With none, the wake's handoff only while it cannot be
+   *  told to be about something else (no PR of its own, no thread of the
+   *  subject's kind): a task is never bound to another subject's handoff. */
+  taskHandoff(
+    bot: { workspaceId: string; botId: string },
+    subject: { threadId?: ThreadId; pr?: { number: number; threadId: ThreadId } },
+    wakeHandoffId: string | undefined,
+  ): string | null {
+    const wake = wakeHandoffId ? this.records.get(wakeHandoffId) ?? null : null;
+    const { threadId, pr } = subject;
+    if (!threadId && !pr) return wakeHandoffId ?? null;
+    const about = (h: Handoff): boolean =>
+      h.threadId === threadId || (!!pr && (h.threadId === pr.threadId || h.payload.refs?.pr === pr.number));
+    if (wake && about(wake)) return wake.id;
+    const candidates = [...this.records.values()].filter((h) =>
+      h.kind === 'dispatch' && h.to.kind === 'bot' && h.to.botId === bot.botId && h.to.workspaceId === bot.workspaceId
+      && (h.status === 'queued' || h.status === 'delivered') && !this.answered(h.id) && h.id !== wake?.id && about(h));
+    if (candidates.length === 1) return candidates[0].id;
+    if (candidates.length > 1 || !wakeHandoffId) return null;
+    const kind = (t: string | undefined): string | undefined => t?.slice(0, t.indexOf(':') + 1) || undefined;
+    const elsewhere = !!wake && ((!!threadId && kind(wake.threadId) === kind(threadId))
+      || (!!pr && (kind(wake.threadId) === 'pr:' || wake.payload.refs?.pr !== undefined)));
+    return elsewhere ? null : wakeHandoffId;
+  }
+
   /** A relay's last result (or one it stopped at): the hops before it in
    *  its chain, oldest first (at most 10). */
   private relayTrail(h: Handoff): { trail?: string[] } {

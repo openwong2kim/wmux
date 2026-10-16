@@ -1221,6 +1221,80 @@ describe('the team lead and a chain that outlives a worker', () => {
   });
 });
 
+describe('the handoff a bot\'s worker belongs to (taskHandoff)', () => {
+  const PR = (n: number) => `pr:github.com/acme/app#${n}` as ThreadId;
+  const subject = (n: number, thread = true) => ({ ...(thread ? { threadId: PR(n) } : {}), pr: { number: n, threadId: PR(n) } });
+  async function reviewerRig() {
+    const lead = bot('ws1', 'moa');
+    const reviewer = bot('ws1', 'verifier');
+    const other = bot('ws1', 'verifier');
+    const h = await harness([lead, reviewer, other]);
+    const send = (to: BotProfile, n: number, extra: { threadId?: ThreadId; refs?: { pr: number } } = { threadId: PR(n) }) => {
+      const d = h.router.send(binding(lead), { kind: 'dispatch', toBotId: to.id, title: `verify PR #${n}`, body: '', ...extra });
+      if (!d.ok) throw new Error('dispatch failed');
+      return d.handoffId;
+    };
+    return { h, lead, reviewer, other, send, me: { workspaceId: reviewer.workspaceId, botId: reviewer.id } };
+  }
+
+  it('a worker for PR #X started from the wake about #Y answers #X\'s dispatch, and #Y\'s stays open', async () => {
+    const { h, lead, reviewer, send, me } = await reviewerRig();
+    const y = send(reviewer, 2);
+    const x = send(reviewer, 1);
+    const bound = h.router.taskHandoff(me, subject(1), y);
+    expect(bound).toBe(x);
+    // The task's wake carries what its row recorded (runningWakeOf).
+    h.wake.id = { wakeId: 'w-task', attempt: 1, handoffId: String(bound), reasonKind: 'facts' } as Harness['wake']['id'];
+    const r = h.router.send(binding(reviewer), { kind: 'result', title: 'PR #1 passes', body: '' });
+    expect(r).toMatchObject({ ok: true, to: { botId: lead.id } });
+    if (r.ok) expect(h.router.get(r.handoffId)?.replyTo).toBe(x);
+    expect(h.router.summarize(x)).toMatchObject({ answered: true });
+    expect(h.router.summarize(y)?.answered).toBeUndefined();
+  });
+
+  it('a coordinator\'s dispatches in their own threads: the PR is told by refs.pr, or by the thread the bot names', async () => {
+    const { h, reviewer, send, me } = await reviewerRig();
+    const y = send(reviewer, 2, { refs: { pr: 2 } });
+    const x = send(reviewer, 1, { refs: { pr: 1 } });
+    expect(h.router.get(x)?.threadId).toBe(`handoff:${x}`);
+    expect(h.router.taskHandoff(me, subject(1, false), y)).toBe(x);
+    const plainY = send(reviewer, 4, {});
+    const plainX = send(reviewer, 3, {});
+    expect(h.router.taskHandoff(me, { threadId: `handoff:${plainX}` as ThreadId }, plainY)).toBe(plainX);
+  });
+
+  it('a worker for the wake\'s own subject keeps the wake\'s handoff', async () => {
+    const { h, reviewer, send, me } = await reviewerRig();
+    const y = send(reviewer, 2);
+    send(reviewer, 1);
+    expect(h.router.taskHandoff(me, subject(2), y)).toBe(y);
+    expect(h.router.taskHandoff(me, {}, y)).toBe(y);
+    // A dispatch in its own thread with no PR named: nothing says it is about another PR.
+    const plain = send(reviewer, 5, {});
+    expect(h.router.taskHandoff(me, subject(5, false), plain)).toBe(plain);
+  });
+
+  it('no open dispatch, or several, for the task\'s subject: bound to none, never to the wake\'s', async () => {
+    const { h, reviewer, send, me } = await reviewerRig();
+    const y = send(reviewer, 2);
+    expect(h.router.taskHandoff(me, subject(1), y)).toBeNull();
+    send(reviewer, 1);
+    send(reviewer, 1, { refs: { pr: 1 } });
+    expect(h.router.taskHandoff(me, subject(1), y)).toBeNull();
+  });
+
+  it('a dispatch addressed to another bot, or one already answered, is never the task\'s', async () => {
+    const { h, reviewer, other, send, me } = await reviewerRig();
+    const y = send(reviewer, 2);
+    send(other, 1);
+    expect(h.router.taskHandoff(me, subject(1), y)).toBeNull();
+    const x = send(reviewer, 1);
+    h.wake.id = { wakeId: 'w-x', attempt: 1, handoffId: x, reasonKind: 'handoff' } as Harness['wake']['id'];
+    expect(h.router.send(binding(reviewer), { kind: 'refusal', title: 'busy', body: '' })).toMatchObject({ ok: true });
+    expect(h.router.taskHandoff(me, subject(1), y)).toBeNull();
+  });
+});
+
 describe('retention of a hop held by an open question', () => {
   it('an old dispatch stays while a question asked on it is open', async () => {
     const lead = bot('ws1', 'moa');

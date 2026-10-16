@@ -29,7 +29,11 @@ import { CHANNEL_TOPIC_MAX, HUMAN_WORKSPACE_ID } from '../../../../shared/channe
 
 vi.mock('../_bridge', () => ({ sendToRenderer: vi.fn() }));
 vi.mock('../../../git/git', () => ({ git: vi.fn() }));
-vi.mock('../../../deck/deckDecisionStore', () => ({ loadWorkspaceDecision: vi.fn(() => null) }));
+// Partial: the handoff router (imported by the handler) reads its limits.
+vi.mock('../../../deck/deckDecisionStore', async (actual) => ({
+  ...(await actual<typeof import('../../../deck/deckDecisionStore')>()),
+  loadWorkspaceDecision: vi.fn(() => null),
+}));
 
 import { sendToRenderer } from '../_bridge';
 import { git } from '../../../git/git';

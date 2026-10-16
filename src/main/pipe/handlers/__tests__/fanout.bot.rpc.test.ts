@@ -13,7 +13,11 @@ import type { RpcContext } from '../../../../shared/rpc';
 
 vi.mock('../_bridge', () => ({ sendToRenderer: vi.fn() }));
 vi.mock('../../../git/git', () => ({ git: vi.fn() }));
-vi.mock('../../../deck/deckDecisionStore', () => ({ loadWorkspaceDecision: vi.fn(() => null) }));
+// Partial: the handoff router (imported by the handler) reads its limits.
+vi.mock('../../../deck/deckDecisionStore', async (actual) => ({
+  ...(await actual<typeof import('../../../deck/deckDecisionStore')>()),
+  loadWorkspaceDecision: vi.fn(() => null),
+}));
 
 import { sendToRenderer } from '../_bridge';
 import { git } from '../../../git/git';
@@ -438,6 +442,34 @@ describe('task.fanout.start — bot origin', () => {
       expect(res.status).toBe('accepted');
       await r.flush();
       expect((r.start.mock.calls[0][0] as FanOutRequest).threadId).toBe(recorded);
+    }
+  });
+
+  it('records the handoff the task\'s subject belongs to (HandoffRouter.taskHandoff), not always the wake\'s', async () => {
+    const PR31 = 'pr:github.com/o/r#31';
+    const cases: Array<[string | null, Record<string, unknown>, Record<string, unknown>]> = [
+      // A wake about PR #12 starting the worker for #31: its subject is #31's thread and PR.
+      ['pr:o/r#12', { checkout: { sha: SHA, fetchRef: 'pull/31/head' } }, { threadId: PR31, pr: { number: 31, threadId: PR31 } }],
+      // A handoff's own thread stays the task's, but the PR it checks out is still its subject.
+      ['handoff:h-x', { checkout: { sha: SHA, fetchRef: 'pull/31/head' } }, { pr: { number: 31, threadId: PR31 } }],
+      // A named PR thread names the PR too.
+      ['pr:o/r#12', { checkout: { sha: SHA }, threadId: 'pr:o/r#31' }, { threadId: PR31, pr: { number: 31, threadId: PR31 } }],
+      ['handoff:h-x', { checkout: { sha: SHA }, threadId: 'handoff:h-y' }, { threadId: 'handoff:h-y' }],
+      ['pr:o/r#12', { checkout: { sha: SHA } }, {}],
+    ];
+    for (const [wakeThread, extra, subject] of cases) {
+      for (const answer of ['h-31', null]) {
+        const r = rig('verifier');
+        r.setThread(wakeThread);
+        const taskHandoff = vi.fn(() => answer);
+        r.port.taskHandoff = taskHandoff;
+        expect((await r.call({ idempotencyKey: 'wake:w-1:1', titles: ['verify'], preset: 'verify', ...extra }, botCtx('verifier'))).status).toBe('accepted');
+        await r.flush();
+        expect(taskHandoff).toHaveBeenCalledWith({ workspaceId: 'ws-bot', botId: BOT_ID }, subject, 'h-dispatch');
+        const req = r.start.mock.calls[0][0] as FanOutRequest;
+        if (answer) expect(req.handoffId).toBe(answer);
+        else expect(req).not.toHaveProperty('handoffId');
+      }
     }
   });
 

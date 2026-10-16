@@ -348,8 +348,8 @@ export interface FanOutRequest {
   /** A bot's fan-out: the room thread its tasks report in (main settles it).
    *  Recorded on each task's ledger row; see LedgerDispatch.threadId. */
   threadId?: string;
-  /** A bot's fan-out: the handoff the asking wake delivered (main's own
-   *  wake state). Recorded on each task's ledger row; see
+  /** A bot's fan-out: the handoff its tasks belong to (main settles it).
+   *  Recorded on each task's ledger row; see
    *  LedgerDispatch.handoffId. */
   handoffId?: string;
   /** A bot's fan-out: the stored secrets each worker receives as env vars
