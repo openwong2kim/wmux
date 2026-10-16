@@ -47,6 +47,7 @@ import { BOT_ID_RE, isBotRole } from '../../shared/bot';
 import type { FactDraft } from '../../shared/facts';
 import { GENERAL_THREAD, ROOM_LIMITS, dmThreadBot, groupThreadGroup, type RoomCard, type ThreadId } from '../../shared/room';
 import { capBody, type FactoryRoomPorts, type RoomWriter } from './roomWriter';
+import { redactStoredSecrets } from './secretRedaction';
 import { HUMAN_RETRY_WINDOW_MS } from './wakeQueue';
 
 /** Longest human message a wake carries (the wake caps its reason at 16 KiB). */
@@ -193,7 +194,8 @@ export function postHumanMessage(writer: RoomWriter, ports: Partial<FactoryRoomP
         workspaceId: to.workspaceId,
         reason: {
           kind: 'human',
-          text: said.slice(0, HUMAN_WAKE_TEXT_MAX),
+          // Processed whole, shortened last.
+          text: redactStoredSecrets(said).slice(0, HUMAN_WAKE_TEXT_MAX),
           source,
           // The card's own id: a clientPostId is unique within one room
           // only, and the queue dedupes per bot across rooms.
@@ -275,7 +277,7 @@ export function postHumanMessage(writer: RoomWriter, ports: Partial<FactoryRoomP
     if (ids.length === 0) return r;
     const fromCard = (card.body?.trim() ? card.body : card.title).trim();
     // The retry's whole message when the card holds its capped copy.
-    const said = input.wakeText?.trim() && card.body !== undefined && capBody(input.wakeText) === card.body ? input.wakeText.trim() : fromCard;
+    const said = input.wakeText?.trim() && card.body !== undefined && capBody(redactStoredSecrets(input.wakeText)) === card.body ? input.wakeText.trim() : fromCard;
     const results: HumanAddresseeResult[] = [];
     for (const id of ids) {
       const bot = safeGet(ports, id);
@@ -296,7 +298,8 @@ export function postHumanMessage(writer: RoomWriter, ports: Partial<FactoryRoomP
       workspaceId,
       ref: { botId: bot.id, messageId: `${card.id}:${bot.id}` },
       actor: { kind: 'human' },
-      payload: { text: capBody(text, HUMAN_FACT_TEXT_MAX), cardId: card.id, threadId, source },
+      // Processed whole, shortened last.
+      payload: { text: capBody(redactStoredSecrets(text), HUMAN_FACT_TEXT_MAX), cardId: card.id, threadId, source },
     };
     try {
       ports.factLog?.append(draft);

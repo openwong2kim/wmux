@@ -668,6 +668,8 @@ export class HandoffRouter {
   /** A bot sends a dispatch, result, refusal or message. Synchronous: the
    *  hop count and the record are settled before anything else runs. */
   send(sender: BotBinding, params: HandoffSendParams): HandoffResult {
+    // Processed whole, then each field shortened to its cap.
+    params = redactStoredSecretsDeep(params);
     const kind = params?.kind;
     if (kind !== 'dispatch' && kind !== 'result' && kind !== 'refusal' && kind !== 'message') {
       return invalid('kind must be dispatch, result, refusal or message');
@@ -1338,6 +1340,8 @@ export class HandoffRouter {
   /** A bot asks the owner. The question is raised in its thread now, or
    *  waits there behind the thread's open decision. */
   askPerson(sender: BotBinding, params: AskPersonParams): Promise<HandoffResult> {
+    // Processed whole, then shortened (see send).
+    params = redactStoredSecretsDeep(params);
     const ports = this.opts.ports();
     // The default key is taken now, in call order, like a send's.
     const asking = runningWake(ports, sender.botId);

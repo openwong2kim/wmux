@@ -36,6 +36,7 @@ import { createFactLog, type FactLog } from '../factLog';
 import { WAKE_RECORD_RETAIN_MS, WakeQueue, latestOwnerWakeThread, setWakeQueue, wakeQueuePath } from '../wakeQueue';
 import { TriggerEngine } from '../triggerEngine';
 import { postHumanMessage } from '../humanMessage';
+import { __resetRedactedSecretsForTesting, setRedactedSecrets } from '../secretRedaction';
 import { typedApprovalSourceAllowed } from '../approvals';
 import { defaultTriggers } from '../roleDefaults';
 import { RoomWriter, writeFactCards } from '../roomWriter';
@@ -499,6 +500,32 @@ describe('phone → HQ bot', () => {
     full = false;
     expect(factoryPhoneMessage(msg, dd)).toEqual({ ok: true, accepted: true, queued: true });
     expect(r.queue.list({ states: ['queued'] }).map((i) => (i.reason as { text: string }).text)).toEqual([long]);
+  });
+
+  it('a long phone message is processed whole and shortened last: card, fact and wake, on a first send and on its retry', () => {
+    const VALUE = 'zQ9vT2mW8rL4nX6pB1cY3hJ5kD7fG0sE9uA2wR4t';
+    setRedactedSecrets([{ name: 'K', value: VALUE }]);
+    try {
+      // VALUE across the title cap (200), the fact's text cap (3000) and the body cap (8192).
+      const at = [180, 2980, 8170];
+      let text = '';
+      for (const i of at) text += 'a'.repeat(i - text.length) + VALUE;
+      text += 'b'.repeat(100);
+      const { d, writer, queue } = deps();
+      const msg = { ...payload, clientMessageId: 'm-whole', text };
+      expect(factoryPhoneMessage(msg, d)).toEqual({ ok: true, accepted: true, queued: true });
+      const [card] = writer.read('ws-hq').cards;
+      expect(card.title).toBe('a'.repeat(180) + '[secret:K]' + 'a'.repeat(10));
+      expect(card.body?.split('[secret:K]')).toHaveLength(4);
+      // The same message again is its retry, not a reused id.
+      expect(factoryPhoneMessage(msg, d)).toEqual({ ok: true, accepted: true, queued: true });
+      const seen = JSON.stringify([card, log.readSince('0').facts, queue.list({})])
+        + (fs.readdirSync(dir, { recursive: true }) as string[]).map((f) => path.join(dir, f)).filter((f) => fs.statSync(f).isFile()).map((f) => fs.readFileSync(f, 'utf8')).join('\n');
+      expect(seen).not.toContain(VALUE.slice(0, 20));
+      expect(seen).not.toContain(VALUE.slice(20));
+    } finally {
+      __resetRedactedSecretsForTesting();
+    }
   });
 
   it('the card a phone message leaves tells typed approval the operator from a paired device', () => {

@@ -392,12 +392,15 @@ export function factoryPhoneMessage(payload: MoaWakePayload, deps: FactoryPhoneD
   // is a reused id, never that card's retry: the daemon released the id when
   // a queue was full, so it can come back here with another message.
   const prior = writer.find(target.workspaceId, (c) => c.clientPostId === clientPostId);
-  if (prior && (prior.threadId !== target.threadId || (prior.body ?? '') !== capBody(redactStoredSecrets(capBody(payload.text))))) return { ok: false, code: 'id_reused' };
+  // The text is processed whole and shortened last, as the room does for
+  // short text.
+  const whole = redactStoredSecrets(payload.text);
+  if (prior && (prior.threadId !== target.threadId || (prior.body ?? '') !== capBody(whole))) return { ok: false, code: 'id_reused' };
   const r = postHumanMessage(writer, ports, {
     workspaceId: target.workspaceId,
     threadId: target.threadId,
-    title: oneLine(payload.text, ROOM_LIMITS.TITLE_MAX) || 'Message',
-    body: capBody(payload.text),
+    title: oneLine(whole, ROOM_LIMITS.TITLE_MAX) || 'Message',
+    body: capBody(whole),
     // The card holds a capped copy; the bot's wake carries the whole message.
     wakeText: payload.text,
     ...(target.toBotId ? { toBotId: target.toBotId } : {}),
