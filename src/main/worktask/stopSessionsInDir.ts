@@ -11,9 +11,10 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { normalizeWorktreePath } from '../../shared/workTask';
+import { wslPathToHost } from '../../mcp/wslPaths';
 
 export interface SessionsInDirPort {
-  listSessions(): Promise<Array<{ id: string; pid?: number; spawnCwd?: string }>>;
+  listSessions(): Promise<Array<{ id: string; pid?: number; spawnCwd?: string; wslTarget?: { distribution?: unknown } }>>;
   destroySession(id: string): Promise<void>;
   /** Whether `pid` is still running. */
   isAlive(pid: number): boolean;
@@ -50,13 +51,27 @@ function isInside(dir: string, root: string, port: Pick<SessionsInDirPort, 'real
   return d === r || d.startsWith(r + '/');
 }
 
+/**
+ * A session's directory as this process names it. A WSL pane records the
+ * Linux path it was started in (`/mnt/c/…`, resolveWslCwd), which never
+ * matches the Windows folder it is (#2254); on win32 no Windows path starts
+ * with a single `/`, so such a path is translated. One that cannot be (a
+ * distro path with no distro known) comes back as given.
+ */
+export function sessionHostDir(dir: string, session: { wslTarget?: { distribution?: unknown } }, platform: NodeJS.Platform = process.platform): string {
+  if (platform !== 'win32' || !dir.startsWith('/') || dir.startsWith('//')) return dir;
+  const distro = typeof session.wslTarget?.distribution === 'string' ? session.wslTarget.distribution : undefined;
+  const host = wslPathToHost(dir, distro);
+  return 'path' in host ? host.path : dir;
+}
+
 /** Ids of the sessions started in any of `dirs` (or below them). */
 export async function sessionsStartedIn(dirs: readonly string[], port: Pick<SessionsInDirPort, 'listSessions' | 'realpath' | 'platform'>): Promise<string[]> {
   const platform = port.platform ?? process.platform;
   const sessions = await port.listSessions();
   return sessions
     .filter((s) => typeof s.spawnCwd === 'string' && s.spawnCwd.length > 0
-      && dirs.some((d) => isInside(s.spawnCwd as string, d, port, platform)))
+      && dirs.some((d) => isInside(sessionHostDir(s.spawnCwd as string, s, platform), d, port, platform)))
     .map((s) => s.id);
 }
 
@@ -70,7 +85,7 @@ export async function stopSessionsInDir(dir: string, port: SessionsInDirPort): P
   const platform = port.platform ?? process.platform;
   const sessions = await port.listSessions();
   const inside = sessions.filter((s) => typeof s.spawnCwd === 'string' && s.spawnCwd.length > 0
-    && isInside(s.spawnCwd, dir, port, platform));
+    && isInside(sessionHostDir(s.spawnCwd, s, platform), dir, port, platform));
   const unknown = sessions.filter((s) => !s.spawnCwd).length;
   if (unknown > 0) port.log?.(`[worktask] ${unknown} session(s) have no spawn directory recorded; left running`);
 

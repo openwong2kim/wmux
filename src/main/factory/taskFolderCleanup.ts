@@ -35,6 +35,7 @@ import { promisify } from 'node:util';
 import type { LedgerEntry } from '../../shared/ledger';
 import { getExecEnv } from '../../shared/execEnv';
 import { createFilePersister, readVersionedFile, type FilePersister } from './versionedFile';
+import { sessionHostDir } from '../worktask/stopSessionsInDir';
 
 export const TASK_FOLDERS_FILENAME = 'task-folders.json';
 export const TASK_FOLDERS_VERSION = 1 as const;
@@ -159,6 +160,7 @@ export interface TaskFolderSession {
   id: string;
   spawnCwd?: string;
   cwd?: string;
+  wslTarget?: { distribution?: unknown };
 }
 
 export interface TaskFolderPorts {
@@ -208,7 +210,8 @@ function defaultExists(p: string): boolean {
   }
 }
 
-/** Whether any daemon session was started in the folder or works in it now. */
+/** Whether any daemon session was started in the folder or works in it now
+ *  (a WSL pane's Linux path read as the Windows folder it is). */
 function folderInUse(folder: string, sessions: readonly TaskFolderSession[]): boolean {
   let real = folder;
   try {
@@ -216,7 +219,11 @@ function folderInUse(folder: string, sessions: readonly TaskFolderSession[]): bo
   } catch {
     /* compared as given */
   }
-  return sessions.some((s) => [s.spawnCwd, s.cwd].some((d) => typeof d === 'string' && d.length > 0 && (isInside(d, folder) || isInside(d, real))));
+  return sessions.some((s) => [s.spawnCwd, s.cwd].some((d) => {
+    if (typeof d !== 'string' || d.length === 0) return false;
+    const host = sessionHostDir(d, s);
+    return isInside(host, folder) || isInside(host, real);
+  }));
 }
 
 /** taskId → the cleanup running on its folder (one at a time per task). */

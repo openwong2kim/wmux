@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import * as path from 'node:path';
-import { PanesStillRunningError, sessionsStartedIn, stopSessionsInDir, type SessionsInDirPort } from '../stopSessionsInDir';
+import { PanesStillRunningError, sessionHostDir, sessionsStartedIn, stopSessionsInDir, type SessionsInDirPort } from '../stopSessionsInDir';
 
-type Session = { id: string; pid?: number; cwd?: string; spawnCwd?: string };
+type Session = { id: string; pid?: number; cwd?: string; spawnCwd?: string; wslTarget?: { distribution: string } };
 
 function port(sessions: Session[], platform: NodeJS.Platform, opts: { stubborn?: number[] } = {}) {
   const alive = new Set(sessions.map((s) => s.pid).filter((p): p is number => typeof p === 'number'));
@@ -48,6 +48,19 @@ describe('stopSessionsInDir', () => {
   it('folds case only where the filesystem does', async () => {
     expect(await stopSessionsInDir('c:/w/task-1', port([{ id: 's', spawnCwd: 'C:\\W\\Task-1' }], 'win32').p)).toEqual(['s']);
     expect(await stopSessionsInDir('/w/task-1', port([{ id: 's', spawnCwd: '/W/Task-1' }], 'linux').p)).toEqual([]);
+  });
+
+  it('a WSL pane (#2254): its Linux spawn path is read as the Windows folder it is', async () => {
+    const wsl = { wslTarget: { distribution: 'Ubuntu' } };
+    const { p } = port([
+      { id: 'drive', spawnCwd: '/mnt/c/Users/me/wt/src', ...wsl },
+      { id: 'distro', spawnCwd: '/home/me/wt', ...wsl },
+      { id: 'other', spawnCwd: '/mnt/d/Users/me/wt', ...wsl },
+    ], 'win32');
+    expect(await stopSessionsInDir('C:\\Users\\me\\wt', p)).toEqual(['drive']);
+    expect(sessionHostDir('/home/me/wt', wsl, 'win32')).toBe('\\\\wsl$\\Ubuntu\\home\\me\\wt');
+    // Elsewhere a Linux path is the folder itself.
+    expect(sessionHostDir('/mnt/c/x', wsl, 'linux')).toBe('/mnt/c/x');
   });
 
   it('throws when a process is still running after the wait, so the worktree is kept', async () => {

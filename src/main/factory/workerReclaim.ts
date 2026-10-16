@@ -303,6 +303,10 @@ export interface WorkerReclaimPorts {
   listSessions: () => Promise<WorkerSessionInfo[]>;
   /** daemon `session.stopAgent`. */
   stopAgent: (sessionId: string) => Promise<{ ok?: boolean; stopped?: boolean; code?: string }>;
+  /** Close a pane (daemon `daemon.destroySession`): the stop of an agent the
+   *  daemon cannot stop by itself (`unsupported`: a WSL pane's Linux agent).
+   *  Absent: such a worker is not stopped. */
+  closePane?: (sessionId: string) => Promise<void>;
   note?: (workspaceId: string, threadId: ThreadId, title: string, body: string, notice?: CardNotice, taskId?: string) => void;
   /** The Bots page re-reads (BOT_EVENT). */
   changed?: () => void;
@@ -450,7 +454,7 @@ export async function reclaimWorker(ports: WorkerReclaimPorts, entry: LedgerEntr
       if (movedOn(ports, entry, ended)) break;
       attempted++;
       try {
-        const r = await ports.stopAgent(p.sessionId);
+        const r = await stopOrClose(ports.stopAgent, ports.closePane, p.sessionId);
         if (r.ok !== true) {
           failed++;
           log(`[factory] reclaim: the agent of ${p.sessionId} (task ${entry.id}) was not stopped: ${r.code ?? 'refused'}`);
@@ -517,6 +521,19 @@ export async function reclaimWorker(ports: WorkerReclaimPorts, entry: LedgerEntr
     log(`[factory] reclaim of ${entry.id} failed: ${String(err)}`);
     return null;
   }
+}
+
+/** Stop a pane's agent; one the daemon cannot stop by itself (a WSL pane's
+ *  Linux agent, #2254) goes with its pane, closed here. */
+async function stopOrClose(
+  stopAgent: WorkerReclaimPorts['stopAgent'],
+  closePane: WorkerReclaimPorts['closePane'],
+  sessionId: string,
+): Promise<{ ok?: boolean; stopped?: boolean; code?: string }> {
+  const r = await stopAgent(sessionId);
+  if (r.code !== 'unsupported' || !closePane) return r;
+  await closePane(sessionId);
+  return { ok: true, stopped: true };
 }
 
 /** Whether a record already covers this end of the task: stopped, or
@@ -636,6 +653,8 @@ export interface WorkerResumePorts {
   submit?: (sessionId: string, text: string) => Promise<boolean>;
   /** daemon `session.stopAgent`, for the stop of a resumed worker. */
   stopAgent?: (sessionId: string) => Promise<{ ok?: boolean; stopped?: boolean; code?: string }>;
+  /** Close a pane whose agent the daemon cannot stop (WorkerReclaimPorts.closePane). */
+  closePane?: (sessionId: string) => Promise<void>;
   /** Open a new task workspace in the recorded worktree with the resume line
    *  as its launch, through the bot worker spawn. Absent: a resume whose pane
    *  is gone is refused. */
@@ -993,7 +1012,7 @@ export async function stopResumedWorkers(ports: WorkerResumePorts, botId?: strin
     let ok = true;
     let stoppedHere = false;
     for (const s of rec.sessions) {
-      const r: { ok?: boolean; stopped?: boolean; code?: string } = await ports.stopAgent(s.sessionId).catch(() => ({ ok: false }));
+      const r: { ok?: boolean; stopped?: boolean; code?: string } = await stopOrClose(ports.stopAgent, ports.closePane, s.sessionId).catch(() => ({ ok: false }));
       // A pane that is gone took its agent with it (a stop of its open task
       // may have closed it first).
       if (r.ok !== true && r.code !== 'no_session') ok = false;

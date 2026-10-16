@@ -165,6 +165,40 @@ async function settled(store: ReclaimedWorkers): Promise<void> {
   if (any) await store.put(any);
 }
 
+describe('a WSL worker (#2254): the daemon cannot stop its Linux agent', () => {
+  const unsupported = () => vi.fn(async () => ({ ok: false, code: 'unsupported' }));
+
+  it('an idle reported WSL worker, its agent liveness unknown, is stopped by closing its pane', async () => {
+    const store = ReclaimedWorkers.at(dir);
+    const current = row('review_requested', { updatedAt: 1_000 });
+    const closePane = vi.fn(async () => undefined);
+    const { ports, note } = reclaimPorts(store, [session({ agentProcessAlive: undefined })], {
+      allRows: () => [current],
+      row: () => current,
+      turnEnded: () => true,
+      reportedIdleMs: 3_000,
+      stopAgent: unsupported(),
+      closePane,
+    });
+    const off = installWorkerReclaim(ports);
+    await vi.waitFor(() => expect(store.get(current.id)?.state).toBe('stopped'));
+    off();
+    expect(closePane).toHaveBeenCalledWith('daemon-1');
+    expect(note.mock.calls.map((c) => c[2])).toEqual(['Worker paused (resumable)']);
+    await settled(store);
+  });
+
+  it('the stop of a resumed WSL worker closes its pane and counts it', async () => {
+    const store = ReclaimedWorkers.at(dir);
+    await store.put({ taskId: 'wtask-abc-12345678', botId: BOT, ownerWorkspaceId: 'ws-owner', taskWorkspaceId: 'ws-task', title: 't', threadId: 'task:x' as never, ended: 'completed', sessions: [{ sessionId: 'daemon-1', cwd: wt }], state: 'resumed', at: 1 });
+    const closePane = vi.fn(async () => undefined);
+    const p: WorkerResumePorts = { store, listSessions: async () => [], typeLine: () => false, stopAgent: unsupported(), closePane };
+    expect(await stopResumedWorkers(p, BOT)).toEqual({ stopped: 1, failed: 0, taskIds: ['wtask-abc-12345678'] });
+    expect(closePane).toHaveBeenCalledWith('daemon-1');
+    expect(store.get('wtask-abc-12345678')?.state).toBe('stopped');
+  });
+});
+
 describe('a reported task whose worker sat idle (refused or failed gate)', () => {
   it('paneTurnEnded: a reported end outweighs an outstanding claim; a running turn or a prompt does not', () => {
     expect(paneTurnEnded('complete', false, false)).toBe(true);
