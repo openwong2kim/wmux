@@ -747,6 +747,62 @@ describe('a2a.resolve.identity — a pid-map hit must be the session\'s current 
     expect(result.mappings).toEqual({ '7644': 'ws-worker' });
   });
 
+  it('does not use a list cached before a daemon reconnect', async () => {
+    // Before the restart the old pane's shell really was 6780.
+    sessions = [
+      { id: 'daemon-04f1c884', pid: 6780, state: 'detached' },
+      { id: 'daemon-worker', pid: 7644, state: 'attached' },
+    ];
+    const before = daemonListing();
+    let current: DaemonClient = before.client;
+    const router = new RpcRouter();
+    registerA2aRpc(router, () => fakeWindow, makeWorker(), {
+      snapshot: async () => ({ ppidByPid, listeners: [] }),
+      createdAt: () => null,
+      getDaemonClient: () => current,
+    });
+    const first = await dispatchResolve(router, {});
+    expect(first.entries).toHaveLength(2);
+
+    // The daemon restarts inside the cache window: a new client, and the old
+    // pane now runs 13632. The cached list would still accept 6780.
+    sessions = [
+      { id: 'daemon-04f1c884', pid: 13632, state: 'detached' },
+      { id: 'daemon-worker', pid: 7644, state: 'attached' },
+    ];
+    const after = daemonListing();
+    current = after.client;
+    const second = await dispatchResolve(router, {});
+
+    expect(after.rpc).toHaveBeenCalledTimes(1);
+    expect(before.rpc).toHaveBeenCalledTimes(1);
+    expect(second.entries).toEqual([{ pid: '7644', ptyId: 'daemon-worker', workspaceId: 'ws-worker' }]);
+  });
+
+  it('mints no pane claim from a stale PID the cached list still calls current', async () => {
+    sessions = [
+      { id: 'daemon-04f1c884', pid: 6780, state: 'detached' },
+      { id: 'daemon-worker', pid: 7644, state: 'attached' },
+    ];
+    const { client, rpc } = daemonListing();
+    const router = routerWith(client);
+    await dispatchResolve(router, {}); // caches a list that names 6780
+    expect(rpc).toHaveBeenCalledTimes(1);
+
+    // Same connection, inside the cache window: a supervised restart moved the
+    // old pane to 13632 before its pid-map file was rewritten, and 6780 now
+    // belongs to the worker's claude.exe.
+    sessions = [
+      { id: 'daemon-04f1c884', pid: 13632, state: 'detached' },
+      { id: 'daemon-worker', pid: 7644, state: 'attached' },
+    ];
+    const result = (await dispatchResolve(router, { callerPid: 39876 })) as ResolveResult & { workspaceToken?: string };
+
+    expect(rpc).toHaveBeenCalledTimes(2); // the claim-minting call read the list again
+    expect(result.resolved).toEqual({ workspaceId: 'ws-worker', ptyId: 'daemon-worker' });
+    expect(lookupWorkspaceClaim(result.workspaceToken)).toEqual({ kind: 'bound', workspaceId: 'ws-worker', ptyId: 'daemon-worker' });
+  });
+
   it('accepts a ptyId missing from the cached list once the re-read list has it', async () => {
     // Cache the list while only the old pane exists.
     fs.rmSync(path.join(dirRef.current, '7644'));

@@ -495,10 +495,12 @@ export function registerA2aRpc(
   }
 
   // The daemon's session list for the resolve-time pid-map check, kept for a
-  // short while so a burst of identity resolves (every MCP server at boot)
-  // costs one listSessions, not one each.
+  // short while so a burst of plain identity resolves costs one listSessions,
+  // not one each. It is stamped with the DaemonClient that read it: every
+  // (re)connect installs a new client, and a list from before a daemon restart
+  // still names the shells the restart replaced, so it is never used after it.
   const DAEMON_SESSIONS_CACHE_MS = 2000;
-  let daemonSessionsCache: { at: number; sessions: DaemonSessionShell[] } | null = null;
+  let daemonSessionsCache: { at: number; client: DaemonClient; sessions: DaemonSessionShell[] } | null = null;
 
   /**
    * A fresh, complete session list (suspended sessions included), or null when
@@ -510,28 +512,41 @@ export function registerA2aRpc(
     try {
       const rows = await dc.rpc('daemon.listSessions', { includeSuspended: true }, { timeoutMs: 2000 });
       if (!Array.isArray(rows)) return null;
-      daemonSessionsCache = { at: Date.now(), sessions: rows as DaemonSessionShell[] };
+      daemonSessionsCache = { at: Date.now(), client: dc, sessions: rows as DaemonSessionShell[] };
       return daemonSessionsCache.sessions;
     } catch {
       return null;
     }
   }
 
+  /** The cached list, if it is recent and was read over the current connection. */
+  function cachedDaemonSessions(): DaemonSessionShell[] | null {
+    const cache = daemonSessionsCache;
+    if (!cache || Date.now() - cache.at >= DAEMON_SESSIONS_CACHE_MS) return null;
+    return cache.client === getDaemonClient?.() ? cache.sessions : null;
+  }
+
   /**
    * `entries` without the daemon pid-map hits whose PID is not that session's
    * current shell, or whose session the daemon does not have (see
-   * liveDaemonPidEntries). A cached list is trusted only to keep entries:
-   * when it lacks an entry's ptyId or disagrees with its PID, the list is read
-   * again and the entry is judged on that fresh list, so a pane created or
-   * given a new shell inside the cache window is not refused. With no daemon
-   * (not connected, or the RPC failed) nothing is filtered and identity falls
-   * back to the pid-map alone, as before this check existed.
+   * liveDaemonPidEntries). With no daemon (not connected, or the RPC failed)
+   * nothing is filtered and identity falls back to the pid-map alone, as
+   * before this check existed.
+   *
+   * `fresh` (a call that can mint a claim) always reads the list again: a
+   * claim must rest on the shells the daemon runs now. Inside the cache window
+   * a pane's shell can change (a supervised restart, a reconnect) while its
+   * old pid-map file is still on disk and the cached list still names that
+   * old PID as current, which would let a process on the reused PID claim the
+   * pane. Otherwise a cached list is trusted only to keep entries: when it
+   * lacks an entry's ptyId or disagrees with its PID, the list is read again,
+   * so a pane created or given a new shell inside the window is not refused.
    */
-  async function keepLiveDaemonPidEntries<T extends PidMapFile>(entries: T[]): Promise<T[]> {
+  async function keepLiveDaemonPidEntries<T extends PidMapFile>(entries: T[], fresh: boolean): Promise<T[]> {
     if (!entries.some((e) => isDaemonPtyId(e.ptyId))) return entries;
-    const cache = daemonSessionsCache;
-    if (cache && Date.now() - cache.at < DAEMON_SESSIONS_CACHE_MS) {
-      const kept = liveDaemonPidEntries(entries, cache.sessions);
+    const cached = fresh ? null : cachedDaemonSessions();
+    if (cached) {
+      const kept = liveDaemonPidEntries(entries, cached);
       if (kept.length === entries.length) return kept;
     }
     return liveDaemonPidEntries(entries, await fetchDaemonSessions());
@@ -654,7 +669,13 @@ export function registerA2aRpc(
     // hand that process the old pane's identity. Filtered once here, so the
     // client-side walk (entries / mappings), the server-side walk below, and
     // the Codex thread and hinted-pane lookups all see only live anchors.
-    const liveEntries = await keepLiveDaemonPidEntries(entries);
+    // A call that can mint a claim (the server-side walk, a Codex thread, a
+    // hinted pane) is judged on a fresh list, never the cache: the claims
+    // below (claimTokenForPane, the thread claim) take these entries as proof
+    // that the pane's shell is live.
+    const claimParams = params as { codexThreadId?: unknown; hintedPtyId?: unknown };
+    const mayMintClaim = callerPid != null || claimParams.codexThreadId !== undefined || claimParams.hintedPtyId !== undefined;
+    const liveEntries = await keepLiveDaemonPidEntries(entries, mayMintClaim);
     if (liveEntries.length !== entries.length) {
       const kept = new Set(liveEntries);
       for (const e of entries) if (!kept.has(e)) delete mappings[e.pid];
