@@ -47,7 +47,9 @@
 // At install every task that ended in the last day and was never reclaimed
 // is reclaimed now (an app restart between the end and the stop), and looked
 // at again a few times while the daemon may still be connecting. A resumed
-// worker counts as live again until its agent exits.
+// worker counts as live again until its agent exits, or until it sat idle (its
+// turn ended, nothing typed into it) for RESUMED_IDLE_MS: then its agent is
+// stopped again the same way (createResumedIdleSweep), resumable once more.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -67,6 +69,10 @@ export const REPORTED_IDLE_MS = 5 * 60_000;
 /** A pane whose turn status main has not seen (as after a restart) counts
  *  as idle only once its task was reported this long ago. */
 export const REPORTED_UNSEEN_IDLE_MS = 30 * 60_000;
+/** How long a resumed worker of an ended task sits idle (its turn ended,
+ *  nothing typed into it) before its agent is stopped again: the same window
+ *  as a reported task's worker. */
+export const RESUMED_IDLE_MS = REPORTED_IDLE_MS;
 /** Records kept (oldest dropped first). */
 export const RECLAIMED_WORKERS_MAX = 500;
 /** How long a resume waits for the relaunched agent before a message. */
@@ -661,7 +667,8 @@ export type WorkerResumeCode =
   | 'not_started'
   | 'worktree_gone'
   | 'not_reopened'
-  | 'not_now';
+  | 'not_now'
+  | 'no_slot';
 
 export type WorkerResumeResult =
   | {
@@ -674,7 +681,7 @@ export type WorkerResumeResult =
       workspaceId: string;
       messageDelivered?: boolean;
     }
-  | { ok: false; code: WorkerResumeCode; message: string };
+  | { ok: false; code: WorkerResumeCode; message: string; /** no_slot: the agent cap in force. */ cap?: number };
 
 /** What a resume asks for when the worker's pane is gone. */
 export interface WorkerRespawnInput {
@@ -1071,18 +1078,8 @@ export async function stopResumedWorkers(ports: WorkerResumePorts, botId?: strin
   let live: WorkerSessionInfo[] | null = null;
   for (const rec of ports.store.all()) {
     if (rec.state !== 'resumed' || (botId !== undefined && rec.botId !== botId)) continue;
-    let ok = true;
-    let stoppedHere = false;
     if (ports.closePane && !live) live = await ports.listSessions().catch(() => []);
-    for (const s of rec.sessions) {
-      const closable = isWslWorkerPane(live?.find((x) => x.id === s.sessionId))
-        && ownPane(ports.workspacePanes, workerWorkspaceOf(rec), s.sessionId);
-      const r: { ok?: boolean; stopped?: boolean; code?: string } = await stopOrClose(ports.stopAgent, closable ? ports.closePane : undefined, s.sessionId).catch(() => ({ ok: false }));
-      // A pane that is gone took its agent with it (a stop of its open task
-      // may have closed it first).
-      if (r.ok !== true && r.code !== 'no_session') ok = false;
-      if (r.ok === true && r.stopped === true) stoppedHere = true;
-    }
+    const { ok, stoppedHere } = await stopRecordedPanes(ports, rec, live, true);
     if (!ok) failed++;
     else if (ports.store.setState(rec.taskId, 'stopped', now())) {
       marked = true;
@@ -1091,6 +1088,185 @@ export async function stopResumedWorkers(ports: WorkerResumePorts, botId?: strin
   }
   if (marked) ports.changed?.();
   return { stopped: taskIds.length, failed, taskIds };
+}
+
+/** Stop the agent of every recorded pane of a resumed worker. A WSL worker's
+ *  pane (isWslWorkerPane in `live`) of its own workspace is closed instead
+ *  when `mayClose`. `ok`: every pane's agent is stopped or its pane is gone;
+ *  `stoppedHere`: an agent was found and stopped. */
+async function stopRecordedPanes(
+  ports: Pick<WorkerResumePorts, 'stopAgent' | 'closePane' | 'workspacePanes'>,
+  rec: ReclaimedWorker,
+  live: readonly WorkerSessionInfo[] | null,
+  mayClose: boolean,
+): Promise<{ ok: boolean; stoppedHere: boolean }> {
+  const stopAgent = ports.stopAgent;
+  if (!stopAgent) return { ok: false, stoppedHere: false };
+  let ok = true;
+  let stoppedHere = false;
+  for (const s of rec.sessions) {
+    const closable = mayClose && isWslWorkerPane(live?.find((x) => x.id === s.sessionId))
+      && ownPane(ports.workspacePanes, workerWorkspaceOf(rec), s.sessionId);
+    const r: { ok?: boolean; stopped?: boolean; code?: string } = await stopOrClose(stopAgent, closable ? ports.closePane : undefined, s.sessionId).catch(() => ({ ok: false }));
+    // A pane that is gone took its agent with it (a stop of its open task
+    // may have closed it first).
+    if (r.ok !== true && r.code !== 'no_session') ok = false;
+    if (r.ok === true && r.stopped === true) stoppedHere = true;
+  }
+  return { ok, stoppedHere };
+}
+
+export interface ResumedIdlePorts extends Pick<WorkerResumePorts, 'store' | 'stopAgent' | 'closePane' | 'workspacePanes' | 'note' | 'changed' | 'now'> {
+  /** The task's ledger row now (null: gone). */
+  row: (taskId: string) => LedgerEntry | null;
+  /** Whether the pane's agent turn ended, from main's last status for it
+   *  (paneTurnEnded with holdsUnsettledRunningClaim); `longAgo`: the worker
+   *  was resumed long enough ago that a status main never saw counts. */
+  paneTurnEnded: (sessionId: string, longAgo: boolean) => boolean;
+  /** Whether anything was typed into the pane within `ms`. */
+  recentInput: (sessionId: string, ms: number) => boolean;
+  /** Default RESUMED_IDLE_MS. */
+  idleMs?: number;
+  log?: (msg: string) => void;
+}
+
+export interface ResumedIdleSweep {
+  /** Look at every resumed worker against `sessions` (daemon.listSessions,
+   *  read once by the caller) and stop those idle for the window. Never
+   *  throws; the tasks whose worker this pass stopped. A call while a pass
+   *  runs does nothing. */
+  sweep(sessions: readonly WorkerSessionInfo[]): Promise<string[]>;
+}
+
+/**
+ * The idle stop of resumed workers. A resumed worker of an ended task counts
+ * against the agent cap until its agent exits, and an idle Claude never
+ * exits; so a resumed worker is stopped again once it has been idle for
+ * `idleMs` without a break. Idle, on every look: each recorded pane whose
+ * agent runs (or a WSL worker's pane, isWslWorkerPane) ended its turn
+ * (`paneTurnEnded`: no turn running, no prompt waiting on the owner, no
+ * running claim left unsettled; a command the agent runs is part of its
+ * turn) and nothing was typed into it within `idleMs`. Silence alone never
+ * is: a pane with no turn status counts only once the worker was resumed
+ * REPORTED_UNSEEN_IDLE_MS ago. Any busy look restarts the window.
+ * Only a worker whose task is still the end it was resumed from (a task that
+ * reopened is its open row's worker again; one still reported for review is
+ * stopped like a reported worker), with no resume or clear of it under way.
+ * The stop is the reclaim's: session.stopAgent keeps the pane and its resume
+ * binding; a WSL worker's pane of a completed or cancelled task is closed
+ * instead (#2260). The record goes back to `stopped` (resumable), which frees
+ * its agent slot, and one card in the task's thread says so.
+ */
+export function createResumedIdleSweep(ports: ResumedIdlePorts): ResumedIdleSweep {
+  const now = ports.now ?? Date.now;
+  const log = ports.log ?? ((m: string) => console.warn(m));
+  const idleMs = ports.idleMs ?? RESUMED_IDLE_MS;
+  /** taskId → when its worker was first seen idle in the current run. */
+  const idleSince = new Map<string, number>();
+  let running = false;
+
+  const rowOf = (taskId: string): LedgerEntry | null | undefined => {
+    try {
+      return ports.row(taskId);
+    } catch {
+      return undefined;
+    }
+  };
+
+  /** Whether the record's task is still the end it was resumed from. */
+  const sameEnd = (rec: ReclaimedWorker): boolean => {
+    const row = rowOf(rec.taskId);
+    if (row === undefined) return false;
+    if (row === null) return true;
+    if (!isReclaimedSince(rec, row)) return false;
+    if (row.status === 'working' || row.status === 'input_required') return false;
+    return row.status !== 'review_requested' || rec.ended === 'reported';
+  };
+
+  const busy = (rec: ReclaimedWorker, panes: readonly WorkerSessionInfo[], at: number): boolean => {
+    const longAgo = at - rec.at >= REPORTED_UNSEEN_IDLE_MS;
+    return panes.some((s) => {
+      try {
+        return !ports.paneTurnEnded(s.id, longAgo) || ports.recentInput(s.id, idleMs);
+      } catch {
+        return true;
+      }
+    });
+  };
+
+  const stop = async (rec: ReclaimedWorker, sessions: readonly WorkerSessionInfo[]): Promise<boolean> => {
+    const mayClose = rec.ended === 'completed' || rec.ended === 'cancelled';
+    const { ok } = await stopRecordedPanes(ports, rec, sessions, mayClose);
+    if (!ok) {
+      log(`[factory] idle stop: the resumed worker of ${rec.taskId} was not stopped; it is tried again`);
+      return false;
+    }
+    if (!ports.store.setState(rec.taskId, 'stopped', now())) return false;
+    // A research task works in a task folder, not a worktree.
+    const research = isResearchDispatch(rowOf(rec.taskId)?.dispatch);
+    try {
+      ports.note?.(
+        rec.ownerWorkspaceId,
+        rec.threadId,
+        'Worker paused (resumable)',
+        `The resumed worker sat idle after its turn: its Claude stopped again to free memory and its agent slot. The ${research ? 'task folder' : 'worktree'} and the conversation are kept; Resume continues the same conversation.`,
+        research ? { code: 'worker.idlePausedResumable', args: { kind: 'research' } } : { code: 'worker.idlePausedResumable' },
+        rec.taskId,
+      );
+    } catch {
+      /* the card is best effort */
+    }
+    return true;
+  };
+
+  return {
+    async sweep(sessions) {
+      if (running) return [];
+      running = true;
+      const out: string[] = [];
+      try {
+        const at = now();
+        const seen = new Set<string>();
+        for (const rec of ports.store.all()) {
+          if (rec.state !== 'resumed') continue;
+          seen.add(rec.taskId);
+          if (resuming.has(rec.taskId) || clearing.has(rec.taskId) || !sameEnd(rec)) {
+            idleSince.delete(rec.taskId);
+            continue;
+          }
+          const panes = rec.sessions
+            .map((p) => sessions.find((s) => s.id === p.sessionId))
+            .filter((s): s is WorkerSessionInfo => !!s && (s.agentProcessAlive === true || isWslWorkerPane(s)));
+          // No agent left: the exit sweep marks it stopped.
+          if (panes.length === 0 || busy(rec, panes, at)) {
+            idleSince.delete(rec.taskId);
+            continue;
+          }
+          const since = idleSince.get(rec.taskId);
+          if (since === undefined) {
+            idleSince.set(rec.taskId, at);
+            continue;
+          }
+          if (at - since < idleMs) continue;
+          // Read again right before the stop: a resume or a clear may have
+          // started while an earlier stop of this pass ran.
+          const cur = ports.store.get(rec.taskId);
+          if (!cur || cur.state !== 'resumed' || resuming.has(rec.taskId) || clearing.has(rec.taskId)) continue;
+          if (await stop(cur, sessions)) {
+            idleSince.delete(rec.taskId);
+            out.push(rec.taskId);
+          }
+        }
+        for (const id of [...idleSince.keys()]) if (!seen.has(id)) idleSince.delete(id);
+        if (out.length > 0) ports.changed?.();
+      } catch (err) {
+        log(`[factory] idle stop of resumed workers failed: ${String(err)}`);
+      } finally {
+        running = false;
+      }
+      return out;
+    },
+  };
 }
 
 /** A resumed worker whose agent exited is stopped again (resumable). */

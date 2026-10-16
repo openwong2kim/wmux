@@ -123,7 +123,7 @@ export interface FactoryBotPort {
   stopBot?(botId: string): Promise<FactoryStopResult>;
   /** Absent: no resume here. Relaunch the stopped worker of an ended task
    *  with the same conversation (main/factory/workerReclaim.ts). */
-  resumeWorker?(taskId: string): Promise<{ ok: boolean; message?: string; workspaceId?: string }>;
+  resumeWorker?(taskId: string): Promise<{ ok: boolean; message?: string; workspaceId?: string; code?: string; cap?: number }>;
   /** Absent: no engine choice here. The engines a bot's workers may run on,
    *  and which are installed. */
   workerAgents?(): Promise<BotWorkerAgentOption[]>;
@@ -180,7 +180,7 @@ interface FactoryBridge {
   setSettings?: (patch: Partial<FactorySettingsView>) => Promise<FactorySettingsView | null>;
   stopAll?: () => Promise<FactoryStopResult>;
   stopBot?: (botId: string) => Promise<FactoryStopResult>;
-  resumeWorker?: (taskId: string) => Promise<{ ok: boolean; message?: string; workspaceId?: string }>;
+  resumeWorker?: (taskId: string) => Promise<{ ok: boolean; message?: string; workspaceId?: string; code?: string; cap?: number }>;
   workerAgents?: () => Promise<BotWorkerAgentOption[]>;
   taskFolderUsage?: () => Promise<FactoryTaskFolderUsage | null>;
   cleanTaskFolders?: () => Promise<FactoryTaskFolderCleanResult>;

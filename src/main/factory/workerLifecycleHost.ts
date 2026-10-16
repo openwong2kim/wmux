@@ -14,6 +14,7 @@ import { sanitizePtyText } from '../../shared/types';
 import { eventBus } from '../events/EventBus';
 import { getLastBroadcastAgentStatus, hasOutstandingRunningClaim } from '../ipc/handlers/metadata.handler';
 import { holdsUnsettledRunningClaim } from '../notification/turnSettle';
+import { recentUserInput } from '../notification/idleSuppression';
 import { guardSessionLaunch } from '../agents/botWorkerMergeGuard';
 import { getTaskLedger } from '../deck/taskLedgerHost';
 import { getBotRuntime } from './BotRuntime';
@@ -21,7 +22,7 @@ import { getBotStore } from './botStore';
 import { getFactorySettings } from './factorySettings';
 import { getRoomWriter } from './roomWriter';
 import { taskFolderFromMissions } from './verifyPreset';
-import { AgentSlots, IdleSnapshot, rowHoldsAgentSlot, setAgentSlots, setSlotLiveness, slotHolderArgs, type SlotLiveness } from './agentSlots';
+import { AgentSlots, IdleSnapshot, getAgentSlots, rowHoldsAgentSlot, setAgentSlots, setSlotLiveness, slotHolderArgs, type SlotLiveness } from './agentSlots';
 import { checkWorkers, recordWorkerEnd, recordWorkerStart } from './budget';
 import { runningWakeTainted } from './wakeTaint';
 import { installReportNudge, submitToWorkerPane } from './workerReportNudge';
@@ -29,6 +30,7 @@ import { setWorkerLivePane } from './workerMessage';
 import {
   REPORTED_UNSEEN_IDLE_MS,
   ReclaimedWorkers,
+  createResumedIdleSweep,
   createWorkerClear,
   installWorkerReclaim,
   isReclaimedSince,
@@ -38,6 +40,7 @@ import {
   setResumedLiveCount,
   setWorkerResumePorts,
   type WorkerRespawnInput,
+  type WorkerResumePorts,
   type WorkerSessionInfo,
   unreclaimedEndedWorkers,
   workerWorkspaceOf,
@@ -280,7 +283,7 @@ export function startWorkerLifecycle(deps: WorkerLifecycleDeps): () => void {
       setTaskFolderPorts(folderPorts);
       offs.push(() => setTaskFolderPorts(null));
     }
-    setWorkerResumePorts({
+    const resumePorts: WorkerResumePorts = {
       store: reclaimed,
       listSessions,
       workspacePanes: (workspaceId) => {
@@ -363,6 +366,19 @@ export function startWorkerLifecycle(deps: WorkerLifecycleDeps): () => void {
       },
       note,
       changed,
+    };
+    setWorkerResumePorts(resumePorts);
+    // A resumed worker idle for RESUMED_IDLE_MS (its turn ended, nothing
+    // typed) is stopped again, which frees its agent slot.
+    const idleResumed = createResumedIdleSweep({
+      ...resumePorts,
+      row: (taskId) => ledger.get(taskId),
+      paneTurnEnded: (sessionId, longAgo) => paneTurnEnded(getLastBroadcastAgentStatus(sessionId), holdsUnsettledRunningClaim(sessionId), longAgo),
+      recentInput: (sessionId, ms) => recentUserInput(sessionId, ms),
+      changed: () => {
+        changed();
+        getAgentSlots()?.kick();
+      },
     });
     // A reclaimed worker's workspace still open (a failed task the owner has
     // not looked at, one they are viewing, one with a busy pane) runs no
@@ -396,6 +412,7 @@ export function startWorkerLifecycle(deps: WorkerLifecycleDeps): () => void {
           if (!alive) moved = r.sessions.some((p) => noteWorkerAgentExit(reclaimed, p.sessionId)) || moved;
         }
         if (moved) changed();
+        return idleResumed.sweep(sessions);
       }).catch(() => undefined).finally(reconcile);
     }, RESUMED_SWEEP_MS);
     sweep.unref?.();

@@ -655,6 +655,13 @@ function taskRailState(task: BotTaskView, t: T): string {
   return task.worker === 'resumable' ? `${t(state)} · ${t('botsPage.worker.canResume')}` : t(state);
 }
 
+/** Why a Resume was refused, in the reader's language when this build words
+ *  it (no free agent slot), else main's own message. Pure over `t`. */
+function resumeRefusalText(r: { message?: string; code?: string; cap?: number }, t: T): string | null {
+  if (r.code === 'no_slot' && typeof r.cap === 'number') return t('botsPage.worker.resumeNoSlot', { cap: r.cap });
+  return r.message ?? null;
+}
+
 /** A bot's task that is not a live worker, in the rail: waiting for an agent
  *  slot, or done with a stopped worker that can resume the same
  *  conversation. Open shows only while the worker's pane is still open; a
@@ -708,7 +715,7 @@ function TaskRow({ task, t, resumePort, readOnly, shownId, onOpen }: { task: Bot
             void resumeWorker(task.taskId)
               .then((r) => {
                 if (!live.current.mounted) return;
-                if (!r.ok) setError(r.message ?? null);
+                if (!r.ok) setError(resumeRefusalText(r, t));
                 else {
                   const opened = r.workspaceId ?? paneWorkspaceId;
                   if (opened) live.current.onOpen(opened);
@@ -732,8 +739,11 @@ const RAIL_ROWS_MAX = 3;
  *  one line ("<bot> working · 0:02 · Stop"), then the tasks the list's
  *  worker tree cannot show — waiting for an agent slot, or resumable with
  *  their pane cleared (owner decision 2026-10-14: the workers themselves are
- *  rows under their bot in the list). Nothing at all while nothing works;
- *  with the bots off, no turns and no Stop or Resume. */
+ *  rows under their bot in the list; narrowed by the owner decision
+ *  2026-10-16 to tasks still open: resuming an ended task's worker is the
+ *  bot's call, and the owner's Resume for it stays in its panel and on its
+ *  card). Nothing at all while nothing works; with the bots off, no turns
+ *  and no Stop or Resume. */
 function WorkingRail({ turns, tasks, t, now, readOnly, resumePort, shownId, onOpen }: {
   turns: readonly FactoryBotRow[];
   tasks: readonly BotTaskView[];
@@ -2102,7 +2112,7 @@ export function BotsChat({ conversation, roomCards, bots, title, workspaceName, 
     if (!resume) return;
     const asked = useStore.getState().botsWorkerPanel;
     await resume(taskId).then((r) => {
-      if (!r.ok) useStore.getState().pushToast({ message: r.message || t('botsPage.worker.resume'), level: 'error' });
+      if (!r.ok) useStore.getState().pushToast({ message: resumeRefusalText(r, t) || t('botsPage.worker.resume'), level: 'error' });
       else if (r.workspaceId && shownChat.current.mounted && shownChat.current.conversationId === conversationId && useStore.getState().botsWorkerPanel === asked) {
         useStore.getState().setBotsWorkerPanel({ workspaceId: r.workspaceId, conversationId });
       }
@@ -2119,11 +2129,14 @@ export function BotsChat({ conversation, roomCards, bots, title, workspaceName, 
   const shown = shownId && !openThread ? workerPanelView(shownId, workers, tree, tasks, t) : null;
   // The rail lists only the tasks with no row in the list's tree.
   const openWorkspaceIds = useStore(useShallow((s) => s.workspaces.map((w) => w.id)));
+  // An ended task is never a rail row (owner decision 2026-10-16), only one
+  // waiting for a slot or still open.
   const railTasks = useMemo(() => {
     const open = new Set(openWorkspaceIds);
     return tasks.filter((task) => {
       const pane = task.workerWorkspaceId ?? task.taskWorkspaceId;
-      return task.stage === 'waiting_slot' || !pane || !open.has(pane);
+      const ended = task.status === 'completed' || task.status === 'cancelled' || task.status === 'failed';
+      return task.stage === 'waiting_slot' || (!ended && (!pane || !open.has(pane)));
     });
   }, [tasks, openWorkspaceIds]);
   // PR and issue links become chips: titled from a thread this conversation

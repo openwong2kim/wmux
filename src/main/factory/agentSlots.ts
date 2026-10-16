@@ -14,9 +14,10 @@
 // for a slot") and the Bots page lists it; it starts as soon as a slot frees,
 // or is not launched after SLOT_WAIT_MAX_MS. Bot turns themselves are not
 // held here (globalConcurrentBots governs them), and work the owner starts
-// (a pane's or the window's fan-out, an owner resume) is neither held nor
-// counted: the cap is the bots' budget, and the owner's own sessions never
-// starve it. A task row whose workspace is gone, or whose panes run no agent
+// (a pane's or the window's fan-out) is neither held nor counted: the cap is
+// the bots' budget, and the owner's own sessions never starve it. The
+// owner's Resume of a bot's stopped worker relaunches that bot worker, so it
+// takes a free slot like a bot's resume does, or is refused (tryAcquire). A task row whose workspace is gone, or whose panes run no agent
 // any more, holds no slot either (an open row can outlive its worker).
 
 import type { LedgerEntry } from '../../shared/ledger';

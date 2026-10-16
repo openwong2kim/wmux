@@ -159,7 +159,7 @@ export function withoutInternalIds(text: string, labels: IdLabels): string {
  *  (RoomCard.notice): code → whether its body is worded too (true) or is the
  *  evidence the card carries (a command, an error), kept as written. */
 const NOTICE_CODES: ReadonlyMap<string, boolean> = new Map([
-  ['worker.paused', true], ['worker.pausedResumable', true],
+  ['worker.paused', true], ['worker.pausedResumable', true], ['worker.idlePausedResumable', true],
   ['worker.done', true], ['worker.doneResumable', true],
   ['worker.resumed', true], ['worker.waiting', true],
   ['worker.noReport', true], ['worker.stillNoReport', true],
@@ -174,7 +174,7 @@ const NOTICE_CODES: ReadonlyMap<string, boolean> = new Map([
 ]);
 
 /** The notice codes that tell the owner a stopped worker can resume. */
-export const RESUMABLE_NOTICE_CODES: ReadonlySet<string> = new Set(['worker.pausedResumable', 'worker.doneResumable']);
+export const RESUMABLE_NOTICE_CODES: ReadonlySet<string> = new Set(['worker.pausedResumable', 'worker.idlePausedResumable', 'worker.doneResumable']);
 
 /** The task a system card offers Resume for: a card saying a stopped
  *  worker can resume (by its notice code), whose task's worker is still

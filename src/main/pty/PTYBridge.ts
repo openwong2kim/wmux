@@ -26,6 +26,7 @@ import {
   RESIZE_REDRAW_GUARD_MS,
   clearEscapeKey,
   markEscapeKey,
+  markUserInput,
   recentlyEscaped,
   recentlySettled,
   SETTLE_REDRAW_GUARD_MS,
@@ -293,6 +294,7 @@ export class PTYBridge {
    */
   noteInterruptInput(ptyId: string, data: string): void {
     try {
+      markUserInput(ptyId);
       if (isEscapeChunk(kittyChunkAsLegacy(data))) markEscapeKey(ptyId);
       if (!this.interruptKeystrokes.observe(ptyId, data)) return;
       settleHookTurnToIdle(ptyId, this.getHookRouter?.() ?? null, this.getWindow());
