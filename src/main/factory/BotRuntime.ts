@@ -51,7 +51,7 @@ import type { Fact } from '../../shared/facts';
 import type { RoomCard, ThreadId } from '../../shared/room';
 import { WAKE_LIMITS, type WakeItem, type WakeReason } from '../../shared/wake';
 import type { BrainAdapter, BrainEvent } from '../deck/BrainAdapter';
-import { findClaudeUsageLimitNotice, parseUsageLimitReset, usageLimitHoldEndsAt } from '../../shared/usageLimit';
+import { USAGE_LIMIT_UNKNOWN_HOLD_MS, findClaudeUsageLimitNotice, parseUsageLimitReset, usageLimitHoldEndsAt } from '../../shared/usageLimit';
 import { emitBotHook } from './botHooks';
 import type { BotEngineFactory } from './botEngines';
 import type { BotStore } from './botStore';
@@ -294,6 +294,20 @@ export function isTransientEngineError(message: string): boolean {
  *  puts its own lead-in before the provider's words. Pure. */
 export function usageLimitNoticeOf(message: string): string | null {
   return findClaudeUsageLimitNotice(message.replace(/^\s*Claude Code returned an error result:\s*/i, ''));
+}
+
+/** The shortest usage-limit park: a reset the text names that is already
+ *  past (an hour rounded down) must not turn into back-to-back retries. */
+export const USAGE_LIMIT_MIN_PARK_MS = 5 * 60_000;
+
+/** When a bot parked at `at` on `notice` picks up again. A clock time with
+ *  no date ("resets 1pm") is a rolling window, never more than the bounded
+ *  hold away: just past that hour, the parser would read tomorrow. Pure. */
+export function usageLimitParkUntil(notice: string, at: number): number {
+  let until = usageLimitHoldEndsAt({ detectedAt: at, resetsAt: parseUsageLimitReset(notice, at) ?? undefined });
+  const dated = /\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+\d|\|\s*\d{10}\b|\bin\s+\d/i.test(notice);
+  if (!dated) until = Math.min(until, at + USAGE_LIMIT_UNKNOWN_HOLD_MS);
+  return Math.max(until, at + USAGE_LIMIT_MIN_PARK_MS);
 }
 
 /** The run of a room-wide owner message a wake answers, or null. Pure. */
@@ -1057,11 +1071,13 @@ export class BotRuntime {
       // then picks up by itself; the wake waits parked with it (its
       // attempts start over when it is unparked), its turn not charged.
       this.transientRetries.delete(item.id);
-      const until = usageLimitHoldEndsAt({ detectedAt: at, resetsAt: parseUsageLimitReset(limitNotice, at) ?? undefined });
+      const until = usageLimitParkUntil(limitNotice, at);
       this.lastError.set(botId, { message: message.slice(0, 500), at });
       this.deps.queue.park(item.id);
       if (startedAt !== undefined && this.deps.store.get(botId)) this.deps.store.mutateUsage(botId, (u) => { unrecordTurn(u, startedAt); });
-      if (this.deps.store.get(botId)) this.deps.store.setParked(botId, { reason: 'error', at, until });
+      // The owner's own park stays: only their Resume lifts it.
+      const current = this.deps.store.get(botId);
+      if (current && current.parked?.reason !== 'human') this.deps.store.setParked(botId, { reason: 'error', at, until });
       emitBotHook({ type: 'bot.error', botId, workspaceId: profile.workspaceId, message: message.slice(0, 500), wakeId: item.id, until, at });
       this.armHeldTimer(until);
     } else if (retryIn !== null) {

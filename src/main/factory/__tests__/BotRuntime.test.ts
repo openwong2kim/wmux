@@ -7,7 +7,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BrainAdapter, BrainEvent, BrainStartOptions } from '../../deck/BrainAdapter';
-import { BotRuntime, BotSessionStore, CONTEXT_WAIT_MS, ROOM_RUN_STAGGER_MS, TRANSIENT_RETRY_BASE_MS, TRANSIENT_RETRY_MAX, botSessionsPath, isTransientEngineError, roomRunOf, setBotRuntimePorts, usageLimitNoticeOf, __resetBotRuntimePortsForTesting } from '../BotRuntime';
+import { BotRuntime, BotSessionStore, CONTEXT_WAIT_MS, ROOM_RUN_STAGGER_MS, TRANSIENT_RETRY_BASE_MS, TRANSIENT_RETRY_MAX, botSessionsPath, isTransientEngineError, roomRunOf, setBotRuntimePorts, usageLimitNoticeOf, usageLimitParkUntil, USAGE_LIMIT_MIN_PARK_MS, __resetBotRuntimePortsForTesting } from '../BotRuntime';
 import type { BotEngineFactory, BotEngineSpawnInput } from '../botEngines';
 import { BotStore, botsFilePath } from '../botStore';
 import { WakeQueue, wakeQueuePath } from '../wakeQueue';
@@ -572,10 +572,12 @@ describe('BotRuntime', () => {
     const id = createBot(r);
     const item = must(r.runtime.wake(id, { text: 'hi' }));
     await settle();
-    const text = "Claude Code returned an error result: You've hit your session limit · resets 1pm (Asia/Seoul)";
+    // The clock is 19:00 in Seoul: the window resets in two hours.
+    const text = "Claude Code returned an error result: You've hit your session limit · resets 9pm (Asia/Seoul)";
     r.adapters[0].end([{ type: 'error', message: text }]);
     await settle();
-    const reset = must(parseUsageLimitReset("You've hit your session limit · resets 1pm (Asia/Seoul)", clock));
+    const reset = must(parseUsageLimitReset("You've hit your session limit · resets 9pm (Asia/Seoul)", clock));
+    expect(reset).toBe(clock + 2 * HOUR_MS);
     const until = reset + USAGE_LIMIT_RESUME_GRACE_MS;
     expect(until).toBeGreaterThan(clock);
     expect(r.store.get(id)?.parked).toEqual({ reason: 'error', at: clock, until });
@@ -605,8 +607,28 @@ describe('BotRuntime', () => {
     r.adapters[0].end([{ type: 'error', message: "You've hit your limit" }]);
     await settle();
     expect(r.store.get(id)?.parked).toEqual({ reason: 'error', at: clock, until: clock + USAGE_LIMIT_UNKNOWN_HOLD_MS });
+    // A reset just past (the hour rounded down) waits the shortest park, never
+    // a day; a dated reset is kept as written.
+    const seoul1pm = Date.UTC(2026, 9, 16, 4, 0);
+    expect(usageLimitParkUntil("You've hit your session limit · resets 1pm (Asia/Seoul)", seoul1pm + 40_000)).toBe(seoul1pm + 40_000 + USAGE_LIMIT_MIN_PARK_MS);
+    expect(usageLimitParkUntil("You've hit your session limit · resets 1pm (Asia/Seoul)", seoul1pm + 90_000)).toBe(seoul1pm + 90_000 + USAGE_LIMIT_UNKNOWN_HOLD_MS);
+    const weekly = usageLimitParkUntil("You've hit your weekly limit · resets Oct 20, 9am (Asia/Seoul)", seoul1pm);
+    expect(weekly).toBe(Date.UTC(2026, 9, 20, 0, 0) + 30_000);
     // A reply that only quotes the wording is not a limit.
     expect(usageLimitNoticeOf("Earlier I said: You've hit your limit, then retried")).toBeNull();
+  });
+
+  it('a usage limit on a turn the owner parked meanwhile keeps the owner\'s park', async () => {
+    const r = rig();
+    const id = createBot(r);
+    const item = must(r.runtime.wake(id));
+    await settle();
+    r.runtime.park(id);
+    r.adapters[0].end([{ type: 'error', message: "You've hit your limit · resets 3pm" }]);
+    await settle();
+    expect(r.store.get(id)?.parked).toMatchObject({ reason: 'human' });
+    expect(r.store.get(id)?.parked).not.toHaveProperty('until');
+    expect(r.queue.get(item.id)?.state).toBe('parked');
   });
 
   it('a network failure retries after a wait, spends no attempt and never parks the bot', async () => {
