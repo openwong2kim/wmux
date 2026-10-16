@@ -89,13 +89,11 @@ export function workDelegate(cards: readonly RoomCard[], delegatorId: string | n
   return null;
 }
 
-/** The request's words for a started thread: the owner's request (its
- *  first line, roomFormat requestTitles), else the title the delegating
- *  bot gave the handoff, from main's opening hop (delivered or refused) or
- *  its pointer line. Pure. */
+/** The work's name for a started thread: the title the delegating bot gave
+ *  the handoff, from main's opening hop (delivered or refused) or its
+ *  pointer line, else the first line of the owner's request (roomFormat
+ *  requestTitles; often only a short reply such as "go ahead"). Pure. */
 export function workTitle(cards: readonly RoomCard[], threadId: ThreadId, requestTitle?: (threadId: ThreadId) => string | null): string | null {
-  const asked = requestTitle?.(threadId)?.trim();
-  if (asked) return asked;
   for (const c of cards) {
     if (c.actor.kind !== 'system') continue;
     const opening = c.threadId === threadId && threadId === `handoff:${c.refs?.handoffId}`;
@@ -104,7 +102,7 @@ export function workTitle(cards: readonly RoomCard[], threadId: ThreadId, reques
     const line = (hop ?? pointer ?? '').replace(FORWARDED, '').split('\n')[0].trim();
     if (line) return line;
   }
-  return null;
+  return requestTitle?.(threadId)?.trim() || null;
 }
 
 /** The delegate's newest message in the thread (any other bot's but the

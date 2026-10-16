@@ -9,7 +9,7 @@ import type { BotProfile } from '../../../../shared/bot';
 import { DEFAULT_BOT_BUDGETS } from '../../../../shared/bot';
 import type { BotGroup } from '../../../../shared/botGroup';
 import type { Conversation } from '../botsModel';
-import { buildTimeline, splitThreads, threadKey } from '../botsTimeline';
+import { ANNOUNCE_WINDOW_MS, RUN_WINDOW_MS, buildTimeline, splitThreads, threadKey } from '../botsTimeline';
 import { conversationStartedThreads, workDelegate, workLatest, workState, workTitle, workView, type WorkThread } from '../botsWork';
 
 const LEAD = 'bot-0000000a';
@@ -54,9 +54,10 @@ function scenario() {
   const relay = card({ threadId: H1, actor: SYS, kind: 'fact', title: 'dispatch → Reviewer: Add a --json flag', refs: { handoffId: 'h-9', botId: REVIEWER } });
   const revSays = card({ threadId: H1, actor: by(REVIEWER), title: 'Looks good' });
   const finished = card({ actor: SYS, kind: 'fact', title: 'Finished: Add a --json flag', refs: { handoffId: 'h-3', threadId: H1 } });
-  const after = card({ title: 'Dev finished, the PR is ready.' });
-  const prCard = card({ threadId: PR, actor: by(LEAD), title: 'About #12' });
-  const prReply = card({ threadId: PR, actor: by(REVIEWER), title: 'Approved #12' });
+  // Later than a run: not the hand-off's announcement.
+  const after = card({ title: 'Dev finished, the PR is ready.', at: 2_000_000 });
+  const prCard = card({ threadId: PR, actor: by(LEAD), title: 'About #12', at: 2_001_000 });
+  const prReply = card({ threadId: PR, actor: by(REVIEWER), title: 'Approved #12', at: 2_002_000 });
   const cards = [ask, reply, hop, devSays, reported, question, devLast, relay, revSays, finished, after, prCard, prReply];
   return { cards, ask, reply, hop, devSays, reported, question, devLast, relay, revSays, finished, after, prCard, prReply };
 }
@@ -128,6 +129,39 @@ describe('splitThreads with started threads', () => {
     expect(lone?.kind === 'work' && lone.continuation).toBe(false);
   });
 
+  it('puts the work card right after the delegating bot\'s message that announced it', () => {
+    const at = 50_000_000;
+    const ask = card({ actor: { kind: 'human' }, kind: 'human', title: 'Do it', at });
+    const hop = card({ threadId: H1, actor: SYS, kind: 'fact', title: 'dispatch → Dev: Do it', refs: { handoffId: 'h-1', botId: DEV, threadId: DM }, at: at + 1_000 });
+    const said = card({ kind: 'dispatch', title: '구현 봇에게 넘겼습니다', at: at + 1_004 });
+    const later = card({ title: 'Anything else?', at: at + ANNOUNCE_WINDOW_MS + 5_000 });
+    const order = (list: RoomCard[], workAuthor?: string) => {
+      const { main, work } = splitThreads(list, never, new Set([threadKey('w1', H1)]));
+      return buildTimeline(main.map((card) => ({ kind: 'card' as const, card })), { waits: never, work, ...(workAuthor ? { workAuthor } : {}) })
+        .filter((i) => i.kind === 'message' || i.kind === 'work')
+        .map((i) => (i.kind === 'work' ? 'work' : i.kind === 'message' ? i.card.id : ''));
+    };
+    expect(order([ask, hop, said, later], LEAD)).toEqual([ask.id, said.id, 'work', later.id]);
+    // The card continues the bubble's run, and the bubble no longer ends it.
+    const { main, work } = splitThreads([ask, hop, said], never, new Set([threadKey('w1', H1)]));
+    const items = buildTimeline(main.map((card) => ({ kind: 'card' as const, card })), { waits: never, work, workAuthor: LEAD });
+    const w = items.find((i) => i.kind === 'work');
+    expect(w?.kind === 'work' && w.continuation).toBe(true);
+    // A message naming the handoff later in the run counts too; one after a
+    // minute that does not name it does not.
+    const naming = card({ title: 'Handed it over', refs: { handoffId: 'h-1' }, at: at + 5 * 60_000 });
+    expect(order([ask, hop, naming], LEAD)).toEqual([ask.id, naming.id, 'work']);
+    expect(order([ask, hop, later], LEAD)).toEqual([ask.id, 'work', later.id]);
+    // The owner's message ends the search, as does the run window.
+    const owner = card({ actor: { kind: 'human' }, kind: 'human', title: 'wait', at: at + 1_002 });
+    expect(order([ask, hop, owner, said], LEAD)).toEqual([ask.id, 'work', owner.id, said.id]);
+    const late = card({ kind: 'dispatch', title: 'late', at: at + 1_000 + RUN_WINDOW_MS });
+    expect(order([ask, hop, late], LEAD)).toEqual([ask.id, 'work', late.id]);
+    // Another bot's message is not the announcement.
+    const other = card({ actor: by(DEV), threadId: DM, title: 'dev here', at: at + 1_003 });
+    expect(order([ask, hop, other], LEAD)).toEqual([ask.id, 'work', other.id]);
+  });
+
   it('a thread whose first card read waits on the owner still gets its work card, and the card shows too', () => {
     const q = card({ threadId: H1, actor: by(DEV), kind: 'question', state: 'open', title: 'Which shape?' });
     const later = card({ threadId: H1, actor: by(DEV), title: 'Working on it' });
@@ -162,6 +196,12 @@ describe('the work card view', () => {
     expect(workTitle(w.all, H1)).toBe('Add a --json flag');
     expect(workTitle([s.finished], H1)).toBe('Add a --json flag');
     expect(workTitle([s.devSays], H1)).toBeNull();
+    // The handoff's own title wins over a short owner reply it points to.
+    const reply = card({ actor: { kind: 'human' }, kind: 'human', title: '응 붙인다' });
+    const named = card({ threadId: H2, actor: SYS, kind: 'fact', title: 'dispatch → 구현 봇: by-wmux-bot 라벨: #2272와 머지된 봇 PR #2257·#2258·#2260에 붙이기', refs: { handoffId: 'h-2', botId: DEV, threadId: DM, requestCardId: reply.id } });
+    expect(workTitle([named], H2, (id) => (id === H2 ? '응 붙인다' : null))).toBe('by-wmux-bot 라벨: #2272와 머지된 봇 PR #2257·#2258·#2260에 붙이기');
+    // A handoff with no title of its own: the owner's request.
+    expect(workTitle([s.devSays], H1, () => '응 붙인다')).toBe('응 붙인다');
     // A refused opening hop keeps the request's words too.
     const refused = card({ threadId: H1, actor: SYS, kind: 'refusal', title: 'Handoff refused (no_addressee): Add a --json flag', refs: { handoffId: 'h-1', threadId: DM } });
     expect(workTitle([refused], H1)).toBe('Add a --json flag');

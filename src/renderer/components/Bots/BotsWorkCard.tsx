@@ -7,9 +7,10 @@
 // only), the request's words, the delegate's newest message (two lines at
 // most), and the PR or issue chip, "N steps · last 15:12" and Show steps.
 // Expanded in place: the folded cards as one-line steps, then Open thread
-// (the side panel) and Hide steps. Whether a card is expanded is kept for
+// (the side panel) and Hide steps — the one toggle while it is open, so the
+// foot's row keeps only the chip and the count. Whether a card is expanded is kept for
 // the session only, in memory; a card starts folded.
-import { useId, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import type { BotProfile } from '../../../shared/bot';
 import type { RoomCard } from '../../../shared/room';
 import { FOCUS_RING } from '../focusRing';
@@ -107,6 +108,14 @@ export default function BotsWorkCard({ work, view, t, faceOf, nameOf, textOf, re
   const key = workKey(work);
   const [open, setOpen] = useState(() => expanded.has(key));
   const toggleRef = useRef<HTMLButtonElement>(null);
+  const hideRef = useRef<HTMLButtonElement>(null);
+  // A toggle the owner pressed hands focus to the one that replaces it.
+  const refocus = useRef(false);
+  useEffect(() => {
+    if (!refocus.current) return;
+    refocus.current = false;
+    (open ? hideRef : toggleRef).current?.focus();
+  }, [open]);
   const stepsId = useId();
   const set = (next: boolean) => {
     if (next) expanded.add(key);
@@ -135,18 +144,19 @@ export default function BotsWorkCard({ work, view, t, faceOf, nameOf, textOf, re
       <div className="wmux-bots-work-foot">
         {refChip}
         <span className="min-w-0 truncate tabular-nums" title={fullTime(view.lastAt)}>{count}</span>
-        <button
-          ref={toggleRef}
-          type="button"
-          data-bots-work-toggle
-          aria-expanded={open}
-          aria-controls={open ? stepsId : undefined}
-          onClick={() => set(!open)}
-          className={`wmux-bots-work-toggle ${FOCUS_RING}`}
-        >
-          {open ? t('botsPage.work.hide') : t('botsPage.work.show')}
-          <span aria-hidden="true" className={`wmux-bots-work-chevron${open ? ' is-open' : ''}`}><IconChevron size={10} /></span>
-        </button>
+        {!open && (
+          <button
+            ref={toggleRef}
+            type="button"
+            data-bots-work-toggle
+            aria-expanded={false}
+            onClick={() => { refocus.current = true; set(true); }}
+            className={`wmux-bots-work-toggle ${FOCUS_RING}`}
+          >
+            {t('botsPage.work.show')}
+            <span aria-hidden="true" className="wmux-bots-work-chevron"><IconChevron size={10} /></span>
+          </button>
+        )}
       </div>
       {open && (
         <div id={stepsId} className="wmux-bots-work-steps" data-bots-work-steps>
@@ -158,11 +168,12 @@ export default function BotsWorkCard({ work, view, t, faceOf, nameOf, textOf, re
           <div className="wmux-bots-work-steps-foot">
             <button type="button" data-bots-work-open onClick={onOpenThread} className={`wmux-bots-work-link ${FOCUS_RING}`}>{t('botsPage.work.openThread')}</button>
             <button
+              ref={hideRef}
               type="button"
               data-bots-work-hide
               aria-expanded
               aria-controls={stepsId}
-              onClick={() => { set(false); toggleRef.current?.focus(); }}
+              onClick={() => { refocus.current = true; set(false); }}
               className={`wmux-bots-work-toggle ${FOCUS_RING}`}
             >
               {t('botsPage.work.hide')}

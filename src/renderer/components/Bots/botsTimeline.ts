@@ -36,6 +36,10 @@ type T = (key: string, vars?: Record<string, string | number>) => string;
 /** A run of one author's messages holds while each follows the last by less than this. */
 export const RUN_WINDOW_MS = 10 * 60_000;
 
+/** A delegating bot's message this soon after a work card's root is the one
+ *  announcing it (placeWork). */
+export const ANNOUNCE_WINDOW_MS = 60_000;
+
 /** A quiet this long brings a date and time separator, as a new day does. */
 export const SEPARATOR_GAP_MS = 60 * 60_000;
 
@@ -177,7 +181,8 @@ function entryAt(entry: RoomEntry): number {
  * the run of `workAuthor` (a 1:1's bot), else of the nearest bot above it
  * among `workCandidates` (a group's coordinators) other than the one the
  * work was handed to — none: a run of its own. A work item is new when a
- * card folded into it is.
+ * card folded into it is. It follows the delegating bot's message that
+ * announced the hand-off (placeWork).
  */
 export function buildTimeline(entries: readonly RoomEntry[], opts: {
   waits: (card: RoomCard) => boolean;
@@ -193,7 +198,7 @@ export function buildTimeline(entries: readonly RoomEntry[], opts: {
   let day = '';
   let lastAt = -Infinity;
   let newPlaced = opts.newAfter == null;
-  for (const entry of entries) {
+  for (const entry of placeWork(entries, opts)) {
     const at = entryAt(entry);
     const d = dayKey(at);
     if (d !== day || at - lastAt >= SEPARATOR_GAP_MS) {
@@ -245,6 +250,43 @@ export function buildTimeline(entries: readonly RoomEntry[], opts: {
     item.continuation = continues(prev, item);
     if (item.continuation && (prev?.kind === 'message' || prev?.kind === 'work')) prev.runEnd = false;
     out.push(item);
+  }
+  return out;
+}
+
+/** Main's hop line opens a thread a few milliseconds before the delegating
+ *  bot's own message announcing it lands: a work card goes right after
+ *  that message — the delegating bot's next card in the conversation's own
+ *  thread within ANNOUNCE_WINDOW_MS, or later in its run when it is its
+ *  dispatch card or names that handoff or thread — so the bubble comes
+ *  first, then the card. Without one it keeps its root's place. The owner's
+ *  message ends the search. Pure. */
+export function placeWork(entries: readonly RoomEntry[], opts: { work?: ReadonlyMap<string, WorkThread>; workAuthor?: string; workCandidates?: ReadonlySet<string> }): RoomEntry[] {
+  if (!opts.work || opts.work.size === 0) return [...entries];
+  const out = [...entries];
+  for (const [anchorId, work] of opts.work) {
+    const from = out.findIndex((e) => e.card.id === anchorId);
+    if (from < 0) continue;
+    const anchor = out[from].card;
+    const delegate = workDelegate(work.all, null);
+    const handoffId = work.threadId.startsWith('handoff:') ? work.threadId.slice(8) : null;
+    const isDelegator = (botId: string) => (opts.workAuthor ? botId === opts.workAuthor : opts.workCandidates ? opts.workCandidates.has(botId) : botId !== delegate);
+    let to = -1;
+    for (let i = from + 1; i < out.length; i++) {
+      const c = out[i].card;
+      const gap = c.at - anchor.at;
+      if (c.actor.kind === 'human' || gap >= RUN_WINDOW_MS) break;
+      if (c.actor.kind !== 'bot' || !isDelegator(c.actor.botId) || c.workspaceId !== anchor.workspaceId) continue;
+      if (!(c.threadId === 'general' || dmThreadBot(c.threadId) || groupThreadGroup(c.threadId))) continue;
+      const names = c.kind === 'dispatch' || (!!handoffId && c.refs?.handoffId === handoffId) || c.refs?.threadId === work.threadId;
+      if (gap <= ANNOUNCE_WINDOW_MS || names) {
+        to = i;
+        break;
+      }
+    }
+    if (to < 0) continue;
+    const [moved] = out.splice(from, 1);
+    out.splice(to, 0, moved);
   }
   return out;
 }

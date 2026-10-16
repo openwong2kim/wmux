@@ -71,6 +71,18 @@ describe('BotsWorkCard', () => {
     expect(host.querySelector('[data-bots-work-toggle]')!.getAttribute('aria-expanded')).toBe('false');
   });
 
+  it('while expanded the foot holds the one toggle, and focus follows it', () => {
+    render('handoff:h-4' as ThreadId);
+    act(() => host.querySelector<HTMLButtonElement>('[data-bots-work-toggle]')!.click());
+    // The count row keeps the count, not a second toggle.
+    expect(host.querySelector('[data-bots-work-toggle]')).toBeNull();
+    expect(host.querySelectorAll('[aria-expanded]')).toHaveLength(1);
+    const hide = host.querySelector<HTMLButtonElement>('[data-bots-work-hide]')!;
+    expect(document.activeElement).toBe(hide);
+    act(() => hide.click());
+    expect(document.activeElement).toBe(host.querySelector('[data-bots-work-toggle]'));
+  });
+
   it('a failed one says so in the danger colour; no title falls back to the kind word', () => {
     render('handoff:h-2' as ThreadId, { state: 'failed', title: null });
     const state = host.querySelector('[data-bots-work-state]')!;
@@ -81,8 +93,8 @@ describe('BotsWorkCard', () => {
 
   it('expands in place into its steps with Open thread, and keeps that for the session', () => {
     const onOpen = render('handoff:h-3' as ThreadId);
-    const toggle = host.querySelector<HTMLButtonElement>('[data-bots-work-toggle]')!;
-    act(() => toggle.click());
+    act(() => host.querySelector<HTMLButtonElement>('[data-bots-work-toggle]')!.click());
+    const toggle = host.querySelector<HTMLButtonElement>('[data-bots-work-hide]')!;
     expect(toggle.getAttribute('aria-expanded')).toBe('true');
     const steps = host.querySelector('[data-bots-work-steps]')!;
     expect(toggle.getAttribute('aria-controls')).toBe(steps.id);

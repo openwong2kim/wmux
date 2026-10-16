@@ -552,19 +552,22 @@ status bar badges, `fleet_triage` or the phone's sidebar.
   the panel's own thread.
   **Work handed off (owner decision 2026-10-16):** a thread the
   conversation started (a coordinator's request thread, from a 1:1 or a
-  group) shows none of that: it is one **work card** at its root's place,
-  inside the delegating bot's run — 14px radius, a `--line` hairline and no
+  group) shows none of that: it is one **work card** at its root's place —
+  right after the delegating bot's message announcing it, when there is
+  one — inside that bot's run — 14px radius, a `--line` hairline and no
   fill, a bubble's width at most. First, in 11px muted, the delegate's 16px
   avatar, "Handed to <bot>" and "· <state>": a steady 6px muted dot and
   Working (Waiting for review once its task reported), the needs-you dot and
   text while anything in it waits on the owner, a success check and Done,
-  Failed in red, a neutral Cancelled. Then the request in 14px/500 (the
-  chip's name), the delegate's newest message in 13px `--text-sub` (two
+  Failed in red, a neutral Cancelled. Then the work's name in 14px/500 (the
+  title the delegating bot gave it, else the first line of the owner's
+  request), the delegate's newest message in 13px `--text-sub` (two
   lines at most), and a foot: the PR or issue chip, "N steps · last 15:12"
   and a ghost Show steps ▾ (24px). It expands in place: a `--stroke`
   hairline, the cards folded into it as one-line steps (time, the actor's
   16px avatar or a system line's grey dot, its owner-facing words, a
-  refusal's red word kept), then Open thread and Hide steps ▴. Expanded is
+  refusal's red word kept), then Open thread and Hide steps ▴ — the one
+  toggle while it is open (the foot above keeps the chip and count). Expanded is
   per card, for the session; folded by default. Its waiting cards still
   show in the timeline, and Open thread shows the whole thread.
   **No internal id in the owner's view:**
