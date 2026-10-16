@@ -1262,6 +1262,8 @@ export function registerFanOutRpc(
       const pr = /^pull\/([1-9][0-9]*)\/head$/.exec(checkout?.fetchRef ?? '')?.[1];
       const repoKey = botProfile?.repo?.repoKey;
       const prThread = pr && repoKey ? parseThreadId(prThreadId(repoKey, Number(pr))) ?? undefined : undefined;
+      // General names no subject: such tasks keep a thread of their own, as
+      // from a wake in General.
       botWakeThread = taskOriginThread(botNamedThread ?? prThread ?? botWakeThread);
     }
     // A bot's named secrets for its workers (factory/secretGrants.ts): names

@@ -25,6 +25,8 @@ import type { FanoutPreset } from '../../../../shared/fanoutPreset';
 import { DEFAULT_BOT_BUDGETS, type BotProfile, type BotRole } from '../../../../shared/bot';
 import { emptyUsage } from '../../../factory/budget';
 import type { ThreadId } from '../../../../shared/room';
+import type { BotGroup } from '../../../../shared/botGroup';
+import { setFactoryRoomPorts } from '../../../factory/roomWriter';
 import type { BotWorkerStartOutcome } from '../../../factory/botNotices';
 import { SecretStore, setSecretStore } from '../../../factory/secretStore';
 import { ConnectorStore } from '../../../factory/connectorStore';
@@ -356,11 +358,15 @@ describe('task.fanout.start — bot origin', () => {
     expect((r.start.mock.calls[0][0] as FanOutRequest).threadId).toBe('pr:github.com/acme/app#12');
   });
 
-  it('records no thread for a wake in general or with none', async () => {
-    for (const t of ['general', null, 'not a thread']) {
+  it('records no thread for a wake in general or with none, nor for General named', async () => {
+    const cases: Array<[string | null, string | undefined]> = [['general', undefined], [null, undefined], ['not a thread', undefined], ['pr:o/r#12', 'general']];
+    for (const [t, named] of cases) {
       const r = rig('verifier');
       r.setThread(t);
-      const res = await r.call({ idempotencyKey: 'wake:w-1:1', titles: ['verify'], preset: 'verify', checkout: { sha: SHA } }, botCtx('verifier'));
+      const res = await r.call(
+        { idempotencyKey: 'wake:w-1:1', titles: ['verify'], preset: 'verify', checkout: { sha: SHA }, ...(named ? { threadId: named } : {}) },
+        botCtx('verifier'),
+      );
       expect(res.status).toBe('accepted');
       await r.flush();
       expect(r.start.mock.calls[0][0] as FanOutRequest).not.toHaveProperty('threadId');
@@ -392,6 +398,26 @@ describe('task.fanout.start — bot origin', () => {
       expect(errorOf(res)).toMatchObject({ code: 'INVALID_ARGUMENT', message: expect.stringContaining('thread') });
       await r.flush();
       expect(r.start).not.toHaveBeenCalled();
+    }
+  });
+
+  it('takes a group chat the bot is in, and another bot\'s 1:1 only from the wake running in it', async () => {
+    const OTHER_DM = 'dm:bot-99999999';
+    let wakeThread: string | null = null;
+    setFactoryRoomPorts(() => ({
+      currentWakeThread: () => wakeThread as ThreadId | null,
+      groups: { byThread: (_ws, t) => (t === 'group:grp-0a1b2c3d' ? { memberIds: [BOT_ID] } : t === 'group:grp-0b0b0b0b' ? { memberIds: ['bot-99999999'] } : null) as BotGroup | null },
+    }));
+    try {
+      const attempt = async (named: string): Promise<Record<string, unknown>> =>
+        rig('verifier').call({ idempotencyKey: 'wake:w-1:1', titles: ['verify'], preset: 'verify', checkout: { sha: SHA }, threadId: named }, botCtx('verifier'));
+      expect((await attempt('group:grp-0a1b2c3d')).status).toBe('accepted');
+      expect(errorOf(await attempt('group:grp-0b0b0b0b')).code).toBe('INVALID_ARGUMENT');
+      expect(errorOf(await attempt(OTHER_DM)).code).toBe('INVALID_ARGUMENT');
+      wakeThread = OTHER_DM;
+      expect((await attempt(OTHER_DM)).status).toBe('accepted');
+    } finally {
+      setFactoryRoomPorts(() => null);
     }
   });
 
