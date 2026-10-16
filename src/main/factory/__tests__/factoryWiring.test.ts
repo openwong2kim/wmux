@@ -31,7 +31,11 @@ import {
   stopTaskWorker,
   taskWakeHandoff,
   threadTail,
+  WorkerStopPendingError,
+  WSL_STOP_RETRY_MS,
+  __pendingWslStopCountForTesting,
 } from '../factoryWiring';
+import { setWorkerResumePorts } from '../workerReclaim';
 import { createFactLog, type FactLog } from '../factLog';
 import { WAKE_RECORD_RETAIN_MS, WakeQueue, latestOwnerWakeThread, setWakeQueue, wakeQueuePath } from '../wakeQueue';
 import { TriggerEngine } from '../triggerEngine';
@@ -832,10 +836,118 @@ describe('stopTaskWorker (a stop of a bot task\'s worker)', () => {
       expect(d.calls).toEqual(['stopAgent:wsl', 'destroy:wsl']);
     });
 
-    it('a workspace tree that is not known: no WSL pane is stopped, closed or counted (it may be the owner\'s)', async () => {
-      const d = wslDaemon([worker, { ...worker, id: 'owner-wsl' }]);
-      expect(await stopTaskWorker(entry, d.client, () => null, { platform: 'win32' })).toBe(0);
-      expect(d.calls).toEqual([]);
+    describe('a workspace tree that is not known (#2267)', () => {
+      // A clock the retry's sleep moves on: each look is WSL_STOP_RETRY_MS later.
+      function retryClock(onLook: (look: number) => void = () => undefined) {
+        let clock = 0;
+        let looks = 0;
+        return {
+          now: () => clock,
+          sleep: async (ms: number) => {
+            clock += ms;
+            onLook(++looks);
+          },
+          looks: () => looks,
+        };
+      }
+      const recordOf = (named: Record<string, string>) => (id: string) => (id in named ? { taskId: named[id] } : null);
+      afterEach(() => setWorkerResumePorts(null));
+
+      it('an unidentified WSL pane is neither stopped nor closed nor counted now; the stop is pending, not done', async () => {
+        const d = wslDaemon([worker, { ...worker, id: 'owner-wsl' }]);
+        const clock = retryClock();
+        const err = await stopTaskWorker(entry, d.client, () => null, { platform: 'win32', ...clock, retryForMs: 6_000 }).catch((e: unknown) => e);
+        expect(err).toBeInstanceOf(WorkerStopPendingError);
+        expect((err as WorkerStopPendingError).pendingSessionIds).toEqual(['wsl', 'owner-wsl']);
+        expect((err as WorkerStopPendingError).workers).toBe(0);
+        expect(d.calls).toEqual([]);
+        await (err as WorkerStopPendingError).retry;
+      });
+
+      it('a WSL worker its session record names as the task\'s is stopped now', async () => {
+        const d = wslDaemon([worker, { ...worker, id: 'other-task', spawnCwd: worker.spawnCwd }]);
+        const recordOfPane = recordOf({ wsl: 'wtask-1', 'other-task': 'wtask-9' });
+        const err = await stopTaskWorker(entry, d.client, () => null, { platform: 'win32', sessionRecordOf: recordOfPane, ...retryClock(), retryForMs: 6_000 }).catch((e: unknown) => e);
+        // Its own worker is stopped at once; the pane another task's record
+        // names is not the task's and waits for the tree.
+        expect(d.calls).toEqual(['stopAgent:wsl', 'destroy:wsl']);
+        expect(err).toBeInstanceOf(WorkerStopPendingError);
+        expect((err as WorkerStopPendingError).workers).toBe(1);
+        expect((err as WorkerStopPendingError).pendingSessionIds).toEqual(['other-task']);
+        await (err as WorkerStopPendingError).retry;
+
+        const only = wslDaemon([worker]);
+        expect(await stopTaskWorker(entry, only.client, () => null, { platform: 'win32', sessionRecordOf: recordOf({ wsl: 'wtask-1' }) })).toBe(1);
+        expect(only.calls).toEqual(['stopAgent:wsl', 'destroy:wsl']);
+        expect(__pendingWslStopCountForTesting()).toBe(0);
+      });
+
+      it('a pane only the reclaim record lists (an owner shell it took in) is not taken for the worker', async () => {
+        const ownerShell = { ...worker, id: 'owner-wsl' };
+        setWorkerResumePorts({
+          store: { get: (id: string) => (id === 'wtask-1' ? { taskId: 'wtask-1', sessions: [{ sessionId: 'owner-wsl', cwd: worker.spawnCwd }] } : null), all: () => [] },
+        } as never);
+        const d = wslDaemon([ownerShell]);
+        const err = await stopTaskWorker(entry, d.client, () => null, { platform: 'win32', sessionRecordOf: recordOf({}), ...retryClock(), retryForMs: 6_000 }).catch((e: unknown) => e);
+        expect(err).toBeInstanceOf(WorkerStopPendingError);
+        expect(d.calls).toEqual([]);
+        // Once the tree is not there either, it stays untouched.
+        expect(await (err as WorkerStopPendingError).retry).toEqual({ kind: 'gave_up' });
+        expect(d.calls).toEqual([]);
+      });
+
+      it('once the tree is known: a pane outside the task workspace is never stopped; one inside is stopped by the retry', async () => {
+        let tree: Record<string, string[]> | null = null;
+        const ws = (id: string) => (tree ? tree[id] ?? [] : null);
+        const d = wslDaemon([worker, { ...worker, id: 'owner-wsl' }]);
+        const clock = retryClock((look) => {
+          if (look === 2) tree = { 'ws-task': ['wsl'], 'ws-owner': ['owner-wsl'] };
+        });
+        const err = await stopTaskWorker(entry, d.client, ws, { platform: 'win32', sessionRecordOf: recordOf({}), ...clock }).catch((e: unknown) => e);
+        expect(err).toBeInstanceOf(WorkerStopPendingError);
+        expect(d.calls).toEqual([]);
+        expect(await (err as WorkerStopPendingError).retry).toEqual({ kind: 'stopped', workers: 1 });
+        expect(clock.looks()).toBe(2);
+        expect(d.calls).toEqual(['stopAgent:wsl', 'destroy:wsl']);
+        expect(__pendingWslStopCountForTesting()).toBe(0);
+      });
+
+      it('a second stop while the retry waits joins it', async () => {
+        let tree: string[] | null = null;
+        const d = wslDaemon([worker]);
+        // The retry's first look is held until both stops have run.
+        const held: Array<() => void> = [];
+        const opts = { platform: 'win32' as const, now: () => 0, sleep: () => new Promise<void>((resolve) => held.push(resolve)) };
+        const first = (await stopTaskWorker(entry, d.client, () => tree, opts).catch((e: unknown) => e)) as WorkerStopPendingError;
+        const second = (await stopTaskWorker(entry, d.client, () => tree, opts).catch((e: unknown) => e)) as WorkerStopPendingError;
+        expect(second).toBeInstanceOf(WorkerStopPendingError);
+        expect(second.retry).toBe(first.retry);
+        expect(__pendingWslStopCountForTesting()).toBe(1);
+        expect(held).toHaveLength(1);
+        tree = ['wsl'];
+        held[0]();
+        expect(await first.retry).toEqual({ kind: 'stopped', workers: 1 });
+        expect(d.calls).toEqual(['stopAgent:wsl', 'destroy:wsl']);
+      });
+
+      it('the retry gives up when the tree stays unknown past its bound, and says so', async () => {
+        const d = wslDaemon([worker]);
+        const clock = retryClock();
+        const err = (await stopTaskWorker(entry, d.client, () => null, { platform: 'win32', ...clock, retryForMs: 30_000 }).catch((e: unknown) => e)) as WorkerStopPendingError;
+        expect(err.message).toMatch(/wait for the workspace tree; tried again for up to 30s/);
+        expect(await err.retry).toEqual({ kind: 'gave_up' });
+        expect(clock.looks()).toBe(30_000 / WSL_STOP_RETRY_MS);
+        expect(clock.now()).toBe(30_000);
+        expect(d.calls).toEqual([]);
+        expect(__pendingWslStopCountForTesting()).toBe(0);
+      });
+
+      it('agentsOnly: a plain WSL shell at its prompt leaves nothing pending', async () => {
+        const d = wslDaemon([{ ...worker, id: 'wsl-shell', commandRunning: false }]);
+        expect(await stopTaskWorker(entry, d.client, () => null, { agentsOnly: true, platform: 'win32' })).toBe(0);
+        expect(d.calls).toEqual([]);
+        expect(__pendingWslStopCountForTesting()).toBe(0);
+      });
     });
 
     it('agentsOnly: a leftover WSL worker is closed; a plain WSL shell and an exec unit with no agent left stay', async () => {

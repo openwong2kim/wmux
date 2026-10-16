@@ -92,7 +92,8 @@ import { installLateStopSweep, setFactoryStopPorts, type FactoryStopPorts } from
 import { getRoutineStore } from './routines';
 import { getGroupStore } from './groupStore';
 import { getAgentSlots } from './agentSlots';
-import { getWorkerResumePorts, isWslWorkerPane, reclaimedWorkerState, stopResumedWorker, stopResumedWorkers, workerWorkspaceOf, type WorkerSessionInfo } from './workerReclaim';
+import { getWorkerResumePorts, isTaskOwnWorkerPane, isWslWorkerPane, reclaimedWorkerState, stopResumedWorker, stopResumedWorkers, workerWorkspaceOf, type WorkerSessionInfo, type WorkerSessionRecordOf } from './workerReclaim';
+import { botWorkerSessionRecord } from '../agents/botWorkerMergeGuard';
 import { getTaskFolderPorts } from './taskFolderCleanup';
 
 // ── Trigger cursor ─────────────────────────────────────────────────────────
@@ -491,14 +492,70 @@ export function daemonRpc(client: () => Daemon | null): ((method: string, params
   return c ? (method, params) => c.rpc(method as never, params as Record<string, unknown> | undefined) : null;
 }
 
+/** How often, and for how long, a stop that met an unknown workspace tree
+ *  looks again for it, to stop the WSL panes it could not tell apart (#2267). */
+export const WSL_STOP_RETRY_MS = 3_000;
+export const WSL_STOP_RETRY_FOR_MS = 120_000;
+
+export type WorkerStopRetryOutcome = { kind: 'stopped'; workers: number } | { kind: 'gave_up' } | { kind: 'failed'; error: string };
+
+/** A stop that met an unknown workspace tree and could not tell the WSL
+ *  panes started in the task folder apart (no session record names the
+ *  task): the rest was stopped (`workers`), these wait for the tree. */
+export class WorkerStopPendingError extends Error {
+  readonly code = 'pending_workspace_tree';
+  constructor(
+    readonly workers: number,
+    readonly pendingSessionIds: readonly string[],
+    /** The retry: `stopped` once the tree was known and the stop ran with
+     *  it (how many workers that stopped), `gave_up` when the tree stayed
+     *  unknown for the whole window, `failed` when that stop threw. */
+    readonly retry: Promise<WorkerStopRetryOutcome>,
+    retryForMs: number,
+  ) {
+    super(`${pendingSessionIds.length} WSL pane(s) in the task folder wait for the workspace tree; tried again for up to ${Math.round(retryForMs / 1000)}s`);
+    this.name = 'WorkerStopPendingError';
+  }
+}
+
+export interface StopTaskWorkerOpts {
+  agentsOnly?: boolean;
+  platform?: NodeJS.Platform;
+  /** A pane's bot worker session record (botWorkerSessionRecord): with the
+   *  tree unknown, a WSL pane is the task's worker only when its record
+   *  names the task. Absent: none is identified. */
+  sessionRecordOf?: WorkerSessionRecordOf;
+  /** The retry of a stop that met an unknown tree (tests inject these). */
+  retryEveryMs?: number;
+  retryForMs?: number;
+  now?: () => number;
+  sleep?: (ms: number) => Promise<void>;
+}
+
+/** taskId → the retry of its stop, while one waits for the workspace tree. */
+const pendingWslStops = new Map<string, Promise<WorkerStopRetryOutcome>>();
+
+/** Tests only. */
+export function __pendingWslStopCountForTesting(): number {
+  return pendingWslStops.size;
+}
+
 /** Stop the processes of a bot task's worker: the daemon sessions of its
  *  workspace started in its worktree (a research task's scratch folder), the
  *  folder kept. Each pane's agent and everything below it first (the daemon's
  *  session.stopAgent: asked to exit, killed after a grace, checked gone),
  *  then the pane itself, checked gone (stopSessionsInDir). `workspacePtys`:
- *  the panes a workspace owns, null when the workspace tree is not known (a
- *  session started in the folder then counts, a WSL pane excepted). A pane in another workspace,
- *  such as a terminal the owner opened in the folder, is never touched.
+ *  the panes a workspace owns, null when the workspace tree is not known.
+ *  A pane in another workspace, such as a terminal the owner opened in the
+ *  folder, is never touched. An unknown tree (right after start-up, a daemon
+ *  reconnect): a session started in the folder counts, but a WSL pane only
+ *  when its bot worker session record names the task (#2267); the folder
+ *  match alone cannot tell the worker from a WSL terminal the owner opened
+ *  there. Any other WSL pane in the folder is left for the retry: once the
+ *  tree is known the same stop runs again with it (only the task
+ *  workspace's own panes), looked for every WSL_STOP_RETRY_MS for
+ *  WSL_STOP_RETRY_FOR_MS. Such a stop throws WorkerStopPendingError after
+ *  stopping the rest, so its caller reports it partial, not done.
  *  `agentsOnly` (the re-stop of a task stopped before): only a leftover
  *  agent is stopped; a pane is closed only when it still runs an agent the
  *  daemon cannot stop by itself (Codex, WSL, an exec unit), so a plain
@@ -514,22 +571,91 @@ export async function stopTaskWorker(
   entry: LedgerEntry,
   client: () => Daemon | null,
   workspacePtys?: (workspaceId: string) => readonly string[] | null,
-  opts: { agentsOnly?: boolean; platform?: NodeJS.Platform } = {},
+  opts: StopTaskWorkerOpts = {},
 ): Promise<number> {
+  const r = await stopTaskWorkerOnce(entry, client, workspacePtys, opts);
+  if (r.pendingWsl.length === 0) return r.workers;
+  // One retry per task: a second stop while one waits joins it.
+  let retry = pendingWslStops.get(entry.id);
+  if (!retry) {
+    retry = retryWslStop(entry, client, workspacePtys, opts).finally(() => pendingWslStops.delete(entry.id));
+    pendingWslStops.set(entry.id, retry);
+  }
+  console.warn(`[factory] stop of task ${entry.id}: the workspace tree is not known; ${r.pendingWsl.length} WSL pane(s) in its folder are stopped once it is`);
+  throw new WorkerStopPendingError(r.workers, r.pendingWsl, retry, opts.retryForMs ?? WSL_STOP_RETRY_FOR_MS);
+}
+
+/** The retry of a stop that met an unknown tree: once the tree is known, the
+ *  same stop runs again with it (the own-workspace filter); bounded. */
+async function retryWslStop(
+  entry: LedgerEntry,
+  client: () => Daemon | null,
+  workspacePtys: ((workspaceId: string) => readonly string[] | null) | undefined,
+  opts: StopTaskWorkerOpts,
+): Promise<WorkerStopRetryOutcome> {
+  const now = opts.now ?? Date.now;
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((resolve) => {
+    setTimeout(resolve, ms).unref?.();
+  }));
+  const every = opts.retryEveryMs ?? WSL_STOP_RETRY_MS;
+  const until = now() + (opts.retryForMs ?? WSL_STOP_RETRY_FOR_MS);
+  for (;;) {
+    await sleep(every);
+    let known = false;
+    try {
+      known = (workspacePtys?.(entry.taskWorkspaceId) ?? null) !== null;
+    } catch {
+      known = false;
+    }
+    if (known) {
+      try {
+        const r = await stopTaskWorkerOnce(entry, client, workspacePtys, opts);
+        console.log(`[factory] stop of task ${entry.id}: the workspace tree is known; ${r.workers} more worker(s) stopped`);
+        return { kind: 'stopped', workers: r.workers };
+      } catch (err) {
+        console.warn(`[factory] stop of task ${entry.id}: the stop once the workspace tree was known failed: ${String(err)}`);
+        return { kind: 'failed', error: String(err) };
+      }
+    }
+    if (now() >= until) {
+      console.warn(`[factory] stop of task ${entry.id}: the workspace tree stayed unknown; its WSL panes were not stopped (stop again to retry)`);
+      return { kind: 'gave_up' };
+    }
+  }
+}
+
+async function stopTaskWorkerOnce(
+  entry: LedgerEntry,
+  client: () => Daemon | null,
+  workspacePtys: ((workspaceId: string) => readonly string[] | null) | undefined,
+  opts: StopTaskWorkerOpts,
+): Promise<{ workers: number; pendingWsl: string[] }> {
   const rpc = daemonRpc(client);
   if (!rpc) throw new Error('the daemon is not connected');
   const worktree = await taskFolderFromMissions(rpc, entry);
   if (!worktree) throw new Error('the task worktree is not known');
   const own = workspacePtys?.(entry.taskWorkspaceId) ?? null;
   type Session = WorkerSessionInfo & { pid?: number };
+  // An unknown tree: a WSL pane is the task's only when its bot worker
+  // session record names the task. The reclaim record is not consulted: it
+  // can list a pane the owner opened in the folder.
+  const identified = (x: Session): boolean => isTaskOwnWorkerPane(x, entry.id, [], opts.sessionRecordOf);
+  const agentsOnly = opts.agentsOnly === true;
+  let unidentifiedWsl: Session[] = [];
   const listSessions = async (): Promise<Session[]> => {
     const sessions = await rpc('daemon.listSessions', {});
     const all = Array.isArray(sessions) ? (sessions as Session[]) : [];
-    // An unknown tree: a WSL pane is never taken for the task's (its folder
-    // match alone cannot tell the worker from a pane the owner opened there).
-    return own ? all.filter((x) => own.includes(x.id)) : all.filter((x) => !x.wslTarget);
+    if (own) return all.filter((x) => own.includes(x.id));
+    unidentifiedWsl = all.filter((x) => !!x.wslTarget && !identified(x));
+    return all.filter((x) => !x.wslTarget || identified(x));
   };
   const before = await listSessions();
+  // The WSL panes in the folder this stop cannot tell apart and would act on
+  // (agentsOnly: only one still running a worker): left for the retry.
+  const deferred = unidentifiedWsl.filter((x) => !agentsOnly || x.agentProcessAlive === true || isWslWorkerPane(x));
+  const pendingWsl = deferred.length > 0
+    ? await sessionsStartedIn([worktree], { listSessions: async () => deferred, platform: opts.platform })
+    : [];
   const agentLive = new Set(before.filter((x) => x.agentProcessAlive === true || isWslWorkerPane(x)).map((x) => x.id));
   const stoppedAgents = new Set<string>();
   for (const id of await sessionsStartedIn([worktree], { listSessions: async () => before, platform: opts.platform })) {
@@ -543,7 +669,6 @@ export async function stopTaskWorker(
   }
   // agentsOnly: only panes still running an agent the stop above did not
   // reach are closed; every other pane stays.
-  const agentsOnly = opts.agentsOnly === true;
   const stopped = await stopSessionsInDir(worktree, {
     listSessions: agentsOnly
       ? async () => (await listSessions()).filter((x) => agentLive.has(x.id) && !stoppedAgents.has(x.id))
@@ -559,7 +684,7 @@ export async function stopTaskWorker(
   if (stopped.length > 0) console.log(`[factory] stopped ${stopped.length} session(s) of task ${entry.id}`);
   const workers = new Set([...stoppedAgents, ...stopped.filter((id) => agentLive.has(id))]);
   if (agentsOnly && workers.size > 0) console.log(`[factory] stopped ${workers.size} leftover agent(s) of task ${entry.id}`);
-  return workers.size;
+  return { workers: workers.size, pendingWsl };
 }
 
 /** The panes (daemon sessions) a workspace owns, stashed ones included; []
@@ -817,7 +942,7 @@ export function createFactoryWiring(deps: Pick<FactoryHostDeps, 'wmuxDir'> & Par
         botIds: () => getBotStore()?.list({}).map((b) => b.id) ?? [],
         ledger,
         gates: getSharedTaskGateRunner,
-        stopWorker: (entry, opts) => stopTaskWorker(entry, daemon, taskWorkspacePtys, opts),
+        stopWorker: (entry, opts) => stopTaskWorker(entry, daemon, taskWorkspacePtys, { ...opts, sessionRecordOf: (id) => botWorkerSessionRecord(id) }),
         isOff: () => !settings().enabled,
         pauseRoutines: (botId) => getRoutineStore()?.pauseFor(botId, 'stop') ?? 0,
         stopResumed: async (botId) => {
