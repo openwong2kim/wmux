@@ -198,8 +198,9 @@ export function buildTimeline(entries: readonly RoomEntry[], opts: {
   let day = '';
   let lastAt = -Infinity;
   let newPlaced = opts.newAfter == null;
-  for (const entry of placeWork(entries, opts)) {
-    const at = entryAt(entry);
+  const placed = placeWork(entries, opts);
+  for (const entry of placed.entries) {
+    const at = placed.at.get(entry.card.id) ?? entryAt(entry);
     const d = dayKey(at);
     if (d !== day || at - lastAt >= SEPARATOR_GAP_MS) {
       day = d;
@@ -260,35 +261,54 @@ export function buildTimeline(entries: readonly RoomEntry[], opts: {
  *  thread within ANNOUNCE_WINDOW_MS, or later in its run when it is its
  *  dispatch card or names that handoff or thread — so the bubble comes
  *  first, then the card. Without one it keeps its root's place. The owner's
- *  message ends the search. Pure. */
-export function placeWork(entries: readonly RoomEntry[], opts: { work?: ReadonlyMap<string, WorkThread>; workAuthor?: string; workCandidates?: ReadonlySet<string> }): RoomEntry[] {
-  if (!opts.work || opts.work.size === 0) return [...entries];
-  const out = [...entries];
-  for (const [anchorId, work] of opts.work) {
-    const from = out.findIndex((e) => e.card.id === anchorId);
-    if (from < 0) continue;
-    const anchor = out[from].card;
+ *  message ends the search. The delegating bot is the 1:1's (`workAuthor`),
+ *  else the nearest of `workCandidates` above the root (any of them when
+ *  none is), else the nearest bot above other than the delegate. Cards
+ *  placed after one message keep their order; each moved card is read at
+ *  that message's time (`at`), for separators and runs. Pure. */
+export function placeWork(entries: readonly RoomEntry[], opts: { work?: ReadonlyMap<string, WorkThread>; workAuthor?: string; workCandidates?: ReadonlySet<string> }): { entries: RoomEntry[]; at: Map<string, number> } {
+  const at = new Map<string, number>();
+  if (!opts.work || opts.work.size === 0) return { entries: [...entries], at };
+  const isConversation = (threadId: ThreadId) => threadId === 'general' || !!dmThreadBot(threadId) || !!groupThreadGroup(threadId);
+  /** Announcement card id → the anchors placed after it, in order. */
+  const after = new Map<string, string[]>();
+  const moved = new Set<string>();
+  for (let from = 0; from < entries.length; from++) {
+    const anchor = entries[from].card;
+    const work = opts.work.get(anchor.id);
+    if (!work) continue;
     const delegate = workDelegate(work.all, null);
+    let delegator: string | null = opts.workAuthor ?? null;
+    for (let i = from - 1; i >= 0 && !delegator; i--) {
+      const c = entries[i].card;
+      if (c.actor.kind === 'bot' && c.actor.botId !== delegate && (!opts.workCandidates || opts.workCandidates.has(c.actor.botId))) delegator = c.actor.botId;
+    }
+    const isDelegator = (botId: string) => (delegator ? botId === delegator : opts.workCandidates ? opts.workCandidates.has(botId) : botId !== delegate);
     const handoffId = work.threadId.startsWith('handoff:') ? work.threadId.slice(8) : null;
-    const isDelegator = (botId: string) => (opts.workAuthor ? botId === opts.workAuthor : opts.workCandidates ? opts.workCandidates.has(botId) : botId !== delegate);
-    let to = -1;
-    for (let i = from + 1; i < out.length; i++) {
-      const c = out[i].card;
+    for (let i = from + 1; i < entries.length; i++) {
+      const c = entries[i].card;
       const gap = c.at - anchor.at;
       if (c.actor.kind === 'human' || gap >= RUN_WINDOW_MS) break;
-      if (c.actor.kind !== 'bot' || !isDelegator(c.actor.botId) || c.workspaceId !== anchor.workspaceId) continue;
-      if (!(c.threadId === 'general' || dmThreadBot(c.threadId) || groupThreadGroup(c.threadId))) continue;
+      if (c.actor.kind !== 'bot' || !isDelegator(c.actor.botId) || c.workspaceId !== anchor.workspaceId || !isConversation(c.threadId)) continue;
       const names = c.kind === 'dispatch' || (!!handoffId && c.refs?.handoffId === handoffId) || c.refs?.threadId === work.threadId;
       if (gap <= ANNOUNCE_WINDOW_MS || names) {
-        to = i;
+        const list = after.get(c.id) ?? [];
+        list.push(anchor.id);
+        after.set(c.id, list);
+        moved.add(anchor.id);
+        at.set(anchor.id, c.at);
         break;
       }
     }
-    if (to < 0) continue;
-    const [moved] = out.splice(from, 1);
-    out.splice(to, 0, moved);
   }
-  return out;
+  const byId = new Map(entries.map((e) => [e.card.id, e]));
+  const out: RoomEntry[] = [];
+  for (const e of entries) {
+    if (moved.has(e.card.id)) continue;
+    out.push(e);
+    for (const id of after.get(e.card.id) ?? []) out.push(byId.get(id)!);
+  }
+  return { entries: out, at };
 }
 
 /** Whether a run item continues the run above it: the same author, less

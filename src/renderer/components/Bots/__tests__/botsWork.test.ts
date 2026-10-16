@@ -162,6 +162,31 @@ describe('splitThreads with started threads', () => {
     expect(order([ask, hop, other], LEAD)).toEqual([ask.id, 'work', other.id]);
   });
 
+  it('keeps the order of several cards after one announcement, its delegator, and its time', () => {
+    const at = 60_000_000;
+    const keyOf = (threadId: ThreadId) => threadKey('w1', threadId);
+    const lead = card({ title: 'Splitting this', at });
+    const hopA = card({ threadId: H1, actor: SYS, kind: 'fact', title: 'dispatch → Dev: A', refs: { handoffId: 'h-1', botId: DEV, threadId: DM }, at: at + 1_000 });
+    const hopB = card({ threadId: H2, actor: SYS, kind: 'fact', title: 'dispatch → Dev: B', refs: { handoffId: 'h-2', botId: DEV, threadId: DM }, at: at + 1_001 });
+    const said = card({ kind: 'dispatch', title: 'Handed both over', at: at + 9 * 60_000 });
+    const next = card({ title: 'More soon', at: at + 9 * 60_000 + 60_000 });
+    const { main, work } = splitThreads([lead, hopA, hopB, said, next], never, new Set([keyOf(H1), keyOf(H2)]));
+    const items = buildTimeline(main.map((card) => ({ kind: 'card' as const, card })), { waits: never, work, workAuthor: LEAD })
+      .filter((i) => i.kind === 'message' || i.kind === 'work');
+    expect(items.map((i) => (i.kind === 'work' ? i.work.threadId : i.kind === 'message' ? i.card.id : ''))).toEqual([lead.id, said.id, H1, H2, next.id]);
+    // Read at the announcement's time: the next message continues the run.
+    expect(items.map((i) => (i.kind === 'message' || i.kind === 'work') && i.continuation)).toEqual([false, true, true, true, true]);
+    // In a group with two coordinators, the one above the root handed it
+    // off: another coordinator's message after it is not the announcement.
+    const other = card({ actor: by(REVIEWER), title: 'Reviewer here', at: at + 1_500 });
+    const g = splitThreads([lead, hopA, other], never, new Set([keyOf(H1)]));
+    const groupItems = buildTimeline(g.main.map((card) => ({ kind: 'card' as const, card })), { waits: never, work: g.work, workCandidates: new Set([LEAD, REVIEWER]) })
+      .filter((i) => i.kind === 'message' || i.kind === 'work');
+    expect(groupItems.map((i) => i.kind)).toEqual(['message', 'work', 'message']);
+    const w = groupItems[1];
+    expect(w.kind === 'work' && w.delegatorId).toBe(LEAD);
+  });
+
   it('a thread whose first card read waits on the owner still gets its work card, and the card shows too', () => {
     const q = card({ threadId: H1, actor: by(DEV), kind: 'question', state: 'open', title: 'Which shape?' });
     const later = card({ threadId: H1, actor: by(DEV), title: 'Working on it' });
