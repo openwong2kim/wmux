@@ -75,6 +75,7 @@ import { launchLineForShell, promptFileArgument } from '../../shared/promptFileA
 import { getPtyShell } from '../pty/ptyShellRegistry';
 import type { Connector } from '../../shared/botConnector';
 import { AGENT_SLUG_SET } from '../../shared/agentIdentity';
+import { getSharedTaskGateRunner } from './TaskGateRunner';
 import {
   clearFirstRunPrompts,
   detectFirstRunPrompt,
@@ -1369,7 +1370,13 @@ export class FanOutService {
     // 돌린다. 실패는 태스크 실패로 취급하고 페인을 열지 않는다 — 의존성이 안 깔린
     // worktree에서 에이전트를 띄우면 그 사실을 발견하는 데 한 턴을 태운다.
     if (ctx.setupCommand !== undefined && plan) {
-      const setupRun = await runFanoutSetup(ctx.setupCommand, plan.worktreePath, taskEnv);
+      // Under the machine-wide gate permit: an install never overlaps a gate.
+      const setupCommand = ctx.setupCommand;
+      const worktreePath = plan.worktreePath;
+      const gates = getSharedTaskGateRunner();
+      const setupRun = gates
+        ? await gates.withPermit(() => runFanoutSetup(setupCommand, worktreePath, taskEnv))
+        : await runFanoutSetup(setupCommand, worktreePath, taskEnv);
       if (!setupRun.ok) {
         // 이 태스크만 보상한다 — 훅 타임아웃/실패는 fan-out 전체를 접지 않고,
         // 호출부 루프가 다음 태스크를 그대로 이어간다.
