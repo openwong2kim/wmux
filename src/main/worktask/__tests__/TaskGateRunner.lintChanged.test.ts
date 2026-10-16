@@ -51,6 +51,8 @@ function fakeEslint(opts: {
   head: Record<string, LintProblem[]>;
   base?: Record<string, LintProblem[]>;
   exit?: number;
+  /** Replaces the HEAD report's stdout. */
+  headOut?: string;
   seen: { argv: string[]; stdin?: string }[];
 }): GateSpawn {
   return (cmd, args, o) => {
@@ -60,7 +62,7 @@ function fakeEslint(opts: {
     let code = 0;
     if (argv[1]?.endsWith(path.join('eslint', 'bin', 'eslint.js'))) {
       if (args.includes('--stdin')) {
-        const f = args[args.indexOf('--stdin-filename') + 1] as string;
+        const f = (args.find((a) => a.startsWith('--stdin-filename=')) as string).slice('--stdin-filename='.length);
         const ps = opts.base?.[f] ?? [];
         out = report({ [f]: ps });
         code = ps.length > 0 ? 1 : 0;
@@ -69,6 +71,7 @@ function fakeEslint(opts: {
         const r = Object.fromEntries(files.map((f) => [f, opts.head[f] ?? []]));
         out = report(r);
         code = Object.values(r).some((ps) => ps.length > 0) ? 1 : 0;
+        if (opts.headOut !== undefined) out = opts.headOut;
       }
       if (opts.exit !== undefined) {
         code = opts.exit;
@@ -94,6 +97,9 @@ function fakeEslint(opts: {
 
 function runnerFor(opts: {
   files: ChangedFile[] | { error: string };
+  removed?: boolean;
+  headOut?: string;
+  extra?: Record<string, string>;
   head: Record<string, LintProblem[]>;
   base?: Record<string, LintProblem[]>;
   baseText?: Record<string, string>;
@@ -102,16 +108,16 @@ function runnerFor(opts: {
 }) {
   const seen: { argv: string[]; stdin?: string }[] = [];
   const ledger = fakeLedger();
-  const lintScripts = { ...scripts, ...(opts.lint ? { lint: opts.lint } : {}) };
+  const lintScripts = { ...scripts, ...(opts.lint ? { lint: opts.lint } : {}), ...opts.extra };
   const runner = new TaskGateRunner({
     ledger,
-    spawn: fakeEslint({ head: opts.head, ...(opts.base ? { base: opts.base } : {}), ...(opts.exit !== undefined ? { exit: opts.exit } : {}), seen }),
+    spawn: fakeEslint({ head: opts.head, ...(opts.base ? { base: opts.base } : {}), ...(opts.exit !== undefined ? { exit: opts.exit } : {}), ...(opts.headOut !== undefined ? { headOut: opts.headOut } : {}), seen }),
     readPackageScripts: () => lintScripts,
     depsState: () => 'ok',
     fileExists: (p) => !p.endsWith('.npmrc'),
     readHead: async () => null,
     readBaseFile: async (_wt, _ref, file) => (file === 'package.json' ? JSON.stringify({ name: 'x', scripts: lintScripts }) : file === '.npmrc' ? null : opts.baseText?.[file] ?? `// ${file} at base`),
-    changedFiles: async () => (Array.isArray(opts.files) ? { base: BASE, files: opts.files } : opts.files),
+    changedFiles: async () => (Array.isArray(opts.files) ? { base: BASE, files: opts.files, ...(opts.removed ? { removed: true } : {}) } : opts.files),
     now: () => 1,
   });
   return {
@@ -125,10 +131,14 @@ const lintRuns = (seen: { argv: string[]; stdin?: string }[]) => seen.filter((s)
 const npmRuns = (seen: { argv: string[] }[]) => seen.filter((s) => !s.argv[1]?.endsWith('eslint.js')).map((s) => s.argv.slice(1).join(' '));
 
 describe('parseEslintScript', () => {
-  it('takes eslint with an --ext list and paths, nothing else', () => {
-    expect(parseEslintScript('eslint --ext .ts,.tsx .')).toEqual({ ext: ['.ts', '.tsx'], paths: ['.'] });
-    expect(parseEslintScript('eslint --ext=.ts src tests')).toEqual({ ext: ['.ts'], paths: ['src', 'tests'] });
-    for (const s of ['eslint .', 'eslint --ext .ts . --max-warnings 0', 'eslint --ext .ts . && rm x', 'eslint --ext .ts', 'next lint', 'eslint --ext .ts --ext .js .', undefined]) {
+  it('takes eslint with an --ext list and directories, nothing else', () => {
+    expect(parseEslintScript('eslint --ext .ts,.tsx .')).toEqual({ ext: ['.ts', '.tsx'], paths: [''] });
+    expect(parseEslintScript('eslint --ext=.ts ./src src/. tests/')).toEqual({ ext: ['.ts'], paths: ['src', 'src', 'tests'] });
+    for (const s of [
+      'eslint .', 'eslint --ext .ts . --max-warnings 0', 'eslint --ext .ts . && rm x', 'eslint --ext .ts', 'next lint', 'eslint --ext .ts --ext .js .',
+      // A second command on a new line, a named file, a path outside.
+      'eslint --ext .ts .\nfalse', 'eslint --ext .ts\t.', 'eslint --ext .ts src/a.js', 'eslint --ext .ts ../other', undefined,
+    ]) {
       expect(parseEslintScript(s), String(s)).toBeNull();
     }
   });
@@ -143,12 +153,17 @@ describe('newLintProblems and parseNameStatus', () => {
   });
 
   it('reads added, modified and renamed paths from -z output', () => {
-    expect(parseNameStatus('M\0src/a.ts\0A\0src/b.ts\0R087\0src/old.ts\0src/new.ts\0')).toEqual([
-      { path: 'src/a.ts', basePath: 'src/a.ts' },
-      { path: 'src/b.ts', basePath: null },
-      { path: 'src/new.ts', basePath: 'src/old.ts' },
-    ]);
-    expect(parseNameStatus('')).toEqual([]);
+    expect(parseNameStatus('M\0src/a.ts\0A\0src/b.ts\0R087\0src/old.ts\0src/new.ts\0')).toEqual({
+      files: [
+        { path: 'src/a.ts', basePath: 'src/a.ts' },
+        { path: 'src/b.ts', basePath: null },
+        { path: 'src/new.ts', basePath: 'src/old.ts' },
+      ],
+      removed: true,
+    });
+    expect(parseNameStatus('D\0src/gone.ts\0C100\0src/a.ts\0src/c.ts\0')).toEqual({ files: [{ path: 'src/c.ts', basePath: 'src/a.ts' }], removed: true });
+    expect(parseNameStatus('M\0src/a.ts\0')).toEqual({ files: [{ path: 'src/a.ts', basePath: 'src/a.ts' }], removed: false });
+    expect(parseNameStatus('')).toEqual({ files: [], removed: false });
     expect(parseNameStatus('X\0what')).toBeNull();
   });
 });
@@ -166,8 +181,8 @@ describe('TaskGateRunner — the eslint step lints only what the task changed', 
     expect(res.result.tail).toContain('1 error in them, 0 new');
     // HEAD's files, then the base version of the one with errors (its text on stdin).
     expect(lintRuns(r.seen).map((s) => s.argv.slice(2))).toEqual([
-      ['--format', 'json', '--quiet', '--', 'src/a.ts'],
-      ['--format', 'json', '--quiet', '--stdin', '--stdin-filename', 'src/a.ts'],
+      ['--ext', '.ts,.tsx', '--format', 'json', '--quiet', '--', 'src/a.ts'],
+      ['--ext', '.ts,.tsx', '--format', 'json', '--quiet', '--stdin', '--stdin-filename=src/a.ts'],
     ]);
     expect(lintRuns(r.seen)[1]?.stdin).toBe('// src/a.ts at base');
     expect(npmRuns(r.seen)).toEqual(['test']);
@@ -214,10 +229,50 @@ describe('TaskGateRunner — the eslint step lints only what the task changed', 
     expect(npmRuns(r.seen)).toEqual([]);
   });
 
-  it('no changed file eslint lints: no eslint run, the tests still run', async () => {
-    const r = runnerFor({ files: [{ path: 'README.md', basePath: 'README.md' }, { path: '-rf.ts', basePath: null }, { path: '../x.ts', basePath: null }], head: {} });
+  it('a file whose name starts with a dash is linted after --', async () => {
+    const r = runnerFor({ files: [{ path: '-a.ts', basePath: null }], head: { '-a.ts': [old] } });
+    expect(await r.run()).toMatchObject({ status: 'completed', result: { exitCode: 1 }, newLintErrors: [expect.stringContaining('-a.ts:10:1')] });
+    expect(lintRuns(r.seen)[0]?.argv.slice(-2)).toEqual(['--', '-a.ts']);
+  });
+
+  it('with a file removed, an import error in a changed file is never taken as old', async () => {
+    const unresolved = problem(1, 'import/no-unresolved', "Unable to resolve path to module './b'.");
+    const r = runnerFor({ files: touched, removed: true, head: { 'src/a.ts': [old, unresolved] }, base: { 'src/a.ts': [old, unresolved] } });
     const res = await r.run();
-    expect(res).toMatchObject({ status: 'completed', result: { exitCode: 0, command: 'npm test' } });
+    expect(res).toMatchObject({ status: 'completed', result: { exitCode: 1 }, newLintErrors: [expect.stringContaining('import/no-unresolved')] });
+    // Without a removal it is the base's own.
+    const kept = runnerFor({ files: touched, head: { 'src/a.ts': [old, unresolved] }, base: { 'src/a.ts': [old, unresolved] } });
+    expect(await kept.run()).toMatchObject({ status: 'completed', result: { exitCode: 0 } });
+  });
+
+  it('a report that disagrees with the exit code, or names other files, fails the step', async () => {
+    for (const headOut of [
+      '[]',
+      JSON.stringify([{ filePath: path.join(WT, 'src/other.ts'), messages: [{ severity: 2, message: 'x', ruleId: 'r', line: 1, column: 1 }] }]),
+      JSON.stringify([{ filePath: path.join(WT, 'src/a.ts'), messages: [{}] }]),
+    ]) {
+      // eslint said 1 (errors), the report shows none on src/a.ts.
+      const r = runnerFor({ files: touched, head: { 'src/a.ts': [old] }, headOut });
+      const res = await r.run();
+      expect(res, headOut).toMatchObject({ status: 'completed', result: { exitCode: 2 } });
+      if (res.status !== 'completed') throw new Error('unreachable');
+      expect(res.result.tail).toContain('eslint gave no report on the files it was given; the lint step fails');
+    }
+  });
+
+  it('a lint script npm runs with a prelint or postlint hook runs npm run lint whole', async () => {
+    for (const extra of [{ prelint: 'node check.js' }, { postlint: 'node check.js' }] as Record<string, string>[]) {
+      const r = runnerFor({ files: touched, head: {}, extra });
+      await r.run();
+      expect(lintRuns(r.seen)).toEqual([]);
+      expect(npmRuns(r.seen)).toEqual(['run lint', 'test']);
+    }
+  });
+
+  it('no changed file eslint lints: no eslint run, the tests still run', async () => {
+    const r = runnerFor({ files: [{ path: 'README.md', basePath: 'README.md' }, { path: 'src/a.js', basePath: null }], head: {} });
+    const res = await r.run();
+    expect(res).toMatchObject({ status: 'completed', result: { exitCode: 0, command: expect.stringMatching(/test$/) } });
     expect(lintRuns(r.seen)).toEqual([]);
     expect(npmRuns(r.seen)).toEqual(['test']);
   });
@@ -274,22 +329,30 @@ describe('TaskGateRunner — a linked node_modules', () => {
 });
 
 describe('TaskGateRunner — the changed files on a real repository', () => {
-  it('diffs from the merge-base, or from a newer dispatch base HEAD holds', { timeout: 30_000 }, async () => {
+  it('diffs from the merge-base, or from a newer dispatch base HEAD holds, to the working tree', { timeout: 30_000 }, async () => {
     const { execFileSync } = await import('node:child_process');
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-gate-diff-'));
     const g = (...args: string[]) => execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', '-c', 'commit.gpgsign=false', ...args], { cwd: dir, encoding: 'utf8' }).trim();
-    const commit = (file: string, text: string) => {
+    const write = (file: string, text: string) => {
       fs.mkdirSync(path.dirname(path.join(dir, file)), { recursive: true });
       fs.writeFileSync(path.join(dir, file), text);
+    };
+    const commit = (file: string, text: string) => {
+      write(file, text);
       g('add', '.');
       g('commit', '-q', '-m', file);
       return g('rev-parse', 'HEAD');
     };
+    const byPath = (list: ChangedFile[]) => [...list].sort((x, y) => (x.path < y.path ? -1 : 1));
     try {
       g('init', '-q', '-b', 'main');
       fs.writeFileSync(path.join(dir, 'package.json'), pkg);
       commit('src/keep.ts', 'a\n'.repeat(20));
       const mainTip = commit('src/a.ts', 'one\n');
+      // A commit off the merge-base that HEAD does not hold.
+      g('checkout', '-q', '-b', 'elsewhere');
+      const elsewhere = commit('src/elsewhere.ts', 'x\n');
+      g('checkout', '-q', 'main');
       g('checkout', '-q', '-b', 'local');
       // A commit the task started from that `main` does not have.
       const dispatch = commit('src/local.ts', 'local\n');
@@ -297,22 +360,27 @@ describe('TaskGateRunner — the changed files on a real repository', () => {
       commit('src/a.ts', 'two\n');
       g('mv', 'src/keep.ts', 'src/moved.ts');
       commit('src/added.ts', 'new\n');
+      // Not committed: an edit, and a new file outside .gitignore.
+      write('src/added.ts', 'newer\n');
+      write('src/untracked.ts', 'u\n');
       const files: ChangedFile[] = [
         { path: 'src/a.ts', basePath: 'src/a.ts' },
         { path: 'src/added.ts', basePath: null },
         { path: 'src/moved.ts', basePath: 'src/keep.ts' },
+        { path: 'src/untracked.ts', basePath: null },
       ];
-      let seen: { base: string; files: ChangedFile[] } | { error: string } | null = null;
       const runner = new TaskGateRunner({ ledger: fakeLedger(), depsState: () => 'ok' });
       // The default changedFiles, through the runner's own seam.
-      const changed = (runner as unknown as { changedFiles: (wt: string, ref: string, d?: string) => Promise<typeof seen> }).changedFiles;
-      seen = await changed(dir, 'main');
-      expect(seen).toEqual({ base: mainTip, files: [...files, { path: 'src/local.ts', basePath: null }].sort((x, y) => x.path.localeCompare(y.path)) });
-      seen = await changed(dir, 'main', dispatch);
-      expect(seen).toEqual({ base: dispatch, files });
-      // A dispatch base HEAD does not hold is not used.
-      seen = await changed(dir, 'main', 'c'.repeat(40));
-      expect(seen).toMatchObject({ base: mainTip });
+      const changed = (runner as unknown as { changedFiles: (wt: string, ref: string, d?: string) => Promise<{ base: string; files: ChangedFile[]; removed?: boolean } | { error: string }> }).changedFiles;
+      const sorted = async (ref: string, d?: string) => {
+        const r = await changed(dir, ref, d);
+        return 'files' in r ? { ...r, files: byPath(r.files) } : r;
+      };
+      expect(await sorted('main')).toEqual({ base: mainTip, files: byPath([...files, { path: 'src/local.ts', basePath: null }]), removed: true });
+      expect(await sorted('main', dispatch)).toEqual({ base: dispatch, files, removed: true });
+      // A dispatch base HEAD does not hold, or one that is not a commit, is not used.
+      expect(await changed(dir, 'main', elsewhere)).toMatchObject({ base: mainTip });
+      expect(await changed(dir, 'main', 'c'.repeat(40))).toMatchObject({ base: mainTip });
       expect(await changed(dir, 'no-such-ref')).toMatchObject({ error: expect.any(String) });
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });

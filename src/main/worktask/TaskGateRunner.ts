@@ -43,17 +43,20 @@
 // ── LINT FROM A BASE REF: ONLY WHAT THE TASK CHANGED ───────────────────────
 //
 // With a base ref, a base `lint` script that is a plain eslint run (`eslint`,
-// an `--ext` list and paths, nothing else) is not run whole. A repository
-// whose default branch already fails its own lint (wmux's does: its CI lints
-// a few named files, never `npm run lint`) would fail every task on errors
-// no task made. Instead the base's eslint runs on the files the task changed
-// (`git diff` from the newest of the dispatch base and `merge-base <ref>
-// HEAD` that HEAD contains, to HEAD), and on each file with errors at HEAD
-// the base's version of it is linted too (`--stdin`). The step fails on an
-// error HEAD has that the base's version did not (matched by rule and
-// message, not by line, so moved code is not new), and the result names
-// them. An eslint that does not answer with its JSON report (exit 2, a
-// crash, no output) fails the step: that is not a lint pass.
+// an `--ext` list and directories, nothing else, and no prelint/postlint) is
+// not run whole. A repository whose default branch already fails its own
+// lint (wmux's does: its CI lints a few named files, never `npm run lint`)
+// would fail every task on errors no task made. Instead the base's eslint
+// runs on the files the task changed (`git diff` from the newest of the
+// dispatch base and `merge-base <ref> HEAD` that HEAD contains, to the
+// working tree, untracked files included), and on each file with errors the
+// base's version of it is linted too (`--stdin`). The step fails on an error
+// the file has that its base version did not (matched by rule and message,
+// not by line, so moved code is not new), and the result names them. With a
+// file removed, `import/` errors are never matched (the base text is linted
+// among HEAD's files). An eslint that does not answer with a JSON report on
+// the files it was given, agreeing with its exit code (exit 2, a crash, no
+// output), fails the step: that is not a lint pass.
 //
 // `node_modules` missing (or a symlink, which is how worktrees in this repo get
 // a false `npm test` failure) is reported as `skipped: 'deps_missing'`, never as
@@ -181,7 +184,8 @@ export interface GateStep {
   readonly eslint?: EslintScript;
 }
 
-/** A plain eslint lint script: its `--ext` list and the paths it lints. */
+/** A plain eslint lint script: its `--ext` list and the directories it
+ *  lints, normalized (`''` is the root). */
 export interface EslintScript {
   readonly ext: readonly string[];
   readonly paths: readonly string[];
@@ -216,8 +220,9 @@ export function allowedGateArgv(worktreePath: string): readonly (readonly string
  * gate runs `npm run lint` whole. Pure.
  */
 export function parseEslintScript(script: string | undefined): EslintScript | null {
-  if (typeof script !== 'string') return null;
-  const words = script.trim().split(/\s+/);
+  // Spaces only between words: a newline or a tab is shell syntax too.
+  if (typeof script !== 'string' || !/^[A-Za-z0-9_.@/,= -]+$/.test(script)) return null;
+  const words = script.trim().split(/ +/);
   if (words.shift() !== 'eslint') return null;
   let ext: string[] | null = null;
   const paths: string[] = [];
@@ -227,7 +232,12 @@ export function parseEslintScript(script: string | undefined): EslintScript | nu
     if (w === '--ext') list = words[++i];
     else if (w.startsWith('--ext=')) list = w.slice('--ext='.length);
     else if (/^[A-Za-z0-9_.@/-]+$/.test(w) && !w.startsWith('-')) {
-      paths.push(w);
+      // A directory, as git spells paths: a named file is linted whatever
+      // its extension, which the changed-file filter does not model.
+      const dir = path.posix.normalize(w).replace(/\/+$/, '');
+      const last = dir.split('/').pop() ?? '';
+      if (dir.startsWith('..') || (last !== '.' && last.includes('.'))) return null;
+      paths.push(dir === '.' ? '' : dir.replace(/^\.\//, ''));
       continue;
     } else return null;
     if (ext !== null || !list || !/^\.[A-Za-z0-9]+(,\.[A-Za-z0-9]+)*$/.test(list)) return null;
@@ -262,7 +272,8 @@ export function parseEslintReport(text: string, roots: readonly string[]): Map<s
     const rel = relativeTo(f.filePath, roots);
     const errors: LintProblem[] = out.get(rel) ?? [];
     for (const m of f.messages as Array<Record<string, unknown>>) {
-      if (!m || m['severity'] !== 2) continue;
+      if (!m || typeof m !== 'object' || typeof m['severity'] !== 'number' || typeof m['message'] !== 'string') return null;
+      if (m['severity'] !== 2) continue;
       errors.push({
         line: typeof m['line'] === 'number' ? m['line'] : 0,
         column: typeof m['column'] === 'number' ? m['column'] : 0,
@@ -324,6 +335,14 @@ export function newLintErrorsText(errors: readonly string[] | undefined): string
 export interface ChangedFile {
   path: string;
   basePath: string | null;
+}
+
+/** The changes eslint step reads: from `base`, the files there now, and
+ *  whether the task removed a path (a deleted or renamed file). */
+export interface ChangedFiles {
+  base: string;
+  files: ChangedFile[];
+  removed?: boolean;
 }
 
 /** Changed files linted per eslint run (keeps argv short on Windows). */
@@ -414,10 +433,10 @@ export interface TaskGateRunnerOptions {
   sameAsBase?: (worktreePath: string, ref: string, file: string) => Promise<boolean>;
   /** Injected for tests; defaults to git in the worktree: the base a task's
    *  changes are read from (the newest of `diffBase` and `merge-base <ref>
-   *  HEAD` that HEAD contains) and the files changed from it to HEAD
-   *  (added, copied, modified or renamed). An error string when that cannot
-   *  be read. */
-  changedFiles?: (worktreePath: string, ref: string, diffBase?: string) => Promise<{ base: string; files: ChangedFile[] } | { error: string }>;
+   *  HEAD` that HEAD contains) and the files changed from it in the working
+   *  tree (untracked ones included). An error string when that cannot be
+   *  read. */
+  changedFiles?: (worktreePath: string, ref: string, diffBase?: string) => Promise<ChangedFiles | { error: string }>;
 }
 
 // ── Results ──────────────────────────────────────────────────────────────────
@@ -606,31 +625,35 @@ async function defaultSameAsBase(worktreePath: string, ref: string, file: string
   return base.code === 0 && here.code === 0 && base.stdout.trim() !== '' && base.stdout.trim() === here.stdout.trim();
 }
 
-/** The paths in `git diff --name-status -z` output (added, copied, modified,
- *  renamed); null when it is not that. Pure. */
-export function parseNameStatus(raw: string): ChangedFile[] | null {
+/** The paths in `git diff --name-status -z` output: the files there now
+ *  (added, copied, modified, renamed, type changed) and whether any path was
+ *  removed (deleted, or renamed away); null when it is not that. Pure. */
+export function parseNameStatus(raw: string): { files: ChangedFile[]; removed: boolean } | null {
   const parts = raw.split('\0');
   if (parts[parts.length - 1] === '') parts.pop();
-  const out: ChangedFile[] = [];
+  const files: ChangedFile[] = [];
+  let removed = false;
   for (let i = 0; i < parts.length; i++) {
     const status = parts[i] as string;
-    if (/^[AM]$/.test(status)) {
+    if (/^[AMTD]$/.test(status)) {
       const p = parts[++i];
       if (!p) return null;
-      out.push({ path: p, basePath: status === 'A' ? null : p });
+      if (status === 'D') removed = true;
+      else files.push({ path: p, basePath: status === 'A' ? null : p });
     } else if (/^[RC]\d*$/.test(status)) {
       const from = parts[++i];
       const to = parts[++i];
       if (!from || !to) return null;
-      out.push({ path: to, basePath: from });
+      if (status.startsWith('R')) removed = true;
+      files.push({ path: to, basePath: from });
     } else {
       return null;
     }
   }
-  return out;
+  return { files, removed };
 }
 
-async function defaultChangedFiles(worktreePath: string, ref: string, diffBase?: string): Promise<{ base: string; files: ChangedFile[] } | { error: string }> {
+async function defaultChangedFiles(worktreePath: string, ref: string, diffBase?: string): Promise<ChangedFiles | { error: string }> {
   const mb = await git(['merge-base', ref, 'HEAD'], worktreePath);
   let base = mb.stdout.trim();
   if (mb.code !== 0 || !SHA_RE.test(base)) return { error: `the commit the task started from could not be read (git merge-base ${ref} HEAD)` };
@@ -645,10 +668,17 @@ async function defaultChangedFiles(worktreePath: string, ref: string, diffBase?:
     ]);
     if (newer.code === 0 && held.code === 0) base = diffBase;
   }
-  const d = await git(['-c', 'core.quotePath=false', 'diff', '--name-status', '-z', '-M', '--diff-filter=ACMR', base, 'HEAD', '--'], worktreePath);
-  const files = d.code === 0 ? parseNameStatus(d.stdout) : null;
-  if (!files) return { error: `the files the task changed since ${base} could not be read` };
-  return { base, files };
+  // To the working tree, not HEAD (eslint reads the files on disk), and the
+  // untracked files outside .gitignore, which the whole lint reads too.
+  const [d, others] = await Promise.all([
+    git(['-c', 'core.quotePath=false', 'diff', '--name-status', '-z', '-M', base, '--'], worktreePath),
+    git(['ls-files', '-z', '--others', '--exclude-standard'], worktreePath),
+  ]);
+  const parsed = d.code === 0 && others.code === 0 ? parseNameStatus(d.stdout) : null;
+  if (!parsed) return { error: `the files the task changed since ${base} could not be read` };
+  const known = new Set(parsed.files.map((f) => f.path));
+  for (const p of others.stdout.split('\0')) if (p && !known.has(p)) parsed.files.push({ path: p, basePath: null });
+  return { base, ...parsed };
 }
 
 /** package.json text → its string scripts; null when it is not JSON. */
@@ -733,15 +763,10 @@ function defaultReadPackageScripts(root: string): Record<string, string> | null 
 }
 
 /** Whether eslint step `s` lints `file` (a path from git, `/`-separated):
- *  one of its extensions, under one of its paths, and a plain relative path
- *  (never one eslint could read as an option). */
+ *  one of its extensions, under one of its paths (`''`: the root). */
 function lintable(file: string, s: EslintScript): boolean {
-  if (file.startsWith('-') || file.startsWith('/') || /[\0\r\n\\]/.test(file) || file.split('/').includes('..')) return false;
   if (!s.ext.includes(path.posix.extname(file))) return false;
-  return s.paths.some((p) => {
-    const dir = p.replace(/^\.(\/|$)/, '').replace(/\/+$/, '');
-    return dir === '' || file === dir || file.startsWith(`${dir}/`);
-  });
+  return s.paths.some((dir) => dir === '' || file === dir || file.startsWith(`${dir}/`));
 }
 
 /** What a `deps_missing` skip for a linked node_modules tells the owner to do. */
@@ -918,7 +943,9 @@ export class TaskGateRunner {
     }
     const steps: GateStep[] = [];
     // From a base ref, a plain eslint script lints only what the task changed.
-    const eslint = baseRef !== undefined ? parseEslintScript(scripts['lint']) : null;
+    // `npm run lint` also runs a prelint or postlint script: not a plain eslint run.
+    const hooked = typeof scripts['prelint'] === 'string' || typeof scripts['postlint'] === 'string';
+    const eslint = baseRef !== undefined && !hooked ? parseEslintScript(scripts['lint']) : null;
     if (eslint) steps.push({ argv: eslintArgv(worktreePath), label: 'eslint on the files the task changed', eslint });
     else if (typeof scripts['lint'] === 'string') steps.push(step([npmBin(), 'run', 'lint']));
     if (typeof scripts['test'] === 'string') steps.push(step([npmBin(), 'test']));
@@ -1217,51 +1244,58 @@ export class TaskGateRunner {
       /* the path as given */
     }
     const deadline = Date.now() + this.timeoutMs;
-    const flags = ['--format', 'json', '--quiet'];
-    /** One eslint run's errors per file, or how it ended when it gave none. */
-    const report = async (args: string[], stdin?: string): Promise<Map<string, LintProblem[]> | { exit: GateExit; timedOut: boolean; label: string }> => {
+    // The script's own --ext: it also picks which code blocks a processor
+    // hands eslint.
+    const flags = ['--ext', eslint.ext.join(','), '--format', 'json', '--quiet'];
+    /** One eslint run's errors per file (each one of `expected`), or how it
+     *  ended when it gave no such report. */
+    const report = async (args: string[], expected: ReadonlySet<string>, stdin?: string): Promise<Map<string, LintProblem[]> | { exit: GateExit; timedOut: boolean; label: string }> => {
       const budget = deadline - Date.now();
       if (budget <= 0) return { ...killed, timedOut: true };
       if (cancelled()) return killed;
-      let out = '';
-      let over = false;
+      const chunks: string[] = [];
+      let bytes = 0;
       const r = await exec([...s.argv, ...flags, ...args], budget, {
         ...(stdin !== undefined ? { stdin } : {}),
         stdout: (c) => {
-          if (over) return;
-          out += c;
-          if (out.length > GATE_LINT_OUTPUT_MAX_BYTES) {
-            over = true;
-            out = '';
-          }
+          if (bytes > GATE_LINT_OUTPUT_MAX_BYTES) return;
+          bytes += Buffer.byteLength(c, 'utf8');
+          if (bytes > GATE_LINT_OUTPUT_MAX_BYTES) chunks.length = 0;
+          else chunks.push(c);
         },
       });
       if (r.exit.kind === 'unavailable' || r.timedOut || cancelled()) return { ...r, label };
-      // eslint exits 0 (no errors) or 1 (errors) with its report; anything
-      // else (2: a config or crash) is no lint result, so the step fails.
-      const parsed = !over && (r.exit.code === 0 || r.exit.code === 1) ? parseEslintReport(out, roots) : null;
-      if (parsed) return parsed;
-      append(`\n[gate] eslint ${over ? 'printed more than the gate reads' : r.exit.code === 0 || r.exit.code === 1 ? 'printed no JSON report' : `exited ${String(r.exit.code)}`}; the lint step fails\n`);
-      return { exit: { kind: 'exited', code: r.exit.code === 0 || r.exit.code === 1 || r.exit.code === null ? 2 : r.exit.code }, timedOut: false, label };
+      const over = bytes > GATE_LINT_OUTPUT_MAX_BYTES;
+      // eslint exits 0 (no errors) or 1 (errors) with its report on exactly
+      // the files it was given; anything else (2: a config or crash, a report
+      // that disagrees with its exit code or names other files) is no lint
+      // result, so the step fails.
+      const code = r.exit.code;
+      const parsed = !over && (code === 0 || code === 1) ? parseEslintReport(chunks.join(''), roots) : null;
+      const errors = parsed ? [...parsed.values()].reduce((n, e) => n + e.length, 0) : 0;
+      if (parsed && [...parsed.keys()].every((k) => expected.has(k)) && (errors > 0) === (code === 1)) return parsed;
+      const why = over ? 'printed more than the gate reads' : code === 0 || code === 1 ? 'gave no report on the files it was given' : `exited ${String(code)}`;
+      append(`\n[gate] eslint ${why}; the lint step fails\n`);
+      return { exit: { kind: 'exited', code: code === 0 || code === 1 || code === null ? 2 : code }, timedOut: false, label };
     };
 
     const head = new Map<string, LintProblem[]>();
     for (let i = 0; i < files.length; i += GATE_LINT_BATCH) {
-      const r = await report(['--', ...files.slice(i, i + GATE_LINT_BATCH).map((f) => f.path)]);
+      const batch = files.slice(i, i + GATE_LINT_BATCH).map((f) => f.path);
+      const r = await report(['--', ...batch], new Set(batch));
       if (!(r instanceof Map)) return r;
       for (const [file, errors] of r) head.set(file, [...(head.get(file) ?? []), ...errors]);
     }
     const added: string[] = [];
     let total = 0;
     let compared = 0;
-    for (const [file, errors] of head) {
+    for (const f of files) {
+      const errors = head.get(f.path) ?? [];
       if (errors.length === 0) continue;
       total += errors.length;
-      const f = files.find((c) => c.path === file);
       let base: LintProblem[] | null = null;
-      // A file eslint named that the task did not change, or past the cap,
-      // has no base to compare with: its errors all count.
-      if (f?.basePath && compared < GATE_LINT_BASE_MAX) {
+      // Past the cap a file has no base to compare with: its errors all count.
+      if (f.basePath && compared < GATE_LINT_BASE_MAX) {
         compared++;
         let text: string | null;
         try {
@@ -1270,12 +1304,15 @@ export class TaskGateRunner {
           return { skip: `${f.basePath} at ${changed.base} could not be read (${err instanceof Error ? err.message : String(err)})` };
         }
         if (text !== null) {
-          const r = await report(['--stdin', '--stdin-filename', f.path], text);
+          const r = await report(['--stdin', `--stdin-filename=${f.path}`], new Set([f.path]), text);
           if (!(r instanceof Map)) return r;
           base = r.get(f.path) ?? [];
+          // The base text is linted among HEAD's files: with a file removed,
+          // an import error there may be the task's, so none is old.
+          if (changed.removed) base = base.filter((p) => !p.ruleId?.startsWith('import/'));
         }
       }
-      for (const p of newLintProblems(errors, base)) added.push(lintErrorLine(file, p));
+      for (const p of newLintProblems(errors, base)) added.push(lintErrorLine(f.path, p));
     }
     append(`[gate] ${label}: ${total} error${total === 1 ? '' : 's'} in them, ${added.length} new\n`);
     const named = added.slice(0, GATE_LINT_NAMED_MAX);
