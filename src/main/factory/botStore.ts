@@ -221,7 +221,8 @@ function sanitizeParked(raw: unknown): BotProfile['parked'] | null {
   const r = raw as Record<string, unknown>;
   if (r.reason !== 'budget' && r.reason !== 'error' && r.reason !== 'human') return null;
   if (!Number.isSafeInteger(r.at)) return null;
-  return { reason: r.reason, at: r.at as number };
+  const until = r.reason === 'error' && Number.isSafeInteger(r.until) ? (r.until as number) : undefined;
+  return { reason: r.reason, at: r.at as number, ...(until !== undefined ? { until } : {}) };
 }
 
 /** A profile read from disk, fully validated (a fresh object), or null. */
@@ -691,7 +692,7 @@ export class BotStore implements BotDirectoryApi {
     const cur = this.bots.get(botId);
     if (!cur) return null;
     const next: BotProfile = { ...cur, updatedAt: this.now() };
-    if (parked) next.parked = { reason: parked.reason, at: parked.at };
+    if (parked) next.parked = { reason: parked.reason, at: parked.at, ...(parked.reason === 'error' && parked.until !== undefined ? { until: parked.until } : {}) };
     else delete next.parked;
     this.bots.set(botId, next);
     this.changed();

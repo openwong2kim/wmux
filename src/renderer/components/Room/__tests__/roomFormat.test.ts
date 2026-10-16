@@ -154,6 +154,9 @@ describe('factory system cards in the reader\'s language (RoomCard.notice)', () 
     expect(ko?.title).toBe('Reviewer: 이번 시간의 턴을 모두 썼습니다');
     expect(ko?.body).toContain(formatNoticeTime(until, now));
     expect(noticeText(card({ notice: { code: 'budget.held', args: { bot: 'Reviewer', until } } }), i18nT, now)?.title).toBe('대기 중: Reviewer의 턴이 소진됐습니다');
+    // A usage-limit park: the title is worded, the body is the provider's own text.
+    const limit = noticeText(card({ body: "You've hit your session limit", notice: { code: 'bot.usageLimit', args: { bot: 'Reviewer', until } } }), i18nT, now);
+    expect(limit).toEqual({ title: `Reviewer: 사용량 한도에 도달해 ${formatNoticeTime(until, now)}에 다시 시작합니다`, body: "You've hit your session limit" });
     // A limit this build does not know keeps the English.
     expect(noticeText(card({ notice: { code: 'budget.exhausted', args: { bot: 'Reviewer', limit: 'tokens_week' } } }), i18nT, now)).toBeNull();
   });

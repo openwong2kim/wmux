@@ -1165,13 +1165,18 @@ export function systemCardForFact(fact: Fact, bots?: BotDirectoryApi): SystemCar
         title: str(p.title), refs: baseRefs,
       };
     }
-    case 'bot.error':
+    case 'bot.error': {
+      // At the provider's usage limit: when the bot picks up by itself.
+      const name = botLabel(bots, fact.ref?.botId);
+      const until = typeof p.until === 'number' && Number.isFinite(p.until) && p.until > 0 ? p.until : null;
       return {
         workspaces: factRooms(fact, bots), threadId: GENERAL_THREAD, kind: 'fact',
-        title: `${botLabel(bots, fact.ref?.botId)} hit an error`,
+        title: until !== null ? `${name} hit its usage limit; it picks up again at ${formatHeldUntil(until, fact.at)}` : `${name} hit an error`,
         ...(capBody(p.message, 1000) ? { body: capBody(p.message, 1000) } : {}),
         refs: baseRefs,
+        ...(until !== null ? { notice: { code: 'bot.usageLimit', args: { bot: name, until } } } : {}),
       };
+    }
     default:
       return null;
   }
