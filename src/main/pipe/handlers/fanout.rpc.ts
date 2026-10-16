@@ -680,7 +680,8 @@ export interface FanOutBotPort {
   /** The wake the bot is running now, or null between turns. */
   currentWakeId(botId: string): string | null;
   /** The room thread of that running wake, or null (main's wake state, read
-   *  with the wake id: the tasks the wake starts report in this thread). */
+   *  with the wake id: the tasks the wake starts report in this thread unless
+   *  the bot names another or they check out a PR). */
   currentWakeThread(botId: string): ThreadId | null;
   /** The handoff that running wake delivers (a dispatch the bot was given,
    *  or the one its task wake answers), or null. Its tasks record it, so
@@ -1259,7 +1260,10 @@ export function registerFanOutRpc(
     }
     if (params['threadId'] !== undefined && !bot) return deny('INVALID_ARGUMENT', 'task.fanout.start accepts threadId only from a factory bot');
     if (bot) {
-      const pr = /^pull\/([1-9][0-9]*)\/head$/.exec(checkout?.fetchRef ?? '')?.[1];
+      // The PR a task checks out is its subject, unless the wake is a
+      // conversation (a handoff's, a 1:1, a group chat) the flow stays in.
+      const inConversation = /^(handoff|dm|group):/.test(botWakeThread ?? '');
+      const pr = inConversation ? undefined : /^pull\/([1-9][0-9]*)\/head$/.exec(checkout?.fetchRef ?? '')?.[1];
       const repoKey = botProfile?.repo?.repoKey;
       const prThread = pr && repoKey ? parseThreadId(prThreadId(repoKey, Number(pr))) ?? undefined : undefined;
       // General names no subject: such tasks keep a thread of their own, as

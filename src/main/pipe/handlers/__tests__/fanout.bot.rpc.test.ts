@@ -421,16 +421,24 @@ describe('task.fanout.start — bot origin', () => {
     }
   });
 
-  it('with no thread named, records the PR its tasks check out (pull/<n>/head) over the wake\'s', async () => {
-    const r = rig('verifier');
-    r.setThread('pr:o/r#12');
-    const res = await r.call(
-      { idempotencyKey: 'wake:w-1:1', titles: ['verify #31'], preset: 'verify', checkout: { sha: SHA, fetchRef: 'pull/31/head' } },
-      botCtx('verifier'),
-    );
-    expect(res.status).toBe('accepted');
-    await r.flush();
-    expect((r.start.mock.calls[0][0] as FanOutRequest).threadId).toBe('pr:github.com/o/r#31');
+  it('with no thread named, records the PR its tasks check out (pull/<n>/head) over a subject wake\'s, not over a conversation\'s', async () => {
+    const cases: Array<[string | null, string]> = [
+      ['pr:o/r#12', 'pr:github.com/o/r#31'],
+      [null, 'pr:github.com/o/r#31'],
+      ['handoff:h-x', 'handoff:h-x'],
+      [`dm:${BOT_ID}`, `dm:${BOT_ID}`],
+    ];
+    for (const [wakeThread, recorded] of cases) {
+      const r = rig('verifier');
+      r.setThread(wakeThread);
+      const res = await r.call(
+        { idempotencyKey: 'wake:w-1:1', titles: ['verify #31'], preset: 'verify', checkout: { sha: SHA, fetchRef: 'pull/31/head' } },
+        botCtx('verifier'),
+      );
+      expect(res.status).toBe('accepted');
+      await r.flush();
+      expect((r.start.mock.calls[0][0] as FanOutRequest).threadId).toBe(recorded);
+    }
   });
 
   it('the same wake key twice polls the first fan-out; a retried turn cannot start a second', async () => {
