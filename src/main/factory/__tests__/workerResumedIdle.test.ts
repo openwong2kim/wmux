@@ -9,11 +9,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { LedgerEntry } from '../../../shared/ledger';
 import {
   REPORTED_IDLE_MS,
-  REPORTED_UNSEEN_IDLE_MS,
   RESUMED_IDLE_MS,
   ReclaimedWorkers,
   createResumedIdleSweep,
   installWorkerReclaim,
+  resumedAgentAlive,
   workerPanesIdle,
   type PaneActivity,
   type ResumedIdlePorts,
@@ -41,23 +41,45 @@ beforeEach(() => {
 afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
 
 describe('workerPanesIdle', () => {
-  const ended = (over: Partial<PaneActivity> = {}): PaneActivity => ({ status: 'complete', unsettledClaim: false, statusAt: 0, ...over });
+  const ended = (over: Partial<PaneActivity> = {}): PaneActivity => ({ status: 'complete', turnStartAt: 0, turnEndAt: 0, ...over });
 
-  it('counts from the pane\'s own last turn edge and input, never before the floor', () => {
+  it('counts from the pane\'s own last turn end and input, never before the floor', () => {
     expect(workerPanesIdle([ended()], 0, REPORTED_IDLE_MS, REPORTED_IDLE_MS)).toBe(true);
     // The report (the floor) is recent: not idle, however quiet the pane.
     expect(workerPanesIdle([ended()], MIN, REPORTED_IDLE_MS, REPORTED_IDLE_MS)).toBe(false);
     // A turn that ended a minute ago, or input a minute ago, restarts the count.
-    expect(workerPanesIdle([ended({ statusAt: 9 * MIN })], 0, 10 * MIN, REPORTED_IDLE_MS)).toBe(false);
+    expect(workerPanesIdle([ended({ turnStartAt: 8 * MIN, turnEndAt: 9 * MIN })], 0, 10 * MIN, REPORTED_IDLE_MS)).toBe(false);
     expect(workerPanesIdle([ended({ inputAt: 9 * MIN })], 0, 10 * MIN, REPORTED_IDLE_MS)).toBe(false);
-    // A running turn, a prompt waiting, an unsettled claim: never idle.
+    // A turn running or a prompt waiting: never idle.
     expect(workerPanesIdle([ended({ status: 'running' })], 0, 60 * MIN, REPORTED_IDLE_MS)).toBe(false);
     expect(workerPanesIdle([ended({ status: 'awaiting_input' })], 0, 60 * MIN, REPORTED_IDLE_MS)).toBe(false);
-    expect(workerPanesIdle([ended({ unsettledClaim: true })], 0, 60 * MIN, REPORTED_IDLE_MS)).toBe(false);
-    // No status seen: idle only once the floor is long past.
-    expect(workerPanesIdle([{ unsettledClaim: false }], 0, REPORTED_IDLE_MS, REPORTED_IDLE_MS)).toBe(false);
-    expect(workerPanesIdle([{ unsettledClaim: false }], 0, REPORTED_UNSEEN_IDLE_MS, REPORTED_IDLE_MS)).toBe(true);
     expect(workerPanesIdle([], 0, 60 * MIN, REPORTED_IDLE_MS)).toBe(false);
+  });
+
+  it('needs an affirmative turn end: a silent 40-minute tool whose latch expired into idle is not idle', () => {
+    // A turn starts at 0 and runs one tool for 40 minutes with no hook signal;
+    // at 30 the turn latch expires and settles the pane to a synthetic idle.
+    const silentTool: PaneActivity = { status: 'idle', turnStartAt: 0, turnEndAt: -MIN };
+    for (const at of [31, 35, 40, 60]) expect(workerPanesIdle([silentTool], 0, at * MIN, RESUMED_IDLE_MS)).toBe(false);
+  });
+
+  it('a pane main knows nothing of (after a restart) is never idle, however old', () => {
+    expect(workerPanesIdle([{}], 0, 24 * 60 * MIN, RESUMED_IDLE_MS)).toBe(false);
+    expect(workerPanesIdle([{ status: 'idle' }], 0, 24 * 60 * MIN, RESUMED_IDLE_MS)).toBe(false);
+    // The daemon's boot settle (no turn since the agent started) is an end.
+    expect(workerPanesIdle([{ status: 'idle', turnEndAt: MIN }], 0, 6 * MIN, RESUMED_IDLE_MS)).toBe(true);
+  });
+});
+
+describe('resumedAgentAlive', () => {
+  it('counts a live WSL worker (agent not attributed, its launch line running) as alive', () => {
+    const rec = { sessions: [{ sessionId: 'daemon-1', cwd: '/mnt/c/x' }] };
+    expect(resumedAgentAlive(rec, [{ id: 'daemon-1', wslTarget: { distribution: 'Ubuntu' }, commandRunning: true }])).toBe(true);
+    expect(resumedAgentAlive(rec, [{ id: 'daemon-1', agentProcessAlive: true }])).toBe(true);
+    // A WSL shell back at its prompt, a dead agent, a gone pane: not alive.
+    expect(resumedAgentAlive(rec, [{ id: 'daemon-1', wslTarget: { distribution: 'Ubuntu' }, commandRunning: false }])).toBe(false);
+    expect(resumedAgentAlive(rec, [{ id: 'daemon-1', agentProcessAlive: false }])).toBe(false);
+    expect(resumedAgentAlive(rec, [])).toBe(false);
   });
 });
 
@@ -65,7 +87,7 @@ describe('the reported-task stop counts idle from the pane, not the row', () => 
   it('report at T, the owner\'s turn ends at T+6:30: no stop at T+7, a stop after T+11:30', async () => {
     const T = 1_000;
     let at = T;
-    const pane: PaneActivity = { status: 'complete', unsettledClaim: false, statusAt: T };
+    const pane: PaneActivity = { status: 'complete', turnStartAt: T - MIN, turnEndAt: T };
     let viewing = false;
     const current = row('review_requested', { updatedAt: T });
     const store = ReclaimedWorkers.at(dir);
@@ -92,10 +114,10 @@ describe('the reported-task stop counts idle from the pane, not the row', () => 
     };
     // The owner prompts the reported worker at T+6; its answer ends at T+6:30.
     pane.status = 'running';
-    pane.statusAt = T + 6 * MIN;
+    pane.turnStartAt = T + 6 * MIN;
     await look(T + 6 * MIN + 10_000);
     pane.status = 'complete';
-    pane.statusAt = T + 6.5 * MIN;
+    pane.turnEndAt = T + 6.5 * MIN;
     await look(T + 7 * MIN);
     await look(T + 11 * MIN);
     expect(stopAgent).not.toHaveBeenCalled();
@@ -125,7 +147,7 @@ describe('the idle stop of resumed workers', () => {
   function rig(over: Partial<ResumedIdlePorts> = {}) {
     let at = MIN;
     // The resumed agent booted and settled at its prompt a minute in.
-    const pane: PaneActivity = { status: 'idle', unsettledClaim: false, statusAt: MIN };
+    const pane: PaneActivity = { status: 'idle', turnEndAt: MIN };
     let viewing = false;
     const stopAgent = vi.fn(async () => ({ ok: true, stopped: true }));
     const note = vi.fn();
@@ -166,13 +188,15 @@ describe('the idle stop of resumed workers', () => {
   it('never stops a busy worker: a turn running (a command the agent runs), input typed, or the owner viewing it', async () => {
     const r = rig();
     r.pane.status = 'running';
+    r.pane.turnStartAt = 20 * MIN;
     expect(await r.sweep(30 * MIN)).toEqual([]);
     // Its turn ended a minute ago: the count starts there.
     r.pane.status = 'complete';
-    r.pane.statusAt = 30 * MIN;
+    r.pane.turnEndAt = 30 * MIN;
     expect(await r.sweep(31 * MIN)).toEqual([]);
     r.pane.inputAt = 34 * MIN;
     expect(await r.sweep(36 * MIN)).toEqual([]);
+    // The owner reading it (the active workspace, or the Bots worker panel).
     r.view(true);
     expect(await r.sweep(60 * MIN)).toEqual([]);
     expect(r.stopAgent).not.toHaveBeenCalled();

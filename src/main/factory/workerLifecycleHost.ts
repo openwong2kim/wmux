@@ -12,8 +12,8 @@ import type { CardNotice, ThreadId } from '../../shared/room';
 import { BOT_EVENT } from '../../shared/bot';
 import { sanitizePtyText } from '../../shared/types';
 import { eventBus } from '../events/EventBus';
-import { getLastBroadcastAgentStatus, getLastBroadcastAgentStatusAt, hasOutstandingRunningClaim } from '../ipc/handlers/metadata.handler';
-import { holdsUnsettledRunningClaim } from '../notification/turnSettle';
+import { getLastBroadcastAgentStatus, hasOutstandingRunningClaim } from '../ipc/handlers/metadata.handler';
+import { lastHookTurnStart, lastTurnEnd } from '../notification/turnEvidence';
 import { lastUserInputAt } from '../notification/idleSuppression';
 import { guardSessionLaunch } from '../agents/botWorkerMergeGuard';
 import { getTaskLedger } from '../deck/taskLedgerHost';
@@ -37,6 +37,7 @@ import {
   isReclaimedSince,
   isTaskWorkspaceOf,
   noteWorkerAgentExit,
+  resumedAgentAlive,
   setResumedLiveCount,
   setWorkerResumePorts,
   type PaneActivity,
@@ -199,17 +200,19 @@ export function startWorkerLifecycle(deps: WorkerLifecycleDeps): () => void {
     // What the idle stops read of a worker pane, and whether the owner is
     // viewing a workspace (unknown: not viewing).
     const paneActivity = (id: string): PaneActivity => {
-      const statusAt = getLastBroadcastAgentStatusAt(id);
-      const inputAt = lastUserInputAt(id);
       const status = getLastBroadcastAgentStatus(id);
+      const turnStartAt = lastHookTurnStart(id);
+      const turnEndAt = lastTurnEnd(id);
+      const inputAt = lastUserInputAt(id);
       return {
         ...(status !== undefined ? { status } : {}),
-        unsettledClaim: holdsUnsettledRunningClaim(id),
-        ...(statusAt !== undefined ? { statusAt } : {}),
+        ...(turnStartAt !== undefined ? { turnStartAt } : {}),
+        ...(turnEndAt !== undefined ? { turnEndAt } : {}),
         ...(inputAt !== undefined ? { inputAt } : {}),
       };
     };
-    const viewed = (workspaceId: string): boolean => mirror.getViewed()?.workspaceId === workspaceId;
+    const viewed = (workspaceId: string): boolean => mirror.getViewed()?.workspaceId === workspaceId
+      || mirror.getPanelWorkspaceId() === workspaceId;
     offs.push(installWorkerReclaim({
       onTransition: (fn) => ledger.onTransition(fn),
       allRows: () => ledger.list({}),
@@ -427,8 +430,7 @@ export function startWorkerLifecycle(deps: WorkerLifecycleDeps): () => void {
       void listSessions().then((sessions) => {
         let moved = false;
         for (const r of resumed) {
-          const alive = r.sessions.some((p) => sessions.find((s) => s.id === p.sessionId)?.agentProcessAlive === true);
-          if (!alive) moved = r.sessions.some((p) => noteWorkerAgentExit(reclaimed, p.sessionId)) || moved;
+          if (!resumedAgentAlive(r, sessions)) moved = r.sessions.some((p) => noteWorkerAgentExit(reclaimed, p.sessionId)) || moved;
         }
         if (moved) changed();
         return idleResumed.sweep(sessions);

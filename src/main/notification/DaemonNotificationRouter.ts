@@ -19,6 +19,7 @@ import {
   getLastBroadcastAgentStatus,
   clearLastBroadcastAgentStatus,
 } from '../ipc/handlers/metadata.handler';
+import { noteBootSettled } from './turnEvidence';
 import { settleHookTurnToIdle, broadcastSettledIdle, holdsUnreadResult, holdsUnsettledRunningClaim } from './turnSettle';
 import { eventBus } from '../events/EventBus';
 import {
@@ -1253,6 +1254,9 @@ export class DaemonNotificationRouter {
 
     const onIdle = (payload: { sessionId: string; preTurn?: boolean }) => {
       const now = Date.now();
+      // The daemon's own word that no turn ran since the agent's SessionStart:
+      // turn-end evidence for the bot workers' idle stops, whatever the dot does.
+      if (payload.preTurn === true) noteBootSettled(payload.sessionId, now);
       // Daemon-mode twin of the PTYBridge.onActiveToIdle gate: byte silence on
       // a hook-governed pane is not a turn end (quiet reasoning, a long tool
       // call), so the clear would only make the dot flicker. The hook's Stop

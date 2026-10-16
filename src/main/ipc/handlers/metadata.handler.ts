@@ -19,6 +19,7 @@ import { PrCiRouter } from '../../metadata/PrCiRouter';
 import { PrReviewRouter } from '../../metadata/PrReviewRouter';
 import { ghPrService } from '../../github/GhPrService';
 import { publishPrOwnerEvent } from '../../deck/prOwnerNotify';
+import { clearTurnEvidence, noteBroadcastStatus } from '../../notification/turnEvidence';
 
 // AO-style CI feedback (owner decision 2026-07-18). Module singletons set at
 // registration (they need getWindow for workspace resolution). The poll feeds
@@ -93,9 +94,6 @@ const lastBroadcastAgentName = new Map<string, string>();
 // stamp for up to 120 s, through any unmarked idle. Cleared with the rest of
 // a PTY's record (clearLastBroadcastAgentStatus) on every pane teardown.
 const runningClaimOutstanding = new Set<string>();
-// When each PTY's broadcast status last changed: a reclaim of an idle bot
-// worker counts its idle time from its own last turn edge (workerReclaim.ts).
-const lastBroadcastAgentStatusAt = new Map<string, number>();
 
 /** Whether a 'running' claim went out for this PTY that no settle has withdrawn. */
 export function hasOutstandingRunningClaim(ptyId: string): boolean {
@@ -107,11 +105,6 @@ export function getLastBroadcastAgentStatus(ptyId: string): AgentStatus | undefi
   return lastBroadcastAgentStatus.get(ptyId);
 }
 
-/** When the PTY's broadcast status last changed, or undefined (none seen). */
-export function getLastBroadcastAgentStatusAt(ptyId: string): number | undefined {
-  return lastBroadcastAgentStatusAt.get(ptyId);
-}
-
 export function getLastBroadcastAgentName(ptyId: string): string | undefined {
   return lastBroadcastAgentName.get(ptyId);
 }
@@ -121,7 +114,7 @@ export function clearLastBroadcastAgentStatus(ptyId: string): void {
   lastBroadcastAgentStatus.delete(ptyId);
   lastBroadcastAgentName.delete(ptyId);
   runningClaimOutstanding.delete(ptyId);
-  lastBroadcastAgentStatusAt.delete(ptyId);
+  clearTurnEvidence(ptyId);
 }
 
 /** Test-only: reset between PTYs when a suite reuses the same id across cases. */
@@ -129,7 +122,7 @@ export function resetLastBroadcastAgentStatusForTests(): void {
   lastBroadcastAgentStatus.clear();
   lastBroadcastAgentName.clear();
   runningClaimOutstanding.clear();
-  lastBroadcastAgentStatusAt.clear();
+  clearTurnEvidence();
 }
 
 /**
@@ -150,7 +143,8 @@ export function broadcastMetadataUpdate(
   // window is a transport detail the idle-clear deferral logic doesn't need
   // to know about.
   if (payload.ptyId && payload.agentStatus !== undefined) {
-    if (lastBroadcastAgentStatus.get(payload.ptyId) !== payload.agentStatus) lastBroadcastAgentStatusAt.set(payload.ptyId, Date.now());
+    // Turn evidence for the idle stops of bot workers (turnEvidence.ts).
+    noteBroadcastStatus(payload.ptyId, payload.agentStatus, payload.hookKind);
     lastBroadcastAgentStatus.set(payload.ptyId, payload.agentStatus);
   }
   if (payload.ptyId) {

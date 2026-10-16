@@ -208,4 +208,10 @@ describe('parseWorkspaceMirrorPayload — panePtys passthrough', () => {
       .toEqual(['pane-1']);
     expect(parseWorkspaceMirrorPayload({ entries: [], fleets: [] })).not.toHaveProperty('paneIds');
   });
+
+  it('keeps the Bots worker panel\'s workspace, and drops a malformed one', () => {
+    expect(parseWorkspaceMirrorPayload({ entries: [], fleets: [], panelWorkspaceId: 'ws-2' })?.panelWorkspaceId).toBe('ws-2');
+    expect(parseWorkspaceMirrorPayload({ entries: [], fleets: [], panelWorkspaceId: 'bad id' })).not.toHaveProperty('panelWorkspaceId');
+    expect(parseWorkspaceMirrorPayload({ entries: [], fleets: [], panelWorkspaceId: 7 })).not.toHaveProperty('panelWorkspaceId');
+  });
 });
