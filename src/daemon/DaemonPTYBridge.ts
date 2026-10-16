@@ -1354,6 +1354,8 @@ export class DaemonPTYBridge extends EventEmitter {
         else ringBuffer.write(buf ?? Buffer.from(data));
         // AFTER the ring write: the tracker's offsets are in the ring's own
         // coordinate system, so it needs the counter this chunk already moved.
+        // Before the titles in this chunk are read (see ClaudeTitleTurnEdge.noteOutput).
+        titleTurnEdge.noteOutput(data);
         interpreter.feed(data, ringBuffer.totalBytesWritten, nativeChunk);
         // After the mode tracker and OSC 133 have seen this chunk (see noteCodexOutput).
         this.noteCodexOutput(data);

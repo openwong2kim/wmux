@@ -75,6 +75,15 @@ describe('DaemonPTYBridge — interrupted-turn row', () => {
       expect(interrupted).toEqual([{ sessionId: 'sess-1', agent: 'Claude Code' }]);
     });
 
+    it('does not report a turn that ran its Stop hooks, even right after an Esc', () => {
+      bridge.noteInput('\x1b');
+      vi.advanceTimersByTime(600);
+      feed('\u001b[38;2;153;153;153m\u001b[2Crunning Stop hook · 3s · \u001b[m');
+      vi.advanceTimersByTime(300);
+      feed(IDLE);
+      expect(interrupted).toEqual([]);
+    });
+
     it('does not report an ordinary turn end (no Esc before it)', () => {
       feed(IDLE);
       expect(interrupted).toEqual([]);

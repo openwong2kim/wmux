@@ -335,6 +335,22 @@ describe('PTYBridge lone Escape confirmed by Claude Code\'s title turning idle (
     expect(idleBroadcasts('p1')).toBe(0);
   });
 
+  it('leaves a turn that ended on its own alone, even right after an Esc that closed a popup', () => {
+    const { bridge, router, proc } = startThinking();
+
+    // Live: the popup Esc, then the answer, then `running Stop hook` on the
+    // spinner row about 300 ms before the idle title.
+    bridge.noteInterruptInput('p1', '\x1b');
+    vi.advanceTimersByTime(600);
+    proc.emitData('\u001b[38;2;153;153;153m\u001b[2Crunning Stop hook · 3s · \u001b[m');
+    vi.advanceTimersByTime(300);
+    proc.emitData(IDLE);
+    vi.advanceTimersByTime(50);
+
+    expect(router.governsRunningState('p1')).toBe(true);
+    expect(idleBroadcasts('p1')).toBe(0);
+  });
+
   it('does not settle on the title edge with no Esc before it (an ordinary turn end)', () => {
     const { router, proc } = startThinking();
 

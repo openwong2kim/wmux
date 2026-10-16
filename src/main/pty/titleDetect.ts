@@ -47,15 +47,28 @@ const CLAUDE_IDLE_TITLE = /^✳\s/;
  */
 export class ClaudeTitleTurnEdge {
   private busy = false;
+  private stopHookRan = false;
 
-  /** Feed one sanitized title. True when it ends a turn the title showed running. */
+  /**
+   * Feed the pane's output, before its titles are read. A turn that ends on
+   * its own runs its Stop hooks first, under `running Stop hook · 3s` on the
+   * spinner row, about 300 ms before the idle title (live capture). No
+   * interrupted turn draws that row, so such an edge is an ordinary turn end
+   * even right after an Esc that only closed a popup.
+   */
+  noteOutput(data: string): void {
+    if (this.busy && data.includes('Stop hook')) this.stopHookRan = true;
+  }
+
+  /** Feed one sanitized title. True when it ends a turn the title showed running without its Stop hooks. */
   observe(title: string): boolean {
     if (CLAUDE_BUSY_TITLE.test(title)) {
       this.busy = true;
       return false;
     }
-    const ended = this.busy && CLAUDE_IDLE_TITLE.test(title);
+    const ended = this.busy && !this.stopHookRan && CLAUDE_IDLE_TITLE.test(title);
     this.busy = false;
+    this.stopHookRan = false;
     return ended;
   }
 }

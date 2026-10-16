@@ -848,6 +848,7 @@ export class PTYBridge {
 
     // 2. OSC parser
     this.addMiddleware(ptyId, (data) => {
+      titleTurnEdge.noteOutput(data);
       oscParser.process(data);
     });
 

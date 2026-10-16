@@ -51,3 +51,15 @@ describe('ClaudeTitleTurnEdge (#2264)', () => {
     expect(edge.observe('✳ Claude Code')).toBe(false);
   });
 });
+
+describe('ClaudeTitleTurnEdge: a turn that ran its Stop hooks ended on its own', () => {
+  it('does not report the idle title that follows the Stop-hook row', () => {
+    const edge = new ClaudeTitleTurnEdge();
+    edge.observe('◐ 50번째 소수 검증');
+    edge.noteOutput('\u001b[38;2;153;153;153m\u001b[2Crunning Stop hook · 3s · \u001b[m');
+    expect(edge.observe('✳ 50번째 소수 검증')).toBe(false);
+    // The next turn starts clean.
+    edge.observe('◑ 50번째 소수 검증');
+    expect(edge.observe('✳ 50번째 소수 검증')).toBe(true);
+  });
+});
