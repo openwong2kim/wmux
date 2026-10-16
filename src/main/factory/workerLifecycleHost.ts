@@ -12,9 +12,9 @@ import type { CardNotice, ThreadId } from '../../shared/room';
 import { BOT_EVENT } from '../../shared/bot';
 import { sanitizePtyText } from '../../shared/types';
 import { eventBus } from '../events/EventBus';
-import { getLastBroadcastAgentStatus, hasOutstandingRunningClaim } from '../ipc/handlers/metadata.handler';
+import { getLastBroadcastAgentStatus, getLastBroadcastAgentStatusAt, hasOutstandingRunningClaim } from '../ipc/handlers/metadata.handler';
 import { holdsUnsettledRunningClaim } from '../notification/turnSettle';
-import { recentUserInput } from '../notification/idleSuppression';
+import { lastUserInputAt } from '../notification/idleSuppression';
 import { guardSessionLaunch } from '../agents/botWorkerMergeGuard';
 import { getTaskLedger } from '../deck/taskLedgerHost';
 import { getBotRuntime } from './BotRuntime';
@@ -28,7 +28,8 @@ import { runningWakeTainted } from './wakeTaint';
 import { installReportNudge, submitToWorkerPane } from './workerReportNudge';
 import { setWorkerLivePane } from './workerMessage';
 import {
-  REPORTED_UNSEEN_IDLE_MS,
+  REPORTED_IDLE_MS,
+  RESUMED_IDLE_MS,
   ReclaimedWorkers,
   createResumedIdleSweep,
   createWorkerClear,
@@ -36,13 +37,14 @@ import {
   isReclaimedSince,
   isTaskWorkspaceOf,
   noteWorkerAgentExit,
-  paneTurnEnded,
   setResumedLiveCount,
   setWorkerResumePorts,
+  type PaneActivity,
   type WorkerRespawnInput,
   type WorkerResumePorts,
   type WorkerSessionInfo,
   unreclaimedEndedWorkers,
+  workerPanesIdle,
   workerWorkspaceOf,
 } from './workerReclaim';
 import { getWorkspaceMirror } from '../workspace/WorkspaceMirror';
@@ -194,6 +196,20 @@ export function startWorkerLifecycle(deps: WorkerLifecycleDeps): () => void {
     const reconcile = (): void => {
       void clear.reconcile();
     };
+    // What the idle stops read of a worker pane, and whether the owner is
+    // viewing a workspace (unknown: not viewing).
+    const paneActivity = (id: string): PaneActivity => {
+      const statusAt = getLastBroadcastAgentStatusAt(id);
+      const inputAt = lastUserInputAt(id);
+      const status = getLastBroadcastAgentStatus(id);
+      return {
+        ...(status !== undefined ? { status } : {}),
+        unsettledClaim: holdsUnsettledRunningClaim(id),
+        ...(statusAt !== undefined ? { statusAt } : {}),
+        ...(inputAt !== undefined ? { inputAt } : {}),
+      };
+    };
+    const viewed = (workspaceId: string): boolean => mirror.getViewed()?.workspaceId === workspaceId;
     offs.push(installWorkerReclaim({
       onTransition: (fn) => ledger.onTransition(fn),
       allRows: () => ledger.list({}),
@@ -212,14 +228,16 @@ export function startWorkerLifecycle(deps: WorkerLifecycleDeps): () => void {
       },
       retryMs: RESUMED_SWEEP_MS,
       // A reported task's worker is stopped once every pane of its
-      // workspace was seen to end its turn, and only those panes are
-      // stopped. A status main has not seen yet (right after a restart) is
-      // taken as idle only for a task reported long ago.
+      // workspace sat idle for the window, counted from the report and from
+      // each pane's own last turn edge and input (workerPanesIdle), and the
+      // owner is not viewing it; only those panes are stopped. A status main
+      // has not seen yet (right after a restart) is taken as idle only for a
+      // task reported long ago.
       turnEnded: (entry) => {
+        if (viewed(entry.taskWorkspaceId)) return false;
         const ws = mirror.getEntries()?.find((e) => e.id === entry.taskWorkspaceId);
         const ptys = ws && Array.isArray(ws.ptyIds) ? ws.ptyIds : [];
-        const longAgo = Date.now() - entry.updatedAt >= REPORTED_UNSEEN_IDLE_MS;
-        return ptys.length > 0 && ptys.every((id) => paneTurnEnded(getLastBroadcastAgentStatus(id), holdsUnsettledRunningClaim(id), longAgo));
+        return workerPanesIdle(ptys.map(paneActivity), entry.updatedAt, Date.now(), REPORTED_IDLE_MS);
       },
       workspacePanes: (workspaceId) => {
         const entries = mirror.getEntries();
@@ -368,13 +386,14 @@ export function startWorkerLifecycle(deps: WorkerLifecycleDeps): () => void {
       changed,
     };
     setWorkerResumePorts(resumePorts);
-    // A resumed worker idle for RESUMED_IDLE_MS (its turn ended, nothing
-    // typed) is stopped again, which frees its agent slot.
+    // A resumed worker idle for RESUMED_IDLE_MS (the reported stop's test)
+    // is stopped again, which frees its agent slot.
     const idleResumed = createResumedIdleSweep({
       ...resumePorts,
       row: (taskId) => ledger.get(taskId),
-      paneTurnEnded: (sessionId, longAgo) => paneTurnEnded(getLastBroadcastAgentStatus(sessionId), holdsUnsettledRunningClaim(sessionId), longAgo),
-      recentInput: (sessionId, ms) => recentUserInput(sessionId, ms),
+      paneActivity,
+      viewed,
+      idleMs: RESUMED_IDLE_MS,
       changed: () => {
         changed();
         getAgentSlots()?.kick();

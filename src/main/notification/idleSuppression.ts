@@ -124,8 +124,9 @@ export function markUserInput(ptyId: string, now: number = Date.now()): void {
   lastInputAt.set(ptyId, now);
 }
 
-export function recentUserInput(ptyId: string, windowMs: number, now: number = Date.now()): boolean {
-  return now - (lastInputAt.get(ptyId) ?? -Infinity) < windowMs;
+/** When someone last typed into the pane, or undefined (not since main started). */
+export function lastUserInputAt(ptyId: string): number | undefined {
+  return lastInputAt.get(ptyId);
 }
 
 export function clearPty(ptyId: string): void {
