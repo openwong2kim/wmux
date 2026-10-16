@@ -1293,6 +1293,31 @@ describe('the handoff a bot\'s worker belongs to (taskHandoff)', () => {
     expect(h.router.send(binding(reviewer), { kind: 'refusal', title: 'busy', body: '' })).toMatchObject({ ok: true });
     expect(h.router.taskHandoff(me, subject(1), y)).toBeNull();
   });
+
+  it('another bot\'s wake handoff is never kept; PR #n of another repository is not this one\'s', async () => {
+    const { h, reviewer, other, send, me } = await reviewerRig();
+    const foreign = send(other, 2);
+    expect(h.router.taskHandoff(me, {}, foreign)).toBeNull();
+    expect(h.router.taskHandoff(me, subject(2), foreign)).toBeNull();
+    const y = send(reviewer, 2);
+    send(reviewer, 1, { threadId: 'pr:github.com/acme/other#1' as ThreadId, refs: { pr: 1 } });
+    expect(h.router.taskHandoff(me, subject(1), y)).toBeNull();
+  });
+
+  it('an answer\'s wake is judged by the dispatch its question was asked on', async () => {
+    const { h, reviewer, send, me } = await reviewerRig();
+    const y = send(reviewer, 2, { refs: { pr: 2 } });
+    h.wake.id = { wakeId: 'w-y', attempt: 1, handoffId: y };
+    const ask = await h.router.askPerson(binding(reviewer), { title: 'Which base?', body: '' });
+    if (!ask.ok) throw new Error('not asked');
+    const answered = await h.router.answer(ask.handoffId, 'main');
+    if (!answered.ok || !answered.answerHandoffId) throw new Error('not answered');
+    const a = answered.answerHandoffId;
+    expect(h.router.taskHandoff(me, subject(2, false), a)).toBe(a);
+    expect(h.router.taskHandoff(me, subject(1, false), a)).toBeNull();
+    const x = send(reviewer, 1, { refs: { pr: 1 } });
+    expect(h.router.taskHandoff(me, subject(1, false), a)).toBe(x);
+  });
 });
 
 describe('retention of a hop held by an open question', () => {

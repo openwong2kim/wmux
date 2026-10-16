@@ -1279,7 +1279,8 @@ export function registerFanOutRpc(
       // The handoff the tasks answer: the wake's, unless their subject is
       // another one's (the reviewer's wake about PR #Y starting the queued
       // worker for #X binds it to #X's dispatch, else to none).
-      const subjectThread = botNamedThread ?? prThread;
+      // General names no subject (every card of the room is there).
+      const subjectThread = taskOriginThread(botNamedThread ?? prThread);
       const namedPr = Number(/^pr:.+#([1-9][0-9]*)$/.exec(subjectThread ?? '')?.[1]);
       const subjectPr = checkoutPr ? Number(checkoutPr) : repoKey && namedPr && subjectThread === prThreadId(repoKey, namedPr) ? namedPr : undefined;
       const subjectPrThread = subjectPr && repoKey ? parseThreadId(prThreadId(repoKey, subjectPr)) : null;

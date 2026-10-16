@@ -456,6 +456,8 @@ describe('task.fanout.start — bot origin', () => {
       ['pr:o/r#12', { checkout: { sha: SHA }, threadId: 'pr:o/r#31' }, { threadId: PR31, pr: { number: 31, threadId: PR31 } }],
       ['handoff:h-x', { checkout: { sha: SHA }, threadId: 'handoff:h-y' }, { threadId: 'handoff:h-y' }],
       ['pr:o/r#12', { checkout: { sha: SHA } }, {}],
+      // General names no subject; the PR checked out still is one.
+      ['pr:o/r#12', { checkout: { sha: SHA, fetchRef: 'pull/31/head' }, threadId: 'general' }, { pr: { number: 31, threadId: PR31 } }],
     ];
     for (const [wakeThread, extra, subject] of cases) {
       for (const answer of ['h-31', null]) {
