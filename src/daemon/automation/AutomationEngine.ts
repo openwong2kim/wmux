@@ -742,17 +742,20 @@ export class AutomationEngine {
     // whose session a human has opened does not count: that session is theirs
     // now, and the next occurrence gets its own PTY.
     const running = this.runs.some((r) => r.automationId === automation.id && !isFinalRunState(r.state));
-    const sessionOpen = !running && [...this.live.values()].some((l) => {
+    const openSessions = running ? [] : [...this.live.values()].filter((l) => {
       const r = this.runs.find((x) => x.id === l.runId);
       if (r?.automationId !== automation.id) return false;
       const handedOver = (r.state === 'completed' || r.state === 'failed') && this.ports.isAttached(l.ptyId);
       return !handedOver;
     });
-    if (running || sessionOpen) {
+    if (running || openSessions.length > 0) {
       // #2065: a run that only waits on a finished run's lingering session
-      // says so, rather than reading as "previous run still going".
+      // says so, rather than reading as "previous run still going". An
+      // ambiguous run's session is not on the linger timer (it can hold the
+      // slot up to the run limit), so it keeps the plain overlap reason.
+      const lingering = openSessions.length > 0 && openSessions.every((l) => l.phase === 'lingering');
       const skipped = this.recordSkipped(automation, scheduledFor, 'overlap', trigger, undefined,
-        sessionOpen ? 'previous_session_open' : undefined);
+        lingering ? 'previous_session_open' : undefined);
       this.pruneAndDrop();
       await this.persistRuns();
       return skipped;
