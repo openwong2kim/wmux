@@ -27,6 +27,10 @@ describe('wslAgentProcessFromEnv (#1727)', () => {
 // refuse anything else: a dropped turn-complete is invisible to the user.
 
 const BRIDGE = path.join(__dirname, '..', 'bin', 'wmux-codex-notify.mjs');
+/** These tests start real node processes and, on Windows, PowerShell to read
+ *  the parent: a loaded CI runner took more than 20 s there, so Windows gets
+ *  more room. The bridge's own lookup budget is set per run below. */
+const SPAWN_TEST_TIMEOUT_MS = process.platform === 'win32' ? 60_000 : 20_000;
 const SERVER_FLAGS = ['--listen', 'unix://', '--managed-daemon'];
 const SERVER_ARGV = ['app-server', ...SERVER_FLAGS];
 const THREAD_ID = '11111111-2222-4333-8444-555555555555';
@@ -319,7 +323,7 @@ describe('wmux-codex-notify under a fake Codex parent', () => {
     expect(received).toEqual([]);
     expect(spoolFiles()).toEqual([]);
     expect(logLines()).toEqual([]);
-  }, 20_000);
+  }, SPAWN_TEST_TIMEOUT_MS);
 
   it('does not spool under the inherited pane id when no wmux endpoint exists', async () => {
     // No auth token: the send is skipped and the bridge used to spool the
@@ -327,28 +331,28 @@ describe('wmux-codex-notify under a fake Codex parent', () => {
     expect(await run(SERVER_ARGV)).toBe(0);
     expect(spoolFiles()).toEqual([]);
     expect(logLines().map((l) => l.outcome)).toEqual([]);
-  }, 20_000);
+  }, SPAWN_TEST_TIMEOUT_MS);
 
   it('sees through a wrapper that re-runs the bridge', async () => {
     writeToken();
     expect(await run(SERVER_ARGV, { shim: true })).toBe(0);
     expect(received).toEqual([]);
     expect(logLines().map((l) => l.outcome)).toEqual([]);
-  }, 20_000);
+  }, SPAWN_TEST_TIMEOUT_MS);
 
   it('drops an unknown shared thread even with no inherited pane identity', async () => {
     writeToken();
     expect(await run(SERVER_ARGV, { identity: false })).toBe(0);
     expect(received).toEqual([]);
     expect(logLines()).toEqual([]);
-  }, 20_000);
+  }, SPAWN_TEST_TIMEOUT_MS);
 
   it('attributes a per-pane stdio server (the Chat composer) to its pane', async () => {
     writeToken();
     expect(await run(['app-server', '--listen', 'stdio://'])).toBe(0);
     expect(received).toEqual([delivered(PANE)]);
     expect(logLines()).toEqual([expect.objectContaining({ outcome: 'ok', origin: 'unknown' })]);
-  }, 20_000);
+  }, SPAWN_TEST_TIMEOUT_MS);
 
   it('attributes a Codex process that runs the turn itself, whatever words it was given', async () => {
     // The review's regression: this parent used to be refused on every turn.
@@ -358,12 +362,12 @@ describe('wmux-codex-notify under a fake Codex parent', () => {
     expect(await run(['parent.cjs', '--no-daemon', '-C', 'app-server', 'exec', 'fix tests'])).toBe(0);
     expect(received).toEqual([delivered(PANE)]);
     expect(logLines()).toEqual([expect.objectContaining({ outcome: 'ok', origin: 'unknown' })]);
-  }, 20_000);
+  }, SPAWN_TEST_TIMEOUT_MS);
 
   it('still spools under the pane id for a Codex process when no endpoint exists', async () => {
     expect(await run(['parent.cjs', 'resume', THREAD_ID])).toBe(0);
     expect(spoolFiles()).toEqual(['pty-starter.json']);
-  }, 20_000);
+  }, SPAWN_TEST_TIMEOUT_MS);
 
   it('decides on the argv the WSL launcher hands over instead of its own parent', async () => {
     writeToken();
@@ -374,7 +378,7 @@ describe('wmux-codex-notify under a fake Codex parent', () => {
     })).toBe(0);
     expect(received).toEqual([delivered(PANE)]);
     expect(logLines().map((l) => l.outcome)).toEqual(['ok']);
-  }, 20_000);
+  }, SPAWN_TEST_TIMEOUT_MS);
 
   // #1727 — the WSL Codex hook's report of which Linux process this Codex is.
   const AGENT_PROC = '1:0f6a7c1e-2b3d-4e5f-8a9b-0c1d2e3f4a5b\x1e4321:991739:/usr/bin/codex\x1f--no-daemon';
@@ -383,18 +387,18 @@ describe('wmux-codex-notify under a fake Codex parent', () => {
     writeToken();
     expect(await run(['parent.cjs', 'resume', THREAD_ID], { agentProc: AGENT_PROC })).toBe(0);
     expect(received).toEqual([delivered({ ...PANE, wslAgentProcess: AGENT_PROC })]);
-  }, 20_000);
+  }, SPAWN_TEST_TIMEOUT_MS);
 
   it('never sends a report a shared server carries', async () => {
     writeToken();
     expect(await run(SERVER_ARGV, { agentProc: AGENT_PROC })).toBe(0);
     expect(received).toEqual([]);
-  }, 20_000);
+  }, SPAWN_TEST_TIMEOUT_MS);
 
   it('drops an oversized report and still sends the notification', async () => {
     writeToken();
     expect(await run(['parent.cjs', 'resume', THREAD_ID], { agentProc: 'x'.repeat(9000) })).toBe(0);
     expect(received).toEqual([delivered(PANE)]);
     expect('wslAgentProcess' in (received[0].params ?? {})).toBe(false);
-  }, 20_000);
+  }, SPAWN_TEST_TIMEOUT_MS);
 });
