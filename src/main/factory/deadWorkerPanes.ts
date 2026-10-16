@@ -14,7 +14,8 @@
 //     pane that runs no agent and no command (a shell at its prompt, or one
 //     respawned at the restart with nothing seen in it since) is closed
 //     through the renderer, and the whole workspace when every pane in it is
-//     such a shell. Folders are left to taskFolderCleanup.ts.
+//     such a shell; an end the reclaim records only once it recorded it.
+//     Folders are left to taskFolderCleanup.ts.
 //   - Task open (review_requested, working) whose worker pane is a shell
 //     respawned at the restart, or whose agent was seen to exit: the worker's
 //     resume record is written (workerReclaim.ts, the same record the idle
@@ -37,8 +38,10 @@ import { taskThreadOf } from '../../shared/room';
 import { STOPPED_BY_OWNER } from './factoryStop';
 import {
   CLEAR_RETRY_MS,
+  RECLAIM_CATCHUP_MS,
   fillLaunchedModes,
   holdWorkerPanes,
+  isReclaimableEnd,
   isReclaimedSince,
   reclaimedSessionOf,
   workerWorkspaceOf,
@@ -52,9 +55,6 @@ import {
 /** The daemon's session fields this sweep reads (daemon.listSessions). */
 export interface DeadPaneSession extends WorkerSessionInfo {
   state?: unknown;
-  /** The daemon respawned the pane at its own restart and has seen no agent
-   *  there since. */
-  recoveredAgentUnconfirmed?: unknown;
 }
 
 /** One pane's key input as the daemon reports it (DaemonClient.getAgentState):
@@ -122,8 +122,11 @@ export interface DeadPaneSweepPorts {
   launchedConversation?: WorkerReclaimPorts['launchedConversation'];
   /** Close a workspace through the renderer's workspace.close; true when it closed. */
   closeWorkspace: (workspaceId: string) => Promise<boolean>;
-  /** Close the pane holding `ptyId` through the renderer's pane.close; true when it closed. */
-  closePane: (ptyId: string) => Promise<boolean>;
+  /** The layout pane holding `ptyId`, or null when not known. */
+  paneOf: (ptyId: string) => string | null;
+  /** Close a layout pane (all its tabs) through the renderer's pane.close;
+   *  true when it closed. */
+  closePane: (paneId: string) => Promise<boolean>;
   changed?: () => void;
   now?: () => number;
   log?: (msg: string) => void;
@@ -160,25 +163,49 @@ export function createDeadPaneSweep(ports: DeadPaneSweepPorts): DeadPaneSweep {
     return ids.filter((id, i) => !typedSince(reads[i], floor, at, isRespawnedShell(byId.get(id))));
   };
 
+  /** The task's row and record now: unchanged since the pass read them
+   *  (same rev and status, a record in the same state), or null. */
+  const unchanged = (row: LedgerEntry, rec: ReclaimedWorker | null): boolean => {
+    const cur = safe(() => ports.rows().find((r) => r.id === row.id) ?? null, null);
+    if (!cur || cur.rev !== row.rev || cur.status !== row.status) return false;
+    const recNow = ports.store.get(row.id);
+    return (recNow?.state ?? null) === (rec?.state ?? null) && (recNow?.at ?? null) === (rec?.at ?? null);
+  };
+
   const closeEnded = async (row: LedgerEntry, rec: ReclaimedWorker | null, ws: string, ptys: readonly string[], byId: Map<string, DeadPaneSession>): Promise<number> => {
-    const gone = (id: string): boolean => {
-      const s = byId.get(id);
-      return !s || s.state === 'dead';
+    const shellIn = (m: Map<string, DeadPaneSession>, id: string): boolean => {
+      const s = m.get(id);
+      return !!s && s.state !== 'dead' && (isRespawnedShell(s) || isIdleShell(s));
     };
-    const shells = ptys.filter((id) => !gone(id) && (isRespawnedShell(byId.get(id)) || isIdleShell(byId.get(id))));
+    const shells = ptys.filter((id) => shellIn(byId, id));
     if (shells.length === 0) return 0;
     // Typed into since the task ended (or since its worker last stopped):
     // the owner's now.
     const floor = Math.max(row.updatedAt, rec?.at ?? 0);
-    const closable = await untyped(shells, byId, floor);
-    if (closable.length === 0) return 0;
+    const quiet = await untyped(shells, byId, floor);
+    if (quiet.length === 0) return 0;
     const release = holdWorkerPanes(row.id);
     if (!release) return 0;
     try {
-      // Read right before the close: the owner may have opened it meanwhile.
+      // Everything again right before the close, after the reads above: the
+      // task (reopened, resumed), what the owner views, the workspace's panes
+      // and what runs in them.
+      if (!unchanged(row, rec)) return 0;
       if (safe(() => ports.viewedWorkspace(), null) === null || safe(() => ports.viewed(ws), true)) return 0;
+      const nowPtys = safe(() => ports.workspacePtys(ws), null);
+      if (!nowPtys || nowPtys.length === 0) return 0;
+      const fresh = new Map((await ports.listSessions()).map((x) => [x.id, x]));
+      const closable = quiet.filter((id) => nowPtys.includes(id) && shellIn(fresh, id));
+      if (closable.length === 0) return 0;
+      // A pane gone from the daemon counts as gone only when it was gone at
+      // the pass's first read too (a terminal opened meanwhile is not).
+      const gone = (id: string): boolean => {
+        const was = byId.get(id);
+        const is = fresh.get(id);
+        return ptys.includes(id) && (!was || was.state === 'dead') && (!is || is.state === 'dead');
+      };
       const why = isStoppedByOwner(row) ? 'stopped by owner' : row.status;
-      if (ptys.every((id) => gone(id) || closable.includes(id))) {
+      if (nowPtys.every((id) => closable.includes(id) || gone(id))) {
         let ok = false;
         try {
           ok = await ports.closeWorkspace(ws);
@@ -193,17 +220,26 @@ export function createDeadPaneSweep(ports: DeadPaneSweepPorts): DeadPaneSweep {
         notBefore.delete(ws);
         return closable.length;
       }
-      let closed = 0;
+      // One pane at a time, and only a pane whose every tab is such a shell:
+      // closing a pane closes all its tabs.
+      const paneOf = (id: string): string | null => safe(() => ports.paneOf(id), null);
+      const panes = new Map<string, string[]>();
       for (const id of closable) {
+        const pane = paneOf(id);
+        if (pane) panes.set(pane, [...(panes.get(pane) ?? []), id]);
+      }
+      let closed = 0;
+      for (const [pane, ids] of panes) {
+        if (!nowPtys.every((id) => paneOf(id) !== pane || ids.includes(id))) continue;
         let ok = false;
         try {
-          ok = await ports.closePane(id);
+          ok = await ports.closePane(pane);
         } catch {
           ok = false;
         }
         if (ok) {
-          closed++;
-          log(`[factory] dead panes: closed ${id} in ${ws} (task ${row.id}, ${why})`);
+          closed += ids.length;
+          for (const id of ids) log(`[factory] dead panes: closed ${id} in ${ws} (task ${row.id}, ${why})`);
         } else {
           notBefore.set(ws, now() + CLEAR_RETRY_MS);
         }
@@ -241,9 +277,13 @@ export function createDeadPaneSweep(ports: DeadPaneSweepPorts): DeadPaneSweep {
     const holds = holdWorkerPanes(row.id);
     if (!holds) return false;
     try {
-      // The row again: one that moved on meanwhile is left to the next pass.
-      const cur = safe(() => ports.rows().find((r) => r.id === row.id) ?? null, null);
-      if (!cur || cur.rev !== row.rev || cur.status !== row.status) return false;
+      // The row and the record again, after the reads above: a task that moved
+      // on, or a worker resumed meanwhile, is left to the next pass. So is a
+      // pane that runs something now.
+      if (!unchanged(row, rec)) return false;
+      const fresh = new Map((await ports.listSessions()).map((x) => [x.id, x]));
+      if (!dead.every((id) => isRespawnedShell(fresh.get(id)) || isAgentExitedShell(fresh.get(id)))) return false;
+      if (!unchanged(row, rec)) return false;
       await ports.store.put({
         taskId: row.id,
         botId: row.dispatch?.origin.botId ?? '',
@@ -291,6 +331,9 @@ export function createDeadPaneSweep(ports: DeadPaneSweepPorts): DeadPaneSweep {
       const ptys = safe(() => ports.workspacePtys(ws), null);
       if (!ptys || ptys.length === 0) continue;
       if (ended) {
+        // An end the reclaim records first (its conversation, for Resume):
+        // only once it did, or gave up.
+        if (isReclaimableEnd(row, row.status) && !isReclaimedSince(rec, row) && at - row.updatedAt < RECLAIM_CATCHUP_MS) continue;
         if (safe(() => ports.viewed(ws), true)) continue;
         closed += await closeEnded(row, rec, ws, ptys, byId);
       } else if (await recordOpen(row, rec, ws, ptys, byId)) {

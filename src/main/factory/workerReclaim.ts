@@ -144,6 +144,9 @@ export interface WorkerSessionInfo {
   agentProcessAlive?: boolean;
   /** OSC 133: a foreground command owns the pane (absent: unknown). */
   commandRunning?: boolean;
+  /** The daemon respawned the pane at its own restart and has seen no agent
+   *  there since (absent from a daemon that does not say). */
+  recoveredAgentUnconfirmed?: boolean;
   /** The pane runs in WSL (its Linux agent is not always attributed). */
   wslTarget?: { distribution?: unknown };
   /** An exec unit: the pane's process is the command itself. */
@@ -1373,8 +1376,11 @@ async function resumeOnce(
   if (live.agentProcessAlive === true || live.commandRunning === true) {
     return refuse('already_running', 'an agent or another command is running in the worker\'s pane');
   }
-  // No observed agent exit and no shell prompt seen: what runs there is not known.
-  if (live.agentProcessAlive !== false && live.commandRunning !== false) {
+  // No observed agent exit and no shell prompt seen: what runs there is not
+  // known. A shell the daemon respawned at its restart, with no agent seen
+  // since, runs no agent (a fresh shell reports its prompt only after its
+  // first command).
+  if (live.agentProcessAlive !== false && live.recoveredAgentUnconfirmed !== true && live.commandRunning !== false) {
     return refuse('unknown_state', 'what runs in the worker\'s pane cannot be told; open it and resume from there');
   }
   // A pane a resume opened earlier whose task was not moved to it then.

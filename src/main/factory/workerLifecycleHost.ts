@@ -532,9 +532,8 @@ export function startWorkerLifecycle(deps: WorkerLifecycleDeps): () => void {
       launchedTask: (id) => botWorkerSessionRecord(id)?.taskId ?? null,
       launchedConversation,
       closeWorkspace,
-      closePane: async (ptyId) => {
-        const paneId = mirror.peekPaneForPty(ptyId)?.paneId;
-        if (!paneId) return false;
+      paneOf: (ptyId) => mirror.peekPaneForPty(ptyId)?.paneId ?? null,
+      closePane: async (paneId) => {
         const res = await sendToRenderer(() => deps.getMainWindow?.() ?? null, 'pane.close', { id: paneId }, { timeoutMs: CLOSE_TIMEOUT_MS });
         return !!res && typeof res === 'object' && (res as { ok?: unknown }).ok === true;
       },
