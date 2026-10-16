@@ -188,6 +188,20 @@ export const FANOUT_WIRE_AGENT_CMD = 'claude';
  *  verdict (accept-then-poll), so this deadline only bounds how long the
  *  detached approval hop may hang before we record the fan-out as denied. */
 const APPROVAL_TIMEOUT_MS = 45_000;
+/** How long a bot's new fan-out waits for a fresh read of its workers' panes
+ *  before the caps are checked on what is already known (#2255). */
+const LIVENESS_WAIT_MS = 2_000;
+
+/** Resolves when `work` settles or after `ms`, whichever is first. */
+async function withinMs(work: Promise<unknown> | undefined, ms: number): Promise<void> {
+  if (!work) return;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([work.catch(() => undefined), new Promise<void>((resolve) => { timer = setTimeout(resolve, ms); })]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
 /**
  * Upper bound on a caller-chosen idempotency key. The key is retained in the
@@ -1092,10 +1106,16 @@ export function registerFanOutRpc(
 
     // A bot's caps below count its live workers: read their panes as they are
     // now, not as the previous check saw them (#2255). Here, ahead of the
-    // synchronous stretch from the poll branch to the booking.
-    if (bot) {
+    // synchronous stretch from the poll branch to the booking. A key already
+    // known is answered from bookkeeping and never waits, and a new one waits
+    // at most LIVENESS_WAIT_MS, well inside the caller's own deadline.
+    const keyKnown = params['cancelPending'] === true
+      || service.statusOf(key).state !== 'unknown'
+      || pending.has(key)
+      || terminal.has(key);
+    if (bot && !keyKnown) {
       try {
-        await (deps.bot ?? defaultBotPort)()?.refreshLiveness?.();
+        await withinMs((deps.bot ?? defaultBotPort)()?.refreshLiveness?.(), LIVENESS_WAIT_MS);
       } catch {
         /* the caps count what is known */
       }

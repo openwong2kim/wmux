@@ -439,6 +439,26 @@ describe('task.fanout.start — bot origin', () => {
     expect(r.port.exhausted).toEqual([]);
   });
 
+  it('a poll of a known key answers without waiting on the panes read (#2255)', async () => {
+    const r = rig('verifier');
+    const params = { idempotencyKey: 'wake:w-1:1', titles: ['verify'], preset: 'verify', checkout: { sha: SHA } };
+    expect((await r.call(params, botCtx('verifier'))).status).toBe('accepted');
+    await r.flush();
+    const refresh = vi.fn(() => new Promise<void>(() => undefined));
+    r.port.refreshLiveness = refresh;
+    expect((await r.call(params, botCtx('verifier'))).status).toBe('completed');
+    expect(refresh).not.toHaveBeenCalled();
+  });
+
+  it('a panes read that hangs delays a new fan-out by the bounded wait only (#2255)', async () => {
+    const r = rig('verifier');
+    r.port.refreshLiveness = () => new Promise<void>(() => undefined);
+    const at = Date.now();
+    const res = await r.call({ idempotencyKey: 'wake:w-1:1', titles: ['x'], preset: 'verify', checkout: { sha: SHA } }, botCtx('verifier'));
+    expect(res.status).toBe('accepted');
+    expect(Date.now() - at).toBeLessThan(5_000);
+  });
+
   it('a second concurrent start counts the first one still being started', async () => {
     const r = rig('verifier');
     const first = r.call({ idempotencyKey: 'wake:w-1:1', titles: ['x'], preset: 'verify', checkout: { sha: SHA } }, botCtx('verifier'));
