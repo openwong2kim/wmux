@@ -243,7 +243,7 @@ export function factFromBotHook(ev: BotHookEvent): FactDraft | null {
     return { kind: 'bot.budget_exhausted', ...base, payload: { reason: ev.reason, ...(ev.wakeId ? { wakeId: ev.wakeId } : {}), ...(ev.until !== undefined ? { until: ev.until } : {}), ...(ev.parkedAt !== undefined ? { parkedAt: ev.parkedAt } : {}) } };
   }
   if (ev.type === 'bot.error') {
-    return { kind: 'bot.error', ...base, payload: { message: ev.message.slice(0, 500), ...(ev.wakeId ? { wakeId: ev.wakeId } : {}) } };
+    return { kind: 'bot.error', ...base, payload: { message: ev.message.slice(0, 500), ...(ev.wakeId ? { wakeId: ev.wakeId } : {}), ...(ev.until !== undefined ? { until: ev.until } : {}) } };
   }
   return null;
 }

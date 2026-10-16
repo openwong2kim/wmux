@@ -65,7 +65,7 @@ import { ApprovePendingChip } from '../Room/ApprovalAnswers';
 import { pendingForChip, useApprovals } from '../Room/approvalsStore';
 import { PresenceDot, botActionsFor, botPresence } from '../Room/BotChips';
 import { deliveryLine, deliveryTaken, roomPostParams, sentFrom, useMentionPicks, type SentTo } from '../Room/RoomComposer';
-import { actorLabel, botKindLabel, cardResumeTaskId, cardTone, isRefThread, kindLabel, ownerCardText, planTextWithNames, requestTitles, threadLabel, threadRef, type IdLabels, type RoomActorView } from '../Room/roomFormat';
+import { actorLabel, botKindLabel, cardResumeTaskId, cardTone, formatNoticeTime, isRefThread, kindLabel, ownerCardText, planTextWithNames, requestTitles, threadLabel, threadRef, type IdLabels, type RoomActorView } from '../Room/roomFormat';
 import { BOT_JOB_MAX, botTemplate, normalizeBotJob } from '../../../shared/bot';
 import { DEFAULT_BOT_WORKER_AGENT, botWorkerAgentLabel, type BotWorkerAgentOption } from '../../../shared/botWorkerAgent';
 import { pickFolderDialog, templateJob } from '../Settings/FactoryTab';
@@ -1535,7 +1535,11 @@ function ParkedLine({ row, port, t }: { row: FactoryBotRow; port?: BotAdminPort;
   return (
     <div className="flex items-center gap-3 py-1 text-[12px]" data-bots-profile-parked={reason}>
       <span className="w-[112px] shrink-0" aria-hidden="true" />
-      <span className="min-w-0 flex-1 text-[var(--text-sub)]">{t(`botsPage.profile.parked.${reason}`)}</span>
+      <span className="min-w-0 flex-1 text-[var(--text-sub)]">
+        {reason === 'error' && row.bot.parked?.until !== undefined
+          ? t('botsPage.profile.parked.limit', { time: formatNoticeTime(row.bot.parked.until) })
+          : t(`botsPage.profile.parked.${reason}`)}
+      </span>
       {act && <Button size="sm" variant="secondary" data-testid="bots-resume-bot" disabled={busy} onClick={() => void resume()}>{t('room.bot.resume')}</Button>}
     </div>
   );

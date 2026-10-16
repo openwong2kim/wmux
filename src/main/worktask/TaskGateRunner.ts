@@ -121,6 +121,13 @@ export const GATE_TIMEOUT_MS = 15 * 60 * 1000;
  *  can be megabytes. */
 export const GATE_TAIL_LINES = 40;
 
+/** Gates that run at once across every task. A gate is a lint + typecheck +
+ *  test run, the heaviest thing wmux starts by itself; several at once on one
+ *  machine swap it to a standstill. Later gates (and fan-out setup hooks, see
+ *  withPermit) wait their turn, first come first served; a task's own gate is
+ *  still one at a time (`busy`). */
+export const GATE_MAX_CONCURRENT = 1;
+
 /** The well-known `wmux.json` command id that opts a project into its own gate.
  *  Fixed on purpose: a project declares THAT it has a verify script, it does not
  *  get to say what runs. */
@@ -209,6 +216,8 @@ export interface TaskGateRunnerOptions {
   project?: ProjectGatePort;
   spawn?: GateSpawn;
   timeoutMs?: number;
+  /** Gates that run at once (GATE_MAX_CONCURRENT); clamped to at least 1. */
+  maxConcurrent?: number;
   now?: () => number;
   /** Injected for tests; defaults to reading `<root>/package.json`. `null` means
    *  the file is there and could not be read or parsed — see
@@ -486,6 +495,13 @@ interface ActiveGate {
   cancel: () => void;
 }
 
+/** A place in the line for a gate permit. */
+interface GatePermit {
+  /** Resolves when the permit is granted. */
+  granted: Promise<void>;
+  isGranted: () => boolean;
+}
+
 export class TaskGateRunner {
   private readonly ledger: LedgerPort;
   private readonly project: ProjectGatePort | undefined;
@@ -502,6 +518,9 @@ export class TaskGateRunner {
   /** One gate per task — the second concurrent call is `busy`, not a second
    *  npm install fighting the first over the same node_modules. */
   private readonly active = new Map<string, ActiveGate>();
+  private readonly maxConcurrent: number;
+  private running = 0;
+  private readonly waiting: Array<() => void> = [];
 
   constructor(opts: TaskGateRunnerOptions) {
     this.ledger = opts.ledger;
@@ -515,6 +534,7 @@ export class TaskGateRunner {
     this.timeoutMs =
       typeof opts.timeoutMs === 'number' && opts.timeoutMs > 0 ? opts.timeoutMs : GATE_TIMEOUT_MS;
     this.now = opts.now ?? Date.now;
+    this.maxConcurrent = typeof opts.maxConcurrent === 'number' && opts.maxConcurrent >= 1 ? Math.floor(opts.maxConcurrent) : GATE_MAX_CONCURRENT;
     this.readPackageScripts = opts.readPackageScripts ?? defaultReadPackageScripts;
     this.depsState = opts.depsState ?? defaultDepsState;
     this.readPackageJson = opts.readPackageJson ?? defaultReadPackageJson;
@@ -646,6 +666,56 @@ export class TaskGateRunner {
     return cmd ? cmd.command.trim() : null;
   }
 
+  /** Join the line for a permit (granted at once when one is free). */
+  private takePermit(): GatePermit & { leave: () => void } {
+    let granted = false;
+    let left = false;
+    let grant: () => void = () => undefined;
+    const promise = new Promise<void>((resolve) => {
+      grant = () => {
+        granted = true;
+        this.running++;
+        resolve();
+      };
+    });
+    if (this.running < this.maxConcurrent) grant();
+    else this.waiting.push(grant);
+    return {
+      granted: promise,
+      isGranted: () => granted && !left,
+      // Leaving the line: a granted permit is handed on, a waiting one is
+      // dropped. Once only: a second call does nothing.
+      leave: () => {
+        if (left) return;
+        left = true;
+        if (granted) {
+          this.running--;
+          this.waiting.shift()?.();
+          return;
+        }
+        const i = this.waiting.indexOf(grant);
+        if (i >= 0) this.waiting.splice(i, 1);
+      },
+    };
+  }
+
+  /** Run other heavy work (a fan-out worktree's setup hook: `npm ci`) under
+   *  the same permit, so it never overlaps a gate. Waits its turn first. */
+  async withPermit<T>(fn: () => Promise<T>): Promise<T> {
+    const permit = this.takePermit();
+    await permit.granted;
+    try {
+      return await fn();
+    } finally {
+      permit.leave();
+    }
+  }
+
+  /** Gates running and waiting for a permit now. */
+  load(): { running: number; waiting: number } {
+    return { running: this.running, waiting: this.waiting.length };
+  }
+
   async run(input: GateRunInput): Promise<GateRunResult> {
     const { taskId, worktreePath } = input;
 
@@ -661,14 +731,20 @@ export class TaskGateRunner {
     if (this.active.has(taskId)) return { ok: false, status: 'busy', taskId };
     let cancelled = false;
     let current: GateProcess | null = null;
+    let stopWaiting: () => void = () => undefined;
+    const cancelSignal = new Promise<void>((resolve) => { stopWaiting = resolve; });
     const token: ActiveGate = {
       cancel: (): void => {
         cancelled = true;
         current?.kill();
+        stopWaiting();
       },
     };
     this.active.set(taskId, token);
+    const permit = this.takePermit();
+    let waitedMs: number | null = null;
     const release = (): void => {
+      if (permit.isGranted()) permit.leave();
       if (this.active.get(taskId) === token) this.active.delete(taskId);
     };
 
@@ -679,6 +755,17 @@ export class TaskGateRunner {
       // every gate answered `deps_missing` — unrecorded — and the task could
       // never reach `completed`. That is the exact blockage the no-gate record
       // exists to remove, reintroduced one step earlier.
+      //
+      // The machine-wide permit comes before all of it: what is checked (the
+      // steps, the base's scripts, the HEAD a verdict pins) and what runs are
+      // the same tree, never one read before a wait and run after it. The
+      // step timeout starts after the wait.
+      const waitedFrom = this.now();
+      if (!permit.isGranted()) {
+        await Promise.race([permit.granted, cancelSignal]);
+        waitedMs = this.now() - waitedFrom;
+      }
+      if (!permit.isGranted()) permit.leave();
       const before = await this.readHead(worktreePath).catch(() => null);
       const resolved = await this.resolveSteps(worktreePath, input.projectRoot ?? worktreePath, input.gateBaseRef);
       if ('refused' in resolved) return { ok: false, status: 'refused', taskId, error: resolved.refused, ...(resolved.code ? { code: resolved.code } : {}) };
@@ -712,6 +799,8 @@ export class TaskGateRunner {
 
       let exitCode: number | null = 0;
       let label = resolved.steps[resolved.steps.length - 1]?.label ?? '';
+
+      if (waitedMs !== null) append(`[gate] waited ${Math.round(waitedMs / 1000)}s for another gate to finish\n`);
 
       for (const step of resolved.steps) {
         if (cancelled) {

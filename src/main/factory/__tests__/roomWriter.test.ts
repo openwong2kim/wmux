@@ -407,6 +407,19 @@ describe('facts → system cards', () => {
     expect(odd).not.toHaveProperty('notice');
   });
 
+  it('a bot.error at the usage limit says when the bot picks up, with a notice code; a plain error does not', () => {
+    const w = writer();
+    const until = now + 3 * 3_600_000;
+    const msg = "You've hit your session limit · resets 1pm (Asia/Seoul)";
+    const [limit] = writeFactCards(w, fact('bot.error', { workspaceId: 'ws1', ref: { botId: 'bot-00000001' }, payload: { message: msg, until } }), bots);
+    expect(limit.title).toMatch(/ hit its usage limit; it picks up again at /);
+    expect(limit.body).toBe(msg);
+    expect(limit.notice).toEqual({ code: 'bot.usageLimit', args: { bot: expect.any(String), until } });
+    const [plain] = writeFactCards(w, fact('bot.error', { id: 'f-e', workspaceId: 'ws1', ref: { botId: 'bot-00000001' }, payload: { message: 'boom' } }), bots);
+    expect(plain.title).toMatch(/ hit an error$/);
+    expect(plain).not.toHaveProperty('notice');
+  });
+
   it('a held owner message gets one status card in its thread, across repeats and a restart', () => {
     const w = writer();
     const until = now + 30 * 60_000;
