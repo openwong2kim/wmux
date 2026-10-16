@@ -736,6 +736,12 @@ describe('stopTaskWorker (a stop of a bot task\'s worker)', () => {
       expect(d.calls).toEqual(['stopAgent:wsl', 'destroy:wsl']);
     });
 
+    it('a workspace tree that is not known: no WSL pane is stopped, closed or counted (it may be the owner\'s)', async () => {
+      const d = wslDaemon([worker, { ...worker, id: 'owner-wsl' }]);
+      expect(await stopTaskWorker(entry, d.client, () => null, { platform: 'win32' })).toBe(0);
+      expect(d.calls).toEqual([]);
+    });
+
     it('agentsOnly: a leftover WSL worker is closed; a plain WSL shell and an exec unit with no agent left stay', async () => {
       const left = wslDaemon([worker]);
       expect(await stopTaskWorker(entry, left.client, () => ['wsl'], { agentsOnly: true, platform: 'win32' })).toBe(1);

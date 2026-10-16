@@ -401,15 +401,26 @@ export async function reclaimWorker(ports: WorkerReclaimPorts, entry: LedgerEntr
     }
     const sessions = await ports.listSessions();
     const ids = new Set(await sessionsStartedIn([worktree], { listSessions: async () => sessions }));
-    if (ended === 'reported' && ports.workspacePanes) {
-      let own: readonly string[] | null = null;
+    const panesOf = (workspaceId: string): readonly string[] | null => {
       try {
-        own = ports.workspacePanes(entry.taskWorkspaceId);
+        return ports.workspacePanes?.(workspaceId) ?? null;
       } catch {
-        own = null;
+        return null;
       }
+    };
+    if (ended === 'reported' && ports.workspacePanes) {
+      const own = panesOf(entry.taskWorkspaceId);
       if (!own) return null;
       for (const id of [...ids]) if (!own.includes(id)) ids.delete(id);
+    }
+    // A WSL pane counts only in the worker's own workspace: its folder match
+    // alone cannot tell the worker from a pane the owner opened there (a
+    // stop of it closes the pane). An unknown tree: tried again later.
+    const wsl = [...ids].filter((id) => sessions.some((x) => x.id === id && !!x.wslTarget));
+    if (wsl.length > 0) {
+      const own = panesOf(workerWorkspaceOf({ taskWorkspaceId: entry.taskWorkspaceId, paneWorkspaceId: ports.store.get(entry.id)?.paneWorkspaceId }));
+      if (!own) return null;
+      for (const id of wsl) if (!own.includes(id)) ids.delete(id);
     }
     const panes = sessions.filter((s) => ids.has(s.id)).map(reclaimedSessionOf).filter((s): s is ReclaimedSession => !!s);
     if (movedOn(ports, entry, ended)) return null;
@@ -549,6 +560,16 @@ export async function reclaimWorker(ports: WorkerReclaimPorts, entry: LedgerEntr
   }
 }
 
+/** Whether `sessionId` is a pane of `workspaceId` by main's workspace tree;
+ *  false when the tree is not known. */
+function ownPane(workspacePanes: ((workspaceId: string) => readonly string[] | null) | undefined, workspaceId: string, sessionId: string): boolean {
+  try {
+    return workspacePanes?.(workspaceId)?.includes(sessionId) === true;
+  } catch {
+    return false;
+  }
+}
+
 /** Stop a pane's agent; one the daemon cannot stop by itself (a WSL pane's
  *  Linux agent, #2254) goes with its pane, closed here when `closePane` is
  *  given (the caller checked isWslWorkerPane). */
@@ -682,6 +703,9 @@ export interface WorkerResumePorts {
   stopAgent?: (sessionId: string) => Promise<{ ok?: boolean; stopped?: boolean; code?: string }>;
   /** Close a pane whose agent the daemon cannot stop (WorkerReclaimPorts.closePane). */
   closePane?: (sessionId: string) => Promise<void>;
+  /** The panes a workspace owns, null when not known: only a pane of the
+   *  worker's own workspace is closed. Absent: none is. */
+  workspacePanes?: (workspaceId: string) => readonly string[] | null;
   /** Default: process.platform (a WSL pane's recorded Linux folder is read
    *  as its Windows folder on win32). */
   platform?: NodeJS.Platform;
@@ -1051,7 +1075,8 @@ export async function stopResumedWorkers(ports: WorkerResumePorts, botId?: strin
     let stoppedHere = false;
     if (ports.closePane && !live) live = await ports.listSessions().catch(() => []);
     for (const s of rec.sessions) {
-      const closable = isWslWorkerPane(live?.find((x) => x.id === s.sessionId));
+      const closable = isWslWorkerPane(live?.find((x) => x.id === s.sessionId))
+        && ownPane(ports.workspacePanes, workerWorkspaceOf(rec), s.sessionId);
       const r: { ok?: boolean; stopped?: boolean; code?: string } = await stopOrClose(ports.stopAgent, closable ? ports.closePane : undefined, s.sessionId).catch(() => ({ ok: false }));
       // A pane that is gone took its agent with it (a stop of its open task
       // may have closed it first).

@@ -439,7 +439,7 @@ export function daemonRpc(client: () => Daemon | null): ((method: string, params
  *  session.stopAgent: asked to exit, killed after a grace, checked gone),
  *  then the pane itself, checked gone (stopSessionsInDir). `workspacePtys`:
  *  the panes a workspace owns, null when the workspace tree is not known (a
- *  session started in the folder then counts). A pane in another workspace,
+ *  session started in the folder then counts, a WSL pane excepted). A pane in another workspace,
  *  such as a terminal the owner opened in the folder, is never touched.
  *  `agentsOnly` (the re-stop of a task stopped before): only a leftover
  *  agent is stopped; a pane is closed only when it still runs an agent the
@@ -467,7 +467,9 @@ export async function stopTaskWorker(
   const listSessions = async (): Promise<Session[]> => {
     const sessions = await rpc('daemon.listSessions', {});
     const all = Array.isArray(sessions) ? (sessions as Session[]) : [];
-    return own ? all.filter((x) => own.includes(x.id)) : all;
+    // An unknown tree: a WSL pane is never taken for the task's (its folder
+    // match alone cannot tell the worker from a pane the owner opened there).
+    return own ? all.filter((x) => own.includes(x.id)) : all.filter((x) => !x.wslTarget);
   };
   const before = await listSessions();
   const agentLive = new Set(before.filter((x) => x.agentProcessAlive === true || isWslWorkerPane(x)).map((x) => x.id));

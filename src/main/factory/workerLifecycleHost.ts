@@ -293,6 +293,12 @@ export function startWorkerLifecycle(deps: WorkerLifecycleDeps): () => void {
     setWorkerResumePorts({
       store: reclaimed,
       listSessions,
+      workspacePanes: (workspaceId) => {
+        const entries = mirror.getEntries();
+        if (!entries) return null;
+        const ws = entries.find((e) => e.id === workspaceId);
+        return ws && Array.isArray(ws.ptyIds) ? ws.ptyIds : [];
+      },
       ...(folderPorts ? { restoreFolder: (taskId: string, folder: string) => restoreTaskFolder(folderPorts, taskId, folder), holdFolder: holdTaskFolder } : {}),
       // The same stage a resume typed from the pane takes (pty:write-launch):
       // a bot worker's line carries its settings file, or this throws.
