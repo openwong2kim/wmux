@@ -162,7 +162,11 @@ export function createDefaultBotEngineFactory(deps: DefaultBotEngineDeps = {}): 
             // A bot with a repository reads it (Read / Grep / Glob, decided by main).
             bot: { ...bot, repoRoot: botRepoReadRoot(input.profile) },
             mcpBundlePath: bundle,
-            ...(engine.model ? { model: engine.model } : {}),
+            // No model set: say 'default' rather than nothing. A resumed
+            // conversation otherwise keeps the model it last ran on, so
+            // clearing the bot's model would not take effect. Bots load no
+            // settings files (settingSources: []), so nothing else is overridden.
+            model: engine.model ?? 'default',
             ...(narrowEffort(engine.effort) ? { effort: narrowEffort(engine.effort) } : {}),
           }),
         };

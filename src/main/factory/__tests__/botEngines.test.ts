@@ -38,6 +38,17 @@ describe('bot engines', () => {
     if (r.ok) r.adapter.dispose();
   });
 
+  it('a claude-sdk bot with no model asks for the default one, so a resumed conversation does not keep a cleared model', () => {
+    const modelOf = (engine: BotEngine) => {
+      const r = factory()(input(engine));
+      const model = r.ok ? (r.adapter as unknown as { model?: string }).model : null;
+      if (r.ok) r.adapter.dispose();
+      return model;
+    };
+    expect(modelOf({ kind: 'claude-sdk' })).toBe('default');
+    expect(modelOf({ kind: 'claude-sdk', model: 'sonnet[1m]' })).toBe('sonnet[1m]');
+  });
+
   it('a claude-sdk bot with a repository reads it, a coordinator (Moa) included; a bot without one and ACP bots do not', () => {
     const repoRootOf = (role: BotProfile['role'], engine: BotEngine, repo?: BotProfile['repo']) => {
       const base = input(engine);

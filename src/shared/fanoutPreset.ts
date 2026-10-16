@@ -168,6 +168,21 @@ export function validateFanoutModel(raw: unknown): { ok: true; model: string } |
   return { ok: true, model };
 }
 
+/**
+ * A bot's OWN model (its claude-sdk brain). That id is an SDK option, never a
+ * shell word, so it may also carry Claude Code's bracketed variant suffix
+ * (`sonnet[1m]`). Workers keep validateFanoutModel: their model lands on a
+ * shell line, where brackets glob.
+ */
+export const BOT_BRAIN_MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]*(?:\[[A-Za-z0-9._-]+\])?$/;
+
+/** One bot brain model id (trimmed), or the reason it is refused. */
+export function validateBotBrainModel(raw: unknown): { ok: true; model: string } | { ok: false } {
+  if (typeof raw !== 'string') return { ok: false };
+  const model = raw.trim();
+  return model.length <= ROLE_BINDING_MODEL_MAX && BOT_BRAIN_MODEL_RE.test(model) ? { ok: true, model } : { ok: false };
+}
+
 /** One task's agent choice (a preset row, or a caller's `agents[k]`). */
 export interface FanoutAgentChoice {
   agent: string;

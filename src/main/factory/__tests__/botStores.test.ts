@@ -89,7 +89,8 @@ describe('BotStore', () => {
     };
     const pinned = { ...old, id: 'bot-0a0a0a22', role: 'lead', template: 'developer', name: 'Dev', hue: 2, engine: { kind: 'claude-sdk', model: 'claude-opus-5-5', effort: 'high' } };
     const bad = { ...old, id: 'bot-0a0a0a23', role: 'lead', template: 'developer', name: 'Bad', hue: 4, engine: { kind: 'claude-sdk', model: 'claude opus', effort: 'low' } };
-    fs.writeFileSync(botsFilePath(dir), JSON.stringify({ version: 1, bots: [old, pinned, bad] }));
+    const variant = { ...old, id: 'bot-0a0a0a24', role: 'lead', template: 'developer', name: 'Long', hue: 3, engine: { kind: 'claude-sdk', model: 'sonnet[1m]' } };
+    fs.writeFileSync(botsFilePath(dir), JSON.stringify({ version: 1, bots: [old, pinned, bad, variant] }));
     const s = newStore();
     s.load();
     // No template model is put on a stored coordinator: it stays on the default.
@@ -97,6 +98,8 @@ describe('BotStore', () => {
     expect(s.get(old.id)?.workerAgent).toBeUndefined();
     expect(s.get(pinned.id)?.engine).toEqual({ kind: 'claude-sdk', model: 'claude-opus-5-5', effort: 'high' });
     expect(s.get(bad.id)?.engine).toEqual({ kind: 'claude-sdk', effort: 'low' });
+    // A bot's own model may carry a variant suffix (an SDK option, not a shell word).
+    expect(s.get(variant.id)?.engine).toEqual({ kind: 'claude-sdk', model: 'sonnet[1m]' });
     // Written back as it was read: version 1, the untouched profiles equal.
     await s.flush();
     const disk = JSON.parse(fs.readFileSync(botsFilePath(dir), 'utf8'));
@@ -147,6 +150,9 @@ describe('BotStore', () => {
     expect(s.update(r.bot.id, { engine: { kind: 'claude-sdk', effort: 'turbo' } })).toMatchObject({ ok: false, code: 'invalid_argument' });
     expect(s.update(r.bot.id, { engine: { kind: 'claude-sdk', model: 'claude-haiku-4-5-20251001', effort: 'low' } })).toMatchObject({ ok: true, bot: { engine: { kind: 'claude-sdk', model: 'claude-haiku-4-5-20251001', effort: 'low' } } });
     expect(s.update(r.bot.id, { workerAgent: { agent: 'claude', model: 'opus', effort: 'max' } })).toMatchObject({ ok: true, bot: { workerAgent: { agent: 'claude', model: 'opus', effort: 'max' } } });
+    // The brain keeps a variant suffix; a worker's model lands on a shell line, so it does not.
+    expect(s.update(r.bot.id, { engine: { kind: 'claude-sdk', model: 'sonnet[1m]' } })).toMatchObject({ ok: true, bot: { engine: { kind: 'claude-sdk', model: 'sonnet[1m]' } } });
+    expect(s.update(r.bot.id, { workerAgent: { agent: 'claude', model: 'sonnet[1m]' } })).toMatchObject({ ok: false, code: 'invalid_argument' });
   });
 
   it('creates with role defaults; any number of bots of one role share a workspace', () => {

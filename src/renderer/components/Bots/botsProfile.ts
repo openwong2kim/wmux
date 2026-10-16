@@ -11,7 +11,7 @@
 import { isCoordinatorBot, type BotEngine, type BotProfile, type BotRole, type BotTemplate, type BotWorkerAgent } from '../../../shared/bot';
 import { SHARED_SURFACE, type BotToolName } from '../../../shared/botSurface';
 import { CLAUDE_EFFORT_LEVELS, claudeModelLabel } from '../../../shared/claudeModels';
-import { validateFanoutModel } from '../../../shared/fanoutPreset';
+import { validateBotBrainModel, validateFanoutModel } from '../../../shared/fanoutPreset';
 import { DEFAULT_BOT_WORKER_AGENT, botWorkerAgentLabel, validateBotWorkerAgent } from '../../../shared/botWorkerAgent';
 
 /** Owner phrases in display order: the i18n key and the tools it stands for. */
@@ -76,7 +76,7 @@ export function botModelSummary(bot: Pick<BotProfile, 'engine' | 'workerAgent'>,
  *  ('' = the default), or the reason the model is refused. Pure. */
 export function brainEngine(model: string, effort: string): { ok: true; engine: BotEngine } | { ok: false; model: string } {
   const typed = model.trim();
-  const checked = typed ? validateFanoutModel(typed) : null;
+  const checked = typed ? validateBotBrainModel(typed) : null;
   if (checked && !checked.ok) return { ok: false, model: typed };
   const level = (CLAUDE_EFFORT_LEVELS as readonly string[]).includes(effort) ? effort : '';
   return { ok: true, engine: { kind: 'claude-sdk', ...(checked?.ok ? { model: checked.model } : {}), ...(level ? { effort: level } : {}) } };

@@ -68,7 +68,7 @@ import { createFilePersister, readVersionedFile, type FilePersister } from './ve
 import { LEGACY_TRIAGE_TRIGGERS, defaultTriggers } from './roleDefaults';
 import { parseBotAvatar } from './botAvatar';
 import { validateBotWorkerAgent } from '../../shared/botWorkerAgent';
-import { validateFanoutModel } from '../../shared/fanoutPreset';
+import { validateBotBrainModel, validateFanoutModel } from '../../shared/fanoutPreset';
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return !!v && typeof v === 'object' && !Array.isArray(v);
@@ -109,7 +109,7 @@ function boundedString(v: unknown, max: number): string | undefined {
 export function sanitizeBotEngine(raw: unknown, opts: { read?: boolean } = {}): BotEngine | null {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
   const r = raw as Record<string, unknown>;
-  const checked = r.model === undefined ? undefined : validateFanoutModel(r.model);
+  const checked = r.model === undefined ? undefined : r.kind === 'claude-sdk' ? validateBotBrainModel(r.model) : validateFanoutModel(r.model);
   if (checked && !checked.ok && opts.read !== true) return null;
   const model = checked?.ok ? checked.model : undefined;
   switch (r.kind) {
@@ -547,7 +547,7 @@ export class BotStore implements BotDirectoryApi {
     const name = input.name === undefined ? fallbackName : normalizeBotName(input.name);
     if (!name) return refuse('invalid_argument', `name must be 1-${NAME_MAX} characters, no control characters`);
     const engine = input.engine === undefined ? withTemplateBrain(sanitizeBotEngine(this.defaultEngine()), template) : sanitizeBotEngine(input.engine);
-    if (!engine) return refuse('invalid_argument', 'engine is malformed (a model must be one model id: letters/digits first, then . _ : -)');
+    if (!engine) return refuse('invalid_argument', 'engine is malformed (a model must be one model id: letters/digits first, then . _ : -, optionally ending in a [variant])');
     let workerAgent = TEMPLATE_MODEL_DEFAULTS[template]?.worker;
     if (input.workerAgent !== undefined) {
       const v = validateBotWorkerAgent(input.workerAgent, this.platform);
@@ -628,7 +628,7 @@ export class BotStore implements BotDirectoryApi {
     }
     if (patch.engine !== undefined) {
       const engine = sanitizeBotEngine(patch.engine);
-      if (!engine) return refuse('invalid_argument', 'engine is malformed (a model must be one model id: letters/digits first, then . _ : -)');
+      if (!engine) return refuse('invalid_argument', 'engine is malformed (a model must be one model id: letters/digits first, then . _ : -, optionally ending in a [variant])');
       next.engine = engine;
     }
     if (patch.workerAgent !== undefined) {

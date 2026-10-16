@@ -59,6 +59,10 @@ describe('bot profile: models', () => {
     expect(brainEngine('opus', 'turbo')).toEqual({ ok: true, engine: { kind: 'claude-sdk', model: 'opus' } });
     expect(brainEngine('--dangerously-skip-permissions', '')).toEqual({ ok: false, model: '--dangerously-skip-permissions' });
     expect(brainEngine('claude opus', 'high')).toEqual({ ok: false, model: 'claude opus' });
+    // The bot's own model is an SDK option, so a variant suffix is kept; workers' stays strict.
+    expect(brainEngine('sonnet[1m]', '')).toEqual({ ok: true, engine: { kind: 'claude-sdk', model: 'sonnet[1m]' } });
+    expect(brainEngine('sonnet[1m', '')).toEqual({ ok: false, model: 'sonnet[1m' });
+    expect(workerAgentPick('', 'sonnet[1m]', '')).toMatchObject({ ok: false, model: 'sonnet[1m]' });
   });
 
   it('the workers picker: the default agent with nothing pinned is null, a model alone pins Claude, a bad id is refused', () => {
