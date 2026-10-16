@@ -406,6 +406,36 @@ describe('task.push RPC', () => {
     }
   });
 
+  it('a resumed worker of a task completed as making no changes cannot push; one of a task completed on a passing gate still can', async () => {
+    const ended = (gate: Record<string, unknown>) => ({
+      id: 'wtask-1', ownerWorkspaceId: 'ws-owner', taskWorkspaceId: 'ws-task', status: 'completed',
+      dispatch: { origin: { kind: 'bot', botId: 'bot-1' }, repoKey: 'github.com/acme/app' },
+      reportedAtRev: 2, gate,
+    });
+    const resumedPush = async (row: Record<string, unknown>) => {
+      const handlers = new Map<string, Handler>();
+      const push = vi.fn(async (i: { branch: string }) => ({ ok: true as const, branch: i.branch, remote: 'origin' as const, head: 'f'.repeat(40), output: '' }));
+      registerTaskPushRpc({ register: (m: string, h: Handler) => handlers.set(m, h) } as never, {
+        getWindow: () => null,
+        daemon: { rpc: vi.fn(async () => ({ ok: true, tasks: [{ id: 'wtask-1', status: 'closed', branch: 'wtask/one', worktreePath: '/w/one' }] })) },
+        // No open task in the pane's workspace: the resumed worker's record stands for it.
+        getLedger: () => ({ findOpenByTaskWorkspace: () => null, get: (id: string) => (id === 'wtask-1' ? row : null) }) as never,
+        resolveCallerWorkspace: async () => 'ws-resumed',
+        reclaimedWorkerOfPane: () => ({ taskId: 'wtask-1', botId: 'bot-1', ownerWorkspaceId: 'ws-owner' }),
+        exists: () => true,
+        wmuxDir: () => fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-task-push-rpc-')),
+        push: push as never,
+        repoDefaultBranch: async () => 'main',
+      });
+      return { result: await (handlers.get('task.push') as Handler)({ senderPtyId: 'pty-9' }, local), push };
+    };
+    const skipped = await resumedPush(ended({ exitCode: 0, tail: '', at: 1, command: 'none', skipped: 'no_changes', recordedBy: 'system', reportRev: 2 }));
+    expect(skipped.result).toMatchObject({ ok: false, error: { code: 'FAILED_PRECONDITION', message: expect.stringContaining('completed as making no changes') } });
+    expect(skipped.push).not.toHaveBeenCalled();
+    const gated = await resumedPush(ended({ exitCode: 0, tail: 'ok', at: 1, command: 'npm test', recordedBy: 'system' }));
+    expect(gated.result).toMatchObject({ ok: true });
+  });
+
   it('a push under way reads as unknown in main\'s record until it ends', async () => {
     const sha = 'f'.repeat(40);
     const r = setup({ head: sha });

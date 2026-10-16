@@ -8,7 +8,9 @@
 //
 //   - the base: the commit main recorded in the ledger at dispatch
 //     (LedgerDispatch.baseOid), not the worktree's task.json;
-//   - the worktree's HEAD: the work the report is about;
+//   - the worktree's HEAD and the task branch's local ref (a worker that
+//     committed on the branch and detached HEAD at the base still holds
+//     that commit), read again as the last step, after origin answered;
 //   - what was published: main's own record of the commit task.push last
 //     sent (taskPushRecord.ts; `unknown` while a push is under way), and the
 //     task branch on origin itself (`ls-remote`, in the git task.push
@@ -23,6 +25,13 @@
 // worker that reset behind the base is gated, as any changed task is.
 // Anything that cannot be read is `unknown`: the gate then runs, and a
 // completion on the skip is refused.
+//
+// Other local refs are not read: a shared repository holds other tasks'
+// and the owner's branches, and nothing main does publishes a task's local
+// refs. The one way a bot task's commits leave the machine is task.push
+// (the worktree's HEAD, to the task branch), and it refuses a task whose
+// report stands checked as unchanged, or that was completed on that check
+// (taskPush.rpc.ts), so a commit made after the last read here stays local.
 
 import path from 'node:path';
 import type { LedgerEntry } from '../../shared/ledger';
@@ -50,13 +59,23 @@ export interface NoChangesPorts {
   mission: (entry: LedgerEntry) => Promise<{ worktreePath: string; branch: string } | null>;
   /** The worktree's HEAD commit; null when it cannot be read. */
   headOf: (worktreePath: string) => Promise<string | null>;
+  /** The task branch's local ref (`refs/heads/<branch>` in the task's
+   *  repository): its commit, null when there is no such ref, `unknown`
+   *  when it cannot be read. */
+  branchRef: (worktreePath: string, branch: string) => Promise<string | null | 'unknown'>;
   /** Main's record of the commit task.push last published for the task. */
   pushed: (taskId: string) => TaskPushLookup;
   /** The task branch on origin (readTaskRemoteHead). */
   remoteHead: (entry: LedgerEntry, mission: { worktreePath: string; branch: string }) => Promise<TaskRemoteHeadResult>;
 }
 
-/** Whether the task holds no work past its recorded base. Never throws. */
+/** Whether the task holds no work past its recorded base. Never throws.
+ *
+ *  The local reads (HEAD, the task branch's ref, main's push record) are
+ *  taken before origin is read and again after it, as the last step: a
+ *  commit or a push made while origin answered is a change. The task
+ *  branch's ref counts as much as HEAD: a worker that committed on the
+ *  branch and then detached HEAD at the base still holds that commit. */
 export async function checkNoChanges(ports: NoChangesPorts, entry: LedgerEntry): Promise<NoChangesVerdict> {
   const unknown = (why: string): NoChangesVerdict => ({ kind: 'unknown', why });
   const base = entry.dispatch?.checkout ? undefined : entry.dispatch?.baseOid;
@@ -64,36 +83,64 @@ export async function checkNoChanges(ports: NoChangesPorts, entry: LedgerEntry):
   try {
     const mission = await ports.mission(entry);
     if (!mission) return unknown('the task\'s worktree and branch could not be read');
-    const head = await ports.headOf(mission.worktreePath);
-    if (!head || !SHA_RE.test(head)) return unknown('the worktree\'s HEAD could not be read');
-    if (!same(head, base)) return { kind: 'changed', why: `the worktree's HEAD is ${head}, not ${base}` };
-    const pushed = ports.pushed(entry.id);
-    if (pushed === 'unknown') return unknown('main\'s record of the task\'s pushes could not be read, or a push is under way');
-    if (pushed && !same(pushed, base)) return { kind: 'changed', why: `task_push published ${pushed}, not ${base}` };
+    /** HEAD, the branch ref and the push record: each the base (or none). */
+    const local = async (when: string): Promise<NoChangesVerdict | null> => {
+      const head = await ports.headOf(mission.worktreePath);
+      if (!head || !SHA_RE.test(head)) return unknown(`the worktree's HEAD could not be read${when}`);
+      if (!same(head, base)) return { kind: 'changed', why: `the worktree's HEAD is ${head}, not ${base}${when}` };
+      const ref = await ports.branchRef(mission.worktreePath, mission.branch);
+      if (ref === 'unknown' || (ref !== null && !SHA_RE.test(ref))) return unknown(`the task branch ${mission.branch} could not be read${when}`);
+      if (ref !== null && !same(ref, base)) return { kind: 'changed', why: `the task branch ${mission.branch} is at ${ref}, not ${base}${when}` };
+      const pushed = ports.pushed(entry.id);
+      if (pushed === 'unknown') return unknown(`main's record of the task's pushes could not be read, or a push is under way${when}`);
+      if (pushed && !same(pushed, base)) return { kind: 'changed', why: `task_push published ${pushed}, not ${base}${when}` };
+      return null;
+    };
+    const before = await local('');
+    if (before) return before;
     const remote = await ports.remoteHead(entry, mission);
     if (!remote.ok) return unknown(`origin's ${mission.branch} could not be read (${remote.error})`);
     if (remote.sha && !same(remote.sha, base)) return { kind: 'changed', why: `origin's ${mission.branch} is at ${remote.sha}, not ${base}` };
-    return { kind: 'unchanged', base, head };
+    // Last: nothing moved while origin answered.
+    const after = await local(' (after origin was read)');
+    if (after) return after;
+    return { kind: 'unchanged', base, head: base };
   } catch (err) {
     return unknown(String(err));
   }
 }
 
-/** The check over main's own records, git and origin. `botRepoKey`: a bot's
- *  repository (its profile), for a task whose dispatch names none. */
-export function liveNoChangesCheck(deps: {
+export interface LiveNoChangesDeps {
   rpc: () => Rpc | null;
   git: Git;
   wmuxDir: () => string;
+  /** A bot's repository (its profile), for a task whose dispatch names none. */
   botRepoKey: (botId: string) => string | undefined;
-}): (entry: LedgerEntry) => Promise<NoChangesVerdict> {
-  const ports: NoChangesPorts = {
+}
+
+/** The check over main's own records, git and origin. */
+export function liveNoChangesCheck(deps: LiveNoChangesDeps): (entry: LedgerEntry) => Promise<NoChangesVerdict> {
+  const ports = liveNoChangesPorts(deps);
+  return (entry) => checkNoChanges(ports, entry);
+}
+
+/** The ports liveNoChangesCheck reads through. */
+export function liveNoChangesPorts(deps: LiveNoChangesDeps): NoChangesPorts {
+  return {
     mission: (entry) => taskMissionFromMissions(deps.rpc(), entry),
     headOf: async (wt) => {
       // The ref's own commit id: no replace ref stands in for it.
       const r = await deps.git(['--no-replace-objects', 'rev-parse', '--verify', '--quiet', 'HEAD^{commit}'], wt);
       const sha = r.stdout.trim();
       return r.code === 0 && SHA_RE.test(sha) ? sha : null;
+    },
+    branchRef: async (wt, branch) => {
+      // The ref's value as stored, in the repository the worktree shares.
+      const r = await deps.git(['--no-replace-objects', 'rev-parse', '--verify', '--quiet', `refs/heads/${branch}`], wt);
+      const sha = r.stdout.trim();
+      if (r.code === 0 && SHA_RE.test(sha)) return sha;
+      // `--verify --quiet` exits 1, printing nothing, for a ref that is not there.
+      return r.code === 1 && !sha ? null : 'unknown';
     },
     pushed: (taskId) => taskPushRecordOf(deps.wmuxDir()).get(taskId),
     remoteHead: async (entry, mission) => {
@@ -109,5 +156,4 @@ export function liveNoChangesCheck(deps: {
       });
     },
   };
-  return (entry) => checkNoChanges(ports, entry);
 }

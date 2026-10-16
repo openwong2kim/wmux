@@ -12,7 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { TaskLedger } from '../../../daemon/ledger/TaskLedger';
 import type { LedgerEntry } from '../../../shared/ledger';
 import type { RpcContext } from '../../../shared/rpc';
-import { checkNoChanges, liveNoChangesCheck, type NoChangesPorts } from '../noChangesCheck';
+import { checkNoChanges, liveNoChangesCheck, liveNoChangesPorts, type NoChangesPorts } from '../noChangesCheck';
 import { recordNoChangesGate } from '../taskGate';
 import { pushTaskBranch } from '../../worktask/taskPush';
 import { readTaskRemoteHead } from '../../worktask/taskFetch';
@@ -35,6 +35,7 @@ describe('checkNoChanges', () => {
   const ports = (over: Partial<NoChangesPorts> = {}): NoChangesPorts => ({
     mission: async () => ({ worktreePath: '/wt', branch: 'wtask/one' }),
     headOf: async () => B,
+    branchRef: async () => null,
     pushed: () => null,
     remoteHead: async () => ({ ok: true, sha: null }),
     ...over,
@@ -51,6 +52,23 @@ describe('checkNoChanges', () => {
       expect((await checkNoChanges(ports({ pushed: () => other }), entry())).kind).toBe('changed');
       expect(await checkNoChanges(ports({ remoteHead: async () => ({ ok: true, sha: other }) }), entry())).toMatchObject({ kind: 'changed', why: expect.stringContaining(other) });
     }
+  });
+
+  it('the task branch\'s local ref counts as much as HEAD: past the base is a change, unreadable is unknown', async () => {
+    expect(await checkNoChanges(ports({ branchRef: async () => B }), entry())).toMatchObject({ kind: 'unchanged' });
+    expect(await checkNoChanges(ports({ branchRef: async () => C }), entry())).toMatchObject({ kind: 'changed', why: expect.stringContaining(`wtask/one is at ${C}`) });
+    expect((await checkNoChanges(ports({ branchRef: async () => 'unknown' }), entry())).kind).toBe('unknown');
+  });
+
+  it('HEAD, the branch ref and the push record are read again after origin: anything that moved meanwhile is a change', async () => {
+    const moving = <T>(first: T, then: T) => { let n = 0; return () => (n++ === 0 ? first : then); };
+    const head = moving<string>(B, C);
+    expect(await checkNoChanges(ports({ headOf: async () => head() }), entry())).toMatchObject({ kind: 'changed', why: expect.stringContaining('after origin was read') });
+    const ref = moving<string | null>(null, C);
+    expect(await checkNoChanges(ports({ branchRef: async () => ref() }), entry())).toMatchObject({ kind: 'changed', why: expect.stringContaining('after origin was read') });
+    // A push that began while origin answered.
+    const pushed = moving<'unknown' | null>(null, 'unknown');
+    expect(await checkNoChanges(ports({ pushed: () => pushed() }), entry())).toMatchObject({ kind: 'unknown', why: expect.stringContaining('after origin was read') });
   });
 
   it('unknown: no recorded base (or a detached checkout), no mission, no HEAD, unreadable push history, origin unreachable, a throw', async () => {
@@ -204,6 +222,52 @@ describe('the no-changes check over real git, task.push and ledger.update', () =
     expect(await complete()).toMatchObject({ ok: false, error: { code: 'FAILED_PRECONDITION' } });
     record.end('t1');
     expect((await check()(row())).kind).toBe('unchanged');
+  });
+
+  it('commits on the task branch with HEAD detached back at the base, never pushed: the branch ref is a change, refused', async () => {
+    await skip();
+    fs.writeFileSync(path.join(work, 'd.txt'), 'd\n');
+    run(work, 'add', '.');
+    run(work, 'commit', '-qm', 'parked');
+    const parked = run(work, 'rev-parse', 'HEAD');
+    run(work, 'switch', '-q', '--detach', base);
+    expect(run(work, 'rev-parse', 'HEAD')).toBe(base);
+    expect(await check()(row())).toMatchObject({ kind: 'changed', why: expect.stringContaining(`wtask/one is at ${parked}`) });
+    expect(await complete()).toMatchObject({ ok: false, error: { code: 'FAILED_PRECONDITION' } });
+    // With the branch ref deleted too, HEAD and origin are at the base and
+    // the branch is gone: nothing of the task remains to publish.
+    run(work, 'branch', '-q', '-D', 'wtask/one');
+    expect((await check()(row())).kind).toBe('unchanged');
+  });
+
+  it('a commit made while origin is read is a change: the completion is refused', async () => {
+    await skip();
+    const live = liveNoChangesPorts({
+      rpc: () => async () => ({ ok: true, tasks: [{ id: 't1', worktreePath: work, branch: 'wtask/one' }] }),
+      git: plainGit,
+      wmuxDir: () => dataDir,
+      botRepoKey: () => undefined,
+    });
+    let committed = '';
+    const slowOrigin: NoChangesPorts = {
+      ...live,
+      remoteHead: async (e, m) => {
+        // The worker commits while main waits on origin.
+        fs.writeFileSync(path.join(work, 'e.txt'), 'e\n');
+        run(work, 'add', '.');
+        run(work, 'commit', '-qm', 'during');
+        committed = run(work, 'rev-parse', 'HEAD');
+        return live.remoteHead(e, m);
+      },
+    };
+    const handlers = new Map<string, (p: Record<string, unknown>, c?: RpcContext) => Promise<unknown>>();
+    registerLedgerRpc({ register: (m: string, h: never) => handlers.set(m, h) } as never, () => null, { getLedger: () => ledger, noChangesCheck: (e) => checkNoChanges(slowOrigin, e) });
+    const r = await (handlers.get('ledger.update') as (p: Record<string, unknown>, c?: RpcContext) => Promise<unknown>)(
+      { taskId: 't1', status: 'completed', expectedRev: row().rev },
+      { origin: 'local', commanderWorkspace: 'ws-o' } as RpcContext,
+    );
+    expect(r).toMatchObject({ ok: false, error: { code: 'FAILED_PRECONDITION', message: expect.stringContaining(committed) } });
+    expect(row().status).toBe('review_requested');
   });
 
   it('a commit after the skip that was never pushed: HEAD has moved, refused', async () => {
