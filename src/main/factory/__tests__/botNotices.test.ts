@@ -90,7 +90,7 @@ describe('bot notices', () => {
 
   it('#2256: a Command Prompt path refusal reaches the card with its cause and remedy, not as an unopened pane', () => {
     const why = cmdLaunchPathRefusal(`claude ${promptFileArgument('C:\\Users\\me\\.wmux-wE9!\\worktrees\\.meta\\t-1\\prompt.md', 'win32')}`, 'C:\\Users\\me\\.wmux-wE9!', true) ?? '';
-    expect(why).toBe('Command Prompt cannot pass the prompt file (its path contains "!"); set Default shell to PowerShell (Settings › Terminal) or move the wmux data folder');
+    expect(why).toBe('Command Prompt cannot pass the wmux data folder (its path contains "!"), and no other shell can either; move the folder');
     // As fan-out reports it: the renderer's spawn, the IPC wrapper, then pty:create's refusal.
     const wrap = (reason: string) => `renderer spawn failed: fanout.spawnWorkspace: PTY create failed — Error invoking remote method 'pty:create': Error: PTY_CREATE: ${reason}`;
     expect(plainStartFailure(wrap(why))).toBe(why);

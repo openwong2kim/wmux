@@ -60,17 +60,21 @@ describe('the cmd.exe prompt argument (#2231)', () => {
   it('#2256: a path cmd cannot carry is refused by its own cause and remedy, not as a merge-lane guard failure', () => {
     const prompt = (flaw: string) => `Command Prompt cannot pass the prompt file (its path ${flaw}); set Default shell to PowerShell (Settings › Terminal) or move the wmux data folder`;
     const dataDir = (flaw: string) => `Command Prompt cannot pass the wmux data folder (its path ${flaw}); set Default shell to PowerShell (Settings › Terminal) or move the folder`;
+    const stuck = (flaw: string) => `Command Prompt cannot pass the wmux data folder (its path ${flaw}), and no other shell can either; move the folder`;
     const line = (p: string) => `claude --model opus ${promptFileArgument(p, 'win32')}`;
     const okDir = 'C:\\Users\\me\\.wmux';
-    expect(cmdLaunchPathRefusal(line('C:\\Users\\me\\.wmux-wE9!\\worktrees\\.meta\\t-1\\prompt.md'), 'C:\\Users\\me\\.wmux-wE9!', true)).toBe(prompt('contains "!"'));
+    // No shell passes the guard's files from this folder, so PowerShell is not offered.
+    expect(cmdLaunchPathRefusal(line('C:\\Users\\me\\.wmux-wE9!\\worktrees\\.meta\\t-1\\prompt.md'), 'C:\\Users\\me\\.wmux-wE9!', true)).toBe(stuck('contains "!"'));
+    // Without the guard's files (not a claude line), PowerShell does pass that prompt file.
+    expect(cmdLaunchPathRefusal(line('C:\\Users\\me\\.wmux-wE9!\\worktrees\\.meta\\t-1\\prompt.md'), 'C:\\Users\\me\\.wmux-wE9!', false)).toBe(prompt('contains "!"'));
     expect(cmdLaunchPathRefusal(line('C:\\100%\\prompt.md'), okDir, true)).toBe(prompt('contains "%"'));
     expect(cmdLaunchPathRefusal(line('\\\\server\\share\\prompt.md'), okDir, true)).toBe(prompt('is a UNC path'));
     expect(cmdLaunchPathRefusal(line('C:\\a\nb\\prompt.md'), okDir, true)).toBe(prompt('has a control character'));
     // A clean prompt path (an output folder elsewhere) under a data folder the guard's files cannot ride cmd from.
-    expect(cmdLaunchPathRefusal(line('D:\\out\\prompt.md'), 'C:\\Users\\me\\.wmux-wE9!', true)).toBe(dataDir('contains "!"'));
-    expect(cmdLaunchPathRefusal(line('D:\\out\\prompt.md'), "C:\\it's", true)).toBe(dataDir('contains "\'"'));
+    expect(cmdLaunchPathRefusal(line('D:\\out\\prompt.md'), 'C:\\Users\\me\\.wmux-wE9!', true)).toBe(stuck('contains "!"'));
+    expect(cmdLaunchPathRefusal(line('D:\\out\\prompt.md'), "C:\\it's", true)).toBe(stuck('contains "\'"'));
     expect(cmdLaunchPathRefusal(line('D:\\out\\prompt.md'), 'C:\\Users\\Tom&Jerry', true)).toBe(dataDir('contains "&"'));
-    expect(cmdLaunchPathRefusal(line('D:\\out\\prompt.md'), '\\\\server\\share\\.wmux', true)).toBe(dataDir('is a UNC path'));
+    expect(cmdLaunchPathRefusal(line('D:\\out\\prompt.md'), '\\\\server\\share\\.wmux', true)).toBe(stuck('is a UNC path'));
     // PowerShell's typographic quotes are plain characters to cmd.
     expect(cmdLaunchPathRefusal(line('D:\\out\\prompt.md'), 'C:\\Users\\\u201cme\u201d', true)).toBeNull();
     // Only a claude line carries the guard's files.

@@ -209,6 +209,8 @@ function cmdPathFlaw(file: string, unsafe: string): string | null {
 // `!`, UNC) and by isPlainCmdLaunchLine (`&`, `|`, `^`, `<`, `>`, a line
 // break). Control characters too (no Windows folder name holds one).
 // PowerShell's typographic quotes do not matter here: the line runs in cmd.
+// What isQuotable refuses in every shell (with a UNC path).
+const ANY_SHELL_DATA_DIR_UNSAFE = '\'"`$%!\\u0000-\\u001f\\u007f';
 const CMD_DATA_DIR_UNSAFE = '\'"`$%!&|^<>\\u0000-\\u001f\\u007f';
 
 /**
@@ -221,6 +223,10 @@ const CMD_DATA_DIR_UNSAFE = '\'"`$%!&|^<>\\u0000-\\u001f\\u007f';
  * room card's title holds it whole. Pure.
  */
 export function cmdLaunchPathRefusal(line: string, dataDir: string, guardsDataDir: boolean): string | null {
+  // No shell passes the guard's files from such a folder (isQuotable), so
+  // PowerShell is no remedy there: only moving the folder is.
+  const stuck = guardsDataDir ? cmdPathFlaw(dataDir, ANY_SHELL_DATA_DIR_UNSAFE) : null;
+  if (stuck && stuck !== 'is not a drive path') return `Command Prompt cannot pass the wmux data folder (its path ${stuck}), and no other shell can either; move the folder`;
   const remedy = 'set Default shell to PowerShell (Settings › Terminal) or move';
   for (const w of shellWords(line)) {
     const m = WIN_PROMPT_ARGUMENT_PATH.exec(line.slice(w.start, w.end));
