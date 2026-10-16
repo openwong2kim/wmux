@@ -8,6 +8,7 @@ import path from 'node:path';
 import { parseLsRemoteHead, pushTaskBranch, taskPushArgs, taskPushBranchRefusal, taskPushGitTarget, wslGitArgv, wslTaskPushGit, type TaskPushExec } from '../taskPush';
 import { originUrlRepoKey, runWorkerGitRead } from '../workerGit';
 import { registerTaskPushRpc } from '../../pipe/handlers/taskPush.rpc';
+import { TASK_PUSHES_FILENAME, TaskPushRecord, taskPushRecordOf } from '../taskPushRecord';
 import { parseRemoteKey } from '../../github/PrProvider';
 import { normalizeRepoKey } from '../../../shared/repoKey';
 import { readRepoDefaultBranchByKey } from '../../agents/botWorkerDefaultBranch';
@@ -347,23 +348,38 @@ describe('task.push: a repository inside WSL', () => {
 
 describe('task.push RPC', () => {
   type Handler = (params: Record<string, unknown>, ctx?: Record<string, unknown>) => Promise<unknown>;
-  const setup = (over: { row?: unknown; tasks?: unknown[]; caller?: string | null; repoDefault?: string | null; botRepo?: string } = {}) => {
+  const setup = (over: { row?: unknown; tasks?: unknown[]; caller?: string | null; repoDefault?: string | null; botRepo?: string; head?: string; fail?: boolean } = {}) => {
     const handlers = new Map<string, Handler>();
-    const push = vi.fn(async (i: { branch: string }) => ({ ok: true as const, branch: i.branch, remote: 'origin' as const, head: 'abc', output: '' }));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-task-push-rpc-'));
+    const push = vi.fn(async (i: { branch: string }) => (over.fail
+      ? { ok: false as const, reason: 'rejected' as const, error: 'non-fast-forward' }
+      : { ok: true as const, branch: i.branch, remote: 'origin' as const, head: over.head ?? 'abc', output: '' }));
     const row = over.row === undefined ? { id: 'wtask-1', ownerWorkspaceId: 'ws-owner', taskWorkspaceId: 'ws-task' } : over.row;
     registerTaskPushRpc({ register: (m: string, h: Handler) => handlers.set(m, h) } as never, {
       getWindow: () => null,
       daemon: { rpc: vi.fn(async () => ({ ok: true, tasks: over.tasks ?? [{ id: 'wtask-1', status: 'open', branch: 'wtask/one', worktreePath: '/w/one' }] })) },
       getLedger: () => ({ findOpenByTaskWorkspace: (ws: string) => (ws === 'ws-task' ? row : null) }) as never,
       resolveCallerWorkspace: async () => (over.caller === undefined ? 'ws-task' : over.caller),
-      wmuxDir: () => fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-task-push-rpc-')),
+      wmuxDir: () => dir,
       push: push as never,
       repoDefaultBranch: async () => (over.repoDefault === undefined ? 'main' : over.repoDefault),
       botRepoKey: () => over.botRepo,
     });
-    return { call: handlers.get('task.push')!, push };
+    return { call: handlers.get('task.push')!, push, dir };
   };
   const local = { origin: 'local' };
+
+  it('records the commit a landed push published, in main\'s own record; a refused push records nothing', async () => {
+    const sha = 'f'.repeat(40);
+    const landed = setup({ head: sha });
+    expect(await landed.call({ senderPtyId: 'pty-1' }, local)).toMatchObject({ ok: true });
+    expect(taskPushRecordOf(landed.dir).get('wtask-1')).toBe(sha);
+    // A fresh reader of the same file (after a restart) sees it too.
+    expect(new TaskPushRecord(path.join(landed.dir, 'factory', TASK_PUSHES_FILENAME)).get('wtask-1')).toBe(sha);
+    const refused = setup({ head: sha, fail: true });
+    expect(await refused.call({ senderPtyId: 'pty-1' }, local)).toMatchObject({ ok: false });
+    expect(taskPushRecordOf(refused.dir).get('wtask-1')).toBeNull();
+  });
 
   it('pushes the branch of the caller\'s own task, named by main\'s record only', async () => {
     const { call, push } = setup();

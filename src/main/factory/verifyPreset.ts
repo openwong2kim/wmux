@@ -201,6 +201,19 @@ export async function worktreeFromMissions(rpc: Rpc | null, entry: LedgerEntry):
   return null;
 }
 
+/** The HEAD commit of a task's worktree now, or null when either cannot be read. */
+export async function taskWorktreeHead(rpc: Rpc | null, git: Git, entry: LedgerEntry): Promise<string | null> {
+  const worktree = await worktreeFromMissions(rpc, entry);
+  if (!worktree) return null;
+  try {
+    const r = await git(['rev-parse', '--verify', '--quiet', 'HEAD^{commit}'], worktree);
+    const sha = r.stdout.trim();
+    return r.code === 0 && sha ? sha : null;
+  } catch {
+    return null;
+  }
+}
+
 /** The folder a task's worker runs in: its worktree, or the output folder of
  *  a task without one (a research task's scratch folder), or null. */
 export async function taskFolderFromMissions(rpc: Rpc | null, entry: LedgerEntry): Promise<string | null> {

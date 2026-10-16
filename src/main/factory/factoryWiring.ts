@@ -85,7 +85,8 @@ import { getSharedTaskGateRunner } from '../worktask/TaskGateRunner';
 import { isPidAlive, sessionsStartedIn, stopSessionsInDir } from '../worktask/stopSessionsInDir';
 import { getWorkspaceMirror } from '../workspace/WorkspaceMirror';
 import { originDefaultRef, taskBaseFromStamp, taskFolderFromMissions, worktreeFromMissions } from './verifyPreset';
-import { completeCheckedTask, completeMergedTask, completeResearchTask, gateCardNoted, installTaskGate, recordNoChangesGate, worktreeHeadMerged } from './taskGate';
+import { commitWithinBase, completeCheckedTask, completeMergedTask, completeResearchTask, gateCardNoted, installTaskGate, publishedTaskHeads, recordNoChangesGate, worktreeHeadMerged } from './taskGate';
+import { taskPushRecordOf } from '../worktask/taskPushRecord';
 import { TaskBranchCache, setBotTaskSources } from './botTasks';
 import { installLateStopSweep, setFactoryStopPorts, type FactoryStopPorts } from './factoryStop';
 import { getRoutineStore } from './routines';
@@ -768,7 +769,13 @@ export function createFactoryWiring(deps: Pick<FactoryHostDeps, 'wmuxDir'> & Par
           completeMerged: (taskId, pr, checkedRev) => completeMergedTask(ledger, taskId, pr, checkedRev),
           // A task with no commits beyond its base is not gated.
           taskBase: (entry, worktreePath) => taskBaseFromStamp(entry, worktreePath),
-          recordNoChanges: (taskId, detail) => recordNoChangesGate(ledger, taskId, detail),
+          recordNoChanges: (taskId, detail, headSha) => recordNoChangesGate(ledger, taskId, detail, Date.now, headSha),
+          publishedHeads: async (entry, worktreePath) => {
+            const known = await branches.branches([entry]);
+            const branch = known.has(entry.id) ? known.get(entry.id) ?? null : undefined;
+            return publishedTaskHeads(git, worktreePath, branch, taskPushRecordOf(deps.wmuxDir()).get(entry.id));
+          },
+          commitWithin: (worktreePath, commit, base) => commitWithinBase(git, worktreePath, commit, base),
           wake: (input) => {
             const q = getWakeQueue();
             if (!q) console.info(`[factory] wake queue not running; ${input.botId} was not woken`);

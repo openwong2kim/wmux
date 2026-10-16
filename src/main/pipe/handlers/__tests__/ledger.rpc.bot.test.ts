@@ -67,6 +67,24 @@ describe('ledger.update — bot scope', () => {
     expect(await update({ taskId: 't-mine', status: 'failed', expectedRev: 3 }, bot('bot-0000000a'))).toMatchObject({ ok: true, entry: { status: 'failed' } });
   });
 
+  it('a completion on a no-changes skip needs the task\'s HEAD to still be the commit the skip checked', async () => {
+    const checked = 'c'.repeat(40);
+    let head: string | null = 'e'.repeat(40);
+    const handlers = new Map<string, Handler>();
+    registerLedgerRpc({ register: (m: string, h: Handler) => handlers.set(m, h) } as never, () => null, { getLedger: () => ledger, taskHead: async () => head });
+    const guarded = handlers.get('ledger.update') as Handler;
+    const r = await ledger.update({ id: 't-mine', status: 'review_requested', actor: { kind: 'worker', workspaceId: 'ws-t1' }, expectedRev: 1 });
+    if (!r.ok) throw new Error(r.message);
+    expect(await recordNoChangesGate(ledger, 't-mine', 'no commits', Date.now, checked)).toBe(true);
+    // The worker committed after the skip: refused.
+    expect(await guarded({ taskId: 't-mine', status: 'completed', expectedRev: 3 }, bot('bot-0000000a'))).toMatchObject({ ok: false, error: { code: 'FAILED_PRECONDITION' } });
+    head = null;
+    expect(await guarded({ taskId: 't-mine', status: 'completed', expectedRev: 3 }, bot('bot-0000000a'))).toMatchObject({ ok: false, error: { code: 'FAILED_PRECONDITION' } });
+    // HEAD is the checked commit: accepted.
+    head = checked;
+    expect(await guarded({ taskId: 't-mine', status: 'completed', expectedRev: 3 }, bot('bot-0000000a'))).toMatchObject({ ok: true, entry: { status: 'completed' } });
+  });
+
   it('a commander brain without a bot binding keeps its workspace-wide reach', async () => {
     expect(await update({ taskId: 't-pane', status: 'failed', expectedRev: 1 }, { origin: 'local', commanderWorkspace: 'ws-bot' })).toMatchObject({ ok: true });
   });

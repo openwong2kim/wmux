@@ -26,6 +26,14 @@
 // instead (`skipped: 'no_changes'`, exit 0, the way the runner records
 // `no_gate_command`), the task is left open, and the bot settles it from the
 // report: the ledger takes its `completed` on that record, or its `failed`.
+// "No commits" covers what was published too: every commit main knows the
+// task's branch was pushed at (its own task.push record, and origin/<branch>
+// in the task's repository) must be at or behind the base, or a worker that
+// pushed and then reset its HEAD would pass as unchanged; when that cannot
+// be read, the gate runs. The record holds for one report at one HEAD: the
+// ledger takes `completed` on it only for the report it was recorded on
+// (TaskLedger: LedgerGateResult.reportRev), and main's ledger.update only
+// while the worktree's HEAD is still the commit it checked.
 // A task whose base is not recorded, or whose HEAD cannot be compared with
 // it, is gated as before.
 // A research task (the `research` preset: a scratch folder, no repository,
@@ -193,18 +201,19 @@ export function noChangesDetail(base: string): string {
  * 'no_changes'`, the detail as its tail), as the gate runner records
  * `no_gate_command`. The bot can then settle `completed` (the ledger takes it
  * on a system gate with exit 0) or `failed`; the system completes nothing on
- * it (isSystemGatePass refuses a skip). Only on a row still in
- * review_requested. One retry on a write that landed in between. Never
- * throws; whether it was recorded.
+ * it (isSystemGatePass refuses a skip). `headSha`: the HEAD that was
+ * checked, kept on the record. Only on a row still in review_requested (the
+ * ledger stamps the report it is for). One retry on a write that landed in
+ * between. Never throws; whether it was recorded.
  */
-export async function recordNoChangesGate(ledger: GateRecordingLedger, taskId: string, detail: string, now: () => number = Date.now): Promise<boolean> {
+export async function recordNoChangesGate(ledger: GateRecordingLedger, taskId: string, detail: string, now: () => number = Date.now, headSha?: string): Promise<boolean> {
   try {
     for (let attempt = 0; attempt < 2; attempt++) {
       const row = ledger.get(taskId);
       if (!row || row.status !== 'review_requested') return false;
       const r = await ledger.recordGate(
         taskId,
-        { exitCode: 0, tail: detail, at: now(), command: 'none', skipped: 'no_changes' },
+        { exitCode: 0, tail: detail, at: now(), command: 'none', skipped: 'no_changes', ...(headSha ? { headSha } : {}) },
         { kind: 'system', workspaceId: VERIFY_GATE_SYSTEM_WORKSPACE },
         row.rev,
       );
@@ -258,6 +267,50 @@ export async function worktreeHeadMerged(git: (args: string[], cwd: string) => P
   } catch {
     return false;
   }
+}
+
+/**
+ * Whether commit `commit` is `base` or an ancestor of it (it holds nothing
+ * past the base), in the worktree's repository. False when that cannot be
+ * told: not full commit ids, or a commit not in the repository.
+ */
+export async function commitWithinBase(git: (args: string[], cwd: string) => Promise<{ stdout: string; code: number }>, worktreePath: string, commit: string, base: string): Promise<boolean> {
+  const sha = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
+  if (!sha.test(commit) || !sha.test(base)) return false;
+  if (commit.toLowerCase() === base.toLowerCase()) return true;
+  try {
+    return (await git(['merge-base', '--is-ancestor', commit, base], worktreePath)).code === 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The commits a task's branch is known to be published at: `pushed` (main's
+ * record of its last task.push) and origin/<branch> in the task's
+ * repository (which task.push sets). Null when that cannot be told: the
+ * branch could not be read (`undefined`), or git failed for another reason
+ * than a missing ref. Empty when neither exists.
+ */
+export async function publishedTaskHeads(
+  git: (args: string[], cwd: string) => Promise<{ stdout: string; code: number }>,
+  worktreePath: string,
+  branch: string | null | undefined,
+  pushed: string | null,
+): Promise<string[] | null> {
+  if (branch === undefined) return null;
+  const out = pushed ? [pushed] : [];
+  if (branch) {
+    try {
+      const r = await git(['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${branch}^{commit}`], worktreePath);
+      const sha = r.stdout.trim();
+      if (r.code === 0 && sha) out.push(sha);
+      else if (r.code !== 1) return null;
+    } catch {
+      return null;
+    }
+  }
+  return [...new Set(out)];
 }
 
 /**
@@ -338,12 +391,19 @@ export interface TaskGatePorts {
   /** completeMergedTask over the hosted ledger. */
   completeMerged?: (taskId: string, pr: number, checkedRev: number) => Promise<{ entry: LedgerEntry } | { entry: null; why: string }>;
   /** The commit the task's branch started from (its task.json stamp), or
-   *  null when none is recorded. With headMerged and recordNoChanges, a task
-   *  whose HEAD is that commit or behind it is not gated (absent: every
-   *  report is gated). */
+   *  null when none is recorded. With headOf, commitWithin, publishedHeads
+   *  and recordNoChanges, a task whose HEAD and published commits are that
+   *  commit or behind it is not gated (absent: every report is gated). */
   taskBase?: (entry: LedgerEntry, worktreePath: string) => Promise<string | null>;
-  /** recordNoChangesGate over the hosted ledger. */
-  recordNoChanges?: (taskId: string, detail: string) => Promise<boolean>;
+  /** recordNoChangesGate over the hosted ledger (`headSha`: the HEAD checked). */
+  recordNoChanges?: (taskId: string, detail: string, headSha?: string) => Promise<boolean>;
+  /** The commits main knows the task's branch was published at (its last
+   *  task.push, origin/<branch> in the task's repository): empty when it
+   *  was never published, null when that cannot be read. Required for the
+   *  no-changes skip (absent: every report is gated). */
+  publishedHeads?: (entry: LedgerEntry, worktreePath: string) => Promise<readonly string[] | null>;
+  /** commitWithinBase over the task's repository. Required with publishedHeads. */
+  commitWithin?: (worktreePath: string, commit: string, base: string) => Promise<boolean>;
   /** How often open reports are checked for a merged PR (default
    *  MERGE_SWEEP_MS). */
   mergeSweepMs?: number;
@@ -669,15 +729,25 @@ export function installTaskGate(ports: TaskGatePorts): () => void {
     if (picked.length > 0) void endMerged(picked);
   };
 
-  /** The base a task's HEAD holds no commits beyond (it is that commit or
-   *  behind it), else null: commits of its own, no recorded base, or a
-   *  comparison that could not be made (the gate then runs as before). */
-  const unchangedBase = async (entry: LedgerEntry, worktree: string): Promise<string | null> => {
-    if (!ports.taskBase || !ports.headMerged || !ports.recordNoChanges) return null;
+  /** The base a task holds no commits beyond, and the HEAD that was checked:
+   *  its HEAD and every commit its branch was published at are that base or
+   *  behind it. Else null: commits of its own (local or pushed), no recorded
+   *  base, or anything that could not be read (the gate then runs as before). */
+  const unchangedBase = async (entry: LedgerEntry, worktree: string): Promise<{ base: string; head: string } | null> => {
+    const { taskBase, headOf, commitWithin, publishedHeads, recordNoChanges } = ports;
+    if (!taskBase || !headOf || !commitWithin || !publishedHeads || !recordNoChanges) return null;
     try {
-      const base = await ports.taskBase(entry, worktree);
+      const base = await taskBase(entry, worktree);
       if (!base) return null;
-      return (await ports.headMerged(worktree, base)) ? base : null;
+      const head = await headOf(worktree);
+      if (!head || !(await commitWithin(worktree, head, base))) return null;
+      // A worker that pushed and then reset its HEAD still published commits.
+      const published = await publishedHeads(entry, worktree);
+      if (published === null) return null;
+      for (const sha of published) {
+        if (!(await commitWithin(worktree, sha, base))) return null;
+      }
+      return { base, head };
     } catch (err) {
       log(`[factory] base of task ${entry.id} not compared: ${String(err)}`);
       return null;
@@ -736,11 +806,11 @@ export function installTaskGate(ports: TaskGatePorts): () => void {
     }
     // No commits beyond its base: nothing of the task's to gate. Recorded as
     // a skip and left open for the bot to settle from the report.
-    const base = await unchangedBase(before, worktree);
-    if (base && ports.recordNoChanges) {
+    const unchanged = await unchangedBase(before, worktree);
+    if (unchanged && ports.recordNoChanges) {
       if (again.has(taskId) || !stillReported(taskId)) return;
-      const detail = noChangesDetail(base);
-      const recorded = await ports.recordNoChanges(taskId, detail);
+      const detail = noChangesDetail(unchanged.base);
+      const recorded = await ports.recordNoChanges(taskId, detail, unchanged.head);
       const now = again.has(taskId) ? null : stillReported(taskId);
       if (!now) return;
       await settle(now, describeTaskGate({ ok: true, status: 'skipped', taskId, skipped: 'no_changes', detail, recorded }));

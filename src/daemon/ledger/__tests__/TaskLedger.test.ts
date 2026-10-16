@@ -290,12 +290,36 @@ describe('TaskLedger — transition matrix', () => {
     expect(a.get('wtask-1')!.gate).not.toHaveProperty('skipped');
   });
 
-  it('a no-changes system record keeps its skipped label, on disk too', async () => {
+  it('a no-changes system record keeps its skipped label and the report it is for, on disk too; only on a reported row', async () => {
     const a = open();
     await seed(a);
+    expect(await a.recordGate('wtask-1', { ...PASS, command: 'none', skipped: 'no_changes' })).toMatchObject({ ok: false, error: 'illegal_transition' });
+    await driveTo(a, 'wtask-1', 'review_requested');
+    const reportedAt = a.get('wtask-1')?.reportedAtRev;
+    expect(reportedAt).toBe(2);
+    // A caller-supplied reportRev is not the ledger's: it stamps its own.
+    await a.recordGate('wtask-1', { ...PASS, command: 'none', skipped: 'no_changes', reportRev: 99 });
+    expect(a.get('wtask-1')?.gate).toMatchObject({ exitCode: 0, command: 'none', skipped: 'no_changes', recordedBy: 'system', reportRev: reportedAt });
+    expect(open().get('wtask-1')?.gate).toMatchObject({ skipped: 'no_changes', reportRev: reportedAt });
+    expect(open().get('wtask-1')?.reportedAtRev).toBe(reportedAt);
+  });
+
+  it('a no-changes skip completes only the report it was recorded on: a new report needs a new one', async () => {
+    const a = open();
+    await seed(a);
+    await driveTo(a, 'wtask-1', 'review_requested');
     await a.recordGate('wtask-1', { ...PASS, command: 'none', skipped: 'no_changes' });
-    expect(a.get('wtask-1')?.gate).toMatchObject({ exitCode: 0, command: 'none', skipped: 'no_changes', recordedBy: 'system' });
-    expect(open().get('wtask-1')?.gate).toMatchObject({ skipped: 'no_changes' });
+    // Sent back, worked on, reported again: the skip on the row is the old report's.
+    for (const [status, actor] of [['working', BRAIN], ['review_requested', WORKER]] as const) {
+      const r = await a.update({ id: 'wtask-1', status, actor, expectedRev: a.get('wtask-1')?.rev ?? 0 });
+      if (!r.ok) throw new Error(r.message);
+    }
+    const stale = await a.update({ id: 'wtask-1', status: 'completed', actor: BRAIN, expectedRev: a.get('wtask-1')?.rev ?? 0 });
+    expect(stale).toMatchObject({ ok: false, error: 'gate_required' });
+    expect(stale.ok ? '' : stale.message).toContain('earlier report');
+    // A skip recorded for this report completes it.
+    await a.recordGate('wtask-1', { ...PASS, command: 'none', skipped: 'no_changes' });
+    expect(await a.update({ id: 'wtask-1', status: 'completed', actor: BRAIN, expectedRev: a.get('wtask-1')?.rev ?? 0 })).toMatchObject({ ok: true, entry: { status: 'completed' } });
   });
 
   it('completed needs a SYSTEM-recorded passing gate unless forced with a reason, and only a brain may set it', async () => {

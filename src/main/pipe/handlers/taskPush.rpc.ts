@@ -26,6 +26,7 @@ import { readBotWorkerDefaultBranches } from '../../../shared/botWorkerGuard';
 import { readRepoDefaultBranchByKey } from '../../agents/botWorkerDefaultBranch';
 import { getBotStore } from '../../factory/botStore';
 import { pushTaskBranch, type TaskPushGit, type TaskPushResult } from '../../worktask/taskPush';
+import { taskPushRecordOf, type TaskPushRecord } from '../../worktask/taskPushRecord';
 
 type GetWindow = () => BrowserWindow | null;
 
@@ -42,6 +43,8 @@ export interface TaskPushRpcDeps {
   repoDefaultBranch?: (repoKey: string) => Promise<string | null>;
   /** A bot's repository key (its profile). */
   botRepoKey?: (botId: string) => string | undefined;
+  /** Where a landed push is recorded (default: the one under wmuxDir). */
+  pushRecord?: Pick<TaskPushRecord, 'record'>;
 }
 
 function deny(code: string, message: string): { ok: false; error: { code: string; message: string } } {
@@ -105,6 +108,9 @@ export function registerTaskPushRpc(router: RpcRouter, deps: TaskPushRpcDeps): v
       // task branch can be named by a person), read by the pushed-to key.
       repoDefaultBranch: deps.repoDefaultBranch ?? ((key: string) => readRepoDefaultBranchByKey(key)),
     }, ...(deps.git ? [deps.git] : []));
+    // Main's own record of what was published: the task gate reads it before
+    // it skips a task as having made no changes (taskPushRecord.ts).
+    if (result.ok) (deps.pushRecord ?? taskPushRecordOf(dir)).record(row.id, result.head);
     return { ...result, taskId: row.id };
   });
 }

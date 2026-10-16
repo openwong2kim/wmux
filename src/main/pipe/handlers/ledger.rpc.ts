@@ -16,7 +16,7 @@
 import type { BrowserWindow } from 'electron';
 import type { RpcRouter } from '../RpcRouter';
 import type { RpcContext } from '../../../shared/rpc';
-import { WORKER_SETTABLE_STATUSES, isLedgerStatus, type LedgerActor } from '../../../shared/ledger';
+import { WORKER_SETTABLE_STATUSES, isLedgerStatus, type LedgerActor, type LedgerEntry } from '../../../shared/ledger';
 import { resolvePtyOwnerWorkspace } from '../../workspace/ptyOwnership';
 import { getTaskLedger } from '../../deck/taskLedgerHost';
 import { LEDGER_SUMMARY_MAX_BYTES, truncateHead, type TaskLedger } from '../../../daemon/ledger/TaskLedger';
@@ -29,6 +29,10 @@ export interface LedgerRpcDeps {
   getLedger?: () => TaskLedger;
   /** Injected in tests; defaults to the mirror/renderer resolution. */
   resolveCallerWorkspace?: (senderPtyId: string) => Promise<string | null>;
+  /** The HEAD of a task's worktree now (null: unreadable). With it, a
+   *  `completed` on a no-changes skip needs HEAD to still be the commit the
+   *  skip checked. */
+  taskHead?: (entry: LedgerEntry) => Promise<string | null>;
 }
 
 function deny(code: string, message: string): { ok: false; error: { code: string; message: string } } {
@@ -131,6 +135,16 @@ export function registerLedgerRpc(router: RpcRouter, getWindow: GetWindow, deps:
         return deny('NOT_AUTHORIZED', 'ledger.update: a bot may update only the tasks it started');
       }
       if (params.force === true) return deny('NOT_AUTHORIZED', 'ledger.update: a bot cannot force a transition');
+    }
+    // A no-changes skip vouches for the HEAD it checked: a worker that
+    // committed since has work no gate saw (factory/taskGate.ts).
+    const skipped = status === 'completed' && params.force !== true ? ledgerOf().get(taskId)?.gate : undefined;
+    if (skipped?.skipped === 'no_changes' && skipped.headSha && deps.taskHead) {
+      const row = ledgerOf().get(taskId);
+      const head = row ? await deps.taskHead(row).catch(() => null) : null;
+      if (head !== skipped.headSha) {
+        return deny('FAILED_PRECONDITION', `ledger.update: the task's HEAD is no longer ${skipped.headSha}, the commit its no-changes skip checked; have its worker report again so its work is gated`);
+      }
     }
     const res = await ledgerOf().update({
       id: taskId,

@@ -57,6 +57,8 @@ import { PTYBridge } from './pty/PTYBridge';
 import { registerAllHandlers } from './ipc/registerHandlers';
 import { RpcRouter } from './pipe/RpcRouter';
 import type { RpcMethod } from '../shared/rpc';
+import { git as gitRun } from './git/git';
+import { taskWorktreeHead } from './factory/verifyPreset';
 import { PipeServer } from './pipe/PipeServer';
 import { registerWorkspaceRpc } from './pipe/handlers/workspace.rpc';
 import { registerSurfaceRpc } from './pipe/handlers/surface.rpc';
@@ -1190,7 +1192,14 @@ registerGitHandoffHandlers({
   startFanOut: (req) => startGuiFanOut(fanOutService, req),
 });
 registerFanOutRpc(rpcRouter, fanOutService, () => mainWindow, { getDaemonClient: () => daemonClient });
-registerLedgerRpc(rpcRouter, () => mainWindow);
+registerLedgerRpc(rpcRouter, () => mainWindow, {
+  // A completion on a no-changes skip needs the task's HEAD unmoved.
+  taskHead: (entry) => taskWorktreeHead(
+    daemonClient ? (method, params) => (daemonClient as DaemonClient).rpc(method as RpcMethod, params as Record<string, unknown>) : null,
+    gitRun,
+    entry,
+  ),
+});
 registerTaskPushRpc(rpcRouter, {
   getWindow: () => mainWindow,
   daemon: {

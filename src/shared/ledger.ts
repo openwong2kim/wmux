@@ -78,6 +78,10 @@ export interface LedgerGateResult {
    *  HEAD could not be read or moved during the run — such a result is not
    *  evidence about any commit. */
   headSha?: string;
+  /** On a `no_changes` record only, stamped by the ledger itself: the
+   *  report it was recorded for (LedgerEntry.reportedAtRev then). `completed`
+   *  takes the record only while the row's current report is that one. */
+  reportRev?: number;
 }
 
 export interface LedgerEntry {
@@ -109,6 +113,10 @@ export interface LedgerEntry {
    *  (LedgerUpdateInput.completion; the ledger RPC never forwards it), never
    *  by a worker or a brain. Absent otherwise. */
   completion?: LedgerCompletion;
+  /** The rev of the row's latest move to review_requested (its current
+   *  report), written by the ledger on that move. Absent on rows not
+   *  reported since it existed. */
+  reportedAtRev?: number;
 }
 
 /** See LedgerEntry.completion. */

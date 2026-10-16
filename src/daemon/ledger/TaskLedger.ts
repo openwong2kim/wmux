@@ -24,8 +24,10 @@
 //     the gate runner), never on a completed or cancelled entry; `update`
 //     ignores a caller-supplied gate.
 //   - `completed`: only by a `brain`, only from `review_requested` (table),
-//     only with a SYSTEM-recorded gate whose exitCode is exactly 0 — unless
-//     `force: true` with a non-empty `reason`, which is logged on the entry,
+//     only with a SYSTEM-recorded gate whose exitCode is exactly 0 (a
+//     `no_changes` skip counts only for the report it was recorded on:
+//     LedgerGateResult.reportRev against LedgerEntry.reportedAtRev) —
+//     unless `force: true` with a non-empty `reason`, which is logged on the entry,
 //     or the row is a bot's research task (`isResearchDispatch`: main wrote
 //     its dispatch; it changes no code, so there is no gate to run).
 //   - CAS: every update names the `expectedRev` it read; a stale one is
@@ -207,6 +209,14 @@ export function truncateHead(text: string, maxBytes: number): string {
   let end = maxBytes;
   while (end > 0 && (buf[end] & 0xc0) === 0x80) end -= 1;
   return buf.subarray(0, end).toString('utf8');
+}
+
+/** Whether a row's no-changes skip was recorded for its current report
+ *  (LedgerGateResult.reportRev). A row reported before reports were
+ *  stamped takes the skip it holds; its next report does not. */
+export function noChangesReceiptCurrent(entry: Pick<LedgerEntry, 'gate' | 'reportedAtRev'>): boolean {
+  const r = entry.gate?.reportRev;
+  return typeof r === 'number' && r === (entry.reportedAtRev ?? r);
 }
 
 function boundGate(gate: LedgerGateResult): LedgerGateResult {
@@ -453,13 +463,18 @@ export class TaskLedger {
       // Provenance, not just value: the gate must have been RECORDED by the
       // gate runner (system). A gate that arrived on the wire never counts.
       const gate = entry.gate;
-      const gatePassed = gate !== undefined && gate.recordedBy === 'system' && gate.exitCode === 0;
+      // A no-changes skip holds for the report it was recorded on only: a
+      // task sent back and reported again needs a record of its own.
+      const staleSkip = gate?.skipped === 'no_changes' && !noChangesReceiptCurrent(entry);
+      const gatePassed = gate !== undefined && gate.recordedBy === 'system' && gate.exitCode === 0 && !staleSkip;
       if (!gatePassed && !isResearchDispatch(entry.dispatch)) {
         if (input.force !== true) {
           return {
             ok: false,
             error: 'gate_required',
-            message: gate
+            message: staleSkip
+              ? 'the no-changes skip on this task was recorded for an earlier report; the current report has no gate result yet'
+              : gate
               ? `the recorded gate did not pass (exitCode ${String(gate.exitCode)}); run the gate again or force with a reason`
               : 'no gate result recorded for this task; run the gate first or force with a reason',
             entry,
@@ -493,6 +508,8 @@ export class TaskLedger {
       updatedAt: this.now(),
       updatedBy: input.actor,
       ...(summary !== undefined ? { summary } : {}),
+      // A new report: what a no-changes skip is recorded for.
+      ...(next === 'review_requested' ? { reportedAtRev: entry.rev + 1 } : {}),
       ...(next === 'completed' && input.completion?.source === 'merge' && Number.isInteger(input.completion.pr) && input.completion.pr > 0
         ? { completion: { source: 'merge' as const, pr: input.completion.pr } }
         : {}),
@@ -553,9 +570,21 @@ export class TaskLedger {
           entry,
         };
       }
+      // A no-changes skip is about one report: only on a reported row, and
+      // stamped with that report (never with a rev the caller supplies).
+      const noChanges = gate.skipped === 'no_changes';
+      if (noChanges && entry.status !== 'review_requested') {
+        return {
+          ok: false,
+          error: 'illegal_transition',
+          message: `task ${id} is ${entry.status}: a no-changes skip is recorded only on a reported task`,
+          entry,
+        };
+      }
+      const bounded = boundGate(this.redact(gate));
       const updated: LedgerEntry = this.redact({
         ...entry,
-        gate: boundGate(this.redact(gate)),
+        gate: noChanges ? { ...bounded, reportRev: entry.reportedAtRev ?? entry.rev } : bounded,
         rev: entry.rev + 1,
         updatedAt: this.now(),
         updatedBy: actor,
