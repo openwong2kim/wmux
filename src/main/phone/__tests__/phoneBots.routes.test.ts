@@ -50,6 +50,7 @@ const GROUP: BotGroup = { id: 'grp-0000abcd', workspaceId: 'ws-1', name: 'Crew',
 const ROOM_GROUP: BotGroup = { id: 'grp-0000beef', workspaceId: 'ws-1', name: '', memberIds: [OFF.id], threadId: 'general', createdAt: 5, updatedAt: 5 };
 
 const freshId = () => `${Date.now()}-${crypto.randomUUID()}`;
+const chatSpentId = freshId();
 
 describe('GET /api/bots and POST /api/rooms/:workspaceId/messages', () => {
   let server: WebTerminalServer | undefined;
@@ -133,6 +134,12 @@ describe('GET /api/bots and POST /api/rooms/:workspaceId/messages', () => {
     server = new WebTerminalServer({
       sessionManager, devices, desktop: () => bridge, log: () => undefined, assetsDir: os.tmpdir(),
       moaWake: () => wake, moaPane: () => null,
+      // Only the chat send receipts: one id this caller spent on a pane.
+      chat: () => ({
+        priorSend: (owner: string, cmid: string) => (cmid === chatSpentId
+          ? { paneId: 's1', view: { clientMessageId: cmid, state: 'submitted' as const, result: 'sent' as const } }
+          : undefined),
+      }) as never,
     });
     await server.start({ port: 0, host: '127.0.0.1', allowInput: true, allowUpload: false, allowTranscript: opts.allowTranscript ?? true });
     const call = async (method: string, route: string, body?: unknown, auth = 'Bearer d1.s1') => {
@@ -243,6 +250,8 @@ describe('GET /api/bots and POST /api/rooms/:workspaceId/messages', () => {
       expect(await send('ws-1', { ...body, text: 'something else' })).toMatchObject({ status: 409, body: { error: 'message-id-reused' } });
       expect(await send('ws-1', { ...body, threadId: GROUP.threadId })).toMatchObject({ status: 409, body: { error: 'message-id-reused' } });
       expect(await send('ws-hq', { ...body, threadId: `dm:${HQ.id}` })).toMatchObject({ status: 409, body: { error: 'message-id-reused' } });
+      // An id spent on a chat send to a pane is reused too.
+      expect(await send('ws-1', { ...body, clientMessageId: chatSpentId })).toMatchObject({ status: 409, body: { error: 'message-id-reused', clientMessageId: chatSpentId } });
       // The Moa receipt reads it.
       expect(await get(`/api/moa/messages/${clientMessageId}`)).toMatchObject({ status: 200, body: { clientMessageId, state: 'queued' } });
     });

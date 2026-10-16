@@ -5556,6 +5556,9 @@ export class WebTerminalServer {
         if (!wake) return this.json(res, 503, { error: 'desktop-unavailable', clientMessageId: cmid });
         const seen = wake.peek(owner, cmid, text, target);
         if (seen) return this.moaWire(res, seen);
+        // The chat path never carries a room message: an id it spent is reused.
+        const prior = this.deps.chat?.()?.priorSend?.(owner, cmid);
+        if (prior && prior.view.state !== 'unknown') return this.json(res, 409, { error: 'message-id-reused', clientMessageId: cmid });
         if (caller.kind === 'device') {
           try { this.deps.auditMoaSend?.({ deviceId: caller.deviceId, sessionId: `room:${workspaceId}`, route: 'wake' }); } catch { /* best-effort */ }
         } else {
