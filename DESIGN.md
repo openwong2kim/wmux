@@ -525,9 +525,11 @@ status bar badges, `fleet_triage` or the phone's sidebar.
   (header, body and chip), one alignment per line. Consecutive system cards of one thread merge
   into one line naming the first three and "N events", the red and yellow
   words kept; it opens into the lines themselves. A 1:1 holds the system
-  cards of its own thread and of the work it started; from before 1:1
+  cards of its own thread; from before 1:1
   threads (and, for a lone bot, from the room too) those naming the bot or
-  its task, or written in a thread it wrote in.
+  its task, or written in a thread it wrote in. Those of the work a 1:1 or a
+  group started — and main's lines about it there, "Finished: …" — are
+  steps of its work card (Threads), not lines (owner decision 2026-10-16).
 - **Threads (owner decision 2026-10-14):** a thread other than General shows
   in the timeline as its first card (its root) — a system line (a task's
   start) as much as a message — carrying the thread's chip when its name
@@ -547,8 +549,25 @@ status bar badges, `fleet_triage` or the phone's sidebar.
   timeline. A card posted where the bot talks with the owner about another
   thread's subject (an approval in General about a PR) carries that
   thread's chip too, and shows in its panel. Inside the panel no row names
-  the panel's own thread. **No internal id in the
-  owner's view:**
+  the panel's own thread.
+  **Work handed off (owner decision 2026-10-16):** a thread the
+  conversation started (a coordinator's request thread, from a 1:1 or a
+  group) shows none of that: it is one **work card** at its root's place,
+  inside the delegating bot's run — 14px radius, a `--line` hairline and no
+  fill, a bubble's width at most. First, in 11px muted, the delegate's 16px
+  avatar, "Handed to <bot>" and "· <state>": a steady 6px muted dot and
+  Working (Waiting for review once its task reported), the needs-you dot and
+  text while anything in it waits on the owner, a success check and Done,
+  Failed in red, a neutral Cancelled. Then the request in 14px/500 (the
+  chip's name), the delegate's newest message in 13px `--text-sub` (two
+  lines at most), and a foot: the PR or issue chip, "N steps · last 15:12"
+  and a ghost Show steps ▾ (24px). It expands in place: a `--stroke`
+  hairline, the cards folded into it as one-line steps (time, the actor's
+  16px avatar or a system line's grey dot, its owner-facing words, a
+  refusal's red word kept), then Open thread and Hide steps ▴. Expanded is
+  per card, for the session; folded by default. Its waiting cards still
+  show in the timeline, and Open thread shows the whole thread.
+  **No internal id in the owner's view:**
   a task's, a request's or a routine's id is only in a chip's tooltip; a
   routine card shows its schedule (never the instructions the bot gave
   itself); a refusal shows its plain sentences (never the reason codes); a

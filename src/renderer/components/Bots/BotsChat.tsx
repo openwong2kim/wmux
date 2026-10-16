@@ -20,6 +20,11 @@
 // card that waits on the owner shows in the main timeline whatever its
 // thread.
 //
+// Work the conversation handed off (owner decision 2026-10-16): a thread it
+// started — a coordinator's request thread — is one work card at its root's
+// position instead of the thread's cards, inside the delegating bot's run
+// (BotsWorkCard). A card in it that waits on the owner still shows.
+//
 // What is happening now sits in the working rail right above the composer:
 // "<bot> working · 0:14" with its queue and a neutral Stop (the turn only;
 // the profile's Stop ends the bot's workers too), then the bot's workers
@@ -66,7 +71,7 @@ import { pendingForChip, useApprovals } from '../Room/approvalsStore';
 import { PresenceDot, botActionsFor, botPresence } from '../Room/BotChips';
 import { deliveryLine, deliveryTaken, roomPostParams, sentFrom, useMentionPicks, type SentTo } from '../Room/RoomComposer';
 import { actorLabel, botKindLabel, cardResumeTaskId, cardTone, formatNoticeTime, isRefThread, kindLabel, ownerCardText, planTextWithNames, requestTitles, threadLabel, threadRef, type IdLabels, type RoomActorView } from '../Room/roomFormat';
-import { BOT_JOB_MAX, botTemplate, normalizeBotJob } from '../../../shared/bot';
+import { BOT_JOB_MAX, botTemplate, normalizeBotJob, type BotProfile as BotProfileData } from '../../../shared/bot';
 import { DEFAULT_BOT_WORKER_AGENT, botWorkerAgentLabel, type BotWorkerAgentOption } from '../../../shared/botWorkerAgent';
 import { pickFolderDialog, templateJob } from '../Settings/FactoryTab';
 import BotAvatar, { botHueIndex, botIdentityColor, noteRemovedBotHues } from '../Room/BotAvatar';
@@ -87,6 +92,8 @@ import { displayWorkspaceName } from '../../utils/fanoutProvenance';
 import { BOTS_SESSION_START, selectWorkerPanelHost } from '../../stores/slices/roomSlice';
 import { routineScheduleText, routineStateText, useBotRoutines } from '../Schedules/BotRoutines';
 import { buildTimeline, clockTime, elapsed, fullTime, hasKindWord, liveNewAfter, separatorLabel, splitThreads, threadCards, type ThreadView, type TimelineItem } from './botsTimeline';
+import { conversationStartedThreads, workView } from './botsWork';
+import BotsWorkCard from './BotsWorkCard';
 import '../Chat/chatMono.css';
 
 const EMPTY_TREE: readonly BotTreeRow[] = [];
@@ -343,6 +350,9 @@ interface RowCtx {
    *  (absent: none, as while the bots are off): whether the task's worker
    *  is resumable now, and the resume. */
   resume?: { resumable: (taskId: string) => boolean; run: (taskId: string) => Promise<void> };
+  /** What a work card reads (absent: no work cards): which cards wait on
+   *  the owner, the bots' tasks, and the pull request a task opened. */
+  work?: { waits: (card: RoomCardData) => boolean; tasks: readonly BotTaskView[]; prUrl: (taskId: string) => string | null };
 }
 
 /** A bot message's prose: the title and the body as one text in one colour,
@@ -497,6 +507,63 @@ function MessageRow({ item, ctx, group }: { item: Extract<TimelineItem, { kind: 
   );
 }
 
+/** A bot's face as the chat knows it: its row, else what the room keeps
+ *  of it (a removed bot's tombstone); null when neither knows it. */
+function botFace(botId: string, ctx: RowCtx): Pick<BotProfileData, 'id' | 'name' | 'role' | 'avatar'> | null {
+  const row = ctx.bots.find((b) => b.bot.id === botId);
+  if (row) return row.bot;
+  const known = ctx.actors[botId];
+  return known?.role ? { id: botId, name: known.name ?? '', role: known.role, ...(known.avatar ? { avatar: known.avatar } : {}) } : null;
+}
+
+/** A thread the conversation started, as one work card in the delegating
+ *  bot's run: its avatar once beside the run's last item, its name above
+ *  the run in a room. */
+function WorkRow({ item, ctx, group }: { item: Extract<TimelineItem, { kind: 'work' }>; ctx: RowCtx; group: boolean }) {
+  const { work, delegatorId, continuation, runEnd } = item;
+  const { t } = ctx;
+  const opts = ctx.work;
+  const view = useMemo(
+    () => workView(work, { delegatorId, waits: opts?.waits ?? (() => false), tasks: opts?.tasks, requestTitle: ctx.requestTitle, prUrl: opts?.prUrl }),
+    [work, delegatorId, opts, ctx.requestTitle],
+  );
+  const party = (botId: string) => ({ kind: 'bot' as const, workspaceId: work.workspaceId, botId });
+  const face = delegatorId ? botFace(delegatorId, ctx) : null;
+  const showName = !!delegatorId && (group || (!!ctx.selfBot && delegatorId !== ctx.selfBot));
+  const textOf = (c: RoomCardData): string => {
+    const title = ownerCardText(c, ctx.botNames, c.actor.kind === 'bot' ? ctx.idLabels : undefined, t).title.split('\n')[0].trim();
+    return c.actor.kind === 'human' ? `${t('room.actor.you')}: ${title}` : title;
+  };
+  const refChip = view.refUrl ? ctx.markdown.linkChip?.(view.refUrl, null) : null;
+  return (
+    <div
+      className={`wmux-bots-msg${continuation ? ' is-continuation' : ''}`}
+      data-bots-bubble="work"
+      data-continuation={continuation ? 'true' : undefined}
+      data-run-end={runEnd ? 'true' : undefined}
+    >
+      <div className="wmux-bots-msg-gutter">{runEnd && face ? <BotAvatar bot={face} size={28} /> : null}</div>
+      <div className="wmux-bots-msg-main">
+        {!continuation && showName && (
+          <div className="wmux-bots-msg-head" data-bots-msg-head>
+            <span className="truncate" style={botNameStyle(delegatorId)}>{actorLabel(party(delegatorId), t, ctx.bots, ctx.actors)}</span>
+          </div>
+        )}
+        <BotsWorkCard
+          work={work}
+          view={view}
+          t={t}
+          faceOf={(botId) => botFace(botId, ctx)}
+          nameOf={(botId) => actorLabel(party(botId), t, ctx.bots, ctx.actors)}
+          textOf={textOf}
+          refChip={refChip}
+          onOpenThread={() => ctx.onThread(work.workspaceId, work.threadId)}
+        />
+      </div>
+    </div>
+  );
+}
+
 /** Consecutive system cards of one thread: one line naming each (a
  *  refusal's or a budget's word kept in its colour) and how many, which
  *  opens into the cards themselves. A lone card is its own line. */
@@ -578,6 +645,7 @@ function TimelineView({ items, ctx, group = false }: { items: readonly TimelineI
           case 'new': return <div key={item.key} className="wmux-bots-new" data-bots-new-divider role="separator"><span>{ctx.t('botsPage.chat.new')}</span></div>;
           case 'system': return <SystemGroup key={item.key} cards={item.cards} thread={item.thread} ctx={ctx} />;
           case 'message': return <MessageRow key={item.key} item={item} ctx={ctx} group={group} />;
+          case 'work': return <WorkRow key={item.key} item={item} ctx={ctx} group={group} />;
         }
       })}
     </>
@@ -1970,11 +2038,14 @@ export function BotsChat({ conversation, roomCards, bots, title, workspaceName, 
   const conversationId = conversation.id;
   // Cards that land while the chat is in view are not "new" (liveNewAfter).
   const [newAfter, setNewAfter] = useState(() => useStore.getState().botsSeenAt[conversationId] ?? BOTS_SESSION_START);
-  const { main, threads, surfaced } = useMemo(() => splitThreads(cards, waits), [cards, waits]);
+  // The threads this conversation started fold into work cards.
+  const startedThreads = useMemo(() => conversationStartedThreads(conversation, roomCards, roomThreads), [conversation, roomCards, roomThreads]);
+  const { main, threads, surfaced, work } = useMemo(() => splitThreads(cards, waits, startedThreads), [cards, waits, startedThreads]);
+  const workAuthor = conversation.kind === 'bot' ? conversation.row.bot.id : undefined;
   const items = useMemo(() => {
     const entries: RoomEntry[] = main.map((card) => ({ kind: 'card' as const, card }));
-    return buildTimeline(entries, { waits, threads, surfaced, newAfter });
-  }, [main, threads, surfaced, waits, newAfter]);
+    return buildTimeline(entries, { waits, threads, surfaced, newAfter, work, ...(workAuthor ? { workAuthor } : {}) });
+  }, [main, threads, surfaced, waits, newAfter, work, workAuthor]);
   const botNames = useMemo(() => bots.map((b) => b.bot.name), [bots]);
   const taskTitle = useMemo(() => {
     const byId = new Map<string, string>();
@@ -1986,6 +2057,17 @@ export function BotsChat({ conversation, roomCards, bots, title, workspaceName, 
     return (threadId: ThreadId) => byThread.get(threadId) ?? null;
   }, [roomCards]);
   const idLabels = useIdLabels(bots, t);
+  // A work card's state reads its tasks; its chip, the PR a task opened.
+  const workCtx = useMemo((): NonNullable<RowCtx['work']> => {
+    const tasks = bots.flatMap((r) => r.tasks ?? []);
+    const urls = new Map<string, string>();
+    for (const r of bots) {
+      const repo = r.bot.repo?.repoKey;
+      if (!repo || !/^github\.com\//.test(repo)) continue;
+      for (const task of r.tasks ?? []) if (task.pr) urls.set(task.taskId, `https://${repo}/pull/${task.pr.number}`);
+    }
+    return { waits, tasks, prUrl: (taskId) => urls.get(taskId) ?? null };
+  }, [bots, waits]);
 
   // An open conversation is read: the list row's unread count clears while
   // the window and the chat are in view, wherever it is scrolled (the
@@ -2187,7 +2269,7 @@ export function BotsChat({ conversation, roomCards, bots, title, workspaceName, 
     resumable: (taskId) => taskRows.some((row) => (row.tasks ?? []).some((task) => task.taskId === taskId && task.worker === 'resumable')),
     run: resumeShown,
   }), [readOnly, resumePort, taskRows, resumeShown]);
-  const ctx: RowCtx = { t, bots, actors, api, now, readOnly, jobPort: readOnly ? undefined : jobPort, nameOf, botNames, taskTitle, requestTitle, idLabels, sent, started, onThread, onOpenBot, markdown, ...(conversation.kind === 'bot' ? { selfBot: conversation.row.bot.id } : {}), ...(cardResume ? { resume: cardResume } : {}) };
+  const ctx: RowCtx = { t, bots, actors, api, now, readOnly, jobPort: readOnly ? undefined : jobPort, nameOf, botNames, taskTitle, requestTitle, idLabels, sent, started, onThread, onOpenBot, markdown, ...(conversation.kind === 'bot' ? { selfBot: conversation.row.bot.id } : {}), ...(cardResume ? { resume: cardResume } : {}), work: workCtx };
   // The open thread is read whole, from its first card (the cached room
   // timeline holds only its newest page), and shown from every card read
   // for the room — not only this conversation's.

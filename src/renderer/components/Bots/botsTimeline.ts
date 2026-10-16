@@ -19,9 +19,16 @@
 // the bot's newest reply in it, which shows there marked with its thread: the
 // owner reads a finished task's answer without opening the thread.
 //
+// Work a conversation handed off (owner decision 2026-10-16): a thread the
+// conversation started folds into one work card at its root's position —
+// its cards and main's pointer lines about it ("Finished: …") — inside the
+// delegating bot's run; a card in it that waits on the owner still shows
+// (botsWork.ts).
+//
 // Pure; times are local.
 import { dmThreadBot, groupThreadGroup, type RoomCard, type ThreadId } from '../../../shared/room';
 import type { RoomEntry } from './botsModel';
+import { isPointerCard, workDelegate, type WorkThread } from './botsWork';
 import { getLocale } from '../../i18n';
 
 type T = (key: string, vars?: Record<string, string | number>) => string;
@@ -49,7 +56,10 @@ export type TimelineItem =
   | { kind: 'day'; key: string; at: number }
   | { kind: 'new'; key: string }
   | { kind: 'system'; key: string; cards: RoomCard[]; thread?: ThreadView }
-  | { kind: 'message'; key: string; card: RoomCard; continuation: boolean; runEnd: boolean; waiting: boolean; thread?: ThreadView; inThread?: boolean };
+  | { kind: 'message'; key: string; card: RoomCard; continuation: boolean; runEnd: boolean; waiting: boolean; thread?: ThreadView; inThread?: boolean }
+  /** A thread the conversation started, folded into one card in the run of
+   *  the bot that handed it off (`delegatorId`; null: not known). */
+  | { kind: 'work'; key: string; work: WorkThread; at: number; delegatorId: string | null; continuation: boolean; runEnd: boolean };
 
 /** The key a thread is known by: a thread id is a room's own, so a 1:1
  *  (which spans rooms) keys it with its workspace. */
@@ -61,21 +71,49 @@ export function threadKey(workspaceId: string, threadId: ThreadId): string {
  *  (and a 1:1's or a group chat's thread: the conversation itself), each
  *  thread's root (first
  *  card) with its summary, any thread card that waits on the owner, and
- *  each thread's newest bot reply (`surfaced`). */
-export function splitThreads(cards: readonly RoomCard[], waits: (card: RoomCard) => boolean): { main: RoomCard[]; threads: Map<string, ThreadView>; surfaced: Set<string> } {
+ *  each thread's newest bot reply (`surfaced`). A thread the conversation
+ *  started (`started`, by threadKey) is one work card instead (`work`, by
+ *  its first folded card's id, which stands in `main` for it): its cards and
+ *  main's pointer lines about it fold in, but a card that waits on the owner
+ *  stays in `main` too. */
+export function splitThreads(cards: readonly RoomCard[], waits: (card: RoomCard) => boolean, started?: ReadonlySet<string>): { main: RoomCard[]; threads: Map<string, ThreadView>; surfaced: Set<string>; work: Map<string, WorkThread> } {
   const main: RoomCard[] = [];
   const byKey = new Map<string, ThreadView>();
   const rootOf = new Map<string, string>();
   const lastBotReply = new Map<string, string>();
   const inMain = (card: RoomCard) => card.threadId === 'general' || dmThreadBot(card.threadId) !== null || groupThreadGroup(card.threadId) !== null;
+  /** The started thread a card folds into, or null. */
+  const workOf = (card: RoomCard): { key: string; threadId: ThreadId } | null => {
+    if (!started || started.size === 0) return null;
+    const threadId = inMain(card) ? (isPointerCard(card) ? card.refs!.threadId! : null) : card.threadId;
+    const key = threadId ? threadKey(card.workspaceId, threadId) : null;
+    return key && threadId && started.has(key) ? { key, threadId } : null;
+  };
   for (const card of cards) {
-    if (inMain(card)) continue;
+    if (inMain(card) || workOf(card)) continue;
     const key = threadKey(card.workspaceId, card.threadId);
     if (!rootOf.has(key)) rootOf.set(key, card.id);
     else if (card.actor.kind === 'bot') lastBotReply.set(key, card.id);
   }
   const surfaced = new Set(lastBotReply.values());
+  const works = new Map<string, WorkThread & { anchor?: string }>();
   for (const card of cards) {
+    const folds = workOf(card);
+    if (folds) {
+      let w = works.get(folds.key);
+      if (!w) works.set(folds.key, (w = { workspaceId: card.workspaceId, threadId: folds.threadId, steps: [], all: [] }));
+      w.all.push(card);
+      if (waits(card)) {
+        main.push(card);
+        continue;
+      }
+      w.steps.push(card);
+      if (!w.anchor) {
+        w.anchor = card.id;
+        main.push(card);
+      }
+      continue;
+    }
     if (inMain(card)) {
       main.push(card);
       continue;
@@ -93,7 +131,9 @@ export function splitThreads(cards: readonly RoomCard[], waits: (card: RoomCard)
   }
   const threads = new Map<string, ThreadView>();
   for (const [key, view] of byKey) threads.set(rootOf.get(key)!, view);
-  return { main, threads, surfaced };
+  const work = new Map<string, WorkThread>();
+  for (const { anchor, ...w } of works.values()) if (anchor) work.set(anchor, w);
+  return { main, threads, surfaced, work };
 }
 
 /** A thread's own cards, and the cards elsewhere that link it (an approval
@@ -105,6 +145,16 @@ export function threadCards(cards: readonly RoomCard[], workspaceId: string, thr
 /** Who wrote a card, as runs compare it. */
 function author(card: RoomCard): string {
   return card.actor.kind === 'bot' ? `bot:${card.actor.botId}` : card.actor.kind;
+}
+
+/** Who a run item is by: a message's author, a work card's delegating bot. */
+function itemAuthor(item: Extract<TimelineItem, { kind: 'message' | 'work' }>): string {
+  if (item.kind === 'message') return author(item.card);
+  return item.delegatorId ? `bot:${item.delegatorId}` : item.key;
+}
+
+function itemAt(item: Extract<TimelineItem, { kind: 'message' | 'work' }>): number {
+  return item.kind === 'message' ? item.card.at : item.at;
 }
 
 /** The local day a time falls on. */
@@ -121,7 +171,10 @@ function entryAt(entry: RoomEntry): number {
  * The timeline items for entries already in order. `waits` says which
  * cards wait on the owner; `threads` maps a root card's id to its thread;
  * `newAfter` places the "New" divider above the first card from someone
- * else written after it (null: none).
+ * else written after it (null: none). `work` maps the card standing for a
+ * started thread to that thread (splitThreads): it becomes a work item in
+ * the run of `workAuthor` (a 1:1's bot), else of the nearest bot above it
+ * other than the one the work was handed to.
  */
 export function buildTimeline(entries: readonly RoomEntry[], opts: {
   waits: (card: RoomCard) => boolean;
@@ -129,6 +182,8 @@ export function buildTimeline(entries: readonly RoomEntry[], opts: {
   /** Thread replies shown in the main timeline (splitThreads). */
   surfaced?: ReadonlySet<string>;
   newAfter?: number | null;
+  work?: ReadonlyMap<string, WorkThread>;
+  workAuthor?: string;
 }): TimelineItem[] {
   const out: TimelineItem[] = [];
   let day = '';
@@ -148,6 +203,17 @@ export function buildTimeline(entries: readonly RoomEntry[], opts: {
     }
     const card = entry.card;
     const prev = out[out.length - 1];
+    const work = opts.work?.get(card.id);
+    if (work) {
+      const delegatorId = opts.workAuthor ?? nearestBot(out, workDelegate(work.all, null));
+      const item: Extract<TimelineItem, { kind: 'work' }> = {
+        kind: 'work', key: `work:${threadKey(work.workspaceId, work.threadId)}`, work, at, delegatorId, continuation: false, runEnd: true,
+      };
+      item.continuation = continues(prev, item);
+      if (item.continuation && (prev?.kind === 'message' || prev?.kind === 'work')) prev.runEnd = false;
+      out.push(item);
+      continue;
+    }
     if (card.actor.kind === 'system') {
       const thread = opts.threads?.get(card.id);
       if (prev?.kind === 'system' && prev.cards[0].threadId === card.threadId && prev.cards[0].workspaceId === card.workspaceId) {
@@ -160,18 +226,34 @@ export function buildTimeline(entries: readonly RoomEntry[], opts: {
       continue;
     }
     const waiting = opts.waits(card);
-    const continuation = prev?.kind === 'message'
-      && author(prev.card) === author(card)
-      && card.at - prev.card.at < RUN_WINDOW_MS;
-    if (continuation && prev.kind === 'message') prev.runEnd = false;
     const thread = opts.threads?.get(card.id);
-    out.push({
-      kind: 'message', key: card.id, card, continuation, runEnd: true, waiting,
+    const item: Extract<TimelineItem, { kind: 'message' }> = {
+      kind: 'message', key: card.id, card, continuation: false, runEnd: true, waiting,
       ...(thread ? { thread } : {}),
       ...(opts.surfaced?.has(card.id) ? { inThread: true } : {}),
-    });
+    };
+    item.continuation = continues(prev, item);
+    if (item.continuation && (prev?.kind === 'message' || prev?.kind === 'work')) prev.runEnd = false;
+    out.push(item);
   }
   return out;
+}
+
+/** Whether a run item continues the run above it: the same author, less
+ *  than RUN_WINDOW_MS later, nothing between. */
+function continues(prev: TimelineItem | undefined, item: Extract<TimelineItem, { kind: 'message' | 'work' }>): boolean {
+  if (prev?.kind !== 'message' && prev?.kind !== 'work') return false;
+  return itemAuthor(prev) === itemAuthor(item) && itemAt(item) - itemAt(prev) < RUN_WINDOW_MS;
+}
+
+/** The newest bot above in the timeline other than `except`, or null. */
+function nearestBot(items: readonly TimelineItem[], except: string | null): string | null {
+  for (let i = items.length - 1; i >= 0; i--) {
+    const it = items[i];
+    if (it.kind === 'message' && it.card.actor.kind === 'bot' && it.card.actor.botId !== except) return it.card.actor.botId;
+    if (it.kind === 'work' && it.delegatorId && it.delegatorId !== except) return it.delegatorId;
+  }
+  return null;
 }
 
 /** Whether a card's kind gets a word in its run header (Verdict, Report…). */

@@ -330,6 +330,94 @@
   border: 1px solid var(--attention-hairline);
   border-radius: 14px;
 }
+/* Work the conversation handed off (owner decision 2026-10-16): one card
+   inside the delegating bot's run, a --line hairline and no fill (one
+   boundary); expanded in place, its steps under a --stroke hairline. */
+.wmux-bots-work {
+  width: min(28rem, 100%);
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+}
+.wmux-bots-work-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.wmux-bots-work-dot { display: inline-block; width: 6px; height: 6px; flex-shrink: 0; border-radius: 9999px; }
+.wmux-bots-work-title {
+  margin-top: 4px;
+  font-size: 14px;
+  line-height: 1.45;
+  font-weight: var(--title-weight, 500);
+  color: var(--text-main);
+  overflow-wrap: anywhere;
+}
+.wmux-bots-work-latest {
+  margin-top: 2px;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text-sub);
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+.wmux-bots-work-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.wmux-bots-work-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  height: 24px;
+  margin-left: auto;
+  padding: 0 6px;
+  border-radius: 6px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.wmux-bots-work-toggle:hover { background: var(--hover-fill); color: var(--text-main); }
+.wmux-bots-work-chevron { display: inline-flex; transform: rotate(90deg); }
+.wmux-bots-work-chevron.is-open { transform: rotate(-90deg); }
+.wmux-bots-work-steps {
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px solid var(--stroke);
+}
+.wmux-bots-work-step {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  min-height: 24px;
+  font-size: 12px;
+  color: var(--text-sub);
+}
+.wmux-bots-work-step-face { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; flex-shrink: 0; }
+.wmux-bots-work-steps-foot { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
+.wmux-bots-work-link {
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  padding: 0 2px;
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--accent);
+}
+.wmux-bots-work-link:hover { text-decoration: underline; }
+
 /* A PR or issue link in a message: its mark, #N and its title. */
 .wmux-bots-ref-chip {
   display: inline-flex;
