@@ -669,6 +669,7 @@ export class TaskGateRunner {
   /** Join the line for a permit (granted at once when one is free). */
   private takePermit(): GatePermit & { leave: () => void } {
     let granted = false;
+    let left = false;
     let grant: () => void = () => undefined;
     const promise = new Promise<void>((resolve) => {
       grant = () => {
@@ -681,9 +682,12 @@ export class TaskGateRunner {
     else this.waiting.push(grant);
     return {
       granted: promise,
-      isGranted: () => granted,
-      // Leaving the line: a granted permit is handed on, a waiting one is dropped.
+      isGranted: () => granted && !left,
+      // Leaving the line: a granted permit is handed on, a waiting one is
+      // dropped. Once only: a second call does nothing.
       leave: () => {
+        if (left) return;
+        left = true;
         if (granted) {
           this.running--;
           this.waiting.shift()?.();
@@ -737,7 +741,10 @@ export class TaskGateRunner {
       },
     };
     this.active.set(taskId, token);
+    const permit = this.takePermit();
+    let waitedMs: number | null = null;
     const release = (): void => {
+      if (permit.isGranted()) permit.leave();
       if (this.active.get(taskId) === token) this.active.delete(taskId);
     };
 
@@ -748,6 +755,17 @@ export class TaskGateRunner {
       // every gate answered `deps_missing` — unrecorded — and the task could
       // never reach `completed`. That is the exact blockage the no-gate record
       // exists to remove, reintroduced one step earlier.
+      //
+      // The machine-wide permit comes before all of it: what is checked (the
+      // steps, the base's scripts, the HEAD a verdict pins) and what runs are
+      // the same tree, never one read before a wait and run after it. The
+      // step timeout starts after the wait.
+      const waitedFrom = this.now();
+      if (!permit.isGranted()) {
+        await Promise.race([permit.granted, cancelSignal]);
+        waitedMs = this.now() - waitedFrom;
+      }
+      if (!permit.isGranted()) permit.leave();
       const before = await this.readHead(worktreePath).catch(() => null);
       const resolved = await this.resolveSteps(worktreePath, input.projectRoot ?? worktreePath, input.gateBaseRef);
       if ('refused' in resolved) return { ok: false, status: 'refused', taskId, error: resolved.refused, ...(resolved.code ? { code: resolved.code } : {}) };
@@ -782,80 +800,65 @@ export class TaskGateRunner {
       let exitCode: number | null = 0;
       let label = resolved.steps[resolved.steps.length - 1]?.label ?? '';
 
-      // One machine-wide permit is held through every step; the timeout runs
-      // from the step's start, never through the wait.
-      const permit = this.takePermit();
-      const waitedFrom = this.now();
-      const queued = !permit.isGranted();
-      if (queued) await Promise.race([permit.granted, cancelSignal]);
-      if (!permit.isGranted()) permit.leave();
-      let pinFrom = before;
-      if (queued && permit.isGranted()) {
-        append(`[gate] waited ${Math.round((this.now() - waitedFrom) / 1000)}s for another gate to finish\n`);
-        // What is graded is the tree after the wait.
-        pinFrom = await this.readHead(worktreePath).catch(() => null);
-      }
-      try {
-        for (const step of resolved.steps) {
-          if (cancelled) {
-            exitCode = null;
-            label = step.label;
-            break;
-          }
+      if (waitedMs !== null) append(`[gate] waited ${Math.round(waitedMs / 1000)}s for another gate to finish\n`);
+
+      for (const step of resolved.steps) {
+        if (cancelled) {
+          exitCode = null;
           label = step.label;
-          const [cmd, ...args] = step.argv;
-          const proc = this.spawn(cmd as string, args, { cwd: worktreePath });
-          current = proc;
-          proc.onOutput(append);
-
-          let timedOut = false;
-          const timer = setTimeout(() => {
-            timedOut = true;
-            proc.kill();
-          }, this.timeoutMs);
-          let exit: GateExit;
-          try {
-            exit = await proc.wait();
-          } finally {
-            clearTimeout(timer);
-            current = null;
-          }
-
-          // The process never ran (ENOENT: npm is not on the daemon's PATH;
-          // EACCES: verify.sh is not executable). Nothing was graded, so this is
-          // a SKIP — reporting it as exitCode null would have a brain close a
-          // healthy task as failed because of the daemon's environment.
-          if (exit.kind === 'unavailable') {
-            return {
-              ok: true,
-              status: 'skipped',
-              taskId,
-              skipped: 'gate_unavailable',
-              detail: `the gate command could not be started (${step.label}): ${exit.message}`,
-            };
-          }
-          exitCode = exit.code;
-
-          if (timedOut || cancelled) {
-            // A killed gate reports `null` whatever the platform turned the signal
-            // into — the ledger's rule is that only an explicit 0 passes.
-            exitCode = null;
-            append(
-              timedOut
-                ? `\n[gate] timed out after ${Math.round(this.timeoutMs / 1000)}s and was killed\n`
-                : '\n[gate] cancelled\n',
-            );
-            break;
-          }
-          // First failure stops: `npm test` after a failing lint tells nobody
-          // anything they did not already know.
-          if (exitCode !== 0) break;
+          break;
         }
-      } finally {
-        if (permit.isGranted()) permit.leave();
+        label = step.label;
+        const [cmd, ...args] = step.argv;
+        const proc = this.spawn(cmd as string, args, { cwd: worktreePath });
+        current = proc;
+        proc.onOutput(append);
+
+        let timedOut = false;
+        const timer = setTimeout(() => {
+          timedOut = true;
+          proc.kill();
+        }, this.timeoutMs);
+        let exit: GateExit;
+        try {
+          exit = await proc.wait();
+        } finally {
+          clearTimeout(timer);
+          current = null;
+        }
+
+        // The process never ran (ENOENT: npm is not on the daemon's PATH;
+        // EACCES: verify.sh is not executable). Nothing was graded, so this is
+        // a SKIP — reporting it as exitCode null would have a brain close a
+        // healthy task as failed because of the daemon's environment.
+        if (exit.kind === 'unavailable') {
+          return {
+            ok: true,
+            status: 'skipped',
+            taskId,
+            skipped: 'gate_unavailable',
+            detail: `the gate command could not be started (${step.label}): ${exit.message}`,
+          };
+        }
+        exitCode = exit.code;
+
+        if (timedOut || cancelled) {
+          // A killed gate reports `null` whatever the platform turned the signal
+          // into — the ledger's rule is that only an explicit 0 passes.
+          exitCode = null;
+          append(
+            timedOut
+              ? `\n[gate] timed out after ${Math.round(this.timeoutMs / 1000)}s and was killed\n`
+              : '\n[gate] cancelled\n',
+          );
+          break;
+        }
+        // First failure stops: `npm test` after a failing lint tells nobody
+        // anything they did not already know.
+        if (exitCode !== 0) break;
       }
 
-      const headSha = await this.pinnedHead(worktreePath, pinFrom);
+      const headSha = await this.pinnedHead(worktreePath, before);
       const result: LedgerGateResult = {
         exitCode,
         tail: boundTail(output),

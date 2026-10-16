@@ -411,6 +411,33 @@ describe('TaskGateRunner', () => {
     expect(runner.load()).toEqual({ running: 0, waiting: 0 });
   });
 
+  it('a queued gate reads its steps only once it holds the permit, so what it checked is what it runs', async () => {
+    const seen: string[][] = [];
+    const reads: string[] = [];
+    let scripts: Record<string, string> = npmProject;
+    const runner = new TaskGateRunner({
+      ledger: fakeLedger(),
+      spawn: fakeSpawn({ hang: true, seen }),
+      readPackageScripts: (root) => { reads.push(root); return scripts; },
+      depsState: () => 'ok',
+    });
+    const tick = () => new Promise((r) => setTimeout(r, 0));
+    const first = runner.run({ taskId: 'wtask-1', worktreePath: WT, systemWorkspaceId: 'ws-daemon' });
+    await tick();
+    const second = runner.run({ taskId: 'wtask-2', worktreePath: '/tmp/wt-task-2', systemWorkspaceId: 'ws-daemon' });
+    await tick();
+    expect(reads.filter((r) => r === '/tmp/wt-task-2')).toHaveLength(0);
+    // The worker drops its test script while it waits: the gate sees that.
+    scripts = { lint: 'eslint .' };
+    runner.cancel('wtask-1');
+    await first;
+    await tick();
+    expect(reads).toContain('/tmp/wt-task-2');
+    expect(seen.at(-1)?.slice(1)).toEqual(['run', 'lint']);
+    runner.cancel('wtask-2');
+    await second;
+  });
+
   it('allows more gates at once when maxConcurrent says so', async () => {
     const seen: string[][] = [];
     const runner = new TaskGateRunner({
