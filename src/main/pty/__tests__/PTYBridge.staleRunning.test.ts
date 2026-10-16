@@ -60,6 +60,7 @@ vi.mock('../../notification/rendererNotificationReadiness', () => ({
 const broadcastMetadataUpdateMock = mocks.broadcastMetadataUpdate;
 
 import { PTYBridge } from '../PTYBridge';
+import { markResize, clearPty as clearSuppression, RESIZE_REDRAW_GUARD_MS } from '../../notification/idleSuppression';
 import type { PTYManager, PTYInstance } from '../PTYManager';
 import type { HookSignalRouter } from '../../hooks/HookSignalRouter';
 
@@ -299,5 +300,71 @@ describe('PTYBridge — the byte heuristic stands down on a hook-governed pane',
     broadcastMetadataUpdateMock.mockClear();
     vi.advanceTimersByTime(5_100);
     expect(idleWasBroadcast()).toBe(true);
+  });
+});
+
+/**
+ * #2262 — local mode's mirror of the daemon fix (#2241). Revealing a workspace
+ * refits its panes, and an idle TUI agent repaints its whole screen, well over
+ * the activity threshold. That repaint is not work: it must not light the pane
+ * `running`, and it must hand its cycle back so a real turn still can.
+ */
+describe('PTYBridge — a resize repaint does not light an idle pane running (#2262)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    broadcastMetadataUpdateMock.mockClear();
+    mocks.lastBroadcastAgentStatus.clear();
+  });
+  afterEach(() => {
+    clearSuppression('p1');
+    vi.useRealTimers();
+  });
+
+  function statusCalls(): string[] {
+    return broadcastMetadataUpdateMock.mock.calls
+      .map((c) => (c[1] as { agentStatus?: string }).agentStatus)
+      .filter((s): s is string => s !== undefined);
+  }
+
+  it('a repaint burst inside the resize window broadcasts nothing, then or on the silence after', () => {
+    const { proc } = makeBridge();
+
+    markResize('p1');
+    proc.emitData('x'.repeat(3000));
+    flushMicroBatch();
+    expect(statusCalls()).toEqual([]);
+
+    // The handed-back cycle has no idle timer, so the silence after the
+    // repaint writes nothing either: the pane keeps whatever it showed.
+    vi.advanceTimersByTime(5_100);
+    expect(statusCalls()).toEqual([]);
+  });
+
+  it('a real turn that keeps writing past the resize window still reports running', () => {
+    const { proc } = makeBridge();
+
+    markResize('p1');
+    proc.emitData('x'.repeat(3000));
+    flushMicroBatch();
+    expect(statusCalls()).toEqual([]);
+
+    // The turn keeps streaming after the guard window: its next burst opens a
+    // fresh cycle, which is outside the window and lights the pane.
+    vi.advanceTimersByTime(RESIZE_REDRAW_GUARD_MS + 100);
+    proc.emitData('y'.repeat(3000));
+    flushMicroBatch();
+    expect(statusCalls()).toEqual(['running']);
+
+    // And that cycle settles to idle on silence as before.
+    vi.advanceTimersByTime(5_100);
+    expect(statusCalls()).toEqual(['running', 'idle']);
+  });
+
+  it('a burst with no recent resize still reports running (control)', () => {
+    const { proc } = makeBridge();
+
+    proc.emitData('x'.repeat(3000));
+    flushMicroBatch();
+    expect(statusCalls()).toEqual(['running']);
   });
 });

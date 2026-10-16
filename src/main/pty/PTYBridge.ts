@@ -726,10 +726,42 @@ export class PTYBridge {
         // reset below — a deferred working cue landing 3s later would reset
         // `announced` on repaint noise and re-open the door to a duplicate
         // toast for an already-announced turn.
+        const resized = recentlyResized(ptyId, RESIZE_REDRAW_GUARD_MS);
         const activeAlarm = this.getAlarm?.() ?? null;
         const activeSlug = agentDisplayToSlug(lastAgent);
-        if (activeAlarm && activeSlug && !recentlyResized(ptyId, RESIZE_REDRAW_GUARD_MS)) {
+        if (activeAlarm && activeSlug && !resized) {
           activeAlarm.observe(ptyId, activeSlug, { class: 'working' });
+        }
+        // #2262: a resize repaint is not work, so it does not reach the status
+        // dot either — the local-mode mirror of the daemon fix (#2241). Revealing
+        // a workspace refits its panes, and an idle TUI (Codex) repaints the
+        // whole screen, well over the threshold: broadcasting `running` here lit
+        // an idle pane, and the unmarked idle that followed left it lit for the
+        // renderer's two-minute activity window. Hand the cycle back instead of
+        // consuming it, so a real turn that keeps writing past the guard window
+        // still reports running. No hook-armed exemption is needed here (the
+        // daemon has one, #2251): main never arms a cycle from a hook's running
+        // edge, and a pane whose hooks govern its running state never gets this
+        // broadcast at all.
+        //
+        // Resize-redraw guard for the detector: resetting the emission dedup on
+        // the repaint burst lets the unchanged idle footer re-match and re-fire
+        // a stale "Ready for input" for a pane where nothing happened. The
+        // reset is deferred to the end of the guard window, not skipped: a
+        // genuinely new turn whose short reply never crosses the threshold
+        // again would otherwise get no fresh dedup state, and its completion
+        // would be deduped as a repeat of the last-notified turn (codex review
+        // catch). Deferring keeps the repaint itself from re-triggering while
+        // that real completion, which arrives over at least one network
+        // round-trip, still sees a reset dedup state.
+        if (resized) {
+          if (resizeGuardTimer) clearTimeout(resizeGuardTimer);
+          resizeGuardTimer = setTimeout(() => {
+            resizeGuardTimer = null;
+            agentDetector.resetEmissionState();
+          }, RESIZE_REDRAW_GUARD_MS);
+          this.activityMonitor.endTurn(ptyId);
+          return;
         }
         // Hook-governed pane: its bridge reports the turn START, so the
         // heuristic's guess is strictly worse than what the pane already
@@ -759,34 +791,7 @@ export class PTYBridge {
           });
         }
         // #935 direction 3: recorded at the broadcastMetadataUpdate funnel.
-        // Resize-redraw guard: a workspace switch / split / zoom refits xterm,
-        // fires pty:resize, and TUI agents answer with a multi-KB full redraw —
-        // a burst indistinguishable from real activity. Resetting the emission
-        // dedup on THAT burst lets the unchanged idle footer re-match and
-        // re-fire a stale "Ready for input" for a pane where nothing happened.
-        //
-        // onActive fires EXACTLY ONCE per active-to-idle cycle (ActivityMonitor
-        // re-arms it only on the next idle→active transition). So a plain
-        // "skip the reset this one time" would permanently skip it for the
-        // REST of this cycle too — if a genuinely new turn's output continues
-        // streaming into the SAME cycle (no 5s idle gap between the resize
-        // repaint and the real response), that turn's completion would never
-        // get a fresh dedup state and would be silently deduped as a repeat
-        // of the last-notified turn (codex review catch). Deferring the
-        // reset to fire once the guard window elapses — rather than skipping
-        // it outright — keeps the repaint itself from re-triggering while
-        // still guaranteeing this cycle's real completion (which streams in
-        // over at least one network round-trip, essentially always >3s) sees
-        // a reset dedup state by the time it arrives.
-        if (recentlyResized(ptyId, RESIZE_REDRAW_GUARD_MS)) {
-          if (resizeGuardTimer) clearTimeout(resizeGuardTimer);
-          resizeGuardTimer = setTimeout(() => {
-            resizeGuardTimer = null;
-            agentDetector.resetEmissionState();
-          }, RESIZE_REDRAW_GUARD_MS);
-        } else {
-          agentDetector.resetEmissionState();
-        }
+        agentDetector.resetEmissionState();
       } catch (err) {
         console.warn('[PTYBridge] onActive callback error:', err);
       }
