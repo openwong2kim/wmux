@@ -11,13 +11,16 @@
 // hand-made workspace. Nothing is posted in a room; one log line per pane.
 //
 //   - Task ended (completed, cancelled, failed, stopped by the owner): each
-//     pane that runs no agent and no command (a shell at its prompt, or one
-//     respawned at the restart with nothing seen in it since) is closed
-//     through the renderer, and the whole workspace when every pane in it is
-//     such a shell (or every pane's session is gone: the owner's stop
-//     destroys them and leaves frozen tabs); an end the reclaim records only
-//     once it recorded it.
-//     Folders are left to taskFolderCleanup.ts.
+//     of the task's own panes (its reclaim record, or its bot worker session
+//     record, names it; never any other pane, however idle) that runs no
+//     agent and no command (a shell at its prompt, or one respawned at the
+//     restart with nothing seen in it since) is closed through the renderer,
+//     and the whole workspace when every pane in it is such a pane of the
+//     task's (or its session is gone: the owner's stop destroys them and
+//     leaves frozen tabs); any other pane keeps the workspace. An end the
+//     reclaim records is handled only once it recorded it. A close counts
+//     (and is logged) only once it shows: its sessions gone from the daemon
+//     and its panes from the tree. Folders are left to taskFolderCleanup.ts.
 //   - Task open (review_requested, working) whose worker pane is a shell
 //     respawned at the restart, or whose agent was seen to exit: the worker's
 //     resume record is written (workerReclaim.ts, the same record the idle
@@ -130,6 +133,10 @@ export interface DeadPaneSweepPorts {
   /** Close a layout pane (all its tabs) through the renderer's pane.close;
    *  true when it closed. */
   closePane: (paneId: string) => Promise<boolean>;
+  /** How long a close is waited for to show (its sessions gone from the
+   *  daemon, its panes from the tree) before it counts as not done. */
+  confirmMs?: number;
+  sleep?: (ms: number) => Promise<void>;
   changed?: () => void;
   now?: () => number;
   log?: (msg: string) => void;
@@ -140,6 +147,10 @@ export interface DeadPaneSweep {
    *  and how many resume records it wrote. A call during a pass does nothing. */
   pass(): Promise<{ closed: number; recorded: number }>;
 }
+
+/** How long a close is waited for to show, and how often it is read. */
+const CLOSE_CONFIRM_MS = 10_000;
+const CLOSE_CONFIRM_STEP_MS = 1_000;
 
 const ENDED: ReadonlySet<string> = new Set(['completed', 'cancelled', 'failed']);
 const OPEN: ReadonlySet<string> = new Set(['review_requested', 'working']);
@@ -166,6 +177,34 @@ export function createDeadPaneSweep(ports: DeadPaneSweepPorts): DeadPaneSweep {
     return ids.filter((id, i) => !typedSince(reads[i], floor, at, isRespawnedShell(byId.get(id))));
   };
 
+  const sleep = ports.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const confirmMs = ports.confirmMs ?? CLOSE_CONFIRM_MS;
+
+  /** Whether a pane is the task's own: recorded for it (its reclaim record),
+   *  or created by its own launch (its bot worker session record names the
+   *  task). Nothing else, however idle: an owner's pane in the workspace is
+   *  never one. */
+  const ownPane = (row: LedgerEntry, rec: ReclaimedWorker | null, id: string): boolean =>
+    !!rec?.sessions.some((s) => s.sessionId === id) || safe(() => ports.launchedTask(id), null) === row.id;
+
+  /** Whether a close took effect: `ids` gone from the daemon and from the
+   *  workspace's panes (the whole workspace, when `wholeWorkspace`), read
+   *  again until `confirmMs`. A close the renderer answered but did not do
+   *  is no close. */
+  const closeShows = async (ws: string, ids: readonly string[], wholeWorkspace: boolean): Promise<boolean> => {
+    const deadline = now() + confirmMs;
+    for (;;) {
+      const panes = safe(() => ports.workspacePtys(ws), null);
+      const treeOk = !!panes && (wholeWorkspace ? panes.length === 0 : ids.every((id) => !panes.includes(id)));
+      if (treeOk) {
+        const live = await ports.listSessions().catch(() => null);
+        if (live && ids.every((id) => !live.some((x) => x.id === id && x.state !== 'dead'))) return true;
+      }
+      if (now() >= deadline) return false;
+      await sleep(CLOSE_CONFIRM_STEP_MS);
+    }
+  };
+
   /** The task's row and record now: unchanged since the pass read them
    *  (same rev and status, a record in the same state), or null. */
   const unchanged = (row: LedgerEntry, rec: ReclaimedWorker | null): boolean => {
@@ -180,10 +219,11 @@ export function createDeadPaneSweep(ports: DeadPaneSweepPorts): DeadPaneSweep {
       const s = m.get(id);
       return !!s && s.state !== 'dead' && (isRespawnedShell(s) || isIdleShell(s));
     };
-    const shells = ptys.filter((id) => shellIn(byId, id));
-    // Every pane's session gone from the daemon (the owner's stop destroys
-    // them, which leaves frozen tabs): the workspace holds nothing.
-    const allGone = ptys.every((id) => !byId.get(id) || byId.get(id)?.state === 'dead');
+    const own = (id: string): boolean => ownPane(row, rec, id);
+    const shells = ptys.filter((id) => own(id) && shellIn(byId, id));
+    // Every pane the task's own and its session gone from the daemon (the
+    // owner's stop destroys them, which leaves frozen tabs).
+    const allGone = ptys.every((id) => own(id) && (!byId.get(id) || byId.get(id)?.state === 'dead'));
     if (shells.length === 0 && !allGone) return 0;
     // Typed into since the task ended (or since its worker last stopped):
     // the owner's now.
@@ -210,7 +250,9 @@ export function createDeadPaneSweep(ports: DeadPaneSweepPorts): DeadPaneSweep {
         return ptys.includes(id) && (!was || was.state === 'dead') && (!is || is.state === 'dead');
       };
       const why = isStoppedByOwner(row) ? 'stopped by owner' : row.status;
-      if (nowPtys.every((id) => closable.includes(id) || gone(id))) {
+      // The whole workspace only when every pane in it is the task's own
+      // and dead: an unidentified pane keeps it.
+      if (nowPtys.every((id) => own(id) && (closable.includes(id) || gone(id)))) {
         let ok = false;
         try {
           ok = await ports.closeWorkspace(ws);
@@ -219,6 +261,11 @@ export function createDeadPaneSweep(ports: DeadPaneSweepPorts): DeadPaneSweep {
         }
         if (!ok) {
           notBefore.set(ws, now() + CLEAR_RETRY_MS);
+          return 0;
+        }
+        if (!(await closeShows(ws, nowPtys, true))) {
+          notBefore.set(ws, now() + CLEAR_FOREIGN_RETRY_MS);
+          log(`[factory] dead panes: the close of ${ws} (task ${row.id}) was answered but did not take effect; looked at again later`);
           return 0;
         }
         for (const id of nowPtys) log(`[factory] dead panes: closed ${id} with its workspace ${ws} (task ${row.id}, ${why}${closable.includes(id) ? '' : ', no session'})`);
@@ -243,6 +290,11 @@ export function createDeadPaneSweep(ports: DeadPaneSweepPorts): DeadPaneSweep {
         } catch {
           ok = false;
         }
+        if (ok && !(await closeShows(ws, ids, false))) {
+          notBefore.set(ws, now() + CLEAR_FOREIGN_RETRY_MS);
+          log(`[factory] dead panes: the close of the pane of ${ids.join(', ')} in ${ws} (task ${row.id}) was answered but did not take effect; looked at again later`);
+          continue;
+        }
         if (ok) {
           closed += ids.length;
           for (const id of ids) log(`[factory] dead panes: closed ${id} in ${ws} (task ${row.id}, ${why})`);
@@ -266,7 +318,7 @@ export function createDeadPaneSweep(ports: DeadPaneSweepPorts): DeadPaneSweep {
     // An agent alive anywhere in the workspace: the worker may be that one.
     if (ptys.some((id) => byId.get(id)?.agentProcessAlive === true)) return false;
     // Only the task's own worker panes: recorded for it, or created by its launch.
-    const own = ptys.filter((id) => rec?.sessions.some((s) => s.sessionId === id) || safe(() => ports.launchedTask(id), null) === row.id);
+    const own = ptys.filter((id) => ownPane(row, rec, id));
     const dead = own.filter((id) => isRespawnedShell(byId.get(id)) || isAgentExitedShell(byId.get(id)));
     if (dead.length === 0 || dead.length < own.length) return false;
     const quiet = await untyped(dead, byId, Math.max(row.updatedAt, rec?.at ?? 0));

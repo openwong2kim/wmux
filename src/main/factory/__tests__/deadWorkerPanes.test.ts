@@ -97,11 +97,13 @@ async function rig(rows: LedgerEntry[], sessions: DeadPaneSession[], over: Parti
     isTaskWorkspace: (rec, ws) => ws !== rec.ownerWorkspaceId && rows.some((x) => x.id === rec.taskId && x.taskWorkspaceId === ws),
     viewedWorkspace: () => 'ws-owner',
     viewed: (ws) => ws === 'ws-owner',
-    launchedTask: (id) => (id === 'daemon-1' ? 'wtask-abc-12345678' : null),
+    launchedTask: (id) => (id === 'daemon-1' || id === 'daemon-3' ? 'wtask-abc-12345678' : null),
     closeWorkspace: (ws) => r.closeWorkspace(ws),
     paneOf,
     closePane: (pane) => r.closePane(pane),
     now: () => NOW,
+    sleep: async () => undefined,
+    confirmMs: 0,
     log: () => undefined,
     ...over,
   };
@@ -142,6 +144,29 @@ describe('ended bot tasks', () => {
     r.input.set('daemon-1', { keyInputRevision: 4, keyInputIdleMs: 5 * 3_600_000 });
     expect(await createDeadPaneSweep(r.ports).pass()).toEqual({ closed: 1, recorded: 0 });
     expect(r.closeWorkspace).toHaveBeenCalledWith('ws-task');
+  });
+
+  it('never closes a pane the task did not create, however idle, nor its workspace', async () => {
+    // The owner split an idle PowerShell pane into the task's workspace long before.
+    const owners: DeadPaneSession = { id: 'daemon-732a7d07', pid: 20, spawnCwd: wt, agentProcessAlive: false, commandRunning: false };
+    const r = await rig([row('completed')], [respawned(), owners]);
+    expect(await createDeadPaneSweep(r.ports).pass()).toEqual({ closed: 1, recorded: 0 });
+    expect(r.closeWorkspace).not.toHaveBeenCalled();
+    expect(r.closePane).toHaveBeenCalledWith('pane-daemon-1');
+    expect(r.closePane).not.toHaveBeenCalledWith('pane-daemon-732a7d07');
+    expect(r.sessions.map((x) => x.id)).toEqual(['daemon-732a7d07']);
+  });
+
+  it('counts a close only once it shows, and does not retry it at once', async () => {
+    const r = await rig([row('completed')], [respawned()]);
+    const lines: string[] = [];
+    r.closeWorkspace.mockImplementation(async () => true); // answered, nothing closed
+    const sweep = createDeadPaneSweep({ ...r.ports, log: (m) => lines.push(m) });
+    expect(await sweep.pass()).toEqual({ closed: 0, recorded: 0 });
+    expect(lines.some((l) => l.includes('did not take effect'))).toBe(true);
+    expect(lines.some((l) => l.includes('closed daemon-1'))).toBe(false);
+    expect(await sweep.pass()).toEqual({ closed: 0, recorded: 0 });
+    expect(r.closeWorkspace).toHaveBeenCalledTimes(1);
   });
 
   it('closes only the dead pane when the owner typed into another one', async () => {
