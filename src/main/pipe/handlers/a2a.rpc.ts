@@ -478,6 +478,8 @@ export function registerA2aRpc(
   async function resolveHintedPane(
     hintedPtyId: unknown,
     entries: ReadonlyArray<{ ptyId: string; workspaceId: string }>,
+    /** True when `entries` still rest on the installed daemon connection (see the resolve handler). */
+    confirmEntries: () => Promise<boolean> = async () => true,
   ): Promise<{ live: boolean; workspaceId?: string; workspaceToken?: string } | null> {
     if (typeof hintedPtyId !== 'string' || hintedPtyId.length === 0 || hintedPtyId.length > 128) return null;
     const pane = entries.find((e) => e.ptyId === hintedPtyId);
@@ -490,6 +492,9 @@ export function registerA2aRpc(
       wslLive = false; // daemon unreachable or older: unattested
     }
     if (!wslLive) return { live: true };
+    // The pane was found in `entries` before the await above; re-find it in
+    // case a reconnect re-judged them, and mint only over the current client.
+    if (!(await confirmEntries()) || !entries.some((e) => e === pane)) return { live: true };
     const workspaceToken = claimTokenForPane(pane.workspaceId, pane.ptyId);
     return workspaceToken ? { live: true, workspaceId: pane.workspaceId, workspaceToken } : { live: true };
   }
@@ -502,28 +507,34 @@ export function registerA2aRpc(
   const DAEMON_SESSIONS_CACHE_MS = 2000;
   let daemonSessionsCache: { at: number; client: DaemonClient; sessions: DaemonSessionShell[] } | null = null;
 
+  /** The DaemonClient now installed, or null when there is none. */
+  function currentDaemonClient(): DaemonClient | null {
+    return getDaemonClient?.() ?? null;
+  }
+
   /**
-   * A fresh, complete session list (suspended sessions included), or null when
-   * the daemon is not connected or did not answer.
+   * A fresh, complete session list (suspended sessions included) and the
+   * client it was asked of. `sessions` is null when the daemon is not
+   * connected or did not answer.
    */
-  async function fetchDaemonSessions(): Promise<DaemonSessionShell[] | null> {
-    const dc = getDaemonClient?.();
-    if (!dc || dc.isConnected === false) return null;
+  async function fetchDaemonSessions(): Promise<{ sessions: DaemonSessionShell[] | null; client: DaemonClient | null }> {
+    const dc = currentDaemonClient();
+    if (!dc || dc.isConnected === false) return { sessions: null, client: dc };
     try {
       const rows = await dc.rpc('daemon.listSessions', { includeSuspended: true }, { timeoutMs: 2000 });
-      if (!Array.isArray(rows)) return null;
+      if (!Array.isArray(rows)) return { sessions: null, client: dc };
       daemonSessionsCache = { at: Date.now(), client: dc, sessions: rows as DaemonSessionShell[] };
-      return daemonSessionsCache.sessions;
+      return { sessions: daemonSessionsCache.sessions, client: dc };
     } catch {
-      return null;
+      return { sessions: null, client: dc };
     }
   }
 
   /** The cached list, if it is recent and was read over the current connection. */
-  function cachedDaemonSessions(): DaemonSessionShell[] | null {
+  function cachedDaemonSessions(): { sessions: DaemonSessionShell[]; client: DaemonClient } | null {
     const cache = daemonSessionsCache;
     if (!cache || Date.now() - cache.at >= DAEMON_SESSIONS_CACHE_MS) return null;
-    return cache.client === getDaemonClient?.() ? cache.sessions : null;
+    return cache.client === currentDaemonClient() ? cache : null;
   }
 
   /**
@@ -541,15 +552,24 @@ export function registerA2aRpc(
    * pane. Otherwise a cached list is trusted only to keep entries: when it
    * lacks an entry's ptyId or disagrees with its PID, the list is read again,
    * so a pane created or given a new shell inside the window is not refused.
+   *
+   * `client` is the connection the answer rests on (the one that produced the
+   * list, or the one current when no list was needed). A claim minted from
+   * these entries must check it is still the installed client: see
+   * confirmEntriesConnection in the resolve handler.
    */
-  async function keepLiveDaemonPidEntries<T extends PidMapFile>(entries: T[], fresh: boolean): Promise<T[]> {
-    if (!entries.some((e) => isDaemonPtyId(e.ptyId))) return entries;
+  async function keepLiveDaemonPidEntries<T extends PidMapFile>(
+    entries: T[],
+    fresh: boolean,
+  ): Promise<{ entries: T[]; client: DaemonClient | null }> {
+    if (!entries.some((e) => isDaemonPtyId(e.ptyId))) return { entries, client: currentDaemonClient() };
     const cached = fresh ? null : cachedDaemonSessions();
     if (cached) {
-      const kept = liveDaemonPidEntries(entries, cached);
-      if (kept.length === entries.length) return kept;
+      const kept = liveDaemonPidEntries(entries, cached.sessions);
+      if (kept.length === entries.length) return { entries: kept, client: cached.client };
     }
-    return liveDaemonPidEntries(entries, await fetchDaemonSessions());
+    const { sessions, client } = await fetchDaemonSessions();
+    return { entries: liveDaemonPidEntries(entries, sessions), client };
   }
 
   // a2a.resolve.identity — handled in main process (not renderer).
@@ -675,12 +695,42 @@ export function registerA2aRpc(
     // that the pane's shell is live.
     const claimParams = params as { codexThreadId?: unknown; hintedPtyId?: unknown };
     const mayMintClaim = callerPid != null || claimParams.codexThreadId !== undefined || claimParams.hintedPtyId !== undefined;
-    const liveEntries = await keepLiveDaemonPidEntries(entries, mayMintClaim);
-    if (liveEntries.length !== entries.length) {
-      const kept = new Set(liveEntries);
-      for (const e of entries) if (!kept.has(e)) delete mappings[e.pid];
-      entries.splice(0, entries.length, ...liveEntries);
-    }
+    const scannedEntries = [...entries];
+    const scannedMappings = { ...mappings };
+    const applyLiveEntries = (live: typeof entries): void => {
+      const kept = new Set(live);
+      for (const key of Object.keys(mappings)) delete mappings[key];
+      for (const e of scannedEntries) if (kept.has(e)) mappings[e.pid] = scannedMappings[e.pid];
+      entries.splice(0, entries.length, ...live);
+    };
+    const filtered = await keepLiveDaemonPidEntries(entries, mayMintClaim);
+    if (filtered.entries.length !== entries.length) applyLiveEntries(filtered.entries);
+    // The connection the entries were judged over. The resolve awaits more
+    // (the process snapshot, the run list, the daemon's WSL answer), and a
+    // reconnect in any of those waits installs a new client whose sessions
+    // may have different shells.
+    let entriesClient = filtered.client;
+    let entriesRechecked = false;
+    /**
+     * Called right before a claim is minted from `entries`, with no await
+     * between its `true` and the mint. True while the client the entries were
+     * judged over is still the installed one. If a reconnect replaced it, the
+     * list is read once from the new client and the scanned entries judged
+     * again: an unchanged result keeps the claim, a changed one (or a second
+     * replacement) refuses it. The response then carries the re-judged entries.
+     */
+    const confirmEntriesConnection = async (): Promise<boolean> => {
+      if (currentDaemonClient() === entriesClient) return true;
+      if (entriesRechecked) return false;
+      entriesRechecked = true;
+      const { sessions, client } = await fetchDaemonSessions();
+      if (currentDaemonClient() !== client) return false;
+      const live = liveDaemonPidEntries(scannedEntries, sessions);
+      const unchanged = live.length === entries.length && live.every((e, i) => e === entries[i]);
+      entriesClient = client;
+      if (!unchanged) applyLiveEntries(live);
+      return unchanged;
+    };
 
     // Server-side walk: from callerPid's PARENT up the live tree to the first
     // ancestor that is a known live anchor. `entries` is already the set of LIVE
@@ -778,25 +828,31 @@ export function registerA2aRpc(
       }
     }
 
+    // A pane claim from the walk rests on `entries`: confirm they were judged
+    // over the connection installed now, with no await before the mint. A walk
+    // hit whose entries a reconnect invalidated gets no claim and no
+    // `resolved`; the caller still has the re-judged entries for its own walk,
+    // and its next resolve walks those.
+    if (resolved && !runClaim && !(await confirmEntriesConnection())) resolved = null;
     const workspaceToken = resolved ? (runClaim ?? claimTokenForPane(resolved.workspaceId, resolved.ptyId)) : null;
     // A call from a shared Codex app-server names its thread instead: the pane
     // comes from the thread's owner record (written by wmux's Codex hooks from
     // inside that pane), joined with the LIVE anchors above. The claim goes
     // back on its own field because the caller stamps it on that call only.
     const codexThreadId = (params as { codexThreadId?: unknown }).codexThreadId;
-    const threadClaim = codexThreadId === undefined
-      ? null
-      : resolveCodexThreadClaim(
-          codexThreadId,
-          entries,
-          await isSharedServerChild(normalizeCallerPid((params as { codexCallerPid?: unknown }).codexCallerPid)),
-        );
+    let threadClaim: ReturnType<typeof resolveCodexThreadClaim> = null;
+    if (codexThreadId !== undefined) {
+      const sharedServerChild = await isSharedServerChild(normalizeCallerPid((params as { codexCallerPid?: unknown }).codexCallerPid));
+      if (await confirmEntriesConnection()) threadClaim = resolveCodexThreadClaim(codexThreadId, entries, sharedServerChild);
+    }
     // The walk missed but the caller's env names a pane. Main says whether
     // that pane is live, and attests it only when the daemon follows a live
     // agent inside it from WSL — the one pane kind whose processes main cannot
     // walk. A name that is not a live pane (a scheduled run's `auto-` session,
     // which belongs to no workspace) is reported as such, never as a pane.
-    const hintedPane = resolved ? null : await resolveHintedPane((params as { hintedPtyId?: unknown }).hintedPtyId, entries);
+    const hintedPane = resolved
+      ? null
+      : await resolveHintedPane((params as { hintedPtyId?: unknown }).hintedPtyId, entries, confirmEntriesConnection);
     return {
       mappings,
       entries,

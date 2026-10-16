@@ -516,10 +516,12 @@ describe('a2a.resolve.identity — accounts and the pane the env names', () => {
       return { live: wslLive };
     });
     const router = new RpcRouter();
+    // One client for the whole connection, as main installs it.
+    const client = { rpc } as unknown as DaemonClient;
     registerA2aRpc(router, () => fakeWindow, makeWorker(), {
       snapshot: async () => ({ ppidByPid: new Map([[39876, 1]]), listeners: [] }),
       createdAt: () => null,
-      getDaemonClient: () => ({ rpc }) as unknown as DaemonClient,
+      getDaemonClient: () => client,
     });
     return { router, rpc };
   }
@@ -777,6 +779,69 @@ describe('a2a.resolve.identity — a pid-map hit must be the session\'s current 
     expect(after.rpc).toHaveBeenCalledTimes(1);
     expect(before.rpc).toHaveBeenCalledTimes(1);
     expect(second.entries).toEqual([{ pid: '7644', ptyId: 'daemon-worker', workspaceId: 'ws-worker' }]);
+  });
+
+  describe('a reconnect in the middle of one resolve', () => {
+    const before = [
+      { id: 'daemon-04f1c884', pid: 6780, state: 'detached' },
+      { id: 'daemon-worker', pid: 7644, state: 'attached' },
+    ];
+
+    // Client A answers the list, then a reconnect installs client B while the
+    // resolve still awaits the process snapshot.
+    function midResolveReconnect(afterSessions: typeof before) {
+      let current: DaemonClient;
+      const bRpc = vi.fn(async (method: string) => {
+        if (method === 'daemon.listSessions') return afterSessions;
+        throw new Error(`unexpected ${method}`);
+      });
+      const b = { isConnected: true, rpc: bRpc } as unknown as DaemonClient;
+      let releaseSnapshot!: () => void;
+      const snapshotGate = new Promise<void>((r) => { releaseSnapshot = r; });
+      const aRpc = vi.fn(async (method: string) => {
+        if (method !== 'daemon.listSessions') throw new Error(`unexpected ${method}`);
+        // Replace the client only once A's answer is on its way back, then
+        // let the snapshot finish.
+        queueMicrotask(() => { current = b; releaseSnapshot(); });
+        return before;
+      });
+      current = { isConnected: true, rpc: aRpc } as unknown as DaemonClient;
+      const router = new RpcRouter();
+      registerA2aRpc(router, () => fakeWindow, makeWorker(), {
+        snapshot: async () => { await snapshotGate; return { ppidByPid, listeners: [] }; },
+        createdAt: () => null,
+        getDaemonClient: () => current,
+      });
+      return { router, aRpc, bRpc };
+    }
+
+    it('mints no token from the old connection\'s entries when the new one disagrees', async () => {
+      // After the restart the old pane runs 13632; 6780 is the worker's claude.exe.
+      const { router, aRpc, bRpc } = midResolveReconnect([
+        { id: 'daemon-04f1c884', pid: 13632, state: 'detached' },
+        { id: 'daemon-worker', pid: 7644, state: 'attached' },
+      ]);
+
+      const result = (await dispatchResolve(router, { callerPid: 39876 })) as ResolveResult & { workspaceToken?: string };
+
+      expect(aRpc).toHaveBeenCalledTimes(1);
+      expect(bRpc).toHaveBeenCalledTimes(1); // re-read once from the new client
+      expect(result.workspaceToken).toBeUndefined();
+      expect(result.resolved).toBeNull();
+      // The response carries the entries judged over the new connection.
+      expect(result.entries).toEqual([{ pid: '7644', ptyId: 'daemon-worker', workspaceId: 'ws-worker' }]);
+      expect(result.mappings).toEqual({ '7644': 'ws-worker' });
+    });
+
+    it('keeps the claim when the new connection judges the entries the same way', async () => {
+      const { router, bRpc } = midResolveReconnect(before);
+
+      const result = (await dispatchResolve(router, { callerPid: 39876 })) as ResolveResult & { workspaceToken?: string };
+
+      expect(bRpc).toHaveBeenCalledTimes(1);
+      expect(result.resolved).toEqual({ workspaceId: 'ws-old', ptyId: 'daemon-04f1c884' });
+      expect(lookupWorkspaceClaim(result.workspaceToken)).toEqual({ kind: 'bound', workspaceId: 'ws-old', ptyId: 'daemon-04f1c884' });
+    });
   });
 
   it('mints no pane claim from a stale PID the cached list still calls current', async () => {
