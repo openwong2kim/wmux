@@ -317,7 +317,8 @@ describe('the daemon\'s phone launch', () => {
     const w = wordsOf(guarded.initialCommand!);
     expect(guardBotWorkerLaunch('pty-1', "claude -- 'hi'", 'claude', dir)).toBe(`claude --settings="${w.settings}" --mcp-config="${w.mcp}" --strict-mcp-config -- 'hi'`);
     expect(guardBotWorkerLaunch('pty-old', 'claude', 'claude', dir)).toBeNull();
-    expect(guardBotWorkerLaunch('pty-wsl', 'claude', 'claude', dir)).toBe(`claude --settings="${botWorkerSettingsPath(dir)}"`);
+    // Linux claude opens it through its /mnt mount (a Windows runner's path).
+    expect(guardBotWorkerLaunch('pty-wsl', 'claude', 'claude', dir)).toBe(`claude --settings="${toWslPath(botWorkerSettingsPath(dir)) ?? botWorkerSettingsPath(dir)}"`);
     // A folder the line may start in is checked too.
     const other = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-conn-phone-'));
     fs.mkdirSync(path.join(other, '.claude'));
