@@ -378,7 +378,10 @@ describe('task.push RPC', () => {
     registerTaskPushRpc({ register: (m: string, h: Handler) => handlers.set(m, h) } as never, {
       getWindow: () => null,
       daemon: { rpc: vi.fn(async () => ({ ok: true, tasks: over.tasks ?? [{ id: 'wtask-1', status: 'open', branch: 'wtask/one', worktreePath: '/w/one' }] })) },
-      getLedger: () => ({ findOpenByTaskWorkspace: (ws: string) => (ws === 'ws-task' ? row : null) }) as never,
+      getLedger: () => ({
+        findOpenByTaskWorkspace: (ws: string) => (ws === 'ws-task' ? row : null),
+        get: (id: string) => (row && (row as { id?: string }).id === id ? row : null),
+      }) as never,
       resolveCallerWorkspace: async () => (over.caller === undefined ? 'ws-task' : over.caller),
       wmuxDir: () => dir,
       push: push as never,
@@ -388,6 +391,33 @@ describe('task.push RPC', () => {
     return { call: handlers.get('task.push')!, push, dir };
   };
   const local = { origin: 'local' };
+
+  it('refuses a push while the task\'s report stands checked as making no changes; one sent back pushes', async () => {
+    const reported = { id: 'wtask-1', ownerWorkspaceId: 'ws-owner', taskWorkspaceId: 'ws-task', status: 'review_requested', reportedAtRev: 2, gate: { exitCode: 0, tail: '', at: 1, command: 'none', skipped: 'no_changes', recordedBy: 'system', reportRev: 2 } };
+    const held = setup({ row: reported });
+    expect(await held.call({ senderPtyId: 'pty-1' }, local)).toMatchObject({ ok: false, error: { code: 'FAILED_PRECONDITION' } });
+    expect(held.push).not.toHaveBeenCalled();
+    // Its push record is not left "under way" by the refusal.
+    expect(taskPushRecordOf(held.dir).get('wtask-1')).toBeNull();
+    // Sent back (or reported again since): the old skip holds nothing up.
+    for (const row of [{ ...reported, status: 'working' }, { ...reported, reportedAtRev: 5 }]) {
+      const free = setup({ row });
+      expect(await free.call({ senderPtyId: 'pty-1' }, local)).toMatchObject({ ok: true });
+    }
+  });
+
+  it('a push under way reads as unknown in main\'s record until it ends', async () => {
+    const sha = 'f'.repeat(40);
+    const r = setup({ head: sha });
+    let during: unknown = null;
+    r.push.mockImplementationOnce(async (i: { branch: string }) => {
+      during = taskPushRecordOf(r.dir).get('wtask-1');
+      return { ok: true as const, branch: i.branch, remote: 'origin' as const, head: sha, output: '' };
+    });
+    expect(await r.call({ senderPtyId: 'pty-1' }, local)).toMatchObject({ ok: true });
+    expect(during).toBe('unknown');
+    expect(taskPushRecordOf(r.dir).get('wtask-1')).toBe(sha);
+  });
 
   it('records the commit a landed push published, in main\'s own record; a refused push records nothing', async () => {
     const sha = 'f'.repeat(40);

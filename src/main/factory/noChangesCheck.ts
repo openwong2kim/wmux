@@ -10,13 +10,19 @@
 //     (LedgerDispatch.baseOid), not the worktree's task.json;
 //   - the worktree's HEAD: the work the report is about;
 //   - what was published: main's own record of the commit task.push last
-//     sent (taskPushRecord.ts), and the task branch on origin itself
-//     (`ls-remote`, in the git task.push pushes with, origin checked to be
-//     the task's repository) — never a remote-tracking ref in the worktree.
+//     sent (taskPushRecord.ts; `unknown` while a push is under way), and the
+//     task branch on origin itself (`ls-remote`, in the git task.push
+//     pushes with, origin checked to be the task's repository) — never a
+//     remote-tracking ref in the worktree.
 //
-// Each must be the base or behind it (`merge-base --is-ancestor`; a commit
-// the repository does not hold is not). Anything that cannot be read is
-// `unknown`: the gate then runs, and a completion on the skip is refused.
+// Each must BE the base (an absent push or remote branch is fine). Not "at
+// or behind it": that would be a `merge-base --is-ancestor` over the
+// worker's own object store, whose parent links a worker can rewrite
+// (replace refs, grafts, a commit-graph file, a planted object), so an
+// equality of commit ids is the only answer that needs nothing from it. A
+// worker that reset behind the base is gated, as any changed task is.
+// Anything that cannot be read is `unknown`: the gate then runs, and a
+// completion on the skip is refused.
 
 import path from 'node:path';
 import type { LedgerEntry } from '../../shared/ledger';
@@ -25,7 +31,8 @@ import { taskPushRecordOf, type TaskPushLookup } from '../worktask/taskPushRecor
 import { taskMissionFromMissions } from './verifyPreset';
 
 export type NoChangesVerdict =
-  /** No work past `base`: `head` is the worktree HEAD that was checked. */
+  /** No work past `base`: `head` is the worktree HEAD that was checked (it
+   *  is `base`). */
   | { kind: 'unchanged'; base: string; head: string }
   | { kind: 'changed'; why: string }
   | { kind: 'unknown'; why: string };
@@ -35,20 +42,7 @@ type Rpc = (method: string, params?: unknown) => Promise<unknown>;
 
 const SHA_RE = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
 
-/**
- * Whether commit `commit` is `base` or an ancestor of it (it holds nothing
- * past the base), in the worktree's repository. False when that cannot be
- * told: not full commit ids, or a commit not in the repository.
- */
-export async function commitWithinBase(git: Git, worktreePath: string, commit: string, base: string): Promise<boolean> {
-  if (!SHA_RE.test(commit) || !SHA_RE.test(base)) return false;
-  if (commit.toLowerCase() === base.toLowerCase()) return true;
-  try {
-    return (await git(['merge-base', '--is-ancestor', commit, base], worktreePath)).code === 0;
-  } catch {
-    return false;
-  }
-}
+const same = (a: string, b: string): boolean => a.toLowerCase() === b.toLowerCase();
 
 export interface NoChangesPorts {
   /** The task's worktree and branch (main's mission record); null when it
@@ -56,7 +50,6 @@ export interface NoChangesPorts {
   mission: (entry: LedgerEntry) => Promise<{ worktreePath: string; branch: string } | null>;
   /** The worktree's HEAD commit; null when it cannot be read. */
   headOf: (worktreePath: string) => Promise<string | null>;
-  commitWithin: (worktreePath: string, commit: string, base: string) => Promise<boolean>;
   /** Main's record of the commit task.push last published for the task. */
   pushed: (taskId: string) => TaskPushLookup;
   /** The task branch on origin (readTaskRemoteHead). */
@@ -71,16 +64,15 @@ export async function checkNoChanges(ports: NoChangesPorts, entry: LedgerEntry):
   try {
     const mission = await ports.mission(entry);
     if (!mission) return unknown('the task\'s worktree and branch could not be read');
-    const wt = mission.worktreePath;
-    const head = await ports.headOf(wt);
-    if (!head) return unknown('the worktree\'s HEAD could not be read');
-    if (!(await ports.commitWithin(wt, head, base))) return { kind: 'changed', why: `the worktree's HEAD ${head} holds commits past ${base}` };
+    const head = await ports.headOf(mission.worktreePath);
+    if (!head || !SHA_RE.test(head)) return unknown('the worktree\'s HEAD could not be read');
+    if (!same(head, base)) return { kind: 'changed', why: `the worktree's HEAD is ${head}, not ${base}` };
     const pushed = ports.pushed(entry.id);
-    if (pushed === 'unknown') return unknown('main\'s record of the task\'s pushes could not be read');
-    if (pushed && !(await ports.commitWithin(wt, pushed, base))) return { kind: 'changed', why: `task_push published ${pushed}, past ${base}` };
+    if (pushed === 'unknown') return unknown('main\'s record of the task\'s pushes could not be read, or a push is under way');
+    if (pushed && !same(pushed, base)) return { kind: 'changed', why: `task_push published ${pushed}, not ${base}` };
     const remote = await ports.remoteHead(entry, mission);
     if (!remote.ok) return unknown(`origin's ${mission.branch} could not be read (${remote.error})`);
-    if (remote.sha && !(await ports.commitWithin(wt, remote.sha, base))) return { kind: 'changed', why: `origin's ${mission.branch} is at ${remote.sha}, past ${base}` };
+    if (remote.sha && !same(remote.sha, base)) return { kind: 'changed', why: `origin's ${mission.branch} is at ${remote.sha}, not ${base}` };
     return { kind: 'unchanged', base, head };
   } catch (err) {
     return unknown(String(err));
@@ -98,11 +90,11 @@ export function liveNoChangesCheck(deps: {
   const ports: NoChangesPorts = {
     mission: (entry) => taskMissionFromMissions(deps.rpc(), entry),
     headOf: async (wt) => {
-      const r = await deps.git(['rev-parse', '--verify', '--quiet', 'HEAD^{commit}'], wt);
+      // The ref's own commit id: no replace ref stands in for it.
+      const r = await deps.git(['--no-replace-objects', 'rev-parse', '--verify', '--quiet', 'HEAD^{commit}'], wt);
       const sha = r.stdout.trim();
       return r.code === 0 && SHA_RE.test(sha) ? sha : null;
     },
-    commitWithin: (wt, commit, base) => commitWithinBase(deps.git, wt, commit, base),
     pushed: (taskId) => taskPushRecordOf(deps.wmuxDir()).get(taskId),
     remoteHead: async (entry, mission) => {
       const origin = entry.dispatch?.origin;

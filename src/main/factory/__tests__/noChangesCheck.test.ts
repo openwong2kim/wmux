@@ -12,7 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { TaskLedger } from '../../../daemon/ledger/TaskLedger';
 import type { LedgerEntry } from '../../../shared/ledger';
 import type { RpcContext } from '../../../shared/rpc';
-import { checkNoChanges, commitWithinBase, liveNoChangesCheck, type NoChangesPorts } from '../noChangesCheck';
+import { checkNoChanges, liveNoChangesCheck, type NoChangesPorts } from '../noChangesCheck';
 import { recordNoChangesGate } from '../taskGate';
 import { pushTaskBranch } from '../../worktask/taskPush';
 import { readTaskRemoteHead } from '../../worktask/taskFetch';
@@ -32,25 +32,25 @@ const entry = (over: Partial<LedgerEntry['dispatch']> = {}): LedgerEntry => ({
 } as LedgerEntry);
 
 describe('checkNoChanges', () => {
-  /** `within`: the commits at or behind B. */
-  const ports = (over: Partial<NoChangesPorts> = {}, within = new Set([A, B])): NoChangesPorts => ({
+  const ports = (over: Partial<NoChangesPorts> = {}): NoChangesPorts => ({
     mission: async () => ({ worktreePath: '/wt', branch: 'wtask/one' }),
     headOf: async () => B,
-    commitWithin: async (_wt, commit, base) => base === B && within.has(commit),
     pushed: () => null,
     remoteHead: async () => ({ ok: true, sha: null }),
     ...over,
   });
 
-  it('unchanged only when HEAD, the push record and origin\'s branch are all at or behind the recorded base', async () => {
+  it('unchanged only when HEAD, the push record and origin\'s branch are each the recorded base (or absent)', async () => {
     expect(await checkNoChanges(ports(), entry())).toEqual({ kind: 'unchanged', base: B, head: B });
-    expect(await checkNoChanges(ports({ headOf: async () => A, pushed: () => B, remoteHead: async () => ({ ok: true, sha: A }) }), entry())).toEqual({ kind: 'unchanged', base: B, head: A });
+    expect(await checkNoChanges(ports({ pushed: () => B, remoteHead: async () => ({ ok: true, sha: B.toUpperCase() }) }), entry())).toEqual({ kind: 'unchanged', base: B, head: B });
   });
 
-  it('changed: a HEAD past the base, a recorded push past it, or origin\'s branch past it (pushed, then reset)', async () => {
-    expect((await checkNoChanges(ports({ headOf: async () => C }), entry())).kind).toBe('changed');
-    expect((await checkNoChanges(ports({ pushed: () => C }), entry())).kind).toBe('changed');
-    expect(await checkNoChanges(ports({ remoteHead: async () => ({ ok: true, sha: C }) }), entry())).toMatchObject({ kind: 'changed', why: expect.stringContaining(C) });
+  it('changed: any other commit, ahead of the base or behind it, in HEAD, the push record or origin (pushed, then reset)', async () => {
+    for (const other of [A, C]) {
+      expect((await checkNoChanges(ports({ headOf: async () => other }), entry())).kind).toBe('changed');
+      expect((await checkNoChanges(ports({ pushed: () => other }), entry())).kind).toBe('changed');
+      expect(await checkNoChanges(ports({ remoteHead: async () => ({ ok: true, sha: other }) }), entry())).toMatchObject({ kind: 'changed', why: expect.stringContaining(other) });
+    }
   });
 
   it('unknown: no recorded base (or a detached checkout), no mission, no HEAD, unreadable push history, origin unreachable, a throw', async () => {
@@ -63,17 +63,6 @@ describe('checkNoChanges', () => {
     expect((await checkNoChanges(ports({ headOf: async () => { throw new Error('boom'); } }), entry())).kind).toBe('unknown');
   });
 
-  it('commitWithinBase: the base itself or an ancestor of it; never a non-sha', async () => {
-    const git = (code: number) => vi.fn(async () => ({ stdout: '', code }));
-    expect(await commitWithinBase(git(1), '/wt', B, B)).toBe(true);
-    const anc = git(0);
-    expect(await commitWithinBase(anc, '/wt', C, B)).toBe(true);
-    expect(anc).toHaveBeenCalledWith(['merge-base', '--is-ancestor', C, B], '/wt');
-    expect(await commitWithinBase(git(1), '/wt', C, B)).toBe(false);
-    const never = git(0);
-    expect(await commitWithinBase(never, '/wt', '--output=x', B)).toBe(false);
-    expect(never).not.toHaveBeenCalled();
-  });
 });
 
 describe('the no-changes check over real git, task.push and ledger.update', () => {
@@ -191,6 +180,30 @@ describe('the no-changes check over real git, task.push and ledger.update', () =
     taskPushRecordOf(dataDir).record('t1', 'e'.repeat(40));
     expect(fs.readFileSync(path.join(dataDir, 'factory', TASK_PUSHES_FILENAME), 'utf8')).toBe('{ not json');
     expect(taskPushRecordOf(dataDir).get('t1')).toBe('unknown');
+  });
+
+  it('a commit dressed up as the base with a replace ref and a grafts file is still a change', async () => {
+    await skip();
+    fs.writeFileSync(path.join(work, 'c.txt'), 'c\n');
+    run(work, 'add', '.');
+    run(work, 'commit', '-qm', 'work');
+    const c = run(work, 'rev-parse', 'HEAD');
+    // The base "has" the new commit as its parent, as far as this repository says.
+    run(work, 'replace', '--graft', base, c);
+    fs.writeFileSync(path.join(work, '.git', 'info', 'grafts'), `${base} ${c}\n`);
+    expect(run(work, 'merge-base', '--is-ancestor', c, base)).toBe('');
+    expect(await check()(row())).toMatchObject({ kind: 'changed', why: expect.stringContaining(c) });
+    expect(await complete()).toMatchObject({ ok: false, error: { code: 'FAILED_PRECONDITION' } });
+  });
+
+  it('a push under way: unknown until it ends', async () => {
+    await skip();
+    const record = taskPushRecordOf(dataDir);
+    record.begin('t1');
+    expect(await check()(row())).toMatchObject({ kind: 'unknown', why: expect.stringContaining('push is under way') });
+    expect(await complete()).toMatchObject({ ok: false, error: { code: 'FAILED_PRECONDITION' } });
+    record.end('t1');
+    expect((await check()(row())).kind).toBe('unchanged');
   });
 
   it('a commit after the skip that was never pushed: HEAD has moved, refused', async () => {

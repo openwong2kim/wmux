@@ -27,6 +27,8 @@ export class TaskPushRecord {
   private readonly heads = new Map<string, string>();
   private loaded = false;
   private unreadable = false;
+  /** Pushes under way, per task: what lands is not known until they end. */
+  private readonly inflight = new Map<string, number>();
 
   constructor(private readonly file: string) {}
 
@@ -56,11 +58,23 @@ export class TaskPushRecord {
   }
 
   /** The commit task.push last published for the task; null when it never
-   *  pushed; `unknown` when the record cannot be read. */
+   *  pushed; `unknown` when the record cannot be read or a push of the task
+   *  is under way. */
   get(taskId: string): TaskPushLookup {
     this.load();
-    if (this.unreadable) return 'unknown';
+    if (this.unreadable || this.inflight.has(taskId)) return 'unknown';
     return this.heads.get(taskId) ?? null;
+  }
+
+  /** A push of the task starts; `end` it (in a finally) once it is over. */
+  begin(taskId: string): void {
+    this.inflight.set(taskId, (this.inflight.get(taskId) ?? 0) + 1);
+  }
+
+  end(taskId: string): void {
+    const n = (this.inflight.get(taskId) ?? 0) - 1;
+    if (n > 0) this.inflight.set(taskId, n);
+    else this.inflight.delete(taskId);
   }
 
   /** Record a landed push (a full commit id; anything else is ignored). */
