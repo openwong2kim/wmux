@@ -75,9 +75,10 @@ describe('a bot\'s own model', () => {
     expect(options.effort).toBe('low');
   });
 
-  it('a bot on the default engine names no model or effort (the SDK default)', async () => {
+  it('a bot on the default engine asks for the default model and names no effort', async () => {
+    // 'default', not nothing: a resumed conversation would keep a model the owner cleared.
     const options = await turnOptions({ kind: 'claude-sdk' });
-    expect(options).not.toHaveProperty('model');
+    expect(options.model).toBe('default');
     expect(options).not.toHaveProperty('effort');
   });
 });
