@@ -256,6 +256,10 @@ export async function pushTaskBranch(input: TaskPushInput, git: TaskPushGit = de
   if (head.code !== 0 || !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(sha)) {
     return { ok: false, reason: 'git-failed', error: `git rev-parse HEAD failed: ${head.stderr.trim().slice(0, 500)}` };
   }
+  // A symbolic ref at the upstream is dropped before the push: neither git's
+  // own update of it nor the one below then follows it to another ref.
+  const upstream = `refs/remotes/origin/${input.branch}`;
+  if ((await run(['symbolic-ref', '--quiet', upstream])).code === 0) await run(['update-ref', '--no-deref', '-d', upstream]);
   const res = await run(taskPushArgs(input.branch, origin.url, sha));
   const output = `${res.stdout}\n${res.stderr}`.trim().slice(0, 2000);
   if (res.code !== 0) {
@@ -265,7 +269,7 @@ export async function pushTaskBranch(input: TaskPushInput, git: TaskPushGit = de
   }
   // The upstream, as `--set-upstream origin` would set it: the ref itself,
   // never what a symbolic ref there names.
-  await run(['update-ref', '--no-deref', `refs/remotes/origin/${input.branch}`, sha]);
+  await run(['update-ref', '--no-deref', upstream, sha]);
   await run(['config', `branch.${input.branch}.remote`, 'origin']);
   await run(['config', `branch.${input.branch}.merge`, `refs/heads/${input.branch}`]);
   return { ok: true, branch: input.branch, remote: 'origin', head: sha, output };
