@@ -172,8 +172,11 @@ export function registerTaskPushRpc(router: RpcRouter, deps: TaskPushRpcDeps): v
         return deny('FAILED_PRECONDITION', 'task.push: this task\'s report was checked as making no changes, and that report stands; to publish commits, ask the bot to send the task back, then report again');
       }
       // Completed on that check (a resumed worker of an ended task pushes
-      // otherwise): nothing gated it, so nothing of it is published.
-      if (now?.status === 'completed' && now.gate?.skipped === 'no_changes') {
+      // otherwise): nothing gated it, so nothing of it is published. Only a
+      // skip that still governs the row: one recorded for its last report
+      // (the ledger takes `completed` on no other), not a merge completion.
+      // A skip a later report superseded completed nothing.
+      if (now?.status === 'completed' && now.gate?.skipped === 'no_changes' && noChangesReceiptCurrent(now) && now.completion?.source !== 'merge') {
         return deny('FAILED_PRECONDITION', 'task.push: this task was completed as making no changes; commits made since are not published from it (start a new task for them)');
       }
       const result: TaskPushResult = await push({

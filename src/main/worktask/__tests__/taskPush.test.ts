@@ -9,6 +9,8 @@ import { defaultGit, parseLsRemoteHead, pushTaskBranch, taskPushArgs, taskPushBr
 import { originUrlRepoKey, runWorkerGitRead } from '../workerGit';
 import { registerTaskPushRpc } from '../../pipe/handlers/taskPush.rpc';
 import { TASK_PUSHES_FILENAME, TaskPushRecord, taskPushRecordOf } from '../taskPushRecord';
+import { TaskLedger } from '../../../daemon/ledger/TaskLedger';
+import { completeMergedTask, recordNoChangesGate } from '../../factory/taskGate';
 import { parseRemoteKey } from '../../github/PrProvider';
 import { normalizeRepoKey } from '../../../shared/repoKey';
 import { readRepoDefaultBranchByKey } from '../../agents/botWorkerDefaultBranch';
@@ -434,6 +436,44 @@ describe('task.push RPC', () => {
     expect(skipped.push).not.toHaveBeenCalled();
     const gated = await resumedPush(ended({ exitCode: 0, tail: 'ok', at: 1, command: 'npm test', recordedBy: 'system' }));
     expect(gated.result).toMatchObject({ ok: true });
+  });
+
+  it('a skip a later report superseded holds nothing back: sent back, reported again, completed by its merged PR, the resumed worker pushes', async () => {
+    const ledgerDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-task-push-ledger-'));
+    try {
+      const ledger = new TaskLedger({ dir: ledgerDir });
+      const id = 'wtask-1';
+      await ledger.register({ id, taskWorkspaceId: 'ws-task', ownerWorkspaceId: 'ws-owner', title: 't', dispatch: { origin: { kind: 'bot', botId: 'bot-1' }, preset: 'default', repoKey: 'github.com/acme/app' } });
+      const step = async (status: string, actor: { kind: 'worker' | 'brain'; workspaceId: string }): Promise<void> => {
+        const r = await ledger.update({ id, status, actor, expectedRev: (ledger.get(id) as { rev: number }).rev });
+        if (!r.ok) throw new Error(r.message);
+      };
+      // A no-changes report (rev 2), its skip (rev 3), sent back (rev 4).
+      await step('review_requested', { kind: 'worker', workspaceId: 'ws-task' });
+      expect(await recordNoChangesGate(ledger, id, 'no commits', Date.now, 'b'.repeat(40))).toBe(true);
+      await step('input_required', { kind: 'brain', workspaceId: 'ws-owner' });
+      // A code report (rev 5) whose gate recorded nothing, completed by its merged PR (rev 6).
+      await step('review_requested', { kind: 'worker', workspaceId: 'ws-task' });
+      const merged = await completeMergedTask(ledger, id, 7, (ledger.get(id) as { rev: number }).rev);
+      expect(merged.entry).toMatchObject({ status: 'completed', completion: { source: 'merge', pr: 7 }, reportedAtRev: 5, gate: { skipped: 'no_changes', reportRev: 2 } });
+      const handlers = new Map<string, Handler>();
+      const push = vi.fn(async (i: { branch: string }) => ({ ok: true as const, branch: i.branch, remote: 'origin' as const, head: 'f'.repeat(40), output: '' }));
+      registerTaskPushRpc({ register: (m: string, h: Handler) => handlers.set(m, h) } as never, {
+        getWindow: () => null,
+        daemon: { rpc: vi.fn(async () => ({ ok: true, tasks: [{ id, status: 'closed', branch: 'wtask/one', worktreePath: '/w/one' }] })) },
+        getLedger: () => ledger,
+        resolveCallerWorkspace: async () => 'ws-resumed',
+        reclaimedWorkerOfPane: () => ({ taskId: id, botId: 'bot-1', ownerWorkspaceId: 'ws-owner' }),
+        exists: () => true,
+        wmuxDir: () => fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-task-push-rpc-')),
+        push: push as never,
+        repoDefaultBranch: async () => 'main',
+      });
+      expect(await (handlers.get('task.push') as Handler)({ senderPtyId: 'pty-9' }, local)).toMatchObject({ ok: true });
+      expect(push).toHaveBeenCalledTimes(1);
+    } finally {
+      fs.rmSync(ledgerDir, { recursive: true, force: true });
+    }
   });
 
   it('a push under way reads as unknown in main\'s record until it ends', async () => {
