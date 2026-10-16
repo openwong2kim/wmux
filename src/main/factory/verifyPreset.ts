@@ -22,7 +22,7 @@ import type { LedgerEntry } from '../../shared/ledger';
 import type { BotProfile } from '../../shared/bot';
 import { taskThreadOf, type CardNotice, type ThreadId } from '../../shared/room';
 import type { WakeReason } from '../../shared/wake';
-import type { GateRunInput, GateRunResult } from '../worktask/TaskGateRunner';
+import { newLintErrorsText, type GateRunInput, type GateRunResult } from '../worktask/TaskGateRunner';
 
 /** The fact id a recorded verify gate wakes its bot with. */
 export function verifyGateFactId(taskId: string, rev: number): string {
@@ -68,7 +68,7 @@ export function describeGateRun(r: GateRunResult): { title: string; body: string
     const verdict = g.exitCode === 0 ? 'passed' : g.exitCode === null ? 'was killed' : `failed (exit ${g.exitCode})`;
     const head = g.headSha ? `at ${g.headSha}` : 'with no pinned head (the tree changed or HEAD moved during the run)';
     const notice: CardNotice = g.exitCode === 0 ? { code: 'verify.passed' } : g.exitCode === null ? { code: 'verify.killed' } : { code: 'verify.failed', args: { exit: g.exitCode } };
-    return { title: `Verify gate ${verdict}`, body: `\`${g.command}\` ${head}; ${r.recorded ? 'recorded in the ledger' : 'NOT recorded (ledger unreachable)'}.`, notice };
+    return { title: `Verify gate ${verdict}`, body: `\`${g.command}\` ${head}; ${r.recorded ? 'recorded in the ledger' : 'NOT recorded (ledger unreachable)'}.${newLintErrorsText(r.newLintErrors)}`, notice };
   }
   if (r.ok && r.status === 'skipped') {
     return {

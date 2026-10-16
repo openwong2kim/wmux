@@ -100,7 +100,7 @@ import { isSystemGatePass } from '../../shared/botTask';
 import { taskThreadOf, type CardNotice, type RoomCard, type ThreadId } from '../../shared/room';
 import type { WakeReason } from '../../shared/wake';
 import type { LedgerUpdateInput, LedgerUpdateResult } from '../../daemon/ledger/TaskLedger';
-import type { GateRunInput, GateRunResult } from '../worktask/TaskGateRunner';
+import { newLintErrorsText, type GateRunInput, type GateRunResult } from '../worktask/TaskGateRunner';
 import { VERIFY_GATE_SYSTEM_WORKSPACE, verifyGateFactId } from './verifyPreset';
 import type { NoChangesVerdict } from './noChangesCheck';
 
@@ -399,7 +399,7 @@ export function describeTaskGate(r: GateRunResult): GateCard {
     const head = g.headSha ? `at ${g.headSha}` : 'with no pinned head (the tree changed or HEAD moved during the run)';
     const receipt = r.recorded ? 'recorded in the ledger' : 'NOT recorded (ledger unreachable)';
     const notice: CardNotice = g.exitCode === 0 ? { code: 'gate.passed' } : g.exitCode === null ? { code: 'gate.killed' } : { code: 'gate.failed', args: { exit: g.exitCode } };
-    return { title: `Gate ${verdict}: task left open`, body: `\`${g.command}\` ${head}; ${receipt}.`, notice };
+    return { title: `Gate ${verdict}: task left open`, body: `\`${g.command}\` ${head}; ${receipt}.${newLintErrorsText(r.newLintErrors)}`, notice };
   }
   if (r.ok && r.status === 'skipped') {
     // A no_changes skip that did not land in the ledger leaves the bot no
@@ -760,6 +760,8 @@ export function installTaskGate(ports: TaskGatePorts): () => void {
       systemWorkspaceId: VERIFY_GATE_SYSTEM_WORKSPACE,
       projectRoot: repoPath,
       gateBaseRef: baseRef,
+      // The commit the task started from: what its lint step diffs against.
+      ...(before.dispatch?.baseOid ? { diffBase: before.dispatch.baseOid } : {}),
     });
     // A report that arrived during the run is gated again (start's finally);
     // this run's result does not settle it.

@@ -40,6 +40,21 @@
 // The trust check on `wmux.json` is therefore about which of two GATES the
 // project picked, never about whether the code being graded is safe to run.
 //
+// ── LINT FROM A BASE REF: ONLY WHAT THE TASK CHANGED ───────────────────────
+//
+// With a base ref, a base `lint` script that is a plain eslint run (`eslint`,
+// an `--ext` list and paths, nothing else) is not run whole. A repository
+// whose default branch already fails its own lint (wmux's does: its CI lints
+// a few named files, never `npm run lint`) would fail every task on errors
+// no task made. Instead the base's eslint runs on the files the task changed
+// (`git diff` from the newest of the dispatch base and `merge-base <ref>
+// HEAD` that HEAD contains, to HEAD), and on each file with errors at HEAD
+// the base's version of it is linted too (`--stdin`). The step fails on an
+// error HEAD has that the base's version did not (matched by rule and
+// message, not by line, so moved code is not new), and the result names
+// them. An eslint that does not answer with its JSON report (exit 2, a
+// crash, no output) fails the step: that is not a lint pass.
+//
 // `node_modules` missing (or a symlink, which is how worktrees in this repo get
 // a false `npm test` failure) is reported as `skipped: 'deps_missing'`, never as
 // a failing gate: "the gate did not run" and "the code is broken" are different
@@ -160,6 +175,16 @@ export interface GateStep {
   readonly argv: readonly string[];
   /** Human/ledger label — exactly the argv, joined. */
   readonly label: string;
+  /** The base's lint script is this eslint run: lint only what the task
+   *  changed (see LINT FROM A BASE REF). `argv` is then the eslint program;
+   *  the runner adds fixed flags and the changed files after `--`. */
+  readonly eslint?: EslintScript;
+}
+
+/** A plain eslint lint script: its `--ext` list and the paths it lints. */
+export interface EslintScript {
+  readonly ext: readonly string[];
+  readonly paths: readonly string[];
 }
 
 const npmBin = (): string => (process.platform === 'win32' ? 'npm.cmd' : 'npm');
@@ -168,15 +193,150 @@ function step(argv: string[]): GateStep {
   return { argv, label: argv.join(' ') };
 }
 
+/** The eslint program in a worktree, run with node (no npm, no shell). */
+function eslintArgv(worktreePath: string): string[] {
+  return ['node', path.join(worktreePath, 'node_modules', 'eslint', 'bin', 'eslint.js')];
+}
+
 /** Every argv shape this runner may ever spawn, as a function of the worktree.
- *  Exported so a test can assert the set has not grown. */
+ *  Exported so a test can assert the set has not grown. The eslint program
+ *  is followed by fixed flags and, after `--`, paths from `git diff`. */
 export function allowedGateArgv(worktreePath: string): readonly (readonly string[])[] {
   return [
     ['bash', path.join(worktreePath, GATE_VERIFY_SCRIPT)],
     [npmBin(), 'run', 'lint'],
     [npmBin(), 'test'],
+    eslintArgv(worktreePath),
   ];
 }
+
+/**
+ * `script` as an EslintScript when it is exactly `eslint`, an `--ext` list
+ * and one or more paths (no other flag, no shell syntax); else null, and the
+ * gate runs `npm run lint` whole. Pure.
+ */
+export function parseEslintScript(script: string | undefined): EslintScript | null {
+  if (typeof script !== 'string') return null;
+  const words = script.trim().split(/\s+/);
+  if (words.shift() !== 'eslint') return null;
+  let ext: string[] | null = null;
+  const paths: string[] = [];
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i] as string;
+    let list: string | undefined;
+    if (w === '--ext') list = words[++i];
+    else if (w.startsWith('--ext=')) list = w.slice('--ext='.length);
+    else if (/^[A-Za-z0-9_.@/-]+$/.test(w) && !w.startsWith('-')) {
+      paths.push(w);
+      continue;
+    } else return null;
+    if (ext !== null || !list || !/^\.[A-Za-z0-9]+(,\.[A-Za-z0-9]+)*$/.test(list)) return null;
+    ext = list.split(',');
+  }
+  return ext && paths.length > 0 ? { ext, paths } : null;
+}
+
+/** One eslint problem, as its JSON report gives it. */
+export interface LintProblem {
+  line: number;
+  column: number;
+  ruleId: string | null;
+  message: string;
+}
+
+/** A file's errors (severity 2) in an eslint JSON report, keyed by the path
+ *  relative to the first of `roots` it is under, with `/`; null when the
+ *  text is not such a report. */
+export function parseEslintReport(text: string, roots: readonly string[]): Map<string, LintProblem[]> | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(parsed)) return null;
+  const out = new Map<string, LintProblem[]>();
+  for (const r of parsed as unknown[]) {
+    const f = r as { filePath?: unknown; messages?: unknown };
+    if (!f || typeof f.filePath !== 'string' || !Array.isArray(f.messages)) return null;
+    const rel = relativeTo(f.filePath, roots);
+    const errors: LintProblem[] = out.get(rel) ?? [];
+    for (const m of f.messages as Array<Record<string, unknown>>) {
+      if (!m || m['severity'] !== 2) continue;
+      errors.push({
+        line: typeof m['line'] === 'number' ? m['line'] : 0,
+        column: typeof m['column'] === 'number' ? m['column'] : 0,
+        ruleId: typeof m['ruleId'] === 'string' ? m['ruleId'] : null,
+        message: typeof m['message'] === 'string' ? m['message'] : '',
+      });
+    }
+    out.set(rel, errors);
+  }
+  return out;
+}
+
+function relativeTo(filePath: string, roots: readonly string[]): string {
+  for (const root of roots) {
+    const rel = path.relative(root, filePath);
+    if (rel && !rel.startsWith('..') && !path.isAbsolute(rel)) return rel.split(path.sep).join('/');
+  }
+  return filePath.split(path.sep).join('/');
+}
+
+/**
+ * The errors `head` has that `base` (the same file at the base, null when
+ * the task added it) does not: matched by rule and message, one for one, so
+ * an error that only moved is not new. Pure.
+ */
+export function newLintProblems(head: readonly LintProblem[], base: readonly LintProblem[] | null): LintProblem[] {
+  const left = new Map<string, number>();
+  for (const p of base ?? []) {
+    const k = `${p.ruleId ?? ''}\u0000${p.message}`;
+    left.set(k, (left.get(k) ?? 0) + 1);
+  }
+  const added: LintProblem[] = [];
+  for (const p of head) {
+    const k = `${p.ruleId ?? ''}\u0000${p.message}`;
+    const n = left.get(k) ?? 0;
+    if (n > 0) left.set(k, n - 1);
+    else added.push(p);
+  }
+  return added;
+}
+
+/** One line naming a lint error, for the tail and the card: control
+ *  characters and backticks dropped, bounded. */
+export function lintErrorLine(file: string, p: LintProblem): string {
+  // eslint-disable-next-line no-control-regex
+  const clean = (s: string) => s.replace(/[\u0000-\u001f\u007f`]/g, ' ');
+  return clean(`${file}:${p.line}:${p.column} ${p.ruleId ?? 'parse error'}: ${p.message}`).slice(0, 240);
+}
+
+/** What a gate card adds for a failed eslint step: the errors the task
+ *  added, one per line; '' when there are none. */
+export function newLintErrorsText(errors: readonly string[] | undefined): string {
+  if (!errors || errors.length === 0) return '';
+  return `\n\nLint errors this task adds (pre-existing ones in the repository do not count):\n${errors.map((l) => `- ${l}`).join('\n')}`;
+}
+
+/** A file the task changed: its path at HEAD and at the base (a rename
+ *  moved it; null when the task added it). */
+export interface ChangedFile {
+  path: string;
+  basePath: string | null;
+}
+
+/** Changed files linted per eslint run (keeps argv short on Windows). */
+export const GATE_LINT_BATCH = 100;
+/** Files with errors whose base version is linted to tell old errors from
+ *  new; past this many, each one's errors all count as new. */
+export const GATE_LINT_BASE_MAX = 60;
+/** Bytes of eslint JSON one run may print; past it the step fails. */
+export const GATE_LINT_OUTPUT_MAX_BYTES = 32 * 1024 * 1024;
+/** New errors the result names (the tail and the card). */
+export const GATE_LINT_NAMED_MAX = 20;
+
+const SHA_RE = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 
 // ── Injected seams ───────────────────────────────────────────────────────────
 
@@ -192,13 +352,25 @@ export type GateExit = { kind: 'exited'; code: number | null } | { kind: 'unavai
 export interface GateProcess {
   /** Combined stdout+stderr, chunk by chunk. */
   onOutput(cb: (chunk: string) => void): void;
+  /** stdout and stderr apart, instead of onOutput (the eslint step reads its
+   *  JSON report from stdout). */
+  onStdio?(out: (chunk: string) => void, err: (chunk: string) => void): void;
   /** How the step ended — see GateExit. */
   wait(): Promise<GateExit>;
   /** Kill the whole process group (a test runner spawns children of its own). */
   kill(): void;
 }
 
-export type GateSpawn = (cmd: string, args: readonly string[], opts: { cwd: string }) => GateProcess;
+/** `stdin`: written to the process and closed (else it reads nothing). */
+export type GateSpawn = (cmd: string, args: readonly string[], opts: { cwd: string; stdin?: string }) => GateProcess;
+
+/** How the runner runs one process of a step (run()'s own, shared by the
+ *  eslint step's several processes). */
+type GateExec = (
+  argv: readonly string[],
+  budgetMs: number,
+  io?: { stdin?: string; stdout: (chunk: string) => void },
+) => Promise<{ exit: GateExit; timedOut: boolean }>;
 
 /** The `wmux.json` facts the runner needs: is it trusted, and does it declare
  *  the well-known verify command. Structurally satisfied by
@@ -240,6 +412,12 @@ export interface TaskGateRunnerOptions {
   /** Injected for tests; defaults to comparing `git hash-object <file>` with
    *  the ref's blob. False when either side is missing or unreadable. */
   sameAsBase?: (worktreePath: string, ref: string, file: string) => Promise<boolean>;
+  /** Injected for tests; defaults to git in the worktree: the base a task's
+   *  changes are read from (the newest of `diffBase` and `merge-base <ref>
+   *  HEAD` that HEAD contains) and the files changed from it to HEAD
+   *  (added, copied, modified or renamed). An error string when that cannot
+   *  be read. */
+  changedFiles?: (worktreePath: string, ref: string, diffBase?: string) => Promise<{ base: string; files: ChangedFile[] } | { error: string }>;
 }
 
 // ── Results ──────────────────────────────────────────────────────────────────
@@ -250,8 +428,10 @@ export interface TaskGateRunnerOptions {
 export type GateSkipReason = 'deps_missing' | 'no_gate_command' | 'gate_unavailable' | 'no_changes';
 
 export type GateRunResult =
-  /** The gate ran to a verdict. `result.exitCode === 0` is the only pass. */
-  | { ok: true; status: 'completed'; taskId: string; result: LedgerGateResult; recorded: boolean }
+  /** The gate ran to a verdict. `result.exitCode === 0` is the only pass.
+   *  `newLintErrors`: the errors the task added, when the eslint step failed
+   *  on them (lintErrorLine each, at most GATE_LINT_NAMED_MAX). */
+  | { ok: true; status: 'completed'; taskId: string; result: LedgerGateResult; recorded: boolean; newLintErrors?: string[] }
   /** Nothing ran, and that is not a failure. `recorded` is present only for
    *  `no_gate_command`, the one skip that still writes a verdict (a passing
    *  system gate, so a project without a gate can reach `completed`); its
@@ -293,6 +473,10 @@ export interface GateRunInput {
   /** Choose the gate from this ref (e.g. `origin/main`) instead of the
    *  worktree; see GATE FROM A BASE REF above. Omitted = the worktree. */
   gateBaseRef?: string;
+  /** The commit the task started from (main's dispatch record), for the
+   *  eslint step's diff; used when HEAD contains it and it is newer than
+   *  `merge-base <gateBaseRef> HEAD`. */
+  diffBase?: string;
 }
 
 /** A ref this runner passes to git: a plain ref name, never an option. */
@@ -332,14 +516,25 @@ const defaultSpawn: GateSpawn = (cmd, args, opts) => {
     // one without a shell (EINVAL, the CVE-2024-27980 fix). The argv stays an
     // ARRAY — Node quotes each element for cmd.exe — and every element here is
     // a constant from allowedGateArgv() plus a server-derived path, so there is
-    // still no caller string being interpolated into a command line.
-    ...(process.platform === 'win32' ? { shell: true } : {}),
-    stdio: ['ignore', 'pipe', 'pipe'],
+    // still no caller string being interpolated into a command line. Only a
+    // batch file gets a shell: the eslint step passes paths from `git diff`,
+    // which must never reach cmd.exe.
+    ...(process.platform === 'win32' && /\.(cmd|bat)$/i.test(cmd) ? { shell: true } : {}),
+    stdio: [opts.stdin !== undefined ? 'pipe' : 'ignore', 'pipe', 'pipe'],
   });
+  if (opts.stdin !== undefined) {
+    // A child that exits before reading all of it is not an error here.
+    child.stdin?.on('error', () => undefined);
+    child.stdin?.end(opts.stdin);
+  }
   return {
     onOutput(cb) {
       child.stdout?.on('data', (d: Buffer) => cb(d.toString('utf8')));
       child.stderr?.on('data', (d: Buffer) => cb(d.toString('utf8')));
+    },
+    onStdio(out, err) {
+      child.stdout?.on('data', (d: Buffer) => out(d.toString('utf8')));
+      child.stderr?.on('data', (d: Buffer) => err(d.toString('utf8')));
     },
     wait() {
       return new Promise<GateExit>((resolve) => {
@@ -409,6 +604,51 @@ async function defaultSameAsBase(worktreePath: string, ref: string, file: string
     git(['hash-object', '--', file], worktreePath),
   ]);
   return base.code === 0 && here.code === 0 && base.stdout.trim() !== '' && base.stdout.trim() === here.stdout.trim();
+}
+
+/** The paths in `git diff --name-status -z` output (added, copied, modified,
+ *  renamed); null when it is not that. Pure. */
+export function parseNameStatus(raw: string): ChangedFile[] | null {
+  const parts = raw.split('\0');
+  if (parts[parts.length - 1] === '') parts.pop();
+  const out: ChangedFile[] = [];
+  for (let i = 0; i < parts.length; i++) {
+    const status = parts[i] as string;
+    if (/^[AM]$/.test(status)) {
+      const p = parts[++i];
+      if (!p) return null;
+      out.push({ path: p, basePath: status === 'A' ? null : p });
+    } else if (/^[RC]\d*$/.test(status)) {
+      const from = parts[++i];
+      const to = parts[++i];
+      if (!from || !to) return null;
+      out.push({ path: to, basePath: from });
+    } else {
+      return null;
+    }
+  }
+  return out;
+}
+
+async function defaultChangedFiles(worktreePath: string, ref: string, diffBase?: string): Promise<{ base: string; files: ChangedFile[] } | { error: string }> {
+  const mb = await git(['merge-base', ref, 'HEAD'], worktreePath);
+  let base = mb.stdout.trim();
+  if (mb.code !== 0 || !SHA_RE.test(base)) return { error: `the commit the task started from could not be read (git merge-base ${ref} HEAD)` };
+  // The dispatch base, when HEAD holds it and it is newer than the merge-base
+  // (a task started from a commit origin does not have yet). A task that
+  // merged or rebased onto a newer base keeps the merge-base: the default
+  // branch's own changes since are not the task's.
+  if (diffBase && SHA_RE.test(diffBase) && diffBase !== base) {
+    const [newer, held] = await Promise.all([
+      git(['merge-base', '--is-ancestor', base, diffBase], worktreePath),
+      git(['merge-base', '--is-ancestor', diffBase, 'HEAD'], worktreePath),
+    ]);
+    if (newer.code === 0 && held.code === 0) base = diffBase;
+  }
+  const d = await git(['-c', 'core.quotePath=false', 'diff', '--name-status', '-z', '-M', '--diff-filter=ACMR', base, 'HEAD', '--'], worktreePath);
+  const files = d.code === 0 ? parseNameStatus(d.stdout) : null;
+  if (!files) return { error: `the files the task changed since ${base} could not be read` };
+  return { base, files };
 }
 
 /** package.json text → its string scripts; null when it is not JSON. */
@@ -492,6 +732,34 @@ function defaultReadPackageScripts(root: string): Record<string, string> | null 
   return scriptsOf(raw);
 }
 
+/** Whether eslint step `s` lints `file` (a path from git, `/`-separated):
+ *  one of its extensions, under one of its paths, and a plain relative path
+ *  (never one eslint could read as an option). */
+function lintable(file: string, s: EslintScript): boolean {
+  if (file.startsWith('-') || file.startsWith('/') || /[\0\r\n\\]/.test(file) || file.split('/').includes('..')) return false;
+  if (!s.ext.includes(path.posix.extname(file))) return false;
+  return s.paths.some((p) => {
+    const dir = p.replace(/^\.(\/|$)/, '').replace(/\/+$/, '');
+    return dir === '' || file === dir || file.startsWith(`${dir}/`);
+  });
+}
+
+/** What a `deps_missing` skip for a linked node_modules tells the owner to do. */
+function linkedDepsDetail(worktreePath: string): string {
+  let target = '';
+  try {
+    // The link's own text (a worker wrote it): bounded, no control characters.
+    // eslint-disable-next-line no-control-regex
+    target = fs.readlinkSync(path.join(worktreePath, 'node_modules')).replace(/[\u0000-\u001f\u007f`]/g, ' ').slice(0, 200);
+  } catch {
+    target = '';
+  }
+  return `node_modules in the task worktree is a symbolic link${target ? ` (to ${target})` : ''}, and the gate does not run on a linked install: `
+    + 'one shared from another checkout is not what this task\'s package-lock.json installs, so tests that read installed files fail for reasons that are not the task\'s. '
+    + `To run the gate: in ${worktreePath}, remove the link (only the link, not the folder it points to) and run npm ci `
+    + '(if it fails with ENOSPC, free disk space first), then send the task back so its worker reports again.';
+}
+
 // ── The runner ───────────────────────────────────────────────────────────────
 
 interface ActiveGate {
@@ -518,6 +786,7 @@ export class TaskGateRunner {
   private readonly readHead: (worktreePath: string) => Promise<string | null>;
   private readonly readBaseFile: (worktreePath: string, ref: string, file: string) => Promise<string | null>;
   private readonly sameAsBase: (worktreePath: string, ref: string, file: string) => Promise<boolean>;
+  private readonly changedFiles: NonNullable<TaskGateRunnerOptions['changedFiles']>;
   /** One gate per task — the second concurrent call is `busy`, not a second
    *  npm install fighting the first over the same node_modules. */
   private readonly active = new Map<string, ActiveGate>();
@@ -545,6 +814,7 @@ export class TaskGateRunner {
     this.readHead = opts.readHead ?? defaultReadHead;
     this.readBaseFile = opts.readBaseFile ?? defaultReadBaseFile;
     this.sameAsBase = opts.sameAsBase ?? defaultSameAsBase;
+    this.changedFiles = opts.changedFiles ?? defaultChangedFiles;
   }
 
   isRunning(taskId: string): boolean {
@@ -647,7 +917,10 @@ export class TaskGateRunner {
       scripts = base;
     }
     const steps: GateStep[] = [];
-    if (typeof scripts['lint'] === 'string') steps.push(step([npmBin(), 'run', 'lint']));
+    // From a base ref, a plain eslint script lints only what the task changed.
+    const eslint = baseRef !== undefined ? parseEslintScript(scripts['lint']) : null;
+    if (eslint) steps.push({ argv: eslintArgv(worktreePath), label: 'eslint on the files the task changed', eslint });
+    else if (typeof scripts['lint'] === 'string') steps.push(step([npmBin(), 'run', 'lint']));
     if (typeof scripts['test'] === 'string') steps.push(step([npmBin(), 'test']));
     return { steps };
   }
@@ -787,7 +1060,7 @@ export class TaskGateRunner {
           detail:
             deps === 'missing'
               ? 'node_modules is missing in the task worktree — run npm ci there, then re-run the gate'
-              : 'node_modules in the task worktree is a symlink, which makes lint/test results meaningless — run a real npm ci there',
+              : linkedDepsDetail(worktreePath),
         };
       }
 
@@ -802,8 +1075,32 @@ export class TaskGateRunner {
 
       let exitCode: number | null = 0;
       let label = resolved.steps[resolved.steps.length - 1]?.label ?? '';
+      let newLintErrors: string[] | undefined;
 
       if (waitedMs !== null) append(`[gate] waited ${Math.round(waitedMs / 1000)}s for another gate to finish\n`);
+
+      /** Run one process to its end, killed after `budgetMs`. With `stdout`,
+       *  its stdout goes there and only stderr to the tail. */
+      const exec: GateExec = async (argv, budgetMs, io) => {
+        const [cmd, ...args] = argv;
+        const proc = this.spawn(cmd as string, args, { cwd: worktreePath, ...(io?.stdin !== undefined ? { stdin: io.stdin } : {}) });
+        current = proc;
+        if (!io) proc.onOutput(append);
+        else if (proc.onStdio) proc.onStdio(io.stdout, append);
+        else proc.onOutput(io.stdout);
+        let timedOut = false;
+        const timer = setTimeout(() => {
+          timedOut = true;
+          proc.kill();
+        }, Math.max(1, budgetMs));
+        try {
+          const exit = await proc.wait();
+          return { exit, timedOut };
+        } finally {
+          clearTimeout(timer);
+          current = null;
+        }
+      };
 
       for (const step of resolved.steps) {
         if (cancelled) {
@@ -812,22 +1109,15 @@ export class TaskGateRunner {
           break;
         }
         label = step.label;
-        const [cmd, ...args] = step.argv;
-        const proc = this.spawn(cmd as string, args, { cwd: worktreePath });
-        current = proc;
-        proc.onOutput(append);
-
-        let timedOut = false;
-        const timer = setTimeout(() => {
-          timedOut = true;
-          proc.kill();
-        }, this.timeoutMs);
         let exit: GateExit;
-        try {
-          exit = await proc.wait();
-        } finally {
-          clearTimeout(timer);
-          current = null;
+        let timedOut: boolean;
+        if (step.eslint) {
+          const lint = await this.lintChanged(step, step.eslint, input, exec, append, () => cancelled);
+          if ('skip' in lint) return { ok: true, status: 'skipped', taskId, skipped: 'gate_unavailable', detail: lint.skip };
+          ({ exit, timedOut, label } = lint);
+          if (lint.named && lint.named.length > 0) newLintErrors = lint.named;
+        } else {
+          ({ exit, timedOut } = await exec(step.argv, this.timeoutMs));
         }
 
         // The process never ran (ENOENT: npm is not on the daemon's PATH;
@@ -870,7 +1160,7 @@ export class TaskGateRunner {
         ...(headSha ? { headSha } : {}),
       };
       const recorded = await this.record(taskId, input.systemWorkspaceId, result);
-      return { ok: true, status: 'completed', taskId, result, recorded };
+      return { ok: true, status: 'completed', taskId, result, recorded, ...(newLintErrors && exitCode !== 0 ? { newLintErrors } : {}) };
     } finally {
       release();
     }
@@ -892,6 +1182,106 @@ export class TaskGateRunner {
     } catch {
       return false;
     }
+  }
+
+  /**
+   * The eslint step (see LINT FROM A BASE REF): eslint on the files changed
+   * from the task's base to HEAD, then the base's version of each one with
+   * errors, and a pass unless HEAD adds one. `skip` when the base or the
+   * changed files cannot be read (the gate did not run). Bounded: the step's
+   * processes share one timeout, at most GATE_LINT_BASE_MAX base versions
+   * are linted, and each report is at most GATE_LINT_OUTPUT_MAX_BYTES.
+   */
+  private async lintChanged(
+    s: GateStep,
+    eslint: EslintScript,
+    input: GateRunInput,
+    exec: GateExec,
+    append: (chunk: string) => void,
+    cancelled: () => boolean,
+  ): Promise<{ exit: GateExit; timedOut: boolean; label: string; named?: string[] } | { skip: string }> {
+    const wt = input.worktreePath;
+    const changed = await this.changedFiles(wt, input.gateBaseRef ?? '', input.diffBase).catch((err: unknown) => ({ error: String(err) }));
+    if ('error' in changed) return { skip: `${changed.error}, so there is nothing to lint the task's changes against` };
+    const files = changed.files.filter((f) => lintable(f.path, eslint) && this.fileExists(path.join(wt, f.path)));
+    const label = `eslint on ${files.length} file${files.length === 1 ? '' : 's'} changed since ${changed.base.slice(0, 12)}`;
+    const killed = { exit: { kind: 'exited', code: null } as GateExit, timedOut: false, label };
+    if (files.length === 0) {
+      append(`[gate] ${label}: nothing to lint\n`);
+      return { exit: { kind: 'exited', code: 0 }, timedOut: false, label };
+    }
+    const roots = [wt];
+    try {
+      roots.push(fs.realpathSync(wt));
+    } catch {
+      /* the path as given */
+    }
+    const deadline = Date.now() + this.timeoutMs;
+    const flags = ['--format', 'json', '--quiet'];
+    /** One eslint run's errors per file, or how it ended when it gave none. */
+    const report = async (args: string[], stdin?: string): Promise<Map<string, LintProblem[]> | { exit: GateExit; timedOut: boolean; label: string }> => {
+      const budget = deadline - Date.now();
+      if (budget <= 0) return { ...killed, timedOut: true };
+      if (cancelled()) return killed;
+      let out = '';
+      let over = false;
+      const r = await exec([...s.argv, ...flags, ...args], budget, {
+        ...(stdin !== undefined ? { stdin } : {}),
+        stdout: (c) => {
+          if (over) return;
+          out += c;
+          if (out.length > GATE_LINT_OUTPUT_MAX_BYTES) {
+            over = true;
+            out = '';
+          }
+        },
+      });
+      if (r.exit.kind === 'unavailable' || r.timedOut || cancelled()) return { ...r, label };
+      // eslint exits 0 (no errors) or 1 (errors) with its report; anything
+      // else (2: a config or crash) is no lint result, so the step fails.
+      const parsed = !over && (r.exit.code === 0 || r.exit.code === 1) ? parseEslintReport(out, roots) : null;
+      if (parsed) return parsed;
+      append(`\n[gate] eslint ${over ? 'printed more than the gate reads' : r.exit.code === 0 || r.exit.code === 1 ? 'printed no JSON report' : `exited ${String(r.exit.code)}`}; the lint step fails\n`);
+      return { exit: { kind: 'exited', code: r.exit.code === 0 || r.exit.code === 1 || r.exit.code === null ? 2 : r.exit.code }, timedOut: false, label };
+    };
+
+    const head = new Map<string, LintProblem[]>();
+    for (let i = 0; i < files.length; i += GATE_LINT_BATCH) {
+      const r = await report(['--', ...files.slice(i, i + GATE_LINT_BATCH).map((f) => f.path)]);
+      if (!(r instanceof Map)) return r;
+      for (const [file, errors] of r) head.set(file, [...(head.get(file) ?? []), ...errors]);
+    }
+    const added: string[] = [];
+    let total = 0;
+    let compared = 0;
+    for (const [file, errors] of head) {
+      if (errors.length === 0) continue;
+      total += errors.length;
+      const f = files.find((c) => c.path === file);
+      let base: LintProblem[] | null = null;
+      // A file eslint named that the task did not change, or past the cap,
+      // has no base to compare with: its errors all count.
+      if (f?.basePath && compared < GATE_LINT_BASE_MAX) {
+        compared++;
+        let text: string | null;
+        try {
+          text = await this.readBaseFile(wt, changed.base, f.basePath);
+        } catch (err) {
+          return { skip: `${f.basePath} at ${changed.base} could not be read (${err instanceof Error ? err.message : String(err)})` };
+        }
+        if (text !== null) {
+          const r = await report(['--stdin', '--stdin-filename', f.path], text);
+          if (!(r instanceof Map)) return r;
+          base = r.get(f.path) ?? [];
+        }
+      }
+      for (const p of newLintProblems(errors, base)) added.push(lintErrorLine(file, p));
+    }
+    append(`[gate] ${label}: ${total} error${total === 1 ? '' : 's'} in them, ${added.length} new\n`);
+    const named = added.slice(0, GATE_LINT_NAMED_MAX);
+    for (const line of named) append(`  ${line}\n`);
+    if (added.length > named.length) append(`  and ${added.length - named.length} more\n`);
+    return { exit: { kind: 'exited', code: added.length > 0 ? 1 : 0 }, timedOut: false, label, named };
   }
 
   /**
