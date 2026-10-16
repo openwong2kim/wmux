@@ -720,6 +720,12 @@ export class HandoffRouter {
    */
   mention(sender: BotBinding, card: Pick<RoomCard, 'id' | 'threadId' | 'title' | 'body' | 'refs'>, botIds: readonly string[]): Array<{ botId: string; result: HandoffResult }> {
     const refs = sanitizeRefs({ pr: card.refs?.pr, issue: card.refs?.issue, headSha: card.refs?.headSha, taskId: card.refs?.taskId, url: card.refs?.url, messageId: card.id });
+    // The owner asked the poster in its own 1:1 and it asked around in
+    // General: the bots of its room answer in that 1:1, where the owner is.
+    const ports = this.opts.ports();
+    const wakeThread = runningWakeThread(ports, sender.botId);
+    const askedInDm = card.threadId === GENERAL_THREAD && runningWake(ports, sender.botId)?.reasonKind === 'human'
+      && dmThreadBot(wakeThread) === sender.botId;
     return botIds.map((botId) => ({
       botId,
       result: this.route(sender, {
@@ -727,7 +733,7 @@ export class HandoffRouter {
         title: oneLine(card.title, HANDOFF_STORE_LIMITS.TITLE_MAX) || 'message',
         body: card.body ?? '',
         refs: refs as FactRef | undefined,
-        namedThread: card.threadId,
+        namedThread: askedInDm && wakeThread && safeGet(ports.bots, botId)?.workspaceId === sender.workspaceId ? wakeThread : card.threadId,
         toBotId: botId,
         clientHandoffId: mentionKey(card.id, botId),
       }),

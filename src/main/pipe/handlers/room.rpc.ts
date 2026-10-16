@@ -34,7 +34,6 @@ import {
   ROOM_EVENT,
   ROOM_LIMITS,
   ROOM_RPC,
-  dmThreadBot,
   parseThreadId,
   type CardKind,
   type RoomCard,
@@ -54,11 +53,11 @@ import { HUMAN_RETRY_WINDOW_MS } from '../../factory/wakeQueue';
 import {
   ROOMS_DIRNAME,
   RoomWriter,
+  botThreadRefusal,
   capBody,
   getRoomWriter,
   isClientId,
   isRoomWorkspaceId,
-  namesOthersGroup,
   oneLine,
   resolveRoomPorts,
   runningWake,
@@ -165,9 +164,8 @@ export async function handleRoomPost(raw: unknown, ctx: RpcContext | undefined, 
     // bot's 1:1 is named only from the wake running in it; a group chat's
     // thread by its members, or from the wake running in it.
     const wakeThread = runningWakeThread(ports, bot.botId);
-    const dmOf = dmThreadBot(namedThread);
-    if (dmOf && dmOf !== bot.botId && namedThread !== wakeThread) return refusal('invalid', 'a bot posts in its own 1:1 thread only');
-    if (namesOthersGroup(ports, bot, namedThread)) return refusal('invalid', 'a bot posts in a group chat it is in');
+    const threadRefused = botThreadRefusal(ports, bot, namedThread);
+    if (threadRefused) return refusal('invalid', threadRefused);
     const threadId = namedThread ?? wakeThread ?? GENERAL_THREAD;
     const wake = runningWake(ports, bot.botId);
     const clientPostId = p.clientPostId ?? wakeOrdinals.next(wake, 'post');

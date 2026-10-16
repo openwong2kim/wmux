@@ -104,6 +104,7 @@ describe('fanout_start: tool surface', () => {
       'roles',
       'secret_names',
       'task_prompts',
+      'thread_id',
       'titles',
     ]);
   });

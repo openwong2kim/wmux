@@ -111,10 +111,11 @@ export interface LedgerDispatch {
   preset?: string;
   /** Set when the task worktree was created detached at a commit. */
   checkout?: { sha: string; detached: true };
-  /** A bot's task: the room thread of the wake that started it, read from
-   *  main's own wake state at dispatch (never from the bot's arguments). The
-   *  task's wakes and cards go there; absent (no thread, `general`, or a row
-   *  written before it existed) = the task's own `task:<id>` thread. */
+  /** A bot's task: the room thread the bot named when it started it (checked
+   *  like a post's), else the PR it checks out, else the thread of the wake
+   *  that started it (main's own wake state at dispatch). The task's wakes
+   *  and cards go there; absent (no thread, `general`, or a row written
+   *  before it existed) = the task's own `task:<id>` thread. */
   threadId?: string;
   /** A bot's task: the handoff the wake that started it delivered (a
    *  dispatch it was given), read from main's own wake state at dispatch.

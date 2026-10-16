@@ -356,18 +356,55 @@ describe('task.fanout.start — bot origin', () => {
     expect((r.start.mock.calls[0][0] as FanOutRequest).threadId).toBe('pr:github.com/acme/app#12');
   });
 
-  it('records no thread for a wake in general or with none, and never one the bot names', async () => {
+  it('records no thread for a wake in general or with none', async () => {
     for (const t of ['general', null, 'not a thread']) {
       const r = rig('verifier');
       r.setThread(t);
-      const res = await r.call(
-        { idempotencyKey: 'wake:w-1:1', titles: ['verify'], preset: 'verify', checkout: { sha: SHA }, threadId: 'issue:acme/app#21' },
-        botCtx('verifier'),
-      );
+      const res = await r.call({ idempotencyKey: 'wake:w-1:1', titles: ['verify'], preset: 'verify', checkout: { sha: SHA } }, botCtx('verifier'));
       expect(res.status).toBe('accepted');
       await r.flush();
       expect(r.start.mock.calls[0][0] as FanOutRequest).not.toHaveProperty('threadId');
     }
+  });
+
+  it('records the thread the bot names over its wake\'s: a wake about one PR starting the next', async () => {
+    for (const [named, recorded] of [['pr:o/r#31', 'pr:github.com/o/r#31'], [`dm:${BOT_ID}`, `dm:${BOT_ID}`]] as const) {
+      const r = rig('verifier');
+      r.setThread('pr:o/r#12');
+      const res = await r.call(
+        { idempotencyKey: 'wake:w-1:1', titles: ['verify #31'], preset: 'verify', checkout: { sha: SHA }, threadId: named },
+        botCtx('verifier'),
+      );
+      expect(res.status).toBe('accepted');
+      await r.flush();
+      expect((r.start.mock.calls[0][0] as FanOutRequest).threadId).toBe(recorded);
+    }
+  });
+
+  it('refuses a thread the bot may not post in, or one that is no thread, before anything starts', async () => {
+    for (const named of ['dm:bot-99999999', 'group:grp-0a1b2c3d', 'not a thread']) {
+      const r = rig('verifier');
+      r.setThread('pr:o/r#12');
+      const res = await r.call(
+        { idempotencyKey: 'wake:w-1:1', titles: ['verify'], preset: 'verify', checkout: { sha: SHA }, threadId: named },
+        botCtx('verifier'),
+      );
+      expect(errorOf(res)).toMatchObject({ code: 'INVALID_ARGUMENT', message: expect.stringContaining('thread') });
+      await r.flush();
+      expect(r.start).not.toHaveBeenCalled();
+    }
+  });
+
+  it('with no thread named, records the PR its tasks check out (pull/<n>/head) over the wake\'s', async () => {
+    const r = rig('verifier');
+    r.setThread('pr:o/r#12');
+    const res = await r.call(
+      { idempotencyKey: 'wake:w-1:1', titles: ['verify #31'], preset: 'verify', checkout: { sha: SHA, fetchRef: 'pull/31/head' } },
+      botCtx('verifier'),
+    );
+    expect(res.status).toBe('accepted');
+    await r.flush();
+    expect((r.start.mock.calls[0][0] as FanOutRequest).threadId).toBe('pr:github.com/o/r#31');
   });
 
   it('the same wake key twice polls the first fan-out; a retried turn cannot start a second', async () => {

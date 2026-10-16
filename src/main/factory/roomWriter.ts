@@ -284,6 +284,17 @@ export function namesOthersGroup(ports: Partial<FactoryRoomPorts>, bot: { worksp
   }
 }
 
+/** Why a bot may not name this thread for what it posts or the workers it
+ *  starts, or null: another bot's 1:1 is named only from the wake running
+ *  in it; a group chat's thread by its members, or from the wake running
+ *  in it. */
+export function botThreadRefusal(ports: Partial<FactoryRoomPorts>, bot: { workspaceId: string; botId: string }, threadId: ThreadId | undefined): string | null {
+  const dmOf = dmThreadBot(threadId);
+  if (dmOf && dmOf !== bot.botId && threadId !== runningWakeThread(ports, bot.botId)) return 'a bot posts in its own 1:1 thread only';
+  if (namesOthersGroup(ports, bot, threadId)) return 'a bot posts in a group chat it is in';
+  return null;
+}
+
 // ── JSONL files ────────────────────────────────────────────────────────────
 
 /** Whether appending to `file` needs a newline first: its last byte is not

@@ -344,8 +344,8 @@ export interface FanOutRequest {
    * or dependsOn. Recorded on each task's ledger row.
    */
   checkout?: { sha: string; detached: true; fetchRef?: string };
-  /** A bot's fan-out: the room thread of the wake that asked (main's own wake
-   *  state). Recorded on each task's ledger row; see LedgerDispatch.threadId. */
+  /** A bot's fan-out: the room thread its tasks report in (main settles it).
+   *  Recorded on each task's ledger row; see LedgerDispatch.threadId. */
   threadId?: string;
   /** A bot's fan-out: the handoff the asking wake delivered (main's own
    *  wake state). Recorded on each task's ledger row; see

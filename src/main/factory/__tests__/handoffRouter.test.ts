@@ -841,6 +841,46 @@ describe('messages and room mentions (group rooms)', () => {
     expect(later.wakes).toEqual([]);
   });
 
+  it('a broadcast in General from a wake the owner started in the poster\'s 1:1 wakes its room\'s bots in that 1:1', async () => {
+    const coord = bot('ws1', 'lead');
+    const b = bot('ws1', 'triage');
+    const far = bot('ws2', 'verifier');
+    const h = await harness([coord, b, far]);
+    const dm = `dm:${coord.id}` as ThreadId;
+    h.wake.thread = dm;
+    h.wake.id = { wakeId: 'w-own', attempt: 1, reasonKind: 'human', ownerCardId: 'c-owner' } as Harness['wake']['id'];
+    const out = h.router.mention(binding(coord), card('c-ask'), [b.id, far.id]);
+    const [mine, theirs] = out.map((o) => (o.result.ok ? h.router.get(o.result.handoffId)! : null));
+    expect(mine).toMatchObject({ kind: 'message', threadId: dm });
+    expect(h.wakes.find((w) => w.botId === b.id)).toMatchObject({ threadId: dm, reason: { kind: 'mention' } });
+    // A bot of another room answers in its own room, as before.
+    expect(theirs).toMatchObject({ threadId: 'general' });
+    // Woken there, the bot's answer lands in the 1:1 (its wake's thread).
+    const posted = await handleRoomPost({ kind: 'status', title: 'Checked' }, { bot: binding(b) } as RpcContext, { writer: () => h.rooms, ports: () => h.ports, wmuxDir: () => dir }) as { ok: boolean; card?: { threadId: string } };
+    expect(posted).toMatchObject({ ok: true, card: { threadId: dm } });
+  });
+
+  it('any other mention keeps the card\'s thread', async () => {
+    const coord = bot('ws1', 'lead');
+    const b = bot('ws1', 'triage');
+    const h = await harness([coord, b]);
+    const dm = `dm:${coord.id}` as ThreadId;
+    const cases: Array<{ thread: ThreadId; reasonKind: string; cardThread: ThreadId }> = [
+      // Not an owner message: a handoff the coordinator runs in its 1:1.
+      { thread: dm, reasonKind: 'handoff', cardThread: 'general' },
+      // The owner's message in General.
+      { thread: 'general', reasonKind: 'human', cardThread: 'general' },
+      // A card the poster put in another subject's thread on purpose.
+      { thread: dm, reasonKind: 'human', cardThread: 'pr:github.com/acme/app#5' },
+    ];
+    for (const [i, c] of cases.entries()) {
+      h.wake.thread = c.thread;
+      h.wake.id = { wakeId: `w-${i}`, attempt: 1, reasonKind: c.reasonKind } as Harness['wake']['id'];
+      const [o] = h.router.mention(binding(coord), card(`c-other${i}`, { threadId: c.cardThread }), [b.id]);
+      expect(o.result.ok && h.router.get(o.result.handoffId)).toMatchObject({ threadId: c.cardThread });
+    }
+  });
+
   it('a queued mention redelivered on start wakes as the same mention', async () => {
     const a = bot('ws1', 'lead');
     const b = bot('ws1', 'triage');
