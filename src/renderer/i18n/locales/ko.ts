@@ -4055,7 +4055,7 @@ export const ko = {
   'botsPage.models.effortValue': "강도 {effort}",
   'botsPage.models.change': "바꾸기",
   'botsPage.models.otherEngine': "엔진이 정합니다",
-  'botsPage.models.invalid': "\"{model}\"은(는) 모델 ID가 아닙니다. 영문자나 숫자로 시작하고 . _ : - 만 쓸 수 있습니다.",
+  'botsPage.models.invalid': "\"{model}\"은(는) 모델 ID가 아닙니다. 영문자나 숫자로 시작하고, 그 뒤에는 영문자·숫자와 . _ : - 만 쓸 수 있습니다.",
   'botsPage.models.saveFailed': "모델을 저장하지 못했습니다.",
   'botsPage.models.workersOn': "워커 {model}",
   'botsPage.profile.workersUnavailable': "{name} (이 시스템에서는 사용할 수 없음)",

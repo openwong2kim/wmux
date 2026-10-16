@@ -3803,7 +3803,7 @@ export const zh = {
   'botsPage.models.effortValue': "强度 {effort}",
   'botsPage.models.change': "更改",
   'botsPage.models.otherEngine': "由其引擎决定",
-  'botsPage.models.invalid': "“{model}”不是模型 ID：须以字母或数字开头，其后只能用 . _ : -",
+  'botsPage.models.invalid': "“{model}”不是模型 ID：须以字母或数字开头，其后只能用字母、数字和 . _ : -",
   'botsPage.models.saveFailed': "无法保存模型。",
   'botsPage.models.workersOn': "工作者 {model}",
   'botsPage.profile.workersUnavailable': "{name}（此系统不可用）",

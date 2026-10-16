@@ -4514,7 +4514,7 @@ export const pl = {
   'botsPage.models.effortValue': "wysiłek {effort}",
   'botsPage.models.change': "Zmień",
   'botsPage.models.otherEngine': "Ustala go silnik",
-  'botsPage.models.invalid': "„{model}” nie jest identyfikatorem modelu: najpierw litera lub cyfra, potem . _ : -",
+  'botsPage.models.invalid': "„{model}” nie jest identyfikatorem modelu: najpierw litera lub cyfra, potem litery, cyfry oraz . _ : -",
   'botsPage.models.saveFailed': "Nie udało się zapisać modelu.",
   'botsPage.models.workersOn': "workery {model}",
   'botsPage.profile.workersUnavailable': "{name} (niedostępny w tym systemie)",

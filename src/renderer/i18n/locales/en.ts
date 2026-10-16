@@ -4553,7 +4553,7 @@ export const en = {
   'botsPage.models.effortValue': "{effort} effort",
   'botsPage.models.change': "Change",
   'botsPage.models.otherEngine': "Set by its engine",
-  'botsPage.models.invalid': "\"{model}\" is not a model id: letters or digits first, then . _ : -",
+  'botsPage.models.invalid': "\"{model}\" is not a model id: a letter or digit first, then letters, digits and . _ : -",
   'botsPage.models.saveFailed': "Could not save the model.",
   'botsPage.models.workersOn': "workers {model}",
   'botsPage.profile.workersUnavailable': "{name} (not available on this system)",

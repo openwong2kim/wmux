@@ -449,8 +449,8 @@ status bar badges, `fleet_triage` or the phone's sidebar.
   as at creation (a refusal says why in one line) — the model it thinks
   on (its own model and effort, as text with a muted Change that opens the
   model combobox of Settings › Agents roles and an effort Select, with
-  Cancel and Save; a model id fan-out would refuse is refused in one red
-  line before main is asked) — what its workers run on — a native Select:
+  Cancel and Save; an invalid model id is refused in one red line before
+  main is asked, and main checks it again) — what its workers run on — a native Select:
   Default (the presets' engine) or an installed engine that has a worker
   guard, one not installed listed but disabled — its workers' model and
   effort (the same model line, for that engine) — on/off and presence (a
