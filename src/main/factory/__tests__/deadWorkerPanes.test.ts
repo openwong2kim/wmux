@@ -53,6 +53,10 @@ interface Rig {
   input: Map<string, PaneKeyInput | null>;
   /** pty → layout pane (default: a pane of its own). */
   panes: Map<string, string>;
+  /** layout pane → its tabs with no local session (remote terminal, browser). */
+  extraTabs: Map<string, number>;
+  destroySession: Mock<(id: string) => Promise<void>>;
+  clock: { now: number };
 }
 
 async function rig(rows: LedgerEntry[], sessions: DeadPaneSession[], over: Partial<DeadPaneSweepPorts> = {}, opts: { reclaimed?: boolean } = {}): Promise<Rig> {
@@ -69,9 +73,15 @@ async function rig(rows: LedgerEntry[], sessions: DeadPaneSession[], over: Parti
   const ptys = new Map<string, string[]>([['ws-task', sessions.map((s) => s.id)]]);
   const input = new Map<string, PaneKeyInput | null>();
   const panes = new Map<string, string>();
+  const extraTabs = new Map<string, number>();
+  const clock = { now: NOW };
   const paneOf = (id: string): string => panes.get(id) ?? `pane-${id}`;
   const r: Rig = {
-    store, sessions, ptys, input, panes,
+    store, sessions, ptys, input, panes, extraTabs, clock,
+    destroySession: vi.fn(async (id: string) => {
+      const i = r.sessions.findIndex((s) => s.id === id);
+      if (i >= 0) r.sessions.splice(i, 1);
+    }),
     closeWorkspace: vi.fn(async (ws: string) => {
       for (const id of ptys.get(ws) ?? []) {
         const i = r.sessions.findIndex((s) => s.id === id);
@@ -99,9 +109,15 @@ async function rig(rows: LedgerEntry[], sessions: DeadPaneSession[], over: Parti
     viewed: (ws) => ws === 'ws-owner',
     sessionRecordOf: (id) => (id === 'daemon-1' || id === 'daemon-3' ? { taskId: 'wtask-abc-12345678' } : null),
     closeWorkspace: (ws) => r.closeWorkspace(ws),
-    paneOf,
+    paneSurfaces: async (ws) => {
+      const byPane = new Map<string, string[]>();
+      for (const id of ptys.get(ws) ?? []) byPane.set(paneOf(id), [...(byPane.get(paneOf(id)) ?? []), id]);
+      return [...byPane].map(([id, list]) => ({ id, surfacePtyIds: list, surfaceCount: list.length + (extraTabs.get(id) ?? 0) }));
+    },
     closePane: (pane) => r.closePane(pane),
-    now: () => NOW,
+    inAnyWorkspace: (id) => [...ptys.values()].some((list) => list.includes(id)),
+    destroySession: (id) => r.destroySession(id),
+    now: () => clock.now,
     sleep: async () => undefined,
     confirmMs: 0,
     log: () => undefined,
@@ -157,6 +173,17 @@ describe('ended bot tasks', () => {
     expect(r.sessions.map((x) => x.id)).toEqual(['daemon-732a7d07']);
   });
 
+  it('never closes an owner shell an older reclaim record lists', async () => {
+    const owners: DeadPaneSession = { id: 'daemon-732a7d07', pid: 20, spawnCwd: wt, agentProcessAlive: false, commandRunning: false };
+    const r = await rig([row('failed')], [owners]);
+    const rec = r.store.get('wtask-abc-12345678');
+    if (!rec) throw new Error('no record');
+    await r.store.put({ ...rec, sessions: [...rec.sessions, { sessionId: 'daemon-732a7d07', cwd: wt }] });
+    expect((await createDeadPaneSweep(r.ports).pass()).closed).toBe(0);
+    expect(r.closeWorkspace).not.toHaveBeenCalled();
+    expect(r.closePane).not.toHaveBeenCalled();
+  });
+
   it('counts a close only once it shows, and does not retry it at once', async () => {
     const r = await rig([row('completed')], [respawned()]);
     const lines: string[] = [];
@@ -167,6 +194,35 @@ describe('ended bot tasks', () => {
     expect(lines.some((l) => l.includes('closed daemon-1'))).toBe(false);
     expect(await sweep.pass()).toEqual({ closed: 0, recorded: 0 });
     expect(r.closeWorkspace).toHaveBeenCalledTimes(1);
+  });
+
+  it('never closes a layout pane that also holds a remote terminal or browser tab, nor its workspace', async () => {
+    const r = await rig([row('completed')], [respawned()]);
+    r.extraTabs.set('pane-daemon-1', 1);
+    expect((await createDeadPaneSweep(r.ports).pass()).closed).toBe(0);
+    expect(r.closeWorkspace).not.toHaveBeenCalled();
+    expect(r.closePane).not.toHaveBeenCalled();
+  });
+
+  it('destroys a session a close left behind once its pane is gone, after the backoff', async () => {
+    const r = await rig([row('completed')], [respawned()]);
+    // The renderer drops the workspace but its session's disposal fails.
+    r.closeWorkspace.mockImplementation(async (ws: string) => {
+      r.ptys.delete(ws);
+      return true;
+    });
+    const sweep = createDeadPaneSweep(r.ports);
+    expect((await sweep.pass()).closed).toBe(0);
+    expect(r.destroySession).not.toHaveBeenCalled();
+    r.clock.now += 5 * 60_000;
+    expect((await sweep.pass()).closed).toBe(0);
+    expect(r.destroySession).not.toHaveBeenCalled();
+    r.clock.now += 6 * 60_000;
+    expect((await sweep.pass()).closed).toBe(1);
+    expect(r.destroySession).toHaveBeenCalledWith('daemon-1');
+    expect(r.sessions).toEqual([]);
+    expect(await sweep.pass()).toEqual({ closed: 0, recorded: 0 });
+    expect(r.destroySession).toHaveBeenCalledTimes(1);
   });
 
   it('does not count a close that left the daemon session behind', async () => {

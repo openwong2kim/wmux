@@ -532,7 +532,20 @@ export function startWorkerLifecycle(deps: WorkerLifecycleDeps): () => void {
       sessionRecordOf: botWorkerSessionRecord,
       launchedConversation,
       closeWorkspace,
-      paneOf: (ptyId) => mirror.peekPaneForPty(ptyId)?.paneId ?? null,
+      paneSurfaces: async (workspaceId) => {
+        const res = await sendToRenderer(() => deps.getMainWindow?.() ?? null, 'pane.list', { workspaceId, includeStashed: true }, { timeoutMs: CLOSE_TIMEOUT_MS });
+        if (!Array.isArray(res)) return null;
+        const out: Array<{ id: string; surfaceCount: number; surfacePtyIds: string[] }> = [];
+        for (const p of res as Array<Record<string, unknown>>) {
+          if (typeof p?.id !== 'string' || typeof p.surfaceCount !== 'number' || !Array.isArray(p.surfacePtyIds)) return null;
+          out.push({ id: p.id, surfaceCount: p.surfaceCount, surfacePtyIds: p.surfacePtyIds.filter((x): x is string => typeof x === 'string') });
+        }
+        return out;
+      },
+      inAnyWorkspace: (ptyId) => mirror.getEntries()?.some((e) => Array.isArray(e.ptyIds) && e.ptyIds.includes(ptyId)) ?? true,
+      destroySession: async (ptyId) => {
+        await rpc('daemon.destroySession', { id: ptyId });
+      },
       closePane: async (paneId) => {
         const res = await sendToRenderer(() => deps.getMainWindow?.() ?? null, 'pane.close', { id: paneId }, { timeoutMs: CLOSE_TIMEOUT_MS });
         return !!res && typeof res === 'object' && (res as { ok?: unknown }).ok === true;

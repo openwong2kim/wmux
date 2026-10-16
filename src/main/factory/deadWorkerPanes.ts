@@ -130,11 +130,19 @@ export interface DeadPaneSweepPorts {
   launchedConversation?: WorkerReclaimPorts['launchedConversation'];
   /** Close a workspace through the renderer's workspace.close; true when it closed. */
   closeWorkspace: (workspaceId: string) => Promise<boolean>;
-  /** The layout pane holding `ptyId`, or null when not known. */
-  paneOf: (ptyId: string) => string | null;
+  /** The workspace's layout panes (stashed ones included) as the renderer
+   *  holds them: each one's tab count and its tabs' local terminal sessions
+   *  (a remote terminal, a browser or an editor tab has none); null when it
+   *  could not be read. */
+  paneSurfaces: (workspaceId: string) => Promise<ReadonlyArray<{ id: string; surfaceCount: number; surfacePtyIds: readonly string[] }> | null>;
   /** Close a layout pane (all its tabs) through the renderer's pane.close;
    *  true when it closed. */
   closePane: (paneId: string) => Promise<boolean>;
+  /** Whether a session is a pane of any open workspace (the tree). */
+  inAnyWorkspace: (ptyId: string) => boolean;
+  /** daemon.destroySession: a task's own dead session a close left behind
+   *  with no pane any more. */
+  destroySession: (ptyId: string) => Promise<void>;
   /** How long a close is waited for to show (its sessions gone from the
    *  daemon, its panes from the tree) before it counts as not done. */
   confirmMs?: number;
@@ -162,6 +170,9 @@ export function createDeadPaneSweep(ports: DeadPaneSweepPorts): DeadPaneSweep {
   const log = ports.log ?? ((m: string) => console.log(m));
   /** workspace → not before (a refused close). */
   const notBefore = new Map<string, number>();
+  /** A task's own session a close was answered for but left in the daemon
+   *  → its task and when to look again. */
+  const leftBehind = new Map<string, { taskId: string; at: number }>();
   let running = false;
 
   const safe = <T>(fn: () => T, fallback: T): T => {
@@ -182,12 +193,12 @@ export function createDeadPaneSweep(ports: DeadPaneSweepPorts): DeadPaneSweep {
   const sleep = ports.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const confirmMs = ports.confirmMs ?? CLOSE_CONFIRM_MS;
 
-  /** Whether a pane is the task's own: recorded for it (its reclaim record),
-   *  or created by its own launch (its bot worker session record names the
-   *  task). Nothing else, however idle: an owner's pane in the workspace is
-   *  never one. */
-  const ownPane = (row: LedgerEntry, rec: ReclaimedWorker | null, id: string): boolean =>
-    isTaskOwnWorkerPane({ id }, row.id, rec?.sessions.map((s) => s.sessionId) ?? [], ports.sessionRecordOf);
+  /** Whether a pane is the task's own: its bot worker session record names
+   *  the task (written for the task's own fan-out or resume spawn only). The
+   *  reclaim record alone is not enough here: one an older version wrote may
+   *  hold a shell the owner started in the task folder. Nothing else,
+   *  however idle: an owner's pane in the workspace is never one. */
+  const ownPane = (taskId: string, id: string): boolean => isTaskOwnWorkerPane({ id }, taskId, [], ports.sessionRecordOf);
 
   /** Whether a close took effect: `ids` gone from the daemon and from the
    *  workspace's panes (the whole workspace, when `wholeWorkspace`), read
@@ -207,6 +218,48 @@ export function createDeadPaneSweep(ports: DeadPaneSweepPorts): DeadPaneSweep {
     }
   };
 
+  /** A close answered but not done: the task's own sessions it was for are
+   *  looked at again from their ids (the tree may have dropped them). */
+  const leaveBehind = (taskId: string, ids: readonly string[]): void => {
+    for (const id of ids) if (ownPane(taskId, id)) leftBehind.set(id, { taskId, at: now() + CLEAR_FOREIGN_RETRY_MS });
+  };
+
+  /** The sessions a close left behind, once due: one still in a pane of an
+   *  open workspace is the tree's again (the next close looks at it); one in
+   *  no pane any more, still the task's own and running no agent and no
+   *  command, is destroyed in the daemon directly, then read again. */
+  const sweepLeftBehind = async (sessions: DeadPaneSession[]): Promise<number> => {
+    let destroyed = 0;
+    const at = now();
+    for (const [id, p] of [...leftBehind]) {
+      if (p.at > at) continue;
+      const s = sessions.find((x) => x.id === id);
+      if (!s || safe(() => ports.inAnyWorkspace(id), true) || !ownPane(p.taskId, id)) {
+        leftBehind.delete(id);
+        continue;
+      }
+      if (s.state !== 'dead' && (s.agentProcessAlive === true || s.commandRunning === true)) {
+        leftBehind.delete(id);
+        continue;
+      }
+      try {
+        await ports.destroySession(id);
+      } catch {
+        /* read again below */
+      }
+      const live = await ports.listSessions().catch(() => null);
+      if (live && !live.some((x) => x.id === id)) {
+        leftBehind.delete(id);
+        destroyed++;
+        log(`[factory] dead panes: destroyed ${id} (task ${p.taskId}), left behind by a close with no pane any more`);
+      } else {
+        leftBehind.set(id, { taskId: p.taskId, at: now() + CLEAR_FOREIGN_RETRY_MS });
+        log(`[factory] dead panes: ${id} (task ${p.taskId}) was not destroyed; looked at again later`);
+      }
+    }
+    return destroyed;
+  };
+
   /** The task's row and record now: unchanged since the pass read them
    *  (same rev and status, a record in the same state), or null. */
   const unchanged = (row: LedgerEntry, rec: ReclaimedWorker | null): boolean => {
@@ -221,7 +274,7 @@ export function createDeadPaneSweep(ports: DeadPaneSweepPorts): DeadPaneSweep {
       const s = m.get(id);
       return !!s && s.state !== 'dead' && (isRespawnedShell(s) || isIdleShell(s));
     };
-    const own = (id: string): boolean => ownPane(row, rec, id);
+    const own = (id: string): boolean => ownPane(row.id, id);
     const shells = ptys.filter((id) => own(id) && shellIn(byId, id));
     // Every pane the task's own and its session gone from the daemon (the
     // owner's stop destroys them, which leaves frozen tabs).
@@ -252,9 +305,17 @@ export function createDeadPaneSweep(ports: DeadPaneSweepPorts): DeadPaneSweep {
         return ptys.includes(id) && (!was || was.state === 'dead') && (!is || is.state === 'dead');
       };
       const why = isStoppedByOwner(row) ? 'stopped by owner' : row.status;
+      const dead = (id: string): boolean => own(id) && (closable.includes(id) || gone(id));
+      // Every tab of a layout pane, of any kind: one with no local session
+      // of its own (a remote terminal, a browser, an editor) is not a dead
+      // worker, and keeps its pane and the workspace.
+      const layout = await ports.paneSurfaces(ws).catch(() => null);
+      if (!layout) return 0;
+      const paneDead = (p: { surfaceCount: number; surfacePtyIds: readonly string[] }): boolean =>
+        p.surfaceCount > 0 && p.surfacePtyIds.length === p.surfaceCount && p.surfacePtyIds.every(dead);
       // The whole workspace only when every pane in it is the task's own
-      // and dead: an unidentified pane keeps it.
-      if (nowPtys.every((id) => own(id) && (closable.includes(id) || gone(id)))) {
+      // and dead: an unidentified pane or tab keeps it.
+      if (nowPtys.every(dead) && layout.length > 0 && layout.every(paneDead)) {
         let ok = false;
         try {
           ok = await ports.closeWorkspace(ws);
@@ -267,6 +328,7 @@ export function createDeadPaneSweep(ports: DeadPaneSweepPorts): DeadPaneSweep {
         }
         if (!(await closeShows(ws, nowPtys, true))) {
           notBefore.set(ws, now() + CLEAR_FOREIGN_RETRY_MS);
+          leaveBehind(row.id, nowPtys);
           log(`[factory] dead panes: the close of ${ws} (task ${row.id}) was answered but did not take effect; looked at again later`);
           return 0;
         }
@@ -275,25 +337,21 @@ export function createDeadPaneSweep(ports: DeadPaneSweepPorts): DeadPaneSweep {
         return nowPtys.length;
       }
       if (closable.length === 0) return 0;
-      // One pane at a time, and only a pane whose every tab is such a shell:
-      // closing a pane closes all its tabs.
-      const paneOf = (id: string): string | null => safe(() => ports.paneOf(id), null);
-      const panes = new Map<string, string[]>();
-      for (const id of closable) {
-        const pane = paneOf(id);
-        if (pane) panes.set(pane, [...(panes.get(pane) ?? []), id]);
-      }
+      // One layout pane at a time, and only one whose every tab is a dead
+      // worker terminal of the task: closing a pane closes all its tabs.
       let closed = 0;
-      for (const [pane, ids] of panes) {
-        if (!nowPtys.every((id) => paneOf(id) !== pane || ids.includes(id))) continue;
+      for (const p of layout) {
+        if (!paneDead(p) || !p.surfacePtyIds.every((id) => closable.includes(id))) continue;
+        const ids = [...p.surfacePtyIds];
         let ok = false;
         try {
-          ok = await ports.closePane(pane);
+          ok = await ports.closePane(p.id);
         } catch {
           ok = false;
         }
         if (ok && !(await closeShows(ws, ids, false))) {
           notBefore.set(ws, now() + CLEAR_FOREIGN_RETRY_MS);
+          leaveBehind(row.id, ids);
           log(`[factory] dead panes: the close of the pane of ${ids.join(', ')} in ${ws} (task ${row.id}) was answered but did not take effect; looked at again later`);
           continue;
         }
@@ -320,7 +378,7 @@ export function createDeadPaneSweep(ports: DeadPaneSweepPorts): DeadPaneSweep {
     // An agent alive anywhere in the workspace: the worker may be that one.
     if (ptys.some((id) => byId.get(id)?.agentProcessAlive === true)) return false;
     // Only the task's own worker panes: recorded for it, or created by its launch.
-    const own = ptys.filter((id) => ownPane(row, rec, id));
+    const own = ptys.filter((id) => ownPane(row.id, id));
     const dead = own.filter((id) => isRespawnedShell(byId.get(id)) || isAgentExitedShell(byId.get(id)));
     if (dead.length === 0 || dead.length < own.length) return false;
     const quiet = await untyped(dead, byId, Math.max(row.updatedAt, rec?.at ?? 0));
@@ -377,6 +435,7 @@ export function createDeadPaneSweep(ports: DeadPaneSweepPorts): DeadPaneSweep {
     let recorded = 0;
     if (!ports.ready() || safe(() => ports.viewedWorkspace(), null) === null) return { closed, recorded };
     const sessions = await ports.listSessions();
+    closed += await sweepLeftBehind(sessions);
     const byId = new Map(sessions.map((s) => [s.id, s]));
     const at = now();
     for (const row of ports.rows()) {

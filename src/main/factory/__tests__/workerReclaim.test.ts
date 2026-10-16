@@ -1111,3 +1111,33 @@ describe('reclaim and resume races (review fixes, second pass)', () => {
     }
   });
 });
+
+describe('reclaimWorker records only the task\'s own panes', () => {
+  it('an owner shell started in the task folder is neither recorded nor stopped', async () => {
+    const store = ReclaimedWorkers.at(fs.mkdtempSync(path.join(dir, 'own-')));
+    // daemon-1 is the task's worker (its session record names the task);
+    // daemon-2 is a shell the owner opened in the task folder, running claude.
+    const owner = session({ id: 'daemon-2', resumeBinding: { agent: 'claude', sessionId: '3fca904b-b4cc-4243-81d3-67a121351893', cwd: wt } });
+    const { ports, stopAgent } = reclaimPorts(store, [session(), owner], {
+      sessionRecordOf: (id) => (id === 'daemon-1' ? { taskId: 'wtask-abc-12345678' } : null),
+    });
+    const rec = await reclaimWorker(ports, row('failed'), 'failed');
+    expect(rec?.sessions.map((s) => s.sessionId)).toEqual(['daemon-1']);
+    expect(stopAgent).toHaveBeenCalledTimes(1);
+    expect(stopAgent).toHaveBeenCalledWith('daemon-1');
+  });
+
+  it('a record an older version wrote with an owner shell drops it at the next attempt', async () => {
+    const store = ReclaimedWorkers.at(fs.mkdtempSync(path.join(dir, 'old-')));
+    await store.put({
+      taskId: 'wtask-abc-12345678', botId: BOT, ownerWorkspaceId: 'ws-owner', taskWorkspaceId: 'ws-task', title: 'perf-A', threadId: 'task:x' as never,
+      ended: 'failed', state: 'stopping', at: 1, endRev: 3,
+      sessions: [{ sessionId: 'daemon-1', cwd: wt, resumeSessionId: UUID }, { sessionId: 'daemon-2', cwd: wt }],
+    });
+    const { ports } = reclaimPorts(store, [session(), session({ id: 'daemon-2', resumeBinding: undefined })], {
+      sessionRecordOf: (id) => (id === 'daemon-1' ? { taskId: 'wtask-abc-12345678' } : null),
+    });
+    const rec = await reclaimWorker(ports, row('failed'), 'failed');
+    expect(rec?.sessions.map((s) => s.sessionId)).toEqual(['daemon-1']);
+  });
+});

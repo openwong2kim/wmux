@@ -388,9 +388,10 @@ export interface WorkerReclaimPorts {
    *  in, as recorded when wmux created the pane as a bot worker; null when
    *  none was. Absent: no mode is filled in. */
   launchedConversation?: (sessionId: string) => { sessionId: string; permissionMode?: PermissionMode } | null;
-  /** A pane's bot worker session record (its task), null when none: a WSL
-   *  pane counts as the task's worker only when identified
-   *  (isTaskOwnWorkerPane). Absent: only the reclaim record identifies one. */
+  /** A pane's bot worker session record (its task), null when none. Given:
+   *  only a pane whose record names the task is recorded, stopped or closed
+   *  as its worker (a WSL pane too, isTaskOwnWorkerPane). Absent: every pane
+   *  started in the task folder counts. */
   sessionRecordOf?: WorkerSessionRecordOf;
   note?: (workspaceId: string, threadId: ThreadId, title: string, body: string, notice?: CardNotice, taskId?: string) => void;
   /** The Bots page re-reads (BOT_EVENT). */
@@ -849,6 +850,13 @@ export async function reclaimWorker(
         if (s && s.agentProcessAlive !== true && !isTaskOwnWorkerPane(s, entry.id, recorded, ports.sessionRecordOf)) ids.delete(id);
       }
     }
+    // Only the task's own worker panes: its bot worker session record names
+    // the task (written for the task's fan-out or resume spawn only). A shell
+    // the owner started in the task folder is never recorded, stopped or
+    // closed as the worker, whatever runs in it; a record an older version
+    // wrote with such a shell drops it here.
+    const ownPane = (id: string): boolean => !ports.sessionRecordOf || isTaskOwnWorkerPane({ id }, entry.id, [], ports.sessionRecordOf);
+    for (const id of [...ids]) if (!ownPane(id)) ids.delete(id);
     const panes = sessions.filter((s) => ids.has(s.id)).map(reclaimedSessionOf).filter((s): s is ReclaimedSession => !!s);
     if (movedOn(ports, entry, ended)) return null;
     const prior = ports.store.get(entry.id);
@@ -856,13 +864,13 @@ export async function reclaimWorker(
     // the record follows the task (a gate written after the stop, the end
     // that came later), with no second stop and no second card.
     if (prior?.ended === 'reported' && prior.state === 'stopped' && !sessions.some((s) => ids.has(s.id) && s.agentProcessAlive === true)) {
-      await ports.store.put({ ...prior, ended, endRev: entry.rev, at: now() });
+      await ports.store.put({ ...prior, sessions: prior.sessions.filter((x) => ownPane(x.sessionId)), ended, endRev: entry.rev, at: now() });
       ports.changed?.();
       return ports.store.get(entry.id);
     }
     // An earlier attempt that did not finish: its recorded conversations are
     // kept (a stopped agent may no longer show its binding).
-    const kept = prior?.state === 'stopping' ? prior.sessions : [];
+    const kept = prior?.state === 'stopping' ? prior.sessions.filter((x) => ownPane(x.sessionId)) : [];
     for (const p of panes) {
       const old = kept.find((k) => k.sessionId === p.sessionId);
       if (!p.resumeSessionId && old?.resumeSessionId) {
