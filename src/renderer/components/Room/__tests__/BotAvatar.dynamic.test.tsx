@@ -248,6 +248,10 @@ describe('BotAvatar', () => {
     for (const cls of ['.wmux-mochi-body', '.wmux-mochi-eye', '.wmux-mochi-sig']) expect(reduced).toContain(cls);
     expect(reduced).toContain('animation: none !important');
     expect(css).toMatch(/\[data-avatar-offscreen\][^{]*\{\s*animation-play-state: paused/);
+    // A hidden window stops (not pauses) every animated part: Blink keeps a removed
+    // element's animations, and its detached tree, until the next drawn frame.
+    for (const cls of ['.wmux-mochi-body', '.wmux-mochi-eye', '.wmux-mochi-sig']) expect(css).toContain(`:root[data-document-hidden] .wmux-mochi ${cls}`);
+    expect(css).toMatch(/:root\[data-document-hidden\] \.wmux-mochi \.wmux-mochi-sig\s*\{\s*animation: none !important/);
     // Every character's animated parts carry the shared role classes the rules key on.
     for (let i = 1; i <= 8; i++) expect(css).toContain(`.wmux-mochi.is-working .wmux-mo${i}-root`);
     // Every animation the rules name has its keyframes (a missing one leaves a character still).

@@ -68,3 +68,29 @@ export function installSystemReducedMotion(
     window.removeEventListener('focus', sync);
   };
 }
+
+// ─── A hidden window: no motion at all ──────────────────────────────────────
+//
+// A hidden document (minimized, fully covered, or the display asleep) draws
+// no frames. Blink drops a removed element's CSS animations from the document
+// timeline only when it services a frame, so while the window is hidden every
+// animated element React removes stays in memory with its whole detached
+// tree: each Bots page left behind kept ~600 nodes until the window was shown
+// again. Pausing is not enough (a paused animation stays on the timeline), so
+// CSS stops the looping avatar motion outright under this attribute and no
+// animation is created for a page drawn while hidden.
+
+export const DOCUMENT_HIDDEN_ATTR = 'data-document-hidden';
+
+/** Mirror `document.visibilityState` as the root attribute. Returns the uninstall. */
+export function installDocumentHiddenMotion(): () => void {
+  const sync = () => {
+    document.documentElement.toggleAttribute(DOCUMENT_HIDDEN_ATTR, document.visibilityState === 'hidden');
+  };
+  sync();
+  document.addEventListener('visibilitychange', sync);
+  return () => {
+    document.removeEventListener('visibilitychange', sync);
+    document.documentElement.removeAttribute(DOCUMENT_HIDDEN_ATTR);
+  };
+}

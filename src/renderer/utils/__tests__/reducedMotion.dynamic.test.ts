@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { REDUCED_MOTION_ATTR, installSystemReducedMotion, prefersReducedMotion, setSystemReducedMotion, subscribeReducedMotion } from '../reducedMotion';
+import { DOCUMENT_HIDDEN_ATTR, REDUCED_MOTION_ATTR, installDocumentHiddenMotion, installSystemReducedMotion, prefersReducedMotion, setSystemReducedMotion, subscribeReducedMotion } from '../reducedMotion';
 
 const cleanups: Array<() => void> = [];
 afterEach(() => {
@@ -41,5 +41,26 @@ describe('system reduced motion in the renderer', () => {
     setSystemReducedMotion(true);
     setSystemReducedMotion(false);
     expect(heard).toHaveBeenCalledTimes(2);
+  });
+
+  it('a hidden window sets the root attribute, a shown one clears it, and uninstall stops listening', () => {
+    let state: DocumentVisibilityState = 'hidden';
+    const spy = vi.spyOn(document, 'visibilityState', 'get').mockImplementation(() => state);
+    try {
+      const uninstall = installDocumentHiddenMotion();
+      expect(document.documentElement.hasAttribute(DOCUMENT_HIDDEN_ATTR)).toBe(true);
+      state = 'visible';
+      document.dispatchEvent(new Event('visibilitychange'));
+      expect(document.documentElement.hasAttribute(DOCUMENT_HIDDEN_ATTR)).toBe(false);
+      state = 'hidden';
+      document.dispatchEvent(new Event('visibilitychange'));
+      expect(document.documentElement.hasAttribute(DOCUMENT_HIDDEN_ATTR)).toBe(true);
+      uninstall();
+      expect(document.documentElement.hasAttribute(DOCUMENT_HIDDEN_ATTR)).toBe(false);
+      document.dispatchEvent(new Event('visibilitychange'));
+      expect(document.documentElement.hasAttribute(DOCUMENT_HIDDEN_ATTR)).toBe(false);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

@@ -692,6 +692,32 @@ describe('Bots page', () => {
     expect(q('[data-bots-page]')?.getAttribute('data-view')).toBe('list');
   });
 
+  it('a hidden window does not pin the chat or its thread to the bottom (Blink would hold the scroll event and the chat); shown again, they do', async () => {
+    let state: DocumentVisibilityState = 'hidden';
+    const visibility = vi.spyOn(document, 'visibilityState', 'get').mockImplementation(() => state);
+    const writes: number[] = [];
+    const proto = HTMLDivElement.prototype as unknown as Record<string, unknown>;
+    Object.defineProperty(proto, 'scrollHeight', { configurable: true, get: () => 500 });
+    Object.defineProperty(proto, 'scrollTop', { configurable: true, get: () => writes.at(-1) ?? 0, set: (v: number) => { writes.push(v); } });
+    try {
+      seedRooms();
+      await render(<BotsPage />);
+      act(() => q('[data-bots-row="group:grp-000000a1"]')!.click());
+      act(() => q('[data-room-card-id="c4"] [data-bots-thread-chip="pr:github.com/acme/api#1"]')!.click());
+      expect(q('[data-bots-messages]')).not.toBeNull();
+      expect(q('[data-bots-thread-panel]')).not.toBeNull();
+      expect(writes).toEqual([]);
+      // Shown again: the chat and the open thread each pin once.
+      state = 'visible';
+      act(() => { document.dispatchEvent(new Event('visibilitychange')); });
+      expect(writes).toEqual([500, 500]);
+    } finally {
+      delete proto.scrollHeight;
+      delete proto.scrollTop;
+      visibility.mockRestore();
+    }
+  });
+
   it('a thread chip opens the thread beside the chat; the main timeline stays as it was', async () => {
     seedRooms();
     await render(<BotsPage />);

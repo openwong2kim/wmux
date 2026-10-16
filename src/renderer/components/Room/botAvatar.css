@@ -5,7 +5,7 @@
  * (`is-working`) hops and twitches quicker. Transform only. Small
  * avatars (`data-avatar-small`, 24px and under) only blink, so stacks and
  * pills stay still; offscreen ones (`data-avatar-offscreen`) are paused; and
- * reduced motion stops everything. Rule order matters: idle, working, small,
+ * reduced motion or a hidden window stops everything. Rule order matters: idle, working, small,
  * then reduced motion. Art and classes: mochiCharacters.tsx. */
 
 @keyframes wmux-mo1-bob{0%,100%{transform:translateY(0) scale(1,1)}50%{transform:translateY(.3px) scale(1.03,.97)}}
@@ -114,5 +114,14 @@
 :root[data-reduced-motion] .wmux-mochi .wmux-mochi-body,
 :root[data-reduced-motion] .wmux-mochi .wmux-mochi-eye,
 :root[data-reduced-motion] .wmux-mochi .wmux-mochi-sig {
+  animation: none !important;
+}
+
+/* A hidden window draws no frames, and Blink frees a removed element's CSS
+ * animations only on a frame: stop (not pause) the motion so a page drawn and
+ * removed while hidden leaves nothing behind (utils/reducedMotion.ts). */
+:root[data-document-hidden] .wmux-mochi .wmux-mochi-body,
+:root[data-document-hidden] .wmux-mochi .wmux-mochi-eye,
+:root[data-document-hidden] .wmux-mochi .wmux-mochi-sig {
   animation: none !important;
 }

@@ -917,10 +917,25 @@ function BotsThreadPanel({ conversation, cards, workspaceId, threadId, ctx: pare
   const replyItems = buildTimeline(replies.map((card): RoomEntry => ({ kind: 'card', card })), { waits });
   const scrollRef = useRef<HTMLDivElement>(null);
   const lastId = cards[cards.length - 1]?.id ?? '';
+  // Not while the window is hidden (see BotsChat's own pin): the pin missed
+  // then is made when the window is shown again.
+  const missedPin = useRef(false);
   useEffect(() => {
     const el = scrollRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
+    if (!el) return;
+    if (document.visibilityState === 'hidden') missedPin.current = true;
+    else el.scrollTop = el.scrollHeight;
   }, [lastId]);
+  useEffect(() => {
+    const onVisible = () => {
+      const el = scrollRef.current;
+      if (!el || !missedPin.current || document.visibilityState === 'hidden') return;
+      missedPin.current = false;
+      el.scrollTop = el.scrollHeight;
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  }, []);
   return (
     <aside className="wmux-bots-side" data-bots-thread-panel={threadId} aria-label={t('botsPage.chat.threadPanel', { name: label })} style={style}>
       <div className="wmux-bots-worker-head">
@@ -1982,12 +1997,19 @@ export function BotsChat({ conversation, roomCards, bots, title, workspaceName, 
       setNewAfter((cur) => liveNewAfter(cards, cur, before, visible, at));
     }
     const el = scrollRef.current;
-    if (el && atBottom.current) el.scrollTop = el.scrollHeight;
-    else if (added > 0) setNewCount((n) => n + added);
+    if (el && atBottom.current) {
+      // A hidden window draws no frames, and Blink keeps a scroll event (with
+      // the whole chat, once it unmounts) until the next one: pin on return.
+      if (document.visibilityState !== 'hidden') el.scrollTop = el.scrollHeight;
+    } else if (added > 0) setNewCount((n) => n + added);
     markSeen();
   }, [lastId, workers.length, markSeen, cards, inView]);
   useEffect(() => {
-    const onVisible = () => markSeen();
+    const onVisible = () => {
+      const el = scrollRef.current;
+      if (el && atBottom.current && document.visibilityState !== 'hidden') el.scrollTop = el.scrollHeight;
+      markSeen();
+    };
     document.addEventListener('visibilitychange', onVisible);
     // A window brought back to the front may not change visibility.
     window.addEventListener('focus', onVisible);
