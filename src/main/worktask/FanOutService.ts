@@ -353,9 +353,9 @@ export interface FanOutRequest {
    *  Recorded on each task's ledger row; see
    *  LedgerDispatch.handoffId. */
   handoffId?: string;
-  /** A bot's code fan-out: the repository it runs in (normalized repo key,
-   *  main settles it). Recorded on each task's ledger row; see
-   *  LedgerDispatch.repoKey. */
+  /** A code fan-out: the repository it runs in (normalized repo key, main
+   *  settles it: a bot's profile, else the caller repository's origin).
+   *  Recorded on each task's ledger row; see LedgerDispatch.repoKey. */
   repoKey?: string;
   /** A bot's fan-out: the stored secrets each worker receives as env vars
    *  (checked by the caller). Each task spawn gets its own single-use grant

@@ -118,6 +118,15 @@ describe('FanOutService — detached checkout + dispatch record', () => {
     expect(replayed?.dispatch).toEqual(row.dispatch);
   });
 
+  it('records the repository of an owner\'s pane fan-out on the dispatch, and it survives a ledger replay', async () => {
+    const r = rig();
+    await r.svc.start({ ...base, caller: { kind: 'pane', paneId: 'p1', surfaceId: 's1' }, preset: undefined, repoKey: 'github.com/acme/app' });
+    const row = ledger.list({ ownerWorkspaceId: 'ws-bot' })[0];
+    expect(row.dispatch).toMatchObject({ origin: { kind: 'pane' }, repoKey: 'github.com/acme/app' });
+    await ledger.flush();
+    expect(new TaskLedger({ dir: path.join(root, 'ledger') }).get(row.id)?.dispatch).toEqual(row.dispatch);
+  });
+
   it('a tainted bot origin keeps its mark on the dispatch, across a ledger replay', async () => {
     const r = rig();
     await r.svc.start({ ...base, caller: { kind: 'bot', botId: 'bot-0a1b2c3d', tainted: true }, checkout: { sha: SHA, detached: true } });

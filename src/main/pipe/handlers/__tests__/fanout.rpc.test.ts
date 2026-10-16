@@ -1579,6 +1579,62 @@ describe('task.fanout.start — review follow-ups', () => {
   });
 });
 
+// ── the repository an owner's code task records ──────────────────────────
+describe('task.fanout.start — owner repository key', () => {
+  const originIs = (url: string): void => {
+    const toplevel = vi.mocked(git).getMockImplementation();
+    vi.mocked(git).mockImplementation(async (args: string[], dir: string) =>
+      args[0] === 'remote' && dir === CALLER_REPO_ROOT
+        ? { stdout: `${url}\n`, stderr: '', code: 0 }
+        : (toplevel as NonNullable<typeof toplevel>)(args, dir));
+  };
+
+  it.each([
+    'https://github.com/Acme/App.git',
+    'git@github.com:acme/app.git',
+  ])('records the caller repository\'s origin (%s) as its key', async (url) => {
+    const h = setup();
+    originIs(url);
+    await h.call(goodParams());
+    await h.flush();
+    expect(h.request().repoKey).toBe('github.com/acme/app');
+    expect(vi.mocked(git)).toHaveBeenCalledWith(['remote', 'get-url', 'origin'], CALLER_REPO_ROOT);
+  });
+
+  it.each([
+    ['a local-path origin', '/srv/git/app.git'],
+    ['a file:// origin', 'file:///srv/git/app.git'],
+    ['an http origin task_push does not read a key from', 'http://github.com/acme/app.git'],
+  ])('records nothing for %s', async (_label, url) => {
+    const h = setup();
+    originIs(url);
+    await h.call(goodParams());
+    await h.flush();
+    expect(h.start).toHaveBeenCalledTimes(1);
+    expect(h.request()).not.toHaveProperty('repoKey');
+  });
+
+  it('records nothing, and still starts, when the repository has no origin', async () => {
+    const h = setup();
+    const toplevel = vi.mocked(git).getMockImplementation();
+    vi.mocked(git).mockImplementation(async (args: string[], dir: string) =>
+      args[0] === 'remote' ? { stdout: '', stderr: 'error: No such remote \'origin\'', code: 2 } : (toplevel as NonNullable<typeof toplevel>)(args, dir));
+    await h.call(goodParams());
+    await h.flush();
+    expect(h.start).toHaveBeenCalledTimes(1);
+    expect(h.request()).not.toHaveProperty('repoKey');
+  });
+
+  it('a no-worktree preset reads no origin and records no key', async () => {
+    const h = setup({ presets: [{ name: 'Notes', items: [{ agent: 'claude' }], worktree: false }] });
+    originIs('https://github.com/acme/app.git');
+    await h.call(goodParams({ preset: 'Notes', titles: ['one'] }));
+    await h.flush();
+    expect(h.request()).not.toHaveProperty('repoKey');
+    expect(vi.mocked(git).mock.calls.some((c) => (c[0] as string[])[0] === 'remote')).toBe(false);
+  });
+});
+
 // ── preset / agents: the caller picks a NAME, never a command ─────────────
 describe('task.fanout.start — preset and agents', () => {
   const IMAGE: FanoutPreset = {

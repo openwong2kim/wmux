@@ -135,10 +135,13 @@ export interface LedgerDispatch {
   origin: { kind: string; botId?: string; tainted?: boolean };
   /** The fan-out preset name; absent when none. */
   preset?: string;
-  /** A bot's code task: the repository it was started in (normalized
-   *  `host/owner/repo`, from the bot's profile at dispatch). A merged pull
-   *  request ends only a task of its own repository; absent (a row written
-   *  before it existed, a research task) = none ends it. */
+  /** A code task: the repository it was started in (normalized
+   *  `host/owner/repo`; a bot's from its profile at dispatch, an owner's from
+   *  the caller repository's origin). A merged pull request ends only a bot
+   *  task of its own repository, and task_push and task_fetch work only with
+   *  it; absent (a row written before it existed, a research task, an origin
+   *  with no `host/owner/repo`) = no merge ends it, and task_fetch refuses a
+   *  task that is not a bot's. */
   repoKey?: string;
   /** Set when the task worktree was created detached at a commit. */
   checkout?: { sha: string; detached: true };
