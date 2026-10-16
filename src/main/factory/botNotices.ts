@@ -149,6 +149,10 @@ export interface BotWorkerStartOutcome {
 /** Why a worker could not start, in plain words, from the fan-out's error
  *  text (which is never shown to the owner). Pure. */
 export function plainStartFailure(error: string): string {
+  // #2256: pty:create's own sentence for a path cmd cannot carry names the
+  // cause and the remedy (promptFileArgument.cmdLaunchPathRefusal).
+  const cmd = /Command Prompt cannot pass [^\n]*/.exec(error);
+  if (cmd) return cmd[0];
   const e = error.toLowerCase();
   if (/fetch|pull\/\d+\/head|resolvecheckout|checkout/.test(e)) return 'the code it was to check could not be fetched from the repository';
   if (/worktree|branch .*exists|already exists/.test(e)) return 'its worktree could not be created';
@@ -183,12 +187,14 @@ export function noticeWorkerStarts(ports: BotNoticePorts, botId: string, outcome
       continue;
     }
     const reason = t.reason || 'its setup failed';
+    // The task's title gives way so the reason reaches the card whole (#2256).
+    const room = BOT_NOTICE_LIMITS.TITLE_MAX - 'Worker for "" could not start: '.length - reason.length;
     noticeBot(ports, {
       botId,
       workspaceId: outcome.workspaceId,
       key: `worker.start_failed:${outcome.key}#${t.index}`,
       topic: 'worker.start_failed',
-      title: `Worker for "${title}" could not start: ${reason}`,
+      title: `Worker for "${title.slice(0, Math.max(1, room))}" could not start: ${reason}`,
       body: 'Nothing is running for it. Tell the owner plainly, then fix the cause or start it again.',
       ...(t.detail ? { detail: t.detail } : {}),
       threadId: outcome.threadId,

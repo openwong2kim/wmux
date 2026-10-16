@@ -341,6 +341,11 @@ describe('pty:create applies the guard (source-level lock)', () => {
     expect(src).toContain('let staged = await withAccountQuota(options);');
     expect(src).toContain('const wsl = isWslShell(shellPath);');
     expect(src).toMatch(/withBotWorkerMergeGuard\(await guardCodexBotWorker\(staged, botWorker\), botWorker, \{\}, \{ wsl,/);
+    // #2256: a path cmd cannot carry is refused by its own cause before the guard refuses the line.
+    const pathCheck = src.indexOf('const refusal = cmdLaunchPathRefusal(line0, getWmuxDir(), namesClaude(line0) && !namesCodex(line0));');
+    expect(pathCheck).toBeGreaterThan(src.indexOf('async function stageCreate('));
+    expect(pathCheck).toBeLessThan(src.indexOf('const guarded = withBotWorkerMergeGuard('));
+    expect(src).toContain('if (refusal) throw new Error(`PTY_CREATE: ${refusal}`);');
     expect(src).toContain('return { options: withLaunchSessionPin(guarded), launch: { ...launchOfCodex(guarded), ...guardedLaunchOf(guarded) } };');
     expect(src.split('stampFanoutTaskPane(options);').length - 1).toBe(2);
     for (let at = src.indexOf('stampFanoutTaskPane(options);'); at !== -1; at = src.indexOf('stampFanoutTaskPane(options);', at + 1)) {

@@ -191,6 +191,40 @@ export function promptFileArgumentForShell(line: string, opts: { wsl: boolean; c
   });
 }
 
+/** What makes a path one a cmd launch line cannot carry, in plain words
+ *  (`contains "!"`, `is a network (UNC) path`), or null. `unsafe` is a
+ *  character class body. Pure. */
+function cmdPathFlaw(file: string, unsafe: string): string | null {
+  const p = file.replace(/\\/g, '/');
+  if (p.startsWith('//')) return 'is a network (UNC) path';
+  if (!/^[A-Za-z]:\//.test(p)) return 'is not a drive path';
+  const bad = new RegExp(`[${unsafe}]`).exec(p)?.[0];
+  if (bad === undefined) return null;
+  const code = bad.charCodeAt(0);
+  return code < 0x20 || code === 0x7f ? 'contains a control character' : `contains "${bad}"`;
+}
+
+const CMD_PATH_REMEDY = 'use PowerShell (Settings › Terminal › Default shell) or move the wmux data folder';
+
+/**
+ * #2256 — why a bot worker's launch line cannot start in a cmd.exe pane, as
+ * the sentence its owner sees, or null. The prompt file's path must take the
+ * cmd form (cmdPromptFileArgument), and, for a claude line (`guardsDataDir`),
+ * the merge-lane guard's files under `dataDir` must be quotable there (no
+ * `'`, `"`, `` ` ``, `$`, `%`, `!`, no UNC). Without this the refusal read as
+ * a merge-lane guard failure. Pure.
+ */
+export function cmdLaunchPathRefusal(line: string, dataDir: string, guardsDataDir: boolean): string | null {
+  for (const w of shellWords(line)) {
+    const m = WIN_PROMPT_ARGUMENT_PATH.exec(line.slice(w.start, w.end));
+    if (!m) continue;
+    const flaw = cmdPathFlaw(m[1].replace(/''/g, "'"), CMD_PROMPT_UNSAFE);
+    if (flaw) return `Command Prompt cannot pass its prompt file (the path ${flaw}); ${CMD_PATH_REMEDY}`;
+  }
+  const flaw = guardsDataDir ? cmdPathFlaw(dataDir, `'${CMD_PROMPT_UNSAFE}`) : null;
+  return flaw ? `Command Prompt cannot pass its launch files (the wmux data folder ${flaw}); ${CMD_PATH_REMEDY}` : null;
+}
+
 /** The launch line as the pane running `shell` takes it (a WSL or cmd pane
  *  gets its own prompt argument). Pure over `platform`. */
 export function launchLineForShell(line: string, shell: string | undefined, platform: NodeJS.Platform = process.platform): string {

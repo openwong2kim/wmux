@@ -31,10 +31,11 @@ import { resolveEnvPolicy, type SpawnKind } from '../../../shared/spawnKind';
 import { withheldCredentialNames } from '../../../shared/envFilter';
 import { getShellUtf8Locale } from '../../pty/shellLocale';
 import { forgetPtyShell, getPtyShell, recordPtyShell } from '../../pty/ptyShellRegistry';
-import { isCmdShellPath, promptFileArgumentForShell } from '../../../shared/promptFileArgument';
+import { cmdLaunchPathRefusal, isCmdShellPath, promptFileArgumentForShell } from '../../../shared/promptFileArgument';
 import { resolveWslWorkerGit, withWslWorkerGit } from '../../agents/wslWorkerGit';
 import { withDaemonCreateRollback } from './daemonCreateRollback';
 import { getWorkspaceMirror } from '../../workspace/WorkspaceMirror';
+import { getWmuxDir } from '../../../daemon/config';
 import { scheduleInitialCommand } from './scheduleInitialCommand';
 import {
   createSessionDataDispatcher,
@@ -204,6 +205,12 @@ async function stageCreate(options: PtyCreateOptions | undefined, botWorker: Bot
   const shellPath = createShell(options);
   const wsl = isWslShell(shellPath);
   const line0 = options?.initialCommand;
+  // #2256: a path cmd cannot carry is refused by its own cause, before the
+  // merge-lane guard would refuse the line as one it cannot guard.
+  if (botWorker && line0 && process.platform === 'win32' && isCmdShellPath(shellPath)) {
+    const refusal = cmdLaunchPathRefusal(line0, getWmuxDir(), namesClaude(line0) && !namesCodex(line0));
+    if (refusal) throw new Error(`PTY_CREATE: ${refusal}`);
+  }
   if (options && line0) {
     const rewritten = promptFileArgumentForShell(line0, { wsl, cmd: process.platform === 'win32' && isCmdShellPath(shellPath) });
     if (rewritten !== line0) options = { ...options, initialCommand: rewritten };

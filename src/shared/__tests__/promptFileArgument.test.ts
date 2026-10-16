@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { cmdPromptFileArgument, isCmdShellPath, promptFileArgument, promptFileArgumentForShell, stripPromptFileArgument } from '../promptFileArgument';
+import { cmdLaunchPathRefusal, cmdPromptFileArgument, isCmdShellPath, promptFileArgument, promptFileArgumentForShell, stripPromptFileArgument } from '../promptFileArgument';
 
 describe('promptFileArgumentForShell', () => {
   const winPath = 'C:\\Users\\me\\.wmux-e2e\\worktrees\\t-1\\.wmux\\prompt.md';
@@ -52,6 +52,29 @@ describe('the cmd.exe prompt argument (#2231)', () => {
       const line = `claude ${promptFileArgument(bad, 'win32')}`;
       expect(promptFileArgumentForShell(line, { wsl: false, cmd: true })).toBe(line);
     }
+  });
+
+  it('#2256: a path cmd cannot carry is refused by its own cause and remedy, not as a merge-lane guard failure', () => {
+    const remedy = 'use PowerShell (Settings › Terminal › Default shell) or move the wmux data folder';
+    const line = (p: string) => `claude --model opus ${promptFileArgument(p, 'win32')}`;
+    const okDir = 'C:\\Users\\me\\.wmux';
+    expect(cmdLaunchPathRefusal(line('C:\\Users\\me\\.wmux-wE9!\\worktrees\\.meta\\t-1\\prompt.md'), 'C:\\Users\\me\\.wmux-wE9!', true))
+      .toBe(`Command Prompt cannot pass its prompt file (the path contains "!"); ${remedy}`);
+    expect(cmdLaunchPathRefusal(line('C:\\100%\\prompt.md'), okDir, true))
+      .toBe(`Command Prompt cannot pass its prompt file (the path contains "%"); ${remedy}`);
+    expect(cmdLaunchPathRefusal(line('\\\\server\\share\\prompt.md'), okDir, true))
+      .toBe(`Command Prompt cannot pass its prompt file (the path is a network (UNC) path); ${remedy}`);
+    expect(cmdLaunchPathRefusal(line('C:\\a\nb\\prompt.md'), okDir, true))
+      .toBe(`Command Prompt cannot pass its prompt file (the path contains a control character); ${remedy}`);
+    // A clean prompt path (an output folder elsewhere) under a data folder the guard's files cannot be quoted from.
+    expect(cmdLaunchPathRefusal(line('D:\\out\\prompt.md'), 'C:\\Users\\me\\.wmux-wE9!', true))
+      .toBe(`Command Prompt cannot pass its launch files (the wmux data folder contains "!"); ${remedy}`);
+    expect(cmdLaunchPathRefusal(line('D:\\out\\prompt.md'), "C:\\it's", true)).toContain('the wmux data folder contains "\'"');
+    // Only a claude line carries the guard's files.
+    expect(cmdLaunchPathRefusal(line('D:\\out\\prompt.md'), 'C:\\Users\\me\\.wmux-wE9!', false)).toBeNull();
+    // Clean paths, or no prompt argument at all, pass.
+    expect(cmdLaunchPathRefusal(winLine, okDir, true)).toBeNull();
+    expect(cmdLaunchPathRefusal('claude --model opus', okDir, true)).toBeNull();
   });
 
   it('the guards read it as wmux\'s own argument, and only that exact shape', () => {

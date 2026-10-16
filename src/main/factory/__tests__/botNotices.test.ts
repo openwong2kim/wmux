@@ -86,4 +86,18 @@ describe('bot notices', () => {
     expect(plainStartFailure('prompt file write failed: EACCES')).toBe('its instructions could not be written');
     expect(plainStartFailure('???')).toBe('its setup failed');
   });
+
+  it('#2256: a Command Prompt path refusal reaches the card with its cause and remedy, not as an unopened pane', () => {
+    const why = 'Command Prompt cannot pass its prompt file (the path contains "!"); use PowerShell (Settings › Terminal › Default shell) or move the wmux data folder';
+    // As fan-out reports it: the renderer's spawn, the IPC wrapper, then pty:create's refusal.
+    const error = `renderer spawn failed: fanout.spawnWorkspace: PTY create failed — Error invoking remote method 'pty:create': Error: PTY_CREATE: ${why}`;
+    expect(plainStartFailure(error)).toBe(why);
+    const p = ports();
+    noticeWorkerStarts(p, 'bot-1', { workspaceId: 'ws-1', threadId: 'general', key: 'wake:w-1:1', tainted: false, tasks: [{ index: 0, title: 'Fix it', started: false, reason: plainStartFailure(error), detail: error }] });
+    expect(p.facts[0].payload.title).toBe(`Worker for "Fix it" could not start: ${why}`);
+    // A long task title gives way, so the reason reaches the card whole.
+    noticeWorkerStarts(p, 'bot-1', { workspaceId: 'ws-1', threadId: 'general', key: 'wake:w-1:2', tainted: false, tasks: [{ index: 0, title: 'x'.repeat(120), started: false, reason: plainStartFailure(error) }] });
+    expect(p.facts[1].payload.title).toMatch(/^Worker for "x+" could not start: /);
+    expect(String(p.facts[1].payload.title).endsWith(why)).toBe(true);
+  });
 });
