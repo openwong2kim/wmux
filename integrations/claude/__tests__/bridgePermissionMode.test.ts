@@ -26,6 +26,7 @@ const ENTRYPOINT_MARKER = '// Run; never throw upward';
 
 let tmp: string;
 let extract: (transcriptPath: string) => string | null;
+let forHook: (hookName: string, transcriptPath: string | null, payload: Record<string, unknown> | null) => string | undefined;
 
 function fixture(name: string, lines: unknown[]): string {
   const p = path.join(tmp, name);
@@ -41,10 +42,10 @@ beforeAll(async () => {
   // Strip the shebang — vite's transform (which intercepts even runtime
   // dynamic imports under vitest) rejects it with a SyntaxError on Windows.
   const testable = src.slice(0, cut).replace(/^#![^\n]*\n/, '')
-    + '\nexport { extractPermissionModeFromTranscript };\n';
+    + '\nexport { extractPermissionModeFromTranscript, permissionModeForHook };\n';
   const mod = path.join(tmp, 'bridge-under-test.mjs');
   writeFileSync(mod, testable, 'utf8');
-  ({ extractPermissionModeFromTranscript: extract } = await import(pathToFileURL(mod).href));
+  ({ extractPermissionModeFromTranscript: extract, permissionModeForHook: forHook } = await import(pathToFileURL(mod).href));
 });
 
 afterAll(() => {
@@ -106,5 +107,30 @@ describe('extractPermissionModeFromTranscript', () => {
       { type: 'system', content: 'x' },
     ]);
     expect(extract(p)).toBeNull();
+  });
+});
+
+// #2270 — a WSL agent's hook runs this bridge in the Windows runtime, where the
+// Linux transcript_path it reports does not exist: the tail read misses, and the
+// mode Claude Code puts on the Stop payload is what is left.
+describe('permissionModeForHook', () => {
+  const linuxPath = '/home/dev/.claude/projects/-home-dev-repo/0b9c1f2e-1111-4222-8333-444455556666.jsonl';
+
+  it('falls back to the Stop payload permission_mode when the transcript cannot be read', () => {
+    expect(forHook('Stop', linuxPath, { permission_mode: 'bypassPermissions' })).toBe('bypassPermissions');
+  });
+
+  it('keeps the transcript record first when it can be read', () => {
+    const p = fixture('readable.jsonl', [{ type: 'permission-mode', permissionMode: 'acceptEdits', sessionId: 's1' }]);
+    expect(forHook('Stop', p, { permission_mode: 'bypassPermissions' })).toBe('acceptEdits');
+  });
+
+  it('does not take a SubagentStop payload mode (it can be the subagent\'s own)', () => {
+    expect(forHook('SubagentStop', linuxPath, { permission_mode: 'bypassPermissions' })).toBeUndefined();
+  });
+
+  it('ignores an unknown payload mode and non-lifecycle hooks', () => {
+    expect(forHook('Stop', linuxPath, { permission_mode: 'someFutureMode' })).toBeUndefined();
+    expect(forHook('PreToolUse', null, { permission_mode: 'bypassPermissions' })).toBeUndefined();
   });
 });

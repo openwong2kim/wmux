@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, it, expect } from 'vitest';
-import { checkTranscriptPath, claudeProjectRoots } from '../transcriptPathGuard';
+import { checkTranscriptPath, claudeProjectRoots, isWslOwnTranscriptPath } from '../transcriptPathGuard';
 
 const SID = '920b9112-1111-4222-8333-444455556666';
 const root = path.join(os.homedir(), '.claude', 'projects');
@@ -93,5 +93,34 @@ describe('checkTranscriptPath', () => {
     expect(claudeProjectRoots()[0]).toBe(root);
     expect(claudeProjectRoots({ CLAUDE_CONFIG_DIR: '/opt/cfg' }))
       .toContain(path.join('/opt/cfg', 'projects'));
+  });
+});
+
+// #2270 — a WSL pane's Claude reports its transcript as a Linux path inside the
+// distro. Only that user's own projects file is recognized; anything else is
+// left to checkTranscriptPath's refusal.
+describe('isWslOwnTranscriptPath', () => {
+  const dev = { distribution: 'Ubuntu', user: 'dev' };
+  const own = `/home/dev/.claude/projects/-home-dev-repo/${SID}.jsonl`;
+
+  it('recognizes the distro user\'s own projects file', () => {
+    expect(isWslOwnTranscriptPath(own, SID, dev)).toBe(true);
+    expect(isWslOwnTranscriptPath(`/root/.claude/projects/-root-repo/${SID}.jsonl`, SID, { distribution: 'Ubuntu', user: 'root' })).toBe(true);
+  });
+
+  it('refuses another user, another directory or another session', () => {
+    expect(isWslOwnTranscriptPath(`/home/other/.claude/projects/-repo/${SID}.jsonl`, SID, dev)).toBe(false);
+    expect(isWslOwnTranscriptPath(`/etc/${SID}.jsonl`, SID, dev)).toBe(false);
+    expect(isWslOwnTranscriptPath(`/home/dev/.claude/projects/${SID}.jsonl`, SID, dev)).toBe(false);
+    expect(isWslOwnTranscriptPath(`/home/dev/.claude/projects/-repo/sub/${SID}.jsonl`, SID, dev)).toBe(false);
+    expect(isWslOwnTranscriptPath(own.replace(SID, 'other-session'), SID, dev)).toBe(false);
+  });
+
+  it('refuses dot segments, backslashes and a missing pane user', () => {
+    expect(isWslOwnTranscriptPath(`/home/dev/.claude/projects/../../../etc/${SID}.jsonl`, SID, dev)).toBe(false);
+    expect(isWslOwnTranscriptPath(`/home/dev/.claude/projects/-repo/../${SID}.jsonl`, SID, dev)).toBe(false);
+    expect(isWslOwnTranscriptPath(`/home/dev/.claude/projects/a\\b/${SID}.jsonl`, SID, dev)).toBe(false);
+    expect(isWslOwnTranscriptPath(own, SID, undefined)).toBe(false);
+    expect(isWslOwnTranscriptPath(own, SID, { user: '' })).toBe(false);
   });
 });

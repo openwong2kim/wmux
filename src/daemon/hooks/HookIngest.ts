@@ -68,6 +68,8 @@ import type { ApprovalHookSink, TerminalPromptNote } from '../approvals/types';
 import { claudeQuestionsForm, extractAskUserQuestion } from '../approvals/askUserQuestion';
 import { boundRecordText, isClaudeFamilyAgent, TERMINAL_PROMPT_TOOL_NAME_MAX } from '../approvals/terminalPrompt';
 import { checkNativeTranscriptPath } from '../transcript/providers';
+import { isWslOwnTranscriptPath } from './transcriptPathGuard';
+import type { WslTarget } from '../../shared/wslTarget';
 
 /** Rolling flood-summary interval. Mirrors the main-side handler. */
 const HOOK_FLOOD_LOG_INTERVAL_MS = 30_000;
@@ -98,6 +100,8 @@ export interface HookIngestSession {
   resumeBinding?: Pick<ResumeBinding, 'agent'> & { sessionId?: string };
   /** Canonical agent the detector/process tracker last saw in this pane. */
   lastDetectedAgent?: string;
+  /** The pane runs in WSL: its agent reports Linux paths. */
+  wslTarget?: WslTarget;
 }
 
 /**
@@ -540,6 +544,7 @@ function summarizeToolInput(payload: Record<string, unknown> | undefined): strin
   for (const f of fields) {
     const v = ti[f];
     if (typeof v === 'string' && v.length > 0) {
+      // eslint-disable-next-line no-control-regex
       const clean = v.replace(/[\x00-\x1f\x7f]/g, '').trim();
       return clean.length > TOOL_INPUT_SUMMARY_MAX
         ? clean.slice(0, TOOL_INPUT_SUMMARY_MAX) + '…'
@@ -1175,8 +1180,15 @@ export class HookIngest {
         ? signal.payload.transcript_path
         : undefined;
       let transcriptPath: string | undefined;
-      if (claimedPath) {
-        const sessionEnv = sessions.find((s) => s.id === sessionId)?.env;
+      const routed = sessions.find((s) => s.id === sessionId);
+      if (claimedPath && signal.agent === 'claude' && routed?.wslTarget
+          && isWslOwnTranscriptPath(claimedPath, signal.agentSessionId, routed.wslTarget)) {
+        // #2270: the WSL pane's own transcript, inside its distro. This process
+        // cannot open that path, so the binding goes without it, as before,
+        // but it is not a refusal.
+        this.deps.log?.('debug', `[hooks] ${sessionId}: transcript is in WSL ${routed.wslTarget.distribution}; not stored`);
+      } else if (claimedPath) {
+        const sessionEnv = routed?.env;
         const check = checkNativeTranscriptPath(signal.agent, claimedPath, signal.agentSessionId, sessionEnv);
         if (check.ok) {
           transcriptPath = claimedPath;
@@ -1194,7 +1206,6 @@ export class HookIngest {
       // The pane switching agents is not a clobber: when the detector/process
       // tracker already sees `signal.agent` running there, the old binding is
       // the stale one and the new session must be captured.
-      const routed = sessions.find((s) => s.id === sessionId);
       const prevAgent = routed?.resumeBinding?.agent;
       // #1823: the binding is only as good as the pane's agent. A different
       // agent's process alive in the pane, or an id the agent's resume grammar

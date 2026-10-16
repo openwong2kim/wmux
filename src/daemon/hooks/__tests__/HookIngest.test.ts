@@ -856,6 +856,47 @@ describe('HookIngest', () => {
       expect(fixture.bindings[0].binding.transcriptPath).toBeUndefined();
     });
 
+    // #2270: a WSL pane's Claude reports its transcript as a Linux path inside
+    // the distro, which this process cannot open. Its own projects file is not
+    // stored and not warned about; any other path keeps the refusal.
+    describe('a WSL pane\'s transcript path', () => {
+      const SID = '0a1b2c3d-0000-4000-8000-000000000001';
+      const own = `/home/dev/.claude/projects/-home-dev-repo/${SID}.jsonl`;
+      function wslIngest(wslTarget?: { distribution: string; user: string }) {
+        const f = makeDeps([session({ id: 'pty-a', ...(wslTarget ? { wslTarget } : {}) })]);
+        const logs: Array<{ level: string; message: string }> = [];
+        const i = new HookIngest({ ...f.deps, log: (level: string, message: string) => { logs.push({ level, message }); } });
+        const stop = (transcript_path: string) => i.handle(makeSignal({
+          ptyId: 'pty-a', kind: 'agent.stop', agentSessionId: SID,
+          payload: { transcript_path, permissionMode: 'bypassPermissions' },
+        }));
+        const warned = () => logs.some((l) => l.level === 'warn' && l.message.includes('refused transcript_path'));
+        return { f, stop, warned };
+      }
+
+      it('binds without the path and without a refusal for the distro user\'s own file', () => {
+        const w = wslIngest({ distribution: 'Ubuntu', user: 'dev' });
+        expect(w.stop(own)).toEqual({ ok: true });
+        expect(w.warned()).toBe(false);
+        expect(w.f.bindings).toHaveLength(1);
+        expect(w.f.bindings[0].binding).toMatchObject({ sessionId: SID, permissionMode: 'bypassPermissions' });
+        expect(w.f.bindings[0].binding.transcriptPath).toBeUndefined();
+      });
+
+      it('still refuses another user\'s file, a traversal, and the same path from a non-WSL pane', () => {
+        for (const [target, p] of [
+          [{ distribution: 'Ubuntu', user: 'dev' }, `/home/other/.claude/projects/-repo/${SID}.jsonl`],
+          [{ distribution: 'Ubuntu', user: 'dev' }, `/home/dev/.claude/projects/-repo/../../../../etc/${SID}.jsonl`],
+          [undefined, own],
+        ] as const) {
+          const w = wslIngest(target);
+          w.stop(p);
+          expect(w.warned()).toBe(true);
+          expect(w.f.bindings[0].binding.transcriptPath).toBeUndefined();
+        }
+      });
+    });
+
     it('accepts a projects root relocated by CLAUDE_CONFIG_DIR in the pane env', () => {
       const f = makeDeps([session({
         id: 'pty-a',

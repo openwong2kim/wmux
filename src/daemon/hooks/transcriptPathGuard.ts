@@ -26,6 +26,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import type { WslTarget } from '../../shared/wslTarget';
 
 /** Separator-agnostic last segment. Windows paths relayed to a POSIX daemon (or
  *  replayed from a state file written elsewhere) must not come back whole. */
@@ -157,4 +158,32 @@ export function checkTranscriptPath(
     }
   }
   return { ok: false, reason: 'outside the Claude projects root' };
+}
+
+/**
+ * Is this the `transcript_path` a WSL pane's own Claude reports: the Linux path
+ * `~/.claude/projects/<project>/<session id>.jsonl` of the pane's distro user
+ * (`/home/<user>/…`, or `/root/…` for root)?
+ *
+ * Recognized, never persisted: this process cannot open a distro path (on
+ * Windows `/home/u/…` names `C:\home\u\…`, a different file), so the caller
+ * stores the binding without a transcript path, as it does for a refused one,
+ * and only skips the refusal warning. Purely lexical, case-sensitive like the
+ * Linux filesystem it names, and nothing outside that one directory matches:
+ * no `.`/`..`/empty segment, no control or backslash character.
+ */
+export function isWslOwnTranscriptPath(
+  transcriptPath: string,
+  agentSessionId: string,
+  target: Partial<WslTarget> | undefined,
+): boolean {
+  const user = target?.user;
+  if (typeof user !== 'string' || !user || user.includes('/') || user === '.' || user === '..') return false;
+  // eslint-disable-next-line no-control-regex
+  if (!agentSessionId || typeof transcriptPath !== 'string' || /[\u0000-\u001f\u007f\\]/.test(transcriptPath)) return false;
+  const root = `${user === 'root' ? '/root' : `/home/${user}`}/.claude/projects/`;
+  if (!transcriptPath.startsWith(root)) return false;
+  const rest = transcriptPath.slice(root.length).split('/');
+  if (rest.some((segment) => !segment || segment === '.' || segment === '..')) return false;
+  return rest.length === 2 && rest[1] === `${agentSessionId}.jsonl`;
 }

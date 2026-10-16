@@ -526,6 +526,23 @@ function extractPermissionModeFromTranscript(transcriptPath) {
   }
 }
 
+// The permission mode a lifecycle hook captures for the resume binding: the
+// transcript tail first (above), then the `permission_mode` Claude Code puts on
+// the Stop payload itself. The fallback matters when the transcript cannot be
+// opened from here: a WSL agent's hook runs this bridge in the Windows runtime
+// (hook.sh), where the Linux `transcript_path` does not exist, so the tail read
+// always missed and a resumed WSL worker lost its mode (#2270). Measured: Stop
+// carries the field, SessionStart does not. Stop only: a SubagentStop's mode can
+// be the subagent's own (an agent definition may set one), and the binding's
+// sticky merge would carry it onto the lead's resume.
+function permissionModeForHook(hookName, transcriptPath, payload) {
+  if (hookName !== 'SessionStart' && hookName !== 'Stop' && hookName !== 'SubagentStop') return undefined;
+  const fromTranscript = transcriptPath ? extractPermissionModeFromTranscript(transcriptPath) : null;
+  if (fromTranscript) return fromTranscript;
+  const reported = hookName === 'Stop' ? payload?.permission_mode : undefined;
+  return typeof reported === 'string' && VALID_PERMISSION_MODES.has(reported) ? reported : undefined;
+}
+
 // Leftover background-work mining for Stop-class envelopes.
 //
 // A Stop hook fires when the lead turn ends EVEN IF background tasks the
@@ -1239,11 +1256,7 @@ async function main() {
   // X6 ② SIGKILL-survival lesson). On SessionStart the transcript may not exist
   // yet (F9 — it appears on the first turn), so this is null until the first
   // turn lands; the next Stop fills it in.
-  let permissionMode;
-  const isSessionStart = hookName === 'SessionStart';
-  if ((isSessionStart || isStopClass) && transcriptPath) {
-    permissionMode = extractPermissionModeFromTranscript(transcriptPath) ?? undefined;
-  }
+  const permissionMode = permissionModeForHook(hookName, transcriptPath, payload);
 
   // Env-first routing identifiers. When Claude Code runs inside a wmux
   // pane, the PTYManager injects WMUX_WORKSPACE_ID / WMUX_SURFACE_ID into
