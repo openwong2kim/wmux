@@ -529,7 +529,7 @@ export function startWorkerLifecycle(deps: WorkerLifecycleDeps): () => void {
       isTaskWorkspace,
       viewedWorkspace: () => mirror.getViewed()?.workspaceId ?? null,
       viewed,
-      launchedTask: (id) => botWorkerSessionRecord(id)?.taskId ?? null,
+      sessionRecordOf: botWorkerSessionRecord,
       launchedConversation,
       closeWorkspace,
       paneOf: (ptyId) => mirror.peekPaneForPty(ptyId)?.paneId ?? null,

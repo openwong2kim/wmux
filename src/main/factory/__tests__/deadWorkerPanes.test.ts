@@ -97,7 +97,7 @@ async function rig(rows: LedgerEntry[], sessions: DeadPaneSession[], over: Parti
     isTaskWorkspace: (rec, ws) => ws !== rec.ownerWorkspaceId && rows.some((x) => x.id === rec.taskId && x.taskWorkspaceId === ws),
     viewedWorkspace: () => 'ws-owner',
     viewed: (ws) => ws === 'ws-owner',
-    launchedTask: (id) => (id === 'daemon-1' || id === 'daemon-3' ? 'wtask-abc-12345678' : null),
+    sessionRecordOf: (id) => (id === 'daemon-1' || id === 'daemon-3' ? { taskId: 'wtask-abc-12345678' } : null),
     closeWorkspace: (ws) => r.closeWorkspace(ws),
     paneOf,
     closePane: (pane) => r.closePane(pane),
@@ -167,6 +167,16 @@ describe('ended bot tasks', () => {
     expect(lines.some((l) => l.includes('closed daemon-1'))).toBe(false);
     expect(await sweep.pass()).toEqual({ closed: 0, recorded: 0 });
     expect(r.closeWorkspace).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not count a close that left the daemon session behind', async () => {
+    const r = await rig([row('completed')], [respawned()]);
+    r.closeWorkspace.mockImplementation(async (ws: string) => {
+      r.ptys.delete(ws);
+      r.sessions[0] = { ...r.sessions[0], state: 'dead' };
+      return true;
+    });
+    expect((await createDeadPaneSweep(r.ports).pass()).closed).toBe(0);
   });
 
   it('closes only the dead pane when the owner typed into another one', async () => {
@@ -319,7 +329,7 @@ describe('open bot tasks', () => {
   it('records nothing while an agent runs in the workspace, or for a pane the task did not launch', async () => {
     const live = await rig([row('review_requested')], [respawned(), { id: 'daemon-2', pid: 11, spawnCwd: wt, agentProcessAlive: true }]);
     expect((await createDeadPaneSweep(live.ports).pass()).recorded).toBe(0);
-    const notOwn = await rig([row('review_requested')], [respawned()], { launchedTask: () => null });
+    const notOwn = await rig([row('review_requested')], [respawned()], { sessionRecordOf: () => null });
     expect((await createDeadPaneSweep(notOwn.ports).pass()).recorded).toBe(0);
     const typed = await rig([row('review_requested')], [respawned()]);
     typed.input.set('daemon-1', { keyInputRevision: 1, keyInputIdleMs: 10 });

@@ -49,6 +49,7 @@ import {
   holdWorkerPanes,
   isReclaimableEnd,
   isReclaimedSince,
+  isTaskOwnWorkerPane,
   reclaimedSessionOf,
   workerWorkspaceOf,
   type ReclaimedSession,
@@ -56,6 +57,7 @@ import {
   type ReclaimedWorkers,
   type WorkerReclaimPorts,
   type WorkerSessionInfo,
+  type WorkerSessionRecordOf,
 } from './workerReclaim';
 
 /** The daemon's session fields this sweep reads (daemon.listSessions). */
@@ -122,9 +124,9 @@ export interface DeadPaneSweepPorts {
   /** Whether the owner views the workspace (the active one, or the Bots
    *  worker panel's). */
   viewed: (workspaceId: string) => boolean;
-  /** The task whose own launch created the pane (the bot worker session
-   *  record), or null. */
-  launchedTask: (ptyId: string) => string | null;
+  /** A pane's bot worker session record (the task whose own launch created
+   *  it), null when none. */
+  sessionRecordOf: WorkerSessionRecordOf;
   launchedConversation?: WorkerReclaimPorts['launchedConversation'];
   /** Close a workspace through the renderer's workspace.close; true when it closed. */
   closeWorkspace: (workspaceId: string) => Promise<boolean>;
@@ -185,7 +187,7 @@ export function createDeadPaneSweep(ports: DeadPaneSweepPorts): DeadPaneSweep {
    *  task). Nothing else, however idle: an owner's pane in the workspace is
    *  never one. */
   const ownPane = (row: LedgerEntry, rec: ReclaimedWorker | null, id: string): boolean =>
-    !!rec?.sessions.some((s) => s.sessionId === id) || safe(() => ports.launchedTask(id), null) === row.id;
+    isTaskOwnWorkerPane({ id }, row.id, rec?.sessions.map((s) => s.sessionId) ?? [], ports.sessionRecordOf);
 
   /** Whether a close took effect: `ids` gone from the daemon and from the
    *  workspace's panes (the whole workspace, when `wholeWorkspace`), read
@@ -198,7 +200,7 @@ export function createDeadPaneSweep(ports: DeadPaneSweepPorts): DeadPaneSweep {
       const treeOk = !!panes && (wholeWorkspace ? panes.length === 0 : ids.every((id) => !panes.includes(id)));
       if (treeOk) {
         const live = await ports.listSessions().catch(() => null);
-        if (live && ids.every((id) => !live.some((x) => x.id === id && x.state !== 'dead'))) return true;
+        if (live && ids.every((id) => !live.some((x) => x.id === id))) return true;
       }
       if (now() >= deadline) return false;
       await sleep(CLOSE_CONFIRM_STEP_MS);
