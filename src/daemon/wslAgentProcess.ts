@@ -219,6 +219,82 @@ export async function checkWslAgentRunning(
   }
 }
 
+// #2261 — signal one WSL agent by its identity. The boot id and the start
+// time are read again inside the distro before the signal, so a pid reused
+// since (or after a distro restart) is never signalled.
+const SIGNAL_SCRIPT = `
+st() { set -f; set -- \${1##*) }; printf '%s' "\${20}"; }
+{ read -r b < /proc/sys/kernel/random/boot_id; } 2>/dev/null || exit 3
+[ "$b" = "$3" ] || exit 0
+s=$(cat "/proc/$1/stat" 2>/dev/null) || exit 0
+[ "$(st "$s")" = "$2" ] || exit 0
+kill -"$4" "$1" 2>/dev/null
+exit 0
+`;
+
+/** Exported for tests: the script, run as `sh -c SIGNAL_SCRIPT wmux-kill <pid> <start> <boot id> <TERM|KILL>`. */
+export { SIGNAL_SCRIPT };
+
+export type WslSignal = (agent: WslWatchedAgent, signal: 'TERM' | 'KILL') => Promise<void>;
+
+export const signalWslAgent: WslSignal = (agent, signal) => new Promise((resolve, reject) => {
+  const args = [...wslTargetArgs(agent.target), '--exec', '/bin/sh', '-c', SIGNAL_SCRIPT, 'wmux-kill', String(agent.pid), agent.start, agent.bootId, signal];
+  execFile(agent.shell, args, {
+    encoding: 'buffer', timeout: DELIVERY_PROBE_TIMEOUT_MS, windowsHide: true,
+    cwd: os.homedir(), env: { ...process.env, WSL_UTF8: '1' },
+  }, (error, _stdout, stderr) => {
+    if (error) reject(new Error(decodeWslOutput(stderr).trim() || error.message));
+    else resolve();
+  });
+});
+
+export interface WslAgentStopDeps {
+  signal?: WslSignal;
+  probe?: WslProbe;
+  hostAlive?: (pid: number) => boolean;
+  sleep?: (ms: number) => Promise<void>;
+  graceMs?: number;
+  pollMs?: number;
+}
+
+export type WslAgentStopResult =
+  | { ok: true; stopped: false }
+  | { ok: true; stopped: true; pid: number; killed: number }
+  | { ok: false; code: 'still_running'; pid: number };
+
+/**
+ * #2261 — session.stopAgent for a WSL pane: the counterpart of stopAgentTree
+ * (agentStop.ts). The agent is asked to exit (TERM: it closes its MCP servers
+ * itself); one still the same process after the grace is killed. Only the
+ * tracked agent is signalled. A probe that fails reads as still running, never
+ * as gone; a pane whose wsl.exe is gone has no agent left to stop.
+ */
+export async function stopWslAgent(agent: WslWatchedAgent, deps: WslAgentStopDeps = {}): Promise<WslAgentStopResult> {
+  const signal = deps.signal ?? signalWslAgent;
+  const probe = deps.probe ?? ((shell, target, pids) => probeWslProcesses(shell, target, pids, DELIVERY_PROBE_TIMEOUT_MS));
+  const hostAlive = deps.hostAlive ?? windowsPidAlive;
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const graceMs = deps.graceMs ?? 5_000;
+  const pollMs = deps.pollMs ?? 500;
+  const exists = async (): Promise<boolean> => {
+    if (!hostAlive(agent.hostPid)) return false;
+    try {
+      return sameProcess(agent, await probe(agent.shell, agent.target, [agent.pid])).exists;
+    } catch {
+      return true;
+    }
+  };
+  if (!(await exists())) return { ok: true, stopped: false };
+  await signal(agent, 'TERM').catch(() => undefined);
+  for (let waited = 0; waited < graceMs; waited += pollMs) {
+    await sleep(pollMs);
+    if (!(await exists())) return { ok: true, stopped: true, pid: agent.pid, killed: 0 };
+  }
+  await signal(agent, 'KILL').catch(() => undefined);
+  await sleep(pollMs);
+  return (await exists()) ? { ok: false, code: 'still_running', pid: agent.pid } : { ok: true, stopped: true, pid: agent.pid, killed: 1 };
+}
+
 interface WatchEntry extends WslWatchedAgent {
   onDead: () => void;
 }
