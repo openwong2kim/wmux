@@ -430,7 +430,7 @@ function workerEngineLine(profile: BotProfile): string {
   const w = profile.workerAgent;
   const name = botWorkerAgentLabel(w?.agent ?? DEFAULT_BOT_WORKER_AGENT);
   const detail = w ? [w.model, w.effort ? `${w.effort} effort` : undefined].filter(Boolean).join(', ') : '';
-  return `Your fan-out workers run on ${name}${detail ? ` (${detail})` : ''}${w ? ', as the owner set in your profile' : ' (the default; the owner can change it in your profile)'}; you do not choose it.`;
+  return `Your fan-out workers run on ${name}${detail ? ` (${detail})` : ''}${w ? ', as set in your profile' : ' (the default; the owner can change it in your profile)'}; you do not choose it.`;
 }
 
 /** A `bot.notice` fact: main's own words, plain; a quoted error is data. */

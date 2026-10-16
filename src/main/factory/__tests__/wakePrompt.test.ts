@@ -33,7 +33,7 @@ describe('buildWakePrompt — the workers\' engine', () => {
   it('says in one line what the workers run on, default or the owner\'s pick', () => {
     expect(buildWakePrompt({ item, profile })).toContain('Your fan-out workers run on Claude Code (the default; the owner can change it in your profile); you do not choose it.');
     const picked = buildWakePrompt({ item, profile: { ...profile, workerAgent: { agent: 'codex', model: 'gpt-6.1-sol', effort: 'low' } } });
-    expect(picked).toContain('Your fan-out workers run on Codex (gpt-6.1-sol, low effort), as the owner set in your profile; you do not choose it.');
+    expect(picked).toContain('Your fan-out workers run on Codex (gpt-6.1-sol, low effort), as set in your profile; you do not choose it.');
   });
 });
 
