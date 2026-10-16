@@ -84,6 +84,18 @@ describe('DaemonPTYBridge — interrupted-turn row', () => {
       expect(interrupted).toEqual([]);
     });
 
+    it('reports one idle title per Esc', () => {
+      bridge.noteInput('\x1b');
+      vi.advanceTimersByTime(84);
+      feed(IDLE);
+      // The next turn starts and ends inside the same Esc window.
+      vi.advanceTimersByTime(500);
+      feed(BUSY);
+      vi.advanceTimersByTime(500);
+      feed(IDLE);
+      expect(interrupted).toEqual([{ sessionId: 'sess-1', agent: 'Claude Code' }]);
+    });
+
     it('does not report an ordinary turn end (no Esc before it)', () => {
       feed(IDLE);
       expect(interrupted).toEqual([]);

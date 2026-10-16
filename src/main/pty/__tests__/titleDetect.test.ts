@@ -58,3 +58,18 @@ describe('ClaudeTitleTurnEdge: a turn that ran its Stop hooks ended on its own',
     expect(edge.observe('✳ 50번째 소수 검증')).toBe(true);
   });
 });
+
+describe('ClaudeTitleTurnEdge: what counts as the Stop-hook row', () => {
+  it('matches the row split across two reads', () => {
+    const edge = new ClaudeTitleTurnEdge();
+    edge.noteOutput('\u001b[2Crunning Sto');
+    edge.noteOutput('p hook · 3s · \u001b[m');
+    expect(edge.observe('✳ Claude Code')).toBe(false);
+  });
+
+  it('does not take conversation text about Stop hooks for the row', () => {
+    const edge = new ClaudeTitleTurnEdge();
+    edge.noteOutput('● The Stop hook in settings.json runs after every turn.');
+    expect(edge.observe('✳ Claude Code')).toBe(true);
+  });
+});

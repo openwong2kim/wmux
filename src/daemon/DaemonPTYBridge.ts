@@ -240,6 +240,8 @@ export class DaemonPTYBridge extends EventEmitter {
 
   /** Last write to stdin that was a lone Esc, from any source (0 = never). */
   private lastEscAt = 0;
+  /** The `lastEscAt` an idle title already reported as an interrupt (#2264). */
+  private titleEdgeEscAt = 0;
   /** Latest OSC 0/2 window title (sanitized) and when it arrived (0 = never). */
   private lastTitle = '';
   private lastTitleAt = 0;
@@ -950,7 +952,11 @@ export class DaemonPTYBridge extends EventEmitter {
     const now = Date.now();
     if (this.muted || now - this.lastResizeAtMs < RESIZE_REDRAW_GUARD_MS) return;
     if (now - this.lastEscAt >= ESC_INTERRUPT_CONFIRM_MS) return;
+    // One Esc confirms one turn: a later idle title inside the same window
+    // belongs to a turn that Esc never touched.
+    if (this.lastEscAt === this.titleEdgeEscAt) return;
     if (this.agentDetector?.getLastAgent() !== 'Claude Code') return;
+    this.titleEdgeEscAt = this.lastEscAt;
     this.emit('turnInterrupted', { sessionId, agent: 'Claude Code' });
   }
 
