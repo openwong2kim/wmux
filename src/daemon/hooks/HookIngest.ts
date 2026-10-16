@@ -1181,8 +1181,7 @@ export class HookIngest {
         : undefined;
       let transcriptPath: string | undefined;
       const routed = sessions.find((s) => s.id === sessionId);
-      if (claimedPath && signal.agent === 'claude' && routed?.wslTarget
-          && isWslOwnTranscriptPath(claimedPath, signal.agentSessionId, routed.wslTarget)) {
+      if (claimedPath && routed?.wslTarget && isWslOwnTranscriptPath(claimedPath, signal.agentSessionId, routed.wslTarget)) {
         // #2270: the WSL pane's own transcript, inside its distro. This process
         // cannot open that path, so the binding goes without it, as before,
         // but it is not a refusal.
