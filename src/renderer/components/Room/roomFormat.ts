@@ -171,6 +171,12 @@ const NOTICE_CODES: ReadonlyMap<string, boolean> = new Map([
   ['budget.exhausted', true], ['budget.held', true], ['bot.usageLimit', false],
   ['task.done', false], ['task.reported', false], ['task.failed', false], ['task.cancelled', false],
   ['task.stoppedByOwner', false], ['task.inputRequired', false],
+  ['verify.passed', false], ['verify.killed', false], ['verify.failed', false], ['verify.skipped', false],
+  ['verify.busy', true], ['verify.refused', false],
+  ['verify.notRunNoBot', true], ['verify.notRunNoWorktree', true], ['verify.notRunNoBaseRef', true],
+  ['pr.merged', false], ['pr.closed', false], ['verdict.recorded', false],
+  ['handoff.sent', false], ['thread.finished', false], ['thread.stopped', false],
+  ['bot.error', false], ['worker.startFailed', false],
 ]);
 
 /** The notice codes that tell the owner a stopped worker can resume. */
@@ -194,6 +200,11 @@ const NOTICE_WORDS: Readonly<Record<string, ReadonlySet<string>>> = {
   // The task a resumable worker card is about: a research task has a task
   // folder, not a worktree.
   kind: new Set(['research']),
+  // A hop's kind (handoffRouter.ts HandoffKind) on a card to a bot.
+  hop: new Set(['dispatch', 'result', 'message', 'refusal', 'answer']),
+  verdict: new Set(['pass', 'fail']),
+  // Why a worker could not start (botNotices.ts START_FAILURES).
+  cause: new Set(['fetch', 'worktree', 'repository', 'promptFile', 'slot', 'pane', 'setupStep', 'setup']),
 };
 
 /** Why wmux moved a task to input_required (roomWriter.ts inputRequiredWhy). */
@@ -272,7 +283,7 @@ export function noticeText(card: Pick<RoomCard, 'actor' | 'body' | 'notice'>, t:
   if (args.where !== undefined) vars.place = t(`room.notice.where.${args.where}`);
   if (typeof args.until === 'number') vars.time = formatNoticeTime(args.until, now);
   // Why a gate did not run, worded; a reason this build does not know stays as written.
-  if (notice.code === 'gate.skipped' && typeof args.reason === 'string' && GATE_SKIP_REASONS.has(args.reason)) {
+  if ((notice.code === 'gate.skipped' || notice.code === 'verify.skipped') && typeof args.reason === 'string' && GATE_SKIP_REASONS.has(args.reason)) {
     vars.reason = t(`room.notice.gate.reason.${args.reason}`);
   }
   if (notice.code === 'worker.waiting') {
@@ -283,8 +294,21 @@ export function noticeText(card: Pick<RoomCard, 'actor' | 'body' | 'notice'>, t:
   if (notice.code === 'task.inputRequired' && typeof args.why === 'string' && INPUT_REQUIRED_WHY.has(args.why)) {
     return { title: t(`room.notice.${notice.code}`, vars), body: t(`room.notice.task.inputRequired.why.${args.why}`, vars) };
   }
+  if (args.verdict !== undefined) vars.verdict = t(`room.notice.verdict.${args.verdict}`);
+  if (args.cause !== undefined) vars.cause = t(`room.notice.worker.startFailed.cause.${args.cause}`);
   const budget = budgetNoticeKeys(notice.code, args);
   if (budget) return { title: t(budget.title, vars), body: t(budget.body, vars) };
+  // A hop says what it carried: one template per kind, forwarded by wmux
+  // for a coordinator's relay.
+  if (notice.code === 'handoff.sent') {
+    if (args.hop === undefined) return null;
+    const hop = t(`room.notice.handoff.${args.hop}`, vars);
+    return { title: args.relay ? t('room.notice.handoff.forwarded', { hop }) : hop, body: card.body ?? '' };
+  }
+  // A PR closed with no title known says only its number.
+  if ((notice.code === 'pr.merged' || notice.code === 'pr.closed') && args.title === undefined) {
+    return { title: t(`room.notice.${notice.code}.untitled`, vars), body: card.body ?? '' };
+  }
   const key = `room.notice.${notice.code}`;
   const bodyKey = args.kind === 'research' && RESUMABLE_NOTICE_CODES.has(notice.code) ? `${key}.body.research` : `${key}.body`;
   return { title: t(key, vars), body: wordedBody ? t(bodyKey, vars) : (card.body ?? '') };

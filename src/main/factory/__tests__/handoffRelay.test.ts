@@ -203,7 +203,7 @@ describe('a coordinator\'s relay', () => {
     // General gets one pointer to the thread.
     const pointers = r.rooms.read('ws1', { threadId: 'general' }).cards.filter((c) => c.refs?.threadId === root.threadId);
     expect(pointers).toHaveLength(1);
-    expect(pointers[0]).toMatchObject({ kind: 'fact', title: 'Finished: Ship the widget', refs: { handoffId: res3.ok ? res3.handoffId : '' } });
+    expect(pointers[0]).toMatchObject({ kind: 'fact', title: 'Finished: Ship the widget', notice: { code: 'thread.finished', args: { title: 'Ship the widget' } }, refs: { handoffId: res3.ok ? res3.handoffId : '' } });
     expect(pointers[0].body).toBeUndefined();
   });
 
@@ -604,6 +604,7 @@ describe('the General card that points at a coordinator\'s thread', () => {
     if (!res1.ok) throw new Error('refused');
     await r.router.idle();
     expect(pointers(r, root.threadId).map((c) => c.title)).toEqual(['Stopped: Ship the widget']);
+    expect(pointers(r, root.threadId)[0].notice).toEqual({ code: 'thread.stopped', args: { title: 'Ship the widget' } });
     expect(r.router.get(res1.handoffId)?.pointed).toBe(true);
     // A restart writes no second card.
     const again = await rig(t.all);

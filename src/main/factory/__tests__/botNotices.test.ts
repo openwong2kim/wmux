@@ -4,7 +4,7 @@
 import { describe, expect, it } from 'vitest';
 import { factDedupeKey, type Fact, type FactDraft } from '../../../shared/facts';
 import type { WakeEnqueueInput } from '../wakeQueue';
-import { BOT_NOTICE_LIMITS, botNoticeDraft, noticeBot, noticeWorkerStarts, plainStartFailure, type BotNoticePorts } from '../botNotices';
+import { BOT_NOTICE_LIMITS, botNoticeDraft, noticeBot, noticeWorkerStarts, plainStartFailure, startFailureCode, type BotNoticePorts } from '../botNotices';
 import { cmdLaunchPathRefusal, promptFileArgument } from '../../../shared/promptFileArgument';
 import { systemCardForFact } from '../roomWriter';
 import { WakeTaint } from '../wakeTaint';
@@ -79,6 +79,8 @@ describe('bot notices', () => {
     expect(systemCardForFact(p.facts[0])).toBeNull();
     expect(systemCardForFact(p.facts[1])).toMatchObject({ workspaces: ['ws-1'], threadId: 'general', kind: 'refusal', title: p.facts[1].payload.title });
     expect(systemCardForFact(p.facts[1])).not.toHaveProperty('body');
+    // ... with the code the reader's language words it by (full title, cause code).
+    expect(systemCardForFact(p.facts[1])?.notice).toEqual({ code: 'worker.startFailed', args: { title: 'Verify PR #1', cause: 'fetch' } });
   });
 
   it('start failures read as plain words', () => {
@@ -86,6 +88,9 @@ describe('bot notices', () => {
     expect(plainStartFailure('fanout preflight failed (task 1): not a git repository')).toBe('the repository was not ready for a new worker');
     expect(plainStartFailure('prompt file write failed: EACCES')).toBe('its instructions could not be written');
     expect(plainStartFailure('???')).toBe('its setup failed');
+    expect(startFailureCode(plainStartFailure('prompt file write failed: EACCES'))).toBe('promptFile');
+    expect(startFailureCode(plainStartFailure('???'))).toBe('setup');
+    expect(startFailureCode('Command Prompt cannot pass the wmux data folder')).toBeNull();
   });
 
   it('#2256: a Command Prompt path refusal reaches the card with its cause and remedy, not as an unopened pane', () => {
@@ -97,6 +102,8 @@ describe('bot notices', () => {
     const p = ports();
     noticeWorkerStarts(p, 'bot-1', { workspaceId: 'ws-1', threadId: 'general', key: 'wake:w-1:1', tainted: false, tasks: [{ index: 0, title: 'Fix it', started: false, reason: plainStartFailure(wrap(why)), detail: wrap(why) }] });
     expect(p.facts[0].payload.title).toBe(`Worker for "Fix it" could not start: ${why}`);
+    // Words plainStartFailure did not choose have no code: the card keeps its English.
+    expect(p.facts[0].payload).not.toHaveProperty('notice');
   });
 
   it('#2256: every Command Prompt path reason reaches the card whole, the task title giving way', () => {

@@ -161,6 +161,43 @@ describe('factory system cards in the reader\'s language (RoomCard.notice)', () 
     expect(noticeText(card({ notice: { code: 'budget.exhausted', args: { bot: 'Reviewer', limit: 'tokens_week' } } }), i18nT, now)).toBeNull();
   });
 
+  it('PR, verdict, hop, verify-gate, error and start-failure cards read in Korean; English matches what main writes', () => {
+    const pr = card({ notice: { code: 'pr.merged', args: { pr: 5, title: 'Fix login' } } });
+    expect(noticeText(pr, i18nT)?.title).toBe('PR #5 merged: Fix login');
+    const verdict = card({ body: 'tests red', notice: { code: 'verdict.recorded', args: { verdict: 'fail', pr: 4, sha: 'abcdef1', bot: 'verifier' } } });
+    expect(noticeText(verdict, i18nT)?.title).toBe('Verdict fail for #4 at abcdef1 by verifier');
+    const relayed = card({ notice: { code: 'handoff.sent', args: { hop: 'result', to: '대장', title: 'add login', relay: 1 } } });
+    expect(noticeText(relayed, i18nT)?.title).toBe('result → 대장: add login (forwarded by wmux)');
+    const failed = card({ notice: { code: 'worker.startFailed', args: { title: 'x', cause: 'setup' } } });
+    expect(noticeText(failed, i18nT)?.title).toBe('Worker for "x" could not start: its setup failed');
+    setLocale('ko');
+    expect(noticeText(pr, i18nT)?.title).toBe('PR #5 머지됨: Fix login');
+    expect(noticeText(card({ notice: { code: 'pr.closed', args: { pr: 6 } } }), i18nT)?.title).toBe('PR #6 닫힘');
+    expect(noticeText(verdict, i18nT)).toEqual({ title: '#4 판정 실패 (abcdef1, verifier)', body: 'tests red' });
+    const hop = (h: string) => noticeText(card({ body: '', notice: { code: 'handoff.sent', args: { hop: h, to: '구현', title: 'add login' } } }), i18nT)?.title;
+    expect(hop('dispatch')).toBe('구현에게 맡김: add login');
+    expect(hop('result')).toBe('구현에게 결과: add login');
+    expect(hop('message')).toBe('구현에게 메시지: add login');
+    expect(hop('answer')).toBe('구현에게 답함: add login');
+    expect(noticeText(relayed, i18nT)?.title).toBe('대장에게 결과: add login (wmux가 전달)');
+    expect(noticeText(card({ notice: { code: 'thread.finished', args: { title: 'Ship it' } } }), i18nT)?.title).toBe('완료: Ship it');
+    expect(noticeText(card({ notice: { code: 'thread.stopped', args: { title: 'Ship it' } } }), i18nT)?.title).toBe('중지됨: Ship it');
+    expect(noticeText(card({ body: '`npm test` at abc1234', notice: { code: 'verify.failed', args: { exit: 1 } } }), i18nT))
+      .toEqual({ title: '검증 게이트 실패 (종료 코드 1)', body: '`npm test` at abc1234' });
+    expect(noticeText(card({ notice: { code: 'verify.skipped', args: { reason: 'deps_missing' } } }), i18nT)?.title).toBe('검증 게이트 건너뜀 (의존성이 설치되지 않음)');
+    expect(noticeText(card({ notice: { code: 'verify.notRunNoWorktree' } }), i18nT)?.body).toBe('작업 워크트리가 디스크에 없어요.');
+    expect(noticeText(card({ body: 'boom', notice: { code: 'bot.error', args: { bot: 'Reviewer' } } }), i18nT)).toEqual({ title: 'Reviewer: 오류가 발생했습니다', body: 'boom' });
+    expect(noticeText(failed, i18nT)?.title).toBe('"x" 워커를 시작하지 못함: 준비 과정이 실패함');
+  });
+
+  it('keeps the English for a hop kind, verdict or start-failure cause this build does not know', () => {
+    setLocale('ko');
+    expect(noticeText(card({ notice: { code: 'handoff.sent', args: { hop: 'handoff', to: '구현', title: 'x' } } }), i18nT)).toBeNull();
+    expect(noticeText(card({ notice: { code: 'handoff.sent', args: { to: '구현', title: 'x' } } }), i18nT)).toBeNull();
+    expect(noticeText(card({ notice: { code: 'verdict.recorded', args: { verdict: 'maybe', pr: 4, sha: 'abc', bot: 'v' } } }), i18nT)).toBeNull();
+    expect(noticeText(card({ notice: { code: 'worker.startFailed', args: { title: 'x', cause: 'cosmic_rays' } } }), i18nT)).toBeNull();
+  });
+
   it('a slot-wait card words its holders in the reader\'s language; an older card keeps its English holders', () => {
     const args = { title: 'fix login', inUse: 4, cap: 4, holders: 'bot in a turn Dev; workers "a", "b"; 1 other worker starting, resumed or not yet reclaimed', bots: 'Dev', botCount: 1, workers: 'a\nb', workerCount: 2 };
     expect(noticeText(card({ notice: { code: 'worker.waiting', args } }), i18nT)?.body).toContain(': bot in a turn Dev; workers "a", "b"; 1 other worker starting, resumed or not yet reclaimed.');

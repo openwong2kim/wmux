@@ -18,7 +18,7 @@
 
 import path from 'node:path';
 import type { BotProfile } from '../../../shared/bot';
-import type { ThreadId } from '../../../shared/room';
+import type { CardNotice, ThreadId } from '../../../shared/room';
 import { registerFactoryRpcModule, type FactoryHostDeps } from '../factoryHost';
 import { setBotRuntimePorts } from '../BotRuntime';
 import { getBotDirectory } from '../botStore';
@@ -63,9 +63,10 @@ async function trustOf(repoPath: string, since: number, now: number) {
   return readTrustMetrics(repoPath, { since, now, ref, git: gitRun });
 }
 
-/** A system card in a room thread (best effort). */
-function systemNote(workspaceId: string, threadId: ThreadId, title: string, body: string): void {
-  getRoomWriter()?.append({ workspaceId, threadId, kind: 'fact', actor: { kind: 'system' }, title, body });
+/** A system card in a room thread (best effort), with its stable code
+ *  when it has one (RoomCard.notice). */
+function systemNote(workspaceId: string, threadId: ThreadId, title: string, body: string, notice?: CardNotice): void {
+  getRoomWriter()?.append({ workspaceId, threadId, kind: 'fact', actor: { kind: 'system' }, title, body, ...(notice ? { notice } : {}) });
 }
 
 export function factoryReadDeps(): FactoryReadDeps {

@@ -407,7 +407,7 @@ describe('facts → system cards', () => {
     expect(odd).not.toHaveProperty('notice');
   });
 
-  it('a bot.error at the usage limit says when the bot picks up, with a notice code; a plain error does not', () => {
+  it('a bot.error at the usage limit says when the bot picks up, with a notice code; a plain error has its own', () => {
     const w = writer();
     const until = now + 3 * 3_600_000;
     const msg = "You've hit your session limit · resets 1pm (Asia/Seoul)";
@@ -417,7 +417,25 @@ describe('facts → system cards', () => {
     expect(limit.notice).toEqual({ code: 'bot.usageLimit', args: { bot: expect.any(String), until } });
     const [plain] = writeFactCards(w, fact('bot.error', { id: 'f-e', workspaceId: 'ws1', ref: { botId: 'bot-00000001' }, payload: { message: 'boom' } }), bots);
     expect(plain.title).toMatch(/ hit an error$/);
-    expect(plain).not.toHaveProperty('notice');
+    expect(plain.body).toBe('boom');
+    expect(plain.notice).toEqual({ code: 'bot.error', args: { bot: expect.any(String) } });
+  });
+
+  it('PR, verdict and hop cards keep their English titles and carry a notice the reader\'s language words', () => {
+    const w = writer();
+    const [merged] = writeFactCards(w, fact('pr.merged', { workspaceId: 'ws1', ref: { pr: 5 }, payload: { title: 'Fix login' } }), bots);
+    expect(merged).toMatchObject({ title: 'PR #5 merged: Fix login', notice: { code: 'pr.merged', args: { pr: 5, title: 'Fix login' } } });
+    const [closed] = writeFactCards(w, fact('pr.closed', { workspaceId: 'ws1', ref: { pr: 6 }, payload: {} }), bots);
+    expect(closed).toMatchObject({ title: 'PR #6 closed', notice: { code: 'pr.closed', args: { pr: 6 } } });
+    const [verdict] = writeFactCards(w, fact('verdict.recorded', { workspaceId: 'ws1', ref: { pr: 4, headSha: 'abcdef1234', botId: 'bot-00000002' }, payload: { verdict: 'fail', summary: 'tests red' } }), bots);
+    expect(verdict).toMatchObject({ title: 'Verdict fail for #4 at abcdef1 by verifier', body: 'tests red', notice: { code: 'verdict.recorded', args: { verdict: 'fail', pr: 4, sha: 'abcdef1', bot: 'verifier' } } });
+    const hop = (id: string, payload: Record<string, unknown>, botId: string | null = 'bot-00000001') =>
+      writeFactCards(w, fact('handoff.received', { workspaceId: 'ws1', ref: { handoffId: id, ...(botId ? { botId } : {}) }, payload: { title: 'add login', threadId: 'general', toWorkspaceId: 'ws1', toLabel: '구현', ...payload } }), bots)[0];
+    expect(hop('h1', { handoffKind: 'dispatch' })).toMatchObject({ title: 'dispatch → 구현: add login', notice: { code: 'handoff.sent', args: { hop: 'dispatch', to: '구현', title: 'add login' } } });
+    expect(hop('h2', { handoffKind: 'result', relay: true })).toMatchObject({ title: 'result → 구현: add login (forwarded by wmux)', notice: { code: 'handoff.sent', args: { hop: 'result', relay: 1 } } });
+    expect(hop('h3', { handoffKind: 'answer', answer: 'yes' })).toMatchObject({ title: 'Answered → 구현: add login', body: 'yes', notice: { code: 'handoff.sent', args: { hop: 'answer', to: '구현', title: 'add login' } } });
+    // To the owner (no addressed bot): the English stays.
+    expect(hop('h4', { handoffKind: 'ask_person', toLabel: 'the owner' }, null)).not.toHaveProperty('notice');
   });
 
   it('a held owner message gets one status card in its thread, across repeats and a restart', () => {
@@ -504,6 +522,10 @@ describe('card fields for owner requests and worker notices', () => {
     expect(systemCardForFact(notice({ topic: 'pr.merged', title: 'PR #1 merged.' }))).toBeNull();
     expect(systemCardForFact(notice({ topic: 'worker.started', title: 'started', card: true, threadId: 'task:wtask-1' }))).toMatchObject({ kind: 'fact', threadId: 'task:wtask-1', workspaces: ['ws-1'] });
     expect(systemCardForFact({ ...notice({ topic: 'worker.start_failed', title: 't', card: true }), workspaceId: undefined })).toBeNull();
+    // main's code for it rides along; a malformed one is dropped.
+    const failed = notice({ topic: 'worker.start_failed', title: 'Worker for "x" could not start: its setup failed', card: true, notice: { code: 'worker.startFailed', args: { title: 'x', cause: 'setup' } } });
+    expect(systemCardForFact(failed)).toMatchObject({ kind: 'refusal', notice: { code: 'worker.startFailed', args: { title: 'x', cause: 'setup' } } });
+    expect(systemCardForFact(notice({ topic: 'worker.start_failed', title: 't', card: true, notice: { code: 'Not A Code' } }))).not.toHaveProperty('notice');
   });
 });
 

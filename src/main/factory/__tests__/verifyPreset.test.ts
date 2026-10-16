@@ -65,6 +65,7 @@ describe('verify gate', () => {
       reason: { kind: 'facts', factIds: [verifyGateFactId('task-1', 5)], trigger: { kind: 'task.done' } },
     });
     expect(r.note.mock.calls[0][2]).toBe('Verify gate passed');
+    expect(r.note.mock.calls[0][4]).toEqual({ code: 'verify.passed' });
   });
 
   it('only bot verify tasks on a detached checkout reporting review_requested', async () => {
@@ -84,11 +85,13 @@ describe('verify gate', () => {
     await r.fire(entry());
     expect(r.runGate).not.toHaveBeenCalled();
     expect(r.note.mock.calls[0][2]).toBe('Verify gate not run');
+    expect(r.note.mock.calls[0][4]).toEqual({ code: 'verify.notRunNoWorktree' });
     expect(r.wake).toHaveBeenCalledTimes(1);
     const b = rig({ baseRef: async () => null });
     await b.fire(entry());
     expect(b.runGate).not.toHaveBeenCalled();
     expect(b.note.mock.calls[0][3]).toMatch(/default branch/);
+    expect(b.note.mock.calls[0][4]).toEqual({ code: 'verify.notRunNoBaseRef' });
   });
 
   it('a dispatching bot of any role tag is gated; one that is gone or has no repository runs nothing and wakes nobody', async () => {
@@ -149,6 +152,15 @@ describe('verify gate', () => {
     expect(describeGateRun({ ok: true, status: 'skipped', taskId: 't', skipped: 'deps_missing', detail: 'node_modules is missing' }).title).toBe('Verify gate skipped (deps_missing)');
     expect(describeGateRun({ ok: false, status: 'refused', taskId: 't', error: 'base gate differs' }).body).toBe('base gate differs');
     expect(describeGateRun({ ok: true, status: 'completed', taskId: 't', recorded: true, result: { exitCode: 1, tail: '', at: 1, command: 'npm test', headSha: SHA } }).title).toBe('Verify gate failed (exit 1)');
+  });
+
+  it('each gate card carries its notice code', () => {
+    const completed = (exitCode: number | null) => describeGateRun({ ok: true, status: 'completed', taskId: 't', recorded: true, result: { exitCode, tail: '', at: 1, command: 'npm test', headSha: SHA } }).notice;
+    expect(completed(1)).toEqual({ code: 'verify.failed', args: { exit: 1 } });
+    expect(completed(null)).toEqual({ code: 'verify.killed' });
+    expect(describeGateRun({ ok: true, status: 'skipped', taskId: 't', skipped: 'deps_missing', detail: 'x' }).notice).toEqual({ code: 'verify.skipped', args: { reason: 'deps_missing' } });
+    expect(describeGateRun({ ok: false, status: 'busy', taskId: 't' }).notice).toEqual({ code: 'verify.busy' });
+    expect(describeGateRun({ ok: false, status: 'refused', taskId: 't', error: 'base gate differs' }).notice).toEqual({ code: 'verify.refused' });
   });
 
   it('default ports: the worktree from the owner\'s mission list, origin\'s default branch', async () => {

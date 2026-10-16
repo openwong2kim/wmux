@@ -1067,12 +1067,19 @@ export function systemCardForFact(fact: Fact, bots?: BotDirectoryApi): SystemCar
       // A room mention is the card that said it: its delivery adds no line.
       // A refused one shows above.
       if (p.mention === true) return null;
+      // Worded in the reader's language only for a bot addressee (ref.botId:
+      // handoffRouter emit's `directed`); the owner and wmux keep the English.
+      const hop = kind || 'handoff';
+      const hopNotice: CardNotice | undefined = fact.ref?.botId
+        ? { code: 'handoff.sent', args: { hop, to, title, ...(p.relay === true && kind !== 'answer' ? { relay: 1 } : {}) } }
+        : undefined;
       return {
         workspaces: [...new Set(workspaces)], threadId, kind: 'fact',
         title: kind === 'answer' ? `Answered → ${to}: ${title}`
           : p.relay === true ? `${kind || 'handoff'} → ${to}: ${title} (forwarded by wmux)`
           : `${kind || 'handoff'} → ${to}: ${title}`,
         ...(kind === 'answer' ? { body: capBody(p.answer, 1000) } : {}),
+        ...(hopNotice ? { notice: hopNotice } : {}),
         refs: {
           ...baseRefs,
           ...(str(p.requestCardId) ? { requestCardId: str(p.requestCardId) } : {}),
@@ -1108,25 +1115,33 @@ export function systemCardForFact(fact: Fact, bots?: BotDirectoryApi): SystemCar
         ...(fact.kind === 'task.done' && threadId === `task:${fact.ref?.taskId}` ? { closes: true as const } : {}),
       };
     }
-    case 'verdict.recorded':
+    case 'verdict.recorded': {
+      const pr = fact.ref?.pr;
+      const sha = sha7(fact.ref?.headSha);
+      const by = botLabel(bots, fact.ref?.botId);
       return {
         workspaces: factRooms(fact, bots), threadId: prThread(fact), kind: 'fact',
-        title: `Verdict ${str(p.verdict) || 'recorded'} for #${fact.ref?.pr ?? '?'} at ${sha7(fact.ref?.headSha)} by ${botLabel(bots, fact.ref?.botId)}`,
+        title: `Verdict ${str(p.verdict) || 'recorded'} for #${pr ?? '?'} at ${sha} by ${by}`,
         ...(capBody(p.summary, 2000) ? { body: capBody(p.summary, 2000) } : {}),
         refs: baseRefs,
+        ...(typeof pr === 'number' && str(p.verdict) ? { notice: { code: 'verdict.recorded', args: { verdict: str(p.verdict), pr, sha, bot: by } } } : {}),
       };
+    }
     case 'merge.done':
       return {
         workspaces: factRooms(fact, bots), threadId: prThread(fact), kind: 'fact',
         title: `Merged #${fact.ref?.pr ?? '?'} at ${sha7(fact.ref?.headSha)}`, refs: baseRefs, closes: true,
       };
     case 'pr.merged':
-    case 'pr.closed':
+    case 'pr.closed': {
+      const pr = fact.ref?.pr;
       return {
         workspaces: factRooms(fact, bots), threadId: prThread(fact), kind: 'fact',
-        title: `PR #${fact.ref?.pr ?? '?'} ${fact.kind === 'pr.merged' ? 'merged' : 'closed'}${str(p.title) ? `: ${str(p.title)}` : ''}`,
+        title: `PR #${pr ?? '?'} ${fact.kind === 'pr.merged' ? 'merged' : 'closed'}${str(p.title) ? `: ${str(p.title)}` : ''}`,
         refs: baseRefs, closes: true,
+        ...(typeof pr === 'number' ? { notice: { code: fact.kind, args: { pr, ...(str(p.title) ? { title: str(p.title) } : {}) } } } : {}),
       };
+    }
     case 'issue.closed':
       return {
         workspaces: factRooms(fact, bots), threadId: issueThread(fact), kind: 'fact',
@@ -1170,10 +1185,13 @@ export function systemCardForFact(fact: Fact, bots?: BotDirectoryApi): SystemCar
       // Main's own line to one bot; the owner sees it only when it says so
       // (a worker that could not start), in the thread it is about, title only.
       if (p.card !== true || !isRoomWorkspaceId(fact.workspaceId) || !str(p.title)) return null;
+      // Main's stable code for it, when it wrote one (botNotices.ts).
+      const notice = sanitizeNotice(p.notice);
       return {
         workspaces: [fact.workspaceId], threadId: parseThreadId(p.threadId) ?? GENERAL_THREAD,
         kind: p.topic === 'worker.start_failed' ? 'refusal' : 'fact',
         title: str(p.title), refs: baseRefs,
+        ...(notice ? { notice } : {}),
       };
     }
     case 'bot.error': {
@@ -1185,7 +1203,7 @@ export function systemCardForFact(fact: Fact, bots?: BotDirectoryApi): SystemCar
         title: until !== null ? `${name} hit its usage limit; it picks up again at ${formatHeldUntil(until, fact.at)}` : `${name} hit an error`,
         ...(capBody(p.message, 1000) ? { body: capBody(p.message, 1000) } : {}),
         refs: baseRefs,
-        ...(until !== null ? { notice: { code: 'bot.usageLimit', args: { bot: name, until } } } : {}),
+        notice: until !== null ? { code: 'bot.usageLimit', args: { bot: name, until } } : { code: 'bot.error', args: { bot: name } },
       };
     }
     default:

@@ -13,6 +13,8 @@
 // must not be written (a fact that cannot be deduplicated is refused, never
 // written with an ad-hoc key).
 
+import type { CardNotice } from './room';
+
 export type FactKind =
   | 'pr.opened' | 'pr.head_moved' | 'pr.closed' | 'pr.merged' | 'pr.labelled' | 'pr.review_requested_changes'
   | 'ci.failed' | 'ci.green'                     // per PR head, edge-triggered
@@ -89,6 +91,8 @@ export interface BotNoticePayload {
   card?: boolean;
   /** It carries text from outside (detail): wakeTaint counts it. */
   tainted?: boolean;
+  /** The card's stable code, so the reader's language words it (RoomCard.notice). */
+  notice?: CardNotice;
 }
 
 export type FactActor = { kind: 'system' | 'bot' | 'human' | 'github'; id?: string };

@@ -20,7 +20,7 @@
 
 import type { LedgerEntry } from '../../shared/ledger';
 import type { BotProfile } from '../../shared/bot';
-import { taskThreadOf, type ThreadId } from '../../shared/room';
+import { taskThreadOf, type CardNotice, type ThreadId } from '../../shared/room';
 import type { WakeReason } from '../../shared/wake';
 import type { GateRunInput, GateRunResult } from '../worktask/TaskGateRunner';
 
@@ -46,8 +46,9 @@ export interface VerifyGatePorts {
   baseRef: (repoPath: string) => Promise<string | null>;
   runGate: (input: GateRunInput) => Promise<GateRunResult>;
   wake: (input: { botId: string; workspaceId: string; reason: WakeReason; priority: 1; threadId: ThreadId }) => unknown;
-  /** A system card in the task's thread (best effort). */
-  note?: (workspaceId: string, threadId: ThreadId, title: string, body: string) => void;
+  /** A system card in the task's thread (best effort), with its stable
+   *  code (RoomCard.notice). */
+  note?: (workspaceId: string, threadId: ThreadId, title: string, body: string, notice?: CardNotice) => void;
   log?: (msg: string) => void;
 }
 
@@ -59,19 +60,24 @@ export function isVerifyReport(entry: LedgerEntry, to: string): boolean {
     && d.preset === 'verify' && d.checkout?.detached === true;
 }
 
-/** One line on what a gate run produced, for the task's thread. */
-export function describeGateRun(r: GateRunResult): { title: string; body: string } {
+/** One line on what a gate run produced, for the task's thread: its
+ *  English words and its stable code (RoomCard.notice). */
+export function describeGateRun(r: GateRunResult): { title: string; body: string; notice: CardNotice } {
   if (r.ok && r.status === 'completed') {
     const g = r.result;
     const verdict = g.exitCode === 0 ? 'passed' : g.exitCode === null ? 'was killed' : `failed (exit ${g.exitCode})`;
     const head = g.headSha ? `at ${g.headSha}` : 'with no pinned head (the tree changed or HEAD moved during the run)';
-    return { title: `Verify gate ${verdict}`, body: `\`${g.command}\` ${head}; ${r.recorded ? 'recorded in the ledger' : 'NOT recorded (ledger unreachable)'}.` };
+    const notice: CardNotice = g.exitCode === 0 ? { code: 'verify.passed' } : g.exitCode === null ? { code: 'verify.killed' } : { code: 'verify.failed', args: { exit: g.exitCode } };
+    return { title: `Verify gate ${verdict}`, body: `\`${g.command}\` ${head}; ${r.recorded ? 'recorded in the ledger' : 'NOT recorded (ledger unreachable)'}.`, notice };
   }
   if (r.ok && r.status === 'skipped') {
-    return { title: `Verify gate skipped (${r.skipped})`, body: r.recorded ? `${r.detail} A recorded skip proves nothing about the head.` : r.detail };
+    return {
+      title: `Verify gate skipped (${r.skipped})`, body: r.recorded ? `${r.detail} A recorded skip proves nothing about the head.` : r.detail,
+      notice: { code: 'verify.skipped', args: { reason: r.skipped } },
+    };
   }
-  if (!r.ok && r.status === 'busy') return { title: 'Verify gate already running', body: 'A gate for this task is running; its result follows.' };
-  return { title: 'Verify gate refused', body: r.ok ? '' : r.error };
+  if (!r.ok && r.status === 'busy') return { title: 'Verify gate already running', body: 'A gate for this task is running; its result follows.', notice: { code: 'verify.busy' } };
+  return { title: 'Verify gate refused', body: r.ok ? '' : r.error, notice: { code: 'verify.refused' } };
 }
 
 /**
@@ -88,9 +94,9 @@ export function installVerifyGate(ports: VerifyGatePorts): () => void {
   const run = async (entry: LedgerEntry): Promise<void> => {
     const botId = entry.dispatch?.origin.botId ?? '';
     const thread = taskThreadOf(entry);
-    const note = (title: string, body: string): void => {
+    const note = (title: string, body: string, notice: CardNotice): void => {
       try {
-        ports.note?.(entry.ownerWorkspaceId, thread, title, body);
+        ports.note?.(entry.ownerWorkspaceId, thread, title, body, notice);
       } catch {
         /* the card is best effort */
       }
@@ -98,7 +104,7 @@ export function installVerifyGate(ports: VerifyGatePorts): () => void {
     const bot = ports.bot(botId);
     const repoPath = bot?.repo?.repoPath;
     if (!bot || !repoPath) {
-      note('Verify gate not run', 'The bot that dispatched this task is gone or has no repository.');
+      note('Verify gate not run', 'The bot that dispatched this task is gone or has no repository.', { code: 'verify.notRunNoBot' });
       return;
     }
     const [worktree, baseRef] = await Promise.all([ports.worktreeOf(entry), ports.baseRef(repoPath)]);
@@ -106,7 +112,7 @@ export function installVerifyGate(ports: VerifyGatePorts): () => void {
     const current = ports.ledgerRow(entry.id);
     if (current && !isVerifyReport(current, current.status)) return;
     if (!worktree || !baseRef) {
-      note('Verify gate not run', !worktree ? 'The task worktree is not on disk.' : 'origin\'s default branch could not be resolved, so there is no base gate to run.');
+      note('Verify gate not run', !worktree ? 'The task worktree is not on disk.' : 'origin\'s default branch could not be resolved, so there is no base gate to run.', { code: !worktree ? 'verify.notRunNoWorktree' : 'verify.notRunNoBaseRef' });
       ports.wake({
         botId, workspaceId: entry.ownerWorkspaceId, priority: 1, threadId: thread,
         reason: { kind: 'facts', factIds: [verifyGateFactId(entry.id, entry.rev)], trigger: { kind: 'task.done' } },
@@ -125,8 +131,8 @@ export function installVerifyGate(ports: VerifyGatePorts): () => void {
     // cancelled, stopped by the owner) is not reported on.
     const after = ports.ledgerRow(entry.id);
     if (after && !isVerifyReport(after, after.status)) return;
-    const { title, body } = describeGateRun(result);
-    note(title, body);
+    const { title, body, notice } = describeGateRun(result);
+    note(title, body, notice);
     const rev = ports.ledgerRow(entry.id)?.rev ?? entry.rev;
     ports.wake({
       botId, workspaceId: entry.ownerWorkspaceId, priority: 1, threadId: thread,

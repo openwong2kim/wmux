@@ -17,7 +17,7 @@
 // wakes the bot once.
 
 import type { BotNoticePayload, Fact, FactDraft } from '../../shared/facts';
-import { parseThreadId, type ThreadId } from '../../shared/room';
+import { parseThreadId, type CardNotice, type ThreadId } from '../../shared/room';
 import type { FactLogApi } from './triggerEngine';
 import type { WakeSinkApi } from './wakeQueue';
 
@@ -41,6 +41,8 @@ export interface BotNoticeInput {
   repoKey?: string;
   pr?: number;
   taskId?: string;
+  /** The card's stable code, so the reader's language words it (RoomCard.notice). */
+  notice?: CardNotice;
 }
 
 export interface BotNoticePorts {
@@ -71,6 +73,7 @@ export function botNoticeDraft(n: BotNoticeInput, at: number): FactDraft<'bot.no
     ...(detail ? { detail } : {}),
     ...(threadId ? { threadId } : {}),
     ...(n.card ? { card: true } : {}),
+    ...(n.notice ? { notice: n.notice } : {}),
     // Text main did not write is outside text, whatever else says so.
     ...(n.tainted || detail ? { tainted: true } : {}),
   };
@@ -146,6 +149,20 @@ export interface BotWorkerStartOutcome {
   }>;
 }
 
+/** Why a worker could not start: what in the fan-out's error says so, the
+ *  plain words, and their stable code (the notice's `cause`, roomFormat.ts),
+ *  first match wins. */
+const START_FAILURES: ReadonlyArray<{ test: RegExp; code: string; text: string }> = [
+  { test: /fetch|pull\/\d+\/head|resolvecheckout|checkout/, code: 'fetch', text: 'the code it was to check could not be fetched from the repository' },
+  { test: /worktree|branch .*exists|already exists/, code: 'worktree', text: 'its worktree could not be created' },
+  { test: /preflight|not a git repository|repository/, code: 'repository', text: 'the repository was not ready for a new worker' },
+  { test: /prompt file/, code: 'promptFile', text: 'its instructions could not be written' },
+  { test: /slot/, code: 'slot', text: 'no agent slot freed up for it' },
+  { test: /launch|spawn|workspace|pane/, code: 'pane', text: 'its pane could not be opened' },
+  { test: /setup/, code: 'setupStep', text: 'the repository\'s setup step failed' },
+  { test: /(?:)/, code: 'setup', text: 'its setup failed' },
+];
+
 /** Why a worker could not start, in plain words, from the fan-out's error
  *  text (which is never shown to the owner). Pure. */
 export function plainStartFailure(error: string): string {
@@ -154,14 +171,13 @@ export function plainStartFailure(error: string): string {
   const cmd = /Command Prompt cannot pass [^\n]*/.exec(error);
   if (cmd) return cmd[0];
   const e = error.toLowerCase();
-  if (/fetch|pull\/\d+\/head|resolvecheckout|checkout/.test(e)) return 'the code it was to check could not be fetched from the repository';
-  if (/worktree|branch .*exists|already exists/.test(e)) return 'its worktree could not be created';
-  if (/preflight|not a git repository|repository/.test(e)) return 'the repository was not ready for a new worker';
-  if (/prompt file/.test(e)) return 'its instructions could not be written';
-  if (/slot/.test(e)) return 'no agent slot freed up for it';
-  if (/launch|spawn|workspace|pane/.test(e)) return 'its pane could not be opened';
-  if (/setup/.test(e)) return 'the repository\'s setup step failed';
-  return 'its setup failed';
+  return (START_FAILURES.find((f) => f.test.test(e)) ?? START_FAILURES[START_FAILURES.length - 1]).text;
+}
+
+/** The stable code of plainStartFailure's words, or null for words it did
+ *  not choose (pty:create's own sentence): those keep their English. Pure. */
+export function startFailureCode(reason: string): string | null {
+  return START_FAILURES.find((f) => f.text === reason)?.code ?? null;
 }
 
 /** Per task: a worker that could not start wakes its bot and gets a card
@@ -187,6 +203,7 @@ export function noticeWorkerStarts(ports: BotNoticePorts, botId: string, outcome
       continue;
     }
     const reason = t.reason || 'its setup failed';
+    const cause = startFailureCode(reason);
     // The task's title gives way so the reason reaches the card whole (#2256).
     const room = BOT_NOTICE_LIMITS.TITLE_MAX - 'Worker for "" could not start: '.length - reason.length;
     const named = title.length <= room ? title : room >= 2 ? `${title.slice(0, room - 1)}…` : null;
@@ -198,6 +215,7 @@ export function noticeWorkerStarts(ports: BotNoticePorts, botId: string, outcome
       title: named === null ? `Worker could not start: ${reason}` : `Worker for "${named}" could not start: ${reason}`,
       body: 'Nothing is running for it. Tell the owner plainly, then fix the cause or start it again.',
       ...(t.detail ? { detail: t.detail } : {}),
+      ...(cause ? { notice: { code: 'worker.startFailed', args: { title, cause } } } : {}),
       threadId: outcome.threadId,
       card: true,
       tainted: outcome.tainted,

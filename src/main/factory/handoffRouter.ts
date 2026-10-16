@@ -1085,6 +1085,7 @@ export class HandoffRouter {
       kind: 'fact',
       actor: { kind: 'system' },
       title: `${how === 'stopped' ? 'Stopped' : 'Finished'}: ${root.payload.title}`,
+      notice: { code: how === 'stopped' ? 'thread.stopped' : 'thread.finished', args: { title: root.payload.title } },
       refs: { handoffId: result.id, threadId: root.threadId },
     }, ownerCard && ownerCard.threadId === saidIn && ownerCard.kind === 'human' ? { replyTo: ownerCard.id } : undefined);
     // Written once per result: the mark is on the result itself.
