@@ -1050,7 +1050,7 @@ describe('Bots page', () => {
     expect(useStore.getState().activeWorkspaceId).toBe('hq');
   });
 
-  it('a done task is a tree row while its pane is open (Resume in the panel\'s menu); a cleared one offers Resume in the rail, which shows the new pane', async () => {
+  it('a done task is a tree row while its pane is open (Resume in the panel\'s menu); a cleared one is not in the rail', async () => {
     seedRooms();
     const now = Date.now();
     const task = (taskId: string, taskWorkspaceId: string, extra: Record<string, unknown> = {}) => ({
@@ -1062,7 +1062,6 @@ describe('Bots page', () => {
     setFactoryBotPort({ ...port, resumeWorker });
     await render(<BotsPage />);
     act(() => q(`[data-bots-row="bot:${LEAD}"]`)!.click());
-    const bubble = (id: string) => q(`[data-bots-task="${id}"]`)!;
     // Its pane open: a done row in the list (the newest task on t1), none in the rail.
     expect(q('[data-bots-tree] [data-bots-worker="t1"]')?.getAttribute('data-worker-state')).toBe('done');
     expect(q('[data-bots-task="wtask-kept-00000001"]')).toBeNull();
@@ -1072,11 +1071,34 @@ describe('Bots page', () => {
     expect(q('[data-bots-worker-panel-resume]')).not.toBeNull();
     expect(q('[data-bots-worker-panel-workspaces]')).not.toBeNull();
     act(() => useStore.getState().setBotsWorkerPanel(null));
-    // Its pane cleared: the rail keeps it, with Resume.
-    expect(bubble('wtask-gone-00000002').querySelector('[data-bots-worker-open]')).toBeNull();
-    expect(bubble('wtask-gone-00000002').textContent).toContain('Done');
-    await act(async () => { (bubble('wtask-gone-00000002').querySelector('[data-bots-task-resume]') as HTMLButtonElement).click(); });
-    expect(resumeWorker).toHaveBeenCalledWith('wtask-gone-00000002');
+    // Its pane cleared: an ended task is no rail row (owner decision
+    // 2026-10-16); resuming it is the bot's call, or the card's Resume.
+    expect(q('[data-bots-task="wtask-gone-00000002"]')).toBeNull();
+    expect(resumeWorker).not.toHaveBeenCalled();
+  });
+
+  it('an open task whose worker was paused stays in the rail with Resume, which shows the new pane; a refusal for want of a slot is worded', async () => {
+    seedRooms();
+    const now = Date.now();
+    const task = (taskId: string, extra: Record<string, unknown> = {}) => ({
+      taskId, taskWorkspaceId: 't-gone', ownerWorkspaceId: 'w1', botId: LEAD, title: `task ${taskId}`, status: 'review_requested' as const,
+      stage: 'coded' as const, worker: 'resumable' as const, updatedAt: now, ...extra,
+    });
+    bots[1] = { ...bots[1], tasks: [task('wtask-open-00000001'), task('wtask-done-00000002', { status: 'completed', stage: 'closed' })] };
+    const resumeWorker = vi.fn()
+      .mockResolvedValueOnce({ ok: false, code: 'no_slot', cap: 4, message: 'main words' })
+      .mockResolvedValue({ ok: true, workspaceId: 't1' });
+    setFactoryBotPort({ ...port, resumeWorker });
+    await render(<BotsPage />);
+    act(() => q(`[data-bots-row="bot:${LEAD}"]`)!.click());
+    // The ended one is not in the rail; the open one is.
+    expect(q('[data-bots-task="wtask-done-00000002"]')).toBeNull();
+    const bubble = q('[data-bots-task="wtask-open-00000001"]')!;
+    expect(bubble.querySelector('[data-bots-worker-open]')).toBeNull();
+    await act(async () => { (bubble.querySelector('[data-bots-task-resume]') as HTMLButtonElement).click(); });
+    expect(q('[data-bots-task="wtask-open-00000001"]')!.textContent).toContain('No free agent slot (the limit is 4)');
+    await act(async () => { (q('[data-bots-task="wtask-open-00000001"] [data-bots-task-resume]') as HTMLButtonElement).click(); });
+    expect(resumeWorker).toHaveBeenCalledWith('wtask-open-00000001');
     expect(useStore.getState().activeWorkspaceId).toBe('hq');
     expect(useStore.getState().botsWorkerPanel?.workspaceId).toBe('t1');
     expect(q('[data-bots-worker-panel="t1"]')).not.toBeNull();
@@ -1105,11 +1127,11 @@ describe('Bots page', () => {
     expect(resumeWorker).toHaveBeenCalledWith(taskId);
   });
 
-  it('a cleared task whose folder was kept for uncommitted changes says so in the rail, with no Resume when its worker cannot resume', async () => {
+  it('a cleared open task whose folder was kept for uncommitted changes says so in the rail, with no Resume when its worker cannot resume', async () => {
     seedRooms();
     bots[1] = { ...bots[1], tasks: [{
       taskId: 'wtask-kept-00000001', taskWorkspaceId: 't-gone', ownerWorkspaceId: 'w1', botId: LEAD, title: 'Kept one',
-      status: 'cancelled' as const, stage: 'cancelled' as const, worker: 'stopped' as const, folder: 'kept_dirty' as const, updatedAt: Date.now(),
+      status: 'review_requested' as const, stage: 'coded' as const, worker: 'stopped' as const, folder: 'kept_dirty' as const, updatedAt: Date.now(),
     }] };
     setFactoryBotPort({ ...port, resumeWorker: vi.fn(async () => ({ ok: true })) });
     await render(<BotsPage />);
@@ -1178,17 +1200,16 @@ describe('Bots page', () => {
     act(() => useStore.getState().setBotsWorkerPanel(null));
   });
 
-  it('a cleared task the owner stopped reads Cancelled in the rail, not Done', async () => {
+  it('a cleared task that ended (stopped, failed, completed) is no rail row, though resumable', async () => {
     seedRooms();
-    bots[1] = { ...bots[1], tasks: [{
-      taskId: 'wtask-stop-00000002', taskWorkspaceId: 't-gone', ownerWorkspaceId: 'w1', botId: LEAD, title: 'Stopped one',
-      status: 'cancelled' as const, stage: 'cancelled' as const, worker: 'resumable' as const, updatedAt: Date.now(),
-    }] };
+    const ended = (taskId: string, status: 'cancelled' | 'failed' | 'completed', stage: 'cancelled' | 'failed' | 'closed') => ({
+      taskId, taskWorkspaceId: 't-gone', ownerWorkspaceId: 'w1', botId: LEAD, title: `Ended ${taskId}`,
+      status, stage, worker: 'resumable' as const, updatedAt: Date.now(),
+    });
+    bots[1] = { ...bots[1], tasks: [ended('wtask-stop-00000002', 'cancelled', 'cancelled'), ended('wtask-fail-00000003', 'failed', 'failed'), ended('wtask-done-00000004', 'completed', 'closed')] };
     await render(<BotsPage />);
     act(() => q(`[data-bots-row="bot:${LEAD}"]`)!.click());
-    const rail = q('[data-bots-task="wtask-stop-00000002"]')!;
-    expect(rail.textContent).toContain('Stopped one · Cancelled · resumable');
-    expect(rail.textContent).not.toContain('Done');
+    expect(q('[data-bots-task]')).toBeNull();
   });
 
   it('a worker waiting on input is a tree row with what it asks, though its pane reads idle', async () => {

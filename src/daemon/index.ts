@@ -124,7 +124,7 @@ import { isTaskState, type AgentStatus, type Task } from '../shared/types';
 import { ProcessMonitor } from './ProcessMonitor';
 import { AgentProcessTracker } from './AgentProcessTracker';
 import { liveRecoveryHint } from './recoveryHint';
-import { checkWslAgentRunning, reportedAgentForPane, WslPidWatcher } from './wslAgentProcess';
+import { checkWslAgentRunning, reportedAgentForPane, stopWslAgent, WslPidWatcher } from './wslAgentProcess';
 import { GateFlagFile } from './gateFlagFile';
 import { WSL_GATE_FLAG_FILE } from '../shared/wslIntegration';
 import { CommandStartAgentProbe } from './commandStartAgentProbe';
@@ -8299,7 +8299,18 @@ async function main(): Promise<void> {
       : '';
     const managed = id ? sessionManager.getSession(id) : undefined;
     if (!managed) return { ok: false, code: 'no_session' };
-    if (managed.meta.wslTarget || managed.meta.exec) return { ok: false, code: 'unsupported' };
+    if (managed.meta.exec) return { ok: false, code: 'unsupported' };
+    if (managed.meta.wslTarget) {
+      // #2261 — a WSL agent attributed from its own hook is stopped inside the
+      // distro; one never attributed stays unsupported (main closes its pane).
+      const wslAgent = agentProcessTracker.wslAgentFor(id);
+      if (!wslAgent) return { ok: false, code: 'unsupported' };
+      try {
+        return await stopWslAgent(wslAgent);
+      } catch {
+        return { ok: false, code: 'unknown' };
+      }
+    }
     try {
       return await stopAgentTree({
         tree: () => agentProcessTracker.agentProcessTree(id, 'claude'),

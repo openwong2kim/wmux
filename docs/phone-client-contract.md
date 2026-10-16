@@ -4219,8 +4219,9 @@ arrival order (`seq`, increasing; never sort by `at`).
   it in the room. It is listed by `/threads` like any thread, with no
   `pr`/`issue` reference; name it after the bot, never by its id.
   `group:<groupId>` (`grp-` and 8 hex digits) is a group chat the owner made
-  on the desktop: its name and its bots live in the desktop only (no route
-  serves them), so name it generically ("Group chat"), never by its id. It
+  on the desktop: its name and its bots are served by `GET /api/bots`
+  (below); without that route, name it generically ("Group chat"), never by
+  its id. It
   holds the owner's messages to that group, the bots' answers and the cards
   of the work started there (a coordinator's `handoff:` thread opened there
   points back to it). Since the desktop's group chats (2026-10-15) a
@@ -4244,7 +4245,8 @@ arrival order (`seq`, increasing; never sort by `at`).
 
 - An owner card a phone sent (`kind: "human"`, `actor.kind: "human"`)
   carries `clientMessageId`: the id it was sent under to
-  `POST /api/moa/messages`. No other card has one. Use it to find your own
+  `POST /api/moa/messages` or `POST /api/rooms/:workspaceId/messages`. No
+  other card has one. Use it to find your own
   message, for example one that was posted but answered `moa-busy`.
 - Pass `nextSinceSeq` back as `sinceSeq` for the next page; `hasMore` says
   more cards follow it. A page can hold fewer than `limit` cards: replies are
@@ -4325,6 +4327,158 @@ bot-authored), checked before anything else; no input grant. Every answer is
 | `503 {error:"desktop-unavailable"}` | No desktop attached (rooms live on the desktop; the daemon keeps no copy). |
 | `503 {error:"rooms-unavailable"}` | The desktop cannot read rooms: too old, its factory has not started, or the room's file cannot be read. |
 | `504 {error:"desktop-timeout"}` / `502 {error:"desktop-bad-reply"}` | The desktop did not answer, or answered badly. |
+
+#### The Bots page (`bots`, `botMessages`, `/api/bots`, `/api/rooms/:workspaceId/messages`)
+
+> **Serving: not yet.** Like *The agent factory* above. Additive: every
+> route and key above is unchanged, and a daemon or desktop that predates
+> this section omits both keys and answers the two routes `404`.
+
+The desktop's Bots page is a messenger: one conversation per bot (its 1:1,
+`dm:<botId>`) and one per group chat the owner made, across every workspace,
+newest first. These two routes give the phone the same list in one call and
+let it write in any of those conversations, not only to the HQ bot.
+
+**`/api/config`.**
+
+- `bots` — `true` when `GET /api/bots` answers here: `--allow-transcript`
+  and an attached desktop that announced the list. Omitted, never `false`,
+  otherwise.
+- `botMessages` — `true` when `POST /api/rooms/:workspaceId/messages` passes
+  its gates for this caller: the chat write gates (transcript and this
+  caller's input), and an attached desktop that takes a message for one
+  conversation. Omitted, never `false`, otherwise. It does not say the
+  factory is on: read `factoryEnabled` on the list.
+
+Neither key, nor either route, depends on the `rooms-v1` client capability:
+a client that calls these routes reads replies as room cards by definition.
+
+**`GET /api/bots`** — every bot and every conversation.
+
+```json
+{ "factoryEnabled": true,
+  "bots": [ { "id": "bot-1a2b3c4d", "name": "Lead", "role": "lead", "workspaceId": "ws-1",
+              "enabled": true, "isHq": false, "presence": "running", "queueDepth": 1,
+              "avatar": { "hue": 3, "picture": false } } ],
+  "conversations": [
+    { "kind": "group", "threadId": "group:grp-0a1b2c3d", "workspaceId": "ws-1", "workspaceName": "wmux",
+      "name": "Release crew", "groupId": "grp-0a1b2c3d", "memberBotIds": [ "bot-1a2b3c4d", "bot-5e6f7a8b" ],
+      "lastAt": 1759600000000, "lastSeq": 42, "lastPreview": "PR is green",
+      "lastActor": { "kind": "bot", "botId": "bot-1a2b3c4d", "role": "lead", "name": "Lead" },
+      "unread": null, "openQuestions": 0 },
+    { "kind": "dm", "threadId": "dm:bot-1a2b3c4d", "workspaceId": "ws-1", "workspaceName": "wmux",
+      "name": "Lead", "botId": "bot-1a2b3c4d", "memberBotIds": [ "bot-1a2b3c4d" ],
+      "lastAt": 1759500000000, "lastSeq": 40, "lastPreview": "Can you fix the login?",
+      "lastActor": { "kind": "human" }, "unread": 2, "openQuestions": 1 } ] }
+```
+
+- `factoryEnabled` — the desktop's factory switch. Off, the bots are paused:
+  the list is still served (the desktop shows it read-only), no bot is
+  `isHq`, and a send answers `409 factory-off`.
+- `bots` — every bot, oldest first (at most 64), switched off ones too.
+  - `role`, `presence`, `queueDepth` — as on `/api/workspaces` rows above.
+  - `enabled` — `false`: switched off on the desktop. Its 1:1 stays listed
+    and readable, and a send to it answers `409 no-recipient` (`bot-off`).
+  - `isHq` — the bot `POST /api/moa/messages` reaches (`factory.hqBotId`).
+  - `avatar.hue` — the bot's identity slot, `0`–`7`, kept for its life: its
+    Mochi character and colour, in the desktop's order (`0` Loaf `#3d6ff5`,
+    `1` Nova `#5b5bd6`, `2` Plume `#7c4ddb`, `3` Wink `#9d3fd1`, `4` Momo
+    `#c0359f`, `5` Pip `#0b8fb0`, `6` Koa `#2a8fd8`, `7` Nub `#5a6b8c`).
+    `null` only for a profile the desktop has not given one yet.
+  - `avatar.picture` — the owner set a picture for the bot, which the desktop
+    draws instead of the character. The picture itself is not served; draw
+    the character.
+- `conversations` — at most 200, newest first: by `lastAt`, a tie by the
+  row's key (`bot:<botId>` or `group:<groupId>`) in string order, as the
+  desktop sorts them. Fewer when
+  the reply would pass 112 KiB; `truncated: true` when the oldest were left
+  out.
+  - `kind` — `dm` (a bot's 1:1) or `group` (a group chat).
+  - `threadId` — the conversation's own thread, the one to read with
+    `GET /api/rooms/:workspaceId/cards?thread=` and to post to: `dm:<botId>`,
+    `group:<groupId>`, or **`general`** for a group made from its workspace's
+    room before group chats existed. Take it from this field; never build it
+    from `groupId`.
+  - `name` — a 1:1: its bot's name. A group: the owner's name for it; a
+    group made from a room has none and is named after its workspace (empty
+    when the workspace is not open on the desktop).
+  - `workspaceName` — the workspace's name, when it is open on the desktop.
+  - `botId` (a 1:1) / `groupId` (a group). `memberBotIds` — a 1:1: its bot;
+    a group: its bots in the owner's order.
+  - `lastAt` — the newest card's time in the conversation (its own thread
+    and the threads work started there opened), wmux's own lines included;
+    its creation when it has no card. `lastSeq` — that card's `seq` in its
+    room (`0`: none).
+  - `lastPreview` / `lastActor` — the newest message, a bot's or the
+    owner's, never one of wmux's own lines: its title (one line, at most 200
+    characters) and who said it (`{kind:"human"}` or `{kind:"bot", botId,
+    role?, name?}`). Absent when nothing has been said. The desktop row
+    writes "You: …" for the owner and, in a group, "<bot name>: …".
+  - `unread` — cards after the owner's read position in its own thread, or
+    `null` when none is known (not zero).
+  - `openQuestions` — questions asked in it that are not answered yet.
+
+A 1:1 here is its `dm:` thread. Before 1:1 threads existed the desktop's 1:1
+also gathered a bot's cards from `general`; this list does not, so an old
+conversation can sort a little differently on the phone.
+
+Read-only; needs `--allow-transcript`, checked first; no input grant. Every
+answer is `Cache-Control: no-store`.
+
+| Answer | Meaning |
+|---|---|
+| `200` | The list above. |
+| `403 {error:"transcript-disabled"}` | The server runs without `--allow-transcript`. |
+| `503 {error:"desktop-unavailable"}` | No desktop attached. |
+| `503 {error:"bots-unavailable"}` | The desktop cannot list its bots: too old, or its factory has not started. |
+| `504 {error:"desktop-timeout"}` / `502 {error:"desktop-bad-reply"}` | The desktop did not answer, or answered badly. |
+
+**`POST /api/rooms/:workspaceId/messages`** `{clientMessageId, text,
+threadId}` — a message to one conversation from the list: `workspaceId` and
+`threadId` exactly as the list gives them. Exactly these three fields. The
+desktop posts the owner's `human` card in that thread, as its own composer
+does: in a 1:1 for that bot alone, in a group for every member that is on.
+Each bot it is for gets a wake; the daemon answers on queue, never on reply.
+The card carries `clientMessageId` on `/cards`, and the bots' replies name it
+by `replyTo`, as for `/api/moa/messages`. Text only: the desktop's Bots chat
+takes no attachments.
+
+Gates and body rules are those of `POST /api/moa/messages`: transcript, then
+this caller's input (the operator token may use it), then the
+`clientMessageId` and `text` rules and their `400`s. Also `400
+{error:"invalid-chat-request", detail:"threadId", effect:"none"}` for a
+`threadId` that is not `dm:<botId>`, `group:<groupId>` or `general`, and `404
+{error:"room-not-found"}` for a malformed `workspaceId`. All checked before
+anything is recorded or sent.
+
+```
+POST /api/rooms/ws-1/messages
+{ "clientMessageId": "1759600000000-…", "text": "Can you fix the login?", "threadId": "dm:bot-1a2b3c4d" }
+→ 202 { "state": "queued", "clientMessageId": "1759600000000-…", "replayed": false }
+```
+
+| Answer | Meaning | Retry |
+|---|---|---|
+| `202 {state:"queued", clientMessageId}` | The card is posted and every bot it is for has the message in its queue. A busy bot queues, it never refuses. | — |
+| `409 {error:"no-recipient", reason, state:"failed"}` | Nothing was posted: `bot-missing` (no such bot in that workspace), `bot-off` (the bot is switched off), `group-missing` (no live group chat in that thread), `group-off` (none of the group's bots is on). Final for this id. `room-refused` (the room took no card): the id is released. | new id, once the desktop changed (`room-refused`: same id, later) |
+| `409 {error:"moa-busy", state:"failed"}`, `Retry-After: 5` | The factory has not finished starting, or a bot's queue is full. Nothing was queued; the id is released. | same id, after the delay |
+| `409 {error:"factory-off", state:"failed"}` | The desktop's factory is switched off. Nothing was posted; the id is released. | same id, once it is on |
+| `503 {error:"desktop-unavailable"}` | No desktop attached, or one too old to take a message for one conversation (it is never sent one). Nothing recorded. | same id, later |
+
+The replay, id-reuse, `desktop-busy`, `uncertain` and `message-history-full`
+answers are those of `POST /api/moa/messages`, on the same receipts: a
+`clientMessageId` is one message whichever route sent it. The same id with
+the same text replays its answer (`replayed: true`) and never posts twice;
+with other text, or the same text to another conversation (or to Moa), it is
+`409 {error:"message-id-reused"}`. That holds after a `moa-busy` too: when a
+full queue refused the wake, the card is already posted and the released id
+stays that card's — send it again with the same text and thread to queue the
+wake, never with a new message. An id this caller spent on a chat send to a
+pane is `409 message-id-reused` as well.
+
+There is no receipt route of its own: `GET /api/moa/messages/:clientMessageId`
+reads these messages too (`state: "queued"` once queued, `failed` with
+`code: "no-recipient"`, `pending`, `uncertain`).
 
 #### Bot approvals (`/api/bot-approvals`)
 

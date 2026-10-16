@@ -12,7 +12,7 @@ import {
   withoutTicketTranscript,
 } from '../../shared/phoneFleetTickets';
 import { getPhoneFleetTicketStore } from './PhoneFleetTicketStore';
-import { handlePhoneRoomCommand, withPhoneFactory } from './PhoneFactory';
+import { handlePhoneBotsCommand, handlePhoneRoomCommand, withPhoneFactory } from './PhoneFactory';
 import { handlePhoneBotApprovalCommand } from './PhoneBotApprovals';
 
 /** How long the list waits for the optional sidebar projection. */
@@ -86,6 +86,9 @@ export async function handlePhoneWorkspaces(command: string, payload: Record<str
   // The agent factory's rooms (read-only); null for any other command.
   const room = handlePhoneRoomCommand(command, payload);
   if (room) return room;
+  // The Bots page's list (read-only).
+  const bots = handlePhoneBotsCommand(command);
+  if (bots) return bots;
   // A bot's approval request: read or decided by the phone's operator.
   const approval = handlePhoneBotApprovalCommand(command, payload);
   if (approval) return approval;

@@ -603,6 +603,19 @@ describe('AutomationEngine — review regressions', () => {
     expect(second.ok && second.run.detail).toBe('previous_session_open');
   });
 
+  it('an ambiguous run\'s open session is a plain overlap, not one that closes after the linger window', async () => {
+    const h = harness();
+    const run = await startedRun(h);
+    h.engine.onAgentProcessExit(`auto-${run.id}`);
+    h.clock.t += 31_000;
+    await h.engine.monitorOnce();
+    expect(h.engine.listRuns()[0]).toMatchObject({ state: 'unknown', reason: 'process_exit' });
+    const second = await h.engine.runNow(run.automationId, 'manual');
+    expect(second.ok && second.run).toMatchObject({ state: 'skipped', reason: 'overlap' });
+    expect(second.ok && second.run.detail).toBeUndefined();
+    expect(h.created).toHaveLength(1);
+  });
+
   it('an attached client cannot hold a completed session open forever', async () => {
     const h = harness({ ports: { isAttached: () => true } });
     const run = await startedRun(h);

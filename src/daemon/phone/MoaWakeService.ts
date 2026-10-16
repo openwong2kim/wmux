@@ -22,7 +22,7 @@ import { receiptHash } from '../approvals/AnswerReceiptStore';
 import type { ChatDeliveredMessage } from '../chat/chatBridge';
 import { DesktopPhoneError, type DesktopPhoneBridge } from './DesktopPhoneBridge';
 import {
-  MOA_WAKE_COMMAND, parseMoaWakeResult,
+  FACTORY_THREAD_MESSAGE_CAPABILITY, MOA_WAKE_COMMAND, parseMoaWakeResult,
   type MoaWakeFailure, type MoaWakePayload, type MoaWakeRefusalCode,
 } from '../../shared/moaWake';
 
@@ -75,7 +75,26 @@ function refusalWire(code: MoaWakeRefusalCode, clientMessageId: string): { wire:
     case 'factory_off':
       // Nothing ran; only a factory send gets it, and it falls back first.
       return { wire: fail(409, 'factory-off'), release: true };
+    // A targeted message: nothing was posted. Final for the id, like no-hq;
+    // a room that took no card may take it later, so that id is released.
+    case 'bot_missing': case 'bot_off': case 'group_missing': case 'group_off': case 'room_refused':
+      return { wire: fail(409, 'no-recipient', { reason: code.replace('_', '-') }), release: code === 'room_refused' };
+    case 'id_reused':
+      // Its first card is in the room: the id stays bound to it.
+      return { wire: { status: 409, body: { error: 'message-id-reused', clientMessageId } }, release: false };
   }
+}
+
+/** The conversation a targeted message is for (`POST /api/rooms/:workspaceId/messages`). */
+export interface MoaWakeTarget {
+  workspaceId: string;
+  threadId: string;
+}
+
+/** What an id's text is recorded as: a target is part of it, so the same id
+ *  with the same text sent to another conversation is a reused id. */
+function wakeHash(text: string, target?: MoaWakeTarget): string {
+  return receiptHash(target ? ['moa-wake', text, target.workspaceId, target.threadId] : ['moa-wake', text]);
 }
 
 function failureResponse(failure: MoaWakeFailure, clientMessageId: string): AnswerReceiptResponse {
@@ -110,8 +129,8 @@ export class MoaWakeService {
    * any routing, so a retry after the pane appeared replays the wake instead
    * of becoming a second turn through the chat path.
    */
-  peek(owner: string, clientMessageId: string, text: string): MoaWakeWire | null {
-    const seen = this.store()?.peek(owner, clientMessageId, WAKE_SLOT, receiptHash(['moa-wake', text])) ?? null;
+  peek(owner: string, clientMessageId: string, text: string, target?: MoaWakeTarget): MoaWakeWire | null {
+    const seen = this.store()?.peek(owner, clientMessageId, WAKE_SLOT, wakeHash(text, target)) ?? null;
     if (!seen) return null;
     switch (seen.kind) {
       case 'reused': return { status: 409, body: { error: 'message-id-reused', clientMessageId } };
@@ -147,7 +166,29 @@ export class MoaWakeService {
     return this.send(input, true);
   }
 
-  private async send(input: { owner: string; clientMessageId: string; text: string; deviceId?: string }, factory: boolean): Promise<MoaWakeWire | null> {
+  /**
+   * A message to one conversation of the desktop's Bots page (a bot's 1:1 or
+   * a group chat): the factory route with a target, on the same receipt file
+   * and rules. Only a desktop that announced FACTORY_THREAD_MESSAGE_CAPABILITY
+   * is sent one (an older one would deliver it to its phone bot); the factory
+   * off is `409 factory-off`, with the id released.
+   */
+  async roomMessage(input: { owner: string; clientMessageId: string; text: string; deviceId?: string; target: MoaWakeTarget }): Promise<MoaWakeWire> {
+    const desktop = this.deps.desktop();
+    if (!desktop?.available || !desktop.supports(FACTORY_THREAD_MESSAGE_CAPABILITY)) {
+      return { status: 503, body: { error: 'desktop-unavailable', clientMessageId: input.clientMessageId } };
+    }
+    const wire = await this.send(input, true, input.target);
+    if (wire) return wire;
+    const { wire: off } = refusalWire('factory_off', input.clientMessageId);
+    return { ...off, body: { ...off.body, replayed: false } };
+  }
+
+  private async send(
+    input: { owner: string; clientMessageId: string; text: string; deviceId?: string },
+    factory: boolean,
+    target?: MoaWakeTarget,
+  ): Promise<MoaWakeWire | null> {
     const { owner, clientMessageId, text } = input;
     const desktop = this.deps.desktop();
     if (!desktop?.available || !desktop.supports(MOA_WAKE_COMMAND)) {
@@ -155,7 +196,7 @@ export class MoaWakeService {
     }
     const store = this.store();
     if (!store) return { status: 500, body: { error: 'chat-persist-failed', clientMessageId } };
-    const bodyHash = receiptHash(['moa-wake', text]);
+    const bodyHash = wakeHash(text, target);
     let begun;
     try {
       begun = await store.begin(owner, clientMessageId, WAKE_SLOT, bodyHash);
@@ -163,13 +204,21 @@ export class MoaWakeService {
       return { status: 500, body: { error: 'chat-persist-failed', clientMessageId } };
     }
     if (begun.kind === 'full') return { status: 409, body: { error: 'message-history-full', clientMessageId } };
-    if (begun.kind !== 'new') return this.peek(owner, clientMessageId, text) ?? { status: 202, body: { state: 'uncertain', clientMessageId } };
+    if (begun.kind !== 'new') return this.peek(owner, clientMessageId, text, target) ?? { status: 202, body: { state: 'uncertain', clientMessageId } };
 
     const payload: MoaWakePayload = {
       clientMessageId, text, actor: owner,
       ...(input.deviceId ? { deviceId: input.deviceId } : {}),
       ...(factory ? { mode: 'factory' as const } : {}),
+      ...(target ? { workspaceId: target.workspaceId, threadId: target.threadId } : {}),
     };
+    // The desktop may have changed while the receipt was written: a target
+    // goes only to one that announced it now (request takes this owner
+    // synchronously, with nothing awaited in between).
+    if (target && !desktop.supports(FACTORY_THREAD_MESSAGE_CAPABILITY)) {
+      await store.release(owner, clientMessageId);
+      return { status: 503, body: { error: 'desktop-unavailable', clientMessageId } };
+    }
     let raw: unknown;
     try {
       raw = await desktop.request(MOA_WAKE_COMMAND, { ...payload });

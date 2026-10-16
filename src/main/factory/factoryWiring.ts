@@ -47,11 +47,12 @@ import fs from 'node:fs';
 import { atomicReadJSONSync, atomicWriteJSONSync } from '../../daemon/util/atomicWrite';
 import type { BotProfile } from '../../shared/bot';
 import type { Fact, FactDraft } from '../../shared/facts';
-import type { MoaWakePayload, MoaWakeResult } from '../../shared/moaWake';
+import type { MoaWakePayload, MoaWakeRefusalCode, MoaWakeResult } from '../../shared/moaWake';
+import type { BotGroup } from '../../shared/botGroup';
 import type { RoomCard, ThreadId } from '../../shared/room';
 import type { WakeItem } from '../../shared/wake';
 import type { FactorySettings } from '../../shared/factorySettings';
-import { ROOM_LIMITS, dmThreadId } from '../../shared/room';
+import { ROOM_LIMITS, dmThreadBot, dmThreadId, parseThreadId } from '../../shared/room';
 import { registerFactoryRpcModule, type FactoryHostDeps, type FactoryModuleHandle } from './factoryHost';
 import { getFactLog, type FactLog } from './factLog';
 import { currentWakeItem, currentWakeThread, getWakeQueue } from './wakeQueue';
@@ -70,6 +71,7 @@ import { readUiLocale } from '../quit/quitAndStopCopy';
 import { setFactoryPhoneMessageHandler } from './phoneMessage';
 import { humanCardIdOfRun, postHumanMessage } from './humanMessage';
 import { phoneBot } from './phoneBot';
+import { redactStoredSecrets } from './secretRedaction';
 import { ghIssueService, splitRepoKey } from '../github/GhIssueService';
 import { MORNING_SCHEDULE_FILENAME, MORNING_SCHEDULE_ID, MorningSchedule, localDay } from './morningSchedule';
 import { fireMorningReport } from './morningReport';
@@ -358,9 +360,14 @@ export interface FactoryPhoneDeps {
 }
 
 /**
- * A phone message to Moa with the factory on: a `human` card in the HQ bot's
- * room and a priority-0 wake for it, idempotent per (caller, message id).
- * Null when the factory is off (the daemon then takes the Moa path).
+ * A phone message with the factory on: a `human` card and a priority-0 wake,
+ * idempotent per (caller, message id). Without a target it is for the phone
+ * bot, in that bot's 1:1; with `workspaceId` + `threadId` it is for that one
+ * conversation of the Bots page, as the desktop composer posts it: a bot's
+ * 1:1 (`dm:<botId>`, that bot alone) or a group chat's thread (every enabled
+ * member). A target that names no live bot or group, or one whose bots are
+ * all off, is refused before anything is written. Null when the factory is
+ * off (the daemon then takes the Moa path, or refuses a targeted message).
  */
 export function factoryPhoneMessage(payload: MoaWakePayload, deps: FactoryPhoneDeps): MoaWakeResult | null {
   const settings = deps.settings();
@@ -369,38 +376,88 @@ export function factoryPhoneMessage(payload: MoaWakePayload, deps: FactoryPhoneD
   const ports = deps.ports();
   // Not started yet (the first seconds after launch): retryable.
   if (!writer || !ports.wakes) return { ok: false, code: 'busy' };
-  // The bot the phone talks to (phoneBot.ts): pinned, else a Coordinator,
-  // else the HQ room's oldest.
   let enabledBots: BotProfile[] = [];
   try {
     enabledBots = ports.bots?.listEnabled() ?? [];
   } catch {
     enabledBots = [];
   }
-  const bot = phoneBot(enabledBots, settings);
-  if (!bot) return { ok: false, code: 'hq_missing' };
+  const target = phoneMessageTarget(payload, enabledBots, settings, ports);
+  if ('code' in target) return { ok: false, code: target.code };
   const actor = crypto.createHash('sha256').update(payload.actor).digest('hex').slice(0, 16);
   const clientPostId = `phone:${actor}:${payload.clientMessageId}`.slice(0, ROOM_LIMITS.CLIENT_ID_MAX);
+  // A retry posts nothing new: the room answers with the id's first card and
+  // queues that card's wakes. An id whose first card says other words (its
+  // body as the room stored it, secrets redacted) or sits in another thread
+  // is a reused id, never that card's retry: the daemon released the id when
+  // a queue was full, so it can come back here with another message.
+  const prior = writer.find(target.workspaceId, (c) => c.clientPostId === clientPostId);
+  // The text is processed whole and shortened last, as the room does for
+  // short text.
+  const whole = redactStoredSecrets(payload.text);
+  if (prior && (prior.threadId !== target.threadId || (prior.body ?? '') !== capBody(whole))) return { ok: false, code: 'id_reused' };
   const r = postHumanMessage(writer, ports, {
-    workspaceId: bot.workspaceId,
-    // The phone's chat with its bot is that bot's 1:1, as on the desktop.
-    threadId: dmThreadId(bot.id),
-    title: oneLine(payload.text, ROOM_LIMITS.TITLE_MAX) || 'Message',
-    body: capBody(payload.text),
+    workspaceId: target.workspaceId,
+    threadId: target.threadId,
+    title: oneLine(whole, ROOM_LIMITS.TITLE_MAX) || 'Message',
+    body: capBody(whole),
     // The card holds a capped copy; the bot's wake carries the whole message.
     wakeText: payload.text,
-    toBotId: bot.id,
+    ...(target.toBotId ? { toBotId: target.toBotId } : {}),
     clientPostId,
     source: 'phone',
   });
-  // The card is up but the HQ bot's queue took no wake, even past its cap:
-  // a retryable refusal, so the phone sends the same id again and that retry
-  // queues the wake once (postHumanMessage).
-  if (!r.ok) return r.code === 'queue_full' ? { ok: false, code: 'busy' } : { ok: false, code: 'hq_unknown' };
-  // A first send or a retry: the message's one wake is queued (or already ran).
+  // The card is up but a queue took no wake, even past its cap: a retryable
+  // refusal, so the phone sends the same id again and that retry queues the
+  // missing wakes once (postHumanMessage).
+  if (!r.ok) return r.code === 'queue_full' ? { ok: false, code: 'busy' } : { ok: false, code: payload.threadId !== undefined ? 'room_refused' : 'hq_unknown' };
+  // A first send or a retry: the message's wakes are queued (or already ran).
   if (r.wakeId) return { ok: true, accepted: true, queued: true };
-  // A retry whose card names a bot that is no longer the HQ bot.
+  // A retry whose card names no bot that is still on.
   return { ok: false, code: 'duplicate' };
+}
+
+/** Where a phone message goes: the phone bot's 1:1, or the conversation the
+ *  payload names, or why it cannot go there. */
+function phoneMessageTarget(
+  payload: MoaWakePayload,
+  enabledBots: readonly BotProfile[],
+  settings: { phoneBotId?: string },
+  ports: Partial<FactoryRoomPorts>,
+): { workspaceId: string; threadId: ThreadId; toBotId?: string } | { code: MoaWakeRefusalCode } {
+  if (payload.workspaceId === undefined || payload.threadId === undefined) {
+    // The bot the phone talks to (phoneBot.ts): pinned, else a Coordinator,
+    // else the oldest enabled bot.
+    const bot = phoneBot(enabledBots, settings);
+    if (!bot) return { code: 'hq_missing' };
+    // The phone's chat with its bot is that bot's 1:1, as on the desktop.
+    return { workspaceId: bot.workspaceId, threadId: dmThreadId(bot.id), toBotId: bot.id };
+  }
+  const { workspaceId } = payload;
+  const threadId = parseThreadId(payload.threadId);
+  if (!threadId) return { code: 'group_missing' };
+  const dmBot = dmThreadBot(threadId);
+  if (dmBot) {
+    let bot: BotProfile | null = null;
+    try {
+      bot = ports.bots?.get(dmBot) ?? null;
+    } catch {
+      bot = null;
+    }
+    if (!bot || bot.workspaceId !== workspaceId) return { code: 'bot_missing' };
+    if (!bot.enabled || !enabledBots.some((b) => b.id === bot.id)) return { code: 'bot_off' };
+    return { workspaceId, threadId, toBotId: bot.id };
+  }
+  let group: BotGroup | null = null;
+  try {
+    group = ports.groups?.byThread(workspaceId, threadId) ?? null;
+  } catch {
+    group = null;
+  }
+  if (!group) return { code: 'group_missing' };
+  // As the desktop: a group with no bot on takes no message.
+  if (!enabledBots.some((b) => b.workspaceId === workspaceId && group.memberIds.includes(b.id))) return { code: 'group_off' };
+  return { workspaceId, threadId };
 }
 
 /**

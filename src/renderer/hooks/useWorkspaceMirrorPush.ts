@@ -89,7 +89,11 @@ export function useWorkspaceMirrorPush(): void {
         s.sidebarPinnedIds !== prev.sidebarPinnedIds ||
         // The viewed pane's branch (Moa's view pointer) has no tree change
         // of its own when the workspace metadata already held that value.
-        s.surfaceGitBranch !== prev.surfaceGitBranch;
+        s.surfaceGitBranch !== prev.surfaceGitBranch ||
+        // The Bots worker panel shows a worker without changing the active
+        // workspace; main must know the owner is reading it at once.
+        s.botsWorkerPanel !== prev.botsWorkerPanel ||
+        s.appRoute !== prev.appRoute;
       if (structural) {
         flushLeading();
         return;

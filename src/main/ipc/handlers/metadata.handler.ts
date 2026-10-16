@@ -19,6 +19,7 @@ import { PrCiRouter } from '../../metadata/PrCiRouter';
 import { PrReviewRouter } from '../../metadata/PrReviewRouter';
 import { ghPrService } from '../../github/GhPrService';
 import { publishPrOwnerEvent } from '../../deck/prOwnerNotify';
+import { clearTurnEvidence, noteBroadcastStatus } from '../../notification/turnEvidence';
 
 // AO-style CI feedback (owner decision 2026-07-18). Module singletons set at
 // registration (they need getWindow for workspace resolution). The poll feeds
@@ -113,6 +114,7 @@ export function clearLastBroadcastAgentStatus(ptyId: string): void {
   lastBroadcastAgentStatus.delete(ptyId);
   lastBroadcastAgentName.delete(ptyId);
   runningClaimOutstanding.delete(ptyId);
+  clearTurnEvidence(ptyId);
 }
 
 /** Test-only: reset between PTYs when a suite reuses the same id across cases. */
@@ -120,6 +122,7 @@ export function resetLastBroadcastAgentStatusForTests(): void {
   lastBroadcastAgentStatus.clear();
   lastBroadcastAgentName.clear();
   runningClaimOutstanding.clear();
+  clearTurnEvidence();
 }
 
 /**
@@ -140,6 +143,8 @@ export function broadcastMetadataUpdate(
   // window is a transport detail the idle-clear deferral logic doesn't need
   // to know about.
   if (payload.ptyId && payload.agentStatus !== undefined) {
+    // Turn evidence for the idle stops of bot workers (turnEvidence.ts).
+    noteBroadcastStatus(payload.ptyId, payload.agentStatus, payload.hookKind);
     lastBroadcastAgentStatus.set(payload.ptyId, payload.agentStatus);
   }
   if (payload.ptyId) {

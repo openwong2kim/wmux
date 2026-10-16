@@ -24,6 +24,7 @@ import { getWmuxDir } from '../config';
 import { namesClaude, readBotWorkerSessions, spliceSettingsFlag, workerProjectSettingsRefusal, writeBotWorkerSettings } from '../../shared/botWorkerGuard';
 import { spliceWorkerLaunch } from '../../shared/botWorkerMcp';
 import { namesCodex } from '../../shared/codexWorkerGuard';
+import { toWslPath } from '../../shared/imagePaste';
 
 /** The first message as terminalLaunchCommand appends it: ` -- '<text>'`,
  *  each `'` written `'\''`. */
@@ -72,7 +73,8 @@ export function guardBotWorkerLaunch(
   } catch {
     return null;
   }
-  const guarded = spliceSettingsFlag(head, settingsPath);
+  // Linux claude opens the file through its /mnt mount, never by the Windows path.
+  const guarded = spliceSettingsFlag(head, toWslPath(settingsPath) ?? settingsPath);
   return guarded === null ? null : guarded + tail;
 }
 

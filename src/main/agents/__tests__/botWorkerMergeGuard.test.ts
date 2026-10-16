@@ -8,6 +8,7 @@ import { clearedLaunchLine,
   botWorkerForCreate,
   botWorkerSessionsPath,
   botWorkerSettingsPath,
+  buildBotWorkerSettings,
   forgetBotWorkerSession,
   guardRefireLine,
   guardSessionLaunch,
@@ -55,7 +56,8 @@ describe('writeBotWorkerSettings', () => {
   it('writes the deny rules under factory/, owner-only, and leaves an unchanged file alone', () => {
     const file = writeBotWorkerSettings(dir);
     expect(file).toBe(path.join(dir, 'factory', 'worker-settings.json'));
-    expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toEqual({ permissions: { deny: [...BOT_WORKER_DENY] } });
+    expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toEqual(buildBotWorkerSettings());
+    expect(JSON.parse(fs.readFileSync(file, 'utf8')).permissions).toEqual({ deny: [...BOT_WORKER_DENY] });
     if (process.platform !== 'win32') expect(fs.statSync(file).mode & 0o777).toBe(0o600);
     fs.utimesSync(file, new Date(0), new Date(0));
     writeBotWorkerSettings(dir);

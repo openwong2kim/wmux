@@ -18,11 +18,25 @@ export const MOA_WAKE_COMMAND = 'moa.wake';
  *  wake path when main answers `factory_off`. */
 export const FACTORY_PHONE_MESSAGE_CAPABILITY = 'factory.message';
 
+/** Announced by a desktop whose factory takes a phone message addressed to
+ *  one conversation of the Bots page (`POST /api/rooms/:workspaceId/messages`):
+ *  `moa.wake` with `mode: 'factory'` plus `workspaceId` and `threadId`. A
+ *  desktop without it would ignore the target and deliver to its phone bot,
+ *  so the daemon never sends a target to one. */
+export const FACTORY_THREAD_MESSAGE_CAPABILITY = 'factory.threadMessage';
+
 export type MoaWakeRefusalCode =
   | 'moa_off' | 'mode_off' | 'not_hq' | 'hq_missing' | 'hq_unknown'
   | 'unsupported_vendor' | 'busy' | 'duplicate'
   /** mode 'factory' only: the factory is off; nothing ran, use the Moa path. */
-  | 'factory_off';
+  | 'factory_off'
+  /** A targeted message only: the 1:1's bot does not exist in that room, or
+   *  is switched off; the group chat does not exist, or none of its bots is
+   *  on. Nothing was posted. `room_refused`: the room took no card. */
+  | 'bot_missing' | 'bot_off' | 'group_missing' | 'group_off' | 'room_refused'
+  /** mode 'factory': the id already stands for a card with other words or in
+   *  another thread. Nothing was posted or queued. */
+  | 'id_reused';
 
 export type MoaWakeResult =
   /** `queued`: the factory took the message as a wake for the HQ bot (its
@@ -43,10 +57,17 @@ export interface MoaWakePayload {
   /** 'factory': deliver to the agent factory's HQ bot, or refuse
    *  `factory_off` without touching the Moa brain. */
   mode?: 'factory';
+  /** With `mode: 'factory'`, both or neither (FACTORY_THREAD_MESSAGE_CAPABILITY):
+   *  the conversation the message is for — a bot's 1:1 (`dm:<botId>`) or a
+   *  group chat's thread (`group:<groupId>`, or `general` for a group made
+   *  from the room) in the room of `workspaceId`. Neither: the phone bot. */
+  workspaceId?: string;
+  threadId?: string;
 }
 
 const REFUSAL_CODES: ReadonlySet<string> = new Set<MoaWakeRefusalCode>([
   'moa_off', 'mode_off', 'not_hq', 'hq_missing', 'hq_unknown', 'unsupported_vendor', 'busy', 'duplicate', 'factory_off',
+  'bot_missing', 'bot_off', 'group_missing', 'group_off', 'room_refused', 'id_reused',
 ]);
 
 /** Main's answer, or null for any shape outside the contract (the daemon reads that as uncertain). */

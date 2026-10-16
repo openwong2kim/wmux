@@ -358,6 +358,8 @@ describe('FanOutService.spawnBotTaskPane', () => {
     expect(spawn).toHaveBeenCalledWith(expect.objectContaining({
       cwd: wt,
       initialCommand: `claude --resume ${UUID}`,
+      // As on the first launch: a resumed worker skips claude's folder-trust dialog (#2261).
+      env: { CLAUDE_CODE_SANDBOXED: '1' },
       fanoutTaskOf: 'ws-owner',
       fanoutOrigin: { kind: 'bot', botId: BOT, tainted: true },
       workerPermissionMode: 'manual',

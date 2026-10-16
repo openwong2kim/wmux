@@ -305,6 +305,49 @@ describe('review safeguards', () => {
     expect(await restoreTaskFolder(p, 'wtask-abc-12345678', wt)).toBe(true);
     expect(git(wt, 'rev-parse', 'HEAD')).toBe(tip);
   });
+
+  it('a detached checkout with a commit no ref holds: the commit stays reachable from refs/wmux/keep/<taskId> after removal', async () => {
+    const mgr = new TaskWorktreeManager();
+    const base = git(repo, 'rev-parse', 'HEAD');
+    const wt = path.join(home, 'worktrees', 'h', 'verify-2');
+    expect((await mgr.createDetachedWorktree({ repoRoot: repo, repoHash: 'h', taskSlug: 'verify-2', metaDir: path.join(dir, 'meta'), worktreePath: wt, branch: 'wtask/verify-2' }, base)).ok).toBe(true);
+    fs.writeFileSync(path.join(wt, 'fix.txt'), 'fix');
+    git(wt, 'add', 'fix.txt');
+    git(wt, 'commit', '-m', 'worker fix');
+    const work = git(wt, 'rev-parse', 'HEAD');
+    const p = ports();
+    const verify = row('completed', { dispatch: { origin: { kind: 'bot', botId: BOT }, preset: 'default', checkout: { sha: base, detached: true } } });
+    expect(await cleanTaskFolder(p, verify, { folder: wt }, [])).toBe('removed');
+    expect(fs.existsSync(wt)).toBe(false);
+    expect(git(repo, 'rev-parse', 'refs/wmux/keep/wtask-abc-12345678')).toBe(work);
+    expect(p.store.get('wtask-abc-12345678')).toMatchObject({ state: 'removed', head: work, keepRef: 'refs/wmux/keep/wtask-abc-12345678' });
+    // gc cannot drop it now, and a resume comes back on it.
+    git(repo, 'gc', '--prune=now', '--quiet');
+    expect(git(repo, 'cat-file', '-t', work)).toBe('commit');
+    expect(await restoreTaskFolder(p, 'wtask-abc-12345678', wt)).toBe(true);
+    expect(git(wt, 'rev-parse', 'HEAD')).toBe(work);
+  });
+
+  it('a detached checkout with no new commits is removed as before, with no keep ref, even when no ref holds its commit', async () => {
+    const mgr = new TaskWorktreeManager();
+    // A fetched PR commit: in the repository, on no ref.
+    git(repo, 'checkout', '-q', '-b', 'pr-tmp');
+    fs.writeFileSync(path.join(repo, 'pr.txt'), 'pr');
+    git(repo, 'add', 'pr.txt');
+    git(repo, 'commit', '-m', 'pr');
+    const pr = git(repo, 'rev-parse', 'HEAD');
+    git(repo, 'checkout', '-q', 'main');
+    git(repo, 'branch', '-q', '-D', 'pr-tmp');
+    const wt = path.join(home, 'worktrees', 'h', 'verify-3');
+    expect((await mgr.createDetachedWorktree({ repoRoot: repo, repoHash: 'h', taskSlug: 'verify-3', metaDir: path.join(dir, 'meta'), worktreePath: wt, branch: 'wtask/verify-3' }, pr)).ok).toBe(true);
+    const p = ports();
+    const verify = row('completed', { dispatch: { origin: { kind: 'bot', botId: BOT }, preset: 'default', checkout: { sha: pr, detached: true } } });
+    expect(await cleanTaskFolder(p, verify, { folder: wt }, [])).toBe('removed');
+    expect(fs.existsSync(wt)).toBe(false);
+    expect(() => git(repo, 'rev-parse', '--verify', '--quiet', 'refs/wmux/keep/wtask-abc-12345678')).toThrow();
+    expect(p.store.get('wtask-abc-12345678')).toMatchObject({ state: 'removed', head: pr });
+    expect(p.store.get('wtask-abc-12345678')?.keepRef).toBeUndefined();
+  });
 });
 
 describe('the automatic pass and Settings › Bots', () => {

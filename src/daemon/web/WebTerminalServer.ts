@@ -180,10 +180,13 @@ import {
   type WireResponse,
 } from './chatWire';
 import { MOA_WAKE_RETRY_AFTER, type MoaWakeService, type MoaWakeWire } from '../phone/MoaWakeService';
-import { FACTORY_PHONE_MESSAGE_CAPABILITY, MOA_WAKE_COMMAND } from '../../shared/moaWake';
+import { FACTORY_PHONE_MESSAGE_CAPABILITY, FACTORY_THREAD_MESSAGE_CAPABILITY, MOA_WAKE_COMMAND } from '../../shared/moaWake';
+import { dmThreadBot, groupThreadGroup, parseThreadId } from '../../shared/room';
+import { isPhoneRoomWorkspaceId } from '../../shared/phoneRooms';
 import { FLEET_TICKET_ROUTE_PREFIX, fleetTicketDetailResponse, fleetTicketsFields } from './fleetTickets';
 import { factoryOn, moaConfigFields } from './factoryConfig';
-import { ROOMS_ROUTE, roomsResponse, roomsSupported } from './rooms';
+import { ROOMS_ROUTE, ROOM_MESSAGES_ROUTE, roomsResponse, roomsSupported } from './rooms';
+import { BOTS_ROUTE, botsResponse, botsSupported } from './bots';
 import { BOT_APPROVALS_ROUTE, botApprovalDecisionRefusal, botApprovalsResponse, botApprovalsSupported, type BotApprovalsCaller } from './botApprovals';
 import type { ChatV2Binding } from '../../shared/chatv2/ipc';
 import { buildWebCsp, WEB_APP_FONT_FILE } from './webCsp';
@@ -2802,6 +2805,13 @@ export class WebTerminalServer {
           roomsReadable: this.opts?.allowTranscript === true && roomsSupported(this.availableDesktop()),
           roomsClient: clientCaps(req).roomsV1 === true,
         }),
+        // The Bots page (bots.ts): `GET /api/bots` answers here (transcript,
+        // and a desktop that announced the list), and `POST
+        // /api/rooms/:workspaceId/messages` would pass its gates for this
+        // caller (the chat write gates, and a desktop that takes a message
+        // for one conversation). OMITTED, not false, otherwise.
+        ...(this.opts?.allowTranscript === true && botsSupported(this.availableDesktop()) ? { bots: true } : {}),
+        ...(this.roomMessageWritable(principal) ? { botMessages: true } : {}),
         // Phone channel Inbox (§9): the four `/api/channels*` routes answer
         // here. OMITTED, not false, exactly when they would answer 503
         // `channels-unavailable` — the shape a pre-channels daemon serves.
@@ -2867,6 +2877,15 @@ export class WebTerminalServer {
     }
     if (p === '/api/moa/messages' && req.method === 'POST') {
       return this.handleMoaSend(req, res, url, principal);
+    }
+    if (req.method === 'GET' && p === BOTS_ROUTE) {
+      void botsResponse({ allowTranscript: this.opts?.allowTranscript === true, desktop: this.availableDesktop() })
+        .then(r => this.json(res,r.status,r.body,{'Cache-Control':'no-store'}));
+      return;
+    }
+    const roomMessageRoute = req.method === 'POST' ? ROOM_MESSAGES_ROUTE.exec(p) : null;
+    if (roomMessageRoute) {
+      return this.handleRoomMessage(req, res, url, principal, roomMessageRoute[1]);
     }
     if (req.method === 'GET' && p.startsWith('/api/moa/messages/')) {
       return this.handleMoaSendReceipt(res, p.slice('/api/moa/messages/'.length), principal);
@@ -5457,6 +5476,102 @@ export class WebTerminalServer {
   }
 
   /**
+   * The `{clientMessageId, text}` body of a phone message (`POST
+   * /api/moa/messages`, and `POST /api/rooms/:workspaceId/messages` with its
+   * `threadId`): exactly those fields and `extra`, the chat send id and text
+   * rules. Answers the 400 itself and returns null when the body fails them.
+   */
+  private parsePhoneMessageBody(
+    res: http.ServerResponse,
+    body: unknown,
+    extra: readonly string[],
+  ): { clientMessageId: string; text: string; fields: Record<string, unknown> } | null {
+    const o = body && typeof body === 'object' && !Array.isArray(body) ? body as Record<string, unknown> : null;
+    const cmid = typeof o?.clientMessageId === 'string' ? o.clientMessageId : undefined;
+    const invalid = (detail: string) => {
+      this.json(res, 400, { error: 'invalid-chat-request', detail, effect: 'none', ...(cmid !== undefined ? { clientMessageId: cmid } : {}) });
+      return null;
+    };
+    if (!o) return invalid('body must be a JSON object');
+    const unknown = Object.keys(o).find((k) => k !== 'clientMessageId' && k !== 'text' && !extra.includes(k));
+    if (unknown !== undefined) return invalid(`unknown field: ${unknown.slice(0, 64)}`);
+    if (cmid === undefined) return invalid('clientMessageId must be a string');
+    if (typeof o.text !== 'string') return invalid('text must be a string');
+    const text = o.text;
+    const idCheck = checkChatId(cmid, this.now(), CHAT_MESSAGE_RETENTION_MS);
+    if (idCheck === 'invalid') return invalid('clientMessageId');
+    if (idCheck === 'expired') {
+      this.json(res, 400, { error: 'message-id-expired', effect: 'none', clientMessageId: cmid });
+      return null;
+    }
+    if (!text.trim()) return invalid('text');
+    // The chat send limit and its refusal, so a client has one rule.
+    if (text.length > CHAT_SEND_MAX_UNITS) {
+      this.json(res, 400, { error: 'text-too-long', result: 'error', limit: 'units', effect: 'none', clientMessageId: cmid });
+      return null;
+    }
+    return { clientMessageId: cmid, text, fields: o };
+  }
+
+  /** `/api/config` `botMessages`: the room message route would pass its gates for this caller. */
+  private roomMessageWritable(principal: WebPrincipal): boolean {
+    const desktop = this.availableDesktop();
+    return !!this.deps.moaWake && this.chatWriteRefusal(principal) === null &&
+      desktop?.supports(MOA_WAKE_COMMAND) === true && desktop.supports(FACTORY_THREAD_MESSAGE_CAPABILITY);
+  }
+
+  /**
+   * `POST /api/rooms/:workspaceId/messages` `{clientMessageId, text,
+   * threadId}`: a message to one conversation of the desktop's Bots page — a
+   * bot's 1:1 (`dm:<botId>`) or a group chat (`group:<groupId>`, or `general`
+   * for a group made from the room). The gates, body rules and answers of
+   * `POST /api/moa/messages` on the factory route, on the same receipt file:
+   * the desktop posts the owner's card in that thread and queues a wake for
+   * each bot it is for, or refuses before posting when no bot there is on.
+   */
+  private handleRoomMessage(req: http.IncomingMessage, res: http.ServerResponse, url: URL, principal: WebPrincipal, rawWorkspaceId: string): void {
+    res.setHeader('Cache-Control', 'no-store');
+    const refusal = this.chatWriteRefusal(principal);
+    if (refusal === 'transcript') return this.refuseTranscript(res);
+    if (refusal === 'input') return this.refuseInput(res, principal, 'Sending to a bot needs input');
+    const workspaceId = decodePathSegment(rawWorkspaceId);
+    if (workspaceId === null || !isPhoneRoomWorkspaceId(workspaceId)) return this.json(res, 404, { error: 'room-not-found' });
+    this.readJsonBody(req, res, (body) => {
+      void (async () => {
+        const fresh = await this.authenticate(req, url, false).catch(() => ({ ok: false as const }));
+        if (!fresh.ok || !sameCaller(principal, fresh.principal)) return this.json(res, 401, { error: 'authorization-expired' });
+        if (this.chatWriteRefusal(fresh.principal) !== null) return this.refuseInput(res, fresh.principal, 'Input permission changed');
+        const caller = fresh.principal;
+        const parsed = this.parsePhoneMessageBody(res, body, ['threadId']);
+        if (!parsed) return;
+        const { clientMessageId: cmid, text } = parsed;
+        // A conversation's own thread only: a bot's 1:1 or a group chat's.
+        const threadId = parseThreadId(parsed.fields.threadId);
+        if (!threadId || !(dmThreadBot(threadId) || groupThreadGroup(threadId) || threadId === 'general')) {
+          return this.json(res, 400, { error: 'invalid-chat-request', detail: 'threadId', effect: 'none', clientMessageId: cmid });
+        }
+        const target = { workspaceId, threadId };
+        const owner = chatOwner(caller);
+        const wake = this.deps.moaWake?.() ?? null;
+        if (!wake) return this.json(res, 503, { error: 'desktop-unavailable', clientMessageId: cmid });
+        const seen = wake.peek(owner, cmid, text, target);
+        if (seen) return this.moaWire(res, seen);
+        // The chat path never carries a room message: an id it spent is reused.
+        const prior = this.deps.chat?.()?.priorSend?.(owner, cmid);
+        if (prior && prior.view.state !== 'unknown') return this.json(res, 409, { error: 'message-id-reused', clientMessageId: cmid });
+        if (caller.kind === 'device') {
+          try { this.deps.auditMoaSend?.({ deviceId: caller.deviceId, sessionId: `room:${workspaceId}`, route: 'wake' }); } catch { /* best-effort */ }
+        } else {
+          this.deps.log('info', '[web] bot message sent by the operator');
+        }
+        return this.moaWire(res, await wake.roomMessage({
+          owner, clientMessageId: cmid, text, target, ...(caller.kind === 'device' ? { deviceId: caller.deviceId } : {}),
+        }));
+      })().catch((err: unknown) => this.failRequest(res, err));
+    }, CHAT_SEND_MAX_BODY_BYTES);
+  }
+
+  /**
    * `POST /api/moa/messages` `{clientMessageId, text}`: a message to Moa
    * whether or not its brain runs yet. Same gates as a chat send. A wake
    * receipt for the id answers first, so a retry after the pane appeared is
@@ -5475,25 +5590,9 @@ export class WebTerminalServer {
         if (!fresh.ok || !sameCaller(principal, fresh.principal)) return this.json(res, 401, { error: 'authorization-expired' });
         if (this.chatWriteRefusal(fresh.principal) !== null) return this.refuseInput(res, fresh.principal, 'Input permission changed');
         const caller = fresh.principal;
-        const o = body && typeof body === 'object' && !Array.isArray(body) ? body as Record<string, unknown> : null;
-        const cmid = typeof o?.clientMessageId === 'string' ? o.clientMessageId : undefined;
-        const invalid = (detail: string) => this.json(res, 400, {
-          error: 'invalid-chat-request', detail, effect: 'none', ...(cmid !== undefined ? { clientMessageId: cmid } : {}),
-        });
-        if (!o) return invalid('body must be a JSON object');
-        const extra = Object.keys(o).find((k) => k !== 'clientMessageId' && k !== 'text');
-        if (extra !== undefined) return invalid(`unknown field: ${extra.slice(0, 64)}`);
-        if (cmid === undefined) return invalid('clientMessageId must be a string');
-        if (typeof o.text !== 'string') return invalid('text must be a string');
-        const text = o.text;
-        const idCheck = checkChatId(cmid, this.now(), CHAT_MESSAGE_RETENTION_MS);
-        if (idCheck === 'invalid') return invalid('clientMessageId');
-        if (idCheck === 'expired') return this.json(res, 400, { error: 'message-id-expired', effect: 'none', clientMessageId: cmid });
-        if (!text.trim()) return invalid('text');
-        // The chat send limit and its refusal, so a client has one rule.
-        if (text.length > CHAT_SEND_MAX_UNITS) {
-          return this.json(res, 400, { error: 'text-too-long', result: 'error', limit: 'units', effect: 'none', clientMessageId: cmid });
-        }
+        const parsed = this.parsePhoneMessageBody(res, body, []);
+        if (!parsed) return;
+        const { clientMessageId: cmid, text } = parsed;
         const owner = chatOwner(caller);
         const wake = this.deps.moaWake?.() ?? null;
         const seen = wake?.peek(owner, cmid, text);

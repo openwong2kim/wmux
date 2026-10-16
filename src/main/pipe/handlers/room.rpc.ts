@@ -50,6 +50,7 @@ import { resolveThreadDecision } from '../../deck/deckDecisionStore';
 import { setBotRuntimePorts } from '../../factory/BotRuntime';
 import { registerFactoryRpcModule, type FactoryHostDeps, type FactoryModuleHandle, type FactoryRouter } from '../../factory/factoryHost';
 import { getHandoffRouter } from '../../factory/handoffRouter';
+import { redactStoredSecrets } from '../../factory/secretRedaction';
 import { HUMAN_RETRY_WINDOW_MS } from '../../factory/wakeQueue';
 import {
   ROOMS_DIRNAME,
@@ -248,7 +249,8 @@ export async function postTurnText(
   deps: RoomHandlerDeps,
 ): Promise<unknown> {
   const writer = deps.writer();
-  const trimmed = capBody(text).trim();
+  // Processed whole, then shortened into a title and a body.
+  const trimmed = capBody(redactStoredSecrets(text)).trim();
   if (!writer || !trimmed) return null;
   const threadId = runningWakeThread(deps.ports(), profile.id) ?? GENERAL_THREAD;
   // A card the bot wrote in this thread during the turn (a room_post, a

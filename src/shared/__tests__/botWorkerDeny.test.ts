@@ -11,6 +11,7 @@ import {
   BOT_WORKER_DENY, BOT_WORKER_MERGE_DENY, BOT_WORKER_PUBLIC_DENY, BOT_WORKER_PUSH_DENY, buildBotWorkerSettings, botWorkerDefaultBranchesPath,
   botWorkerSessionsPath, isDenyableBranchName, namesClaude, readBotWorkerDefaultBranches, readBotWorkerSessions, recordBotWorkerDefaultBranch, writeBotWorkerSettings,
 } from '../botWorkerGuard';
+import { wslClaudeHooks } from '../wslIntegration';
 
 function denied(command: string, rules: readonly string[] = BOT_WORKER_DENY): boolean {
   return rules.some((rule) => {
@@ -23,9 +24,19 @@ function denied(command: string, rules: readonly string[] = BOT_WORKER_DENY): bo
 
 describe('bot worker deny rules', () => {
   it('the settings document carries every rule, merge rules first', () => {
-    expect(buildBotWorkerSettings()).toEqual({ permissions: { deny: [...BOT_WORKER_DENY] } });
+    expect(buildBotWorkerSettings()).toEqual({ permissions: { deny: [...BOT_WORKER_DENY] }, disableAllHooks: false, hooks: wslClaudeHooks() });
     expect(BOT_WORKER_DENY.slice(0, BOT_WORKER_MERGE_DENY.length)).toEqual([...BOT_WORKER_MERGE_DENY]);
     expect(BOT_WORKER_DENY).toEqual(expect.arrayContaining([...BOT_WORKER_PUSH_DENY, ...BOT_WORKER_PUBLIC_DENY]));
+  });
+
+  it('a WSL worker\'s settings keep wmux\'s hooks, which its own --settings would otherwise replace (#2261)', () => {
+    const hooks = buildBotWorkerSettings().hooks as Record<string, Array<{ hooks: Array<{ command: string }> }>>;
+    // The turn end (idle reclaim) and the session id (resume) come from these.
+    for (const event of ['SessionStart', 'Stop', 'StopFailure', 'UserPromptSubmit']) {
+      expect(hooks[event]?.[0]?.hooks[0]?.command, event).toBe(`/bin/sh "$WMUX_WSL_HOOK" ${event}`);
+    }
+    // No Windows path: Linux claude runs them through the WSL hook script.
+    expect(JSON.stringify(hooks)).not.toMatch(/[A-Za-z]:[\\/]|\.mjs|node /);
   });
 
   it('the rule set is pinned: any change to a rule is a deliberate change to this test', () => {

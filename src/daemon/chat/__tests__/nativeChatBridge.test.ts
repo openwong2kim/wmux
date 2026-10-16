@@ -11,7 +11,8 @@ import { atomicWriteJSONSync } from '../../util/atomicWrite';
 import { withChosenAccountEnv } from '../../phone/paneAccountSpawn';
 import { createChatBridge, QUEUE_WATCH_CLIENT, WEB_BRIDGE_CLIENT, type ChatAgentState, type ChatPane, type NativeChatBridgeDeps } from '../nativeChatBridge';
 import { guardBotWorkerLaunch } from '../botWorkerLaunchGuard';
-import { BOT_WORKER_DENY, botWorkerSessionsPath, botWorkerSettingsPath } from '../../../shared/botWorkerGuard';
+import { BOT_WORKER_DENY, botWorkerSessionsPath, botWorkerSettingsPath, buildBotWorkerSettings } from '../../../shared/botWorkerGuard';
+import { toWslPath } from '../../../shared/imagePaste';
 import type { TerminalChatAbortOutcome } from '../../transcript/TerminalChatService';
 import { cancelResponse } from '../../web/chatWire';
 import { agentAliveVerdict } from '../../canonicalAgent';
@@ -474,8 +475,10 @@ describe('launch', () => {
       botWorker(f.dir);
       expect(await f.bridge.launch({ id: 'pane', agent: 'claude', prompt: "it's done" })).toEqual({ ok: true, effect: 'submitted' });
       const settings = botWorkerSettingsPath(f.dir);
-      expect(f.typed).toEqual([`claude --settings="${settings}" --session-id PIN -- 'it'\\''s done'\r`]);
-      expect(JSON.parse(fs.readFileSync(settings, 'utf8'))).toEqual({ permissions: { deny: [...BOT_WORKER_DENY] } });
+      // Linux claude opens it through its /mnt mount (a Windows runner's path).
+      expect(f.typed).toEqual([`claude --settings="${toWslPath(settings) ?? settings}" --session-id PIN -- 'it'\\''s done'\r`]);
+      expect(JSON.parse(fs.readFileSync(settings, 'utf8'))).toEqual(buildBotWorkerSettings());
+      expect(JSON.parse(fs.readFileSync(settings, 'utf8')).permissions).toEqual({ deny: [...BOT_WORKER_DENY] });
     });
 
     it('a phone resume of its exact session carries them too', async () => {
@@ -489,7 +492,7 @@ describe('launch', () => {
       expect(await go({ prompt: 'next' })).toEqual({ ok: true, effect: 'submitted' });
       f.shell.empty = true;
       expect(await go({ mode: 'bypass' })).toMatchObject({ ok: true });
-      const settings = botWorkerSettingsPath(f.dir);
+      const settings = toWslPath(botWorkerSettingsPath(f.dir)) ?? botWorkerSettingsPath(f.dir);
       expect(f.typed).toEqual([
         `cd -- '/proj' && claude --settings="${settings}" --resume ${SID} -- 'next'\r`,
         `cd -- '/proj' && claude --settings="${settings}" --resume ${SID} --dangerously-skip-permissions\r`,
@@ -532,7 +535,7 @@ describe('launch', () => {
       botWorker(dir);
       expect(guardBotWorkerLaunch('pane', "claude -- 'x'", 'claude --resume y', dir)).toBeNull();
       expect(guardBotWorkerLaunch('pane', "claude -- 'x'; echo more", 'claude', dir)).toBeNull();
-      expect(guardBotWorkerLaunch('pane', "claude -- 'x'", 'claude', dir)).toBe(`claude --settings="${botWorkerSettingsPath(dir)}" -- 'x'`);
+      expect(guardBotWorkerLaunch('pane', "claude -- 'x'", 'claude', dir)).toBe(`claude --settings="${toWslPath(botWorkerSettingsPath(dir)) ?? botWorkerSettingsPath(dir)}" -- 'x'`);
     });
   });
 

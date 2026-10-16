@@ -8,7 +8,9 @@
 //     (TaskWorktreeManager.removeWorktree: `git status --porcelain` must be
 //     empty; ignored files such as node_modules do not count and go with the
 //     folder). A dirty worktree is kept and never removed automatically; the
-//     task shows a note and Settings › Bots counts it.
+//     task shows a note and Settings › Bots counts it. A detached HEAD (a
+//     verify task's checkout) with commits no ref holds first gets
+//     `refs/wmux/keep/<taskId>`, so removal never leaves them to gc.
 //   - A research task's scratch folder
 //     (`<wmux data>/factory/bots/<botId>/research/<batch>/<task>`) is removed;
 //     its report is in the ledger and the room.
@@ -68,6 +70,9 @@ export interface TaskFolderRecord {
   repoHash?: string;
   branch?: string;
   head?: string;
+  /** The ref that holds a detached HEAD's commits no other ref held
+   *  (`refs/wmux/keep/<taskId>`), written before the worktree went. */
+  keepRef?: string;
   at: number;
 }
 
@@ -347,9 +352,17 @@ async function cleanTaskFolderNow(
     return 'failed';
   }
   if ((folderHolds.get(entry.id) ?? 0) > 0) return 'skipped';
+  // Commits made on a detached HEAD are held by no branch: a ref keeps them
+  // before the worktree (and with it HEAD's reflog) goes.
+  const kept = await keepDetachedCommits(repo.repoRoot, mission.folder, entry.id, mission.branch, repo.head, entry.dispatch?.checkout?.sha);
+  if (kept === null) {
+    log(`[factory] worktree of ${entry.id} not removed: whether its commits are kept could not be read`);
+    return 'failed';
+  }
   const base = {
     taskId: entry.id, kind, path: mission.folder, repoRoot: repo.repoRoot, repoHash: repo.repoHash,
-    ...(mission.branch ? { branch: mission.branch } : {}), ...(repo.head ? { head: repo.head } : {}), at: now(),
+    ...(mission.branch ? { branch: mission.branch } : {}), ...(repo.head ? { head: repo.head } : {}),
+    ...(kept ? { keepRef: kept } : prior?.keepRef ? { keepRef: prior.keepRef } : {}), at: now(),
   };
   // How to put it back is on disk before the folder goes.
   try {
@@ -624,6 +637,44 @@ export async function gitRepoInfo(worktreePath: string): Promise<{ repoRoot: str
     }
     const head = (await execFileAsync('git', ['rev-parse', 'HEAD'], opts).catch(() => ({ stdout: '' }))).stdout.trim();
     return { repoRoot: top, repoHash: crypto.createHash('sha256').update(real).digest('hex').slice(0, 12), ...(/^[0-9a-f]{40,64}$/.test(head) ? { head } : {}) };
+  } catch {
+    return null;
+  }
+}
+
+/** The ref namespace that holds commits of removed detached worktrees. */
+export const TASK_KEEP_REF_PREFIX = 'refs/wmux/keep/';
+
+/**
+ * Before a task worktree goes: when its HEAD is detached (or the mission
+ * names no branch), differs from the commit it was checked out at, and no ref
+ * contains it, point `refs/wmux/keep/<taskId>` at it so its commits stay
+ * reachable. Returns that ref when it was written, '' when nothing needed
+ * keeping, and null when git could not tell (the worktree then stays).
+ */
+export async function keepDetachedCommits(
+  repoRoot: string,
+  worktreePath: string,
+  taskId: string,
+  branch: string | undefined,
+  head: string | undefined,
+  checkedOutAt: string | undefined,
+): Promise<string | null> {
+  const opts = { timeout: 30_000, windowsHide: true, env: getExecEnv() };
+  if (branch) {
+    // On its branch, the branch holds the commits.
+    const onBranch = await execFileAsync('git', ['-C', worktreePath, 'symbolic-ref', '-q', 'HEAD'], opts).then(() => true, () => false);
+    if (onBranch) return '';
+  }
+  if (!head || !/^[0-9a-f]{40,64}$/.test(head)) return null;
+  if (head === checkedOutAt) return '';
+  try {
+    const holders = (await execFileAsync('git', ['-C', repoRoot, 'for-each-ref', '--count=1', '--format=%(refname)', '--contains', head], opts)).stdout.trim();
+    if (holders) return '';
+    if (!/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(taskId)) return null;
+    const ref = `${TASK_KEEP_REF_PREFIX}${taskId}`;
+    await execFileAsync('git', ['-C', repoRoot, 'update-ref', ref, head], opts);
+    return ref;
   } catch {
     return null;
   }

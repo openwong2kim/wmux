@@ -90,6 +90,27 @@ describe('FACTORY_WORKER_RESUME (IPC guard)', () => {
     expect(p.typeLine).not.toHaveBeenCalled();
     expect(await handler(ok, { taskId: TASK })).toMatchObject({ ok: true });
   });
+
+  it('the owner\'s Resume takes an agent slot: refused with the cap when none is free, started once when one is', async () => {
+    const ok = { sender: webContents, senderFrame: mainFrame };
+    const full = ports();
+    const busy = new AgentSlots({ cap: () => 3, runningBots: () => 3, liveWorkers: () => 0, pollMs: 60_000 });
+    const refused = await factoryWorkerResumeHandler(() => win, () => full, () => busy)(ok, { taskId: TASK });
+    expect(refused).toMatchObject({ ok: false, code: 'no_slot', cap: 3 });
+    expect((refused as { message: string }).message).toContain('No free agent slot (the limit is 3)');
+    expect(full.typeLine).not.toHaveBeenCalled();
+    expect(store.get(TASK)?.state).toBe('stopped');
+    const p = ports();
+    const free = new AgentSlots({ cap: () => 3, runningBots: () => 1, liveWorkers: () => 0, pollMs: 60_000 });
+    const handler = factoryWorkerResumeHandler(() => win, () => p, () => free);
+    expect(await handler(ok, { taskId: TASK })).toMatchObject({ ok: true, resumeSessionId: UUID });
+    // The launch slot was handed over to the resumed-worker count.
+    expect(free.inUse()).toBe(1);
+    // A second click on the resumed worker starts nothing and takes no slot.
+    expect(await handler(ok, { taskId: TASK })).toMatchObject({ ok: false, code: 'already_running' });
+    expect(p.typeLine).toHaveBeenCalledTimes(1);
+    expect(free.inUse()).toBe(1);
+  });
 });
 
 describe('FACTORY_TASK_FOLDERS_* (IPC guard)', () => {

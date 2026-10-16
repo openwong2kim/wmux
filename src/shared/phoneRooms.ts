@@ -183,7 +183,8 @@ function httpUrl(value: unknown): string | undefined {
   }
 }
 
-function parseActor(value: unknown): PhoneRoomActor | undefined {
+/** A card's actor as the phone may see it, or undefined. Idempotent. */
+export function parsePhoneRoomActor(value: unknown): PhoneRoomActor | undefined {
   if (!isRecord(value)) return undefined;
   if (value.kind === 'human') return { kind: 'human' };
   if (value.kind === 'system') return { kind: 'system' };
@@ -227,7 +228,7 @@ export function parsePhoneRoomCard(value: unknown): PhoneRoomCard | null {
   const threadId = parseThreadId(value.threadId);
   const kind = cardKind(value.kind);
   const at = positive(value.at);
-  const actor = parseActor(value.actor);
+  const actor = parsePhoneRoomActor(value.actor);
   const title = line(value.title, PHONE_ROOM_LIMITS.title) ?? '';
   if (!id || seq === undefined || !threadId || !kind || at === undefined || !actor) return null;
   const text = body(value.body);

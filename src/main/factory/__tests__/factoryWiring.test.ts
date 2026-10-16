@@ -36,6 +36,7 @@ import { createFactLog, type FactLog } from '../factLog';
 import { WAKE_RECORD_RETAIN_MS, WakeQueue, latestOwnerWakeThread, setWakeQueue, wakeQueuePath } from '../wakeQueue';
 import { TriggerEngine } from '../triggerEngine';
 import { postHumanMessage } from '../humanMessage';
+import { __resetRedactedSecretsForTesting, setRedactedSecrets } from '../secretRedaction';
 import { typedApprovalSourceAllowed } from '../approvals';
 import { defaultTriggers } from '../roleDefaults';
 import { RoomWriter, writeFactCards } from '../roomWriter';
@@ -501,6 +502,32 @@ describe('phone → HQ bot', () => {
     expect(r.queue.list({ states: ['queued'] }).map((i) => (i.reason as { text: string }).text)).toEqual([long]);
   });
 
+  it('a long phone message is processed whole and shortened last: card, fact and wake, on a first send and on its retry', () => {
+    const VALUE = 'zQ9vT2mW8rL4nX6pB1cY3hJ5kD7fG0sE9uA2wR4t';
+    setRedactedSecrets([{ name: 'K', value: VALUE }]);
+    try {
+      // VALUE across the title cap (200), the fact's text cap (3000) and the body cap (8192).
+      const at = [180, 2980, 8170];
+      let text = '';
+      for (const i of at) text += 'a'.repeat(i - text.length) + VALUE;
+      text += 'b'.repeat(100);
+      const { d, writer, queue } = deps();
+      const msg = { ...payload, clientMessageId: 'm-whole', text };
+      expect(factoryPhoneMessage(msg, d)).toEqual({ ok: true, accepted: true, queued: true });
+      const [card] = writer.read('ws-hq').cards;
+      expect(card.title).toBe('a'.repeat(180) + '[secret:K]' + 'a'.repeat(10));
+      expect(card.body?.split('[secret:K]')).toHaveLength(4);
+      // The same message again is its retry, not a reused id.
+      expect(factoryPhoneMessage(msg, d)).toEqual({ ok: true, accepted: true, queued: true });
+      const seen = JSON.stringify([card, log.readSince('0').facts, queue.list({})])
+        + (fs.readdirSync(dir, { recursive: true }) as string[]).map((f) => path.join(dir, f)).filter((f) => fs.statSync(f).isFile()).map((f) => fs.readFileSync(f, 'utf8')).join('\n');
+      expect(seen).not.toContain(VALUE.slice(0, 20));
+      expect(seen).not.toContain(VALUE.slice(20));
+    } finally {
+      __resetRedactedSecretsForTesting();
+    }
+  });
+
   it('the card a phone message leaves tells typed approval the operator from a paired device', () => {
     const { d, writer } = deps();
     factoryPhoneMessage(payload, d);
@@ -528,6 +555,75 @@ describe('phone → HQ bot', () => {
     expect(writer.read('ws-hq').cards).toHaveLength(1);
     // A refusal never waits on the disk.
     expect(await factoryPhoneMessageSaved(payload, deps({ bots: [] }).d)).toEqual({ ok: false, code: 'hq_missing' });
+  });
+});
+
+describe('phone → one conversation (workspaceId + threadId)', () => {
+  const lead = bot('bot-000000bb', 'lead');
+  const triage = bot('bot-000000cc', 'triage', { createdAt: 1 });
+  const off = bot('bot-000000dd', 'verifier', { enabled: false, createdAt: 2 });
+  const group = { id: 'grp-0000abcd', workspaceId: 'ws-1', name: 'Crew', memberIds: [lead.id, triage.id], threadId: 'group:grp-0000abcd' as const, createdAt: 0, updatedAt: 0 };
+  const idle = { id: 'grp-0000dead', workspaceId: 'ws-1', name: 'Idle', memberIds: [off.id], threadId: 'group:grp-0000dead' as const, createdAt: 0, updatedAt: 0 };
+  function deps() {
+    const writer = new RoomWriter({ dir: path.join(dir, 'factory', 'rooms') });
+    const queue = newQueue();
+    const groups = [group, idle];
+    return {
+      writer,
+      queue,
+      d: {
+        settings: () => ({ ...DEFAULT_FACTORY_SETTINGS, enabled: true }),
+        writer: () => writer,
+        ports: () => ({
+          factLog: log, wakes: queue, bots: dirOf([lead, triage, off]),
+          groups: { byThread: (ws: string, t: string | null | undefined) => groups.find((g) => g.workspaceId === ws && g.threadId === t) ?? null },
+        }),
+      },
+    };
+  }
+  const msg = (threadId: string, over: Record<string, unknown> = {}) => ({ clientMessageId: 'm-1', text: 'Ship it?', actor: 'device:abc', mode: 'factory' as const, workspaceId: 'ws-1', threadId, ...over });
+
+  it('a 1:1: a human card in that bot\'s thread and one wake for it alone', () => {
+    const { d, writer, queue } = deps();
+    expect(factoryPhoneMessage(msg(`dm:${triage.id}`), d)).toEqual({ ok: true, accepted: true, queued: true });
+    expect(writer.read('ws-1').cards).toMatchObject([{ kind: 'human', threadId: `dm:${triage.id}`, refs: { botId: triage.id }, clientPostId: expect.stringMatching(/^phone:[0-9a-f]{16}:m-1$/) }]);
+    expect(queue.list({ states: ['queued'] }).map((i) => [i.botId, i.threadId])).toEqual([[triage.id, `dm:${triage.id}`]]);
+  });
+
+  it('a group: one card in its thread and a wake for each enabled member', () => {
+    const { d, writer, queue } = deps();
+    expect(factoryPhoneMessage(msg(group.threadId), d)).toEqual({ ok: true, accepted: true, queued: true });
+    expect(writer.read('ws-1').cards).toMatchObject([{ threadId: group.threadId, refs: { botIds: [lead.id, triage.id] } }]);
+    expect(queue.list({ states: ['queued'] }).map((i) => i.botId).sort()).toEqual([lead.id, triage.id]);
+  });
+
+  it('an id whose card is up but whose wake a full queue refused is bound to that card: other text or another thread is a reused id', () => {
+    const { d, writer, queue } = deps();
+    let full = true;
+    const wakes = { enqueue: (input: Parameters<typeof queue.enqueue>[0]) => (full ? null : queue.enqueue(input)) };
+    const dd = { ...d, ports: () => ({ ...d.ports(), wakes }) };
+    expect(factoryPhoneMessage(msg(`dm:${triage.id}`), dd)).toEqual({ ok: false, code: 'busy' });
+    full = false;
+    expect(factoryPhoneMessage(msg(`dm:${triage.id}`, { text: 'Something else' }), dd)).toEqual({ ok: false, code: 'id_reused' });
+    expect(factoryPhoneMessage(msg(group.threadId), dd)).toEqual({ ok: false, code: 'id_reused' });
+    expect(queue.list({ states: ['queued'] })).toEqual([]);
+    // Its own retry still queues the wake, once.
+    expect(factoryPhoneMessage(msg(`dm:${triage.id}`), dd)).toEqual({ ok: true, accepted: true, queued: true });
+    expect(queue.list({ states: ['queued'] }).map((i) => i.botId)).toEqual([triage.id]);
+    expect(writer.read('ws-1').cards).toHaveLength(1);
+  });
+
+  it('refuses before posting: a missing or switched-off bot, a missing group, a group with no bot on', () => {
+    const { d, writer, queue } = deps();
+    expect(factoryPhoneMessage(msg(`dm:${off.id}`), d)).toEqual({ ok: false, code: 'bot_off' });
+    expect(factoryPhoneMessage(msg('dm:bot-0000ffff'), d)).toEqual({ ok: false, code: 'bot_missing' });
+    // A bot of another workspace is no 1:1 of this room.
+    expect(factoryPhoneMessage(msg(`dm:${lead.id}`, { workspaceId: 'ws-2' }), d)).toEqual({ ok: false, code: 'bot_missing' });
+    expect(factoryPhoneMessage(msg('group:grp-00000000'), d)).toEqual({ ok: false, code: 'group_missing' });
+    expect(factoryPhoneMessage(msg('general'), d)).toEqual({ ok: false, code: 'group_missing' });
+    expect(factoryPhoneMessage(msg(idle.threadId), d)).toEqual({ ok: false, code: 'group_off' });
+    expect(writer.read('ws-1').cards).toEqual([]);
+    expect(queue.list({ states: ['queued'] })).toEqual([]);
   });
 });
 

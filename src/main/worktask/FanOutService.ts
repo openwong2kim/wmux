@@ -1928,10 +1928,14 @@ export class FanOutService {
     const releaseBotSpawn = beginBotWorkerSpawn(input.ownerWorkspaceId, input.cwd, { botId: input.botId, taskId: input.taskId, ...(connectors.length > 0 ? { connectors } : {}) });
     let spawned: Awaited<ReturnType<FanOutRendererPort['spawnWorkspace']>>;
     try {
+      // The same first-run env as the task's first launch: without it a
+      // resumed worker stops at claude's folder-trust dialog (#2261).
+      const paneEnv = firstRunEnvForAgent(input.command);
       spawned = await this.renderer.spawnWorkspace({
         name: `wtask: ${input.title.slice(0, 32)}`,
         cwd: input.cwd,
         initialCommand: input.command,
+        ...(Object.keys(paneEnv).length > 0 ? { env: paneEnv } : {}),
         fanoutTaskOf: input.ownerWorkspaceId,
         fanoutOrigin: origin,
         ...(secretGrant ? { secretGrant } : {}),
