@@ -54,6 +54,45 @@ describe('ScheduleDetail output snapshot', () => {
       .toBe('Open the folder once in a terminal and trust it in Claude, then run again.');
   });
 
+  it('says a skip only waits on the previous run\'s open session (#2065)', async () => {
+    useStore.setState({ automationRuns: [run({ id: 'r3', state: 'skipped', reason: 'overlap', detail: 'previous_session_open' })] });
+    await act(async () => root.render(<ScheduleDetail automation={automation()} accounts={[]} onEdit={vi.fn()} />));
+    expect(container.querySelector('[data-run-row="r3"]')!.textContent).toContain("previous run's session still open");
+    expect(container.textContent).not.toContain('previous run still going');
+    expect(container.querySelector('[data-run-session-open-hint]')!.textContent)
+      .toBe('The previous run finished, but its session stays open for up to 10 minutes in case it asked something, so this run was skipped. It closes by itself; run again after that.');
+  });
+
+  it('a plain overlap keeps its words and no session note', async () => {
+    useStore.setState({ automationRuns: [run({ id: 'r4', state: 'skipped', reason: 'overlap' })] });
+    await act(async () => root.render(<ScheduleDetail automation={automation()} accounts={[]} onEdit={vi.fn()} />));
+    expect(container.querySelector('[data-run-row="r4"]')!.textContent).toContain('previous run still going');
+    expect(container.querySelector('[data-run-session-open-hint]')).toBeNull();
+  });
+
+  it('Run now that the overlap rule skipped does not say it started (#2065)', async () => {
+    const skipped = run({ id: 'r5', state: 'skipped', reason: 'overlap', detail: 'previous_session_open', trigger: 'manual' });
+    const runNow = vi.fn(async () => ({ ok: true, run: skipped }));
+    vi.stubGlobal('electronAPI', { automation: { snapshot, runNow, list: vi.fn(async () => ({ automations: [], available: true })), runs: vi.fn(async () => ({ runs: [] })) } });
+    useStore.setState({ toasts: [] });
+    await act(async () => root.render(<ScheduleDetail automation={automation()} accounts={[]} onEdit={vi.fn()} />));
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-schedule-test-run]')!.click());
+    expect(runNow).toHaveBeenCalledWith('a1', 'manual');
+    const toasts = useStore.getState().toasts;
+    expect(toasts.map((x) => x.message)).toContain("Not started: previous run's session still open.");
+    expect(toasts.map((x) => x.message)).not.toContain('Run started.');
+    expect(toasts.find((x) => x.message.startsWith('Not started'))?.level).toBe('warn');
+  });
+
+  it('Run now that launched still says it started', async () => {
+    const runNow = vi.fn(async () => ({ ok: true, run: run({ id: 'r6', state: 'launching', trigger: 'manual' }) }));
+    vi.stubGlobal('electronAPI', { automation: { snapshot, runNow, list: vi.fn(async () => ({ automations: [], available: true })), runs: vi.fn(async () => ({ runs: [] })) } });
+    useStore.setState({ toasts: [] });
+    await act(async () => root.render(<ScheduleDetail automation={automation()} accounts={[]} onEdit={vi.fn()} />));
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-schedule-test-run]')!.click());
+    expect(useStore.getState().toasts.map((x) => x.message)).toContain('Run started.');
+  });
+
   it('says the runs stay skipped when Grant again is declined', async () => {
     const grant = vi.fn(async () => ({ ok: false, error: 'cancelled' }));
     vi.stubGlobal('electronAPI', { automation: { snapshot, grant, list: vi.fn(async () => ({ automations: [], available: false })), runs: vi.fn(async () => ({ runs: [] })) } });

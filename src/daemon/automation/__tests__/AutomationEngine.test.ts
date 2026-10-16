@@ -306,6 +306,8 @@ describe('AutomationEngine — launch & readiness', () => {
     const second = await h.engine.runNow(first.automationId, 'manual');
     expect(second.ok && second.run).toMatchObject({ state: 'skipped', reason: 'overlap' });
     expect(h.created).toHaveLength(1);
+    // Still running: plain overlap, no session note (#2065).
+    expect(second.ok && second.run.detail).toBeUndefined();
   });
 
   it('boot: a run left launching/running is marked unknown and never relaunched', async () => {
@@ -597,6 +599,8 @@ describe('AutomationEngine — review regressions', () => {
     const second = await h.engine.runNow(run.automationId, 'manual');
     expect(second.ok && second.run).toMatchObject({ state: 'skipped', reason: 'overlap' });
     expect(h.created).toHaveLength(1);
+    // Finished, only its session lingers: the skip says so (#2065).
+    expect(second.ok && second.run.detail).toBe('previous_session_open');
   });
 
   it('an attached client cannot hold a completed session open forever', async () => {
