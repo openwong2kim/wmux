@@ -33,9 +33,8 @@
   to a bot in its chat, its answers, its greeting and the work it starts
   there stay in that chat; the room shows only what is said in the room.
   Before, the private chat was a view of the room, so the two mirrored each
-  other. A workspace's room appears once it has two or more bots; a single
-  bot has just its chat. Messages from the phone to its bot land in that
-  bot's chat too. (#2217)
+  other. Group chats are the ones you make (see below). Messages from the
+  phone to its bot land in that bot's chat too. (#2217)
 
 - **The Bots item appears in the sidebar only after you turn bots on in
   Settings.** Settings › Bots' switch now says that turning it on adds Bots to
