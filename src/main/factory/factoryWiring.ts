@@ -71,6 +71,7 @@ import { readUiLocale } from '../quit/quitAndStopCopy';
 import { setFactoryPhoneMessageHandler } from './phoneMessage';
 import { humanCardIdOfRun, postHumanMessage } from './humanMessage';
 import { phoneBot } from './phoneBot';
+import { redactStoredSecrets } from './secretRedaction';
 import { ghIssueService, splitRepoKey } from '../github/GhIssueService';
 import { MORNING_SCHEDULE_FILENAME, MORNING_SCHEDULE_ID, MorningSchedule, localDay } from './morningSchedule';
 import { fireMorningReport } from './morningReport';
@@ -385,6 +386,13 @@ export function factoryPhoneMessage(payload: MoaWakePayload, deps: FactoryPhoneD
   if ('code' in target) return { ok: false, code: target.code };
   const actor = crypto.createHash('sha256').update(payload.actor).digest('hex').slice(0, 16);
   const clientPostId = `phone:${actor}:${payload.clientMessageId}`.slice(0, ROOM_LIMITS.CLIENT_ID_MAX);
+  // A retry posts nothing new: the room answers with the id's first card and
+  // queues that card's wakes. An id whose first card says other words (its
+  // body as the room stored it, secrets redacted) or sits in another thread
+  // is a reused id, never that card's retry: the daemon released the id when
+  // a queue was full, so it can come back here with another message.
+  const prior = writer.find(target.workspaceId, (c) => c.clientPostId === clientPostId);
+  if (prior && (prior.threadId !== target.threadId || (prior.body ?? '') !== capBody(redactStoredSecrets(capBody(payload.text))))) return { ok: false, code: 'id_reused' };
   const r = postHumanMessage(writer, ports, {
     workspaceId: target.workspaceId,
     threadId: target.threadId,

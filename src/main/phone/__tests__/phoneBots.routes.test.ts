@@ -58,6 +58,7 @@ describe('GET /api/bots and POST /api/rooms/:workspaceId/messages', () => {
   let queue: WakeQueue;
   let enabled: boolean;
   let wakesUp: boolean;
+  let queueFull: boolean;
   let groups: BotGroup[];
   let dir: string;
   let toMain: Array<{ command: string; payload: Record<string, unknown> }>;
@@ -70,6 +71,7 @@ describe('GET /api/bots and POST /api/rooms/:workspaceId/messages', () => {
     queue = new WakeQueue(wakeQueuePath(dir), { isBotEnabled: () => true });
     enabled = true;
     wakesUp = true;
+    queueFull = false;
     groups = [GROUP, ROOM_GROUP];
     toMain = [];
     const all = [HQ, LEAD, OFF];
@@ -79,7 +81,7 @@ describe('GET /api/bots and POST /api/rooms/:workspaceId/messages', () => {
       writer: () => writer,
       ports: () => ({
         bots: directory,
-        ...(wakesUp ? { wakes: queue } : {}),
+        ...(wakesUp ? { wakes: queueFull ? { enqueue: () => null, flush: () => queue.flush() } : queue } : {}),
         groups: { byThread: (ws, t) => groups.find((g) => g.workspaceId === ws && g.threadId === t) ?? null },
       }),
     }));
@@ -273,6 +275,20 @@ describe('GET /api/bots and POST /api/rooms/:workspaceId/messages', () => {
       expect(busy.retryAfter).toBe('5');
       wakesUp = true;
       expect(await send('ws-1', body)).toMatchObject({ status: 202, body: { state: 'queued', replayed: false } });
+    });
+
+    it('a full queue after the card is up: 409 moa-busy, then the id stays that card\'s (other text or thread is reused)', async () => {
+      const { send } = await start();
+      queueFull = true;
+      const body = { clientMessageId: freshId(), text: 'first words', threadId: `dm:${LEAD.id}` };
+      const busy = await send('ws-1', body);
+      expect(busy).toMatchObject({ status: 409, body: { error: 'moa-busy' } });
+      expect(busy.retryAfter).toBe('5');
+      queueFull = false;
+      expect(await send('ws-1', { ...body, text: 'other words' })).toMatchObject({ status: 409, body: { error: 'message-id-reused' } });
+      expect(await send('ws-1', { ...body, threadId: GROUP.threadId })).toMatchObject({ status: 409, body: { error: 'message-id-reused' } });
+      expect(queue.list({ states: ['queued'] })).toEqual([]);
+      expect(writer.read('ws-1').cards).toHaveLength(1);
     });
 
     it('409 no-recipient before anything is posted: a switched-off or missing bot, a missing group, a group with no bot on; final for the id', async () => {

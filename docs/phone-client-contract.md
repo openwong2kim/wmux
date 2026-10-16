@@ -4470,7 +4470,11 @@ answers are those of `POST /api/moa/messages`, on the same receipts: a
 `clientMessageId` is one message whichever route sent it. The same id with
 the same text replays its answer (`replayed: true`) and never posts twice;
 with other text, or the same text to another conversation (or to Moa), it is
-`409 {error:"message-id-reused"}`.
+`409 {error:"message-id-reused"}`. That holds after a `moa-busy` too: when a
+full queue refused the wake, the card is already posted and the released id
+stays that card's — send it again with the same text and thread to queue the
+wake, never with a new message. An id this caller spent on a chat send to a
+pane is `409 message-id-reused` as well.
 
 There is no receipt route of its own: `GET /api/moa/messages/:clientMessageId`
 reads these messages too (`state: "queued"` once queued, `failed` with

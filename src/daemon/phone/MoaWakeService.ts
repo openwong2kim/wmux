@@ -79,6 +79,9 @@ function refusalWire(code: MoaWakeRefusalCode, clientMessageId: string): { wire:
     // a room that took no card may take it later, so that id is released.
     case 'bot_missing': case 'bot_off': case 'group_missing': case 'group_off': case 'room_refused':
       return { wire: fail(409, 'no-recipient', { reason: code.replace('_', '-') }), release: code === 'room_refused' };
+    case 'id_reused':
+      // Its first card is in the room: the id stays bound to it.
+      return { wire: { status: 409, body: { error: 'message-id-reused', clientMessageId } }, release: false };
   }
 }
 

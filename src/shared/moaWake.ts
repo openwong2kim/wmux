@@ -33,7 +33,10 @@ export type MoaWakeRefusalCode =
   /** A targeted message only: the 1:1's bot does not exist in that room, or
    *  is switched off; the group chat does not exist, or none of its bots is
    *  on. Nothing was posted. `room_refused`: the room took no card. */
-  | 'bot_missing' | 'bot_off' | 'group_missing' | 'group_off' | 'room_refused';
+  | 'bot_missing' | 'bot_off' | 'group_missing' | 'group_off' | 'room_refused'
+  /** mode 'factory': the id already stands for a card with other words or in
+   *  another thread. Nothing was posted or queued. */
+  | 'id_reused';
 
 export type MoaWakeResult =
   /** `queued`: the factory took the message as a wake for the HQ bot (its
@@ -64,7 +67,7 @@ export interface MoaWakePayload {
 
 const REFUSAL_CODES: ReadonlySet<string> = new Set<MoaWakeRefusalCode>([
   'moa_off', 'mode_off', 'not_hq', 'hq_missing', 'hq_unknown', 'unsupported_vendor', 'busy', 'duplicate', 'factory_off',
-  'bot_missing', 'bot_off', 'group_missing', 'group_off', 'room_refused',
+  'bot_missing', 'bot_off', 'group_missing', 'group_off', 'room_refused', 'id_reused',
 ]);
 
 /** Main's answer, or null for any shape outside the contract (the daemon reads that as uncertain). */

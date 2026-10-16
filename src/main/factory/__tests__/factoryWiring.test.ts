@@ -570,6 +570,22 @@ describe('phone → one conversation (workspaceId + threadId)', () => {
     expect(queue.list({ states: ['queued'] }).map((i) => i.botId).sort()).toEqual([lead.id, triage.id]);
   });
 
+  it('an id whose card is up but whose wake a full queue refused is bound to that card: other text or another thread is a reused id', () => {
+    const { d, writer, queue } = deps();
+    let full = true;
+    const wakes = { enqueue: (input: Parameters<typeof queue.enqueue>[0]) => (full ? null : queue.enqueue(input)) };
+    const dd = { ...d, ports: () => ({ ...d.ports(), wakes }) };
+    expect(factoryPhoneMessage(msg(`dm:${triage.id}`), dd)).toEqual({ ok: false, code: 'busy' });
+    full = false;
+    expect(factoryPhoneMessage(msg(`dm:${triage.id}`, { text: 'Something else' }), dd)).toEqual({ ok: false, code: 'id_reused' });
+    expect(factoryPhoneMessage(msg(group.threadId), dd)).toEqual({ ok: false, code: 'id_reused' });
+    expect(queue.list({ states: ['queued'] })).toEqual([]);
+    // Its own retry still queues the wake, once.
+    expect(factoryPhoneMessage(msg(`dm:${triage.id}`), dd)).toEqual({ ok: true, accepted: true, queued: true });
+    expect(queue.list({ states: ['queued'] }).map((i) => i.botId)).toEqual([triage.id]);
+    expect(writer.read('ws-1').cards).toHaveLength(1);
+  });
+
   it('refuses before posting: a missing or switched-off bot, a missing group, a group with no bot on', () => {
     const { d, writer, queue } = deps();
     expect(factoryPhoneMessage(msg(`dm:${off.id}`), d)).toEqual({ ok: false, code: 'bot_off' });
