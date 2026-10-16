@@ -189,12 +189,13 @@ export function noticeWorkerStarts(ports: BotNoticePorts, botId: string, outcome
     const reason = t.reason || 'its setup failed';
     // The task's title gives way so the reason reaches the card whole (#2256).
     const room = BOT_NOTICE_LIMITS.TITLE_MAX - 'Worker for "" could not start: '.length - reason.length;
+    const named = title.length <= room ? title : room >= 2 ? `${title.slice(0, room - 1)}…` : null;
     noticeBot(ports, {
       botId,
       workspaceId: outcome.workspaceId,
       key: `worker.start_failed:${outcome.key}#${t.index}`,
       topic: 'worker.start_failed',
-      title: `Worker for "${title.slice(0, Math.max(1, room))}" could not start: ${reason}`,
+      title: named === null ? `Worker could not start: ${reason}` : `Worker for "${named}" could not start: ${reason}`,
       body: 'Nothing is running for it. Tell the owner plainly, then fix the cause or start it again.',
       ...(t.detail ? { detail: t.detail } : {}),
       threadId: outcome.threadId,

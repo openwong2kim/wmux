@@ -1,4 +1,7 @@
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { isPlainCmdLaunchLine } from '../botWorkerGuard';
+import { spliceWorkerLaunch } from '../botWorkerMcp';
 import { cmdLaunchPathRefusal, cmdPromptFileArgument, isCmdShellPath, promptFileArgument, promptFileArgumentForShell, stripPromptFileArgument } from '../promptFileArgument';
 
 describe('promptFileArgumentForShell', () => {
@@ -55,26 +58,42 @@ describe('the cmd.exe prompt argument (#2231)', () => {
   });
 
   it('#2256: a path cmd cannot carry is refused by its own cause and remedy, not as a merge-lane guard failure', () => {
-    const remedy = 'use PowerShell (Settings › Terminal › Default shell) or move the wmux data folder';
+    const prompt = (flaw: string) => `Command Prompt cannot pass the prompt file (its path ${flaw}); set Default shell to PowerShell (Settings › Terminal) or move the wmux data folder`;
+    const dataDir = (flaw: string) => `Command Prompt cannot pass the wmux data folder (its path ${flaw}); set Default shell to PowerShell (Settings › Terminal) or move the folder`;
     const line = (p: string) => `claude --model opus ${promptFileArgument(p, 'win32')}`;
     const okDir = 'C:\\Users\\me\\.wmux';
-    expect(cmdLaunchPathRefusal(line('C:\\Users\\me\\.wmux-wE9!\\worktrees\\.meta\\t-1\\prompt.md'), 'C:\\Users\\me\\.wmux-wE9!', true))
-      .toBe(`Command Prompt cannot pass its prompt file (the path contains "!"); ${remedy}`);
-    expect(cmdLaunchPathRefusal(line('C:\\100%\\prompt.md'), okDir, true))
-      .toBe(`Command Prompt cannot pass its prompt file (the path contains "%"); ${remedy}`);
-    expect(cmdLaunchPathRefusal(line('\\\\server\\share\\prompt.md'), okDir, true))
-      .toBe(`Command Prompt cannot pass its prompt file (the path is a network (UNC) path); ${remedy}`);
-    expect(cmdLaunchPathRefusal(line('C:\\a\nb\\prompt.md'), okDir, true))
-      .toBe(`Command Prompt cannot pass its prompt file (the path contains a control character); ${remedy}`);
-    // A clean prompt path (an output folder elsewhere) under a data folder the guard's files cannot be quoted from.
-    expect(cmdLaunchPathRefusal(line('D:\\out\\prompt.md'), 'C:\\Users\\me\\.wmux-wE9!', true))
-      .toBe(`Command Prompt cannot pass its launch files (the wmux data folder contains "!"); ${remedy}`);
-    expect(cmdLaunchPathRefusal(line('D:\\out\\prompt.md'), "C:\\it's", true)).toContain('the wmux data folder contains "\'"');
+    expect(cmdLaunchPathRefusal(line('C:\\Users\\me\\.wmux-wE9!\\worktrees\\.meta\\t-1\\prompt.md'), 'C:\\Users\\me\\.wmux-wE9!', true)).toBe(prompt('contains "!"'));
+    expect(cmdLaunchPathRefusal(line('C:\\100%\\prompt.md'), okDir, true)).toBe(prompt('contains "%"'));
+    expect(cmdLaunchPathRefusal(line('\\\\server\\share\\prompt.md'), okDir, true)).toBe(prompt('is a UNC path'));
+    expect(cmdLaunchPathRefusal(line('C:\\a\nb\\prompt.md'), okDir, true)).toBe(prompt('has a control character'));
+    // A clean prompt path (an output folder elsewhere) under a data folder the guard's files cannot ride cmd from.
+    expect(cmdLaunchPathRefusal(line('D:\\out\\prompt.md'), 'C:\\Users\\me\\.wmux-wE9!', true)).toBe(dataDir('contains "!"'));
+    expect(cmdLaunchPathRefusal(line('D:\\out\\prompt.md'), "C:\\it's", true)).toBe(dataDir('contains "\'"'));
+    expect(cmdLaunchPathRefusal(line('D:\\out\\prompt.md'), 'C:\\Users\\Tom&Jerry', true)).toBe(dataDir('contains "&"'));
+    expect(cmdLaunchPathRefusal(line('D:\\out\\prompt.md'), '\\\\server\\share\\.wmux', true)).toBe(dataDir('is a UNC path'));
+    // PowerShell's typographic quotes are plain characters to cmd.
+    expect(cmdLaunchPathRefusal(line('D:\\out\\prompt.md'), 'C:\\Users\\\u201cme\u201d', true)).toBeNull();
     // Only a claude line carries the guard's files.
     expect(cmdLaunchPathRefusal(line('D:\\out\\prompt.md'), 'C:\\Users\\me\\.wmux-wE9!', false)).toBeNull();
     // Clean paths, or no prompt argument at all, pass.
     expect(cmdLaunchPathRefusal(winLine, okDir, true)).toBeNull();
     expect(cmdLaunchPathRefusal('claude --model opus', okDir, true)).toBeNull();
+  });
+
+  it('#2256: every data folder the guarded cmd line would refuse is named by its cause first', () => {
+    const chars = [...Array.from({ length: 0x80 }, (_, c) => String.fromCharCode(c)), '\u2018', '\u2019', '\u201a', '\u201b', '\u201c', '\u201d', '\u201e', '\u201f'];
+    for (const c of chars) {
+      const dir = `C:\\Users\\a${c}b`;
+      const file = (kind: string) => path.win32.join(dir, 'factory', kind, '0123456789ab.json');
+      // As pty:create builds it: the merge-lane guard's splice, then the cmd check.
+      const spliced = spliceWorkerLaunch('claude', file('worker-settings'), file('worker-mcp'));
+      const refused = spliced === null || !isPlainCmdLaunchLine(spliced);
+      const named = cmdLaunchPathRefusal('claude', dir, true) !== null;
+      const code = c.charCodeAt(0);
+      // A control character is refused either way (no Windows folder name holds one).
+      if (code < 0x20 || code === 0x7f) expect(named, `U+${code.toString(16)}`).toBe(true);
+      else expect(named, `${c} (U+${code.toString(16)})`).toBe(refused);
+    }
   });
 
   it('the guards read it as wmux\'s own argument, and only that exact shape', () => {

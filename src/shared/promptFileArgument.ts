@@ -192,37 +192,44 @@ export function promptFileArgumentForShell(line: string, opts: { wsl: boolean; c
 }
 
 /** What makes a path one a cmd launch line cannot carry, in plain words
- *  (`contains "!"`, `is a network (UNC) path`), or null. `unsafe` is a
- *  character class body. Pure. */
+ *  (`contains "!"`, `is a UNC path`), or null. `unsafe` is a character class
+ *  body. Pure. */
 function cmdPathFlaw(file: string, unsafe: string): string | null {
   const p = file.replace(/\\/g, '/');
-  if (p.startsWith('//')) return 'is a network (UNC) path';
+  if (p.startsWith('//')) return 'is a UNC path';
   if (!/^[A-Za-z]:\//.test(p)) return 'is not a drive path';
   const bad = new RegExp(`[${unsafe}]`).exec(p)?.[0];
   if (bad === undefined) return null;
   const code = bad.charCodeAt(0);
-  return code < 0x20 || code === 0x7f ? 'contains a control character' : `contains "${bad}"`;
+  return code < 0x20 || code === 0x7f ? 'has a control character' : `contains "${bad}"`;
 }
 
-const CMD_PATH_REMEDY = 'use PowerShell (Settings › Terminal › Default shell) or move the wmux data folder';
+// The merge-lane guard's files under the data folder ride the cmd line as
+// `--settings="<path>"`: refused by isQuotable (`'`, `"`, `` ` ``, `$`, `%`,
+// `!`, UNC) and by isPlainCmdLaunchLine (`&`, `|`, `^`, `<`, `>`, a line
+// break). Control characters too (no Windows folder name holds one).
+// PowerShell's typographic quotes do not matter here: the line runs in cmd.
+const CMD_DATA_DIR_UNSAFE = '\'"`$%!&|^<>\\u0000-\\u001f\\u007f';
 
 /**
  * #2256 — why a bot worker's launch line cannot start in a cmd.exe pane, as
  * the sentence its owner sees, or null. The prompt file's path must take the
  * cmd form (cmdPromptFileArgument), and, for a claude line (`guardsDataDir`),
- * the merge-lane guard's files under `dataDir` must be quotable there (no
- * `'`, `"`, `` ` ``, `$`, `%`, `!`, no UNC). Without this the refusal read as
- * a merge-lane guard failure. Pure.
+ * the merge-lane guard's files under `dataDir` must pass cmd as they are
+ * spliced (CMD_DATA_DIR_UNSAFE). Without this the refusal read as a
+ * merge-lane guard failure, or as a line cmd would split. Short enough that a
+ * room card's title holds it whole. Pure.
  */
 export function cmdLaunchPathRefusal(line: string, dataDir: string, guardsDataDir: boolean): string | null {
+  const remedy = 'set Default shell to PowerShell (Settings › Terminal) or move';
   for (const w of shellWords(line)) {
     const m = WIN_PROMPT_ARGUMENT_PATH.exec(line.slice(w.start, w.end));
     if (!m) continue;
     const flaw = cmdPathFlaw(m[1].replace(/''/g, "'"), CMD_PROMPT_UNSAFE);
-    if (flaw) return `Command Prompt cannot pass its prompt file (the path ${flaw}); ${CMD_PATH_REMEDY}`;
+    if (flaw) return `Command Prompt cannot pass the prompt file (its path ${flaw}); ${remedy} the wmux data folder`;
   }
-  const flaw = guardsDataDir ? cmdPathFlaw(dataDir, `'${CMD_PROMPT_UNSAFE}`) : null;
-  return flaw ? `Command Prompt cannot pass its launch files (the wmux data folder ${flaw}); ${CMD_PATH_REMEDY}` : null;
+  const flaw = guardsDataDir ? cmdPathFlaw(dataDir, CMD_DATA_DIR_UNSAFE) : null;
+  return flaw ? `Command Prompt cannot pass the wmux data folder (its path ${flaw}); ${remedy} the folder` : null;
 }
 
 /** The launch line as the pane running `shell` takes it (a WSL or cmd pane
