@@ -21,7 +21,7 @@ import { getBotStore } from './botStore';
 import { getFactorySettings } from './factorySettings';
 import { getRoomWriter } from './roomWriter';
 import { taskFolderFromMissions } from './verifyPreset';
-import { AgentSlots, rowHoldsAgentSlot, setAgentSlots, setSlotLiveness, slotHolderArgs, type SlotLiveness } from './agentSlots';
+import { AgentSlots, IdleSnapshot, rowHoldsAgentSlot, setAgentSlots, setSlotLiveness, slotHolderArgs, type SlotLiveness } from './agentSlots';
 import { checkWorkers, recordWorkerEnd, recordWorkerStart } from './budget';
 import { runningWakeTainted } from './wakeTaint';
 import { installReportNudge, submitToWorkerPane } from './workerReportNudge';
@@ -112,30 +112,20 @@ export function startWorkerLifecycle(deps: WorkerLifecycleDeps): () => void {
   };
   // What the agent budget knows of the workers' panes: the open workspaces
   // (the mirror, read now) and those whose panes all run no agent any more
-  // (the daemon's sessions, read in the background at most every
-  // LIVENESS_REFRESH_MS; until the first read, none).
-  let idleWorkspaces: ReadonlySet<string> = new Set();
-  let idleReadAt = 0;
-  let idleReading = false;
-  const refreshIdle = (): void => {
-    if (idleReading || Date.now() - idleReadAt < LIVENESS_REFRESH_MS) return;
-    idleReading = true;
-    void listSessions().then((sessions) => {
-      const byId = new Map(sessions.map((x) => [x.id, x]));
-      const next = new Set<string>();
-      for (const e of getWorkspaceMirror().getEntries() ?? []) {
-        const ptys = Array.isArray(e.ptyIds) ? e.ptyIds : [];
-        // Gone, or seen to exit; an agent never attributed is not known dead.
-        if (ptys.length > 0 && ptys.every((id) => { const x = byId.get(id); return !x || x.agentProcessAlive === false; })) next.add(e.id);
-      }
-      idleWorkspaces = next;
-      idleReadAt = Date.now();
-    }).catch(() => undefined).finally(() => {
-      idleReading = false;
-    });
-  };
+  // (the daemon's sessions, read at most every LIVENESS_REFRESH_MS; until
+  // the first read, none). A cap check awaits a fresh read (refreshSlotLiveness).
+  const idle = new IdleSnapshot(async () => {
+    const byId = new Map((await listSessions()).map((x) => [x.id, x]));
+    const next = new Set<string>();
+    for (const e of getWorkspaceMirror().getEntries() ?? []) {
+      const ptys = Array.isArray(e.ptyIds) ? e.ptyIds : [];
+      // Gone, or seen to exit; an agent never attributed is not known dead.
+      if (ptys.length > 0 && ptys.every((id) => { const x = byId.get(id); return !x || x.agentProcessAlive === false; })) next.add(e.id);
+    }
+    return next;
+  }, LIVENESS_REFRESH_MS);
   const liveness = (): SlotLiveness => {
-    refreshIdle();
+    const idleWorkspaces = idle.get();
     const entries = getWorkspaceMirror().getEntries();
     return { workspaces: entries ? new Set(entries.map((e) => e.id)) : null, idleWorkspaces, now: Date.now() };
   };
@@ -144,7 +134,7 @@ export function startWorkerLifecycle(deps: WorkerLifecycleDeps): () => void {
     const live = liveness();
     return ledger.list({ openOnly: true }).filter((r) => rowHoldsAgentSlot(r, live));
   };
-  setSlotLiveness(liveness);
+  setSlotLiveness(liveness, () => idle.fresh());
   offs.push(() => setSlotLiveness(null));
   /** Whether a task's row is open (a reclaimed task can reopen: failed → working). */
   const taskOpen = (taskId: string): boolean => {

@@ -288,12 +288,61 @@ export class AgentSlots {
   }
 }
 
+/** The open workspaces whose panes all run no agent any more, read from the
+ *  daemon at most every `refreshMs`. `get()` answers at once from the last
+ *  read (starting a new one in the background when it is stale); `fresh()`
+ *  waits for a read when the last one is stale, so a decision never rests on
+ *  a snapshot older than `refreshMs` however long ago the previous check ran.
+ *  A failed read keeps the last snapshot. */
+export class IdleSnapshot {
+  private idle: ReadonlySet<string> = new Set();
+  private readAt = 0;
+  private reading: Promise<void> | null = null;
+
+  constructor(
+    private readonly read: () => Promise<ReadonlySet<string>>,
+    private readonly refreshMs: number,
+    private readonly now: () => number = Date.now,
+  ) {}
+
+  /** The last snapshot (none until the first read). */
+  get(): ReadonlySet<string> {
+    void this.fresh();
+    return this.idle;
+  }
+
+  /** Resolves once the snapshot is no older than `refreshMs` (or its read failed). */
+  fresh(): Promise<void> {
+    if (this.reading) return this.reading;
+    if (this.readAt > 0 && this.now() - this.readAt < this.refreshMs) return Promise.resolve();
+    this.reading = this.read().then((next) => {
+      this.idle = next;
+      this.readAt = this.now();
+    }).catch(() => undefined).finally(() => {
+      this.reading = null;
+    });
+    return this.reading;
+  }
+}
+
 let current: AgentSlots | null = null;
 let liveness: (() => SlotLiveness) | null = null;
+let livenessRefresh: (() => Promise<void>) | null = null;
 
-/** Set by the worker lifecycle host: what is known of the workers' panes. */
-export function setSlotLiveness(next: (() => SlotLiveness) | null): void {
+/** Set by the worker lifecycle host: what is known of the workers' panes,
+ *  and how to bring that up to date before a decision. */
+export function setSlotLiveness(next: (() => SlotLiveness) | null, refresh?: () => Promise<void>): void {
   liveness = next;
+  livenessRefresh = next ? refresh ?? null : null;
+}
+
+/** Brings what getSlotLiveness answers up to date. Never rejects. */
+export async function refreshSlotLiveness(): Promise<void> {
+  try {
+    await livenessRefresh?.();
+  } catch {
+    /* decided on what is known */
+  }
 }
 
 /** What is known of the workers' panes now, or null (every bot row counts). */

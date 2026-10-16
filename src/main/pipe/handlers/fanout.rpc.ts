@@ -140,7 +140,7 @@ import { getFactLog, type FactLog } from '../../factory/factLog';
 import { getWakeQueue } from '../../factory/wakeQueue';
 import { getVerdictedTasks } from '../../factory/verdictedTasks';
 import { isWakeStoppedByOwner } from '../../factory/factoryStop';
-import { getAgentSlots, getSlotLiveness, rowHoldsAgentSlot } from '../../factory/agentSlots';
+import { getAgentSlots, getSlotLiveness, refreshSlotLiveness, rowHoldsAgentSlot } from '../../factory/agentSlots';
 import { resumedWorkersLive } from '../../factory/workerReclaim';
 import type { LedgerEntry } from '../../../shared/ledger';
 import type { Fact } from '../../../shared/facts';
@@ -677,6 +677,9 @@ export interface FanOutBotPort {
   currentWakeTainted(botId: string): boolean;
   /** Open fan-out tasks started by this bot, and by any bot. */
   openWorkers(botId: string): { bot: number; factory: number };
+  /** Brings what openWorkers counts up to date (which workers' panes still
+   *  run an agent). Awaited before the caps are checked. Never rejects. */
+  refreshLiveness?(): Promise<void>;
   usage(botId: string): BotUsage;
   workersStarted(botId: string, taskIds: readonly string[]): void;
   budgetExhausted(bot: BotBinding, reason: BudgetRefusalReason | 'factory_workers'): void;
@@ -806,6 +809,7 @@ function defaultBotPort(): FanOutBotPort | null {
       const wake = runningWake(resolveRoomPorts(), botId);
       return wake && wake.wakeId === runtime.currentTurn(botId)?.wakeId ? wake.handoffId ?? null : null;
     },
+    refreshLiveness: refreshSlotLiveness,
     // Open bot tasks whose worker still runs, plus resumed workers whose task
     // row has ended.
     openWorkers: (botId) => {
@@ -1085,6 +1089,17 @@ export function registerFanOutRpc(
       : commanderWorkspaceId
         ? `${callerWorkspaceId}::commander::${callerKey}`
         : `${callerWorkspaceId}::${callerKey}`;
+
+    // A bot's caps below count its live workers: read their panes as they are
+    // now, not as the previous check saw them (#2255). Here, ahead of the
+    // synchronous stretch from the poll branch to the booking.
+    if (bot) {
+      try {
+        await (deps.bot ?? defaultBotPort)()?.refreshLiveness?.();
+      } catch {
+        /* the caps count what is known */
+      }
+    }
 
     // ── Poll branch ──────────────────────────────────────────────────────
     // A repeat of a key we already know answers from bookkeeping and starts

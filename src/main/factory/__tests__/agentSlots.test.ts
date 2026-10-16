@@ -1,7 +1,7 @@
 // One budget for bots and workers: a bot's new worker past it waits for a
 // slot, first come first served, and a stop ends the wait.
 import { describe, expect, it, vi } from 'vitest';
-import { AgentSlots, SLOT_GRANT_MAX_MS, SLOT_HOLDERS_SHOWN_MAX, SLOT_ROW_GRACE_MS, rowHoldsAgentSlot, slotHolderArgs, type AgentSlotPorts, type SlotLiveness } from '../agentSlots';
+import { AgentSlots, IdleSnapshot, SLOT_GRANT_MAX_MS, SLOT_HOLDERS_SHOWN_MAX, SLOT_ROW_GRACE_MS, rowHoldsAgentSlot, slotHolderArgs, type AgentSlotPorts, type SlotLiveness } from '../agentSlots';
 
 function slots(over: Partial<AgentSlotPorts> & { bots?: () => number; workers?: () => number } = {}) {
   let now = 0;
@@ -195,5 +195,53 @@ describe('slotHolderArgs', () => {
     expect(r.workerCount).toBe(many.length);
     expect(r.workers.split('\n')).toHaveLength(SLOT_HOLDERS_SHOWN_MAX);
     expect(r.holders).toMatch(/ and 2 more$/);
+  });
+});
+
+describe('IdleSnapshot (#2255)', () => {
+  it('a cap check after a quiet period sees the panes as they are now, not the previous check\'s snapshot', async () => {
+    const REFRESH_MS = 10_000;
+    let now = 1_000_000;
+    // The fake daemon: whether each worker workspace's agent still runs.
+    const agentAlive = new Map([['ws-a', true], ['ws-b', true], ['ws-c', true]]);
+    // A daemon round-trip: answered on a later turn of the event loop.
+    const read = vi.fn(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+      return new Set([...agentAlive].filter(([, alive]) => !alive).map(([ws]) => ws));
+    });
+    const idle = new IdleSnapshot(read, REFRESH_MS, () => now);
+    const rows = ['ws-a', 'ws-b', 'ws-c'].map((ws) => ({ dispatch: { origin: { kind: 'bot', botId: 'bot-0000000a' } }, taskWorkspaceId: ws, updatedAt: 0 }) as never);
+    // The factory-wide cap of 3: one more worker fits only below it.
+    const capAllowsOneMore = async (): Promise<boolean> => {
+      await idle.fresh();
+      const live: SlotLiveness = { workspaces: new Set(agentAlive.keys()), idleWorkspaces: idle.get(), now };
+      return rows.filter((r) => rowHoldsAgentSlot(r, live)).length + 1 <= 3;
+    };
+
+    expect(await capAllowsOneMore()).toBe(false);
+    // Back to back: the throttle holds, no second daemon read.
+    expect(await capAllowsOneMore()).toBe(false);
+    expect(read).toHaveBeenCalledTimes(1);
+
+    // Two workers pause, then minutes pass with no check at all.
+    agentAlive.set('ws-b', false);
+    agentAlive.set('ws-c', false);
+    now += 12 * 60_000;
+    expect(await capAllowsOneMore()).toBe(true);
+    expect(read).toHaveBeenCalledTimes(2);
+  });
+
+  it('a failed read keeps the last snapshot and does not hold the check', async () => {
+    let now = 1_000_000;
+    let fail = false;
+    const idle = new IdleSnapshot(async () => {
+      if (fail) throw new Error('the daemon is not connected');
+      return new Set(['ws-a']);
+    }, 10_000, () => now);
+    await idle.fresh();
+    fail = true;
+    now += 60_000;
+    await idle.fresh();
+    expect([...idle.get()]).toEqual(['ws-a']);
   });
 });

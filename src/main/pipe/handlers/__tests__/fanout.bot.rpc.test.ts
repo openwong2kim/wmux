@@ -427,6 +427,18 @@ describe('task.fanout.start — bot origin', () => {
     expect(r.start).not.toHaveBeenCalled();
   });
 
+  it('reads the workers\' panes fresh before the factory-wide cap check (#2255)', async () => {
+    const r = rig('verifier');
+    // The last check saw three live workers; two have paused since.
+    r.setOpen({ bot: 0, factory: 3 });
+    r.port.refreshLiveness = async () => {
+      r.setOpen({ bot: 0, factory: 1 });
+    };
+    const res = await r.call({ idempotencyKey: 'wake:w-1:1', titles: ['x'], preset: 'verify', checkout: { sha: SHA } }, botCtx('verifier'));
+    expect(res.status).toBe('accepted');
+    expect(r.port.exhausted).toEqual([]);
+  });
+
   it('a second concurrent start counts the first one still being started', async () => {
     const r = rig('verifier');
     const first = r.call({ idempotencyKey: 'wake:w-1:1', titles: ['x'], preset: 'verify', checkout: { sha: SHA } }, botCtx('verifier'));
