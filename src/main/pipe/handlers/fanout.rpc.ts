@@ -135,16 +135,12 @@ import { botThreadRefusal, resolveRoomPorts, runningWake } from '../../factory/r
 import { getHandoffRouter } from '../../factory/handoffRouter';
 import { emitBotHook } from '../../factory/botHooks';
 import { checkWorkers, recordWorkerStart, type BotUsage, type BudgetRefusalReason } from '../../factory/budget';
-import { getTaskLedger } from '../../deck/taskLedgerHost';
 import { botFanoutPreset, botFanoutPresetList, botPresetCheckoutRefusal, composeBotWorkerPrompt } from '../../worktask/botFanoutPresets';
-import { getFactLog, type FactLog } from '../../factory/factLog';
+import { getFactLog } from '../../factory/factLog';
 import { getWakeQueue } from '../../factory/wakeQueue';
-import { getVerdictedTasks } from '../../factory/verdictedTasks';
 import { isWakeStoppedByOwner } from '../../factory/factoryStop';
-import { getAgentSlots, getSlotLiveness, refreshSlotLiveness, rowHoldsAgentSlot } from '../../factory/agentSlots';
-import { resumedWorkersLive } from '../../factory/workerReclaim';
-import type { LedgerEntry } from '../../../shared/ledger';
-import type { Fact } from '../../../shared/facts';
+import { getAgentSlots, refreshSlotLiveness } from '../../factory/agentSlots';
+import { countOpenBotWorkers, openBotWorkers, verdictedTaskIds } from '../../factory/openBotWorkers';
 
 /** Per worker CLI: why a connection cannot reach its workers, or null. */
 const CONNECTOR_AGENT_REFUSAL: Readonly<Record<string, (c: Connector) => string | null>> = { codex: codexConnectorRefusal };
@@ -721,54 +717,10 @@ export interface FanOutBotPort {
 export const BOT_FANOUT_STARTING_NOTE =
   'Accepted: the workers are starting, not started. Say they are starting, not that they started: a worker that could not start wakes you, and one that started reports through its task.';
 
+export { countOpenBotWorkers, verdictedTaskIds };
+
 /** Fan-outs a bot may start inside one wake. */
 export const BOT_FANOUTS_PER_WAKE_MAX = 16;
-
-/** The verify tasks among `taskIds` whose verdict.recorded fact (naming the
- *  task as its evidence) is still in the fact log. Empty when the log is not
- *  running or cannot be scanned. The factory's verdicted-tasks file keeps
- *  them after the fact is gone (verdictedTasks.ts). */
-export function verdictedTaskIds(taskIds: readonly string[], log: unknown = getFactLog()): Set<string> {
-  const out = new Set<string>();
-  if (taskIds.length === 0 || !log || typeof (log as Partial<FactLog>).readWhere !== 'function') return out;
-  const want = new Set(taskIds);
-  // One fact per task is enough: the scan stops once every task is found.
-  const firstVerdict = (f: Fact): boolean => {
-    const id = f.ref?.taskId;
-    if (f.kind !== 'verdict.recorded' || !id || !want.has(id) || out.has(id)) return false;
-    out.add(id);
-    return true;
-  };
-  try {
-    (log as FactLog).readWhere(0, firstVerdict, want.size);
-  } catch {
-    out.clear(); // counted as open
-  }
-  return out;
-}
-
-/**
- * Open fan-out tasks started by `botId`, and by any bot. A verify task that
- * reported done (review_requested) and whose verdict is recorded has
- * finished its work — the verdict was the reason it ran — so it no longer
- * holds a worker slot. Pure over its inputs.
- */
-export function countOpenBotWorkers(
-  rows: ReadonlyArray<Pick<LedgerEntry, 'id' | 'status' | 'dispatch'>>,
-  botId: string,
-  verdicted: (taskIds: readonly string[]) => Set<string>,
-): { bot: number; factory: number } {
-  const botRows = rows.filter((e) => e.dispatch?.origin?.kind === 'bot');
-  const done = verdicted(botRows.filter((e) => e.status === 'review_requested' && e.dispatch?.preset === 'verify').map((e) => e.id));
-  let bot = 0;
-  let factory = 0;
-  for (const e of botRows) {
-    if (done.has(e.id)) continue;
-    factory++;
-    if (e.dispatch?.origin?.botId === botId) bot++;
-  }
-  return { bot, factory };
-}
 
 /** What fills a bot's own worker budget, for its refusal: a worker waiting
  *  for an agent slot has not started, and the bot must not say it runs. Pure. */
@@ -836,17 +788,7 @@ function defaultBotPort(): FanOutBotPort | null {
     refreshLiveness: refreshSlotLiveness,
     // Open bot tasks whose worker still runs, plus resumed workers whose task
     // row has ended.
-    openWorkers: (botId) => {
-      const live = getSlotLiveness();
-      const rows = getTaskLedger().list({ openOnly: true }).filter((r) => rowHoldsAgentSlot(r, live));
-      const open = countOpenBotWorkers(rows, botId, (ids) => {
-        const kept = getVerdictedTasks();
-        const found = verdictedTaskIds(ids.filter((id) => !kept?.has(id)));
-        for (const id of ids) if (kept?.has(id)) found.add(id);
-        return found;
-      });
-      return { bot: open.bot + resumedWorkersLive(botId), factory: open.factory + resumedWorkersLive() };
-    },
+    openWorkers: openBotWorkers,
     usage: (botId) => store.usageOf(botId),
     workersStarted: (botId, taskIds) => {
       const now = Date.now();

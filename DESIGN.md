@@ -453,10 +453,17 @@ status bar badges, `fleet_triage` or the phone's sidebar.
   main is asked, and main checks it again) — what its workers run on — a native Select:
   Default (the presets' engine) or an installed engine that has a worker
   guard, one not installed listed but disabled — its workers' model and
-  effort (the same model line, for that engine) — on/off and presence (a
-  parked bot adds one muted line under it saying why — out of turns,
-  stopped after errors, paused by the owner — with a secondary Resume),
-  turns used and left today,
+  effort (the same model line, for that engine) — on/off and presence,
+  then Today (owner decision 2026-10-16): on top, one muted line naming the
+  first thing that keeps the bot from new work — paused by the owner,
+  stopped after errors, the usage limit until a time, out of turns until a
+  time, out of worker time for today (with its reset), its workers at its
+  cap, the factory's workers or agent slots full, its queue full — with a
+  secondary Resume while it is parked; under it one muted line per limit in
+  tabular figures: turns this hour (only with an hourly cap) and today,
+  used and left; worker time used of its cap; running workers of its cap;
+  the queue of its cap (only when not empty); a line at its limit in the
+  caution yellow,
   its routines, its connections — each library connection that applies to
   it, an every-bot one with a switch that turns it off for this bot alone,
   a picked one with Edit and Remove from this bot, then Add connection and
@@ -1564,6 +1571,7 @@ primitives plus `Settings/SettingsLayout.tsx` (`SettingsSection`,
 | 2026-10-15 | Owner decision (dogfood): window glass on every theme, in either appearance, with an Off / Soft / Clear setting; the sheet loses its right and bottom margins and the pane column rounds off against the sidebar with a hairline; borrowed terminal palettes sit on their theme's own base. Amends Themes, Frame, Sheet and Window glass | Glass only on a dark Mac read as a missing feature for anyone on a light one, and a fixed 85% frame was barely translucent. The 8px margins spent space on a frame the eye did not need, while the sidebar and panes met with no visible edge. A navy or red theme over a borrowed grey terminal looked like two different apps |
 | 2026-10-16 | Owner decision: a bot without a picture is its Mochi character ("Mochi Orb Crew v2", drawn by Grok), the one of its identity colour slot, replacing the four shapes with a face. The characters move: idle breath, blink and one signature twitch; a quicker hop while the bot runs; blink only at 24px and under; paused off screen; still under reduced motion. Amends Avatars and the Motion rule's "only perpetual motion" | The owner picked the crew from a design contest ("go ahead as it is"); a character tells bots apart better than a coloured shape, and its motion says which bot is busy without a word |
 | 2026-10-16 | Owner decision: per-bot models. A bot's profile picks the model and effort it thinks on and its workers' model and effort, each a text value with a muted Change (model combobox + effort Select, Cancel and Save), between the repository and on/off lines; Settings › Bots' list rows and the group dialog's bot rows add one muted, truncated note of what is set (e.g. "haiku (latest) · workers opus (latest)"), nothing when both are on the defaults. New Coordinator, Issue and Researcher bots think on a fast model, new Developer and Reviewer bots' workers on the strongest; existing bots keep theirs. Amends the profile's item list only | The owner could not choose models per bot; a one-line note keeps the list scannable without a column, and the profile stays a list of lines with no new control style |
+| 2026-10-16 | Owner decision: a bot's profile shows Today — each of its limits (turns per hour and day, worker time, running workers, the queue) with what is used of it, and one line on top naming the first that stops it, in a fixed order | A bot has four separate limits plus a queue cap, and the owner could not tell which stopped it: the reviewer had 26 turns left but no worker time and a full queue, and looked simply stuck. The limits stay as they are; they are made visible |
 
 ### Desktop conversation view
 

@@ -22,6 +22,7 @@ import {
   HOUR_MS,
   hourlyCap,
   turnsUsedDay,
+  workerTimeAllowedAt,
 } from '../budget';
 import { FactorySettingsStore, factorySettingsPath, mergeFactorySettings, DEFAULT_FACTORY_SETTINGS } from '../factorySettings';
 import { __resetBotHooksForTesting, onBotHook, type BotHookEvent } from '../botHooks';
@@ -430,6 +431,23 @@ describe('budget windows', () => {
     expect(budgetLeft(open, u, 5)).toMatchObject({ turnsHour: null, turnsDay: 1 });
     recordTurn(u, 4);
     expect(checkTurn(open, u, 5)).toEqual({ ok: false, reason: 'turns_day' });
+  });
+
+  it('workerTimeAllowedAt: now under the cap, else when enough of the last day\'s worker time leaves it', () => {
+    const u = emptyUsage(); // cap: 1 worker-hour a day
+    recordWorkerStart(u, 'a', 0);
+    recordWorkerEnd(u, 'a', 30 * 60_000);
+    expect(workerTimeAllowedAt(budget, u, HOUR_MS)).toBe(HOUR_MS);
+    recordWorkerStart(u, 'b', HOUR_MS);
+    recordWorkerEnd(u, 'b', 2 * HOUR_MS);
+    const now = 3 * HOUR_MS;
+    // 1.5 h used: under the cap once the first run and the start of the
+    // second have left the day.
+    const at = workerTimeAllowedAt(budget, u, now);
+    expect(Math.abs(at - 25 * HOUR_MS)).toBeLessThanOrEqual(1_000);
+    expect(checkWorkers(budget, u, 0, 1, at).ok).toBe(true);
+    expect(checkWorkers(budget, u, 0, 1, at - 2_000).ok).toBe(false);
+    expect(workerTimeAllowedAt({ ...budget, maxWorkerHoursPerDay: 0 }, u, now)).toBe(Infinity);
   });
 
   it('nextTurnAllowedAt: now when a turn is allowed, else when the window that refuses frees one', () => {

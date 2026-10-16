@@ -46,7 +46,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import type { BotBinding, BotProfile, BotStatus } from '../../shared/bot';
+import type { BotBinding, BotProfile, BotStatus, BotStatusUsage } from '../../shared/bot';
 import type { Fact } from '../../shared/facts';
 import type { RoomCard, ThreadId } from '../../shared/room';
 import { WAKE_LIMITS, type WakeItem, type WakeReason } from '../../shared/wake';
@@ -55,7 +55,10 @@ import { USAGE_LIMIT_UNKNOWN_HOLD_MS, findClaudeUsageLimitNotice, parseUsageLimi
 import { emitBotHook } from './botHooks';
 import type { BotEngineFactory } from './botEngines';
 import type { BotStore } from './botStore';
-import { budgetLeft, checkTurn, nextTurnAllowedAt, recordTurn, unrecordTurn, type BudgetRefusalReason } from './budget';
+import {
+  budgetLeft, checkTurn, hourlyCap, nextTurnAllowedAt, recordTurn, runningWorkers, turnsUsedDay, turnsUsedHour, unrecordTurn,
+  workerHoursDay, workerTimeAllowedAt, type BotUsage, type BudgetRefusalReason,
+} from './budget';
 import type { FactorySettings } from './factorySettings';
 import { createFilePersister, readVersionedFile, type FilePersister } from './versionedFile';
 import {
@@ -179,6 +182,20 @@ export interface BotRuntimeDeps {
   resolveHandoff?: (handoffId: string) => WakeHandoffSummary | null;
   /** A bot's status changed. */
   onStatus?: (status: BotStatus) => void;
+  /** Its workers running now and the factory's worker load, for the status
+   *  (the profile's Today block); absent: not reported. */
+  workerLoad?: (botId: string) => BotWorkerLoad;
+}
+
+/** What `workerLoad` reports. */
+export interface BotWorkerLoad {
+  /** The bot's open workers, and every bot's, as the fan-out's cap counts them. */
+  running: number;
+  factoryRunning: number;
+  /** The bot's new workers waiting for an agent slot. */
+  waiting: number;
+  /** The factory's agent slots, or null before they are installed. */
+  slots: { inUse: number; cap: number } | null;
 }
 
 /** What a live session is bound to: its engine and the repository it
@@ -384,7 +401,9 @@ export class BotRuntime {
           : live?.attached
             ? 'idle'
             : 'unknown';
-    const left = budgetLeft(profile.budget, this.deps.store.usageOf(botId), this.now());
+    const now = this.now();
+    const usage = this.deps.store.usageOf(botId);
+    const left = budgetLeft(profile.budget, usage, now);
     const sessionId = live?.adapter.sessionId ?? this.deps.sessions.get(botId)?.sessionId;
     const err = this.lastError.get(botId);
     return {
@@ -394,8 +413,40 @@ export class BotRuntime {
       ...(run ? { currentTurn: { wakeId: run.item.id, startedAt: run.startedAt, ...(run.item.threadId ? { threadId: run.item.threadId } : {}) } } : {}),
       queueDepth: this.deps.queue.depth(botId),
       budgetLeft: { turnsHour: left.turnsHour, turnsDay: left.turnsDay, workerHoursDay: left.workerHoursDay },
+      usage: this.usageView(profile, usage, now),
       ...(err ? { lastError: { ...err } } : {}),
     };
+  }
+
+  /** The status's `usage`: what the bot used of each limit, when an
+   *  exhausted one frees up, and the worker load (when reported). */
+  private usageView(profile: BotProfile, usage: BotUsage, now: number): BotStatusUsage {
+    const out: BotStatusUsage = {
+      turnsHour: hourlyCap(profile.budget) === null ? null : turnsUsedHour(usage, now),
+      turnsDay: turnsUsedDay(usage, now),
+      workerHoursDay: workerHoursDay(usage, now),
+    };
+    if (!checkTurn(profile.budget, usage, now).ok) {
+      const at = nextTurnAllowedAt(profile.budget, usage, now);
+      if (Number.isFinite(at)) out.nextTurnAt = at;
+    }
+    let load: BotWorkerLoad | null = null;
+    try {
+      load = this.deps.workerLoad?.(profile.id) ?? null;
+    } catch {
+      /* the status never fails on the load */
+    }
+    if (out.workerHoursDay >= profile.budget.maxWorkerHoursPerDay && runningWorkers(usage) === 0 && (load?.running ?? 0) === 0) {
+      const at = workerTimeAllowedAt(profile.budget, usage, now);
+      if (Number.isFinite(at)) out.workerTimeAt = at;
+    }
+    if (load) {
+      out.workersRunning = load.running;
+      if (load.waiting > 0) out.workersWaiting = load.waiting;
+      out.factoryWorkers = load.factoryRunning;
+      if (load.slots) out.slots = { ...load.slots };
+    }
+    return out;
   }
 
   private pushStatus(botId: string): void {

@@ -79,6 +79,40 @@ export function turnsUsedDay(usage: BotUsage, now: number): number {
   return turnsSince(usage, now - DAY_MS, now);
 }
 
+/** Turns the bot started inside the last hour. */
+export function turnsUsedHour(usage: BotUsage, now: number): number {
+  return turnsSince(usage, now - HOUR_MS, now);
+}
+
+/** The earliest time the bot's worker time in the last day drops below its
+ *  cap again, counting its running workers as if they stopped now (a worker
+ *  still running pushes the real time later): `now` when it is below the cap
+ *  now, Infinity when the cap is 0. */
+export function workerTimeAllowedAt(budget: BotBudget, usage: BotUsage, now: number): number {
+  const max = budget.maxWorkerHoursPerDay;
+  if (workerHoursDay(usage, now) < max) return now;
+  if (max <= 0) return Infinity;
+  // Worker time in the window ending at t, no worker time after now: it only
+  // falls as t moves on, so a binary search finds the first t below the cap.
+  const used = (t: number): number => {
+    let ms = 0;
+    for (const w of usage.workers) {
+      const start = Math.max(w.startedAt, t - DAY_MS);
+      const end = Math.min(w.endedAt ?? now, now);
+      if (end > start) ms += end - start;
+    }
+    return ms / HOUR_MS;
+  };
+  let lo = now;
+  let hi = now + DAY_MS;
+  while (hi - lo > 1_000) {
+    const mid = Math.floor((lo + hi) / 2);
+    if (used(mid) < max) hi = mid;
+    else lo = mid;
+  }
+  return hi;
+}
+
 export interface BudgetLeft {
   /** null: no hourly cap. */
   turnsHour: number | null;

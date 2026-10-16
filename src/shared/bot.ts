@@ -301,7 +301,34 @@ export interface BotStatus {
   queueDepth: number;
   /** turnsHour is null when the bot has no hourly cap. */
   budgetLeft: { turnsHour: number | null; turnsDay: number; workerHoursDay: number };
+  /** What the profile's Today block shows beside budgetLeft (absent from an
+   *  older build). */
+  usage?: BotStatusUsage;
   lastError?: { message: string; at: number };
+}
+
+/** A bot's use of its limits now (main/factory/budget.ts). */
+export interface BotStatusUsage {
+  /** Turns started in the last hour; null when the bot has no hourly cap. */
+  turnsHour: number | null;
+  turnsDay: number;
+  /** Worker time in the last day, in hours (may pass the cap: a running
+   *  worker counts up to now). */
+  workerHoursDay: number;
+  /** When out of turns: when a turn is allowed again (absent: never, a cap
+   *  of 0). */
+  nextTurnAt?: number;
+  /** When out of worker time and no worker of its runs: when its worker
+   *  time drops below the cap. */
+  workerTimeAt?: number;
+  /** Its workers running now, as the fan-out's cap counts them. */
+  workersRunning?: number;
+  /** Its new workers waiting for an agent slot (they count against its cap). */
+  workersWaiting?: number;
+  /** Bot workers running factory-wide (cap WAKE_LIMITS.GLOBAL_CONCURRENT_WORKERS). */
+  factoryWorkers?: number;
+  /** The factory's agent slots (Settings › Bots). */
+  slots?: { inUse: number; cap: number };
 }
 
 export const BOT_RPC = {

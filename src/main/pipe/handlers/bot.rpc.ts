@@ -35,6 +35,8 @@ import { FactorySettingsStore, factorySettingsPath, onFactorySettingsChanged, se
 import { BotRuntime, BotSessionStore, botSessionsPath, setBotRuntime } from '../../factory/BotRuntime';
 import { createDefaultBotEngineFactory, runnableDefaultEngine, type BotEngineFactory } from '../../factory/botEngines';
 import { recordWorkerEnd } from '../../factory/budget';
+import { openBotWorkers } from '../../factory/openBotWorkers';
+import { getAgentSlots } from '../../factory/agentSlots';
 import { BotFanoutReceipts, botFanoutReceiptsPath, setBotFanoutReceipts } from '../../factory/botFanoutReceipts';
 import { installBotFanoutWake } from '../../deck/fanoutCallerNotify';
 import { isVerifyReport } from '../../factory/verifyPreset';
@@ -419,6 +421,16 @@ export function botRuntimeModule(router: FactoryRouter, deps: FactoryHostDeps, o
         wmuxDir,
         resolveTasks: taskSummaries,
         onStatus: (status: BotStatus) => send({ type: 'bot.status', status }),
+        workerLoad: (botId) => {
+          const open = openBotWorkers(botId);
+          const slots = getAgentSlots();
+          return {
+            running: open.bot,
+            factoryRunning: open.factory,
+            waiting: slots ? slots.waiting().filter((w) => w.botId === botId).length : 0,
+            slots: slots ? { inUse: slots.inUse(), cap: slots.limit() } : null,
+          };
+        },
       });
       setFactorySettingsStore(settings);
       setBotStore(store);
@@ -434,9 +446,14 @@ export function botRuntimeModule(router: FactoryRouter, deps: FactoryHostDeps, o
       try {
         offWake = installBotFanoutWake({
           enqueue: (input) => queue.enqueue(input),
-          onWorkerEnded: (botId, taskId) => store.mutateUsage(botId, (u) => {
-            recordWorkerEnd(u, taskId, Date.now());
-          }),
+          // A usage change alone sends no event: tell the window, so the
+          // profile's running workers and worker time move on.
+          onWorkerEnded: (botId, taskId) => {
+            store.mutateUsage(botId, (u) => {
+              recordWorkerEnd(u, taskId, Date.now());
+            });
+            send({ type: 'bots-changed' });
+          },
           // A verify task's report wakes its verifier once, from the verify
           // gate (verifyPreset.ts) after the gate at the head is recorded.
           wokenElsewhere: (t) => isVerifyReport(t.entry, t.to),

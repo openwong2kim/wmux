@@ -68,9 +68,9 @@ import { RoomCard, useIdLabels } from '../Room/RoomCard';
 import { CardAnswers, useWorkspaceNames } from '../Room/CardAnswers';
 import { ApprovePendingChip } from '../Room/ApprovalAnswers';
 import { pendingForChip, useApprovals } from '../Room/approvalsStore';
-import { PresenceDot, botActionsFor, botPresence } from '../Room/BotChips';
+import { PresenceDot, botPresence } from '../Room/BotChips';
 import { deliveryLine, deliveryTaken, roomPostParams, sentFrom, useMentionPicks, type SentTo } from '../Room/RoomComposer';
-import { actorLabel, botKindLabel, cardResumeTaskId, cardTone, formatNoticeTime, isRefThread, kindLabel, ownerCardText, planTextWithNames, requestTitles, threadLabel, threadRef, type IdLabels, type RoomActorView } from '../Room/roomFormat';
+import { actorLabel, botKindLabel, cardResumeTaskId, cardTone, isRefThread, kindLabel, ownerCardText, planTextWithNames, requestTitles, threadLabel, threadRef, type IdLabels, type RoomActorView } from '../Room/roomFormat';
 import { BOT_JOB_MAX, botTemplate, isCoordinatorBot, normalizeBotJob, type BotProfile as BotProfileData } from '../../../shared/bot';
 import { DEFAULT_BOT_WORKER_AGENT, botWorkerAgentLabel, type BotWorkerAgentOption } from '../../../shared/botWorkerAgent';
 import { pickFolderDialog, templateJob } from '../Settings/FactoryTab';
@@ -84,6 +84,7 @@ import { useShallow } from 'zustand/react/shallow';
 import type { BotTaskView } from '../../../shared/botTask';
 import { botCanDo } from './botsProfile';
 import { BotConnections } from './BotConnections';
+import { BotToday } from './BotToday';
 import { BrainModelLine, WorkerModelLine } from './BotModelLines';
 import { stopBotSummary, type BotsStopPort } from './botsStop';
 import { InlineConfirm } from './InlineConfirm';
@@ -1580,39 +1581,6 @@ function StopBot({ row, port, t }: { row: FactoryBotRow; port: BotsStopPort; t: 
  *  Resume and Delete bot (absent ones show no control). */
 type BotAdminPort = Partial<Pick<FactoryBotPort, 'act' | 'remove'>>;
 
-/** A parked bot's line: why it takes no turn (out of turns, stopped after
- *  errors, parked by the owner) and Resume, which lets every wake waiting
- *  for it run now, past its limits if need be. */
-function ParkedLine({ row, port, t }: { row: FactoryBotRow; port?: BotAdminPort; t: T }) {
-  const [busy, setBusy] = useState(false);
-  const act = port?.act;
-  if (!botActionsFor(row).resume) return null;
-  const reason = row.bot.parked?.reason ?? 'human';
-  const resume = async () => {
-    if (!act) return;
-    setBusy(true);
-    try {
-      const r = await act('resume', row.bot.id);
-      if (!r.ok) useStore.getState().pushToast({ message: t('room.bot.actionFailed', { name: row.bot.name, reason: r.message ?? '' }), level: 'error' });
-    } catch (err) {
-      useStore.getState().pushToast({ message: t('room.bot.actionFailed', { name: row.bot.name, reason: err instanceof Error ? err.message : String(err) }), level: 'error' });
-    } finally {
-      setBusy(false);
-    }
-  };
-  return (
-    <div className="flex items-center gap-3 py-1 text-[12px]" data-bots-profile-parked={reason}>
-      <span className="w-[112px] shrink-0" aria-hidden="true" />
-      <span className="min-w-0 flex-1 text-[var(--text-sub)]">
-        {reason === 'error' && row.bot.parked?.until !== undefined
-          ? t('botsPage.profile.parked.limit', { time: formatNoticeTime(row.bot.parked.until) })
-          : t(`botsPage.profile.parked.${reason}`)}
-      </span>
-      {act && <Button size="sm" variant="secondary" data-testid="bots-resume-bot" disabled={busy} onClick={() => void resume()}>{t('room.bot.resume')}</Button>}
-    </div>
-  );
-}
-
 /** Delete bot, after an inline confirm that says what happens: its history
  *  stays, its running workers are stopped, its routines are removed. Its
  *  colour goes with its tombstone, so its old cards keep its face. */
@@ -1846,11 +1814,11 @@ function WorkerEngineLine({ row, t, port }: { row: FactoryBotRow; t: T; port?: P
 
 /** The bot's profile under its name pill: template, job (editable),
  *  workspace, repo, the model it thinks on, what its workers run on and
- *  their model, on/off, turns used and left today, its routines
+ *  their model, on/off, what it used today of each limit (and what stops
+ *  it, with Resume when parked), its routines
  *  (read-only), its connections, then what it can do (the shared powers,
  *  read-only), whom it reports to, its workers now, and Stop. */
 function BotProfile({ row, workers, workspaceName, t, stopPort, jobPort, adminPort }: { row: FactoryBotRow; workers: readonly BotWorker[]; workspaceName: string; t: T; stopPort: BotsStopPort; jobPort?: Pick<FactoryBotPort, 'update' | 'workerAgents'>; adminPort?: BotAdminPort }) {
-  const left = row.status?.budgetLeft?.turnsDay;
   const routines = (useBotRoutines()?.routines ?? []).filter((r) => r.botId === row.bot.id);
   const canDo = botCanDo(row.bot);
   const waiting = workers.filter((w) => w.waiting).length;
@@ -1865,13 +1833,7 @@ function BotProfile({ row, workers, workspaceName, t, stopPort, jobPort, adminPo
       <WorkerEngineLine row={row} t={t} port={jobPort} />
       <WorkerModelLine row={row} t={t} port={jobPort} />
       <ProfileLine label={t('botsPage.profile.state')} value={`${t(row.bot.enabled ? 'botsPage.profile.on' : 'botsPage.profile.off')} · ${t(`room.presence.${botPresence(row)}`)}`} />
-      <ParkedLine row={row} port={adminPort} t={t} />
-      {typeof left === 'number' && (
-        <ProfileLine
-          label={t('botsPage.profile.turnsToday')}
-          value={<span data-bots-profile-turns>{t('botsPage.profile.turnsTodayValue', { used: Math.max(0, row.bot.budget.maxTurnsPerDay - left), left })}</span>}
-        />
-      )}
+      <BotToday row={row} act={adminPort?.act} t={t} />
       {routines.length > 0 && (
         <div className="flex items-baseline gap-3 py-1 text-[12px]" data-bots-profile-routines>
           <span className="w-[112px] shrink-0 text-[var(--text-muted)]">{t('botsPage.profile.routines')}</span>
