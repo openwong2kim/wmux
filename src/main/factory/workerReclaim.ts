@@ -160,6 +160,35 @@ export function isWslWorkerPane(s: Pick<WorkerSessionInfo, 'wslTarget' | 'exec' 
   return !!s && !!s.wslTarget && !s.exec && s.agentProcessAlive !== false && s.commandRunning === true;
 }
 
+/** The part of a bot worker session record (botWorkerSessionRecord) that
+ *  names the task whose own fan-out (or resume) launch created the pane. */
+export type WorkerSessionRecordOf = (sessionId: string) => { taskId?: string } | null;
+
+/**
+ * Whether a pane is the task's own worker pane (#2266): its session is one
+ * the task's reclaim record lists (`recordedSessionIds`), or its bot worker
+ * session record names this task (written only for the task's own fan-out
+ * or resume spawn, never for a split). A WSL pane's Linux agent is not always
+ * attributed, so a WSL terminal the owner opened in the task folder looks
+ * like a worker whenever it runs anything; only this identifies the worker.
+ * A pane neither names (a record that cannot be read, a pane created before
+ * session records carried a task) is not the task's: it is never closed and
+ * never blocks a resume. Pure over its inputs.
+ */
+export function isTaskOwnWorkerPane(
+  session: Pick<WorkerSessionInfo, 'id'>,
+  taskId: string,
+  recordedSessionIds: readonly string[],
+  sessionRecordOf: WorkerSessionRecordOf | undefined,
+): boolean {
+  if (recordedSessionIds.includes(session.id)) return true;
+  try {
+    return sessionRecordOf?.(session.id)?.taskId === taskId;
+  } catch {
+    return false;
+  }
+}
+
 /** Whether a ledger move ends a bot task this module reclaims. Pure. */
 export function isReclaimableEnd(entry: LedgerEntry, to: string): to is 'completed' | 'cancelled' | 'failed' {
   const origin = entry.dispatch?.origin;
@@ -339,6 +368,10 @@ export interface WorkerReclaimPorts {
    *  in, as recorded when wmux created the pane as a bot worker; null when
    *  none was. Absent: no mode is filled in. */
   launchedConversation?: (sessionId: string) => { sessionId: string; permissionMode?: PermissionMode } | null;
+  /** A pane's bot worker session record (its task), null when none: a WSL
+   *  pane counts as the task's worker only when identified
+   *  (isTaskOwnWorkerPane). Absent: only the reclaim record identifies one. */
+  sessionRecordOf?: WorkerSessionRecordOf;
   note?: (workspaceId: string, threadId: ThreadId, title: string, body: string, notice?: CardNotice, taskId?: string) => void;
   /** The Bots page re-reads (BOT_EVENT). */
   changed?: () => void;
@@ -776,10 +809,25 @@ export async function reclaimWorker(
     // alone cannot tell the worker from a pane the owner opened there (a
     // stop of it closes the pane). An unknown tree: tried again later.
     const wsl = [...ids].filter((id) => sessions.some((x) => x.id === id && !!x.wslTarget));
+    // The task's recorded panes (an earlier stop, a resume): with its bot
+    // worker session record, what identifies its own WSL worker pane.
+    const recorded = ports.store.get(entry.id)?.sessions.map((x) => x.sessionId) ?? [];
     if (wsl.length > 0) {
       const own = panesOf(workerWorkspaceOf({ taskWorkspaceId: entry.taskWorkspaceId, paneWorkspaceId: ports.store.get(entry.id)?.paneWorkspaceId }));
       if (!own) return null;
       for (const id of wsl) if (!own.includes(id)) ids.delete(id);
+      // Nor does a WSL pane of that workspace count unless it is identified
+      // as the task's own (#2266): the owner's WSL terminal there running vim
+      // or a test is no worker. Its stop would be refused (`unsupported`) and
+      // keep the record `stopping`. A WSL agent the daemon attributed is
+      // stopped in the distro, its pane kept, like a Windows pane's. The
+      // trade-off: an unattributed worker pane neither the record nor its
+      // session record names (one created before session records carried a
+      // task, a record that cannot be read) keeps running.
+      for (const id of wsl) {
+        const s = sessions.find((x) => x.id === id);
+        if (s && s.agentProcessAlive !== true && !isTaskOwnWorkerPane(s, entry.id, recorded, ports.sessionRecordOf)) ids.delete(id);
+      }
     }
     const panes = sessions.filter((s) => ids.has(s.id)).map(reclaimedSessionOf).filter((s): s is ReclaimedSession => !!s);
     if (movedOn(ports, entry, ended)) return null;
@@ -881,10 +929,12 @@ export async function reclaimWorker(
       attempted++;
       try {
         // Only an end whose card says its pane closes closes a WSL worker's
-        // pane; a reported (still open) or failed task keeps it.
+        // pane; a reported (still open) or failed task keeps it. Only the
+        // task's own pane (isTaskOwnWorkerPane) is ever closed.
         const closable = (ended === 'completed' || ended === 'cancelled')
           && !!ownPanes?.includes(p.sessionId)
-          && isWslWorkerPane(sessions.find((x) => x.id === p.sessionId));
+          && isWslWorkerPane(sessions.find((x) => x.id === p.sessionId))
+          && isTaskOwnWorkerPane({ id: p.sessionId }, entry.id, recorded, ports.sessionRecordOf);
         const r = await stopOrClose(ports.stopAgent, closable ? ports.closePane : undefined, p.sessionId, ended === 'reported' ? { ifTurnClosed: true } : undefined);
         // The daemon found the turn open at the stop itself: nothing was
         // signalled, and it is no failed stop.
@@ -1128,6 +1178,9 @@ export interface WorkerResumePorts {
   /** Default: process.platform (a WSL pane's recorded Linux folder is read
    *  as its Windows folder on win32). */
   platform?: NodeJS.Platform;
+  /** A pane's bot worker session record (WorkerReclaimPorts.sessionRecordOf):
+   *  only the task's own WSL worker pane makes a resume wait. */
+  sessionRecordOf?: WorkerSessionRecordOf;
   /** Open a new task workspace in the recorded worktree with the resume line
    *  as its launch, through the bot worker spawn. Absent: a resume whose pane
    *  is gone is refused. */
@@ -1354,8 +1407,11 @@ async function respawnOnce(
   // the same conversation is never started.
   const home = normalizeResumeCwd(folder);
   // A WSL worker's agent is never attributed (agentProcessAlive unknown):
-  // its running foreground command counts (isWslWorkerPane).
-  const busy = sessions.some((s) => (s.agentProcessAlive === true || isWslWorkerPane(s))
+  // its running foreground command counts (isWslWorkerPane), but only in the
+  // task's own pane (isTaskOwnWorkerPane, #2266): the owner's WSL terminal
+  // in the folder running vim or a test does not hold the resume back.
+  const recorded = rec.sessions.map((x) => x.sessionId);
+  const busy = sessions.some((s) => (s.agentProcessAlive === true || (isWslWorkerPane(s) && isTaskOwnWorkerPane(s, rec.taskId, recorded, ports.sessionRecordOf)))
     && [s.spawnCwd, s.cwd].some((d) => typeof d === 'string' && d.length > 0 && normalizeResumeCwd(sessionHostDir(d, s, platform)) === home));
   if (busy) return refuse('already_running', 'an agent is already running in the task\'s worktree');
   if (stopped()) return refuse('not_now', 'the bot\'s work was stopped while this resume was under way');

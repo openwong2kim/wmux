@@ -304,6 +304,8 @@ export function startWorkerLifecycle(deps: WorkerLifecycleDeps): () => void {
         const r = botWorkerSessionRecord(sessionId);
         return r?.launchSessionId ? { sessionId: r.launchSessionId, ...(r.permissionMode ? { permissionMode: r.permissionMode } : {}) } : null;
       },
+      // A WSL pane counts as the task's worker only when identified (#2266).
+      sessionRecordOf: botWorkerSessionRecord,
       note,
       changed: () => {
         changed();
@@ -385,6 +387,7 @@ export function startWorkerLifecycle(deps: WorkerLifecycleDeps): () => void {
     const resumePorts: WorkerResumePorts = {
       store: reclaimed,
       listSessions,
+      sessionRecordOf: botWorkerSessionRecord,
       workspacePanes: (workspaceId) => {
         const entries = mirror.getEntries();
         if (!entries) return null;
