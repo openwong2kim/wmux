@@ -14,7 +14,9 @@
 //     pane that runs no agent and no command (a shell at its prompt, or one
 //     respawned at the restart with nothing seen in it since) is closed
 //     through the renderer, and the whole workspace when every pane in it is
-//     such a shell; an end the reclaim records only once it recorded it.
+//     such a shell (or every pane's session is gone: the owner's stop
+//     destroys them and leaves frozen tabs); an end the reclaim records only
+//     once it recorded it.
 //     Folders are left to taskFolderCleanup.ts.
 //   - Task open (review_requested, working) whose worker pane is a shell
 //     respawned at the restart, or whose agent was seen to exit: the worker's
@@ -37,6 +39,7 @@ import type { LedgerEntry } from '../../shared/ledger';
 import { taskThreadOf } from '../../shared/room';
 import { STOPPED_BY_OWNER } from './factoryStop';
 import {
+  CLEAR_FOREIGN_RETRY_MS,
   CLEAR_RETRY_MS,
   RECLAIM_CATCHUP_MS,
   fillLaunchedModes,
@@ -178,12 +181,15 @@ export function createDeadPaneSweep(ports: DeadPaneSweepPorts): DeadPaneSweep {
       return !!s && s.state !== 'dead' && (isRespawnedShell(s) || isIdleShell(s));
     };
     const shells = ptys.filter((id) => shellIn(byId, id));
-    if (shells.length === 0) return 0;
+    // Every pane's session gone from the daemon (the owner's stop destroys
+    // them, which leaves frozen tabs): the workspace holds nothing.
+    const allGone = ptys.every((id) => !byId.get(id) || byId.get(id)?.state === 'dead');
+    if (shells.length === 0 && !allGone) return 0;
     // Typed into since the task ended (or since its worker last stopped):
     // the owner's now.
     const floor = Math.max(row.updatedAt, rec?.at ?? 0);
-    const quiet = await untyped(shells, byId, floor);
-    if (quiet.length === 0) return 0;
+    const quiet = shells.length > 0 ? await untyped(shells, byId, floor) : [];
+    if (quiet.length === 0 && !allGone) return 0;
     const release = holdWorkerPanes(row.id);
     if (!release) return 0;
     try {
@@ -196,7 +202,6 @@ export function createDeadPaneSweep(ports: DeadPaneSweepPorts): DeadPaneSweep {
       if (!nowPtys || nowPtys.length === 0) return 0;
       const fresh = new Map((await ports.listSessions()).map((x) => [x.id, x]));
       const closable = quiet.filter((id) => nowPtys.includes(id) && shellIn(fresh, id));
-      if (closable.length === 0) return 0;
       // A pane gone from the daemon counts as gone only when it was gone at
       // the pass's first read too (a terminal opened meanwhile is not).
       const gone = (id: string): boolean => {
@@ -216,10 +221,11 @@ export function createDeadPaneSweep(ports: DeadPaneSweepPorts): DeadPaneSweep {
           notBefore.set(ws, now() + CLEAR_RETRY_MS);
           return 0;
         }
-        for (const id of closable) log(`[factory] dead panes: closed ${id} with its workspace ${ws} (task ${row.id}, ${why})`);
+        for (const id of nowPtys) log(`[factory] dead panes: closed ${id} with its workspace ${ws} (task ${row.id}, ${why}${closable.includes(id) ? '' : ', no session'})`);
         notBefore.delete(ws);
-        return closable.length;
+        return nowPtys.length;
       }
+      if (closable.length === 0) return 0;
       // One pane at a time, and only a pane whose every tab is such a shell:
       // closing a pane closes all its tabs.
       const paneOf = (id: string): string | null => safe(() => ports.paneOf(id), null);
@@ -241,7 +247,10 @@ export function createDeadPaneSweep(ports: DeadPaneSweepPorts): DeadPaneSweep {
           closed += ids.length;
           for (const id of ids) log(`[factory] dead panes: closed ${id} in ${ws} (task ${row.id}, ${why})`);
         } else {
-          notBefore.set(ws, now() + CLEAR_RETRY_MS);
+          // Refused (a workspace's root pane cannot close): looked at again
+          // only much later.
+          notBefore.set(ws, now() + CLEAR_FOREIGN_RETRY_MS);
+          log(`[factory] dead panes: the pane of ${ids.join(', ')} in ${ws} (task ${row.id}) did not close; it stays`);
         }
       }
       return closed;

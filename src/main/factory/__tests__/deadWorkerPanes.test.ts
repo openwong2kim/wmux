@@ -126,6 +126,15 @@ describe('ended bot tasks', () => {
     expect(changed).toHaveBeenCalledTimes(1);
   });
 
+  it('closes an owner-stopped workspace whose sessions the stop destroyed', async () => {
+    const stopped = row('cancelled', { summary: STOPPED_BY_OWNER, updatedBy: { kind: 'system', workspaceId: 'ws-daemon' } });
+    const r = await rig([stopped], []);
+    r.ptys.set('ws-task', ['daemon-1']);
+    expect(await createDeadPaneSweep(r.ports).pass()).toEqual({ closed: 1, recorded: 0 });
+    expect(r.closeWorkspace).toHaveBeenCalledWith('ws-task');
+    expect(fs.existsSync(wt)).toBe(true);
+  });
+
   it('closes a failed task\'s idle shell with no restart in between', async () => {
     const shell: DeadPaneSession = { id: 'daemon-1', pid: 10, spawnCwd: wt, agentProcessAlive: false, commandRunning: false };
     const r = await rig([row('failed')], [shell]);
