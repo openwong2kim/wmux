@@ -14,6 +14,7 @@ import { loadThreadDecision } from '../../../deck/deckDecisionStore';
 import { HANDOFFS_FILENAME, HandoffRouter, deckDecisionPort, setHandoffRouter } from '../../../factory/handoffRouter';
 import { RoomWriter, type FactoryRoomPorts } from '../../../factory/roomWriter';
 import { humanAddressees, humanCardIdOfRun, humanRunId } from '../../../factory/humanMessage';
+import { __resetRedactedSecretsForTesting, setRedactedSecrets } from '../../../factory/secretRedaction';
 import { botSeesFact } from '../../../factory/triggerEngine';
 import {
   createRoomModule,
@@ -862,6 +863,66 @@ describe('the room module closes questions whose subject ended (A5)', () => {
     } finally {
       void mod.dispose?.();
       setHandoffRouter(null);
+    }
+  });
+});
+
+describe('long room card text is shortened as the last step', () => {
+  const VALUE = 'zQ9vT2mW8rL4nX6pB1cY3hJ5kD7fG0sE9uA2wR4t';
+  const MARK = '[secret:K]';
+  beforeEach(() => setRedactedSecrets([{ name: 'K', value: VALUE }]));
+  afterEach(() => __resetRedactedSecretsForTesting());
+
+  /** A first line with VALUE across char 200, then a body with VALUE across char 8192. */
+  const across = (): { title: string; text: string } => {
+    const title = 'a'.repeat(ROOM_TITLE_MAX - 20) + VALUE + 'b'.repeat(30);
+    const lead = `${title}\n`;
+    return { title, text: lead + 'c'.repeat(ROOM_BODY_MAX - 22 - lead.length) + VALUE + 'd'.repeat(100) };
+  };
+  const onDisk = (): string => (fs.readdirSync(dir, { recursive: true }) as string[])
+    .map((f) => path.join(dir, f))
+    .filter((f) => fs.statSync(f).isFile())
+    .map((f) => fs.readFileSync(f, 'utf8'))
+    .join('\n');
+  const clean = (x: string): void => {
+    expect(x).not.toContain(VALUE.slice(0, 20));
+    expect(x).not.toContain(VALUE.slice(20));
+  };
+
+  it('a turn\'s long words: processed whole, then shortened, in the card and its file', async () => {
+    const dev = bot('ws1', 'maintainer');
+    const s = setup([dev]);
+    s.wake.thread = `dm:${dev.id}` as ThreadId;
+    s.wake.id = { wakeId: 'w-1', attempt: 1 };
+    const { text } = across();
+    expect(text.indexOf(VALUE)).toBe(ROOM_TITLE_MAX - 20);
+    expect(text.lastIndexOf(VALUE)).toBe(ROOM_BODY_MAX - 22);
+    await postTurnText(dev, { id: 'w-1' }, text, Date.now() - 1, s.deps);
+    const [card] = s.writer.read('ws1', { threadId: `dm:${dev.id}` as ThreadId }).cards;
+    expect(card.title).toBe('a'.repeat(ROOM_TITLE_MAX - 20) + MARK + 'b'.repeat(10));
+    expect(card.body?.split(MARK)).toHaveLength(3);
+    clean(JSON.stringify(card));
+    clean(onDisk());
+  });
+
+  it('a long question a bot asks: processed whole, then shortened, in the card and the stores', async () => {
+    const lead = bot('ws1', 'lead');
+    const s = setup([lead]);
+    s.ports.currentWakeThread = () => 'general' as never;
+    const router = new HandoffRouter({ file: path.join(dir, 'factory', HANDOFFS_FILENAME), decisions: deckDecisionPort(dir), ports: () => s.ports, rooms: () => s.writer, log: () => undefined });
+    await router.start();
+    try {
+      const { title, text } = across();
+      const body = text.slice(title.length + 1);
+      const asked = await handleAskPerson({ title, body: 'c'.repeat(title.length + 1) + body }, asBot(lead), { router: () => router }) as { ok: boolean };
+      expect(asked.ok).toBe(true);
+      const [card] = s.writer.read('ws1').cards.filter((c) => c.kind === 'question');
+      expect(card.title).toBe('a'.repeat(ROOM_TITLE_MAX - 20) + MARK + 'b'.repeat(10));
+      expect(card.body).toContain(MARK);
+      clean(JSON.stringify(card));
+      clean(onDisk());
+    } finally {
+      router.dispose();
     }
   });
 });

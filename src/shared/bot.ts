@@ -174,7 +174,9 @@ export interface BotProfile {
    *  before slots were stored (the store fills it on load). */
   hue?: number;
   enabled: boolean;
-  parked?: { reason: 'budget' | 'error' | 'human'; at: number };
+  /** `until`: an error park at the provider's usage limit, lifted by
+   *  itself then (an older build reads it as a plain error park). */
+  parked?: { reason: 'budget' | 'error' | 'human'; at: number; until?: number };
   createdAt: number;
   updatedAt: number;
 }

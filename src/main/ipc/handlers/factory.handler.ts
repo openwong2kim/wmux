@@ -36,6 +36,7 @@ import { cleanTaskFolders, getTaskFolderPorts, taskFolderUsage } from '../../fac
 import { botTaskViews, getBotTaskSources, type BotTaskSources } from '../../factory/botTasks';
 import { getFactoryStopPorts, stopFactoryWork, type FactoryStopPorts, type FactoryStopResult } from '../../factory/factoryStop';
 import { getWorkerResumePorts, resumeWorker, type WorkerResumePorts, type WorkerResumeResult } from '../../factory/workerReclaim';
+import { getAgentSlots, type AgentSlots } from '../../factory/agentSlots';
 import { botClaudeConfigDir, engineReadiness, startEngineLogin, type EngineLoginDeps, type EngineReadinessDeps } from '../../factory/engineReadiness';
 import type { FactoryEngineReadiness } from '../../../shared/factoryEngine';
 import { BOT_WORKER_AGENTS, botWorkerAgentLabel, botWorkerAgentSupported, type BotWorkerAgentOption } from '../../../shared/botWorkerAgent';
@@ -109,10 +110,14 @@ export function factoryStopHandler(
 }
 
 /** FACTORY_WORKER_RESUME's body: the sender check, the task id, then the
- *  resume (the owner's: no bot check, never held by the agent budget). */
+ *  resume (the owner's: no bot check). A resumed worker holds an agent slot
+ *  like a bot's resume does (agentSlots.ts), so it starts only with a slot
+ *  free now; otherwise it is refused with the cap, and nothing starts. A
+ *  worker resumed already says so without taking a slot. */
 export function factoryWorkerResumeHandler(
   getWindow: () => BrowserWindow | null,
   ports: () => WorkerResumePorts | null = getWorkerResumePorts,
+  slots: () => AgentSlots | null = getAgentSlots,
 ): (e: { sender?: unknown; senderFrame?: unknown }, req?: unknown) => Promise<WorkerResumeResult> {
   return async (e, req) => {
     if (!isMainWindowSender(e, getWindow())) return { ok: false, code: 'operator_only', message: 'only the main window may resume a worker' };
@@ -120,7 +125,22 @@ export function factoryWorkerResumeHandler(
     if (typeof raw !== 'string' || !/^wtask-[A-Za-z0-9_-]{1,80}$/.test(raw)) return { ok: false, code: 'invalid_argument', message: 'taskId must be a task id' };
     const p = ports();
     if (!p) return { ok: false, code: 'not_started', message: 'The factory is not running.' };
-    return resumeWorker(p, raw, { kind: 'owner' });
+    if (p.store.get(raw)?.state === 'resumed') return resumeWorker(p, raw, { kind: 'owner' });
+    const s = slots();
+    const slot = s ? s.tryAcquire() : null;
+    if (s && !slot) {
+      const cap = s.limit();
+      return { ok: false, code: 'no_slot', cap, message: `No free agent slot (the limit is ${cap}). Stop an idle worker, or raise the limit in Settings › Bots.` };
+    }
+    // The slot hands over to the resumed-worker count once the line is typed.
+    const release = (): void => {
+      if (slot?.ok) slot.release();
+    };
+    try {
+      return await resumeWorker(p, raw, { kind: 'owner' }, undefined, release);
+    } finally {
+      release();
+    }
   };
 }
 

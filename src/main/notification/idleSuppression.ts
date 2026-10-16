@@ -112,8 +112,26 @@ export function clearEscapeKey(ptyId: string): void {
   lastEscapeAt.delete(ptyId);
 }
 
+/**
+ * When someone last typed into the pane (any keystroke or paste the owner or
+ * a tool sent through main). A resumed bot worker is stopped as idle only
+ * when nothing was typed into it for its idle window (factory/workerReclaim.ts).
+ */
+const lastInputAt = new Map<string, number>();
+
+export function markUserInput(ptyId: string, now: number = Date.now()): void {
+  if (!ptyId) return;
+  lastInputAt.set(ptyId, now);
+}
+
+/** When someone last typed into the pane, or undefined (not since main started). */
+export function lastUserInputAt(ptyId: string): number | undefined {
+  return lastInputAt.get(ptyId);
+}
+
 export function clearPty(ptyId: string): void {
   lastResizeAt.delete(ptyId);
   lastSettleAt.delete(ptyId);
   lastEscapeAt.delete(ptyId);
+  lastInputAt.delete(ptyId);
 }

@@ -81,6 +81,20 @@ describe('BotStore', () => {
     expect(parseBotProfile({ ...stored, workerAgent: { agent: 'codex' } })?.workerAgent).toEqual({ agent: 'codex' });
   });
 
+  it('a usage-limit park keeps its until across a reload; only an error park carries one', async () => {
+    const s = newStore();
+    const r = s.create({ workspaceId: 'ws-1', name: 'Dev' });
+    if (!r.ok) throw new Error('create');
+    s.setParked(r.bot.id, { reason: 'error', at: 5, until: 99 });
+    expect(s.get(r.bot.id)?.parked).toEqual({ reason: 'error', at: 5, until: 99 });
+    await s.flush();
+    const again = newStore();
+    again.load();
+    expect(again.get(r.bot.id)?.parked).toEqual({ reason: 'error', at: 5, until: 99 });
+    again.setParked(r.bot.id, { reason: 'human', at: 6, until: 99 });
+    expect(again.get(r.bot.id)?.parked).toEqual({ reason: 'human', at: 6 });
+  });
+
   it('creates with role defaults; any number of bots of one role share a workspace', () => {
     const s = newStore();
     const r = s.create({ workspaceId: 'ws-1', role: 'verifier' });

@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "commands": [
+    {
+      "id": "verify",
+      "title": "Verify this change (lint, typecheck and tests of what changed)",
+      "command": "scripts/verify.sh"
+    }
+  ]
+}

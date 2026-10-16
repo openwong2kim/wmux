@@ -38,6 +38,8 @@ export type MirrorSnapshotState = FleetSnapshotState & {
   sidebarPinnedIds?: StoreState['sidebarPinnedIds'];
   activeWorkspaceId?: StoreState['activeWorkspaceId'];
   surfaceGitBranch?: StoreState['surfaceGitBranch'];
+  appRoute?: StoreState['appRoute'];
+  botsWorkerPanel?: StoreState['botsWorkerPanel'];
 };
 
 /**
@@ -378,6 +380,8 @@ export function buildWorkspaceMirrorPayload(
     sessionRestored: state.sessionRestored === true,
     pinnedIds: [...(state.sidebarPinnedIds ?? [])],
     viewed: buildViewed(state),
+    // The worker the Bots page shows beside its chat, while Bots is the page.
+    ...(state.appRoute === 'bots' && state.botsWorkerPanel?.workspaceId ? { panelWorkspaceId: state.botsWorkerPanel.workspaceId } : {}),
   };
 }
 

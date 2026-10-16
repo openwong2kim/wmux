@@ -51,6 +51,7 @@ import type { Fact } from '../../shared/facts';
 import type { RoomCard, ThreadId } from '../../shared/room';
 import { WAKE_LIMITS, type WakeItem, type WakeReason } from '../../shared/wake';
 import type { BrainAdapter, BrainEvent } from '../deck/BrainAdapter';
+import { USAGE_LIMIT_UNKNOWN_HOLD_MS, findClaudeUsageLimitNotice, parseUsageLimitReset, usageLimitHoldEndsAt } from '../../shared/usageLimit';
 import { emitBotHook } from './botHooks';
 import type { BotEngineFactory } from './botEngines';
 import type { BotStore } from './botStore';
@@ -286,6 +287,27 @@ const TRANSIENT_ERROR_RE = new RegExp([
  *  turn's own: worth retrying as is. Pure. */
 export function isTransientEngineError(message: string): boolean {
   return TRANSIENT_ERROR_RE.test(message);
+}
+
+/** The provider usage-limit notice a failed turn's error carries ("You've
+ *  hit your session limit · resets 1pm (Asia/Seoul)"), or null. The SDK
+ *  puts its own lead-in before the provider's words. Pure. */
+export function usageLimitNoticeOf(message: string): string | null {
+  return findClaudeUsageLimitNotice(message.replace(/^\s*Claude Code returned an error result:\s*/i, ''));
+}
+
+/** The shortest usage-limit park: a reset the text names that is already
+ *  past (an hour rounded down) must not turn into back-to-back retries. */
+export const USAGE_LIMIT_MIN_PARK_MS = 5 * 60_000;
+
+/** When a bot parked at `at` on `notice` picks up again. A clock time with
+ *  no date ("resets 1pm") is a rolling window, never more than the bounded
+ *  hold away: just past that hour, the parser would read tomorrow. Pure. */
+export function usageLimitParkUntil(notice: string, at: number): number {
+  let until = usageLimitHoldEndsAt({ detectedAt: at, resetsAt: parseUsageLimitReset(notice, at) ?? undefined });
+  const dated = /\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+\d|\|\s*\d{10}\b|\bin\s+\d/i.test(notice);
+  if (!dated) until = Math.min(until, at + USAGE_LIMIT_UNKNOWN_HOLD_MS);
+  return Math.max(until, at + USAGE_LIMIT_MIN_PARK_MS);
 }
 
 /** The run of a room-wide owner message a wake answers, or null. Pure. */
@@ -577,6 +599,7 @@ export class BotRuntime {
     const cap = settings.globalConcurrentBots;
     const now = this.now();
     this.sweepBudgetParks(now);
+    this.sweepLimitParks(now);
     // Bots with work, most urgent next item first.
     const ready: Array<{ profile: BotProfile; item: WakeItem }> = [];
     for (const botId of this.deps.queue.botsWithQueued()) {
@@ -759,6 +782,27 @@ export class BotRuntime {
       if (this.liftBudgetPark(profile, now)) continue;
       const until = nextTurnAllowedAt(profile.budget, this.deps.store.usageOf(profile.id), now);
       if (Number.isFinite(until)) this.armHeldTimer(until);
+    }
+  }
+
+  /** A bot parked at the provider's usage limit picks up by itself at its
+   *  park's `until`: its parked wakes go back to the queue (not past its
+   *  budget: only the owner's Resume does that). Else wake up then. */
+  private sweepLimitParks(now: number): void {
+    for (const profile of this.deps.store.list()) {
+      const until = profile.parked?.reason === 'error' ? profile.parked.until : undefined;
+      if (until === undefined) continue;
+      if (now < until) {
+        this.armHeldTimer(until);
+        continue;
+      }
+      this.deps.store.setParked(profile.id, null);
+      delete profile.parked;
+      this.lastError.delete(profile.id);
+      this.deps.queue.unparkAll(profile.id);
+      this.dedupeHeldRoutines(profile.id);
+      this.lifecycle(profile.id, 'resumed');
+      this.pushStatus(profile.id);
     }
   }
 
@@ -994,7 +1038,8 @@ export class BotRuntime {
     // Quitting: the item stays `running` on disk, so the next start marks it
     // interrupted (R8) instead of replaying it.
     if (this.disposed) return;
-    const retryIn = outcome === 'failed' ? this.transientRetryDelay(item.id, message) : null;
+    const limitNotice = outcome === 'failed' || outcome === 'engine' ? usageLimitNoticeOf(message) : null;
+    const retryIn = outcome === 'failed' && limitNotice === null ? this.transientRetryDelay(item.id, message) : null;
     const finalAttempt = outcome !== 'failed' || item.attempts >= WAKE_LIMITS.MAX_ATTEMPTS;
     // Spent network retries stay counted until the wake ends, so the
     // ordinary retry after them does not earn a fresh set.
@@ -1020,6 +1065,21 @@ export class BotRuntime {
           at,
         });
       }
+    } else if (limitNotice !== null) {
+      // The provider's usage limit, not the turn: the bot is parked until
+      // the window resets (a bounded hold when the text names no time) and
+      // then picks up by itself; the wake waits parked with it (its
+      // attempts start over when it is unparked), its turn not charged.
+      this.transientRetries.delete(item.id);
+      const until = usageLimitParkUntil(limitNotice, at);
+      this.lastError.set(botId, { message: message.slice(0, 500), at });
+      this.deps.queue.park(item.id);
+      if (startedAt !== undefined && this.deps.store.get(botId)) this.deps.store.mutateUsage(botId, (u) => { unrecordTurn(u, startedAt); });
+      // The owner's own park stays: only their Resume lifts it.
+      const current = this.deps.store.get(botId);
+      if (current && current.parked?.reason !== 'human') this.deps.store.setParked(botId, { reason: 'error', at, until });
+      emitBotHook({ type: 'bot.error', botId, workspaceId: profile.workspaceId, message: message.slice(0, 500), wakeId: item.id, until, at });
+      this.armHeldTimer(until);
     } else if (retryIn !== null) {
       // The network or the API server failed, not the turn: the wake waits
       // and runs again by itself; the bot is not parked.

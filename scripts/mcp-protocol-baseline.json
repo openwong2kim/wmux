@@ -143,7 +143,7 @@
     },
     "commander": {
       "maxListBytes": 60000,
-      "wireResultSha256": "da6917ea1e39f56986500ff62be91aee45452d2669da8cb9248033e3becf82e8",
+      "wireResultSha256": "fe1a879568c79e151cc2da99aab751bcf9dcf1f4af4fdd774689cd89aac4bdb5",
       "instructionSha256": "a6ca1e79b13dc33fb5d4ce6478ed5019a111254511cb3fe38c43ad7c4f9715f2",
       "toolNames": [
         "terminal_read",
