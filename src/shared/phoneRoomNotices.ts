@@ -28,7 +28,7 @@ export interface PhoneNoticeCode {
 export const PHONE_NOTICE_ARG_MAX = 500;
 
 const STATUS = ['room.notice.status.completed', 'room.notice.status.cancelled', 'room.notice.status.failed', 'room.notice.pane.closes', 'room.notice.pane.stays'];
-const GATE_REASONS = ['room.notice.gate.reason.gate_unavailable', 'room.notice.gate.reason.no_gate_command', 'room.notice.gate.reason.deps_missing'];
+const GATE_REASONS = ['room.notice.gate.reason.gate_unavailable', 'room.notice.gate.reason.no_gate_command', 'room.notice.gate.reason.deps_missing', 'room.notice.gate.reason.no_changes'];
 const HOLDERS = [
   'room.notice.holders.bot', 'room.notice.holders.bots', 'room.notice.holders.worker', 'room.notice.holders.workers',
   'room.notice.holders.other', 'room.notice.holders.others', 'room.notice.holders.more', 'room.notice.holders.none',
