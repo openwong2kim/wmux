@@ -45,6 +45,9 @@ import {
   type A2aRemoteTarget,
 } from '../../../shared/a2aRemoteDelivery';
 
+/** The daemon connection a resolve's pid-map entries were confirmed against (null: no daemon). */
+type EntriesConfirmation = { client: DaemonClient | null };
+
 type GetWindow = () => BrowserWindow | null;
 
 // ─── envelope PR4: A2A 태스크 데몬 정본 게이트 ─────────────────────────
@@ -478,8 +481,8 @@ export function registerA2aRpc(
   async function resolveHintedPane(
     hintedPtyId: unknown,
     entries: ReadonlyArray<{ ptyId: string; workspaceId: string }>,
-    /** True when `entries` still rest on the installed daemon connection (see the resolve handler). */
-    confirmEntries: () => Promise<boolean> = async () => true,
+    /** The connection `entries` are confirmed against, or null (see confirmEntriesConnection). */
+    confirmEntries: () => Promise<EntriesConfirmation | null> = async () => ({ client: currentDaemonClient() }),
   ): Promise<{ live: boolean; workspaceId?: string; workspaceToken?: string } | null> {
     if (typeof hintedPtyId !== 'string' || hintedPtyId.length === 0 || hintedPtyId.length > 128) return null;
     const pane = entries.find((e) => e.ptyId === hintedPtyId);
@@ -493,8 +496,10 @@ export function registerA2aRpc(
     }
     if (!wslLive) return { live: true };
     // The pane was found in `entries` before the await above; re-find it in
-    // case a reconnect re-judged them, and mint only over the current client.
-    if (!(await confirmEntries()) || !entries.some((e) => e === pane)) return { live: true };
+    // case a reconnect re-judged them, and mint only over the current client,
+    // checked synchronously right before the mint.
+    const confirmed = await confirmEntries();
+    if (!stillConfirmed(confirmed) || !entries.some((e) => e === pane)) return { live: true };
     const workspaceToken = claimTokenForPane(pane.workspaceId, pane.ptyId);
     return workspaceToken ? { live: true, workspaceId: pane.workspaceId, workspaceToken } : { live: true };
   }
@@ -510,6 +515,16 @@ export function registerA2aRpc(
   /** The DaemonClient now installed, or null when there is none. */
   function currentDaemonClient(): DaemonClient | null {
     return getDaemonClient?.() ?? null;
+  }
+
+  /**
+   * Synchronous: the confirmation still holds only while the client it names
+   * is the installed one. Call it on the line right before a mint, with no
+   * await in between (a reconnect can land in any await, including the one
+   * that produced `confirmed`).
+   */
+  function stillConfirmed(confirmed: EntriesConfirmation | null): boolean {
+    return confirmed !== null && currentDaemonClient() === confirmed.client;
   }
 
   /**
@@ -712,24 +727,37 @@ export function registerA2aRpc(
     let entriesClient = filtered.client;
     let entriesRechecked = false;
     /**
-     * Called right before a claim is minted from `entries`, with no await
-     * between its `true` and the mint. True while the client the entries were
-     * judged over is still the installed one. If a reconnect replaced it, the
-     * list is read once from the new client and the scanned entries judged
-     * again: an unchanged result keeps the claim, a changed one (or a second
-     * replacement) refuses it. The response then carries the re-judged entries.
+     * Called before a claim is minted from `entries`. Resolves to the client
+     * the entries are confirmed against, or null to refuse the claim. Awaiting
+     * it yields to the event loop even when it answers at once, so a reconnect
+     * can still land after it: the caller must compare the returned client
+     * with the installed one SYNCHRONOUSLY, on the line before the mint
+     * (`stillConfirmed`).
+     *
+     * While the client the entries were judged over is still installed, that
+     * client is returned. If a reconnect replaced it, the list is read once
+     * from the new client and the scanned entries judged again: an unchanged
+     * result is confirmed against the new client; a changed one refuses (and
+     * the response carries the re-judged entries). So does a re-read that
+     * yields no list (failed or malformed): the "no daemon, no filtering"
+     * fallback of a fresh resolve never confirms entries judged over another
+     * connection. A second replacement refuses too.
      */
-    const confirmEntriesConnection = async (): Promise<boolean> => {
-      if (currentDaemonClient() === entriesClient) return true;
-      if (entriesRechecked) return false;
+    const confirmEntriesConnection = async (): Promise<EntriesConfirmation | null> => {
+      if (currentDaemonClient() === entriesClient) return { client: entriesClient };
+      if (entriesRechecked) return null;
       entriesRechecked = true;
       const { sessions, client } = await fetchDaemonSessions();
-      if (currentDaemonClient() !== client) return false;
+      if (currentDaemonClient() !== client) return null;
+      if (!sessions) return null;
       const live = liveDaemonPidEntries(scannedEntries, sessions);
       const unchanged = live.length === entries.length && live.every((e, i) => e === entries[i]);
       entriesClient = client;
-      if (!unchanged) applyLiveEntries(live);
-      return unchanged;
+      if (!unchanged) {
+        applyLiveEntries(live);
+        return null;
+      }
+      return { client };
     };
 
     // Server-side walk: from callerPid's PARENT up the live tree to the first
@@ -829,11 +857,14 @@ export function registerA2aRpc(
     }
 
     // A pane claim from the walk rests on `entries`: confirm they were judged
-    // over the connection installed now, with no await before the mint. A walk
-    // hit whose entries a reconnect invalidated gets no claim and no
-    // `resolved`; the caller still has the re-judged entries for its own walk,
-    // and its next resolve walks those.
-    if (resolved && !runClaim && !(await confirmEntriesConnection())) resolved = null;
+    // over the connection installed now. The synchronous re-check and the mint
+    // run with no await between them. A walk hit whose entries a reconnect
+    // invalidated gets no claim and no `resolved`; the caller still has the
+    // re-judged entries for its own walk, and its next resolve walks those.
+    if (resolved && !runClaim) {
+      const confirmed = await confirmEntriesConnection();
+      if (!stillConfirmed(confirmed)) resolved = null;
+    }
     const workspaceToken = resolved ? (runClaim ?? claimTokenForPane(resolved.workspaceId, resolved.ptyId)) : null;
     // A call from a shared Codex app-server names its thread instead: the pane
     // comes from the thread's owner record (written by wmux's Codex hooks from
@@ -843,7 +874,8 @@ export function registerA2aRpc(
     let threadClaim: ReturnType<typeof resolveCodexThreadClaim> = null;
     if (codexThreadId !== undefined) {
       const sharedServerChild = await isSharedServerChild(normalizeCallerPid((params as { codexCallerPid?: unknown }).codexCallerPid));
-      if (await confirmEntriesConnection()) threadClaim = resolveCodexThreadClaim(codexThreadId, entries, sharedServerChild);
+      const confirmed = await confirmEntriesConnection();
+      if (stillConfirmed(confirmed)) threadClaim = resolveCodexThreadClaim(codexThreadId, entries, sharedServerChild);
     }
     // The walk missed but the caller's env names a pane. Main says whether
     // that pane is live, and attests it only when the daemon follows a live

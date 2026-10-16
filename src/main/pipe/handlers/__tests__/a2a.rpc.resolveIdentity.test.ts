@@ -405,6 +405,120 @@ describe('a2a.resolve.identity — server-side walk (callerPid)', () => {
   });
 });
 
+describe('a2a.resolve.identity — a reconnect between the connection check and the mint', () => {
+  // The check that the entries' client is still installed is awaited, and an
+  // await yields even when it answers at once. These tests queue the swap to
+  // client B inside that very gap: the first getDaemonClient() call after the
+  // armed point (the confirmation's own check) schedules it.
+  const sessions = [{ id: 'daemon-shell', pid: 49076, state: 'attached' }];
+  let current: DaemonClient;
+  let armed: boolean;
+  let a: { client: DaemonClient; rpc: ReturnType<typeof vi.fn> };
+  let b: { client: DaemonClient; rpc: ReturnType<typeof vi.fn> };
+
+  function client(onWslLive?: () => void) {
+    const rpc = vi.fn(async (method: string) => {
+      if (method === 'daemon.listSessions') return sessions;
+      if (method === 'session.wslAgentLive') { onWslLive?.(); return { live: true }; }
+      throw new Error(`unexpected ${method}`);
+    });
+    return { client: { isConnected: true, rpc } as unknown as DaemonClient, rpc };
+  }
+
+  function router(opts: { ppidByPid: Map<number, number>; armOnWalk?: boolean; armOnCodexCheck?: boolean }): RpcRouter {
+    const r = new RpcRouter();
+    registerA2aRpc(r, () => fakeWindow, makeWorker(), {
+      snapshot: async () => ({ ppidByPid: opts.ppidByPid, listeners: [] }),
+      // Called during the walk, after the snapshot: the next client lookup is the confirmation's.
+      createdAt: () => { if (opts.armOnWalk) armed = true; return null; },
+      classifyCodexCaller: async () => { if (opts.armOnCodexCheck) armed = true; return 'shared-server'; },
+      getDaemonClient: () => {
+        const c = current;
+        if (armed) {
+          armed = false;
+          queueMicrotask(() => { current = b.client; });
+        }
+        return c;
+      },
+    });
+    return r;
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    __resetWorkspaceClaimTrustForTesting();
+    dirRef.current = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-pidmap-gap-'));
+    fs.writeFileSync(path.join(dirRef.current, '49076'), 'daemon-shell');
+    sendToRendererMock.mockImplementation(
+      (_w: unknown, method: string, p: { ptyId: string }) =>
+        Promise.resolve({
+          workspaceId: method === 'input.findOwnerWorkspace' && p.ptyId === 'daemon-shell' ? 'ws-live' : null,
+        }),
+    );
+    armed = false;
+    a = client(() => { armed = true; });
+    b = client();
+    current = a.client;
+  });
+  afterEach(() => {
+    try { fs.rmSync(dirRef.current, { recursive: true, force: true }); } catch { /* best-effort */ }
+  });
+
+  it('the walk: no pane token', async () => {
+    const r = router({ ppidByPid: new Map([[39876, 49076], [49076, 1]]), armOnWalk: true });
+    const result = (await dispatchResolve(r, { callerPid: 39876 })) as ResolveResult & { workspaceToken?: string };
+
+    expect(current).toBe(b.client); // the swap did land
+    expect(result.workspaceToken).toBeUndefined();
+    expect(result.resolved).toBeNull();
+  });
+
+  it('the hinted pane: no token', async () => {
+    // The walk misses, so the hinted pane is attested (the WSL answer arms the swap).
+    const r = router({ ppidByPid: new Map([[39876, 1]]) });
+    const result = (await dispatchResolve(r, { callerPid: 39876, hintedPtyId: 'daemon-shell' })) as {
+      hintedPane?: { live: boolean; workspaceToken?: string };
+    };
+
+    expect(current).toBe(b.client);
+    expect(result.hintedPane).toEqual({ live: true });
+  });
+
+  it('the Codex thread: no thread claim', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-codex-home-gap-'));
+    const threadId = '019a0000-0000-7000-8000-0000000000aa';
+    const digest = (v: string) => createHash('sha256').update(v).digest('hex');
+    const dir = path.join(home, 'wmux-thread-owners');
+    fs.mkdirSync(dir, { recursive: true });
+    const suffix = process.env.WMUX_DATA_SUFFIX || '';
+    const env = {
+      WMUX_PTY_ID: 'daemon-shell', WMUX_WORKSPACE_ID: 'ws-frozen', WMUX_SURFACE_ID: '', WMUX_DATA_SUFFIX: suffix,
+      WMUX_PIPE_NAME: '', WMUX_HOOKS_TO_MAIN: '',
+    };
+    fs.writeFileSync(path.join(dir, `thread-${digest(threadId)}.json`), JSON.stringify({ version: 1, id: threadId, env, nonce: 'n1' }));
+    fs.writeFileSync(path.join(dir, `pane-${digest(JSON.stringify([suffix, 'daemon-shell']))}.json`), JSON.stringify({ id: threadId, nonce: 'n1' }));
+    const previous = process.env.CODEX_HOME;
+    process.env.CODEX_HOME = home;
+    try {
+      // Control: without the swap the same call gets its thread claim.
+      const control = (await dispatchResolve(router({ ppidByPid: new Map() }), { codexThreadId: threadId, codexCallerPid: 4242 })) as {
+        threadClaim?: unknown;
+      };
+      expect(control.threadClaim).toMatchObject({ ptyId: 'daemon-shell' });
+
+      const r = router({ ppidByPid: new Map(), armOnCodexCheck: true });
+      const result = (await dispatchResolve(r, { codexThreadId: threadId, codexCallerPid: 4242 })) as { threadClaim?: unknown };
+
+      expect(current).toBe(b.client);
+      expect(result.threadClaim).toBeUndefined();
+    } finally {
+      if (previous === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = previous;
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('a2a.resolve.identity — pane claims from main\'s own answers', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -788,11 +902,11 @@ describe('a2a.resolve.identity — a pid-map hit must be the session\'s current 
     ];
 
     // Client A answers the list, then a reconnect installs client B while the
-    // resolve still awaits the process snapshot.
-    function midResolveReconnect(afterSessions: typeof before) {
+    // resolve still awaits the process snapshot. `bAnswer` overrides B's list.
+    function midResolveReconnect(afterSessions: typeof before, bAnswer?: () => Promise<unknown>) {
       let current: DaemonClient;
       const bRpc = vi.fn(async (method: string) => {
-        if (method === 'daemon.listSessions') return afterSessions;
+        if (method === 'daemon.listSessions') return bAnswer ? bAnswer() : afterSessions;
         throw new Error(`unexpected ${method}`);
       });
       const b = { isConnected: true, rpc: bRpc } as unknown as DaemonClient;
@@ -831,6 +945,19 @@ describe('a2a.resolve.identity — a pid-map hit must be the session\'s current 
       // The response carries the entries judged over the new connection.
       expect(result.entries).toEqual([{ pid: '7644', ptyId: 'daemon-worker', workspaceId: 'ws-worker' }]);
       expect(result.mappings).toEqual({ '7644': 'ws-worker' });
+    });
+
+    it.each([
+      ['rejects', async () => { throw new Error('daemon busy'); }],
+      ['answers with something that is not a list', async () => ({ error: 'malformed' })],
+    ])('mints no token when the re-read from the new connection %s', async (_label, bAnswer) => {
+      const { router, bRpc } = midResolveReconnect(before, bAnswer);
+
+      const result = (await dispatchResolve(router, { callerPid: 39876 })) as ResolveResult & { workspaceToken?: string };
+
+      expect(bRpc).toHaveBeenCalledTimes(1);
+      expect(result.workspaceToken).toBeUndefined();
+      expect(result.resolved).toBeNull();
     });
 
     it('keeps the claim when the new connection judges the entries the same way', async () => {
