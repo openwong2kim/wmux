@@ -103,15 +103,16 @@ export function splitThreads(cards: readonly RoomCard[], waits: (card: RoomCard)
       let w = works.get(folds.key);
       if (!w) works.set(folds.key, (w = { workspaceId: card.workspaceId, threadId: folds.threadId, steps: [], all: [] }));
       w.all.push(card);
+      // The thread's first card read places the work card; one that waits
+      // on the owner also shows as itself.
+      const first = !w.anchor;
+      if (first) w.anchor = card.id;
       if (waits(card)) {
         main.push(card);
         continue;
       }
       w.steps.push(card);
-      if (!w.anchor) {
-        w.anchor = card.id;
-        main.push(card);
-      }
+      if (first) main.push(card);
       continue;
     }
     if (inMain(card)) {
@@ -174,7 +175,9 @@ function entryAt(entry: RoomEntry): number {
  * else written after it (null: none). `work` maps the card standing for a
  * started thread to that thread (splitThreads): it becomes a work item in
  * the run of `workAuthor` (a 1:1's bot), else of the nearest bot above it
- * other than the one the work was handed to.
+ * among `workCandidates` (a group's coordinators) other than the one the
+ * work was handed to — none: a run of its own. A work item is new when a
+ * card folded into it is.
  */
 export function buildTimeline(entries: readonly RoomEntry[], opts: {
   waits: (card: RoomCard) => boolean;
@@ -184,6 +187,7 @@ export function buildTimeline(entries: readonly RoomEntry[], opts: {
   newAfter?: number | null;
   work?: ReadonlyMap<string, WorkThread>;
   workAuthor?: string;
+  workCandidates?: ReadonlySet<string>;
 }): TimelineItem[] {
   const out: TimelineItem[] = [];
   let day = '';
@@ -197,23 +201,29 @@ export function buildTimeline(entries: readonly RoomEntry[], opts: {
       out.push({ kind: 'day', key: `day:${at}:${out.length}`, at });
     }
     lastAt = Math.max(lastAt, at);
-    if (!newPlaced && entry.kind === 'card' && entry.card.actor.kind !== 'human' && at > (opts.newAfter as number)) {
+    const folded = opts.work?.get(entry.card.id);
+    const fresh = folded
+      ? folded.all.some((c) => c.actor.kind !== 'human' && c.at > (opts.newAfter as number))
+      : entry.card.actor.kind !== 'human' && at > (opts.newAfter as number);
+    if (!newPlaced && fresh) {
       newPlaced = true;
       out.push({ kind: 'new', key: 'new' });
     }
     const card = entry.card;
-    const prev = out[out.length - 1];
-    const work = opts.work?.get(card.id);
+    const work = folded;
     if (work) {
-      const delegatorId = opts.workAuthor ?? nearestBot(out, workDelegate(work.all, null));
+      const delegatorId = opts.workAuthor ?? nearestBot(out, workDelegate(work.all, null), opts.workCandidates);
       const item: Extract<TimelineItem, { kind: 'work' }> = {
         kind: 'work', key: `work:${threadKey(work.workspaceId, work.threadId)}`, work, at, delegatorId, continuation: false, runEnd: true,
       };
-      item.continuation = continues(prev, item);
-      if (item.continuation && (prev?.kind === 'message' || prev?.kind === 'work')) prev.runEnd = false;
+      const above = out[out.length - 1];
+      item.continuation = continues(above, item);
+      if (item.continuation && (above?.kind === 'message' || above?.kind === 'work')) above.runEnd = false;
       out.push(item);
-      continue;
+      // A first card that waits on the owner shows as itself too.
+      if (work.steps.includes(card)) continue;
     }
+    const prev = out[out.length - 1];
     if (card.actor.kind === 'system') {
       const thread = opts.threads?.get(card.id);
       if (prev?.kind === 'system' && prev.cards[0].threadId === card.threadId && prev.cards[0].workspaceId === card.workspaceId) {
@@ -246,12 +256,14 @@ function continues(prev: TimelineItem | undefined, item: Extract<TimelineItem, {
   return itemAuthor(prev) === itemAuthor(item) && itemAt(item) - itemAt(prev) < RUN_WINDOW_MS;
 }
 
-/** The newest bot above in the timeline other than `except`, or null. */
-function nearestBot(items: readonly TimelineItem[], except: string | null): string | null {
+/** The newest bot above in the timeline other than `except`, among
+ *  `among` when given, or null. */
+function nearestBot(items: readonly TimelineItem[], except: string | null, among?: ReadonlySet<string>): string | null {
+  const fits = (id: string) => id !== except && (!among || among.has(id));
   for (let i = items.length - 1; i >= 0; i--) {
     const it = items[i];
-    if (it.kind === 'message' && it.card.actor.kind === 'bot' && it.card.actor.botId !== except) return it.card.actor.botId;
-    if (it.kind === 'work' && it.delegatorId && it.delegatorId !== except) return it.delegatorId;
+    if (it.kind === 'message' && it.card.actor.kind === 'bot' && fits(it.card.actor.botId)) return it.card.actor.botId;
+    if (it.kind === 'work' && it.delegatorId && fits(it.delegatorId)) return it.delegatorId;
   }
   return null;
 }

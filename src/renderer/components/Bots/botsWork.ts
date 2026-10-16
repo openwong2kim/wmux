@@ -59,6 +59,8 @@ export interface WorkView {
 
 /** main's opening hop line: `<kind> → <name>: <title>` (roomWriter.ts). */
 const HOP_LINE = /^([a-z_]+) → [^:]+?: (.+)$/s;
+/** main's line for a refused opening hop (roomWriter.ts). */
+const REFUSED_LINE = /^Handoff refused \([^)]*\): (.+)$/s;
 /** main's pointer in the conversation once the work came back (handoffRouter pointToThread). */
 const POINTER_LINE = /^(Finished|Stopped): (.+)$/s;
 const GITHUB_REF = /https?:\/\/github\.com\/[^/\s]+\/[^/\s#?]+\/(?:pull|issues)\/\d+/gi;
@@ -89,15 +91,17 @@ export function workDelegate(cards: readonly RoomCard[], delegatorId: string | n
 
 /** The request's words for a started thread: the owner's request (its
  *  first line, roomFormat requestTitles), else the title the delegating
- *  bot gave the handoff, from main's opening hop or its pointer line. Pure. */
+ *  bot gave the handoff, from main's opening hop (delivered or refused) or
+ *  its pointer line. Pure. */
 export function workTitle(cards: readonly RoomCard[], threadId: ThreadId, requestTitle?: (threadId: ThreadId) => string | null): string | null {
   const asked = requestTitle?.(threadId)?.trim();
   if (asked) return asked;
   for (const c of cards) {
     if (c.actor.kind !== 'system') continue;
-    const hop = c.threadId === threadId && threadId === `handoff:${c.refs?.handoffId}` ? HOP_LINE.exec(c.title) : null;
-    const pointer = !hop && isPointerCard(c) ? POINTER_LINE.exec(c.title) : null;
-    const line = (hop?.[2] ?? pointer?.[2] ?? '').replace(FORWARDED, '').split('\n')[0].trim();
+    const opening = c.threadId === threadId && threadId === `handoff:${c.refs?.handoffId}`;
+    const hop = opening ? HOP_LINE.exec(c.title)?.[2] ?? REFUSED_LINE.exec(c.title)?.[1] : undefined;
+    const pointer = !hop && isPointerCard(c) ? POINTER_LINE.exec(c.title)?.[2] : undefined;
+    const line = (hop ?? pointer ?? '').replace(FORWARDED, '').split('\n')[0].trim();
     if (line) return line;
   }
   return null;
@@ -118,6 +122,11 @@ export function workLatest(cards: readonly RoomCard[], delegateId: string | null
 
 /** The task stages whose task is not over. */
 const LIVE_STAGE: ReadonlySet<BotTaskView['stage']> = new Set<BotTaskView['stage']>(['working', 'needs_input', 'waiting_slot', 'coded']);
+
+/** An ended task's outcome. */
+function endedState(stage: BotTaskView['stage']): WorkState {
+  return stage === 'failed' ? 'failed' : stage === 'cancelled' ? 'cancelled' : 'done';
+}
 
 /** The state a card on its own says, in thread order (null: none). A
  *  worker's ask for input is not one: what waits on the owner is read from
@@ -143,19 +152,29 @@ function cardState(c: RoomCard): WorkState | null {
 /** A started thread's state. Something waiting on the owner wins (an open
  *  card, or a task's worker asking for input); then a live task of the
  *  thread (its cards' `refs.taskId`, in the bots' task lists): at work, or
- *  reported and waiting for review; else the newest word in the thread — a
- *  task's end, main's Finished or Stopped line, a refusal, a new dispatch —
- *  and, with none, at work. Pure. */
+ *  reported and waiting for review; else the newest word — a card's (a
+ *  task's end, main's Finished or Stopped line, a refusal, a new dispatch)
+ *  or the newest ended task's outcome (a task's end may write no card of
+ *  its own) — and, with none, at work. Pure. */
 export function workState(cards: readonly RoomCard[], waits: (card: RoomCard) => boolean, tasks: readonly BotTaskView[] = []): WorkState {
   if (cards.some(waits)) return 'needsYou';
   const ids = new Set(cards.map((c) => c.refs?.taskId).filter((id): id is string => !!id));
-  const live = tasks.filter((task) => ids.has(task.taskId) && LIVE_STAGE.has(task.stage));
+  const known = tasks.filter((task) => ids.has(task.taskId));
+  const live = known.filter((task) => LIVE_STAGE.has(task.stage));
   if (live.some((task) => task.stage === 'needs_input')) return 'needsYou';
   if (live.some((task) => task.stage === 'working' || task.stage === 'waiting_slot')) return 'working';
   if (live.length > 0) return 'review';
   let state: WorkState = 'working';
-  for (const c of cards) state = cardState(c) ?? state;
-  return state;
+  let saidAt = -Infinity;
+  for (const c of cards) {
+    const said = cardState(c);
+    if (said) {
+      state = said;
+      saidAt = c.at;
+    }
+  }
+  const ended = known.reduce<BotTaskView | null>((m, task) => (!m || task.updatedAt > m.updatedAt ? task : m), null);
+  return ended && ended.updatedAt >= saidAt ? endedState(ended.stage) : state;
 }
 
 /** The GitHub pull request or issue a started thread is about: one its

@@ -116,6 +116,34 @@ describe('splitThreads with started threads', () => {
     const groupItems = buildTimeline(main.map((card) => ({ kind: 'card' as const, card })), { waits: never, threads, surfaced, work });
     const g = groupItems.find((i) => i.kind === 'work');
     expect(g?.kind === 'work' && g.delegatorId).toBe(LEAD);
+    // Only a group's coordinators hand work off: another bot above is not one.
+    const other = card({ actor: by(REVIEWER), title: 'Unrelated', at: s.hop.at - 1 });
+    const split = splitThreads([s.reply, other, s.hop], never, new Set([threadKey('w1', H1)]));
+    const among = buildTimeline(split.main.map((card) => ({ kind: 'card' as const, card })), { waits: never, work: split.work, workCandidates: new Set([LEAD]) });
+    const picked = among.find((i) => i.kind === 'work');
+    expect(picked?.kind === 'work' && picked.delegatorId).toBe(LEAD);
+    const none = buildTimeline(split.main.map((card) => ({ kind: 'card' as const, card })), { waits: never, work: split.work, workCandidates: new Set() });
+    const lone = none.find((i) => i.kind === 'work');
+    expect(lone?.kind === 'work' && lone.delegatorId).toBeNull();
+    expect(lone?.kind === 'work' && lone.continuation).toBe(false);
+  });
+
+  it('a thread whose first card read waits on the owner still gets its work card, and the card shows too', () => {
+    const q = card({ threadId: H1, actor: by(DEV), kind: 'question', state: 'open', title: 'Which shape?' });
+    const later = card({ threadId: H1, actor: by(DEV), title: 'Working on it' });
+    const { main, work } = splitThreads([q, later], (c) => c.id === q.id, new Set([threadKey('w1', H1)]));
+    expect(main.map((c) => c.id)).toEqual([q.id]);
+    expect(work.get(q.id)?.steps.map((c) => c.id)).toEqual([later.id]);
+    const items = buildTimeline(main.map((card) => ({ kind: 'card' as const, card })), { waits: (c) => c.id === q.id, work });
+    expect(items.filter((i) => i.kind !== 'day').map((i) => i.kind)).toEqual(['work', 'message']);
+  });
+
+  it('marks the work card new when a card folded into it is', () => {
+    const s = scenario();
+    const { main, work } = splitThreads(s.cards, never, new Set([threadKey('w1', H1)]));
+    const items = buildTimeline(main.map((card) => ({ kind: 'card' as const, card })), { waits: never, work, newAfter: s.devSays.at - 1 });
+    const at = items.findIndex((i) => i.kind === 'new');
+    expect(items[at + 1]?.kind).toBe('work');
   });
 });
 
@@ -134,6 +162,9 @@ describe('the work card view', () => {
     expect(workTitle(w.all, H1)).toBe('Add a --json flag');
     expect(workTitle([s.finished], H1)).toBe('Add a --json flag');
     expect(workTitle([s.devSays], H1)).toBeNull();
+    // A refused opening hop keeps the request's words too.
+    const refused = card({ threadId: H1, actor: SYS, kind: 'refusal', title: 'Handoff refused (no_addressee): Add a --json flag', refs: { handoffId: 'h-1', threadId: DM } });
+    expect(workTitle([refused], H1)).toBe('Add a --json flag');
   });
 
   it('shows the delegate\'s newest message, not a later bot\'s', () => {
@@ -164,6 +195,12 @@ describe('the work card view', () => {
     expect(workState([s.hop, stopped], never)).toBe('failed');
     // A new dispatch after an end puts it back to work.
     expect(workState([s.hop, failed, s.relay], never)).toBe('working');
+    // A task that ended after its report, with no card of its own: its outcome.
+    expect(workState([s.hop, s.reported], never, [task('t1', 'checked', s.reported.at + 1)])).toBe('done');
+    expect(workState([s.hop, s.reported], never, [task('t1', 'cancelled', s.reported.at + 1)])).toBe('cancelled');
+    expect(workState([s.hop, s.reported], never, [task('t1', 'failed', s.reported.at + 1)])).toBe('failed');
+    // A newer word in the thread than the task's end wins.
+    expect(workState([s.hop, s.reported, s.relay], never, [task('t1', 'checked', s.reported.at + 1)])).toBe('working');
   });
 
   it('counts the folded cards as its steps, and finds the pull request a task opened', () => {
