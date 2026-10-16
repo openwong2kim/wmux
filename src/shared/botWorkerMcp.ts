@@ -33,6 +33,7 @@ import { tokenize } from './agentResume';
 import { splitModelEnvMarker } from './workerLaunch';
 import { stripPromptFileArgument } from './promptFileArgument';
 import { argumentsMayExpand, isClaudeLauncher, isQuotable, isSingleCommand } from './botWorkerGuard';
+import { wslMcpLaunchOf } from './wslIntegration';
 
 /** The wmux level a worker's server runs at. */
 export type WorkerWmuxLevel = 'core' | 'full';
@@ -65,6 +66,15 @@ export interface WorkerMcpInput {
   /** Other connection keys the worker's environment may hold (a re-fire's
    *  first launch had them): kept out of every stdio server too. */
   strayKeys?: readonly string[];
+}
+
+/** A WSL pane's `--mcp-config` document: this build's wmux server, run in
+ *  the Windows runtime over interop as a WSL pane's own server is
+ *  (wslIntegration.ts WSL_MCP_LAUNCH), so its pipe and caller identity work.
+ *  `runtime` is that runtime's /mnt path. A WSL worker takes no connections.
+ *  Pure. */
+export function buildWslWorkerMcpConfig(runtime: string, entry: string, level: WorkerWmuxLevel): { mcpServers: Record<string, unknown> } {
+  return { mcpServers: { wmux: { type: 'stdio', command: '/bin/sh', args: ['-c', wslMcpLaunchOf(runtime, entry, level === 'core' ? ['--core'] : [])] } } };
 }
 
 /** The `--mcp-config` document. Pure. */

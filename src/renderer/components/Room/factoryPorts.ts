@@ -39,6 +39,9 @@
 //         // gates, stop every bot worker (optional: without it there is no stop)
 //     stopBot(botId: string): Promise<FactoryStopResult>
 //         // IPC.FACTORY_STOP_BOT: the same for one bot (optional)
+//     stopTask(taskId: string): Promise<FactoryStopResult>
+//         // IPC.FACTORY_STOP_TASK: one bot task's worker, its task
+//         // cancelled (optional)
 //   }
 //
 // `setFactoryBotPort` / `setFactorySettingsPort` replace a port outright
@@ -68,12 +71,15 @@ export interface FactoryBotRow {
 }
 
 /** What a stop changed (main/factory/factoryStop.ts). `ok:false` with
- *  `code`: operator_only | invalid_argument | not_started. */
+ *  `code`: operator_only | invalid_argument | not_started (| not_found
+ *  for one task). */
 export interface FactoryStopResult {
   ok: boolean;
   botsInterrupted: number;
   workersStopped: number;
   gatesCancelled: number;
+  /** Open bot tasks moved to `cancelled`. */
+  tasksCancelled?: number;
   code?: string;
   message?: string;
 }
@@ -123,6 +129,9 @@ export interface FactoryBotPort {
   stopAll?(): Promise<FactoryStopResult>;
   /** Absent: no stop here. The same for one bot's turn and workers. */
   stopBot?(botId: string): Promise<FactoryStopResult>;
+  /** Absent: no Stop worker here. One bot task's worker: its task cancelled
+   *  ("stopped by owner"), its gate and processes stopped. */
+  stopTask?(taskId: string): Promise<FactoryStopResult>;
   /** Absent: no resume here. Relaunch the stopped worker of an ended task
    *  with the same conversation (main/factory/workerReclaim.ts). */
   resumeWorker?(taskId: string): Promise<{ ok: boolean; message?: string; workspaceId?: string; code?: string; cap?: number }>;
@@ -182,6 +191,7 @@ interface FactoryBridge {
   setSettings?: (patch: Partial<FactorySettingsView>) => Promise<FactorySettingsView | null>;
   stopAll?: () => Promise<FactoryStopResult>;
   stopBot?: (botId: string) => Promise<FactoryStopResult>;
+  stopTask?: (taskId: string) => Promise<FactoryStopResult>;
   resumeWorker?: (taskId: string) => Promise<{ ok: boolean; message?: string; workspaceId?: string; code?: string; cap?: number }>;
   workerAgents?: () => Promise<BotWorkerAgentOption[]>;
   taskFolderUsage?: () => Promise<FactoryTaskFolderUsage | null>;
@@ -226,6 +236,7 @@ export function bridgeBotPort(): FactoryBotPort {
     ...(b.suggestBotRepo ? { suggestRepo: b.suggestBotRepo } : {}),
     ...(b.stopAll ? { stopAll: b.stopAll } : {}),
     ...(b.stopBot ? { stopBot: b.stopBot } : {}),
+    ...(b.stopTask ? { stopTask: b.stopTask } : {}),
     ...(b.resumeWorker ? { resumeWorker: b.resumeWorker } : {}),
     ...(b.workerAgents ? { workerAgents: b.workerAgents } : {}),
   };

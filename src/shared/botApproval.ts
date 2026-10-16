@@ -113,6 +113,15 @@ export interface ApprovalRequest {
   /** Why a covering "always allow" rule did not approve it, in the owner's
    *  words (never a raw code), for display. Main fills it on every view. */
   ruleSkippedText?: string;
+  /** The first unmet condition of that skip, when it is one of the rule's
+   *  own (ruleSkipCondition), for the card to say in the owner's language.
+   *  Main fills it on every view. */
+  ruleSkippedCondition?: ApprovalRuleCondition;
+  /** A merge no rule covers: what an "always allow" rule made from it would
+   *  still lack in this workspace (no Reviewer bot, no required checks on
+   *  the repository, an author the lane does not trust), read when it was
+   *  asked. The card says it under Always allow. */
+  ruleNeeds?: ApprovalRuleNeed[];
   createdAt: number;
   updatedAt: number;
 }
@@ -130,7 +139,9 @@ export interface ApprovalRequestParams {
 
 export interface ApprovalListParams { state?: ApprovalState[]; limit?: number; }
 
-/** An "always allow" the owner remembered. */
+/** An "always allow" the owner remembered. It covers the requests the
+ *  scope's bot asks for (ApprovalRequest.botId, the asking bot), or that any
+ *  bot of the workspace asks for, whoever's worker authored the PR. */
 export interface ApprovalRule {
   ruleId: string;
   action: Exclude<ApprovalAction, 'release' | 'push_default' | 'skill'>;
@@ -138,6 +149,46 @@ export interface ApprovalRule {
   /** One bot, or every bot of one workspace. */
   scope: { botId: string } | { workspaceId: string };
   createdAt: number;
+}
+
+/** What an "always allow" rule needs before it merges by itself, as the
+ *  approval card names it: the request did not start from outside text, it
+ *  was asked by the bot the rule covers, a verifier passed the head, the
+ *  repository has required checks and they are green, the author is trusted. */
+export type ApprovalRuleCondition = 'outside' | 'asker' | 'verifier' | 'noChecks' | 'checks' | 'author';
+
+/** The conditions a workspace can lack for good (the card names them before
+ *  a rule exists). */
+export type ApprovalRuleNeed = Extract<ApprovalRuleCondition, 'verifier' | 'noChecks' | 'author'>;
+
+/** The code a request gets when a bot-scoped rule on the same act and
+ *  repository covers another bot (ApprovalRequest.botId is the asking bot). */
+export const RULE_OTHER_ASKER = 'rule-other-asker';
+
+/** Which rule condition one skip code is (`predicate:reason` from the merge
+ *  lane, or a bare code), or null for any other. Pure. */
+export function ruleConditionOf(code: string): ApprovalRuleCondition | null {
+  if (code === 'tainted-origin') return 'outside';
+  if (code === RULE_OTHER_ASKER) return 'asker';
+  if (code.startsWith('verifier-pass-at-head:')) return 'verifier';
+  if (code === 'required-checks-green:no-required-checks') return 'noChecks';
+  if (code.startsWith('required-checks-green:')) return 'checks';
+  if (code.startsWith('author-trusted:')) return 'author';
+  return null;
+}
+
+const RULE_CONDITION_ORDER: readonly ApprovalRuleCondition[] = ['outside', 'asker', 'verifier', 'noChecks', 'checks', 'author'];
+
+/** The first unmet condition among skip codes: the rule's own conditions in
+ *  the order Settings lists them, else the first code. Null for none. Pure. */
+export function firstRuleSkip(codes: readonly string[]): { code: string; condition: ApprovalRuleCondition | null } | null {
+  let best: { code: string; condition: ApprovalRuleCondition } | null = null;
+  for (const code of codes) {
+    const condition = ruleConditionOf(code);
+    if (condition && (!best || RULE_CONDITION_ORDER.indexOf(condition) < RULE_CONDITION_ORDER.indexOf(best.condition))) best = { code, condition };
+  }
+  if (best) return best;
+  return codes.length > 0 ? { code: codes[0], condition: null } : null;
 }
 
 /** BOT_APPROVAL_IPC.decide request. */

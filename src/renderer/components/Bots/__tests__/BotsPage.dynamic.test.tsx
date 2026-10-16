@@ -836,6 +836,20 @@ describe('Bots page', () => {
     expect(q('[data-bots-delivery]')?.textContent).toBe('Sent to Lead');
   });
 
+  it('a bot reply whose body repeats its title, or starts with it, prints once', async () => {
+    cards.push(
+      card({ workspaceId: 'w1', actor: by('w1', LEAD), threadId: `dm:${LEAD}`, title: 'Rebased onto main', body: 'Rebased onto main', at: 700 }),
+      card({ workspaceId: 'w1', actor: by('w1', LEAD), threadId: `dm:${LEAD}`, title: 'Checked the build', body: 'Checked the build, and the tests pass.', at: 710 }),
+    );
+    seedRooms();
+    await render(<BotsPage />);
+    act(() => q(`[data-bots-row="bot:${LEAD}"]`)!.click());
+    const chat = q('[data-bots-messages]')?.textContent ?? '';
+    expect(chat.split('Rebased onto main').length - 1).toBe(1);
+    expect(chat.split('Checked the build').length - 1).toBe(1);
+    expect(chat).toContain('Checked the build, and the tests pass.');
+  });
+
   it('a 1:1 and the room are separate: a 1:1 thread shows only in its bot\'s chat, never as a thread chip in the room', async () => {
     cards.push(
       card({ workspaceId: 'w1', actor: { kind: 'human' }, kind: 'human', threadId: `dm:${LEAD}`, refs: { botId: LEAD }, title: 'Private ask', at: 700 }),
@@ -938,6 +952,21 @@ describe('Bots page', () => {
     await act(async () => { q('[data-testid="bots-composer-send"]')!.click(); });
     expect(posted.at(-1)).toMatchObject({ workspaceId: 'w1', threadId: G, title: 'Go' });
     expect(posted.at(-1)!.mentions).toBeUndefined();
+  });
+
+  it('a bot the owner paused: its 1:1 still takes a message and says, in one muted line, it reads it on resume', async () => {
+    bots = bots.map((r) => (r.bot.id === LEAD ? { ...r, bot: { ...r.bot, parked: { reason: 'human' as const, at: 1 } } } : r));
+    seedRooms();
+    await render(<BotsPage />);
+    act(() => q(`[data-bots-row="bot:${LEAD}"]`)!.click());
+    const status = q('[data-testid="bots-composer-status"]')!;
+    expect(status.textContent).toBe('Paused. Lead reads this when you resume it.');
+    expect(status.className).toContain('text-[var(--text-muted)]');
+    expect(status.getAttribute('role')).toBe('status');
+    expect(q<HTMLTextAreaElement>('[data-bots-composer] textarea, textarea')!.disabled).toBe(false);
+    // Another bot's 1:1, not paused, has no line.
+    act(() => q(`[data-bots-row="bot:${VERIFIER}"]`)!.click());
+    expect(q('[data-testid="bots-composer-status"]')).toBeNull();
   });
 
   it('a group with no bot on takes no message, and says why', async () => {
@@ -1154,6 +1183,195 @@ describe('Bots page', () => {
     // 2026-10-16); resuming it is the bot's call, or the card's Resume.
     expect(q('[data-bots-task="wtask-gone-00000002"]')).toBeNull();
     expect(resumeWorker).not.toHaveBeenCalled();
+  });
+
+  /** t1 holds a pane whose agent runs; t2 is a plain open workspace. */
+  function seedWorkerPanes() {
+    act(() => useStore.setState({
+      workspaces: [ws('hq', 'Headquarters'), ws('w1', 'api'), {
+        ...ws('t1', 'wtask: fix login'),
+        rootPane: { id: 't1-p', type: 'leaf', ordinal: 1, surfaces: [{ id: 's', ptyId: 'pty-t1', title: '', shell: 'zsh', cwd: '/', surfaceType: 'terminal' }], activeSurfaceId: 's' },
+      } as Workspace, ws('t2', 'wtask: old one')],
+      surfaceAgent: { 'pty-t1': { name: 'Claude Code', status: 'running' } },
+      surfaceAgentStatus: { 'pty-t1': 'running' },
+    } as never));
+  }
+
+  it('Stop worker: a running worker\'s panel menu offers it, asks in place, and stops that one task (Cancel sends nothing); its row has no menu', async () => {
+    seedRooms();
+    seedWorkerPanes();
+    const taskId = 'wtask-run-00000001';
+    bots[1] = { ...bots[1], tasks: [{
+      taskId, taskWorkspaceId: 't1', ownerWorkspaceId: 'w1', botId: LEAD, title: 'fix login',
+      status: 'working' as const, stage: 'working' as const, updatedAt: Date.now(),
+    }] };
+    const stop = {
+      stopBot: vi.fn(async () => ({ ok: true, workersStopped: 1 })),
+      stopTask: vi.fn(async () => ({ ok: true, workersStopped: 1, tasksCancelled: 1 })),
+    };
+    act(() => useStore.setState({ toasts: [] } as never));
+    await render(<BotsPage stop={stop} />);
+    act(() => q(`[data-bots-row="bot:${LEAD}"]`)!.click());
+    const row = q('[data-bots-tree] [data-bots-worker="t1"]')!;
+    expect(row.getAttribute('data-worker-state')).toBe('running');
+    // The list's row stays a plain row: no menu of its own.
+    expect(q('[data-bots-tree] [aria-haspopup="menu"]')).toBeNull();
+    act(() => row.click());
+    expect(q('[data-bots-worker-panel="t1"]')).not.toBeNull();
+    act(() => q('[data-bots-worker-panel-menu]')!.click());
+    expect(q('[data-bots-worker-panel-menu]')?.getAttribute('aria-label')).toBe('Worker options');
+    expect(q('[data-bots-worker-panel-workspaces]')).not.toBeNull();
+    expect(q('[data-bots-worker-panel-stop]')?.textContent).toBe('Stop worker');
+    act(() => q('[data-bots-worker-panel-stop]')!.click());
+    expect(q('[data-bots-worker-panel-stop]')).toBeNull();
+    expect(q('[data-testid="bots-stop-worker-confirm-row"]')?.textContent).toContain('Stop the worker for “fix login”?');
+    expect(stop.stopTask).not.toHaveBeenCalled();
+    act(() => q('[data-testid="bots-stop-worker-cancel"]')!.click());
+    expect(q('[data-testid="bots-stop-worker-confirm-row"]')).toBeNull();
+    expect(stop.stopTask).not.toHaveBeenCalled();
+    // Focus goes back to the menu's ⋯.
+    expect(document.activeElement).toBe(q('[data-bots-worker-panel-menu]'));
+    // Confirmed: that task's worker only, never the bot-wide stop; a toast says so.
+    act(() => q('[data-bots-worker-panel-menu]')!.click());
+    act(() => q('[data-bots-worker-panel-stop]')!.click());
+    await act(async () => { q('[data-testid="bots-stop-worker-confirm"]')!.click(); });
+    expect(stop.stopTask).toHaveBeenCalledTimes(1);
+    expect(stop.stopTask).toHaveBeenCalledWith(taskId);
+    expect(stop.stopBot).not.toHaveBeenCalled();
+    expect(useStore.getState().toasts.at(-1)?.message).toBe('Stopped the worker for “fix login”.');
+    expect(q('[data-testid="bots-stop-worker-confirm-row"]')).toBeNull();
+    expect(document.activeElement).toBe(q('[data-bots-worker-panel-menu]'));
+    act(() => useStore.getState().setBotsWorkerPanel(null));
+  });
+
+  it('a Stop worker that answers after the panel moved to another worker leaves that worker\'s confirm and focus alone', async () => {
+    seedRooms();
+    const pane = (id: string) => ({
+      ...ws(id, `wtask: ${id}`),
+      rootPane: { id: `${id}-p`, type: 'leaf', ordinal: 1, surfaces: [{ id: `s-${id}`, ptyId: `pty-${id}`, title: '', shell: 'zsh', cwd: '/', surfaceType: 'terminal' }], activeSurfaceId: `s-${id}` },
+    }) as Workspace;
+    act(() => useStore.setState({
+      workspaces: [ws('hq', 'Headquarters'), ws('w1', 'api'), pane('t1'), pane('t2')],
+      surfaceAgent: { 'pty-t1': { name: 'Claude Code', status: 'running' }, 'pty-t2': { name: 'Claude Code', status: 'running' } },
+      surfaceAgentStatus: { 'pty-t1': 'running', 'pty-t2': 'running' },
+    } as never));
+    const view = (taskId: string, ws: string, title: string) => ({
+      taskId, taskWorkspaceId: ws, ownerWorkspaceId: 'w1', botId: LEAD, title, status: 'working' as const, stage: 'working' as const, updatedAt: Date.now(),
+    });
+    bots[1] = { ...bots[1], tasks: [view('wtask-aaaa-00000001', 't1', 'task A'), view('wtask-bbbb-00000002', 't2', 'task B')] };
+    let answerA: (r: { ok: boolean; workersStopped: number; tasksCancelled: number }) => void = () => undefined;
+    const stopTask = vi.fn((taskId: string) => (taskId === 'wtask-aaaa-00000001'
+      ? new Promise<{ ok: boolean; workersStopped: number; tasksCancelled: number }>((resolve) => { answerA = resolve; })
+      : Promise.resolve({ ok: true, workersStopped: 1, tasksCancelled: 1 })));
+    act(() => useStore.setState({ toasts: [] } as never));
+    await render(<BotsPage stop={{ stopTask }} />);
+    act(() => q(`[data-bots-row="bot:${LEAD}"]`)!.click());
+    // Stop A, and while it runs show B and open B's confirm.
+    act(() => q('[data-bots-tree] [data-bots-worker="t1"]')!.click());
+    act(() => q('[data-bots-worker-panel-menu]')!.click());
+    act(() => q('[data-bots-worker-panel-stop]')!.click());
+    await act(async () => { q('[data-testid="bots-stop-worker-confirm"]')!.click(); });
+    expect(stopTask).toHaveBeenCalledWith('wtask-aaaa-00000001');
+    act(() => q('[data-bots-tree] [data-bots-worker="t2"]')!.click());
+    expect(q('[data-bots-worker-panel="t2"]')).not.toBeNull();
+    act(() => q('[data-bots-worker-panel-menu]')!.click());
+    act(() => q('[data-bots-worker-panel-stop]')!.click());
+    const bConfirm = q('[data-testid="bots-stop-worker-confirm"]')!;
+    expect(q('[data-testid="bots-stop-worker-confirm-row"]')?.textContent).toContain('task B');
+    expect(document.activeElement).toBe(bConfirm);
+    // A answers: its toast, but B's confirm stays open and keeps the focus.
+    await act(async () => { answerA({ ok: true, workersStopped: 1, tasksCancelled: 1 }); });
+    expect(useStore.getState().toasts.at(-1)?.message).toBe('Stopped the worker for “task A”.');
+    expect(q('[data-testid="bots-stop-worker-confirm-row"]')?.textContent).toContain('task B');
+    expect(document.activeElement).toBe(bConfirm);
+    expect(stopTask).toHaveBeenCalledTimes(1);
+    act(() => q('[data-testid="bots-stop-worker-cancel"]')!.click());
+    act(() => useStore.getState().setBotsWorkerPanel(null));
+  });
+
+  it('a partial Stop worker says why and keeps Stop worker offered once the task is cancelled, until a stop goes through', async () => {
+    seedRooms();
+    seedWorkerPanes();
+    const taskId = 'wtask-part-00000001';
+    const view = (stage: 'working' | 'cancelled') => [{
+      taskId, taskWorkspaceId: 't1', ownerWorkspaceId: 'w1', botId: LEAD, title: 'fix login',
+      status: stage, stage, updatedAt: Date.now(),
+    }];
+    bots[1] = { ...bots[1], tasks: view('working') as never };
+    const stopTask = vi.fn()
+      .mockResolvedValueOnce({ ok: false, code: 'partial', workersStopped: 0, tasksCancelled: 1, message: 'The worker could not be stopped; stop again to retry.' })
+      .mockResolvedValue({ ok: true, workersStopped: 1, tasksCancelled: 0 });
+    act(() => useStore.setState({ toasts: [] } as never));
+    await render(<BotsPage stop={{ stopTask }} />);
+    act(() => q(`[data-bots-row="bot:${LEAD}"]`)!.click());
+    act(() => q('[data-bots-tree] [data-bots-worker="t1"]')!.click());
+    act(() => q('[data-bots-worker-panel-menu]')!.click());
+    act(() => q('[data-bots-worker-panel-stop]')!.click());
+    await act(async () => { q('[data-testid="bots-stop-worker-confirm"]')!.click(); });
+    expect(useStore.getState().toasts.at(-1)).toMatchObject({
+      level: 'error',
+      message: 'Could not stop the worker for “fix login”. The worker could not be stopped; stop again to retry.',
+    });
+    // The confirm stays for another try.
+    expect(q('[data-testid="bots-stop-worker-confirm-row"]')).not.toBeNull();
+    // Main cancelled the task meanwhile: the page reads it again, and Stop worker is still offered.
+    act(() => root.unmount());
+    bots[1] = { ...bots[1], tasks: view('cancelled') as never };
+    root = createRoot(container);
+    await render(<BotsPage stop={{ stopTask }} />);
+    act(() => q(`[data-bots-row="bot:${LEAD}"]`)!.click());
+    act(() => q('[data-bots-tree] [data-bots-worker="t1"]')!.click());
+    expect(q('[data-bots-tree] [data-bots-worker="t1"]')?.getAttribute('data-worker-state')).not.toBe('running');
+    act(() => q('[data-bots-worker-panel-menu]')!.click());
+    act(() => q('[data-bots-worker-panel-stop]')!.click());
+    await act(async () => { q('[data-testid="bots-stop-worker-confirm"]')!.click(); });
+    expect(stopTask).toHaveBeenCalledTimes(2);
+    expect(stopTask).toHaveBeenLastCalledWith(taskId);
+    expect(useStore.getState().toasts.at(-1)?.message).toBe('Stopped the worker for “fix login”.');
+    // Gone through: a cancelled task is offered no Stop worker again.
+    act(() => q('[data-bots-worker-panel-menu]')!.click());
+    expect(q('[data-bots-worker-panel-workspaces]')).not.toBeNull();
+    expect(q('[data-bots-worker-panel-stop]')).toBeNull();
+    act(() => useStore.getState().setBotsWorkerPanel(null));
+  });
+
+  it('Stop worker is not offered for a finished task, for a resumed worker of an ended task, or without the stop verb', async () => {
+    seedRooms();
+    seedWorkerPanes();
+    const now = Date.now();
+    const ended = (taskId: string, taskWorkspaceId: string, worker: 'resumable' | 'resumed') => ({
+      taskId, taskWorkspaceId, ownerWorkspaceId: 'w1', botId: LEAD, title: `task ${taskWorkspaceId}`,
+      status: 'completed' as const, stage: 'closed' as const, worker, updatedAt: now,
+    });
+    bots[1] = { ...bots[1], tasks: [ended('wtask-resd-00000001', 't1', 'resumed'), ended('wtask-done-00000002', 't2', 'resumable')] };
+    const stop = { stopTask: vi.fn(async () => ({ ok: true, workersStopped: 1, tasksCancelled: 1 })) };
+    await render(<BotsPage stop={stop} />);
+    act(() => q(`[data-bots-row="bot:${LEAD}"]`)!.click());
+    // A resumed worker of an ended task runs, but has no task left to cancel.
+    expect(q('[data-bots-tree] [data-bots-worker="t1"]')?.getAttribute('data-worker-state')).toBe('running');
+    expect(q('[data-bots-tree] [data-bots-worker="t2"]')?.getAttribute('data-worker-state')).toBe('done');
+    for (const id of ['t1', 't2']) {
+      act(() => q(`[data-bots-tree] [data-bots-worker="${id}"]`)!.click());
+      act(() => q('[data-bots-worker-panel-menu]')!.click());
+      expect(q('[data-bots-worker-panel-workspaces]')).not.toBeNull();
+      expect(q('[data-bots-worker-panel-stop]')).toBeNull();
+      act(() => useStore.getState().setBotsWorkerPanel(null));
+    }
+    act(() => root.unmount());
+    // A running worker of an open task, but no stop verb: no Stop worker.
+    bots[1] = { ...bots[1], tasks: [{
+      taskId: 'wtask-run-00000001', taskWorkspaceId: 't1', ownerWorkspaceId: 'w1', botId: LEAD, title: 'fix login',
+      status: 'working' as const, stage: 'working' as const, updatedAt: now,
+    }] };
+    root = createRoot(container);
+    await render(<BotsPage stop={{}} />);
+    act(() => q(`[data-bots-row="bot:${LEAD}"]`)!.click());
+    act(() => q('[data-bots-tree] [data-bots-worker="t1"]')!.click());
+    act(() => q('[data-bots-worker-panel-menu]')!.click());
+    expect(q('[data-bots-worker-panel-workspaces]')).not.toBeNull();
+    expect(q('[data-bots-worker-panel-stop]')).toBeNull();
+    expect(stop.stopTask).not.toHaveBeenCalled();
+    act(() => useStore.getState().setBotsWorkerPanel(null));
   });
 
   it('an open task whose worker was paused stays in the rail with Resume, which shows the new pane; a refusal for want of a slot is worded', async () => {

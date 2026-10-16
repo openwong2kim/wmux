@@ -63,7 +63,7 @@ const flush = () => act(async () => { await vi.advanceTimersByTimeAsync(0); });
 
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
-  useStore.setState({ roomStatus: null, roomThreads: {}, roomTimelines: {}, roomActors: {}, roomPushCount: 0, roomPushedAt: {} } as never);
+  useStore.setState({ roomStatus: null, roomThreads: {}, roomTimelines: {}, roomActors: {}, roomPushCount: 0, roomPushedAt: {}, roomPreviewCards: {} } as never);
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
@@ -140,5 +140,37 @@ describe('useBotsSync on a cold start', () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
     expect(api.read).toHaveBeenCalledTimes(1);
     root = createRoot(container);
+  });
+});
+
+describe('useBotsSync: a quiet conversation\'s preview', () => {
+  it('a 1:1 whose newest card is older than the room\'s newest page: that card alone is read, once', async () => {
+    const DM = 'dm:bot-0000000a';
+    const old: RoomCard = { ...cards[0], id: 'c-old', seq: 3, threadId: DM, title: 'Last word, long ago' };
+    const recent: RoomCard[] = cards.map((c) => ({ ...c, id: `g${c.seq}`, seq: c.seq + 100, threadId: 'general' }));
+    const api = {
+      status: vi.fn(async () => ({ running: true, enabled: true, hqWorkspaceId: null })),
+      threads: vi.fn(async () => ({ ok: true as const, workspaceId: WS, threads: [
+        { threadId: DM, title: 'x', lastAt: 3, lastSeq: 3, cardCount: 1, openQuestions: 0, lastKind: 'status', status: 'open', unread: null },
+        { threadId: 'general', title: 'g', lastAt: 119, lastSeq: 119, cardCount: 19, openQuestions: 0, lastKind: 'status', status: 'open', unread: null },
+      ] })),
+      read: vi.fn(async (p: { threadId?: string }) => (p.threadId === DM
+        ? { ok: true as const, workspaceId: WS, threadId: DM, cards: [old], nextSinceSeq: 3, hasMore: false }
+        : { ok: true as const, workspaceId: WS, threadId: null, cards: recent, nextSinceSeq: 119, hasMore: false })),
+      actors: vi.fn(async () => ({ actors: {} })),
+      onEvent: vi.fn(() => () => undefined),
+    };
+    setRoomsApiForTests(api as unknown as RoomsApi);
+    await render(true);
+    await flush();
+    await flush();
+    const dmReads = () => api.read.mock.calls.filter(([p]) => (p as { threadId?: string }).threadId === DM);
+    expect(dmReads()).toEqual([[{ workspaceId: WS, threadId: DM, limit: 1 }]]);
+    expect(useStore.getState().roomPreviewCards[timelineKey(WS, DM)]?.id).toBe('c-old');
+    // The thread itself still reads as unread: opening it reads it whole.
+    expect(useStore.getState().roomTimelines[timelineKey(WS, DM)]).toBeUndefined();
+    await render(true);
+    await flush();
+    expect(dmReads()).toHaveLength(1);
   });
 });

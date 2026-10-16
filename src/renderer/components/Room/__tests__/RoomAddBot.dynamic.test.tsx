@@ -167,6 +167,25 @@ describe('FactoryTab › Add bot', () => {
     expect(create).toHaveBeenCalledWith({ workspaceId: WS, name: '대장', template: 'developer', job: 'Lead the team and merge what is ready.' });
   });
 
+  it('a pasted command or path is not a name: Add stays off and the form says why', async () => {
+    const { botPort, settingsPort, pickFolder, create } = setup({ ok: true, bot: row('bot-00000001').bot });
+    await render(createElement(FactoryTab, { settingsPort, botPort, pickFolder }));
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="factory-add-bot-open"]')!.click());
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="factory-add-bot-folder"]')!.click());
+    const submit = () => container.querySelector<HTMLButtonElement>('[data-testid="factory-add-bot-submit"]')!;
+    const blocked = () => container.querySelector('[data-testid="factory-add-bot-blocked"]')?.textContent ?? null;
+    await typeInto('factory-add-bot-name', 'cd /private/tmp/wmux-e2e && npm run dev');
+    expect(submit().disabled).toBe(true);
+    expect(blocked()).toBe(en['settings.factory.addBotBadName'].replace('{max}', '64'));
+    await act(async () => submit().click());
+    expect(create).not.toHaveBeenCalled();
+    await typeInto('factory-add-bot-name', 'C:\\Users\\dev');
+    expect(blocked()).toBe(en['settings.factory.addBotBadName'].replace('{max}', '64'));
+    await typeInto('factory-add-bot-name', "O'Brien-2, 리뷰 봇");
+    expect(blocked()).toBeNull();
+    expect(submit().disabled).toBe(false);
+  });
+
   it('shows main\'s refusal and keeps the form', async () => {
     const { botPort, settingsPort, pickFolder } = setup({ ok: false, code: 'not_a_repo', message: '/src/app is not a git checkout.' });
     await render(createElement(FactoryTab, { settingsPort, botPort, pickFolder }));

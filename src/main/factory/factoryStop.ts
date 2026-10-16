@@ -95,6 +95,8 @@ export interface FactoryStopPorts {
    *  their tasks ended, so step 2 does not reach them; how many it stopped
    *  (and how many it could not). */
   stopResumed?: (botId?: string) => Promise<number | { stopped: number; failed: number; taskIds?: string[] }>;
+  /** The same for one task's resumed worker (stopFactoryTask). Absent: none. */
+  stopResumedTask?: (taskId: string) => Promise<{ stopped: number; failed: number; taskIds?: string[] }>;
   /** The tasks of a bot whose launch is under way past its launch check (an
    *  agent slot granted, not yet registered), or null when that cannot be
    *  told. Default: the factory's agent slots. */
@@ -180,6 +182,15 @@ export function __resetFactoryStopForTesting(): void {
   stoppedWakes.clear();
   lateStops.clear();
   turnStops.clear();
+}
+
+/** Whether a row is a bot task the owner stopped (Stop worker, Stop for one
+ *  bot, Stop all, or "Run bots" off): cancelled by the system as "stopped
+ *  by owner". A stop deletes nothing, so its folder is kept
+ *  (taskFolderCleanup.ts). Pure. */
+export function isStoppedByOwnerRow(row: Pick<LedgerEntry, 'status' | 'summary' | 'updatedBy' | 'dispatch'>): boolean {
+  const origin = row.dispatch?.origin;
+  return origin?.kind === 'bot' && !!origin.botId && row.status === 'cancelled' && row.summary === STOPPED_BY_OWNER && row.updatedBy?.kind === 'system';
 }
 
 /** Whether a row is a task the owner stopped recently (its worker is stopped again). */
@@ -386,6 +397,85 @@ export async function stopFactoryWork(ports: FactoryStopPorts, scope: { botId?: 
   const counts = { botsInterrupted, workersStopped, tasksCancelled, gatesCancelled, ...(routinesPaused !== undefined ? { routinesPaused } : {}) };
   return failures > 0
     ? { ok: false, ...counts, code: 'partial', message: 'Some work could not be stopped; stop again to retry.' }
+    : { ok: true, ...counts };
+}
+
+/**
+ * Stop one bot task's worker (the owner's Stop worker on the Bots page): the
+ * same stop Stop for one bot runs on each of its open tasks (stopTask), for
+ * this task only. Its row is cancelled ("stopped by owner", waking nobody),
+ * a gate running on it is cancelled and its worker's processes are stopped;
+ * the worktree, its branch and the task's workspace stay. A resumed worker
+ * of the task (it reopened after a resume) is stopped and its resume record
+ * marked stopped, as the bot-wide stop does. A task the owner stopped
+ * recently is stopped again as the bot-wide stop retries one: its gate, and
+ * an agent that outlived the first stop (its panes kept) — so a partial stop
+ * can be retried. The bot's turn, its other tasks and its routines are left
+ * alone, and nothing is remembered for later launches. Never throws.
+ * `not_found`: no bot task has that id; a task that ended otherwise stops
+ * nothing (`ok`, zero counts).
+ */
+export async function stopFactoryTask(ports: FactoryStopPorts, taskId: string): Promise<FactoryStopResult> {
+  const log = ports.log ?? ((m: string) => console.warn(m));
+  const now = (ports.now ?? Date.now)();
+  const none = { botsInterrupted: 0, workersStopped: 0, tasksCancelled: 0, gatesCancelled: 0 };
+  let row: LedgerEntry | null = null;
+  try {
+    row = ports.ledger.get(taskId);
+  } catch (err) {
+    log(`[factory] stop: the task ledger could not be read: ${String(err)}`);
+    return { ok: false, ...none, code: 'partial', message: 'The task could not be read; stop again to retry.' };
+  }
+  const origin = row?.dispatch?.origin;
+  if (!row || origin?.kind !== 'bot' || typeof origin.botId !== 'string' || !origin.botId) {
+    return { ok: false, ...none, code: 'not_found', message: 'No bot task has that id.' };
+  }
+  let stopped = false;
+  let cancelled = false;
+  let gate = false;
+  let failed = false;
+  if (isOpenBotTask(row)) {
+    const r = await stopTask(ports, row, undefined, log);
+    ({ stopped, cancelled, gate, failed } = r);
+  } else if (isRecentlyStopped(row, undefined, now - STOP_RETRY_MS)) {
+    // Stopped before (this or a bot-wide stop): what that stop could not
+    // reach — a gate it could not cancel, an agent that outlived it.
+    try {
+      const gates = ports.gates();
+      if (gates?.isRunning(row.id)) {
+        gate = gates.cancel(row.id);
+        if (!gate) {
+          failed = true;
+          log(`[factory] stop: the gate of ${row.id} was not cancelled`);
+        }
+      }
+    } catch (err) {
+      failed = true;
+      log(`[factory] stop: the gate of ${row.id} was not cancelled: ${String(err)}`);
+    }
+    try {
+      stopped = (await ports.stopWorker(row, { agentsOnly: true })) > 0;
+    } catch (err) {
+      failed = true;
+      log(`[factory] stop: the worker of ${row.id} was not stopped: ${String(err)}`);
+    }
+  }
+  if (ports.stopResumedTask) {
+    try {
+      const r = await ports.stopResumedTask(row.id);
+      if (r.stopped > 0) stopped = true;
+      if (r.failed > 0) {
+        failed = true;
+        log(`[factory] stop: the resumed worker of ${row.id} was not stopped`);
+      }
+    } catch (err) {
+      failed = true;
+      log(`[factory] stop: the resumed worker of ${row.id} was not stopped: ${String(err)}`);
+    }
+  }
+  const counts = { ...none, workersStopped: stopped ? 1 : 0, tasksCancelled: cancelled ? 1 : 0, gatesCancelled: gate ? 1 : 0 };
+  return failed
+    ? { ok: false, ...counts, code: 'partial', message: 'The worker could not be stopped; stop again to retry.' }
     : { ok: true, ...counts };
 }
 

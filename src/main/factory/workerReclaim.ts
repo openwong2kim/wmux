@@ -330,7 +330,7 @@ export interface WorkerReclaimPorts {
   worktreeOf: (entry: LedgerEntry) => Promise<string | null>;
   listSessions: () => Promise<WorkerSessionInfo[]>;
   /** daemon `session.stopAgent`. */
-  stopAgent: (sessionId: string) => Promise<{ ok?: boolean; stopped?: boolean; code?: string }>;
+  stopAgent: (sessionId: string, opts?: { ifTurnClosed?: boolean }) => Promise<{ ok?: boolean; stopped?: boolean; code?: string }>;
   /** Close a pane (daemon `daemon.destroySession`): the stop of an agent the
    *  daemon cannot stop by itself (`unsupported`: a WSL pane's Linux agent).
    *  Absent: such a worker is not stopped. */
@@ -361,6 +361,20 @@ export interface WorkerReclaimPorts {
    *  checked), never another pane opened in its folder; unknown: nothing is
    *  stopped. Absent: every pane started in the folder, as for an end. */
   workspacePanes?: (workspaceId: string) => readonly string[] | null;
+  /** The panes of a reported task whose idle turnEnded checked: its own
+   *  worker panes (reportedWorkerPanes), null when not known. A reported
+   *  task's stop reaches only these, never a shell in its workspace; none
+   *  or unknown: nothing is stopped. Absent: workspacePanes. */
+  reportedPanes?: (entry: LedgerEntry) => readonly string[] | null;
+  /** Asked as the last step before each stop of a reported task's idle
+   *  worker, after every other await: whether the daemon, read again now,
+   *  still shows its turn over and the idle window still met with the
+   *  times it reports (a turn start main missed leaves turnEnded true on
+   *  stale evidence). false: not now, looked at again on the next pass, no
+   *  attempt spent. The stop itself is also conditional (`ifTurnClosed`: a
+   *  daemon that knows it refuses with `turn_open`, read the same way).
+   *  Absent: not asked. */
+  confirmIdle?: (entry: LedgerEntry) => Promise<boolean>;
 }
 
 /** Whether one pane of a reported task's workspace ended its turn, from the
@@ -411,6 +425,268 @@ export function workerPanesIdle(panes: readonly PaneActivity[], floor: number, n
     && now - Math.max(floor, p.turnEndAt, p.inputAt ?? -Infinity) >= ms);
 }
 
+/** One pane's turn as the daemon reports it (DaemonClient.getAgentState). */
+export interface DaemonTurnState {
+  agentStatus: string;
+  /** A turn is open (a quiet one reads `idle` in agentStatus). Absent from an older daemon. */
+  turnOpen?: boolean;
+  /** The pane's current agent has delivered a hook. Absent from an older daemon. */
+  hookReports?: boolean;
+  /** Milliseconds since the last key input. Absent from an older daemon. */
+  keyInputIdleMs?: number;
+  /** Milliseconds since the pane's last settled result. Absent from an older
+   *  daemon and when none settled since its agent started. */
+  settledAgoMs?: number;
+}
+
+/** A worker pane whose read came back without an answer (no state, an
+ *  older daemon) is read again after this, doubling per failure up to
+ *  TURN_SEED_RETRY_MAX_MS; never given up on. */
+export const TURN_SEED_RETRY_MS = 60_000;
+export const TURN_SEED_RETRY_MAX_MS = 30 * 60_000;
+/** A worker pane the daemon reported mid-turn (or with no hook seen) is read
+ *  again this often. */
+export const TURN_SEED_OPEN_RECHECK_MS = 5 * 60_000;
+
+/**
+ * The worker panes of one reported task, among its workspace's panes whose
+ * agent the daemon reports running (agentProcessAlive, or a WSL worker's
+ * launch line, isWslWorkerPane). With panes recorded for the task (its
+ * reclaim record), only those. Otherwise the one pane its own fan-out (or
+ * resume) launch created (`launched`: the bot worker session record names
+ * the task), and only while it is the workspace's single agent pane. Anything
+ * else (a recorded worker that exited beside another agent, two agents, an
+ * agent the task did not launch) identifies no worker: the task is not idle
+ * and nothing is stopped. A plain shell is never one. Pure.
+ */
+export function taskWorkerPanes(panes: readonly string[], recorded: readonly string[], launched: readonly string[], sessions: readonly WorkerSessionInfo[]): string[] {
+  const alive = panes.filter((id) => {
+    const s = sessions.find((x) => x.id === id);
+    return !!s && (s.agentProcessAlive === true || isWslWorkerPane(s));
+  });
+  if (recorded.length > 0) return alive.filter((id) => recorded.includes(id));
+  return alive.length === 1 && launched.includes(alive[0]) ? alive : [];
+}
+
+/** Whether the daemon's read of a pane shows its turn over: a turn known
+ *  closed, no running turn, no prompt waiting. No state, or an older daemon
+ *  that does not say, is not. Pure. */
+export function daemonTurnClosed(state: DaemonTurnState | null): boolean {
+  return !!state && state.turnOpen === false && state.agentStatus !== 'running' && state.agentStatus !== 'awaiting_input';
+}
+
+/** The panes a reported task's idle stop looks at and stops: its identified
+ *  worker panes still in its workspace; none (not idle, nothing stopped)
+ *  when no worker pane was identified; null when the workspace tree is not
+ *  known. Pure. */
+export function reportedWorkerPanes(workers: readonly string[] | null, workspacePtys: readonly string[] | null): string[] | null {
+  if (!workspacePtys) return null;
+  return workers ? workers.filter((id) => workspacePtys.includes(id)) : [];
+}
+
+/** One pane's activity for the idle stops: main's own turn evidence and the
+ *  daemon's reads, the later turn end and the later input of the two. Pure. */
+export function mergePaneActivity(live: PaneActivity, seeded: Pick<PaneActivity, 'turnEndAt' | 'inputAt'> | null): PaneActivity {
+  const later = (a: number | undefined, b: number | undefined): number | undefined => (a === undefined ? b : b === undefined ? a : Math.max(a, b));
+  const turnEndAt = later(live.turnEndAt, seeded?.turnEndAt);
+  const inputAt = later(live.inputAt, seeded?.inputAt);
+  return {
+    ...(live.status !== undefined ? { status: live.status } : {}),
+    ...(live.turnStartAt !== undefined ? { turnStartAt: live.turnStartAt } : {}),
+    ...(turnEndAt !== undefined ? { turnEndAt } : {}),
+    ...(inputAt !== undefined ? { inputAt } : {}),
+  };
+}
+
+export interface DaemonTurnSeedPorts {
+  /** The open reported bot tasks not yet stopped for that report: their
+   *  workspace's panes, the panes recorded for the task (its reclaim
+   *  record), the panes its own launch created (taskWorkerPanes), and the
+   *  report time; null when the workspace tree is not known yet (nothing is
+   *  read or dropped). */
+  tasks: () => ReadonlyArray<{ taskId: string; reportedAt: number; panes: readonly string[]; recorded: readonly string[]; launched: readonly string[] }> | null;
+  /** Whether the daemon can be asked now (not connected: nothing is read). */
+  ready: () => boolean;
+  /** The daemon's sessions (daemon.listSessions). */
+  listSessions: () => Promise<WorkerSessionInfo[]>;
+  /** The pane's state, null when the daemon has none (no session, a failed
+   *  or timed-out read). */
+  readState: (ptyId: string) => Promise<DaemonTurnState | null>;
+  /** Whether main saw a turn edge of the pane itself since it started. */
+  liveEvidence: (ptyId: string) => boolean;
+  now?: () => number;
+}
+
+export interface DaemonTurnSeed {
+  /** The daemon's turn end for a worker pane, or null. */
+  activity(ptyId: string): Pick<PaneActivity, 'turnEndAt' | 'inputAt'> | null;
+  /** The task's worker panes as the last pass identified them
+   *  (taskWorkerPanes), or null when none was. */
+  workerPanes(taskId: string): readonly string[] | null;
+  /** Identify the worker panes and read those still unknown. */
+  pass(): Promise<void>;
+  /** Read the panes again right before they are stopped: true only when the
+   *  daemon shows every one's turn over (daemonTurnClosed). The times it
+   *  reports (its last settled result, its last key input) are folded into
+   *  the seed, so the caller checks the idle window again with them. A pane
+   *  it shows mid-turn loses its seed (a turn start main missed) and is
+   *  read again later. */
+  confirmIdle(ptyIds: readonly string[]): Promise<boolean>;
+}
+
+/**
+ * Which panes of a reported bot task are its worker, and, for those main has
+ * no turn evidence of (after an app restart: it lived only in memory), the
+ * daemon's view of their turn. A reported task's idle stop looks at and stops
+ * only these panes (reportedWorkerPanes): a shell in the task's workspace,
+ * which may be the owner's, is never counted and never stopped, and a task
+ * whose worker pane cannot be identified is not idle.
+ *
+ * A worker pane whose agent's hooks reported and whose turn the daemon
+ * reports closed (`turnOpen` false, `hookReports` true, no running turn, no
+ * prompt waiting) counts as having ended its turn at its last settled result,
+ * never before the report; the daemon's time since the last key input moves
+ * the window too. An open turn is read again later (TURN_SEED_OPEN_RECHECK_MS);
+ * no state and an older daemon that does not say are read again with a
+ * growing delay (TURN_SEED_RETRY_MS), never given up on; a read lost to a
+ * disconnect is not counted, and a reconnect reads again at once. Evidence
+ * main sees itself is never overruled: the later turn end and input count,
+ * a live hook turn start outweighs an older end, and a pane that shows live
+ * evidence by the time its read returns is not seeded. Before any stop the
+ * panes are read again (confirmIdle) and their fresh times folded in, so a
+ * seed a missed turn start made stale stops nothing.
+ */
+export function createDaemonTurnSeed(ports: DaemonTurnSeedPorts): DaemonTurnSeed {
+  const now = ports.now ?? Date.now;
+  const seeds = new Map<string, { turnEndAt?: number; inputAt?: number }>();
+  const workers = new Map<string, string[]>();
+  /** Reads in a row that came back without an answer. */
+  const failures = new Map<string, number>();
+  const nextReadAt = new Map<string, number>();
+  let wasReady = false;
+  let running = false;
+
+  const read = async (ptyId: string, reportedAt: number): Promise<void> => {
+    let state: DaemonTurnState | null = null;
+    try {
+      state = await ports.readState(ptyId);
+    } catch {
+      state = null;
+    }
+    const readAt = now();
+    if (!state || state.turnOpen === undefined) {
+      // Lost to a disconnect: not counted.
+      if (!state && !ports.ready()) return;
+      const n = (failures.get(ptyId) ?? 0) + 1;
+      failures.set(ptyId, n);
+      nextReadAt.set(ptyId, readAt + Math.min(TURN_SEED_RETRY_MS * 2 ** (n - 1), TURN_SEED_RETRY_MAX_MS));
+      return;
+    }
+    failures.delete(ptyId);
+    if (!daemonTurnClosed(state) || state.hookReports !== true) {
+      nextReadAt.set(ptyId, readAt + TURN_SEED_OPEN_RECHECK_MS);
+      return;
+    }
+    // Live evidence that arrived while the read was out wins.
+    if (ports.liveEvidence(ptyId)) return;
+    const ago = (ms: number | undefined): number | undefined => (typeof ms === 'number' && Number.isFinite(ms) && ms >= 0 ? readAt - ms : undefined);
+    const settledAt = ago(state.settledAgoMs);
+    const inputAt = ago(state.keyInputIdleMs);
+    seeds.set(ptyId, {
+      turnEndAt: Math.max(reportedAt, settledAt ?? -Infinity),
+      ...(inputAt !== undefined ? { inputAt } : {}),
+    });
+    nextReadAt.delete(ptyId);
+  };
+
+  return {
+    activity(ptyId) {
+      const s = seeds.get(ptyId);
+      return s ? { ...s } : null;
+    },
+    workerPanes(taskId) {
+      const w = workers.get(taskId);
+      return w ? [...w] : null;
+    },
+    async pass() {
+      if (running) return;
+      running = true;
+      try {
+        let tasks: ReturnType<DaemonTurnSeedPorts['tasks']> = null;
+        try {
+          tasks = ports.tasks();
+        } catch {
+          tasks = null;
+        }
+        if (!tasks) return;
+        const ready = ports.ready();
+        // A (re)connect: reads that came back empty are tried again now.
+        if (ready && !wasReady) {
+          for (const id of failures.keys()) nextReadAt.delete(id);
+          failures.clear();
+        }
+        wasReady = ready;
+        if (!ready) return;
+        let sessions: WorkerSessionInfo[];
+        try {
+          sessions = await ports.listSessions();
+        } catch {
+          return;
+        }
+        workers.clear();
+        const reportedAt = new Map<string, number>();
+        for (const t of tasks) {
+          const w = taskWorkerPanes(t.panes, t.recorded, t.launched, sessions);
+          if (w.length === 0) continue;
+          workers.set(t.taskId, w);
+          for (const id of w) reportedAt.set(id, t.reportedAt);
+        }
+        // A pane that is no longer a reported task's worker keeps nothing.
+        for (const m of [seeds, failures, nextReadAt]) for (const id of [...m.keys()]) if (!reportedAt.has(id)) m.delete(id);
+        const at = now();
+        const due = [...reportedAt].filter(([id]) => seeds.get(id)?.turnEndAt === undefined && !ports.liveEvidence(id) && (nextReadAt.get(id) ?? -Infinity) <= at);
+        await Promise.all(due.map(([id, t]) => read(id, t)));
+      } finally {
+        running = false;
+      }
+    },
+    async confirmIdle(ptyIds) {
+      if (ptyIds.length === 0 || !ports.ready()) return false;
+      const states = await Promise.all(ptyIds.map(async (id) => {
+        try {
+          return await ports.readState(id);
+        } catch {
+          return null;
+        }
+      }));
+      let ok = true;
+      const readAt = now();
+      states.forEach((state, i) => {
+        if (state && daemonTurnClosed(state)) {
+          // Its fresh times: a result that settled or a key typed since the
+          // last look moves the window.
+          const ago = (ms: number | undefined): number | undefined => (typeof ms === 'number' && Number.isFinite(ms) && ms >= 0 ? readAt - ms : undefined);
+          const settledAt = ago(state.settledAgoMs);
+          const inputAt = ago(state.keyInputIdleMs);
+          const prior = seeds.get(ptyIds[i]) ?? {};
+          const later = (a: number | undefined, b: number | undefined): number | undefined => (a === undefined ? b : b === undefined ? a : Math.max(a, b));
+          const turnEndAt = later(prior.turnEndAt, settledAt);
+          const input = later(prior.inputAt, inputAt);
+          if (turnEndAt !== undefined || input !== undefined) {
+            seeds.set(ptyIds[i], { ...(turnEndAt !== undefined ? { turnEndAt } : {}), ...(input !== undefined ? { inputAt: input } : {}) });
+          }
+          return;
+        }
+        ok = false;
+        // Shown mid-turn: a turn start main missed. Its seed goes (main's own
+        // turn end, if any, stays) and it is read again later.
+        if (state && state.turnOpen !== undefined && seeds.delete(ptyIds[i])) nextReadAt.set(ptyIds[i], now() + TURN_SEED_OPEN_RECHECK_MS);
+      });
+      return ok;
+    },
+  };
+}
+
 /** Whether a resumed worker's agent still runs in one of its recorded panes:
  *  an agent seen alive, or a WSL worker's pane, whose Linux agent the daemon
  *  does not always attribute (isWslWorkerPane). Pure. */
@@ -428,8 +704,8 @@ export const RECLAIM_ATTEMPTS_MAX = 3;
  *  for. An end: its row is open again (it reopened since it ended); a row
  *  that cannot be read is not counted as open. A report: its row is no
  *  longer that report (another status or rev, unreadable) or a turn runs
- *  again in its panes. Pure over its reads. */
-function movedOn(ports: Pick<WorkerReclaimPorts, 'row' | 'turnEnded'>, entry: LedgerEntry, ended: ReclaimedWorker['ended']): boolean {
+ *  again in its panes (`rowOnly`: the row alone). Pure over its reads. */
+function movedOn(ports: Pick<WorkerReclaimPorts, 'row' | 'turnEnded'>, entry: LedgerEntry, ended: ReclaimedWorker['ended'], rowOnly = false): boolean {
   if (ended === 'reported' && !ports.row) return false;
   let now: LedgerEntry | null = null;
   try {
@@ -439,6 +715,7 @@ function movedOn(ports: Pick<WorkerReclaimPorts, 'row' | 'turnEnded'>, entry: Le
   }
   if (ended === 'reported') {
     if (!now || now.status !== 'review_requested' || now.rev !== entry.rev) return true;
+    if (rowOnly) return false;
     try {
       return ports.turnEnded?.(now) === false;
     } catch {
@@ -455,7 +732,15 @@ function movedOn(ports: Pick<WorkerReclaimPorts, 'row' | 'turnEnded'>, entry: Le
  * A record whose stops did not all succeed stays `stopping` (still live) and
  * is tried again.
  */
-export async function reclaimWorker(ports: WorkerReclaimPorts, entry: LedgerEntry, ended: ReclaimedWorker['ended']): Promise<ReclaimedWorker | null> {
+export async function reclaimWorker(
+  ports: WorkerReclaimPorts,
+  entry: LedgerEntry,
+  ended: ReclaimedWorker['ended'],
+  /** Set `deferred` when a reported task's stop was held back because its
+   *  turn is not over after all (confirmIdle, or the daemon's `turn_open`):
+   *  not a failed attempt. */
+  out?: { deferred?: boolean },
+): Promise<ReclaimedWorker | null> {
   const log = ports.log ?? ((m: string) => console.warn(m));
   const now = ports.now ?? Date.now;
   try {
@@ -473,7 +758,16 @@ export async function reclaimWorker(ports: WorkerReclaimPorts, entry: LedgerEntr
         return null;
       }
     };
-    if (ended === 'reported' && ports.workspacePanes) {
+    if (ended === 'reported' && ports.reportedPanes) {
+      let own: readonly string[] | null = null;
+      try {
+        own = ports.reportedPanes(entry);
+      } catch {
+        own = null;
+      }
+      if (!own || own.length === 0) return null;
+      for (const id of [...ids]) if (!own.includes(id)) ids.delete(id);
+    } else if (ended === 'reported' && ports.workspacePanes) {
       const own = panesOf(entry.taskWorkspaceId);
       if (!own) return null;
       for (const id of [...ids]) if (!own.includes(id)) ids.delete(id);
@@ -558,10 +852,32 @@ export async function reclaimWorker(ports: WorkerReclaimPorts, entry: LedgerEntr
     } catch {
       ownPanes = null;
     }
+    // A pane whose stop was held back (its turn is not over after all):
+    // the record stays `stopping`, live, for a later look.
+    let heldBack = false;
     for (const p of panes) {
       // The task reopened (or moved on from its report) meanwhile: what
       // still runs is its worker again.
       if (movedOn(ports, entry, ended)) break;
+      // A reported task's idle worker: the last step before its stop, after
+      // every await above, reads the daemon again (a turn that started
+      // meanwhile, its hook missed, stops nothing).
+      if (ended === 'reported' && ports.confirmIdle) {
+        let still = false;
+        try {
+          still = await ports.confirmIdle(entry);
+        } catch {
+          still = false;
+        }
+        if (!still) {
+          heldBack = true;
+          if (out) out.deferred = true;
+          break;
+        }
+        // The row is read again after that read: one that moved on (back to
+        // working, a newer report) while it was out has nothing stopped.
+        if (movedOn(ports, entry, ended)) break;
+      }
       attempted++;
       try {
         // Only an end whose card says its pane closes closes a WSL worker's
@@ -569,7 +885,15 @@ export async function reclaimWorker(ports: WorkerReclaimPorts, entry: LedgerEntr
         const closable = (ended === 'completed' || ended === 'cancelled')
           && !!ownPanes?.includes(p.sessionId)
           && isWslWorkerPane(sessions.find((x) => x.id === p.sessionId));
-        const r = await stopOrClose(ports.stopAgent, closable ? ports.closePane : undefined, p.sessionId);
+        const r = await stopOrClose(ports.stopAgent, closable ? ports.closePane : undefined, p.sessionId, ended === 'reported' ? { ifTurnClosed: true } : undefined);
+        // The daemon found the turn open at the stop itself: nothing was
+        // signalled, and it is no failed stop.
+        if (r.code === 'turn_open') {
+          attempted--;
+          heldBack = true;
+          if (out) out.deferred = true;
+          break;
+        }
         if (r.ok !== true) {
           failed++;
           log(`[factory] reclaim: the agent of ${p.sessionId} (task ${entry.id}) was not stopped: ${r.code ?? 'refused'}`);
@@ -592,6 +916,15 @@ export async function reclaimWorker(ports: WorkerReclaimPorts, entry: LedgerEntr
     // Stopped only once every pane's stop succeeded; else it stays
     // `stopping` (still live for the agent budget) and a later look retries.
     if (failed > 0) return ports.store.get(entry.id);
+    // Stopped only when every pane was. A pane left running while the row
+    // itself has not moved on (a stop held back, a turn that opened in it
+    // after another pane was stopped) keeps the record `stopping`, live, and
+    // the next sweep looks again.
+    if (attempted < panes.length && !movedOn(ports, entry, ended, true)) heldBack = true;
+    if (heldBack) {
+      if (out) out.deferred = true;
+      return ports.store.get(entry.id);
+    }
     ports.store.setState(entry.id, 'stopped', now());
     // Reopened part way: the conversation stays recorded, no card (the
     // task is open again, and its open row counts what still runs).
@@ -656,8 +989,9 @@ async function stopOrClose(
   stopAgent: WorkerReclaimPorts['stopAgent'],
   closePane: WorkerReclaimPorts['closePane'],
   sessionId: string,
+  opts?: { ifTurnClosed?: boolean },
 ): Promise<{ ok?: boolean; stopped?: boolean; code?: string }> {
-  const r = await stopAgent(sessionId);
+  const r = await (opts ? stopAgent(sessionId, opts) : stopAgent(sessionId));
   if (r.code !== 'unsupported' || !closePane) return r;
   await closePane(sessionId);
   return { ok: true, stopped: true };
@@ -684,7 +1018,12 @@ export function installWorkerReclaim(ports: WorkerReclaimPorts): () => void {
     if (n >= RECLAIM_ATTEMPTS_MAX) return;
     attempts.set(key, n + 1);
     inFlight.add(entry.id);
-    void reclaimWorker(ports, entry, ended).finally(() => inFlight.delete(entry.id));
+    const out: { deferred?: boolean } = {};
+    void reclaimWorker(ports, entry, ended, out).finally(() => {
+      inFlight.delete(entry.id);
+      // Held back because the turn is not over: no attempt spent.
+      if (out.deferred && attempts.get(key) === n + 1) attempts.set(key, n);
+    });
   };
   const off = ports.onTransition((t) => {
     if (isReclaimableEnd(t.entry, t.to)) run(t.entry, t.to);
@@ -808,7 +1147,10 @@ export interface WorkerResumePorts {
   /** Hold the task's folder for the resume (taskFolderCleanup.ts
    *  holdTaskFolder): no cleanup removes it meanwhile. Returns the release. */
   holdFolder?: (taskId: string) => Promise<() => void>;
-  note?: (workspaceId: string, threadId: ThreadId, title: string, body: string, notice?: CardNotice, taskId?: string) => void;
+  /** The resumed worker uses the task's folder again (taskFolderCleanup.ts
+   *  forgetKeptFolder: a folder a stop kept is no longer only kept). */
+  folderResumed?: (taskId: string) => void;
+  note?:(workspaceId: string, threadId: ThreadId, title: string, body: string, notice?: CardNotice, taskId?: string) => void;
   changed?: () => void;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
@@ -848,12 +1190,14 @@ const clearing = new Set<string>();
  *  resumed or ends. */
 const botStarting = new Map<string, number>();
 
-/** Bumped by every stop of resumed workers (all bots, or one): a resume
- *  that was under way when a stop ran launches nothing more. */
+/** Bumped by every stop of resumed workers (all bots, one bot, or one
+ *  task's): a resume that was under way when a stop ran launches nothing
+ *  more. */
 let stopAllSeq = 0;
 const botStopSeq = new Map<string, number>();
-function stopMark(botId: string): string {
-  return `${stopAllSeq}:${botStopSeq.get(botId) ?? 0}`;
+const taskStopSeq = new Map<string, number>();
+function stopMark(botId: string, taskId: string): string {
+  return `${stopAllSeq}:${botStopSeq.get(botId) ?? 0}:${taskStopSeq.get(taskId) ?? 0}`;
 }
 
 function refuse(code: WorkerResumeCode, message: string): WorkerResumeResult {
@@ -927,8 +1271,8 @@ async function resumeOnce(
   if (rec.state === 'stopping') return refuse('busy', 'this worker is still being stopped; try again in a moment');
   // Read in the same tick as the request: a stop of resumed workers from
   // here on ends this resume.
-  const mark = stopMark(rec.botId);
-  const stopped = (): boolean => stopMark(rec.botId) !== mark;
+  const mark = stopMark(rec.botId, rec.taskId);
+  const stopped = (): boolean => stopMark(rec.botId, rec.taskId) !== mark;
   if (by.kind === 'bot') {
     const text = typeof message === 'string' ? message.trim() : '';
     if (text && (ports.taskTainted?.(taskId) ?? true) === false && (ports.senderTainted?.(by.botId) ?? true) !== false) {
@@ -1093,6 +1437,11 @@ async function launched(
 ): Promise<WorkerResumeResult> {
   const now = ports.now ?? Date.now;
   ports.store.setState(rec.taskId, 'resumed', now());
+  try {
+    ports.folderResumed?.(rec.taskId);
+  } catch {
+    /* best effort: the folder stays kept */
+  }
   onLaunched?.();
   try {
     const task = lifecycleCardTask(rec.title, rec.taskId);
@@ -1143,6 +1492,20 @@ export function reclaimedWorkerState(rec: ReclaimedWorker | null): 'resumable' |
 export async function stopResumedWorkers(ports: WorkerResumePorts, botId?: string): Promise<{ stopped: number; failed: number; taskIds: string[] }> {
   if (botId === undefined) stopAllSeq++;
   else botStopSeq.set(botId, (botStopSeq.get(botId) ?? 0) + 1);
+  return stopResumedWhere(ports, (rec) => botId === undefined || rec.botId === botId);
+}
+
+/** The same for one task's resumed worker (the owner's Stop worker): a
+ *  task that reopened after its worker was resumed keeps the resume record
+ *  `resumed`, which the idle stop, the exit sweep and Resume read, so its
+ *  stop marks it stopped too. A resume of that task under way launches
+ *  nothing more; the bot's other resumes go on. */
+export async function stopResumedWorker(ports: WorkerResumePorts, taskId: string): Promise<{ stopped: number; failed: number; taskIds: string[] }> {
+  taskStopSeq.set(taskId, (taskStopSeq.get(taskId) ?? 0) + 1);
+  return stopResumedWhere(ports, (rec) => rec.taskId === taskId);
+}
+
+async function stopResumedWhere(ports: WorkerResumePorts, which: (rec: ReclaimedWorker) => boolean): Promise<{ stopped: number; failed: number; taskIds: string[] }> {
   if (!ports.stopAgent) return { stopped: 0, failed: 0, taskIds: [] };
   const now = ports.now ?? Date.now;
   const taskIds: string[] = [];
@@ -1151,7 +1514,7 @@ export async function stopResumedWorkers(ports: WorkerResumePorts, botId?: strin
   // Read only when a pane may be closed (a WSL worker, isWslWorkerPane).
   let live: WorkerSessionInfo[] | null = null;
   for (const rec of ports.store.all()) {
-    if (rec.state !== 'resumed' || (botId !== undefined && rec.botId !== botId)) continue;
+    if (rec.state !== 'resumed' || !which(rec)) continue;
     if (ports.closePane && !live) live = await ports.listSessions().catch(() => []);
     const { ok, stoppedHere } = await stopRecordedPanes(ports, rec, live, true);
     if (!ok) failed++;
@@ -1565,4 +1928,10 @@ export function reclaimedWorkerWorkspaces(botId: string, owner: string, store: P
 export function isReclaimedWorkerPane(botId: string, owner: string, workspaceId: string, ptyId: string, store: Pick<ReclaimedWorkers, 'all'> | null | undefined = resumePorts?.store): boolean {
   return (store?.all() ?? []).some((r) => r.botId === botId && r.ownerWorkspaceId === owner
     && workerWorkspaceOf(r) === workspaceId && r.sessions.some((s) => s.sessionId === ptyId));
+}
+
+/** The reclaimed worker of a bot's task whose recorded pane `ptyId` is, in
+ *  the workspace that worker runs in (that pane only), or null. */
+export function reclaimedWorkerOfPane(workspaceId: string, ptyId: string, store: Pick<ReclaimedWorkers, 'all'> | null | undefined = resumePorts?.store): ReclaimedWorker | null {
+  return (store?.all() ?? []).find((r) => workerWorkspaceOf(r) === workspaceId && r.sessions.some((s) => s.sessionId === ptyId)) ?? null;
 }

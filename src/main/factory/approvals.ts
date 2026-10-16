@@ -65,19 +65,22 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash, randomBytes } from 'node:crypto';
 import { atomicReadJSONSync, atomicWriteJSONSync } from '../../daemon/util/atomicWrite';
-import type { BotBinding, BotEventPayload, BotProfile } from '../../shared/bot';
+import { botTemplate, type BotBinding, type BotEventPayload, type BotProfile } from '../../shared/bot';
 import {
   APPROVAL_ACTIONS,
   APPROVAL_ID_RE,
   APPROVAL_NEVER_BY_RULE,
   APPROVAL_UNDO_MS,
   BOT_APPROVAL_RPC,
+  RULE_OTHER_ASKER,
+  firstRuleSkip,
   isOwnerApprovalText,
   type ApprovalAction,
   type ApprovalApprover,
   type ApprovalDecideRequest,
   type ApprovalRequest,
   type ApprovalRule,
+  type ApprovalRuleNeed,
   type ApprovalState,
 } from '../../shared/botApproval';
 import type { FactoryRefusal } from '../../shared/botSurface';
@@ -91,7 +94,7 @@ import { factFromMergeEffect } from './factIngest';
 import { fenceFor } from '../../shared/markdownFence';
 import { redactStoredSecrets } from './secretRedaction';
 import { normalizeRepoKey } from './repoWatch';
-import { laneRefusalLine } from './laneRefusalText';
+import { laneRefusalCodes, laneRefusalLine } from './laneRefusalText';
 import { wakeReplyTo, type RoomWriter } from './roomWriter';
 import type { BotNoticeInput } from './botNotices';
 import type { BotDirectoryApi } from './triggerEngine';
@@ -141,12 +144,16 @@ export function approvalView(r: StoredApproval): ApprovalView {
   // What the owner reads: sentences, never the raw codes.
   delete view.refusalText;
   delete view.ruleSkippedText;
+  delete view.ruleSkippedCondition;
   const refusalText = r.refusal ? laneRefusalLine(r.refusal) : '';
-  const ruleSkippedText = r.ruleSkipped ? laneRefusalLine(r.ruleSkipped) : '';
+  // A skip names its first unmet condition only (firstRuleSkip).
+  const skip = r.ruleSkipped ? firstRuleSkip(laneRefusalCodes(r.ruleSkipped)) : null;
+  const ruleSkippedText = skip ? laneRefusalLine(skip.code) : '';
   return {
     ...(view as ApprovalView),
     ...(refusalText ? { refusalText } : {}),
     ...(ruleSkippedText ? { ruleSkippedText } : {}),
+    ...(skip?.condition ? { ruleSkippedCondition: skip.condition } : {}),
   };
 }
 
@@ -998,11 +1005,14 @@ export class ApprovalService {
     const r = this.requests.get(requestId);
     if (!r || r.state !== 'pending' || APPROVAL_NEVER_BY_RULE.has(r.action)) return;
     const rule = [...this.rules.values()].find((x) => ruleCovers(x, r));
-    if (!rule) return;
+    if (!rule) {
+      await this.noRule(r);
+      return;
+    }
     let why: string | null;
     // A rule decides only a request whose card the owner can see.
     if (!r.cardId) why = 'its card could not be posted';
-    else if (r.tainted) why = 'started from outside text';
+    else if (r.tainted) why = 'tainted-origin';
     else if (r.action !== 'merge') why = 'only merges are carried out by a rule';
     else {
       const host = this.ports.merge();
@@ -1021,6 +1031,41 @@ export class ApprovalService {
       return;
     }
     this.approve(cur, 'rule', 'rule', rule.ruleId);
+  }
+
+  /** A merge request no rule covers. A bot-scoped rule on the same act and
+   *  repository for another bot is named on the card (a rule covers the
+   *  bot that asks, not the bot that wrote the PR). With no rule at all, the
+   *  card says what a rule made from it would still lack here: a Reviewer
+   *  bot on the repository to verify heads, required checks on the repository, a trusted
+   *  author (the lane's own reasons, read now). */
+  private async noRule(r: StoredApproval): Promise<void> {
+    if (r.action !== 'merge' || !r.cardId) return;
+    const near = [...this.rules.values()].some((x) => x.action === r.action && x.repoKey === r.repoKey && 'botId' in x.scope && x.scope.botId !== r.botId);
+    let patch: Partial<StoredApproval> | null = near ? { ruleSkipped: RULE_OTHER_ASKER } : null;
+    if (!patch && !r.tainted) {
+      const needs = new Set<ApprovalRuleNeed>();
+      let bots: BotProfile[] = [];
+      try {
+        bots = this.ports.bots()?.listEnabled() ?? [];
+      } catch {
+        bots = [];
+      }
+      // A Reviewer records verdicts on its own repository only.
+      if (!bots.some((b) => botTemplate(b) === 'reviewer' && normalizeRepoKey(b.repo?.repoKey) === r.repoKey)) needs.add('verifier');
+      const host = this.ports.merge();
+      const why = host ? await host.ruleCheck(r).catch(() => null) : null;
+      for (const code of why ? laneRefusalCodes(why) : []) {
+        if (code === 'required-checks-green:no-required-checks') needs.add('noChecks');
+        else if (code.startsWith('author-trusted:')) needs.add('author');
+      }
+      if (needs.size > 0) patch = { ruleNeeds: (['verifier', 'noChecks', 'author'] as const).filter((n) => needs.has(n)) };
+    }
+    if (!patch) return;
+    const cur = this.requests.get(r.requestId);
+    if (!cur || cur !== r || cur.state !== 'pending') return;
+    this.put({ ...cur, ...patch, updatedAt: this.now() });
+    this.changed(cur.workspaceId);
   }
 
   // ── execution ──

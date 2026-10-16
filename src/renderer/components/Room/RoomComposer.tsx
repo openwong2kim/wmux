@@ -24,7 +24,7 @@ import { FOCUS_RING } from '../focusRing';
 import { roomsApi, type RoomsApi } from '../../hooks/useRoomSync';
 import { useStore } from '../../stores';
 import type { FactoryBotRow } from './factoryPorts';
-import { messageTitle, roleLabel } from './roomFormat';
+import { actorLabel, messageTitle, roleLabel, type RoomActorView } from './roomFormat';
 import Button from '../ui/Button';
 import '../Chat/chatMono.css';
 
@@ -90,16 +90,21 @@ export function deliveryTaken(sent: readonly SentTo[] | null | undefined, bots: 
  *  turn it is running for something else, or who the message went to (also
  *  once the bot is running the turn this message woke). `started`: the bot
  *  has been seen taking the message up, so a later turn of its own does not
- *  read as the message queuing again. */
+ *  read as the message queuing again. A bot no longer running is named as
+ *  main's bot store keeps it (`actors`: a removed bot's name, marked
+ *  removed), else by its role. */
 export function deliveryLine(
   sent: readonly SentTo[] | null | undefined,
   bots: readonly FactoryBotRow[],
   t: T,
   started = false,
+  actors: Readonly<Record<string, RoomActorView>> = {},
 ): string | null {
   if (sent === undefined) return null;
   if (sent === null || sent.length === 0) return t('room.composer.noAddressee');
-  const nameOf = (s: SentTo) => bots.find((b) => b.bot.id === s.botId)?.bot.name ?? roleLabel(s.role, t);
+  const nameOf = (s: SentTo) => (bots.some((b) => b.bot.id === s.botId) || actors[s.botId]?.name?.trim()
+    ? actorLabel({ kind: 'bot', workspaceId: '', botId: s.botId }, t, bots, actors)
+    : roleLabel(s.role, t));
   if (sent.length === 1) {
     if (!started && deliveryQueued(sent, bots)) return t('room.composer.queuedFor', { name: nameOf(sent[0]) });
     return t('room.composer.sentTo', { name: nameOf(sent[0]) });

@@ -57,6 +57,9 @@ const SENTENCES: Readonly<Record<string, string>> = {
   'verdict-no-evidence': 'The PASS names no verify task',
   // The lane host.
   'repro-origin': 'A repro worker opened it from an issue, so you merge it',
+  'tainted-origin': 'It started from outside text',
+  // An "always allow" rule for another bot (approvals.ts).
+  'rule-other-asker': 'Your rule covers the merges another bot asks for',
   // The lane executor (moaMergeExecutor.ts).
   'unknown-approver': 'The merge has no known approver',
   'lane-not-wired': 'The merge lane is not running',

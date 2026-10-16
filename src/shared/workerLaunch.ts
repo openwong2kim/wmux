@@ -159,7 +159,8 @@ export function isFanoutWorkerPermissionMode(v: unknown): v is FanoutWorkerPermi
 
 /**
  * The wmux tools a worker may call without a prompt: record its ledger row,
- * publish its own task branch (main pushes it), READ its mission channel,
+ * publish its own task branch (main pushes it) and fetch origin into it (main
+ * fetches), READ its mission channel,
  * and ask who it is / what it was asked. Nothing
  * that writes into another agent's prompt: `channel_post` is left out because
  * a post can pin a mention to any pane and land in that agent's prompt, and
@@ -169,6 +170,7 @@ export function isFanoutWorkerPermissionMode(v: unknown): v is FanoutWorkerPermi
 export const FANOUT_WORKER_ALLOWED_TOOLS: readonly string[] = [
   'mcp__wmux__ledger_update',
   'mcp__wmux__task_push',
+  'mcp__wmux__task_fetch',
   'mcp__wmux__channel_read',
   'mcp__wmux__channel_unread',
   'mcp__wmux__channel_ack',

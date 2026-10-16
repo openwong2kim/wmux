@@ -3,7 +3,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { RoomCard } from '../../../../shared/room';
 import { setLocale, t as i18nT } from '../../../i18n';
-import { actorLabel, cardResumeTaskId, formatCardTime, formatNoticeTime, noticeText, ownerCardText, requestTitles, routineCardBody, threadLabel, withoutInternalIds, withoutReasonCodes, withoutRoleTags } from '../roomFormat';
+import { actorLabel, cardResumeTaskId, formatCardTime, formatNoticeTime, noticeText, onceText, ownerCardText, requestTitles, routineCardBody, threadLabel, withoutInternalIds, withoutReasonCodes, withoutRoleTags } from '../roomFormat';
 
 const t = (key: string) => key;
 const system = { kind: 'system' as const };
@@ -341,5 +341,25 @@ describe('actorLabel', () => {
     expect(actorLabel(botActor, i18nT, [], { 'bot-0000000d': { role: 'lead', name: 'Developer', removed: true } })).toBe('Developer (removed)');
     expect(actorLabel(botActor, i18nT, [], { 'bot-0000000d': { role: 'lead' } })).toBe(i18nT('room.role.lead'));
     expect(actorLabel(botActor, i18nT, [], {})).toBe('Bot');
+  });
+});
+
+describe('onceText', () => {
+  it('a body equal to the title, or starting with it, is the whole text shown once; any other body is kept', () => {
+    expect(onceText('Done: merged #12', '  Done: merged #12 ')).toEqual({ title: 'Done: merged #12', body: '' });
+    // A turn's long first line: the title is its start, the body the whole text.
+    expect(onceText('Checked the build and the  tests', 'Checked the build and the tests pass on main.\n\nNext: docs.'))
+      .toEqual({ title: 'Checked the build and the tests pass on main.\n\nNext: docs.', body: '' });
+    expect(onceText('Done', 'Merged #12. Done')).toEqual({ title: 'Done', body: 'Merged #12. Done' });
+    expect(onceText('Done', '')).toEqual({ title: 'Done', body: '' });
+    // A title cut from the body at about 200 characters, mid-word, with or without an ellipsis.
+    const long = `${'Rebased the branch onto main and re-ran the suite; '.repeat(4)}everything passes now.`;
+    const cut = long.slice(0, 200);
+    expect(cut.endsWith(' ')).toBe(false);
+    expect(onceText(cut, long)).toEqual({ title: long, body: '' });
+    expect(onceText(`${cut}…`, long)).toEqual({ title: long, body: '' });
+    expect(onceText(`${cut}...`, long)).toEqual({ title: long, body: '' });
+    // An ellipsis alone is not a prefix of everything.
+    expect(onceText('…', 'Merged #12')).toEqual({ title: '…', body: 'Merged #12' });
   });
 });

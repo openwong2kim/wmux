@@ -714,6 +714,9 @@ export class DaemonClient extends EventEmitter {
     title?: string;
     /** #2263 — a turn is open (a quiet one reads `idle` in agentStatus). Absent on an older daemon. */
     turnOpen?: boolean;
+    /** Milliseconds since the pane's last settled result. Absent on an older
+     *  daemon and when none settled since its agent started. */
+    settledAgoMs?: number;
   } | null> {
     try {
       const result = await (opts.timeoutMs !== undefined
@@ -732,6 +735,7 @@ export class DaemonClient extends EventEmitter {
         keyInputIdleMs?: unknown;
         title?: unknown;
         turnOpen?: unknown;
+        settledAgoMs?: unknown;
       };
       const validStatuses: AgentStatus[] = [
         'running',
@@ -773,6 +777,9 @@ export class DaemonClient extends EventEmitter {
           : {}),
         ...(typeof result.title === 'string' ? { title: sanitizeTitle(result.title) } : {}),
         ...(typeof result.turnOpen === 'boolean' ? { turnOpen: result.turnOpen } : {}),
+        ...(typeof result.settledAgoMs === 'number' && Number.isFinite(result.settledAgoMs) && result.settledAgoMs >= 0
+          ? { settledAgoMs: result.settledAgoMs }
+          : {}),
       };
     } catch {
       return null;

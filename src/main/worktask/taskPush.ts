@@ -80,7 +80,7 @@ export type TaskPushResult =
   | { ok: true; branch: string; remote: 'origin'; head: string; output: string }
   | { ok: false; reason: 'branch-refused' | 'no-origin' | 'remote-refused' | 'config-refused' | 'rejected' | 'git-failed'; error: string };
 
-async function defaultGit(args: string[], cwd: string): Promise<{ code: number; stdout: string; stderr: string }> {
+export async function defaultGit(args: string[], cwd: string): Promise<{ code: number; stdout: string; stderr: string }> {
   const env = { ...workerGitEnv(getExecEnv()), GIT_TERMINAL_PROMPT: '0' };
   try {
     const { stdout, stderr } = await execFileP('git', args, { cwd, env, timeout: TASK_PUSH_TIMEOUT_MS, windowsHide: true, maxBuffer: 1024 * 1024 });
@@ -179,7 +179,7 @@ export function wslTaskPushGit(distro: string, gitDir: string, exec: TaskPushExe
   return (args) => exec(wslExe, wslGitArgv(distro, gitDir, args), env);
 }
 
-function readDotGitFile(worktreePath: string): string | null {
+export function readDotGitFile(worktreePath: string): string | null {
   try {
     const p = path.join(worktreePath, '.git');
     return fs.statSync(p).isFile() ? fs.readFileSync(p, 'utf8') : null;

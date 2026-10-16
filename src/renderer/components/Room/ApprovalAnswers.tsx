@@ -3,18 +3,23 @@
 // Under an `approval` card (the room dock and a Bots conversation alike),
 // from the request main holds (approvalsStore.ts), never from the card's
 // text: while it waits, Deny, Always allow (not for a release or a push to a
-// default branch) and Approve — the one primary; once a merge is approved,
+// default branch) and Approve — the one primary, with one muted line under
+// them when a rule made from it could not merge by itself here (what it still
+// needs); once a merge is approved,
 // the seconds left with Undo; then what happened (merged, or why not, in
 // main's words and never its code — a new head needs a new request). "Started from outside text" says the bot's wake
 // carried an issue's or a PR's words. Every answer goes to main
 // (BOT_APPROVAL_IPC.decide), which decides whether it counts.
 import { useEffect, useState } from 'react';
+import type { ApprovalRuleNeed } from '../../../shared/botApproval';
 import type { RoomCard as RoomCardData } from '../../../shared/room';
 import Button from '../ui/Button';
 import { FOCUS_RING } from '../focusRing';
 import { approvalPhase, approvalsApi, refreshApprovals, useApprovals, type ApprovalsApi } from './approvalsStore';
 
 type T = (key: string, vars?: Record<string, string | number>) => string;
+
+const RULE_NEEDS: readonly ApprovalRuleNeed[] = ['verifier', 'noChecks', 'author'];
 
 export function ApprovalAnswers({ card, t, api, readOnly = false, now }: {
   card: RoomCardData;
@@ -56,13 +61,21 @@ export function ApprovalAnswers({ card, t, api, readOnly = false, now }: {
     }
   };
   const canAnswer = !!bridge && !readOnly;
+  // What an "always allow" rule from this request would still lack here.
+  const needs = (req?.ruleNeeds ?? []).filter((n) => RULE_NEEDS.includes(n));
   return (
     <div data-approval-answers={id} data-approval-phase={phase.phase} className="mt-1.5 flex flex-col gap-1">
       {req?.tainted && (
         <p data-approval-outside className="text-[11px] text-[var(--text-muted)]">{t('room.approval.outside')}</p>
       )}
-      {phase.phase === 'pending' && req?.ruleSkipped && req.ruleSkippedText?.trim() && (
-        <p data-approval-rule-skipped className="text-[11px] text-[var(--text-muted)]">{t('room.approval.ruleSkipped', { reason: req.ruleSkippedText.trim() })}</p>
+      {phase.phase === 'pending' && req?.ruleSkipped && (req.ruleSkippedCondition || req.ruleSkippedText?.trim()) && (
+        <p data-approval-rule-skipped className="text-[11px] text-[var(--text-muted)]">
+          {t('room.approval.ruleSkipped', {
+            reason: req.ruleSkippedCondition
+              ? t(`room.approval.ruleCondition.${req.ruleSkippedCondition}`, { sha: (req.headSha ?? '').slice(0, 7) })
+              : (req.ruleSkippedText ?? '').trim(),
+          })}
+        </p>
       )}
       {phase.phase === 'pending' && canAnswer && (
         <div className="flex flex-wrap items-center gap-1.5">
@@ -74,6 +87,11 @@ export function ApprovalAnswers({ card, t, api, readOnly = false, now }: {
           )}
           <Button size="sm" variant="primary" data-testid="approval-approve" disabled={busy} onClick={() => void decide('approve')}>{t('room.approval.approve')}</Button>
         </div>
+      )}
+      {phase.phase === 'pending' && canAnswer && phase.canAlways && !req?.ruleSkipped && needs.length > 0 && (
+        <p data-approval-rule-needs className="text-[11px] text-[var(--text-muted)]">
+          {t('room.approval.ruleNeeds', { needs: needs.map((n) => t(`room.approval.ruleNeed.${n}`)).join(t('room.approval.ruleNeedsJoin')) })}
+        </p>
       )}
       {phase.phase === 'undo' && (
         <div className="flex flex-wrap items-center gap-2 text-[12px] text-[var(--text-sub)]">

@@ -16,9 +16,9 @@ import { useShallow } from 'zustand/react/shallow';
 import { useStore, type StoreState } from '../../stores';
 import { selectWorkspaceAttentionClasses, type FleetAttentionClass } from '../../stores/selectors/fleet';
 import { selectWorkspaceIdName } from '../../stores/selectors/workspaceProjections';
-import { ALL_THREADS, timelineKey, type RoomActorEntry, type RoomStatusView } from '../../stores/slices/roomSlice';
+import { ALL_THREADS, timelineKey, type RoomActorEntry, type RoomStatusView, type RoomTimeline } from '../../stores/slices/roomSlice';
 import { CATCH_UP_MAX_PAGES, catchUpRoomTimeline, isTimelineLoaded, loadRoomActors, loadRoomThreads, loadRoomTimeline, readWithRetry, roomsApi } from '../../hooks/useRoomSync';
-import type { ThreadId, ThreadSummary } from '../../../shared/room';
+import { dmThreadId, type RoomCard, type ThreadId, type ThreadSummary } from '../../../shared/room';
 import { getFactoryBotPort, type FactoryBotPort, type FactoryBotRow } from '../Room/factoryPorts';
 import { useFactoryBots } from '../Room/useFactoryBots';
 import { useBotGroups, type BotGroupPort } from '../Room/botGroups';
@@ -62,6 +62,7 @@ export function useBots(port?: FactoryBotPort, groupPort?: BotGroupPort): BotsSt
   const initialBots = useRef(bots);
   const listed = bots !== initialBots.current || bots.length > 0 || !(port ?? getFactoryBotPort()).available;
   const timelines = useStore((s) => s.roomTimelines);
+  const previews = useStore((s) => s.roomPreviewCards);
   const threads = useStore((s) => s.roomThreads);
   const botTaskOf = useStore(selectBotTaskOwners);
   const workerClass = useStore(useShallow(selectBotWorkerClasses));
@@ -77,7 +78,7 @@ export function useBots(port?: FactoryBotPort, groupPort?: BotGroupPort): BotsSt
     return buildBots({
       bots,
       groups,
-      cards: roomCardsByWorkspace(timelines),
+      cards: roomCardsByWorkspace(withPreviews(previews, timelines)),
       threads,
       botTaskOf,
       workerClass,
@@ -85,7 +86,7 @@ export function useBots(port?: FactoryBotPort, groupPort?: BotGroupPort): BotsSt
       readOnly: !on,
       removed,
     });
-  }, [status, on, bots, groups, timelines, threads, botTaskOf, workerClass, names, removed]);
+  }, [status, on, bots, groups, timelines, previews, threads, botTaskOf, workerClass, names, removed]);
   return { status, bots, model, on, listed, groups };
 }
 
@@ -140,6 +141,45 @@ export function threadsToRead(
   return out;
 }
 
+/** The conversation threads to read for the list's previews, as timeline
+ *  keys: per live bot's 1:1 and per group, the thread holding its newest
+ *  card (by the thread summaries) when no card read so far is that card —
+ *  a quiet conversation whose last card is older than the room's newest
+ *  page. One one-card read each (loadPreviewCard), so the cost is bounded
+ *  by the list. Threads read whole anyway (threadsToRead), threads already
+ *  read and previews already read are left out. Pure. */
+export function previewThreadsToRead(
+  bots: readonly FactoryBotRow[],
+  groups: readonly Pick<BotGroup, 'id' | 'workspaceId' | 'threadId'>[],
+  roomThreads: Readonly<Record<string, readonly ThreadSummary[] | undefined>>,
+  roomTimelines: Readonly<Record<string, { cards: readonly { seq: number }[]; loading?: boolean } | undefined>>,
+  previews: Readonly<Record<string, { seq: number } | undefined>> = {},
+): string[] {
+  const whole = new Set(threadsToRead([...new Set([...bots.map((r) => r.bot.workspaceId), ...groups.map((g) => g.workspaceId)])], roomThreads, {}));
+  // A thread's card is read when its own timeline is, or the room's is
+  // holding it (no other timeline holds another thread's cards).
+  const seen = new Map<string, Set<number>>();
+  const seqsOf = (ws: string): Set<number> => {
+    let seqs = seen.get(ws);
+    if (!seqs) seen.set(ws, (seqs = new Set((roomTimelines[timelineKey(ws, ALL_THREADS)]?.cards ?? []).map((c) => c.seq))));
+    return seqs;
+  };
+  const out = new Set<string>();
+  const pick = (ws: string, mine: (th: ThreadSummary) => boolean) => {
+    let newest: ThreadSummary | null = null;
+    for (const th of roomThreads[ws] ?? []) if (mine(th) && th.cardCount > 0 && (!newest || th.lastSeq > newest.lastSeq)) newest = th;
+    if (!newest || seqsOf(ws).has(newest.lastSeq)) return;
+    const key = timelineKey(ws, newest.threadId);
+    if (!whole.has(key) && !isTimelineLoaded(roomTimelines[key]) && (previews[key]?.seq ?? -1) < newest.lastSeq) out.add(key);
+  };
+  for (const r of bots) {
+    const dm = dmThreadId(r.bot.id);
+    pick(r.bot.workspaceId, (th) => th.threadId === dm || th.dmBotId === r.bot.id);
+  }
+  for (const g of groups) pick(g.workspaceId, (th) => th.threadId === g.threadId || th.groupId === g.id);
+  return [...out];
+}
+
 /** The deleted bots the room's actors remember, with their workspace. Pure. */
 export function removedBotRefs(actors: Readonly<Record<string, RoomActorEntry>>): RemovedBotRef[] {
   return Object.entries(actors).flatMap(([id, a]) => (a.removed && a.workspaceId
@@ -148,7 +188,7 @@ export function removedBotRefs(actors: Readonly<Record<string, RoomActorEntry>>)
 }
 
 /** Keep the page's rooms read (see the file header). */
-export function useBotsSync(state: Pick<BotsState, 'status' | 'bots' | 'on'>, opts: { focus: boolean; paused?: boolean }): void {
+export function useBotsSync(state: Pick<BotsState, 'status' | 'bots' | 'on'> & { groups?: readonly BotGroup[] }, opts: { focus: boolean; paused?: boolean }): void {
   const known = !!state.status && (state.on || !!opts.paused);
   // A deleted bot's room too, so its 1:1 can still be read.
   const actors = useStore((s) => s.roomActors);
@@ -207,4 +247,54 @@ export function useBotsSync(state: Pick<BotsState, 'status' | 'bots' | 'on'>, op
     }
     return () => reads.abort();
   }, [questionThreads, running]);
+
+  // A quiet conversation's newest card, older than the room's newest page:
+  // its thread's newest page, so the list's preview is not "No messages yet".
+  const groups = known ? state.groups ?? NO_GROUPS : NO_GROUPS;
+  const liveBots = known ? state.bots : NO_ROWS;
+  const previewThreads = useStore(useShallow((s) => previewThreadsToRead(liveBots, groups, s.roomThreads, s.roomTimelines, s.roomPreviewCards)));
+  useEffect(() => {
+    for (const key of previewThreads) {
+      const cut = key.indexOf('\u0000');
+      void loadPreviewCard(key.slice(0, cut), key.slice(cut + 1) as ThreadId);
+    }
+  }, [previewThreads, running]);
 }
+
+/** Preview reads in flight (timeline keys): the rail and the page ask once. */
+const previewReads = new Set<string>();
+
+/** Read a thread's newest card alone into roomPreviewCards. Its timeline
+ *  is left as it was (unread), so a later whole read still runs. A refused
+ *  read is asked again when the list next needs it (the room starting). */
+export async function loadPreviewCard(workspaceId: string, threadId: ThreadId): Promise<void> {
+  const api = roomsApi();
+  const key = timelineKey(workspaceId, threadId);
+  if (!api || !workspaceId || previewReads.has(key)) return;
+  previewReads.add(key);
+  try {
+    const r = await api.read({ workspaceId, threadId, limit: 1 });
+    const card = r.ok ? r.cards[r.cards.length - 1] : undefined;
+    if (card) useStore.getState().setRoomPreviewCard(workspaceId, threadId, card);
+  } catch {
+    // asked again on the next change
+  } finally {
+    previewReads.delete(key);
+  }
+}
+
+/** The preview cards as one-card timelines placed before the real ones, so
+ *  roomCardsByWorkspace keeps a timeline's copy of the same card. Pure. */
+export function withPreviews(
+  previews: Readonly<Record<string, RoomCard>>,
+  timelines: Readonly<Record<string, RoomTimeline>>,
+): Readonly<Record<string, RoomTimeline>> {
+  const keys = Object.keys(previews);
+  if (keys.length === 0) return timelines;
+  const out: Record<string, RoomTimeline> = {};
+  for (const key of keys) out[`${key}\u0000preview`] = { cards: [previews[key]], nextSinceSeq: previews[key].seq, hasMore: false };
+  return Object.assign(out, timelines);
+}
+
+const NO_GROUPS: readonly BotGroup[] = [];
+const NO_ROWS: readonly FactoryBotRow[] = [];

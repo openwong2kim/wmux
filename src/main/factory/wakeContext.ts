@@ -131,8 +131,11 @@ function isOwnerCard(c: RoomCard): boolean {
 }
 
 /** The language the bot writes in for this wake. Pure over its ports.
- *  The owner's latest words to the bot (in the wake's thread, else in the
- *  room), else their latest message to anyone in the room (a bot added
+ *  The owner's latest words to the bot in the wake's thread, else their
+ *  latest words to anyone there, else (in a plan or request thread another
+ *  bot started) to
+ *  that bot, else to this bot in the room, else their latest message to
+ *  anyone in the room (a bot added
  *  after the owner wrote follows the owner too), else the UI language. A
  *  wake on the owner's message carries a sample of its words; any other wake
  *  only when the script does not name the language, marked as a sample
@@ -149,9 +152,17 @@ export function wakeLanguage(ports: WakeContextPorts, profile: BotProfile, item:
     };
     const pick = (cards: readonly RoomCard[], match: (c: RoomCard) => boolean): RoomCard | undefined => [...cards].reverse().find((c) => isOwnerCard(c) && match(c));
     try {
-      const inThread = item.threadId ? pick(ports.cards(item.workspaceId, item.threadId, WAKE_CONTEXT_LIMITS.SCAN), addressed) : undefined;
+      const threadCards = item.threadId ? ports.cards(item.workspaceId, item.threadId, WAKE_CONTEXT_LIMITS.SCAN) : [];
+      const inThread = pick(threadCards, addressed) ?? pick(threadCards, () => true);
+      // A plan or request thread another bot started (a coordinator's): the
+      // owner reads it as their talk with that bot, so its words to that bot
+      // set the language. Its starter is known only when the whole thread
+      // was read.
+      const root = /^(?:plan|handoff):/.test(item.threadId ?? '') && threadCards.length < WAKE_CONTEXT_LIMITS.SCAN ? threadCards[0]?.actor : undefined;
+      const lead = root?.kind === 'bot' && root.botId !== profile.id ? root.botId : null;
+      const toLead = (c: RoomCard): boolean => !!lead && (c.refs?.botId === lead || (c.refs?.botIds ?? []).includes(lead));
       const room = inThread ? [] : ports.cards(item.workspaceId, null, WAKE_CONTEXT_LIMITS.SCAN);
-      const latest = inThread ?? pick(room, addressed) ?? pick(room, () => true);
+      const latest = inThread ?? pick(room, toLead) ?? pick(room, addressed) ?? pick(room, () => true);
       said = latest ? ownerText(latest) : null;
     } catch {
       said = null;

@@ -92,7 +92,7 @@ import { installLateStopSweep, setFactoryStopPorts, type FactoryStopPorts } from
 import { getRoutineStore } from './routines';
 import { getGroupStore } from './groupStore';
 import { getAgentSlots } from './agentSlots';
-import { getWorkerResumePorts, isWslWorkerPane, reclaimedWorkerState, stopResumedWorkers, workerWorkspaceOf, type WorkerSessionInfo } from './workerReclaim';
+import { getWorkerResumePorts, isWslWorkerPane, reclaimedWorkerState, stopResumedWorker, stopResumedWorkers, workerWorkspaceOf, type WorkerSessionInfo } from './workerReclaim';
 import { getTaskFolderPorts } from './taskFolderCleanup';
 
 // ── Trigger cursor ─────────────────────────────────────────────────────────
@@ -824,6 +824,10 @@ export function createFactoryWiring(deps: Pick<FactoryHostDeps, 'wmuxDir'> & Par
         stopResumed: async (botId) => {
           const p = getWorkerResumePorts();
           return p ? stopResumedWorkers(p, botId) : 0;
+        },
+        stopResumedTask: async (taskId) => {
+          const p = getWorkerResumePorts();
+          return p ? stopResumedWorker(p, taskId) : { stopped: 0, failed: 0, taskIds: [] };
         },
       };
       setFactoryStopPorts(stopPorts);

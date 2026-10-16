@@ -68,6 +68,20 @@ describe('readDaemonAgentState wiring (#1303)', () => {
     expect(body).toMatch(/keyInputRevision: bridge\.getKeyInputRevision\(\)/);
     expect(body).toMatch(/keyInputQuiet: bridge\.isKeyInputQuiet\(\)/);
     expect(body).toMatch(/hookReports: bridge\.hasHookReports\(\)/);
+    expect(body).toMatch(/settledAgoMs: bridge\.settledAgoMs\(\)/);
+  });
+
+  // main's idle stop of a reported worker: session.stopAgent stops only while
+  // the pane's turn is over, checked by the daemon itself before any signal.
+  it('session.stopAgent honours ifTurnClosed on both the native and the WSL path', () => {
+    const at = src.indexOf("pipeServer.onRpc('session.stopAgent'");
+    const body = src.slice(at, src.indexOf("pipeServer.onRpc(", at + 10));
+    expect(body).toContain('ifTurnClosed === true');
+    expect(body).toContain('paneTurnClosed({ agentStatus: bridge.getAgentStatus(), turnOpen: bridge.isTurnOpen() })');
+    const wslGuard = body.indexOf("if (stillIdle && !stillIdle()) return { ok: false, code: 'turn_open' };");
+    expect(wslGuard).toBeGreaterThan(-1);
+    expect(wslGuard).toBeLessThan(body.indexOf('stopWslAgent(wslAgent)'));
+    expect(body).toContain('...(stillIdle ? { stillIdle } : {}),');
   });
 
   // #1307 — scheduled delivery must require agentVerified and re-check the

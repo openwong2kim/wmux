@@ -11,7 +11,7 @@ import { atomicWriteJSONSync } from '../../util/atomicWrite';
 import { withChosenAccountEnv } from '../../phone/paneAccountSpawn';
 import { createChatBridge, QUEUE_WATCH_CLIENT, WEB_BRIDGE_CLIENT, type ChatAgentState, type ChatPane, type NativeChatBridgeDeps } from '../nativeChatBridge';
 import { guardBotWorkerLaunch } from '../botWorkerLaunchGuard';
-import { BOT_WORKER_DENY, botWorkerSessionsPath, botWorkerSettingsPath, buildBotWorkerSettings } from '../../../shared/botWorkerGuard';
+import { BOT_WORKER_DENY, botWorkerSessionsPath, buildBotWorkerSettings } from '../../../shared/botWorkerGuard';
 import { toWslPath } from '../../../shared/imagePaste';
 import type { TerminalChatAbortOutcome } from '../../transcript/TerminalChatService';
 import { cancelResponse } from '../../web/chatWire';
@@ -466,24 +466,39 @@ describe('launch', () => {
       fs.mkdirSync(path.join(dir, 'factory'), { recursive: true });
       fs.writeFileSync(botWorkerSessionsPath(dir), typeof body === 'string' ? body : JSON.stringify(body));
     };
-    // A WSL pane's record: its launches carry the worker settings file alone
-    // (a record with launch files is covered in botWorkerConnectors.test.ts).
-    const botWorker = (dir: string) => record(dir, { version: 1, sessions: { pane: { workspaceId: 'ws-task', at: 1, wsl: true } } });
+    // A WSL pane's record names the files main wrote for it: the worker
+    // settings and this build's wmux server (botWorkerConnectors.test.ts
+    // covers a native record's).
+    const botWorker = (dir: string) => {
+      const settings = path.join(dir, 'factory', 'worker-settings', '0123456789ab.json');
+      const mcp = path.join(dir, 'factory', 'worker-mcp', '0123456789ab.json');
+      fs.mkdirSync(path.dirname(settings), { recursive: true });
+      fs.mkdirSync(path.dirname(mcp), { recursive: true });
+      fs.writeFileSync(settings, JSON.stringify(buildBotWorkerSettings()));
+      fs.writeFileSync(mcp, JSON.stringify({ mcpServers: { wmux: { type: 'stdio', command: '/bin/sh', args: ['-c', 'exec x'] } } }));
+      record(dir, { version: 1, sessions: { pane: { workspaceId: 'ws-task', at: 1, wsl: true, launch: { settingsFile: settings, mcpConfigFile: mcp, level: 'full' } } } });
+      // Linux claude opens them through its /mnt mount (a Windows runner's path).
+      return { settings, mcp, flags: `--settings="${toWslPath(settings) ?? settings}" --mcp-config="${toWslPath(mcp) ?? mcp}" --strict-mcp-config` };
+    };
 
     it('a fresh claude launch carries the worker settings right after the launcher, first message kept', async () => {
       const f = fixture();
-      botWorker(f.dir);
+      const files = botWorker(f.dir);
       expect(await f.bridge.launch({ id: 'pane', agent: 'claude', prompt: "it's done" })).toEqual({ ok: true, effect: 'submitted' });
-      const settings = botWorkerSettingsPath(f.dir);
-      // Linux claude opens it through its /mnt mount (a Windows runner's path).
-      expect(f.typed).toEqual([`claude --settings="${toWslPath(settings) ?? settings}" --session-id PIN -- 'it'\\''s done'\r`]);
-      expect(JSON.parse(fs.readFileSync(settings, 'utf8'))).toEqual(buildBotWorkerSettings());
-      expect(JSON.parse(fs.readFileSync(settings, 'utf8')).permissions).toEqual({ deny: [...BOT_WORKER_DENY] });
+      expect(f.typed).toEqual([`claude ${files.flags} --session-id PIN -- 'it'\\''s done'\r`]);
+      expect(JSON.parse(fs.readFileSync(files.settings, 'utf8')).permissions).toEqual({ deny: [...BOT_WORKER_DENY] });
+    });
+
+    it('a WSL record without its files (an older main\'s) types nothing: the distro\'s own wmux server is never used', async () => {
+      const f = fixture();
+      record(f.dir, { version: 1, sessions: { pane: { workspaceId: 'ws-task', at: 1, wsl: true } } });
+      expect(await f.bridge.launch({ id: 'pane', agent: 'claude', prompt: 'go' })).toEqual({ ok: false, error: 'launch-unsupported', effect: 'none' });
+      expect(f.typed).toEqual([]);
     });
 
     it('a phone resume of its exact session carries them too', async () => {
       const f = fixture();
-      botWorker(f.dir);
+      const files = botWorker(f.dir);
       f.state.projector = FILE;
       f.state.pane!.meta.resumeBinding = { agent: 'claude', sessionId: SID, cwd: '/proj', transcriptPath: '/t.jsonl', ts: 1 };
       f.state.pane!.meta.cmd = '/bin/zsh';
@@ -492,10 +507,9 @@ describe('launch', () => {
       expect(await go({ prompt: 'next' })).toEqual({ ok: true, effect: 'submitted' });
       f.shell.empty = true;
       expect(await go({ mode: 'bypass' })).toMatchObject({ ok: true });
-      const settings = toWslPath(botWorkerSettingsPath(f.dir)) ?? botWorkerSettingsPath(f.dir);
       expect(f.typed).toEqual([
-        `cd -- '/proj' && claude --settings="${settings}" --resume ${SID} -- 'next'\r`,
-        `cd -- '/proj' && claude --settings="${settings}" --resume ${SID} --dangerously-skip-permissions\r`,
+        `cd -- '/proj' && claude ${files.flags} --resume ${SID} -- 'next'\r`,
+        `cd -- '/proj' && claude ${files.flags} --resume ${SID} --dangerously-skip-permissions\r`,
       ]);
     });
 
@@ -508,11 +522,10 @@ describe('launch', () => {
       expect(f.typed).toEqual([]);
     });
 
-    it('fails closed: settings that cannot be written, or a path that cannot be quoted, type nothing', async () => {
+    it('fails closed: a recorded file that is gone, or a path that cannot be quoted, type nothing', async () => {
       const f = fixture();
-      botWorker(f.dir);
-      // The settings file's place is taken by a folder.
-      fs.mkdirSync(path.join(botWorkerSettingsPath(f.dir), 'x'), { recursive: true });
+      const files = botWorker(f.dir);
+      fs.unlinkSync(files.mcp);
       expect(await f.bridge.launch({ id: 'pane', agent: 'claude', prompt: 'go' })).toEqual({ ok: false, error: 'launch-unsupported', effect: 'none' });
       const odd = path.join(f.dir, 'a$b');
       botWorker(odd);
@@ -532,10 +545,10 @@ describe('launch', () => {
 
     it('the guard reads only the launcher part: a line that does not start with it is refused', () => {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-guard-')); dirs.push(dir);
-      botWorker(dir);
+      const files = botWorker(dir);
       expect(guardBotWorkerLaunch('pane', "claude -- 'x'", 'claude --resume y', dir)).toBeNull();
       expect(guardBotWorkerLaunch('pane', "claude -- 'x'; echo more", 'claude', dir)).toBeNull();
-      expect(guardBotWorkerLaunch('pane', "claude -- 'x'", 'claude', dir)).toBe(`claude --settings="${toWslPath(botWorkerSettingsPath(dir)) ?? botWorkerSettingsPath(dir)}" -- 'x'`);
+      expect(guardBotWorkerLaunch('pane', "claude -- 'x'", 'claude', dir)).toBe(`claude ${files.flags} -- 'x'`);
     });
   });
 

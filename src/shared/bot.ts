@@ -272,13 +272,23 @@ export const BOT_AVATAR_PX = 128;
 /** Longest bot name, in UTF-16 units after trimming. */
 export const BOT_NAME_MAX = 64;
 
-/** A name the bot store accepts on create / update: trimmed, 1..BOT_NAME_MAX
- *  long, no control or line-separator characters. Undefined otherwise. */
-export function normalizeBotName(raw: unknown): string | undefined {
+/** A stored bot name read back: trimmed, 1..BOT_NAME_MAX long, no control
+ *  or line-separator characters. Looser than normalizeBotName, so a name
+ *  stored before its path-separator rule still loads. Undefined otherwise. */
+export function storedBotName(raw: unknown): string | undefined {
   if (typeof raw !== 'string') return undefined;
   const name = raw.trim();
   if (name.length === 0 || name.length > BOT_NAME_MAX) return undefined;
   return /[\p{Cc}\u2028\u2029]/u.test(name) ? undefined : name;
+}
+
+/** A name the bot store accepts on create / update: a storedBotName with no
+ *  path separator (`/`, `\`), so a pasted command or path is not taken for
+ *  a name. Letters of any script, spaces and other punctuation are fine.
+ *  Undefined otherwise. */
+export function normalizeBotName(raw: unknown): string | undefined {
+  const name = storedBotName(raw);
+  return name && !/[/\\]/.test(name) ? name : undefined;
 }
 
 /** What a bot token resolves to. */

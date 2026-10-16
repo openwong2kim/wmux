@@ -321,7 +321,7 @@ describe('DaemonClient', () => {
 
     it('passes the title and open-turn fields through, sanitized, and omits malformed ones (#2263)', async () => {
       const pipeName = testPipeName('agent-state-title');
-      let extra: Record<string, unknown> = { title: '✳ build\x07 fix', turnOpen: true };
+      let extra: Record<string, unknown> = { title: '✳ build\x07 fix', turnOpen: true, settledAgoMs: 1500 };
       mockServer = createMockDaemonServer(pipeName, AUTH_TOKEN, {
         'daemon.getAgentState': () => ({
           agentName: 'Claude Code',
@@ -337,12 +337,16 @@ describe('DaemonClient', () => {
 
       client = new DaemonClient(pipeName, AUTH_TOKEN);
       await client.connect();
-      await expect(client.getAgentState('sess-1')).resolves.toMatchObject({ title: '✳ build fix', turnOpen: true });
-      extra = { title: 7, turnOpen: 'yes' };
+      await expect(client.getAgentState('sess-1')).resolves.toMatchObject({ title: '✳ build fix', turnOpen: true, settledAgoMs: 1500 });
+      extra = { title: 7, turnOpen: 'yes', settledAgoMs: -1 };
       const malformed = await client.getAgentState('sess-1');
       expect(malformed).not.toBeNull();
       expect(malformed).not.toHaveProperty('title');
       expect(malformed).not.toHaveProperty('turnOpen');
+      expect(malformed).not.toHaveProperty('settledAgoMs');
+      // No result settled since the agent started: the daemon sends null.
+      extra = { settledAgoMs: null };
+      expect(await client.getAgentState('sess-1')).not.toHaveProperty('settledAgoMs');
 
       await client.disconnect();
       await mockServer.stop();

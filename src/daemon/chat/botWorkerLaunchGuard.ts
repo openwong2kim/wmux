@@ -21,7 +21,7 @@
 
 import fs from 'node:fs';
 import { getWmuxDir } from '../config';
-import { namesClaude, readBotWorkerSessions, spliceSettingsFlag, workerProjectSettingsRefusal, writeBotWorkerSettings } from '../../shared/botWorkerGuard';
+import { namesClaude, readBotWorkerSessions, workerProjectSettingsRefusal } from '../../shared/botWorkerGuard';
 import { spliceWorkerLaunch } from '../../shared/botWorkerMcp';
 import { namesCodex } from '../../shared/codexWorkerGuard';
 import { toWslPath } from '../../shared/imagePaste';
@@ -63,18 +63,16 @@ export function guardBotWorkerLaunch(
     const strict = spliceWorkerLaunch(head, rec.launch.settingsFile, rec.launch.mcpConfigFile, rec.launch.settingSources);
     return strict === null ? null : strict + tail;
   }
-  // Only a WSL pane launches with the settings file alone. Any other record
-  // without its files (an older main's, or one that cannot be read) types
-  // nothing: the daemon cannot write the worker's MCP config.
-  if (!rec?.wsl) return null;
-  let settingsPath: string;
-  try {
-    settingsPath = writeBotWorkerSettings(dir);
-  } catch {
-    return null;
-  }
-  // Linux claude opens the file through its /mnt mount, never by the Windows path.
-  const guarded = spliceSettingsFlag(head, toWslPath(settingsPath) ?? settingsPath);
+  // A WSL pane's record names the files main wrote for it (this build's wmux
+  // server, run in the Windows runtime): Linux claude opens them through its
+  // /mnt mount. A record without them (an older main's, or one that cannot
+  // be read) types nothing: the daemon cannot write the worker's MCP config,
+  // and the distro's own claude config may name another wmux server.
+  if (!rec?.wsl || !rec.launch) return null;
+  if (!fs.existsSync(rec.launch.settingsFile) || !fs.existsSync(rec.launch.mcpConfigFile)) return null;
+  if (carriesConnections(rec.launch.mcpConfigFile)) return null;
+  const inWsl = (p: string): string => toWslPath(p) ?? p;
+  const guarded = spliceWorkerLaunch(head, inWsl(rec.launch.settingsFile), inWsl(rec.launch.mcpConfigFile));
   return guarded === null ? null : guarded + tail;
 }
 

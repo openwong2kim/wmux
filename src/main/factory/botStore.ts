@@ -48,6 +48,7 @@ import {
   isBotTemplate,
   normalizeBotJob,
   normalizeBotName,
+  storedBotName,
   templateOfRole,
   type BotBudget,
   type BotEngine,
@@ -246,7 +247,7 @@ export function parseRemovedBot(raw: unknown): RemovedBot | null {
   if (typeof raw.id !== 'string' || !BOT_ID_RE.test(raw.id)) return null;
   if (typeof raw.workspaceId !== 'string' || raw.workspaceId.length === 0 || raw.workspaceId.length > 200) return null;
   if (!isBotRole(raw.role)) return null;
-  const name = normalizeBotName(raw.name);
+  const name = storedBotName(raw.name);
   if (!name || !Number.isSafeInteger(raw.removedAt)) return null;
   const avatar = raw.avatar === undefined ? null : parseBotAvatar(raw.avatar);
   const hue = Number.isInteger(raw.hue) && (raw.hue as number) >= 0 && (raw.hue as number) < BOT_IDENTITY_SLOTS ? (raw.hue as number) : undefined;
@@ -546,7 +547,7 @@ export class BotStore implements BotDirectoryApi {
     if (input.job !== undefined && job === undefined) return refuse('invalid_argument', `job must be 1-${BOT_JOB_MAX} characters, no control characters but newlines`);
     const fallbackName = input.template === undefined && input.role !== undefined ? DEFAULT_NAMES[role] : TEMPLATE_NAMES[template];
     const name = input.name === undefined ? fallbackName : normalizeBotName(input.name);
-    if (!name) return refuse('invalid_argument', `name must be 1-${NAME_MAX} characters, no control characters`);
+    if (!name) return refuse('invalid_argument', `name must be 1-${NAME_MAX} characters, no control characters or slashes`);
     const engine = input.engine === undefined ? withTemplateBrain(sanitizeBotEngine(this.defaultEngine()), template) : sanitizeBotEngine(input.engine);
     if (!engine) return refuse('invalid_argument', 'engine is malformed (a model must be one model id: letters/digits first, then . _ : -, optionally ending in a [variant])');
     let workerAgent = TEMPLATE_MODEL_DEFAULTS[template]?.worker;
@@ -611,7 +612,7 @@ export class BotStore implements BotDirectoryApi {
     const next: BotProfile = { ...cur };
     if (patch.name !== undefined) {
       const name = normalizeBotName(patch.name);
-      if (!name) return refuse('invalid_argument', `name must be 1-${NAME_MAX} characters, no control characters`);
+      if (!name) return refuse('invalid_argument', `name must be 1-${NAME_MAX} characters, no control characters or slashes`);
       next.name = name;
     }
     if (patch.job !== undefined) {

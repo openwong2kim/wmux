@@ -160,7 +160,7 @@ describe('wmux role resolve', () => {
     );
     expect(resolveRole('Builder', { agent: 'agy', tools: 'role' }, entry).mcp).toEqual({
       level: 'role',
-      tools: ['ledger_update', 'task_push', 'channel_read', 'channel_unread', 'channel_ack', 'channel_post', 'a2a_task_query'],
+      tools: ['ledger_update', 'task_push', 'task_fetch', 'channel_read', 'channel_unread', 'channel_ack', 'channel_post', 'a2a_task_query'],
       argv: [],
     });
     expect(resolveRole('Builder', { agent: 'opencode', tools: 'role' }, entry).mcp).toBeUndefined();

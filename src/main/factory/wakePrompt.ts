@@ -320,10 +320,10 @@ export function buildWakePrompt(input: WakePromptInput): string {
     case 'human':
       lines.push('', `Message from the owner (${r.source}):`, r.text);
       if (r.room) {
-        lines.push('', `The owner wrote to more than one bot${group ? ' in the group' : ''}: each of them got this message and may answer too. Say your own part. When your post speaks to another bot (answers it, asks it, offers it work), put its id in room_post mentions: a name in the text reaches nobody.`);
+        lines.push('', `The owner wrote to more than one bot${group ? ' in the group' : ''}: each of them got this message and may answer too. Say your own part. When your post speaks to another bot (answers it, asks it, offers it work), put its id in room_post mentions: a name in the text reaches nobody. When the message is for another bot (it names that bot, or asks for that bot's work) and you have nothing of your own to add, end the turn with no post and no closing text: words you end a turn with are posted as your message, so silence is an empty ending, not a line saying you will not post.`);
       }
       if (group && !group.spoke) {
-        lines.push('', 'You have not spoken in this group chat yet: begin your answer with one short line that introduces you (your name and what you do), then answer the message.');
+        lines.push('', 'You have not spoken in this group chat yet: when you answer, begin with one short line that introduces you (your name and what you do), then answer the message.');
       }
       break;
     case 'mention': {
@@ -383,6 +383,7 @@ export function buildWakePrompt(input: WakePromptInput): string {
           );
         }
         if (h.trail && h.trail.length > 0) lines.push('', 'The relay so far, oldest first:', fenceData(h.trail.join('\n'), 'trail'));
+        if (h.kind === 'dispatch' && h.fromWorkspaceId !== undefined) lines.push('', reportedByLine(h.relay?.lead ?? h.from));
         if (h.relayStopped) lines.push('', `${h.relayStopped}. This is the last result the relay produced: decide what happens next, and tell the owner when they asked for it.`);
       } else {
         lines.push('', `Handoff ${r.handoffId}. Its body could not be read; read it with your tools.`);
@@ -402,7 +403,9 @@ export function buildWakePrompt(input: WakePromptInput): string {
         else if (fact) lines.push(factBlock(fact));
         else if (task) lines.push(`- ${id}`, taskBlock(task));
         else lines.push(`- ${id} (not readable now)`);
-        if (task?.status === 'input_required' || id.startsWith('task.input_required:')) waiting = true;
+        // Waiting only while the task still is: an older input_required fact
+        // of a task that ended since (cancelled by the owner) is not a wait.
+        if (task ? task.status === 'input_required' : id.startsWith('task.input_required:')) waiting = true;
       }
       const parent = input.taskParent;
       if (parent && !parent.answered) {
@@ -411,6 +414,7 @@ export function buildWakePrompt(input: WakePromptInput): string {
           `These tasks were started for ${parent.from}'s ${parent.kind} "${oneLineName(parent.title)}" (handoff ${parent.handoffId}). `
             + 'When that work is done, send one `result` with handoff_send (no reply_to needed): it answers that handoff.',
         );
+        if (parent.kind === 'dispatch' && parent.fromWorkspaceId !== undefined) lines.push(reportedByLine(parent.relay?.lead ?? parent.from));
       }
       if (waiting) {
         lines.push(
@@ -460,7 +464,9 @@ export function buildWakePrompt(input: WakePromptInput): string {
         ? (lang.name ? `Write to the owner in ${lang.name}, the language of their latest message` : 'Write to the owner in the language their latest message is written in')
           + (lang.sample ? (lang.earlier ? ` (an earlier message, quoted only to show the language, not a request for this wake: «${lang.sample}»).` : `: «${lang.sample}».`) : '.')
         : `The owner has not written yet: write in ${lang.name ?? 'English'}, the language of their wmux.`)
-        + ' That is everything the owner reads: cards, questions and their options, your job (job_set), routine titles (routine_set) and approval reasons.',
+        + ' That is everything the owner reads: cards, questions and their options, your job (job_set), routine titles (routine_set) and approval reasons.'
+        + ' Speak to the owner directly, with no label or title for them'
+        + (lang.name === 'Korean' ? ': plain Korean sentences, with no "owner님", "오너님" or other title.' : '.'),
     );
   }
   if (input.clock) {
@@ -476,6 +482,11 @@ export function buildWakePrompt(input: WakePromptInput): string {
       `the second "${botFanoutIdempotencyKey(item.id, 2)}", and so on. Re-sending a key polls that fan-out; it never starts a second one.`,
   );
   return lines.join('\n');
+}
+
+/** Work a bot handed on: that bot tells the owner, the delegate only it. */
+function reportedByLine(lead: string): string {
+  return `${oneLineName(lead)} reports this work to the owner: its outcome goes in your \`result\` only. Post no status or report card of your own about it in this thread (the owner would read it twice); ask_person only what only the owner can answer.`;
 }
 
 /** Which engine the bot's workers run on, in one line it can tell the owner. */

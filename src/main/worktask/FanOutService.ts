@@ -133,6 +133,7 @@ export function workerTaskIdentityNote(taskId: string, channelId: string, botBra
   // shared/botWorkerGuard.ts): main pushes its task branch (task_push).
   const push = botBranch
     ? `- Your branch: \`${botBranch}\`. Commit, then publish it with the \`task_push\` tool (wmux pushes this branch to origin, fast-forward only); \`git push\` itself is refused. Open the pull request with \`gh pr create --head ${botBranch}\`.
+- Fresh main, or a conflict to settle: run the \`task_fetch\` tool (wmux fetches origin's default branch and your branch with its own credentials), then \`git merge origin/<default branch>\`. Never ask for credentials to fetch.
 ${botWorkerAgentPromptNote(agent)}`
     : '';
   // The task's connections: what they return is outside text.

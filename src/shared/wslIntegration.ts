@@ -135,8 +135,15 @@ if [ -z "$real" ]; then
   exit 127
 fi
 # Retain the pane PATH for subprocesses; only command lookup excludes the shim.
+# A launch that names its own servers (--strict-mcp-config: a bot's worker,
+# main/agents/botWorkerMergeGuard.ts) keeps them alone. Only its options
+# count: the scan stops at --, where the prompt starts.
+mcp_config=\${WMUX_WSL_MCP_CONFIG:-}
+for arg in "$@"; do
+  case $arg in --) break ;; --strict-mcp-config) mcp_config= ;; esac
+done
 # --mcp-config is variadic: the = form keeps it from swallowing a prompt argument.
-exec "$real" --settings "$WMUX_WSL_SETTINGS" \${WMUX_WSL_MCP_CONFIG:+--mcp-config="$WMUX_WSL_MCP_CONFIG"} "$@"
+exec "$real" --settings "$WMUX_WSL_SETTINGS" \${mcp_config:+--mcp-config="$mcp_config"} "$@"
 `;
 
 /**
@@ -221,12 +228,19 @@ exit 0
 // One interop spawn per agent session, never per tool call. The server also
 // learns which distro called it and where Windows drives are mounted (`wslpath
 // -u 'C:\'`, e.g. /mnt/c/), so file tools can speak the agent's paths.
-export const WSL_MCP_LAUNCH = 'export ELECTRON_RUN_AS_NODE=1 WMUX_WSL_DISTRO="$WSL_DISTRO_NAME"'
+const WSL_MCP_ENV = 'export ELECTRON_RUN_AS_NODE=1 WMUX_WSL_DISTRO="$WSL_DISTRO_NAME"'
   + ' WMUX_WSL_MOUNT="$(wslpath -u \'C:\\\' 2>/dev/null)"'
-  + ' WSLENV="${WSLENV:+$WSLENV:}ELECTRON_RUN_AS_NODE/w:WMUX_WSL_DISTRO/w:WMUX_WSL_MOUNT/w";'
-  + ' exec "$WMUX_WSL_NODE" "$WMUX_WSL_MCP"';
+  + ' WSLENV="${WSLENV:+$WSLENV:}ELECTRON_RUN_AS_NODE/w:WMUX_WSL_DISTRO/w:WMUX_WSL_MOUNT/w";';
+export const WSL_MCP_LAUNCH = `${WSL_MCP_ENV} exec "$WMUX_WSL_NODE" "$WMUX_WSL_MCP"`;
 
 const shellQuote = (text: string) => `'${text.replace(/'/g, `'\\''`)}'`;
+
+/** WSL_MCP_LAUNCH for one named server: `runtime` is the Windows runtime as
+ *  Linux reaches it (/mnt/…), `entry` the bundle as that runtime reads it
+ *  (a Windows path). Pure. */
+export function wslMcpLaunchOf(runtime: string, entry: string, args: readonly string[] = []): string {
+  return `${WSL_MCP_ENV} exec ${[runtime, entry, ...args].map(shellQuote).join(' ')}`;
+}
 // Codex gets the same server through -c. JSON string syntax is valid TOML.
 // Codex starts MCP servers with a sanitized environment (PATH, HOME, ...), so
 // the shim appends env={...} with the pane's own values as literal strings.

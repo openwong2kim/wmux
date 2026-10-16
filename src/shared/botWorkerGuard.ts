@@ -400,6 +400,9 @@ export interface BotWorkerSessionRecord {
   codexHome?: string;
   launch?: BotWorkerLaunchFiles;
   wsl?: boolean;
+  /** The bot task whose own fan-out (or resume) launch created this pane;
+   *  absent for any other pane of the task's workspace. */
+  taskId?: string;
   /** The conversation the launch line pinned (`--session-id`), and the
    *  permission mode its flags started it in: what a resume of that
    *  conversation falls back to when no hook recorded a mode. */
@@ -449,6 +452,7 @@ export function readBotWorkerSessions(dir: string): { sessions: Map<string, BotW
         ...(typeof r.codexHome === 'string' && r.codexHome.length <= 4096 ? { codexHome: r.codexHome } : {}),
         ...(launch ? { launch } : {}),
         ...(r.wsl === true ? { wsl: true } : {}),
+        ...(typeof r.taskId === 'string' && r.taskId.length > 0 && r.taskId.length <= 128 ? { taskId: r.taskId } : {}),
         ...(typeof r.launchSessionId === 'string' && isPlausibleResumeSessionId('claude', r.launchSessionId) ? { launchSessionId: r.launchSessionId } : {}),
         ...(typeof r.permissionMode === 'string' && Object.prototype.hasOwnProperty.call(PERMISSION_FLAG, r.permissionMode) ? { permissionMode: r.permissionMode } : {}),
       });

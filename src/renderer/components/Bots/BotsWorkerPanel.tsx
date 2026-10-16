@@ -19,14 +19,60 @@ import Button from '../ui/Button';
 import Popover from '../ui/Popover';
 import { FOCUS_RING } from '../focusRing';
 import { IconMoreHorizontal, IconX } from '../icons';
+import { InlineConfirm } from './InlineConfirm';
+import { markWorkerStopUnfinished, stopTaskSummary, type BotsStopPort } from './botsStop';
 
 type T = (key: string, vars?: Record<string, string | number>) => string;
 
 const openInWorkspaces = (workspaceId: string) => focusNotificationTarget(() => useStore.getState(), { workspaceId }, { reveal: true });
 
-/** The header's ⋮: Open in Workspaces, and Resume for an ended task whose
- *  stopped worker can resume the same conversation. */
-function PanelMenu({ workspaceId, t, onResume }: { workspaceId: string; t: T; onResume?: () => void }) {
+/** Stop worker's in-place confirm under the header, as the profile's Stop
+ *  asks: what will happen, Cancel and Stop. It stops that one task's worker
+ *  (its task cancelled, "stopped by owner"; the bot's turn and other work go
+ *  on). The result is a toast; a stop that went through closes it. */
+function StopWorkerConfirm({ task, taskId, stopTask, t, onClose }: {
+  task: string;
+  taskId: string;
+  stopTask: NonNullable<BotsStopPort['stopTask']>;
+  t: T;
+  onClose: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const run = async () => {
+    setBusy(true);
+    // Stop worker stays offered while this runs and, when it is partial,
+    // after: the task is cancelled before its worker is confirmed stopped.
+    markWorkerStopUnfinished(taskId, true);
+    try {
+      const r = await stopTask(taskId);
+      markWorkerStopUnfinished(taskId, !r.ok && r.code === 'partial');
+      useStore.getState().pushToast({ message: stopTaskSummary(task, r, t), level: r.ok ? 'info' : 'error' });
+      if (r.ok) onClose();
+    } catch (err) {
+      useStore.getState().pushToast({ message: `${t('botsPage.stop.workerFailed', { task })} ${err instanceof Error ? err.message : String(err)}`, level: 'error' });
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="px-3 py-2" data-bots-worker-panel-stop-confirm>
+      <InlineConfirm
+        text={t('botsPage.stop.workerConfirm', { task })}
+        confirmLabel={t('botsPage.stop.bot')}
+        cancelLabel={t('room.hq.cancel')}
+        busy={busy}
+        onConfirm={() => void run()}
+        onCancel={onClose}
+        testId="bots-stop-worker"
+      />
+    </div>
+  );
+}
+
+/** The header's ⋮: Open in Workspaces, Resume for an ended task whose
+ *  stopped worker can resume the same conversation, and Stop worker for a
+ *  live worker whose task is still open. */
+function PanelMenu({ workspaceId, t, onResume, onStop }: { workspaceId: string; t: T; onResume?: () => void; onStop?: () => void }) {
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLSpanElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
@@ -98,13 +144,24 @@ function PanelMenu({ workspaceId, t, onResume }: { workspaceId: string; t: T; on
           >
             {t('botsPage.chat.openInWorkspaces')}
           </button>
+          {onStop && (
+            <button
+              type="button"
+              role="menuitem"
+              data-bots-worker-panel-stop
+              onClick={() => { close(); onStop(); }}
+              className={`ui-section-row w-full text-left text-[13px] text-[var(--accent-red)] ${FOCUS_RING}`}
+            >
+              {t('botsPage.worker.stop')}
+            </button>
+          )}
         </Popover>
       )}
     </span>
   );
 }
 
-export default function BotsWorkerPanel({ workspaceId, hosted, name, state, attention, t, onClose, onResume, style }: {
+export default function BotsWorkerPanel({ workspaceId, hosted, name, state, attention, t, onClose, onResume, stop, style }: {
   workspaceId: string;
   /** The panel hosts the workspace's panes (selectWorkerPanelHost); false:
    *  it stays on Workspaces and the panel offers the way there. */
@@ -119,13 +176,30 @@ export default function BotsWorkerPanel({ workspaceId, hosted, name, state, atte
   onClose: () => void;
   /** Resumes an ended task's stopped worker (absent: not resumable). */
   onResume?: () => void;
+  /** Stops this live worker, its task cancelled (absent: not offered). */
+  stop?: { taskId: string; stopTask: NonNullable<BotsStopPort['stopTask']> };
   /** The panel's width beside the chat (the splitter's). */
   style?: React.CSSProperties;
 }): React.ReactElement | null {
   const workspace = useStore((s) => s.workspaces.find((w) => w.id === workspaceId));
+  // Stop worker's confirm belongs to the task it was asked for.
+  const [confirmStop, setConfirmStop] = useState<string | null>(null);
+  const asideRef = useRef<HTMLElement>(null);
+  // The worker shown now, read when a stop answers.
+  const shownRef = useRef(workspaceId);
+  shownRef.current = workspaceId;
+  // Cancel or a stop that went through closes that task's confirm and hands
+  // focus back to the menu's ⋯ — only while the panel still shows the worker
+  // the stop was asked for. A stop that answers after the owner moved on to
+  // another worker leaves that worker's confirm and the focus alone.
+  const closeStop = (taskId: string, askedFor: string) => {
+    setConfirmStop((cur) => (cur === taskId ? null : cur));
+    if (shownRef.current !== askedFor) return;
+    asideRef.current?.querySelector<HTMLButtonElement>('[data-bots-worker-panel-menu]')?.focus();
+  };
   if (!workspace) return null;
   return (
-    <aside className="wmux-bots-worker" data-bots-worker-panel={workspaceId} aria-label={t('botsPage.chat.workerPanel', { name })} style={style}>
+    <aside ref={asideRef} className="wmux-bots-worker" data-bots-worker-panel={workspaceId} aria-label={t('botsPage.chat.workerPanel', { name })} style={style}>
       {/* One line: the name, its state, the menu, Close. */}
       <div className="wmux-bots-worker-head">
         <span className="flex min-w-0 flex-1 items-baseline gap-1.5">
@@ -134,7 +208,7 @@ export default function BotsWorkerPanel({ workspaceId, hosted, name, state, atte
             <span data-bots-worker-panel-state className={`shrink-0 truncate text-[11px] ${attention ? 'text-[var(--attention-text)]' : 'text-[var(--text-muted)]'}`}>{`· ${state}`}</span>
           )}
         </span>
-        <PanelMenu workspaceId={workspaceId} t={t} onResume={onResume} />
+        <PanelMenu workspaceId={workspaceId} t={t} onResume={onResume} onStop={stop ? () => setConfirmStop(stop.taskId) : undefined} />
         <button
           type="button"
           data-bots-worker-panel-close
@@ -146,6 +220,9 @@ export default function BotsWorkerPanel({ workspaceId, hosted, name, state, atte
           <IconX size={14} />
         </button>
       </div>
+      {stop && confirmStop === stop.taskId && (
+        <StopWorkerConfirm task={name} taskId={stop.taskId} stopTask={stop.stopTask} t={t} onClose={() => closeStop(stop.taskId, workspaceId)} />
+      )}
       {/* The terminal right under the header: the pane's tab strip and its
           split, browser and zoom controls are Workspaces' (bots.css hides
           them here — this panel only views the worker). */}

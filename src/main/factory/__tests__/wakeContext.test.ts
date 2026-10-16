@@ -61,6 +61,31 @@ describe('wakeContext', () => {
     expect(wakeLanguage(ports([]), me, wake({ kind: 'intro' }))).toBeNull();
   });
 
+  it('a delegate in a thread another bot started writes in the language the owner used with that bot', () => {
+    const P = 'plan:p-1' as ThreadId;
+    const coord = 'bot-0000000c';
+    // The owner spoke English to this bot long ago and Korean to the coordinator, whose plan thread this is.
+    const cards = [
+      owner('run the e2e checks', { refs: { botId: me.id, botIds: [me.id] } }),
+      owner('e2e-win 정리해줘', { refs: { botId: coord, botIds: [coord] } }),
+      said(coord, 'Plan: clean up e2e-win', { threadId: P, kind: 'plan' }),
+    ];
+    expect(wakeLanguage(ports(cards, { uiLocale: () => 'en' }), me, wake({ kind: 'handoff', handoffId: 'h-1' }, P))).toEqual({ name: 'Korean', source: 'owner', earlier: true });
+    // The owner's own words in the thread, to whichever bot, come first.
+    const answered = [...cards, owner('좋아요, 진행해', { threadId: P, refs: { botId: coord, botIds: [coord] } })];
+    expect(wakeLanguage(ports(answered, { uiLocale: () => 'en' }), me, wake({ kind: 'handoff', handoffId: 'h-1' }, P))).toEqual({ name: 'Korean', source: 'owner', earlier: true });
+    // General (or a 1:1) is nobody's lead thread, whoever posted first.
+    const general = [
+      said(coord, 'Hello'),
+      owner('e2e-win 정리해줘', { threadId: `dm:${coord}` as ThreadId, refs: { botId: coord, botIds: [coord] } }),
+      owner('run the e2e checks', { threadId: `dm:${me.id}` as ThreadId, refs: { botId: me.id, botIds: [me.id] } }),
+    ];
+    expect(wakeLanguage(ports(general, { uiLocale: () => 'en' }), me, wake({ kind: 'facts', factIds: [], trigger: { kind: 'task.done' } }, 'general'))?.sample).toBe('run the e2e checks');
+    // A thread this bot started keeps the owner's words to this bot.
+    const mine = [...cards.slice(0, 2), said(me.id, 'Status', { threadId: P })];
+    expect(wakeLanguage(ports(mine, { uiLocale: () => 'en' }), me, wake({ kind: 'handoff', handoffId: 'h-1' }, P))?.sample).toBe('run the e2e checks');
+  });
+
   it('a bot added after the owner wrote to the other bots follows the owner, not the UI language', () => {
     const cards = [owner('머지할거 머지해', { refs: { botIds: ['bot-0000000b', 'bot-0000000c'] } })];
     expect(wakeLanguage(ports(cards, { uiLocale: () => 'en' }), me, wake({ kind: 'intro' }))).toEqual({ name: 'Korean', source: 'owner', earlier: true });

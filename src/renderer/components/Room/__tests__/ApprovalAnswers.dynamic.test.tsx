@@ -112,6 +112,23 @@ describe('ApprovalAnswers: main\'s words, never its codes', () => {
 });
 
 describe('ApprovalAnswers', () => {
+  it('a skipped rule names its condition in the owner\'s language; a merge no rule covers says what a rule still needs under Always allow', async () => {
+    setApprovalsApiForTests(fakeApi([req({ ruleSkipped: 'required-checks-green:no-required-checks', ruleSkippedText: 'The repository has no required checks', ruleSkippedCondition: 'noChecks' })]));
+    await render(createElement(ApprovalAnswers, { card: card(), t }));
+    expect(container.querySelector('[data-approval-rule-skipped]')?.textContent).toBe('room.approval.ruleSkipped(reason=room.approval.ruleCondition.noChecks(sha=aaaaaaa))');
+    expect(container.querySelector('[data-approval-rule-needs]')).toBeNull();
+    setApprovalsApiForTests(fakeApi([req({ ruleNeeds: ['verifier', 'noChecks'] })]));
+    await render(createElement(ApprovalAnswers, { card: card(), t }));
+    const needs = container.querySelector('[data-approval-rule-needs]');
+    expect(needs?.textContent).toBe('room.approval.ruleNeeds(needs=room.approval.ruleNeed.verifierroom.approval.ruleNeedsJoinroom.approval.ruleNeed.noChecks)');
+    // Under the buttons, after Always allow.
+    expect(container.querySelector('[data-testid="approval-always"]')?.compareDocumentPosition(needs as Node)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    // No Always allow offered (a release): no line.
+    setApprovalsApiForTests(fakeApi([req({ action: 'release', ruleNeeds: ['verifier'] })]));
+    await render(createElement(ApprovalAnswers, { card: card(), t }));
+    expect(container.querySelector('[data-approval-rule-needs]')).toBeNull();
+  });
+
   it('a waiting request takes Deny, Always allow and Approve (the primary); the answer goes to main', async () => {
     const api = fakeApi([req({ tainted: true })]);
     setApprovalsApiForTests(api);

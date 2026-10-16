@@ -22,6 +22,13 @@
 //   - Only bot tasks' own folders: a ledger row a bot started, whose folder
 //     sits under one of the two roots above. Owner fan-outs, phone worktrees
 //     and worktrees made by hand are never touched.
+//   - Not a task the owner stopped (cancelled "stopped by owner": Stop
+//     worker, a bot's Stop, Stop all, "Run bots" off). A stop deletes
+//     nothing (factoryStop.ts), so the owner can look at what the worker
+//     left; only the owner's Clean up now applies the rules to it. Such a
+//     folder is recorded (`kept_stopped`, with its bot), so Clean up now
+//     and the usage line still find it once the ledger has pruned the
+//     task's row; a removal or a resume of its worker ends that.
 // What was removed is recorded in `<wmuxDir>/factory/task-folders.json`, with
 // the repository and branch to put it back. A resume of the task's worker
 // (workerReclaim.ts respawn, the owner's Resume or `worker_resume`) puts the
@@ -35,14 +42,19 @@ import crypto from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { LedgerEntry } from '../../shared/ledger';
+import { BOT_ID_RE } from '../../shared/bot';
 import { getExecEnv } from '../../shared/execEnv';
 import { createFilePersister, readVersionedFile, type FilePersister } from './versionedFile';
 import { sessionHostDir } from '../worktask/stopSessionsInDir';
+import { STOPPED_BY_OWNER, STOP_SYSTEM_WORKSPACE, isStoppedByOwnerRow } from './factoryStop';
 
 export const TASK_FOLDERS_FILENAME = 'task-folders.json';
 export const TASK_FOLDERS_VERSION = 1 as const;
 /** Records kept (oldest dropped first). */
 export const TASK_FOLDERS_MAX = 2000;
+/** Records of folders a stop kept, on a budget of their own (a folder
+ *  dropped past it is never deleted, only no longer listed). */
+export const TASK_FOLDERS_KEPT_MAX = 2000;
 /** How far back an ended task is looked at by the automatic pass. */
 export const TASK_FOLDER_CATCHUP_MS = 24 * 3_600_000;
 /** Attempts per task and end before the automatic pass gives up on a
@@ -62,8 +74,11 @@ export interface TaskFolderRecord {
   path: string;
   /** being removed (written before the folder goes, so a crash keeps how to
    *  put it back) · removed · kept (uncommitted changes) · put back for a
-   *  resume. */
-  state: 'removing' | 'removed' | 'kept_dirty' | 'restored';
+   *  resume · kept because the owner stopped the task. */
+  state: 'removing' | 'removed' | 'kept_dirty' | 'restored' | 'kept_stopped';
+  /** A folder a stop kept: its task's bot, so Clean up now can look at it
+   *  without the task's ledger row (pruned after a while). */
+  stopped?: { botId: string };
   /** A worktree's repository, and its branch or (a detached checkout, such
    *  as a verify task's) its commit, recorded before removal. */
   repoRoot?: string;
@@ -80,7 +95,17 @@ function isRecord(v: unknown): v is TaskFolderRecord {
   if (!v || typeof v !== 'object') return false;
   const r = v as Record<string, unknown>;
   return typeof r.taskId === 'string' && (r.kind === 'worktree' || r.kind === 'research') && typeof r.path === 'string'
-    && (r.state === 'removing' || r.state === 'removed' || r.state === 'kept_dirty' || r.state === 'restored') && typeof r.at === 'number';
+    && (r.state === 'removing' || r.state === 'removed' || r.state === 'kept_dirty' || r.state === 'restored' || r.state === 'kept_stopped')
+    && typeof r.at === 'number'
+    && (r.stopped === undefined || (typeof r.stopped === 'object' && r.stopped !== null && typeof (r.stopped as { botId?: unknown }).botId === 'string'
+      && BOT_ID_RE.test((r.stopped as { botId: string }).botId)));
+}
+
+/** A record of a folder a stop kept that is not gone yet (kept, kept dirty
+ *  after a Clean up now, or a removal that has not finished): what Clean up
+ *  now and the usage line find without the task's row. Never evicted. */
+function isKeptRecord(r: TaskFolderRecord): boolean {
+  return !!r.stopped && (r.state === 'kept_stopped' || r.state === 'kept_dirty' || r.state === 'removing');
 }
 
 export class TaskFolders {
@@ -115,10 +140,31 @@ export class TaskFolders {
   put(rec: TaskFolderRecord): Promise<void> {
     this.records.delete(rec.taskId);
     this.records.set(rec.taskId, rec);
-    for (const id of this.records.keys()) {
-      if (this.records.size <= TASK_FOLDERS_MAX) break;
+    // Two budgets, each dropped oldest first: the folders a stop kept (their
+    // record is the only way Clean up now finds one once the ledger pruned
+    // its row) and every other record, so neither crowds the other out. The
+    // record being written is never the one dropped.
+    let kept = 0;
+    for (const r of this.records.values()) if (isKeptRecord(r)) kept++;
+    let other = this.records.size - kept;
+    for (const [id, r] of this.records) {
+      if (kept <= TASK_FOLDERS_KEPT_MAX && other <= TASK_FOLDERS_MAX) break;
+      if (id === rec.taskId) continue;
+      if (isKeptRecord(r)) {
+        if (kept <= TASK_FOLDERS_KEPT_MAX) continue;
+        kept--;
+      } else {
+        if (other <= TASK_FOLDERS_MAX) continue;
+        other--;
+      }
       this.records.delete(id);
     }
+    return this.persister.schedule();
+  }
+
+  /** Forget a task's record (a kept folder its resumed worker uses again). */
+  delete(taskId: string): Promise<void> {
+    if (!this.records.delete(taskId)) return Promise.resolve();
     return this.persister.schedule();
   }
 }
@@ -143,6 +189,8 @@ export interface TaskFolderRoots {
  *  the bot's own research root (a batch and a task below it). Pure. */
 export function taskFolderKind(folder: string, branch: string | undefined, botId: string, roots: TaskFolderRoots): TaskFolderKind | null {
   if (!folder || !path.isAbsolute(folder)) return null;
+  // A bot id names one folder under the bots' root (no separators, no "..").
+  if (!BOT_ID_RE.test(botId)) return null;
   const research = path.join(roots.wmuxDir, 'factory', 'bots', botId, 'research');
   const relResearch = path.relative(research, path.resolve(folder));
   if (relResearch && !relResearch.startsWith('..') && !path.isAbsolute(relResearch) && relResearch.split(path.sep).length >= 2) return 'research';
@@ -271,8 +319,9 @@ function throughNoLink(folder: string, root: string): boolean {
 
 /**
  * Remove one ended bot task's folder when the rules allow it. `force`: the
- * owner's Clean up now (a folder kept dirty is looked at again). Never
- * throws. `skipped`: not a bot task's folder, not ended, detached, already
+ * owner's Clean up now (a folder kept dirty, or one a stop kept, is looked
+ * at again). Never throws. `skipped`: not a bot task's folder, not ended,
+ * stopped by the owner (without `force`), detached, already
  * handled, held by a resume, or a worker still runs; `busy`: a session or a
  * gate still uses the folder.
  */
@@ -306,8 +355,28 @@ async function cleanTaskFolderNow(
   const botId = entry.dispatch?.origin.botId ?? '';
   const kind = taskFolderKind(mission.folder, mission.branch, botId, ports.roots);
   if (!kind) return 'skipped';
-  if ((folderHolds.get(entry.id) ?? 0) > 0) return 'skipped';
   const prior = ports.store.get(entry.id);
+  const stoppedByOwner = isStoppedByOwnerRow(entry);
+  // A task the owner stopped keeps its folder; Clean up now still applies.
+  // It is recorded, so it is found once the ledger has pruned the row.
+  if (stoppedByOwner && opts.force !== true) {
+    // A removal that did not finish (its folder still there) is kept again.
+    if (prior?.state !== 'kept_stopped' && prior?.state !== 'removed' && exists(mission.folder)) {
+      await ports.store.put({
+        taskId: entry.id, kind, path: mission.folder, state: 'kept_stopped', stopped: { botId },
+        ...(mission.branch ? { branch: mission.branch } : prior?.branch ? { branch: prior.branch } : {}),
+        ...(prior?.repoRoot ? { repoRoot: prior.repoRoot } : {}),
+        ...(prior?.repoHash ? { repoHash: prior.repoHash } : {}),
+        ...(prior?.head ? { head: prior.head } : {}),
+        ...(prior?.keepRef ? { keepRef: prior.keepRef } : {}),
+        at: now(),
+      }).catch((err: unknown) => log(`[factory] kept folder of ${entry.id} not recorded: ${String(err)}`));
+    }
+    return 'skipped';
+  }
+  // Every later record of a folder a stop kept says so (Clean up now finds it).
+  const stoppedMark = stoppedByOwner || prior?.stopped ? { stopped: { botId } } : {};
+  if ((folderHolds.get(entry.id) ?? 0) > 0) return 'skipped';
   if (prior?.state === 'removed') return 'skipped';
   if (prior?.state === 'kept_dirty' && opts.force !== true) return 'skipped';
   if (prior?.state === 'restored' && now() - prior.at < TASK_FOLDER_RESTORE_HOLD_MS) return 'skipped';
@@ -321,7 +390,7 @@ async function cleanTaskFolderNow(
   };
   if (!exists(mission.folder)) {
     // Gone already (by hand, or a removal that finished before a crash).
-    await ports.store.put({ taskId: entry.id, kind, path: mission.folder, state: 'removed', ...keep, at: now() }).catch(() => undefined);
+    await ports.store.put({ taskId: entry.id, kind, path: mission.folder, state: 'removed', ...keep, ...stoppedMark, at: now() }).catch(() => undefined);
     return 'skipped';
   }
   if (folderInUse(mission.folder, sessions)) return 'busy';
@@ -334,7 +403,7 @@ async function cleanTaskFolderNow(
   if (kind === 'research') {
     try {
       if (!fs.lstatSync(mission.folder).isDirectory()) return 'skipped';
-      await ports.store.put({ taskId: entry.id, kind, path: mission.folder, state: 'removing', at: now() });
+      await ports.store.put({ taskId: entry.id, kind, path: mission.folder, state: 'removing', ...stoppedMark, at: now() });
       await (ports.removeDir ?? ((d: string) => fs.promises.rm(d, { recursive: true })))(mission.folder);
     } catch (err) {
       log(`[factory] research folder of ${entry.id} not removed: ${String(err)}`);
@@ -362,7 +431,7 @@ async function cleanTaskFolderNow(
   const base = {
     taskId: entry.id, kind, path: mission.folder, repoRoot: repo.repoRoot, repoHash: repo.repoHash,
     ...(mission.branch ? { branch: mission.branch } : {}), ...(repo.head ? { head: repo.head } : {}),
-    ...(kept ? { keepRef: kept } : prior?.keepRef ? { keepRef: prior.keepRef } : {}), at: now(),
+    ...(kept ? { keepRef: kept } : prior?.keepRef ? { keepRef: prior.keepRef } : {}), ...stoppedMark, at: now(),
   };
   // How to put it back is on disk before the folder goes.
   try {
@@ -431,19 +500,54 @@ export interface TaskFolderSweep {
 export async function cleanTaskFolders(ports: TaskFolderPorts, rows: readonly LedgerEntry[], opts: { force?: boolean } = {}): Promise<TaskFolderSweep> {
   const out: TaskFolderSweep = { removed: 0, keptDirty: 0, busy: 0, failed: 0 };
   const ended = rows.filter(isEndedBotTask);
-  if (ended.length === 0) return out;
+  if (ended.length === 0 && keptRecords(ports.store).length === 0) return out;
   const sessions = await ports.listSessions();
   const byOwner = new Map<string, Map<string, TaskMission> | null>();
-  for (const row of ended) {
-    if (!byOwner.has(row.ownerWorkspaceId)) byOwner.set(row.ownerWorkspaceId, await ports.missions(row.ownerWorkspaceId).catch(() => null));
-    const mission = byOwner.get(row.ownerWorkspaceId)?.get(row.id) ?? null;
-    const r = await cleanTaskFolder(ports, row, mission, sessions, opts);
+  const count = (r: TaskFolderOutcome): void => {
     if (r === 'removed') out.removed++;
     else if (r === 'kept_dirty') out.keptDirty++;
     else if (r === 'busy') out.busy++;
     else if (r === 'failed') out.failed++;
+  };
+  const handled = new Set<string>();
+  for (const row of ended) {
+    if (!byOwner.has(row.ownerWorkspaceId)) byOwner.set(row.ownerWorkspaceId, await ports.missions(row.ownerWorkspaceId).catch(() => null));
+    const mission = byOwner.get(row.ownerWorkspaceId)?.get(row.id) ?? null;
+    if (mission) handled.add(row.id);
+    count(await cleanTaskFolder(ports, row, mission, sessions, opts));
+  }
+  // A folder a stop kept whose row (or mission) is gone — the ledger prunes
+  // ended rows after a while: its record says where it is.
+  for (const rec of keptRecords(ports.store)) {
+    if (handled.has(rec.taskId)) continue;
+    count(await cleanTaskFolder(ports, keptRow(rec), { folder: rec.path, ...(rec.branch ? { branch: rec.branch } : {}) }, sessions, opts));
   }
   return out;
+}
+
+/** The folders a stop kept (kept dirty too, once Clean up now looked at one),
+ *  as recorded: found without the task's ledger row. */
+function keptRecords(store: Pick<TaskFolders, 'all'>): TaskFolderRecord[] {
+  return store.all().filter(isKeptRecord);
+}
+
+/** The task row a kept folder's record stands for once the ledger pruned it:
+ *  an ended bot task the owner stopped, so the usual rules (and the checks
+ *  on its folder and its bot's roots) apply to it. */
+function keptRow(rec: TaskFolderRecord): LedgerEntry {
+  return {
+    schemaVersion: 1, id: rec.taskId, taskWorkspaceId: '', ownerWorkspaceId: '', title: '',
+    status: 'cancelled', rev: 0, updatedAt: rec.at, summary: STOPPED_BY_OWNER,
+    updatedBy: { kind: 'system', workspaceId: STOP_SYSTEM_WORKSPACE },
+    dispatch: { origin: { kind: 'bot', botId: rec.stopped?.botId ?? '' }, preset: rec.kind === 'research' ? 'research' : 'default' },
+  } as LedgerEntry;
+}
+
+/** A resumed worker uses its task's folder again: a folder a stop kept is no
+ *  longer only kept (its next stop records it again). */
+export async function forgetKeptFolder(ports: Pick<TaskFolderPorts, 'store'>, taskId: string): Promise<void> {
+  if (ports.store.get(taskId)?.state !== 'kept_stopped') return;
+  await ports.store.delete(taskId).catch(() => undefined);
 }
 
 /**
@@ -532,6 +636,16 @@ export async function taskFolderUsage(ports: TaskFolderPorts, rows: readonly Led
     out.folders++;
     out.bytes += await folderBytes(key);
     if (ports.store.get(row.id)?.state === 'kept_dirty') out.dirty++;
+  }
+  // A folder a stop kept counts once, though its row is gone.
+  for (const rec of keptRecords(ports.store)) {
+    if (!rec.stopped || !taskFolderKind(rec.path, rec.branch, rec.stopped.botId, ports.roots)) continue;
+    const key = path.resolve(rec.path);
+    if (seen.has(key) || !exists(key)) continue;
+    seen.add(key);
+    out.folders++;
+    out.bytes += await folderBytes(key);
+    if (rec.state === 'kept_dirty') out.dirty++;
   }
   return out;
 }

@@ -9,6 +9,7 @@ import { getConnectorStore } from './connectorStore';
 import type { BrowserWindow } from 'electron';
 import type { DaemonClient } from '../DaemonClient';
 import type { CardNotice, ThreadId } from '../../shared/room';
+import type { LedgerEntry } from '../../shared/ledger';
 import { BOT_EVENT } from '../../shared/bot';
 import { sanitizePtyText } from '../../shared/types';
 import { eventBus } from '../events/EventBus';
@@ -22,7 +23,7 @@ import { getBotStore } from './botStore';
 import { getFactorySettings } from './factorySettings';
 import { getRoomWriter } from './roomWriter';
 import { taskFolderFromMissions } from './verifyPreset';
-import { AgentSlots, IdleSnapshot, getAgentSlots, rowHoldsAgentSlot, setAgentSlots, setSlotLiveness, slotHolderArgs, type SlotLiveness } from './agentSlots';
+import { AgentSlots, IdleSnapshot, getAgentSlots, paneRunsNoAgent, paneShowsWork, rowHoldsAgentSlot, setAgentSlots, setSlotLiveness, slotHolderArgs, type SlotLiveness } from './agentSlots';
 import { checkWorkers, recordWorkerEnd, recordWorkerStart } from './budget';
 import { runningWakeTainted } from './wakeTaint';
 import { installReportNudge, submitToWorkerPane } from './workerReportNudge';
@@ -35,12 +36,16 @@ import {
   REPORTED_IDLE_MS,
   RESUMED_IDLE_MS,
   ReclaimedWorkers,
+  createDaemonTurnSeed,
   createResumedIdleSweep,
   createWorkerClear,
   installWorkerReclaim,
+  isReclaimableReport,
   isReclaimedSince,
   isTaskWorkspaceOf,
+  mergePaneActivity,
   noteWorkerAgentExit,
+  reportedWorkerPanes,
   resumedAgentAlive,
   setResumedLiveCount,
   setWorkerResumePorts,
@@ -56,7 +61,7 @@ import { getWorkspaceMirror } from '../workspace/WorkspaceMirror';
 import path from 'node:path';
 import { getWmuxHomeDir } from '../../shared/constants';
 import { TaskWorktreeManager } from '../worktask/TaskWorktreeManager';
-import { TaskFolders, gitRepoInfo, holdTaskFolder, installTaskFolderCleanup, restoreTaskFolder, setTaskFolderPorts, type TaskMission } from './taskFolderCleanup';
+import { TaskFolders, forgetKeptFolder, gitRepoInfo, holdTaskFolder, installTaskFolderCleanup, restoreTaskFolder, setTaskFolderPorts, type TaskMission } from './taskFolderCleanup';
 import { getSharedTaskGateRunner } from '../worktask/TaskGateRunner';
 import { STOPPED_BY_OWNER } from './factoryStop';
 import { getFanOutGuards, setDormantTaskWorkspaces } from '../worktask/fanoutGuards';
@@ -81,6 +86,9 @@ export interface WorkerLifecycleDeps {
 /** Which open workspaces run no agent any more is read at most this often. */
 const LIVENESS_REFRESH_MS = 10_000;
 
+/** One read of a worker pane's turn from the daemon waits this long. */
+const TURN_SEED_READ_TIMEOUT_MS = 5_000;
+
 /** A workspace tree push looks for freed task folders at most this often. */
 const FOLDER_KICK_MIN_MS = 10_000;
 /** The task folder cleanup's worktree manager (its per-repository lock
@@ -102,6 +110,8 @@ function note(workspaceId: string, threadId: ThreadId, title: string, body: stri
 export function startWorkerLifecycle(deps: WorkerLifecycleDeps): () => void {
   const offs: Array<() => void> = [];
   const ledger = getTaskLedger();
+  /** The reclaim record, once loaded below (the slot count reads it). */
+  let reclaimedStore: ReclaimedWorkers | null = null;
   const daemon = (): DaemonClient | null => deps.getDaemonClient?.() ?? null;
   const rpc = async (method: string, params: Record<string, unknown>): Promise<unknown> => {
     const c = daemon();
@@ -124,20 +134,36 @@ export function startWorkerLifecycle(deps: WorkerLifecycleDeps): () => void {
   // (the mirror, read now) and those whose panes all run no agent any more
   // (the daemon's sessions, read at most every LIVENESS_REFRESH_MS; until
   // the first read, none). A cap check awaits a fresh read (refreshSlotLiveness).
+  let busyWorkspaces: ReadonlySet<string> = new Set();
   const idle = new IdleSnapshot(async () => {
     const byId = new Map((await listSessions()).map((x) => [x.id, x]));
     const next = new Set<string>();
+    const busy = new Set<string>();
     for (const e of getWorkspaceMirror().getEntries() ?? []) {
       const ptys = Array.isArray(e.ptyIds) ? e.ptyIds : [];
-      // Gone, or seen to exit; an agent never attributed is not known dead.
-      if (ptys.length > 0 && ptys.every((id) => { const x = byId.get(id); return !x || x.agentProcessAlive === false; })) next.add(e.id);
+      if (ptys.some((id) => paneShowsWork(byId.get(id)))) busy.add(e.id);
+      // Gone, seen to exit, or respawned by the daemon's restart with no agent
+      // since; an agent never attributed otherwise is not known dead.
+      if (ptys.length > 0 && ptys.every((id) => paneRunsNoAgent(byId.get(id)))) next.add(e.id);
     }
+    busyWorkspaces = busy;
     return next;
   }, LIVENESS_REFRESH_MS);
+  // Bot tasks whose worker main stopped since the row last changed (paused
+  // for review, or reclaimed at its end) and did not resume.
+  const stoppedTasks = (): Set<string> => {
+    const out = new Set<string>();
+    for (const r of reclaimedStore?.all() ?? []) {
+      if (r.state !== 'stopped') continue;
+      const row = ledger.get(r.taskId);
+      if (row && isReclaimedSince(r, row)) out.add(r.taskId);
+    }
+    return out;
+  };
   const liveness = (): SlotLiveness => {
     const idleWorkspaces = idle.get();
     const entries = getWorkspaceMirror().getEntries();
-    return { workspaces: entries ? new Set(entries.map((e) => e.id)) : null, idleWorkspaces, now: Date.now() };
+    return { workspaces: entries ? new Set(entries.map((e) => e.id)) : null, idleWorkspaces, stoppedTasks: stoppedTasks(), busyWorkspaces, now: Date.now() };
   };
   /** Open bot task rows whose worker holds an agent slot. */
   const slotRows = (): ReturnType<typeof ledger.list> => {
@@ -163,6 +189,7 @@ export function startWorkerLifecycle(deps: WorkerLifecycleDeps): () => void {
   // Reclaim + resume. A record file this version cannot read leaves the
   // reclaim off (workers keep running, as before), never overwritten.
   const reclaimed = ReclaimedWorkers.at(deps.wmuxDir());
+  reclaimedStore = reclaimed;
   let reclaimOn = true;
   try {
     reclaimed.load();
@@ -201,22 +228,65 @@ export function startWorkerLifecycle(deps: WorkerLifecycleDeps): () => void {
     const reconcile = (): void => {
       void clear.reconcile();
     };
+    const workspacePtys = (workspaceId: string): readonly string[] | null => {
+      const entries = mirror.getEntries();
+      if (!entries) return null;
+      const ws = entries.find((e) => e.id === workspaceId);
+      return ws && Array.isArray(ws.ptyIds) ? ws.ptyIds : [];
+    };
+    // A reported task's own worker panes, and the daemon's view of their
+    // turn where main has none (after a restart): createDaemonTurnSeed.
+    const turnSeed = createDaemonTurnSeed({
+      tasks: () => {
+        const entries = mirror.getEntries();
+        if (!entries) return null;
+        const out: Array<{ taskId: string; reportedAt: number; panes: readonly string[]; recorded: readonly string[]; launched: readonly string[] }> = [];
+        for (const r of ledger.list({ openOnly: true })) {
+          const rec = reclaimed.get(r.id);
+          if (!isReclaimableReport(r) || isReclaimedSince(rec, r)) continue;
+          const ws = entries.find((e) => e.id === r.taskWorkspaceId);
+          const panes = ws && Array.isArray(ws.ptyIds) ? ws.ptyIds : [];
+          out.push({
+            taskId: r.id,
+            reportedAt: r.updatedAt,
+            panes,
+            recorded: rec?.sessions.map((x) => x.sessionId) ?? [],
+            // The pane the task's own fan-out (or resume) launch created.
+            launched: panes.filter((id) => botWorkerSessionRecord(id)?.taskId === r.id),
+          });
+        }
+        return out;
+      },
+      ready: () => daemon()?.isConnected === true,
+      listSessions,
+      readState: async (id) => (await daemon()?.getAgentState(id, { timeoutMs: TURN_SEED_READ_TIMEOUT_MS })) ?? null,
+      liveEvidence: (id) => lastTurnEnd(id) !== undefined || lastHookTurnStart(id) !== undefined,
+    });
+    const seedTurns = (): void => {
+      void turnSeed.pass().catch(() => undefined);
+    };
     // What the idle stops read of a worker pane, and whether the owner is
-    // viewing a workspace (unknown: not viewing).
+    // viewing a workspace (unknown: not viewing). A turn end or input main
+    // saw itself wins over the daemon's.
     const paneActivity = (id: string): PaneActivity => {
       const status = getLastBroadcastAgentStatus(id);
       const turnStartAt = lastHookTurnStart(id);
       const turnEndAt = lastTurnEnd(id);
       const inputAt = lastUserInputAt(id);
-      return {
+      return mergePaneActivity({
         ...(status !== undefined ? { status } : {}),
         ...(turnStartAt !== undefined ? { turnStartAt } : {}),
         ...(turnEndAt !== undefined ? { turnEndAt } : {}),
         ...(inputAt !== undefined ? { inputAt } : {}),
-      };
+      }, turnSeed.activity(id));
     };
     const viewed = (workspaceId: string): boolean => mirror.getViewed()?.workspaceId === workspaceId
       || mirror.getPanelWorkspaceId() === workspaceId;
+    const reportedIdle = (entry: LedgerEntry): boolean => {
+      if (viewed(entry.taskWorkspaceId)) return false;
+      const panes = reportedWorkerPanes(turnSeed.workerPanes(entry.id), workspacePtys(entry.taskWorkspaceId));
+      return !!panes && workerPanesIdle(panes.map(paneActivity), entry.updatedAt, Date.now(), REPORTED_IDLE_MS);
+    };
     offs.push(installWorkerReclaim({
       onTransition: (fn) => ledger.onTransition(fn),
       allRows: () => ledger.list({}),
@@ -224,7 +294,9 @@ export function startWorkerLifecycle(deps: WorkerLifecycleDeps): () => void {
       store: reclaimed,
       worktreeOf: (entry) => taskFolderFromMissions((m, p) => rpc(m, (p ?? {}) as Record<string, unknown>), entry),
       listSessions,
-      stopAgent: async (sessionId) => (await rpc('session.stopAgent', { sessionId })) as { ok?: boolean; stopped?: boolean; code?: string },
+      // A reported worker's stop is conditional: a daemon that knows
+      // `ifTurnClosed` refuses it (`turn_open`) when the turn opened.
+      stopAgent: async (sessionId, opts) => (await rpc('session.stopAgent', { sessionId, ...(opts?.ifTurnClosed ? { ifTurnClosed: true } : {}) })) as { ok?: boolean; stopped?: boolean; code?: string },
       closePane: async (sessionId) => {
         await rpc('daemon.destroySession', { id: sessionId });
       },
@@ -238,24 +310,22 @@ export function startWorkerLifecycle(deps: WorkerLifecycleDeps): () => void {
         reconcile();
       },
       retryMs: RESUMED_SWEEP_MS,
-      // A reported task's worker is stopped once every pane of its
-      // workspace sat idle for the window, counted from the report and from
-      // each pane's own last turn edge and input (workerPanesIdle), and the
-      // owner is not viewing it; only those panes are stopped. A status main
-      // has not seen yet (right after a restart) is taken as idle only for a
-      // task reported long ago.
-      turnEnded: (entry) => {
-        if (viewed(entry.taskWorkspaceId)) return false;
-        const ws = mirror.getEntries()?.find((e) => e.id === entry.taskWorkspaceId);
-        const ptys = ws && Array.isArray(ws.ptyIds) ? ws.ptyIds : [];
-        return workerPanesIdle(ptys.map(paneActivity), entry.updatedAt, Date.now(), REPORTED_IDLE_MS);
-      },
-      workspacePanes: (workspaceId) => {
-        const entries = mirror.getEntries();
-        if (!entries) return null;
-        const ws = entries.find((e) => e.id === workspaceId);
-        return ws && Array.isArray(ws.ptyIds) ? ws.ptyIds : [];
-      },
+      // A reported task's worker is stopped once every one of its own worker
+      // panes (turnSeed: a pane of its workspace whose agent runs; never a
+      // plain shell) sat idle for the window, counted from the report and
+      // from each pane's own last turn edge and input (workerPanesIdle), and
+      // the owner is not viewing it; only those panes are stopped. Right
+      // after a restart a pane's turn end is the daemon's; a worker pane that
+      // cannot be identified, or whose turn neither main nor the daemon
+      // knows, is not idle.
+      turnEnded: reportedIdle,
+      reportedPanes: (entry) => reportedWorkerPanes(turnSeed.workerPanes(entry.id), workspacePtys(entry.taskWorkspaceId)),
+      // The last step before each stop: the daemon, read again, must still
+      // show every worker pane's turn over, and the window must still be met
+      // with the times it reports now (folded into the seed).
+      confirmIdle: async (entry) => (await turnSeed.confirmIdle(reportedWorkerPanes(turnSeed.workerPanes(entry.id), workspacePtys(entry.taskWorkspaceId)) ?? []))
+        && reportedIdle(entry),
+      workspacePanes: workspacePtys,
     }));
     // The viewed workspace moving (and every other tree push) may make a
     // deferred clear due; a pass with nothing due reads nothing.
@@ -321,7 +391,11 @@ export function startWorkerLifecycle(deps: WorkerLifecycleDeps): () => void {
         const ws = entries.find((e) => e.id === workspaceId);
         return ws && Array.isArray(ws.ptyIds) ? ws.ptyIds : [];
       },
-      ...(folderPorts ? { restoreFolder: (taskId: string, folder: string) => restoreTaskFolder(folderPorts, taskId, folder), holdFolder: holdTaskFolder } : {}),
+      ...(folderPorts ? {
+        restoreFolder: (taskId: string, folder: string) => restoreTaskFolder(folderPorts, taskId, folder),
+        holdFolder: holdTaskFolder,
+        folderResumed: (taskId: string) => { void forgetKeptFolder(folderPorts, taskId); },
+      } : {}),
       // The same stage a resume typed from the pane takes (pty:write-launch):
       // a bot worker's line carries its settings file, or this throws.
       typeLine: (sessionId, line) => {
@@ -430,6 +504,7 @@ export function startWorkerLifecycle(deps: WorkerLifecycleDeps): () => void {
     };
     offs.push(() => { reclaimed.onStateChange = null; });
     const sweep = setInterval(() => {
+      seedTurns();
       const resumed = reclaimed.all().filter((r) => r.state === 'resumed' && Date.now() - r.at >= RESUMED_SETTLE_MS);
       if (resumed.length === 0) {
         reconcile();
@@ -448,6 +523,7 @@ export function startWorkerLifecycle(deps: WorkerLifecycleDeps): () => void {
     offs.push(() => clearInterval(sweep));
     // Workspaces of tasks that ended before this start (an app restart).
     reconcile();
+    seedTurns();
   }
 
   // The agent budget.

@@ -70,7 +70,7 @@ import { ApprovePendingChip } from '../Room/ApprovalAnswers';
 import { pendingForChip, useApprovals } from '../Room/approvalsStore';
 import { PresenceDot, botActionsFor, botPresence } from '../Room/BotChips';
 import { deliveryLine, deliveryTaken, roomPostParams, sentFrom, useMentionPicks, type SentTo } from '../Room/RoomComposer';
-import { actorLabel, botKindLabel, cardResumeTaskId, cardTone, isRefThread, kindLabel, ownerCardText, planTextWithNames, requestTitles, threadLabel, threadRef, type IdLabels, type RoomActorView } from '../Room/roomFormat';
+import { actorLabel, botKindLabel, cardResumeTaskId, cardTone, isRefThread, kindLabel, onceText, ownerCardText, planTextWithNames, requestTitles, threadLabel, threadRef, type IdLabels, type RoomActorView } from '../Room/roomFormat';
 import { BOT_JOB_MAX, botTemplate, delegatesFromConversation, normalizeBotJob, type BotPresence, type BotProfile as BotProfileData } from '../../../shared/bot';
 import { DEFAULT_BOT_WORKER_AGENT, botWorkerAgentLabel, type BotWorkerAgentOption } from '../../../shared/botWorkerAgent';
 import { pickFolderDialog, templateJob } from '../Settings/FactoryTab';
@@ -87,7 +87,7 @@ import { BotConnections } from './BotConnections';
 import { BotSkills } from './BotSkills';
 import { BotToday } from './BotToday';
 import { BrainModelLine, WorkerModelLine } from './BotModelLines';
-import { stopBotSummary, type BotsStopPort } from './botsStop';
+import { stopBotSummary, useWorkerStopUnfinished, type BotsStopPort } from './botsStop';
 import { InlineConfirm } from './InlineConfirm';
 import BotsWorkerPanel from './BotsWorkerPanel';
 import { displayWorkspaceName } from '../../utils/fanoutProvenance';
@@ -136,6 +136,13 @@ function linkedThread(card: RoomCardData): ThreadId | null {
  *  message mentions this bot, so it reaches this bot alone. Pure. */
 export function oneToOneRefusal(row: FactoryBotRow, t: T): string | null {
   return row.bot.enabled ? null : t('botsPage.botOff', { name: row.bot.name });
+}
+
+/** The quiet line by a 1:1's composer while the owner has paused its bot:
+ *  a message still goes, and the bot reads it once resumed. Null otherwise.
+ *  Pure. */
+export function pausedHint(row: FactoryBotRow, t: T): string | null {
+  return row.bot.enabled && row.bot.parked?.reason === 'human' ? t('botsPage.pausedHint', { name: row.bot.name }) : null;
 }
 
 /** The composer's placeholder: a Lead's empty 1:1 says what to ask it for
@@ -368,8 +375,11 @@ function BotProse({ card, answers, waiting, ctx }: { card: RoomCardData; answers
   useEffect(() => { if (!answers) setEditing(false); }, [answers]);
   const isPlan = card.kind === 'plan';
   const shown = ownerCardText(card, ctx.botNames, ctx.idLabels);
-  const title = isPlan ? planTextWithNames(shown.title, ctx.nameOf, t) : shown.title;
-  const body = (isPlan ? planTextWithNames(shown.body, ctx.nameOf, t) : shown.body).trim();
+  const rawTitle = isPlan ? planTextWithNames(shown.title, ctx.nameOf, t) : shown.title;
+  const rawBody = (isPlan ? planTextWithNames(shown.body, ctx.nameOf, t) : shown.body).trim();
+  // A body that repeats the title is printed once (a card with answers keeps
+  // its body below them, where an edit replaces it).
+  const { title, body } = answers ? { title: rawTitle, body: rawBody } : onceText(rawTitle, rawBody);
   const tone = cardTone(card);
   return (
     <>
@@ -439,7 +449,7 @@ function MessageRow({ item, ctx, group }: { item: Extract<TimelineItem, { kind: 
   // An approval card always shows its request's state (answers only while
   // the bots run); a plan or proposal its answers while it waits.
   const answers = !human && ((!ctx.readOnly && waiting) || card.kind === 'approval');
-  const line = human && card.id in ctx.sent ? deliveryLine(ctx.sent[card.id], ctx.bots, t, ctx.started.has(card.id)) : null;
+  const line = human && card.id in ctx.sent ? deliveryLine(ctx.sent[card.id], ctx.bots, t, ctx.started.has(card.id), ctx.actors) : null;
   const linked = linkedThread(card);
   const chip = (id: ThreadId) => <ThreadChip threadId={id} t={t} onPick={(th) => ctx.onThread(card.workspaceId, th)} taskTitle={ctx.taskTitle} requestTitle={ctx.requestTitle} />;
   // A thread's root names its thread only when the name says something (a
@@ -1122,12 +1132,15 @@ function workerState(worker: BotWorker): string {
  *  worker's name and state (needs-you text while it waits), else its row in
  *  the list's tree (in review, done, failed or cancelled, with its folder
  *  note, and whether it can resume), else a task's rail state, else its
- *  workspace's name with no state. */
-function workerPanelView(workspaceId: string, workers: readonly BotWorker[], tree: readonly BotTreeRow[], tasks: readonly BotTaskView[], t: T): { name: string; state: string | null; attention: boolean; resumeTaskId?: string } {
+ *  workspace's name with no state. `stopTaskId`: a live worker whose task
+ *  is still open (its row's), which Stop worker stops; `taskId`: the shown
+ *  row's task, whatever its state. */
+function workerPanelView(workspaceId: string, workers: readonly BotWorker[], tree: readonly BotTreeRow[], tasks: readonly BotTaskView[], t: T): { name: string; state: string | null; attention: boolean; resumeTaskId?: string; stopTaskId?: string; taskId?: string } {
   const live = workers.find((w) => w.workspaceId === workspaceId);
-  if (live) return { name: live.name, state: t(workerState(live)), attention: live.waiting };
   const row = tree.find((r) => r.workspaceId === workspaceId);
-  if (row) return { name: row.title, state: treeRowLabel(row, t), attention: row.state === 'needsYou', ...(row.resumable && row.taskId ? { resumeTaskId: row.taskId } : {}) };
+  const taskId = row?.taskId ?? live?.taskId;
+  if (live) return { name: live.name, state: t(workerState(live)), attention: live.waiting, ...(taskId ? { taskId } : {}), ...(row?.stoppable && row.taskId ? { stopTaskId: row.taskId } : {}) };
+  if (row) return { name: row.title, state: treeRowLabel(row, t), attention: row.state === 'needsYou', ...(taskId ? { taskId } : {}), ...(row.resumable && row.taskId ? { resumeTaskId: row.taskId } : {}) };
   const task = tasks.find((x) => (x.workerWorkspaceId ?? x.taskWorkspaceId) === workspaceId);
   if (task) return { name: task.title, state: taskRailState(task, t), attention: false };
   const ws = useStore.getState().workspaces.find((w) => w.id === workspaceId);
@@ -1298,7 +1311,7 @@ function BotsComposer({ conversation, threadId, workspaceId: workspaceOverride, 
       void submit();
     }
   };
-  const line = error ?? refusal;
+  const line = error ?? refusal ?? (conversation.kind === 'bot' ? pausedHint(conversation.row, t) : null);
   // "+": what to put in the box — a suggested message, or (in a room) a bot
   // to address. It closes on a pick, Escape or a press outside it.
   const [menuOpen, setMenuOpen] = useState(false);
@@ -2260,6 +2273,10 @@ export function BotsChat({ conversation, roomCards, bots, title, workspaceName, 
   useEffect(() => { if (shownId) setOpenThread(null); }, [shownId]);
   const tree = conversation.kind === 'bot' ? conversation.tree : EMPTY_TREE;
   const shown = shownId && !openThread ? workerPanelView(shownId, workers, tree, tasks, t) : null;
+  // A Stop worker under way, or one main answered partial, keeps the item
+  // offered once its task is cancelled, so the owner can stop again.
+  const stopUnfinished = useWorkerStopUnfinished(shown?.taskId);
+  const shownStopTaskId = shown?.stopTaskId ?? (stopUnfinished ? shown?.taskId : undefined);
   // The rail lists only the tasks with no row in the list's tree.
   const openWorkspaceIds = useStore(useShallow((s) => s.workspaces.map((w) => w.id)));
   // An ended task is never a rail row (owner decision 2026-10-16), only one
@@ -2435,6 +2452,7 @@ export function BotsChat({ conversation, roomCards, bots, title, workspaceName, 
         t={t}
         onClose={() => useStore.getState().setBotsWorkerPanel(null)}
         onResume={shown.resumeTaskId && !readOnly && resumePort?.resumeWorker ? () => resumeShown(shown.resumeTaskId!) : undefined}
+        stop={shownStopTaskId && stopPort.stopTask ? { taskId: shownStopTaskId, stopTask: stopPort.stopTask } : undefined}
         style={sideStyle}
       />
     )}

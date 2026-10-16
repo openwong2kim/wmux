@@ -158,6 +158,24 @@ describe('botWorkers from the bot\'s tasks', () => {
     ]);
   });
 
+  it('Stop worker: only a live worker whose task is still open can be stopped, not a resumed worker of an ended task nor an ended row', () => {
+    const tasks = [
+      view('a', 't1', 'working'),
+      view('b', 't2', 'needs_input'),
+      view('c', 't3', 'closed', { status: 'completed', worker: 'resumed' }),
+      view('d', 't4', 'coded', { status: 'review_requested', worker: 'resumable' }),
+    ];
+    const live = botWorkers(LEAD, { t5: LEAD }, { t1: 'running', t2: 'idle', t3: 'running', t5: 'running' }, names, tasks);
+    const tree = botWorkerTree(LEAD, live, tasks, names, { t5: LEAD }, { t5: 'running' });
+    expect(tree.map((r) => [r.workspaceId, r.state, !!r.stoppable])).toEqual([
+      ['t1', 'running', true],
+      ['t2', 'needsYou', true],
+      ['t3', 'running', false],
+      ['t5', 'running', false],
+      ['t4', 'review', false],
+    ]);
+  });
+
   it('a task reported for review is open, not done: In review, with its worker paused once it was stopped', () => {
     const tasks = [
       view('a', 't1', 'coded', { status: 'review_requested', worker: 'resumable', updatedAt: 3 }),

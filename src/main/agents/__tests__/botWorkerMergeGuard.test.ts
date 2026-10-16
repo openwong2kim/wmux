@@ -6,11 +6,12 @@ import { clearedLaunchLine,
   BOT_WORKER_DENY,
   beginBotWorkerSpawn,
   botWorkerForCreate,
+  botWorkerLaunchTask,
   botWorkerSessionsPath,
-  botWorkerSettingsPath,
   buildBotWorkerSettings,
   botWorkerSessionRecord,
   forgetBotWorkerSession,
+  guardedLaunchOf,
   guardRefireLine,
   guardSessionLaunch,
   isBotWorkerSession,
@@ -30,6 +31,7 @@ import { workerLaunchCommand } from '../../worktask/FanOutService';
 import { TaskLedger } from '../../../daemon/ledger/TaskLedger';
 import { setTaskLedgerForTests } from '../../deck/taskLedgerHost';
 import { toWslPath } from '../../../shared/imagePaste';
+import { wslMcpLaunchOf } from '../../../shared/wslIntegration';
 
 let dir: string;
 beforeEach(() => {
@@ -198,12 +200,28 @@ describe('which creates are a bot\'s workers: main\'s records, never the rendere
       expect(path.dirname(files.settings)).toBe(path.join(dir, 'factory', 'worker-settings'));
       expect(JSON.parse(fs.readFileSync(files.settings, 'utf8')).permissions.deny).toEqual([...BOT_WORKER_DENY]);
       expect(JSON.parse(fs.readFileSync(files.mcp, 'utf8'))).toEqual({ mcpServers: { wmux: { type: 'stdio', command: 'node', args: [ENTRY] } } });
-      // A WSL shell keeps the worker settings file alone, as before.
-      expect(withBotWorkerMergeGuard(opts, worker, { dir, ...mcp() }, { wsl: true })!.initialCommand).toBe(`claude --settings="${toWslPath(botWorkerSettingsPath(dir)) ?? botWorkerSettingsPath(dir)}" --dangerously-skip-permissions "$(cat '/w/.wtask/prompt.md')"`);
-      // On Windows the file is handed to Linux claude by its /mnt path.
-      const winSettings = 'C:\\Users\\me\\.wmux-e2e\\factory\\worker-settings.json';
-      expect(withBotWorkerMergeGuard(opts, worker, { dir, ...mcp(), writeSettings: () => winSettings }, { wsl: true })!.initialCommand)
-        .toBe(`claude --settings="/mnt/c/Users/me/.wmux-e2e/factory/worker-settings.json" --dangerously-skip-permissions "$(cat '/w/.wtask/prompt.md')"`);
+      // A WSL shell: the worker settings and this build's wmux server alone
+      // (strict), run in the Windows runtime over interop.
+      const runtime = { wslRuntime: () => 'C:\\Program Files\\wmux\\wmux.exe' };
+      const wslCreate = withBotWorkerMergeGuard(opts, worker, { dir, ...mcp(), ...runtime }, { wsl: true })!;
+      // The line names each file as Linux reaches it; the record keeps main's own path.
+      const wslFiles = guardedLaunchOf(wslCreate).launch!;
+      const linux = (p: string) => toWslPath(p) ?? p;
+      expect(wslCreate.initialCommand).toBe(`claude --settings="${linux(wslFiles.settingsFile)}" --mcp-config="${linux(wslFiles.mcpConfigFile)}" --strict-mcp-config --dangerously-skip-permissions "$(cat '/w/.wtask/prompt.md')"`);
+      expect(JSON.parse(fs.readFileSync(wslFiles.settingsFile, 'utf8'))).toEqual(buildBotWorkerSettings());
+      expect(JSON.parse(fs.readFileSync(wslFiles.mcpConfigFile, 'utf8'))).toEqual({ mcpServers: { wmux: { type: 'stdio', command: '/bin/sh', args: ['-c', wslMcpLaunchOf('/mnt/c/Program Files/wmux/wmux.exe', ENTRY)] } } });
+      // A role binding's level reaches it too.
+      const core = guardedLaunchOf(withBotWorkerMergeGuard(opts, worker, { dir, ...mcp(), ...runtime }, { wsl: true, level: 'role' })).launch!;
+      expect(core.level).toBe('core');
+      expect(JSON.parse(fs.readFileSync(core.mcpConfigFile, 'utf8')).mcpServers.wmux.args[1]).toBe(wslMcpLaunchOf('/mnt/c/Program Files/wmux/wmux.exe', ENTRY, ['--core']));
+      // On Windows each file is handed to Linux claude by its /mnt path.
+      const winSettings = 'C:\\Users\\me\\.wmux-e2e\\factory\\worker-settings\\0123456789ab.json';
+      expect(withBotWorkerMergeGuard(opts, worker, { dir, ...mcp(), ...runtime, writeSettings: () => winSettings }, { wsl: true })!.initialCommand)
+        .toMatch(/^claude --settings="\/mnt\/c\/Users\/me\/\.wmux-e2e\/factory\/worker-settings\/0123456789ab\.json" --mcp-config="[^"]+" --strict-mcp-config /);
+      // A runtime or file Linux cannot reach, or no bundle, is refused: never the distro's own wmux server.
+      expect(() => withBotWorkerMergeGuard(opts, worker, { dir, ...mcp(), wslRuntime: () => '\\\\server\\share\\wmux.exe', platform: 'win32' }, { wsl: true })).toThrow(/runtime cannot be reached from WSL/);
+      expect(() => withBotWorkerMergeGuard(opts, worker, { dir, ...mcp(), ...runtime, platform: 'win32', writeSettings: () => '\\\\server\\share\\s.json' }, { wsl: true })).toThrow(/settings and MCP config cannot be reached from WSL/);
+      expect(() => withBotWorkerMergeGuard(opts, worker, { dir, ...mcp(), ...runtime, mcpEntry: () => null }, { wsl: true })).toThrow(/MCP bundle was not found/);
       // Another owner, or another folder, is not that spawn.
       expect(botWorkerForCreate({ ...opts, fanoutTaskOf: 'ws-other' }, NOT_BOT)).toBeNull();
       expect(botWorkerForCreate({ ...opts, cwd: '/w/other' }, NOT_BOT)).toBeNull();
@@ -290,6 +308,27 @@ describe('bot worker sessions survive a restart', () => {
     expect(guardSessionLaunch('daemon-human', resume, { dir })).toBe(resume);
   });
 
+  it('the pane a task\'s own fan-out launch created records that task; any other pane of the workspace records none', () => {
+    const release = beginBotWorkerSpawn('ws-owner', '/w/task', { botId: 'bot-0000000a', taskId: 'wtask-abc-12345678' });
+    try {
+      const launch = botWorkerForCreate({ fanoutTaskOf: 'ws-owner', cwd: '/w/task', workspaceId: 'ws-task' }, { dir, isBotTaskWorkspace: () => false });
+      expect(botWorkerLaunchTask(launch)).toEqual({ taskId: 'wtask-abc-12345678' });
+      noteBotWorkerSession('daemon-launch', 'ws-task', dir, botWorkerLaunchTask(launch));
+    } finally {
+      release();
+    }
+    // A split or a new tab in the same task workspace.
+    const split = botWorkerForCreate({ workspaceId: 'ws-task', cwd: '/w/task' }, { dir, isBotTaskWorkspace: (ws: string) => ws === 'ws-task' });
+    expect(botWorkerLaunchTask(split)).toEqual({});
+    noteBotWorkerSession('daemon-split', 'ws-task', dir, botWorkerLaunchTask(split));
+    expect(botWorkerLaunchTask(null)).toEqual({});
+    // Two tasks in flight for the same owner and folder: neither is named.
+    expect(botWorkerLaunchTask({ strict: true, spawns: [{ botId: 'b', taskId: 't1' }, { botId: 'b', taskId: 't2' }] })).toEqual({});
+    reloadBotWorkerSessionsForTests();
+    expect(botWorkerSessionRecord('daemon-launch', dir)?.taskId).toBe('wtask-abc-12345678');
+    expect(botWorkerSessionRecord('daemon-split', dir)).not.toHaveProperty('taskId');
+  });
+
   it('keeps the conversation the launch line pinned and the mode it started in across a restart', () => {
     const U = '11111111-2222-4333-8444-555555555555';
     noteBotWorkerSession('daemon-bot6', 'ws-task', dir, { cwd: dir, wsl: true, conversation: { sessionId: U, permissionMode: 'bypassPermissions' } });
@@ -367,8 +406,11 @@ describe('pty:create applies the guard (source-level lock)', () => {
       expect(src.indexOf(line, at)).toBeGreaterThan(at);
     }
     // The session is recorded (before the daemon creates it), and forgotten with the pane.
-    expect(src.indexOf('if (botWorker) noteBotWorkerSession(sessionId, botWorker.workspaceId, undefined, staged.launch);')).toBeLessThan(src.indexOf("daemonClient.rpc('daemon.createSession'"));
-    expect(src).toContain('noteBotWorkerSession(instance.id, botWorker.workspaceId, undefined, staged.launch);');
+    // It names the task when it is that task's own fan-out (or resume) launch.
+    const noted = src.indexOf('if (botWorker) noteBotWorkerSession(sessionId, botWorker.workspaceId, undefined, { ...staged.launch, ...botWorkerLaunchTask(botWorker) });');
+    expect(noted).toBeGreaterThan(-1);
+    expect(noted).toBeLessThan(src.indexOf("daemonClient.rpc('daemon.createSession'"));
+    expect(src).toContain('noteBotWorkerSession(instance.id, botWorker.workspaceId, undefined, { ...staged.launch, ...botWorkerLaunchTask(botWorker) });');
     // The record carries a guarded codex launch's folder as well as a claude launch's files,
     // and the conversation the launch line pinned.
     expect(src).toContain('launch: { ...launchOfCodex(guarded), ...guardedLaunchOf(guarded), ...(conversation ? { conversation } : {}) }');

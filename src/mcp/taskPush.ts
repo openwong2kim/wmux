@@ -5,6 +5,10 @@
 // server-verified senderPtyId and pushes that task's branch to origin itself.
 // The tool takes no arguments: there is no branch, remote or refspec for a
 // caller to name.
+//
+// task_fetch — the same caller and task: main fetches origin's default branch
+// and the task branch into their remote-tracking refs (`task.fetch`), for a
+// worker whose shell has no credentials for origin. Fetch only.
 
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { sendRpc } from './wmux-client';
@@ -42,6 +46,40 @@ export function registerTaskPushTool(server: McpServer, deps: TaskPushToolDeps):
       try {
         // Outwait main's push (TASK_PUSH_TIMEOUT_MS, 120 s, plus its reads).
         const result = (await sendRpc('task.push' as RpcMethod, params, TASK_PUSH_RPC_TIMEOUT_MS)) as { ok?: boolean } | undefined;
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify(result ?? {}, null, 2) }],
+          ...(result && result.ok === false ? { isError: true as const } : {}),
+        };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return { content: [{ type: 'text' as const, text: `Error: ${message}` }], isError: true };
+      }
+    },
+  );
+}
+
+/** Mirrors main's fetch timeout (the push's, worktask/taskPush.ts) plus headroom. */
+const TASK_FETCH_RPC_TIMEOUT_MS = 150_000;
+
+export function registerTaskFetchTool(server: McpServer, deps: TaskPushToolDeps): void {
+  const resolveSenderPtyId = deps.getSenderPtyId ?? (() => '');
+  server.tool(
+    'task_fetch',
+    'Fetch origin\'s default branch and YOUR task branch into origin/<name> with wmux\'s credentials. Fetch only: then git merge origin/<default>.',
+    {},
+    async () => {
+      if (deps.resolveWorkspaceId) {
+        try {
+          await deps.resolveWorkspaceId();
+        } catch {
+          // The handler refuses an unresolvable caller with its own message.
+        }
+      }
+      const params: Record<string, unknown> = {};
+      const pty = resolveSenderPtyId();
+      if (pty) params['senderPtyId'] = pty;
+      try {
+        const result = (await sendRpc('task.fetch' as RpcMethod, params, TASK_FETCH_RPC_TIMEOUT_MS)) as { ok?: boolean } | undefined;
         return {
           content: [{ type: 'text' as const, text: JSON.stringify(result ?? {}, null, 2) }],
           ...(result && result.ok === false ? { isError: true as const } : {}),

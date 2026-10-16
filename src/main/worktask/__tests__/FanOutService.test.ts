@@ -666,9 +666,14 @@ describe('§0 E2E 정상 — N=2 전부 성공', () => {
     expect(branch).toBeTruthy();
     expect(body).toContain('publish it with the `task_push` tool');
     expect(body).toContain(`gh pr create --head ${branch}`);
+    // Fresh main or a conflict: main fetches, the worker merges.
+    expect(body).toContain('run the `task_fetch` tool');
+    expect(body).toContain('`git merge origin/<default branch>`');
+    expect(body).toContain('Never ask for credentials to fetch.');
     expect(body.endsWith(workerTaskIdentityNote(res.tasks[0].taskId!, res.tasks[0].channelId!, branch))).toBe(true);
     // A person's fan-out keeps the note it had.
     expect(workerTaskIdentityNote('wtask-x', 'ch-1')).not.toContain('task_push');
+    expect(workerTaskIdentityNote('wtask-x', 'ch-1')).not.toContain('task_fetch');
     // A codex worker is told what its rules leave out.
     expect(workerTaskIdentityNote('wtask-x', 'ch-1', 'wtask/b', 'codex')).toContain('`gh api` and `git config` are not available');
     expect(workerTaskIdentityNote('wtask-x', 'ch-1', 'wtask/b', 'claude')).not.toContain('gh api');

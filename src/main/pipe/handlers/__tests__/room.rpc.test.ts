@@ -11,7 +11,7 @@ import { ROOM_LIMITS, type RoomCard, type ThreadId } from '../../../../shared/ro
 const ROOM_TITLE_MAX = ROOM_LIMITS.TITLE_MAX;
 const ROOM_BODY_MAX = ROOM_LIMITS.CARD_BODY_MAX;
 import { loadThreadDecision } from '../../../deck/deckDecisionStore';
-import { HANDOFFS_FILENAME, HandoffRouter, deckDecisionPort, setHandoffRouter } from '../../../factory/handoffRouter';
+import { HANDOFFS_FILENAME, HandoffRouter, deckDecisionPort, invitesFreeText, setHandoffRouter } from '../../../factory/handoffRouter';
 import { RoomWriter, type FactoryRoomPorts } from '../../../factory/roomWriter';
 import { humanAddressees, humanCardIdOfRun, humanRunId } from '../../../factory/humanMessage';
 import { __resetRedactedSecretsForTesting, setRedactedSecrets } from '../../../factory/secretRedaction';
@@ -645,6 +645,70 @@ describe('one PR is one thread however the caller spells it', () => {
   });
 });
 
+describe('a delegate woken in a thread its dispatch opened posts there', () => {
+  const GROUP = 'group:grp-00000009';
+  async function opened(groupMembers?: (lead: BotProfile, dev: BotProfile) => string[]) {
+    const lead = bot('ws1', 'moa');
+    const dev = bot('ws1', 'lead');
+    const s = setup([lead, dev]);
+    if (groupMembers) {
+      const memberIds = groupMembers(lead, dev);
+      s.ports.groups = { byThread: (ws, th) => (ws === 'ws1' && th === GROUP
+        ? { id: 'grp-00000009', workspaceId: 'ws1', name: 'Ship', memberIds, threadId: GROUP as ThreadId, createdAt: 1, updatedAt: 1 }
+        : null) };
+    }
+    const router = new HandoffRouter({ file: path.join(dir, 'factory', HANDOFFS_FILENAME), decisions: deckDecisionPort(dir), ports: () => s.ports, rooms: () => s.writer, log: () => undefined });
+    await router.start();
+    setHandoffRouter(router);
+    const said = (groupMembers ? GROUP : `dm:${lead.id}`) as ThreadId;
+    // The coordinator, woken by the owner in its 1:1 or the group, dispatches.
+    s.wake.thread = said;
+    s.wake.id = { wakeId: 'w-lead', attempt: 1 };
+    const d = handleHandoffSend({ kind: 'dispatch', toBotId: dev.id, title: 'Write coord.txt', body: 'b' }, asBot(lead), { router: () => router }) as { ok: true; handoffId: string; threadId: string };
+    expect(d).toMatchObject({ ok: true, threadId: `handoff:${d.handoffId}` });
+    await router.idle();
+    // The delegate runs the dispatch's wake, pinned to the opened thread.
+    s.wake.thread = d.threadId;
+    s.wake.id = { wakeId: 'w-dev', attempt: 1, handoffId: d.handoffId };
+    const post = async (b: BotProfile, threadId?: string) => (await handleRoomPost({ kind: 'status', title: 'Got it: worker starting', ...(threadId ? { threadId } : {}) }, asBot(b), s.deps)) as { ok: boolean; card?: RoomCard };
+    return { lead, dev, s, router, said, thread: d.threadId, post };
+  }
+
+  it('from a coordinator\'s 1:1: by default, and when it names that 1:1, the delegate\'s status lands in the opened thread', async () => {
+    const o = await opened();
+    expect((await o.post(o.dev)).card?.threadId).toBe(o.thread);
+    expect((await o.post(o.dev, o.said)).card?.threadId).toBe(o.thread);
+    // Another thread it names is kept.
+    expect((await o.post(o.dev, 'general')).card?.threadId).toBe('general');
+    expect(o.s.writer.read('ws1', { threadId: o.said }).cards.filter((c) => c.kind === 'status')).toEqual([]);
+    o.router.dispose();
+  });
+
+  it('from a group chat: the delegate naming the group posts in the opened thread', async () => {
+    const o = await opened((lead, dev) => [lead.id, dev.id]);
+    expect((await o.post(o.dev)).card?.threadId).toBe(o.thread);
+    expect((await o.post(o.dev, o.said)).card?.threadId).toBe(o.thread);
+    // A reply it names to the owner's group message moves with it, unlinked.
+    const ask = o.s.writer.append({ workspaceId: 'ws1', threadId: o.said, kind: 'human', actor: { kind: 'human' }, title: 'Write group.txt' })!;
+    const moved = (await handleRoomPost({ kind: 'status', title: 'Handoff received', threadId: o.said, replyTo: ask.id }, asBot(o.dev), o.s.deps)) as { ok: boolean; card?: RoomCard };
+    expect(moved).toMatchObject({ ok: true, card: { threadId: o.thread } });
+    expect(moved.card?.replyTo).toBeUndefined();
+    expect(o.s.writer.read('ws1', { threadId: o.said }).cards.filter((c) => c.kind === 'status')).toEqual([]);
+    o.router.dispose();
+  });
+
+  it('the dispatching bot still speaks in its conversation; a wake in another thread is not redirected', async () => {
+    const o = await opened((lead, dev) => [lead.id, dev.id]);
+    // The coordinator woken in the opened thread (its result) reports to the group.
+    expect((await o.post(o.lead, o.said)).card?.threadId).toBe(o.said);
+    // The delegate woken anywhere else names the group as before.
+    o.s.wake.thread = 'general';
+    o.s.wake.id = { wakeId: 'w-dev-2', attempt: 1 };
+    expect((await o.post(o.dev, o.said)).card?.threadId).toBe(o.said);
+    o.router.dispose();
+  });
+});
+
 describe('room.read / room.threads', () => {
   it('a bot reads its own room; only a Coordinator (Moa) reads another; the operator reads any', async () => {
     const lead = bot('ws1', 'lead');
@@ -799,6 +863,49 @@ describe('human.correction from the owner\'s answers', () => {
       payload: { category: 'question-override', cardKind: 'question', botRole: 'lead', threadId: 'task:b', note: 'Hold until Monday' },
     })]);
     router.dispose();
+  });
+
+  it('words outside the options answer a question that invites them: the greeting, an "own words" option or wording; no override', async () => {
+    const lead = bot('ws1', 'lead');
+    const s = setup([lead]);
+    const router = new HandoffRouter({ file: path.join(dir, 'factory', HANDOFFS_FILENAME), decisions: deckDecisionPort(dir), ports: () => s.ports, rooms: () => s.writer, log: () => undefined });
+    await router.start();
+    setHandoffRouter(router);
+    // The greeting, asked in the bot's first (intro) wake.
+    s.wake.id = { wakeId: 'w-intro', attempt: 1, reasonKind: 'intro' } as never;
+    await handleAskPerson({ title: 'Hi, I\'m Lead. What should I do?', body: '', threadId: `dm:${lead.id}`, options: ['Review PRs', 'Triage issues'] }, asBot(lead), { router: () => router });
+    s.wake.id = { wakeId: 'w-2', attempt: 1 };
+    await handleAskPerson({ title: 'Which branch?', body: '', threadId: 'task:a', options: ['main', 'Something else (tell me)'] }, asBot(lead), { router: () => router });
+    await handleAskPerson({ title: 'Where next?', body: 'Pick one, or tell me in your own words.', threadId: 'task:b', options: ['Docs', 'Tests'] }, asBot(lead), { router: () => router });
+    await handleAskPerson({ title: 'Ship?', body: '', threadId: 'task:c', options: ['Ship', 'Hold'] }, asBot(lead), { router: () => router });
+    const q = (thread: string) => s.writer.read('ws1').cards.find((c) => c.kind === 'question' && c.threadId === thread)!;
+    expect(q(`dm:${lead.id}`).greeting).toBe(true);
+    await handleRoomResolve({ workspaceId: 'ws1', cardId: q(`dm:${lead.id}`).id, resolution: 'lead this repo' }, OPERATOR, s.deps);
+    await handleRoomResolve({ workspaceId: 'ws1', cardId: q('task:a').id, resolution: 'release/4.7' }, OPERATOR, s.deps);
+    await handleRoomResolve({ workspaceId: 'ws1', cardId: q('task:b').id, resolution: 'wait for requests' }, OPERATOR, s.deps);
+    // Replacing the options of a question that offered only choices is still an override.
+    await handleRoomResolve({ workspaceId: 'ws1', cardId: q('task:c').id, resolution: 'Neither, revert it' }, OPERATOR, s.deps);
+    expect(corrections(s.facts).map((f) => f.payload)).toEqual([expect.objectContaining({ category: 'question-override', threadId: 'task:c', note: 'Neither, revert it' })]);
+    router.dispose();
+  });
+
+  it('invitesFreeText: the greeting, a free-text option, or wording that asks for the owner\'s words', () => {
+    const ask = (title: string, options: string[], body = '', intro = false) => ({ payload: { title, body, options }, ...(intro ? { intro: true as const } : {}) });
+    expect(invitesFreeText(ask('무엇을 할까요?', ['리뷰', '이슈 정리'], '', true))).toBe(true);
+    expect(invitesFreeText(ask('Which?', ['A', 'Other']))).toBe(true);
+    expect(invitesFreeText(ask('Which?', ['A', 'B', 'Tell me in your own words']))).toBe(true);
+    expect(invitesFreeText(ask('Which? Or tell me what you want.', ['A', 'B']))).toBe(true);
+    expect(invitesFreeText(ask('Merge?', ['Merge now', 'Wait']))).toBe(false);
+    expect(invitesFreeText(ask('Which branch?', ['main', 'the other branch']))).toBe(false);
+    expect(invitesFreeText(ask('Which branch?', ['Current branch', 'Other branch']))).toBe(false);
+    expect(invitesFreeText(ask('Which approach?', ['Keep it in TypeScript', 'Rewrite it in Rust']))).toBe(false);
+    expect(invitesFreeText(ask('Which?', ['A', 'Something else (tell me)']))).toBe(true);
+    // Negated wording is no invitation; an affirmative clause beside it still is.
+    expect(invitesFreeText(ask('Which?', ['A', 'B'], 'Pick one; do not answer in your own words.'))).toBe(false);
+    expect(invitesFreeText(ask('Which? Don\'t tell me what you want, pick one.', ['A', 'B']))).toBe(false);
+    expect(invitesFreeText(ask('Which?', ['A', 'Not in your own words']))).toBe(false);
+    expect(invitesFreeText(ask('Which?', ['A', 'B'], 'No need for anything else. Or tell me in your own words.'))).toBe(true);
+    expect(invitesFreeText(ask('Pick only one, or tell me what you want.', ['A', 'B']))).toBe(true);
   });
 
   it('an override answered through handoff.answer (the phone path) is recorded too; a dismissal is not', async () => {

@@ -163,16 +163,20 @@ export async function handleRoomPost(raw: unknown, ctx: RpcContext | undefined, 
     }
     // Main pins the thread: the one named, else the running wake's. Another
     // bot's 1:1 is named only from the wake running in it; a group chat's
-    // thread by its members, or from the wake running in it.
+    // thread by its members, or from the wake running in it. A bot woken in
+    // a thread opened for a dispatch that names the conversation the
+    // dispatch was said in posts in the opened thread (postThread).
     const wakeThread = runningWakeThread(ports, bot.botId);
-    const threadRefused = botThreadRefusal(ports, bot, namedThread);
+    const pinned = getHandoffRouter()?.postThread(bot.botId, namedThread) ?? namedThread;
+    const threadRefused = botThreadRefusal(ports, bot, pinned);
     if (threadRefused) return refusal('invalid', threadRefused);
-    const threadId = namedThread ?? wakeThread ?? GENERAL_THREAD;
+    const threadId = pinned ?? wakeThread ?? GENERAL_THREAD;
     const wake = runningWake(ports, bot.botId);
     const clientPostId = p.clientPostId ?? wakeOrdinals.next(wake, 'post');
     // A card the bot names no parent for answers the owner message its wake
-    // is about, when it lands in that message's thread.
-    const replyTo = p.replyTo ?? wakeReplyTo(writer, wake, bot.workspaceId, threadId);
+    // is about, when it lands in that message's thread. A post moved to the
+    // opened thread drops the parent it named in the conversation.
+    const replyTo = (pinned === namedThread ? p.replyTo : undefined) ?? wakeReplyTo(writer, wake, bot.workspaceId, threadId);
     const { valid, dropped } = settleMentions(ports, bot, mentions ?? []);
     const r = writer.post({
       workspaceId: bot.workspaceId,

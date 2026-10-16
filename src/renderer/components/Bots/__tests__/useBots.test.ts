@@ -5,7 +5,11 @@ import { useStore } from '../../../stores';
 import { timelineKey } from '../../../stores/slices/roomSlice';
 import { setRoomsApiForTests, type RoomsApi } from '../../../hooks/useRoomSync';
 import type { RoomCard } from '../../../../shared/room';
-import { loadWholeThread, threadsToRead } from '../useBots';
+import { loadWholeThread, previewThreadsToRead, threadsToRead, withPreviews } from '../useBots';
+import { roomCardsByWorkspace } from '../botsModel';
+import { ALL_THREADS } from '../../../stores/slices/roomSlice';
+import { DEFAULT_BOT_BUDGETS } from '../../../../shared/bot';
+import type { FactoryBotRow } from '../../Room/factoryPorts';
 import type { ThreadSummary } from '../../../../shared/room';
 
 const THREAD = 'task:t1' as const;
@@ -79,5 +83,58 @@ describe('threadsToRead', () => {
     ]);
     // Already read: not again.
     expect(threadsToRead(['hq'], threads, { [timelineKey('hq', 'plan:p-new')]: {} })).toEqual([]);
+  });
+});
+
+describe('previewThreadsToRead', () => {
+  const botRow = (id: string, ws = 'w1'): FactoryBotRow => ({
+    bot: { version: 1, id, workspaceId: ws, role: 'lead', name: id, engine: { kind: 'claude-sdk' }, triggers: [], budget: DEFAULT_BOT_BUDGETS.lead, enabled: true, createdAt: 1, updatedAt: 1 },
+    status: null,
+  });
+  const th = (threadId: string, lastSeq: number, over: Partial<ThreadSummary> = {}): ThreadSummary => ({
+    threadId: threadId as ThreadSummary['threadId'], title: threadId, lastAt: lastSeq, lastSeq, cardCount: 1, openQuestions: 0, lastKind: 'status', status: 'open', unread: null, ...over,
+  });
+  const quiet = botRow('bot-0000000a');
+  const busy = botRow('bot-0000000b');
+  const group = { id: 'grp-00000001', workspaceId: 'w1', threadId: 'group:grp-00000001' as const };
+  // The room's newest page holds only the busy bot's 1:1.
+  const room = { [timelineKey('w1', ALL_THREADS)]: { cards: [{ seq: 400 }, { seq: 401 }] } };
+
+  it('reads the thread holding a quiet conversation\'s newest card, once per conversation, not one already read', () => {
+    const threads = { w1: [
+      th('dm:bot-0000000a', 12), th('handoff:h-1', 30, { dmBotId: 'bot-0000000a' }),
+      th('dm:bot-0000000b', 401),
+      th('group:grp-00000001', 7), th('handoff:h-2', 5, { groupId: 'grp-00000001' }),
+      th('general', 399),
+    ] };
+    expect(previewThreadsToRead([quiet, busy], [group], threads, room)).toEqual([
+      timelineKey('w1', 'handoff:h-1'),
+      timelineKey('w1', 'group:grp-00000001'),
+    ]);
+    // Read (or being read): asked no more.
+    const read = { ...room, [timelineKey('w1', 'handoff:h-1')]: { cards: [{ seq: 30 }] }, [timelineKey('w1', 'group:grp-00000001')]: { cards: [], loading: true } };
+    expect(previewThreadsToRead([quiet, busy], [group], threads, read)).toEqual([timelineKey('w1', 'group:grp-00000001')]);
+    expect(previewThreadsToRead([quiet, busy], [group], threads, { ...read, [timelineKey('w1', 'group:grp-00000001')]: { cards: [{ seq: 7 }] } })).toEqual([]);
+    // A preview card read already covers its thread, until a newer card lands there.
+    const previews = { [timelineKey('w1', 'handoff:h-1')]: { seq: 30 }, [timelineKey('w1', 'group:grp-00000001')]: { seq: 7 } };
+    expect(previewThreadsToRead([quiet, busy], [group], threads, room, previews)).toEqual([]);
+    expect(previewThreadsToRead([quiet, busy], [group], { w1: threads.w1.map((t) => (t.threadId === 'handoff:h-1' ? { ...t, lastSeq: 31 } : t)) }, room, previews)).toEqual([timelineKey('w1', 'handoff:h-1')]);
+  });
+
+  it('a thread read whole anyway (an open question) or with no card is left out; no summaries, nothing to read', () => {
+    const threads = { w1: [th('dm:bot-0000000a', 12, { openQuestions: 1 }), th('group:grp-00000001', 0, { cardCount: 0 })] };
+    expect(previewThreadsToRead([quiet], [group], threads, room)).toEqual([]);
+    expect(previewThreadsToRead([quiet], [group], {}, room)).toEqual([]);
+  });
+});
+
+describe('withPreviews', () => {
+  it('preview cards join the model before the timelines, so a timeline\'s copy of the same card wins', () => {
+    const preview = card(5, { title: 'old copy' });
+    const timelines = { [timelineKey('w1', THREAD)]: { cards: [card(5, { title: 'fresh copy' })], nextSinceSeq: 5, hasMore: false } };
+    const merged = withPreviews({ [timelineKey('w1', THREAD)]: preview }, timelines);
+    expect(Object.keys(merged)).toEqual([`${timelineKey('w1', THREAD)}\u0000preview`, timelineKey('w1', THREAD)]);
+    expect(roomCardsByWorkspace(merged).get('w1')?.map((c) => c.title)).toEqual(['fresh copy']);
+    expect(withPreviews({}, timelines)).toBe(timelines);
   });
 });

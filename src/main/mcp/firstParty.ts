@@ -336,6 +336,8 @@ export const FIRST_PARTY_METHODS: ReadonlySet<RpcMethod> = new Set<RpcMethod>([
   // task_push (every profile): a worker publishes its own task branch; the
   // handler resolves task, branch and remote from the caller's pane.
   'task.push',
+  // task_fetch (every profile): main fetches origin for the caller's task.
+  'task.fetch',
   // pr_verdict (the verifier bot's tool).
   'verify.recordVerdict',
   // Agent factory bot tools (shared/botSurface.ts BOT_TOOL_RPC), registered

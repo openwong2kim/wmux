@@ -1,7 +1,9 @@
 // One budget for bots and workers: a bot's new worker past it waits for a
 // slot, first come first served, and a stop ends the wait.
 import { describe, expect, it, vi } from 'vitest';
-import { AgentSlots, IdleSnapshot, SLOT_GRANT_MAX_MS, SLOT_HOLDERS_SHOWN_MAX, SLOT_ROW_GRACE_MS, rowHoldsAgentSlot, slotHolderArgs, type AgentSlotPorts, type SlotLiveness } from '../agentSlots';
+import { countOpenBotWorkers } from '../openBotWorkers';
+import { WAKE_LIMITS } from '../../../shared/wake';
+import { AgentSlots, IdleSnapshot, SLOT_GRANT_MAX_MS, SLOT_HOLDERS_SHOWN_MAX, SLOT_ROW_GRACE_MS, paneRunsNoAgent, paneShowsWork, rowHoldsAgentSlot, slotHolderArgs, type AgentSlotPorts, type SlotLiveness } from '../agentSlots';
 
 function slots(over: Partial<AgentSlotPorts> & { bots?: () => number; workers?: () => number } = {}) {
   let now = 0;
@@ -158,6 +160,14 @@ describe('rowHoldsAgentSlot', () => {
     expect(rowHoldsAgentSlot(row('ws-idle', bot), live)).toBe(false);
   });
 
+  it('a completed, cancelled or failed row never holds a slot, even recent and with its workspace open', () => {
+    for (const status of ['completed', 'cancelled', 'failed'] as const) {
+      expect(rowHoldsAgentSlot({ ...row('ws-live', bot, now - 1_000), status }, live), status).toBe(false);
+      expect(rowHoldsAgentSlot({ ...row('ws-live', bot), status }, null), status).toBe(false);
+    }
+    expect(rowHoldsAgentSlot({ ...row('ws-live', bot), status: 'review_requested' }, live)).toBe(true);
+  });
+
   it('a recent row counts while its worker comes up; with nothing known every bot row counts', () => {
     expect(rowHoldsAgentSlot(row('ws-gone', bot, now - 1_000), live)).toBe(true);
     expect(rowHoldsAgentSlot(row('ws-gone', bot), { ...live, workspaces: null })).toBe(true);
@@ -176,6 +186,81 @@ describe('rowHoldsAgentSlot', () => {
     rows.pop();
     const g = await s.acquire({ taskId: 't', title: 't', botId: 'bot-0000000a', ownerWorkspaceId: 'ws-1' });
     expect(g.ok).toBe(true);
+  });
+});
+
+describe('paneRunsNoAgent (F22: after a cold start)', () => {
+  it('a pane the daemon respawned at its restart, with no agent seen since, runs none', () => {
+    expect(paneRunsNoAgent({ state: 'detached', recoveredAgentUnconfirmed: true })).toBe(true);
+    // An agent seen there again holds it.
+    expect(paneRunsNoAgent({ state: 'detached', recoveredAgentUnconfirmed: true, agentProcessAlive: true })).toBe(false);
+    // A launch typed there before its agent is confirmed holds it too.
+    expect(paneRunsNoAgent({ state: 'detached', recoveredAgentUnconfirmed: true, commandRunning: true })).toBe(false);
+  });
+
+  it('gone, without a live PTY, or seen to exit runs none; never attributed is not known dead', () => {
+    expect(paneRunsNoAgent(undefined)).toBe(true);
+    expect(paneRunsNoAgent({ state: 'dead' })).toBe(true);
+    expect(paneRunsNoAgent({ state: 'suspended' })).toBe(true);
+    expect(paneRunsNoAgent({ state: 'attached', agentProcessAlive: false })).toBe(true);
+    // An older daemon that does not say: kept, as before.
+    expect(paneRunsNoAgent({ state: 'attached' })).toBe(false);
+    expect(paneRunsNoAgent({ state: 'detached', agentProcessAlive: true })).toBe(false);
+  });
+
+  it('after a cold start the bot\'s worker in review holds no slot, so a new worker gets one', async () => {
+    const now = 100 * SLOT_ROW_GRACE_MS;
+    const sessions = new Map([['pty-r', { state: 'detached', recoveredAgentUnconfirmed: true }]]);
+    const idle = new Set(['ws-review'].filter(() => ['pty-r'].every((id) => paneRunsNoAgent(sessions.get(id)))));
+    const live: SlotLiveness = { workspaces: new Set(['ws-review']), idleWorkspaces: idle, now };
+    const rows = [{ taskWorkspaceId: 'ws-review', updatedAt: now - SLOT_ROW_GRACE_MS, status: 'review_requested' as const, dispatch: { origin: { kind: 'bot', botId: 'bot-0000000a' } } }];
+    const s = new AgentSlots({ cap: () => 1, runningBots: () => 0, liveWorkers: () => rows.filter((r) => rowHoldsAgentSlot(r, live)).length, pollMs: 60_000 });
+    expect(s.inUse()).toBe(0);
+    expect((await s.acquire({ taskId: 't', title: 't', botId: 'bot-0000000a', ownerWorkspaceId: 'ws-1' })).ok).toBe(true);
+  });
+});
+
+describe('the factory-wide worker cap over paused review workers (F22)', () => {
+  const now = 100 * SLOT_ROW_GRACE_MS;
+  const bot = { kind: 'bot', botId: 'bot-0000000a' };
+  const review = (id: string, ws: string) => ({ id, taskWorkspaceId: ws, status: 'review_requested' as const, updatedAt: now - SLOT_ROW_GRACE_MS, dispatch: { origin: bot } });
+  /** What fanout.rpc admits: open (counted as openBotWorkers counts) + booked + n within the cap. */
+  const admits = (rows: ReturnType<typeof review>[], live: SlotLiveness, n: number) => {
+    const open = countOpenBotWorkers(rows.filter((r) => rowHoldsAgentSlot(r, live)), 'bot-0000000a', () => new Set());
+    return open.factory + n <= WAKE_LIMITS.GLOBAL_CONCURRENT_WORKERS;
+  };
+
+  it('three review tasks whose workers were paused leave room for a new worker', () => {
+    const rows = [review('t1', 'ws-1'), review('t2', 'ws-2'), review('t3', 'ws-3')];
+    // Their WSL panes run no agent the daemon attributed: liveness alone keeps them.
+    const live: SlotLiveness = { workspaces: new Set(['ws-1', 'ws-2', 'ws-3']), idleWorkspaces: new Set(), now };
+    expect(admits(rows, live, 1)).toBe(false);
+    expect(admits(rows, { ...live, stoppedTasks: new Set(['t1', 't2', 't3']) }, 1)).toBe(true);
+  });
+
+  it('two running workers and one paused: one more is admitted, not two', () => {
+    const rows = [review('t1', 'ws-1'), review('t2', 'ws-2'), review('t3', 'ws-3')];
+    const live: SlotLiveness = { workspaces: new Set(['ws-1', 'ws-2', 'ws-3']), idleWorkspaces: new Set(), stoppedTasks: new Set(['t3']), now };
+    expect(admits(rows, live, 1)).toBe(true);
+    expect(admits(rows, live, 2)).toBe(false);
+  });
+
+  it('a recent row whose worker was stopped since holds nothing; one never stopped still counts while it comes up', () => {
+    const fresh = { ...review('t1', 'ws-gone'), updatedAt: now - 1_000 };
+    const live: SlotLiveness = { workspaces: new Set(), idleWorkspaces: new Set(), now };
+    expect(rowHoldsAgentSlot(fresh, live)).toBe(true);
+    expect(rowHoldsAgentSlot(fresh, { ...live, stoppedTasks: new Set(['t1']) })).toBe(false);
+  });
+
+  it('a stopped task\'s worker relaunched by hand holds its slot again', () => {
+    const row = review('t1', 'ws-1');
+    const live: SlotLiveness = { workspaces: new Set(['ws-1']), idleWorkspaces: new Set(), stoppedTasks: new Set(['t1']), now };
+    expect(rowHoldsAgentSlot(row, live)).toBe(false);
+    for (const pane of [{ agentProcessAlive: true }, { commandRunning: true }]) {
+      expect(paneShowsWork(pane)).toBe(true);
+      expect(rowHoldsAgentSlot(row, { ...live, busyWorkspaces: new Set(['ws-1']) })).toBe(true);
+    }
+    expect(paneShowsWork({ commandRunning: false })).toBe(false);
   });
 });
 

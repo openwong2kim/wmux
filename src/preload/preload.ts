@@ -1219,6 +1219,9 @@ const electronAPI = {
     stopAll: () => ipcRenderer.invoke(IPC.FACTORY_STOP_ALL) as Promise<import('../main/factory/factoryStop').FactoryStopResult>,
     stopBot: (botId: string) =>
       ipcRenderer.invoke(IPC.FACTORY_STOP_BOT, { botId }) as Promise<import('../main/factory/factoryStop').FactoryStopResult>,
+    // The owner's stop of one bot task's worker (its task cancelled).
+    stopTask: (taskId: string) =>
+      ipcRenderer.invoke(IPC.FACTORY_STOP_TASK, { taskId }) as Promise<import('../main/factory/factoryStop').FactoryStopResult>,
     // The owner resumes the stopped worker of an ended bot task.
     resumeWorker: (taskId: string) =>
       ipcRenderer.invoke(IPC.FACTORY_WORKER_RESUME, { taskId }) as Promise<import('../main/factory/workerReclaim').WorkerResumeResult>,

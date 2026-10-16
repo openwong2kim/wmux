@@ -20,7 +20,7 @@ import {
   reloadBotWorkerSessionsForTests,
   withBotWorkerMergeGuard,
 } from '../botWorkerMergeGuard';
-import { BOT_WORKER_DENY, botWorkerSessionsPath, botWorkerSettingsPath, readBotWorkerSessions, spliceSettingsFlag, workerProjectSettingsRefusal } from '../../../shared/botWorkerGuard';
+import { BOT_WORKER_DENY, botWorkerSessionsPath, readBotWorkerSessions, spliceSettingsFlag, workerProjectSettingsRefusal } from '../../../shared/botWorkerGuard';
 import { buildWorkerMcpConfig, buildWorkerSettings, spliceWorkerLaunch, workerWmuxLevel } from '../../../shared/botWorkerMcp';
 import { guardBotWorkerLaunch } from '../../../daemon/chat/botWorkerLaunchGuard';
 import type { Connector } from '../../../shared/botConnector';
@@ -51,7 +51,7 @@ const files = con({
 });
 
 let dir: string;
-const deps = () => ({ dir, mcpEntry: () => ENTRY, registeredLevel: () => null, isolatedBridge: () => null });
+const deps = () => ({ dir, mcpEntry: () => ENTRY, registeredLevel: () => null, isolatedBridge: () => null, wslRuntime: () => 'C:\\Program Files\\wmux\\wmux.exe' });
 function wordsOf(line: string): { settings: string; mcp: string } {
   const m = /--settings="([^"]+)" --mcp-config="([^"]+)" --strict-mcp-config/.exec(line);
   if (!m) throw new Error(`not strict: ${line}`);
@@ -187,16 +187,20 @@ describe('the guard with connections', () => {
 });
 
 describe('the session record carries the launch', () => {
-  it('re-fire and resume reuse the recorded files; a WSL session keeps the settings file alone', () => {
+  it('re-fire and resume reuse the recorded files; a WSL session gets its settings and this build\'s wmux server again', () => {
     const guarded = withBotWorkerMergeGuard({ initialCommand: LINE, cwd: dir }, { workspaceId: 'ws-task', strict: false }, deps())!;
     noteBotWorkerSession('pty-1', 'ws-task', dir, guardedLaunchOf(guarded));
-    noteBotWorkerSession('pty-wsl', 'ws-task', dir, { wsl: true });
+    const wsl = withBotWorkerMergeGuard({ initialCommand: LINE, cwd: dir }, { workspaceId: 'ws-task', strict: false }, deps(), { wsl: true })!;
+    noteBotWorkerSession('pty-wsl', 'ws-task', dir, guardedLaunchOf(wsl));
     reloadBotWorkerSessionsForTests();
     const w = wordsOf(guarded.initialCommand!);
     expect(wordsOf(guardRefireLine('pty-1', LINE, deps()))).toEqual(w);
     expect(wordsOf(guardSessionLaunch('pty-1', 'claude --resume 11111111-2222-3333-4444-555555555555', deps()))).toEqual(w);
-    // Linux claude reads it by its /mnt path (a Windows temp dir is a drive path).
-    expect(guardRefireLine('pty-wsl', LINE, deps())).toBe(`claude --settings="${toWslPath(botWorkerSettingsPath(dir)) ?? botWorkerSettingsPath(dir)}" --dangerously-skip-permissions "$(cat '/w/.wtask/prompt.md')"`);
+    // Linux claude reads them by their /mnt paths (a Windows temp dir is a drive path).
+    expect(guardRefireLine('pty-wsl', LINE, deps())).toBe(wsl.initialCommand);
+    expect(guardSessionLaunch('pty-wsl', LINE, deps())).toBe(wsl.initialCommand);
+    const recorded = readBotWorkerSessions(dir);
+    expect('sessions' in recorded && recorded.sessions.get('pty-wsl')?.launch?.level).toBe('full');
     // A session with no folder on record is not re-fired.
     noteBotWorkerSession('pty-nofolder', 'ws-task', dir);
     expect(() => guardRefireLine('pty-nofolder', LINE, deps())).toThrow(/no folder on record/);
@@ -309,16 +313,22 @@ describe('the session record carries the launch', () => {
 });
 
 describe('the daemon\'s phone launch', () => {
-  it('splices a session\'s recorded files with strict; a WSL record gets the settings file alone; any other record nothing', () => {
+  it('splices a session\'s recorded files with strict, a WSL record\'s by their /mnt paths; any other record nothing', () => {
     const guarded = withBotWorkerMergeGuard({ initialCommand: LINE, cwd: dir }, { workspaceId: 'ws-task', strict: false }, deps())!;
     noteBotWorkerSession('pty-1', 'ws-task', dir, guardedLaunchOf(guarded));
     noteBotWorkerSession('pty-old', 'ws-task', dir);
-    noteBotWorkerSession('pty-wsl', 'ws-task', dir, { wsl: true });
+    const wslCreate = withBotWorkerMergeGuard({ initialCommand: LINE, cwd: dir }, { workspaceId: 'ws-task', strict: false }, deps(), { wsl: true })!;
+    noteBotWorkerSession('pty-wsl', 'ws-task', dir, guardedLaunchOf(wslCreate));
+    noteBotWorkerSession('pty-wsl-old', 'ws-task', dir, { wsl: true });
     const w = wordsOf(guarded.initialCommand!);
     expect(guardBotWorkerLaunch('pty-1', "claude -- 'hi'", 'claude', dir)).toBe(`claude --settings="${w.settings}" --mcp-config="${w.mcp}" --strict-mcp-config -- 'hi'`);
     expect(guardBotWorkerLaunch('pty-old', 'claude', 'claude', dir)).toBeNull();
-    // Linux claude opens it through its /mnt mount (a Windows runner's path).
-    expect(guardBotWorkerLaunch('pty-wsl', 'claude', 'claude', dir)).toBe(`claude --settings="${toWslPath(botWorkerSettingsPath(dir)) ?? botWorkerSettingsPath(dir)}"`);
+    // Linux claude opens them through its /mnt mount (a Windows runner's path).
+    const ww = wordsOf(wslCreate.initialCommand!);
+    expect(guardBotWorkerLaunch('pty-wsl', 'claude', 'claude', dir)).toBe(`claude --settings="${ww.settings}" --mcp-config="${ww.mcp}" --strict-mcp-config`);
+    expect(ww.mcp).toBe(toWslPath(guardedLaunchOf(wslCreate).launch!.mcpConfigFile) ?? guardedLaunchOf(wslCreate).launch!.mcpConfigFile);
+    // A WSL record from before (no files): nothing, never the distro's own wmux server.
+    expect(guardBotWorkerLaunch('pty-wsl-old', 'claude', 'claude', dir)).toBeNull();
     // A folder the line may start in is checked too.
     const other = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-conn-phone-'));
     fs.mkdirSync(path.join(other, '.claude'));

@@ -37,6 +37,14 @@ export interface SlotLiveness {
   workspaces: ReadonlySet<string> | null;
   /** Open workspaces whose panes all run no agent process any more. */
   idleWorkspaces: ReadonlySet<string>;
+  /** Tasks whose worker main stopped (paused for review, or done) after the
+   *  row's last change, and did not resume: whatever their panes show (a WSL
+   *  pane's agent is often never attributed), they run no agent. */
+  stoppedTasks?: ReadonlySet<string>;
+  /** Open workspaces with a pane whose agent is seen alive or whose shell
+   *  runs a foreground command: a stopped task's worker relaunched there
+   *  holds its slot again. */
+  busyWorkspaces?: ReadonlySet<string>;
   now: number;
 }
 
@@ -70,14 +78,47 @@ export function slotHolderArgs(bots: readonly string[], workers: readonly string
   };
 }
 
-/** Whether a ledger row holds an agent slot: a bot's task (the owner's own
- *  fan-outs do not count), whose workspace is open and whose agent still
- *  runs — or recent enough that its worker may still be coming up. Pure. */
+/** What the slot count reads of one daemon session (daemon.listSessions). */
+export interface SlotPaneInfo {
+  state?: unknown;
+  agentProcessAlive?: unknown;
+  /** OSC 133: a foreground command owns the pane (absent: unknown). */
+  commandRunning?: unknown;
+  /** The daemon respawned the pane at its own restart and has seen no agent
+   *  there since (absent from a daemon that does not say). */
+  recoveredAgentUnconfirmed?: unknown;
+}
+
+/** Whether a pane runs no agent for the slot count: gone, no live PTY, its
+ *  agent seen to exit, or a fresh shell the daemon respawned at its restart
+ *  with no agent seen since and no command running in it. An agent never attributed otherwise is not known
+ *  dead (an older daemon may simply not say). Pure. */
+export function paneRunsNoAgent(s: SlotPaneInfo | undefined): boolean {
+  if (!s) return true;
+  if (s.state === 'dead' || s.state === 'suspended') return true;
+  if (s.agentProcessAlive === false) return true;
+  return s.agentProcessAlive !== true && s.commandRunning !== true && s.recoveredAgentUnconfirmed === true;
+}
+
+/** Whether a pane shows something running: its agent seen alive, or a
+ *  foreground command in its shell. Pure. */
+export function paneShowsWork(s: SlotPaneInfo | undefined): boolean {
+  return !!s && (s.agentProcessAlive === true || s.commandRunning === true);
+}
+
+/** Whether a ledger row holds an agent slot: an open bot task (the owner's
+ *  own fan-outs do not count), whose workspace is open and whose agent still
+ *  runs — or recent enough that its worker may still be coming up. A
+ *  completed, cancelled or failed row never does. Pure. */
 export function rowHoldsAgentSlot(
-  row: Pick<LedgerEntry, 'dispatch' | 'taskWorkspaceId' | 'updatedAt'>,
+  row: Pick<LedgerEntry, 'dispatch' | 'taskWorkspaceId' | 'updatedAt'> & { id?: string; status?: LedgerEntry['status'] },
   live: SlotLiveness | null,
 ): boolean {
   if (row.dispatch?.origin?.kind !== 'bot') return false;
+  if (row.status === 'completed' || row.status === 'cancelled' || row.status === 'failed') return false;
+  // Its worker was stopped after the row last changed: no agent, even when
+  // the row is recent or its pane is not known dead.
+  if (row.id && live?.stoppedTasks?.has(row.id) && !live.busyWorkspaces?.has(row.taskWorkspaceId)) return false;
   if (!live || live.now - row.updatedAt < SLOT_ROW_GRACE_MS) return true;
   if (live.workspaces && !live.workspaces.has(row.taskWorkspaceId)) return false;
   return !live.idleWorkspaces.has(row.taskWorkspaceId);

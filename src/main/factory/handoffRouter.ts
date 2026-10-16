@@ -617,6 +617,23 @@ export class HandoffRouter {
     return h ? structuredClone(h) : null;
   }
 
+  /** The thread a bot's room post goes to when it names `named`. A bot
+   *  whose running wake is in a thread wmux opened for a dispatch said in a
+   *  1:1 or a group chat (opensThread, openedIn) and that names that
+   *  conversation posts in the opened thread instead: the work stays folded
+   *  there, as the dispatch that opened it does. The bot that dispatched it
+   *  still speaks in its conversation (its report is for the owner there).
+   *  Any other name is kept. */
+  postThread(botId: string, named: ThreadId | undefined): ThreadId | undefined {
+    if (!named) return named;
+    const wakeThread = runningWakeThread(this.opts.ports(), botId);
+    if (!wakeThread || wakeThread === named || !wakeThread.startsWith('handoff:')) return named;
+    const root = this.records.get(wakeThread.slice('handoff:'.length));
+    if (!root || root.kind !== 'dispatch' || root.opensThread !== true || root.threadId !== wakeThread) return named;
+    if (root.openedIn !== named || (root.from.kind === 'bot' && root.from.botId === botId)) return named;
+    return wakeThread;
+  }
+
   list(params: HandoffListParams = {}): Handoff[] {
     const limit = Math.max(1, Math.min(HANDOFF_STORE_LIMITS.LIST_MAX, Math.floor(params.limit ?? HANDOFF_STORE_LIMITS.LIST_DEFAULT)));
     const statuses = Array.isArray(params.status) ? params.status.filter((s) => oneOf(HANDOFF_STATUSES, s)) : null;
@@ -1762,13 +1779,14 @@ export class HandoffRouter {
 
   /** An answer that is none of the options the bot offered is the owner
    *  overriding the bot: a `human.correction` fact. Choosing any offered
-   *  option is not (the options carry no recommendation), and a free-text
-   *  question has nothing to override. */
+   *  option is not (the options carry no recommendation), and a question
+   *  that invites the owner's own words (invitesFreeText) has nothing to
+   *  override: words outside its options are the answer it asked for. */
   private noteOverride(ask: Handoff, text: string): void {
     const ws = partyWorkspace(ask.from);
     const options = ask.payload.options ?? [];
     if (ask.from.kind !== 'bot' || !ws || options.length === 0) return;
-    if (options.some((o) => isSameAnswer(text, o))) return;
+    if (options.some((o) => isSameAnswer(text, o)) || invitesFreeText(ask)) return;
     emitHumanCorrection(this.opts.ports(), {
       workspaceId: ws,
       botId: ask.from.botId,
@@ -1857,6 +1875,34 @@ function invalid(message: string): HandoffResult {
 export function isSameAnswer(answer: string, option: string): boolean {
   const norm = (v: string) => v.replace(/\s+/g, ' ').trim().toLowerCase();
   return norm(answer) === norm(option);
+}
+
+/** An option that stands for the owner's own words ("Other", "Something
+ *  else", "Tell me in your own words"). */
+const FREE_TEXT_OPTION = /^\s*(other|something else|anything else)\s*([(:,.…—–-]|$)|\bown words\b|^\s*(tell me|let me (say|tell|explain|describe)|i'll (write|type|explain))\b/i;
+/** A question that asks for the owner's own words besides its options. */
+const FREE_TEXT_QUESTION = /own words|or tell me|tell me (what|how|in)|something else|anything else/i;
+/** A negation ("do not answer in your own words", "no other choice"). */
+const NEGATION = /\b(not|no|never|without|instead of|rather than)\b|n't\b/i;
+
+/** Whether the pattern matches in a clause of the text with no negation
+ *  before it in that clause: an affirmative invitation only. Pure. */
+function invites(pattern: RegExp, text: string): boolean {
+  return text.split(/[.!?;\n]+/).some((clause) => {
+    const m = pattern.exec(clause);
+    return !!m && !NEGATION.test(clause.slice(0, m.index));
+  });
+}
+
+/** Whether a question asks for the owner's own words, so an answer outside
+ *  its options is an answer, not an override: the greeting (`intro`, "what
+ *  should I do?" — any words are the job, in whatever language the owner
+ *  writes), or one whose options or wording invite free text. The wording
+ *  check reads English only; `intro` is what holds for every language. Pure. */
+export function invitesFreeText(ask: Pick<Handoff, 'intro' | 'payload'>): boolean {
+  if (ask.intro === true) return true;
+  if ((ask.payload.options ?? []).some((o) => invites(FREE_TEXT_OPTION, o))) return true;
+  return invites(FREE_TEXT_QUESTION, `${ask.payload.title}\n${ask.payload.body ?? ''}`);
 }
 
 function partyWorkspace(p: Party): string | undefined {

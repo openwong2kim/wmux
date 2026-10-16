@@ -34,7 +34,7 @@ import { isMainWindowSender } from '../mainWindowSender';
 import type { BotTaskView, FactoryTaskFolderCleanResult, FactoryTaskFolderUsage } from '../../../shared/botTask';
 import { cleanTaskFolders, getTaskFolderPorts, taskFolderUsage } from '../../factory/taskFolderCleanup';
 import { botTaskViews, getBotTaskSources, type BotTaskSources } from '../../factory/botTasks';
-import { getFactoryStopPorts, stopFactoryWork, type FactoryStopPorts, type FactoryStopResult } from '../../factory/factoryStop';
+import { getFactoryStopPorts, stopFactoryTask, stopFactoryWork, type FactoryStopPorts, type FactoryStopResult } from '../../factory/factoryStop';
 import { getWorkerResumePorts, resumeWorker, type WorkerResumePorts, type WorkerResumeResult } from '../../factory/workerReclaim';
 import { getAgentSlots, type AgentSlots } from '../../factory/agentSlots';
 import { botClaudeConfigDir, engineReadiness, startEngineLogin, type EngineLoginDeps, type EngineReadinessDeps } from '../../factory/engineReadiness';
@@ -87,16 +87,28 @@ export async function factoryBotRowsWithTasks(
 
 const STOP_NONE = { botsInterrupted: 0, workersStopped: 0, tasksCancelled: 0, gatesCancelled: 0 } as const;
 
-/** FACTORY_STOP_ALL / FACTORY_STOP_BOT's body: the sender check, the bot id
- *  (stop-bot only), then factoryStop. A stop of a bot the store no longer
- *  holds still stops the tasks it started. */
+/** A bot task's ledger id. */
+const TASK_ID_RE = /^wtask-[A-Za-z0-9_-]{1,80}$/;
+
+/** FACTORY_STOP_ALL / FACTORY_STOP_BOT / FACTORY_STOP_TASK's body: the
+ *  sender check, the bot id (stop-bot) or task id (stop-task), then
+ *  factoryStop. A stop of a bot the store no longer holds still stops the
+ *  tasks it started. */
 export function factoryStopHandler(
   getWindow: () => BrowserWindow | null,
-  scope: 'all' | 'bot',
+  scope: 'all' | 'bot' | 'task',
   ports: () => FactoryStopPorts | null = getFactoryStopPorts,
 ): (e: { sender?: unknown; senderFrame?: unknown }, req?: unknown) => Promise<FactoryStopResult> {
   return async (e, req) => {
     if (!isMainWindowSender(e, getWindow())) return { ok: false, ...STOP_NONE, code: 'operator_only', message: 'only the main window may stop the bots' };
+    // One task's worker (the Bots page's Stop worker): that task only.
+    if (scope === 'task') {
+      const raw = req && typeof req === 'object' && !Array.isArray(req) ? (req as { taskId?: unknown }).taskId : undefined;
+      if (typeof raw !== 'string' || !TASK_ID_RE.test(raw)) return { ok: false, ...STOP_NONE, code: 'invalid_argument', message: 'taskId must be a task id' };
+      const p = ports();
+      if (!p) return { ok: false, ...STOP_NONE, code: 'not_started', message: 'The factory is not running.' };
+      return stopFactoryTask(p, raw);
+    }
     let botId: string | undefined;
     if (scope === 'bot') {
       const raw = req && typeof req === 'object' && !Array.isArray(req) ? (req as { botId?: unknown }).botId : undefined;
@@ -122,7 +134,7 @@ export function factoryWorkerResumeHandler(
   return async (e, req) => {
     if (!isMainWindowSender(e, getWindow())) return { ok: false, code: 'operator_only', message: 'only the main window may resume a worker' };
     const raw = req && typeof req === 'object' && !Array.isArray(req) ? (req as { taskId?: unknown }).taskId : undefined;
-    if (typeof raw !== 'string' || !/^wtask-[A-Za-z0-9_-]{1,80}$/.test(raw)) return { ok: false, code: 'invalid_argument', message: 'taskId must be a task id' };
+    if (typeof raw !== 'string' || !TASK_ID_RE.test(raw)) return { ok: false, code: 'invalid_argument', message: 'taskId must be a task id' };
     const p = ports();
     if (!p) return { ok: false, code: 'not_started', message: 'The factory is not running.' };
     if (p.store.get(raw)?.state === 'resumed') return resumeWorker(p, raw, { kind: 'owner' });
@@ -407,6 +419,7 @@ export function registerFactoryHandlers(
     IPC.FACTORY_BOT_SUGGEST_REPO,
     IPC.FACTORY_STOP_ALL,
     IPC.FACTORY_STOP_BOT,
+    IPC.FACTORY_STOP_TASK,
     IPC.FACTORY_WORKER_RESUME,
     IPC.FACTORY_ENGINE_READINESS,
     IPC.FACTORY_ENGINE_LOGIN,
@@ -451,6 +464,8 @@ export function registerFactoryHandlers(
   ipcMain.handle(IPC.FACTORY_STOP_ALL, wrapHandler(IPC.FACTORY_STOP_ALL, factoryStopHandler(getWindow, 'all')));
 
   ipcMain.handle(IPC.FACTORY_STOP_BOT, wrapHandler(IPC.FACTORY_STOP_BOT, factoryStopHandler(getWindow, 'bot')));
+
+  ipcMain.handle(IPC.FACTORY_STOP_TASK, wrapHandler(IPC.FACTORY_STOP_TASK, factoryStopHandler(getWindow, 'task')));
 
   ipcMain.handle(IPC.FACTORY_WORKER_RESUME, wrapHandler(IPC.FACTORY_WORKER_RESUME, factoryWorkerResumeHandler(getWindow)));
 

@@ -39,7 +39,7 @@ registerToolModule({
         action: z.enum(BOT_REQUESTABLE_ACTIONS as unknown as [ApprovalAction, ...ApprovalAction[]]),
         pr_number: NUMBER.optional().describe('merge, or a comment on a PR.'),
         issue_number: NUMBER.optional().describe('issue_close, or a comment on an issue.'),
-        reason: z.string().min(1).max(300).describe('One line for the owner, in your own words: what this act does and what you checked. Never quote the owner\'s messages.'),
+        reason: z.string().min(1).max(300).describe('One line for the owner, in your own words and in the owner\'s language (the wake block says which): what this act does and what you checked. The owner reads it on the approval card. Never quote the owner\'s messages.'),
       },
       async ({ action, pr_number, issue_number, reason }) =>
         call(BOT_APPROVAL_RPC.request, { action, prNumber: pr_number, issueNumber: issue_number, reason }, REQUEST_TIMEOUT_MS),

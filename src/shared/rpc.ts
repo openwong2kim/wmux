@@ -732,6 +732,7 @@ export type RpcMethod =
   | 'task.close'
   | 'task.pr'
   | 'task.push'
+  | 'task.fetch'
   | 'task.git.status'
   | 'task.git.log'
   | 'task.gh.prView'
@@ -1017,6 +1018,7 @@ export const ALL_RPC_METHODS = [
   'task.close',
   'task.pr',
   'task.push',
+  'task.fetch',
   'task.git.status',
   'task.git.log',
   'task.gh.prView',

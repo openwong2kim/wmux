@@ -760,6 +760,12 @@ export class DaemonPTYBridge extends EventEmitter {
     return this.turnOpen;
   }
 
+  /** Milliseconds since the pane's last settled status (a turn's result),
+   *  or null when none settled since its current agent started. */
+  settledAgoMs(): number | null {
+    return this.settledAtMs > 0 ? Math.max(0, Date.now() - this.settledAtMs) : null;
+  }
+
   /** #1621 — an authoritative hook has reported on this pane's current agent. */
   hasHookReports(): boolean {
     return this.hookSeen;

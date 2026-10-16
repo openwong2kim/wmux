@@ -137,6 +137,10 @@ export interface BotTreeRow {
   taskId?: string;
   /** An ended task whose stopped worker can resume the same conversation. */
   resumable: boolean;
+  /** A live worker whose task is still open (working or waiting on input):
+   *  the owner can stop it, its task cancelled. A resumed worker of an
+   *  ended task is not (it has no task left to cancel). */
+  stoppable?: true;
   /** A review task's worker was stopped (paused) while it waits. */
   workerPaused?: boolean;
   /** Its folder was kept because something in it is not committed. */
@@ -484,6 +488,7 @@ export function botWorkerTree(
     state: w.cls === 'error' ? 'error' : w.waiting ? 'needsYou' : 'running',
     ...(w.taskId ? { taskId: w.taskId } : {}),
     resumable: false,
+    ...(w.taskId && tasks.some((task) => task.taskId === w.taskId && WORKING_STAGE.has(task.stage)) ? { stoppable: true as const } : {}),
     ...(w.needsInput ? { needsInput: true } : {}),
     ...(w.needsInput && w.summary ? { summary: w.summary } : {}),
   }));

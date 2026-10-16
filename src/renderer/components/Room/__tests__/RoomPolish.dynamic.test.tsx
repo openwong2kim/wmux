@@ -152,6 +152,16 @@ describe('composer: the real bot it queued for', () => {
     expect(sentFrom({ addressee: null })).toBeNull();
   });
 
+  it('a deleted addressee is named as main keeps it, marked removed; one it never knew by its role', () => {
+    const sent = [{ botId: 'bot-rex', role: 'lead' as const }];
+    const actors = { 'bot-rex': { role: 'lead' as const, name: 'Rex', removed: true } };
+    expect(deliveryLine(sent, [lead], t, false, actors)).toBe('room.composer.sentTo(name=room.actor.removed(name=Rex))');
+    expect(deliveryLine(sent, [lead], t, false, { 'bot-rex': { role: 'lead', name: 'Rex' } })).toBe('room.composer.sentTo(name=Rex)');
+    expect(deliveryLine(sent, [lead], t)).toBe('room.composer.sentTo(name=room.role.lead)');
+    // A running bot's live name wins over the stored one.
+    expect(deliveryLine([{ botId: 'bot-lead', role: 'lead', wakeId: 'w-mine' }], [lead], t, true, { 'bot-lead': { role: 'lead', name: 'Old' } })).toBe('room.composer.sentTo(name=Ada)');
+  });
+
   it('predicts main\'s addressees: the mentioned bots that are on, else every bot of the room, oldest first', () => {
     const other: FactoryBotRow = { bot: bot('bot-other', { workspaceId: 'ws-b', name: 'Other lead' }), status: null };
     const late: FactoryBotRow = { bot: bot('bot-late', { name: 'Late', createdAt: 9 }), status: null };

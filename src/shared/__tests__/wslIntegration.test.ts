@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { accountHomeWslFlags, buildWslInjection, WSL_HOOK, wslClaudeHooks } from '../wslIntegration';
+import { accountHomeWslFlags, buildWslInjection, WSL_CLAUDE_SHIM, WSL_HOOK, wslClaudeHooks } from '../wslIntegration';
 import { HOOK_SPECS } from '../../cli/commands/setupHooks';
 import { parseWslAgentReport, pickReportedAgent } from '../../daemon/wslAgentProcess';
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -84,7 +84,28 @@ describe('WSL per-launch Claude integration', () => {
     expect(injected.env.WSLENV).toContain('WMUX_WSL_GATE_FLAG/p');
     expect(fs.readdirSync(dir)).toEqual(['wsl']);
     expect(fs.readFileSync(path.join(dir, 'wsl', 'bashrc.integration'), 'utf8')).toContain('# original shell integration');
-    expect(fs.readFileSync(path.join(dir, 'wsl', 'bin', 'claude'), 'utf8')).toContain('"$real" --settings "$WMUX_WSL_SETTINGS" ${WMUX_WSL_MCP_CONFIG:+--mcp-config="$WMUX_WSL_MCP_CONFIG"} "$@"');
+    const shim = fs.readFileSync(path.join(dir, 'wsl', 'bin', 'claude'), 'utf8');
+    expect(shim).toContain('"$real" --settings "$WMUX_WSL_SETTINGS" ${mcp_config:+--mcp-config="$mcp_config"} "$@"');
+    // A launch that names its own servers (a bot's worker) keeps them alone.
+    expect(shim).toContain('mcp_config=${WMUX_WSL_MCP_CONFIG:-}');
+    expect(shim).toContain('case $arg in --) break ;; --strict-mcp-config) mcp_config= ;; esac');
+  });
+
+  it.skipIf(process.platform === 'win32')('the claude shim leaves its own MCP config out only for a launch whose options say --strict-mcp-config', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-wsl-shim-')); dirs.push(dir);
+    const bin = path.join(dir, 'bin');
+    const real = path.join(dir, 'real');
+    fs.mkdirSync(bin); fs.mkdirSync(real);
+    fs.writeFileSync(path.join(bin, 'claude'), WSL_CLAUDE_SHIM, { mode: 0o755 });
+    fs.writeFileSync(path.join(real, 'claude'), '#!/bin/sh\nfor a in "$@"; do printf "[%s]" "$a"; done\n', { mode: 0o755 });
+    const run = (...args: string[]) => execFileSync('/bin/sh', [path.join(bin, 'claude'), ...args], {
+      encoding: 'utf8',
+      env: { PATH: `${bin}:${real}:/usr/bin:/bin`, WMUX_WSL_BIN: bin, WMUX_WSL_SETTINGS: '/s.json', WMUX_WSL_MCP_CONFIG: '/m.json' },
+    });
+    expect(run('--resume', 'x')).toBe('[--settings][/s.json][--mcp-config=/m.json][--resume][x]');
+    expect(run('--mcp-config=/w.json', '--strict-mcp-config', '--', 'go')).toBe('[--settings][/s.json][--mcp-config=/w.json][--strict-mcp-config][--][go]');
+    // The words after -- are the prompt, not options.
+    expect(run('--', '--strict-mcp-config')).toBe('[--settings][/s.json][--mcp-config=/m.json][--][--strict-mcp-config]');
   });
 
   describe('account homes across the Windows/WSL boundary', () => {
