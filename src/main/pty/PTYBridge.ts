@@ -5,7 +5,7 @@ import { TerminalNotificationParser } from './oscNotification';
 import { AgentDetector, agentDisplayToSlug } from './AgentDetector';
 import { ActivityMonitor } from './ActivityMonitor';
 import { parseOsc7Cwd, detectPromptCwd } from './cwdDetect';
-import { sanitizeTitle } from './titleDetect';
+import { ClaudeTitleTurnEdge, sanitizeTitle } from './titleDetect';
 import { IPC } from '../../shared/constants';
 import {
   updateCwd,
@@ -379,6 +379,17 @@ export class PTYBridge {
     const agentDetector = new AgentDetector();
     this.agentDetectors.set(ptyId, agentDetector);
 
+    // The agent says its turn is over right after a lone Escape: that confirms
+    // the Escape as an interrupt (#2247). Two things say it: the "Interrupted"
+    // row (onInterrupted below) and, for an Esc while Claude Code is still
+    // thinking, which draws no row, its title turning idle (#2264).
+    const confirmEscapeInterrupt = (): void => {
+      if (!recentlyEscaped(ptyId) || recentlyResized(ptyId, RESIZE_REDRAW_GUARD_MS)) return;
+      clearEscapeKey(ptyId);
+      settleHookTurnToIdle(ptyId, this.getHookRouter?.() ?? null, this.getWindow());
+    };
+    const titleTurnEdge = new ClaudeTitleTurnEdge();
+
     // Handle OSC events
     oscParser.onOsc((event) => {
       const win = this.getWindow();
@@ -391,6 +402,9 @@ export class PTYBridge {
           // Code's `/rename`. OSC 1 (icon name only) is intentionally ignored.
           const title = sanitizeTitle(event.data);
           if (title) win.webContents.send(IPC.TERMINAL_TITLE_CHANGED, ptyId, title);
+          if (titleTurnEdge.observe(title) && agentDetector.getLastAgent() === 'Claude Code') {
+            confirmEscapeInterrupt();
+          }
           break;
         }
         case 7: {
@@ -804,9 +818,7 @@ export class PTYBridge {
     // (or the turn was already settled by Ctrl+C / ESC ESC).
     const unsubInterrupted = agentDetector.onInterrupted(() => {
       try {
-        if (!recentlyEscaped(ptyId) || recentlyResized(ptyId, RESIZE_REDRAW_GUARD_MS)) return;
-        clearEscapeKey(ptyId);
-        settleHookTurnToIdle(ptyId, this.getHookRouter?.() ?? null, this.getWindow());
+        confirmEscapeInterrupt();
       } catch (err) {
         console.warn('[PTYBridge] onInterrupted callback error:', err);
       }

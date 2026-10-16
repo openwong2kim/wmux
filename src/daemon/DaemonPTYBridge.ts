@@ -9,10 +9,10 @@ import { TerminalNotificationParser } from '../main/pty/oscNotification';
 import { AgentDetector, drawsCodexBanner, type AgentEventStatus } from '../main/pty/AgentDetector';
 import { ActivityMonitor } from '../main/pty/ActivityMonitor';
 import { parseOsc7Cwd, detectPromptCwd } from '../main/pty/cwdDetect';
-import { sanitizeTitle } from '../main/pty/titleDetect';
+import { ClaudeTitleTurnEdge, sanitizeTitle } from '../main/pty/titleDetect';
 import { RingBuffer } from './RingBuffer';
 import { PromptEventLog, parseOsc133Payload } from './PromptEventLog';
-import { RESIZE_REDRAW_GUARD_MS } from '../main/notification/idleSuppression';
+import { ESC_INTERRUPT_CONFIRM_MS, RESIZE_REDRAW_GUARD_MS } from '../main/notification/idleSuppression';
 import { stripReplayQuerySequences } from '../shared/replayQuerySanitizer';
 import { isFreshSessionSource } from '../shared/hooks/signal-types';
 import { ESCAPE_WIN32 } from '../shared/win32InputKeys';
@@ -937,6 +937,24 @@ export class DaemonPTYBridge extends EventEmitter {
   }
 
   /**
+   * Claude Code's title went from its running spinner to idle (#2264). An Esc
+   * while it is still thinking ends the turn without the `⎿  Interrupted` row,
+   * so this edge is the only thing that confirms such an Esc. It is reported
+   * as the same `turnInterrupted` the row raises, and only right after a lone
+   * Esc reached this pane: every turn ends with this edge, and an ordinary
+   * turn end is not an interrupt. Main still checks its own Escape record
+   * before it settles. Dropped like the row inside a resize redraw or a muted
+   * replay.
+   */
+  private noteTitleTurnEnd(sessionId: string): void {
+    const now = Date.now();
+    if (this.muted || now - this.lastResizeAtMs < RESIZE_REDRAW_GUARD_MS) return;
+    if (now - this.lastEscAt >= ESC_INTERRUPT_CONFIRM_MS) return;
+    if (this.agentDetector?.getLastAgent() !== 'Claude Code') return;
+    this.emit('turnInterrupted', { sessionId, agent: 'Claude Code' });
+  }
+
+  /**
    * The agent's own interrupt reached this pane's turn without a key (Codex
    * `turn/interrupt`): recorded like a lone Esc, so the once-per-turn latch
    * and the cooldown hold for every later Stop, phone or desktop. Nothing
@@ -1227,6 +1245,8 @@ export class DaemonPTYBridge extends EventEmitter {
 
     // OSC events → cwd (OSC 7), prompt/command markers (OSC 133), and
     // desktop notifications (OSC 9/777/99)
+    // #2264: Claude Code's title turning idle right after a lone Esc (see noteTitleTurnEnd).
+    const titleTurnEdge = new ClaudeTitleTurnEdge();
     interpreter.onOsc((event) => {
       if (event.code === 0 || event.code === 2) {
         // OSC 0/2 window title (e.g. Claude Code `/rename`). OSC 1 (icon-only)
@@ -1237,6 +1257,7 @@ export class DaemonPTYBridge extends EventEmitter {
         this.lastTitle = title;
         this.lastTitleAt = Date.now();
         if (title) this.emit('title', { sessionId, title });
+        if (titleTurnEdge.observe(title)) this.noteTitleTurnEnd(sessionId);
         return;
       }
       if (event.code === 7) {

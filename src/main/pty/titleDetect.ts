@@ -26,3 +26,36 @@ export function sanitizeTitle(raw: string): string {
     ? stripped.slice(0, TERMINAL_TITLE_MAX)
     : stripped;
 }
+
+/**
+ * Claude Code's window-title spinner (#2264), as captured on 2.1.301: the
+ * title alternates `◐ <name>` / `◑ <name>` about once a second for the whole
+ * turn (thinking, tools, streaming), reduced motion included, and turns
+ * `✳ <name>` when the turn ends or is interrupted.
+ */
+const CLAUDE_BUSY_TITLE = /^[◐◑]\s/;
+const CLAUDE_IDLE_TITLE = /^✳\s/;
+
+/**
+ * Reads the busy-to-idle edge of Claude Code's title spinner, one pane each.
+ *
+ * An Esc while Claude Code is still thinking ends the turn without the
+ * `⎿  Interrupted` row: it blanks the spinner row, puts the prompt back in the
+ * composer and sets the idle title. The title edge is the one thing it draws
+ * that says the turn is over. Only an edge counts: a repeated idle title, or
+ * one with no running title before it, says nothing about a turn.
+ */
+export class ClaudeTitleTurnEdge {
+  private busy = false;
+
+  /** Feed one sanitized title. True when it ends a turn the title showed running. */
+  observe(title: string): boolean {
+    if (CLAUDE_BUSY_TITLE.test(title)) {
+      this.busy = true;
+      return false;
+    }
+    const ended = this.busy && CLAUDE_IDLE_TITLE.test(title);
+    this.busy = false;
+    return ended;
+  }
+}

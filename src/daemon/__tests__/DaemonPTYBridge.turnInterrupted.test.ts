@@ -55,4 +55,50 @@ describe('DaemonPTYBridge — interrupted-turn row', () => {
     feed(ROW);
     expect(interrupted).toEqual([]);
   });
+
+  // #2264 — an Esc while Claude Code is still thinking draws no row; its title
+  // turning from the running spinner to `✳` is the only sign the turn ended
+  // (frames from a live 2.1.301 capture).
+  describe('title turning idle after a lone Esc', () => {
+    const BUSY = '\u001b]0;◑ 50번째 소수 검증\u0007';
+    const IDLE = '\u001b]0;✳ 50번째 소수 검증\u0007';
+
+    beforeEach(() => {
+      vi.advanceTimersByTime(RESIZE_REDRAW_GUARD_MS);
+      feed(BUSY);
+    });
+
+    it('reports the edge that follows a lone Esc', () => {
+      bridge.noteInput('\x1b');
+      vi.advanceTimersByTime(84);
+      feed(IDLE);
+      expect(interrupted).toEqual([{ sessionId: 'sess-1', agent: 'Claude Code' }]);
+    });
+
+    it('does not report an ordinary turn end (no Esc before it)', () => {
+      feed(IDLE);
+      expect(interrupted).toEqual([]);
+    });
+
+    it('does not report an edge after the Esc window has passed', () => {
+      bridge.noteInput('\x1b');
+      vi.advanceTimersByTime(3_000);
+      feed(IDLE);
+      expect(interrupted).toEqual([]);
+    });
+
+    it('does not report an idle title with no running title before it', () => {
+      feed(IDLE);
+      bridge.noteInput('\x1b');
+      feed(IDLE);
+      expect(interrupted).toEqual([]);
+    });
+
+    it('ignores the edge inside a resize redraw', () => {
+      bridge.noteInput('\x1b');
+      bridge.noteResize();
+      feed(IDLE);
+      expect(interrupted).toEqual([]);
+    });
+  });
 });
