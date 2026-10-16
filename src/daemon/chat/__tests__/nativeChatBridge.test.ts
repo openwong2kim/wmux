@@ -11,7 +11,7 @@ import { atomicWriteJSONSync } from '../../util/atomicWrite';
 import { withChosenAccountEnv } from '../../phone/paneAccountSpawn';
 import { createChatBridge, QUEUE_WATCH_CLIENT, WEB_BRIDGE_CLIENT, type ChatAgentState, type ChatPane, type NativeChatBridgeDeps } from '../nativeChatBridge';
 import { guardBotWorkerLaunch } from '../botWorkerLaunchGuard';
-import { BOT_WORKER_DENY, botWorkerSessionsPath, botWorkerSettingsPath } from '../../../shared/botWorkerGuard';
+import { BOT_WORKER_DENY, botWorkerSessionsPath, botWorkerSettingsPath, buildBotWorkerSettings } from '../../../shared/botWorkerGuard';
 import type { TerminalChatAbortOutcome } from '../../transcript/TerminalChatService';
 import { cancelResponse } from '../../web/chatWire';
 import { agentAliveVerdict } from '../../canonicalAgent';
@@ -475,7 +475,8 @@ describe('launch', () => {
       expect(await f.bridge.launch({ id: 'pane', agent: 'claude', prompt: "it's done" })).toEqual({ ok: true, effect: 'submitted' });
       const settings = botWorkerSettingsPath(f.dir);
       expect(f.typed).toEqual([`claude --settings="${settings}" --session-id PIN -- 'it'\\''s done'\r`]);
-      expect(JSON.parse(fs.readFileSync(settings, 'utf8'))).toEqual({ permissions: { deny: [...BOT_WORKER_DENY] } });
+      expect(JSON.parse(fs.readFileSync(settings, 'utf8'))).toEqual(buildBotWorkerSettings());
+    expect(JSON.parse(fs.readFileSync(settings, 'utf8')).permissions).toEqual({ deny: [...BOT_WORKER_DENY] });
     });
 
     it('a phone resume of its exact session carries them too', async () => {

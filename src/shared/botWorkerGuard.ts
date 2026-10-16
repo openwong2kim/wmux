@@ -23,6 +23,7 @@ import path from 'node:path';
 import { tokenize, launcherStem } from './agentResume';
 import { splitModelEnvMarker } from './workerLaunch';
 import { stripPromptFileArgument } from './promptFileArgument';
+import { wslClaudeHooks } from './wslIntegration';
 
 /** `gh <group> <verb>` in every spelling gh runs it: with global options
  *  (`-R o/r`, `--repo=o/r`, `--hostname h`) before the group, between the
@@ -108,7 +109,12 @@ export const BOT_WORKER_DENY: readonly string[] = [...BOT_WORKER_MERGE_DENY, ...
 
 /** The worker's `--settings` document: every rule. */
 export function buildBotWorkerSettings(): Record<string, unknown> {
-  return { permissions: { deny: [...BOT_WORKER_DENY] } };
+  // Only a WSL pane's worker launches with this file alone (#2261). The WSL
+  // claude shim passes wmux's hooks as its own `--settings`, and of two
+  // `--settings` flags the last one wins, so this file carries those hooks
+  // too: without them no turn end and no session id reached wmux, so the
+  // worker was never paused when idle and could not be resumed.
+  return { permissions: { deny: [...BOT_WORKER_DENY] }, disableAllHooks: false, hooks: wslClaudeHooks() };
 }
 
 // ── factory/worker-default-branches.json ─────────────────────────────────────
