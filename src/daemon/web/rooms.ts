@@ -25,6 +25,10 @@ import { DesktopPhoneError } from '../phone/DesktopPhoneBridge';
 
 export const ROOMS_ROUTE = /^\/api\/rooms\/([^/]+)\/(threads|cards)$/;
 
+/** `POST /api/rooms/:workspaceId/messages`: the one room write, served by
+ *  WebTerminalServer.handleRoomMessage on the Moa message path. */
+export const ROOM_MESSAGES_ROUTE = /^\/api\/rooms\/([^/]+)\/messages$/;
+
 /** The part of the desktop bridge the routes use (DesktopPhoneBridge). */
 export interface RoomsDesktop {
   supports(command: string): boolean;

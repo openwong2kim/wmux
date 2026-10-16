@@ -1,5 +1,6 @@
 // The agent factory for the phone: main's side of the factory fields in the
-// sidebar snapshot and of the two read-only room commands.
+// sidebar snapshot, of the two read-only room commands and of the Bots page
+// list (`workspaces.bots`).
 //
 // Main owns every store involved (bots, their runtime status, the factory
 // settings, rooms, handoffs), so the factory fields are folded into the
@@ -14,9 +15,19 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { getWmuxDir } from '../../daemon/config';
-import type { BotProfile, BotStatus } from '../../shared/bot';
+import { isIdentitySlot, type BotProfile, type BotStatus } from '../../shared/bot';
+import type { BotGroup } from '../../shared/botGroup';
 import type { Handoff } from '../../shared/handoff';
-import { parseThreadId, type RoomCard, type ThreadId, type ThreadSummary } from '../../shared/room';
+import { dmThreadBot, dmThreadId, groupThreadGroup, parseThreadId, type RoomCard, type ThreadId, type ThreadSummary } from '../../shared/room';
+import {
+  PHONE_BOTS_COMMAND,
+  fitPhoneBots,
+  parsePhoneBotsBot,
+  parsePhoneBotsConversation,
+  type PhoneBotsBot,
+  type PhoneBotsConversation,
+  type PhoneBotsReply,
+} from '../../shared/phoneBots';
 import { applyFactoryToSidebar, delegationsFromHandoffs, type PhoneFactoryState } from '../../shared/phoneFactory';
 import {
   PHONE_BOT_PRESENCES,
@@ -45,6 +56,8 @@ import { getFactorySettings } from '../factory/factorySettings';
 import { getHandoffRouter, HANDOFF_STORE_LIMITS } from '../factory/handoffRouter';
 import { getRoomWriter, ROOMS_DIRNAME } from '../factory/roomWriter';
 import { phoneBot } from '../factory/phoneBot';
+import { getGroupStore } from '../factory/groupStore';
+import { getWorkspaceMirror } from '../workspace/WorkspaceMirror';
 
 /** The room reads this file needs (RoomWriter). */
 export interface PhoneRoomReader {
@@ -245,4 +258,177 @@ export function handlePhoneRoomCommand(command: string, payload: Record<string, 
     if (projected) cards.push(projected);
   }
   return fitPhoneRoomPage({ workspaceId, threadId, cards, nextSinceSeq: page.nextSinceSeq, hasMore: page.hasMore }, sinceSeq !== undefined);
+}
+
+// ── The Bots page list ─────────────────────────────────────────────────────
+
+export interface PhoneBotsPorts extends PhoneFactoryPorts {
+  /** The owner's live group chats; null before the group store started. */
+  groups(): BotGroup[] | null;
+  /** A workspace's name on the desktop, or null when it is not open. */
+  workspaceName(workspaceId: string): string | null;
+}
+
+export function defaultPhoneBotsPorts(): PhoneBotsPorts {
+  return {
+    ...defaultPhoneFactoryPorts(),
+    groups: () => getGroupStore()?.list() ?? null,
+    workspaceName: (workspaceId) => getWorkspaceMirror().getEntries()?.find((e) => e.id === workspaceId)?.name ?? null,
+  };
+}
+
+/** Cards read from the end of a thread to find its newest message. */
+const PREVIEW_SCAN = 20;
+
+/** One conversation's threads, as the desktop list derives them (Bots/botsModel.ts). */
+interface ConversationScope {
+  /** Its own thread: the row's unread and its send target. */
+  own: ThreadSummary | undefined;
+  /** Its own thread and the threads it started. */
+  all: ThreadSummary[];
+}
+
+function dmScope(threads: readonly ThreadSummary[], botId: string): ConversationScope {
+  const ownId = dmThreadId(botId);
+  return {
+    own: threads.find((t) => t.threadId === ownId),
+    all: threads.filter((t) => t.threadId === ownId || (t.dmBotId === botId && !dmThreadBot(t.threadId))),
+  };
+}
+
+function groupScope(threads: readonly ThreadSummary[], group: BotGroup): ConversationScope {
+  const own = threads.find((t) => t.threadId === group.threadId);
+  if (groupThreadGroup(group.threadId)) {
+    return { own, all: threads.filter((t) => t.threadId === group.threadId || (t.groupId === group.id && !groupThreadGroup(t.threadId))) };
+  }
+  // A group made from the room lives in General: the room without the 1:1
+  // and group threads and the threads they started.
+  return { own, all: threads.filter((t) => !dmThreadBot(t.threadId) && !groupThreadGroup(t.threadId) && !t.dmBotId && !t.groupId) };
+}
+
+/** The newest message (a bot's or the owner's) across a conversation's
+ *  threads: wmux's own lines never preview a row. */
+function newestMessage(rooms: PhoneRoomReader, workspaceId: string, scope: ConversationScope): RoomCard | null {
+  let best: RoomCard | null = null;
+  for (const t of scope.all) {
+    if (best && t.lastAt < best.at) continue;
+    const cards = rooms.read(workspaceId, { threadId: t.threadId, limit: PREVIEW_SCAN }).cards;
+    for (let i = cards.length - 1; i >= 0; i--) {
+      const c = cards[i];
+      if (c.actor.kind === 'system') continue;
+      if (!best || c.at > best.at || (c.at === best.at && c.seq > best.seq)) best = c;
+      break;
+    }
+  }
+  return best;
+}
+
+/** The row's time, seq, preview and counts over its threads. */
+function conversationActivity(
+  rooms: PhoneRoomReader,
+  workspaceId: string,
+  scope: ConversationScope,
+  createdAt: number,
+  bot: (botId: string) => { role: BotProfile['role']; name: string } | null,
+): Pick<PhoneBotsConversation, 'lastAt' | 'lastSeq' | 'lastPreview' | 'lastActor' | 'unread' | 'openQuestions'> {
+  const newest = scope.all.reduce<ThreadSummary | null>((m, t) => (t.cardCount > 0 && (!m || t.lastAt > m.lastAt || (t.lastAt === m.lastAt && t.lastSeq > m.lastSeq)) ? t : m), null);
+  const last = newestMessage(rooms, workspaceId, scope);
+  const card = last ? phoneRoomCard(last, bot) : null;
+  return {
+    lastAt: Math.max(createdAt, newest?.lastAt ?? 0),
+    lastSeq: newest?.lastSeq ?? 0,
+    ...(card ? { lastPreview: card.title, lastActor: card.actor } : {}),
+    unread: scope.own?.unread ?? null,
+    openQuestions: scope.all.reduce((n, t) => n + t.openQuestions, 0),
+  };
+}
+
+/**
+ * The Bots page's list for the phone (shared/phoneBots.ts): every bot, and
+ * one conversation per bot (its 1:1) and per live group chat, newest first,
+ * across workspaces — the desktop's order (Bots/botsModel.ts buildBots). A
+ * conversation is its own thread and the threads it started; the desktop's
+ * 1:1 also folds in a bot's older General cards, which this list leaves out
+ * (the phone reads a 1:1 as its `dm:` thread). Null before the factory
+ * started.
+ */
+export function phoneBotsReply(ports: PhoneBotsPorts): PhoneBotsReply | null {
+  const all = ports.bots();
+  const rooms = ports.rooms();
+  const groups = ports.groups();
+  if (!all || !rooms || !groups) return null;
+  const settings = ports.settings();
+  const hq = settings.enabled ? phoneBot(all, settings) : null;
+  const sorted = [...all].sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
+  const bots: PhoneBotsBot[] = sorted.map((b) => {
+    const status = ports.status(b.id);
+    return {
+      id: b.id, name: b.name, role: b.role, workspaceId: b.workspaceId, enabled: b.enabled,
+      isHq: hq?.id === b.id, presence: presenceOf(status), queueDepth: status?.queueDepth ?? 0,
+      avatar: { hue: isIdentitySlot(b.hue) ? b.hue : null, picture: typeof b.avatar === 'string' && b.avatar.length > 0 },
+    };
+  });
+  const threadsOf = new Map<string, ThreadSummary[]>();
+  const threads = (workspaceId: string): ThreadSummary[] => {
+    let list = threadsOf.get(workspaceId);
+    if (!list) {
+      try {
+        list = ports.roomReadable(workspaceId) ? rooms.threads(workspaceId) : [];
+      } catch {
+        list = [];
+      }
+      threadsOf.set(workspaceId, list);
+    }
+    return list;
+  };
+  const info = botInfo(all);
+  const names = new Map<string, string | null>();
+  const workspaceName = (workspaceId: string): string | null => {
+    if (!names.has(workspaceId)) names.set(workspaceId, ports.workspaceName(workspaceId));
+    return names.get(workspaceId) ?? null;
+  };
+  const rows: Array<PhoneBotsConversation & { order: string }> = [];
+  const activity = (workspaceId: string, scope: ConversationScope, createdAt: number) => {
+    try {
+      return conversationActivity(rooms, workspaceId, scope, createdAt, info);
+    } catch {
+      return { lastAt: createdAt, lastSeq: 0, unread: null, openQuestions: 0 };
+    }
+  };
+  for (const group of groups) {
+    const ws = workspaceName(group.workspaceId);
+    rows.push({
+      order: `group:${group.id}`,
+      kind: 'group', threadId: group.threadId, workspaceId: group.workspaceId,
+      ...(ws ? { workspaceName: ws } : {}),
+      name: group.name || ws || '',
+      groupId: group.id,
+      memberBotIds: group.memberIds.filter((id) => all.some((b) => b.id === id && b.workspaceId === group.workspaceId)),
+      ...activity(group.workspaceId, groupScope(threads(group.workspaceId), group), group.createdAt),
+    });
+  }
+  for (const b of sorted) {
+    const ws = workspaceName(b.workspaceId);
+    rows.push({
+      order: `bot:${b.id}`,
+      kind: 'dm', threadId: dmThreadId(b.id), workspaceId: b.workspaceId,
+      ...(ws ? { workspaceName: ws } : {}),
+      name: b.name, botId: b.id, memberBotIds: [b.id],
+      ...activity(b.workspaceId, dmScope(threads(b.workspaceId), b.id), b.createdAt),
+    });
+  }
+  rows.sort((a, b) => b.lastAt - a.lastAt || a.order.localeCompare(b.order));
+  const conversations: PhoneBotsConversation[] = [];
+  for (const { order: _order, ...row } of rows) {
+    const parsed = parsePhoneBotsConversation(row);
+    if (parsed) conversations.push(parsed);
+  }
+  const parsedBots = bots.map(parsePhoneBotsBot).filter((b): b is PhoneBotsBot => b !== null);
+  return fitPhoneBots({ factoryEnabled: settings.enabled, bots: parsedBots, conversations });
+}
+
+/** `workspaces.bots`; null for any other command. */
+export function handlePhoneBotsCommand(command: string, ports: () => PhoneBotsPorts = defaultPhoneBotsPorts): PhoneBotsReply | { unavailable: true } | null {
+  if (command !== PHONE_BOTS_COMMAND) return null;
+  return phoneBotsReply(ports()) ?? { unavailable: true };
 }

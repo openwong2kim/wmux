@@ -531,6 +531,59 @@ describe('phone → HQ bot', () => {
   });
 });
 
+describe('phone → one conversation (workspaceId + threadId)', () => {
+  const lead = bot('bot-000000bb', 'lead');
+  const triage = bot('bot-000000cc', 'triage', { createdAt: 1 });
+  const off = bot('bot-000000dd', 'verifier', { enabled: false, createdAt: 2 });
+  const group = { id: 'grp-0000abcd', workspaceId: 'ws-1', name: 'Crew', memberIds: [lead.id, triage.id], threadId: 'group:grp-0000abcd' as const, createdAt: 0, updatedAt: 0 };
+  const idle = { id: 'grp-0000dead', workspaceId: 'ws-1', name: 'Idle', memberIds: [off.id], threadId: 'group:grp-0000dead' as const, createdAt: 0, updatedAt: 0 };
+  function deps() {
+    const writer = new RoomWriter({ dir: path.join(dir, 'factory', 'rooms') });
+    const queue = newQueue();
+    const groups = [group, idle];
+    return {
+      writer,
+      queue,
+      d: {
+        settings: () => ({ ...DEFAULT_FACTORY_SETTINGS, enabled: true }),
+        writer: () => writer,
+        ports: () => ({
+          factLog: log, wakes: queue, bots: dirOf([lead, triage, off]),
+          groups: { byThread: (ws: string, t: string | null | undefined) => groups.find((g) => g.workspaceId === ws && g.threadId === t) ?? null },
+        }),
+      },
+    };
+  }
+  const msg = (threadId: string, over: Record<string, unknown> = {}) => ({ clientMessageId: 'm-1', text: 'Ship it?', actor: 'device:abc', mode: 'factory' as const, workspaceId: 'ws-1', threadId, ...over });
+
+  it('a 1:1: a human card in that bot\'s thread and one wake for it alone', () => {
+    const { d, writer, queue } = deps();
+    expect(factoryPhoneMessage(msg(`dm:${triage.id}`), d)).toEqual({ ok: true, accepted: true, queued: true });
+    expect(writer.read('ws-1').cards).toMatchObject([{ kind: 'human', threadId: `dm:${triage.id}`, refs: { botId: triage.id }, clientPostId: expect.stringMatching(/^phone:[0-9a-f]{16}:m-1$/) }]);
+    expect(queue.list({ states: ['queued'] }).map((i) => [i.botId, i.threadId])).toEqual([[triage.id, `dm:${triage.id}`]]);
+  });
+
+  it('a group: one card in its thread and a wake for each enabled member', () => {
+    const { d, writer, queue } = deps();
+    expect(factoryPhoneMessage(msg(group.threadId), d)).toEqual({ ok: true, accepted: true, queued: true });
+    expect(writer.read('ws-1').cards).toMatchObject([{ threadId: group.threadId, refs: { botIds: [lead.id, triage.id] } }]);
+    expect(queue.list({ states: ['queued'] }).map((i) => i.botId).sort()).toEqual([lead.id, triage.id]);
+  });
+
+  it('refuses before posting: a missing or switched-off bot, a missing group, a group with no bot on', () => {
+    const { d, writer, queue } = deps();
+    expect(factoryPhoneMessage(msg(`dm:${off.id}`), d)).toEqual({ ok: false, code: 'bot_off' });
+    expect(factoryPhoneMessage(msg('dm:bot-0000ffff'), d)).toEqual({ ok: false, code: 'bot_missing' });
+    // A bot of another workspace is no 1:1 of this room.
+    expect(factoryPhoneMessage(msg(`dm:${lead.id}`, { workspaceId: 'ws-2' }), d)).toEqual({ ok: false, code: 'bot_missing' });
+    expect(factoryPhoneMessage(msg('group:grp-00000000'), d)).toEqual({ ok: false, code: 'group_missing' });
+    expect(factoryPhoneMessage(msg('general'), d)).toEqual({ ok: false, code: 'group_missing' });
+    expect(factoryPhoneMessage(msg(idle.threadId), d)).toEqual({ ok: false, code: 'group_off' });
+    expect(writer.read('ws-1').cards).toEqual([]);
+    expect(queue.list({ states: ['queued'] })).toEqual([]);
+  });
+});
+
 describe('owner message → exactly one turn', () => {
   const lead = (): BotProfile => bot('bot-0000000l', 'lead', { triggers: [...defaultTriggers('lead'), { kind: 'human.message' }] });
 
