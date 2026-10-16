@@ -10,7 +10,9 @@
 //   - WHERE: origin's URL, read from the repository config right before the
 //     push and pushed to as a URL (not through the remote's name). Refused
 //     when origin sets anything but its URL and fetch refspec, when any URL
-//     rewrite or a program-running key is set (worktask/workerGit.ts), and —
+//     rewrite or a program-running key is set (worktask/workerGit.ts), when
+//     the config defines a remote named by origin's URL (the same remote and
+//     ref checks as task_fetch), and —
 //     for a bot's task — when the URL is not a plain https/ssh address of the
 //     bot's own repository. A task of the operator's goes to the operator's
 //     own origin.
@@ -49,7 +51,7 @@ import { mergeWslEnv } from '../../shared/wsl';
 import { decodeWslOutput, isValidWslDistroName } from '../../shared/wslDistro';
 import { BOT_WORKER_FALLBACK_DEFAULT_BRANCHES, isDenyableBranchName } from '../../shared/botWorkerGuard';
 import { normalizeRepoKey } from '../../shared/repoKey';
-import { originUrlRepoKey, workerGitEnv, workerGitPreflight, workerGitSafeArgs, workerOriginRefusal } from './workerGit';
+import { originUrlRepoKey, urlNamedRemoteRefusal, workerGitEnv, workerGitPreflight, workerGitSafeArgs, workerOriginRefusal } from './workerGit';
 
 const execFileP = promisify(execFile);
 
@@ -222,6 +224,8 @@ export async function pushTaskBranch(input: TaskPushInput, git: TaskPushGit = de
   if ('error' in origin) {
     return { ok: false, reason: /no origin remote/.test(origin.error) ? 'no-origin' : 'remote-refused', error: origin.error };
   }
+  const named = urlNamedRemoteRefusal(pre.entries, origin.url);
+  if (named) return { ok: false, reason: 'config-refused', error: named };
   const key = originUrlRepoKey(origin.url);
   if (input.expectedRepoKey !== undefined) {
     const expected = normalizeRepoKey(input.expectedRepoKey);
@@ -259,8 +263,9 @@ export async function pushTaskBranch(input: TaskPushInput, git: TaskPushGit = de
     const rejected = /^!\t/m.test(res.stdout);
     return { ok: false, reason: rejected ? 'rejected' : 'git-failed', error: output || `git push exited ${res.code}` };
   }
-  // The upstream, as `--set-upstream origin` would set it.
-  await run(['update-ref', `refs/remotes/origin/${input.branch}`, sha]);
+  // The upstream, as `--set-upstream origin` would set it: the ref itself,
+  // never what a symbolic ref there names.
+  await run(['update-ref', '--no-deref', `refs/remotes/origin/${input.branch}`, sha]);
   await run(['config', `branch.${input.branch}.remote`, 'origin']);
   await run(['config', `branch.${input.branch}.merge`, `refs/heads/${input.branch}`]);
   return { ok: true, branch: input.branch, remote: 'origin', head: sha, output };

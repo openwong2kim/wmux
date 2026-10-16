@@ -111,6 +111,7 @@ describe('fetchTaskRefs', () => {
     git(work, 'remote', 'add', 'upstream', 'https://github.com/acme/app.git');
     expect(await fetchTaskRefs(input())).toMatchObject({ ok: true });
     expect(taskFetchConfigRefusal([{ scope: 'global', key: 'fetch.bundleuri', value: 'x' }], origin)).toBeNull();
+    expect(taskFetchConfigRefusal([{ scope: 'global', key: `remote.${origin.toLowerCase()}.url`, value: 'x' }], origin)).toBeNull();
   });
 
   it('fetches each branch into main\'s own namespace, at origin\'s URL, with no tags, submodules or FETCH_HEAD', () => {

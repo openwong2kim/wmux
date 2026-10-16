@@ -28,7 +28,7 @@ import path from 'node:path';
 import { isDenyableBranchName } from '../../shared/botWorkerGuard';
 import { normalizeRepoKey } from '../../shared/repoKey';
 import { defaultGit, parseLsRemoteHead, readDotGitFile, taskPushGitTarget, wslTaskPushGit, type TaskPushDeps, type TaskPushGit } from './taskPush';
-import { originUrlRepoKey, workerGitPreflight, workerGitSafeArgs, workerOriginRefusal, type GitConfigEntry } from './workerGit';
+import { originUrlRepoKey, urlNamedRemoteRefusal, workerGitPreflight, workerGitSafeArgs, workerOriginRefusal, type GitConfigEntry } from './workerGit';
 
 export interface TaskFetchInput {
   /** The task's worktree (main's record). */
@@ -66,9 +66,10 @@ export function parseLsRemoteHeads(stdout: string): Map<string, string> {
  *  that remote, with its own URL and refspecs), or a bundle URI (fetched
  *  from wherever it names). Only the repository's own scopes count. Pure. */
 export function taskFetchConfigRefusal(entries: readonly GitConfigEntry[], url: string): string | null {
+  const named = urlNamedRemoteRefusal(entries, url);
+  if (named) return named;
   const own = entries.filter((e) => e.scope === 'local' || e.scope === 'worktree');
-  const asRemote = `remote.${url.toLowerCase()}.`;
-  const hit = own.find((e) => e.key.startsWith(asRemote) || /^(?:fetch|transfer)\.bundleuri$/.test(e.key) || e.key.startsWith('bundle.'));
+  const hit = own.find((e) => /^(?:fetch|transfer)\.bundleuri$/.test(e.key) || e.key.startsWith('bundle.'));
   return hit ? `the repository's git config sets ${hit.key}, which main does not fetch with` : null;
 }
 

@@ -94,6 +94,16 @@ export function workerOriginRefusal(entries: readonly GitConfigEntry[]): { error
   return { url: urls[0].value };
 }
 
+/** Why main will not use origin's URL with git, or null: the repository
+ *  config defines a remote named by that URL, and git would take the URL for
+ *  that remote, with its own URLs and refspecs. Only the repository's own
+ *  scopes count; keys are compared lowercased. Pure. */
+export function urlNamedRemoteRefusal(entries: readonly GitConfigEntry[], url: string): string | null {
+  const asRemote = `remote.${url.toLowerCase()}.`;
+  const hit = entries.find((e) => (e.scope === 'local' || e.scope === 'worktree') && e.key.startsWith(asRemote));
+  return hit ? `the repository's git config sets ${hit.key}, a remote named by origin's URL` : null;
+}
+
 /** Path segments a repository address may hold after its host: GitLab nests
  *  groups up to 20 deep under the project. */
 const MAX_REPO_PATH_SEGMENTS = 21;

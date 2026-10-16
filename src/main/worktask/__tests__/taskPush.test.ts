@@ -70,6 +70,23 @@ describe('pushTaskBranch', () => {
     expect(git(origin, 'tag', '--list')).toBe('');
   });
 
+  it('applies the same remote and ref checks as task_fetch: a remote named by origin\'s URL is refused, a symbolic upstream ref is replaced', async () => {
+    const other = path.join(root, 'other.git');
+    execFileSync('git', ['init', '-q', '--bare', other]);
+    git(work, 'config', `remote.${origin}.pushurl`, other);
+    expect(await pushTaskBranch(input())).toMatchObject({ ok: false, reason: 'config-refused', error: expect.stringContaining(`remote.${origin.toLowerCase()}.pushurl`) });
+    expect(git(other, 'for-each-ref')).toBe('');
+    expect(git(origin, 'for-each-ref', '--format=%(refname)', 'refs/heads')).toBe('refs/heads/main');
+    git(work, 'config', '--unset', `remote.${origin}.pushurl`);
+    // origin/<task branch> pointing at a local branch: the push sets the ref itself.
+    const main = git(work, 'rev-parse', 'refs/heads/main');
+    git(work, 'symbolic-ref', 'refs/remotes/origin/wtask/one', 'refs/heads/main');
+    expect(await pushTaskBranch(input())).toMatchObject({ ok: true });
+    expect(git(work, 'rev-parse', 'refs/heads/main')).toBe(main);
+    expect(git(work, 'rev-parse', 'refs/remotes/origin/wtask/one')).toBe(git(work, 'rev-parse', 'HEAD'));
+    expect(() => git(work, 'symbolic-ref', '-q', 'refs/remotes/origin/wtask/one')).toThrow();
+  });
+
   it('runs none of the worktree\'s own hooks', async () => {
     const hook = path.join(work, '.git', 'hooks', 'pre-push');
     const marker = path.join(root, 'hook-ran');
