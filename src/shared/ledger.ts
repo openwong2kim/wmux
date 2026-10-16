@@ -66,8 +66,13 @@ export interface LedgerGateResult {
    *  nothing to fail — `completed` is allowed (the exitCode is 0) and the
    *  ledger says why, in `command: 'none'` and in the tail. The other two skips
    *  (`deps_missing`, `gate_unavailable`) are NOT recorded at all: there a gate
-   *  existed and the environment stopped it, which is a human's problem. */
-  skipped?: 'no_gate_command';
+   *  existed and the environment stopped it, which is a human's problem.
+   *  `no_changes` (written by the bot task gate, factory/taskGate.ts): the
+   *  task's branch has no commits beyond the commit it started from, so a gate
+   *  would grade that base and not the task. Recorded the same way, so the
+   *  bot that reads the report can settle it `completed` or `failed`; the
+   *  system completes nothing on it (isSystemGatePass refuses any skip). */
+  skipped?: 'no_gate_command' | 'no_changes';
   /** The worktree HEAD the gate ran on: read by the gate runner before the
    *  run and again after it, and set only when both reads agree. Absent when
    *  HEAD could not be read or moved during the run — such a result is not

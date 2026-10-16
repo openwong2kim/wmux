@@ -10,11 +10,11 @@ import { TaskLedger } from '../../../daemon/ledger/TaskLedger';
 import { DEFAULT_BOT_BUDGETS, type BotProfile } from '../../../shared/bot';
 import type { LedgerEntry, LedgerGateResult } from '../../../shared/ledger';
 import type { GateRunInput, GateRunResult } from '../../worktask/TaskGateRunner';
-import { MERGE_ANSWER_TTL_MS, MERGE_BACKOFF_MAX_MS, MERGE_SWEEP_MAX, completeCheckedTask, completeMergedTask, completeResearchTask, describeTaskGate, gateCardNoted, installTaskGate, isMergeCompletion, isTaskGateReport, mergeBackoffMs, mergedMark, reportWasGated, worktreeHeadMerged, type BranchPr, type TaskGatePorts } from '../taskGate';
+import { MERGE_ANSWER_TTL_MS, MERGE_BACKOFF_MAX_MS, MERGE_SWEEP_MAX, completeCheckedTask, completeMergedTask, completeResearchTask, describeTaskGate, gateCardNoted, installTaskGate, isMergeCompletion, isTaskGateReport, mergeBackoffMs, mergedMark, noChangesDetail, recordNoChangesGate, reportWasGated, worktreeHeadMerged, type BranchPr, type TaskGatePorts } from '../taskGate';
 import { factDedupeKey, type Fact } from '../../../shared/facts';
 import type { RoomCard } from '../../../shared/room';
 import { RoomWriter } from '../roomWriter';
-import { verifyGateFactId } from '../verifyPreset';
+import { taskBaseFromStamp, verifyGateFactId } from '../verifyPreset';
 import { countOpenBotWorkers } from '../../pipe/handlers/fanout.rpc';
 
 const BOT = 'bot-0000000a';
@@ -1069,6 +1069,34 @@ describe('a merged pull request ends its task', { timeout: 30_000 }, () => {
     });
   }
 
+  it('at install, a deferred report with no commits that the sweep later gates gets the no_changes skip, not a gate run', async () => {
+    const BASE = 'b'.repeat(40);
+    await registerTask();
+    await report();
+    let worktree: string | null = null;
+    const r = mergeRig({}, { 'task-1': 'wmux/task-1' }, {
+      mergeSweepMs: 20,
+      worktreeOf: async () => worktree,
+      taskBase: async () => BASE,
+      recordNoChanges: (id, detail) => recordNoChangesGate(ledger, id, detail),
+    }, undefined, { 'task-1': [BASE] });
+    await flush();
+    // Deferred: the check could not answer, so nothing ran and nobody was woken.
+    expect(r.runGate).not.toHaveBeenCalled();
+    expect(r.note).not.toHaveBeenCalled();
+    expect(r.wake).not.toHaveBeenCalled();
+    worktree = '/wt/task-1';
+    await vi.waitFor(() => expect(r.wake).toHaveBeenCalledTimes(1), { interval: 2, timeout: 15_000 });
+    await new Promise((res) => setTimeout(res, 80));
+    expect(r.wake).toHaveBeenCalledTimes(1);
+    expect(r.runGate).not.toHaveBeenCalled();
+    const row = ledger.get('task-1') as LedgerEntry;
+    expect(row.status).toBe('review_requested');
+    expect(row.gate).toMatchObject({ exitCode: 0, command: 'none', skipped: 'no_changes', recordedBy: 'system' });
+    expect(r.note.mock.calls.map((c) => c[2])).toEqual(['Gate skipped (the task made no changes): task left open']);
+    r.off();
+  });
+
   it('nothing after the unsubscribe: no sweep, no live fact, and a check under way writes nothing', async () => {
     // A report whose gate failed before a restart: the install's merge check
     // (the PR is merged) waits on the branch read.
@@ -1148,5 +1176,160 @@ describe('completeMergedTask', () => {
     expect(await completeMergedTask(always, 'b', 3)).toEqual({ entry: null, why: 'the task kept changing' });
     expect(always.update).toHaveBeenCalledTimes(2);
     expect(real.get('b')?.status).toBe('review_requested');
+  });
+});
+
+// A task with no commits beyond the commit it started from (an operational
+// task: call an API, read a log) is not gated: a gate there grades the base,
+// and a pass completed tasks whose own report said they failed.
+describe('a task with no commits beyond its base', () => {
+  const BASE = 'b'.repeat(40);
+  /** The rig with the no-changes ports: `ahead` says whether the worktree's
+   *  HEAD has commits beyond the base (headMerged answers the opposite). */
+  function noChangeRig(opts: { base?: string | null; ahead?: boolean; headMerged?: TaskGatePorts['headMerged'] } = {}, runGate = recordingRunner(PASS)) {
+    const taskBase = vi.fn<NonNullable<TaskGatePorts['taskBase']>>(async () => (opts.base === undefined ? BASE : opts.base));
+    const headMerged = vi.fn<NonNullable<TaskGatePorts['headMerged']>>(opts.headMerged ?? (async () => !(opts.ahead ?? false)));
+    const recordNoChanges = vi.fn((taskId: string, detail: string) => recordNoChangesGate(ledger, taskId, detail, () => 7));
+    const r = rig({ taskBase, headMerged, recordNoChanges }, runGate);
+    return { ...r, taskBase, headMerged, recordNoChanges };
+  }
+
+  it('no commits, a passing gate command: the gate never runs, the task is not completed, a no_changes skip is recorded, one card and one wake', async () => {
+    await register();
+    const r = noChangeRig();
+    await report();
+    await flush();
+    expect(r.runGate).not.toHaveBeenCalled();
+    expect(r.taskBase).toHaveBeenCalledWith(expect.objectContaining({ id: 'task-1' }), '/wt/task');
+    expect(r.headMerged).toHaveBeenCalledWith('/wt/task', BASE);
+    const row = ledger.get('task-1') as LedgerEntry;
+    expect(row.status).toBe('review_requested');
+    expect(row.gate).toEqual({ exitCode: 0, tail: noChangesDetail(BASE), at: 7, command: 'none', skipped: 'no_changes', recordedBy: 'system' });
+    expect(row.updatedBy.kind).toBe('system');
+    expect(r.note).toHaveBeenCalledTimes(1);
+    const [, , title, body, key, notice] = r.note.mock.calls[0];
+    expect(title).toBe('Gate skipped (the task made no changes): task left open');
+    expect(body).toBe(noChangesDetail(BASE));
+    expect(key).toBe(verifyGateFactId('task-1', row.rev));
+    expect(notice).toEqual({ code: 'gate.skipped', args: { reason: 'no_changes' } });
+    expect(r.wake).toHaveBeenCalledTimes(1);
+    expect(r.wake.mock.calls[0][0].reason.factIds).toEqual([verifyGateFactId('task-1', row.rev)]);
+  });
+
+  it('the bot then settles it failed from the report', async () => {
+    await register();
+    noChangeRig();
+    await report();
+    await flush();
+    const row = ledger.get('task-1') as LedgerEntry;
+    const r = await ledger.update({ id: 'task-1', status: 'failed', actor: { kind: 'brain', workspaceId: 'ws-lead' }, expectedRev: row.rev, summary: 'the API call failed (WebException)' });
+    expect(r.ok).toBe(true);
+    expect(ledger.get('task-1')?.status).toBe('failed');
+  });
+
+  it('or settles it completed, unforced (a bot cannot force), on the recorded skip', async () => {
+    await register();
+    noChangeRig();
+    await report();
+    await flush();
+    const row = ledger.get('task-1') as LedgerEntry;
+    const r = await ledger.update({ id: 'task-1', status: 'completed', actor: { kind: 'brain', workspaceId: 'ws-lead' }, expectedRev: row.rev });
+    expect(r.ok).toBe(true);
+    const done = ledger.get('task-1') as LedgerEntry;
+    expect(done.status).toBe('completed');
+    expect(done.summary).toBe('done'); // no [forced: …]
+    expect(done.gate?.skipped).toBe('no_changes');
+  });
+
+  it('a task with commits beyond its base is gated and completed on a pass, as before', async () => {
+    await register();
+    const r = noChangeRig({ ahead: true });
+    await report();
+    await flush();
+    expect(r.headMerged).toHaveBeenCalledWith('/wt/task', BASE);
+    expect(r.runGate).toHaveBeenCalledTimes(1);
+    expect(r.recordNoChanges).not.toHaveBeenCalled();
+    const row = ledger.get('task-1') as LedgerEntry;
+    expect(row.status).toBe('completed');
+    expect(row.gate?.skipped).toBeUndefined();
+    expect(r.note.mock.calls.map((c) => c[2])).toEqual(['Task checked: gate passed, task completed']);
+  });
+
+  it('base unknown (no recorded base, or the comparison fails): the gate runs as before', async () => {
+    await register('a');
+    await register('b');
+    const r = noChangeRig({ base: null });
+    await report('a');
+    await flush();
+    expect(r.headMerged).not.toHaveBeenCalled();
+    expect(r.runGate).toHaveBeenCalledTimes(1);
+    expect(ledger.get('a')?.status).toBe('completed');
+    r.off();
+    const thrown = noChangeRig({ headMerged: async () => { throw new Error('git is gone'); } });
+    await report('b');
+    await flush();
+    expect(thrown.runGate).toHaveBeenCalledTimes(1);
+    expect(thrown.recordNoChanges).not.toHaveBeenCalled();
+    expect(ledger.get('b')?.status).toBe('completed');
+  });
+
+  it('without the no-changes ports every report is gated, as before', async () => {
+    await register();
+    const r = rig({ headMerged: async () => true });
+    await report();
+    await flush();
+    expect(r.runGate).toHaveBeenCalledTimes(1);
+    expect(ledger.get('task-1')?.status).toBe('completed');
+  });
+
+  it('restart: a recorded no_changes skip is not gated again, only woken', async () => {
+    await register();
+    const first = noChangeRig();
+    await report();
+    await flush();
+    first.off();
+    const r = noChangeRig();
+    await flush();
+    expect(r.runGate).not.toHaveBeenCalled();
+    expect(r.recordNoChanges).not.toHaveBeenCalled();
+    expect(r.wake).toHaveBeenCalledTimes(1);
+    expect(ledger.get('task-1')?.status).toBe('review_requested');
+  });
+
+  it('a skip that did not land in the ledger says so; the task stays open', async () => {
+    await register();
+    const r = rig({ taskBase: async () => BASE, headMerged: async () => true, recordNoChanges: async () => false });
+    await report();
+    await flush();
+    expect(r.runGate).not.toHaveBeenCalled();
+    expect(ledger.get('task-1')?.status).toBe('review_requested');
+    expect(ledger.get('task-1')?.gate).toBeUndefined();
+    expect(r.note.mock.calls[0][3]).toContain('NOT recorded');
+  });
+
+  it('recordNoChangesGate records only on a reported row', async () => {
+    await register();
+    expect(await recordNoChangesGate(ledger, 'task-1', 'x')).toBe(false);
+    expect(await recordNoChangesGate(ledger, 'missing', 'x')).toBe(false);
+    expect(ledger.get('task-1')?.gate).toBeUndefined();
+  });
+});
+
+describe('taskBaseFromStamp', () => {
+  const row = (checkout?: boolean): LedgerEntry => ({
+    id: 't', dispatch: { origin: { kind: 'bot', botId: BOT }, ...(checkout ? { checkout: { sha: 'a'.repeat(40), detached: true as const } } : {}) },
+  } as LedgerEntry);
+  it('reads the base fan-out stamped beside the worktree; null when absent, malformed, or a detached checkout', async () => {
+    const worktree = path.join(dir, 'wt', 'task');
+    const meta = path.join(dir, 'wt', '.meta', 'task');
+    fs.mkdirSync(meta, { recursive: true });
+    expect(await taskBaseFromStamp(row(), worktree)).toBeNull();
+    fs.writeFileSync(path.join(meta, 'task.json'), JSON.stringify({ taskId: 't', title: 't', createdAt: 1, baseOid: 'd'.repeat(40) }));
+    expect(await taskBaseFromStamp(row(), worktree)).toBe('d'.repeat(40));
+    expect(await taskBaseFromStamp(row(true), worktree)).toBeNull();
+    fs.writeFileSync(path.join(meta, 'task.json'), JSON.stringify({ taskId: 't', title: 't', createdAt: 1, baseOid: 'HEAD' }));
+    expect(await taskBaseFromStamp(row(), worktree)).toBeNull();
+    fs.writeFileSync(path.join(meta, 'task.json'), 'not json');
+    expect(await taskBaseFromStamp(row(), worktree)).toBeNull();
   });
 });

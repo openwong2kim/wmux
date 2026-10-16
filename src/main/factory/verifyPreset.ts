@@ -18,11 +18,15 @@
 // review_requested wake (fanoutCallerNotify) comes first, before the gate
 // exists; the verifier's prompt says to end that turn.
 
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import type { LedgerEntry } from '../../shared/ledger';
 import type { BotProfile } from '../../shared/bot';
 import { taskThreadOf, type CardNotice, type ThreadId } from '../../shared/room';
 import type { WakeReason } from '../../shared/wake';
 import type { GateRunInput, GateRunResult } from '../worktask/TaskGateRunner';
+import { metaDirForWorktree } from '../worktask/TaskWorktreeManager';
+import { WORKTASK_META_FILENAME } from '../../shared/workTask';
 
 /** The fact id a recorded verify gate wakes its bot with. */
 export function verifyGateFactId(taskId: string, rev: number): string {
@@ -215,6 +219,24 @@ export async function taskFolderFromMissions(rpc: Rpc | null, entry: LedgerEntry
     if (typeof t.outputDir === 'string' && t.outputDir) return t.outputDir;
   }
   return null;
+}
+
+/**
+ * The commit a task's branch started from: the `baseOid` fan-out stamped in
+ * the task.json beside its worktree (a full commit id). Null when none is
+ * recorded or it cannot be read: a task that fell back to the owner's HEAD, a
+ * stamp written before the base was stamped, or a detached checkout (its
+ * stamp names origin's default branch, not the commit it checked out).
+ */
+export async function taskBaseFromStamp(entry: LedgerEntry, worktreePath: string): Promise<string | null> {
+  if (entry.dispatch?.checkout) return null;
+  try {
+    const raw = await fs.promises.readFile(path.join(metaDirForWorktree(worktreePath), WORKTASK_META_FILENAME), 'utf8');
+    const oid = (JSON.parse(raw) as { baseOid?: unknown } | null)?.baseOid;
+    return typeof oid === 'string' && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(oid) ? oid : null;
+  } catch {
+    return null;
+  }
 }
 
 /** origin's default branch (`origin/<name>`): origin/HEAD, else main or master. */

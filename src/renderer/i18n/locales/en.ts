@@ -1817,6 +1817,7 @@ export const en = {
   'room.notice.gate.skipped': "Gate skipped ({reason}): task left open",
   'room.notice.gate.reason.gate_unavailable': "the gate command could not start",
   'room.notice.gate.reason.no_gate_command': "no gate command is set",
+  'room.notice.gate.reason.no_changes': "the task made no changes",
   'room.notice.gate.reason.deps_missing': "dependencies are not installed",
   'room.notice.gate.busy': "Gate already running: task left open",
   'room.notice.gate.busy.body': "Another gate run holds this task; its result is in the task's ledger row when it ends.",

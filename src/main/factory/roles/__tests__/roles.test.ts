@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 import { BOT_ROLES, BOT_TEMPLATES, DEFAULT_BOT_BUDGETS, TEMPLATE_LEGACY_ROLE, type BotProfile, type BotRole, type BotTemplate } from '../../../../shared/bot';
 import { BOT_TOOL_RPC, SHARED_SURFACE } from '../../../../shared/botSurface';
 import { TEMPLATE_DEFINITIONS, rolePrompt, templateDefinitionOf } from '../index';
-import { renderBotPrompt } from '../common';
+import { NO_CHANGES_SETTLE, renderBotPrompt } from '../common';
 import { BOT_FANOUT_PRESETS } from '../../../worktask/botFanoutPresets';
 
 function profile(template: BotTemplate, over: Partial<BotProfile> = {}): BotProfile {
@@ -96,6 +96,17 @@ describe('bot prompts (job, powers and outputs)', () => {
     expect(templateDefinitionOf({ role: 'verifier' })).toBe(TEMPLATE_DEFINITIONS.reviewer);
     expect(rolePrompt({ ...profile('custom'), role: 'maintainer' })).toMatch(/verify-wmux feature map/);
     expect(rolePrompt({ ...profile('custom'), role: 'maintainer', job: 'Something else.' })).toContain('Your job:\nSomething else.');
+  });
+
+  it('a bot whose tasks the task gate checks is told to settle a no_changes task from its report, completed or failed', () => {
+    const ledgerLine = (prompt: string): string => prompt.split('\n').find((l) => l.startsWith('- ledger_update: ')) ?? '';
+    // The reviewer's verify tasks have their own gate and are never skipped for no_changes.
+    for (const template of BOT_TEMPLATES.filter((t) => t !== 'reviewer')) {
+      expect({ template, says: ledgerLine(rolePrompt(profile(template))).includes(NO_CHANGES_SETTLE) }).toEqual({ template, says: true });
+    }
+    expect(ledgerLine(rolePrompt({ ...profile('custom'), role: 'maintainer' }))).toContain(NO_CHANGES_SETTLE);
+    expect(NO_CHANGES_SETTLE).toMatch(/skipped "no_changes"/);
+    expect(NO_CHANGES_SETTLE).toMatch(/completed when the report shows the job done, failed when it shows the job failed/);
   });
 
   it('any bot with a repository has the Read / Grep / Glob power line, a Coordinator included; a bot without one does not', () => {

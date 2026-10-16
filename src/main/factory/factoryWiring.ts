@@ -84,8 +84,8 @@ import { git } from '../git/git';
 import { getSharedTaskGateRunner } from '../worktask/TaskGateRunner';
 import { isPidAlive, sessionsStartedIn, stopSessionsInDir } from '../worktask/stopSessionsInDir';
 import { getWorkspaceMirror } from '../workspace/WorkspaceMirror';
-import { originDefaultRef, taskFolderFromMissions, worktreeFromMissions } from './verifyPreset';
-import { completeCheckedTask, completeMergedTask, completeResearchTask, gateCardNoted, installTaskGate, worktreeHeadMerged } from './taskGate';
+import { originDefaultRef, taskBaseFromStamp, taskFolderFromMissions, worktreeFromMissions } from './verifyPreset';
+import { completeCheckedTask, completeMergedTask, completeResearchTask, gateCardNoted, installTaskGate, recordNoChangesGate, worktreeHeadMerged } from './taskGate';
 import { TaskBranchCache, setBotTaskSources } from './botTasks';
 import { installLateStopSweep, setFactoryStopPorts, type FactoryStopPorts } from './factoryStop';
 import { getRoutineStore } from './routines';
@@ -766,6 +766,9 @@ export function createFactoryWiring(deps: Pick<FactoryHostDeps, 'wmuxDir'> & Par
           },
           headMerged: (worktreePath, sha) => worktreeHeadMerged(git, worktreePath, sha),
           completeMerged: (taskId, pr, checkedRev) => completeMergedTask(ledger, taskId, pr, checkedRev),
+          // A task with no commits beyond its base is not gated.
+          taskBase: (entry, worktreePath) => taskBaseFromStamp(entry, worktreePath),
+          recordNoChanges: (taskId, detail) => recordNoChangesGate(ledger, taskId, detail),
           wake: (input) => {
             const q = getWakeQueue();
             if (!q) console.info(`[factory] wake queue not running; ${input.botId} was not woken`);

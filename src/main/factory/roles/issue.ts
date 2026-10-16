@@ -1,7 +1,7 @@
 // The Issue template: one reproduction attempt per issue, then the fix.
 // Job, powers and outputs only (common.ts).
 
-import type { TemplateDefinition } from './common';
+import { NO_CHANGES_SETTLE, type TemplateDefinition } from './common';
 
 export const ISSUE_TEMPLATE: TemplateDefinition = {
   template: 'issue',
@@ -11,7 +11,7 @@ export const ISSUE_TEMPLATE: TemplateDefinition = {
     issue_read: 'read one issue (body, labels, recent comments) or the open issues, optionally by label.',
     pr_read: 'read a pull request a worker opened: head, files, checks.',
     fanout_start: 'start one worker with preset "repro": its prompt is the issue (number, title, what to reproduce). The worker reproduces, writes a failing test, attempts a minimal fix and opens a draft pull request.',
-    ledger_update: 'settle the repro task once you have reported it: completed when its gate passed, failed or cancelled otherwise.',
+    ledger_update: `settle the repro task once you have reported it: completed when its gate passed, failed or cancelled otherwise. ${NO_CHANGES_SETTLE}`,
     terminal_read: 'read the repro worker\'s pane when its summary leaves the outcome unclear.',
     handoff_send: 'send the outcome to the bot that should act on it (to_bot_id), or report back to the bot that handed you the issue (kind "result").',
     ask_person: 'ask the owner when an issue needs a decision before anyone reproduces it (scope, priority, which behaviour is right).',

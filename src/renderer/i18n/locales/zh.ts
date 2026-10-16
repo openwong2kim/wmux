@@ -1913,6 +1913,7 @@ export const zh = {
   'room.notice.gate.skipped': "检查已跳过（{reason}）：任务保持打开",
   'room.notice.gate.reason.gate_unavailable': "检查命令无法启动",
   'room.notice.gate.reason.no_gate_command': "未设置检查命令",
+  'room.notice.gate.reason.no_changes': "任务没有做出任何更改",
   'room.notice.gate.reason.deps_missing': "依赖未安装",
   'room.notice.gate.busy': "检查已在运行：任务保持打开",
   'room.notice.gate.busy.body': "另一次检查运行正占用此任务；结束后其结果会记录在任务的账本行中。",

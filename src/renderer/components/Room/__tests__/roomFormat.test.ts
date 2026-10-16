@@ -220,6 +220,12 @@ describe('factory system cards in the reader\'s language (RoomCard.notice)', () 
     expect(noticeText(card({ notice: { code: 'gate.skipped', args: { reason: 'brand_new' } } }), i18nT)?.title).toBe('게이트 건너뜀 (brand_new): 작업은 열린 채로 둠');
     setLocale('en');
     expect(noticeText(card({ notice: { code: 'gate.skipped', args: { reason: 'gate_unavailable' } } }), i18nT)?.title).toBe('Gate skipped (the gate command could not start): task left open');
+    expect(noticeText(card({ notice: { code: 'gate.skipped', args: { reason: 'no_changes' } } }), i18nT)?.title).toBe('Gate skipped (the task made no changes): task left open');
+    for (const locale of ['ko', 'pl', 'zh'] as const) {
+      setLocale(locale);
+      expect(noticeText(card({ notice: { code: 'gate.skipped', args: { reason: 'no_changes' } } }), i18nT)?.title).not.toContain('no_changes');
+    }
+    setLocale('en');
   });
 
   it('a task card\'s label in the reader\'s language, a stopped task Cancelled, its evidence body kept', () => {

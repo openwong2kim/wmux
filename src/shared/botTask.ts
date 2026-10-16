@@ -49,8 +49,9 @@ export interface BotTaskView {
   stage: BotTaskStage;
   /** The fan-out preset the task ran with. */
   preset?: string;
-  /** The last system-recorded gate. `skipped` = nothing ran (no gate declared). */
-  gate?: { exitCode: number | null; at: number; skipped?: 'no_gate_command'; headSha?: string };
+  /** The last system-recorded gate. `skipped` = nothing ran (no gate
+   *  declared, or the task made no commits beyond its base). */
+  gate?: { exitCode: number | null; at: number; skipped?: 'no_gate_command' | 'no_changes'; headSha?: string };
   pr?: BotTaskPr;
   /** The ledger row's latest summary, one line (≤ BOT_TASK_SUMMARY_MAX): for
    *  `needs_input`, what the worker is waiting for. Written by the worker or

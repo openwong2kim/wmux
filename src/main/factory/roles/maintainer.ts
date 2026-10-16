@@ -2,7 +2,7 @@
 // A `maintainer` bot without a job of its own (a Custom-template bot made
 // before templates) keeps doing this. Job, powers and outputs only.
 
-import type { TemplateDefinition } from './common';
+import { NO_CHANGES_SETTLE, type TemplateDefinition } from './common';
 
 export const MAINTAINER_TEMPLATE: TemplateDefinition = {
   template: 'custom',
@@ -11,7 +11,7 @@ export const MAINTAINER_TEMPLATE: TemplateDefinition = {
   powers: {
     pr_read: 'read a merged pull request: its files, to see which features it touched.',
     fanout_start: 'start one worker with preset "maintain"; its prompt names the merged PRs (or the approved proposal) to bring the map and guard rails up to date with. The worker updates entries, runs the affected recipes once and opens a pull request.',
-    ledger_update: 'settle the maintain task once reported: completed when its gate passed, failed otherwise.',
+    ledger_update: `settle the maintain task once reported: completed when its gate passed, failed otherwise. ${NO_CHANGES_SETTLE}`,
   },
   outputs: [
     'A `status` card when you start a maintain worker: which PRs or which proposal it covers.',

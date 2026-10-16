@@ -8,6 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { TaskLedger } from '../../../../daemon/ledger/TaskLedger';
 import { registerLedgerRpc } from '../ledger.rpc';
+import { recordNoChangesGate } from '../../../factory/taskGate';
 import type { RpcContext } from '../../../../shared/rpc';
 
 type Handler = (params: Record<string, unknown>, ctx?: RpcContext) => Promise<unknown>;
@@ -48,6 +49,22 @@ describe('ledger.update — bot scope', () => {
     }
     expect(await update({ taskId: 't-mine', status: 'cancelled', expectedRev: 1, force: true, reason: 'x' }, bot('bot-0000000a')))
       .toMatchObject({ ok: false, error: { code: 'NOT_AUTHORIZED' } });
+  });
+
+  it('settles its own reported task the gate skipped for no_changes: completed (unforced) or failed', async () => {
+    await ledger.register({ id: 't-done', taskWorkspaceId: 'ws-t4', ownerWorkspaceId: 'ws-bot', title: 'done', dispatch: { origin: { kind: 'bot', botId: 'bot-0000000a' } } });
+    for (const [id, ws] of [['t-mine', 'ws-t1'], ['t-done', 'ws-t4']] as const) {
+      const r = await ledger.update({ id, status: 'review_requested', actor: { kind: 'worker', workspaceId: ws }, expectedRev: 1, summary: 'node --version is v22' });
+      if (!r.ok) throw new Error(r.message);
+    }
+    // Before the skip is recorded there is no gate: completed is refused.
+    expect(await update({ taskId: 't-done', status: 'completed', expectedRev: 2 }, bot('bot-0000000a'))).toMatchObject({ ok: false, error: { code: 'GATE_REQUIRED' } });
+    expect(await recordNoChangesGate(ledger, 't-done', 'no commits')).toBe(true);
+    expect(await recordNoChangesGate(ledger, 't-mine', 'no commits')).toBe(true);
+    expect(await update({ taskId: 't-done', status: 'completed', expectedRev: 3 }, bot('bot-0000000a'))).toMatchObject({ ok: true, entry: { status: 'completed' } });
+    expect(ledger.get('t-done')?.summary).toBe('node --version is v22');
+    expect(ledger.get('t-done')?.gate?.skipped).toBe('no_changes');
+    expect(await update({ taskId: 't-mine', status: 'failed', expectedRev: 3 }, bot('bot-0000000a'))).toMatchObject({ ok: true, entry: { status: 'failed' } });
   });
 
   it('a commander brain without a bot binding keeps its workspace-wide reach', async () => {

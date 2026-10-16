@@ -227,7 +227,7 @@ const NOTICE_WORDS: Readonly<Record<string, ReadonlySet<string>>> = {
 const INPUT_REQUIRED_WHY: ReadonlySet<string> = new Set(['trustDialog', 'firstRun', 'launchFailed']);
 
 /** Why a gate was skipped (TaskGateRunner.ts GateSkipReason). */
-const GATE_SKIP_REASONS: ReadonlySet<string> = new Set(['deps_missing', 'no_gate_command', 'gate_unavailable']);
+const GATE_SKIP_REASONS: ReadonlySet<string> = new Set(['deps_missing', 'no_gate_command', 'gate_unavailable', 'no_changes']);
 
 /** A notice's clock time in the app's language: the time today, else a
  *  short date and the time. */

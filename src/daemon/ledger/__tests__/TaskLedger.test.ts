@@ -290,6 +290,14 @@ describe('TaskLedger — transition matrix', () => {
     expect(a.get('wtask-1')!.gate).not.toHaveProperty('skipped');
   });
 
+  it('a no-changes system record keeps its skipped label, on disk too', async () => {
+    const a = open();
+    await seed(a);
+    await a.recordGate('wtask-1', { ...PASS, command: 'none', skipped: 'no_changes' });
+    expect(a.get('wtask-1')?.gate).toMatchObject({ exitCode: 0, command: 'none', skipped: 'no_changes', recordedBy: 'system' });
+    expect(open().get('wtask-1')?.gate).toMatchObject({ skipped: 'no_changes' });
+  });
+
   it('completed needs a SYSTEM-recorded passing gate unless forced with a reason, and only a brain may set it', async () => {
     const a = open();
     await seed(a);

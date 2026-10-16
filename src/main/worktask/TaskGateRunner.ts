@@ -244,7 +244,10 @@ export interface TaskGateRunnerOptions {
 
 // ── Results ──────────────────────────────────────────────────────────────────
 
-export type GateSkipReason = 'deps_missing' | 'no_gate_command' | 'gate_unavailable';
+/** `no_changes` is never this runner's: the bot task gate (factory/taskGate.ts)
+ *  answers it without running anything, for a task with no commits beyond
+ *  its base. */
+export type GateSkipReason = 'deps_missing' | 'no_gate_command' | 'gate_unavailable' | 'no_changes';
 
 export type GateRunResult =
   /** The gate ran to a verdict. `result.exitCode === 0` is the only pass. */
