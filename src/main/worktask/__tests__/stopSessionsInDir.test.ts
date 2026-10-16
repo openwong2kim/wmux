@@ -58,6 +58,10 @@ describe('stopSessionsInDir', () => {
       { id: 'other', spawnCwd: '/mnt/d/Users/me/wt', ...wsl },
     ], 'win32');
     expect(await stopSessionsInDir('C:\\Users\\me\\wt', p)).toEqual(['drive']);
+    // A sibling whose name only starts the same is another folder, either way round.
+    const { p: p10 } = port([{ id: 'ten', spawnCwd: '/mnt/c/w/task-10', ...wsl }, { id: 'one', spawnCwd: '/mnt/c/w/task-1', ...wsl }], 'win32');
+    expect(await sessionsStartedIn(['C:\\w\\task-1'], p10)).toEqual(['one']);
+    expect(await sessionsStartedIn(['C:\\w\\task-10'], p10)).toEqual(['ten']);
     expect(sessionHostDir('/home/me/wt', wsl, 'win32')).toBe('\\\\wsl$\\Ubuntu\\home\\me\\wt');
     // Elsewhere a Linux path is the folder itself.
     expect(sessionHostDir('/mnt/c/x', wsl, 'linux')).toBe('/mnt/c/x');

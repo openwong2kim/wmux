@@ -705,30 +705,49 @@ describe('stopTaskWorker (a stop of a bot task\'s worker)', () => {
     }
   });
 
-  it('a WSL worker (#2254): its pane, started at the Linux path of the Windows worktree, is closed and counted', async () => {
-    const calls: string[] = [];
-    let sessions: Array<Record<string, unknown>> = [
-      // spawnCwd is what resolveWslCwd answered; agentProcessAlive is unknown.
-      { id: 'wsl', spawnCwd: '/mnt/c/Users/me/.wmux/worktrees/r/wt', wslTarget: { distribution: 'Ubuntu-24.04', user: 'me' } },
-      { id: 'wsl-elsewhere', spawnCwd: '/mnt/c/Users/me/other', wslTarget: { distribution: 'Ubuntu-24.04', user: 'me' } },
-    ];
-    const rpc = vi.fn(async (method: string, params?: Record<string, unknown>) => {
-      if (method === 'task.mission.list') return { ok: true, tasks: [{ id: 'wtask-1', worktreePath: 'C:\\Users\\me\\.wmux\\worktrees\\r\\wt' }] };
-      if (method === 'daemon.listSessions') return sessions;
-      if (method === 'session.stopAgent') {
-        calls.push(`stopAgent:${String(params?.sessionId)}`);
-        return { ok: false, code: 'unsupported' };
-      }
-      if (method === 'daemon.destroySession') {
-        calls.push(`destroy:${String(params?.id)}`);
-        sessions = sessions.filter((x) => x.id !== params?.id);
-        return { ok: true };
-      }
-      throw new Error(method);
+  describe('a WSL worker (#2254)', () => {
+    const WSL = { distribution: 'Ubuntu-24.04', user: 'me' };
+    function wslDaemon(sessions0: Array<Record<string, unknown>>) {
+      const calls: string[] = [];
+      let sessions = sessions0;
+      const rpc = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+        if (method === 'task.mission.list') return { ok: true, tasks: [{ id: 'wtask-1', worktreePath: 'C:\\Users\\me\\.wmux\\worktrees\\r\\task-1' }] };
+        if (method === 'daemon.listSessions') return sessions;
+        if (method === 'session.stopAgent') {
+          calls.push(`stopAgent:${String(params?.sessionId)}`);
+          return { ok: false, code: 'unsupported' };
+        }
+        if (method === 'daemon.destroySession') {
+          calls.push(`destroy:${String(params?.id)}`);
+          sessions = sessions.filter((x) => x.id !== params?.id);
+          return { ok: true };
+        }
+        throw new Error(method);
+      });
+      return { client: () => ({ rpc }) as never, calls };
+    }
+    // spawnCwd is what resolveWslCwd answered; its launch line runs; its
+    // Linux agent was never attributed (agentProcessAlive unknown).
+    const worker = { id: 'wsl', spawnCwd: '/mnt/c/Users/me/.wmux/worktrees/r/task-1', wslTarget: WSL, commandRunning: true };
+
+    it('its pane, started at the Linux path of the Windows worktree, is closed and counted; task-10 is another folder', async () => {
+      const d = wslDaemon([worker, { ...worker, id: 'wsl-task-10', spawnCwd: '/mnt/c/Users/me/.wmux/worktrees/r/task-10' }]);
+      expect(await stopTaskWorker(entry, d.client, () => ['wsl', 'wsl-task-10'], { platform: 'win32' })).toBe(1);
+      expect(d.calls).toEqual(['stopAgent:wsl', 'destroy:wsl']);
     });
-    const client = () => ({ rpc }) as never;
-    expect(await stopTaskWorker(entry, client, () => ['wsl', 'wsl-elsewhere'], { platform: 'win32' })).toBe(1);
-    expect(calls).toEqual(['stopAgent:wsl', 'destroy:wsl']);
+
+    it('agentsOnly: a leftover WSL worker is closed; a plain WSL shell and an exec unit with no agent left stay', async () => {
+      const left = wslDaemon([worker]);
+      expect(await stopTaskWorker(entry, left.client, () => ['wsl'], { agentsOnly: true, platform: 'win32' })).toBe(1);
+      expect(left.calls).toEqual(['stopAgent:wsl', 'destroy:wsl']);
+      const kept = wslDaemon([
+        { ...worker, id: 'wsl-shell', commandRunning: false },
+        { ...worker, id: 'wsl-fresh', commandRunning: undefined },
+        { id: 'exec', spawnCwd: 'C:\\Users\\me\\.wmux\\worktrees\\r\\task-1', exec: { command: 'claude' }, agentProcessAlive: false },
+      ]);
+      expect(await stopTaskWorker(entry, kept.client, () => ['wsl-shell', 'wsl-fresh', 'exec'], { agentsOnly: true, platform: 'win32' })).toBe(0);
+      expect(kept.calls.filter((c) => c.startsWith('destroy:'))).toEqual([]);
+    });
   });
 
   it('an agent the daemon could not stop fails the stop and destroys nothing', async () => {

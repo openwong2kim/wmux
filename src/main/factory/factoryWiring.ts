@@ -89,7 +89,7 @@ import { installLateStopSweep, setFactoryStopPorts, type FactoryStopPorts } from
 import { getRoutineStore } from './routines';
 import { getGroupStore } from './groupStore';
 import { getAgentSlots } from './agentSlots';
-import { getWorkerResumePorts, reclaimedWorkerState, stopResumedWorkers, workerWorkspaceOf } from './workerReclaim';
+import { getWorkerResumePorts, isWslWorkerPane, reclaimedWorkerState, stopResumedWorkers, workerWorkspaceOf, type WorkerSessionInfo } from './workerReclaim';
 import { getTaskFolderPorts } from './taskFolderCleanup';
 
 // ── Trigger cursor ─────────────────────────────────────────────────────────
@@ -448,9 +448,10 @@ export function daemonRpc(client: () => Daemon | null): ((method: string, params
  *  How many workers were confirmed stopped: panes that ran an agent (the
  *  daemon's `agentProcessAlive`, or a claude this call stopped) whose agent
  *  or pane this call confirmed gone; a pane with no agent, such as a plain
- *  shell, does not count. A pane whose agent the daemon cannot stop and has
- *  not seen exit (a WSL pane: its Linux agent is not always attributed)
- *  counts as running one. Throws when one was not stopped. */
+ *  shell, does not count. A WSL pane running its launched worker
+ *  (isWslWorkerPane: its Linux agent is not always attributed) counts as
+ *  running one; a plain WSL shell at its prompt does not. Throws when one
+ *  was not stopped. */
 export async function stopTaskWorker(
   entry: LedgerEntry,
   client: () => Daemon | null,
@@ -462,19 +463,18 @@ export async function stopTaskWorker(
   const worktree = await taskFolderFromMissions(rpc, entry);
   if (!worktree) throw new Error('the task worktree is not known');
   const own = workspacePtys?.(entry.taskWorkspaceId) ?? null;
-  type Session = { id: string; pid?: number; spawnCwd?: string; wslTarget?: { distribution?: unknown }; agentProcessAlive?: boolean };
+  type Session = WorkerSessionInfo & { pid?: number };
   const listSessions = async (): Promise<Session[]> => {
     const sessions = await rpc('daemon.listSessions', {});
     const all = Array.isArray(sessions) ? (sessions as Session[]) : [];
     return own ? all.filter((x) => own.includes(x.id)) : all;
   };
   const before = await listSessions();
-  const agentLive = new Set(before.filter((x) => x.agentProcessAlive === true).map((x) => x.id));
+  const agentLive = new Set(before.filter((x) => x.agentProcessAlive === true || isWslWorkerPane(x)).map((x) => x.id));
   const stoppedAgents = new Set<string>();
   for (const id of await sessionsStartedIn([worktree], { listSessions: async () => before, platform: opts.platform })) {
     const r = (await rpc('session.stopAgent', { sessionId: id })) as { ok?: boolean; stopped?: boolean; code?: string } | null;
     if (r?.ok === true && r.stopped === true) stoppedAgents.add(id);
-    if (r?.code === 'unsupported' && before.find((x) => x.id === id)?.agentProcessAlive !== false) agentLive.add(id);
     // Gone already, or a pane whose agent the daemon cannot stop this way
     // (WSL, an exec unit): the pane's own stop below ends it.
     if (r?.ok !== true && r?.code !== 'no_session' && r?.code !== 'unsupported') {
