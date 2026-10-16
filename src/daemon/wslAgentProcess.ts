@@ -221,14 +221,28 @@ export async function checkWslAgentRunning(
 
 // #2261 — signal one WSL agent by its identity. The boot id and the start
 // time are read again inside the distro before the signal, so a pid reused
-// since (or after a distro restart) is never signalled.
+// since (or after a distro restart) is never signalled. A KILL also takes
+// every process below the agent (its MCP servers, its tools), listed before
+// anything is signalled, since a TERM lets the agent close them itself and a
+// KILL does not.
 const SIGNAL_SCRIPT = `
 st() { set -f; set -- \${1##*) }; printf '%s' "\${20}"; }
+kids() {
+  for f in /proc/[0-9]*/stat; do
+    t=$(cat "$f" 2>/dev/null) || continue
+    r=\${t##*) }; r=\${r#* }; [ "\${r%% *}" = "$1" ] || continue
+    c=\${f#/proc/}; c=\${c%/stat}
+    echo "$c"; (kids "$c")
+  done
+}
 { read -r b < /proc/sys/kernel/random/boot_id; } 2>/dev/null || exit 3
 [ "$b" = "$3" ] || exit 0
 s=$(cat "/proc/$1/stat" 2>/dev/null) || exit 0
 [ "$(st "$s")" = "$2" ] || exit 0
+below=
+[ "$4" = KILL ] && below=$(kids "$1")
 kill -"$4" "$1" 2>/dev/null
+for k in $below; do kill -KILL "$k" 2>/dev/null; done
 exit 0
 `;
 
@@ -253,6 +267,7 @@ export interface WslAgentStopDeps {
   probe?: WslProbe;
   hostAlive?: (pid: number) => boolean;
   sleep?: (ms: number) => Promise<void>;
+  now?: () => number;
   graceMs?: number;
   pollMs?: number;
 }
@@ -274,7 +289,10 @@ export async function stopWslAgent(agent: WslWatchedAgent, deps: WslAgentStopDep
   const probe = deps.probe ?? ((shell, target, pids) => probeWslProcesses(shell, target, pids, DELIVERY_PROBE_TIMEOUT_MS));
   const hostAlive = deps.hostAlive ?? windowsPidAlive;
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
-  const graceMs = deps.graceMs ?? 5_000;
+  const now = deps.now ?? Date.now;
+  // Each probe and signal is a wsl.exe run, so the grace is wall time, and
+  // short enough that the whole stop answers inside main's 10 s RPC timeout.
+  const graceMs = deps.graceMs ?? 3_000;
   const pollMs = deps.pollMs ?? 500;
   const exists = async (): Promise<boolean> => {
     if (!hostAlive(agent.hostPid)) return false;
@@ -285,8 +303,9 @@ export async function stopWslAgent(agent: WslWatchedAgent, deps: WslAgentStopDep
     }
   };
   if (!(await exists())) return { ok: true, stopped: false };
+  const deadline = now() + graceMs;
   await signal(agent, 'TERM').catch(() => undefined);
-  for (let waited = 0; waited < graceMs; waited += pollMs) {
+  while (now() < deadline) {
     await sleep(pollMs);
     if (!(await exists())) return { ok: true, stopped: true, pid: agent.pid, killed: 0 };
   }

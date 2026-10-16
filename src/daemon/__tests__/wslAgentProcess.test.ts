@@ -361,10 +361,31 @@ describe.runIf(process.platform === 'linux' && fs.existsSync('/proc/sys/kernel/r
       child.kill('SIGKILL');
     }
   });
+
+  it('SIGNAL_SCRIPT with KILL also kills the processes below the agent', async () => {
+    const parent = spawn('/bin/sh', ['-c', 'sleep 30 & echo $!; wait'], { stdio: ['ignore', 'pipe', 'ignore'] });
+    try {
+      const kid = Number(await new Promise<string>((resolve) => parent.stdout?.once('data', (d: Buffer) => resolve(d.toString().trim()))));
+      const pid = parent.pid as number;
+      const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
+      const start = stat.slice(stat.lastIndexOf(')') + 2).split(' ')[19];
+      const boot = fs.readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim();
+      execFileSync('/bin/sh', ['-c', SIGNAL_SCRIPT, 'wmux-kill', String(pid), start, boot, 'KILL']);
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      expect(fs.existsSync(`/proc/${kid}`) && !/\) Z /.test(fs.readFileSync(`/proc/${kid}/stat`, 'utf8'))).toBe(false);
+    } finally {
+      parent.kill('SIGKILL');
+    }
+  });
 });
 
 describe('stopWslAgent (#2261)', () => {
-  const quick = { sleep: async () => undefined, graceMs: 1_000, pollMs: 500, hostAlive: () => true };
+  // A fake clock that each sleep moves on.
+  const clock = () => {
+    let t = 0;
+    return { now: () => t, sleep: async (ms: number) => { t += ms; } };
+  };
+  const fresh = () => ({ ...clock(), graceMs: 1_000, pollMs: 500, hostAlive: () => true });
   // A probe that answers the agent alive for the first `n` reads, then gone.
   const aliveFor = (n: number): WslProbe => {
     let reads = 0;
@@ -373,33 +394,43 @@ describe('stopWslAgent (#2261)', () => {
 
   it('asks the agent to exit and reports it stopped once it is gone', async () => {
     const signal = vi.fn(async (_agent: WslWatchedAgent, _signal: 'TERM' | 'KILL') => undefined);
-    expect(await stopWslAgent(agent(), { ...quick, signal, probe: aliveFor(1) })).toEqual({ ok: true, stopped: true, pid: 4321, killed: 0 });
+    expect(await stopWslAgent(agent(), { ...fresh(), signal, probe: aliveFor(1) })).toEqual({ ok: true, stopped: true, pid: 4321, killed: 0 });
     expect(signal.mock.calls).toEqual([[agent(), 'TERM']]);
   });
 
   it('kills an agent still there after the grace, and says so when even that fails', async () => {
     const signal = vi.fn(async (_agent: WslWatchedAgent, _signal: 'TERM' | 'KILL') => undefined);
-    expect(await stopWslAgent(agent(), { ...quick, signal, probe: aliveFor(3) })).toEqual({ ok: true, stopped: true, pid: 4321, killed: 1 });
+    expect(await stopWslAgent(agent(), { ...fresh(), signal, probe: aliveFor(3) })).toEqual({ ok: true, stopped: true, pid: 4321, killed: 1 });
     expect(signal.mock.calls.map((c) => c[1])).toEqual(['TERM', 'KILL']);
     const stuck = vi.fn(async (_agent: WslWatchedAgent, _signal: 'TERM' | 'KILL') => undefined);
-    expect(await stopWslAgent(agent(), { ...quick, signal: stuck, probe: aliveFor(99) })).toEqual({ ok: false, code: 'still_running', pid: 4321 });
+    expect(await stopWslAgent(agent(), { ...fresh(), signal: stuck, probe: aliveFor(99) })).toEqual({ ok: false, code: 'still_running', pid: 4321 });
   });
 
   it('signals nothing for an agent already gone, a reused pid, a restarted distro or a closed pane', async () => {
     for (const probe of [async () => result([]), async () => result([[4321, 'S', '5']]), async () => result([[4321, 'S', '991739']], '1f6a7c1e-2b3d-4e5f-8a9b-0c1d2e3f4a5b')] as WslProbe[]) {
       const signal = vi.fn(async (_agent: WslWatchedAgent, _signal: 'TERM' | 'KILL') => undefined);
-      expect(await stopWslAgent(agent(), { ...quick, signal, probe })).toEqual({ ok: true, stopped: false });
+      expect(await stopWslAgent(agent(), { ...fresh(), signal, probe })).toEqual({ ok: true, stopped: false });
       expect(signal).not.toHaveBeenCalled();
     }
     const signal = vi.fn(async (_agent: WslWatchedAgent, _signal: 'TERM' | 'KILL') => undefined);
-    expect(await stopWslAgent(agent(), { ...quick, signal, probe: aliveFor(99), hostAlive: () => false })).toEqual({ ok: true, stopped: false });
+    expect(await stopWslAgent(agent(), { ...fresh(), signal, probe: aliveFor(99), hostAlive: () => false })).toEqual({ ok: true, stopped: false });
     expect(signal).not.toHaveBeenCalled();
+  });
+
+  it('counts the time each probe takes against the grace', async () => {
+    const c = clock();
+    // Every probe costs 2 s of wall time: one look fits the 3 s grace, then KILL.
+    const slow: WslProbe = async () => { await c.sleep(2_000); return result([[4321, 'S', '991739']]); };
+    const signal = vi.fn(async (_agent: WslWatchedAgent, _signal: 'TERM' | 'KILL') => undefined);
+    await stopWslAgent(agent(), { ...c, graceMs: 3_000, pollMs: 500, hostAlive: () => true, signal, probe: slow });
+    expect(c.now()).toBeLessThan(10_000);
+    expect(signal.mock.calls.map((x) => x[1])).toEqual(['TERM', 'KILL']);
   });
 
   it('reads a probe that fails as still running, never as gone', async () => {
     const signal = vi.fn(async (_agent: WslWatchedAgent, _signal: 'TERM' | 'KILL') => undefined);
     const failing: WslProbe = async () => { throw new Error('interop down'); };
-    expect(await stopWslAgent(agent(), { ...quick, signal, probe: failing })).toEqual({ ok: false, code: 'still_running', pid: 4321 });
+    expect(await stopWslAgent(agent(), { ...fresh(), signal, probe: failing })).toEqual({ ok: false, code: 'still_running', pid: 4321 });
   });
 
   it('the signal script checks the boot id and the start time before it signals', () => {
