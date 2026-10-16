@@ -5,7 +5,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { parseLsRemoteHead, pushTaskBranch, taskPushArgs, taskPushBranchRefusal, taskPushGitTarget, wslGitArgv, wslTaskPushGit, type TaskPushExec } from '../taskPush';
+import { defaultGit, parseLsRemoteHead, pushTaskBranch, taskPushArgs, taskPushBranchRefusal, taskPushGitTarget, wslGitArgv, wslTaskPushGit, type TaskPushExec } from '../taskPush';
 import { originUrlRepoKey, runWorkerGitRead } from '../workerGit';
 import { registerTaskPushRpc } from '../../pipe/handlers/taskPush.rpc';
 import { TASK_PUSHES_FILENAME, TaskPushRecord, taskPushRecordOf } from '../taskPushRecord';
@@ -105,10 +105,30 @@ describe('pushTaskBranch', () => {
     expect(await pushTaskBranch(input())).toMatchObject({ ok: false, reason: 'no-origin' });
   });
 
-  it('pushes exactly HEAD to refs/heads/<task branch> at origin\'s URL, fast-forward only', () => {
-    const args = taskPushArgs('wtask/one', 'git@github.com:o/r.git');
-    expect(args).toEqual(['push', '--no-verify', '--no-follow-tags', '--recurse-submodules=no', '--porcelain', '--', 'git@github.com:o/r.git', 'HEAD:refs/heads/wtask/one']);
+  it('pushes exactly the commit HEAD was resolved to, to refs/heads/<task branch> at origin\'s URL, fast-forward only', () => {
+    const sha = 'a'.repeat(40);
+    const args = taskPushArgs('wtask/one', 'git@github.com:o/r.git', sha);
+    expect(args).toEqual(['push', '--no-verify', '--no-follow-tags', '--recurse-submodules=no', '--porcelain', '--', 'git@github.com:o/r.git', `${sha}:refs/heads/wtask/one`]);
     expect(args.some((a) => a.startsWith('+') || a.includes('force'))).toBe(false);
+  });
+
+  it('HEAD moving during the push: the commit pushed, set upstream and reported is the one resolved first', async () => {
+    const resolved = git(work, 'rev-parse', 'HEAD');
+    // A git that commits in the worktree (moving HEAD) right before it pushes.
+    const moving = async (args: string[], cwd: string) => {
+      if (args.includes('push')) {
+        fs.writeFileSync(path.join(work, 'late.txt'), 'late\n');
+        git(work, 'add', '.');
+        git(work, 'commit', '-qm', 'late');
+      }
+      return defaultGit(args, cwd);
+    };
+    const r = await pushTaskBranch(input(), moving);
+    const moved = git(work, 'rev-parse', 'HEAD');
+    expect(moved).not.toBe(resolved);
+    expect(r).toMatchObject({ ok: true, head: resolved });
+    expect(git(origin, 'rev-parse', 'refs/heads/wtask/one')).toBe(resolved);
+    expect(git(work, 'rev-parse', 'refs/remotes/origin/wtask/one')).toBe(resolved);
   });
 
   it('refuses when the repository config redirects the push or names a program, and runs none of it', async () => {
@@ -191,7 +211,7 @@ describe('task.push: GitLab remotes', () => {
       calls.push(args);
       const sub = args[args.indexOf('-c', 2) + 2];
       if (sub === 'config') return { code: 0, stdout: 'local\0remote.origin.url\nssh://git@gitlab.corp.example:2222/group/sub/proj.git\0', stderr: '' };
-      if (sub === 'rev-parse') return { code: 0, stdout: 'abc\n', stderr: '' };
+      if (sub === 'rev-parse') return { code: 0, stdout: `${'a'.repeat(40)}\n`, stderr: '' };
       if (sub === 'ls-remote') return { code: 0, stdout: 'ref: refs/heads/develop\tHEAD\nabc\tHEAD\n', stderr: '' };
       // A worker-written origin/HEAD naming some other branch.
       if (sub === 'symbolic-ref') return { code: 0, stdout: 'refs/remotes/origin/elsewhere\n', stderr: '' };

@@ -1,0 +1,204 @@
+// The no-changes check: a bot task is skipped as unchanged, and its bot's
+// completion on that skip goes through, only when the worktree's HEAD,
+// main's record of what task.push published and the task branch on origin
+// itself are all the base recorded at dispatch or behind it. Anything that
+// cannot be read is `unknown`. Real git below: a bare origin, a worktree,
+// task.push, a reset.
+import { execFileSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { TaskLedger } from '../../../daemon/ledger/TaskLedger';
+import type { LedgerEntry } from '../../../shared/ledger';
+import type { RpcContext } from '../../../shared/rpc';
+import { checkNoChanges, commitWithinBase, liveNoChangesCheck, type NoChangesPorts } from '../noChangesCheck';
+import { recordNoChangesGate } from '../taskGate';
+import { pushTaskBranch } from '../../worktask/taskPush';
+import { readTaskRemoteHead } from '../../worktask/taskFetch';
+import { TASK_PUSHES_FILENAME, taskPushRecordOf } from '../../worktask/taskPushRecord';
+import { registerLedgerRpc } from '../../pipe/handlers/ledger.rpc';
+
+vi.mock('electron', () => ({ app: { getPath: () => os.tmpdir() } }));
+
+const A = 'a'.repeat(40);
+const B = 'b'.repeat(40);
+const C = 'c'.repeat(40);
+
+const entry = (over: Partial<LedgerEntry['dispatch']> = {}): LedgerEntry => ({
+  id: 't1', taskWorkspaceId: 'ws-t', ownerWorkspaceId: 'ws-o', title: 't', status: 'review_requested', rev: 3, updatedAt: 1,
+  updatedBy: { kind: 'worker', workspaceId: 'ws-t' }, schemaVersion: 1,
+  dispatch: { origin: { kind: 'operator' }, baseOid: B, ...over },
+} as LedgerEntry);
+
+describe('checkNoChanges', () => {
+  /** `within`: the commits at or behind B. */
+  const ports = (over: Partial<NoChangesPorts> = {}, within = new Set([A, B])): NoChangesPorts => ({
+    mission: async () => ({ worktreePath: '/wt', branch: 'wtask/one' }),
+    headOf: async () => B,
+    commitWithin: async (_wt, commit, base) => base === B && within.has(commit),
+    pushed: () => null,
+    remoteHead: async () => ({ ok: true, sha: null }),
+    ...over,
+  });
+
+  it('unchanged only when HEAD, the push record and origin\'s branch are all at or behind the recorded base', async () => {
+    expect(await checkNoChanges(ports(), entry())).toEqual({ kind: 'unchanged', base: B, head: B });
+    expect(await checkNoChanges(ports({ headOf: async () => A, pushed: () => B, remoteHead: async () => ({ ok: true, sha: A }) }), entry())).toEqual({ kind: 'unchanged', base: B, head: A });
+  });
+
+  it('changed: a HEAD past the base, a recorded push past it, or origin\'s branch past it (pushed, then reset)', async () => {
+    expect((await checkNoChanges(ports({ headOf: async () => C }), entry())).kind).toBe('changed');
+    expect((await checkNoChanges(ports({ pushed: () => C }), entry())).kind).toBe('changed');
+    expect(await checkNoChanges(ports({ remoteHead: async () => ({ ok: true, sha: C }) }), entry())).toMatchObject({ kind: 'changed', why: expect.stringContaining(C) });
+  });
+
+  it('unknown: no recorded base (or a detached checkout), no mission, no HEAD, unreadable push history, origin unreachable, a throw', async () => {
+    expect((await checkNoChanges(ports(), entry({ baseOid: undefined }))).kind).toBe('unknown');
+    expect((await checkNoChanges(ports(), entry({ checkout: { sha: B, detached: true } }))).kind).toBe('unknown');
+    expect((await checkNoChanges(ports({ mission: async () => null }), entry())).kind).toBe('unknown');
+    expect((await checkNoChanges(ports({ headOf: async () => null }), entry())).kind).toBe('unknown');
+    expect(await checkNoChanges(ports({ pushed: () => 'unknown' }), entry())).toMatchObject({ kind: 'unknown', why: expect.stringContaining('pushes') });
+    expect(await checkNoChanges(ports({ remoteHead: async () => ({ ok: false, reason: 'git-failed', error: 'could not read from remote' }) }), entry())).toMatchObject({ kind: 'unknown', why: expect.stringContaining('could not read from remote') });
+    expect((await checkNoChanges(ports({ headOf: async () => { throw new Error('boom'); } }), entry())).kind).toBe('unknown');
+  });
+
+  it('commitWithinBase: the base itself or an ancestor of it; never a non-sha', async () => {
+    const git = (code: number) => vi.fn(async () => ({ stdout: '', code }));
+    expect(await commitWithinBase(git(1), '/wt', B, B)).toBe(true);
+    const anc = git(0);
+    expect(await commitWithinBase(anc, '/wt', C, B)).toBe(true);
+    expect(anc).toHaveBeenCalledWith(['merge-base', '--is-ancestor', C, B], '/wt');
+    expect(await commitWithinBase(git(1), '/wt', C, B)).toBe(false);
+    const never = git(0);
+    expect(await commitWithinBase(never, '/wt', '--output=x', B)).toBe(false);
+    expect(never).not.toHaveBeenCalled();
+  });
+});
+
+describe('the no-changes check over real git, task.push and ledger.update', () => {
+  const run = (cwd: string, ...args: string[]): string =>
+    execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.invalid', ...args], { cwd, encoding: 'utf8' }).trim();
+  const plainGit = async (args: string[], cwd: string) => {
+    try {
+      return { stdout: execFileSync('git', args, { cwd, encoding: 'utf8' }), code: 0 };
+    } catch (err) {
+      return { stdout: '', code: (err as { status?: number }).status ?? 1 };
+    }
+  };
+  let root = '';
+  let origin = '';
+  let work = '';
+  let dataDir = '';
+  let base = '';
+  let ledger: TaskLedger;
+  beforeEach(async () => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-no-changes-'));
+    origin = path.join(root, 'origin.git');
+    work = path.join(root, 'work');
+    dataDir = path.join(root, 'data');
+    execFileSync('git', ['init', '-q', '--bare', origin]);
+    execFileSync('git', ['init', '-q', '-b', 'main', work]);
+    fs.writeFileSync(path.join(work, 'a.txt'), 'a\n');
+    run(work, 'add', '.');
+    run(work, 'commit', '-qm', 'init');
+    run(work, 'remote', 'add', 'origin', origin);
+    run(work, 'push', '-q', 'origin', 'main');
+    run(work, 'checkout', '-qb', 'wtask/one');
+    base = run(work, 'rev-parse', 'HEAD');
+    ledger = new TaskLedger({ dir: path.join(root, 'ledger') });
+    await ledger.register({ id: 't1', taskWorkspaceId: 'ws-t', ownerWorkspaceId: 'ws-o', title: 't', dispatch: { origin: { kind: 'operator' }, baseOid: base } });
+    const r = await ledger.update({ id: 't1', status: 'review_requested', actor: { kind: 'worker', workspaceId: 'ws-t' }, expectedRev: 1, summary: 'read the API, nothing to commit' });
+    if (!r.ok) throw new Error(r.message);
+  });
+  afterEach(() => { fs.rmSync(root, { recursive: true, force: true }); });
+
+  const check = () => liveNoChangesCheck({
+    rpc: () => async () => ({ ok: true, tasks: [{ id: 't1', worktreePath: work, branch: 'wtask/one' }] }),
+    git: plainGit,
+    wmuxDir: () => dataDir,
+    botRepoKey: () => undefined,
+  });
+  const row = (): LedgerEntry => ledger.get('t1') as LedgerEntry;
+  /** ledger.update as a brain, with the live check wired. */
+  const complete = async (): Promise<unknown> => {
+    const handlers = new Map<string, (p: Record<string, unknown>, c?: RpcContext) => Promise<unknown>>();
+    registerLedgerRpc({ register: (m: string, h: never) => handlers.set(m, h) } as never, () => null, { getLedger: () => ledger, noChangesCheck: check() });
+    return (handlers.get('ledger.update') as (p: Record<string, unknown>, c?: RpcContext) => Promise<unknown>)(
+      { taskId: 't1', status: 'completed', expectedRev: row().rev },
+      { origin: 'local', commanderWorkspace: 'ws-o' } as RpcContext,
+    );
+  };
+  /** The skip, recorded the way the task gate records it. */
+  const skip = async (): Promise<void> => {
+    const v = await check()(row());
+    expect(v).toEqual({ kind: 'unchanged', base, head: base });
+    expect(await recordNoChangesGate(ledger, 't1', 'no commits', Date.now, base)).toBe(true);
+  };
+  /** Commit, publish it with task.push (recorded as task.push records it),
+   *  then reset HEAD back to the base. */
+  const commitPushReset = async (record = true): Promise<string> => {
+    fs.writeFileSync(path.join(work, 'b.txt'), 'b\n');
+    run(work, 'add', '.');
+    run(work, 'commit', '-qm', 'work');
+    const pushed = await pushTaskBranch({ worktreePath: work, branch: 'wtask/one', defaultBranches: [], noHooksDir: path.join(root, 'nh') });
+    if (!pushed.ok) throw new Error(pushed.error);
+    if (record) taskPushRecordOf(dataDir).record('t1', pushed.head);
+    run(work, 'reset', '-q', '--hard', base);
+    return pushed.head;
+  };
+
+  it('a task that never pushed and holds no commits: unchanged, and its completion goes through', async () => {
+    await skip();
+    expect(await complete()).toMatchObject({ ok: true, entry: { status: 'completed' } });
+  });
+
+  it('commit, push, reset after the skip: the completion is refused (main\'s push record)', async () => {
+    await skip();
+    const pushed = await commitPushReset();
+    expect(await check()(row())).toMatchObject({ kind: 'changed', why: expect.stringContaining(pushed) });
+    expect(await complete()).toMatchObject({ ok: false, error: { code: 'FAILED_PRECONDITION' } });
+    expect(row().status).toBe('review_requested');
+  });
+
+  it('commit, push, reset with no push record at all: origin itself shows the commit, and the completion is refused', async () => {
+    await skip();
+    const pushed = await commitPushReset(false);
+    expect(taskPushRecordOf(dataDir).get('t1')).toBeNull();
+    // The worker also deletes the remote-tracking ref main set: it is not read.
+    run(work, 'update-ref', '-d', 'refs/remotes/origin/wtask/one');
+    expect(await readTaskRemoteHead({ worktreePath: work, branch: 'wtask/one', noHooksDir: path.join(root, 'nh') })).toEqual({ ok: true, sha: pushed });
+    expect(await check()(row())).toMatchObject({ kind: 'changed', why: expect.stringContaining(`origin's wtask/one is at ${pushed}`) });
+    expect(await complete()).toMatchObject({ ok: false, error: { code: 'FAILED_PRECONDITION' } });
+  });
+
+  it('origin unreachable: unknown, so the gate would run, and the completion is refused', async () => {
+    await skip();
+    run(work, 'remote', 'set-url', 'origin', path.join(root, 'gone.git'));
+    expect((await readTaskRemoteHead({ worktreePath: work, branch: 'wtask/one', noHooksDir: path.join(root, 'nh') })).ok).toBe(false);
+    expect(await check()(row())).toMatchObject({ kind: 'unknown', why: expect.stringContaining('could not be read') });
+    expect(await complete()).toMatchObject({ ok: false, error: { code: 'FAILED_PRECONDITION' } });
+  });
+
+  it('push history that cannot be read (as main finds it at start): unknown, so the gate would run, and the completion is refused', async () => {
+    fs.mkdirSync(path.join(dataDir, 'factory'), { recursive: true });
+    fs.writeFileSync(path.join(dataDir, 'factory', TASK_PUSHES_FILENAME), '{ not json');
+    expect(await check()(row())).toMatchObject({ kind: 'unknown', why: expect.stringContaining('pushes') });
+    // A skip on the row (as if recorded before) completes nothing either.
+    expect(await recordNoChangesGate(ledger, 't1', 'no commits', Date.now, base)).toBe(true);
+    expect(await complete()).toMatchObject({ ok: false, error: { code: 'FAILED_PRECONDITION' } });
+    // The unreadable file is left as it is, not overwritten with less.
+    taskPushRecordOf(dataDir).record('t1', 'e'.repeat(40));
+    expect(fs.readFileSync(path.join(dataDir, 'factory', TASK_PUSHES_FILENAME), 'utf8')).toBe('{ not json');
+    expect(taskPushRecordOf(dataDir).get('t1')).toBe('unknown');
+  });
+
+  it('a commit after the skip that was never pushed: HEAD has moved, refused', async () => {
+    await skip();
+    fs.writeFileSync(path.join(work, 'c.txt'), 'c\n');
+    run(work, 'add', '.');
+    run(work, 'commit', '-qm', 'later');
+    expect((await check()(row())).kind).toBe('changed');
+    expect(await complete()).toMatchObject({ ok: false, error: { code: 'FAILED_PRECONDITION' } });
+  });
+});

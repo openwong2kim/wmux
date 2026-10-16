@@ -18,15 +18,11 @@
 // review_requested wake (fanoutCallerNotify) comes first, before the gate
 // exists; the verifier's prompt says to end that turn.
 
-import * as fs from 'node:fs';
-import * as path from 'node:path';
 import type { LedgerEntry } from '../../shared/ledger';
 import type { BotProfile } from '../../shared/bot';
 import { taskThreadOf, type CardNotice, type ThreadId } from '../../shared/room';
 import type { WakeReason } from '../../shared/wake';
 import type { GateRunInput, GateRunResult } from '../worktask/TaskGateRunner';
-import { metaDirForWorktree } from '../worktask/TaskWorktreeManager';
-import { WORKTASK_META_FILENAME } from '../../shared/workTask';
 
 /** The fact id a recorded verify gate wakes its bot with. */
 export function verifyGateFactId(taskId: string, rev: number): string {
@@ -201,17 +197,25 @@ export async function worktreeFromMissions(rpc: Rpc | null, entry: LedgerEntry):
   return null;
 }
 
-/** The HEAD commit of a task's worktree now, or null when either cannot be read. */
-export async function taskWorktreeHead(rpc: Rpc | null, git: Git, entry: LedgerEntry): Promise<string | null> {
-  const worktree = await worktreeFromMissions(rpc, entry);
-  if (!worktree) return null;
+/** A task's worktree and branch, from the daemon's mission list of its
+ *  owner; null when it has either missing or the list cannot be read. */
+export async function taskMissionFromMissions(rpc: Rpc | null, entry: LedgerEntry): Promise<{ worktreePath: string; branch: string } | null> {
+  if (!rpc) return null;
+  let reply: unknown;
   try {
-    const r = await git(['rev-parse', '--verify', '--quiet', 'HEAD^{commit}'], worktree);
-    const sha = r.stdout.trim();
-    return r.code === 0 && sha ? sha : null;
+    reply = await rpc('task.mission.list', { verifiedWorkspaceId: entry.ownerWorkspaceId });
   } catch {
     return null;
   }
+  const tasks = (reply as { ok?: unknown; tasks?: unknown } | null);
+  if (!tasks || tasks.ok !== true || !Array.isArray(tasks.tasks)) return null;
+  for (const t of tasks.tasks as Array<Record<string, unknown>>) {
+    if (!t || t.id !== entry.id) continue;
+    return typeof t.worktreePath === 'string' && t.worktreePath && typeof t.branch === 'string' && t.branch
+      ? { worktreePath: t.worktreePath, branch: t.branch }
+      : null;
+  }
+  return null;
 }
 
 /** The folder a task's worker runs in: its worktree, or the output folder of
@@ -232,24 +236,6 @@ export async function taskFolderFromMissions(rpc: Rpc | null, entry: LedgerEntry
     if (typeof t.outputDir === 'string' && t.outputDir) return t.outputDir;
   }
   return null;
-}
-
-/**
- * The commit a task's branch started from: the `baseOid` fan-out stamped in
- * the task.json beside its worktree (a full commit id). Null when none is
- * recorded or it cannot be read: a task that fell back to the owner's HEAD, a
- * stamp written before the base was stamped, or a detached checkout (its
- * stamp names origin's default branch, not the commit it checked out).
- */
-export async function taskBaseFromStamp(entry: LedgerEntry, worktreePath: string): Promise<string | null> {
-  if (entry.dispatch?.checkout) return null;
-  try {
-    const raw = await fs.promises.readFile(path.join(metaDirForWorktree(worktreePath), WORKTASK_META_FILENAME), 'utf8');
-    const oid = (JSON.parse(raw) as { baseOid?: unknown } | null)?.baseOid;
-    return typeof oid === 'string' && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(oid) ? oid : null;
-  } catch {
-    return null;
-  }
 }
 
 /** origin's default branch (`origin/<name>`): origin/HEAD, else main or master. */

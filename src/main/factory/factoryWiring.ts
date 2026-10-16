@@ -84,9 +84,9 @@ import { git } from '../git/git';
 import { getSharedTaskGateRunner } from '../worktask/TaskGateRunner';
 import { isPidAlive, sessionsStartedIn, stopSessionsInDir } from '../worktask/stopSessionsInDir';
 import { getWorkspaceMirror } from '../workspace/WorkspaceMirror';
-import { originDefaultRef, taskBaseFromStamp, taskFolderFromMissions, worktreeFromMissions } from './verifyPreset';
-import { commitWithinBase, completeCheckedTask, completeMergedTask, completeResearchTask, gateCardNoted, installTaskGate, publishedTaskHeads, recordNoChangesGate, worktreeHeadMerged } from './taskGate';
-import { taskPushRecordOf } from '../worktask/taskPushRecord';
+import { originDefaultRef, taskFolderFromMissions, worktreeFromMissions } from './verifyPreset';
+import { completeCheckedTask, completeMergedTask, completeResearchTask, gateCardNoted, installTaskGate, recordNoChangesGate, worktreeHeadMerged } from './taskGate';
+import { liveNoChangesCheck } from './noChangesCheck';
 import { TaskBranchCache, setBotTaskSources } from './botTasks';
 import { installLateStopSweep, setFactoryStopPorts, type FactoryStopPorts } from './factoryStop';
 import { getRoutineStore } from './routines';
@@ -768,14 +768,13 @@ export function createFactoryWiring(deps: Pick<FactoryHostDeps, 'wmuxDir'> & Par
           headMerged: (worktreePath, sha) => worktreeHeadMerged(git, worktreePath, sha),
           completeMerged: (taskId, pr, checkedRev) => completeMergedTask(ledger, taskId, pr, checkedRev),
           // A task with no commits beyond its base is not gated.
-          taskBase: (entry, worktreePath) => taskBaseFromStamp(entry, worktreePath),
+          noChanges: liveNoChangesCheck({
+            rpc: () => daemonRpc(daemon),
+            git,
+            wmuxDir: deps.wmuxDir,
+            botRepoKey: (botId) => getBotDirectory()?.get(botId)?.repo?.repoKey,
+          }),
           recordNoChanges: (taskId, detail, headSha) => recordNoChangesGate(ledger, taskId, detail, Date.now, headSha),
-          publishedHeads: async (entry, worktreePath) => {
-            const known = await branches.branches([entry]);
-            const branch = known.has(entry.id) ? known.get(entry.id) ?? null : undefined;
-            return publishedTaskHeads(git, worktreePath, branch, taskPushRecordOf(deps.wmuxDir()).get(entry.id));
-          },
-          commitWithin: (worktreePath, commit, base) => commitWithinBase(git, worktreePath, commit, base),
           wake: (input) => {
             const q = getWakeQueue();
             if (!q) console.info(`[factory] wake queue not running; ${input.botId} was not woken`);

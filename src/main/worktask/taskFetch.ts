@@ -81,9 +81,16 @@ export function taskFetchArgs(url: string, branches: readonly string[], ns: stri
   ];
 }
 
-/** Fetch the default branch and the task branch. Never throws. */
-export async function fetchTaskRefs(input: TaskFetchInput, git: TaskPushGit = defaultGit, deps: TaskPushDeps = {}): Promise<TaskFetchResult> {
-  if (!isDenyableBranchName(input.branch)) return { ok: false, reason: 'branch-refused', error: 'the task branch name cannot be fetched as itself' };
+type TaskRemoteFailure = Extract<TaskFetchResult, { ok: false }>;
+
+/** The git main reads origin with for a task (main's own, or the
+ *  repository's WSL distro's), after the push's and the fetch's config
+ *  checks, and origin's URL and key. Never throws. */
+async function openTaskRemote(
+  input: Pick<TaskFetchInput, 'worktreePath' | 'noHooksDir' | 'expectedRepoKey'>,
+  git: TaskPushGit,
+  deps: TaskPushDeps,
+): Promise<{ ok: true; run: (args: string[]) => ReturnType<TaskPushGit>; url: string; key: string | null } | TaskRemoteFailure> {
   const platform = deps.platform ?? process.platform;
   const target = taskPushGitTarget(platform === 'win32' ? (deps.readDotGit ?? readDotGitFile)(input.worktreePath) : null, platform);
   if (target.kind === 'refused') return { ok: false, reason: 'git-failed', error: target.error };
@@ -105,6 +112,38 @@ export async function fetchTaskRefs(input: TaskFetchInput, git: TaskPushGit = de
       return { ok: false, reason: 'remote-refused', error: `origin is not ${input.expectedRepoKey} (a plain https or ssh address of it)` };
     }
   }
+  return { ok: true, run, url: origin.url, key };
+}
+
+export type TaskRemoteHeadResult = { ok: true; sha: string | null } | TaskRemoteFailure;
+
+/**
+ * The commit the task branch is at on origin itself (`ls-remote`, nothing
+ * written), read in the git task.push pushes with and under the same checks:
+ * null when origin has no such branch. The task's repository and branch
+ * come from main's record; for a bot's task origin must be its repository.
+ * Never throws.
+ */
+export async function readTaskRemoteHead(
+  input: Pick<TaskFetchInput, 'worktreePath' | 'branch' | 'noHooksDir' | 'expectedRepoKey'>,
+  git: TaskPushGit = defaultGit,
+  deps: TaskPushDeps = {},
+): Promise<TaskRemoteHeadResult> {
+  if (!isDenyableBranchName(input.branch)) return { ok: false, reason: 'branch-refused', error: 'the task branch name cannot be read as itself' };
+  const remote = await openTaskRemote(input, git, deps);
+  if (!remote.ok) return remote;
+  const heads = await remote.run(['ls-remote', '--heads', '--', remote.url, `refs/heads/${input.branch}`]);
+  if (heads.code !== 0) return { ok: false, reason: 'git-failed', error: `git ls-remote failed: ${heads.stderr.trim().slice(0, 500)}` };
+  return { ok: true, sha: parseLsRemoteHeads(heads.stdout).get(input.branch) ?? null };
+}
+
+/** Fetch the default branch and the task branch. Never throws. */
+export async function fetchTaskRefs(input: TaskFetchInput, git: TaskPushGit = defaultGit, deps: TaskPushDeps = {}): Promise<TaskFetchResult> {
+  if (!isDenyableBranchName(input.branch)) return { ok: false, reason: 'branch-refused', error: 'the task branch name cannot be fetched as itself' };
+  const opened = await openTaskRemote(input, git, deps);
+  if (!opened.ok) return opened;
+  const { run, key } = opened;
+  const origin = { url: opened.url };
   // The default branch: the remote's own HEAD, else GitHub's by key, else
   // origin/HEAD.
   const remote = await run(['ls-remote', '--symref', '--', origin.url, 'HEAD']);

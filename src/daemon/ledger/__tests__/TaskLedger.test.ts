@@ -372,6 +372,16 @@ describe('TaskLedger — transition matrix', () => {
     expect((await a.recordGate('wtask-3', PASS)).ok).toBe(true);
   });
 
+  it('a dispatch keeps the base commit main created the branch from, a full commit id only, across a reload', async () => {
+    const a = open();
+    const base = 'b'.repeat(40);
+    await a.register({ id: 'wtask-1', taskWorkspaceId: 'ws-task', ownerWorkspaceId: 'ws-owner', title: 'lane', dispatch: { origin: { kind: 'bot', botId: 'b1' }, baseOid: base } });
+    await a.register({ id: 'wtask-2', taskWorkspaceId: 'ws-task', ownerWorkspaceId: 'ws-owner', title: 'lane', dispatch: { origin: { kind: 'bot', botId: 'b1' }, baseOid: 'HEAD' } });
+    expect(a.get('wtask-1')?.dispatch?.baseOid).toBe(base);
+    expect(a.get('wtask-2')?.dispatch?.baseOid).toBeUndefined();
+    expect(open().get('wtask-1')?.dispatch?.baseOid).toBe(base);
+  });
+
   it('a merge completion is recorded only on a move to completed; a dispatch keeps a well-formed repo key only', async () => {
     const a = open();
     await a.register({ id: 'wtask-1', taskWorkspaceId: 'ws-task', ownerWorkspaceId: 'ws-owner', title: 'lane', dispatch: { origin: { kind: 'bot', botId: 'b1' }, repoKey: 'github.com/acme/app' } });

@@ -143,11 +143,11 @@ describe('FanOutService — detached checkout + dispatch record', () => {
     expect(output.ok).toBe(false);
   });
 
-  it('a branch fan-out from a pane records its origin and no checkout', async () => {
+  it('a branch fan-out from a pane records its origin, no checkout, and the base commit its branch was created from', async () => {
     const r = rig();
     await r.svc.start({ ...base, caller: { kind: 'pane', paneId: 'p1' }, preset: undefined });
-    expect(r.worktrees.createWorktree).toHaveBeenCalled();
-    expect(ledger.list({ ownerWorkspaceId: 'ws-bot' })[0].dispatch).toEqual({ origin: { kind: 'pane' } });
+    expect(r.worktrees.createWorktree).toHaveBeenCalledWith(expect.anything(), 'c'.repeat(40));
+    expect(ledger.list({ ownerWorkspaceId: 'ws-bot' })[0].dispatch).toEqual({ origin: { kind: 'pane' }, baseOid: 'c'.repeat(40) });
   });
 
   it('mayLaunch is asked right before each pane spawns: a refusal there launches nothing and closes the task', async () => {

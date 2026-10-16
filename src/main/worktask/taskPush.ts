@@ -103,9 +103,11 @@ export function taskPushBranchRefusal(branch: string, defaultBranches: readonly 
   return null;
 }
 
-/** The git argv of main's push (after the safe `-c` options). Pure. */
-export function taskPushArgs(branch: string, url: string): string[] {
-  return ['push', '--no-verify', '--no-follow-tags', '--recurse-submodules=no', '--porcelain', '--', url, `HEAD:refs/heads/${branch}`];
+/** The git argv of main's push (after the safe `-c` options): the commit
+ *  `sha` HEAD was resolved to, never `HEAD` itself, so what lands is what
+ *  main read and records even if HEAD moves meanwhile. Pure. */
+export function taskPushArgs(branch: string, url: string, sha: string): string[] {
+  return ['push', '--no-verify', '--no-follow-tags', '--recurse-submodules=no', '--porcelain', '--', url, `${sha}:refs/heads/${branch}`];
 }
 
 /** Which git pushes a worktree: main's own, or a WSL distro's. */
@@ -243,10 +245,14 @@ export async function pushTaskBranch(input: TaskPushInput, git: TaskPushGit = de
     const refusal = taskPushBranchRefusal(input.branch, [...input.defaultBranches, ...own]);
     if (refusal) return { ok: false, reason: 'branch-refused', error: refusal };
   }
-  const head = await run(['rev-parse', 'HEAD']);
-  if (head.code !== 0) return { ok: false, reason: 'git-failed', error: `git rev-parse HEAD failed: ${head.stderr.trim().slice(0, 500)}` };
+  // HEAD is resolved once: that commit is what is pushed, set as the
+  // upstream and reported (and recorded by task.push), even if HEAD moves.
+  const head = await run(['rev-parse', '--verify', '--quiet', 'HEAD^{commit}']);
   const sha = head.stdout.trim();
-  const res = await run(taskPushArgs(input.branch, origin.url));
+  if (head.code !== 0 || !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(sha)) {
+    return { ok: false, reason: 'git-failed', error: `git rev-parse HEAD failed: ${head.stderr.trim().slice(0, 500)}` };
+  }
+  const res = await run(taskPushArgs(input.branch, origin.url, sha));
   const output = `${res.stdout}\n${res.stderr}`.trim().slice(0, 2000);
   if (res.code !== 0) {
     // --porcelain marks a refused ref with `!` (non-fast-forward, remote hook).

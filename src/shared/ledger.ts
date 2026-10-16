@@ -142,6 +142,11 @@ export interface LedgerDispatch {
   repoKey?: string;
   /** Set when the task worktree was created detached at a commit. */
   checkout?: { sha: string; detached: true };
+  /** The commit main created the task's branch from (origin's default branch
+   *  at fan-out), a full commit id; absent for a detached checkout, a task
+   *  with no worktree, one that fell back to the owner's HEAD, and rows
+   *  written before it existed. The no-changes check measures against it. */
+  baseOid?: string;
   /** A bot's task: the room thread the bot named when it started it (checked
    *  like a post's), else the PR it checks out, else the thread of the wake
    *  that started it (main's own wake state at dispatch). The task's wakes
