@@ -372,17 +372,25 @@ describe('PTYBridge lone Escape confirmed by Claude Code\'s title turning idle (
     expect(router.governsRunningState('p1')).toBe(true);
   });
 
-  it('needs a running title before the idle one: a repeated idle title is no edge', () => {
-    const { bridge, router, proc } = startThinking();
-
-    proc.emitData(IDLE);
+  it('settles an Esc in the first second, before the first running title', () => {
+    // Live: Esc 300 ms after the submit; the title goes straight to idle.
+    const { bridge, router, proc } = makeBridge();
+    bridge.setupDataForwarding('p1');
+    proc.emitData('Claude Code v2.1.301\r\n  bypass permissions on\r\n');
+    vi.advanceTimersByTime(50);
+    mocks.lastBroadcastAgentStatus.clear();
+    mocks.broadcastMetadataUpdate.mockClear();
+    proc.emitData('\u001b]0;✳ Claude Code\u0007');
     vi.advanceTimersByTime(50);
     router.noteHookTurnStart('p1', Date.now(), 'claude');
+    vi.advanceTimersByTime(300);
     bridge.noteInterruptInput('p1', '\x1b');
-    proc.emitData(IDLE);
+    vi.advanceTimersByTime(100);
+    proc.emitData('\u001b]0;✳ Claude Code\u0007');
     vi.advanceTimersByTime(50);
 
-    expect(router.governsRunningState('p1')).toBe(true);
+    expect(router.governsRunningState('p1')).toBe(false);
+    expect(idleBroadcasts('p1')).toBe(1);
   });
 
   it('settles one turn per Esc: the next turn\'s title edge inside the window does not settle it', () => {

@@ -96,11 +96,13 @@ describe('DaemonPTYBridge — interrupted-turn row', () => {
       expect(interrupted).toEqual([]);
     });
 
-    it('does not report an idle title with no running title before it', () => {
-      feed(IDLE);
-      bridge.noteInput('\x1b');
+    it('reports an idle title after an Esc that came before the first running title', () => {
       feed(IDLE);
       expect(interrupted).toEqual([]);
+      bridge.noteInput('\x1b');
+      vi.advanceTimersByTime(100);
+      feed(IDLE);
+      expect(interrupted).toEqual([{ sessionId: 'sess-1', agent: 'Claude Code' }]);
     });
 
     it('ignores the edge inside a resize redraw', () => {

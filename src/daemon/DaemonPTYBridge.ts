@@ -937,9 +937,9 @@ export class DaemonPTYBridge extends EventEmitter {
   }
 
   /**
-   * Claude Code's title went from its running spinner to idle (#2264). An Esc
-   * while it is still thinking ends the turn without the `⎿  Interrupted` row,
-   * so this edge is the only thing that confirms such an Esc. It is reported
+   * Claude Code set its idle title with no Stop-hook row before it (#2264). An
+   * Esc while it is still thinking ends the turn without the `⎿  Interrupted`
+   * row, so this title is the only thing that confirms such an Esc. It is reported
    * as the same `turnInterrupted` the row raises, and only right after a lone
    * Esc reached this pane: every turn ends with this edge, and an ordinary
    * turn end is not an interrupt. Main still checks its own Escape record

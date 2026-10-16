@@ -321,8 +321,8 @@ export function runFakeTui(spec) {
         }
         // A CSI cut off at the end of a read waits for the rest; a bare ESC
         // with nothing after it is a lone Escape key once no more bytes follow
-        // (the 50 ms a real TUI waits too). Anything else after ESC is also a
-        // lone Escape key.
+        // (the 50 ms a real TUI waits too). An ESC glued to other bytes (an
+        // Alt+key, ESC ESC) is dropped, as before.
         // eslint-disable-next-line no-control-regex -- ESC is the byte being parsed
         if (/^\x1b(?:\[[0-?]*[ -/]*|O)?$/.test(s) && s.length < 16) {
           state.pending = s;
@@ -336,7 +336,6 @@ export function runFakeTui(spec) {
           break;
         }
         s = s.slice(1);
-        escapeKey();
         continue;
       }
       const ch = String.fromCodePoint(s.codePointAt(0));
