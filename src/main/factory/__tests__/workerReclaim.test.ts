@@ -184,10 +184,21 @@ describe('a WSL worker (#2254): the daemon cannot stop its Linux agent', () => {
   it('a completed task\'s WSL worker is stopped by closing its pane, as its card says', async () => {
     const store = ReclaimedWorkers.at(dir);
     const closePane = vi.fn(async () => undefined);
-    const { ports, note } = reclaimPorts(store, [wslWorker()], { stopAgent: unsupported(), closePane });
+    const workspacePanes = vi.fn((ws: string) => (ws === 'ws-task' ? ['daemon-1'] : []));
+    const { ports, note } = reclaimPorts(store, [wslWorker()], { stopAgent: unsupported(), closePane, workspacePanes });
     expect(await reclaimWorker(ports, row('completed'), 'completed')).toMatchObject({ state: 'stopped' });
     expect(closePane).toHaveBeenCalledWith('daemon-1');
     expect(note.mock.calls[0][3]).toContain('Its pane closes.');
+  });
+
+  it('a WSL pane in the same folder but outside the task\'s workspace is never closed', async () => {
+    for (const workspacePanes of [(ws: string) => (ws === 'ws-other' ? ['daemon-1'] : []), undefined]) {
+      const store = ReclaimedWorkers.at(fs.mkdtempSync(path.join(dir, 'o-')));
+      const closePane = vi.fn(async () => undefined);
+      const { ports } = reclaimPorts(store, [wslWorker()], { stopAgent: unsupported(), closePane, ...(workspacePanes ? { workspacePanes } : {}) });
+      await reclaimWorker(ports, row('completed'), 'completed');
+      expect(closePane).not.toHaveBeenCalled();
+    }
   });
 
   it('an exec unit or a plain WSL shell in the worktree is never closed', async () => {
@@ -229,6 +240,16 @@ describe('a WSL worker (#2254): the daemon cannot stop its Linux agent', () => {
     const shell: WorkerResumePorts = { store: shellStore, listSessions: async () => [wslWorker({ commandRunning: false })], typeLine: () => false, stopAgent: unsupported(), closePane: keep };
     expect(await stopResumedWorkers(shell, BOT)).toEqual({ stopped: 0, failed: 1, taskIds: [] });
     expect(keep).not.toHaveBeenCalled();
+  });
+
+  it('the resume of a WSL worker is refused while a WSL agent still runs in its folder', async () => {
+    const store = ReclaimedWorkers.at(dir);
+    await store.put({ taskId: 'wtask-abc-12345678', botId: BOT, ownerWorkspaceId: 'ws-owner', taskWorkspaceId: 'ws-task', title: 't', threadId: 'task:x' as never, ended: 'completed', sessions: [{ sessionId: 'daemon-1', cwd: '/mnt/c/Users/me/wt', resumeSessionId: UUID, permissionMode: 'bypassPermissions' }], state: 'stopped', at: 1 });
+    const respawn = vi.fn(async () => ({ ok: true as const, workspaceId: 'ws-new', sessionId: 'daemon-9' }));
+    const other = wslWorker({ id: 'daemon-7', spawnCwd: '/mnt/c/Users/me/wt', cwd: '/mnt/c/Users/me/wt' });
+    const r = await resumeWorker({ store, listSessions: async () => [other], typeLine: () => false, respawn, folderExists: () => true, platform: 'win32', now: () => 9_000 }, 'wtask-abc-12345678', { kind: 'owner' });
+    expect(r).toMatchObject({ ok: false, code: 'already_running' });
+    expect(respawn).not.toHaveBeenCalled();
   });
 
   it('the resume of a WSL worker whose pane closed opens the recorded Linux folder as its Windows folder', async () => {

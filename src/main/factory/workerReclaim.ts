@@ -461,6 +461,14 @@ export async function reclaimWorker(ports: WorkerReclaimPorts, entry: LedgerEntr
     if (panes.length === 0) return rec;
     let failed = 0;
     let attempted = 0;
+    // A pane is closed only in the task's own workspace: a WSL terminal the
+    // owner opened in the same folder elsewhere is never the worker's.
+    let ownPanes: readonly string[] | null = null;
+    try {
+      ownPanes = ports.workspacePanes?.(workerWorkspaceOf({ taskWorkspaceId: entry.taskWorkspaceId, paneWorkspaceId: prior?.paneWorkspaceId })) ?? null;
+    } catch {
+      ownPanes = null;
+    }
     for (const p of panes) {
       // The task reopened (or moved on from its report) meanwhile: what
       // still runs is its worker again.
@@ -469,7 +477,9 @@ export async function reclaimWorker(ports: WorkerReclaimPorts, entry: LedgerEntr
       try {
         // Only an end whose card says its pane closes closes a WSL worker's
         // pane; a reported (still open) or failed task keeps it.
-        const closable = (ended === 'completed' || ended === 'cancelled') && isWslWorkerPane(sessions.find((x) => x.id === p.sessionId));
+        const closable = (ended === 'completed' || ended === 'cancelled')
+          && !!ownPanes?.includes(p.sessionId)
+          && isWslWorkerPane(sessions.find((x) => x.id === p.sessionId));
         const r = await stopOrClose(ports.stopAgent, closable ? ports.closePane : undefined, p.sessionId);
         if (r.ok !== true) {
           failed++;
@@ -895,7 +905,9 @@ async function respawnOnce(
   // Another pane already runs an agent in the worktree: a second process on
   // the same conversation is never started.
   const home = normalizeResumeCwd(folder);
-  const busy = sessions.some((s) => s.agentProcessAlive === true
+  // A WSL worker's agent is never attributed (agentProcessAlive unknown):
+  // its running foreground command counts (isWslWorkerPane).
+  const busy = sessions.some((s) => (s.agentProcessAlive === true || isWslWorkerPane(s))
     && [s.spawnCwd, s.cwd].some((d) => typeof d === 'string' && d.length > 0 && normalizeResumeCwd(sessionHostDir(d, s, platform)) === home));
   if (busy) return refuse('already_running', 'an agent is already running in the task\'s worktree');
   if (stopped()) return refuse('not_now', 'the bot\'s work was stopped while this resume was under way');
