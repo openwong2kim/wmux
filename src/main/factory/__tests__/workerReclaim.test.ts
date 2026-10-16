@@ -1127,6 +1127,19 @@ describe('reclaimWorker records only the task\'s own panes', () => {
     expect(stopAgent).toHaveBeenCalledWith('daemon-1');
   });
 
+  it('a paused worker whose pane closed keeps its conversation when its task ends', async () => {
+    const store = ReclaimedWorkers.at(fs.mkdtempSync(path.join(dir, 'gone-')));
+    await store.put({
+      taskId: 'wtask-abc-12345678', botId: BOT, ownerWorkspaceId: 'ws-owner', taskWorkspaceId: 'ws-task', title: 'perf-A', threadId: 'task:x' as never,
+      ended: 'reported', state: 'stopped', at: 1, endRev: 2,
+      sessions: [{ sessionId: 'closed-pty', cwd: wt, resumeSessionId: UUID, permissionMode: 'acceptEdits' }],
+    });
+    // The pane is closed: no session, and its session record is gone too.
+    const { ports } = reclaimPorts(store, [], { sessionRecordOf: () => null });
+    const rec = await reclaimWorker(ports, row('cancelled'), 'cancelled');
+    expect(rec?.sessions).toEqual([{ sessionId: 'closed-pty', cwd: wt, resumeSessionId: UUID, permissionMode: 'acceptEdits' }]);
+  });
+
   it('a record an older version wrote with an owner shell drops it at the next attempt', async () => {
     const store = ReclaimedWorkers.at(fs.mkdtempSync(path.join(dir, 'old-')));
     await store.put({

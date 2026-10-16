@@ -857,6 +857,10 @@ export async function reclaimWorker(
     // wrote with such a shell drops it here.
     const ownPane = (id: string): boolean => !ports.sessionRecordOf || isTaskOwnWorkerPane({ id }, entry.id, [], ports.sessionRecordOf);
     for (const id of [...ids]) if (!ownPane(id)) ids.delete(id);
+    // A pane the record kept whose session is gone (a closed pane, whose
+    // session record went with it) stays: nothing of it can be stopped or
+    // closed any more, and its conversation is what Resume reopens.
+    const keepRecorded = (id: string): boolean => ownPane(id) || !sessions.some((x) => x.id === id);
     const panes = sessions.filter((s) => ids.has(s.id)).map(reclaimedSessionOf).filter((s): s is ReclaimedSession => !!s);
     if (movedOn(ports, entry, ended)) return null;
     const prior = ports.store.get(entry.id);
@@ -864,13 +868,13 @@ export async function reclaimWorker(
     // the record follows the task (a gate written after the stop, the end
     // that came later), with no second stop and no second card.
     if (prior?.ended === 'reported' && prior.state === 'stopped' && !sessions.some((s) => ids.has(s.id) && s.agentProcessAlive === true)) {
-      await ports.store.put({ ...prior, sessions: prior.sessions.filter((x) => ownPane(x.sessionId)), ended, endRev: entry.rev, at: now() });
+      await ports.store.put({ ...prior, sessions: prior.sessions.filter((x) => keepRecorded(x.sessionId)), ended, endRev: entry.rev, at: now() });
       ports.changed?.();
       return ports.store.get(entry.id);
     }
     // An earlier attempt that did not finish: its recorded conversations are
     // kept (a stopped agent may no longer show its binding).
-    const kept = prior?.state === 'stopping' ? prior.sessions.filter((x) => ownPane(x.sessionId)) : [];
+    const kept = prior?.state === 'stopping' ? prior.sessions.filter((x) => keepRecorded(x.sessionId)) : [];
     for (const p of panes) {
       const old = kept.find((k) => k.sessionId === p.sessionId);
       if (!p.resumeSessionId && old?.resumeSessionId) {
