@@ -146,6 +146,28 @@ export function selectableFanoutAgents(): string[] {
  */
 export const FANOUT_MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
 
+/**
+ * One model id as fan-out accepts it (trimmed), or the issue. The single rule
+ * for every model pin: a caller's `agents[k]`, a preset row, and a bot's own
+ * model and its workers' (main/factory/botStore.ts, the Bots profile).
+ */
+export function validateFanoutModel(raw: unknown): { ok: true; model: string } | ({ ok: false } & FanoutIssue) {
+  if (typeof raw !== 'string') return { ok: false, ...issue('model-not-string', {}, 'model must be a string') };
+  const model = raw.trim();
+  if (model.length > ROLE_BINDING_MODEL_MAX || !FANOUT_MODEL_RE.test(model)) {
+    const shown = model.slice(0, 80);
+    return {
+      ok: false,
+      ...issue(
+        'model-invalid',
+        { model: shown, max: String(ROLE_BINDING_MODEL_MAX) },
+        `model "${shown}" is not a single model id (letters/digits first, then . _ : -; max ${ROLE_BINDING_MODEL_MAX})`,
+      ),
+    };
+  }
+  return { ok: true, model };
+}
+
 /** One task's agent choice (a preset row, or a caller's `agents[k]`). */
 export interface FanoutAgentChoice {
   agent: string;
@@ -198,24 +220,14 @@ export function validateFanoutAgentChoice(
   }
   const choice: FanoutAgentChoice = { agent };
   if (src.model !== undefined && src.model !== null && src.model !== '') {
-    if (typeof src.model !== 'string') return fail(issue('model-not-string', {}, 'model must be a string'));
-    const model = src.model.trim();
-    if (model.length > ROLE_BINDING_MODEL_MAX || !FANOUT_MODEL_RE.test(model)) {
-      const shown = model.slice(0, 80);
-      return fail(
-        issue(
-          'model-invalid',
-          { model: shown, max: String(ROLE_BINDING_MODEL_MAX) },
-          `model "${shown}" is not a single model id (letters/digits first, then . _ : -; max ${ROLE_BINDING_MODEL_MAX})`,
-        ),
-      );
-    }
+    const model = validateFanoutModel(src.model);
+    if (!model.ok) return fail(model);
     if (!spec.modelFlag) {
       return fail(
         issue('model-unsupported', { agent }, `agent "${agent}" has no verified model flag, so a model cannot be pinned for it`),
       );
     }
-    choice.model = model;
+    choice.model = model.model;
   }
   // Same shape as automation's optionalToken (absent / null / '' = not given),
   // but held to EFFORT_TOKEN_RE: the launch rewrite drops any other effort

@@ -642,6 +642,15 @@ describe('task.fanout.start — bot origin', () => {
       expect((await codex.call({ idempotencyKey: 'wake:w-1:2', titles: ['x'], agents: [{ agent: 'claude' }] }, botCtx('lead'))).status).not.toBe('accepted');
     });
 
+    it('a model-only worker pick (the developer template\'s) puts every task on that model; research keeps working on it', async () => {
+      const r = rig('lead', { workerAgent: { agent: 'claude', model: 'opus' } }, { builtinPresets: true });
+      expect((await r.call({ idempotencyKey: 'wake:w-1:1', titles: ['a', 'b'], prompt: 'build it', preset: 'default' }, botCtx('lead'))).status).toBe('accepted');
+      expect((await r.call({ idempotencyKey: 'wake:w-1:2', titles: ['q'], prompt: 'q', preset: 'research' }, botCtx('lead'))).status).toBe('accepted');
+      await r.flush();
+      expect((r.start.mock.calls[0][0] as FanOutRequest).agents).toEqual([{ agent: 'claude', model: 'opus' }, { agent: 'claude', model: 'opus' }]);
+      expect((r.start.mock.calls[1][0] as FanOutRequest).agents).toEqual([{ agent: 'claude', model: 'opus' }]);
+    });
+
     it('verify refuses a fan-out without a checkout; the other presets refuse one', async () => {
       const v = rig('verifier', {}, { builtinPresets: true });
       const err = errorOf(await v.call({ idempotencyKey: 'wake:w-1:1', titles: ['x'], preset: 'verify' }, botCtx('verifier')));

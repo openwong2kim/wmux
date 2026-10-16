@@ -81,6 +81,74 @@ describe('BotStore', () => {
     expect(parseBotProfile({ ...stored, workerAgent: { agent: 'codex' } })?.workerAgent).toEqual({ agent: 'codex' });
   });
 
+  it('an old profile with no models loads unchanged (default brain, preset workers), stays version 1, and a stored model that fails the rule is dropped, the bot kept', async () => {
+    fs.mkdirSync(path.dirname(botsFilePath(dir)), { recursive: true });
+    const old = {
+      version: 1, id: 'bot-0a0a0a21', workspaceId: 'ws-1', role: 'moa', template: 'coordinator', name: 'Coordinator', hue: 5,
+      engine: { kind: 'claude-sdk' }, triggers: [], budget: DEFAULT_BOT_BUDGETS.moa, enabled: true, createdAt: 1, updatedAt: 1,
+    };
+    const pinned = { ...old, id: 'bot-0a0a0a22', role: 'lead', template: 'developer', name: 'Dev', hue: 2, engine: { kind: 'claude-sdk', model: 'claude-opus-5-5', effort: 'high' } };
+    const bad = { ...old, id: 'bot-0a0a0a23', role: 'lead', template: 'developer', name: 'Bad', hue: 4, engine: { kind: 'claude-sdk', model: 'claude opus', effort: 'low' } };
+    fs.writeFileSync(botsFilePath(dir), JSON.stringify({ version: 1, bots: [old, pinned, bad] }));
+    const s = newStore();
+    s.load();
+    // No template model is put on a stored coordinator: it stays on the default.
+    expect(s.get(old.id)?.engine).toEqual({ kind: 'claude-sdk' });
+    expect(s.get(old.id)?.workerAgent).toBeUndefined();
+    expect(s.get(pinned.id)?.engine).toEqual({ kind: 'claude-sdk', model: 'claude-opus-5-5', effort: 'high' });
+    expect(s.get(bad.id)?.engine).toEqual({ kind: 'claude-sdk', effort: 'low' });
+    // Written back as it was read: version 1, the untouched profiles equal.
+    await s.flush();
+    const disk = JSON.parse(fs.readFileSync(botsFilePath(dir), 'utf8'));
+    expect(disk.version).toBe(1);
+    expect(disk.bots[0]).toEqual(old);
+    expect(disk.bots[1]).toEqual(pinned);
+  });
+
+  it('a new bot starts on its template\'s models; an explicit engine or worker agent wins; Custom has none', () => {
+    const s = newStore();
+    const made = (input: Parameters<BotStore['create']>[0]) => {
+      const r = s.create(input);
+      if (!r.ok) throw new Error(r.message);
+      return r.bot;
+    };
+    for (const template of ['coordinator', 'issue', 'researcher'] as const) {
+      const b = made({ workspaceId: 'ws-1', template });
+      expect(b.engine).toEqual({ kind: 'claude-sdk', model: 'haiku' });
+      expect(b.workerAgent).toBeUndefined();
+    }
+    for (const template of ['developer', 'reviewer'] as const) {
+      const b = made({ workspaceId: 'ws-1', template });
+      expect(b.engine).toEqual({ kind: 'claude-sdk' });
+      expect(b.workerAgent).toEqual({ agent: 'claude', model: 'opus' });
+    }
+    expect(made({ workspaceId: 'ws-1', template: 'custom' })).toMatchObject({ engine: { kind: 'claude-sdk' } });
+    expect(made({ workspaceId: 'ws-1', template: 'custom' }).workerAgent).toBeUndefined();
+    expect(made({ workspaceId: 'ws-1', template: 'coordinator', engine: { kind: 'claude-sdk', model: 'sonnet' } }).engine).toEqual({ kind: 'claude-sdk', model: 'sonnet' });
+    expect(made({ workspaceId: 'ws-1', template: 'developer', workerAgent: { agent: 'codex', model: 'gpt-6.1-sol' } }).workerAgent).toEqual({ agent: 'codex', model: 'gpt-6.1-sol' });
+    // A factory default engine that already names a model keeps it.
+    const own = new BotStore(botsFilePath(dir), { now, newId: () => 'bot-000000ee', defaultEngine: () => ({ kind: 'claude-sdk', model: 'claude-sonnet-5-5' }) });
+    const o = own.create({ workspaceId: 'ws-2', template: 'coordinator' });
+    expect(o.ok && o.bot.engine).toEqual({ kind: 'claude-sdk', model: 'claude-sonnet-5-5' });
+  });
+
+  it('refuses a bot model or worker model that fan-out would refuse, on create and on update', () => {
+    const s = newStore();
+    for (const model of ['--dangerously-skip-permissions', 'claude opus', '-m', 'x'.repeat(65)]) {
+      expect(s.create({ workspaceId: 'ws-1', engine: { kind: 'claude-sdk', model } })).toMatchObject({ ok: false, code: 'invalid_argument' });
+      expect(s.create({ workspaceId: 'ws-1', workerAgent: { agent: 'claude', model } })).toMatchObject({ ok: false, code: 'invalid_argument' });
+    }
+    // An empty engine model is refused (absent means the default); for a
+    // worker, fan-out reads '' as "no model given".
+    expect(s.create({ workspaceId: 'ws-1', engine: { kind: 'claude-sdk', model: '' } })).toMatchObject({ ok: false, code: 'invalid_argument' });
+    const r = s.create({ workspaceId: 'ws-1', name: 'Dev' });
+    if (!r.ok) throw new Error('create');
+    expect(s.update(r.bot.id, { engine: { kind: 'claude-sdk', model: '--yolo' } })).toMatchObject({ ok: false, code: 'invalid_argument', message: expect.stringMatching(/model id/) });
+    expect(s.update(r.bot.id, { engine: { kind: 'claude-sdk', effort: 'turbo' } })).toMatchObject({ ok: false, code: 'invalid_argument' });
+    expect(s.update(r.bot.id, { engine: { kind: 'claude-sdk', model: 'claude-haiku-4-5-20251001', effort: 'low' } })).toMatchObject({ ok: true, bot: { engine: { kind: 'claude-sdk', model: 'claude-haiku-4-5-20251001', effort: 'low' } } });
+    expect(s.update(r.bot.id, { workerAgent: { agent: 'claude', model: 'opus', effort: 'max' } })).toMatchObject({ ok: true, bot: { workerAgent: { agent: 'claude', model: 'opus', effort: 'max' } } });
+  });
+
   it('creates with role defaults; any number of bots of one role share a workspace', () => {
     const s = newStore();
     const r = s.create({ workspaceId: 'ws-1', role: 'verifier' });

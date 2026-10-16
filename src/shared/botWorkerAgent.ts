@@ -44,10 +44,17 @@ export function botWorkerAgentLabel(agent: string): string {
 }
 
 /** A bot fan-out's per-task rows with the owner's pick applied: every row on
- *  the picked agent (the preset's rows otherwise). Pure. */
+ *  the picked agent (the preset's rows otherwise). The pick's model and
+ *  effort are defaults: a row already on that agent keeps the model and
+ *  effort it pins itself. Pure. */
 export function withBotWorkerAgent(rows: readonly FanoutAgentChoice[], workerAgent: BotWorkerAgent | undefined): FanoutAgentChoice[] {
   if (!workerAgent) return [...rows];
-  return rows.map(() => ({ agent: workerAgent.agent, ...(workerAgent.model ? { model: workerAgent.model } : {}), ...(workerAgent.effort ? { effort: workerAgent.effort } : {}) }));
+  return rows.map((row) => {
+    const own: Partial<FanoutAgentChoice> = row.agent === workerAgent.agent ? row : {};
+    const model = own.model ?? workerAgent.model;
+    const effort = own.effort ?? workerAgent.effort;
+    return { agent: workerAgent.agent, ...(model ? { model } : {}), ...(effort ? { effort } : {}) };
+  });
 }
 
 /** One engine a bot's workers may run on, as the profile offers it. */

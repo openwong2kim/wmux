@@ -79,6 +79,7 @@ import { useShallow } from 'zustand/react/shallow';
 import type { BotTaskView } from '../../../shared/botTask';
 import { botCanDo } from './botsProfile';
 import { BotConnections } from './BotConnections';
+import { BrainModelLine, WorkerModelLine } from './BotModelLines';
 import { stopBotSummary, type BotsStopPort } from './botsStop';
 import { InlineConfirm } from './InlineConfirm';
 import BotsWorkerPanel from './BotsWorkerPanel';
@@ -1762,7 +1763,8 @@ function WorkerEngineLine({ row, t, port }: { row: FactoryBotRow; t: T; port?: P
 }
 
 /** The bot's profile under its name pill: template, job (editable),
- *  workspace, repo, what its workers run on, on/off, turns used and left today, its routines
+ *  workspace, repo, the model it thinks on, what its workers run on and
+ *  their model, on/off, turns used and left today, its routines
  *  (read-only), its connections, then what it can do (the shared powers,
  *  read-only), whom it reports to, its workers now, and Stop. */
 function BotProfile({ row, workers, workspaceName, t, stopPort, jobPort, adminPort }: { row: FactoryBotRow; workers: readonly BotWorker[]; workspaceName: string; t: T; stopPort: BotsStopPort; jobPort?: Pick<FactoryBotPort, 'update' | 'workerAgents'>; adminPort?: BotAdminPort }) {
@@ -1777,7 +1779,9 @@ function BotProfile({ row, workers, workspaceName, t, stopPort, jobPort, adminPo
       <JobLine key={`${row.bot.id}:${row.bot.job ?? ''}`} row={row} t={t} jobPort={jobPort} />
       <ProfileLine label={t('botsPage.profile.workspace')} value={workspaceName} />
       <RepoLine row={row} t={t} port={jobPort} />
+      <BrainModelLine row={row} t={t} port={jobPort} />
       <WorkerEngineLine row={row} t={t} port={jobPort} />
+      <WorkerModelLine row={row} t={t} port={jobPort} />
       <ProfileLine label={t('botsPage.profile.state')} value={`${t(row.bot.enabled ? 'botsPage.profile.on' : 'botsPage.profile.off')} · ${t(`room.presence.${botPresence(row)}`)}`} />
       <ParkedLine row={row} port={adminPort} t={t} />
       {typeof left === 'number' && (

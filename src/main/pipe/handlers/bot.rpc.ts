@@ -232,6 +232,7 @@ export function registerBotRpcHandlers(
       name: params['name'],
       job: params['job'],
       engine: params['engine'],
+      workerAgent: params['workerAgent'],
       triggers: params['triggers'],
       budget: params['budget'],
       repo: params['repo'],

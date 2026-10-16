@@ -87,6 +87,8 @@ export type BotProfilePatch = Partial<Pick<BotProfile, 'name' | 'enabled' | 'tem
   job?: string | null;
   /** What the bot's workers run on; null puts them back on the default. */
   workerAgent?: BotWorkerAgent | null;
+  /** The bot's own engine: its model and effort (claude-sdk). */
+  engine?: BotEngine;
   /** A picked folder: main makes it the bot's repository as Add bot does. */
   repoFolder?: string;
   budget?: Partial<Omit<BotProfile['budget'], 'maxTurnsPerHour'>> & { maxTurnsPerHour?: number | null };

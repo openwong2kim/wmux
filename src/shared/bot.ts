@@ -100,6 +100,21 @@ export type BotEngine =
 
 export const DEFAULT_BOT_ENGINE: BotEngine = { kind: 'claude-sdk' };
 
+/** The models a NEW bot of a template starts on (main/factory/botStore.ts
+ *  `create`, when the caller names no engine or worker agent): `brain` is
+ *  the bot's own `claude-sdk` model (BotEngine.model), `worker` its fan-out
+ *  workers' (BotProfile.workerAgent). The ids are aliases from the model
+ *  catalog (shared/claudeModels.ts CLAUDE_MODEL_OPTIONS), so they follow the
+ *  installed claude CLI's newest model of that tier. A stored bot is never
+ *  moved onto these; a template absent here starts on the defaults. */
+export const TEMPLATE_MODEL_DEFAULTS: Readonly<Partial<Record<BotTemplate, { brain?: { model: string }; worker?: BotWorkerAgent }>>> = {
+  coordinator: { brain: { model: 'haiku' } },
+  issue: { brain: { model: 'haiku' } },
+  researcher: { brain: { model: 'haiku' } },
+  developer: { worker: { agent: 'claude', model: 'opus' } },
+  reviewer: { worker: { agent: 'claude', model: 'opus' } },
+};
+
 /** The agent CLI a bot's fan-out workers run on (shared/botWorkerAgent.ts):
  *  a slug from fan-out's closed agent table that has a bot-worker guard, plus
  *  an optional model and effort. Set only by the owner; absent = the bot

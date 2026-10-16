@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 import { SHARED_SURFACE } from '../../../../shared/botSurface';
 import { BOT_ROLES } from '../../../../shared/bot';
 import { en } from '../../../i18n/locales/en';
-import { CAN_DO_COORDINATOR, CAN_DO_PHRASES, CAN_DO_UNLISTED, botCanDo } from '../botsProfile';
+import { CAN_DO_COORDINATOR, CAN_DO_PHRASES, CAN_DO_UNLISTED, botCanDo, botModelSummary, brainEngine, workerAgentPick } from '../botsProfile';
 
 describe('bot profile: can do', () => {
   it('every tool on the surface has an owner phrase or is an event feed', () => {
@@ -35,5 +35,47 @@ describe('bot profile: can do', () => {
     expect(botCanDo({ role: 'lead', template: 'coordinator' })).toContain(CAN_DO_COORDINATOR);
     expect(botCanDo({ role: 'moa' })).toContain(CAN_DO_COORDINATOR);
     expect(botCanDo({ role: 'moa', template: 'developer' })).not.toContain(CAN_DO_COORDINATOR);
+  });
+});
+
+describe('bot profile: models', () => {
+  const t = (key: string, vars?: Record<string, string | number>) => {
+    const text = (en as Record<string, string>)[key] ?? key;
+    return text.replace(/\{(\w+)\}/g, (_m, k: string) => String(vars?.[k] ?? `{${k}}`));
+  };
+
+  it('every model string is in en, ko, pl and zh', async () => {
+    const { ko } = await import('../../../i18n/locales/ko');
+    const { pl } = await import('../../../i18n/locales/pl');
+    const { zh } = await import('../../../i18n/locales/zh');
+    const keys = Object.keys(en).filter((k) => k.startsWith('botsPage.models.'));
+    expect(keys.length).toBeGreaterThanOrEqual(12);
+    for (const locale of [ko, pl, zh] as Record<string, string>[]) for (const k of keys) expect(locale[k], k).toBeTruthy();
+  });
+
+  it('the brain picker saves a claude-sdk engine; it refuses a model id fan-out would refuse', () => {
+    expect(brainEngine('haiku', 'low')).toEqual({ ok: true, engine: { kind: 'claude-sdk', model: 'haiku', effort: 'low' } });
+    expect(brainEngine('  ', '')).toEqual({ ok: true, engine: { kind: 'claude-sdk' } });
+    expect(brainEngine('opus', 'turbo')).toEqual({ ok: true, engine: { kind: 'claude-sdk', model: 'opus' } });
+    expect(brainEngine('--dangerously-skip-permissions', '')).toEqual({ ok: false, model: '--dangerously-skip-permissions' });
+    expect(brainEngine('claude opus', 'high')).toEqual({ ok: false, model: 'claude opus' });
+  });
+
+  it('the workers picker: the default agent with nothing pinned is null, a model alone pins Claude, a bad id is refused', () => {
+    expect(workerAgentPick('', '', '')).toEqual({ ok: true, workerAgent: null });
+    expect(workerAgentPick('', 'opus', '')).toEqual({ ok: true, workerAgent: { agent: 'claude', model: 'opus' } });
+    expect(workerAgentPick('codex', 'gpt-6.1-sol', 'high')).toEqual({ ok: true, workerAgent: { agent: 'codex', model: 'gpt-6.1-sol', effort: 'high' } });
+    expect(workerAgentPick('codex', '', '')).toEqual({ ok: true, workerAgent: { agent: 'codex' } });
+    expect(workerAgentPick('claude', '-m', '')).toMatchObject({ ok: false, model: '-m' });
+    expect(workerAgentPick('grok', '', '')).toMatchObject({ ok: false, error: expect.stringMatching(/bot-worker guard/) });
+  });
+
+  it('the list and roster note: only what is set, briefly', () => {
+    expect(botModelSummary({ engine: { kind: 'claude-sdk' } }, t)).toBe('');
+    expect(botModelSummary({ engine: { kind: 'claude-sdk', model: 'haiku' } }, t)).toBe('haiku (latest)');
+    expect(botModelSummary({ engine: { kind: 'claude-sdk' }, workerAgent: { agent: 'claude', model: 'claude-opus-5-5' } }, t)).toBe('workers Opus 5.5');
+    expect(botModelSummary({ engine: { kind: 'claude-sdk', model: 'sonnet' }, workerAgent: { agent: 'codex', model: 'gpt-6.1-sol' } }, t)).toBe('sonnet (latest) · workers gpt-6.1-sol');
+    expect(botModelSummary({ engine: { kind: 'claude-sdk' }, workerAgent: { agent: 'codex' } }, t)).toBe('workers Codex');
+    expect(botModelSummary({ engine: { kind: 'claude-sdk' }, workerAgent: { agent: 'claude' } }, t)).toBe('');
   });
 });

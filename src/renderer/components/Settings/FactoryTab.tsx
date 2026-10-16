@@ -57,6 +57,7 @@ import { listedWorkspaces } from '../../stores/slices/moaSlice';
 import { createBot, turnBotsOn, type TurnBotsOnResult } from '../Bots/botsAddBot';
 import { botsOnPatch, useBotsPlanConsent } from '../Bots/BotsPlanConsent';
 import { botsStopPort, toastStoppedWork } from '../Bots/botsStop';
+import { botModelSummary } from '../Bots/botsProfile';
 
 type T = (key: string, vars?: Record<string, string | number>) => string;
 
@@ -720,6 +721,7 @@ function BotsList({ t, port, workspaceName, workspaces, defaultWorkspaceId, pick
                 <PresenceDot presence={botPresence(row)} />
                 <span className="truncate text-[var(--text-main)]">{row.bot.name}</span>
                 <span className="text-[11px] text-[var(--text-muted)]">{botKindLabel(row.bot, t)}</span>
+                {botModelSummary(row.bot, t) && <span data-testid="factory-bot-models" className="min-w-0 truncate text-[11px] text-[var(--text-muted)]">{botModelSummary(row.bot, t)}</span>}
                 {!row.bot.enabled && <span className="ml-auto text-[11px] text-[var(--text-muted)]">{t('settings.factory.botOff')}</span>}
               </button>
               {editing === row.bot.id && <BotProfileEditor row={row} port={port} t={t} onDone={() => setEditing(null)} />}

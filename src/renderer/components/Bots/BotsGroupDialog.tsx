@@ -18,6 +18,7 @@ import Select from '../ui/Select';
 import Button from '../ui/Button';
 import { FOCUS_RING } from '../focusRing';
 import { InlineConfirm } from './InlineConfirm';
+import { botModelSummary } from './botsProfile';
 
 type T = (key: string, vars?: Record<string, string | number>) => string;
 
@@ -132,6 +133,7 @@ export default function BotsGroupDialog({ start, bots, workspaces, port, t, onDo
                 <input type="checkbox" data-bots-group-member={r.bot.id} checked={chosen.includes(r.bot.id)} onChange={() => toggle(r.bot.id)} className={FOCUS_RING} />
                 <BotAvatar bot={r.bot} size={20} />
                 <span className="min-w-0 truncate">{r.bot.name}</span>
+                {botModelSummary(r.bot, t) && <span data-bots-group-member-models className="ml-auto shrink-0 text-[11px] text-[var(--text-muted)]">{botModelSummary(r.bot, t)}</span>}
               </label>
             ))}
           </fieldset>
