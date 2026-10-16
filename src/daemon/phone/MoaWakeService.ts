@@ -75,9 +75,10 @@ function refusalWire(code: MoaWakeRefusalCode, clientMessageId: string): { wire:
     case 'factory_off':
       // Nothing ran; only a factory send gets it, and it falls back first.
       return { wire: fail(409, 'factory-off'), release: true };
-    // A targeted message: nothing was posted. Final for the id, like no-hq.
+    // A targeted message: nothing was posted. Final for the id, like no-hq;
+    // a room that took no card may take it later, so that id is released.
     case 'bot_missing': case 'bot_off': case 'group_missing': case 'group_off': case 'room_refused':
-      return { wire: fail(409, 'no-recipient', { reason: code.replace('_', '-') }), release: false };
+      return { wire: fail(409, 'no-recipient', { reason: code.replace('_', '-') }), release: code === 'room_refused' };
   }
 }
 
@@ -208,6 +209,13 @@ export class MoaWakeService {
       ...(factory ? { mode: 'factory' as const } : {}),
       ...(target ? { workspaceId: target.workspaceId, threadId: target.threadId } : {}),
     };
+    // The desktop may have changed while the receipt was written: a target
+    // goes only to one that announced it now (request takes this owner
+    // synchronously, with nothing awaited in between).
+    if (target && !desktop.supports(FACTORY_THREAD_MESSAGE_CAPABILITY)) {
+      await store.release(owner, clientMessageId);
+      return { status: 503, body: { error: 'desktop-unavailable', clientMessageId } };
+    }
     let raw: unknown;
     try {
       raw = await desktop.request(MOA_WAKE_COMMAND, { ...payload });

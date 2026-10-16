@@ -4460,7 +4460,7 @@ POST /api/rooms/ws-1/messages
 | Answer | Meaning | Retry |
 |---|---|---|
 | `202 {state:"queued", clientMessageId}` | The card is posted and every bot it is for has the message in its queue. A busy bot queues, it never refuses. | — |
-| `409 {error:"no-recipient", reason, state:"failed"}` | Nothing was posted: `bot-missing` (no such bot in that workspace), `bot-off` (the bot is switched off), `group-missing` (no live group chat in that thread), `group-off` (none of the group's bots is on), `room-refused` (the room took no card). Final for this id. | new id, once the desktop changed |
+| `409 {error:"no-recipient", reason, state:"failed"}` | Nothing was posted: `bot-missing` (no such bot in that workspace), `bot-off` (the bot is switched off), `group-missing` (no live group chat in that thread), `group-off` (none of the group's bots is on). Final for this id. `room-refused` (the room took no card): the id is released. | new id, once the desktop changed (`room-refused`: same id, later) |
 | `409 {error:"moa-busy", state:"failed"}`, `Retry-After: 5` | The factory has not finished starting, or a bot's queue is full. Nothing was queued; the id is released. | same id, after the delay |
 | `409 {error:"factory-off", state:"failed"}` | The desktop's factory is switched off. Nothing was posted; the id is released. | same id, once it is on |
 | `503 {error:"desktop-unavailable"}` | No desktop attached, or one too old to take a message for one conversation (it is never sent one). Nothing recorded. | same id, later |

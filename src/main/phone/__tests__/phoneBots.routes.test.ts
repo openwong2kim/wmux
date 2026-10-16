@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach, beforeEach, afterAll, beforeAll } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach, afterAll, beforeAll, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -293,6 +293,22 @@ describe('GET /api/bots and POST /api/rooms/:workspaceId/messages', () => {
       expect(writer.read('ws-1').cards).toEqual([]);
       expect(writer.read('ws-2').cards).toEqual([]);
       expect(queue.list({ states: ['queued'] })).toEqual([]);
+    });
+
+    it('a desktop that changes while the receipt is written is never sent the target; the id is released', async () => {
+      const caps = new Set(['moa.wake', 'factory.threadMessage']);
+      const request = vi.fn(async () => ({ ok: true, accepted: true, queued: true }));
+      const desktop = { available: true, supports: (c: string) => caps.has(c), request };
+      const store = new AnswerReceiptStore(dir, Date.now, undefined, 'phone-moa-wake-receipts.json');
+      const begin = store.begin.bind(store);
+      // An older desktop takes over while the receipt is written.
+      vi.spyOn(store, 'begin').mockImplementationOnce(async (...args) => { caps.delete('factory.threadMessage'); return begin(...args); });
+      const wake = new MoaWakeService({ receipts: () => store, desktop: () => desktop as never });
+      const input = { owner: 'device:d1', clientMessageId: freshId(), text: 'hi', target: { workspaceId: 'ws-1', threadId: `dm:${LEAD.id}` } };
+      expect(await wake.roomMessage(input)).toMatchObject({ status: 503, body: { error: 'desktop-unavailable' } });
+      expect(request).not.toHaveBeenCalled();
+      caps.add('factory.threadMessage');
+      expect(await wake.roomMessage(input)).toMatchObject({ status: 202, body: { state: 'queued', replayed: false } });
     });
 
     it('409 factory-off with the factory switched off; the id is released', async () => {
