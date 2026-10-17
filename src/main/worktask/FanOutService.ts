@@ -76,7 +76,6 @@ import { getPtyShell } from '../pty/ptyShellRegistry';
 import type { Connector } from '../../shared/botConnector';
 import { AGENT_SLUG_SET } from '../../shared/agentIdentity';
 import { getSharedTaskGateRunner } from './TaskGateRunner';
-import { originPinMatches } from '../../shared/originPin';
 import {
   clearFirstRunPrompts,
   detectFirstRunPrompt,
@@ -541,11 +540,13 @@ export type FanOutStatus =
 
 /** Why a bot's code fan-out may not start, or null: the bot's profile pins
  *  origin (`botPin`), and the repository's origin, read at dispatch
- *  (`planPin`), no longer matches it. A fan-out of the owner's (no bot pin)
+ *  (`planPin`), is no longer that URL as written. Exactly as written: the
+ *  dispatch fetches the base from origin by its own spelling, and git's URL
+ *  rewrites match the literal string. A fan-out of the owner's (no bot pin)
  *  is never refused here. Pure. */
 export function dispatchOriginPinRefusal(botPin: string | undefined, planPin: string | undefined): string | null {
   if (!botPin) return null;
-  return planPin && originPinMatches(botPin, planPin) ? null : 'this repository\'s origin changed; re-select the repository';
+  return planPin === botPin ? null : 'this repository\'s origin changed; re-select the repository';
 }
 
 export class FanOutService {

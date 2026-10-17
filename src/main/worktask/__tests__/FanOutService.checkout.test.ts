@@ -139,8 +139,12 @@ describe('FanOutService — detached checkout + dispatch record', () => {
     expect(refused).toMatchObject({ ok: false, error: expect.stringContaining('re-select the repository') });
     expect(moved.worktrees.createWorktree).not.toHaveBeenCalled();
     expect(ledger.list({ ownerWorkspaceId: 'ws-bot' })).toHaveLength(0);
+    // The base is fetched from origin by its own spelling: a respelling refuses too.
+    const respelled = rig();
+    respelled.worktrees.preflight.mockImplementation(plan('ssh://git@git.corp.example:22/acme/App'));
+    expect(await respelled.svc.start({ ...base, repoKey: 'git.corp.example/acme/app', originPin: botPin })).toMatchObject({ ok: false, error: expect.stringContaining('re-select the repository') });
     const same = rig();
-    same.worktrees.preflight.mockImplementation(plan('ssh://git@git.corp.example:22/acme/App'));
+    same.worktrees.preflight.mockImplementation(plan(botPin));
     expect((await same.svc.start({ ...base, repoKey: 'git.corp.example/acme/app', originPin: botPin })).ok).toBe(true);
     expect(ledger.list({ ownerWorkspaceId: 'ws-bot' })[0].dispatch?.originPin).toBe(botPin);
     expect(dispatchOriginPinRefusal(undefined, 'ssh://git@git.corp.example:2222/acme/app.git')).toBeNull();

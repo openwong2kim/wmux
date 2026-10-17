@@ -373,6 +373,21 @@ describe.skipIf(process.platform === 'win32')('task.push and task.fetch: the rec
     await assertPinnedUrlUsed(pin, 'https://git.corp.example:443/acme/app.git', other);
   });
 
+  it('an unrelated remote-conditioned include keeps the owner\'s repository-scoped transport config replayed', async () => {
+    const pin = 'https://git.corp.example/acme/app.git';
+    git(repo, 'remote', 'add', 'origin', pin);
+    // The rewrite to the task's origin comes only through an include for the
+    // recorded repository's git dir, which the relay's own dir never matches.
+    const inc = path.join(root, 'gitdir.inc');
+    fs.writeFileSync(inc, rule('srv', 'https://git.corp.example/'));
+    globalConfig(`[includeIf "gitdir:${common}"]\n\tpath = ${inc}\n[includeIf "hasconfig:remote.*.url:https://elsewhere.example/**"]\n\tpath = ${inc}.none\n`);
+    expect(await pushTask({ ...input(), expectedOriginPin: pin })).toMatchObject({ ok: true });
+    expect(git(bare, 'rev-parse', 'refs/heads/wtask/one')).toBe(git(work, 'rev-parse', 'HEAD'));
+    // Respelled, the repository's include reading is not replayed: the push cannot reach srv.
+    git(repo, 'remote', 'set-url', 'origin', 'https://git.corp.example:443/acme/app.git');
+    expect(await pushTask({ ...input(), expectedOriginPin: pin })).toMatchObject({ ok: false });
+  });
+
   it('a switch between https and ssh is refused; the owner picks the repository again', async () => {
     git(repo, 'remote', 'add', 'origin', 'git@git.corp.example:acme/app.git');
     globalConfig();
