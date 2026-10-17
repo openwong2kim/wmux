@@ -406,6 +406,29 @@ describe.skipIf(process.platform === 'win32')('task.push and task.fetch: the rec
     expect(await pushTask({ ...input(), expectedOriginPin: pin })).toMatchObject({ ok: true });
   });
 
+  it('an owner include conditioned on the branch is never replayed from the recorded repository, whose HEAD the worker can move', async () => {
+    const other = otherServer('srv2');
+    const pin = 'https://git.corp.example/acme/app.git';
+    git(repo, 'remote', 'add', 'origin', pin);
+    const inc = path.join(root, 'onbranch.inc');
+    fs.writeFileSync(inc, rule('srv2', 'https://git.corp.example/acme/'));
+    globalConfig(rule('srv', 'https://git.corp.example/') + `[includeIf "onbranch:release/**"]\n\tpath = ${inc}\n`);
+    git(repo, 'branch', 'release/x');
+    git(repo, 'symbolic-ref', 'HEAD', 'refs/heads/release/x');
+    expect(await pushTask({ ...input(), expectedOriginPin: pin })).toMatchObject({ ok: true });
+    expect(git(bare, 'rev-parse', 'refs/heads/wtask/one')).toBe(git(work, 'rev-parse', 'HEAD'));
+    expect(git(other, 'for-each-ref')).toBe('');
+  });
+
+  it('an owner rewrite whose base carries a user name sends push and fetch to it, unrefused', async () => {
+    const pin = 'https://git.corp.example/acme/app.git';
+    git(repo, 'remote', 'add', 'origin', pin);
+    globalConfig(`[url "${fakeSshUrl(path.join(root, 'srv')).replace('ssh://', 'ssh://x-access-token@')}/"]\n\tinsteadOf = https://git.corp.example/\n`);
+    expect(await pushTask({ ...input(), expectedOriginPin: pin })).toMatchObject({ ok: true });
+    expect(git(bare, 'rev-parse', 'refs/heads/wtask/one')).toBe(git(work, 'rev-parse', 'HEAD'));
+    expect(await fetchTaskRefs({ ...input(), expectedOriginPin: pin })).toMatchObject({ ok: true, defaultBranch: 'main' });
+  });
+
   it('a switch between https and ssh is refused; the owner picks the repository again', async () => {
     git(repo, 'remote', 'add', 'origin', 'git@git.corp.example:acme/app.git');
     globalConfig();
