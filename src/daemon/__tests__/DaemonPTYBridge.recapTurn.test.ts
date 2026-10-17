@@ -317,7 +317,9 @@ describe('DaemonPTYBridge — output after a hook Stop (F24)', () => {
     bridge.noteAgentStatus('complete', true);
     feed(IDLE_TITLE);
     vi.advanceTimersByTime(60_000);
-    feed(RUNNING_TITLE);
+    feed(BIG + footer); // held: still under the idle title
+    vi.advanceTimersByTime(500);
+    feed(RUNNING_TITLE); // opens the turn
     vi.advanceTimersByTime(500);
     feed(BIG + footer); // the autonomous turn paints; the footer did not change
     expect(bridge.getAgentStatus()).toBe('running');
@@ -327,7 +329,7 @@ describe('DaemonPTYBridge — output after a hook Stop (F24)', () => {
     expect(bridge.getTurn(bridge.getAgentStatus())).toMatchObject({ id, state: 'running' });
   });
 
-  it('a slow Stop hook that keeps the spinner up past the cool-down: its idle title ends the turn it opened', () => {
+  it('a slow Stop hook that keeps the spinner up past the cool-down opens nothing', () => {
     bridge.noteInput('go\r');
     bridge.noteAgentStatus('running', true);
     feed(RUNNING_TITLE + BIG);
@@ -336,6 +338,7 @@ describe('DaemonPTYBridge — output after a hook Stop (F24)', () => {
     for (let i = 0; i < 8; i++) {
       vi.advanceTimersByTime(1000);
       feed(i % 2 ? RUNNING_TITLE : '\x1b]0;◑ Set e2e-win/hello.txt line 1\x07');
+      expect(bridge.isTurnOpen()).toBe(false);
     }
     feed(IDLE_TITLE); // the hooks are done
     expect(bridge.isTurnOpen()).toBe(false);
@@ -346,18 +349,22 @@ describe('DaemonPTYBridge — output after a hook Stop (F24)', () => {
     expect(bridge.getTurn('running').startedAt).toBe(Date.now());
   });
 
-  it('spinner titles under the `running Stop hooks` row never open a turn', () => {
-    bridge.noteInput('go\r');
-    bridge.noteAgentStatus('running', true);
-    feed(RUNNING_TITLE + BIG);
-    feed('\x1b[2K✢ Musing… (running Stop hooks… 1/2 · 2s)');
-    bridge.noteAgentStatus('complete', true);
-    for (let i = 0; i < 8; i++) {
-      vi.advanceTimersByTime(1000);
-      feed(RUNNING_TITLE);
-      expect(bridge.isTurnOpen()).toBe(false);
-    }
-    feed(IDLE_TITLE);
+  it('a spinner-opened turn the idle title ends (no hook) is settled again: a later repaint opens nothing', () => {
+    const id = finishedHookTurn();
+    vi.advanceTimersByTime(60_000);
+    feed(BIG);
+    vi.advanceTimersByTime(300);
+    feed(RUNNING_TITLE);
+    expect(bridge.isTurnOpen()).toBe(true);
+    vi.advanceTimersByTime(300);
+    feed(IDLE_TITLE); // an Esc, with no hook
+    expect(bridge.isTurnOpen()).toBe(false);
     expect(bridge.getAgentStatus()).toBe('complete');
+    vi.advanceTimersByTime(6000);
+    feed(F24_PANE_TAIL + RECAP_FRAME);
+    vi.advanceTimersByTime(10_000);
+    expect(bridge.isTurnOpen()).toBe(false);
+    bridge.noteInput('again\r');
+    expect(bridge.getTurn('running').id).not.toBe(id);
   });
 });

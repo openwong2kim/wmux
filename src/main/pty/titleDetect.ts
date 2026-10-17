@@ -69,11 +69,6 @@ export class ClaudeTitleTurnEdge {
     this.tail = text.slice(-(CLAUDE_STOP_HOOK_ROW.length - 1));
   }
 
-  /** The Stop-hook row was drawn since the last idle title: the turn is running its Stop hooks. */
-  inStopHooks(): boolean {
-    return this.stopHookRan;
-  }
-
   /** Feed one sanitized title. True for an idle title with no Stop-hook row since the last one. */
   observe(title: string): boolean {
     if (!CLAUDE_IDLE_TITLE.test(title)) return false;

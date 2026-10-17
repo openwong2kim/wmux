@@ -889,13 +889,14 @@ export class DaemonPTYBridge extends EventEmitter {
   private static readonly HELD_BURST_MS = 3000;
 
   /**
-   * F24 — Claude Code set its running spinner title on a settled hook pane:
-   * it started a turn by itself (a background task woke it), and the burst
-   * the idle-title gate held back may have been that turn's first paint. Its
-   * spinner alone writes too few bytes to cross the activity threshold
-   * again, so the title opens the turn, from the held burst when one came
-   * within the last few seconds. The settled branch's other guards apply: the
-   * finishing turn's tail, echo of the user's keys, a resize repaint.
+   * F24 — Claude Code set its running spinner title on a settled hook pane
+   * within a few seconds of a burst the idle-title gate held back: it
+   * started a turn by itself (a background task woke it), and that burst was
+   * the turn's first paint. The spinner alone writes too few bytes to cross
+   * the activity threshold again, so the title opens the turn, dated from the
+   * held burst. Without a held burst a spinner title opens nothing (a slow
+   * Stop hook keeps the spinner up after its Stop arrived). The settled
+   * branch's other guards apply: echo of the user's keys, a resize repaint.
    */
   private noteSpinnerTitle(): void {
     if (!this.explicitTerminalStatus || !this.hookSeen || this.awaitingHuman || this.muted || !this.sessionId) return;
@@ -905,15 +906,16 @@ export class DaemonPTYBridge extends EventEmitter {
       || !this.isInputQuiet()
       || now - this.lastResizeAtMs < RESIZE_REDRAW_GUARD_MS
     ) return;
-    const heldAt = now - this.heldBurstAt < DaemonPTYBridge.HELD_BURST_MS ? this.heldBurstAt : undefined;
+    if (now - this.heldBurstAt >= DaemonPTYBridge.HELD_BURST_MS) return;
+    const heldAt = this.heldBurstAt;
     this.heldBurstAt = 0;
+    this.spinnerSettledStatus = this.settledStatus;
     this.explicitTerminalStatus = false;
     this.settledStatus = null;
     this.submittedTurnPending = false;
     // Not `byteOpenedTurn`: the spinner is the agent's own word that a turn
     // runs, and that turn ends with a Stop like any other. Until a hook
-    // speaks, Claude Code's idle title ends it too: a slow Stop hook keeps the
-    // spinner up past the cool-down, then sets `✳` with no hook after it.
+    // speaks, Claude Code's idle title ends it too (see endSpinnerTurn).
     const wasOpen = this.turnOpen;
     this.openTurn(true, heldAt);
     if (!wasOpen) this.spinnerOpenedTurn = true;
@@ -929,6 +931,27 @@ export class DaemonPTYBridge extends EventEmitter {
   private spinnerArmedCycle = false;
   /** The open episode was opened by noteSpinnerTitle, and no hook or submit has spoken since. */
   private spinnerOpenedTurn = false;
+  /** The settled status noteSpinnerTitle cleared, for endSpinnerTurn to put back. */
+  private spinnerSettledStatus: AgentEventStatus | null = null;
+
+  /**
+   * Claude Code set its idle title over a turn only its spinner opened (no
+   * hook since: an interrupt, or a turn that never reached the model). The
+   * episode ends softly and the pane is settled again as it was, so a later
+   * repaint under that title meets the idle-title gate.
+   */
+  private endSpinnerTurn(): void {
+    this.closeTurn(true);
+    this.explicitTerminalStatus = true;
+    this.settledStatus = this.spinnerSettledStatus ?? 'complete';
+    this.spinnerSettledStatus = null;
+    this.spinnerArmedCycle = false;
+    if (this.activityMonitor && this.sessionId) {
+      this.activityMonitor.endTurn(this.sessionId);
+      // Main heard `running` from this turn; nothing else would retract it.
+      this.emit('idle', { sessionId: this.sessionId });
+    }
+  }
 
   /**
    * Something other than the shell moved the pane's cwd (an agent's hook
@@ -1385,12 +1408,8 @@ export class DaemonPTYBridge extends EventEmitter {
         this.lastTitleAt = Date.now();
         if (title) this.emit('title', { sessionId, title });
         if (titleTurnEdge.observe(title)) this.noteTitleTurnEnd(sessionId);
-        // Not while the spinner row reads `running Stop hooks`: that is the
-        // finished turn's tail, however long its hooks take.
-        if (DaemonPTYBridge.CLAUDE_SPINNER_TITLE.test(title)) {
-          if (!titleTurnEdge.inStopHooks()) this.noteSpinnerTitle();
-        }
-        else if (this.spinnerOpenedTurn && !this.awaitingHuman && /^✳\s/.test(title)) this.closeTurn(true);
+        if (DaemonPTYBridge.CLAUDE_SPINNER_TITLE.test(title)) this.noteSpinnerTitle();
+        else if (this.spinnerOpenedTurn && this.turnOpen && !this.awaitingHuman && /^✳\s/.test(title)) this.endSpinnerTurn();
         return;
       }
       if (event.code === 7) {
