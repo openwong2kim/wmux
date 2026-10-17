@@ -163,10 +163,11 @@ function hostedLedgerTaskOf(workspaceId: string): { title: string; status: strin
 
 /** What holds the live fan-out slots, for the cap's refusal. */
 export interface LiveSlotHolders {
-  /** Titles of open tasks. */
-  running: string[];
+  /** Titles of open (not yet ended) tasks: they hold a slot whether or not
+   *  an agent runs in them. */
+  open: string[];
   /** Titles of tasks that ended (completed, cancelled, failed) whose
-   *  workspace still runs an agent. */
+   *  workspace is not known to run no agent. */
   ended: string[];
   /** Open task workspaces whose task row is not known (a launch under way,
    *  or one whose row was never written). */
@@ -194,9 +195,9 @@ export function liveCapMessage(live: number, count: number, holders: LiveSlotHol
   const frees = ' A slot frees when a task ends and its agent stops, or when its task workspace is closed.';
   if (!holders) return `${head}${frees}`;
   const parts: string[] = [];
-  if (holders.running.length > 0) parts.push(`${holders.running.length} running (${titleList(holders.running)})`);
+  if (holders.open.length > 0) parts.push(`${holders.open.length} open (${titleList(holders.open)})`);
   if (holders.ended.length > 0) {
-    parts.push(`${holders.ended.length} ended but still running an agent in ${holders.ended.length === 1 ? 'its workspace' : 'their workspaces'} (${titleList(holders.ended)})`);
+    parts.push(`${holders.ended.length} ended whose agent is not known to have stopped (${titleList(holders.ended)})`);
   }
   if (holders.untracked > 0) parts.push(`${holders.untracked} task ${holders.untracked === 1 ? 'workspace' : 'workspaces'} with no task record`);
   if (holders.starting > 0) parts.push(`${holders.starting} starting`);
@@ -395,12 +396,12 @@ export class FanOutGuards {
   private liveSlotHolders(starting: number): LiveSlotHolders | null {
     if (this.countLiveOverride) return null;
     try {
-      const holders: LiveSlotHolders = { running: [], ended: [], untracked: 0, starting };
+      const holders: LiveSlotHolders = { open: [], ended: [], untracked: 0, starting };
       for (const ws of this.liveTaskWorkspaces()) {
         const task = this.ledgerTaskOf(ws);
         if (!task) holders.untracked++;
         else if (task.status === 'completed' || task.status === 'cancelled' || task.status === 'failed') holders.ended.push(task.title);
-        else holders.running.push(task.title);
+        else holders.open.push(task.title);
       }
       return holders;
     } catch {

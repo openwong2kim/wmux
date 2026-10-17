@@ -493,12 +493,12 @@ describe('ended tasks hold no live slot (F25)', () => {
     expect(r.ok).toBe(false);
     expect(!r.ok && r.message).toBe(
       'fan-out refused: at most 8 fan-out tasks may be live at once across wmux (8 live now, 1 requested). ' +
-        'Held by: 2 running ("fix login", "perf A"); 1 ended but still running an agent in its workspace ("docs"); 5 task workspaces with no task record. ' +
+        'Held by: 2 open ("fix login", "perf A"); 1 ended whose agent is not known to have stopped ("docs"); 5 task workspaces with no task record. ' +
         'A slot frees when a task ends and its agent stops, or when its task workspace is closed.',
     );
-    expect(liveCapMessage(8, 2, { running: ['a', 'b', 'c', 'd', 'e'], ended: [], untracked: 0, starting: 3 })).toBe(
+    expect(liveCapMessage(8, 2, { open: ['a', 'b', 'c', 'd', 'e'], ended: [], untracked: 0, starting: 3 })).toBe(
       'fan-out refused: at most 8 fan-out tasks may be live at once across wmux (8 live now, 2 requested). ' +
-        'Held by: 5 running ("a", "b", "c" and 2 more); 3 starting. A slot frees when a task ends and its agent stops, or when its task workspace is closed.',
+        'Held by: 5 open ("a", "b", "c" and 2 more); 3 starting. A slot frees when a task ends and its agent stops, or when its task workspace is closed.',
     );
     expect(liveCapMessage(7, 2, null)).toBe(
       'fan-out refused: at most 8 fan-out tasks may be live at once across wmux (7 live now, 2 requested). A slot frees when a task ends and its agent stops, or when its task workspace is closed.',
