@@ -567,6 +567,7 @@ export class DaemonPTYBridge extends EventEmitter {
     }
     // A submit, or a human answering the agent's dialog: a turn either way.
     this.byteOpenedTurn = false;
+    this.spinnerOpenedTurn = false;
     this.lastTurnStartedAt = Date.now();
     this.preTurn = false;
     this.codexBootWindow = false;
@@ -692,6 +693,7 @@ export class DaemonPTYBridge extends EventEmitter {
    */
   noteAgentStatus(status: AgentEventStatus, authoritative = false, questionAt?: number, provisional = false, signalTs?: number): void {
     this.spinnerArmedCycle = false;
+    if (authoritative) this.spinnerOpenedTurn = false;
     // #1463 — any hook is turn evidence. SessionStart re-sets `preTurn` after
     // its own edge (noteSessionStart); detector statuses are not evidence.
     if (authoritative) {
@@ -847,6 +849,7 @@ export class DaemonPTYBridge extends EventEmitter {
 
   private closeTurn(soft = false): void {
     this.byteOpenedTurn = false;
+    this.spinnerOpenedTurn = false;
     if (this.turnOpen) this.turnSoftClosed = soft;
     else if (!soft) this.turnSoftClosed = false;
     this.turnOpen = false;
@@ -908,8 +911,12 @@ export class DaemonPTYBridge extends EventEmitter {
     this.settledStatus = null;
     this.submittedTurnPending = false;
     // Not `byteOpenedTurn`: the spinner is the agent's own word that a turn
-    // runs, and that turn ends with a Stop like any other.
+    // runs, and that turn ends with a Stop like any other. Until a hook
+    // speaks, Claude Code's idle title ends it too: a slow Stop hook keeps the
+    // spinner up past the cool-down, then sets `✳` with no hook after it.
+    const wasOpen = this.turnOpen;
     this.openTurn(true, heldAt);
+    if (!wasOpen) this.spinnerOpenedTurn = true;
     // The turn's next output reports `running` through onActive, as a hook's
     // running edge does, but keeps the detector's dedup like the settled
     // branch's promotion: the idle chrome still on screen must not answer
@@ -920,6 +927,8 @@ export class DaemonPTYBridge extends EventEmitter {
 
   /** The current activity cycle was armed by noteSpinnerTitle and has not fired yet. */
   private spinnerArmedCycle = false;
+  /** The open episode was opened by noteSpinnerTitle, and no hook or submit has spoken since. */
+  private spinnerOpenedTurn = false;
 
   /**
    * Something other than the shell moved the pane's cwd (an agent's hook
@@ -1076,7 +1085,7 @@ export class DaemonPTYBridge extends EventEmitter {
    */
   noteSessionStart(signalTs: number, source: unknown): void {
     const atIdlePrompt = this.explicitTerminalStatus && this.settledStatus === 'waiting' && !this.awaitingHuman;
-    const { preTurn, turnEvidenceAt, turnOpen, turnSeq, turnOpenedAt, prevTurnOpenedAt, turnSoftClosed, codexBootWindow, bootEpisode, byteOpenedTurn, lastFailure } = this;
+    const { preTurn, turnEvidenceAt, turnOpen, turnSeq, turnOpenedAt, prevTurnOpenedAt, turnSoftClosed, codexBootWindow, bootEpisode, byteOpenedTurn, spinnerOpenedTurn, lastFailure } = this;
     this.noteAgentStatus('running', true);
     this.codexBootWindow = codexBootWindow;
     // The session start is not turn evidence itself: a duplicate delivery of
@@ -1093,6 +1102,7 @@ export class DaemonPTYBridge extends EventEmitter {
     this.turnSoftClosed = turnSoftClosed;
     this.bootEpisode = bootEpisode;
     this.byteOpenedTurn = byteOpenedTurn;
+    this.spinnerOpenedTurn = spinnerOpenedTurn;
     if (!isFreshSessionSource(source)) {
       this.preTurn = false;
       return;
@@ -1375,7 +1385,12 @@ export class DaemonPTYBridge extends EventEmitter {
         this.lastTitleAt = Date.now();
         if (title) this.emit('title', { sessionId, title });
         if (titleTurnEdge.observe(title)) this.noteTitleTurnEnd(sessionId);
-        if (DaemonPTYBridge.CLAUDE_SPINNER_TITLE.test(title)) this.noteSpinnerTitle();
+        // Not while the spinner row reads `running Stop hooks`: that is the
+        // finished turn's tail, however long its hooks take.
+        if (DaemonPTYBridge.CLAUDE_SPINNER_TITLE.test(title)) {
+          if (!titleTurnEdge.inStopHooks()) this.noteSpinnerTitle();
+        }
+        else if (this.spinnerOpenedTurn && !this.awaitingHuman && /^✳\s/.test(title)) this.closeTurn(true);
         return;
       }
       if (event.code === 7) {
@@ -1780,6 +1795,7 @@ export class DaemonPTYBridge extends EventEmitter {
     this.byteOpenedTurn = false;
     this.heldBurstAt = 0;
     this.spinnerArmedCycle = false;
+    this.spinnerOpenedTurn = false;
     this.hookSeen = false;
     this.lastTitle = '';
     this.lastTitleAt = 0;

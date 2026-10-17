@@ -326,4 +326,38 @@ describe('DaemonPTYBridge — output after a hook Stop (F24)', () => {
     bridge.noteInput('queued\r');
     expect(bridge.getTurn(bridge.getAgentStatus())).toMatchObject({ id, state: 'running' });
   });
+
+  it('a slow Stop hook that keeps the spinner up past the cool-down: its idle title ends the turn it opened', () => {
+    bridge.noteInput('go\r');
+    bridge.noteAgentStatus('running', true);
+    feed(RUNNING_TITLE + BIG);
+    const id = bridge.getTurn('running').id;
+    bridge.noteAgentStatus('complete', true); // Stop; another Stop hook is still running
+    for (let i = 0; i < 8; i++) {
+      vi.advanceTimersByTime(1000);
+      feed(i % 2 ? RUNNING_TITLE : '\x1b]0;◑ Set e2e-win/hello.txt line 1\x07');
+    }
+    feed(IDLE_TITLE); // the hooks are done
+    expect(bridge.isTurnOpen()).toBe(false);
+    vi.advanceTimersByTime(30_000);
+    expect(bridge.isTurnOpen()).toBe(false);
+    bridge.noteInput('next task\r');
+    expect(bridge.getTurn('running').id).not.toBe(id);
+    expect(bridge.getTurn('running').startedAt).toBe(Date.now());
+  });
+
+  it('spinner titles under the `running Stop hooks` row never open a turn', () => {
+    bridge.noteInput('go\r');
+    bridge.noteAgentStatus('running', true);
+    feed(RUNNING_TITLE + BIG);
+    feed('\x1b[2K✢ Musing… (running Stop hooks… 1/2 · 2s)');
+    bridge.noteAgentStatus('complete', true);
+    for (let i = 0; i < 8; i++) {
+      vi.advanceTimersByTime(1000);
+      feed(RUNNING_TITLE);
+      expect(bridge.isTurnOpen()).toBe(false);
+    }
+    feed(IDLE_TITLE);
+    expect(bridge.getAgentStatus()).toBe('complete');
+  });
 });
