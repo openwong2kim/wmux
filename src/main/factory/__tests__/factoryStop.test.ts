@@ -11,7 +11,8 @@ vi.mock('electron', () => ({ ipcMain: { handle: vi.fn(), removeHandler: vi.fn() 
 import { TaskLedger } from '../../../daemon/ledger/TaskLedger';
 import type { LedgerEntry } from '../../../shared/ledger';
 import { installBotFanoutWake } from '../../deck/fanoutCallerNotify';
-import { STOPPED_BY_OWNER, STOPPED_WAKE_KEEP_MS, __lateStopCountForTesting, __resetFactoryStopForTesting, installLateStopSweep, isOpenBotTask, isStoppedByOwnerRow, isWakeStoppedByOwner, stopFactoryTask, stopFactoryWork, type FactoryStopPorts } from '../factoryStop';
+import { WorkerStopPendingError } from '../factoryWiring';
+import { STOPPED_BY_OWNER, STOPPED_WAKE_KEEP_MS, WORKSPACES_LOADING_MESSAGE, __lateStopCountForTesting, __resetFactoryStopForTesting, installLateStopSweep, isOpenBotTask, isStoppedByOwnerRow, isWakeStoppedByOwner, stopFactoryTask, stopFactoryWork, type FactoryStopPorts } from '../factoryStop';
 import { factorySettingsSetHandler, factoryStopHandler } from '../../ipc/handlers/factory.handler';
 import { DEFAULT_FACTORY_SETTINGS, type FactorySettings, type FactorySettingsStore } from '../factorySettings';
 
@@ -129,20 +130,33 @@ describe('stopFactoryWork', () => {
     expect(await stopFactoryWork(r.p)).toEqual({ ok: true, botsInterrupted: 0, workersStopped: 1, tasksCancelled: 0, gatesCancelled: 0 });
   });
 
-  it('a stop left pending (#2267) is partial, and the workers it did stop are counted', async () => {
+  it('a stop that left WSL panes alone while the app loads its workspaces (#2267): partial, with that reason, and the workers it did stop counted', async () => {
     await task('t-pend-native', LEAD);
     await task('t-pend-wsl', LEAD);
-    const pending = (workers: number) => Object.assign(new Error('1 WSL pane(s) in the task folder wait for the workspace tree'), { workers });
+    // One native worker stopped beside an unjudged WSL pane; only an unjudged WSL pane.
     const stopWorker = vi.fn(async (entry: LedgerEntry): Promise<number> => {
-      throw pending(entry.id === 't-pend-native' ? 1 : 0);
+      throw new WorkerStopPendingError(entry.id === 't-pend-native' ? 1 : 0, ['wsl']);
     });
     const r = ports({ stopWorker });
-    // One native worker stopped and one WSL pane deferred: counted, but not done.
-    expect(await stopFactoryWork(r.p)).toMatchObject({ ok: false, code: 'partial', workersStopped: 1, tasksCancelled: 2 });
+    expect(await stopFactoryWork(r.p)).toEqual({
+      ok: false, botsInterrupted: 1, workersStopped: 1, tasksCancelled: 2, gatesCancelled: 0, code: 'partial', message: WORKSPACES_LOADING_MESSAGE,
+    });
     // The re-stop of a task stopped before (agentsOnly), bot-wide and for one task.
-    expect(await stopFactoryWork(r.p)).toMatchObject({ ok: false, code: 'partial', workersStopped: 1 });
-    expect(await stopFactoryTask(r.p, 't-pend-native')).toMatchObject({ ok: false, code: 'partial', workersStopped: 1 });
-    expect(await stopFactoryTask(r.p, 't-pend-wsl')).toMatchObject({ ok: false, code: 'partial', workersStopped: 0 });
+    expect(await stopFactoryWork(r.p)).toMatchObject({ ok: false, code: 'partial', workersStopped: 1, message: WORKSPACES_LOADING_MESSAGE });
+    expect(await stopFactoryTask(r.p, 't-pend-native')).toMatchObject({ ok: false, code: 'partial', workersStopped: 1, message: WORKSPACES_LOADING_MESSAGE });
+    expect(await stopFactoryTask(r.p, 't-pend-wsl')).toMatchObject({ ok: false, code: 'partial', workersStopped: 0, message: WORKSPACES_LOADING_MESSAGE });
+  });
+
+  it('a loading stop beside another failure keeps the general message', async () => {
+    await task('t-load', LEAD);
+    await task('t-broken', LEAD);
+    const stopWorker = vi.fn(async (entry: LedgerEntry): Promise<number> => {
+      if (entry.id === 't-load') throw new WorkerStopPendingError(0, ['wsl']);
+      throw new Error('daemon gone');
+    });
+    const r = ports({ stopWorker });
+    expect(await stopFactoryWork(r.p)).toMatchObject({ ok: false, code: 'partial', message: 'Some work could not be stopped; stop again to retry.' });
+    expect(await stopFactoryTask(r.p, 't-broken')).toMatchObject({ ok: false, code: 'partial', message: 'The worker could not be stopped; stop again to retry.' });
   });
 
   it('a task the stopped bot\'s fan-out was still launching is stopped when it registers', async () => {
