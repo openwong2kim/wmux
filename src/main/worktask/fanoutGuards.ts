@@ -102,7 +102,35 @@ export interface FanOutAuditRecord {
   /** worktree:false — the batch folder the tasks write into (additive). */
   outputBatchDir?: string;
   /** kind 'launched': the line each task's pane was actually started with. */
-  launched?: { title: string; workspaceId?: string; command?: string; error?: string }[];
+  launched?: FanOutLaunchedTask[];
+}
+
+/** One task of a 'launched' record. `started: false` = the task got no
+ *  workspace, so nothing ran and no command is recorded. */
+export type FanOutLaunchedTask =
+  | { title: string; workspaceId: string; command?: string; error?: string }
+  | { title: string; started: false; error?: string };
+
+/**
+ * A task's entry in the 'launched' record. A task that got no workspace (its
+ * pane could not be created, its worktree preflight failed) launched nothing:
+ * it is marked `started: false` and carries no command, so the record cannot
+ * be read as a run.
+ */
+export function launchedAuditTask(t: {
+  title: string;
+  workspaceId?: string;
+  initialCommand?: string;
+  error?: string;
+}): FanOutLaunchedTask {
+  const error = t.error ? { error: t.error } : {};
+  if (!t.workspaceId) return { title: t.title, started: false, ...error };
+  return {
+    title: t.title,
+    workspaceId: t.workspaceId,
+    ...(t.initialCommand ? { command: t.initialCommand } : {}),
+    ...error,
+  };
 }
 
 export type CapReservation = { ok: true } | { ok: false; message: string };

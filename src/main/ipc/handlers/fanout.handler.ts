@@ -23,7 +23,7 @@ function asOrchRole(raw: unknown): string {
   return cleaned && (ORCH_ROLES as readonly string[]).includes(cleaned) ? cleaned : '';
 }
 import type { FanOutRequest, FanOutResult, FanOutService } from '../../worktask/FanOutService';
-import { getFanOutGuards, promptDigest } from '../../worktask/fanoutGuards';
+import { getFanOutGuards, launchedAuditTask, promptDigest } from '../../worktask/fanoutGuards';
 import {
   loadFanoutRequireApproval,
   loadFanoutTrustAgyFolders,
@@ -174,12 +174,7 @@ export async function startGuiFanOut(service: FanOutService, req: FanOutRequest)
       kind: 'launched',
       roleCommands: [],
       promptSha256: [],
-      launched: result.tasks.map((t) => ({
-        title: t.title,
-        ...(t.workspaceId ? { workspaceId: t.workspaceId } : {}),
-        ...(t.initialCommand ? { command: t.initialCommand } : {}),
-        ...(t.error ? { error: t.error } : {}),
-      })),
+      launched: result.tasks.map(launchedAuditTask),
     });
   } catch (err) {
     console.warn(`[fanout] could not append the launch record: ${String(err)}`);

@@ -14,6 +14,7 @@ import {
   FANOUT_LINEAGE_FILENAME,
   FANOUT_LIVE_TASK_CAP,
   FanOutGuards,
+  launchedAuditTask,
   promptDigest,
   setDormantTaskWorkspaces,
   stampFanoutTaskPane,
@@ -157,6 +158,27 @@ describe('audit log', () => {
     expect(recent.map((r) => r.idempotencyKey)).toEqual(['k2', 'k1']);
     expect(fs.readFileSync(path.join(dir, FANOUT_AUDIT_FILENAME), 'utf8').split('\n').filter(Boolean)).toHaveLength(2);
     expect(recent[1].promptSha256[0]).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it("a 'launched' entry for a task that got no workspace is not started and records no command", () => {
+    expect(launchedAuditTask({ title: 'a', workspaceId: 'ws-a', initialCommand: 'claude "a"' })).toEqual({
+      title: 'a',
+      workspaceId: 'ws-a',
+      command: 'claude "a"',
+    });
+    // A pane that came up but whose agent did not keeps its workspace and line.
+    expect(launchedAuditTask({ title: 'a', workspaceId: 'ws-a', initialCommand: 'claude "a"', error: 'agent did not start' })).toEqual({
+      title: 'a',
+      workspaceId: 'ws-a',
+      command: 'claude "a"',
+      error: 'agent did not start',
+    });
+    expect(launchedAuditTask({ title: 'b', initialCommand: 'claude "b"', error: 'PTY create failed' })).toEqual({
+      title: 'b',
+      started: false,
+      error: 'PTY create failed',
+    });
+    expect(launchedAuditTask({ title: 'c' })).toEqual({ title: 'c', started: false });
   });
 });
 

@@ -98,7 +98,7 @@ import type { DaemonClient } from '../../DaemonClient';
 import { hostCwdForPane, type DaemonRpc } from '../../pty/wslCallerCwd';
 import { loadWorkspaceDecision } from '../../deck/deckDecisionStore';
 import type { FanOutRequest, FanOutService, FanOutTaskResult } from '../../worktask/FanOutService';
-import { getFanOutGuards, promptDigest, type FanOutGuards } from '../../worktask/fanoutGuards';
+import { getFanOutGuards, launchedAuditTask, promptDigest, type FanOutGuards } from '../../worktask/fanoutGuards';
 import { loadFanoutRequireApproval, loadFanoutWorkerPermissionMode } from '../../worktask/fanoutWorkerPolicy';
 import { workerLaunchFlags, type FanoutWorkerPermissionMode } from '../../../shared/workerLaunch';
 import { loadFanoutPresets } from '../../worktask/fanoutPresets';
@@ -1797,12 +1797,7 @@ export function registerFanOutRpc(
               ...(presetName ? { preset: presetName } : {}),
               ...(agentLabels.length > 0 ? { agents: agentLabels } : {}),
               ...(outputBatchDir ? { outputBatchDir } : {}),
-              launched: tasks.map((t) => ({
-                title: t.title,
-                ...(t.workspaceId ? { workspaceId: t.workspaceId } : {}),
-                ...(t.initialCommand ? { command: t.initialCommand } : {}),
-                ...(t.error ? { error: t.error } : {}),
-              })),
+              launched: tasks.map(launchedAuditTask),
             });
           } catch (err) {
             console.warn(`[fanout.rpc] could not append the launch record for ${key}: ${String(err)}`);

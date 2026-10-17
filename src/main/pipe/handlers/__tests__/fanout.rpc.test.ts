@@ -129,6 +129,8 @@ function setup(opts?: {
   /** The fan-out worker permission mode Settings holds, read at each use.
    *  Defaults to auto. */
   workerMode?: () => 'auto' | 'acceptEdits' | 'bypassPermissions' | 'manual';
+  /** What an immediate run resolves with. Defaults to no tasks. */
+  startResult?: FanOutResult;
 }): Harness {
   const commanderAnchorPtyId =
     opts?.commanderAnchorPtyId === undefined ? 'pty-1' : opts.commanderAnchorPtyId;
@@ -156,7 +158,7 @@ function setup(opts?: {
         releaseRun = (r) => resolve(settle(r));
       });
     }
-    return Promise.resolve(settle({ ok: true, tasks: [] }));
+    return Promise.resolve(settle(opts?.startResult ?? { ok: true, tasks: [] }));
   });
 
   const statusOf = vi.fn((key: string): FanOutStatus => state.get(key) ?? { state: 'unknown' });
@@ -1499,6 +1501,36 @@ describe('task.fanout.start — audit record', () => {
     expect(rec.promptSha256).toEqual([sha('do the thing\n\npa'), sha('do the thing')]);
     // No prompt body in the log.
     expect(fs.readFileSync(nodePath.join(dir, 'fanout-audit.jsonl'), 'utf8')).not.toMatch(/do the thing/);
+  });
+
+  it('marks a task that got no workspace as not started, with no command', async () => {
+    const g = guardsIn(tmp());
+    const h = setup({
+      guards: g,
+      approval: { approved: true, outcome: 'auto' },
+      startResult: {
+        ok: false,
+        tasks: [
+          { index: 0, title: 'a', ok: true, taskId: 't-a', workspaceId: 'ws-a', initialCommand: 'claude "a"' },
+          {
+            index: 1,
+            title: 'b',
+            ok: false,
+            initialCommand: 'claude "b"',
+            error: 'renderer spawn failed: PTY create failed',
+          },
+        ],
+      },
+    });
+    await h.call(goodParams({ titles: ['a', 'b'] }));
+    await h.flush();
+    await h.flush();
+    const [launched] = g.recentAudit(1);
+    expect(launched.kind).toBe('launched');
+    expect(launched.launched).toEqual([
+      { title: 'a', workspaceId: 'ws-a', command: 'claude "a"' },
+      { title: 'b', started: false, error: 'renderer spawn failed: PTY create failed' },
+    ]);
   });
 
   it('marks a dialog approval as human', async () => {
