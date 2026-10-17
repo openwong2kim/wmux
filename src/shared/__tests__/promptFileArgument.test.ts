@@ -1,8 +1,8 @@
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { isPlainCmdLaunchLine } from '../botWorkerGuard';
+import { isPlainCmdLaunchLine, isQuotable } from '../botWorkerGuard';
 import { spliceWorkerLaunch } from '../botWorkerMcp';
-import { cmdLaunchPathRefusal, cmdPromptFileArgument, isCmdShellPath, promptFileArgument, promptFileArgumentForShell, stripPromptFileArgument } from '../promptFileArgument';
+import { cmdLaunchPathRefusal, cmdPromptFileArgument, dataDirNoShellRefusal, isCmdShellPath, promptFileArgument, promptFileArgumentForShell, stripPromptFileArgument } from '../promptFileArgument';
 
 describe('promptFileArgumentForShell', () => {
   const winPath = 'C:\\Users\\me\\.wmux-e2e\\worktrees\\t-1\\.wmux\\prompt.md';
@@ -97,6 +97,22 @@ describe('the cmd.exe prompt argument (#2231)', () => {
       // A control character is refused either way (no Windows folder name holds one).
       if (code < 0x20 || code === 0x7f) expect(named, `U+${code.toString(16)}`).toBe(true);
       else expect(named, `${c} (U+${code.toString(16)})`).toBe(refused);
+    }
+  });
+
+  it('#2268: a data folder no shell can pass gets #2256\'s sentence in every shell, on Windows and POSIX paths alike', () => {
+    const stuck = (flaw: string) => `Command Prompt cannot pass the wmux data folder (its path ${flaw}), and no other shell can either; move the folder`;
+    // The same words a Command Prompt pane gets.
+    expect(dataDirNoShellRefusal('C:\\Users\\me\\.wmux-wE9!')).toBe(cmdLaunchPathRefusal('claude', 'C:\\Users\\me\\.wmux-wE9!', true));
+    expect(dataDirNoShellRefusal('C:\\Users\\me\\.wmux-wE9!')).toBe(stuck('contains "!"'));
+    expect(dataDirNoShellRefusal('\\\\server\\share\\.wmux')).toBe(cmdLaunchPathRefusal('claude', '\\\\server\\share\\.wmux', true));
+    expect(dataDirNoShellRefusal('/home/a$b/.wmux')).toBe(stuck('contains "$"'));
+    expect(dataDirNoShellRefusal('C:\\a\\\\b')).toBe(stuck('has a run of backslashes'));
+    for (const ok of ['C:\\Users\\me\\.wmux', '/home/me/.wmux', 'C:\\Users\\Tom&Jerry', 'C:\\Users\\\u201cme\u201d']) expect(dataDirNoShellRefusal(ok), ok).toBeNull();
+    // Exactly what the guard cannot quote: a folder it can quote is never refused for this cause.
+    const chars = [...Array.from({ length: 0x80 }, (_, c) => String.fromCharCode(c)), '\u2018', '\u201c'];
+    for (const c of chars) {
+      for (const dir of [`C:\\Users\\a${c}b`, `/home/a${c}b`]) expect(dataDirNoShellRefusal(dir) === null, JSON.stringify(dir)).toBe(isQuotable(dir));
     }
   });
 

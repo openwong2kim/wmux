@@ -167,7 +167,9 @@ const START_FAILURES: ReadonlyArray<{ test: RegExp; code: string; text: string }
  *  text (which is never shown to the owner). Pure. */
 export function plainStartFailure(error: string): string {
   // #2256: pty:create's own sentence for a path cmd cannot carry names the
-  // cause and the remedy (promptFileArgument.cmdLaunchPathRefusal).
+  // cause and the remedy (promptFileArgument.cmdLaunchPathRefusal), as does
+  // the merge-lane guard's for a data folder no shell can pass (#2268,
+  // promptFileArgument.dataDirNoShellRefusal), in any shell.
   const cmd = /Command Prompt cannot pass [^\n]*/.exec(error);
   if (cmd) return cmd[0];
   const e = error.toLowerCase();

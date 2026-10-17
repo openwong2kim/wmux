@@ -32,6 +32,7 @@ import { TaskLedger } from '../../../daemon/ledger/TaskLedger';
 import { setTaskLedgerForTests } from '../../deck/taskLedgerHost';
 import { toWslPath } from '../../../shared/imagePaste';
 import { wslMcpLaunchOf } from '../../../shared/wslIntegration';
+import { cmdLaunchPathRefusal, promptFileArgument } from '../../../shared/promptFileArgument';
 
 let dir: string;
 beforeEach(() => {
@@ -271,9 +272,51 @@ describe('which creates are a bot\'s workers: main\'s records, never the rendere
     }
     expect(() => withBotWorkerMergeGuard({}, strict, { dir, ...mcp() })).toThrow(/no launch line/);
     expect(() => withBotWorkerMergeGuard({ initialCommand: LINE, exec: 'claude', cwd: dir }, strict, { dir, ...mcp() })).toThrow(/exec unit/);
-    expect(() => withBotWorkerMergeGuard({ initialCommand: LINE, cwd: dir }, strict, { dir: path.join(dir, 'a$b'), ...mcp() })).toThrow(/cannot carry/);
+    // #2268: a data folder no shell can quote is named as the cause (below), not as a line the guard cannot carry.
+    expect(() => withBotWorkerMergeGuard({ initialCommand: LINE, cwd: dir }, strict, { dir: path.join(dir, 'a$b'), ...mcp() })).toThrow(/^PTY_CREATE: Command Prompt cannot pass the wmux data folder \(its path contains "\$"\), and no other shell can either; move the folder$/);
     // An unreadable ledger is not read as "not a bot".
     expect(() => botWorkerForCreate({ workspaceId: 'ws-task' }, { dir, isBotTaskWorkspace: () => { throw new Error('torn'); } })).toThrow(/ledger could not be read/);
+  });
+});
+
+describe('#2268: a data folder no shell can pass refuses a worker by that cause, in every shell', () => {
+  const stuck = `Command Prompt cannot pass the wmux data folder (its path contains "!"), and no other shell can either; move the folder`;
+  const strict = { workspaceId: 'ws-task', strict: true };
+  const winLine = `claude --dangerously-skip-permissions ${promptFileArgument('C:\\Users\\me\\.wmux-wE9!\\worktrees\\.meta\\t-1\\prompt.md', 'win32')}`;
+
+  it('a PowerShell pane (the strict plan) says what a Command Prompt pane says (#2256), not the merge-lane guard', () => {
+    const bad = path.join(dir, '.wmux-wE9!');
+    const refused = (() => {
+      try {
+        withBotWorkerMergeGuard({ initialCommand: winLine, cwd: dir }, strict, { dir: bad, ...mcp() });
+      } catch (err) {
+        return (err as Error).message;
+      }
+      return null;
+    })();
+    expect(refused).toBe(`PTY_CREATE: ${stuck}`);
+    expect(refused).toBe(`PTY_CREATE: ${cmdLaunchPathRefusal(winLine, 'C:\\Users\\me\\.wmux-wE9!', true)}`);
+    expect(refused).not.toMatch(/merge-lane guard/);
+    // Nothing is written for a launch that cannot start.
+    expect(fs.existsSync(path.join(bad, 'factory'))).toBe(false);
+  });
+
+  it('a WSL pane (the legacy plan) cannot pass it either: the same reason', () => {
+    const bad = path.join(dir, '.wmux-wE9!');
+    expect(() => withBotWorkerMergeGuard({ initialCommand: LINE, cwd: dir }, strict, { dir: bad, ...mcp(), wslRuntime: () => '/usr/bin/node' }, { wsl: true })).toThrow(`PTY_CREATE: ${stuck}`);
+  });
+
+  it('a re-fire or a typed resume of a recorded session says the same', () => {
+    const bad = path.join(dir, '.wmux-wE9!');
+    noteBotWorkerSession('daemon-bang', 'ws-task', bad, { cwd: dir });
+    expect(() => guardRefireLine('daemon-bang', LINE, { dir: bad, ...mcp() })).toThrow(`worktask:refire: ${stuck}`);
+    expect(() => guardSessionLaunch('daemon-bang', 'claude --resume 11111111-2222-3333-4444-555555555555', { dir: bad, ...mcp() })).toThrow(`pty:write-launch: ${stuck}`);
+  });
+
+  it('a clean data folder still launches, and a line the guard cannot carry still says so', () => {
+    const ok = withBotWorkerMergeGuard({ initialCommand: winLine, cwd: dir }, strict, { dir, ...mcp() });
+    expect(ok?.initialCommand).toContain('--strict-mcp-config');
+    expect(() => withBotWorkerMergeGuard({ initialCommand: 'claude --strict-mcp-config', cwd: dir }, strict, { dir, ...mcp() })).toThrow(/merge-lane guard \(the launch line cannot carry the worker's MCP config and rules\)/);
   });
 });
 

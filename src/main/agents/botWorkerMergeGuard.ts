@@ -56,6 +56,7 @@ import { getTaskLedger } from '../deck/taskLedgerHost';
 import { getConnectorStore } from '../factory/connectorStore';
 import { launchesCodex, namesCodex } from '../../shared/codexWorkerGuard';
 import { toWslPath } from '../../shared/imagePaste';
+import { dataDirNoShellRefusal } from '../../shared/promptFileArgument';
 import { dataSuffix } from '../../shared/constants';
 import { bridgeHookGroups, findBridgeSourceFrom } from '../../cli/commands/setupHooks';
 
@@ -378,6 +379,12 @@ type LaunchPlan =
 
 function guardLaunchLine(where: string, line: string, deps: BotWorkerGuardDeps, plan: LaunchPlan): { line: string; files?: BotWorkerLaunchFiles } {
   const dir = deps.dir ?? getWmuxDir();
+  // #2268: the guard's files are named under the data folder, so a folder no
+  // shell can quote refuses every launch. Say that (as #2256 does for a
+  // Command Prompt pane), not that the line cannot carry the files. Not a
+  // guardError: the room card takes this sentence whole.
+  const stuck = dataDirNoShellRefusal(dir);
+  if (stuck) throw new Error(`${where}: ${stuck}`);
   if (plan.kind === 'legacy') {
     let settingsPath: string;
     try {

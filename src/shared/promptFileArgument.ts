@@ -213,6 +213,33 @@ function cmdPathFlaw(file: string, unsafe: string): string | null {
 const ANY_SHELL_DATA_DIR_UNSAFE = '\'"`$%!\\u0000-\\u001f\\u007f';
 const CMD_DATA_DIR_UNSAFE = '\'"`$%!&|^<>\\u0000-\\u001f\\u007f';
 
+/** #2256's sentence for a data folder no shell can pass the guard's files
+ *  from. One wording whichever shell refused the worker (#2268), so the room
+ *  card and the phone show one message. */
+function noShellDataDirSentence(flaw: string): string {
+  return `Command Prompt cannot pass the wmux data folder (its path ${flaw}), and no other shell can either; move the folder`;
+}
+
+/**
+ * #2268 — the merge-lane guard's refusal of a data folder no shell can pass
+ * its files from, as #2256's sentence, or null. It refuses exactly what
+ * botWorkerGuard.isQuotable refuses (`'`, `"`, `` ` ``, `$`, `%`, `!`, a run
+ * of backslashes such as a UNC prefix), on a Windows or a POSIX path alike:
+ * the guard's files are named under that folder, so a PowerShell or WSL
+ * worker is refused for the same cause as a Command Prompt one, and now says
+ * so instead of reading as a line the guard cannot carry. Pure.
+ */
+export function dataDirNoShellRefusal(dataDir: string): string | null {
+  let flaw: string | null = null;
+  if (dataDir.startsWith('\\\\')) flaw = 'is a UNC path';
+  else {
+    const bad = /['"`$%!]/.exec(dataDir)?.[0];
+    if (bad !== undefined) flaw = `contains "${bad}"`;
+    else if (/\\\\/.test(dataDir)) flaw = 'has a run of backslashes';
+  }
+  return flaw === null ? null : noShellDataDirSentence(flaw);
+}
+
 /**
  * #2256 — why a bot worker's launch line cannot start in a cmd.exe pane, as
  * the sentence its owner sees, or null. The prompt file's path must take the
@@ -226,7 +253,7 @@ export function cmdLaunchPathRefusal(line: string, dataDir: string, guardsDataDi
   // No shell passes the guard's files from such a folder (isQuotable), so
   // PowerShell is no remedy there: only moving the folder is.
   const stuck = guardsDataDir ? cmdPathFlaw(dataDir, ANY_SHELL_DATA_DIR_UNSAFE) : null;
-  if (stuck && stuck !== 'is not a drive path') return `Command Prompt cannot pass the wmux data folder (its path ${stuck}), and no other shell can either; move the folder`;
+  if (stuck && stuck !== 'is not a drive path') return noShellDataDirSentence(stuck);
   const remedy = 'set Default shell to PowerShell (Settings › Terminal) or move';
   for (const w of shellWords(line)) {
     const m = WIN_PROMPT_ARGUMENT_PATH.exec(line.slice(w.start, w.end));

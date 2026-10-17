@@ -1,7 +1,11 @@
 // Main's notices to one bot: one directed bot.notice fact and one wake per
 // key; a worker that could not start also gets a card, in plain words.
 
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { withBotWorkerMergeGuard } from '../../agents/botWorkerMergeGuard';
 import { factDedupeKey, type Fact, type FactDraft } from '../../../shared/facts';
 import type { WakeEnqueueInput } from '../wakeQueue';
 import { BOT_NOTICE_LIMITS, botNoticeDraft, noticeBot, noticeWorkerStarts, plainStartFailure, startFailureCode, type BotNoticePorts } from '../botNotices';
@@ -104,6 +108,37 @@ describe('bot notices', () => {
     expect(p.facts[0].payload.title).toBe(`Worker for "Fix it" could not start: ${why}`);
     // Words plainStartFailure did not choose have no code: the card keeps its English.
     expect(p.facts[0].payload).not.toHaveProperty('notice');
+  });
+
+  it('#2268: a PowerShell worker refused for the data folder reaches the card with the same words as a Command Prompt one', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-notice-'));
+    try {
+      const dataDir = path.join(tmp, '.wmux-wE9!');
+      const line = `claude ${promptFileArgument(path.join(dataDir, 'worktrees', '.meta', 't-1', 'prompt.md'), 'win32')}`;
+      let thrown = '';
+      try {
+        withBotWorkerMergeGuard({ initialCommand: line, cwd: tmp }, { workspaceId: 'ws-task', strict: true }, { dir: dataDir, mcpEntry: () => '/opt/wmux/mcp/index.js', registeredLevel: () => null, isolatedBridge: () => null });
+      } catch (err) {
+        thrown = (err as Error).message;
+      }
+      const why = 'Command Prompt cannot pass the wmux data folder (its path contains "!"), and no other shell can either; move the folder';
+      expect(thrown).toBe(`PTY_CREATE: ${why}`);
+      // As fan-out reports it: the renderer's spawn, the IPC wrapper, then the guard's refusal.
+      const wrapped = `renderer spawn failed: fanout.spawnWorkspace: PTY create failed — Error invoking remote method 'pty:create': Error: ${thrown}`;
+      expect(plainStartFailure(wrapped)).toBe(why);
+      const p = ports();
+      for (const title of ['Fix it', 'x'.repeat(120)]) {
+        noticeWorkerStarts(p, 'bot-1', { workspaceId: 'ws-1', threadId: 'general', key: `wake:w-1:${title.length}`, tainted: false, tasks: [{ index: 0, title, started: false, reason: plainStartFailure(wrapped), detail: wrapped }] });
+        const card = String(p.facts[p.facts.length - 1].payload.title);
+        expect(card.endsWith(`could not start: ${why}`), card).toBe(true);
+        expect(card.length).toBeLessThanOrEqual(BOT_NOTICE_LIMITS.TITLE_MAX);
+        expect(card).not.toMatch(/its pane could not be opened/);
+      }
+      expect(p.facts[0].payload.title).toBe(`Worker for "Fix it" could not start: ${why}`);
+      expect(p.facts[0].payload).not.toHaveProperty('notice');
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
   });
 
   it('#2256: every Command Prompt path reason reaches the card whole, the task title giving way', () => {
