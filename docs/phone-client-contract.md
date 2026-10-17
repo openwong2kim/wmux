@@ -6661,6 +6661,13 @@ receipt {"requestId": "…", "state": "done", "pushed": "<oid>", "target": "refs
 - **Where it pushes.** To the upstream branch, which may have a different
   name than the local branch; show `target.ref`. `create:true` means a new
   remote branch (the app shows its own copy on the same sheet).
+- **A branch with no upstream.** The push goes to the same-named remote
+  branch: `create:true` when the remote has none, a fast-forward
+  (`create:false`) when the remote branch is already in the local branch's
+  history, and `remote-branch-exists` otherwise. The daemon writes nothing
+  into the pane's repository, so a branch the push created still has no
+  upstream afterwards (the branch list shows no ahead/behind for it), and the
+  pane's remote-tracking ref moves only when the pane fetches.
 - **`fastForward:false`.** The push will fail with `non-fast-forward`.
   Disable the button.
 - **Never force-pushes.** There is no override.
