@@ -316,49 +316,49 @@ describe.skipIf(process.platform === 'win32')('task.push and task.fetch: the rec
     return other;
   };
   const rule = (dir: string, prefix: string, key = 'insteadOf') => `[url "${fakeSshUrl(path.join(root, dir))}/"]\n\t${key} = ${prefix}\n`;
-  const assertRefusedThenOk = async (pin: string, moved: string, other: string) => {
+  /** origin respelled to `moved` (the same address as `pin`): the push still
+   *  lands where the pin is rewritten to (the task's bare origin), never on
+   *  `other`, which the respelling alone would reach. */
+  const assertPinnedUrlUsed = async (pin: string, moved: string, other: string) => {
     git(repo, 'remote', 'set-url', 'origin', moved);
     expect(originPinMatches(pin, moved)).toBe(true);
-    expect(await pushTask({ ...input(), expectedOriginPin: pin })).toMatchObject({ ok: false, reason: 'remote-refused', error: expect.stringContaining('reach') });
-    expect(git(other, 'for-each-ref')).toBe('');
-    git(repo, 'remote', 'set-url', 'origin', pin);
     expect(await pushTask({ ...input(), expectedOriginPin: pin })).toMatchObject({ ok: true });
+    expect(git(bare, 'rev-parse', 'refs/heads/wtask/one')).toBe(git(work, 'rev-parse', 'HEAD'));
+    expect(git(other, 'for-each-ref')).toBe('');
+    expect(await fetchTaskRefs({ ...input(), expectedOriginPin: pin })).toMatchObject({ ok: true, fetched: expect.arrayContaining([{ ref: 'origin/wtask/one', sha: git(work, 'rev-parse', 'HEAD') }]) });
   };
 
-  it('a spelling of the pinned address that the owner\'s rewrites send to another server is refused (as git resolves them)', async () => {
+  it('origin respelled so the owner\'s rewrites would send it to another server: main\'s git uses the pinned URL as recorded', async () => {
     const other = otherServer('srv2');
     const pin = 'https://git.corp.example/acme/app.git';
     git(repo, 'remote', 'add', 'origin', pin);
     globalConfig(rule('srv', 'https://git.corp.example/') + rule('srv2', 'https://git.corp.example:443/'));
-    await assertRefusedThenOk(pin, 'https://git.corp.example:443/acme/app.git', other);
+    await assertPinnedUrlUsed(pin, 'https://git.corp.example:443/acme/app.git', other);
   });
 
-  it('a longer rule for the `.git` spelling: dropping `.git` reaches the shorter rule\'s server, and is refused', async () => {
+  it('a longer rule for the `.git` spelling: origin without `.git` would reach the shorter rule\'s server; the pinned URL is used', async () => {
     const other = otherServer('srv2');
     const pin = 'https://git.corp.example/acme/app.git';
     git(repo, 'remote', 'add', 'origin', pin);
-    // The pinned spelling goes to srv by the longer rule; without `.git`, to srv2.
     globalConfig(rule('srv2', 'https://git.corp.example/') + `[url "${fakeSshUrl(bare)}"]\n\tinsteadOf = https://git.corp.example/acme/app.git\n`);
-    await assertRefusedThenOk(pin, 'https://git.corp.example/acme/app', other);
+    await assertPinnedUrlUsed(pin, 'https://git.corp.example/acme/app', other);
   });
 
-  it('a host spelled in another case misses the owner\'s rule (git matches it literally), and is refused', async () => {
+  it('equal-length rules for a host in two cases (git takes the first, matching literally): the pinned URL is used', async () => {
     const other = otherServer('srv2');
     const pin = 'https://git.corp.example/acme/app.git';
     git(repo, 'remote', 'add', 'origin', pin);
-    // Equal-length rules: git takes the first; the other case of the host takes the other.
     globalConfig(rule('srv', 'https://git.corp.example/') + rule('srv2', 'https://Git.Corp.Example/'));
-    await assertRefusedThenOk(pin, 'https://Git.Corp.Example/acme/app.git', other);
+    await assertPinnedUrlUsed(pin, 'https://Git.Corp.Example/acme/app.git', other);
   });
 
-  it('a push rewrite counts for a push', async () => {
+  it('a push rewrite for another spelling, and an owner pushurl for origin, do not move the push', async () => {
     const other = otherServer('srv2');
-    const pin = 'https://git.corp.example/acme/app.git';
+    const pin = 'https://git.corp.example/acme/App.git';
     git(repo, 'remote', 'add', 'origin', pin);
-    globalConfig(rule('srv', 'https://git.corp.example/') + rule('srv2', 'https://git.corp.example/acme/app', 'pushInsteadOf'));
-    // The pinned spelling (with `.git`) is pushed by the push rule too: to pin
-    // the spelling the push rule misses, record the URL without `.git`.
-    await assertRefusedThenOk('https://git.corp.example/acme/App.git', 'https://git.corp.example/acme/app.git', other);
+    globalConfig(rule('srv', 'https://git.corp.example/') + rule('srv2', 'https://git.corp.example/acme/app', 'pushInsteadOf') + `[remote "origin"]\n\tpushurl = ${fakeSshUrl(other)}\n`);
+    // The repository's own origin sets only its URL; the owner's pushurl is not the task's.
+    await assertPinnedUrlUsed(pin, 'https://git.corp.example/acme/app.git', other);
   });
 
   it('a switch between https and ssh is refused; the owner picks the repository again', async () => {

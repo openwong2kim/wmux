@@ -27,7 +27,7 @@ import { fetchCommandFor } from '../../shared/taskGitRelay';
 import { toWslPath } from '../../shared/imagePaste';
 import { isDenyableBranchName } from '../../shared/botWorkerGuard';
 import { normalizeRepoKey } from '../../shared/repoKey';
-import { defaultGit, openTaskGitRepo, originPinRefusal, parseLsRemoteHead, type TaskGitRepo, type TaskGitRepoInput, type TaskOriginPinInput, type TaskPushDeps, type TaskPushGit } from './taskPush';
+import { defaultGit, openTaskGitRepo, originPinUrl, parseLsRemoteHead, type TaskGitRepo, type TaskGitRepoInput, type TaskOriginPinInput, type TaskPushDeps, type TaskPushGit } from './taskPush';
 import { originUrlRepoKey, urlNamedRemoteRefusal, workerOriginRefusal, type GitConfigEntry } from './workerGit';
 
 export interface TaskFetchInput extends TaskGitRepoInput, TaskOriginPinInput {
@@ -101,8 +101,6 @@ async function openTaskRemote(
   if ('error' in origin) {
     return { ok: false, reason: /no origin remote/.test(origin.error) ? 'no-origin' : 'remote-refused', error: origin.error };
   }
-  const fetchRefusal = taskFetchConfigRefusal(repo.entries, origin.url);
-  if (fetchRefusal) return { ok: false, reason: 'config-refused', error: fetchRefusal };
   const key = originUrlRepoKey(origin.url);
   if (input.expectedRepoKey !== undefined) {
     const expected = normalizeRepoKey(input.expectedRepoKey);
@@ -110,9 +108,15 @@ async function openTaskRemote(
       return { ok: false, reason: 'remote-refused', error: `origin is not ${input.expectedRepoKey} (a plain https or ssh address of it)` };
     }
   }
-  const pinRefusal = await originPinRefusal(origin.url, input, repo);
-  if (pinRefusal) return { ok: false, reason: 'remote-refused', error: pinRefusal };
-  return { ok: true, repo, url: origin.url, key };
+  const pinned = await originPinUrl(origin.url, input);
+  if ('error' in pinned) return { ok: false, reason: 'remote-refused', error: pinned.error };
+  // Every network call uses the pinned URL as recorded (origin's own when the
+  // task has no pin).
+  for (const u of new Set([origin.url, pinned.url])) {
+    const fetchRefusal = taskFetchConfigRefusal(repo.entries, u);
+    if (fetchRefusal) return { ok: false, reason: 'config-refused', error: fetchRefusal };
+  }
+  return { ok: true, repo, url: pinned.url, key };
 }
 
 export type TaskRemoteHeadResult = { ok: true; sha: string | null } | TaskRemoteFailure;

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isOriginPin, namesNonDefaultPort, normalizeOriginPin, originPinMatches, parseOriginAddress, sameOriginEndpoint } from '../originPin';
+import { isOriginPin, namesNonDefaultPort, normalizeOriginPin, originPinMatches, parseOriginAddress } from '../originPin';
 import { originUrlRepoKey } from '../../main/worktask/workerGit';
 
 describe('origin addresses', () => {
@@ -81,12 +81,5 @@ describe('originPinMatches', () => {
   it('never matches an address that is not plain', () => {
     expect(originPinMatches('https://github.com/acme/app', 'file:///github.com/acme/app')).toBe(false);
     expect(originPinMatches('not a pin', 'https://github.com/acme/app')).toBe(false);
-  });
-
-  it('the URLs git connects to are one endpoint under the same rules, else only when identical', () => {
-    expect(sameOriginEndpoint('ssh://a.example/team/app', 'ssh://a.example/team/App.git')).toBe(true);
-    expect(sameOriginEndpoint('ssh://a.example/team/app', 'ssh://b.example/team/app')).toBe(false);
-    expect(sameOriginEndpoint('ssh://b.example/', 'ssh://b.example/')).toBe(true);
-    expect(sameOriginEndpoint('ssh://b.example/', 'ssh://a.example/team/app')).toBe(false);
   });
 });

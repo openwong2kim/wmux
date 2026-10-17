@@ -21,10 +21,11 @@
 //
 // The compare (originPinMatches): the same form (https, `ssh://` or
 // scp-style), user, host and port; the path ignoring case (GitHub, GitHub
-// Enterprise and GitLab name a repository case-insensitively). Origin's URL
-// and the pin are compared as written, and again as git rewrites them for a
-// fetch and for a push (the owner's `insteadOf` / `pushInsteadOf`, resolved
-// by git itself, main/worktask/taskPush.ts).
+// Enterprise and GitLab name a repository case-insensitively). Once origin
+// matches, main's network calls use the pin itself, as recorded
+// (main/worktask/taskPush.ts originPinUrl): git's URL rewrites and URL-scoped
+// settings match a URL's literal spelling, so a respelling of origin must not
+// reach them.
 
 /** Path segments after the host (GitLab nests groups up to 20 deep). */
 const MAX_PATH_SEGMENTS = 21;
@@ -126,15 +127,6 @@ export function originPinMatches(pin: string, url: string): boolean {
   const a = parseOriginAddress(pin);
   const b = parseOriginAddress(url);
   return a !== null && b !== null && sameEndpoint(a, b);
-}
-
-/** Whether two URLs git connects to (after its rewrites) are one endpoint:
- *  as originPinMatches when both are plain addresses, else the same string.
- *  Pure. */
-export function sameOriginEndpoint(a: string, b: string): boolean {
-  const x = parseOriginAddress(a);
-  const y = parseOriginAddress(b);
-  return x && y ? sameEndpoint(x, y) : a === b;
 }
 
 /** Whether the address names a port other than its transport's default
