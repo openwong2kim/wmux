@@ -18,7 +18,7 @@ import { isFreshSessionSource } from '../shared/hooks/signal-types';
 import { ESCAPE_WIN32 } from '../shared/win32InputKeys';
 import { isEscapeChunk } from '../shared/hooks/interruptKeystroke';
 import { kittyChunkAsLegacy } from '../shared/kittyKeyEvents';
-import { titleShowsRunningTurn } from './transcript/chatScreenGate';
+import { titleShowsFinishedTurn, titleShowsRunningTurn } from './transcript/chatScreenGate';
 import type { TurnFailure } from '../shared/phoneTurnFailure';
 
 /**
@@ -220,6 +220,16 @@ export class DaemonPTYBridge extends EventEmitter {
    * transcript end or the agent ending makes the close final.
    */
   private turnSoftClosed = false;
+  /**
+   * F24 — the open episode was opened by output alone (a byte promotion) on a
+   * pane whose hooks report, and no hook or submit has confirmed it since.
+   * Such a pane says when its turns end, and Claude Code's own post-turn
+   * paints (the idle recap, a repaint when a viewer attaches) fire no hook:
+   * an episode they opened would never close. So until a hook confirms it,
+   * the episode ends like a hook-less pane's does (a detector settle), and
+   * also when its output goes quiet: a real turn keeps painting its spinner.
+   */
+  private byteOpenedTurn = false;
   /**
    * #1670 — the episode was opened while the boot window was open (a program
    * launched, no submit or hook since), by a byte promotion or by the first
@@ -550,6 +560,7 @@ export class DaemonPTYBridge extends EventEmitter {
       this.turnSoftClosed = false;
       this.openTurn();
       if (joined) this.bootEpisode = false;
+      this.byteOpenedTurn = false;
     }
     this.lastTurnStartedAt = Date.now();
     this.preTurn = false;
@@ -692,6 +703,7 @@ export class DaemonPTYBridge extends EventEmitter {
         if (!this.awaitingHuman) this.openTurn(true, signalTs);
         // The agent's own hook: whatever opened the episode, it is a turn.
         this.bootEpisode = false;
+        this.byteOpenedTurn = false;
       }
       this.explicitTerminalStatus = false;
       this.settledStatus = null;
@@ -730,7 +742,7 @@ export class DaemonPTYBridge extends EventEmitter {
     if (authoritative) this.hookSeen = true;
     // `provisional`: a hook settle the transcript has not confirmed (see the
     // daemon's Codex stop handling) closes like a detector settle does.
-    if (!this.awaitingHuman && (authoritative || !this.hookSeen)) this.closeTurn(!authoritative || provisional);
+    if (!this.awaitingHuman && (authoritative || !this.hookSeen || this.byteOpenedTurn)) this.closeTurn(!authoritative || provisional);
     this.settledAtMs = Date.now();
     this.submittedTurnPending = false;
     this.hookArmedCycle = false;
@@ -824,6 +836,7 @@ export class DaemonPTYBridge extends EventEmitter {
   }
 
   private closeTurn(soft = false): void {
+    this.byteOpenedTurn = false;
     if (this.turnOpen) this.turnSoftClosed = soft;
     else if (!soft) this.turnSoftClosed = false;
     this.turnOpen = false;
@@ -835,6 +848,19 @@ export class DaemonPTYBridge extends EventEmitter {
     const agent = this.agentDetector?.getLastAgent() ?? '';
     const slug = /codex/i.test(agent) ? 'codex' : /claude/i.test(agent) ? 'claude' : '';
     return !!slug && titleShowsRunningTurn({ title: this.lastTitle, at: this.lastTitleAt }, slug, Date.now());
+  }
+
+  /**
+   * F24 — output alone must not open a turn here: the pane's hooks report,
+   * and the latest window title is Claude Code's idle `✳ <name>`. Claude Code
+   * swaps it for its `◐`/`◑` spinner within about a second of any turn it
+   * starts, autonomous ones included, and keeps the spinner up for the whole
+   * turn; its idle recap, `Checking for updates` and a repaint for a viewer
+   * that attached are all drawn under `✳`. The agent is not checked: the
+   * glyph is Claude Code's own, and its detector may not have named it.
+   */
+  private idleTitleOnHookPane(): boolean {
+    return this.hookSeen && titleShowsFinishedTurn({ title: this.lastTitle, at: this.lastTitleAt }, 'claude', 0);
   }
 
   /**
@@ -992,7 +1018,7 @@ export class DaemonPTYBridge extends EventEmitter {
    */
   noteSessionStart(signalTs: number, source: unknown): void {
     const atIdlePrompt = this.explicitTerminalStatus && this.settledStatus === 'waiting' && !this.awaitingHuman;
-    const { preTurn, turnEvidenceAt, turnOpen, turnSeq, turnOpenedAt, prevTurnOpenedAt, turnSoftClosed, codexBootWindow, bootEpisode, lastFailure } = this;
+    const { preTurn, turnEvidenceAt, turnOpen, turnSeq, turnOpenedAt, prevTurnOpenedAt, turnSoftClosed, codexBootWindow, bootEpisode, byteOpenedTurn, lastFailure } = this;
     this.noteAgentStatus('running', true);
     this.codexBootWindow = codexBootWindow;
     // The session start is not turn evidence itself: a duplicate delivery of
@@ -1008,6 +1034,7 @@ export class DaemonPTYBridge extends EventEmitter {
     this.prevTurnOpenedAt = prevTurnOpenedAt;
     this.turnSoftClosed = turnSoftClosed;
     this.bootEpisode = bootEpisode;
+    this.byteOpenedTurn = byteOpenedTurn;
     if (!isFreshSessionSource(source)) {
       this.preTurn = false;
       return;
@@ -1139,6 +1166,11 @@ export class DaemonPTYBridge extends EventEmitter {
     // explicit waiting/complete state five seconds later.
     this.idleUnsubscribe = activityMonitor.onActiveToIdle((ptyId) => {
       this.hookArmedCycle = false;
+      // F24: an episode only output opened, on a hook pane, ends when that
+      // output stops (see `byteOpenedTurn`). Five seconds of byte silence
+      // means no spinner either; the spinner title is output too. Softly, so
+      // the next hook of a real turn resumes the same episode.
+      if (this.byteOpenedTurn && !this.awaitingHuman) this.closeTurn(true);
       if (this.explicitTerminalStatus) return;
       this.emit('idle', { sessionId: ptyId, ...(this.isPreTurn() ? { preTurn: true } : {}) });
     });
@@ -1170,11 +1202,14 @@ export class DaemonPTYBridge extends EventEmitter {
         // TUI painting a live counter, is the whole turn. That applies to the
         // cool-down too: the tail of the finishing turn is exactly the burst
         // most likely to arrive just before a genuine one.
+        // F24: on a hook pane, a burst under Claude Code's idle title is its
+        // own post-turn paint (the recap, a repaint on attach), not a turn.
         const now = Date.now();
         if (
           now - this.settledAtMs < DaemonPTYBridge.SETTLE_COOLDOWN_MS
           || !this.isInputQuiet()
           || now - this.lastResizeAtMs < RESIZE_REDRAW_GUARD_MS
+          || this.idleTitleOnHookPane()
         ) {
           activityMonitor.endTurn(ptyId);
           return;
@@ -1182,7 +1217,9 @@ export class DaemonPTYBridge extends EventEmitter {
         this.explicitTerminalStatus = false;
         this.settledStatus = null;
         this.submittedTurnPending = false;
+        const wasOpen = this.turnOpen;
         this.openTurn(true);
+        if (!wasOpen && this.hookSeen) this.byteOpenedTurn = true;
         // Deliberately NOT resetEmissionState(). The unsettled path below
         // clears the detector's dedup so a new turn's footer can speak again;
         // doing it here would let the idle chrome that is still on screen
@@ -1227,7 +1264,9 @@ export class DaemonPTYBridge extends EventEmitter {
             }
           } else {
             this.agentDetector?.resetEmissionState();
+            const wasOpen = this.turnOpen;
             this.openTurn(true);
+            if (!wasOpen && this.hookSeen) this.byteOpenedTurn = true;
           }
         }
       }
@@ -1667,6 +1706,7 @@ export class DaemonPTYBridge extends EventEmitter {
     this.turnOpen = false;
     this.turnSoftClosed = false;
     this.bootEpisode = false;
+    this.byteOpenedTurn = false;
     this.hookSeen = false;
     this.lastTitle = '';
     this.lastTitleAt = 0;
