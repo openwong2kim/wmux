@@ -385,12 +385,12 @@ describe('TaskLedger — transition matrix', () => {
     }
   });
 
-  it('a dispatch keeps origin\'s pin in its canonical form, across a reload', async () => {
+  it('a dispatch keeps origin\'s pin, a plain address as written, across a reload', async () => {
     const a = open();
     const pin = 'ssh://git@git.corp.example:2222/Team/App';
     await a.register({ id: 'wtask-pin', taskWorkspaceId: 'ws-task', ownerWorkspaceId: 'ws-owner', title: 'lane', dispatch: { origin: { kind: 'bot', botId: 'b1' }, originPin: pin } });
     expect(open().get('wtask-pin')?.dispatch?.originPin).toBe(pin);
-    for (const [i, bad] of ['HTTPS://X.example/o/r', 'https://x.example/o/r', '/srv/r.git', ''].entries()) {
+    for (const [i, bad] of [' https://x.example/o/r', 'file:///x/o/r', '/srv/r.git', ''].entries()) {
       await a.register({ id: `wtask-pin-bad-${i}`, taskWorkspaceId: 'ws-task', ownerWorkspaceId: 'ws-owner', title: 'lane', dispatch: { origin: { kind: 'bot', botId: 'b1' }, originPin: bad } });
       expect(a.get(`wtask-pin-bad-${i}`)?.dispatch?.originPin).toBeUndefined();
     }

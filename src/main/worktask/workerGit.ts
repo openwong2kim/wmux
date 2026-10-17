@@ -15,7 +15,7 @@
 
 import path from 'node:path';
 import { git, type GitResult } from '../git/git';
-import { normalizeOriginPin } from '../../shared/originPin';
+import { isOriginPin } from '../../shared/originPin';
 
 /** Runs git with `args` in the worktree; never throws. */
 export type WorkerGitRun = (args: string[]) => Promise<{ code: number; stdout: string; stderr: string }>;
@@ -144,10 +144,11 @@ export function originUrlFromConfigList(stdout: string): string | null {
   return urls.length === 1 ? urls[0].value : null;
 }
 
-/** origin's pin (shared/originPin.ts) from the same output, or null. Pure. */
+/** origin's pin (shared/originPin.ts) from the same output: that URL when it
+ *  is a plain https or ssh address, else null. Pure. */
 export function originPinFromConfigList(stdout: string): string | null {
   const url = originUrlFromConfigList(stdout);
-  return url === null ? null : normalizeOriginPin(url);
+  return isOriginPin(url) ? url : null;
 }
 
 /** origin's URL as the repository config of the checkout at `dir` holds it,

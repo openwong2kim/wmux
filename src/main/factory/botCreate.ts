@@ -38,7 +38,7 @@ import { git as runGit, type GitResult } from '../git/git';
 import { dubiousOwnership, dubiousOwnershipMessage } from '../git/dubiousOwnership';
 import { parseRemoteKey } from '../github/PrProvider';
 import { readRawOriginUrl } from '../worktask/workerGit';
-import { normalizeOriginPin } from '../../shared/originPin';
+import { isOriginPin } from '../../shared/originPin';
 import type { WorkspaceListEntry } from '../../shared/workspaceMirror';
 import type { BotStore } from './botStore';
 import type { WakeEnqueueInput } from './wakeQueue';
@@ -100,7 +100,7 @@ export async function resolveBotRepo(folder: unknown, deps: BotRepoDeps = {}): P
   const rawKey = raw === null ? null : normalizeRepoKey(parseRemoteKey(raw));
   const repoKey = rawKey ?? normalizeRepoKey(parseRemoteKey(url));
   if (!repoKey) return { ok: false, code: 'no_remote', message: `The origin remote of ${repoPath} is not an owner/repo address on a git host. ${NEEDS_HOSTED_ORIGIN}` };
-  const originPin = rawKey ? normalizeOriginPin(raw) : null;
+  const originPin = rawKey && isOriginPin(raw) ? raw : null;
   return { ok: true, repo: { repoKey, repoPath, ...(originPin ? { originPin } : {}) } };
 }
 

@@ -110,7 +110,7 @@ async function openTaskRemote(
       return { ok: false, reason: 'remote-refused', error: `origin is not ${input.expectedRepoKey} (a plain https or ssh address of it)` };
     }
   }
-  const pinRefusal = await originPinRefusal(origin.url, input, repo.config);
+  const pinRefusal = await originPinRefusal(origin.url, input, repo);
   if (pinRefusal) return { ok: false, reason: 'remote-refused', error: pinRefusal };
   return { ok: true, repo, url: origin.url, key };
 }

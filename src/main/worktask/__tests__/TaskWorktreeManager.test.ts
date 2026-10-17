@@ -111,7 +111,7 @@ describe('preflight — the repository\'s common git dir', () => {
       return {};
     });
     const res = await new TaskWorktreeManager({ runGit: withOrigin('global\0url.ssh://git@git.corp.example/.insteadof\nhttps://git.corp.example/\0local\0remote.origin.url\nhttps://Git.Corp.Example/Team/App.git\0') }).preflight(repoRoot, 'T', 'wtask-x-1');
-    expect(res.ok && res.plan.originPin).toBe('https://git.corp.example:443/Team/App');
+    expect(res.ok && res.plan.originPin).toBe('https://Git.Corp.Example/Team/App.git');
     expect(calls).toContainEqual([`--git-dir=${path.join(repoRoot, '.git')}`, 'config', '-z', '--list', '--show-scope']);
     // A local-path origin has no pin.
     const local = await new TaskWorktreeManager({ runGit: withOrigin('local\0remote.origin.url\n/srv/app.git\0') }).preflight(repoRoot, 'T', 'wtask-x-1');

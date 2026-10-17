@@ -19,6 +19,7 @@ import { readTaskRemoteHead } from '../../worktask/taskFetch';
 import { TASK_PUSHES_FILENAME, taskPushRecordOf } from '../../worktask/taskPushRecord';
 import { registerLedgerRpc } from '../../pipe/handlers/ledger.rpc';
 import { fakeSshUrl, writeFakeSsh } from '../../../test-utils/fakeSsh';
+import { originUrlRepoKey } from '../../worktask/workerGit';
 
 vi.mock('electron', () => ({ app: { getPath: () => os.tmpdir() } }));
 
@@ -195,11 +196,15 @@ describe.skipIf(process.platform === 'win32')('the no-changes check over real gi
       recordOriginPin: (taskId, pin) => ledger.recordOriginPin(taskId, pin),
     });
     const mission = { worktreePath: work, branch: 'wtask/one' };
-    expect(await ports.remoteHead(row(), mission)).toEqual({ ok: true, sha: null });
-    expect(row().dispatch?.originPin).toBe(`ssh://localhost${origin.replace(/\.git$/, '')}`);
+    // A row with no repository key is not pinned from what origin says now.
+    expect(await ports.remoteHead(row(), mission)).toMatchObject({ ok: false, reason: 'remote-refused' });
+    expect(row().dispatch?.originPin).toBeUndefined();
+    const keyed = () => ({ ...row(), dispatch: { ...row().dispatch!, repoKey: originUrlRepoKey(fakeSshUrl(origin)) as string } });
+    expect(await ports.remoteHead(keyed(), mission)).toEqual({ ok: true, sha: null });
+    expect(row().dispatch?.originPin).toBe(fakeSshUrl(origin));
     // The same repository key on another port is not the pinned origin.
     run(work, 'remote', 'set-url', 'origin', fakeSshUrl(origin).replace('ssh://localhost', 'ssh://localhost:2222'));
-    expect(await ports.remoteHead(row(), mission)).toMatchObject({ ok: false, reason: 'remote-refused' });
+    expect(await ports.remoteHead(keyed(), mission)).toMatchObject({ ok: false, reason: 'remote-refused' });
     expect(await check()(row())).toMatchObject({ kind: 'unknown' });
   });
 

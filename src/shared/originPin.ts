@@ -4,35 +4,27 @@
 // repository: it drops the port, the ssh user and the path's case, so thread
 // ids, verdicts and the merge lane read one key however the address was
 // spelled. task_push and task_fetch also need the address itself: an origin
-// pin is origin's URL as the repository config holds it (never rewritten by
-// `url.*.insteadOf`), recorded by main and compared on every network call.
+// pin is origin's URL exactly as the repository config held it (never
+// rewritten by `url.*.insteadOf`), recorded by main and compared on every
+// network call.
 //
-// The pin form (normalizeOriginPin):
-//   - https:       `https://<host>:<port>/<path>`   (no user; 443 written out)
-//   - ssh URL:     `ssh://[<user>@]<host>[:<port>]/<path>`
-//   - scp-style:   `<user>@<host>:<path>`   (relative to the server's home)
-// one trailing `/` and a trailing `.git` dropped, the scheme and host
-// lowercased; the path keeps its case, the ssh user and the scp-style vs
-// `ssh://` form are kept as written. An ssh address keeps its port only when
-// it names one: with none, ssh's own config picks it, so "none" and ":22" are
-// different addresses. A URL with surrounding whitespace is not an address
-// (git keeps a quoted space in the path it asks for). The accepted addresses
-// are those originUrlRepoKey (main/worktask/workerGit.ts) accepts. An ssh
-// Host alias (`git@github-work:org/repo`) is a host name like any other:
-// kept as written, never resolved through ssh's config.
+// A pin is a plain address (parseOriginAddress): https, `ssh://` or
+// scp-style, with no surrounding whitespace (git keeps a quoted space in the
+// path it asks for). The accepted addresses are those originUrlRepoKey
+// (main/worktask/workerGit.ts) accepts. Read as an address: the scheme and
+// host lowercased, one trailing `/` and a trailing `.git` dropped, an https
+// address on 443 whether or not it writes the port; an ssh address has a port
+// only when it names one (with none, ssh's own config picks it, so "none"
+// and ":22" are different addresses). An ssh Host alias
+// (`git@github-work:org/repo`) is a host name like any other: kept as
+// written, never resolved through ssh's config.
 //
-// The compare (originPinMatches):
-//   - the host and the port are compared exactly;
-//   - the path is compared ignoring case (GitHub, GitHub Enterprise and
-//     GitLab name a repository case-insensitively);
-//   - two ssh addresses must use the same user and the same form;
-//   - the transport-switch rule: an https address and an ssh address (either
-//     form) name the same repository when the host and the path match and
-//     each is on its transport's default port (443; 22 or none).
-// And, since the owner's `url.<base>.insteadOf` / `pushInsteadOf` match
-// URLs by their literal prefix, two spellings of one pin can be rewritten
-// to different servers: originRewriteRefusal checks that the rewrite git
-// applies to origin's URL lands where it lands for the pin's own spelling.
+// The compare (originPinMatches): the same form (https, `ssh://` or
+// scp-style), user, host and port; the path ignoring case (GitHub, GitHub
+// Enterprise and GitLab name a repository case-insensitively). Origin's URL
+// and the pin are compared as written, and again as git rewrites them for a
+// fetch and for a push (the owner's `insteadOf` / `pushInsteadOf`, resolved
+// by git itself, main/worktask/taskPush.ts).
 
 /** Path segments after the host (GitLab nests groups up to 20 deep). */
 const MAX_PATH_SEGMENTS = 21;
@@ -112,88 +104,41 @@ function pinOf(a: OriginAddress): string {
   return `${a.user}@${a.host}:${a.path}`;
 }
 
-/** An origin URL → its pin, or null when it is not a plain https or ssh
- *  address. Pure; a pin normalizes to itself. */
+/** An origin URL's address in one spelling (for display and tests), or null
+ *  when it is not a plain https or ssh address. Pure. */
 export function normalizeOriginPin(url: unknown): string | null {
   const a = parseOriginAddress(url);
   return a ? pinOf(a) : null;
 }
 
-/** Whether `v` is a pin in its canonical form. Pure. */
+/** Whether `v` can be a pin: a plain https or ssh address. Pure. */
 export function isOriginPin(v: unknown): v is string {
-  return typeof v === 'string' && normalizeOriginPin(v) === v;
+  return parseOriginAddress(v) !== null;
 }
 
 function sameEndpoint(a: OriginAddress, b: OriginAddress): boolean {
   return a.form === b.form && a.user === b.user && a.host === b.host && a.port === b.port && a.path.toLowerCase() === b.path.toLowerCase();
 }
 
-function onDefaultPort(a: OriginAddress): boolean {
-  return a.form === 'https' ? a.port === HTTPS_PORT : a.port === null || a.port === SSH_PORT;
-}
-
-/** Whether the origin URL `url` names the repository `pin` recorded, under
- *  the rules above. Pure. */
+/** Whether the origin URL `url` names the repository `pin` recorded: the
+ *  same form, user, host and port, the path in any case. Pure. */
 export function originPinMatches(pin: string, url: string): boolean {
   const a = parseOriginAddress(pin);
   const b = parseOriginAddress(url);
-  if (!a || !b) return false;
-  if (a.host !== b.host || a.path.toLowerCase() !== b.path.toLowerCase()) return false;
-  const aSsh = a.form !== 'https';
-  const bSsh = b.form !== 'https';
-  if (aSsh === bSsh) return aSsh ? sameEndpoint(a, b) : a.port === b.port;
-  // The transport-switch rule.
-  return onDefaultPort(a) && onDefaultPort(b);
+  return a !== null && b !== null && sameEndpoint(a, b);
 }
 
-/** One `url.<base>.insteadOf` (or `pushInsteadOf`) value. */
-export interface OriginUrlRewrite { base: string; prefix: string; push: boolean }
-
-/** The URL rewrites in `git config --list` entries whose keys keep their
- *  case (the `<base>` is a URL). Pure. */
-export function originUrlRewrites(entries: ReadonlyArray<{ key: string; value: string }>): OriginUrlRewrite[] {
-  const out: OriginUrlRewrite[] = [];
-  for (const e of entries) {
-    const m = /^url\.(.+)\.(insteadof|pushinsteadof)$/i.exec(e.key);
-    if (m && e.value) out.push({ base: m[1], prefix: e.value, push: m[2].toLowerCase() === 'pushinsteadof' });
-  }
-  return out;
+/** Whether two URLs git connects to (after its rewrites) are one endpoint:
+ *  as originPinMatches when both are plain addresses, else the same string.
+ *  Pure. */
+export function sameOriginEndpoint(a: string, b: string): boolean {
+  const x = parseOriginAddress(a);
+  const y = parseOriginAddress(b);
+  return x && y ? sameEndpoint(x, y) : a === b;
 }
 
-/** git's rewrite of `url`: the longest matching prefix, a push rewrite before
- *  a fetch one for a push. Pure. */
-export function rewriteOriginUrl(url: string, rules: readonly OriginUrlRewrite[], push: boolean): string {
-  const pick = (list: readonly OriginUrlRewrite[]) => list.reduce<OriginUrlRewrite | null>((best, r) => (url.startsWith(r.prefix) && (!best || r.prefix.length > best.prefix.length) ? r : best), null);
-  const p = push ? pick(rules.filter((r) => r.push)) : null;
-  const r = p ?? pick(rules.filter((x) => !x.push));
-  return r ? r.base + url.slice(r.prefix.length) : url;
-}
-
-/** The pin's own spellings: as written, without and with `.git`. */
-function pinSpellings(a: OriginAddress): string[] {
-  const head = a.form === 'https'
-    ? `https://${a.host}${a.port === HTTPS_PORT ? '' : `:${a.port}`}/`
-    : a.form === 'ssh' ? `ssh://${a.user ? `${a.user}@` : ''}${a.host}${a.port === null ? '' : `:${a.port}`}/` : `${a.user}@${a.host}:`;
-  return [`${head}${a.path}`, `${head}${a.path}.git`];
-}
-
-/** Why the owner's URL rewrites send origin's URL `url` somewhere other than
- *  they send the pin's own spelling, or null. Checked for a fetch and for a
- *  push. Pure. */
-export function originRewriteRefusal(pin: string, url: string, rules: readonly OriginUrlRewrite[]): string | null {
-  if (rules.length === 0) return null;
-  const a = parseOriginAddress(pin);
-  if (!a) return 'the recorded origin address cannot be read';
-  const spellings = pinSpellings(a);
-  for (const push of [false, true]) {
-    const at = rewriteOriginUrl(url, rules, push);
-    const pinned = spellings.map((s) => rewriteOriginUrl(s, rules, push));
-    if (at === url && pinned.every((r, i) => r === spellings[i])) continue;
-    const there = parseOriginAddress(at);
-    if (!there || !pinned.some((r) => {
-      const p = parseOriginAddress(r);
-      return p !== null && sameEndpoint(p, there);
-    })) return 'origin is rewritten by a URL rule to an address other than the one wmux recorded for this task';
-  }
-  return null;
+/** Whether the address names a port other than its transport's default
+ *  (https 443, ssh 22). Pure. */
+export function namesNonDefaultPort(a: OriginAddress): boolean {
+  return a.form === 'https' ? a.port !== HTTPS_PORT : a.port !== null && a.port !== SSH_PORT;
 }

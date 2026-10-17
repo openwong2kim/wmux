@@ -15,7 +15,7 @@ import { parseRemoteKey } from '../../github/PrProvider';
 import { normalizeRepoKey } from '../../../shared/repoKey';
 import { readRepoDefaultBranchByKey } from '../../agents/botWorkerDefaultBranch';
 import { fakeSshUrl, writeFakeSsh } from '../../../test-utils/fakeSsh';
-import { normalizeOriginPin } from '../../../shared/originPin';
+import { originPinMatches } from '../../../shared/originPin';
 import { fetchTaskRefs } from '../taskFetch';
 import { resolveBotRepo } from '../../factory/botCreate';
 
@@ -252,30 +252,30 @@ describe.skipIf(process.platform === 'win32')('task.push and task.fetch: the rec
     expect(git(repo, 'remote', 'get-url', 'origin')).toBe(fakeSshUrl(bare));
     // Recorded as a bot's repository is: from the raw URL, never get-url.
     const resolved = await resolveBotRepo(repo);
-    expect(resolved).toMatchObject({ ok: true, repo: { repoKey: 'git.corp.example/acme/app', originPin: 'https://git.corp.example:443/acme/app' } });
+    expect(resolved).toMatchObject({ ok: true, repo: { repoKey: 'git.corp.example/acme/app', originPin: 'https://git.corp.example/acme/app.git' } });
     const expectedOriginPin = resolved.ok ? resolved.repo.originPin : undefined;
-    const r = await pushTask({ ...input(), expectedRepoKey: 'git.corp.example/acme/app', expectedOriginPin });
-    expect(r).toMatchObject({ ok: true });
+    expect(await pushTask({ ...input(), expectedRepoKey: 'git.corp.example/acme/app', expectedOriginPin })).toMatchObject({ ok: true });
     expect(git(bare, 'rev-parse', 'refs/heads/wtask/one')).toBe(git(work, 'rev-parse', 'HEAD'));
+    // Another spelling of the same address the same rule rewrites the same way.
+    git(repo, 'remote', 'set-url', 'origin', 'https://git.corp.example/acme/App');
+    expect(await fetchTaskRefs({ ...input(), expectedRepoKey: 'git.corp.example/acme/app', expectedOriginPin })).toMatchObject({ ok: true });
   });
 
   it('a row with no pin is pinned at its first use, then held to it: a port change is refused and nothing reaches the other server', async () => {
     git(repo, 'remote', 'add', 'origin', fakeSshUrl(bare));
     globalConfig();
+    const expectedRepoKey = originUrlRepoKey(fakeSshUrl(bare)) as string;
     const recorded: string[] = [];
     const recordOriginPin = vi.fn(async (pin: string) => {
       if (recorded.length === 0) recorded.push(pin);
       return recorded[0];
     });
-    const ledgerPinned = async () => ({ ...input(), ...(recorded[0] ? { expectedOriginPin: recorded[0] } : { recordOriginPin }) });
+    const ledgerPinned = async () => ({ ...input(), expectedRepoKey, ...(recorded[0] ? { expectedOriginPin: recorded[0] } : { recordOriginPin }) });
     expect(await pushTask(await ledgerPinned())).toMatchObject({ ok: true });
-    expect(recorded).toEqual([normalizeOriginPin(fakeSshUrl(bare))]);
+    expect(recorded).toEqual([fakeSshUrl(bare)]);
     // The same repository key on another port: the pin refuses it.
-    const other = path.join(root, 'other.git');
-    execFileSync('git', ['init', '-q', '--bare', other]);
     git(repo, 'remote', 'set-url', 'origin', fakeSshUrl(bare).replace('ssh://localhost', 'ssh://localhost:2222'));
-    const refused = await pushTask(await ledgerPinned());
-    expect(refused).toMatchObject({ ok: false, reason: 'remote-refused', error: expect.stringContaining('recorded') });
+    expect(await pushTask(await ledgerPinned())).toMatchObject({ ok: false, reason: 'remote-refused', error: expect.stringContaining('recorded') });
     expect(await fetchTaskRefs(await ledgerPinned())).toMatchObject({ ok: false, reason: 'remote-refused' });
     expect(recordOriginPin).toHaveBeenCalledTimes(1);
     // Back on the recorded address it works again.
@@ -283,32 +283,94 @@ describe.skipIf(process.platform === 'win32')('task.push and task.fetch: the rec
     expect(await fetchTaskRefs(await ledgerPinned())).toMatchObject({ ok: true, defaultBranch: 'main' });
   });
 
+  it('a row with no pin is not pinned to a URL naming another port, nor without its repository key', async () => {
+    const record = vi.fn(async (p: string) => p);
+    git(repo, 'remote', 'add', 'origin', fakeSshUrl(bare).replace('ssh://localhost', 'ssh://localhost:2222'));
+    // The stand-in ssh takes `-p <port>` like OpenSSH.
+    globalConfig('[ssh]\n\tvariant = ssh\n');
+    const expectedRepoKey = originUrlRepoKey(fakeSshUrl(bare)) as string;
+    expect(await pushTask({ ...input(), expectedRepoKey, recordOriginPin: record })).toMatchObject({ ok: false, reason: 'remote-refused', error: expect.stringContaining('start a new task') });
+    git(repo, 'remote', 'set-url', 'origin', fakeSshUrl(bare).replace('ssh://localhost', 'ssh://localhost:22'));
+    expect(await pushTask({ ...input(), recordOriginPin: record })).toMatchObject({ ok: false, reason: 'remote-refused', error: expect.stringContaining('start a new task') });
+    expect(record).not.toHaveBeenCalled();
+    // The default port, written out, is pinned.
+    const pinned = await pushTask({ ...input(), expectedRepoKey, recordOriginPin: record });
+    expect(pinned).toMatchObject({ ok: true });
+    expect(record).toHaveBeenCalledWith(fakeSshUrl(bare).replace('ssh://localhost', 'ssh://localhost:22'));
+  });
+
   it('a pin that cannot be recorded refuses the push', async () => {
     git(repo, 'remote', 'add', 'origin', fakeSshUrl(bare));
     globalConfig();
-    expect(await pushTask({ ...input(), recordOriginPin: async () => null })).toMatchObject({ ok: false, reason: 'remote-refused' });
-    expect(await pushTask({ ...input(), recordOriginPin: async () => { throw new Error('disk full'); } })).toMatchObject({ ok: false, reason: 'remote-refused' });
+    const expectedRepoKey = originUrlRepoKey(fakeSshUrl(bare)) as string;
+    expect(await pushTask({ ...input(), expectedRepoKey, recordOriginPin: async () => null })).toMatchObject({ ok: false, reason: 'remote-refused' });
+    expect(await pushTask({ ...input(), expectedRepoKey, recordOriginPin: async () => { throw new Error('disk full'); } })).toMatchObject({ ok: false, reason: 'remote-refused' });
     expect(git(bare, 'for-each-ref', '--format=%(refname)', 'refs/heads')).toBe('refs/heads/main');
   });
 
-  it('a spelling of the pinned address that the owner\'s rewrites send to another server is refused', async () => {
-    const other = path.join(root, 'srv2', 'acme', 'app.git');
+  /** A second bare origin at `<root>/<dir>/acme/app.git`. */
+  const otherServer = (dir: string) => {
+    const other = path.join(root, dir, 'acme', 'app.git');
     fs.mkdirSync(path.dirname(other), { recursive: true });
     execFileSync('git', ['init', '-q', '--bare', other]);
-    git(repo, 'remote', 'add', 'origin', 'https://git.corp.example/acme/app.git');
-    globalConfig(`[url "${fakeSshUrl(path.join(root, 'srv'))}/"]\n\tinsteadOf = https://git.corp.example/\n[url "${fakeSshUrl(path.join(root, 'srv2'))}/"]\n\tinsteadOf = https://git.corp.example:443/\n`);
-    const expectedOriginPin = normalizeOriginPin('https://git.corp.example/acme/app.git') as string;
-    git(repo, 'remote', 'set-url', 'origin', 'https://git.corp.example:443/acme/app.git');
-    expect(await pushTask({ ...input(), expectedOriginPin })).toMatchObject({ ok: false, reason: 'remote-refused', error: expect.stringContaining('rewritten') });
+    return other;
+  };
+  const rule = (dir: string, prefix: string, key = 'insteadOf') => `[url "${fakeSshUrl(path.join(root, dir))}/"]\n\t${key} = ${prefix}\n`;
+  const assertRefusedThenOk = async (pin: string, moved: string, other: string) => {
+    git(repo, 'remote', 'set-url', 'origin', moved);
+    expect(originPinMatches(pin, moved)).toBe(true);
+    expect(await pushTask({ ...input(), expectedOriginPin: pin })).toMatchObject({ ok: false, reason: 'remote-refused', error: expect.stringContaining('reach') });
     expect(git(other, 'for-each-ref')).toBe('');
-    git(repo, 'remote', 'set-url', 'origin', 'https://git.corp.example/acme/app.git');
-    expect(await pushTask({ ...input(), expectedOriginPin })).toMatchObject({ ok: true });
+    git(repo, 'remote', 'set-url', 'origin', pin);
+    expect(await pushTask({ ...input(), expectedOriginPin: pin })).toMatchObject({ ok: true });
+  };
+
+  it('a spelling of the pinned address that the owner\'s rewrites send to another server is refused (as git resolves them)', async () => {
+    const other = otherServer('srv2');
+    const pin = 'https://git.corp.example/acme/app.git';
+    git(repo, 'remote', 'add', 'origin', pin);
+    globalConfig(rule('srv', 'https://git.corp.example/') + rule('srv2', 'https://git.corp.example:443/'));
+    await assertRefusedThenOk(pin, 'https://git.corp.example:443/acme/app.git', other);
+  });
+
+  it('a longer rule for the `.git` spelling: dropping `.git` reaches the shorter rule\'s server, and is refused', async () => {
+    const other = otherServer('srv2');
+    const pin = 'https://git.corp.example/acme/app.git';
+    git(repo, 'remote', 'add', 'origin', pin);
+    // The pinned spelling goes to srv by the longer rule; without `.git`, to srv2.
+    globalConfig(rule('srv2', 'https://git.corp.example/') + `[url "${fakeSshUrl(bare)}"]\n\tinsteadOf = https://git.corp.example/acme/app.git\n`);
+    await assertRefusedThenOk(pin, 'https://git.corp.example/acme/app', other);
+  });
+
+  it('a host spelled in another case misses the owner\'s rule (git matches it literally), and is refused', async () => {
+    const other = otherServer('srv2');
+    const pin = 'https://git.corp.example/acme/app.git';
+    git(repo, 'remote', 'add', 'origin', pin);
+    // Equal-length rules: git takes the first; the other case of the host takes the other.
+    globalConfig(rule('srv', 'https://git.corp.example/') + rule('srv2', 'https://Git.Corp.Example/'));
+    await assertRefusedThenOk(pin, 'https://Git.Corp.Example/acme/app.git', other);
+  });
+
+  it('a push rewrite counts for a push', async () => {
+    const other = otherServer('srv2');
+    const pin = 'https://git.corp.example/acme/app.git';
+    git(repo, 'remote', 'add', 'origin', pin);
+    globalConfig(rule('srv', 'https://git.corp.example/') + rule('srv2', 'https://git.corp.example/acme/app', 'pushInsteadOf'));
+    // The pinned spelling (with `.git`) is pushed by the push rule too: to pin
+    // the spelling the push rule misses, record the URL without `.git`.
+    await assertRefusedThenOk('https://git.corp.example/acme/App.git', 'https://git.corp.example/acme/app.git', other);
+  });
+
+  it('a switch between https and ssh is refused; the owner picks the repository again', async () => {
+    git(repo, 'remote', 'add', 'origin', 'git@git.corp.example:acme/app.git');
+    globalConfig();
+    expect(await pushTask({ ...input(), expectedOriginPin: 'https://git.corp.example/acme/app.git' })).toMatchObject({ ok: false, reason: 'remote-refused' });
   });
 
   it('a different host is refused even under the same repository path', async () => {
     git(repo, 'remote', 'add', 'origin', 'git@git.corp.example:acme/app.git');
     globalConfig();
-    expect(await pushTask({ ...input(), expectedOriginPin: normalizeOriginPin('git@git.other.example:acme/app.git') as string })).toMatchObject({ ok: false, reason: 'remote-refused' });
+    expect(await pushTask({ ...input(), expectedOriginPin: 'git@git.other.example:acme/app.git' })).toMatchObject({ ok: false, reason: 'remote-refused' });
     expect(git(bare, 'for-each-ref', '--format=%(refname)', 'refs/heads')).toBe('refs/heads/main');
   });
 });
@@ -561,8 +623,8 @@ describe('task.push RPC', () => {
         expect(await (handlers.get('task.push') as Handler)({ senderPtyId: 'pty-1' }, local)).toMatchObject({ ok: true });
         return push.mock.calls[0][0] as { expectedOriginPin?: string; recordOriginPin?: unknown };
       };
-      const pinned = await pushWith({ id: 'wtask-a', dispatch: { ...dispatch, originPin: 'https://github.com:443/acme/app' } }, 'git@github.com:acme/other');
-      expect(pinned).toMatchObject({ expectedOriginPin: 'https://github.com:443/acme/app' });
+      const pinned = await pushWith({ id: 'wtask-a', dispatch: { ...dispatch, originPin: 'https://github.com/acme/app.git' } }, 'git@github.com:acme/other');
+      expect(pinned).toMatchObject({ expectedOriginPin: 'https://github.com/acme/app.git' });
       expect(pinned.recordOriginPin).toBeUndefined();
       expect(await pushWith({ id: 'wtask-b', dispatch }, 'git@github.com:acme/app')).toMatchObject({ expectedOriginPin: 'git@github.com:acme/app' });
       // A legacy row: pinned at its first push, and held to that pin after a reload.

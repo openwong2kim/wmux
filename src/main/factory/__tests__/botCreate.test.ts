@@ -99,14 +99,14 @@ describe('resolveBotRepo', () => {
   it('keys the repo by origin and roots it at the realpath of the git toplevel', async () => {
     const git = fakeGit(ok('/link/app\n'), ok('git@github.com:Acme/App.git\n'));
     const r = await resolveBotRepo('/link/app/src', { git, realpath: (p) => p.replace('/link', '/real') });
-    expect(r).toEqual({ ok: true, repo: { repoKey: 'github.com/acme/app', repoPath: '/real/app', originPin: 'git@github.com:Acme/App' } });
+    expect(r).toEqual({ ok: true, repo: { repoKey: 'github.com/acme/app', repoPath: '/real/app', originPin: 'git@github.com:Acme/App.git' } });
     expect(git).toHaveBeenCalledWith(['remote', 'get-url', 'origin'], '/real/app');
   });
 
   it('keys and pins the repo by origin\'s URL as the repository config holds it, not as an owner\'s insteadOf rewrites it', async () => {
     // get-url answers the rewritten address (an ssh Host alias); the config holds https.
     const git = fakeGit(ok('/src/app\n'), ok('git@github-work:Acme/App.git\n'), 'https://github.com/Acme/App.git');
-    expect(await resolveBotRepo('/src/app', { git, realpath: (p) => p })).toEqual({ ok: true, repo: { repoKey: 'github.com/acme/app', repoPath: '/src/app', originPin: 'https://github.com:443/Acme/App' } });
+    expect(await resolveBotRepo('/src/app', { git, realpath: (p) => p })).toEqual({ ok: true, repo: { repoKey: 'github.com/acme/app', repoPath: '/src/app', originPin: 'https://github.com/Acme/App.git' } });
     // A config URL with no owner/repo (a shortcut only insteadOf expands): get-url's key, no pin.
     const short = fakeGit(ok('/src/app\n'), ok('https://github.com/acme/app.git\n'), 'gh:acme/app');
     expect(await resolveBotRepo('/src/app', { git: short, realpath: (p) => p })).toEqual({ ok: true, repo: { repoKey: 'github.com/acme/app', repoPath: '/src/app' } });
@@ -119,7 +119,7 @@ describe('resolveBotRepo', () => {
     execFileSync('git', ['remote', 'add', 'origin', 'git@github.com:acme/app.git'], { cwd: repo });
     const r = await resolveBotRepo(path.join(repo, 'src'));
     // git prints the long form of a Windows 8.3 short name; the native realpath does too.
-    expect(r).toEqual({ ok: true, repo: { repoKey: 'github.com/acme/app', repoPath: fs.realpathSync.native(repo), originPin: 'git@github.com:acme/app' } });
+    expect(r).toEqual({ ok: true, repo: { repoKey: 'github.com/acme/app', repoPath: fs.realpathSync.native(repo), originPin: 'git@github.com:acme/app.git' } });
   });
 });
 
@@ -185,7 +185,7 @@ describe('botRepoFromFolder: an existing bot\'s repository', () => {
   it('resolves the folder as Add bot does, local-path origins refused', async () => {
     const made = await createBotFromFolder(store, { workspaceId: 'ws-1', role: 'lead' }, app);
     if (!made.ok) throw new Error('not made');
-    expect(await botRepoFromFolder(store, made.bot.id, '/src/app', app)).toEqual({ ok: true, repo: { repoKey: 'github.com/acme/app', repoPath: '/src/app', originPin: 'https://github.com:443/acme/app' } });
+    expect(await botRepoFromFolder(store, made.bot.id, '/src/app', app)).toEqual({ ok: true, repo: { repoKey: 'github.com/acme/app', repoPath: '/src/app', originPin: 'https://github.com/acme/app.git' } });
     const local = { git: fakeGit(ok('/src/app\n'), ok('/srv/git/app.git\n')), realpath: (p: string) => p };
     expect(await botRepoFromFolder(store, made.bot.id, '/src/app', local)).toMatchObject({ ok: false, code: 'no_remote' });
     expect(await botRepoFromFolder(store, made.bot.id, 'relative/dir', app)).toMatchObject({ ok: false, code: 'invalid_argument' });
@@ -215,7 +215,7 @@ describe('createBotFromFolder: one repository per workspace', () => {
     expect(workspaceRepo(store, 'ws-1')).toBeNull();
     expect((await createBotFromFolder(store, { workspaceId: 'ws-1', role: 'lead', repoFolder: '/src/app' }, deps)).ok).toBe(true);
     // The store keeps origin's pin with the repository.
-    expect(workspaceRepo(store, 'ws-1')).toEqual({ repoKey: 'github.com/acme/app', repoPath: path.normalize('/src/app'), originPin: 'https://github.com:443/acme/app' });
+    expect(workspaceRepo(store, 'ws-1')).toEqual({ repoKey: 'github.com/acme/app', repoPath: path.normalize('/src/app'), originPin: 'https://github.com/acme/app.git' });
   });
 
   it('a later repo bot without a folder takes the workspace\'s repo, without running git', async () => {
@@ -432,7 +432,7 @@ describe('"Add team"', () => {
     expect(r.bots.every((b) => b.repo?.repoKey === 'github.com/acme/app' && b.repo.repoPath === path.normalize('/src/app'))).toBe(true);
     // The root, get-url, the common git dir and its config: once for the team.
     expect(git).toHaveBeenCalledTimes(4);
-    expect(r.bots.every((b) => b.repo?.originPin === 'git@github.com:acme/app')).toBe(true);
+    expect(r.bots.every((b) => b.repo?.originPin === 'git@github.com:acme/app.git')).toBe(true);
     // The coordinator is the oldest of them: the room's lead.
     expect(r.bots[0].createdAt).toBeLessThanOrEqual(Math.min(...r.bots.map((b) => b.createdAt)));
   });

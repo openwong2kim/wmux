@@ -18,8 +18,10 @@
 //     defines a remote named by origin's URL (the same remote and ref checks
 //     as task_fetch), when the URL is not a plain https/ssh address of the
 //     task's recorded repository, and when it does not match the origin pin
-//     main recorded for the task (shared/originPin.ts: the host and port
-//     exactly; a row with no pin is pinned at its first use).
+//     main recorded for the task (shared/originPin.ts: the form, user, host
+//     and port exactly, as written and as git rewrites both for a fetch and
+//     a push; a row with no pin is pinned at its first use only when origin
+//     names no other port than its default).
 //   - IN WHICH git dir: the push runs in a bare relay repository main owns
 //     (one per task, under <wmux>/factory/git-relay/<taskId>) that borrows the
 //     recorded repository's objects through `objects/info/alternates`. The
@@ -58,9 +60,9 @@ import { mergeWslEnv } from '../../shared/wsl';
 import { decodeWslOutput, isValidWslDistroName } from '../../shared/wslDistro';
 import { BOT_WORKER_FALLBACK_DEFAULT_BRANCHES, isDenyableBranchName } from '../../shared/botWorkerGuard';
 import { normalizeRepoKey } from '../../shared/repoKey';
-import { normalizeOriginPin, originPinMatches, originRewriteRefusal, originUrlRewrites } from '../../shared/originPin';
+import { namesNonDefaultPort, originPinMatches, parseOriginAddress, sameOriginEndpoint } from '../../shared/originPin';
 import {
-  RELAY_GIT_DEFAULT_PROTOCOLS, gitVersionRefusal, parseRawGitConfigList, parseTaskHead, relayGitConfigArgs, taskGitEnv, transportConfigReplay, type RawGitConfigEntry,
+  RELAY_GIT_DEFAULT_PROTOCOLS, gitVersionRefusal, parseRawGitConfigList, parseTaskHead, relayGitConfigArgs, taskGitEnv, transportConfigReplay,
 } from '../../shared/taskGitRelay';
 import { originUrlRepoKey, urlNamedRemoteRefusal, workerGitEnv, workerGitPreflight, workerGitSafeArgs, workerOriginRefusal, type GitConfigEntry } from './workerGit';
 
@@ -101,23 +103,42 @@ export interface TaskOriginPinInput {
   recordOriginPin?: (pin: string) => Promise<string | null>;
 }
 
-/** Why main will not use origin's URL `url` for the task's pin, or null. A
- *  task with no pin is pinned to `url` first when `recordOriginPin` is given;
- *  a pin that could not be recorded refuses. `config` is the repository's
- *  config list (keys as git printed them), for the owner's URL rewrites.
+/** The URLs git connects to for `url` in the task's relay (the config the
+ *  network calls run with): for a fetch (`insteadOf`) and for a push
+ *  (`pushInsteadOf`, else `insteadOf`), as git itself resolves them. */
+async function effectiveOriginUrls(repo: Pick<TaskGitRepo, 'inRelay'>, url: string): Promise<{ fetch: string; push: string } | null> {
+  const r = await repo.inRelay(url, async (run) => {
+    const fetch = await run(['remote', 'get-url', 'origin']);
+    const push = await run(['remote', 'get-url', '--push', 'origin']);
+    return fetch.code === 0 && push.code === 0 ? { fetch: fetch.stdout.trim(), push: push.stdout.trim() } : null;
+  });
+  return r.ok ? r.value : null;
+}
+
+/** Why main will not use origin's URL `url` for the task, or null. With a
+ *  pin: the URL must name the pinned address, and git must connect to the
+ *  same endpoint for both, for a fetch and for a push. With none and
+ *  `recordOriginPin` given (a row written before pins): `url` is pinned,
+ *  only when its repository key was checked and it names no port other than
+ *  its transport's default; a pin that could not be recorded refuses.
  *  Never throws. */
-export async function originPinRefusal(url: string, input: TaskOriginPinInput, config: ReadonlyArray<{ key: string; value: string }>): Promise<string | null> {
-  let pin = input.expectedOriginPin;
-  if (pin === undefined && input.recordOriginPin) {
-    const now = normalizeOriginPin(url);
-    if (!now) return 'origin is not a plain https or ssh address';
-    const stored = await input.recordOriginPin(now).catch(() => null);
-    if (!stored) return 'wmux could not record origin\'s address for this task';
-    pin = stored;
+export async function originPinRefusal(url: string, input: TaskOriginPinInput & { expectedRepoKey?: string }, repo: Pick<TaskGitRepo, 'inRelay'>): Promise<string | null> {
+  const pin = input.expectedOriginPin;
+  if (pin === undefined) {
+    if (!input.recordOriginPin) return null;
+    const a = parseOriginAddress(url);
+    if (!a || input.expectedRepoKey === undefined || namesNonDefaultPort(a)) return 'wmux recorded no origin address for this task that it can confirm; start a new task for this repository';
+    const stored = await input.recordOriginPin(url).catch(() => null);
+    return stored === url ? null : 'wmux could not record origin\'s address for this task';
   }
-  if (pin === undefined) return null;
   if (!originPinMatches(pin, url)) return 'origin does not match the address wmux recorded for this task';
-  return originRewriteRefusal(pin, url, originUrlRewrites(config));
+  if (pin === url) return null;
+  const [now, pinned] = [await effectiveOriginUrls(repo, url), await effectiveOriginUrls(repo, pin)];
+  if (!now || !pinned) return 'git could not resolve origin\'s address';
+  if (!sameOriginEndpoint(now.fetch, pinned.fetch) || !sameOriginEndpoint(now.push, pinned.push)) {
+    return 'origin does not reach the address wmux recorded for this task';
+  }
+  return null;
 }
 
 export interface TaskPushInput extends TaskGitRepoInput, TaskOriginPinInput {
@@ -272,9 +293,6 @@ export function parseLsRemoteHead(stdout: string): string | null {
 export interface TaskGitRepo {
   /** The repository config, read through `--git-dir` (includes resolved). */
   entries: GitConfigEntry[];
-  /** The same list with keys as git printed them (a subsection keeps its
-   *  case). */
-  config: RawGitConfigEntry[];
   /** A read on the recorded repository (`--git-dir`, no object or ref write). */
   local: (args: string[]) => Promise<GitOut>;
   /** The commit the worktree's HEAD names: its HEAD file in the recorded
@@ -510,7 +528,7 @@ export async function openTaskGitRepo(input: TaskGitRepoInput, git: TaskPushGit 
   });
 
   const workerShellPlatform: NodeJS.Platform = target.kind === 'wsl' ? 'linux' : platform;
-  return { ok: true, repo: { entries: pre.entries, config: context, local, headOid, inRelay, relayShellPath, workerShellPlatform } };
+  return { ok: true, repo: { entries: pre.entries, local, headOid, inRelay, relayShellPath, workerShellPlatform } };
 }
 
 /** Removes the relay of a task that has closed, after any call on it ends. */
@@ -566,7 +584,7 @@ export async function pushTaskBranch(input: TaskPushInput, git: TaskPushGit = de
       return { ok: false, reason: 'remote-refused', error: `origin is not ${input.expectedRepoKey} (a plain https or ssh address of it)` };
     }
   }
-  const pinRefusal = await originPinRefusal(origin.url, input, repo.config);
+  const pinRefusal = await originPinRefusal(origin.url, input, repo);
   if (pinRefusal) return { ok: false, reason: 'remote-refused', error: pinRefusal };
   // The repository's own default branch, under every name it is read by.
   const own: string[] = [];
