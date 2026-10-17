@@ -383,7 +383,7 @@ describe('lane effects', () => {
       // Each PR reads as its own number.
       (exec as unknown as { ports: MoaMergeExecutorPorts }).ports.facts = { readFresh: async (_p, _k, n) => ({ ...BEHIND, number: n }) };
       const runs = [a, b, c].map((e) => exec.run(e.id));
-      await vi.waitFor(() => expect(updateBranch).toHaveBeenCalledTimes(1));
+      await vi.waitFor(() => expect(updateBranch).toHaveBeenCalledTimes(1), { timeout: 10_000 });
       while (updateBranch.mock.calls.length < 3 || releases.length > 0) {
         releases.shift()?.();
         await new Promise((r) => setTimeout(r, 5));

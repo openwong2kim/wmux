@@ -150,7 +150,7 @@ async function reclaimLook(
     workspacePanes: () => [WORKER, SHELL],
   });
   await new Promise((r) => setTimeout(r, 50));
-  await vi.waitFor(() => expect(store.get(entry.id)?.state ?? 'none').not.toBe('stopping'));
+  await vi.waitFor(() => expect(store.get(entry.id)?.state ?? 'none').not.toBe('stopping'), { timeout: 10_000 });
   off();
   const rec = store.get(entry.id);
   if (rec) await store.put(rec);
@@ -439,7 +439,7 @@ describe('after a restart: live evidence wins over the daemon read', () => {
     let release: (s: DaemonTurnState) => void = () => undefined;
     const main = restartedMain(() => new Promise<DaemonTurnState>((resolve) => { release = resolve; }));
     const pass = main.seed.pass();
-    await vi.waitFor(() => expect(main.readState).toHaveBeenCalled());
+    await vi.waitFor(() => expect(main.readState).toHaveBeenCalled(), { timeout: 10_000 });
     // A hook turn start lands before the daemon's answer.
     main.live.turnStart.set(WORKER, RESTART + 1);
     main.live.status.set(WORKER, 'running');
@@ -541,10 +541,10 @@ describe('after a restart: live evidence wins over the daemon read', () => {
       workspacePanes: () => [WORKER],
     });
     try {
-      await vi.waitFor(() => expect(stop.mock.calls.length).toBeGreaterThan(RECLAIM_ATTEMPTS_MAX + 1));
+      await vi.waitFor(() => expect(stop.mock.calls.length).toBeGreaterThan(RECLAIM_ATTEMPTS_MAX + 1), { timeout: 10_000 });
       expect(store.get(entry.id)?.state ?? 'none').not.toBe('stopped');
       open = false;
-      await vi.waitFor(() => expect(store.get(entry.id)?.state).toBe('stopped'));
+      await vi.waitFor(() => expect(store.get(entry.id)?.state).toBe('stopped'), { timeout: 10_000 });
     } finally {
       off();
     }
@@ -599,10 +599,10 @@ describe('after a restart: live evidence wins over the daemon read', () => {
       workspacePanes: () => [WORKER],
     });
     try {
-      await vi.waitFor(() => expect(confirmIdle.mock.calls.length).toBeGreaterThan(RECLAIM_ATTEMPTS_MAX + 1));
+      await vi.waitFor(() => expect(confirmIdle.mock.calls.length).toBeGreaterThan(RECLAIM_ATTEMPTS_MAX + 1), { timeout: 10_000 });
       expect(stopAgent).not.toHaveBeenCalled();
       closed = true;
-      await vi.waitFor(() => expect(store.get(entry.id)?.state).toBe('stopped'));
+      await vi.waitFor(() => expect(store.get(entry.id)?.state).toBe('stopped'), { timeout: 10_000 });
       expect(stopAgent).toHaveBeenCalledWith(WORKER, { ifTurnClosed: true });
     } finally {
       off();

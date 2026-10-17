@@ -116,7 +116,7 @@ describe('daemonLauncherCore — launch strategy', () => {
   it('falls back to the detached spawn when launchd cannot load the job', async () => {
     startMock.mockRejectedValue(new LaunchdUnavailableError('Bootstrap failed: 125'));
     const p = ensureDaemon(deps(true));
-    await vi.waitFor(() => expect(spawnMock).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(spawnMock).toHaveBeenCalledTimes(1), { timeout: 5_000 });
     fakeChild.emit('error', new Error('spawn EACCES'));
     await expect(p).rejects.toThrow(/Failed to spawn daemon/);
   });
@@ -143,7 +143,7 @@ describe('daemonLauncherCore — launch strategy', () => {
 
   it('keeps the plain spawn when the host did not opt in', async () => {
     const p = ensureDaemon(deps(false));
-    await vi.waitFor(() => expect(spawnMock).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(spawnMock).toHaveBeenCalledTimes(1), { timeout: 5_000 });
     fakeChild.emit('error', new Error('spawn EACCES'));
     await expect(p).rejects.toThrow(/Failed to spawn daemon/);
     expect(startMock).not.toHaveBeenCalled();

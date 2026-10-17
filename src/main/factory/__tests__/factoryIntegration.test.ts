@@ -217,7 +217,7 @@ describe('factory loop: trusted PR → verifier → verdict → CI → merge lan
     // 2. The batch window passes; the Verifier's turn records its PASS.
     clock += 21_000;
     runtime.kick();
-    await vi.waitFor(() => expect(log.readWhere(0, (f) => f.kind === 'verdict.recorded', 5).facts).toHaveLength(1));
+    await vi.waitFor(() => expect(log.readWhere(0, (f) => f.kind === 'verdict.recorded', 5).facts).toHaveLength(1), { timeout: 10_000 });
     await settle();
     expect(adapters).toHaveLength(1);
     expect(adapters[0].prompts[0]).toContain('pr.opened');

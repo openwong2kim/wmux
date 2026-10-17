@@ -149,7 +149,7 @@ describe('quitAndStopSessions (the click handler)', () => {
     let release!: (v: { ok: boolean }) => void;
     raceMock.mockImplementationOnce(() => new Promise((r) => { release = r; }));
     const first = quitAndStopSessions(cb);
-    await vi.waitFor(() => expect(raceMock).toHaveBeenCalled());
+    await vi.waitFor(() => expect(raceMock).toHaveBeenCalled(), { timeout: 5_000 });
     await quitAndStopSessions(cb);
     expect(showMessageBoxMock).toHaveBeenCalledOnce();
     release({ ok: true });

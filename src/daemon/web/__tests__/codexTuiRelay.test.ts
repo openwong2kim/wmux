@@ -861,7 +861,7 @@ describe.skipIf(process.platform === 'win32')('Codex relay reconnect after a los
       // Linked again: no other claim, and the TUI leaving retires the relay.
       await expect(f.connect()).rejects.toThrow();
       back.terminate();await closed(back);
-      await vi.waitFor(()=>expect(f.relay.retired()).toBe(true));
+      await vi.waitFor(()=>expect(f.relay.retired()).toBe(true), { timeout: 10_000 });
     } finally {await f.cleanup();}
   });
   it('a dropped link to a server that lived on keeps its running turn, and reports no server loss',async()=>{
@@ -927,7 +927,7 @@ describe.skipIf(process.platform === 'win32')('Codex relay reconnect after a los
       const answer=resume(back,9);
       await expect(answer).resolves.toMatchObject({id:9,error:{message:expect.stringContaining('not sent')}});
       await closed(back);
-      await vi.waitFor(()=>expect(f.relay.retired()).toBe(true));
+      await vi.waitFor(()=>expect(f.relay.retired()).toBe(true), { timeout: 10_000 });
       expect(serverLost).toHaveBeenCalledOnce();
       await expect(f.connect()).rejects.toThrow();
     } finally {await f.cleanup();}

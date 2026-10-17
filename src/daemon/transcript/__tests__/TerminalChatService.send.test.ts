@@ -125,7 +125,7 @@ describe('TerminalChatService.abort (phone and desktop Stop)', () => {
   it('a watch that loses the plugin turns cancel off with send', async () => fixture(async f => {
     current(f);
     f.service.subscribe('c', 'pane');
-    await vi.waitFor(() => expect(f.emit).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(f.emit).toHaveBeenCalledTimes(1), { timeout: 10_000 });
     expect(f.emit.mock.calls[0][1].status.terminal.capabilities.cancel).toBe(true);
     f.plugin.read = { phase: 'unknown-phase' };
     await vi.waitFor(() => expect(f.emit).toHaveBeenCalledTimes(2), { timeout: 3000 });

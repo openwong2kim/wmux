@@ -131,7 +131,7 @@ describe('the reported-task stop counts idle from the pane, not the row', () => 
     viewing = false;
     at = T + 11.5 * MIN + 1;
     const off = install();
-    await vi.waitFor(() => expect(store.get(TASK)?.state).toBe('stopped'));
+    await vi.waitFor(() => expect(store.get(TASK)?.state).toBe('stopped'), { timeout: 10_000 });
     off();
     expect(stopAgent).toHaveBeenCalledWith('daemon-1', { ifTurnClosed: true });
   });

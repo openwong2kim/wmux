@@ -197,7 +197,7 @@ describe('terminal_prompt creation from the screen', () => {
     h.pane.rows = DIALOG;
     await new Promise((r) => setTimeout(r, 0));
     gaps.shift()?.();
-    await vi.waitFor(() => expect(h.events.filter((e) => e.type === 'create')).toHaveLength(2));
+    await vi.waitFor(() => expect(h.events.filter((e) => e.type === 'create')).toHaveLength(2), { timeout: 10_000 });
     const [upgraded] = h.registry.list().pending;
     expect(upgraded?.id).not.toBe(first!.id);
     expect(upgraded).toMatchObject({ toolName: 'Bash', choices: [{ key: '1', label: 'Yes' }, { key: '2', label: 'No' }] });

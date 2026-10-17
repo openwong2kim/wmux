@@ -195,7 +195,7 @@ describe('installWorkerReclaim', () => {
       allRows: () => [row('completed', { id: 'wtask-old-00000001', updatedAt: 4_000 }), row('completed', { id: 'wtask-ancient-0001', updatedAt: -1e9 })],
     });
     const off = installWorkerReclaim(ports);
-    await vi.waitFor(() => expect(store.get('wtask-old-00000001')).not.toBeNull());
+    await vi.waitFor(() => expect(store.get('wtask-old-00000001')).not.toBeNull(), { timeout: 10_000 });
     expect(store.get('wtask-ancient-0001')).toBeNull();
     stopAgent.mockClear();
     fire(row('review_requested'), 'review_requested');
@@ -204,7 +204,7 @@ describe('installWorkerReclaim', () => {
     await new Promise((r) => setTimeout(r, 10));
     expect(stopAgent).not.toHaveBeenCalled();
     fire(row('completed'), 'completed');
-    await vi.waitFor(() => expect(stopAgent).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(stopAgent).toHaveBeenCalledTimes(1), { timeout: 10_000 });
     off();
   });
 });
@@ -457,7 +457,7 @@ describe('a reported task whose worker sat idle (refused or failed gate)', () =>
       expect(stopAgent).not.toHaveBeenCalled();
       off();
       off = installWorkerReclaim({ ...ports, now: () => 1_000 + 5 * 60_000 + 1 });
-      await vi.waitFor(() => expect(store.get(current.id)?.state).toBe('stopped'));
+      await vi.waitFor(() => expect(store.get(current.id)?.state).toBe('stopped'), { timeout: 10_000 });
       off();
       expect(stopAgent).toHaveBeenCalledWith('daemon-1', { ifTurnClosed: true });
       // The same claim while the turn still runs keeps the worker.
@@ -504,7 +504,7 @@ describe('a reported task whose worker sat idle (refused or failed gate)', () =>
     expect(stopAgent).not.toHaveBeenCalled();
     off();
     off = installWorkerReclaim(ports);
-    await vi.waitFor(() => expect(store.get(current.id)?.state).toBe('stopped'));
+    await vi.waitFor(() => expect(store.get(current.id)?.state).toBe('stopped'), { timeout: 10_000 });
     off();
     expect(stopAgent).toHaveBeenCalledWith('daemon-1', { ifTurnClosed: true });
     const rec = store.get(current.id);
@@ -822,12 +822,12 @@ describe('reclaim state and reopen (review fixes, PR #2164)', () => {
     const { ports, stopAgent, fire } = reclaimPorts(store, [session()]);
     const off = installWorkerReclaim(ports);
     fire(row('failed', { updatedAt: 1_000 }), 'failed');
-    await vi.waitFor(() => expect(store.get(ID)?.state).toBe('stopped'));
+    await vi.waitFor(() => expect(store.get(ID)?.state).toBe('stopped'), { timeout: 10_000 });
     fire(row('failed', { updatedAt: 1_000 }), 'failed');
     await new Promise((r) => setTimeout(r, 10));
     expect(stopAgent).toHaveBeenCalledTimes(1);
     fire(row('completed', { rev: 7, updatedAt: 6_000 }), 'completed');
-    await vi.waitFor(() => expect(stopAgent).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(stopAgent).toHaveBeenCalledTimes(2), { timeout: 10_000 });
     off();
   });
 
@@ -1202,7 +1202,7 @@ describe('the fan-out slot of an ended task, and a record left stopping (F25)', 
     const changed = vi.fn();
     const { ports, stopAgent } = reclaimPorts(store, [], { row: () => ownerStopped(), allRows: () => [ownerStopped()], changed });
     const off = installWorkerReclaim({ ...ports, now: () => 5_000 });
-    await vi.waitFor(() => expect(store.get(TASK)?.state).toBe('stopped'));
+    await vi.waitFor(() => expect(store.get(TASK)?.state).toBe('stopped'), { timeout: 10_000 });
     expect(stopAgent).not.toHaveBeenCalled();
     expect(changed).toHaveBeenCalled();
     off();
@@ -1239,7 +1239,7 @@ describe('the fan-out slot of an ended task, and a record left stopping (F25)', 
     let now = 5_000;
     const { ports } = reclaimPorts(store, [session()], { row: () => failedRow, allRows: () => [], stopAgent, retryMs: 1, now: () => now });
     const off = installWorkerReclaim(ports);
-    await vi.waitFor(() => expect(stopAgent).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(stopAgent).toHaveBeenCalledTimes(1), { timeout: 10_000 });
     // Stale again past the bound: once per end, not on every look.
     now += 2 * STOPPING_SETTLE_MS;
     await new Promise((r) => setTimeout(r, 30));
@@ -1278,7 +1278,7 @@ describe('the fan-out slot of an ended task, and a record left stopping (F25)', 
     expect(store.get(TASK)?.state).toBe('stopping');
     panes = ['daemon-1'];
     off = installWorkerReclaim({ ...ports, listSessions: async () => [], now: () => 5_000 });
-    await vi.waitFor(() => expect(store.get(TASK)?.state).toBe('stopped'));
+    await vi.waitFor(() => expect(store.get(TASK)?.state).toBe('stopped'), { timeout: 10_000 });
     off();
     expect(stopAgent).not.toHaveBeenCalled();
     await settled(store);

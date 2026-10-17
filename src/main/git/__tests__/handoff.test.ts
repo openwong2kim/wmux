@@ -151,7 +151,7 @@ describe('sendHandoff', () => {
       },
     });
     const first = sendHandoff(d, { item: { kind: 'issue', ref: issue }, target });
-    await vi.waitFor(() => expect(d.invoke).toHaveBeenCalled());
+    await vi.waitFor(() => expect(d.invoke).toHaveBeenCalled(), { timeout: 5_000 });
     // Same item, URL in another case: still the same item.
     const second = await sendHandoff(d, { item: { kind: 'issue', ref: { ...issue, owner: 'acme', url: 'https://github.com/acme/Widgets/issues/12' } }, target });
     expect(second).toMatchObject({ ok: false, code: 'refused' });

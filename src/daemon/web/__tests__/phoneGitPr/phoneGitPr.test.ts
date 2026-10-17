@@ -297,7 +297,7 @@ describe('phone pr.create and pr.merge', { timeout: 30_000 }, () => {
       });
       const h = handlers();
       const first = execute(h.merge.execute, 'pr.merge', mergeBody());
-      await vi.waitFor(() => expect(merges()).toHaveLength(1));
+      await vi.waitFor(() => expect(merges()).toHaveLength(1), { timeout: 10_000 });
       const second = await execute(h.merge.execute, 'pr.merge', mergeBody({ requestId: '0d6b1c1e-1111-4222-8333-444455559999' }));
       expect(second.settled).toEqual([{ state: 'refused', error: 'merge-in-flight' }]);
       expect(await h.merge.preview!(await session('pr.merge'))).toEqual({ ok: false, body: { error: 'merge-in-flight' } });

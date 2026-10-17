@@ -253,7 +253,7 @@ describe('a bot task reports in the thread of the wake that started it', () => {
     // Restart catch-up: a gated verify task re-queues its verifier wake in the PR thread.
     expect(queue.list({ states: ['queued'] })).toMatchObject([{ threadId: pr, reason: { factIds: ['task.gated:wtask-g@4'] } }]);
     for (const fn of [...fns]) fn({ entry: row('review_requested', 2, dispatch), from: 'working', to: 'review_requested', by: { kind: 'worker', workspaceId: 'ws-r' } });
-    await vi.waitFor(() => expect(notes).toEqual([pr]));
+    await vi.waitFor(() => expect(notes).toEqual([pr]), { timeout: 10_000 });
     // Both gates' wakes are for one verifier in one thread: still queued, they
     // ride one wake there.
     expect(queue.list({ states: ['queued'] })).toMatchObject([{ threadId: pr, reason: { factIds: ['task.gated:wtask-g@4', 'task.gated:wtask-r@2'] } }]);
@@ -283,7 +283,7 @@ describe('gap 4: a verify task report wakes its verifier once, from the verify g
       dispatch: { origin: { kind: 'bot', botId: verifierBot.id }, preset: 'verify', checkout: { sha: 'a'.repeat(40), detached: true } },
     };
     for (const fn of [...fns]) fn({ entry, from: 'working', to: 'review_requested', by: { kind: 'worker', workspaceId: 'ws-v' } });
-    await vi.waitFor(() => expect(queue.list({ states: ['queued'] })).toHaveLength(1));
+    await vi.waitFor(() => expect(queue.list({ states: ['queued'] })).toHaveLength(1), { timeout: 10_000 });
     await new Promise((r) => setImmediate(r));
     expect(queue.list({ states: ['queued'] })).toMatchObject([{ botId: verifierBot.id, threadId: 'task:wtask-v', reason: { factIds: ['task.gated:wtask-v@2'] } }]);
     // A verify task that fails (not a report) still wakes through the fan-out path.

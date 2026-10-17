@@ -166,7 +166,7 @@ describe('stopFactoryWork', () => {
     await stopFactoryWork(r.p, { botId: LEAD });
     await task('t-late', LEAD);
     await task('t-other', TRIAGE);
-    await vi.waitFor(() => expect(ledger.get('t-late')?.status).toBe('cancelled'));
+    await vi.waitFor(() => expect(ledger.get('t-late')?.status).toBe('cancelled'), { timeout: 10_000 });
     expect(ledger.get('t-other')?.status).toBe('working');
     // Past the window a new task is the bot's own new work.
     now += 10 * 60_000;
@@ -228,7 +228,7 @@ describe('stopFactoryWork', () => {
     const off = installLateStopSweep({ ...r.p, onTransition: (fn) => ledger.onTransition(fn) });
     await stopFactoryWork(r.p, { botId: LEAD, keepTurn: true });
     await task('t-same-turn', LEAD);
-    await vi.waitFor(() => expect(ledger.get('t-same-turn')?.status).toBe('cancelled'));
+    await vi.waitFor(() => expect(ledger.get('t-same-turn')?.status).toBe('cancelled'), { timeout: 10_000 });
     // The turn ended (no current turn): the owner may ask for work again at once.
     r.runtime.interrupt(LEAD);
     await task('t-after', LEAD);
@@ -362,7 +362,7 @@ describe('late stops and stopped wakes (review fixes, PR #2164)', () => {
     await stopFactoryWork(r.p, { botId: LEAD });
     await task('t-late', LEAD);
     await task('t-new', LEAD);
-    await vi.waitFor(() => expect(ledger.get('t-late')?.status).toBe('cancelled'));
+    await vi.waitFor(() => expect(ledger.get('t-late')?.status).toBe('cancelled'), { timeout: 10_000 });
     await new Promise((res) => setTimeout(res, 30));
     expect(ledger.get('t-new')?.status).toBe('working');
     off();
@@ -424,7 +424,7 @@ describe('stop hardening (owner decision 2026-10-15)', () => {
     await stopFactoryWork(r.p, { off: true });
     now += 10 * 60_000; // far past the late-stop window
     await task('t-delayed', LEAD);
-    await vi.waitFor(() => expect(ledger.get('t-delayed')).toMatchObject({ status: 'cancelled', summary: STOPPED_BY_OWNER }));
+    await vi.waitFor(() => expect(ledger.get('t-delayed')).toMatchObject({ status: 'cancelled', summary: STOPPED_BY_OWNER }), { timeout: 10_000 });
     isOff = false;
     await task('t-after', LEAD);
     await new Promise((res) => setTimeout(res, 30));

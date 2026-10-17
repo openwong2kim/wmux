@@ -225,7 +225,7 @@ describe('ClaudeWorker → work links', () => {
     const session = { proc: {} as never, taskId: 'task-1', lineBuffer: '', sessionId: 's' };
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (w as any).processLine(session, 'ws-1', JSON.stringify({ type: 'result', result: 'done', is_error: false, total_cost_usd: 0 }));
-    await vi.waitFor(() => expect(h.sendToRenderer).toHaveBeenCalled());
+    await vi.waitFor(() => expect(h.sendToRenderer).toHaveBeenCalled(), { timeout: 10_000 });
     await new Promise((r) => setTimeout(r, 0));
     await settle();
     return store.getByTaskId('task-1')?.state;

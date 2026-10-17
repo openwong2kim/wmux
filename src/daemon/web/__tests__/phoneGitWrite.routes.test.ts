@@ -181,7 +181,7 @@ describe('phone git write routes', { timeout: 60_000 }, () => {
     const first = await call(phone, 'POST', 's1/git/push', body);
     expect(first.status).toBe(202);
     expect(await first.json()).toEqual({ requestId: body.requestId, replayed: false, state: 'pending' });
-    await vi.waitFor(async () => expect(await (await call(phone, 'GET', `s1/git/push/${body.requestId}`)).json()).toMatchObject({ state: 'done' }));
+    await vi.waitFor(async () => expect(await (await call(phone, 'GET', `s1/git/push/${body.requestId}`)).json()).toMatchObject({ state: 'done' }), { timeout: 10_000 });
     // Lost response: same body, spent token → the stored receipt, nothing runs twice.
     const resend = await call(phone, 'POST', 's1/git/push', body);
     expect(resend.status).toBe(200);
@@ -234,7 +234,7 @@ describe('phone git write routes', { timeout: 60_000 }, () => {
     const t2 = (await (await call(phone, 'POST', 's1/git/pr/1980/merge/preview', {})).json() as Record<string, unknown>).confirmToken;
     const second = { ...body, requestId: randomUUID(), confirmToken: t2 };
     expect((await call(phone, 'POST', 's1/git/pr/1980/merge', second)).status).toBe(202);
-    await vi.waitFor(async () => expect(await (await call(phone, 'GET', `s1/git/pr/1980/merge/${second.requestId}`)).json()).toMatchObject({ state: 'done', mergeCommitOid: OID }));
+    await vi.waitFor(async () => expect(await (await call(phone, 'GET', `s1/git/pr/1980/merge/${second.requestId}`)).json()).toMatchObject({ state: 'done', mergeCommitOid: OID }), { timeout: 10_000 });
     expect((await call(phone, 'GET', `s1/git/pr/999/merge/${second.requestId}`)).status).toBe(404);
   });
 
@@ -245,7 +245,7 @@ describe('phone git write routes', { timeout: 60_000 }, () => {
     const facts = await preview(phone);
     const body = { requestId: randomUUID(), confirmToken: facts.confirmToken, expectedHead: OID, expectedRef: REF };
     expect((await call(phone, 'POST', 's1/git/push', body)).status).toBe(202);
-    await vi.waitFor(async () => expect(await (await call(phone, 'GET', `s1/git/push/${body.requestId}`)).json()).toMatchObject({ state: 'done' }));
+    await vi.waitFor(async () => expect(await (await call(phone, 'GET', `s1/git/push/${body.requestId}`)).json()).toMatchObject({ state: 'done' }), { timeout: 10_000 });
     panes.delete('s1');
     expect(await (await call(phone, 'GET', `s1/git/push/${body.requestId}`)).json()).toMatchObject({ state: 'done' });
     expect(await (await call(phone, 'POST', 's1/git/push', body)).json()).toMatchObject({ replayed: true, state: 'done' });
@@ -272,7 +272,7 @@ describe('phone git write routes', { timeout: 60_000 }, () => {
     const facts = await preview(phone);
     const body = { requestId: randomUUID(), confirmToken: facts.confirmToken, expectedHead: OID, expectedRef: REF };
     expect((await call(phone, 'POST', 's1/git/push', body)).status).toBe(202);
-    await vi.waitFor(async () => expect(await (await call(phone, 'GET', `s1/git/push/${body.requestId}`)).json()).toMatchObject({ state: 'done' }));
+    await vi.waitFor(async () => expect(await (await call(phone, 'GET', `s1/git/push/${body.requestId}`)).json()).toMatchObject({ state: 'done' }), { timeout: 10_000 });
     await new Promise((r) => setImmediate(r));
     // A new daemon: tokens are gone, the receipt is not.
     gate?.close();

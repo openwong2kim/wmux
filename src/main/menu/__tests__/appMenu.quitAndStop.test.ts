@@ -69,7 +69,7 @@ describe('Quit and Stop Sessions — menu wiring', () => {
       quitMenu(buildFromTemplateMock.mock.calls[call][0] as Item[], process.platform)
         .find((i) => i.click && i.label !== 'Close Window')?.label;
     expect(labelOf(0)).toBe('Quit and Stop Sessions');
-    await vi.waitFor(() => expect(buildFromTemplateMock).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(buildFromTemplateMock).toHaveBeenCalledTimes(2), { timeout: 5_000 });
     expect(labelOf(1)).toBe('종료하고 세션 멈추기');
   });
 

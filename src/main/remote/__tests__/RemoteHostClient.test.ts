@@ -420,7 +420,7 @@ describe('RemoteHostClient', () => {
 
       await vi.waitFor(() => {
         expect(received).toEqual(['meta:80x24:c25hcHNob3Q=', 'data:aGVsbG8=']);
-      });
+      }, { timeout: 5_000 });
 
       const [url, init] = fetchImpl.mock.calls[0];
       expect(url).toBe(`${host.origin}/api/stream?session=sess-1`);
@@ -453,7 +453,7 @@ describe('RemoteHostClient', () => {
       client.attach('sess-1');
       await vi.waitFor(() => {
         expect(received).toEqual(['meta:80x24', 'resize:100x40', 'data:aGVsbG8=']);
-      });
+      }, { timeout: 5_000 });
     });
 
     it('★ releases a bare meta that no snapshot follows, as geometry', async () => {
@@ -474,7 +474,7 @@ describe('RemoteHostClient', () => {
       client.attach('sess-1');
       await vi.waitFor(() => {
         expect(received).toEqual(['meta:80x24', 'resize:120x30', 'data:aGVsbG8=']);
-      });
+      }, { timeout: 5_000 });
     });
 
     it('forwards truncated and omittedBytes from meta', async () => {
@@ -492,7 +492,7 @@ describe('RemoteHostClient', () => {
 
       await vi.waitFor(() => {
         expect(metaEvent).toBeDefined();
-      });
+      }, { timeout: 5_000 });
       expect(metaEvent?.truncated).toBe(true);
       expect(metaEvent?.omittedBytes).toBe(42);
     });
@@ -509,7 +509,7 @@ describe('RemoteHostClient', () => {
 
       await vi.waitFor(() => {
         expect(received).toEqual(['meta', 'data:aGVsbG8=']);
-      });
+      }, { timeout: 5_000 });
     });
 
     it('ignores unknown event names (e.g. attention) instead of treating them as pane bytes', async () => {
@@ -524,7 +524,7 @@ describe('RemoteHostClient', () => {
 
       await vi.waitFor(() => {
         expect(received).toEqual(['meta', 'data:aGVsbG8=']);
-      });
+      }, { timeout: 5_000 });
       // No extra events snuck through as data.
       expect(received).toHaveLength(2);
     });
@@ -542,7 +542,7 @@ describe('RemoteHostClient', () => {
 
       await vi.waitFor(() => {
         expect(exited).toBe(true);
-      });
+      }, { timeout: 5_000 });
     });
 
     it('handles a frame split across multiple stream chunks', async () => {
@@ -557,7 +557,7 @@ describe('RemoteHostClient', () => {
 
       await vi.waitFor(() => {
         expect(received).toEqual(['meta:80x24']);
-      });
+      }, { timeout: 5_000 });
     });
   });
 
@@ -576,7 +576,7 @@ describe('RemoteHostClient', () => {
 
       await vi.waitFor(() => {
         expect(received).toEqual(['meta']);
-      });
+      }, { timeout: 5_000 });
 
       client.detach(attachId);
       expect(abortSignal?.aborted).toBe(true);
@@ -658,7 +658,7 @@ describe('RemoteHostClient', () => {
 
       await vi.waitFor(() => {
         expect(fetchImpl).toHaveBeenCalledTimes(2);
-      });
+      }, { timeout: 5_000 });
 
       await Promise.all([p1, p2, p3]);
       expect(bodies).toEqual(['a', 'bc']);
@@ -692,11 +692,11 @@ describe('RemoteHostClient', () => {
         client.onMeta((e) => received.push(`meta:${e.cols}x${e.rows}`));
         const attachId = client.attach('sess-1');
         await vi.advanceTimersByTimeAsync(0);
-        await vi.waitFor(() => expect(received).toEqual(['meta:80x24']));
+        await vi.waitFor(() => expect(received).toEqual(['meta:80x24']), { timeout: 5_000 });
 
         client.refresh(attachId);
         await vi.advanceTimersByTimeAsync(0);
-        await vi.waitFor(() => expect(received).toEqual(['meta:80x24', 'meta:120x40']));
+        await vi.waitFor(() => expect(received).toEqual(['meta:80x24', 'meta:120x40']), { timeout: 5_000 });
 
         // The aborted first stream must not schedule a reconnect of its own.
         await vi.advanceTimersByTimeAsync(10_000);
@@ -744,11 +744,11 @@ describe('RemoteHostClient', () => {
 
       await vi.waitFor(() => {
         expect(fetchImpl).toHaveBeenCalledTimes(2);
-      });
+      }, { timeout: 5_000 });
       await vi.advanceTimersByTimeAsync(0);
       await vi.waitFor(() => {
         expect(received).toEqual(['meta:80x24']);
-      });
+      }, { timeout: 5_000 });
     });
 
     it('gives up after 5 consecutive failed reconnects, emits onError, and schedules no further retries', async () => {

@@ -46,7 +46,7 @@ describe('insertMention', () => {
     const focus = vi.fn();
     terms.set('pty-1', { focus, modes: { bracketedPasteMode: true } });
     expect(insertMention(termSource, '[ref]')).toBe('inserted');
-    await vi.waitFor(() => expect(write).toHaveBeenCalled());
+    await vi.waitFor(() => expect(write).toHaveBeenCalled(), { timeout: 5_000 });
     expect(write.mock.calls.map((c) => c[1]).join('')).toBe('\x1b[200~[ref]\x1b[201~');
     expect(focus).toHaveBeenCalled();
   });

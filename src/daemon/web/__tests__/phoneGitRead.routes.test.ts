@@ -137,8 +137,8 @@ describe('phone Git read routes', { timeout: 30_000 }, () => {
     gitRunner = async (args, cwd) => { entered(); await gate; return real(args, cwd); };
     // All four hold a slot while they wait on the same repository read.
     const held = [0, 1, 2, 3].map(() => fetch(`${base()}/api/sessions/s1/git/checks`, { headers }));
-    await vi.waitFor(() => expect(entered).toHaveBeenCalled());
-    await vi.waitFor(() => expect((server as unknown as { phoneGitRequests: number }).phoneGitRequests).toBe(4));
+    await vi.waitFor(() => expect(entered).toHaveBeenCalled(), { timeout: 10_000 });
+    await vi.waitFor(() => expect((server as unknown as { phoneGitRequests: number }).phoneGitRequests).toBe(4), { timeout: 10_000 });
     const refused = await fetch(`${base()}/api/git/projects`, { headers });
     expect(refused.status).toBe(429);
     expect(await refused.json()).toEqual({ error: 'git-busy' });

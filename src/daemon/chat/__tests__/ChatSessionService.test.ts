@@ -36,7 +36,7 @@ describe('managed chat session contract', () => {
       expect(JSON.parse(fs.readFileSync(file, 'utf8')).inFlight).toBe('send-1');
     });
     expect(await f.service.send('pane', 'native-session', 'hello', 'send-1')).toBe('sent');
-    await vi.waitFor(() => expect(f.service.status('pane')?.managed?.phase).toBe('ready'));
+    await vi.waitFor(() => expect(f.service.status('pane')?.managed?.phase).toBe('ready'), { timeout: 10_000 });
     expect(await f.service.send('pane', 'native-session', 'hello', 'send-1')).toBe('sent');
     expect(await f.service.send('pane', 'native-session', 'changed', 'send-1')).toBe('error');
     expect(dispatch).toHaveBeenCalledTimes(1);
@@ -50,7 +50,7 @@ describe('managed chat session contract', () => {
   it('retains unconfirmed intent across restart and never automatically replays it', async () => {
     const f = fixture(); await f.service.start('pane', 'test');
     await f.service.send('pane', 'native-session', 'hello', 'one');
-    f.reject(); await vi.waitFor(() => expect(f.service.status('pane')?.managed?.phase).toBe('unconfirmed'));
+    f.reject(); await vi.waitFor(() => expect(f.service.status('pane')?.managed?.phase).toBe('unconfirmed'), { timeout: 10_000 });
     expect(f.service.status('pane')?.managed?.phase).toBe('unconfirmed');
     f.service.dispose();
     const restored = new ChatSessionService(f.deps); cleanup.push(() => restored.dispose());

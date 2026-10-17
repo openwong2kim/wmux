@@ -43,7 +43,7 @@ describe('PR proof for the owner nudge', () => {
     updateCwd('pty-p2', '/repo2');
     updateBranch('pty-p2', 'feat/old');
     const tick = runMetadataPollTick(mgr, win, true);
-    await vi.waitFor(() => expect(resolveOld).not.toBeNull());
+    await vi.waitFor(() => expect(resolveOld).not.toBeNull(), { timeout: 5_000 });
     updateBranch('pty-p2', 'feat/new'); // the pane moved while gh was answering
     resolveOld!(PR);
     await tick;

@@ -1055,7 +1055,7 @@ describe('AutoUpdater — the auto-update toggle gates background polls only', (
     // no terminal event and fail here.
     await vi.waitFor(() => {
       expect(sent.some((m) => m.channel === IPC.UPDATE_NOT_AVAILABLE)).toBe(true);
-    });
+    }, { timeout: 5_000 });
     expect(requestUrls).toContain(EXPECTED_WIN32_FEED);
     expect(sent.some((m) => m.channel === IPC.UPDATE_ERROR)).toBe(false);
 

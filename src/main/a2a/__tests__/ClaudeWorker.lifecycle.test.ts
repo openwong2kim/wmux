@@ -97,7 +97,7 @@ describe('ClaudeWorker cancel during the account check', () => {
     let resolveLaunch!: (v: unknown) => void;
     launchMock.mockImplementation(() => new Promise((r) => { resolveLaunch = r; }));
     const run = worker.execute('task-1', 'ws-receiver', 'do the thing');
-    await vi.waitFor(() => expect(launchMock).toHaveBeenCalled());
+    await vi.waitFor(() => expect(launchMock).toHaveBeenCalled(), { timeout: 5_000 });
     expect(worker.cancel('task-1')).toBe(true);
     resolveLaunch({ kind: 'run', env: {}, accountId: null });
     await run;

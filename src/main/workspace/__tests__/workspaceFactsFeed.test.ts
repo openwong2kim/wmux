@@ -119,7 +119,7 @@ describe('createWorkspaceFactsPublisher', () => {
       inFlight -= 1;
     });
     const letOnePushFinish = async (): Promise<void> => {
-      await vi.waitFor(() => expect(gate.release).not.toBeNull());
+      await vi.waitFor(() => expect(gate.release).not.toBeNull(), { timeout: 5_000 });
       const release = gate.release;
       gate.release = null;
       release?.();

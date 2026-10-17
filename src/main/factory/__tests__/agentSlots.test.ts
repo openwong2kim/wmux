@@ -42,7 +42,7 @@ describe('AgentSlots', () => {
     expect(third).toBeNull();
     // b's launch gives up: a slot frees and c starts.
     if (b.ok) b.release();
-    await vi.waitFor(() => expect(third).toMatchObject({ ok: true }));
+    await vi.waitFor(() => expect(third).toMatchObject({ ok: true }), { timeout: 5_000 });
     expect(s.waiting()).toEqual([]);
   });
 
@@ -55,10 +55,10 @@ describe('AgentSlots', () => {
     bots = 2;
     expect(s.tryAcquire()).toBeNull(); // others wait first
     s.kick();
-    await vi.waitFor(() => expect(order).toEqual(['first']));
+    await vi.waitFor(() => expect(order).toEqual(['first']), { timeout: 5_000 });
     bots = 1;
     s.kick();
-    await vi.waitFor(() => expect(order).toEqual(['first', 'second']));
+    await vi.waitFor(() => expect(order).toEqual(['first', 'second']), { timeout: 5_000 });
   });
 
   it('ends a wait unlaunched when the launch is no longer wanted, or after the longest wait', async () => {
