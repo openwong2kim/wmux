@@ -7,7 +7,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { FanOutService } from '../FanOutService';
+import { FanOutService, dispatchOriginPinRefusal } from '../FanOutService';
 import type { FanOutDaemonPort } from '../FanOutService';
 import type { TaskWorktreeManager, TaskWorktreePlan } from '../TaskWorktreeManager';
 import { TaskLedger } from '../../../daemon/ledger/TaskLedger';
@@ -43,6 +43,7 @@ function rig(checkoutResult: { oid: string } | { error: string } = { oid: SHA })
     resolveCheckout: vi.fn(async () => checkoutResult),
     resolveBase: vi.fn(async () => ({ oid: 'c'.repeat(40), ref: 'refs/remotes/origin/main' })),
     removeWorktree: vi.fn(async () => ({ ok: true as const })),
+    readOriginPin: vi.fn(async (): Promise<string | undefined> => undefined),
   };
   const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
   const spawn = vi.fn(async () => ({ workspaceId: 'ws-task-1', ptyId: 'pty-1' }));
@@ -127,17 +128,54 @@ describe('FanOutService — detached checkout + dispatch record', () => {
     expect(new TaskLedger({ dir: path.join(root, 'ledger') }).get(row.id)?.dispatch).toEqual(row.dispatch);
   });
 
+  it('a bot\'s fan-out is held to the bot\'s origin pin: an origin moved to another port refuses it; a match records the bot\'s pin', async () => {
+    const plan = (originPin: string) => async (_r: string, _t: string, taskId: string) => ({
+      ok: true as const,
+      plan: { repoRoot: '/repo', repoHash: 'h', taskSlug: taskId.slice(-8), worktreePath: path.join(root, 'wt', taskId.slice(-8)), branch: `wtask/${taskId.slice(-8)}`, metaDir: path.join(root, 'meta', taskId.slice(-8)), gitCommonDir: '/repo/.git', originPin },
+    });
+    const botPin = 'ssh://git@git.corp.example:22/acme/app.git';
+    const missions = (r: ReturnType<typeof rig>) => r.calls.filter((c) => c.method === 'task.mission.start').length;
+    const moved = rig();
+    moved.worktrees.preflight.mockImplementation(plan('ssh://git@git.corp.example:2222/acme/app.git'));
+    const refused = await moved.svc.start({ ...base, repoKey: 'git.corp.example/acme/app', originPin: botPin });
+    expect(refused).toMatchObject({ ok: false, error: expect.stringContaining('re-select the repository') });
+    expect(moved.worktrees.createWorktree).not.toHaveBeenCalled();
+    expect(missions(moved)).toBe(0);
+    expect(ledger.list({ ownerWorkspaceId: 'ws-bot' })).toHaveLength(0);
+    // The base is fetched from origin by its own spelling: a respelling refuses too.
+    const respelled = rig();
+    respelled.worktrees.preflight.mockImplementation(plan('ssh://git@git.corp.example:22/acme/App'));
+    expect(await respelled.svc.start({ ...base, repoKey: 'git.corp.example/acme/app', originPin: botPin })).toMatchObject({ ok: false, error: expect.stringContaining('re-select the repository') });
+    // origin moved after the batch preflight, before the task's mission: refused, no mission created.
+    const late = rig();
+    late.worktrees.preflight.mockImplementation(plan(botPin));
+    late.worktrees.readOriginPin.mockImplementation(async () => 'ssh://git@git.corp.example:2222/acme/app.git');
+    const lateRes = await late.svc.start({ ...base, repoKey: 'git.corp.example/acme/app', originPin: botPin });
+    expect(lateRes.tasks[0]).toMatchObject({ ok: false, error: expect.stringContaining('re-select the repository') });
+    expect(missions(late)).toBe(0);
+    expect(late.worktrees.createWorktree).not.toHaveBeenCalled();
+    const same = rig();
+    same.worktrees.preflight.mockImplementation(plan(botPin));
+    same.worktrees.readOriginPin.mockImplementation(async () => botPin);
+    expect((await same.svc.start({ ...base, repoKey: 'git.corp.example/acme/app', originPin: botPin })).ok).toBe(true);
+    expect(missions(same)).toBe(1);
+    expect(ledger.list({ ownerWorkspaceId: 'ws-bot' })[0].dispatch?.originPin).toBe(botPin);
+    expect(dispatchOriginPinRefusal(undefined, 'ssh://git@git.corp.example:2222/acme/app.git')).toBeNull();
+    expect(dispatchOriginPinRefusal(botPin, undefined)).toMatch(/re-select/);
+  });
+
   it('records the repository\'s common git dir from the preflight on the dispatch, and it survives a ledger replay', async () => {
     const r = rig();
     r.worktrees.preflight.mockImplementation(async (_r: string, _t: string, taskId: string) => ({
       ok: true as const,
-      plan: { repoRoot: '/repo', repoHash: 'h', taskSlug: taskId.slice(-8), worktreePath: path.join(root, 'wt', taskId.slice(-8)), branch: `wtask/${taskId.slice(-8)}`, metaDir: path.join(root, 'meta', taskId.slice(-8)), gitCommonDir: '/repo/.git' },
+      plan: { repoRoot: '/repo', repoHash: 'h', taskSlug: taskId.slice(-8), worktreePath: path.join(root, 'wt', taskId.slice(-8)), branch: `wtask/${taskId.slice(-8)}`, metaDir: path.join(root, 'meta', taskId.slice(-8)), gitCommonDir: '/repo/.git', originPin: 'ssh://git@git.corp.example:2222/acme/App' },
     }));
     await r.svc.start({ ...base, repoKey: 'github.com/acme/app' });
     const row = ledger.list({ ownerWorkspaceId: 'ws-bot' })[0];
     expect(row.dispatch?.gitCommonDir).toBe('/repo/.git');
+    expect(row.dispatch?.originPin).toBe('ssh://git@git.corp.example:2222/acme/App');
     await ledger.flush();
-    expect(new TaskLedger({ dir: path.join(root, 'ledger') }).get(row.id)?.dispatch?.gitCommonDir).toBe('/repo/.git');
+    expect(new TaskLedger({ dir: path.join(root, 'ledger') }).get(row.id)?.dispatch).toMatchObject({ gitCommonDir: '/repo/.git', originPin: 'ssh://git@git.corp.example:2222/acme/App' });
   });
 
   it('a tainted bot origin keeps its mark on the dispatch, across a ledger replay', async () => {

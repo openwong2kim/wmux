@@ -1200,6 +1200,8 @@ registerLedgerRpc(rpcRouter, () => mainWindow, {
     wmuxDir: getWmuxDir,
     botRepoKey: (botId) => getBotStore()?.get(botId)?.repo?.repoKey,
     botRepoPath: (botId) => getBotStore()?.get(botId)?.repo?.repoPath,
+    botOriginPin: (botId) => getBotStore()?.get(botId)?.repo?.originPin,
+    recordOriginPin: (taskId, pin) => getTaskLedger().recordOriginPin(taskId, pin),
   }),
 });
 registerTaskPushRpc(rpcRouter, {

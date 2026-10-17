@@ -64,6 +64,7 @@ import {
 import { CLAUDE_EFFORT_LEVELS } from '../../shared/claudeModels';
 import { isFactKind, type FactFilter } from '../../shared/facts';
 import { normalizeRepoKey } from '../../shared/repoKey';
+import { isOriginPin } from '../../shared/originPin';
 import { emptyUsage, pruneUsage, sanitizeUsage, type BotUsage } from './budget';
 import { createFilePersister, readVersionedFile, type FilePersister } from './versionedFile';
 import { LEGACY_TRIAGE_TRIGGERS, defaultTriggers } from './roleDefaults';
@@ -228,7 +229,7 @@ function sanitizeRepo(raw: unknown): BotProfile['repo'] | null {
   const repoKey = normalizeRepoKey(r.repoKey);
   if (!repoKey) return null;
   if (typeof r.repoPath !== 'string' || r.repoPath.length > 4096 || !path.isAbsolute(r.repoPath)) return null;
-  return { repoKey, repoPath: path.normalize(r.repoPath) };
+  return { repoKey, repoPath: path.normalize(r.repoPath), ...(isOriginPin(r.originPin) ? { originPin: r.originPin } : {}) };
 }
 
 function sanitizeParked(raw: unknown): BotProfile['parked'] | null {

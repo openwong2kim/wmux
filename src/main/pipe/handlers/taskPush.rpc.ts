@@ -40,7 +40,7 @@ import { getWmuxDir } from '../../../daemon/config';
 import { readBotWorkerDefaultBranches } from '../../../shared/botWorkerGuard';
 import { readRepoDefaultBranchByKey } from '../../agents/botWorkerDefaultBranch';
 import { getBotStore } from '../../factory/botStore';
-import { pushTaskBranch, sweepTaskGitRelays, type TaskPushGit, type TaskPushResult } from '../../worktask/taskPush';
+import { pushTaskBranch, sweepTaskGitRelays, type TaskOriginPinInput, type TaskPushGit, type TaskPushResult } from '../../worktask/taskPush';
 import { recordedTaskGitCommonDir, recordedTaskGitWorktreeDir } from '../../worktask/taskGitCommonDir';
 import { taskPushRecordOf, type TaskPushRecord } from '../../worktask/taskPushRecord';
 import { fetchTaskRefs } from '../../worktask/taskFetch';
@@ -67,6 +67,8 @@ export interface TaskPushRpcDeps {
   /** A bot's repository folder (its profile), for a task whose row records
    *  no git dir. */
   botRepoPath?: (botId: string) => string | undefined;
+  /** A bot's origin pin (its profile), for a task whose row records none. */
+  botOriginPin?: (botId: string) => string | undefined;
   /** Where a landed push is recorded (default: the one under wmuxDir). */
   pushRecord?: Pick<TaskPushRecord, 'record' | 'begin' | 'end'>;
   /** The reclaimed worker whose recorded pane this is (default: the
@@ -104,7 +106,7 @@ export function registerTaskPushRpc(router: RpcRouter, deps: TaskPushRpcDeps): v
     }
   });
 
-  type Resolved = { ok: true; row: { id: string; ownerWorkspaceId: string; dispatch?: { origin?: { kind?: string; botId?: string } } }; task: Required<Pick<MissionTask, 'branch' | 'worktreePath'>>; dir: string; gitCommonDir: string; gitWorktreeDir: string | null; expectedRepoKey?: string }
+  type Resolved = { ok: true; row: { id: string; ownerWorkspaceId: string; dispatch?: { origin?: { kind?: string; botId?: string } } }; task: Required<Pick<MissionTask, 'branch' | 'worktreePath'>>; dir: string; gitCommonDir: string; gitWorktreeDir: string | null; expectedRepoKey?: string; pin: TaskOriginPinInput }
     | { ok: false; error: { code: string; message: string } };
 
   /** The caller's own task (its open one, or the ended one a resumed
@@ -174,7 +176,14 @@ export function registerTaskPushRpc(router: RpcRouter, deps: TaskPushRpcDeps): v
     const gitCommonDir = await recordedTaskGitCommonDir(own.dispatch, deps.botRepoPath ?? ((id: string) => getBotStore()?.get(id)?.repo?.repoPath), deps.git);
     if (!gitCommonDir) return deny('FAILED_PRECONDITION', `${method}: wmux recorded no repository folder for this task ${words.repo}; start a new task`);
     const gitWorktreeDir = await recordedTaskGitWorktreeDir(own.dispatch, gitCommonDir, task.worktreePath);
-    return { ok: true, row: own, task: { branch: task.branch, worktreePath: task.worktreePath }, dir, gitCommonDir, gitWorktreeDir, ...(expectedRepoKey ? { expectedRepoKey } : {}) };
+    // origin's exact address: the dispatch's pin, else the bot's profile's;
+    // a row with neither is pinned at this first use.
+    const expectedOriginPin = own.dispatch?.originPin
+      ?? (origin?.kind === 'bot' && origin.botId ? (deps.botOriginPin ?? ((id: string) => getBotStore()?.get(id)?.repo?.originPin))(origin.botId) : undefined);
+    const pin: TaskOriginPinInput = expectedOriginPin
+      ? { expectedOriginPin }
+      : { recordOriginPin: (p: string) => ledgerOf().recordOriginPin(own.id, p) };
+    return { ok: true, row: own, task: { branch: task.branch, worktreePath: task.worktreePath }, dir, gitCommonDir, gitWorktreeDir, ...(expectedRepoKey ? { expectedRepoKey } : {}), pin };
   };
 
   router.register('task.push', async (params, ctx?: RpcContext) => {
@@ -214,6 +223,7 @@ export function registerTaskPushRpc(router: RpcRouter, deps: TaskPushRpcDeps): v
         relayRoot: relayRootOf(r.dir),
         taskId: r.row.id,
         ...(r.expectedRepoKey ? { expectedRepoKey: r.expectedRepoKey } : {}),
+        ...r.pin,
         // Every task, bot or not: the repository's own default branch too (a
         // task branch can be named by a person), read by the pushed-to key.
         repoDefaultBranch: deps.repoDefaultBranch ?? ((key: string) => readRepoDefaultBranchByKey(key)),
@@ -237,6 +247,7 @@ export function registerTaskPushRpc(router: RpcRouter, deps: TaskPushRpcDeps): v
       relayRoot: relayRootOf(r.dir),
       taskId: r.row.id,
       ...(r.expectedRepoKey ? { expectedRepoKey: r.expectedRepoKey } : {}),
+      ...r.pin,
       repoDefaultBranch: deps.repoDefaultBranch ?? ((key: string) => readRepoDefaultBranchByKey(key)),
     }, ...(deps.git ? [deps.git] : []));
     return { ...result, taskId: r.row.id };

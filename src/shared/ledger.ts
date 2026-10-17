@@ -155,6 +155,11 @@ export interface LedgerDispatch {
    *  reads HEAD by this path; absent = derived from the common dir's
    *  `worktrees/` for a row written before it existed. */
   gitWorktreeDir?: string;
+  /** A code task: origin's address as the repository config held it
+   *  (shared/originPin.ts), recorded by main at dispatch, or at the first
+   *  task_push or task_fetch for a row written before it existed. task_push
+   *  and task_fetch work only with an origin that matches it. */
+  originPin?: string;
   /** Set when the task worktree was created detached at a commit. */
   checkout?: { sha: string; detached: true };
   /** The commit main created the task's branch from (origin's default branch

@@ -186,8 +186,11 @@ export interface BotProfile {
   workerAgent?: BotWorkerAgent;
   triggers: BotTrigger[];
   budget: BotBudget;
-  /** The repo the bot acts on (fan-out needs it: a bot has no pane cwd). */
-  repo?: { repoKey: string; repoPath: string };
+  /** The repo the bot acts on (fan-out needs it: a bot has no pane cwd).
+   *  `originPin`: origin's address as the repository config held it when
+   *  the folder was picked (shared/originPin.ts); a task with no pin of its
+   *  own is held to it. */
+  repo?: { repoKey: string; repoPath: string; originPin?: string };
   /** The owner's picture for the bot: a `data:image/png;base64,` URL of a
    *  square PNG at most BOT_AVATAR_PX wide, written only by main. Absent =
    *  the UI draws the name's initials. */

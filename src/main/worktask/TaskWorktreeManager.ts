@@ -24,6 +24,7 @@ import * as fs from 'node:fs';
 import * as crypto from 'node:crypto';
 import { getWmuxHomeDir } from '../../shared/constants';
 import { getExecEnv } from '../../shared/execEnv';
+import { originPinFromConfigList } from './workerGit';
 
 const execFileAsync = promisify(execFile);
 
@@ -141,6 +142,10 @@ export interface TaskWorktreePlan {
   /** The repository's common git dir, resolved; absent when it could not be
    *  read. Recorded on the task's ledger row (LedgerDispatch.gitCommonDir). */
   gitCommonDir?: string;
+  /** origin's pin, read through gitCommonDir; absent when origin is not a
+   *  plain https or ssh address. Recorded on the task's ledger row
+   *  (LedgerDispatch.originPin). */
+  originPin?: string;
 }
 
 export type PreflightResult =
@@ -232,6 +237,56 @@ export class TaskWorktreeManager {
    *   - 전용 루트 쓰기 가능 + 경로 길이(260자) 검증.
    *   - branch·slug·경로 파생 반환(성공 시).
    */
+  /** The repository's common git dir (resolved) and origin's pin, read
+   *  through that git dir (origin's URL as the config holds it, no URL
+   *  rewrite applied); either absent when it cannot be read. Never throws. */
+  private async gitDirAndPin(realRoot: string): Promise<{ gitCommonDir?: string; originPin?: string }> {
+    let gitCommonDir: string | undefined;
+    try {
+      const { stdout } = await this.runGit(['rev-parse', '--git-common-dir'], realRoot);
+      const out = stdout.trim();
+      if (out) {
+        const resolved = path.resolve(realRoot, out);
+        try {
+          gitCommonDir = fs.realpathSync.native(resolved);
+        } catch {
+          // A repository inside a WSL distro, on a share Windows cannot
+          // resolve: the distro resolves the path itself (taskPush.ts).
+          gitCommonDir = process.platform === 'win32' && /^\\\\wsl(?:\$|\.localhost)\\/i.test(resolved) ? resolved : undefined;
+        }
+      }
+    } catch {
+      gitCommonDir = undefined;
+    }
+    if (!gitCommonDir) return {};
+    try {
+      const { stdout } = await this.runGit([`--git-dir=${gitCommonDir}`, 'config', '-z', '--list', '--show-scope'], realRoot);
+      const originPin = originPinFromConfigList(stdout) ?? undefined;
+      return { gitCommonDir, ...(originPin ? { originPin } : {}) };
+    } catch {
+      return { gitCommonDir };
+    }
+  }
+
+  /** origin's pin for the repository at `repoInput`, read as preflight reads
+   *  it; undefined when it cannot be read. Never throws. */
+  async readOriginPin(repoInput: string): Promise<string | undefined> {
+    try {
+      const { stdout } = await this.runGit(['rev-parse', '--show-toplevel'], repoInput);
+      const top = stdout.trim();
+      if (!top) return undefined;
+      let realRoot = top;
+      try {
+        realRoot = fs.realpathSync(top);
+      } catch {
+        // kept as git printed it, as preflight does
+      }
+      return (await this.gitDirAndPin(realRoot)).originPin;
+    } catch {
+      return undefined;
+    }
+  }
+
   async preflight(
     repoPathRaw: string,
     title: string,
@@ -294,25 +349,9 @@ export class TaskWorktreeManager {
       realRoot = repoRoot;
     }
     const repoHash = crypto.createHash('sha256').update(realRoot).digest('hex').slice(0, 12);
-    // The git dir task_push and task_fetch later run on, read here before
-    // any worker exists.
-    let gitCommonDir: string | undefined;
-    try {
-      const { stdout } = await this.runGit(['rev-parse', '--git-common-dir'], realRoot);
-      const out = stdout.trim();
-      if (out) {
-        const resolved = path.resolve(realRoot, out);
-        try {
-          gitCommonDir = fs.realpathSync.native(resolved);
-        } catch {
-          // A repository inside a WSL distro, on a share Windows cannot
-          // resolve: the distro resolves the path itself (taskPush.ts).
-          gitCommonDir = process.platform === 'win32' && /^\\\\wsl(?:\$|\.localhost)\\/i.test(resolved) ? resolved : undefined;
-        }
-      }
-    } catch {
-      gitCommonDir = undefined;
-    }
+    // The git dir task_push and task_fetch later run on, and origin's pin,
+    // read here before any worker exists.
+    const { gitCommonDir, originPin } = await this.gitDirAndPin(realRoot);
 
     // 경로 파생.
     const taskSlug = buildTaskSlug(title, taskId);
@@ -359,7 +398,7 @@ export class TaskWorktreeManager {
       }
     }
 
-    return { ok: true, plan: { repoRoot: realRoot, repoHash, taskSlug, worktreePath, branch, metaDir, ...(gitCommonDir ? { gitCommonDir } : {}) } };
+    return { ok: true, plan: { repoRoot: realRoot, repoHash, taskSlug, worktreePath, branch, metaDir, ...(gitCommonDir ? { gitCommonDir } : {}), ...(originPin ? { originPin } : {}) } };
   }
 
   /**

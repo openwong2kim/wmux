@@ -27,10 +27,10 @@ import { fetchCommandFor } from '../../shared/taskGitRelay';
 import { toWslPath } from '../../shared/imagePaste';
 import { isDenyableBranchName } from '../../shared/botWorkerGuard';
 import { normalizeRepoKey } from '../../shared/repoKey';
-import { defaultGit, openTaskGitRepo, parseLsRemoteHead, type TaskGitRepo, type TaskGitRepoInput, type TaskPushDeps, type TaskPushGit } from './taskPush';
+import { defaultGit, openTaskGitRepo, originPinUrl, parseLsRemoteHead, type TaskGitRepo, type TaskGitRepoInput, type TaskOriginPinInput, type TaskPushDeps, type TaskPushGit } from './taskPush';
 import { originUrlRepoKey, urlNamedRemoteRefusal, workerOriginRefusal, type GitConfigEntry } from './workerGit';
 
-export interface TaskFetchInput extends TaskGitRepoInput {
+export interface TaskFetchInput extends TaskGitRepoInput, TaskOriginPinInput {
   /** The task's branch (main's record). */
   branch: string;
   /** A bot's task: the repository origin must be. Absent for a task of the
@@ -90,7 +90,7 @@ type TaskRemoteFailure = Extract<TaskFetchResult, { ok: false }>;
 /** Main's git on the task's recorded repository and relay, after the push's
  *  and the fetch's config checks, and origin's URL and key. Never throws. */
 async function openTaskRemote(
-  input: Pick<TaskFetchInput, keyof TaskGitRepoInput | 'expectedRepoKey'>,
+  input: Pick<TaskFetchInput, keyof TaskGitRepoInput | keyof TaskOriginPinInput | 'expectedRepoKey'>,
   git: TaskPushGit,
   deps: TaskPushDeps,
 ): Promise<{ ok: true; repo: TaskGitRepo; url: string; key: string | null } | TaskRemoteFailure> {
@@ -101,8 +101,6 @@ async function openTaskRemote(
   if ('error' in origin) {
     return { ok: false, reason: /no origin remote/.test(origin.error) ? 'no-origin' : 'remote-refused', error: origin.error };
   }
-  const fetchRefusal = taskFetchConfigRefusal(repo.entries, origin.url);
-  if (fetchRefusal) return { ok: false, reason: 'config-refused', error: fetchRefusal };
   const key = originUrlRepoKey(origin.url);
   if (input.expectedRepoKey !== undefined) {
     const expected = normalizeRepoKey(input.expectedRepoKey);
@@ -110,7 +108,15 @@ async function openTaskRemote(
       return { ok: false, reason: 'remote-refused', error: `origin is not ${input.expectedRepoKey} (a plain https or ssh address of it)` };
     }
   }
-  return { ok: true, repo, url: origin.url, key };
+  const pinned = await originPinUrl(origin.url, input);
+  if ('error' in pinned) return { ok: false, reason: 'remote-refused', error: pinned.error };
+  // Every network call uses the pinned URL as recorded (origin's own when the
+  // task has no pin).
+  for (const u of new Set([origin.url, pinned.url])) {
+    const fetchRefusal = taskFetchConfigRefusal(repo.entries, u);
+    if (fetchRefusal) return { ok: false, reason: 'config-refused', error: fetchRefusal };
+  }
+  return { ok: true, repo, url: pinned.url, key };
 }
 
 export type TaskRemoteHeadResult = { ok: true; sha: string | null } | TaskRemoteFailure;
@@ -121,7 +127,7 @@ export type TaskRemoteHeadResult = { ok: true; sha: string | null } | TaskRemote
  * null when origin has no such branch. Never throws.
  */
 export async function readTaskRemoteHead(
-  input: Pick<TaskFetchInput, keyof TaskGitRepoInput | 'branch' | 'expectedRepoKey'>,
+  input: Pick<TaskFetchInput, keyof TaskGitRepoInput | keyof TaskOriginPinInput | 'branch' | 'expectedRepoKey'>,
   git: TaskPushGit = defaultGit,
   deps: TaskPushDeps = {},
 ): Promise<TaskRemoteHeadResult> {

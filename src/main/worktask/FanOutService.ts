@@ -357,6 +357,10 @@ export interface FanOutRequest {
    *  settles it: a bot's profile, else the caller repository's origin).
    *  Recorded on each task's ledger row; see LedgerDispatch.repoKey. */
   repoKey?: string;
+  /** A bot's code fan-out: the origin pin of the bot's profile
+   *  (shared/originPin.ts). The repository's origin must still match it, and
+   *  it is recorded on each task's ledger row (LedgerDispatch.originPin). */
+  originPin?: string;
   /** A bot's fan-out: the stored secrets each worker receives as env vars
    *  (checked by the caller). Each task spawn gets its own single-use grant
    *  (factory/secretGrants.ts); a name no longer stored at launch time leaves
@@ -533,6 +537,17 @@ export type FanOutStatus =
   | { state: 'unknown' }
   | { state: 'running' }
   | { state: 'done'; result: FanOutResult };
+
+/** Why a bot's code fan-out may not start, or null: the bot's profile pins
+ *  origin (`botPin`), and the repository's origin, read at dispatch
+ *  (`planPin`), is no longer that URL as written. Exactly as written: the
+ *  dispatch fetches the base from origin by its own spelling, and git's URL
+ *  rewrites match the literal string. A fan-out of the owner's (no bot pin)
+ *  is never refused here. Pure. */
+export function dispatchOriginPinRefusal(botPin: string | undefined, planPin: string | undefined): string | null {
+  if (!botPin) return null;
+  return planPin === botPin ? null : 'this repository\'s origin changed; re-select the repository';
+}
 
 export class FanOutService {
   private readonly daemon: FanOutDaemonPort;
@@ -752,6 +767,8 @@ export class FanOutService {
       if (!pf.ok) {
         return { ok: false, error: `fanout preflight failed (task ${k + 1}): ${pf.error}`, tasks: [] };
       }
+      const pinRefusal = dispatchOriginPinRefusal(req.originPin, pf.plan.originPin);
+      if (pinRefusal) return { ok: false, error: `fanout preflight failed: ${pinRefusal}`, tasks: [] };
       repoRoot = pf.plan.repoRoot;
     }
 
@@ -798,6 +815,7 @@ export class FanOutService {
       ...(req.threadId ? { threadId: req.threadId } : {}),
       ...(req.handoffId ? { handoffId: req.handoffId } : {}),
       ...(req.repoKey ? { repoKey: req.repoKey } : {}),
+      ...(req.originPin ? { originPin: req.originPin } : {}),
       ...(req.mayLaunch ? { mayLaunch: req.mayLaunch } : {}),
       ...(req.awaitLaunchSlot ? { awaitLaunchSlot: req.awaitLaunchSlot } : {}),
       ...(req.secretNames && req.secretNames.length > 0 ? { secretNames: req.secretNames } : {}),
@@ -1222,6 +1240,8 @@ export class FanOutService {
     handoffId?: string;
     /** See FanOutRequest.repoKey. */
     repoKey?: string;
+    /** See FanOutRequest.originPin. */
+    originPin?: string;
     /** See FanOutRequest.mayLaunch. */
     mayLaunch?: () => string | null;
     /** See FanOutRequest.awaitLaunchSlot. */
@@ -1233,6 +1253,14 @@ export class FanOutService {
   }, slotGuard: { settle: () => void }): Promise<FanOutTaskResult> {
     const base: FanOutTaskResult = { index: ctx.index, title: ctx.title, ok: false };
     if (ctx.agentChoice) base.agent = ctx.agentChoice.agent;
+
+    // A bot's code task: origin is read again right before its mission is
+    // created (the batch preflight ran before the base was resolved), so a
+    // refusal leaves nothing behind.
+    if (ctx.originPin && !ctx.output) {
+      const pinRefusal = dispatchOriginPinRefusal(ctx.originPin, await this.worktrees.readOriginPin(ctx.repoPath));
+      if (pinRefusal) return { ...base, error: `worktree preflight failed: ${pinRefusal}` };
+    }
 
     // ① mission.start — taskId·channelId 획득(멱등키 전달).
     let taskId: string;
@@ -1281,6 +1309,11 @@ export class FanOutService {
       if (!pf.ok) {
         await this.compensate(taskId, ctx.verifiedWorkspaceId);
         return { ...base, error: `worktree preflight failed: ${pf.error}` };
+      }
+      const pinRefusal = dispatchOriginPinRefusal(ctx.originPin, pf.plan.originPin);
+      if (pinRefusal) {
+        await this.compensate(taskId, ctx.verifiedWorkspaceId);
+        return { ...base, error: `worktree preflight failed: ${pinRefusal}` };
       }
       plan = pf.plan;
       const created = ctx.checkout
@@ -1641,6 +1674,10 @@ export class FanOutService {
                 ...(ctx.repoKey ? { repoKey: ctx.repoKey } : {}),
                 // The git dir task_push and task_fetch run on.
                 ...(plan?.gitCommonDir ? { gitCommonDir: plan.gitCommonDir } : {}),
+                // origin's exact address: the bot's own pin (the repository's
+                // origin was checked against it above), else the one read
+                // through that git dir.
+                ...(plan && (ctx.originPin ?? plan.originPin) ? { originPin: ctx.originPin ?? plan.originPin } : {}),
                 ...(gitWorktreeDir ? { gitWorktreeDir } : {}),
                 ...(ctx.checkout ? { checkout: { sha: ctx.checkout.sha, detached: true as const } } : {}),
                 // The commit the task branch was created from: the no-changes
