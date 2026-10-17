@@ -782,6 +782,40 @@ export function endedTaskAgentRuns(
   });
 }
 
+/**
+ * The open task workspaces that hold no live fan-out slot: a reclaimed
+ * worker's workspace still open (a failed task the owner has not looked at,
+ * one they are viewing, one with a busy pane) whose task did not reopen; a
+ * reported task's stopped worker while its task waits for review; and a task
+ * that ended with no agent left in its workspace (`endedNoAgent`: the owner's
+ * stop writes no record, a record left `stopping` is not stopped) while its
+ * row still says so and no resume started since. A workspace an agent was
+ * seen in (`agentWorkspaces`) is never one. `records`: [] when the reclaim
+ * store could not be read; the ended-task rule needs none. Pure.
+ */
+export function dormantTaskWorkspaceSet(p: {
+  records: readonly ReclaimedWorker[];
+  row: (taskId: string) => Pick<LedgerEntry, 'status'> | null;
+  workspaceRow: (workspaceId: string) => Pick<LedgerEntry, 'id' | 'status'> | null;
+  endedNoAgent: Iterable<string>;
+  agentWorkspaces: ReadonlySet<string>;
+}): Set<string> {
+  const ended = (status: string | undefined): boolean => status === 'completed' || status === 'cancelled' || status === 'failed';
+  const open = (status: string | undefined): boolean => status === 'working' || status === 'input_required' || status === 'review_requested';
+  const out = new Set<string>();
+  for (const r of p.records) {
+    if (r.state !== 'stopped') continue;
+    const status = p.row(r.taskId)?.status;
+    if (!open(status) || (r.ended === 'reported' && status === 'review_requested')) out.add(workerWorkspaceOf(r));
+  }
+  for (const ws of p.endedNoAgent) {
+    const row = p.workspaceRow(ws);
+    if (row && ended(row.status) && p.records.find((r) => r.taskId === row.id)?.state !== 'resumed') out.add(ws);
+  }
+  for (const ws of p.agentWorkspaces) out.delete(ws);
+  return out;
+}
+
 /** Attempts per ended task before the reclaim gives it up. */
 export const RECLAIM_ATTEMPTS_MAX = 3;
 /** A `stopping` record is looked at again this long after its stop began

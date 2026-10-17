@@ -39,6 +39,7 @@ import {
   createDaemonTurnSeed,
   createResumedIdleSweep,
   createWorkerClear,
+  dormantTaskWorkspaceSet,
   endedTaskAgentRuns,
   installWorkerReclaim,
   isReclaimableReport,
@@ -56,7 +57,6 @@ import {
   type WorkerSessionInfo,
   unreclaimedEndedWorkers,
   workerPanesIdle,
-  workerWorkspaceOf,
 } from './workerReclaim';
 import { getWorkspaceMirror } from '../workspace/WorkspaceMirror';
 import { createDeadPaneSweep } from './deadWorkerPanes';
@@ -226,6 +226,20 @@ export function startWorkerLifecycle(deps: WorkerLifecycleDeps): () => void {
     reclaimOn = false;
     console.warn(`[factory] worker reclaim off: ${String(err)}`);
   }
+  // Task workspaces that hold no live fan-out slot (dormantTaskWorkspaceSet).
+  // Installed whether or not the reclaim is on: an ended task with no agent
+  // left needs no reclaim record.
+  setDormantTaskWorkspaces(() => {
+    idle.get();
+    return dormantTaskWorkspaceSet({
+      records: reclaimOn ? reclaimed.all() : [],
+      row: (taskId) => ledger.get(taskId),
+      workspaceRow: (ws) => ledger.findByTaskWorkspace(ws),
+      endedNoAgent: endedNoAgentWorkspaces,
+      agentWorkspaces,
+    });
+  });
+  offs.push(() => setDormantTaskWorkspaces(null));
   if (reclaimOn) {
     // Clear: an ended task's workspace closes once its agent is stopped.
     const mirror = getWorkspaceMirror();
@@ -519,26 +533,6 @@ export function startWorkerLifecycle(deps: WorkerLifecycleDeps): () => void {
         getAgentSlots()?.kick();
       },
     });
-    // A reclaimed worker's workspace still open (a failed task the owner has
-    // not looked at, one they are viewing, one with a busy pane) runs no
-    // agent: it holds no live fan-out slot (unless its task reopened).
-    // So does a reported task's stopped worker while its task waits for review.
-    // And so does a task that ended with no agent left in its workspace (the
-    // owner's stop writes no record; a record left `stopping` is not stopped),
-    // while its row still says so and no resume started since the read. A
-    // workspace the last read saw an agent in is never dormant.
-    setDormantTaskWorkspaces(() => {
-      const out = new Set(reclaimed.all().filter((r) => r.state === 'stopped'
-        && (!taskOpen(r.taskId) || (r.ended === 'reported' && ledger.get(r.taskId)?.status === 'review_requested'))).map((r) => workerWorkspaceOf(r)));
-      idle.get();
-      for (const ws of endedNoAgentWorkspaces) {
-        const row = ledger.findByTaskWorkspace(ws);
-        if (row && isEndedStatus(row.status) && reclaimed.get(row.id)?.state !== 'resumed') out.add(ws);
-      }
-      for (const ws of agentWorkspaces) out.delete(ws);
-      return out;
-    });
-    offs.push(() => setDormantTaskWorkspaces(null));
     offs.push(() => setWorkerResumePorts(null));
     // A resumed worker runs on its bot's worker budget: counted live by the
     // fan-out's check, and its run (resume to stop) in the bot's hours.

@@ -15,6 +15,7 @@ import {
   isWslWorkerPane,
   isTaskOwnWorkerPane,
   clearVerdict,
+  dormantTaskWorkspaceSet,
   endedTaskAgentRuns,
   lifecycleCardTask,
   paneTurnEnded,
@@ -1281,6 +1282,33 @@ describe('the fan-out slot of an ended task, and a record left stopping (F25)', 
     off();
     expect(stopAgent).not.toHaveBeenCalled();
     await settled(store);
+  });
+
+  it('dormantTaskWorkspaceSet: with the reclaim store unavailable, an ended task whose agent is gone still holds no slot', () => {
+    const rows: Record<string, Pick<LedgerEntry, 'id' | 'status'>> = {
+      'ws-stopped': { id: 't-stopped', status: 'cancelled' },
+      'ws-open': { id: 't-open', status: 'working' },
+      'ws-agent': { id: 't-agent', status: 'completed' },
+    };
+    const byTask = (taskId: string) => Object.values(rows).find((r) => r.id === taskId) ?? null;
+    // The reclaim store could not be read: no records.
+    const dormant = dormantTaskWorkspaceSet({
+      records: [],
+      row: byTask,
+      workspaceRow: (ws) => rows[ws] ?? null,
+      endedNoAgent: ['ws-stopped', 'ws-open'],
+      agentWorkspaces: new Set(['ws-agent']),
+    });
+    expect([...dormant]).toEqual(['ws-stopped']);
+    // With records: a stopped worker of an ended task is dormant, a resumed one is not, an agent seen wins.
+    const withRecords = dormantTaskWorkspaceSet({
+      records: [stopping({ taskId: 't-agent', taskWorkspaceId: 'ws-agent', state: 'stopped' }), stopping({ taskId: 't-stopped', taskWorkspaceId: 'ws-stopped', state: 'resumed' })],
+      row: byTask,
+      workspaceRow: (ws) => rows[ws] ?? null,
+      endedNoAgent: ['ws-stopped'],
+      agentWorkspaces: new Set(['ws-agent']),
+    });
+    expect([...withRecords]).toEqual([]);
   });
 
   it('a stop answered no_session (the pane went since the read) is no failed stop', async () => {
