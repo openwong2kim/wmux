@@ -257,9 +257,13 @@ export async function pushTaskBranch(input: TaskPushInput, git: TaskPushGit = de
     return { ok: false, reason: 'git-failed', error: `git rev-parse HEAD failed: ${head.stderr.trim().slice(0, 500)}` };
   }
   // A symbolic ref at the upstream is dropped before the push: neither git's
-  // own update of it nor the one below then follows it to another ref.
+  // own update of it nor the one below then follows it to another ref. One
+  // that cannot be dropped stops the push.
   const upstream = `refs/remotes/origin/${input.branch}`;
-  if ((await run(['symbolic-ref', '--quiet', upstream])).code === 0) await run(['update-ref', '--no-deref', '-d', upstream]);
+  if ((await run(['symbolic-ref', '--quiet', upstream])).code === 0) {
+    const dropped = await run(['update-ref', '--no-deref', '-d', upstream]);
+    if (dropped.code !== 0) return { ok: false, reason: 'git-failed', error: `git update-ref -d ${upstream} failed: ${dropped.stderr.trim().slice(0, 500)}` };
+  }
   const res = await run(taskPushArgs(input.branch, origin.url, sha));
   const output = `${res.stdout}\n${res.stderr}`.trim().slice(0, 2000);
   if (res.code !== 0) {

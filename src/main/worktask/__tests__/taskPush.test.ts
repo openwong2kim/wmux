@@ -87,6 +87,15 @@ describe('pushTaskBranch', () => {
     expect(() => git(work, 'symbolic-ref', '-q', 'refs/remotes/origin/wtask/one')).toThrow();
   });
 
+  it('stops before pushing when a symbolic upstream ref cannot be dropped', async () => {
+    const main = git(work, 'rev-parse', 'refs/heads/main');
+    git(work, 'symbolic-ref', 'refs/remotes/origin/wtask/one', 'refs/heads/main');
+    fs.writeFileSync(path.join(work, '.git', 'refs', 'remotes', 'origin', 'wtask', 'one.lock'), '');
+    expect(await pushTaskBranch(input())).toMatchObject({ ok: false, reason: 'git-failed', error: expect.stringContaining('update-ref -d refs/remotes/origin/wtask/one') });
+    expect(git(origin, 'for-each-ref', '--format=%(refname)', 'refs/heads')).toBe('refs/heads/main');
+    expect(git(work, 'rev-parse', 'refs/heads/main')).toBe(main);
+  });
+
   it('runs none of the worktree\'s own hooks', async () => {
     const hook = path.join(work, '.git', 'hooks', 'pre-push');
     const marker = path.join(root, 'hook-ran');
@@ -568,8 +577,8 @@ describe('task.push RPC', () => {
   });
 
   it('refuses a detached checkout (verify) and a closed or branchless task', async () => {
-    const detached = setup({ row: { id: 'wtask-1', ownerWorkspaceId: 'ws-owner', dispatch: { checkout: { sha: 'a'.repeat(40), detached: true } } } });
-    expect(await detached.call({ senderPtyId: 'pty-1' }, local)).toMatchObject({ ok: false, error: { code: 'FAILED_PRECONDITION' } });
+    const detached = setup({ row: { id: 'wtask-1', ownerWorkspaceId: 'ws-owner', dispatch: { origin: { kind: 'pane' }, repoKey: 'github.com/acme/app', checkout: { sha: 'a'.repeat(40), detached: true } } } });
+    expect(await detached.call({ senderPtyId: 'pty-1' }, local)).toMatchObject({ ok: false, error: { code: 'FAILED_PRECONDITION', message: expect.stringMatching(/detached checkout/) } });
     expect(detached.push).not.toHaveBeenCalled();
     expect(await setup({ tasks: [{ id: 'wtask-1', status: 'closed', branch: 'b', worktreePath: '/w' }] }).call({ senderPtyId: 'p' }, local))
       .toMatchObject({ ok: false, error: { code: 'FAILED_PRECONDITION' } });
