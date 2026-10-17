@@ -420,6 +420,21 @@ describe.skipIf(process.platform === 'win32')('task.push and task.fetch: the rec
     expect(git(other, 'for-each-ref')).toBe('');
   });
 
+  it('any owner include condition but gitdir (worktree:, a condition git adds later) keeps the repository\'s reading out of the relay', async () => {
+    const pin = 'https://git.corp.example/acme/app.git';
+    git(repo, 'remote', 'add', 'origin', pin);
+    // The rewrite to the task's origin comes only through the repository's gitdir include.
+    const inc = path.join(root, 'gitdir.inc');
+    fs.writeFileSync(inc, rule('srv', 'https://git.corp.example/'));
+    const withCondition = (extra: string) => globalConfig(`[includeIf "gitdir:${common}"]\n\tpath = ${inc}\n${extra}`);
+    withCondition('');
+    expect(await pushTask({ ...input(), expectedOriginPin: pin })).toMatchObject({ ok: true });
+    for (const cond of ['worktree:/elsewhere/**', 'onbranch:release/**', 'someday:x']) {
+      withCondition(`[includeIf "${cond}"]\n\tpath = ${inc}.none\n`);
+      expect(await pushTask({ ...input(), expectedOriginPin: pin }), cond).toMatchObject({ ok: false });
+    }
+  });
+
   it('an owner rewrite whose base carries a user name sends push and fetch to it, unrefused', async () => {
     const pin = 'https://git.corp.example/acme/app.git';
     git(repo, 'remote', 'add', 'origin', pin);
