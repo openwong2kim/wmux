@@ -668,4 +668,13 @@ export const da = {
   'botsPage.consent.cancel': "Annuller",
   'botsPage.consent.keepOn': "Behold bots slået til",
   'botsPage.consent.turnOff': "Slå bots fra",
+
+  // Task cleanup list: detail line per scan entry
+  'worktask.cleanup.detail.unmaterialized': 'Der blev ikke oprettet noget worktree til denne opgave — luk den, eller opret worktreet igen.',
+  'worktask.cleanup.detail.preserved': 'Ikke-committet arbejde er bevaret — gennemgå diffen, og commit eller åbn en PR, eller kassér det.',
+  'worktask.cleanup.detail.phone': 'Oprettet fra telefonen (gren phone/…) — tjek det, og fjern det, når du ikke længere har brug for det.',
+  'worktask.cleanup.detail.orphanEnded': 'Ingen åben opgave er knyttet til det (opgaven er afsluttet eller ryddet op) — tjek det, og slet det.',
+  'worktask.cleanup.detail.orphanUnlinked': 'Ingen opgave eller opgavepost er knyttet til det — tjek det, og slet det.',
+  'worktask.cleanup.detail.orphanMeta': 'Kun opgaveposten er tilbage, ikke worktreet (en fjernelse blev afbrudt) — tjek det, og slet det.',
+  'worktask.cleanup.detail.diskMissing': 'Worktreet mangler på disken (slettet uden for wmux, eller et nedbrud) — luk opgaven for at rydde op.',
 } as const;

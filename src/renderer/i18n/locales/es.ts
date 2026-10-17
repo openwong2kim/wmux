@@ -670,4 +670,13 @@ export const es = {
   'botsPage.consent.cancel': "Cancelar",
   'botsPage.consent.keepOn': "Mantener bots activados",
   'botsPage.consent.turnOff': "Desactivar bots",
+
+  // Task cleanup list: detail line per scan entry
+  'worktask.cleanup.detail.unmaterialized': 'No se creó ningún worktree para esta tarea — ciérrala o vuelve a crear el worktree.',
+  'worktask.cleanup.detail.preserved': 'Se conserva el trabajo sin confirmar — revisa el diff y luego haz commit, abre un PR o descártalo.',
+  'worktask.cleanup.detail.phone': 'Creado desde el teléfono (rama phone/…) — revísalo y elimínalo cuando ya no lo necesites.',
+  'worktask.cleanup.detail.orphanEnded': 'Ninguna tarea abierta lo enlaza (la tarea terminó o se limpió) — revísalo y luego elimínalo.',
+  'worktask.cleanup.detail.orphanUnlinked': 'Ninguna tarea ni registro de tarea lo enlaza — revísalo y luego elimínalo.',
+  'worktask.cleanup.detail.orphanMeta': 'Solo queda el registro de la tarea, no el worktree (se interrumpió una eliminación) — revísalo y luego elimínalo.',
+  'worktask.cleanup.detail.diskMissing': 'El worktree no está en el disco (eliminado fuera de wmux o por un fallo) — cierra la tarea para limpiarlo.',
 } as const;

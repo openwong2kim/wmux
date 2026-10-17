@@ -5,7 +5,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
-import { WorktaskScanService, type ScanOpenTask } from '../WorktaskScanService';
+import { WorktaskScanService, WORKTASK_SCAN_DETAIL, type ScanOpenTask } from '../WorktaskScanService';
+import { en } from '../../../renderer/i18n/locales/en';
 import { WORKTASK_META_FILENAME, type WorkTaskMetaStamp } from '../../../shared/workTask';
 
 let root: string; // 전용 루트 스텁({wmux home}/worktrees 대역)
@@ -244,5 +245,68 @@ describe('phone worktrees (contract item 5)', () => {
     const wt = seedWorktree('phone-app', { taskId: 'wtask-9', title: 'Phone app' } as WorkTaskMetaStamp);
     const res = await makeSvc().scan([]);
     expect(res.entries).toEqual([expect.objectContaining({ category: 'orphan-dir', taskId: 'wtask-9', worktreePath: wt })]);
+  });
+});
+
+describe('detail codes (the renderer localizes the detail line)', () => {
+  /** One scan that produces every detail situation the service knows. */
+  async function scanEverySituation() {
+    const preservedWt = seedWorktree('dirty-slug');
+    const ghost = path.join(root, REPO_HASH, 'ghost-slug');
+    seedWorktree('ended-slug', { taskId: 'wtask-ended', title: 'Ended', createdAt: 1, closedAt: 2 });
+    seedWorktree('bare-slug');
+    seedWorktree('phone-fix-login');
+    const metaDir = path.join(root, REPO_HASH, '.meta', 'meta-only');
+    fs.mkdirSync(metaDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(metaDir, WORKTASK_META_FILENAME),
+      JSON.stringify({ taskId: 'wtask-meta', title: 'Meta', createdAt: 1 }),
+    );
+    const res = await makeSvc(new Set([preservedWt])).scan([
+      { taskId: 'wtask-unmat', title: 'Unmat' },
+      { taskId: 'wtask-dirty', title: 'Dirty', worktreePath: preservedWt },
+      { taskId: 'wtask-ghost', title: 'Ghost', worktreePath: ghost },
+    ]);
+    return res.entries;
+  }
+
+  it('gives every entry a stable detailCode for its situation', async () => {
+    const entries = await scanEverySituation();
+    const byCode = (code: string) => entries.filter((e) => e.detailCode === code);
+    expect(byCode('unmaterialized')).toEqual([expect.objectContaining({ category: 'unmaterialized-open', taskId: 'wtask-unmat' })]);
+    expect(byCode('preserved')).toEqual([expect.objectContaining({ category: 'preserved', taskId: 'wtask-dirty' })]);
+    expect(byCode('disk-missing')).toEqual([expect.objectContaining({ category: 'disk-missing', taskId: 'wtask-ghost' })]);
+    expect(byCode('orphan-ended')).toEqual([expect.objectContaining({ category: 'orphan-dir', taskId: 'wtask-ended' })]);
+    expect(byCode('orphan-unlinked')).toEqual([
+      expect.objectContaining({ category: 'orphan-dir', worktreePath: path.join(root, REPO_HASH, 'bare-slug') }),
+    ]);
+    expect(byCode('orphan-meta')).toEqual([expect.objectContaining({ category: 'orphan-dir', taskId: 'wtask-meta' })]);
+    expect(byCode('phone')).toEqual([expect.objectContaining({ category: 'phone-worktree' })]);
+    expect(entries).toHaveLength(7);
+    expect(entries.every((e) => typeof e.detailCode === 'string')).toBe(true);
+  });
+
+  it('keeps detail as English text, never Hangul, matching the English UI copy', async () => {
+    const entries = await scanEverySituation();
+    for (const e of entries) {
+      expect(e.detail, `${e.detailCode} detail`).toBeTruthy();
+      expect(/[ᄀ-ᇿ㄰-㆏가-힯]/.test(e.detail ?? ''), `${e.detailCode}: ${e.detail}`).toBe(false);
+      if (!e.detailCode) throw new Error(`entry without detailCode: ${e.category}`);
+      expect(e.detail).toBe(WORKTASK_SCAN_DETAIL[e.detailCode]);
+    }
+    // One English wording: the plain-text detail is the same sentence the
+    // English UI shows for that code.
+    const enKey: Record<keyof typeof WORKTASK_SCAN_DETAIL, keyof typeof en> = {
+      unmaterialized: 'worktask.cleanup.detail.unmaterialized',
+      preserved: 'worktask.cleanup.detail.preserved',
+      phone: 'worktask.cleanup.detail.phone',
+      'orphan-ended': 'worktask.cleanup.detail.orphanEnded',
+      'orphan-unlinked': 'worktask.cleanup.detail.orphanUnlinked',
+      'orphan-meta': 'worktask.cleanup.detail.orphanMeta',
+      'disk-missing': 'worktask.cleanup.detail.diskMissing',
+    };
+    for (const [code, text] of Object.entries(WORKTASK_SCAN_DETAIL)) {
+      expect(text).toBe(en[enKey[code as keyof typeof WORKTASK_SCAN_DETAIL]]);
+    }
   });
 });

@@ -664,4 +664,13 @@ export const th = {
   'botsPage.consent.cancel': "ยกเลิก",
   'botsPage.consent.keepOn': "เปิดบอตต่อไป",
   'botsPage.consent.turnOff': "ปิดบอต",
+
+  // Task cleanup list: detail line per scan entry
+  'worktask.cleanup.detail.unmaterialized': 'ไม่ได้สร้าง worktree สำหรับงานนี้ — ปิดงาน หรือสร้าง worktree ใหม่',
+  'worktask.cleanup.detail.preserved': 'เก็บงานที่ยังไม่ได้ commit ไว้ — ตรวจดู diff แล้ว commit หรือเปิด PR หรือทิ้งไป',
+  'worktask.cleanup.detail.phone': 'สร้างจากโทรศัพท์ (branch phone/…) — ตรวจสอบ แล้วลบออกเมื่อไม่ต้องการแล้ว',
+  'worktask.cleanup.detail.orphanEnded': 'ไม่มีงานที่เปิดอยู่เชื่อมโยงกับรายการนี้ (งานจบแล้วหรือถูกล้างไปแล้ว) — ตรวจสอบ แล้วลบ',
+  'worktask.cleanup.detail.orphanUnlinked': 'ไม่มีงานหรือบันทึกงานเชื่อมโยงกับรายการนี้ — ตรวจสอบ แล้วลบ',
+  'worktask.cleanup.detail.orphanMeta': 'เหลือเพียงบันทึกงาน ไม่มี worktree (การลบถูกขัดจังหวะ) — ตรวจสอบ แล้วลบ',
+  'worktask.cleanup.detail.diskMissing': 'ไม่พบ worktree บนดิสก์ (ถูกลบนอก wmux หรือเกิดการขัดข้อง) — ปิดงานเพื่อเคลียร์',
 } as const;

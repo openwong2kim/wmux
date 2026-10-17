@@ -664,4 +664,13 @@ export const vi = {
   'botsPage.consent.cancel': "Hủy",
   'botsPage.consent.keepOn': "Giữ bot bật",
   'botsPage.consent.turnOff': "Tắt bot",
+
+  // Task cleanup list: detail line per scan entry
+  'worktask.cleanup.detail.unmaterialized': 'Chưa tạo worktree cho tác vụ này — hãy đóng tác vụ, hoặc tạo lại worktree.',
+  'worktask.cleanup.detail.preserved': 'Phần việc chưa commit được giữ lại — xem diff, rồi commit hoặc mở PR, hoặc bỏ đi.',
+  'worktask.cleanup.detail.phone': 'Được tạo từ điện thoại (nhánh phone/…) — kiểm tra, rồi xóa khi không còn cần.',
+  'worktask.cleanup.detail.orphanEnded': 'Không có tác vụ đang mở nào liên kết với nó (tác vụ đã kết thúc hoặc đã được dọn) — kiểm tra, rồi xóa.',
+  'worktask.cleanup.detail.orphanUnlinked': 'Không có tác vụ hay bản ghi tác vụ nào liên kết với nó — kiểm tra, rồi xóa.',
+  'worktask.cleanup.detail.orphanMeta': 'Chỉ còn bản ghi tác vụ, không có worktree (việc xóa bị gián đoạn) — kiểm tra, rồi xóa.',
+  'worktask.cleanup.detail.diskMissing': 'Worktree không có trên đĩa (bị xóa bên ngoài wmux, hoặc do sự cố) — đóng tác vụ để dọn dẹp.',
 } as const;

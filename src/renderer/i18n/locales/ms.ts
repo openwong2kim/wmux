@@ -670,4 +670,13 @@ export const ms = {
   'botsPage.consent.cancel': "Batal",
   'botsPage.consent.keepOn': "Kekalkan bot hidup",
   'botsPage.consent.turnOff': "Matikan bot",
+
+  // Task cleanup list: detail line per scan entry
+  'worktask.cleanup.detail.unmaterialized': 'Tiada worktree dicipta untuk tugasan ini — tutup tugasan, atau cipta semula worktree.',
+  'worktask.cleanup.detail.preserved': 'Kerja yang belum di-commit disimpan — semak diff, kemudian commit atau buka PR, atau buang.',
+  'worktask.cleanup.detail.phone': 'Dicipta dari telefon (cabang phone/…) — semak, kemudian alih keluar apabila tidak diperlukan lagi.',
+  'worktask.cleanup.detail.orphanEnded': 'Tiada tugasan terbuka yang dipautkan (tugasan tamat atau telah dibersihkan) — semak, kemudian padam.',
+  'worktask.cleanup.detail.orphanUnlinked': 'Tiada tugasan atau rekod tugasan yang dipautkan — semak, kemudian padam.',
+  'worktask.cleanup.detail.orphanMeta': 'Hanya rekod tugasan yang tinggal, tanpa worktree (pengalihan keluar terganggu) — semak, kemudian padam.',
+  'worktask.cleanup.detail.diskMissing': 'Worktree tiada pada cakera (dipadam di luar wmux, atau ranap) — tutup tugasan untuk membersihkannya.',
 } as const;

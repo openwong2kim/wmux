@@ -285,8 +285,21 @@ export interface WorktaskScanEntryWire {
   ownerWorkspaceId?: string;
   worktreePath?: string;
   closedAt?: number;
+  /** Stable code for the detail line; absent from an older main. */
+  detailCode?: WorktaskScanDetailCodeWire;
+  /** English detail text; the fallback when `detailCode` is absent or unknown. */
   detail?: string;
 }
+
+/** Detail line codes (WorktaskScanService.WorktaskScanDetailCode mirror). */
+export type WorktaskScanDetailCodeWire =
+  | 'unmaterialized'
+  | 'preserved'
+  | 'phone'
+  | 'orphan-ended'
+  | 'orphan-unlinked'
+  | 'orphan-meta'
+  | 'disk-missing';
 
 /** worktask:scan 결과(핸들러 반환 미러). */
 export type WorktaskScanResultWire =

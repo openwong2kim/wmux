@@ -718,4 +718,13 @@ export const ja = {
   'botsPage.consent.cancel': "キャンセル",
   'botsPage.consent.keepOn': "ボットをオンのままにする",
   'botsPage.consent.turnOff': "ボットをオフにする",
+
+  // Task cleanup list: detail line per scan entry
+  'worktask.cleanup.detail.unmaterialized': 'このタスクの worktree は作成されていません — 閉じるか、worktree を作り直してください。',
+  'worktask.cleanup.detail.preserved': '未コミットの作業を保持しています — diff を確認してからコミットするか PR を作成するか、破棄してください。',
+  'worktask.cleanup.detail.phone': 'スマートフォンから作成されました（ブランチ phone/…）— 確認し、不要になったら削除してください。',
+  'worktask.cleanup.detail.orphanEnded': 'これにリンクする開いているタスクはありません（タスクは終了または整理済み）— 確認してから削除してください。',
+  'worktask.cleanup.detail.orphanUnlinked': 'これにリンクするタスクもタスク記録もありません — 確認してから削除してください。',
+  'worktask.cleanup.detail.orphanMeta': 'タスク記録だけが残り、worktree はありません（削除が中断されました）— 確認してから削除してください。',
+  'worktask.cleanup.detail.diskMissing': 'worktree がディスク上にありません（wmux の外で削除されたか、クラッシュ）— タスクを閉じて整理してください。',
 } as const;

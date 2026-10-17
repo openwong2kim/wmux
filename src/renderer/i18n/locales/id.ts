@@ -669,4 +669,13 @@ export const id = {
   'botsPage.consent.cancel': "Batal",
   'botsPage.consent.keepOn': "Biarkan bot menyala",
   'botsPage.consent.turnOff': "Matikan bot",
+
+  // Task cleanup list: detail line per scan entry
+  'worktask.cleanup.detail.unmaterialized': 'Tidak ada worktree yang dibuat untuk tugas ini — tutup tugasnya, atau buat ulang worktree-nya.',
+  'worktask.cleanup.detail.preserved': 'Pekerjaan yang belum di-commit disimpan — tinjau diff, lalu commit atau buka PR, atau buang.',
+  'worktask.cleanup.detail.phone': 'Dibuat dari ponsel (branch phone/…) — periksa, lalu hapus jika sudah tidak diperlukan.',
+  'worktask.cleanup.detail.orphanEnded': 'Tidak ada tugas terbuka yang terhubung (tugas selesai atau sudah dibersihkan) — periksa, lalu hapus.',
+  'worktask.cleanup.detail.orphanUnlinked': 'Tidak ada tugas atau catatan tugas yang terhubung — periksa, lalu hapus.',
+  'worktask.cleanup.detail.orphanMeta': 'Hanya catatan tugas yang tersisa, tanpa worktree (penghapusan terputus) — periksa, lalu hapus.',
+  'worktask.cleanup.detail.diskMissing': 'Worktree tidak ada di disk (dihapus di luar wmux, atau crash) — tutup tugas untuk merapikannya.',
 } as const;

@@ -670,4 +670,13 @@ export const uk = {
   'botsPage.consent.cancel': "Скасувати",
   'botsPage.consent.keepOn': "Залишити ботів увімкненими",
   'botsPage.consent.turnOff': "Вимкнути ботів",
+
+  // Task cleanup list: detail line per scan entry
+  'worktask.cleanup.detail.unmaterialized': 'Для цього завдання worktree не створено — закрийте його або створіть worktree знову.',
+  'worktask.cleanup.detail.preserved': 'Незакомічену роботу збережено — перегляньте diff, потім зробіть коміт або відкрийте PR чи відкиньте зміни.',
+  'worktask.cleanup.detail.phone': 'Створено з телефона (гілка phone/…) — перевірте й видаліть, коли стане непотрібним.',
+  'worktask.cleanup.detail.orphanEnded': 'Жодне відкрите завдання не пов’язане з ним (завдання завершено або прибрано) — перевірте, потім видаліть.',
+  'worktask.cleanup.detail.orphanUnlinked': 'З ним не пов’язані ні завдання, ні запис завдання — перевірте, потім видаліть.',
+  'worktask.cleanup.detail.orphanMeta': 'Залишився лише запис завдання, без worktree (видалення перервано) — перевірте, потім видаліть.',
+  'worktask.cleanup.detail.diskMissing': 'Worktree немає на диску (видалено поза wmux або після збою) — закрийте завдання, щоб навести лад.',
 } as const;

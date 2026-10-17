@@ -669,4 +669,13 @@ export const it = {
   'botsPage.consent.cancel': "Annulla",
   'botsPage.consent.keepOn': "Mantieni attivi i bot",
   'botsPage.consent.turnOff': "Disattiva i bot",
+
+  // Task cleanup list: detail line per scan entry
+  'worktask.cleanup.detail.unmaterialized': 'Per questa attività non è stato creato alcun worktree — chiudila o ricrea il worktree.',
+  'worktask.cleanup.detail.preserved': 'Il lavoro non committato è conservato — controlla il diff, poi fai commit o apri una PR, oppure scartalo.',
+  'worktask.cleanup.detail.phone': 'Creato dal telefono (branch phone/…) — controllalo, poi rimuovilo quando non ti serve più.',
+  'worktask.cleanup.detail.orphanEnded': 'Nessuna attività aperta vi è collegata (attività terminata o ripulita) — controlla, poi elimina.',
+  'worktask.cleanup.detail.orphanUnlinked': 'Nessuna attività o record di attività vi è collegato — controlla, poi elimina.',
+  'worktask.cleanup.detail.orphanMeta': 'Resta solo il record dell’attività, non il worktree (una rimozione è stata interrotta) — controlla, poi elimina.',
+  'worktask.cleanup.detail.diskMissing': 'Il worktree manca dal disco (eliminato fuori da wmux o per un crash) — chiudi l’attività per sistemarlo.',
 } as const;

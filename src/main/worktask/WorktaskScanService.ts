@@ -56,9 +56,33 @@ export interface WorktaskScanEntry {
   worktreePath?: string;
   /** task.json의 closedAt(GC된 closed 태스크의 orphan에서만 관측). */
   closedAt?: number;
+  /** Stable code for the detail line; the renderer localizes it. */
+  detailCode?: WorktaskScanDetailCode;
   /** 사람용 부가 설명. */
   detail?: string;
 }
+
+/** Machine code for an entry's detail line, one per situation the scan finds. */
+export type WorktaskScanDetailCode =
+  | 'unmaterialized'
+  | 'preserved'
+  | 'phone'
+  | 'orphan-ended'
+  | 'orphan-unlinked'
+  | 'orphan-meta'
+  | 'disk-missing';
+
+/** English detail text for consumers that do not localize (kept in step with
+ *  the renderer's `worktask.cleanup.detail.*` strings in en.ts). */
+export const WORKTASK_SCAN_DETAIL: Record<WorktaskScanDetailCode, string> = {
+  unmaterialized: 'No worktree was created for this task — close it, or create the worktree again.',
+  preserved: 'Uncommitted work is kept — review the diff, then commit or open a PR, or discard it.',
+  phone: 'Created from the phone (branch phone/…) — check it, then remove it once you no longer need it.',
+  'orphan-ended': 'No open task links to it (the task ended or was cleaned up) — check it, then delete it.',
+  'orphan-unlinked': 'No task or task record links to it — check it, then delete it.',
+  'orphan-meta': 'Only the task record is left, not the worktree (a removal was interrupted) — check it, then delete it.',
+  'disk-missing': 'The worktree is missing from disk (deleted outside wmux, or a crash) — close the task to clear it.',
+};
 
 export interface WorktaskScanResult {
   scannedRoot: string;
@@ -144,7 +168,8 @@ export class WorktaskScanService {
           taskId: t.taskId,
           title: t.title,
           ...(t.ownerWorkspaceId ? { ownerWorkspaceId: t.ownerWorkspaceId } : {}),
-          detail: '물질화 미완(worktree 부재) — close 또는 재물질화',
+          detailCode: 'unmaterialized',
+          detail: WORKTASK_SCAN_DETAIL.unmaterialized,
         });
         continue;
       }
@@ -178,7 +203,8 @@ export class WorktaskScanService {
             title: matched.title,
             ...(matched.ownerWorkspaceId ? { ownerWorkspaceId: matched.ownerWorkspaceId } : {}),
             worktreePath: dir,
-            detail: '미커밋 산출물 보존 — diff 재열람 후 커밋/PR 또는 폐기',
+            detailCode: 'preserved',
+            detail: WORKTASK_SCAN_DETAIL.preserved,
           });
         }
         continue;
@@ -192,7 +218,8 @@ export class WorktaskScanService {
         entries.push({
           category: 'phone-worktree',
           worktreePath: dir,
-          detail: 'Created from the phone (branch phone/…) — check it, then remove it once no longer needed',
+          detailCode: 'phone',
+          detail: WORKTASK_SCAN_DETAIL.phone,
         });
         continue;
       }
@@ -202,9 +229,8 @@ export class WorktaskScanService {
         ...(stamp?.title ? { title: stamp.title } : {}),
         ...(stamp?.closedAt !== undefined ? { closedAt: stamp.closedAt } : {}),
         worktreePath: dir,
-        detail: stamp
-          ? '연결된 open 태스크 없음(종료·GC 잔여) — 수동 확인 후 삭제 가능'
-          : '연결된 태스크·스탬프 없음 — 수동 확인 후 삭제 가능',
+        detailCode: stamp ? 'orphan-ended' : 'orphan-unlinked',
+        detail: WORKTASK_SCAN_DETAIL[stamp ? 'orphan-ended' : 'orphan-unlinked'],
       });
     }
 
@@ -221,7 +247,8 @@ export class WorktaskScanService {
         title: t.title,
         ...(t.ownerWorkspaceId ? { ownerWorkspaceId: t.ownerWorkspaceId } : {}),
         ...(t.worktreePath ? { worktreePath: t.worktreePath } : {}),
-        detail: 'worktree 디스크 부재(외부 삭제·크래시) — close로 정합화',
+        detailCode: 'disk-missing',
+        detail: WORKTASK_SCAN_DETAIL['disk-missing'],
       });
     }
 
@@ -238,7 +265,8 @@ export class WorktaskScanService {
         ...(stamp?.title ? { title: stamp.title } : {}),
         ...(stamp?.closedAt !== undefined ? { closedAt: stamp.closedAt } : {}),
         worktreePath: meta.impliedWorktreePath,
-        detail: 'worktree 없는 meta 잔여(remove↔meta 삭제 크래시) — 사이드카 확인 후 삭제 가능',
+        detailCode: 'orphan-meta',
+        detail: WORKTASK_SCAN_DETAIL['orphan-meta'],
       });
     }
 

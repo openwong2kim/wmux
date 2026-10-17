@@ -705,4 +705,13 @@ export const zhTW = {
   'botsPage.consent.cancel': "取消",
   'botsPage.consent.keepOn': "保持機器人開啟",
   'botsPage.consent.turnOff': "關閉機器人",
+
+  // Task cleanup list: detail line per scan entry
+  'worktask.cleanup.detail.unmaterialized': '此任務從未建立工作樹 — 關閉它，或重新建立工作樹。',
+  'worktask.cleanup.detail.preserved': '未提交的工作已保留 — 檢視 diff 後提交或建立 PR，或將其捨棄。',
+  'worktask.cleanup.detail.phone': '從手機建立（分支 phone/…）— 檢查後，不再需要時將其移除。',
+  'worktask.cleanup.detail.orphanEnded': '沒有開啟中的任務連結到它（任務已結束或已清理）— 檢查後刪除。',
+  'worktask.cleanup.detail.orphanUnlinked': '沒有任務或任務記錄連結到它 — 檢查後刪除。',
+  'worktask.cleanup.detail.orphanMeta': '只剩下任務記錄，工作樹已不存在（移除被中斷）— 檢查後刪除。',
+  'worktask.cleanup.detail.diskMissing': '工作樹在磁碟上遺失（在 wmux 外被刪除或發生當機）— 關閉任務以清理。',
 } as const;

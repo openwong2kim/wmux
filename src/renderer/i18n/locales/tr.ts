@@ -670,4 +670,13 @@ export const tr = {
   'botsPage.consent.cancel': "İptal",
   'botsPage.consent.keepOn': "Botları açık tut",
   'botsPage.consent.turnOff': "Botları kapat",
+
+  // Task cleanup list: detail line per scan entry
+  'worktask.cleanup.detail.unmaterialized': 'Bu görev için worktree oluşturulmadı — görevi kapatın veya worktree’yi yeniden oluşturun.',
+  'worktask.cleanup.detail.preserved': 'Commit edilmemiş çalışma korunuyor — diff’i inceleyin, sonra commit edin veya PR açın ya da atın.',
+  'worktask.cleanup.detail.phone': 'Telefondan oluşturuldu (phone/… dalı) — kontrol edin, artık gerekmediğinde kaldırın.',
+  'worktask.cleanup.detail.orphanEnded': 'Ona bağlı açık görev yok (görev bitti veya temizlendi) — kontrol edin, sonra silin.',
+  'worktask.cleanup.detail.orphanUnlinked': 'Ona bağlı görev veya görev kaydı yok — kontrol edin, sonra silin.',
+  'worktask.cleanup.detail.orphanMeta': 'Yalnızca görev kaydı kaldı, worktree yok (bir kaldırma işlemi yarıda kesildi) — kontrol edin, sonra silin.',
+  'worktask.cleanup.detail.diskMissing': 'Worktree diskte yok (wmux dışında silindi veya çökme) — temizlemek için görevi kapatın.',
 } as const;

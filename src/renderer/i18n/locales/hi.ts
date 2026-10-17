@@ -665,4 +665,13 @@ export const hi = {
   'botsPage.consent.cancel': "रद्द करें",
   'botsPage.consent.keepOn': "बॉट चालू रखें",
   'botsPage.consent.turnOff': "बॉट बंद करें",
+
+  // Task cleanup list: detail line per scan entry
+  'worktask.cleanup.detail.unmaterialized': 'इस कार्य के लिए कोई worktree नहीं बनाया गया — इसे बंद करें, या worktree फिर से बनाएँ।',
+  'worktask.cleanup.detail.preserved': 'बिना कमिट किया गया काम सुरक्षित है — diff देखें, फिर कमिट करें या PR खोलें, या इसे छोड़ दें।',
+  'worktask.cleanup.detail.phone': 'फ़ोन से बनाया गया (ब्रांच phone/…) — जाँचें, फिर ज़रूरत न रहने पर हटा दें।',
+  'worktask.cleanup.detail.orphanEnded': 'कोई खुला कार्य इससे जुड़ा नहीं है (कार्य समाप्त हुआ या साफ़ किया गया) — जाँचें, फिर हटाएँ।',
+  'worktask.cleanup.detail.orphanUnlinked': 'कोई कार्य या कार्य रिकॉर्ड इससे जुड़ा नहीं है — जाँचें, फिर हटाएँ।',
+  'worktask.cleanup.detail.orphanMeta': 'केवल कार्य रिकॉर्ड बचा है, worktree नहीं (हटाना बीच में रुक गया) — जाँचें, फिर हटाएँ।',
+  'worktask.cleanup.detail.diskMissing': 'worktree डिस्क पर नहीं है (wmux के बाहर हटाया गया, या क्रैश) — साफ़ करने के लिए कार्य बंद करें।',
 } as const;

@@ -666,4 +666,13 @@ export const de = {
   'botsPage.consent.cancel': "Abbrechen",
   'botsPage.consent.keepOn': "Bots eingeschaltet lassen",
   'botsPage.consent.turnOff': "Bots ausschalten",
+
+  // Task cleanup list: detail line per scan entry
+  'worktask.cleanup.detail.unmaterialized': 'Für diese Aufgabe wurde kein Worktree erstellt — schließen Sie sie oder erstellen Sie den Worktree neu.',
+  'worktask.cleanup.detail.preserved': 'Nicht committete Arbeit bleibt erhalten — prüfen Sie den Diff, dann committen oder einen PR öffnen oder verwerfen.',
+  'worktask.cleanup.detail.phone': 'Vom Telefon erstellt (Branch phone/…) — prüfen Sie ihn und entfernen Sie ihn, wenn Sie ihn nicht mehr brauchen.',
+  'worktask.cleanup.detail.orphanEnded': 'Keine offene Aufgabe verweist darauf (Aufgabe beendet oder aufgeräumt) — prüfen und dann löschen.',
+  'worktask.cleanup.detail.orphanUnlinked': 'Keine Aufgabe und kein Aufgabeneintrag verweist darauf — prüfen und dann löschen.',
+  'worktask.cleanup.detail.orphanMeta': 'Nur der Aufgabeneintrag ist übrig, nicht der Worktree (Entfernen wurde unterbrochen) — prüfen und dann löschen.',
+  'worktask.cleanup.detail.diskMissing': 'Der Worktree fehlt auf der Festplatte (außerhalb von wmux gelöscht oder Absturz) — schließen Sie die Aufgabe, um das zu bereinigen.',
 } as const;

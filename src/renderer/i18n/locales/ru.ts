@@ -670,4 +670,13 @@ export const ru = {
   'botsPage.consent.cancel': "Отмена",
   'botsPage.consent.keepOn': "Оставить ботов включёнными",
   'botsPage.consent.turnOff': "Выключить ботов",
+
+  // Task cleanup list: detail line per scan entry
+  'worktask.cleanup.detail.unmaterialized': 'Для этой задачи worktree не был создан — закройте её или создайте worktree заново.',
+  'worktask.cleanup.detail.preserved': 'Незакоммиченная работа сохранена — просмотрите diff, затем сделайте коммит или откройте PR либо отмените изменения.',
+  'worktask.cleanup.detail.phone': 'Создано с телефона (ветка phone/…) — проверьте и удалите, когда станет не нужно.',
+  'worktask.cleanup.detail.orphanEnded': 'Ни одна открытая задача не связана с ним (задача завершена или очищена) — проверьте, затем удалите.',
+  'worktask.cleanup.detail.orphanUnlinked': 'С ним не связаны ни задача, ни запись задачи — проверьте, затем удалите.',
+  'worktask.cleanup.detail.orphanMeta': 'Осталась только запись задачи, без worktree (удаление было прервано) — проверьте, затем удалите.',
+  'worktask.cleanup.detail.diskMissing': 'Worktree отсутствует на диске (удалён вне wmux или после сбоя) — закройте задачу, чтобы навести порядок.',
 } as const;

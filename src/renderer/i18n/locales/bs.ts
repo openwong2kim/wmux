@@ -669,4 +669,13 @@ export const bs = {
   'botsPage.consent.cancel': "Otkaži",
   'botsPage.consent.keepOn': "Ostavi botove uključene",
   'botsPage.consent.turnOff': "Isključi botove",
+
+  // Task cleanup list: detail line per scan entry
+  'worktask.cleanup.detail.unmaterialized': 'Za ovaj zadatak nije kreiran worktree — zatvorite ga ili ponovo kreirajte worktree.',
+  'worktask.cleanup.detail.preserved': 'Nekomitovani rad je sačuvan — pregledajte diff, zatim komitujte ili otvorite PR, ili ga odbacite.',
+  'worktask.cleanup.detail.phone': 'Kreirano s telefona (grana phone/…) — provjerite ga, pa ga uklonite kad vam više ne treba.',
+  'worktask.cleanup.detail.orphanEnded': 'Nijedan otvoreni zadatak nije povezan s njim (zadatak je završen ili očišćen) — provjerite, pa obrišite.',
+  'worktask.cleanup.detail.orphanUnlinked': 'Nijedan zadatak ni zapis zadatka nije povezan s njim — provjerite, pa obrišite.',
+  'worktask.cleanup.detail.orphanMeta': 'Ostao je samo zapis zadatka, bez worktreeja (uklanjanje je prekinuto) — provjerite, pa obrišite.',
+  'worktask.cleanup.detail.diskMissing': 'Worktree nedostaje na disku (obrisan izvan wmuxa ili zbog pada) — zatvorite zadatak da to uredite.',
 } as const;
