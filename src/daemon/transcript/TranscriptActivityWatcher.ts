@@ -38,6 +38,7 @@ import { parseCodexLineDetailed } from './parseCodexEntry';
 import { isLineBoundary, readTranscriptDelta, readTranscriptPage, statTranscript } from './readTail';
 import { HOOK_ACTIVITY_KINDS } from '../../shared/hooks/hookActivityKinds';
 import { MAX_RAW_LEN, summarizeActivity } from '../../shared/activitySummary';
+import { agentRow } from '../../shared/agentIdentity';
 
 /** Most bytes read for one session in one tick. */
 export const READ_CAP_BYTES = 256 * 1024;
@@ -123,6 +124,15 @@ export interface TranscriptActivityDeps {
   isAgentAlive: (sessionId: string) => boolean | undefined;
   /** Report a line ('' clears) for the session. */
   emit: (sessionId: string, activity: string) => void;
+  /**
+   * Every complete line read from a Claude transcript, in file order, with the
+   * file it came from (the API-error turn end reads it; see apiErrorTurnEnd).
+   * A new watch also replays its last JUMP_WINDOW_BYTES here once, so the
+   * entry of a turn that failed before the watch existed is not lost.
+   */
+  onClaudeLine?: (sessionId: string, path: string, line: string) => void;
+  /** Runs at the end of every tick. */
+  afterTick?: () => void;
   now?: () => number;
   pollMs?: number;
   minGapMs?: number;
@@ -139,6 +149,12 @@ interface Watch {
   sentAt: number;
   /** A line held back by the gap, sent on a later tick. */
   pending?: string;
+  /** Hands its Claude lines to `onClaudeLine`. */
+  lines: boolean;
+  /** Hook-fed: read only for `onClaudeLine`, never for the activity line. */
+  linesOnly: boolean;
+  /** The one-time `onClaudeLine` replay of the window before `offset` is still owed. */
+  replay?: boolean;
 }
 
 /**
@@ -215,7 +231,13 @@ export class TranscriptActivityWatcher {
     if (LIVE_HOOK_KINDS.has(kind) || HOOK_ACTIVITY_KINDS.has(kind)) this.liveHookAt.set(sessionId, at);
     if (HOOK_ACTIVITY_KINDS.has(kind)) {
       this.hookFed.add(sessionId);
-      this.watches.delete(sessionId);
+      // The hook owns the activity line now; the Claude lines still matter.
+      const watch = this.watches.get(sessionId);
+      if (watch?.lines) {
+        watch.linesOnly = true;
+        watch.sent = undefined;
+        watch.pending = undefined;
+      } else this.watches.delete(sessionId);
     } else if (kind === 'agent.session_start') {
       this.sessionStartAt.set(sessionId, at);
       this.hookFed.delete(sessionId);
@@ -281,6 +303,7 @@ export class TranscriptActivityWatcher {
         this.watches.delete(id);
       }
     }
+    this.deps.afterTick?.();
   }
 
   /** One transcript, one pane: the pane whose agent spoke last keeps it. */
@@ -296,25 +319,46 @@ export class TranscriptActivityWatcher {
   }
 
   private reconcile(id: string): void {
-    const binding = this.hookFed.has(id) || !this.agentAlive(id) ? undefined : this.deps.getBinding(id);
-    const parse = binding ? PARSERS[binding.agent] : undefined;
+    const fed = this.hookFed.has(id);
+    let binding = fed || !this.agentAlive(id) ? undefined : this.deps.getBinding(id);
+    // A hook-fed Claude pane is still read for its lines (an API-error turn
+    // end has no hook on an install without StopFailure), never for activity.
+    if (fed && this.deps.onClaudeLine && this.agentAlive(id)) {
+      const own = this.deps.getBinding(id);
+      if (agentRow(own?.agent)?.apiErrorTurnEnd) binding = own;
+    }
+    const agentParse = binding ? PARSERS[binding.agent] : undefined;
     const path = binding?.transcriptPath;
+    const onLine = agentRow(binding?.agent)?.apiErrorTurnEnd ? this.deps.onClaudeLine : undefined;
+    const parse: ParseLine | undefined = agentParse && onLine && path
+      ? (line, offset) => { onLine(id, path, line); return agentParse(line, offset); }
+      : agentParse;
     const current = this.watches.get(id);
     if (!parse || !path) {
       this.watches.delete(id);
       return;
     }
-    if (current && current.path === path) return;
+    if (current && current.path === path) {
+      current.linesOnly = this.hookFed.has(id);
+      return;
+    }
     const stat = statTranscript(path);
     if (!stat) {
       this.watches.delete(id);
       return;
     }
     // Start at the end: only what the agent writes from now on.
-    this.watches.set(id, { path, parse, ino: stat.ino, offset: stat.size, sentAt: 0 });
+    this.watches.set(id, { path, parse, ino: stat.ino, offset: stat.size, sentAt: 0, lines: !!onLine, linesOnly: this.hookFed.has(id), replay: !!onLine });
   }
 
   private read(id: string, watch: Watch): void {
+    // Here, after dropSharedTranscripts: a pane that lost a shared file is
+    // recreated by every reconcile, and must not replay it every tick.
+    const onLine = this.deps.onClaudeLine;
+    if (watch.replay && onLine) {
+      watch.replay = false;
+      readTranscriptPage(watch.path, { maxBytes: JUMP_WINDOW_BYTES, parseLine: (line) => { onLine(id, watch.path, line); return []; } });
+    }
     const stat = statTranscript(watch.path);
     if (!stat) {
       this.watches.delete(id);
@@ -342,6 +386,7 @@ export class TranscriptActivityWatcher {
         watch.offset = delta.cursor.tailOffset;
       }
     }
+    if (watch.linesOnly) return;
     if (events.some((event) => event.kind === 'user_text')) watch.sent = undefined;
     const { line, quiet } = readBatch(events);
     // A turn that moved past its tools must not have a held-back line sent

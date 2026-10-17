@@ -159,7 +159,7 @@ import { monitorEventLoopDelay, performance as nodePerformance } from 'node:perf
 import { DAEMON_EXIT_ALREADY_RUNNING, ENV_KEYS, isBrainPty } from '../shared/constants';
 import { toResumeCommand, resumeGrammarFor, resumeOfferForRecovered, mergeResumeBinding, isProvisionalCapture, transcriptRelocated, normalizeResumeCwd, isUsableResumeBinding, isPlausibleResumeSessionId } from '../shared/agentResume';
 import type { ResumeBinding } from '../shared/agentResume';
-import { agentDisplayToSlug, AGENT_SLUG_SET, isAgentSlug } from '../shared/agentIdentity';
+import { agentDisplayToSlug, agentRow, AGENT_SLUG_SET, isAgentSlug } from '../shared/agentIdentity';
 import type { AgentEventStatus } from '../main/pty/AgentDetector';
 import { HookIngest, identifiedAgentPid, type HookArbitration } from './hooks/HookIngest';
 import { DetectionAgreementLog } from './diagnostics/detectionAgreementLog';
@@ -171,6 +171,7 @@ import { agentSlugToDisplay, isAgentSignal, type AgentSignal } from '../shared/h
 import { checkNativeTranscriptPath } from './transcript/providers';
 import { TranscriptProjector } from './transcript/TranscriptProjector';
 import { TranscriptActivityWatcher } from './transcript/TranscriptActivityWatcher';
+import { ApiErrorTurnEnds, stopFailureSignal } from './transcript/apiErrorTurnEnd';
 import { TranscriptDiscovery, DISCOVERABLE_AGENT } from './transcript/TranscriptDiscovery';
 import { admitCodexCapture, gateCodexStop } from './transcript/codexCapture';
 import { CodexCwdBinder, codexLiveFor, describeCodexPane, readProcessStartMs, type CodexPaneFacts } from './transcript/codexRolloutByCwd';
@@ -324,6 +325,7 @@ let transcriptProjector: TranscriptProjector | null = null;
 // Fleet's now-doing line for panes with no per-tool hook (setup-hooks installs,
 // Codex): tails the agent's own transcript. Guarded like the projector.
 let transcriptActivity: TranscriptActivityWatcher | null = null;
+let apiErrorTurnEnds: ApiErrorTurnEnds | null = null;
 // Phone native chat bridge (contract v0.3.1). Built in registerRpcHandlers next
 // to the services it wraps; the web server reads it lazily per request.
 let chatBridge: ChatBridge | null = null;
@@ -3871,6 +3873,33 @@ function registerRpcHandlers(
     pipeServer.onClientClose((clientId) => projectorForClose.dropClient(clientId));
   }
   const projector = transcriptProjector;
+  // A Claude turn that died on an API error, on an install without the
+  // StopFailure hook: the transcript's error entry stands in for the hook. It
+  // reads the activity watcher's tail, never a file of its own.
+  if (!apiErrorTurnEnds) {
+    apiErrorTurnEnds = new ApiErrorTurnEnds({
+      isCurrentOpenTurn: (id, at) => {
+        const bridge = sessionManager.getSession(id)?.bridge;
+        return !!bridge && bridge.isTurnOpen() && bridge.turnAt(at)?.current === true;
+      },
+      // Only the pane's own session, read from the file its binding names and
+      // that file still passing the same check the hook's path had to.
+      signalFor: (id, path, end) => {
+        const session = sessionManager.getSession(id);
+        const binding = resolveTranscriptBinding(id);
+        if (!session || isBrainPty({ id, env: session.meta.env })) return null;
+        const agent = agentRow(binding?.agent);
+        if (!binding || !agent?.apiErrorTurnEnd || binding.transcriptPath !== path) return null;
+        if (!checkNativeTranscriptPath(agent.slug, path, binding.sessionId, session.meta.env).ok) return null;
+        return stopFailureSignal(id, { agent: agent.slug, sessionId: binding.sessionId, cwd: binding.cwd }, end, Date.now());
+      },
+      emit: (signal) => {
+        log('info', `[hooks] ${signal.ptyId}: API-error turn end (${String(signal.payload.error)}) read from the transcript; no StopFailure hook arrived`);
+        hookIngest?.handle(signal);
+      },
+    });
+  }
+  const turnEnds = apiErrorTurnEnds;
   if (!transcriptActivity) {
     transcriptActivity = new TranscriptActivityWatcher({
       listSessionIds: () => sessionManager.listLiveSessions().map((s) => s.id),
@@ -3885,6 +3914,8 @@ function registerRpcHandlers(
         const event: DaemonEvent = { type: 'agent.transcriptActivity', sessionId, data: { activity } };
         pipeServer.broadcast(event);
       },
+      onClaudeLine: (sessionId, path, line) => turnEnds.noteLine(sessionId, path, line),
+      afterTick: () => turnEnds.settle(),
     });
     transcriptActivity.start();
   }
@@ -4503,6 +4534,7 @@ function registerRpcHandlers(
         projector.nudge(sessionId, kind, agentSessionId);
         // A hook-fed session's own activity line wins over the transcript.
         transcriptActivity?.noteHookSignal(sessionId, kind);
+        apiErrorTurnEnds?.noteHookSignal(sessionId, kind);
         // #782 — phone turn-view nudge. Non-recording: bypasses attentionLog so
         // a busy pane cannot evict a pending approval and blank the badge on
         // replay (CRITICAL 3). Delivered only to devices watching this pane; a
@@ -6412,6 +6444,7 @@ function wireEvents(
     chatSubscribers.delete(payload.id);
     transcriptProjector?.dropPty(payload.id);
     transcriptActivity?.dropSession(payload.id);
+    apiErrorTurnEnds?.dropSession(payload.id);
     terminalChat?.dropPty(payload.id);
     // …and nothing left to discover a transcript FOR.
     transcriptDiscovery?.cancel(payload.id);
@@ -7032,6 +7065,7 @@ function wireEvents(
     chatSubscribers.delete(payload.id);
     transcriptProjector?.dropPty(payload.id);
     transcriptActivity?.dropSession(payload.id);
+    apiErrorTurnEnds?.dropSession(payload.id);
     terminalChat?.dropPty(payload.id);
     // …and nothing left to discover a transcript FOR.
     transcriptDiscovery?.cancel(payload.id);

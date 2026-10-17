@@ -141,6 +141,10 @@ export interface AgentIdentityRow {
   readonly detect?: 'screen';
   /** Hook bridge flavour; see {@link AgentHooksFlavour}. */
   readonly hooks?: AgentHooksFlavour;
+  /** Its transcript marks a turn that ended on an API error
+   *  (`isApiErrorMessage`), read when the StopFailure hook is not installed
+   *  (daemon/transcript/apiErrorTurnEnd). */
+  readonly apiErrorTurnEnd?: true;
   /** MCP registration target (src/shared/mcpTargets.ts). */
   readonly mcp?: AgentMcpTargetSpec;
   /** The pane is a TUI chat box: a pasted line lands in a composer, not a
@@ -189,6 +193,7 @@ export const AGENT_IDENTITIES = [
     process: { packages: ['claude-code', '@anthropic-ai/claude-code'] },
     detect: 'screen',
     hooks: 'claude',
+    apiErrorTurnEnd: true,
     mcp: { format: 'json', configPath: ['.claude.json'], createIfMissing: true, verified: true, autoRegister: true },
     tuiComposer: true,
     dialogs: 'claude',
