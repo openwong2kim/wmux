@@ -146,7 +146,7 @@ describe('phone git push', { timeout: 60_000 }, () => {
       repo: 'github.com/o/r', ahead: 1, behind: 0, remoteTip: base, fastForward: true, commitsTruncated: false,
     });
     expect(facts.commits).toEqual([{ oid: head, subject: 'one', author: 'T' }]);
-    const gitDir = path.join(work, '.git');
+    const gitDir = fs.realpathSync.native(path.join(work, '.git'));
     expect(pins).toEqual({
       head, ref: 'refs/heads/local-x', targetRef: 'refs/heads/remote-y', remoteTip: base, repo: 'o/r', pushUrl: URL_, gitDir, commonDir: gitDir,
     });

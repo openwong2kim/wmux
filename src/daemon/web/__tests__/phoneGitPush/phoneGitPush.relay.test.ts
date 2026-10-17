@@ -43,6 +43,10 @@ describe('phone git push relay', { timeout: 60_000 }, () => {
     git(cwd, 'commit', '-q', '--allow-empty', '-m', msg);
     return git(cwd, 'rev-parse', 'HEAD');
   };
+  /** A path as git reports it, resolved (long names on Windows). */
+  const real = (p: string) => fs.realpathSync.native(p);
+  /** Replace a file: git marks `.git` hidden on Windows, and a hidden file cannot be opened for writing. */
+  const rewrite = (p: string, text: string) => { fs.rmSync(p, { force: true }); fs.writeFileSync(p, text); };
   const refsOf = (repo: string) => git(repo, 'for-each-ref', '--format=%(refname) %(objectname)');
 
   /** The network runner's args with the test transport: the URL → the bare path, file allowed. */
@@ -163,11 +167,11 @@ describe('phone git push relay', { timeout: 60_000 }, () => {
     return other;
   };
 
-  it('pushes to the pinned URL from a relay while the pane repository is redirected mid-call', async () => {
+  it('pushes to the pinned URL from a relay when the pane repository changes after the checks', async () => {
     const { wt, head, gitDir } = linkedWorktree();
     const { facts, pins } = await okPreview(wt);
     expect(facts).toMatchObject({ branch: 'feat', head, target: { ref: 'refs/heads/feat', create: true } });
-    expect(pins).toMatchObject({ gitDir, commonDir: path.join(work, '.git') });
+    expect(pins).toMatchObject({ gitDir: real(gitDir), commonDir: real(path.join(work, '.git')) });
 
     const other = otherRepo();
     // After the config checks and before the first network call of the execute.
@@ -177,8 +181,8 @@ describe('phone git push relay', { timeout: 60_000 }, () => {
       git(work, 'config', `url.${evil}.pushInsteadOf`, bare);
       git(work, 'config', 'http.https://github.com/.proxy', 'http://127.0.0.1:9');
       git(work, 'config', '--add', 'credential.helper', 'store');
-      fs.writeFileSync(path.join(wt, '.git'), `gitdir: ${path.join(other, '.git')}\n`);
-      fs.writeFileSync(path.join(gitDir, 'commondir'), `${path.join(other, '.git')}\n`);
+      rewrite(path.join(wt, '.git'), `gitdir: ${path.join(other, '.git')}\n`);
+      rewrite(path.join(gitDir, 'commondir'), `${path.join(other, '.git')}\n`);
     };
     const row = await executeAndSettle(wt, pins, head);
     expect(row).toMatchObject({ state: 'done', fields: { pushed: head, target: 'refs/heads/feat' } });
@@ -206,7 +210,7 @@ describe('phone git push relay', { timeout: 60_000 }, () => {
     const { wt, head } = linkedWorktree();
     const { pins } = await okPreview(wt);
     const other = otherRepo();
-    fs.writeFileSync(path.join(wt, '.git'), `gitdir: ${path.join(other, '.git')}\n`);
+    rewrite(path.join(wt, '.git'), `gitdir: ${path.join(other, '.git')}\n`);
     const before = network.length;
     const row = await executeAndSettle(wt, pins, head);
     expect(row).toMatchObject({ state: 'refused', error: 'stale' });
@@ -214,7 +218,7 @@ describe('phone git push relay', { timeout: 60_000 }, () => {
     expect(refsOf(bare)).not.toContain('refs/heads/feat');
   });
 
-  it('writes nothing under the pane repository, and follows no symlinked ref or log folder', async () => {
+  it('writes nothing under the pane repository, symlinked ref and log folders included', async () => {
     git(work, 'checkout', '-q', '-b', 'feat');
     commit(work, 'one');
     git(work, '-c', `url.${bare}.insteadOf=${URL_}`, '-c', 'protocol.file.allow=always', 'push', '-q', '-u', 'origin', 'feat');
@@ -281,7 +285,7 @@ describe('phone git push relay', { timeout: 60_000 }, () => {
     expect(network).toEqual([]);
   });
 
-  it('reads HEAD strictly: a symlinked HEAD file is not followed', async () => {
+  it('reads HEAD strictly: a symlinked HEAD file is refused', async () => {
     const { wt, gitDir } = linkedWorktree();
     const real = path.join(root, 'head-elsewhere');
     fs.writeFileSync(real, 'ref: refs/heads/feat\n');
