@@ -169,13 +169,20 @@ describe('DaemonPTYBridge — output after a hook Stop (F24)', () => {
     expect(bridge.isTurnOpen()).toBe(false);
   });
 
-  it('a burst that comes ahead of the spinner title is held, and the next one opens', () => {
+  it('a spinner title in the same chunk as the burst counts; a burst ahead of it is held, the next opens', () => {
     finishedHookTurn();
     vi.advanceTimersByTime(60_000);
-    feed(BIG + RUNNING_TITLE); // the title is read after this chunk's bytes
+    feed(RUNNING_TITLE + BIG); // measured before its titles are parsed
+    expect(bridge.isTurnOpen()).toBe(true);
+    bridge.noteAgentStatus('complete', true);
+    feed(IDLE_TITLE);
+
+    vi.advanceTimersByTime(60_000);
+    feed(BIG); // the turn's first paint, before its spinner title
     expect(bridge.isTurnOpen()).toBe(false);
+    feed(RUNNING_TITLE);
     vi.advanceTimersByTime(1000);
-    feed(RUNNING_TITLE + BIG);
+    feed(BIG);
     expect(bridge.isTurnOpen()).toBe(true);
   });
 
@@ -234,5 +241,22 @@ describe('DaemonPTYBridge — output after a hook Stop (F24)', () => {
     expect(bridge.isTurnOpen()).toBe(true);
     expect(bridge.isAwaitingHuman()).toBe(true);
     expect(bridge.getAgentStatus()).toBe('awaiting_input');
+  });
+
+  it('a byte-opened turn whose approval a human answered is a confirmed turn', () => {
+    bridge.noteInput('go\r');
+    bridge.noteAgentStatus('running', true);
+    feed(BIG);
+    bridge.noteAgentStatus('complete', true);
+    vi.advanceTimersByTime(6100);
+    feed(BIG);
+    const id = bridge.getTurn('running').id;
+    bridge.noteAgentStatus('awaiting_input', true); // PermissionRequest
+    bridge.noteInput('1'); // allowed
+    feed(BIG); // the dialog closes
+    vi.advanceTimersByTime(30_000); // the approved tool runs quietly
+    expect(bridge.isTurnOpen()).toBe(true);
+    bridge.noteInput('then this\r'); // queued into the same turn
+    expect(bridge.getTurn('running').id).toBe(id);
   });
 });

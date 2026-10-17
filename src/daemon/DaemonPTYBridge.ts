@@ -560,8 +560,9 @@ export class DaemonPTYBridge extends EventEmitter {
       this.turnSoftClosed = false;
       this.openTurn();
       if (joined) this.bootEpisode = false;
-      this.byteOpenedTurn = false;
     }
+    // A submit, or a human answering the agent's dialog: a turn either way.
+    this.byteOpenedTurn = false;
     this.lastTurnStartedAt = Date.now();
     this.preTurn = false;
     this.codexBootWindow = false;
@@ -858,10 +859,18 @@ export class DaemonPTYBridge extends EventEmitter {
    * turn; its idle recap, `Checking for updates` and a repaint for a viewer
    * that attached are all drawn under `✳`. The agent is not checked: the
    * glyph is Claude Code's own, and its detector may not have named it.
+   * The chunk being measured is read before its titles are parsed, so a
+   * spinner title inside that same chunk counts too.
    */
   private idleTitleOnHookPane(): boolean {
-    return this.hookSeen && titleShowsFinishedTurn({ title: this.lastTitle, at: this.lastTitleAt }, 'claude', 0);
+    return this.hookSeen && !this.chunkSetsSpinnerTitle
+      && titleShowsFinishedTurn({ title: this.lastTitle, at: this.lastTitleAt }, 'claude', 0);
   }
+
+  /** The output chunk the activity monitor is measuring sets Claude Code's spinner title. */
+  private chunkSetsSpinnerTitle = false;
+  // eslint-disable-next-line no-control-regex
+  private static readonly CLAUDE_SPINNER_TITLE_OSC = /\x1b\][02];[◐◑]\s/;
 
   /**
    * Something other than the shell moved the pane's cwd (an agent's hook
@@ -1463,11 +1472,15 @@ export class DaemonPTYBridge extends EventEmitter {
       // Echo is what the settled branch has to exclude, and the input stamp
       // names it directly instead of blocking every byte to be safe.
       if (!this.muted && (!this.explicitTerminalStatus || this.isInputQuiet())) {
+        // Only the settled hook-pane gate reads it (see idleTitleOnHookPane).
+        this.chunkSetsSpinnerTitle = this.explicitTerminalStatus && this.hookSeen
+          && DaemonPTYBridge.CLAUDE_SPINNER_TITLE_OSC.test(data);
         try {
           activityMonitor.feed(sessionId, byteLength);
         } catch {
           // activity heuristics must never block detection or data forwarding.
         }
+        this.chunkSetsSpinnerTitle = false;
       }
 
       // AgentDetector는 순수 텍스트 분석(side effect 없음)이라 muted 구간에서도
