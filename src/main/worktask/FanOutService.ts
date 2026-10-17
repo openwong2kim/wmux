@@ -1254,6 +1254,14 @@ export class FanOutService {
     const base: FanOutTaskResult = { index: ctx.index, title: ctx.title, ok: false };
     if (ctx.agentChoice) base.agent = ctx.agentChoice.agent;
 
+    // A bot's code task: origin is read again right before its mission is
+    // created (the batch preflight ran before the base was resolved), so a
+    // refusal leaves nothing behind.
+    if (ctx.originPin && !ctx.output) {
+      const pinRefusal = dispatchOriginPinRefusal(ctx.originPin, await this.worktrees.readOriginPin(ctx.repoPath));
+      if (pinRefusal) return { ...base, error: `worktree preflight failed: ${pinRefusal}` };
+    }
+
     // ① mission.start — taskId·channelId 획득(멱등키 전달).
     let taskId: string;
     let channelId: string;

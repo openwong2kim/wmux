@@ -388,6 +388,24 @@ describe.skipIf(process.platform === 'win32')('task.push and task.fetch: the rec
     expect(await pushTask({ ...input(), expectedOriginPin: pin })).toMatchObject({ ok: false });
   });
 
+  it('a remote URL in any scope counts for a remote-conditioned include: the repository\'s reading is not replayed', async () => {
+    const pin = 'https://git.corp.example/acme/app.git';
+    git(repo, 'remote', 'add', 'origin', pin);
+    // The repository's include supplies the rewrite to the task's origin; the
+    // owner's global config holds another remote, which a hasconfig include
+    // matches. (git itself refuses a remote URL inside an included file once
+    // a hasconfig include exists.)
+    const inc = path.join(root, 'gitdir.inc');
+    fs.writeFileSync(inc, rule('srv', 'https://git.corp.example/'));
+    const withExtra = (extra: string) => globalConfig(`[includeIf "gitdir:${common}"]\n\tpath = ${inc}\n[includeIf "hasconfig:remote.*.url:https://elsewhere.example/**"]\n\tpath = ${inc}.none\n${extra}`);
+    withExtra('[remote "extra"]\n\turl = https://elsewhere.example/acme/app.git\n');
+    expect(await pushTask({ ...input(), expectedOriginPin: pin })).toMatchObject({ ok: false });
+    expect(git(bare, 'for-each-ref', '--format=%(refname)', 'refs/heads')).toBe('refs/heads/main');
+    // Without the extra remote the replay stands and the push lands.
+    withExtra('');
+    expect(await pushTask({ ...input(), expectedOriginPin: pin })).toMatchObject({ ok: true });
+  });
+
   it('a switch between https and ssh is refused; the owner picks the repository again', async () => {
     git(repo, 'remote', 'add', 'origin', 'git@git.corp.example:acme/app.git');
     globalConfig();
