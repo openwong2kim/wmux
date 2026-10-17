@@ -133,9 +133,8 @@ jobs:
       # checked by scripts/typecheck.mjs against the disk itself. Running it on
       # three runners added no signal, and on macos-14 (7 GB RAM) the old
       # single-program check ran out of the default V8 heap. ci.yml type-checks
-      # once with scripts/typecheck.mjs; the mcp program is compiled by
-      # validate's build:mcp step and the daemon program by validate-runtime's
-      # build:daemon step.
+      # once with scripts/typecheck.mjs; the mcp and daemon programs are
+      # compiled by validate's build:mcp and build:daemon steps.
 
       # No lint here. Lint does not depend on the OS: ci.yml runs the strict
       # lint on the cross-platform files once. The repo-wide advisory lint that
