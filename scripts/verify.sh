@@ -9,9 +9,12 @@
 #   1. eslint on the changed .ts/.tsx files (errors fail, warnings do not),
 #   2. the typecheck,
 #   3. the vitest files related to the change (`vitest --changed`), in the
-#      main lane and the runtime lane.
-# Any change at all (a deletion, a config file) runs 2 and 3; only eslint is
-# limited to the changed TypeScript files.
+#      main lane and the runtime lane,
+#   4. the guard tests in scripts/verify-guards.txt, whatever changed: they
+#      check rules of the repository (a directory scan, a doc, a generated
+#      file), so `--changed`, which follows imports, rarely picks them.
+# Any change at all (a deletion, a config file) runs 2, 3 and 4; only eslint
+# is limited to the changed TypeScript files.
 # The change is everything since the merge base with WMUX_VERIFY_BASE
 # (default origin/main, refreshed first when the network allows): committed,
 # staged, unstaged and untracked files.
@@ -69,5 +72,18 @@ npx vitest run --changed "$base" --maxWorkers="$workers" --passWithNoTests --rep
 
 echo "verify: related runtime tests"
 npx vitest run --config vitest.runtime.config.ts --changed "$base" --maxWorkers="$workers" --passWithNoTests --reporter=dot --silent
+
+# The base's list plus the lines this change adds (scripts/lib/verify-guards.mjs).
+# Read into a variable first so a failing helper stops the gate (set -e)
+# instead of reading as an empty list.
+guard_list="$(node scripts/verify-guards.mjs "$base")"
+guards=()
+while IFS= read -r g; do
+  if [ -n "$g" ]; then guards+=("$g"); fi
+done <<< "$guard_list"
+if [ "${#guards[@]}" -gt 0 ]; then
+  echo "verify: guard tests (${#guards[@]})"
+  npx vitest run "${guards[@]}" --maxWorkers="$workers" --reporter=dot --silent
+fi
 
 echo "verify: passed"

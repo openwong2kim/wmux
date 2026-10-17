@@ -1,0 +1,27 @@
+# Guard tests: tests that check a rule of this repository rather than one
+# module. `vitest --changed` only picks the tests that import a changed file,
+# and a guard reads the tree itself (a directory scan, a doc, a generated
+# file, a script it runs), so a change that breaks the rule is usually not
+# one it imports. scripts/verify.sh therefore runs every file listed here on
+# every change, after the related tests.
+#
+# One path per line, relative to the repository root; `#` starts a comment.
+# Only main-lane tests (vitest.config.ts), not *.runtime.test.* files.
+#
+# What counts is this list on the change's merge base plus any line the
+# change adds: a change can add a guard to its own gate, but removing a line
+# takes effect only once that removal is on main.
+
+# A room.notice template the desktop has must be published for the phone and
+# listed in docs/phone-client-contract.md.
+src/shared/__tests__/phoneRoomNotices.test.ts
+
+# No new `slug === '<agent>'` or `case '<agent>':` branches outside the agent
+# registry (src/shared/agentIdentity.ts).
+src/shared/__tests__/agentSlugBranches.guard.test.ts
+
+# Every English UI string has a Polish one, with the same placeholders.
+src/renderer/i18n/__tests__/plLocaleCoverage.test.ts
+
+# docs/api/reference.md is regenerated after an RPC, event or capability change.
+scripts/__tests__/genApiReference.test.mjs
