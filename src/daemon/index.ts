@@ -130,6 +130,8 @@ import { WSL_GATE_FLAG_FILE } from '../shared/wslIntegration';
 import { CommandStartAgentProbe } from './commandStartAgentProbe';
 import { resolveCanonicalAgentIdentity, detectorSuppressedBy, reportedAgentName, provesLiveAgent, type CanonicalAgentIdentity } from './canonicalAgent';
 import { decideLaunchPresence, launchPresenceNeedsProcessRead, type IdleShellRead } from './launchPresence';
+import { promptLineState } from '../shared/promptLineState';
+import { parseWriteExpectation, writeIfUnchanged } from './writeIfUnchanged';
 import { Watchdog } from './Watchdog';
 import { selectRecoverableSessions, startLeftoverShellReaps } from './recoverySelector';
 import { isShutdownKillExit, SHUTDOWN_KILL_RECLASSIFY_MS } from './shutdownKill';
@@ -4931,6 +4933,7 @@ function registerRpcHandlers(
       isExec: !!session?.meta.exec,
       isWsl: !!session?.meta.wslTarget,
       exitAfterPrompt: session?.promptLog.exitAfterPrompt(),
+      lineNeverRead: !!session && promptLineState(session.promptLog.snapshot(), session.ringBuffer.totalBytesWritten) === 'idle-at-prompt',
     };
     let idleShell: IdleShellRead | undefined;
     if (session && params['probeProcess'] === true && launchPresenceNeedsProcessRead(inputs)) {
@@ -5264,6 +5267,35 @@ function registerRpcHandlers(
     return { result: await bridge.desktopInterrupt(id, agentSessionId) };
   });
 
+  // F26 — type into a session only if it has not moved since main looked at
+  // it: the compare and the PTY write are one synchronous step (see
+  // writeIfUnchanged.ts). Used for a fan-out task pane's second launch line.
+  pipeServer.onRpc('daemon.writeIfUnchanged', async (params) => {
+    const sessionId = typeof params['sessionId'] === 'string' ? params['sessionId'] : '';
+    const data = typeof params['data'] === 'string' ? params['data'] : '';
+    const expect = parseWriteExpectation(params['expect']);
+    if (!sessionId || !data || data.length > 64 * 1024 || !expect) {
+      throw new Error('daemon.writeIfUnchanged: sessionId, data (at most 64 KiB) and expect are required');
+    }
+    const managed = sessionManager.getSession(sessionId);
+    if (!managed) return { written: false };
+    try {
+      return {
+        written: writeIfUnchanged({
+          ringBuffer: managed.ringBuffer,
+          promptLog: managed.promptLog,
+          write: (input) => {
+            managed.ptyProcess.write(input);
+            managed.bridge.noteInput(input);
+          },
+        }, data, expect),
+      };
+    } catch {
+      // A PTY that refused the write (backpressure, gone): not written.
+      return { written: false };
+    }
+  });
+
   // daemon.readPromptEvents — read structured OSC 133 prompt/command events
   // from a session's PromptEventLog. Falls back to an empty response when the
   // session doesn't exist so callers can degrade gracefully.
@@ -5304,6 +5336,9 @@ function registerRpcHandlers(
 
     return {
       events,
+      // The whole log's size, not just this page: daemon.writeIfUnchanged
+      // compares against it.
+      eventCount: managed.promptLog.size,
       lastCompletedRange,
       totalBytesWritten,
       sessionFound: true,

@@ -19,14 +19,72 @@ import type { DaemonClient } from '../DaemonClient';
 import type { RpcMethod } from '../../shared/rpc';
 import { sendToRenderer } from '../pipe/handlers/_bridge';
 import { getProjectConfigStore } from '../project/ProjectConfigStore';
+import { WSL_RPC_TIMEOUT_MS } from '../../shared/wsl';
 import { FanOutService } from './FanOutService';
 import { createDaemonLaunchProbe } from './fanoutLaunchProbe';
 import { createWorkerTempDir, getWorkerTempDirSweeper, removeWorkerTempDir } from './fanoutTempDir';
 
 type GetWindow = () => BrowserWindow | null;
 
-/** 스폰은 몇 초 걸릴 수 있으니 렌더러 spawn 타임아웃을 넉넉히(PTY 생성 포함). */
-const SPAWN_TIMEOUT_MS = 30000;
+/** How long a task's spawn may take before the fan-out gives up on it. F26 —
+ *  it covers pty:create's own WSL budget (WSL_RPC_TIMEOUT_MS, a 60 s cwd probe
+ *  that a burst of WSL workers starting up slows down) plus the attach after
+ *  it. The old 30 s gave up on WSL spawns that were still in progress. */
+export const SPAWN_TIMEOUT_MS = WSL_RPC_TIMEOUT_MS + 30_000;
+
+/** How long a reply that arrives after the give-up is still listened for. */
+const SPAWN_LATE_REPLY_MS = 10 * 60_000;
+
+/**
+ * The renderer's `fanout.spawnWorkspace`, given up on after `giveUpMs`. The
+ * fan-out then reports the task as not started and closes its mission, so a
+ * workspace the renderer still brings up afterwards would be a live, stamped
+ * pane no task or caller knows about (it holds a live-cap slot and its agent
+ * runs). It is closed as soon as its late reply lands. A late failure needs
+ * nothing: the renderer has already rolled its workspace back.
+ */
+export function spawnTaskWorkspace(
+  getWindow: GetWindow,
+  params: Record<string, unknown>,
+  opts: { send?: typeof sendToRenderer; giveUpMs?: number; lateReplyMs?: number } = {},
+): Promise<unknown> {
+  const send = opts.send ?? sendToRenderer;
+  const giveUpMs = opts.giveUpMs ?? SPAWN_TIMEOUT_MS;
+  const reply = send(getWindow, 'fanout.spawnWorkspace', params, {
+    timeoutMs: giveUpMs + (opts.lateReplyMs ?? SPAWN_LATE_REPLY_MS),
+  });
+  return new Promise((resolve, reject) => {
+    let gaveUp = false;
+    const timer = setTimeout(() => {
+      gaveUp = true;
+      reject(new Error(`RPC timeout: fanout.spawnWorkspace (${giveUpMs}ms)`));
+    }, giveUpMs);
+    reply.then(
+      (res) => {
+        if (!gaveUp) {
+          clearTimeout(timer);
+          resolve(res);
+          return;
+        }
+        const late = (res as { workspaceId?: unknown } | null)?.workspaceId;
+        if (typeof late !== 'string' || !late) return;
+        console.warn(`[fanout] closing workspace ${late}: its spawn finished after the fan-out gave up on it`);
+        send(getWindow, 'workspace.close', { id: late, force: true }).then(
+          (closed) => {
+            const error = (closed as { error?: unknown } | null)?.error;
+            if (typeof error === 'string') console.warn(`[fanout] late workspace ${late} not closed: ${error}`);
+          },
+          (err: unknown) => console.warn(`[fanout] late workspace ${late} not closed: ${String(err)}`),
+        );
+      },
+      (err: unknown) => {
+        if (gaveUp) return;
+        clearTimeout(timer);
+        reject(err);
+      },
+    );
+  });
+}
 
 /** A-1 — a first-run screen is a whole boxed dialog; a short tail would cut its
  *  headline off and the detector would never match. */
@@ -49,9 +107,12 @@ export function createFanOutService(
     },
     renderer: {
       spawnWorkspace: async (p) => {
-        const res = (await sendToRenderer(getWindow, 'fanout.spawnWorkspace', p, {
-          timeoutMs: SPAWN_TIMEOUT_MS,
-        })) as { workspaceId?: string; ptyId?: string; initialCommand?: string; error?: string };
+        const res = (await spawnTaskWorkspace(getWindow, p)) as {
+          workspaceId?: string;
+          ptyId?: string;
+          initialCommand?: string;
+          error?: string;
+        };
         if (res && typeof res.error === 'string') return { error: res.error };
         if (res && typeof res.workspaceId === 'string') {
           return {
