@@ -37,6 +37,8 @@ import { dmThreadId } from '../../shared/room';
 import { git as runGit, type GitResult } from '../git/git';
 import { dubiousOwnership, dubiousOwnershipMessage } from '../git/dubiousOwnership';
 import { parseRemoteKey } from '../github/PrProvider';
+import { readRawOriginUrl } from '../worktask/workerGit';
+import { normalizeOriginPin } from '../../shared/originPin';
 import type { WorkspaceListEntry } from '../../shared/workspaceMirror';
 import type { BotStore } from './botStore';
 import type { WakeEnqueueInput } from './wakeQueue';
@@ -47,7 +49,7 @@ export interface BotRepoDeps {
 }
 
 export type BotRepoResult =
-  | { ok: true; repo: { repoKey: string; repoPath: string } }
+  | { ok: true; repo: { repoKey: string; repoPath: string; originPin?: string } }
   | { ok: false; code: 'invalid_argument' | 'not_a_repo' | 'repo_untrusted' | 'no_remote'; message: string };
 
 /** A repository inside WSL (`\\wsl.localhost\<distro>\…`, `\\wsl$\…`): its bot's
@@ -91,14 +93,20 @@ export async function resolveBotRepo(folder: unknown, deps: BotRepoDeps = {}): P
   // picker is the only way to link a repository, so the person has to learn
   // here that the fix is in the repository's own remote (#2296 E2E, F1).
   if (!url) return { ok: false, code: 'no_remote', message: `${repoPath} has no origin remote. ${NEEDS_HOSTED_ORIGIN}` };
-  const repoKey = normalizeRepoKey(parseRemoteKey(url));
+  // The key and the pin come from origin's URL as the repository config holds
+  // it, the address task_push compares against (an owner's `url.*.insteadOf`
+  // is applied by get-url only); get-url's when that one names no repository.
+  const raw = await readRawOriginUrl(git, repoPath);
+  const rawKey = raw === null ? null : normalizeRepoKey(parseRemoteKey(raw));
+  const repoKey = rawKey ?? normalizeRepoKey(parseRemoteKey(url));
   if (!repoKey) return { ok: false, code: 'no_remote', message: `The origin remote of ${repoPath} is not an owner/repo address on a git host. ${NEEDS_HOSTED_ORIGIN}` };
-  return { ok: true, repo: { repoKey, repoPath } };
+  const originPin = rawKey ? normalizeOriginPin(raw) : null;
+  return { ok: true, repo: { repoKey, repoPath, ...(originPin ? { originPin } : {}) } };
 }
 
 /** The repo a workspace's bots already work on (its oldest repo bot's), or
  *  null when none has one. */
-export function workspaceRepo(store: BotStore, workspaceId: unknown): { repoKey: string; repoPath: string } | null {
+export function workspaceRepo(store: BotStore, workspaceId: unknown): { repoKey: string; repoPath: string; originPin?: string } | null {
   if (typeof workspaceId !== 'string' || workspaceId.length === 0) return null;
   const withRepo = store.list({ workspaceId }).filter((b) => b.repo).sort((a, b) => a.createdAt - b.createdAt);
   return withRepo[0]?.repo ? { ...withRepo[0].repo } : null;
@@ -112,7 +120,7 @@ export async function createBotFromFolder(
 ): Promise<FactoryBotCreateResult> {
   if (!store) return { ok: false, code: 'not_started', message: 'The factory is not running.' };
   const r = req && typeof req === 'object' && !Array.isArray(req) ? (req as Record<string, unknown>) : {};
-  let repo: { repoKey: string; repoPath: string } | undefined;
+  let repo: { repoKey: string; repoPath: string; originPin?: string } | undefined;
   if (r.repoFolder === undefined) {
     // No folder: the workspace's repo, when one of its bots has one.
     const inherited = workspaceRepo(store, r.workspaceId);

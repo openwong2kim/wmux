@@ -24,6 +24,7 @@ import * as fs from 'node:fs';
 import * as crypto from 'node:crypto';
 import { getWmuxHomeDir } from '../../shared/constants';
 import { getExecEnv } from '../../shared/execEnv';
+import { originPinFromConfigList } from './workerGit';
 
 const execFileAsync = promisify(execFile);
 
@@ -141,6 +142,10 @@ export interface TaskWorktreePlan {
   /** The repository's common git dir, resolved; absent when it could not be
    *  read. Recorded on the task's ledger row (LedgerDispatch.gitCommonDir). */
   gitCommonDir?: string;
+  /** origin's pin, read through gitCommonDir; absent when origin is not a
+   *  plain https or ssh address. Recorded on the task's ledger row
+   *  (LedgerDispatch.originPin). */
+  originPin?: string;
 }
 
 export type PreflightResult =
@@ -313,6 +318,17 @@ export class TaskWorktreeManager {
     } catch {
       gitCommonDir = undefined;
     }
+    // origin's address as the repository config holds it (no URL rewrite
+    // applied), read through that git dir: the task's origin pin.
+    let originPin: string | undefined;
+    if (gitCommonDir) {
+      try {
+        const { stdout } = await this.runGit([`--git-dir=${gitCommonDir}`, 'config', '-z', '--list', '--show-scope'], realRoot);
+        originPin = originPinFromConfigList(stdout) ?? undefined;
+      } catch {
+        originPin = undefined;
+      }
+    }
 
     // 경로 파생.
     const taskSlug = buildTaskSlug(title, taskId);
@@ -359,7 +375,7 @@ export class TaskWorktreeManager {
       }
     }
 
-    return { ok: true, plan: { repoRoot: realRoot, repoHash, taskSlug, worktreePath, branch, metaDir, ...(gitCommonDir ? { gitCommonDir } : {}) } };
+    return { ok: true, plan: { repoRoot: realRoot, repoHash, taskSlug, worktreePath, branch, metaDir, ...(gitCommonDir ? { gitCommonDir } : {}), ...(originPin ? { originPin } : {}) } };
   }
 
   /**

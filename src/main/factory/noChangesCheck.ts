@@ -124,6 +124,12 @@ export interface LiveNoChangesDeps {
   /** A bot's repository folder (its profile), for a task whose dispatch
    *  records no git dir. */
   botRepoPath?: (botId: string) => string | undefined;
+  /** A bot's origin pin (its profile), for a task whose dispatch records
+   *  none. */
+  botOriginPin?: (botId: string) => string | undefined;
+  /** Records origin's pin on a task row that has none (TaskLedger
+   *  recordOriginPin); absent = such a row is read unpinned. */
+  recordOriginPin?: (taskId: string, pin: string) => Promise<string | null>;
 }
 
 /** The check over main's own records, git and origin. */
@@ -183,6 +189,10 @@ export function liveNoChangesPorts(deps: LiveNoChangesDeps): NoChangesPorts {
       // Read in the repository main recorded, never one found through the worktree.
       const gitCommonDir = await recordedTaskGitCommonDir(entry.dispatch, deps.botRepoPath ?? (() => undefined));
       if (!gitCommonDir) return { ok: false, reason: 'git-failed', error: 'wmux recorded no repository folder for the task' };
+      // origin's exact address: the dispatch's pin, else the bot's profile's;
+      // a row with neither is pinned at this first use.
+      const expectedOriginPin = entry.dispatch?.originPin ?? (origin?.kind === 'bot' && origin.botId ? deps.botOriginPin?.(origin.botId) : undefined);
+      const record = deps.recordOriginPin;
       return readTaskRemoteHead({
         worktreePath: mission.worktreePath,
         branch: mission.branch,
@@ -191,6 +201,7 @@ export function liveNoChangesPorts(deps: LiveNoChangesDeps): NoChangesPorts {
         relayRoot: path.join(deps.wmuxDir(), 'factory', 'git-relay'),
         taskId: entry.id,
         ...(expectedRepoKey ? { expectedRepoKey } : {}),
+        ...(expectedOriginPin ? { expectedOriginPin } : record ? { recordOriginPin: (p: string) => record(entry.id, p) } : {}),
       }, git, deps.gitDeps);
     },
   };

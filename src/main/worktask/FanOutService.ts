@@ -1641,6 +1641,8 @@ export class FanOutService {
                 ...(ctx.repoKey ? { repoKey: ctx.repoKey } : {}),
                 // The git dir task_push and task_fetch run on.
                 ...(plan?.gitCommonDir ? { gitCommonDir: plan.gitCommonDir } : {}),
+                // origin's exact address, read through that git dir.
+                ...(plan?.originPin ? { originPin: plan.originPin } : {}),
                 ...(gitWorktreeDir ? { gitWorktreeDir } : {}),
                 ...(ctx.checkout ? { checkout: { sha: ctx.checkout.sha, detached: true as const } } : {}),
                 // The commit the task branch was created from: the no-changes

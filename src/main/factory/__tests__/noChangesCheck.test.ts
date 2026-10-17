@@ -187,6 +187,22 @@ describe.skipIf(process.platform === 'win32')('the no-changes check over real gi
     expect(await complete()).toMatchObject({ ok: false, error: { code: 'FAILED_PRECONDITION' } });
   });
 
+  it('origin is read only at the address pinned for the task: a row with no pin is pinned at this first read, then held to it', async () => {
+    const ports = liveNoChangesPorts({
+      rpc: () => async () => ({ ok: true, tasks: [] }),
+      wmuxDir: () => dataDir,
+      botRepoKey: () => undefined,
+      recordOriginPin: (taskId, pin) => ledger.recordOriginPin(taskId, pin),
+    });
+    const mission = { worktreePath: work, branch: 'wtask/one' };
+    expect(await ports.remoteHead(row(), mission)).toEqual({ ok: true, sha: null });
+    expect(row().dispatch?.originPin).toBe(`ssh://localhost:22${origin.replace(/\.git$/, '')}`);
+    // The same repository key on another port is not the pinned origin.
+    run(work, 'remote', 'set-url', 'origin', fakeSshUrl(origin).replace('ssh://localhost', 'ssh://localhost:2222'));
+    expect(await ports.remoteHead(row(), mission)).toMatchObject({ ok: false, reason: 'remote-refused' });
+    expect(await check()(row())).toMatchObject({ kind: 'unknown' });
+  });
+
   it('origin unreachable: unknown, so the gate would run, and the completion is refused', async () => {
     await skip();
     run(work, 'remote', 'set-url', 'origin', fakeSshUrl(path.join(root, 'gone.git')));

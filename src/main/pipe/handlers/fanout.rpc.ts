@@ -129,7 +129,7 @@ import { RESEARCH_PRESET } from '../../../shared/ledger';
 import { GENERAL_THREAD, parseThreadId, prThreadId, taskOriginThread, type ThreadId } from '../../../shared/room';
 import { normalizeRepoKey } from '../../../shared/repoKey';
 import { parseRemoteKey } from '../../github/PrProvider';
-import { originUrlRepoKey } from '../../worktask/workerGit';
+import { originUrlRepoKey, readRawOriginUrl } from '../../worktask/workerGit';
 import { getFactorySettings } from '../../factory/factorySettings';
 import { getBotFanoutReceipts } from '../../factory/botFanoutReceipts';
 import { noticeWorkerStarts, plainStartFailure, type BotWorkerStartOutcome } from '../../factory/botNotices';
@@ -368,6 +368,12 @@ async function repoRootOf(dir: string): Promise<{ root: string | null; refusal: 
  */
 async function originRepoKeyOf(dir: string): Promise<string | null> {
   try {
+    // origin's URL as the repository config holds it first: the address
+    // task_push compares against (get-url applies an owner's
+    // `url.*.insteadOf`).
+    const raw = await readRawOriginUrl(runGit, dir);
+    const rawKey = raw === null ? null : normalizeRepoKey(parseRemoteKey(raw));
+    if (raw !== null && rawKey && originUrlRepoKey(raw) === rawKey) return rawKey;
     const res = await runGit(['remote', 'get-url', 'origin'], dir);
     if (res.code !== 0) return null;
     const url = res.stdout.trim();

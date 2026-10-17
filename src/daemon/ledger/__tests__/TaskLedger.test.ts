@@ -385,6 +385,32 @@ describe('TaskLedger — transition matrix', () => {
     }
   });
 
+  it('a dispatch keeps origin\'s pin in its canonical form, across a reload', async () => {
+    const a = open();
+    const pin = 'ssh://git@git.corp.example:2222/Team/App';
+    await a.register({ id: 'wtask-pin', taskWorkspaceId: 'ws-task', ownerWorkspaceId: 'ws-owner', title: 'lane', dispatch: { origin: { kind: 'bot', botId: 'b1' }, originPin: pin } });
+    expect(open().get('wtask-pin')?.dispatch?.originPin).toBe(pin);
+    for (const [i, bad] of ['HTTPS://X.example/o/r', 'https://x.example/o/r', '/srv/r.git', ''].entries()) {
+      await a.register({ id: `wtask-pin-bad-${i}`, taskWorkspaceId: 'ws-task', ownerWorkspaceId: 'ws-owner', title: 'lane', dispatch: { origin: { kind: 'bot', botId: 'b1' }, originPin: bad } });
+      expect(a.get(`wtask-pin-bad-${i}`)?.dispatch?.originPin).toBeUndefined();
+    }
+  });
+
+  it('a row with no pin is pinned once: a recorded pin is never replaced, and survives a reload', async () => {
+    const a = open();
+    await a.register({ id: 'wtask-old', taskWorkspaceId: 'ws-task', ownerWorkspaceId: 'ws-owner', title: 'lane', dispatch: { origin: { kind: 'bot', botId: 'b1' }, repoKey: 'github.com/acme/app' } });
+    const rev = a.get('wtask-old')?.rev;
+    expect(await a.recordOriginPin('wtask-old', 'not a pin')).toBeNull();
+    expect(await a.recordOriginPin('wtask-old', 'git@github.com:acme/app')).toBe('git@github.com:acme/app');
+    expect(await a.recordOriginPin('wtask-old', 'https://github.com:443/acme/app')).toBe('git@github.com:acme/app');
+    const reloaded = open().get('wtask-old');
+    expect(reloaded?.dispatch).toMatchObject({ repoKey: 'github.com/acme/app', originPin: 'git@github.com:acme/app' });
+    expect(reloaded?.rev).toBe(rev);
+    await a.register({ id: 'wtask-none', taskWorkspaceId: 'ws-task', ownerWorkspaceId: 'ws-owner', title: 'lane' });
+    expect(await a.recordOriginPin('wtask-none', 'git@github.com:acme/app')).toBeNull();
+    expect(await a.recordOriginPin('wtask-missing', 'git@github.com:acme/app')).toBeNull();
+  });
+
   it('a dispatch keeps the base commit main created the branch from, a full commit id only, across a reload', async () => {
     const a = open();
     const base = 'b'.repeat(40);

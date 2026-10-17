@@ -14,6 +14,10 @@ import { completeMergedTask, recordNoChangesGate } from '../../factory/taskGate'
 import { parseRemoteKey } from '../../github/PrProvider';
 import { normalizeRepoKey } from '../../../shared/repoKey';
 import { readRepoDefaultBranchByKey } from '../../agents/botWorkerDefaultBranch';
+import { fakeSshUrl, writeFakeSsh } from '../../../test-utils/fakeSsh';
+import { normalizeOriginPin } from '../../../shared/originPin';
+import { fetchTaskRefs } from '../taskFetch';
+import { resolveBotRepo } from '../../factory/botCreate';
 
 vi.mock('electron', () => ({ app: { getPath: () => os.tmpdir() } }));
 
@@ -200,6 +204,90 @@ describe('pushTaskBranch', () => {
     for (const bad of ['/srv/app.git', 'file:///srv/app.git', 'ext::sh -c x', 'https://github.com/acme/app?x=1', '--upload-pack=x', 'git@github.com:22:acme/app.git', 'https://u:secret@gitlab.example.com/g/p.git', 'http://gitlab.example.com/g/p.git', 'https://gitlab.example.com/g/../p.git']) {
       expect(originUrlRepoKey(bad), bad).toBeNull();
     }
+  });
+});
+
+// The stand-in ssh origin is a /bin/sh script.
+describe.skipIf(process.platform === 'win32')('task.push and task.fetch: the recorded origin pin', () => {
+  let root: string;
+  let repo: string;
+  let work: string;
+  let common: string;
+  let wtGitDir: string;
+  let bare: string;
+  beforeEach(() => {
+    root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-origin-pin-')));
+    bare = path.join(root, 'srv', 'acme', 'app.git');
+    repo = path.join(root, 'repo');
+    work = path.join(root, 'work');
+    fs.mkdirSync(path.dirname(bare), { recursive: true });
+    execFileSync('git', ['init', '-q', '--bare', bare]);
+    execFileSync('git', ['init', '-q', '-b', 'main', repo]);
+    fs.writeFileSync(path.join(repo, 'a.txt'), 'a\n');
+    git(repo, 'add', '.');
+    git(repo, 'commit', '-qm', 'init');
+    git(repo, 'push', '-q', bare, 'main');
+    git(repo, 'worktree', 'add', '-q', '-b', 'wtask/one', work);
+    fs.writeFileSync(path.join(work, 'b.txt'), 'b\n');
+    git(work, 'add', '.');
+    git(work, 'commit', '-qm', 'work');
+    common = fs.realpathSync.native(path.join(repo, '.git'));
+    wtGitDir = fs.realpathSync.native(git(work, 'rev-parse', '--path-format=absolute', '--git-dir'));
+  });
+  afterEach(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(path.join(os.homedir(), '.gitconfig'), { force: true });
+  });
+  const input = () => ({
+    worktreePath: work, branch: 'wtask/one', defaultBranches: [], noHooksDir: path.join(root, 'no-hooks'),
+    gitCommonDir: common, gitWorktreeDir: wtGitDir, relayRoot: path.join(root, 'relay'), taskId: 'wtask-1',
+  });
+  /** The owner's global config: the stand-in ssh, and `extra`. */
+  const globalConfig = (extra = '') => fs.writeFileSync(path.join(os.homedir(), '.gitconfig'), `[core]\n\tsshCommand = ${writeFakeSsh(root)}\n${extra}`);
+
+  it('the owner\'s global insteadOf (https to ssh) changes neither side of the compare: the pin is recorded and compared from the raw URL', async () => {
+    // The repository says https; the owner's global config sends it over ssh.
+    git(repo, 'remote', 'add', 'origin', 'https://git.corp.example/acme/app.git');
+    globalConfig(`[url "${fakeSshUrl(path.join(root, 'srv'))}/"]\n\tinsteadOf = https://git.corp.example/\n`);
+    expect(git(repo, 'remote', 'get-url', 'origin')).toBe(fakeSshUrl(bare));
+    // Recorded as a bot's repository is: from the raw URL, never get-url.
+    const resolved = await resolveBotRepo(repo);
+    expect(resolved).toMatchObject({ ok: true, repo: { repoKey: 'git.corp.example/acme/app', originPin: 'https://git.corp.example:443/acme/app' } });
+    const expectedOriginPin = resolved.ok ? resolved.repo.originPin : undefined;
+    const r = await pushTask({ ...input(), expectedRepoKey: 'git.corp.example/acme/app', expectedOriginPin });
+    expect(r).toMatchObject({ ok: true });
+    expect(git(bare, 'rev-parse', 'refs/heads/wtask/one')).toBe(git(work, 'rev-parse', 'HEAD'));
+  });
+
+  it('a row with no pin is pinned at its first use, then held to it: a port change is refused and nothing reaches the other server', async () => {
+    git(repo, 'remote', 'add', 'origin', fakeSshUrl(bare));
+    globalConfig();
+    const recorded: string[] = [];
+    const recordOriginPin = vi.fn(async (pin: string) => {
+      if (recorded.length === 0) recorded.push(pin);
+      return recorded[0];
+    });
+    const ledgerPinned = async () => ({ ...input(), ...(recorded[0] ? { expectedOriginPin: recorded[0] } : { recordOriginPin }) });
+    expect(await pushTask(await ledgerPinned())).toMatchObject({ ok: true });
+    expect(recorded).toEqual([normalizeOriginPin(fakeSshUrl(bare))]);
+    // The same repository key on another port: the pin refuses it.
+    const other = path.join(root, 'other.git');
+    execFileSync('git', ['init', '-q', '--bare', other]);
+    git(repo, 'remote', 'set-url', 'origin', fakeSshUrl(bare).replace('ssh://localhost', 'ssh://localhost:2222'));
+    const refused = await pushTask(await ledgerPinned());
+    expect(refused).toMatchObject({ ok: false, reason: 'remote-refused', error: expect.stringContaining('recorded') });
+    expect(await fetchTaskRefs(await ledgerPinned())).toMatchObject({ ok: false, reason: 'remote-refused' });
+    expect(recordOriginPin).toHaveBeenCalledTimes(1);
+    // Back on the recorded address it works again.
+    git(repo, 'remote', 'set-url', 'origin', fakeSshUrl(bare));
+    expect(await fetchTaskRefs(await ledgerPinned())).toMatchObject({ ok: true, defaultBranch: 'main' });
+  });
+
+  it('a different host is refused even under the same repository path', async () => {
+    git(repo, 'remote', 'add', 'origin', 'git@git.corp.example:acme/app.git');
+    globalConfig();
+    expect(await pushTask({ ...input(), expectedOriginPin: normalizeOriginPin('git@git.other.example:acme/app.git') as string })).toMatchObject({ ok: false, reason: 'remote-refused' });
+    expect(git(bare, 'for-each-ref', '--format=%(refname)', 'refs/heads')).toBe('refs/heads/main');
   });
 });
 
@@ -419,6 +507,48 @@ describe('task.push RPC', () => {
       });
       expect(await (handlers.get('task.push') as Handler)({ senderPtyId: 'pty-9' }, local)).toMatchObject({ ok: true });
       expect(push).toHaveBeenCalledTimes(1);
+    } finally {
+      fs.rmSync(ledgerDir, { recursive: true, force: true });
+    }
+  });
+
+  it('holds the push to the pin on the dispatch, else the bot\'s profile\'s; a row with neither is pinned on the ledger at its first use', async () => {
+    const ledgerDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-task-push-ledger-'));
+    try {
+      const ledger = new TaskLedger({ dir: ledgerDir });
+      const dispatch = { origin: { kind: 'bot', botId: 'bot-1' }, repoKey: 'github.com/acme/app', gitCommonDir: '/r/.git' };
+      const pushWith = async (row: Record<string, unknown>, profilePin?: string) => {
+        const handlers = new Map<string, Handler>();
+        const push = vi.fn(async (i: { branch: string; recordOriginPin?: (p: string) => Promise<string | null> }) => {
+          // The push records origin's pin as read from the recorded repository.
+          if (i.recordOriginPin) await i.recordOriginPin('git@github.com:acme/app');
+          return { ok: true as const, branch: i.branch, remote: 'origin' as const, head: 'f'.repeat(40), output: '' };
+        });
+        await ledger.register({ id: row.id as string, taskWorkspaceId: 'ws-task', ownerWorkspaceId: 'ws-owner', title: 't', dispatch: row.dispatch as never });
+        registerTaskPushRpc({ register: (m: string, h: Handler) => handlers.set(m, h) } as never, {
+          getWindow: () => null,
+          daemon: { rpc: vi.fn(async () => ({ ok: true, tasks: [{ id: row.id, status: 'open', branch: 'wtask/one', worktreePath: '/w/one' }] })) },
+          getLedger: () => ({ findOpenByTaskWorkspace: () => ledger.get(row.id as string), get: (id: string) => ledger.get(id), recordOriginPin: (id: string, p: string) => ledger.recordOriginPin(id, p) }) as never,
+          resolveCallerWorkspace: async () => 'ws-task',
+          exists: () => true,
+          wmuxDir: () => fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-task-push-rpc-')),
+          push: push as never,
+          repoDefaultBranch: async () => 'main',
+          botOriginPin: () => profilePin,
+        });
+        expect(await (handlers.get('task.push') as Handler)({ senderPtyId: 'pty-1' }, local)).toMatchObject({ ok: true });
+        return push.mock.calls[0][0] as { expectedOriginPin?: string; recordOriginPin?: unknown };
+      };
+      const pinned = await pushWith({ id: 'wtask-a', dispatch: { ...dispatch, originPin: 'https://github.com:443/acme/app' } }, 'git@github.com:acme/other');
+      expect(pinned).toMatchObject({ expectedOriginPin: 'https://github.com:443/acme/app' });
+      expect(pinned.recordOriginPin).toBeUndefined();
+      expect(await pushWith({ id: 'wtask-b', dispatch }, 'git@github.com:acme/app')).toMatchObject({ expectedOriginPin: 'git@github.com:acme/app' });
+      // A legacy row: pinned at its first push, and held to that pin after a reload.
+      const legacy = await pushWith({ id: 'wtask-c', dispatch });
+      expect(legacy.expectedOriginPin).toBeUndefined();
+      expect(typeof legacy.recordOriginPin).toBe('function');
+      await ledger.flush();
+      expect(new TaskLedger({ dir: ledgerDir }).get('wtask-c')?.dispatch?.originPin).toBe('git@github.com:acme/app');
     } finally {
       fs.rmSync(ledgerDir, { recursive: true, force: true });
     }

@@ -16,8 +16,10 @@
 //     anything but its URL and fetch refspec, when any URL rewrite or a
 //     program-running key is set (worktask/workerGit.ts), when the config
 //     defines a remote named by origin's URL (the same remote and ref checks
-//     as task_fetch), and — for a bot's task — when the URL is not a plain
-//     https/ssh address of the bot's own repository.
+//     as task_fetch), when the URL is not a plain https/ssh address of the
+//     task's recorded repository, and when it does not match the origin pin
+//     main recorded for the task (shared/originPin.ts: the host and port
+//     exactly; a row with no pin is pinned at its first use).
 //   - IN WHICH git dir: the push runs in a bare relay repository main owns
 //     (one per task, under <wmux>/factory/git-relay/<taskId>) that borrows the
 //     recorded repository's objects through `objects/info/alternates`. The
@@ -56,6 +58,7 @@ import { mergeWslEnv } from '../../shared/wsl';
 import { decodeWslOutput, isValidWslDistroName } from '../../shared/wslDistro';
 import { BOT_WORKER_FALLBACK_DEFAULT_BRANCHES, isDenyableBranchName } from '../../shared/botWorkerGuard';
 import { normalizeRepoKey } from '../../shared/repoKey';
+import { normalizeOriginPin, originPinMatches } from '../../shared/originPin';
 import {
   RELAY_GIT_DEFAULT_PROTOCOLS, gitVersionRefusal, parseRawGitConfigList, parseTaskHead, relayGitConfigArgs, taskGitEnv, transportConfigReplay,
 } from '../../shared/taskGitRelay';
@@ -89,7 +92,30 @@ export interface TaskGitRepoInput {
   taskId: string;
 }
 
-export interface TaskPushInput extends TaskGitRepoInput {
+/** The origin address main recorded for the task (shared/originPin.ts). */
+export interface TaskOriginPinInput {
+  /** The pin origin must match; absent for a row written before pins. */
+  expectedOriginPin?: string;
+  /** With no expected pin: records origin's pin, as read now, on the task's
+   *  row and resolves with the pin the row holds (null: not recorded). */
+  recordOriginPin?: (pin: string) => Promise<string | null>;
+}
+
+/** Why main will not use origin's URL `url` for the task's pin, or null. A
+ *  task with no pin is pinned to `url` first when `recordOriginPin` is given.
+ *  Never throws. */
+export async function originPinRefusal(url: string, input: TaskOriginPinInput): Promise<string | null> {
+  let pin = input.expectedOriginPin;
+  if (pin === undefined && input.recordOriginPin) {
+    const now = normalizeOriginPin(url);
+    if (!now) return 'origin is not a plain https or ssh address';
+    pin = (await input.recordOriginPin(now).catch(() => null)) ?? now;
+  }
+  if (pin !== undefined && !originPinMatches(pin, url)) return 'origin does not match the address wmux recorded for this task';
+  return null;
+}
+
+export interface TaskPushInput extends TaskGitRepoInput, TaskOriginPinInput {
   /** The task's branch (main's record). */
   branch: string;
   /** Default branches main recorded for this instance (main/master are
@@ -532,6 +558,8 @@ export async function pushTaskBranch(input: TaskPushInput, git: TaskPushGit = de
       return { ok: false, reason: 'remote-refused', error: `origin is not ${input.expectedRepoKey} (a plain https or ssh address of it)` };
     }
   }
+  const pinRefusal = await originPinRefusal(origin.url, input);
+  if (pinRefusal) return { ok: false, reason: 'remote-refused', error: pinRefusal };
   // The repository's own default branch, under every name it is read by.
   const own: string[] = [];
   const byKey = key && input.repoDefaultBranch ? await input.repoDefaultBranch(key).catch(() => null) : null;

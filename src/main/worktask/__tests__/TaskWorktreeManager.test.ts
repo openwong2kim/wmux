@@ -96,6 +96,28 @@ describe('preflight — the repository\'s common git dir', () => {
     expect(missing.ok && missing.plan.gitCommonDir).toBeUndefined();
     fs.rmSync(repoRoot, { recursive: true, force: true });
   });
+
+  it('pins origin as the repository config holds it, read through that git dir', async () => {
+    const repoRoot = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-repo-')));
+    fs.mkdirSync(path.join(repoRoot, '.git'));
+    const { TaskWorktreeManager } = await loadModule();
+    const calls: string[][] = [];
+    const withOrigin = (list: string) => makeGitFake((args) => {
+      calls.push(args);
+      if (args.includes('--git-common-dir')) return { stdout: '.git\n' };
+      if (args.includes('--show-toplevel')) return { stdout: `${repoRoot}\n` };
+      if (args.includes('--is-bare-repository')) return { stdout: 'false\n' };
+      if (args.includes('config') && args.includes('--list')) return { stdout: list };
+      return {};
+    });
+    const res = await new TaskWorktreeManager({ runGit: withOrigin('global\0url.ssh://git@git.corp.example/.insteadof\nhttps://git.corp.example/\0local\0remote.origin.url\nhttps://Git.Corp.Example/Team/App.git\0') }).preflight(repoRoot, 'T', 'wtask-x-1');
+    expect(res.ok && res.plan.originPin).toBe('https://git.corp.example:443/Team/App');
+    expect(calls).toContainEqual([`--git-dir=${path.join(repoRoot, '.git')}`, 'config', '-z', '--list', '--show-scope']);
+    // A local-path origin has no pin.
+    const local = await new TaskWorktreeManager({ runGit: withOrigin('local\0remote.origin.url\n/srv/app.git\0') }).preflight(repoRoot, 'T', 'wtask-x-1');
+    expect(local.ok && local.plan.originPin).toBeUndefined();
+    fs.rmSync(repoRoot, { recursive: true, force: true });
+  });
 });
 
 describe('preflight — 전용 루트 suffix 파생 (§3 C4)', () => {
