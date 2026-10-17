@@ -74,6 +74,8 @@ const SHALLOW_MAX = 1024 * 1024;
 
 /** A git runner with an explicit environment. Never throws; a failure is data. */
 export type PushGitRunner = (args: readonly string[], cwd: string, env: NodeJS.ProcessEnv) => Promise<GitRunResult>;
+/** A git runner fed `input` on stdin; stdout as bytes, at most `maxBytes` (more fails). */
+export type PushGitInputRunner = (args: readonly string[], cwd: string, env: NodeJS.ProcessEnv, input: string, maxBytes: number) => Promise<{ ok: boolean; stdout: Buffer }>;
 /** A gh runner with an explicit environment. */
 export type PushGhRunner = (args: readonly string[], env: NodeJS.ProcessEnv) => Promise<GitRunResult>;
 export interface PushChildResult { spawned: boolean; code: number | null; timedOut: boolean; stdout: string; stderr: string }
@@ -85,6 +87,8 @@ export interface PhoneGitPushDeps {
   git: PushGitRunner;
   /** Network git (`ls-remote`), always in a relay. */
   remote: PushGitRunner;
+  /** Local git with stdin (`cat-file --batch`). Never reaches the network. */
+  gitInput: PushGitInputRunner;
   gh: PushGhRunner;
   push: PushSpawner;
   /** The environment git and gh are found in (PATH, HOME). */
@@ -167,6 +171,31 @@ const spawnGroup: PushSpawner = (args, cwd, env, timeoutMs) => new Promise((reso
 });
 
 const localGit = execRunner('git', LOCAL_TIMEOUT_MS);
+
+const gitWithInput: PushGitInputRunner = (args, cwd, env, input, maxBytes) => new Promise((resolve) => {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  let done = false;
+  const child = spawn('git', [...args], { cwd, env, stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true });
+  const finish = (ok: boolean) => {
+    if (done) return;
+    done = true;
+    clearTimeout(timer);
+    if (!ok) child.kill('SIGKILL');
+    resolve({ ok, stdout: Buffer.concat(chunks) });
+  };
+  const timer = setTimeout(() => finish(false), LOCAL_TIMEOUT_MS);
+  child.stdout.on('data', (b: Buffer) => {
+    size += b.length;
+    if (size > maxBytes) return finish(false);
+    chunks.push(b);
+  });
+  child.once('error', () => finish(false));
+  child.once('close', (code) => finish(code === 0));
+  child.stdin.on('error', () => undefined);
+  child.stdin.end(input);
+});
+
 const ghRun = execRunner('gh', NETWORK_TIMEOUT_MS);
 
 /** `ls-remote` and the other network reads: same process-group handling as the push. */
@@ -181,6 +210,7 @@ export function createNetworkGitRunner(timeoutMs: number = NETWORK_TIMEOUT_MS): 
 export const defaultPushDeps: PhoneGitPushDeps = {
   git: localGit,
   remote: createNetworkGitRunner(),
+  gitInput: gitWithInput,
   gh: (args, env) => ghRun(args, undefined, env),
   push: spawnGroup,
   baseEnv: getExecEnv,
@@ -433,6 +463,89 @@ export function sweepPhoneGitRelays(stateDir: string, now: number): void {
   }
 }
 
+// ── Verified ancestry ───────────────────────────────────────────────────────
+
+/** The most commits a fast-forward check reads before it asks GitHub instead. */
+export const PUSH_ANCESTRY_MAX_COMMITS = 2000;
+/** The most bytes of commit objects that check reads. */
+const PUSH_ANCESTRY_MAX_BYTES = 32 * 1024 * 1024;
+
+/**
+ * Whether `tip` is an ancestor of `head`, from commits whose content hashes to
+ * their own ids: the walk from `head` reads each commit's raw object
+ * (`cat-file --batch`, replacement refs off), re-hashes it, and follows only
+ * the parents written in it. `unverified` when an object is not a commit
+ * matching its id, the walk passes PUSH_ANCESTRY_MAX_COMMITS, or git fails.
+ */
+async function verifiedAncestor(
+  deps: PhoneGitPushDeps, dirs: PaneGitDirs, env: NodeJS.ProcessEnv, objectFormat: 'sha1' | 'sha256', tip: string, head: string,
+): Promise<'ancestor' | 'not-ancestor' | 'unverified'> {
+  const idRe = objectFormat === 'sha256' ? /^[0-9a-f]{64}$/ : /^[0-9a-f]{40}$/;
+  if (!idRe.test(tip) || !idRe.test(head)) return 'unverified';
+  if (tip === head) return 'ancestor';
+  const pinned = { ...env, GIT_COMMON_DIR: dirs.commonDir, GIT_NO_REPLACE_OBJECTS: '1' };
+  const seen = new Set<string>([head]);
+  let frontier = [head];
+  let bytes = 0;
+  while (frontier.length > 0) {
+    const out = await deps.gitInput(local(`--git-dir=${dirs.gitDir}`, 'cat-file', '--batch'), os.homedir(), pinned, `${frontier.join('\n')}\n`, PUSH_ANCESTRY_MAX_BYTES - bytes);
+    if (!out.ok) return 'unverified';
+    bytes += out.stdout.length;
+    const next: string[] = [];
+    let at = 0;
+    for (const oid of frontier) {
+      const nl = out.stdout.indexOf(0x0a, at);
+      if (nl < 0) return 'unverified';
+      const header = out.stdout.subarray(at, nl).toString('latin1').split(' ');
+      // A missing parent (a shallow boundary) ends that line of history.
+      if (header.length === 2 && header[0] === oid && header[1] === 'missing') { at = nl + 1; continue; }
+      if (header.length !== 3 || header[0] !== oid || header[1] !== 'commit' || !/^\d+$/.test(header[2] as string)) return 'unverified';
+      const size = Number(header[2]);
+      const body = out.stdout.subarray(nl + 1, nl + 1 + size);
+      if (body.length !== size || out.stdout[nl + 1 + size] !== 0x0a) return 'unverified';
+      at = nl + 2 + size;
+      const id = crypto.createHash(objectFormat).update(`commit ${size}\0`).update(body).digest('hex');
+      if (id !== oid) return 'unverified';
+      const end = body.indexOf('\n\n');
+      for (const line of body.subarray(0, end < 0 ? body.length : end).toString('latin1').split('\n')) {
+        if (!line.startsWith('parent ')) continue;
+        const parent = line.slice('parent '.length);
+        if (!idRe.test(parent)) return 'unverified';
+        if (parent === tip) return 'ancestor';
+        if (seen.has(parent)) continue;
+        seen.add(parent);
+        next.push(parent);
+      }
+    }
+    if (at !== out.stdout.length) return 'unverified';
+    if (seen.size > PUSH_ANCESTRY_MAX_COMMITS) return 'unverified';
+    frontier = next;
+  }
+  return 'not-ancestor';
+}
+
+/**
+ * Whether pushing `head` onto `tip` is a fast-forward, from verified
+ * ancestry only: the re-hashed local walk, and when that cannot answer,
+ * GitHub's compare (which knows only commits already pushed). False on any
+ * doubt.
+ */
+async function verifiedFastForward(
+  deps: PhoneGitPushDeps, dirs: PaneGitDirs, env: NodeJS.ProcessEnv, objectFormat: 'sha1' | 'sha256',
+  tip: string, head: string, ownerRepo: string, net: NodeJS.ProcessEnv,
+): Promise<boolean> {
+  const walked = await verifiedAncestor(deps, dirs, env, objectFormat, tip, head);
+  if (walked !== 'unverified') return walked === 'ancestor';
+  const cmp = await deps.gh(['api', '--hostname', 'github.com', `repos/${ownerRepo}/compare/${tip}...${head}`], net);
+  if (!cmp.ok) return false;
+  try {
+    const status = (JSON.parse(cmp.stdout) as { status?: unknown }).status;
+    return status === 'ahead' || status === 'identical';
+  } catch {
+    return false;
+  }
+}
+
 // ── Facts ────────────────────────────────────────────────────────────────────
 
 type Facts = Omit<PushPreviewFacts, 'identity'> & { ownerRepo: string; pushUrl: string };
@@ -559,7 +672,10 @@ async function gather(ctx: GitWriteSessionContext, deps: PhoneGitPushDeps, pin?:
     const b = await run('rev-list', '--count', remoteTip, `^${head}`);
     if (!b.ok) return gitFailed();
     behind = Number(b.stdout.trim());
-    fastForward = behind === 0;
+    // The count above follows the repository's own objects; whether the push
+    // may go is decided on verified ancestry.
+    fastForward = behind === 0 && await verifiedFastForward(deps, dirs, env, objectFormat, remoteTip, head, ownerRepo, net);
+    if (!fastForward) behind = Math.max(behind, 1);
   } else if (remoteTip !== null) {
     // The remote holds commits this clone never fetched: at least one.
     behind = 1;

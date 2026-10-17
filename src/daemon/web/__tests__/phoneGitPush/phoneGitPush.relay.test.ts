@@ -36,6 +36,11 @@ describe('phone git push relay', { timeout: 60_000 }, () => {
   let probes: Array<{ proxy: string; helpers: string[]; url: string }>;
   /** Runs during each gh call, i.e. after the config checks and before ls-remote. */
   let onGh: () => void;
+  /** What GitHub's compare answers (null: it fails). */
+  let compareStatus: string | null;
+  let compares: string[];
+  /** Replaces the stdin git runner (the ancestry walk's object reads). */
+  let gitInput: PhoneGitPushDeps['gitInput'];
 
   const env = () => ({ ...buildGitEnv(), GIT_CONFIG_GLOBAL: GIT_NULL_DEVICE });
   const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, env: env(), encoding: 'utf8' }).trim();
@@ -64,6 +69,7 @@ describe('phone git push relay', { timeout: 60_000 }, () => {
 
   const deps = (): PhoneGitPushDeps => ({
     ...defaultPushDeps,
+    gitInput: (...a) => gitInput(...a),
     remote: (args, cwd, e) => {
       network.push({ args: [...args], env: e });
       probe(args, cwd, e);
@@ -76,6 +82,13 @@ describe('phone git push relay', { timeout: 60_000 }, () => {
     },
     gh: async (args) => {
       onGh();
+      const last = String(args.at(-1));
+      if (last.includes('/compare/')) {
+        compares.push(last);
+        return compareStatus === null
+          ? { ok: false, ran: true, code: 1, stdout: '', stderr: 'HTTP 404' }
+          : { ok: true, ran: true, code: 0, stdout: JSON.stringify({ status: compareStatus }), stderr: '' };
+      }
       if (/^repos\/[^/]+\/[^/]+$/.test(String(args.at(-1)))) return { ok: true, ran: true, code: 0, stdout: JSON.stringify({ default_branch: 'main' }), stderr: '' };
       return { ok: false, ran: true, code: 1, stdout: '', stderr: 'HTTP 500' };
     },
@@ -101,6 +114,9 @@ describe('phone git push relay', { timeout: 60_000 }, () => {
     network = [];
     probes = [];
     onGh = () => undefined;
+    compareStatus = null;
+    compares = [];
+    gitInput = defaultPushDeps.gitInput;
     receipts = undefined;
   });
 
@@ -274,6 +290,62 @@ describe('phone git push relay', { timeout: 60_000 }, () => {
     } as GitWriteExecuteContext);
     await vi.waitFor(() => expect(store.find(key)?.state).toBe('done'), WAIT);
     expect(git(bare, 'rev-parse', 'refs/heads/feat')).toBe(head);
+  });
+
+  describe('fast-forward from verified ancestry', () => {
+    const toRemote = (cwd: string, ...args: string[]) => git(cwd, '-c', `url.${bare}.insteadOf=${URL_}`, '-c', 'protocol.file.allow=always', ...args);
+    /** `feat` on the remote at `one`, and locally one commit past it. */
+    const ahead = () => {
+      git(work, 'checkout', '-q', '-b', 'feat');
+      const one = commit(work, 'one');
+      toRemote(work, 'push', '-q', '-u', 'origin', 'feat');
+      return { tip: one, head: commit(work, 'two') };
+    };
+
+    it('allows a fast-forward the re-hashed walk confirms, without asking GitHub', async () => {
+      const { tip, head } = ahead();
+      const { facts, pins } = await okPreview(work);
+      expect(facts).toMatchObject({ remoteTip: tip, fastForward: true, behind: 0 });
+      expect(compares).toEqual([]);
+      expect(await executeAndSettle(work, pins, head)).toMatchObject({ state: 'done', fields: { pushed: head } });
+    });
+
+    it('refuses when a commit object does not hash to its id and GitHub says the branches diverged', async () => {
+      const { tip, head } = ahead();
+      // The walk's object reads answer with content that is not the named commit.
+      gitInput = async (args, cwd, e, input, max) => {
+        const out = await defaultPushDeps.gitInput(args, cwd, e, input, max);
+        const text = out.stdout.toString('latin1').replace('\ntwo\n', '\nTWO\n');
+        return { ok: out.ok, stdout: Buffer.from(text, 'latin1') };
+      };
+      compareStatus = 'diverged';
+      const r = await createPhoneGitPushHandlers(deps()).preview!(ctx(work));
+      if (!r.ok) throw new Error(`preview refused: ${JSON.stringify(r.body)}`);
+      expect(r.facts).toMatchObject({ remoteTip: tip, fastForward: false });
+      expect((r.facts as unknown as PushPreview).behind).toBeGreaterThanOrEqual(1);
+      expect(compares).toEqual([`repos/o/r/compare/${tip}...${head}`]);
+      const pushesBefore = network.filter((c) => c.args.includes('push')).length;
+      expect(await executeAndSettle(work, r.pins, head)).toMatchObject({ state: 'refused', error: 'non-fast-forward' });
+      expect(network.filter((c) => c.args.includes('push')).length).toBe(pushesBefore);
+      expect(git(bare, 'rev-parse', 'refs/heads/feat')).toBe(tip);
+    });
+
+    it('when the local walk cannot verify (past the bound, or git cannot read the objects), goes by GitHub\'s compare and fails closed', async () => {
+      const { tip, head } = ahead();
+      // The walk cannot read the objects (stands in for a chain past
+      // PUSH_ANCESTRY_MAX_COMMITS, which also ends the walk unverified).
+      gitInput = async () => ({ ok: false, stdout: Buffer.alloc(0) });
+      const refused = await createPhoneGitPushHandlers(deps()).preview!(ctx(work));
+      if (!refused.ok) throw new Error(`preview refused: ${JSON.stringify(refused.body)}`);
+      expect(refused.facts).toMatchObject({ fastForward: false });
+      expect(compares).toEqual([`repos/o/r/compare/${tip}...${head}`]);
+      // GitHub says the new head is ahead: a verified fast-forward.
+      compareStatus = 'ahead';
+      const allowed = await createPhoneGitPushHandlers(deps()).preview!(ctx(work));
+      if (!allowed.ok) throw new Error(`preview refused: ${JSON.stringify(allowed.body)}`);
+      expect(allowed.facts).toMatchObject({ fastForward: true, behind: 0 });
+    });
+
   });
 
   it('refuses a partial clone before any network call', async () => {
