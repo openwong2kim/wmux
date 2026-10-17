@@ -29,9 +29,11 @@
 //
 // Bot-owned fan-out tasks wake their bot through installBotFanoutWake (one
 // wake per ledger transition, pinned to the task's thread, independent of
-// the bot's triggers). Their task.* facts still land in the log and the
-// rooms, but the trigger engine is not handed them, so no transition wakes
-// a bot twice.
+// the bot's triggers). No task.* fact is handed to the trigger engine: a bot
+// task's would wake its bot twice, and a task no bot started (the owner's GUI
+// or pane fan-out) is the owner's to watch, so its facts wake no bot (they
+// still land in the log and the rooms). A bot the owner wants on such a task
+// is addressed directly (a mention: humanMessage.ts).
 //
 // The trigger cursor: the last fact seq the trigger engine was handed,
 // persisted in `factory/trigger-cursor.json`. On start the facts appended
@@ -162,6 +164,14 @@ export function isBotOwnedTaskFact(f: Fact): boolean {
   return f.kind.startsWith('task.') && typeof f.ref?.botId === 'string' && f.ref.botId.length > 0;
 }
 
+/** A task's lifecycle fact (task.done / task.failed / task.input_required),
+ *  whoever started the task. Kept from the trigger engine (see the header):
+ *  otherwise every bot of the workspace with a task.* trigger (each lead)
+ *  wakes for every task of the owner's own fan-out. */
+export function isTaskLifecycleFact(f: Fact): boolean {
+  return f.kind.startsWith('task.');
+}
+
 /**
  * The fact log as the trigger engine sees it: `subscribe` first replays the
  * facts after the cursor (or none on a first start), then delivers live
@@ -171,7 +181,7 @@ export function isBotOwnedTaskFact(f: Fact): boolean {
 export function routedFactLog(
   log: FactLogApi & { latestSeq?: () => number },
   cursor: Pick<TriggerCursor, 'load' | 'mark'> & Partial<Pick<TriggerCursor, 'reset'>>,
-  accept: (f: Fact) => boolean = (f) => !isBotOwnedTaskFact(f),
+  accept: (f: Fact) => boolean = (f) => !isTaskLifecycleFact(f),
 ): FactLogApi {
   return {
     append: (draft) => log.append(draft),

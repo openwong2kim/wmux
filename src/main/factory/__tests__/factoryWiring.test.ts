@@ -1,8 +1,8 @@
 // The factory wiring: the trigger cursor (replay after a crash, no history on
-// a first start), bot-owned task facts kept from the trigger engine (one wake
-// per task transition), runtime hooks as facts, interrupted turns held for
-// the rooms module, the running wake as the rooms read it, trust, and the
-// phone's message to the HQ bot.
+// a first start), task facts kept from the trigger engine (one wake per bot
+// task transition, none for a task no bot started), runtime hooks as facts,
+// interrupted turns held for the rooms module, the running wake as the rooms
+// read it, trust, and the phone's message to the HQ bot.
 
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -24,6 +24,7 @@ import {
   factoryPhoneMessageSaved,
   factoryTrust,
   isBotOwnedTaskFact,
+  isTaskLifecycleFact,
   ownerLoginTarget,
   resolveFactsFrom,
   routedFactLog,
@@ -79,11 +80,15 @@ const dirOf = (bots: BotProfile[]) => ({ listEnabled: () => bots.filter((b) => b
 const taskDone = (taskId: string, ws = 'ws-1') => ({ kind: 'task.done' as const, at: Date.now(), workspaceId: ws, ref: { taskId }, payload: {} });
 
 describe('trigger cursor', () => {
+  // The cursor's own mechanics, apart from which kinds the engine is handed
+  // (task facts are not: see below).
+  const everyFact = (): boolean => true;
+
   it('a first start routes no history; later facts move the cursor, and a restart replays only what came after it', () => {
     log.append(taskDone('old'));
     const cursor = new TriggerCursor(path.join(dir, 'factory', 'trigger-cursor.json'), 60_000);
     const seen: string[] = [];
-    const off = routedFactLog(log, cursor).subscribe((f) => seen.push(f.ref?.taskId ?? ''));
+    const off = routedFactLog(log, cursor, everyFact).subscribe((f) => seen.push(f.ref?.taskId ?? ''));
     expect(seen).toEqual([]);
     log.append(taskDone('live'));
     expect(seen).toEqual(['live']);
@@ -93,7 +98,7 @@ describe('trigger cursor', () => {
     log.append(taskDone('missed-1'));
     log.append(taskDone('missed-2'));
     const again: string[] = [];
-    const off2 = routedFactLog(log, new TriggerCursor(path.join(dir, 'factory', 'trigger-cursor.json'))).subscribe((f) => again.push(f.ref?.taskId ?? ''));
+    const off2 = routedFactLog(log, new TriggerCursor(path.join(dir, 'factory', 'trigger-cursor.json')), everyFact).subscribe((f) => again.push(f.ref?.taskId ?? ''));
     expect(again).toEqual(['missed-1', 'missed-2']);
     log.append(taskDone('next'));
     expect(again).toEqual(['missed-1', 'missed-2', 'next']);
@@ -103,18 +108,18 @@ describe('trigger cursor', () => {
   it('an idle first start keeps its baseline: facts appended before the next start are routed then', () => {
     log.append(taskDone('history'));
     const file = path.join(dir, 'factory', 'trigger-cursor.json');
-    const off = routedFactLog(log, new TriggerCursor(file, 60_000)).subscribe(() => undefined);
+    const off = routedFactLog(log, new TriggerCursor(file, 60_000), everyFact).subscribe(() => undefined);
     off();
     log.append(taskDone('while-down'));
     const seen: string[] = [];
-    routedFactLog(log, new TriggerCursor(file)).subscribe((f) => seen.push(f.ref?.taskId ?? ''));
+    routedFactLog(log, new TriggerCursor(file), everyFact).subscribe((f) => seen.push(f.ref?.taskId ?? ''));
     expect(seen).toEqual(['while-down']);
   });
 
   it('a cursor ahead of the log (another data dir) starts at the newest fact', () => {
     log.append(taskDone('a'));
     const seen: string[] = [];
-    routedFactLog(log, { load: () => 999, mark: () => undefined }).subscribe((f) => seen.push(f.ref?.taskId ?? ''));
+    routedFactLog(log, { load: () => 999, mark: () => undefined }, everyFact).subscribe((f) => seen.push(f.ref?.taskId ?? ''));
     expect(seen).toEqual([]);
   });
 
@@ -125,15 +130,21 @@ describe('trigger cursor', () => {
     expect(new TriggerCursor(file).load()).toBeNull();
   });
 
-  it('bot-owned task facts are not handed to the trigger engine, but move the cursor', () => {
+  it('no task fact is handed to the trigger engine, the owner\'s or a bot\'s, but each moves the cursor', () => {
     const marks: number[] = [];
     const seen: Fact[] = [];
     routedFactLog(log, { load: () => null, mark: (s) => marks.push(s) }).subscribe((f) => seen.push(f));
     const owned = log.append({ ...taskDone('t-bot'), ref: { taskId: 't-bot', botId: 'bot-0000000a' } });
     const human = log.append(taskDone('t-human'));
-    expect(seen.map((f) => f.id)).toEqual([human?.id]);
-    expect(marks).toEqual([owned?.seq, human?.seq]);
+    const asks = log.append({ kind: 'task.input_required', at: Date.now(), workspaceId: 'ws-1', ref: { taskId: 't-human-2' }, payload: {} });
+    // Other kinds still pass.
+    const refused = log.append({ kind: 'merge.refused', at: Date.now(), workspaceId: 'ws-1', repoKey: 'github.com/o/r', ref: { pr: 3, headSha: 'a'.repeat(40) }, payload: {} });
+    expect(seen.map((f) => f.id)).toEqual([refused?.id]);
+    expect(marks).toEqual([owned?.seq, human?.seq, asks?.seq, refused?.seq]);
     expect(isBotOwnedTaskFact(owned as Fact)).toBe(true);
+    expect(isBotOwnedTaskFact(human as Fact)).toBe(false);
+    expect(isTaskLifecycleFact(human as Fact)).toBe(true);
+    expect(isTaskLifecycleFact(refused as Fact)).toBe(false);
     expect(isBotOwnedTaskFact({ ...(human as Fact), kind: 'verdict.recorded', ref: { botId: 'bot-0000000a' } })).toBe(false);
   });
 });
@@ -182,14 +193,88 @@ describe('gap 4: one wake per bot task transition', () => {
     expect(queue.list().filter((i) => i.botId === verifier.id && i.state !== 'dropped')).toHaveLength(2);
     expect(queue.list({ states: ['queued'] }).filter((i) => i.botId === lead.id)).toHaveLength(0);
 
-    // A task no bot started is the lead's, through its trigger, once.
+    // A task no bot started is the owner's: it wakes no bot, the lead's
+    // task.* triggers included.
     const human = { ...entry('failed', 1, null), id: 'wtask-h' };
     l.fire({ entry: human, from: 'working', to: 'failed', by: { kind: 'worker', workspaceId: 'ws-task' } });
-    expect(queue.list({ states: ['queued'] }).filter((i) => i.botId === lead.id)).toMatchObject([{ threadId: 'task:wtask-h' }]);
+    expect(queue.list({ states: ['queued'] }).filter((i) => i.botId === lead.id)).toEqual([]);
 
     offWake();
     ingest.dispose();
     engine.dispose();
+  });
+});
+
+describe('a task\'s facts wake only the bot that started it', () => {
+  // Two leads in one workspace: each carries the lead's task.* triggers.
+  const botA = (): BotProfile => bot('bot-0000000a', 'lead');
+  const botB = (): BotProfile => bot('bot-0000000b', 'lead');
+  const row = (id: string, status: LedgerStatus, rev: number, origin: { kind: string; botId?: string }): LedgerEntry => ({
+    schemaVersion: 1, id, taskWorkspaceId: `ws-${id}`, ownerWorkspaceId: 'ws-1', title: `g: ${id}`, status, rev,
+    updatedAt: Date.now(), updatedBy: { kind: 'system', workspaceId: 'ws-1' }, dispatch: { origin },
+  });
+  function wired(bots: BotProfile[]) {
+    const fns = new Set<(t: LedgerTransition) => void>();
+    const instance = { onTransition: (fn: (t: LedgerTransition) => void) => { fns.add(fn); return () => fns.delete(fn); }, list: () => [] } as unknown as TaskLedger;
+    const queue = newQueue();
+    const directory = dirOf(bots);
+    const engine = new TriggerEngine({ factLog: routedFactLog(log, { load: () => null, mark: () => undefined }), wakes: queue, bots: directory });
+    engine.start();
+    const writer = new RoomWriter({ dir: path.join(dir, 'factory', 'rooms') });
+    const offCards = log.subscribe((f) => { writeFactCards(writer, f, directory); });
+    const ingest = startFactIngest(log, { onLedgerTransition: (fn) => { fns.add(fn); return () => { fns.delete(fn); }; } });
+    const offWake = installBotFanoutWake({ enqueue: (input) => queue.enqueue(input) }, instance);
+    return {
+      queue, writer, directory,
+      fire: (t: LedgerTransition): void => { for (const fn of [...fns]) fn(t); },
+      live: () => queue.list().filter((i) => i.state !== 'dropped'),
+      dispose: () => { offWake(); ingest.dispose(); offCards(); engine.dispose(); },
+    };
+  }
+
+  it('the owner\'s GUI fan-out: a task that needs input wakes no bot; its card still shows in the task thread', () => {
+    const w = wired([botA(), botB()]);
+    for (const id of ['wtask-g1', 'wtask-g2', 'wtask-g3']) {
+      w.fire({ entry: row(id, 'input_required', 3, { kind: 'gui' }), from: 'working', to: 'input_required', by: { kind: 'system', workspaceId: 'ws-1' } });
+    }
+    expect(log.readSince('0').facts.map((f) => [f.kind, f.ref?.botId])).toEqual([
+      ['task.input_required', undefined], ['task.input_required', undefined], ['task.input_required', undefined],
+    ]);
+    expect(w.live()).toEqual([]);
+    expect(w.writer.read('ws-1').cards.map((c) => [c.kind, c.threadId])).toEqual([
+      ['fact', 'task:wtask-g1'], ['fact', 'task:wtask-g2'], ['fact', 'task:wtask-g3'],
+    ]);
+    // Its end, too.
+    w.fire({ entry: row('wtask-g1', 'failed', 4, { kind: 'gui' }), from: 'input_required', to: 'failed', by: { kind: 'system', workspaceId: 'ws-1' } });
+    expect(w.live()).toEqual([]);
+    w.dispose();
+  });
+
+  it('bot A\'s task wakes A, in the task thread; bot B of the same workspace does not wake', () => {
+    const a = botA();
+    const b = botB();
+    const w = wired([a, b]);
+    w.fire({ entry: row('wtask-a1', 'input_required', 3, { kind: 'bot', botId: a.id }), from: 'working', to: 'input_required', by: { kind: 'system', workspaceId: 'ws-1' } });
+    expect(w.live()).toMatchObject([{ botId: a.id, threadId: 'task:wtask-a1', reason: { kind: 'facts', factIds: ['task.input_required:wtask-a1@3'] } }]);
+    w.fire({ entry: row('wtask-a1', 'failed', 4, { kind: 'bot', botId: a.id }), from: 'input_required', to: 'failed', by: { kind: 'worker', workspaceId: 'ws-wtask-a1' } });
+    expect(w.live().every((i) => i.botId === a.id)).toBe(true);
+    expect(w.live().flatMap((i) => (i.reason.kind === 'facts' ? i.reason.factIds : []))).toEqual(['task.input_required:wtask-a1@3', 'task.failed:wtask-a1@4']);
+    expect(w.live().filter((i) => i.botId === b.id)).toEqual([]);
+    w.dispose();
+  });
+
+  it('the owner mentioning a bot in an owner task\'s thread still wakes that bot, and only it', () => {
+    const a = botA();
+    const b = botB();
+    const w = wired([a, b]);
+    w.fire({ entry: row('wtask-g1', 'input_required', 3, { kind: 'gui' }), from: 'working', to: 'input_required', by: { kind: 'system', workspaceId: 'ws-1' } });
+    expect(w.live()).toEqual([]);
+    const r = postHumanMessage(w.writer, { factLog: log, wakes: w.queue, bots: w.directory }, {
+      workspaceId: 'ws-1', threadId: 'task:wtask-g1', title: 'Restart g1', mentions: [b.id], clientPostId: 'cp-g1', source: 'desktop',
+    });
+    expect(r).toMatchObject({ ok: true, addressee: { botId: b.id } });
+    expect(w.live()).toMatchObject([{ botId: b.id, threadId: 'task:wtask-g1', reason: { kind: 'human' } }]);
+    w.dispose();
   });
 });
 

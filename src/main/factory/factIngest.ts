@@ -88,8 +88,9 @@ const STOPPED_BY_OWNER_SUMMARY = 'stopped by owner';
  * normal close of a delivered task → no fact, unless the owner's stop
  * cancelled it (task.failed, which the room shows as stopped by owner).
  * A task a bot started names that bot in ref.botId: the bot's wake for it
- * comes from the fan-out path (installBotFanoutWake), and the trigger
- * engine is not handed these facts (factoryWiring.ts).
+ * comes from the fan-out path (installBotFanoutWake). The trigger engine is
+ * handed no task fact (factoryWiring.ts), so a task no bot started wakes no
+ * bot.
  */
 export function factFromLedgerTransition(t: LedgerTransition): FactDraft | null {
   if (t.from === t.to) return null;
