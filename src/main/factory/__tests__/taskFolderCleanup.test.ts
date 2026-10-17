@@ -34,6 +34,13 @@ import {
 } from '../taskFolderCleanup';
 import { ReclaimedWorkers, resumeWorker, type ReclaimedWorker, type WorkerResumePorts } from '../workerReclaim';
 
+// Every test here runs real git over real worktrees, several spawns in a
+// row; on a loaded CI runner (the Windows shard) one spawn can take a few
+// hundred ms, so the file's tests and its waits are bounded here, not by
+// vitest's 5s / 1s defaults. Seen as "expected undefined to be 'kept_dirty'"
+// on main four times in a day before the waits were widened.
+vi.setConfig({ testTimeout: 30_000 });
+
 const BOT = 'bot-0000000a';
 const UUID = '2eca904b-b4cc-4243-81d3-67a121351892';
 
@@ -372,7 +379,7 @@ describe('the automatic pass and Settings › Bots', () => {
     expect(await cleanTaskFolder(p, row('completed'), mission, [])).toBe('removed');
   });
 
-  it('runs on a bot task\'s end, over ended tasks of the last day; Clean up now counts what it did; usage sums the folders', { timeout: 15_000 }, async () => {
+  it('runs on a bot task\'s end, over ended tasks of the last day; Clean up now counts what it did; usage sums the folders', async () => {
     const mgr = new TaskWorktreeManager();
     const clean = await taskWorktree(mgr, 'clean-11111111');
     const dirty = await taskWorktree(mgr, 'dirty-22222222');
@@ -427,7 +434,7 @@ describe('the automatic pass and Settings › Bots', () => {
     ];
     const p = ports({}, missions);
     const installed = installTaskFolderCleanup({ ...p, onTransition: () => () => undefined, allRows: () => rows });
-    await vi.waitFor(() => expect(fs.existsSync(otherWt)).toBe(false));
+    await vi.waitFor(() => expect(fs.existsSync(otherWt)).toBe(false), { timeout: 10_000 });
     installed.dispose();
     expect(fs.existsSync(path.join(stoppedWt, 'a.txt'))).toBe(true);
     expect(fs.readFileSync(path.join(scratch, 'notes.md'), 'utf8')).toBe('found it');
