@@ -2897,6 +2897,14 @@ export const ko = {
   'channels.joinedToast': '{workspace}을(를) #{channel}에 추가했습니다',
   'daemon.replacingToast':
     '백그라운드 데몬을 이 버전으로 업데이트하는 중입니다 — 판이 잠시 멈췄다가 자동으로 복원될 수 있습니다.',
+  'daemon.linkReconnecting': "백그라운드 데몬과 연결이 끊겼습니다. 다시 연결하는 중…",
+  'daemon.linkReconnectingAttempt': "백그라운드 데몬과 연결이 끊겼습니다. 다시 연결하는 중… ({attempt}번째 시도)",
+  'daemon.linkReconnected': "백그라운드 데몬에 다시 연결했습니다.",
+  'daemon.linkGaveUp': "wmux가 백그라운드 데몬에 다시 연결하지 못했습니다. 이 판은 연결이 끊긴 상태입니다.",
+  'daemon.linkGaveUpHint': "wmux를 종료했다가 다시 열면 다시 연결됩니다. 지금 새로 여는 판은 데몬 없이 실행됩니다.",
+  'daemon.linkInputLostWhileDown': "지금 여기에 입력하는 내용은 셸에 전달되지 않을 수 있습니다.",
+  'daemon.linkInputLost': "연결이 끊긴 동안 입력한 내용이 셸에 전달되지 않았을 수 있습니다. 다시 입력하기 전에 화면을 확인하세요.",
+  'daemon.linkDismiss': "닫기",
   'update.refusedInstall':
     '지난 업데이트가 설치되지 않았습니다. 현재 버전은 그대로입니다. 다시 시도하거나, wmux를 종료한 뒤 릴리스 페이지의 설치 프로그램을 실행하세요. ({detail})',
   'update.readyToInstall':

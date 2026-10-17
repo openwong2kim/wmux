@@ -3482,6 +3482,14 @@ export const pl = {
   'channels.joinedToast': 'Dodano {workspace} do #{channel}',
   'daemon.replacingToast':
     'Aktualizuję demona w tle do tej wersji — panele mogą się na chwilę zatrzymać i przywrócić automatycznie.',
+  'daemon.linkReconnecting': "Utracono połączenie z demonem w tle. Ponowne łączenie…",
+  'daemon.linkReconnectingAttempt': "Utracono połączenie z demonem w tle. Ponowne łączenie (próba {attempt})…",
+  'daemon.linkReconnected': "Ponownie połączono z demonem w tle.",
+  'daemon.linkGaveUp': "wmux nie mógł ponownie połączyć się z demonem w tle. Ten panel jest rozłączony.",
+  'daemon.linkGaveUpHint': "Zamknij i ponownie otwórz wmux, aby go połączyć. Panele otwierane teraz działają bez demona.",
+  'daemon.linkInputLostWhileDown': "To, co teraz tu wpiszesz, może nie dotrzeć do powłoki.",
+  'daemon.linkInputLost': "To, co wpisano podczas rozłączenia, mogło nie dotrzeć do powłoki. Sprawdź ekran, zanim wpiszesz to ponownie.",
+  'daemon.linkDismiss': "Zamknij",
   'update.refusedInstall':
     'Ostatnia aktualizacja się nie zainstalowała; obecna wersja pozostaje bez zmian. Spróbuj ponownie albo zamknij wmux i uruchom instalator ze strony wydań. ({detail})',
   'update.readyToInstall': 'wmux {version} jest gotowy do instalacji. Używasz {current}. Instalacja zamyka każdy panel.',

@@ -1,4 +1,4 @@
-import { lazy, Suspense, useRef, useEffect, useState, useCallback, useMemo } from 'react';
+import { lazy, Suspense, useRef, useEffect, useState, useCallback, useMemo, useSyncExternalStore } from 'react';
 import { useTerminal, copySelectionWithFeedback, getPaneSyncUi, subscribePaneSyncUi, type ContextMenuEvent, type PaneSyncUiState } from '../../hooks/useTerminal';
 import { handoffTargetForPty, isOurHandoffDrag, takeHandoffDrop } from '../Git/handoffDrag';
 import { useStore } from '../../stores';
@@ -18,6 +18,7 @@ import BookmarkIndicator from './BookmarkIndicator';
 import ContextMenu from './ContextMenu';
 import ScrollToBottomButton from './ScrollToBottomButton';
 import { paneTagDropText } from '../../utils/paneTagDrag';
+import { dismissPaneLinkNotice, getPaneLinkNotice, notePaneInput, subscribeDaemonLinkNotice } from '../../daemon/daemonLinkNotice';
 import '@xterm/xterm/css/xterm.css';
 
 const ChatView = lazy(() => import('../Chat/ChatView'));
@@ -96,6 +97,10 @@ export default function TerminalComponent({ chatView = false, ptyId: externalPty
     setSyncState(getPaneSyncUi(ptyId));
     return subscribePaneSyncUi(ptyId, setSyncState);
   }, [ptyId]);
+
+  // Daemon link notice: this pane lost its daemon connection (reconnecting /
+  // reconnected / gave up), and whether input typed meanwhile may be lost.
+  const linkNotice = useSyncExternalStore(subscribeDaemonLinkNotice, () => getPaneLinkNotice(ownerSurfaceId));
 
   // Hide restoring overlay when first data arrives
   const handleFirstData = useCallback(() => setRestoring(false), []);
@@ -381,6 +386,7 @@ export default function TerminalComponent({ chatView = false, ptyId: externalPty
       // pasteClipboardImage, which routes them to the agent's own image-paste
       // key or to the temp-PNG path (#1196).
       const text = await window.clipboardAPI.readText();
+      notePaneInput(ptyId);
       if (text) {
         // Async chunked write: paces the IPC queue so the conpty input
         // pipe drains between chunks, normalizes line endings to \r so
@@ -443,6 +449,7 @@ export default function TerminalComponent({ chatView = false, ptyId: externalPty
     e.preventDefault();
     const terminal = terminalRef.current;
     const modes = (terminal as unknown as { modes?: { bracketedPasteMode?: boolean } })?.modes;
+    notePaneInput(ptyId);
     // A pane header dropped here types its tag (`#w1-2 `), not its markdown.
     void pastePtyChunked(
       (d) => window.electronAPI.pty.write(ptyId, d),
@@ -525,6 +532,39 @@ export default function TerminalComponent({ chatView = false, ptyId: externalPty
               </button>
             )}
           </div>
+        </div>
+      )}
+      {/* Daemon link notice. Same neutral banner as the recovery alert above,
+          which wins when both apply (it carries the actions). Colour sits on
+          the state words only: muted while reconnecting, red once wmux gave
+          up, attention for input that may not have reached the shell. */}
+      {!recoveryError && linkNotice && ownerSurfaceId && (
+        <div role={linkNotice.state === 'reconnecting' ? 'status' : 'alert'} aria-live={linkNotice.state === 'reconnecting' ? 'polite' : undefined}
+          className="absolute inset-x-2 top-2 z-20 flex flex-wrap items-start gap-3 rounded border border-[var(--border)] bg-[var(--bg-base)] p-3 text-sm text-[var(--text-primary)]">
+          {/* The text keeps at least ~14rem and never shrinks below its
+              longest word, so a narrow pane wraps Dismiss onto its own row
+              instead of squeezing the text into a column that breaks words. */}
+          <div className="flex-1 basis-56">
+            <p className={`break-words ${linkNotice.state === 'reconnecting' ? 'text-[var(--text-muted)]' : linkNotice.state === 'gave-up' ? 'text-[var(--accent-red)]' : ''}`}>
+              {linkNotice.state === 'reconnecting'
+                ? (linkNotice.attempt > 0 ? t('daemon.linkReconnectingAttempt', { attempt: linkNotice.attempt }) : t('daemon.linkReconnecting'))
+                : linkNotice.state === 'reconnected' ? t('daemon.linkReconnected') : t('daemon.linkGaveUp')}
+            </p>
+            {linkNotice.state === 'gave-up' && (
+              <p className="mt-1 text-[var(--text-muted)]">{t('daemon.linkGaveUpHint')}</p>
+            )}
+            {linkNotice.inputLost && (
+              <p className="mt-1 text-[var(--attention-text)]">
+                {linkNotice.state === 'reconnected' ? t('daemon.linkInputLost') : t('daemon.linkInputLostWhileDown')}
+              </p>
+            )}
+          </div>
+          {linkNotice.state !== 'reconnecting' && (
+            <button type="button" onClick={() => dismissPaneLinkNotice(ownerSurfaceId)}
+              className="shrink-0 rounded border border-[var(--border)] px-3 py-1 text-[var(--text-muted)]">
+              {t('daemon.linkDismiss')}
+            </button>
+          )}
         </div>
       )}
       {/* Session restore overlay */}

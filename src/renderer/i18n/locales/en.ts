@@ -3505,6 +3505,14 @@ export const en = {
   'channels.joinedToast': 'Added {workspace} to #{channel}',
   'daemon.replacingToast':
     'Updating the background daemon to this version — panes may pause briefly and restore automatically.',
+  'daemon.linkReconnecting': "Lost the connection to the background daemon. Reconnecting…",
+  'daemon.linkReconnectingAttempt': "Lost the connection to the background daemon. Reconnecting (attempt {attempt})…",
+  'daemon.linkReconnected': "Reconnected to the background daemon.",
+  'daemon.linkGaveUp': "wmux could not reconnect to the background daemon. This pane is disconnected.",
+  'daemon.linkGaveUpHint': "Quit and reopen wmux to reconnect it. Panes you open now run without the daemon.",
+  'daemon.linkInputLostWhileDown': "What you type here now may not reach the shell.",
+  'daemon.linkInputLost': "Input you typed while it was disconnected may not have reached the shell. Check the screen before typing it again.",
+  'daemon.linkDismiss': "Dismiss",
   'update.refusedInstall':
     'The last update did not install; your current version is unchanged. Try again, or close wmux and run the installer from the releases page. ({detail})',
   'update.readyToInstall':
