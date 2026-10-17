@@ -149,3 +149,6 @@ EPIPE_ROOT_CAUSE.md
 
 # Temporary native terminal verifier bundles
 .native-core-verify-*/
+
+# Vitest retry reports (scripts/vitest-retry-reporter.mjs, CI only)
+test-results/

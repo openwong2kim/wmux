@@ -127,6 +127,24 @@ jobs:
       - name: Test (unit suite, shard ${{ matrix.shard }}/2)
         run: npm run test:parallel -- --shard=${{ matrix.shard }}/2
 
+      # The unit suite retries a failed test once on CI (vitest.config.ts). A
+      # test that passes on retry leaves the job green, so these two steps keep
+      # it from going unnoticed: the job summary and a warning annotation list
+      # it under "Flaky (passed on retry)", and the report is kept as an
+      # artifact so flakes add up across runs (scripts/flaky-report.mjs reads a
+      # directory of downloaded ones). Neither step can fail the job.
+      - name: Flaky test report
+        if: ${{ !cancelled() }}
+        run: node scripts/flaky-report.mjs test-results
+
+      - name: Upload test report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: test-report-validate-${{ matrix.shard }}
+          path: test-results/
+          if-no-files-found: ignore
+
   validate-runtime:
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: windows-latest

@@ -143,3 +143,17 @@ jobs:
 
       - name: Test (cross-platform)
         run: npm test
+
+      # Retried tests from both suites `npm test` runs; see the same two steps
+      # in ci.yml.
+      - name: Flaky test report
+        if: ${{ !cancelled() }}
+        run: node scripts/flaky-report.mjs test-results
+
+      - name: Upload test report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: test-report-baseline-${{ matrix.os }}
+          path: test-results/
+          if-no-files-found: ignore
