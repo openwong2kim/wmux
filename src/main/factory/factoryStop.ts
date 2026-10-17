@@ -83,7 +83,9 @@ export interface FactoryStopPorts {
   gates: () => { isRunning(taskId: string): boolean; cancel(taskId: string): boolean } | null;
   /** Stop the processes of a task's worker; how many agents it confirmed
    *  stopped (0: none were running). `agentsOnly`: a leftover agent only,
-   *  its panes kept (a task stopped before). Throws when it could not. */
+   *  its panes kept (a task stopped before). Throws when it could not; an
+   *  error with a numeric `workers` (a stop left pending) says how many it
+   *  stopped before. */
   stopWorker: (entry: LedgerEntry, opts?: { agentsOnly?: boolean }) => Promise<number>;
   /** Whether "Run bots" is off now: while it is, every bot task that
    *  registers is stopped (installLateStopSweep). Absent: never. */
@@ -200,6 +202,14 @@ function isRecentlyStopped(row: LedgerEntry, botId: string | undefined, since: n
   return row.status === 'cancelled' && row.summary === STOPPED_BY_OWNER && row.updatedBy.kind === 'system' && row.updatedAt >= since;
 }
 
+/** How many workers a stopWorker that threw had confirmed stopped before
+ *  it did: a stop left pending (factoryWiring's WorkerStopPendingError)
+ *  carries them as `workers`; any other error, none. */
+function stoppedBeforeFailure(err: unknown): number {
+  const n = (err as { workers?: unknown } | null)?.workers;
+  return typeof n === 'number' && Number.isFinite(n) && n > 0 ? n : 0;
+}
+
 /** Stop one task: cancel its row, its gate and its worker. The physical
  *  stops run even when the row could not be written. `stopped`: its worker's
  *  processes were confirmed gone (some were running). `off` ("Run bots"
@@ -241,9 +251,10 @@ async function stopTask(
     sessions = await ports.stopWorker(row);
   } catch (err) {
     workerOk = false;
+    sessions = stoppedBeforeFailure(err);
     log(`[factory] stop: the worker of ${row.id} was not stopped: ${String(err)}`);
   }
-  return { cancelled: outcome === 'cancelled', stopped: workerOk && sessions > 0, gate, failed: outcome === 'failed' || !workerOk || gateFailed };
+  return { cancelled: outcome === 'cancelled', stopped: sessions > 0, gate, failed: outcome === 'failed' || !workerOk || gateFailed };
 }
 
 /**
@@ -373,6 +384,7 @@ export async function stopFactoryWork(ports: FactoryStopPorts, scope: { botId?: 
       if ((await ports.stopWorker(row, { agentsOnly: true })) > 0) stoppedTasks.add(row.id);
     } catch (err) {
       failures++;
+      if (stoppedBeforeFailure(err) > 0) stoppedTasks.add(row.id);
       log(`[factory] stop: the worker of ${row.id} was not stopped: ${String(err)}`);
     }
   }
@@ -457,6 +469,7 @@ export async function stopFactoryTask(ports: FactoryStopPorts, taskId: string): 
       stopped = (await ports.stopWorker(row, { agentsOnly: true })) > 0;
     } catch (err) {
       failed = true;
+      stopped = stoppedBeforeFailure(err) > 0;
       log(`[factory] stop: the worker of ${row.id} was not stopped: ${String(err)}`);
     }
   }

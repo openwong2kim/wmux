@@ -129,6 +129,22 @@ describe('stopFactoryWork', () => {
     expect(await stopFactoryWork(r.p)).toEqual({ ok: true, botsInterrupted: 0, workersStopped: 1, tasksCancelled: 0, gatesCancelled: 0 });
   });
 
+  it('a stop left pending (#2267) is partial, and the workers it did stop are counted', async () => {
+    await task('t-pend-native', LEAD);
+    await task('t-pend-wsl', LEAD);
+    const pending = (workers: number) => Object.assign(new Error('1 WSL pane(s) in the task folder wait for the workspace tree'), { workers });
+    const stopWorker = vi.fn(async (entry: LedgerEntry): Promise<number> => {
+      throw pending(entry.id === 't-pend-native' ? 1 : 0);
+    });
+    const r = ports({ stopWorker });
+    // One native worker stopped and one WSL pane deferred: counted, but not done.
+    expect(await stopFactoryWork(r.p)).toMatchObject({ ok: false, code: 'partial', workersStopped: 1, tasksCancelled: 2 });
+    // The re-stop of a task stopped before (agentsOnly), bot-wide and for one task.
+    expect(await stopFactoryWork(r.p)).toMatchObject({ ok: false, code: 'partial', workersStopped: 1 });
+    expect(await stopFactoryTask(r.p, 't-pend-native')).toMatchObject({ ok: false, code: 'partial', workersStopped: 1 });
+    expect(await stopFactoryTask(r.p, 't-pend-wsl')).toMatchObject({ ok: false, code: 'partial', workersStopped: 0 });
+  });
+
   it('a task the stopped bot\'s fan-out was still launching is stopped when it registers', async () => {
     let now = 1_000;
     const r = ports({ now: () => now });
