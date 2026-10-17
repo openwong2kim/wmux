@@ -283,6 +283,28 @@ describe.skipIf(process.platform === 'win32')('task.push and task.fetch: the rec
     expect(await fetchTaskRefs(await ledgerPinned())).toMatchObject({ ok: true, defaultBranch: 'main' });
   });
 
+  it('a pin that cannot be recorded refuses the push', async () => {
+    git(repo, 'remote', 'add', 'origin', fakeSshUrl(bare));
+    globalConfig();
+    expect(await pushTask({ ...input(), recordOriginPin: async () => null })).toMatchObject({ ok: false, reason: 'remote-refused' });
+    expect(await pushTask({ ...input(), recordOriginPin: async () => { throw new Error('disk full'); } })).toMatchObject({ ok: false, reason: 'remote-refused' });
+    expect(git(bare, 'for-each-ref', '--format=%(refname)', 'refs/heads')).toBe('refs/heads/main');
+  });
+
+  it('a spelling of the pinned address that the owner\'s rewrites send to another server is refused', async () => {
+    const other = path.join(root, 'srv2', 'acme', 'app.git');
+    fs.mkdirSync(path.dirname(other), { recursive: true });
+    execFileSync('git', ['init', '-q', '--bare', other]);
+    git(repo, 'remote', 'add', 'origin', 'https://git.corp.example/acme/app.git');
+    globalConfig(`[url "${fakeSshUrl(path.join(root, 'srv'))}/"]\n\tinsteadOf = https://git.corp.example/\n[url "${fakeSshUrl(path.join(root, 'srv2'))}/"]\n\tinsteadOf = https://git.corp.example:443/\n`);
+    const expectedOriginPin = normalizeOriginPin('https://git.corp.example/acme/app.git') as string;
+    git(repo, 'remote', 'set-url', 'origin', 'https://git.corp.example:443/acme/app.git');
+    expect(await pushTask({ ...input(), expectedOriginPin })).toMatchObject({ ok: false, reason: 'remote-refused', error: expect.stringContaining('rewritten') });
+    expect(git(other, 'for-each-ref')).toBe('');
+    git(repo, 'remote', 'set-url', 'origin', 'https://git.corp.example/acme/app.git');
+    expect(await pushTask({ ...input(), expectedOriginPin })).toMatchObject({ ok: true });
+  });
+
   it('a different host is refused even under the same repository path', async () => {
     git(repo, 'remote', 'add', 'origin', 'git@git.corp.example:acme/app.git');
     globalConfig();

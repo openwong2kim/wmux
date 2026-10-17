@@ -196,7 +196,7 @@ describe.skipIf(process.platform === 'win32')('the no-changes check over real gi
     });
     const mission = { worktreePath: work, branch: 'wtask/one' };
     expect(await ports.remoteHead(row(), mission)).toEqual({ ok: true, sha: null });
-    expect(row().dispatch?.originPin).toBe(`ssh://localhost:22${origin.replace(/\.git$/, '')}`);
+    expect(row().dispatch?.originPin).toBe(`ssh://localhost${origin.replace(/\.git$/, '')}`);
     // The same repository key on another port is not the pinned origin.
     run(work, 'remote', 'set-url', 'origin', fakeSshUrl(origin).replace('ssh://localhost', 'ssh://localhost:2222'));
     expect(await ports.remoteHead(row(), mission)).toMatchObject({ ok: false, reason: 'remote-refused' });
