@@ -15,6 +15,7 @@ import {
   isWslWorkerPane,
   isTaskOwnWorkerPane,
   clearVerdict,
+  endedTaskAgentRuns,
   lifecycleCardTask,
   paneTurnEnded,
   noteWorkerAgentExit,
@@ -29,6 +30,8 @@ import {
   stopResumedWorkers,
   unreclaimedEndedWorkers,
   RECLAIMED_WORKERS_MAX,
+  STOPPING_SETTLE_MS,
+  type ReclaimedWorker,
   type WorkerReclaimPorts,
   type WorkerResumePorts,
   type WorkerSessionInfo,
@@ -1152,5 +1155,104 @@ describe('reclaimWorker records only the task\'s own panes', () => {
     });
     const rec = await reclaimWorker(ports, row('failed'), 'failed');
     expect(rec?.sessions.map((s) => s.sessionId)).toEqual(['daemon-1']);
+  });
+});
+
+describe('the fan-out slot of an ended task, and a record left stopping (F25)', () => {
+  const TASK = 'wtask-abc-12345678';
+  const stopping = (over: Partial<ReclaimedWorker> = {}): ReclaimedWorker => ({
+    taskId: TASK, botId: BOT, ownerWorkspaceId: 'ws-owner', taskWorkspaceId: 'ws-task', title: 'perf-A', threadId: 'task:x' as never,
+    ended: 'completed', sessions: [{ sessionId: 'daemon-1', cwd: wt, resumeSessionId: UUID }], state: 'stopping', at: 1_000, endRev: 3, ...over,
+  });
+  const ownerStopped = () => row('cancelled', { summary: STOPPED_BY_OWNER, updatedBy: { kind: 'system', workspaceId: 'ws-daemon' }, rev: 4 });
+
+  it('endedTaskAgentRuns: an agent seen alive in any pane, or a command in the task\'s own pane; never a shell at its prompt or another\'s command', () => {
+    const byId = (...s: WorkerSessionInfo[]) => new Map(s.map((x) => [x.id, x]));
+    const own = (id: string) => (id === 'daemon-1' ? { taskId: TASK } : null);
+    // The worker marked its row completed and its agent keeps running.
+    expect(endedTaskAgentRuns(['daemon-1'], TASK, [], byId(session()), own)).toBe(true);
+    // An agent the daemon sees in a pane the task did not launch is an agent all the same.
+    expect(endedTaskAgentRuns(['daemon-2'], TASK, [], byId(session({ id: 'daemon-2' })), own)).toBe(true);
+    // The owner's stop destroyed the sessions; the tabs stay.
+    expect(endedTaskAgentRuns(['daemon-1'], TASK, [], byId(), own)).toBe(false);
+    // A plain shell at its prompt, an agent seen to exit, a dead session.
+    expect(endedTaskAgentRuns(['daemon-1'], TASK, [], byId(session({ agentProcessAlive: undefined, commandRunning: false })), own)).toBe(false);
+    expect(endedTaskAgentRuns(['daemon-1'], TASK, [], byId(session({ agentProcessAlive: false, commandRunning: true })), own)).toBe(false);
+    expect(endedTaskAgentRuns(['daemon-1'], TASK, [], byId({ ...session(), state: 'dead' } as WorkerSessionInfo), own)).toBe(false);
+    // A WSL worker's launch line in its own pane runs; the same in the owner's terminal does not hold the slot.
+    const wsl = (id: string) => session({ id, agentProcessAlive: undefined, commandRunning: true, wslTarget: { distribution: 'Ubuntu' } });
+    expect(endedTaskAgentRuns(['daemon-1'], TASK, [], byId(wsl('daemon-1')), own)).toBe(true);
+    expect(endedTaskAgentRuns(['daemon-3'], TASK, [], byId(wsl('daemon-3')), own)).toBe(false);
+    expect(endedTaskAgentRuns(['daemon-3'], TASK, ['daemon-3'], byId(wsl('daemon-3')), own)).toBe(true);
+  });
+
+  it('a record left stopping by an earlier run, with no session left, is marked stopped at install', async () => {
+    const store = ReclaimedWorkers.at(dir);
+    await store.put(stopping());
+    const changed = vi.fn();
+    const { ports, stopAgent } = reclaimPorts(store, [], { row: () => ownerStopped(), allRows: () => [ownerStopped()], changed });
+    const off = installWorkerReclaim({ ...ports, now: () => 5_000 });
+    await vi.waitFor(() => expect(store.get(TASK)?.state).toBe('stopped'));
+    expect(stopAgent).not.toHaveBeenCalled();
+    expect(changed).toHaveBeenCalled();
+    off();
+    await settled(store);
+  });
+
+  it('one left stopping in this run is looked at only past the bound, then marked stopped', async () => {
+    vi.useFakeTimers();
+    try {
+      const store = ReclaimedWorkers.at(dir);
+      let now = 10_000;
+      await store.put(stopping({ at: 10_000 }));
+      const { ports } = reclaimPorts(store, [], { row: () => ownerStopped(), allRows: () => [ownerStopped()], retryMs: 60_000, now: () => now });
+      const off = installWorkerReclaim(ports);
+      now = 10_000 + 60_000;
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(store.get(TASK)?.state).toBe('stopping');
+      now = 10_000 + STOPPING_SETTLE_MS;
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(store.get(TASK)?.state).toBe('stopped');
+      off();
+      await settled(store);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('one whose agent still runs keeps counting, and its stop is tried once more', async () => {
+    const store = ReclaimedWorkers.at(dir);
+    await store.put(stopping());
+    // The daemon keeps refusing the stop: the agent runs on.
+    const stopAgent = vi.fn(async () => ({ ok: false, code: 'refused' }));
+    const failedRow = row('failed', { rev: 5 });
+    let now = 5_000;
+    const { ports } = reclaimPorts(store, [session()], { row: () => failedRow, allRows: () => [], stopAgent, retryMs: 1, now: () => now });
+    const off = installWorkerReclaim(ports);
+    await vi.waitFor(() => expect(stopAgent).toHaveBeenCalledTimes(1));
+    // Stale again past the bound: once per end, not on every look.
+    now += 2 * STOPPING_SETTLE_MS;
+    await new Promise((r) => setTimeout(r, 30));
+    off();
+    expect(stopAgent).toHaveBeenCalledTimes(1);
+    expect(store.get(TASK)?.state).toBe('stopping');
+    // A reported task still in review whose worker runs is left to the reported stop.
+    const inReview = ReclaimedWorkers.at(path.join(dir, 'review'));
+    await inReview.put(stopping({ ended: 'reported' }));
+    const review = reclaimPorts(inReview, [session()], { row: () => row('review_requested'), allRows: () => [] });
+    const offReview = installWorkerReclaim({ ...review.ports, now: () => 5_000 });
+    await new Promise((r) => setTimeout(r, 30));
+    offReview();
+    expect(review.stopAgent).not.toHaveBeenCalled();
+    expect(inReview.get(TASK)?.state).toBe('stopping');
+    await settled(store);
+    await settled(inReview);
+  });
+
+  it('a stop answered no_session (the pane went since the read) is no failed stop', async () => {
+    const store = ReclaimedWorkers.at(dir);
+    const { ports } = reclaimPorts(store, [session()], { stopAgent: async () => ({ ok: false, code: 'no_session' }) });
+    const rec = await reclaimWorker(ports, row('completed'), 'completed');
+    expect(rec?.state).toBe('stopped');
   });
 });

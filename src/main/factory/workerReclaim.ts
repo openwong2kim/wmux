@@ -751,8 +751,35 @@ export function resumedAgentAlive(rec: Pick<ReclaimedWorker, 'sessions'>, sessio
   });
 }
 
+/**
+ * Whether an agent runs in a task workspace's panes, for the fan-out slot of
+ * a task that ended: a pane whose agent the daemon sees alive, or one of the
+ * task's own worker panes (isTaskOwnWorkerPane) running a foreground command
+ * with no agent exit seen (a WSL worker's launch line, isWslWorkerPane, or an
+ * agent the daemon never attributed). A gone, dead or suspended session, a
+ * shell at its prompt, or a command in a pane that is not the task's own is
+ * none. Pure.
+ */
+export function endedTaskAgentRuns(
+  ptys: readonly string[],
+  taskId: string,
+  recordedSessionIds: readonly string[],
+  sessions: ReadonlyMap<string, WorkerSessionInfo & { state?: unknown }>,
+  sessionRecordOf: WorkerSessionRecordOf | undefined,
+): boolean {
+  return ptys.some((id) => {
+    const s = sessions.get(id);
+    if (!s || s.state === 'dead' || s.state === 'suspended') return false;
+    if (s.agentProcessAlive === true) return true;
+    return s.agentProcessAlive !== false && s.commandRunning === true && isTaskOwnWorkerPane(s, taskId, recordedSessionIds, sessionRecordOf);
+  });
+}
+
 /** Attempts per ended task before the reclaim gives it up. */
 export const RECLAIM_ATTEMPTS_MAX = 3;
+/** A `stopping` record is looked at again this long after its stop began
+ *  (one an earlier run left is looked at right away). */
+export const STOPPING_SETTLE_MS = 2 * 60_000;
 
 /** Whether the task moved on from the state its worker is being stopped
  *  for. An end: its row is open again (it reopened since it ended); a row
@@ -964,7 +991,9 @@ export async function reclaimWorker(
           if (out) out.deferred = true;
           break;
         }
-        if (r.ok !== true) {
+        // A pane gone since the read took its agent with it: no failed stop
+        // (counted as one, it kept the record `stopping` for good).
+        if (r.ok !== true && r.code !== 'no_session') {
           failed++;
           log(`[factory] reclaim: the agent of ${p.sessionId} (task ${entry.id}) was not stopped: ${r.code ?? 'refused'}`);
         }
@@ -1078,6 +1107,8 @@ export function isReclaimedSince(rec: ReclaimedWorker | null, entry: Pick<Ledger
 /** Install the reclaim on bot task ends. Returns the unsubscribe. */
 export function installWorkerReclaim(ports: WorkerReclaimPorts): () => void {
   const now = ports.now ?? Date.now;
+  const log = ports.log ?? ((m: string) => console.warn(m));
+  const installedAt = now();
   const inFlight = new Set<string>();
   const attempts = new Map<string, number>();
   const run = (entry: LedgerEntry, ended: ReclaimedWorker['ended']): void => {
@@ -1118,6 +1149,64 @@ export function installWorkerReclaim(ports: WorkerReclaimPorts): () => void {
     for (const e of rows) {
       if (e.updatedAt >= since && isReclaimableEnd(e, e.status)) run(e, e.status as 'completed' | 'cancelled' | 'failed');
       else if (ports.turnEnded && e.updatedAt <= idleSince && isReclaimableReport(e) && turnEndedIn(e)) run(e, 'reported');
+    }
+    void settleStopping();
+  };
+  // A record left `stopping` (a stop that failed or was cut off by a quit, a
+  // reported stop held back whose worker then exited, or a task whose end
+  // moved on to one this reclaim does not take, such as the owner's stop or
+  // one past the catch-up window) is never tried again by the above. Once
+  // stale (left by an earlier run, or begun STOPPING_SETTLE_MS ago) it is
+  // read again: no agent left in its panes, it is stopped; one still running
+  // in an ended task is stopped once more through the reclaim, per end.
+  const retried = new Set<string>();
+  let settling = false;
+  const settleStopping = async (): Promise<void> => {
+    if (settling || !ports.row) return;
+    const at = now();
+    const stale = ports.store.all().filter((r) => r.state === 'stopping' && !inFlight.has(r.taskId)
+      && (r.at < installedAt || at - r.at >= STOPPING_SETTLE_MS));
+    if (stale.length === 0) return;
+    settling = true;
+    try {
+      const byId = new Map((await ports.listSessions()).map((x) => [x.id, x]));
+      let moved = false;
+      for (const rec of stale) {
+        // Read again after the await: a reclaim that started meanwhile owns it.
+        const cur = ports.store.get(rec.taskId);
+        if (!cur || cur.state !== 'stopping' || cur.at !== rec.at || inFlight.has(rec.taskId)) continue;
+        let row: LedgerEntry | null;
+        try {
+          row = ports.row(rec.taskId);
+        } catch {
+          continue;
+        }
+        // An open task's worker is its row's: the reclaim of its next end
+        // looks at the record again.
+        if (row && (row.status === 'working' || row.status === 'input_required')) continue;
+        const recorded = cur.sessions.map((x) => x.sessionId);
+        if (!endedTaskAgentRuns(recorded, cur.taskId, recorded, byId, undefined)) {
+          if (ports.store.setState(rec.taskId, 'stopped', now())) {
+            moved = true;
+            log(`[factory] reclaim: ${rec.taskId} was left stopping with no agent running; marked stopped`);
+          }
+          continue;
+        }
+        // Its agent still runs. A reported task still in review is the
+        // reported stop's to retry; an ended one is stopped once more.
+        if (!row || (row.status !== 'completed' && row.status !== 'cancelled' && row.status !== 'failed')) continue;
+        const key = `${row.id}@${row.rev}`;
+        if (retried.has(key)) continue;
+        retried.add(key);
+        attempts.delete(key);
+        log(`[factory] reclaim: ${rec.taskId} was left stopping with its agent running; its stop is tried again`);
+        run(row, row.status);
+      }
+      if (moved) ports.changed?.();
+    } catch (err) {
+      log(`[factory] reclaim: a look at workers left stopping failed: ${String(err)}`);
+    } finally {
+      settling = false;
     }
   };
   catchUp();
