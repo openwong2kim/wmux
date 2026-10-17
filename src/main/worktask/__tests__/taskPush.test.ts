@@ -429,7 +429,7 @@ describe.skipIf(process.platform === 'win32')('task.push and task.fetch: the rec
     const withCondition = (extra: string) => globalConfig(`[includeIf "gitdir:${common}"]\n\tpath = ${inc}\n${extra}`);
     withCondition('');
     expect(await pushTask({ ...input(), expectedOriginPin: pin })).toMatchObject({ ok: true });
-    for (const cond of ['worktree:/elsewhere/**', 'onbranch:release/**', 'someday:x']) {
+    for (const cond of ['worktree:/elsewhere/**', 'onbranch:release/**', 'someday:x', 'hasconfig:core.worktree:/elsewhere/**', 'hasconfig:remote.*.urlx:https://git.corp.example/**']) {
       withCondition(`[includeIf "${cond}"]\n\tpath = ${inc}.none\n`);
       expect(await pushTask({ ...input(), expectedOriginPin: pin }), cond).toMatchObject({ ok: false });
     }

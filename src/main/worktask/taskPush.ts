@@ -487,8 +487,9 @@ export async function openTaskGitRepo(input: TaskGitRepoInput, git: TaskPushGit 
   // against the recorded repository's HEAD; `worktree:`, against its
   // `core.worktree`; any condition git adds later): the worker can change
   // what it is evaluated against, so with one, nothing read through the
-  // repository is replayed. Only `gitdir:` (main's recorded path) is not.
-  const ownerStateInclude = context.some((e) => (e.scope === 'system' || e.scope === 'global' || e.scope === 'unknown') && /^includeif\./i.test(e.key) && !/^includeif\.(?:gitdir|gitdir\/i|hasconfig):/i.test(e.key));
+  // repository is replayed. Only `gitdir:` (main's recorded path) and
+  // exactly `hasconfig:remote.*.url:` (above) are not.
+  const ownerStateInclude = context.some((e) => (e.scope === 'system' || e.scope === 'global' || e.scope === 'unknown') && /^includeif\./i.test(e.key) && !/^includeif\.(?:gitdir:|gitdir\/i:|hasconfig:remote\.\*\.url:)/i.test(e.key));
   const protocols = deps.protocols ?? RELAY_GIT_DEFAULT_PROTOCOLS;
   const relayShellPath = target.kind === 'wsl' ? (await (toLinux as (p: string) => Promise<string | null>)(relayHostPath)) ?? '' : relayHostPath;
 
