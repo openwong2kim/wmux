@@ -42,8 +42,10 @@ import {
   SKILL_REFERENCE_NAME_RE,
   WORKER_SKILLS_EXCLUDE_LINE,
   parseSkillFrontmatter,
+  serializeSkillFrontmatter,
   skillVersionNewer,
   workerSkillDirName,
+  workerSkillFile,
   type BotSkillView,
   type SkillIndexEntry,
   type SkillReferenceInput,
@@ -231,7 +233,16 @@ export function skillLineDiff(before: string, after: string): string | null {
   return out.join('\n');
 }
 
-/** The change from one version to another, file by file. Pure. */
+/** SKILL.md as a worker's Claude Code reads it: the front matter written
+ *  from its parsed fields, and the body. Null when it does not parse. */
+function skillParts(content: string): { head: string; body: string } | null {
+  const fm = parseSkillFrontmatter(content);
+  return fm.ok ? { head: serializeSkillFrontmatter(fm.frontmatter), body: fm.body } : null;
+}
+
+/** The change from one version to another, file by file. SKILL.md shows
+ *  its front matter as a worker's Claude Code reads it (the parsed fields,
+ *  written again), always whole, apart from its body. Pure. */
 export function skillFilesDiff(before: SkillFiles | null, after: SkillFiles): string {
   const parts: string[] = [];
   const one = (file: string, from: string, to: string): void => {
@@ -240,7 +251,16 @@ export function skillFilesDiff(before: SkillFiles | null, after: SkillFiles): st
     // Every line carries a prefix, so none can close the card's code fence.
     parts.push(`--- ${file}`, d ?? ['@@ too long to compare; the new text', ...to.split('\n').map((l) => `+ ${l}`)].join('\n'));
   };
-  one(SKILL_FILE, before?.content ?? '', after.content);
+  const to = skillParts(after.content);
+  if (to) {
+    const from = before ? skillParts(before.content) : null;
+    // Five lines: a diff of them never runs over DIFF_MAX_LINES.
+    const head = from?.head === to.head ? to.head.split('\n').map((l) => `  ${l}`).join('\n') : skillLineDiff(from?.head ?? '', to.head) as string;
+    parts.push(`--- ${SKILL_FILE} front matter, as Claude Code reads it`, head);
+    one(`${SKILL_FILE} body`, from ? from.body : before?.content ?? '', to.body);
+  } else {
+    one(SKILL_FILE, before?.content ?? '', after.content);
+  }
   const names = new Set([...(before?.references ?? []), ...after.references].map((r) => r.name));
   for (const name of [...names].sort()) {
     const from = before?.references.find((r) => r.name === name)?.content ?? '';
@@ -264,6 +284,9 @@ export function validateSkillProposal(name: unknown, content: unknown, reference
   if (!fm.ok) return refuse('invalid', fm.error);
   if (fm.frontmatter.name !== name) return refuse('invalid', `the front matter's name (${fm.frontmatter.name}) is not ${name}`);
   if (!fm.body.trim()) return refuse('invalid', 'SKILL.md needs the procedure after its front matter');
+  // A dashes-only line in the body reads as a front matter marker to some
+  // readers (right after the front matter, as a second block): none is taken.
+  if (/^[ \t]*-{3,}[ \t]*$/m.test(fm.body)) return refuse('invalid', 'the procedure holds no line of only dashes (it reads as a front matter marker); use *** for a rule');
   const refs: SkillReferenceInput[] = [];
   if (references !== undefined) {
     if (!Array.isArray(references)) return refuse('invalid', 'references is a list of {name, content}');
@@ -903,7 +926,8 @@ export class BotSkillStore {
 export type SkillGitRun = (args: string[], cwd: string) => Promise<{ code: number; stdout: string; stderr: string }>;
 
 /** Copy the bot's approved skills into a worker's worktree as
- *  `.claude/skills/bot-<name>/`, after adding WORKER_SKILLS_EXCLUDE_LINE to
+ *  `.claude/skills/bot-<name>/` (SKILL.md's front matter written again from
+ *  its parsed fields: workerSkillFile), after adding WORKER_SKILLS_EXCLUDE_LINE to
  *  the worktree's `info/exclude` (`git rev-parse --git-path`, the common
  *  one for a linked worktree) so they are never committed. Nothing is copied
  *  when the exclude cannot be written, and a folder already there (one the
@@ -953,9 +977,12 @@ export async function installWorkerSkills(
     for (const p of [claudeDir, skillsDir]) if (!lstatOrNull(p)) mkdir(p);
     for (const s of skills) {
       const target = path.join(skillsDir, workerSkillDirName(s.name));
-      if (lstatOrNull(target)) continue;
+      // Never the bytes as written: the front matter Claude Code reads is
+      // written again from the parsed fields.
+      const text = workerSkillFile(s.files.content);
+      if (text === null || lstatOrNull(target)) continue;
       mkdir(target);
-      write(path.join(target, SKILL_FILE), s.files.content);
+      write(path.join(target, SKILL_FILE), text);
       if (s.files.references.length > 0) {
         mkdir(path.join(target, REFERENCES_DIR));
         for (const ref of s.files.references) write(path.join(target, REFERENCES_DIR, ref.name), ref.content);

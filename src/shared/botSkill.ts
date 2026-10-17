@@ -27,7 +27,8 @@
 // approved skills by name and description and `skill_read` returns an
 // approved body; a worker it starts in a worktree gets copies of the approved
 // skills in its `.claude/skills/bot-<name>/`, excluded from git (a research
-// worker's scratch folder gets none).
+// worker's scratch folder gets none), each front matter written again from its
+// parsed fields (workerSkillFile), never copied as the bot wrote it.
 //
 // A bot writes and reads only its own skills; main takes the bot from the
 // token's binding and builds every path itself — a call never names a path.
@@ -69,11 +70,14 @@ export const SKILL_LIMITS = {
   DIFF_MAX: 7000,
 } as const;
 
-/** A skill's name: a lowercase slug — no separator, no dot, so never `..`. */
-export const SKILL_NAME_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
+/** A skill's name: a lowercase slug — no separator, no dot, so never `..`
+ *  — and never a Windows device name (con, prn, aux, nul, com0-9, lpt0-9),
+ *  which no folder on Windows can be called. */
+export const SKILL_NAME_RE = /^(?!(?:con|prn|aux|nul|com[0-9]|lpt[0-9])$)[a-z0-9][a-z0-9-]{0,63}$/;
 
-/** A reference file's name: a slug with a .md or .txt extension. */
-export const SKILL_REFERENCE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}\.(md|txt)$/;
+/** A reference file's name: a slug with a .md or .txt extension, whose
+ *  stem is never a Windows device name (`con.md` is reserved too). */
+export const SKILL_REFERENCE_NAME_RE = /^(?!(?:con|prn|aux|nul|com[0-9]|lpt[0-9])\.)[a-z0-9][a-z0-9_-]{0,63}\.(md|txt)$/;
 
 /** `MAJOR.MINOR.PATCH`. */
 export const SKILL_VERSION_RE = /^(0|[1-9]\d{0,5})\.(0|[1-9]\d{0,5})\.(0|[1-9]\d{0,5})$/;
@@ -150,17 +154,32 @@ export interface SkillFrontmatter {
   version: string;
 }
 
-/** The front matter of a SKILL.md: `---`, one `key: value` line per key
- *  (exactly SKILL_FRONTMATTER_KEYS, each once; a value may be quoted), `---`.
- *  Returns the fields and the body after it, or why not. Pure. */
+/** The front matter of a SKILL.md, read the way Claude Code reads it. Claude
+ *  Code takes `/^---\s*\n([\s\S]*?)---/`: the front matter ends at the
+ *  first `---` anywhere after the opening line, not at a line of its own, so
+ *  an indented `  ---` or a value holding `---` ends it there and the lines
+ *  after it are read as front matter. A SKILL.md is therefore read only when
+ *  both readings agree: line 1 is exactly `---` (no byte-order mark, no blank
+ *  line before it), and the first `---` after it is a whole line, exactly
+ *  `---`. A trailing `\r` (CRLF) is the only other thing either line may
+ *  hold. Between them, one `key: value` line per key (exactly
+ *  SKILL_FRONTMATTER_KEYS, each once; a value may be quoted). Anything else
+ *  is refused, never read one way here and another way there. Returns the
+ *  fields and the body after it, or why not. Pure. */
 export function parseSkillFrontmatter(content: string): { ok: true; frontmatter: SkillFrontmatter; body: string } | { ok: false; error: string } {
-  const text = content.replace(/^\uFEFF/, '');
-  const lines = text.split(/\r?\n/);
-  if (lines[0]?.trim() !== '---') return { ok: false, error: 'SKILL.md starts with a --- front matter line' };
-  const end = lines.findIndex((l, i) => i > 0 && l.trim() === '---');
-  if (end < 0) return { ok: false, error: 'the front matter has no closing --- line' };
+  const open = /^---\r?\n/.exec(content);
+  if (!open) return { ok: false, error: 'SKILL.md starts with a --- front matter line (line 1, exactly ---)' };
+  const close = content.indexOf('---', open[0].length);
+  if (close < 0) return { ok: false, error: 'the front matter has no closing --- line' };
+  // The opening line ends in \n, so this holds for an empty front matter too.
+  if (content[close - 1] !== '\n') return { ok: false, error: 'the front matter holds --- inside a line; it ends only at a line that is exactly --- (no indent, and no --- in a value)' };
+  const after = /^(?:\r?\n|$)/.exec(content.slice(close + 3));
+  if (!after) return { ok: false, error: 'the closing front matter line is exactly ---' };
   const fields: Record<string, string> = {};
-  for (const line of lines.slice(1, end)) {
+  for (const line of content.slice(open[0].length, close).split(/\r?\n/)) {
+    // A lone \r and the YAML 1.1 line breaks would split a line for a YAML
+    // reader that this split keeps whole.
+    if (/[\r\u0085\u2028\u2029]/.test(line)) return { ok: false, error: 'front matter lines end with \\n (or \\r\\n) and hold no other line break' };
     if (!line.trim()) continue;
     const m = /^([A-Za-z_][A-Za-z0-9_-]*):\s*(.*)$/.exec(line);
     if (!m) return { ok: false, error: `front matter line is not "key: value": ${line.slice(0, 60)}` };
@@ -176,14 +195,33 @@ export function parseSkillFrontmatter(content: string): { ok: true; frontmatter:
   for (const key of SKILL_FRONTMATTER_KEYS) {
     if (!fields[key]) return { ok: false, error: `front matter needs ${key}` };
   }
-  if (!SKILL_NAME_RE.test(fields.name)) return { ok: false, error: 'front matter name is a lowercase slug (a-z, 0-9, -)' };
+  if (!SKILL_NAME_RE.test(fields.name)) return { ok: false, error: 'front matter name is a lowercase slug (a-z, 0-9, -), not a Windows device name' };
   if (fields.description.length > SKILL_LIMITS.DESCRIPTION_MAX) return { ok: false, error: `description is at most ${SKILL_LIMITS.DESCRIPTION_MAX} characters` };
   if (!SKILL_VERSION_RE.test(fields.version)) return { ok: false, error: 'version is MAJOR.MINOR.PATCH (1.0.0)' };
   return {
     ok: true,
     frontmatter: { name: fields.name, description: fields.description, version: fields.version },
-    body: lines.slice(end + 1).join('\n'),
+    body: content.slice(close + 3 + after[0].length).split(/\r?\n/).join('\n'),
   };
+}
+
+/** The front matter a worker's Claude Code reads, written from the parsed
+ *  fields (never the bytes the bot wrote): each value a JSON string, which
+ *  YAML reads as the same double-quoted string. Pure. */
+export function serializeSkillFrontmatter(fm: SkillFrontmatter): string {
+  return ['---', ...SKILL_FRONTMATTER_KEYS.map((k) => `${k}: ${JSON.stringify(fm[k])}`), '---'].join('\n');
+}
+
+/** The SKILL.md a worker's copy holds: the front matter written again from
+ *  its parsed fields, then the body. Null when the file does not parse, or
+ *  when the written front matter would hold a `---` before its closing line
+ *  (parsing refuses one, so never). Pure. */
+export function workerSkillFile(content: string): string | null {
+  const fm = parseSkillFrontmatter(content);
+  if (!fm.ok) return null;
+  const head = serializeSkillFrontmatter(fm.frontmatter);
+  if (head.indexOf('---', 4) !== head.length - 3) return null;
+  return `${head}\n${fm.body}`;
 }
 
 /** a > b for two SKILL_VERSION_RE versions. Pure. */

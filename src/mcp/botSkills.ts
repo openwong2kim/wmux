@@ -4,10 +4,10 @@
 // every path itself, so no tool names a bot or a path.
 
 import { z } from 'zod';
-import { BOT_SKILL_RPC, SKILL_LIMITS } from '../shared/botSkill';
+import { BOT_SKILL_RPC, SKILL_LIMITS, SKILL_NAME_RE, SKILL_REFERENCE_NAME_RE } from '../shared/botSkill';
 import { registerToolModule } from './toolModules';
 
-const NAME = z.string().regex(/^[a-z0-9][a-z0-9-]{0,63}$/).describe('The skill\'s name: a lowercase slug (a-z, 0-9, -).');
+const NAME = z.string().regex(SKILL_NAME_RE).describe('The skill\'s name: a lowercase slug (a-z, 0-9, -).');
 
 registerToolModule({
   name: 'bot-skills',
@@ -27,9 +27,9 @@ registerToolModule({
       {
         name: NAME,
         content: z.string().min(1).max(SKILL_LIMITS.BODY_MAX)
-          .describe('The whole SKILL.md: a front matter of exactly name, description (one line: when to use it) and version (1.0.0) between --- lines, then the procedure.'),
+          .describe('The whole SKILL.md: line 1 exactly ---, then exactly name, description (one line: when to use it) and version (1.0.0), one key: value line each, then a line exactly --- (no indent), then the procedure. No --- anywhere in the values, and no line of only dashes in the procedure (use *** for a rule).'),
         references: z.array(z.object({
-          name: z.string().regex(/^[a-z0-9][a-z0-9_-]{0,63}\.(md|txt)$/),
+          name: z.string().regex(SKILL_REFERENCE_NAME_RE),
           content: z.string().max(SKILL_LIMITS.REFERENCE_MAX),
         })).max(SKILL_LIMITS.REFERENCES_MAX).optional().describe('Supporting files of this version (the whole set).'),
         reason: z.string().min(1).max(SKILL_LIMITS.REASON_MAX).describe('One line for the owner: what you learned, and from what.'),
