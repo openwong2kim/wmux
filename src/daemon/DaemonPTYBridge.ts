@@ -560,6 +560,10 @@ export class DaemonPTYBridge extends EventEmitter {
       this.turnSoftClosed = false;
       this.openTurn();
       if (joined) this.bootEpisode = false;
+    } else if (this.turnSoftClosed) {
+      // Answering a dialog resumes the episode it interrupted, even one a
+      // detector settle closed softly before the dialog went up.
+      this.openTurn(true);
     }
     // A submit, or a human answering the agent's dialog: a turn either way.
     this.byteOpenedTurn = false;
@@ -736,6 +740,9 @@ export class DaemonPTYBridge extends EventEmitter {
     if (status === 'awaiting_input') {
       this.awaitingHuman = true;
       this.awaitingQuestionAt = questionAt ?? null;
+      // The agent's own dialog hook means its turn is running: an episode a
+      // detector settle closed softly mid-turn resumes under the same id.
+      if (authoritative && this.turnSoftClosed) this.openTurn(true);
     } else if (authoritative) this.awaitingHuman = false;
     // A settle ends the episode unless it is the dialog the turn waits on. On
     // a pane with hooks only the hook's own settle (Stop / StopFailure) counts:
@@ -871,6 +878,40 @@ export class DaemonPTYBridge extends EventEmitter {
   private chunkSetsSpinnerTitle = false;
   // eslint-disable-next-line no-control-regex
   private static readonly CLAUDE_SPINNER_TITLE_OSC = /\x1b\][02];[◐◑]\s/;
+  private static readonly CLAUDE_SPINNER_TITLE = /^[◐◑]\s/;
+  /** When the idle-title gate last held a burst back (0 = never). */
+  private heldBurstAt = 0;
+  private static readonly HELD_BURST_MS = 3000;
+
+  /**
+   * F24 — Claude Code set its running spinner title on a settled hook pane:
+   * it started a turn by itself (a background task woke it), and the burst
+   * the idle-title gate held back may have been that turn's first paint. Its
+   * spinner alone writes too few bytes to cross the activity threshold
+   * again, so the title opens the turn, from the held burst when one came
+   * within the last few seconds. The settled branch's other guards apply: the
+   * finishing turn's tail, echo of the user's keys, a resize repaint.
+   */
+  private noteSpinnerTitle(): void {
+    if (!this.explicitTerminalStatus || !this.hookSeen || this.awaitingHuman || this.muted || !this.sessionId) return;
+    const now = Date.now();
+    if (
+      now - this.settledAtMs < DaemonPTYBridge.SETTLE_COOLDOWN_MS
+      || !this.isInputQuiet()
+      || now - this.lastResizeAtMs < RESIZE_REDRAW_GUARD_MS
+    ) return;
+    const heldAt = now - this.heldBurstAt < DaemonPTYBridge.HELD_BURST_MS ? this.heldBurstAt : undefined;
+    this.heldBurstAt = 0;
+    this.explicitTerminalStatus = false;
+    this.settledStatus = null;
+    this.submittedTurnPending = false;
+    const wasOpen = this.turnOpen;
+    this.openTurn(true, heldAt);
+    if (!wasOpen) this.byteOpenedTurn = true;
+    // The turn's next output reports `running` through onActive, as a hook's
+    // running edge does.
+    this.activityMonitor?.beginTurnIfInactive(this.sessionId);
+  }
 
   /**
    * Something other than the shell moved the pane's cwd (an agent's hook
@@ -1213,13 +1254,19 @@ export class DaemonPTYBridge extends EventEmitter {
         // most likely to arrive just before a genuine one.
         // F24: on a hook pane, a burst under Claude Code's idle title is its
         // own post-turn paint (the recap, a repaint on attach), not a turn.
+        // Such a burst is held: the spinner title of a real turn may follow it
+        // (see noteSpinnerTitle).
         const now = Date.now();
         if (
           now - this.settledAtMs < DaemonPTYBridge.SETTLE_COOLDOWN_MS
           || !this.isInputQuiet()
           || now - this.lastResizeAtMs < RESIZE_REDRAW_GUARD_MS
-          || this.idleTitleOnHookPane()
         ) {
+          activityMonitor.endTurn(ptyId);
+          return;
+        }
+        if (this.idleTitleOnHookPane()) {
+          this.heldBurstAt = now;
           activityMonitor.endTurn(ptyId);
           return;
         }
@@ -1318,6 +1365,7 @@ export class DaemonPTYBridge extends EventEmitter {
         this.lastTitleAt = Date.now();
         if (title) this.emit('title', { sessionId, title });
         if (titleTurnEdge.observe(title)) this.noteTitleTurnEnd(sessionId);
+        if (DaemonPTYBridge.CLAUDE_SPINNER_TITLE.test(title)) this.noteSpinnerTitle();
         return;
       }
       if (event.code === 7) {
@@ -1720,6 +1768,7 @@ export class DaemonPTYBridge extends EventEmitter {
     this.turnSoftClosed = false;
     this.bootEpisode = false;
     this.byteOpenedTurn = false;
+    this.heldBurstAt = 0;
     this.hookSeen = false;
     this.lastTitle = '';
     this.lastTitleAt = 0;

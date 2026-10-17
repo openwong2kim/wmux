@@ -259,4 +259,52 @@ describe('DaemonPTYBridge — output after a hook Stop (F24)', () => {
     bridge.noteInput('then this\r'); // queued into the same turn
     expect(bridge.getTurn('running').id).toBe(id);
   });
+
+  it('a burst held under the idle title opens the turn when the spinner title follows it', () => {
+    const id = finishedHookTurn();
+    vi.advanceTimersByTime(60_000);
+    const burstAt = Date.now();
+    feed(BIG); // the autonomous turn's first paint, before its spinner title
+    expect(bridge.isTurnOpen()).toBe(false);
+    vi.advanceTimersByTime(500);
+    feed(RUNNING_TITLE); // the spinner alone never crosses the byte threshold
+    expect(bridge.isTurnOpen()).toBe(true);
+    expect(bridge.getTurn('running').id).not.toBe(id);
+    expect(bridge.getTurn('running').startedAt).toBe(burstAt);
+    expect(bridge.getAgentStatus()).toBe('running');
+    vi.advanceTimersByTime(1000);
+    feed('\x1b]0;◑ Set e2e-win/hello.txt line 1\x07');
+    expect(bridge.getAgentStatus()).toBe('running');
+    bridge.noteAgentStatus('complete', true);
+    expect(bridge.isTurnOpen()).toBe(false);
+  });
+
+  it('a spinner title inside the settle cool-down (the Stop hook still running) opens nothing', () => {
+    finishedHookTurn();
+    vi.advanceTimersByTime(500);
+    feed(RUNNING_TITLE);
+    expect(bridge.isTurnOpen()).toBe(false);
+    expect(bridge.getAgentStatus()).toBe('complete');
+  });
+
+  it('a dialog after a soft close resumes the episode: one id from the approval to the Stop', () => {
+    bridge.noteInput('go\r');
+    bridge.noteAgentStatus('running', true);
+    feed(BIG);
+    bridge.noteAgentStatus('complete', true); // this agent sets no title
+    vi.advanceTimersByTime(6100);
+    feed(BIG); // an autonomous turn, from bytes alone
+    const id = bridge.getTurn('running').id;
+    bridge.noteAgentStatus('waiting'); // detector: the `bypass permissions on` footer
+    expect(bridge.isTurnOpen()).toBe(false);
+    bridge.noteAgentStatus('awaiting_input', true); // PermissionRequest
+    expect(bridge.getTurn(bridge.getAgentStatus())).toMatchObject({ id, state: 'running' });
+    bridge.noteInput('1'); // allowed
+    feed(BIG); // the approved tool runs
+    expect(bridge.getTurn(bridge.getAgentStatus())).toMatchObject({ id, state: 'running' });
+    bridge.noteInput('then this\r'); // queued into the running turn
+    expect(bridge.getTurn(bridge.getAgentStatus())).toMatchObject({ id, state: 'running' });
+    bridge.noteAgentStatus('complete', true);
+    expect(bridge.getTurn(bridge.getAgentStatus())).toMatchObject({ id, state: 'idle' });
+  });
 });
