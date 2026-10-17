@@ -307,4 +307,23 @@ describe('DaemonPTYBridge — output after a hook Stop (F24)', () => {
     bridge.noteAgentStatus('complete', true);
     expect(bridge.getTurn(bridge.getAgentStatus())).toMatchObject({ id, state: 'idle' });
   });
+
+  it('a spinner-opened turn under an unchanged idle footer keeps running and its id', () => {
+    const footer = '\r\n  ⏵⏵ bypass permissions on (shift+tab to cycle)\r\n';
+    feed('Claude Code v2.1.301\r\n'); // the detector names the agent
+    bridge.noteInput('go\r');
+    bridge.noteAgentStatus('running', true);
+    feed(RUNNING_TITLE + BIG + footer);
+    bridge.noteAgentStatus('complete', true);
+    feed(IDLE_TITLE);
+    vi.advanceTimersByTime(60_000);
+    feed(RUNNING_TITLE);
+    vi.advanceTimersByTime(500);
+    feed(BIG + footer); // the autonomous turn paints; the footer did not change
+    expect(bridge.getAgentStatus()).toBe('running');
+    const id = bridge.getTurn('running').id;
+    expect(bridge.isTurnOpen()).toBe(true);
+    bridge.noteInput('queued\r');
+    expect(bridge.getTurn(bridge.getAgentStatus())).toMatchObject({ id, state: 'running' });
+  });
 });

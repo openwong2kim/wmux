@@ -580,6 +580,7 @@ export class DaemonPTYBridge extends EventEmitter {
       clearTimeout(this.resizeGuardTimer);
       this.resizeGuardTimer = null;
     }
+    this.spinnerArmedCycle = false;
     this.agentDetector?.resetEmissionState();
     if (this.activityMonitor && this.sessionId) {
       this.activityMonitor.beginTurn(this.sessionId);
@@ -690,6 +691,7 @@ export class DaemonPTYBridge extends EventEmitter {
    * explicit running activity opens the gate again for autonomous work.
    */
   noteAgentStatus(status: AgentEventStatus, authoritative = false, questionAt?: number, provisional = false, signalTs?: number): void {
+    this.spinnerArmedCycle = false;
     // #1463 — any hook is turn evidence. SessionStart re-sets `preTurn` after
     // its own edge (noteSessionStart); detector statuses are not evidence.
     if (authoritative) {
@@ -905,13 +907,19 @@ export class DaemonPTYBridge extends EventEmitter {
     this.explicitTerminalStatus = false;
     this.settledStatus = null;
     this.submittedTurnPending = false;
-    const wasOpen = this.turnOpen;
+    // Not `byteOpenedTurn`: the spinner is the agent's own word that a turn
+    // runs, and that turn ends with a Stop like any other.
     this.openTurn(true, heldAt);
-    if (!wasOpen) this.byteOpenedTurn = true;
     // The turn's next output reports `running` through onActive, as a hook's
-    // running edge does.
+    // running edge does, but keeps the detector's dedup like the settled
+    // branch's promotion: the idle chrome still on screen must not answer
+    // with a stale `waiting`.
+    this.spinnerArmedCycle = true;
     this.activityMonitor?.beginTurnIfInactive(this.sessionId);
   }
+
+  /** The current activity cycle was armed by noteSpinnerTitle and has not fired yet. */
+  private spinnerArmedCycle = false;
 
   /**
    * Something other than the shell moved the pane's cwd (an agent's hook
@@ -1286,6 +1294,8 @@ export class DaemonPTYBridge extends EventEmitter {
         this.submittedTurnPending = false;
         const hookArmed = this.hookArmedCycle;
         this.hookArmedCycle = false;
+        const spinnerArmed = this.spinnerArmedCycle;
+        this.spinnerArmedCycle = false;
 
         // Real submitted input already reset detector dedup in noteInput(). For
         // a passive startup/autonomous burst, retain the resize-redraw guard: a
@@ -1319,7 +1329,7 @@ export class DaemonPTYBridge extends EventEmitter {
               return;
             }
           } else {
-            this.agentDetector?.resetEmissionState();
+            if (!spinnerArmed) this.agentDetector?.resetEmissionState();
             const wasOpen = this.turnOpen;
             this.openTurn(true);
             if (!wasOpen && this.hookSeen) this.byteOpenedTurn = true;
@@ -1769,6 +1779,7 @@ export class DaemonPTYBridge extends EventEmitter {
     this.bootEpisode = false;
     this.byteOpenedTurn = false;
     this.heldBurstAt = 0;
+    this.spinnerArmedCycle = false;
     this.hookSeen = false;
     this.lastTitle = '';
     this.lastTitleAt = 0;
