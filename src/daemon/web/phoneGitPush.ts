@@ -1,11 +1,15 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { execFile, execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { getWmuxDir } from '../config';
 import { atomicWriteJSONSync } from '../util/atomicWrite';
 import { getExecEnv } from '../../shared/execEnv';
+import { readWorkerFile } from '../../shared/readWorkerFile';
+import { parseRawGitConfigList, parseTaskHead, relayGitConfigArgs, type RawGitConfigEntry } from '../../shared/taskGitRelay';
 import { buildGitEnv, gitArgv, type GitRunResult } from './sessionDiff';
+import { canonicalPath, pathKey } from './phoneGitRead';
 import { GitWriteReceipts, type GhTokenResult } from './phoneGitWriteGate';
 import { registerPhoneGitWriteAction, type GitWriteExecuteContext, type GitWritePreviewResult, type GitWriteSessionContext } from './phoneGitWriteRegistry';
 import {
@@ -20,13 +24,31 @@ import {
  *
  * - The target is the upstream's ref on `origin`; with no upstream the push
  *   creates `refs/heads/<branch>` only when the remote has no such branch.
+ * - Which repository: the routes resolve the session's trusted spawn cwd to
+ *   its common git dir and bind the confirm token to it. Each read here finds
+ *   the pane's git dir and common dir once (`paneGitDirs`), requires that
+ *   same common dir, and from then on names both explicitly (`--git-dir` and
+ *   `GIT_COMMON_DIR`); nothing is looked up through the worktree again. The
+ *   preview pins both dirs and the execute must find the same ones. HEAD is
+ *   read from the git dir's own HEAD file, strictly (`parseTaskHead`).
  * - Before any network call: the repository's own config may not set
  *   transport, credential or URL keys (`isolatedConfigKey`), and the
  *   effective `origin` URLs must be `https://github.com/<owner>/<repo>`.
  *   Network calls then name that validated URL, never the remote `origin`,
  *   and the preview pins it into the confirm token.
+ * - Every network git call (each `ls-remote`, the push) runs in a bare relay
+ *   repository the daemon owns, made for that call under the daemon's data
+ *   folder (`phone-git-relay/`) and removed after it. The relay borrows the
+ *   pane repository's objects through `objects/info/alternates`, so the push
+ *   reads the commit from there, and git in the relay reads only the relay's
+ *   own config and this module's `-c` options: never the pane repository's.
+ * - Nothing is written under the pane repository: no ref, no config. A branch
+ *   the push created has no upstream until the pane sets one; the next push
+ *   from it goes to the same-named remote branch as a fast-forward.
  * - Global and system git config are never loaded; the argv fixes every push
  *   option a repository's config could otherwise change. Never forced.
+ *   No git call fetches a missing object on its own (`GIT_NO_LAZY_FETCH`),
+ *   and a partial clone is refused.
  * - Every network git child runs in its own process group (a tree on
  *   Windows), killed on timeout and on daemon exit. A push's intent is written
  *   to disk before it spawns, so a restart can settle the `uncertain` receipt
@@ -43,6 +65,12 @@ const MAX_PUSHES_PER_OWNER = 1;
 const MAX_PUSHES = 2;
 /** One file per in-flight push, named by its receipt key. */
 export const PHONE_GIT_PUSH_INTENTS_DIR = 'phone-git-push-intents';
+/** One bare relay repository per network call, removed after it. */
+export const PHONE_GIT_RELAY_DIR = 'phone-git-relay';
+/** A relay this old is left over from a daemon that stopped mid-call. */
+const RELAY_SWEEP_AGE_MS = 60 * 60 * 1000;
+/** The most of a shallow list read (about 25,000 boundary commits). */
+const SHALLOW_MAX = 1024 * 1024;
 
 /** A git runner with an explicit environment. Never throws; a failure is data. */
 export type PushGitRunner = (args: readonly string[], cwd: string, env: NodeJS.ProcessEnv) => Promise<GitRunResult>;
@@ -53,15 +81,15 @@ export interface PushChildResult { spawned: boolean; code: number | null; timedO
 export type PushSpawner = (args: readonly string[], cwd: string, env: NodeJS.ProcessEnv, timeoutMs: number) => Promise<PushChildResult>;
 
 export interface PhoneGitPushDeps {
-  /** Local reads and the post-push upstream config. Never reaches the network. */
+  /** Local reads and the relay's setup. Never reaches the network. */
   git: PushGitRunner;
-  /** Network git (`ls-remote`). */
+  /** Network git (`ls-remote`), always in a relay. */
   remote: PushGitRunner;
   gh: PushGhRunner;
   push: PushSpawner;
   /** The environment git and gh are found in (PATH, HOME). */
   baseEnv: () => NodeJS.ProcessEnv;
-  /** Where the in-flight intents are written. */
+  /** Where the in-flight intents and the relays are written. */
   stateDir: () => string;
   now: () => number;
   log: (msg: string) => void;
@@ -211,6 +239,10 @@ export function pushArgv(pushUrl: string, expectedHead: string, targetRef: strin
 
 const local = (...args: string[]) => gitArgv('-c', 'log.showSignature=false', ...args);
 
+/** The relay's argv prefix: its git dir, then the relay's forced options (no
+ *  automatic gc or maintenance, HTTPS only). Every network call starts so. */
+const inRelay = (relay: string, ...args: string[]) => [`--git-dir=${relay}`, ...relayGitConfigArgs([], ['https']), ...args];
+
 // ── Remote ───────────────────────────────────────────────────────────────────
 
 const GITHUB_HTTPS = /^https:\/\/github\.com\/([A-Za-z0-9](?:[A-Za-z0-9-]{0,38}))\/([A-Za-z0-9_.-]{1,100}?)(?:\.git)?$/;
@@ -235,23 +267,52 @@ export function isolatedConfigKey(key: string): boolean {
 }
 
 /**
- * Every config key the repository sets (local and worktree, includes
+ * Every config entry the repository sets (local and worktree, includes
  * followed), or null when git cannot say. Global and system are off; the
  * `command` scope is this module's own `-c` and is left out.
  */
-async function repoConfigKeys(git: PushGitRunner, cwd: string, env: NodeJS.ProcessEnv): Promise<string[] | null> {
-  const out = await git(local('config', '--list', '-z', '--includes', '--show-scope'), cwd, env);
+async function repoConfig(run: PaneGit): Promise<RawGitConfigEntry[] | null> {
+  const out = await run('config', '--list', '-z', '--includes', '--show-scope');
   if (!out.ok) return null;
-  const fields = out.stdout.split('\0');
-  const keys: string[] = [];
-  for (let i = 0; i + 1 < fields.length; i += 2) {
-    const scope = fields[i] as string;
-    const entry = fields[i + 1] as string;
-    if (scope === 'command') continue;
-    const nl = entry.indexOf('\n');
-    keys.push(nl === -1 ? entry : entry.slice(0, nl));
+  return parseRawGitConfigList(out.stdout).filter((e) => e.scope !== 'command');
+}
+
+/** A local git call on the pane repository, by its pinned git dirs. */
+type PaneGit = (...args: string[]) => Promise<GitRunResult>;
+
+/** The pane repository's git dirs, canonical: the worktree's own git dir and
+ *  the common dir. */
+export interface PaneGitDirs { gitDir: string; commonDir: string }
+
+/**
+ * Find the pane repository's git dirs once, from the session's cwd: the
+ * common dir must be the one the routes resolved (`expectedCommon`), and the
+ * git dir must be it or one of its `worktrees/<id>`. Null when git cannot say
+ * or the dirs do not match.
+ */
+async function paneGitDirs(git: PushGitRunner, cwd: string, env: NodeJS.ProcessEnv, expectedCommon: string): Promise<PaneGitDirs | null> {
+  const out = await git(local('rev-parse', '--path-format=absolute', '--absolute-git-dir', '--git-common-dir'), cwd, env);
+  if (!out.ok) return null;
+  const [rawGit, rawCommon] = out.stdout.split('\n');
+  if (!rawGit || !rawCommon || !path.isAbsolute(rawGit) || !path.isAbsolute(rawCommon)) return null;
+  let gitDir: string;
+  let commonDir: string;
+  try {
+    gitDir = await fs.promises.realpath(rawGit);
+    commonDir = await fs.promises.realpath(rawCommon);
+  } catch {
+    return null;
   }
-  return keys;
+  if (!expectedCommon || pathKey(commonDir) !== pathKey(await canonicalPath(expectedCommon))) return null;
+  if (pathKey(gitDir) !== pathKey(commonDir) && pathKey(path.dirname(gitDir)) !== pathKey(path.join(commonDir, 'worktrees'))) return null;
+  return { gitDir, commonDir };
+}
+
+/** Local git on the pinned dirs: `--git-dir` and `GIT_COMMON_DIR` named, run
+ *  from a folder of no repository's, so git never looks one up. */
+function paneGit(git: PushGitRunner, dirs: PaneGitDirs, env: NodeJS.ProcessEnv): PaneGit {
+  const pinned = { ...env, GIT_COMMON_DIR: dirs.commonDir };
+  return (...args) => git(local(`--git-dir=${dirs.gitDir}`, ...args), os.homedir(), pinned);
 }
 
 /**
@@ -259,9 +320,9 @@ async function repoConfigKeys(git: PushGitRunner, cwd: string, env: NodeJS.Proce
  * expansion of the URLs. Every URL must be HTTPS github.com and name the same
  * repository; `pushUrl` is the one URL every network call then uses. Local only.
  */
-async function originRepo(git: PushGitRunner, cwd: string, env: NodeJS.ProcessEnv): Promise<{ ownerRepo: string; pushUrl: string } | null> {
-  const fetchUrls = await git(local('remote', 'get-url', '--all', 'origin'), cwd, env);
-  const pushUrls = await git(local('remote', 'get-url', '--push', '--all', 'origin'), cwd, env);
+async function originRepo(run: PaneGit): Promise<{ ownerRepo: string; pushUrl: string } | null> {
+  const fetchUrls = await run('remote', 'get-url', '--all', 'origin');
+  const pushUrls = await run('remote', 'get-url', '--push', '--all', 'origin');
   if (!fetchUrls.ok || !pushUrls.ok) return null;
   const pushList = pushUrls.stdout.split('\n').filter(Boolean);
   if (pushList.length !== 1) return null;
@@ -277,9 +338,9 @@ function remoteFailure(stderr: string, login: string): GitWriteErrorBody {
     : { error: 'remote-unreachable' };
 }
 
-/** The remote's tip of `ref`, null when it has none. */
-async function remoteTipOf(remote: PushGitRunner, where: string, cwd: string, ref: string, env: NodeJS.ProcessEnv, login: string): Promise<{ tip: string | null } | { fail: GitWriteErrorBody }> {
-  const out = await remote([...NETWORK_CONFIG, 'ls-remote', '--refs', where, ref], cwd, env);
+/** The remote's tip of `ref`, null when it has none. Read in `relay`. */
+async function remoteTipOf(remote: PushGitRunner, relay: string, where: string, ref: string, env: NodeJS.ProcessEnv, login: string): Promise<{ tip: string | null } | { fail: GitWriteErrorBody }> {
+  const out = await remote(inRelay(relay, ...NETWORK_CONFIG, 'ls-remote', '--refs', where, ref), relay, env);
   if (!out.ok) return { fail: remoteFailure(out.stderr, login) };
   for (const line of out.stdout.split('\n')) {
     const [oid, name] = line.split('\t');
@@ -301,24 +362,129 @@ async function defaultBranch(gh: PushGhRunner, repo: string, env: NodeJS.Process
   return { fail: { error: 'gh-unavailable' } };
 }
 
+// ── Relay ────────────────────────────────────────────────────────────────────
+
+/** What a relay borrows from the pane repository. */
+interface RelaySource {
+  commonDir: string;
+  objectFormat: 'sha1' | 'sha256';
+  /** The pane repository's shallow list, or '' when it is complete. */
+  shallow: string;
+}
+
+/**
+ * Run `fn` with a fresh bare relay repository under the daemon's data folder,
+ * removed afterwards. With a `source`, the relay borrows its objects (and its
+ * shallow list, so a push from a shallow clone stops where the clone does).
+ * Null when the relay cannot be made; `fn` has not run then. What `fn` throws
+ * is thrown.
+ */
+async function withRelay<T>(deps: PhoneGitPushDeps, source: RelaySource | null, fn: (relay: string) => Promise<T>): Promise<{ value: T } | null> {
+  const dir = await makeRelay(deps, source);
+  if (!dir) return null;
+  try {
+    return { value: await fn(dir) };
+  } finally {
+    removeRelay(dir);
+  }
+}
+
+function removeRelay(dir: string): void {
+  try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* swept at the next start */ }
+}
+
+/** Make one relay, or null (nothing left behind) when it cannot be made. */
+async function makeRelay(deps: PhoneGitPushDeps, source: RelaySource | null): Promise<string | null> {
+  let dir: string | null = null;
+  try {
+    const root = path.join(deps.stateDir(), PHONE_GIT_RELAY_DIR);
+    fs.mkdirSync(root, { recursive: true, mode: 0o700 });
+    if (process.platform !== 'win32') fs.chmodSync(root, 0o700);
+    dir = path.join(root, crypto.randomBytes(12).toString('hex'));
+    fs.mkdirSync(dir, { mode: 0o700 });
+    const init = await deps.git(
+      local(`--git-dir=${dir}`, 'init', '-q', '--bare', '--template=', `--object-format=${source?.objectFormat ?? 'sha1'}`),
+      dir, isolatedEnv(deps.baseEnv()),
+    );
+    if (!init.ok) throw new Error(init.stderr.trim().slice(0, 300) || 'git init failed');
+    if (source) {
+      fs.mkdirSync(path.join(dir, 'objects', 'info'), { recursive: true });
+      fs.writeFileSync(path.join(dir, 'objects', 'info', 'alternates'), `${path.join(source.commonDir, 'objects')}\n`);
+      if (source.shallow) fs.writeFileSync(path.join(dir, 'shallow'), source.shallow);
+    }
+    return dir;
+  } catch (error) {
+    deps.log(`the relay could not be made: ${error instanceof Error ? error.message : String(error)}`);
+    if (dir) removeRelay(dir);
+    return null;
+  }
+}
+
+/** Remove relays left by a daemon that stopped mid-call. Best effort. */
+export function sweepPhoneGitRelays(stateDir: string, now: number): void {
+  const root = path.join(stateDir, PHONE_GIT_RELAY_DIR);
+  let names: string[];
+  try { names = fs.readdirSync(root); } catch { return; }
+  for (const name of names) {
+    const p = path.join(root, name);
+    try {
+      if (fs.lstatSync(p).mtimeMs <= now - RELAY_SWEEP_AGE_MS) fs.rmSync(p, { recursive: true, force: true });
+    } catch { /* best effort */ }
+  }
+}
+
 // ── Facts ────────────────────────────────────────────────────────────────────
 
 type Facts = Omit<PushPreviewFacts, 'identity'> & { ownerRepo: string; pushUrl: string };
-type Gathered = { ok: true; facts: Facts } | { ok: false; body: GitWriteErrorBody };
+type Gathered = { ok: true; facts: Facts; dirs: PaneGitDirs; source: RelaySource } | { ok: false; body: GitWriteErrorBody };
 
 const failed = (body: GitWriteErrorBody): Gathered => ({ ok: false, body });
 const gitFailed = (): Gathered => failed({ error: 'git-operation-failed' });
 
+/** What an execute re-reads against: the preview's pins. */
+interface GatherPin { ref: string; head: string; repo: string; pushUrl: string; gitDir: string; commonDir: string }
+
+/** The pane repository's shallow list, '' when it has none, null when it
+ *  cannot be read as one. Read by the daemon itself, bounded, no symlink. */
+async function shallowList(commonDir: string, objectFormat: 'sha1' | 'sha256'): Promise<string | null> {
+  const p = path.join(commonDir, 'shallow');
+  try {
+    await fs.promises.lstat(p);
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'ENOENT' ? '' : null;
+  }
+  const text = await readWorkerFile(p, SHALLOW_MAX);
+  const ids = (text ?? '').split('\n').map((l) => l.trim()).filter(Boolean);
+  const idRe = objectFormat === 'sha256' ? /^[0-9a-f]{64}$/ : /^[0-9a-f]{40}$/;
+  if (text === null || ids.length === 0 || !ids.every((id) => idRe.test(id))) return null;
+  return `${[...new Set(ids)].join('\n')}\n`;
+}
+
 /**
  * Read every fact a push is decided on. Local first: the branch, its upstream
  * and the origin URLs; only then gh and `ls-remote`. `pin` (execute) names the
- * branch ref and the commit instead of reading HEAD.
+ * branch ref and the commit instead of reading HEAD, and the git dirs and URL
+ * the preview found.
  */
-async function gather(ctx: GitWriteSessionContext, deps: PhoneGitPushDeps, pin?: { ref: string; head: string; repo: string; pushUrl: string }): Promise<Gathered> {
+async function gather(ctx: GitWriteSessionContext, deps: PhoneGitPushDeps, pin?: GatherPin): Promise<Gathered> {
   const base = deps.baseEnv();
   const env = isolatedEnv(base);
-  const cwd = ctx.cwd;
-  const run = (...args: string[]) => deps.git(local(...args), cwd, env);
+  const stale = (): Gathered => failed({ error: 'stale', head: pin?.head });
+
+  // The one lookup through the session's cwd; every later call names the dirs.
+  const dirs = await paneGitDirs(deps.git, ctx.cwd, env, ctx.repo.commonReal);
+  if (!dirs) return pin ? stale() : gitFailed();
+  if (pin && (dirs.gitDir !== pin.gitDir || dirs.commonDir !== pin.commonDir)) return stale();
+  const run = paneGit(deps.git, dirs, env);
+
+  const config = await repoConfig(run);
+  if (!config) return gitFailed();
+  const own = (key: string) => config.filter((e) => e.key === key).at(-1)?.value;
+  const format = (own('extensions.objectformat') ?? 'sha1').toLowerCase();
+  if (format !== 'sha1' && format !== 'sha256') return gitFailed();
+  const objectFormat: 'sha1' | 'sha256' = format;
+  // A partial clone would fetch what it lacks; this push never runs on one.
+  if (config.some((e) => e.key === 'extensions.partialclone' || /^remote\..+\.promisor$/.test(e.key))) return failed({ error: 'remote-unsupported' });
 
   let ref: string;
   let head: string;
@@ -328,11 +494,13 @@ async function gather(ctx: GitWriteSessionContext, deps: PhoneGitPushDeps, pin?:
     if (!has.ok) return has.ran === false ? gitFailed() : failed({ error: 'stale', head: pin.head });
     head = pin.head;
   } else {
-    const sym = await run('symbolic-ref', '-q', 'HEAD');
-    if (!sym.ok) return sym.code === 1 ? failed({ error: 'detached-head' }) : gitFailed();
-    ref = sym.stdout.trim();
-    if (!ref.startsWith('refs/heads/')) return failed({ error: 'detached-head' });
-    const h = await run('rev-parse', '--verify', '-q', 'HEAD^{commit}');
+    // HEAD from the git dir's own file, strictly: a branch or a commit id.
+    const text = await readWorkerFile(path.join(dirs.gitDir, 'HEAD'));
+    const parsed = text === null ? null : parseTaskHead(text, objectFormat);
+    if (!parsed) return gitFailed();
+    if (parsed.kind === 'oid') return failed({ error: 'detached-head' });
+    ref = parsed.ref;
+    const h = await run('rev-parse', '--verify', '-q', '--end-of-options', `${ref}^{commit}`);
     if (!h.ok || !GIT_WRITE_OID.test(h.stdout.trim())) return gitFailed();
     head = h.stdout.trim();
   }
@@ -358,24 +526,25 @@ async function gather(ctx: GitWriteSessionContext, deps: PhoneGitPushDeps, pin?:
   }
 
   // The repository's own config and the effective URLs, before any network call.
-  const keys = await repoConfigKeys(deps.git, cwd, env);
-  if (!keys) return gitFailed();
-  if (keys.some(isolatedConfigKey)) return failed({ error: 'remote-unsupported' });
-  const origin = await originRepo(deps.git, cwd, env);
+  if (config.some((e) => isolatedConfigKey(e.key))) return failed({ error: 'remote-unsupported' });
+  const origin = await originRepo(run);
   if (!origin) return failed({ error: 'remote-unsupported' });
   const { ownerRepo, pushUrl } = origin;
   // Execute: the URL the person confirmed, or nothing goes out.
   if (pin && (ownerRepo !== pin.repo || pushUrl !== pin.pushUrl)) return failed({ error: 'stale', head: pin.head });
+  const shallow = await shallowList(dirs.commonDir, objectFormat);
+  if (shallow === null) return gitFailed();
+  const source: RelaySource = { commonDir: dirs.commonDir, objectFormat, shallow };
 
   const net = networkEnv(base, ctx.ghEnv);
   const def = await defaultBranch(deps.gh, ownerRepo, net, ctx.login);
   if ('fail' in def) return failed(def.fail);
   if (def.ref === targetRef) return failed({ error: 'protected-target' });
 
-  const tipRead = await remoteTipOf(deps.remote, pushUrl, cwd, targetRef, net, ctx.login);
-  if ('fail' in tipRead) return failed(tipRead.fail);
-  const remoteTip = tipRead.tip;
-  if (!hasUpstream && remoteTip !== null) return failed({ error: 'remote-branch-exists' });
+  const tipRead = await withRelay(deps, source, (relay) => remoteTipOf(deps.remote, relay, pushUrl, targetRef, net, ctx.login));
+  if (!tipRead) return gitFailed();
+  if ('fail' in tipRead.value) return failed(tipRead.value.fail);
+  const remoteTip = tipRead.value.tip;
   if (remoteTip === head) return failed({ error: 'no-commits-ahead' });
 
   // Counts against the remote tip when this clone has it; otherwise against
@@ -395,7 +564,10 @@ async function gather(ctx: GitWriteSessionContext, deps: PhoneGitPushDeps, pin?:
     // The remote holds commits this clone never fetched: at least one.
     behind = 1;
   }
-  const tracking = await run('rev-parse', '--verify', '-q', `refs/remotes/origin/${targetRef.slice('refs/heads/'.length)}^{commit}`);
+  // No upstream: the same-named remote branch is pushed to only when it is
+  // already in this branch's history (one this push created earlier, say).
+  if (!hasUpstream && remoteTip !== null && !fastForward) return failed({ error: 'remote-branch-exists' });
+  const tracking = await run('rev-parse', '--verify', '-q', '--end-of-options', `refs/remotes/origin/${targetRef.slice('refs/heads/'.length)}^{commit}`);
   const trackingOid = tracking.ok ? tracking.stdout.trim() : null;
 
   let commits: PushCommit[] = [];
@@ -421,6 +593,7 @@ async function gather(ctx: GitWriteSessionContext, deps: PhoneGitPushDeps, pin?:
       remoteMoved: trackingOid !== remoteTip,
       fastForward, commits, commitsTruncated, ownerRepo, pushUrl,
     },
+    dirs, source,
   };
 }
 
@@ -434,11 +607,11 @@ export interface PushIntent {
   /** The local branch pushed from. */
   ref: string;
   targetRef: string;
-  /** The push creates the remote branch, and records it as the upstream once it lands. */
+  /** The push creates the remote branch. */
   create: boolean;
   expectedHead: string;
   login: string;
-  /** The session's spawn cwd: a local ancestor check is tried there first. */
+  /** The session's spawn cwd. */
   cwd: string;
   startedAt: number;
 }
@@ -521,21 +694,15 @@ type Landed = 'landed' | 'not-landed' | 'unknown';
 
 /**
  * Whether `expectedHead` is on the remote: the remote tip is it or descends
- * from it. Tried locally first; otherwise GitHub's compare answers.
+ * from it. The tip is read in `relay`; the ancestry comes from GitHub's
+ * compare, never from the pane repository's own history.
  */
-async function pushLanded(deps: PhoneGitPushDeps, intent: Omit<PushIntent, 'startedAt'>, net: NodeJS.ProcessEnv): Promise<Landed> {
-  const tipRead = await remoteTipOf(deps.remote, intent.pushUrl, os.tmpdir(), intent.targetRef, net, intent.login);
+async function pushLanded(deps: PhoneGitPushDeps, intent: Omit<PushIntent, 'startedAt'>, net: NodeJS.ProcessEnv, relay: string): Promise<Landed> {
+  const tipRead = await remoteTipOf(deps.remote, relay, intent.pushUrl, intent.targetRef, net, intent.login);
   if ('fail' in tipRead) return 'unknown';
   const tip = tipRead.tip;
   if (tip === null) return 'not-landed';
   if (tip === intent.expectedHead) return 'landed';
-  const env = isolatedEnv(deps.baseEnv());
-  const known = await deps.git(local('cat-file', '-e', `${tip}^{commit}`), intent.cwd, env);
-  if (known.ok) {
-    const anc = await deps.git(local('merge-base', '--is-ancestor', intent.expectedHead, tip), intent.cwd, env);
-    if (anc.ok) return 'landed';
-    if (anc.code === 1) return 'not-landed';
-  }
   const cmp = await deps.gh(['api', '--hostname', 'github.com', `repos/${intent.ownerRepo}/compare/${intent.expectedHead}...${tip}`], net);
   if (!cmp.ok) return /HTTP 404/.test(cmp.stderr) ? 'not-landed' : 'unknown';
   try {
@@ -544,24 +711,6 @@ async function pushLanded(deps: PhoneGitPushDeps, intent: Omit<PushIntent, 'star
     if (status === 'behind' || status === 'diverged') return 'not-landed';
   } catch { /* unknown */ }
   return 'unknown';
-}
-
-/**
- * After a push landed, record locally what a push to `origin` would have: the
- * remote-tracking ref, and for a branch the push created, its upstream (the
- * source is a commit id, so `--set-upstream` would not record one; a branch
- * that already has an upstream is left alone). Best effort.
- */
-async function recordPushed(deps: PhoneGitPushDeps, intent: PushIntent): Promise<void> {
-  const env = isolatedEnv(deps.baseEnv());
-  const run = (...args: string[]) => deps.git(local(...args), intent.cwd, env);
-  await run('update-ref', `refs/remotes/origin/${intent.targetRef.slice('refs/heads/'.length)}`, intent.expectedHead);
-  if (!intent.create) return;
-  const branch = intent.ref.slice('refs/heads/'.length);
-  const has = await run('config', '--get', `branch.${branch}.merge`);
-  if (has.ok || has.code !== 1) return;
-  await run('config', `branch.${branch}.remote`, 'origin');
-  await run('config', `branch.${branch}.merge`, intent.targetRef);
 }
 
 // ── Handlers ─────────────────────────────────────────────────────────────────
@@ -573,15 +722,14 @@ export function createPhoneGitPushHandlers(deps: PhoneGitPushDeps = defaultPushD
   async function preview(ctx: GitWriteSessionContext): Promise<GitWritePreviewResult> {
     const g = await gather(ctx, deps);
     if (!g.ok) return { ok: false, body: g.body };
-    const facts: Record<string, unknown> & Omit<Facts, 'ownerRepo' | 'pushUrl'> = { ...g.facts };
-    delete facts.ownerRepo;
-    delete facts.pushUrl;
+    const { ownerRepo, pushUrl, ...facts } = g.facts;
+    const { dirs } = g;
     return {
       ok: true,
       facts,
       pins: {
         head: facts.head, ref: facts.ref, targetRef: facts.target.ref, remoteTip: facts.remoteTip,
-        repo: g.facts.ownerRepo, pushUrl: g.facts.pushUrl,
+        repo: ownerRepo, pushUrl, gitDir: dirs.gitDir, commonDir: dirs.commonDir,
       },
     };
   }
@@ -589,7 +737,8 @@ export function createPhoneGitPushHandlers(deps: PhoneGitPushDeps = defaultPushD
   async function execute(ctx: GitWriteExecuteContext): Promise<void> {
     const body = ctx.body as PushExecuteBody;
     const pins = ctx.pins;
-    if (!pins || typeof pins.ref !== 'string' || typeof pins.targetRef !== 'string' || typeof pins.repo !== 'string' || typeof pins.pushUrl !== 'string') {
+    if (!pins || typeof pins.ref !== 'string' || typeof pins.targetRef !== 'string' || typeof pins.repo !== 'string' || typeof pins.pushUrl !== 'string'
+      || typeof pins.gitDir !== 'string' || typeof pins.commonDir !== 'string') {
       return ctx.settle({ state: 'refused', error: 'confirm-required' });
     }
     const mine = running.get(ctx.owner) ?? 0;
@@ -599,6 +748,7 @@ export function createPhoneGitPushHandlers(deps: PhoneGitPushDeps = defaultPushD
     try {
       await executePinned(ctx, body, {
         ref: pins.ref, targetRef: pins.targetRef, remoteTip: pins.remoteTip as string | null, repo: pins.repo, pushUrl: pins.pushUrl,
+        gitDir: pins.gitDir, commonDir: pins.commonDir,
       });
     } finally {
       runningTotal -= 1;
@@ -607,7 +757,7 @@ export function createPhoneGitPushHandlers(deps: PhoneGitPushDeps = defaultPushD
     }
   }
 
-  type Pinned = { ref: string; targetRef: string; remoteTip: string | null; repo: string; pushUrl: string };
+  type Pinned = { ref: string; targetRef: string; remoteTip: string | null; repo: string; pushUrl: string; gitDir: string; commonDir: string };
 
   async function executePinned(ctx: GitWriteExecuteContext, body: PushExecuteBody, pins: Pinned): Promise<void> {
     const refuse = (b: GitWriteErrorBody) => {
@@ -616,7 +766,9 @@ export function createPhoneGitPushHandlers(deps: PhoneGitPushDeps = defaultPushD
       ctx.settle({ state: 'refused', error, ...(Object.keys(fields).length ? { fields } : {}) });
     };
     // Re-read every pinned fact; the commit pushed is `expectedHead`, whatever HEAD is now.
-    const g = await gather(ctx, deps, { ref: pins.ref, head: body.expectedHead, repo: pins.repo, pushUrl: pins.pushUrl });
+    const g = await gather(ctx, deps, {
+      ref: pins.ref, head: body.expectedHead, repo: pins.repo, pushUrl: pins.pushUrl, gitDir: pins.gitDir, commonDir: pins.commonDir,
+    });
     if (!g.ok) return refuse(g.body);
     const f = g.facts;
     if (!f.fastForward) return refuse({ error: 'non-fast-forward', remoteTip: f.remoteTip, behind: f.behind });
@@ -635,12 +787,20 @@ export function createPhoneGitPushHandlers(deps: PhoneGitPushDeps = defaultPushD
       deps.log(`the push intent could not be written: ${error instanceof Error ? error.message : String(error)}`);
       return refuse({ error: 'git-receipts-unavailable' });
     }
-    ctx.markInFlight();
     try {
-      const outcome = await pushAndRead(ctx, intent, net);
+      // The relay is made before the receipt goes in flight: when it cannot
+      // be, nothing was sent.
+      const ran = await withRelay(deps, g.source, async (relay) => {
+        ctx.markInFlight();
+        return pushAndRead(ctx, intent, net, relay);
+      });
+      if (!ran) {
+        removePushIntent(dir, key);
+        return refuse({ error: 'git-operation-failed' });
+      }
+      const outcome = ran.value;
       if (outcome === 'unknown') throw new Error('push outcome unknown');
       if (outcome.state === 'done') {
-        await recordPushed(deps, intent).catch(() => undefined);
         ctx.settle({ state: 'done', fields: { pushed: intent.expectedHead, target: intent.targetRef } });
       } else {
         refuse(outcome.body);
@@ -654,14 +814,14 @@ export function createPhoneGitPushHandlers(deps: PhoneGitPushDeps = defaultPushD
   }
 
   /** Push, then classify. `unknown` when neither git nor the remote can say whether it landed. */
-  async function pushAndRead(ctx: GitWriteExecuteContext, intent: PushIntent, net: NodeJS.ProcessEnv): Promise<{ state: 'done' } | { state: 'refused'; body: GitWriteErrorBody } | 'unknown'> {
-    const out = await deps.push(pushArgv(intent.pushUrl, intent.expectedHead, intent.targetRef), ctx.cwd, net, PUSH_TIMEOUT_MS);
+  async function pushAndRead(ctx: GitWriteExecuteContext, intent: PushIntent, net: NodeJS.ProcessEnv, relay: string): Promise<{ state: 'done' } | { state: 'refused'; body: GitWriteErrorBody } | 'unknown'> {
+    const out = await deps.push(inRelay(relay, ...pushArgv(intent.pushUrl, intent.expectedHead, intent.targetRef)), relay, net, PUSH_TIMEOUT_MS);
     if (!out.spawned) return { state: 'refused', body: { error: 'git-operation-failed' } };
     if (out.code === 0 && !out.timedOut) return { state: 'done' };
     if (!out.timedOut) {
       const rejected = out.stdout.split('\n').find((l) => l.startsWith('!'));
       if (rejected && /non-fast-forward|fetch first|stale info/.test(rejected)) {
-        const tip = await remoteTipOf(deps.remote, intent.pushUrl, ctx.cwd, intent.targetRef, net, ctx.login);
+        const tip = await remoteTipOf(deps.remote, relay, intent.pushUrl, intent.targetRef, net, ctx.login);
         return { state: 'refused', body: { error: 'non-fast-forward', remoteTip: 'tip' in tip ? tip.tip : null } };
       }
       if (rejected || remoteFailure(out.stderr, ctx.login).error === 'remote-forbidden') {
@@ -670,7 +830,7 @@ export function createPhoneGitPushHandlers(deps: PhoneGitPushDeps = defaultPushD
       }
     }
     // Killed or failed on the way: the remote tip says whether it landed.
-    const landed = await pushLanded(deps, intent, net);
+    const landed = await pushLanded(deps, intent, net, relay);
     if (landed === 'landed') return { state: 'done' };
     if (landed === 'not-landed') return { state: 'refused', body: { error: 'push-not-landed' } };
     return 'unknown';
@@ -712,10 +872,10 @@ export async function recheckUncertainPushes(receipts: GitWriteReceipts, opts: P
     const token = await opts.identity(intent.login);
     if (!token.ok) { left += 1; continue; }
     const net = networkEnv(deps.baseEnv(), { GH_TOKEN: token.token, GH_HOST: 'github.com', GH_PROMPT_DISABLED: '1' });
-    const landed = await pushLanded(deps, intent, net).catch((): Landed => 'unknown');
+    const checked = await withRelay(deps, null, (relay) => pushLanded(deps, intent, net, relay).catch((): Landed => 'unknown'));
+    const landed: Landed = checked ? checked.value : 'unknown';
     if (landed === 'unknown') { left += 1; continue; }
     if (landed === 'landed') {
-      await recordPushed(deps, intent).catch(() => undefined);
       receipts.settle(key, { state: 'done', fields: { pushed: intent.expectedHead, target: intent.targetRef } });
     } else {
       receipts.settle(key, { state: 'refused', error: 'push-not-landed' });
@@ -762,6 +922,7 @@ export function startPushRecovery(receipts: GitWriteReceipts, opts: PushRecovery
   };
   const handle = { kick: (delayMs: number) => schedule(delayMs) };
   activeRecovery = handle;
+  sweepPhoneGitRelays((opts.deps ?? defaultPushDeps).stateDir(), Date.now());
   schedule(0);
   return () => {
     stopped = true;

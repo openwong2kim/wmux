@@ -11,7 +11,7 @@ import { GitWriteReceipts, PhoneGitWriteGate } from '../../phoneGitWriteGate';
 import { registerPhoneGitWriteAction, type GitWriteExecuteContext, type GitWriteSessionContext } from '../../phoneGitWriteRegistry';
 import { PhoneGitWriteRoutes, type PhoneGitWriteHost } from '../../phoneGitWriteRoutes';
 import {
-  GIT_NULL_DEVICE, PHONE_GIT_PUSH_INTENTS_DIR, PUSH_RECHECK_DELAY_MS, createNetworkGitRunner, createPhoneGitPushHandlers,
+  GIT_NULL_DEVICE, PHONE_GIT_PUSH_INTENTS_DIR, PHONE_GIT_RELAY_DIR, PUSH_RECHECK_DELAY_MS, createNetworkGitRunner, createPhoneGitPushHandlers,
   defaultPushDeps, readPushIntent, recheckUncertainPushes, startPushRecovery,
   type PhoneGitPushDeps, type PushChildResult,
 } from '../../phoneGitPush';
@@ -91,7 +91,7 @@ describe('phone git push', { timeout: 60_000 }, () => {
 
   const ctx = (): GitWriteSessionContext => ({
     action: 'push', owner: 'device:d1', deviceId: 'd1', sessionId: 's1', cwd: work,
-    repo: {} as GitWriteSessionContext['repo'], login: 'octo', ghEnv: { GH_TOKEN: 'gho_octo' },
+    repo: { commonReal: path.join(work, '.git') } as GitWriteSessionContext['repo'], login: 'octo', ghEnv: { GH_TOKEN: 'gho_octo' },
   });
 
   const preview = async () => {
@@ -146,7 +146,10 @@ describe('phone git push', { timeout: 60_000 }, () => {
       repo: 'github.com/o/r', ahead: 1, behind: 0, remoteTip: base, fastForward: true, commitsTruncated: false,
     });
     expect(facts.commits).toEqual([{ oid: head, subject: 'one', author: 'T' }]);
-    expect(pins).toEqual({ head, ref: 'refs/heads/local-x', targetRef: 'refs/heads/remote-y', remoteTip: base, repo: 'o/r', pushUrl: URL_ });
+    const gitDir = path.join(work, '.git');
+    expect(pins).toEqual({
+      head, ref: 'refs/heads/local-x', targetRef: 'refs/heads/remote-y', remoteTip: base, repo: 'o/r', pushUrl: URL_, gitDir, commonDir: gitDir,
+    });
     expect(calls.remote.every((a) => a.includes(URL_) && !a.includes('origin'))).toBe(true);
 
     commit(work, 'after the preview'); // HEAD moves on; the reviewed commit is what goes out.
@@ -158,30 +161,50 @@ describe('phone git push', { timeout: 60_000 }, () => {
     expect(calls.push).toHaveLength(1);
     expect(calls.push[0].slice(-2)).toEqual([URL_, `${head}:refs/heads/remote-y`]);
     expect(calls.push[0]).toEqual(expect.arrayContaining(['http.proxy=', 'https.proxy=', 'http.sslVerify=true', 'credential.helper=']));
-    expect(git(work, 'rev-parse', 'refs/remotes/origin/remote-y')).toBe(head);
+    // Nothing is written in the pane repository: its tracking ref stays where the pane left it.
+    expect(git(work, 'rev-parse', 'refs/remotes/origin/remote-y')).toBe(base);
     expect(fs.readdirSync(path.join(stateDir, PHONE_GIT_PUSH_INTENTS_DIR))).toEqual([]);
+    expect(fs.readdirSync(path.join(stateDir, PHONE_GIT_RELAY_DIR))).toEqual([]);
     for (const a of calls.push[0]) expect(a).not.toMatch(/^(--force|-f|--mirror|--delete|--tags|\+)/);
   });
 
-  it('creates the remote branch when there is no upstream, then records it as the upstream', async () => {
+  it('creates the remote branch when there is no upstream, and pushes to it again as a fast-forward', async () => {
     git(work, 'checkout', '-q', '-b', 'phone/x');
     const head = commit(work, 'phone work');
     const { facts, pins } = await okPreview();
     expect(facts).toMatchObject({ target: { remote: 'origin', ref: 'refs/heads/phone/x', create: true }, remoteTip: null, fastForward: true, ahead: 1 });
 
-    const { key, run } = await execute(pins, head);
-    await run;
-    expect((await settled(key)).state).toBe('done');
+    const first = await execute(pins, head);
+    await first.run;
+    expect((await settled(first.key)).state).toBe('done');
     expect(bareRef('refs/heads/phone/x')).toBe(head);
-    expect(git(work, 'config', '--get', 'branch.phone/x.merge')).toBe('refs/heads/phone/x');
-    // The next preview targets the upstream, which now holds HEAD.
+    // No upstream is written into the pane repository.
+    expect(() => git(work, 'config', '--get', 'branch.phone/x.merge')).toThrow();
     expect(await preview()).toEqual({ ok: false, body: { error: 'no-commits-ahead' } });
+
+    const next = commit(work, 'more phone work');
+    const again = await okPreview();
+    expect(again.facts).toMatchObject({ target: { remote: 'origin', ref: 'refs/heads/phone/x', create: false }, remoteTip: head, fastForward: true, ahead: 1, behind: 0 });
+    const second = await execute(again.pins, next);
+    await second.run;
+    expect((await settled(second.key)).state).toBe('done');
+    expect(bareRef('refs/heads/phone/x')).toBe(next);
   });
 
-  it('refuses to create a branch the remote already has', async () => {
+  it('refuses a branch the remote already has when it is not in this branch\'s history', async () => {
     git(work, 'checkout', '-q', '-b', 'taken');
     commit(work, 'mine');
-    git(work, ...toBare(['push', '-q', 'origin', 'main:refs/heads/taken']));
+    // Someone else's branch of the same name, from another clone.
+    const other = path.join(root, 'other');
+    git(root, ...toBare(['clone', '-q', URL_, other]));
+    git(other, 'config', 'user.name', 'O');
+    git(other, 'config', 'user.email', 'o@example.invalid');
+    git(other, 'checkout', '-q', '-b', 'taken');
+    commit(other, 'theirs');
+    git(other, ...toBare(['push', '-q', 'origin', 'taken']));
+    expect(await preview()).toEqual({ ok: false, body: { error: 'remote-branch-exists' } });
+    // Fetched, it is known but still not ours.
+    git(work, ...toBare(['fetch', '-q', 'origin']));
     expect(await preview()).toEqual({ ok: false, body: { error: 'remote-branch-exists' } });
   });
 
@@ -373,8 +396,28 @@ describe('phone git push', { timeout: 60_000 }, () => {
       now = started + PUSH_RECHECK_DELAY_MS;
       expect(await recheckUncertainPushes(receipts!, { deps, identity })).toBe(0);
       expect(receipts!.find(key)).toMatchObject({ state: 'done', fields: { pushed: head, target: 'refs/heads/feat' } });
-      expect(git(work, 'config', '--get', 'branch.feat.merge')).toBe('refs/heads/feat');
+      expect(() => git(work, 'config', '--get', 'branch.feat.merge')).toThrow();
       expect(calls.push).toHaveLength(0); // never re-run
+    });
+
+    it('takes the ancestry from GitHub, not from the pane repository, when the remote moved on', async () => {
+      const { key, head } = await crashMidPush();
+      git(work, ...toBare(['push', '-q', 'origin', `${head}:refs/heads/feat`]));
+      const later = commit(work, 'on top');
+      git(work, ...toBare(['push', '-q', 'origin', `${later}:refs/heads/feat`]));
+      now = receipts!.find(key)!.startedAt! + PUSH_RECHECK_DELAY_MS;
+      // GitHub cannot answer: the pane's own history is not taken for it.
+      expect(await recheckUncertainPushes(receipts!, { deps, identity })).toBe(1);
+      expect(receipts!.find(key)?.state).toBe('uncertain');
+      expect(calls.gh.some((a) => String(a.at(-1)).includes(`/compare/${head}...${later}`))).toBe(true);
+      const answering: PhoneGitPushDeps = {
+        ...deps,
+        gh: async (args) => String(args.at(-1)).includes('/compare/')
+          ? { ok: true, ran: true, code: 0, stdout: JSON.stringify({ status: 'ahead' }), stderr: '' }
+          : deps.gh(args, {}),
+      };
+      expect(await recheckUncertainPushes(receipts!, { deps: answering, identity })).toBe(0);
+      expect(receipts!.find(key)).toMatchObject({ state: 'done', fields: { pushed: head } });
     });
 
     it('reads push-not-landed when the remote never got it', async () => {
@@ -442,9 +485,9 @@ describe('phone git push', { timeout: 60_000 }, () => {
     git(work, 'checkout', '-q', '-b', 'feat');
     const head = commit(work, 'x');
     const { pins } = await okPreview();
-    const blocked = path.join(root, 'blocked');
-    fs.writeFileSync(blocked, 'a file where the directory should be');
-    const { key, run } = await execute(pins, head, { ...deps, stateDir: () => blocked });
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(path.join(stateDir, PHONE_GIT_PUSH_INTENTS_DIR), 'a file where the directory should be');
+    const { key, run } = await execute(pins, head);
     await run;
     expect(await settled(key)).toMatchObject({ state: 'refused', error: 'git-receipts-unavailable' });
     expect(calls.push).toHaveLength(0);
