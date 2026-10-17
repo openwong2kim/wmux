@@ -58,7 +58,6 @@ import { pruneDaemonPidMapAtConnect } from './pty/pidMap';
 import { registerAllHandlers } from './ipc/registerHandlers';
 import { RpcRouter } from './pipe/RpcRouter';
 import type { RpcMethod } from '../shared/rpc';
-import { git as gitRun } from './git/git';
 import { liveNoChangesCheck } from './factory/noChangesCheck';
 import { getBotStore } from './factory/botStore';
 import { PipeServer } from './pipe/PipeServer';
@@ -1198,9 +1197,9 @@ registerLedgerRpc(rpcRouter, () => mainWindow, {
   // A completion on a no-changes skip asks the no-changes check again.
   noChangesCheck: liveNoChangesCheck({
     rpc: () => (daemonClient ? (method, params) => (daemonClient as DaemonClient).rpc(method as RpcMethod, params as Record<string, unknown>) : null),
-    git: gitRun,
     wmuxDir: getWmuxDir,
     botRepoKey: (botId) => getBotStore()?.get(botId)?.repo?.repoKey,
+    botRepoPath: (botId) => getBotStore()?.get(botId)?.repo?.repoPath,
   }),
 });
 registerTaskPushRpc(rpcRouter, {

@@ -817,9 +817,9 @@ export function createFactoryWiring(deps: Pick<FactoryHostDeps, 'wmuxDir'> & Par
           // A task with no commits beyond its base is not gated.
           noChanges: liveNoChangesCheck({
             rpc: () => daemonRpc(daemon),
-            git,
             wmuxDir: deps.wmuxDir,
             botRepoKey: (botId) => getBotDirectory()?.get(botId)?.repo?.repoKey,
+            botRepoPath: (botId) => getBotDirectory()?.get(botId)?.repo?.repoPath,
           }),
           recordNoChanges: (taskId, detail, headSha) => recordNoChangesGate(ledger, taskId, detail, Date.now, headSha),
           wake: (input) => {

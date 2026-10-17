@@ -143,6 +143,18 @@ export interface LedgerDispatch {
    *  with no `host/owner/repo`) = no merge ends it, and task_fetch refuses a
    *  task that is not a bot's. */
   repoKey?: string;
+  /** A code task: the git dir of the repository its worktree was created in
+   *  (the repository's common dir, resolved), recorded by main at dispatch.
+   *  task_push and task_fetch run git on this path and never on one found
+   *  through the worktree; absent (a row written before it existed, a task
+   *  with no worktree) = a bot's task uses its profile's repository, any
+   *  other task is refused. */
+  gitCommonDir?: string;
+  /** A code task: the git dir of the task's own worktree
+   *  (`<gitCommonDir>/worktrees/<id>`), recorded by main at dispatch. task_push
+   *  reads HEAD by this path; absent = derived from the common dir's
+   *  `worktrees/` for a row written before it existed. */
+  gitWorktreeDir?: string;
   /** Set when the task worktree was created detached at a commit. */
   checkout?: { sha: string; detached: true };
   /** The commit main created the task's branch from (origin's default branch

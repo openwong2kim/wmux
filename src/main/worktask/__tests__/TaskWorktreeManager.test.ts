@@ -84,6 +84,20 @@ describe('slug 파생 (§3)', () => {
   });
 });
 
+describe('preflight — the repository\'s common git dir', () => {
+  it('is read before any worker exists and resolved; one that cannot be read is left out', async () => {
+    const repoRoot = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-repo-')));
+    fs.mkdirSync(path.join(repoRoot, '.git'));
+    const { TaskWorktreeManager } = await loadModule();
+    const withCommon = makeGitFake((args) => (args.includes('--git-common-dir') ? { stdout: '.git\n' } : args.includes('--show-toplevel') ? { stdout: `${repoRoot}\n` } : args.includes('--is-bare-repository') ? { stdout: 'false\n' } : {}));
+    const res = await new TaskWorktreeManager({ runGit: withCommon }).preflight(repoRoot, 'T', 'wtask-x-1');
+    expect(res.ok && res.plan.gitCommonDir).toBe(path.join(repoRoot, '.git'));
+    const missing = await new TaskWorktreeManager({ runGit: healthyRepoGit(repoRoot) }).preflight(repoRoot, 'T', 'wtask-x-1');
+    expect(missing.ok && missing.plan.gitCommonDir).toBeUndefined();
+    fs.rmSync(repoRoot, { recursive: true, force: true });
+  });
+});
+
 describe('preflight — 전용 루트 suffix 파생 (§3 C4)', () => {
   it('경로가 getWmuxHomeDir() 하위 worktrees/{repoHash}/{slug}로 파생된다', async () => {
     delete process.env.WMUX_DATA_SUFFIX;

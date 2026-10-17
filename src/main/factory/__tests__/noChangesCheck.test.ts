@@ -18,6 +18,7 @@ import { pushTaskBranch } from '../../worktask/taskPush';
 import { readTaskRemoteHead } from '../../worktask/taskFetch';
 import { TASK_PUSHES_FILENAME, taskPushRecordOf } from '../../worktask/taskPushRecord';
 import { registerLedgerRpc } from '../../pipe/handlers/ledger.rpc';
+import { fakeSshUrl, writeFakeSsh } from '../../../test-utils/fakeSsh';
 
 vi.mock('electron', () => ({ app: { getPath: () => os.tmpdir() } }));
 
@@ -83,46 +84,53 @@ describe('checkNoChanges', () => {
 
 });
 
-describe('the no-changes check over real git, task.push and ledger.update', () => {
+// The stand-in ssh origin is a /bin/sh script.
+describe.skipIf(process.platform === 'win32')('the no-changes check over real git, task.push and ledger.update', () => {
   const run = (cwd: string, ...args: string[]): string =>
     execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.invalid', ...args], { cwd, encoding: 'utf8' }).trim();
-  const plainGit = async (args: string[], cwd: string) => {
-    try {
-      return { stdout: execFileSync('git', args, { cwd, encoding: 'utf8' }), code: 0 };
-    } catch (err) {
-      return { stdout: '', code: (err as { status?: number }).status ?? 1 };
-    }
-  };
   let root = '';
   let origin = '';
+  let repo = '';
   let work = '';
   let dataDir = '';
   let base = '';
   let ledger: TaskLedger;
   beforeEach(async () => {
-    root = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-no-changes-'));
+    root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-no-changes-')));
     origin = path.join(root, 'origin.git');
+    repo = path.join(root, 'repo');
     work = path.join(root, 'work');
     dataDir = path.join(root, 'data');
     execFileSync('git', ['init', '-q', '--bare', origin]);
-    execFileSync('git', ['init', '-q', '-b', 'main', work]);
-    fs.writeFileSync(path.join(work, 'a.txt'), 'a\n');
-    run(work, 'add', '.');
-    run(work, 'commit', '-qm', 'init');
-    run(work, 'remote', 'add', 'origin', origin);
-    run(work, 'push', '-q', 'origin', 'main');
-    run(work, 'checkout', '-qb', 'wtask/one');
+    execFileSync('git', ['init', '-q', '-b', 'main', repo]);
+    fs.writeFileSync(path.join(repo, 'a.txt'), 'a\n');
+    run(repo, 'add', '.');
+    run(repo, 'commit', '-qm', 'init');
+    run(repo, 'remote', 'add', 'origin', origin);
+    run(repo, 'push', '-q', 'origin', 'main');
+    // Main's network git allows https and ssh only: origin is reached over a
+    // stand-in ssh the owner's global config names.
+    run(repo, 'remote', 'set-url', 'origin', fakeSshUrl(origin));
+    fs.writeFileSync(path.join(os.homedir(), '.gitconfig'), `[core]\n\tsshCommand = ${writeFakeSsh(root)}\n`);
+    run(repo, 'worktree', 'add', '-q', '-b', 'wtask/one', work);
     base = run(work, 'rev-parse', 'HEAD');
+    gitCommonDir = fs.realpathSync.native(path.join(repo, '.git'));
+    gitWorktreeDir = fs.realpathSync.native(run(work, 'rev-parse', '--path-format=absolute', '--git-dir'));
     ledger = new TaskLedger({ dir: path.join(root, 'ledger') });
-    await ledger.register({ id: 't1', taskWorkspaceId: 'ws-t', ownerWorkspaceId: 'ws-o', title: 't', dispatch: { origin: { kind: 'operator' }, baseOid: base } });
+    await ledger.register({ id: 't1', taskWorkspaceId: 'ws-t', ownerWorkspaceId: 'ws-o', title: 't', dispatch: { origin: { kind: 'operator' }, baseOid: base, gitCommonDir, gitWorktreeDir } });
     const r = await ledger.update({ id: 't1', status: 'review_requested', actor: { kind: 'worker', workspaceId: 'ws-t' }, expectedRev: 1, summary: 'read the API, nothing to commit' });
     if (!r.ok) throw new Error(r.message);
   });
-  afterEach(() => { fs.rmSync(root, { recursive: true, force: true }); });
+  afterEach(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(path.join(os.homedir(), '.gitconfig'), { force: true });
+  });
+  let gitCommonDir = '';
+  let gitWorktreeDir = '';
+  const at = () => ({ worktreePath: work, branch: 'wtask/one', noHooksDir: path.join(root, 'nh'), gitCommonDir, gitWorktreeDir, relayRoot: path.join(root, 'relay'), taskId: 't1' });
 
   const check = () => liveNoChangesCheck({
     rpc: () => async () => ({ ok: true, tasks: [{ id: 't1', worktreePath: work, branch: 'wtask/one' }] }),
-    git: plainGit,
     wmuxDir: () => dataDir,
     botRepoKey: () => undefined,
   });
@@ -148,7 +156,7 @@ describe('the no-changes check over real git, task.push and ledger.update', () =
     fs.writeFileSync(path.join(work, 'b.txt'), 'b\n');
     run(work, 'add', '.');
     run(work, 'commit', '-qm', 'work');
-    const pushed = await pushTaskBranch({ worktreePath: work, branch: 'wtask/one', defaultBranches: [], noHooksDir: path.join(root, 'nh') });
+    const pushed = await pushTaskBranch({ ...at(), defaultBranches: [] });
     if (!pushed.ok) throw new Error(pushed.error);
     if (record) taskPushRecordOf(dataDir).record('t1', pushed.head);
     run(work, 'reset', '-q', '--hard', base);
@@ -174,15 +182,15 @@ describe('the no-changes check over real git, task.push and ledger.update', () =
     expect(taskPushRecordOf(dataDir).get('t1')).toBeNull();
     // The worker also deletes the remote-tracking ref main set: it is not read.
     run(work, 'update-ref', '-d', 'refs/remotes/origin/wtask/one');
-    expect(await readTaskRemoteHead({ worktreePath: work, branch: 'wtask/one', noHooksDir: path.join(root, 'nh') })).toEqual({ ok: true, sha: pushed });
+    expect(await readTaskRemoteHead(at())).toEqual({ ok: true, sha: pushed });
     expect(await check()(row())).toMatchObject({ kind: 'changed', why: expect.stringContaining(`origin's wtask/one is at ${pushed}`) });
     expect(await complete()).toMatchObject({ ok: false, error: { code: 'FAILED_PRECONDITION' } });
   });
 
   it('origin unreachable: unknown, so the gate would run, and the completion is refused', async () => {
     await skip();
-    run(work, 'remote', 'set-url', 'origin', path.join(root, 'gone.git'));
-    expect((await readTaskRemoteHead({ worktreePath: work, branch: 'wtask/one', noHooksDir: path.join(root, 'nh') })).ok).toBe(false);
+    run(work, 'remote', 'set-url', 'origin', fakeSshUrl(path.join(root, 'gone.git')));
+    expect((await readTaskRemoteHead(at())).ok).toBe(false);
     expect(await check()(row())).toMatchObject({ kind: 'unknown', why: expect.stringContaining('could not be read') });
     expect(await complete()).toMatchObject({ ok: false, error: { code: 'FAILED_PRECONDITION' } });
   });
@@ -208,7 +216,7 @@ describe('the no-changes check over real git, task.push and ledger.update', () =
     const c = run(work, 'rev-parse', 'HEAD');
     // The base "has" the new commit as its parent, as far as this repository says.
     run(work, 'replace', '--graft', base, c);
-    fs.writeFileSync(path.join(work, '.git', 'info', 'grafts'), `${base} ${c}\n`);
+    fs.writeFileSync(path.join(gitCommonDir, 'info', 'grafts'), `${base} ${c}\n`);
     expect(run(work, 'merge-base', '--is-ancestor', c, base)).toBe('');
     expect(await check()(row())).toMatchObject({ kind: 'changed', why: expect.stringContaining(c) });
     expect(await complete()).toMatchObject({ ok: false, error: { code: 'FAILED_PRECONDITION' } });
@@ -244,7 +252,6 @@ describe('the no-changes check over real git, task.push and ledger.update', () =
     await skip();
     const live = liveNoChangesPorts({
       rpc: () => async () => ({ ok: true, tasks: [{ id: 't1', worktreePath: work, branch: 'wtask/one' }] }),
-      git: plainGit,
       wmuxDir: () => dataDir,
       botRepoKey: () => undefined,
     });

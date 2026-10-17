@@ -98,7 +98,7 @@ const REPRO_PROMPT = (): string => [
   '- Reproduce the issue with the smallest steps you can find.',
   '- Write a test that fails because of it.',
   '- Attempt the minimal fix that makes that test pass, and run the repository gate (typecheck, lint, tests).',
-  '- Commit on your branch, push it with the `task_push` tool, and open a DRAFT pull request (`gh pr create --draft`) whose body has the repro steps and the test.',
+  '- Commit on your branch, push it with the `task_push` tool, and open a DRAFT pull request (`gh pr create --draft --head <your branch>`) whose body has the repro steps and the test.',
   '',
   'What you hand back (ledger summary, status review_requested): the repro steps, the failing test, the fix if there is one, and the draft PR link. When the issue does not reproduce, the summary starts with `no-repro` and lists what you tried.',
 ].join('\n');
@@ -112,7 +112,7 @@ const MAINTAIN_PROMPT = (): string => [
   '- Read the merged pull requests the task names (`gh pr view <n> --json files,title`) and the renderer handles they touched.',
   '- Update the matching feature entries, keeping each entry\'s four-section shape.',
   '- Run each affected verify-wmux recipe once when it can run here, and note the ones that cannot.',
-  '- Commit, push with the `task_push` tool, and open a pull request with what changed and why.',
+  '- Commit, push with the `task_push` tool, and open a pull request (`gh pr create --head <your branch>`) with what changed and why.',
   '',
   'What you hand back (ledger summary, status review_requested): the entries you changed, the recipes you ran and their outcome, and the PR link; or `no-drift` when every entry already matched.',
 ].join('\n');
@@ -132,7 +132,7 @@ const DEFAULT_PROMPT = (): string => [
   '',
   'You are a task worker dispatched by a factory bot. Your worktree is a fresh branch from origin\'s default branch.',
   '',
-  'What you can do here: implement the task below within the files it names, run the repository gate (typecheck, lint, tests), commit, push your branch with the `task_push` tool, and open a pull request.',
+  'What you can do here: implement the task below within the files it names, run the repository gate (typecheck, lint, tests), commit, push your branch with the `task_push` tool, and open a pull request (`gh pr create --head <your branch>`).',
   'When the task asks a question instead of a change (research, a comparison, a look at the web), answer it: search, read the sources, and report; such a task opens no pull request.',
   '',
   'What you hand back (ledger summary, status review_requested): what landed, what you verified, and the PR link — or, for a question, your findings with a link to each source.',

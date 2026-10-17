@@ -63,17 +63,26 @@ export interface TaskCloseServiceOptions {
   worktrees: TaskWorktreeManager;
   /** Stops the panes running inside the worktree; called only after the unpushed and dirty checks pass. */
   stopPanesIn?: (worktreePath: string) => Promise<void>;
+  /** Removes the task's relay repository (task_push/task_fetch); called on every close. */
+  removeRelay?: (taskId: string) => void | Promise<void>;
+  /** The commit task_push last published for the task (main's record), or
+   *  null: a worktree whose HEAD is that commit counts as pushed. */
+  pushedHead?: (taskId: string) => string | null;
 }
 
 export class TaskCloseService {
   private readonly daemon: CloseDaemonPort;
   private readonly worktrees: TaskWorktreeManager;
   private readonly stopPanesIn?: (worktreePath: string) => Promise<void>;
+  private readonly removeRelay?: (taskId: string) => void | Promise<void>;
+  private readonly pushedHead?: (taskId: string) => string | null;
 
   constructor(opts: TaskCloseServiceOptions) {
     this.daemon = opts.daemon;
     this.worktrees = opts.worktrees;
     this.stopPanesIn = opts.stopPanesIn;
+    this.removeRelay = opts.removeRelay;
+    this.pushedHead = opts.pushedHead;
   }
 
   async closeTask(input: CloseTaskInput): Promise<CloseTaskResult> {
@@ -87,7 +96,8 @@ export class TaskCloseService {
     }
 
     // ⓪ upstream/ahead 검사(CX3): 커밋됐지만 push 안 된 산출물이 있으면 진행 중단.
-    const ahead = await this.aheadOfUpstream(input.worktreePath);
+    // task_push sets no upstream: a HEAD that is the commit it last published counts as pushed.
+    const ahead = (await this.headIsPushed(taskId, input.worktreePath)) ? { kind: 'clean' as const } : await this.aheadOfUpstream(input.worktreePath);
     if (ahead.kind === 'ahead') {
       return {
         ok: false,
@@ -169,6 +179,11 @@ export class TaskCloseService {
         // Lane F: the task ledger learns about the close now, not on the
         // next reconcile pass (an open row would hold the brain's Stop gate).
         await noteWorkTaskClosed(taskId);
+        try {
+          await this.removeRelay?.(taskId);
+        } catch {
+          // Best-effort: a leftover relay is swept at the next start.
+        }
         return { ok: true, archivePending: res.archivePending === true };
       }
       return { ok: false, error: res?.error?.message ?? 'task.mission.close failed' };
@@ -186,6 +201,18 @@ export class TaskCloseService {
    *   - 검사 실패: 보수적으로 통과(clean 판정은 remove의 porcelain이 정본 —
    *     여기는 경고 게이트라 fail-open이 UX 손실뿐 데이터 손실 없음).
    */
+  /** Whether the worktree's HEAD is the commit task_push last published. */
+  private async headIsPushed(taskId: string, worktreePath: string): Promise<boolean> {
+    const pushed = this.pushedHead?.(taskId);
+    if (!pushed) return false;
+    try {
+      const { stdout } = await execFileAsync('git', ['rev-parse', '--verify', '--quiet', 'HEAD'], { cwd: worktreePath, timeout: 15000, env: getExecEnv() });
+      return stdout.trim().toLowerCase() === pushed.toLowerCase();
+    } catch {
+      return false;
+    }
+  }
+
   private async aheadOfUpstream(
     worktreePath: string,
   ): Promise<{ kind: 'clean' } | { kind: 'ahead' | 'no-upstream-with-commits'; count: number }> {

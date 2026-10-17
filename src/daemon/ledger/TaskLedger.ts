@@ -246,12 +246,21 @@ function isEntryShape(v: unknown): v is LedgerEntry {
   );
 }
 
+/** An absolute path (POSIX, a Windows drive or a UNC share) with no control
+ *  character. */
+function isRecordedGitDir(v: unknown): v is string {
+  // eslint-disable-next-line no-control-regex
+  return typeof v === 'string' && v.length <= 4096 && /^(?:\/|[A-Za-z]:[\\/]|\\\\)/.test(v) && !/[\x00-\x1f\x7f]/.test(v);
+}
+
 function copyDispatch(d: LedgerDispatch): LedgerDispatch {
   return {
     origin: { kind: d.origin.kind, ...(d.origin.botId ? { botId: d.origin.botId } : {}), ...(typeof d.origin.tainted === 'boolean' ? { tainted: d.origin.tainted } : {}) },
     ...(d.preset ? { preset: d.preset } : {}),
     // Only the factory's own spelling of a repository (shared/repoKey.ts).
     ...(typeof d.repoKey === 'string' && normalizeRepoKey(d.repoKey) === d.repoKey ? { repoKey: d.repoKey } : {}),
+    ...(isRecordedGitDir(d.gitCommonDir) ? { gitCommonDir: d.gitCommonDir } : {}),
+    ...(isRecordedGitDir(d.gitWorktreeDir) ? { gitWorktreeDir: d.gitWorktreeDir } : {}),
     ...(d.checkout ? { checkout: { sha: d.checkout.sha, detached: true as const } } : {}),
     ...(typeof d.baseOid === 'string' && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(d.baseOid) ? { baseOid: d.baseOid } : {}),
     ...(d.threadId ? { threadId: d.threadId } : {}),

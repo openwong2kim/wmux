@@ -23,6 +23,10 @@
 // origin's default branch and the task branch into their remote-tracking refs
 // (main/worktask/taskFetch.ts): for a worker whose shell has no credentials
 // for origin. Never a push, never the checkout.
+//
+// Both run git on the repository main recorded for the task
+// (worktask/taskGitCommonDir.ts), and their network calls in clean git dirs
+// under <wmux>/factory/git-clean, swept when this registers (main's start).
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -31,12 +35,13 @@ import type { RpcRouter } from '../RpcRouter';
 import type { RpcContext } from '../../../shared/rpc';
 import { resolvePtyOwnerWorkspace } from '../../workspace/ptyOwnership';
 import { getTaskLedger } from '../../deck/taskLedgerHost';
-import { noChangesReceiptCurrent, type TaskLedger } from '../../../daemon/ledger/TaskLedger';
+import { isOpenLedgerStatus, noChangesReceiptCurrent, type TaskLedger } from '../../../daemon/ledger/TaskLedger';
 import { getWmuxDir } from '../../../daemon/config';
 import { readBotWorkerDefaultBranches } from '../../../shared/botWorkerGuard';
 import { readRepoDefaultBranchByKey } from '../../agents/botWorkerDefaultBranch';
 import { getBotStore } from '../../factory/botStore';
-import { pushTaskBranch, type TaskPushGit, type TaskPushResult } from '../../worktask/taskPush';
+import { pushTaskBranch, sweepTaskGitRelays, type TaskPushGit, type TaskPushResult } from '../../worktask/taskPush';
+import { recordedTaskGitCommonDir, recordedTaskGitWorktreeDir } from '../../worktask/taskGitCommonDir';
 import { taskPushRecordOf, type TaskPushRecord } from '../../worktask/taskPushRecord';
 import { fetchTaskRefs } from '../../worktask/taskFetch';
 import { reclaimedWorkerOfPane } from '../../factory/workerReclaim';
@@ -59,6 +64,9 @@ export interface TaskPushRpcDeps {
   repoDefaultBranch?: (repoKey: string) => Promise<string | null>;
   /** A bot's repository key (its profile). */
   botRepoKey?: (botId: string) => string | undefined;
+  /** A bot's repository folder (its profile), for a task whose row records
+   *  no git dir. */
+  botRepoPath?: (botId: string) => string | undefined;
   /** Where a landed push is recorded (default: the one under wmuxDir). */
   pushRecord?: Pick<TaskPushRecord, 'record' | 'begin' | 'end'>;
   /** The reclaimed worker whose recorded pane this is (default: the
@@ -84,8 +92,19 @@ export function registerTaskPushRpc(router: RpcRouter, deps: TaskPushRpcDeps): v
     }
   });
   const push = deps.push ?? pushTaskBranch;
+  const relayRootOf = (dir: string) => path.join(dir, 'factory', 'git-relay');
+  // Relays whose task is no longer open are swept at registration.
+  sweepTaskGitRelays(relayRootOf((deps.wmuxDir ?? getWmuxDir)()), (taskId) => {
+    try {
+      const e = ledgerOf().get(taskId);
+      return e ? isOpenLedgerStatus(e.status) : false;
+    } catch {
+      // Keep it when the ledger cannot be read: a resumed worker may still use it.
+      return true;
+    }
+  });
 
-  type Resolved = { ok: true; row: { id: string; ownerWorkspaceId: string; dispatch?: { origin?: { kind?: string; botId?: string } } }; task: Required<Pick<MissionTask, 'branch' | 'worktreePath'>>; dir: string; expectedRepoKey?: string }
+  type Resolved = { ok: true; row: { id: string; ownerWorkspaceId: string; dispatch?: { origin?: { kind?: string; botId?: string } } }; task: Required<Pick<MissionTask, 'branch' | 'worktreePath'>>; dir: string; gitCommonDir: string; gitWorktreeDir: string | null; expectedRepoKey?: string }
     | { ok: false; error: { code: string; message: string } };
 
   /** The caller's own task (its open one, or the ended one a resumed
@@ -151,7 +170,11 @@ export function registerTaskPushRpc(router: RpcRouter, deps: TaskPushRpcDeps): v
     } else if (opts.recordedRepo && !expectedRepoKey) {
       return deny('FAILED_PRECONDITION', `${method}: wmux recorded no origin for this task ${words.repo}`);
     }
-    return { ok: true, row: own, task: { branch: task.branch, worktreePath: task.worktreePath }, dir, ...(expectedRepoKey ? { expectedRepoKey } : {}) };
+    // The repository's git dir, as main recorded it (never the worktree's).
+    const gitCommonDir = await recordedTaskGitCommonDir(own.dispatch, deps.botRepoPath ?? ((id: string) => getBotStore()?.get(id)?.repo?.repoPath), deps.git);
+    if (!gitCommonDir) return deny('FAILED_PRECONDITION', `${method}: wmux recorded no repository folder for this task ${words.repo}; start a new task`);
+    const gitWorktreeDir = await recordedTaskGitWorktreeDir(own.dispatch, gitCommonDir, task.worktreePath);
+    return { ok: true, row: own, task: { branch: task.branch, worktreePath: task.worktreePath }, dir, gitCommonDir, gitWorktreeDir, ...(expectedRepoKey ? { expectedRepoKey } : {}) };
   };
 
   router.register('task.push', async (params, ctx?: RpcContext) => {
@@ -186,6 +209,10 @@ export function registerTaskPushRpc(router: RpcRouter, deps: TaskPushRpcDeps): v
         branch: r.task.branch,
         defaultBranches: readBotWorkerDefaultBranches(r.dir),
         noHooksDir: path.join(r.dir, 'factory', 'no-hooks'),
+        gitCommonDir: r.gitCommonDir,
+        ...(r.gitWorktreeDir ? { gitWorktreeDir: r.gitWorktreeDir } : {}),
+        relayRoot: relayRootOf(r.dir),
+        taskId: r.row.id,
         ...(r.expectedRepoKey ? { expectedRepoKey: r.expectedRepoKey } : {}),
         // Every task, bot or not: the repository's own default branch too (a
         // task branch can be named by a person), read by the pushed-to key.
@@ -206,6 +233,9 @@ export function registerTaskPushRpc(router: RpcRouter, deps: TaskPushRpcDeps): v
       worktreePath: r.task.worktreePath,
       branch: r.task.branch,
       noHooksDir: path.join(r.dir, 'factory', 'no-hooks'),
+      gitCommonDir: r.gitCommonDir,
+      relayRoot: relayRootOf(r.dir),
+      taskId: r.row.id,
       ...(r.expectedRepoKey ? { expectedRepoKey: r.expectedRepoKey } : {}),
       repoDefaultBranch: deps.repoDefaultBranch ?? ((key: string) => readRepoDefaultBranchByKey(key)),
     }, ...(deps.git ? [deps.git] : []));

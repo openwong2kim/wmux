@@ -133,7 +133,7 @@ export function workerTaskIdentityNote(taskId: string, channelId: string, botBra
   // shared/botWorkerGuard.ts): main pushes its task branch (task_push).
   const push = botBranch
     ? `- Your branch: \`${botBranch}\`. Commit, then publish it with the \`task_push\` tool (wmux pushes this branch to origin, fast-forward only); \`git push\` itself is refused. Open the pull request with \`gh pr create --head ${botBranch}\`.
-- Fresh main, or a conflict to settle: run the \`task_fetch\` tool (wmux fetches origin's default branch and your branch with its own credentials), then \`git merge origin/<default branch>\`. Never ask for credentials to fetch.
+- Fresh main, or a conflict to settle: run the \`task_fetch\` tool (wmux fetches with its own credentials), run the \`git fetch\` line it returns in your shell, then \`git merge origin/<default branch>\`. Never ask for credentials to fetch.
 ${botWorkerAgentPromptNote(agent)}`
     : '';
   // The task's connections: what they return is outside text.
@@ -1261,6 +1261,7 @@ export class FanOutService {
     let cwd: string;
     let metaDir: string;
     let plan: TaskWorktreePlan | undefined;
+    let gitWorktreeDir: string | undefined;
     if (ctx.output) {
       const leaf = `${ctx.index + 1}-${ctx.agentChoice?.agent ?? 'agent'}-${taskIdSuffix(taskId)}`;
       cwd = path.join(ctx.output.batchDir, leaf);
@@ -1290,6 +1291,7 @@ export class FanOutService {
         return { ...base, error: `worktree create failed: ${created.error}` };
       }
       base.worktreePath = plan.worktreePath;
+      gitWorktreeDir = created.gitWorktreeDir;
       if (!ctx.checkout) base.branch = plan.branch;
       cwd = plan.worktreePath;
       metaDir = plan.metaDir;
@@ -1637,6 +1639,9 @@ export class FanOutService {
                 origin: { kind: ctx.requester.kind, ...(ctx.requester.botId ? { botId: ctx.requester.botId } : {}), ...(typeof ctx.requester.tainted === 'boolean' ? { tainted: ctx.requester.tainted } : {}) },
                 ...(ctx.preset ? { preset: ctx.preset } : {}),
                 ...(ctx.repoKey ? { repoKey: ctx.repoKey } : {}),
+                // The git dir task_push and task_fetch run on.
+                ...(plan?.gitCommonDir ? { gitCommonDir: plan.gitCommonDir } : {}),
+                ...(gitWorktreeDir ? { gitWorktreeDir } : {}),
                 ...(ctx.checkout ? { checkout: { sha: ctx.checkout.sha, detached: true as const } } : {}),
                 // The commit the task branch was created from: the no-changes
                 // check's base (main's record, not the worktree's task.json).

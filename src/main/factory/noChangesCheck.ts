@@ -35,7 +35,10 @@
 
 import path from 'node:path';
 import type { LedgerEntry } from '../../shared/ledger';
+import { isPlainTaskBranchName } from '../../shared/taskGitRelay';
 import { readTaskRemoteHead, type TaskRemoteHeadResult } from '../worktask/taskFetch';
+import { recordedTaskGitCommonDir, recordedTaskGitWorktreeDir } from '../worktask/taskGitCommonDir';
+import { defaultGit, openTaskGitRepo, type TaskGitRepo, type TaskPushDeps, type TaskPushGit } from '../worktask/taskPush';
 import { taskPushRecordOf, type TaskPushLookup } from '../worktask/taskPushRecord';
 import { taskMissionFromMissions } from './verifyPreset';
 
@@ -46,7 +49,6 @@ export type NoChangesVerdict =
   | { kind: 'changed'; why: string }
   | { kind: 'unknown'; why: string };
 
-type Git = (args: string[], cwd: string) => Promise<{ stdout: string; code: number }>;
 type Rpc = (method: string, params?: unknown) => Promise<unknown>;
 
 const SHA_RE = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
@@ -58,11 +60,11 @@ export interface NoChangesPorts {
    *  cannot be read. */
   mission: (entry: LedgerEntry) => Promise<{ worktreePath: string; branch: string } | null>;
   /** The worktree's HEAD commit; null when it cannot be read. */
-  headOf: (worktreePath: string) => Promise<string | null>;
+  headOf: (worktreePath: string, entry: LedgerEntry) => Promise<string | null>;
   /** The task branch's local ref (`refs/heads/<branch>` in the task's
    *  repository): its commit, null when there is no such ref, `unknown`
    *  when it cannot be read. */
-  branchRef: (worktreePath: string, branch: string) => Promise<string | null | 'unknown'>;
+  branchRef: (worktreePath: string, branch: string, entry: LedgerEntry) => Promise<string | null | 'unknown'>;
   /** Main's record of the commit task.push last published for the task. */
   pushed: (taskId: string) => TaskPushLookup;
   /** The task branch on origin (readTaskRemoteHead). */
@@ -85,10 +87,10 @@ export async function checkNoChanges(ports: NoChangesPorts, entry: LedgerEntry):
     if (!mission) return unknown('the task\'s worktree and branch could not be read');
     /** HEAD, the branch ref and the push record: each the base (or none). */
     const local = async (when: string): Promise<NoChangesVerdict | null> => {
-      const head = await ports.headOf(mission.worktreePath);
+      const head = await ports.headOf(mission.worktreePath, entry);
       if (!head || !SHA_RE.test(head)) return unknown(`the worktree's HEAD could not be read${when}`);
       if (!same(head, base)) return { kind: 'changed', why: `the worktree's HEAD is ${head}, not ${base}${when}` };
-      const ref = await ports.branchRef(mission.worktreePath, mission.branch);
+      const ref = await ports.branchRef(mission.worktreePath, mission.branch, entry);
       if (ref === 'unknown' || (ref !== null && !SHA_RE.test(ref))) return unknown(`the task branch ${mission.branch} could not be read${when}`);
       if (ref !== null && !same(ref, base)) return { kind: 'changed', why: `the task branch ${mission.branch} is at ${ref}, not ${base}${when}` };
       const pushed = ports.pushed(entry.id);
@@ -112,10 +114,16 @@ export async function checkNoChanges(ports: NoChangesPorts, entry: LedgerEntry):
 
 export interface LiveNoChangesDeps {
   rpc: () => Rpc | null;
-  git: Git;
+  /** Main's git for the task's repository (default: taskPush's). */
+  git?: TaskPushGit;
+  /** Test seam: the transports a network call may use. */
+  gitDeps?: TaskPushDeps;
   wmuxDir: () => string;
   /** A bot's repository (its profile), for a task whose dispatch names none. */
   botRepoKey: (botId: string) => string | undefined;
+  /** A bot's repository folder (its profile), for a task whose dispatch
+   *  records no git dir. */
+  botRepoPath?: (botId: string) => string | undefined;
 }
 
 /** The check over main's own records, git and origin. */
@@ -126,17 +134,41 @@ export function liveNoChangesCheck(deps: LiveNoChangesDeps): (entry: LedgerEntry
 
 /** The ports liveNoChangesCheck reads through. */
 export function liveNoChangesPorts(deps: LiveNoChangesDeps): NoChangesPorts {
+  const git = deps.git ?? defaultGit;
+  /** Main's git on the repository and worktree git dir main recorded for the
+   *  task (never ones found through the worktree), opened anew for each read:
+   *  the same checks as task_push (a partial clone is refused) run before
+   *  anything is read. */
+  const open = async (wt: string, entry: LedgerEntry): Promise<TaskGitRepo | null> => {
+    const gitCommonDir = await recordedTaskGitCommonDir(entry.dispatch, deps.botRepoPath ?? (() => undefined));
+    if (!gitCommonDir) return null;
+    const gitWorktreeDir = await recordedTaskGitWorktreeDir(entry.dispatch, gitCommonDir, wt);
+    const opened = await openTaskGitRepo({
+      worktreePath: wt,
+      gitCommonDir,
+      ...(gitWorktreeDir ? { gitWorktreeDir } : {}),
+      noHooksDir: path.join(deps.wmuxDir(), 'factory', 'no-hooks'),
+      relayRoot: path.join(deps.wmuxDir(), 'factory', 'git-relay'),
+      taskId: entry.id,
+    }, git, deps.gitDeps);
+    return opened.ok ? opened.repo : null;
+  };
   return {
     mission: (entry) => taskMissionFromMissions(deps.rpc(), entry),
-    headOf: async (wt) => {
-      // The ref's own commit id: no replace ref stands in for it.
-      const r = await deps.git(['--no-replace-objects', 'rev-parse', '--verify', '--quiet', 'HEAD^{commit}'], wt);
-      const sha = r.stdout.trim();
-      return r.code === 0 && SHA_RE.test(sha) ? sha : null;
+    headOf: async (wt, entry) => {
+      // The HEAD file of the recorded worktree git dir, read strictly; a
+      // branch resolved in the recorded refs, no object read.
+      const repo = await open(wt, entry);
+      const head = repo ? await repo.headOid() : null;
+      return head?.ok ? head.oid : null;
     },
-    branchRef: async (wt, branch) => {
-      // The ref's value as stored, in the repository the worktree shares.
-      const r = await deps.git(['--no-replace-objects', 'rev-parse', '--verify', '--quiet', `refs/heads/${branch}`], wt);
+    branchRef: async (wt, branch, entry) => {
+      // The ref's value as stored, in the repository main recorded for the
+      // task.
+      if (!isPlainTaskBranchName(branch)) return 'unknown';
+      const repo = await open(wt, entry);
+      if (!repo) return 'unknown';
+      const r = await repo.local(['rev-parse', '--verify', '--quiet', '--end-of-options', `refs/heads/${branch}`]);
       const sha = r.stdout.trim();
       if (r.code === 0 && SHA_RE.test(sha)) return sha;
       // `--verify --quiet` exits 1, printing nothing, for a ref that is not there.
@@ -148,12 +180,18 @@ export function liveNoChangesPorts(deps: LiveNoChangesDeps): NoChangesPorts {
       const expectedRepoKey = entry.dispatch?.repoKey ?? (origin?.kind === 'bot' && origin.botId ? deps.botRepoKey(origin.botId) : undefined);
       // A bot's task is read only from its own repository.
       if (origin?.kind === 'bot' && !expectedRepoKey) return { ok: false, reason: 'remote-refused', error: 'the task names no repository' };
+      // Read in the repository main recorded, never one found through the worktree.
+      const gitCommonDir = await recordedTaskGitCommonDir(entry.dispatch, deps.botRepoPath ?? (() => undefined));
+      if (!gitCommonDir) return { ok: false, reason: 'git-failed', error: 'wmux recorded no repository folder for the task' };
       return readTaskRemoteHead({
         worktreePath: mission.worktreePath,
         branch: mission.branch,
         noHooksDir: path.join(deps.wmuxDir(), 'factory', 'no-hooks'),
+        gitCommonDir,
+        relayRoot: path.join(deps.wmuxDir(), 'factory', 'git-relay'),
+        taskId: entry.id,
         ...(expectedRepoKey ? { expectedRepoKey } : {}),
-      });
+      }, git, deps.gitDeps);
     },
   };
 }

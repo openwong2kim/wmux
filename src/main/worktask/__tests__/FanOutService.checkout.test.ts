@@ -127,6 +127,19 @@ describe('FanOutService — detached checkout + dispatch record', () => {
     expect(new TaskLedger({ dir: path.join(root, 'ledger') }).get(row.id)?.dispatch).toEqual(row.dispatch);
   });
 
+  it('records the repository\'s common git dir from the preflight on the dispatch, and it survives a ledger replay', async () => {
+    const r = rig();
+    r.worktrees.preflight.mockImplementation(async (_r: string, _t: string, taskId: string) => ({
+      ok: true as const,
+      plan: { repoRoot: '/repo', repoHash: 'h', taskSlug: taskId.slice(-8), worktreePath: path.join(root, 'wt', taskId.slice(-8)), branch: `wtask/${taskId.slice(-8)}`, metaDir: path.join(root, 'meta', taskId.slice(-8)), gitCommonDir: '/repo/.git' },
+    }));
+    await r.svc.start({ ...base, repoKey: 'github.com/acme/app' });
+    const row = ledger.list({ ownerWorkspaceId: 'ws-bot' })[0];
+    expect(row.dispatch?.gitCommonDir).toBe('/repo/.git');
+    await ledger.flush();
+    expect(new TaskLedger({ dir: path.join(root, 'ledger') }).get(row.id)?.dispatch?.gitCommonDir).toBe('/repo/.git');
+  });
+
   it('a tainted bot origin keeps its mark on the dispatch, across a ledger replay', async () => {
     const r = rig();
     await r.svc.start({ ...base, caller: { kind: 'bot', botId: 'bot-0a1b2c3d', tainted: true }, checkout: { sha: SHA, detached: true } });

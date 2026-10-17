@@ -169,6 +169,24 @@ describe('J3 §1 close 순서 계약', () => {
     fs.rmSync(remoteDir, { recursive: true, force: true });
   });
 
+  it('a HEAD that is the commit task_push last published counts as pushed, with no upstream; the relay is removed on close', async () => {
+    const { mgr, worktreePath, metaDir } = await makeWorktree('pushed-task');
+    const remoteDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-close-remote-'));
+    git(['init', '-q', '--bare'], remoteDir);
+    git(['remote', 'add', 'origin', remoteDir], repoRoot);
+    fs.writeFileSync(path.join(worktreePath, 'done.txt'), 'work\n');
+    git(['add', '.'], worktreePath);
+    git(['commit', '-q', '-m', 'work'], worktreePath);
+    const head = git(['rev-parse', 'HEAD'], worktreePath).trim();
+    const { port } = makeDaemon();
+    const removed: string[] = [];
+    const svc = new TaskCloseService({ daemon: port, worktrees: mgr, pushedHead: (id) => (id === 'wtask-p' ? head : null), removeRelay: (id) => { removed.push(id); } });
+    const res = await svc.closeTask({ taskId: 'wtask-p', verifiedWorkspaceId: 'ws-owner', repoRoot, repoHash: 'closehash', worktreePath, metaDir });
+    expect(res.ok).toBe(true);
+    expect(removed).toEqual(['wtask-p']);
+    fs.rmSync(remoteDir, { recursive: true, force: true });
+  });
+
   it('미물질화(worktreePath 부재): worktree 단계 건너뛰고 close만', async () => {
     const { port, calls } = makeDaemon();
     const mgr = new TaskWorktreeManager();

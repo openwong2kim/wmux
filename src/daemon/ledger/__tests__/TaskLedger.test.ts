@@ -372,6 +372,19 @@ describe('TaskLedger — transition matrix', () => {
     expect((await a.recordGate('wtask-3', PASS)).ok).toBe(true);
   });
 
+  it('a dispatch keeps the recorded git dir when it is an absolute path with no control character, across a reload', async () => {
+    const a = open();
+    const ok = ['/home/me/repo/.git', 'C:\\Users\\me\\repo\\.git', '\\\\wsl.localhost\\Ubuntu\\home\\me\\repo\\.git'];
+    for (const [i, dir] of ok.entries()) {
+      await a.register({ id: `wtask-${i}`, taskWorkspaceId: 'ws-task', ownerWorkspaceId: 'ws-owner', title: 'lane', dispatch: { origin: { kind: 'bot', botId: 'b1' }, gitCommonDir: dir } });
+      expect(open().get(`wtask-${i}`)?.dispatch?.gitCommonDir).toBe(dir);
+    }
+    for (const [i, dir] of ['repo/.git', '/r/.git\n', ''].entries()) {
+      await a.register({ id: `wtask-bad-${i}`, taskWorkspaceId: 'ws-task', ownerWorkspaceId: 'ws-owner', title: 'lane', dispatch: { origin: { kind: 'bot', botId: 'b1' }, gitCommonDir: dir } });
+      expect(a.get(`wtask-bad-${i}`)?.dispatch?.gitCommonDir).toBeUndefined();
+    }
+  });
+
   it('a dispatch keeps the base commit main created the branch from, a full commit id only, across a reload', async () => {
     const a = open();
     const base = 'b'.repeat(40);

@@ -145,10 +145,10 @@ export async function runWorkerGitRead(args: string[], cwd: string): Promise<Git
 }
 
 /** Read the worktree's config and refuse what main does not run git with. */
-export async function workerGitPreflight(run: WorkerGitRun, mode: 'all' | 'read' = 'all'): Promise<{ ok: true; entries: GitConfigEntry[] } | { ok: false; error: string }> {
+export async function workerGitPreflight(run: WorkerGitRun, mode: 'all' | 'read' = 'all'): Promise<{ ok: true; entries: GitConfigEntry[]; stdout: string } | { ok: false; error: string }> {
   const r = await run(['config', '-z', '--list', '--show-scope']);
   if (r.code !== 0) return { ok: false, error: `git config --list failed: ${r.stderr.trim().slice(0, 300)}` };
   const entries = parseGitConfigList(r.stdout);
   const refusal = workerGitConfigRefusal(entries, mode);
-  return refusal ? { ok: false, error: refusal } : { ok: true, entries };
+  return refusal ? { ok: false, error: refusal } : { ok: true, entries, stdout: r.stdout };
 }
