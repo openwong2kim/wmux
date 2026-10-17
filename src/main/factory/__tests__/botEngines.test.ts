@@ -38,15 +38,19 @@ describe('bot engines', () => {
     if (r.ok) r.adapter.dispose();
   });
 
-  it('a claude-sdk bot with no model asks for the default one, so a resumed conversation does not keep a cleared model', () => {
+  it('a claude-sdk bot with no model, \'default\' or an unusable stored model passes no model, so ANTHROPIC_MODEL still applies (#2272)', () => {
     const modelOf = (engine: BotEngine) => {
       const r = factory()(input(engine));
       const model = r.ok ? (r.adapter as unknown as { model?: string }).model : null;
       if (r.ok) r.adapter.dispose();
       return model;
     };
-    expect(modelOf({ kind: 'claude-sdk' })).toBe('default');
+    expect(modelOf({ kind: 'claude-sdk' })).toBeUndefined();
+    expect(modelOf({ kind: 'claude-sdk', model: 'default' })).toBeUndefined();
+    expect(modelOf({ kind: 'claude-sdk', model: 'opus; rm -rf ~' })).toBeUndefined();
     expect(modelOf({ kind: 'claude-sdk', model: 'sonnet[1m]' })).toBe('sonnet[1m]');
+    const arn = 'arn:aws:bedrock:us-east-1:123456789012:inference-profile/us.anthropic.claude-opus-5-5-v1:0';
+    expect(modelOf({ kind: 'claude-sdk', model: arn })).toBe(arn);
   });
 
   it('a claude-sdk bot with a repository reads it, a coordinator (Moa) included; a bot without one and ACP bots do not', () => {

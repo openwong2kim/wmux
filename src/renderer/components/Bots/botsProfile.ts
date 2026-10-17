@@ -51,7 +51,9 @@ export function botCanDo(bot: { role: BotRole; template?: BotTemplate }): string
 // The bot's own model and effort are its claude-sdk engine's (BotEngine);
 // its workers' are `workerAgent`. Main checks both again on save
 // (main/factory/botStore.ts); the profile refuses a bad model id first, with
-// the same rule (shared/fanoutPreset.ts validateFanoutModel).
+// the same rules (shared/fanoutPreset.ts validateBotBrainModel for the bot's
+// own, validateFanoutModel for its workers'). A stored model of the bot's own
+// that fails its rule is kept on disk but not used; the profile warns of it.
 
 type T = (key: string, vars?: Record<string, string | number>) => string;
 
@@ -66,11 +68,19 @@ export function botModelName(agent: string, model: string): string {
  *  are on the defaults. Pure. */
 export function botModelSummary(bot: Pick<BotProfile, 'engine' | 'workerAgent'>, t: T): string {
   const parts: string[] = [];
-  if (bot.engine.kind === 'claude-sdk' && bot.engine.model) parts.push(botModelName(DEFAULT_BOT_WORKER_AGENT, bot.engine.model));
+  if (bot.engine.kind === 'claude-sdk' && bot.engine.model && !unusableBrainModel(bot.engine)) parts.push(botModelName(DEFAULT_BOT_WORKER_AGENT, bot.engine.model));
   const w = bot.workerAgent;
   if (w?.model) parts.push(t('botsPage.models.workersOn', { model: botModelName(w.agent, w.model) }));
   else if (w && w.agent !== DEFAULT_BOT_WORKER_AGENT) parts.push(t('botsPage.models.workersOn', { model: botWorkerAgentLabel(w.agent) }));
   return parts.join(' · ');
+}
+
+/** The bot's stored model when it fails the brain model rule, so the bot
+ *  runs on the default model instead (main/factory/botEngines.ts), else
+ *  null. Pure. */
+export function unusableBrainModel(engine: BotEngine): string | null {
+  if (engine.kind !== 'claude-sdk' || !engine.model) return null;
+  return validateBotBrainModel(engine.model).ok ? null : engine.model;
 }
 
 /** The engine the brain picker saves: claude-sdk with the model and effort

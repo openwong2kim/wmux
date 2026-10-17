@@ -75,10 +75,26 @@ describe('a bot\'s own model', () => {
     expect(options.effort).toBe('low');
   });
 
-  it('a bot on the default engine asks for the default model and names no effort', async () => {
-    // 'default', not nothing: a resumed conversation would keep a model the owner cleared.
-    const options = await turnOptions({ kind: 'claude-sdk' });
-    expect(options.model).toBe('default');
-    expect(options).not.toHaveProperty('effort');
+  it('a bot with no model names no model and no effort, so the ANTHROPIC_MODEL a gateway or Bedrock set still applies (#2272)', async () => {
+    const before = process.env.ANTHROPIC_MODEL;
+    process.env.ANTHROPIC_MODEL = 'glm-5.3';
+    try {
+      for (const engine of [{ kind: 'claude-sdk' }, { kind: 'claude-sdk', model: 'default' }, { kind: 'claude-sdk', model: 'claude opus' }] as BotEngine[]) {
+        const options = await turnOptions(engine);
+        expect(options).not.toHaveProperty('model');
+        expect(options).not.toHaveProperty('effort');
+        expect(options.extraArgs ?? {}).not.toHaveProperty('model');
+        // The env the SDK spawns claude with still carries the owner's model.
+        expect((options.env as Record<string, string> | undefined)?.ANTHROPIC_MODEL).toBe('glm-5.3');
+      }
+    } finally {
+      if (before === undefined) delete process.env.ANTHROPIC_MODEL;
+      else process.env.ANTHROPIC_MODEL = before;
+    }
+  });
+
+  it('a Bedrock ARN is passed through as the model', async () => {
+    const arn = 'arn:aws:bedrock:us-east-1:123456789012:inference-profile/us.anthropic.claude-opus-5-5-v1:0';
+    expect((await turnOptions({ kind: 'claude-sdk', model: arn })).model).toBe(arn);
   });
 });

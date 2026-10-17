@@ -4,9 +4,10 @@
 // "Worker model": the model and effort of the workers it starts, on the
 // agent the "Workers run on" line picks (workerAgent). Each shows its value
 // with Change, which opens the model combobox (the catalog's models, free
-// text allowed) and an effort select; Save refuses a model id that fan-out
+// text allowed) and an effort select; Save refuses a model id that main
 // would refuse (botsProfile.ts brainEngine / workerAgentPick) before main
-// checks it again.
+// checks it again. A saved model of the bot's own that main would not pass
+// on shows as the default model, with a warning.
 
 import { useEffect, useState } from 'react';
 import Button from '../ui/Button';
@@ -18,7 +19,7 @@ import { CLAUDE_EFFORT_LEVELS } from '../../../shared/claudeModels';
 import { CATALOG_AGENTS, staticClaudeModels, type CatalogModel } from '../../../shared/modelCatalog';
 import { DEFAULT_BOT_WORKER_AGENT } from '../../../shared/botWorkerAgent';
 import type { FactoryBotPort, FactoryBotRow } from '../Room/factoryPorts';
-import { botModelName, brainEngine, workerAgentPick } from './botsProfile';
+import { botModelName, brainEngine, unusableBrainModel, workerAgentPick } from './botsProfile';
 
 type T = (key: string, vars?: Record<string, string | number>) => string;
 
@@ -40,10 +41,12 @@ function useAgentModels(agent: string): CatalogModel[] {
 
 /** One model + effort line. `save` resolves to null once saved, else the
  *  message to show; absent = read-only. */
-function ModelPickLine({ label, testId, shown, model0, effort0, models, efforts, save, t }: {
+function ModelPickLine({ label, testId, shown, warning, model0, effort0, models, efforts, save, t }: {
   label: string;
   testId: string;
   shown: string;
+  /** Shown under the value while not editing. */
+  warning?: string;
   model0: string;
   effort0: string;
   models: readonly CatalogModel[];
@@ -111,6 +114,7 @@ function ModelPickLine({ label, testId, shown, model0, effort0, models, efforts,
                 {t('botsPage.models.change')}
               </button>
             )}
+            {warning && <p data-testid={`${testId}-warning`} className="mt-1 text-[11px] text-[var(--accent-yellow)]">{warning}</p>}
           </>
         )}
       </div>
@@ -134,11 +138,12 @@ export function BrainModelLine({ row, t, port }: { row: FactoryBotRow; t: T; por
   if (engine.kind !== 'claude-sdk') {
     return <ModelPickLine label={label} testId="bots-profile-brain" shown={t('botsPage.models.otherEngine')} model0="" effort0="" models={[]} efforts={() => []} t={t} />;
   }
+  const unusable = unusableBrainModel(engine);
   const update = port?.update;
   const save = update
     ? async (model: string, effort: string): Promise<string | null> => {
       const next = brainEngine(model, effort);
-      if (!next.ok) return t('botsPage.models.invalid', { model: next.model });
+      if (!next.ok) return t('botsPage.models.invalidBrain', { model: next.model });
       const r = await update(row.bot.id, { engine: next.engine });
       return r.ok ? null : r.message || t('botsPage.models.saveFailed');
     }
@@ -148,7 +153,8 @@ export function BrainModelLine({ row, t, port }: { row: FactoryBotRow; t: T; por
       key={`${engine.model ?? ''}:${engine.effort ?? ''}`}
       label={label}
       testId="bots-profile-brain"
-      shown={shownModel(DEFAULT_BOT_WORKER_AGENT, engine.model, engine.effort, t)}
+      shown={shownModel(DEFAULT_BOT_WORKER_AGENT, unusable === null ? engine.model : undefined, engine.effort, t)}
+      {...(unusable !== null ? { warning: t('botsPage.models.storedInvalid', { model: unusable }) } : {})}
       model0={engine.model ?? ''}
       effort0={engine.effort ?? ''}
       models={models}

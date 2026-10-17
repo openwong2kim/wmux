@@ -12,9 +12,11 @@
 // refuses it, so the pipe's bot.update never sets one. A picture that fails
 // the check on read is dropped and the bot kept; so is a job that fails
 // normalizeBotJob, a worker agent (`workerAgent`, optional, owner-set
-// through `update`) that fails validateBotWorkerAgent, and an engine model
-// that fails fan-out's model rule (shared/fanoutPreset.ts
-// validateFanoutModel), which is refused on create/update.
+// through `update`) that fails validateBotWorkerAgent. An engine model is
+// checked on create/update only (shared/fanoutPreset.ts validateBotBrainModel
+// for claude-sdk, validateFanoutModel otherwise); a stored one is kept as
+// written, and one that fails the rule is ignored when the bot runs
+// (botEngines.ts), never dropped from the file.
 //
 // A bot's own model and effort are its engine's (`engine.model`/`effort`,
 // claude-sdk); its workers' are `workerAgent`. Both are optional, so a
@@ -103,27 +105,30 @@ function boundedString(v: unknown, max: number): string | undefined {
   return t.length > 0 && t.length <= max ? t : undefined;
 }
 
-/** A well-formed engine (a fresh object), or null. A model must pass
- *  fan-out's model rule (validateFanoutModel); on a read (`read: true`) a
- *  stored model that does not is dropped and the engine kept, so the bot
- *  runs on the default model rather than disappearing. */
+/** A well-formed engine (a fresh object), or null. On create/update a model
+ *  must pass the brain model rule (claude-sdk, validateBotBrainModel) or
+ *  fan-out's (validateFanoutModel). On a read (`read: true`) a stored model
+ *  string is kept exactly as written, valid or not, so a later write never
+ *  drops it from bots.json; the engine factory ignores one that fails the
+ *  rule (the bot runs on claude's default) and the profile warns of it. */
 export function sanitizeBotEngine(raw: unknown, opts: { read?: boolean } = {}): BotEngine | null {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
   const r = raw as Record<string, unknown>;
-  const checked = r.model === undefined ? undefined : r.kind === 'claude-sdk' ? validateBotBrainModel(r.model) : validateFanoutModel(r.model);
-  if (checked && !checked.ok && opts.read !== true) return null;
-  const model = checked?.ok ? checked.model : undefined;
+  const read = opts.read === true;
+  const checked = r.model === undefined || read ? undefined : r.kind === 'claude-sdk' ? validateBotBrainModel(r.model) : validateFanoutModel(r.model);
+  if (checked && !checked.ok) return null;
+  const model = read ? (typeof r.model === 'string' ? r.model : undefined) : checked?.ok ? checked.model : undefined;
   switch (r.kind) {
     case 'claude-sdk': {
       if (r.effort !== undefined && (typeof r.effort !== 'string' || !EFFORTS.has(r.effort))) return null;
       return {
         kind: 'claude-sdk',
-        ...(model ? { model } : {}),
+        ...(model !== undefined ? { model } : {}),
         ...(typeof r.effort === 'string' ? { effort: r.effort } : {}),
       };
     }
     case 'claude-pty':
-      return { kind: 'claude-pty', ...(model ? { model } : {}) };
+      return { kind: 'claude-pty', ...(model !== undefined ? { model } : {}) };
     case 'acp': {
       const command = boundedString(r.command, ACP_COMMAND_MAX);
       if (!command || !Array.isArray(r.args) || r.args.length > ACP_ARGS_MAX) return null;

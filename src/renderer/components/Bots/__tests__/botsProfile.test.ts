@@ -4,9 +4,13 @@
 
 import { describe, expect, it } from 'vitest';
 import { SHARED_SURFACE } from '../../../../shared/botSurface';
-import { BOT_ROLES } from '../../../../shared/bot';
 import { en } from '../../../i18n/locales/en';
-import { CAN_DO_COORDINATOR, CAN_DO_PHRASES, CAN_DO_UNLISTED, botCanDo, botModelSummary, brainEngine, workerAgentPick } from '../botsProfile';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { BOT_ROLES, DEFAULT_BOT_BUDGETS, type BotEngine, type BotProfile } from '../../../../shared/bot';
+import type { FactoryBotRow } from '../../Room/factoryPorts';
+import { BrainModelLine } from '../BotModelLines';
+import { CAN_DO_COORDINATOR, CAN_DO_PHRASES, CAN_DO_UNLISTED, botCanDo, botModelSummary, brainEngine, unusableBrainModel, workerAgentPick } from '../botsProfile';
 
 describe('bot profile: can do', () => {
   it('every tool on the surface has an owner phrase or is an event feed', () => {
@@ -62,6 +66,9 @@ describe('bot profile: models', () => {
     // The bot's own model is an SDK option, so a variant suffix is kept; workers' stays strict.
     expect(brainEngine('sonnet[1m]', '')).toEqual({ ok: true, engine: { kind: 'claude-sdk', model: 'sonnet[1m]' } });
     expect(brainEngine('sonnet[1m', '')).toEqual({ ok: false, model: 'sonnet[1m' });
+    const arn = 'arn:aws:bedrock:us-east-1:123456789012:inference-profile/us.anthropic.claude-opus-5-5-v1:0';
+    expect(brainEngine(arn, '')).toEqual({ ok: true, engine: { kind: 'claude-sdk', model: arn } });
+    expect(brainEngine('claude-opus-5-5@20260901', '')).toEqual({ ok: true, engine: { kind: 'claude-sdk', model: 'claude-opus-5-5@20260901' } });
     expect(workerAgentPick('', 'sonnet[1m]', '')).toMatchObject({ ok: false, model: 'sonnet[1m]' });
   });
 
@@ -81,5 +88,26 @@ describe('bot profile: models', () => {
     expect(botModelSummary({ engine: { kind: 'claude-sdk', model: 'sonnet' }, workerAgent: { agent: 'codex', model: 'gpt-6.1-sol' } }, t)).toBe('sonnet (latest) · workers gpt-6.1-sol');
     expect(botModelSummary({ engine: { kind: 'claude-sdk' }, workerAgent: { agent: 'codex' } }, t)).toBe('workers Codex');
     expect(botModelSummary({ engine: { kind: 'claude-sdk' }, workerAgent: { agent: 'claude' } }, t)).toBe('');
+  });
+  it('a stored model the bot cannot run on is ignored, left out of the note, and the profile warns of it (#2272)', () => {
+    const arn = 'arn:aws:bedrock:us-east-1:123456789012:inference-profile/us.anthropic.claude-opus-5-5-v1:0';
+    expect(unusableBrainModel({ kind: 'claude-sdk' })).toBeNull();
+    expect(unusableBrainModel({ kind: 'claude-sdk', model: arn })).toBeNull();
+    expect(unusableBrainModel({ kind: 'claude-sdk', model: 'opus; rm -rf ~' })).toBe('opus; rm -rf ~');
+    expect(botModelSummary({ engine: { kind: 'claude-sdk', model: 'opus; rm -rf ~' } }, t)).toBe('');
+    const render = (engine: BotEngine) => {
+      const bot: BotProfile = {
+        version: 1, id: 'bot-0000000a', workspaceId: 'ws-1', role: 'moa', template: 'coordinator', name: 'Coordinator',
+        engine, triggers: [], budget: DEFAULT_BOT_BUDGETS.moa, enabled: true, createdAt: 1, updatedAt: 1,
+      };
+      return renderToStaticMarkup(createElement(BrainModelLine, { row: { bot, status: null } as unknown as FactoryBotRow, t }));
+    };
+    const bad = render({ kind: 'claude-sdk', model: 'opus; rm -rf ~' });
+    expect(bad).toContain('data-testid="bots-profile-brain-warning"');
+    expect(bad).toContain('The saved model');
+    expect(bad).toContain('Default model');
+    const good = render({ kind: 'claude-sdk', model: arn });
+    expect(good).not.toContain('bots-profile-brain-warning');
+    expect(good).toContain(arn);
   });
 });

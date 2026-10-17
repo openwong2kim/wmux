@@ -5,7 +5,7 @@
 import { describe, expect, it } from 'vitest';
 import { TEMPLATE_MODEL_DEFAULTS } from '../bot';
 import { CLAUDE_MODEL_OPTIONS } from '../claudeModels';
-import { validateFanoutAgentChoice, validateFanoutModel } from '../fanoutPreset';
+import { validateBotBrainModel, validateFanoutAgentChoice, validateFanoutModel } from '../fanoutPreset';
 import { validateBotWorkerAgent, withBotWorkerAgent } from '../botWorkerAgent';
 
 describe('per-bot models', () => {
@@ -49,5 +49,32 @@ describe('per-bot models', () => {
     }
     expect(validateFanoutModel(42)).toMatchObject({ ok: false, code: 'model-not-string' });
     expect(validateFanoutAgentChoice({ agent: 'claude', model: '--yolo' })).toMatchObject({ ok: false, code: 'model-invalid' });
+  });
+
+  it('a bot\'s own model takes Bedrock / Vertex ids and ARNs up to 256, and still refuses shell words (#2272)', () => {
+    for (const model of [
+      'arn:aws:bedrock:us-east-1:123456789012:inference-profile/us.anthropic.claude-opus-5-5-20260901-v1:0',
+      'arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-opus-5-5-v1:0',
+      'us.anthropic.claude-sonnet-5-5-v1:0',
+      'claude-opus-5-5@20260901',
+      'publishers/anthropic/models/claude-opus-5-5@20260901',
+      'sonnet[1m]',
+      'glm-5.3',
+      `m${'x'.repeat(255)}`,
+    ]) {
+      expect(validateBotBrainModel(model)).toEqual({ ok: true, model });
+    }
+    expect(validateBotBrainModel('  opus  ')).toEqual({ ok: true, model: 'opus' });
+    for (const model of [
+      '', '-m', '--model', '--dangerously-skip-permissions', '/abs/path', '@x', 'claude opus', 'opus\tx', 'opus\nid', 'opus\u0000', 'opus\u001b',
+      'a;b', 'a&b', 'a|b', 'a$b', 'a`id`', "a'b", 'a"b', 'a<b', 'a>b', 'a(b)', 'a{b}', 'a*', 'a?', 'a~', 'a#b', 'a!b', 'a\\b', 'a,b', 'a=b',
+      `m${'x'.repeat(256)}`,
+    ]) {
+      expect(validateBotBrainModel(model)).toEqual({ ok: false });
+    }
+    expect(validateBotBrainModel(42)).toEqual({ ok: false });
+    // Workers keep fan-out's strict rule: their model lands on a shell line.
+    expect(validateFanoutModel('claude-opus-5-5@20260901')).toMatchObject({ ok: false });
+    expect(validateFanoutModel('arn:aws:bedrock:us-east-1::foundation-model/x')).toMatchObject({ ok: false });
   });
 });

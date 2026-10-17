@@ -3920,6 +3920,8 @@ export const zh = {
   'botsPage.models.change': "更改",
   'botsPage.models.otherEngine': "由其引擎决定",
   'botsPage.models.invalid': "“{model}”不是模型 ID：须以字母或数字开头，其后只能用字母、数字和 . _ : -",
+  'botsPage.models.invalidBrain': "“{model}”不是模型 ID：须以字母或数字开头，其后只能用字母、数字和 . _ : / @ -（最多 256 个字符），末尾可带 [变体]",
+  'botsPage.models.storedInvalid': "已保存的模型“{model}”不是 wmux 能传递的模型 ID，因此此机器人使用默认模型运行。点击“更改”以选择其他模型。",
   'botsPage.models.saveFailed': "无法保存模型。",
   'botsPage.models.workersOn': "工作者 {model}",
   'botsPage.profile.workersUnavailable': "{name}（此系统不可用）",

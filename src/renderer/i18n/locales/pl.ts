@@ -4657,6 +4657,8 @@ export const pl = {
   'botsPage.models.change': "Zmień",
   'botsPage.models.otherEngine': "Ustala go silnik",
   'botsPage.models.invalid': "„{model}” nie jest identyfikatorem modelu: najpierw litera lub cyfra, potem litery, cyfry oraz . _ : -",
+  'botsPage.models.invalidBrain': "„{model}” nie jest identyfikatorem modelu: najpierw litera lub cyfra, potem litery, cyfry oraz . _ : / @ - (do 256 znaków), opcjonalnie z [wariantem] na końcu",
+  'botsPage.models.storedInvalid': "Zapisany model „{model}” nie jest identyfikatorem, który wmux może przekazać, więc ten bot działa na modelu domyślnym. Zmień go, aby wybrać inny.",
   'botsPage.models.saveFailed': "Nie udało się zapisać modelu.",
   'botsPage.models.workersOn': "workery {model}",
   'botsPage.profile.workersUnavailable': "{name} (niedostępny w tym systemie)",

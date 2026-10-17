@@ -4198,6 +4198,8 @@ export const ko = {
   'botsPage.models.change': "바꾸기",
   'botsPage.models.otherEngine': "엔진이 정합니다",
   'botsPage.models.invalid': "\"{model}\"은(는) 모델 ID가 아닙니다. 영문자나 숫자로 시작하고, 그 뒤에는 영문자·숫자와 . _ : - 만 쓸 수 있습니다.",
+  'botsPage.models.invalidBrain': "\"{model}\"은(는) 모델 ID가 아닙니다. 영문자나 숫자로 시작하고, 그 뒤에는 영문자·숫자와 . _ : / @ - 만 쓸 수 있으며(최대 256자), 끝에 [변형]을 붙일 수 있습니다.",
+  'botsPage.models.storedInvalid': "저장된 모델 \"{model}\"은(는) wmux가 넘길 수 있는 모델 ID가 아니어서 이 봇은 기본 모델로 실행됩니다. 다른 모델로 바꾸려면 바꾸기를 누르세요.",
   'botsPage.models.saveFailed': "모델을 저장하지 못했습니다.",
   'botsPage.models.workersOn': "워커 {model}",
   'botsPage.profile.workersUnavailable': "{name} (이 시스템에서는 사용할 수 없음)",

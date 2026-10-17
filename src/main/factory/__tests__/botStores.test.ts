@@ -82,7 +82,7 @@ describe('BotStore', () => {
     expect(parseBotProfile({ ...stored, workerAgent: { agent: 'codex' } })?.workerAgent).toEqual({ agent: 'codex' });
   });
 
-  it('an old profile with no models loads unchanged (default brain, preset workers), stays version 1, and a stored model that fails the rule is dropped, the bot kept', async () => {
+  it('an old profile with no models loads unchanged (default brain, preset workers), stays version 1, and a stored model that fails the rule is kept as written', async () => {
     fs.mkdirSync(path.dirname(botsFilePath(dir)), { recursive: true });
     const old = {
       version: 1, id: 'bot-0a0a0a21', workspaceId: 'ws-1', role: 'moa', template: 'coordinator', name: 'Coordinator', hue: 5,
@@ -98,7 +98,8 @@ describe('BotStore', () => {
     expect(s.get(old.id)?.engine).toEqual({ kind: 'claude-sdk' });
     expect(s.get(old.id)?.workerAgent).toBeUndefined();
     expect(s.get(pinned.id)?.engine).toEqual({ kind: 'claude-sdk', model: 'claude-opus-5-5', effort: 'high' });
-    expect(s.get(bad.id)?.engine).toEqual({ kind: 'claude-sdk', effort: 'low' });
+    // Kept for the owner to see and fix; the engine factory does not pass it on.
+    expect(s.get(bad.id)?.engine).toEqual({ kind: 'claude-sdk', model: 'claude opus', effort: 'low' });
     // A bot's own model may carry a variant suffix (an SDK option, not a shell word).
     expect(s.get(variant.id)?.engine).toEqual({ kind: 'claude-sdk', model: 'sonnet[1m]' });
     // Written back as it was read: version 1, the untouched profiles equal.
@@ -107,6 +108,45 @@ describe('BotStore', () => {
     expect(disk.version).toBe(1);
     expect(disk.bots[0]).toEqual(old);
     expect(disk.bots[1]).toEqual(pinned);
+    expect(disk.bots[2]).toEqual(bad);
+  });
+
+  it('stored Bedrock / Vertex model ids and long names load unchanged, the file is not rewritten, and a later write keeps them (#2272)', async () => {
+    fs.mkdirSync(path.dirname(botsFilePath(dir)), { recursive: true });
+    const arn = 'arn:aws:bedrock:us-east-1:123456789012:inference-profile/us.anthropic.claude-opus-5-5-20260901-v1:0';
+    const long = `glm-${'x'.repeat(96)}`;
+    const base = {
+      version: 1, workspaceId: 'ws-1', role: 'lead', template: 'developer', triggers: [], budget: DEFAULT_BOT_BUDGETS.lead,
+      enabled: true, createdAt: 1, updatedAt: 1,
+    };
+    const bots = [
+      { ...base, id: 'bot-0a0a0a31', name: 'Bedrock', hue: 1, engine: { kind: 'claude-sdk', model: arn, effort: 'high' } },
+      { ...base, id: 'bot-0a0a0a32', name: 'Long', hue: 2, engine: { kind: 'claude-sdk', model: long } },
+      { ...base, id: 'bot-0a0a0a33', name: 'Vertex', hue: 3, engine: { kind: 'claude-sdk', model: 'claude-opus-5-5@20260901' } },
+      { ...base, id: 'bot-0a0a0a34', name: 'Unsafe', hue: 4, engine: { kind: 'claude-sdk', model: 'opus; rm -rf ~' } },
+    ];
+    const text = JSON.stringify({ version: 1, bots, usage: {} });
+    fs.writeFileSync(botsFilePath(dir), text);
+    const past = new Date(Date.now() - 60_000);
+    fs.utimesSync(botsFilePath(dir), past, past);
+    const mtime = fs.statSync(botsFilePath(dir)).mtimeMs;
+    const s = newStore();
+    s.load();
+    expect(long).toHaveLength(100);
+    expect(s.get('bot-0a0a0a31')?.engine).toEqual({ kind: 'claude-sdk', model: arn, effort: 'high' });
+    expect(s.get('bot-0a0a0a32')?.engine).toEqual({ kind: 'claude-sdk', model: long });
+    expect(s.get('bot-0a0a0a33')?.engine).toEqual({ kind: 'claude-sdk', model: 'claude-opus-5-5@20260901' });
+    expect(s.get('bot-0a0a0a34')?.engine).toEqual({ kind: 'claude-sdk', model: 'opus; rm -rf ~' });
+    // Loading wrote nothing (a write it scheduled would have landed by now;
+    // flush() itself writes, so it cannot be the check).
+    await new Promise((r) => setTimeout(r, 50));
+    expect(fs.readFileSync(botsFilePath(dir), 'utf8')).toBe(text);
+    expect(fs.statSync(botsFilePath(dir)).mtimeMs).toBe(mtime);
+    // An unrelated write keeps every stored model, the unsafe one included.
+    expect(s.update('bot-0a0a0a32', { name: 'Longer' })).toMatchObject({ ok: true });
+    await s.flush();
+    const disk = JSON.parse(fs.readFileSync(botsFilePath(dir), 'utf8'));
+    expect(disk.bots.map((b: { engine: { model?: string } }) => b.engine.model)).toEqual([arn, long, 'claude-opus-5-5@20260901', 'opus; rm -rf ~']);
   });
 
   it('a new bot starts on its template\'s models; an explicit engine or worker agent wins; Custom has none', () => {
@@ -138,9 +178,15 @@ describe('BotStore', () => {
 
   it('refuses a bot model or worker model that fan-out would refuse, on create and on update', () => {
     const s = newStore();
-    for (const model of ['--dangerously-skip-permissions', 'claude opus', '-m', 'x'.repeat(65)]) {
+    for (const model of ['--dangerously-skip-permissions', 'claude opus', '-m', 'opus;id', 'x'.repeat(257)]) {
       expect(s.create({ workspaceId: 'ws-1', engine: { kind: 'claude-sdk', model } })).toMatchObject({ ok: false, code: 'invalid_argument' });
+    }
+    for (const model of ['--dangerously-skip-permissions', 'claude opus', '-m', 'x'.repeat(65), 'arn:aws:bedrock:us-east-1::foundation-model/x']) {
       expect(s.create({ workspaceId: 'ws-1', workerAgent: { agent: 'claude', model } })).toMatchObject({ ok: false, code: 'invalid_argument' });
+    }
+    // The brain takes a Bedrock ARN or a Vertex id (an SDK argv item, never a shell word).
+    for (const model of ['arn:aws:bedrock:us-east-1:123456789012:inference-profile/us.anthropic.claude-opus-5-5-v1:0', 'claude-opus-5-5@20260901', 'x'.repeat(256)]) {
+      expect(s.create({ workspaceId: 'ws-1', engine: { kind: 'claude-sdk', model } })).toMatchObject({ ok: true, bot: { engine: { model } } });
     }
     // An empty engine model is refused (absent means the default); for a
     // worker, fan-out reads '' as "no model given".
