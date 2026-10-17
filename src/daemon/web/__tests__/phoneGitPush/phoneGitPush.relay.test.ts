@@ -3,6 +3,7 @@ import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto, { randomUUID } from 'node:crypto';
+import zlib from 'node:zlib';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { buildGitEnv } from '../../sessionDiff';
 import { GitWriteReceipts } from '../../phoneGitWriteGate';
@@ -328,6 +329,61 @@ describe('phone git push relay', { timeout: 60_000 }, () => {
       expect(await executeAndSettle(work, r.pins, head)).toMatchObject({ state: 'refused', error: 'non-fast-forward' });
       expect(network.filter((c) => c.args.includes('push')).length).toBe(pushesBefore);
       expect(git(bare, 'rev-parse', 'refs/heads/feat')).toBe(tip);
+    });
+
+    it('a late parent header does not make a forged intermediate commit an ancestor', async () => {
+      // Remote: main at base, feat at a divergent commit R the clone also has.
+      git(work, 'checkout', '-q', '-b', 'feat');
+      const r = commit(work, 'divergent');
+      toRemote(work, 'push', '-q', 'origin', 'feat');
+      git(work, 'checkout', '-q', 'main');
+      const tree = git(work, 'hash-object', '-w', '-t', 'tree', '/dev/null');
+      const base = git(work, 'rev-parse', 'HEAD');
+      // A real commit A, then H whose consecutive parent is A and whose only
+      // reference to R is a late `parent` line (after committer): git ignores it.
+      const a = git(work, 'commit-tree', tree, '-p', base, '-m', 'A');
+      const hBody = `tree ${tree}\nparent ${a}\nauthor T <t@example.invalid> 1700000000 +0000\ncommitter T <t@example.invalid> 1700000000 +0000\nparent ${r}\n\nlate parent\n`;
+      const hFile = path.join(root, 'hbody');
+      fs.writeFileSync(hFile, hBody);
+      const h = git(work, 'hash-object', '-w', '-t', 'commit', hFile);
+      git(work, 'update-ref', 'refs/heads/feat', h);
+      git(work, 'symbolic-ref', 'HEAD', 'refs/heads/feat');
+      // An upstream, so the target is feat on origin (not a create check).
+      git(work, 'config', 'branch.feat.remote', 'origin');
+      git(work, 'config', 'branch.feat.merge', 'refs/heads/feat');
+      // Forge A's object so git's own walk counts R as reachable (behind 0).
+      const aPath = path.join(work, '.git', 'objects', a.slice(0, 2), a.slice(2));
+      const forged = `tree ${tree}\nparent ${r}\nauthor T <t@example.invalid> 1700000000 +0000\ncommitter T <t@example.invalid> 1700000000 +0000\n\nforged\n`;
+      const store = Buffer.from(`commit ${Buffer.byteLength(forged)}\0${forged}`, 'latin1');
+      fs.chmodSync(aPath, 0o644);
+      fs.writeFileSync(aPath, zlib.deflateSync(store));
+      expect(git(work, 'rev-list', '--count', r, `^${h}`)).toBe('0'); // git's own walk is fooled
+
+      compareStatus = 'diverged'; // GitHub, the authority past the local walk, disagrees
+      const r0 = await createPhoneGitPushHandlers(deps()).preview!(ctx(work));
+      if (!r0.ok) throw new Error(`preview refused: ${JSON.stringify(r0.body)}`);
+      expect(r0.facts).toMatchObject({ remoteTip: r, fastForward: false });
+      const pushesBefore = network.filter((c) => c.args.includes('push')).length;
+      expect(await executeAndSettle(work, r0.pins, h)).toMatchObject({ state: 'refused', error: 'non-fast-forward' });
+      expect(network.filter((c) => c.args.includes('push')).length).toBe(pushesBefore);
+      expect(git(bare, 'rev-parse', 'refs/heads/feat')).toBe(r);
+    });
+
+    it('leases the verified remote tip on an update, and an empty lease on a create', async () => {
+      const { tip, head } = ahead();
+      const upd = await okPreview(work);
+      expect(await executeAndSettle(work, upd.pins, head)).toMatchObject({ state: 'done' });
+      const updPush = network.find((c) => c.args.includes('push'))!;
+      expect(updPush.args).toContain(`--force-with-lease=refs/heads/feat:${tip}`);
+
+      network.length = 0;
+      git(work, 'checkout', '-q', '-b', 'fresh');
+      const made = commit(work, 'new branch');
+      const cre = await okPreview(work);
+      expect(cre.facts).toMatchObject({ target: { create: true } });
+      expect(await executeAndSettle(work, cre.pins, made)).toMatchObject({ state: 'done' });
+      const crePush = network.find((c) => c.args.includes('push'))!;
+      expect(crePush.args).toContain('--force-with-lease=refs/heads/fresh:');
     });
 
     it('when the local walk cannot verify (past the bound, or git cannot read the objects), goes by GitHub\'s compare and fails closed', async () => {

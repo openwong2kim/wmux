@@ -259,10 +259,16 @@ const NETWORK_CONFIG: readonly string[] = [
   '-c', 'push.pushOption=',
 ];
 
-/** The push argv: to the validated URL, exactly one refspec, never forced. */
-export function pushArgv(pushUrl: string, expectedHead: string, targetRef: string): string[] {
+/**
+ * The push argv: to the validated URL, exactly one refspec. A lease pins the
+ * verified remote tip (empty when the branch is being created), so the update
+ * lands only while the remote is still what the fast-forward was verified
+ * against; the push is otherwise never forced.
+ */
+export function pushArgv(pushUrl: string, expectedHead: string, targetRef: string, expectedTip: string | null): string[] {
   return [
     ...NETWORK_CONFIG, 'push', '--porcelain', '--no-recurse-submodules', '--no-follow-tags', '--no-signed', '--no-verify',
+    `--force-with-lease=${targetRef}:${expectedTip ?? ''}`,
     pushUrl, `${expectedHead}:${targetRef}`,
   ];
 }
@@ -506,9 +512,15 @@ async function verifiedAncestor(
       at = nl + 2 + size;
       const id = crypto.createHash(objectFormat).update(`commit ${size}\0`).update(body).digest('hex');
       if (id !== oid) return 'unverified';
+      // A commit's parents are the `parent` lines right after `tree`, and only
+      // those: git stops at the first header line that is not `parent`, so a
+      // later `parent` (after `author`/`committer`) is not an ancestor edge.
       const end = body.indexOf('\n\n');
-      for (const line of body.subarray(0, end < 0 ? body.length : end).toString('latin1').split('\n')) {
-        if (!line.startsWith('parent ')) continue;
+      const headerLines = body.subarray(0, end < 0 ? body.length : end).toString('latin1').split('\n');
+      if (!headerLines[0]?.startsWith('tree ')) return 'unverified';
+      for (let k = 1; k < headerLines.length; k++) {
+        const line = headerLines[k] as string;
+        if (!line.startsWith('parent ')) break;
         const parent = line.slice('parent '.length);
         if (!idRe.test(parent)) return 'unverified';
         if (parent === tip) return 'ancestor';
@@ -725,6 +737,9 @@ export interface PushIntent {
   targetRef: string;
   /** The push creates the remote branch. */
   create: boolean;
+  /** The verified remote tip the fast-forward was checked against (null on a
+   *  create): the push leases it. */
+  remoteTip: string | null;
   expectedHead: string;
   login: string;
   /** The session's spawn cwd. */
@@ -748,6 +763,7 @@ function validIntent(v: unknown): v is PushIntent {
     && typeof e.pushUrl === 'string' && githubHttpsRepo(e.pushUrl)?.toLowerCase() === e.ownerRepo.toLowerCase()
     && typeof e.ref === 'string' && e.ref.startsWith('refs/heads/') && typeof e.create === 'boolean'
     && typeof e.targetRef === 'string' && e.targetRef.startsWith('refs/heads/')
+    && (e.remoteTip === null || (typeof e.remoteTip === 'string' && GIT_WRITE_OID.test(e.remoteTip)))
     && typeof e.expectedHead === 'string' && GIT_WRITE_OID.test(e.expectedHead)
     && typeof e.login === 'string' && typeof e.cwd === 'string' && Number.isSafeInteger(e.startedAt);
 }
@@ -893,7 +909,7 @@ export function createPhoneGitPushHandlers(deps: PhoneGitPushDeps = defaultPushD
     const net = networkEnv(deps.baseEnv(), ctx.ghEnv);
     const intent: PushIntent = {
       ownerRepo: f.ownerRepo, pushUrl: f.pushUrl, ref: f.ref, targetRef: f.target.ref, create: f.target.create,
-      expectedHead: body.expectedHead, login: ctx.login, cwd: ctx.cwd, startedAt: deps.now(),
+      remoteTip: f.remoteTip, expectedHead: body.expectedHead, login: ctx.login, cwd: ctx.cwd, startedAt: deps.now(),
     };
     const dir = deps.stateDir();
     const key = GitWriteReceipts.key(ctx.owner, ctx.requestId);
@@ -931,7 +947,7 @@ export function createPhoneGitPushHandlers(deps: PhoneGitPushDeps = defaultPushD
 
   /** Push, then classify. `unknown` when neither git nor the remote can say whether it landed. */
   async function pushAndRead(ctx: GitWriteExecuteContext, intent: PushIntent, net: NodeJS.ProcessEnv, relay: string): Promise<{ state: 'done' } | { state: 'refused'; body: GitWriteErrorBody } | 'unknown'> {
-    const out = await deps.push(inRelay(relay, ...pushArgv(intent.pushUrl, intent.expectedHead, intent.targetRef)), relay, net, PUSH_TIMEOUT_MS);
+    const out = await deps.push(inRelay(relay, ...pushArgv(intent.pushUrl, intent.expectedHead, intent.targetRef, intent.remoteTip)), relay, net, PUSH_TIMEOUT_MS);
     if (!out.spawned) return { state: 'refused', body: { error: 'git-operation-failed' } };
     if (out.code === 0 && !out.timedOut) return { state: 'done' };
     if (!out.timedOut) {

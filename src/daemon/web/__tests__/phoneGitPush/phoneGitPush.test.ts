@@ -161,11 +161,13 @@ describe('phone git push', { timeout: 60_000 }, () => {
     expect(calls.push).toHaveLength(1);
     expect(calls.push[0].slice(-2)).toEqual([URL_, `${head}:refs/heads/remote-y`]);
     expect(calls.push[0]).toEqual(expect.arrayContaining(['http.proxy=', 'https.proxy=', 'http.sslVerify=true', 'credential.helper=']));
+    // The lease pins the verified remote tip; the push is never otherwise forced.
+    expect(calls.push[0]).toContain(`--force-with-lease=refs/heads/remote-y:${base}`);
     // Nothing is written in the pane repository: its tracking ref stays where the pane left it.
     expect(git(work, 'rev-parse', 'refs/remotes/origin/remote-y')).toBe(base);
     expect(fs.readdirSync(path.join(stateDir, PHONE_GIT_PUSH_INTENTS_DIR))).toEqual([]);
     expect(fs.readdirSync(path.join(stateDir, PHONE_GIT_RELAY_DIR))).toEqual([]);
-    for (const a of calls.push[0]) expect(a).not.toMatch(/^(--force|-f|--mirror|--delete|--tags|\+)/);
+    for (const a of calls.push[0]) expect(a).not.toMatch(/^(--force(?!-with-lease=)|-f$|--mirror|--delete|--tags|\+)/);
   });
 
   it('creates the remote branch when there is no upstream, and pushes to it again as a fast-forward', async () => {
