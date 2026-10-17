@@ -7,7 +7,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { FanOutService } from '../FanOutService';
+import { FanOutService, dispatchOriginPinRefusal } from '../FanOutService';
 import type { FanOutDaemonPort } from '../FanOutService';
 import type { TaskWorktreeManager, TaskWorktreePlan } from '../TaskWorktreeManager';
 import { TaskLedger } from '../../../daemon/ledger/TaskLedger';
@@ -125,6 +125,26 @@ describe('FanOutService — detached checkout + dispatch record', () => {
     expect(row.dispatch).toMatchObject({ origin: { kind: 'pane' }, repoKey: 'github.com/acme/app' });
     await ledger.flush();
     expect(new TaskLedger({ dir: path.join(root, 'ledger') }).get(row.id)?.dispatch).toEqual(row.dispatch);
+  });
+
+  it('a bot\'s fan-out is held to the bot\'s origin pin: an origin moved to another port refuses it; a match records the bot\'s pin', async () => {
+    const plan = (originPin: string) => async (_r: string, _t: string, taskId: string) => ({
+      ok: true as const,
+      plan: { repoRoot: '/repo', repoHash: 'h', taskSlug: taskId.slice(-8), worktreePath: path.join(root, 'wt', taskId.slice(-8)), branch: `wtask/${taskId.slice(-8)}`, metaDir: path.join(root, 'meta', taskId.slice(-8)), gitCommonDir: '/repo/.git', originPin },
+    });
+    const botPin = 'ssh://git@git.corp.example:22/acme/app.git';
+    const moved = rig();
+    moved.worktrees.preflight.mockImplementation(plan('ssh://git@git.corp.example:2222/acme/app.git'));
+    const refused = await moved.svc.start({ ...base, repoKey: 'git.corp.example/acme/app', originPin: botPin });
+    expect(refused).toMatchObject({ ok: false, error: expect.stringContaining('re-select the repository') });
+    expect(moved.worktrees.createWorktree).not.toHaveBeenCalled();
+    expect(ledger.list({ ownerWorkspaceId: 'ws-bot' })).toHaveLength(0);
+    const same = rig();
+    same.worktrees.preflight.mockImplementation(plan('ssh://git@git.corp.example:22/acme/App'));
+    expect((await same.svc.start({ ...base, repoKey: 'git.corp.example/acme/app', originPin: botPin })).ok).toBe(true);
+    expect(ledger.list({ ownerWorkspaceId: 'ws-bot' })[0].dispatch?.originPin).toBe(botPin);
+    expect(dispatchOriginPinRefusal(undefined, 'ssh://git@git.corp.example:2222/acme/app.git')).toBeNull();
+    expect(dispatchOriginPinRefusal(botPin, undefined)).toMatch(/re-select/);
   });
 
   it('records the repository\'s common git dir from the preflight on the dispatch, and it survives a ledger replay', async () => {

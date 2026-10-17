@@ -474,6 +474,11 @@ export async function openTaskGitRepo(input: TaskGitRepoInput, git: TaskPushGit 
   // repository, origin set to the verified URL. Reused across calls.
   const relayHostPath = path.join(input.relayRoot, input.taskId);
   const context = parseRawGitConfigList(pre.stdout);
+  // The owner's `includeIf "hasconfig:remote.*.url:…"` was evaluated above
+  // against the repository's own remote URLs, which the worker can respell:
+  // with such an include, the relay's own reading (origin = the URL main
+  // set) stands, and nothing read through the repository is replayed.
+  const ownerHasConfigInclude = context.some((e) => (e.scope === 'system' || e.scope === 'global' || e.scope === 'unknown') && /^includeif\.hasconfig:/i.test(e.key));
   const protocols = deps.protocols ?? RELAY_GIT_DEFAULT_PROTOCOLS;
   const relayShellPath = target.kind === 'wsl' ? (await (toLinux as (p: string) => Promise<string | null>)(relayHostPath)) ?? '' : relayHostPath;
 
@@ -501,7 +506,7 @@ export async function openTaskGitRepo(input: TaskGitRepoInput, git: TaskPushGit 
       // replayed so the relay matches it.
       const relayList = await relayGit([...safe, 'config', '-z', '--list', '--show-scope']);
       if (relayList.code !== 0) return { ok: false as const, error: `git config --list failed: ${relayList.stderr.trim().slice(0, 300)}` };
-      const replay = transportConfigReplay(context, parseRawGitConfigList(relayList.stdout)).flatMap((kv) => ['-c', kv]);
+      const replay = ownerHasConfigInclude ? [] : transportConfigReplay(context, parseRawGitConfigList(relayList.stdout)).flatMap((kv) => ['-c', kv]);
       const relayArgs = relayGitConfigArgs(safe, protocols);
       const run = (args: string[]) => relayGit([...relayArgs, ...replay, ...args]);
       return { ok: true as const, value: await fn(run) };

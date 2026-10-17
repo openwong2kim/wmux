@@ -128,6 +128,7 @@ import { getWmuxDir } from '../../../daemon/config';
 import { RESEARCH_PRESET } from '../../../shared/ledger';
 import { GENERAL_THREAD, parseThreadId, prThreadId, taskOriginThread, type ThreadId } from '../../../shared/room';
 import { normalizeRepoKey } from '../../../shared/repoKey';
+import { isOriginPin } from '../../../shared/originPin';
 import { parseRemoteKey } from '../../github/PrProvider';
 import { originUrlRepoKey, readRawOriginUrl } from '../../worktask/workerGit';
 import { getFactorySettings } from '../../factory/factorySettings';
@@ -1627,6 +1628,8 @@ export function registerFanOutRpc(
       // of its own repository (factory/taskGate.ts), whatever the bot's
       // profile names later.
       ...(bot && !botResearch && normalizeRepoKey(botProfile?.repo?.repoKey) ? { repoKey: normalizeRepoKey(botProfile?.repo?.repoKey) as string } : {}),
+      // Its origin pin: the repository's origin must still match it.
+      ...(bot && !botResearch && isOriginPin(botProfile?.repo?.originPin) ? { originPin: botProfile?.repo?.originPin as string } : {}),
       // An owner's code task: its origin's, which task_fetch reads.
       ...(ownerRepoKey ? { repoKey: ownerRepoKey } : {}),
       ...(bot && secretNames ? { secretNames } : {}),

@@ -361,6 +361,18 @@ describe.skipIf(process.platform === 'win32')('task.push and task.fetch: the rec
     await assertPinnedUrlUsed(pin, 'https://git.corp.example/acme/app.git', other);
   });
 
+  it('an owner include conditioned on a remote URL is read with the pinned URL, never with a respelled origin', async () => {
+    const other = otherServer('srv2');
+    const pin = 'https://git.corp.example/acme/app.git';
+    git(repo, 'remote', 'add', 'origin', pin);
+    // An include for the explicit-port spelling only, whose rule would send
+    // the pinned spelling to srv2.
+    const inc = path.join(root, 'hasconfig.inc');
+    fs.writeFileSync(inc, rule('srv2', 'https://git.corp.example/acme/'));
+    globalConfig(rule('srv', 'https://git.corp.example/') + `[includeIf "hasconfig:remote.*.url:https://git.corp.example:443/**"]\n\tpath = ${inc}\n`);
+    await assertPinnedUrlUsed(pin, 'https://git.corp.example:443/acme/app.git', other);
+  });
+
   it('a switch between https and ssh is refused; the owner picks the repository again', async () => {
     git(repo, 'remote', 'add', 'origin', 'git@git.corp.example:acme/app.git');
     globalConfig();
