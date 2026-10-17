@@ -1184,6 +1184,15 @@ describe('the fan-out slot of an ended task, and a record left stopping (F25)', 
     expect(endedTaskAgentRuns(['daemon-1'], TASK, [], byId(wsl('daemon-1')), own)).toBe(true);
     expect(endedTaskAgentRuns(['daemon-3'], TASK, [], byId(wsl('daemon-3')), own)).toBe(false);
     expect(endedTaskAgentRuns(['daemon-3'], TASK, ['daemon-3'], byId(wsl('daemon-3')), own)).toBe(true);
+    // Nothing known of the task's own pane: it counts (fail closed); of another's pane, it does not.
+    const silent = (id: string) => session({ id, agentProcessAlive: undefined, commandRunning: undefined });
+    expect(endedTaskAgentRuns(['daemon-1'], TASK, [], byId(silent('daemon-1')), own)).toBe(true);
+    expect(endedTaskAgentRuns(['daemon-3'], TASK, [], byId(silent('daemon-3')), own)).toBe(false);
+    // Only what is seen running, when asked for that.
+    expect(endedTaskAgentRuns(['daemon-1'], TASK, [], byId(silent('daemon-1')), own, false)).toBe(false);
+    expect(endedTaskAgentRuns(['daemon-1'], TASK, [], byId(wsl('daemon-1')), own, false)).toBe(true);
+    // A shell the daemon respawned at its restart with nothing run in it since.
+    expect(endedTaskAgentRuns(['daemon-1'], TASK, [], byId(session({ agentProcessAlive: undefined, recoveredAgentUnconfirmed: true })), own)).toBe(false);
   });
 
   it('a record left stopping by an earlier run, with no session left, is marked stopped at install', async () => {
@@ -1247,6 +1256,31 @@ describe('the fan-out slot of an ended task, and a record left stopping (F25)', 
     expect(inReview.get(TASK)?.state).toBe('stopping');
     await settled(store);
     await settled(inReview);
+  });
+
+  it('an agent in another pane of its workspace, or a tree not known, keeps it stopping', async () => {
+    const store = ReclaimedWorkers.at(dir);
+    // A reported stop held back; its recorded pane is gone since.
+    await store.put(stopping({ ended: 'reported' }));
+    let panes: readonly string[] | null = ['daemon-1', 'daemon-2'];
+    const { ports, stopAgent } = reclaimPorts(store, [session({ id: 'daemon-2', spawnCwd: path.join(dir, 'elsewhere') })], {
+      row: () => row('review_requested'), allRows: () => [], workspacePanes: () => panes,
+    });
+    let off = installWorkerReclaim({ ...ports, now: () => 5_000 });
+    await new Promise((r) => setTimeout(r, 30));
+    off();
+    expect(store.get(TASK)?.state).toBe('stopping');
+    panes = null;
+    off = installWorkerReclaim({ ...ports, listSessions: async () => [], now: () => 5_000 });
+    await new Promise((r) => setTimeout(r, 30));
+    off();
+    expect(store.get(TASK)?.state).toBe('stopping');
+    panes = ['daemon-1'];
+    off = installWorkerReclaim({ ...ports, listSessions: async () => [], now: () => 5_000 });
+    await vi.waitFor(() => expect(store.get(TASK)?.state).toBe('stopped'));
+    off();
+    expect(stopAgent).not.toHaveBeenCalled();
+    await settled(store);
   });
 
   it('a stop answered no_session (the pane went since the read) is no failed stop', async () => {

@@ -754,11 +754,14 @@ export function resumedAgentAlive(rec: Pick<ReclaimedWorker, 'sessions'>, sessio
 /**
  * Whether an agent runs in a task workspace's panes, for the fan-out slot of
  * a task that ended: a pane whose agent the daemon sees alive, or one of the
- * task's own worker panes (isTaskOwnWorkerPane) running a foreground command
- * with no agent exit seen (a WSL worker's launch line, isWslWorkerPane, or an
- * agent the daemon never attributed). A gone, dead or suspended session, a
- * shell at its prompt, or a command in a pane that is not the task's own is
- * none. Pure.
+ * task's own worker panes (isTaskOwnWorkerPane) not known to run none (a WSL
+ * worker's launch line, isWslWorkerPane, an agent the daemon never
+ * attributed, or a pane it says nothing about). A gone, dead or suspended
+ * session, an agent seen to exit, a shell at its prompt, one the daemon
+ * respawned at its restart with nothing run in it since, or a command in a
+ * pane that is not the task's own is none. `silentRuns: false`: an own pane
+ * the daemon says nothing about runs none (only what is seen running counts).
+ * Pure.
  */
 export function endedTaskAgentRuns(
   ptys: readonly string[],
@@ -766,12 +769,16 @@ export function endedTaskAgentRuns(
   recordedSessionIds: readonly string[],
   sessions: ReadonlyMap<string, WorkerSessionInfo & { state?: unknown }>,
   sessionRecordOf: WorkerSessionRecordOf | undefined,
+  silentRuns = true,
 ): boolean {
   return ptys.some((id) => {
     const s = sessions.get(id);
     if (!s || s.state === 'dead' || s.state === 'suspended') return false;
     if (s.agentProcessAlive === true) return true;
-    return s.agentProcessAlive !== false && s.commandRunning === true && isTaskOwnWorkerPane(s, taskId, recordedSessionIds, sessionRecordOf);
+    if (s.agentProcessAlive === false || s.commandRunning === false) return false;
+    if (!silentRuns && s.commandRunning !== true) return false;
+    if (s.recoveredAgentUnconfirmed === true && s.commandRunning !== true) return false;
+    return isTaskOwnWorkerPane(s, taskId, recordedSessionIds, sessionRecordOf);
   });
 }
 
@@ -1184,8 +1191,18 @@ export function installWorkerReclaim(ports: WorkerReclaimPorts): () => void {
         // An open task's worker is its row's: the reclaim of its next end
         // looks at the record again.
         if (row && (row.status === 'working' || row.status === 'input_required')) continue;
+        // Its recorded panes and every pane of its workspace: an agent in
+        // another pane there keeps it (a stopped record frees the slot).
         const recorded = cur.sessions.map((x) => x.sessionId);
-        if (!endedTaskAgentRuns(recorded, cur.taskId, recorded, byId, undefined)) {
+        let panes: readonly string[] | null = [];
+        try {
+          panes = ports.workspacePanes ? ports.workspacePanes(workerWorkspaceOf(cur)) : [];
+        } catch {
+          panes = null;
+        }
+        if (!panes) continue;
+        const ptys = [...new Set([...recorded, ...panes])];
+        if (!endedTaskAgentRuns(ptys, cur.taskId, recorded, byId, ports.sessionRecordOf)) {
           if (ports.store.setState(rec.taskId, 'stopped', now())) {
             moved = true;
             log(`[factory] reclaim: ${rec.taskId} was left stopping with no agent running; marked stopped`);

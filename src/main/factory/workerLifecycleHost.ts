@@ -152,11 +152,16 @@ export function startWorkerLifecycle(deps: WorkerLifecycleDeps): () => void {
   // of the same read: they hold no live fan-out slot, whether or not the
   // dead-pane sweep closed them yet.
   let endedNoAgentWorkspaces: ReadonlySet<string> = new Set();
+  // Open workspaces where an agent is seen running (endedTaskAgentRuns, a
+  // silent pane not counted), as of the same read: they hold their slot even
+  // when a reclaim record says stopped.
+  let agentWorkspaces: ReadonlySet<string> = new Set();
   const idle = new IdleSnapshot(async () => {
     const byId = new Map((await listSessions()).map((x) => [x.id, x]));
     const next = new Set<string>();
     const busy = new Set<string>();
     const endedNoAgent = new Set<string>();
+    const withAgent = new Set<string>();
     for (const e of getWorkspaceMirror().getEntries() ?? []) {
       const ptys = Array.isArray(e.ptyIds) ? e.ptyIds : [];
       if (ptys.some((id) => paneShowsWork(byId.get(id)))) busy.add(e.id);
@@ -164,13 +169,13 @@ export function startWorkerLifecycle(deps: WorkerLifecycleDeps): () => void {
       // since; an agent never attributed otherwise is not known dead.
       if (ptys.length > 0 && ptys.every((id) => paneRunsNoAgent(byId.get(id)))) next.add(e.id);
       const row = ledger.findByTaskWorkspace(e.id);
-      if (row && isEndedStatus(row.status)) {
-        const recorded = reclaimedStore?.get(row.id)?.sessions.map((x) => x.sessionId) ?? [];
-        if (!endedTaskAgentRuns(ptys, row.id, recorded, byId, botWorkerSessionRecord)) endedNoAgent.add(e.id);
-      }
+      const recorded = row ? reclaimedStore?.get(row.id)?.sessions.map((x) => x.sessionId) ?? [] : [];
+      if (endedTaskAgentRuns(ptys, row?.id ?? '', recorded, byId, botWorkerSessionRecord, false)) withAgent.add(e.id);
+      else if (row && isEndedStatus(row.status) && !endedTaskAgentRuns(ptys, row.id, recorded, byId, botWorkerSessionRecord)) endedNoAgent.add(e.id);
     }
     busyWorkspaces = busy;
     endedNoAgentWorkspaces = endedNoAgent;
+    agentWorkspaces = withAgent;
     return next;
   }, LIVENESS_REFRESH_MS);
   // Bot tasks whose worker main stopped since the row last changed (paused
@@ -520,7 +525,8 @@ export function startWorkerLifecycle(deps: WorkerLifecycleDeps): () => void {
     // So does a reported task's stopped worker while its task waits for review.
     // And so does a task that ended with no agent left in its workspace (the
     // owner's stop writes no record; a record left `stopping` is not stopped),
-    // while its row still says so and no resume started since the read.
+    // while its row still says so and no resume started since the read. A
+    // workspace the last read saw an agent in is never dormant.
     setDormantTaskWorkspaces(() => {
       const out = new Set(reclaimed.all().filter((r) => r.state === 'stopped'
         && (!taskOpen(r.taskId) || (r.ended === 'reported' && ledger.get(r.taskId)?.status === 'review_requested'))).map((r) => workerWorkspaceOf(r)));
@@ -529,6 +535,7 @@ export function startWorkerLifecycle(deps: WorkerLifecycleDeps): () => void {
         const row = ledger.findByTaskWorkspace(ws);
         if (row && isEndedStatus(row.status) && reclaimed.get(row.id)?.state !== 'resumed') out.add(ws);
       }
+      for (const ws of agentWorkspaces) out.delete(ws);
       return out;
     });
     offs.push(() => setDormantTaskWorkspaces(null));
