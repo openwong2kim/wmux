@@ -102,6 +102,7 @@ import { registerPluginProtocolHandler } from './plugins/pluginProtocol';
 import { registerPrivilegedSchemes } from './privilegedSchemes';
 import { registerPreviewProtocol } from './preview/previewProtocol';
 import { isHtmlPreviewContents, registerHtmlPreview } from './preview/previewHtml';
+import { pageZoomKey, stepPageZoom } from '../shared/browserZoom';
 import { registerPluginHostHandlers } from './ipc/handlers/pluginHost.handler';
 import { registerProjectConfigHandlers } from './ipc/handlers/projectConfig.handler';
 import { registerChannelLocalHandlers } from './ipc/handlers/channelLocal.handler';
@@ -2692,6 +2693,13 @@ app.on('web-contents-created', (_event, contents) => {
       void contents.loadURL(url);
     }
     return { action: 'deny' };
+  });
+  // Cmd/Ctrl + = / - / 0 inside the page zoom the page (browserZoom.ts).
+  contents.on('before-input-event', (event, input) => {
+    const step = pageZoomKey(input, process.platform);
+    if (!step) return;
+    event.preventDefault();
+    contents.setZoomFactor(stepPageZoom(contents.getZoomFactor(), step));
   });
 });
 

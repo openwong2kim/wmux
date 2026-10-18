@@ -14,6 +14,7 @@ import { isPrivateSessionReady, privateSessionReady } from '../../utils/privateS
 import { formatElementHandoff, parseElementRect, parseInspectedElement, ELEMENT_STYLE_KEYS, HANDOFF_NOTE_MAX, type InspectedElement } from '../../../shared/browserElementHandoff';
 import { findWorkspaceSurfaceById } from '../../utils/paneTraversal';
 import { findLeaf } from '../../../shared/paneUtils';
+import { BROWSER_ZOOM_EVENT, stepPageZoom, type BrowserZoomDetail } from '../../../shared/browserZoom';
 import { injectText } from '../AgentToolbar/inject';
 import { IconX } from '../icons';
 
@@ -385,6 +386,19 @@ export default function BrowserPanel({ surfaceId, workspaceId, initialUrl, parti
     document.addEventListener(BROWSER_NAVIGATE_EVENT, onNavigateEvent);
     return () => document.removeEventListener(BROWSER_NAVIGATE_EVENT, onNavigateEvent);
   }, [surfaceId, handleNavigate]);
+
+  // Cmd/Ctrl + = / - / 0 while this pane's chrome has focus (useKeyboard);
+  // inside the page main handles the same keys.
+  useEffect(() => {
+    const onZoomEvent = (e: Event) => {
+      const detail = (e as CustomEvent<BrowserZoomDetail>).detail;
+      const wv = webviewRef.current;
+      if (!detail || detail.surfaceId !== surfaceId || !wv || !isReady) return;
+      wv.setZoomFactor(stepPageZoom(wv.getZoomFactor(), detail.step));
+    };
+    document.addEventListener(BROWSER_ZOOM_EVENT, onZoomEvent);
+    return () => document.removeEventListener(BROWSER_ZOOM_EVENT, onZoomEvent);
+  }, [surfaceId, isReady]);
 
   const handleBack = useCallback(() => {
     webviewRef.current?.goBack();

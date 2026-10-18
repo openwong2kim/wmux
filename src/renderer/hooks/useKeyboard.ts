@@ -12,6 +12,7 @@ import { createTerminalSurface } from '../utils/createTerminalSurface';
 import { selectHostPickName } from '../stores/shadowWorkspace';
 import { openUrlInBrowserPane } from '../utils/browserPaneActions';
 import { PRIVATE_BROWSER_PARTITION } from '../../shared/privateBrowser';
+import { BROWSER_ZOOM_EVENT, type BrowserZoomDetail, type PageZoomStep } from '../../shared/browserZoom';
 import {
   destroyPaneTreeRemoteSessions,
   destroyWorkspaceRemoteSessions,
@@ -378,6 +379,16 @@ export function useKeyboard() {
       const next = clampFontSize(cur + delta);
       if (next !== cur) store.getState().setTerminalFontSize(next);
     };
+    // With a browser pane active the same keys zoom its page, as in Chrome
+    // (browserZoom.ts). True when a browser surface took the step.
+    const zoomBrowserPage = (step: PageZoomStep): boolean => {
+      const ws = activeWorkspace();
+      const pane = ws ? findLeaf(ws.rootPane, ws.activePaneId) : null;
+      const surface = pane?.surfaces.find((s) => s.id === pane.activeSurfaceId);
+      if (surface?.surfaceType !== 'browser') return false;
+      document.dispatchEvent(new CustomEvent<BrowserZoomDetail>(BROWSER_ZOOM_EVENT, { detail: { surfaceId: surface.id, step } }));
+      return true;
+    };
     // Ctrl+Shift+Arrow MOVES focus — pane focus within the active workspace,
     // or (in multiview) focus between grid tiles.
     const moveFocus = (dir: 'up' | 'down' | 'left' | 'right') => {
@@ -571,9 +582,10 @@ export function useKeyboard() {
       },
       toggleMessageFeed: () => { store.getState().toggleMessageFeed(); },
       toggleFileTree: () => { toggleFileTreePanel(store.getState()); },
-      zoomIn: () => zoomFont(FONT_SIZE_STEP),
-      zoomOut: () => zoomFont(-FONT_SIZE_STEP),
+      zoomIn: () => { if (!zoomBrowserPage('in')) zoomFont(FONT_SIZE_STEP); },
+      zoomOut: () => { if (!zoomBrowserPage('out')) zoomFont(-FONT_SIZE_STEP); },
       zoomReset: () => {
+        if (zoomBrowserPage('reset')) return;
         if (store.getState().terminalFontSize !== FONT_SIZE_DEFAULT) {
           store.getState().setTerminalFontSize(FONT_SIZE_DEFAULT);
         }
