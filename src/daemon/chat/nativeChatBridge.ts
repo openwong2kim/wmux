@@ -189,7 +189,7 @@ export interface NativeChatBridge extends Omit<ChatBridge, QueueMethods>, Requir
    */
   desktopInterrupt(id: string, agentSessionId: string): Promise<ChatInterruptResult>;
   /** `daemon.transcript.rewind`: Claude's own Rewind picker, under the same send lock as Stop. */
-  desktopRewind(id: string): Promise<ClaudeRewindResult>;
+  desktopRewind(id: string, opts?: { kitty?: boolean }): Promise<ClaudeRewindResult>;
   /** A file-binding send is between its first check and its last write (Stop must wait). */
   sendInFlight(id: string): boolean;
   /**
@@ -1690,7 +1690,7 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
     return DESKTOP_INTERRUPT[await interruptLocked(id, agentSessionId)];
   };
 
-  const desktopRewind = async (id: string): Promise<ClaudeRewindResult> => {
+  const desktopRewind = async (id: string, opts: { kitty?: boolean } = {}): Promise<ClaudeRewindResult> => {
     if (!id || !deps.pane(id)) return 'unavailable';
     // A send between its paste and its Enter, or a Stop, owns the keyboard.
     if (sending.has(id)) return 'busy';
@@ -1700,11 +1700,14 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
         hasOpenApproval: () => hasOpenApproval(id),
         getAgentState: () => {
           const current = deps.chatAgentState(id);
-          return current.agentVerified ? { slug: slugOf(current), status: current.agentStatus } : null;
+          const slug = slugOf(current);
+          return current.agentVerified && slug
+            ? { slug, status: current.agentStatus, inputRevision: current.keyInputRevision ?? current.inputRevision } : null;
         },
         readScreen: () => deps.readScreen(id),
         readTitle: () => deps.pane(id)?.bridge.getTitle() ?? null,
         write: (data) => deps.write(id, data),
+        kitty: opts.kitty === true,
         now,
       });
     } finally { sending.delete(id); }

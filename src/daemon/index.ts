@@ -5272,7 +5272,7 @@ function registerRpcHandlers(
   pipeServer.onRpc('daemon.transcript.rewind', async (params, ctx) => {
     if (!firstPartyOnly(ctx.clientId, 'rewind')) return { result: 'unavailable' };
     const id = typeof params['id'] === 'string' ? params['id'] : '';
-    return { result: await bridge.desktopRewind(id) };
+    return { result: await bridge.desktopRewind(id, { kitty: params['kitty'] === true }) };
   });
 
   // F26 — type into a session only if it has not moved since main looked at

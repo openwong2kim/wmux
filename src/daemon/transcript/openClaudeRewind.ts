@@ -5,16 +5,20 @@ import { claudeComposerEmpty, claudeComposerVisible, type ChatScreenRows } from 
 
 /** Gap between the two ESCs: well inside Claude's double-tap window, and two separate chunks. */
 export const REWIND_ESC_GAP_MS = 120;
+/** Escape as kitty CSI-u, for a pane whose app pushed the kitty keyboard protocol. */
+export const ESCAPE_CSI_U = '\x1b[27u';
 
 export interface ClaudeRewindDeps {
   hasOpenApproval: () => boolean;
-  /** Null when the pane runs no verified agent. */
-  getAgentState: () => { slug: string; status: AgentStatus } | null;
+  /** Null when the pane runs no verified agent. `inputRevision` moves on every key written to the pane. */
+  getAgentState: () => { slug: string; status: AgentStatus; inputRevision: number } | null;
   /** The pane's visible grid, parsed; null when it cannot be read. */
   readScreen: () => Promise<ChatScreenRows | null>;
   /** The pane's latest window title and when it was set. */
   readTitle?: () => { title: string; at: number } | null;
   write: (data: string) => boolean;
+  /** The pane's app negotiated kitty keys: a bare ESC would wait for a CSI that never comes. */
+  kitty?: boolean;
   delay?: (ms: number) => Promise<void>;
   now?: () => number;
 }
@@ -28,38 +32,49 @@ export interface ClaudeRewindDeps {
  * ESC means something else in every other state, so each one refuses: during
  * a turn it interrupts, in a dialog it answers, and with a draft in the
  * composer the first ESC clears it. Only an idle Claude with an empty
- * composer on screen and no pending approval gets the keys, and the state
- * checks repeat right before each write.
+ * composer on screen and no pending approval gets the keys. The screen, the
+ * title and the state are read again before each ESC, and any key written to
+ * the pane in between (the terminal, the phone) aborts.
  */
 export async function openClaudeRewind(deps: ClaudeRewindDeps): Promise<ClaudeRewindResult> {
   const now = deps.now ?? Date.now;
-  const check = (): ClaudeRewindResult | null => {
+  const esc = deps.kitty ? ESCAPE_CSI_U : '\x1b';
+  const check = (revision?: number): ClaudeRewindResult | null => {
     if (deps.hasOpenApproval()) return 'blocked';
     const state = deps.getAgentState();
     if (!state || state.slug !== 'claude') return 'unavailable';
     if (state.status === 'running') return 'busy';
     if (state.status === 'awaiting_input' || state.status === 'waiting') return 'blocked';
+    // Someone else typed since the screen was read: the screen no longer says what ESC would do.
+    if (revision !== undefined && state.inputRevision !== revision) return 'busy';
     return null;
+  };
+  const revision = (): number => deps.getAgentState()?.inputRevision ?? -1;
+  /** The screen read (the last await before a write), then every check again. */
+  const atRest = async (expected: number): Promise<ClaudeRewindResult | null> => {
+    let rows: ChatScreenRows | null = null;
+    try { rows = await deps.readScreen(); } catch { /* unreadable = refuse */ }
+    if (screenBlocksChatSend(rows)) return 'blocked';
+    // A hook's idle can lag the turn; Claude's own running row and title cannot.
+    let title: { title: string; at: number } | null = null;
+    try { title = deps.readTitle?.() ?? null; } catch { /* no title = no title evidence */ }
+    if (screenShowsRunningTurn(rows, 'claude') || titleShowsRunningTurn(title, 'claude', now())) return 'busy';
+    if (!claudeComposerEmpty(rows)) return claudeComposerVisible(rows) ? 'draft' : 'blocked';
+    return check(expected);
   };
   const first = check();
   if (first) return first;
-  let rows: ChatScreenRows | null = null;
-  try { rows = await deps.readScreen(); } catch { /* unreadable = refuse */ }
-  if (screenBlocksChatSend(rows)) return 'blocked';
-  // A hook's idle can lag the turn; Claude's own running row and title cannot.
-  let title: { title: string; at: number } | null = null;
-  try { title = deps.readTitle?.() ?? null; } catch { /* no title = no title evidence */ }
-  if (screenShowsRunningTurn(rows, 'claude') || titleShowsRunningTurn(title, 'claude', now())) return 'busy';
-  if (!claudeComposerEmpty(rows)) return claudeComposerVisible(rows) ? 'draft' : 'blocked';
-  const again = check();
-  if (again) return again;
   try {
-    if (!deps.write('\x1b')) return 'unavailable';
+    const before = await atRest(revision());
+    if (before) return before;
+    if (!deps.write(esc)) return 'unavailable';
+    // Our own ESC moved the revision; anything past it is someone else's key.
+    const afterFirst = revision();
     await (deps.delay ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))))(REWIND_ESC_GAP_MS);
     // A lone ESC on an empty composer does nothing, so stopping here is safe.
-    const last = check();
-    if (last) return last;
-    return deps.write('\x1b') ? 'opened' : 'unavailable';
+    const between = await atRest(afterFirst);
+    if (between) return between;
+    return deps.write(esc) ? 'opened' : 'unavailable';
   } catch {
     return 'error';
   }

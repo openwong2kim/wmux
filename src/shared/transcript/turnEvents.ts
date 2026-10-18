@@ -303,7 +303,7 @@ export interface ChatBridgeApi {
   /** ESC into the live terminal agent, only while its turn is running. */
   interrupt?: (args: { ptyId: string; agentSessionId: string }) => Promise<{ result: ChatInterruptResult }>;
   /** Double ESC into an idle Claude with an empty composer: opens its own Rewind picker. */
-  rewind?: (args: { ptyId: string }) => Promise<{ result: ClaudeRewindResult }>;
+  rewind?: (args: { ptyId: string; kitty?: boolean }) => Promise<{ result: ClaudeRewindResult }>;
   attachment?: (args: { path: string }) => Promise<ChatAttachmentPreview>;
   status: (ptyId: string) => Promise<TranscriptStatus>;
   /** `before` pages BACKWARD from a prior cursor.headOffset; omit for the tail. */

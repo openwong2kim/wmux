@@ -11,6 +11,7 @@ import { useDaemonModeActive } from '../../hooks/useDaemonMode';
 import { IconClock } from '../icons';
 import type { PaneActionItem } from './PaneActionsMenu';
 import { terminalRegistry } from '../../hooks/useTerminal';
+import { xtermKittyFlags } from '../../terminal/kittyKeyboard';
 import type { ClaudeRewindResult } from '../../../shared/transcript/turnEvents';
 
 export const PANE_CLAUDE_REWIND_KEY = 'claude-rewind';
@@ -39,7 +40,10 @@ export function usePaneClaudeRewind(opts: {
     const api = window.electronAPI?.chat;
     if (!api?.rewind || !ptyId) return;
     let result: ClaudeRewindResult;
-    try { result = (await api.rewind({ ptyId })).result; } catch { result = 'error'; }
+    // Escape as this pane's keys are encoded now (useTerminal's Escape path): CSI-u once its app pushed kitty flags.
+    const term = terminalRegistry.get(ptyId);
+    const kitty = !!term && term.options.vtExtensions?.kittyKeyboard === true && (xtermKittyFlags(term) ?? 0) > 0;
+    try { result = (await api.rewind({ ptyId, kitty })).result; } catch { result = 'error'; }
     if (result === 'opened') {
       // The picker takes arrow keys and Enter: hand the keyboard to the terminal.
       requestAnimationFrame(() => { terminalRegistry.get(ptyId)?.focus(); });

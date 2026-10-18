@@ -1,24 +1,27 @@
 import { describe, expect, it } from 'vitest';
 import type { AgentStatus } from '../../../shared/types';
-import { openClaudeRewind, type ClaudeRewindDeps } from '../openClaudeRewind';
+import { ESCAPE_CSI_U, openClaudeRewind, type ClaudeRewindDeps } from '../openClaudeRewind';
 
 const RULE = '─'.repeat(40);
 const empty = ['● hi', '', RULE, '❯ ', RULE, '  ⏵⏵ auto mode on'];
 
-function harness(opts: { status?: AgentStatus; slug?: string; screen?: string[] | null; approval?: boolean; title?: string; afterFirst?: () => void } = {}) {
+function harness(opts: { status?: AgentStatus; slug?: string; screen?: string[] | null; approval?: boolean; title?: string; kitty?: boolean; between?: (h: { type: () => void; set: (s: AgentStatus) => void }) => void } = {}) {
   const writes: string[] = [];
   let status: AgentStatus = opts.status ?? 'idle';
-  let approval = opts.approval ?? false;
+  let revision = 7;
+  const ctl = { type: () => { revision += 1; }, set: (s: AgentStatus) => { status = s; } };
   const deps: ClaudeRewindDeps = {
-    hasOpenApproval: () => approval,
-    getAgentState: () => ({ slug: opts.slug ?? 'claude', status }),
+    hasOpenApproval: () => opts.approval ?? false,
+    getAgentState: () => ({ slug: opts.slug ?? 'claude', status, inputRevision: revision }),
     readScreen: async () => (opts.screen === undefined ? empty : opts.screen),
     readTitle: () => (opts.title ? { title: opts.title, at: 1_000 } : null),
-    write: (data) => { writes.push(data); return true; },
-    delay: async () => { opts.afterFirst?.(); },
+    // Every write is a key: it moves the revision, as noteInput does.
+    write: (data) => { writes.push(data); revision += 1; return true; },
+    kitty: opts.kitty,
+    delay: async () => { opts.between?.(ctl); },
     now: () => 1_500,
   };
-  return { deps, writes, set: (s: AgentStatus) => { status = s; }, approve: () => { approval = true; } };
+  return { deps, writes };
 }
 
 describe('openClaudeRewind', () => {
@@ -26,6 +29,12 @@ describe('openClaudeRewind', () => {
     const h = harness();
     expect(await openClaudeRewind(h.deps)).toBe('opened');
     expect(h.writes).toEqual(['\x1b', '\x1b']);
+  });
+
+  it('encodes ESC as CSI-u for a pane that negotiated kitty keys', async () => {
+    const h = harness({ kitty: true });
+    expect(await openClaudeRewind(h.deps)).toBe('opened');
+    expect(h.writes).toEqual([ESCAPE_CSI_U, ESCAPE_CSI_U]);
   });
 
   it.each([
@@ -41,8 +50,11 @@ describe('openClaudeRewind', () => {
     expect(h.writes).toEqual([]);
   });
 
-  it('stops after the first ESC when a turn starts in the gap', async () => {
-    const h = harness({ afterFirst: () => h.set('running') });
+  it.each([
+    ['a turn starts', (c: { set: (s: AgentStatus) => void }) => c.set('running')],
+    ['someone types into the pane', (c: { type: () => void }) => c.type()],
+  ])('stops after the first ESC when %s in the gap', async (_name, between) => {
+    const h = harness({ between });
     expect(await openClaudeRewind(h.deps)).toBe('busy');
     expect(h.writes).toEqual(['\x1b']);
   });
