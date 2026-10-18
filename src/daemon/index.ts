@@ -5267,6 +5267,14 @@ function registerRpcHandlers(
     return { result: await bridge.desktopInterrupt(id, agentSessionId) };
   });
 
+  // Pane menu "Rewind" for a terminal Claude: its own double ESC, only at rest
+  // with an empty composer (see openClaudeRewind), under the bridge's send lock.
+  pipeServer.onRpc('daemon.transcript.rewind', async (params, ctx) => {
+    if (!firstPartyOnly(ctx.clientId, 'rewind')) return { result: 'unavailable' };
+    const id = typeof params['id'] === 'string' ? params['id'] : '';
+    return { result: await bridge.desktopRewind(id) };
+  });
+
   // F26 — type into a session only if it has not moved since main looked at
   // it: the compare and the PTY write are one synchronous step (see
   // writeIfUnchanged.ts). Used for a fan-out task pane's second launch line.

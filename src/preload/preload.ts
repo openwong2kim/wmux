@@ -177,6 +177,7 @@ const chat: ChatBridgeApi = {
   codeBlock: (args) => ipcRenderer.invoke(CHAT_IPC.codeBlock, args),
   send: (args) => ipcRenderer.invoke(CHAT_IPC.send, args),
   interrupt: (args) => ipcRenderer.invoke(CHAT_IPC.interrupt, args),
+  rewind: (args) => ipcRenderer.invoke(CHAT_IPC.rewind, args),
   attachment: (args) => ipcRenderer.invoke(CHAT_IPC.attachment, args),
   openGates: () => ipcRenderer.invoke(CHAT_IPC.openGates),
   onAppend: (callback) => {

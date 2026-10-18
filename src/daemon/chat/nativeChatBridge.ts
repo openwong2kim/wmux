@@ -6,7 +6,7 @@ import { isBrainPty } from '../../shared/constants';
 import type { AgentStatus } from '../../shared/types';
 import type { ChatSkillCatalog } from '../../shared/transcript/chatSkills';
 import type { TerminalLaunchAgent } from '../../shared/transcript/terminalChat';
-import type { ChatInterruptResult, ChatSendResult, TranscriptPage, TranscriptStatus } from '../../shared/transcript/turnEvents';
+import type { ChatInterruptResult, ChatSendResult, ClaudeRewindResult, TranscriptPage, TranscriptStatus } from '../../shared/transcript/turnEvents';
 import type { AgentLaunchOptions } from '../web/agentLaunch';
 import { buildAgentLaunch } from '../web/agentLaunch';
 import { withChosenAccountEnv } from '../phone/paneAccountSpawn';
@@ -15,6 +15,7 @@ import type { CodexNativeInterrupt, CodexTurnRef } from '../web/codexPaneRelays'
 import { screenBlocksChatSend, screenShowsRunningTurn, screenShowsTurnEnding, titleShowsFinishedTurn } from '../transcript/chatScreenGate';
 import { claudeComposerRows, claudeComposerShows, deliverChatPrompt, type ChatScreenRows } from '../transcript/deliverChatPrompt';
 import { INTERRUPT_COOLDOWN_MS, interruptChatTurn, type ChatInterruptVerdict } from '../transcript/interruptChatTurn';
+import { openClaudeRewind } from '../transcript/openClaudeRewind';
 import { boundResumeCommand, codexRuntimeEnv, resumeCwdUsable, terminalLaunchCommand } from '../transcript/terminalLaunch';
 import { boundSessionLives } from '../transcript/resumeAvailable';
 import { isUsableResumeBinding, withLaunchSessionId, type ResumeBinding } from '../../shared/agentResume';
@@ -187,6 +188,8 @@ export interface NativeChatBridge extends Omit<ChatBridge, QueueMethods>, Requir
    * once-per-turn latch and cooldown as the phone cancel. No receipt.
    */
   desktopInterrupt(id: string, agentSessionId: string): Promise<ChatInterruptResult>;
+  /** `daemon.transcript.rewind`: Claude's own Rewind picker, under the same send lock as Stop. */
+  desktopRewind(id: string): Promise<ClaudeRewindResult>;
   /** A file-binding send is between its first check and its last write (Stop must wait). */
   sendInFlight(id: string): boolean;
   /**
@@ -1687,6 +1690,26 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
     return DESKTOP_INTERRUPT[await interruptLocked(id, agentSessionId)];
   };
 
+  const desktopRewind = async (id: string): Promise<ClaudeRewindResult> => {
+    if (!id || !deps.pane(id)) return 'unavailable';
+    // A send between its paste and its Enter, or a Stop, owns the keyboard.
+    if (sending.has(id)) return 'busy';
+    sending.add(id);
+    try {
+      return await openClaudeRewind({
+        hasOpenApproval: () => hasOpenApproval(id),
+        getAgentState: () => {
+          const current = deps.chatAgentState(id);
+          return current.agentVerified ? { slug: slugOf(current), status: current.agentStatus } : null;
+        },
+        readScreen: () => deps.readScreen(id),
+        readTitle: () => deps.pane(id)?.bridge.getTitle() ?? null,
+        write: (data) => deps.write(id, data),
+        now,
+      });
+    } finally { sending.delete(id); }
+  };
+
   // ---------------------------------------------------------------------------
   // Launch
 
@@ -1914,6 +1937,7 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
         ...(outcome.pending ? { pending: true as const } : {}), ...(outcome.queued ? { queued: true as const } : {}) };
     },
     desktopInterrupt,
+    desktopRewind,
     sendInFlight: (id) => sending.has(id),
     hasOpenApproval,
     desktopSkills: (id, agent) => skillsWith(id, agent, 'cwd'),
