@@ -529,6 +529,16 @@ export default function BrowserPanel({ surfaceId, workspaceId, initialUrl, parti
     setInspecting(!inspecting);
   }, [inspecting, injectInspector, removeInspector]);
 
+  // A full navigation replaces the document and the overlay with it, while
+  // `inspecting` stays on: re-inject so the picker keeps working on the new page.
+  useEffect(() => {
+    const wv = webviewRef.current;
+    if (!wv || !inspecting) return;
+    const onDomReady = () => injectInspector();
+    wv.addEventListener('dom-ready', onDomReady);
+    return () => { wv.removeEventListener('dom-ready', onDomReady); };
+  }, [inspecting, injectInspector, discarded]);
+
   // Listen for inspector click results from webview console
   useEffect(() => {
     const wv = webviewRef.current;
