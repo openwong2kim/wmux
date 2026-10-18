@@ -443,13 +443,26 @@ export class BotRuntime {
     const live = this.live.get(profile.id);
     const accountId = live?.adapter.conversationAccountId !== undefined
       ? live.adapter.conversationAccountId
-      : this.deps.sessions.get(profile.id)?.accountId;
+      : this.resumableSession(profile)?.accountId;
     try {
       const quota = this.deps.claudeQuota(profile.workspaceId, accountId);
       return quota ? { quota } : {};
     } catch {
       return {}; /* the status never fails on the quota */
     }
+  }
+
+  /** The saved conversation the next spawn resumes, if any. */
+  private resumableSession(profile: BotProfile): BotSessionRecord | null {
+    // A conversation about another repository is not resumed, nor one that
+    // ran on another model pin: with no --model, claude resumes it on the
+    // model it last ran on, so a cleared pin would not take effect.
+    const prior = this.deps.sessions.get(profile.id);
+    return prior
+      && (prior.repoPath === undefined || prior.repoPath === (profile.repo?.repoPath ?? null))
+      && (prior.model === undefined || prior.model === modelPin(profile))
+      ? prior
+      : null;
   }
 
   /** The status's `usage`: what the bot used of each limit, when an
@@ -954,12 +967,7 @@ export class BotRuntime {
     // A conversation about another repository is not resumed, nor one that
     // ran on another model pin: with no --model, claude resumes it on the
     // model it last ran on, so a cleared pin would not take effect.
-    const prior = this.deps.sessions.get(profile.id);
-    const saved = prior
-      && (prior.repoPath === undefined || prior.repoPath === (profile.repo?.repoPath ?? null))
-      && (prior.model === undefined || prior.model === modelPin(profile))
-      ? prior
-      : null;
+    const saved = this.resumableSession(profile);
     spawned.adapter.start({
       systemPrompt: redactStoredSecrets((this.deps.systemPrompt ?? ports.systemPrompt ?? defaultBotSystemPrompt)(profile)),
       ...(saved ? { resumeSessionId: saved.sessionId, ...(saved.accountId !== undefined ? { resumeAccountId: saved.accountId } : {}) } : {}),
@@ -1028,15 +1036,16 @@ export class BotRuntime {
       }
       if (run) run.adapter = s.live.adapter;
       const result = await this.drive(s.live, this.prompt(profile, item), profile.budget.turnTimeoutMs, () => run?.interrupted === true, run?.stopped);
+      // A failed turn that reached the model cost as much as a finished one.
+      if (result.costUsd !== undefined) {
+        const usd = result.costUsd;
+        this.deps.store.mutateUsage(botId, (u) => recordCost(u, usd, this.now()));
+      }
       if (run?.interrupted) {
         outcome = 'interrupted';
       } else if (result.ok) {
         outcome = 'done';
         s.live.attached = true;
-        if (result.costUsd !== undefined) {
-          const usd = result.costUsd;
-          this.deps.store.mutateUsage(botId, (u) => recordCost(u, usd, this.now()));
-        }
         const sessionId = result.sessionId ?? s.live.adapter.sessionId;
         if (sessionId) {
           const accountId = s.live.adapter.conversationAccountId;
@@ -1081,7 +1090,7 @@ export class BotRuntime {
     timeoutMs: number,
     interrupted: () => boolean,
     stopped: Promise<'stop'> = new Promise<'stop'>(() => undefined),
-  ): Promise<{ ok: true; sessionId: string | null; text: string; costUsd?: number } | { ok: false; error: string; timedOut?: true; freshSession?: true }> {
+  ): Promise<{ ok: true; sessionId: string | null; text: string; costUsd?: number } | { ok: false; error: string; timedOut?: true; freshSession?: true; costUsd?: number }> {
     // A stored bot secret never reaches a bot's prompt (secretRedaction.ts).
     const iterator = live.adapter.send(redactStoredSecrets(prompt))[Symbol.asyncIterator]();
     let timer: unknown = null;
@@ -1090,6 +1099,7 @@ export class BotRuntime {
     });
     let error = '';
     let freshSession = false;
+    let errorCostUsd: number | undefined;
     // The turn's last assistant message: the text after its last tool call.
     let text = '';
     try {
@@ -1121,13 +1131,19 @@ export class BotRuntime {
         if (ev.type === 'error') {
           error = ev.message;
           if (ev.botTools) freshSession = true;
+          if (ev.usage?.costUsd !== undefined) errorCostUsd = ev.usage.costUsd;
         }
       }
     } finally {
       if (timer !== null) this.clearTimer(timer);
     }
     if (interrupted()) return { ok: false, error: 'interrupted' };
-    return { ok: false, error: error || 'the turn ended without a result', ...(freshSession ? { freshSession: true as const } : {}) };
+    return {
+      ok: false,
+      error: error || 'the turn ended without a result',
+      ...(freshSession ? { freshSession: true as const } : {}),
+      ...(errorCostUsd !== undefined ? { costUsd: errorCostUsd } : {}),
+    };
   }
 
   private settle(profile: BotProfile, item: WakeItem, outcome: 'done' | 'failed' | 'interrupted' | 'engine', message: string, offSwitch = false): void {

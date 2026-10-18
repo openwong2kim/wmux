@@ -20,6 +20,10 @@ export interface ClaudeUsageCache {
   onChange(cb: () => void): () => void;
 }
 
+/** A reading older than this is not shown: the line carries no age, and a
+ *  meter that stopped refreshing would leave yesterday's numbers on it. */
+export const BOT_QUOTA_MAX_AGE_MS = 6 * 60 * 60 * 1000;
+
 function quotaWindow(pct: number, resetEpochSec: number, now: number): BotQuotaWindow | undefined {
   if (!Number.isFinite(pct)) return undefined;
   const resetsAt = resetEpochSec > 0 ? resetEpochSec * 1000 : undefined;
@@ -30,7 +34,7 @@ function quotaWindow(pct: number, resetEpochSec: number, now: number): BotQuotaW
 
 /** The quota line of an account's reading; null when it has no window to show. */
 export function botQuotaOf(accountName: string | null, snapshot: UsageSnapshot | null, now: number): BotQuota | null {
-  if (!snapshot) return null;
+  if (!snapshot || now - snapshot.fetchedAtMs > BOT_QUOTA_MAX_AGE_MS) return null;
   const session = quotaWindow(snapshot.sessionPct, snapshot.sessionResetEpochSec, now);
   const weekly = quotaWindow(snapshot.weeklyPct, snapshot.weeklyResetEpochSec, now);
   if (!session && !weekly) return null;

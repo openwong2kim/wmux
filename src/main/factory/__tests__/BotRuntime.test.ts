@@ -180,9 +180,15 @@ describe('BotRuntime', () => {
     expect(r.runtime.status(id)?.usage).toMatchObject({ costUsdDay: 0.75, costUsdTotal: 0.75 });
     expect(r.runtime.status(id)?.quota).toEqual({ accountName: null, session: { pct: 40 } });
     expect(asked.at(-1)).toEqual(['ws-1', undefined]);
+    // A turn that failed after reaching the model is counted too.
+    r.runtime.wake(id, { text: 'three' });
+    await settle();
+    r.adapters[0].end([{ type: 'error', message: 'error_max_turns', usage: { costUsd: 0.25 } }]);
+    await settle();
+    expect(r.runtime.status(id)?.usage).toMatchObject({ costUsdDay: 1, costUsdTotal: 1 });
     // A day later the day's sum is gone; the total stays.
     clock += 24 * HOUR_MS;
-    expect(r.runtime.status(id)?.usage).toMatchObject({ costUsdDay: 0, costUsdTotal: 0.75 });
+    expect(r.runtime.status(id)?.usage).toMatchObject({ costUsdDay: 0, costUsdTotal: 1 });
   });
 
   it('the running turn\'s status names the thread it answers in (the page shows it busy there only)', async () => {

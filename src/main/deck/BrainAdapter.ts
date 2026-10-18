@@ -100,6 +100,9 @@ export type BrainEvent =
       /** Set when the brain process never came up (spawn or attach failed,
        *  or it died during startup), so the prompt was never typed. */
       spawnFailed?: true;
+      /** What a turn that failed after reaching the model reported using
+       *  (an error result's cost, e.g. past max turns). */
+      usage?: BrainUsage;
       /** Set by a bot turn that reached none of its wmux tools (botToolGuard.ts):
        *  'missing' — the tools did not load; 'unreached' — the model called
        *  them by names they do not have. Its conversation is not resumed. */
@@ -471,20 +474,20 @@ export function normalizeSdkMessage(msg: RawSdkMessage, state: NormalizeState): 
 
     case 'result': {
       const isError = msg.is_error === true || (msg.subtype ? msg.subtype !== 'success' : false);
-      if (isError) {
-        const detail =
-          (msg.errors && msg.errors.length > 0 && msg.errors.join('; ')) ||
-          msg.subtype ||
-          'the brain turn failed';
-        out.push({ type: 'error', message: detail });
-        return out;
-      }
       const usage: BrainUsage = {};
       const u = msg.usage;
       if (u?.input_tokens != null) usage.inputTokens = u.input_tokens;
       if (u?.output_tokens != null) usage.outputTokens = u.output_tokens;
       if (msg.total_cost_usd != null) usage.costUsd = msg.total_cost_usd;
       if (msg.num_turns != null) usage.numTurns = msg.num_turns;
+      if (isError) {
+        const detail =
+          (msg.errors && msg.errors.length > 0 && msg.errors.join('; ')) ||
+          msg.subtype ||
+          'the brain turn failed';
+        out.push({ type: 'error', message: detail, ...(usage.costUsd !== undefined ? { usage } : {}) });
+        return out;
+      }
       out.push({
         type: 'turn-end',
         sessionId: state.sessionId,

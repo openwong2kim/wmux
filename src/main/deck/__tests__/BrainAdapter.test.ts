@@ -106,6 +106,11 @@ describe('normalizeSdkMessage', () => {
       state,
     );
     expect(events).toEqual([{ type: 'error', message: 'hit the turn cap' }]);
+    // A failed turn that reached the model keeps what it cost.
+    expect(normalizeSdkMessage(
+      { type: 'result', subtype: 'error_max_turns', is_error: true, errors: ['hit the turn cap'], total_cost_usd: 0.3, num_turns: 9 },
+      createNormalizeState(),
+    )).toEqual([{ type: 'error', message: 'hit the turn cap', usage: { costUsd: 0.3, numTurns: 9 } }]);
   });
 
   it('ignores unknown frame types', () => {

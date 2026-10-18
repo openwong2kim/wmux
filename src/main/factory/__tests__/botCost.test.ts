@@ -2,7 +2,7 @@
 // quota line comes from the account's held usage reading.
 import { describe, expect, it } from 'vitest';
 import { DAY_MS, costUsdDay, emptyUsage, pruneUsage, recordCost, sanitizeUsage } from '../budget';
-import { botQuotaOf } from '../botQuota';
+import { BOT_QUOTA_MAX_AGE_MS, botQuotaOf } from '../botQuota';
 
 describe('bot cost estimate', () => {
   it('records, prunes the day but keeps the total, and survives sanitizeUsage', () => {
@@ -36,5 +36,6 @@ describe('botQuotaOf', () => {
   it('drops a window that has reset since the reading, and shows nothing without a reading', () => {
     expect(botQuotaOf(null, { ...snap, sessionResetEpochSec: now / 1000 - 1 }, now)).toEqual({ accountName: null, weekly: { pct: 100 } });
     expect(botQuotaOf(null, null, now)).toBeNull();
+    expect(botQuotaOf(null, { ...snap, fetchedAtMs: now - BOT_QUOTA_MAX_AGE_MS - 1 }, now)).toBeNull();
   });
 });
