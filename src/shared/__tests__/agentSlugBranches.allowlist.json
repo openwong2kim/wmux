@@ -19,7 +19,7 @@
     "src/daemon/transcript/TerminalChatService.ts": 1,
     "src/daemon/transcript/TranscriptDiscovery.ts": 3,
     "src/daemon/transcript/TranscriptProjector.ts": 1,
-    "src/daemon/transcript/chatScreenGate.ts": 7,
+    "src/daemon/transcript/chatScreenGate.ts": 5,
     "src/daemon/transcript/chatSkills.ts": 2,
     "src/daemon/transcript/codexCapture.ts": 3,
     "src/daemon/transcript/codexRolloutByCwd.ts": 4,

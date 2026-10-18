@@ -6,6 +6,8 @@
  * cwdDetect.ts. Both feed renderer surface fields off the same PTY data path.
  */
 
+import { CLAUDE_IDLE_TITLE } from '../../shared/agentTitleRules';
+
 /** Max tab-title length, matching the pane-label cap (PANE_METADATA_LABEL_MAX). */
 export const TERMINAL_TITLE_MAX = 64;
 
@@ -27,13 +29,6 @@ export function sanitizeTitle(raw: string): string {
     : stripped;
 }
 
-/**
- * Claude Code's window title (#2264), as captured on 2.1.301: `◐ <name>` /
- * `◑ <name>` alternate about once a second while a turn runs (thinking, tools,
- * streaming), reduced motion included, and `✳ <name>` is set when the turn
- * ends or is interrupted.
- */
-const CLAUDE_IDLE_TITLE = /^✳\s/;
 /** What Claude Code's spinner row says while a turn's Stop hooks run. */
 const CLAUDE_STOP_HOOK_ROW = 'running Stop hook';
 
