@@ -77,7 +77,7 @@ export function parseInspectedElement(raw: unknown): InspectedElement | null {
     const v = oneLine(rawStyles[key], STYLE_VALUE_MAX);
     if (v) styles[key] = v;
   }
-  const rect = parseRect(r.rect);
+  const rect = parseElementRect(r.rect);
   return {
     title: oneLine(r.title, FIELD_MAX.title),
     url: oneLine(r.url, FIELD_MAX.url),
@@ -89,7 +89,8 @@ export function parseInspectedElement(raw: unknown): InspectedElement | null {
   };
 }
 
-function parseRect(raw: unknown): ElementRect | null {
+/** A rect the page reported, or null unless every field is a finite number. */
+export function parseElementRect(raw: unknown): ElementRect | null {
   if (!raw || typeof raw !== 'object') return null;
   const r = raw as Record<string, unknown>;
   const keys = ['x', 'y', 'width', 'height', 'viewportWidth', 'viewportHeight'] as const;

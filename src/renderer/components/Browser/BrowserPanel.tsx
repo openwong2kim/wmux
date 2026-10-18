@@ -11,7 +11,7 @@ import {
 } from '../../utils/browserPane';
 import { isPrivateBrowserPartition } from '../../../shared/privateBrowser';
 import { isPrivateSessionReady, privateSessionReady } from '../../utils/privateSessionGate';
-import { formatElementHandoff, parseInspectedElement, ELEMENT_STYLE_KEYS, HANDOFF_NOTE_MAX, type InspectedElement } from '../../../shared/browserElementHandoff';
+import { formatElementHandoff, parseElementRect, parseInspectedElement, ELEMENT_STYLE_KEYS, HANDOFF_NOTE_MAX, type InspectedElement } from '../../../shared/browserElementHandoff';
 import { findWorkspaceSurfaceById } from '../../utils/paneTraversal';
 import { findLeaf } from '../../../shared/paneUtils';
 import { injectText } from '../AgentToolbar/inject';
@@ -492,6 +492,8 @@ export default function BrowserPanel({ surfaceId, workspaceId, initialUrl, parti
           e.stopImmediatePropagation();
           const el = document.elementFromPoint(e.clientX, e.clientY);
           if (!el || el === overlay || el === label || el.id?.startsWith('__wmux')) return;
+          // Kept so the app can measure it again right before its screenshot.
+          window.__wmuxPicked = el;
           console.log('__wmux_inspect_result__' + ${JSON.stringify(nonce)} + ':' + JSON.stringify(buildContext(el)));
         }
 
@@ -546,16 +548,24 @@ export default function BrowserPanel({ surfaceId, workspaceId, initialUrl, parti
       setHandoff(picked);
       // The element's screenshot, saved for the agent to open. Not for a
       // private tab: its pages are never written to disk.
-      const rect = picked.rect;
       const wcId = (wv as unknown as { getWebContentsId?: () => number }).getWebContentsId?.();
       const capture = window.electronAPI?.browser?.captureElement;
-      if (rect && !isPrivate && wcId && capture) {
+      if (picked.rect && !isPrivate && wcId && capture) {
         const shotOf = picked;
         void (async () => {
           try {
             // The inspector's overlay goes first (removeInspector above runs
-            // before this in the guest); wait two frames so it is off screen.
-            await wv.executeJavaScript('new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))');
+            // before this in the guest); wait two frames so it is off screen,
+            // then measure the element again: the hand-off bar replacing the
+            // inspector hint resized the view, which can move it.
+            const rect = parseElementRect(await wv.executeJavaScript(`new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => {
+              const el = window.__wmuxPicked;
+              delete window.__wmuxPicked;
+              if (!el || !el.isConnected) return r(null);
+              const b = el.getBoundingClientRect();
+              r({ x: b.left, y: b.top, width: b.width, height: b.height, viewportWidth: window.innerWidth, viewportHeight: window.innerHeight });
+            })))`));
+            if (!rect) return;
             const ptyId = resolveHandoffTarget(useStore.getState(), workspaceId, surfaceId)?.[2];
             const file = await capture(wcId, rect, ptyId);
             if (file) setHandoff((cur) => (cur === shotOf ? { ...cur, screenshot: file } : cur));
