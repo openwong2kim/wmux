@@ -1320,6 +1320,17 @@ const electronAPI = {
       return () => { ipcRenderer.removeListener(IPC.WORK_LINK_CHANGED, listener); };
     },
   },
+  // Fleet's Plan card: Claude's plan dialogs and the answer to one (main window only).
+  planApprovals: {
+    list: () => ipcRenderer.invoke(IPC.PLAN_APPROVALS_LIST) as Promise<import('../shared/planApproval').PlanApprovalView[]>,
+    answer: (request: import('../shared/planApproval').PlanApprovalAnswerRequest) =>
+      ipcRenderer.invoke(IPC.PLAN_APPROVALS_ANSWER, request) as Promise<import('../shared/planApproval').PlanApprovalAnswerResult>,
+    onChanged: (callback: () => void) => {
+      const listener = () => callback();
+      ipcRenderer.on(IPC.PLAN_APPROVALS_CHANGED, listener);
+      return () => { ipcRenderer.removeListener(IPC.PLAN_APPROVALS_CHANGED, listener); };
+    },
+  },
   // Moa's track record: the weekly retro card and its settings.
   trackRecord: {
     getRetro: (workspaceId: string) =>

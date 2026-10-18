@@ -199,7 +199,7 @@ import { ApprovalRegistry } from './approvals/ApprovalRegistry';
 import { WorkspaceFactStore, type WorkspaceFactRowInput } from './approvals/workspaceFacts';
 import { MoaPaneRpc, resolveMoaPane } from './web/moaPane';
 import { MoaPromptSync } from './web/moaPrompt';
-import { parseApprovalResolveRequest } from './approvals/resolveRequest';
+import { parseApprovalResolveRequest, parsePlanAnswerRequest } from './approvals/resolveRequest';
 import { GateBroker } from './approvals/GateBroker';
 import { coerceGate } from './approvals/gateConfig';
 import { DeviceStore, type DeviceBatchRevocationCause } from './web/DeviceStore';
@@ -4697,6 +4697,23 @@ function registerRpcHandlers(
     if ('ok' in request) return request;
     if (!approvalRegistry) return { ok: false, reason: 'not-found' };
     return approvalRegistry.resolve(request);
+  });
+
+  // The desktop's answer to Claude's plan dialog and the plan it shows: the
+  // first-party client only (see parsePlanAnswerRequest). Every other client
+  // keeps answering it in the terminal or from a paired phone.
+  pipeServer.onRpc('daemon.approvals.answerPlan', async (params, ctx) => {
+    const request = parsePlanAnswerRequest(params as Record<string, unknown>, {
+      isFirstParty: pipeServer.isFirstParty(ctx.clientId),
+    });
+    if ('ok' in request) return request;
+    if (!approvalRegistry) return { ok: false, reason: 'not-found' };
+    return approvalRegistry.answerPlanFromDesktop(request);
+  });
+  pipeServer.onRpc('daemon.approvals.detail', async (params, ctx) => {
+    if (!pipeServer.isFirstParty(ctx.clientId)) return null;
+    const id = typeof (params as { id?: unknown }).id === 'string' ? (params as { id: string }).id : '';
+    return (id && approvalRegistry?.terminalPromptDetail(id)) || null;
   });
 
   // ── Main → daemon workspace facts (approval press scope) ─────────────────

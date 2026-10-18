@@ -912,6 +912,16 @@ export const en = {
   // C-3 — what happened to the approvals nobody answered.
   'fleet.approvals.autoRejected': 'auto-rejected: {name}',
   'fleet.approvals.autoRejectedLog': 'Recently auto-rejected approvals',
+  'fleet.plan.title': 'Plan ready for review',
+  'fleet.plan.feedbackLabel': 'Feedback for Claude',
+  'fleet.plan.feedbackPlaceholder': 'What should change (optional)',
+  'fleet.plan.inTerminal': 'This plan can only be answered in its pane.',
+  'fleet.plan.sent': 'Answer sent',
+  'fleet.plan.truncated': 'The plan is longer than shown. Read the rest in its pane.',
+  'fleet.plan.refusedChanged': 'The dialog changed, so nothing was sent. Check the pane.',
+  'fleet.plan.refusedTooSoon': 'The dialog just appeared. Try again in a moment.',
+  'fleet.plan.refusedText': 'The dialog cannot take that feedback. Keep it to one shorter line.',
+  'fleet.plan.refused': 'Not sent ({reason}). Answer it in the pane.',
   // browser_request_help — the Fleet inbox row (the event's second rendition).
   'fleet.help.title': 'Browser needs you',
   'fleet.help.timesOutIn': 'times out in {seconds}s',

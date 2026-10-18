@@ -476,6 +476,11 @@ export const IPC = {
   FACTORY_TASK_FOLDERS_USAGE: 'factory:taskFolders:usage',
   FACTORY_TASK_FOLDERS_CLEAN: 'factory:taskFolders:clean',
   TRACK_RECORD_CHANGED: 'trackRecord:changed',
+  // The Fleet approvals tab's Plan card (shared/planApproval.ts): Claude's
+  // ExitPlanMode dialogs, answered from the main window only.
+  PLAN_APPROVALS_LIST: 'planApprovals:list',
+  PLAN_APPROVALS_ANSWER: 'planApprovals:answer',
+  PLAN_APPROVALS_CHANGED: 'planApprovals:changed',
   // Git page ship button: the branch's status, commit / push / create PR
   GIT_SHIP_STATUS: 'gitShip:status',
   GIT_SHIP_COMMIT: 'gitShip:commit',

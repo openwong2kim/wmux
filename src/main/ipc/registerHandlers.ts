@@ -53,6 +53,7 @@ import { registerAccountRotationHandlers } from './handlers/accountRotation.hand
 import { registerAgyAccountHandlers } from './handlers/agyAccount.handler';
 import { liveFactoryState, registerRoomIpcHandlers } from './handlers/room.handler';
 import { registerApprovalIpcHandlers } from './handlers/approval.handler';
+import { registerPlanApprovalHandlers } from './handlers/planApproval.handler';
 import { createRpcInvokeHandler } from './rpcInvoke';
 import { createFlashFrameHandler } from '../window/flashFrame';
 import { applyUiZoom, winOverlayHeight } from '../window/uiZoom';
@@ -236,6 +237,8 @@ export function registerAllHandlers(
   // live in the daemon session list). Renderer polls this ONLY while Fleet View
   // is visible, so a closed cockpit costs nothing.
   const cleanupPaneResources = daemonClient ? registerPaneResourcesHandlers(daemonClient) : null;
+  // Fleet's Plan card: Claude's plan dialogs live in the daemon's approval registry.
+  const cleanupPlanApprovals = daemonClient ? registerPlanApprovalHandlers(getWindow, daemonClient) : null;
 
   // wmux web — registered UNCONDITIONALLY (unlike LanLink above) so the titlebar
   // toggle always resolves. The getter closes over the `daemonClient` snapshot;
@@ -558,6 +561,7 @@ export function registerAllHandlers(
     if (cleanupLanLink) cleanupLanLink();
     if (cleanupA2aRemote) cleanupA2aRemote();
     if (cleanupPaneResources) cleanupPaneResources();
+    if (cleanupPlanApprovals) cleanupPlanApprovals();
     cleanupWeb();
     cleanupAutomation();
     cleanupChat();
