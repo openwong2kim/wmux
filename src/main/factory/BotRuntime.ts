@@ -46,7 +46,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import type { BotBinding, BotProfile, BotStatus, BotStatusUsage } from '../../shared/bot';
+import type { BotBinding, BotProfile, BotQuota, BotStatus, BotStatusUsage } from '../../shared/bot';
 import type { Fact } from '../../shared/facts';
 import type { RoomCard, ThreadId } from '../../shared/room';
 import { WAKE_LIMITS, type WakeItem, type WakeReason } from '../../shared/wake';
@@ -56,7 +56,7 @@ import { emitBotHook } from './botHooks';
 import type { BotEngineFactory } from './botEngines';
 import type { BotStore } from './botStore';
 import {
-  budgetLeft, checkTurn, hourlyCap, nextTurnAllowedAt, recordTurn, runningWorkers, turnsUsedDay, turnsUsedHour, unrecordTurn,
+  budgetLeft, checkTurn, costUsdDay, hourlyCap, nextTurnAllowedAt, recordCost, recordTurn, runningWorkers, turnsUsedDay, turnsUsedHour, unrecordTurn,
   workerHoursDay, workerTimeAllowedAt, type BotUsage, type BudgetRefusalReason,
 } from './budget';
 import type { FactorySettings } from './factorySettings';
@@ -192,6 +192,11 @@ export interface BotRuntimeDeps {
   /** Its workers running now and the factory's worker load, for the status
    *  (the profile's Today block); absent: not reported. */
   workerLoad?: (botId: string) => BotWorkerLoad;
+  /** The usage limits of the Claude account a bot's brain runs on, from the
+   *  readings already held (no fetch). `accountId`: the account its
+   *  conversation runs on, null for the default login, undefined when no
+   *  conversation says (the workspace's binding then). Absent: not reported. */
+  claudeQuota?: (workspaceId: string, accountId: string | null | undefined) => BotQuota | null;
 }
 
 /** What `workerLoad` reports. */
@@ -426,8 +431,25 @@ export class BotRuntime {
       queueDepth: this.deps.queue.depth(botId),
       budgetLeft: { turnsHour: left.turnsHour, turnsDay: left.turnsDay, workerHoursDay: left.workerHoursDay },
       usage: this.usageView(profile, usage, now),
+      ...this.quotaView(profile),
       ...(err ? { lastError: { ...err } } : {}),
     };
+  }
+
+  /** The status's `quota`, for a bot whose brain runs on Claude Code: the
+   *  account its live or saved conversation runs on, else the binding. */
+  private quotaView(profile: BotProfile): { quota?: BotQuota } {
+    if (!this.deps.claudeQuota || profile.engine.kind !== 'claude-sdk' || this.deps.settings().acpStub === true) return {};
+    const live = this.live.get(profile.id);
+    const accountId = live?.adapter.conversationAccountId !== undefined
+      ? live.adapter.conversationAccountId
+      : this.deps.sessions.get(profile.id)?.accountId;
+    try {
+      const quota = this.deps.claudeQuota(profile.workspaceId, accountId);
+      return quota ? { quota } : {};
+    } catch {
+      return {}; /* the status never fails on the quota */
+    }
   }
 
   /** The status's `usage`: what the bot used of each limit, when an
@@ -438,6 +460,10 @@ export class BotRuntime {
       turnsDay: turnsUsedDay(usage, now),
       workerHoursDay: workerHoursDay(usage, now),
     };
+    if (usage.cost) {
+      out.costUsdDay = costUsdDay(usage, now);
+      out.costUsdTotal = usage.cost.total;
+    }
     if (!checkTurn(profile.budget, usage, now).ok) {
       const at = nextTurnAllowedAt(profile.budget, usage, now);
       if (Number.isFinite(at)) out.nextTurnAt = at;
@@ -1007,6 +1033,10 @@ export class BotRuntime {
       } else if (result.ok) {
         outcome = 'done';
         s.live.attached = true;
+        if (result.costUsd !== undefined) {
+          const usd = result.costUsd;
+          this.deps.store.mutateUsage(botId, (u) => recordCost(u, usd, this.now()));
+        }
         const sessionId = result.sessionId ?? s.live.adapter.sessionId;
         if (sessionId) {
           const accountId = s.live.adapter.conversationAccountId;
@@ -1051,7 +1081,7 @@ export class BotRuntime {
     timeoutMs: number,
     interrupted: () => boolean,
     stopped: Promise<'stop'> = new Promise<'stop'>(() => undefined),
-  ): Promise<{ ok: true; sessionId: string | null; text: string } | { ok: false; error: string; timedOut?: true; freshSession?: true }> {
+  ): Promise<{ ok: true; sessionId: string | null; text: string; costUsd?: number } | { ok: false; error: string; timedOut?: true; freshSession?: true }> {
     // A stored bot secret never reaches a bot's prompt (secretRedaction.ts).
     const iterator = live.adapter.send(redactStoredSecrets(prompt))[Symbol.asyncIterator]();
     let timer: unknown = null;
@@ -1083,7 +1113,8 @@ export class BotRuntime {
         if (ev.type === 'turn-end') {
           // Let the adapter's own cleanup run (its generator is parked on this yield).
           await Promise.resolve(iterator.return?.()).catch(() => undefined);
-          return { ok: true, sessionId: ev.sessionId, text };
+          const costUsd = ev.usage?.costUsd;
+          return { ok: true, sessionId: ev.sessionId, text, ...(costUsd !== undefined ? { costUsd } : {}) };
         }
         if (ev.type === 'text-delta') text += ev.text;
         else if (ev.type === 'tool-start') text = '';

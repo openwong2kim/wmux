@@ -33,6 +33,23 @@ describe('botBudgetView', () => {
     expect(queued.lines.at(-1)).toEqual({ id: 'queue', depth: 3, cap: WAKE_LIMITS.PER_BOT_QUEUE_CAP, reached: false });
   });
 
+  it('puts the account and its usage limits first and the API-equivalent cost last, each only when reported', () => {
+    const v = botBudgetView(bot(), status(
+      { quota: { accountName: 'Work', session: { pct: 100, resetsAt: 5_000 }, weekly: { pct: 30 } } },
+      { costUsdDay: 0.5, costUsdTotal: 2.25 },
+    ));
+    expect(v.lines.slice(0, 3)).toEqual([
+      { id: 'account', name: 'Work', reached: false },
+      { id: 'quotaSession', pct: 100, resetsAt: 5_000, reached: true },
+      { id: 'quotaWeekly', pct: 30, reached: false },
+    ]);
+    expect(v.lines.at(-1)).toEqual({ id: 'cost', dayUsd: 0.5, totalUsd: 2.25, reached: false });
+    // A full 5-hour window is shown, not a blocker of its own.
+    expect(v.blocker).toBeNull();
+    const plain = botBudgetView(bot(), status({ quota: { accountName: null } }));
+    expect(plain.lines.map((l) => l.id)).toEqual(['turnsDay', 'workerTime', 'workers']);
+  });
+
   it('shows the hour line only with an hourly cap', () => {
     const v = botBudgetView(bot({ budget: { ...budget, maxTurnsPerHour: 10 } }), status({ budgetLeft: { turnsHour: 0, turnsDay: 150, workerHoursDay: 4 } }, { turnsHour: 10 }));
     expect(v.lines[0]).toEqual({ id: 'turnsHour', used: 10, left: 0, reached: true });

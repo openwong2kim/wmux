@@ -55,7 +55,21 @@ function lineText(line: BotTodayLine, t: T, liveWorkers?: number, inReviewTasks 
       return { label: t('botsPage.profile.today.workers'), value: parts.join(' · ') };
     }
     case 'queue': return { label: t('botsPage.profile.today.queue'), value: t('botsPage.profile.today.ofMax', { count: line.depth, max: line.cap }) };
+    case 'account': return { label: t('botsPage.profile.today.account'), value: line.name ?? t('botsPage.profile.today.defaultAccount') };
+    case 'quotaSession':
+    case 'quotaWeekly': return {
+      label: t(line.id === 'quotaSession' ? 'botsPage.profile.today.quotaSession' : 'botsPage.profile.today.quotaWeekly'),
+      value: line.resetsAt !== undefined
+        ? t('botsPage.profile.today.quotaResets', { pct: line.pct, time: formatNoticeTime(line.resetsAt) })
+        : t('botsPage.profile.today.quotaUsed', { pct: line.pct }),
+    };
+    case 'cost': return { label: t('botsPage.profile.today.cost'), value: t('botsPage.profile.today.costValue', { day: usdText(line.dayUsd), total: usdText(line.totalUsd) }) };
   }
+}
+
+/** "$1.24". */
+export function usdText(usd: number): string {
+  return `$${usd.toFixed(2)}`;
 }
 
 /** `liveWorkers`: the bot's workers live now (the profile's "Workers now"),
@@ -101,6 +115,7 @@ export function BotToday({ row, act, liveWorkers, t }: { row: FactoryBotRow; act
                 key={line.id}
                 data-bots-today-line={line.id}
                 data-reached={line.reached ? 'true' : undefined}
+                {...(line.id === 'cost' ? { title: t('botsPage.profile.today.costHint') } : {})}
                 className={`flex gap-2 ${line.reached ? 'text-[var(--accent-yellow)]' : 'text-[var(--text-sub)]'}`}
               >
                 <span className={line.reached ? undefined : 'text-[var(--text-muted)]'}>{label}</span>

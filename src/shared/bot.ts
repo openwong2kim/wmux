@@ -327,7 +327,29 @@ export interface BotStatus {
   /** What the profile's Today block shows beside budgetLeft (absent from an
    *  older build). */
   usage?: BotStatusUsage;
+  /** The subscription usage limits of the Claude account the bot's brain
+   *  runs on, from the usage readings wmux already holds (absent: another
+   *  engine, nothing read yet, or the caller is a bot). */
+  quota?: BotQuota;
   lastError?: { message: string; at: number };
+}
+
+/** One usage-limit window of a bot's account. */
+export interface BotQuotaWindow {
+  /** Percent used, 0-100. */
+  pct: number;
+  /** When the window resets (Unix ms); absent when not reported. */
+  resetsAt?: number;
+}
+
+/** A bot's account and its usage limits (main/factory/botQuota.ts). */
+export interface BotQuota {
+  /** The registered account's name; null: the default Claude login. */
+  accountName: string | null;
+  /** The 5-hour window; absent when it was not read or has reset since. */
+  session?: BotQuotaWindow;
+  /** The weekly window; absent when it was not read or has reset since. */
+  weekly?: BotQuotaWindow;
 }
 
 /** A bot's use of its limits now (main/factory/budget.ts). */
@@ -352,6 +374,11 @@ export interface BotStatusUsage {
   factoryWorkers?: number;
   /** The factory's agent slots (Settings › Bots). */
   slots?: { inUse: number; cap: number };
+  /** The engine's cost estimate for the bot's turns in the last day and in
+   *  all, in USD at API prices (absent: none reported). A subscription is
+   *  not charged this; it only sizes the use. */
+  costUsdDay?: number;
+  costUsdTotal?: number;
 }
 
 export const BOT_RPC = {

@@ -7,7 +7,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BrainAdapter, BrainEvent, BrainStartOptions } from '../../deck/BrainAdapter';
-import { BotRuntime, BotSessionStore, CONTEXT_WAIT_MS, ROOM_RUN_STAGGER_MS, TRANSIENT_RETRY_BASE_MS, TRANSIENT_RETRY_MAX, botSessionsPath, isTransientEngineError, roomRunOf, setBotRuntimePorts, usageLimitNoticeOf, usageLimitParkUntil, USAGE_LIMIT_MIN_PARK_MS, __resetBotRuntimePortsForTesting } from '../BotRuntime';
+import { BotRuntime, BotSessionStore, type BotRuntimeDeps, CONTEXT_WAIT_MS, ROOM_RUN_STAGGER_MS, TRANSIENT_RETRY_BASE_MS, TRANSIENT_RETRY_MAX, botSessionsPath, isTransientEngineError, roomRunOf, setBotRuntimePorts, usageLimitNoticeOf, usageLimitParkUntil, USAGE_LIMIT_MIN_PARK_MS, __resetBotRuntimePortsForTesting } from '../BotRuntime';
 import type { BotEngineFactory, BotEngineSpawnInput } from '../botEngines';
 import { BotStore, botsFilePath } from '../botStore';
 import { WakeQueue, wakeQueuePath } from '../wakeQueue';
@@ -89,7 +89,7 @@ interface Rig {
   spawns: BotEngineSpawnInput[];
 }
 
-function rig(opts: { mode?: FakeAdapter['mode']; engines?: BotEngineFactory; load?: boolean; timers?: Array<{ fn: () => void; at: number }> } = {}): Rig {
+function rig(opts: { mode?: FakeAdapter['mode']; engines?: BotEngineFactory; load?: boolean; timers?: Array<{ fn: () => void; at: number }>; claudeQuota?: BotRuntimeDeps['claudeQuota'] } = {}): Rig {
   const store = new BotStore(botsFilePath(dir), { now: () => clock });
   const sessions = new BotSessionStore(botSessionsPath(dir));
   let runtime: BotRuntime | null = null;
@@ -113,6 +113,7 @@ function rig(opts: { mode?: FakeAdapter['mode']; engines?: BotEngineFactory; loa
     settings: () => settings,
     wmuxDir: dir,
     now: () => clock,
+    ...(opts.claudeQuota ? { claudeQuota: opts.claudeQuota } : {}),
     ...(timers ? {
       setTimer: (fn: () => void, ms: number) => { timers.push({ fn, at: clock + ms }); return timers.length; },
       clearTimer: () => undefined,
@@ -157,6 +158,31 @@ describe('BotRuntime', () => {
     expect(r.runtime.status(id)).toMatchObject({ presence: 'idle', sessionId: 'sess-1' });
     expect(r.sessions.get(id)?.sessionId).toBe('sess-1');
     expect(r.queue.list({ botId: id })[0].state).toBe('done');
+  });
+
+  it('adds up each turn\'s cost estimate (last day and in all) and reports the quota of the account its conversation runs on', async () => {
+    const asked: Array<[string, string | null | undefined]> = [];
+    const r = rig({ claudeQuota: (ws, accountId) => {
+      asked.push([ws, accountId]);
+      return { accountName: null, session: { pct: 40 } };
+    } });
+    const id = createBot(r);
+    expect(r.runtime.status(id)?.usage?.costUsdTotal).toBeUndefined();
+    r.runtime.wake(id, { text: 'one' });
+    await settle();
+    r.adapters[0].end([{ type: 'turn-end', sessionId: 'sess-1', usage: { costUsd: 0.5 } }]);
+    await settle();
+    clock += HOUR_MS;
+    r.runtime.wake(id, { text: 'two' });
+    await settle();
+    r.adapters[0].end([{ type: 'turn-end', sessionId: 'sess-1', usage: { costUsd: 0.25 } }]);
+    await settle();
+    expect(r.runtime.status(id)?.usage).toMatchObject({ costUsdDay: 0.75, costUsdTotal: 0.75 });
+    expect(r.runtime.status(id)?.quota).toEqual({ accountName: null, session: { pct: 40 } });
+    expect(asked.at(-1)).toEqual(['ws-1', undefined]);
+    // A day later the day's sum is gone; the total stays.
+    clock += 24 * HOUR_MS;
+    expect(r.runtime.status(id)?.usage).toMatchObject({ costUsdDay: 0, costUsdTotal: 0.75 });
   });
 
   it('the running turn\'s status names the thread it answers in (the page shows it busy there only)', async () => {

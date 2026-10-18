@@ -30,6 +30,9 @@ export interface BotUsage {
   turns: number[];
   /** Workers that ran inside the last day, plus every one still running. */
   workers: BotWorkerUsage[];
+  /** The engine's cost estimate (USD at API prices) of each turn inside the
+   *  last day, and of every turn ever. Absent until a turn reports one. */
+  cost?: { day: { at: number; usd: number }[]; total: number };
 }
 
 export type BudgetRefusalReason = 'turns_hour' | 'turns_day' | 'concurrent_workers' | 'worker_hours_day';
@@ -44,7 +47,24 @@ export function emptyUsage(): BotUsage {
 export function pruneUsage(usage: BotUsage, now: number): BotUsage {
   usage.turns = usage.turns.filter((t) => t > now - DAY_MS && t <= now);
   usage.workers = usage.workers.filter((w) => w.endedAt === undefined || w.endedAt > now - DAY_MS);
+  if (usage.cost) usage.cost.day = usage.cost.day.filter((c) => c.at > now - DAY_MS && c.at <= now);
   return usage;
+}
+
+/** Add one turn's cost estimate. Ignores a value that is not a finite,
+ *  non-negative number. */
+export function recordCost(usage: BotUsage, usd: number, now: number): void {
+  if (!Number.isFinite(usd) || usd < 0) return;
+  pruneUsage(usage, now);
+  const cost = usage.cost ?? { day: [], total: 0 };
+  cost.day.push({ at: now, usd });
+  cost.total += usd;
+  usage.cost = cost;
+}
+
+/** The cost estimate of the turns in the last day (USD). */
+export function costUsdDay(usage: BotUsage, now: number): number {
+  return (usage.cost?.day ?? []).filter((c) => c.at > now - DAY_MS && c.at <= now).reduce((sum, c) => sum + c.usd, 0);
 }
 
 function turnsSince(usage: BotUsage, since: number, now: number): number {
@@ -225,5 +245,18 @@ export function sanitizeUsage(raw: unknown): BotUsage {
       });
     }
   }
+  const cost = r.cost as Record<string, unknown> | null | undefined;
+  if (cost && typeof cost === 'object' && !Array.isArray(cost) && isUsd(cost.total)) {
+    const day: { at: number; usd: number }[] = [];
+    for (const c of Array.isArray(cost.day) ? cost.day.slice(-USAGE_TURNS_MAX) : []) {
+      const x = c as Record<string, unknown> | null;
+      if (x && typeof x === 'object' && Number.isSafeInteger(x.at) && (x.at as number) > 0 && isUsd(x.usd)) day.push({ at: x.at as number, usd: x.usd as number });
+    }
+    out.cost = { day, total: cost.total as number };
+  }
   return out;
+}
+
+function isUsd(v: unknown): v is number {
+  return typeof v === 'number' && Number.isFinite(v) && v >= 0;
 }

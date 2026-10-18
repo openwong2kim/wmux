@@ -36,6 +36,7 @@ import { FactorySettingsStore, factorySettingsPath, onFactorySettingsChanged, se
 import { BotRuntime, BotSessionStore, botSessionsPath, setBotRuntime } from '../../factory/BotRuntime';
 import { createDefaultBotEngineFactory, runnableDefaultEngine, type BotEngineFactory } from '../../factory/botEngines';
 import { recordWorkerEnd } from '../../factory/budget';
+import { botAccountQuota, type ClaudeUsageCache } from '../../factory/botQuota';
 import { openBotWorkers } from '../../factory/openBotWorkers';
 import { getAgentSlots } from '../../factory/agentSlots';
 import { BotFanoutReceipts, botFanoutReceiptsPath, setBotFanoutReceipts } from '../../factory/botFanoutReceipts';
@@ -58,6 +59,7 @@ function refuse(code: Refusal['code'], message: string): Refusal {
 }
 
 const HUMAN_TEXT_MAX = 16 * 1024;
+const USAGE_CHANGED_DEBOUNCE_MS = 5_000;
 
 type Caller = { kind: 'operator' } | { kind: 'bot'; botId: string; role: string } | null;
 
@@ -70,6 +72,15 @@ function callerOf(ctx: RpcContext | undefined): Caller {
 function botIdParam(params: Record<string, unknown>): string | null {
   const v = params['botId'];
   return typeof v === 'string' && BOT_ID_RE.test(v) ? v : null;
+}
+
+/** A status as a caller reads it: a bot does not read the owner's account
+ *  and its usage limits. */
+function statusFor(caller: Caller, status: BotStatus | null): BotStatus | null {
+  if (!status || caller?.kind !== 'bot' || !status.quota) return status;
+  const out = { ...status };
+  delete out.quota;
+  return out;
 }
 
 /** A profile as the pipe answers it: without the picture. */
@@ -195,7 +206,7 @@ export function registerBotRpcHandlers(
     const bots = l.store.list(workspaceId ? { workspaceId } : {});
     return {
       ok: true,
-      bots: bots.map((bot) => ({ bot: pipeProfile(bot), status: l.runtime.status(bot.id) })),
+      bots: bots.map((bot) => ({ bot: pipeProfile(bot), status: statusFor(caller, l.runtime.status(bot.id)) })),
     };
   });
 
@@ -209,7 +220,7 @@ export function registerBotRpcHandlers(
     }
     const l = live();
     if (!l) return NOT_STARTED;
-    const status = l.runtime.status(requested);
+    const status = statusFor(caller, l.runtime.status(requested));
     return status ? { ok: true, status } : refuse('not_found', `no bot ${requested}`);
   });
 
@@ -444,6 +455,8 @@ export function botRuntimeModule(router: FactoryRouter, deps: FactoryHostDeps, o
   let offWake: (() => void) | null = null;
   let offStore: (() => void) | null = null;
   let offSettings: (() => void) | null = null;
+  let offUsage: (() => void) | null = null;
+  let usageTimer: ReturnType<typeof setTimeout> | null = null;
   registerBotRpcHandlers(router, () => live);
 
   const send = (payload: unknown): void => {
@@ -463,6 +476,12 @@ export function botRuntimeModule(router: FactoryRouter, deps: FactoryHostDeps, o
       const receipts = new BotFanoutReceipts(botFanoutReceiptsPath(wmuxDir));
       receipts.load();
       let runtime: BotRuntime | null = null;
+      let usage: ClaudeUsageCache | null = null;
+      try {
+        usage = deps.claudeUsage?.() ?? null;
+      } catch (err) {
+        console.warn(`[factory] bot quota readings are not wired: ${String(err)}`);
+      }
       const queue = new WakeQueue(wakeQueuePath(wmuxDir), {
         isBotEnabled: (botId) => store.get(botId)?.enabled === true,
         onChange: () => runtime?.kick(),
@@ -490,6 +509,7 @@ export function botRuntimeModule(router: FactoryRouter, deps: FactoryHostDeps, o
             slots: slots ? { inUse: slots.inUse(), cap: slots.limit() } : null,
           };
         },
+        ...(usage ? { claudeQuota: (workspaceId: string, accountId: string | null | undefined) => botAccountQuota(usage, workspaceId, accountId) } : {}),
       });
       setFactorySettingsStore(settings);
       setBotStore(store);
@@ -502,6 +522,15 @@ export function botRuntimeModule(router: FactoryRouter, deps: FactoryHostDeps, o
       offSettings = onFactorySettingsChanged(() => {
         runtime?.kick();
       });
+      // A new usage reading moves the bots' quota lines: tell the window, at
+      // most once per few seconds (live statusline samples come in bursts).
+      offUsage = usage?.onChange(() => {
+        if (usageTimer) return;
+        usageTimer = setTimeout(() => {
+          usageTimer = null;
+          send({ type: 'bots-changed' });
+        }, USAGE_CHANGED_DEBOUNCE_MS);
+      }) ?? null;
       try {
         offWake = installBotFanoutWake({
           enqueue: (input) => queue.enqueue(input),
@@ -534,6 +563,9 @@ export function botRuntimeModule(router: FactoryRouter, deps: FactoryHostDeps, o
       offWake?.();
       offStore?.();
       offSettings?.();
+      offUsage?.();
+      if (usageTimer) clearTimeout(usageTimer);
+      usageTimer = null;
       const l = live;
       live = null;
       l?.runtime.dispose();

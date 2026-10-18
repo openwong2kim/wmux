@@ -467,7 +467,13 @@ status bar badges, `fleet_triage` or the phone's sidebar.
   review whose worker still holds one is named: "2 of 3 · 2 held by tasks in
   review");
   the queue of its cap (only when not empty); a line at its limit in the
-  caution yellow,
+  caution yellow. Above those limits (owner decision 2026-10-18), when wmux
+  holds a usage reading for it, the account a Claude Code brain runs on
+  (its name, or "Default Claude login") and that account's 5-hour and
+  weekly limits, percent used with the reset time; below them, once a turn
+  reported one, the engine's cost estimate labelled "Cost (API-equivalent)",
+  "≈ $0.50 today · ≈ $2.25 in all", never a charge (a subscription is not
+  billed it; the hint says so),
   its routines, its connections — each library connection that applies to
   it, an every-bot one with a switch that turns it off for this bot alone,
   a picked one with Edit and Remove from this bot, then Add connection and

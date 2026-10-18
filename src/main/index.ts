@@ -1229,6 +1229,18 @@ const factoryHost = registerFactoryRpc(rpcRouter, {
   resolvePtyWorkspace: (ptyId) => resolvePtyOwnerWorkspace(() => mainWindow, ptyId),
   paneCwd: paneOwnCwdOf,
   wmuxDir: () => getWmuxDir(),
+  // A bot's quota line: the usage readings held below, never a new request.
+  // Called after start, once both services exist.
+  claudeUsage: () => ({
+    read: (accountId) => (accountId === null
+      ? usagePoller.getState().snapshot
+      : accountUsageService.getAll().find((e) => e.accountId === accountId)?.snapshot ?? null),
+    onChange: (cb) => {
+      const offAccounts = accountUsageService.onChange(() => cb());
+      const offDefault = usagePoller.onStateChange(() => cb());
+      return () => { offAccounts(); offDefault(); };
+    },
+  }),
 });
 // Scheduled runs for agents: draft-only propose + redacted reads, relayed to
 // the daemon over main's first-party connection (pipe/handlers/automation.rpc.ts).

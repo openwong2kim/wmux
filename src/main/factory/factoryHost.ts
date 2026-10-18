@@ -19,6 +19,7 @@ import type { BotRefusalListener, RpcRouter } from '../pipe/RpcRouter';
 import type { DaemonClient } from '../DaemonClient';
 import type { FanOutService } from '../worktask/FanOutService';
 import { FACTORY_RPC_METHODS, factoryNotImplemented } from '../../shared/botSurface';
+import type { ClaudeUsageCache } from './botQuota';
 import { runFactoryMigrations } from './migrate';
 
 /** What main hands every factory module. Over-provided on purpose: index.ts
@@ -37,6 +38,9 @@ export interface FactoryHostDeps {
   paneCwd: (ptyId: string, workspaceId: string) => string;
   /** The wmux data dir (`getWmuxDir()`), `factory/` lives under it. */
   wmuxDir: () => string;
+  /** The Claude usage readings main already holds (a bot's quota line);
+   *  absent or null: none. */
+  claudeUsage?: () => ClaudeUsageCache | null;
 }
 
 /** What a module's register function may return. */
