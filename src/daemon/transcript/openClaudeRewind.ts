@@ -51,7 +51,8 @@ export async function openClaudeRewind(deps: ClaudeRewindDeps): Promise<ClaudeRe
     const state = deps.getAgentState();
     if (!state || !agentRow(state.slug)?.rewindPicker) return 'unavailable';
     if (state.status === 'running') return 'busy';
-    if (state.status === 'awaiting_input' || state.status === 'waiting') return 'blocked';
+    // `waiting` is a turn that ended and is ready for input; only a mid-turn prompt blocks.
+    if (state.status === 'awaiting_input') return 'blocked';
     // Someone else typed since the screen was read: the screen no longer says what ESC would do.
     if (revision !== undefined && state.inputRevision !== revision) return 'busy';
     return null;

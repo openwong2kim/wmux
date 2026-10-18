@@ -32,6 +32,11 @@ describe('openClaudeRewind', () => {
     expect(h.writes).toEqual(['\x1b', '\x1b']);
   });
 
+  it('opens for a Claude whose turn ended and waits for input', async () => {
+    const h = harness({ status: 'waiting' });
+    expect(await openClaudeRewind(h.deps)).toBe('opened');
+  });
+
   it('encodes ESC as CSI-u for a pane that negotiated kitty keys', async () => {
     const h = harness({ kitty: true });
     expect(await openClaudeRewind(h.deps)).toBe('opened');
