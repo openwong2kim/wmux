@@ -38,7 +38,7 @@ const AUTH_TTL_MS = 60 * 1000;
 /** A forced probe (Check again, refresh) answered this recently is reused. */
 const FORCED_REUSE_MS = 3_000;
 
-const GLAB_ENV: NodeJS.ProcessEnv = {
+export const GLAB_ENV: NodeJS.ProcessEnv = {
   ...process.env,
   PATH: cliPath(),
   // glab 비대화형 강제 — 프롬프트/페이저가 폴을 블록하면 안 된다(gh와 동일 계약).

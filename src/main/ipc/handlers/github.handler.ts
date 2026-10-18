@@ -13,6 +13,7 @@ import type { PrSummary, PrDetail, PrProvider } from '../../github/PrProvider';
 import { ghPrService } from '../../github/GhPrService';
 import { glabPrService } from '../../github/GlabPrService';
 import { ghIssueService } from '../../github/GhIssueService';
+import { glabIssueService } from '../../github/GlabIssueService';
 import { parseIssueFilter, type IssueDetailResult, type IssueFilter, type IssueListResult, type IssueRepo, type RepoPermission } from '../../../shared/issueSurface';
 
 export type GithubPrListResult =
@@ -64,9 +65,16 @@ function repoOfKey(key: string | null): IssueRepo | null {
 async function issueList(repoPath: string, filter: IssueFilter, force: boolean): Promise<IssueListResult> {
   const remote = await detectRemote(repoPath, force);
   if (!remote) return { ok: false, code: 'no-remote', message: 'no origin remote' };
-  // GitLab and every other host: no glab issue reader yet, and no gate probe.
+  // Every other host is GitLab, through glab and the PR list's glab gate.
   if (!isGithubHost(remote.host)) {
-    return { ok: false, code: 'unsupported-host', message: 'Issues are GitHub-only for now', provider: 'gitlab' };
+    const glabGate = await glabPrService.gate(repoPath, remote.host, force);
+    if (!glabGate.ok) {
+      return { ok: false, code: glabGate.reason === 'cli-missing' ? 'cli-missing' : 'unauthenticated', message: glabGate.message, provider: 'gitlab' };
+    }
+    if (!remote.key) return { ok: false, code: 'error', message: 'origin is not a GitLab group/project remote' };
+    const res = await glabIssueService.listIssues(repoPath, filter, remote.key, force);
+    // IssueRepo's owner/repo has no room for subgroups; nothing reads it for GitLab.
+    return res.ok ? { ok: true, issues: res.issues, repo: null } : res;
   }
   const gate = await ghPrService.gate(repoPath, remote.host, force);
   if (!gate.ok) {
@@ -183,9 +191,12 @@ export function registerGithubHandlers(): () => void {
         const safeRepo = await resolveAccessiblePath(repoPath);
         if (!safeRepo) return { ok: false, code: 'error', message: 'repoPath required' };
         const remote = await detectRemote(safeRepo);
-        if (!remote || !isGithubHost(remote.host)) return { ok: false, code: 'error', message: 'Issues are GitHub-only for now' };
-        if (!remote.key) return { ok: false, code: 'error', message: 'origin is not a GitHub owner/repo remote' };
-        return ghIssueService.issueDetail(safeRepo, number, typeof updatedAt === 'string' ? updatedAt : '', remote.key);
+        if (!remote) return { ok: false, code: 'error', message: 'no origin remote' };
+        if (!remote.key) return { ok: false, code: 'error', message: 'origin has no owner/repo path' };
+        const since = typeof updatedAt === 'string' ? updatedAt : '';
+        return isGithubHost(remote.host)
+          ? ghIssueService.issueDetail(safeRepo, number, since, remote.key)
+          : glabIssueService.issueDetail(safeRepo, number, since, remote.key);
       },
     ),
   );
