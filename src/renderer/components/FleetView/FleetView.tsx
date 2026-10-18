@@ -962,8 +962,16 @@ export default function FleetView() {
           const idx = rowApprovalIndex(inbox, row.pane.workspaceId);
           if (idx >= 0) setInboxIdx(idx);
           setTab('approvals');
-          // The focused row unmounts with the tab switch; put focus on the row.
-          requestAnimationFrame(() => { focusActiveItemRef.current(); });
+          const ptyId = fleetTargetPtyId(row.pane);
+          // The focused row unmounts with the tab switch; put focus on the row,
+          // or on the agent's Plan card — never an unrelated row Enter approves.
+          requestAnimationFrame(() => {
+            if (idx < 0 && plans.some((p) => p.sessionId === ptyId)) {
+              panelRef.current?.querySelector<HTMLElement>(`[data-plan-session="${CSS.escape(ptyId)}"]`)?.focus();
+              return;
+            }
+            focusActiveItemRef.current();
+          });
           return;
         }
         if (row && !row.pane.remote && (key === 'm' || key === 's' || key === 'l' || key === 'r' || key === 'Backspace')) {
@@ -1021,7 +1029,7 @@ export default function FleetView() {
       }
     }, [tab, setTab, rovingKeys, grid, inbox, inboxIdx, remoteInbox, remoteIdx, dismissRemoteItem, setVisible,
       editor, reviewEditor, closeEditor, detailOpen, visibleRows, focusedKey, focusedTicket, verbsFor, selectKey,
-      focusedReview, openReviewDiff, openReviewEditor, jumpToReviewTask]);
+      focusedReview, openReviewDiff, openReviewEditor, jumpToReviewTask, plans]);
 
   // Summary strip: account usage, the next scheduled run, phones watching.
   const usage = useStore((s) => (s.anthropicUsageEnabled ? s.anthropicUsage.snapshot : null));
