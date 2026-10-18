@@ -2,12 +2,13 @@
 // picked element's on-screen box is captured from its <webview> guest and
 // saved as a PNG in the app's temp folder, so a terminal agent can open the
 // path the hand-off line carries. Files share the paste-image prefix sweep in
-// clipboard.handler.ts (removed after 24 h).
-import { app, ipcMain, webContents, type BrowserWindow, type IpcMainInvokeEvent } from 'electron';
+// clipboard.handler.ts (removed at the next app start once older than 24 h).
+import { app, ipcMain, session, webContents, type BrowserWindow, type IpcMainInvokeEvent } from 'electron';
 import { promises as fsp } from 'node:fs';
 import * as path from 'node:path';
 import { ELEMENT_SHOT_PREFIX, elementShotRect, type ElementRect } from '../../../shared/browserElementHandoff';
 import { imagePathForPane } from '../../../shared/imagePaste';
+import { PRIVATE_BROWSER_PARTITION } from '../../../shared/privateBrowser';
 import { getPtyShell } from '../../pty/ptyShellRegistry';
 import { isTrustedMainFrameSender } from './browserPolicy.handler';
 import { wrapHandler } from '../wrapHandler';
@@ -27,6 +28,8 @@ export function registerElementShotHandler(getWindow: () => BrowserWindow | null
       if (typeof webContentsId !== 'number' || !Number.isInteger(webContentsId)) return null;
       const wc = webContents.fromId(webContentsId);
       if (!wc || wc.isDestroyed() || wc.getType() !== 'webview' || wc.hostWebContents !== event.sender) return null;
+      // A private tab is never captured; the renderer skips it too, this holds if it did not.
+      if (wc.session === session.fromPartition(PRIVATE_BROWSER_PARTITION)) return null;
       // Non-numeric fields make the clipped box NaN, which elementShotRect refuses.
       if (!rect || typeof rect !== 'object') return null;
       const box = elementShotRect(rect as ElementRect);
