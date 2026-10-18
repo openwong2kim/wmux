@@ -112,12 +112,13 @@ beforeEach(() => {
     diff: { read: vi.fn(async () => readResult()), applyHunks: vi.fn() },
     rpc: { invoke, mutateChannelLocal },
   };
-  Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+  (window as unknown as { clipboardAPI: unknown }).clipboardAPI = { writeText };
 });
 
 afterEach(() => {
   while (mounted.length) mounted.pop()?.();
   delete (window as unknown as { electronAPI?: unknown }).electronAPI;
+  delete (window as unknown as { clipboardAPI?: unknown }).clipboardAPI;
 });
 
 describe('DiffPanel — line comments', () => {

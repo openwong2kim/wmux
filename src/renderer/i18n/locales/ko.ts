@@ -3588,6 +3588,7 @@ export const ko = {
   'diff.reviewSend': '{agent}에게 보내기 ({count})',
   'diff.reviewSendTitle': '이 판의 에이전트 입력창에 리뷰를 입력합니다(전송은 하지 않음)',
   'diff.reviewSent': '{agent} 입력창에 리뷰를 입력했습니다 — 거기서 Enter를 눌러 보내세요',
+  'diff.reviewSendFailed': '에이전트에 리뷰를 입력하지 못했습니다: {error}',
 
   // ─── Worktask cleanup: close-result toasts ───────────────────────────────
   'worktask.cleanup.closed': '태스크를 닫았습니다.',

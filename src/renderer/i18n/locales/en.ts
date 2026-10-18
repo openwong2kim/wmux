@@ -4106,6 +4106,7 @@ export const en = {
   'diff.reviewSend': 'Send to {agent} ({count})',
   'diff.reviewSendTitle': "Type the review into the agent's input in this pane, without sending it",
   'diff.reviewSent': "Review typed into {agent}'s input — press Enter there to send it",
+  'diff.reviewSendFailed': 'Could not type the review into the agent: {error}',
 
   // ─── Worktask cleanup: close-result toasts ───────────────────────────────
   'worktask.cleanup.closed': 'Task closed.',

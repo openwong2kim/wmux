@@ -484,6 +484,19 @@ function CommentList({ comments, bare, onRemove, removeLabel }: {
   );
 }
 
+/**
+ * An agent owns this terminal now: one is recorded on it, and neither the
+ * process tracker (it died) nor shell integration (the shell is back at its
+ * prompt) says otherwise. A review note is a prompt for the agent; it must
+ * never be typed into a bare shell.
+ */
+function agentOwnsPty(
+  s: { surfaceAgent: Record<string, unknown>; agentAliveByPtyId: Record<string, boolean>; commandRunningByPtyId: Record<string, boolean> },
+  ptyId: string,
+): boolean {
+  return !!s.surfaceAgent[ptyId] && s.agentAliveByPtyId[ptyId] !== false && s.commandRunningByPtyId[ptyId] !== false;
+}
+
 /** Where the open comment composer points: a hunk (`line` 0) or a line range in it. */
 interface CommentTarget {
   /** `${path}#${hunkIndex}` */
@@ -854,12 +867,15 @@ export default function DiffPanel({ source, isActive, focused = isActive, surfac
           const hi = Math.max(prev.endLine ?? prev.line, a.line);
           return { ...prev, line: lo, ...(hi > lo ? { endLine: hi } : { endLine: undefined }), snippet: a.line < prev.line ? line.text : prev.snippet };
         }
-        if (prev && prev.key === key && prev.side === a.side && prev.line === a.line && !prev.endLine) return null;
         return { key, file, hunkHeader, side: a.side, line: a.line, snippet: line.text };
       });
     },
     [],
   );
+  const lineComposerOpenAt = (key: string, line: DiffLine): boolean => {
+    const a = lineAnchorOf(line);
+    return !!a && commentTarget?.key === key && commentTarget.side === a.side && commentTarget.line === a.line && !commentTarget.endLine;
+  };
 
   // Workspace review: the terminal the note goes to — the one in this diff's
   // pane running an agent (the shown terminal first). The note is a prompt for
@@ -875,7 +891,7 @@ export default function DiffPanel({ source, isActive, focused = isActive, surfac
       if (!leaf) return '';
       const terminals = leaf.surfaces.filter((x) => !x.surfaceType || x.surfaceType === 'terminal');
       const shown = terminals.find((x) => x.id === leaf.activeSurfaceId);
-      const pick = [shown, ...terminals].find((x) => x?.ptyId && s.surfaceAgent[x.ptyId]);
+      const pick = [shown, ...terminals].find((x) => !!x?.ptyId && agentOwnsPty(s, x.ptyId));
       return pick ? JSON.stringify([ws.id, leaf.id, pick.id, pick.ptyId, s.surfaceAgent[pick.ptyId].name]) : '';
     }
     return '';
@@ -884,25 +900,44 @@ export default function DiffPanel({ source, isActive, focused = isActive, surfac
     ? (JSON.parse(reviewTargetKey) as [string, string, string, string, string])
     : null;
 
-  const sendReview = useCallback(() => {
+  const sendReview = useCallback(async () => {
     if (!reviewTarget || reviewDraft.length === 0) return;
     const [wsId, paneId, terminalSurfaceId, ptyId, agentName] = reviewTarget;
-    void injectText(ptyId, formatDiffReviewNote(repoPath, reviewDraft, false), false);
+    // Checked again at the click: the agent may have exited since the last render.
+    if (!agentOwnsPty(useStore.getState(), ptyId)) return;
+    const sent = reviewDraft;
+    try {
+      await injectText(ptyId, formatDiffReviewNote(repoPath, sent, false), false);
+    } catch (e) {
+      // Nothing was typed: keep the draft so it can be sent again or copied.
+      setApplyMsg(t('diff.reviewSendFailed', { error: e instanceof Error ? e.message : String(e) }));
+      return;
+    }
     // Focus the terminal: the note sits in its input unsent until the user presses Enter.
     useStore.getState().setActiveSurface(paneId, terminalSurfaceId, wsId);
-    setReviewDraft([]);
+    setReviewDraft((prev) => prev.filter((d) => !sent.includes(d)));
     setApplyMsg(t('diff.reviewSent', { agent: agentName }));
   }, [reviewTarget, reviewDraft, repoPath, t]);
 
-  const copyReview = useCallback(() => {
+  const copyReview = useCallback(async () => {
     if (reviewDraft.length === 0) return;
     const count = reviewDraft.length;
     // Kept after a copy: the draft is only cleared once it reached an agent or was discarded.
-    void navigator.clipboard.writeText(formatDiffReviewNote(repoPath, reviewDraft, true)).then(
-      () => setApplyMsg(t('diff.reviewCopied', { count })),
-      () => setApplyMsg(t('diff.reviewCopyFailed')),
-    );
+    try {
+      await window.clipboardAPI.writeText(formatDiffReviewNote(repoPath, reviewDraft, true));
+      setApplyMsg(t('diff.reviewCopied', { count }));
+    } catch {
+      setApplyMsg(t('diff.reviewCopyFailed'));
+    }
   }, [reviewDraft, repoPath, t]);
+
+  // A reload that changed the hunk an open composer points at closes it, so a
+  // comment is never posted with an anchor taken from content no longer shown.
+  useEffect(() => {
+    if (!commentTarget) return;
+    const idx = Number(commentTarget.key.slice(commentTarget.key.lastIndexOf('#') + 1));
+    if (filesByPath.get(commentTarget.file)?.hunks[idx]?.header !== commentTarget.hunkHeader) setCommentTarget(null);
+  }, [filesByPath, commentTarget]);
 
   // J3 §1 — close(remove 성공→close 순서). 확인 1회 후 결과를 토스트로 구분
   // (dirty=보존/unpushed=경고+PR 제안/archivePending). main이 데몬 projection에서
@@ -1083,6 +1118,7 @@ export default function DiffPanel({ source, isActive, focused = isActive, surfac
           }}
           placeholder={t('diff.commentPrompt', { file: where })}
           spellCheck={false}
+          {...(isTask ? {} : { maxLength: REVIEW_COMMENT_MAX })}
           className="flex-1 min-w-0 bg-transparent text-[11px] text-[var(--text-main)] placeholder-[var(--text-muted)] outline-none px-1"
           data-testid="diff-comment-input"
         />
@@ -1135,7 +1171,7 @@ export default function DiffPanel({ source, isActive, focused = isActive, surfac
               className={reviewTarget
                 ? `px-2 py-0.5 text-[10px] text-[var(--text-sub)] hover:text-[var(--text-main)] ${BTN_RAISED}`
                 : `px-2 py-0.5 text-[10px] ${BTN_PRIMARY_WARM}`}
-              onClick={copyReview}
+              onClick={() => void copyReview()}
               title={t('diff.reviewCopyTitle')}
               data-testid="diff-review-copy"
             >
@@ -1144,7 +1180,7 @@ export default function DiffPanel({ source, isActive, focused = isActive, surfac
             {reviewTarget && (
               <button
                 className={`px-2 py-0.5 text-[10px] ${BTN_PRIMARY_WARM}`}
-                onClick={sendReview}
+                onClick={() => void sendReview()}
                 title={t('diff.reviewSendTitle')}
                 data-testid="diff-review-send"
               >
@@ -1323,7 +1359,15 @@ export default function DiffPanel({ source, isActive, focused = isActive, surfac
                               <button
                                 type="button"
                                 className={`wmux-hunk-gutter-btn ${FOCUS_RING}`}
-                                onClick={(e) => placeLineComment(key, activeFile.path, hunk.header, line, e.shiftKey)}
+                                onClick={(e) => {
+                                  // A second click on the open line closes its composer and its text.
+                                  if (!e.shiftKey && lineComposerOpenAt(key, line)) {
+                                    setCommentTarget(null);
+                                    setCommentText('');
+                                    return;
+                                  }
+                                  placeLineComment(key, activeFile.path, hunk.header, line, e.shiftKey);
+                                }}
                                 aria-label={t('diff.commentLine', { file: activeFile.path, line: range })}
                                 title={t('diff.commentLineTitle')}
                                 data-testid="diff-line-comment"

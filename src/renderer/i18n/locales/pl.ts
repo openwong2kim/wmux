@@ -4069,6 +4069,7 @@ export const pl = {
   'diff.reviewSend': 'Wyślij do {agent} ({count})',
   'diff.reviewSendTitle': 'Wpisz recenzję w pole wejściowe agenta w tym panelu, bez wysyłania',
   'diff.reviewSent': 'Recenzja wpisana w pole wejściowe {agent} — naciśnij tam Enter, aby ją wysłać',
+  'diff.reviewSendFailed': 'Nie udało się wpisać recenzji do agenta: {error}',
 
   // ─── Worktask cleanup: close-result toasts ───────────────────────────────
   'worktask.cleanup.closed': 'Zadanie zamknięte.',
