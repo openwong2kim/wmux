@@ -978,6 +978,10 @@ const electronAPI = {
   browser: {
     registerWebview: (surfaceId: string, webContentsId: number, workspaceId?: string) =>
       ipcRenderer.invoke('browser:register-webview', surfaceId, webContentsId, workspaceId),
+    /** Save the inspector-picked element's on-screen box as a PNG; resolves to
+     *  its path as `ptyId`'s shell sees it, or null when it could not be taken. */
+    captureElement: (webContentsId: number, rect: unknown, ptyId?: string): Promise<string | null> =>
+      ipcRenderer.invoke('browser:capture-element', webContentsId, rect, ptyId),
     // #517 lightweight mode signals
     setVisibility: (surfaceId: string, visible: boolean) =>
       ipcRenderer.invoke('browser:set-visibility', surfaceId, visible),

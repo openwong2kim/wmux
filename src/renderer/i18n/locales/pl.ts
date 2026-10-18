@@ -1008,6 +1008,7 @@ export const pl = {
   'browser.handoff.send': 'Wyślij do {name}',
   'browser.handoff.sendHint': 'Tekst jest tylko wpisywany w wiersz terminala. Nic się nie uruchomi, dopóki nie naciśniesz Enter.',
   'browser.handoff.copy': 'Kopiuj',
+  'browser.handoff.screenshot': 'Zrzut ekranu dołączony',
   'browser.handoff.close': 'Zamknij',
   'browser.handoff.noTerminal': 'Ten panel nie ma terminala — skopiuj zamiast tego',
   'browser.inspector.hint': 'Kliknij element, aby przekazać go agentowi',

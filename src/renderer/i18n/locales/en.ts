@@ -1023,6 +1023,7 @@ export const en = {
   'browser.handoff.send': 'Send to {name}',
   'browser.handoff.sendHint': 'Types it into the terminal\'s input line. Nothing runs until you press Enter.',
   'browser.handoff.copy': 'Copy',
+  'browser.handoff.screenshot': 'Screenshot attached',
   'browser.handoff.close': 'Close',
   'browser.handoff.noTerminal': 'This pane has no terminal, so copy it instead',
   'browser.inspector.hint': 'Click an element to hand it to the agent',

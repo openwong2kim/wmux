@@ -172,6 +172,7 @@ import { ChromeProfileStore, reconcilePaneBindingsFromMirror } from './browser-s
 import { CHROME_PANE_IPC } from '../shared/chromePaneBinding';
 import { BrowserPolicyStore, reconcileBrowserPoliciesFromMirror } from './browser-session/BrowserPolicyStore';
 import { isTrustedMainFrameSender, registerBrowserPolicyIpc, UNTRUSTED_SENDER_ERROR } from './ipc/handlers/browserPolicy.handler';
+import { registerElementShotHandler } from './ipc/handlers/browserElementShot.handler';
 import { ChromeSurfaceStore } from './browser-session/ChromeSurfaceStore';
 import { getActionCacheStore } from './browser-session/ActionCacheStore';
 import { getPromotedSkillStore } from './browser-session/PromotedSkillStore';
@@ -1619,6 +1620,8 @@ ipcMain.handle('browser:set-discard', (_event, enabled: boolean) => {
   webviewCdpManager.setDiscardMode(enabled);
   return { ok: true };
 });
+// Inspector hand-off: the picked element's screenshot, saved for the agent.
+registerElementShotHandler(() => mainWindow);
 // Private browser tabs: the renderer asks once the last one has closed. The
 // clear waits for the closed tabs' guests to be destroyed (tracked here).
 trackPrivateBrowserContents();

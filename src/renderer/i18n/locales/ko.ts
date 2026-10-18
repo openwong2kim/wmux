@@ -775,6 +775,7 @@ export const ko = {
   'browser.handoff.send': '{name}(으)로 보내기',
   'browser.handoff.sendHint': '터미널 입력줄에 입력만 합니다. Enter를 눌러야 실행됩니다.',
   'browser.handoff.copy': '복사',
+  'browser.handoff.screenshot': '스크린샷 첨부됨',
   'browser.handoff.close': '닫기',
   'browser.handoff.noTerminal': '이 판에 터미널이 없어 복사만 할 수 있습니다',
   'browser.inspector.hint': '에이전트에게 넘길 요소를 클릭하세요',
