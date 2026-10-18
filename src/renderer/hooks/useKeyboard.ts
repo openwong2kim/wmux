@@ -379,14 +379,15 @@ export function useKeyboard() {
       const next = clampFontSize(cur + delta);
       if (next !== cur) store.getState().setTerminalFontSize(next);
     };
-    // With a browser pane active the same keys zoom its page, as in Chrome
-    // (browserZoom.ts). True when a browser surface took the step.
+    // With focus in a browser pane's chrome (address bar, toolbar) the same
+    // keys zoom its page, as in Chrome (browserZoom.ts). Focus, not the active
+    // surface, picks the target: clicking an address bar does not make its
+    // pane active, and a floating terminal can sit over an active browser.
+    // True when a browser pane took the step.
     const zoomBrowserPage = (step: PageZoomStep): boolean => {
-      const ws = activeWorkspace();
-      const pane = ws ? findLeaf(ws.rootPane, ws.activePaneId) : null;
-      const surface = pane?.surfaces.find((s) => s.id === pane.activeSurfaceId);
-      if (surface?.surfaceType !== 'browser') return false;
-      document.dispatchEvent(new CustomEvent<BrowserZoomDetail>(BROWSER_ZOOM_EVENT, { detail: { surfaceId: surface.id, step } }));
+      const surfaceId = (document.activeElement as HTMLElement | null)?.closest<HTMLElement>('[data-browser-panel]')?.dataset.browserPanel;
+      if (!surfaceId) return false;
+      document.dispatchEvent(new CustomEvent<BrowserZoomDetail>(BROWSER_ZOOM_EVENT, { detail: { surfaceId, step } }));
       return true;
     };
     // Ctrl+Shift+Arrow MOVES focus — pane focus within the active workspace,

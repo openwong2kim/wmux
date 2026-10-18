@@ -633,6 +633,8 @@ export default function BrowserPanel({ surfaceId, workspaceId, initialUrl, parti
   return (
     <div
       className="flex flex-col h-full w-full overflow-hidden"
+      // Lets the zoom shortcut find the pane whose chrome has focus (useKeyboard).
+      data-browser-panel={surfaceId}
       // Clicking the toolbar / title strip / page chrome (anywhere in the
       // pane) pulls keyboard focus onto the webview. Clicking *inside* page
       // content already focuses the guest natively, but pane-switch clicks and
