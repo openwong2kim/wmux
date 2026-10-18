@@ -52,7 +52,8 @@ export function registerElementShotHandler(getWindow: () => BrowserWindow | null
         `${ELEMENT_SHOT_PREFIX}${Date.now()}-${Math.random().toString(36).slice(2, 8)}.png`,
       );
       try {
-        await fsp.writeFile(file, image.toPNG());
+        // Owner-only: a page element can hold private content, and Linux /tmp is shared.
+        await fsp.writeFile(file, image.toPNG(), { mode: 0o600, flag: 'wx' });
       } catch {
         return null;
       }
