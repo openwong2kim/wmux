@@ -151,6 +151,8 @@ export interface HumanMessageInput {
    *  phone takes messages longer than a card holds): the wake carries it. */
   wakeText?: string;
   source: 'desktop' | 'phone';
+  /** Photos already in the room's store (roomAttachments.ts). */
+  attachments?: RoomCard['attachments'];
 }
 
 /** One addressee's outcome. `wakeId` absent: its queue took no wake. */
@@ -264,6 +266,7 @@ export function postHumanMessage(writer: RoomWriter, ports: Partial<FactoryRoomP
     refs,
     ...(input.replyTo ? { replyTo: input.replyTo } : {}),
     ...(input.clientPostId ? { clientPostId: input.clientPostId } : {}),
+    ...(input.attachments?.length ? { attachments: input.attachments } : {}),
   });
   if (!r.ok) return r;
   const card = r.card;

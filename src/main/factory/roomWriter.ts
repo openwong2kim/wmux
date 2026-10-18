@@ -53,6 +53,7 @@ import { formatLaneRefusal } from './laneRefusalText';
 import { redactStoredSecrets, redactStoredSecretsDeep } from './secretRedaction';
 import type { BotDirectoryApi, FactLogApi, WakeSinkApi } from './triggerEngine';
 import type { BotGroup } from '../../shared/botGroup';
+import { parseRoomAttachments } from '../../shared/roomAttachments';
 
 export const ROOMS_DIRNAME = 'rooms';
 
@@ -449,6 +450,7 @@ export function parseCardLine(raw: unknown, workspaceId: string): RoomCard | nul
   const refs = sanitizeRefs(c.refs);
   const jobChange = c.kind === 'job_changed' ? sanitizeJobChange(c.jobChange) : undefined;
   const notice = actor.kind === 'system' ? sanitizeNotice(c.notice) : undefined;
+  const attachments = c.kind === 'human' && actor.kind === 'human' ? parseRoomAttachments(c.attachments) : undefined;
   return {
     version: 1,
     id: c.id,
@@ -468,6 +470,7 @@ export function parseCardLine(raw: unknown, workspaceId: string): RoomCard | nul
     ...(jobChange ? { jobChange } : {}),
     ...(c.greeting === true && c.kind === 'question' ? { greeting: true as const } : {}),
     ...(notice ? { notice } : {}),
+    ...(attachments ? { attachments } : {}),
   };
 }
 
@@ -504,6 +507,9 @@ export interface RoomCardInput {
   greeting?: true;
   /** System cards only (RoomCard.notice). */
   notice?: CardNotice;
+  /** The owner's `human` cards only (RoomCard.attachments): photos already
+   *  in the room's store. */
+  attachments?: RoomCard['attachments'];
 }
 
 /** A post from a bot or the owner: idempotent by clientPostId, and a replyTo
@@ -715,6 +721,7 @@ export class RoomWriter {
     const refs = sanitizeRefs(redactStoredSecretsDeep(input.refs));
     const jobChange = input.kind === 'job_changed' ? sanitizeJobChange(redactStoredSecretsDeep(input.jobChange)) : undefined;
     const notice = actor.kind === 'system' ? sanitizeNotice(redactStoredSecretsDeep(input.notice)) : undefined;
+    const attachments = input.kind === 'human' && actor.kind === 'human' ? parseRoomAttachments(input.attachments) : undefined;
     // A fact delivered twice (a re-subscribe, a replay) writes one card.
     const factKey = refs?.factId ? factCardKey({ refs, threadId, kind: input.kind }) : null;
     if (factKey && state.seenFacts.has(factKey)) return null;
@@ -735,6 +742,7 @@ export class RoomWriter {
       ...(jobChange ? { jobChange } : {}),
       ...(input.greeting === true && input.kind === 'question' ? { greeting: true as const } : {}),
       ...(notice ? { notice } : {}),
+      ...(attachments ? { attachments } : {}),
       ...(extra?.replyTo ? { replyTo: extra.replyTo } : {}),
       ...(extra?.clientPostId ? { clientPostId: extra.clientPostId } : {}),
     };

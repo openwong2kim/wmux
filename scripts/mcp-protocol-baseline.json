@@ -3,7 +3,7 @@
   "profiles": {
     "full": {
       "maxListBytes": 80000,
-      "wireResultSha256": "c8bfb053b9648648f4e90db2d6f6cd4e1c72341a1c7c56154946cb127de1ab65",
+      "wireResultSha256": "e4eecfdf120b6a00b7e2b9438d0a54c72d338bb136e824141c10d373cd78bd84",
       "instructionSha256": "6e09a08a7038bb08f49484e3a98020ef6a35efebbebc39d33f9a514b71e7c7c1",
       "toolNames": [
         "browser_open",
@@ -90,7 +90,7 @@
     },
     "core": {
       "maxListBytes": 49000,
-      "wireResultSha256": "3d7d84b20352583ec02a606f5f05cdafa8ed217748c1de4569664680863e736f",
+      "wireResultSha256": "02c09d96d417c482083be819f101bd274d473edfb48d901809d8214e61fbea73",
       "instructionSha256": "4a87aa8208502b84c23fd41c6c2594b91c7e368ad187f14d4905164448548f4a",
       "toolNames": [
         "terminal_read",

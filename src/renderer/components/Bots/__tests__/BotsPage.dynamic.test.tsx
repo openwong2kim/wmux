@@ -880,6 +880,64 @@ describe('Bots page', () => {
     expect(heads).not.toContain('Lead');
   });
 
+  it('photos: the picker stages chips (× and Backspace take them off), the send carries their paths, and a photo-only send has no words', async () => {
+    const withPhotos = api();
+    withPhotos.pickAttachments = vi.fn(async () => ['/Users/me/shot.png', '/Users/me/notes.txt']) as unknown as RoomsApi['pickAttachments'];
+    setRoomsApiForTests(withPhotos);
+    vi.stubGlobal('electronAPI', {
+      web: { status: vi.fn(async () => ({ running: false })) },
+      chat: { attachment: vi.fn(async ({ path }: { path: string }) => ({ ok: true, path, name: path.split('/').pop(), bytes: 10, thumbnail: 'data:image/png;base64,AAAA' })) },
+    });
+    seedRooms();
+    await render(<BotsPage />);
+    act(() => q(`[data-bots-row="bot:${LEAD}"]`)!.click());
+    const send = () => q<HTMLButtonElement>('[data-testid="bots-composer-send"]')!;
+    expect(send().disabled).toBe(true);
+    await act(async () => { q('[data-bots-composer-attach]')!.click(); });
+    await act(async () => { await Promise.resolve(); });
+    // The PNG is staged; the text file is refused with one line.
+    expect([...container.querySelectorAll('[data-bots-composer-photos] .wmux-chat-attachment-name')].map((el) => el.textContent)).toEqual(['shot.png']);
+    expect(q('[data-testid="bots-composer-status"]')?.textContent).toBe('Only PNG and JPEG photos can be sent.');
+    // A photo alone may be sent.
+    expect(send().disabled).toBe(false);
+    await act(async () => { send().click(); });
+    expect(posted.at(-1)).toMatchObject({ workspaceId: 'w1', threadId: `dm:${LEAD}`, title: 'Photo', attachmentPaths: ['/Users/me/shot.png'] });
+    expect(posted.at(-1)?.body).toBeUndefined();
+    expect(container.querySelector('[data-bots-composer-photos]')).toBeNull();
+    // Backspace at the start of the box takes the last chip off.
+    await act(async () => { q('[data-bots-composer-attach]')!.click(); });
+    await act(async () => { await Promise.resolve(); });
+    const input = q<HTMLTextAreaElement>('[data-testid="bots-composer-input"]')!;
+    act(() => { input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Backspace', bubbles: true })); });
+    expect(container.querySelector('[data-bots-composer-photos]')).toBeNull();
+  });
+
+  it("an owner card's photos show as thumbnails that open full size; a photo-only card draws no words", async () => {
+    const id = 'a'.repeat(32);
+    cards.push(card({ workspaceId: 'w1', actor: { kind: 'human' }, kind: 'human', title: 'Photo', threadId: `dm:${LEAD}`, refs: { botId: LEAD }, at: 500, attachments: [{ id, mediaType: 'image/jpeg', bytes: 4 }] }));
+    const withPhotos = api();
+    withPhotos.attachment = vi.fn(async () => ({ ok: true, dataUrl: 'data:image/jpeg;base64,/9j/' })) as unknown as RoomsApi['attachment'];
+    setRoomsApiForTests(withPhotos);
+    seedRooms();
+    await render(<BotsPage />);
+    act(() => q(`[data-bots-row="bot:${LEAD}"]`)!.click());
+    await act(async () => { await Promise.resolve(); });
+    const owner = () => container.querySelector(`[data-room-card-id="${cards.at(-1)!.id}"]`)!;
+    await vi.waitFor(() => expect(owner().querySelector(`[data-bots-photo="${id}"] img`)?.getAttribute('src')).toBe('data:image/jpeg;base64,/9j/'), { timeout: 10_000 });
+    expect(owner().querySelector('.wmux-bots-bubble-owner')).toBeNull();
+    const thumb = owner().querySelector<HTMLButtonElement>(`[data-bots-photo="${id}"]`)!;
+    thumb.focus();
+    act(() => thumb.click());
+    expect(document.querySelector('[data-testid="bots-photo-viewer"] img')?.getAttribute('src')).toBe('data:image/jpeg;base64,/9j/');
+    // A visible ×, Escape and the backdrop each close it; focus goes back to the thumbnail.
+    act(() => document.querySelector<HTMLButtonElement>('[data-testid="bots-photo-viewer-close"]')!.click());
+    expect(document.querySelector('[data-testid="bots-photo-viewer"]')).toBeNull();
+    expect(document.activeElement).toBe(thumb);
+    act(() => thumb.click());
+    act(() => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); });
+    expect(document.querySelector('[data-testid="bots-photo-viewer"]')).toBeNull();
+  });
+
   it('a group message goes to every bot of the group unless some are picked: "To: everyone ▾", a ticked box or a typed @name; picks reset after send', async () => {
     seedRooms();
     await render(<BotsPage />);

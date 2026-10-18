@@ -20,6 +20,7 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
 import { isCoordinatorBot, type BotRole } from '../../../shared/bot';
 import type { ThreadId } from '../../../shared/room';
+import { photoPlaceholderTitle } from '../../../shared/roomAttachments';
 import { FOCUS_RING } from '../focusRing';
 import { roomsApi, type RoomsApi } from '../../hooks/useRoomSync';
 import { useStore } from '../../stores';
@@ -49,6 +50,30 @@ export function roomPostParams(args: {
     ...(text !== title ? { body: text } : {}),
     ...(args.mentions && args.mentions.length > 0 ? { mentions: [...args.mentions] } : {}),
     clientPostId: args.clientPostId,
+  };
+}
+
+/** The room.post params for a message with photos: the words always ride
+ *  the body (a card with photos and no body is photos only), and a
+ *  photo-only message gets wmux's placeholder title. Pure. */
+export function photoPostParams(args: {
+  workspaceId: string;
+  threadId: ThreadId;
+  text: string;
+  mentions?: readonly string[];
+  clientPostId: string;
+  paths: readonly string[];
+}): Parameters<RoomsApi['post']>[0] | null {
+  if (args.paths.length === 0) return null;
+  const text = args.text.trim();
+  return {
+    workspaceId: args.workspaceId,
+    threadId: args.threadId,
+    title: messageTitle(text) || photoPlaceholderTitle(args.paths.length),
+    ...(text ? { body: text } : {}),
+    ...(args.mentions && args.mentions.length > 0 ? { mentions: [...args.mentions] } : {}),
+    clientPostId: args.clientPostId,
+    attachmentPaths: [...args.paths],
   };
 }
 

@@ -72,6 +72,26 @@ describe('Bots profile model pickers', () => {
     expect(q('[role="alert"]')?.textContent).toMatch(/is not a model id/);
   });
 
+  it('a saved model main would not pass on: the warning stays, the picker opens empty, and an effort-only save sends no model', async () => {
+    const update = vi.fn(async () => ({ ok: true }));
+    act(() => root.render(<BrainModelLine row={row({ engine: { kind: 'claude-sdk', model: 'opus; rm -rf ~' } })} t={t} port={{ update }} />));
+    expect(q('[data-testid="bots-profile-brain-value"]')?.textContent).toBe('Default model');
+    expect(q('[data-testid="bots-profile-brain-warning"]')?.textContent).toContain('opus; rm -rf ~');
+    await click(q('[data-testid="bots-profile-brain-edit"]'));
+    expect(q<HTMLInputElement>('[data-testid="bots-profile-brain"] input[role="combobox"]')!.value).toBe('');
+    const effort = q<HTMLSelectElement>('[data-testid="bots-profile-brain-effort"]')!;
+    act(() => { effort.value = 'high'; effort.dispatchEvent(new Event('change', { bubbles: true })); });
+    await click(q('[data-testid="bots-profile-brain-save"]'));
+    expect(update).toHaveBeenCalledWith('bot-0000000a', { engine: { kind: 'claude-sdk', effort: 'high' } });
+    expect(q('[role="alert"]')).toBeNull();
+  });
+
+  it('a stored model id with padding opens the editor trimmed', async () => {
+    act(() => root.render(<BrainModelLine row={row({ engine: { kind: 'claude-sdk', model: '  haiku  ' } })} t={t} port={{ update: vi.fn(async () => ({ ok: true })) }} />));
+    await click(q('[data-testid="bots-profile-brain-edit"]'));
+    expect(q<HTMLInputElement>('[data-testid="bots-profile-brain"] input[role="combobox"]')!.value).toBe('haiku');
+  });
+
   it('the workers\' model: a model alone pins Claude workers on it; main\'s refusal is shown', async () => {
     const update = vi.fn(async () => ({ ok: false, message: 'workerAgent: refused by main' }));
     act(() => root.render(<WorkerModelLine row={row({ engine: { kind: 'claude-sdk' } })} t={t} port={{ update }} />));

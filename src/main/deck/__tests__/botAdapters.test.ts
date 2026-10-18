@@ -113,7 +113,7 @@ describe('ClaudeSdkAdapter bot mode', () => {
       workspaceId: BINDING.workspaceId,
       mcpBundlePath: '/b.js',
       queryFn: ({ prompt, options = {} }) => {
-        prompts.push(prompt);
+        prompts.push(prompt as string);
         files.push(botTokenFileArgValue((options.mcpServers as Record<string, { args: string[] }>).wmux.args) ?? '');
         return { async *[Symbol.asyncIterator]() { yield { type: 'result', subtype: 'success', session_id: 's' }; } };
       },

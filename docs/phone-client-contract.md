@@ -2747,6 +2747,11 @@ staged in that directory is neither swept nor counted against the quota.
 
 There is no offline queue. A failed upload is a notice and a manual retry.
 
+A photo sent with a Bots room message is copied out of this folder when the
+message is posted and kept with the room card (see
+[Photos on Bots messages](#photos-on-bots-messages-botattachments-roomattachments));
+the upload itself still expires after 24 hours.
+
 ---
 
 ## 9. Channels — reading what the agents said to each other
@@ -4566,8 +4571,9 @@ desktop posts the owner's `human` card in that thread, as its own composer
 does: in a 1:1 for that bot alone, in a group for every member that is on.
 Each bot it is for gets a wake; the daemon answers on queue, never on reply.
 The card carries `clientMessageId` on `/cards`, and the bots' replies name it
-by `replyTo`, as for `/api/moa/messages`. Text only: the desktop's Bots chat
-takes no attachments.
+by `replyTo`, as for `/api/moa/messages`. It may carry photos: see
+[Photos on Bots messages](#photos-on-bots-messages-botattachments-roomattachments)
+below.
 
 Gates and body rules are those of `POST /api/moa/messages`: transcript, then
 this caller's input (the operator token may use it), then the
@@ -4605,6 +4611,98 @@ pane is `409 message-id-reused` as well.
 There is no receipt route of its own: `GET /api/moa/messages/:clientMessageId`
 reads these messages too (`state: "queued"` once queued, `failed` with
 `code: "no-recipient"`, `pending`, `uncertain`).
+
+#### Photos on Bots messages (`botAttachments`, `roomAttachments`)
+
+Additive. A daemon or desktop that predates this omits both keys, never puts
+`attachments` on a card, and refuses the field on the message route with
+`400 {error:"invalid-chat-request", detail:"unknown field: attachments"}`.
+
+**`/api/config`.**
+
+- `botAttachments` — `true` when this caller may send photos with
+  `POST /api/rooms/:workspaceId/messages`: `botMessages` holds, uploads are
+  on (`allowUpload`), and the attached desktop takes photos. Gate the attach
+  button on it. Omitted, never `false`, otherwise.
+- `roomAttachments` — `true` when `GET /api/rooms/:workspaceId/attachments/:id`
+  answers here: `--allow-transcript` and a desktop that serves photos. Draw
+  photos on cards when it is present; a read-only phone sees photos it cannot
+  send. Omitted, never `false`, otherwise.
+
+**Sending.** Upload each photo first with `POST /api/upload` (§8), then send
+the message with the upload names:
+
+```
+POST /api/rooms/ws-1/messages
+{ "clientMessageId": "1759600000000-…", "text": "This crashes on launch", "threadId": "dm:bot-1a2b3c4d",
+  "attachments": [ { "uploadId": "photo-2026-10-18T01-02-03-456Z-0a1b2c3d.jpg" } ] }
+→ 202 { "state": "queued", "clientMessageId": "1759600000000-…", "replayed": false }
+```
+
+- `attachments` — 1 to 4 objects, each exactly `{uploadId}`: the file name
+  (the last path segment) of the `path` an upload returned. No other form;
+  never send a path. No name twice.
+- PNG or JPEG only, decided by the bytes; at most 10 MiB each (the upload cap).
+- `text` may be `""` when at least one photo is attached (a photo-only
+  message). Without photos the text rules are unchanged.
+- A `clientMessageId` stands for its text, its thread and its photos (their
+  upload names, in order) together. The same id with the same photos replays
+  its answer, even after the uploads expired, after uploads were switched
+  off, or with a desktop that no longer takes photos; with other photos it
+  is `409 message-id-reused`. A retry of a message whose card is already up
+  (after `moa-busy`) needs no upload file either: the card keeps its photos.
+- The desktop copies each photo into the room before it posts the card, as
+  one JPEG at most 1568 px on its long edge. That copy is what the card
+  shows, what you fetch and what the bot sees. It is kept by wmux as long as
+  the card (90 days), not the upload's 24 hours. An agent's own conversation
+  record is outside wmux and is not covered by this.
+- The bot each message is for sees the photos themselves in the turn that
+  answers it. A worker the bot hands the task to receives only what the bot
+  tells it.
+
+New answers, all checked before anything is posted. `effect: "none"`; the
+id is not spent:
+
+| Answer | Meaning | Retry |
+|---|---|---|
+| `400 {error:"invalid-chat-request", detail:"attachments"}` | Not 1–4 objects that are exactly `{uploadId}` with a name the upload routes generate, or a name twice. Also `detail:"text"` for empty text without photos. | fix the request |
+| `400 {error:"attachment-not-found", index}` | The upload at `index` is not there: it expired (24 h), or was never uploaded here. | upload again, same id |
+| `413 {error:"attachment-too-large", index, limit}` | Over 10 MiB. | — |
+| `415 {error:"attachment-unsupported", index}` | Not PNG or JPEG. | — |
+| `403 {error:"uploads-disabled: …"}` | The server runs without `--allow-upload` (match the prefix). | send without photos |
+| `409 {error:"attachments-unsupported"}` | The desktop takes no photos (too old). | send without photos |
+| `409 {error:"attachment-refused", reason, state:"failed"}` | The desktop could not take a photo: `missing`, `type`, `size`, or `changed` (the file was replaced after the daemon read it). Nothing was posted; the id is released. | same id, after uploading again |
+| `507 {error:"attachments-full", state:"failed"}` | The room's photo store is full (2000 photos or 1 GiB). Nothing was posted; the id is released. | see below |
+
+`attachments-full`: tell the owner the room's photo storage is full and offer
+to send the message without its photos. Room photos expire with their cards
+after 90 days; the owner frees room sooner on the desktop by deleting files
+from `~/.wmux/factory/room-attachments/<workspaceId>/` (a card whose photo
+is gone shows it as unavailable). Never retry the same message in a loop.
+
+**On cards.** An owner card (`kind: "human"`, `actor: {kind:"human"}`) of
+`GET /api/rooms/:workspaceId/cards` may carry:
+
+```
+"attachments": [ { "id": "3f2a…(32 lowercase hex)", "mediaType": "image/jpeg", "bytes": 482113, "width": 1568, "height": 1176 } ]
+```
+
+At most 4. `width`/`height` may be absent. A card with `attachments` and no
+`body` is a photo-only message: its `title` is wmux's placeholder (`Photo`,
+`2 photos`), so draw only the photos. Cards of other kinds never carry it.
+
+**`GET /api/rooms/:workspaceId/attachments/:attachmentId[?variant=thumb]`** —
+the photo's bytes. `--allow-transcript`, checked first; no input grant. The
+desktop must still keep a card of that room carrying the id.
+
+| Answer | Meaning |
+|---|---|
+| `200` | The JPEG. `Content-Type: image/jpeg`, `Content-Length`, `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`, `Content-Security-Policy: default-src 'none'; sandbox`. `variant=thumb` answers the same copy (it is already small); scale it on the phone. |
+| `400 {error:"invalid-room-request", detail:"variant"}` | A `variant` other than `thumb`. |
+| `403 {error:"transcript-disabled"}` | The server runs without `--allow-transcript`. |
+| `404 {error:"attachment-not-found"}` | No such photo on a kept card of that room, or its file is gone. Show the photo as unavailable. |
+| `503 {error:"desktop-unavailable"}` / `503 {error:"rooms-unavailable"}` | No desktop, or one that cannot serve photos. |
+| `504 {error:"desktop-timeout"}` | The desktop did not answer. |
 
 #### Bot approvals (`/api/bot-approvals`)
 
@@ -6664,6 +6762,13 @@ receipt {"requestId": "…", "state": "done", "pushed": "<oid>", "target": "refs
 - **Where it pushes.** To the upstream branch, which may have a different
   name than the local branch; show `target.ref`. `create:true` means a new
   remote branch (the app shows its own copy on the same sheet).
+- **A branch with no upstream.** The push goes to the same-named remote
+  branch: `create:true` when the remote has none, a fast-forward
+  (`create:false`) when the remote branch is already in the local branch's
+  history, and `remote-branch-exists` otherwise. The daemon writes nothing
+  into the pane's repository, so a branch the push created still has no
+  upstream afterwards (the branch list shows no ahead/behind for it), and the
+  pane's remote-tracking ref moves only when the pane fetches.
 - **`fastForward:false`.** The push will fail with `non-fast-forward`.
   Disable the button.
 - **Never force-pushes.** There is no override.

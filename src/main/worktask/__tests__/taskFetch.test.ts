@@ -128,6 +128,18 @@ describe('fetchTaskRefs', () => {
     expect(taskFetchConfigRefusal([{ scope: 'global', key: `remote.${origin.toLowerCase()}.url`, value: 'x' }], origin)).toBeNull();
   });
 
+  it('a Windows-host repository: the WSL line runs Windows git through interop (git.exe, the Windows relay path, quoted for bash)', async () => {
+    const r = await fetchTask(input(), undefined, { protocols: ['https', 'ssh', 'file'], platform: 'win32' });
+    expect(r).toMatchObject({ ok: true, fetchCommandShell: 'win32' });
+    const { fetchCommand, fetchCommandWsl } = r as { fetchCommand: string; fetchCommandWsl?: string };
+    const relay = path.join(root, 'relay', 'wtask-1');
+    expect(fetchCommand).toBe(`git fetch --no-tags --no-write-fetch-head "${relay}" "+refs/heads/main:refs/remotes/origin/main"`);
+    expect(fetchCommandWsl).toBe(`git.exe fetch --no-tags --no-write-fetch-head '${relay}' '+refs/heads/main:refs/remotes/origin/main'`);
+    // The same line, read by bash (git standing in for git.exe), brings origin/main in.
+    execFileSync('bash', ['-c', (fetchCommandWsl as string).replace(/^git\.exe /, 'git ')], { cwd: work });
+    expect(git(work, 'rev-parse', 'refs/remotes/origin/main')).toBe(git(other, 'rev-parse', 'HEAD'));
+  });
+
   it('fetches each branch into the relay\'s own refs/heads, at origin\'s URL, with no tags, submodules or FETCH_HEAD', () => {
     expect(taskFetchArgs('https://github.com/o/r.git', ['main', 'wtask/one'])).toEqual([
       'fetch', '--no-tags', '--recurse-submodules=no', '--no-write-fetch-head', '--no-auto-maintenance', '--no-write-commit-graph',
@@ -142,7 +154,7 @@ describe('task.fetch RPC', () => {
   type Rec = { taskId: string; botId: string; ownerWorkspaceId: string };
   const setup = (over: { tasks?: unknown[]; caller?: string | null; botRepo?: string; row?: unknown; ended?: unknown; reclaimed?: (ws: string, pty: string) => Rec | null; exists?: boolean } = {}) => {
     const handlers = new Map<string, Handler>();
-    const fetch = vi.fn(async () => ({ ok: true as const, remote: 'origin' as const, defaultBranch: 'main', fetchCommand: 'git fetch --no-tags R +refs/heads/main:refs/remotes/origin/main', fetched: [{ ref: 'origin/main', sha: 'abc' }], missing: [] }));
+    const fetch = vi.fn(async () => ({ ok: true as const, remote: 'origin' as const, defaultBranch: 'main', fetchCommand: 'git fetch --no-tags R +refs/heads/main:refs/remotes/origin/main', fetchCommandShell: 'linux' as const, fetched: [{ ref: 'origin/main', sha: 'abc' }], missing: [] }));
     const push = vi.fn();
     const row = over.row === undefined ? { id: 'wtask-1', ownerWorkspaceId: 'ws-owner', taskWorkspaceId: 'ws-task', dispatch: { origin: { kind: 'pane' }, repoKey: 'github.com/acme/app', gitCommonDir: '/r/.git' } } : over.row;
     registerTaskPushRpc({ register: (m: string, h: Handler) => handlers.set(m, h) } as never, {

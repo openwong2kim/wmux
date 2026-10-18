@@ -910,6 +910,7 @@ async function restoreWebServer(sessionManager: DaemonSessionManager): Promise<v
         // the Playwright sandbox already allowlists, so an uploaded photo is
         // reachable by browser_file_upload without a second policy.
         uploadsDir: path.join(wmuxDir, 'uploads', 'phone'),
+        roomAttachmentsDir: path.join(wmuxDir, 'factory', 'room-attachments'),
         // Each file served because an agent sent it with SendUserFile.
         auditSentFile: (entry) => getDeviceStore().recordSentFile(entry),
         // The Moa (HQ brain) pane main last vouched for, read per request so a
@@ -3368,6 +3369,7 @@ function registerRpcHandlers(
       ...(channelPhoneApi ? { channels: channelPhoneApi } : {}),
       // See the restore path for why this directory and not another.
       uploadsDir: path.join(wmuxDir, 'uploads', 'phone'),
+        roomAttachmentsDir: path.join(wmuxDir, 'factory', 'room-attachments'),
       // See the restore path.
       auditSentFile: (entry) => getDeviceStore().recordSentFile(entry),
       // See the restore path.

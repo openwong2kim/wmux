@@ -10,6 +10,7 @@
 
 import type { FactRef } from './facts';
 import type { Party } from './handoff';
+import type { RoomAttachment } from './roomAttachments';
 import { normalizeRepoKey } from './repoKey';
 import { BOT_ID_RE } from './bot';
 
@@ -188,6 +189,9 @@ export interface RoomCard {
    *  title and body stay the English text, shown for a code the reader does
    *  not know. */
   notice?: CardNotice;
+  /** Main-written, `human` cards only: the photos the owner sent with the
+   *  message (shared/roomAttachments.ts). Never set by a room.post param. */
+  attachments?: RoomAttachment[];
 }
 
 /** A factory system card's stable code: the task gate's and the worker

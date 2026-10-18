@@ -110,7 +110,7 @@ describe('identity and file mode (#2231)', () => {
 describe.skipIf(process.platform === 'win32')('WSL_TASK_GIT_ENV', () => {
   const run = (env: Record<string, string>) => execFileSync('/bin/bash', ['-c', `${WSL_TASK_GIT_ENV}
 printf '%s|%s|%s|%s|%s|%s|%s\\n' "\${GIT_DIR-}" "\${GIT_WORK_TREE-}" "\${GIT_CONFIG_COUNT-}" "\${GIT_CONFIG_KEY_0-}" "\${GIT_CONFIG_VALUE_0-}" "\${GIT_CONFIG_KEY_1-}" "\${GIT_CONFIG_VALUE_1-}"`], {
-    env: { PATH: process.env.PATH ?? '/usr/bin:/bin', ...env },
+    env: { PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: process.env.HOME ?? '/tmp', ...env },
     encoding: 'utf8',
   }).trim();
   const where = { WMUX_WSL_GIT_DIR: '/mnt/d/r/.git/worktrees/t 1', WMUX_WSL_GIT_WORK_TREE: '/mnt/c/w/t 1' };
@@ -131,7 +131,7 @@ printf '%s|%s|%s|%s|%s|%s|%s\\n' "\${GIT_DIR-}" "\${GIT_WORK_TREE-}" "\${GIT_CON
   it('appends file mode and identity after autocrlf, values kept as they are', () => {
     const out = execFileSync('/bin/bash', ['-c', `${WSL_TASK_GIT_ENV}
 for i in 0 1 2 3; do eval "printf '%s=%s;' \\"\\$GIT_CONFIG_KEY_$i\\" \\"\\$GIT_CONFIG_VALUE_$i\\""; done; printf '%s' "$GIT_CONFIG_COUNT"`], {
-      env: { PATH: process.env.PATH ?? '/usr/bin:/bin', ...where, WMUX_WSL_GIT_AUTOCRLF: 'true', WMUX_WSL_GIT_FILEMODE: 'false', WMUX_WSL_GIT_USER_NAME: "Kim 'W' $(x)", WMUX_WSL_GIT_USER_EMAIL: 'me@example.com' },
+      env: { PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: process.env.HOME ?? '/tmp', ...where, WMUX_WSL_GIT_AUTOCRLF: 'true', WMUX_WSL_GIT_FILEMODE: 'false', WMUX_WSL_GIT_USER_NAME: "Kim 'W' $(x)", WMUX_WSL_GIT_USER_EMAIL: 'me@example.com' },
       encoding: 'utf8',
     });
     expect(out).toBe("core.autocrlf=true;core.filemode=false;user.name=Kim 'W' $(x);user.email=me@example.com;4");

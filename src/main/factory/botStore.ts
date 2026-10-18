@@ -72,7 +72,8 @@ import { createFilePersister, readVersionedFile, type FilePersister } from './ve
 import { LEGACY_TRIAGE_TRIGGERS, defaultTriggers } from './roleDefaults';
 import { parseBotAvatar } from './botAvatar';
 import { validateBotWorkerAgent } from '../../shared/botWorkerAgent';
-import { validateBotBrainModel, validateFanoutModel } from '../../shared/fanoutPreset';
+import { BOT_BRAIN_MODEL_MAX, validateBotBrainModel, validateFanoutModel } from '../../shared/fanoutPreset';
+import { ROLE_BINDING_MODEL_MAX } from '../../shared/orchestratorRole';
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return !!v && typeof v === 'object' && !Array.isArray(v);
@@ -91,6 +92,8 @@ const LABEL_MAX = 100;
 const BATCH_WINDOW_MAX_MS = 24 * 3_600_000;
 const BATCH_MAX = 100;
 const EFFORTS: ReadonlySet<string> = new Set(CLAUDE_EFFORT_LEVELS);
+/** The refusal for an engine sanitizeBotEngine rejects, with both model rules. */
+const ENGINE_MALFORMED = `engine is malformed (a claude-sdk model must be one model id of up to ${BOT_BRAIN_MODEL_MAX} characters: a letter or digit first, then letters, digits and . _ : / @ -, optionally ending in a [variant], so a Bedrock or Vertex id or a model ARN passes; a claude-pty model: a letter or digit first, then letters, digits and . _ : -, up to ${ROLE_BINDING_MODEL_MAX})`;
 
 /** What a store answers to the trigger engine (§14). */
 export interface BotDirectoryApi {
@@ -555,7 +558,7 @@ export class BotStore implements BotDirectoryApi {
     const name = input.name === undefined ? fallbackName : normalizeBotName(input.name);
     if (!name) return refuse('invalid_argument', `name must be 1-${NAME_MAX} characters, no control characters or slashes`);
     const engine = input.engine === undefined ? withTemplateBrain(sanitizeBotEngine(this.defaultEngine()), template) : sanitizeBotEngine(input.engine);
-    if (!engine) return refuse('invalid_argument', 'engine is malformed (a model must be one model id: letters/digits first, then . _ : -, optionally ending in a [variant])');
+    if (!engine) return refuse('invalid_argument', ENGINE_MALFORMED);
     let workerAgent = TEMPLATE_MODEL_DEFAULTS[template]?.worker;
     if (input.workerAgent !== undefined) {
       const v = validateBotWorkerAgent(input.workerAgent, this.platform);
@@ -636,7 +639,12 @@ export class BotStore implements BotDirectoryApi {
     }
     if (patch.engine !== undefined) {
       const engine = sanitizeBotEngine(patch.engine);
-      if (!engine) return refuse('invalid_argument', 'engine is malformed (a model must be one model id: letters/digits first, then . _ : -, optionally ending in a [variant])');
+      if (!engine) return refuse('invalid_argument', ENGINE_MALFORMED);
+      // A stored model that fails the rule cannot be sent back, so a patch
+      // without a model keeps it: only picking another model replaces it.
+      if (engine.kind === 'claude-sdk' && engine.model === undefined && cur.engine.kind === 'claude-sdk' && cur.engine.model !== undefined && !validateBotBrainModel(cur.engine.model).ok) {
+        engine.model = cur.engine.model;
+      }
       next.engine = engine;
     }
     if (patch.workerAgent !== undefined) {

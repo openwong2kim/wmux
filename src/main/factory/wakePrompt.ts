@@ -304,6 +304,8 @@ export function buildWakePrompt(input: WakePromptInput): string {
       actor: c.actor,
       title: c.title,
       ...(c.body ? { body: c.body } : {}),
+      // The owner's photos are seen only in the turn that answers them.
+      ...(c.attachments?.length ? { photos: c.attachments.length } : {}),
     }));
     lines.push(
       '',

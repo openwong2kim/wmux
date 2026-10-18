@@ -540,3 +540,14 @@ export function IconPin({ size = 14 }: { size?: number }) {
     </Icon>
   );
 }
+
+/** A picture: a frame, a sun and a hill — attaching a photo. */
+export function IconImage({ size = 14 }: { size?: number }) {
+  return (
+    <Icon size={size}>
+      <rect x="1.8" y="2.6" width="10.4" height="8.8" rx="1.6" />
+      <circle cx="5" cy="5.6" r="1" />
+      <path d="M2.2 10.2 L5.6 7.2 L8 9.2 L9.6 7.8 L11.8 9.8" />
+    </Icon>
+  );
+}

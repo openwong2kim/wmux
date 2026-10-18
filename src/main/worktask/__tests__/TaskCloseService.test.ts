@@ -187,6 +187,22 @@ describe('J3 §1 close 순서 계약', () => {
     fs.rmSync(remoteDir, { recursive: true, force: true });
   });
 
+  it('the relay removal is queued, not awaited: a removal stuck behind a relay call does not delay the close', async () => {
+    const { port } = makeDaemon();
+    let timer: NodeJS.Timeout | undefined;
+    const removeRelay = vi.fn(() => new Promise<void>((resolve) => { timer = setTimeout(resolve, 3000); }));
+    const svc = new TaskCloseService({ daemon: port, worktrees: new TaskWorktreeManager(), removeRelay });
+    const started = Date.now();
+    try {
+      const res = await svc.closeTask({ taskId: 'wtask-slow', verifiedWorkspaceId: 'ws-owner' });
+      expect(res.ok).toBe(true);
+      expect(Date.now() - started).toBeLessThan(2000);
+      expect(removeRelay).toHaveBeenCalledWith('wtask-slow');
+    } finally {
+      clearTimeout(timer);
+    }
+  });
+
   it('미물질화(worktreePath 부재): worktree 단계 건너뛰고 close만', async () => {
     const { port, calls } = makeDaemon();
     const mgr = new TaskWorktreeManager();

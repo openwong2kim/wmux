@@ -1,6 +1,7 @@
 import { useEffect, useState, useRef, useCallback, useSyncExternalStore, lazy, Suspense } from 'react';
 import { isBrowserBackend } from '../../../shared/browserBackend';
 import { deliverChatDrop } from '../Chat/chatAttachments';
+import { deliverBotsDrop } from '../Bots/BotsPhotos';
 import type { AgentSlug } from '../../../shared/events';
 import type { ResumeBinding } from '../../../shared/agentResume';
 import { useStore } from '../../stores';
@@ -1088,6 +1089,12 @@ export default function AppLayout() {
       dragCounterRef.current = 0;
 
       const state = useStore.getState();
+      // The Bots page: a drop is photos for its open composer, never a path
+      // typed into a pane the page covers.
+      if (state.appRoute === 'bots') {
+        deliverBotsDrop(paths);
+        return;
+      }
       const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
       if (!ws) return;
 

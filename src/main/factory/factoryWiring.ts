@@ -47,7 +47,8 @@ import fs from 'node:fs';
 import { atomicReadJSONSync, atomicWriteJSONSync } from '../../daemon/util/atomicWrite';
 import type { BotProfile } from '../../shared/bot';
 import type { Fact, FactDraft } from '../../shared/facts';
-import type { MoaWakePayload, MoaWakeRefusalCode, MoaWakeResult } from '../../shared/moaWake';
+import type { MoaWakeAttachment, MoaWakePayload, MoaWakeRefusalCode, MoaWakeResult } from '../../shared/moaWake';
+import { photoPlaceholderTitle, type RoomAttachment } from '../../shared/roomAttachments';
 import type { BotGroup } from '../../shared/botGroup';
 import type { RoomCard, ThreadId } from '../../shared/room';
 import type { WakeItem } from '../../shared/wake';
@@ -61,6 +62,7 @@ import { getFactorySettings } from './factorySettings';
 import { onBotHook, type BotHookEvent } from './botHooks';
 import { normalizeRepoKey } from './repoWatch';
 import { setFactoryTriggerPorts, type BotDirectoryApi, type FactLogApi, type FactoryTrustApi } from './triggerEngine';
+import { ROOM_ATTACHMENTS_DIRNAME, RoomAttachmentStore, cardImages, getRoomAttachmentStore, setRoomAttachmentStore } from './roomAttachments';
 import { capBody, getRoomWriter, oneLine, setFactoryRoomPorts, type FactoryRoomPorts, type RoomBotHookEvent, type RoomWriter, type RunningWake } from './roomWriter';
 import { getBotRuntime, setBotRuntimePorts } from './BotRuntime';
 import { getHandoffRouter, summarizeHandoff } from './handoffRouter';
@@ -353,12 +355,30 @@ export function runningWakeOf(botId: string): RunningWake | null {
   };
 }
 
+/** The photos of the owner card a `human` wake answers: its run names the
+ *  card (humanRunId), in the bot's own room. */
+export function wakeImagesOf(
+  writer: Pick<RoomWriter, 'get'> | null,
+  store: RoomAttachmentStore | null,
+  profile: Pick<BotProfile, 'workspaceId'>,
+  item: Pick<WakeItem, 'reason' | 'workspaceId'>,
+): { images: Array<{ mediaType: string; data: string }>; missing: number } | null {
+  if (item.reason.kind !== 'human') return null;
+  const cardId = humanCardIdOfRun(item.reason.runId);
+  if (!cardId || !writer) return null;
+  const card = writer.get(item.workspaceId || profile.workspaceId, cardId);
+  if (!card || card.kind !== 'human' || !card.attachments?.length) return null;
+  return cardImages(store, card.workspaceId, card.attachments);
+}
+
 // ── Phone ──────────────────────────────────────────────────────────────────
 
 export interface FactoryPhoneDeps {
   settings: () => FactorySettings;
   writer: () => RoomWriter | null;
   ports: () => Partial<FactoryRoomPorts>;
+  /** The room's photo store (roomAttachments.ts). Default: the factory's. */
+  attachments?: () => RoomAttachmentStore | null;
 }
 
 /**
@@ -370,6 +390,12 @@ export interface FactoryPhoneDeps {
  * member). A target that names no live bot or group, or one whose bots are
  * all off, is refused before anything is written. Null when the factory is
  * off (the daemon then takes the Moa path, or refuses a targeted message).
+ *
+ * Photos (`attachments`, targeted only): a first post copies each upload
+ * into the room's store, then posts; a retry of the same id reuses the
+ * first card's photos and copies nothing. Copies are removed only when no
+ * card was written: a full queue or a failed flush leaves the card, and its
+ * photos, for the retry. Synchronous from the lookup to the post.
  */
 export function factoryPhoneMessage(payload: MoaWakePayload, deps: FactoryPhoneDeps): MoaWakeResult | null {
   const settings = deps.settings();
@@ -388,27 +414,54 @@ export function factoryPhoneMessage(payload: MoaWakePayload, deps: FactoryPhoneD
   if ('code' in target) return { ok: false, code: target.code };
   const actor = crypto.createHash('sha256').update(payload.actor).digest('hex').slice(0, 16);
   const clientPostId = `phone:${actor}:${payload.clientMessageId}`.slice(0, ROOM_LIMITS.CLIENT_ID_MAX);
+  const uploads = payload.attachments ?? [];
   // A retry posts nothing new: the room answers with the id's first card and
   // queues that card's wakes. An id whose first card says other words (its
-  // body as the room stored it, secrets redacted) or sits in another thread
-  // is a reused id, never that card's retry: the daemon released the id when
-  // a queue was full, so it can come back here with another message.
+  // body as the room stored it, secrets redacted), sits in another thread or
+  // carries other photos is a reused id, never that card's retry: the daemon
+  // released the id when a queue was full, so it can come back here with
+  // another message.
   const prior = writer.find(target.workspaceId, (c) => c.clientPostId === clientPostId);
   // The text is processed whole and shortened last, as the room does for
   // short text.
   const whole = redactStoredSecrets(payload.text);
-  if (prior && (prior.threadId !== target.threadId || (prior.body ?? '') !== capBody(whole))) return { ok: false, code: 'id_reused' };
+  const words = whole.trim() ? capBody(whole) : '';
+  if (prior && (prior.threadId !== target.threadId || (prior.body ?? '') !== words || !sameUploads(prior.attachments, uploads))) {
+    return { ok: false, code: 'id_reused' };
+  }
+  let attachments: RoomAttachment[] = prior?.attachments ?? [];
+  const imported: string[] = [];
+  if (!prior && uploads.length > 0) {
+    const store = deps.attachments ? deps.attachments() : getRoomAttachmentStore();
+    if (!store) return { ok: false, code: 'busy' };
+    for (const upload of uploads) {
+      const r = store.importUpload(target.workspaceId, upload);
+      if (!r.ok) {
+        store.remove(target.workspaceId, imported);
+        return r.reason === 'full' ? { ok: false, code: 'attachments_full' } : { ok: false, code: 'attachment_refused', reason: r.reason };
+      }
+      imported.push(r.attachment.id);
+      attachments = [...attachments, r.attachment];
+    }
+  }
+  const photoOnly = !words && attachments.length > 0;
   const r = postHumanMessage(writer, ports, {
     workspaceId: target.workspaceId,
     threadId: target.threadId,
-    title: oneLine(whole, ROOM_LIMITS.TITLE_MAX) || 'Message',
-    body: capBody(whole),
+    title: photoOnly ? photoPlaceholderTitle(attachments.length) : oneLine(whole, ROOM_LIMITS.TITLE_MAX) || 'Message',
+    ...(words ? { body: words } : {}),
     // The card holds a capped copy; the bot's wake carries the whole message.
-    wakeText: payload.text,
+    wakeText: photoOnly ? PHOTO_ONLY_WAKE_TEXT : payload.text,
     ...(target.toBotId ? { toBotId: target.toBotId } : {}),
     clientPostId,
     source: 'phone',
+    ...(attachments.length > 0 ? { attachments } : {}),
   });
+  // Photos only the card can hold: none written (or another card answered),
+  // so these copies are no card's.
+  const kept = 'card' in r && r.card ? new Set((r.card.attachments ?? []).map((a) => a.id)) : new Set<string>();
+  const orphans = imported.filter((id) => !kept.has(id));
+  if (orphans.length > 0) (deps.attachments ? deps.attachments() : getRoomAttachmentStore())?.remove(target.workspaceId, orphans);
   // The card is up but a queue took no wake, even past its cap: a retryable
   // refusal, so the phone sends the same id again and that retry queues the
   // missing wakes once (postHumanMessage).
@@ -417,6 +470,15 @@ export function factoryPhoneMessage(payload: MoaWakePayload, deps: FactoryPhoneD
   if (r.wakeId) return { ok: true, accepted: true, queued: true };
   // A retry whose card names no bot that is still on.
   return { ok: false, code: 'duplicate' };
+}
+
+/** The bot's words for a message that is only photos. */
+export const PHOTO_ONLY_WAKE_TEXT = '(The owner sent only photos, no words.)';
+
+/** Whether a stored card's photos came from exactly these uploads, in order. */
+function sameUploads(stored: readonly RoomAttachment[] | undefined, uploads: readonly MoaWakeAttachment[]): boolean {
+  const had = (stored ?? []).map((a) => a.upload ?? '');
+  return had.length === uploads.length && had.every((name, i) => name === uploads[i]!.uploadId);
 }
 
 /** Where a phone message goes: the phone bot's 1:1, or the conversation the
@@ -707,6 +769,7 @@ export function createFactoryWiring(deps: Pick<FactoryHostDeps, 'wmuxDir'> & Par
     taskHandoff: (item) => taskWakeHandoff(item.reason, (id) => getTaskLedger().get(id)),
     readThreadTail: (workspaceId, threadId, n) => threadTail(getRoomWriter(), workspaceId, threadId, n),
     wakeContext: (profile, item) => wakeContext(contextPorts(), profile, item),
+    wakeImages: (profile, item) => wakeImagesOf(getRoomWriter(), getRoomAttachmentStore(), profile, item),
     onTurnDone: (profile, item) => getHandoffRouter()?.closeAnsweredInChat(profile.id, item),
     // The runtime starts before these modules (modules.ts): a wake restored
     // at launch waits for its handoff, thread and routine to be readable.
@@ -723,6 +786,13 @@ export function createFactoryWiring(deps: Pick<FactoryHostDeps, 'wmuxDir'> & Par
     }
   });
 
+  // The room's photo store: swept by age once at start (roomAttachments.ts).
+  const photos = new RoomAttachmentStore({
+    root: path.join(deps.wmuxDir(), 'factory', ROOM_ATTACHMENTS_DIRNAME),
+    uploadsDir: path.join(deps.wmuxDir(), 'uploads', 'phone'),
+  });
+  photos.sweep();
+  setRoomAttachmentStore(photos);
   setFactoryPhoneMessageHandler((payload) => factoryPhoneMessageSaved(payload, { settings, writer: getRoomWriter, ports: roomPorts }));
 
   const morning = new MorningSchedule({
@@ -911,6 +981,7 @@ export function createFactoryWiring(deps: Pick<FactoryHostDeps, 'wmuxDir'> & Par
       offHookFacts();
       hooks.dispose();
       setFactoryPhoneMessageHandler(null);
+      setRoomAttachmentStore(null);
       cursor.flush();
     },
   };

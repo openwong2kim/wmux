@@ -57,10 +57,11 @@ export function botCanDo(bot: { role: BotRole; template?: BotTemplate }): string
 
 type T = (key: string, vars?: Record<string, string | number>) => string;
 
-/** A model id as the profile shows it: the catalog's name for a Claude
- *  model, else the id itself. Pure. */
+/** A model id as the profile shows it, trimmed (a stored id is kept as
+ *  written): the catalog's name for a Claude model, else the id. Pure. */
 export function botModelName(agent: string, model: string): string {
-  return agent === DEFAULT_BOT_WORKER_AGENT ? claudeModelLabel(model) : model;
+  const id = model.trim();
+  return agent === DEFAULT_BOT_WORKER_AGENT ? claudeModelLabel(id) : id;
 }
 
 /** The bot list's and roster's one-line note of its models: its own and

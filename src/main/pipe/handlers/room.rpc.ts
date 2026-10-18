@@ -76,6 +76,8 @@ import {
 } from '../../factory/roomWriter';
 import { humanAddressee, parseMentions, postHumanMessage } from '../../factory/humanMessage';
 import { parseResolution } from '../../factory/morningReport';
+import { getRoomAttachmentStore, type RoomAttachmentStore } from '../../factory/roomAttachments';
+import { parseRoomAttachments, type RoomAttachment } from '../../../shared/roomAttachments';
 
 // The owner's messages (shared with the phone) live in factory/humanMessage.ts.
 export { humanAddressee, postHumanMessage };
@@ -123,6 +125,19 @@ export interface RoomHandlerDeps {
   writer: () => RoomWriter | null;
   ports: () => Partial<FactoryRoomPorts>;
   wmuxDir: () => string;
+  /** The room's photo store. Default: the factory's. */
+  attachments?: () => RoomAttachmentStore | null;
+}
+
+/** The operator's stored photos, undefined for none, null when one is not a
+ *  file of this room's store of the size the record says. */
+function operatorPhotos(value: unknown, workspaceId: string, deps: RoomHandlerDeps): RoomAttachment[] | undefined | null {
+  if (value === undefined) return undefined;
+  const parsed = parseRoomAttachments(value);
+  if (!parsed || !Array.isArray(value) || parsed.length !== value.length) return null;
+  const store = deps.attachments ? deps.attachments() : getRoomAttachmentStore();
+  if (!store) return null;
+  return parsed.every((a) => store.size(workspaceId, a.id) === a.bytes) ? parsed : null;
 }
 
 function notStarted(): FactoryRefusal<'not_started'> {
@@ -212,6 +227,11 @@ export async function handleRoomPost(raw: unknown, ctx: RpcContext | undefined, 
   if (p.kind !== undefined && p.kind !== 'human') return refusal('card_kind', 'the owner posts human cards');
   if (!isRoomWorkspaceId(p.workspaceId)) return refusal('invalid', 'workspaceId is required');
   if (p.to !== undefined && !isBotRole(p.to)) return refusal('invalid', 'to is not a bot role');
+  // Photos the renderer's room bridge already copied into the room's store
+  // (room.handler.ts postWithPhotos): read for the operator only, and each
+  // must be a stored file of this room of that size.
+  const photos = ctx?.operator === true ? operatorPhotos((p as { attachments?: unknown }).attachments, p.workspaceId, deps) : undefined;
+  if (photos === null) return refusal('invalid', 'attachments are not photos of this room');
   const posted = postHumanMessage(writer, ports, {
     workspaceId: p.workspaceId,
     ...(namedThread !== undefined ? { threadId: namedThread } : {}),
@@ -223,6 +243,7 @@ export async function handleRoomPost(raw: unknown, ctx: RpcContext | undefined, 
     ...(p.replyTo ? { replyTo: p.replyTo } : {}),
     ...(p.clientPostId ? { clientPostId: p.clientPostId } : {}),
     source: 'desktop',
+    ...(photos ? { attachments: photos } : {}),
   });
   // The owner hears "sent" once the wakes are on disk: a restart then still
   // runs them. A failed write is retryable with the same clientPostId (the

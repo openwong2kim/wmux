@@ -51,13 +51,16 @@
 // or an `@Name` of a group bot anywhere in the text (resolved here at send;
 // main reads only the field). The picks reset after each send. Typing `@`
 // in a group suggests its bots.
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ClipboardEvent, type FormEvent, type KeyboardEvent } from 'react';
 import { dmThreadBot, dmThreadId, groupThreadGroup, type RoomCard as RoomCardData, type ThreadId, type ThreadSummary } from '../../../shared/room';
 import { FOCUS_RING } from '../focusRing';
 import Button from '../ui/Button';
 import Select from '../ui/Select';
 import Popover from '../ui/Popover';
-import { IconFanOut, IconPlus } from '../icons';
+import { IconFanOut, IconImage, IconPlus } from '../icons';
+import { ChatAttachmentChips } from '../Chat/ChatAttachmentViews';
+import type { ChatAttachment } from '../Chat/chatAttachments';
+import { CardPhotos, ROOM_PHOTO_LIMIT, isRoomPhotoPath, photoOnlyCard, registerBotsDropTarget } from './BotsPhotos';
 import { renderBrainMarkdown, type MarkdownOptions } from '../shared/BrainMarkdown';
 import { getLocale } from '../../i18n';
 import { normalizeRepoKey } from '../../../shared/repoKey';
@@ -69,7 +72,7 @@ import { CardAnswers, useWorkspaceNames } from '../Room/CardAnswers';
 import { ApprovePendingChip } from '../Room/ApprovalAnswers';
 import { pendingForChip, useApprovals } from '../Room/approvalsStore';
 import { PresenceDot, botActionsFor, botPresence } from '../Room/BotChips';
-import { deliveryLine, deliveryTaken, roomPostParams, sentFrom, useMentionPicks, type SentTo } from '../Room/RoomComposer';
+import { deliveryLine, deliveryTaken, photoPostParams, roomPostParams, sentFrom, useMentionPicks, type SentTo } from '../Room/RoomComposer';
 import { actorLabel, botKindLabel, cardResumeTaskId, cardTone, isRefThread, kindLabel, onceText, ownerCardText, planTextWithNames, requestTitles, threadLabel, threadRef, type IdLabels, type RoomActorView } from '../Room/roomFormat';
 import { BOT_JOB_MAX, botTemplate, delegatesFromConversation, normalizeBotJob, type BotPresence, type BotProfile as BotProfileData } from '../../../shared/bot';
 import { DEFAULT_BOT_WORKER_AGENT, botWorkerAgentLabel, type BotWorkerAgentOption } from '../../../shared/botWorkerAgent';
@@ -476,10 +479,14 @@ function MessageRow({ item, ctx, group }: { item: Extract<TimelineItem, { kind: 
         data-continuation={continuation ? 'true' : undefined}
       >
         <div className="wmux-bots-msg-main">
-          <div className="wmux-bots-bubble wmux-bots-bubble-owner wmux-bots-prose" title={fullTime(card.at)}>
-            <span className="sr-only">{`${name}: `}</span>
-            {renderBrainMarkdown((card.body?.trim() ? card.body : card.title).trim(), ctx.markdown)}
-          </div>
+          <CardPhotos card={card} api={ctx.api} t={t} />
+          {/* A photo-only card's title is wmux's placeholder: no words drawn. */}
+          {photoOnlyCard(card) ? <span className="sr-only">{`${name}: ${t('room.photo.count', { count: card.attachments?.length ?? 0 })}`}</span> : (
+            <div className="wmux-bots-bubble wmux-bots-bubble-owner wmux-bots-prose" title={fullTime(card.at)}>
+              <span className="sr-only">{`${name}: `}</span>
+              {renderBrainMarkdown((card.body?.trim() ? card.body : card.title).trim(), ctx.markdown)}
+            </div>
+          )}
           {chips}
           {thread && thread.replies > 0 && <ThreadSummaryLine thread={thread} ctx={ctx} />}
         </div>
@@ -1169,6 +1176,9 @@ function BotsComposer({ conversation, threadId, workspaceId: workspaceOverride, 
   const [text, setText] = useState('');
   const [inFlight, setInFlight] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Photos staged for the next message (BotsPhotos.tsx): local paths main
+  // copies into the room when the message is sent.
+  const [photos, setPhotos] = useState<ChatAttachment[]>([]);
   const failedPost = useRef<{ key: string; clientPostId: string } | null>(null);
   const textNow = useRef(text);
   const workspaceId = workspaceOverride ?? conversation.workspaceId;
@@ -1217,9 +1227,12 @@ function BotsComposer({ conversation, threadId, workspaceId: workspaceOverride, 
     if (inFlight || refusal) return;
     const bridge = api === undefined ? roomsApi() : api;
     const submitted = text;
-    const key = JSON.stringify([workspaceId, threadId, text, mentions]);
+    const paths = photos.map((p) => p.path);
+    const key = JSON.stringify([workspaceId, threadId, text, mentions, paths]);
     const clientPostId = failedPost.current?.key === key ? failedPost.current.clientPostId : newClientPostId();
-    const params = roomPostParams({ workspaceId, threadId, text, mentions, clientPostId });
+    const params = paths.length > 0
+      ? photoPostParams({ workspaceId, threadId, text, mentions, clientPostId, paths })
+      : roomPostParams({ workspaceId, threadId, text, mentions, clientPostId });
     if (!params) return;
     if (!bridge) {
       setError(t('room.composer.unavailable'));
@@ -1236,7 +1249,12 @@ function BotsComposer({ conversation, threadId, workspaceId: workspaceOverride, 
           setText('');
           picks.reset();
         }
+        // The photos this message took leave the draft; one added while it
+        // was sending stays for the next message.
+        setPhotos((current) => current.filter((p) => !paths.includes(p.path)));
         onSent(r.card.id, sentFrom(r));
+      } else if (r.code === 'attachment' && 'reason' in r) {
+        setError(t(`room.attach.${r.reason}`, { count: ROOM_PHOTO_LIMIT }));
       } else {
         setError(r.message || t('room.composer.failed'));
       }
@@ -1246,7 +1264,46 @@ function BotsComposer({ conversation, threadId, workspaceId: workspaceOverride, 
     } finally {
       setInFlight(false);
     }
-  }, [api, inFlight, refusal, text, workspaceId, threadId, mentions, picks, t, locale, onSent]);
+  }, [api, inFlight, refusal, text, photos, workspaceId, threadId, mentions, picks, t, locale, onSent]);
+
+  // Photos: from the picker, a paste or a drop on the window; PNG and JPEG,
+  // at most ROOM_PHOTO_LIMIT; a refused one says why in the status line.
+  const addPhotos = useCallback(async (paths: readonly string[]) => {
+    if (refusal) return;
+    const preview = window.electronAPI?.chat?.attachment;
+    for (const path of paths) {
+      const name = path.split(/[\\/]/).pop() || path;
+      if (!isRoomPhotoPath(path)) { setError(t('room.attach.type', { name })); continue; }
+      const result = preview ? await preview({ path }).catch(() => null) : null;
+      if (result && !result.ok) { setError(t(result.reason === 'size' ? 'room.attach.size' : 'room.attach.missing', { name })); continue; }
+      let full = false;
+      setPhotos((current) => {
+        if (current.some((p) => p.path === path)) return current;
+        if (current.length >= ROOM_PHOTO_LIMIT) { full = true; return current; }
+        return [...current, { path, name, thumbnail: result?.ok ? result.thumbnail : '' }];
+      });
+      if (full) setError(t('room.attach.count', { count: ROOM_PHOTO_LIMIT }));
+      else setError(null);
+    }
+    inputRef.current?.focus();
+  }, [refusal, t]);
+  const addPhotosRef = useRef(addPhotos);
+  addPhotosRef.current = addPhotos;
+  useEffect(() => (readOnly ? undefined : registerBotsDropTarget((paths) => void addPhotosRef.current(paths))), [readOnly]);
+  const pickPhotos = useCallback(async () => {
+    const bridge = api === undefined ? roomsApi() : api;
+    const picked = await bridge?.pickAttachments?.().catch(() => null);
+    if (Array.isArray(picked) && picked.length > 0) await addPhotos(picked);
+  }, [api, addPhotos]);
+  const pastePhoto = useCallback(async (e: ClipboardEvent<HTMLTextAreaElement>) => {
+    const data = e.clipboardData;
+    // A mixed clipboard (a browser copy carries text and a picture) pastes its text.
+    if (data.getData('text/plain') || ![...data.files].some((f) => f.type.startsWith('image/'))) return;
+    e.preventDefault();
+    const path = await window.clipboardAPI?.readImage?.().catch(() => null);
+    if (path) await addPhotos([path]);
+    else setError(t('room.attach.missing'));
+  }, [addPhotos, t]);
 
   // `@` suggestions: typing `@` and the start of a name in a room lists the
   // room's bots that match; Enter or Tab (or a click) puts `@Name ` in its
@@ -1309,6 +1366,12 @@ function BotsComposer({ conversation, threadId, workspaceId: workspaceOverride, 
       e.preventDefault();
       e.stopPropagation();
       void submit();
+      return;
+    }
+    // Backspace at the very start takes the last photo off.
+    if (e.key === 'Backspace' && photos.length > 0 && e.currentTarget.selectionStart === 0 && e.currentTarget.selectionEnd === 0) {
+      e.preventDefault();
+      setPhotos((current) => current.slice(0, -1));
     }
   };
   const line = error ?? refusal ?? (conversation.kind === 'bot' ? pausedHint(conversation.row, t) : null);
@@ -1407,6 +1470,11 @@ function BotsComposer({ conversation, threadId, workspaceId: workspaceOverride, 
       {conversation.kind === 'room' && !refusal && (
         <RecipientsControl candidates={roomCandidates} picked={picked} onToggle={picks.toggle} t={t} />
       )}
+      {photos.length > 0 && (
+        <div data-bots-composer-photos>
+          <ChatAttachmentChips items={photos} onRemove={(path) => setPhotos((current) => current.filter((p) => p.path !== path))} />
+        </div>
+      )}
     <form
       onSubmit={(e) => void submit(e)}
       data-testid="bots-composer"
@@ -1428,6 +1496,17 @@ function BotsComposer({ conversation, threadId, workspaceId: workspaceOverride, 
           className={`wmux-bots-composer-plus ${FOCUS_RING}`}
         >
           <IconPlus size={16} />
+        </button>
+        <button
+          type="button"
+          data-bots-composer-attach
+          aria-label={t('room.attach.add')}
+          title={t('room.attach.add')}
+          disabled={!!refusal || photos.length >= ROOM_PHOTO_LIMIT}
+          onClick={() => void pickPhotos()}
+          className={`wmux-bots-composer-plus ${FOCUS_RING}`}
+        >
+          <IconImage size={16} />
         </button>
         <textarea
           ref={inputRef}
@@ -1453,12 +1532,13 @@ function BotsComposer({ conversation, threadId, workspaceId: workspaceOverride, 
           onBlur={() => setDismissedAt(query?.at ?? null)}
           onFocus={() => setDismissedAt(null)}
           onKeyDown={onKeyDown}
+          onPaste={(e) => void pastePhoto(e)}
           className="wmux-bots-composer-input text-[14px]"
         />
         <button
           type="submit"
           data-testid="bots-composer-send"
-          disabled={!text.trim() || inFlight || !!refusal}
+          disabled={(!text.trim() && photos.length === 0) || inFlight || !!refusal}
           aria-label={t('room.composer.send')}
           title={t('room.composer.send')}
           className={`wmux-bots-composer-send ${FOCUS_RING}`}

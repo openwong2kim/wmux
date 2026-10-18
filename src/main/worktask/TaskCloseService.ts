@@ -179,8 +179,11 @@ export class TaskCloseService {
         // Lane F: the task ledger learns about the close now, not on the
         // next reconcile pass (an open row would hold the brain's Stop gate).
         await noteWorkTaskClosed(taskId);
+        // Queued, not awaited: the removal waits behind any relay call in
+        // flight (up to TASK_PUSH_TIMEOUT_MS per git call), longer than the
+        // caller's RPC timeout.
         try {
-          await this.removeRelay?.(taskId);
+          void Promise.resolve(this.removeRelay?.(taskId)).catch(() => undefined);
         } catch {
           // Best-effort: a leftover relay is swept at the next start.
         }

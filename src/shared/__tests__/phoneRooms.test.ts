@@ -29,6 +29,14 @@ describe('phone room cards', () => {
     expect(parsePhoneRoomCard(out)).toEqual(out);
   });
 
+  it("carries an owner card's photos without their upload names; no other card carries any", () => {
+    const photo = { id: 'a'.repeat(32), mediaType: 'image/jpeg' as const, bytes: 1234, width: 1568, height: 1176, upload: 'photo-2026-10-18T01-02-03-456Z-0a1b2c3d.jpg' };
+    const owner = phoneRoomCard(card(7, { kind: 'human', actor: { kind: 'human' }, attachments: [photo] }), () => null);
+    expect(owner?.attachments).toEqual([{ id: photo.id, mediaType: 'image/jpeg', bytes: 1234, width: 1568, height: 1176 }]);
+    expect(parsePhoneRoomCard(owner)).toEqual(owner);
+    expect(phoneRoomCard(card(8, { attachments: [photo] }), () => null)).not.toHaveProperty('attachments');
+  });
+
   it("gives an owner card a phone sent its clientMessageId, and no other card any id", () => {
     const human = { kind: 'human' as const, actor: { kind: 'human' as const } };
     const owner = phoneRoomCard(card(4, { ...human, clientPostId: 'phone:0123456789abcdef:msg-1' }), () => null);

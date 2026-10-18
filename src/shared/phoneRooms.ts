@@ -20,10 +20,16 @@ import { isBotSecretName } from './botSecret';
 import { parseThreadId, ROOM_LIMITS, type CardKind, type RoomCard, type ThreadId, type ThreadStatus, type ThreadSummary } from './room';
 import { PHONE_BOT_ROLES, clampSidebarString, type PhoneBotRole } from './phoneFleetSidebar';
 import { PHONE_NOTICE_ARG_MAX, PHONE_ROOM_NOTICE_CODES } from './phoneRoomNotices';
+import { parseRoomAttachments, type RoomAttachment } from './roomAttachments';
 
 /** Bridge commands; `workspaces.` routes them through main's PhoneWorkspaces. */
 export const PHONE_ROOM_THREADS_COMMAND = 'workspaces.roomThreads';
 export const PHONE_ROOM_CARDS_COMMAND = 'workspaces.roomCards';
+/** `{workspaceId, attachmentId}` → `{attachment: {mediaType, bytes}}` when a
+ *  kept owner card of that room carries the photo, else `{notFound: true}`.
+ *  The daemon then reads the stored copy from disk itself: a photo never
+ *  rides the bridge (its replies are capped at 128 KiB). */
+export const PHONE_ROOM_ATTACHMENT_COMMAND = 'workspaces.roomAttachment';
 
 export const PHONE_ROOM_LIMITS = {
   /** Threads one list carries (open questions first, as the room sorts them). */
@@ -120,7 +126,13 @@ export interface PhoneRoomCard {
   /** An `approval` card only: the act its request asks for (`merge`,
    *  `comment`, …, `skill`; any later name passes). */
   approvalAction?: string;
+  /** An owner (`human`) card only: the photos sent with it, drawn from
+   *  `GET /api/rooms/:workspaceId/attachments/:id`. */
+  attachments?: PhoneRoomAttachment[];
 }
+
+/** A photo as the phone sees it: no upload name, no path. */
+export type PhoneRoomAttachment = Omit<RoomAttachment, 'upload'>;
 
 export interface PhoneRoomNotice {
   code: string;
@@ -287,6 +299,7 @@ export function parsePhoneRoomCard(value: unknown): PhoneRoomCard | null {
   const clientMessageId = kind === 'human' && actor.kind === 'human' ? phoneMessageId(value.clientMessageId) : undefined;
   const notice = actor.kind === 'system' ? parsePhoneRoomNotice(value.notice) : undefined;
   const approvalAction = kind === 'approval' && typeof value.approvalAction === 'string' && APPROVAL_ACTION_RE.test(value.approvalAction) ? value.approvalAction : undefined;
+  const attachments = kind === 'human' && actor.kind === 'human' ? parseRoomAttachments(value.attachments, { keepUpload: false }) : undefined;
   return {
     id, seq, threadId, kind, at, actor, title,
     ...(text !== undefined ? { body: text } : {}),
@@ -298,6 +311,7 @@ export function parsePhoneRoomCard(value: unknown): PhoneRoomCard | null {
     ...(clientMessageId ? { clientMessageId } : {}),
     ...(notice ? { notice } : {}),
     ...(approvalAction ? { approvalAction } : {}),
+    ...(attachments ? { attachments } : {}),
   };
 }
 

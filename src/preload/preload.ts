@@ -1175,8 +1175,15 @@ const electronAPI = {
       ipcRenderer.invoke(IPC.ROOM_READ, params) as Promise<import('../shared/room').RoomReadResult | import('../main/ipc/handlers/room.handler').RoomRefusal>,
     threads: (workspaceId: string) =>
       ipcRenderer.invoke(IPC.ROOM_THREADS, { workspaceId }) as Promise<{ ok: true; workspaceId: string; threads: import('../shared/room').ThreadSummary[] } | import('../main/ipc/handlers/room.handler').RoomRefusal>,
-    post: (params: { workspaceId: string; threadId?: import('../shared/room').ThreadId; title: string; body?: string; mentions?: string[]; to?: import('../shared/bot').BotRole; replyTo?: string; clientPostId?: string }) =>
-      ipcRenderer.invoke(IPC.ROOM_POST, { ...params, kind: 'human' }) as Promise<import('../main/ipc/handlers/room.handler').RoomPostResponse>,
+    // `attachmentPaths`: photos the owner picked, pasted or dropped (main
+    // copies them into the room's store before it posts).
+    post: (params: { workspaceId: string; threadId?: import('../shared/room').ThreadId; title: string; body?: string; mentions?: string[]; to?: import('../shared/bot').BotRole; replyTo?: string; clientPostId?: string; attachmentPaths?: string[] }) =>
+      ipcRenderer.invoke(IPC.ROOM_POST, { ...params, kind: 'human' }) as Promise<import('../main/ipc/handlers/room.handler').RoomPostResponse | import('../main/ipc/handlers/room.handler').RoomPhotoRefusal>,
+    /** A photo of an owner card, as a data URL. */
+    attachment: (params: { workspaceId: string; attachmentId: string }) =>
+      ipcRenderer.invoke(IPC.ROOM_ATTACHMENT, params) as Promise<{ ok: true; dataUrl: string; width?: number; height?: number } | { ok: false }>,
+    /** The composer's photo picker: absolute paths, empty when cancelled. */
+    pickAttachments: () => ipcRenderer.invoke(IPC.ROOM_PICK_ATTACHMENTS) as Promise<string[] | { ok: false }>,
     resolve: (params: import('../shared/room').RoomResolveParams) =>
       ipcRenderer.invoke(IPC.ROOM_RESOLVE, params) as Promise<{ ok: true; card: import('../shared/room').RoomCard } | import('../main/ipc/handlers/room.handler').RoomRefusal>,
     decision: (workspaceId: string, cardId: string) =>

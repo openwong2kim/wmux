@@ -23,8 +23,7 @@
 //     defines a remote named by origin's URL or a bundle URI.
 //   - Never a push.
 
-import { fetchCommandFor } from '../../shared/taskGitRelay';
-import { toWslPath } from '../../shared/imagePaste';
+import { fetchCommandFor, shellQuote } from '../../shared/taskGitRelay';
 import { isDenyableBranchName } from '../../shared/botWorkerGuard';
 import { normalizeRepoKey } from '../../shared/repoKey';
 import { defaultGit, openTaskGitRepo, originPinUrl, parseLsRemoteHead, type TaskGitRepo, type TaskGitRepoInput, type TaskOriginPinInput, type TaskPushDeps, type TaskPushGit } from './taskPush';
@@ -48,9 +47,15 @@ export type TaskFetchResult =
     ok: true; remote: 'origin'; defaultBranch: string;
     /** The line the worker runs in its own shell (the repository's platform). */
     fetchCommand: string;
-    /** On a Windows host: the same line for a WSL shell (the relay by its
-     *  `/mnt/<drive>/…` path). */
+    /** The line for a WSL shell. A repository inside a WSL distro: the same
+     *  as fetchCommand. A Windows-host repository: the same fetch run by
+     *  Windows git through interop (`git.exe`, the relay by its Windows path,
+     *  quoted for bash), since its relay borrows objects by a Windows path
+     *  that Linux git cannot read. */
     fetchCommandWsl?: string;
+    /** The platform whose shell fetchCommand is quoted for ('win32' for a
+     *  Windows-host repository). */
+    fetchCommandShell: NodeJS.Platform;
     fetched: TaskFetchedRef[]; missing: string[];
   }
   | { ok: false; reason: 'branch-refused' | 'no-origin' | 'remote-refused' | 'config-refused' | 'no-default-branch' | 'git-failed'; error: string };
@@ -193,12 +198,18 @@ export async function fetchTaskRefs(input: TaskFetchInput, git: TaskPushGit = de
   }
   const refspecs = present.map((b) => `+refs/heads/${b}:refs/remotes/origin/${b}`);
   const fetchCommand = fetchCommandFor(repo.relayShellPath, refspecs, repo.workerShellPlatform);
-  if (!fetchCommand) return { ok: false, reason: 'git-failed', error: `main's relay path ${repo.relayShellPath} cannot be written as a shell word` };
-  // A WSL pane on a Windows-drive repository reads the relay by its drvfs path.
-  const wslRelay = repo.workerShellPlatform === 'win32' ? toWslPath(repo.relayShellPath) : null;
-  const fetchCommandWsl = wslRelay ? fetchCommandFor(wslRelay, refspecs, 'linux') : null;
+  if (!fetchCommand) {
+    const bad = [repo.relayShellPath, ...refspecs].find((w) => shellQuote(w, repo.workerShellPlatform) === null) ?? repo.relayShellPath;
+    return { ok: false, reason: 'git-failed', error: `${bad} cannot be written as a shell word in the fetch line` };
+  }
+  // A WSL shell on a Windows-host repository runs Windows git through interop:
+  // Linux git reads `C:\…` as an ssh host and cannot read the relay's
+  // Windows-path alternates.
+  const fetchCommandWsl = repo.inWslDistro
+    ? fetchCommand
+    : repo.workerShellPlatform === 'win32' ? fetchCommandFor(repo.relayShellPath, refspecs, 'linux', 'git.exe') : null;
   return {
-    ok: true, remote: 'origin', defaultBranch, fetchCommand,
+    ok: true, remote: 'origin', defaultBranch, fetchCommand, fetchCommandShell: repo.workerShellPlatform,
     ...(fetchCommandWsl ? { fetchCommandWsl } : {}),
     fetched, missing: wanted.filter((b) => !there.has(b)).map((b) => `origin/${b}`),
   };

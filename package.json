@@ -34,6 +34,8 @@
     "check:internal-docs": "node scripts/check-internal-docs.mjs --tracked",
     "test": "npm run test:parallel && npm run test:runtime",
     "test:parallel": "vitest run --exclude \"**/*.runtime.test.ts\" --exclude \"**/*.runtime.test.tsx\" --exclude \"**/*.runtime.test.mjs\"",
+    "test:unit": "vitest run --project unit",
+    "test:integration": "vitest run --project integration",
     "test:agent": "vitest run --reporter=dot --silent --exclude \"**/*.runtime.test.ts\" --exclude \"**/*.runtime.test.tsx\" --exclude \"**/*.runtime.test.mjs\"",
     "test:changed": "vitest run --changed --reporter=dot --silent --exclude \"**/*.runtime.test.ts\" --exclude \"**/*.runtime.test.tsx\" --exclude \"**/*.runtime.test.mjs\"",
     "test:runtime": "vitest run --config vitest.runtime.config.ts",

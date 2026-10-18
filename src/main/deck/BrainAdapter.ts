@@ -180,6 +180,18 @@ export interface BrainSendOptions {
    *  CommanderSessionManager records it for the turn (a Moa goal refuses to
    *  fan out from such a turn); adapters ignore it. */
   remoteMoa?: boolean;
+  /** Bots only: photos the owner sent with the message this turn answers,
+   *  shown to the model as image blocks before the text (base64 JPEG, the
+   *  room's normalised copy). An adapter that cannot show images ignores
+   *  them; the text says how many there are. */
+  images?: ReadonlyArray<BrainImage>;
+}
+
+/** One image of a turn's user message. */
+export interface BrainImage {
+  mediaType: string;
+  /** Base64, no data: prefix. */
+  data: string;
 }
 
 /**

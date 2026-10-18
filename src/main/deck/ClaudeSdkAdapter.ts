@@ -41,6 +41,8 @@ import { COMMANDER_MODE_ARG, COMMANDER_TOOL_SURFACE, COMMANDER_ONLY_TOOLS } from
 import {
   type BrainAdapter,
   type BrainEvent,
+  type BrainImage,
+  type BrainSendOptions,
   type BrainStartOptions,
   type RawSdkMessage,
   createNormalizeState,
@@ -86,10 +88,46 @@ function logFirstLimitShape(ev: Extract<BrainEvent, { type: 'limit' }>): void {
   );
 }
 
+/** A streaming-input user message (the SDK's SDKUserMessage, the fields we send). */
+export interface SdkUserMessage {
+  type: 'user';
+  message: { role: 'user'; content: Array<Record<string, unknown>> };
+  parent_tool_use_id: null;
+  session_id: string;
+}
+
 export type SdkQueryFn = (params: {
-  prompt: string;
+  /** A string is one text-only user message; the iterable form carries
+   *  image blocks (a bot turn on an owner message with photos). */
+  prompt: string | AsyncIterable<SdkUserMessage>;
   options?: Record<string, unknown>;
 }) => SdkQueryHandle;
+
+/**
+ * One user message of image blocks then the text, as a single-use iterable:
+ * the SDK writes it to the CLI as the string path does a text message, waits
+ * for the turn's result (a bot has canUseTool and MCP), then closes input.
+ * Build one per attempt — an iterable is consumed by its query.
+ */
+export function imagePrompt(text: string, images: ReadonlyArray<BrainImage>): AsyncIterable<SdkUserMessage> {
+  const message: SdkUserMessage = {
+    type: 'user',
+    message: {
+      role: 'user',
+      content: [
+        ...images.map((img) => ({ type: 'image', source: { type: 'base64', media_type: img.mediaType, data: img.data } })),
+        { type: 'text', text },
+      ],
+    },
+    parent_tool_use_id: null,
+    session_id: '',
+  };
+  return {
+    async *[Symbol.asyncIterator]() {
+      yield message;
+    },
+  };
+}
 
 // ─── SDK loading (dev vs packaged) ───────────────────────────────────────────
 //
@@ -1103,7 +1141,7 @@ export class ClaudeSdkAdapter implements BrainAdapter {
     return `${parts.join('\n\n---\n\n')}\n\n---\n\n${text}`;
   }
 
-  async *send(text: string): AsyncIterable<BrainEvent> {
+  async *send(text: string, sendOpts?: BrainSendOptions): AsyncIterable<BrainEvent> {
     if (this._disposed) {
       yield { type: 'error', message: 'commander session disposed' };
       return;
@@ -1183,7 +1221,9 @@ export class ClaudeSdkAdapter implements BrainAdapter {
             return;
           }
         }
-        handle = withShadowedWarningOnce(() => queryFn({ prompt, options }));
+        // Photos (bots): a fresh one-message iterable each attempt.
+        const images = this.bot ? sendOpts?.images ?? [] : [];
+        handle = withShadowedWarningOnce(() => queryFn({ prompt: images.length > 0 ? imagePrompt(prompt, images) : prompt, options }));
       } catch (err) {
         this.disposeHandoff();
         if (resumingUnvalidated && attempt === 0) {

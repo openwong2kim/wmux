@@ -22,8 +22,8 @@ import { receiptHash } from '../approvals/AnswerReceiptStore';
 import type { ChatDeliveredMessage } from '../chat/chatBridge';
 import { DesktopPhoneError, type DesktopPhoneBridge } from './DesktopPhoneBridge';
 import {
-  FACTORY_THREAD_MESSAGE_CAPABILITY, MOA_WAKE_COMMAND, parseMoaWakeResult,
-  type MoaWakeFailure, type MoaWakePayload, type MoaWakeRefusalCode,
+  FACTORY_THREAD_ATTACHMENTS_CAPABILITY, FACTORY_THREAD_MESSAGE_CAPABILITY, MOA_WAKE_COMMAND, parseMoaWakeResult,
+  type MoaWakeAttachment, type MoaWakeAttachmentRefusal, type MoaWakeFailure, type MoaWakePayload, type MoaWakeRefusalCode,
 } from '../../shared/moaWake';
 
 /** The receipt store's per-approval slot; every wake shares it. */
@@ -57,7 +57,7 @@ export interface MoaWakeDeps {
 }
 
 /** A refusal main returned, as the phone sees it. */
-function refusalWire(code: MoaWakeRefusalCode, clientMessageId: string): { wire: MoaWakeWire; release: boolean } {
+function refusalWire(code: MoaWakeRefusalCode, clientMessageId: string, reason?: MoaWakeAttachmentRefusal): { wire: MoaWakeWire; release: boolean } {
   const fail = (status: number, error: string, extra: Record<string, unknown> = {}, headers?: Record<string, string>) =>
     ({ status, body: { state: 'failed', error, code: error, ...extra, clientMessageId }, ...(headers ? { headers } : {}) });
   switch (code) {
@@ -82,6 +82,11 @@ function refusalWire(code: MoaWakeRefusalCode, clientMessageId: string): { wire:
     case 'id_reused':
       // Its first card is in the room: the id stays bound to it.
       return { wire: { status: 409, body: { error: 'message-id-reused', clientMessageId } }, release: false };
+    // A photo main could not take, or no room for it: nothing was posted.
+    case 'attachment_refused':
+      return { wire: fail(409, 'attachment-refused', reason ? { reason } : {}), release: true };
+    case 'attachments_full':
+      return { wire: fail(507, 'attachments-full'), release: true };
   }
 }
 
@@ -92,10 +97,17 @@ export interface MoaWakeTarget {
 }
 
 /** What an id's text is recorded as: a target is part of it, so the same id
- *  with the same text sent to another conversation is a reused id. */
-function wakeHash(text: string, target?: MoaWakeTarget): string {
-  return receiptHash(target ? ['moa-wake', text, target.workspaceId, target.threadId] : ['moa-wake', text]);
+ *  with the same text sent to another conversation is a reused id; so are
+ *  the photos, by their upload names in order (never their bytes: a replay
+ *  after the uploads were swept must still answer). A message without
+ *  photos hashes as before photos existed. */
+function wakeHash(text: string, target?: MoaWakeTarget, uploads: readonly string[] = []): string {
+  if (!target) return receiptHash(['moa-wake', text]);
+  return receiptHash(['moa-wake', text, target.workspaceId, target.threadId, ...(uploads.length > 0 ? ['uploads', ...uploads] : [])]);
 }
+
+/** Read the photos a new message names, once its receipt is begun. */
+export type MoaWakeAttachmentReader = () => Promise<{ ok: true; attachments: MoaWakeAttachment[]; missing?: number[] } | { ok: false; wire: MoaWakeWire }>;
 
 function failureResponse(failure: MoaWakeFailure, clientMessageId: string): AnswerReceiptResponse {
   return { status: 409, body: { state: 'failed', error: 'moa-wake-failed', code: failure, clientMessageId } };
@@ -129,8 +141,8 @@ export class MoaWakeService {
    * any routing, so a retry after the pane appeared replays the wake instead
    * of becoming a second turn through the chat path.
    */
-  peek(owner: string, clientMessageId: string, text: string, target?: MoaWakeTarget): MoaWakeWire | null {
-    const seen = this.store()?.peek(owner, clientMessageId, WAKE_SLOT, wakeHash(text, target)) ?? null;
+  peek(owner: string, clientMessageId: string, text: string, target?: MoaWakeTarget, uploads?: readonly string[]): MoaWakeWire | null {
+    const seen = this.store()?.peek(owner, clientMessageId, WAKE_SLOT, wakeHash(text, target, uploads)) ?? null;
     if (!seen) return null;
     switch (seen.kind) {
       case 'reused': return { status: 409, body: { error: 'message-id-reused', clientMessageId } };
@@ -173,12 +185,16 @@ export class MoaWakeService {
    * is sent one (an older one would deliver it to its phone bot); the factory
    * off is `409 factory-off`, with the id released.
    */
-  async roomMessage(input: { owner: string; clientMessageId: string; text: string; deviceId?: string; target: MoaWakeTarget }): Promise<MoaWakeWire> {
+  async roomMessage(input: {
+    owner: string; clientMessageId: string; text: string; deviceId?: string; target: MoaWakeTarget;
+    /** The photos' upload names, and how to read them once the id is new. */
+    uploads?: readonly string[]; readAttachments?: MoaWakeAttachmentReader;
+  }): Promise<MoaWakeWire> {
     const desktop = this.deps.desktop();
     if (!desktop?.available || !desktop.supports(FACTORY_THREAD_MESSAGE_CAPABILITY)) {
       return { status: 503, body: { error: 'desktop-unavailable', clientMessageId: input.clientMessageId } };
     }
-    const wire = await this.send(input, true, input.target);
+    const wire = await this.send(input, true, input.target, input.uploads?.length ? { uploads: input.uploads, read: input.readAttachments } : undefined);
     if (wire) return wire;
     const { wire: off } = refusalWire('factory_off', input.clientMessageId);
     return { ...off, body: { ...off.body, replayed: false } };
@@ -188,6 +204,7 @@ export class MoaWakeService {
     input: { owner: string; clientMessageId: string; text: string; deviceId?: string },
     factory: boolean,
     target?: MoaWakeTarget,
+    photos?: { uploads: readonly string[]; read?: MoaWakeAttachmentReader },
   ): Promise<MoaWakeWire | null> {
     const { owner, clientMessageId, text } = input;
     const desktop = this.deps.desktop();
@@ -196,7 +213,7 @@ export class MoaWakeService {
     }
     const store = this.store();
     if (!store) return { status: 500, body: { error: 'chat-persist-failed', clientMessageId } };
-    const bodyHash = wakeHash(text, target);
+    const bodyHash = wakeHash(text, target, photos?.uploads);
     let begun;
     try {
       begun = await store.begin(owner, clientMessageId, WAKE_SLOT, bodyHash);
@@ -204,18 +221,42 @@ export class MoaWakeService {
       return { status: 500, body: { error: 'chat-persist-failed', clientMessageId } };
     }
     if (begun.kind === 'full') return { status: 409, body: { error: 'message-history-full', clientMessageId } };
-    if (begun.kind !== 'new') return this.peek(owner, clientMessageId, text, target) ?? { status: 202, body: { state: 'uncertain', clientMessageId } };
+    if (begun.kind !== 'new') return this.peek(owner, clientMessageId, text, target, photos?.uploads) ?? { status: 202, body: { state: 'uncertain', clientMessageId } };
+
+    // The photos are read only for a new id: a replay never needs the files.
+    let attachments: MoaWakeAttachment[] | undefined;
+    // The first upload the daemon found gone, for main's `missing` refusal.
+    let missingAt: number | undefined;
+    if (photos) {
+      if (!target || !desktop.supports(FACTORY_THREAD_ATTACHMENTS_CAPABILITY) || !photos.read) {
+        await store.release(owner, clientMessageId);
+        return { status: 409, body: { error: 'attachments-unsupported', effect: 'none', clientMessageId } };
+      }
+      let read: Awaited<ReturnType<MoaWakeAttachmentReader>>;
+      try {
+        read = await photos.read();
+      } catch {
+        read = { ok: false, wire: { status: 500, body: { error: 'attachment-read-failed', effect: 'none', clientMessageId } } };
+      }
+      if (!read.ok) {
+        await store.release(owner, clientMessageId);
+        return read.wire;
+      }
+      attachments = read.attachments;
+      missingAt = read.missing?.[0];
+    }
 
     const payload: MoaWakePayload = {
       clientMessageId, text, actor: owner,
       ...(input.deviceId ? { deviceId: input.deviceId } : {}),
       ...(factory ? { mode: 'factory' as const } : {}),
       ...(target ? { workspaceId: target.workspaceId, threadId: target.threadId } : {}),
+      ...(attachments ? { attachments } : {}),
     };
     // The desktop may have changed while the receipt was written: a target
     // goes only to one that announced it now (request takes this owner
     // synchronously, with nothing awaited in between).
-    if (target && !desktop.supports(FACTORY_THREAD_MESSAGE_CAPABILITY)) {
+    if (target && (!desktop.supports(FACTORY_THREAD_MESSAGE_CAPABILITY) || (attachments && !desktop.supports(FACTORY_THREAD_ATTACHMENTS_CAPABILITY)))) {
       await store.release(owner, clientMessageId);
       return { status: 503, body: { error: 'desktop-unavailable', clientMessageId } };
     }
@@ -258,7 +299,13 @@ export class MoaWakeService {
       if (this.delivered.length > DELIVERED_MAX) this.delivered.splice(0, this.delivered.length - DELIVERED_MAX);
       return this.finish(store, owner, clientMessageId, 'done', { status: 202, body: { state: 'accepted', clientMessageId } });
     }
-    const { wire, release } = refusalWire(result.code, clientMessageId);
+    // A new message naming an upload that is gone: the phone's own answer
+    // for it, as the daemon would have given had the file been needed.
+    if (!result.ok && result.code === 'attachment_refused' && result.reason === 'missing' && missingAt !== undefined) {
+      await store.release(owner, clientMessageId);
+      return { status: 400, body: { error: 'attachment-not-found', index: missingAt, effect: 'none', clientMessageId } };
+    }
+    const { wire, release } = refusalWire(result.code, clientMessageId, result.reason);
     if (release) {
       await store.release(owner, clientMessageId);
       return wire;

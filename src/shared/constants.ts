@@ -500,6 +500,10 @@ export const IPC = {
   ROOM_RESOLVE: 'room:resolve',
   ROOM_DECISION: 'room:decision',
   ROOM_ACTORS: 'room:actors',
+  // A photo on an owner card (the room's stored copy, as a data URL), and the
+  // composer's file picker for photos.
+  ROOM_ATTACHMENT: 'room:attachment',
+  ROOM_PICK_ATTACHMENTS: 'room:pick-attachments',
   DIALOG_PICK_FOLDER: 'dialog:pick-folder',
   // File system
   FS_READ_DIR: 'fs:read-dir',

@@ -656,8 +656,15 @@ status bar badges, `fleet_triage` or the phone's sidebar.
 - **Composer:** one rounded pill at the foot (22px radius, a `--line`
   hairline, `--line-strong` while focused): "+" on the left — a menu of
   first messages to put in the box and, in a group, the bots to address —
-  the text ("Message <name>"; "Reply in thread" in a thread), and the
-  round primary send on the right. No microphone. A 1:1
+  a muted picture button beside it (Attach photos: a PNG/JPEG picker), the
+  text ("Message <name>"; "Reply in thread" in a thread), and the
+  round primary send on the right. No microphone. Photos (owner decision
+  2026-10-18) use Chat view's grammar: each staged photo is a chip above
+  the pill (thumbnail, name, × or Backspace at the start of the box removes
+  it), from the button, a paste or a drop on the page, at most four; a
+  refused one says why in the status line; a photo alone may be sent. The
+  owner's sent card shows them as thumbnails above its words (none for a
+  photo-only message) and a click opens one fitted in a dialog. A 1:1
   message is addressed to that bot alone. A group's message goes to every
   bot of the group (they may answer each other; a coordinator is a bot like
   any other, its job saying it leads — owner decision 2026-10-15) unless
@@ -1605,6 +1612,7 @@ primitives plus `Settings/SettingsLayout.tsx` (`SettingsSection`,
 | 2026-10-16 | Owner decision: a bot without a picture is its Mochi character ("Mochi Orb Crew v2", drawn by Grok), the one of its identity colour slot, replacing the four shapes with a face. The characters move: idle breath, blink and one signature twitch; a quicker hop while the bot runs; blink only at 24px and under; paused off screen; still under reduced motion. Amends Avatars and the Motion rule's "only perpetual motion" | The owner picked the crew from a design contest ("go ahead as it is"); a character tells bots apart better than a coloured shape, and its motion says which bot is busy without a word |
 | 2026-10-16 | Owner decision: per-bot models. A bot's profile picks the model and effort it thinks on and its workers' model and effort, each a text value with a muted Change (model combobox + effort Select, Cancel and Save), between the repository and on/off lines; Settings › Bots' list rows and the group dialog's bot rows add one muted, truncated note of what is set (e.g. "haiku (latest) · workers opus (latest)"), nothing when both are on the defaults. New Coordinator, Issue and Researcher bots think on a fast model, new Developer and Reviewer bots' workers on the strongest; existing bots keep theirs. Amends the profile's item list only | The owner could not choose models per bot; a one-line note keeps the list scannable without a column, and the profile stays a list of lines with no new control style |
 | 2026-10-16 | Owner decision: a bot's profile shows Today — each of its limits (turns per hour and day, worker time, running workers, the queue) with what is used of it, and one line on top naming the first that stops it, in a fixed order | A bot has four separate limits plus a queue cap, and the owner could not tell which stopped it: the reviewer had 26 turns left but no worker time and a full queue, and looked simply stuck. The limits stay as they are; they are made visible |
+| 2026-10-18 | Owner decision: photos in Bots messages, from the desktop composer and the phone. A muted picture button beside "+", staged chips and sent thumbnails in Chat view's 2026-09-25 grammar, the full photo in a dialog; no new colour or control style | The owner sends screenshots and photos to bots from the phone; the bot sees the photo itself in its turn, and the desktop draws what was sent the way Chat view already does |
 
 ### Desktop conversation view
 

@@ -178,14 +178,15 @@ export function shellQuote(word: string, platform: NodeJS.Platform): string | nu
 
 /** The `git fetch` line the worker runs in its own shell to bring the fetched
  *  branches into its `refs/remotes/origin/*` from the relay, or null when a
- *  word cannot be quoted for that shell. Pure. */
-export function fetchCommandFor(relayPath: string, refspecs: readonly string[], platform: NodeJS.Platform): string | null {
+ *  word cannot be quoted for that shell. `program` is the git it names
+ *  (`git.exe` for a WSL shell on a Windows-host repository). Pure. */
+export function fetchCommandFor(relayPath: string, refspecs: readonly string[], platform: NodeJS.Platform, program = 'git'): string | null {
   const words = [relayPath, ...refspecs].map((w) => shellQuote(w, platform));
   if (words.some((w) => w === null)) return null;
   // `--no-write-fetch-head`: the worker only wants its `refs/remotes/origin/*`
   // updated, and a sandboxed worker (codexWorkerGuard) can write the common
   // dir's objects, refs and logs but not a FETCH_HEAD beside them.
-  return ['git', 'fetch', '--no-tags', '--no-write-fetch-head', ...(words as string[])].join(' ');
+  return [program, 'fetch', '--no-tags', '--no-write-fetch-head', ...(words as string[])].join(' ');
 }
 
 /** A branch name main hands git as a plain ref name: git's own branch-name

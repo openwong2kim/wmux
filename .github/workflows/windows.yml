@@ -1,0 +1,75 @@
+name: Windows full suite
+
+# Every test lane on Windows: `npm run test:parallel` (the unit lane and the
+# integration lane together; scripts/lib/test-lanes.mjs). On a pull request the
+# unit lane runs on Linux (ci.yml, validate) and only the integration lane runs
+# on Windows, because a file that touches the OS or mentions win32 is in that
+# lane and the rest is OS-agnostic by construction. This workflow is the net
+# under that construction: a pure-logic test that breaks on Windows without
+# naming it is caught here, within a day of landing rather than at release.
+# It runs:
+#
+# - nightly, on main;
+# - on every push to main, so a regression is pinned to a merge or a short
+#   range of merges. A newer push cancels the run in flight, so a burst of
+#   merges costs two Windows runners once;
+# - on demand: `gh workflow run windows.yml --ref <branch>` for a pull request
+#   that touches platform code without saying win32.
+#
+# Nothing requires this workflow to pass. A red run is the notification.
+on:
+  schedule:
+    # 17:53 UTC = 02:53 KST. Off the hour: scheduled runs on :00 queue longest.
+    - cron: '53 17 * * *'
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # Pushes to main share one group and supersede each other. The nightly and
+  # manual runs get their own groups, so a merge never cancels them.
+  group: windows-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'push' }}
+
+jobs:
+  windows:
+    name: windows (${{ matrix.shard }}/2)
+    runs-on: windows-latest
+    # Both lanes on one runner took ~8 min of tests per shard before the
+    # lanes; the cap only stops a hang.
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+    steps:
+      # Same pins and toolchain as validate in ci.yml; see the comments there.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        id: node
+        with:
+          node-version: '>=24.21.0 <25'
+          cache: npm
+
+      - name: Use npm 11
+        run: npm install -g npm@11
+
+      # See the checks job in ci.yml for the key.
+      - name: Restore node_modules
+        id: node-modules
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: node_modules
+          key: node-modules-${{ runner.os }}-${{ runner.arch }}-node${{ steps.node.outputs.node-version }}-${{ hashFiles('package-lock.json', 'patches/**', 'scripts/fix-node-pty.js', 'scripts/apply-patches.mjs') }}
+
+      - name: Install dependencies
+        if: steps.node-modules.outputs.cache-hit != 'true'
+        run: npm ci
+
+      - name: Test (both lanes, shard ${{ matrix.shard }}/2)
+        run: npm run test:parallel -- --shard=${{ matrix.shard }}/2

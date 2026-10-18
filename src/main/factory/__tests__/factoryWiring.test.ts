@@ -32,12 +32,14 @@ import {
   taskWakeHandoff,
   threadTail,
   WorkerStopPendingError,
+  wakeImagesOf,
 } from '../factoryWiring';
+import { RoomAttachmentStore } from '../roomAttachments';
 import { setWorkerResumePorts } from '../workerReclaim';
 import { createFactLog, type FactLog } from '../factLog';
 import { WAKE_RECORD_RETAIN_MS, WakeQueue, latestOwnerWakeThread, setWakeQueue, wakeQueuePath } from '../wakeQueue';
 import { TriggerEngine } from '../triggerEngine';
-import { postHumanMessage } from '../humanMessage';
+import { humanRunId, postHumanMessage } from '../humanMessage';
 import { __resetRedactedSecretsForTesting, setRedactedSecrets } from '../secretRedaction';
 import { typedApprovalSourceAllowed } from '../approvals';
 import { defaultTriggers } from '../roleDefaults';
@@ -913,6 +915,34 @@ describe('stopTaskWorker (a stop of a bot task\'s worker)', () => {
       expect(d.calls).toEqual(['stopAgent:own']);
     } finally {
       fs.rmSync(d.wt, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('wakeImagesOf', () => {
+  it("a human wake's owner card photos, read from the store; other wakes and cards have none", () => {
+    const d = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-wake-photos-'));
+    try {
+      const writer = new RoomWriter({ dir: path.join(d, 'rooms'), log: () => undefined });
+      const store = new RoomAttachmentStore({
+        root: path.join(d, 'photos'), uploadsDir: d, log: () => undefined,
+        normalize: (b) => ({ data: b, width: 1, height: 1 }),
+      });
+      const src = path.join(d, 'a.jpg');
+      fs.writeFileSync(src, Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2]));
+      const imported = store.importFile('ws-1', src);
+      if (!imported.ok) throw new Error('import failed');
+      const posted = writer.post({ workspaceId: 'ws-1', kind: 'human', actor: { kind: 'human' }, title: 'see', attachments: [imported.attachment] });
+      if (!posted.ok) throw new Error('post failed');
+      const profile = { workspaceId: 'ws-1' };
+      const wake = (runId: string) => ({ workspaceId: 'ws-1', reason: { kind: 'human' as const, text: 'see', source: 'phone' as const, runId } });
+      expect(wakeImagesOf(writer, store, profile, wake(humanRunId(posted.card.id)))).toEqual({
+        images: [{ mediaType: 'image/jpeg', data: Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2]).toString('base64') }], missing: 0,
+      });
+      expect(wakeImagesOf(writer, store, profile, wake('run-c-none'))).toBeNull();
+      expect(wakeImagesOf(writer, store, profile, { workspaceId: 'ws-1', reason: { kind: 'manual', by: 'human' } })).toBeNull();
+    } finally {
+      fs.rmSync(d, { recursive: true, force: true });
     }
   });
 });

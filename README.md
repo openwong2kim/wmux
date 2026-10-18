@@ -8,7 +8,7 @@
 
 **Automate everything else. Do your true work.**
 
-Run fleets of AI agents — Claude Code, Codex, Gemini, or any CLI — side by side, native on **Windows and macOS**. Let them drive a real browser for the work beyond code, and answer them from your **iPhone**.
+Run fleets of AI agents — Claude Code, Codex, Gemini, or any CLI — side by side, native on **Windows and macOS**. Keep only the hunks you want from their work, and hand jobs to bots in plain words.
 
 [![Windows 10/11](https://img.shields.io/badge/Windows-10%2F11-0078D6?logo=windows&logoColor=white)](https://github.com/openwong2kim/wmux/releases/latest)
 [![macOS](https://img.shields.io/badge/macOS-Apple%20Silicon-000000?logo=apple&logoColor=white)](https://github.com/openwong2kim/wmux/releases/latest)

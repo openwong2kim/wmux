@@ -84,6 +84,9 @@ describe('bot profile: models', () => {
   it('the list and roster note: only what is set, briefly', () => {
     expect(botModelSummary({ engine: { kind: 'claude-sdk' } }, t)).toBe('');
     expect(botModelSummary({ engine: { kind: 'claude-sdk', model: 'haiku' } }, t)).toBe('haiku (latest)');
+    // A stored id is kept as written; the profile shows it trimmed.
+    expect(botModelSummary({ engine: { kind: 'claude-sdk', model: '  haiku  ' } }, t)).toBe('haiku (latest)');
+    expect(botModelSummary({ engine: { kind: 'claude-sdk' }, workerAgent: { agent: 'codex', model: ' gpt-6.1-sol ' } }, t)).toBe('workers gpt-6.1-sol');
     expect(botModelSummary({ engine: { kind: 'claude-sdk' }, workerAgent: { agent: 'claude', model: 'claude-opus-5-5' } }, t)).toBe('workers Opus 5.5');
     expect(botModelSummary({ engine: { kind: 'claude-sdk', model: 'sonnet' }, workerAgent: { agent: 'codex', model: 'gpt-6.1-sol' } }, t)).toBe('sonnet (latest) · workers gpt-6.1-sol');
     expect(botModelSummary({ engine: { kind: 'claude-sdk' }, workerAgent: { agent: 'codex' } }, t)).toBe('workers Codex');

@@ -148,6 +148,13 @@ describe('BotStore', () => {
     await s.flush();
     const disk = JSON.parse(fs.readFileSync(botsFilePath(dir), 'utf8'));
     expect(disk.bots.map((b: { engine: { model?: string } }) => b.engine.model)).toEqual([arn, long, 'claude-opus-5-5@20260901', 'opus; rm -rf ~']);
+    // An engine patch without a model (the profile's effort-only save) keeps a
+    // stored model that fails the rule; it still clears one that passes.
+    expect(s.update('bot-0a0a0a34', { engine: { kind: 'claude-sdk', effort: 'high' } })).toMatchObject({ ok: true, bot: { engine: { kind: 'claude-sdk', model: 'opus; rm -rf ~', effort: 'high' } } });
+    expect(s.update('bot-0a0a0a33', { engine: { kind: 'claude-sdk', effort: 'high' } })).toMatchObject({ ok: true, bot: { engine: { kind: 'claude-sdk', effort: 'high' } } });
+    expect(s.get('bot-0a0a0a33')?.engine).toEqual({ kind: 'claude-sdk', effort: 'high' });
+    // Picking another model replaces it.
+    expect(s.update('bot-0a0a0a34', { engine: { kind: 'claude-sdk', model: 'opus' } })).toMatchObject({ ok: true, bot: { engine: { kind: 'claude-sdk', model: 'opus' } } });
   });
 
   it('a new bot starts on its template\'s models; an explicit engine or worker agent wins; Custom has none', () => {
@@ -195,6 +202,10 @@ describe('BotStore', () => {
     const r = s.create({ workspaceId: 'ws-1', name: 'Dev' });
     if (!r.ok) throw new Error('create');
     expect(s.update(r.bot.id, { engine: { kind: 'claude-sdk', model: '--yolo' } })).toMatchObject({ ok: false, code: 'invalid_argument', message: expect.stringMatching(/model id/) });
+    // The refusal states the brain rule as it is: / and @ allowed, up to 256.
+    const refused = s.create({ workspaceId: 'ws-1', engine: { kind: 'claude-sdk', model: 'opus; rm' } });
+    expect(refused).toMatchObject({ ok: false, code: 'invalid_argument', message: expect.stringContaining('. _ : / @ -') });
+    expect(!refused.ok && refused.message).toMatch(/up to 256 characters.*Bedrock or Vertex id or a model ARN/);
     expect(s.update(r.bot.id, { engine: { kind: 'claude-sdk', effort: 'turbo' } })).toMatchObject({ ok: false, code: 'invalid_argument' });
     expect(s.update(r.bot.id, { engine: { kind: 'claude-sdk', model: 'claude-haiku-4-5-20251001', effort: 'low' } })).toMatchObject({ ok: true, bot: { engine: { kind: 'claude-sdk', model: 'claude-haiku-4-5-20251001', effort: 'low' } } });
     expect(s.update(r.bot.id, { workerAgent: { agent: 'claude', model: 'opus', effort: 'max' } })).toMatchObject({ ok: true, bot: { workerAgent: { agent: 'claude', model: 'opus', effort: 'max' } } });

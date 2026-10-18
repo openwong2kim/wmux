@@ -25,6 +25,12 @@ export const FACTORY_PHONE_MESSAGE_CAPABILITY = 'factory.message';
  *  so the daemon never sends a target to one. */
 export const FACTORY_THREAD_MESSAGE_CAPABILITY = 'factory.threadMessage';
 
+/** Announced by a desktop whose factory takes photos with a message for one
+ *  conversation (`attachments` on the payload, shared/roomAttachments.ts).
+ *  A desktop without it would drop them silently, so the daemon never sends
+ *  it a message with photos. */
+export const FACTORY_THREAD_ATTACHMENTS_CAPABILITY = 'factory.threadAttachments';
+
 export type MoaWakeRefusalCode =
   | 'moa_off' | 'mode_off' | 'not_hq' | 'hq_missing' | 'hq_unknown'
   | 'unsupported_vendor' | 'busy' | 'duplicate'
@@ -36,13 +42,23 @@ export type MoaWakeRefusalCode =
   | 'bot_missing' | 'bot_off' | 'group_missing' | 'group_off' | 'room_refused'
   /** mode 'factory': the id already stands for a card with other words or in
    *  another thread. Nothing was posted or queued. */
-  | 'id_reused';
+  | 'id_reused'
+  /** A targeted message with photos: a photo could not be taken (`reason`).
+   *  Nothing was posted. */
+  | 'attachment_refused'
+  /** A targeted message with photos: the room's photo store is full.
+   *  Nothing was posted. */
+  | 'attachments_full';
+
+/** Why a photo was refused: gone, not PNG/JPEG, too large, or not the file
+ *  the daemon checked. */
+export type MoaWakeAttachmentRefusal = 'missing' | 'type' | 'size' | 'changed';
 
 export type MoaWakeResult =
   /** `queued`: the factory took the message as a wake for the HQ bot (its
    *  reply is a room card; no Moa pane will appear). */
   | { ok: true; accepted: true; queued?: true }
-  | { ok: false; code: MoaWakeRefusalCode };
+  | { ok: false; code: MoaWakeRefusalCode; reason?: MoaWakeAttachmentRefusal };
 
 /** Failures main learns only after it accepted, reported over `daemon.moa.wakeResult`. */
 export type MoaWakeFailure = 'tui-dialog' | 'spawn-failed';
@@ -63,12 +79,29 @@ export interface MoaWakePayload {
    *  from the room) in the room of `workspaceId`. Neither: the phone bot. */
   workspaceId?: string;
   threadId?: string;
+  /** With a target only (FACTORY_THREAD_ATTACHMENTS_CAPABILITY): the phone
+   *  uploads the message carries, as the daemon read them. Main copies each
+   *  from its own uploads folder and refuses one whose bytes are not these. */
+  attachments?: MoaWakeAttachment[];
+}
+
+/** One phone upload on a message: its file name in the uploads folder (the
+ *  daemon's name rule), and the size and SHA-256 the daemon read — both
+ *  absent when the file is gone (a retry whose card already has its photos
+ *  needs none; main refuses a new message with one). */
+export interface MoaWakeAttachment {
+  uploadId: string;
+  bytes?: number;
+  sha256?: string;
 }
 
 const REFUSAL_CODES: ReadonlySet<string> = new Set<MoaWakeRefusalCode>([
   'moa_off', 'mode_off', 'not_hq', 'hq_missing', 'hq_unknown', 'unsupported_vendor', 'busy', 'duplicate', 'factory_off',
   'bot_missing', 'bot_off', 'group_missing', 'group_off', 'room_refused', 'id_reused',
+  'attachment_refused', 'attachments_full',
 ]);
+
+const ATTACHMENT_REFUSALS: ReadonlySet<string> = new Set<MoaWakeAttachmentRefusal>(['missing', 'type', 'size', 'changed']);
 
 /** Main's answer, or null for any shape outside the contract (the daemon reads that as uncertain). */
 export function parseMoaWakeResult(raw: unknown): MoaWakeResult | null {
@@ -76,7 +109,9 @@ export function parseMoaWakeResult(raw: unknown): MoaWakeResult | null {
   const r = raw as Record<string, unknown>;
   if (r.ok === true && r.accepted === true) return r.queued === true ? { ok: true, accepted: true, queued: true } : { ok: true, accepted: true };
   if (r.ok === false && typeof r.code === 'string' && REFUSAL_CODES.has(r.code)) {
-    return { ok: false, code: r.code as MoaWakeRefusalCode };
+    const reason = r.code === 'attachment_refused' && typeof r.reason === 'string' && ATTACHMENT_REFUSALS.has(r.reason)
+      ? r.reason as MoaWakeAttachmentRefusal : undefined;
+    return { ok: false, code: r.code as MoaWakeRefusalCode, ...(reason ? { reason } : {}) };
   }
   return null;
 }

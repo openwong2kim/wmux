@@ -19,7 +19,7 @@ describe('desktop phone listener lifetime', () => {
     expect(handle).toHaveBeenCalledTimes(1);
     expect(client.rpc).toHaveBeenCalledWith('daemon.phone.complete', { requestId: 'r1', ok: true, result: { accounts: [] } });
     // The desktop announces the optional commands it handles at register.
-    expect(client.rpc).toHaveBeenCalledWith('daemon.phone.register', { commands: ['accounts.envForAccount', 'moa.wake', 'factory.message', 'workspaces.fleetTicket', 'workspaces.roomThreads', 'workspaces.roomCards', 'workspaces.botApproval', 'workspaces.botApprovalDecide', 'workspaces.bots', 'factory.threadMessage'] });
+    expect(client.rpc).toHaveBeenCalledWith('daemon.phone.register', { commands: ['accounts.envForAccount', 'moa.wake', 'factory.message', 'workspaces.fleetTicket', 'workspaces.roomThreads', 'workspaces.roomCards', 'workspaces.botApproval', 'workspaces.botApprovalDecide', 'workspaces.bots', 'factory.threadMessage', 'factory.threadAttachments', 'workspaces.roomAttachment'] });
     dispose();
     client.emit('event', { ...event, data: { ...event.data, requestId: 'r2' } });
     expect(handle).toHaveBeenCalledTimes(1);

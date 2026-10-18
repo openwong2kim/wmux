@@ -16,9 +16,9 @@
 // the runtime has started.
 import fs from 'node:fs';
 import path from 'node:path';
-import type { BrowserWindow } from 'electron';
+import type { BrowserWindow, OpenDialogOptions } from 'electron';
 import { isMainWindowSender } from '../mainWindowSender';
-import { ipcMain } from 'electron';
+import { dialog, ipcMain } from 'electron';
 import { IPC } from '../../../shared/constants';
 import type { BotProfile, BotRole, RemovedBot } from '../../../shared/bot';
 import { getBotStore } from '../../factory/botStore';
@@ -29,6 +29,9 @@ import { ROOM_RPC } from '../../../shared/room';
 import { getRoomWriter, isRoomWorkspaceId, type RoomWriter } from '../../factory/roomWriter';
 import { loadWorkspaceDecisions, type WorkspaceDecision } from '../../deck/deckDecisionStore';
 import { getFactorySettingsStore } from '../../factory/factorySettings';
+import { getRoomAttachmentStore, type RoomAttachmentStore } from '../../factory/roomAttachments';
+import { ROOM_ATTACHMENT_ID_RE, ROOM_ATTACHMENT_LIMITS, type RoomAttachment } from '../../../shared/roomAttachments';
+import { resolveAccessiblePath } from './fs.handler';
 
 /** What the dock needs to know about the factory. */
 export interface RoomFactoryState {
@@ -60,6 +63,12 @@ export interface RoomIpcPorts {
   bots?: () => readonly Pick<BotProfile, 'id' | 'role' | 'name'>[];
   /** The removed bots' tombstones (botStore.ts listRemoved). */
   removedBots?: () => readonly RemovedBot[];
+  /** The room's photo store (roomAttachments.ts). */
+  attachments?: () => RoomAttachmentStore | null;
+  /** Turn a picked path into a readable real path, or null (fs.handler). */
+  resolvePath?: (file: string) => Promise<string | null>;
+  /** The composer's photo picker. */
+  pickFiles?: () => Promise<string[] | null>;
 }
 
 /** A bot as a card author. A removed one (`removed`) keeps its name, its
@@ -131,7 +140,7 @@ export function registerRoomIpcHandlers(getWindow: () => BrowserWindow | null, p
   };
   const bots = ports.bots ?? (() => getBotStore()?.list() ?? []);
   const removedBots = ports.removedBots ?? (() => getBotStore()?.listRemoved() ?? []);
-  const channels = [IPC.ROOM_STATUS, IPC.ROOM_READ, IPC.ROOM_THREADS, IPC.ROOM_POST, IPC.ROOM_RESOLVE, IPC.ROOM_DECISION, IPC.ROOM_ACTORS];
+  const channels = [IPC.ROOM_STATUS, IPC.ROOM_READ, IPC.ROOM_THREADS, IPC.ROOM_POST, IPC.ROOM_RESOLVE, IPC.ROOM_DECISION, IPC.ROOM_ACTORS, IPC.ROOM_ATTACHMENT, IPC.ROOM_PICK_ATTACHMENTS];
   for (const c of channels) ipcMain.removeHandler(c);
 
   // Every channel acts with the operator's authority, so every one checks
@@ -147,7 +156,17 @@ export function registerRoomIpcHandlers(getWindow: () => BrowserWindow | null, p
   ipcMain.handle(IPC.ROOM_READ, wrapHandler(IPC.ROOM_READ, operatorOnly((raw) => call(ROOM_RPC.read, raw))));
   ipcMain.handle(IPC.ROOM_THREADS, wrapHandler(IPC.ROOM_THREADS, operatorOnly((raw) => call(ROOM_RPC.threads, raw))));
   // The owner posts human cards only; the kind is fixed here.
-  ipcMain.handle(IPC.ROOM_POST, wrapHandler(IPC.ROOM_POST, operatorOnly((raw) => call(ROOM_RPC.post, { ...obj(raw), kind: 'human' }))));
+  // Photos: the paths the owner picked are copied into the room's store
+  // here, and only the stored records go on to room.post (postWithPhotos).
+  const photos = ports.attachments ?? getRoomAttachmentStore;
+  const resolvePath = ports.resolvePath ?? resolveAccessiblePath;
+  const posting = new Map<string, Promise<unknown>>();
+  ipcMain.handle(IPC.ROOM_POST, wrapHandler(IPC.ROOM_POST, operatorOnly((raw) => postWithPhotos(raw, {
+    post: (params) => call(ROOM_RPC.post, { ...params, kind: 'human' }),
+    writer, store: photos, resolvePath, posting,
+  }))));
+  ipcMain.handle(IPC.ROOM_ATTACHMENT, wrapHandler(IPC.ROOM_ATTACHMENT, operatorOnly((raw) => roomPhoto(raw, writer(), photos()))));
+  ipcMain.handle(IPC.ROOM_PICK_ATTACHMENTS, wrapHandler(IPC.ROOM_PICK_ATTACHMENTS, operatorOnly(async () => (await (ports.pickFiles ?? (() => pickPhotos(getWindow)))()) ?? [])));
   ipcMain.handle(IPC.ROOM_RESOLVE, wrapHandler(IPC.ROOM_RESOLVE, operatorOnly((raw) => call(ROOM_RPC.resolve, raw))));
   // The decision behind a question card (its options), for answering it.
   ipcMain.handle(IPC.ROOM_DECISION, wrapHandler(IPC.ROOM_DECISION, operatorOnly((raw): { decision: WorkspaceDecision | null } => {
@@ -173,4 +192,127 @@ export function registerRoomIpcHandlers(getWindow: () => BrowserWindow | null, p
   return () => {
     for (const c of channels) ipcMain.removeHandler(c);
   };
+}
+
+// ── Photos ─────────────────────────────────────────────────────────────────
+
+/** A photo the room did not take: the reason, for the composer's line. */
+export interface RoomPhotoRefusal { ok: false; code: 'attachment'; reason: 'missing' | 'type' | 'size' | 'changed' | 'full' | 'count' | 'unavailable'; message: string; index?: number }
+
+export interface PostWithPhotosDeps {
+  post: (params: Record<string, unknown>) => Promise<unknown>;
+  writer: () => RoomWriter | null;
+  store: () => RoomAttachmentStore | null;
+  resolvePath: (file: string) => Promise<string | null>;
+  /** In-flight posts by room and clientPostId: one at a time per key. */
+  posting: Map<string, Promise<unknown>>;
+}
+
+const PHOTO_MESSAGES: Record<RoomPhotoRefusal['reason'], string> = {
+  missing: 'A photo could not be read.',
+  type: 'Only PNG and JPEG photos can be sent.',
+  size: 'A photo is too large.',
+  changed: 'A photo changed while it was being sent.',
+  full: "This room's photo storage is full.",
+  count: `At most ${ROOM_ATTACHMENT_LIMITS.PER_MESSAGE} photos can be sent with one message.`,
+  unavailable: 'Photos cannot be sent until the bots have started.',
+};
+
+function photoRefusal(reason: RoomPhotoRefusal['reason'], index?: number): RoomPhotoRefusal {
+  return { ok: false, code: 'attachment', reason, message: PHOTO_MESSAGES[reason], ...(index !== undefined ? { index } : {}) };
+}
+
+/**
+ * ROOM_POST with `attachmentPaths` (absolute paths the owner picked, pasted
+ * or dropped). One post per (room, clientPostId) at a time; inside it: a card
+ * that already has the id keeps its photos and nothing is copied; else each
+ * path is copied into the room's store, then room.post runs with the stored
+ * records. Copies are removed only when no card took them. A renderer's own
+ * `attachments` field is never forwarded.
+ */
+export async function postWithPhotos(raw: unknown, deps: PostWithPhotosDeps): Promise<unknown> {
+  const { attachmentPaths, attachments: _ignored, ...params } = obj(raw);
+  void _ignored;
+  if (attachmentPaths === undefined) return deps.post(params);
+  if (!Array.isArray(attachmentPaths) || attachmentPaths.length === 0 || attachmentPaths.some((p) => typeof p !== 'string')) return photoRefusal('missing');
+  if (attachmentPaths.length > ROOM_ATTACHMENT_LIMITS.PER_MESSAGE) return photoRefusal('count');
+  const workspaceId = params.workspaceId;
+  if (!isRoomWorkspaceId(workspaceId)) return deps.post(params);
+  const clientPostId = typeof params.clientPostId === 'string' ? params.clientPostId : null;
+  const key = clientPostId ? `${workspaceId}\u0000${clientPostId}` : null;
+  const run = async (): Promise<unknown> => {
+    const store = deps.store();
+    if (!store) return photoRefusal('unavailable');
+    const prior = clientPostId ? deps.writer()?.find(workspaceId, (c) => c.clientPostId === clientPostId) ?? null : null;
+    let records: RoomAttachment[] = prior?.attachments ?? [];
+    const imported: string[] = [];
+    if (!prior) {
+      // Only a new post reads the files: a retry whose card is up needs none
+      // (the owner may have moved them since).
+      const resolved: string[] = [];
+      for (const [index, file] of (attachmentPaths as string[]).entries()) {
+        const real = await deps.resolvePath(file).catch(() => null);
+        if (!real) return photoRefusal('missing', index);
+        resolved.push(real);
+      }
+      for (const [index, file] of resolved.entries()) {
+        const r = store.importFile(workspaceId, file);
+        if (!r.ok) {
+          store.remove(workspaceId, imported);
+          return photoRefusal(r.reason, index);
+        }
+        imported.push(r.attachment.id);
+        records = [...records, r.attachment];
+      }
+    }
+    // A throw leaves the copies: whether a card was written is unknown, and
+    // a retry with the same id finds it (the age sweep takes any leftover).
+    const answer = await deps.post({ ...params, ...(records.length > 0 ? { attachments: records } : {}) });
+    const card = obj(answer).card as RoomCard | undefined;
+    const kept = new Set((card?.attachments ?? []).map((a) => a.id));
+    const orphans = imported.filter((id) => !kept.has(id));
+    if (orphans.length > 0) store.remove(workspaceId, orphans);
+    return answer;
+  };
+  if (!key) return run();
+  // Serialised per key: a double send waits for the first, then finds its card.
+  const before = deps.posting.get(key) ?? Promise.resolve();
+  const mine = before.catch(() => undefined).then(run);
+  deps.posting.set(key, mine);
+  try {
+    return await mine;
+  } finally {
+    if (deps.posting.get(key) === mine) deps.posting.delete(key);
+  }
+}
+
+/** ROOM_ATTACHMENT: a photo of a kept owner card of that room, as a data URL. */
+export function roomPhoto(raw: unknown, writer: RoomWriter | null, store: RoomAttachmentStore | null): { ok: true; dataUrl: string; width?: number; height?: number } | { ok: false } {
+  const p = obj(raw);
+  const { workspaceId, attachmentId } = p;
+  if (!isRoomWorkspaceId(workspaceId) || typeof attachmentId !== 'string' || !ROOM_ATTACHMENT_ID_RE.test(attachmentId) || !writer || !store) return { ok: false };
+  const card = writer.find(workspaceId, (c) => c.kind === 'human' && !!c.attachments?.some((a) => a.id === attachmentId));
+  const meta = card?.attachments?.find((a) => a.id === attachmentId);
+  if (!meta) return { ok: false };
+  const data = store.read(workspaceId, attachmentId);
+  if (!data) return { ok: false };
+  return {
+    ok: true, dataUrl: `data:${meta.mediaType};base64,${data.toString('base64')}`,
+    ...(meta.width ? { width: meta.width } : {}), ...(meta.height ? { height: meta.height } : {}),
+  };
+}
+
+/** The composer's picker: PNG and JPEG, several at once. An isolated
+ *  instance (WMUX_DATA_SUFFIX) started with WMUX_TEST_ROOM_ATTACH_FILE takes
+ *  that file instead of asking, so a live check can drive it. */
+async function pickPhotos(getWindow: () => BrowserWindow | null): Promise<string[] | null> {
+  const testFile = process.env.WMUX_DATA_SUFFIX ? process.env.WMUX_TEST_ROOM_ATTACH_FILE : undefined;
+  if (testFile) return [testFile];
+  const opts: OpenDialogOptions = {
+    properties: ['openFile', 'multiSelections'],
+    filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg'] }],
+  };
+  const win = getWindow();
+  const r = win && !win.isDestroyed() ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts);
+  return r.canceled ? null : r.filePaths.slice(0, ROOM_ATTACHMENT_LIMITS.PER_MESSAGE);
 }

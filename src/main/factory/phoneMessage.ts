@@ -8,7 +8,8 @@
 // answers `factory_off` and the daemon takes the Moa pane path itself. Any
 // other `moa.wake` answers `moa_off`: there is no Moa brain to wake.
 
-import type { MoaWakePayload, MoaWakeResult } from '../../shared/moaWake';
+import type { MoaWakeAttachment, MoaWakePayload, MoaWakeResult } from '../../shared/moaWake';
+import { ROOM_ATTACHMENT_LIMITS, UPLOAD_NAME_RE } from '../../shared/roomAttachments';
 import { parseThreadId } from '../../shared/room';
 import { isPhoneRoomWorkspaceId } from '../../shared/phoneRooms';
 
@@ -32,8 +33,11 @@ export async function handlePhoneMoaWake(raw: Record<string, unknown>): Promise<
   const { clientMessageId, text, actor, deviceId, mode, workspaceId, threadId } = raw;
   // A target is both fields or neither, and only for the factory.
   const targeted = workspaceId !== undefined || threadId !== undefined;
+  // Photos ride a targeted message only; with them the text may be empty.
+  const attachments = raw.attachments === undefined ? undefined : parseWakeAttachments(raw.attachments);
+  if (attachments === null || (attachments && !targeted)) throw new Error('invalid moa.wake payload');
   if (typeof clientMessageId !== 'string' || clientMessageId.length === 0 || clientMessageId.length > 128 ||
-      typeof text !== 'string' || !text.trim() || typeof actor !== 'string' || actor.length === 0 || actor.length > 256 ||
+      typeof text !== 'string' || (!text.trim() && !attachments) || typeof actor !== 'string' || actor.length === 0 || actor.length > 256 ||
       (deviceId !== undefined && typeof deviceId !== 'string') || (mode !== undefined && mode !== 'factory') ||
       (targeted && (mode !== 'factory' || !isPhoneRoomWorkspaceId(workspaceId) || parseThreadId(threadId) === null))) {
     throw new Error('invalid moa.wake payload');
@@ -43,6 +47,7 @@ export async function handlePhoneMoaWake(raw: Record<string, unknown>): Promise<
     clientMessageId, text, actor, mode,
     ...(typeof deviceId === 'string' ? { deviceId } : {}),
     ...(targeted ? { workspaceId: workspaceId as string, threadId: parseThreadId(threadId) as string } : {}),
+    ...(attachments ? { attachments } : {}),
   };
   let r: MoaWakeResult | null = null;
   try {
@@ -52,4 +57,25 @@ export async function handlePhoneMoaWake(raw: Record<string, unknown>): Promise<
     return { ok: false, code: 'hq_unknown' };
   }
   return r ?? { ok: false, code: 'factory_off' };
+}
+
+/** The payload's photos: 1–PER_MESSAGE distinct uploads by name, size and
+ *  SHA-256; null for any other shape. */
+function parseWakeAttachments(value: unknown): MoaWakeAttachment[] | null {
+  if (!Array.isArray(value) || value.length === 0 || value.length > ROOM_ATTACHMENT_LIMITS.PER_MESSAGE) return null;
+  const out: MoaWakeAttachment[] = [];
+  for (const raw of value) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+    const a = raw as Record<string, unknown>;
+    if (typeof a.uploadId !== 'string' || !UPLOAD_NAME_RE.test(a.uploadId) || out.some((o) => o.uploadId === a.uploadId)) return null;
+    // Size and hash both, or neither (the daemon found the file gone).
+    if (a.bytes === undefined && a.sha256 === undefined) {
+      out.push({ uploadId: a.uploadId });
+      continue;
+    }
+    if (typeof a.bytes !== 'number' || !Number.isSafeInteger(a.bytes) || a.bytes <= 0 || a.bytes > ROOM_ATTACHMENT_LIMITS.SOURCE_MAX_BYTES) return null;
+    if (typeof a.sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(a.sha256)) return null;
+    out.push({ uploadId: a.uploadId, bytes: a.bytes, sha256: a.sha256 });
+  }
+  return out;
 }
