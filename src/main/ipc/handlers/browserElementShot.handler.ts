@@ -10,6 +10,7 @@ import { ELEMENT_SHOT_PREFIX, elementShotRect, type ElementRect } from '../../..
 import { imagePathForPane } from '../../../shared/imagePaste';
 import { getPtyShell } from '../../pty/ptyShellRegistry';
 import { isTrustedMainFrameSender } from './browserPolicy.handler';
+import { wrapHandler } from '../wrapHandler';
 
 export const ELEMENT_SHOT_CHANNEL = 'browser:capture-element';
 // capturePage can hang on some guests (see CAPTURE_PAGE_TIMEOUT_MS in
@@ -20,7 +21,7 @@ export function registerElementShotHandler(getWindow: () => BrowserWindow | null
   ipcMain.removeHandler(ELEMENT_SHOT_CHANNEL);
   ipcMain.handle(
     ELEMENT_SHOT_CHANNEL,
-    async (event: IpcMainInvokeEvent, webContentsId: unknown, rect: unknown, ptyId: unknown): Promise<string | null> => {
+    wrapHandler(ELEMENT_SHOT_CHANNEL, async (event: IpcMainInvokeEvent, webContentsId: unknown, rect: unknown, ptyId: unknown): Promise<string | null> => {
       // Only the wmux window may ask, and only for a <webview> guest it hosts.
       if (!isTrustedMainFrameSender(event, getWindow)) return null;
       if (typeof webContentsId !== 'number' || !Number.isInteger(webContentsId)) return null;
@@ -60,6 +61,6 @@ export function registerElementShotHandler(getWindow: () => BrowserWindow | null
         platform: process.platform,
         shellPath: getPtyShell(typeof ptyId === 'string' && ptyId ? ptyId : undefined),
       });
-    },
+    }),
   );
 }
