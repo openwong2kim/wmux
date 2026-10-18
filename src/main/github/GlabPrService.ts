@@ -8,8 +8,10 @@
 //    배열), 코멘트 = `glab api projects/:id/merge_requests/<iid>/notes`
 //    (`:id`는 glab이 cwd의 repo로 치환). system 노트("added 1 commit" 등)는
 //    사람 코멘트가 아니라 노이즈라 걸러낸다.
-//  - checks: REST 목록 페이로드에 파이프라인 롤업이 없어 v1은 null(정직한
-//    부재 — UI가 무색 dot). head_pipeline 조회는 MR당 추가 콜이라 보류.
+//  - checks: the REST list carries no pipeline, and `head_pipeline` is on the
+//    single-MR GET only (one call per MR). So one GraphQL call reads every
+//    listed MR's head pipeline at once; if it fails (an old self-managed
+//    schema, a timeout) the list still shows, with no dot (checks null).
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import {
@@ -29,6 +31,12 @@ const LIST_TTL_MS = 30_000;
 const GLAB_TIMEOUT_MS = 10_000;
 const LIST_LIMIT = 30;
 const MAX_ENTRIES = 128;
+/** How long a missing / found glab binary is believed before probing again. */
+const GATE_TTL_MS = 5 * 60 * 1000;
+/** How long `glab auth status --hostname` is believed, per host. */
+const AUTH_TTL_MS = 60 * 1000;
+/** A forced probe (Check again, refresh) answered this recently is reused. */
+const FORCED_REUSE_MS = 3_000;
 
 const GLAB_ENV: NodeJS.ProcessEnv = {
   ...process.env,
@@ -65,6 +73,61 @@ interface GlabMrItem {
   updated_at?: string;
   web_url?: string;
   has_conflicts?: boolean;
+  /** `full` is `group/subgroup/project!iid`: the project's full path, which
+   *  the GraphQL `project(fullPath:)` lookup needs. */
+  references?: { full?: string };
+}
+
+/** GitLab's PipelineStatusEnum → the 3-state rollup. MANUAL (blocked on a
+ *  manual job) is unfinished, so pending; skipped or unknown → null. */
+export function mapGlabPipelineStatus(status: string | null | undefined): PrSummary['checks'] {
+  switch ((status ?? '').toUpperCase()) {
+    case 'SUCCESS':
+      return 'passing';
+    case 'FAILED': // cancelled counts as failing, as in GhPrService mapChecks
+    case 'CANCELED':
+      return 'failing';
+    case 'CREATED':
+    case 'WAITING_FOR_RESOURCE':
+    case 'PREPARING':
+    case 'WAITING_FOR_CALLBACK':
+    case 'PENDING':
+    case 'RUNNING':
+    case 'CANCELING':
+    case 'SCHEDULED':
+    case 'MANUAL':
+      return 'pending';
+    default:
+      return null;
+  }
+}
+
+/** The project's full path from an MR's `references.full`, or null. */
+export function glabProjectPath(item: GlabMrItem): string | null {
+  const full = item.references?.full ?? '';
+  const bang = full.lastIndexOf('!');
+  const path = bang > 0 ? full.slice(0, bang) : '';
+  return /^[\w.-]+(?:\/[\w.-]+)+$/.test(path) ? path : null;
+}
+
+/** The GraphQL query for the head pipelines of these MRs (iids are numbers). */
+export function glabPipelinesQuery(iids: readonly number[]): string {
+  const list = iids.map((n) => JSON.stringify(String(n))).join(',');
+  return `query($fullPath: ID!) { project(fullPath: $fullPath) { mergeRequests(iids: [${list}]) { nodes { iid headPipeline { status } } } } }`;
+}
+
+/** iid → head-pipeline rollup from the GraphQL reply; an MR with no pipeline is absent. */
+export function mapGlabPipelines(reply: unknown): Map<number, NonNullable<PrSummary['checks']>> {
+  const out = new Map<number, NonNullable<PrSummary['checks']>>();
+  const nodes = (reply as { data?: { project?: { mergeRequests?: { nodes?: unknown } } | null } } | null)
+    ?.data?.project?.mergeRequests?.nodes;
+  if (!Array.isArray(nodes)) return out;
+  for (const n of nodes as Array<{ iid?: unknown; headPipeline?: { status?: string } | null }>) {
+    const iid = Number(n?.iid);
+    const checks = mapGlabPipelineStatus(n?.headPipeline?.status);
+    if (Number.isInteger(iid) && checks) out.set(iid, checks);
+  }
+  return out;
 }
 
 export function mapGlabMrItem(json: GlabMrItem): PrSummary | null {
@@ -87,7 +150,7 @@ export function mapGlabMrItem(json: GlabMrItem): PrSummary | null {
     updatedAt: json.updated_at ?? '',
     url: json.web_url,
     reviewDecision: '',
-    // REST 목록엔 파이프라인 롤업이 없다 — v1은 정직한 null(무색 dot).
+    // Filled in from the GraphQL head-pipeline read (fetchList); null = no dot.
     checks: null,
     // GitLab의 has_conflicts를 gh 계약(CONFLICTING) 어휘로 정규화. 부재는 ''.
     mergeable: json.has_conflicts === true ? 'CONFLICTING' : '',
@@ -143,7 +206,11 @@ export class GlabPrService implements PrProvider {
   private detailCache = new Map<string, { updatedAt: string; value: PrDetailResult }>();
   /** iid → web_url (목록에서 채움 — notes의 앵커 URL로 쓴다). */
   private urlByIid = new Map<string, string>();
-  private glabAvailable: boolean | null = null;
+  private glabMissingAt: number | null = null;
+  private glabFoundAt: number | null = null;
+  /** Per host: the last `glab auth status` answer, and a probe in flight. */
+  private authAt = new Map<string, { ok: boolean; at: number }>();
+  private authPending = new Map<string, Promise<boolean>>();
 
   constructor(
     private now: () => number = Date.now,
@@ -159,21 +226,29 @@ export class GlabPrService implements PrProvider {
     });
   }
 
-  async gate(repoPath: string, host: string): Promise<PrGate> {
-    if (this.glabAvailable === false) {
-      return { ok: false, reason: 'cli-missing', message: 'GitLab CLI (glab) is not installed' };
+  // Each probe is TTL-cached like GhPrService's: every 30 s list poll asks for
+  // the gate, and `glab auth status` may go to the network. `force` (Check
+  // again) re-probes both; back-to-back forced reads share one probe.
+  async gate(repoPath: string, host: string, force = false): Promise<PrGate> {
+    const now = this.now();
+    const missing = { ok: false as const, reason: 'cli-missing' as const, message: 'GitLab CLI (glab) is not installed' };
+    if (!force && this.glabMissingAt !== null && now - this.glabMissingAt < GATE_TTL_MS) return missing;
+    if (force || this.glabFoundAt === null || now - this.glabFoundAt >= GATE_TTL_MS) {
+      try {
+        await this.glab(['--version'], repoPath);
+        this.glabMissingAt = null;
+        this.glabFoundAt = this.now();
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') this.glabMissingAt = this.now();
+        this.glabFoundAt = null;
+        return missing;
+      }
     }
-    try {
-      await this.glab(['--version'], repoPath);
-      this.glabAvailable = true;
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') this.glabAvailable = false;
-      return { ok: false, reason: 'cli-missing', message: 'GitLab CLI (glab) is not installed' };
-    }
-    try {
-      // 호스트 단위 인증(self-hosted 대응) — 미인증이면 비 0 종료.
-      await this.glab(['auth', 'status', '--hostname', host], repoPath);
-    } catch {
+    const auth = this.authAt.get(host);
+    const fresh = !!auth && now - auth.at < (force ? FORCED_REUSE_MS : AUTH_TTL_MS);
+    // Auth is per host (self-managed GitLab): a non-zero exit means signed out.
+    const ok = fresh ? auth.ok : await this.probeAuth(repoPath, host);
+    if (!ok) {
       return {
         ok: false,
         reason: 'unauthenticated',
@@ -181,6 +256,20 @@ export class GlabPrService implements PrProvider {
       };
     }
     return { ok: true };
+  }
+
+  private probeAuth(repoPath: string, host: string): Promise<boolean> {
+    const running = this.authPending.get(host);
+    if (running) return running;
+    const probe = this.glab(['auth', 'status', '--hostname', host], repoPath)
+      .then(() => true, () => false)
+      .then((ok) => {
+        this.authAt.set(host, { ok, at: this.now() });
+        this.authPending.delete(host);
+        return ok;
+      });
+    this.authPending.set(host, probe);
+    return probe;
   }
 
   // force=true: 수동 새로고침 — TTL 캐시를 건너뛴다(gh 경로와 동일 계약).
@@ -218,15 +307,41 @@ export class GlabPrService implements PrProvider {
         ['mr', 'list', '--per-page', String(LIST_LIMIT), '--output', 'json'],
         repoPath,
       );
-      const arr = JSON.parse(stdout) as GlabMrItem[];
-      const prs = (Array.isArray(arr) ? arr : [])
+      const parsed = JSON.parse(stdout) as GlabMrItem[];
+      const items = Array.isArray(parsed) ? parsed : [];
+      const mapped = items
         .map(mapGlabMrItem)
         .filter((p): p is PrSummary => p !== null);
-      for (const p of prs) this.urlByIid.set(`${cacheKey(repoPath)}\0${p.number}`, p.url);
+      for (const p of mapped) this.urlByIid.set(`${cacheKey(repoPath)}\0${p.number}`, p.url);
+      const pipelines = await this.readPipelines(repoPath, items, mapped);
+      const prs = mapped.map((p) => {
+        const checks = pipelines.get(p.number);
+        return checks ? { ...p, checks } : p;
+      });
       return { ok: true, prs };
     } catch (err) {
       const e = err as { stderr?: string; message?: string };
       return { ok: false, error: (e.stderr || e.message || String(err)).slice(0, 300) };
+    }
+  }
+
+  /** Head-pipeline rollups for the listed MRs, in one GraphQL call. Any
+   *  failure reads as "no pipelines": the list matters more than its dots. */
+  private async readPipelines(
+    repoPath: string,
+    items: readonly GlabMrItem[],
+    prs: readonly PrSummary[],
+  ): Promise<Map<number, NonNullable<PrSummary['checks']>>> {
+    const fullPath = items.map(glabProjectPath).find((p): p is string => p !== null);
+    if (!fullPath || prs.length === 0) return new Map();
+    try {
+      const { stdout } = await this.glab(
+        ['api', 'graphql', '-f', `query=${glabPipelinesQuery(prs.map((p) => p.number))}`, '-f', `fullPath=${fullPath}`],
+        repoPath,
+      );
+      return mapGlabPipelines(JSON.parse(stdout));
+    } catch {
+      return new Map();
     }
   }
 

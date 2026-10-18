@@ -1,7 +1,7 @@
 // GlabPrService — GitLab REST 매핑·호스트 단위 게이트·TTL·updatedAt 캐시
 // (exec 목킹, GhPrService 테스트와 대칭).
 import { describe, it, expect, vi } from 'vitest';
-import { GlabPrService, mapGlabMrItem, mapGlabNotes } from '../GlabPrService';
+import { GlabPrService, glabProjectPath, mapGlabMrItem, mapGlabNotes, mapGlabPipelineStatus } from '../GlabPrService';
 import { PR_COMMENT_BODY_CAP } from '../../../shared/prSurface';
 
 type ExecCall = { cmd: string; args: string[] };
@@ -145,5 +145,93 @@ describe('GlabPrService — 목록 TTL·상세 updatedAt 캐시', () => {
     const r = await svc.listPrs('D:/r');
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error).toContain('404');
+  });
+});
+
+describe('GlabPrService — MR head pipelines', () => {
+  const LIST = JSON.stringify([
+    { iid: 7, title: 'a', state: 'opened', web_url: 'https://gl/team/sub/repo/-/merge_requests/7', references: { full: 'team/sub/repo!7' } },
+    { iid: 8, title: 'b', state: 'opened', web_url: 'https://gl/team/sub/repo/-/merge_requests/8', references: { full: 'team/sub/repo!8' } },
+    { iid: 9, title: 'c', state: 'opened', web_url: 'https://gl/team/sub/repo/-/merge_requests/9', references: { full: 'team/sub/repo!9' } },
+  ]);
+  const GRAPHQL = JSON.stringify({
+    data: {
+      project: {
+        mergeRequests: {
+          nodes: [
+            { iid: '7', headPipeline: { status: 'SUCCESS' } },
+            { iid: '8', headPipeline: { status: 'RUNNING' } },
+            { iid: '9', headPipeline: null },
+          ],
+        },
+      },
+    },
+  });
+
+  it('maps GitLab pipeline statuses to the 3-state rollup', () => {
+    expect(mapGlabPipelineStatus('SUCCESS')).toBe('passing');
+    expect(mapGlabPipelineStatus('FAILED')).toBe('failing');
+    expect(mapGlabPipelineStatus('CANCELED')).toBe('failing');
+    expect(mapGlabPipelineStatus('RUNNING')).toBe('pending');
+    expect(mapGlabPipelineStatus('MANUAL')).toBe('pending');
+    expect(mapGlabPipelineStatus('SKIPPED')).toBeNull();
+    expect(mapGlabPipelineStatus(undefined)).toBeNull();
+  });
+
+  it("reads the project path from references.full, subgroups included", () => {
+    expect(glabProjectPath({ references: { full: 'team/sub/repo!7' } })).toBe('team/sub/repo');
+    expect(glabProjectPath({ references: { full: '!7' } })).toBeNull();
+    expect(glabProjectPath({ references: { full: 'team/re po!7' } })).toBeNull();
+    expect(glabProjectPath({})).toBeNull();
+  });
+
+  it('fills checks from one GraphQL call for every listed MR', async () => {
+    const { svc, calls } = makeService((args) => {
+      if (args[0] === 'mr') return { stdout: LIST };
+      if (args[0] === 'api' && args[1] === 'graphql') return { stdout: GRAPHQL };
+      return { stdout: '' };
+    });
+    const r = await svc.listPrs('D:/r');
+    expect(r.ok && r.prs.map((p) => p.checks)).toEqual(['passing', 'pending', null]);
+    const gql = calls.filter((c) => c.args[1] === 'graphql');
+    expect(gql.length).toBe(1);
+    expect(gql[0].args).toContain('fullPath=team/sub/repo');
+    expect(gql[0].args.find((a) => a.startsWith('query='))).toContain('iids: ["7","8","9"]');
+  });
+
+  it('still lists the MRs, with no dots, when the GraphQL read fails', async () => {
+    const { svc } = makeService((args) => {
+      if (args[0] === 'mr') return { stdout: LIST };
+      return Object.assign(new Error('graphql'), { stderr: 'Field headPipeline does not exist' });
+    });
+    const r = await svc.listPrs('D:/r');
+    expect(r.ok && r.prs.map((p) => p.checks)).toEqual([null, null, null]);
+  });
+
+  it('skips the GraphQL call when there are no MRs', async () => {
+    const { svc, calls } = makeService((args) => (args[0] === 'mr' ? { stdout: '[]' } : { stdout: '' }));
+    await svc.listPrs('D:/r');
+    expect(calls.some((c) => c.args[1] === 'graphql')).toBe(false);
+  });
+});
+
+describe('GlabPrService — gate TTL', () => {
+  it('reuses the auth answer for a minute and re-probes on force', async () => {
+    const nowRef = { t: 0 };
+    const { svc, calls } = makeService(() => ({ stdout: 'ok' }), nowRef);
+    const auths = () => calls.filter((c) => c.args[0] === 'auth').length;
+    expect((await svc.gate('D:/r', 'gitlab.company.io')).ok).toBe(true);
+    nowRef.t = 30_000;
+    await svc.gate('D:/r', 'gitlab.company.io');
+    expect(auths()).toBe(1);
+    expect(calls.filter((c) => c.args[0] === '--version').length).toBe(1);
+    await svc.gate('D:/r', 'other.host');
+    expect(auths()).toBe(2);
+    nowRef.t = 61_000;
+    await svc.gate('D:/r', 'gitlab.company.io');
+    expect(auths()).toBe(3);
+    nowRef.t = 70_000;
+    await svc.gate('D:/r', 'gitlab.company.io', true);
+    expect(auths()).toBe(4);
   });
 });
