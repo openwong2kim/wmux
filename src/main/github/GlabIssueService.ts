@@ -102,7 +102,9 @@ export function mapGlabIssue(j: GlabIssueJson): IssueSummary | null {
 }
 
 /** An issue and its notes; system notes ("changed the description", "mentioned
- *  in …") are activity, not comments, and are left out. */
+ *  in …") are activity, not comments, and are left out. The notes read asks
+ *  for comments only, so activity cannot fill its page; a GitLab too old to
+ *  know that filter sends everything and this drops it. */
 export function mapGlabIssueDetail(j: GlabIssueJson, notes: GlabNoteJson[]): IssueDetail | null {
   if (typeof j.iid !== 'number' || typeof j.web_url !== 'string') return null;
   const body = capBody(typeof j.description === 'string' ? j.description : '');
@@ -206,14 +208,17 @@ export class GlabIssueService {
     const cacheKey = `${key}\0${number}`;
     const cached = this.detailCache.get(cacheKey);
     if (cached && updatedAt && cached.updatedAt === updatedAt) return { ok: true, detail: cached.value };
-    const inFlight = this.detailPending.get(cacheKey);
+    // A read is shared only by callers asking for the same version: one that
+    // began before the issue moved would answer with the old one.
+    const pendingKey = `${cacheKey}\0${updatedAt}`;
+    const inFlight = this.detailPending.get(pendingKey);
     if (inFlight) return inFlight;
     const base = `projects/${encodeURIComponent(project.path)}/issues/${number}`;
     const pending = (async (): Promise<IssueDetailResult> => {
       try {
         const [issue, notes] = await Promise.all([
           this.glab(project.host, base, repoPath),
-          this.glab(project.host, `${base}/notes?sort=asc&order_by=created_at&per_page=100`, repoPath),
+          this.glab(project.host, `${base}/notes?activity_filter=only_comments&sort=asc&order_by=created_at&per_page=100`, repoPath),
         ]);
         const detail = mapGlabIssueDetail(
           (issue ?? {}) as GlabIssueJson,
@@ -226,10 +231,10 @@ export class GlabIssueService {
       } catch (err) {
         return { ok: false, code: 'error', message: errorText(err) };
       } finally {
-        this.detailPending.delete(cacheKey);
+        this.detailPending.delete(pendingKey);
       }
     })();
-    this.detailPending.set(cacheKey, pending);
+    this.detailPending.set(pendingKey, pending);
     return pending;
   }
 }

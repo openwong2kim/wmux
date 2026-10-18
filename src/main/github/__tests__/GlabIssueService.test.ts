@@ -87,7 +87,7 @@ describe('mapping', () => {
 
 describe('service', () => {
   it('names the host and project on every read, never glab\'s :id', async () => {
-    const { svc, calls } = makeService((p) => (p.endsWith('/notes?sort=asc&order_by=created_at&per_page=100') ? NOTES : p.includes('?') ? [ISSUE] : ISSUE));
+    const { svc, calls } = makeService((p) => (p.endsWith('/notes?activity_filter=only_comments&sort=asc&order_by=created_at&per_page=100') ? NOTES : p.includes('?') ? [ISSUE] : ISSUE));
     const list = await svc.listIssues('/repo', { kind: 'assigned' }, KEY);
     expect(list).toMatchObject({ ok: true, issues: [{ number: 7 }] });
     const detail = await svc.issueDetail('/repo', 7, ISSUE.updated_at, KEY);
@@ -96,7 +96,7 @@ describe('service', () => {
     expect(calls.map((a) => a[3])).toEqual([
       `${PROJECT}?state=opened&per_page=100&scope=assigned_to_me`,
       `${PROJECT}/7`,
-      `${PROJECT}/7/notes?sort=asc&order_by=created_at&per_page=100`,
+      `${PROJECT}/7/notes?activity_filter=only_comments&sort=asc&order_by=created_at&per_page=100`,
     ]);
     expect(calls.flat().some((a) => a.includes(':id'))).toBe(false);
   });
@@ -124,5 +124,26 @@ describe('service', () => {
     expect(await svc.issueDetail('/repo', 7, 'u2', KEY)).toEqual({ ok: false, code: 'error', message: '404 Not Found' });
     expect(await svc.listIssues('/repo', { kind: 'all' }, KEY)).toEqual({ ok: false, code: 'error', message: '404 Not Found' });
     expect(await svc.issueDetail('/repo', 7, 'u1', KEY)).toMatchObject({ ok: true });
+  });
+
+  it('a detail asked for a newer version does not join a read of the older one', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    let title = 'old';
+    const calls: string[] = [];
+    const exec = vi.fn(async (_cmd: string, args: string[]) => {
+      calls.push(args[3]);
+      const t = title;
+      if (calls.length <= 2) await gate;
+      return { stdout: JSON.stringify(args[3].includes('/notes') ? [] : { ...ISSUE, title: t }) };
+    });
+    const svc = new GlabIssueService(() => 0, exec as never);
+    const older = svc.issueDetail('/repo', 7, 'u1', KEY);
+    title = 'new';
+    const newer = await svc.issueDetail('/repo', 7, 'u2', KEY);
+    expect(newer).toMatchObject({ ok: true, detail: { title: 'new' } });
+    release();
+    expect(await older).toMatchObject({ ok: true, detail: { title: 'old' } });
+    expect(calls).toHaveLength(4);
   });
 });
