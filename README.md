@@ -19,18 +19,18 @@ Run fleets of AI agents — Claude Code, Codex, Gemini, or any CLI — side by s
 
 [**Download**](https://github.com/openwong2kim/wmux/releases/latest) · [**Website**](https://www.wmux.app) · [**Docs**](docs/README.md) · [**iOS app**](https://apps.apple.com/app/wmux-workspace-for-ai-agents/id6797904556)
 
-<a href="https://www.wmux.app"><img alt="One prompt fans out into three tasks, each on its own worktree branch; the one that asks shows under Needs you in Fleet, its question is answered in the iPhone Inbox, and all three end up in Ready to review" src="docs/readme/hero.gif" width="900" /></a>
+<a href="https://www.wmux.app"><img alt="Multi Task splits one prompt into two tasks, and Claude Code works in each task's own worktree; Fleet shows both ready to review, hunks from two files are adopted and the tests pass; then a bot named Nova takes a slugify job in chat, runs a Claude Code worker on its own branch and reports the tests passing" src="docs/readme/hero.gif" width="900" /></a>
 
-<sub>One prompt, three tasks in three git worktrees — the one question that came up answered from a phone, and all three ready to review.</sub>
+<sub>Run tasks in parallel → review and adopt → hand a job to a bot. Recorded on wmux 4.6.1 with real Claude Code on a sample repo; waits are cut and the rest is sped up.</sub>
 
 </div>
 
 wmux is a desktop app where your AI agents work side by side, each in its own pane, while a background daemon on your own machine keeps every session alive. What sets it apart:
 
-- **Any CLI agent, natively on Windows and macOS.** Claude Code, Codex, Gemini, agy (Antigravity), and any other CLI agent run side by side in real PTYs — no WSL needed on Windows.
-- **Sessions owned by your own daemon.** Closing the app, a crash, or a reboot does not end your agents' sessions.
-- **Answer agents from your iPhone.** The iOS app pairs directly with the daemon on your machine: terminal output and your answers travel between the two without a cloud service in the middle.
-- **One prompt, fanned out into git worktrees.** Each task gets its own worktree and agent, and you review the results hunk by hunk.
+- **Keep only the hunks you want.** Tick hunks across every task's diff and apply the selection to your working tree in one step. You review and commit; nothing lands on its own.
+- **Bots you hand jobs in chat.** Name a bot and tell it what to do in plain words. It starts Claude Code workers on their own branches, runs the tests and reports back. Anything public, like merging a PR, waits for your approval.
+- **Native on Windows and macOS. MIT.** ConPTY-native on Windows 10 and 11 with no WSL, and native on Apple Silicon Macs. Claude Code, Codex, Gemini, agy (Antigravity) and any other CLI agent run side by side in real PTYs.
+- **No agent launches another behind your back.** When an agent asks wmux to start another agent with permissions bypassed, wmux asks you first. A request nobody answers is declined after 30 seconds, unless you turn on auto-approve.
 
 ## Install
 
@@ -52,17 +52,27 @@ winget install openwong2kim.wmux    # or: choco install wmux
 
 ## Features
 
+### Bots
+
+Name a bot and tell it what to do in plain words. It plans the change, starts a Claude Code worker on its own branch, runs the tests and reports back. Anything public, like merging a PR, waits for your approval.
+
+<img alt="A new bot, Nova, asks what to take on and is told in chat to tidy up slugify with a test for each case and no PR; it reports the change with the tests passing, then takes one more job, capping slugs at 60 characters on a word boundary, runs a Claude Code worker on its own branch and reports all 7 tests passing" src="docs/readme/bots.gif" width="900" />
+
+### One prompt, N worktrees
+
+Split one prompt into up to 8 tasks with **Multi Task** — compare approaches to the same problem, or run different jobs side by side. Each task gets its own git worktree on a fresh `wtask/*` branch with its own agent pane. See [fan-out task environments](docs/how-to/fan-out-task-environment.md) for ports and prepared worktrees.
+
+<img alt="Multi Task splits a release-prep prompt into two tasks, Limit slug length and Document usage; each gets its own worktree branch and Claude Code pane, and the slug task's agent edits slug.js and its test, runs them and commits" src="docs/readme/worktrees.gif" width="900" />
+
+Review the diffs, tick the hunks you want across files, and adopt them as one all-or-nothing `git apply` — your tree takes the whole selection or stays untouched. Then close the task (the worktree is removed only after a clean check) or open a pull request.
+
+<img alt="Both tasks wait in Fleet under Ready to review; in the diff review a hunk is ticked in slug.js and another in slug.test.js, Adopt (2) applies them to the working tree, and node --test passes" src="docs/readme/adopt.gif" width="900" />
+
 ### Answer from your phone
 
 When an agent stops to ask you something — a Claude Code question (single or multi-select, several questions, or an "Other" answer) or a permission prompt — it reaches the Inbox on your iPhone. Answer it there and the pane on your desktop moves on. Terminals and agent output travel straight from the daemon on your machine to your phone. A default install does not send push notifications yet, so you see the question when you open the app. When push is configured, notifications pass through the project's relay as sealed envelopes it cannot read; only the lock-screen Live Activity carries a few counts and your computer's name in plain text. Details: [the phone client contract](docs/phone-client-contract.md).
 
 <img alt="An agent's question in the iPhone Inbox is answered by picking Three dots; the desktop pane receives the answer and the agent edits, tests and commits while the Inbox reads Nothing is waiting on you" src="docs/readme/phone.gif" width="900" />
-
-### One prompt, N worktrees
-
-Fan one prompt out into up to 8 tasks, each in its own git worktree on a fresh `wtask/*` branch with its own agent pane. Review the diffs, tick the hunks you want across files, and adopt them as one all-or-nothing `git apply` — your tree takes the whole selection or stays untouched. Then close the task (the worktree is removed only after a clean check) or open a pull request. See [fan-out task environments](docs/how-to/fan-out-task-environment.md) for ports and prepared worktrees.
-
-<img alt="Two worktree tasks from one prompt reach Ready to review in Fleet; in the diff review a hunk is ticked in src/truncate.js and another in test/truncate.test.js, Adopt (2) applies them, and Close removes the worktree" src="docs/readme/worktrees.gif" width="900" />
 
 ### Git page
 
