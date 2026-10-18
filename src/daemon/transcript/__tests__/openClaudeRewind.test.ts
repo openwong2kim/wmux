@@ -5,21 +5,22 @@ import { ESCAPE_CSI_U, openClaudeRewind, type ClaudeRewindDeps } from '../openCl
 const RULE = '─'.repeat(40);
 const empty = ['● hi', '', RULE, '❯ ', RULE, '  ⏵⏵ auto mode on'];
 
-function harness(opts: { status?: AgentStatus; slug?: string; screen?: string[] | null; approval?: boolean; title?: string; kitty?: boolean; between?: (h: { type: () => void; set: (s: AgentStatus) => void }) => void } = {}) {
+function harness(opts: { status?: AgentStatus; slug?: string; screen?: string[] | null; approval?: boolean; title?: string; kitty?: boolean; readMs?: number; between?: (h: { type: () => void; set: (s: AgentStatus) => void }) => void } = {}) {
   const writes: string[] = [];
   let status: AgentStatus = opts.status ?? 'idle';
   let revision = 7;
   const ctl = { type: () => { revision += 1; }, set: (s: AgentStatus) => { status = s; } };
+  let clock = 1_500;
   const deps: ClaudeRewindDeps = {
     hasOpenApproval: () => opts.approval ?? false,
     getAgentState: () => ({ slug: opts.slug ?? 'claude', status, inputRevision: revision }),
-    readScreen: async () => (opts.screen === undefined ? empty : opts.screen),
+    readScreen: async () => { clock += opts.readMs ?? 0; return opts.screen === undefined ? empty : opts.screen; },
     readTitle: () => (opts.title ? { title: opts.title, at: 1_000 } : null),
     // Every write is a key: it moves the revision, as noteInput does.
     write: (data) => { writes.push(data); revision += 1; return true; },
     kitty: opts.kitty,
     delay: async () => { opts.between?.(ctl); },
-    now: () => 1_500,
+    now: () => clock,
   };
   return { deps, writes };
 }
@@ -48,6 +49,12 @@ describe('openClaudeRewind', () => {
     const h = harness(opts);
     expect(await openClaudeRewind(h.deps)).toBe(verdict);
     expect(h.writes).toEqual([]);
+  });
+
+  it('sends no second ESC when a slow screen read stretched the gap past a double-tap', async () => {
+    const h = harness({ readMs: 500 });
+    expect(await openClaudeRewind(h.deps)).toBe('retry');
+    expect(h.writes).toEqual(['\x1b']);
   });
 
   it.each([

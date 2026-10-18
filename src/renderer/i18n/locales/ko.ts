@@ -826,6 +826,7 @@ export const ko = {
   'pane.rewindBusy': "Claude가 작업 중입니다 — 턴이 끝난 뒤 되돌리세요",
   'pane.rewindDraft': "Claude 입력창의 글을 먼저 지우거나 보내세요",
   'pane.rewindBlocked': "Claude가 질문을 띄우고 있습니다 — 먼저 답하세요",
+  'pane.rewindRetry': "Claude에 키가 제때 전달되지 않았습니다 — 다시 시도하세요",
   'pane.rewindUnavailable': "이 판에서는 되돌리기를 쓸 수 없습니다",
   'pane.continueOnAccountNamed': "{name}에서 이어가기",
   'pane.continueOnAccountDone': "이 대화를 {name}에서 이어갑니다.",

@@ -1059,6 +1059,7 @@ export const pl = {
   'pane.rewindBusy': "Claude pracuje — cofnij, gdy tura się skończy",
   'pane.rewindDraft': "Najpierw wyczyść lub wyślij tekst w polu wpisywania Claude",
   'pane.rewindBlocked': "Claude wyświetla pytanie — najpierw na nie odpowiedz",
+  'pane.rewindRetry': "Klawisze nie dotarły do Claude na czas — spróbuj ponownie",
   'pane.rewindUnavailable': "Cofanie nie jest dostępne w tym panelu",
   'pane.continueOnAccountNamed': "Kontynuuj na koncie {name}",
   'pane.continueOnAccountDone': "Ta rozmowa jest kontynuowana na koncie {name}.",

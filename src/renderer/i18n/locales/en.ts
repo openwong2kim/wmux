@@ -1074,6 +1074,7 @@ export const en = {
   'pane.rewindBusy': "Claude is working — rewind once the turn ends",
   'pane.rewindDraft': "Clear or send the text in Claude's input first",
   'pane.rewindBlocked': "Claude is showing a prompt — answer it first",
+  'pane.rewindRetry': "Claude didn't get the keys in time — try Rewind again",
   'pane.rewindUnavailable': "Rewind is not available in this pane",
   'pane.continueOnAccountNamed': "Continue on {name}",
   'pane.continueOnAccountDone': "Continuing this conversation on {name}.",

@@ -6,6 +6,12 @@ import { claudeComposerEmpty, claudeComposerVisible, type ChatScreenRows } from 
 
 /** Gap between the two ESCs: well inside Claude's double-tap window, and two separate chunks. */
 export const REWIND_ESC_GAP_MS = 120;
+/**
+ * The most the two ESCs may be apart, screen read included. Past it Claude
+ * may read them as two lone presses (the daemon's own detector allows a
+ * human's 500 ms double-tap), so the second one is not sent.
+ */
+export const REWIND_MAX_GAP_MS = 400;
 /** Escape as kitty CSI-u, for a pane whose app pushed the kitty keyboard protocol. */
 export const ESCAPE_CSI_U = '\x1b[27u';
 
@@ -69,12 +75,15 @@ export async function openClaudeRewind(deps: ClaudeRewindDeps): Promise<ClaudeRe
     const before = await atRest(revision());
     if (before) return before;
     if (!deps.write(esc)) return 'unavailable';
+    const firstAt = now();
     // Our own ESC moved the revision; anything past it is someone else's key.
     const afterFirst = revision();
     await (deps.delay ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))))(REWIND_ESC_GAP_MS);
     // A lone ESC on an empty composer does nothing, so stopping here is safe.
     const between = await atRest(afterFirst);
     if (between) return between;
+    // A slow screen read stretched the gap past a double-tap: not a rewind any more.
+    if (now() - firstAt > REWIND_MAX_GAP_MS) return 'retry';
     return deps.write(esc) ? 'opened' : 'unavailable';
   } catch {
     return 'error';
