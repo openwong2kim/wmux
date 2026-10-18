@@ -1,5 +1,6 @@
 import type { AgentStatus } from '../../shared/types';
 import type { ClaudeRewindResult } from '../../shared/transcript/turnEvents';
+import { agentRow } from '../../shared/agentIdentity';
 import { screenBlocksChatSend, screenShowsRunningTurn, titleShowsRunningTurn } from './chatScreenGate';
 import { claudeComposerEmpty, claudeComposerVisible, type ChatScreenRows } from './deliverChatPrompt';
 
@@ -42,7 +43,7 @@ export async function openClaudeRewind(deps: ClaudeRewindDeps): Promise<ClaudeRe
   const check = (revision?: number): ClaudeRewindResult | null => {
     if (deps.hasOpenApproval()) return 'blocked';
     const state = deps.getAgentState();
-    if (!state || state.slug !== 'claude') return 'unavailable';
+    if (!state || !agentRow(state.slug)?.rewindPicker) return 'unavailable';
     if (state.status === 'running') return 'busy';
     if (state.status === 'awaiting_input' || state.status === 'waiting') return 'blocked';
     // Someone else typed since the screen was read: the screen no longer says what ESC would do.

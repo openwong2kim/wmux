@@ -13,6 +13,7 @@ import type { PaneActionItem } from './PaneActionsMenu';
 import { terminalRegistry } from '../../hooks/useTerminal';
 import { xtermKittyFlags } from '../../terminal/kittyKeyboard';
 import type { ClaudeRewindResult } from '../../../shared/transcript/turnEvents';
+import { agentRow } from '../../../shared/agentIdentity';
 
 export const PANE_CLAUDE_REWIND_KEY = 'claude-rewind';
 
@@ -33,7 +34,7 @@ export function usePaneClaudeRewind(opts: {
   const { ptyId, allowed } = opts;
   const t = useT();
   const daemon = useDaemonModeActive();
-  const isClaude = useStore((s) => (ptyId ? s.surfaceAgent[ptyId]?.slug === 'claude' : false));
+  const isClaude = useStore((s) => (ptyId ? !!agentRow(s.surfaceAgent[ptyId]?.slug)?.rewindPicker : false));
   const ready = allowed && daemon && isClaude && !!ptyId && !!window.electronAPI?.chat?.rewind;
 
   const rewind = useCallback(async () => {

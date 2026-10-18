@@ -160,6 +160,9 @@ export interface AgentIdentityRow {
    *  exact resume under that account's CLAUDE_CONFIG_DIR picks the copy up
    *  (src/daemon/continueOnAccount.ts). */
   readonly continueOnAccount?: true;
+  /** A double ESC at rest, with an empty composer, opens the agent's own
+   *  Rewind picker (src/daemon/transcript/openClaudeRewind.ts). */
+  readonly rewindPicker?: true;
   /** Listed in Settings -> Token usage (activeProviders). */
   readonly tokenUsage?: true;
   /** Has a model discovery source (modelCatalog). */
@@ -196,6 +199,7 @@ export const AGENT_IDENTITIES = [
     terminalChat: { send: true, cancel: true, images: true, queue: true },
     accounts: 'account-store',
     continueOnAccount: true,
+    rewindPicker: true,
     tokenUsage: true,
     modelCatalog: true,
   },
