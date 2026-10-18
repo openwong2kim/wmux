@@ -21,7 +21,6 @@ import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import { unwrapRpc } from '../../utils/unwrapRpc';
 import { findWorkspaceSurfaceById } from '../../utils/paneTraversal';
-import { injectText } from '../AgentToolbar/inject';
 import { FOCUS_RING } from '../focusRing';
 import { IconX } from '../icons';
 import { HunkGutter, HunkLines } from './HunkLines';
@@ -507,7 +506,12 @@ interface CommentTarget {
   line: number;
   endLine?: number;
   snippet: string;
+  /** The hunk's body when the composer opened: a reload that kept the header
+   *  but changed the lines closes the composer (see the effect below). */
+  hunkBody: string;
 }
+
+const hunkBodyOf = (hunk: Pick<DiffHunk, 'bodyLines'>): string => hunk.bodyLines.join('\n');
 
 // 크롬 emoji 금지(DESIGN.md) — 코멘트 액션은 monochrome 말풍선 glyph.
 function IconComment() {
@@ -858,7 +862,7 @@ export default function DiffPanel({ source, isActive, focused = isActive, surfac
   // A gutter click opens the composer on that line; a shift-click while a line
   // composer is open in the same hunk and side stretches it to a range.
   const placeLineComment = useCallback(
-    (key: string, file: string, hunkHeader: string, line: DiffLine, extend: boolean) => {
+    (key: string, file: string, hunkHeader: string, hunkBody: string, line: DiffLine, extend: boolean) => {
       const a = lineAnchorOf(line);
       if (!a) return;
       setCommentTarget((prev) => {
@@ -867,7 +871,7 @@ export default function DiffPanel({ source, isActive, focused = isActive, surfac
           const hi = Math.max(prev.endLine ?? prev.line, a.line);
           return { ...prev, line: lo, ...(hi > lo ? { endLine: hi } : { endLine: undefined }), snippet: a.line < prev.line ? line.text : prev.snippet };
         }
-        return { key, file, hunkHeader, side: a.side, line: a.line, snippet: line.text };
+        return { key, file, hunkHeader, hunkBody, side: a.side, line: a.line, snippet: line.text };
       });
     },
     [],
@@ -907,9 +911,13 @@ export default function DiffPanel({ source, isActive, focused = isActive, surfac
     if (!agentOwnsPty(useStore.getState(), ptyId)) return;
     const sent = reviewDraft;
     try {
-      await injectText(ptyId, formatDiffReviewNote(repoPath, sent, false), false);
+      // An invoke that resolves only once main handed the bytes to a live
+      // session and rejects otherwise (pty.write is a fire-and-forget send,
+      // so a dropped write would read as success and lose the draft). The
+      // note is one sanitized line, so it is typed as-is, without Enter.
+      await window.electronAPI.pty.writeLaunch(ptyId, formatDiffReviewNote(repoPath, sent, false), false);
     } catch (e) {
-      // Nothing was typed: keep the draft so it can be sent again or copied.
+      // Main refused or the session is gone: keep the draft so it can be sent again or copied.
       setApplyMsg(t('diff.reviewSendFailed', { error: e instanceof Error ? e.message : String(e) }));
       return;
     }
@@ -931,12 +939,17 @@ export default function DiffPanel({ source, isActive, focused = isActive, surfac
     }
   }, [reviewDraft, repoPath, t]);
 
-  // A reload that changed the hunk an open composer points at closes it, so a
-  // comment is never posted with an anchor taken from content no longer shown.
+  // A reload that changed the hunk an open composer points at (its header, or
+  // its lines under an unchanged header) closes it, so a comment is never sent
+  // with an anchor or a quoted line taken from content no longer shown. The
+  // typed text is kept for the next composer.
   useEffect(() => {
     if (!commentTarget) return;
     const idx = Number(commentTarget.key.slice(commentTarget.key.lastIndexOf('#') + 1));
-    if (filesByPath.get(commentTarget.file)?.hunks[idx]?.header !== commentTarget.hunkHeader) setCommentTarget(null);
+    const hunk = filesByPath.get(commentTarget.file)?.hunks[idx];
+    if (!hunk || hunk.header !== commentTarget.hunkHeader || hunkBodyOf(hunk) !== commentTarget.hunkBody) {
+      setCommentTarget(null);
+    }
   }, [filesByPath, commentTarget]);
 
   // J3 §1 — close(remove 성공→close 순서). 확인 1회 후 결과를 토스트로 구분
@@ -1329,7 +1342,7 @@ export default function DiffPanel({ source, isActive, focused = isActive, surfac
                               setCommentTarget((prev) =>
                                 prev?.key === key && prev.line === 0
                                   ? null
-                                  : { key, file: activeFile.path, hunkHeader: hunk.header, side: 'new', line: 0, snippet: '' },
+                                  : { key, file: activeFile.path, hunkHeader: hunk.header, hunkBody: hunkBodyOf(hunk), side: 'new', line: 0, snippet: '' },
                               );
                             }}
                             title={t('diff.commentHunk')}
@@ -1366,7 +1379,7 @@ export default function DiffPanel({ source, isActive, focused = isActive, surfac
                                     setCommentText('');
                                     return;
                                   }
-                                  placeLineComment(key, activeFile.path, hunk.header, line, e.shiftKey);
+                                  placeLineComment(key, activeFile.path, hunk.header, hunkBodyOf(hunk), line, e.shiftKey);
                                 }}
                                 aria-label={t('diff.commentLine', { file: activeFile.path, line: range })}
                                 title={t('diff.commentLineTitle')}

@@ -8,13 +8,14 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { createRoot } from 'react-dom/client';
 import { act } from 'react';
 import DiffPanel, { type DiffPanelSource } from '../DiffPanel';
+import { useStore } from '../../../stores';
 import type { DiffReadResult } from '../../../../shared/diffParse';
 
 const TASK_ID = 'wtask-1';
 const CHANNEL_ID = 'chan-1';
 const WS = 'ws-owner';
 
-function readResult(): DiffReadResult {
+function readResult(body: string[] = [' ctx', '+added', '+more']): DiffReadResult {
   return {
     ok: true,
     files: [
@@ -34,7 +35,7 @@ function readResult(): DiffReadResult {
             newStart: 1,
             newLines: 3,
             section: '',
-            bodyLines: [' ctx', '+added', '+more'],
+            bodyLines: body,
           },
         ],
       },
@@ -64,6 +65,8 @@ const invoke = vi.fn(async (method: string) => {
   }
 });
 const mutateChannelLocal = vi.fn(async () => ({ ok: true }));
+const writeLaunch = vi.fn(async (): Promise<void> => undefined);
+const read = vi.fn(async () => readResult());
 const writeText = vi.fn(async () => undefined);
 
 const mounted: Array<() => void> = [];
@@ -108,9 +111,14 @@ beforeEach(() => {
   invoke.mockClear();
   mutateChannelLocal.mockClear();
   writeText.mockClear();
+  writeLaunch.mockReset();
+  writeLaunch.mockResolvedValue(undefined);
+  read.mockReset();
+  read.mockResolvedValue(readResult());
   (window as unknown as { electronAPI: unknown }).electronAPI = {
-    diff: { read: vi.fn(async () => readResult()), applyHunks: vi.fn() },
+    diff: { read, applyHunks: vi.fn() },
     rpc: { invoke, mutateChannelLocal },
+    pty: { writeLaunch },
   };
   (window as unknown as { clipboardAPI: unknown }).clipboardAPI = { writeText };
 });
@@ -160,5 +168,66 @@ describe('DiffPanel — line comments', () => {
     expect(writeText).toHaveBeenCalledWith(
       'Review comments on the uncommitted changes in /repo:\n\n1. a.txt:2 at "added"\n   rename\n2. a.txt:1 at "ctx"\n   keep\n',
     );
+  });
+});
+
+describe('DiffPanel — workspace review delivery', () => {
+  const seedAgentPane = () =>
+    act(() =>
+      useStore.setState({
+        workspaces: [{
+          id: 'ws-1',
+          name: 'w',
+          rootPane: {
+            id: 'pane-1',
+            type: 'leaf',
+            activeSurfaceId: 's1',
+            surfaces: [
+              { id: 'term-1', ptyId: 'pty-1', title: 'claude', shell: '', cwd: '' },
+              { id: 's1', ptyId: '', title: 'Diff', shell: '', cwd: '', surfaceType: 'diff', diffRepoPath: '/repo' },
+            ],
+          },
+        }],
+        surfaceAgent: { 'pty-1': { name: 'Claude Code', status: 'idle' } },
+        agentAliveByPtyId: {},
+        commandRunningByPtyId: {},
+      } as never),
+    );
+
+  async function draftOne(c: Element) {
+    click(gutter(c, 'new:2'));
+    type(c, 'rename');
+    submit(c);
+    await flush();
+  }
+
+  it('keeps the draft when main refuses the write, and clears it once the line is typed', async () => {
+    seedAgentPane();
+    const c = render({ kind: 'workspace', repoPath: '/repo' });
+    await flush();
+    await draftOne(c);
+
+    writeLaunch.mockRejectedValueOnce(new Error('PTY_WRITE_LAUNCH: the session is not live'));
+    click(c.querySelector('[data-testid="diff-review-send"]')!);
+    await flush();
+    expect(writeLaunch).toHaveBeenCalledWith('pty-1', expect.stringContaining('a.txt:2 at "added": rename'), false);
+    expect(c.querySelectorAll('[data-diff-comment]')).toHaveLength(1);
+
+    click(c.querySelector('[data-testid="diff-review-send"]')!);
+    await flush();
+    expect(writeLaunch).toHaveBeenCalledTimes(2);
+    expect(c.querySelectorAll('[data-diff-comment]')).toHaveLength(0);
+  });
+
+  it('closes an open composer when a reload changed the hunk body under the same header', async () => {
+    const c = render({ kind: 'workspace', repoPath: '/repo' });
+    await flush();
+    click(gutter(c, 'new:2'));
+    expect(c.querySelector('[data-testid="diff-comment-input"]')).not.toBeNull();
+
+    read.mockResolvedValue(readResult([' ctx', '+other', '+more']));
+    click([...c.querySelectorAll('button')].find((b) => b.textContent === 'Reload')!);
+    await flush();
+    expect(c.querySelector('[data-testid="diff-comment-input"]')).toBeNull();
   });
 });
