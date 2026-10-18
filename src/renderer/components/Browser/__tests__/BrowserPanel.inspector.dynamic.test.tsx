@@ -13,6 +13,7 @@ import * as React from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import BrowserPanel from '../BrowserPanel';
 import { useStore } from '../../../stores';
+import { beginPrivateSessionClear } from '../../../utils/privateSessionGate';
 
 const act = React.act;
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -21,7 +22,7 @@ let container: HTMLDivElement;
 let root: Root;
 let executeJavaScript: ReturnType<typeof vi.fn>;
 
-function mount(): HTMLElement {
+function render(partition = 'persist:test'): void {
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
@@ -31,12 +32,15 @@ function mount(): HTMLElement {
         surfaceId: 'surf-1',
         workspaceId: 'ws-test',
         initialUrl: 'https://example.com',
-        partition: 'persist:test',
+        partition,
         isActive: true,
         onClose: () => undefined,
       }),
     );
   });
+}
+
+function attachWebview(): HTMLElement {
   const wv = container.querySelector('webview') as HTMLElement & { executeJavaScript?: unknown };
   if (!wv) throw new Error('webview not rendered');
   wv.executeJavaScript = executeJavaScript;
@@ -55,6 +59,11 @@ function clickPicker(label: string): void {
   act(() => {
     btn.dispatchEvent(new MouseEvent('click', { bubbles: true }));
   });
+}
+
+function mount(): HTMLElement {
+  render();
+  return attachWebview();
 }
 
 const injections = () => executeJavaScript.mock.calls.filter(([src]) => String(src).includes('__wmux_inspector_overlay')).length;
@@ -91,6 +100,23 @@ describe('BrowserPanel — element picker across navigation', () => {
     const wv = mount();
     clickPicker('Pick an element for the agent');
     expect(injections()).toBe(0);
+    domReady(wv);
+    expect(injections()).toBe(1);
+  });
+
+  it('injects on the first page load when picking started before a private tab mounted its page', async () => {
+    // A private tab waits for the previous private session's wipe before it
+    // mounts the <webview>; the toolbar is already usable meanwhile.
+    let finishClear!: () => void;
+    beginPrivateSessionClear(() => new Promise<void>((resolve) => { finishClear = resolve; }));
+    render('wmux-private');
+    expect(container.querySelector('webview')).toBeNull();
+    clickPicker('Pick an element for the agent');
+    await act(async () => {
+      finishClear();
+      await Promise.resolve();
+    });
+    const wv = attachWebview();
     domReady(wv);
     expect(injections()).toBe(1);
   });

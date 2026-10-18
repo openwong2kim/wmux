@@ -539,7 +539,7 @@ export default function BrowserPanel({ surfaceId, workspaceId, initialUrl, parti
     const onDomReady = () => injectInspector(true);
     wv.addEventListener('dom-ready', onDomReady);
     return () => { wv.removeEventListener('dom-ready', onDomReady); };
-  }, [inspecting, injectInspector, discarded]);
+  }, [inspecting, injectInspector, discarded, sessionReady]);
 
   // Listen for inspector click results from webview console
   useEffect(() => {
