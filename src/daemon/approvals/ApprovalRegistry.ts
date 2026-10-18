@@ -1921,7 +1921,8 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
    * chat view, a person at this machine. It goes through the same checks as a
    * `decision-v2` phone answer (the form, its fingerprint, the answer age, the
    * one-answer-in-flight claim) and the same adapter call; only the web marker
-   * is replaced by this entry point, which no pipe RPC or MCP tool reaches.
+   * is replaced by this entry point, which only the first-party chat-v2 host
+   * reaches (no MCP tool does).
    * `answers`: questions only, one entry per form question in order.
    */
   answerNativeFromDesktop(input: {

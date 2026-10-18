@@ -37,7 +37,9 @@
 // class reaches this RPC. Main declares `automated` on the brain's behalf, and
 // its own desktop UI keeps saying nothing and stays human.
 
-import type { AnswerRefusalReason, ApprovalDecision, ApprovalResolveParams, DecisionAnswer, DecisionTextRefusal } from './types';
+import type {
+  AnswerRefusalReason, ApprovalDecision, ApprovalResolveParams, DecisionAnswer, DecisionTextRefusal, TerminalPromptDetail,
+} from './types';
 import { parseDecisionAnswerBody } from '../web/decisionAnswer';
 
 /** A malformed request, with the wire reason to answer. */
@@ -128,4 +130,12 @@ export function parsePlanAnswerRequest(
     return { ok: false, reason: 'invalid-choice' };
   }
   return { id, answer: parsed.answer };
+}
+
+/**
+ * `daemon.approvals.detail` serves the plan only: every other dialog's full
+ * command (a Bash line, a path) stays where it was served before.
+ */
+export function planDetailOnly(detail: TerminalPromptDetail | null): TerminalPromptDetail | null {
+  return detail?.toolName === 'ExitPlanMode' ? detail : null;
 }

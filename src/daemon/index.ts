@@ -199,7 +199,7 @@ import { ApprovalRegistry } from './approvals/ApprovalRegistry';
 import { WorkspaceFactStore, type WorkspaceFactRowInput } from './approvals/workspaceFacts';
 import { MoaPaneRpc, resolveMoaPane } from './web/moaPane';
 import { MoaPromptSync } from './web/moaPrompt';
-import { parseApprovalResolveRequest, parsePlanAnswerRequest } from './approvals/resolveRequest';
+import { parseApprovalResolveRequest, parsePlanAnswerRequest, planDetailOnly } from './approvals/resolveRequest';
 import { GateBroker } from './approvals/GateBroker';
 import { coerceGate } from './approvals/gateConfig';
 import { DeviceStore, type DeviceBatchRevocationCause } from './web/DeviceStore';
@@ -4704,18 +4704,16 @@ function registerRpcHandlers(
   // keeps answering it in the terminal or from a paired phone.
   pipeServer.onRpc('daemon.approvals.answerPlan', async (params, ctx) => {
     const request = parsePlanAnswerRequest(params as Record<string, unknown>, {
-      isFirstParty: pipeServer.isFirstParty(ctx.clientId),
+      isFirstParty: firstPartyOnly(ctx.clientId, 'daemon.approvals.answerPlan'),
     });
     if ('ok' in request) return request;
     if (!approvalRegistry) return { ok: false, reason: 'not-found' };
     return approvalRegistry.answerPlanFromDesktop(request);
   });
   pipeServer.onRpc('daemon.approvals.detail', async (params, ctx) => {
-    if (!pipeServer.isFirstParty(ctx.clientId)) return null;
+    if (!firstPartyOnly(ctx.clientId, 'daemon.approvals.detail')) return null;
     const id = typeof (params as { id?: unknown }).id === 'string' ? (params as { id: string }).id : '';
-    // The plan only: every other dialog's full command stays where it was served.
-    const detail = id ? approvalRegistry?.terminalPromptDetail(id) ?? null : null;
-    return detail?.toolName === 'ExitPlanMode' ? detail : null;
+    return planDetailOnly(id ? approvalRegistry?.terminalPromptDetail(id) ?? null : null);
   });
 
   // ── Main → daemon workspace facts (approval press scope) ─────────────────

@@ -25,7 +25,7 @@ import {
 import type { PendingToolUse } from '../../transcript/pendingToolUse';
 import { coerceApprovalState } from '../approvalStore';
 import { parseDecisionAnswerBody } from '../../web/decisionAnswer';
-import { parsePlanAnswerRequest } from '../resolveRequest';
+import { parsePlanAnswerRequest, planDetailOnly } from '../resolveRequest';
 
 const DIR = path.join(__dirname, 'fixtures', 'terminal-prompts');
 // Read with fs, not a JSON import: a JSON import breaks the daemon build.
@@ -550,5 +550,14 @@ describe('the desktop answer (daemon.approvals.answerPlan)', () => {
     })).toMatchObject({ ok: false, reason: 'answer-in-terminal', answerRefusal: 'unsupported-shape' });
     expect(h.writes).toEqual([]);
     expect(bypass.writes).toEqual([]);
+  });
+
+  it('daemon.approvals.detail serves the plan, never another dialog\'s command', async () => {
+    const h = makeRegistry();
+    const plan = await create(h);
+    expect(planDetailOnly(h.registry.terminalPromptDetail(plan.id))?.command).toBe(PLAN_CALL.input['plan']);
+    const bash = { id: 'r', toolName: 'Bash', command: 'rm -rf /tmp/x', commandHash: 'h', commandBytes: 13, truncated: false };
+    expect(planDetailOnly(bash)).toBeNull();
+    expect(planDetailOnly(null)).toBeNull();
   });
 });
