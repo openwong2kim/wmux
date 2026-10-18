@@ -399,9 +399,11 @@ export default function BrowserPanel({ surfaceId, workspaceId, initialUrl, parti
   }, []);
 
   // Inspector: inject/remove highlight overlay into webview
-  const injectInspector = useCallback(() => {
+  // `domReady`: called from a dom-ready listener, which can hold a closure from
+  // before isReady turned true (a discarded page waking up while picking).
+  const injectInspector = useCallback((domReady = false) => {
     const wv = webviewRef.current;
-    if (!wv || !isReady) return;
+    if (!wv || (!isReady && !domReady)) return;
     const nonce = crypto.randomUUID();
     inspectNonceRef.current = nonce;
     // 이 오버레이/라벨은 게스트 웹뷰(임의의 외부 페이지) 내부에 주입된다.
@@ -534,7 +536,7 @@ export default function BrowserPanel({ surfaceId, workspaceId, initialUrl, parti
   useEffect(() => {
     const wv = webviewRef.current;
     if (!wv || !inspecting) return;
-    const onDomReady = () => injectInspector();
+    const onDomReady = () => injectInspector(true);
     wv.addEventListener('dom-ready', onDomReady);
     return () => { wv.removeEventListener('dom-ready', onDomReady); };
   }, [inspecting, injectInspector, discarded]);

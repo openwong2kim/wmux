@@ -86,6 +86,15 @@ describe('BrowserPanel — element picker across navigation', () => {
     expect(injections()).toBe(2);
   });
 
+  it('injects on the first page load when picking started before the page was ready', () => {
+    // The state a discarded page wakes into: picking on, isReady false.
+    const wv = mount();
+    clickPicker('Pick an element for the agent');
+    expect(injections()).toBe(0);
+    domReady(wv);
+    expect(injections()).toBe(1);
+  });
+
   it('leaves a new page alone once picking is off', () => {
     const wv = mount();
     domReady(wv);
