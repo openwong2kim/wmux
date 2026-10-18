@@ -107,7 +107,8 @@ export function BotToday({ row, act, liveWorkers, t }: { row: FactoryBotRow; act
             {canResume && <Button size="sm" variant="secondary" data-testid="bots-resume-bot" disabled={busy} onClick={() => void resume()}>{t('room.bot.resume')}</Button>}
           </div>
         )}
-        <ul className="space-y-0.5 tabular-nums">
+        {/* One label column for every row, so each value starts at the same x. */}
+        <ul className="grid grid-cols-[max-content_minmax(0,1fr)] gap-x-2 gap-y-0.5 tabular-nums">
           {view.lines.map((line) => {
             const { label, value } = lineText(line, t, liveWorkers, inReviewTasks);
             return (
@@ -116,9 +117,9 @@ export function BotToday({ row, act, liveWorkers, t }: { row: FactoryBotRow; act
                 data-bots-today-line={line.id}
                 data-reached={line.reached ? 'true' : undefined}
                 {...(line.id === 'cost' ? { title: t('botsPage.profile.today.costHint') } : {})}
-                className={`flex gap-2 ${line.reached ? 'text-[var(--accent-yellow)]' : 'text-[var(--text-sub)]'}`}
+                className={`col-span-2 grid grid-cols-subgrid ${line.reached ? 'text-[var(--accent-yellow)]' : 'text-[var(--text-sub)]'}`}
               >
-                <span className={line.reached ? undefined : 'text-[var(--text-muted)]'}>{label}</span>
+                <span className={`whitespace-nowrap ${line.reached ? '' : 'text-[var(--text-muted)]'}`}>{label}</span>
                 <span {...(line.id === 'turnsDay' ? { 'data-bots-profile-turns': '' } : {})}>{value}</span>
               </li>
             );
