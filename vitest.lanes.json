@@ -359,6 +359,7 @@
     "src/shared/__tests__/accountQuota.test.ts",
     "src/shared/__tests__/botConnector.test.ts",
     "src/shared/__tests__/botModels.test.ts",
+    "src/shared/__tests__/browserZoom.test.ts",
     "src/shared/__tests__/codexWorkerGuard.test.ts",
     "src/shared/__tests__/constants.test.ts",
     "src/shared/__tests__/cwdShape.test.ts",
