@@ -32,6 +32,7 @@ describe('pageZoomKey', () => {
     expect(pageZoomKey(key({ meta: true, key: '=' }), 'win32')).toBeNull();
     expect(pageZoomKey(key({ meta: true, alt: true, key: '=' }), 'darwin')).toBeNull();
     expect(pageZoomKey(key({ meta: true, key: 'r' }), 'darwin')).toBeNull();
+    expect(pageZoomKey(key({ control: true, key: 'Insert', code: 'Numpad0' }), 'win32')).toBeNull();
     expect(pageZoomKey(key({ type: 'keyUp', meta: true, key: '=' }), 'darwin')).toBeNull();
   });
 });

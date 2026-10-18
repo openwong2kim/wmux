@@ -45,6 +45,7 @@ export function pageZoomKey(input: ZoomKeyInput, platform: NodeJS.Platform): Pag
   if (!mod) return null;
   if (input.key === '=' || input.key === '+' || input.code === 'NumpadAdd') return 'in';
   if (input.key === '-' || input.key === '_' || input.code === 'NumpadSubtract') return 'out';
-  if (input.key === '0' || input.code === 'Numpad0') return 'reset';
+  // By key, not code: with NumLock off the Numpad0 key is Insert (Ctrl+Insert copies).
+  if (input.key === '0') return 'reset';
   return null;
 }
