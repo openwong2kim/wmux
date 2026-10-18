@@ -1132,7 +1132,16 @@ export default function FleetView() {
     const idx = rowApprovalIndex(inbox, pane.workspaceId);
     if (idx >= 0) setInboxIdx(idx);
     setTab('approvals');
-    requestAnimationFrame(() => { focusActiveItemRef.current(); });
+    const ptyId = fleetTargetPtyId(pane);
+    requestAnimationFrame(() => {
+      // Waiting on a plan, not on an inbox row: focus its card, never an
+      // unrelated row that Enter would approve.
+      if (idx < 0 && plans.some((p) => p.sessionId === ptyId)) {
+        panelRef.current?.querySelector<HTMLElement>(`[data-plan-session="${CSS.escape(ptyId)}"]`)?.focus();
+        return;
+      }
+      focusActiveItemRef.current();
+    });
   };
 
   const renderRow = (row: FleetRow) => {

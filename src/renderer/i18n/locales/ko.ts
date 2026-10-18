@@ -648,6 +648,7 @@ export const ko = {
   'fleet.plan.feedbackPlaceholder': '바꿀 점 (선택)',
   'fleet.plan.inTerminal': '이 계획은 해당 판에서만 답할 수 있습니다.',
   'fleet.plan.sent': '답변 보냄',
+  'fleet.plan.stopped': '피드백 입력이 중간에 멈췄습니다. 판에서 마무리하세요.',
   'fleet.plan.truncated': '계획이 더 깁니다. 나머지는 판에서 확인하세요.',
   'fleet.plan.refusedChanged': '대화창이 바뀌어 아무것도 보내지 않았습니다. 판을 확인하세요.',
   'fleet.plan.refusedTooSoon': '대화창이 방금 떴습니다. 잠시 후 다시 시도하세요.',

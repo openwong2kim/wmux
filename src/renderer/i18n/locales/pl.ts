@@ -906,6 +906,7 @@ export const pl = {
   'fleet.plan.feedbackPlaceholder': 'Co zmienić (opcjonalnie)',
   'fleet.plan.inTerminal': 'Na ten plan można odpowiedzieć tylko w jego panelu.',
   'fleet.plan.sent': 'Odpowiedź wysłana',
+  'fleet.plan.stopped': 'Wpisywanie uwag zatrzymało się w połowie. Dokończ w panelu.',
   'fleet.plan.truncated': 'Plan jest dłuższy niż widać. Resztę przeczytaj w jego panelu.',
   'fleet.plan.refusedChanged': 'Okno dialogowe się zmieniło, więc nic nie wysłano. Sprawdź panel.',
   'fleet.plan.refusedTooSoon': 'Okno dialogowe właśnie się pojawiło. Spróbuj ponownie za chwilę.',

@@ -6,7 +6,7 @@ vi.mock('electron', () => {
     handle: (name: string, fn: (...args: any[]) => unknown) => handlers.set(name, fn) } };
 });
 import * as electron from 'electron';
-import { registerPlanApprovalHandlers } from '../planApproval.handler';
+import { registerPlanApprovalHandlers, toPlanApprovalView } from '../planApproval.handler';
 import { IPC } from '../../../../shared/constants';
 import type { DaemonClient } from '../../../DaemonClient';
 import type { ApprovalRequest } from '../../../../daemon/approvals/types';
@@ -38,7 +38,9 @@ function fixture() {
   const rpc = vi.fn(async (method: string, params: Record<string, unknown>) => {
     if (method === 'daemon.approvals.list') return { pending: [answerable, unbound, permission], recentlyResolved: [] };
     if (method === 'daemon.approvals.detail') {
-      return params['id'] === 'req-1' ? { id: 'req-1', command: '# Plan: create hello.txt\n\n1. Write it.', truncated: false } : null;
+      return params['id'] === 'req-1'
+        ? { id: 'req-1', toolName: 'ExitPlanMode', command: '# Plan: create hello.txt\n\n1. Write it.', truncated: false }
+        : null;
     }
     if (method === 'daemon.approvals.answerPlan') return { ok: false, reason: 'prompt-changed', request: answerable };
     return null;
@@ -64,10 +66,10 @@ describe('Fleet Plan card bridge', () => {
           { id: 'approve-manual', label: 'Yes, manually approve edits', needsText: false },
           { id: 'feedback', label: 'Tell Claude what to change', needsText: true },
         ],
-        formFingerprint: FP, answered: false, createdAt: 5,
+        formFingerprint: FP, answered: false, stopped: false, createdAt: 5,
       },
       // Fail closed: shown, but with nothing to press.
-      { id: 'req-2', sessionId: 'pty-b', agent: 'claude', summary: 'Plan: other', actions: [], answered: false, createdAt: 6 },
+      { id: 'req-2', sessionId: 'pty-b', agent: 'claude', summary: 'Plan: other', actions: [], answered: false, stopped: false, createdAt: 6 },
     ]);
   });
 
@@ -86,6 +88,14 @@ describe('Fleet Plan card bridge', () => {
       .toEqual({ ok: false, reason: 'operator-only' });
     expect(await handlers.get(IPC.PLAN_APPROVALS_LIST)!(other)).toEqual([]);
     expect(rpc.mock.calls.filter(([m]) => m === 'daemon.approvals.answerPlan')).toHaveLength(1);
+  });
+
+  it('a feedback answer that stopped partway is not shown as sent, and offers no actions', () => {
+    const step = { answerId: 'a', index: 1, total: 3, expectedRevision: 4, incarnation: 'i', startedAt: 5 };
+    expect(toPlanApprovalView({ ...answerable, step: { ...step, status: 'partial' } }, null))
+      .toMatchObject({ answered: false, stopped: true });
+    expect(toPlanApprovalView({ ...answerable, step: { ...step, status: 'running' } }, null))
+      .toMatchObject({ answered: true, stopped: false });
   });
 
   it('nudges the renderer on every daemon approval change', () => {

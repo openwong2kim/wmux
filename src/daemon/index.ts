@@ -4713,7 +4713,9 @@ function registerRpcHandlers(
   pipeServer.onRpc('daemon.approvals.detail', async (params, ctx) => {
     if (!pipeServer.isFirstParty(ctx.clientId)) return null;
     const id = typeof (params as { id?: unknown }).id === 'string' ? (params as { id: string }).id : '';
-    return (id && approvalRegistry?.terminalPromptDetail(id)) || null;
+    // The plan only: every other dialog's full command stays where it was served.
+    const detail = id ? approvalRegistry?.terminalPromptDetail(id) ?? null : null;
+    return detail?.toolName === 'ExitPlanMode' ? detail : null;
   });
 
   // ── Main → daemon workspace facts (approval press scope) ─────────────────

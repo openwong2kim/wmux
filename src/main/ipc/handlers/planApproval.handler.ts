@@ -39,7 +39,8 @@ export function toPlanApprovalView(record: ApprovalRequest, detail: TerminalProm
     ...(detail ? { plan: detail.command, planTruncated: detail.truncated } : {}),
     actions: form ? form.actions.map((a) => ({ id: a.id, label: a.label, needsText: a.needsText === true })) : [],
     ...(form ? { formFingerprint: record.formFingerprint } : {}),
-    answered: record.pressedAt !== undefined || record.step !== undefined,
+    answered: record.pressedAt !== undefined || (record.step !== undefined && record.step.status !== 'partial'),
+    stopped: record.step?.status === 'partial',
     createdAt: record.createdAt,
   };
 }

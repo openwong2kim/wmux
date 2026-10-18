@@ -31,6 +31,8 @@ export function planRefusalText(result: Extract<PlanApprovalAnswerResult, { ok: 
       return t('fleet.plan.refusedTooSoon');
     case 'invalid-text':
       return t('fleet.plan.refusedText');
+    case 'answer-in-terminal':
+      return t('fleet.plan.inTerminal');
     default:
       return t('fleet.plan.refused', { reason: result.reason });
   }
@@ -73,10 +75,12 @@ function PlanCard({ plan }: { plan: PlanApprovalView }) {
     useStore.getState().setFleetViewVisible(false);
   };
 
-  const canAnswer = plan.actions.length > 0 && !plan.answered && !!plan.formFingerprint;
+  const canAnswer = plan.actions.length > 0 && !plan.answered && !plan.stopped && !!plan.formFingerprint;
   return (
     <div
       data-plan-card
+      data-plan-session={plan.sessionId}
+      tabIndex={-1}
       className="flex flex-col gap-2 px-3 py-2.5"
       style={{
         // A request that waits on you (DESIGN.md colour grammar): the
@@ -162,7 +166,7 @@ function PlanCard({ plan }: { plan: PlanApprovalView }) {
         </div>
       ) : (
         <p data-plan-unavailable className="text-xs" style={{ color: 'var(--text-subtle)' }}>
-          {plan.answered ? t('fleet.plan.sent') : t('fleet.plan.inTerminal')}
+          {plan.stopped ? t('fleet.plan.stopped') : plan.answered ? t('fleet.plan.sent') : t('fleet.plan.inTerminal')}
         </p>
       )}
       {note && canAnswer && (

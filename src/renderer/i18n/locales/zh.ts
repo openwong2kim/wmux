@@ -1364,6 +1364,7 @@ export const zh = {
   'fleet.plan.feedbackPlaceholder': '需要修改的地方（可选）',
   'fleet.plan.inTerminal': '此计划只能在其窗格中回复。',
   'fleet.plan.sent': '已发送回复',
+  'fleet.plan.stopped': '反馈输入中途停止。请在窗格中完成。',
   'fleet.plan.truncated': '计划比显示的更长。请在其窗格中阅读其余部分。',
   'fleet.plan.refusedChanged': '对话框已变化，未发送任何内容。请查看窗格。',
   'fleet.plan.refusedTooSoon': '对话框刚出现。请稍后再试。',

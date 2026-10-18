@@ -32,6 +32,8 @@ export interface PlanApprovalView {
   formFingerprint?: string;
   /** An answer is already on its way to the pane. */
   answered: boolean;
+  /** A feedback answer stopped partway (some keys typed, not submitted): finish it in the pane. */
+  stopped: boolean;
   createdAt: number;
 }
 

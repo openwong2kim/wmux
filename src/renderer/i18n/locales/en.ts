@@ -917,6 +917,7 @@ export const en = {
   'fleet.plan.feedbackPlaceholder': 'What should change (optional)',
   'fleet.plan.inTerminal': 'This plan can only be answered in its pane.',
   'fleet.plan.sent': 'Answer sent',
+  'fleet.plan.stopped': 'The feedback stopped partway. Finish it in the pane.',
   'fleet.plan.truncated': 'The plan is longer than shown. Read the rest in its pane.',
   'fleet.plan.refusedChanged': 'The dialog changed, so nothing was sent. Check the pane.',
   'fleet.plan.refusedTooSoon': 'The dialog just appeared. Try again in a moment.',
