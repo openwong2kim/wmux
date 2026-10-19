@@ -231,6 +231,12 @@ export const hi = {
   'pane.browserPolicyGrantSensitive': "{host} का साइन-इन डेटा",
   'pane.browserPolicyRevoke': "रद्द करें",
   'pane.browserPolicyRevokeFailed': "रद्द नहीं हो सका।",
+  'pane.browserPolicySummaryBlocked': "हाल में {count} ब्लॉक",
+  'pane.browserPolicyRecentlyBlocked': "हाल में ब्लॉक किए गए",
+  'pane.browserPolicyRecentlyBlockedDesc': "इस पेन के Chrome के शुरू होने या सुरक्षा में पिछले बदलाव के बाद अस्वीकार की गई साइटें। अनुमति दें इसे तुरंत अनुमत साइटों में जोड़ देता है।",
+  'pane.browserPolicyRecentlyBlockedCount': "{count}× ब्लॉक",
+  'pane.browserPolicyAllow': "अनुमति दें",
+  'pane.browserPolicyAllowHost': "{host} को अनुमति दें",
   'browser.private': "निजी",
   'browser.privateTab': "निजी टैब",
   'browser.privateTooltip': "निजी टैब: कुकी और साइट डेटा केवल मेमोरी में रहते हैं और आखिरी निजी टैब बंद होने पर मिट जाते हैं। पुनः आरंभ के बाद बहाल नहीं होता।",
@@ -531,9 +537,6 @@ export const hi = {
 
   // ─── Agent toolbar: fan-out / broadcast buttons ───
   'toolbar.fanOut': 'Multi Task',
-  'toolbar.broadcast': 'Broadcast',
-  'toolbar.broadcastTooltip': 'Broadcast — वर्तमान कार्यक्षेत्र के हर टर्मिनल पैनल में वही टेक्स्ट (कोई पृथक्करण नहीं)',
-  'toolbar.broadcastPrompt': 'Broadcast — वर्तमान कार्यक्षेत्र के हर टर्मिनल पैनल में भेजें',
 
   // ─── Fan-out dialog (1 prompt → N isolated tasks) ───
   'fanout.title': 'Fan-out — 1 प्रॉम्प्ट → N पृथक टास्क',
@@ -654,4 +657,21 @@ export const hi = {
   'git.secret.more': "(और {count})",
   'settings.secretGuard': "कमिट, पुश और PR में पासवर्ड और कुंजियाँ रोकें",
   'settings.secretGuardDesc': "Git पेज पर कमिट, पुश और PR बनाना तथा टास्क अपनाना ऐसे बदलाव को नहीं भेजते जिसमें .env फ़ाइल, प्राइवेट कुंजी या API कुंजी जोड़ी गई हो।",
+  'botsPage.consent.title': "बॉट आपके Claude प्लान पर चलते हैं",
+  'botsPage.consent.engine': "हर बॉट इस कंप्यूटर के Claude Code लॉगिन से साइन इन किए गए Claude Agent SDK से सोचता है। इसके वर्कर आपका अपना Claude Code चलाते हैं।",
+  'botsPage.consent.usage': "इनका उपयोग आपके Claude प्लान की सीमाओं में गिना जाता है।",
+  'botsPage.consent.terms': "आपके प्लान के लिए Anthropic की शर्तें लागू होती हैं। wmux आपका Claude साइन-इन कभी नहीं पढ़ता, सहेजता या भेजता।",
+  'botsPage.consent.turnOn': "बॉट चालू करें",
+  'botsPage.consent.cancel': "रद्द करें",
+  'botsPage.consent.keepOn': "बॉट चालू रखें",
+  'botsPage.consent.turnOff': "बॉट बंद करें",
+
+  // Task cleanup list: detail line per scan entry
+  'worktask.cleanup.detail.unmaterialized': 'इस कार्य के लिए कोई worktree नहीं बनाया गया — इसे बंद करें, या worktree फिर से बनाएँ।',
+  'worktask.cleanup.detail.preserved': 'बिना कमिट किया गया काम सुरक्षित है — diff देखें, फिर कमिट करें या PR खोलें, या इसे छोड़ दें।',
+  'worktask.cleanup.detail.phone': 'फ़ोन से बनाया गया (ब्रांच phone/…) — जाँचें, फिर ज़रूरत न रहने पर हटा दें।',
+  'worktask.cleanup.detail.orphanEnded': 'कोई खुला कार्य इससे जुड़ा नहीं है (कार्य समाप्त हुआ या साफ़ किया गया) — जाँचें, फिर हटाएँ।',
+  'worktask.cleanup.detail.orphanUnlinked': 'कोई कार्य या कार्य रिकॉर्ड इससे जुड़ा नहीं है — जाँचें, फिर हटाएँ।',
+  'worktask.cleanup.detail.orphanMeta': 'केवल कार्य रिकॉर्ड बचा है, worktree नहीं (हटाना बीच में रुक गया) — जाँचें, फिर हटाएँ।',
+  'worktask.cleanup.detail.diskMissing': 'worktree डिस्क पर नहीं है (wmux के बाहर हटाया गया, या क्रैश) — साफ़ करने के लिए कार्य बंद करें।',
 } as const;

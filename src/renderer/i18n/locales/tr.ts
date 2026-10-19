@@ -231,6 +231,12 @@ export const tr = {
   'pane.browserPolicyGrantSensitive': "{host} oturum verileri",
   'pane.browserPolicyRevoke': "Geri al",
   'pane.browserPolicyRevokeFailed': "Geri alınamadı.",
+  'pane.browserPolicySummaryBlocked': "Son zamanlarda {count} engellendi",
+  'pane.browserPolicyRecentlyBlocked': "Son engellenenler",
+  'pane.browserPolicyRecentlyBlockedDesc': "Bu bölmenin Chrome'unun başladığından ya da koruma son değiştiğinden beri reddedilen siteler. İzin ver, siteyi hemen izin verilenlere ekler.",
+  'pane.browserPolicyRecentlyBlockedCount': "{count}× engellendi",
+  'pane.browserPolicyAllow': "İzin ver",
+  'pane.browserPolicyAllowHost': "{host} için izin ver",
   'browser.private': "Gizli",
   'browser.privateTab': "Gizli sekme",
   'browser.privateTooltip': "Gizli sekme: çerezler ve site verileri yalnızca bellekte tutulur ve son gizli sekme kapatıldığında silinir. Yeniden başlatmadan sonra geri yüklenmez.",
@@ -536,9 +542,6 @@ export const tr = {
 
   // ─── Aracı araç çubuğu: fan-out / broadcast düğmeleri ───
   'toolbar.fanOut': 'Multi Task',
-  'toolbar.broadcast': 'Broadcast',
-  'toolbar.broadcastTooltip': 'Broadcast — geçerli çalışma alanındaki her terminal bölmesine aynı metin (izolasyon yok)',
-  'toolbar.broadcastPrompt': 'Broadcast — geçerli çalışma alanındaki her terminal bölmesine gönder',
 
   // ─── Fan-out iletişim kutusu (1 prompt → N izole görev) ───
   'fanout.title': 'Fan-out — 1 prompt → N izole görev',
@@ -659,4 +662,21 @@ export const tr = {
   'git.secret.more': "(ve {count} tane daha)",
   'settings.secretGuard': "Commit, push ve PR'larda parolaları ve anahtarları engelle",
   'settings.secretGuardDesc': "Git sayfasındaki Commit, Push ve PR oluştur ile bir görevi devralma; .env dosyası, özel anahtar veya API anahtarı ekleyen bir değişikliği reddeder.",
+  'botsPage.consent.title': "Botlar Claude planınızla çalışır",
+  'botsPage.consent.engine': "Her bot, bu bilgisayardaki Claude Code oturumuyla Claude Agent SDK kullanarak düşünür. Çalışanları kendi Claude Code'unuzu çalıştırır.",
+  'botsPage.consent.usage': "Kullanımları Claude planınızın limitlerine sayılır.",
+  'botsPage.consent.terms': "Planınız için Anthropic koşulları geçerlidir. wmux, Claude oturum bilgilerinizi asla okumaz, saklamaz veya göndermez.",
+  'botsPage.consent.turnOn': "Botları aç",
+  'botsPage.consent.cancel': "İptal",
+  'botsPage.consent.keepOn': "Botları açık tut",
+  'botsPage.consent.turnOff': "Botları kapat",
+
+  // Task cleanup list: detail line per scan entry
+  'worktask.cleanup.detail.unmaterialized': 'Bu görev için worktree oluşturulmadı — görevi kapatın veya worktree’yi yeniden oluşturun.',
+  'worktask.cleanup.detail.preserved': 'Commit edilmemiş çalışma korunuyor — diff’i inceleyin, sonra commit edin veya PR açın ya da atın.',
+  'worktask.cleanup.detail.phone': 'Telefondan oluşturuldu (phone/… dalı) — kontrol edin, artık gerekmediğinde kaldırın.',
+  'worktask.cleanup.detail.orphanEnded': 'Ona bağlı açık görev yok (görev bitti veya temizlendi) — kontrol edin, sonra silin.',
+  'worktask.cleanup.detail.orphanUnlinked': 'Ona bağlı görev veya görev kaydı yok — kontrol edin, sonra silin.',
+  'worktask.cleanup.detail.orphanMeta': 'Yalnızca görev kaydı kaldı, worktree yok (bir kaldırma işlemi yarıda kesildi) — kontrol edin, sonra silin.',
+  'worktask.cleanup.detail.diskMissing': 'Worktree diskte yok (wmux dışında silindi veya çökme) — temizlemek için görevi kapatın.',
 } as const;

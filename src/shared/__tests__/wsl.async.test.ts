@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const { exec } = vi.hoisted(() => ({ exec: vi.fn() }));
 vi.mock('node:child_process', () => ({ execFile: exec }));
 import { resolveWslCwd, WSL_CWD_MISSING_MARKER, WSL_CWD_PROBE, WSL_PROBE_TIMEOUT_MS, isWslCwdMissingError } from '../wsl';
+import { deliberateSleep } from '../../test-utils/waitFor';
 
 type Callback = (error: Error | null, stdout: string | Buffer, stderr: string | Buffer) => void;
 /**
@@ -26,7 +27,7 @@ describe('asynchronous WSL probes', () => {
     expect(exec).toHaveBeenCalledTimes(1);
     expect(exec.mock.calls[0][2].timeout).toBe(WSL_PROBE_TIMEOUT_MS);
     let ticked = false;
-    await new Promise<void>((resolve) => setTimeout(() => { ticked = true; resolve(); }, 1));
+    await deliberateSleep(1, 'real timer: proves the probe does not block the event loop').then(() => { ticked = true; });
     expect(ticked).toBe(true);
     finish(0);
     expect(await first).toEqual(await second);
@@ -86,6 +87,62 @@ describe('a missing working directory', () => {
     // The probe is handed '~' verbatim: expanding it on the Windows side would
     // name the Windows home.
     expect(exec.mock.calls[0][1]).toContain('~');
+  });
+
+  // F26 — node's execFile error message is `Command failed: <argv>`, and argv
+  // carries WSL_CWD_PROBE with the marker literal in it. A probe that printed
+  // nothing (killed by the timeout under load, or an exit with no stderr) was
+  // read as "no longer exists" for a directory that was there all along.
+  const commandFailed = (extra: Record<string, unknown>) =>
+    Object.assign(new Error(`Command failed: wsl.exe --exec /bin/sh -c ${WSL_CWD_PROBE} wmux-cwd C:\\work\\task\n`), extra);
+
+  it('is never concluded from a probe the timeout killed', async () => {
+    const failed = resolveWslCwd('wsl.exe', 'C:\\work\\task');
+    const caught = failed.catch((error: unknown) => error);
+    respond(0, Buffer.alloc(0), Buffer.alloc(0), commandFailed({ killed: true, signal: 'SIGTERM', code: null }));
+
+    const error = await caught;
+    expect(isWslCwdMissingError(error)).toBe(false);
+    expect((error as Error).message).not.toContain('no longer exists');
+    expect((error as Error).message).toContain(`did not answer within ${WSL_PROBE_TIMEOUT_MS / 1000}s`);
+    expect((error as Error).message).toContain('Check the distro and directory, then retry');
+  });
+
+  it('is never concluded from a failure that printed nothing', async () => {
+    const failed = resolveWslCwd('wsl.exe', 'C:\\work\\task');
+    const caught = failed.catch((error: unknown) => error);
+    respond(0, Buffer.alloc(0), Buffer.alloc(0), commandFailed({ killed: false, code: 1 }));
+
+    const error = await caught;
+    expect(isWslCwdMissingError(error)).toBe(false);
+    expect((error as Error).message).toContain('wsl.exe exited with code 1');
+    expect((error as Error).message).toContain('Check the distro and directory, then retry');
+  });
+
+  // What is shown reaches the owner's card and a bot's reason: node's
+  // `Command failed: <argv>` would put the whole probe script there.
+  it.each([
+    ['an exit code', { killed: false, code: 1 }, 'wsl.exe exited with code 1'],
+    ['a signal', { killed: false, code: null, signal: 'SIGKILL' }, 'wsl.exe was stopped by SIGKILL'],
+    ['neither', { killed: false, code: null }, 'wsl.exe failed without a message'],
+    ['the timeout', { killed: true, code: null, signal: 'SIGTERM' }, 'did not answer within'],
+  ])('never shows the probe script for a silent failure with %s', async (_label, extra, expected) => {
+    const caught = resolveWslCwd('wsl.exe', 'C:\\work\\task').catch((error: Error) => error.message);
+    respond(0, Buffer.alloc(0), Buffer.alloc(0), commandFailed(extra));
+
+    const message = await caught;
+    expect(message).toContain(expected);
+    expect(message).not.toContain('Command failed');
+    expect(message).not.toContain(WSL_CWD_MISSING_MARKER);
+    expect(message).not.toContain('set -eu');
+  });
+
+  it('is still concluded from the probe\'s own report on a real exit', async () => {
+    const failed = resolveWslCwd('wsl.exe', 'C:\\work\\gone');
+    const caught = failed.catch((error: unknown) => error);
+    respond(0, Buffer.alloc(0), Buffer.from(`${WSL_CWD_MISSING_MARKER}: /mnt/c/work/gone\n`, 'utf8'), commandFailed({ killed: false, code: 3 }));
+
+    expect(isWslCwdMissingError(await caught)).toBe(true);
   });
 
   it('leaves every other failure as the retryable kind it was', async () => {

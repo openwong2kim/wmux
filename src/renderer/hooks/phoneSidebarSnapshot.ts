@@ -21,6 +21,9 @@
 //   - panes:        the roster's pane display name and surface title rules
 //   - layout:       `rootPane` as PaneContainer draws it (direction, sizes,
 //                   tab order, active tab) and `activePaneId`
+//   - botWorkers:   `selectBotTaskOwners` (the lineage / ledger bot origin),
+//                   with the task record's id; those rows stay out of
+//                   `workspaces` and `panes`
 //   - HQ, moa, moaWakeBlocked, factory: not here — main folds the agent
 //                   factory's fields in (main/phone/PhoneFactory.ts)
 //   - moaHandoff:   main's pending decisions (DECK_MOA_DECISIONS), passed in
@@ -49,6 +52,7 @@ import {
   type PhoneMoaDelegation,
   type PhoneMoaDelegationState,
   PHONE_MOA_DELEGATION_RECENT_MS,
+  type PhoneSidebarBotWorker,
   type PhoneSidebarPane,
   type PhoneSidebarSnapshot,
   type PhoneSidebarWorkspace,
@@ -69,7 +73,7 @@ import type { MoaPendingDecision } from '../../shared/moa';
 import { HANDOFF_OPTIONS } from '../../shared/moaHandoff';
 import type { StoreState } from '../stores';
 import { resolveTaskLink } from '../utils/fanoutProvenance';
-import { selectOwnerWorkspaces } from '../components/Sidebar/botTasks';
+import { selectBotTaskOwners, selectOwnerWorkspaces } from '../components/Sidebar/botTasks';
 import { computePaneAutoName, paneDisplayName } from '../utils/paneNaming';
 import { buildSidebarTree, paneRowsFinished, splitTasksByPane, taskRollup } from '../components/Sidebar/sidebarTree';
 import { selectWorkspaceAgentStatus, surfaceAttentionStatus } from '../stores/selectors/fleet';
@@ -519,6 +523,15 @@ export function buildPhoneSidebarSnapshot(
       onDrop('fleetTickets');
     }
   }
+  // The workers left out above, named so the daemon can mark their rows: the
+  // phone still lists them (it types into them), and must tell a bot's worker
+  // from a workspace the snapshot has not caught up with.
+  let botWorkers: PhoneSidebarBotWorker[] | undefined;
+  try {
+    botWorkers = projectBotWorkers(state);
+  } catch {
+    onDrop('botWorkers');
+  }
   let nextScheduleAt: number | undefined;
   try {
     const next = selectScheduleNavSummary(state).nextRunAt;
@@ -534,5 +547,22 @@ export function buildPhoneSidebarSnapshot(
     ...(moaDelegations ? { moaDelegations } : {}),
     ...(fleet ? { fleetTickets: fleet.tickets, [PHONE_FLEET_TICKET_DETAILS_KEY]: fleet.details } : {}),
     ...(nextScheduleAt !== undefined ? { nextScheduleAt } : {}),
+    ...(botWorkers && botWorkers.length > 0 ? { botWorkers } : {}),
   };
+}
+
+/** Every open bot worker in the desktop's workspace order, bounded. A bot
+ *  origin that names no usable bot id is left out: the marker needs one. */
+export function projectBotWorkers(state: StoreState): PhoneSidebarBotWorker[] {
+  const owners = selectBotTaskOwners(state);
+  const out: PhoneSidebarBotWorker[] = [];
+  for (const ws of state.workspaces) {
+    if (out.length >= PHONE_SIDEBAR_LIMITS.botWorkers) break;
+    if (!Object.prototype.hasOwnProperty.call(owners, ws.id)) continue;
+    const botId = owners[ws.id];
+    if (!isSidebarId(ws.id) || !isSidebarId(botId)) continue;
+    const taskId = state.missionByPaneGroup[ws.id]?.id;
+    out.push({ workspaceId: ws.id, botId, ...(isSidebarId(taskId) ? { taskId } : {}) });
+  }
+  return out;
 }

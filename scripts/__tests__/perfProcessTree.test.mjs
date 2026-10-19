@@ -1,7 +1,7 @@
 // Pure-logic tests for the A1 RAM process-tree walk
 // (scripts/perf-process-tree.mjs, issue #570). No packaged app, no CIM, no
 // pipes — collected by `npm test` via scripts/__tests__/**/*.test.mjs and safe
-// on CI. Mirrors the perfProcessClassify.test.mjs convention: import the pure
+// on CI. Mirrors the perfProcessClassify.os.test.mjs convention: import the pure
 // module, feed it mock CIM rows, assert what the walk collects and rejects.
 import { describe, it, expect } from 'vitest';
 import {

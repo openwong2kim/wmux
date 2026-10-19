@@ -112,6 +112,12 @@ export interface PolicyContext {
   /** Target workspace's metadata.notificationsMuted === true. */
   isMutedWorkspace: boolean;
   /**
+   * The originating pane's PaneLeaf.notificationsMuted === true. Same
+   * "recorded, surfaces silent" contract as a muted workspace, scoped to one
+   * pane. Optional so callers without a resolved pane leave it unset (false).
+   */
+  isMutedPane?: boolean;
+  /**
    * Categories the user has muted in Settings (#516). Same semantics as a
    * muted workspace — the notification is still recorded, every surface is
    * silent — but scoped to the KIND of event instead of where it came from,
@@ -150,6 +156,7 @@ export interface PolicyContext {
  *   2. Muted workspace — return [addNotification] only. Data is preserved
  *      in the panel, every surface action is suppressed regardless of
  *      individual toggles.
+ *   2a. Muted pane — same contract, scoped to the originating pane.
  *   2b. Muted category — same contract, keyed on the event kind instead of
  *      the workspace. Uncategorized notifications are never suppressed here.
  *   3. Normal fan-out — addNotification first, then each surface action
@@ -186,6 +193,12 @@ export function decideNotificationActions(
   //    badge math still ignores it via the mute flag), but every surface
   //    is silent. Independent of individual toggles by design (A4).
   if (ctx.isMutedWorkspace) {
+    return [addAction];
+  }
+
+  // 2a. Muted pane — the user silenced this one pane from its menu. The
+  //     record still lands so the panel and the sidebar keep its state.
+  if (ctx.isMutedPane) {
     return [addAction];
   }
 

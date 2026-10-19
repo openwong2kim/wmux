@@ -60,6 +60,34 @@ describe('createWorkTaskReconciler', () => {
     await reconcile();
     expect(calls).toBe(4);
   });
+
+  it('a mirrored row carries the lineage stamp\'s origin, and the fan-out\'s own register replaces it (#2393)', async () => {
+    const tasks = [
+      { id: 'wtask-bot', title: 'recovered', status: 'open', owner: { verifiedWorkspaceId: 'ws-parent' }, paneGroupId: 'ws-bot' },
+      { id: 'wtask-plain', title: 'unstamped', status: 'open', owner: { verifiedWorkspaceId: 'ws-parent' }, paneGroupId: 'ws-plain' },
+    ];
+    const reconcile = createWorkTaskReconciler({
+      candidateOwners: () => ['ws-parent'],
+      listTasks: async () => ({ ok: true, tasks }),
+      originOf: (ws) => (ws === 'ws-bot' ? { kind: 'bot', botId: 'bot-a' } : null),
+    });
+    await reconcile();
+    // A running recovered bot worker counts on its bot's slots again.
+    expect(ledger.get('wtask-bot')?.dispatch).toEqual({ origin: { kind: 'bot', botId: 'bot-a' }, reconciled: true });
+    expect(ledger.get('wtask-plain')?.dispatch).toBeUndefined();
+    // The fan-out's register landing after the reconciler still records its
+    // full dispatch, which is never replaced after that.
+    await ledger.register({
+      id: 'wtask-bot', taskWorkspaceId: 'ws-bot', ownerWorkspaceId: 'ws-parent', title: 'recovered',
+      dispatch: { origin: { kind: 'bot', botId: 'bot-a', tainted: false }, preset: 'code', repoKey: 'github.com/o/r' },
+    });
+    expect(ledger.get('wtask-bot')?.dispatch).toEqual({ origin: { kind: 'bot', botId: 'bot-a', tainted: false }, preset: 'code', repoKey: 'github.com/o/r' });
+    await ledger.register({
+      id: 'wtask-bot', taskWorkspaceId: 'ws-bot', ownerWorkspaceId: 'ws-parent', title: 'recovered',
+      dispatch: { origin: { kind: 'bot', botId: 'bot-b' } },
+    });
+    expect(ledger.get('wtask-bot')?.dispatch?.origin.botId).toBe('bot-a');
+  });
 });
 
 describe('decision context', () => {

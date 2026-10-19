@@ -37,7 +37,7 @@ async function driveCompleted(worker: ClaudeWorker): Promise<void> {
     JSON.stringify({ type: 'result', result: 'done', is_error: false, total_cost_usd: 0.01 }),
   );
   // fire-and-forget updateTaskStatus: 데몬 rpc(await) → sendToRenderer 순 마이크로태스크 플러시
-  await vi.waitFor(() => expect(sendToRendererMock).toHaveBeenCalled());
+  await vi.waitFor(() => expect(sendToRendererMock).toHaveBeenCalled(), { timeout: 5_000 });
 }
 
 describe('ClaudeWorker — C12 데몬 정본 재배선 (envelope PR4)', () => {

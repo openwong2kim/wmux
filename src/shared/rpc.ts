@@ -720,6 +720,10 @@ export type RpcMethod =
   | 'botSecret.request'
   | 'botSecret.list'
   | 'botLogin.request'
+  // A bot's own skills (shared/botSkill.ts): propose one for the owner's
+  // approval, read an approved one.
+  | 'skill.propose'
+  | 'skill.read'
   // Task lifecycle on the pipe (pipe/handlers/worktask.rpc.ts) — the half of
   // fan-out that finishes a task. Local-origin only, owner-scoped against
   // `task.mission.list`, and `task.close` / `task.pr` additionally raise a
@@ -730,6 +734,7 @@ export type RpcMethod =
   | 'task.close'
   | 'task.pr'
   | 'task.push'
+  | 'task.fetch'
   | 'task.git.status'
   | 'task.git.log'
   | 'task.gh.prView'
@@ -1009,12 +1014,15 @@ export const ALL_RPC_METHODS = [
   'botSecret.request',
   'botSecret.list',
   'botLogin.request',
+  'skill.propose',
+  'skill.read',
   'task.gate.run',
   'task.gate.cancel',
   'task.adopt',
   'task.close',
   'task.pr',
   'task.push',
+  'task.fetch',
   'task.git.status',
   'task.git.log',
   'task.gh.prView',
@@ -1069,6 +1077,9 @@ export interface DaemonEvent {
     | 'phone.request'
     | 'agent.event'
     | 'agent.critical'
+    // The agent printed its own "turn interrupted" row (Claude Code fires no
+    // Stop hook for an interrupted turn). `data` is `{ agent: string }`.
+    | 'agent.interrupted'
     | 'activity.idle'
     | 'activity.active'
     // The agent process inside an interactive pane died (AgentProcessTracker's
@@ -1090,7 +1101,8 @@ export interface DaemonEvent {
     | 'title.changed'
     // X1 workspace-context sidebar (schema-freeze §2). Per-session live
     // context detected where the PTY lives:
-    //   context.git   → { branch: string | null, isWorktree: boolean }
+    //   context.git   → { branch: string | null, isWorktree: boolean, absent?: true }
+    //                   (absent: null branch is a known "not a repo", see GitContext)
     //   context.ports → { ports: Array<{ port: number, pid: number }> }
     | 'context.git'
     | 'context.ports'
@@ -1259,6 +1271,19 @@ export interface SupervisionRuntime {
 export interface DaemonSessionIdParams {
   id: string;
 }
+
+/** `daemon.destroySession`. `killTree`: also kill every process the pane's
+ *  shell started and check each one exited; the reply then carries `tree`
+ *  ({@link DaemonDestroySessionTree}). */
+export interface DaemonDestroySessionParams extends DaemonSessionIdParams {
+  killTree?: boolean;
+}
+
+/** `daemon.destroySession`'s `tree`: whether every process of the pane's
+ *  tree exited, and which did not. */
+export type DaemonDestroySessionTree =
+  | { ok: true; killed: number[] }
+  | { ok: false; killed: number[]; survivors: Array<{ pid: number; reason: string; startTime?: string; unverified?: true }> };
 
 /**
  * X6 ③: persist a resume binding on a session (daemon-side, saveImmediate).

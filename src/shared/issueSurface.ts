@@ -1,5 +1,6 @@
-// Wire types for the Git page's Issues view, shared by main (GhIssueService)
-// and the renderer (IssueSection). GitHub only for now: gh fills them.
+// Wire types for the Git page's Issues view, shared by main (GhIssueService,
+// GlabIssueService) and the renderer (IssueSection): gh fills them for GitHub,
+// glab for GitLab.
 
 export interface IssueLabel {
   readonly name: string;

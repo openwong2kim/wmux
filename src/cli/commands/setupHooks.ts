@@ -108,7 +108,8 @@ type HookEvent =
   | (typeof HOOK_EVENTS)[number]
   | (typeof ASK_QUESTION_HOOKS)[number]['event']
   | 'PreToolUse' // #783 — permission gate adds a wide PreToolUse
-  | 'PermissionRequest';
+  | 'PermissionRequest'
+  | 'Notification';
 
 /**
  * #783 — the permission-gate hook. A WIDE PreToolUse matcher (every tool) that
@@ -139,6 +140,21 @@ const PERMISSION_GATE_SPEC = {
 const PERMISSION_REQUEST_SPEC = {
   event: 'PermissionRequest' as const,
   matcher: '',
+};
+
+/**
+ * Claude Code's `permission_prompt` notification: a permission prompt that has
+ * waited, unanswered, for about six seconds. PermissionRequest only says a
+ * dialog is ABOUT to show (another hook, the SDK host or a non-interactive
+ * session can settle it unseen), so this is what the daemon raises "needs you"
+ * on. Matcher-scoped: no other notification type spawns the bridge.
+ *
+ * Outside SIGNAL_SPECS for the same `detectProfile` reason as
+ * PERMISSION_REQUEST_SPEC: an install made before it must keep its profile.
+ */
+const PERMISSION_NOTIFICATION_SPEC = {
+  event: 'Notification' as const,
+  matcher: 'permission_prompt',
 };
 
 /** One wmux-owned hook entry in settings.json. */
@@ -184,11 +200,25 @@ export type HookProfile = 'full' | 'signals-only';
 
 /** Every wmux-owned hook in settings.json as (event, matcher) specs — the
  *  single source `installHooks` writes and `statusHooks` checks against. */
-export const HOOK_SPECS: readonly HookSpec[] = [...SIGNAL_SPECS, PERMISSION_REQUEST_SPEC, PERMISSION_GATE_SPEC];
+export const HOOK_SPECS: readonly HookSpec[] = [...SIGNAL_SPECS, PERMISSION_REQUEST_SPEC, PERMISSION_NOTIFICATION_SPEC, PERMISSION_GATE_SPEC];
+
+/**
+ * #2231 — the wmux hook groups for a claude launch configured by its own
+ * `--settings` file (a bot worker of an isolated instance): the signals-only
+ * profile, run by `bridgePath` — that build's own bridge, not the shared copy
+ * under ~/.wmux/hooks the global settings name. Pure.
+ */
+export function bridgeHookGroups(bridgePath: string): Record<string, Array<{ matcher: string; hooks: Array<{ type: 'command'; command: string }> }>> {
+  const out: Record<string, Array<{ matcher: string; hooks: Array<{ type: 'command'; command: string }> }>> = {};
+  for (const spec of specsFor('signals-only')) {
+    (out[spec.event] ??= []).push({ matcher: spec.matcher, hooks: [{ type: 'command', command: bridgeCommand(bridgePath, spec.event, spec.extraArgs) }] });
+  }
+  return out;
+}
 
 /** The specs a given profile installs. */
 function specsFor(profile: HookProfile): readonly HookSpec[] {
-  return profile === 'signals-only' ? [...SIGNAL_SPECS, PERMISSION_REQUEST_SPEC] : HOOK_SPECS;
+  return profile === 'signals-only' ? [...SIGNAL_SPECS, PERMISSION_REQUEST_SPEC, PERMISSION_NOTIFICATION_SPEC] : HOOK_SPECS;
 }
 
 /** Stable identity of a spec — event plus argv tail, since the approval pair
@@ -360,13 +390,15 @@ function hasArgvTail(
 ): boolean {
   const hooks = (group as HookGroup).hooks;
   if (!Array.isArray(hooks)) return false;
-  const tail = `${spec.event}${spec.extraArgs ? ` ${spec.extraArgs}` : ''}`;
-  return hooks.some((h) => {
-    if (!h || typeof h !== 'object') return false;
-    const command = (h as HookLeaf).command;
-    if (typeof command !== 'string' || !command.includes(WMUX_BRIDGE_MARKER)) return false;
-    return command.trim().endsWith(tail);
-  });
+  return hooks.some((h) => isWmuxLeafWithTail(h, spec));
+}
+
+/** True when a single leaf is a wmux command ending in this spec's argv tail. */
+function isWmuxLeafWithTail(leaf: unknown, spec: { event: HookEvent; extraArgs?: string }): boolean {
+  if (!leaf || typeof leaf !== 'object') return false;
+  const command = (leaf as HookLeaf).command;
+  if (typeof command !== 'string' || !command.includes(WMUX_BRIDGE_MARKER)) return false;
+  return command.trim().endsWith(`${spec.event}${spec.extraArgs ? ` ${spec.extraArgs}` : ''}`);
 }
 
 /**
@@ -386,6 +418,49 @@ function installedSpecsIn(settings: Record<string, unknown>): Set<string> {
     }
   }
   return found;
+}
+
+/**
+ * #2404 — how one hook the current build expects stands in settings.json:
+ *   'ok'        a wmux group gives it the spec's scope
+ *   'outdated'  a wmux leaf for it exists, but under a scope an older build
+ *               wrote (the matcher:'' PostToolUse removed on 2026-07-13)
+ *   'missing'   no wmux leaf for it at all (Notification on a pre-#2390 install)
+ */
+export type HookSpecState = 'ok' | 'missing' | 'outdated';
+
+export interface HookSpecStatus extends HookSpec {
+  /** Display name, e.g. `Notification:permission_prompt`. Built here so the
+   *  CLI and the Settings card print the same words. */
+  label: string;
+  state: HookSpecState;
+}
+
+function specLabel(spec: HookSpec): string {
+  return `${spec.event}${spec.matcher ? `:${spec.matcher}` : ''}${spec.extraArgs ? ` ${spec.extraArgs}` : ''}`;
+}
+
+function specState(groups: unknown, spec: HookSpec): HookSpecState {
+  if (!Array.isArray(groups)) return 'missing';
+  if (groups.some((g) => isEffectiveWmuxGroupForSpec(g, spec))) return 'ok';
+  return groups.some((g) => isWmuxGroup(g) && hasArgvTail(g, spec)) ? 'outdated' : 'missing';
+}
+
+/**
+ * #2404 — the installed hook set compared with the one this build expects.
+ * The expected set is `specsFor(profile)`, the list `installHooks` writes, and
+ * the profile is the derived one, so an install from before a hook existed is
+ * measured against its own profile and never grows the gate.
+ */
+export function hookSetStatus(settings: Record<string, unknown>): { profile: HookProfile; hooks: HookSpecStatus[] } {
+  const profile = detectProfile(settings);
+  const map = settings.hooks && typeof settings.hooks === 'object' && !Array.isArray(settings.hooks)
+    ? (settings.hooks as Record<string, unknown>)
+    : {};
+  return {
+    profile,
+    hooks: specsFor(profile).map((spec) => ({ ...spec, label: specLabel(spec), state: specState(map[spec.event], spec) })),
+  };
 }
 
 /**
@@ -730,6 +805,80 @@ export function installHooks(
   };
 }
 
+// ----- Update (Settings button) -------------------------------------------
+
+export interface UpdateOutcome {
+  ok: boolean;
+  settingsPath: string;
+  profile: HookProfile;
+  /** The hooks this call wrote: missing ones added, outdated ones rewritten. */
+  updated: string[];
+  error: string | null;
+}
+
+/**
+ * #2404 — bring an existing install up to the hook set this build expects,
+ * touching only what differs. Unlike `installHooks` (clear-then-add, which
+ * moves every wmux group to the end of its event), this appends the missing
+ * specs and rewrites only the wmux leaves of an outdated one; every other
+ * group, foreign or wmux, keeps its place. The profile is the derived one, so
+ * a signals-only install stays signals-only. Run only from an explicit click
+ * (owner decision 2026-07-17): nothing calls this on its own.
+ */
+export function updateHooks(paths: SetupHooksPaths): UpdateOutcome {
+  const base: UpdateOutcome = { ok: false, settingsPath: paths.settingsPath, profile: 'full', updated: [], error: null };
+  const load = loadSettings(paths.settingsPath);
+  if (load.corrupted) {
+    return {
+      ...base,
+      error:
+        `settings.json at ${paths.settingsPath} is not valid JSON — aborting to avoid ` +
+        `overwriting your Claude Code config. Fix or remove the file and retry.`,
+    };
+  }
+  const settings = load.settings;
+  // The plugin owns the hooks then; settings.json entries would double them.
+  if (detectPluginViaManifest(paths.settingsPath) && !isPluginExplicitlyDisabled(settings)) {
+    return { ...base, ok: true };
+  }
+  const { profile, hooks: rows } = hookSetStatus(settings);
+  const stale = rows.filter((r) => r.state !== 'ok');
+  if (stale.length === 0) return { ...base, ok: true, profile };
+
+  const copy = copyBridge(paths);
+  if (!copy.copied) return { ...base, profile, error: copy.warning };
+
+  const hooks =
+    settings.hooks && typeof settings.hooks === 'object' && !Array.isArray(settings.hooks)
+      ? (settings.hooks as Record<string, unknown>)
+      : {};
+  for (const spec of stale) {
+    const existing = Array.isArray(hooks[spec.event]) ? (hooks[spec.event] as unknown[]) : [];
+    const kept: unknown[] = [];
+    for (const group of existing) {
+      // An outdated spec's own leaves go; a hand-mixed group keeps the
+      // user's leaves and its place, as in `stripWmuxHooks`.
+      if (spec.state !== 'outdated' || !isWmuxGroup(group) || isEffectiveWmuxGroupForSpec(group, spec)) {
+        kept.push(group);
+        continue;
+      }
+      const leaves = (group as HookGroup).hooks as unknown[];
+      const rest = leaves.filter((leaf) => !isWmuxLeafWithTail(leaf, spec));
+      if (rest.length === 0) continue;
+      (group as HookGroup).hooks = rest as HookLeaf[];
+      kept.push(group);
+    }
+    kept.push({
+      matcher: spec.matcher,
+      hooks: [{ type: 'command', command: bridgeCommand(paths.bridgeDest, spec.event, spec.extraArgs) }],
+    });
+    hooks[spec.event] = kept;
+  }
+  settings.hooks = hooks;
+  writeJsonAtomic(paths.settingsPath, settings);
+  return { ...base, ok: true, profile, updated: stale.map((r) => r.label) };
+}
+
 // ----- Fan-out worker allow-list (Settings button) ------------------------
 
 export interface AllowWorkerToolsOutcome {
@@ -961,8 +1110,22 @@ export interface StatusOutcome {
     approvalCard: HookFeatureStatus;
     turnStart: HookFeatureStatus;
     turnEnd: HookFeatureStatus;
+    permissionPrompt: HookFeatureStatus;
     permissionGate: HookFeatureStatus;
   };
+  /**
+   * #2404 — every hook this build installs for `profile`, each checked against
+   * settings.json (see `hookSetStatus`). Empty when the settings file is
+   * corrupt or an active marketplace plugin owns the hooks: its hooks.json is
+   * Claude Code's to update, and settings.json then holds none by design.
+   */
+  hooks: HookSpecStatus[];
+  /**
+   * #2404 — settings.json holds a wmux install whose hook set is older than
+   * this build's: some expected hook is missing or outdated. `updateHooks`
+   * (Settings › Update) or a bare `wmux setup-hooks` brings it up to date.
+   */
+  updateAvailable: boolean;
 }
 
 /**
@@ -1178,6 +1341,15 @@ export function statusHooks(paths: SetupHooksPaths): StatusOutcome {
     // offers the way back rather than calling it missing. The old copy encoded
     // "the gate is required" as a string — an answer to a design question that
     // had not been asked yet.
+    // #2390 — PermissionRequest records the dialog, and the permission_prompt
+    // Notification is what raises "needs you". An install from before #2390
+    // has the first and not the second, so the row needs both.
+    permissionPrompt: featureStatus(
+      pluginActive,
+      hasSpec('PermissionRequest') && hasSpec('Notification'),
+      'PermissionRequest + Notification (permission_prompt) → needs you on a permission dialog',
+      `PermissionRequest/Notification:permission_prompt missing → run \`${FIX}\``,
+    ),
     permissionGate: featureStatus(
       pluginActive,
       hasSpec('PreToolUse', PERMISSION_GATE_SPEC.extraArgs),
@@ -1189,12 +1361,16 @@ export function statusHooks(paths: SetupHooksPaths): StatusOutcome {
     ),
   };
 
+  const hookRows = load.corrupted || pluginActive ? [] : hookSetStatus(load.settings).hooks;
+
   return {
     settingsPath: paths.settingsPath,
     settingsExists: load.exists,
     settingsCorrupted: load.corrupted,
     installedEvents,
     profile,
+    hooks: hookRows,
+    updateAvailable: installedEvents.length > 0 && hookRows.some((h) => h.state !== 'ok'),
     bridgeDest: paths.bridgeDest,
     bridgeExists,
     bridgeSource: paths.bridgeSource,
@@ -1307,11 +1483,30 @@ function printStatus(outcome: StatusOutcome, jsonMode: boolean): void {
     ['approval card', outcome.features.approvalCard],
     ['turn-start signal', outcome.features.turnStart],
     ['turn-end signal', outcome.features.turnEnd],
+    ['permission prompt', outcome.features.permissionPrompt],
     ['permission gate', outcome.features.permissionGate],
   ];
   for (const [label, f] of featureRows) {
     const tag = f.state === 'ok' ? 'OK ' : f.state === 'stale' ? 'STALE' : 'OFF';
     console.log(`${label.padEnd(18)} ${tag}  ${f.detail}`);
+  }
+
+  // #2404 — the hook set itself, one line per hook this build expects, so a
+  // hook a newer build added reads as missing instead of hiding behind a
+  // feature row that predates it.
+  if (outcome.hooks.length > 0) {
+    console.log('');
+    console.log(`hooks (${outcome.profile} profile):`);
+    for (const h of outcome.hooks) {
+      const tag = h.state === 'ok' ? 'OK' : h.state === 'outdated' ? 'OUTDATED' : 'MISSING';
+      console.log(`  ${h.label.padEnd(36)} ${tag}`);
+    }
+    if (outcome.updateAvailable) {
+      console.log(
+        'update:   this install is older than the hook set this build expects — run ' +
+          '`wmux setup-hooks` or click Update in Settings › Claude Code › Setup',
+      );
+    }
   }
 
   console.log('');

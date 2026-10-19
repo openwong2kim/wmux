@@ -306,6 +306,8 @@ describe('AutomationEngine — launch & readiness', () => {
     const second = await h.engine.runNow(first.automationId, 'manual');
     expect(second.ok && second.run).toMatchObject({ state: 'skipped', reason: 'overlap' });
     expect(h.created).toHaveLength(1);
+    // Still running: plain overlap, no session note (#2065).
+    expect(second.ok && second.run.detail).toBeUndefined();
   });
 
   it('boot: a run left launching/running is marked unknown and never relaunched', async () => {
@@ -596,6 +598,21 @@ describe('AutomationEngine — review regressions', () => {
     await h.engine.onAgentEvent(`auto-${run.id}`, { kind: 'agent.stop', status: 'complete', decision: 'emit' });
     const second = await h.engine.runNow(run.automationId, 'manual');
     expect(second.ok && second.run).toMatchObject({ state: 'skipped', reason: 'overlap' });
+    expect(h.created).toHaveLength(1);
+    // Finished, only its session lingers: the skip says so (#2065).
+    expect(second.ok && second.run.detail).toBe('previous_session_open');
+  });
+
+  it('an ambiguous run\'s open session is a plain overlap, not one that closes after the linger window', async () => {
+    const h = harness();
+    const run = await startedRun(h);
+    h.engine.onAgentProcessExit(`auto-${run.id}`);
+    h.clock.t += 31_000;
+    await h.engine.monitorOnce();
+    expect(h.engine.listRuns()[0]).toMatchObject({ state: 'unknown', reason: 'process_exit' });
+    const second = await h.engine.runNow(run.automationId, 'manual');
+    expect(second.ok && second.run).toMatchObject({ state: 'skipped', reason: 'overlap' });
+    expect(second.ok && second.run.detail).toBeUndefined();
     expect(h.created).toHaveLength(1);
   });
 

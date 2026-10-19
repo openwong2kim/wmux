@@ -26,6 +26,14 @@ function report(error: string | undefined, t: ReturnType<typeof useT>, modeLabel
   useStore.getState().pushToast({ level: 'error', message: t('schedules.error', { error }) });
 }
 
+/** A run's reason in words; an overlap that only waits on a finished run's
+ *  open session says so (#2065), not "previous run still going". */
+function runReasonLabel(run: AutomationRun, t: ReturnType<typeof useT>): string {
+  if (!run.reason) return '';
+  if (run.reason === 'overlap' && run.detail === 'previous_session_open') return t('schedules.reason.overlap_session_open');
+  return t(`schedules.reason.${run.reason}`);
+}
+
 /**
  * The selected schedule: a header that answers "is it on, and when next" with
  * Run now and Edit beside it, one muted line for what it runs, then its run
@@ -100,7 +108,12 @@ export default function ScheduleDetail({ automation: a, accounts, onEdit, onDisc
             disabled={busy || !api}
             onClick={() => void act(async (x) => {
               const r = await x.runNow(a.id, 'manual');
-              if (r.ok) useStore.getState().pushToast({ level: 'info', message: t('schedules.runNowStarted') });
+              // #2065: a Run now the overlap rule skipped is not a started run.
+              if (r.ok && r.run.state === 'skipped') {
+                useStore.getState().pushToast({ level: 'warn', message: t('schedules.runNowSkipped', { reason: runReasonLabel(r.run, t) }) });
+              } else if (r.ok) {
+                useStore.getState().pushToast({ level: 'info', message: t('schedules.runNowStarted') });
+              }
               return r;
             })}
             data-schedule-test-run
@@ -202,7 +215,7 @@ function RunRow({ run, automation, showingOutput, onToggleOutput, onCancel }: {
   const live = isLiveRun(run);
   const result = [
     runStateLabel(run.state),
-    run.reason ? t(`schedules.reason.${run.reason}`) : '',
+    runReasonLabel(run, t),
     run.trigger === 'test' ? t('schedules.triggerTest') : run.trigger === 'manual' ? t('schedules.triggerManual') : '',
   ].filter(Boolean).join(' · ');
   return (
@@ -229,6 +242,11 @@ function RunRow({ run, automation, showingOutput, onToggleOutput, onCancel }: {
       {run.reason === 'first_run_blocked' && (
         <p className="ui-note px-[14px] pb-3" data-run-first-run-hint>
           {t('schedules.firstRunBlockedHint', { agent: agentLabel(automation.action.agent) })}
+        </p>
+      )}
+      {run.detail === 'previous_session_open' && (
+        <p className="ui-note px-[14px] pb-3" data-run-session-open-hint>
+          {t('schedules.detail.previous_session_open', { minutes: AUTOMATION_DEFAULTS.completionLingerMinutes })}
         </p>
       )}
       {(run.detail === 'browser_needs_consent' || run.detail === 'browser_policy_denied'

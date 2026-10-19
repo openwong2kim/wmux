@@ -1,7 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import {
   classifyReapIdentity,
+  dmtfToUtcMicros,
+  fileTimeToUtcMicros,
   isPhantomExit,
+  sameProcessStartTime,
   isPidAlive,
   isSameBootProven,
   mayReap,
@@ -106,9 +109,17 @@ describe('classifyReapIdentity', () => {
     expect(
       classifyReapIdentity({ storedStartTime: undefined, currentStartTime: T1, looksLikeOurShell: true }),
     ).toBe('heuristic');
+  });
+
+  it('an unreadable process never passes the heuristic, even when its executable matched (#2416)', () => {
+    // The two reads behind a reap can disagree: the start-time read fails and
+    // the executable read succeeds. Unknown must not authorize a kill.
     expect(
       classifyReapIdentity({ storedStartTime: null, currentStartTime: null, looksLikeOurShell: true }),
-    ).toBe('heuristic');
+    ).toBe('unconfirmed');
+    expect(
+      classifyReapIdentity({ currentCreatedAtFt: null, looksLikeOurShell: true }),
+    ).toBe('unconfirmed');
   });
 
   it('no recorded time and not our shell means no evidence at all', () => {
@@ -121,6 +132,130 @@ describe('classifyReapIdentity', () => {
     expect(mayReap('start-time')).toBe(true);
     expect(mayReap('heuristic')).toBe(true);
     expect(mayReap('unconfirmed')).toBe(false);
+  });
+
+  it('a pid the OS reports gone is neither a kill nor a refusal', () => {
+    // An exited pid used to read as "unknown" and was logged as an
+    // unconfirmed identity, inflating the refusal count.
+    expect(
+      classifyReapIdentity({ storedCreatedAtFt: '134296036801234567', currentCreatedAtFt: null, currentGone: true, looksLikeOurShell: false }),
+    ).toBe('gone');
+    expect(
+      classifyReapIdentity({ storedStartTime: T1, currentStartTime: null, currentGone: true, looksLikeOurShell: false }),
+    ).toBe('gone');
+    expect(classifyReapIdentity({ currentGone: true, looksLikeOurShell: false })).toBe('gone');
+    expect(mayReap('gone')).toBe(false);
+  });
+});
+
+// #2398: Windows records the FILETIME read natively. Records written before
+// that hold a DMTF string, which must keep authorizing against a FILETIME.
+describe('classifyReapIdentity with a native FILETIME', () => {
+  // 2026-07-27T05:28:00.1234567Z
+  const FT = 134296036801234567n;
+  const OTHER_FT = FT + 10_000_000n;
+
+  it('a stored FILETIME equal to the current one is proof', () => {
+    expect(
+      classifyReapIdentity({ storedCreatedAtFt: FT.toString(), currentCreatedAtFt: FT, looksLikeOurShell: false }),
+    ).toBe('start-time');
+  });
+
+  it('a stored FILETIME that differs refuses, even when the executable looks like our shell', () => {
+    expect(
+      classifyReapIdentity({ storedCreatedAtFt: FT.toString(), currentCreatedAtFt: OTHER_FT, looksLikeOurShell: true }),
+    ).toBe('unconfirmed');
+    // Exact: 100 ns apart is another process.
+    expect(
+      classifyReapIdentity({ storedCreatedAtFt: FT.toString(), currentCreatedAtFt: FT + 1n, looksLikeOurShell: true }),
+    ).toBe('unconfirmed');
+  });
+
+  it('a stored FILETIME wins over a legacy DMTF on the same record', () => {
+    expect(
+      classifyReapIdentity({
+        storedCreatedAtFt: OTHER_FT.toString(),
+        storedStartTime: '20260727142800.123456+540',
+        currentCreatedAtFt: FT,
+        looksLikeOurShell: true,
+      }),
+    ).toBe('unconfirmed');
+  });
+
+  it('a legacy DMTF in the same offset matches the FILETIME truncated to microseconds', () => {
+    expect(
+      classifyReapIdentity({ storedStartTime: '20260727142800.123456+540', currentCreatedAtFt: FT, looksLikeOurShell: false }),
+    ).toBe('start-time');
+    expect(
+      classifyReapIdentity({ storedStartTime: '20260727142800.123457+540', currentCreatedAtFt: FT, looksLikeOurShell: true }),
+    ).toBe('unconfirmed');
+  });
+
+  it('a legacy DMTF written under another (DST) offset still matches the same instant', () => {
+    // Pacific daylight time: 22:28 the day before, seven hours behind UTC.
+    expect(
+      classifyReapIdentity({ storedStartTime: '20260726222800.123456-420', currentCreatedAtFt: FT, looksLikeOurShell: false }),
+    ).toBe('start-time');
+    // The same wall-clock time under standard time is an hour later in UTC.
+    expect(
+      classifyReapIdentity({ storedStartTime: '20260726222800.123456-480', currentCreatedAtFt: FT, looksLikeOurShell: true }),
+    ).toBe('unconfirmed');
+  });
+
+  it('a stored value that is not DMTF never matches a FILETIME', () => {
+    expect(
+      classifyReapIdentity({ storedStartTime: 'Mon Jul 27 14:28:00 2026', currentCreatedAtFt: FT, looksLikeOurShell: true }),
+    ).toBe('unconfirmed');
+  });
+
+  it('nothing stored falls back to the executable-name heuristic', () => {
+    expect(classifyReapIdentity({ currentCreatedAtFt: FT, looksLikeOurShell: true })).toBe('heuristic');
+    expect(classifyReapIdentity({ currentCreatedAtFt: FT, looksLikeOurShell: false })).toBe('unconfirmed');
+  });
+
+  it('an unreadable current FILETIME never counts as a match', () => {
+    expect(
+      classifyReapIdentity({ storedCreatedAtFt: FT.toString(), currentCreatedAtFt: null, looksLikeOurShell: true }),
+    ).toBe('unconfirmed');
+    expect(
+      classifyReapIdentity({ storedStartTime: '20260727142800.123456+540', currentCreatedAtFt: null, looksLikeOurShell: true }),
+    ).toBe('unconfirmed');
+  });
+});
+
+describe('sameProcessStartTime', () => {
+  it('equal readings match, whatever their format', () => {
+    expect(sameProcessStartTime('134296036801234567', '134296036801234567')).toBe(true);
+    expect(sameProcessStartTime('Mon Jul 27 14:28:00 2026', 'Mon Jul 27 14:28:00 2026')).toBe(true);
+  });
+
+  it('a stored DMTF matches the FILETIME of the same instant, and only that one', () => {
+    expect(sameProcessStartTime('20260727142800.123456+540', '134296036801234567')).toBe(true);
+    expect(sameProcessStartTime('20260726222800.123456-420', '134296036801234567')).toBe(true);
+    expect(sameProcessStartTime('20260727142800.123457+540', '134296036801234567')).toBe(false);
+  });
+
+  it('nothing else matches', () => {
+    expect(sameProcessStartTime('134296036801234567', '134296036801234568')).toBe(false);
+    expect(sameProcessStartTime('20260727142800.123456+540', null)).toBe(false);
+    expect(sameProcessStartTime('20260727142800.123456+540', 'Mon Jul 27 14:28:00 2026')).toBe(false);
+    expect(sameProcessStartTime('Mon Jul 27 14:28:00 2026', '134296036801234567')).toBe(false);
+  });
+});
+
+describe('DMTF and FILETIME normalization', () => {
+  it('reduces both to UTC microseconds', () => {
+    const us = BigInt(Date.UTC(2026, 6, 27, 5, 28, 0)) * 1000n + 123456n;
+    expect(fileTimeToUtcMicros(134296036801234567n)).toBe(us);
+    expect(dmtfToUtcMicros('20260727142800.123456+540')).toBe(us);
+    expect(dmtfToUtcMicros('20260727052800.123456+000')).toBe(us);
+    expect(dmtfToUtcMicros('20260726222800.123456-420')).toBe(us);
+  });
+
+  it('is null for anything that is not DMTF', () => {
+    expect(dmtfToUtcMicros('')).toBeNull();
+    expect(dmtfToUtcMicros('134296036801234567')).toBeNull();
+    expect(dmtfToUtcMicros('20260727142800+540')).toBeNull();
   });
 });
 

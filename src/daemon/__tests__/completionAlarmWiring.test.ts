@@ -52,8 +52,9 @@ describe('CompletionAlarm daemon wiring', () => {
     expect(body).toMatch(/meta\.lastDetectedAgent/);
     // A resize repaint is not work: the alarm feed must skip
     // likelyRepaint-flagged bursts (a refit rebutting a pending completion
-    // window would silently kill a real alarm) while the loose status-dot
-    // broadcast below the guard keeps running.
+    // window would silently kill a real alarm). The bridge flags only a
+    // hook-armed cycle in a still-open turn; its status-dot broadcast below
+    // the guard still goes out.
     const feedIdx = body.indexOf('notePaneWorking(');
     const repaintGuardIdx = body.indexOf('likelyRepaint');
     expect(repaintGuardIdx).toBeGreaterThan(-1);

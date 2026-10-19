@@ -20,7 +20,7 @@ beforeEach(() => {
   useStore.setState({
     commandPaletteVisible: false, fleetViewVisible: false, settingsPanelVisible: false,
     schedulesViewOpen: false, appRoute: 'workspaces', schedulesAvailable: true, readOnly: false, sidebarVisible: true,
-    moa: null,
+    moa: null, roomStatus: { running: true, enabled: true, hqWorkspaceId: null },
   });
 });
 afterEach(() => {
@@ -42,6 +42,33 @@ describe('sidebar icon rail', () => {
     for (const b of rail().querySelectorAll('button')) {
       expect(b.getAttribute('aria-label')?.length, b.outerHTML).toBeGreaterThan(0);
     }
+  });
+
+  it('lists Bots only while the bots are on, appearing and going without a restart', async () => {
+    act(() => useStore.setState({ roomStatus: { running: false, enabled: false, hqWorkspaceId: null } }));
+    await act(async () => root.render(<MiniSidebar rail collapsed={false} />));
+    expect(navIds()).toEqual(['home', 'fleet', 'schedules', 'remote', 'git']);
+    // Settings › Bots' switch writes the setting and re-reads this status.
+    act(() => useStore.setState({ roomStatus: { running: true, enabled: true, hqWorkspaceId: null } }));
+    expect(navIds()).toEqual(['home', 'bots', 'fleet', 'schedules', 'remote', 'git']);
+    act(() => useStore.setState({ roomStatus: { running: false, enabled: false, hqWorkspaceId: null } }));
+    expect(navIds()).toEqual(['home', 'fleet', 'schedules', 'remote', 'git']);
+    // No status read yet (or no bot runtime): not listed either.
+    act(() => useStore.setState({ roomStatus: null }));
+    expect(navIds()).toEqual(['home', 'fleet', 'schedules', 'remote', 'git']);
+  });
+
+  it('the Bots shortcut and palette command open Settings › Bots while the bots are off', () => {
+    act(() => useStore.setState({ roomStatus: { running: false, enabled: false, hqWorkspaceId: null }, settingsInitialTab: null }));
+    act(() => useStore.getState().toggleBotsView());
+    expect(useStore.getState().appRoute).toBe('settings');
+    expect(useStore.getState().settingsInitialTab).toBe('factory');
+    act(() => useStore.getState().setAppRoute('workspaces'));
+    act(() => useStore.setState({ roomStatus: { running: true, enabled: true, hqWorkspaceId: null } }));
+    act(() => useStore.getState().openBotsPage());
+    expect(useStore.getState().appRoute).toBe('bots');
+    act(() => useStore.getState().toggleBotsView());
+    expect(useStore.getState().appRoute).toBe('workspaces');
   });
 
   it('Git opens its page and carries a red dot only while a PR fails its checks or conflicts', async () => {

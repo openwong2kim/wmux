@@ -8,6 +8,7 @@ import http from 'node:http';
 import https from 'node:https';
 import crypto from 'node:crypto';
 import { createTlsTestFixture, findOpenSsl } from './tlsTestFixture';
+import { deliberateSleep } from '../../../test-utils/waitFor';
 
 /**
  * #596 regression — `wmux web` must survive a daemon restart.
@@ -314,7 +315,7 @@ async function killDaemon(child: ChildProcess): Promise<void> {
     const index = spawned.indexOf(child);
     if (index >= 0) spawned.splice(index, 1);
   }
-  await sleep(1500);
+  await deliberateSleep(1500, 'not yet converted (#2363): lets the killed daemon release its pipe; nothing polled');
 }
 
 /**

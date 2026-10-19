@@ -279,6 +279,8 @@ export interface TranscriptAppendData {
 export type ChatSendResult = 'sent' | 'busy' | 'blocked' | 'unconfirmed' | 'session_changed' | 'unavailable' | 'error';
 /** `sent` means ESC reached the agent, not that the turn stopped; the transcript says that. */
 export type ChatInterruptResult = 'sent' | 'not_running' | 'blocked' | 'session_changed' | 'unavailable' | 'error';
+/** Opening Claude's Rewind picker in a terminal pane: `draft` = the composer holds text, `retry` = the two ESCs could not be sent close enough together. */
+export type ClaudeRewindResult = 'opened' | 'busy' | 'draft' | 'blocked' | 'retry' | 'unavailable' | 'error';
 /** A staged composer image, validated and thumbnailed by main. */
 export type ChatAttachmentPreview = { ok: true; path: string; name: string; bytes: number; thumbnail: string } | { ok: false; reason: 'type' | 'size' | 'missing' };
 
@@ -300,6 +302,8 @@ export interface ChatBridgeApi {
   }>;
   /** ESC into the live terminal agent, only while its turn is running. */
   interrupt?: (args: { ptyId: string; agentSessionId: string }) => Promise<{ result: ChatInterruptResult }>;
+  /** Double ESC into an idle Claude with an empty composer: opens its own Rewind picker. */
+  rewind?: (args: { ptyId: string; kitty?: boolean }) => Promise<{ result: ClaudeRewindResult }>;
   attachment?: (args: { path: string }) => Promise<ChatAttachmentPreview>;
   status: (ptyId: string) => Promise<TranscriptStatus>;
   /** `before` pages BACKWARD from a prior cursor.headOffset; omit for the tail. */

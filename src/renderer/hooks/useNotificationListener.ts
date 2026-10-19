@@ -22,6 +22,9 @@ import { normalizeWorktreePath } from '../../shared/workTask';
 import { isBrainPtyId } from '../../shared/constants';
 import type { AppRoute } from '../stores/slices/uiSlice';
 import { showWorkspaces as revealWorkspaces } from '../utils/showWorkspaces';
+import { selectBotTaskOwners } from '../components/Sidebar/botTasks';
+import type { FanoutOrigin } from '../../shared/fanoutOrigin';
+import type { BotsWorkerPanel } from '../stores/slices/roomSlice';
 import { notePanePr } from './fanoutCallerNudge';
 
 /**
@@ -168,6 +171,24 @@ export interface FocusTargetState {
    */
   appRoute?: AppRoute;
   setAppRoute?: (route: AppRoute) => void;
+  /**
+   * On the Bots page a bot's worker is shown in the page's own worker panel
+   * (DESIGN.md › Bots › Worker panel), never by leaving for Workspaces.
+   * Optional like the fields above: without them a jump reveals Workspaces.
+   */
+  fanoutOrigin?: Readonly<Record<string, FanoutOrigin | undefined>>;
+  setBotsWorkerPanel?: (panel: BotsWorkerPanel | null) => void;
+}
+
+/** On the Bots page, show a bot worker's workspace in the page's worker
+ *  panel (beside its bot's chat) instead of leaving the page. True when it
+ *  did. */
+function showInBotsPanel(state: FocusTargetState, workspaceId: string): boolean {
+  if (state.appRoute !== 'bots' || !state.setBotsWorkerPanel) return false;
+  const botId = selectBotTaskOwners({ workspaces: state.workspaces, fanoutOrigin: state.fanoutOrigin })[workspaceId];
+  if (!botId) return false;
+  state.setBotsWorkerPanel({ workspaceId, conversationId: `bot:${botId}` });
+  return true;
 }
 
 /**
@@ -231,8 +252,30 @@ export function activatePaneTarget(
 export function focusNotificationTarget(
   getState: () => FocusTargetState,
   payload: { ptyId?: string | null; workspaceId?: string | null; surfaceId?: string | null },
+  /** `reveal`: go to Workspaces even for a bot's worker on the Bots page
+   *  (its panel's Open in Workspaces). */
+  opts: { reveal?: boolean } = {},
 ): boolean {
   const state = getState();
+  const keepBots = (workspaceId: string): boolean => !opts.reveal && showInBotsPanel(state, workspaceId);
+  // The Bots panel shows the worker's workspace as it is: the jump brings
+  // the target tab forward there and reads its notifications, as a jump on
+  // Workspaces does, without making that workspace the active one.
+  const showSurfaceInBots = (workspaceId: string, paneId: string, surfaceId: string, stashed = false): boolean => {
+    if (!keepBots(workspaceId)) return false;
+    if (stashed) state.unstashPane?.(paneId, workspaceId);
+    const fresh = getState();
+    fresh.setActiveSurface(paneId, surfaceId, workspaceId);
+    let markedAny = false;
+    for (const n of fresh.notifications) {
+      if (!n.read && n.surfaceId !== undefined && n.surfaceId === surfaceId) {
+        fresh.markRead(n.id);
+        markedAny = true;
+      }
+    }
+    if (markedAny) fresh.setPaneNotificationRing(paneId, null);
+    return true;
+  };
   const showWorkspaces = (): void => revealWorkspaces(state);
   // Shared tail of both resolver branches: jump (workspace + pane +
   // surface + zoom coherence), then mark this surface's unread
@@ -264,6 +307,7 @@ export function focusNotificationTarget(
     for (const ws of state.workspaces) {
       const found = findWorkspaceSurfaceByPtyId(ws, payload.ptyId);
       if (!found) continue;
+      if (showSurfaceInBots(ws.id, found.paneId, found.surfaceId, found.stashed)) return true;
       jumpToSurface(ws.id, found.paneId, found.surfaceId, found.stashed);
       return true;
     }
@@ -274,12 +318,14 @@ export function focusNotificationTarget(
     for (const ws of state.workspaces) {
       const found = findWorkspaceSurfaceById(ws, payload.surfaceId);
       if (!found) continue;
+      if (showSurfaceInBots(ws.id, found.paneId, payload.surfaceId, found.stashed)) return true;
       jumpToSurface(ws.id, found.paneId, payload.surfaceId, found.stashed);
       return true;
     }
   }
   if (payload.workspaceId) {
     const ws = state.workspaces.find((w) => w.id === payload.workspaceId);
+    if (ws && keepBots(ws.id)) return true;
     if (ws) {
       // #1086, same reason as activatePaneTarget above: while a remote mirror
       // is on screen `activeWorkspaceId` already equals the target, so a bare
@@ -421,6 +467,16 @@ export function createNotificationHandler(deps: NotificationHandlerDeps) {
       windowFocused: deps.isWindowFocused(),
       isActiveSurface: isActive,
       isMutedWorkspace: ws?.metadata?.notificationsMuted === true,
+      // Only a notification the pane itself sent: one without a ptyId is
+      // resolved onto the workspace's ACTIVE pane, and muting that pane must
+      // not silence workspace-level events (`wmux notify`, MCP notify).
+      isMutedPane: !!(
+        ws &&
+        ptyId &&
+        getWorkspaceLeafPanes(ws).some(
+          (l) => l.notificationsMuted === true && l.surfaces.some((s) => s.ptyId === ptyId),
+        )
+      ),
       mutedCategories: state.mutedNotificationCategories,
       paneId: target.paneId ?? null,
       settings: {

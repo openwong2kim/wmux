@@ -10,8 +10,9 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ReplSession, buildReplChildEnv } from '../ReplSession';
+import { deliberateSleep } from '../../../test-utils/waitFor';
 
 const live: ReplSession[] = [];
 
@@ -159,8 +160,7 @@ describe('ReplSession timeouts', () => {
     expect(outcome.ok).toBe(false);
     expect(outcome.fatal).toContain('killed');
     expect(session.dead).toBe(true);
-    await new Promise((r) => setTimeout(r, 200));
-    expect(isAlive(pid)).toBe(false);
+    await vi.waitFor(() => expect(isAlive(pid)).toBe(false), { timeout: 10_000 });
   }, 20_000);
 
   it('reports the child exiting on its own rather than hanging', async () => {
@@ -176,7 +176,7 @@ describe('ReplSession timeouts', () => {
     // Fire well after this run's output drain, so the throw lands between evals
     // and the next run is the one that must surface it.
     await session.run('setTimeout(() => { throw new Error("late boom"); }, 250);', 5000);
-    await new Promise((r) => setTimeout(r, 500));
+    await deliberateSleep(500, 'real timer: the child\'s 250ms timer must fire between runs');
     const after = await session.run('"still running"', 5000);
     expect(session.dead).toBe(false);
     expect(after.ok).toBe(true);
@@ -258,7 +258,7 @@ describe('ReplSession result integrity (review panel findings)', () => {
   it('labels output left over from an earlier run as background', async () => {
     const session = makeSession();
     await session.run('setTimeout(() => console.log("from the past"), 250);', 5000);
-    await new Promise((r) => setTimeout(r, 500));
+    await deliberateSleep(500, 'real timer: the child\'s 250ms timer must fire between runs');
     const outcome = await session.run('console.log("mine"); 1', 5000);
     expect(outcome.background).toContain('from the past');
     expect(outcome.stdout.text).toContain('mine');
@@ -355,7 +355,6 @@ describe('ReplSession isolation', () => {
     // Close the channel WITHOUT killing the child, which is what a SIGKILLed
     // parent looks like from the child's side.
     (session as unknown as { child: { disconnect(): void } }).child.disconnect();
-    await new Promise((r) => setTimeout(r, 500));
-    expect(isAlive(pid)).toBe(false);
+    await vi.waitFor(() => expect(isAlive(pid)).toBe(false), { timeout: 10_000 });
   }, 20_000);
 });

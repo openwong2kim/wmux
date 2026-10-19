@@ -87,6 +87,17 @@ describe('release.yml server artifacts', () => {
     }
   });
 
+  // #2398: node-pty 1.2 ships Linux prebuilds, which npm ci uses instead of
+  // compiling; stageNodePty needs the build against this image's glibc.
+  it('rebuilds node-pty from source in the image after npm ci', () => {
+    const wrapper = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'build-server-artifact-container.sh'), 'utf8').replace(/\r\n/g, '\n');
+    const ci = wrapper.indexOf('npm ci --no-audit --no-fund');
+    const rebuild = wrapper.indexOf('npm_config_build_from_source=true npm rebuild node-pty');
+    expect(ci).toBeGreaterThan(0);
+    expect(rebuild).toBeGreaterThan(ci);
+    expect(rebuild).toBeLessThan(wrapper.indexOf('node scripts/build-server-artifact.mjs build'));
+  });
+
   it('writes the manifest before every app is packaged, and checks it shipped', () => {
     expect(job('build')).toMatch(/\n {4}needs: server\n/);
     for (const name of ['macos', 'linux']) expect(job(name)).toMatch(/\n {4}needs: \[server, build\]\n/);

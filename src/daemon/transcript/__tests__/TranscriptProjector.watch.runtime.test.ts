@@ -11,6 +11,7 @@ import { TranscriptProjector } from '../TranscriptProjector';
 import type { ResumeBinding } from '../../../shared/agentResume';
 import type { TranscriptAppendData } from '../../../shared/transcript/turnEvents';
 import { shortPathOf } from '../../../test-utils/shortPath';
+import { deliberateSleep } from '../../../test-utils/waitFor';
 
 let root: string;
 let dir: string;
@@ -70,7 +71,7 @@ describe('fs.watch — append', () => {
     fs.appendFileSync(file, entry('e-2', 'second line'));
     fs.appendFileSync(file, entry('e-3', 'third line'));
     await waitFor(() => appends.length === 2);
-    await delay(120);
+    await deliberateSleep(120, 'negative: writes inside one debounce window add no extra append');
 
     expect(appends).toHaveLength(2);
     const delta = appends[1].data;
@@ -90,7 +91,7 @@ describe('fs.watch — append', () => {
     await waitFor(() => appends.length === 1);
 
     fs.writeFileSync(path.join(dir, 'other-session.jsonl'), entry('x-1', 'not ours'), 'utf8');
-    await delay(200);
+    await deliberateSleep(200, 'negative: another session\'s file adds nothing');
     expect(appends).toHaveLength(1);
   });
 
@@ -100,7 +101,7 @@ describe('fs.watch — append', () => {
     projector.unsubscribe('c1', 'pty-1');
 
     fs.appendFileSync(file, entry('e-2', 'after unsubscribe'));
-    await delay(200);
+    await deliberateSleep(200, 'negative: nothing is projected after unsubscribe');
     expect(appends).toHaveLength(1);
   });
 });
@@ -146,7 +147,7 @@ describe('fs.watch — truncation and rotation', () => {
     const seenBefore = appends.length;
 
     fs.rmSync(file);
-    await delay(120);
+    await deliberateSleep(120, 'negative: a removed file yields no append');
     // A missing file yields nothing — never a throw and never a bogus append.
     expect(appends).toHaveLength(seenBefore);
 
@@ -229,7 +230,7 @@ describe('polling fallback', () => {
 
     fs.mkdirSync(path.dirname(nested), { recursive: true });
     fs.writeFileSync(nested, entry('p-2', 'nobody is listening'), 'utf8');
-    await delay(150);
+    await deliberateSleep(150, 'negative: nobody is listening, so nothing is projected');
     expect(appends).toHaveLength(0);
   });
 });

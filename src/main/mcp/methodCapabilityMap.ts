@@ -629,6 +629,8 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
   'botSecret.request':   { capability: 'wmux.internal' },
   'botSecret.list':      { capability: 'wmux.internal' },
   'botLogin.request':    { capability: 'wmux.internal' },
+  'skill.propose':       { capability: 'wmux.internal' },
+  'skill.read':          { capability: 'wmux.internal' },
 
   // --- Task lifecycle (pipe/handlers/worktask.rpc.ts) ---
   // The reads answer "what did this task produce"; the writes run the task's
@@ -646,6 +648,8 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
   // A worker publishing its own task branch (pipe/handlers/taskPush.rpc.ts):
   // the caller's pane decides the task, main decides branch and remote.
   'task.push':        { capability: 'task.write', riskClass: 'a2a' },
+  // Main fetching origin into that task's repository (same handler file).
+  'task.fetch':       { capability: 'task.write', riskClass: 'a2a' },
   'task.git.status':  { capability: 'task.read',  riskClass: 'a2a' },
   'task.git.log':     { capability: 'task.read',  riskClass: 'a2a' },
   'task.gh.prView':   { capability: 'task.read',  riskClass: 'a2a' },

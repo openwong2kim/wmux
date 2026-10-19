@@ -158,6 +158,18 @@ describe('CompletionAlarm', () => {
     expect(confirmed).toHaveLength(1);
   });
 
+  it('a stop with leftover background work keeps a firm attention window, like any working cue', () => {
+    expect(alarm.observe('p1', 'claude', FIRM_ATTENTION)).toBe('hold');
+    expect(alarm.observe('p1', 'claude', { class: 'stop', child: false, leftoverWork: 1 })).toBe('drop');
+    vi.advanceTimersByTime(DEFAULT_ALARM_WINDOW_MS);
+    expect(confirmed.map((c) => c.cls)).toEqual(['attention']);
+    // A detector-only (not firm) attention window is still rebutted by it.
+    expect(alarm.observe('p2', 'claude', ATTENTION)).toBe('hold');
+    expect(alarm.observe('p2', 'claude', { class: 'stop', child: false, leftoverWork: 1 })).toBe('drop');
+    vi.advanceTimersByTime(DEFAULT_ALARM_WINDOW_MS);
+    expect(confirmed).toHaveLength(1);
+  });
+
   it('an interrupted stop settles the turn without announcing it', () => {
     alarm.observe('p1', 'claude', WORKING);
     // The detector saw the screen go quiet after Esc and opened a window...

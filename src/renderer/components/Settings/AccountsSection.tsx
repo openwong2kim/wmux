@@ -1,18 +1,22 @@
-import { useState, useEffect, useCallback, useSyncExternalStore } from 'react';
+import { useState, useEffect, useCallback, useRef, useSyncExternalStore, type CSSProperties } from 'react';
 import type { Account } from '../../../main/account/accountStore';
 import type { CredentialStatus } from '../../../main/ipc/handlers/account.handler';
 import type { AccountUsageEntry } from '../../../main/account/AccountUsageService';
+import { accountGroupOf, groupAccounts, MAX_ACCOUNT_GROUP_CHARS } from '../../../shared/accountGroup';
 import { t } from '../../i18n';
 import { useT } from '../../hooks/useT';
-import { FOCUS_RING } from '../focusRing';
-import { IconRefresh, IconX } from '../icons';
 import Badge from '../ui/Badge';
 import Button from '../ui/Button';
 import Checkbox from '../ui/Checkbox';
+import Dialog, { DialogBody, DialogFooter, DialogHeader } from '../ui/Dialog';
+import Field from '../ui/Field';
 import Input from '../ui/Input';
 import SegmentedControl from '../ui/SegmentedControl';
-import { SettingsSection } from './SettingsLayout';
+import Select from '../ui/Select';
+import { SettingsSection, useOwnedDialog } from './SettingsLayout';
 import { AccountRotationControls, RotationQuotaBit, useAccountRotation } from './AccountRotationControls';
+import RemoteRowMenu, { type RemoteRowMenuItem } from '../Remote/RemoteRowMenu';
+import { useStore } from '../../stores';
 import {
   startAccountLogin,
   checkAccountLoginAgain,
@@ -48,22 +52,10 @@ function pctColor(pct: number): string {
   return pct >= 80 ? 'var(--accent-yellow)' : 'var(--text-sub)';
 }
 
-function UsageBit({ entry, onRefresh }: {
-  entry: AccountUsageEntry | undefined;
-  onRefresh: () => void;
-}): React.ReactElement {
+/** The account's last usage reading; Refresh lives in the row's ⋯ menu. */
+function UsageBit({ entry }: { entry: AccountUsageEntry | undefined }): React.ReactElement | null {
   const t = useT();
-  const refreshBtn = (
-    <Button
-      variant="icon"
-      onClick={onRefresh}
-      title={t('accounts.refreshUsageTitle')}
-      aria-label={t('accounts.refreshUsageTitle')}
-    >
-      <IconRefresh size={12} />
-    </Button>
-  );
-  if (!entry) return refreshBtn;
+  if (!entry) return null;
   if (entry.status === 'ok' && entry.snapshot) {
     const s = entry.snapshot;
     return (
@@ -72,7 +64,6 @@ function UsageBit({ entry, onRefresh }: {
         <span className="text-[var(--text-subtle)]">·</span>
         <span style={{ color: pctColor(s.weeklyPct) }}>7d {s.weeklyPct}%</span>
         <span className="text-[var(--text-subtle)]" title={t('accounts.updatedTitle', { age: fmtAge(entry.fetchedAtMs) })}>· {fmtAge(entry.fetchedAtMs)}</span>
-        {refreshBtn}
       </span>
     );
   }
@@ -87,7 +78,6 @@ function UsageBit({ entry, onRefresh }: {
         <span title={t('accounts.lastKnownTitle')}>5h {entry.snapshot.sessionPct}% · 7d {entry.snapshot.weeklyPct}% ({t('accounts.stale')})</span>
       )}
       {reason && <span>{reason}</span>}
-      {refreshBtn}
     </span>
   );
 }
@@ -100,18 +90,31 @@ function UsageBit({ entry, onRefresh }: {
 // commits the account once login lands. wmux never touches the OAuth flow
 // itself. Hidden entirely when the preload doesn't expose accounts.
 
-function statusBadge(status: CredentialStatus): React.ReactElement {
-  if (status.loggedIn) {
+/** One element says the login state: the tier while logged in, "Log in
+ *  again" while logged out or expired, the logged-out badge while a login
+ *  for it is already open. */
+function LoginState({ row, expired, pending }: { row: AccountRow; expired: boolean; pending: boolean }): React.ReactElement {
+  if (row.status.loggedIn && !expired) {
     return (
       <Badge tone="success" className="shrink-0">
-        {status.subscriptionType ? status.subscriptionType : t('accounts.loggedIn')}
+        {row.status.subscriptionType ? row.status.subscriptionType : t('accounts.loggedIn')}
       </Badge>
     );
   }
+  if (pending) return <Badge tone="danger" className="shrink-0">{t('accounts.loggedOut')}</Badge>;
   return (
-    <Badge tone="danger" className="shrink-0">
-      {t('accounts.loggedOut')}
-    </Badge>
+    <Button
+      variant="secondary"
+      size="sm"
+      className="shrink-0"
+      onClick={() => {
+        void startAccountLogin({
+          vendor: row.vendor, name: row.name, configDir: row.configDir, loginCommand: row.loginCommand, accountId: row.id,
+        });
+      }}
+    >
+      {t('accounts.loginAgain')}
+    </Button>
   );
 }
 
@@ -143,8 +146,8 @@ function PendingLoginRow({ entry }: { entry: PendingLogin }): React.ReactElement
     <div className="settings-row" data-account-login={entry.configDir}>
       <div className="flex flex-col gap-2">
         <div className="flex items-center gap-2 text-[13px] text-[var(--text-main)]">
-          {/* Amber = alive: the one live wait on this surface. */}
-          {waiting && <span className="inline-block w-2 h-2 rounded-full animate-pulse shrink-0" style={{ background: 'var(--accent-amber)' }} />}
+          {/* The accent = alive: the one live wait on this surface. */}
+          {waiting && <span className="inline-block w-2 h-2 rounded-full animate-pulse shrink-0" style={{ background: 'var(--accent)' }} />}
           {waiting
             ? t('accounts.waitingForLoginNamed', { name: entry.name })
             : failed
@@ -173,10 +176,65 @@ function PendingLoginRow({ entry }: { entry: PendingLogin }): React.ReactElement
   );
 }
 
-function AddAccountWizard({ onDone, onCancel }: { onDone: () => void; onCancel: () => void }): React.ReactElement {
+/** The picker option that swaps it for a name field; a group name cannot hold a control character. */
+const NEW_GROUP = '\u0000new';
+
+/** A group: an existing one, none, or a new name typed in place. */
+function GroupPicker({ value, groups, onSet }: {
+  value: string;
+  groups: string[];
+  onSet: (group: string) => void;
+}): React.ReactElement {
+  const t = useT();
+  const [typing, setTyping] = useState(false);
+  const [draft, setDraft] = useState('');
+  const label = t('accounts.groupLabel');
+  if (typing) {
+    const commit = () => {
+      setTyping(false);
+      if (draft.trim()) onSet(draft.trim());
+    };
+    return (
+      <Input
+        className="settings-input shrink-0 w-[140px]"
+        aria-label={label}
+        placeholder={t('accounts.groupPlaceholder')}
+        maxLength={MAX_ACCOUNT_GROUP_CHARS}
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={(e) => {
+          // Enter that ends an IME composition is not a commit (some IMEs send it as keyCode 229).
+          if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+          if (e.key === 'Enter') commit();
+          if (e.key === 'Escape') setTyping(false);
+        }}
+        onBlur={commit}
+        autoFocus
+      />
+    );
+  }
+  return (
+    <Select
+      className="settings-select shrink-0"
+      aria-label={label}
+      data-account-group-picker
+      value={value}
+      onChange={(e) => {
+        if (e.target.value === NEW_GROUP) { setDraft(''); setTyping(true); } else onSet(e.target.value);
+      }}
+    >
+      <option value="">{t('accounts.noGroup')}</option>
+      {[...new Set([...groups, value].filter(Boolean))].map((g) => <option key={g} value={g}>{g}</option>)}
+      <option value={NEW_GROUP}>{t('accounts.newGroup')}</option>
+    </Select>
+  );
+}
+
+function AddAccountWizard({ groups, onDone, onCancel }: { groups: string[]; onDone: () => void; onCancel: () => void }): React.ReactElement {
   const t = useT();
   const [vendor, setVendor] = useState<Vendor>('claude');
   const [name, setName] = useState('');
+  const [group, setGroup] = useState('');
   const [share, setShare] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -191,13 +249,13 @@ function AddAccountWizard({ onDone, onCancel }: { onDone: () => void; onCancel: 
       const res = await api.onboardPrepare({ vendor, share });
       // Opens the login tab, closes Settings and watches for the login; the
       // account is registered once the credential shows up.
-      await startAccountLogin({ vendor, name: name.trim(), configDir: res.configDir, loginCommand: res.loginCommand });
+      await startAccountLogin({ vendor, name: name.trim(), configDir: res.configDir, loginCommand: res.loginCommand, group: group || undefined });
       onDone();
     } catch (e) {
       setError(String((e as { message?: string })?.message ?? e));
       setBusy(false);
     }
-  }, [vendor, name, share, onDone, t]);
+  }, [vendor, name, group, share, onDone, t]);
 
   return (
     <div className="settings-row" data-account-wizard>
@@ -219,6 +277,9 @@ function AddAccountWizard({ onDone, onCancel }: { onDone: () => void; onCancel: 
           onChange={(e) => setName(e.target.value)}
           autoFocus
         />
+        <Field label={t('accounts.groupLabel')} description={t('accounts.groupHint')}>
+          <GroupPicker value={group} groups={groups} onSet={setGroup} />
+        </Field>
         <label className="flex items-center gap-2 text-[13px] text-[var(--text-main)] cursor-pointer">
           <Checkbox checked={share} onCheckedChange={setShare} aria-label={t('accounts.copyDefaultSettings')} />
           {t('accounts.copyDefaultSettings')}
@@ -242,7 +303,12 @@ export function AccountsSection(): React.ReactElement | null {
   const [adding, setAdding] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState('');
-  const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
+  const [confirmRemove, setConfirmRemove] = useState<AccountRow | null>(null);
+  const [bindings, setBindings] = useState<Record<string, Partial<Record<Vendor, string>>>>({});
+  const [move, setMove] = useState<PendingMove | null>(null);
+  const workspaces = useStore((s) => s.workspaces);
+  // Settings closes on Escape unless something it opened owns the key.
+  useOwnedDialog(move !== null || confirmRemove !== null);
   const [removeNotice, setRemoveNotice] = useState<string | null>(null);
   const [usage, setUsage] = useState<Map<string, AccountUsageEntry>>(new Map());
   const pending = useSyncExternalStore(subscribeAccountLogins, getPendingAccountLogins);
@@ -251,10 +317,19 @@ export function AccountsSection(): React.ReactElement | null {
   const reload = useCallback(() => {
     const api = window.electronAPI?.accounts;
     if (!api) { setLoaded(true); return; }
-    void api.list().then((res) => { setRows(res.accounts); setLoaded(true); }).catch(() => setLoaded(true));
+    void api.list().then((res) => { setRows(res.accounts); setBindings(res.bindings); setLoaded(true); }).catch(() => setLoaded(true));
   }, []);
 
   useEffect(() => { reload(); }, [reload]);
+  // After a move the list re-renders in a new order (a group's heading and ⋯
+  // may be gone): focus the moved account's ⋯ once the new rows are in.
+  const focusAfterReload = useRef<string | null>(null);
+  useEffect(() => {
+    const id = focusAfterReload.current;
+    if (!id) return;
+    focusAfterReload.current = null;
+    document.querySelector<HTMLElement>(`[data-account-row="${CSS.escape(id)}"] [data-remote-menu]`)?.focus();
+  }, [rows]);
   // A login finishing (or being cancelled) changes the registry / status badges.
   useEffect(() => subscribeAccountLogins(reload), [reload]);
 
@@ -297,6 +372,10 @@ export function AccountsSection(): React.ReactElement | null {
   // Hidden when the preload predates multi-account.
   if (!window.electronAPI?.accounts) return null;
 
+  const closeRemove = (id: string) => {
+    setConfirmRemove(null);
+    requestAnimationFrame(() => document.querySelector<HTMLElement>(`[data-account-row="${id}"] [data-remote-menu]`)?.focus());
+  };
   const remove = (id: string) => {
     const api = window.electronAPI?.accounts;
     if (api) {
@@ -313,6 +392,51 @@ export function AccountsSection(): React.ReactElement | null {
     }
     setConfirmRemove(null);
   };
+  /** A group-wide move takes the group's members as they are now, not when it was asked for. */
+  const membersOf = (m: PendingMove): string[] => (m.kind === 'move'
+    ? m.ids
+    : rows.filter((r) => accountGroupOf(r) === m.from).map((r) => r.id));
+  /** Workspaces whose rotation pool a move changes, and the pool they move to. */
+  const moveImpact = (m: PendingMove, to: string): string[] => {
+    const ids = membersOf(m);
+    const moved = rows.filter((r) => ids.includes(r.id));
+    const names = new Set<string>();
+    for (const vendor of ['claude', 'codex'] as const) {
+      const movedHere = moved.filter((r) => r.vendor === vendor);
+      const key = (list: AccountRow[]) => list.map((r) => r.id).sort().join('|');
+      const before = rows.filter((r) => r.vendor === vendor && accountGroupOf(r) === m.from);
+      const after = [...rows.filter((r) => r.vendor === vendor && accountGroupOf(r) === to && !ids.includes(r.id)), ...movedHere];
+      if (movedHere.length === 0 || key(before) === key(after)) continue;
+      for (const [wsId, perVendor] of Object.entries(bindings)) {
+        if (movedHere.some((r) => r.id === perVendor[vendor])) names.add(workspaces.find((w) => w.id === wsId)?.name ?? wsId);
+      }
+    }
+    return [...names];
+  };
+  const applyMove = (m: PendingMove, to: string) => {
+    const api = window.electronAPI?.accounts;
+    closeMove(m);
+    if (!api?.setGroup) return;
+    const ids = membersOf(m);
+    focusAfterReload.current = ids[0] ?? null;
+    void ids.reduce<Promise<unknown>>((chain, id) => chain.then(() => api.setGroup({ id, group: to })), Promise.resolve())
+      .then(reload)
+      .catch(() => {
+        reload();
+        useStore.getState().pushToast({ level: 'error', message: t('accounts.moveFailed') });
+      });
+  };
+  /** Focus goes back to the ⋯ the move came from (its menu item is gone). */
+  const closeMove = (m: PendingMove) => {
+    setMove(null);
+    const selector = m.kind === 'move' ? `[data-account-row="${m.ids[0]}"] [data-remote-menu]` : `[data-account-group="${CSS.escape(m.from)}"] [data-remote-menu]`;
+    requestAnimationFrame(() => document.querySelector<HTMLElement>(selector)?.focus());
+  };
+  /** A move that changes no workspace's pool applies at once; else it asks first. */
+  const requestMove = (m: PendingMove) => {
+    if (m.to !== null && moveImpact(m, m.to).length === 0) applyMove(m, m.to);
+    else setMove(m);
+  };
   const rename = (id: string) => {
     const api = window.electronAPI?.accounts;
     if (api && editName.trim()) {
@@ -320,84 +444,82 @@ export function AccountsSection(): React.ReactElement | null {
     }
     setEditingId(null);
   };
+  // Rows in group order; each group gets a heading once any account has one,
+  // so a registry with no groups looks as it always did.
+  const buckets = groupAccounts(rows);
+  const groupNames = buckets.map((b) => b.group).filter(Boolean);
+  const orderedRows = buckets.flatMap((b) => b.accounts);
+  // A heading above its group's own container: small, muted, no fill. A
+  // named group's ⋯ (rename, ungroup) shows on hover, focus or while open.
+  const groupHeading = (group: string, accounts: AccountRow[]) => {
+    const ids = accounts.map((r) => r.id);
+    return (
+      <div className="group/heading flex items-center gap-2 min-h-[26px] px-[14px] text-[12px] leading-4 text-[var(--text-sub)]" data-account-group={group}>
+        <span className="flex-1 min-w-0 truncate">{group || t('accounts.noGroup')}</span>
+        {group && (
+          <span className="flex opacity-0 group-hover/heading:opacity-100 focus-within:opacity-100 has-[[aria-expanded=true]]:opacity-100">
+            <AccountMenu
+              label={t('accounts.groupMenu', { group })}
+              items={[
+                { id: 'rename', label: t('accounts.renameGroup'), onSelect: () => setMove({ ids, from: group, to: null, kind: 'rename' }) },
+                { id: 'ungroup', label: t('accounts.ungroup'), onSelect: () => requestMove({ ids, from: group, to: '', kind: 'ungroup' }) },
+              ]}
+            />
+          </span>
+        )}
+      </div>
+    );
+  };
+  const rowMenu = (r: AccountRow): RemoteRowMenuItem[] => {
+    const from = accountGroupOf(r);
+    return [
+      ...groupNames.filter((g) => g !== from).map((g) => ({
+        id: `to-group:${g}`, label: t('accounts.moveTo', { group: g }), onSelect: () => requestMove({ ids: [r.id], from, to: g, kind: 'move' }),
+      })),
+      ...(from ? [{ id: 'move:none', label: t('accounts.moveToNoGroup'), onSelect: () => requestMove({ ids: [r.id], from, to: '', kind: 'move' }) }] : []),
+      { id: 'move:new', label: t('accounts.moveToNewGroup'), onSelect: () => setMove({ ids: [r.id], from, to: null, kind: 'move' }) },
+      ...(r.vendor === 'claude' ? [{ id: 'refresh', label: t('accounts.refreshUsage'), onSelect: () => window.electronAPI?.accounts?.usageRefresh?.(r.id) }] : []),
+      { id: 'rename', label: t('accounts.rename'), onSelect: () => { setEditingId(r.id); setEditName(r.name); } },
+      { id: 'remove', label: t('common.remove'), danger: true, onSelect: () => setConfirmRemove(r) },
+    ];
+  };
 
-  return (
-    // No heading: the Accounts page title already names this, its only group.
-    <SettingsSection id="claudeacct">
-      <p className="settings-note">{t('accounts.intro')}</p>
-      <AccountRotationControls state={rotation.state} reload={rotation.reload} />
-      {removeNotice && <p className="settings-note">{removeNotice}</p>}
-      {loaded && rows.length === 0 && !adding && (
-        <p className="settings-note">{t('accounts.empty')}</p>
+  const renderRow = (r: AccountRow) => (
+    <div key={r.id} className="ui-row" style={ROW_TRACKS} data-account-row={r.id}>
+      <Badge className="justify-self-start">{r.vendor}</Badge>
+      {editingId === r.id ? (
+        <Input
+          className="settings-input min-w-0"
+          aria-label={t('accounts.namePlaceholder')}
+          value={editName}
+          onChange={(e) => setEditName(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') rename(r.id); if (e.key === 'Escape') setEditingId(null); }}
+          onBlur={() => rename(r.id)}
+          autoFocus
+        />
+      ) : (
+        <span className="min-w-0 text-[13px] font-medium text-[var(--text-main)] truncate">{r.name}</span>
       )}
-      {rows.map((r) => (
-        <div key={r.id} className="ui-row" data-account-row={r.id}>
-          <Badge className="shrink-0">{r.vendor}</Badge>
-          {editingId === r.id ? (
-            <Input
-              className="settings-input flex-1"
-              aria-label={t('accounts.namePlaceholder')}
-              value={editName}
-              onChange={(e) => setEditName(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter') rename(r.id); if (e.key === 'Escape') setEditingId(null); }}
-              onBlur={() => rename(r.id)}
-              autoFocus
-            />
-          ) : (
-            <button
-              type="button"
-              className={`flex-1 min-w-0 text-left text-[13px] font-medium text-[var(--text-main)] truncate hover:underline rounded ${FOCUS_RING}`}
-              onClick={() => { setEditingId(r.id); setEditName(r.name); }}
-            >
-              {r.name}
-            </button>
-          )}
-          {statusBadge(r.status)}
-          {(!r.status.loggedIn || usage.get(r.id)?.status === 'unauthorized')
-            && !pending.some((p) => p.configDir === r.configDir) && (
-            <Button
-              variant="secondary"
-              size="md"
-              className="shrink-0"
-              onClick={() => {
-                void startAccountLogin({
-                  vendor: r.vendor, name: r.name, configDir: r.configDir, loginCommand: r.loginCommand, accountId: r.id,
-                });
-              }}
-            >
-              {t('accounts.loginAgain')}
-            </Button>
-          )}
-          {r.vendor === 'codex' && (
-            <RotationQuotaBit row={rotation.state?.rows.find((x) => x.accountId === r.id)} />
-          )}
-          {r.vendor === 'claude' && (
-            <UsageBit
-              entry={usage.get(r.id)}
-              onRefresh={() => window.electronAPI?.accounts?.usageRefresh?.(r.id)}
-            />
-          )}
-          {confirmRemove === r.id ? (
-            <span className="flex items-center gap-2 shrink-0">
-              <Button variant="ghost" size="md" onClick={() => setConfirmRemove(null)}>{t('common.cancel')}</Button>
-              <Button variant="danger" size="md" onClick={() => remove(r.id)}>{t('common.remove')}</Button>
-            </span>
-          ) : (
-            <Button
-              variant="icon"
-              className="shrink-0"
-              onClick={() => setConfirmRemove(r.id)}
-              title={t('accounts.unregisterTitle')}
-              aria-label={t('accounts.unregisterTitle')}
-            >
-              <IconX size={12} />
-            </Button>
-          )}
-        </div>
-      ))}
+      <span className="justify-self-end min-w-0 max-w-full overflow-hidden">
+        <LoginState
+          row={r}
+          expired={usage.get(r.id)?.status === 'unauthorized'}
+          pending={pending.some((p) => p.configDir === r.configDir)}
+        />
+      </span>
+      <span className="justify-self-end min-w-0 max-w-full overflow-hidden">
+        {r.vendor === 'codex'
+          ? <RotationQuotaBit row={rotation.state?.rows.find((x) => x.accountId === r.id)} />
+          : <UsageBit entry={usage.get(r.id)} />}
+      </span>
+      <AccountMenu label={t('accounts.rowMenu', { name: r.name })} items={rowMenu(r)} />
+    </div>
+  );
+  const tail = (
+    <>
       {pending.map((p) => <PendingLoginRow key={p.configDir} entry={p} />)}
       {adding ? (
-        <AddAccountWizard onDone={() => { setAdding(false); reload(); }} onCancel={() => setAdding(false)} />
+        <AddAccountWizard groups={groupNames} onDone={() => { setAdding(false); reload(); }} onCancel={() => setAdding(false)} />
       ) : (
         <div className="settings-row" style={{ minHeight: 0 }}>
           {/* With no account yet, adding one is what the tab is for. */}
@@ -411,6 +533,121 @@ export function AccountsSection(): React.ReactElement | null {
           </Button>
         </div>
       )}
-    </SettingsSection>
+    </>
+  );
+  // Rows sit in the section's container until any account has a group; then
+  // each group gets its own container under a heading.
+  const grouped = groupNames.length > 0;
+
+  return (
+    <>
+      {/* No heading: the Accounts page title already names this, its only group. */}
+      <SettingsSection
+        id="claudeacct"
+        // The scope line alone is the visible line; the rest waits behind Learn more.
+      description={`${t('accounts.scopeLine')}\n${[t('accounts.intro'), t('accounts.rotateDesc'), t('accounts.groupsDesc')].join(' ')}`}
+      >
+        <AccountRotationControls state={rotation.state} reload={rotation.reload} />
+        {removeNotice && <p className="settings-note">{removeNotice}</p>}
+        {loaded && rows.length === 0 && !adding && (
+          <p className="settings-note">{t('accounts.empty')}</p>
+        )}
+        {!grouped && orderedRows.map(renderRow)}
+        {!grouped && tail}
+      </SettingsSection>
+      {grouped && (
+        <div className="flex flex-col gap-4" data-account-groups>
+          {buckets.map(({ group, accounts }) => (
+            <div key={group || 'ungrouped'} className="flex flex-col gap-1">
+              {groupHeading(group, accounts)}
+              <div className="ui-group">{accounts.map(renderRow)}</div>
+            </div>
+          ))}
+          <div className="ui-group">{tail}</div>
+        </div>
+      )}
+      {move && <MoveDialog move={move} impact={(to) => moveImpact(move, to)} onApply={(to) => applyMove(move, to)} onCancel={() => closeMove(move)} />}
+      {confirmRemove && (
+        <Dialog onClose={() => closeRemove(confirmRemove.id)} width={420}>
+          <DialogHeader title={t('accounts.removeTitle', { name: confirmRemove.name })} description={t('accounts.removeDesc')} closeLabel={t('common.cancel')} />
+          <DialogFooter>
+            <Button variant="ghost" size="md" onClick={() => closeRemove(confirmRemove.id)}>{t('common.cancel')}</Button>
+            <Button variant="danger" size="md" onClick={() => remove(confirmRemove.id)}>{t('common.remove')}</Button>
+          </DialogFooter>
+        </Dialog>
+      )}
+    </>
+  );
+}
+
+/** Shared column tracks (vendor · name · login · quota · ⋯) so a row that
+ *  shows less than another does not shift its neighbours. */
+const ROW_TRACKS: CSSProperties = { display: 'grid', gridTemplateColumns: '64px minmax(64px, 1fr) minmax(0, 112px) minmax(0, 176px) 28px' };
+
+/** A ⋯ menu that holds Escape while open, so Settings does not close under it. */
+function AccountMenu(props: { label: string; items: RemoteRowMenuItem[] }): React.ReactElement {
+  const [open, setOpen] = useState(false);
+  useOwnedDialog(open);
+  return <RemoteRowMenu {...props} onOpenChange={setOpen} />;
+}
+
+interface PendingMove {
+  ids: string[];
+  /** The group the accounts are in now ('' = ungrouped). */
+  from: string;
+  /** Destination; null = ask for a name (a new group, or renaming `from`). */
+  to: string | null;
+  kind: 'move' | 'rename' | 'ungroup';
+}
+
+/** Names a new group when needed and, when the move changes the rotation
+ *  pool of bound workspaces, says which ones and the pool they move to. */
+function MoveDialog({ move, impact, onApply, onCancel }: {
+  move: PendingMove;
+  impact: (to: string) => string[];
+  onApply: (to: string) => void;
+  onCancel: () => void;
+}): React.ReactElement {
+  const t = useT();
+  const [draft, setDraft] = useState(move.kind === 'rename' ? move.from : '');
+  const to = move.to ?? draft.trim();
+  const affected = to || move.to !== null ? impact(to) : [];
+  const title = move.kind === 'rename' ? t('accounts.renameGroupTitle', { group: move.from })
+    : move.kind === 'ungroup' ? t('accounts.ungroupTitle', { group: move.from })
+      : move.to === null ? t('accounts.moveTitle') : t('accounts.moveTo', { group: move.to || t('accounts.noGroup') });
+  const canApply = move.to !== null || (to !== '' && to !== move.from);
+  return (
+    <Dialog onClose={onCancel} width={420}>
+      <DialogHeader title={title} closeLabel={t('common.cancel')} />
+      <DialogBody>
+        <div className="flex flex-col gap-3">
+          {move.to === null && (
+            <Field label={t('accounts.groupLabel')} layout="stacked">
+              <Input
+                className="w-full text-[13px]"
+                placeholder={t('accounts.groupPlaceholder')}
+                maxLength={MAX_ACCOUNT_GROUP_CHARS}
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+                  if (e.key === 'Enter' && canApply) onApply(to);
+                }}
+                autoFocus
+              />
+            </Field>
+          )}
+          {affected.length > 0 && (
+            <p className="m-0 text-[13px] text-[var(--text-sub)]" data-account-move-impact>
+              {t('accounts.poolChangeNotice', { workspaces: affected.join(', '), pool: to || t('accounts.noGroup') })}
+            </p>
+          )}
+        </div>
+      </DialogBody>
+      <DialogFooter>
+        <Button variant="ghost" size="md" onClick={onCancel}>{t('common.cancel')}</Button>
+        <Button variant="primary" size="md" disabled={!canApply} onClick={() => onApply(to)}>{t('accounts.apply')}</Button>
+      </DialogFooter>
+    </Dialog>
   );
 }

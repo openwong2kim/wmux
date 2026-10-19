@@ -1,6 +1,6 @@
 // M2 — the HookIngest → ApprovalRegistry wiring.
 //
-// The registry's own rules are covered in ApprovalRegistry.test.ts; what is
+// The registry's own rules are covered in ApprovalRegistry.os.test.ts; what is
 // under test HERE is the gate in front of it. Approval requests are the one
 // surface in wmux that writes bytes into a terminal on somebody else's say-so,
 // so "which signals may mint one" is the load-bearing question, and the answer

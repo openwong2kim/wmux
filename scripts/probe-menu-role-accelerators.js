@@ -7,7 +7,7 @@
  * undefined — so the collision test that keeps the application menu off wmux's
  * keymap has to know what each role installs. A hand-copied table goes stale
  * silently on an Electron upgrade, hence this probe plus the
- * PROBED_ELECTRON_MAJOR tripwire in appMenu.template.test.ts.
+ * PROBED_ELECTRON_MAJOR tripwire in appMenu.template.os.test.ts.
  *
  * Usage (from the repo root):
  *

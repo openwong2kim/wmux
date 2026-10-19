@@ -1,6 +1,7 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { deliberateSleep } from '../../test-utils/waitFor';
 
 // The opt-in switch and the pipe are the only boundaries mocked: the tool is
 // exercised through a real McpServer from createWmuxServer.
@@ -173,7 +174,7 @@ describe('computer MCP tool', () => {
     mockSendRpc.mockImplementation(async (method: string) => {
       if (method === 'a2a.resolve.identity') {
         walks++;
-        await new Promise((r) => setTimeout(r, 30)); // a slow walk: the second call arrives meanwhile
+        await deliberateSleep(30, 'stub latency: a slow identity walk'); // a slow walk: the second call arrives meanwhile
         return { mappings: {}, resolved: { workspaceId: 'ws-walked', ptyId: 'pty-walked' } };
       }
       return method.startsWith('computer.') ? reply(method) : {};

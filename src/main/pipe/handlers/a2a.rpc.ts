@@ -18,6 +18,8 @@ import { claimTokenForPane, claimTokenForRun } from '../../workspace/workspaceCl
 import { isIdentityRunPty, liveIdentityRunAnchors } from '../../automation/runIdentity';
 import type { PortSnapshot, SnapshotFn } from '../../pty/portWatch';
 import { walkToOwningAnchor } from '../../pty/serverSidePidWalk';
+import { isDaemonPtyId, liveDaemonPidEntries } from '../../pty/pidMap';
+import type { DaemonSessionShell, PidMapFile } from '../../pty/pidMap';
 import { tryProcessCreatedAt } from '../../pty/winSnapshotNative';
 import { readWindowsAncestry } from './callerAncestry';
 import { getAccountStore } from '../../account/accountStore';
@@ -42,6 +44,9 @@ import {
   type A2aRemoteStateInput,
   type A2aRemoteTarget,
 } from '../../../shared/a2aRemoteDelivery';
+
+/** The daemon connection a resolve's pid-map entries were confirmed against (null: no daemon). */
+type EntriesConfirmation = { client: DaemonClient | null };
 
 type GetWindow = () => BrowserWindow | null;
 
@@ -476,6 +481,8 @@ export function registerA2aRpc(
   async function resolveHintedPane(
     hintedPtyId: unknown,
     entries: ReadonlyArray<{ ptyId: string; workspaceId: string }>,
+    /** The connection `entries` are confirmed against, or null (see confirmEntriesConnection). */
+    confirmEntries: () => Promise<EntriesConfirmation | null> = async () => ({ client: currentDaemonClient() }),
   ): Promise<{ live: boolean; workspaceId?: string; workspaceToken?: string } | null> {
     if (typeof hintedPtyId !== 'string' || hintedPtyId.length === 0 || hintedPtyId.length > 128) return null;
     const pane = entries.find((e) => e.ptyId === hintedPtyId);
@@ -488,8 +495,96 @@ export function registerA2aRpc(
       wslLive = false; // daemon unreachable or older: unattested
     }
     if (!wslLive) return { live: true };
+    // The pane was found in `entries` before the await above; re-find it in
+    // case a reconnect re-judged them, and mint only over the current client,
+    // checked synchronously right before the mint.
+    const confirmed = await confirmEntries();
+    if (!stillConfirmed(confirmed) || !entries.some((e) => e === pane)) return { live: true };
     const workspaceToken = claimTokenForPane(pane.workspaceId, pane.ptyId);
     return workspaceToken ? { live: true, workspaceId: pane.workspaceId, workspaceToken } : { live: true };
+  }
+
+  // The daemon's session list for the resolve-time pid-map check, kept for a
+  // short while so a burst of plain identity resolves costs one listSessions,
+  // not one each. It is stamped with the DaemonClient that read it: every
+  // (re)connect installs a new client, and a list from before a daemon restart
+  // still names the shells the restart replaced, so it is never used after it.
+  const DAEMON_SESSIONS_CACHE_MS = 2000;
+  let daemonSessionsCache: { at: number; client: DaemonClient; sessions: DaemonSessionShell[] } | null = null;
+
+  /** The DaemonClient now installed, or null when there is none. */
+  function currentDaemonClient(): DaemonClient | null {
+    return getDaemonClient?.() ?? null;
+  }
+
+  /**
+   * Synchronous: the confirmation still holds only while the client it names
+   * is the installed one. Call it on the line right before a mint, with no
+   * await in between (a reconnect can land in any await, including the one
+   * that produced `confirmed`).
+   */
+  function stillConfirmed(confirmed: EntriesConfirmation | null): boolean {
+    return confirmed !== null && currentDaemonClient() === confirmed.client;
+  }
+
+  /**
+   * A fresh, complete session list (suspended sessions included) and the
+   * client it was asked of. `sessions` is null when the daemon is not
+   * connected or did not answer.
+   */
+  async function fetchDaemonSessions(): Promise<{ sessions: DaemonSessionShell[] | null; client: DaemonClient | null }> {
+    const dc = currentDaemonClient();
+    if (!dc || dc.isConnected === false) return { sessions: null, client: dc };
+    try {
+      const rows = await dc.rpc('daemon.listSessions', { includeSuspended: true }, { timeoutMs: 2000 });
+      if (!Array.isArray(rows)) return { sessions: null, client: dc };
+      daemonSessionsCache = { at: Date.now(), client: dc, sessions: rows as DaemonSessionShell[] };
+      return { sessions: daemonSessionsCache.sessions, client: dc };
+    } catch {
+      return { sessions: null, client: dc };
+    }
+  }
+
+  /** The cached list, if it is recent and was read over the current connection. */
+  function cachedDaemonSessions(): { sessions: DaemonSessionShell[]; client: DaemonClient } | null {
+    const cache = daemonSessionsCache;
+    if (!cache || Date.now() - cache.at >= DAEMON_SESSIONS_CACHE_MS) return null;
+    return cache.client === currentDaemonClient() ? cache : null;
+  }
+
+  /**
+   * `entries` without the daemon pid-map hits whose PID is not that session's
+   * current shell, or whose session the daemon does not have (see
+   * liveDaemonPidEntries). With no daemon (not connected, or the RPC failed)
+   * nothing is filtered and identity falls back to the pid-map alone, as
+   * before this check existed.
+   *
+   * `fresh` (a call that can mint a claim) always reads the list again: a
+   * claim must rest on the shells the daemon runs now. Inside the cache window
+   * a pane's shell can change (a supervised restart, a reconnect) while its
+   * old pid-map file is still on disk and the cached list still names that
+   * old PID as current, which would let a process on the reused PID claim the
+   * pane. Otherwise a cached list is trusted only to keep entries: when it
+   * lacks an entry's ptyId or disagrees with its PID, the list is read again,
+   * so a pane created or given a new shell inside the window is not refused.
+   *
+   * `client` is the connection the answer rests on (the one that produced the
+   * list, or the one current when no list was needed). A claim minted from
+   * these entries must check it is still the installed client: see
+   * confirmEntriesConnection in the resolve handler.
+   */
+  async function keepLiveDaemonPidEntries<T extends PidMapFile>(
+    entries: T[],
+    fresh: boolean,
+  ): Promise<{ entries: T[]; client: DaemonClient | null }> {
+    if (!entries.some((e) => isDaemonPtyId(e.ptyId))) return { entries, client: currentDaemonClient() };
+    const cached = fresh ? null : cachedDaemonSessions();
+    if (cached) {
+      const kept = liveDaemonPidEntries(entries, cached.sessions);
+      if (kept.length === entries.length) return { entries: kept, client: cached.client };
+    }
+    const { sessions, client } = await fetchDaemonSessions();
+    return { entries: liveDaemonPidEntries(entries, sessions), client };
   }
 
   // a2a.resolve.identity — handled in main process (not renderer).
@@ -603,6 +698,68 @@ export function registerA2aRpc(
       }
     } catch { /* best-effort: identity resolution is non-critical */ }
 
+    // A pid-map hit counts only while its PID is still the pane's shell. A
+    // daemon restart gives recovered sessions new shell PIDs; a file left on an
+    // old PID the OS has reused (a new worker's own claude.exe) would otherwise
+    // hand that process the old pane's identity. Filtered once here, so the
+    // client-side walk (entries / mappings), the server-side walk below, and
+    // the Codex thread and hinted-pane lookups all see only live anchors.
+    // A call that can mint a claim (the server-side walk, a Codex thread, a
+    // hinted pane) is judged on a fresh list, never the cache: the claims
+    // below (claimTokenForPane, the thread claim) take these entries as proof
+    // that the pane's shell is live.
+    const claimParams = params as { codexThreadId?: unknown; hintedPtyId?: unknown };
+    const mayMintClaim = callerPid != null || claimParams.codexThreadId !== undefined || claimParams.hintedPtyId !== undefined;
+    const scannedEntries = [...entries];
+    const scannedMappings = { ...mappings };
+    const applyLiveEntries = (live: typeof entries): void => {
+      const kept = new Set(live);
+      for (const key of Object.keys(mappings)) delete mappings[key];
+      for (const e of scannedEntries) if (kept.has(e)) mappings[e.pid] = scannedMappings[e.pid];
+      entries.splice(0, entries.length, ...live);
+    };
+    const filtered = await keepLiveDaemonPidEntries(entries, mayMintClaim);
+    if (filtered.entries.length !== entries.length) applyLiveEntries(filtered.entries);
+    // The connection the entries were judged over. The resolve awaits more
+    // (the process snapshot, the run list, the daemon's WSL answer), and a
+    // reconnect in any of those waits installs a new client whose sessions
+    // may have different shells.
+    let entriesClient = filtered.client;
+    let entriesRechecked = false;
+    /**
+     * Called before a claim is minted from `entries`. Resolves to the client
+     * the entries are confirmed against, or null to refuse the claim. Awaiting
+     * it yields to the event loop even when it answers at once, so a reconnect
+     * can still land after it: the caller must compare the returned client
+     * with the installed one SYNCHRONOUSLY, on the line before the mint
+     * (`stillConfirmed`).
+     *
+     * While the client the entries were judged over is still installed, that
+     * client is returned. If a reconnect replaced it, the list is read once
+     * from the new client and the scanned entries judged again: an unchanged
+     * result is confirmed against the new client; a changed one refuses (and
+     * the response carries the re-judged entries). So does a re-read that
+     * yields no list (failed or malformed): the "no daemon, no filtering"
+     * fallback of a fresh resolve never confirms entries judged over another
+     * connection. A second replacement refuses too.
+     */
+    const confirmEntriesConnection = async (): Promise<EntriesConfirmation | null> => {
+      if (currentDaemonClient() === entriesClient) return { client: entriesClient };
+      if (entriesRechecked) return null;
+      entriesRechecked = true;
+      const { sessions, client } = await fetchDaemonSessions();
+      if (currentDaemonClient() !== client) return null;
+      if (!sessions) return null;
+      const live = liveDaemonPidEntries(scannedEntries, sessions);
+      const unchanged = live.length === entries.length && live.every((e, i) => e === entries[i]);
+      entriesClient = client;
+      if (!unchanged) {
+        applyLiveEntries(live);
+        return null;
+      }
+      return { client };
+    };
+
     // Server-side walk: from callerPid's PARENT up the live tree to the first
     // ancestor that is a known live anchor. `entries` is already the set of LIVE
     // PID→ptyId→workspace anchors resolved above, so the walk reuses it — no
@@ -699,25 +856,35 @@ export function registerA2aRpc(
       }
     }
 
+    // A pane claim from the walk rests on `entries`: confirm they were judged
+    // over the connection installed now. The synchronous re-check and the mint
+    // run with no await between them. A walk hit whose entries a reconnect
+    // invalidated gets no claim and no `resolved`; the caller still has the
+    // re-judged entries for its own walk, and its next resolve walks those.
+    if (resolved && !runClaim) {
+      const confirmed = await confirmEntriesConnection();
+      if (!stillConfirmed(confirmed)) resolved = null;
+    }
     const workspaceToken = resolved ? (runClaim ?? claimTokenForPane(resolved.workspaceId, resolved.ptyId)) : null;
     // A call from a shared Codex app-server names its thread instead: the pane
     // comes from the thread's owner record (written by wmux's Codex hooks from
     // inside that pane), joined with the LIVE anchors above. The claim goes
     // back on its own field because the caller stamps it on that call only.
     const codexThreadId = (params as { codexThreadId?: unknown }).codexThreadId;
-    const threadClaim = codexThreadId === undefined
-      ? null
-      : resolveCodexThreadClaim(
-          codexThreadId,
-          entries,
-          await isSharedServerChild(normalizeCallerPid((params as { codexCallerPid?: unknown }).codexCallerPid)),
-        );
+    let threadClaim: ReturnType<typeof resolveCodexThreadClaim> = null;
+    if (codexThreadId !== undefined) {
+      const sharedServerChild = await isSharedServerChild(normalizeCallerPid((params as { codexCallerPid?: unknown }).codexCallerPid));
+      const confirmed = await confirmEntriesConnection();
+      if (stillConfirmed(confirmed)) threadClaim = resolveCodexThreadClaim(codexThreadId, entries, sharedServerChild);
+    }
     // The walk missed but the caller's env names a pane. Main says whether
     // that pane is live, and attests it only when the daemon follows a live
     // agent inside it from WSL — the one pane kind whose processes main cannot
     // walk. A name that is not a live pane (a scheduled run's `auto-` session,
     // which belongs to no workspace) is reported as such, never as a pane.
-    const hintedPane = resolved ? null : await resolveHintedPane((params as { hintedPtyId?: unknown }).hintedPtyId, entries);
+    const hintedPane = resolved
+      ? null
+      : await resolveHintedPane((params as { hintedPtyId?: unknown }).hintedPtyId, entries, confirmEntriesConnection);
     return {
       mappings,
       entries,

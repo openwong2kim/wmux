@@ -1,15 +1,15 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { useStore } from '../../stores';
 import { selectActiveWorkspace } from '../../stores/selectors/workspaceProjections';
 import { useT } from '../../hooks/useT';
 import { focusedTerminalPtyId } from '../../utils/focusedSurface';
-import { attachFilesToPty, injectText } from './inject';
+import { effectiveBindings } from '../../../shared/keymap';
+import { shortcutLabel } from '../../utils/shortcutLabel';
+import { toggleFileTreePanel } from '../FileTree/fileTreeToggle';
 import RichInput from './RichInput';
 import SnippetsMenu from './SnippetsMenu';
-import FileExplorerPopover from './FileExplorerPopover';
-import BroadcastPopover from './BroadcastPopover';
 import SessionSchedulesPopover from './SessionSchedulesPopover';
-import { IconPaperclip, IconFolder, IconStar, IconKeyboard, IconPlus, IconUsers, IconSparkles, IconLock, IconClock } from '../icons';
+import { IconFolder, IconStar, IconKeyboard, IconSparkles, IconLock, IconClock } from '../icons';
 
 /**
  * Bar height — also the travel distance of the reveal transform. The 40px
@@ -51,17 +51,17 @@ export default function AgentToolbar({ barHandlers, revealed, onHoldChange, onFo
   const activeWorkspace = useStore(selectActiveWorkspace);
   const popover = useStore((s) => s.toolbarPopover);
   const setPopover = useStore((s) => s.setToolbarPopover);
-  const newCommand = useStore((s) => s.newConversationCommand);
   const pinned = useStore((s) => s.agentToolbarPinned);
   const setPinned = useStore((s) => s.setAgentToolbarPinned);
   const fanOutOpen = useStore((s) => s.fanOutWorkspaceId != null);
   const openFanOut = useStore((s) => s.openFanOut);
   const closeFanOut = useStore((s) => s.closeFanOut);
+  // Files shows the file tree column, the one home for browsing the project;
+  // pressed only while the column is on screen (the Workspaces page).
+  const fileTreeOnScreen = useStore((s) => s.fileTreeVisible && s.appRoute === 'workspaces');
+  const shortcutOverrides = useStore((s) => s.shortcutOverrides);
 
   const containerRef = useRef<HTMLDivElement>(null);
-  const broadcastBtnRef = useRef<HTMLButtonElement>(null);
-  const [showBroadcast, setShowBroadcast] = useState(false);
-  const [newArmed, setNewArmed] = useState(false);
 
   const ptyId = focusedTerminalPtyId(activeWorkspace);
   const activeAgent = useStore((s) => (ptyId ? s.surfaceAgent[ptyId] : undefined));
@@ -74,7 +74,7 @@ export default function AgentToolbar({ barHandlers, revealed, onHoldChange, onFo
   // set with nothing rendered — and the bar held open forever. Hold only for
   // popovers that can actually be on screen.
   const popoverOnScreen = popover !== null && !!ptyId;
-  const hold = popoverOnScreen || showBroadcast || fanOutOpen;
+  const hold = popoverOnScreen || fanOutOpen;
   useEffect(() => { onHoldChange(hold); }, [hold, onHoldChange]);
 
   // Losing the focused terminal invalidates every popover here; clear the
@@ -83,32 +83,17 @@ export default function AgentToolbar({ barHandlers, revealed, onHoldChange, onFo
     if (!ptyId && popover !== null) setPopover(null);
   }, [ptyId, popover, setPopover]);
 
-  const handleAttach = useCallback(() => {
-    if (!ptyId) return;
-    void attachFilesToPty(ptyId);
-  }, [ptyId]);
-
-  // Two-step, like the pane cluster's button was: the default command is
-  // `/clear`, which discards the agent's conversation. A single stray click on
-  // a bar that appears under the pointer must not be able to do that.
-  const handleNew = useCallback(() => {
-    if (!ptyId) return;
-    if (!newArmed) { setNewArmed(true); return; }
-    void injectText(ptyId, newCommand, true);
-    setNewArmed(false);
-  }, [ptyId, newCommand, newArmed]);
-
-  useEffect(() => {
-    if (!newArmed) return;
-    const id = window.setTimeout(() => setNewArmed(false), 4000);
-    return () => window.clearTimeout(id);
-  }, [newArmed]);
+  const platform = window.electronAPI?.platform ?? 'linux';
+  const bindings = useMemo(() => effectiveBindings(platform, shortcutOverrides), [platform, shortcutOverrides]);
+  const withCombo = (label: string, action: string) => {
+    const combo = shortcutLabel(platform, bindings.find((b) => b.action === action)?.combo);
+    return combo ? `${label} (${combo})` : label;
+  };
 
   // Every open path closes the others. Fan-out already cleared these; without
   // the reverse the two dialogs could sit on top of each other.
-  const togglePopover = (name: 'explorer' | 'snippets' | 'rich' | 'schedule') => {
+  const togglePopover = (name: 'snippets' | 'rich' | 'schedule') => {
     if (fanOutOpen) closeFanOut();
-    setShowBroadcast(false);
     setPopover(popover === name ? null : name);
   };
 
@@ -120,7 +105,6 @@ export default function AgentToolbar({ barHandlers, revealed, onHoldChange, onFo
     if (!activeWorkspace) return;
     if (fanOutOpen) { closeFanOut(); return; }
     setPopover(null);
-    setShowBroadcast(false);
     const r = event.currentTarget.getBoundingClientRect();
     openFanOut(activeWorkspace.id, { top: r.top, left: r.left, right: r.right, bottom: r.bottom });
   }, [activeWorkspace, fanOutOpen, closeFanOut, setPopover, openFanOut]);
@@ -130,10 +114,9 @@ export default function AgentToolbar({ barHandlers, revealed, onHoldChange, onFo
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') { e.preventDefault(); setPopover(null); }
     };
-    // "Outside" cannot be decided by the bar's DOM alone: FileExplorerPopover
-    // portals to document.body, so a click on one of its rows is outside
-    // containerRef. Closing on that mousedown unmounted the popover before its
-    // own click could run — the explorer looked alive and inserted nothing.
+    // "Outside" cannot be decided by the bar's DOM alone: a popover that
+    // portals to document.body sits outside containerRef. Closing on that
+    // mousedown unmounted the popover before its own click could run.
     // Portalled children of this bar count as inside.
     const onDown = (e: MouseEvent) => {
       const target = e.target as HTMLElement | null;
@@ -201,26 +184,28 @@ export default function AgentToolbar({ barHandlers, revealed, onHoldChange, onFo
       data-testid="agent-toolbar"
       data-revealed={revealed ? 'true' : 'false'}
     >
-      <button className={`${btn} ${idle}`} disabled={disabled} onClick={handleAttach} title={t('toolbar.attach')}>
-        <IconPaperclip size={13} /> <span className="wmux-toolbar-label wmux-toolbar-label-secondary whitespace-nowrap">{t('toolbar.attach')}</span>
-      </button>
-      {/* Disabled without a focused terminal: the explorer's only verb is
-          "insert this path into the prompt", which needs a pty to write to. */}
+      {/* Files works without a focused terminal: it only shows or hides the
+          file tree column, whose rows insert or drag paths into a pane. */}
       <button
-        className={`${btn} ${popover === 'explorer' ? active : idle}`}
-        disabled={disabled}
-        onClick={() => togglePopover('explorer')}
-        title={t('toolbar.fileExplorer')}
-        data-toolbar-action="file-explorer"
+        className={`${btn} ${fileTreeOnScreen ? active : idle}`}
+        onClick={() => {
+          if (fanOutOpen) closeFanOut();
+          setPopover(null);
+          toggleFileTreePanel(useStore.getState());
+        }}
+        title={withCombo(t('toolbar.fileExplorer'), 'toggleFileTree')}
+        aria-label={t('toolbar.fileExplorer')}
+        aria-pressed={fileTreeOnScreen}
+        aria-controls="wmux-file-tree"
+        data-toolbar-action="file-tree"
       >
         <IconFolder size={13} /> <span className="wmux-toolbar-label wmux-toolbar-label-secondary whitespace-nowrap">{t('toolbar.fileExplorer')}</span>
       </button>
       <button className={`${btn} ${popover === 'snippets' ? active : idle}`} disabled={disabled} onClick={() => togglePopover('snippets')} title={t('toolbar.snippets')}>
         <IconStar size={13} /> <span className="wmux-toolbar-label wmux-toolbar-label-secondary whitespace-nowrap">{t('toolbar.snippets')}</span>
       </button>
-      <button className={`${btn} ${popover === 'rich' ? active : idle}`} disabled={disabled} onClick={() => togglePopover('rich')} title={t('toolbar.richInput')}>
+      <button className={`${btn} ${popover === 'rich' ? active : idle}`} disabled={disabled} onClick={() => togglePopover('rich')} title={withCombo(t('toolbar.richInput'), 'richInput')}>
         <IconKeyboard size={13} /> <span className="wmux-toolbar-label whitespace-nowrap">{t('toolbar.richInput')}</span>
-        <kbd className="wmux-toolbar-label ml-1 px-1 rounded border border-[var(--bg-overlay)] text-[10px] leading-tight opacity-60 font-sans">{window.electronAPI?.platform === 'darwin' ? '⌘G' : 'Ctrl G'}</kbd>
       </button>
       <button
         className={`${btn} ${popover === 'schedule' ? active : idle}`}
@@ -231,21 +216,10 @@ export default function AgentToolbar({ barHandlers, revealed, onHoldChange, onFo
       >
         <IconClock size={13} /> <span className="wmux-toolbar-label whitespace-nowrap">{t('toolbar.schedule')}</span>
       </button>
-      <button
-        ref={broadcastBtnRef}
-        className={`${btn} ${showBroadcast ? active : idle}`}
-        // Opening a local popover clears the global one (explorer/snippets/rich)
-        // so the two can't render on top of each other.
-        onClick={() => { setPopover(null); setShowBroadcast((v) => !v); }}
-        title={t('toolbar.broadcastTooltip')}
-        data-testid="broadcast-button"
-      >
-        <IconUsers size={13} /> <span className="wmux-toolbar-label whitespace-nowrap">{t('toolbar.broadcast')}</span>
-      </button>
       <div className="flex-1" />
       {disabled && <span className="text-[10px] text-[var(--text-muted)]">{t('toolbar.noTerminal')}</span>}
       {/* Multi Task (fan-out) — a fleet-spawn command, so it lives on the
-          agent toolbar, in the right-hand group left of New chat. */}
+          agent toolbar, in the right-hand group left of the pin. */}
       <button
         className={`${btn} ${fanOutOpen ? active : idle}`}
         onClick={handleFanOut}
@@ -254,21 +228,6 @@ export default function AgentToolbar({ barHandlers, revealed, onHoldChange, onFo
         data-onboarding-target="fanout"
       >
         <IconSparkles size={13} /> <span className="wmux-toolbar-label whitespace-nowrap">{t('toolbar.fanOut')}</span>
-      </button>
-      <button
-        className={`${btn} ${newArmed ? active : idle}`}
-        disabled={disabled}
-        onClick={handleNew}
-        title={newArmed
-          ? t('toolbar.newConversationConfirm')
-          : `${t('toolbar.newChat')} (${newCommand})`}
-        data-testid="new-conversation"
-        data-armed={newArmed ? 'true' : 'false'}
-      >
-        <IconPlus size={13} />
-        <span className="wmux-toolbar-label whitespace-nowrap">
-          {newArmed ? t('toolbar.newConversationConfirm') : t('toolbar.newChat')}
-        </span>
       </button>
       {/* Pin — the escape hatch from reveal-on-approach. Pinned, this is the
           plain always-on strip; unpinned it stays out of the terminal's way. */}
@@ -282,12 +241,8 @@ export default function AgentToolbar({ barHandlers, revealed, onHoldChange, onFo
         <IconLock size={12} />
       </button>
 
-      {/* These three render INSIDE the bar, which is pointer-events:none, so
-          each claims its own hit area at its root (FileExplorerPopover portals
-          to document.body and is therefore unaffected). */}
-      {popover === 'explorer' && ptyId && (
-        <FileExplorerPopover ptyId={ptyId} onClose={() => setPopover(null)} />
-      )}
+      {/* These render INSIDE the bar, which is pointer-events:none, so each
+          claims its own hit area at its root. */}
       {popover === 'snippets' && ptyId && <SnippetsMenu ptyId={ptyId} />}
       {popover === 'rich' && ptyId && <RichInput ptyId={ptyId} />}
       {popover === 'schedule' && ptyId && (
@@ -297,7 +252,6 @@ export default function AgentToolbar({ barHandlers, revealed, onHoldChange, onFo
           agentName={activeAgent?.name}
         />
       )}
-      {showBroadcast && <BroadcastPopover onClose={() => setShowBroadcast(false)} triggerRef={broadcastBtnRef} />}
     </div>
   );
 }

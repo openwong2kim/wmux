@@ -15,7 +15,7 @@
 // 현재 존재하는 모든 워크스페이스 id를 각각 조회하면 된다(fan-out 안 한 워크스페이스는
 // 빈 배열을 돌려주므로 무해 — 사이드바 섹션은 빈 캐시에서 아무것도 렌더하지 않는다).
 
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { useStore } from '../stores';
 
 /**
@@ -79,6 +79,75 @@ async function refreshProvenanceThenParents(): Promise<void> {
   useStore.getState().markFanoutRefreshSettled?.();
 }
 
+/** #2349 — how long a burst of workspace-set changes is let settle before
+ *  the one pass it causes. */
+export const MISSION_REFRESH_DEBOUNCE_MS = 500;
+
+export interface MissionRefresher {
+  /** Run a pass now, or once after the one in flight. */
+  now(provenance: boolean): void;
+  /** Run a pass once triggers stop arriving for the debounce window. */
+  soon(provenance: boolean): void;
+  dispose(): void;
+}
+
+/**
+ * #2349 — at most one full pass at a time. A full pass is one
+ * `task.mission.list` per workspace (~90 RPCs on a large window), and every
+ * workspace a fan-out adds or removes used to start another one while the
+ * last was still running: an 8-task fan-out stacked about four passes into
+ * the same second, ~370 calls against the daemon's 200/s global budget, and
+ * the fan-out's own spawns were refused. A trigger during a pass now asks for
+ * ONE rerun after it (with provenance if any trigger wanted it), and id-set
+ * changes are debounced first, so a burst costs at most two passes.
+ */
+export function createMissionRefresher(
+  runPass: (provenance: boolean) => Promise<void>,
+  debounceMs = MISSION_REFRESH_DEBOUNCE_MS,
+): MissionRefresher {
+  let running = false;
+  let rerun: { provenance: boolean } | null = null;
+  let debounce: ReturnType<typeof setTimeout> | null = null;
+  let debouncedProvenance = false;
+  let disposed = false;
+  const start = (provenance: boolean): void => {
+    if (disposed) return;
+    if (running) {
+      rerun = { provenance: (rerun?.provenance ?? false) || provenance };
+      return;
+    }
+    running = true;
+    void runPass(provenance)
+      .catch(() => undefined)
+      .finally(() => {
+        running = false;
+        const next = rerun;
+        rerun = null;
+        if (next) start(next.provenance);
+      });
+  };
+  return {
+    now: start,
+    soon(provenance) {
+      if (disposed) return;
+      debouncedProvenance = debouncedProvenance || provenance;
+      if (debounce) clearTimeout(debounce);
+      debounce = setTimeout(() => {
+        debounce = null;
+        const p = debouncedProvenance;
+        debouncedProvenance = false;
+        start(p);
+      }, debounceMs);
+    },
+    dispose() {
+      disposed = true;
+      rerun = null;
+      if (debounce) clearTimeout(debounce);
+      debounce = null;
+    },
+  };
+}
+
 /**
  * AppLayout에 1회 마운트. React state는 소유하지 않고 스토어로 디스패치만 한다.
  * 워크스페이스 id 집합이 바뀔 때마다 재수화하고, 성긴 배경 폴링으로 상태를 갱신한다.
@@ -86,41 +155,62 @@ async function refreshProvenanceThenParents(): Promise<void> {
 export function useMissionsPolling(): void {
   // id 집합 문자열: 워크스페이스 추가/삭제 시에만 effect를 재실행(이름/메타 변경엔 무반응).
   const workspaceIdsKey = useStore((s) => s.workspaces.map((w) => w.id).join(','));
+  const refresher = useRef<MissionRefresher | null>(null);
 
+  // The poll and the daemon triggers live for the mount, not per id set, so
+  // an id-set change neither restarts the 15 s cadence nor re-arms whenReady
+  // (which resolves at once once connected: a second pass per change).
   useEffect(() => {
-    // 마운트 + id 집합 변화 시 즉시 refetch. The audit read rides only these
-    // triggers (a new fan-out always changes the id set), not the 15 s poll.
-    auditRetries = 0;
-    void refreshProvenanceThenParents();
+    const r = createMissionRefresher((provenance) =>
+      provenance ? refreshProvenanceThenParents() : refreshAllParents(),
+    );
+    refresher.current = r;
 
     // 성긴 배경 폴링(상태 드리프트용). #1481 — the audit log's launch record
     // lands only after every task of a fan-out has spawned, i.e. after the
-    // id-set change above fired; while a spawned task still has none, a
+    // id-set change below fired; while a spawned task still has none, a
     // bounded number of polls re-read it. Otherwise the poll is ledger-only.
     const timer = setInterval(() => {
       const st = useStore.getState();
       const missing = Object.keys(st.fanoutSpawnOwner ?? {}).some((id) => !st.fanoutProvenance?.[id]);
       if (missing && auditRetries < MAX_AUDIT_RETRIES) {
         auditRetries += 1;
-        void refreshProvenanceThenParents();
+        r.now(true);
       } else {
-        void refreshAllParents();
+        r.now(false);
       }
     }, MISSION_POLL_INTERVAL_MS);
 
     // daemon (re)connect 시 콜드부트/리스폰 후 재수화.
     let disposed = false;
     void window.electronAPI.daemon.whenReady().then(() => {
-      if (!disposed) void refreshProvenanceThenParents();
+      if (!disposed) r.now(true);
     });
     const offConnected = window.electronAPI.daemon.onConnected(() => {
-      if (!disposed) void refreshProvenanceThenParents();
+      if (!disposed) r.now(true);
     });
 
     return () => {
       disposed = true;
       clearInterval(timer);
       offConnected();
+      r.dispose();
+      if (refresher.current === r) refresher.current = null;
     };
+  }, []);
+
+  // 마운트 + id 집합 변화 시 refetch. The audit read rides only these
+  // triggers (a new fan-out always changes the id set), not the 15 s poll.
+  // The mount refetches at once; later changes are debounced so a fan-out's
+  // burst of new workspaces costs one pass.
+  const mounted = useRef(false);
+  useEffect(() => {
+    auditRetries = 0;
+    if (mounted.current) {
+      refresher.current?.soon(true);
+      return;
+    }
+    mounted.current = true;
+    refresher.current?.now(true);
   }, [workspaceIdsKey]);
 }

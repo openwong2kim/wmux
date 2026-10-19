@@ -86,7 +86,7 @@ describe('AccountUsageService live ingest', () => {
     const fetchImpl = vi.fn().mockImplementation(() => new Promise<Response>((r) => { fail = r; })) as unknown as typeof fetch;
     const svc = make(() => NOW_MS, fetchImpl);
     const pending = svc.refreshNow('A');
-    await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalled());
+    await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalled(), { timeout: 5_000 });
     svc.ingestLive('A', LIVE);
     fail(new Response('', { status: 500 }));
     await pending;

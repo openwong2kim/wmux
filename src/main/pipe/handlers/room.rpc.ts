@@ -11,7 +11,8 @@
 //                 card into the named workspace's room, which is also a
 //                 `human.message` fact and a priority-0 wake for each bot it is
 //                 for (humanMessage.ts: the `mentions`, else the `to` role,
-//                 else every bot of the room). Addressing is a field, never
+//                 else every bot of the room; in a group chat's thread, its
+//                 members or those it names). Addressing is a field, never
 //                 text: an `@name` in a card wakes nobody. Posts are
 //                 idempotent by clientPostId.
 //   room.read     a bot: its own room (a Coordinator-template bot, by its live
@@ -24,7 +25,7 @@
 // Any other caller — no bot binding and not the operator — is refused.
 
 import path from 'node:path';
-import type { BotBinding, BotRole } from '../../../shared/bot';
+import type { BotBinding, BotProfile, BotRole } from '../../../shared/bot';
 import { isBotRole, isCoordinatorBot } from '../../../shared/bot';
 import { SHARED_SURFACE, type BotToolName, type FactoryRefusal } from '../../../shared/botSurface';
 import {
@@ -43,13 +44,18 @@ import {
   type RoomThreadsParams,
 } from '../../../shared/room';
 import type { RpcContext } from '../../../shared/rpc';
+import type { WakeItem } from '../../../shared/wake';
 import { resolveThreadDecision } from '../../deck/deckDecisionStore';
+import { setBotRuntimePorts } from '../../factory/BotRuntime';
 import { registerFactoryRpcModule, type FactoryHostDeps, type FactoryModuleHandle, type FactoryRouter } from '../../factory/factoryHost';
 import { getHandoffRouter } from '../../factory/handoffRouter';
+import { redactStoredSecrets } from '../../factory/secretRedaction';
 import { HUMAN_RETRY_WINDOW_MS } from '../../factory/wakeQueue';
 import {
   ROOMS_DIRNAME,
   RoomWriter,
+  botThreadRefusal,
+  capBody,
   getRoomWriter,
   isClientId,
   isRoomWorkspaceId,
@@ -70,6 +76,8 @@ import {
 } from '../../factory/roomWriter';
 import { humanAddressee, parseMentions, postHumanMessage } from '../../factory/humanMessage';
 import { parseResolution } from '../../factory/morningReport';
+import { getRoomAttachmentStore, type RoomAttachmentStore } from '../../factory/roomAttachments';
+import { parseRoomAttachments, type RoomAttachment } from '../../../shared/roomAttachments';
 
 // The owner's messages (shared with the phone) live in factory/humanMessage.ts.
 export { humanAddressee, postHumanMessage };
@@ -117,6 +125,19 @@ export interface RoomHandlerDeps {
   writer: () => RoomWriter | null;
   ports: () => Partial<FactoryRoomPorts>;
   wmuxDir: () => string;
+  /** The room's photo store. Default: the factory's. */
+  attachments?: () => RoomAttachmentStore | null;
+}
+
+/** The operator's stored photos, undefined for none, null when one is not a
+ *  file of this room's store of the size the record says. */
+function operatorPhotos(value: unknown, workspaceId: string, deps: RoomHandlerDeps): RoomAttachment[] | undefined | null {
+  if (value === undefined) return undefined;
+  const parsed = parseRoomAttachments(value);
+  if (!parsed || !Array.isArray(value) || parsed.length !== value.length) return null;
+  const store = deps.attachments ? deps.attachments() : getRoomAttachmentStore();
+  if (!store) return null;
+  return parsed.every((a) => store.size(workspaceId, a.id) === a.bytes) ? parsed : null;
 }
 
 function notStarted(): FactoryRefusal<'not_started'> {
@@ -155,13 +176,22 @@ export async function handleRoomPost(raw: unknown, ctx: RpcContext | undefined, 
     if (p.workspaceId !== undefined && p.workspaceId !== bot.workspaceId) {
       return refusal('cross_workspace', 'a bot posts into its own workspace\'s room');
     }
-    // Main pins the thread: the one named, else the running wake's.
-    const threadId = namedThread ?? runningWakeThread(ports, bot.botId) ?? GENERAL_THREAD;
+    // Main pins the thread: the one named, else the running wake's. Another
+    // bot's 1:1 is named only from the wake running in it; a group chat's
+    // thread by its members, or from the wake running in it. A bot woken in
+    // a thread opened for a dispatch that names the conversation the
+    // dispatch was said in posts in the opened thread (postThread).
+    const wakeThread = runningWakeThread(ports, bot.botId);
+    const pinned = getHandoffRouter()?.postThread(bot.botId, namedThread) ?? namedThread;
+    const threadRefused = botThreadRefusal(ports, bot, pinned);
+    if (threadRefused) return refusal('invalid', threadRefused);
+    const threadId = pinned ?? wakeThread ?? GENERAL_THREAD;
     const wake = runningWake(ports, bot.botId);
     const clientPostId = p.clientPostId ?? wakeOrdinals.next(wake, 'post');
     // A card the bot names no parent for answers the owner message its wake
-    // is about, when it lands in that message's thread.
-    const replyTo = p.replyTo ?? wakeReplyTo(writer, wake, bot.workspaceId, threadId);
+    // is about, when it lands in that message's thread. A post moved to the
+    // opened thread drops the parent it named in the conversation.
+    const replyTo = (pinned === namedThread ? p.replyTo : undefined) ?? wakeReplyTo(writer, wake, bot.workspaceId, threadId);
     const { valid, dropped } = settleMentions(ports, bot, mentions ?? []);
     const r = writer.post({
       workspaceId: bot.workspaceId,
@@ -197,6 +227,11 @@ export async function handleRoomPost(raw: unknown, ctx: RpcContext | undefined, 
   if (p.kind !== undefined && p.kind !== 'human') return refusal('card_kind', 'the owner posts human cards');
   if (!isRoomWorkspaceId(p.workspaceId)) return refusal('invalid', 'workspaceId is required');
   if (p.to !== undefined && !isBotRole(p.to)) return refusal('invalid', 'to is not a bot role');
+  // Photos the renderer's room bridge already copied into the room's store
+  // (room.handler.ts postWithPhotos): read for the operator only, and each
+  // must be a stored file of this room of that size.
+  const photos = ctx?.operator === true ? operatorPhotos((p as { attachments?: unknown }).attachments, p.workspaceId, deps) : undefined;
+  if (photos === null) return refusal('invalid', 'attachments are not photos of this room');
   const posted = postHumanMessage(writer, ports, {
     workspaceId: p.workspaceId,
     ...(namedThread !== undefined ? { threadId: namedThread } : {}),
@@ -208,6 +243,7 @@ export async function handleRoomPost(raw: unknown, ctx: RpcContext | undefined, 
     ...(p.replyTo ? { replyTo: p.replyTo } : {}),
     ...(p.clientPostId ? { clientPostId: p.clientPostId } : {}),
     source: 'desktop',
+    ...(photos ? { attachments: photos } : {}),
   });
   // The owner hears "sent" once the wakes are on disk: a restart then still
   // runs them. A failed write is retryable with the same clientPostId (the
@@ -221,6 +257,45 @@ export async function handleRoomPost(raw: unknown, ctx: RpcContext | undefined, 
     }
   }
   return posted;
+}
+
+/** A bot's turn that ended with words but wrote no card of its own in its
+ *  wake's thread since `since`: those words become its card there, through
+ *  handleRoomPost as the bot (the same surface, thread, reply link and
+ *  checks as a room_post). The first line is the title, the rest the body,
+ *  capped as a card's. Call it while the wake still runs. */
+export async function postTurnText(
+  profile: Pick<BotProfile, 'id' | 'workspaceId' | 'role'>,
+  item: Pick<WakeItem, 'id'>,
+  text: string,
+  since: number,
+  deps: RoomHandlerDeps,
+): Promise<unknown> {
+  const writer = deps.writer();
+  // Processed whole, then shortened into a title and a body.
+  const trimmed = capBody(redactStoredSecrets(text)).trim();
+  if (!writer || !trimmed) return null;
+  const threadId = runningWakeThread(deps.ports(), profile.id) ?? GENERAL_THREAD;
+  // A card the bot wrote in this thread during the turn (a room_post, a
+  // question, a handoff), or in an earlier attempt of the same wake (a
+  // retried room_post returns that card), already answered: nothing more.
+  const attemptKey = `wake:${item.id}:`;
+  const own = writer.find(profile.workspaceId, (c) => c.threadId === threadId
+    && c.actor.kind === 'bot' && c.actor.botId === profile.id
+    && (c.at > since || c.clientPostId?.startsWith(attemptKey) === true));
+  if (own) return null;
+  const nl = trimmed.indexOf('\n');
+  const first = nl < 0 ? trimmed : trimmed.slice(0, nl);
+  const line = oneLine(first, ROOM_LIMITS.CARD_BODY_MAX);
+  const title = line.slice(0, ROOM_LIMITS.TITLE_MAX).trim();
+  if (!title) return null;
+  // A first line longer than a title keeps the whole text in the body.
+  const body = line.length > title.length ? trimmed : (nl < 0 ? '' : trimmed.slice(nl + 1).trim());
+  return handleRoomPost(
+    { kind: 'status', title, ...(body ? { body } : {}), clientPostId: `wake:${item.id}:text` },
+    { origin: 'local', bot: { workspaceId: profile.workspaceId, botId: profile.id, role: profile.role } },
+    deps,
+  );
 }
 
 /** A bot card's mentions split into the bots that wake (existing, enabled,
@@ -403,6 +478,9 @@ export function createRoomModule(
         },
       });
       setRoomWriter(writer);
+      setBotRuntimePorts({
+        postTurnText: (profile, item, text, since) => postTurnText(profile, item, text, since, { writer: getRoomWriter, ports: resolve, wmuxDir: deps.wmuxDir }),
+      });
       const ports = resolve();
       if (ports.factLog) {
         offs.push(ports.factLog.subscribe((fact) => {

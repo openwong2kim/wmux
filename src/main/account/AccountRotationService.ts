@@ -25,6 +25,7 @@ import {
   type AccountQuotaReading,
   type QuotaVerdict,
 } from '../../shared/accountQuota';
+import { accountGroupOf } from '../../shared/accountGroup';
 import { getAccountStore, isAccessibleDir, VENDOR_ENV_KEYS, type Account, type Vendor } from './accountStore';
 import type { AccountUsageEntry } from './AccountUsageService';
 import { readCodexRolloutLimits, type RolloutLimits } from '../quota/codexRollout';
@@ -53,7 +54,8 @@ export interface RotationAccountRow {
 export type RotationDecision =
   | { kind: 'keep' }
   | { kind: 'switch'; accountId: string; env: Record<string, string> }
-  | { kind: 'hold'; availableAtMs: number | null };
+  /** `grouped`: only the bound account's group was out; accounts in other groups were not considered. */
+  | { kind: 'hold'; availableAtMs: number | null; grouped?: true };
 
 export interface AccountRotationDeps {
   dataDir?: string;
@@ -184,24 +186,29 @@ export class AccountRotationService {
   /**
    * Decide the account for a typed `vendor` launch in `workspaceId`. Rotation
    * off, no registered account, or a workspace not bound to one → keep (the
-   * launch runs exactly as before).
+   * launch runs exactly as before). Only accounts in the bound account's group
+   * are candidates: when that group is out the launch is held, never moved to
+   * another group.
    */
   async prepareLaunch(vendor: Vendor, workspaceId: string | undefined): Promise<RotationDecision> {
     if (!this.getSettings()[vendor]) return { kind: 'keep' };
-    const pool = this.accounts(vendor);
-    if (pool.length === 0) return { kind: 'keep' };
-    const bound = workspaceId
+    const registered = this.accounts(vendor);
+    if (registered.length === 0) return { kind: 'keep' };
+    const bindingOf = () => (workspaceId
       ? (this.deps.getBinding ? this.deps.getBinding(workspaceId, vendor) : getAccountStore().getBinding(workspaceId, vendor))
-      : undefined;
+      : undefined);
+    const bound = bindingOf();
     // An unbound workspace runs on the CLI's default login, which is not a
     // registered account wmux can measure: leave it alone.
-    if (!bound || !pool.some((a) => a.id === bound)) return { kind: 'keep' };
+    if (!bound || !registered.some((a) => a.id === bound)) return { kind: 'keep' };
     const now = this.now();
     // One budget for the whole decision: the bound read and the fallback
     // reads share it.
     const deadline = now + PROBE_TIMEOUT_MS;
     // The bound account first: while it has quota nothing else is read.
-    const boundAccount = pool.find((a) => a.id === bound)!;
+    const boundAccount = registered.find((a) => a.id === bound)!;
+    const group = accountGroupOf(boundAccount);
+    const pool = registered.filter((a) => accountGroupOf(a) === group);
     const boundReading = await this.reading(boundAccount, deadline);
     if (evaluateQuota(boundReading, now).usable) return { kind: 'keep' };
     // The switch may have gone off while the bound account was being read.
@@ -212,16 +219,24 @@ export class AccountRotationService {
     ];
     // ...or while the others were.
     if (!this.getSettings()[vendor]) return { kind: 'keep' };
+    // Groups as they are now: an account moved out of the group during the
+    // reads is no longer a candidate, and one moved in was not measured.
+    const groupNow = new Map(this.accounts(vendor).map((a) => [a.id, accountGroupOf(a)]));
+    // A workspace rebound meanwhile is decided by its next launch, not from the old group.
+    if (bindingOf() !== bound || groupNow.get(bound) !== group) return { kind: 'keep' };
+    const groupSize = [...groupNow.values()].filter((g) => g === group).length;
     // Only a measured account is a switch target; an unmeasured one (no
     // reading, or a Claude account whose last probe failed) is never picked.
     const candidates = read
+      .filter(({ a }) => groupNow.get(a.id) === group)
       .filter(({ a, reading }) => a.id === bound || reading !== null)
       .map(({ a, reading }) => ({ id: a.id, current: a.id === bound, verdict: evaluateQuota(reading, now) }));
     const choice = chooseByQuota(candidates);
     if (choice.kind === 'hold') {
       // "Every account is out" is only true when every account was measured.
-      if (candidates.length < pool.length) return { kind: 'keep' };
-      return { kind: 'hold', availableAtMs: choice.availableAtMs };
+      if (candidates.length < groupSize) return { kind: 'keep' };
+      // Other accounts were left out by group, so "every account" would be wrong.
+      return { kind: 'hold', availableAtMs: choice.availableAtMs, ...(groupSize < groupNow.size ? { grouped: true as const } : {}) };
     }
     if (choice.kind === 'keep') return { kind: 'keep' };
     const account = pool.find((a) => a.id === choice.id);

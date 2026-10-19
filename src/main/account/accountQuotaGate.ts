@@ -67,7 +67,7 @@ export async function withAccountQuota<T extends QuotaLaunchOptions>(
         return options;
       }
       console.warn(`[account-rotation] ${stem} launch held: every registered ${stem} account is out of quota`);
-      return { ...options, initialCommand: marker + heldLaunchNotice(stem, decision.availableAtMs) };
+      return { ...options, initialCommand: marker + heldLaunchNotice(stem, decision.availableAtMs, decision.grouped ? 'group' : 'all') };
     }
   } catch (err) {
     console.warn(`[account-rotation] launch gate failed, launching unchanged: ${String(err)}`);

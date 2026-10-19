@@ -11,9 +11,10 @@ import {
 } from '../../utils/browserPane';
 import { isPrivateBrowserPartition } from '../../../shared/privateBrowser';
 import { isPrivateSessionReady, privateSessionReady } from '../../utils/privateSessionGate';
-import { formatElementHandoff, parseInspectedElement, HANDOFF_NOTE_MAX, type InspectedElement } from '../../../shared/browserElementHandoff';
+import { formatElementHandoff, parseElementRect, parseInspectedElement, ELEMENT_STYLE_KEYS, HANDOFF_NOTE_MAX, type InspectedElement } from '../../../shared/browserElementHandoff';
 import { findWorkspaceSurfaceById } from '../../utils/paneTraversal';
 import { findLeaf } from '../../../shared/paneUtils';
+import { BROWSER_ZOOM_EVENT, stepPageZoom, type BrowserZoomDetail } from '../../../shared/browserZoom';
 import { injectText } from '../AgentToolbar/inject';
 import { IconX } from '../icons';
 
@@ -75,6 +76,23 @@ export function computeEffectiveVisibility(input: {
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
+
+/** The hand-off's terminal as [paneId, surfaceId, ptyId, agentName], or null
+ *  when this browser's pane shows no terminal with an agent in it. */
+function resolveHandoffTarget(
+  s: ReturnType<typeof useStore.getState>,
+  workspaceId: string,
+  surfaceId: string,
+): [string, string, string, string] | null {
+  const ws = s.workspaces.find((w) => w.id === workspaceId);
+  const at = ws ? findWorkspaceSurfaceById(ws, surfaceId) : null;
+  const leaf = ws && at && !at.stashed ? findLeaf(ws.rootPane, at.paneId) : null;
+  if (!leaf) return null;
+  const terminals = leaf.surfaces.filter((x) => !x.surfaceType || x.surfaceType === 'terminal');
+  const shown = terminals.find((x) => x.id === leaf.activeSurfaceId) ?? terminals[0];
+  const agent = shown?.ptyId ? s.surfaceAgent[shown.ptyId] : undefined;
+  return shown && agent ? [leaf.id, shown.id, shown.ptyId, agent.name] : null;
+}
 
 export default function BrowserPanel({ surfaceId, workspaceId, initialUrl, partition, isActive, visible, isZoomHidden, isWorkspaceVisible, occluded, onClose }: BrowserPanelProps) {
   const t = useT();
@@ -369,6 +387,19 @@ export default function BrowserPanel({ surfaceId, workspaceId, initialUrl, parti
     return () => document.removeEventListener(BROWSER_NAVIGATE_EVENT, onNavigateEvent);
   }, [surfaceId, handleNavigate]);
 
+  // Cmd/Ctrl + = / - / 0 while this pane's chrome has focus (useKeyboard);
+  // inside the page main handles the same keys.
+  useEffect(() => {
+    const onZoomEvent = (e: Event) => {
+      const detail = (e as CustomEvent<BrowserZoomDetail>).detail;
+      const wv = webviewRef.current;
+      if (!detail || detail.surfaceId !== surfaceId || !wv || !isReady) return;
+      wv.setZoomFactor(stepPageZoom(wv.getZoomFactor(), detail.step));
+    };
+    document.addEventListener(BROWSER_ZOOM_EVENT, onZoomEvent);
+    return () => document.removeEventListener(BROWSER_ZOOM_EVENT, onZoomEvent);
+  }, [surfaceId, isReady]);
+
   const handleBack = useCallback(() => {
     webviewRef.current?.goBack();
   }, []);
@@ -382,9 +413,11 @@ export default function BrowserPanel({ surfaceId, workspaceId, initialUrl, parti
   }, []);
 
   // Inspector: inject/remove highlight overlay into webview
-  const injectInspector = useCallback(() => {
+  // `domReady`: called from a dom-ready listener, which can hold a closure from
+  // before isReady turned true (a discarded page waking up while picking).
+  const injectInspector = useCallback((domReady = false) => {
     const wv = webviewRef.current;
-    if (!wv || !isReady) return;
+    if (!wv || (!isReady && !domReady)) return;
     const nonce = crypto.randomUUID();
     inspectNonceRef.current = nonce;
     // 이 오버레이/라벨은 게스트 웹뷰(임의의 외부 페이지) 내부에 주입된다.
@@ -436,7 +469,14 @@ export default function BrowserPanel({ surfaceId, workspaceId, initialUrl, parti
             .join(' ');
           const openTag = '<' + tag + (attrs ? ' ' + attrs : '') + '>';
           const text = (el.innerText || el.textContent || '').trim().slice(0, 400);
-          return { title: document.title, url: location.href, selector: selector, tag: openTag, text: text };
+          // A few computed styles (the allow-list; the app re-checks every key)
+          // and the element's box, which the app captures as a screenshot.
+          const cs = getComputedStyle(el);
+          const styles = {};
+          for (const k of ${JSON.stringify(ELEMENT_STYLE_KEYS)}) styles[k] = String(cs.getPropertyValue(k) || '').slice(0, 200);
+          const b = el.getBoundingClientRect();
+          const rect = { x: b.left, y: b.top, width: b.width, height: b.height, viewportWidth: window.innerWidth, viewportHeight: window.innerHeight };
+          return { title: document.title, url: location.href, selector: selector, tag: openTag, text: text, styles: styles, rect: rect };
         }
 
         function onMove(e) {
@@ -468,6 +508,8 @@ export default function BrowserPanel({ surfaceId, workspaceId, initialUrl, parti
           e.stopImmediatePropagation();
           const el = document.elementFromPoint(e.clientX, e.clientY);
           if (!el || el === overlay || el === label || el.id?.startsWith('__wmux')) return;
+          // Kept so the app can measure it again right before its screenshot.
+          window.__wmuxPicked = el;
           console.log('__wmux_inspect_result__' + ${JSON.stringify(nonce)} + ':' + JSON.stringify(buildContext(el)));
         }
 
@@ -503,6 +545,16 @@ export default function BrowserPanel({ surfaceId, workspaceId, initialUrl, parti
     setInspecting(!inspecting);
   }, [inspecting, injectInspector, removeInspector]);
 
+  // A full navigation replaces the document and the overlay with it, while
+  // `inspecting` stays on: re-inject so the picker keeps working on the new page.
+  useEffect(() => {
+    const wv = webviewRef.current;
+    if (!wv || !inspecting) return;
+    const onDomReady = () => injectInspector(true);
+    wv.addEventListener('dom-ready', onDomReady);
+    return () => { wv.removeEventListener('dom-ready', onDomReady); };
+  }, [inspecting, injectInspector, discarded, sessionReady]);
+
   // Listen for inspector click results from webview console
   useEffect(() => {
     const wv = webviewRef.current;
@@ -520,10 +572,36 @@ export default function BrowserPanel({ surfaceId, workspaceId, initialUrl, parti
       if (!picked) return;
       setHandoffNote('');
       setHandoff(picked);
+      // The element's screenshot, saved for the agent to open. Not for a
+      // private tab: its pages are never written to disk.
+      const wcId = (wv as unknown as { getWebContentsId?: () => number }).getWebContentsId?.();
+      const capture = window.electronAPI?.browser?.captureElement;
+      if (picked.rect && !isPrivate && wcId && capture) {
+        const shotOf = picked;
+        void (async () => {
+          try {
+            // The inspector's overlay goes first (removeInspector above runs
+            // before this in the guest); wait two frames so it is off screen,
+            // then measure the element again: the hand-off bar replacing the
+            // inspector hint resized the view, which can move it.
+            const rect = parseElementRect(await wv.executeJavaScript(`new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => {
+              const el = window.__wmuxPicked;
+              delete window.__wmuxPicked;
+              if (!el || !el.isConnected) return r(null);
+              const b = el.getBoundingClientRect();
+              r({ x: b.left, y: b.top, width: b.width, height: b.height, viewportWidth: window.innerWidth, viewportHeight: window.innerHeight });
+            })))`));
+            if (!rect) return;
+            const ptyId = resolveHandoffTarget(useStore.getState(), workspaceId, surfaceId)?.[2];
+            const file = await capture(wcId, rect, ptyId);
+            if (file) setHandoff((cur) => (cur === shotOf ? { ...cur, screenshot: file } : cur));
+          } catch { /* the hand-off goes without a screenshot */ }
+        })();
+      }
     };
     wv.addEventListener('console-message', onConsole as EventListener);
     return () => { wv.removeEventListener('console-message', onConsole as EventListener); };
-  }, [removeInspector, discarded, sessionReady]);
+  }, [removeInspector, discarded, sessionReady, isPrivate, workspaceId, surfaceId]);
 
   // The terminal the hand-off goes to: the one this browser's pane shows (its
   // focused terminal, else its first), and only while an agent runs in it —
@@ -532,14 +610,8 @@ export default function BrowserPanel({ surfaceId, workspaceId, initialUrl, parti
   // re-renders this panel only when the answer changes.
   const handoffTargetKey = useStore((s) => {
     if (!handoff) return '';
-    const ws = s.workspaces.find((w) => w.id === workspaceId);
-    const at = ws ? findWorkspaceSurfaceById(ws, surfaceId) : null;
-    const leaf = ws && at && !at.stashed ? findLeaf(ws.rootPane, at.paneId) : null;
-    if (!leaf) return '';
-    const terminals = leaf.surfaces.filter((x) => !x.surfaceType || x.surfaceType === 'terminal');
-    const shown = terminals.find((x) => x.id === leaf.activeSurfaceId) ?? terminals[0];
-    const agent = shown?.ptyId ? s.surfaceAgent[shown.ptyId] : undefined;
-    return shown && agent ? JSON.stringify([leaf.id, shown.id, shown.ptyId, agent.name]) : '';
+    const target = resolveHandoffTarget(s, workspaceId, surfaceId);
+    return target ? JSON.stringify(target) : '';
   });
   const handoffTarget = handoffTargetKey
     ? (JSON.parse(handoffTargetKey) as [string, string, string, string])
@@ -573,6 +645,8 @@ export default function BrowserPanel({ surfaceId, workspaceId, initialUrl, parti
   return (
     <div
       className="flex flex-col h-full w-full overflow-hidden"
+      // Lets the zoom shortcut find the pane whose chrome has focus (useKeyboard).
+      data-browser-panel={surfaceId}
       // Clicking the toolbar / title strip / page chrome (anywhere in the
       // pane) pulls keyboard focus onto the webview. Clicking *inside* page
       // content already focuses the guest natively, but pane-switch clicks and
@@ -734,6 +808,16 @@ export default function BrowserPanel({ surfaceId, workspaceId, initialUrl, parti
             {handoff.text && (
               <span className="truncate min-w-0" style={{ color: 'var(--text-sub)' }} title={handoff.text}>
                 {handoff.text}
+              </span>
+            )}
+            {handoff.screenshot && (
+              <span
+                data-browser-handoff-shot
+                className="shrink-0 ml-auto"
+                style={{ fontSize: 11, color: 'var(--text-muted)' }}
+                title={handoff.screenshot}
+              >
+                {t('browser.handoff.screenshot')}
               </span>
             )}
           </div>

@@ -1,7 +1,8 @@
 // job_set — the bot tool over `bot.setJob` (shared/bot.ts BOT_RPC). Registered
 // with registerToolModule (src/mcp/toolModules.ts). The bot token on the call
 // is the identity: main sets the calling bot's own job, and only while it
-// runs a wake on the owner's own words, so the tool sends no bot id.
+// runs a wake on the owner's own words (their message, or their answer to its
+// question), so the tool sends no bot id.
 
 import { z } from 'zod';
 import { BOT_JOB_MAX, BOT_RPC } from '../shared/bot';
@@ -13,7 +14,7 @@ registerToolModule({
   register(host, deps) {
     host.tool(
       'job_set',
-      'Set your own job when the owner gives you one in their own words (this wake must be the owner\'s message). '
+      'Set your own job when the owner gives you one in their own words (this wake must be the owner\'s message or their answer to your question). '
         + 'The job becomes part of your instructions from your next wake; the room shows the change and the owner can undo it. '
         + 'Pass job: null to clear it.',
       {

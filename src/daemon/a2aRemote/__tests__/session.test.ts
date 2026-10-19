@@ -1,8 +1,9 @@
 // JoinerSession pump, with a fake pinned client: what happens when this side
 // cannot record the outcome of a send.
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { A2A_REMOTE_PROTOCOL, A2A_ROUTES, type A2aOutboxRecordV1 } from '../../../shared/a2aRemote';
 import { JoinerSession, type SessionClient } from '../session';
+import { deliberateSleep } from '../../../test-utils/waitFor';
 
 const HOST = '11111111-1111-4111-8111-111111111111';
 
@@ -60,14 +61,14 @@ function make(answer: unknown, failWrites: { ack?: boolean; refuse?: boolean }):
 describe('JoinerSession pump', () => {
   it('an ack it cannot record backs off instead of re-POSTing in a tight loop', async () => {
     const s = make({ ok: true, duplicate: false }, { ack: true });
-    await new Promise((r) => setTimeout(r, 600));
+    await deliberateSleep(600, 'real timer: counts re-POSTs inside a 600ms window of the backoff');
     expect(s.posts()).toBeGreaterThanOrEqual(1);
     expect(s.posts()).toBeLessThanOrEqual(5);
   });
 
   it('a refusal it cannot record backs off too', async () => {
     const s = make({ ok: false, error: 'conflict' }, { refuse: true });
-    await new Promise((r) => setTimeout(r, 600));
+    await deliberateSleep(600, 'real timer: counts re-POSTs inside a 600ms window of the backoff');
     expect(s.posts()).toBeGreaterThanOrEqual(1);
     expect(s.posts()).toBeLessThanOrEqual(5);
   });
@@ -112,8 +113,7 @@ describe('JoinerSession status', () => {
     });
     sessions.push(session);
     session.start();
-    await new Promise((r) => setTimeout(r, 200));
-    expect(states).toContain('connected');
+    await vi.waitFor(() => expect(states).toContain('connected'), { timeout: 10_000 });
     expect(session.current()).toMatchObject({ state: 'connected', pending: 0 });
     // The send also cut the stream's long backoff short (a redial happened).
     expect(stream).toBeGreaterThanOrEqual(2);

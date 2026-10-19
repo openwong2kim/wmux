@@ -185,11 +185,14 @@ export class WakeTaint {
     // A researcher's handoff is tainted whatever mark it was given.
     if (h.from.kind === 'bot' && this.alwaysTainted(h.from.botId)) return true;
     // The owner's answer to a question asked mid-hop resumes that hop: it
-    // is as tainted as the hop.
+    // is as tainted as the hop. An answer whose question was pruned is
+    // handled like outside text: which hop it resumed is no longer known.
     if (h.kind === 'answer' && h.replyTo && this.answerResumesTaintedHop(h.replyTo)) return true;
     return mark ?? h.from.kind === 'bot';
   }
 
+  /** The question an answer replies to was asked mid-hop on a tainted hop,
+   *  or is no longer on record (pruned, or unreadable). */
   private answerResumesTaintedHop(askId: string): boolean {
     let ask: Handoff | null;
     try {
@@ -197,7 +200,8 @@ export class WakeTaint {
     } catch {
       return true;
     }
-    return !!ask?.forHop && this.handoffTainted(ask.forHop);
+    if (!ask) return true;
+    return !!ask.forHop && this.handoffTainted(ask.forHop);
   }
 
   /** A handoff was delivered: mark it from its sender's running wake. Called
@@ -213,7 +217,10 @@ export class WakeTaint {
     if (!h) return;
     let tainted: boolean;
     if (h.from.kind !== 'bot') {
-      tainted = false;
+      // The owner's answer keeps the mark of the hop it resumes, read now
+      // while its question is on record: the answer itself may be pruned
+      // later, and then only this mark is left.
+      tainted = h.kind === 'answer' && !!h.replyTo && this.answerResumesTaintedHop(h.replyTo);
     } else if (h.relay === true || this.alwaysTainted(h.from.botId)) {
       // A relay's dispatch is wmux's, in the coordinator's name: its mark
       // is written before it is stored, never read from the coordinator's wake.

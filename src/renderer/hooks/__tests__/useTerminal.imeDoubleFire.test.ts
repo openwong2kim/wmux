@@ -8,8 +8,8 @@ import path from 'node:path';
  * turn the second one into PTY input once the press was acted on, and must
  * arm the guard itself when it is the one that acts (a switched-off
  * shortcut's control byte). The guard's semantics are unit-tested in
- * shared/__tests__/keymap.test.ts and driven end to end through useKeyboard
- * in useKeyboard.imeDoubleFire.dynamic.test.tsx; jsdom cannot run xterm's
+ * shared/__tests__/keymap.os.test.ts and driven end to end through useKeyboard
+ * in useKeyboard.imeDoubleFire.dynamic.os.test.tsx; jsdom cannot run xterm's
  * custom key handler, so this pins where the handler consults it.
  */
 

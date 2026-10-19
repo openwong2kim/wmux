@@ -49,6 +49,10 @@ docker run --rm --platform "$PLATFORM" \
     export PATH="/tmp/node/bin:$PATH"
     echo "building with node $(node --version), npm $(npm --version), $(ldd --version | head -n 1)"
     npm ci --no-audit --no-fund
+    # node-pty ships Linux prebuilds since 1.2 (#2398), so npm ci no longer
+    # compiles it; rebuild it here against this image glibc. The artifact
+    # stages build/Release/pty.node, and its glibc scan and PTY smoke check it.
+    npm_config_build_from_source=true npm rebuild node-pty
     npm run build:cli
     npm run build:daemon
     node scripts/build-server-artifact.mjs build --arch "$ARCH" --out "$OUT" --cache "$CACHE" --max-glibc "$MAX_GLIBC"

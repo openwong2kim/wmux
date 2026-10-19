@@ -60,6 +60,8 @@ export async function readRepoDefaultBranch(repoRoot: string, deps: DefaultBranc
  *  key: read without a working folder, so no repository config is involved.
  *  null when gh cannot tell. */
 export async function readRepoDefaultBranchByKey(repoKey: string, deps: DefaultBranchDeps = {}): Promise<string | null> {
+  // A GitLab subgroup project is no GitHub repository.
+  if (repoKey.split('/').length !== 3) return null;
   const run = deps.run ?? defaultRun;
   try {
     const name = (await run('gh', ['repo', 'view', repoKey, '--json', 'defaultBranchRef', '--jq', '.defaultBranchRef.name'], os.tmpdir())).trim();

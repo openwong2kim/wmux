@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import fs from 'node:fs';
 import path from 'node:path';
+import { readSourceText } from '../../../test-utils/sourceText';
 
 // Phase A — A6. The async scrollback.load() in useTerminal can resolve
 // AFTER daemon mode becomes active. Writing the stale .txt content into
@@ -15,7 +15,7 @@ import path from 'node:path';
 // checklist in docs/upgrade-v2.9.1.md.
 describe('A6 — useTerminal async restore race cancel (source-level)', () => {
   const hookPath = path.join(__dirname, '..', 'useTerminal.ts');
-  const src = fs.readFileSync(hookPath, 'utf-8');
+  const src = readSourceText(hookPath);
 
   it('imports isDaemonModeActive from the renderer daemon module', () => {
     expect(src).toMatch(
@@ -63,7 +63,7 @@ describe('A6 — useTerminal async restore race cancel (source-level)', () => {
     const loadIdx = src.indexOf('scrollback.load(scrollbackFile)');
     const body = src.slice(loadIdx, loadIdx + 6000);
     expect(body).toMatch(/didRestoreTxt\s*=\s*true/);
-    expect(body).toMatch(/window\.electronAPI\.daemon\.onConnected\(/);
+    expect(body).toMatch(/onDaemonConnected\(/);
     // The listener resets the terminal and clears the flag.
     expect(body).toMatch(/terminal\.reset\(\)/);
     // Cleanup unregisters the listener.

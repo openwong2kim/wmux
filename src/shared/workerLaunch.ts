@@ -41,14 +41,23 @@
 // is opened from Finder/Dock, main inherits no shell environment at all), so a
 // main-side `process.env.ANTHROPIC_BASE_URL` check would read absent for
 // exactly the gateway operator it is meant to protect.
+//
+// Bedrock and Vertex (`CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX`) set
+// no base URL, yet their `ANTHROPIC_MODEL` is a provider id (a Bedrock ARN, a
+// Vertex `model@version`) that claude's own default is not, so either flag
+// cancels the neutralisation the same way.
 
 import { commandChoosesModel } from './orchestratorRole';
 
 /** The variable the launch neutralises. */
 export const WORKER_MODEL_ENV = 'ANTHROPIC_MODEL';
 
-/** The variable whose presence CANCELS the neutralisation (see above). */
+/** The gateway variable whose presence CANCELS the neutralisation (see above). */
 export const WORKER_GATEWAY_ENV = 'ANTHROPIC_BASE_URL';
+
+/** Every variable whose presence cancels it: the gateway and the Bedrock and
+ *  Vertex backend flags. */
+export const WORKER_MODEL_KEEP_ENVS = [WORKER_GATEWAY_ENV, 'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX'] as const;
 
 /**
  * The prefix, verbatim. Compared and sliced as a literal on both sides — never
@@ -61,7 +70,7 @@ export const WORKER_GATEWAY_ENV = 'ANTHROPIC_BASE_URL';
  * Model SELECTION is the one part of that environment wmux owns for a worker,
  * because wmux is what decided to launch this agent at all.
  */
-export const MODEL_ENV_MARKER = `[ -n "$${WORKER_GATEWAY_ENV}" ] || unset ${WORKER_MODEL_ENV}; `;
+export const MODEL_ENV_MARKER = `${WORKER_MODEL_KEEP_ENVS.map((v) => `[ -n "$${v}" ]`).join(' || ')} || unset ${WORKER_MODEL_ENV}; `;
 
 /** Split a leading {@link MODEL_ENV_MARKER} off a launch command. */
 export function splitModelEnvMarker(command: string): { marker: string; command: string } {
@@ -159,7 +168,8 @@ export function isFanoutWorkerPermissionMode(v: unknown): v is FanoutWorkerPermi
 
 /**
  * The wmux tools a worker may call without a prompt: record its ledger row,
- * publish its own task branch (main pushes it), READ its mission channel,
+ * publish its own task branch (main pushes it) and fetch origin into it (main
+ * fetches), READ its mission channel,
  * and ask who it is / what it was asked. Nothing
  * that writes into another agent's prompt: `channel_post` is left out because
  * a post can pin a mention to any pane and land in that agent's prompt, and
@@ -169,6 +179,7 @@ export function isFanoutWorkerPermissionMode(v: unknown): v is FanoutWorkerPermi
 export const FANOUT_WORKER_ALLOWED_TOOLS: readonly string[] = [
   'mcp__wmux__ledger_update',
   'mcp__wmux__task_push',
+  'mcp__wmux__task_fetch',
   'mcp__wmux__channel_read',
   'mcp__wmux__channel_unread',
   'mcp__wmux__channel_ack',

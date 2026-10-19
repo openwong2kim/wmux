@@ -14,6 +14,7 @@
 import crypto from 'node:crypto';
 import path from 'node:path';
 import { BOT_SECRET_LIMITS, SECRET_GRANT_ID_RE, isBotSecretName, type SecretGrantId } from '../../shared/botSecret';
+import { isConnectionKey } from './connectorStore';
 
 export interface SecretGrantSource {
   /** The values of `names`, or the names that are not stored. */
@@ -26,7 +27,11 @@ interface Grant {
   taskId: string;
   ownerWorkspaceId: string;
   cwd: string;
+  /** Plain secrets the bot named (never a connection's key). */
   names: string[];
+  /** The keys of the task's connections (each a connection's key, and one
+   *  of the connections the spawn carries). */
+  connectionNames: string[];
   expiresAt: number;
 }
 
@@ -67,11 +72,16 @@ export function secretNamesRefusal(names: readonly string[]): string | null {
 
 /** Mint one single-use grant for one worker spawn. Null when a name is not
  *  stored any more (the task is then not launched). */
-export function mintSecretGrant(input: { botId: string; taskId: string; ownerWorkspaceId: string; cwd: string; names: readonly string[] }): SecretGrantId | null {
+export function mintSecretGrant(input: { botId: string; taskId: string; ownerWorkspaceId: string; cwd: string; names: readonly string[]; connectionNames?: readonly string[] }): SecretGrantId | null {
   const now = clock();
   sweep(now);
-  if (!input.botId || !input.taskId || !input.ownerWorkspaceId || !input.cwd || parseSecretNames([...input.names]) === null) return null;
-  if (secretNamesRefusal(input.names) !== null) return null;
+  const connectionNames = [...(input.connectionNames ?? [])];
+  const all = [...input.names, ...connectionNames];
+  if (!input.botId || !input.taskId || !input.ownerWorkspaceId || !input.cwd || parseSecretNames(all) === null) return null;
+  // A connection's key never goes out as a plain secret, whenever it became
+  // one; a connection's key list holds only connection keys.
+  if (input.names.some((n) => isConnectionKey(n)) || connectionNames.some((n) => !isConnectionKey(n))) return null;
+  if (secretNamesRefusal(all) !== null) return null;
   const id = `sg-${crypto.randomBytes(24).toString('base64url')}`;
   grants.set(id, {
     botId: input.botId,
@@ -79,6 +89,7 @@ export function mintSecretGrant(input: { botId: string; taskId: string; ownerWor
     ownerWorkspaceId: input.ownerWorkspaceId,
     cwd: path.resolve(input.cwd),
     names: [...input.names],
+    connectionNames,
     expiresAt: now + BOT_SECRET_LIMITS.GRANT_TTL_MS,
   });
   return id;
@@ -97,7 +108,7 @@ export function revokeSecretGrant(id: SecretGrantId | null | undefined): void {
  */
 export function resolveSecretGrant(
   id: unknown,
-  spawn: { strictBotWorker: boolean; fanoutTaskOf: unknown; cwd: unknown; spawns?: ReadonlyArray<{ botId: string; taskId: string }> },
+  spawn: { strictBotWorker: boolean; fanoutTaskOf: unknown; cwd: unknown; spawns?: ReadonlyArray<{ botId: string; taskId: string; connectors?: ReadonlyArray<{ secrets: ReadonlyArray<{ secret: string }> }> }> },
 ): GrantResolution {
   if (typeof id !== 'string' || !SECRET_GRANT_ID_RE.test(id)) return { ok: false, reason: 'not a secret grant' };
   const grant = grants.get(id);
@@ -111,17 +122,23 @@ export function resolveSecretGrant(
   if (typeof spawn.cwd !== 'string' || !spawn.cwd || path.resolve(spawn.cwd) !== grant.cwd) {
     return { ok: false, reason: 'the secret grant is for another folder' };
   }
-  if (!spawn.spawns?.some((s) => s.botId === grant.botId && s.taskId === grant.taskId)) {
-    return { ok: false, reason: 'the secret grant is for another bot or task' };
+  const mark = spawn.spawns?.find((s) => s.botId === grant.botId && s.taskId === grant.taskId);
+  if (!mark) return { ok: false, reason: 'the secret grant is for another bot or task' };
+  if (grant.names.some((n) => isConnectionKey(n))) return { ok: false, reason: 'a key it names belongs to a connection now' };
+  // A connection's key goes only to a spawn that carries that connection.
+  const carried = new Set((mark.connectors ?? []).flatMap((c) => c.secrets.map((x) => x.secret)));
+  if (grant.connectionNames.some((n) => !carried.has(n) || !isConnectionKey(n))) {
+    return { ok: false, reason: 'a connection key it names is not one of this launch\'s connections' };
   }
   const s = source?.() ?? null;
   if (!s) return { ok: false, reason: 'the key store is not running' };
-  const r = s.values(grant.names);
+  const names = [...grant.names, ...grant.connectionNames];
+  const r = s.values(names);
   if (!r.ok) return { ok: false, reason: `not stored: ${r.missing.join(', ')}` };
   try {
-    s.markUsed(grant.names, grant.botId);
+    s.markUsed(names, grant.botId);
   } catch { /* use is best effort; the spawn goes on */ }
-  return { ok: true, env: r.env, botId: grant.botId, names: [...grant.names] };
+  return { ok: true, env: r.env, botId: grant.botId, names };
 }
 
 /** Test-only. */
@@ -137,7 +154,7 @@ export function __resetSecretGrantsForTesting(now?: () => number): void {
  */
 export function secretEnvForCreate(
   options: { secretGrant?: unknown; fanoutTaskOf?: unknown; cwd?: unknown } | undefined,
-  botWorker: { strict: boolean; spawns?: ReadonlyArray<{ botId: string; taskId: string }> } | null,
+  botWorker: { strict: boolean; spawns?: ReadonlyArray<{ botId: string; taskId: string; connectors?: ReadonlyArray<{ secrets: ReadonlyArray<{ secret: string }> }> }> } | null,
 ): Record<string, string> | undefined {
   if (options?.secretGrant === undefined) return undefined;
   const r = resolveSecretGrant(options.secretGrant, {

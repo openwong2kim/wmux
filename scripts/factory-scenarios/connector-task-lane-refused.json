@@ -1,0 +1,269 @@
+{
+  "name": "connector-task-lane-refused",
+  "layer": "regression",
+  "runs": 1,
+  "model": "stub",
+  "description": "A developer bot is woken by the owner's own words (a clean wake) and starts a default worker on an every-bot connection; the task carries the taint because a connection's output is outside text. The verifier passes the PR with gate evidence and lane auto-merge is on, yet the lane refuses tainted-origin and merges nothing.",
+  "setup": {
+    "repo": true,
+    "worker": {
+      "commit": true,
+      "delayMs": 1500
+    },
+    "bots": [
+      {
+        "key": "lead",
+        "repo": true,
+        "script": {
+          "turns": [
+            {
+              "steps": [
+                {
+                  "capture": {
+                    "key": "idempotency_key \"(wake:[^\"]+)\""
+                  }
+                },
+                {
+                  "tool": "fanout_start",
+                  "args": {
+                    "idempotency_key": "{{key}}",
+                    "titles": [
+                      "feat: add widget"
+                    ],
+                    "prompt": "Look up how widgets are added and add a widget file to the repository.",
+                    "preset": "default",
+                    "connectors": [
+                      "probe"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "steps": [
+                {
+                  "say": "noted"
+                }
+              ]
+            }
+          ]
+        },
+        "triggers": [],
+        "role": "lead",
+        "template": "developer"
+      },
+      {
+        "key": "verifier",
+        "role": "verifier",
+        "repo": true,
+        "script": {
+          "turns": [
+            {
+              "steps": [
+                {
+                  "capture": {
+                    "key": "idempotency_key \"(wake:[^\"]+)\""
+                  }
+                },
+                {
+                  "tool": "pr_read",
+                  "args": {
+                    "pr_number": 1
+                  },
+                  "save": {
+                    "head": "\"head(?:Sha|RefOid)\": \"([0-9a-f]{40})\""
+                  }
+                },
+                {
+                  "tool": "fanout_start",
+                  "args": {
+                    "idempotency_key": "{{key}}",
+                    "titles": [
+                      "verify PR #1"
+                    ],
+                    "prompt": "Grade pull request #1 at its head.",
+                    "preset": "verify",
+                    "checkout": {
+                      "sha": "{{head}}",
+                      "fetch_ref": "pull/1/head"
+                    }
+                  }
+                }
+              ]
+            },
+            {
+              "steps": [
+                {
+                  "capture": {
+                    "task": "\"taskId\": \"(wtask-[^\"]+)\"",
+                    "gateHead": "\"headSha\": \"([0-9a-f]{40})\""
+                  }
+                },
+                {
+                  "tool": "pr_verdict",
+                  "args": {
+                    "pr_number": 1,
+                    "head_sha": "{{gateHead}}",
+                    "verdict": "pass",
+                    "summary": "The recorded gate is green at this head.",
+                    "evidence": {
+                      "task_id": "{{task}}"
+                    }
+                  }
+                }
+              ]
+            },
+            {
+              "steps": [
+                {
+                  "say": "nothing to do"
+                }
+              ]
+            }
+          ]
+        }
+      }
+    ],
+    "settings": {
+      "laneAutoMerge": true
+    }
+  },
+  "actions": [
+    {
+      "do": "api",
+      "label": "connector",
+      "fn": "factory.connectors.save",
+      "args": [
+        {
+          "connector": {
+            "name": "probe",
+            "purpose": "a probe server for the smoke",
+            "transport": "stdio",
+            "stdio": {
+              "command": "true",
+              "args": [],
+              "env": {}
+            },
+            "secrets": [],
+            "tools": {
+              "mode": "listed",
+              "allowed": [
+                "probe_read"
+              ]
+            },
+            "scope": {
+              "kind": "all"
+            },
+            "enabled": true
+          }
+        }
+      ],
+      "record": true,
+      "save": {
+        "connId": "connector.id"
+      }
+    },
+    {
+      "do": "waitFor",
+      "label": "repo watch baseline",
+      "cond": {
+        "repoWatch": {
+          "repo": "github.com/acme/app"
+        }
+      },
+      "timeoutMs": 100000,
+      "required": true
+    },
+    {
+      "do": "post",
+      "label": "ask",
+      "post": {
+        "title": "Add a widget",
+        "body": "Add a widget file, and check it through the probe connection.",
+        "mentions": [
+          "{{bot.lead}}"
+        ]
+      }
+    },
+    {
+      "do": "waitFor",
+      "label": "worker pushed its branch",
+      "cond": {
+        "workers": {
+          "event": "commit"
+        }
+      },
+      "timeoutMs": 180000,
+      "required": true
+    },
+    {
+      "do": "gh",
+      "op": "addPr",
+      "fromBranch": "wtask/",
+      "pr": {
+        "number": 1,
+        "title": "feat: add widget",
+        "author": "octo",
+        "checks": "SUCCESS",
+        "requiredChecks": [
+          "build"
+        ]
+      }
+    },
+    {
+      "do": "waitFor",
+      "label": "pr.opened",
+      "cond": {
+        "facts": {
+          "kind": "pr.opened"
+        }
+      },
+      "timeoutMs": 100000
+    },
+    {
+      "do": "waitFor",
+      "label": "verdict recorded",
+      "cond": {
+        "facts": {
+          "kind": "verdict.recorded"
+        }
+      },
+      "timeoutMs": 300000
+    },
+    {
+      "do": "waitFor",
+      "label": "lane outcome",
+      "cond": {
+        "facts": {
+          "kind": "merge.refused"
+        }
+      },
+      "timeoutMs": 120000
+    },
+    {
+      "do": "waitFor",
+      "label": "quiet",
+      "cond": {
+        "idle": true,
+        "quietMs": 3000
+      },
+      "timeoutMs": 60000
+    }
+  ],
+  "expect": {
+    "requires": [
+      "facts",
+      "cards",
+      "bots",
+      "wakes",
+      "ledger",
+      "verdicts",
+      "ghCalls",
+      "workers"
+    ],
+    "pr": 1,
+    "verifier": "verifier",
+    "lead": "lead",
+    "connector": "probe"
+  }
+}

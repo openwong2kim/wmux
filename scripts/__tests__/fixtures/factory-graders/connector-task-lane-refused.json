@@ -1,0 +1,673 @@
+{
+  "pass": {
+    "schemaVersion": 1,
+    "scenario": "connector-task-lane-refused",
+    "run": 1,
+    "workspaceId": "ws-651f2dda-991c-4dae-a72a-debd41b809d1",
+    "botKeys": {
+      "lead": "bot-e81059d5",
+      "verifier": "bot-455d97ed"
+    },
+    "harnessErrors": [],
+    "facts": [
+      {
+        "id": "f-0mv8pv5jc-3f9c66e03fdb",
+        "seq": 1,
+        "kind": "human.message",
+        "at": 1792019035848,
+        "dedupeKey": "human.message:c-mv8pv5jc10a3e7c3e0:bot-e81059d5",
+        "workspaceId": "ws-651f2dda-991c-4dae-a72a-debd41b809d1",
+        "ref": {
+          "botId": "bot-e81059d5",
+          "messageId": "c-mv8pv5jc10a3e7c3e0:bot-e81059d5"
+        },
+        "actor": {
+          "kind": "human"
+        },
+        "payload": {
+          "text": "Add a widget file, and check it through the probe connection.",
+          "cardId": "c-mv8pv5jc10a3e7c3e0",
+          "threadId": "general",
+          "source": "desktop"
+        }
+      },
+      {
+        "id": "f-0mv8pveji-20f63647fad3",
+        "seq": 2,
+        "kind": "task.done",
+        "at": 1792019047518,
+        "dedupeKey": "task.done:wtask-mv8pv9qk-a69fcie5",
+        "workspaceId": "ws-651f2dda-991c-4dae-a72a-debd41b809d1",
+        "ref": {
+          "taskId": "wtask-mv8pv9qk-a69fcie5",
+          "botId": "bot-e81059d5"
+        },
+        "actor": {
+          "kind": "system"
+        },
+        "payload": {
+          "taskWorkspaceId": "ws-ed760a2b-3bc9-4e8e-9faa-94eaa31741b1",
+          "title": "feat: add widget",
+          "status": "review_requested",
+          "from": "working",
+          "by": "worker",
+          "summary": "fake worker: review_requested for wtask-mv8pv9qk-a69fcie5"
+        }
+      },
+      {
+        "id": "f-0mv8pvx4t-fc3a38636cfc",
+        "seq": 3,
+        "kind": "bot.notice",
+        "at": 1792019071613,
+        "dedupeKey": "bot.notice:bot-e81059d5:worker.started:wtask-mv8pv9qk-a69fcie5",
+        "workspaceId": "ws-651f2dda-991c-4dae-a72a-debd41b809d1",
+        "ref": {
+          "botId": "bot-e81059d5",
+          "messageId": "worker.started:wtask-mv8pv9qk-a69fcie5",
+          "taskId": "wtask-mv8pv9qk-a69fcie5"
+        },
+        "actor": {
+          "kind": "system"
+        },
+        "payload": {
+          "topic": "worker.started",
+          "title": "Your worker for \"feat: add widget\" started (task wtask-mv8pv9qk-a69fcie5).",
+          "body": "It reports in its ledger row; you are woken when it finishes or needs input.",
+          "threadId": "general",
+          "tainted": true
+        }
+      },
+      {
+        "id": "f-0mv8pwfl8-67f3e44272d0",
+        "seq": 4,
+        "kind": "pr.opened",
+        "at": 1792019095532,
+        "dedupeKey": "pr.opened:github.com/acme/app#1",
+        "repoKey": "github.com/acme/app",
+        "ref": {
+          "pr": 1,
+          "headSha": "1d91f9b56810615f3a52279b79e0195faf819b72"
+        },
+        "actor": {
+          "kind": "github",
+          "id": "octo"
+        },
+        "payload": {
+          "author": "octo",
+          "title": "feat: add widget",
+          "headRefName": "wtask/feat-add-widget-a69fcie5",
+          "isCrossRepository": false,
+          "isDraft": false,
+          "labels": [],
+          "mergeStateStatus": "CLEAN",
+          "checks": "pass"
+        }
+      },
+      {
+        "id": "f-0mv8pwfl8-630a47e862ba",
+        "seq": 5,
+        "kind": "ci.green",
+        "at": 1792019095532,
+        "dedupeKey": "ci.green:github.com/acme/app#1:1d91f9b56810615f3a52279b79e0195faf819b72",
+        "repoKey": "github.com/acme/app",
+        "ref": {
+          "pr": 1,
+          "headSha": "1d91f9b56810615f3a52279b79e0195faf819b72"
+        },
+        "actor": {
+          "kind": "github",
+          "id": "octo"
+        },
+        "payload": {
+          "author": "octo",
+          "title": "feat: add widget",
+          "headRefName": "wtask/feat-add-widget-a69fcie5",
+          "isCrossRepository": false,
+          "isDraft": false,
+          "labels": [],
+          "mergeStateStatus": "CLEAN",
+          "checks": "pass"
+        }
+      },
+      {
+        "id": "f-0mv8px10e-5c44e0596c20",
+        "seq": 6,
+        "kind": "task.done",
+        "at": 1792019123294,
+        "dedupeKey": "task.done:wtask-mv8pwzdn-40cqx3w5",
+        "workspaceId": "ws-651f2dda-991c-4dae-a72a-debd41b809d1",
+        "ref": {
+          "taskId": "wtask-mv8pwzdn-40cqx3w5",
+          "botId": "bot-455d97ed"
+        },
+        "actor": {
+          "kind": "system"
+        },
+        "payload": {
+          "taskWorkspaceId": "ws-0b95a9ba-aae6-47fd-abb7-bb961f841f00",
+          "title": "verify PR #1",
+          "status": "review_requested",
+          "from": "working",
+          "by": "worker",
+          "summary": "fake worker: review_requested for wtask-mv8pwzdn-40cqx3w5",
+          "threadId": "pr:github.com/acme/app#1"
+        }
+      },
+      {
+        "id": "f-0mv8px1k1-6f0426839e5b",
+        "seq": 7,
+        "kind": "verdict.recorded",
+        "at": 1792019124001,
+        "dedupeKey": "verdict.recorded:github.com/acme/app#1:1d91f9b56810615f3a52279b79e0195faf819b72:bot-455d97ed",
+        "workspaceId": "ws-651f2dda-991c-4dae-a72a-debd41b809d1",
+        "repoKey": "github.com/acme/app",
+        "ref": {
+          "pr": 1,
+          "headSha": "1d91f9b56810615f3a52279b79e0195faf819b72",
+          "botId": "bot-455d97ed",
+          "taskId": "wtask-mv8pwzdn-40cqx3w5"
+        },
+        "actor": {
+          "kind": "bot",
+          "id": "bot-455d97ed"
+        },
+        "payload": {
+          "verdict": "pass",
+          "summary": "The recorded gate is green at this head.",
+          "agent": "bot:verifier",
+          "gateHeadSha": "1d91f9b56810615f3a52279b79e0195faf819b72"
+        }
+      },
+      {
+        "id": "f-0mv8px1lk-7b58925f3e4a",
+        "seq": 8,
+        "kind": "merge.refused",
+        "at": 1792019124056,
+        "dedupeKey": "merge.refused:github.com/acme/app#1:1d91f9b56810615f3a52279b79e0195faf819b72",
+        "repoKey": "github.com/acme/app",
+        "ref": {
+          "pr": 1,
+          "headSha": "1d91f9b56810615f3a52279b79e0195faf819b72"
+        },
+        "actor": {
+          "kind": "system"
+        },
+        "payload": {
+          "approvedBy": "lane",
+          "reason": "tainted-origin: a bot task on this branch started from outside text; the owner merges it"
+        }
+      }
+    ],
+    "handoffs": null,
+    "ledger": [
+      {
+        "schemaVersion": 1,
+        "id": "wtask-mv8pv9qk-a69fcie5",
+        "taskWorkspaceId": "ws-ed760a2b-3bc9-4e8e-9faa-94eaa31741b1",
+        "ownerWorkspaceId": "ws-651f2dda-991c-4dae-a72a-debd41b809d1",
+        "title": "feat: add widget",
+        "status": "completed",
+        "rev": 4,
+        "updatedAt": 1792019047977,
+        "updatedBy": {
+          "kind": "brain",
+          "workspaceId": "ws-651f2dda-991c-4dae-a72a-debd41b809d1"
+        },
+        "dispatch": {
+          "origin": {
+            "kind": "bot",
+            "botId": "bot-e81059d5",
+            "tainted": true
+          },
+          "preset": "default",
+          "connectors": [
+            "probe"
+          ]
+        },
+        "summary": "fake worker: review_requested for wtask-mv8pv9qk-a69fcie5",
+        "gate": {
+          "exitCode": 0,
+          "tail": "\n> factory-smoke-app@1.0.0 lint\n> node -e \"process.exit(0)\"\n\n\n> factory-smoke-app@1.0.0 test\n> node -e \"process.exit(0)\"\n\n",
+          "at": 1792019047976,
+          "command": "npm test",
+          "recordedBy": "system",
+          "headSha": "1d91f9b56810615f3a52279b79e0195faf819b72"
+        }
+      },
+      {
+        "schemaVersion": 1,
+        "id": "wtask-mv8pwzdn-40cqx3w5",
+        "taskWorkspaceId": "ws-0b95a9ba-aae6-47fd-abb7-bb961f841f00",
+        "ownerWorkspaceId": "ws-651f2dda-991c-4dae-a72a-debd41b809d1",
+        "title": "verify PR #1",
+        "status": "completed",
+        "rev": 4,
+        "updatedAt": 1792019124003,
+        "updatedBy": {
+          "kind": "brain",
+          "workspaceId": "ws-651f2dda-991c-4dae-a72a-debd41b809d1"
+        },
+        "dispatch": {
+          "origin": {
+            "kind": "bot",
+            "botId": "bot-455d97ed",
+            "tainted": true
+          },
+          "preset": "verify",
+          "checkout": {
+            "sha": "1d91f9b56810615f3a52279b79e0195faf819b72",
+            "detached": true
+          },
+          "threadId": "pr:github.com/acme/app#1"
+        },
+        "summary": "fake worker: review_requested for wtask-mv8pwzdn-40cqx3w5",
+        "gate": {
+          "exitCode": 0,
+          "tail": "\n> factory-smoke-app@1.0.0 lint\n> node -e \"process.exit(0)\"\n\n\n> factory-smoke-app@1.0.0 test\n> node -e \"process.exit(0)\"\n\n",
+          "at": 1792019123934,
+          "command": "npm test",
+          "recordedBy": "system",
+          "headSha": "1d91f9b56810615f3a52279b79e0195faf819b72"
+        }
+      }
+    ],
+    "verdicts": [
+      {
+        "version": 2,
+        "repoKey": "github.com/acme/app",
+        "prNumber": 1,
+        "headSha": "1d91f9b56810615f3a52279b79e0195faf819b72",
+        "verdict": "pass",
+        "principal": {
+          "workspaceId": "ws-651f2dda-991c-4dae-a72a-debd41b809d1",
+          "botId": "bot-455d97ed",
+          "agent": "bot:verifier"
+        },
+        "evidence": {
+          "taskId": "wtask-mv8pwzdn-40cqx3w5",
+          "gateHeadSha": "1d91f9b56810615f3a52279b79e0195faf819b72"
+        },
+        "summary": "The recorded gate is green at this head.",
+        "at": 1792019124001
+      }
+    ],
+    "effects": null,
+    "approvals": null,
+    "approvalRules": null,
+    "decisions": null,
+    "routines": null,
+    "workers": [
+      {
+        "at": 1792019044894,
+        "event": "start",
+        "taskId": "wtask-mv8pv9qk-a69fcie5",
+        "strict": true,
+        "mcpServers": [
+          "wmux",
+          "probe"
+        ],
+        "allow": [
+          "mcp__probe__probe_read"
+        ]
+      },
+      {
+        "at": 1792019045827,
+        "event": "commit",
+        "branch": "wtask/feat-add-widget-a69fcie5",
+        "head": "1d91f9b56810615f3a52279b79e0195faf819b72"
+      },
+      {
+        "at": 1792019047521,
+        "event": "ledger_update"
+      },
+      {
+        "at": 1792019121594,
+        "event": "start",
+        "taskId": "wtask-mv8pwzdn-40cqx3w5",
+        "strict": true,
+        "mcpServers": [
+          "wmux"
+        ],
+        "allow": []
+      },
+      {
+        "at": 1792019121595,
+        "event": "deps"
+      },
+      {
+        "at": 1792019123298,
+        "event": "ledger_update"
+      }
+    ],
+    "gh": {
+      "calls": [
+        {
+          "at": 1792018975877,
+          "argv": [
+            "api",
+            "--hostname",
+            "github.com",
+            "user",
+            "--jq",
+            ".login"
+          ],
+          "cwd": "/home/u",
+          "handled": true,
+          "exit": 0
+        },
+        {
+          "at": 1792019035467,
+          "argv": [
+            "api",
+            "graphql",
+            "--hostname",
+            "github.com",
+            "-f",
+            "query=query($owner: String!, $repo: String!) {\n  rateLimit { cost remaining }\n  repository(owner: $owner, name: $repo) {\n    open: pullRequests(states: OPEN, first: 100, orderBy: {field: CREATED_AT, direction: DESC}) {\n      totalCount\n      pageInfo { hasNextPage endCursor }\n      nodes { number ti\u2026",
+            "-f",
+            "owner=acme",
+            "-f",
+            "repo=app"
+          ],
+          "cwd": "/tmp/wmux-fsmoke-connector-task-lane-refu-r60e4Q/app",
+          "handled": true,
+          "exit": 0
+        },
+        {
+          "at": 1792019041153,
+          "argv": [
+            "repo",
+            "view",
+            "--json",
+            "defaultBranchRef",
+            "--jq",
+            ".defaultBranchRef.name"
+          ],
+          "cwd": "/tmp/wmux-fsmoke-connector-task-lane-refu-r60e4Q/app",
+          "handled": false,
+          "exit": 1,
+          "error": "fake-gh: unsupported repo"
+        },
+        {
+          "at": 1792019041443,
+          "argv": [
+            "pr",
+            "view",
+            "--json",
+            "number,state,isDraft,url,mergeable,statusCheckRollup,headRefOid"
+          ],
+          "cwd": "/home/u/.wmux-verify-f9cd5790/worktrees/3e890c28d25e/feat-add-widget-a69fcie5",
+          "handled": true,
+          "exit": 1,
+          "error": "no pull requests found for branch \"wtask/feat-add-widget-a69fcie5\""
+        },
+        {
+          "at": 1792019045686,
+          "argv": [
+            "repo",
+            "view",
+            "github.com/acme/app",
+            "--json",
+            "defaultBranchRef",
+            "--jq",
+            ".defaultBranchRef.name"
+          ],
+          "cwd": "/tmp",
+          "handled": false,
+          "exit": 1,
+          "error": "fake-gh: unsupported repo"
+        },
+        {
+          "at": 1792019095528,
+          "argv": [
+            "api",
+            "graphql",
+            "--hostname",
+            "github.com",
+            "-f",
+            "query=query($owner: String!, $repo: String!) {\n  rateLimit { cost remaining }\n  repository(owner: $owner, name: $repo) {\n    open: pullRequests(states: OPEN, first: 100, orderBy: {field: CREATED_AT, direction: DESC}) {\n      totalCount\n      pageInfo { hasNextPage endCursor }\n      nodes { number ti\u2026",
+            "-f",
+            "owner=acme",
+            "-f",
+            "repo=app"
+          ],
+          "cwd": "/tmp/wmux-fsmoke-connector-task-lane-refu-r60e4Q/app",
+          "handled": true,
+          "exit": 0
+        },
+        {
+          "at": 1792019120945,
+          "argv": [
+            "api",
+            "graphql",
+            "--hostname",
+            "github.com",
+            "-f",
+            "query=query($owner: String!, $repo: String!, $number: Int!) {\n  repository(owner: $owner, name: $repo) {\n    pullRequest(number: $number) {\n      number title state isDraft isCrossRepository mergeable mergeStateStatus\n      headRefOid headRefName baseRefName\n      mergedAt mergeCommit { oid }\n      \u2026",
+            "-f",
+            "owner=acme",
+            "-f",
+            "repo=app",
+            "-F",
+            "number=1"
+          ],
+          "cwd": "/tmp/wmux-fsmoke-connector-task-lane-refu-r60e4Q/app",
+          "handled": true,
+          "exit": 0
+        },
+        {
+          "at": 1792019121477,
+          "argv": [
+            "pr",
+            "view",
+            "--json",
+            "number,state,isDraft,url,mergeable,statusCheckRollup,headRefOid"
+          ],
+          "cwd": "/home/u/.wmux-verify-f9cd5790/worktrees/3e890c28d25e/verify-pr-1-40cqx3w5",
+          "handled": true,
+          "exit": 1,
+          "error": "no pull requests found for branch \"HEAD\""
+        },
+        {
+          "at": 1792019123998,
+          "argv": [
+            "api",
+            "graphql",
+            "--hostname",
+            "github.com",
+            "-f",
+            "query=query($owner: String!, $repo: String!, $number: Int!) {\n  repository(owner: $owner, name: $repo) {\n    pullRequest(number: $number) {\n      number title state isDraft isCrossRepository mergeable mergeStateStatus\n      headRefOid headRefName baseRefName\n      mergedAt mergeCommit { oid }\n      \u2026",
+            "-f",
+            "owner=acme",
+            "-f",
+            "repo=app",
+            "-F",
+            "number=1"
+          ],
+          "cwd": "/tmp/wmux-fsmoke-connector-task-lane-refu-r60e4Q/app",
+          "handled": true,
+          "exit": 0
+        },
+        {
+          "at": 1792019124052,
+          "argv": [
+            "api",
+            "graphql",
+            "--hostname",
+            "github.com",
+            "-f",
+            "query=query($owner: String!, $repo: String!, $number: Int!) {\n  repository(owner: $owner, name: $repo) {\n    pullRequest(number: $number) {\n      number title state isDraft isCrossRepository mergeable mergeStateStatus\n      headRefOid headRefName baseRefName\n      mergedAt mergeCommit { oid }\n      \u2026",
+            "-f",
+            "owner=acme",
+            "-f",
+            "repo=app",
+            "-F",
+            "number=1"
+          ],
+          "cwd": "/tmp/wmux-fsmoke-connector-task-lane-refu-r60e4Q/app",
+          "handled": true,
+          "exit": 0
+        }
+      ],
+      "state": {
+        "login": "octo",
+        "repos": {
+          "github.com/acme/app": {
+            "prs": [
+              {
+                "state": "OPEN",
+                "isDraft": false,
+                "baseRefName": "main",
+                "labels": [],
+                "createdAt": "2026-10-14T23:04:05.912Z",
+                "checks": "SUCCESS",
+                "requiredChecks": [
+                  "build"
+                ],
+                "files": [
+                  "src/index.ts"
+                ],
+                "mergeStateStatus": "CLEAN",
+                "mergeable": "MERGEABLE",
+                "author": "octo",
+                "number": 1,
+                "title": "feat: add widget",
+                "headRefName": "wtask/feat-add-widget-a69fcie5",
+                "headSha": "1d91f9b56810615f3a52279b79e0195faf819b72"
+              }
+            ],
+            "issues": []
+          }
+        }
+      }
+    },
+    "sources": {
+      "facts": {
+        "present": true,
+        "ok": true,
+        "errors": 0
+      },
+      "wakes": {
+        "present": true,
+        "ok": true,
+        "errors": 0
+      },
+      "handoffs": {
+        "present": false,
+        "ok": false,
+        "errors": 0
+      },
+      "bots": {
+        "present": true,
+        "ok": true,
+        "errors": 0
+      },
+      "settings": {
+        "present": true,
+        "ok": true,
+        "errors": 0
+      },
+      "repoWatch": {
+        "present": true,
+        "ok": true,
+        "errors": 0
+      },
+      "ledger": {
+        "present": true,
+        "ok": true,
+        "errors": 0
+      },
+      "verdicts": {
+        "present": true,
+        "ok": true,
+        "errors": 0
+      },
+      "effects": {
+        "present": false,
+        "ok": false,
+        "errors": 0
+      },
+      "approvals": {
+        "present": false,
+        "ok": false,
+        "errors": 0
+      },
+      "approvalRules": {
+        "present": false,
+        "ok": false,
+        "errors": 0
+      },
+      "decisions": {
+        "present": false,
+        "ok": false,
+        "errors": 0
+      },
+      "routines": {
+        "present": false,
+        "ok": false,
+        "errors": 0
+      },
+      "cards": {
+        "present": true,
+        "ok": true,
+        "errors": 0
+      },
+      "workers": {
+        "present": true,
+        "ok": true,
+        "errors": 0
+      },
+      "ghCalls": {
+        "present": true,
+        "ok": true,
+        "errors": 0
+      }
+    },
+    "saved": {
+      "connId": "con-45fe7f6d",
+      "pr1Head": "1d91f9b56810615f3a52279b79e0195faf819b72",
+      "pr1Branch": "wtask/feat-add-widget-a69fcie5"
+    },
+    "durationMs": 157405
+  },
+  "fail": [
+    {
+      "why": "the task does not name its connection",
+      "failing": [
+        "task_names_connection"
+      ],
+      "mutate": [
+        {
+          "op": "remove",
+          "path": "ledger.0.dispatch.connectors"
+        }
+      ]
+    },
+    {
+      "why": "the task with a connection is marked clean",
+      "failing": [
+        "lead_task_tainted"
+      ],
+      "mutate": [
+        {
+          "op": "set",
+          "path": "ledger.0.dispatch.origin.tainted",
+          "value": false
+        }
+      ]
+    },
+    {
+      "why": "the lane refused for another reason",
+      "failing": [
+        "lane_refused_tainted"
+      ],
+      "mutate": [
+        {
+          "op": "set",
+          "path": "facts.7.payload.reason",
+          "value": "author-trusted:external-author"
+        }
+      ]
+    }
+  ]
+}

@@ -17,6 +17,10 @@ import type { BotRole } from '../../../shared/bot';
 import { isTerminalOnlyWorkspace } from './workspaceSlice';
 
 /** The timeline key for "every card of the room". */
+
+/** A card author main knows (room.handler.ts RoomActor). */
+export interface RoomActorEntry { role: BotRole; name: string; removed?: true; avatar?: string; hue?: number; workspaceId?: string }
+
 export const ALL_THREADS = '*' as const;
 export type TimelineThread = ThreadId | typeof ALL_THREADS;
 
@@ -51,9 +55,16 @@ export interface RoomSlice {
    *  was last pushed: a page read that started before a push never undoes it. */
   roomPushCount: number;
   roomPushedAt: Record<string, number>;
-  /** Bot authors by id (role and name), from main's bot store. */
-  roomActors: Record<string, { role: BotRole; name: string }>;
-  setRoomActors: (actors: Record<string, { role: BotRole; name: string }>) => void;
+  /** Bot authors by id (role and name), from main's bot store; a removed
+   *  bot from its tombstone (marked `removed`, with its picture and colour
+   *  slot). */
+  roomActors: Record<string, RoomActorEntry>;
+  /** A conversation thread's newest card, read on its own for the Bots
+   *  list's preview when no timeline holds it (key: timelineKey). Not a
+   *  timeline: the thread still reads as unread (isTimelineLoaded). */
+  roomPreviewCards: Record<string, RoomCard>;
+  setRoomPreviewCard: (workspaceId: string, threadId: ThreadId, card: RoomCard) => void;
+  setRoomActors: (actors: Record<string, RoomActorEntry>) => void;
   setRoomStatus: (status: RoomStatusView | null) => void;
   setRoomThreads: (workspaceId: string, threads: ThreadSummary[]) => void;
   /** Store a page: `replace` for a first read, `append` for a page after
@@ -146,9 +157,15 @@ export const createRoomSlice: StateCreator<StoreState, [['zustand/immer', never]
   roomPushCount: 0,
   roomPushedAt: {},
   roomActors: {},
+  roomPreviewCards: {},
   botsWorkerPanel: null,
   botsSeenAt: {},
   setRoomActors: (actors) => set((s) => { s.roomActors = actors; }),
+  setRoomPreviewCard: (workspaceId, threadId, card) => set((s) => {
+    const key = timelineKey(workspaceId, threadId);
+    const prev = s.roomPreviewCards[key];
+    if (!prev || prev.seq <= card.seq) s.roomPreviewCards[key] = card;
+  }),
   setRoomStatus: (status) => set((s) => { s.roomStatus = status; }),
   setRoomThreads: (workspaceId, threads) => set((s) => { s.roomThreads[workspaceId] = threads; }),
   setRoomPage: (workspaceId, thread, page, mode, startedAt) => set((s) => {
@@ -167,6 +184,9 @@ export const createRoomSlice: StateCreator<StoreState, [['zustand/immer', never]
     s.roomPushCount += 1;
     s.roomPushedAt[`${workspaceId}\u0000${card.id}`] = s.roomPushCount;
     if (s.roomThreads[workspaceId]) s.roomThreads[workspaceId] = upsertThread(s.roomThreads[workspaceId], threadSummary);
+    // A preview card changed in place (a question answered) follows.
+    const previewKey = timelineKey(workspaceId, card.threadId);
+    if (s.roomPreviewCards[previewKey]?.id === card.id) s.roomPreviewCards[previewKey] = card;
     // Only timelines already loaded take the card; an unloaded one reads it
     // when it is first shown.
     for (const thread of [ALL_THREADS, card.threadId] as TimelineThread[]) {

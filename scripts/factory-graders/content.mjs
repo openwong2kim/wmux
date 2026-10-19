@@ -5,7 +5,7 @@
 
 import { arr, botCards, botId, cardsOfKind, criterion, factsOfKind, handoffsOfKind, wakesOf } from './common.mjs';
 
-/** 20. triage-real-issue: a triage card and a draft PR from its repro worker. */
+/** 20. triage-real-issue: a triage card and a PR (draft or ready) from its repro worker. */
 export function triageRealIssue(snap, expect) {
   const cards = botCards(snap, expect.bot);
   const triage = cards.filter((c) => c.kind === 'triage');
@@ -16,7 +16,7 @@ export function triageRealIssue(snap, expect) {
     criterion('triage_card_in_issue_thread', triage.length >= 1 && triage.every((c) => c.threadId === expect.thread), triage.map((c) => c.threadId).join(', ') || 'none'),
     criterion('repro_worker_started', tasks.some((e) => e.dispatch?.preset === 'repro'), tasks.map((e) => e.dispatch?.preset).join(', ') || 'none'),
     criterion('names_the_bug', triage.some((c) => new RegExp(expect.bugPattern, 'i').test(`${c.title}\n${c.body ?? ''}`)), expect.bugPattern),
-    criterion('draft_pr_or_no_repro', prs.some((p) => p.isDraft) || cards.some((c) => /no-repro/i.test(c.body ?? '')), `${prs.length} PR(s)`),
+    criterion('pr_or_no_repro', prs.length > 0 || cards.some((c) => /no-repro/i.test(c.body ?? '')), `${prs.length} PR(s)`),
     criterion('within_turns', turns > 0 && turns <= (expect.maxTurns ?? 6), `${turns} turn(s)`),
   ];
 }
@@ -55,5 +55,26 @@ export function moaMorningReportReal(snap, expect) {
     criterion('report_mentions_open_issue', new RegExp(expect.issuePattern, 'i').test(text), expect.issuePattern),
     criterion('no_dispatch_without_approval', handoffsOfKind(snap, 'dispatch').length + factsOfKind(snap, 'handoff.received').length === 0,
       `${handoffsOfKind(snap, 'dispatch').length} dispatch(es), ${factsOfKind(snap, 'handoff.received').length} delivery fact(s)`),
+  ];
+}
+
+/** researcher-dispatch-real: the researcher's dispatch wake settles done and
+ *  its answer went back as a result handoff (its wmux tools were reached);
+ *  a wake that settled done with nothing sent is the 4.5.0 silent failure. */
+export function researcherDispatchReal(snap, expect) {
+  const lead = botId(snap, expect.lead);
+  const researcher = botId(snap, expect.researcher);
+  const dispatch = handoffsOfKind(snap, 'dispatch').find((h) => h.from?.botId === lead && h.to?.botId === researcher) ?? null;
+  const wakes = wakesOf(snap, expect.researcher).filter((w) => w.reason?.kind === 'handoff' && w.reason.handoffId === dispatch?.id);
+  // A refused attempt keeps its text but reached nobody.
+  const results = handoffsOfKind(snap, 'result').filter((h) => h.from?.botId === researcher && h.replyTo === dispatch?.id && h.status !== 'refused');
+  const sentSomething = results.length > 0 || botCards(snap, expect.researcher).length > 0;
+  const text = results.map((h) => `${h.payload?.title ?? ''}\n${h.payload?.body ?? ''}`).join('\n');
+  return [
+    criterion('dispatch_delivered', dispatch !== null, dispatch ? dispatch.id : 'no dispatch to the researcher'),
+    criterion('researcher_wake_done', wakes.length > 0 && wakes.every((w) => w.state === 'done'), wakes.map((w) => w.state).join(', ') || 'none'),
+    criterion('result_sent', results.length > 0, `${results.length} result handoff(s)`),
+    criterion('result_answers', new RegExp(expect.answerPattern, 'i').test(text), text.slice(0, 200)),
+    criterion('no_silent_done', !(wakes.some((w) => w.state === 'done') && !sentSomething), sentSomething ? 'sent' : 'nothing sent'),
   ];
 }

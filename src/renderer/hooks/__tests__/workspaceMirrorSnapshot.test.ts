@@ -387,6 +387,13 @@ describe('buildWorkspaceMirrorPayload', () => {
       .toMatchObject({ workspaceId: 'ws-2', paneId: 'p2a', cwd: 'C:\\repo\\s2a' });
   });
 
+  it('carries the workspace the Bots worker panel shows, only while Bots is the page', () => {
+    const panel = { workspaceId: 'ws-2', conversationId: 'bot:x' };
+    expect(buildWorkspaceMirrorPayload({ ...state(), activeWorkspaceId: 'ws-1', appRoute: 'bots', botsWorkerPanel: panel }, () => 1).panelWorkspaceId).toBe('ws-2');
+    expect(buildWorkspaceMirrorPayload({ ...state(), activeWorkspaceId: 'ws-1', appRoute: 'workspaces', botsWorkerPanel: panel }, () => 1)).not.toHaveProperty('panelWorkspaceId');
+    expect(buildWorkspaceMirrorPayload({ ...state(), appRoute: 'bots', botsWorkerPanel: null }, () => 1)).not.toHaveProperty('panelWorkspaceId');
+  });
+
   it("carries the active surface's own cwd and branch, not the workspace's", () => {
     // Two panes in one workspace: the workspace metadata holds the OTHER
     // pane's values (the last reporter); the pointer must not.

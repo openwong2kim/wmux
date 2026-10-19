@@ -231,6 +231,12 @@ export const vi = {
   'pane.browserPolicyGrantSensitive': "Dữ liệu đăng nhập của {host}",
   'pane.browserPolicyRevoke': "Thu hồi",
   'pane.browserPolicyRevokeFailed': "Không thể thu hồi.",
+  'pane.browserPolicySummaryBlocked': "{count} bị chặn gần đây",
+  'pane.browserPolicyRecentlyBlocked': "Bị chặn gần đây",
+  'pane.browserPolicyRecentlyBlockedDesc': "Các trang mà Chrome của khung này bị từ chối kể từ khi khởi động hoặc từ lần thay đổi bảo vệ gần nhất. Cho phép sẽ thêm ngay trang đó vào danh sách được phép.",
+  'pane.browserPolicyRecentlyBlockedCount': "Bị chặn {count}×",
+  'pane.browserPolicyAllow': "Cho phép",
+  'pane.browserPolicyAllowHost': "Cho phép {host}",
   'browser.private': "Riêng tư",
   'browser.privateTab': "Tab riêng tư",
   'browser.privateTooltip': "Tab riêng tư: cookie và dữ liệu trang chỉ lưu trong bộ nhớ và bị xóa khi đóng tab riêng tư cuối cùng. Không được khôi phục sau khi khởi động lại.",
@@ -530,9 +536,6 @@ export const vi = {
 
   // ─── Agent toolbar: fan-out / broadcast buttons ───
   'toolbar.fanOut': 'Multi Task',
-  'toolbar.broadcast': 'Broadcast',
-  'toolbar.broadcastTooltip': 'Broadcast — cùng một văn bản tới mọi khung terminal trong không gian làm việc hiện tại (không cô lập)',
-  'toolbar.broadcastPrompt': 'Broadcast — gửi tới mọi khung terminal trong không gian làm việc hiện tại',
 
   // ─── Fan-out dialog (1 prompt → N isolated tasks) ───
   'fanout.title': 'Fan-out — 1 prompt → N tác vụ cô lập',
@@ -653,4 +656,21 @@ export const vi = {
   'git.secret.more': "(và {count} chỗ khác)",
   'settings.secretGuard': "Chặn mật khẩu và khóa trong commit, push và PR",
   'settings.secretGuardDesc': "Commit, Push và Tạo PR trên trang Git, cùng việc nhận việc từ tác vụ, sẽ từ chối thay đổi có thêm tệp .env, khóa riêng tư hoặc khóa API.",
+  'botsPage.consent.title': "Bot chạy bằng gói Claude của bạn",
+  'botsPage.consent.engine': "Mỗi bot suy nghĩ bằng Claude Agent SDK, đăng nhập bằng tài khoản Claude Code trên máy tính này. Các worker của bot chạy Claude Code của chính bạn.",
+  'botsPage.consent.usage': "Mức sử dụng của chúng được tính vào giới hạn gói Claude của bạn.",
+  'botsPage.consent.terms': "Điều khoản của Anthropic cho gói của bạn được áp dụng. wmux không bao giờ đọc, lưu hay gửi thông tin đăng nhập Claude của bạn.",
+  'botsPage.consent.turnOn': "Bật bot",
+  'botsPage.consent.cancel': "Hủy",
+  'botsPage.consent.keepOn': "Giữ bot bật",
+  'botsPage.consent.turnOff': "Tắt bot",
+
+  // Task cleanup list: detail line per scan entry
+  'worktask.cleanup.detail.unmaterialized': 'Chưa tạo worktree cho tác vụ này — hãy đóng tác vụ, hoặc tạo lại worktree.',
+  'worktask.cleanup.detail.preserved': 'Phần việc chưa commit được giữ lại — xem diff, rồi commit hoặc mở PR, hoặc bỏ đi.',
+  'worktask.cleanup.detail.phone': 'Được tạo từ điện thoại (nhánh phone/…) — kiểm tra, rồi xóa khi không còn cần.',
+  'worktask.cleanup.detail.orphanEnded': 'Không có tác vụ đang mở nào liên kết với nó (tác vụ đã kết thúc hoặc đã được dọn) — kiểm tra, rồi xóa.',
+  'worktask.cleanup.detail.orphanUnlinked': 'Không có tác vụ hay bản ghi tác vụ nào liên kết với nó — kiểm tra, rồi xóa.',
+  'worktask.cleanup.detail.orphanMeta': 'Chỉ còn bản ghi tác vụ, không có worktree (việc xóa bị gián đoạn) — kiểm tra, rồi xóa.',
+  'worktask.cleanup.detail.diskMissing': 'Worktree không có trên đĩa (bị xóa bên ngoài wmux, hoặc do sự cố) — đóng tác vụ để dọn dẹp.',
 } as const;

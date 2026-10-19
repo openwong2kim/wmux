@@ -35,7 +35,12 @@ Copy-Item integrations\opencode\plugins\wmux.js "$env:USERPROFILE\.config\openco
 
 (Or place it in a project's `.opencode/plugins/` for that project only.)
 OpenCode auto-loads every `.js` / `.ts` file in those directories at startup.
-Restart `opencode` after copying.
+Restart `opencode` after copying. On OpenCode 2.x the shared background service
+reloads a changed plugin file by itself; `opencode service restart` forces it.
+
+The same file works on OpenCode **1.4 or newer** and on **2.x**: its default
+export carries a 1.x `server` entry and a 2.x `setup` entry, and each runtime
+reads its own. OpenCode before 1.4 cannot load an object default export.
 
 ## Verify
 
@@ -67,9 +72,35 @@ change is needed). Routing prefers `ptyId` (exact per-pane) â†’ `workspaceId` â†
   cancels it, so an auto-approved permission never raises a false "waiting"
   signal.
 
+## OpenCode 2.x
+
+OpenCode 2.x reports the same three moments under new names, and the plugin
+maps them to the same signals:
+
+| wmux signal | OpenCode 1.x event | OpenCode 2.x event |
+|---|---|---|
+| `agent.stop` | `session.idle` | `session.execution.succeeded`, `session.execution.failed`, `session.execution.interrupted` (reason `user` or `inactivity` only) |
+| `agent.awaiting_input` | `permission.asked`, `question.asked` | `permission.asked`, `form.created` |
+| `agent.input_answered` | `permission.replied`, `question.replied` | `permission.replied`, `form.replied`, `form.cancelled` |
+
+**Routing in a shared service.** By default every `opencode` 2.x on the machine
+talks to one background service (`opencode serve --service`), started by
+whichever client came first. The plugin runs inside that service, so its
+`WMUX_PTY_ID` is the pane that started the service, not the pane whose session
+finished. There the plugin sends no `ptyId` / `workspaceId` / `surfaceId` and
+takes `cwd` from the session's own directory; wmux routes by that directory.
+Two OpenCode panes in the same directory can therefore not be told apart. Run
+`opencode --standalone` to get a private server in the pane: the plugin then
+sends the pane id, as on 1.x. Every plugin instance in the service sees every
+session's events, so each event is handled once per process.
+
 **Sub-agent suppression:** both signals fire only for the **root** session. The
 plugin looks up the session via the SDK `client` and drops anything with a
 `parentID` (a sub-agent session), so the orchestrator wakes on the top-level
 turn, not every internal sub-turn (mirrors opencode-notify's
-`notifyChildSessions=false`). If the lookup can't run (no client / offline) it
-fails open and treats the session as root, so a real completion is never lost.
+`notifyChildSessions=false`). On OpenCode 1.x, if the lookup can't run (no
+client / offline) the stop fails open and treats the session as root, so a real
+completion is never lost. In OpenCode 2.x's shared service a failed lookup also
+loses the session's directory, so the plugin drops that stop (logged as
+`skip-no-session-cwd`) rather than hand it to a guessed pane. A permission or
+question whose lookup failed raises nothing on either version.

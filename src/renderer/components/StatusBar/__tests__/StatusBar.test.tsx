@@ -3,7 +3,7 @@
  *
  * The repository's vitest config runs in `node` env without a DOM library
  * (no jsdom / @testing-library/react), so we follow the same pattern as
- * KeyboardCheatSheet.test.tsx and SettingsPanel.firstRunSection.test.tsx:
+ * KeyboardCheatSheet.os.test.tsx and SettingsPanel.firstRunSection.test.tsx:
  *   1. Pure helpers (computeUnreadCount, formatBellContent, formatBellAriaLabel)
  *      tested directly.
  *   2. Presentational view (NotificationBellBadgeView) tested via

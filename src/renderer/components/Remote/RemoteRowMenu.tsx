@@ -22,8 +22,14 @@ const PAD_PX = 12;
  * outside click closes. The menu is portalled to the body so the list's
  * rounded clip never cuts it off.
  */
-export default function RemoteRowMenu({ label, items }: { label: string; items: RemoteRowMenuItem[] }) {
+export default function RemoteRowMenu({ label, items, onOpenChange }: {
+  label: string;
+  items: RemoteRowMenuItem[];
+  /** Told when the menu opens or closes (a host page that owns Escape). */
+  onOpenChange?: (open: boolean) => void;
+}) {
   const [open, setOpen] = useState(false);
+  useEffect(() => { onOpenChange?.(open); }, [open, onOpenChange]);
   const [place, setPlace] = useState<CSSProperties>({});
   const menuId = useId();
   const buttonRef = useRef<HTMLButtonElement>(null);

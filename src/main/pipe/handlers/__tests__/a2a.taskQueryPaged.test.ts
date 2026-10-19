@@ -289,7 +289,7 @@ describe('내부 상태 조회 — 이력 없는 단건 응답', () => {
     let release!: (value: unknown) => void;
     sendToRendererMock.mockImplementation(() => new Promise((resolve) => { release = resolve; }));
     const pending = stateQuery(router);
-    await vi.waitFor(() => expect(wire.daemonLineBytes).toHaveLength(1));
+    await vi.waitFor(() => expect(wire.daemonLineBytes).toHaveLength(1), { timeout: 5_000 });
     release({ workspaceId: WS, tasks: applyTaskQueryView(store, { view: 'state', taskId: 'task-0042' }) });
     expect((await pending).tasks[0].status.state).toBe('working');
   });

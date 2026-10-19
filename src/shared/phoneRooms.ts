@@ -19,10 +19,17 @@ import { APPROVAL_ID_RE } from './botApproval';
 import { isBotSecretName } from './botSecret';
 import { parseThreadId, ROOM_LIMITS, type CardKind, type RoomCard, type ThreadId, type ThreadStatus, type ThreadSummary } from './room';
 import { PHONE_BOT_ROLES, clampSidebarString, type PhoneBotRole } from './phoneFleetSidebar';
+import { PHONE_NOTICE_ARG_MAX, PHONE_ROOM_NOTICE_CODES } from './phoneRoomNotices';
+import { parseRoomAttachments, type RoomAttachment } from './roomAttachments';
 
 /** Bridge commands; `workspaces.` routes them through main's PhoneWorkspaces. */
 export const PHONE_ROOM_THREADS_COMMAND = 'workspaces.roomThreads';
 export const PHONE_ROOM_CARDS_COMMAND = 'workspaces.roomCards';
+/** `{workspaceId, attachmentId}` → `{attachment: {mediaType, bytes}}` when a
+ *  kept owner card of that room carries the photo, else `{notFound: true}`.
+ *  The daemon then reads the stored copy from disk itself: a photo never
+ *  rides the bridge (its replies are capped at 128 KiB). */
+export const PHONE_ROOM_ATTACHMENT_COMMAND = 'workspaces.roomAttachment';
 
 export const PHONE_ROOM_LIMITS = {
   /** Threads one list carries (open questions first, as the room sorts them). */
@@ -113,6 +120,23 @@ export interface PhoneRoomCard {
   /** An owner (`human`) card a phone sent only: the clientMessageId it was
    *  sent under, so the app can find its own message. */
   clientMessageId?: string;
+  /** A system card's stable code and values (shared/phoneRoomNotices.ts),
+   *  for a published code only; `title` keeps the English text. */
+  notice?: PhoneRoomNotice;
+  /** An `approval` card only: the act its request asks for (`merge`,
+   *  `comment`, …, `skill`; any later name passes). */
+  approvalAction?: string;
+  /** An owner (`human`) card only: the photos sent with it, drawn from
+   *  `GET /api/rooms/:workspaceId/attachments/:id`. */
+  attachments?: PhoneRoomAttachment[];
+}
+
+/** A photo as the phone sees it: no upload name, no path. */
+export type PhoneRoomAttachment = Omit<RoomAttachment, 'upload'>;
+
+export interface PhoneRoomNotice {
+  code: string;
+  args?: Record<string, string | number>;
 }
 
 export type PhoneRoomThread = Omit<ThreadSummary, 'lastKind'> & { lastKind: PhoneRoomCardKind };
@@ -149,7 +173,8 @@ function positive(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : undefined;
 }
 
-function cardId(value: unknown): string | undefined {
+/** A card id as the phone may see it, or undefined. */
+export function cardId(value: unknown): string | undefined {
   return typeof value === 'string' && CARD_ID_RE.test(value) ? value : undefined;
 }
 
@@ -173,7 +198,8 @@ function body(value: unknown): string | undefined {
   return out.trim() ? out : undefined;
 }
 
-function httpUrl(value: unknown): string | undefined {
+/** An http(s) URL of at most PHONE_ROOM_LIMITS.url characters, or undefined. */
+export function httpUrl(value: unknown): string | undefined {
   if (typeof value !== 'string' || value.length > PHONE_ROOM_LIMITS.url) return undefined;
   try {
     const u = new URL(value);
@@ -183,7 +209,44 @@ function httpUrl(value: unknown): string | undefined {
   }
 }
 
-function parseActor(value: unknown): PhoneRoomActor | undefined {
+const own = (o: object, key: string): boolean => Object.prototype.hasOwnProperty.call(o, key);
+
+/** An arg string: no control characters but newline (a list's separator),
+ *  at most PHONE_NOTICE_ARG_MAX characters. */
+function noticeString(value: string): string {
+  // eslint-disable-next-line no-control-regex
+  let out = value.replace(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f‪-‮⁦-⁩]/g, '');
+  if (out.length > PHONE_NOTICE_ARG_MAX) {
+    out = out.slice(0, PHONE_NOTICE_ARG_MAX);
+    const last = out.charCodeAt(out.length - 1);
+    if (last >= 0xd800 && last <= 0xdbff) out = out.slice(0, -1);
+  }
+  return out;
+}
+
+/** A notice as the phone may see it: a published code, and only that code's
+ *  args, each of its type. Undefined otherwise. Idempotent. */
+export function parsePhoneRoomNotice(value: unknown): PhoneRoomNotice | undefined {
+  if (!isRecord(value) || typeof value.code !== 'string' || !own(PHONE_ROOM_NOTICE_CODES, value.code)) return undefined;
+  const spec = PHONE_ROOM_NOTICE_CODES[value.code].args;
+  const args: Record<string, string | number> = {};
+  if (isRecord(value.args)) {
+    for (const [key, v] of Object.entries(value.args)) {
+      if (!own(spec, key)) continue;
+      if (spec[key] === 'number' && typeof v === 'number' && Number.isFinite(v)) args[key] = v;
+      else if (spec[key] === 'string' && typeof v === 'string') args[key] = noticeString(v);
+    }
+  }
+  return Object.keys(args).length > 0 ? { code: value.code, args } : { code: value.code };
+}
+
+/** An approval request's action name: what ApprovalAction's names look
+ *  like, so a later action passes (the client treats one it does not know
+ *  as approved on the desktop only). */
+const APPROVAL_ACTION_RE = /^[a-z][a-z0-9_]{0,39}$/;
+
+/** A card's actor as the phone may see it, or undefined. Idempotent. */
+export function parsePhoneRoomActor(value: unknown): PhoneRoomActor | undefined {
   if (!isRecord(value)) return undefined;
   if (value.kind === 'human') return { kind: 'human' };
   if (value.kind === 'system') return { kind: 'system' };
@@ -227,13 +290,16 @@ export function parsePhoneRoomCard(value: unknown): PhoneRoomCard | null {
   const threadId = parseThreadId(value.threadId);
   const kind = cardKind(value.kind);
   const at = positive(value.at);
-  const actor = parseActor(value.actor);
+  const actor = parsePhoneRoomActor(value.actor);
   const title = line(value.title, PHONE_ROOM_LIMITS.title) ?? '';
   if (!id || seq === undefined || !threadId || !kind || at === undefined || !actor) return null;
   const text = body(value.body);
   const refs = parseRefs(value.refs);
   const replyTo = cardId(value.replyTo);
   const clientMessageId = kind === 'human' && actor.kind === 'human' ? phoneMessageId(value.clientMessageId) : undefined;
+  const notice = actor.kind === 'system' ? parsePhoneRoomNotice(value.notice) : undefined;
+  const approvalAction = kind === 'approval' && typeof value.approvalAction === 'string' && APPROVAL_ACTION_RE.test(value.approvalAction) ? value.approvalAction : undefined;
+  const attachments = kind === 'human' && actor.kind === 'human' ? parseRoomAttachments(value.attachments, { keepUpload: false }) : undefined;
   return {
     id, seq, threadId, kind, at, actor, title,
     ...(text !== undefined ? { body: text } : {}),
@@ -243,6 +309,9 @@ export function parsePhoneRoomCard(value: unknown): PhoneRoomCard | null {
     ...(value.closes === true ? { closes: true as const } : {}),
     ...(value.greeting === true && kind === 'question' ? { greeting: true as const } : {}),
     ...(clientMessageId ? { clientMessageId } : {}),
+    ...(notice ? { notice } : {}),
+    ...(approvalAction ? { approvalAction } : {}),
+    ...(attachments ? { attachments } : {}),
   };
 }
 
@@ -311,8 +380,13 @@ function phoneMessageId(value: unknown): string | undefined {
  *  (factoryWiring.factoryPhoneMessage); the phone sees only its own part. */
 const PHONE_POST_ID = /^phone:[0-9a-f]{16}:(.+)$/s;
 
-/** A room card projected for the phone; `bot` resolves an actor's role and name. */
-export function phoneRoomCard(card: RoomCard, bot: (botId: string) => { role: PhoneBotRole; name: string } | null): PhoneRoomCard | null {
+/** A room card projected for the phone; `bot` resolves an actor's role and
+ *  name, `approvalAction` an `approval` card's request's action. */
+export function phoneRoomCard(
+  card: RoomCard,
+  bot: (botId: string) => { role: PhoneBotRole; name: string } | null,
+  approvalAction?: (approvalId: string) => string | null,
+): PhoneRoomCard | null {
   const actor = card.actor.kind === 'bot'
     ? (() => {
         const info = bot(card.actor.botId);
@@ -321,7 +395,9 @@ export function phoneRoomCard(card: RoomCard, bot: (botId: string) => { role: Ph
     : { kind: card.actor.kind };
   const { clientPostId, ...rest } = card;
   const sent = clientPostId ? PHONE_POST_ID.exec(clientPostId)?.[1] : undefined;
-  return parsePhoneRoomCard({ ...rest, actor, ...(sent ? { clientMessageId: sent } : {}) });
+  const approvalId = card.kind === 'approval' ? card.refs?.approvalId : undefined;
+  const action = approvalId && approvalAction ? approvalAction(approvalId) : null;
+  return parsePhoneRoomCard({ ...rest, actor, ...(sent ? { clientMessageId: sent } : {}), ...(action ? { approvalAction: action } : {}) });
 }
 
 const encoder = new TextEncoder();

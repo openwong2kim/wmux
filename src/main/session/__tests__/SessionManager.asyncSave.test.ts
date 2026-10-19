@@ -141,9 +141,8 @@ describe('SessionManager — async periodic save (A4)', () => {
       gatedCalls = 0;
       sm.saveAsync(makeSession('pty-stale-inflight'));
       // 태스크가 큐에서 시작해 pre-check를 통과하고 게이트에 매달릴 때까지 양보.
-      await new Promise((r) => setTimeout(r, 10));
       // 목킹 실적용 확인 — stale 쓰기가 게이트에 실제로 매달렸다(가짜 양성 방지).
-      expect(gatedCalls).toBe(1);
+      await vi.waitFor(() => expect(gatedCalls).toBe(1), { timeout: 10_000 });
       // 이 시점 async는 in-flight — queue.clear()로 제거 불가. sync가 최신 커밋.
       sm.save(makeSession('pty-fresh-sync-late'));
       expect(readDiskPtyId(sm)).toBe('pty-fresh-sync-late');

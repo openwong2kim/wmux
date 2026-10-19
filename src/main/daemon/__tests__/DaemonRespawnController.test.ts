@@ -26,6 +26,11 @@ class FakeDaemonClient extends EventEmitter {
     async () => ({});
   disconnectCalls = 0;
   disconnectSyncCalls = 0;
+  resubscribeCalls = 0;
+
+  async resubscribeEvents(): Promise<void> {
+    this.resubscribeCalls++;
+  }
 
   get isConnected(): boolean {
     return this.connected;
@@ -471,6 +476,67 @@ describe('DaemonRespawnController health probe', () => {
     expect(c1.disconnectSyncCalls).toBe(0);
     expect(h.events.some((e) => e.type === 'reconnecting')).toBe(false);
     expect(h.controller.isHealthy).toBe(true);
+  });
+
+  it('subscribes again when a ping says the daemon dropped our event subscription', async () => {
+    const h = makeHarness({
+      config: { healthIntervalMs: 1000, healthTimeoutMs: 5000, baseBackoffMs: 50, budget: 5 },
+    });
+    const c1 = new FakeDaemonClient();
+    h.clientQueue.push(c1);
+    let subscribed = true;
+    c1.rpcImpl = async (method) =>
+      method === 'daemon.ping' ? { status: 'ok', eventsSubscribed: subscribed } : {};
+
+    await h.controller.bootstrap();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(c1.resubscribeCalls).toBe(0);
+
+    subscribed = false;
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(c1.resubscribeCalls).toBe(1);
+    // Still connected: a dropped subscription is not a hang.
+    expect(c1.disconnectSyncCalls).toBe(0);
+    expect(h.deps.onUninstall).not.toHaveBeenCalled();
+  });
+
+  it('asks the owner to resync once the dropped subscription is restored (#2263)', async () => {
+    const h = makeHarness({
+      config: { healthIntervalMs: 1000, healthTimeoutMs: 5000, baseBackoffMs: 50, budget: 5 },
+    });
+    const onEventsResubscribed = vi.fn();
+    h.deps.onEventsResubscribed = onEventsResubscribed;
+    const c1 = new FakeDaemonClient();
+    h.clientQueue.push(c1);
+    let subscribed = true;
+    c1.rpcImpl = async (method) =>
+      method === 'daemon.ping' ? { status: 'ok', eventsSubscribed: subscribed } : {};
+
+    await h.controller.bootstrap();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(onEventsResubscribed).not.toHaveBeenCalled();
+
+    subscribed = false;
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(onEventsResubscribed).toHaveBeenCalledTimes(1);
+    expect(onEventsResubscribed).toHaveBeenCalledWith(c1);
+
+    subscribed = true;
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(onEventsResubscribed).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves an older daemon that does not report the subscription alone', async () => {
+    const h = makeHarness({
+      config: { healthIntervalMs: 1000, healthTimeoutMs: 5000, baseBackoffMs: 50, budget: 5 },
+    });
+    const c1 = new FakeDaemonClient();
+    h.clientQueue.push(c1);
+    c1.rpcImpl = async (method) => (method === 'daemon.ping' ? { status: 'ok' } : {});
+
+    await h.controller.bootstrap();
+    for (let i = 0; i < 3; i++) await vi.advanceTimersByTimeAsync(1000);
+    expect(c1.resubscribeCalls).toBe(0);
   });
 
   it('uses the default hangFailureThreshold of 5 (4 failures tolerated, 5th respawns) (RCA A4)', async () => {

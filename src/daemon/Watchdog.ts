@@ -48,6 +48,12 @@ export class Watchdog {
   private sessionsBlocked = false;
   private checkCount = 0;
   private idleShutdownFired = false;
+  // #2375: the health source passed to start(), kept so a create can re-sample
+  // memory on demand instead of waiting up to a full interval for the block
+  // to lift. lastRecheckAt rate-limits that on-demand sample.
+  private healthCheck: (() => { sessions: number; memory: number; uptime: number }) | null = null;
+  private lastRecheckAt = -Infinity;
+  private static readonly RECHECK_MIN_INTERVAL_MS = 1000;
 
   // Memory escalation thresholds (bytes). Instance-level (was static) so the
   // daemon can thread config.daemon.mem{Warn,Reap,Block}Mb. The defaults
@@ -96,9 +102,44 @@ export class Watchdog {
     return this.sessionsBlocked;
   }
 
+  /**
+   * Whether new session creation is blocked, re-sampling memory first when it
+   * is (#2375). The interval blocks on a single sample and only re-reads it a
+   * full interval later, so a transient spike (a cold start restoring ~120
+   * panes) used to refuse every create for ~30 s after memory had already
+   * fallen back. Callers that refuse work on the block go through this
+   * instead of `isBlocked`. The re-sample only ever lifts the block, and runs
+   * at most once per RECHECK_MIN_INTERVAL_MS — within that window a burst of
+   * creates reuses the last answer.
+   */
+  recheckBlock(): boolean {
+    if (!this.sessionsBlocked || !this.healthCheck) return this.sessionsBlocked;
+    const now = Date.now();
+    // A clock that went back (now < lastRecheckAt) samples again rather than
+    // holding the last answer until the clock catches up.
+    if (now >= this.lastRecheckAt && now - this.lastRecheckAt < Watchdog.RECHECK_MIN_INTERVAL_MS) return this.sessionsBlocked;
+    this.lastRecheckAt = now;
+    try {
+      const health = this.healthCheck();
+      if (health.memory < this.blockBytes) {
+        this.unblock((health.memory / 1024 / 1024).toFixed(1));
+      }
+    } catch (err) {
+      console.log(`[Watchdog] Health recheck failed:`, err);
+    }
+    return this.sessionsBlocked;
+  }
+
+  private unblock(memMB: string): void {
+    this.sessionsBlocked = false;
+    this.callbacks.onBlockNewSessions?.(false);
+    console.log(`[Watchdog] Memory recovered to ${memMB}MB — unblocking new sessions`);
+  }
+
   /** Start periodic health checks. */
   start(healthCheck: () => { sessions: number; memory: number; uptime: number }): void {
     if (this.intervalId) return;
+    this.healthCheck = healthCheck;
 
     this.intervalId = setInterval(() => {
       try {
@@ -129,9 +170,7 @@ export class Watchdog {
 
         // Recovery: unblock if memory drops below block threshold
         if (this.sessionsBlocked && health.memory < this.blockBytes) {
-          this.sessionsBlocked = false;
-          this.callbacks.onBlockNewSessions?.(false);
-          console.log(`[Watchdog] Memory recovered to ${memMB}MB — unblocking new sessions`);
+          this.unblock(memMB);
         }
 
         // Regular health log (only every 5th check to reduce noise)

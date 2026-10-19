@@ -4,6 +4,7 @@ import { EventEmitter } from 'node:events';
 const broadcastMetadataUpdate = vi.fn();
 const updateBranch = vi.fn();
 const removeBranch = vi.fn();
+const markBranchAbsent = vi.fn();
 const removeCwd = vi.fn();
 const updatePorts = vi.fn();
 const removePorts = vi.fn();
@@ -15,6 +16,7 @@ vi.mock('../../ipc/handlers/metadata.handler', () => ({
   broadcastMetadataUpdate: (...args: unknown[]) => broadcastMetadataUpdate(...args),
   updateBranch: (...args: unknown[]) => updateBranch(...args),
   removeBranch: (...args: unknown[]) => removeBranch(...args),
+  markBranchAbsent: (...args: unknown[]) => markBranchAbsent(...args),
   removeCwd: (...args: unknown[]) => removeCwd(...args),
   updatePorts: (...args: unknown[]) => updatePorts(...args),
   removePorts: (...args: unknown[]) => removePorts(...args),
@@ -60,6 +62,17 @@ describe('WorkspaceContextRouter', () => {
       gitIsWorktree: false,
       pr: null,
     });
+    await flush();
+  });
+
+  it('keeps a known "not a repo" as such and forgets an unknown null branch', async () => {
+    const { client } = makeRouter();
+    client.emit('session:git', { sessionId: 'pty-1', data: { branch: null, isWorktree: false, absent: true } });
+    expect(markBranchAbsent).toHaveBeenCalledWith('pty-1');
+    expect(removeBranch).not.toHaveBeenCalled();
+    client.emit('session:git', { sessionId: 'pty-1', data: { branch: null, isWorktree: false } });
+    expect(removeBranch).toHaveBeenCalledWith('pty-1');
+    expect(markBranchAbsent).toHaveBeenCalledTimes(1);
     await flush();
   });
 

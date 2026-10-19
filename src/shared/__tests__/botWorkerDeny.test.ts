@@ -9,8 +9,9 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   BOT_WORKER_DENY, BOT_WORKER_MERGE_DENY, BOT_WORKER_PUBLIC_DENY, BOT_WORKER_PUSH_DENY, buildBotWorkerSettings, botWorkerDefaultBranchesPath,
-  isDenyableBranchName, namesClaude, readBotWorkerDefaultBranches, recordBotWorkerDefaultBranch, writeBotWorkerSettings,
+  botWorkerSessionsPath, isDenyableBranchName, namesClaude, readBotWorkerDefaultBranches, readBotWorkerSessions, recordBotWorkerDefaultBranch, writeBotWorkerSettings,
 } from '../botWorkerGuard';
+import { wslClaudeHooks } from '../wslIntegration';
 
 function denied(command: string, rules: readonly string[] = BOT_WORKER_DENY): boolean {
   return rules.some((rule) => {
@@ -23,9 +24,19 @@ function denied(command: string, rules: readonly string[] = BOT_WORKER_DENY): bo
 
 describe('bot worker deny rules', () => {
   it('the settings document carries every rule, merge rules first', () => {
-    expect(buildBotWorkerSettings()).toEqual({ permissions: { deny: [...BOT_WORKER_DENY] } });
+    expect(buildBotWorkerSettings()).toEqual({ permissions: { deny: [...BOT_WORKER_DENY] }, disableAllHooks: false, hooks: wslClaudeHooks() });
     expect(BOT_WORKER_DENY.slice(0, BOT_WORKER_MERGE_DENY.length)).toEqual([...BOT_WORKER_MERGE_DENY]);
     expect(BOT_WORKER_DENY).toEqual(expect.arrayContaining([...BOT_WORKER_PUSH_DENY, ...BOT_WORKER_PUBLIC_DENY]));
+  });
+
+  it('a WSL worker\'s settings keep wmux\'s hooks, which its own --settings would otherwise replace (#2261)', () => {
+    const hooks = buildBotWorkerSettings().hooks as Record<string, Array<{ hooks: Array<{ command: string }> }>>;
+    // The turn end (idle reclaim) and the session id (resume) come from these.
+    for (const event of ['SessionStart', 'Stop', 'StopFailure', 'UserPromptSubmit']) {
+      expect(hooks[event]?.[0]?.hooks[0]?.command, event).toBe(`/bin/sh "$WMUX_WSL_HOOK" ${event}`);
+    }
+    // No Windows path: Linux claude runs them through the WSL hook script.
+    expect(JSON.stringify(hooks)).not.toMatch(/[A-Za-z]:[\\/]|\.mjs|node /);
   });
 
   it('the rule set is pinned: any change to a rule is a deliberate change to this test', () => {
@@ -170,6 +181,25 @@ describe('which lines start claude', () => {
   it('sees every claude launcher, a glued one included, and not a longer word', () => {
     for (const yes of ['claude', '/opt/bin/claude --resume x', 'true;claude', 'a&&claude -p x', '(claude)', 'x|claude.exe']) expect(namesClaude(yes), yes).toBe(true);
     for (const no of ['codex', 'git log --grep claudex', 'echo claudeish']) expect(namesClaude(no), no).toBe(false);
+  });
+});
+
+describe('the bot worker sessions record', () => {
+  let dir: string;
+  beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-sessions-')); });
+  afterEach(() => { fs.rmSync(dir, { recursive: true, force: true }); });
+
+  it('keeps the optional codex launch fields of a version-1 record, and ignores malformed ones without dropping the record', () => {
+    fs.mkdirSync(path.join(dir, 'factory'), { recursive: true });
+    fs.writeFileSync(botWorkerSessionsPath(dir), JSON.stringify({ version: 1, sessions: {
+      a: { workspaceId: 'ws-a', at: 1, agent: 'codex', cwd: '/w/a', repoKey: 'acme/app' },
+      b: { workspaceId: 'ws-b', at: 2, agent: 7, cwd: { no: 1 } },
+      c: { workspaceId: 'ws-c', at: 3 },
+    } }));
+    const read = readBotWorkerSessions(dir) as { sessions: Map<string, unknown> };
+    expect(read.sessions.get('a')).toEqual({ workspaceId: 'ws-a', at: 1, agent: 'codex', cwd: '/w/a', repoKey: 'acme/app' });
+    expect(read.sessions.get('b')).toEqual({ workspaceId: 'ws-b', at: 2 });
+    expect(read.sessions.get('c')).toEqual({ workspaceId: 'ws-c', at: 3 });
   });
 });
 

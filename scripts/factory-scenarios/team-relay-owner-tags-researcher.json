@@ -193,7 +193,10 @@
       "label": "ask",
       "post": {
         "title": "Ship a widget",
-        "body": "Please get a widget shipped, with a follow-up issue."
+        "body": "Please get a widget shipped, with a follow-up issue.",
+        "mentions": [
+          "{{bot.lead}}"
+        ]
       }
     },
     {

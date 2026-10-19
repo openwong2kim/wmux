@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { FACT_KINDS, factDedupeKey, isFactKind, type FactKind } from '../facts';
-import { parseThreadId, prThreadId, issueThreadId, taskOriginThread, taskThreadOf } from '../room';
+import { dmThreadBot, dmThreadId, groupThreadGroup, groupThreadId, parseThreadId, prThreadId, issueThreadId, taskOriginThread, taskThreadOf } from '../room';
 import { normalizeRepoKey } from '../repoKey';
 import {
   BOT_JOB_MAX,
@@ -47,6 +47,19 @@ describe('factDedupeKey', () => {
       .toBe(`bot.refused:bot-0000beef:input.send:${MINUTE}`);
   });
 
+  it('a budget park is reported once per park: a second park in the same hour gets its own key', () => {
+    const bot = { botId: 'bot-0000beef' };
+    const first = factDedupeKey({ kind: 'bot.budget_exhausted', at: AT, ref: bot, payload: { reason: 'turns_hour', parkedAt: AT } });
+    const again = factDedupeKey({ kind: 'bot.budget_exhausted', at: AT, ref: bot, payload: { reason: 'turns_hour', parkedAt: AT } });
+    const second = factDedupeKey({ kind: 'bot.budget_exhausted', at: AT + 600_000, ref: bot, payload: { reason: 'turns_hour', parkedAt: AT + 600_000 } });
+    expect(first).toBe(`bot.budget_exhausted:bot-0000beef:park:${AT}`);
+    expect(again).toBe(first);
+    expect(second).not.toBe(first);
+    // No park (a worker start refused): one per hour, as before.
+    expect(factDedupeKey({ kind: 'bot.budget_exhausted', at: AT, ref: bot, payload: { reason: 'concurrent_workers' } }))
+      .toBe(`bot.budget_exhausted:bot-0000beef:${Math.floor(AT / 3_600_000)}`);
+  });
+
   it('a verdict from a pane (no bot) keys on its workspace', () => {
     expect(factDedupeKey({ kind: 'verdict.recorded', at: AT, repoKey: 'a/b', workspaceId: 'ws-1', ref: { pr: 1, headSha: 'f' } }))
       .toBe('verdict.recorded:a/b#1:f:ws-1');
@@ -79,6 +92,22 @@ describe('thread ids', () => {
     expect(parseThreadId(issueThreadId('github.com/a/b', 3))).toBe('issue:github.com/a/b#3');
   });
 
+  it('a bot\'s 1:1 thread is dm:<bot id>, and nothing else after dm: parses', () => {
+    expect(dmThreadId('bot-0a1b2c3d')).toBe('dm:bot-0a1b2c3d');
+    expect(parseThreadId('dm:bot-0a1b2c3d')).toBe('dm:bot-0a1b2c3d');
+    expect(dmThreadBot('dm:bot-0a1b2c3d')).toBe('bot-0a1b2c3d');
+    for (const v of ['dm:', 'dm:bot-XYZ', 'dm:moa', 'dm:bot-0a1b2c3d/x']) expect(parseThreadId(v), v).toBeNull();
+    for (const v of ['general', 'task:t-1', 'dm:nope', undefined]) expect(dmThreadBot(v)).toBeNull();
+  });
+
+  it('a group chat\'s thread is group:<group id>, and nothing else after group: parses', () => {
+    expect(groupThreadId('grp-0a1b2c3d')).toBe('group:grp-0a1b2c3d');
+    expect(parseThreadId('group:grp-0a1b2c3d')).toBe('group:grp-0a1b2c3d');
+    expect(groupThreadGroup('group:grp-0a1b2c3d')).toBe('grp-0a1b2c3d');
+    for (const v of ['group:', 'group:grp-XYZ', 'group:bot-0a1b2c3d', 'group:grp-0a1b2c3d/x']) expect(parseThreadId(v), v).toBeNull();
+    for (const v of ['general', 'dm:bot-0a1b2c3d', 'group:nope', undefined]) expect(groupThreadGroup(v)).toBeNull();
+  });
+
   it('one PR is one thread however its repo key is spelled', () => {
     for (const key of ['Acme/App', 'acme/app', 'github.com/Acme/App', 'GitHub.com/acme/app.git', 'github.com/acme/app/']) {
       expect(prThreadId(key, 12)).toBe('pr:github.com/acme/app#12');
@@ -103,7 +132,8 @@ describe('thread ids', () => {
   });
 
   it('rejects anything else', () => {
-    for (const bad of ['', 'pr:a/b#0', 'pr:ab#1', 'pr:h/a/b/c#1', 'pr:a/b#x', 'nope:1', 'task:', 'task:a b', 42, null, `plan:${'x'.repeat(300)}`]) {
+    expect(parseThreadId('pr:GitLab.corp/G/Sub/P#1')).toBe('pr:gitlab.corp/g/sub/p#1');
+    for (const bad of ['', 'pr:a/b#0', 'pr:ab#1', 'pr:h/a//c#1', 'pr:a/b#x', 'nope:1', 'task:', 'task:a b', 42, null, `plan:${'x'.repeat(300)}`]) {
       expect(parseThreadId(bad), String(bad)).toBeNull();
     }
   });
@@ -162,7 +192,9 @@ describe('repo keys', () => {
     expect(normalizeRepoKey(long)).toBeNull();
     const fits = normalizeRepoKey(`${'o'.repeat(120)}/${'r'.repeat(120)}`);
     expect(fits && normalizeRepoKey(fits)).toBe(fits);
-    for (const bad of ['', 'app', 'a//b', 'h/a/b/c', 'a b/c', 'a/b#1', `${'x'.repeat(260)}/a/b`, 42, null, undefined]) {
+    // A GitLab subgroup project keeps its whole path.
+    expect(normalizeRepoKey('GitLab.corp/Group/Sub/App.git')).toBe('gitlab.corp/group/sub/app');
+    for (const bad of ['', 'app', 'a//b', 'h/a//c', `h/${Array(22).fill('g').join('/')}`, 'a b/c', 'a/b#1', `${'x'.repeat(260)}/a/b`, 42, null, undefined]) {
       expect(normalizeRepoKey(bad), String(bad)).toBeNull();
     }
   });

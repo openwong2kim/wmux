@@ -74,6 +74,17 @@ describe('load-time heal of a Claude binding over a Codex rollout (#1823)', () =
     expect(loaded.lastDetectedAgent).toBe('codex');
   });
 
+  it('drops the Claude name\'s evidence stamp when it renames the pane to Codex', () => {
+    writeRollout(THREAD);
+    const { loaded, persisted } = loadThroughMainWriter(session({
+      lastDetectedAgent: 'claude',
+      lastDetectedAgentEvidence: { source: 'hook', at: 1791307112000 },
+    }));
+    expect(loaded.lastDetectedAgent).toBe('codex');
+    expect(loaded.lastDetectedAgentEvidence).toBeUndefined();
+    expect(persisted.lastDetectedAgentEvidence).toBeUndefined();
+  });
+
   it('drops it when the rollout file is gone', () => {
     const { loaded, persisted, warnings } = loadThroughMainWriter(session({}));
     expect(loaded.resumeBinding).toBeUndefined();

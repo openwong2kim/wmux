@@ -47,6 +47,7 @@ export type FactoryBotCreateCode =
   | 'too_many_bots'
   | 'not_found'
   | 'not_a_repo'
+  | 'repo_untrusted'
   | 'no_remote'
   | 'repo_mismatch';
 
@@ -90,7 +91,7 @@ export function roleWorksOnRepo(role: BotRole): boolean {
  *  `root` with the home folder shortened to `~`. */
 export type FactoryBotRepoSuggestion =
   | { ok: true; repoKey: string; root: string; displayRoot: string; inherited: boolean }
-  | { ok: false; code: 'operator_only' | 'invalid_argument' | 'no_folder' | 'not_a_repo' | 'no_remote' };
+  | { ok: false; code: 'operator_only' | 'invalid_argument' | 'no_folder' | 'not_a_repo' | 'repo_untrusted' | 'no_remote' };
 
 /** FACTORY_BOT_PICK_AVATAR: the picked image as a stored-avatar preview (not
  *  saved yet), or why there is none. */

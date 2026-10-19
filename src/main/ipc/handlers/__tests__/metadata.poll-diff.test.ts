@@ -13,6 +13,7 @@ import {
   getLastBroadcastAgentStatus,
   hasOutstandingRunningClaim,
 } from '../metadata.handler';
+import { readSourceText } from '../../../../test-utils/sourceText';
 
 vi.mock('electron', () => ({
   ipcMain: { removeHandler: vi.fn(), handle: vi.fn() },
@@ -160,10 +161,8 @@ describe('runMetadataPollTick payload diff', () => {
 // METADATA_UPDATE path so the renderer's active-surface apply logic runs.
 describe('METADATA_REQUEST re-broadcast (active-surface pull)', () => {
   it('the request handler broadcasts the payload in addition to returning it', async () => {
-    const fs = await import('node:fs');
     const path = await import('node:path');
-    const src = fs.readFileSync(
-      path.join(__dirname, '..', 'metadata.handler.ts'), 'utf-8');
+    const src = readSourceText(path.join(__dirname, '..', 'metadata.handler.ts'));
     const idx = src.indexOf('ipcMain.handle(IPC.METADATA_REQUEST');
     expect(idx).toBeGreaterThan(0);
     const body = src.slice(idx, idx + 900);

@@ -171,6 +171,13 @@ describe('approval requests (bot side)', () => {
     expect(answering.writer.get(WS, req.cardId as string)?.refs?.threadId).toBeUndefined();
   });
 
+  it('a turn in the bot\'s own 1:1 (its task\'s work, asked for there) asks there, though the owner spoke in the room since', async () => {
+    const DM = bot('bot-0000de01');
+    const inDm = rig({ conversationThread: () => 'general' as never, bots: () => ({ listEnabled: () => [DM], get: () => DM }) });
+    inDm.state.wakes.set(DM.id, { wakeId: 'w-3', attempt: 1, threadId: `dm:${DM.id}` as never, tainted: false });
+    expect(await inDm.ask(DM, { action: 'merge', prNumber: 1, reason: 'x' })).toMatchObject({ threadId: `dm:${DM.id}` });
+  });
+
   it('refuses outside a wake, without a repository, a closed PR, or an unreadable login', async () => {
     const r = rig();
     r.state.wakes.delete(DEV.id);
@@ -500,6 +507,65 @@ describe('typed approval (the owner\'s own words in the thread)', () => {
   });
 });
 
+describe('a deleted bot\'s requests', () => {
+  function rigWithDeletable() {
+    const gone = new Set<string>();
+    const live = () => [DEV, OTHER].filter((b) => !gone.has(b.id));
+    const r = rig({ bots: () => ({ listEnabled: live, get: (id) => live().find((b) => b.id === id) ?? null }) });
+    return { ...r, gone };
+  }
+
+  it('on delete, each waiting request of the bot expires and its card closes; a later approve is refused', async () => {
+    const r = rigWithDeletable();
+    const merge = await r.ask(DEV, { action: 'merge', prNumber: 1, reason: 'x' });
+    const other = await r.ask(OTHER, { action: 'merge', prNumber: 2, reason: 'y' });
+    r.gone.add(DEV.id);
+    expect(r.svc.botRemoved(DEV.id)).toBe(1);
+    expect(r.svc.get(merge.requestId)?.state).toBe('expired');
+    expect(r.writer.get(WS, merge.cardId as string)?.state).toBe('resolved');
+    expect(r.svc.decide({ requestId: merge.requestId, decision: 'approve' }, 'desktop')).toMatchObject({ ok: false, code: 'not_bot' });
+    expect(r.svc.get(merge.requestId)?.state).toBe('expired');
+    expect(r.enqueued).toEqual([]);
+    // Another bot's request is untouched.
+    expect(r.svc.get(other.requestId)?.state).toBe('pending');
+  });
+
+  it('a request whose bot is gone is refused even when nothing expired it first', async () => {
+    const r = rigWithDeletable();
+    const merge = await r.ask(DEV, { action: 'merge', prNumber: 1, reason: 'x' });
+    r.gone.add(DEV.id);
+    for (const decision of ['approve', 'always', 'deny']) {
+      expect(r.svc.decide({ requestId: merge.requestId, decision }, 'desktop')).toMatchObject({ ok: false, code: 'not_bot' });
+    }
+    expect(r.svc.get(merge.requestId)?.state).toBe('expired');
+    expect(r.svc.rulesList()).toEqual([]);
+    expect(r.enqueued).toEqual([]);
+  });
+
+  it('a merge approved but inside its Undo window ends on delete, and no merge effect of a deleted bot is authorized', async () => {
+    const r = rigWithDeletable();
+    const merge = await r.ask(DEV, { action: 'merge', prNumber: 1, reason: 'x' });
+    expect(r.svc.decide({ requestId: merge.requestId, decision: 'approve' }, 'desktop')).toMatchObject({ ok: true, request: { state: 'approved' } });
+    const effect = { decisionId: merge.requestId, approvedBy: 'owner', expectHead: HEAD, prNumber: 1, repoKey: KEY } as unknown as MergeEffect;
+    r.gone.add(DEV.id);
+    expect(r.svc.authorizeEffect(effect)).toBe('bot-removed');
+    expect(r.svc.botRemoved(DEV.id)).toBe(1);
+    expect(r.svc.get(merge.requestId)?.state).toBe('expired');
+    expect(r.svc.authorizeEffect(effect)).toBe('approval-not-approved');
+    r.svc.stop();
+  });
+
+  it('a request still open for a bot deleted earlier ends when the store starts again', async () => {
+    const r = rigWithDeletable();
+    const merge = await r.ask(DEV, { action: 'merge', prNumber: 1, reason: 'x' });
+    r.gone.add(DEV.id);
+    const again = new ApprovalService(r.ports);
+    again.resume();
+    expect(again.get(merge.requestId)?.state).toBe('expired');
+    again.stop();
+  });
+});
+
 describe('always allow (remembered rules)', () => {
   it('always allow is one write: a failed write leaves neither the rule nor the approval', async () => {
     const r = rig();
@@ -544,6 +610,7 @@ describe('always allow (remembered rules)', () => {
     const a = await r.ask(DEV, { action: 'merge', prNumber: 1, reason: 'x' });
     r.svc.decide({ requestId: a.requestId, decision: 'always' }, 'desktop');
     r.state.wakes.set(DEV.id, { wakeId: 'w-2', attempt: 1, threadId: null, tainted: false });
+    (r.host.ruleCheck as ReturnType<typeof vi.fn>).mockClear();
     const post = r.writer.post.bind(r.writer);
     const spy = vi.spyOn(r.writer, 'post').mockImplementation((input) => (input.kind === 'approval' ? { ok: false, code: 'invalid', message: 'refused' } as never : post(input)));
     try {
@@ -591,14 +658,15 @@ describe('always allow (remembered rules)', () => {
     r.state.wakes.set(DEV.id, { wakeId: 'w-2', attempt: 1, threadId: null, tainted: true });
     r.state.heads.set(3, HEAD);
     const tainted = await r.ask(DEV, { action: 'merge', prNumber: 3, reason: 'from an issue' });
-    expect(tainted).toMatchObject({ state: 'pending', ruleSkipped: 'started from outside text' });
+    expect(tainted).toMatchObject({ state: 'pending', ruleSkipped: 'tainted-origin' });
     r.state.wakes.set(DEV.id, { wakeId: 'w-3', attempt: 1, threadId: null, tainted: false });
     r.state.ruleCheck = 'lane-paused';
     r.state.heads.set(4, HEAD);
     expect(await r.ask(DEV, { action: 'merge', prNumber: 4, reason: 'x' })).toMatchObject({ state: 'pending', ruleSkipped: 'lane-paused' });
     r.state.ruleCheck = null;
     r.state.heads.set(5, HEAD);
-    expect(await r.ask(OTHER, { action: 'merge', prNumber: 5, reason: 'x' })).toMatchObject({ state: 'pending' });
+    // The rule covers the bot that asks: another bot's request is told so.
+    expect(await r.ask(OTHER, { action: 'merge', prNumber: 5, reason: 'x' })).toMatchObject({ state: 'pending', ruleSkipped: 'rule-other-asker' });
     const rel = await r.ask(DEV, { action: 'release', reason: 'ship' });
     expect(r.svc.decide({ requestId: rel.requestId, decision: 'always' }, 'desktop')).toMatchObject({ ok: false, code: 'not_ruleable' });
     expect(ruleCovers({ ruleId: 'r', action: 'merge', repoKey: KEY, scope: { workspaceId: WS }, createdAt: 1 }, { action: 'release', repoKey: KEY, botId: DEV.id, workspaceId: WS })).toBe(false);
@@ -726,6 +794,72 @@ describe('the bots learn what became of a request (A4)', () => {
     const second = await r.ask(DEV, { action: 'merge', prNumber: 2, reason: 'y' });
     const view = r.svc.listForOperator(WS).find((v) => v.requestId === second.requestId)!;
     expect(view).toMatchObject({ state: 'pending', ruleSkippedText: 'The repository has no required checks' });
+  });
+});
+
+describe('always allow: what a rule needs and why it did not apply', () => {
+  const view = (r: ReturnType<typeof rig>, id: string) => r.svc.listForOperator(WS).find((v) => v.requestId === id) ?? { ruleNeeds: 'missing', ruleSkipped: 'missing', ruleSkippedCondition: 'missing' };
+
+  it('a merge no rule covers says what a rule from it would still lack here: a Reviewer bot, required checks, a trusted author', async () => {
+    const r = rig();
+    r.state.ruleCheck = 'required-checks-green:no-required-checks, author-trusted:external-author, verifier-pass-at-head:no-verdict';
+    const a = await r.ask(DEV, { action: 'merge', prNumber: 1, reason: 'x' });
+    expect(view(r, a.requestId)).toMatchObject({ state: 'pending', ruleNeeds: ['verifier', 'noChecks', 'author'] });
+    expect(view(r, a.requestId).ruleSkipped).toBeUndefined();
+    // A Reviewer bot of another repository cannot verify this one.
+    const elsewhere = bot('bot-0000rev2', { template: 'reviewer', role: 'verifier', repo: { repoKey: 'o/other', repoPath: '/other' } });
+    const other = rig({ bots: () => ({ listEnabled: () => [DEV, OTHER, elsewhere], get: (id) => [DEV, OTHER, elsewhere].find((b) => b.id === id) ?? null }) });
+    other.state.ruleCheck = 'verifier-pass-at-head:no-verdict';
+    other.state.wakes.set(DEV.id, { wakeId: 'w-4', attempt: 1, threadId: null, tainted: false });
+    other.state.heads.set(4, HEAD);
+    const d = await other.ask(DEV, { action: 'merge', prNumber: 4, reason: 'x' });
+    expect(view(other, d.requestId).ruleNeeds).toEqual(['verifier']);
+    // A Reviewer bot on this repository can verify: only what the repository lacks.
+    const reviewer = bot('bot-0000rev1', { template: 'reviewer', role: 'verifier' });
+    const withReviewer = rig({ bots: () => ({ listEnabled: () => [DEV, OTHER, reviewer], get: (id) => [DEV, OTHER, reviewer].find((b) => b.id === id) ?? null }) });
+    withReviewer.state.ruleCheck = 'required-checks-green:no-required-checks, verifier-pass-at-head:no-verdict';
+    withReviewer.state.wakes.set(DEV.id, { wakeId: 'w-5', attempt: 1, threadId: null, tainted: false });
+    const b = await withReviewer.ask(DEV, { action: 'merge', prNumber: 2, reason: 'x' });
+    expect(view(withReviewer, b.requestId).ruleNeeds).toEqual(['noChecks']);
+    // Nothing missing for good (a pending check, a verdict still to come): no line.
+    withReviewer.state.ruleCheck = 'required-checks-green:required-check-pending, verifier-pass-at-head:no-verdict';
+    withReviewer.state.heads.set(3, HEAD);
+    withReviewer.state.wakes.set(DEV.id, { wakeId: 'w-2', attempt: 1, threadId: null, tainted: false });
+    const c = await withReviewer.ask(DEV, { action: 'merge', prNumber: 3, reason: 'x' });
+    expect(view(withReviewer, c.requestId).ruleNeeds).toBeUndefined();
+  });
+
+  it('a covered request that the rule could not approve names its first unmet condition on its own pending card', async () => {
+    const r = rig();
+    const first = await r.ask(DEV, { action: 'merge', prNumber: 1, reason: 'x' });
+    r.svc.decide({ requestId: first.requestId, decision: 'always' }, 'desktop');
+    r.state.wakes.set(DEV.id, { wakeId: 'w-2', attempt: 1, threadId: null, tainted: false });
+    // The Windows E2E: verifier passed, author trusted, the repository has no checks at all.
+    r.state.ruleCheck = 'required-checks-green:no-required-checks';
+    const second = await r.ask(DEV, { action: 'merge', prNumber: 2, reason: 'y' });
+    expect(view(r, second.requestId)).toMatchObject({ state: 'pending', ruleSkippedCondition: 'noChecks', ruleSkippedText: 'The repository has no required checks' });
+    // Several unmet: the verifier first, as Settings lists them.
+    r.state.wakes.set(DEV.id, { wakeId: 'w-3', attempt: 1, threadId: null, tainted: false });
+    r.state.heads.set(3, HEAD2);
+    r.state.ruleCheck = 'required-checks-green:required-check-failure, author-trusted:external-author, verifier-pass-at-head:no-verdict';
+    const third = await r.ask(DEV, { action: 'merge', prNumber: 3, reason: 'z' });
+    expect(view(r, third.requestId)).toMatchObject({ ruleSkippedCondition: 'verifier', ruleSkippedText: 'No verifier recorded a verdict' });
+    // A code that is none of the rule's conditions keeps main's words.
+    r.state.wakes.set(DEV.id, { wakeId: 'w-4', attempt: 1, threadId: null, tainted: false });
+    r.state.heads.set(4, HEAD2);
+    r.state.ruleCheck = 'lane-daily-cap';
+    const fourth = await r.ask(DEV, { action: 'merge', prNumber: 4, reason: 'z' });
+    expect(view(r, fourth.requestId)).toMatchObject({ ruleSkippedText: 'Today\'s lane merge limit is reached' });
+    expect(view(r, fourth.requestId).ruleSkippedCondition).toBeUndefined();
+  });
+
+  it('a rule covers the bot that asked: the coordinator\'s rule does not cover the developer\'s request, and the card says so', async () => {
+    const r = rig();
+    const coord = await r.ask(OTHER, { action: 'merge', prNumber: 1, reason: 'x' });
+    const res = r.svc.decide({ requestId: coord.requestId, decision: 'always' }, 'desktop');
+    expect(res).toMatchObject({ ok: true, rule: { scope: { botId: OTHER.id } } });
+    const dev = await r.ask(DEV, { action: 'merge', prNumber: 2, reason: 'y' });
+    expect(view(r, dev.requestId)).toMatchObject({ state: 'pending', ruleSkipped: 'rule-other-asker', ruleSkippedCondition: 'asker', ruleSkippedText: 'Your rule covers the merges another bot asks for' });
   });
 });
 

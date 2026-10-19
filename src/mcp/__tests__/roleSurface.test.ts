@@ -57,9 +57,10 @@ describe('--role surface', () => {
     expect(await listNames({ roleSurface: 'Reviewer' })).toHaveLength(5);
   });
 
-  it('a fan-out worker gets the tools its preamble names: Builder 7, Tester 8', async () => {
-    expect(await listNames({ roleSurface: 'Builder' })).toHaveLength(7);
+  it('a fan-out worker gets the tools its preamble names: Builder 8, Tester 8', async () => {
+    expect(await listNames({ roleSurface: 'Builder' })).toHaveLength(8);
     expect(await listNames({ roleSurface: 'Builder' })).toContain('task_push');
+    expect(await listNames({ roleSurface: 'Builder' })).toContain('task_fetch');
     expect(await listNames({ roleSurface: 'Tester' })).toHaveLength(8);
     expect(await listNames({ roleSurface: 'Builder' })).toContain('ledger_update');
   });

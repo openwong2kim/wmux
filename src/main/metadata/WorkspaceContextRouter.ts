@@ -4,6 +4,7 @@ import {
   broadcastMetadataUpdate,
   updateBranch,
   removeBranch,
+  markBranchAbsent,
   getCwd,
   removeCwd,
   updatePorts,
@@ -52,13 +53,16 @@ export class WorkspaceContextRouter {
   start(): void {
     const onGit = (payload: { sessionId: string; data: unknown }) => {
       try {
-        const data = payload.data as { branch?: string | null; isWorktree?: boolean } | null;
+        const data = payload.data as { branch?: string | null; isWorktree?: boolean; absent?: boolean } | null;
         if (!data || typeof data !== 'object') return;
         const branch = typeof data.branch === 'string' ? data.branch : '';
         const isWorktree = data.isWorktree === true;
         // Keep the metadata poll's branch cache in sync so the 5 s tick
-        // re-broadcasts the watcher value instead of exec-ing git.
+        // re-broadcasts the watcher value instead of exec-ing git. A known
+        // "not a repo" is kept as such (no git spawn per tick); a null branch
+        // without `absent` is unknown and leaves the poll its git fallback.
         if (branch) updateBranch(payload.sessionId, branch);
+        else if (data.absent === true) markBranchAbsent(payload.sessionId);
         else removeBranch(payload.sessionId);
         updateWorktree(payload.sessionId, isWorktree);
         this.branchByPty.set(payload.sessionId, branch);

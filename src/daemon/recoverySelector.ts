@@ -40,3 +40,41 @@ export function selectRecoverableSessions(
     cappedCount: queue.length - recoverableIds.size,
   };
 }
+
+/**
+ * Stop the shells a previous daemon left running, a few sessions at a time.
+ *
+ * Each `reap` is expected to confirm the process identity itself and kill
+ * right after that check, so no pid is acted on with a stale verdict. Every
+ * returned promise settles, even when a check throws, so the recovery loop
+ * can await a session's entry before recreating that session.
+ */
+export function startLeftoverShellReaps(
+  sessions: readonly DaemonSession[],
+  opts: {
+    limit: number;
+    isAlive: (pid: number) => Promise<boolean>;
+    reap: (session: DaemonSession) => Promise<unknown>;
+  },
+): Map<string, Promise<void>> {
+  const done = new Map<string, Promise<void>>();
+  const resolvers = new Map<string, () => void>();
+  for (const s of sessions) {
+    done.set(s.id, new Promise<void>((resolve) => resolvers.set(s.id, resolve)));
+  }
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    while (next < sessions.length) {
+      const s = sessions[next++];
+      try {
+        if (await opts.isAlive(s.pid)) await opts.reap(s);
+      } catch {
+        /* treated as gone: nothing is killed */
+      } finally {
+        resolvers.get(s.id)?.();
+      }
+    }
+  };
+  for (let i = 0; i < Math.min(opts.limit, sessions.length); i++) void worker();
+  return done;
+}

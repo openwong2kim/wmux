@@ -36,11 +36,14 @@ import type { WakeReason } from '../../shared/wake';
 import {
   GENERAL_THREAD,
   ROOM_LIMITS,
+  dmThreadBot,
+  groupThreadGroup,
   parseThreadId,
   issueThreadId,
   prThreadId,
   taskOriginThread,
   type CardKind,
+  type CardNotice,
   type RoomCard,
   type ThreadId,
   type ThreadSummary,
@@ -49,6 +52,8 @@ import { normalizeRepoKey } from './repoWatch';
 import { formatLaneRefusal } from './laneRefusalText';
 import { redactStoredSecrets, redactStoredSecretsDeep } from './secretRedaction';
 import type { BotDirectoryApi, FactLogApi, WakeSinkApi } from './triggerEngine';
+import type { BotGroup } from '../../shared/botGroup';
+import { parseRoomAttachments } from '../../shared/roomAttachments';
 
 export const ROOMS_DIRNAME = 'rooms';
 
@@ -98,6 +103,9 @@ export interface FactoryRoomPorts {
    *  handoff the wake delivers (WakeReason handoff), which a handoff sent
    *  from that turn continues (run, depth) even without a replyTo. */
   currentWake?: (botId: string) => RunningWake | null;
+  /** The owner's group chats (groupStore.ts): the live group a thread of a
+   *  room is. Missing: no group thread takes a post. */
+  groups?: { byThread(workspaceId: string, threadId: ThreadId | null | undefined): BotGroup | null };
 }
 
 /** `handoffId`: the handoff the wake delivers (a handoff or a mention), or
@@ -265,6 +273,29 @@ export function runningWakeThread(ports: Partial<FactoryRoomPorts>, botId: strin
   }
 }
 
+/** A group chat's thread the bot may not name: a live group it is not in,
+ *  unless its running wake is in that thread (a bot asked there answers
+ *  there). */
+export function namesOthersGroup(ports: Partial<FactoryRoomPorts>, bot: { workspaceId: string; botId: string }, threadId: ThreadId | null | undefined): boolean {
+  if (!groupThreadGroup(threadId) || threadId === runningWakeThread(ports, bot.botId)) return false;
+  try {
+    return ports.groups?.byThread(bot.workspaceId, threadId)?.memberIds.includes(bot.botId) !== true;
+  } catch {
+    return true;
+  }
+}
+
+/** Why a bot may not name this thread for what it posts or the workers it
+ *  starts, or null: another bot's 1:1 is named only from the wake running
+ *  in it; a group chat's thread by its members, or from the wake running
+ *  in it. */
+export function botThreadRefusal(ports: Partial<FactoryRoomPorts>, bot: { workspaceId: string; botId: string }, threadId: ThreadId | undefined): string | null {
+  const dmOf = dmThreadBot(threadId);
+  if (dmOf && dmOf !== bot.botId && threadId !== runningWakeThread(ports, bot.botId)) return 'a bot posts in its own 1:1 thread only';
+  if (namesOthersGroup(ports, bot, threadId)) return 'a bot posts in a group chat it is in';
+  return null;
+}
+
 // ── JSONL files ────────────────────────────────────────────────────────────
 
 /** Whether appending to `file` needs a newline first: its last byte is not
@@ -382,6 +413,26 @@ export function sanitizeJobChange(value: unknown): RoomCard['jobChange'] {
   return { botId: j.botId, previous, next };
 }
 
+const NOTICE_CODE_RE = /^[a-z][a-zA-Z0-9.]{0,63}$/;
+const NOTICE_ARG_KEY_RE = /^[a-zA-Z][a-zA-Z0-9]{0,31}$/;
+const NOTICE_ARGS_MAX = 8;
+
+/** A system card's notice (RoomCard.notice), or undefined. */
+export function sanitizeNotice(value: unknown): CardNotice | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const n = value as Record<string, unknown>;
+  if (typeof n.code !== 'string' || !NOTICE_CODE_RE.test(n.code)) return undefined;
+  const args: Record<string, string | number> = {};
+  if (n.args && typeof n.args === 'object' && !Array.isArray(n.args)) {
+    for (const [k, v] of Object.entries(n.args as Record<string, unknown>).slice(0, NOTICE_ARGS_MAX)) {
+      if (!NOTICE_ARG_KEY_RE.test(k)) continue;
+      if (typeof v === 'number' && Number.isFinite(v)) args[k] = v;
+      else if (typeof v === 'string') args[k] = capBody(v);
+    }
+  }
+  return Object.keys(args).length > 0 ? { code: n.code, args } : { code: n.code };
+}
+
 /** A card read from disk, or null when it is not one of this room's. */
 export function parseCardLine(raw: unknown, workspaceId: string): RoomCard | null {
   if (!raw || typeof raw !== 'object') return null;
@@ -398,6 +449,8 @@ export function parseCardLine(raw: unknown, workspaceId: string): RoomCard | nul
   const body = typeof c.body === 'string' ? capBody(c.body) : undefined;
   const refs = sanitizeRefs(c.refs);
   const jobChange = c.kind === 'job_changed' ? sanitizeJobChange(c.jobChange) : undefined;
+  const notice = actor.kind === 'system' ? sanitizeNotice(c.notice) : undefined;
+  const attachments = c.kind === 'human' && actor.kind === 'human' ? parseRoomAttachments(c.attachments) : undefined;
   return {
     version: 1,
     id: c.id,
@@ -416,6 +469,8 @@ export function parseCardLine(raw: unknown, workspaceId: string): RoomCard | nul
     ...(c.closes === true ? { closes: true as const } : {}),
     ...(jobChange ? { jobChange } : {}),
     ...(c.greeting === true && c.kind === 'question' ? { greeting: true as const } : {}),
+    ...(notice ? { notice } : {}),
+    ...(attachments ? { attachments } : {}),
   };
 }
 
@@ -450,6 +505,11 @@ export interface RoomCardInput {
   jobChange?: RoomCard['jobChange'];
   /** `question` cards only (RoomCard.greeting). */
   greeting?: true;
+  /** System cards only (RoomCard.notice). */
+  notice?: CardNotice;
+  /** The owner's `human` cards only (RoomCard.attachments): photos already
+   *  in the room's store. */
+  attachments?: RoomCard['attachments'];
 }
 
 /** A post from a bot or the owner: idempotent by clientPostId, and a replyTo
@@ -660,6 +720,8 @@ export class RoomWriter {
     const body = capBody(typeof input.body === 'string' ? redactStoredSecrets(input.body) : input.body);
     const refs = sanitizeRefs(redactStoredSecretsDeep(input.refs));
     const jobChange = input.kind === 'job_changed' ? sanitizeJobChange(redactStoredSecretsDeep(input.jobChange)) : undefined;
+    const notice = actor.kind === 'system' ? sanitizeNotice(redactStoredSecretsDeep(input.notice)) : undefined;
+    const attachments = input.kind === 'human' && actor.kind === 'human' ? parseRoomAttachments(input.attachments) : undefined;
     // A fact delivered twice (a re-subscribe, a replay) writes one card.
     const factKey = refs?.factId ? factCardKey({ refs, threadId, kind: input.kind }) : null;
     if (factKey && state.seenFacts.has(factKey)) return null;
@@ -679,6 +741,8 @@ export class RoomWriter {
       ...(input.closes ? { closes: true as const } : {}),
       ...(jobChange ? { jobChange } : {}),
       ...(input.greeting === true && input.kind === 'question' ? { greeting: true as const } : {}),
+      ...(notice ? { notice } : {}),
+      ...(attachments ? { attachments } : {}),
       ...(extra?.replyTo ? { replyTo: extra.replyTo } : {}),
       ...(extra?.clientPostId ? { clientPostId: extra.clientPostId } : {}),
     };
@@ -801,6 +865,8 @@ export class RoomWriter {
     let status: ThreadSummary['status'] = 'open';
     if (threadId !== GENERAL_THREAD && openItems === 0 && cards.some((c) => c.closes)) status = 'closed';
     else if (openItems === 0 && last && this.now() - last.at > ROOM_LIMITS.QUIET_DAYS * DAY_MS) status = 'quiet';
+    const dmBotId = state ? threadLinked(state.cards, threadId, dmThreadBot) : null;
+    const groupId = state && !dmBotId ? threadLinked(state.cards, threadId, groupThreadGroup) : null;
     return {
       threadId,
       title: threadId === GENERAL_THREAD ? threadTitle(threadId) : redactStoredSecrets(cards[0]?.title ?? threadTitle(threadId)),
@@ -811,6 +877,9 @@ export class RoomWriter {
       lastKind: last?.kind ?? 'fact',
       status,
       unread: through === undefined ? null : cards.filter((c) => c.seq > through).length,
+      ...(cards[0] ? { firstAt: cards[0].at } : {}),
+      ...(dmBotId ? { dmBotId } : {}),
+      ...(groupId ? { groupId } : {}),
     };
   }
 
@@ -831,6 +900,27 @@ export class RoomWriter {
   unload(): void {
     this.rooms.clear();
   }
+}
+
+/** The bot whose 1:1 a thread is, or started it (`of` = dmThreadBot), or
+ *  the group chat's (`of` = groupThreadGroup): its own `dm:<botId>` /
+ *  `group:<id>`, or a thread one of main's cards ties to one — the opening
+ *  hop linking it (`refs.threadId`), or the pointer card in it linking this
+ *  thread. */
+function threadLinked(cards: readonly RoomCard[], threadId: ThreadId, of: (t: unknown) => string | null): string | null {
+  const own = of(threadId);
+  if (own || threadId === GENERAL_THREAD || dmThreadBot(threadId) || groupThreadGroup(threadId)) return own;
+  for (const c of cards) {
+    if (c.actor.kind !== 'system') continue;
+    if (c.threadId === threadId) {
+      const linked = of(c.refs?.threadId);
+      if (linked) return linked;
+    } else if (c.refs?.threadId === threadId) {
+      const from = of(c.threadId);
+      if (from) return from;
+    }
+  }
+  return null;
 }
 
 /** Keep `max` cards: open ones first, then the newest; seq order kept. */
@@ -918,7 +1008,41 @@ export function factRooms(fact: Fact, bots: BotDirectoryApi | undefined): string
   return [...out];
 }
 
-interface SystemCard { workspaces: string[]; threadId: ThreadId; kind: CardKind; title: string; body?: string; refs?: RoomCard['refs']; closes?: true; }
+interface SystemCard { workspaces: string[]; threadId: ThreadId; kind: CardKind; title: string; body?: string; refs?: RoomCard['refs']; closes?: true; notice?: CardNotice }
+
+/** factoryStop.ts STOPPED_BY_OWNER: the summary of a task the owner's stop
+ *  cancelled (not imported: the stop pulls in the fan-out notifier). */
+const STOPPED_BY_OWNER_SUMMARY = 'stopped by owner';
+
+/** A task card's label in the English the card keeps, by its notice code. */
+/** #2231 — why wmux itself moved a task to input_required, from the summary
+ *  it wrote (FanOutService), so the room can word it in the reader's
+ *  language; null for a worker's own words. Pure. */
+export function inputRequiredWhy(summary: string): 'trustDialog' | 'firstRun' | 'launchFailed' | null {
+  if (/^worker is waiting on Claude Code's (?:workspace|codex folder) trust dialog;/.test(summary)) return 'trustDialog';
+  if (/^worker is waiting on Claude Code's [^;]+; it needs a keypress in the pane$/.test(summary)) return 'firstRun';
+  if (/^launch failed: no agent started in pane \S+ within \d+s/.test(summary)) return 'launchFailed';
+  return null;
+}
+
+const TASK_CARD_LABEL: Readonly<Record<string, string>> = {
+  'task.done': 'Task done',
+  'task.reported': 'Task reported · in review',
+  'task.failed': 'Task failed',
+  'task.cancelled': 'Task cancelled',
+  'task.stoppedByOwner': 'Task cancelled · stopped by owner',
+  'task.inputRequired': 'Task needs input',
+};
+
+/** What a budget refusal stopped, in the English the card keeps (the
+ *  reader's language comes from its notice, roomFormat.ts). */
+const BUDGET_LIMIT_TEXT: Readonly<Record<string, string>> = {
+  turns_hour: 'is out of turns for this hour',
+  turns_day: 'is out of turns for today',
+  concurrent_workers: 'is running as many workers as it may at once',
+  worker_hours_day: 'has used its worker hours for today',
+  factory_workers: 'waits: the bots run as many workers as they may at once',
+};
 
 /** The system card(s) a fact becomes, or null for kinds the room does not
  *  show (PR / issue / CI edges other than the closing ones — the bots post
@@ -937,60 +1061,95 @@ export function systemCardForFact(fact: Fact, bots?: BotDirectoryApi): SystemCar
       const title = str(p.title) || 'handoff';
       const to = str(p.toLabel) || botLabel(bots, fact.ref?.botId);
       const kind = str(p.handoffKind);
+      // A thread opened from a coordinator's 1:1 or a group chat: the opening
+      // hop links it.
+      const openedIn = parseThreadId(p.openedIn);
+      const dmLink = openedIn && (dmThreadBot(openedIn) || groupThreadGroup(openedIn)) ? { threadId: openedIn } : {};
       if (fact.kind === 'handoff.refused') {
         return {
           workspaces: [...new Set(workspaces)], threadId, kind: 'refusal',
           title: `Handoff refused (${str(p.code) || 'refused'}): ${title}`,
-          body: capBody(p.detail, 1000), refs: baseRefs,
+          body: capBody(p.detail, 1000), refs: { ...baseRefs, ...dmLink },
         };
       }
       // A room mention is the card that said it: its delivery adds no line.
       // A refused one shows above.
       if (p.mention === true) return null;
+      // Worded in the reader's language only for a bot addressee (ref.botId:
+      // handoffRouter emit's `directed`); the owner and wmux keep the English.
+      const hop = kind || 'handoff';
+      const hopNotice: CardNotice | undefined = fact.ref?.botId
+        ? { code: 'handoff.sent', args: { hop, to, title, ...(p.relay === true && kind !== 'answer' ? { relay: 1 } : {}) } }
+        : undefined;
       return {
         workspaces: [...new Set(workspaces)], threadId, kind: 'fact',
         title: kind === 'answer' ? `Answered → ${to}: ${title}`
           : p.relay === true ? `${kind || 'handoff'} → ${to}: ${title} (forwarded by wmux)`
           : `${kind || 'handoff'} → ${to}: ${title}`,
         ...(kind === 'answer' ? { body: capBody(p.answer, 1000) } : {}),
-        refs: { ...baseRefs, ...(str(p.requestCardId) ? { requestCardId: str(p.requestCardId) } : {}) },
+        ...(hopNotice ? { notice: hopNotice } : {}),
+        refs: {
+          ...baseRefs,
+          ...(str(p.requestCardId) ? { requestCardId: str(p.requestCardId) } : {}),
+          ...dmLink,
+        },
       };
     }
     case 'task.done':
     case 'task.failed':
     case 'task.input_required': {
-      const label = fact.kind === 'task.done' ? 'Task done' : fact.kind === 'task.failed' ? 'Task failed' : 'Task needs input';
+      // A task cancelled before it reported comes as task.failed (factIngest.ts)
+      // but is not a failure: it says Cancelled, and stopped by owner when
+      // the owner's stop ended it (factoryStop.ts).
+      const cancelled = fact.kind === 'task.failed' && p.status === 'cancelled';
+      const byOwner = cancelled && p.by === 'system' && p.summary === STOPPED_BY_OWNER_SUMMARY;
+      // A worker that reported is not done: the task waits on review.
+      const code = fact.kind === 'task.done' ? (p.status === 'review_requested' ? 'task.reported' : 'task.done')
+        : byOwner ? 'task.stoppedByOwner'
+          : cancelled ? 'task.cancelled'
+            : fact.kind === 'task.failed' ? 'task.failed' : 'task.inputRequired';
       const gate = typeof p.gateExit === 'number' ? `gate exit ${p.gateExit}${p.gateHeadSha ? ` at ${sha7(p.gateHeadSha)}` : ''}` : '';
-      const body = [capBody(p.summary, 2000), gate].filter(Boolean).join('\n\n');
+      const body = [byOwner ? '' : capBody(p.summary, 2000), gate].filter(Boolean).join('\n\n');
       const threadId = taskThread(fact);
+      const title = str(p.title) || fact.ref?.taskId || 'task';
+      const why = code === 'task.inputRequired' ? inputRequiredWhy(str(p.summary)) : null;
       return {
         workspaces: factRooms(fact, bots), threadId, kind: 'fact',
-        title: `${label}: ${str(p.title) || fact.ref?.taskId || 'task'}`,
+        title: `${TASK_CARD_LABEL[code]}: ${title}`,
+        notice: { code, args: { title, ...(why ? { why } : {}) } },
         ...(body ? { body } : {}), refs: baseRefs,
         // A task's end closes only its own thread: in the issue, PR or other
         // thread it was started from, the subject is still open.
         ...(fact.kind === 'task.done' && threadId === `task:${fact.ref?.taskId}` ? { closes: true as const } : {}),
       };
     }
-    case 'verdict.recorded':
+    case 'verdict.recorded': {
+      const pr = fact.ref?.pr;
+      const sha = sha7(fact.ref?.headSha);
+      const by = botLabel(bots, fact.ref?.botId);
       return {
         workspaces: factRooms(fact, bots), threadId: prThread(fact), kind: 'fact',
-        title: `Verdict ${str(p.verdict) || 'recorded'} for #${fact.ref?.pr ?? '?'} at ${sha7(fact.ref?.headSha)} by ${botLabel(bots, fact.ref?.botId)}`,
+        title: `Verdict ${str(p.verdict) || 'recorded'} for #${pr ?? '?'} at ${sha} by ${by}`,
         ...(capBody(p.summary, 2000) ? { body: capBody(p.summary, 2000) } : {}),
         refs: baseRefs,
+        ...(typeof pr === 'number' && str(p.verdict) ? { notice: { code: 'verdict.recorded', args: { verdict: str(p.verdict), pr, sha, bot: by } } } : {}),
       };
+    }
     case 'merge.done':
       return {
         workspaces: factRooms(fact, bots), threadId: prThread(fact), kind: 'fact',
         title: `Merged #${fact.ref?.pr ?? '?'} at ${sha7(fact.ref?.headSha)}`, refs: baseRefs, closes: true,
       };
     case 'pr.merged':
-    case 'pr.closed':
+    case 'pr.closed': {
+      const pr = fact.ref?.pr;
       return {
         workspaces: factRooms(fact, bots), threadId: prThread(fact), kind: 'fact',
-        title: `PR #${fact.ref?.pr ?? '?'} ${fact.kind === 'pr.merged' ? 'merged' : 'closed'}${str(p.title) ? `: ${str(p.title)}` : ''}`,
+        title: `PR #${pr ?? '?'} ${fact.kind === 'pr.merged' ? 'merged' : 'closed'}${str(p.title) ? `: ${str(p.title)}` : ''}`,
         refs: baseRefs, closes: true,
+        ...(typeof pr === 'number' ? { notice: { code: fact.kind, args: { pr, ...(str(p.title) ? { title: str(p.title) } : {}) } } } : {}),
       };
+    }
     case 'issue.closed':
       return {
         workspaces: factRooms(fact, bots), threadId: issueThread(fact), kind: 'fact',
@@ -1016,29 +1175,45 @@ export function systemCardForFact(fact: Fact, bots?: BotDirectoryApi): SystemCar
         title: `${botLabel(bots, fact.ref?.botId)} was refused ${str(fact.ref?.method) || 'a call'} (${str(p.reason) || 'surface'})`,
         refs: baseRefs,
       };
-    case 'bot.budget_exhausted':
+    case 'bot.budget_exhausted': {
+      // Which limit, and when the bot picks up again (a turn limit frees by
+      // itself as its window slides; BotRuntime computes the time).
+      const name = botLabel(bots, fact.ref?.botId);
+      const reason = str(p.reason);
+      const until = typeof p.until === 'number' && Number.isFinite(p.until) && p.until > 0 ? p.until : null;
+      const limit = BUDGET_LIMIT_TEXT[reason] ?? 'is out of budget';
       return {
         workspaces: factRooms(fact, bots), threadId: GENERAL_THREAD, kind: 'budget',
-        title: `${botLabel(bots, fact.ref?.botId)} is out of budget (${str(p.reason) || 'budget'})`,
+        title: `${name} ${limit}${until !== null ? `; it picks up again at ${formatHeldUntil(until, fact.at)}` : ''}`,
         refs: baseRefs,
+        ...(reason in BUDGET_LIMIT_TEXT ? { notice: { code: 'budget.exhausted', args: { bot: name, limit: reason, ...(until !== null ? { until } : {}) } } } : {}),
       };
+    }
     case 'bot.notice': {
       // Main's own line to one bot; the owner sees it only when it says so
       // (a worker that could not start), in the thread it is about, title only.
       if (p.card !== true || !isRoomWorkspaceId(fact.workspaceId) || !str(p.title)) return null;
+      // Main's stable code for it, when it wrote one (botNotices.ts).
+      const notice = sanitizeNotice(p.notice);
       return {
         workspaces: [fact.workspaceId], threadId: parseThreadId(p.threadId) ?? GENERAL_THREAD,
         kind: p.topic === 'worker.start_failed' ? 'refusal' : 'fact',
         title: str(p.title), refs: baseRefs,
+        ...(notice ? { notice } : {}),
       };
     }
-    case 'bot.error':
+    case 'bot.error': {
+      // At the provider's usage limit: when the bot picks up by itself.
+      const name = botLabel(bots, fact.ref?.botId);
+      const until = typeof p.until === 'number' && Number.isFinite(p.until) && p.until > 0 ? p.until : null;
       return {
         workspaces: factRooms(fact, bots), threadId: GENERAL_THREAD, kind: 'fact',
-        title: `${botLabel(bots, fact.ref?.botId)} hit an error`,
+        title: until !== null ? `${name} hit its usage limit; it picks up again at ${formatHeldUntil(until, fact.at)}` : `${name} hit an error`,
         ...(capBody(p.message, 1000) ? { body: capBody(p.message, 1000) } : {}),
         refs: baseRefs,
+        notice: until !== null ? { code: 'bot.usageLimit', args: { bot: name, until } } : { code: 'bot.error', args: { bot: name } },
       };
+    }
     default:
       return null;
   }
@@ -1064,6 +1239,7 @@ export function writeFactCards(writer: RoomWriter, fact: Fact, bots?: BotDirecto
       ...(spec.body ? { body: spec.body } : {}),
       ...(spec.refs ? { refs: spec.refs } : {}),
       ...(spec.closes ? { closes: true as const } : {}),
+      ...(spec.notice ? { notice: spec.notice } : {}),
       at: fact.at,
     });
     if (card) out.push(card);
@@ -1102,7 +1278,8 @@ export function writeHeldWakeCard(writer: RoomWriter, ev: RoomBotHookEvent, bots
   if (ev.type !== 'wake.held' || !('wakeId' in ev) || !isRoomWorkspaceId(ev.workspaceId)) return null;
   const threadId = parseThreadId(ev.threadId) ?? GENERAL_THREAD;
   const name = botLabel(bots, ev.botId);
-  const until = 'until' in ev && typeof ev.until === 'number' ? ` until ${formatHeldUntil(ev.until, ev.at)}` : '';
+  const at = 'until' in ev && typeof ev.until === 'number' ? ev.until : null;
+  const until = at !== null ? ` until ${formatHeldUntil(at, ev.at)}` : '';
   const r = writer.post({
     workspaceId: ev.workspaceId,
     threadId,
@@ -1110,6 +1287,7 @@ export function writeHeldWakeCard(writer: RoomWriter, ev: RoomBotHookEvent, bots
     actor: { kind: 'system' },
     title: `Queued: ${name} is out of turns${until}; resume it in its profile`,
     refs: { botId: ev.botId },
+    notice: { code: 'budget.held', args: { bot: name, ...(at !== null ? { until: at } : {}) } },
     clientPostId: `held:${ev.wakeId}`,
   });
   return r.ok && !r.duplicate ? r.card : null;

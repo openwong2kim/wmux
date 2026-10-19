@@ -347,6 +347,21 @@ export function isProvisionalCapture(prev: ResumeBinding | undefined, next: Resu
 }
 
 /**
+ * True when the agent's transcript moved to another project folder between two
+ * captures of the same session. Claude relocates the transcript when it changes
+ * its own working directory (EnterWorktree, ExitWorktree) and `--resume <id>`
+ * then only works from the new folder. A Bash-tool `cd` changes the hook's
+ * `cwd` too, but leaves the transcript where it was, so resuming still needs
+ * the original folder. Only a relocation may move the pane's cwd.
+ */
+export function transcriptRelocated(prev: ResumeBinding | undefined, next: ResumeBinding): boolean {
+  if (!prev?.transcriptPath || !next.transcriptPath) return false;
+  if (prev.agent !== next.agent || prev.sessionId !== next.sessionId) return false;
+  const folder = (p: string) => p.replace(/[\\/][^\\/]*$/, '');
+  return folder(prev.transcriptPath) !== folder(next.transcriptPath);
+}
+
+/**
  * X6 ③: merge a freshly-captured binding over the previously-persisted one,
  * keeping `permissionMode` and `transcriptPath` STICKY. The bridge reads
  * permissionMode from the transcript's last 64KB; a turn that writes >64KB after
@@ -530,6 +545,38 @@ export function isResumableLaunchCommand(command: string): boolean {
 }
 
 /**
+ * The conversation a Claude launch line pins (`--session-id <uuid>`, see
+ * withLaunchSessionId) and the permission mode its flags start it in
+ * (`--dangerously-skip-permissions`, `--permission-mode <mode>`; the last one
+ * wins, as for Claude Code). Null for a line that is not a Claude launch or
+ * pins no id. Only unquoted words before an unquoted `--` count: a quoted word
+ * is a prompt or a path. The caller unwraps a leading worker model-env marker
+ * first. Pure.
+ */
+export function launchedConversation(command: string): { sessionId: string; permissionMode?: PermissionMode } | null {
+  const tokens = tokenize(command);
+  if (tokens.length === 0 || tokens[0].quoted) return null;
+  const stem = launcherStem(tokens[0].value);
+  const pin = RESUME_BY_LAUNCHER.get(stem)?.pin;
+  if (!pin || !agentSupportsPermissionFlag(stem)) return null;
+  let sessionId: string | undefined;
+  let permissionMode: PermissionMode | undefined;
+  for (let i = 1; i < tokens.length; i++) {
+    const t = tokens[i];
+    if (t.quoted) continue;
+    if (t.value === '--') break;
+    const next = tokens[i + 1];
+    const value = (flag: string): string | undefined => (t.value === flag ? (next && !next.quoted ? next.value : undefined) : t.value.startsWith(`${flag}=`) ? t.value.slice(flag.length + 1) : undefined);
+    const id = value(pin);
+    if (id !== undefined && UUID_RE.test(id)) sessionId = id.toLowerCase();
+    if (t.value === '--dangerously-skip-permissions') permissionMode = 'bypassPermissions';
+    const mode = value('--permission-mode');
+    if (mode !== undefined && Object.prototype.hasOwnProperty.call(PERMISSION_FLAG, mode)) permissionMode = mode as PermissionMode;
+  }
+  return sessionId ? { sessionId, ...(permissionMode ? { permissionMode } : {}) } : null;
+}
+
+/**
  * A1 — pin a FRESH launch of an agent that has a pin flag (Claude
  * `--session-id`, see AgentResumeSpec.pin) to a wmux-minted conversation id
  * (`claude --session-id <id> …`), so the pane's exact id is known from the
@@ -567,7 +614,8 @@ export function withLaunchSessionId(command: string, sessionId: string): string 
  * bring it back). Excluded:
  *   - exec/supervised units — they already auto-resume via execLaunchCommand
  *     (Feature ①); a pill would be a redundant second resume.
- *   - panes that never ran a detectable agent (no lastDetectedAgent).
+ *   - panes that never ran a detectable agent (no lastDetectedAgent and no
+ *     saved conversation).
  *   - agents wmux cannot actually resume (absent from RESUME_BY_LAUNCHER, e.g.
  *     gemini/aider) — offering one would surface a pill that types a broken
  *     command (the generalized form of the codex `--continue` bug).
@@ -580,9 +628,35 @@ export function resumeOfferForRecovered(session: {
   exec?: { command: string };
   supervision?: unknown;
   lastDetectedAgent?: string;
+  lastDetectedAgentEvidence?: { source?: string; at?: number };
+  resumeBinding?: unknown;
 }): string | undefined {
   if (session.exec || session.supervision) return undefined;
-  const agent = session.lastDetectedAgent;
-  if (!agent || !RESUME_BY_LAUNCHER.has(agent)) return undefined;
-  return agent;
+  const named = session.lastDetectedAgent;
+  const detected = named && RESUME_BY_LAUNCHER.has(named) ? named : undefined;
+  const binding = isUsableResumeBinding(session.resumeBinding) ? session.resumeBinding : undefined;
+  const bound = binding && RESUME_BY_LAUNCHER.has(binding.agent) ? binding.agent : undefined;
+  // An agent wmux cannot resume (Gemini, Aider) that a hook or a live process
+  // proved ran after the saved conversation was the pane's last agent: there
+  // is nothing to offer, and the older conversation must not be reopened.
+  if (bound && named && named !== bound && !detected && provenAfter(session.lastDetectedAgentEvidence, binding?.ts)) {
+    return undefined;
+  }
+  if (!bound || !detected || bound === detected) return detected ?? bound;
+  // The name and the saved conversation disagree. The binding is the agent's
+  // own word (its hook, its command line), the name may be the screen
+  // detector's guess: a Claude reply quoting Codex's banner persisted as
+  // "codex", after which the pill typed Codex's picker on a Claude-only pane
+  // and the Claude conversation was never offered. The name wins only when
+  // it is proven newer: a hook or a live process decided it after the
+  // binding was captured (a Codex run after Claude, with no Codex binding).
+  // A name with no evidence — a screen guess, or one persisted before the
+  // evidence was recorded — loses, which also repairs names already wrong.
+  return provenAfter(session.lastDetectedAgentEvidence, binding?.ts) ? detected : bound;
+}
+
+function provenAfter(evidence: { source?: string; at?: number } | undefined, bindingTs: unknown): boolean {
+  if (evidence?.source !== 'hook' && evidence?.source !== 'process') return false;
+  if (typeof evidence.at !== 'number' || !Number.isFinite(evidence.at)) return false;
+  return typeof bindingTs !== 'number' || evidence.at > bindingTs;
 }

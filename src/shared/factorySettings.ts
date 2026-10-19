@@ -10,6 +10,25 @@ import { WAKE_LIMITS } from './wake';
 
 export const FACTORY_SETTINGS_VERSION = 1 as const;
 
+/** The version of the "Bots run on your Claude plan" consent. Turning bots
+ *  on needs the owner's consent at this version (main refuses otherwise);
+ *  raise it when what the owner agrees to changes, and everyone is asked
+ *  again. */
+export const BOTS_PLAN_CONSENT_VERSION = 1;
+
+/** The owner agreed, at `at` (ISO time), that bots run on their own Claude
+ *  plan: the brain on the Claude Code sign-in here, the workers on their own
+ *  Claude Code. */
+export interface BotsPlanConsent {
+  version: number;
+  at: string;
+}
+
+/** True when `s` holds the owner's consent at the current version. Pure. */
+export function hasBotsPlanConsent(s: { planConsent?: BotsPlanConsent | null } | null | undefined): boolean {
+  return s?.planConsent?.version === BOTS_PLAN_CONSENT_VERSION;
+}
+
 export interface FactorySettings {
   version: typeof FACTORY_SETTINGS_VERSION;
   enabled: boolean;
@@ -40,6 +59,10 @@ export interface FactorySettings {
    *  Bots. Absent: the oldest enabled Coordinator-template bot, else the
    *  oldest enabled bot (main/factory/phoneBot.ts). */
   phoneBotId?: string;
+  /** The owner's consent that bots run on their own Claude plan. Absent on
+   *  a file from before the consent existed (bots that were on stay on; the
+   *  Bots page asks once). */
+  planConsent?: BotsPlanConsent;
 }
 
 export const FACTORY_CONCURRENT_BOTS_MIN = 1;

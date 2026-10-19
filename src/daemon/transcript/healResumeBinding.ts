@@ -13,6 +13,7 @@ export interface HealableSession {
   resumeBinding?: ResumeBinding;
   env?: Record<string, string>;
   lastDetectedAgent?: string;
+  lastDetectedAgentEvidence?: unknown;
 }
 
 /**
@@ -33,7 +34,11 @@ export function healCrossProviderBinding(session: HealableSession): 'converted' 
     session.resumeBinding = { agent: 'codex', sessionId: threadId, cwd: binding.cwd, transcriptPath: file, ts: binding.ts };
     // The rollout was the pane's last bound conversation (a later Claude run
     // would have replaced it), so the pill should offer Codex.
-    if (!session.lastDetectedAgent || session.lastDetectedAgent === 'claude') session.lastDetectedAgent = 'codex';
+    if (!session.lastDetectedAgent || session.lastDetectedAgent === 'claude') {
+      session.lastDetectedAgent = 'codex';
+      // The stamp vouched for the Claude name; it says nothing about Codex.
+      delete session.lastDetectedAgentEvidence;
+    }
     return 'converted';
   }
   delete session.resumeBinding;

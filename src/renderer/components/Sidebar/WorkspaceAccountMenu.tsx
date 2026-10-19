@@ -1,9 +1,10 @@
 // Adapted from MonoCode (hardbeat920/monocode@6bd432ca, src/app/shell/Sidebar.tsx), MIT License, Copyright (c) 2026 Nick
-import { useState, useEffect, useCallback } from 'react';
+import { Fragment, useState, useEffect, useCallback } from 'react';
 import { IconChevron } from '../icons';
 import { useT } from '../../hooks/useT';
 import type { Account } from '../../../main/account/accountStore';
 import type { CredentialStatus } from '../../../main/ipc/handlers/account.handler';
+import { accountGroupOf, groupAccountsBoundFirst } from '../../../shared/accountGroup';
 
 type Vendor = 'claude' | 'codex';
 type AccountRow = Account & { status: CredentialStatus };
@@ -63,6 +64,12 @@ export default function WorkspaceAccountMenu({
         const vendorRows = rows.filter((r) => r.vendor === vendor);
         if (vendorRows.length === 0) return null;
         const boundId = bindings[vendor];
+        // Group sections once any account has a group: the bound account's
+        // group first, then the others under one "Other groups" divider. With
+        // nothing bound no group is current. A pick in another group is allowed.
+        const bound = vendorRows.find((r) => r.id === boundId);
+        const buckets = groupAccountsBoundFirst(vendorRows, bound ? accountGroupOf(bound) : null);
+        const sectioned = buckets.some((b) => b.group !== '');
         return (
           <div
             key={vendor}
@@ -76,7 +83,7 @@ export default function WorkspaceAccountMenu({
             >
               <span>{t(vendorLabelKey[vendor])}</span>
               {boundId && (
-                <span className="text-[10px] text-[var(--accent-amber)] truncate max-w-[90px]">
+                <span className="text-[11px] text-[var(--text-sub)] truncate max-w-[90px]">
                   {vendorRows.find((r) => r.id === boundId)?.name ?? ''}
                 </span>
               )}
@@ -89,32 +96,46 @@ export default function WorkspaceAccountMenu({
               >
                 {/* Default (unbind) */}
                 <button
-                  className="w-full flex items-center gap-2 px-3 py-1.5 text-xs transition-colors hover:bg-[var(--bg-overlay)]"
+                  className="w-full flex items-center gap-2 px-3 py-1.5 text-[13px] text-left transition-colors hover:bg-[var(--bg-overlay)]"
                   style={{ color: 'var(--text-main)' }}
                   onClick={() => bind(vendor, undefined)}
                 >
-                  <span className="w-3 text-[var(--accent-amber)]">{!boundId ? '●' : ''}</span>
+                  <span className="w-3 shrink-0 text-[var(--accent)]">{!boundId ? '●' : ''}</span>
                   <span className="text-[var(--text-muted)]">{t('accounts.defaultAccount')}</span>
                 </button>
-                {vendorRows.map((r) => (
+                {buckets.map(({ group, accounts }, i) => (
+                  <Fragment key={group}>
+                  {bound && i === 1 && (
+                    <div className="px-3 pt-1.5 mt-1 border-t border-[var(--bg-overlay)] text-[11px] text-[var(--text-muted)]" data-account-menu-other-groups>
+                      {t('accounts.otherGroups')}
+                    </div>
+                  )}
+                  {sectioned && (
+                    <div className="px-3 pt-1.5 pb-0.5 pl-8 text-[11px] text-[var(--text-sub)] truncate" data-account-menu-group={group}>
+                      {group || t('accounts.noGroup')}
+                    </div>
+                  )}
+                  {accounts.map((r) => (
                   <button
                     key={r.id}
-                    className="w-full flex items-center gap-2 px-3 py-1.5 text-xs transition-colors hover:bg-[var(--bg-overlay)]"
+                    className="w-full flex items-center gap-2 px-3 py-1.5 text-[13px] text-left transition-colors hover:bg-[var(--bg-overlay)]"
                     style={{ color: 'var(--text-main)' }}
                     onClick={() => bind(vendor, r.id)}
                     title={r.status.loggedIn
                       ? (r.status.subscriptionType ? `${r.status.subscriptionType}` : t('accounts.loggedIn'))
                       : t('accounts.notLoggedIn')}
                   >
-                    <span className="w-3 text-[var(--accent-amber)]">{boundId === r.id ? '●' : ''}</span>
+                    <span className="w-3 shrink-0 text-[var(--accent)]">{boundId === r.id ? '●' : ''}</span>
                     <span className="truncate flex-1">{r.name}</span>
                     {!r.status.loggedIn && (
-                      <span className="text-[10px] text-[var(--accent-red)] shrink-0">{t('accounts.loggedOut')}</span>
+                      <span className="text-[11px] text-[var(--accent-red)] shrink-0">{t('accounts.loggedOut')}</span>
                     )}
                     {r.status.subscriptionType && (
-                      <span className="text-[10px] text-[var(--text-subtle)] shrink-0">{r.status.subscriptionType}</span>
+                      <span className="text-[11px] text-[var(--text-subtle)] shrink-0">{r.status.subscriptionType}</span>
                     )}
                   </button>
+                  ))}
+                  </Fragment>
                 ))}
                 <div className="px-3 pt-1 mt-1 border-t border-[var(--bg-overlay)] text-[10px] text-[var(--text-muted)] leading-snug">
                   {t('accounts.newTerminalsNote')}

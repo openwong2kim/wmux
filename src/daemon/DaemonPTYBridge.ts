@@ -9,16 +9,18 @@ import { TerminalNotificationParser } from '../main/pty/oscNotification';
 import { AgentDetector, drawsCodexBanner, type AgentEventStatus } from '../main/pty/AgentDetector';
 import { ActivityMonitor } from '../main/pty/ActivityMonitor';
 import { parseOsc7Cwd, detectPromptCwd } from '../main/pty/cwdDetect';
-import { sanitizeTitle } from '../main/pty/titleDetect';
+import { ClaudeTitleTurnEdge, sanitizeTitle } from '../main/pty/titleDetect';
 import { RingBuffer } from './RingBuffer';
 import { PromptEventLog, parseOsc133Payload } from './PromptEventLog';
-import { RESIZE_REDRAW_GUARD_MS } from '../main/notification/idleSuppression';
+import { ESC_INTERRUPT_CONFIRM_MS, RESIZE_REDRAW_GUARD_MS } from '../main/notification/idleSuppression';
 import { stripReplayQuerySequences } from '../shared/replayQuerySanitizer';
 import { isFreshSessionSource } from '../shared/hooks/signal-types';
 import { ESCAPE_WIN32 } from '../shared/win32InputKeys';
 import { isEscapeChunk } from '../shared/hooks/interruptKeystroke';
+import { stripPassiveInput } from '../shared/terminal/passiveInput';
 import { kittyChunkAsLegacy } from '../shared/kittyKeyEvents';
-import { titleShowsRunningTurn } from './transcript/chatScreenGate';
+import { titleShowsFinishedTurn, titleShowsRunningTurn } from './transcript/chatScreenGate';
+import { CLAUDE_IDLE_TITLE, CLAUDE_RUNNING_TITLE, CLAUDE_RUNNING_TITLE_OSC } from '../shared/agentTitleRules';
 import type { TurnFailure } from '../shared/phoneTurnFailure';
 
 /**
@@ -71,10 +73,15 @@ export function scanStartupDa1(text: string): 'answer' | 'more' | 'closed' {
  *  - 'notification' → { sessionId, event: TerminalNotification & { ts } }
  *  - 'critical' → { sessionId: string, event: CriticalEvent }
  *  - 'usageLimit' → { sessionId: string, event: UsageLimitLineEvent }
+ *  - 'turnInterrupted' → { sessionId: string, agent: string } — the agent
+ *                 printed its own "turn interrupted" row (not inside a
+ *                 resize redraw or a muted replay)
  *  - 'inputSubmitted' → { sessionId: string } (input with a submit boundary)
  *  - 'active'   → { sessionId, agentName?, likelyRepaint? } — onActive cycle
- *                 start; likelyRepaint marks a passive burst inside the
- *                 resize-redraw guard window (alarm feeds must ignore it)
+ *                 start. A passive burst inside the resize-redraw guard
+ *                 window is not emitted, except a cycle a hook's running
+ *                 edge armed in a still-open turn: that one carries
+ *                 likelyRepaint (alarm feeds must ignore it)
  *  - 'idle'     → { sessionId, preTurn? }              — onActiveToIdle;
  *                 preTurn marks silence after a SessionStart with no turn
  *                 started since (see isPreTurn)
@@ -102,6 +109,7 @@ export class DaemonPTYBridge extends EventEmitter {
   private agentUnsubscribe: (() => void) | null = null;
   private criticalUnsubscribe: (() => void) | null = null;
   private usageLimitUnsubscribe: (() => void) | null = null;
+  private interruptedUnsubscribe: (() => void) | null = null;
   /** See noteInput: typed or pasted composer text not yet submitted. */
   private draftPending = false;
   private resizeGuardTimer: ReturnType<typeof setTimeout> | null = null;
@@ -169,6 +177,9 @@ export class DaemonPTYBridge extends EventEmitter {
    */
   private oscCwdSeen = false;
 
+  /** Last cwd emitted by the prompt-scrape fallback (shells without OSC 7). */
+  private lastDetectedPromptCwd = '';
+
   /**
    * A detector/hook terminal state (waiting, complete, awaiting input, error)
    * outranks passive byte throughput until a real submitted-input boundary
@@ -177,6 +188,8 @@ export class DaemonPTYBridge extends EventEmitter {
    */
   private explicitTerminalStatus = false;
   private submittedTurnPending = false;
+  /** The current activity cycle was armed by a hook's running edge and has not fired yet. */
+  private hookArmedCycle = false;
   private lastTurnStartedAt = 0;
 
   /**
@@ -210,6 +223,16 @@ export class DaemonPTYBridge extends EventEmitter {
    */
   private turnSoftClosed = false;
   /**
+   * F24 — the open episode was opened by output alone (a byte promotion) on a
+   * pane whose hooks report, and no hook or submit has confirmed it since.
+   * Such a pane says when its turns end, and Claude Code's own post-turn
+   * paints (the idle recap, a repaint when a viewer attaches) fire no hook:
+   * an episode they opened would never close. So until a hook confirms it,
+   * the episode ends like a hook-less pane's does (a detector settle), and
+   * also when its output goes quiet: a real turn keeps painting its spinner.
+   */
+  private byteOpenedTurn = false;
+  /**
    * #1670 — the episode was opened while the boot window was open (a program
    * launched, no submit or hook since), by a byte promotion or by the first
    * Enter: the TUI painting itself or a dialog answered, or a real first turn.
@@ -229,6 +252,8 @@ export class DaemonPTYBridge extends EventEmitter {
 
   /** Last write to stdin that was a lone Esc, from any source (0 = never). */
   private lastEscAt = 0;
+  /** The `lastEscAt` an idle title already reported as an interrupt (#2264). */
+  private titleEdgeEscAt = 0;
   /** Latest OSC 0/2 window title (sanitized) and when it arrived (0 = never). */
   private lastTitle = '';
   private lastTitleAt = 0;
@@ -396,7 +421,7 @@ export class DaemonPTYBridge extends EventEmitter {
     if (data.length > 0) {
       this.lastInputAt = Date.now();
       this.inputRevision += 1;
-      const active = DaemonPTYBridge.stripPassiveInput(data);
+      const active = stripPassiveInput(data);
       // Every path that types into a pane ends here (pipe, web raw input, chat
       // Stop, approval keys), so this is the one place a lone Esc is seen.
       // Inside a bracketed paste an ESC is text, not a key. On Windows the
@@ -537,7 +562,14 @@ export class DaemonPTYBridge extends EventEmitter {
       this.turnSoftClosed = false;
       this.openTurn();
       if (joined) this.bootEpisode = false;
+    } else if (this.turnSoftClosed) {
+      // Answering a dialog resumes the episode it interrupted, even one a
+      // detector settle closed softly before the dialog went up.
+      this.openTurn(true);
     }
+    // A submit, or a human answering the agent's dialog: a turn either way.
+    this.byteOpenedTurn = false;
+    this.spinnerOpenedTurn = false;
     this.lastTurnStartedAt = Date.now();
     this.preTurn = false;
     this.codexBootWindow = false;
@@ -551,6 +583,7 @@ export class DaemonPTYBridge extends EventEmitter {
       clearTimeout(this.resizeGuardTimer);
       this.resizeGuardTimer = null;
     }
+    this.spinnerArmedCycle = false;
     this.agentDetector?.resetEmissionState();
     if (this.activityMonitor && this.sessionId) {
       this.activityMonitor.beginTurn(this.sessionId);
@@ -564,57 +597,6 @@ export class DaemonPTYBridge extends EventEmitter {
   /** SGR mouse reports and focus in/out reports: terminal input that is not a key. */
   // eslint-disable-next-line no-control-regex
   private static readonly NON_KEY_INPUT = /\x1b\[<\d+;\d+;\d+[Mm]|\x1b\[[IO]/g;
-  // eslint-disable-next-line no-control-regex
-  private static readonly SGR_MOUSE = /\x1b\[<(\d+);\d+;\d+[Mm]/g;
-  // eslint-disable-next-line no-control-regex
-  private static readonly FOCUS_REPORT = /\x1b\[[IO]/g;
-
-  /**
-   * #1680 — replies the TERMINAL writes back to a query the app sent: no key
-   * makes them, and an app redrawing (e.g. after `/clear` or `/new`) may ask.
-   * Each form is anchored on a final byte or prefix no key encoding uses.
-   * xterm.js 6.0.0 (the renderer and the web terminal) answers, in
-   * src/common/InputHandler.ts and src/browser/CoreBrowserTerminal.ts:
-   *   DA1 `CSI ? … c`, DA2 `CSI > … c`, DSR status `CSI 0 n`, DECRQM
-   *   `CSI ? … $ y` / `CSI … $ y`, window reports `CSI 4|6|8 ; … t`, DECRQSS
-   *   `DCS 0|1 $ r … ST`, OSC 4/10/11/12 color reports (ST or BEL), and the
-   *   cursor position reports below. Also covered, from other terminals that
-   *   may sit behind the web or phone input: DA3 `DCS ! | … ST`, XTVERSION
-   *   `DCS > | … ST`, and the kitty keyboard flags reply `CSI ? flags u`.
-   */
-  // eslint-disable-next-line no-control-regex
-  private static readonly TERMINAL_REPLY = new RegExp(
-    [
-      '\\x1b\\[[?>][\\d;]*c', // DA1, DA2
-      '\\x1b\\[0n', // DSR: terminal OK
-      '\\x1b\\[\\??[\\d;]+\\$y', // DECRQM (ANSI and DEC private)
-      '\\x1b\\[[468](?:;\\d+)+t', // window size reports
-      '\\x1b\\[\\?\\d+(?:;\\d+)+R', // DECXCPR
-      '\\x1b\\[\\?\\d+u', // kitty keyboard flags
-      '\\x1bP(?:[01]\\$r|!\\||>\\|)[^\\x1b\\x07]*(?:\\x1b\\\\|\\x07)', // DECRQSS, DA3, XTVERSION
-      '\\x1b\\](?:4;\\d+|1[0-2]);[^\\x1b\\x07]*(?:\\x1b\\\\|\\x07)', // OSC color reports
-    ].join('|'),
-    'g',
-  );
-
-  /**
-   * CPR `CSI row ; col R`. The one reply a key can collide with: xterm.js
-   * sends F3 with modifiers as `CSI 1 ; m R`, m = 1 + (shift 1, alt 2, ctrl 4,
-   * meta 8) — so 2..16 (src/common/input/Keyboard.ts). A CPR for row 1 and a
-   * column 2..16 is therefore left counted as a key: wrongly counting a reply
-   * can only make a fresh-context step skip or fail, wrongly dropping a key
-   * could let a delivery type over someone's input. Every other CPR (row > 1,
-   * or a column past 16) cannot be a key and is dropped.
-   */
-  // eslint-disable-next-line no-control-regex
-  private static readonly CPR = /\x1b\[(\d+);(\d+)R/g;
-
-  /**
-   * Remove only PASSIVE input: focus reports, SGR mouse reports that are pure
-   * motion (motion flag 32 set, button bits 3 = none, no wheel flag 64), and
-   * the terminal's own replies to queries (TERMINAL_REPLY, CPR). Presses,
-   * releases and wheel reports stay — they can select or dismiss.
-   */
   /** Whether input carries composer text: printable characters once control
    *  bytes, escape sequences and the paste brackets are removed. */
   private static typesDraftText(data: string): boolean {
@@ -642,25 +624,14 @@ export class DaemonPTYBridge extends EventEmitter {
     this.emit('typedInput', { sessionId: this.sessionId });
   }
 
-  private static stripPassiveInput(data: string): string {
-    return data
-      .replace(DaemonPTYBridge.FOCUS_REPORT, '')
-      .replace(DaemonPTYBridge.TERMINAL_REPLY, '')
-      .replace(DaemonPTYBridge.CPR, (seq, row: string, col: string) =>
-        Number(row) === 1 && Number(col) >= 2 && Number(col) <= 16 ? seq : '')
-      .replace(DaemonPTYBridge.SGR_MOUSE, (seq, b: string) => {
-        const code = Number(b);
-        const pureMotion = (code & 32) !== 0 && (code & 3) === 3 && (code & 64) === 0;
-        return pureMotion ? '' : seq;
-      });
-  }
-
   /**
    * Apply an authoritative detector/hook lifecycle edge inside the daemon.
    * Terminal states settle the turn and block later byte-only redraws;
    * explicit running activity opens the gate again for autonomous work.
    */
   noteAgentStatus(status: AgentEventStatus, authoritative = false, questionAt?: number, provisional = false, signalTs?: number): void {
+    this.spinnerArmedCycle = false;
+    if (authoritative) this.spinnerOpenedTurn = false;
     // #1463 — any hook is turn evidence. SessionStart re-sets `preTurn` after
     // its own edge (noteSessionStart); detector statuses are not evidence.
     if (authoritative) {
@@ -679,6 +650,7 @@ export class DaemonPTYBridge extends EventEmitter {
         if (!this.awaitingHuman) this.openTurn(true, signalTs);
         // The agent's own hook: whatever opened the episode, it is a turn.
         this.bootEpisode = false;
+        this.byteOpenedTurn = false;
       }
       this.explicitTerminalStatus = false;
       this.settledStatus = null;
@@ -697,6 +669,7 @@ export class DaemonPTYBridge extends EventEmitter {
       // never earn `running` back after an idle, and the roster showed idle
       // for a pane genuinely mid-turn.
       if (this.activityMonitor && this.sessionId) {
+        if (authoritative) this.hookArmedCycle = true;
         this.activityMonitor.beginTurnIfInactive(this.sessionId);
       }
       return;
@@ -709,6 +682,9 @@ export class DaemonPTYBridge extends EventEmitter {
     if (status === 'awaiting_input') {
       this.awaitingHuman = true;
       this.awaitingQuestionAt = questionAt ?? null;
+      // The agent's own dialog hook means its turn is running: an episode a
+      // detector settle closed softly mid-turn resumes under the same id.
+      if (authoritative && this.turnSoftClosed) this.openTurn(true);
     } else if (authoritative) this.awaitingHuman = false;
     // A settle ends the episode unless it is the dialog the turn waits on. On
     // a pane with hooks only the hook's own settle (Stop / StopFailure) counts:
@@ -716,9 +692,10 @@ export class DaemonPTYBridge extends EventEmitter {
     if (authoritative) this.hookSeen = true;
     // `provisional`: a hook settle the transcript has not confirmed (see the
     // daemon's Codex stop handling) closes like a detector settle does.
-    if (!this.awaitingHuman && (authoritative || !this.hookSeen)) this.closeTurn(!authoritative || provisional);
+    if (!this.awaitingHuman && (authoritative || !this.hookSeen || this.byteOpenedTurn)) this.closeTurn(!authoritative || provisional);
     this.settledAtMs = Date.now();
     this.submittedTurnPending = false;
+    this.hookArmedCycle = false;
     if (this.resizeGuardTimer) {
       clearTimeout(this.resizeGuardTimer);
       this.resizeGuardTimer = null;
@@ -743,6 +720,12 @@ export class DaemonPTYBridge extends EventEmitter {
   /** #1621 — an episode is open (a submit or running edge not yet settled). */
   isTurnOpen(): boolean {
     return this.turnOpen;
+  }
+
+  /** Milliseconds since the pane's last settled status (a turn's result),
+   *  or null when none settled since its current agent started. */
+  settledAgoMs(): number | null {
+    return this.settledAtMs > 0 ? Math.max(0, Date.now() - this.settledAtMs) : null;
   }
 
   /** #1621 — an authoritative hook has reported on this pane's current agent. */
@@ -803,6 +786,8 @@ export class DaemonPTYBridge extends EventEmitter {
   }
 
   private closeTurn(soft = false): void {
+    this.byteOpenedTurn = false;
+    this.spinnerOpenedTurn = false;
     if (this.turnOpen) this.turnSoftClosed = soft;
     else if (!soft) this.turnSoftClosed = false;
     this.turnOpen = false;
@@ -814,6 +799,104 @@ export class DaemonPTYBridge extends EventEmitter {
     const agent = this.agentDetector?.getLastAgent() ?? '';
     const slug = /codex/i.test(agent) ? 'codex' : /claude/i.test(agent) ? 'claude' : '';
     return !!slug && titleShowsRunningTurn({ title: this.lastTitle, at: this.lastTitleAt }, slug, Date.now());
+  }
+
+  /**
+   * F24 — output alone must not open a turn here: the pane's hooks report,
+   * and the latest window title is Claude Code's idle `✳ <name>`. Claude Code
+   * swaps it for its `◐`/`◑` spinner within about a second of any turn it
+   * starts, autonomous ones included, and keeps the spinner up for the whole
+   * turn; its idle recap, `Checking for updates` and a repaint for a viewer
+   * that attached are all drawn under `✳`. The agent is not checked: the
+   * glyph is Claude Code's own, and its detector may not have named it.
+   * The chunk being measured is read before its titles are parsed, so a
+   * spinner title inside that same chunk counts too.
+   */
+  private idleTitleOnHookPane(): boolean {
+    return this.hookSeen && !this.chunkSetsSpinnerTitle
+      && titleShowsFinishedTurn({ title: this.lastTitle, at: this.lastTitleAt }, 'claude', 0);
+  }
+
+  /** The output chunk the activity monitor is measuring sets Claude Code's spinner title. */
+  private chunkSetsSpinnerTitle = false;
+  /** When the idle-title gate last held a burst back (0 = never). */
+  private heldBurstAt = 0;
+  private static readonly HELD_BURST_MS = 3000;
+
+  /**
+   * F24 — Claude Code set its running spinner title on a settled hook pane
+   * within a few seconds of a burst the idle-title gate held back: it
+   * started a turn by itself (a background task woke it), and that burst was
+   * the turn's first paint. The spinner alone writes too few bytes to cross
+   * the activity threshold again, so the title opens the turn, dated from the
+   * held burst. Without a held burst a spinner title opens nothing (a slow
+   * Stop hook keeps the spinner up after its Stop arrived). The settled
+   * branch's other guards apply: echo of the user's keys, a resize repaint.
+   */
+  private noteSpinnerTitle(): void {
+    if (!this.explicitTerminalStatus || !this.hookSeen || this.awaitingHuman || this.muted || !this.sessionId) return;
+    const now = Date.now();
+    if (
+      now - this.settledAtMs < DaemonPTYBridge.SETTLE_COOLDOWN_MS
+      || !this.isInputQuiet()
+      || now - this.lastResizeAtMs < RESIZE_REDRAW_GUARD_MS
+    ) return;
+    if (now - this.heldBurstAt >= DaemonPTYBridge.HELD_BURST_MS) return;
+    const heldAt = this.heldBurstAt;
+    this.heldBurstAt = 0;
+    this.spinnerSettledStatus = this.settledStatus;
+    this.explicitTerminalStatus = false;
+    this.settledStatus = null;
+    this.submittedTurnPending = false;
+    // Not `byteOpenedTurn`: the spinner is the agent's own word that a turn
+    // runs, and that turn ends with a Stop like any other. Until a hook
+    // speaks, Claude Code's idle title ends it too (see endSpinnerTurn).
+    const wasOpen = this.turnOpen;
+    this.openTurn(true, heldAt);
+    if (!wasOpen) this.spinnerOpenedTurn = true;
+    // The turn's next output reports `running` through onActive, as a hook's
+    // running edge does, but keeps the detector's dedup like the settled
+    // branch's promotion: the idle chrome still on screen must not answer
+    // with a stale `waiting`.
+    this.spinnerArmedCycle = true;
+    this.activityMonitor?.beginTurnIfInactive(this.sessionId);
+  }
+
+  /** The current activity cycle was armed by noteSpinnerTitle and has not fired yet. */
+  private spinnerArmedCycle = false;
+  /** The open episode was opened by noteSpinnerTitle, and no hook or submit has spoken since. */
+  private spinnerOpenedTurn = false;
+  /** The settled status noteSpinnerTitle cleared, for endSpinnerTurn to put back. */
+  private spinnerSettledStatus: AgentEventStatus | null = null;
+
+  /**
+   * Claude Code set its idle title over a turn only its spinner opened (no
+   * hook since: an interrupt, or a turn that never reached the model). The
+   * episode ends softly and the pane is settled again as it was, so a later
+   * repaint under that title meets the idle-title gate.
+   */
+  private endSpinnerTurn(): void {
+    this.closeTurn(true);
+    this.explicitTerminalStatus = true;
+    this.settledStatus = this.spinnerSettledStatus ?? 'complete';
+    this.spinnerSettledStatus = null;
+    this.spinnerArmedCycle = false;
+    if (this.activityMonitor && this.sessionId) {
+      this.activityMonitor.endTurn(this.sessionId);
+      // Main heard `running` from this turn; nothing else would retract it.
+      this.emit('idle', { sessionId: this.sessionId });
+    }
+  }
+
+  /**
+   * Something other than the shell moved the pane's cwd (an agent's hook
+   * reported its own directory). Forget the last shell-reported value so the
+   * shell's next report re-emits even when it names the same directory again,
+   * which is how the cwd moves back once the agent exits to the prompt.
+   */
+  forgetEmittedCwd(): void {
+    this.lastEmittedOscCwd = null;
+    this.lastDetectedPromptCwd = '';
   }
 
   /**
@@ -891,6 +974,16 @@ export class DaemonPTYBridge extends EventEmitter {
   }
 
   /**
+   * The id of the latest episode when it is over for good: closed by a settle
+   * that is not soft (a soft close resumes under the same id). Null while it
+   * is open or soft-closed, or before the first episode.
+   */
+  endedTurnId(): string | null {
+    if (this.turnSeq === 0 || this.turnOpen || this.turnSoftClosed) return null;
+    return `t1:${this.turnNonce}.${this.turnSeq}`;
+  }
+
+  /**
    * Record a failed turn. A failure already held for the same turn (or, with
    * no turn id, any failure held since the last episode opened) is kept as
    * is, so every surface serves one `turnId`/`at`; `fresh` is false then.
@@ -910,6 +1003,28 @@ export class DaemonPTYBridge extends EventEmitter {
   /** When a lone Esc was last written to this PTY, from any source; 0 = never. */
   getLastEscAt(): number {
     return this.lastEscAt;
+  }
+
+  /**
+   * Claude Code set its idle title with no Stop-hook row before it (#2264). An
+   * Esc while it is still thinking ends the turn without the `⎿  Interrupted`
+   * row, so this title is the only thing that confirms such an Esc. It is reported
+   * as the same `turnInterrupted` the row raises, and only right after a lone
+   * Esc reached this pane: every turn ends with this edge, and an ordinary
+   * turn end is not an interrupt. Main still checks its own Escape record
+   * before it settles. Dropped like the row inside a resize redraw or a muted
+   * replay.
+   */
+  private noteTitleTurnEnd(sessionId: string): void {
+    const now = Date.now();
+    if (this.muted || now - this.lastResizeAtMs < RESIZE_REDRAW_GUARD_MS) return;
+    if (now - this.lastEscAt >= ESC_INTERRUPT_CONFIRM_MS) return;
+    // One Esc confirms one turn: a later idle title inside the same window
+    // belongs to a turn that Esc never touched.
+    if (this.lastEscAt === this.titleEdgeEscAt) return;
+    if (this.agentDetector?.getLastAgent() !== 'Claude Code') return;
+    this.titleEdgeEscAt = this.lastEscAt;
+    this.emit('turnInterrupted', { sessionId, agent: 'Claude Code' });
   }
 
   /**
@@ -938,7 +1053,7 @@ export class DaemonPTYBridge extends EventEmitter {
    */
   noteSessionStart(signalTs: number, source: unknown): void {
     const atIdlePrompt = this.explicitTerminalStatus && this.settledStatus === 'waiting' && !this.awaitingHuman;
-    const { preTurn, turnEvidenceAt, turnOpen, turnSeq, turnOpenedAt, prevTurnOpenedAt, turnSoftClosed, codexBootWindow, bootEpisode, lastFailure } = this;
+    const { preTurn, turnEvidenceAt, turnOpen, turnSeq, turnOpenedAt, prevTurnOpenedAt, turnSoftClosed, codexBootWindow, bootEpisode, byteOpenedTurn, spinnerOpenedTurn, lastFailure } = this;
     this.noteAgentStatus('running', true);
     this.codexBootWindow = codexBootWindow;
     // The session start is not turn evidence itself: a duplicate delivery of
@@ -954,6 +1069,8 @@ export class DaemonPTYBridge extends EventEmitter {
     this.prevTurnOpenedAt = prevTurnOpenedAt;
     this.turnSoftClosed = turnSoftClosed;
     this.bootEpisode = bootEpisode;
+    this.byteOpenedTurn = byteOpenedTurn;
+    this.spinnerOpenedTurn = spinnerOpenedTurn;
     if (!isFreshSessionSource(source)) {
       this.preTurn = false;
       return;
@@ -1066,6 +1183,7 @@ export class DaemonPTYBridge extends EventEmitter {
     this.sessionId = sessionId;
     this.explicitTerminalStatus = false;
     this.submittedTurnPending = false;
+    this.hookArmedCycle = false;
     this.inputInBracketedPaste = false;
     this.lastInputAt = 0;
     this.settledStatus = null;
@@ -1083,6 +1201,12 @@ export class DaemonPTYBridge extends EventEmitter {
     // settled this turn, byte silence is weaker evidence and must not clear the
     // explicit waiting/complete state five seconds later.
     this.idleUnsubscribe = activityMonitor.onActiveToIdle((ptyId) => {
+      this.hookArmedCycle = false;
+      // F24: an episode only output opened, on a hook pane, ends when that
+      // output stops (see `byteOpenedTurn`). Five seconds of byte silence
+      // means no spinner either; the spinner title is output too. Softly, so
+      // the next hook of a real turn resumes the same episode.
+      if (this.byteOpenedTurn && !this.awaitingHuman) this.closeTurn(true);
       if (this.explicitTerminalStatus) return;
       this.emit('idle', { sessionId: ptyId, ...(this.isPreTurn() ? { preTurn: true } : {}) });
     });
@@ -1114,6 +1238,10 @@ export class DaemonPTYBridge extends EventEmitter {
         // TUI painting a live counter, is the whole turn. That applies to the
         // cool-down too: the tail of the finishing turn is exactly the burst
         // most likely to arrive just before a genuine one.
+        // F24: on a hook pane, a burst under Claude Code's idle title is its
+        // own post-turn paint (the recap, a repaint on attach), not a turn.
+        // Such a burst is held: the spinner title of a real turn may follow it
+        // (see noteSpinnerTitle).
         const now = Date.now();
         if (
           now - this.settledAtMs < DaemonPTYBridge.SETTLE_COOLDOWN_MS
@@ -1123,10 +1251,17 @@ export class DaemonPTYBridge extends EventEmitter {
           activityMonitor.endTurn(ptyId);
           return;
         }
+        if (this.idleTitleOnHookPane()) {
+          this.heldBurstAt = now;
+          activityMonitor.endTurn(ptyId);
+          return;
+        }
         this.explicitTerminalStatus = false;
         this.settledStatus = null;
         this.submittedTurnPending = false;
+        const wasOpen = this.turnOpen;
         this.openTurn(true);
+        if (!wasOpen && this.hookSeen) this.byteOpenedTurn = true;
         // Deliberately NOT resetEmissionState(). The unsettled path below
         // clears the detector's dedup so a new turn's footer can speak again;
         // doing it here would let the idle chrome that is still on screen
@@ -1135,6 +1270,10 @@ export class DaemonPTYBridge extends EventEmitter {
       } else {
         const inputStartedTurn = this.submittedTurnPending;
         this.submittedTurnPending = false;
+        const hookArmed = this.hookArmedCycle;
+        this.hookArmedCycle = false;
+        const spinnerArmed = this.spinnerArmedCycle;
+        this.spinnerArmedCycle = false;
 
         // Real submitted input already reset detector dedup in noteInput(). For
         // a passive startup/autonomous burst, retain the resize-redraw guard: a
@@ -1149,9 +1288,29 @@ export class DaemonPTYBridge extends EventEmitter {
               this.resizeGuardTimer = null;
               this.agentDetector?.resetEmissionState();
             }, RESIZE_REDRAW_GUARD_MS - elapsed);
+            // A resize repaint is not work, so it does not reach the status
+            // dot either. Revealing a workspace refits its panes, and an idle
+            // TUI (Codex) repaints the whole screen, well over the threshold:
+            // emitting `active` here lit an idle pane "running", and the
+            // unmarked idle that followed left it lit for the renderer's
+            // two-minute activity window. Like the settled rejections above,
+            // hand the cycle back instead of consuming it, so a real turn that
+            // keeps writing past the guard window still reports running.
+            // A cycle a hook's running edge armed is exempt while that turn is
+            // still open: handing it back would drop the hook's signal to the
+            // byte threshold for the rest of a sparse-output turn. Only the
+            // arming edge counts, not `turnOpen` alone: a boot paint or a
+            // submitted prompt that never got a settle also leaves the turn
+            // open, and its reveal repaint is still not work.
+            if (!(hookArmed && this.turnOpen)) {
+              activityMonitor.endTurn(ptyId);
+              return;
+            }
           } else {
-            this.agentDetector?.resetEmissionState();
+            if (!spinnerArmed) this.agentDetector?.resetEmissionState();
+            const wasOpen = this.turnOpen;
             this.openTurn(true);
+            if (!wasOpen && this.hookSeen) this.byteOpenedTurn = true;
           }
         }
       }
@@ -1161,12 +1320,13 @@ export class DaemonPTYBridge extends EventEmitter {
       // 같은 daemon 프로세스인 여기서는 getLastAgent()가 닿는다. 이게 있어야
       // idle prompt 패턴이 안 잡히는 에이전트(Claude Code v2.1.x 등)도 running
       // 상태에서 agentName이 채워진다.
-      // `likelyRepaint`: this passive burst sits inside the resize-redraw
-      // guard window, so it is a TUI repaint, not work. The loose status dot
-      // still updates (the flag travels with the event), but the alarm's
-      // working feed in daemon/index.ts must NOT treat it as turn evidence —
-      // a repaint rebutting a pending completion window would silently kill
-      // a real "finished" alarm.
+      // `likelyRepaint` is true only for a cycle a hook's running edge armed
+      // in a still-open turn whose first output landed inside the
+      // resize-redraw guard window; every other burst in that window returned
+      // above. The status dot shows that hook turn running, but the alarm's
+      // working feed in daemon/index.ts must NOT treat the burst as turn
+      // evidence — a repaint rebutting a pending completion window would
+      // silently kill a real "finished" alarm.
       this.emit('active', {
         sessionId: ptyId,
         agentName: this.agentDetector?.getLastAgent() ?? undefined,
@@ -1180,6 +1340,8 @@ export class DaemonPTYBridge extends EventEmitter {
 
     // OSC events → cwd (OSC 7), prompt/command markers (OSC 133), and
     // desktop notifications (OSC 9/777/99)
+    // #2264: Claude Code's title turning idle right after a lone Esc (see noteTitleTurnEnd).
+    const titleTurnEdge = new ClaudeTitleTurnEdge();
     interpreter.onOsc((event) => {
       if (event.code === 0 || event.code === 2) {
         // OSC 0/2 window title (e.g. Claude Code `/rename`). OSC 1 (icon-only)
@@ -1190,13 +1352,16 @@ export class DaemonPTYBridge extends EventEmitter {
         this.lastTitle = title;
         this.lastTitleAt = Date.now();
         if (title) this.emit('title', { sessionId, title });
+        if (titleTurnEdge.observe(title)) this.noteTitleTurnEnd(sessionId);
+        if (CLAUDE_RUNNING_TITLE.test(title)) this.noteSpinnerTitle();
+        else if (this.spinnerOpenedTurn && this.turnOpen && !this.awaitingHuman && CLAUDE_IDLE_TITLE.test(title)) this.endSpinnerTurn();
         return;
       }
       if (event.code === 7) {
         // app-weight P1-4: dedup identical OSC 7 emissions. Shells re-emit
         // OSC 7 on every prompt redraw, so an idle pane would otherwise spam
         // the same cwd across daemon→main→renderer on each redraw. Mirrors
-        // the prompt-detect guard (lastDetectedCwd) below; the first OSC 7
+        // the prompt-detect guard (lastDetectedPromptCwd) below; the first OSC 7
         // after spawn always emits because the cache starts null.
         const cwd = parseOsc7Cwd(event.data);
         // OSC 7-sticky (2026-07-21): this shell has the integration hook — the
@@ -1260,9 +1425,14 @@ export class DaemonPTYBridge extends EventEmitter {
     this.usageLimitUnsubscribe = agentDetector.onUsageLimit((event) => {
       this.emit('usageLimit', { sessionId, event });
     });
+    // The interrupt row stays in the transcript: a resize redraw or a muted
+    // recovery replay prints it again for a turn that is long over.
+    this.interruptedUnsubscribe = agentDetector.onInterrupted(({ agent }) => {
+      if (this.muted || Date.now() - this.lastResizeAtMs < RESIZE_REDRAW_GUARD_MS) return;
+      this.emit('turnInterrupted', { sessionId, agent });
+    });
 
     // Prompt-based CWD detection state
-    let lastDetectedCwd = '';
     let promptBuffer = '';
 
     const capture = (data: string, buf?: Buffer, nativeChunk?: NativeOutputChunk): void => {
@@ -1281,6 +1451,8 @@ export class DaemonPTYBridge extends EventEmitter {
         else ringBuffer.write(buf ?? Buffer.from(data));
         // AFTER the ring write: the tracker's offsets are in the ring's own
         // coordinate system, so it needs the counter this chunk already moved.
+        // Before the titles in this chunk are read (see ClaudeTitleTurnEdge.noteOutput).
+        titleTurnEdge.noteOutput(data);
         interpreter.feed(data, ringBuffer.totalBytesWritten, nativeChunk);
         // After the mode tracker and OSC 133 have seen this chunk (see noteCodexOutput).
         this.noteCodexOutput(data);
@@ -1296,8 +1468,8 @@ export class DaemonPTYBridge extends EventEmitter {
           const clean = promptBuffer.replace(DaemonPTYBridge.ANSI_STRIP, '');
           const detectedCwd = detectPromptCwd(clean);
           if (detectedCwd !== null) {
-            if (detectedCwd !== lastDetectedCwd) {
-              lastDetectedCwd = detectedCwd;
+            if (detectedCwd !== this.lastDetectedPromptCwd) {
+              this.lastDetectedPromptCwd = detectedCwd;
               this.emit('cwd', { sessionId, cwd: detectedCwd });
             }
             promptBuffer = '';
@@ -1337,11 +1509,15 @@ export class DaemonPTYBridge extends EventEmitter {
       // Echo is what the settled branch has to exclude, and the input stamp
       // names it directly instead of blocking every byte to be safe.
       if (!this.muted && (!this.explicitTerminalStatus || this.isInputQuiet())) {
+        // Only the settled hook-pane gate reads it (see idleTitleOnHookPane).
+        this.chunkSetsSpinnerTitle = this.explicitTerminalStatus && this.hookSeen
+          && CLAUDE_RUNNING_TITLE_OSC.test(data);
         try {
           activityMonitor.feed(sessionId, byteLength);
         } catch {
           // activity heuristics must never block detection or data forwarding.
         }
+        this.chunkSetsSpinnerTitle = false;
       }
 
       // AgentDetector는 순수 텍스트 분석(side effect 없음)이라 muted 구간에서도
@@ -1551,6 +1727,8 @@ export class DaemonPTYBridge extends EventEmitter {
     this.criticalUnsubscribe = null;
     this.usageLimitUnsubscribe?.();
     this.usageLimitUnsubscribe = null;
+    this.interruptedUnsubscribe?.();
+    this.interruptedUnsubscribe = null;
 
     // Stop activity monitor to clear timers and state
     if (this.activityMonitor && this.sessionId) {
@@ -1560,6 +1738,7 @@ export class DaemonPTYBridge extends EventEmitter {
     this.lastEmittedOscCwd = null;
     this.explicitTerminalStatus = false;
     this.submittedTurnPending = false;
+    this.hookArmedCycle = false;
     this.inputInBracketedPaste = false;
     this.lastInputAt = 0;
     this.inputRevision = 0;
@@ -1577,6 +1756,10 @@ export class DaemonPTYBridge extends EventEmitter {
     this.turnOpen = false;
     this.turnSoftClosed = false;
     this.bootEpisode = false;
+    this.byteOpenedTurn = false;
+    this.heldBurstAt = 0;
+    this.spinnerArmedCycle = false;
+    this.spinnerOpenedTurn = false;
     this.hookSeen = false;
     this.lastTitle = '';
     this.lastTitleAt = 0;

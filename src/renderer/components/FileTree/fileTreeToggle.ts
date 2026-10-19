@@ -13,7 +13,8 @@ interface FileTreeToggleState {
  * so opening it from a rail page brings that page forward: otherwise it would
  * open behind an inert page. From a rail page with the column already shown,
  * the same press brings the page forward instead of hiding something the user
- * cannot see. Shared by the titlebar button, the shortcut and the palette.
+ * cannot see. Shared by the agent bar's Files button, the shortcut and the
+ * palette.
  */
 export function toggleFileTreePanel(state: FileTreeToggleState): void {
   const offPage = state.appRoute !== undefined && state.appRoute !== 'workspaces';

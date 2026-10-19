@@ -1,4 +1,4 @@
-import { lazy, Suspense, useRef, useEffect, useState, useCallback, useMemo } from 'react';
+import { lazy, Suspense, useRef, useEffect, useState, useCallback, useMemo, useSyncExternalStore } from 'react';
 import { useTerminal, copySelectionWithFeedback, getPaneSyncUi, subscribePaneSyncUi, type ContextMenuEvent, type PaneSyncUiState } from '../../hooks/useTerminal';
 import { handoffTargetForPty, isOurHandoffDrag, takeHandoffDrop } from '../Git/handoffDrag';
 import { useStore } from '../../stores';
@@ -18,6 +18,8 @@ import BookmarkIndicator from './BookmarkIndicator';
 import ContextMenu from './ContextMenu';
 import ScrollToBottomButton from './ScrollToBottomButton';
 import { paneTagDropText } from '../../utils/paneTagDrag';
+import { getPaneLinkNotice, notePaneUserInput, subscribeDaemonLinkNotice } from '../../daemon/daemonLinkNotice';
+import DaemonLinkNotice from './DaemonLinkNotice';
 import '@xterm/xterm/css/xterm.css';
 
 const ChatView = lazy(() => import('../Chat/ChatView'));
@@ -96,6 +98,10 @@ export default function TerminalComponent({ chatView = false, ptyId: externalPty
     setSyncState(getPaneSyncUi(ptyId));
     return subscribePaneSyncUi(ptyId, setSyncState);
   }, [ptyId]);
+
+  // Daemon link notice: this pane lost its daemon connection (reconnecting /
+  // reconnected / gave up), and whether input typed meanwhile may be lost.
+  const linkNotice = useSyncExternalStore(subscribeDaemonLinkNotice, () => getPaneLinkNotice(ownerSurfaceId));
 
   // Hide restoring overlay when first data arrives
   const handleFirstData = useCallback(() => setRestoring(false), []);
@@ -381,6 +387,7 @@ export default function TerminalComponent({ chatView = false, ptyId: externalPty
       // pasteClipboardImage, which routes them to the agent's own image-paste
       // key or to the temp-PNG path (#1196).
       const text = await window.clipboardAPI.readText();
+      notePaneUserInput(ptyId);
       if (text) {
         // Async chunked write: paces the IPC queue so the conpty input
         // pipe drains between chunks, normalizes line endings to \r so
@@ -443,6 +450,7 @@ export default function TerminalComponent({ chatView = false, ptyId: externalPty
     e.preventDefault();
     const terminal = terminalRef.current;
     const modes = (terminal as unknown as { modes?: { bracketedPasteMode?: boolean } })?.modes;
+    notePaneUserInput(ptyId);
     // A pane header dropped here types its tag (`#w1-2 `), not its markdown.
     void pastePtyChunked(
       (d) => window.electronAPI.pty.write(ptyId, d),
@@ -527,6 +535,9 @@ export default function TerminalComponent({ chatView = false, ptyId: externalPty
           </div>
         </div>
       )}
+      {/* Daemon link notice; the recovery alert above wins when both apply
+          (it carries the actions). */}
+      {!recoveryError && linkNotice && ownerSurfaceId && <DaemonLinkNotice notice={linkNotice} surfaceId={ownerSurfaceId} />}
       {/* Session restore overlay */}
       {restoring && (
         <div className="absolute inset-0 flex items-center justify-center text-[var(--text-muted)] text-sm font-mono z-10 pointer-events-none">
@@ -546,7 +557,12 @@ export default function TerminalComponent({ chatView = false, ptyId: externalPty
       {/* xterm mount point. draggable={false} is explicit: xterm's selection
           handler must own pointer events here, otherwise a long-press on
           selected text could be interpreted as a native drag start and
-          clash with the SurfaceTabs drag-export feature. */}
+          clash with the SurfaceTabs drag-export feature.
+          content-box with calc(): FitAddon sizes the grid from this element's
+          computed width/height and subtracts only the .xterm element's own
+          padding. Under border-box those values include this 4px padding, so
+          the fit got 8px of height it did not have and the last row was cut
+          off whenever the cell height fit into that extra 8px. */}
       <div
         ref={containerRef}
         inert={chatView}
@@ -554,7 +570,7 @@ export default function TerminalComponent({ chatView = false, ptyId: externalPty
         draggable={false}
         onDragOver={handleTerminalDragOver}
         onDrop={handleTerminalDrop}
-        style={{ width: '100%', height: '100%', padding: '4px', visibility: chatView ? 'hidden' : undefined }}
+        style={{ boxSizing: 'content-box', width: 'calc(100% - 8px)', height: 'calc(100% - 8px)', padding: '4px', visibility: chatView ? 'hidden' : undefined }}
       />
 
       {/* Scrollback bookmark markers on the left edge. #1256: bound to the

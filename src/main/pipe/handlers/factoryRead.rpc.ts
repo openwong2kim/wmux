@@ -20,7 +20,8 @@
 // proposing bot's room, each item naming a workspace that has an enabled
 // lead — its own workspace for any bot, any workspace for a Coordinator.
 // The owner resolves it once (room.resolve); the roles module wakes the
-// proposer with the answer, and it dispatches the approved items.
+// proposer with the answer, and it dispatches the approved items. A newer
+// plan from the same bot closes its older plans still open (superseded).
 
 import { randomBytes } from 'node:crypto';
 import { isCoordinatorBot, type BotBinding, type BotProfile } from '../../../shared/bot';
@@ -413,6 +414,16 @@ export async function handlePlanPropose(raw: unknown, ctx: RpcContext | undefine
   });
   if (!r.ok) return refusal('invalid', r.message);
   const card: RoomCard = r.card;
+  // A newer plan supersedes the bot's older ones still open: they leave the
+  // open state (no answer is routed for them; the room counts only the
+  // newest anyway, botsModel.ts livePlanIds).
+  if (!r.duplicate) {
+    for (;;) {
+      const older = writer.find(bot.workspaceId, (c) => c.kind === 'plan' && c.state === 'open' && c.id !== card.id
+        && c.actor.kind === 'bot' && c.actor.botId === bot.botId);
+      if (!older || !writer.setState(bot.workspaceId, older.id, 'resolved')) break;
+    }
+  }
   return { ok: true, card, threadId: card.threadId, items, ...(r.duplicate ? { duplicate: true } : {}) };
 }
 

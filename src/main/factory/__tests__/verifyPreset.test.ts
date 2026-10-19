@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { LedgerEntry } from '../../../shared/ledger';
 import { DEFAULT_BOT_BUDGETS, type BotProfile } from '../../../shared/bot';
 import type { GateRunInput, GateRunResult } from '../../worktask/TaskGateRunner';
-import { describeGateRun, installVerifyGate, isVerifyReport, originDefaultRef, verifyGateFactId, worktreeFromMissions, type VerifyGatePorts } from '../verifyPreset';
+import { describeGateRun, installVerifyGate, isVerifyReport, originDefaultRef, taskFolderFromMissions, verifyGateFactId, worktreeFromMissions, type VerifyGatePorts } from '../verifyPreset';
 
 const SHA = 'a'.repeat(40);
 const BOT_ID = 'bot-0a1b2c3d';
@@ -65,6 +65,7 @@ describe('verify gate', () => {
       reason: { kind: 'facts', factIds: [verifyGateFactId('task-1', 5)], trigger: { kind: 'task.done' } },
     });
     expect(r.note.mock.calls[0][2]).toBe('Verify gate passed');
+    expect(r.note.mock.calls[0][4]).toEqual({ code: 'verify.passed' });
   });
 
   it('only bot verify tasks on a detached checkout reporting review_requested', async () => {
@@ -84,11 +85,13 @@ describe('verify gate', () => {
     await r.fire(entry());
     expect(r.runGate).not.toHaveBeenCalled();
     expect(r.note.mock.calls[0][2]).toBe('Verify gate not run');
+    expect(r.note.mock.calls[0][4]).toEqual({ code: 'verify.notRunNoWorktree' });
     expect(r.wake).toHaveBeenCalledTimes(1);
     const b = rig({ baseRef: async () => null });
     await b.fire(entry());
     expect(b.runGate).not.toHaveBeenCalled();
     expect(b.note.mock.calls[0][3]).toMatch(/default branch/);
+    expect(b.note.mock.calls[0][4]).toEqual({ code: 'verify.notRunNoBaseRef' });
   });
 
   it('a dispatching bot of any role tag is gated; one that is gone or has no repository runs nothing and wakes nobody', async () => {
@@ -151,12 +154,26 @@ describe('verify gate', () => {
     expect(describeGateRun({ ok: true, status: 'completed', taskId: 't', recorded: true, result: { exitCode: 1, tail: '', at: 1, command: 'npm test', headSha: SHA } }).title).toBe('Verify gate failed (exit 1)');
   });
 
+  it('each gate card carries its notice code', () => {
+    const completed = (exitCode: number | null) => describeGateRun({ ok: true, status: 'completed', taskId: 't', recorded: true, result: { exitCode, tail: '', at: 1, command: 'npm test', headSha: SHA } }).notice;
+    expect(completed(1)).toEqual({ code: 'verify.failed', args: { exit: 1 } });
+    expect(completed(null)).toEqual({ code: 'verify.killed' });
+    expect(describeGateRun({ ok: true, status: 'skipped', taskId: 't', skipped: 'deps_missing', detail: 'x' }).notice).toEqual({ code: 'verify.skipped', args: { reason: 'deps_missing' } });
+    expect(describeGateRun({ ok: false, status: 'busy', taskId: 't' }).notice).toEqual({ code: 'verify.busy' });
+    expect(describeGateRun({ ok: false, status: 'refused', taskId: 't', error: 'base gate differs' }).notice).toEqual({ code: 'verify.refused' });
+  });
+
   it('default ports: the worktree from the owner\'s mission list, origin\'s default branch', async () => {
     const rpc = vi.fn(async () => ({ ok: true, tasks: [{ id: 'other', worktreePath: '/x' }, { id: 'task-1', worktreePath: '/wt/1' }] }));
     expect(await worktreeFromMissions(rpc, entry())).toBe('/wt/1');
     expect(rpc).toHaveBeenCalledWith('task.mission.list', { verifiedWorkspaceId: 'ws-v' });
     expect(await worktreeFromMissions(null, entry())).toBeNull();
     expect(await worktreeFromMissions(async () => ({ ok: false }), entry())).toBeNull();
+    // A research task has no worktree: its worker is found (and reclaimed) in its output folder.
+    const research = vi.fn(async () => ({ ok: true, tasks: [{ id: 'task-1', outputDir: '/bots/b/research/batch/1-claude-x' }] }));
+    expect(await worktreeFromMissions(research, entry())).toBeNull();
+    expect(await taskFolderFromMissions(research, entry())).toBe('/bots/b/research/batch/1-claude-x');
+    expect(await taskFolderFromMissions(rpc, entry())).toBe('/wt/1');
     const git = async (args: string[]) => (args[0] === 'symbolic-ref' ? { stdout: 'refs/remotes/origin/trunk\n', code: 0 } : { stdout: '', code: 1 });
     expect(await originDefaultRef(git, '/r')).toBe('origin/trunk');
     const noHead = async (args: string[]) => (args[0] === 'symbolic-ref' ? { stdout: '', code: 1 } : args[3]?.includes('master') ? { stdout: SHA, code: 0 } : { stdout: '', code: 1 });

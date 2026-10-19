@@ -13,6 +13,8 @@
 // must not be written (a fact that cannot be deduplicated is refused, never
 // written with an ad-hoc key).
 
+import type { CardNotice } from './room';
+
 export type FactKind =
   | 'pr.opened' | 'pr.head_moved' | 'pr.closed' | 'pr.merged' | 'pr.labelled' | 'pr.review_requested_changes'
   | 'ci.failed' | 'ci.green'                     // per PR head, edge-triggered
@@ -75,7 +77,7 @@ export interface FactRef {
  *  main only, in main's words; `detail` may quote a tool's error output and
  *  is shown to the bot as data. */
 export interface BotNoticePayload {
-  topic: 'worker.started' | 'worker.start_failed' | 'approval.decided' | 'pr.merged';
+  topic: 'worker.started' | 'worker.start_failed' | 'worker.report_after_end' | 'approval.decided' | 'pr.merged';
   /** One line, main's words. */
   title: string;
   /** More of main's words (optional). */
@@ -89,6 +91,8 @@ export interface BotNoticePayload {
   card?: boolean;
   /** It carries text from outside (detail): wakeTaint counts it. */
   tainted?: boolean;
+  /** The card's stable code, so the reader's language words it (RoomCard.notice). */
+  notice?: CardNotice;
 }
 
 export type FactActor = { kind: 'system' | 'bot' | 'human' | 'github'; id?: string };
@@ -180,12 +184,14 @@ function join(kind: FactKind, ...parts: Array<string | number | null | undefined
  *   handoff.received / .refused   <kind>:<handoffId>
  *   human.message / .correction   <kind>:<messageId>
  *   bot.refused                bot.refused:<botId>:<method>:<epochMinute>
- *   bot.budget_exhausted       bot.budget_exhausted:<botId>:<epochHour>
+ *   bot.budget_exhausted       bot.budget_exhausted:<botId>:park:<parkedAt> (a park: one per park,
+ *                              so a new park in the same hour is reported again),
+ *                              else bot.budget_exhausted:<botId>:<epochHour>
  *   bot.error                  bot.error:<botId>:<epochMinute>
  *   bot.notice                 bot.notice:<botId>:<messageId>
  *   schedule.fired             schedule.fired:<scheduleId>:<epochDay>
  */
-export function factDedupeKey(draft: Pick<FactDraft, 'kind' | 'at' | 'repoKey' | 'ref' | 'workspaceId'>): string | null {
+export function factDedupeKey(draft: Pick<FactDraft, 'kind' | 'at' | 'repoKey' | 'ref' | 'workspaceId'> & { payload?: Record<string, unknown> }): string | null {
   const { kind, at, repoKey } = draft;
   const ref = draft.ref ?? {};
   if (!Number.isFinite(at)) return null;
@@ -229,8 +235,12 @@ export function factDedupeKey(draft: Pick<FactDraft, 'kind' | 'at' | 'repoKey' |
       return join(kind, ref.messageId);
     case 'bot.refused':
       return join(kind, ref.botId, ref.method, minute);
-    case 'bot.budget_exhausted':
-      return join(kind, ref.botId, Math.floor(at / HOUR_MS));
+    case 'bot.budget_exhausted': {
+      const parkedAt = draft.payload?.parkedAt;
+      return typeof parkedAt === 'number' && Number.isSafeInteger(parkedAt)
+        ? join(kind, ref.botId, 'park', parkedAt)
+        : join(kind, ref.botId, Math.floor(at / HOUR_MS));
+    }
     case 'bot.error':
       return join(kind, ref.botId, minute);
     case 'bot.notice':

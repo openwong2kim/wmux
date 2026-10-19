@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { RpcRouter } from '../../RpcRouter';
 import { registerEventsRpc } from '../events.rpc';
 import { eventBus } from '../../../events/EventBus';
+import { deliberateSleep } from '../../../../test-utils/waitFor';
 
 // registerHandlers.ts imports `electron` at module top-level (ipcMain,
 // BrowserWindow). Mock it so we can import the pure a2a.task trust-boundary
@@ -1367,7 +1368,7 @@ describe('events.rpc — blocking poll, review regressions', () => {
     ));
     // Let every one of them reach the park (they only occupy a slot once the
     // handler has run its immediate collect and decided to wait).
-    await new Promise((r) => setTimeout(r, 30));
+    await deliberateSleep(30, 'not yet converted (#2363): lets every poll reach the park; nothing polled');
 
     const overflow = await router.dispatch(
       { id: 'cap-over', method: 'events.poll', params: { blockMs: 5_000, ptyId: 'pty-overflow' } },
@@ -1400,7 +1401,7 @@ describe('events.rpc — blocking poll, review regressions', () => {
       { id: 'cap-after', method: 'events.poll', params: { blockMs: 5_000, ptyId: 'pty-after' } },
       { firstParty: true },
     );
-    await new Promise((r) => setTimeout(r, 20));
+    await deliberateSleep(20, 'not yet converted (#2363): lets the poll reach the park before the emit; nothing polled');
     eventBus.emit(lifecycle('pty-after', 'agent.stop'));
     const afterRes = await after;
     if (afterRes.ok) {

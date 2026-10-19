@@ -16,7 +16,7 @@ import { findPane } from '../../../shared/paneUtils';
 import PaneDragGrip from './PaneDragGrip';
 import { FOCUS_RING } from '../focusRing';
 import { HIT_TARGET_24 } from '../hitArea';
-import { IconSplitRight, IconSplitDown, IconBrowser, IconExternalLink, IconEyeOff, IconPencil, IconGrid, IconComputer, IconLock } from '../icons';
+import { IconSplitRight, IconSplitDown, IconBrowser, IconExternalLink, IconEyeOff, IconPencil, IconGrid, IconComputer, IconLock, IconBellOff, IconBell } from '../icons';
 import { isPrivateBrowserSurface } from '../../../shared/privateBrowser';
 import { LOCAL_PC_ID, isShadowWorkspaceId } from '../../../shared/pcRail';
 import A2aLinkDialog from '../Remote/A2aLinkDialog';
@@ -25,6 +25,8 @@ import { workspaceColorHex } from '../../../shared/workspaceColors';
 import PaneActionsMenu, { PANE_ACTIONS_MENU_WIDTH, type PaneActionItem } from './PaneActionsMenu';
 import { PANE_BROWSER_PROFILE_KEY, usePaneChromeProfileMenu } from './usePaneChromeProfileMenu';
 import { usePaneBrowserPolicyMenu } from './usePaneBrowserPolicyMenu';
+import { PANE_CONTINUE_ACCOUNT_KEY, usePaneContinueOnAccount } from './usePaneContinueOnAccount';
+import { usePaneClaudeRewind } from './usePaneClaudeRewind';
 import BrowserPolicyDialog from './BrowserPolicyDialog';
 import {
   bindingEnforcesModel, bindingEnforcesSkipPermissions, bindingSkipPermissionsFlag, type RoleBinding,
@@ -87,7 +89,9 @@ export const PANE_ACTIONS_CLUSTER_WIDTH = 142;
 
 /** Pane menu entries a shadow workspace leaves out: its layout belongs to the
  *  host, so no split, no new pane and (by the `snap-` prefix) no layout snap. */
-const HIDDEN_ON_SHADOW: ReadonlySet<string> = new Set(['split-right', 'split-down', 'new-remote', 'split-right-remote', 'split-down-remote']);
+// 'mute-notifications': a shadow pane's notifications come from the remote
+// host's own path, which never reads this pane's mute flag.
+const HIDDEN_ON_SHADOW: ReadonlySet<string> = new Set(['split-right', 'split-down', 'new-remote', 'split-right-remote', 'split-down-remote', 'mute-notifications']);
 
 /** Rendered width (px) of the COLLAPSED cluster: the ⋮ trigger alone, which
  *  opens the same actions as a vertical menu. Same outer box as the full
@@ -507,7 +511,7 @@ export default function SurfaceTabs({
   >(null);
   // 'main' is the action list; 'browser-profile' its Chrome profile submenu,
   // shown in the same popover (the Moa header menu's Model/Mode idiom).
-  const [menu, setMenu] = useState<null | 'main' | 'browser-profile' | 'browser-profile-new'>(null);
+  const [menu, setMenu] = useState<null | 'main' | 'browser-profile' | 'browser-profile-new' | 'continue-account'>(null);
   const menuOpen = menu !== null;
   // Where focus was when the menu opened. The submenu remounts the popover, so
   // its own "focus on open" is a main-menu item that is gone by close time.
@@ -529,6 +533,12 @@ export default function SurfaceTabs({
   // Escape in the submenu steps back to the main menu, on the item that opened it.
   const backToMainMenu = useCallback(() => {
     setMenuFocusKey(PANE_BROWSER_PROFILE_KEY);
+    setMenu('main');
+  }, []);
+  const openContinueAccountMenu = useCallback(() => setMenu('continue-account'), []);
+  const closeContinueAccountSubmenu = useCallback(() => setMenu((m) => (m === 'continue-account' ? null : m)), []);
+  const backFromContinueAccount = useCallback(() => {
+    setMenuFocusKey(PANE_CONTINUE_ACCOUNT_KEY);
     setMenu('main');
   }, []);
 
@@ -659,6 +669,10 @@ export default function SurfaceTabs({
   // surface; the user label (if any) overrides the auto coordinate.
   const leaf = findPane(workspace.rootPane, paneId);
   const paneOrdinal = leaf && leaf.type === 'leaf' ? (leaf.ordinal ?? 0) : 0;
+  const paneMuted = !!(leaf && leaf.type === 'leaf' && leaf.notificationsMuted === true);
+  const togglePaneMuted = useCallback(() => {
+    useStore.getState().setPaneNotificationsMuted(paneId, !paneMuted, workspace.id);
+  }, [paneId, paneMuted, workspace.id]);
   const paneAutoName = computePaneAutoName(workspace.wsOrdinal ?? 0, paneOrdinal, activeSlug);
   const paneDisplay = paneDisplayName(paneLabel, paneAutoName);
   // Mirrors paneDisplayName's own blank-label rule, so "named" here means
@@ -717,11 +731,22 @@ export default function SurfaceTabs({
     openDialog: openPolicyDialog,
   });
   const reloadBrowserPolicy = browserPolicy.reload;
+  // Continue the pane's Claude conversation on another account (the hook gates itself).
+  const continueAccount = usePaneContinueOnAccount({
+    ptyId: activeSurfacePtyId,
+    allowed: !readOnly,
+    workspaceId: workspace.id,
+    openSubmenu: openContinueAccountMenu,
+  });
+  const reloadContinueAccount = continueAccount.reload;
+  // Open Claude's own Rewind picker (the hook gates itself to a terminal Claude).
+  const claudeRewindItems = usePaneClaudeRewind({ ptyId: activeSurfacePtyId, allowed: !readOnly });
   useEffect(() => {
     if (menu !== 'main') return;
     reloadChromeProfiles();
     reloadBrowserPolicy();
-  }, [menu, reloadChromeProfiles, reloadBrowserPolicy]);
+    reloadContinueAccount();
+  }, [menu, reloadChromeProfiles, reloadBrowserPolicy, reloadContinueAccount]);
   // PC rail: with another computer on screen (or in its shadow workspace) a
   // new browser still opens on this one, so its label says so.
   const shadow = isShadowWorkspaceId(workspace.id);
@@ -786,12 +811,20 @@ export default function SurfaceTabs({
       icon: <IconPencil size={14} />,
       onSelect: startPaneRename,
     },
+    ...continueAccount.mainItems,
+    ...claudeRewindItems,
     ...(canLinkRemote ? [{
       key: 'link-remote-pane',
       label: t('a2aLink.menu'),
       icon: <IconComputer size={14} />,
       onSelect: () => setLinkDialogOpen(true),
     }] : []),
+    {
+      key: 'mute-notifications',
+      label: paneMuted ? t('pane.unmuteNotifications') : t('pane.muteNotifications'),
+      icon: paneMuted ? <IconBell size={14} /> : <IconBellOff size={14} />,
+      onSelect: togglePaneMuted,
+    },
     {
       key: 'stash',
       label: t('pane.stash'),
@@ -829,7 +862,7 @@ export default function SurfaceTabs({
   ].filter((item) => !shadow || !(HIDDEN_ON_SHADOW.has(item.key) || item.key.startsWith('snap-'))), [
     t, onSplitHorizontal, onSplitVertical, onAddBrowser, newBrowserLabel, onAddPrivateBrowser, chromeProfile.mainItems, browserPolicy.mainItems, onAddRemote,
     onSplitHorizontalRemote, onSplitVerticalRemote, startPaneRename,
-    menuTabSurface, startRename, canLinkRemote,
+    menuTabSurface, startRename, canLinkRemote, paneMuted, togglePaneMuted, continueAccount.mainItems, claudeRewindItems,
     stashChord, stashDisabled, stashTooltip, stashThisPane, isZoomed, toggleZoom,
     layoutTemplates, shadow,
   ]);
@@ -953,6 +986,19 @@ export default function SurfaceTabs({
           data-protected-pane
         >
           <IconLock size={12} />
+        </span>
+      )}
+
+      {/* Muted pane: one muted bell-off, same weight as the padlock above. */}
+      {paneMuted && !shadow && (
+        <span
+          className="shrink-0 ml-1 flex items-center text-[var(--text-muted)]"
+          role="img"
+          aria-label={t('pane.notificationsMuted')}
+          title={t('pane.notificationsMuted')}
+          data-pane-muted
+        >
+          <IconBellOff size={12} />
         </span>
       )}
 
@@ -1185,6 +1231,8 @@ export default function SurfaceTabs({
       <UsageLimitChip
         ptyId={surfaces.find((sf) => sf.id === activeSurfaceId)?.ptyId}
         compact={usageLimitCompact}
+        readOnly={readOnly}
+        workspaceId={workspace.id}
       />
       {supervision && (
         <span
@@ -1362,9 +1410,9 @@ export default function SurfaceTabs({
           key={menu}
           anchor={menuAnchor}
           triggerRef={overflowBtnRef}
-          items={menu === 'browser-profile' ? chromeProfile.subItems : menu === 'browser-profile-new' ? [] : menuItems}
-          onClose={menu === 'main' ? closeMenu : menu === 'browser-profile' ? closeProfileSubmenu : closeSubmenu}
-          onEscape={menu === 'main' ? undefined : menu === 'browser-profile-new' ? openBrowserProfileMenu : backToMainMenu}
+          items={menu === 'browser-profile' ? chromeProfile.subItems : menu === 'continue-account' ? continueAccount.subItems : menu === 'browser-profile-new' ? [] : menuItems}
+          onClose={menu === 'main' ? closeMenu : menu === 'browser-profile' ? closeProfileSubmenu : menu === 'continue-account' ? closeContinueAccountSubmenu : closeSubmenu}
+          onEscape={menu === 'main' ? undefined : menu === 'browser-profile-new' ? openBrowserProfileMenu : menu === 'continue-account' ? backFromContinueAccount : backToMainMenu}
           initialFocusKey={menu === 'main' ? menuFocusKey : undefined}
           restoreFocusTo={menuOpenerRef}
         >

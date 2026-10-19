@@ -11,10 +11,15 @@ const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true }); });
 const tmp = () => { const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-queue-')); dirs.push(dir); return dir; };
 const id = () => `${Date.now()}-${randomUUID()}`;
+/** The store's default write is durable: fsync, then two renames, each of
+ *  which waits out antivirus holds on Windows. Tests about the queue's logic
+ *  write plainly; the restart test below keeps the default and reads the file. */
+const plainWrite = (file: string, data: unknown) => fs.writeFileSync(file, JSON.stringify(data));
 
 describe('ChatQueueStore', () => {
   it('keeps FIFO order per pane and caps active items per pane and owner', () => {
-    const store = new ChatQueueStore(tmp());
+    // Twelve writes; durable ones took over 5 s on the loaded Windows shard.
+    const store = new ChatQueueStore(tmp(), { write: plainWrite });
     const ids = Array.from({ length: CHAT_QUEUE_MAX_ITEMS }, id);
     for (const cmid of ids) expect(store.insert('device:a', 'pane', cmid)).toBe('inserted');
     expect(store.insert('device:a', 'pane', id())).toBe('full');

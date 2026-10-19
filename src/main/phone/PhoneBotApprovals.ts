@@ -37,6 +37,8 @@ export function handlePhoneBotApprovalCommand(
     const view = r ? phoneBotApproval(r) : null;
     return view ? { request: view } : { notFound: true };
   }
+  // A skill proposal is decided on its desktop card, where its diff is.
+  if (service.get(requestId)?.action === 'skill') return { refused: { code: 'not_on_phone', message: 'a skill is approved in wmux on its card, where the change is shown' } };
   const body = parsePhoneBotApprovalDecideBody({ decision: payload.decision, ...(payload.ruleScope !== undefined ? { ruleScope: payload.ruleScope } : {}) });
   if (!body) return { invalid: true };
   const deviceId = typeof payload.deviceId === 'string' && DEVICE_ID_RE.test(payload.deviceId) ? payload.deviceId : undefined;

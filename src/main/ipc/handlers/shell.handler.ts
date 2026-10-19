@@ -1,4 +1,4 @@
-import { ipcMain, shell, app } from 'electron';
+import { ipcMain, shell, app, systemPreferences } from 'electron';
 import { spawn, execFile } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs/promises';
@@ -9,6 +9,7 @@ import { IPC } from '../../../shared/constants';
 import { wrapHandler } from '../wrapHandler';
 import { isAutostartEnabled, setAutostartEnabled } from '../../autostart';
 import { sampleAppCpuPercent } from '../../perf/appCpu';
+import { systemPrefersReducedMotion } from '../../reducedMotion';
 import { readDaemonPid } from '../../updater/installTeardown';
 import { getWmuxDir } from '../../../daemon/config';
 
@@ -132,6 +133,12 @@ export function registerShellHandlers(): () => void {
   ipcMain.handle(IPC.APP_CPU, wrapHandler(IPC.APP_CPU, (_event: Electron.IpcMainInvokeEvent) =>
     sampleAppCpuPercent(readDaemonPid(getWmuxDir()))));
 
+  // Read on every ask (the renderer asks at start and on focus): Windows
+  // sends no event when Animation effects is turned off.
+  ipcMain.removeHandler(IPC.SYSTEM_REDUCED_MOTION);
+  ipcMain.handle(IPC.SYSTEM_REDUCED_MOTION, wrapHandler(IPC.SYSTEM_REDUCED_MOTION, (_event: Electron.IpcMainInvokeEvent) =>
+    systemPrefersReducedMotion(process.platform, () => systemPreferences.getAnimationSettings())));
+
   // Windows "start on login" toggle (issue #460). The per-user Run registry
   // key is the source of truth; GET reads it, SET writes it and echoes back
   // the resulting state so an optimistic renderer can reconcile. Both are
@@ -198,6 +205,7 @@ export function registerShellHandlers(): () => void {
     ipcMain.removeHandler(IPC.SHELL_OPEN_PATH);
     ipcMain.removeHandler(IPC.APP_MEMORY);
     ipcMain.removeHandler(IPC.APP_CPU);
+    ipcMain.removeHandler(IPC.SYSTEM_REDUCED_MOTION);
     ipcMain.removeHandler(IPC.AUTOSTART_GET);
     ipcMain.removeHandler(IPC.AUTOSTART_SET);
     ipcMain.removeHandler(IPC.SHELL_DETECT_APPS);

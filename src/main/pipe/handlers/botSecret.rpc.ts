@@ -28,13 +28,14 @@ import {
   type BotSecretEntry,
   type LoginService,
 } from '../../../shared/botSecret';
-import { GENERAL_THREAD, parseThreadId, type RoomCard, type ThreadId } from '../../../shared/room';
+import { GENERAL_THREAD, dmThreadId, parseThreadId, type RoomCard, type ThreadId } from '../../../shared/room';
 import type { RpcContext } from '../../../shared/rpc';
 import { registerFactoryRpcModule, type FactoryHostDeps, type FactoryModuleHandle, type FactoryRouter } from '../../factory/factoryHost';
 import {
   getRoomWriter,
   isClientId,
   isRoomWorkspaceId,
+  namesOthersGroup,
   oneLine,
   resolveRoomPorts,
   runningWake,
@@ -47,6 +48,7 @@ import {
 import { SecretStore, electronSecretCrypto, getSecretStore, setSecretStore, type SecretCrypto } from '../../factory/secretStore';
 import { setSecretGrantSource } from '../../factory/secretGrants';
 import { isMainWindowSender } from '../../ipc/mainWindowSender';
+import { getConnectorStore, isConnectionKey } from '../../factory/connectorStore';
 
 export const SECRETS_FILENAME = 'secrets.json';
 const URL_MAX = 500;
@@ -78,6 +80,8 @@ export interface SecretHandlerDeps {
   store: () => SecretStore | null;
   writer: () => RoomWriter | null;
   ports: () => Partial<FactoryRoomPorts>;
+  /** Is this key a connection's (default: the running library and store)? */
+  isConnectionKey?: (name: string) => boolean;
 }
 
 function notStarted(): FactoryRefusal<'not_started'> {
@@ -94,6 +98,7 @@ function botCardPlace(
 ): { threadId: ThreadId; clientPostId?: string; replyTo?: string } | FactoryRefusal<'invalid'> {
   const named = p.threadId === undefined ? undefined : parseThreadId(p.threadId);
   if (named === null) return refusal('invalid', 'threadId is not a thread id');
+  if (namesOthersGroup(ports, bot, named)) return refusal('invalid', 'a bot posts in a group chat it is in');
   if (p.clientRequestId !== undefined && !isClientId(p.clientRequestId)) return refusal('invalid', 'clientRequestId is not a valid key');
   const threadId = named ?? runningWakeThread(ports, bot.botId) ?? GENERAL_THREAD;
   const wake = runningWake(ports, bot.botId);
@@ -147,7 +152,11 @@ export function handleSecretList(_raw: unknown, ctx: RpcContext | undefined, dep
   if (caller.kind === 'bot' && !botHasTool(caller.bot, 'secret_list')) return refusal('surface', 'this bot has no secret_list');
   const store = deps.store();
   if (!store) return notStarted();
-  const secrets = store.list().map((e) => ({ ...e, usable: store.has(e.name) }));
+  // A connection's keys are not a bot's to hand out: a bot's list leaves them out.
+  const owned = deps.isConnectionKey ?? ((n: string) => isConnectionKey(n));
+  const secrets = store.list()
+    .filter((e) => caller.kind !== 'bot' || !owned(e.name))
+    .map((e) => ({ ...e, usable: store.has(e.name) }));
   return { ok: true, secrets };
 }
 
@@ -231,6 +240,26 @@ export type OwnerSecretResult =
 
 export interface OwnerSecretDeps extends SecretHandlerDeps {
   now?: () => number;
+  /** The owner deleted a key a bot asked for or last used: one system card
+   *  in that bot's conversation. Best effort. */
+  noteDeleted?: (botId: string, name: string) => void;
+}
+
+/** The card a deleted key posts in a bot's conversation thread: its name
+ *  only, never its value, worded from its notice code (`secret.deleted`) in
+ *  the reader's language. */
+export function postSecretDeletedCard(writer: Pick<RoomWriter, 'append'> | null, workspaceId: string, threadId: ThreadId, name: string): boolean {
+  if (!writer) return false;
+  const card = writer.append({
+    workspaceId,
+    threadId,
+    kind: 'fact',
+    actor: { kind: 'system' },
+    title: `Key deleted: ${name}`,
+    body: 'The owner deleted it from the keys in Settings. Workers already running keep it until they stop, and the bot\'s next wake is told it is gone.',
+    notice: { code: 'secret.deleted', args: { name } },
+  });
+  return !!card;
 }
 
 /** An open request card of `kind` in `workspaceId`, or a refusal text. */
@@ -276,6 +305,10 @@ export function ownerSetSecret(raw: unknown, deps: OwnerSecretDeps): OwnerSecret
     if (found.refs?.secretName !== p.name) return { ok: false, code: 'invalid_card', message: 'the card asks for another name' };
     card = found;
   }
+  // A connection's key is replaced in its connection, never from a bot's card.
+  if (typeof p.name === 'string' && (deps.isConnectionKey ?? ((n: string) => isConnectionKey(n)))(p.name)) {
+    return { ok: false, code: 'connection_key', message: `${p.name} is a connection's key. Replace it in Settings › Bots › Connections.` };
+  }
   const r = store.set(p.name, p.value, {
     ...(card ? { label: card.title } : {}),
     ...(card && card.actor.kind === 'bot' ? { requestedBy: card.actor.botId } : {}),
@@ -297,7 +330,17 @@ export function ownerDeleteSecret(raw: unknown, deps: OwnerSecretDeps): { ok: bo
   const store = deps.store();
   const name = params(raw).name;
   if (!store || typeof name !== 'string') return { ok: false };
-  return { ok: store.delete(name) };
+  // Read before the delete: the bots that asked for it or used it last.
+  const bots = store.botsOf(name);
+  if (!store.delete(name)) return { ok: false };
+  for (const botId of bots) {
+    try {
+      deps.noteDeleted?.(botId, name);
+    } catch {
+      /* the bot's wake still says it is deleted */
+    }
+  }
+  return { ok: true };
 }
 
 export interface LoginCheckPorts {
@@ -364,9 +407,13 @@ export function registerSecretIpc(getWindow: () => BrowserWindow | null, deps: O
     const store = deps.store();
     if (!store) return { ok: false as const, code: 'not_started', message: 'The key store is not running yet.' };
     const refusalNow = store.storeRefusal();
+    const lib = getConnectorStore()?.list() ?? [];
     return {
       ok: true as const,
-      secrets: store.list().map((e) => ({ ...e, usable: store.has(e.name) })),
+      secrets: store.list().map((e) => {
+        const connections = lib.filter((c) => c.secrets.some((s) => s.secret === e.name)).map((c) => c.name);
+        return { ...e, usable: store.has(e.name), ...(connections.length > 0 ? { connections } : {}) };
+      }),
       ...(refusalNow ? { cannotStore: { code: refusalNow.code, message: refusalNow.message } } : {}),
     };
   }));
@@ -378,6 +425,21 @@ export function registerSecretIpc(getWindow: () => BrowserWindow | null, deps: O
   };
 }
 
+/** The deleted-key card, in the thread the owner last woke the bot in (its
+ *  1:1 otherwise), as an archived skill's (skill.rpc.ts). Best effort: a
+ *  failure is logged. */
+function noteDeletedInRoom(botId: string, name: string): void {
+  void (async () => {
+    const [{ getBotDirectory }, { latestOwnerWakeThread }] = await Promise.all([
+      import('../../factory/botStore'),
+      import('../../factory/wakeQueue'),
+    ]);
+    const bot = getBotDirectory()?.get(botId);
+    if (!bot) return;
+    postSecretDeletedCard(getRoomWriter(), bot.workspaceId, latestOwnerWakeThread(botId) ?? dmThreadId(botId), name);
+  })().catch((err) => console.warn(`[factory] key deleted card not posted: ${String(err)}`));
+}
+
 // ── Module ─────────────────────────────────────────────────────────────────
 
 export function createSecretModule(
@@ -385,7 +447,7 @@ export function createSecretModule(
   crypto: () => SecretCrypto = electronSecretCrypto,
 ): FactoryModuleHandle {
   let offIpc: (() => void) | null = null;
-  const handlerDeps: OwnerSecretDeps = { store: getSecretStore, writer: getRoomWriter, ports: resolveRoomPorts };
+  const handlerDeps: OwnerSecretDeps = { store: getSecretStore, writer: getRoomWriter, ports: resolveRoomPorts, noteDeleted: noteDeletedInRoom };
   return {
     start() {
       if (getSecretStore()) return;

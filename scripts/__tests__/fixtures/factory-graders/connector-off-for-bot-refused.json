@@ -1,0 +1,208 @@
+{
+  "pass": {
+    "schemaVersion": 1,
+    "scenario": "connector-off-for-bot-refused",
+    "run": 1,
+    "workspaceId": "ws-4cfccd10-598c-4ff2-8730-6c2b7db1e25c",
+    "botKeys": {
+      "lead": "bot-8d72339a"
+    },
+    "harnessErrors": [],
+    "sources": {
+      "facts": {
+        "present": true,
+        "ok": true,
+        "errors": 0
+      },
+      "wakes": {
+        "present": true,
+        "ok": true,
+        "errors": 0
+      },
+      "handoffs": {
+        "present": false,
+        "ok": false,
+        "errors": 0
+      },
+      "bots": {
+        "present": true,
+        "ok": true,
+        "errors": 0
+      },
+      "settings": {
+        "present": true,
+        "ok": true,
+        "errors": 0
+      },
+      "repoWatch": {
+        "present": false,
+        "ok": false,
+        "errors": 0
+      },
+      "ledger": {
+        "present": false,
+        "ok": false,
+        "errors": 0
+      },
+      "verdicts": {
+        "present": false,
+        "ok": false,
+        "errors": 0
+      },
+      "effects": {
+        "present": false,
+        "ok": false,
+        "errors": 0
+      },
+      "approvals": {
+        "present": false,
+        "ok": false,
+        "errors": 0
+      },
+      "approvalRules": {
+        "present": false,
+        "ok": false,
+        "errors": 0
+      },
+      "decisions": {
+        "present": false,
+        "ok": false,
+        "errors": 0
+      },
+      "routines": {
+        "present": false,
+        "ok": false,
+        "errors": 0
+      },
+      "cards": {
+        "present": true,
+        "ok": true,
+        "errors": 0
+      },
+      "workers": {
+        "present": false,
+        "ok": false,
+        "errors": 0
+      },
+      "ghCalls": {
+        "present": true,
+        "ok": true,
+        "errors": 0
+      }
+    },
+    "records": [
+      {
+        "label": "connector",
+        "result": {
+          "ok": true,
+          "connector": {
+            "name": "probe",
+            "purpose": "a probe server for the smoke",
+            "transport": "stdio",
+            "stdio": {
+              "command": "/usr/bin/true",
+              "args": [],
+              "env": {}
+            },
+            "secrets": [],
+            "tools": {
+              "mode": "listed",
+              "allowed": [
+                "probe_read"
+              ]
+            },
+            "scope": {
+              "kind": "all"
+            },
+            "offFor": [],
+            "enabled": true,
+            "id": "con-4ec88e9a",
+            "missingKeys": []
+          }
+        }
+      },
+      {
+        "label": "off for lead",
+        "result": {
+          "ok": true,
+          "connector": {
+            "name": "probe",
+            "purpose": "a probe server for the smoke",
+            "transport": "stdio",
+            "stdio": {
+              "command": "/usr/bin/true",
+              "args": [],
+              "env": {}
+            },
+            "secrets": [],
+            "tools": {
+              "mode": "listed",
+              "allowed": [
+                "probe_read"
+              ]
+            },
+            "scope": {
+              "kind": "all"
+            },
+            "offFor": [
+              "bot-8d72339a"
+            ],
+            "enabled": true,
+            "id": "con-4ec88e9a",
+            "missingKeys": []
+          }
+        }
+      }
+    ],
+    "ledger": null,
+    "workers": [],
+    "stub": {
+      "lead": [
+        {
+          "event": "tool",
+          "name": "fanout_start",
+          "ok": false,
+          "text": "{\n  \"ok\": false,\n  \"error\": {\n    \"code\": \"INVALID_ARGUMENT\",\n    \"message\": \"not one of your connections: probe (your wake prompt lists them)\"\n  }\n}"
+        }
+      ]
+    }
+  },
+  "fail": [
+    {
+      "why": "the fan-out was accepted",
+      "failing": [
+        "fanout_refused"
+      ],
+      "mutate": [
+        {
+          "op": "set",
+          "path": "stub.lead.0.text",
+          "value": "{\"ok\":true,\"status\":\"accepted\"}"
+        },
+        {
+          "op": "set",
+          "path": "stub.lead.0.ok",
+          "value": true
+        }
+      ]
+    },
+    {
+      "why": "a worker started anyway",
+      "failing": [
+        "nothing_started"
+      ],
+      "mutate": [
+        {
+          "op": "set",
+          "path": "workers",
+          "value": [
+            {
+              "event": "start",
+              "strict": true
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

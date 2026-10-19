@@ -5,7 +5,7 @@
  * wrapper itself (`useNotificationListener`) is a thin useEffect that
  * wires the factory to `window.electronAPI` and `useStore`; we exercise
  * the factory directly so vitest's `node` environment is sufficient (no
- * jsdom, no React testing harness — see useKeyboard.test.ts for the same
+ * jsdom, no React testing harness — see useKeyboard.os.test.ts for the same
  * pattern).
  *
  * Regression coverage promise (R1-R11): every behaviour that previously
@@ -350,6 +350,21 @@ describe('createNotificationHandler (R4-R10)', () => {
     expect(harness.spies.setPaneNotificationRing).not.toHaveBeenCalled();
   });
 
+  it('R8c: a muted pane silences its own notifications but not a ptyId-less one resolved onto it', () => {
+    harness.state.workspaces[0].rootPane = { ...harness.state.workspaces[0].rootPane, notificationsMuted: true } as typeof harness.state.workspaces[0]['rootPane'];
+    harness.state.activeWorkspaceId = 'ws-other';
+    handle('pty-1', { type: 'info', title: 't', body: 'b' });
+    expect(harness.spies.addNotification).toHaveBeenCalledTimes(1);
+    expect(harness.spies.pushToast).not.toHaveBeenCalled();
+    expect(harness.spies.playSound).not.toHaveBeenCalled();
+
+    // `wmux notify` with only a workspace hint lands on the active pane, which
+    // is the muted one — it still interrupts.
+    handle(null, { type: 'info', title: 't2', body: 'b2', workspaceId: 'ws-a' });
+    expect(harness.spies.addNotification).toHaveBeenCalledTimes(2);
+    expect(harness.spies.pushToast).toHaveBeenCalledTimes(1);
+  });
+
   // R9 — toggling toastEnabled at runtime affects subsequent notifications.
   it('R9: flipping toastEnabled between calls toggles pushToast dispatch', () => {
     harness.state.activeWorkspaceId = 'ws-other';
@@ -600,6 +615,38 @@ describe('focusNotificationTarget', () => {
     Object.assign(h.state, { appRoute: 'workspaces', setAppRoute });
     focusNotificationTarget(h.getState, { ptyId: 'pty-a', workspaceId: null });
     expect(setAppRoute).not.toHaveBeenCalled();
+  });
+
+  it('J-bots: on the Bots page a bot worker\'s jump opens the page\'s worker panel and stays', () => {
+    for (const payload of [{ ptyId: 'pty-b', workspaceId: null }, { surfaceId: 'sf-b' }, { ptyId: null, workspaceId: 'ws-b' }]) {
+      const h = makeJumpHarness({ workspaces: [wsA(), wsB()], activeWorkspaceId: 'ws-a' });
+      const setAppRoute = vi.fn();
+      const setBotsWorkerPanel = vi.fn();
+      Object.assign(h.state, { appRoute: 'bots', setAppRoute, setBotsWorkerPanel, fanoutOrigin: { 'ws-b': { kind: 'bot', botId: 'bot-0000000a' } } });
+      expect(focusNotificationTarget(h.getState, payload)).toBe(true);
+      expect(setAppRoute).not.toHaveBeenCalled();
+      expect(h.spies.setActiveWorkspace).not.toHaveBeenCalled();
+      expect(setBotsWorkerPanel).toHaveBeenCalledWith({ workspaceId: 'ws-b', conversationId: 'bot:bot-0000000a' });
+      // The target tab comes forward in that workspace, not as the active one.
+      if (payload.workspaceId !== 'ws-b') expect(h.spies.setActiveSurface).toHaveBeenCalledWith('pane-b', 'sf-b', 'ws-b');
+    }
+    // Its unread notifications are read and the ring cleared.
+    const read = makeJumpHarness({ workspaces: [wsA(), wsB()], activeWorkspaceId: 'ws-a', notifications: [{ id: 'n1', read: false, surfaceId: 'sf-b' }] });
+    Object.assign(read.state, { appRoute: 'bots', setBotsWorkerPanel: vi.fn(), fanoutOrigin: { 'ws-b': { kind: 'bot', botId: 'bot-0000000a' } } });
+    focusNotificationTarget(read.getState, { ptyId: 'pty-b' });
+    expect(read.spies.markRead).toHaveBeenCalledWith('n1');
+    expect(read.spies.setPaneNotificationRing).toHaveBeenCalledWith('pane-b', null);
+    // Not a bot's worker, or the panel's own Open in Workspaces: the page is left.
+    const h = makeJumpHarness({ workspaces: [wsA(), wsB()], activeWorkspaceId: 'ws-a' });
+    const setAppRoute = vi.fn();
+    const setBotsWorkerPanel = vi.fn();
+    Object.assign(h.state, { appRoute: 'bots', setAppRoute, setBotsWorkerPanel, fanoutOrigin: { 'ws-b': { kind: 'bot', botId: 'bot-0000000a' } } });
+    focusNotificationTarget(h.getState, { ptyId: 'pty-a', workspaceId: null });
+    expect(setAppRoute).toHaveBeenCalledWith('workspaces');
+    setAppRoute.mockClear();
+    focusNotificationTarget(h.getState, { workspaceId: 'ws-b' }, { reveal: true });
+    expect(setAppRoute).toHaveBeenCalledWith('workspaces');
+    expect(setBotsWorkerPanel).not.toHaveBeenCalled();
   });
 
   it('J3: unread notifications for the target surface are marked read and the ring cleared', () => {

@@ -78,6 +78,16 @@ export function isCoordinatorBot(profile: { template?: BotTemplate; role: BotRol
   return !!profile && botTemplate(profile) === 'coordinator';
 }
 
+/** The bot's new piece of work handed off from its own 1:1 or a group chat
+ *  opens a request thread there (main/factory/handoffRouter.ts), which the
+ *  conversation shows folded into one work card (shared/botsWork.ts): the
+ *  Coordinator, or a bot with the `lead` role (the first bot a name-only
+ *  create makes is one). It grants nothing; powers stay with
+ *  isCoordinatorBot. Pure. */
+export function delegatesFromConversation(profile: { template?: BotTemplate; role: BotRole } | null | undefined): boolean {
+  return isCoordinatorBot(profile) || profile?.role === 'lead';
+}
+
 /** Longest job text, in UTF-16 units after trimming. */
 export const BOT_JOB_MAX = 2000;
 
@@ -99,6 +109,31 @@ export type BotEngine =
   | { kind: 'acp'; command: string; args: string[] };
 
 export const DEFAULT_BOT_ENGINE: BotEngine = { kind: 'claude-sdk' };
+
+/** The models a NEW bot of a template starts on (main/factory/botStore.ts
+ *  `create`, when the caller names no engine or worker agent): `brain` is
+ *  the bot's own `claude-sdk` model (BotEngine.model), `worker` its fan-out
+ *  workers' (BotProfile.workerAgent). The ids are aliases from the model
+ *  catalog (shared/claudeModels.ts CLAUDE_MODEL_OPTIONS), so they follow the
+ *  installed claude CLI's newest model of that tier. A stored bot is never
+ *  moved onto these; a template absent here starts on the defaults. */
+export const TEMPLATE_MODEL_DEFAULTS: Readonly<Partial<Record<BotTemplate, { brain?: { model: string }; worker?: BotWorkerAgent }>>> = {
+  coordinator: { brain: { model: 'haiku' } },
+  issue: { brain: { model: 'haiku' } },
+  researcher: { brain: { model: 'haiku' } },
+  developer: { worker: { agent: 'claude', model: 'opus' } },
+  reviewer: { worker: { agent: 'claude', model: 'opus' } },
+};
+
+/** The agent CLI a bot's fan-out workers run on (shared/botWorkerAgent.ts):
+ *  a slug from fan-out's closed agent table that has a bot-worker guard, plus
+ *  an optional model and effort. Set only by the owner; absent = the bot
+ *  presets' own engine (Claude Code). */
+export interface BotWorkerAgent {
+  agent: string;
+  model?: string;
+  effort?: string;
+}
 
 export interface BotBudget {
   /** Turns per rolling hour. Absent = no hourly cap (never 0: a stored 0 is
@@ -147,21 +182,92 @@ export interface BotProfile {
    *  itself (job_set → bot.setJob, during a wake on the owner's words). */
   job?: string;
   engine: BotEngine;
+  /** What its fan-out workers run on (absent: the presets' own engine). */
+  workerAgent?: BotWorkerAgent;
   triggers: BotTrigger[];
   budget: BotBudget;
-  /** The repo the bot acts on (fan-out needs it: a bot has no pane cwd). */
-  repo?: { repoKey: string; repoPath: string };
+  /** The repo the bot acts on (fan-out needs it: a bot has no pane cwd).
+   *  `originPin`: origin's address as the repository config held it when
+   *  the folder was picked (shared/originPin.ts); a task with no pin of its
+   *  own is held to it. */
+  repo?: { repoKey: string; repoPath: string; originPin?: string };
   /** The owner's picture for the bot: a `data:image/png;base64,` URL of a
    *  square PNG at most BOT_AVATAR_PX wide, written only by main. Absent =
    *  the UI draws the name's initials. */
   avatar?: string;
+  /** Its identity colour slot, 0..BOT_IDENTITY_SLOTS-1 (its character):
+   *  given by main at create, the first slot free among its workspace's
+   *  bots in IDENTITY_SPREAD order, and kept for its life, so a relaunch or
+   *  another bot's removal never moves it. Absent only on a profile written
+   *  before slots were stored (the store fills it on load). */
+  hue?: number;
   enabled: boolean;
-  parked?: { reason: 'budget' | 'error' | 'human'; at: number };
+  /** `until`: an error park at the provider's usage limit, lifted by
+   *  itself then (an older build reads it as a plain error park). */
+  parked?: { reason: 'budget' | 'error' | 'human'; at: number; until?: number };
   createdAt: number;
   updatedAt: number;
 }
 
 export const BOT_ID_RE = /^bot-[0-9a-f]{8}$/;
+
+/** How many identity colour slots a bot's face takes from (the renderer's
+ *  BOT_IDENTITY_HUES). */
+export const BOT_IDENTITY_SLOTS = 8;
+
+/** The order a room's bots take the identity colours in: each next colour
+ *  far from those before it (teal, violet, magenta, blue, slate, …), never
+ *  the palette's neighbour, so a room's first five bots read apart. */
+export const IDENTITY_SPREAD = [5, 2, 4, 0, 7, 3, 6, 1] as const;
+
+export type IdentityBot = Pick<BotProfile, 'id' | 'createdAt' | 'workspaceId'>;
+
+/** Each bot's colour slot among `bots`, per room (workspace): oldest first
+ *  (then by id), a bot takes the first slot of IDENTITY_SPREAD that the
+ *  fewest bots of its room hold (`taken`: slots its room's bots already
+ *  hold) — two bots of a room never share one while the palette lasts. Pure. */
+export function identityHueIndexes(bots: readonly IdentityBot[], taken: readonly { workspaceId: string; index: number }[] = []): Map<string, number> {
+  const n = BOT_IDENTITY_SLOTS;
+  const order = [...bots].sort((a, b) => a.createdAt - b.createdAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  const used = new Map<string, number[]>();
+  const usedIn = (ws: string) => {
+    let u = used.get(ws);
+    if (!u) { u = new Array<number>(n).fill(0); used.set(ws, u); }
+    return u;
+  };
+  for (const t of taken) usedIn(t.workspaceId)[t.index] += 1;
+  const out = new Map<string, number>();
+  for (const b of order) {
+    if (out.has(b.id)) continue;
+    const u = usedIn(b.workspaceId);
+    const least = Math.min(...u);
+    const pick = IDENTITY_SPREAD.find((i) => u[i] === least) ?? IDENTITY_SPREAD[0];
+    u[pick] += 1;
+    out.set(b.id, pick);
+  }
+  return out;
+}
+
+/** Whether a value is an identity colour slot. */
+export function isIdentitySlot(v: unknown): v is number {
+  return Number.isInteger(v) && (v as number) >= 0 && (v as number) < BOT_IDENTITY_SLOTS;
+}
+
+/** What is kept of a removed bot (bots.json `removed`): enough for the cards
+ *  it wrote to keep its name and face, marked as removed. */
+export interface RemovedBot {
+  id: string;
+  workspaceId: string;
+  role: BotRole;
+  template?: BotTemplate;
+  name: string;
+  /** Its picture, when it had one (BotProfile.avatar). */
+  avatar?: string;
+  /** Its identity colour slot, 0..BOT_IDENTITY_SLOTS-1, when the remover
+   *  knew it (the Bots page does). */
+  hue?: number;
+  removedAt: number;
+}
 
 /** Edge of the stored avatar PNG, in pixels. */
 export const BOT_AVATAR_PX = 128;
@@ -169,13 +275,23 @@ export const BOT_AVATAR_PX = 128;
 /** Longest bot name, in UTF-16 units after trimming. */
 export const BOT_NAME_MAX = 64;
 
-/** A name the bot store accepts on create / update: trimmed, 1..BOT_NAME_MAX
- *  long, no control or line-separator characters. Undefined otherwise. */
-export function normalizeBotName(raw: unknown): string | undefined {
+/** A stored bot name read back: trimmed, 1..BOT_NAME_MAX long, no control
+ *  or line-separator characters. Looser than normalizeBotName, so a name
+ *  stored before its path-separator rule still loads. Undefined otherwise. */
+export function storedBotName(raw: unknown): string | undefined {
   if (typeof raw !== 'string') return undefined;
   const name = raw.trim();
   if (name.length === 0 || name.length > BOT_NAME_MAX) return undefined;
   return /[\p{Cc}\u2028\u2029]/u.test(name) ? undefined : name;
+}
+
+/** A name the bot store accepts on create / update: a storedBotName with no
+ *  path separator (`/`, `\`), so a pasted command or path is not taken for
+ *  a name. Letters of any script, spaces and other punctuation are fine.
+ *  Undefined otherwise. */
+export function normalizeBotName(raw: unknown): string | undefined {
+  const name = storedBotName(raw);
+  return name && !/[/\\]/.test(name) ? name : undefined;
 }
 
 /** What a bot token resolves to. */
@@ -202,11 +318,67 @@ export interface BotStatus {
   botId: string;
   presence: BotPresence;
   sessionId?: string;
-  currentTurn?: { wakeId: string; startedAt: number };
+  /** `threadId`: the room thread the running turn answers in (absent: none,
+   *  or `general`), so a busy line shows in that conversation only. */
+  currentTurn?: { wakeId: string; startedAt: number; threadId?: string };
   queueDepth: number;
   /** turnsHour is null when the bot has no hourly cap. */
   budgetLeft: { turnsHour: number | null; turnsDay: number; workerHoursDay: number };
+  /** What the profile's Today block shows beside budgetLeft (absent from an
+   *  older build). */
+  usage?: BotStatusUsage;
+  /** The subscription usage limits of the Claude account the bot's brain
+   *  runs on, from the usage readings wmux already holds (absent: another
+   *  engine, nothing read yet, or the caller is a bot). */
+  quota?: BotQuota;
   lastError?: { message: string; at: number };
+}
+
+/** One usage-limit window of a bot's account. */
+export interface BotQuotaWindow {
+  /** Percent used, 0-100. */
+  pct: number;
+  /** When the window resets (Unix ms); absent when not reported. */
+  resetsAt?: number;
+}
+
+/** A bot's account and its usage limits (main/factory/botQuota.ts). */
+export interface BotQuota {
+  /** The registered account's name; null: the default Claude login. */
+  accountName: string | null;
+  /** The 5-hour window; absent when it was not read or has reset since. */
+  session?: BotQuotaWindow;
+  /** The weekly window; absent when it was not read or has reset since. */
+  weekly?: BotQuotaWindow;
+}
+
+/** A bot's use of its limits now (main/factory/budget.ts). */
+export interface BotStatusUsage {
+  /** Turns started in the last hour; null when the bot has no hourly cap. */
+  turnsHour: number | null;
+  turnsDay: number;
+  /** Worker time in the last day, in hours (may pass the cap: a running
+   *  worker counts up to now). */
+  workerHoursDay: number;
+  /** When out of turns: when a turn is allowed again (absent: never, a cap
+   *  of 0). */
+  nextTurnAt?: number;
+  /** When out of worker time and no worker of its runs: when its worker
+   *  time drops below the cap. */
+  workerTimeAt?: number;
+  /** Its workers running now, as the fan-out's cap counts them. */
+  workersRunning?: number;
+  /** Its new workers waiting for an agent slot (they count against its cap). */
+  workersWaiting?: number;
+  /** Bot workers running factory-wide (cap WAKE_LIMITS.GLOBAL_CONCURRENT_WORKERS). */
+  factoryWorkers?: number;
+  /** The factory's agent slots (Settings › Bots). */
+  slots?: { inUse: number; cap: number };
+  /** The engine's cost estimate for the bot's turns in the last day and in
+   *  all, in USD at API prices (absent: none reported). A subscription is
+   *  not charged this; it only sizes the use. */
+  costUsdDay?: number;
+  costUsdTotal?: number;
 }
 
 export const BOT_RPC = {
@@ -279,13 +451,20 @@ export interface BotSetJobParams {
  *    remembered rules changed (shared/botApproval.ts);
  *  - `routines-changed`: a bot's routines changed (shared/botRoutine.ts);
  *  - `secrets-changed`: the stored secret names or their use changed
- *    (shared/botSecret.ts). */
+ *    (shared/botSecret.ts);
+ *  - `connectors-changed`: the connection library changed
+ *    (shared/botConnector.ts);
+ *  - `groups-changed`: the owner's group chats changed (shared/botGroup.ts);
+ *  - `skills-changed`: a bot's skills changed (shared/botSkill.ts). */
 export type BotEventPayload =
   | { type: 'bot.status'; status: BotStatus }
   | { type: 'bots-changed' }
   | { type: 'approvals-changed'; workspaceId?: string }
   | { type: 'routines-changed'; botId?: string }
-  | { type: 'secrets-changed' };
+  | { type: 'secrets-changed' }
+  | { type: 'connectors-changed' }
+  | { type: 'groups-changed' }
+  | { type: 'skills-changed'; botId?: string };
 
 export const BOT_EVENT = 'bot.event';
 

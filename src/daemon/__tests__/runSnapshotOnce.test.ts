@@ -5,7 +5,7 @@ import path from 'node:path';
 import os from 'node:os';
 
 // Mock node-pty so createSession does not spawn real processes.
-// Mirrors the pattern in DaemonSessionManager.test.ts.
+// Mirrors the pattern in DaemonSessionManager.os.test.ts.
 class MockPty extends EventEmitter {
   pid = 12345;
   onData() { return { dispose: () => { /* noop */ } }; }

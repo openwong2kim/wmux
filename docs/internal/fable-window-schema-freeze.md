@@ -81,7 +81,8 @@ the existing DaemonEvent broadcast channel:
 
 ```ts
 // shared/rpc.ts DaemonEvent additions (D6–7)
-{ type: 'context.git',   sessionId, data: { branch: string | null; isWorktree: boolean } }
+{ type: 'context.git',   sessionId, data: { branch: string | null; isWorktree: boolean; absent?: true } }
+// absent (additive): branch is null because the cwd is outside a repo and watched — a known "no branch"
 { type: 'context.ports', sessionId, data: { ports: Array<{ port: number; pid: number }> } }
 // cwd already exists: { type: 'cwd.changed', sessionId, data: string }
 ```

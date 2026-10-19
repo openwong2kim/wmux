@@ -47,7 +47,8 @@ const HOOK_TIMEOUT_MS = 2000; // hard cap so we never slow Claude
 //   0.3.0 — suffix-isolated lifecycle routing and bridge state.
 //   0.5.0 — `--context` mode (HQ brain UserPromptSubmit additionalContext).
 //   0.6.0 — `--context` mode honors a `block` (exit 2 discards the prompt).
-const BRIDGE_VERSION = '0.6.0';
+//   0.7.0 — `Notification` (permission_prompt only) → agent.awaiting_input.
+const BRIDGE_VERSION = '0.7.0';
 
 // A2 (2026-05-29 user dogfood: 8 connect-errors during a brief main-process
 // restart / handler-swap window): retry a TRANSIENT connect failure a few
@@ -103,7 +104,15 @@ const HOOK_TO_KIND = {
   // so the pane reads "needs you" even when the screen detector misses the
   // row. Exit 0 with empty stdout is "no decision": the dialog stays up and the
   // human answers it. Nothing on this path may ever write stdout.
+  // The daemon holds it as TENTATIVE: Claude fires it for dialogs nobody ever
+  // sees too (decided by another hook, auto-denied, answered at once).
   PermissionRequest: 'agent.awaiting_input',
+  // Claude Code's notification. Only `notification_type: 'permission_prompt'`
+  // is forwarded (main() drops every other type): a permission prompt that has
+  // waited, unanswered, for about six seconds. That is the daemon's firm "needs
+  // you" for a permission dialog. Registered at matcher `permission_prompt`, so
+  // no other type spawns this bridge in the first place.
+  Notification: 'agent.awaiting_input',
 };
 
 // Determine the signal kind for a PostToolUse hook. AskUserQuestion completing
@@ -524,6 +533,30 @@ function extractPermissionModeFromTranscript(transcriptPath) {
     logEvent('transcript-permission-read-error', { error: String(err) });
     return null;
   }
+}
+
+// The permission mode a hook captures for the resume binding. On SessionStart,
+// Stop and SubagentStop: the transcript tail first (above), then the
+// `permission_mode` Claude Code puts on the payload itself. The fallback matters
+// when the transcript cannot be opened from here: a WSL agent's hook runs this
+// bridge in the Windows runtime (hook.sh), where the Linux `transcript_path`
+// does not exist, so the tail read always missed and a resumed WSL worker lost
+// its mode (#2270). Measured: Stop carries the field; SessionStart has not, so
+// it is taken there only when present. On UserPromptSubmit: the payload alone,
+// the mode of the turn starting now (the transcript tail is the last turn's).
+// That turn start is what records the mode of a worker whose task ends before
+// its first Stop. Never from a SubagentStop payload: its mode can be the
+// subagent's own (an agent definition may set one), and the binding's sticky
+// merge would carry it onto the lead's resume.
+function permissionModeForHook(hookName, transcriptPath, payload) {
+  const reported = hookName === 'SessionStart' || hookName === 'Stop' || hookName === 'UserPromptSubmit'
+    ? payload?.permission_mode
+    : undefined;
+  const fromPayload = typeof reported === 'string' && VALID_PERMISSION_MODES.has(reported) ? reported : undefined;
+  if (hookName === 'UserPromptSubmit') return fromPayload;
+  if (hookName !== 'SessionStart' && hookName !== 'Stop' && hookName !== 'SubagentStop') return undefined;
+  const fromTranscript = transcriptPath ? extractPermissionModeFromTranscript(transcriptPath) : null;
+  return fromTranscript ?? fromPayload;
 }
 
 // Leftover background-work mining for Stop-class envelopes.
@@ -1078,10 +1111,12 @@ async function main() {
   // waited on. A headless run nested in a pane inherits WMUX_PTY_ID, so it
   // would mark the HOST pane "needs you". Only an interactive session can be
   // blocked on a human.
-  if (hookName === 'PermissionRequest') {
+  // The permission Notification follows the same rule: only an interactive
+  // session has a prompt on a screen.
+  if (hookName === 'PermissionRequest' || hookName === 'Notification') {
     const entrypoint = process.env.CLAUDE_CODE_ENTRYPOINT;
     if (!entrypoint || !INTERACTIVE_ENTRYPOINTS.has(entrypoint)) {
-      logEvent('permission-request-skipped', { reason: 'headless', entrypoint: entrypoint ?? null });
+      logEvent(hookName === 'Notification' ? 'notification-skipped' : 'permission-request-skipped', { reason: 'headless', entrypoint: entrypoint ?? null });
       return;
     }
   }
@@ -1118,6 +1153,13 @@ async function main() {
   // Empty stdin is allowed for SessionStart per Claude Code spec.
   if (payload === null && hookName !== 'SessionStart') {
     logEvent('empty-stdin', { hook: hookName });
+    return;
+  }
+  // A notification other than a waiting permission prompt (idle, auth,
+  // elicitation…) says nothing about a permission dialog. Keyed on the type
+  // alone, never on the message text.
+  if (hookName === 'Notification' && !(payload && payload.notification_type === 'permission_prompt')) {
+    logEvent('skip-notification', { type: payload && typeof payload.notification_type === 'string' ? payload.notification_type : null });
     return;
   }
   if (entrypointClass === 'unknown' && payload) {
@@ -1232,18 +1274,14 @@ async function main() {
     leftoverWork = countLeftoverBackgroundTasks(transcriptPath);
   }
 
-  // X6 ③: capture the permission mode LIVE — on SessionStart and on every
-  // Stop/SubagentStop while the session is still alive. This is deliberately
+  // X6 ③: capture the permission mode LIVE — on SessionStart, on every
+  // UserPromptSubmit and on every Stop/SubagentStop while the session is still alive. This is deliberately
   // NOT a teardown/exit hook: a real reboot is SIGKILL, so no exit hook fires;
   // the resume binding must already be persisted from the last live hook (the
   // X6 ② SIGKILL-survival lesson). On SessionStart the transcript may not exist
   // yet (F9 — it appears on the first turn), so this is null until the first
   // turn lands; the next Stop fills it in.
-  let permissionMode;
-  const isSessionStart = hookName === 'SessionStart';
-  if ((isSessionStart || isStopClass) && transcriptPath) {
-    permissionMode = extractPermissionModeFromTranscript(transcriptPath) ?? undefined;
-  }
+  const permissionMode = permissionModeForHook(hookName, transcriptPath, payload);
 
   // Env-first routing identifiers. When Claude Code runs inside a wmux
   // pane, the PTYManager injects WMUX_WORKSPACE_ID / WMUX_SURFACE_ID into
@@ -1425,6 +1463,7 @@ async function main() {
   // (ptyId) + a resumable id. A SessionStart whose transcript doesn't exist yet
   // still spools; a later Stop's spool overwrites it with the #12235-safe id.
   const isLifecycle = envelope.kind === 'agent.session_start'
+    || envelope.kind === 'agent.user_prompt_submit'
     || envelope.kind === 'agent.stop'
     || envelope.kind === 'agent.subagent_stop';
   if (!innerOk && isLifecycle && envPtyId && envelope.agentSessionId) {

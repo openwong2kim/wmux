@@ -57,7 +57,7 @@ Each entry uses exec form (`"exec": "node"` plus `"args"`), which Copilot starts
 without a shell. A shell-form command (`node "<path>" <flavour> <Event>`) starts
 with a bare `node` because PowerShell cannot run a line that begins with a quoted
 token (#1882). Both forms are tested under PowerShell 5.1, cmd and Git Bash in
-`__tests__/hooksBridgeShells.test.ts`.
+`__tests__/hooksBridgeShells.os.test.ts`.
 
 ## Compatibility by CLI
 

@@ -9,6 +9,7 @@ import { isProvisionalCapture, mergeResumeBinding, type ResumeBinding } from '..
 import type { AgentSignal } from '../../../shared/hooks/signal-types';
 import { TranscriptDiscovery } from '../TranscriptDiscovery';
 import { admitCodexCapture, gateCodexStop, HELD_BACK_SEARCH_MS } from '../codexCapture';
+import { deliberateSleep } from '../../../test-utils/waitFor';
 
 const A = '01a0e700-0000-7000-8000-00000000000a';
 const B = '01a0e700-0000-7000-8000-00000000000b';
@@ -147,7 +148,7 @@ describe('gateCodexStop', () => {
     expect(now).toBeNull();
     expect(calls).toEqual([]);
     await until(() => calls.length > 0);
-    await new Promise((r) => setTimeout(r, 30));
+    await deliberateSleep(30, 'negative: exactly these calls, no later ones');
     expect(calls).toEqual([{ kind: 'drop' }]);
   });
 
@@ -156,7 +157,7 @@ describe('gateCodexStop', () => {
     expect(now).toBeNull();
     const fileB = rollout(B);
     await until(() => calls.length > 0);
-    await new Promise((r) => setTimeout(r, 80));
+    await deliberateSleep(80, 'negative: exactly these calls, no later ones');
     expect(calls).toEqual([{ kind: 'admit', path: fileB }]);
   });
 
@@ -185,7 +186,7 @@ describe('gateCodexStop', () => {
   // #1765 — the bridge's own rollout lookup, from Codex's environment.
   const held = async (calls: Array<{ kind: string }>) => {
     await until(() => calls.length > 0);
-    await new Promise((r) => setTimeout(r, 30));
+    await deliberateSleep(30, 'negative: exactly these calls, no later ones');
   };
 
   it('a WSL pane ignores the verdict: the managed WSL hook already drops title threads', () => {

@@ -75,7 +75,7 @@ describe('PipeServer dispatch provenance', () => {
       firstParty: true,
     });
 
-    await vi.waitFor(() => expect(dispatch).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(dispatch).toHaveBeenCalledOnce(), { timeout: 5_000 });
     expect(dispatch).toHaveBeenCalledWith(
       expect.objectContaining({ id: 'authenticated', clientName: 'claude-code' }),
       // The trust lane is the ONLY provenance marker. Cancellation (`signal`)

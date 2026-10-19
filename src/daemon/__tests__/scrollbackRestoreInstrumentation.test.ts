@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import fs from 'node:fs';
 import path from 'node:path';
+import { readSourceText } from '../../test-utils/sourceText';
 
 // Source-level invariants for the scrollback-restore latency / loss
 // instrumentation added 2026-05-17 in response to user dogfood: after a
@@ -22,8 +22,8 @@ import path from 'node:path';
 describe('scrollback restore — chain instrumentation', () => {
   const daemonIndexPath = path.join(__dirname, '..', 'index.ts');
   const sessionPipePath = path.join(__dirname, '..', 'SessionPipe.ts');
-  const daemonIndexSrc = fs.readFileSync(daemonIndexPath, 'utf-8');
-  const sessionPipeSrc = fs.readFileSync(sessionPipePath, 'utf-8');
+  const daemonIndexSrc = readSourceText(daemonIndexPath);
+  const sessionPipeSrc = readSourceText(sessionPipePath);
 
   it('logs recovery .buf bytes adjacent to the read so the size matches what becomes scrollbackData', () => {
     // The log must come AFTER the readFileSync that produced scrollbackData

@@ -31,6 +31,7 @@ const SOURCES = [
   'MoaTab.tsx',
   'FactoryTab.tsx',
   'BotSecretsSection.tsx',
+  'BotConnectionsSection.tsx',
 ];
 
 function anchoredIds(): Set<string> {

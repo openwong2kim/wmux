@@ -15,6 +15,8 @@ vi.mock('../../../hooks/useTerminal', () => ({
 }));
 
 import { useStore } from '../../../stores';
+import { setLocale } from '../../../i18n';
+import { en } from '../../../i18n/locales/en';
 import WorktaskCleanupView from '../WorktaskCleanupView';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -155,6 +157,63 @@ describe('WorktaskCleanupView', () => {
     expect(removePhone.mock.calls).toEqual([['/wt/abc123def456/phone-x', false], ['/wt/abc123def456/phone-x', true]]);
     expect(useStore.getState().toasts.map((toast) => toast.message)).toEqual(['The worktree is still there (locked). Try again, or remove it with git.']);
     confirm.mockRestore();
+  });
+
+  describe('detail line', () => {
+    const scanReturns = (entries: unknown[]) => {
+      const api = (window as unknown as { electronAPI: { workTask: Record<string, unknown> } }).electronAPI.workTask;
+      api.scan = vi.fn(async () => ({ ok: true, scannedRoot: '/wt', entries }));
+    };
+    afterEach(() => setLocale('en'));
+
+    it('shows the localized text for a known detail code, not the raw detail', async () => {
+      scanReturns([
+        { category: 'orphan-dir', worktreePath: '/wt/abc/bare', detailCode: 'orphan-unlinked', detail: 'RAW-FROM-MAIN' },
+      ]);
+      act(() => root.render(createElement(WorktaskCleanupView)));
+      await flush();
+      expect(container.textContent).toContain('No task or task record links to it — check it, then delete it.');
+      expect(container.textContent).not.toContain('RAW-FROM-MAIN');
+    });
+
+    // Each code shows its own situation's line (a swapped mapping fails here).
+    it.each([
+      ['unmaterialized', 'worktask.cleanup.detail.unmaterialized'],
+      ['preserved', 'worktask.cleanup.detail.preserved'],
+      ['phone', 'worktask.cleanup.detail.phone'],
+      ['orphan-ended', 'worktask.cleanup.detail.orphanEnded'],
+      ['orphan-unlinked', 'worktask.cleanup.detail.orphanUnlinked'],
+      ['orphan-meta', 'worktask.cleanup.detail.orphanMeta'],
+      ['disk-missing', 'worktask.cleanup.detail.diskMissing'],
+    ] as const)('detail code %s shows %s', async (code, key) => {
+      scanReturns([{ category: 'orphan-dir', worktreePath: '/wt/abc/x', detailCode: code, detail: 'RAW-FROM-MAIN' }]);
+      act(() => root.render(createElement(WorktaskCleanupView)));
+      await flush();
+      expect(container.textContent).toContain(en[key]);
+      expect(container.textContent).not.toContain('RAW-FROM-MAIN');
+    });
+
+    it('follows the UI language for the detail code', async () => {
+      setLocale('de');
+      scanReturns([
+        { category: 'disk-missing', taskId: 'task-9', title: 'Gone', worktreePath: '/wt/abc/gone', detailCode: 'disk-missing', detail: 'RAW-FROM-MAIN' },
+      ]);
+      act(() => root.render(createElement(WorktaskCleanupView)));
+      await flush();
+      expect(container.textContent).toContain('Der Worktree fehlt auf der Festplatte');
+      expect(container.textContent).not.toContain('RAW-FROM-MAIN');
+    });
+
+    it('falls back to the raw detail when the code is unknown or absent (another main version)', async () => {
+      scanReturns([
+        { category: 'orphan-dir', worktreePath: '/wt/abc/new', detailCode: 'from-a-newer-main', detail: 'Detail from a newer main' },
+        { category: 'orphan-dir', worktreePath: '/wt/abc/old', detail: 'Detail from an older main' },
+      ]);
+      act(() => root.render(createElement(WorktaskCleanupView)));
+      await flush();
+      expect(container.textContent).toContain('Detail from a newer main');
+      expect(container.textContent).toContain('Detail from an older main');
+    });
   });
 
   it('Commit & close leaves focus on the terminal holding the prepared line', async () => {

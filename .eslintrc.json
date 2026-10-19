@@ -31,6 +31,19 @@
       }
     }
   },
+  "rules": {
+    "no-restricted-syntax": [
+      "error",
+      {
+        "selector": "CallExpression[callee.object.name='vi'][callee.property.name=/^wait(For|Until)$/][arguments.length<2]",
+        "message": "vi.waitFor/vi.waitUntil must pass an explicit timeout: the 1s default flakes on the loaded Windows CI runner, where one real git or child-process spawn takes 100-200ms. Use { timeout: 10_000 } when waiting on real git/fs/processes, { timeout: 5_000 } when waiting on in-memory state."
+      },
+      {
+        "selector": "CallExpression[callee.object.name='vi'][callee.property.name=/^wait(For|Until)$/] > ObjectExpression.arguments:nth-child(2):not(:has(> Property[key.name='timeout'])):not(:has(> Property[key.value='timeout'])):not(:has(> SpreadElement))",
+        "message": "vi.waitFor/vi.waitUntil must pass an explicit timeout: the 1s default flakes on the loaded Windows CI runner, where one real git or child-process spawn takes 100-200ms. Use { timeout: 10_000 } when waiting on real git/fs/processes, { timeout: 5_000 } when waiting on in-memory state."
+      }
+    ]
+  },
   "overrides": [
     {
       "files": [
@@ -82,6 +95,14 @@
           {
             "selector": "Property[key.value='fontSize'] > Literal[value=/^(?:8|9|10\\.5|11\\.5|12\\.5)(?:px)?$/]",
             "message": "Off-scale text size. DESIGN.md Typography defines a 4-step ramp (10px section labels / 11px meta+tool lines / 13px body / 14px titles); 8, 9, 10.5, 11.5 and 12.5 are not steps on it. Use the nearest step (8|9 -> 10, 10.5 -> 10 for section labels or 11 for meta lines, 11.5 -> 11, 12.5 -> 13). src/renderer/components/Terminal/** is exempt: the terminal owns its own scale."
+          },
+          {
+            "selector": "CallExpression[callee.object.name='vi'][callee.property.name=/^wait(For|Until)$/][arguments.length<2]",
+            "message": "vi.waitFor/vi.waitUntil must pass an explicit timeout: the 1s default flakes on the loaded Windows CI runner, where one real git or child-process spawn takes 100-200ms. Use { timeout: 10_000 } when waiting on real git/fs/processes, { timeout: 5_000 } when waiting on in-memory state."
+          },
+          {
+            "selector": "CallExpression[callee.object.name='vi'][callee.property.name=/^wait(For|Until)$/] > ObjectExpression.arguments:nth-child(2):not(:has(> Property[key.name='timeout'])):not(:has(> Property[key.value='timeout'])):not(:has(> SpreadElement))",
+            "message": "vi.waitFor/vi.waitUntil must pass an explicit timeout: the 1s default flakes on the loaded Windows CI runner, where one real git or child-process spawn takes 100-200ms. Use { timeout: 10_000 } when waiting on real git/fs/processes, { timeout: 5_000 } when waiting on in-memory state."
           }
         ]
       }
@@ -112,6 +133,37 @@
             "ignore": [
               "^@modelcontextprotocol/sdk/(?:client/index|inMemory)\\.js$"
             ]
+          }
+        ]
+      }
+    },
+    {
+      "files": [
+        "**/__tests__/**",
+        "**/*.test.*"
+      ],
+      "rules": {
+        "no-restricted-syntax": [
+          "error",
+          {
+            "selector": "CallExpression[callee.object.name='vi'][callee.property.name=/^wait(For|Until)$/][arguments.length<2]",
+            "message": "vi.waitFor/vi.waitUntil must pass an explicit timeout: the 1s default flakes on the loaded Windows CI runner, where one real git or child-process spawn takes 100-200ms. Use { timeout: 10_000 } when waiting on real git/fs/processes, { timeout: 5_000 } when waiting on in-memory state."
+          },
+          {
+            "selector": "CallExpression[callee.object.name='vi'][callee.property.name=/^wait(For|Until)$/] > ObjectExpression.arguments:nth-child(2):not(:has(> Property[key.name='timeout'])):not(:has(> Property[key.value='timeout'])):not(:has(> SpreadElement))",
+            "message": "vi.waitFor/vi.waitUntil must pass an explicit timeout: the 1s default flakes on the loaded Windows CI runner, where one real git or child-process spawn takes 100-200ms. Use { timeout: 10_000 } when waiting on real git/fs/processes, { timeout: 5_000 } when waiting on in-memory state."
+          },
+          {
+            "selector": "AwaitExpression:not(:matches(WhileStatement, DoWhileStatement, ForStatement, ForInStatement, ForOfStatement) > ExpressionStatement > AwaitExpression, :matches(WhileStatement, DoWhileStatement, ForStatement, ForInStatement, ForOfStatement) > BlockStatement > ExpressionStatement > AwaitExpression, :matches(WhileStatement, DoWhileStatement, ForStatement, ForInStatement, ForOfStatement) > BlockStatement > IfStatement > ExpressionStatement > AwaitExpression, :matches(WhileStatement, DoWhileStatement, ForStatement, ForInStatement, ForOfStatement) > BlockStatement > IfStatement > BlockStatement > ExpressionStatement > AwaitExpression, :matches(WhileStatement, DoWhileStatement, ForStatement, ForInStatement, ForOfStatement) > BlockStatement > TryStatement > CatchClause > BlockStatement > ExpressionStatement > AwaitExpression) > NewExpression[callee.name='Promise'] > :matches(ArrowFunctionExpression, FunctionExpression) > CallExpression.body[callee.name='setTimeout'][arguments.length=2]:not([arguments.1.value=0])",
+            "message": "Fixed sleep in a test. It guesses how long something else takes, and on the loaded Windows CI runner the guess loses. Waiting until something happens: await vi.waitFor(() => expect(...), { timeout: 10_000 }) (5_000 for in-memory state). Letting a timer elapse: vi.useFakeTimers() + await vi.advanceTimersByTimeAsync(ms). A genuine negative check (\"still nothing after 200ms\"), a real timer fake timers cannot drive, or latency inside a stub: await deliberateSleep(ms, 'why') from src/test-utils/waitFor. Not flagged: setTimeout(r, 0) yields, and a sleep that is the poll interval of a loop."
+          },
+          {
+            "selector": "AwaitExpression:not(:matches(WhileStatement, DoWhileStatement, ForStatement, ForInStatement, ForOfStatement) > ExpressionStatement > AwaitExpression, :matches(WhileStatement, DoWhileStatement, ForStatement, ForInStatement, ForOfStatement) > BlockStatement > ExpressionStatement > AwaitExpression, :matches(WhileStatement, DoWhileStatement, ForStatement, ForInStatement, ForOfStatement) > BlockStatement > IfStatement > ExpressionStatement > AwaitExpression, :matches(WhileStatement, DoWhileStatement, ForStatement, ForInStatement, ForOfStatement) > BlockStatement > IfStatement > BlockStatement > ExpressionStatement > AwaitExpression, :matches(WhileStatement, DoWhileStatement, ForStatement, ForInStatement, ForOfStatement) > BlockStatement > TryStatement > CatchClause > BlockStatement > ExpressionStatement > AwaitExpression) > NewExpression[callee.name='Promise'] > :matches(ArrowFunctionExpression, FunctionExpression) > BlockStatement[body.length=1] > ExpressionStatement > CallExpression.expression[callee.name='setTimeout'][arguments.length=2]:not([arguments.1.value=0])",
+            "message": "Fixed sleep in a test. It guesses how long something else takes, and on the loaded Windows CI runner the guess loses. Waiting until something happens: await vi.waitFor(() => expect(...), { timeout: 10_000 }) (5_000 for in-memory state). Letting a timer elapse: vi.useFakeTimers() + await vi.advanceTimersByTimeAsync(ms). A genuine negative check (\"still nothing after 200ms\"), a real timer fake timers cannot drive, or latency inside a stub: await deliberateSleep(ms, 'why') from src/test-utils/waitFor. Not flagged: setTimeout(r, 0) yields, and a sleep that is the poll interval of a loop."
+          },
+          {
+            "selector": "AwaitExpression:not(:matches(WhileStatement, DoWhileStatement, ForStatement, ForInStatement, ForOfStatement) > ExpressionStatement > AwaitExpression, :matches(WhileStatement, DoWhileStatement, ForStatement, ForInStatement, ForOfStatement) > BlockStatement > ExpressionStatement > AwaitExpression, :matches(WhileStatement, DoWhileStatement, ForStatement, ForInStatement, ForOfStatement) > BlockStatement > IfStatement > ExpressionStatement > AwaitExpression, :matches(WhileStatement, DoWhileStatement, ForStatement, ForInStatement, ForOfStatement) > BlockStatement > IfStatement > BlockStatement > ExpressionStatement > AwaitExpression, :matches(WhileStatement, DoWhileStatement, ForStatement, ForInStatement, ForOfStatement) > BlockStatement > TryStatement > CatchClause > BlockStatement > ExpressionStatement > AwaitExpression) > CallExpression.argument[callee.name=/^(?:sleep|delay|wait)$/][arguments.length=1]:not([arguments.0.value=0]):not([arguments.0.type='ObjectExpression'])",
+            "message": "Fixed sleep in a test. It guesses how long something else takes, and on the loaded Windows CI runner the guess loses. Waiting until something happens: await vi.waitFor(() => expect(...), { timeout: 10_000 }) (5_000 for in-memory state). Letting a timer elapse: vi.useFakeTimers() + await vi.advanceTimersByTimeAsync(ms). A genuine negative check (\"still nothing after 200ms\"), a real timer fake timers cannot drive, or latency inside a stub: await deliberateSleep(ms, 'why') from src/test-utils/waitFor. Not flagged: setTimeout(r, 0) yields, and a sleep that is the poll interval of a loop."
           }
         ]
       }

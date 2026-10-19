@@ -126,8 +126,7 @@ describe('idle reclaim', () => {
     // when it STARTS; reclaiming one mid-flight would destroy state the caller
     // is actively using.
     const inFlight = session.run('await new Promise((r) => setTimeout(r, 1500)); "done"', 10_000);
-    await new Promise((r) => setTimeout(r, 200));
-    expect(session.busy).toBe(true);
+    await vi.waitFor(() => expect(session.busy).toBe(true), { timeout: 10_000 });
     expect(registry.reclaimIdle(Date.now() + 10 * IDLE_TIMEOUT_MS)).toBe(0);
     expect(session.dead).toBe(false);
 
@@ -212,8 +211,7 @@ describe('repl_sessions idle reporting', () => {
 
     // A busy session has no countdown to report — the sweep does not touch it.
     const inFlight = session.run('await new Promise((r) => setTimeout(r, 1200)); 1', 10_000);
-    await new Promise((r) => setTimeout(r, 200));
-    expect(listSessions(scope)).toContain('reclaim held while busy');
+    await vi.waitFor(() => expect(listSessions(scope)).toContain('reclaim held while busy'), { timeout: 10_000 });
     await inFlight;
   }, 20_000);
 });

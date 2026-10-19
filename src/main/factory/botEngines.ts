@@ -24,6 +24,7 @@ import path from 'node:path';
 import { app } from 'electron';
 import type { BotBinding, BotEngine, BotProfile } from '../../shared/bot';
 import { CLAUDE_EFFORT_LEVELS, type ClaudeEffort } from '../../shared/claudeModels';
+import { validateBotBrainModel } from '../../shared/fanoutPreset';
 import type { BrainAdapter } from '../deck/BrainAdapter';
 import { ClaudeSdkAdapter } from '../deck/ClaudeSdkAdapter';
 import { AcpBrainAdapter } from '../deck/AcpBrainAdapter';
@@ -91,6 +92,13 @@ export function resolveOnPath(
 
 function narrowEffort(effort: string | undefined): ClaudeEffort | undefined {
   return (CLAUDE_EFFORT_LEVELS as readonly string[]).includes(effort ?? '') ? (effort as ClaudeEffort) : undefined;
+}
+
+/** The SDK `model` option of a bot's turn: the stored id when it passes the
+ *  brain model rule and is not 'default', else none. */
+function brainModelOption(model: string | undefined): { model?: string } {
+  const checked = model === undefined ? null : validateBotBrainModel(model);
+  return checked?.ok && checked.model.toLowerCase() !== 'default' ? { model: checked.model } : {};
 }
 
 export interface DefaultBotEngineDeps {
@@ -162,7 +170,13 @@ export function createDefaultBotEngineFactory(deps: DefaultBotEngineDeps = {}): 
             // A bot with a repository reads it (Read / Grep / Glob, decided by main).
             bot: { ...bot, repoRoot: botRepoReadRoot(input.profile) },
             mcpBundlePath: bundle,
-            ...(engine.model ? { model: engine.model } : {}),
+            // No model set (or 'default', or a stored id that fails the brain
+            // model rule): pass none, so claude picks its own default and an
+            // ANTHROPIC_MODEL the owner set for a gateway or Bedrock still
+            // applies; `--model default` overrode it. claude then resumes a
+            // conversation on the model it last ran on, so the runtime starts
+            // a fresh one when the pin changes (BotRuntime session()).
+            ...brainModelOption(engine.model),
             ...(narrowEffort(engine.effort) ? { effort: narrowEffort(engine.effort) } : {}),
           }),
         };

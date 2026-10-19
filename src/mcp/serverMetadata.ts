@@ -118,6 +118,7 @@ const ROUTING_INSTRUCTIONS =
 const BOT_SURFACE_INSTRUCTIONS =
   'wmux factory bot tools: talk in your room and to any bot (room_post, room_read, handoff_send, bot_list), ' +
   'ask the owner (ask_person, with options for a choice), keep your job and routines (job_set, routine_set), ' +
+  'propose and read your own skills (skill_propose, skill_read), ' +
   'start workers who write code in their own worktrees (fanout_start), read PRs, issues and CI, record review ' +
   'verdicts (pr_verdict), and ask the owner to approve irreversible or public acts (approval_request) or to enter ' +
   'a secret or log in (secret_request, login_request).';

@@ -40,6 +40,8 @@ export const PHONE_SIDEBAR_LIMITS = {
   fleetTicketResultSummary: 240,
   /** Agent factory bots per workspace (`PhoneSidebarWorkspace.bots`). */
   botsPerWorkspace: 16,
+  /** A bot's worker workspaces (`PhoneSidebarSnapshot.botWorkers`). */
+  botWorkers: 128,
   /** Upper bound for counts and ahead/behind; anything larger is not a real value. */
   count: 1_000_000,
   /**
@@ -158,6 +160,20 @@ export const PHONE_BOT_ROLES = ['lead', 'triage', 'verifier', 'maintainer', 'moa
 export type PhoneBotRole = (typeof PHONE_BOT_ROLES)[number];
 export const PHONE_BOT_PRESENCES = ['running', 'idle', 'parked', 'stopped', 'unknown'] as const;
 export type PhoneBotPresence = (typeof PHONE_BOT_PRESENCES)[number];
+
+/**
+ * One open task workspace a factory bot fanned out: the bot's worker. The
+ * desktop shows it on the Bots page only, so it is never a row of
+ * `PhoneSidebarSnapshot.workspaces` (nor are its panes in `panes`); the daemon
+ * stamps `botWorker` on the rows it lists for that workspace from this.
+ */
+export interface PhoneSidebarBotWorker {
+  workspaceId: string;
+  /** The bot that started the fan-out (`bot-<hex>`). */
+  botId: string;
+  /** The task ledger's record for the workspace (`wtask-<uuid>`), once known. */
+  taskId?: string;
+}
 
 /** The agent factory as the snapshot carries it (main fills it in). */
 export interface PhoneSidebarFactory {
@@ -362,6 +378,12 @@ export interface PhoneSidebarSnapshot {
   fleetTickets?: PhoneFleetTicket[];
   /** Epoch ms of the earliest enabled schedule's next run. Absent when none is scheduled. */
   nextScheduleAt?: number;
+  /**
+   * The open workspaces that are a factory bot's workers, at most
+   * `botWorkers`, one per workspace and never one of `workspaces`. Absent
+   * when there is none, from an older desktop, and on a failed read.
+   */
+  botWorkers?: PhoneSidebarBotWorker[];
 }
 
 /**
@@ -627,6 +649,36 @@ function parseBots(value: unknown[], drop: SidebarDropReporter): PhoneSidebarBot
   return out;
 }
 
+function parseBotWorker(value: unknown, drop: SidebarDropReporter): PhoneSidebarBotWorker | undefined {
+  if (!isRecord(value)) return undefined;
+  const workspaceId = idString(value.workspaceId);
+  const botId = idString(value.botId);
+  if (workspaceId === undefined || botId === undefined) return undefined;
+  const out: PhoneSidebarBotWorker = { workspaceId, botId };
+  const taskId = idString(value.taskId);
+  if (taskId !== undefined) out.taskId = taskId;
+  else if (value.taskId !== undefined) drop('botWorkers.taskId');
+  return out;
+}
+
+/** Bot workers, first wins per workspace. A workspace the snapshot also lists
+ *  as an owner row is not a bot's worker (the desktop never lists both), so
+ *  such an entry is dropped rather than marking an owner's own task. */
+function parseBotWorkers(value: unknown[], ownerRows: ReadonlySet<string>, drop: SidebarDropReporter): PhoneSidebarBotWorker[] {
+  const out: PhoneSidebarBotWorker[] = [];
+  const seen = new Set<string>();
+  for (const raw of value) {
+    if (out.length >= PHONE_SIDEBAR_LIMITS.botWorkers) { drop('botWorkers.overLimit'); break; }
+    const row = parseBotWorker(raw, drop);
+    if (!row) { drop('botWorkers.row'); continue; }
+    if (ownerRows.has(row.workspaceId)) { drop('botWorkers.ownerRow'); continue; }
+    if (seen.has(row.workspaceId)) { drop('botWorkers.duplicate'); continue; }
+    seen.add(row.workspaceId);
+    out.push(row);
+  }
+  return out;
+}
+
 /** The factory block, or undefined when it is not one. An id that fails the
  *  id rule is dropped alone; `enabled` must be a boolean. */
 function parseFactory(value: unknown, drop: SidebarDropReporter): PhoneSidebarFactory | undefined {
@@ -855,6 +907,8 @@ export function parsePhoneSidebarSnapshot(value: unknown, onDrop?: SidebarDropRe
   const nextScheduleAt = timestamp(value.nextScheduleAt);
   if (nextScheduleAt !== undefined) snapshot.nextScheduleAt = nextScheduleAt;
   else if (value.nextScheduleAt !== undefined) drop('nextScheduleAt');
+  if (Array.isArray(value.botWorkers)) snapshot.botWorkers = parseBotWorkers(value.botWorkers, seenWorkspaces, drop);
+  else if (value.botWorkers !== undefined) drop('botWorkers');
   return snapshot;
 }
 

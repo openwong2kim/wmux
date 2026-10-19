@@ -174,9 +174,9 @@
    ]
   },
   {
-   "why": "neither a draft PR nor no-repro",
+   "why": "neither a PR nor no-repro",
    "failing": [
-    "draft_pr_or_no_repro"
+    "pr_or_no_repro"
    ],
    "mutate": [
     {

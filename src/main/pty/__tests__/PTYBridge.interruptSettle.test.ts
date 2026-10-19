@@ -21,6 +21,8 @@ const mocks = vi.hoisted(() => {
 
 vi.mock('electron', () => ({
   BrowserWindow: class {},
+  // The confirmed turn end fans out to ToastManager.showDirect; no OS toasts here.
+  Notification: class { static isSupported() { return false; } },
 }));
 
 vi.mock('../../ipc/handlers/metadata.handler', () => ({
@@ -37,7 +39,7 @@ import { PTYBridge } from '../PTYBridge';
 import type { PTYManager, PTYInstance } from '../PTYManager';
 import { HookSignalRouter } from '../../hooks/HookSignalRouter';
 import { SignalLatencyMeter } from '../../../shared/hooks/SignalLatencyMeter';
-import { clearPty as clearSuppression, SETTLE_REDRAW_GUARD_MS } from '../../notification/idleSuppression';
+import { clearPty as clearSuppression, recentlyEscaped, SETTLE_REDRAW_GUARD_MS } from '../../notification/idleSuppression';
 
 interface MockProcess {
   onData: (cb: (data: string) => void) => void;
@@ -113,6 +115,25 @@ describe('PTYBridge interrupt edge (Ctrl+C / ESC ESC settles a latched pane)', (
 
     expect(router.governsRunningState('p1')).toBe(true);
     expect(mocks.broadcastMetadataUpdate).not.toHaveBeenCalled();
+  });
+
+  it('records a lone ESC for the agent\'s "Interrupted" row to confirm', () => {
+    const { bridge } = makeBridge();
+    clearSuppression('p1');
+    expect(recentlyEscaped('p1')).toBe(false);
+
+    bridge.noteInterruptInput('p1', '\x1b[A');
+    expect(recentlyEscaped('p1')).toBe(false);
+    bridge.noteInterruptInput('p1', '\x1b');
+    expect(recentlyEscaped('p1')).toBe(true);
+  });
+
+  it('records a kitty Escape that arrives glued to its release', () => {
+    const { bridge } = makeBridge();
+    clearSuppression('p1');
+
+    bridge.noteInterruptInput('p1', '\x1b[27u\x1b[27;1:3u');
+    expect(recentlyEscaped('p1')).toBe(true);
   });
 
   it('releases the latch on ESC ESC', () => {
@@ -210,5 +231,183 @@ describe('PTYBridge settle-redraw guard (the burst that follows a settle)', () =
     burst(proc);
 
     expect(runningBroadcasts('p1')).toBe(1);
+  });
+});
+
+describe('PTYBridge lone Escape confirmed by the agent\'s "Interrupted" row', () => {
+  const ROW = '  \u001b[2m⎿\u001b[0m  Interrupted · What should Claude do instead?\r\n';
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    mocks.broadcastMetadataUpdate.mockClear();
+    mocks.lastBroadcastAgentStatus.clear();
+    clearSuppression('p1');
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('settles the interrupted turn once, and not the next one when the row is redrawn', () => {
+    const { bridge, router, proc } = makeBridge();
+    bridge.setupDataForwarding('p1');
+    proc.emitData('Claude Code v2.1.172\r\n  bypass permissions on\r\n');
+    vi.advanceTimersByTime(50);
+
+    router.noteHookTurnStart('p1', Date.now(), 'claude');
+    bridge.noteInterruptInput('p1', '\x1b');
+    proc.emitData(ROW);
+    vi.advanceTimersByTime(50);
+    expect(router.governsRunningState('p1')).toBe(false);
+    expect(recentlyEscaped('p1')).toBe(false);
+
+    // The next turn starts inside the Escape window; a repaint prints the row again.
+    vi.advanceTimersByTime(1_500);
+    router.noteHookTurnStart('p1', Date.now(), 'claude');
+    proc.emitData(ROW);
+    vi.advanceTimersByTime(50);
+    expect(router.governsRunningState('p1')).toBe(true);
+  });
+});
+
+// #2264 — an Esc while Claude Code is still thinking draws no "Interrupted"
+// row. Live capture (Claude Code 2.1.301, Windows ConPTY): the title alternates
+// `◐`/`◑` about once a second for the whole turn, and 84 ms after the Esc it
+// turns `✳` while one redraw blanks the spinner row and puts the prompt back
+// in the composer. The frames below are copied from that capture.
+describe('PTYBridge lone Escape confirmed by Claude Code\'s title turning idle (#2264)', () => {
+  const BUSY_A = '\u001b]0;◐ 50번째 소수 검증\u0007';
+  const BUSY_B = '\u001b[m\u001b]0;◑ 50번째 소수 검증\u0007';
+  const IDLE = '\u001b]0;✳ 50번째 소수 검증\u0007';
+  // The redraw that follows the Esc: the spinner row blanked, the prompt restored.
+  const RESTORE = '\u001b[?25l\u001b[7;1H' + ' '.repeat(120) + '\u001b[34;1H \u001b[1C\u001b[11X\u001b[100C● high · /effort\r\n'
+    + '─'.repeat(120) + '\u001b[m❯ Think step by step about the 50th prime.\u001b[40;39H\u001b[K\u001b[37;14H\u001b[?25h';
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    mocks.broadcastMetadataUpdate.mockClear();
+    mocks.lastBroadcastAgentStatus.clear();
+    clearSuppression('p1');
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function startThinking() {
+    const made = makeBridge();
+    made.bridge.setupDataForwarding('p1');
+    made.proc.emitData('Claude Code v2.1.301\r\n  bypass permissions on\r\n');
+    vi.advanceTimersByTime(50);
+    // The banner's footer reads as a detector status; a turn is now running,
+    // so nothing unread stands in the way of the settle broadcast.
+    mocks.lastBroadcastAgentStatus.clear();
+    mocks.broadcastMetadataUpdate.mockClear();
+    made.router.noteHookTurnStart('p1', Date.now(), 'claude');
+    made.proc.emitData(BUSY_A);
+    vi.advanceTimersByTime(960);
+    made.proc.emitData(BUSY_B);
+    vi.advanceTimersByTime(50);
+    return made;
+  }
+
+  it('settles the turn when the title turns idle right after a lone Esc', () => {
+    const { bridge, router, proc } = startThinking();
+
+    bridge.noteInterruptInput('p1', '\x1b');
+    vi.advanceTimersByTime(84);
+    proc.emitData(IDLE);
+    proc.emitData(RESTORE);
+    vi.advanceTimersByTime(50);
+
+    expect(router.governsRunningState('p1')).toBe(false);
+    expect(idleBroadcasts('p1')).toBe(1);
+    expect(recentlyEscaped('p1')).toBe(false);
+  });
+
+  it('leaves the turn running when the Esc only closed a popup and the title keeps spinning', () => {
+    const { bridge, router, proc } = startThinking();
+
+    bridge.noteInterruptInput('p1', '\x1b');
+    vi.advanceTimersByTime(900);
+    proc.emitData(BUSY_A);
+    vi.advanceTimersByTime(960);
+    proc.emitData(BUSY_B);
+    vi.advanceTimersByTime(50);
+
+    expect(router.governsRunningState('p1')).toBe(true);
+    expect(idleBroadcasts('p1')).toBe(0);
+  });
+
+  it('leaves a turn that ended on its own alone, even right after an Esc that closed a popup', () => {
+    const { bridge, router, proc } = startThinking();
+
+    // Live: the popup Esc, then the answer, then `running Stop hook` on the
+    // spinner row about 300 ms before the idle title.
+    bridge.noteInterruptInput('p1', '\x1b');
+    vi.advanceTimersByTime(600);
+    proc.emitData('\u001b[38;2;153;153;153m\u001b[2Crunning Stop hook · 3s · \u001b[m');
+    vi.advanceTimersByTime(300);
+    proc.emitData(IDLE);
+    vi.advanceTimersByTime(50);
+
+    expect(router.governsRunningState('p1')).toBe(true);
+    expect(idleBroadcasts('p1')).toBe(0);
+  });
+
+  it('does not settle on the title edge with no Esc before it (an ordinary turn end)', () => {
+    const { router, proc } = startThinking();
+
+    proc.emitData(IDLE);
+    vi.advanceTimersByTime(50);
+
+    expect(router.governsRunningState('p1')).toBe(true);
+    expect(idleBroadcasts('p1')).toBe(0);
+  });
+
+  it('does not settle on an Esc older than the confirm window', () => {
+    const { bridge, router, proc } = startThinking();
+
+    bridge.noteInterruptInput('p1', '\x1b');
+    vi.advanceTimersByTime(3_100);
+    proc.emitData(IDLE);
+    vi.advanceTimersByTime(50);
+
+    expect(router.governsRunningState('p1')).toBe(true);
+  });
+
+  it('settles an Esc in the first second, before the first running title', () => {
+    // Live: Esc 300 ms after the submit; the title goes straight to idle.
+    const { bridge, router, proc } = makeBridge();
+    bridge.setupDataForwarding('p1');
+    proc.emitData('Claude Code v2.1.301\r\n  bypass permissions on\r\n');
+    vi.advanceTimersByTime(50);
+    mocks.lastBroadcastAgentStatus.clear();
+    mocks.broadcastMetadataUpdate.mockClear();
+    proc.emitData('\u001b]0;✳ Claude Code\u0007');
+    vi.advanceTimersByTime(50);
+    router.noteHookTurnStart('p1', Date.now(), 'claude');
+    vi.advanceTimersByTime(300);
+    bridge.noteInterruptInput('p1', '\x1b');
+    vi.advanceTimersByTime(100);
+    proc.emitData('\u001b]0;✳ Claude Code\u0007');
+    vi.advanceTimersByTime(50);
+
+    expect(router.governsRunningState('p1')).toBe(false);
+    expect(idleBroadcasts('p1')).toBe(1);
+  });
+
+  it('settles one turn per Esc: the next turn\'s title edge inside the window does not settle it', () => {
+    const { bridge, router, proc } = startThinking();
+
+    bridge.noteInterruptInput('p1', '\x1b');
+    proc.emitData(IDLE);
+    vi.advanceTimersByTime(50);
+    expect(router.governsRunningState('p1')).toBe(false);
+
+    router.noteHookTurnStart('p1', Date.now(), 'claude');
+    proc.emitData(BUSY_A);
+    vi.advanceTimersByTime(500);
+    proc.emitData(IDLE);
+    vi.advanceTimersByTime(50);
+    expect(router.governsRunningState('p1')).toBe(true);
   });
 });

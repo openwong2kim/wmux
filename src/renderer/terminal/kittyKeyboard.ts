@@ -61,7 +61,7 @@ function kittyState(term: object): XtermKittyState | undefined {
  * xterm parses them, so a pane whose app pushed flags before a reload has
  * them in xterm and not in the fold. What matters for every decision here is
  * what xterm's encoder will do. There is no public getter; the shape is
- * locked by kittyKeyboard.test.ts against the installed xterm.
+ * locked by kittyKeyboard.os.test.ts against the installed xterm.
  */
 export function xtermKittyFlags(term: object): number | undefined {
   return kittyState(term)?.flags;

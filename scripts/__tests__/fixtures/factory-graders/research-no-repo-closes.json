@@ -1,0 +1,527 @@
+{
+  "pass": {
+    "schemaVersion": 1,
+    "scenario": "research-no-repo-closes",
+    "run": 1,
+    "workspaceId": "ws-303b28b0-1096-4285-b3a9-7324d7aa32c4",
+    "botKeys": {
+      "researcher": "bot-b825041b"
+    },
+    "injected": [
+      {
+        "label": "ask",
+        "kind": "card",
+        "id": "c-mv9cdm805e47a6c322",
+        "threadId": "general",
+        "at": 1792056848829
+      }
+    ],
+    "actions": [
+      {
+        "at": 1792056848829,
+        "do": "post",
+        "label": "ask",
+        "result": {
+          "ok": true,
+          "card": {
+            "version": 1,
+            "id": "c-mv9cdm805e47a6c322",
+            "seq": 1,
+            "workspaceId": "ws-303b28b0-1096-4285-b3a9-7324d7aa32c4",
+            "threadId": "general",
+            "kind": "human",
+            "at": 1792056848832,
+            "actor": {
+              "kind": "human"
+            },
+            "title": "Research",
+            "body": "Who else does this?",
+            "refs": {
+              "botId": "bot-b825041b",
+              "botIds": [
+                "bot-b825041b"
+              ]
+            }
+          },
+          "addressee": {
+            "botId": "bot-b825041b",
+            "role": "lead"
+          },
+          "wakeId": "w-mv9cdm81-289cfb18",
+          "addressees": [
+            {
+              "botId": "bot-b825041b",
+              "role": "lead",
+              "wakeId": "w-mv9cdm81-289cfb18"
+            }
+          ]
+        }
+      },
+      {
+        "at": 1792056848836,
+        "do": "waitFor",
+        "label": "report",
+        "ok": true,
+        "doneAt": 1792056858899
+      },
+      {
+        "at": 1792056858900,
+        "do": "waitFor",
+        "label": "settled",
+        "ok": true,
+        "doneAt": 1792056858900
+      },
+      {
+        "at": 1792056858900,
+        "do": "waitFor",
+        "label": "quiet",
+        "ok": true,
+        "doneAt": 1792056866950
+      }
+    ],
+    "harnessErrors": [],
+    "sources": {
+      "facts": {
+        "present": true,
+        "ok": true,
+        "errors": 0
+      },
+      "wakes": {
+        "present": true,
+        "ok": true,
+        "errors": 0
+      },
+      "handoffs": {
+        "present": false,
+        "ok": false,
+        "errors": 0
+      },
+      "bots": {
+        "present": true,
+        "ok": true,
+        "errors": 0
+      },
+      "settings": {
+        "present": true,
+        "ok": true,
+        "errors": 0
+      },
+      "repoWatch": {
+        "present": false,
+        "ok": false,
+        "errors": 0
+      },
+      "ledger": {
+        "present": true,
+        "ok": true,
+        "errors": 0
+      },
+      "verdicts": {
+        "present": false,
+        "ok": false,
+        "errors": 0
+      },
+      "effects": {
+        "present": false,
+        "ok": false,
+        "errors": 0
+      },
+      "approvals": {
+        "present": false,
+        "ok": false,
+        "errors": 0
+      },
+      "approvalRules": {
+        "present": false,
+        "ok": false,
+        "errors": 0
+      },
+      "decisions": {
+        "present": false,
+        "ok": false,
+        "errors": 0
+      },
+      "routines": {
+        "present": false,
+        "ok": false,
+        "errors": 0
+      },
+      "cards": {
+        "present": true,
+        "ok": true,
+        "errors": 0
+      },
+      "workers": {
+        "present": true,
+        "ok": true,
+        "errors": 0
+      },
+      "ghCalls": {
+        "present": true,
+        "ok": true,
+        "errors": 0
+      }
+    },
+    "timeouts": [],
+    "saved": {},
+    "records": [],
+    "facts": [
+      {
+        "id": "f-0mv9cdm80-51d359993228",
+        "seq": 1,
+        "kind": "human.message",
+        "at": 1792056848832,
+        "dedupeKey": "human.message:c-mv9cdm805e47a6c322:bot-b825041b",
+        "workspaceId": "ws-303b28b0-1096-4285-b3a9-7324d7aa32c4",
+        "ref": {
+          "botId": "bot-b825041b",
+          "messageId": "c-mv9cdm805e47a6c322:bot-b825041b"
+        },
+        "actor": {
+          "kind": "human"
+        },
+        "payload": {
+          "text": "Who else does this?",
+          "cardId": "c-mv9cdm805e47a6c322",
+          "threadId": "general",
+          "source": "desktop"
+        }
+      },
+      {
+        "id": "f-0mv9cdtvb-39e3a443f969",
+        "seq": 2,
+        "kind": "task.done",
+        "at": 1792056858743,
+        "dedupeKey": "task.done:wtask-mv9cdq98-plx80nlz",
+        "workspaceId": "ws-303b28b0-1096-4285-b3a9-7324d7aa32c4",
+        "ref": {
+          "taskId": "wtask-mv9cdq98-plx80nlz",
+          "botId": "bot-b825041b"
+        },
+        "actor": {
+          "kind": "system"
+        },
+        "payload": {
+          "taskWorkspaceId": "ws-abb63abe-3f84-4943-bf01-7a25459b11d6",
+          "title": "who else does this",
+          "status": "review_requested",
+          "from": "working",
+          "by": "worker",
+          "summary": "fake worker: review_requested for wtask-mv9cdq98-plx80nlz"
+        }
+      }
+    ],
+    "wakes": [
+      {
+        "id": "w-mv9cdm81-289cfb18",
+        "botId": "bot-b825041b",
+        "workspaceId": "ws-303b28b0-1096-4285-b3a9-7324d7aa32c4",
+        "reason": {
+          "kind": "human",
+          "text": "Who else does this?",
+          "source": "desktop",
+          "clientMessageId": "c-mv9cdm805e47a6c322",
+          "runId": "run-c-mv9cdm805e47a6c322"
+        },
+        "threadId": "general",
+        "priority": 0,
+        "enqueuedAt": 1792056848833,
+        "attempts": 1,
+        "state": "done"
+      },
+      {
+        "id": "w-mv9cdtvg-c403aa78",
+        "botId": "bot-b825041b",
+        "workspaceId": "ws-303b28b0-1096-4285-b3a9-7324d7aa32c4",
+        "reason": {
+          "kind": "facts",
+          "factIds": [
+            "task.gated:wtask-mv9cdq98-plx80nlz@3"
+          ],
+          "trigger": {
+            "kind": "task.done"
+          }
+        },
+        "threadId": "task:wtask-mv9cdq98-plx80nlz",
+        "priority": 1,
+        "enqueuedAt": 1792056858748,
+        "attempts": 1,
+        "state": "done"
+      }
+    ],
+    "bots": [
+      {
+        "version": 1,
+        "id": "bot-b825041b",
+        "workspaceId": "ws-303b28b0-1096-4285-b3a9-7324d7aa32c4",
+        "role": "lead",
+        "template": "researcher",
+        "name": "Researcher",
+        "engine": {
+          "kind": "acp",
+          "command": "/usr/local/bin/node",
+          "args": [
+            "/repo/wmux/scripts/acp-stub.mjs",
+            "--script",
+            "/var/folders/mp/_2n8b2_x28ldyspmqm_mbm7r0000gn/T/wmux-fsmoke-research-no-repo-closes-rxPYTW/stub/researcher.json",
+            "--log",
+            "/var/folders/mp/_2n8b2_x28ldyspmqm_mbm7r0000gn/T/wmux-fsmoke-research-no-repo-closes-rxPYTW/logs/stub-researcher.jsonl"
+          ]
+        },
+        "triggers": [
+          {
+            "kind": "task.done"
+          },
+          {
+            "kind": "task.failed"
+          },
+          {
+            "kind": "task.input_required"
+          },
+          {
+            "kind": "merge.refused"
+          }
+        ],
+        "budget": {
+          "maxTurnsPerDay": 200,
+          "maxConcurrentWorkers": 3,
+          "maxWorkerHoursPerDay": 6,
+          "turnTimeoutMs": 600000
+        },
+        "enabled": true,
+        "createdAt": 1792056848828,
+        "updatedAt": 1792056848828
+      }
+    ],
+    "ledger": [
+      {
+        "schemaVersion": 1,
+        "id": "wtask-mv9cdq98-plx80nlz",
+        "taskWorkspaceId": "ws-abb63abe-3f84-4943-bf01-7a25459b11d6",
+        "ownerWorkspaceId": "ws-303b28b0-1096-4285-b3a9-7324d7aa32c4",
+        "title": "who else does this",
+        "status": "completed",
+        "rev": 3,
+        "updatedAt": 1792056858744,
+        "updatedBy": {
+          "kind": "brain",
+          "workspaceId": "ws-303b28b0-1096-4285-b3a9-7324d7aa32c4"
+        },
+        "dispatch": {
+          "origin": {
+            "kind": "bot",
+            "botId": "bot-b825041b",
+            "tainted": true
+          },
+          "preset": "research"
+        },
+        "summary": "fake worker: review_requested for wtask-mv9cdq98-plx80nlz"
+      }
+    ],
+    "cards": [
+      {
+        "version": 1,
+        "id": "c-mv9cdm805e47a6c322",
+        "seq": 1,
+        "workspaceId": "ws-303b28b0-1096-4285-b3a9-7324d7aa32c4",
+        "threadId": "general",
+        "kind": "human",
+        "at": 1792056848832,
+        "actor": {
+          "kind": "human"
+        },
+        "title": "Research",
+        "body": "Who else does this?",
+        "refs": {
+          "botId": "bot-b825041b",
+          "botIds": [
+            "bot-b825041b"
+          ]
+        }
+      },
+      {
+        "version": 1,
+        "id": "c-mv9cdtvb669eab9ad4",
+        "seq": 2,
+        "workspaceId": "ws-303b28b0-1096-4285-b3a9-7324d7aa32c4",
+        "threadId": "task:wtask-mv9cdq98-plx80nlz",
+        "kind": "fact",
+        "at": 1792056858743,
+        "actor": {
+          "kind": "system"
+        },
+        "title": "Task done: who else does this",
+        "body": "fake worker: review_requested for wtask-mv9cdq98-plx80nlz",
+        "refs": {
+          "taskId": "wtask-mv9cdq98-plx80nlz",
+          "botId": "bot-b825041b",
+          "factId": "f-0mv9cdtvb-39e3a443f969"
+        },
+        "closes": true
+      },
+      {
+        "version": 1,
+        "id": "c-mv9cdtvg6c1e7a017f",
+        "seq": 3,
+        "workspaceId": "ws-303b28b0-1096-4285-b3a9-7324d7aa32c4",
+        "threadId": "task:wtask-mv9cdq98-plx80nlz",
+        "kind": "fact",
+        "at": 1792056858748,
+        "actor": {
+          "kind": "system"
+        },
+        "title": "Research reported: task completed",
+        "body": "A research task changes no code, so no gate runs on it."
+      },
+      {
+        "version": 1,
+        "id": "c-mv9cdtvmff04c426b9",
+        "seq": 4,
+        "workspaceId": "ws-303b28b0-1096-4285-b3a9-7324d7aa32c4",
+        "threadId": "task:wtask-mv9cdq98-plx80nlz",
+        "kind": "fact",
+        "at": 1792056858754,
+        "actor": {
+          "kind": "system"
+        },
+        "title": "Worker done",
+        "body": "Task completed: its Claude stopped to free memory. Its pane closes. The worktree is kept; no conversation was recorded to resume."
+      }
+    ],
+    "stub": {
+      "researcher": [
+        {
+          "at": 1792056848859,
+          "event": "initialize"
+        },
+        {
+          "at": 1792056848860,
+          "event": "session/new",
+          "sessionId": "stub-4e505a49a42c",
+          "cwd": "/home/user/.wmux-verify-f93e0249/factory/bots/bot-b825041b"
+        },
+        {
+          "at": 1792056853864,
+          "event": "prompt",
+          "sessionId": "stub-4e505a49a42c",
+          "text": "You are Researcher, a bot of wmux workspace ws-303b28b0-1096-4285-b3a9-7324d7aa32c4.\n\nYour job:\nYou research what the owner asks about \u2014 competitors, users, the market, the ecosystem \u2014 and report findings with their sources and what they mean for the work. Web research is a worker's: you start one w"
+        },
+        {
+          "at": 1792056854058,
+          "event": "tool",
+          "sessionId": "stub-4e505a49a42c",
+          "name": "fanout_start",
+          "ok": true,
+          "text": "{\n  \"ok\": true,\n  \"status\": \"accepted\",\n  \"idempotencyKey\": \"wake:w-mv9cdm81-289cfb18:1\",\n  \"taskCount\": 1,\n  \"repoPath\": \"/home/user/.wmux-verify-f93e0249/factory/bots/bot-b825041b/research\",\n  \"ownerWorkspaceId\": \"ws-303b28b0-1096-4285-b3a9-7324d7aa32c4\",\n  \"workspaceId\": \"ws-303b28b0-1096-42"
+        },
+        {
+          "at": 1792056858749,
+          "event": "prompt",
+          "sessionId": "stub-4e505a49a42c",
+          "text": "[wake w-mv9cdtvg-c403aa78] Researcher (researcher) \u00b7 reason: facts \u00b7 priority 1\nYour job, as it stands now (it replaces the one in your instructions):\n> You research what the owner asks about \u2014 competitors, users, the market, the ecosystem \u2014 and report findings with their sources and what they mean "
+        }
+      ]
+    },
+    "workers": [
+      {
+        "at": 1792056857584,
+        "pid": 8430,
+        "cwd": "/home/user/.wmux-verify-f93e0249/factory/bots/bot-b825041b/research/20261015-183414-5f81d2/1-claude-plx80nlz",
+        "event": "start",
+        "taskId": "wtask-mv9cdq98-plx80nlz",
+        "agent": "claude",
+        "rulesPresent": false,
+        "strict": true,
+        "mcpServers": [
+          "wmux"
+        ],
+        "allow": [],
+        "codexMcp": {
+          "featuresOff": [],
+          "serversOff": [],
+          "tables": []
+        },
+        "args": [
+          "--session-id",
+          "06d43fa3-f666-4257-9958-e73a20a590d7",
+          "--settings=/home/user/.wmux-verify-f93e0249/factory/worker-settings/9ed5dc5",
+          "--mcp-config=/home/user/.wmux-verify-f93e0249/factory/worker-mcp/fbb2723eb1"
+        ]
+      },
+      {
+        "at": 1792056858745,
+        "pid": 8430,
+        "cwd": "/home/user/.wmux-verify-f93e0249/factory/bots/bot-b825041b/research/20261015-183414-5f81d2/1-claude-plx80nlz",
+        "event": "ledger_update",
+        "ok": true,
+        "text": "{\n  \"ok\": true,\n  \"entry\": {\n    \"schemaVersion\": 1,\n    \"id\": \"wtask-mv9cdq98-plx80nlz\",\n    \"taskWorkspaceId\": \"ws-abb63abe-3f84-4943-bf01-7a25459b11d6\",\n    \"ownerWorkspaceId\": \"ws-303b28b0-1096-4285-b3a9-7324d7aa32c4\",\n    \"title\": \"who else does this\",\n    \"status\": \"review_requested\",\n    \"rev\": 2,\n    \"updatedAt\": 1792056858743,\n    \"updatedBy\": {\n      \"kind\": \"worker\",\n      \"workspaceId\": \"ws-abb63abe-3f84-4943-bf01-7a25459b11d6\"\n    },\n    \"dispatch\": {\n      \"origin\": {\n        \"kind\": \"bot\",\n        \"botId\": \"bot-b825041b\",\n        \"tainted\": true\n      },\n      \"preset\": \"research\"\n    },\n    \"summary\": \"fake worker: review_requested for wtask-mv9cdq98-plx80nlz\"\n  }\n}"
+      }
+    ]
+  },
+  "fail": [
+    {
+      "why": "the task was completed by force",
+      "failing": [
+        "completed_without_gate"
+      ],
+      "mutate": [
+        {
+          "op": "set",
+          "path": "ledger.0.summary",
+          "value": "done [forced: no gate]"
+        }
+      ]
+    },
+    {
+      "why": "the task stayed open after the report",
+      "failing": [
+        "completed_without_gate"
+      ],
+      "mutate": [
+        {
+          "op": "set",
+          "path": "ledger.0.status",
+          "value": "review_requested"
+        }
+      ]
+    },
+    {
+      "why": "a research task recorded as clean",
+      "failing": [
+        "research_is_tainted"
+      ],
+      "mutate": [
+        {
+          "op": "set",
+          "path": "ledger.0.dispatch.origin.tainted",
+          "value": false
+        }
+      ]
+    },
+    {
+      "why": "the worker ran in a repository worktree",
+      "failing": [
+        "scratch_folder_under_bot"
+      ],
+      "mutate": [
+        {
+          "op": "set",
+          "path": "workers.0.cwd",
+          "value": "/tmp/app-worktrees/wtask-x"
+        }
+      ]
+    },
+    {
+      "why": "the worker was never reclaimed",
+      "failing": [
+        "worker_reclaimed"
+      ],
+      "mutate": [
+        {
+          "op": "remove",
+          "path": "cards.3"
+        }
+      ]
+    }
+  ]
+}

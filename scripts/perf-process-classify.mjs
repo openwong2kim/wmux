@@ -1,7 +1,7 @@
 // Pure process-classification helpers for the A1 RAM-attribution breakdown
 // (perf-bench.mjs PR D). Split into its own module — with NO shebang — so it
 // can be imported by both perf-bench.mjs and a vitest test
-// (scripts/__tests__/perfProcessClassify.test.mjs). A leading shebang makes
+// (scripts/__tests__/perfProcessClassify.os.test.mjs). A leading shebang makes
 // the Windows-CI vitest loader throw a SyntaxError (known repo gotcha — see
 // the same note atop perf-compare.mjs), so this file must stay shebang-free.
 //

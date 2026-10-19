@@ -20,10 +20,11 @@ import { handleRoomPost, handleRoomRead, handleRoomResolve, handleRoomThreads } 
 import { ROOM_RPC } from '../../../../shared/room';
 import type { RpcContext } from '../../../../shared/rpc';
 import type { WorkspaceDecision } from '../../../deck/deckDecisionStore';
+import type { RemovedBot } from '../../../../shared/bot';
 
 const WS = 'ws-room-1';
 
-function setup(opts: { decisions?: WorkspaceDecision[]; factory?: { enabled: boolean; hqWorkspaceId: string | null } } = {}) {
+function setup(opts: { decisions?: WorkspaceDecision[]; factory?: { enabled: boolean; hqWorkspaceId: string | null }; removed?: RemovedBot[] } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wp7-room-ipc-'));
   const writer = new RoomWriter({ dir: path.join(dir, 'factory', 'rooms'), log: () => undefined });
   const mainFrame = { name: 'main' };
@@ -45,6 +46,7 @@ function setup(opts: { decisions?: WorkspaceDecision[]; factory?: { enabled: boo
     wmuxDir: () => dir,
     decisions: () => opts.decisions ?? [],
     bots: () => [{ id: 'bot-00000001', role: 'verifier', name: 'Verifier' }],
+    removedBots: () => opts.removed ?? [],
     ...(opts.factory ? { factoryState: () => opts.factory! } : {}),
   });
   const call = (channel: string, raw?: unknown, sender: unknown = webContents, senderFrame: unknown = mainFrame) =>
@@ -136,6 +138,15 @@ describe('room.handler', () => {
     expect(await s.call(IPC.ROOM_ACTORS)).toEqual({ actors: { 'bot-00000001': { role: 'verifier', name: 'Verifier' } } });
   });
 
+  it('a removed bot keeps its name, picture, colour slot and workspace (its 1:1), marked removed', async () => {
+    const s = setup({ removed: [{ id: 'bot-0000000d', workspaceId: WS, role: 'lead', template: 'developer', name: 'Developer', hue: 2, removedAt: 5 }] });
+    dirs.push(s.dir);
+    expect(await s.call(IPC.ROOM_ACTORS)).toEqual({ actors: {
+      'bot-00000001': { role: 'verifier', name: 'Verifier' },
+      'bot-0000000d': { role: 'lead', name: 'Developer', removed: true, hue: 2, workspaceId: WS },
+    } });
+  });
+
   it('reports whether rooms run and the factory state', async () => {
     const s = setup({ factory: { enabled: true, hqWorkspaceId: 'ws-hq' } });
     dirs.push(s.dir);
@@ -177,7 +188,7 @@ describe('liveFactoryState', () => {
       await store.update({ enabled: false, hqWorkspaceId: 'ws-live' });
       setFactorySettingsStore(store);
       expect(liveFactoryState(() => dir)).toEqual({ enabled: false, hqWorkspaceId: null });
-      await store.update({ enabled: true });
+      await store.update({ enabled: true, planConsent: { version: 1, at: '2026-10-15T00:00:00.000Z' } });
       expect(liveFactoryState(() => dir).enabled).toBe(true);
     } finally {
       setFactorySettingsStore(null);

@@ -110,7 +110,7 @@ export interface DaemonLauncherDeps {
 // `ProcessLiveness` + the pure classifiers now live in shared/processLiveness so
 // the daemon (a bare Node process that must NOT import this electron-dependent
 // module) shares the exact same contract. Re-exported here so existing importers
-// (launcher.liveness.test.ts) keep resolving them from '../launcher'.
+// (launcher.liveness.os.test.ts) keep resolving them from '../launcher'.
 export { classifyTasklistOutput, classifyKillOutcome };
 export type { ProcessLiveness };
 

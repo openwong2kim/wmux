@@ -168,7 +168,8 @@ export class CompletionAlarm {
    *                    |                | (firm if the cue or the replaced
    *                    |                | attention window was firm)
    *   stop.child       | any            | NO-OP, never a toast → drop
-   *   stop.leftover>0  | any            | cancel, treated as working → drop
+   *   stop.leftover>0  | firm attention | kept, treated as working → drop
+   *   stop.leftover>0  | other          | cancel, treated as working → drop
    *   stop clean       | attention      | cancel, then evaluate the gate
    *   stop clean       | done           | cancel, replace with new window (R2)
    *   stop clean       | —              | gate: !seenWorking || announced →
@@ -233,6 +234,13 @@ export class CompletionAlarm {
           // cues — whereas cancelling costs the alarm entirely, with nothing
           // left to fire. Missed beats early is the trade this module refuses
           // to make.
+          return 'drop';
+        }
+        if (cue.leftoverWork > 0 && state.pending?.cls === 'attention' && state.pending.firm) {
+          // Background work still running is working evidence, and working
+          // evidence never closes a hook-reported dialog: a background agent's
+          // permission prompt can be the very dialog waiting behind this stop.
+          state.seenWorking = true;
           return 'drop';
         }
         this.cancelPending(state, key, 'superseded by stop');

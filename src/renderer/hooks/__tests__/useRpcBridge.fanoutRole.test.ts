@@ -73,7 +73,7 @@ describe('useRpcBridge — fan-out task roles', () => {
     expect(block).toMatch(/const launchCommand = createOptions\.initialCommand \?\? ''/);
     // (Spread with only the lineage owner, origin and a bot worker's secret
     // grant added — the command is unchanged.)
-    expect(block).toMatch(/pty\.create\(\s*fanoutTaskOf \? \{ \.\.\.createOptions, fanoutTaskOf, \.\.\.\(fanoutOrigin \? \{ fanoutOrigin \} : \{\}\), \.\.\.\(secretGrant \? \{ secretGrant \} : \{\}\) \} : createOptions,?\s*\)/);
+    expect(block).toMatch(/pty\.create\(\s*fanoutTaskOf \? \{ \.\.\.createOptions, fanoutTaskOf, \.\.\.\(fanoutOrigin \? \{ fanoutOrigin \} : \{\}\), \.\.\.\(secretGrant \? \{ secretGrant \} : \{\}\), \.\.\.\(fanoutLaunch \? \{ fanoutLaunch \} : \{\}\) \} : createOptions,?\s*\)/);
   });
 
   it('applies the binding to the launch command via withRoleBinding', () => {
@@ -149,7 +149,7 @@ describe('useRpcBridge — fan-out task roles', () => {
 
   it('hands the lineage owner to pty.create (main stamps it inside the create), with no await before it', () => {
     const block = fanoutSpawnBlock();
-    expect(block).toMatch(/pty\.create\(\s*fanoutTaskOf \? \{ \.\.\.createOptions, fanoutTaskOf, \.\.\.\(fanoutOrigin \? \{ fanoutOrigin \} : \{\}\), \.\.\.\(secretGrant \? \{ secretGrant \} : \{\}\) \} : createOptions/);
+    expect(block).toMatch(/pty\.create\(\s*fanoutTaskOf \? \{ \.\.\.createOptions, fanoutTaskOf, \.\.\.\(fanoutOrigin \? \{ fanoutOrigin \} : \{\}\), \.\.\.\(secretGrant \? \{ secretGrant \} : \{\}\), \.\.\.\(fanoutLaunch \? \{ fanoutLaunch \} : \{\}\) \} : createOptions/);
     // The requester arrives resolved (main resolved it once, at request
     // time): the spawn only sanitizes it and never re-resolves a ptyId
     // against the layout, which may have moved on since.

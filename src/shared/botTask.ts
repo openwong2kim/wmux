@@ -49,8 +49,9 @@ export interface BotTaskView {
   stage: BotTaskStage;
   /** The fan-out preset the task ran with. */
   preset?: string;
-  /** The last system-recorded gate. `skipped` = nothing ran (no gate declared). */
-  gate?: { exitCode: number | null; at: number; skipped?: 'no_gate_command'; headSha?: string };
+  /** The last system-recorded gate. `skipped` = nothing ran (no gate
+   *  declared, or the task made no commits beyond its base). */
+  gate?: { exitCode: number | null; at: number; skipped?: 'no_gate_command' | 'no_changes'; headSha?: string };
   pr?: BotTaskPr;
   /** The ledger row's latest summary, one line (≤ BOT_TASK_SUMMARY_MAX): for
    *  `needs_input`, what the worker is waiting for. Written by the worker or
@@ -62,8 +63,26 @@ export interface BotTaskView {
   /** The workspace the reclaimed worker's pane was last in (a resume may
    *  have opened a new one); it is closed once the task is cleared. */
   workerWorkspaceId?: string;
+  /** The ended task's folder was kept because something in it is not
+   *  committed (main/factory/taskFolderCleanup.ts); a clean one is removed. */
+  folder?: 'kept_dirty';
   updatedAt: number;
 }
+
+/** The space bot task folders use now (Settings › Bots;
+ *  main/factory/taskFolderCleanup.ts). */
+export interface FactoryTaskFolderUsage {
+  bytes: number;
+  /** Folders on disk. */
+  folders: number;
+  /** Of those, ended tasks' folders kept for uncommitted changes. */
+  dirty: number;
+}
+
+/** What Clean up now did to ended bot tasks' folders. */
+export type FactoryTaskFolderCleanResult =
+  | { ok: true; removed: number; keptDirty: number; busy: number; failed: number; notRemoved?: Array<{ path: string; reason: string }> }
+  | { ok: false; code: string; message: string };
 
 /** Longest BotTaskView.summary. */
 export const BOT_TASK_SUMMARY_MAX = 300;

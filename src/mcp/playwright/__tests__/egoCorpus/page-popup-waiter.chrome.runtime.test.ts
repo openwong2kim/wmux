@@ -12,6 +12,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { MODES, harnessFor } from '../../../../test-utils/realBrowserHarness';
 import { generateSnapshot } from '../../snapshot';
 import { ACTION_TIMEOUT_MS, CASE_TIMEOUT_MS, openPage, refFor, serveCorpus } from './_support';
+import { deliberateSleep } from '../../../../test-utils/waitFor';
 
 const { engine } = vi.hoisted(() => ({
   engine: { page: null as unknown },
@@ -247,7 +248,7 @@ for (const mode of MODES) {
 
         // Let the abandoned action run out its own cap, then check nothing
         // pressed anything afterwards.
-        await new Promise((r) => setTimeout(r, ACTION_TIMEOUT_MS + 500));
+        await deliberateSleep(ACTION_TIMEOUT_MS + 500, 'negative: nothing presses after the abandoned action\'s cap');
         await untilRendering(source, mode.headless);
         expect(await source.evaluate(() => (window as unknown as { __hits: number }).__hits)).toBe(1);
         expect(opened.filter((p) => p.url().includes('popup-waiter=overlap'))).toHaveLength(1);

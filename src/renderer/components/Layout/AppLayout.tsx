@@ -1,6 +1,7 @@
 import { useEffect, useState, useRef, useCallback, useSyncExternalStore, lazy, Suspense } from 'react';
 import { isBrowserBackend } from '../../../shared/browserBackend';
 import { deliverChatDrop } from '../Chat/chatAttachments';
+import { deliverBotsDrop } from '../Bots/BotsPhotos';
 import type { AgentSlug } from '../../../shared/events';
 import type { ResumeBinding } from '../../../shared/agentResume';
 import { useStore } from '../../stores';
@@ -97,6 +98,7 @@ import { probeProjectConfig, maybeAutoApplyProjectLayout, workspaceProbeCwd } fr
 import { serializeTerminalBuffer } from '../../utils/scrollbackDump';
 import { pastePtyChunked } from '../../utils/clipboardChunk';
 import { isDaemonModeActive, setDaemonModeActive } from '../../daemon/daemonMode';
+import { noteDaemonConnected, noteDaemonDisconnected, noteDaemonGaveUp, noteDaemonReconnecting, notePaneReattached, notePaneWriteDropped, setDaemonLinkSurfaceResolver, type DaemonPaneRef } from '../../daemon/daemonLinkNotice';
 import { planAgentCandidateSeed, planLiveAgentSeed, asAgentSlug, markSeedAttempted } from '../../channels/agentCandidateSeed';
 import { agentSlugToDisplay } from '../../../shared/agentIdentity';
 import { RECONCILE_TIMEOUT_MS } from '../../../shared/timeouts';
@@ -327,6 +329,7 @@ function cloneStashedPanes(
           type: 'leaf',
           activeSurfaceId: pane.activeSurfaceId,
           ordinal: pane.ordinal,
+          ...(pane.notificationsMuted ? { notificationsMuted: true } : {}),
           // `metadata` rides along here and NOT in cloneWithScrollback, which
           // strips it on purpose (MetadataStore owns pane labels). This path is
           // the opposite case: the normal serializer just failed, so anything
@@ -457,6 +460,7 @@ function buildSessionData(dumped: Map<string, boolean>): SessionData {
     attentionBlink: state.attentionBlink,
     attentionBlinkRemindMs: state.attentionBlinkRemindMs,
     attentionBlinkFinished: state.attentionBlinkFinished,
+    windowGlass: state.windowGlass,
     sidebarSortMode: state.sidebarSortMode,
     sidebarSortModeChosen: state.sidebarSortModeChosen,
     sidebarPinnedIds: state.sidebarPinnedIds,
@@ -474,6 +478,10 @@ function buildSessionData(dumped: Map<string, boolean>): SessionData {
     notificationSoundEnabled: state.notificationSoundEnabled,
     toastEnabled: state.toastEnabled,
     notificationRingEnabled: state.notificationRingEnabled,
+    paneRingEnabled: state.paneRingEnabled,
+    paneFlashEnabled: state.paneFlashEnabled,
+    taskbarFlashEnabled: state.taskbarFlashEnabled,
+    paneGlowOpacity: state.paneGlowOpacity,
     anthropicUsageEnabled: state.anthropicUsageEnabled,
     usageLimitAutoResume: state.usageLimitAutoResume,
     claudeResumeOnStart: state.claudeResumeOnStart,
@@ -502,7 +510,6 @@ function buildSessionData(dumped: Map<string, boolean>): SessionData {
     agentToolbarEnabled: state.agentToolbarEnabled,
     agentToolbarPinned: state.agentToolbarPinned,
     agentToolbarSnippets: state.toolbarSnippets.length > 0 ? state.toolbarSnippets : undefined,
-    agentToolbarNewCommand: state.newConversationCommand,
   };
 }
 
@@ -1083,6 +1090,12 @@ export default function AppLayout() {
       dragCounterRef.current = 0;
 
       const state = useStore.getState();
+      // The Bots page: a drop is photos for its open composer, never a path
+      // typed into a pane the page covers.
+      if (state.appRoute === 'bots') {
+        deliverBotsDrop(paths);
+        return;
+      }
       const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
       if (!ws) return;
 
@@ -1721,9 +1734,34 @@ export default function AppLayout() {
     });
     const offConnected = window.electronAPI.daemon.onConnected(() => {
       setDaemonModeActive(true);
+      noteDaemonConnected();
     });
+    // Every surface bound to a pty right now, keyed for the link notice.
+    const boundSurfaces = (): DaemonPaneRef[] => useStore.getState().workspaces.flatMap((ws) =>
+      getWorkspaceLeafPanes(ws).flatMap((leaf) => leaf.surfaces
+        .filter((sf) => sf.ptyId)
+        .map((sf) => ({ surfaceId: sf.id, ptyId: sf.ptyId as string }))));
     const offDisconnected = window.electronAPI.daemon.onDisconnected(() => {
       setDaemonModeActive(false);
+      // Every pane bound right now was attached to the daemon that dropped.
+      noteDaemonDisconnected(boundSurfaces());
+    });
+    // A pane is back once its own session pipe has replayed; the surface
+    // lookup covers a reconcile that rebound it to a new session.
+    const surfaceForPty = (ptyId: string): string | null => boundSurfaces().find((p) => p.ptyId === ptyId)?.surfaceId ?? null;
+    setDaemonLinkSurfaceResolver(surfaceForPty);
+    const offFlushComplete = window.electronAPI.pty.onFlushComplete((ptyId) => {
+      notePaneReattached(ptyId, () => surfaceForPty(ptyId));
+    });
+    // Main dropped a write: whatever sent it, it never reached the shell.
+    const offWriteDropped = window.electronAPI.pty.onWriteDropped((ptyId) => {
+      notePaneWriteDropped(ptyId);
+    });
+    const offReconnecting = window.electronAPI.daemon.onReconnecting(({ attempt }) => {
+      noteDaemonReconnecting(attempt);
+    });
+    const offRespawnExhausted = window.electronAPI.daemon.onRespawnExhausted(() => {
+      noteDaemonGaveUp();
     });
     // B′ stale-daemon auto-replacement started: without this toast the pane
     // freeze + scrollback replay during suspend→respawn→recover reads as an
@@ -1735,6 +1773,10 @@ export default function AppLayout() {
       offConnected();
       offDisconnected();
       offReplacing();
+      offReconnecting();
+      offRespawnExhausted();
+      offFlushComplete();
+      offWriteDropped();
     };
   }, []);
 
@@ -1819,9 +1861,12 @@ export default function AppLayout() {
         const commandRunningSnapshot: Record<string, boolean> = {};
         // Process-truth agent liveness — the chip's edge-trigger gate.
         const agentAliveSnapshot: Record<string, boolean> = {};
+        // #2408: an agent sighted on a recovered pane; on screen hides its pill.
+        const onScreenSnapshot: Record<string, boolean> = {};
         for (const s of sessions) {
           if (s.supervision) snapshot[s.id] = s.supervision;
           if (s.resumeAgent) resumeSnapshot[s.id] = s.resumeAgent as AgentSlug;
+          if (s.resumeAgentOnScreen !== undefined) onScreenSnapshot[s.id] = s.resumeAgentOnScreen;
           if (s.resumeBinding) resumeBindingSnapshot[s.id] = s.resumeBinding;
           if (s.commandRunning !== undefined) commandRunningSnapshot[s.id] = s.commandRunning;
           if (s.agentProcessAlive !== undefined) agentAliveSnapshot[s.id] = s.agentProcessAlive;
@@ -1831,6 +1876,7 @@ export default function AppLayout() {
         useStore.getState().hydrateResumeBindings(resumeBindingSnapshot);
         useStore.getState().hydrateCommandRunning(commandRunningSnapshot);
         useStore.getState().hydrateAgentAlive(agentAliveSnapshot);
+        useStore.getState().hydrateResumeAgentOnScreen(onScreenSnapshot);
         // #1210: the slug is stamped on detect and was never cleared on
         // agent exit. Process-truth `false` and OSC 133 "back at a prompt"
         // are the two signals that the TUI is gone — drop the identity so
@@ -1906,14 +1952,20 @@ export default function AppLayout() {
         // Agent process liveness rides along too — it is the edge (alive→dead)
         // that lets the chip appear on panes without shell integration.
         const agentAliveSnapshot: Record<string, boolean> = {};
+        // #2408: the on-screen sighting rides along, so a hidden pill comes
+        // back once the agent leaves the screen. Not a hint: a consumed pill
+        // stays consumed.
+        const onScreenSnapshot: Record<string, boolean> = {};
         for (const s of sessions) {
           if (s.resumeBinding) snapshot[s.id] = s.resumeBinding;
           if (s.commandRunning !== undefined) cmdSnapshot[s.id] = s.commandRunning;
           if (s.agentProcessAlive !== undefined) agentAliveSnapshot[s.id] = s.agentProcessAlive;
+          if (s.resumeAgentOnScreen !== undefined) onScreenSnapshot[s.id] = s.resumeAgentOnScreen;
         }
         useStore.getState().hydrateResumeBindings(snapshot);
         useStore.getState().hydrateCommandRunning(cmdSnapshot);
         useStore.getState().hydrateAgentAlive(agentAliveSnapshot);
+        useStore.getState().hydrateResumeAgentOnScreen(onScreenSnapshot);
         clearSurfaceAgentsKnownGone(agentAliveSnapshot, cmdSnapshot, requestedAt);
         // An agent relaunched after boot (the Resume pill) is attributed by
         // the daemon seconds later; this tick is what brings its row back.
@@ -2077,7 +2129,7 @@ export default function AppLayout() {
       <ErrorBoundary name="SidebarRail">
         <MiniSidebar rail collapsed={!sidebarVisible} />
       </ErrorBoundary>
-      <div className={`wmux-shell-body relative flex flex-1 min-h-0 min-w-0 ${sidebarPosition === 'right' ? 'flex-row-reverse' : ''}`}>
+      <div className={`wmux-shell-body relative flex flex-1 min-h-0 min-w-0 ${sidebarPosition === 'right' ? 'flex-row-reverse' : ''}`} data-sidebar={sidebarVisible ? 'shown' : 'hidden'}>
       {/* The Workspaces page. Another rail page covers it (RailPage) while it
           stays mounted, full size and inert, so no PTY is resized or lost. */}
       <div className="contents" inert={appRoute !== 'workspaces' && !inspectModeActive} data-workspaces-page>
@@ -2091,7 +2143,7 @@ export default function AppLayout() {
       <ErrorBoundary name="Main">
       {/* `relative` anchors ToolbarHost: the agent toolbar overlays this column
           rather than taking a row, so revealing it never resizes a PTY. */}
-      <div className="flex-1 min-w-0 flex flex-col relative">
+      <div className="wmux-main-column flex-1 min-w-0 flex flex-col relative">
         {/* P1.5 — the status strip moved into the Titlebar (owner feedback:
             the empty titlebar center + a second status row doubled the top
             chrome). This column now starts directly with the pane area. */}

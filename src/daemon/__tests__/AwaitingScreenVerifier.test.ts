@@ -19,6 +19,7 @@ import { generateTextSnapshot } from '../HeadlessSnapshot';
 import { screenShowsActiveDialog, screenShowsAgentDialog } from '../transcript/chatScreenGate';
 import { askPickerOnScreen, parseAskPicker } from '../approvals/askPicker';
 import type { ApprovalRequest } from '../approvals/types';
+import { deliberateSleep } from '../../test-utils/waitFor';
 
 // ── Replay fixtures ──────────────────────────────────────────────────────────
 // Built from the text of a real Claude Code permission dialog raised by a user
@@ -666,7 +667,7 @@ describe('AwaitingScreenVerifier end to end', () => {
       bridge.noteAgentStatus('awaiting_input', true);
       // A click on "1. Yes": press and release, SGR encoded. Not a key.
       bridge.noteInput('\x1b[<0;6;13M\x1b[<0;6;13m');
-      await new Promise((r) => setTimeout(r, 60));
+      await deliberateSleep(60, 'negative: a mouse click must not clear awaiting-human');
       expect(bridge.isAwaitingHuman()).toBe(true);
 
       dataHandler!(RUNNING_FRAME);

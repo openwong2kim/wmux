@@ -155,6 +155,14 @@ export interface PaneLeaf {
    * live construction path assigns one via `assignPaneOrdinals`.
    */
   ordinal?: number;
+  /**
+   * Per-pane notification mute. Same contract as the workspace flag
+   * (WorkspaceMetadata.notificationsMuted): the notification is still
+   * recorded and the sidebar still shows the pane's state, but toast, sound,
+   * ring, taskbar flash and OS toast are skipped. Layout state like `ordinal`,
+   * so it persists via the `...pane` spread. undefined === false.
+   */
+  notificationsMuted?: boolean;
 }
 
 // === Pane Metadata: optional descriptive labels for external tooling ===
@@ -978,6 +986,8 @@ export interface SessionData {
   attentionBlink?: string;
   attentionBlinkRemindMs?: number;
   attentionBlinkFinished?: string;
+  /** macOS window glass level ('off' | 'soft' | 'clear'). Whitelisted on load (windowGlass.ts). */
+  windowGlass?: string;
   /** #1481 — workspace list order ('manual' | 'attention' | 'recent'). Absent in
    *  older sessions; `sidebarAttentionFirst` then decides. Whitelisted on load. */
   sidebarSortMode?: string;
@@ -1005,6 +1015,12 @@ export interface SessionData {
   notificationSoundEnabled?: boolean;
   toastEnabled?: boolean;
   notificationRingEnabled?: boolean;
+  /** #2294 — the notification-effect toggles and the unread-glow opacity.
+   *  Absent in older sessions; each then keeps its default (on, on, on, 0.6). */
+  paneRingEnabled?: boolean;
+  paneFlashEnabled?: boolean;
+  taskbarFlashEnabled?: boolean;
+  paneGlowOpacity?: number;
   /** Whether the user opted in to Anthropic usage polling (#896). No credentials are persisted. */
   anthropicUsageEnabled?: boolean;
   /** Arm a pane held at a usage limit to continue after the reset, unless the pane decided otherwise. */
@@ -1048,7 +1064,6 @@ export interface SessionData {
   agentToolbarEnabled?: boolean;
   agentToolbarPinned?: boolean;
   agentToolbarSnippets?: { id: string; label: string; text: string }[];
-  agentToolbarNewCommand?: string;
 }
 
 // === xterm 20-slot ANSI palette ===

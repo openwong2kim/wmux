@@ -12,11 +12,11 @@
  * which never answers) through the same mute useTerminal uses for replays.
  */
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { Terminal } from '@xterm/xterm';
 import { installShellPromptModeReset } from '../../../shared/terminal/shellPromptModeReset';
 import { beginReplayWrite, createReplayMute, isReplayMuted } from '../replayMute';
+import { readSourceText } from '../../../test-utils/sourceText';
 
 const ESC = '\x1b';
 /** ConPTY's own session-start preamble. */
@@ -70,10 +70,7 @@ describe('replayed ?1004h answer (reattach focus-report leak)', () => {
 });
 
 describe('useTerminal wiring (source-level lock)', () => {
-  const src = readFileSync(
-    path.resolve(process.cwd(), 'src/renderer/hooks/useTerminal.ts'),
-    'utf8',
-  ).replace(/\r\n/g, '\n');
+  const src = readSourceText(path.resolve(process.cwd(), 'src/renderer/hooks/useTerminal.ts'));
 
   it('hands the replay mute to the prompt-mode guard on every build', () => {
     const idx = src.indexOf('const promptModeGuard = installShellPromptModeReset(');

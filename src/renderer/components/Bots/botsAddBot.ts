@@ -5,6 +5,7 @@ import { useStore } from '../../stores';
 import { refreshRoomStatus } from '../../hooks/useRoomSync';
 import type { FactoryBotCreateRequest, FactoryBotCreateResult } from '../../../shared/botCreate';
 import type { FactoryBotPort, FactorySettingsPort } from '../Room/factoryPorts';
+import { botsOnPatch } from './BotsPlanConsent';
 
 /** The factory's settings page (Settings › Bots), by its tab id. */
 export const FACTORY_SETTINGS_TAB = 'factory';
@@ -13,12 +14,22 @@ export function openFactorySettings(): void {
   useStore.getState().openSettingsTab(FACTORY_SETTINGS_TAB);
 }
 
-/** Turn the bots on (the setting Settings' switch writes) and re-read the
- *  page's gate. False: main did not take it (the runtime has not started). */
-export async function turnBotsOn(settings: Pick<FactorySettingsPort, 'set'>): Promise<boolean> {
-  const next = await settings.set({ enabled: true });
+/** on: the bots are on. declined: the owner said no to the plan consent
+ *  (nothing changed). failed: main did not take it (not started). */
+export type TurnBotsOnResult = 'on' | 'declined' | 'failed';
+
+/** Turn the bots on (the setting Settings' switch writes), asking the plan
+ *  consent first when it is not stored yet (`confirm`), and re-read the
+ *  page's gate. */
+export async function turnBotsOn(
+  settings: Pick<FactorySettingsPort, 'get' | 'set'>,
+  confirm: () => Promise<boolean>,
+): Promise<TurnBotsOnResult> {
+  const patch = await botsOnPatch(await settings.get().catch(() => null), confirm);
+  if (!patch) return 'declined';
+  const next = await settings.set(patch);
   await refreshRoomStatus();
-  return !!next?.enabled;
+  return next?.enabled ? 'on' : 'failed';
 }
 
 /** A create right after the bots were turned on may meet a runtime still

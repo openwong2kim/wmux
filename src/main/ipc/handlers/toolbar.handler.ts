@@ -26,17 +26,6 @@ export function registerToolbarHandlers(): () => void {
     return gitStatusPorcelain(resolved);
   }));
 
-  ipcMain.removeHandler(IPC.DIALOG_PICK_FILE);
-  ipcMain.handle(IPC.DIALOG_PICK_FILE, wrapHandler(IPC.DIALOG_PICK_FILE, async (event: Electron.IpcMainInvokeEvent): Promise<string[]> => {
-    const win = BrowserWindow.fromWebContents(event.sender);
-    const opts = { properties: ['openFile', 'multiSelections'] as Array<'openFile' | 'multiSelections'> };
-    const result = win
-      ? await dialog.showOpenDialog(win, opts)
-      : await dialog.showOpenDialog(opts);
-    if (result.canceled) return [];
-    return result.filePaths;
-  }));
-
   ipcMain.removeHandler(IPC.DIALOG_PICK_FOLDER);
   ipcMain.handle(IPC.DIALOG_PICK_FOLDER, wrapHandler(IPC.DIALOG_PICK_FOLDER, async (event: Electron.IpcMainInvokeEvent): Promise<string[]> => {
     const win = BrowserWindow.fromWebContents(event.sender);
@@ -50,7 +39,6 @@ export function registerToolbarHandlers(): () => void {
 
   return () => {
     ipcMain.removeHandler(IPC.GIT_STATUS);
-    ipcMain.removeHandler(IPC.DIALOG_PICK_FILE);
     ipcMain.removeHandler(IPC.DIALOG_PICK_FOLDER);
   };
 }

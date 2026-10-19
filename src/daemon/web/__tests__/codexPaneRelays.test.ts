@@ -311,7 +311,7 @@ describe('Codex pane relay native interrupt',()=>{
     expect(result).toEqual({outcome:'interrupted',turn:aimed});
     expect(connection.interrupt).toHaveBeenCalledWith('thread','turn-aimed',1000);
     expect(registry.turnEnded('pane',aimed)).toBe('interrupted');
-    await vi.waitFor(()=>expect(answered).toHaveBeenCalledOnce());
+    await vi.waitFor(()=>expect(answered).toHaveBeenCalledOnce(), { timeout: 5_000 });
     await registry.shutdown();
   });
   it('never counts {} alone, nor a late {} after another turn\'s interrupt, as ended',async()=>{

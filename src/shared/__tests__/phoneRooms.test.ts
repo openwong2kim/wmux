@@ -29,6 +29,14 @@ describe('phone room cards', () => {
     expect(parsePhoneRoomCard(out)).toEqual(out);
   });
 
+  it("carries an owner card's photos without their upload names; no other card carries any", () => {
+    const photo = { id: 'a'.repeat(32), mediaType: 'image/jpeg' as const, bytes: 1234, width: 1568, height: 1176, upload: 'photo-2026-10-18T01-02-03-456Z-0a1b2c3d.jpg' };
+    const owner = phoneRoomCard(card(7, { kind: 'human', actor: { kind: 'human' }, attachments: [photo] }), () => null);
+    expect(owner?.attachments).toEqual([{ id: photo.id, mediaType: 'image/jpeg', bytes: 1234, width: 1568, height: 1176 }]);
+    expect(parsePhoneRoomCard(owner)).toEqual(owner);
+    expect(phoneRoomCard(card(8, { attachments: [photo] }), () => null)).not.toHaveProperty('attachments');
+  });
+
   it("gives an owner card a phone sent its clientMessageId, and no other card any id", () => {
     const human = { kind: 'human' as const, actor: { kind: 'human' as const } };
     const owner = phoneRoomCard(card(4, { ...human, clientPostId: 'phone:0123456789abcdef:msg-1' }), () => null);
@@ -86,6 +94,71 @@ describe('phone room cards', () => {
   it('workspace ids follow the room store rule', () => {
     expect(isPhoneRoomWorkspaceId('ws-1')).toBe(true);
     for (const bad of ['', '..', 'a/b', 'x'.repeat(81), 5]) expect(isPhoneRoomWorkspaceId(bad)).toBe(false);
+  });
+});
+
+describe('phone room cards — notice and approvalAction', () => {
+  const sys = { actor: { kind: 'system' as const }, kind: 'fact' as const };
+
+  it('passes a system card\'s notice for a published code, its title kept in English', () => {
+    const c = card(1, { ...sys, title: 'Task done: Add a flag', notice: { code: 'task.done', args: { title: 'Add a flag' } } });
+    const out = phoneRoomCard(c, () => null);
+    expect(out?.notice).toEqual({ code: 'task.done', args: { title: 'Add a flag' } });
+    expect(out?.title).toBe('Task done: Add a flag');
+    expect(parsePhoneRoomCard(out)).toEqual(out);
+    expect(phoneRoomCard(card(2, { ...sys, notice: { code: 'gate.passed' } }), () => null)?.notice).toEqual({ code: 'gate.passed' });
+  });
+
+  it('drops a notice with an unpublished code, on a card that is not the system\'s, or that is no object', () => {
+    for (const code of ['task.later', 'constructor', '__proto__', 'toString', '', 7]) {
+      expect(parsePhoneRoomCard({ ...card(1, sys), notice: { code } })?.notice, String(code)).toBeUndefined();
+    }
+    expect(phoneRoomCard(card(1, { notice: { code: 'task.done', args: { title: 'x' } } }), () => null)?.notice).toBeUndefined();
+    expect(parsePhoneRoomCard({ ...card(1, sys), notice: 'task.done' })?.notice).toBeUndefined();
+    expect(parsePhoneRoomCard({ ...card(1, sys), notice: ['task.done'] })?.notice).toBeUndefined();
+  });
+
+  it('keeps only the code\'s own args, each of its type, strings bounded and without control characters', () => {
+    const out = parsePhoneRoomCard({
+      ...card(1, sys),
+      notice: { code: 'worker.waiting', args: {
+        title: `a\u0007b‮${'x'.repeat(600)}`, inUse: 2, cap: '3', bots: 'Lead\nDev', botCount: Number.NaN, secret: 'hunter2', constructor: 'x',
+      } },
+    });
+    expect(Object.keys(out?.notice?.args ?? {}).sort()).toEqual(['bots', 'inUse', 'title']);
+    expect(out?.notice?.args?.inUse).toBe(2);
+    expect(out?.notice?.args?.bots).toBe('Lead\nDev');
+    const title = out?.notice?.args?.title as string;
+    expect(title.startsWith('abx')).toBe(true);
+    expect(title).toHaveLength(500);
+    expect(parsePhoneRoomCard(out)).toEqual(out);
+    // No arg left: the code alone.
+    expect(parsePhoneRoomCard({ ...card(1, sys), notice: { code: 'gate.failed', args: { exit: 'one' } } })?.notice).toEqual({ code: 'gate.failed' });
+  });
+
+  it('gives an approval card its request\'s action, and no other card one', () => {
+    const approval = card(1, { kind: 'approval', refs: { approvalId: 'apr-aaaaaaaa1' } });
+    const asked: string[] = [];
+    const action = (id: string) => (asked.push(id), 'merge');
+    const out = phoneRoomCard(approval, () => null, action);
+    expect(out?.approvalAction).toBe('merge');
+    expect(asked).toEqual(['apr-aaaaaaaa1']);
+    expect(parsePhoneRoomCard(out)).toEqual(out);
+    // A later action passes by its name (the app shows it as desktop-only).
+    expect(phoneRoomCard(approval, () => null, () => 'skill')?.approvalAction).toBe('skill');
+    expect(phoneRoomCard(approval, () => null, () => null)?.approvalAction).toBeUndefined();
+    expect(phoneRoomCard(approval, () => null)?.approvalAction).toBeUndefined();
+    expect(phoneRoomCard(card(2, { kind: 'status', refs: { approvalId: 'apr-aaaaaaaa1' } }), () => null, action)?.approvalAction).toBeUndefined();
+    expect(phoneRoomCard(card(3, { kind: 'approval' }), () => null, action)?.approvalAction).toBeUndefined();
+    for (const v of ['Merge', 'a b', '', 'x'.repeat(41), 3]) expect(parsePhoneRoomCard({ ...approval, approvalAction: v })?.approvalAction, String(v)).toBeUndefined();
+    expect(parsePhoneRoomCard({ ...card(4), approvalAction: 'merge' })?.approvalAction).toBeUndefined();
+  });
+
+  it('leaves every other field as it was', () => {
+    const c = card(5, { ...sys, body: 'evidence', refs: { taskId: 't1' }, notice: { code: 'task.done', args: { title: 't' } } });
+    const { notice, ...rest } = phoneRoomCard(c, () => null, () => 'merge') ?? {};
+    expect(notice).toBeDefined();
+    expect(rest).toEqual(phoneRoomCard({ ...c, notice: undefined }, () => null));
   });
 });
 

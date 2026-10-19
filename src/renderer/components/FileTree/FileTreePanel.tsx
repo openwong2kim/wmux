@@ -491,6 +491,18 @@ export default function FileTreePanel({ position }: FileTreePanelProps) {
         >
           <IconRefresh size={14} />
         </button>
+        {/* The column's own way out: the agent bar's Files button is not on
+            screen while the bar is off or a remote workspace is shown. */}
+        <button
+          type="button"
+          className={`wmux-filetree-action ${FOCUS_RING}`}
+          onClick={() => useStore.getState().setFileTreeVisible(false)}
+          title={t('filetree.toggleHide')}
+          aria-label={t('filetree.toggleHide')}
+          data-file-tree-close
+        >
+          <IconX size={14} />
+        </button>
       </div>
 
       {filterOpen && root && (

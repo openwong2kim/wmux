@@ -6,6 +6,9 @@
 // worker (fake-claude.mjs), logged as agent "codex":
 //
 //   codex --version                          → a version at the guard's floor
+//   codex --help / codex features list       → what the pane shell's codex
+//      wrapper probes for (--no-daemon, daemon_auto_start), as codex-cli
+//      0.162.1 answers, so the wrapper keeps the pane's identity
 //   codex execpolicy check --rules <f>… <cmd>  → "forbidden" when a rules file
 //      holds a wmux rule whose pattern starts with the command's first two
 //      words; exit 1 when a file is not rules (as a real codex refuses a file
@@ -18,6 +21,14 @@ import fs from 'node:fs';
 const argv = process.argv.slice(2);
 if (argv[0] === '--version') {
   process.stdout.write('codex-cli 0.162.1\n');
+  process.exit(0);
+}
+if (argv[0] === '--help') {
+  process.stdout.write('Usage: codex [OPTIONS] [PROMPT]\n      --no-daemon\n');
+  process.exit(0);
+}
+if (argv[0] === 'features' && argv[1] === 'list') {
+  process.stdout.write('daemon_auto_start                        stable             true\n');
   process.exit(0);
 }
 if (argv[0] === 'execpolicy' && argv[1] === 'check') {

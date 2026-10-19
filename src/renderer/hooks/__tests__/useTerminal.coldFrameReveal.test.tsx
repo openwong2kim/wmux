@@ -17,6 +17,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { setDaemonModeActive } from '../../daemon/daemonMode';
 import { useStore } from '../../stores';
 import { __coldFrameKeys, __resetColdFrames, COLD_FRAME_STORAGE_KEY, rememberColdFrame } from '../../terminal/coldFrame';
+import { deliberateSleep } from '../../../test-utils/waitFor';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -98,7 +99,7 @@ afterEach(() => {
   localStorage.clear();
 });
 
-const settle = () => act(async () => { await new Promise((r) => setTimeout(r, 50)); });
+const settle = () => act(async () => { await deliberateSleep(50, 'not yet converted (#2363): lets the reveal settle under act; nothing polled'); });
 
 async function mount(ptyId: string, visible: boolean): Promise<(visible: boolean) => Promise<void>> {
   const { useTerminal } = await import('../useTerminal');

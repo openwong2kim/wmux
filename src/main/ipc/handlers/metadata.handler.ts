@@ -19,6 +19,7 @@ import { PrCiRouter } from '../../metadata/PrCiRouter';
 import { PrReviewRouter } from '../../metadata/PrReviewRouter';
 import { ghPrService } from '../../github/GhPrService';
 import { publishPrOwnerEvent } from '../../deck/prOwnerNotify';
+import { clearTurnEvidence, noteBroadcastStatus } from '../../notification/turnEvidence';
 
 // AO-style CI feedback (owner decision 2026-07-18). Module singletons set at
 // registration (they need getWindow for workspace resolution). The poll feeds
@@ -113,6 +114,7 @@ export function clearLastBroadcastAgentStatus(ptyId: string): void {
   lastBroadcastAgentStatus.delete(ptyId);
   lastBroadcastAgentName.delete(ptyId);
   runningClaimOutstanding.delete(ptyId);
+  clearTurnEvidence(ptyId);
 }
 
 /** Test-only: reset between PTYs when a suite reuses the same id across cases. */
@@ -120,6 +122,7 @@ export function resetLastBroadcastAgentStatusForTests(): void {
   lastBroadcastAgentStatus.clear();
   lastBroadcastAgentName.clear();
   runningClaimOutstanding.clear();
+  clearTurnEvidence();
 }
 
 /**
@@ -140,6 +143,8 @@ export function broadcastMetadataUpdate(
   // window is a transport detail the idle-clear deferral logic doesn't need
   // to know about.
   if (payload.ptyId && payload.agentStatus !== undefined) {
+    // Turn evidence for the idle stops of bot workers (turnEvidence.ts).
+    noteBroadcastStatus(payload.ptyId, payload.agentStatus, payload.hookKind);
     lastBroadcastAgentStatus.set(payload.ptyId, payload.agentStatus);
   }
   if (payload.ptyId) {
@@ -185,6 +190,12 @@ const cwdMap = new Map<string, string>();
 // mode); OSC 7727 shell integration also still writes here.
 const branchMap = new Map<string, string>();
 
+// Panes the watcher knows have no branch (cwd outside any repo, watched for a
+// `.git` appearing). With branchMap this keeps the watcher's three answers
+// apart: a branch, known absent, and unknown (in neither: no watcher event
+// yet, or a failed read). Only unknown falls back to exec-ing git.
+const branchKnownAbsent = new Set<string>();
+
 // X1 — linked-worktree flag per ptyId (same watcher as branchMap).
 const worktreeMap = new Map<string, boolean>();
 
@@ -212,9 +223,12 @@ export function onCwdUpdate(listener: CwdListener): () => void {
 async function buildMetadataPayload(ptyId: string): Promise<MetadataUpdatePayload | null> {
   const cwd = cwdMap.get(ptyId);
   if (!cwd) return null;
-  // Watcher/shell-integration branch wins; exec git only as fallback so a
-  // session that predates the watcher (or a watch failure) still resolves.
-  const gitBranch = branchMap.get(ptyId) ?? (await collector.getGitBranch(cwd)) ?? '';
+  // Watcher/shell-integration branch wins, and a watcher-known "no branch"
+  // is final. Exec git (behind MetadataCollector's per-directory cache) only
+  // when the watcher has no answer, so a session that predates the watcher
+  // (or a failed read) still resolves.
+  const gitBranch = branchMap.get(ptyId)
+    ?? (branchKnownAbsent.has(ptyId) ? '' : (await collector.getGitBranch(cwd)) ?? '');
   const payload: MetadataUpdatePayload = { ptyId, cwd, gitBranch };
   const isWorktree = worktreeMap.get(ptyId);
   if (isWorktree !== undefined) payload.gitIsWorktree = isWorktree;
@@ -280,6 +294,7 @@ export async function runMetadataPollTick(
     if (localPtyOwnership && !instance) {
       cwdMap.delete(ptyId);
       branchMap.delete(ptyId);
+      branchKnownAbsent.delete(ptyId);
       worktreeMap.delete(ptyId);
       portsMap.delete(ptyId);
       prCiRouter?.forget(ptyId);
@@ -588,11 +603,21 @@ export function removeCwd(ptyId: string): void {
 export function updateBranch(ptyId: string, branch: string): void {
   if (branchMap.get(ptyId) !== branch) invalidatePrProof(ptyId);
   branchMap.set(ptyId, branch);
+  branchKnownAbsent.delete(ptyId);
 }
 
+/** Forget the pane's branch: the poll asks git again (unknown). */
 export function removeBranch(ptyId: string): void {
   if (branchMap.has(ptyId)) invalidatePrProof(ptyId);
   branchMap.delete(ptyId);
+  branchKnownAbsent.delete(ptyId);
+}
+
+/** The watcher knows the pane has no branch: the poll reports none and
+ *  spawns no git for it until a branch or a forget arrives. */
+export function markBranchAbsent(ptyId: string): void {
+  removeBranch(ptyId);
+  branchKnownAbsent.add(ptyId);
 }
 
 export function getCwd(ptyId: string): string | undefined {

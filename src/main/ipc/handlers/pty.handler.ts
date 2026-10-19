@@ -13,23 +13,36 @@ import { IPC, ENV_KEYS, isBrainPty } from '../../../shared/constants';
 import { DAEMON_RESYNC_RPC_TIMEOUT_MS } from '../../../shared/timeouts';
 import { writePidMap, removePidMapByPtyId } from '../../pty/pidMap';
 import { DaemonDataBatcher } from '../../pty/DaemonDataBatcher';
+import { stripPassiveInput } from '../../../shared/terminal/passiveInput';
 import { sanitizePtyText } from '../../../shared/types';
 import { isShadowWorkspaceId } from '../../../shared/pcRail/shadowId';
 import { resolveSpawnEnv } from '../../pty/resolveSpawnEnv';
 import { withFreshWindowsPath } from '../../../shared/windowsPathEnv';
 import { getAccountStore } from '../../account/accountStore';
 import { withAccountQuota } from '../../account/accountQuotaGate';
-import { botWorkerForCreate, clearedLaunchLine, forgetBotWorkerSession, guardSessionLaunch, guardedCodexCwdRefusal, noteBotWorkerSession, withBotWorkerMergeGuard } from '../../agents/botWorkerMergeGuard';
+import { botWorkerForCreate, botWorkerLaunchTask, botWorkerSessionRecord, clearedLaunchLine, forgetBotWorkerSession, guardedClaudeCwdRefusal, guardedCodexCwdRefusal, guardedCodexLaunch, guardedLaunchOf, isBotWorkerSession, noteBotWorkerSession, paneLaunchFolders, setWorkerMcpResolvers, withBotWorkerMergeGuard, type BotWorkerCreate } from '../../agents/botWorkerMergeGuard';
+import { isPlainCmdLaunchLine, namesClaude } from '../../../shared/botWorkerGuard';
+import { namesCodex } from '../../../shared/codexWorkerGuard';
+import { getMcpTarget } from '../../../shared/mcpTargets';
+import { readTargetStatus } from '../../../shared/mcpRegistration';
 import { revokeSecretGrant, secretEnvForCreate } from '../../factory/secretGrants';
+import { noteSessionAgentLaunched, noteSessionInput, noteTaskWorkerLaunched } from '../../factory/agentGoneFacts';
+import { beginPaneRelaunch, launchStillCurrent, startsAgent } from '../../factory/workerSlots';
 import { withLaunchSessionPin } from '../../agents/launchSessionPin';
-import { guardCodexBotWorker } from '../../agents/codexWorkerGuard';
+import { guardBotWorkerSessionText, guardCodexBotWorker } from '../../agents/codexWorkerGuard';
 import { resolveEnvPolicy, type SpawnKind } from '../../../shared/spawnKind';
 import { withheldCredentialNames } from '../../../shared/envFilter';
 import { getShellUtf8Locale } from '../../pty/shellLocale';
-import { forgetPtyShell, recordPtyShell } from '../../pty/ptyShellRegistry';
+import { forgetPtyShell, getPtyShell, recordPtyShell } from '../../pty/ptyShellRegistry';
+import { cmdLaunchPathRefusal, isCmdShellPath, promptFileArgumentForShell } from '../../../shared/promptFileArgument';
+import { resolveWslWorkerGit, withWslWorkerGit } from '../../agents/wslWorkerGit';
 import { withDaemonCreateRollback } from './daemonCreateRollback';
 import { getWorkspaceMirror } from '../../workspace/WorkspaceMirror';
+import { getWmuxDir } from '../../../daemon/config';
 import { scheduleInitialCommand } from './scheduleInitialCommand';
+import { verifyLaunchLine, type LaunchLineRead } from './verifyLaunchLine';
+import { LAUNCH_PROBE_CONFIRM_TIMEOUT_MS } from '../../worktask/fanoutLaunchProbe';
+import { launchPresenceAllowsResend, type LaunchPresenceVerdict } from '../../../daemon/launchPresence';
 import {
   createSessionDataDispatcher,
   type SessionDataDispatcher,
@@ -50,7 +63,8 @@ import {
   PROJECT_SUPERVISION_HEALTHY_UPTIME_SEC_MAX,
 } from '../../../shared/wmuxProjectConfig';
 import type { DaemonSupervisionPolicy } from '../../../shared/rpc';
-import type { ResumeBinding } from '../../../shared/agentResume';
+import { launchedConversation, type ResumeBinding } from '../../../shared/agentResume';
+import { splitModelEnvMarker } from '../../../shared/workerLaunch';
 import type { AgentSlug } from '../../../shared/events';
 import { createDeadPaneRecovery, type DeadPaneRecovery } from '../../../shared/ptyRecovery';
 import { isWslShell, type WslTarget } from '../../../shared/wsl';
@@ -60,7 +74,7 @@ import { agentDisplayToSlug } from '../../../shared/agentIdentity';
 import { wslDistroArgs, isWslDistroSpawnArgs } from '../../../shared/wslDistro';
 import { getDefaultWslDistro } from '../../pty/defaultWslDistro';
 import { SessionPromptScheduler } from '../../pty/SessionPromptScheduler';
-import { stampFanoutTaskPane } from '../../worktask/fanoutGuards';
+import { recordFanoutTaskPane, stampFanoutTaskPane } from '../../worktask/fanoutGuards';
 import type { FanoutOrigin } from '../../../shared/fanoutOrigin';
 import {
   removeSessionPromptSchedulesForPty,
@@ -138,6 +152,8 @@ type PtyCreateOptions = {
   wmuxTools?: unknown;
   /** A bot worker's single-use secret grant (main/factory/secretGrants). */
   secretGrant?: string;
+  /** Fan-out task pane: the task launch it is for (main/factory/workerSlots). */
+  fanoutLaunch?: unknown;
 };
 
 
@@ -167,6 +183,72 @@ function withWmuxTools(options: PtyCreateOptions | undefined): PtyCreateOptions 
   });
   if (initialCommand !== rest.initialCommand) console.log('[pty:create] wmux tool level applied', { tools: wmuxTools.tools, role: wmuxTools.role });
   return { ...rest, initialCommand };
+}
+
+/** The shell a create will spawn (the same default both modes use). */
+function createShell(options: PtyCreateOptions | undefined): string {
+  return options?.shell || (process.platform === 'win32' ? new ShellDetector().getDefault() : (process.env.SHELL || '/bin/bash'));
+}
+
+/** The owner's registered claude wmux server level (`core`, `full`, ...). */
+function registeredClaudeLevel(): string | null {
+  try {
+    const target = getMcpTarget('claude');
+    return target ? readTargetStatus(target, app.getPath('home')).wmux.profile ?? null : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * pty:create's launch stages, in order: the account quota, the wmux tool
+ * level, the codex worker guard, the merge-lane guard (botWorkerMergeGuard)
+ * and the session pin. A bot worker's claude line loads only the MCP servers
+ * main writes for it, so a role binding's tool level goes to that guard (as
+ * its wmux level) instead of being spliced on its own, and the hint is
+ * dropped. Returns what the guarded launch carried, for its session record.
+ */
+async function stageCreate(options: PtyCreateOptions | undefined, botWorker: BotWorkerCreate | null): Promise<{ options: PtyCreateOptions | undefined; launch: ReturnType<typeof guardedLaunchOf> & ReturnType<typeof launchOfCodex> & { conversation?: ReturnType<typeof launchedConversation> } }> {
+  // A fan-out line's prompt argument was built for the platform; the pane's
+  // shell decides its form (a WSL pane runs bash).
+  const shellPath = createShell(options);
+  const wsl = isWslShell(shellPath);
+  const line0 = options?.initialCommand;
+  // #2256: a path cmd cannot carry is refused by its own cause, before the
+  // merge-lane guard would refuse the line as one it cannot guard.
+  if (botWorker && line0 && process.platform === 'win32' && isCmdShellPath(shellPath)) {
+    const refusal = cmdLaunchPathRefusal(line0, getWmuxDir(), namesClaude(line0) && !namesCodex(line0));
+    if (refusal) throw new Error(`PTY_CREATE: ${refusal}`);
+  }
+  if (options && line0) {
+    const rewritten = promptFileArgumentForShell(line0, { wsl, cmd: process.platform === 'win32' && isCmdShellPath(shellPath) });
+    if (rewritten !== line0) options = { ...options, initialCommand: rewritten };
+  }
+  let staged = await withAccountQuota(options);
+  let level: string | undefined;
+  const line = staged?.initialCommand;
+  if (botWorker && staged && line && namesClaude(line) && !namesCodex(line)) {
+    const { wmuxTools, ...rest } = staged;
+    if (isWmuxToolsHint(wmuxTools)) level = wmuxTools.tools;
+    staged = rest;
+  } else {
+    staged = withWmuxTools(staged);
+  }
+  const guarded = withBotWorkerMergeGuard(await guardCodexBotWorker(staged, botWorker), botWorker, {}, { wsl, ...(level ? { level } : {}) });
+  // A bot worker's line in a cmd.exe pane is read by cmd's own rules.
+  if (botWorker && process.platform === 'win32' && isCmdShellPath(shellPath) && guarded?.initialCommand && !isPlainCmdLaunchLine(guarded.initialCommand)) {
+    throw new Error('PTY_CREATE: a bot\'s worker line for a Command Prompt pane holds characters cmd would read as more than one command');
+  }
+  const pinned = withLaunchSessionPin(guarded);
+  // A bot worker's record keeps the conversation its line pinned and the mode
+  // that line starts it in (workerReclaim.ts: a resume with no hook-recorded mode).
+  const conversation = botWorker && pinned?.initialCommand ? launchedConversation(splitModelEnvMarker(pinned.initialCommand).command) : null;
+  return { options: pinned, launch: { ...launchOfCodex(guarded), ...guardedLaunchOf(guarded), ...(conversation ? { conversation } : {}) } };
+}
+
+/** A guarded codex launch's folder and repository, for its session record. */
+function launchOfCodex(options: PtyCreateOptions | undefined): { agent?: string; cwd?: string; repoKey?: string; codexHome?: string } {
+  return guardedCodexLaunch(options) ?? {};
 }
 
 /** Clamp one runaway-guard bound to its cap; falls back to `def` when absent.
@@ -295,6 +377,8 @@ export function registerPTYHandlers(
   getWindow?: () => BrowserWindow | null,
 ): () => void {
   const useDaemon = daemonClient?.isConnected ?? false;
+  // A bot worker's launch writes its own wmux server entry (botWorkerMcp.ts).
+  setWorkerMcpResolvers({ entry: currentMcpEntry, registeredLevel: registeredClaudeLevel });
 
   // Per-session data dispatch. DaemonClient emits a SINGLE 'session:data' event
   // for ALL sessions; the O(N)-listeners-per-chunk fan-out (and its
@@ -438,7 +522,8 @@ export function registerPTYHandlers(
       // the daemon apart from `env` (DaemonCreateSessionParams.secretEnv).
       const secretEnv = secretEnvForCreate(options, botWorker);
       const grantedCwd = options?.cwd;
-      options = withLaunchSessionPin(withBotWorkerMergeGuard(await guardCodexBotWorker(withWmuxTools(await withAccountQuota(options)), botWorker), botWorker));
+      const staged = await stageCreate(options, botWorker);
+      options = staged.options;
 
       // X8 exec-style unit: a supervised wmux.json leaf runs its command as the
       // pane's root process under a daemon-chosen wrapper shell (the daemon
@@ -456,8 +541,8 @@ export function registerPTYHandlers(
       // both modes pick the same default.
       const shell = options?.shell || (process.platform === 'win32' ? new ShellDetector().getDefault() : (process.env.SHELL || '/bin/bash'));
       const cwdResolution = resolvePtyCreateCwdForShell(options?.cwd, options?.recoveryCwds, shell);
-      // A bot's codex worker starts in the folder its rules were written into.
-      const codexCwdRefusal = guardedCodexCwdRefusal(options, cwdResolution);
+      // A bot's worker starts in the folder its rules or settings were checked in.
+      const codexCwdRefusal = guardedCodexCwdRefusal(options, cwdResolution) ?? guardedClaudeCwdRefusal(staged.launch, cwdResolution);
       if (codexCwdRefusal) throw new Error(codexCwdRefusal);
       if (secretEnv) {
         const refusal = secretCreateCwdRefusal(grantedCwd, cwdResolution);
@@ -486,7 +571,14 @@ export function registerPTYHandlers(
       const sessionId = `daemon-${crypto.randomUUID().slice(0, 8)}`;
       logCwdResolution(sessionId, cwdResolution.incomingCwd, safeCwd, cwdResolution.source);
       // Recorded before the session exists, so a restart always knows it.
-      if (botWorker) noteBotWorkerSession(sessionId, botWorker.workspaceId);
+      if (botWorker) {
+        const launchTask = botWorkerLaunchTask(botWorker);
+        noteBotWorkerSession(sessionId, botWorker.workspaceId, undefined, { ...staged.launch, ...launchTask });
+        // A new worker session for the task (a respawn or a resume): its agent runs again.
+        if (launchTask.taskId) noteTaskWorkerLaunched(launchTask.taskId);
+      }
+      // A fan-out task pane's task and launch generation, bot or owner.
+      recordFanoutTaskPane(options, sessionId);
 
       // Identity env vars for the spawned shell. The daemon's
       // `buildSafeChildEnv` passes WMUX_WORKSPACE_ID / WMUX_SURFACE_ID
@@ -579,6 +671,13 @@ export function registerPTYHandlers(
       // native-terminal freshness. No-op off win32 / on failure. (Recovery replays
       // the persisted create-time env verbatim; refreshing that is a follow-up.)
       const resolvedEnv = resolveSpawnEnv(withFreshWindowsPath(globalThis.process.env), options?.env, identity, getShellUtf8Locale(), envPolicy, accountEnv);
+      // #2231 — a fan-out task pane in WSL on a Windows-drive worktree: Linux
+      // git gets the worktree's gitdir by its Linux path (wslWorkerGit.ts).
+      if ((botWorker || options?.fanoutTaskOf) && isWslShell(shell) && safeCwd) {
+        await withWslWorkerGit(resolvedEnv, safeCwd, wslArgs?.[1] ?? null).catch((err) => {
+          console.warn(`[pty:create] ${sessionId}: WSL task git location not set: ${String(err)}`);
+        });
+      }
       // 관측 floor: gated pane에서 자격증명을 withheld하면 로컬 로그 1줄.
       if (envPolicy === 'gated') {
         const withheld = withheldCredentialNames(globalThis.process.env);
@@ -646,8 +745,54 @@ export function registerPTYHandlers(
       // is a no-op (its onFirstData stays a harmless call below).
       // A bot worker's line clears the screen first (clearedLaunchLine).
       const typedLine = execCommand !== undefined ? undefined : options?.initialCommand;
+      const writeLaunchLine = (cmd: string): boolean => {
+        // The task launch it is for was abandoned (its spawn timed out) or
+        // replaced since the create: nothing is typed, and the pane goes.
+        if (!launchStillCurrent(options?.fanoutLaunch)) {
+          console.warn(`[pty:create] ${sessionId}: its task launch was abandoned; the launch line is not typed`);
+          void daemonClient.rpc('daemon.destroySession', { id: sessionId }).catch(() => undefined);
+          return true;
+        }
+        return daemonClient.writeToSession(sessionId, sanitizePtyText(cmd) + '\r');
+      };
+      // F26 — a fan-out task pane's line is checked once written, and written
+      // once more if the shell never read it (verifyLaunchLine.ts).
+      const verifyTaskLine = !!botWorker || !!options?.fanoutTaskOf;
+      let verifying = false;
       const initialCmd = scheduleInitialCommand(botWorker && !isWslShell(shell) ? clearedLaunchLine(typedLine, shell) : typedLine, {
-        write: (cmd) => daemonClient.writeToSession(sessionId, sanitizePtyText(cmd) + '\r'),
+        write: (cmd) => {
+          const delivered = writeLaunchLine(cmd);
+          if (delivered && verifyTaskLine && !verifying) {
+            verifying = true;
+            verifyLaunchLine({
+              // A slow read is skipped, not waited on (the default RPC bound is 10 s).
+              read: async () => (await daemonClient.rpc('daemon.readPromptEvents', { sessionId, limit: 32 }, { timeoutMs: 2_000 })) as LaunchLineRead,
+              // The same bytes the first write sent, compared and written in one
+              // daemon step (daemon/writeIfUnchanged.ts).
+              resendIfUnchanged: async (expect) => {
+                // Not for a task launch abandoned or replaced since the first write.
+                if (!launchStillCurrent(options?.fanoutLaunch)) return false;
+                const res = (await daemonClient.rpc('daemon.writeIfUnchanged', { sessionId, data: sanitizePtyText(cmd) + '\r', expect }, { timeoutMs: 5_000 })) as { written?: unknown } | null;
+                const written = res?.written === true;
+                if (written) console.warn(`[pty:create] ${sessionId}: the shell never read the launch line; wrote it once more`);
+                return written;
+              },
+              // The fan-out launch check's own question, process read included:
+              // only its process-table `absent` is evidence that nothing runs
+              // in the pane (never a WSL pane's; launchPresenceAllowsResend).
+              nothingRunning: async () => {
+                const res = (await daemonClient.rpc('daemon.getLaunchPresence', { id: sessionId, probeProcess: true }, { timeoutMs: LAUNCH_PROBE_CONFIRM_TIMEOUT_MS })) as { presence?: unknown; reason?: unknown } | null;
+                return !!res && launchPresenceAllowsResend(res as Pick<LaunchPresenceVerdict, 'presence' | 'reason'>);
+              },
+              onDone: (outcome) => {
+                if (outcome === 'gave-up') console.warn(`[pty:create] ${sessionId}: the shell did not read the launch line after a second write`);
+                // No evidence either way: not re-sent; the fan-out launch check decides.
+                if (outcome === 'unverified') console.warn(`[pty:create] ${sessionId}: launch line unverified (no sign the shell read it, and none that it did not)`);
+              },
+            });
+          }
+          return delivered;
+        },
         onExhausted: () => {
           console.warn(
             `[pty:create] startup command for ${sessionId} not delivered after ` +
@@ -709,7 +854,12 @@ export function registerPTYHandlers(
         revokeSecretGrant(typeof options.secretGrant === 'string' ? options.secretGrant : null);
         throw new Error('PTY_CREATE: a worker with secrets needs the wmux daemon');
       }
-      options = withLaunchSessionPin(withBotWorkerMergeGuard(await guardCodexBotWorker(withWmuxTools(await withAccountQuota(options)), botWorker), botWorker));
+      // A task's connections, like its secrets, need the daemon.
+      if (botWorker?.spawns?.some((s) => (s.connectors?.length ?? 0) > 0)) {
+        throw new Error('PTY_CREATE: a worker with connections needs the wmux daemon');
+      }
+      const staged = await stageCreate(options, botWorker);
+      options = staged.options;
 
       // X8 — supervision lives inside the daemon (decision ②). In local mode it
       // can't be honored, but a silent drop would be a trust violation: the user
@@ -739,8 +889,8 @@ export function registerPTYHandlers(
       const shell = options?.shell
         || (process.platform === 'win32' ? new ShellDetector().getDefault() : (process.env.SHELL || '/bin/bash'));
       const cwdResolution = resolvePtyCreateCwdForShell(options?.cwd, options?.recoveryCwds, shell);
-      // A bot's codex worker starts in the folder its rules were written into.
-      const codexCwdRefusal = guardedCodexCwdRefusal(options, cwdResolution);
+      // A bot's worker starts in the folder its rules or settings were checked in.
+      const codexCwdRefusal = guardedCodexCwdRefusal(options, cwdResolution) ?? guardedClaudeCwdRefusal(staged.launch, cwdResolution);
       if (codexCwdRefusal) throw new Error(codexCwdRefusal);
       const safeCwd = cwdResolution.safeCwd;
       const effectiveCwd = safeCwd ?? undefined;
@@ -752,15 +902,27 @@ export function registerPTYHandlers(
       // #1103 — same distro injection as the daemon branch, so both modes
       // boot the same WSL distro for the same setting.
       const wslArgs = wslDistroArgs(shell, getDefaultWslDistro());
-      const instance = await ptyManager.createAsync({ shell, ...(wslArgs ? { shellArgs: wslArgs } : {}), cols, rows, workspaceId, surfaceId, env, cwd: effectiveCwd, spawnKind, wslAccountLoginEnvKey });
+      // #2231 — as the daemon branch: a WSL fan-out task pane's worktree git location.
+      const wslTaskGit = (botWorker || options?.fanoutTaskOf) && isWslShell(shell) && safeCwd
+        ? await resolveWslWorkerGit(safeCwd, wslArgs?.[1] ?? null).catch(() => null)
+        : null;
+      const instance = await ptyManager.createAsync({ shell, ...(wslArgs ? { shellArgs: wslArgs } : {}), cols, rows, workspaceId, surfaceId, env, cwd: effectiveCwd, spawnKind, wslAccountLoginEnvKey, ...(wslTaskGit ? { wslTaskGit } : {}) });
       logCwdResolution(instance.id, cwdResolution.incomingCwd, safeCwd, cwdResolution.source);
       if (botWorker) {
+        const launchTask = botWorkerLaunchTask(botWorker);
         try {
-          noteBotWorkerSession(instance.id, botWorker.workspaceId);
+          noteBotWorkerSession(instance.id, botWorker.workspaceId, undefined, { ...staged.launch, ...launchTask });
         } catch (err) {
           ptyManager.dispose(instance.id);
           throw err;
         }
+        if (launchTask.taskId) noteTaskWorkerLaunched(launchTask.taskId);
+      }
+      try {
+        recordFanoutTaskPane(options, instance.id);
+      } catch (err) {
+        ptyManager.dispose(instance.id);
+        throw err;
       }
       ptyBridge.setupDataForwarding(instance.id);
       const actualCwd = instance.cwd || effectiveCwd || homedir();
@@ -770,7 +932,14 @@ export function registerPTYHandlers(
       // writes are always delivered locally, so the writer returns void.
       if (initialCommand && initialCommand.trim().length > 0) {
         const initialCmd = scheduleInitialCommand(botWorker && !isWslShell(shell) ? clearedLaunchLine(initialCommand, shell) : initialCommand, {
-          write: (cmd) => { ptyManager.write(instance.id, sanitizePtyText(cmd) + '\r'); },
+          write: (cmd) => {
+            // As the daemon path: an abandoned task launch types nothing.
+            if (!launchStillCurrent(options?.fanoutLaunch)) {
+              ptyManager.dispose(instance.id);
+              return;
+            }
+            ptyManager.write(instance.id, sanitizePtyText(cmd) + '\r');
+          },
         });
         const disposable = instance.process.onData(() => {
           disposable.dispose();
@@ -813,13 +982,21 @@ export function registerPTYHandlers(
   }
 
   ipcMain.removeAllListeners(IPC.PTY_WRITE);
+  // Tell the writing renderer its bytes were dropped, so the pane can say
+  // that input may not have reached the shell (daemonLinkNotice.ts). A write
+  // that is only passive input (a focus report, mouse motion, the terminal's
+  // own reply to a query) is not something the user typed, and is not reported.
+  const reportWriteDropped = (event: Electron.IpcMainEvent, id: string, data: string): void => {
+    if (stripPassiveInput(data).length === 0) return;
+    if (!event.sender.isDestroyed()) event.sender.send(IPC.PTY_WRITE_DROPPED, id);
+  };
   if (useDaemon && daemonClient) {
     // Per-session diagnostic: log the first dropped write so silent
     // input-mute leaves a paper trail in main.log without spamming on
     // every keystroke if a pipe stays dead. Reset when a write succeeds
     // so future regressions still log their first occurrence.
     const writeDropLogged = new Set<string>();
-    const onPtyWrite = (_event: Electron.IpcMainEvent, id: string, data: string): void => {
+    const onPtyWrite = (event: Electron.IpcMainEvent, id: string, data: string): void => {
       if (typeof data !== 'string') return;
       if (data.length > PTY_WRITE_HARD_LIMIT) {
         console.error(`[PTY_WRITE] refused payload exceeding hard limit: ${data.length} chars > ${PTY_WRITE_HARD_LIMIT}. Caller must fix.`);
@@ -830,9 +1007,12 @@ export function registerPTYHandlers(
       }
       // The interrupt edge: Ctrl+C / ESC ESC ends the agent's turn without any
       // Stop hook, and `claude` stays the foreground command so OSC 133 cannot
-      // see it either. Runs before the write so the settle is not gated on
+      // see it either. A lone ESC is recorded, and settles the turn once the
+      // agent prints its "Interrupted" row. Runs before the write so the settle is not gated on
       // delivery — the operator's intent is the same either way.
       ptyBridge.noteInterruptInput(id, data);
+      // The Enter that submits a staged launch line (agentGoneFacts.ts).
+      noteSessionInput(id, data);
       const segments = segmentOversize(data);
       let allDelivered = true;
       for (const segment of segments) {
@@ -843,6 +1023,7 @@ export function registerPTYHandlers(
         }
       }
       if (!allDelivered) {
+        reportWriteDropped(event, id, data);
         if (!writeDropLogged.has(id)) {
           writeDropLogged.add(id);
           console.warn(`[PTY_WRITE] drop sessionId=${id} reason=no-live-session-pipe (first occurrence; suppressing further logs for this id until next successful write)`);
@@ -853,9 +1034,14 @@ export function registerPTYHandlers(
     };
     ipcMain.on(IPC.PTY_WRITE, onPtyWrite);
   } else {
-    const onPtyWrite = (_event: Electron.IpcMainEvent, id: string, data: string): void => {
-      if (!ptyManager.get(id)) return;
+    const onPtyWrite = (event: Electron.IpcMainEvent, id: string, data: string): void => {
       if (typeof data !== 'string') return;
+      // While the daemon is down this handler stands in for it, and a daemon
+      // pane's pty is not here: its input is dropped.
+      if (!ptyManager.get(id)) {
+        reportWriteDropped(event, id, data);
+        return;
+      }
       if (data.length > PTY_WRITE_HARD_LIMIT) {
         console.error(`[PTY_WRITE] refused payload exceeding hard limit: ${data.length} chars > ${PTY_WRITE_HARD_LIMIT}. Caller must fix.`);
         return;
@@ -865,6 +1051,7 @@ export function registerPTYHandlers(
       }
       // Interrupt edge — same reasoning as the daemon branch above.
       ptyBridge.noteInterruptInput(id, data);
+      noteSessionInput(id, data);
       const segments = segmentOversize(data);
       for (const segment of segments) {
         ptyManager.write(id, sanitizePtyText(segment));
@@ -887,13 +1074,42 @@ export function registerPTYHandlers(
     if (typeof id !== 'string' || typeof text !== 'string' || text.length > PTY_WRITE_BACKSTOP) {
       throw new Error('PTY_WRITE_LAUNCH: an id and a line are required');
     }
-    const line = sanitizePtyText(guardSessionLaunch(id, text)) + (submit === true ? '\r' : '');
-    if (useDaemon && daemonClient) {
-      if (!daemonClient.writeToSession(id, line)) throw new Error('PTY_WRITE_LAUNCH: the session is not live');
-    } else {
-      if (!ptyManager.get(id)) throw new Error('PTY_WRITE_LAUNCH: no such session');
-      ptyManager.write(id, line);
+    // A bot's worker pane: the folders the line may start in are checked too.
+    const dc = useDaemon ? daemonClient : null;
+    const botPane = isBotWorkerSession(id);
+    // Without the daemon the pane's folder is not known: a bot worker's
+    // claude is not started again there.
+    if (botPane && !dc && namesClaude(text)) throw new Error('PTY_WRITE_LAUNCH: a bot worker\'s claude starts again only with the wmux daemon');
+    const folders = dc && botPane ? await paneLaunchFolders(id, (m, p) => dc.rpc(m, p)) : undefined;
+    const shaped = promptFileArgumentForShell(text, { wsl: isWslShell(getPtyShell(id)), cmd: process.platform === 'win32' && isCmdShellPath(getPtyShell(id)) });
+    const guardedText = await guardBotWorkerSessionText(id, shaped, 'write-launch', folders ? { folders } : {});
+    if (botPane && process.platform === 'win32' && isCmdShellPath(getPtyShell(id)) && !isPlainCmdLaunchLine(guardedText)) {
+      throw new Error('PTY_WRITE_LAUNCH: a bot worker\'s line for a Command Prompt pane holds characters cmd would read as more than one command');
     }
+    const line = sanitizePtyText(guardedText) + (submit === true ? '\r' : '');
+    // A task's pane: a new launch of the task, on disk before the line is
+    // typed (factory/workerSlots.ts); not recorded, not typed.
+    let settleRelaunch: ((typed: boolean) => void) | null;
+    try {
+      settleRelaunch = startsAgent(text) ? beginPaneRelaunch(id) : null;
+    } catch (err) {
+      throw new Error(`PTY_WRITE_LAUNCH: ${(err as Error).message}`);
+    }
+    try {
+      if (useDaemon && daemonClient) {
+        if (!daemonClient.writeToSession(id, line)) throw new Error('PTY_WRITE_LAUNCH: the session is not live');
+      } else {
+        if (!ptyManager.get(id)) throw new Error('PTY_WRITE_LAUNCH: no such session');
+        ptyManager.write(id, line);
+      }
+    } catch (err) {
+      settleRelaunch?.(false);
+      throw err;
+    }
+    settleRelaunch?.(true);
+    // An agent starts again in this pane, now or at the owner's Enter: an
+    // ended task it belongs to is not known gone any more (agentGoneFacts.ts).
+    noteSessionAgentLaunched(id, submit === true, botPane ? botWorkerSessionRecord(id)?.taskId : undefined);
   }));
 
   // Per-session scheduled prompts. Unlike Command Deck schedules, these
@@ -1126,6 +1342,10 @@ export function registerPTYHandlers(
         lastDetectedAgent?: string;
         // X6 ② — present only for an interactive agent pane recovered this boot.
         resumeAgent?: string;
+        // #2408 — with resumeAgent, when the screen tier sighted an agent since
+        // the restart: whether it is on screen now. Hides the pill only; the
+        // offer stays.
+        resumeAgentOnScreen?: boolean;
         // X6 ③ — the captured resume binding (origin id + cwd + permission mode),
         // surfaced alongside resumeAgent (recovery-only, cwd-matched) for the pill.
         args?: string[];
@@ -1191,6 +1411,7 @@ export function registerPTYHandlers(
             : {}),
           // X6 ② — carry the resume hint (agent slug) for the renderer pill.
           ...(s.resumeAgent ? { resumeAgent: s.resumeAgent } : {}),
+          ...(s.resumeAgent && typeof s.resumeAgentOnScreen === 'boolean' ? { resumeAgentOnScreen: s.resumeAgentOnScreen } : {}),
           // X6 ③ — carry the binding so the pill can build `--resume <id>`.
           ...(s.resumeBinding ? { resumeBinding: s.resumeBinding } : {}),
           ...(s.args ? { args: s.args } : {}),

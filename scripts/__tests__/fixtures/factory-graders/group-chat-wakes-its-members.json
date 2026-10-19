@@ -1,0 +1,733 @@
+{
+ "pass": {
+  "schemaVersion": 1,
+  "scenario": "group-chat-wakes-its-members",
+  "run": 1,
+  "workspaceId": "ws-8e90e7fd-082b-4b57-a86a-4d9a78bea1f6",
+  "bots": [
+   {
+    "version": 1,
+    "id": "bot-553f6303",
+    "workspaceId": "ws-8e90e7fd-082b-4b57-a86a-4d9a78bea1f6",
+    "role": "moa",
+    "template": "coordinator",
+    "name": "Coordinator",
+    "engine": {
+     "kind": "acp",
+     "command": "/home/owner/.local/node/bin/node",
+     "args": [
+      "/home/owner/Desktop/coding/wmux/wmux-team/scripts/acp-stub.mjs",
+      "--script",
+      "/tmp/x",
+      "--log",
+      "/tmp/x"
+     ]
+    },
+    "triggers": [],
+    "budget": {
+     "maxTurnsPerDay": 200,
+     "maxConcurrentWorkers": 1,
+     "maxWorkerHoursPerDay": 4,
+     "turnTimeoutMs": 600000
+    },
+    "enabled": true,
+    "createdAt": 1792057630274,
+    "updatedAt": 1792057630274
+   },
+   {
+    "version": 1,
+    "id": "bot-c3cecdd2",
+    "workspaceId": "ws-8e90e7fd-082b-4b57-a86a-4d9a78bea1f6",
+    "role": "lead",
+    "template": "developer",
+    "name": "Developer",
+    "engine": {
+     "kind": "acp",
+     "command": "/home/owner/.local/node/bin/node",
+     "args": [
+      "/home/owner/Desktop/coding/wmux/wmux-team/scripts/acp-stub.mjs",
+      "--script",
+      "/tmp/x",
+      "--log",
+      "/tmp/x"
+     ]
+    },
+    "triggers": [],
+    "budget": {
+     "maxTurnsPerDay": 200,
+     "maxConcurrentWorkers": 3,
+     "maxWorkerHoursPerDay": 6,
+     "turnTimeoutMs": 600000
+    },
+    "enabled": true,
+    "createdAt": 1792057630275,
+    "updatedAt": 1792057630275
+   },
+   {
+    "version": 1,
+    "id": "bot-14661957",
+    "workspaceId": "ws-8e90e7fd-082b-4b57-a86a-4d9a78bea1f6",
+    "role": "triage",
+    "template": "issue",
+    "name": "Issue",
+    "engine": {
+     "kind": "acp",
+     "command": "/home/owner/.local/node/bin/node",
+     "args": [
+      "/home/owner/Desktop/coding/wmux/wmux-team/scripts/acp-stub.mjs",
+      "--script",
+      "/tmp/x",
+      "--log",
+      "/tmp/x"
+     ]
+    },
+    "triggers": [],
+    "budget": {
+     "maxTurnsPerDay": 200,
+     "maxConcurrentWorkers": 1,
+     "maxWorkerHoursPerDay": 4,
+     "turnTimeoutMs": 600000
+    },
+    "enabled": true,
+    "createdAt": 1792057630276,
+    "updatedAt": 1792057630276
+   }
+  ],
+  "botKeys": {
+   "lead": "bot-553f6303",
+   "developer": "bot-c3cecdd2",
+   "issue": "bot-14661957"
+  },
+  "injected": [
+   {
+    "label": "hi",
+    "kind": "card",
+    "id": "c-mv9cud6v05f2520eca",
+    "threadId": "group:grp-18ef819e",
+    "at": 1792057630278
+   },
+   {
+    "label": "dev only",
+    "kind": "card",
+    "id": "c-mv9culcq9ef5d59e52",
+    "threadId": "group:grp-18ef819e",
+    "at": 1792057640856
+   }
+  ],
+  "actions": [
+   {
+    "at": 1792057630277,
+    "do": "api",
+    "label": "make the group",
+    "result": {
+     "ok": true,
+     "group": {
+      "id": "grp-18ef819e",
+      "workspaceId": "ws-8e90e7fd-082b-4b57-a86a-4d9a78bea1f6",
+      "name": "Ship it",
+      "memberIds": [
+       "bot-553f6303",
+       "bot-c3cecdd2"
+      ],
+      "threadId": "group:grp-18ef819e",
+      "createdAt": 1792057630277,
+      "updatedAt": 1792057630277
+     }
+    }
+   },
+   {
+    "at": 1792057630278,
+    "do": "post",
+    "label": "hi",
+    "result": {
+     "ok": true,
+     "card": {
+      "version": 1,
+      "id": "c-mv9cud6v05f2520eca",
+      "seq": 1,
+      "workspaceId": "ws-8e90e7fd-082b-4b57-a86a-4d9a78bea1f6",
+      "threadId": "group:grp-18ef819e",
+      "kind": "human",
+      "at": 1792057630279,
+      "actor": {
+       "kind": "human"
+      },
+      "title": "Hi team",
+      "body": "Can someone look at the login bug?",
+      "refs": {
+       "botIds": [
+        "bot-553f6303",
+        "bot-c3cecdd2"
+       ]
+      }
+     },
+     "addressee": {
+      "botId": "bot-553f6303",
+      "role": "moa"
+     },
+     "wakeId": "w-mv9cud6w-600e3f9c",
+     "addressees": [
+      {
+       "botId": "bot-553f6303",
+       "role": "moa",
+       "wakeId": "w-mv9cud6w-600e3f9c"
+      },
+      {
+       "botId": "bot-c3cecdd2",
+       "role": "lead",
+       "wakeId": "w-mv9cud6w-f0a43764"
+      }
+     ]
+    }
+   },
+   {
+    "at": 1792057630284,
+    "do": "waitFor",
+    "label": "both members answered",
+    "ok": true,
+    "doneAt": 1792057640854
+   },
+   {
+    "at": 1792057640854,
+    "do": "waitFor",
+    "label": "lead answered",
+    "ok": true,
+    "doneAt": 1792057640856
+   },
+   {
+    "at": 1792057640856,
+    "do": "post",
+    "label": "dev only",
+    "result": {
+     "ok": true,
+     "card": {
+      "version": 1,
+      "id": "c-mv9culcq9ef5d59e52",
+      "seq": 4,
+      "workspaceId": "ws-8e90e7fd-082b-4b57-a86a-4d9a78bea1f6",
+      "threadId": "group:grp-18ef819e",
+      "kind": "human",
+      "at": 1792057640858,
+      "actor": {
+       "kind": "human"
+      },
+      "title": "Developer only",
+      "body": "Just the developer, please.",
+      "refs": {
+       "botId": "bot-c3cecdd2",
+       "botIds": [
+        "bot-c3cecdd2"
+       ]
+      }
+     },
+     "addressee": {
+      "botId": "bot-c3cecdd2",
+      "role": "lead"
+     },
+     "wakeId": "w-mv9culcr-3ef33490",
+     "addressees": [
+      {
+       "botId": "bot-c3cecdd2",
+       "role": "lead",
+       "wakeId": "w-mv9culcr-3ef33490"
+      }
+     ]
+    }
+   },
+   {
+    "at": 1792057640863,
+    "do": "waitFor",
+    "label": "quiet",
+    "ok": true,
+    "doneAt": 1792057646407
+   }
+  ],
+  "harnessErrors": [],
+  "facts": [
+   {
+    "id": "f-0mv9cud6v-1875c19e40c9",
+    "seq": 1,
+    "kind": "human.message",
+    "at": 1792057630279,
+    "dedupeKey": "human.message:c-mv9cud6v05f2520eca:bot-553f6303",
+    "workspaceId": "ws-8e90e7fd-082b-4b57-a86a-4d9a78bea1f6",
+    "ref": {
+     "botId": "bot-553f6303",
+     "messageId": "c-mv9cud6v05f2520eca:bot-553f6303"
+    },
+    "actor": {
+     "kind": "human"
+    },
+    "payload": {
+     "text": "Can someone look at the login bug?",
+     "cardId": "c-mv9cud6v05f2520eca",
+     "threadId": "group:grp-18ef819e",
+     "source": "desktop"
+    }
+   },
+   {
+    "id": "f-0mv9cud6v-1597fa082d3d",
+    "seq": 2,
+    "kind": "human.message",
+    "at": 1792057630279,
+    "dedupeKey": "human.message:c-mv9cud6v05f2520eca:bot-c3cecdd2",
+    "workspaceId": "ws-8e90e7fd-082b-4b57-a86a-4d9a78bea1f6",
+    "ref": {
+     "botId": "bot-c3cecdd2",
+     "messageId": "c-mv9cud6v05f2520eca:bot-c3cecdd2"
+    },
+    "actor": {
+     "kind": "human"
+    },
+    "payload": {
+     "text": "Can someone look at the login bug?",
+     "cardId": "c-mv9cud6v05f2520eca",
+     "threadId": "group:grp-18ef819e",
+     "source": "desktop"
+    }
+   },
+   {
+    "id": "f-0mv9culcq-a6947e8d3bc3",
+    "seq": 3,
+    "kind": "human.message",
+    "at": 1792057640858,
+    "dedupeKey": "human.message:c-mv9culcq9ef5d59e52:bot-c3cecdd2",
+    "workspaceId": "ws-8e90e7fd-082b-4b57-a86a-4d9a78bea1f6",
+    "ref": {
+     "botId": "bot-c3cecdd2",
+     "messageId": "c-mv9culcq9ef5d59e52:bot-c3cecdd2"
+    },
+    "actor": {
+     "kind": "human"
+    },
+    "payload": {
+     "text": "Just the developer, please.",
+     "cardId": "c-mv9culcq9ef5d59e52",
+     "threadId": "group:grp-18ef819e",
+     "source": "desktop"
+    }
+   }
+  ],
+  "wakes": [
+   {
+    "id": "w-mv9cud6w-600e3f9c",
+    "botId": "bot-553f6303",
+    "workspaceId": "ws-8e90e7fd-082b-4b57-a86a-4d9a78bea1f6",
+    "reason": {
+     "kind": "human",
+     "text": "Can someone look at the login bug?",
+     "source": "desktop",
+     "clientMessageId": "c-mv9cud6v05f2520eca",
+     "runId": "run-c-mv9cud6v05f2520eca",
+     "room": true
+    },
+    "threadId": "group:grp-18ef819e",
+    "priority": 0,
+    "enqueuedAt": 1792057630280,
+    "attempts": 1,
+    "state": "done"
+   },
+   {
+    "id": "w-mv9cud6w-f0a43764",
+    "botId": "bot-c3cecdd2",
+    "workspaceId": "ws-8e90e7fd-082b-4b57-a86a-4d9a78bea1f6",
+    "reason": {
+     "kind": "human",
+     "text": "Can someone look at the login bug?",
+     "source": "desktop",
+     "clientMessageId": "c-mv9cud6v05f2520eca",
+     "runId": "run-c-mv9cud6v05f2520eca",
+     "room": true
+    },
+    "threadId": "group:grp-18ef819e",
+    "priority": 0,
+    "enqueuedAt": 1792057630280,
+    "attempts": 1,
+    "state": "done"
+   },
+   {
+    "id": "w-mv9culcr-3ef33490",
+    "botId": "bot-c3cecdd2",
+    "workspaceId": "ws-8e90e7fd-082b-4b57-a86a-4d9a78bea1f6",
+    "reason": {
+     "kind": "human",
+     "text": "Just the developer, please.",
+     "source": "desktop",
+     "clientMessageId": "c-mv9culcq9ef5d59e52",
+     "runId": "run-c-mv9culcq9ef5d59e52"
+    },
+    "threadId": "group:grp-18ef819e",
+    "priority": 0,
+    "enqueuedAt": 1792057640859,
+    "attempts": 1,
+    "state": "done"
+   }
+  ],
+  "handoffs": null,
+  "repoWatch": null,
+  "ledger": null,
+  "verdicts": null,
+  "effects": null,
+  "decisions": null,
+  "routines": null,
+  "cards": [
+   {
+    "version": 1,
+    "id": "c-mv9cud6v05f2520eca",
+    "seq": 1,
+    "workspaceId": "ws-8e90e7fd-082b-4b57-a86a-4d9a78bea1f6",
+    "threadId": "group:grp-18ef819e",
+    "kind": "human",
+    "at": 1792057630279,
+    "actor": {
+     "kind": "human"
+    },
+    "title": "Hi team",
+    "body": "Can someone look at the login bug?",
+    "refs": {
+     "botIds": [
+      "bot-553f6303",
+      "bot-c3cecdd2"
+     ]
+    }
+   },
+   {
+    "version": 1,
+    "id": "c-mv9cuh6338edbd9a2c",
+    "seq": 2,
+    "workspaceId": "ws-8e90e7fd-082b-4b57-a86a-4d9a78bea1f6",
+    "threadId": "group:grp-18ef819e",
+    "kind": "opinion",
+    "at": 1792057635435,
+    "actor": {
+     "kind": "bot",
+     "workspaceId": "ws-8e90e7fd-082b-4b57-a86a-4d9a78bea1f6",
+     "botId": "bot-553f6303"
+    },
+    "title": "On it",
+    "body": "I will pick who works on this.",
+    "replyTo": "c-mv9cud6v05f2520eca",
+    "clientPostId": "wake:w-mv9cud6w-600e3f9c:1"
+   },
+   {
+    "version": 1,
+    "id": "c-mv9cul632bf639fd20",
+    "seq": 3,
+    "workspaceId": "ws-8e90e7fd-082b-4b57-a86a-4d9a78bea1f6",
+    "threadId": "group:grp-18ef819e",
+    "kind": "opinion",
+    "at": 1792057640619,
+    "actor": {
+     "kind": "bot",
+     "workspaceId": "ws-8e90e7fd-082b-4b57-a86a-4d9a78bea1f6",
+     "botId": "bot-c3cecdd2"
+    },
+    "title": "Hi from developer",
+    "body": "developer here.",
+    "replyTo": "c-mv9cud6v05f2520eca",
+    "clientPostId": "wake:w-mv9cud6w-f0a43764:1"
+   },
+   {
+    "version": 1,
+    "id": "c-mv9culcq9ef5d59e52",
+    "seq": 4,
+    "workspaceId": "ws-8e90e7fd-082b-4b57-a86a-4d9a78bea1f6",
+    "threadId": "group:grp-18ef819e",
+    "kind": "human",
+    "at": 1792057640858,
+    "actor": {
+     "kind": "human"
+    },
+    "title": "Developer only",
+    "body": "Just the developer, please.",
+    "refs": {
+     "botId": "bot-c3cecdd2",
+     "botIds": [
+      "bot-c3cecdd2"
+     ]
+    }
+   },
+   {
+    "version": 1,
+    "id": "c-mv9culcvacb80b73bb",
+    "seq": 5,
+    "workspaceId": "ws-8e90e7fd-082b-4b57-a86a-4d9a78bea1f6",
+    "threadId": "group:grp-18ef819e",
+    "kind": "opinion",
+    "at": 1792057640863,
+    "actor": {
+     "kind": "bot",
+     "workspaceId": "ws-8e90e7fd-082b-4b57-a86a-4d9a78bea1f6",
+     "botId": "bot-c3cecdd2"
+    },
+    "title": "Hi from developer",
+    "body": "developer here.",
+    "replyTo": "c-mv9culcq9ef5d59e52",
+    "clientPostId": "wake:w-mv9culcr-3ef33490:1"
+   }
+  ],
+  "stub": {
+   "lead": [
+    {
+     "at": 1792057635436,
+     "event": "tool",
+     "sessionId": "stub-fe580188bb6a",
+     "name": "room_post",
+     "ok": true,
+     "text": "{\n  \"ok\": true,\n  \"card\": {\n    \"version\": 1,\n    \"id\": \"c-mv9cuh6338edbd9a2c\",\n    \"seq\": 2,\n    \"workspaceId\": \"ws-8e90e7fd-082b-4b57-a86a-4d9a78bea1f6\",\n    \"threadId\": \"group:grp-18ef819e\",\n    \"kind\": \"opinion\",\n    \"at\": 1792057635435,\n    \"actor\": {\n      \"kind\": \"bot\",\n      \"workspaceId\": \"ws-8e90e7fd-082b-4b57-a86a-4d9a78bea1f6\",\n      \"botId\": \"bot-553f6303\"\n    },\n    \"title\": \"On it\",\n    \"body\": \"I will pick who works on this.\",\n    \"replyTo\": \"c-mv9cud6v05f2520eca\",\n    \"clientPostId\": \"wake:w-mv9cud6w-600e3f9c:1\"\n  }\n}"
+    }
+   ],
+   "developer": [
+    {
+     "at": 1792057640620,
+     "event": "tool",
+     "sessionId": "stub-4a8a78b985c6",
+     "name": "room_post",
+     "ok": true,
+     "text": "{\n  \"ok\": true,\n  \"card\": {\n    \"version\": 1,\n    \"id\": \"c-mv9cul632bf639fd20\",\n    \"seq\": 3,\n    \"workspaceId\": \"ws-8e90e7fd-082b-4b57-a86a-4d9a78bea1f6\",\n    \"threadId\": \"group:grp-18ef819e\",\n    \"kind\": \"opinion\",\n    \"at\": 1792057640619,\n    \"actor\": {\n      \"kind\": \"bot\",\n      \"workspaceId\": \"ws-8e90e7fd-082b-4b57-a86a-4d9a78bea1f6\",\n      \"botId\": \"bot-c3cecdd2\"\n    },\n    \"title\": \"Hi from developer\",\n    \"body\": \"developer here.\",\n    \"replyTo\": \"c-mv9cud6v05f2520eca\",\n    \"clientPostId\": \"wake:w-mv9cud6w-f0a43764:1\"\n  }\n}"
+    },
+    {
+     "at": 1792057640864,
+     "event": "tool",
+     "sessionId": "stub-4a8a78b985c6",
+     "name": "room_post",
+     "ok": true,
+     "text": "{\n  \"ok\": true,\n  \"card\": {\n    \"version\": 1,\n    \"id\": \"c-mv9culcvacb80b73bb\",\n    \"seq\": 5,\n    \"workspaceId\": \"ws-8e90e7fd-082b-4b57-a86a-4d9a78bea1f6\",\n    \"threadId\": \"group:grp-18ef819e\",\n    \"kind\": \"opinion\",\n    \"at\": 1792057640863,\n    \"actor\": {\n      \"kind\": \"bot\",\n      \"workspaceId\": \"ws-8e90e7fd-082b-4b57-a86a-4d9a78bea1f6\",\n      \"botId\": \"bot-c3cecdd2\"\n    },\n    \"title\": \"Hi from developer\",\n    \"body\": \"developer here.\",\n    \"replyTo\": \"c-mv9culcq9ef5d59e52\",\n    \"clientPostId\": \"wake:w-mv9culcr-3ef33490:1\"\n  }\n}"
+    }
+   ],
+   "issue": []
+  },
+  "workers": [],
+  "gh": {
+   "calls": []
+  },
+  "sources": {
+   "facts": {
+    "present": true,
+    "ok": true,
+    "errors": 0
+   },
+   "wakes": {
+    "present": true,
+    "ok": true,
+    "errors": 0
+   },
+   "handoffs": {
+    "present": false,
+    "ok": false,
+    "errors": 0
+   },
+   "bots": {
+    "present": true,
+    "ok": true,
+    "errors": 0
+   },
+   "settings": {
+    "present": true,
+    "ok": true,
+    "errors": 0
+   },
+   "repoWatch": {
+    "present": false,
+    "ok": false,
+    "errors": 0
+   },
+   "ledger": {
+    "present": false,
+    "ok": false,
+    "errors": 0
+   },
+   "verdicts": {
+    "present": false,
+    "ok": false,
+    "errors": 0
+   },
+   "effects": {
+    "present": false,
+    "ok": false,
+    "errors": 0
+   },
+   "approvals": {
+    "present": false,
+    "ok": false,
+    "errors": 0
+   },
+   "approvalRules": {
+    "present": false,
+    "ok": false,
+    "errors": 0
+   },
+   "decisions": {
+    "present": false,
+    "ok": false,
+    "errors": 0
+   },
+   "routines": {
+    "present": false,
+    "ok": false,
+    "errors": 0
+   },
+   "cards": {
+    "present": true,
+    "ok": true,
+    "errors": 0
+   },
+   "workers": {
+    "present": false,
+    "ok": false,
+    "errors": 0
+   },
+   "ghCalls": {
+    "present": true,
+    "ok": true,
+    "errors": 0
+   }
+  },
+  "records": [
+   {
+    "label": "make the group",
+    "result": {
+     "ok": true,
+     "group": {
+      "id": "grp-18ef819e",
+      "workspaceId": "ws-8e90e7fd-082b-4b57-a86a-4d9a78bea1f6",
+      "name": "Ship it",
+      "memberIds": [
+       "bot-553f6303",
+       "bot-c3cecdd2"
+      ],
+      "threadId": "group:grp-18ef819e",
+      "createdAt": 1792057630277,
+      "updatedAt": 1792057630277
+     }
+    }
+   }
+  ],
+  "timeouts": [],
+  "saved": {
+   "groupThread": "group:grp-18ef819e"
+  },
+  "launches": [
+   {
+    "ok": true
+   }
+  ]
+ },
+ "fail": [
+  {
+   "why": "the issue bot, outside the group, woke on the group message",
+   "failing": [
+    "one_wake_per_member",
+    "issue_not_woken"
+   ],
+   "mutate": [
+    {
+     "op": "push",
+     "path": "wakes",
+     "value": {
+      "id": "w-issue",
+      "botId": "bot-14661957",
+      "workspaceId": "ws-8e90e7fd-082b-4b57-a86a-4d9a78bea1f6",
+      "reason": {
+       "kind": "human",
+       "text": "Can someone look at the login bug?",
+       "source": "desktop",
+       "clientMessageId": "c-mv9cud6v05f2520eca",
+       "runId": "run-c-mv9cud6v05f2520eca",
+       "room": true
+      },
+      "threadId": "group:grp-18ef819e",
+      "priority": 0,
+      "enqueuedAt": 1792057630280,
+      "attempts": 1,
+      "state": "done"
+     }
+    }
+   ]
+  },
+  {
+   "why": "the lead's wake was not pinned to the group",
+   "failing": [
+    "wakes_pinned_to_group"
+   ],
+   "mutate": [
+    {
+     "op": "set",
+     "path": "wakes.0.threadId",
+     "value": "general"
+    }
+   ]
+  },
+  {
+   "why": "the lead was woken as the room's coordinator alone",
+   "failing": [
+    "wakes_pinned_to_group"
+   ],
+   "mutate": [
+    {
+     "op": "set",
+     "path": "wakes.0.reason.lead",
+     "value": true
+    }
+   ]
+  },
+  {
+   "why": "the card names the whole workspace",
+   "failing": [
+    "card_in_group_names_every_member"
+   ],
+   "mutate": [
+    {
+     "op": "set",
+     "path": "cards.0.refs.botIds",
+     "value": [
+      "bot-553f6303",
+      "bot-c3cecdd2",
+      "bot-14661957"
+     ]
+    }
+   ]
+  },
+  {
+   "why": "the picked message woke the lead too",
+   "failing": [
+    "picked_wakes_one"
+   ],
+   "mutate": [
+    {
+     "op": "push",
+     "path": "wakes",
+     "value": {
+      "id": "w-lead-2",
+      "botId": "bot-553f6303",
+      "workspaceId": "ws-8e90e7fd-082b-4b57-a86a-4d9a78bea1f6",
+      "reason": {
+       "kind": "human",
+       "text": "Just the developer, please.",
+       "source": "desktop",
+       "clientMessageId": "c-mv9culcq9ef5d59e52",
+       "runId": "run-c-mv9culcq9ef5d59e52"
+      },
+      "threadId": "group:grp-18ef819e",
+      "priority": 0,
+      "enqueuedAt": 1792057640859,
+      "attempts": 1,
+      "state": "done"
+     }
+    }
+   ]
+  },
+  {
+   "why": "no directed fact for the lead",
+   "failing": [
+    "one_directed_fact_each"
+   ],
+   "mutate": [
+    {
+     "op": "remove",
+     "path": "facts.0"
+    }
+   ]
+  }
+ ]
+}

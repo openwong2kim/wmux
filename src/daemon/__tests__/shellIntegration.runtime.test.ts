@@ -1,7 +1,7 @@
 /**
  * Runtime integration tests for OSC 133 shell integration.
  *
- * Unlike DaemonSessionManager.test.ts (which mocks node-pty), this suite
+ * Unlike DaemonSessionManager.os.test.ts (which mocks node-pty), this suite
  * spawns real ConPTY / Git Bash processes to verify the end-to-end flow:
  *
  *   shell init → OSC 133 markers → OscParser → PromptEventLog
@@ -18,6 +18,7 @@ import type { ManagedSession } from '../DaemonSessionManager';
 import { DaemonSessionManager } from '../DaemonSessionManager';
 import type { PromptEvent } from '../PromptEventLog';
 import { FACTORY_DEFAULT_SCOPES, __setPolicyProbeForTests } from '../../shared/pwshExecutionPolicy';
+import { deliberateSleep } from '../../test-utils/waitFor';
 
 const SYS = process.env.SystemRoot || 'C:\\Windows';
 const PF = process.env.ProgramFiles || 'C:\\Program Files';
@@ -129,7 +130,7 @@ describe.runIf(hasPowerShell)('OSC 133 runtime — powershell.exe', () => {
   it('captures command_start / command_end with exitCode 0 when echo is run', async () => {
     manager = new DaemonSessionManager();
     const id = `rt-pwsh-${Date.now()}`;
-    manager.createSession({
+    await manager.createSessionAsync({
       id,
       cmd: POWERSHELL,
       cwd: path.resolve(process.cwd()),
@@ -170,7 +171,7 @@ describe.runIf(hasPowerShell)('OSC 133 runtime — powershell.exe', () => {
   it('records a non-zero exit code when the command fails', async () => {
     manager = new DaemonSessionManager();
     const id = `rt-pwsh-fail-${Date.now()}`;
-    manager.createSession({
+    await manager.createSessionAsync({
       id,
       cmd: POWERSHELL,
       cwd: path.resolve(process.cwd()),
@@ -213,7 +214,7 @@ describe.runIf(hasPowerShell)('OSC 133 runtime — powershell.exe', () => {
   it('hands the real $? to the wrapped prompt', async () => {
     manager = new DaemonSessionManager();
     const id = `rt-pwsh-status-${Date.now()}`;
-    manager.createSession({
+    await manager.createSessionAsync({
       id,
       cmd: POWERSHELL,
       cwd: path.resolve(process.cwd()),
@@ -259,7 +260,7 @@ describe.runIf(hasPowerShell)('OSC 133 runtime — powershell.exe', () => {
   it('reports a failing cmdlet after a native command as non-zero', async () => {
     manager = new DaemonSessionManager();
     const id = `rt-pwsh-cmdlet-fail-${Date.now()}`;
-    manager.createSession({ id, cmd: POWERSHELL, cwd: path.resolve(process.cwd()) });
+    await manager.createSessionAsync({ id, cmd: POWERSHELL, cwd: path.resolve(process.cwd()) });
 
     const managed = manager.getSession(id)!;
     const baseline = managed.promptLog.size;
@@ -305,7 +306,7 @@ describe.runIf(hasPowerShell)('OSC 133 runtime — powershell.exe', () => {
   it('reports a succeeding cmdlet after a failing native command as zero', async () => {
     manager = new DaemonSessionManager();
     const id = `rt-pwsh-cmdlet-ok-${Date.now()}`;
-    manager.createSession({ id, cmd: POWERSHELL, cwd: path.resolve(process.cwd()) });
+    await manager.createSessionAsync({ id, cmd: POWERSHELL, cwd: path.resolve(process.cwd()) });
 
     const managed = manager.getSession(id)!;
     const baseline = managed.promptLog.size;
@@ -352,7 +353,7 @@ describe.runIf(hasPowerShell)('mid-line cwd report — powershell.exe (#1941)', 
     } catch { /* a leftover temp folder is not a test failure */ }
   });
 
-  function startPane(tag: string): { managed: ManagedSession; start: string; target: string } {
+  async function startPane(tag: string): Promise<{ managed: ManagedSession; start: string; target: string }> {
     root = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-1941-'));
     const start = path.join(root, 'start');
     // A space and a percent sign: the payload must survive the percent-decode.
@@ -361,7 +362,7 @@ describe.runIf(hasPowerShell)('mid-line cwd report — powershell.exe (#1941)', 
     fs.mkdirSync(target);
     manager = new DaemonSessionManager();
     const id = `rt-pwsh-${tag}-${Date.now()}`;
-    manager.createSession({ id, cmd: POWERSHELL, cwd: start });
+    await manager.createSessionAsync({ id, cmd: POWERSHELL, cwd: start });
     return { managed: manager.getSession(id)!, start, target };
   }
 
@@ -384,7 +385,7 @@ describe.runIf(hasPowerShell)('mid-line cwd report — powershell.exe (#1941)', 
   }
 
   it('reports the new folder while the program on the same line still runs', async () => {
-    const { managed, start, target } = startPane('cdline');
+    const { managed, start, target } = await startPane('cdline');
     await waitForCwd(managed, start, 'the first prompt to report the spawn folder');
     const baseline = managed.promptLog.size;
 
@@ -399,7 +400,7 @@ describe.runIf(hasPowerShell)('mid-line cwd report — powershell.exe (#1941)', 
   }, EVENT_TIMEOUT_MS * 2 + 2000);
 
   it('disarms on a program launch and inside a function, and keeps a user action', async () => {
-    const { managed, start } = startPane('arm');
+    const { managed, start } = await startPane('arm');
     await waitForCwd(managed, start, 'the first prompt');
     const probe = (line: string, label: string) => {
       const before = managed.ringBuffer.readAll().length;
@@ -434,7 +435,7 @@ describe.runIf(hasPowerShell)('mid-line cwd report — powershell.exe (#1941)', 
   // user's action again. The counter bounds the user's own recursion once ours
   // has disarmed (PowerShell itself does not guard a lookup action).
   it('runs a chained user action once per lookup when it makes lookups itself', async () => {
-    const { managed, start } = startPane('reentry');
+    const { managed, start } = await startPane('reentry');
     await waitForCwd(managed, start, 'the first prompt');
     managed.ptyProcess.write('$ExecutionContext.InvokeCommand.PostCommandLookupAction = { $global:userHits++; if ($global:userHits -lt 50) { Get-Date > $null; Get-Date > $null } }\r');
     // Two lookups between the reset and the snapshot: the two Get-Date calls.
@@ -450,7 +451,7 @@ describe.runIf(hasPowerShell)('mid-line cwd report — powershell.exe (#1941)', 
   // The hook now disarms after 64 lookups on one line. A cd before that is
   // still reported at once; a cd after it waits for the next prompt.
   it('disarms after 64 lookups on one line and reports a later cd at the prompt', async () => {
-    const { managed, start, target } = startPane('cap');
+    const { managed, start, target } = await startPane('cap');
     await waitForCwd(managed, start, 'the first prompt');
     const probe = (line: string, label: string) => {
       const before = managed.ringBuffer.readAll().length;
@@ -493,7 +494,7 @@ describe.runIf(hasPowerShell)('mid-line cwd report — powershell.exe (#1941)', 
     await waitForOutputAfter(managed, before, /PINGSTART\[1\]/, 'the capped line reaching the program');
     // The hook would have written OSC 7 ahead of the marker; give the daemon a
     // moment to parse the stream, while ping -n 8 still runs for about 7 s.
-    await new Promise((r) => setTimeout(r, 500));
+    await deliberateSleep(500, 'negative: the program on the capped line has not finished yet');
     expect(managed.ringBuffer.readAll().subarray(before).toString('utf8')).not.toMatch(/PINGDONE\[1\]/);
     expect(real(managed.meta.cwd)).toBe(real(start));
     await waitForOutputAfter(managed, before, /PINGDONE\[1\]/, 'the program on the capped line ending');
@@ -504,7 +505,7 @@ describe.runIf(hasPowerShell)('mid-line cwd report — powershell.exe (#1941)', 
   // terminating error the host looks up Out-Default and prompt with the action
   // still armed, so the prompt read $? = true and reported D;0.
   it('reports a line that ends in a terminating error as failed', async () => {
-    const { managed, start } = startPane('status');
+    const { managed, start } = await startPane('status');
     await waitForCwd(managed, start, 'the first prompt');
     const baseline = managed.promptLog.size;
     managed.ptyProcess.write("throw 'wmux-1942'\r");
@@ -536,7 +537,7 @@ describe.runIf(hasGitBash)('OSC 133 runtime — bash.exe (Git Bash)', () => {
   it('emits initial prompt markers on shell startup', async () => {
     manager = new DaemonSessionManager();
     const id = `rt-bash-${Date.now()}`;
-    manager.createSession({
+    await manager.createSessionAsync({
       id,
       cmd: GIT_BASH,
       cwd: path.resolve(process.cwd()),
@@ -558,7 +559,7 @@ describe.runIf(hasGitBash)('OSC 133 runtime — bash.exe (Git Bash)', () => {
   it('captures command_start / command_end with exitCode 0 when echo runs', async () => {
     manager = new DaemonSessionManager();
     const id = `rt-bash-exec-${Date.now()}`;
-    manager.createSession({
+    await manager.createSessionAsync({
       id,
       cmd: GIT_BASH,
       cwd: path.resolve(process.cwd()),
@@ -595,7 +596,7 @@ describe.runIf(hasGitBash)('OSC 133 runtime — bash.exe (Git Bash)', () => {
   it('records non-zero exit code from a failing command', async () => {
     manager = new DaemonSessionManager();
     const id = `rt-bash-fail-${Date.now()}`;
-    manager.createSession({
+    await manager.createSessionAsync({
       id,
       cmd: GIT_BASH,
       cwd: path.resolve(process.cwd()),
@@ -666,7 +667,7 @@ describe.runIf(hasPowerShell)('execution policy on a factory-default machine —
     __setPolicyProbeForTests({ scopes: { ...FACTORY_DEFAULT_SCOPES, currentUser: 'set' }, platform: 'win32' });
     manager = new DaemonSessionManager();
     const id = `rt-policy-control-${Date.now()}`;
-    manager.createSession({ id, cmd: POWERSHELL, cwd: path.resolve(process.cwd()), env: RESTRICTED_ENV });
+    await manager.createSessionAsync({ id, cmd: POWERSHELL, cwd: path.resolve(process.cwd()), env: RESTRICTED_ENV });
     const managed = manager.getSession(id)!;
 
     // Proves the env var reached the pane AND that this setup reproduces the bug.
@@ -681,7 +682,7 @@ describe.runIf(hasPowerShell)('execution policy on a factory-default machine —
     __setPolicyProbeForTests({ scopes: FACTORY_DEFAULT_SCOPES, platform: 'win32' });
     manager = new DaemonSessionManager();
     const id = `rt-policy-fix-${Date.now()}`;
-    manager.createSession({ id, cmd: POWERSHELL, cwd: path.resolve(process.cwd()), env: RESTRICTED_ENV });
+    await manager.createSessionAsync({ id, cmd: POWERSHELL, cwd: path.resolve(process.cwd()), env: RESTRICTED_ENV });
     const managed = manager.getSession(id)!;
     const baseline = managed.promptLog.size;
 
@@ -711,7 +712,7 @@ describe.runIf(hasPowerShell)('execution policy on a factory-default machine —
     const script = writeProbeScript();
     manager = new DaemonSessionManager();
     const id = `rt-policy-exec-control-${Date.now()}`;
-    manager.createSession({
+    await manager.createSessionAsync({
       id, cmd: POWERSHELL, cwd: path.resolve(process.cwd()), env: RESTRICTED_ENV,
       exec: { command: `& '${script.replace(/'/g, "''")}'` },
     });
@@ -725,7 +726,7 @@ describe.runIf(hasPowerShell)('execution policy on a factory-default machine —
     const script = writeProbeScript();
     manager = new DaemonSessionManager();
     const id = `rt-policy-exec-fix-${Date.now()}`;
-    manager.createSession({
+    await manager.createSessionAsync({
       id, cmd: POWERSHELL, cwd: path.resolve(process.cwd()), env: RESTRICTED_ENV,
       exec: { command: `& '${script.replace(/'/g, "''")}'` },
     });

@@ -20,6 +20,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { getWmuxHomeDir } from '../../shared/constants';
+import { externalRegistrationSkipReason } from '../../shared/mcpTargets';
 import { codexConfigPath, codexHasWmuxServer } from '../../shared/mcpRegistration';
 import { tokenize, launcherStem } from '../../shared/agentResume';
 import { WMUX_TOOLS, type WmuxTools } from '../../shared/orchestratorRole';
@@ -47,6 +48,11 @@ export interface McpEntryLocation {
   /** Path rules to resolve with (default: this platform's). Tests pass
    *  path.posix / path.win32 to cover both on any OS. */
   pathApi?: path.PlatformPath;
+  /** An isolated (suffixed) instance: McpRegistrar never syncs the stable
+   *  copy there (externalRegistrationSkipReason), so that copy is whatever
+   *  the installed app last wrote and the app's own bundle goes first.
+   *  Default: read from the environment. */
+  isolated?: boolean;
 }
 
 /**
@@ -55,6 +61,8 @@ export interface McpEntryLocation {
  *   - packaged: the stable copy McpRegistrar keeps in `<home>/.wmux/mcp/`
  *     (no data suffix: one copy per user, see stabilizePackaged), else the
  *     versioned `resources/mcp-bundle/index.js` (or the old resources layout);
+ *     an isolated instance never syncs that copy, so there the app's own
+ *     bundle comes first and the copy is the fallback;
  *   - dev: `dist/mcp/mcp/entry.js` under the app path or one of its parents.
  * null when none exists.
  */
@@ -63,11 +71,12 @@ export function locateWmuxMcpEntry(loc: McpEntryLocation): string | null {
   const p = loc.pathApi ?? path;
   const candidates: string[] = [];
   if (loc.isPackaged) {
-    candidates.push(p.join(loc.home, '.wmux', 'mcp', 'index.js'));
-    if (loc.resourcesPath) {
-      candidates.push(p.join(loc.resourcesPath, 'mcp-bundle', 'index.js'));
-      candidates.push(p.join(loc.resourcesPath, 'mcp', 'mcp', 'index.js'));
-    }
+    const stable = p.join(loc.home, '.wmux', 'mcp', 'index.js');
+    const own = loc.resourcesPath
+      ? [p.join(loc.resourcesPath, 'mcp-bundle', 'index.js'), p.join(loc.resourcesPath, 'mcp', 'mcp', 'index.js')]
+      : [];
+    const isolated = loc.isolated ?? externalRegistrationSkipReason() !== null;
+    candidates.push(...(isolated ? [...own, stable] : [stable, ...own]));
   } else if (loc.appPath) {
     let current = loc.appPath;
     for (let i = 0; i < 6; i++) {
@@ -113,7 +122,7 @@ export function applyWmuxToolsToCommand(fullCommand: string, hint: WmuxToolsHint
   if (/--mcp-config\b|mcp_servers\.wmux/.test(command)) return command;
   const entry = deps.entry !== undefined
     ? deps.entry
-    : locateWmuxMcpEntry({ home: os.homedir(), isPackaged: true, exists });
+    : locateWmuxMcpEntry({ home: os.homedir(), isPackaged: true, resourcesPath: process.resourcesPath, exists });
   if (!entry || !exists(entry)) return command;
   const known = resolveRoleName(hint.role);
   const role = known.kind === 'role' ? known.role : undefined;

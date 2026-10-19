@@ -65,19 +65,22 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash, randomBytes } from 'node:crypto';
 import { atomicReadJSONSync, atomicWriteJSONSync } from '../../daemon/util/atomicWrite';
-import type { BotBinding, BotEventPayload, BotProfile } from '../../shared/bot';
+import { botTemplate, type BotBinding, type BotEventPayload, type BotProfile } from '../../shared/bot';
 import {
   APPROVAL_ACTIONS,
   APPROVAL_ID_RE,
   APPROVAL_NEVER_BY_RULE,
   APPROVAL_UNDO_MS,
   BOT_APPROVAL_RPC,
+  RULE_OTHER_ASKER,
+  firstRuleSkip,
   isOwnerApprovalText,
   type ApprovalAction,
   type ApprovalApprover,
   type ApprovalDecideRequest,
   type ApprovalRequest,
   type ApprovalRule,
+  type ApprovalRuleNeed,
   type ApprovalState,
 } from '../../shared/botApproval';
 import type { FactoryRefusal } from '../../shared/botSurface';
@@ -85,11 +88,13 @@ import type { Fact, FactDraft } from '../../shared/facts';
 import type { MergeEffect } from '../../shared/moaDecision';
 import type { PrLaneFacts } from '../../shared/prReview';
 import type { RpcContext } from '../../shared/rpc';
-import { GENERAL_THREAD, issueThreadId, parseThreadId, prThreadId, type RoomCard, type ThreadId } from '../../shared/room';
+import { GENERAL_THREAD, ROOM_LIMITS, dmThreadBot, issueThreadId, parseThreadId, prThreadId, type RoomCard, type ThreadId } from '../../shared/room';
 import type { FactoryRouter } from './factoryHost';
 import { factFromMergeEffect } from './factIngest';
+import { fenceFor } from '../../shared/markdownFence';
+import { redactStoredSecrets } from './secretRedaction';
 import { normalizeRepoKey } from './repoWatch';
-import { laneRefusalLine } from './laneRefusalText';
+import { laneRefusalCodes, laneRefusalLine } from './laneRefusalText';
 import { wakeReplyTo, type RoomWriter } from './roomWriter';
 import type { BotNoticeInput } from './botNotices';
 import type { BotDirectoryApi } from './triggerEngine';
@@ -139,12 +144,16 @@ export function approvalView(r: StoredApproval): ApprovalView {
   // What the owner reads: sentences, never the raw codes.
   delete view.refusalText;
   delete view.ruleSkippedText;
+  delete view.ruleSkippedCondition;
   const refusalText = r.refusal ? laneRefusalLine(r.refusal) : '';
-  const ruleSkippedText = r.ruleSkipped ? laneRefusalLine(r.ruleSkipped) : '';
+  // A skip names its first unmet condition only (firstRuleSkip).
+  const skip = r.ruleSkipped ? firstRuleSkip(laneRefusalCodes(r.ruleSkipped)) : null;
+  const ruleSkippedText = skip ? laneRefusalLine(skip.code) : '';
   return {
     ...(view as ApprovalView),
     ...(refusalText ? { refusalText } : {}),
     ...(ruleSkippedText ? { ruleSkippedText } : {}),
+    ...(skip?.condition ? { ruleSkippedCondition: skip.condition } : {}),
   };
 }
 
@@ -194,11 +203,34 @@ export interface ApprovalPorts {
    *  noticeBot: a directed fact and one wake per key). */
   notice?: (n: BotNoticeInput) => void;
   emit?: (payload: BotEventPayload) => void;
+  /** The bot skills store, for `skill` requests: the owner's answer is the
+   *  act. `approve` returns why the proposal on the card cannot be approved
+   *  (it changed since), or null once it is the approved version. */
+  skills?: () => ApprovalSkillHost | null;
   now?: () => number;
   log?: (line: string) => void;
 }
 
-type Refusal = FactoryRefusal<'not_bot' | 'not_running' | 'invalid' | 'no_repo' | 'read_failed' | 'not_open' | 'too_many' | 'not_found' | 'not_pending' | 'too_late' | 'not_ruleable' | 'write_failed' | 'not_started'>;
+/** What a `skill` request's decision does to the bot's skill. */
+export interface ApprovalSkillHost {
+  approve(r: StoredApproval): string | null;
+  /** Denied, or expired unanswered: the proposal is archived. */
+  deny(r: StoredApproval): void;
+}
+
+/** What `proposeSkill` takes (the store has written the proposal). */
+export interface SkillApprovalInput {
+  name: string;
+  hash: string;
+  version: string;
+  update: boolean;
+  /** The change against the approved version, shown on the card. */
+  diff: string;
+  /** The bot's one line. */
+  reason: string;
+}
+
+type Refusal = FactoryRefusal<'not_bot' | 'not_running' | 'invalid' | 'no_repo' | 'read_failed' | 'not_open' | 'too_many' | 'not_found' | 'not_pending' | 'too_late' | 'not_ruleable' | 'write_failed' | 'not_started' | 'stale'>;
 
 function refuse(code: Refusal['code'], message: string): Refusal {
   return { ok: false, code, message };
@@ -356,12 +388,38 @@ const ACTION_TITLE: Readonly<Record<ApprovalAction, string>> = {
   issue_close: 'Close',
   comment: 'Comment on',
   release: 'Publish a release of',
+  skill: 'Load the skill',
 };
 
-function subject(r: Pick<ApprovalRequest, 'action' | 'repoKey' | 'prNumber' | 'issueNumber'>): string {
+function subject(r: Pick<ApprovalRequest, 'action' | 'repoKey' | 'prNumber' | 'issueNumber' | 'skill'>): string {
+  if (r.skill) return `${r.skill.name} ${r.skill.version}`;
   if (r.prNumber !== undefined) return `PR #${r.prNumber}`;
   if (r.issueNumber !== undefined) return `issue #${r.issueNumber}`;
   return r.repoKey;
+}
+
+/** A skill card's lines after the bot's: what Approve does, then the whole
+ *  diff in a fence longer than any backtick run in it, so it shows as
+ *  written. Null when they do not fit in `room` characters: the owner sees
+ *  all of what they approve, so a diff is never cut. Pure. */
+export function skillCardLines(update: boolean, diff: string, room: number): string[] | null {
+  const fence = fenceFor(diff);
+  const lines = [
+    '',
+    update
+      ? 'Approve to load this version in place of the approved one; Deny keeps the approved one and archives this proposal.'
+      : 'Approve to load this skill in the bot\'s wakes and its workers; Deny archives it.',
+    '',
+    `${fence}diff`,
+    diff,
+    fence,
+  ];
+  return lines.join('\n').length <= room ? lines : null;
+}
+
+/** The first line of an approval card's body. */
+function askLine(profile: BotProfile, reason: string): string {
+  return `${profile.name || 'A bot'} asks: ${reason}`;
 }
 
 export class ApprovalService {
@@ -454,6 +512,7 @@ export class ApprovalService {
       return refuse('invalid', `action must be one of ${APPROVAL_ACTIONS.join(', ')}`);
     }
     const act = action as ApprovalAction;
+    if (act === 'skill') return refuse('invalid', 'a skill is proposed with skill_propose');
     const num = (v: unknown): number | undefined | null => (v === undefined ? undefined : Number.isSafeInteger(v) && (v as number) > 0 ? (v as number) : null);
     const prNumber = num(raw.prNumber);
     const issueNumber = num(raw.issueNumber);
@@ -507,9 +566,11 @@ export class ApprovalService {
       if (!login) return refuse('read_failed', 'the gh login could not be read');
       ghLogin = login.toLowerCase();
     }
-    // Re-read the wake after the awaits: a request outlives no turn.
+    // Re-read the wake after the awaits: a request outlives no turn, and
+    // no bot deleted meanwhile.
     const still = this.ports.runningWake(bot.botId);
     if (!still || still.wakeId !== wake.wakeId) return refuse('not_running', 'the wake that asked has ended');
+    if (this.botGone(bot)) return refuse('not_bot', 'this bot was deleted');
     // A request stored while this one read GitHub (a retry, another bot).
     const again = [...this.requests.values()].find((r) => (r.botId === bot.botId && r.clientRequestId === clientRequestId)
       || (headSha !== undefined && r.action === 'merge' && r.repoKey === repoKey && r.prNumber === prNumber && r.headSha === headSha && (r.state === 'pending' || r.state === 'approved')));
@@ -548,6 +609,105 @@ export class ApprovalService {
     return { ok: true, request: approvalView(this.get(record.requestId) ?? record) };
   }
 
+  /** A bot's skill proposal (the skills module, from `skill_propose`): one
+   *  `skill` request whose card shows the diff. No repository is needed and
+   *  no rule ever approves it. */
+  proposeSkill(bot: BotBinding, input: SkillApprovalInput): { ok: true; request: ApprovalView } | Refusal {
+    const wake = this.ports.runningWake(bot.botId);
+    if (!wake) return refuse('not_running', 'a bot proposes a skill only during a wake');
+    let profile: BotProfile | null = null;
+    try {
+      profile = this.ports.bots()?.get(bot.botId) ?? null;
+    } catch {
+      profile = null;
+    }
+    if (!profile || !profile.enabled || profile.workspaceId !== bot.workspaceId) return refuse('not_bot', 'this bot is not running in the factory');
+    const given = oneLine(input.reason, APPROVAL_LIMITS.REASON_MAX);
+    const reason = withoutOwnerQuotes(given, this.ownerTexts(bot.workspaceId)) || `${ACTION_TITLE.skill} ${input.name} ${input.version}.`;
+    const open = [...this.requests.values()].filter((r) => r.botId === bot.botId && r.state === 'pending').length;
+    if (open >= APPROVAL_LIMITS.PENDING_PER_BOT) return refuse('too_many', `${open} requests already wait for the owner`);
+    const skillLines = skillCardLines(input.update, input.diff, ROOM_LIMITS.CARD_BODY_MAX - askLine(profile, reason).length - 1);
+    // Measured as the room stores it (stored secrets redacted), so the card
+    // the owner reads is the whole change.
+    const posted = skillLines ? redactStoredSecrets([askLine(profile, reason), ...skillLines].join('\n')) : '';
+    if (!skillLines || posted.length > ROOM_LIMITS.CARD_BODY_MAX) return refuse('invalid', 'the change does not fit on the owner\'s card; propose a shorter skill or a smaller change');
+    const at = this.now();
+    const record: StoredApproval = {
+      requestId: newRequestId(),
+      action: 'skill',
+      repoKey: normalizeRepoKey(profile.repo?.repoKey) ?? '',
+      repoPath: '',
+      skill: { name: input.name, hash: input.hash, version: input.version, update: input.update },
+      botId: bot.botId,
+      workspaceId: bot.workspaceId,
+      threadId: this.conversationThread(bot.botId, wake),
+      reason,
+      tainted: wake.tainted,
+      state: 'pending',
+      clientRequestId: `skill:${input.name}:${input.hash}`,
+      createdAt: at,
+      updatedAt: at,
+    };
+    // A skill is approved on its card only, so the card is posted first and
+    // the request is stored once, with it: nothing waits without a card.
+    const card = this.postCard(record, profile, wake, skillLines);
+    if (!card) return refuse('write_failed', 'the approval card could not be posted; propose the skill again');
+    if (!this.put({ ...record, cardId: card.id })) {
+      this.closeCard({ ...record, cardId: card.id });
+      return refuse('write_failed', 'the request could not be stored; propose the skill again');
+    }
+    this.changed(record.workspaceId);
+    return { ok: true, request: approvalView(this.get(record.requestId) ?? record) };
+  }
+
+  /** The bot was deleted: each of its requests still waiting expires and
+   *  its card closes (a skill's proposal is shelved), and so does a merge
+   *  approved but still inside its Undo window. Returns how many. */
+  botRemoved(botId: string): number {
+    let n = 0;
+    for (const r of [...this.requests.values()]) {
+      if (r.botId !== botId) continue;
+      const armed = r.state === 'approved' && r.action === 'merge' && !r.effectId;
+      if (r.state !== 'pending' && !armed) continue;
+      if (this.expireForGoneBot(r)) n += 1;
+    }
+    return n;
+  }
+
+  /** A request whose bot no longer exists: it expires, unanswered. */
+  private expireForGoneBot(r: StoredApproval): boolean {
+    const next: StoredApproval = { ...r, state: 'expired', updatedAt: this.now() };
+    if (!this.put(next)) return false;
+    this.log(`[factory] approval ${r.requestId} expired: bot deleted`);
+    this.clearTimer(r.requestId);
+    this.closeCard(next);
+    if (next.action === 'skill') this.skillDenied(next);
+    this.changed(next.workspaceId);
+    return true;
+  }
+
+  /** The bot that asked was deleted (a directory that is running says so). */
+  private botGone(r: Pick<StoredApproval, 'botId'>): boolean {
+    try {
+      const dir = this.ports.bots();
+      return !!dir && !dir.get(r.botId);
+    } catch {
+      return false;
+    }
+  }
+
+  /** A pending request whose subject went away (a skill proposal replaced
+   *  or archived): it expires, its card closes, nobody is told. */
+  withdraw(requestId: string): boolean {
+    const r = this.requests.get(requestId);
+    if (!r || r.state !== 'pending') return false;
+    const next: StoredApproval = { ...r, state: 'expired', updatedAt: this.now() };
+    if (!this.put(next)) return false;
+    this.closeCard(next);
+    this.changed(next.workspaceId);
+    return true;
+  }
+
   /** What the owner wrote in the workspace's room lately (newest page). */
   private ownerTexts(workspaceId: string): string[] {
     try {
@@ -558,10 +718,14 @@ export class ApprovalService {
     }
   }
 
-  /** The thread a request's card goes to: the thread of the owner's latest
-   *  words to the bot (its latest owner-message wake), else the running
-   *  wake's when that is the owner's, else `general`. */
+  /** The thread a request's card goes to: the bot's 1:1 when its turn runs
+   *  there, else the thread of the owner's latest words to the bot (its
+   *  latest owner-message wake), else the running wake's when that is the
+   *  owner's, else `general`. */
   private conversationThread(botId: string, wake: ApprovalWake): ThreadId {
+    // A turn in the bot's 1:1 (its task's facts wake there too) asks there:
+    // the 1:1 is where that work was asked for.
+    if (dmThreadBot(wake.threadId) === botId) return wake.threadId as ThreadId;
     let thread: ThreadId | null = null;
     try {
       thread = this.ports.conversationThread?.(botId) ?? null;
@@ -650,6 +814,11 @@ export class ApprovalService {
     if (!r) return refuse('not_found', 'no such request');
     this.expire();
     const cur = this.requests.get(r.requestId) as StoredApproval;
+    // A request whose bot was deleted takes no decision (and stops waiting).
+    if (this.botGone(cur)) {
+      if (cur.state === 'pending') this.expireForGoneBot(cur);
+      return refuse('not_bot', 'the bot that asked was deleted');
+    }
     const via = by === 'phone' && deviceId ? `phone, device ${deviceId}` : by;
     switch (p.decision) {
       case 'approve':
@@ -675,12 +844,15 @@ export class ApprovalService {
         if (!this.put(next)) return refuse('write_failed', 'the decision could not be stored');
         this.log(`[factory] approval ${cur.requestId} denied by owner (${via})`);
         this.closeCard(next);
+        if (next.action === 'skill') this.skillDenied(next);
         this.changed(next.workspaceId);
         this.tellDecided(next, `The owner denied: ${ACTION_TITLE[next.action]} ${subject(next)}.`, 'Do not ask for it again unless the owner says so.');
         return { ok: true, request: approvalView(next) };
       }
       case 'undo': {
         if (cur.state !== 'approved') return refuse('not_pending', `the request is ${cur.state}`);
+        // An approved skill is loaded already; the profile's Archive unloads it.
+        if (cur.action === 'skill') return refuse('too_late', 'the skill is loaded; archive it from the bot\'s profile');
         if (cur.effectId || (cur.executeAfter !== undefined && this.now() >= cur.executeAfter)) return refuse('too_late', 'the merge has started');
         const next: StoredApproval = { ...cur, state: 'pending', updatedAt: this.now() };
         delete next.decidedBy;
@@ -701,6 +873,12 @@ export class ApprovalService {
 
   private approve(cur: StoredApproval, approver: ApprovalApprover, by: string, ruleId?: string, newRule?: ApprovalRule): { ok: true; request: ApprovalView } | Refusal {
     if (cur.state !== 'pending') return refuse('not_pending', `the request is ${cur.state}`);
+    if (this.botGone(cur)) {
+      this.expireForGoneBot(cur);
+      return refuse('not_bot', 'the bot that asked was deleted');
+    }
+    const skillHost = cur.action === 'skill' ? this.ports.skills?.() ?? null : null;
+    if (cur.action === 'skill' && !skillHost) return refuse('not_started', 'skills are not running yet');
     const at = this.now();
     const next: StoredApproval = {
       ...cur,
@@ -716,13 +894,37 @@ export class ApprovalService {
       if (newRule) this.rules.set(newRule.ruleId, newRule);
     });
     if (!stored) return refuse('write_failed', 'the decision could not be stored');
+    if (skillHost) {
+      // The owner's answer is the act: once the decision is stored, the
+      // proposal on the card becomes the approved skill. When it cannot (it
+      // changed since, or a write failed) the decision is taken back and
+      // the card is moot, so the two stores never disagree on a live skill.
+      let why: string | null;
+      try {
+        why = skillHost.approve(next);
+      } catch (err) {
+        why = `the skill could not be approved: ${String(err)}`;
+      }
+      if (why) {
+        const moot: StoredApproval = { ...cur, state: 'expired', updatedAt: this.now() };
+        if (this.put(moot)) {
+          this.closeCard(moot);
+          // As a lapsed card does: the proposal it showed is shelved.
+          this.skillDenied(moot);
+        } else this.log(`[factory] approval ${cur.requestId} kept as approved though its skill did not load`);
+        this.changed(cur.workspaceId);
+        return refuse('stale', why);
+      }
+    }
     this.log(`[factory] approval ${cur.requestId} approved by ${approver} (${by})`);
     // Decided: the card stops waiting on the owner (its Undo reads the request).
     this.closeCard(next);
     if (next.action === 'merge') this.arm(next);
     this.changed(next.workspaceId);
     // A merge is told once it ran (merged, or refused); any other act now.
-    if (next.action !== 'merge') {
+    if (next.action === 'skill') {
+      this.tellDecided(next, `The owner approved your skill ${subject(next)}.`, 'It is listed in your wakes from now on; read it with skill_read.');
+    } else if (next.action !== 'merge') {
       this.tellDecided(next, `The owner approved: ${ACTION_TITLE[next.action]} ${subject(next)}.`, 'wmux records it but does not carry this act out yet.');
     }
     return { ok: true, request: approvalView(next) };
@@ -749,7 +951,8 @@ export class ApprovalService {
       this.typedSeen.delete(first);
     }
     this.expire();
-    const pending = [...this.requests.values()].filter((r) => r.state === 'pending');
+    // A skill is approved on its card only, where its diff is shown.
+    const pending = [...this.requests.values()].filter((r) => r.state === 'pending' && r.action !== 'skill');
     // The thread's latest cards: what sits between the requests and the words.
     const threadCards = writer.read(stored.workspaceId, { threadId: stored.threadId }).cards;
     let message: RoomCard = stored;
@@ -802,11 +1005,14 @@ export class ApprovalService {
     const r = this.requests.get(requestId);
     if (!r || r.state !== 'pending' || APPROVAL_NEVER_BY_RULE.has(r.action)) return;
     const rule = [...this.rules.values()].find((x) => ruleCovers(x, r));
-    if (!rule) return;
+    if (!rule) {
+      await this.noRule(r);
+      return;
+    }
     let why: string | null;
     // A rule decides only a request whose card the owner can see.
     if (!r.cardId) why = 'its card could not be posted';
-    else if (r.tainted) why = 'started from outside text';
+    else if (r.tainted) why = 'tainted-origin';
     else if (r.action !== 'merge') why = 'only merges are carried out by a rule';
     else {
       const host = this.ports.merge();
@@ -825,6 +1031,41 @@ export class ApprovalService {
       return;
     }
     this.approve(cur, 'rule', 'rule', rule.ruleId);
+  }
+
+  /** A merge request no rule covers. A bot-scoped rule on the same act and
+   *  repository for another bot is named on the card (a rule covers the
+   *  bot that asks, not the bot that wrote the PR). With no rule at all, the
+   *  card says what a rule made from it would still lack here: a Reviewer
+   *  bot on the repository to verify heads, required checks on the repository, a trusted
+   *  author (the lane's own reasons, read now). */
+  private async noRule(r: StoredApproval): Promise<void> {
+    if (r.action !== 'merge' || !r.cardId) return;
+    const near = [...this.rules.values()].some((x) => x.action === r.action && x.repoKey === r.repoKey && 'botId' in x.scope && x.scope.botId !== r.botId);
+    let patch: Partial<StoredApproval> | null = near ? { ruleSkipped: RULE_OTHER_ASKER } : null;
+    if (!patch && !r.tainted) {
+      const needs = new Set<ApprovalRuleNeed>();
+      let bots: BotProfile[] = [];
+      try {
+        bots = this.ports.bots()?.listEnabled() ?? [];
+      } catch {
+        bots = [];
+      }
+      // A Reviewer records verdicts on its own repository only.
+      if (!bots.some((b) => botTemplate(b) === 'reviewer' && normalizeRepoKey(b.repo?.repoKey) === r.repoKey)) needs.add('verifier');
+      const host = this.ports.merge();
+      const why = host ? await host.ruleCheck(r).catch(() => null) : null;
+      for (const code of why ? laneRefusalCodes(why) : []) {
+        if (code === 'required-checks-green:no-required-checks') needs.add('noChecks');
+        else if (code.startsWith('author-trusted:')) needs.add('author');
+      }
+      if (needs.size > 0) patch = { ruleNeeds: (['verifier', 'noChecks', 'author'] as const).filter((n) => needs.has(n)) };
+    }
+    if (!patch) return;
+    const cur = this.requests.get(r.requestId);
+    if (!cur || cur !== r || cur.state !== 'pending') return;
+    this.put({ ...cur, ...patch, updatedAt: this.now() });
+    this.changed(cur.workspaceId);
   }
 
   // ── execution ──
@@ -858,6 +1099,11 @@ export class ApprovalService {
       this.reloaded.clear();
     }
     this.expire();
+    // A bot deleted while a request of its was still open (its clean-up did
+    // not land): those end now.
+    for (const botId of new Set([...this.requests.values()].filter((r) => r.state === 'pending' || r.state === 'approved').map((r) => r.botId))) {
+      if (this.botGone({ botId })) this.botRemoved(botId);
+    }
     // A request whose merge already ended takes that outcome (a write that
     // failed before the quit included).
     const host = this.ports.merge();
@@ -921,6 +1167,7 @@ export class ApprovalService {
     const r = typeof e.decisionId === 'string' ? this.requests.get(e.decisionId) : undefined;
     if (!r) return 'approval-missing';
     if (r.state !== 'approved' || r.action !== 'merge') return 'approval-not-approved';
+    if (this.botGone(r)) return 'bot-removed';
     if (r.decidedBy !== e.approvedBy) return 'approval-mismatch';
     if (r.headSha !== e.expectHead || r.prNumber !== e.prNumber || normalizeRepoKey(e.repoKey) !== r.repoKey) return 'approval-mismatch';
     if (r.executeAfter !== undefined && this.now() < r.executeAfter) return 'approval-undo-window';
@@ -1071,23 +1318,40 @@ export class ApprovalService {
       const settled = [...this.requests.values()].filter((r) => r.state !== 'pending' && r.state !== 'approved').sort((a, b) => a.updatedAt - b.updatedAt);
       while (this.requests.size > APPROVAL_LIMITS.REQUESTS_MAX && settled.length > 0) this.requests.delete((settled.shift() as StoredApproval).requestId);
     });
-    if (ok) for (const r of stale) this.closeCard(r);
+    if (ok) {
+      for (const r of stale) {
+        this.closeCard(r);
+        if (r.action === 'skill') this.skillDenied(r);
+      }
+    }
+  }
+
+  /** A skill proposal the owner denied or left unanswered is archived. */
+  private skillDenied(r: StoredApproval): void {
+    try {
+      this.ports.skills?.()?.deny(r);
+    } catch (err) {
+      this.log(`[factory] skill proposal ${r.requestId} not archived: ${String(err)}`);
+    }
   }
 
   // ── cards ──
 
-  private postCard(r: StoredApproval, profile: BotProfile, wake: ApprovalWake): RoomCard | null {
+  private postCard(r: StoredApproval, profile: BotProfile, wake: ApprovalWake, skillLines?: readonly string[]): RoomCard | null {
     const writer = this.ports.rooms();
     if (!writer) return null;
     const replyTo = wakeReplyTo(writer, wake, r.workspaceId, r.threadId);
-    const what = `${ACTION_TITLE[r.action]} ${subject(r)}${r.headSha ? ` at ${r.headSha.slice(0, 7)}` : ''}?`;
+    const what = r.skill
+      ? `${r.skill.update ? 'Update the skill' : 'Add the skill'} ${subject(r)}?`
+      : `${ACTION_TITLE[r.action]} ${subject(r)}${r.headSha ? ` at ${r.headSha.slice(0, 7)}` : ''}?`;
     const subjectThread = r.prNumber !== undefined ? prThreadId(r.repoKey, r.prNumber) : r.issueNumber !== undefined ? issueThreadId(r.repoKey, r.issueNumber) : null;
     const lines = [
-      `${profile.name || 'A bot'} asks: ${r.reason}`,
+      askLine(profile, r.reason),
       // "Started from outside text" is the card's own line, from the
       // request's `tainted` (ApprovalAnswers, the phone): not in the body.
-      ...(r.action === 'merge' ? [] : ['wmux records your answer; it does not carry this act out yet.']),
+      ...(r.action === 'merge' || r.action === 'skill' ? [] : ['wmux records your answer; it does not carry this act out yet.']),
     ];
+    if (skillLines) lines.push(...skillLines);
     const res = writer.post({
       workspaceId: r.workspaceId,
       threadId: r.threadId,

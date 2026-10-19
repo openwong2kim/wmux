@@ -1,0 +1,205 @@
+{
+  "note": "Synthetic (hand-written): the real-model scenarios are run by hand; this pins the grading rule.",
+  "pass": {
+    "schemaVersion": 1,
+    "scenario": "researcher-dispatch-real",
+    "run": 1,
+    "workspaceId": "ws-11111111-2222-3333-4444-555555555555",
+    "botKeys": {
+      "lead": "bot-aaaa0001",
+      "researcher": "bot-aaaa0002"
+    },
+    "injected": [],
+    "actions": [],
+    "harnessErrors": [],
+    "sources": {
+      "facts": {
+        "present": true,
+        "ok": true,
+        "errors": 0
+      },
+      "cards": {
+        "present": true,
+        "ok": true,
+        "errors": 0
+      },
+      "bots": {
+        "present": true,
+        "ok": true,
+        "errors": 0
+      },
+      "wakes": {
+        "present": true,
+        "ok": true,
+        "errors": 0
+      },
+      "handoffs": {
+        "present": true,
+        "ok": true,
+        "errors": 0
+      }
+    },
+    "facts": [],
+    "wakes": [
+      {
+        "id": "w-0001",
+        "botId": "bot-aaaa0001",
+        "workspaceId": "ws-11111111-2222-3333-4444-555555555555",
+        "reason": {
+          "kind": "human",
+          "text": "What npm scripts does the app have?"
+        },
+        "threadId": "general",
+        "priority": 0,
+        "enqueuedAt": 1,
+        "attempts": 1,
+        "state": "done"
+      },
+      {
+        "id": "w-0002",
+        "botId": "bot-aaaa0002",
+        "workspaceId": "ws-11111111-2222-3333-4444-555555555555",
+        "reason": {
+          "kind": "handoff",
+          "handoffId": "h-1"
+        },
+        "threadId": "handoff:h-1",
+        "priority": 1,
+        "enqueuedAt": 2,
+        "attempts": 1,
+        "state": "done"
+      }
+    ],
+    "handoffs": [
+      {
+        "id": "h-1",
+        "kind": "dispatch",
+        "from": {
+          "kind": "bot",
+          "workspaceId": "ws-11111111-2222-3333-4444-555555555555",
+          "botId": "bot-aaaa0001"
+        },
+        "to": {
+          "kind": "bot",
+          "workspaceId": "ws-11111111-2222-3333-4444-555555555555",
+          "botId": "bot-aaaa0002"
+        },
+        "payload": {
+          "title": "Which npm scripts does the app define?",
+          "body": "Read package.json."
+        },
+        "status": "delivered"
+      },
+      {
+        "id": "h-2",
+        "kind": "result",
+        "replyTo": "h-1",
+        "from": {
+          "kind": "bot",
+          "workspaceId": "ws-11111111-2222-3333-4444-555555555555",
+          "botId": "bot-aaaa0002"
+        },
+        "to": {
+          "kind": "bot",
+          "workspaceId": "ws-11111111-2222-3333-4444-555555555555",
+          "botId": "bot-aaaa0001"
+        },
+        "payload": {
+          "title": "npm scripts",
+          "body": "package.json defines two scripts: lint and test."
+        },
+        "status": "delivered"
+      }
+    ],
+    "bots": [
+      {
+        "id": "bot-aaaa0001",
+        "role": "moa",
+        "template": "coordinator",
+        "workspaceId": "ws-11111111-2222-3333-4444-555555555555",
+        "enabled": true
+      },
+      {
+        "id": "bot-aaaa0002",
+        "role": "lead",
+        "template": "researcher",
+        "workspaceId": "ws-11111111-2222-3333-4444-555555555555",
+        "enabled": true
+      }
+    ],
+    "ledger": null,
+    "verdicts": null,
+    "effects": null,
+    "cards": [],
+    "stub": {},
+    "workers": [],
+    "gh": {
+      "calls": [],
+      "state": null
+    },
+    "records": []
+  },
+  "fail": [
+    {
+      "why": "the researcher sent nothing and its wake still settled done (the 4.5.0 bare-tool-name failure)",
+      "failing": [
+        "result_sent",
+        "result_answers",
+        "no_silent_done"
+      ],
+      "mutate": [
+        {
+          "op": "remove",
+          "path": "handoffs.1"
+        }
+      ]
+    },
+    {
+      "why": "the researcher's turn reached none of its tools and parked",
+      "failing": [
+        "researcher_wake_done",
+        "result_sent",
+        "result_answers"
+      ],
+      "mutate": [
+        {
+          "op": "remove",
+          "path": "handoffs.1"
+        },
+        {
+          "op": "set",
+          "path": "wakes.1.state",
+          "value": "parked"
+        }
+      ]
+    },
+    {
+      "why": "the result does not answer the question",
+      "failing": [
+        "result_answers"
+      ],
+      "mutate": [
+        {
+          "op": "set",
+          "path": "handoffs.1.payload.body",
+          "value": "I could not read the repository."
+        }
+      ]
+    },
+    {
+      "why": "the result was refused, so it never reached the lead",
+      "failing": [
+        "result_sent",
+        "result_answers",
+        "no_silent_done"
+      ],
+      "mutate": [
+        {
+          "op": "set",
+          "path": "handoffs.1.status",
+          "value": "refused"
+        }
+      ]
+    }
+  ]
+}

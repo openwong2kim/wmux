@@ -2,7 +2,7 @@
 //
 // Dynamic verification for useRemoteAttachmentsLifecycle. The restore replay,
 // the exit-driven refetch and the safety-net poll all live INSIDE React
-// effects, so — like useNotificationListener.activity.dynamic.test.tsx — the
+// effects, so — like useNotificationListener.activity.dynamic.os.test.tsx — the
 // REAL hook is mounted against the REAL store with a mocked
 // `window.electronAPI.remote`, and the assertions are made on the live store.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';

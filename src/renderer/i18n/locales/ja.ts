@@ -233,6 +233,12 @@ export const ja = {
   'pane.browserPolicyGrantSensitive': "{host} のサインインデータ",
   'pane.browserPolicyRevoke': "取り消す",
   'pane.browserPolicyRevokeFailed': "取り消せませんでした。",
+  'pane.browserPolicySummaryBlocked': "最近 {count} 件ブロック",
+  'pane.browserPolicyRecentlyBlocked': "最近ブロックされたサイト",
+  'pane.browserPolicyRecentlyBlockedDesc': "この Chrome の起動後、または保護設定の変更後に拒否されたサイトです。「許可」を押すとすぐに許可リストに追加されます。",
+  'pane.browserPolicyRecentlyBlockedCount': "{count} 回ブロック",
+  'pane.browserPolicyAllow': "許可",
+  'pane.browserPolicyAllowHost': "{host} を許可",
   'browser.private': "シークレット",
   'browser.privateTab': "シークレットタブ",
   'browser.privateTooltip': "シークレットタブ: Cookie とサイトデータはメモリ上にのみ保持され、最後のシークレットタブを閉じると消去されます。再起動後は復元されません。",
@@ -579,9 +585,6 @@ export const ja = {
 
   // ─── エージェントツールバー: fan-out / broadcast ボタン ───
   'toolbar.fanOut': 'Multi Task',
-  'toolbar.broadcast': 'Broadcast',
-  'toolbar.broadcastTooltip': 'Broadcast — 現在のワークスペースのすべてのターミナルペインに同じテキストを送信（隔離なし）',
-  'toolbar.broadcastPrompt': 'Broadcast — 現在のワークスペースのすべてのターミナルペインに送信',
 
   // ─── Fan-out ダイアログ（プロンプト1個 → N個の隔離タスク）───
   'fanout.title': 'Fan-out — プロンプト1個 → N個の隔離タスク',
@@ -707,4 +710,21 @@ export const ja = {
   'git.secret.more': "(ほか {count} 件)",
   'settings.secretGuard': "コミット・プッシュ・PR でパスワードとキーをブロック",
   'settings.secretGuardDesc': "Git ページのコミット・プッシュ・PR 作成とタスクの取り込みで、.env ファイル、秘密鍵、API キーを含む変更を送信しません。",
+  'botsPage.consent.title': "ボットはあなたの Claude プランで動きます",
+  'botsPage.consent.engine': "各ボットは、このコンピューターの Claude Code ログインでサインインした Claude Agent SDK で考えます。ボットのワーカーはあなた自身の Claude Code を実行します。",
+  'botsPage.consent.usage': "その使用量はあなたの Claude プランの上限に含まれます。",
+  'botsPage.consent.terms': "あなたのプランに対する Anthropic の規約が適用されます。wmux があなたの Claude のサインイン情報を読み取ったり、保存したり、送信したりすることはありません。",
+  'botsPage.consent.turnOn': "ボットをオンにする",
+  'botsPage.consent.cancel': "キャンセル",
+  'botsPage.consent.keepOn': "ボットをオンのままにする",
+  'botsPage.consent.turnOff': "ボットをオフにする",
+
+  // Task cleanup list: detail line per scan entry
+  'worktask.cleanup.detail.unmaterialized': 'このタスクの worktree は作成されていません — 閉じるか、worktree を作り直してください。',
+  'worktask.cleanup.detail.preserved': '未コミットの作業を保持しています — diff を確認してからコミットするか PR を作成するか、破棄してください。',
+  'worktask.cleanup.detail.phone': 'スマートフォンから作成されました（ブランチ phone/…）— 確認し、不要になったら削除してください。',
+  'worktask.cleanup.detail.orphanEnded': 'これにリンクする開いているタスクはありません（タスクは終了または整理済み）— 確認してから削除してください。',
+  'worktask.cleanup.detail.orphanUnlinked': 'これにリンクするタスクもタスク記録もありません — 確認してから削除してください。',
+  'worktask.cleanup.detail.orphanMeta': 'タスク記録だけが残り、worktree はありません（削除が中断されました）— 確認してから削除してください。',
+  'worktask.cleanup.detail.diskMissing': 'worktree がディスク上にありません（wmux の外で削除されたか、クラッシュ）— タスクを閉じて整理してください。',
 } as const;

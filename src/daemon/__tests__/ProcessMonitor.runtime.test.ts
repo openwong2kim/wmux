@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { spawn } from 'node:child_process';
 import { ProcessMonitor } from '../ProcessMonitor';
+import { deliberateSleep } from '../../test-utils/waitFor';
 
 let monitor: ProcessMonitor;
 
@@ -118,7 +119,7 @@ describe('ProcessMonitor', () => {
       monitor.unwatch('sess-1');
 
       // Wait a bit to ensure no callback fires
-      await new Promise((r) => setTimeout(r, 200));
+      await deliberateSleep(200, 'negative: no death callback after unwatch');
 
       expect(onDead).not.toHaveBeenCalled();
     } finally {
@@ -140,7 +141,7 @@ describe('ProcessMonitor', () => {
       monitor.unwatchAll();
 
       // Wait a bit to ensure no callback fires
-      await new Promise((r) => setTimeout(r, 200));
+      await deliberateSleep(200, 'negative: no death callback after unwatchAll');
 
       expect(onDead1).not.toHaveBeenCalled();
       expect(onDead2).not.toHaveBeenCalled();
@@ -161,7 +162,7 @@ describe('ProcessMonitor', () => {
       monitor.watch('sess-alive', process.pid, onDead);
 
       // Wait for several check intervals
-      await new Promise((r) => setTimeout(r, 300));
+      await deliberateSleep(300, 'negative: a live process is never reported dead over several intervals');
 
       expect(onDead).not.toHaveBeenCalled();
     } finally {
@@ -195,7 +196,7 @@ describe('ProcessMonitor', () => {
       }, { timeout: 1000 });
 
       // Wait another interval — second check should be skipped due to batchRunning guard
-      await new Promise((r) => setTimeout(r, 100));
+      await deliberateSleep(100, 'negative: the next interval is skipped while a batch runs');
 
       // batchCheckAlive should still only have been called once (second was skipped)
       expect(batchSpy).toHaveBeenCalledTimes(1);
@@ -242,7 +243,7 @@ describe('ProcessMonitor', () => {
       }, { timeout: 2000 });
 
       // Give re-verify a chance to finish for all three
-      await new Promise((r) => setTimeout(r, 200));
+      await deliberateSleep(200, 'negative: re-verify must not fire the death callbacks');
 
       // None of the dead callbacks should have fired — re-verify saved them
       expect(onDead1).not.toHaveBeenCalled();
@@ -307,7 +308,7 @@ describe('ProcessMonitor', () => {
       await vi.waitFor(() => {
         expect(deadSpy).toHaveBeenCalled();
       }, { timeout: 2000 });
-      await new Promise((r) => setTimeout(r, 150));
+      await deliberateSleep(150, 'negative: a probe timeout is never read as a death');
 
       // The whole point: a probe timeout must never be read as a death.
       expect(onDead).not.toHaveBeenCalled();

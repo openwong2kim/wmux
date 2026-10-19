@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import fs from 'node:fs';
 import path from 'node:path';
+import { readSourceText } from '../../../../test-utils/sourceText';
 
 /**
  * Source-level regression lock (#1228 review, C3): the #1210 dead-slug fix's
@@ -9,10 +9,7 @@ import path from 'node:path';
  * locks pin the wiring, following the appLayout.deadPaneRecovery convention.
  */
 
-const source = fs.readFileSync(
-  path.resolve(process.cwd(), 'src/renderer/components/Layout/AppLayout.tsx'),
-  'utf8',
-);
+const source = readSourceText(path.resolve(process.cwd(), 'src/renderer/components/Layout/AppLayout.tsx'));
 
 describe('AppLayout clearSurfaceAgents wiring (#1210 / #1228)', () => {
   it('hydrate runs clearSurfaceAgentsKnownGone after hydrateAgentAlive in both flows', () => {
@@ -22,10 +19,24 @@ describe('AppLayout clearSurfaceAgents wiring (#1210 / #1228)', () => {
       ...source.matchAll(/hydrateAgentAlive\(agentAliveSnapshot\);/g),
     ].map((m) => m.index ?? -1);
     expect(hydrates.length).toBe(2);
+    // "Right after" by structure, not by a character count: a count broke
+    // when one line was added between the two calls (#2410), and earlier on
+    // Windows alone, where CRLF made the same code longer. The next clear
+    // must be in the same block as the hydrate (braces between them balance
+    // and never close it) with no `await` or `return` between, so it runs
+    // synchronously after it on every path. Comments are stripped first.
     for (const at of hydrates) {
-      const window = source.slice(at, at + 500);
-      const clearAt = window.indexOf('clearSurfaceAgentsKnownGone(');
-      expect(clearAt).toBeGreaterThan(-1);
+      const clearAt = source.indexOf('clearSurfaceAgentsKnownGone(', at);
+      expect(clearAt, 'a clear after the hydrate').toBeGreaterThan(at);
+      const between = source.slice(at, clearAt).replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
+      let depth = 0;
+      for (const ch of between) {
+        if (ch === '{') depth++;
+        else if (ch === '}') depth--;
+        expect(depth, 'the clear stays in the hydrate\'s block').toBeGreaterThanOrEqual(0);
+      }
+      expect(depth, 'the clear is not nested inside a new block').toBe(0);
+      expect(between).not.toMatch(/\bawait\b|\breturn\b/);
     }
     expect(source).toMatch(
       /clearSurfaceAgentsKnownGone\(agentAliveSnapshot, commandRunningSnapshot, requestedAt\)/,

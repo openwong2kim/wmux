@@ -20,6 +20,7 @@ import {
   FACTORY_MAX_AGENTS_MAX,
   FACTORY_MAX_AGENTS_MIN,
   FACTORY_SETTINGS_VERSION,
+  hasBotsPlanConsent,
   type FactorySettings,
 } from '../../shared/factorySettings';
 import { createFilePersister, readVersionedFile, type FilePersister } from './versionedFile';
@@ -56,6 +57,7 @@ export function mergeFactorySettings(base: FactorySettings, raw: unknown): Facto
     trustedAuthors: [...base.trustedAuthors],
     morning: { hour: base.morning.hour, weekdays: [...base.morning.weekdays] },
     defaultEngine: sanitizeBotEngine(base.defaultEngine) ?? { ...DEFAULT_BOT_ENGINE },
+    ...(base.planConsent ? { planConsent: { ...base.planConsent } } : {}),
   };
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
   const r = raw as Record<string, unknown>;
@@ -100,8 +102,21 @@ export function mergeFactorySettings(base: FactorySettings, raw: unknown): Facto
   // null clears the pin (automatic); an id is kept only in a bot id's shape.
   if (r.phoneBotId === null) delete out.phoneBotId;
   else if (typeof r.phoneBotId === 'string' && BOT_ID_RE.test(r.phoneBotId)) out.phoneBotId = r.phoneBotId;
+  // Consent is only ever recorded, never cleared by a patch.
+  if (r.planConsent && typeof r.planConsent === 'object' && !Array.isArray(r.planConsent)) {
+    const c = r.planConsent as Record<string, unknown>;
+    if (Number.isInteger(c.version) && (c.version as number) >= 1 && typeof c.at === 'string' && !Number.isNaN(Date.parse(c.at))) {
+      out.planConsent = { version: c.version as number, at: c.at };
+    }
+  }
   return out;
 }
+
+/** Why turning bots on was refused: the owner has not agreed, at the
+ *  current version, that bots run on their own Claude plan. Only the wmux
+ *  app's own window can ask them. */
+export const BOTS_PLAN_CONSENT_REQUIRED =
+  'Bots run on your Claude plan: turn bots on in the wmux app first, where you confirm it.';
 
 export function factorySettingsPath(wmuxDir: string): string {
   return path.join(wmuxDir, 'factory', 'settings.json');
@@ -126,9 +141,18 @@ export class FactorySettingsStore {
     return mergeFactorySettings(this.settings, {});
   }
 
-  /** Apply a patch (malformed fields are ignored) and persist. */
+  /** Apply a patch (malformed fields are ignored) and persist. A patch that
+   *  turns bots on is refused (throws, nothing changes) unless the owner's
+   *  plan consent at the current version is stored or comes in the same
+   *  patch; bots already on without it (from before the consent) stay on. */
   async update(patch: unknown): Promise<FactorySettings> {
-    this.settings = mergeFactorySettings(this.settings, patch);
+    const p = patch && typeof patch === 'object' && !Array.isArray(patch) ? (patch as Record<string, unknown>) : {};
+    const next = mergeFactorySettings(this.settings, patch);
+    // A consent given now is stamped with main's clock, not the caller's.
+    const given = mergeFactorySettings(cloneDefaults(), { planConsent: p.planConsent }).planConsent;
+    if (given) next.planConsent = { version: given.version, at: new Date().toISOString() };
+    if (p.enabled === true && !hasBotsPlanConsent(next)) throw new Error(BOTS_PLAN_CONSENT_REQUIRED);
+    this.settings = next;
     // Live from now, before the write lands: switching off stops the bots at
     // once, whether the write is slow or fails.
     notifySettingsChanged();

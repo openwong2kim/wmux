@@ -23,21 +23,28 @@
 //             it (main/factory/verifyGate.ts) — that record, not the worker's
 //             word, is what a verdict rests on.
 //   repro     reproduce an issue, write the failing test, attempt a minimal
-//             fix, open a DRAFT pull request.
+//             fix, open a DRAFT pull request while working and mark it
+//             ready (`gh pr ready`) once the test is pushed, so CI runs.
 //   maintain  bring the verify-wmux feature map up to date with merged PRs,
 //             run the affected recipes once, open a pull request.
 //   default   a bot's plain task: implement, gate, open a pull request — or,
 //             for a task that asks a question (research), report the
 //             findings with their sources and open no pull request.
+//   research  a question that needs no code: the worker runs in a scratch
+//             folder under the bot's own data folder (no repository, no
+//             worktree, no git, no push), searches and reads, and reports
+//             its findings with their sources. The only preset a bot without
+//             a repository can start; its report completes the task without
+//             a gate (shared/ledger.ts isResearchDispatch).
 
 import type { FanoutAgentChoice, FanoutPreset } from '../../shared/fanoutPreset';
 import { fanoutPresetKey } from '../../shared/fanoutPreset';
 import type { FanoutWorkerPermissionMode } from '../../shared/workerLaunch';
 import { FANOUT_MAX_TASKS } from '../../shared/workTask';
 
-export type BotFanoutPresetName = 'verify' | 'repro' | 'maintain' | 'default';
+export type BotFanoutPresetName = 'verify' | 'repro' | 'maintain' | 'default' | 'research';
 
-export const BOT_FANOUT_PRESET_NAMES: readonly BotFanoutPresetName[] = ['verify', 'repro', 'maintain', 'default'];
+export const BOT_FANOUT_PRESET_NAMES: readonly BotFanoutPresetName[] = ['verify', 'repro', 'maintain', 'default', 'research'];
 
 export interface BotPresetCheckout {
   sha: string;
@@ -56,6 +63,8 @@ export interface BotFanoutPreset {
   agent: FanoutAgentChoice;
   /** `required`: a detached checkout of one commit; `none`: a fresh branch. */
   checkout: 'required' | 'none';
+  /** false: no repository and no worktree — a scratch folder (research). */
+  worktree: boolean;
   /** Most tasks one fan-out of this preset may start. */
   maxTasks: number;
 }
@@ -90,9 +99,10 @@ const REPRO_PROMPT = (): string => [
   '- Reproduce the issue with the smallest steps you can find.',
   '- Write a test that fails because of it.',
   '- Attempt the minimal fix that makes that test pass, and run the repository gate (typecheck, lint, tests).',
-  '- Commit on your branch, push it with the `task_push` tool, and open a DRAFT pull request (`gh pr create --draft`) whose body has the repro steps and the test.',
+  '- Commit on your branch, push it with the `task_push` tool, and open a DRAFT pull request (`gh pr create --draft --head <your branch>`) whose body has the repro steps and the test.',
+  '- Once the failing test (and the fix, if there is one) is committed and pushed, mark the PR ready with `gh pr ready <number>`: CI skips drafts, so this is what starts it. When the issue does not reproduce, the PR stays a draft, if you opened one.',
   '',
-  'What you hand back (ledger summary, status review_requested): the repro steps, the failing test, the fix if there is one, and the draft PR link. When the issue does not reproduce, the summary starts with `no-repro` and lists what you tried.',
+  'What you hand back (ledger summary, status review_requested): the repro steps, the failing test, the fix if there is one, and the PR link. When the issue does not reproduce, the summary starts with `no-repro` and lists what you tried.',
 ].join('\n');
 
 const MAINTAIN_PROMPT = (): string => [
@@ -104,9 +114,19 @@ const MAINTAIN_PROMPT = (): string => [
   '- Read the merged pull requests the task names (`gh pr view <n> --json files,title`) and the renderer handles they touched.',
   '- Update the matching feature entries, keeping each entry\'s four-section shape.',
   '- Run each affected verify-wmux recipe once when it can run here, and note the ones that cannot.',
-  '- Commit, push with the `task_push` tool, and open a pull request with what changed and why.',
+  '- Commit, push with the `task_push` tool, and open a pull request (`gh pr create --head <your branch>`) with what changed and why.',
   '',
   'What you hand back (ledger summary, status review_requested): the entries you changed, the recipes you ran and their outcome, and the PR link; or `no-drift` when every entry already matched.',
+].join('\n');
+
+const RESEARCH_PROMPT = (): string => [
+  '# Research worker',
+  '',
+  'You are a research worker dispatched by a factory bot. Your current directory is an empty scratch folder: it is not a repository, and there is no branch, no commit, no push and no pull request for this task.',
+  '',
+  'What you can do here: search the web, read the sources, and keep notes or downloads in this folder if they help.',
+  '',
+  'What you hand back (ledger summary, status review_requested): your findings, each with a link to its source, and what they mean for the question. That report completes the task. If the question needs a change to code, say so in the summary instead of making one.',
 ].join('\n');
 
 const DEFAULT_PROMPT = (): string => [
@@ -114,7 +134,7 @@ const DEFAULT_PROMPT = (): string => [
   '',
   'You are a task worker dispatched by a factory bot. Your worktree is a fresh branch from origin\'s default branch.',
   '',
-  'What you can do here: implement the task below within the files it names, run the repository gate (typecheck, lint, tests), commit, push your branch with the `task_push` tool, and open a pull request.',
+  'What you can do here: implement the task below within the files it names, run the repository gate (typecheck, lint, tests), commit, push your branch with the `task_push` tool, and open a pull request (`gh pr create --head <your branch>`).',
   'When the task asks a question instead of a change (research, a comparison, a look at the web), answer it: search, read the sources, and report; such a task opens no pull request.',
   '',
   'What you hand back (ledger summary, status review_requested): what landed, what you verified, and the PR link — or, for a question, your findings with a link to each source.',
@@ -128,15 +148,17 @@ export const BOT_FANOUT_PRESETS: Readonly<Record<BotFanoutPresetName, BotFanoutP
     permissionMode: UNATTENDED,
     agent: CLAUDE,
     checkout: 'required',
+    worktree: true,
     maxTasks: 1,
   },
   repro: {
     name: 'repro',
-    description: 'Reproduce an issue, write the failing test, attempt a minimal fix, open a draft PR.',
+    description: 'Reproduce an issue, write the failing test, attempt a minimal fix, open a PR and mark it ready for CI.',
     workerPrompt: REPRO_PROMPT,
     permissionMode: UNATTENDED,
     agent: CLAUDE,
     checkout: 'none',
+    worktree: true,
     maxTasks: 1,
   },
   maintain: {
@@ -146,6 +168,7 @@ export const BOT_FANOUT_PRESETS: Readonly<Record<BotFanoutPresetName, BotFanoutP
     permissionMode: UNATTENDED,
     agent: CLAUDE,
     checkout: 'none',
+    worktree: true,
     maxTasks: 1,
   },
   default: {
@@ -155,6 +178,17 @@ export const BOT_FANOUT_PRESETS: Readonly<Record<BotFanoutPresetName, BotFanoutP
     permissionMode: UNATTENDED,
     agent: CLAUDE,
     checkout: 'none',
+    worktree: true,
+    maxTasks: FANOUT_MAX_TASKS,
+  },
+  research: {
+    name: 'research',
+    description: 'Answer a question that needs no code: search, read, report findings with sources. No repository needed.',
+    workerPrompt: RESEARCH_PROMPT,
+    permissionMode: UNATTENDED,
+    agent: CLAUDE,
+    checkout: 'none',
+    worktree: false,
     maxTasks: FANOUT_MAX_TASKS,
   },
 };
@@ -166,7 +200,7 @@ export function botFanoutPreset(name: string): BotFanoutPreset | null {
 }
 
 /** The presets as fan-out's preset table reads them (one agent row per task
- *  the preset allows; always a worktree). */
+ *  the preset allows; a worktree for every preset but research). */
 export function botFanoutPresetList(): FanoutPreset[] {
   return BOT_FANOUT_PRESET_NAMES.map((name) => {
     const p = BOT_FANOUT_PRESETS[name];
@@ -174,7 +208,7 @@ export function botFanoutPresetList(): FanoutPreset[] {
       name: p.name,
       description: p.description,
       items: Array.from({ length: p.maxTasks }, () => ({ ...p.agent })),
-      worktree: true,
+      worktree: p.worktree,
     };
   });
 }

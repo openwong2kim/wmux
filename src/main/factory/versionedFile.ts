@@ -11,6 +11,7 @@
 import fs from 'node:fs';
 import { atomicReadJSONSync, atomicWriteJSON } from '../../daemon/util/atomicWrite';
 import { createSerialChain } from '../deck/serialChain';
+import { assertNotLiveWmuxPath } from '../../shared/constants';
 
 /** The file's parsed body, or null when it does not exist. Throws when it
  *  exists but is unreadable or carries another version. */
@@ -33,6 +34,7 @@ export interface FilePersister {
 }
 
 export function createFilePersister(file: string, snapshot: () => unknown): FilePersister {
+  assertNotLiveWmuxPath(file);
   const chain = createSerialChain();
   let pending: Promise<void> | null = null;
   return {

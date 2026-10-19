@@ -18,6 +18,7 @@ import { t } from '../i18n';
 import { XTERM_THEMES, extractXtermColors, type ThemeId, type BuiltinThemeId } from '../themes';
 import { resolveMinimumContrastRatio } from '../tailwindPalette';
 import { isDaemonModeActive } from '../daemon/daemonMode';
+import { notePaneUserInput } from '../daemon/daemonLinkNotice';
 import { pastePtyChunked, chunkOnDataIfNeeded } from '../utils/clipboardChunk';
 import { pasteClipboardImage } from '../utils/imagePaste';
 import { openTerminalUrl } from '../utils/browserPaneActions';
@@ -26,7 +27,7 @@ import { claimFit } from '../utils/fitGuard';
 import { createFitScheduler } from '../utils/layoutTransitionGate';
 import { installAltClickTrackingGuard } from '../utils/altClickUnderMouseTracking';
 import { createMouseOwnedHint } from '../utils/mouseOwnedHint';
-import { agentSelectsOnDrag, installPlainDragSelect, mouseOwnedHintApplies } from '../utils/plainDragSelect';
+import { agentSelectsOnDrag, installPlainDragSelect, installWheelClearsSelectionHint, mouseOwnedHintApplies } from '../utils/plainDragSelect';
 import { resizeOrderFor, runOrderedFit, type CancelOrderedFit } from '../utils/resizeOrder';
 import { createAutoSelectionCopy } from '../utils/autoSelectionCopy';
 import { createOsc52Handler } from '../utils/osc52Clipboard';
@@ -51,7 +52,7 @@ import { attachImeStormGuard } from '../terminal/imeStormGuard';
 import { attachCompositionCommitGate } from '../terminal/compositionCommitGate';
 import { webglContextPool } from '../terminal/webglContextPool';
 import { teardownWebglAddon } from '../terminal/webglTeardown';
-import { webglUpgradeQueue } from '../terminal/webglUpgradeQueue';
+import { WEBGL_UPGRADE_HIDE_MAX_MS, webglUpgradeQueue } from '../terminal/webglUpgradeQueue';
 import { syncInlineImages } from '../terminal/inlineImages';
 import { forceCharSizeMeasure, onCharSizeChange } from '../terminal/charSizeRefit';
 import { createGlyphRepaintScheduler, type GlyphRepaintScheduler } from '../terminal/glyphRepaint';
@@ -60,6 +61,7 @@ import { decideViewerVisibility } from '../terminal/viewerVisibility';
 import { useWindowDisplayed } from './useWindowDisplayed';
 import { createDeadInputWatchdog, describeDeclinedKey, readXtermCompositionState } from '../terminal/deadInputWatchdog';
 import { formatModifiers, modifiersOf, sharedModifierPressTracker } from '../terminal/modifierPressTracker';
+import { createStaleMetaNotice, resolveStaleMetaText } from '../terminal/staleMetaKey';
 import { awaitParseBarrier } from '../terminal/parseBarrier';
 import { STALE_REPLAY_INPUT_MODE_RESETS, STALE_REPLAY_ALIVE_SHELL_RESETS, STALE_REPLAY_DISPLAY_RESETS, staleReplayResetLevel } from '../../shared/terminal/staleReplayModeReset';
 import { installShellPromptModeReset, shellPromptModeResetFor } from '../../shared/terminal/shellPromptModeReset';
@@ -88,6 +90,8 @@ import { captureColdFrame, clearPersistedColdFrames, coldFrameFits, dropColdFram
 // One detector for every pane in this renderer: the ESC-pair state is keyed by
 // ptyId, and a per-mount instance would lose a double-tap split across a remount.
 const interruptKeystrokes = new InterruptKeystrokeDetector();
+// One per window: the stale Meta it reports is window-wide key state (#1950).
+const staleMetaNotice = createStaleMetaNotice();
 
 // #1228 review — keyboard-protocol state parked with the Terminal instance so
 // a restructure-driven unmount/remount (park → adopt, #1002) keeps the
@@ -247,12 +251,27 @@ const ptyExitDispatcher = createPtyDispatcher<number>((cb) =>
   }));
 const ptyFlushDispatcher = createPtyDispatcher<number>((cb) =>
   window.electronAPI.pty.onFlushComplete(cb));
+interface PtyRestartedPayload { ptyId: string; restartCount: number; exitCode: number | null }
+const ptyRestartedDispatcher = createPtyDispatcher<PtyRestartedPayload>((cb) =>
+  window.electronAPI.pty.onRestarted((payload) => cb(payload.ptyId, payload)));
+// `daemon:connected` carries no ptyId: every terminal registers under one key,
+// so the renderer holds ONE IPC listener for it however many panes are open
+// (a listener per terminal tripped MaxListenersExceededWarning past ten).
+const DAEMON_CONNECTED_KEY = '*';
+const daemonConnectedDispatcher = createPtyDispatcher<null>((cb) =>
+  window.electronAPI.daemon.onConnected(() => cb(DAEMON_CONNECTED_KEY, null)));
+/** Run `fn` on every `daemon:connected`; returns the unsubscribe. */
+export function onDaemonConnected(fn: () => void): () => void {
+  return daemonConnectedDispatcher.register(DAEMON_CONNECTED_KEY, () => fn());
+}
 /** Test seam: detach the global IPC listeners and drop all registrations so
  *  per-test electronAPI mocks don't leak across cases. */
 export function __resetPtyDispatchersForTests(): void {
   ptyDataDispatcher.reset();
   ptyExitDispatcher.reset();
   ptyFlushDispatcher.reset();
+  ptyRestartedDispatcher.reset();
+  daemonConnectedDispatcher.reset();
 }
 
 // === #582: terminal mouse-drag dispose guard =================================
@@ -727,7 +746,10 @@ function showCopyErrorToast() {
 // nothing. Longer-lived than the copy toasts because this one is
 // instructional, not an acknowledgement.
 let mouseOwnedToastTimer: ReturnType<typeof setTimeout> | null = null;
-function showMouseOwnedHintToast() {
+const MOUSE_OWNED_HINT_KEYS = { mac: 'terminal.mouseOwnedSelectHintMac', other: 'terminal.mouseOwnedSelectHint' } as const;
+/** #2293: the same toast, for a wheel scroll that cleared the selection. */
+const ALT_WHEEL_SELECTION_HINT_KEYS = { mac: 'terminal.altWheelSelectionHintMac', other: 'terminal.altWheelSelectionHint' } as const;
+function showMouseOwnedHintToast(keys: { mac: string; other: string } = MOUSE_OWNED_HINT_KEYS, visibleMs = 3200) {
   let el = document.getElementById('wmux-mouse-owned-toast');
   if (!el) {
     el = document.createElement('div');
@@ -736,14 +758,10 @@ function showMouseOwnedHintToast() {
     document.body.appendChild(el);
   }
   const node = el;
-  node.textContent = t(
-    window.electronAPI?.platform === 'darwin'
-      ? 'terminal.mouseOwnedSelectHintMac'
-      : 'terminal.mouseOwnedSelectHint',
-  );
+  node.textContent = t(window.electronAPI?.platform === 'darwin' ? keys.mac : keys.other);
   node.style.opacity = '1';
   if (mouseOwnedToastTimer) clearTimeout(mouseOwnedToastTimer);
-  mouseOwnedToastTimer = setTimeout(() => { node.style.opacity = '0'; }, 3200);
+  mouseOwnedToastTimer = setTimeout(() => { node.style.opacity = '0'; }, visibleMs);
 }
 
 /**
@@ -1546,6 +1564,14 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       isEnabled: () => useStore.getState().plainDragSelectEnabled && !paneAgentSelectsOnDrag(),
       isMac,
     });
+    // #2293: the wheel keeps going to a mouse-tracking fullscreen app (Codex),
+    // which clears the selection; say why once per pane. Claude Code keeps its
+    // own selection while it scrolls, so it is left out.
+    const detachWheelSelectionHint = installWheelClearsSelectionHint(container, terminal, {
+      paneId: () => ptyIdRef.current ?? null,
+      isExempt: paneAgentSelectsOnDrag,
+      show: () => showMouseOwnedHintToast(ALT_WHEEL_SELECTION_HINT_KEYS, 6000),
+    });
 
     // Issue #167: keep the hidden IME textarea empty while idle. xterm only
     // clears it on blur, so IME-committed text accumulates there after it was
@@ -2216,6 +2242,10 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
           }),
         };
         unpairedReleases.noteKeydown(e, pass);
+        // A key the user pressed here, not a byte xterm sent on its own (a
+        // cursor-position reply also arrives as onData): clears a reconnected
+        // pane's lost-input notice.
+        if (e.key !== 'Shift' && e.key !== 'Control' && e.key !== 'Alt' && e.key !== 'Meta') notePaneUserInput(ptyId);
       }
       return pass;
     });
@@ -2391,6 +2421,33 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         }
       }
 
+      // #1950: a printable key carrying a Meta flag this window never saw
+      // pressed (Windows keeps a released Win key in its key state). xterm
+      // encodes nothing for it, so Space and letters died in every pane until
+      // a restart. Type the plain character instead, below the shortcut checks
+      // so every binding still wins. See terminal/staleMetaKey.ts.
+      const staleMods = e.metaKey ? modifierPresses.staleModifiers(e) : [];
+      const staleMetaText = resolveStaleMetaText(e, {
+        platform: window.electronAPI?.platform,
+        staleMods,
+        xtermEncodes: xtermEncodesKey(e, kittyNegotiated()),
+      });
+      if (staleMetaText !== null) {
+        e.preventDefault();
+        if (staleMetaNotice.shouldLog(modifierPresses.focusSession())) {
+          console.warn(
+            `[wmux:stale-meta] pty=${ptyIdRef.current} typed through a stale Meta flag ` +
+            `keyCode=${e.keyCode} code=${e.code} mods=[${formatModifiers(modifiersOf(e))}] ` +
+            `stale=[${staleMods.join(',')}] docFocus=${document.hasFocus() ? 1 : 0}`,
+          );
+        }
+        compositionCommitGate.runAfterCommit(() => {
+          window.electronAPI.pty.write(ptyId, staleMetaText);
+          noteUserKeystroke(staleMetaText);
+        });
+        return false;
+      }
+
       // ⌘Backspace deletes to the start of the line (xterm encodes no ⌘ chord).
       // Below the shortcut checks so a user binding on it still wins.
       const lineDeleteByte = resolveMacLineDeleteByte(e, isMac);
@@ -2421,10 +2478,12 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
           const text = await window.clipboardAPI.readText();
           if (text) {
             const modes = (terminal as unknown as { modes?: { bracketedPasteMode?: boolean } }).modes;
+            notePaneUserInput(ptyId);
             await pastePtyChunked((d) => window.electronAPI.pty.write(ptyId, d), text, modes);
             return;
           }
           const imgModes = (terminal as unknown as { modes?: { bracketedPasteMode?: boolean } }).modes;
+          notePaneUserInput(ptyId);
           await pasteClipboardImage({
             ptyId,
             write: (d) => window.electronAPI.pty.write(ptyId, d),
@@ -2472,12 +2531,14 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
             // whole, and wraps the body in bracketed-paste markers when
             // the foreground app enabled DECSET 2004.
             const modes = (terminal as unknown as { modes?: { bracketedPasteMode?: boolean } }).modes;
+            notePaneUserInput(ptyId);
             await pastePtyChunked((d) => window.electronAPI.pty.write(ptyId, d), text, modes);
             return;
           }
           // No text — hand the image-only clipboard to the paste helper, which
           // picks the native-key or temp-PNG-path route per setting (#1196).
           const imgModes = (terminal as unknown as { modes?: { bracketedPasteMode?: boolean } }).modes;
+          notePaneUserInput(ptyId);
           await pasteClipboardImage({
             ptyId,
             write: (d) => window.electronAPI.pty.write(ptyId, d),
@@ -2511,10 +2572,12 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
           const text = await window.clipboardAPI.readText();
           if (text) {
             const modes = (terminal as unknown as { modes?: { bracketedPasteMode?: boolean } }).modes;
+            notePaneUserInput(ptyId);
             await pastePtyChunked((d) => window.electronAPI.pty.write(ptyId, d), text, modes);
             return;
           }
           const imgModes = (terminal as unknown as { modes?: { bracketedPasteMode?: boolean } }).modes;
+          notePaneUserInput(ptyId);
           await pasteClipboardImage({
             ptyId,
             write: (d) => window.electronAPI.pty.write(ptyId, d),
@@ -2650,10 +2713,12 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
           // PowerShell does not execute mid-paste, keeps surrogate pairs
           // whole, and wraps the body in bracketed-paste markers when
           // the foreground app enabled DECSET 2004.
+          notePaneUserInput(ptyId);
           await pastePtyChunked((d) => window.electronAPI.pty.write(ptyId, d), text, modes);
           return;
         }
 
+        notePaneUserInput(ptyId);
         await pasteClipboardImage({
           ptyId,
           write: (d) => window.electronAPI.pty.write(ptyId, d),
@@ -3197,7 +3262,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
           // recoveredBytes=0 (cap-skipped session or fresh create) leaves
           // the .txt cache on screen — degraded gracefully instead of
           // wiping to a blank prompt.
-          removeDaemonConnectedForRestore = window.electronAPI.daemon.onConnected(() => {
+          removeDaemonConnectedForRestore = onDaemonConnected(() => {
             if (!didRestoreTxt) return;
             if (terminalRef.current !== terminal) return;
             didRestoreTxt = false;
@@ -3464,6 +3529,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       if (isMac) { container.removeEventListener('paste', blockNativePaste, true); }
       detachAltClickGuard();
       detachPlainDragSelect();
+      detachWheelSelectionHint();
       detachAltScreenWheel();
       terminal.textarea?.removeEventListener('focus', onTextareaFocus);
       terminal.textarea?.removeEventListener('keydown', onWatchdogKeyDown);
@@ -3693,7 +3759,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // gating here would drop the only reattach for that generation; (b) a latch
     // would skip every generation after the first (a respawn would leave the
     // pane attached to a dead session). The event itself is the connect signal.
-    const off = window.electronAPI.daemon.onConnected(() => reattach('daemon:connected'));
+    const off = onDaemonConnected(() => reattach('daemon:connected'));
     // X8 — a supervised restart re-created THIS session under the same id with a
     // fresh PTY. The daemon:connected reattach trigger above does NOT fire (the
     // daemon never disconnected), so PTY_RESTARTED is the dedicated signal:
@@ -3705,8 +3771,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     //       attach + SessionPipe + pid-map re-anchor all happen.
     // onExit only prints (no "dead" UI state to clear), so a restart needs no
     // extra teardown reversal — just the marker + reattach.
-    const offRestarted = window.electronAPI.pty.onRestarted((payload) => {
-      if (payload.ptyId !== id) return;
+    const offRestarted = ptyRestartedDispatcher.register(id, (payload) => {
       const term = terminalRef.current;
       if (term && ptyIdRef.current === id) {
         const line = payload.exitCode !== null
@@ -3836,10 +3901,15 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // A pane that holds no context yet (a cold-parked workspace remounting,
       // the first reveal after start) does not build one here either: that is
       // the same ~0.5 s of synchronous GPU setup, per pane, before the switch
-      // can paint. It paints with the DOM renderer now and is upgraded from
-      // webglUpgradeQueue once reveals settle, one pane per idle period.
+      // can paint. The switch paints first, and webglUpgradeQueue builds the
+      // context right after, one pane per frame. The pane stays hidden until
+      // then rather than showing its DOM frame: at a fractional device pixel
+      // ratio the DOM renderer keeps fractional cell sizes while WebGL floors
+      // them to device pixels, so the swap visibly tightened letter and line
+      // spacing on screen, and the refit below re-wrapped the grid.
       let cancelUpgrade: (() => void) | null = null;
       let upgradeFitRaf: number | null = null;
+      let showAfterUpgrade: (() => void) | null = null;
       if (
         loadWebglRef.current &&
         disposeWebglRef.current &&
@@ -3848,12 +3918,42 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         if (webglAddonRef.current) {
           webglContextPool.acquire(token, loadWebglRef.current, disposeWebglRef.current);
         } else {
+          const el = terminalRef.current?.element;
+          // opacity, not visibility: Chromium never focuses an element in a
+          // visibility:hidden subtree, so the reveal's term.focus() would miss
+          // and keys typed before the upgrade would reach <body> and be lost.
+          if (el) el.style.opacity = '0';
+          // A window that is not painting (occluded, headless) runs no frame
+          // callbacks, so the queued build may never run: show the pane after
+          // a bounded wait whatever happens.
+          let hideTimer: ReturnType<typeof setTimeout> | null = null;
+          showAfterUpgrade = () => {
+            if (hideTimer !== null) { clearTimeout(hideTimer); hideTimer = null; }
+            if (el) el.style.opacity = '';
+          };
+          const show = showAfterUpgrade;
+          hideTimer = setTimeout(show, WEBGL_UPGRADE_HIDE_MAX_MS);
           cancelUpgrade = webglUpgradeQueue.enqueue(() => {
-            if (!isVisibleRef.current || !loadWebglRef.current || !disposeWebglRef.current) return;
-            if (webglContextPool.acquireWouldEvict(token)) return;
+            if (
+              !isVisibleRef.current ||
+              !loadWebglRef.current ||
+              !disposeWebglRef.current ||
+              webglContextPool.acquireWouldEvict(token)
+            ) {
+              show();
+              return;
+            }
             const hadAddon = webglAddonRef.current !== null;
-            webglContextPool.acquire(token, loadWebglRef.current, disposeWebglRef.current);
-            if (hadAddon || !webglAddonRef.current) return;
+            try {
+              webglContextPool.acquire(token, loadWebglRef.current, disposeWebglRef.current);
+            } catch (err) {
+              show();
+              throw err;
+            }
+            if (hadAddon || !webglAddonRef.current) {
+              show();
+              return;
+            }
             // The reveal's fit measured the DOM renderer's cell. WebGL rounds
             // the cell down to whole device pixels, so at a fractional cell
             // width the grid now holds too few columns (a blank strip, and a
@@ -3862,7 +3962,13 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
             // lands on the same size sends nothing.
             upgradeFitRaf = requestAnimationFrame(() => {
               upgradeFitRaf = null;
-              if (claimFit(terminalRef.current, pendingFitRef)) fit();
+              // Outside the queue's try/catch: a throwing fit must not leave the
+              // pane invisible.
+              try {
+                if (claimFit(terminalRef.current, pendingFitRef)) fit();
+              } finally {
+                show();
+              }
             });
           });
         }
@@ -3892,6 +3998,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         cancelAnimationFrame(id);
         cancelUpgrade?.();
         if (upgradeFitRaf !== null) cancelAnimationFrame(upgradeFitRaf);
+        showAfterUpgrade?.();
       };
     }
     // Hidden: keep the WebGL context ("A hidden terminal KEEPS its WebGL

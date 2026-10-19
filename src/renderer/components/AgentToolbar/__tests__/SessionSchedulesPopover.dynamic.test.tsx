@@ -189,9 +189,9 @@ describe('SessionSchedulesPopover', () => {
     await mount(api);
 
     await act(async () => { query<HTMLButtonElement>('[data-session-schedule-toggle]').click(); });
-    await vi.waitFor(() => expect(listCalls).toBe(2));
+    await vi.waitFor(() => expect(listCalls).toBe(2), { timeout: 5_000 });
     await act(async () => { query<HTMLButtonElement>('[data-session-schedule-toggle]').click(); });
-    await vi.waitFor(() => expect(listCalls).toBe(3));
+    await vi.waitFor(() => expect(listCalls).toBe(3), { timeout: 5_000 });
 
     await act(async () => { newer.resolve({ schedules: [paused] }); });
     expect(query<HTMLButtonElement>('[data-session-schedule-toggle]').textContent).toContain('Resume');

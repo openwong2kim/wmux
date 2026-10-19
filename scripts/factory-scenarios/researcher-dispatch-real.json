@@ -1,0 +1,42 @@
+{
+  "name": "researcher-dispatch-real",
+  "layer": "workflow",
+  "runs": 1,
+  "model": "real",
+  "description": "A researcher bot on the real default engine (claude-sdk) takes a dispatch and hands its answer back. Its turn reaches its wmux tools by their real names and settles done only with a result sent; a turn that reached none of them is an error, not done (4.5.0: the researcher called bare tool names and its wake settled done with nothing sent).",
+  "setup": {
+    "repo": true,
+    "bots": [
+      {
+        "key": "lead",
+        "template": "coordinator",
+        "triggers": [],
+        "script": {
+          "turns": [
+            {
+              "steps": [
+                {
+                  "tool": "handoff_send",
+                  "args": {
+                    "kind": "dispatch",
+                    "to_bot_id": "{{bot.researcher}}",
+                    "title": "Which npm scripts does the app define?",
+                    "body": "Read the repository's package.json (no worker needed: Read or Grep it yourself) and send back, as your result, the names of the npm scripts it defines."
+                  }
+                }
+              ]
+            },
+            { "steps": [ { "say": "stub lead got the result" } ] }
+          ]
+        }
+      },
+      { "key": "researcher", "template": "researcher", "repo": true, "triggers": [] }
+    ]
+  },
+  "actions": [
+    { "do": "post", "label": "ask", "post": { "title": "What npm scripts does the app have?", "body": "Ask the researcher.", "mentions": ["{{bot.lead}}"] } },
+    { "do": "waitFor", "label": "researcher settled", "cond": { "wakes": { "bot": "researcher", "reason": "handoff", "state": ["done", "parked"] } }, "timeoutMs": 600000, "required": true },
+    { "do": "waitFor", "label": "quiet", "cond": { "idle": true, "quietMs": 5000 }, "timeoutMs": 120000 }
+  ],
+  "expect": { "requires": ["facts", "cards", "bots", "wakes", "handoffs"], "lead": "lead", "researcher": "researcher", "answerPattern": "lint[\\s\\S]*test|test[\\s\\S]*lint" }
+}

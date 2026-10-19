@@ -3,7 +3,7 @@
  * broker, the respawn-after-death contract, and connection-scoped isolation.
  */
 import * as os from 'os';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { runInConnectionScope, createConnectionScope } from '../../connectionScope';
 import {
   MAX_SESSIONS_PER_CONNECTION,
@@ -75,8 +75,7 @@ describe('ReplRegistry', () => {
 
     expect(registry.reset('default')).toBe(true);
     expect(registry.reset('default')).toBe(false);
-    await new Promise((r) => setTimeout(r, 200));
-    expect(() => process.kill(pid as number, 0)).toThrow();
+    await vi.waitFor(() => expect(() => process.kill(pid as number, 0)).toThrow(), { timeout: 10_000 });
 
     const fresh = registry.acquire('default', os.tmpdir());
     expect(fresh.created).toBe(true);

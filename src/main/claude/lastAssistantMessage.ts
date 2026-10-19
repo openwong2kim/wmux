@@ -203,6 +203,9 @@ export function parseLastAssistantMessage(raw: string): LastAssistantMessage | n
     // assistant does tool-only work -> turn ends. Without this boundary the
     // reader walks back over the tool-only turns AND the answer, and
     // republishes the settled question as a fresh block.
+    // The role only stands in for a missing `type`: an `api-request-blob`
+    // (Claude Code 2.1.301) carries a copy of an earlier message.
+    if (entry.type !== undefined && entry.type !== 'user' && entry.type !== 'assistant') continue;
     if (entry.type === 'user' || entry.message?.role === 'user') {
       if (isHumanTurn(entry.message?.content)) return null;
       continue; // tool_result — part of the assistant's own turn

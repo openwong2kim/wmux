@@ -6,7 +6,7 @@
 // own state, so no tool sends them, and no tool decides a request.
 
 import { z } from 'zod';
-import { APPROVAL_ACTIONS, BOT_APPROVAL_RPC, type ApprovalAction, type ApprovalState } from '../shared/botApproval';
+import { BOT_APPROVAL_RPC, BOT_REQUESTABLE_ACTIONS, type ApprovalAction, type ApprovalState } from '../shared/botApproval';
 import { registerToolModule } from './toolModules';
 
 /** A merge request reads the PR and the gh login from GitHub first. */
@@ -36,10 +36,10 @@ registerToolModule({
         + 'the head and CI); a new head needs a new request. Other acts are recorded only for now. Returns the request (requestId, state); '
         + 'to the owner it is the approval card for that PR, never its requestId.',
       {
-        action: z.enum(APPROVAL_ACTIONS as unknown as [ApprovalAction, ...ApprovalAction[]]),
+        action: z.enum(BOT_REQUESTABLE_ACTIONS as unknown as [ApprovalAction, ...ApprovalAction[]]),
         pr_number: NUMBER.optional().describe('merge, or a comment on a PR.'),
         issue_number: NUMBER.optional().describe('issue_close, or a comment on an issue.'),
-        reason: z.string().min(1).max(300).describe('One line for the owner, in your own words: what this act does and what you checked. Never quote the owner\'s messages.'),
+        reason: z.string().min(1).max(300).describe('One line for the owner, in your own words and in the owner\'s language (the wake block says which): what this act does and what you checked. The owner reads it on the approval card. Never quote the owner\'s messages.'),
       },
       async ({ action, pr_number, issue_number, reason }) =>
         call(BOT_APPROVAL_RPC.request, { action, prNumber: pr_number, issueNumber: issue_number, reason }, REQUEST_TIMEOUT_MS),

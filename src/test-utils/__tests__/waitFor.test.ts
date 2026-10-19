@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { waitFor, DEFAULT_WAIT_TIMEOUT_MS } from '../waitFor';
+import { waitFor, deliberateSleep, DEFAULT_WAIT_TIMEOUT_MS } from '../waitFor';
 
 describe('waitFor', () => {
   it('returns as soon as the condition holds, without waiting out the timeout', async () => {
@@ -57,5 +57,17 @@ describe('waitFor', () => {
 
   it('has a default timeout that fits under a 5s vitest timeout', () => {
     expect(DEFAULT_WAIT_TIMEOUT_MS).toBeLessThan(5_000);
+  });
+});
+
+describe('deliberateSleep', () => {
+  it('sleeps at least the given span', async () => {
+    const started = Date.now();
+    await deliberateSleep(30, 'negative: the span is the claim');
+    expect(Date.now() - started).toBeGreaterThanOrEqual(25);
+  });
+
+  it('refuses a sleep that does not say why', () => {
+    expect(() => deliberateSleep(10, '  ')).toThrow(/say why/);
   });
 });

@@ -231,6 +231,12 @@ export const fr = {
   'pane.browserPolicyGrantSensitive': "Données de connexion de {host}",
   'pane.browserPolicyRevoke': "Révoquer",
   'pane.browserPolicyRevokeFailed': "Impossible de révoquer.",
+  'pane.browserPolicySummaryBlocked': "{count} bloqués récemment",
+  'pane.browserPolicyRecentlyBlocked': "Bloqués récemment",
+  'pane.browserPolicyRecentlyBlockedDesc': "Sites refusés au Chrome de ce volet depuis son démarrage ou la dernière modification de la protection. Autoriser l’ajoute aussitôt aux sites autorisés.",
+  'pane.browserPolicyRecentlyBlockedCount': "Bloqué {count}×",
+  'pane.browserPolicyAllow': "Autoriser",
+  'pane.browserPolicyAllowHost': "Autoriser {host}",
   'browser.private': "Privé",
   'browser.privateTab': "Onglet privé",
   'browser.privateTooltip': "Onglet privé : les cookies et données de site restent en mémoire et sont effacés à la fermeture du dernier onglet privé. Non restauré après un redémarrage.",
@@ -535,9 +541,6 @@ export const fr = {
 
   // ─── Barre d'outils agent : boutons fan-out / broadcast ───
   'toolbar.fanOut': 'Multi Task',
-  'toolbar.broadcast': 'Broadcast',
-  'toolbar.broadcastTooltip': "Broadcast — même texte envoyé à chaque panneau de terminal de l'espace de travail actuel (sans isolation)",
-  'toolbar.broadcastPrompt': "Broadcast — envoyer à chaque panneau de terminal de l'espace de travail actuel",
 
   // ─── Dialogue Fan-out (1 prompt → N tâches isolées) ───
   'fanout.title': 'Fan-out — 1 prompt → N tâches isolées',
@@ -658,4 +661,21 @@ export const fr = {
   'git.secret.more': "(et {count} de plus)",
   'settings.secretGuard': "Bloquer les mots de passe et les clés dans les commits, push et PR",
   'settings.secretGuardDesc': "Commit, Push et Créer une PR dans la page Git, ainsi que l'adoption d'une tâche, refusent une modification qui ajoute un fichier .env, une clé privée ou une clé d'API.",
+  'botsPage.consent.title': "Les bots utilisent votre forfait Claude",
+  'botsPage.consent.engine': "Chaque bot réfléchit avec le Claude Agent SDK, connecté avec l'identifiant Claude Code de cet ordinateur. Ses workers exécutent votre propre Claude Code.",
+  'botsPage.consent.usage': "Leur utilisation est décomptée des limites de votre forfait Claude.",
+  'botsPage.consent.terms': "Les conditions d'Anthropic pour votre forfait s'appliquent. wmux ne lit, ne stocke et n'envoie jamais votre connexion Claude.",
+  'botsPage.consent.turnOn': "Activer les bots",
+  'botsPage.consent.cancel': "Annuler",
+  'botsPage.consent.keepOn': "Garder les bots activés",
+  'botsPage.consent.turnOff': "Désactiver les bots",
+
+  // Task cleanup list: detail line per scan entry
+  'worktask.cleanup.detail.unmaterialized': 'Aucun worktree n’a été créé pour cette tâche — fermez-la ou recréez le worktree.',
+  'worktask.cleanup.detail.preserved': 'Le travail non commité est conservé — examinez le diff, puis commitez ou ouvrez une PR, ou abandonnez-le.',
+  'worktask.cleanup.detail.phone': 'Créé depuis le téléphone (branche phone/…) — vérifiez-le, puis supprimez-le quand vous n’en avez plus besoin.',
+  'worktask.cleanup.detail.orphanEnded': 'Aucune tâche ouverte n’y est liée (tâche terminée ou nettoyée) — vérifiez, puis supprimez.',
+  'worktask.cleanup.detail.orphanUnlinked': 'Aucune tâche ni aucun enregistrement de tâche n’y est lié — vérifiez, puis supprimez.',
+  'worktask.cleanup.detail.orphanMeta': 'Seul l’enregistrement de la tâche reste, pas le worktree (une suppression a été interrompue) — vérifiez, puis supprimez.',
+  'worktask.cleanup.detail.diskMissing': 'Le worktree est absent du disque (supprimé hors de wmux ou après un plantage) — fermez la tâche pour le nettoyer.',
 } as const;

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CdpSocket } from '../CdpSocket';
 
 // The shared CDP transport. Same FakeWebSocket shape as
-// LiveChromeClient.test.ts — this file covers what the extraction ADDED:
+// LiveChromeClient.os.test.ts — this file covers what the extraction ADDED:
 // event dispatch (id-less frames used to be dropped) and flattened sessions.
 
 type Listener = (ev: { data?: string }) => void;

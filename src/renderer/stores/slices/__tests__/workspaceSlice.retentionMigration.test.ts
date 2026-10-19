@@ -1,15 +1,13 @@
 import { describe, it, expect } from 'vitest';
-import fs from 'node:fs';
 import path from 'node:path';
+import { readSourceText } from '../../../../test-utils/sourceText';
 
 // P0-1 (app-weight plan) — source-level wiring checks for the retention
 // default flip + one-shot migration. Full loadSession is too entangled for a
 // slice harness (same convention as useTerminal.hiddenRetention.test.ts); the
 // ledger POLICY itself is behaviorally covered by retentionMigration.test.ts.
-const workspaceSrc = fs.readFileSync(
-  path.join(__dirname, '..', 'workspaceSlice.ts'), 'utf-8');
-const uiSrc = fs.readFileSync(
-  path.join(__dirname, '..', 'uiSlice.ts'), 'utf-8');
+const workspaceSrc = readSourceText(path.join(__dirname, '..', 'workspaceSlice.ts'));
+const uiSrc = readSourceText(path.join(__dirname, '..', 'uiSlice.ts'));
 
 describe('retention default flip — migration wiring (source-level)', () => {
   it('uiSlice defaults hiddenPaneRetentionEnabled to true', () => {

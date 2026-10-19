@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import fs from 'node:fs';
 import path from 'node:path';
 import { SQUIRREL_INSTALLER_EVENTS } from '../squirrel';
+import { readSourceText } from '../../test-utils/sourceText';
 
 // Source-level WIRING invariants for the Squirrel firstrun zombie fix.
 //
@@ -21,7 +21,7 @@ import { SQUIRREL_INSTALLER_EVENTS } from '../squirrel';
 
 describe('Squirrel firstrun fix — index.ts wiring invariants', () => {
   const indexPath = path.join(__dirname, '..', 'index.ts');
-  const indexSrc = fs.readFileSync(indexPath, 'utf-8');
+  const indexSrc = readSourceText(indexPath);
 
   it('classifies the Squirrel arg via isSquirrelInstallerEvent, not a bare startsWith', () => {
     // The predicate must be the gate that sets isSquirrelEvent.
@@ -83,7 +83,7 @@ describe('Squirrel firstrun fix — index.ts wiring invariants', () => {
   // the invariants above: the behavior lives in index.ts's module-load-time
   // squirrel branch, which cannot be imported in tests, so pin the wiring at
   // source level. The kill semantics themselves are unit-tested in
-  // squirrelTeardown.test.ts.
+  // squirrelTeardown.os.test.ts.
   it('#502: terminates running app instances inside the squirrel branch, before any Update.exe work', () => {
     const gatePos = indexSrc.indexOf('if (isSquirrelInstallerEvent(squirrelCmd))');
     const killPos = indexSrc.indexOf('terminateRunningAppInstances()');
@@ -122,7 +122,7 @@ describe('Squirrel firstrun fix — index.ts wiring invariants', () => {
     // The index.ts source lock can't see that (wrong file), so pin squirrel.ts
     // directly: exact-match membership, no prefix matching. (squirrel.test.ts
     // already catches this behaviourally; this is the cheap source-level twin.)
-    const squirrelSrc = fs.readFileSync(path.join(__dirname, '..', 'squirrel.ts'), 'utf-8');
+    const squirrelSrc = readSourceText(path.join(__dirname, '..', 'squirrel.ts'));
     expect(squirrelSrc).toMatch(/\.includes\(\s*argv1\s*\)/);
     expect(squirrelSrc).not.toMatch(/startsWith/);
   });

@@ -8,6 +8,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { TaskLedger } from '../../../../daemon/ledger/TaskLedger';
 import { registerLedgerRpc } from '../ledger.rpc';
+import { recordNoChangesGate } from '../../../factory/taskGate';
+import type { NoChangesVerdict } from '../../../factory/noChangesCheck';
 import type { RpcContext } from '../../../../shared/rpc';
 
 type Handler = (params: Record<string, unknown>, ctx?: RpcContext) => Promise<unknown>;
@@ -48,6 +50,55 @@ describe('ledger.update — bot scope', () => {
     }
     expect(await update({ taskId: 't-mine', status: 'cancelled', expectedRev: 1, force: true, reason: 'x' }, bot('bot-0000000a')))
       .toMatchObject({ ok: false, error: { code: 'NOT_AUTHORIZED' } });
+  });
+
+  /** ledger.update with the no-changes check answering `verdict`. */
+  const guardedBy = (verdict: () => NoChangesVerdict | Promise<NoChangesVerdict>): Handler => {
+    const handlers = new Map<string, Handler>();
+    registerLedgerRpc({ register: (m: string, h: Handler) => handlers.set(m, h) } as never, () => null, { getLedger: () => ledger, noChangesCheck: async () => verdict() });
+    return handlers.get('ledger.update') as Handler;
+  };
+  const CHECKED = 'c'.repeat(40);
+
+  it('settles its own reported task the gate skipped for no_changes: completed (unforced, while the check still holds) or failed', async () => {
+    const guarded = guardedBy(() => ({ kind: 'unchanged', base: CHECKED, head: CHECKED }));
+    await ledger.register({ id: 't-done', taskWorkspaceId: 'ws-t4', ownerWorkspaceId: 'ws-bot', title: 'done', dispatch: { origin: { kind: 'bot', botId: 'bot-0000000a' } } });
+    for (const [id, ws] of [['t-mine', 'ws-t1'], ['t-done', 'ws-t4']] as const) {
+      const r = await ledger.update({ id, status: 'review_requested', actor: { kind: 'worker', workspaceId: ws }, expectedRev: 1, summary: 'node --version is v22' });
+      if (!r.ok) throw new Error(r.message);
+    }
+    // Before the skip is recorded there is no gate: completed is refused.
+    expect(await guarded({ taskId: 't-done', status: 'completed', expectedRev: 2 }, bot('bot-0000000a'))).toMatchObject({ ok: false, error: { code: 'GATE_REQUIRED' } });
+    expect(await recordNoChangesGate(ledger, 't-done', 'no commits', Date.now, CHECKED)).toBe(true);
+    expect(await recordNoChangesGate(ledger, 't-mine', 'no commits', Date.now, CHECKED)).toBe(true);
+    expect(await guarded({ taskId: 't-done', status: 'completed', expectedRev: 3 }, bot('bot-0000000a'))).toMatchObject({ ok: true, entry: { status: 'completed' } });
+    expect(ledger.get('t-done')?.summary).toBe('node --version is v22');
+    expect(ledger.get('t-done')?.gate?.skipped).toBe('no_changes');
+    // Failing it asks nothing: no work is accepted by it.
+    expect(await update({ taskId: 't-mine', status: 'failed', expectedRev: 3 }, bot('bot-0000000a'))).toMatchObject({ ok: true, entry: { status: 'failed' } });
+  });
+
+  it('a completion on a no-changes skip is refused unless the check answers unchanged now, at the HEAD the skip checked', async () => {
+    const r = await ledger.update({ id: 't-mine', status: 'review_requested', actor: { kind: 'worker', workspaceId: 'ws-t1' }, expectedRev: 1 });
+    if (!r.ok) throw new Error(r.message);
+    expect(await recordNoChangesGate(ledger, 't-mine', 'no commits', Date.now, CHECKED)).toBe(true);
+    const refusedBy: Array<() => NoChangesVerdict | Promise<NoChangesVerdict>> = [
+      // Committed, pushed and reset after the skip: origin's branch is past the base.
+      () => ({ kind: 'changed', why: `origin's wtask/one is at ${'d'.repeat(40)}, past the base` }),
+      // origin unreachable, or the push history unreadable.
+      () => ({ kind: 'unknown', why: 'origin could not be read' }),
+      // Still unchanged, but at another HEAD than the one the skip checked.
+      () => ({ kind: 'unchanged', base: CHECKED, head: 'e'.repeat(40) }),
+      () => { throw new Error('boom'); },
+    ];
+    for (const verdict of refusedBy) {
+      expect(await guardedBy(verdict)({ taskId: 't-mine', status: 'completed', expectedRev: 3 }, bot('bot-0000000a'))).toMatchObject({ ok: false, error: { code: 'FAILED_PRECONDITION' } });
+    }
+    // No check wired at all: refused too.
+    expect(await update({ taskId: 't-mine', status: 'completed', expectedRev: 3 }, bot('bot-0000000a'))).toMatchObject({ ok: false, error: { code: 'FAILED_PRECONDITION' } });
+    expect(ledger.get('t-mine')?.status).toBe('review_requested');
+    expect(await guardedBy(() => ({ kind: 'unchanged', base: CHECKED, head: CHECKED }))({ taskId: 't-mine', status: 'completed', expectedRev: 3 }, bot('bot-0000000a')))
+      .toMatchObject({ ok: true, entry: { status: 'completed' } });
   });
 
   it('a commander brain without a bot binding keeps its workspace-wide reach', async () => {

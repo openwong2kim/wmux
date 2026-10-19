@@ -187,6 +187,8 @@ export function parseWorkspaceMirrorPayload(raw: unknown): WorkspaceMirrorPushPa
       ...(typeof branch === 'string' && branch.length > 0 && branch.length <= 512 ? { branch } : {}),
     };
   }
+  // The Bots worker panel's workspace. A bad id drops the field (none).
+  if (typeof raw.panelWorkspaceId === 'string' && WORKSPACE_ID_RE.test(raw.panelWorkspaceId)) out.panelWorkspaceId = raw.panelWorkspaceId;
   return out;
 }
 

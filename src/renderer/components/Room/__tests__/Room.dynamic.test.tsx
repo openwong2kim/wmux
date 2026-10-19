@@ -336,6 +336,23 @@ describe('BotChips', () => {
     expect(document.querySelector('[data-testid="room-bot-menu"]')).toBeNull();
   });
 
+  it('a bot paused during its running turn offers Resume, not Park', async () => {
+    const act$ = vi.fn(async () => ({ ok: true }));
+    const port: FactoryBotPort = { available: true, list: async () => [], subscribe: () => () => undefined, act: act$ };
+    const row: FactoryBotRow = {
+      bot: { ...bot('bot-00000002'), parked: { reason: 'human', at: 1 } },
+      status: { botId: 'bot-00000002', presence: 'running', currentTurn: { wakeId: 'w', startedAt: 1 }, queueDepth: 0, budgetLeft: { turnsHour: 1, turnsDay: 20, workerHoursDay: 1 } },
+    };
+    await render(createElement(BotChips, { rows: [row], t, port }));
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="room-bot-chip"]')!.click());
+    expect(document.querySelector<HTMLButtonElement>('[data-bot-action="park"]')!.disabled).toBe(true);
+    expect(document.querySelector<HTMLButtonElement>('[data-bot-action="interrupt"]')!.disabled).toBe(false);
+    const resume = document.querySelector<HTMLButtonElement>('[data-bot-action="resume"]')!;
+    expect(resume.disabled).toBe(false);
+    await act(async () => resume.click());
+    expect(act$).toHaveBeenCalledWith('resume', 'bot-00000002');
+  });
+
   it('the menu stays open while another region scrolls, and closes when the strip under it scrolls', async () => {
     const port: FactoryBotPort = { available: true, list: async () => [], subscribe: () => () => undefined, act: vi.fn(async () => ({ ok: true })) };
     await render(createElement('div', null,
@@ -401,6 +418,26 @@ describe('FactoryTab', () => {
     expect(settingsPort.get).not.toHaveBeenCalled();
   });
 
+  it('shows the space bot task folders use, and Clean up now says what it did and reads the space again', async () => {
+    const view = {
+      version: 1 as const, enabled: true, hqWorkspaceId: null, trustedAuthors: [], morning: { hour: 9, weekdays: [1, 2, 3, 4, 5] },
+      verifierOnOwnerPrs: true, defaultEngine: { kind: 'claude-sdk' as const }, globalConcurrentBots: 2, laneAutoMerge: false, laneDailyCap: 5,
+    };
+    const usage = vi.fn()
+      .mockResolvedValueOnce({ bytes: 3 * 1024 ** 3, folders: 4, dirty: 1 })
+      .mockResolvedValueOnce({ bytes: 512 * 1024 ** 2, folders: 1, dirty: 1 });
+    const cleanTaskFolders = vi.fn(async () => ({ ok: true as const, removed: 3, keptDirty: 1, busy: 0, failed: 0 }));
+    const settingsPort = { available: true, get: vi.fn(async () => view), set: vi.fn(async () => view), taskFolderUsage: usage, cleanTaskFolders };
+    const botPort: FactoryBotPort = { available: true, list: async () => [], subscribe: () => () => undefined, act: async () => ({ ok: true }) };
+    await render(createElement(FactoryTab, { settingsPort, botPort }));
+    const line = () => container.querySelector('[data-testid="factory-task-folders-usage"]')?.textContent;
+    expect(line()).toBe('Folders: 4, 3 GB · kept with uncommitted changes: 1');
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="factory-task-folders-clean"]')!.click());
+    expect(cleanTaskFolders).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('[data-testid="factory-task-folders-note"]')?.textContent).toBe('Removed 3. Kept 1 with uncommitted changes and 0 still in use.');
+    expect(line()).toBe('Folders: 1, 512 MB · kept with uncommitted changes: 1');
+  });
+
   it('with a factory, turning it on writes enabled through the port', async () => {
     const view = {
       version: 1 as const, enabled: false, hqWorkspaceId: null, trustedAuthors: [], morning: { hour: 9, weekdays: [1, 2, 3, 4, 5] },
@@ -413,8 +450,42 @@ describe('FactoryTab', () => {
     const sw = container.querySelector<HTMLButtonElement>('[data-testid="factory-enabled"]')!;
     expect(sw.disabled).toBe(false);
     await act(async () => sw.click());
-    expect(settingsPort.set).toHaveBeenCalledWith({ enabled: true });
+    // The plan consent comes first; Turn on bots sends it with the switch.
+    expect(settingsPort.set).not.toHaveBeenCalled();
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="bots-plan-consent-confirm"]')!.click());
+    expect(settingsPort.set).toHaveBeenCalledWith({ enabled: true, planConsent: expect.objectContaining({ version: 1 }) });
     expect(container.querySelector('[data-testid="factory-not-installed"]')).toBeNull();
+  });
+
+  it('turning it off says how many workers main stopped, and offers Try again when the stop failed', async () => {
+    const view = {
+      version: 1 as const, enabled: true, hqWorkspaceId: null, trustedAuthors: [], morning: { hour: 9, weekdays: [1, 2, 3, 4, 5] },
+      verifierOnOwnerPrs: true, defaultEngine: { kind: 'claude-sdk' as const }, globalConcurrentBots: 2, laneAutoMerge: false, laneDailyCap: 5,
+    };
+    let stoppedWork: { workers: number; tasks: number; ok: boolean } = { workers: 3, tasks: 2, ok: true };
+    const settingsPort = { available: true, get: vi.fn(async () => view), set: vi.fn(async (p: object) => ({ ...view, ...p, stoppedWork })) };
+    setRoomsApiForTests(fakeApi() as unknown as RoomsApi);
+    const stopAll = vi.fn(async () => ({ ok: true, botsInterrupted: 1, workersStopped: 1, gatesCancelled: 0 }));
+    const botPort = { available: true, list: async () => [], subscribe: () => () => undefined, act: async () => ({ ok: true }), stopAll } as FactoryBotPort;
+    useStore.setState({ toasts: [] });
+    await render(createElement(FactoryTab, { settingsPort, botPort }));
+    const sw = container.querySelector<HTMLButtonElement>('[data-testid="factory-enabled"]')!;
+    await act(async () => sw.click());
+    expect(settingsPort.set).toHaveBeenCalledWith({ enabled: false });
+    expect(useStore.getState().toasts.map((x) => x.message)).toEqual(['Stopped 3 workers. Saved work is kept.']);
+    // The stop failed (a fresh tab, the bots on again): an error toast whose
+    // action runs Stop all.
+    act(() => root.unmount());
+    root = createRoot(container);
+    useStore.setState({ toasts: [] });
+    stoppedWork = { workers: 0, tasks: 0, ok: false };
+    await render(createElement(FactoryTab, { settingsPort, botPort }));
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="factory-enabled"]')!.click());
+    const failed = useStore.getState().toasts.find((x) => x.level === 'error');
+    expect(failed?.message).toBe('Bots are off, but their running work could not be stopped.');
+    expect(failed?.action?.label).toBe('Try again');
+    await act(async () => { failed!.action!.onClick(); });
+    expect(stopAll).toHaveBeenCalledTimes(1);
   });
 });
 

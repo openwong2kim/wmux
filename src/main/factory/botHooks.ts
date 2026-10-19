@@ -18,9 +18,17 @@ export type BotHookEvent =
       /** Which window refused. */
       reason: 'turns_hour' | 'turns_day' | 'concurrent_workers' | 'worker_hours_day' | 'factory_workers';
       wakeId?: string;
+      /** When the window allows a turn again (a turn refusal only; absent:
+       *  not by itself, or not known). */
+      until?: number;
+      /** When the bot was parked for it (a turn refusal: one report per
+       *  park). Absent: no park (a worker start refused). */
+      parkedAt?: number;
       at: number;
     }
-  | { type: 'bot.error'; botId: string; workspaceId: string; message: string; wakeId?: string; at: number }
+  /** `until`: the turn hit the provider's usage limit; the bot is parked
+   *  until then and picks up by itself. */
+  | { type: 'bot.error'; botId: string; workspaceId: string; message: string; wakeId?: string; until?: number; at: number }
   | {
       /** A wake carrying the owner's words waits, queued, while its bot is
        *  out of turns (reported on every pass; the room shows it once). */

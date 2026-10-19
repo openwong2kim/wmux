@@ -40,24 +40,25 @@ async function waitFor(cond: () => boolean, label: string, timeoutMs = WAIT_MS):
 }
 
 /** Create a session on the bundled backend and record what is written to it. */
-function createBundled(
+async function createBundled(
   mgr: DaemonSessionManager,
   id: string,
   extra: { deferOutput?: boolean; scrollbackData?: Buffer } = {},
-): { managed: ManagedSession; writes: string[]; createdAt: number } {
+): Promise<{ managed: ManagedSession; writes: string[]; createdAt: number }> {
   const prev = process.env[CONPTY_BACKEND_ENV];
   process.env[CONPTY_BACKEND_ENV] = 'bundled';
   const createdAt = Date.now();
   try {
-    mgr.createSession({ id, cmd: CMD_EXE, cwd: path.resolve(process.cwd()), cols: 80, rows: 24, ...extra });
+    await mgr.createSessionAsync({ id, cmd: CMD_EXE, cwd: path.resolve(process.cwd()), cols: 80, rows: 24, ...extra });
   } finally {
     if (prev === undefined) delete process.env[CONPTY_BACKEND_ENV];
     else process.env[CONPTY_BACKEND_ENV] = prev;
   }
   const managed = mgr.getSession(id);
   if (!managed) throw new Error(`session ${id} was not created`);
-  // The PTY's output arrives asynchronously, so wrapping write here still
-  // sees the startup reply.
+  // The PTY's output arrives asynchronously, and createSessionAsync resolves
+  // before the first chunk (#2398), so wrapping write here still sees the
+  // startup reply.
   const writes: string[] = [];
   const write = managed.ptyProcess.write.bind(managed.ptyProcess);
   managed.ptyProcess.write = (data: string | Buffer) => {
@@ -78,7 +79,7 @@ describe.skipIf(!onWindows)('bundled ConPTY — real OpenConsole (win32 only)', 
   it('a new pane: the startup DA1 is answered once and the prompt arrives with no garbage', async () => {
     const mgr = new DaemonSessionManager();
     manager = mgr;
-    const { managed, writes, createdAt } = createBundled(mgr, `rt-1965-new-${Date.now()}`);
+    const { managed, writes, createdAt } = await createBundled(mgr, `rt-1965-new-${Date.now()}`);
     // A demotion to in-box here would mean the bundled DLL did not load.
     expect(managed.conptyBackend).toBe('bundled');
 
@@ -99,7 +100,7 @@ describe.skipIf(!onWindows)('bundled ConPTY — real OpenConsole (win32 only)', 
   it('a recovered pane: the prompt printed while muted arrives after a size change without a keypress', async () => {
     const mgr = new DaemonSessionManager();
     manager = mgr;
-    const { managed, writes } = createBundled(mgr, `rt-1965-rec-${Date.now()}`, {
+    const { managed, writes } = await createBundled(mgr, `rt-1965-rec-${Date.now()}`, {
       deferOutput: true,
       scrollbackData: Buffer.from('WMUX-HISTORY-1965\r\n'),
     });

@@ -98,6 +98,7 @@ import {
 } from '../../components/Sidebar/attentionBlink';
 import { initialGitPageState, type GitDragContext, type GitHandoffOpen, type GitPageState } from '../../components/Git/gitPageState';
 import { multiviewColumnCount, type MultiviewArrangement } from '../../utils/multiviewGrid';
+import { DEFAULT_WINDOW_GLASS, type WindowGlassLevel } from '../../utils/windowGlass';
 import {
   normalizeRoleBinding,
   type OrchestratorRoleBindings,
@@ -684,6 +685,11 @@ export interface UISlice {
   setAttentionBlinkRemindMs: (ms: AttentionRemindMs) => void;
   setAttentionBlinkFinished: (mode: AttentionBlinkFinished) => void;
 
+  /** Window glass on macOS: how translucent the frame and the sidebar are
+   *  over the window material. Per user, persisted in the session. */
+  windowGlass: WindowGlassLevel;
+  setWindowGlass: (level: WindowGlassLevel) => void;
+
   // ─── Toast / ring notification UI ────────────────────────────────────────
   toastEnabled: boolean;
   setToastEnabled: (enabled: boolean) => void;
@@ -693,10 +699,9 @@ export interface UISlice {
 
   // ─── Notification surface toggles (T5) ───────────────────────────────────
   // Distinct knobs so users can quiet individual surfaces without disabling
-  // the underlying notification feature. Mirrors the non-persisting shape of
-  // notificationRingEnabled / notificationSoundEnabled rather than the
-  // IPC-persisting toastEnabled — the SettingsPanel reset path lives in the
-  // same family as the other notification toggles.
+  // the underlying notification feature. Saved with the session and restored
+  // by loadSession, like notificationRingEnabled (#2294), rather than through
+  // the IPC that persists toastEnabled.
   //
   // paneRingEnabled: master gate for the pane border ring animation that
   //   triggers on notifications. When false, NotifyEvents that would normally
@@ -723,8 +728,8 @@ export interface UISlice {
   //   which reads as "the pane is shadowed" and makes an inactive session
   //   hard to monitor. 1 disables the dimming entirely (the border-color
   //   glow stays); 0.6 is the historical look. Clamped to [0.6, 1] — below
-  //   0.6 would only make the readability complaint worse. Same
-  //   non-persisting family as paneRingEnabled above.
+  //   0.6 would only make the readability complaint worse. Saved with the
+  //   session like paneRingEnabled above; loadSession clamps it the same way.
   paneGlowOpacity: number;
   setPaneGlowOpacity: (opacity: number) => void;
 
@@ -933,6 +938,9 @@ export interface UISlice {
   companyViewVisible: boolean;
   toggleCompanyView: () => void;
   toggleBotsView: () => void;
+  /** The Bots page while the bots are on; otherwise Settings › Bots, where
+   *  they are turned on (the page has no rail item while they are off). */
+  openBotsPage: () => void;
   setCompanyViewVisible: (visible: boolean) => void;
 
   messageFeedVisible: boolean;
@@ -1876,6 +1884,12 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
   setAttentionBlinkRemindMs: (ms) => set((state) => { state.attentionBlinkRemindMs = ms; }),
   setAttentionBlinkFinished: (mode) => set((state) => { state.attentionBlinkFinished = mode; }),
 
+  windowGlass: DEFAULT_WINDOW_GLASS,
+  setWindowGlass: (level) => {
+    document.documentElement.setAttribute('data-glass-level', level);
+    set((state) => { state.windowGlass = level; });
+  },
+
   // ─── Toast / ring notification UI ────────────────────────────────────────
   toastEnabled: true,
 
@@ -2194,7 +2208,12 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
   // Opens the Bots rail page and, pressed there, returns to Workspaces.
   toggleBotsView: () => {
     if (get().appRoute === 'bots') set((state) => { leaveAppRoute(state, 'bots'); });
-    else get().setAppRoute('bots');
+    else get().openBotsPage();
+  },
+  openBotsPage: () => {
+    if (get().roomStatus?.enabled) get().setAppRoute('bots');
+    // Settings › Bots (FACTORY_SETTINGS_TAB in components/Bots/botsAddBot.ts).
+    else get().openSettingsTab('factory');
   },
   setCompanyViewVisible: (visible) => set((state) => { state.companyViewVisible = visible; }),
 

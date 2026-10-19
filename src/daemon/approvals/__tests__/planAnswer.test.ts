@@ -25,6 +25,7 @@ import {
 import type { PendingToolUse } from '../../transcript/pendingToolUse';
 import { coerceApprovalState } from '../approvalStore';
 import { parseDecisionAnswerBody } from '../../web/decisionAnswer';
+import { parsePlanAnswerRequest, planDetailOnly } from '../resolveRequest';
 
 const DIR = path.join(__dirname, 'fixtures', 'terminal-prompts');
 // Read with fs, not a JSON import: a JSON import breaks the daemon build.
@@ -498,5 +499,65 @@ describe('review fixes: the feedback text and where a stopped answer leaves the 
     expect(parseDecisionAnswerBody({
       formFingerprint: 'a'.repeat(32), clientAnswerId: 'answer-0000000001', action: 'feedback', text: '\x1b[201~1\r',
     })).toEqual({ ok: false, error: 'invalid-text', textRefusal: 'unsafe-text' });
+  });
+});
+
+describe('the desktop answer (daemon.approvals.answerPlan)', () => {
+  const desktop = (h: Harness, record: ApprovalRequest, action: string, text?: string) => {
+    const request = parsePlanAnswerRequest({
+      id: record.id,
+      answer: {
+        formFingerprint: record.formFingerprint!, clientAnswerId: `desktop-answer-000000${++answerSeq}`, action,
+        ...(text !== undefined ? { text } : {}),
+      },
+    }, { isFirstParty: true });
+    if ('ok' in request) throw new Error(`refused: ${request.reason}`);
+    return h.registry.answerPlanFromDesktop(request);
+  };
+
+  it('answers through the same fenced path without the web marker: approve is one key, feedback the stepwise driver', async () => {
+    const h = makeRegistry();
+    const record = await create(h);
+    expect(await desktop(h, record, 'approve-manual')).toMatchObject({ ok: true, request: { selectedChoiceKey: '2', resolvedBy: 'desktop' } });
+    expect(h.writes).toEqual(['2']);
+    expect(await desktop(h, record, 'approve-manual')).toMatchObject({ ok: false, reason: 'already-answered' });
+
+    const fb = makeRegistry();
+    const second = await create(fb);
+    expect(await desktop(fb, second, 'feedback', 'use a list')).toMatchObject({ ok: true });
+    expect(fb.stepKeys).toEqual(['3', '\x1b[200~use a list\x1b[201~', '\r']);
+  });
+
+  it('fails closed like the phone: stale fingerprint, unknown action, other clients, other records', async () => {
+    const h = makeRegistry();
+    const record = await create(h);
+    const stale = parsePlanAnswerRequest({
+      id: record.id, answer: { formFingerprint: 'f'.repeat(32), clientAnswerId: 'desktop-answer-0000001', action: 'approve-manual' },
+    }, { isFirstParty: true });
+    if ('ok' in stale) throw new Error('parse refused');
+    expect(await h.registry.answerPlanFromDesktop(stale)).toMatchObject({ ok: false, reason: 'prompt-changed' });
+    expect(await desktop(h, record, 'approve-auto')).toMatchObject({ ok: false, reason: 'invalid-choice' });
+    // Not the app's own client: refused before the registry is asked.
+    expect(parsePlanAnswerRequest({
+      id: record.id, answer: { formFingerprint: record.formFingerprint, clientAnswerId: 'desktop-answer-0000002', action: 'approve-manual' },
+    }, { isFirstParty: false })).toEqual({ ok: false, reason: 'answer-in-terminal', answerRefusal: 'no-capability' });
+    // A plan dialog the daemon could not answer (no form) stays the terminal's.
+    const bypass = makeRegistry();
+    bypass.pane.rows = BYPASS;
+    const unbound = await create(bypass);
+    expect(await bypass.registry.answerPlanFromDesktop({
+      id: unbound.id, answer: { formFingerprint: 'a'.repeat(32), clientAnswerId: 'desktop-answer-0000003', action: 'approve-manual' },
+    })).toMatchObject({ ok: false, reason: 'answer-in-terminal', answerRefusal: 'unsupported-shape' });
+    expect(h.writes).toEqual([]);
+    expect(bypass.writes).toEqual([]);
+  });
+
+  it('daemon.approvals.detail serves the plan, never another dialog\'s command', async () => {
+    const h = makeRegistry();
+    const plan = await create(h);
+    expect(planDetailOnly(h.registry.terminalPromptDetail(plan.id))?.command).toBe(PLAN_CALL.input['plan']);
+    const bash = { id: 'r', toolName: 'Bash', command: 'rm -rf /tmp/x', commandHash: 'h', commandBytes: 13, truncated: false };
+    expect(planDetailOnly(bash)).toBeNull();
+    expect(planDetailOnly(null)).toBeNull();
   });
 });

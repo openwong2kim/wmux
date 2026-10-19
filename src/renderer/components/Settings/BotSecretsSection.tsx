@@ -85,6 +85,7 @@ export function BotSecretsSection({ t, port = getBotSecretPort(), now }: { t: T;
           <div className="flex min-w-0 flex-1 flex-col gap-0.5">
             <span className="font-mono text-[13px] text-[var(--text-main)]">{row.name}</span>
             <span className="text-[11px] text-[var(--text-sub)]">
+              {row.connections && row.connections.length > 0 && `${t('settings.factory.keyConnection', { names: row.connections.join(', ') })} · `}
               {!row.usable
                 ? t('settings.factory.keyUnusable')
                 : row.lastUsed
@@ -103,7 +104,7 @@ export function BotSecretsSection({ t, port = getBotSecretPort(), now }: { t: T;
               testId={`factory-key-${row.name}`}
             />
           ) : (
-            <Button size="sm" variant="destructive" data-testid={`factory-key-delete-${row.name}`} onClick={() => setConfirming(row.name)}>
+            <Button size="sm" variant="destructive" data-testid={`factory-key-delete-${row.name}`} aria-label={t('settings.factory.keyDeleteNamed', { name: row.name })} onClick={() => setConfirming(row.name)}>
               {t('settings.factory.keyDelete')}
             </Button>
           )}

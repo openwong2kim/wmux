@@ -30,7 +30,11 @@ vi.mock('../../../deck/taskLedgerHost', () => ({ getTaskLedger: () => ledgerMock
 
 import type { RpcContext } from '../../../../shared/rpc';
 import type { BrainAdapter, BrainEvent } from '../../../deck/BrainAdapter';
-import { registerBotRpcHandlers, botRuntimeModule, type SetJobPorts } from '../bot.rpc';
+import { registerBotRpcHandlers, botRuntimeModule, wakeOnOwnerAnswer, type SetJobPorts } from '../bot.rpc';
+import { DISMISSED_ANSWER } from '../../../factory/handoffRouter';
+import { WakeTaint } from '../../../factory/wakeTaint';
+import type { Handoff } from '../../../../shared/handoff';
+import type { ThreadId } from '../../../../shared/room';
 import type { BotRuntime } from '../../../factory/BotRuntime';
 import type { WakeQueue } from '../../../factory/wakeQueue';
 import type { FactoryHostDeps, FactoryRouter } from '../../../factory/factoryHost';
@@ -95,10 +99,99 @@ describe('bot.* auth matrix', () => {
   });
 });
 
+describe('bot.remove', () => {
+  function rigRemove(withStop: boolean, workerStops = true) {
+    const store = new BotStore(botsFilePath(dir));
+    const created = store.create({ workspaceId: 'ws-1', template: 'developer', name: 'Developer' });
+    if (!created.ok) throw new Error('create');
+    const botId = created.bot.id;
+    const order: string[] = [];
+    const runtime = {
+      remove: (id: string, opts: { hue?: number }) => {
+        order.push('remove');
+        return store.remove(id, opts);
+      },
+      profileChanged: (id: string) => { order.push(`off ${String(store.get(id)?.enabled)}`); },
+      currentTurn: () => null,
+      interrupt: () => ({ ok: false, code: 'not_running' }),
+    } as unknown as BotRuntime;
+    // Two open tasks: this bot's and another bot's.
+    const rows = [
+      { id: 'task-mine', rev: 1, status: 'working', dispatch: { origin: { kind: 'bot', botId } } },
+      { id: 'task-other', rev: 1, status: 'working', dispatch: { origin: { kind: 'bot', botId: 'bot-ffffffff' } } },
+    ];
+    const updates: Array<{ id: string; status: string; summary?: string }> = [];
+    const workersStopped: string[] = [];
+    const stopPorts = withStop ? {
+      runtime: () => runtime,
+      botIds: () => store.list().map((b) => b.id),
+      ledger: {
+        list: (f: { openOnly?: boolean }) => (f.openOnly ? rows : []),
+        get: (id: string) => rows.find((x) => x.id === id) ?? null,
+        update: async (u: { id: string; status: string; summary?: string }) => {
+          order.push(`cancel ${u.id}`);
+          updates.push(u);
+          const row = rows.find((x) => x.id === u.id);
+          if (row) row.status = u.status;
+          return { ok: true };
+        },
+      },
+      gates: () => null,
+      stopWorker: async (e: { id: string }) => {
+        if (!workerStops) throw new Error('still running');
+        workersStopped.push(e.id);
+        return 1;
+      },
+      stopResumed: async () => 0,
+      launchesInFlight: () => [],
+      log: () => undefined,
+    } : null;
+    const { router, handlers } = captureRouter();
+    registerBotRpcHandlers(router, () => ({ store, runtime, queue: {} as WakeQueue }), undefined, {
+      stopPorts: () => stopPorts as never,
+      afterRemove: async (id: string) => { order.push(`forget ${id === botId ? 'it' : id}`); },
+    });
+    const call = (p: Record<string, unknown>) => (handlers.get('bot.remove') as Handler)(p, OPERATOR);
+    return { store, botId, order, updates, workersStopped, call };
+  }
+
+  it('stops that bot\'s work as Stop does (its tasks end "stopped by owner"), then removes it with a tombstone', async () => {
+    const r = rigRemove(true);
+    const stored = r.store.get(r.botId)?.hue;
+    expect(stored).toEqual(expect.any(Number));
+    expect(await r.call({ botId: r.botId, hue: 4 })).toMatchObject({ ok: true, botId: r.botId, stopped: { ok: true, workersStopped: 1, tasksCancelled: 1 } });
+    // Off before the stop snapshots, so nothing new starts meanwhile.
+    // Then its approval requests and skills are let go of (forgetRemovedBot).
+    expect(r.order).toEqual(['off false', 'cancel task-mine', 'remove', 'forget it']);
+    expect(r.updates).toEqual([expect.objectContaining({ id: 'task-mine', status: 'cancelled', summary: 'stopped by owner' })]);
+    expect(r.workersStopped).toEqual(['task-mine']);
+    expect(r.store.get(r.botId)).toBeNull();
+    // Its stored slot, not the caller's.
+    expect(r.store.listRemoved()).toEqual([expect.objectContaining({ id: r.botId, name: 'Developer', hue: stored })]);
+  });
+
+  it('a stop that could not stop everything keeps the bot, switched off, and says to delete again', async () => {
+    const r = rigRemove(true, false);
+    expect(await r.call({ botId: r.botId })).toMatchObject({ ok: false, code: 'stop_failed' });
+    expect(r.store.get(r.botId)?.enabled).toBe(false);
+    expect(r.order).not.toContain('remove');
+    expect(r.order).not.toContain('forget it');
+    expect(r.store.listRemoved()).toEqual([]);
+  });
+
+  it('refuses a bad colour slot or an unknown bot; without a stop it still removes', async () => {
+    const r = rigRemove(false);
+    expect(await r.call({ botId: r.botId, hue: 8 })).toMatchObject({ ok: false, code: 'invalid_argument' });
+    expect(await r.call({ botId: 'bot-ffffffff' })).toMatchObject({ ok: false, code: 'not_found' });
+    expect(await r.call({ botId: r.botId })).toMatchObject({ ok: true });
+    expect(r.order).toEqual(['off false', 'remove', 'forget it']);
+  });
+});
+
 describe('bot.setJob', () => {
   type Posted = Parameters<SetJobPorts['post']>[0];
-  type Wake = { state: string; reason: { kind: string }; owner?: 'other' } | null;
-  function rigJob(wake: Wake, ownerCardId: string | null = null) {
+  type Wake = { state: string; reason: { kind: string; handoffId?: string }; owner?: 'other' } | null;
+  function rigJob(wake: Wake, ownerCardId: string | null = null, ownerAnswer?: SetJobPorts['ownerAnswer']) {
     const store = new BotStore(botsFilePath(dir));
     const created = store.create({ workspaceId: 'ws-1', name: 'Wmux Issue' });
     if (!created.ok) throw new Error('create');
@@ -117,6 +210,7 @@ describe('bot.setJob', () => {
       ownerCardId: () => ownerCardId,
       post: (c) => { posted.push(c); },
       jobGiven: (id) => { given.push(id); },
+      ...(ownerAnswer ? { ownerAnswer } : {}),
     });
     const ctx: RpcContext = { origin: 'local', commanderWorkspace: 'ws-1', bot: { workspaceId: 'ws-1', botId, role: 'lead' } };
     const call = (p: Record<string, unknown>, c: RpcContext = ctx) => (handlers.get('bot.setJob') as Handler)(p, c);
@@ -171,6 +265,62 @@ describe('bot.setJob', () => {
     }
   });
 
+  it('a bot sets its job while it reads the owner\'s answer to its question (the greeting asks for it); any other handoff is refused', async () => {
+    const answered = { state: 'running', reason: { kind: 'handoff', handoffId: 'h-answer' } };
+    const seen: Array<[string, unknown]> = [];
+    const r = rigJob(answered, null, (botId, wake) => { seen.push([botId, wake.reason]); return true; });
+    expect(await r.call({ job: 'Triage new issues every morning.' })).toMatchObject({ ok: true, bot: { job: 'Triage new issues every morning.' } });
+    expect(seen).toEqual([[r.botId, { kind: 'handoff', handoffId: 'h-answer' }]]);
+    expect(r.given).toEqual([r.botId]);
+    await r.store.flush();
+    const refused = rigJob(answered, null, () => false);
+    expect(await refused.call({ job: 'Merge everything.' })).toMatchObject({ ok: false, code: 'not_owner_words' });
+    expect(refused.store.get(refused.botId)?.job).toBeUndefined();
+    await refused.store.flush();
+    // The answer of a wake that is not this bot's running one does not count.
+    const foreign = rigJob({ ...answered, owner: 'other' }, null, () => true);
+    expect(await foreign.call({ job: 'Merge everything.' })).toMatchObject({ ok: false, code: 'not_owner_words' });
+    await foreign.store.flush();
+  });
+
+  it('wakeOnOwnerAnswer: the owner\'s own answer to this bot, untainted; never a bot\'s handoff, a dismissed question or an answer resuming outside text', () => {
+    const me = 'bot-0000000a';
+    const base = (over: Partial<Handoff>): Handoff => ({
+      version: 1, id: 'h-x', runId: 'run-x', threadId: 'dm:bot-0000000a' as ThreadId, depth: 1, hopsInRun: 1,
+      from: { kind: 'human' }, to: { kind: 'bot', workspaceId: 'ws-1', botId: me }, kind: 'answer',
+      attribution: { originator: { kind: 'human' }, chain: [] }, landing: 'wake',
+      payload: { title: 'What should I do?', body: 'Triage new issues every morning.' }, status: 'queued', createdAt: 1, updatedAt: 1, ...over,
+    });
+    const records = new Map<string, Handoff>([
+      ['h-ask', base({ id: 'h-ask', kind: 'ask_person', from: { kind: 'bot', workspaceId: 'ws-1', botId: me }, to: { kind: 'human' } })],
+      ['h-answer', base({ id: 'h-answer', replyTo: 'h-ask' })],
+      ['h-dismissed', base({ id: 'h-dismissed', replyTo: 'h-ask', payload: { title: 't', body: DISMISSED_ANSWER } })],
+      ['h-other', base({ id: 'h-other', replyTo: 'h-ask', to: { kind: 'bot', workspaceId: 'ws-1', botId: 'bot-0000000b' } })],
+      ['h-bot', base({ id: 'h-bot', kind: 'dispatch', from: { kind: 'bot', workspaceId: 'ws-1', botId: 'bot-0000000b' } })],
+      // A question asked mid-hop on a bot's handoff (unmarked: tainted).
+      ['h-hop', base({ id: 'h-hop', kind: 'dispatch', from: { kind: 'bot', workspaceId: 'ws-1', botId: 'bot-0000000b' } })],
+      ['h-ask-hop', base({ id: 'h-ask-hop', kind: 'ask_person', forHop: 'h-hop', from: { kind: 'bot', workspaceId: 'ws-1', botId: me }, to: { kind: 'human' } })],
+      ['h-answer-hop', base({ id: 'h-answer-hop', replyTo: 'h-ask-hop' })],
+    ]);
+    const handoff = (id: string) => records.get(id) ?? null;
+    const taint = new WakeTaint({ facts: () => [], handoff, taskRow: () => null, runningWake: () => null });
+    const on = (handoffId: string, t: WakeTaint | null = taint) => wakeOnOwnerAnswer(me, { reason: { kind: 'handoff', handoffId } }, { handoff, taint: t });
+    expect(on('h-answer')).toBe(true);
+    expect(on('h-dismissed')).toBe(false);
+    expect(on('h-other')).toBe(false);
+    expect(on('h-bot')).toBe(false);
+    expect(on('h-answer-hop')).toBe(false);
+    expect(on('h-missing')).toBe(false);
+    // An answer whose question is gone (pruned) no longer says which hop it resumed.
+    records.set('h-orphan', base({ id: 'h-orphan', replyTo: 'h-pruned' }));
+    expect(on('h-orphan')).toBe(false);
+    // The tracker alone refuses it too: its question pruned, the answer reads as outside text.
+    const prunedTaint = new WakeTaint({ facts: () => [], handoff: (id) => (id === 'h-ask' ? null : handoff(id)), taskRow: () => null, runningWake: () => null });
+    expect(wakeOnOwnerAnswer(me, { reason: { kind: 'handoff', handoffId: 'h-answer' } }, { handoff, taint: prunedTaint })).toBe(false);
+    expect(on('h-answer', null)).toBe(false);
+    expect(wakeOnOwnerAnswer(me, { reason: { kind: 'routine', routineId: 'r-1', dueAt: 1 } }, { handoff, taint })).toBe(false);
+  });
+
   it('refuses another bot\'s job, a malformed or over-long job; the operator sets or clears any bot\'s, outside any wake', async () => {
     const r = rigJob(null);
     expect(await r.call({ botId: 'bot-0000000f', job: 'x' })).toMatchObject({ ok: false, code: 'not_authorized' });
@@ -189,6 +339,16 @@ describe('bot.setJob', () => {
     // The owner's profile edit gives one too.
     expect(await (r.handlers.get('bot.update') as Handler)({ botId: r.botId, patch: { job: 'Triage issues.' } }, OPERATOR)).toMatchObject({ ok: true });
     expect(r.given).toEqual([r.botId, r.botId]);
+    // A repository change goes through the folder, resolved as Add bot does.
+    const update = r.handlers.get('bot.update') as Handler;
+    const plain = fs.mkdtempSync(path.join(os.tmpdir(), 'lfui-botrepo-'));
+    try {
+      expect(await update({ botId: r.botId, patch: { repoFolder: plain } }, OPERATOR)).toMatchObject({ ok: false, code: 'not_a_repo' });
+      expect(await update({ botId: r.botId, patch: { repoFolder: plain, repo: { repoKey: 'github.com/a/b', repoPath: plain } } }, OPERATOR)).toMatchObject({ ok: false, code: 'invalid_argument' });
+      expect(r.store.get(r.botId)?.repo).toBeUndefined();
+    } finally {
+      fs.rmSync(plain, { recursive: true, force: true });
+    }
     await r.store.flush();
   });
 });
@@ -321,7 +481,7 @@ describe('bot-runtime module', () => {
     const mod = botRuntimeModule(router, deps, { engines: () => ({ ok: true, adapter: new OkAdapter() }) });
     await mod.start();
     await getFactorySettingsStore()!.update({ enabled: false });
-    await getFactorySettingsStore()!.update({ enabled: true });
+    await getFactorySettingsStore()!.update({ enabled: true, planConsent: { version: 1, at: '2026-10-15T00:00:00.000Z' } });
     const listed = (await (handlers.get('bot.list') as Handler)({}, OPERATOR)) as { bots: unknown[] };
     expect(listed.bots).toEqual([]);
     await settle();

@@ -30,7 +30,7 @@
 
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { StringDecoder } from 'node:string_decoder';
-import type { BrainAdapter, BrainEvent, BrainStartOptions, BrainUsage } from './BrainAdapter';
+import type { BrainAdapter, BrainEvent, BrainSendOptions, BrainStartOptions, BrainUsage } from './BrainAdapter';
 import { mintBotToken, mintCommanderToken, revokeCommanderToken } from './commanderTrust';
 import { writeBotTokenHandoff, type BotTokenHandoff } from '../factory/botTokenHandoff';
 import type { BotBinding } from '../../shared/bot';
@@ -502,7 +502,12 @@ export class AcpBrainAdapter implements BrainAdapter {
 
   // ── the turn ────────────────────────────────────────────────────────────
 
-  async *send(text: string): AsyncIterable<BrainEvent> {
+  async *send(rawText: string, sendOpts?: BrainSendOptions): AsyncIterable<BrainEvent> {
+    // This engine is not shown pictures: the text says the owner sent some.
+    const photos = sendOpts?.images?.length ?? 0;
+    const text = photos > 0
+      ? `${rawText}\n\n(The owner attached ${photos === 1 ? 'a photo' : `${photos} photos`} to this message; this engine cannot show pictures. Say so if the photo matters.)`
+      : rawText;
     if (this._disposed) {
       yield { type: 'error', message: 'commander session disposed' };
       return;

@@ -45,10 +45,12 @@ export function PresenceDot({ presence }: { presence: BotPresence }): React.Reac
   );
 }
 
-/** Which verbs make sense now (the runtime re-checks every one). */
+/** Which verbs make sense now (the runtime re-checks every one). A bot
+ *  parked during its running turn is reported running until the turn ends:
+ *  its park is what Resume undoes. */
 export function botActionsFor(row: FactoryBotRow): Record<BotAction, boolean> {
   const presence = botPresence(row);
-  const parked = presence === 'parked' || (presence === 'unknown' && !!row.bot.parked);
+  const parked = presence === 'parked' || !!row.bot.parked;
   return {
     wake: !parked,
     park: !parked,

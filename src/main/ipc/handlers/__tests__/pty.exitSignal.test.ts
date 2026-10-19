@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
 import path from 'node:path';
+import { readSourceText } from '../../../../test-utils/sourceText';
 
 /**
  * Source-level lock (#1838): node-pty reports a signal-killed shell as exit
@@ -10,7 +10,7 @@ import path from 'node:path';
  * are wired deep inside daemon and electron setup, so like the reconnect locks
  * they are pinned at the source level.
  */
-const read = (rel: string) => readFileSync(path.resolve(process.cwd(), rel), 'utf8');
+const read = (rel: string) => readSourceText(path.resolve(process.cwd(), rel));
 
 describe('exit signal reaches the renderer (source-level lock)', () => {
   it('the daemon broadcasts the signal with session.died', () => {

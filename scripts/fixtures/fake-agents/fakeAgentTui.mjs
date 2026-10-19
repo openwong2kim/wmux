@@ -5,6 +5,11 @@
 // commands, so the fresh-context engine can be driven end to end without a
 // real model, a login, or the operator's own agent configuration.
 //
+// Interrupts follow live Claude Code 2.1.301: Ctrl+C ends a turn with the
+// `⎿  Interrupted · What should Claude do instead?` row, and a lone Esc ends it
+// as Claude Code does while still thinking (#2264): no row, the prompt back in
+// the composer, and the window title from its `◐`/`◑` spinner to `✳`.
+//
 // Not a product surface: nothing in src/ imports this. Written for wmux; no
 // code from any other product.
 //
@@ -90,6 +95,14 @@ export function runFakeTui(spec) {
   const rows = () => process.stdout.rows || 30;
   const SPINNER = ['✻', '✶', '✳', '✢', '·'];
 
+  // A `✳ <name>` title (Claude Code) spins like the real one: `◐`/`◑`
+  // alternate about once a second while a turn runs, and `✳` comes back when
+  // it ends or is interrupted. wmux reads that edge (#2264).
+  function windowTitle() {
+    if (!state.busy || !spec.title.startsWith('✳ ')) return spec.title;
+    return `${Math.floor(state.busy.frame / 5) % 2 === 0 ? '◐' : '◑'} ${spec.title.slice(2)}`;
+  }
+
   function render() {
     const lines = [];
     if (state.showHeader) lines.push(...spec.header(), '');
@@ -118,7 +131,7 @@ export function runFakeTui(spec) {
     const visible = lines.slice(Math.max(0, lines.length - rows()));
     const composerRow = composerIndex - (lines.length - visible.length);
     let frame = `${ESC}[H${ESC}[2J`;
-    if (spec.title) frame += `${ESC}]0;${spec.title}\x07`;
+    if (spec.title) frame += `${ESC}]0;${windowTitle()}\x07`;
     frame += visible.join('\r\n');
     // The cursor rests on the composer row, after the typed text — wmux reads
     // the composer as the cursor row.
@@ -177,7 +190,7 @@ export function runFakeTui(spec) {
     const earlier = Math.max(0, conv.prompts.length - 1);
     state.transcript.push(
       interrupted
-        ? '  ⎿  Interrupted'
+        ? '  ⎿  Interrupted · What should Claude do instead?'
         : `● done: ${busy.text.slice(0, 80)} (context: ${earlier} earlier prompt${earlier === 1 ? '' : 's'} in this conversation)`,
       '',
     );
@@ -186,6 +199,23 @@ export function runFakeTui(spec) {
     const next = state.queue.shift();
     if (next !== undefined) submit(next);
     else render();
+  }
+
+  // A lone Escape while a turn runs. The fake writes no answer before its turn
+  // ends, so this is always Claude Code's still-thinking case (#2264, live on
+  // 2.1.301): the turn ends with no Interrupted row, the prompt goes back into
+  // the composer, and the title turns idle. Ctrl+C keeps the row.
+  function escapeKey() {
+    const busy = state.busy;
+    if (!busy) return;
+    clearInterval(busy.ticker);
+    clearTimeout(busy.timer);
+    state.busy = null;
+    state.transcript.pop();
+    state.conversation.prompts.pop();
+    state.composer = busy.text;
+    log('interrupted', { text: busy.text.slice(0, 200), thinking: true, session: state.conversation.id });
+    render();
   }
 
   function enter() {
@@ -289,11 +319,20 @@ export function runFakeTui(spec) {
           s = s.slice(m[0].length);
           continue;
         }
-        // A CSI cut off at the end of a read waits for the rest; anything else
-        // after ESC is a lone Escape key, which is dropped.
+        // A CSI cut off at the end of a read waits for the rest; a bare ESC
+        // with nothing after it is a lone Escape key once no more bytes follow
+        // (the 50 ms a real TUI waits too). An ESC glued to other bytes (an
+        // Alt+key, ESC ESC) is dropped, as before.
         // eslint-disable-next-line no-control-regex -- ESC is the byte being parsed
         if (/^\x1b(?:\[[0-?]*[ -/]*|O)?$/.test(s) && s.length < 16) {
           state.pending = s;
+          if (s === ESC) {
+            setTimeout(() => {
+              if (state.pending !== ESC) return;
+              state.pending = '';
+              escapeKey();
+            }, 50);
+          }
           break;
         }
         s = s.slice(1);

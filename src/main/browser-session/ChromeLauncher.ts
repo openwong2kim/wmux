@@ -5,7 +5,9 @@ import { join } from 'node:path';
 import { ORPHAN_TTL_MS, RECORD_TTL_MS, type ChromeSurfaceRecord, type ChromeSurfaceStore } from './ChromeSurfaceStore';
 import { CdpSocket } from './CdpSocket';
 import { ProtectedProxy, protectedChromeArgs } from './ProtectedProxy';
+import { BlockedHostLog } from './BlockedHostLog';
 import type { HostMatcher } from '../../shared/browserHostPolicy';
+import type { BlockedHost } from '../../shared/browserPolicy';
 import type { LiveTabOwner } from '../../shared/liveWriteScope';
 
 // ---------------------------------------------------------------------------
@@ -313,6 +315,9 @@ export class ChromeLauncher implements ChromeBackendClient {
   /** Whether the running instance was launched behind the proxy. */
   private launchedProtected = false;
   private proxy: ProtectedProxy | null = null;
+  /** Hosts the proxy refused since this Chrome launched or the policy last
+   *  changed (#2063); the pane editor offers an Allow for each. */
+  private readonly blocked = new BlockedHostLog();
   /** Main's own browser-level session that keeps downloads denied. */
   private downloadGuard: CdpSocket | null = null;
   /** The guard being armed, so concurrent callers share one socket. */
@@ -348,6 +353,16 @@ export class ChromeLauncher implements ChromeBackendClient {
   /** Whether this instance runs (or would run) behind the proxy. */
   isProtected(): boolean {
     return this.launchedProtected;
+  }
+
+  /** The hosts this profile's proxy refused recently, newest first. */
+  blockedHosts(): BlockedHost[] {
+    return this.blocked.list();
+  }
+
+  /** Forget the recently refused hosts (the policy changed). */
+  clearBlockedHosts(): void {
+    this.blocked.clear();
   }
 
   /** True when this launcher opened (and still tracks) the given surface. */
@@ -1015,6 +1030,7 @@ export class ChromeLauncher implements ChromeBackendClient {
         matcher: () => (this.wantedProtection() ?? { matcher: () => ({ allows: () => false }) }).matcher(),
         ...(plan.resolve && { resolve: plan.resolve }),
         ...(plan.onDecision && { onDecision: plan.onDecision }),
+        onBlocked: (host, port) => this.blocked.record(host, port),
       });
     }
     try {
@@ -1214,6 +1230,9 @@ export class ChromeLauncher implements ChromeBackendClient {
 
   private async launch(): Promise<number> {
     const plan = this.wantedProtection();
+    // A fresh Chrome starts with a fresh list: what the last one was refused
+    // is not what this one will ask for.
+    this.blocked.clear();
     if (plan) {
       await this.evictExisting();
     } else {
@@ -1569,6 +1588,20 @@ export class ChromeLauncherRegistry {
           : undefined,
       ),
     );
+  }
+
+  /** The hosts `profile`'s proxy refused recently (#2063); empty when that
+   *  profile has no launcher or never ran protected. Never creates one. */
+  blockedHostsFor(profile: string): BlockedHost[] {
+    const launcher = this.launchers.get(profile);
+    return launcher instanceof ChromeLauncher ? launcher.blockedHosts() : [];
+  }
+
+  /** Forget every profile's recently refused hosts (any policy change). */
+  clearBlockedHosts(): void {
+    for (const l of this.launchers.values()) {
+      if (l instanceof ChromeLauncher) l.clearBlockedHosts();
+    }
   }
 
   forProfile(name: string): ChromeBackendClient {

@@ -38,6 +38,7 @@ import { parseCodexLineDetailed } from './parseCodexEntry';
 import { isLineBoundary, readTranscriptDelta, readTranscriptPage, statTranscript } from './readTail';
 import { HOOK_ACTIVITY_KINDS } from '../../shared/hooks/hookActivityKinds';
 import { MAX_RAW_LEN, summarizeActivity } from '../../shared/activitySummary';
+import { agentRow } from '../../shared/agentIdentity';
 
 /** Most bytes read for one session in one tick. */
 export const READ_CAP_BYTES = 256 * 1024;
@@ -123,6 +124,18 @@ export interface TranscriptActivityDeps {
   isAgentAlive: (sessionId: string) => boolean | undefined;
   /** Report a line ('' clears) for the session. */
   emit: (sessionId: string, activity: string) => void;
+  /**
+   * Every complete line read from a Claude transcript, in file order, with the
+   * file it came from (the API-error turn end reads it; see apiErrorTurnEnd).
+   * A new watch also replays its last JUMP_WINDOW_BYTES here once, so the
+   * entry of a turn that failed before the watch existed is not lost.
+   */
+  onClaudeLine?: (sessionId: string, path: string, line: string) => void;
+  /** Lines of this session's Claude transcript were skipped unread (more was
+   *  appended in one tick than READ_CAP_BYTES): what they said is unknown. */
+  onClaudeGap?: (sessionId: string) => void;
+  /** Runs at the end of every tick. */
+  afterTick?: () => void;
   now?: () => number;
   pollMs?: number;
   minGapMs?: number;
@@ -139,6 +152,12 @@ interface Watch {
   sentAt: number;
   /** A line held back by the gap, sent on a later tick. */
   pending?: string;
+  /** Hands its Claude lines to `onClaudeLine`. */
+  lines: boolean;
+  /** Hook-fed: read only for `onClaudeLine`, never for the activity line. */
+  linesOnly: boolean;
+  /** The one-time `onClaudeLine` replay of the window before `offset` is still owed. */
+  replay?: boolean;
 }
 
 /**
@@ -215,7 +234,13 @@ export class TranscriptActivityWatcher {
     if (LIVE_HOOK_KINDS.has(kind) || HOOK_ACTIVITY_KINDS.has(kind)) this.liveHookAt.set(sessionId, at);
     if (HOOK_ACTIVITY_KINDS.has(kind)) {
       this.hookFed.add(sessionId);
-      this.watches.delete(sessionId);
+      // The hook owns the activity line now; the Claude lines still matter.
+      const watch = this.watches.get(sessionId);
+      if (watch?.lines) {
+        watch.linesOnly = true;
+        watch.sent = undefined;
+        watch.pending = undefined;
+      } else this.watches.delete(sessionId);
     } else if (kind === 'agent.session_start') {
       this.sessionStartAt.set(sessionId, at);
       this.hookFed.delete(sessionId);
@@ -225,6 +250,12 @@ export class TranscriptActivityWatcher {
       const watch = this.watches.get(sessionId);
       if (watch) { watch.sent = undefined; watch.pending = undefined; }
     }
+  }
+
+  /** This pane's watch reads `path` and hands its lines to `onClaudeLine`. */
+  readsLines(sessionId: string, path: string): boolean {
+    const watch = this.watches.get(sessionId);
+    return !!watch && watch.lines && watch.path === path;
   }
 
   /** The pane closed or its PTY died. */
@@ -281,6 +312,7 @@ export class TranscriptActivityWatcher {
         this.watches.delete(id);
       }
     }
+    this.deps.afterTick?.();
   }
 
   /** One transcript, one pane: the pane whose agent spoke last keeps it. */
@@ -296,25 +328,57 @@ export class TranscriptActivityWatcher {
   }
 
   private reconcile(id: string): void {
-    const binding = this.hookFed.has(id) || !this.agentAlive(id) ? undefined : this.deps.getBinding(id);
-    const parse = binding ? PARSERS[binding.agent] : undefined;
+    const fed = this.hookFed.has(id);
+    let binding = fed || !this.agentAlive(id) ? undefined : this.deps.getBinding(id);
+    // A hook-fed Claude pane is still read for its lines (an API-error turn
+    // end has no hook on an install without StopFailure), never for activity.
+    if (fed && this.deps.onClaudeLine && this.agentAlive(id)) {
+      const own = this.deps.getBinding(id);
+      if (agentRow(own?.agent)?.apiErrorTurnEnd) binding = own;
+    }
+    const agentParse = binding ? PARSERS[binding.agent] : undefined;
     const path = binding?.transcriptPath;
+    const onLine = agentRow(binding?.agent)?.apiErrorTurnEnd ? this.deps.onClaudeLine : undefined;
+    const parse: ParseLine | undefined = agentParse && onLine && path
+      ? (line, offset) => { onLine(id, path, line); return agentParse(line, offset); }
+      : agentParse;
     const current = this.watches.get(id);
     if (!parse || !path) {
       this.watches.delete(id);
       return;
     }
-    if (current && current.path === path) return;
+    if (current && current.path === path) {
+      current.linesOnly = this.hookFed.has(id);
+      return;
+    }
     const stat = statTranscript(path);
     if (!stat) {
       this.watches.delete(id);
       return;
     }
     // Start at the end: only what the agent writes from now on.
-    this.watches.set(id, { path, parse, ino: stat.ino, offset: stat.size, sentAt: 0 });
+    this.watches.set(id, { path, parse, ino: stat.ino, offset: stat.size, sentAt: 0, lines: !!onLine, linesOnly: this.hookFed.has(id), replay: !!onLine });
+  }
+
+  /** The one-time `onClaudeLine` replay a watch owes, if it owes one. */
+  private replayLines(id: string, watch: Watch): void {
+    const onLine = this.deps.onClaudeLine;
+    if (!watch.replay || !onLine) return;
+    watch.replay = false;
+    // The replay reads only the last window, so whatever came before it (and
+    // whatever was written while no watch read this file) is a gap.
+    this.deps.onClaudeGap?.(id);
+    const page = readTranscriptPage(watch.path, { maxBytes: JUMP_WINDOW_BYTES, parseLine: (line) => { onLine(id, watch.path, line); return []; } });
+    // Go on from the last complete line the replay handed over: a line still
+    // being written when the watch began is read whole once it ends, rather
+    // than its tail failing the line-boundary check and being skipped.
+    if (page && page.cursor.fileSize >= watch.offset) watch.offset = page.cursor.tailOffset;
   }
 
   private read(id: string, watch: Watch): void {
+    // Here, after dropSharedTranscripts: a pane that lost a shared file is
+    // recreated by every reconcile, and must not replay it every tick.
+    this.replayLines(id, watch);
     const stat = statTranscript(watch.path);
     if (!stat) {
       this.watches.delete(id);
@@ -325,10 +389,16 @@ export class TranscriptActivityWatcher {
       || (watch.offset > 0 && watch.offset <= stat.size && !isLineBoundary(watch.path, watch.offset));
     if (replaced || stat.size < watch.offset) {
       // Rewritten, replaced or rotated: re-seat at the new end, report nothing.
+      // The Claude lines of the new file are owed once, as for a new watch.
       watch.ino = stat.ino;
       watch.offset = stat.size;
       watch.pending = undefined;
+      // In this tick, before afterTick settles a pending error the new file
+      // may already have moved past.
+      watch.replay = watch.lines;
+      this.replayLines(id, watch);
     } else if (stat.size - watch.offset > READ_CAP_BYTES) {
+      if (watch.lines) this.deps.onClaudeGap?.(id);
       const page = readTranscriptPage(watch.path, { maxBytes: JUMP_WINDOW_BYTES, parseLine: watch.parse });
       if (!page) { this.watches.delete(id); return; }
       events = page.events;
@@ -336,12 +406,17 @@ export class TranscriptActivityWatcher {
     } else if (stat.size > watch.offset) {
       const delta = readTranscriptDelta(watch.path, watch.offset, READ_CAP_BYTES, watch.parse);
       if (!delta) { this.watches.delete(id); return; }
-      if (delta.reset) watch.offset = stat.size;
-      else {
+      if (delta.reset) {
+        // Rewritten under the read: like a replacement, a gap then one replay.
+        watch.offset = stat.size;
+        watch.replay = watch.lines;
+        this.replayLines(id, watch);
+      } else {
         events = delta.events;
         watch.offset = delta.cursor.tailOffset;
       }
     }
+    if (watch.linesOnly) return;
     if (events.some((event) => event.kind === 'user_text')) watch.sent = undefined;
     const { line, quiet } = readBatch(events);
     // A turn that moved past its tools must not have a held-back line sent

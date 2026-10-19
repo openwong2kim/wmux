@@ -20,6 +20,11 @@
 //   5. stays alive (an agent that exits leaves a bare shell, which the
 //      fan-out launch check reads as "no agent started").
 //
+// The `start` line also records what the launch would load: whether it
+// carried `--strict-mcp-config`, the server names in its `--mcp-config` file
+// and the settings file's allow rules (never a key value: the files hold
+// none); for codex, the MCP `-c` words.
+//
 // Every step is logged to FACTORY_E2E_WORKER_LOG as one JSON line.
 
 import { spawn, spawnSync } from 'node:child_process';
@@ -103,13 +108,41 @@ async function mcpCall(name, args) {
   }
 }
 
+/** What the launch line's MCP and settings flags load. */
+function launchConfig(argv) {
+  const value = (flag) => argv.find((a) => a.startsWith(`${flag}=`))?.slice(flag.length + 1);
+  const read = (file) => {
+    try {
+      return file ? JSON.parse(fs.readFileSync(file, 'utf8')) : null;
+    } catch {
+      return null;
+    }
+  };
+  const mcp = read(value('--mcp-config'));
+  const settings = read(value('--settings'));
+  // A codex line's `-c` words: the features and owner servers it turns off,
+  // and each connection table's name with the tools it lists.
+  const words = argv.filter((_, i) => argv[i - 1] === '-c');
+  const tables = words.map((w) => /^mcp_servers\.([a-z0-9-]+)=(\{.*\})$/.exec(w)).filter(Boolean);
+  return {
+    strict: argv.includes('--strict-mcp-config'),
+    mcpServers: mcp ? Object.keys(mcp.mcpServers ?? {}) : null,
+    allow: settings?.permissions?.allow ?? [],
+    codexMcp: {
+      featuresOff: words.map((w) => /^features\.(\w+)=false$/.exec(w)?.[1]).filter(Boolean),
+      serversOff: words.map((w) => /^mcp_servers\.([A-Za-z0-9_-]+)\.enabled=false$/.exec(w)?.[1]).filter(Boolean),
+      tables: tables.map((m) => ({ name: m[1], enabledTools: /"enabled_tools"=\[([^\]]*)\]/.exec(m[2])?.[1] ?? null })),
+    },
+  };
+}
+
 async function main() {
   const id = taskId();
   // Which CLI ran this worker (fake-codex.mjs sets codex), and whether the
   // codex rules file main writes was in place.
   const agent = process.env.FACTORY_E2E_WORKER_AGENT || 'claude';
   const rulesPresent = fs.existsSync(path.join(process.cwd(), '.codex', 'rules', 'wmux-bot-worker.rules'));
-  log('start', { taskId: id, agent, rulesPresent, args: process.argv.slice(2).map((a) => a.slice(0, 200)) });
+  log('start', { taskId: id, agent, rulesPresent, ...launchConfig(process.argv.slice(2)), args: process.argv.slice(2).map((a) => a.slice(0, 200)) });
   if (!id) {
     log('no-task-id');
   } else {

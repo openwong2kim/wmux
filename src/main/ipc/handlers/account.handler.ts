@@ -133,6 +133,7 @@ export function registerAccountHandlers(): () => void {
     IPC.ACCOUNT_ONBOARD_PREPARE,
     IPC.ACCOUNT_ADD,
     IPC.ACCOUNT_RENAME,
+    IPC.ACCOUNT_SET_GROUP,
     IPC.ACCOUNT_REMOVE,
     IPC.ACCOUNT_SET_BINDING,
     IPC.ACCOUNT_CREDENTIAL_STATUS,
@@ -189,6 +190,14 @@ export function registerAccountHandlers(): () => void {
   ipcMain.handle(IPC.ACCOUNT_RENAME, wrapHandler(IPC.ACCOUNT_RENAME,
     async (_e, args: { id: unknown; name: unknown }) => {
       await getAccountStore().renameAccount(assertString(args?.id, 'id'), assertString(args?.name, 'name'));
+      return { ok: true };
+    }));
+
+  // '' moves the account out of its group; the store validates the name.
+  ipcMain.handle(IPC.ACCOUNT_SET_GROUP, wrapHandler(IPC.ACCOUNT_SET_GROUP,
+    async (_e, args: { id: unknown; group: unknown }) => {
+      if (typeof args?.group !== 'string') throw new AccountError('invalid', 'group is required');
+      await getAccountStore().setAccountGroup(assertString(args.id, 'id'), args.group);
       return { ok: true };
     }));
 

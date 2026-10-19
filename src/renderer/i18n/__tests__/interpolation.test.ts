@@ -31,6 +31,11 @@ describe('t() interpolation treats values as literal text', () => {
     expect(t('{n} of {n}', { n: 3 })).toBe('3 of 3');
   });
 
+  it('never reads an inserted value as a template', () => {
+    expect(t('{title}: {pane}', { title: 'Fix {pane} handling', pane: 'closes' })).toBe('Fix {pane} handling: closes');
+    expect(t('{a}{b}', { b: '{a}', a: '{b}' })).toBe('{b}{a}');
+  });
+
   it('leaves an unsupplied placeholder alone', () => {
     expect(t(tpl, { other: 'x' })).toBe('value: {message}!');
   });

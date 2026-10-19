@@ -108,6 +108,14 @@ describe('readLastAssistantMessage', () => {
     });
   });
 
+  it('ignores api-request-blob entries that copy an earlier message', () => {
+    // Claude Code 2.1.301 logs each API request with its last message inside.
+    const blob = (role: string, content: unknown) =>
+      line({ type: 'api-request-blob', hash: 'h', message: { role, content } });
+    fs.writeFileSync(file, assistantText('Shall I merge?') + blob('user', 'yes') + blob('assistant', [{ type: 'text', text: 'Old text.' }]));
+    expect(readLastAssistantMessage(file)?.text).toBe('Shall I merge?');
+  });
+
   it('skips tool-only assistant turns to find the last spoken text', () => {
     // A turn that only issued tool calls has no text; the human-facing message
     // is the one before it.

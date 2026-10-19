@@ -12,6 +12,7 @@ import * as rooms from './rooms.mjs';
 import * as content from './content.mjs';
 import * as approvals from './approvals.mjs';
 import * as group from './group.mjs';
+import * as connectors from './connectors.mjs';
 
 export const GRADERS = {
   'reply-in-wake-thread': threads.replyInWakeThread,
@@ -37,12 +38,15 @@ export const GRADERS = {
   'verifier-real-pr': content.verifierRealPr,
   'moa-morning-report': handoffs.moaMorningReport,
   'moa-morning-report-real': content.moaMorningReportReal,
+  'researcher-dispatch-real': content.researcherDispatchReal,
   'lane-ready-card': lane.laneReadyCard,
   'lane-owner-login-trusted': lane.laneReadyCard,
   'human-correction-plan-decline': handoffs.humanCorrectionPlanDecline,
   'interrupted-wake-after-restart': wakes.interruptedAfterRestart,
   'repowatch-baseline-first-poll': lane.repoWatchBaseline,
   'lead-task-system-gate': handoffs.leadTaskSystemGate,
+  'research-no-repo-closes': handoffs.researchNoRepoCloses,
+  'bot-worker-codex-engine': handoffs.botWorkerCodexEngine,
   'approval-typed-merge': approvals.approvalTypedMerge,
   'approval-needs-owner-words': approvals.approvalNeedsOwnerWords,
   'approval-head-moved': approvals.approvalHeadMoved,
@@ -58,8 +62,12 @@ export const GRADERS = {
   'team-relay-limit': handoffs.teamRelayLimit,
   'team-relay-owner-tags-researcher': handoffs.teamRelayOwnerTagsResearcher,
   'taint-relay-lane-refused': approvals.taintRelayLaneRefused,
-  'coordinator-room-wakes-lead-only': group.coordinatorRoomWakesLeadOnly,
+  'group-chat-wakes-its-members': group.groupChatWakesItsMembers,
   'taint-research-lane-refused': approvals.taintLaneRefused,
+  'connector-worker-launch': connectors.connectorWorkerLaunch,
+  'connector-off-for-bot-refused': connectors.connectorOffForBotRefused,
+  'connector-task-lane-refused': connectors.connectorTaskLaneRefused,
+  'connector-codex-worker-launch': connectors.connectorCodexWorkerLaunch,
 };
 
 /** `{status: 'pass'|'fail'|'error', criteria}` for one snapshot. */

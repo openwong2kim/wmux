@@ -137,7 +137,7 @@ export type ChatV2DriverFactory = (agent: HarnessId) => ChatV2Driver | null;
 /** What the orphan sweep compares before it kills anything. */
 export interface ChatV2ProcessIdentity {
   pid: number;
-  /** As `getProcessStartTime` reports it. */
+  /** As `getProcessStartTime` reports it; compared with `sameProcessStartTime`. */
   startTime: string;
   /** Must appear in the process command line: the provider session id. */
   marker: string;

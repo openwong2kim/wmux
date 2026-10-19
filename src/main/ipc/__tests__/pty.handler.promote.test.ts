@@ -19,16 +19,13 @@
  * dump replay, and the session-cap RESOURCE_EXHAUSTED path.
  */
 import { describe, it, expect } from 'vitest';
-import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { readSourceText } from '../../../test-utils/sourceText';
 
 const srcRoot = path.join(__dirname, '..', '..', '..');
 
 describe('pty.handler PTY_PROMOTE — renderer→daemon hop', () => {
-  const source = fs.readFileSync(
-    path.join(__dirname, '..', 'handlers', 'pty.handler.ts'),
-    'utf-8',
-  );
+  const source = readSourceText(path.join(__dirname, '..', 'handlers', 'pty.handler.ts'));
 
   function promoteRegion(): string {
     const start = source.indexOf('ipcMain.handle(IPC.PTY_PROMOTE');
@@ -85,7 +82,7 @@ describe('pty.handler PTY_PROMOTE — renderer→daemon hop', () => {
 });
 
 describe('daemon.promoteSession — guards', () => {
-  const source = fs.readFileSync(path.join(srcRoot, 'daemon', 'index.ts'), 'utf-8');
+  const source = readSourceText(path.join(srcRoot, 'daemon', 'index.ts'));
 
   function promoteRegion(): string {
     const start = source.indexOf("const promoteSession = async");
@@ -220,7 +217,9 @@ describe('daemon.promoteSession — guards', () => {
     expect(region).toMatch(/if \(includeSuspended\) \{/);
     // No duplicates: an id already in the active list must not be re-added.
     expect(region).toMatch(/!activeIdSet\.has\(s\.id\)/);
-    // And the default (unscoped) reply must stay exactly the active list.
-    expect(region).toMatch(/return activeSessions;/);
+    // And the default (unscoped) reply must stay exactly the active list
+    // (`reply` only wraps it when the caller asks `withRecovery`, #2393).
+    expect(region).toMatch(/return reply\(activeSessions\);/);
+    expect(region).toMatch(/withRecovery \? \{ sessions, recoveryDone: [^}]+\} : sessions/);
   });
 });

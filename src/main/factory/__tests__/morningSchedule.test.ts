@@ -6,7 +6,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_FACTORY_SETTINGS, type FactorySettings } from '../../../shared/factorySettings';
-import { MorningSchedule, localDay, morningDue } from '../morningSchedule';
+import { MorningSchedule, localDay, morningDecision, morningDue, previousMorningDay } from '../morningSchedule';
 import type { MorningFireResult } from '../morningReport';
 
 let dir = '';
@@ -27,6 +27,20 @@ describe('morningDue', () => {
     expect(morningDue(on, at(10, 0, 5), null)).toBeNull();
     expect(morningDue({ ...on, enabled: false }, at(10), null)).toBeNull();
     expect(localDay(at(23, 59))).toBe('2026-10-12');
+  });
+
+  it('on the first run or after a gap fires only within the grace window after the hour', () => {
+    // First enable at 17:47: no morning report today (the E2E defect).
+    expect(morningDue(on, at(17, 47), null)).toBeNull();
+    expect(morningDecision(on, at(17, 47), null)).toEqual({ day: '2026-10-12', fire: false });
+    expect(morningDue(on, at(10, 59), null)).toBe('2026-10-12');
+    expect(morningDue(on, at(11, 0), null)).toBeNull();
+    // Monday after Friday's report: a late open still catches up.
+    expect(previousMorningDay(on.morning.weekdays, at(15))).toBe('2026-10-09');
+    expect(morningDue(on, at(15), '2026-10-09')).toBe('2026-10-12');
+    // Last fired the Wednesday before: a gap, so only within the window.
+    expect(morningDue(on, at(15), '2026-10-07')).toBeNull();
+    expect(morningDue(on, at(9, 30), '2026-10-07')).toBe('2026-10-12');
   });
 });
 
@@ -66,5 +80,19 @@ describe('MorningSchedule', () => {
     now = at(9, 1, 1);
     expect(await again.tick()).toBe('fired');
     expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toEqual({ version: 1, lastDay: '2026-10-13' });
+  });
+
+  it('turned on late in the day: records the day as skipped, fires the next morning', async () => {
+    let now = at(17, 47);
+    const fire = vi.fn(async (): Promise<MorningFireResult> => ({ ok: true, fact: {} as never, hqBotId: 'bot-1' }));
+    const file = path.join(dir, 'factory', 'morning-schedule.json');
+    const s = new MorningSchedule({ file, settings: () => on, fire, now: () => now });
+    expect(await s.tick()).toBe('idle');
+    expect(fire).not.toHaveBeenCalled();
+    expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toEqual({ version: 1, lastDay: '2026-10-12' });
+    // The next day, opened after the window: the skipped day counts as handled.
+    now = at(13, 0, 1);
+    expect(await s.tick()).toBe('fired');
+    expect(fire).toHaveBeenCalledTimes(1);
   });
 });

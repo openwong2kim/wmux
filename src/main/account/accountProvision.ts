@@ -44,6 +44,12 @@ const SHARE_MANIFEST: Record<Vendor, { linkDirs: readonly string[]; copyFiles: r
 const SHARED_LINK_DIRS = SHARE_MANIFEST.claude.linkDirs;
 const SHARED_COPY_FILES = SHARE_MANIFEST.claude.copyFiles;
 
+/** The vendor's account folders hold their own copy of `settings.json` (Claude
+ *  Code's settings, where its hooks are registered). */
+export function copiesSettingsJson(vendor: Vendor): boolean {
+  return SHARE_MANIFEST[vendor].copyFiles.includes('settings.json');
+}
+
 /** Default source config dir per vendor (where the user's existing setup lives). */
 export function defaultSourceDir(vendor: Vendor): string {
   return vendor === 'codex'

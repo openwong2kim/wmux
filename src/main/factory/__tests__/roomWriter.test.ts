@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { BotProfile } from '../../../shared/bot';
 import type { Fact, FactKind } from '../../../shared/facts';
 import { ROOM_LIMITS, type RoomCard } from '../../../shared/room';
+import { STOPPED_BY_OWNER } from '../factoryStop';
 import {
   RoomWriter,
   WakeOrdinals,
@@ -70,6 +71,19 @@ describe('RoomWriter store', () => {
     const again = writer();
     expect(again.read('ws1').cards.map((c) => c.title)).toEqual(['one', 'two']);
     expect(again.append({ workspaceId: 'ws1', kind: 'status', actor: SYS, title: 'three' })!.seq).toBe(3);
+  });
+
+  it('a system card keeps its notice code and values across a restart; a bot card or a malformed notice keeps none', () => {
+    const w = writer();
+    const card = w.append({
+      workspaceId: 'ws1', threadId: 'task:t1', kind: 'fact', actor: SYS, title: 'Worker done',
+      notice: { code: 'worker.done', args: { status: 'cancelled', exit: 1, 'bad key': 'x', nested: { a: 1 } as never } },
+    })!;
+    expect(card.notice).toEqual({ code: 'worker.done', args: { status: 'cancelled', exit: 1 } });
+    expect(writer().read('ws1').cards[0].notice).toEqual({ code: 'worker.done', args: { status: 'cancelled', exit: 1 } });
+    const botCard = w.append({ workspaceId: 'ws1', kind: 'status', actor: { kind: 'bot', workspaceId: 'ws1', botId: 'bot-0a1b2c3d' }, title: 'b', notice: { code: 'worker.done' } })!;
+    expect(botCard).not.toHaveProperty('notice');
+    expect(w.append({ workspaceId: 'ws1', kind: 'fact', actor: SYS, title: 'c', notice: { code: 'Not A Code' } })).not.toHaveProperty('notice');
   });
 
   it('refuses a workspace id that is not filename-safe and an invalid thread', () => {
@@ -361,6 +375,69 @@ describe('facts → system cards', () => {
     expect(w.read('ws1', { threadId: 'general' }).cards).toHaveLength(0);
   });
 
+  it('a task card carries a notice code; a cancelled task reads Cancelled (stopped by owner when the owner\'s stop did it), never Failed', () => {
+    expect(STOPPED_BY_OWNER).toBe('stopped by owner');
+    const w = writer();
+    const one = (id: string, kind: FactKind, payload: Record<string, unknown>) =>
+      writeFactCards(w, fact(kind, { id, workspaceId: 'ws1', ref: { taskId: `wt-${id}` }, payload: { title: 'fix login', ...payload } }), bots)[0];
+    expect(one('a', 'task.done', {})).toMatchObject({ title: 'Task done: fix login', notice: { code: 'task.done', args: { title: 'fix login' } } });
+    expect(one('a2', 'task.done', { status: 'completed' })).toMatchObject({ notice: { code: 'task.done' } });
+    // A worker that reported waits on review: not done.
+    expect(one('r', 'task.done', { status: 'review_requested' })).toMatchObject({ title: 'Task reported · in review: fix login', notice: { code: 'task.reported', args: { title: 'fix login' } } });
+    expect(one('b', 'task.failed', { status: 'failed', summary: 'tests red' })).toMatchObject({ title: 'Task failed: fix login', body: 'tests red', notice: { code: 'task.failed' } });
+    const stopped = one('c', 'task.failed', { status: 'cancelled', by: 'system', summary: STOPPED_BY_OWNER });
+    expect(stopped).toMatchObject({ title: 'Task cancelled · stopped by owner: fix login', notice: { code: 'task.stoppedByOwner', args: { title: 'fix login' } } });
+    expect(stopped).not.toHaveProperty('body');
+    expect(one('d', 'task.failed', { status: 'cancelled', by: 'bot', summary: 'not needed' })).toMatchObject({ title: 'Task cancelled: fix login', body: 'not needed', notice: { code: 'task.cancelled' } });
+    expect(one('e', 'task.input_required', {})).toMatchObject({ title: 'Task needs input: fix login', notice: { code: 'task.inputRequired' } });
+  });
+
+  it('a budget card says which limit and when the bot picks up again, in words and as a notice; an unknown limit keeps no notice', () => {
+    const w = writer();
+    const until = now + 42 * 60_000;
+    const [card] = writeFactCards(w, fact('bot.budget_exhausted', { workspaceId: 'ws1', ref: { botId: 'bot-00000001' }, payload: { reason: 'turns_hour', until } }), bots);
+    expect(card.title).toMatch(/ is out of turns for this hour; it picks up again at \d\d:\d\d$/);
+    expect(card.title).not.toContain('turns_hour');
+    expect(card.notice).toEqual({ code: 'budget.exhausted', args: { bot: expect.any(String), limit: 'turns_hour', until } });
+    const [workers] = writeFactCards(w, fact('bot.budget_exhausted', { id: 'f-w', workspaceId: 'ws1', ref: { botId: 'bot-00000001' }, payload: { reason: 'concurrent_workers' } }), bots);
+    expect(workers.title).toMatch(/ is running as many workers as it may at once$/);
+    expect(workers.notice).toEqual({ code: 'budget.exhausted', args: { bot: expect.any(String), limit: 'concurrent_workers' } });
+    const [odd] = writeFactCards(w, fact('bot.budget_exhausted', { id: 'f-o', workspaceId: 'ws1', ref: { botId: 'bot-00000001' }, payload: { reason: 'something_new' } }), bots);
+    expect(odd.title).toMatch(/ is out of budget$/);
+    expect(odd).not.toHaveProperty('notice');
+  });
+
+  it('a bot.error at the usage limit says when the bot picks up, with a notice code; a plain error has its own', () => {
+    const w = writer();
+    const until = now + 3 * 3_600_000;
+    const msg = "You've hit your session limit · resets 1pm (Asia/Seoul)";
+    const [limit] = writeFactCards(w, fact('bot.error', { workspaceId: 'ws1', ref: { botId: 'bot-00000001' }, payload: { message: msg, until } }), bots);
+    expect(limit.title).toMatch(/ hit its usage limit; it picks up again at /);
+    expect(limit.body).toBe(msg);
+    expect(limit.notice).toEqual({ code: 'bot.usageLimit', args: { bot: expect.any(String), until } });
+    const [plain] = writeFactCards(w, fact('bot.error', { id: 'f-e', workspaceId: 'ws1', ref: { botId: 'bot-00000001' }, payload: { message: 'boom' } }), bots);
+    expect(plain.title).toMatch(/ hit an error$/);
+    expect(plain.body).toBe('boom');
+    expect(plain.notice).toEqual({ code: 'bot.error', args: { bot: expect.any(String) } });
+  });
+
+  it('PR, verdict and hop cards keep their English titles and carry a notice the reader\'s language words', () => {
+    const w = writer();
+    const [merged] = writeFactCards(w, fact('pr.merged', { workspaceId: 'ws1', ref: { pr: 5 }, payload: { title: 'Fix login' } }), bots);
+    expect(merged).toMatchObject({ title: 'PR #5 merged: Fix login', notice: { code: 'pr.merged', args: { pr: 5, title: 'Fix login' } } });
+    const [closed] = writeFactCards(w, fact('pr.closed', { workspaceId: 'ws1', ref: { pr: 6 }, payload: {} }), bots);
+    expect(closed).toMatchObject({ title: 'PR #6 closed', notice: { code: 'pr.closed', args: { pr: 6 } } });
+    const [verdict] = writeFactCards(w, fact('verdict.recorded', { workspaceId: 'ws1', ref: { pr: 4, headSha: 'abcdef1234', botId: 'bot-00000002' }, payload: { verdict: 'fail', summary: 'tests red' } }), bots);
+    expect(verdict).toMatchObject({ title: 'Verdict fail for #4 at abcdef1 by verifier', body: 'tests red', notice: { code: 'verdict.recorded', args: { verdict: 'fail', pr: 4, sha: 'abcdef1', bot: 'verifier' } } });
+    const hop = (id: string, payload: Record<string, unknown>, botId: string | null = 'bot-00000001') =>
+      writeFactCards(w, fact('handoff.received', { workspaceId: 'ws1', ref: { handoffId: id, ...(botId ? { botId } : {}) }, payload: { title: 'add login', threadId: 'general', toWorkspaceId: 'ws1', toLabel: '구현', ...payload } }), bots)[0];
+    expect(hop('h1', { handoffKind: 'dispatch' })).toMatchObject({ title: 'dispatch → 구현: add login', notice: { code: 'handoff.sent', args: { hop: 'dispatch', to: '구현', title: 'add login' } } });
+    expect(hop('h2', { handoffKind: 'result', relay: true })).toMatchObject({ title: 'result → 구현: add login (forwarded by wmux)', notice: { code: 'handoff.sent', args: { hop: 'result', relay: 1 } } });
+    expect(hop('h3', { handoffKind: 'answer', answer: 'yes' })).toMatchObject({ title: 'Answered → 구현: add login', body: 'yes', notice: { code: 'handoff.sent', args: { hop: 'answer', to: '구현', title: 'add login' } } });
+    // To the owner (no addressed bot): the English stays.
+    expect(hop('h4', { handoffKind: 'ask_person', toLabel: 'the owner' }, null)).not.toHaveProperty('notice');
+  });
+
   it('a held owner message gets one status card in its thread, across repeats and a restart', () => {
     const w = writer();
     const until = now + 30 * 60_000;
@@ -368,6 +445,7 @@ describe('facts → system cards', () => {
     const card = writeBotHookCard(w, ev, bots) as RoomCard;
     expect(card).toMatchObject({ kind: 'budget', threadId: 'issue:github.com/acme/app#3', actor: { kind: 'system' }, refs: { botId: 'bot-00000001' } });
     expect(card.title).toMatch(/^Queued: .+ is out of turns until \d\d:\d\d; resume it in its profile$/);
+    expect(card.notice).toEqual({ code: 'budget.held', args: { bot: expect.any(String), until } });
     expect(writeBotHookCard(w, ev, bots)).toBeNull();
     expect(writeBotHookCard(writer(), ev, bots)).toBeNull();
     expect(w.read('ws1', { threadId: 'issue:github.com/acme/app#3' }).cards.filter((c) => c.kind === 'budget')).toHaveLength(1);
@@ -375,6 +453,7 @@ describe('facts → system cards', () => {
     const other = writeBotHookCard(w, { ...ev, wakeId: 'w10', threadId: undefined, until: null }, bots) as RoomCard;
     expect(other).toMatchObject({ threadId: 'general' });
     expect(other.title).toMatch(/^Queued: .+ is out of turns; resume it in its profile$/);
+    expect(other.notice?.args).not.toHaveProperty('until');
     // The same seam still writes the interrupted card.
     expect(writeBotHookCard(w, { type: 'wake.interrupted', botId: 'bot-00000001', workspaceId: 'ws1', wakeId: 'w1', at: now }, bots)?.title).toMatch(/interrupted/);
   });
@@ -443,5 +522,20 @@ describe('card fields for owner requests and worker notices', () => {
     expect(systemCardForFact(notice({ topic: 'pr.merged', title: 'PR #1 merged.' }))).toBeNull();
     expect(systemCardForFact(notice({ topic: 'worker.started', title: 'started', card: true, threadId: 'task:wtask-1' }))).toMatchObject({ kind: 'fact', threadId: 'task:wtask-1', workspaces: ['ws-1'] });
     expect(systemCardForFact({ ...notice({ topic: 'worker.start_failed', title: 't', card: true }), workspaceId: undefined })).toBeNull();
+    // main's code for it rides along; a malformed one is dropped.
+    const failed = notice({ topic: 'worker.start_failed', title: 'Worker for "x" could not start: its setup failed', card: true, notice: { code: 'worker.startFailed', args: { title: 'x', cause: 'setup' } } });
+    expect(systemCardForFact(failed)).toMatchObject({ kind: 'refusal', notice: { code: 'worker.startFailed', args: { title: 'x', cause: 'setup' } } });
+    expect(systemCardForFact(notice({ topic: 'worker.start_failed', title: 't', card: true, notice: { code: 'Not A Code' } }))).not.toHaveProperty('notice');
+  });
+});
+
+describe('inputRequiredWhy (#2231)', () => {
+  it('knows the summaries wmux writes, and nothing else', async () => {
+    const { inputRequiredWhy } = await import('../roomWriter');
+    expect(inputRequiredWhy("worker is waiting on Claude Code's workspace trust dialog; it needs a keypress in the pane")).toBe('trustDialog');
+    expect(inputRequiredWhy("worker is waiting on Claude Code's codex folder trust dialog; it needs a keypress in the pane")).toBe('trustDialog');
+    expect(inputRequiredWhy("worker is waiting on Claude Code's auto-mode onboarding; it needs a keypress in the pane")).toBe('firstRun');
+    expect(inputRequiredWhy("launch failed: no agent started in pane daemon-70a64bc2 within 45s, so the pane sits at its shell prompt; re-run the task's launch line in that pane (the fan-out result carries it)")).toBe('launchFailed');
+    expect(inputRequiredWhy('I need the staging API key')).toBeNull();
   });
 });

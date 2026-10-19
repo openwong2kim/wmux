@@ -35,6 +35,12 @@ export interface ProtectedProxyOptions {
   resolve?: (host: string, port: number) => { host: string; port: number };
   /** Test seam: every decision, in order. */
   onDecision?: (decision: { host: string; port: number; allowed: boolean; kind: 'http' | 'connect' | 'upgrade' }) => void;
+  /**
+   * A real destination the policy refused (#2063): a plain request or a
+   * CONNECT to a host off this machine. Never the proxy itself, a local host
+   * or a refused upgrade, which no allow rule would let through.
+   */
+  onBlocked?: (host: string, port: number) => void;
 }
 
 const HOP_BY_HOP = new Set([
@@ -111,10 +117,11 @@ export class ProtectedProxy {
 
   private decide(host: string, port: number, kind: 'http' | 'connect' | 'upgrade'): boolean {
     let allowed = false;
+    let self = false;
     try {
       // The proxy itself is never a destination, whatever the policy says or
       // however its address is spelled.
-      const self = port === this.listenPort && isLocalHost(host);
+      self = port === this.listenPort && isLocalHost(host);
       allowed = !self && kind !== 'upgrade' && this.opts.matcher().allows(host, port);
     } catch {
       allowed = false;
@@ -123,6 +130,13 @@ export class ProtectedProxy {
       this.opts.onDecision?.({ host, port, allowed, kind });
     } catch {
       /* observation only */
+    }
+    if (!allowed && !self && kind !== 'upgrade' && this.opts.onBlocked) {
+      try {
+        if (!isLocalHost(host)) this.opts.onBlocked(host, port);
+      } catch {
+        /* observation only */
+      }
     }
     return allowed;
   }

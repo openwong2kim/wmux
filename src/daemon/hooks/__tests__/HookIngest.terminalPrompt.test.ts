@@ -12,8 +12,9 @@ import {
 import { DEFAULT_ALARM_WINDOW_MS } from '../../../shared/hooks/CompletionAlarm';
 import { ENV_KEYS } from '../../../shared/constants';
 import type { AgentSignal } from '../../../shared/hooks/signal-types';
+import { deliberateSleep } from '../../../test-utils/waitFor';
 
-type TerminalPromptInput = { sessionId: string; agent: string; workspaceId?: string; toolName?: string; summary?: string };
+type TerminalPromptInput = { sessionId: string; agent: string; workspaceId?: string; toolName?: string; summary?: string; source?: string };
 
 function makeSignal(overrides: Partial<AgentSignal> = {}): AgentSignal {
   return { kind: 'agent.awaiting_input', agent: 'claude', cwd: '/repo', payload: {}, ts: 1_000, ptyId: 'pty-a', ...overrides };
@@ -127,15 +128,21 @@ describe('HookIngest — terminal_prompt records', () => {
       expect(f.awaitingInput).toEqual(['pty-a']);
     });
 
-    it('is recorded once when the detector reports the same dialog (a firm window)', () => {
+    it('is recorded by the hook once when the detector reports the same dialog', () => {
+      // The request is tentative and opens no alarm window, so the detector's
+      // window is not firm and its confirmation notes the dialog too. That
+      // second note is the registry's to refuse (a record is already pending
+      // for the pane); the hook's own record, with the tool, comes first.
       for (const detectorFirst of [false, true]) {
         const f = makeIngest();
         if (detectorFirst) f.ingest.arbitrateDetector('pty-a', AWAITING);
         f.ingest.handle(makeSignal({ payload: PERMISSION_REQUEST }));
         if (!detectorFirst) f.ingest.arbitrateDetector('pty-a', AWAITING);
         vi.advanceTimersByTime(DEFAULT_ALARM_WINDOW_MS * 2);
-        expect(f.terminalPrompts, `detector first: ${detectorFirst}`).toHaveLength(1);
-        expect(f.terminalPrompts[0]?.toolName).toBe('Bash');
+        const fromHook = f.terminalPrompts.filter((n) => n.source === 'hook');
+        expect(fromHook, `detector first: ${detectorFirst}`).toHaveLength(1);
+        expect(fromHook[0]?.toolName).toBe('Bash');
+        expect(f.terminalPrompts[0]).toBe(fromHook[0]);
       }
     });
   });
@@ -160,7 +167,7 @@ describe('HookIngest — terminal_prompt records', () => {
         log: (_level, message) => { logs.push(message); },
       });
       ingest.handle(makeSignal({ payload: PERMISSION_REQUEST }));
-      await new Promise((r) => setTimeout(r, 10));
+      await deliberateSleep(10, 'negative: a failed record leaves no unhandled rejection');
       expect(unhandled).toEqual([]);
       expect(logs.some((l) => l.includes('terminal prompt record failed'))).toBe(true);
       ingest.dispose();

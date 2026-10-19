@@ -4,6 +4,8 @@ import type { RoomCard, RoomReadParams, ThreadId } from '../../../shared/room';
 import { ALL_THREADS, timelineKey } from '../../stores/slices/roomSlice';
 import {
   catchUpRoomTimeline,
+  FIRST_READ_RETRY_MS,
+  isTimelineLoaded,
   loadRoomTimeline,
   markRoomThreadRead,
   refreshRoomStatus,
@@ -149,5 +151,83 @@ describe('status', () => {
     useStore.getState().setRoomStatus({ running: true, enabled: true, hqWorkspaceId: null });
     await refreshRoomStatus();
     expect(useStore.getState().roomStatus).toBeNull();
+  });
+});
+
+describe('a refused first read (cold start: rooms not started yet)', () => {
+  const NOT_STARTED = { ok: false as const, code: 'not_started', message: 'rooms are not running yet' };
+  const key = timelineKey(WS, ALL_THREADS);
+  beforeEach(() => vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] }));
+  afterEach(() => vi.useRealTimers());
+
+  it('is read again and shows the cards, with no focus event', async () => {
+    const room = fakeRoom(19);
+    room.raw.read.mockResolvedValueOnce(NOT_STARTED as never);
+    setRoomsApiForTests(room.api);
+    const done = loadRoomTimeline(WS, ALL_THREADS);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(useStore.getState().roomTimelines[key].loading).toBe(true);
+    await vi.advanceTimersByTimeAsync(FIRST_READ_RETRY_MS[0]);
+    await done;
+    const tl = useStore.getState().roomTimelines[key];
+    expect(isTimelineLoaded(tl)).toBe(true);
+    expect(tl.cards).toHaveLength(19);
+    expect(room.raw.read).toHaveBeenCalledTimes(2);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('a first read that answers is read once and leaves no timer', async () => {
+    const room = fakeRoom(3);
+    setRoomsApiForTests(room.api);
+    await loadRoomTimeline(WS, ALL_THREADS);
+    expect(room.raw.read).toHaveBeenCalledTimes(1);
+    expect(useStore.getState().roomTimelines[key].cards).toHaveLength(3);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('stops after the bounded retries, still unread so a later trigger reads it', async () => {
+    const room = fakeRoom(3);
+    room.raw.read.mockResolvedValue(NOT_STARTED as never);
+    setRoomsApiForTests(room.api);
+    const done = loadRoomTimeline(WS, ALL_THREADS);
+    await vi.advanceTimersByTimeAsync(FIRST_READ_RETRY_MS.reduce((a, b) => a + b, 0) * 2);
+    await done;
+    expect(room.raw.read).toHaveBeenCalledTimes(1 + FIRST_READ_RETRY_MS.length);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(isTimelineLoaded(useStore.getState().roomTimelines[key])).toBe(false);
+  });
+
+  it('one loop per timeline: a second call joins it and tries again now; it ends once every caller aborted', async () => {
+    const room = fakeRoom(3);
+    room.raw.read.mockResolvedValue(NOT_STARTED as never);
+    setRoomsApiForTests(room.api);
+    const rail = new AbortController();
+    const page = new AbortController();
+    const done = loadRoomTimeline(WS, ALL_THREADS, rail.signal);
+    await vi.advanceTimersByTimeAsync(0);
+    await loadRoomTimeline(WS, ALL_THREADS, page.signal);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(room.raw.read).toHaveBeenCalledTimes(2);
+    // The page closes; the rail still wants the room.
+    page.abort();
+    await vi.advanceTimersByTimeAsync(FIRST_READ_RETRY_MS[1]);
+    expect(room.raw.read).toHaveBeenCalledTimes(3);
+    rail.abort();
+    await done;
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(room.raw.read).toHaveBeenCalledTimes(3);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('a catch-up of a placeholder makes the first read try again now', async () => {
+    const room = fakeRoom(4);
+    room.raw.read.mockResolvedValueOnce(NOT_STARTED as never);
+    setRoomsApiForTests(room.api);
+    const done = loadRoomTimeline(WS, ALL_THREADS);
+    await vi.advanceTimersByTimeAsync(0);
+    await catchUpRoomTimeline(WS, ALL_THREADS);
+    await done;
+    expect(useStore.getState().roomTimelines[key].cards).toHaveLength(4);
+    expect(room.raw.read).toHaveBeenCalledTimes(2);
   });
 });

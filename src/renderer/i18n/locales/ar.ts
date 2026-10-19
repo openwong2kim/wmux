@@ -231,6 +231,12 @@ export const ar = {
   'pane.browserPolicyGrantSensitive': "بيانات تسجيل الدخول لـ {host}",
   'pane.browserPolicyRevoke': "إلغاء",
   'pane.browserPolicyRevokeFailed': "تعذّر الإلغاء.",
+  'pane.browserPolicySummaryBlocked': "{count} محظورة مؤخرًا",
+  'pane.browserPolicyRecentlyBlocked': "محظورة مؤخرًا",
+  'pane.browserPolicyRecentlyBlockedDesc': "مواقع رُفضت لمتصفح Chrome في هذا الجزء منذ تشغيله أو منذ آخر تغيير في الحماية. يضيف «سماح» الموقع إلى المواقع المسموح بها فورًا.",
+  'pane.browserPolicyRecentlyBlockedCount': "حُظر {count} مرة",
+  'pane.browserPolicyAllow': "سماح",
+  'pane.browserPolicyAllowHost': "السماح بـ {host}",
   'browser.private': "خاص",
   'browser.privateTab': "علامة تبويب خاصة",
   'browser.privateTooltip': "علامة تبويب خاصة: تبقى ملفات تعريف الارتباط وبيانات المواقع في الذاكرة فقط وتُمحى عند إغلاق آخر علامة تبويب خاصة. لا تتم استعادتها بعد إعادة التشغيل.",
@@ -532,9 +538,6 @@ export const ar = {
 
   // ─── Agent toolbar: fan-out / broadcast buttons ───
   'toolbar.fanOut': 'Multi Task',
-  'toolbar.broadcast': 'Broadcast',
-  'toolbar.broadcastTooltip': 'Broadcast — نفس النص إلى كل جزء طرفية في مساحة العمل الحالية (بدون عزل)',
-  'toolbar.broadcastPrompt': 'Broadcast — إرسال إلى كل جزء طرفية في مساحة العمل الحالية',
 
   // ─── Fan-out dialog (1 prompt → N isolated tasks) ───
   'fanout.title': 'Fan-out — مطالبة واحدة ← N مهمة معزولة',
@@ -655,4 +658,21 @@ export const ar = {
   'git.secret.more': "(و{count} أخرى)",
   'settings.secretGuard': "حظر كلمات المرور والمفاتيح في الإيداعات والدفع وطلبات السحب",
   'settings.secretGuardDesc': "يرفض الإيداع والدفع وإنشاء طلب سحب في صفحة Git، واعتماد مهمة، أي تغيير يضيف ملف .env أو مفتاحًا خاصًا أو مفتاح API.",
+  'botsPage.consent.title': "تعمل الروبوتات على خطة Claude الخاصة بك",
+  'botsPage.consent.engine': "يفكّر كل روبوت باستخدام Claude Agent SDK، مسجّلًا الدخول بحساب Claude Code على هذا الكمبيوتر. ويشغّل العاملون التابعون له Claude Code الخاص بك.",
+  'botsPage.consent.usage': "يُحتسب استخدامها ضمن حدود خطة Claude الخاصة بك.",
+  'botsPage.consent.terms': "تنطبق شروط Anthropic الخاصة بخطتك. لا يقرأ wmux بيانات تسجيل دخولك إلى Claude أو يخزّنها أو يرسلها أبدًا.",
+  'botsPage.consent.turnOn': "تشغيل الروبوتات",
+  'botsPage.consent.cancel': "إلغاء",
+  'botsPage.consent.keepOn': "إبقاء الروبوتات قيد التشغيل",
+  'botsPage.consent.turnOff': "إيقاف الروبوتات",
+
+  // Task cleanup list: detail line per scan entry
+  'worktask.cleanup.detail.unmaterialized': 'لم تُنشأ شجرة عمل (worktree) لهذه المهمة — أغلقها أو أنشئ شجرة العمل من جديد.',
+  'worktask.cleanup.detail.preserved': 'العمل غير المُثبَّت محفوظ — راجع الفروق (diff)، ثم ثبّته أو افتح طلب سحب (PR)، أو تجاهله.',
+  'worktask.cleanup.detail.phone': 'أُنشئ من الهاتف (الفرع phone/…) — تحقّق منه، ثم أزله عندما لا تحتاج إليه.',
+  'worktask.cleanup.detail.orphanEnded': 'لا ترتبط به أي مهمة مفتوحة (انتهت المهمة أو نُظّفت) — تحقّق منه، ثم احذفه.',
+  'worktask.cleanup.detail.orphanUnlinked': 'لا ترتبط به أي مهمة ولا سجل مهمة — تحقّق منه، ثم احذفه.',
+  'worktask.cleanup.detail.orphanMeta': 'لم يتبقَّ سوى سجل المهمة دون شجرة العمل (انقطعت عملية إزالة) — تحقّق منه، ثم احذفه.',
+  'worktask.cleanup.detail.diskMissing': 'شجرة العمل غير موجودة على القرص (حُذفت خارج wmux أو بسبب عطل) — أغلق المهمة لتنظيفها.',
 } as const;

@@ -301,6 +301,24 @@ describe('settings persist across tabs', () => {
     act(() => useStore.getState().setSidebarSortMode(before));
   });
 
+  it('appearance › theme lists wmux\'s own looks first and every other theme under More themes', async () => {
+    await openTab('appearance');
+    const names = (group: string) => [...(row('theme')?.querySelectorAll<HTMLButtonElement>(
+      `[data-theme-group="${group}"] [role="radio"]`,
+    ) ?? [])].map((b) => b.getAttribute('aria-label'));
+    expect(names('looks')).toEqual(['Tint', 'Zinc', 'Graphite', 'Paper', 'Amber Line']);
+    const more = names('more');
+    expect(more[0]).toBe('Mono');
+    expect(more.at(-1)).toBe('Custom');
+    expect(more).not.toContain('Tint');
+    // One radiogroup still holds every card, so one theme stays selected.
+    expect(row('theme')?.querySelectorAll('[role="radiogroup"] [role="radio"]').length)
+      .toBe(names('looks').length + more.length);
+    const heading = row('theme')?.querySelector('.settings-theme-more');
+    expect(heading?.textContent).toBe('More themes');
+    expect(heading?.nextElementSibling?.getAttribute('data-theme-group')).toBe('more');
+  });
+
   it('keeps the language picked on General', async () => {
     const before = useStore.getState().locale;
     const select = row('language')!.querySelector('select')!;

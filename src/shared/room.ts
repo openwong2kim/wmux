@@ -2,13 +2,17 @@
 //
 // A room is one workspace's timeline (`getWmuxDir()/factory/rooms/<ws>.jsonl`,
 // main-owned). A thread is the room's sub-timeline for one PR, issue, task,
-// handoff, plan or report; `general` is the room itself. Bots write cards
+// handoff, plan or report, a bot's 1:1 with the owner (`dm:<botId>`), or a
+// group chat the owner made (`group:<groupId>`, shared/botGroup.ts);
+// `general` is the room itself. Bots write cards
 // with `room.post`; facts become compact `fact` cards; an `ask_person` lands
 // as a `question` card backed by a WorkspaceDecision in the same thread.
 
 import type { FactRef } from './facts';
 import type { Party } from './handoff';
+import type { RoomAttachment } from './roomAttachments';
 import { normalizeRepoKey } from './repoKey';
+import { BOT_ID_RE } from './bot';
 
 export type ThreadId =
   | `pr:${string}#${number}`
@@ -17,11 +21,18 @@ export type ThreadId =
   | `handoff:${string}`
   | `plan:${string}`
   | `report:${string}`
+  /** A bot's 1:1 with the owner (`dm:<botId>`), in the bot's own room. */
+  | `dm:${string}`
+  /** A group chat the owner made (`group:<groupId>`), in its bots' room. */
+  | `group:${string}`
   | 'general';
 
 export const GENERAL_THREAD: ThreadId = 'general';
 
 const OPAQUE_RE = /^[A-Za-z0-9_.:-]{1,128}$/;
+
+/** A group chat's id (shared/botGroup.ts). */
+export const GROUP_ID_RE = /^grp-[0-9a-f]{8}$/;
 
 /** A thread id from disk or the wire, or null when it is not one. A PR or
  *  issue thread comes back in its canonical spelling (the repo key
@@ -38,7 +49,37 @@ export function parseThreadId(value: unknown): ThreadId | null {
   }
   const opaque = /^(task|handoff|plan|report):(.+)$/.exec(value);
   if (opaque) return OPAQUE_RE.test(opaque[2]) ? (value as ThreadId) : null;
+  const dm = /^dm:(.+)$/.exec(value);
+  if (dm) return BOT_ID_RE.test(dm[1]) ? (value as ThreadId) : null;
+  const group = /^group:(.+)$/.exec(value);
+  if (group) return GROUP_ID_RE.test(group[1]) ? (value as ThreadId) : null;
   return null;
+}
+
+/** A bot's 1:1 thread: what the owner and that bot say to each other, apart
+ *  from the room's General. */
+export function dmThreadId(botId: string): ThreadId {
+  return `dm:${botId}`;
+}
+
+/** The bot whose 1:1 a thread is, or null when it is no 1:1 thread. */
+export function dmThreadBot(threadId: unknown): string | null {
+  if (typeof threadId !== 'string' || !threadId.startsWith('dm:')) return null;
+  const botId = threadId.slice(3);
+  return BOT_ID_RE.test(botId) ? botId : null;
+}
+
+/** A group chat's own thread (an owner-made group; a group migrated from
+ *  a workspace room keeps `general`, shared/botGroup.ts). */
+export function groupThreadId(groupId: string): ThreadId {
+  return `group:${groupId}`;
+}
+
+/** The group whose own thread this is, or null when it is no group thread. */
+export function groupThreadGroup(threadId: unknown): string | null {
+  if (typeof threadId !== 'string' || !threadId.startsWith('group:')) return null;
+  const groupId = threadId.slice(6);
+  return GROUP_ID_RE.test(groupId) ? groupId : null;
 }
 
 /** A repo key as a thread names it (shared/repoKey.ts normalizeRepoKey) —
@@ -143,6 +184,23 @@ export interface RoomCard {
   /** `job_changed` only: whose job changed and from what, so Undo restores
    *  `previous` (null: there was none). */
   jobChange?: { botId: string; previous: string | null; next: string | null };
+  /** Main-written, system cards only: what the card says as a stable code
+   *  and its values, so the reader's language words it (CardNotice). The
+   *  title and body stay the English text, shown for a code the reader does
+   *  not know. */
+  notice?: CardNotice;
+  /** Main-written, `human` cards only: the photos the owner sent with the
+   *  message (shared/roomAttachments.ts). Never set by a room.post param. */
+  attachments?: RoomAttachment[];
+}
+
+/** A factory system card's stable code: the task gate's and the worker
+ *  lifecycle's cards. `args` are the values the words need (a status, an
+ *  exit code, a task title); evidence a card carries (a command, an error)
+ *  stays in its body. */
+export interface CardNotice {
+  code: string;
+  args?: Record<string, string | number>;
 }
 
 /** Derived, never stored: `closed` once a closing card is the latest word
@@ -163,6 +221,15 @@ export interface ThreadSummary {
   /** Cards after the reader's read position; null when no position is
    *  known for this thread (unknown, not zero). */
   unread: number | null;
+  /** The first card's time (absent: no card). */
+  firstAt?: number;
+  /** The bot whose 1:1 this thread is (`dm:<botId>`), or whose 1:1 started
+   *  it (a coordinator's request thread: main's card links the 1:1 or sits
+   *  in it pointing here). Absent: the room's own thread. */
+  dmBotId?: string;
+  /** The group whose own thread this is (`group:<groupId>`), or whose
+   *  thread started it (a coordinator's request thread opened there). */
+  groupId?: string;
 }
 
 export const ROOM_RPC = { post: 'room.post', read: 'room.read', threads: 'room.threads', resolve: 'room.resolve' } as const;

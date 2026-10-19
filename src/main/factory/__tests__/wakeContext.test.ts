@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { DEFAULT_BOT_BUDGETS, type BotProfile } from '../../../shared/bot';
 import type { RoomCard, ThreadId } from '../../../shared/room';
 import type { WakeItem } from '../../../shared/wake';
-import { localeLanguageName, scriptLanguage, wakeApprovals, wakeClock, wakeContext, wakeLanguage, wakeRunReplies, type WakeContextPorts } from '../wakeContext';
+import { latinUiLanguage, localeLanguageName, scriptLanguage, wakeApprovals, wakeClock, wakeContext, wakeGroup, wakeLanguage, wakeRunReplies, type WakeContextPorts } from '../wakeContext';
 
 const me: BotProfile = {
   version: 1, id: 'bot-0000000a', workspaceId: 'ws1', role: 'lead', name: 'Wmux Dev', engine: { kind: 'claude-sdk' }, triggers: [],
@@ -29,6 +29,18 @@ function ports(cards: RoomCard[], over: Partial<WakeContextPorts> = {}): WakeCon
 const wake = (reason: WakeItem['reason'], threadId?: ThreadId): WakeItem => ({ id: 'w', botId: me.id, workspaceId: 'ws1', reason, priority: 0, enqueuedAt: 1, attempts: 1, state: 'running', ...(threadId ? { threadId } : {}) });
 
 describe('wakeContext', () => {
+  it('a wake in a group chat\'s thread carries the group and whether the bot spoke there (across the whole room)', () => {
+    const G = 'group:grp-00000001' as ThreadId;
+    const group = (_ws: string, t: ThreadId) => (t === G ? { id: 'grp-00000001', workspaceId: 'ws1', name: 'Ship', memberIds: [me.id, 'bot-0000000b'], threadId: G, createdAt: 1, updatedAt: 1 } : null);
+    const fresh = [owner('Hi team', { threadId: G }), said('bot-0000000b', 'Hello', { threadId: G }), said(me.id, 'elsewhere')];
+    expect(wakeGroup(ports(fresh, { group }), me, wake({ kind: 'human', text: 'Hi team', source: 'desktop' }, G))).toEqual({ name: 'Ship', memberIds: [me.id, 'bot-0000000b'], spoke: false });
+    // An introduction long ago (older than any newest page) still counts.
+    const old = [said(me.id, 'I am Wmux Dev', { threadId: G }), ...Array.from({ length: 300 }, () => owner('x', { threadId: G }))];
+    expect(wakeGroup(ports(old, { group }), me, wake({ kind: 'human', text: 'x', source: 'desktop' }, G))?.spoke).toBe(true);
+    expect(wakeGroup(ports(fresh, { group }), me, wake({ kind: 'human', text: 'x', source: 'desktop' }, 'general'))).toBeNull();
+    expect(wakeGroup(ports(fresh), me, wake({ kind: 'human', text: 'x', source: 'desktop' }, G))).toBeNull();
+  });
+
   it('reads a language from the script; a UI locale as its English name', () => {
     expect(scriptLanguage('머지할거 머지해')).toBe('Korean');
     expect(scriptLanguage('マージして')).toBe('Japanese');
@@ -49,9 +61,56 @@ describe('wakeContext', () => {
     expect(wakeLanguage(ports([]), me, wake({ kind: 'intro' }))).toBeNull();
   });
 
+  it('a delegate in a thread another bot started writes in the language the owner used with that bot', () => {
+    const P = 'plan:p-1' as ThreadId;
+    const coord = 'bot-0000000c';
+    // The owner spoke English to this bot long ago and Korean to the coordinator, whose plan thread this is.
+    const cards = [
+      owner('run the e2e checks', { refs: { botId: me.id, botIds: [me.id] } }),
+      owner('e2e-win 정리해줘', { refs: { botId: coord, botIds: [coord] } }),
+      said(coord, 'Plan: clean up e2e-win', { threadId: P, kind: 'plan' }),
+    ];
+    expect(wakeLanguage(ports(cards, { uiLocale: () => 'en' }), me, wake({ kind: 'handoff', handoffId: 'h-1' }, P))).toEqual({ name: 'Korean', source: 'owner', earlier: true });
+    // The owner's own words in the thread, to whichever bot, come first.
+    const answered = [...cards, owner('좋아요, 진행해', { threadId: P, refs: { botId: coord, botIds: [coord] } })];
+    expect(wakeLanguage(ports(answered, { uiLocale: () => 'en' }), me, wake({ kind: 'handoff', handoffId: 'h-1' }, P))).toEqual({ name: 'Korean', source: 'owner', earlier: true });
+    // General (or a 1:1) is nobody's lead thread, whoever posted first.
+    const general = [
+      said(coord, 'Hello'),
+      owner('e2e-win 정리해줘', { threadId: `dm:${coord}` as ThreadId, refs: { botId: coord, botIds: [coord] } }),
+      owner('run the e2e checks', { threadId: `dm:${me.id}` as ThreadId, refs: { botId: me.id, botIds: [me.id] } }),
+    ];
+    expect(wakeLanguage(ports(general, { uiLocale: () => 'en' }), me, wake({ kind: 'facts', factIds: [], trigger: { kind: 'task.done' } }, 'general'))?.sample).toBe('run the e2e checks');
+    // A thread this bot started keeps the owner's words to this bot.
+    const mine = [...cards.slice(0, 2), said(me.id, 'Status', { threadId: P })];
+    expect(wakeLanguage(ports(mine, { uiLocale: () => 'en' }), me, wake({ kind: 'handoff', handoffId: 'h-1' }, P))?.sample).toBe('run the e2e checks');
+  });
+
   it('a bot added after the owner wrote to the other bots follows the owner, not the UI language', () => {
     const cards = [owner('머지할거 머지해', { refs: { botIds: ['bot-0000000b', 'bot-0000000c'] } })];
     expect(wakeLanguage(ports(cards, { uiLocale: () => 'en' }), me, wake({ kind: 'intro' }))).toEqual({ name: 'Korean', source: 'owner', earlier: true });
+  });
+
+  it('names the language of Latin-script words from the UI language when it could be theirs; the owner\'s script always wins', () => {
+    const intro = wake({ kind: 'intro' });
+    // en UI, English words: English (the greeting no longer guesses).
+    expect(wakeLanguage(ports([owner('Hello, nice to meet you')], { uiLocale: () => 'en' }), me, intro))
+      .toEqual({ name: 'English', source: 'owner', sample: 'Hello, nice to meet you', earlier: true });
+    expect(wakeLanguage(ports([], { uiLocale: () => 'en' }), me, wake({ kind: 'human', text: 'Review my PRs', source: 'desktop' })))
+      .toEqual({ name: 'English', source: 'owner', sample: 'Review my PRs' });
+    // ko UI, Korean words: Korean.
+    expect(wakeLanguage(ports([owner('반가워요')], { uiLocale: () => 'ko' }), me, intro)).toEqual({ name: 'Korean', source: 'owner', earlier: true });
+    // en UI, Korean words: the owner's own language, Korean.
+    expect(wakeLanguage(ports([owner('반가워요')], { uiLocale: () => 'en' }), me, intro)).toEqual({ name: 'Korean', source: 'owner', earlier: true });
+    expect(wakeLanguage(ports([], { uiLocale: () => 'en' }), me, wake({ kind: 'human', text: 'PR 리뷰해줘', source: 'desktop' })))
+      .toEqual({ name: 'Korean', source: 'owner', sample: 'PR 리뷰해줘' });
+    // ko UI, Latin-script words: Korean is not theirs, so no name; the sample shows the language.
+    expect(wakeLanguage(ports([owner('Hello there')], { uiLocale: () => 'ko' }), me, intro)).toEqual({ name: null, source: 'owner', sample: 'Hello there', earlier: true });
+    // A script no language is named for that is not Latin (Greek): no name from the UI.
+    expect(wakeLanguage(ports([owner('Γεια σου')], { uiLocale: () => 'en' }), me, intro)).toEqual({ name: null, source: 'owner', sample: 'Γεια σου', earlier: true });
+    expect(latinUiLanguage('de')).toBe('German');
+    expect(latinUiLanguage('ja')).toBeNull();
+    expect(latinUiLanguage('zh-TW')).toBeNull();
   });
 
   it('the owner\'s clock in their zone', () => {
@@ -68,9 +127,9 @@ describe('wakeContext', () => {
       { action: 'issue_close', issueNumber: 4, repoKey: 'k', state: 'refused', refusal: 'x', botId: 'bot-0000000z', createdAt: 1, updatedAt: now - 1000 },
     ];
     expect(wakeApprovals(ports([], { approvals: () => rows }), me, now)).toEqual([
-      { what: 'Close issue #4', state: 'refused', askedBy: 'bot-0000000z', at: now - 1000, refusal: 'x' },
-      { what: 'Merge PR #1', state: 'executed', askedBy: 'Wmux Reviewer', at: now - 60_000 },
-      { what: 'Merge PR #2', state: 'pending', askedBy: 'you', at: 5 },
+      { what: 'Close issue #4', state: 'refused', action: 'issue_close', askedBy: 'bot-0000000z', at: now - 1000, refusal: 'x' },
+      { what: 'Merge PR #1', state: 'executed', action: 'merge', askedBy: 'Wmux Reviewer', at: now - 60_000 },
+      { what: 'Merge PR #2', state: 'pending', action: 'merge', askedBy: 'you', at: 5 },
     ]);
     expect(wakeApprovals(ports([], { approvals: () => { throw new Error('x'); } }), me, now)).toEqual([]);
   });

@@ -35,6 +35,7 @@ import { stripReplayQuerySequences } from '../shared/replayQuerySanitizer';
 import { createSessionPipeMarkers } from '../daemon/sessionPipeMarkers';
 import { SessionPipeStreamScanner } from './daemon/sessionPipeStreamScanner';
 import { DAEMON_RPC_TIMEOUT_MS } from '../shared/timeouts';
+import { sanitizeTitle } from './pty/titleDetect';
 import {
   getDaemonAuthTokenPath,
   getDaemonSocketPath,
@@ -168,6 +169,16 @@ export class DaemonClient extends EventEmitter {
   // cannot resurrect itself and subscribe on behalf of a connection that is
   // already gone.
   private eventHandshakeGeneration = 0;
+
+  /**
+   * Subscribe to pushed events again on the live connection. The daemon drops
+   * a subscriber whose socket buffer passes its backpressure cap without
+   * closing the socket, so the health probe calls this when a ping reports
+   * `eventsSubscribed: false`.
+   */
+  resubscribeEvents(): Promise<void> {
+    return this.startEventHandshake();
+  }
 
   private startEventHandshake(): Promise<void> {
     const generation = ++this.eventHandshakeGeneration;
@@ -699,6 +710,13 @@ export class DaemonClient extends EventEmitter {
     hasDraft?: boolean;
     /** Milliseconds since the last key input. Absent on an older daemon. */
     keyInputIdleMs?: number;
+    /** #2263 — the latest window title ('' = none yet). Absent on an older daemon. */
+    title?: string;
+    /** #2263 — a turn is open (a quiet one reads `idle` in agentStatus). Absent on an older daemon. */
+    turnOpen?: boolean;
+    /** Milliseconds since the pane's last settled result. Absent on an older
+     *  daemon and when none settled since its agent started. */
+    settledAgoMs?: number;
   } | null> {
     try {
       const result = await (opts.timeoutMs !== undefined
@@ -715,6 +733,9 @@ export class DaemonClient extends EventEmitter {
         hookReports?: unknown;
         hasDraft?: unknown;
         keyInputIdleMs?: unknown;
+        title?: unknown;
+        turnOpen?: unknown;
+        settledAgoMs?: unknown;
       };
       const validStatuses: AgentStatus[] = [
         'running',
@@ -753,6 +774,11 @@ export class DaemonClient extends EventEmitter {
         ...(typeof result.hasDraft === 'boolean' ? { hasDraft: result.hasDraft } : {}),
         ...(typeof result.keyInputIdleMs === 'number' && Number.isFinite(result.keyInputIdleMs) && result.keyInputIdleMs >= 0
           ? { keyInputIdleMs: result.keyInputIdleMs }
+          : {}),
+        ...(typeof result.title === 'string' ? { title: sanitizeTitle(result.title) } : {}),
+        ...(typeof result.turnOpen === 'boolean' ? { turnOpen: result.turnOpen } : {}),
+        ...(typeof result.settledAgoMs === 'number' && Number.isFinite(result.settledAgoMs) && result.settledAgoMs >= 0
+          ? { settledAgoMs: result.settledAgoMs }
           : {}),
       };
     } catch {
@@ -1040,6 +1066,9 @@ export class DaemonClient extends EventEmitter {
           break;
         case 'agent.critical':
           this.emit('session:critical', { sessionId: event.sessionId, event: event.data });
+          break;
+        case 'agent.interrupted':
+          this.emit('session:agentInterrupted', { sessionId: event.sessionId });
           break;
         case 'agent.processExit': {
           // The pane's agent process died with the shell still alive. The one

@@ -1,6 +1,7 @@
 // Adapted from MonoCode (hardbeat920/monocode@6bd432ca, src/features/sessions/ui/AgentTranscript.tsx), MIT License, Copyright (c) 2026 Nick
 import { Fragment, useState } from 'react';
 import { t } from '../../i18n';
+import { closesFence, fenceOpenLength } from '../../../shared/markdownFence';
 
 // ─── Command Deck — orchestrator prose markdown (dep-free subset) ────────────
 //
@@ -43,6 +44,29 @@ export interface MarkdownOptions {
   /** Draw `@Name` mentions in plain text as something else (the Bots chat's
    *  bot marks). `pattern` matches the whole mention, group 1 the name. */
   mention?: { pattern: RegExp; render: (name: string, key: string) => React.ReactNode };
+  /** `*` and `**` emphasis only at word boundaries: no emphasis where the
+   *  delimiter sits between two ASCII letters or digits (CommonMark's rule
+   *  for `_`, applied to `*`), and none whose delimiter touches a space on
+   *  its inner side. Code-like text (`2**31`, `a*b*c`) stays as written;
+   *  bold followed by a Korean particle (`**파일**을`) is still bold. */
+  strictEmphasis?: boolean;
+}
+
+const ASCII_ALNUM = /[A-Za-z0-9]/;
+
+/** Whether an emphasis match (`**x**` or `*x*` at `index` in `text`) may
+ *  open and close under `strictEmphasis`. */
+function emphasisAtBoundaries(text: string, index: number, m: string): boolean {
+  const n = m.startsWith('**') ? 2 : 1;
+  const before = text[index - 1] ?? '';
+  const after = text[index + m.length] ?? '';
+  const first = m[n];
+  const last = m[m.length - n - 1];
+  const between = (a: string, b: string) => ASCII_ALNUM.test(a) && ASCII_ALNUM.test(b);
+  if (before === '*' || after === '*') return false;
+  if (/\s/.test(first) || between(before, first)) return false;
+  if (/\s/.test(last) || between(last, after)) return false;
+  return true;
 }
 
 /** Plain text, with its mentions drawn by `opts.mention` when given. */
@@ -115,8 +139,8 @@ const attrValue = (m: RegExpMatchArray | null) => (m ? (m[1] ?? m[2] ?? m[3] ?? 
 export function reduceInlineHtml(text: string): string {
   return text.split(/(`[^`\n]+`)/).map((part, i) => {
     if (i % 2 === 1) return part;
-    let t = part.replace(/<img\b[^>]*>/gi, (tag) => decodeEntities(attrValue(attr(tag, 'alt'))));
-    t = t.replace(/<a\b([^>]*)>([\s\S]*?)<\/a\s*>/gi, (_m, attrs: string, inner: string) => {
+    let t = part.replace(/<img\b[^<>]*>/gi, (tag) => decodeEntities(attrValue(attr(tag, 'alt'))));
+    t = t.replace(/<a\b([^<>]*)>((?:(?!<a\b)[\s\S])*?)<\/a\s*>/gi, (_m, attrs: string, inner: string) => {
       const label = decodeEntities(inner.replace(/<[^>]*>/g, '')).replace(/[[\]]/g, '').trim();
       const href = decodeEntities(attrValue(attr(`<a${attrs}>`, 'href'))).trim();
       if (label && HTTP_URL.test(href) && !/[\s()]/.test(href)) return `[${label}](${href})`;
@@ -133,24 +157,33 @@ function preprocessGithubHtml(source: string): string {
   const lines = source.split('\n');
   const out: string[] = [];
   let chunk: string[] = [];
-  let inFence = false;
+  let fence = 0;
   const flush = () => {
     if (chunk.length === 0) return;
     const text = chunk.join('\n')
-      // \x21 is '!': this file is inlined into the web client's page, whose
-      // build refuses a bundle containing a literal comment opener.
-      .replace(/<\x21--[\s\S]*?(?:-->|$)/g, '')
-      .replace(/<(script|style)\b[^>]*>[\s\S]*?(?:<\/\1\s*>|$)/gi, '')
+      // One left-to-right pass, so whichever starts first wins: a code span
+      // keeps a `<script>` or comment opener written as code (which would
+      // otherwise swallow the rest of the document), and a real comment or
+      // script keeps the backticks inside it. \x21 is '!': this file is
+      // inlined into the web client's page, whose build refuses a bundle
+      // containing a literal comment opener.
+      .replace(
+        /(`[^`\n]+`)|<\x21--[\s\S]*?(?:-->|$)|<(script|style)\b[^<>]*>[\s\S]*?(?:<\/\2\s*>|$)/gi,
+        (_m, code: string | undefined) => code ?? '',
+      )
       .replace(/<br\s*\/?>/gi, '\n');
-    out.push(...text.split('\n'));
+    // A loop, not push(...spread): a long run of short lines would pass
+    // one argument per line and overflow the call stack.
+    for (const l of text.split('\n')) out.push(l);
     chunk = [];
   };
   for (const line of lines) {
-    if (line.trimStart().startsWith('```')) {
-      if (!inFence) flush();
-      inFence = !inFence;
+    if (fence === 0 && fenceOpenLength(line) > 0) {
+      flush();
+      fence = fenceOpenLength(line);
       out.push(line);
-    } else if (inFence) {
+    } else if (fence > 0) {
+      if (closesFence(line, fence)) fence = 0;
       out.push(line);
     } else {
       chunk.push(line);
@@ -189,13 +222,21 @@ function renderInline(raw: string, keyPrefix: string, opts: MarkdownOptions = {}
   if (opts.githubHtml) opts = { ...opts, githubHtml: false };
   const parts: React.ReactNode[] = [];
   const regex = opts.links
-    ? /(`[^`\n]+`)|(\*\*[^*\n]+\*\*)|(\*[^*\n]+\*)|(\[[^\]\n]+\]\([^)\n]+\))|(https?:\/\/[^\s<>()[\]]*[^\s<>()[\].,;:!?'"])/g
-    : /(`[^`\n]+`)|(\*\*[^*\n]+\*\*)|(\*[^*\n]+\*)|(\[[^\]\n]+\]\([^)\n]+\))/g;
+    ? /(`[^`\n]+`)|(\*\*[^*\n]+\*\*)|(\*[^*\n]+\*)|(\[[^[\]\n]+\]\([^()\n]+\))|(https?:\/\/[^\s<>()[\]]*[^\s<>()[\].,;:!?'"])/g
+    : /(`[^`\n]+`)|(\*\*[^*\n]+\*\*)|(\*[^*\n]+\*)|(\[[^[\]\n]+\]\([^()\n]+\))/g;
   let lastIndex = 0;
   let match: RegExpExecArray | null;
   while ((match = regex.exec(text)) !== null) {
-    if (match.index > lastIndex) parts.push(...plainText(text.slice(lastIndex, match.index), `${keyPrefix}p${lastIndex}`, opts));
     const m = match[0];
+    if (opts.strictEmphasis && m.startsWith('*') && !emphasisAtBoundaries(text, match.index, m)) {
+      // Not emphasis: the whole `*` run stays text (in the next plain
+      // slice), and the scan goes on after it (a later run may still open).
+      let run = 1;
+      while (text[match.index + run] === '*') run++;
+      regex.lastIndex = match.index + run;
+      continue;
+    }
+    if (match.index > lastIndex) parts.push(...plainText(text.slice(lastIndex, match.index), `${keyPrefix}p${lastIndex}`, opts));
     if (m.startsWith('`')) {
       parts.push(
         // Mono on a faint surface, no accent: inline code is a machine token
@@ -253,7 +294,9 @@ function renderInline(raw: string, keyPrefix: string, opts: MarkdownOptions = {}
 }
 
 /** A GFM table delimiter row: `| --- | :--: |`, at least one pipe. */
-const TABLE_SEPARATOR = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/;
+// No two whitespace runs touch, so a long line that is not a separator fails
+// in linear time (an editor file can be a megabyte).
+const TABLE_SEPARATOR = /^\s*(?:\|\s*)?:?-+:?\s*(?:\|\s*:?-+:?\s*)*(?:\|\s*)?$/;
 
 /** A table row's cells: outer pipes dropped, split on pipes not escaped as `\|`. */
 function tableCells(line: string): string[] {
@@ -273,18 +316,31 @@ export function renderBrainMarkdown(source: string, opts: MarkdownOptions = {}):
   return renderBlocks(opts.githubHtml ? preprocessGithubHtml(source) : source, opts, 0, { left: MAX_BLOCKS });
 }
 
+/** renderBrainMarkdown, or null when the source runs past MAX_BLOCKS and
+ *  the render would be cut short. For callers that must show the whole
+ *  document (the editor's View mode falls back to raw text). */
+export function renderBrainMarkdownWhole(source: string, opts: MarkdownOptions = {}): React.ReactNode[] | null {
+  const budget: BlockBudget = { left: MAX_BLOCKS };
+  const nodes = renderBlocks(opts.githubHtml ? preprocessGithubHtml(source) : source, opts, 0, budget);
+  return budget.cut ? null : nodes;
+}
+
 /** Quotes nest this deep; a deeper `>` renders as text. Untrusted text (an
  *  issue body) could otherwise nest thousands deep and overflow the stack. */
 export const MAX_QUOTE_DEPTH = 4;
 /** Blocks drawn per render, every quote level together; the rest is cut. */
 export const MAX_BLOCKS = 2000;
 
-function renderBlocks(source: string, opts: MarkdownOptions, depth: number, budget: { left: number }): React.ReactNode[] {
+/** Blocks left to draw; `cut` is set once a render ran out of them. */
+interface BlockBudget { left: number; cut?: boolean }
+
+function renderBlocks(source: string, opts: MarkdownOptions, depth: number, budget: BlockBudget): React.ReactNode[] {
   const lines = source.split('\n');
   const out: React.ReactNode[] = [];
   let i = 0;
   while (i < lines.length) {
     if (budget.left <= 0) {
+      budget.cut = true;
       out.push(<div key={out.length} data-brain-md-cut className="text-[var(--text-muted)]">…</div>);
       break;
     }
@@ -292,11 +348,13 @@ function renderBlocks(source: string, opts: MarkdownOptions, depth: number, budg
     const line = lines[i];
 
     // Fenced code block (an unclosed fence swallows to the end — streaming).
-    if (line.trimStart().startsWith('```')) {
+    // It closes on a backtick run at least as long as the one it opened with.
+    const open = fenceOpenLength(line);
+    if (open > 0) {
       const codeLines: string[] = [];
-      const lang = line.trimStart().slice(3).trim().split(/\s+/)[0]?.slice(0, 24) ?? '';
+      const lang = line.trimStart().slice(open).trim().split(/\s+/)[0]?.slice(0, 24) ?? '';
       i++;
-      while (i < lines.length && !lines[i].trimStart().startsWith('```')) {
+      while (i < lines.length && !closesFence(lines[i], open)) {
         codeLines.push(lines[i]);
         i++;
       }

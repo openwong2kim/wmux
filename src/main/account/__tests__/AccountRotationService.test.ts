@@ -3,14 +3,16 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AccountRotationService, claudeReading, codexReading, type AccountRotationDeps } from '../AccountRotationService';
-import type { Account } from '../accountStore';
+import { AccountStore, type Account } from '../accountStore';
 import type { AccountUsageEntry } from '../AccountUsageService';
 import type { RolloutLimits } from '../../quota/codexRollout';
 
 const NOW = Date.parse('2026-10-02T12:00:00Z');
 const RESET_SEC = Math.floor((NOW + 3 * 3600_000) / 1000);
 
-const acct = (id: string, vendor: 'claude' | 'codex'): Account => ({ id, name: id, vendor, configDir: `/acc/${id}`, createdAt: 0 });
+const acct = (id: string, vendor: 'claude' | 'codex', group?: string): Account => ({
+  id, name: id, vendor, configDir: `/acc/${id}`, createdAt: 0, ...(group ? { group } : {}),
+});
 
 function usage(id: string, sessionPct: number, fetchedAtMs = NOW): AccountUsageEntry {
   return {
@@ -145,6 +147,67 @@ describe('AccountRotationService', () => {
     codex[path.join('/acc/x', 'sessions')] = limits(100);
     codex[path.join('/acc/y', 'sessions')] = limits(99);
     expect(await s.prepareLaunch('codex', 'ws')).toEqual({ kind: 'hold', availableAtMs: NOW + 3600_000 });
+  });
+
+  it('rotates only inside the bound account\'s group', async () => {
+    const s = make([acct('w1', 'claude', 'work'), acct('p1', 'claude', 'personal'), acct('w2', 'claude', 'work'), acct('u1', 'claude')]);
+    await s.setEnabled('claude', true);
+    bindings['ws:claude'] = 'w1';
+    usageEntries = [usage('w1', 99), usage('p1', 5), usage('w2', 60), usage('u1', 5)];
+    expect(await s.prepareLaunch('claude', 'ws')).toEqual({ kind: 'switch', accountId: 'w2', env: { CLAUDE_CONFIG_DIR: '/acc/w2' } });
+    // Ungrouped accounts are one pool of their own, never a fallback for a group.
+    bindings['ws2:claude'] = 'u1';
+    usageEntries = [usage('w1', 5), usage('p1', 5), usage('w2', 5), usage('u1', 99)];
+    expect(await s.prepareLaunch('claude', 'ws2')).toMatchObject({ kind: 'hold', grouped: true });
+  });
+
+  it('still holds inside the group after an older build rewrote accounts.json', async () => {
+    const store = new AccountStore(dataDir);
+    fs.mkdirSync(path.join(dataDir, 'w'));
+    fs.mkdirSync(path.join(dataDir, 'p'));
+    const w = await store.addAccount({ name: 'w', vendor: 'claude', configDir: path.join(dataDir, 'w') });
+    const p = await store.addAccount({ name: 'p', vendor: 'claude', configDir: path.join(dataDir, 'p') });
+    await store.setAccountGroup(w.id, 'Work');
+    await store.setAccountGroup(p.id, 'Personal');
+    const file = path.join(dataDir, 'accounts.json');
+    const raw = JSON.parse(fs.readFileSync(file, 'utf8')) as { accounts: Record<string, unknown>[] };
+    raw.accounts = raw.accounts.map(({ id, name, vendor, configDir, createdAt }) => ({ id, name, vendor, configDir, createdAt }));
+    fs.writeFileSync(file, JSON.stringify(raw));
+    const fresh = new AccountStore(dataDir);
+    const s = make([], { accounts: () => fresh.listAccounts() });
+    await s.setEnabled('claude', true);
+    bindings['ws:claude'] = w.id;
+    usageEntries = [usage(w.id, 99), usage(p.id, 5)];
+    expect(await s.prepareLaunch('claude', 'ws')).toMatchObject({ kind: 'hold', grouped: true });
+  });
+
+  it('drops an account moved to another group while the quota reads ran', async () => {
+    const accounts = [acct('w1', 'claude', 'work'), acct('w2', 'claude', 'work')];
+    const s = make(accounts);
+    await s.setEnabled('claude', true);
+    bindings['ws:claude'] = 'w1';
+    usageEntries = [usage('w1', 99, NOW - 60 * 60_000), usage('w2', 10)];
+    // The store hands out new records after a write, as setAccountGroup does.
+    refreshNow.mockImplementation(async () => { accounts[1] = acct('w2', 'claude', 'personal'); });
+    // w2 had quota but is personal now: the work group (w1 alone) is out.
+    expect(await s.prepareLaunch('claude', 'ws')).toEqual({ kind: 'hold', availableAtMs: RESET_SEC * 1000, grouped: true });
+  });
+
+  it('holds when the whole group is out instead of crossing into another group', async () => {
+    const s = make([acct('w1', 'claude', 'work'), acct('w2', 'claude', 'work'), acct('p1', 'claude', 'personal')]);
+    await s.setEnabled('claude', true);
+    bindings['ws:claude'] = 'w1';
+    usageEntries = [usage('w1', 100), usage('w2', 99), usage('p1', 0)];
+    expect(await s.prepareLaunch('claude', 'ws')).toEqual({ kind: 'hold', availableAtMs: RESET_SEC * 1000, grouped: true });
+  });
+
+  it('does not switch inside the old group when the workspace is rebound during the reads', async () => {
+    const s = make([acct('w1', 'claude', 'work'), acct('w2', 'claude', 'work'), acct('p1', 'claude', 'personal')]);
+    await s.setEnabled('claude', true);
+    bindings['ws:claude'] = 'w1';
+    usageEntries = [usage('w1', 99, NOW - 60 * 60_000), usage('w2', 10), usage('p1', 10)];
+    refreshNow.mockImplementation(async () => { bindings['ws:claude'] = 'p1'; });
+    expect(await s.prepareLaunch('claude', 'ws')).toEqual({ kind: 'keep' });
   });
 
   it('switches a Codex pane via CODEX_HOME', async () => {

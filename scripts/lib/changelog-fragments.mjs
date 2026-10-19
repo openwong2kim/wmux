@@ -24,7 +24,7 @@ export const CHANGELOG = path.join(ROOT, 'CHANGELOG.md');
 
 // Keep a Changelog's section order. A fragment may use any subset; anything
 // else is a typo we refuse rather than silently drop.
-const SECTIONS = ['Added', 'Changed', 'Deprecated', 'Removed', 'Fixed', 'Security'];
+export const SECTIONS = ['Added', 'Changed', 'Deprecated', 'Removed', 'Fixed', 'Security'];
 
 /** Fragment files, oldest PR first. README.md is documentation, not an entry. */
 export function fragmentFiles(dir = FRAGMENT_DIR) {
@@ -45,34 +45,44 @@ export function fragmentFiles(dir = FRAGMENT_DIR) {
 }
 
 /**
- * Split one fragment into `{ Added: [entry, …], … }`.
+ * Walk one fragment line by line without throwing, keeping line numbers.
  *
- * An entry is everything between one `- ` bullet and the next, so a multi-line
- * paragraph survives intact. Text before any `###` heading is an error: it
- * would otherwise vanish into no section at all.
+ * `entries` is what the fold keeps: `{ Added: [{ line, text }, …], … }`.
+ * `headings` lists every `### ` heading, known or not. `problems` holds what
+ * parseFragment refuses, in order, with the message it throws. `stray` is
+ * text inside a section but before its first bullet — the fold drops it
+ * without a word, so only the checker reports it. Line numbers are 1-based.
  */
-export function parseFragment(text, name = '<fragment>') {
-  const out = {};
+export function scanFragment(text) {
+  const entries = {};
+  const headings = [];
+  const problems = [];
+  const stray = [];
   let section = null;
   let buffer = [];
+  let start = 0;
 
   const flush = () => {
     if (!section || buffer.length === 0) return;
     const entry = buffer.join('\n').replace(/\s+$/, '');
-    if (entry) (out[section] ??= []).push(entry);
+    // An unknown section is already a problem; its entries go nowhere.
+    if (entry && SECTIONS.includes(section)) (entries[section] ??= []).push({ line: start, text: entry });
     buffer = [];
   };
 
   // A fragment checked out with CRLF must not carry \r into its entries.
-  for (const line of text.replace(/\r\n/g, '\n').split('\n')) {
+  const lines = text.replace(/\r\n/g, '\n').split('\n');
+  for (const [i, line] of lines.entries()) {
     const heading = /^###\s+(.+?)\s*$/.exec(line);
     if (heading) {
       flush();
       const title = heading[1];
+      headings.push({ line: i + 1, title });
       if (!SECTIONS.includes(title)) {
-        throw new Error(
-          `${name}: unknown section "${title}" — expected one of ${SECTIONS.join(', ')}`,
-        );
+        problems.push({
+          line: i + 1,
+          message: `unknown section "${title}" — expected one of ${SECTIONS.join(', ')}`,
+        });
       }
       section = title;
       continue;
@@ -80,6 +90,7 @@ export function parseFragment(text, name = '<fragment>') {
     if (/^-\s/.test(line)) {
       flush();
       buffer.push(line);
+      start = i + 1;
       continue;
     }
     if (buffer.length > 0) {
@@ -87,10 +98,30 @@ export function parseFragment(text, name = '<fragment>') {
       continue;
     }
     if (line.trim() && !section) {
-      throw new Error(`${name}: text outside any "### Section" heading: ${line.trim().slice(0, 60)}`);
+      problems.push({
+        line: i + 1,
+        message: `text outside any "### Section" heading: ${line.trim().slice(0, 60)}`,
+      });
+    } else if (line.trim()) {
+      stray.push({ line: i + 1, text: line });
     }
   }
   flush();
+  return { entries, headings, problems, stray };
+}
+
+/**
+ * Split one fragment into `{ Added: [entry, …], … }`.
+ *
+ * An entry is everything between one `- ` bullet and the next, so a multi-line
+ * paragraph survives intact. Text before any `###` heading is an error: it
+ * would otherwise vanish into no section at all.
+ */
+export function parseFragment(text, name = '<fragment>') {
+  const { entries, problems } = scanFragment(text);
+  if (problems.length > 0) throw new Error(`${name}: ${problems[0].message}`);
+  const out = {};
+  for (const [section, list] of Object.entries(entries)) out[section] = list.map((e) => e.text);
   return out;
 }
 

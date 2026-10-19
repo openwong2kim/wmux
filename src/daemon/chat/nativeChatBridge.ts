@@ -6,7 +6,7 @@ import { isBrainPty } from '../../shared/constants';
 import type { AgentStatus } from '../../shared/types';
 import type { ChatSkillCatalog } from '../../shared/transcript/chatSkills';
 import type { TerminalLaunchAgent } from '../../shared/transcript/terminalChat';
-import type { ChatInterruptResult, ChatSendResult, TranscriptPage, TranscriptStatus } from '../../shared/transcript/turnEvents';
+import type { ChatInterruptResult, ChatSendResult, ClaudeRewindResult, TranscriptPage, TranscriptStatus } from '../../shared/transcript/turnEvents';
 import type { AgentLaunchOptions } from '../web/agentLaunch';
 import { buildAgentLaunch } from '../web/agentLaunch';
 import { withChosenAccountEnv } from '../phone/paneAccountSpawn';
@@ -15,6 +15,7 @@ import type { CodexNativeInterrupt, CodexTurnRef } from '../web/codexPaneRelays'
 import { screenBlocksChatSend, screenShowsRunningTurn, screenShowsTurnEnding, titleShowsFinishedTurn } from '../transcript/chatScreenGate';
 import { claudeComposerRows, claudeComposerShows, deliverChatPrompt, type ChatScreenRows } from '../transcript/deliverChatPrompt';
 import { INTERRUPT_COOLDOWN_MS, interruptChatTurn, type ChatInterruptVerdict } from '../transcript/interruptChatTurn';
+import { openClaudeRewind } from '../transcript/openClaudeRewind';
 import { boundResumeCommand, codexRuntimeEnv, resumeCwdUsable, terminalLaunchCommand } from '../transcript/terminalLaunch';
 import { boundSessionLives } from '../transcript/resumeAvailable';
 import { isUsableResumeBinding, withLaunchSessionId, type ResumeBinding } from '../../shared/agentResume';
@@ -136,7 +137,7 @@ export interface NativeChatBridgeDeps<P extends ChatPane> {
   resumeTakesPrompt?(agent: TerminalLaunchAgent): boolean;
   /** The launch line for a pane, guarded when it is a bot's fan-out worker
    *  (default guardBotWorkerLaunch); null: type nothing. */
-  botWorkerLaunch?(id: string, line: string, head: string): string | null;
+  botWorkerLaunch?(id: string, line: string, head: string, folders?: readonly string[]): string | null;
   relays: {
     retire(id: string): Promise<void>;
     prepare(id: string, pane: P): Promise<LaunchRelay>;
@@ -187,6 +188,8 @@ export interface NativeChatBridge extends Omit<ChatBridge, QueueMethods>, Requir
    * once-per-turn latch and cooldown as the phone cancel. No receipt.
    */
   desktopInterrupt(id: string, agentSessionId: string): Promise<ChatInterruptResult>;
+  /** `daemon.transcript.rewind`: Claude's own Rewind picker, under the same send lock as Stop. */
+  desktopRewind(id: string, opts?: { kitty?: boolean }): Promise<ClaudeRewindResult>;
   /** A file-binding send is between its first check and its last write (Stop must wait). */
   sendInFlight(id: string): boolean;
   /**
@@ -1687,6 +1690,29 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
     return DESKTOP_INTERRUPT[await interruptLocked(id, agentSessionId)];
   };
 
+  const desktopRewind = async (id: string, opts: { kitty?: boolean } = {}): Promise<ClaudeRewindResult> => {
+    if (!id || !deps.pane(id)) return 'unavailable';
+    // A send between its paste and its Enter, or a Stop, owns the keyboard.
+    if (sending.has(id)) return 'busy';
+    sending.add(id);
+    try {
+      return await openClaudeRewind({
+        hasOpenApproval: () => hasOpenApproval(id),
+        getAgentState: () => {
+          const current = deps.chatAgentState(id);
+          const slug = slugOf(current);
+          return current.agentVerified && slug
+            ? { slug, status: current.agentStatus, inputRevision: current.keyInputRevision ?? current.inputRevision } : null;
+        },
+        readScreen: () => deps.readScreen(id),
+        readTitle: () => deps.pane(id)?.bridge.getTitle() ?? null,
+        write: (data) => deps.write(id, data),
+        kitty: opts.kitty === true,
+        now,
+      });
+    } finally { sending.delete(id); }
+  };
+
   // ---------------------------------------------------------------------------
   // Launch
 
@@ -1773,7 +1799,8 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
       }
       // A bot's fan-out worker merges only through the merge lane: its claude
       // line carries the worker settings, or nothing is typed.
-      const guarded = (deps.botWorkerLaunch ?? guardBotWorkerLaunch)(id, command, head);
+      const folders = [bound?.cwd, pane.meta.cwd, pane.meta.spawnCwd].filter((f): f is string => typeof f === 'string' && f.length > 0);
+      const guarded = (deps.botWorkerLaunch ?? ((i: string, l: string, h: string, f?: readonly string[]) => guardBotWorkerLaunch(i, l, h, undefined, f)))(id, command, head, folders);
       if (guarded === null) return fail('launch-unsupported');
       command = guarded;
       if (agent === 'codex' && boundShell !== 'pwsh') {
@@ -1913,6 +1940,7 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
         ...(outcome.pending ? { pending: true as const } : {}), ...(outcome.queued ? { queued: true as const } : {}) };
     },
     desktopInterrupt,
+    desktopRewind,
     sendInFlight: (id) => sending.has(id),
     hasOpenApproval,
     desktopSkills: (id, agent) => skillsWith(id, agent, 'cwd'),

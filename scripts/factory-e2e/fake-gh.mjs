@@ -329,6 +329,12 @@ function pr(state, f) {
   } else p = (repo.prs ?? []).find((x) => x.number === Number(num));
   if (!p) return fail(`GraphQL: Could not resolve to a PullRequest with the number of ${num}.`);
   if (sub === 'view') return out(prViewJson(p, key));
+  if (sub === 'ready') {
+    if (p.state !== 'OPEN') return fail(`pull request #${p.number} is not open`);
+    p.isDraft = false;
+    writeState(state);
+    return out(`✓ Pull request #${p.number} is marked as "ready for review"`);
+  }
   if (sub === 'checks') {
     if (f.named.json) return out(checkNodes(p).map((c) => ({ name: c.name, state: c.conclusion ?? 'PENDING', bucket: c.conclusion === 'SUCCESS' ? 'pass' : c.conclusion ? 'fail' : 'pending' })));
     return out(checkNodes(p).map((c) => `${c.name}\t${c.conclusion === 'SUCCESS' ? 'pass' : 'pending'}`).join('\n'));

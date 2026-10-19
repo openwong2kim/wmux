@@ -1,0 +1,103 @@
+{
+  "name": "research-no-repo-closes",
+  "layer": "regression",
+  "runs": 1,
+  "model": "stub",
+  "description": "A researcher with no repository fans out one research task; the scripted worker reports review_requested from its scratch folder. The task ends completed without a gate (unforced, as the owner), in a folder under the bot's data folder, and the researcher takes one turn after it without settling the task itself.",
+  "setup": {
+    "worker": {
+      "delayMs": 1000
+    },
+    "bots": [
+      {
+        "key": "researcher",
+        "template": "researcher",
+        "script": {
+          "turns": [
+            {
+              "steps": [
+                {
+                  "capture": {
+                    "key": "idempotency_key \"(wake:[^\"]+)\""
+                  }
+                },
+                {
+                  "tool": "fanout_start",
+                  "args": {
+                    "idempotency_key": "{{key}}",
+                    "titles": [
+                      "who else does this"
+                    ],
+                    "prompt": "Compare the competitors named in the title, with sources.",
+                    "preset": "research"
+                  }
+                }
+              ]
+            },
+            {
+              "steps": [
+                {
+                  "say": "findings read"
+                }
+              ]
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "actions": [
+    {
+      "do": "post",
+      "label": "ask",
+      "post": {
+        "title": "Research",
+        "body": "Who else does this?",
+        "to": "lead"
+      }
+    },
+    {
+      "do": "waitFor",
+      "label": "report",
+      "cond": {
+        "workers": {
+          "event": "ledger_update",
+          "min": 1
+        }
+      },
+      "timeoutMs": 240000,
+      "required": true
+    },
+    {
+      "do": "waitFor",
+      "label": "settled",
+      "cond": {
+        "ledger": {
+          "status": "completed",
+          "min": 1
+        }
+      },
+      "timeoutMs": 180000
+    },
+    {
+      "do": "waitFor",
+      "label": "quiet",
+      "cond": {
+        "idle": true,
+        "quietMs": 8000
+      },
+      "timeoutMs": 90000
+    }
+  ],
+  "expect": {
+    "requires": [
+      "facts",
+      "cards",
+      "bots",
+      "wakes",
+      "ledger",
+      "workers"
+    ],
+    "researcher": "researcher"
+  }
+}

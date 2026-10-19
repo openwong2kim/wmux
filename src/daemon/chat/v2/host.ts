@@ -38,6 +38,7 @@ import { buildDriverEnv, DriverEnvError } from './env';
 import { boundEvent, EventBatcher } from './eventBatcher';
 import { claimChatV2Pane, releaseChatV2Pane } from './paneClaims';
 import { handOffToTerminal, handedOffRefusal } from './handoff';
+import { sameProcessStartTime } from '../../phantomExit';
 import { classifyShell } from '../../shell-integration';
 import { ChatV2Store } from './store';
 import {
@@ -254,7 +255,7 @@ class Host implements ChatV2Host {
     } catch {
       identity = null;
     }
-    if (!identity || !process.startTime || identity.startTime !== process.startTime || !process.marker
+    if (!identity || !process.startTime || !sameProcessStartTime(process.startTime, identity.startTime) || !process.marker
       || !identity.commandLine.includes(process.marker)) {
       return;
     }

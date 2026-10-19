@@ -1,7 +1,7 @@
 import { TerminalEngineSetting } from './TerminalEngineSetting';
 import { QuickCommandsSection } from './QuickCommandsSection';
 import { SecretHookSetting } from './SecretHookSetting';
-import { createContext, useContext, useEffect, useMemo, useRef, useState, useCallback, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, useCallback, type ReactNode } from 'react';
 import { BROWSER_BACKENDS, isBrowserBackend } from '../../../shared/browserBackend';
 import { isWslShellPath } from '../../../shared/wslDistro';
 import type { ImagePasteMode } from '../../../shared/imagePaste';
@@ -104,7 +104,7 @@ import { resolveAttentionRemindMs } from '../Sidebar/attentionBlink';
 import Badge from '../ui/Badge';
 import TokenUsageTab from './tabs/TokenUsageTab';
 import './settings.css';
-import { SettingsSection, SettingRow, SettingNote } from './SettingsLayout';
+import { SettingsSection, SettingRow, SettingNote, OwnedDialogContext, useOwnedDialog } from './SettingsLayout';
 import { MAX_WORKSPACE_IDLE_DAYS, MIN_WORKSPACE_IDLE_DAYS } from '../../../shared/workspaceSettle';
 import { sendWorkspaceSettleIdleDays } from '../../hooks/useWorkspaceSettleBridge';
 import { FactoryTab } from './FactoryTab';
@@ -2350,8 +2350,6 @@ function AgentToolbarSection() {
   const t = useT();
   const agentToolbarEnabled = useStore((s) => s.agentToolbarEnabled);
   const setAgentToolbarEnabled = useStore((s) => s.setAgentToolbarEnabled);
-  const newConversationCommand = useStore((s) => s.newConversationCommand);
-  const setNewConversationCommand = useStore((s) => s.setNewConversationCommand);
 
   return (
     <SettingsSection title={t('settings.agentToolbar')}>
@@ -2360,18 +2358,6 @@ function AgentToolbarSection() {
           checked={agentToolbarEnabled}
           onChange={setAgentToolbarEnabled}
           label={t('settings.agentToolbarShow')}
-        />
-      </SettingRow>
-      <SettingRow label={t('settings.agentToolbarNewCommand')}>
-        <Input
-          type="text"
-          aria-label={t('settings.agentToolbarNewCommand')}
-          value={newConversationCommand}
-          onChange={(e) => setNewConversationCommand(e.target.value)}
-          spellCheck={false}
-          // A command line is machine evidence: mono.
-          className="settings-input font-mono"
-          style={{ width: 240 }}
         />
       </SettingRow>
     </SettingsSection>
@@ -3616,6 +3602,8 @@ function TabAppearance() {
   const attentionBlinkRemindMs = useStore((s) => s.attentionBlinkRemindMs);
   const setAttentionBlinkRemindMs = useStore((s) => s.setAttentionBlinkRemindMs);
   const attentionBlinkFinished = useStore((s) => s.attentionBlinkFinished);
+  const windowGlass = useStore((s) => s.windowGlass);
+  const setWindowGlass = useStore((s) => s.setWindowGlass);
   const setAttentionBlinkFinished = useStore((s) => s.setAttentionBlinkFinished);
   const workspaceSettleIdleDays = useStore((s) => s.workspaceSettle.idleDays);
   const fleetLayout = useStore((s) => s.fleetLayout);
@@ -3653,6 +3641,46 @@ function TabAppearance() {
   // user has ever customized → fall back to the default custom theme.
   const customThemeColors = useStore((s) => s.customThemeColors) ?? DEFAULT_CUSTOM_THEME;
 
+  // wmux's own looks (the ones with a THEME_STYLES entry) lead the grid; every
+  // other built-in theme and Custom follow under a second heading, each group
+  // in THEME_OPTIONS order.
+  const lookOptions = THEME_OPTIONS.filter(({ value }) => value in THEME_STYLES);
+  const moreOptions = THEME_OPTIONS.filter(({ value }) => !(value in THEME_STYLES));
+  const renderThemeCard = ({ value, label }: (typeof THEME_OPTIONS)[number]) => {
+    const selected = currentTheme === value;
+    const palette = value === 'custom'
+      ? deriveFullPalette(customThemeColors)
+      : deriveBuiltinPalette(value as BuiltinThemeId);
+    return (
+      <button
+        key={value}
+        type="button"
+        onClick={() => setTheme(value)}
+        role="radio"
+        aria-checked={selected}
+        aria-label={label}
+        className={`settings-theme-card ${FOCUS_RING}`}
+      >
+        <ThemeThumbnail palette={palette} look={value === 'custom' ? undefined : THEME_STYLES[value as BuiltinThemeId]} />
+        <div
+          className="flex items-center justify-between gap-1 px-2.5 py-1.5"
+          style={{
+            backgroundColor: palette.bgMantle,
+            color: selected ? palette.textMain : palette.textSub,
+            fontFamily: value === 'custom' ? undefined : THEME_STYLES[value as BuiltinThemeId]?.uiFont,
+          }}
+        >
+          <span className="text-[13px] truncate">{label}</span>
+          {selected && (
+            <span className="shrink-0 inline-flex" style={{ color: palette.textMain }} aria-hidden="true">
+              <IconCheck size={12} />
+            </span>
+          )}
+        </div>
+      </button>
+    );
+  };
+
   return (
     <div className="settings-page">
       {/* Theme — visual cards on the surface radii and hairlines. Selection is
@@ -3661,41 +3689,14 @@ function TabAppearance() {
         <div className="settings-section-head">
           <h3 className="ui-group-label settings-section-title">{t('settings.theme')}</h3>
         </div>
-        <div className="grid grid-cols-3 gap-3" role="radiogroup" aria-label={t('settings.theme')}>
-          {THEME_OPTIONS.map(({ value, label }) => {
-            const selected = currentTheme === value;
-            const palette = value === 'custom'
-              ? deriveFullPalette(customThemeColors)
-              : deriveBuiltinPalette(value as BuiltinThemeId);
-            return (
-              <button
-                key={value}
-                type="button"
-                onClick={() => setTheme(value)}
-                role="radio"
-                aria-checked={selected}
-                aria-label={label}
-                className={`settings-theme-card ${FOCUS_RING}`}
-              >
-                <ThemeThumbnail palette={palette} look={value === 'custom' ? undefined : THEME_STYLES[value as BuiltinThemeId]} />
-                <div
-                  className="flex items-center justify-between gap-1 px-2.5 py-1.5"
-                  style={{
-                    backgroundColor: palette.bgMantle,
-                    color: selected ? palette.textMain : palette.textSub,
-                    fontFamily: value === 'custom' ? undefined : THEME_STYLES[value as BuiltinThemeId]?.uiFont,
-                  }}
-                >
-                  <span className="text-[13px] truncate">{label}</span>
-                  {selected && (
-                    <span className="shrink-0 inline-flex" style={{ color: palette.textMain }} aria-hidden="true">
-                      <IconCheck size={12} />
-                    </span>
-                  )}
-                </div>
-              </button>
-            );
-          })}
+        <div className="flex flex-col gap-3" role="radiogroup" aria-label={t('settings.theme')}>
+          <div className="grid grid-cols-3 gap-3" data-theme-group="looks">
+            {lookOptions.map(renderThemeCard)}
+          </div>
+          <h4 className="ui-group-label settings-section-title settings-theme-more">{t('settings.theme.more')}</h4>
+          <div className="grid grid-cols-3 gap-3" data-theme-group="more">
+            {moreOptions.map(renderThemeCard)}
+          </div>
         </div>
       </section>
 
@@ -3720,6 +3721,20 @@ function TabAppearance() {
             </span>
           </div>
         </SettingRow>
+        {/* macOS only: the window material is a macOS feature. */}
+        {window.electronAPI?.platform === 'darwin' && (
+          <SettingRow id="windowglass" label={t('settings.windowGlass')} description={t('settings.windowGlassDesc')}>
+            <SegmentedControl
+              value={windowGlass}
+              onValueChange={setWindowGlass}
+              options={[
+                { value: 'off', label: t('settings.windowGlassOff') },
+                { value: 'soft', label: t('settings.windowGlassSoft') },
+                { value: 'clear', label: t('settings.windowGlassClear') },
+              ]}
+            />
+          </SettingRow>
+        )}
         <SettingRow id="chrome" label={t('settings.chromePreset')} description={t('settings.chromePresetDesc')}>
           <ChromePresetActionsView onApply={applyChromePresetWithFeedback} />
         </SettingRow>
@@ -4373,25 +4388,6 @@ function TabNotifications() {
       onChangeWorkspacePrWakeChecksPassed={(id, enabled) => updateWorkspaceMetadata(id, { wakeOnPrChecksPassed: enabled })}
     />
   );
-}
-
-// ─── Dialogs Settings owns ───────────────────────────────────────────────────
-//
-// A modal opened FROM Settings (key capture, paired devices) is the top-most
-// layer: Escape closes only it and Ctrl/Cmd+F must not pull focus to the
-// search box behind it. Settings' own key handler runs first (window,
-// capture), so it has to know when one is open. Each owner registers while it
-// is open; a DOM query for any aria-modal dialog would also match dialogs
-// Settings does not own (the floating terminal stays mounted, hidden).
-const OwnedDialogContext = createContext<(delta: number) => void>(() => undefined);
-
-function useOwnedDialog(open: boolean): void {
-  const register = useContext(OwnedDialogContext);
-  useEffect(() => {
-    if (!open) return;
-    register(1);
-    return () => register(-1);
-  }, [open, register]);
 }
 
 // ─── Key capture overlay ──────────────────────────────────────────────────────
@@ -5299,7 +5295,11 @@ export default function SettingsPanel({ initialTab }: { initialTab?: string }) {
   const searchRef = useRef<HTMLInputElement>(null);
 
   const searchHits = useMemo(
-    () => matchSettings(searchQuery, t, SETTINGS_CATALOG),
+    () => matchSettings(
+      searchQuery,
+      t,
+      SETTINGS_CATALOG.filter((entry) => !entry.platform || entry.platform === window.electronAPI?.platform),
+    ),
     [searchQuery, t],
   );
   const searching = searchQuery.trim().length > 0;

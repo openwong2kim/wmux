@@ -106,7 +106,7 @@ export function selectActiveWorkspaceSummary(s: StoreState): ActiveWorkspaceSumm
 
 /**
  * 활성 워크스페이스 OBJECT 자체 — rootPane/metadata를 깊이 읽어야 하는 활성-ws
- * 전용 구독자(AgentToolbar·FileExplorerPopover·FileTreePanel)용.
+ * 전용 구독자(AgentToolbar·FileTreePanel)용.
  *
  * 새 객체를 만들지 않고 immer가 관리하는 ws 참조를 그대로 돌려주므로, 활성 ws가
  * 실제로 바뀔 때(전환 또는 그 ws의 트리 변경)만 참조가 달라진다 — 배경 ws의

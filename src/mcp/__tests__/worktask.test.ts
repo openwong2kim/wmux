@@ -1,6 +1,6 @@
 // Tests for the task-lifecycle MCP tools.
 //
-// The trust boundary is main-side (worktask.rpc.test.ts). What is pinned HERE
+// The trust boundary is main-side (worktask.rpc.os.test.ts). What is pinned HERE
 // is the tool SHAPE: a schema that cannot express a call main rejects, the
 // verified ptyId attached on every call, and the wire envelope handed back
 // whole — collapsing it would hide the `reason` an unattended caller branches
@@ -15,7 +15,7 @@ vi.mock('../wmux-client', () => ({
 }));
 
 import { sendRpc } from '../wmux-client';
-import { registerWorktaskTools } from '../worktask';
+import { GATE_RUN_RPC_TIMEOUT_MS, registerWorktaskTools } from '../worktask';
 
 const mockSendRpc = sendRpc as unknown as ReturnType<typeof vi.fn>;
 
@@ -67,8 +67,8 @@ describe('tool surface', () => {
 });
 
 describe('the wire call', () => {
+  // task_gate_run also passes its own deadline (the test after this one).
   it.each([
-    ['task_gate_run', 'task.gate.run'],
     ['task_gate_cancel', 'task.gate.cancel'],
     ['task_adopt', 'task.adopt'],
     ['task_close', 'task.close'],
@@ -76,6 +76,13 @@ describe('the wire call', () => {
   ])('%s sends %s with the verified ptyId and camelCase taskId', async (tool, method) => {
     await tools.get(tool)?.({ task_id: 'wtask-1' });
     expect(mockSendRpc).toHaveBeenCalledWith(method, { taskId: 'wtask-1', senderPtyId: 'pty-mine' });
+  });
+
+  it('task_gate_run waits long enough for a queued gate and its steps; the others keep the default deadline', async () => {
+    await tools.get('task_gate_run')?.({ task_id: 'wtask-1' });
+    expect(mockSendRpc).toHaveBeenLastCalledWith('task.gate.run', { taskId: 'wtask-1', senderPtyId: 'pty-mine' }, GATE_RUN_RPC_TIMEOUT_MS);
+    await tools.get('task_close')?.({ task_id: 'wtask-1' });
+    expect(mockSendRpc.mock.calls.at(-1)).toHaveLength(2);
   });
 
   it('resolves identity BEFORE reading the ptyId (a cold getter answers empty)', async () => {

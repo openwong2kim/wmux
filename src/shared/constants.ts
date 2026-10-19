@@ -3,6 +3,9 @@ import { QUICK_LAUNCH_IPC } from './quickLaunchIpc';
 export const IPC = {
   PTY_CREATE: 'pty:create',
   PTY_WRITE: 'pty:write',
+  // Main → renderer: a pty:write for this id was dropped (no live session
+  // pipe, or the local fallback has no such pty). Payload: (id).
+  PTY_WRITE_DROPPED: 'pty:write-dropped',
   // A whole launch line (a resume) typed into a pane: main applies the bot
   // worker merge guard first (main/agents/botWorkerMergeGuard.ts).
   PTY_WRITE_LAUNCH: 'pty:write-launch',
@@ -213,6 +216,12 @@ export const IPC = {
   //   2026-07-17). Renderer-only trust boundary.
   HOOKS_BRIDGE_STATUS: 'hooks:bridge:status',
   HOOKS_BRIDGE_INSTALL: 'hooks:bridge:install',
+  //   UPDATE — #2404, the Settings card's Update button: adds the hooks a newer
+  //   build expects to an existing install and rewrites only outdated wmux
+  //   entries. User-clicked, like INSTALL.
+  HOOKS_BRIDGE_UPDATE: 'hooks:bridge:update',
+  // An account folder's own copy of Claude settings: the same Update, by id.
+  HOOKS_BRIDGE_UPDATE_ACCOUNT: 'hooks:bridge:update-account',
   //   ALLOW_WORKER_TOOLS — the Settings button that adds the minimal fan-out
   //   worker tool list to permissions.allow. User-clicked, like INSTALL.
   HOOKS_BRIDGE_ALLOW_WORKER_TOOLS: 'hooks:bridge:allow-worker-tools',
@@ -247,9 +256,13 @@ export const IPC = {
   ACCOUNT_ONBOARD_PREPARE: 'account:onboard:prepare',
   ACCOUNT_ADD: 'account:add',
   ACCOUNT_RENAME: 'account:rename',
+  ACCOUNT_SET_GROUP: 'account:set-group',
   ACCOUNT_REMOVE: 'account:remove',
   ACCOUNT_SET_BINDING: 'account:set-binding',
   ACCOUNT_CREDENTIAL_STATUS: 'account:credential-status',
+  // Continue a pane's Claude conversation on another account (invoke,
+  // renderer → main → daemon `session.continueOnAccount`).
+  ACCOUNT_CONTINUE_PANE: 'account:continue-pane',
   // M2 — per-account usage (hook-gated, opt-in). LIST pulls the current cache on
   // Settings mount; REFRESH (renderer → main) forces a manual probe for one
   // account (explicit user action, bypasses the opt-in/cooldown gates); UPDATE
@@ -288,6 +301,9 @@ export const IPC = {
   // state that sleep may have invalidated (shared glyph atlas — see
   // terminal/atlasWakeRecovery.ts).
   SYSTEM_RESUMED: 'system:resumed',
+  /** Windows' "Animation effects" off, which Chromium's
+   *  prefers-reduced-motion misses there (main/reducedMotion.ts). */
+  SYSTEM_REDUCED_MOTION: 'system:reduced-motion',
   // Phase 4: Auto updater
   UPDATE_CHECK: 'update:check',
   UPDATE_AVAILABLE: 'update:available',
@@ -451,6 +467,9 @@ export const IPC = {
   // factoryStop.ts): turns, gates, workers; main window only.
   FACTORY_STOP_ALL: 'factory:stop:all',
   FACTORY_STOP_BOT: 'factory:stop:bot',
+  // Stop one bot task's worker (factoryStop.ts stopFactoryTask): its row
+  // cancelled, its gate and worker stopped; main window only.
+  FACTORY_STOP_TASK: 'factory:stop:task',
   // The owner resumes the stopped worker of an ended bot task
   // (main/factory/workerReclaim.ts); main window only.
   FACTORY_WORKER_RESUME: 'factory:worker:resume',
@@ -458,7 +477,19 @@ export const IPC = {
   // model turn, and the Claude sign-in (shared/factoryEngine.ts); main window only.
   FACTORY_ENGINE_READINESS: 'factory:engine:readiness',
   FACTORY_ENGINE_LOGIN: 'factory:engine:login',
+  // The engines a bot's workers may run on that are installed here
+  // (shared/botWorkerAgent.ts); main window only.
+  FACTORY_WORKER_AGENTS: 'factory:worker:agents',
+  // The space ended and running bot tasks' folders use, and Clean up now
+  // (main/factory/taskFolderCleanup.ts); main window only.
+  FACTORY_TASK_FOLDERS_USAGE: 'factory:taskFolders:usage',
+  FACTORY_TASK_FOLDERS_CLEAN: 'factory:taskFolders:clean',
   TRACK_RECORD_CHANGED: 'trackRecord:changed',
+  // The Fleet approvals tab's Plan card (shared/planApproval.ts): Claude's
+  // ExitPlanMode dialogs, answered from the main window only.
+  PLAN_APPROVALS_LIST: 'planApprovals:list',
+  PLAN_APPROVALS_ANSWER: 'planApprovals:answer',
+  PLAN_APPROVALS_CHANGED: 'planApprovals:changed',
   // Git page ship button: the branch's status, commit / push / create PR
   GIT_SHIP_STATUS: 'gitShip:status',
   GIT_SHIP_COMMIT: 'gitShip:commit',
@@ -483,7 +514,10 @@ export const IPC = {
   ROOM_RESOLVE: 'room:resolve',
   ROOM_DECISION: 'room:decision',
   ROOM_ACTORS: 'room:actors',
-  DIALOG_PICK_FILE: 'dialog:pick-file',
+  // A photo on an owner card (the room's stored copy, as a data URL), and the
+  // composer's file picker for photos.
+  ROOM_ATTACHMENT: 'room:attachment',
+  ROOM_PICK_ATTACHMENTS: 'room:pick-attachments',
   DIALOG_PICK_FOLDER: 'dialog:pick-folder',
   // File system
   FS_READ_DIR: 'fs:read-dir',
@@ -583,6 +617,10 @@ export const IPC = {
   // native min/max/close) so the controls never clash with the theme.
   // Windows-only no-op elsewhere (see registerHandlers).
   WINDOW_SET_TITLEBAR_OVERLAY: 'window:setTitleBarOverlay',
+  // macOS window glass: the renderer asks main to set the app's appearance
+  // ('dark' | 'light') from the theme, so the vibrancy material behind the
+  // window matches it. macOS-only no-op elsewhere (see registerHandlers).
+  WINDOW_SET_APPEARANCE: 'window:setAppearance',
   // Whole-interface zoom (#822): the renderer asks main to scale the
   // BrowserWindow with setZoomFactor and re-place the native chrome to match.
   // One-way send — the persisted factor lives in the renderer store.
@@ -957,6 +995,24 @@ export function assertNotLiveWmuxDataDir(home: string): void {
     if (home && norm(home) === norm(process.env.WMUX_TEST_REAL_HOME)) {
       throw new Error('Refusing to touch the live wmux data dir from a test');
     }
+  }
+}
+
+/**
+ * The same refusal for a store handed its directory or file whole (the task
+ * ledger, the factory's files): under vitest, a path inside the real user's
+ * `~/.wmux` is refused. Before the isolate setup existed, fan-out tests wrote
+ * their fixture tasks into the owner's real task ledger, where they stayed
+ * open for good.
+ */
+export function assertNotLiveWmuxPath(p: string): void {
+  const realHome = process.env.WMUX_TEST_REAL_HOME;
+  if (!process.env.VITEST || !realHome || !p) return;
+  const norm = (x: string) => x.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+  const live = `${norm(realHome)}/.wmux`;
+  const target = norm(p);
+  if (target === live || target.startsWith(`${live}/`)) {
+    throw new Error('Refusing to touch the live wmux data dir from a test');
   }
 }
 

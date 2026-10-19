@@ -6,6 +6,7 @@ import {
   type ChatV2RunMode,
 } from '../../../shared/chatv2/ipc';
 import { permissionFlagFor } from '../../../shared/agentResume';
+import { sameProcessStartTime } from '../../phantomExit';
 import type { ChatV2Driver, ChatV2HostDeps, ChatV2StoredRecord } from './types';
 
 /**
@@ -135,7 +136,7 @@ async function driverState(
   const identity = await deps.processIdentity(pid).catch(() => null);
   if (!identity) return 'unknown';
   if (identity.commandLine.includes(record.providerSessionId)) return 'alive';
-  if (record.process?.pid === pid && record.process.startTime && identity.startTime === record.process.startTime) return 'alive';
+  if (record.process?.pid === pid && record.process.startTime && sameProcessStartTime(record.process.startTime, identity.startTime)) return 'alive';
   return 'gone';
 }
 

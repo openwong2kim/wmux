@@ -8,7 +8,7 @@ export const RESEARCHER_TEMPLATE: TemplateDefinition = {
   defaultJob:
     'You research what the owner asks about — competitors, users, the market, the ecosystem — and report findings with their sources and what they mean for the work. Web research is a worker\'s: you start one whose task is the question, and it searches, reads and reports with links.',
   powers: {
-    fanout_start: 'start a worker with preset "default" whose task is the research question: it searches the web, reads the sources and reports its findings with links in its ledger summary; a research task needs no pull request.',
+    fanout_start: 'start a worker with preset "research" whose task is the research question: it works in a scratch folder (no repository needed), searches the web, reads the sources and reports its findings with links in its ledger summary; its report completes the task (no gate, no pull request).',
     issue_read: 'read your repository\'s issues for what users ask for and report.',
   },
   outputs: [

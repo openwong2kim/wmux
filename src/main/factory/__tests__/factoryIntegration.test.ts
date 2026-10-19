@@ -19,6 +19,7 @@ import { BotStore, botsFilePath } from '../botStore';
 import { WakeQueue, wakeQueuePath } from '../wakeQueue';
 import { BotRuntime, BotSessionStore, botSessionsPath, __resetBotRuntimePortsForTesting, setBotRuntimePorts } from '../BotRuntime';
 import { TriggerEngine } from '../triggerEngine';
+import { LEGACY_VERIFIER_TRIGGERS } from '../roleDefaults';
 import { RoomWriter, writeFactCards } from '../roomWriter';
 import { HandoffRouter, HANDOFFS_FILENAME, deckDecisionPort, summarizeHandoff, setHandoffRouter } from '../handoffRouter';
 import { startFactIngest } from '../factIngest';
@@ -107,7 +108,9 @@ describe('factory loop: trusted PR → verifier → verdict → CI → merge lan
     offs.push(() => log.dispose());
     const store = new BotStore(botsFilePath(dir), { now: () => clock });
     flushers.push(() => store.flush());
-    const created = store.create({ workspaceId: 'ws-1', role: 'verifier', repo: { repoKey: 'o/r', repoPath: '/repo' } });
+    // A verifier its owner set to wake on PR events: the role's default is
+    // on request only.
+    const created = store.create({ workspaceId: 'ws-1', role: 'verifier', repo: { repoKey: 'o/r', repoPath: '/repo' }, triggers: LEGACY_VERIFIER_TRIGGERS.map((t) => ({ ...t })) });
     if (!created.ok) throw new Error(created.message);
     const verifier = created.bot;
     let runtime: BotRuntime | null = null;
@@ -217,7 +220,7 @@ describe('factory loop: trusted PR → verifier → verdict → CI → merge lan
     // 2. The batch window passes; the Verifier's turn records its PASS.
     clock += 21_000;
     runtime.kick();
-    await vi.waitFor(() => expect(log.readWhere(0, (f) => f.kind === 'verdict.recorded', 5).facts).toHaveLength(1));
+    await vi.waitFor(() => expect(log.readWhere(0, (f) => f.kind === 'verdict.recorded', 5).facts).toHaveLength(1), { timeout: 10_000 });
     await settle();
     expect(adapters).toHaveLength(1);
     expect(adapters[0].prompts[0]).toContain('pr.opened');

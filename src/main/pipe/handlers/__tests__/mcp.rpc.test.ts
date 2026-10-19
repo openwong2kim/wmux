@@ -6,6 +6,7 @@ import { RpcRouter } from '../../RpcRouter';
 import { registerMcpPluginRpc } from '../mcp.rpc';
 import { PluginTrustStore } from '../../../mcp/PluginTrustStore';
 import type { McpDeclarePermissionsResult, McpIdentifyResult } from '../../../../shared/rpc';
+import { deliberateSleep } from '../../../../test-utils/waitFor';
 
 let tmpDir = '';
 let dbPath = '';
@@ -85,7 +86,7 @@ describe('mcp.identify', () => {
       params: {},
       clientName: 'claude-ai',
     });
-    await new Promise((r) => setTimeout(r, 5));
+    await deliberateSleep(5, 'clock: the second identify gets a later timestamp');
     const second = await router.dispatch({
       id: 'r-3b',
       method: 'mcp.identify',

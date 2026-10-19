@@ -48,6 +48,13 @@ export function useFieldWiring(id?: string, describedBy?: string): FieldWiring {
   };
 }
 
+/** Its children sit outside the enclosing Field's wiring: a list of
+ *  controls inside one row, each labelled by itself, neither takes the row's
+ *  control id (one id on many controls) nor becomes the row label's target. */
+export function FieldOwnIds({ children }: { children?: ReactNode }) {
+  return <FieldContext.Provider value={null}>{children}</FieldContext.Provider>;
+}
+
 export interface FieldProps {
   label: ReactNode;
   description?: ReactNode;

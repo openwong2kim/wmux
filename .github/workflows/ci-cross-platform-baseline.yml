@@ -37,7 +37,7 @@ jobs:
     name: Baseline (${{ matrix.os }})
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ${{ matrix.os }}
-    # The slowest leg (windows) takes ~13 min; a hung test must not hold a
+    # The slowest leg (macos) takes ~17 min; a hung test must not hold a
     # runner for the 6 h default.
     timeout-minutes: 30
     strategy:
@@ -45,9 +45,10 @@ jobs:
       # matrix legs running so we can see the full cross-platform picture
       # even if one OS regresses.
       fail-fast: false
+      # No windows leg: it ran `npm test` serially, the same suites ci.yml
+      # already runs on windows-latest, and was the slowest job on every PR.
       matrix:
         os:
-          - windows-latest   # regression baseline (the only OS that works today)
           - macos-14         # Apple Silicon
           - ubuntu-22.04     # Linux baseline
 
@@ -58,12 +59,12 @@ jobs:
       - name: Setup Node.js + npm 11
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          # Windows takes the ci.yml floor (see the comment there, #984). The
-          # libuv bug is Windows-only, so the other legs stay on 22: on Node 24
-          # macOS rejects the >104-byte unix socket paths the SessionPipe and
-          # DaemonClient tests build under its long $TMPDIR (EINVAL), where
-          # Node 22 truncated them silently. That is its own follow-up.
-          node-version: ${{ runner.os == 'Windows' && '>=24.21.0 <25' || '22' }}
+          # Node 22, not ci.yml's 24 floor (#984, a Windows-only libuv bug): on
+          # Node 24 macOS rejects the >104-byte unix socket paths the
+          # SessionPipe and DaemonClient tests build under its long $TMPDIR
+          # (EINVAL), where Node 22 truncated them silently. That is its own
+          # follow-up.
+          node-version: '22'
           cache: npm
 
       - name: Use npm 11
@@ -132,36 +133,38 @@ jobs:
       # checked by scripts/typecheck.mjs against the disk itself. Running it on
       # three runners added no signal, and on macos-14 (7 GB RAM) the old
       # single-program check ran out of the default V8 heap. ci.yml type-checks
-      # once with scripts/typecheck.mjs; the mcp program is compiled by
-      # validate's build:mcp step and the daemon program by validate-runtime's
-      # build:daemon step.
+      # once with scripts/typecheck.mjs; the mcp and daemon programs are
+      # compiled by the checks job's build:mcp and build:daemon steps.
 
-      # ADVISORY ONLY — this step is expected to fail and never gates the job.
-      # The repo-wide lint carries a pre-existing baseline of 238 errors /
-      # 1745 warnings across ~100 files (measured 2026-09-13: mostly
-      # no-empty-function, no-var-requires and no-useless-escape, plus
-      # import/no-unresolved on vitest/config and a missing react-hooks
-      # plugin). That is too large to clean up mechanically, so a red result
-      # here carries no signal on its own; read its output only when auditing
-      # lint debt. The strict step below blocks only on its fixed list of 7
-      # files; lint regressions in any other new or changed file are not
-      # blocked anywhere in this workflow. See #1287.
-      # continue-on-error does not bound a hang. This step takes ~90 s on
-      # windows-latest, but once it sat for 32 min and the job hit its 30 min
-      # cap before a single test ran (run 37361972608, attempt 1).
-      - name: ESLint (repo-wide, advisory, non-blocking)
-        run: npx eslint --ext .ts,.tsx .
-        continue-on-error: true
-        timeout-minutes: 10
-
-      # Strict lint on files added/modified by the cross-platform port. Any
-      # new error here is a real regression introduced by porting work.
-      # NOTE: keep this on ONE line. PowerShell on windows-latest does not
-      # honor bash `\` line continuations, which made eslint receive zero
-      # arguments and walk up the directory tree until it found a stray
-      # .eslintrc.json inside the actions/checkout install dir.
-      - name: ESLint (new cross-platform code, strict)
-        run: npx eslint --max-warnings=0 src/shared/platform.ts src/shared/__tests__/platform.test.ts src/shared/ShellDetector.ts src/shared/__tests__/ShellDetector.test.ts src/shared/shellResolution.ts src/shared/__tests__/shellResolution.test.ts src/main/notification/__tests__/ToastManager.test.ts
+      # No lint here. Lint does not depend on the OS: ci.yml runs the strict
+      # lint on the cross-platform files once. The repo-wide advisory lint that
+      # ran on every leg was expected to fail (#1287) and gated nothing.
 
       - name: Test (cross-platform)
         run: npm test
+
+      # Retried tests from both suites `npm test` runs; see the same two steps
+      # in ci.yml.
+      - name: Flaky test report
+        id: flaky
+        if: ${{ !cancelled() }}
+        run: node scripts/flaky-report.mjs test-results
+
+      - name: Upload test report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: test-report-baseline-${{ matrix.os }}
+          path: test-results/
+          if-no-files-found: ignore
+
+      # The retry reports on their own, only when one lists a retried test,
+      # for the weekly rollup (scripts/flaky-weekly.mjs): it downloads these
+      # and nothing else, so a run without a retry costs it no API call.
+      - name: Upload retry report
+        if: ${{ !cancelled() && steps.flaky.outputs.retried == 'true' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: test-report-retries-baseline-${{ matrix.os }}
+          path: test-results/retries-*.json
+          if-no-files-found: ignore

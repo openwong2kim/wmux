@@ -16,13 +16,13 @@
  * test in paneSlice.stash.reconcile.test.ts instead.
  */
 import { describe, it, expect } from 'vitest';
-import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { readSourceText } from '../../../../test-utils/sourceText';
 
 const RENDERER = path.join(__dirname, '..', '..', '..');
 
 function read(...parts: string[]): string {
-  return fs.readFileSync(path.join(RENDERER, ...parts), 'utf-8');
+  return readSourceText(path.join(RENDERER, ...parts));
 }
 
 describe('AppLayout — reconcile walks everything the workspace owns', () => {

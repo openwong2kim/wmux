@@ -16,7 +16,7 @@ import {
   type WakeSinkApi,
   isRoutineFact,
 } from '../triggerEngine';
-import { ROLE_DEFAULT_TRIGGERS, defaultTriggers } from '../roleDefaults';
+import { LEGACY_VERIFIER_TRIGGERS, ROLE_DEFAULT_TRIGGERS, defaultTriggers } from '../roleDefaults';
 import { registeredFactoryModules } from '../factoryHost';
 import type { BotProfile, BotRole } from '../../../shared/bot';
 import type { Fact, FactKind } from '../../../shared/facts';
@@ -30,9 +30,12 @@ function fact(kind: FactKind, extra: Partial<Fact> = {}): Fact {
   return { id: `f${seq}`, seq, kind, at: 1, dedupeKey: `k${seq}`, payload: {}, ...extra };
 }
 
+// A verifier here is one its owner set to wake on PR events (the old
+// default); the role's default is none (it verifies on request).
 function bot(id: string, role: BotRole, extra: Partial<BotProfile> = {}): BotProfile {
+  const triggers = role === 'verifier' ? LEGACY_VERIFIER_TRIGGERS.map((t) => ({ ...t })) : defaultTriggers(role);
   return {
-    version: 1, id, workspaceId: 'ws-1', role, name: role, engine: { kind: 'claude-sdk' }, triggers: defaultTriggers(role),
+    version: 1, id, workspaceId: 'ws-1', role, name: role, engine: { kind: 'claude-sdk' }, triggers,
     budget: { maxTurnsPerHour: 1, maxTurnsPerDay: 1, maxConcurrentWorkers: 1, maxWorkerHoursPerDay: 1, turnTimeoutMs: 1 },
     repo: { repoKey: KEY, repoPath: '/repo' }, enabled: true, createdAt: 0, updatedAt: 0, ...extra,
   };
@@ -65,11 +68,8 @@ describe('roleDefaults', () => {
       { kind: 'issue.opened', filter: { authorTrusted: true } },
       { kind: 'issue.labelled', filter: { labelsAny: ['bug', 'triage'], authorTrusted: true } },
     ]);
-    expect(ROLE_DEFAULT_TRIGGERS.verifier.map((t) => [t.kind, t.filter?.authorTrusted, t.batch])).toEqual([
-      ['pr.opened', true, { windowMs: 20_000, max: 5 }],
-      ['pr.head_moved', true, { windowMs: 20_000, max: 5 }],
-      ['ci.failed', true, undefined],
-    ]);
+    // The verifier verifies only on request: no PR event wakes it.
+    expect(ROLE_DEFAULT_TRIGGERS.verifier).toEqual([]);
     expect(ROLE_DEFAULT_TRIGGERS.maintainer).toEqual([{ kind: 'merge.done', batch: { windowMs: 3_600_000, max: 20 } }]);
     expect(ROLE_DEFAULT_TRIGGERS.moa.map((t) => t.kind)).toEqual(['schedule.fired', 'bot.budget_exhausted']);
   });

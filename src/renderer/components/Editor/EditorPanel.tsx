@@ -1,5 +1,6 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useT } from '../../hooks/useT';
+import { renderBrainMarkdownWhole } from '../shared/BrainMarkdown';
 
 interface EditorPanelProps {
   filePath: string;
@@ -15,6 +16,11 @@ async function readFileContent(filePath: string): Promise<string | null> {
   } catch {
     return null;
   }
+}
+
+/** Files the View mode draws as markdown instead of raw text. */
+export function isMarkdownPath(p: string): boolean {
+  return /\.(md|markdown|mdx)$/i.test(p);
 }
 
 /** Shorten a path for display (show last 2-3 segments) */
@@ -34,6 +40,15 @@ export default function EditorPanel({ filePath, isActive, surfaceId }: EditorPan
   const [editContent, setEditContent] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
+  const isMarkdown = isMarkdownPath(filePath);
+  // null when the file is not markdown or is too long for the renderer's
+  // block budget: View then shows the raw text rather than a cut document.
+  const markdownView = useMemo(
+    () => (isMarkdown && content !== null
+      ? renderBrainMarkdownWhole(content, { links: true, githubHtml: true, richCode: true })
+      : null),
+    [isMarkdown, content],
+  );
   const fileName = filePath.split(/[/\\]/).pop() || filePath;
 
   // Load file content
@@ -177,9 +192,18 @@ export default function EditorPanel({ filePath, isActive, surfaceId }: EditorPan
           </div>
         )}
         {!loading && !error && !editing && (
-          <pre className="p-3 text-[var(--text-main)] text-xs font-mono whitespace-pre-wrap break-words leading-relaxed select-text">
-            {content}
-          </pre>
+          markdownView ? (
+            <div
+              data-testid="editor-markdown"
+              className="mx-auto max-w-[48rem] p-4 text-[var(--text-main)] text-[13px] leading-relaxed select-text"
+            >
+              {markdownView}
+            </div>
+          ) : (
+            <pre className="p-3 text-[var(--text-main)] text-xs font-mono whitespace-pre-wrap break-words leading-relaxed select-text">
+              {content}
+            </pre>
+          )
         )}
         {!loading && !error && editing && (
           <textarea

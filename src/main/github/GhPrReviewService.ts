@@ -533,6 +533,42 @@ export class GhPrReviewService {
     });
   }
 
+  /** The PRs from `branch` merged into `base` (newest first, at most
+   *  `limit`): the task gate's evidence that a bot task's work landed.
+   *  `--head` also matches a fork's PR with the same branch name, so each
+   *  carries its `cross` flag for the caller to drop. Never cached. */
+  mergedOfBranch(repoPath: string, key: string, branch: string, base: string, limit = 20): Promise<PrReviewRead<Array<{ pr: number; base: string; headSha: string; cross: boolean }>>> {
+    return this.read(async () => {
+      const { host } = this.repo(key);
+      for (const ref of [branch, base]) if (!ref || ref.startsWith('-')) throw new Error(`not a branch name: ${ref}`);
+      const out = await this.gh(host, [
+        'pr', 'list', '--repo', key, '--head', branch, '--base', base, '--state', 'merged',
+        '--json', 'number,baseRefName,headRefOid,isCrossRepository', '--limit', String(limit),
+      ], repoPath);
+      const raw = JSON.parse(out) as unknown;
+      if (!Array.isArray(raw)) return [];
+      return raw.flatMap((r) => {
+        const o = r as Record<string, unknown>;
+        return typeof o.number === 'number' && typeof o.baseRefName === 'string' && typeof o.headRefOid === 'string'
+          // Unreadable reads as a fork: the cautious side.
+          ? [{ pr: o.number, base: o.baseRefName, headSha: o.headRefOid, cross: o.isCrossRepository !== false }]
+          : [];
+      });
+    });
+  }
+
+  /** The repository's default branch on GitHub. Never cached (the caller
+   *  keeps it). */
+  defaultBranch(repoPath: string, key: string): Promise<PrReviewRead<string>> {
+    return this.read(async () => {
+      const { host } = this.repo(key);
+      const out = await this.gh(host, ['repo', 'view', key, '--json', 'defaultBranchRef'], repoPath);
+      const name = str((JSON.parse(out) as { defaultBranchRef?: { name?: unknown } | null } | null)?.defaultBranchRef?.name);
+      if (!name) throw new Error('the repository has no default branch');
+      return name;
+    });
+  }
+
   /** A comment on one line of the diff at the head the person saw. */
   comment(repoPath: string, key: string, number: number, req: PrCommentRequest): Promise<PrWriteResult> {
     return this.write(async () => {

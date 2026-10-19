@@ -252,6 +252,49 @@ describe('planRecoveryPillType — gates that must NOT rewrite', () => {
   });
 });
 
+describe('planAutoResume — Codex panes resume themselves on app start', () => {
+  const binding = { agent: 'codex', cwd: 'C:/git/Heartbound', sessionId: SID };
+
+  it('resumes the exact Codex thread when the binding matches the pane cwd', () => {
+    expect(planAutoResume({ enabled: true, agent: 'codex', binding, paneCwds: ['C:/git/Heartbound'], roleBinding: undefined }))
+      .toBe(`codex resume ${SID}`);
+  });
+
+  it('never types a Claude permission flag on a Codex line', () => {
+    const line = planAutoResume({
+      enabled: true,
+      agent: 'codex',
+      binding: { ...binding, permissionMode: 'acceptEdits' },
+      paneCwds: ['C:/git/Heartbound'],
+      roleBinding: undefined,
+    });
+    expect(line).toBe(`codex resume ${SID}`);
+  });
+
+  it('never types the bypass flag for a role with skipPermissions', () => {
+    expect(planAutoResume({
+      enabled: true, agent: 'codex', binding, paneCwds: ['C:/git/Heartbound'],
+      roleBinding: { agent: 'codex', skipPermissions: true },
+    })).toBe(`codex resume ${SID}`);
+  });
+
+  it('drops the bypass flag from the role args', () => {
+    expect(planAutoResume({
+      enabled: true, agent: 'codex', binding, paneCwds: ['C:/git/Heartbound'],
+      roleBinding: { agent: 'codex', args: '--dangerously-bypass-approvals-and-sandbox' },
+    })).toBe(`codex resume ${SID}`);
+  });
+
+  it('types nothing when the binding belongs to another agent or folder, or the setting is off', () => {
+    expect(planAutoResume({ enabled: true, agent: 'codex', binding: { ...binding, agent: 'claude' }, paneCwds: ['C:/git/Heartbound'], roleBinding: undefined }))
+      .toBeNull();
+    expect(planAutoResume({ enabled: true, agent: 'codex', binding, paneCwds: ['C:/elsewhere'], roleBinding: undefined }))
+      .toBeNull();
+    expect(planAutoResume({ enabled: false, agent: 'codex', binding, paneCwds: ['C:/git/Heartbound'], roleBinding: undefined }))
+      .toBeNull();
+  });
+});
+
 describe('planAutoResume — Claude panes resume themselves on app start', () => {
   const binding = { agent: 'claude', cwd: 'C:/git/wmux', sessionId: SID };
 

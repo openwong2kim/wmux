@@ -8,6 +8,9 @@ import { ROOM_EVENT } from '../shared/room';
 import { BOT_EVENT } from '../shared/bot';
 import { BOT_APPROVAL_IPC } from '../shared/botApproval';
 import { BOT_SECRET_IPC } from '../shared/botSecret';
+import { CONNECTOR_IPC } from '../shared/botConnector';
+import { BOT_SKILL_IPC } from '../shared/botSkill';
+import { BOT_GROUP_IPC } from '../shared/botGroup';
 import type { PaneLabelRejection } from '../shared/paneLabelRules';
 import { CHROME_PANE_IPC, type ChromePaneBindings } from '../shared/chromePaneBinding';
 import {
@@ -16,6 +19,7 @@ import {
   type BrowserPolicyWritePayload,
   type BrowserPolicyGrantsPayload,
   type BrowserPolicyWriteResult,
+  type BrowserPolicyBlockedResult,
 } from '../shared/browserPolicy';
 import type {
   AgySensorInstallResult,
@@ -140,12 +144,18 @@ export interface McpRegisterTargetResult {
 
 
 /** A bot.* call as the operator, with the router's envelope and the
- *  handler's refusal flattened to {ok, message?}. */
-async function factoryBotCall(method: string, params: Record<string, unknown>): Promise<{ ok: boolean; message?: string }> {
+ *  handler's refusal flattened to {ok, message?, code?}: the refusal's code
+ *  (repo_mismatch, no_remote…) lets the renderer tell refusals apart. */
+async function factoryBotCall(method: string, params: Record<string, unknown>): Promise<{ ok: boolean; message?: string; code?: string }> {
   const resp = (await ipcRenderer.invoke(IPC.RPC_INVOKE, method, params)) as { ok?: unknown; result?: unknown; error?: unknown } | null;
   if (!resp || resp.ok !== true) return { ok: false, message: typeof resp?.error === 'string' ? resp.error : 'the bot call failed' };
-  const result = (resp.result ?? {}) as { ok?: unknown; message?: unknown };
-  return result.ok === false ? { ok: false, message: typeof result.message === 'string' ? result.message : 'refused' } : { ok: true };
+  const result = (resp.result ?? {}) as { ok?: unknown; message?: unknown; code?: unknown };
+  if (result.ok !== false) return { ok: true };
+  return {
+    ok: false,
+    message: typeof result.message === 'string' ? result.message : 'refused',
+    ...(typeof result.code === 'string' && result.code ? { code: result.code } : {}),
+  };
 }
 
 const chat: ChatBridgeApi = {
@@ -167,6 +177,7 @@ const chat: ChatBridgeApi = {
   codeBlock: (args) => ipcRenderer.invoke(CHAT_IPC.codeBlock, args),
   send: (args) => ipcRenderer.invoke(CHAT_IPC.send, args),
   interrupt: (args) => ipcRenderer.invoke(CHAT_IPC.interrupt, args),
+  rewind: (args) => ipcRenderer.invoke(CHAT_IPC.rewind, args),
   attachment: (args) => ipcRenderer.invoke(CHAT_IPC.attachment, args),
   openGates: () => ipcRenderer.invoke(CHAT_IPC.openGates),
   onAppend: (callback) => {
@@ -233,7 +244,7 @@ const electronAPI = {
     // wmux.json leaf — `exec` runs the command as the pane's ROOT process and
     // `supervision` arms the daemon's PaneSupervisor (daemon mode only; the
     // local branch ignores them with a one-time warning toast).
-    create: (options?: { shell?: string; cwd?: string; recoveryCwds?: Pick<DeadPaneRecovery, 'spawnCwd' | 'cwd' | 'sourceSessionId'>; cols?: number; rows?: number; workspaceId?: string; surfaceId?: string; env?: Record<string, string>; wslAccountLoginEnvKey?: 'CLAUDE_CONFIG_DIR' | 'CODEX_HOME'; initialCommand?: string; exec?: string; supervision?: { restart: 'on-failure' | 'always'; limit?: { burst?: number; healthyUptimeSec?: number }; restorePermissionMode?: boolean }; fanoutTaskOf?: string; fanoutOrigin?: import('../shared/fanoutOrigin').FanoutOrigin; secretGrant?: string }) =>
+    create: (options?: { shell?: string; cwd?: string; recoveryCwds?: Pick<DeadPaneRecovery, 'spawnCwd' | 'cwd' | 'sourceSessionId'>; cols?: number; rows?: number; workspaceId?: string; surfaceId?: string; env?: Record<string, string>; wslAccountLoginEnvKey?: 'CLAUDE_CONFIG_DIR' | 'CODEX_HOME'; initialCommand?: string; exec?: string; supervision?: { restart: 'on-failure' | 'always'; limit?: { burst?: number; healthyUptimeSec?: number }; restorePermissionMode?: boolean }; fanoutTaskOf?: string; fanoutOrigin?: import('../shared/fanoutOrigin').FanoutOrigin; secretGrant?: string; fanoutLaunch?: { taskId: string; gen: number } }) =>
       ipcRenderer.invoke(IPC.PTY_CREATE, options),
     write: (id: string, data: string) => {
       ipcRenderer.send(IPC.PTY_WRITE, id, data);
@@ -304,7 +315,7 @@ const electronAPI = {
       // rebind a stale ptyId to the surviving session after a reboot.
       // `workspaceId`/`agentName` (#1101): origin identity for the orphaned
       // session list.
-      ipcRenderer.invoke(IPC.PTY_LIST, opts) as Promise<{ id: string; shell: string; surfaceId?: string; createdAt?: string; state?: string; cwd?: string; spawnCwd?: string; workspaceId?: string; agentName?: string; supervision?: { status: 'armed' | 'stopped'; restartCount: number }; resumeAgent?: AgentSlug; resumeBinding?: ResumeBinding; commandRunning?: boolean; agentProcessAlive?: boolean; liveAgent?: AgentSlug }[]>,
+      ipcRenderer.invoke(IPC.PTY_LIST, opts) as Promise<{ id: string; shell: string; surfaceId?: string; createdAt?: string; state?: string; cwd?: string; spawnCwd?: string; workspaceId?: string; agentName?: string; supervision?: { status: 'armed' | 'stopped'; restartCount: number }; resumeAgent?: AgentSlug; resumeAgentOnScreen?: boolean; resumeBinding?: ResumeBinding; commandRunning?: boolean; agentProcessAlive?: boolean; liveAgent?: AgentSlug }[]>,
     // TASK-6 — per-pane agent RAM for the Fleet View cockpit. Given the ptyIds
     // currently shown as cards, returns { [ptyId]: { rss (bytes), image? } } by
     // walking each pane shell's descendant process tree from ONE CIM snapshot.
@@ -397,6 +408,12 @@ const electronAPI = {
       ipcRenderer.on(IPC.PTY_FLUSH_COMPLETE, listener);
       return () => { ipcRenderer.removeListener(IPC.PTY_FLUSH_COMPLETE, listener); };
     },
+    // Main dropped a write for this pty: the bytes never reached its shell.
+    onWriteDropped: (callback: (id: string) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, id: string) => callback(id);
+      ipcRenderer.on(IPC.PTY_WRITE_DROPPED, listener);
+      return () => { ipcRenderer.removeListener(IPC.PTY_WRITE_DROPPED, listener); };
+    },
   },
   // X8 supervision control (renderer-only, pane context menu). `rearm` resets a
   // tripped runaway guard and restarts the pane once; `stop` disarms it. Both
@@ -462,6 +479,9 @@ const electronAPI = {
       ipcRenderer.on(IPC.SYSTEM_RESUMED, listener);
       return () => { ipcRenderer.removeListener(IPC.SYSTEM_RESUMED, listener); };
     },
+    /** Windows: the system asks for reduced motion (Animation effects off).
+     *  False elsewhere, where the media query already says it. */
+    getReducedMotion: () => ipcRenderer.invoke(IPC.SYSTEM_REDUCED_MOTION) as Promise<boolean>,
   },
   settings: {
     getTerminalCore: () => ipcRenderer.invoke(IPC.TERMINAL_CORE_SETTINGS_GET) as Promise<TerminalCoreSettings>,
@@ -712,6 +732,8 @@ const electronAPI = {
       >,
     rename: (args: { id: string; name: string }) =>
       ipcRenderer.invoke(IPC.ACCOUNT_RENAME, args) as Promise<{ ok: boolean }>,
+    setGroup: (args: { id: string; group: string }) =>
+      ipcRenderer.invoke(IPC.ACCOUNT_SET_GROUP, args) as Promise<{ ok: boolean }>,
     remove: (id: string) =>
       ipcRenderer.invoke(IPC.ACCOUNT_REMOVE, { id }) as Promise<{
         ok: boolean;
@@ -722,6 +744,11 @@ const electronAPI = {
     credentialStatus: (args: { vendor: 'claude' | 'codex'; configDir: string }) =>
       ipcRenderer.invoke(IPC.ACCOUNT_CREDENTIAL_STATUS, args) as Promise<
         import('../main/ipc/handlers/account.handler').CredentialStatus
+      >,
+    // Continue the pane's own Claude conversation on another account (same pane).
+    continuePane: (args: { ptyId: string; accountId: string }) =>
+      ipcRenderer.invoke(IPC.ACCOUNT_CONTINUE_PANE, args) as Promise<
+        import('../main/account/continueOnAccount.handler').ContinuePaneResult
       >,
     // M2 — per-account usage (hook-gated, opt-in). usageList() pulls the current
     // cache on mount; usageRefresh(accountId) forces a manual probe (explicit
@@ -880,6 +907,16 @@ const electronAPI = {
         ipcRenderer.invoke(IPC.HOOKS_BRIDGE_INSTALL) as Promise<
           import('../cli/commands/setupHooks').InstallOutcome
         >,
+      // #2404 — Settings' Update: adds only what a newer build expects.
+      update: () =>
+        ipcRenderer.invoke(IPC.HOOKS_BRIDGE_UPDATE) as Promise<
+          import('../cli/commands/setupHooks').UpdateOutcome
+        >,
+      // The same Update for one Claude account folder, named by account id.
+      updateAccount: (accountId: string) =>
+        ipcRenderer.invoke(IPC.HOOKS_BRIDGE_UPDATE_ACCOUNT, accountId) as Promise<
+          import('../cli/commands/setupHooks').UpdateOutcome
+        >,
       allowWorkerTools: () =>
         ipcRenderer.invoke(IPC.HOOKS_BRIDGE_ALLOW_WORKER_TOOLS) as Promise<
           import('../cli/commands/setupHooks').AllowWorkerToolsOutcome
@@ -958,6 +995,10 @@ const electronAPI = {
   browser: {
     registerWebview: (surfaceId: string, webContentsId: number, workspaceId?: string) =>
       ipcRenderer.invoke('browser:register-webview', surfaceId, webContentsId, workspaceId),
+    /** Save the inspector-picked element's on-screen box as a PNG; resolves to
+     *  its path as `ptyId`'s shell sees it, or null when it could not be taken. */
+    captureElement: (webContentsId: number, rect: unknown, ptyId?: string): Promise<string | null> =>
+      ipcRenderer.invoke('browser:capture-element', webContentsId, rect, ptyId),
     // #517 lightweight mode signals
     setVisibility: (surfaceId: string, visible: boolean) =>
       ipcRenderer.invoke('browser:set-visibility', surfaceId, visible),
@@ -1010,6 +1051,9 @@ const electronAPI = {
       // Revoke standing consent ("Always on this pane"); revocation only.
       grants: (payload: BrowserPolicyGrantsPayload): Promise<BrowserPolicyWriteResult> =>
         ipcRenderer.invoke(BROWSER_POLICY_IPC.grants, payload),
+      // Hosts the pane's protected proxy refused recently (#2063); read only.
+      blocked: (workspaceId: string, paneId: string): Promise<BrowserPolicyBlockedResult> =>
+        ipcRenderer.invoke(BROWSER_POLICY_IPC.blocked, { workspaceId, paneId }),
     },
     onDiscarded: (callback: (surfaceId: string) => void) => {
       const listener = (_e: Electron.IpcRendererEvent, surfaceId: string) => callback(surfaceId);
@@ -1152,8 +1196,15 @@ const electronAPI = {
       ipcRenderer.invoke(IPC.ROOM_READ, params) as Promise<import('../shared/room').RoomReadResult | import('../main/ipc/handlers/room.handler').RoomRefusal>,
     threads: (workspaceId: string) =>
       ipcRenderer.invoke(IPC.ROOM_THREADS, { workspaceId }) as Promise<{ ok: true; workspaceId: string; threads: import('../shared/room').ThreadSummary[] } | import('../main/ipc/handlers/room.handler').RoomRefusal>,
-    post: (params: { workspaceId: string; threadId?: import('../shared/room').ThreadId; title: string; body?: string; mentions?: string[]; to?: import('../shared/bot').BotRole; replyTo?: string; clientPostId?: string }) =>
-      ipcRenderer.invoke(IPC.ROOM_POST, { ...params, kind: 'human' }) as Promise<import('../main/ipc/handlers/room.handler').RoomPostResponse>,
+    // `attachmentPaths`: photos the owner picked, pasted or dropped (main
+    // copies them into the room's store before it posts).
+    post: (params: { workspaceId: string; threadId?: import('../shared/room').ThreadId; title: string; body?: string; mentions?: string[]; to?: import('../shared/bot').BotRole; replyTo?: string; clientPostId?: string; attachmentPaths?: string[] }) =>
+      ipcRenderer.invoke(IPC.ROOM_POST, { ...params, kind: 'human' }) as Promise<import('../main/ipc/handlers/room.handler').RoomPostResponse | import('../main/ipc/handlers/room.handler').RoomPhotoRefusal>,
+    /** A photo of an owner card, as a data URL. */
+    attachment: (params: { workspaceId: string; attachmentId: string }) =>
+      ipcRenderer.invoke(IPC.ROOM_ATTACHMENT, params) as Promise<{ ok: true; dataUrl: string; width?: number; height?: number } | { ok: false }>,
+    /** The composer's photo picker: absolute paths, empty when cancelled. */
+    pickAttachments: () => ipcRenderer.invoke(IPC.ROOM_PICK_ATTACHMENTS) as Promise<string[] | { ok: false }>,
     resolve: (params: import('../shared/room').RoomResolveParams) =>
       ipcRenderer.invoke(IPC.ROOM_RESOLVE, params) as Promise<{ ok: true; card: import('../shared/room').RoomCard } | import('../main/ipc/handlers/room.handler').RoomRefusal>,
     decision: (workspaceId: string, cardId: string) =>
@@ -1182,6 +1233,10 @@ const electronAPI = {
       factoryBotCall(`bot.${action}`, { botId }),
     updateBot: (botId: string, patch: Record<string, unknown>) =>
       factoryBotCall('bot.update', { botId, patch }),
+    // Remove a bot: its work is stopped, its routines go, its history stays
+    // (`hue`: its colour slot, kept for the cards it wrote).
+    removeBot: (botId: string, hue?: number) =>
+      factoryBotCall('bot.remove', { botId, ...(hue !== undefined ? { hue } : {}) }),
     createBot: (req: import('../shared/botCreate').FactoryBotCreateRequest) =>
       ipcRenderer.invoke(IPC.FACTORY_BOT_CREATE, req) as Promise<import('../shared/botCreate').FactoryBotCreateResult>,
     createBotTeam: (req: import('../shared/botCreate').FactoryBotCreateTeamRequest) =>
@@ -1199,6 +1254,9 @@ const electronAPI = {
     stopAll: () => ipcRenderer.invoke(IPC.FACTORY_STOP_ALL) as Promise<import('../main/factory/factoryStop').FactoryStopResult>,
     stopBot: (botId: string) =>
       ipcRenderer.invoke(IPC.FACTORY_STOP_BOT, { botId }) as Promise<import('../main/factory/factoryStop').FactoryStopResult>,
+    // The owner's stop of one bot task's worker (its task cancelled).
+    stopTask: (taskId: string) =>
+      ipcRenderer.invoke(IPC.FACTORY_STOP_TASK, { taskId }) as Promise<import('../main/factory/factoryStop').FactoryStopResult>,
     // The owner resumes the stopped worker of an ended bot task.
     resumeWorker: (taskId: string) =>
       ipcRenderer.invoke(IPC.FACTORY_WORKER_RESUME, { taskId }) as Promise<import('../main/factory/workerReclaim').WorkerResumeResult>,
@@ -1209,6 +1267,13 @@ const electronAPI = {
     // active workspace); rejects when no tab could be opened. Poll
     // factoryEngineReadiness to see it land.
     factoryEngineLogin: () => ipcRenderer.invoke(IPC.FACTORY_ENGINE_LOGIN) as Promise<void>,
+    // The engines a bot's workers may run on, and which are installed here.
+    workerAgents: () =>
+      ipcRenderer.invoke(IPC.FACTORY_WORKER_AGENTS) as Promise<import('../shared/botWorkerAgent').BotWorkerAgentOption[]>,
+    taskFolderUsage: () =>
+      ipcRenderer.invoke(IPC.FACTORY_TASK_FOLDERS_USAGE) as Promise<import('../shared/botTask').FactoryTaskFolderUsage | null>,
+    cleanTaskFolders: () =>
+      ipcRenderer.invoke(IPC.FACTORY_TASK_FOLDERS_CLEAN) as Promise<import('../shared/botTask').FactoryTaskFolderCleanResult>,
     // Every bot's routines, read-only (routine.list as the operator).
     listRoutines: async (): Promise<import('../shared/botRoutine').BotRoutine[]> => {
       const resp = (await ipcRenderer.invoke(IPC.RPC_INVOKE, 'routine.list', {})) as { ok?: unknown; result?: { ok?: unknown; routines?: unknown } } | null;
@@ -1225,6 +1290,38 @@ const electronAPI = {
       delete: (name: string) => ipcRenderer.invoke(BOT_SECRET_IPC.delete, { name }) as Promise<{ ok: boolean }>,
       login: (req: { workspaceId: string; cardId: string; done?: boolean }) =>
         ipcRenderer.invoke(BOT_SECRET_IPC.login, req) as Promise<import('../renderer/components/Room/botSecrets').LoginResult>,
+    },
+    // The connection library (renderer/components/Room/botConnectors.ts):
+    // a key's value goes out once, in save; nothing reads one back.
+    connectors: {
+      list: () => ipcRenderer.invoke(CONNECTOR_IPC.list) as Promise<import('../shared/botConnector').ConnectorListResult>,
+      save: (req: import('../shared/botConnector').ConnectorSaveRequest) =>
+        ipcRenderer.invoke(CONNECTOR_IPC.save, req) as Promise<import('../shared/botConnector').ConnectorSaveResult>,
+      remove: (req: import('../shared/botConnector').ConnectorRemoveRequest) =>
+        ipcRenderer.invoke(CONNECTOR_IPC.remove, req) as Promise<import('../shared/botConnector').ConnectorRemoveResult>,
+      setOffForBot: (req: { id: string; botId: string; off: boolean }) =>
+        ipcRenderer.invoke(CONNECTOR_IPC.setOffForBot, req) as Promise<import('../shared/botConnector').ConnectorSimpleResult>,
+      setEnabled: (req: { id: string; enabled: boolean }) =>
+        ipcRenderer.invoke(CONNECTOR_IPC.setEnabled, req) as Promise<import('../shared/botConnector').ConnectorSimpleResult>,
+    },
+    // A bot's skills (renderer/components/Bots/BotSkills.tsx): the list and
+    // the owner's Archive; changes arrive as BOT_EVENT {type:'skills-changed'}.
+    skills: {
+      list: (botId: string) => ipcRenderer.invoke(BOT_SKILL_IPC.list, { botId }) as Promise<import('../shared/botSkill').SkillListResult>,
+      archive: (req: import('../shared/botSkill').SkillArchiveRequest) =>
+        ipcRenderer.invoke(BOT_SKILL_IPC.archive, req) as Promise<import('../shared/botSkill').SkillArchiveResult>,
+    },
+    // The owner's group chats (shared/botGroup.ts); changes arrive as
+    // BOT_EVENT {type:'groups-changed'}.
+    groups: {
+      list: (req?: { workspaceId?: string }) =>
+        ipcRenderer.invoke(BOT_GROUP_IPC.list, req ?? {}) as Promise<import('../shared/botGroup').BotGroupListResult>,
+      create: (req: import('../shared/botGroup').BotGroupCreateRequest) =>
+        ipcRenderer.invoke(BOT_GROUP_IPC.create, req) as Promise<import('../shared/botGroup').BotGroupResult>,
+      update: (req: import('../shared/botGroup').BotGroupUpdateRequest) =>
+        ipcRenderer.invoke(BOT_GROUP_IPC.update, req) as Promise<import('../shared/botGroup').BotGroupResult>,
+      remove: (id: string) =>
+        ipcRenderer.invoke(BOT_GROUP_IPC.remove, { id }) as Promise<import('../shared/botGroup').BotGroupRemoveResult>,
     },
   },
   // Owner approvals of what bots ask for (main/ipc/handlers/approval.handler.ts:
@@ -1249,6 +1346,17 @@ const electronAPI = {
       const listener = (_event: Electron.IpcRendererEvent, ids: string[]) => callback(ids);
       ipcRenderer.on(IPC.WORK_LINK_CHANGED, listener);
       return () => { ipcRenderer.removeListener(IPC.WORK_LINK_CHANGED, listener); };
+    },
+  },
+  // Fleet's Plan card: Claude's plan dialogs and the answer to one (main window only).
+  planApprovals: {
+    list: () => ipcRenderer.invoke(IPC.PLAN_APPROVALS_LIST) as Promise<import('../shared/planApproval').PlanApprovalView[]>,
+    answer: (request: import('../shared/planApproval').PlanApprovalAnswerRequest) =>
+      ipcRenderer.invoke(IPC.PLAN_APPROVALS_ANSWER, request) as Promise<import('../shared/planApproval').PlanApprovalAnswerResult>,
+    onChanged: (callback: () => void) => {
+      const listener = () => callback();
+      ipcRenderer.on(IPC.PLAN_APPROVALS_CHANGED, listener);
+      return () => { ipcRenderer.removeListener(IPC.PLAN_APPROVALS_CHANGED, listener); };
     },
   },
   // Moa's track record: the weekly retro card and its settings.
@@ -1363,7 +1471,6 @@ const electronAPI = {
       ipcRenderer.invoke(IPC.WORKTASK_DELETE_PHONE_BRANCH, { repo, branch }) as Promise<{ ok: boolean; error?: string }>,
   },
   dialog: {
-    pickFile: () => ipcRenderer.invoke(IPC.DIALOG_PICK_FILE) as Promise<string[]>,
     pickFolder: () => ipcRenderer.invoke(IPC.DIALOG_PICK_FOLDER) as Promise<string[]>,
   },
   // Project config (X5 wmux.json). `get` resolves a workspace cwd to the
@@ -1655,6 +1762,12 @@ const electronAPI = {
     // Main validates the payload and no-ops on non-Windows platforms.
     setTitleBarOverlay: (opts: { color: string; symbolColor: string }) => {
       ipcRenderer.send(IPC.WINDOW_SET_TITLEBAR_OVERLAY, opts);
+    },
+    // macOS window glass: match the app's appearance to the theme so the
+    // material behind the window has the theme's tone, or 'system' with glass
+    // off. Main validates it.
+    setAppearance: (appearance: 'dark' | 'light' | 'system') => {
+      ipcRenderer.send(IPC.WINDOW_SET_APPEARANCE, appearance);
     },
     // Whole-interface zoom (#822): push the persisted factor to main, which
     // scales the renderer and re-places the native chrome. The overlay color

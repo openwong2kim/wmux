@@ -1,0 +1,284 @@
+{
+  "pass": {
+    "schemaVersion": 1,
+    "scenario": "connector-codex-worker-launch",
+    "run": 1,
+    "workspaceId": "ws-716be637-af93-47f2-93cd-a0d494276396",
+    "botKeys": {
+      "lead": "bot-a968a8d7"
+    },
+    "harnessErrors": [],
+    "sources": {
+      "facts": {
+        "present": true,
+        "ok": true,
+        "errors": 0
+      },
+      "wakes": {
+        "present": true,
+        "ok": true,
+        "errors": 0
+      },
+      "handoffs": {
+        "present": false,
+        "ok": false,
+        "errors": 0
+      },
+      "bots": {
+        "present": true,
+        "ok": true,
+        "errors": 0
+      },
+      "settings": {
+        "present": true,
+        "ok": true,
+        "errors": 0
+      },
+      "repoWatch": {
+        "present": false,
+        "ok": false,
+        "errors": 0
+      },
+      "ledger": {
+        "present": true,
+        "ok": true,
+        "errors": 0
+      },
+      "verdicts": {
+        "present": false,
+        "ok": false,
+        "errors": 0
+      },
+      "effects": {
+        "present": false,
+        "ok": false,
+        "errors": 0
+      },
+      "approvals": {
+        "present": false,
+        "ok": false,
+        "errors": 0
+      },
+      "approvalRules": {
+        "present": false,
+        "ok": false,
+        "errors": 0
+      },
+      "decisions": {
+        "present": false,
+        "ok": false,
+        "errors": 0
+      },
+      "routines": {
+        "present": false,
+        "ok": false,
+        "errors": 0
+      },
+      "cards": {
+        "present": true,
+        "ok": true,
+        "errors": 0
+      },
+      "workers": {
+        "present": true,
+        "ok": true,
+        "errors": 0
+      },
+      "ghCalls": {
+        "present": true,
+        "ok": true,
+        "errors": 0
+      }
+    },
+    "records": [
+      {
+        "label": "connector",
+        "result": {
+          "ok": true,
+          "connector": {
+            "name": "probe",
+            "purpose": "a probe server for the smoke",
+            "transport": "stdio",
+            "stdio": {
+              "command": "/usr/bin/true",
+              "args": [],
+              "env": {}
+            },
+            "secrets": [],
+            "tools": {
+              "mode": "listed",
+              "allowed": [
+                "probe_read"
+              ]
+            },
+            "scope": {
+              "kind": "all"
+            },
+            "offFor": [],
+            "enabled": true,
+            "id": "con-c4565e01",
+            "createdAt": 1792022243660,
+            "updatedAt": 1792022243660,
+            "missingKeys": []
+          }
+        }
+      }
+    ],
+    "ledger": [
+      {
+        "schemaVersion": 1,
+        "id": "wtask-mv8rs15i-esv3d1dh",
+        "taskWorkspaceId": "ws-ee612e0a-b9c6-4fac-a7cf-f4d223f97cb0",
+        "ownerWorkspaceId": "ws-716be637-af93-47f2-93cd-a0d494276396",
+        "title": "probe the connection",
+        "status": "completed",
+        "rev": 4,
+        "updatedAt": 1792022252764,
+        "updatedBy": {
+          "kind": "brain",
+          "workspaceId": "ws-716be637-af93-47f2-93cd-a0d494276396"
+        },
+        "dispatch": {
+          "origin": {
+            "kind": "bot",
+            "botId": "bot-a968a8d7",
+            "tainted": true
+          },
+          "preset": "default",
+          "connectors": [
+            "probe"
+          ]
+        },
+        "summary": "fake worker: review_requested for wtask-mv8rs15i-esv3d1dh",
+        "gate": {
+          "exitCode": 0,
+          "tail": "\n> factory-smoke-app@1.0.0 lint\n> node -e \"process.exit(0)\"\n\n\n> factory-smoke-app@1.0.0 test\n> node -e \"process.exit(0)\"\n\n",
+          "at": 1792022252764,
+          "command": "npm test",
+          "recordedBy": "system",
+          "headSha": "47f76333a905235f1416938249cd5c646f396f1e"
+        }
+      }
+    ],
+    "workers": [
+      {
+        "at": 1792022250665,
+        "pid": 91186,
+        "cwd": "/home/owner/.wmux-verify-f9187d75/worktrees/c5fb6c54a6cd/probe-the-connection-esv3d1dh",
+        "event": "start",
+        "taskId": "wtask-mv8rs15i-esv3d1dh",
+        "agent": "codex",
+        "rulesPresent": true,
+        "strict": false,
+        "mcpServers": null,
+        "allow": [],
+        "codexMcp": {
+          "featuresOff": [
+            "daemon_auto_start",
+            "apps",
+            "plugins"
+          ],
+          "serversOff": [
+            "openaiDeveloperDocs",
+            "node_repl"
+          ],
+          "tables": [
+            {
+              "name": "probe",
+              "enabledTools": "\"probe_read\""
+            }
+          ]
+        }
+      },
+      {
+        "at": 1792022252389,
+        "pid": 91186,
+        "cwd": "/home/owner/.wmux-verify-f9187d75/worktrees/c5fb6c54a6cd/probe-the-connection-esv3d1dh",
+        "event": "ledger_update",
+        "ok": true,
+        "text": "{\n  \"ok\": true,\n  \"entry\": {\n    \"schemaVersion\": 1,\n    \"id\": \"wtask-mv8rs15i-esv3d1dh\",\n    \"taskWorkspaceId\": \"ws-ee612e0a-b9c6-4fac-a7cf-f4d223f97cb0\",\n    \"ownerWorkspaceId\": \"ws-716be637-af93-47f2-93cd-a0d494276396\",\n    \"title\": \"probe the connection\",\n    \"status\": \"review_requested\",\n    \"rev\": 2,\n    \"updatedAt\": 1792022252386,\n    \"updatedBy\": {\n      \"kind\": \"worker\",\n      \"workspaceId\": \"ws-ee612e0a-b9c6-4fac-a7cf-f4d223f97cb0\"\n    },\n    \"dispatch\": {\n      \"origin\": {\n        \"kind\": \"bot\",\n        \"botId\": \"bot-a968a8d7\",\n        \"tainted\": true\n      },\n      \"preset\": \"default\",\n      \"connectors\": [\n        \"probe\"\n      ]\n    },\n    \"summary\": \"fake worker: review_requested for wtask-mv8rs15i-esv3d1dh\"\n  }\n}"
+      }
+    ]
+  },
+  "fail": [
+    {
+      "why": "the worker ran on claude, not codex",
+      "failing": [
+        "worker_ran_codex"
+      ],
+      "mutate": [
+        {
+          "op": "set",
+          "path": "workers.0.agent",
+          "value": "claude"
+        }
+      ]
+    },
+    {
+      "why": "the ChatGPT apps stayed on",
+      "failing": [
+        "apps_and_plugins_off"
+      ],
+      "mutate": [
+        {
+          "op": "set",
+          "path": "workers.0.codexMcp.featuresOff",
+          "value": [
+            "plugins"
+          ]
+        }
+      ]
+    },
+    {
+      "why": "the wmux server was turned off with the owner's others",
+      "failing": [
+        "wmux_kept"
+      ],
+      "mutate": [
+        {
+          "op": "push",
+          "path": "workers.0.codexMcp.serversOff",
+          "value": "wmux"
+        }
+      ]
+    },
+    {
+      "why": "a listed-tools connection was loaded whole",
+      "failing": [
+        "connection_listed_tools_only"
+      ],
+      "mutate": [
+        {
+          "op": "set",
+          "path": "workers.0.codexMcp.tables.0.enabledTools",
+          "value": null
+        }
+      ]
+    },
+    {
+      "why": "the task with a connection is recorded as clean",
+      "failing": [
+        "task_tainted"
+      ],
+      "mutate": [
+        {
+          "op": "set",
+          "path": "ledger.0.dispatch.origin.tainted",
+          "value": false
+        }
+      ]
+    },
+    {
+      "why": "the ledger does not name the connection",
+      "failing": [
+        "task_names_connection"
+      ],
+      "mutate": [
+        {
+          "op": "remove",
+          "path": "ledger.0.dispatch.connectors"
+        }
+      ]
+    }
+  ]
+}

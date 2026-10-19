@@ -167,6 +167,25 @@ describe('FactoryTab › Add bot', () => {
     expect(create).toHaveBeenCalledWith({ workspaceId: WS, name: '대장', template: 'developer', job: 'Lead the team and merge what is ready.' });
   });
 
+  it('a pasted command or path is not a name: Add stays off and the form says why', async () => {
+    const { botPort, settingsPort, pickFolder, create } = setup({ ok: true, bot: row('bot-00000001').bot });
+    await render(createElement(FactoryTab, { settingsPort, botPort, pickFolder }));
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="factory-add-bot-open"]')!.click());
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="factory-add-bot-folder"]')!.click());
+    const submit = () => container.querySelector<HTMLButtonElement>('[data-testid="factory-add-bot-submit"]')!;
+    const blocked = () => container.querySelector('[data-testid="factory-add-bot-blocked"]')?.textContent ?? null;
+    await typeInto('factory-add-bot-name', 'cd /private/tmp/wmux-e2e && npm run dev');
+    expect(submit().disabled).toBe(true);
+    expect(blocked()).toBe(en['settings.factory.addBotBadName'].replace('{max}', '64'));
+    await act(async () => submit().click());
+    expect(create).not.toHaveBeenCalled();
+    await typeInto('factory-add-bot-name', 'C:\\Users\\dev');
+    expect(blocked()).toBe(en['settings.factory.addBotBadName'].replace('{max}', '64'));
+    await typeInto('factory-add-bot-name', "O'Brien-2, 리뷰 봇");
+    expect(blocked()).toBeNull();
+    expect(submit().disabled).toBe(false);
+  });
+
   it('shows main\'s refusal and keeps the form', async () => {
     const { botPort, settingsPort, pickFolder } = setup({ ok: false, code: 'not_a_repo', message: '/src/app is not a git checkout.' });
     await render(createElement(FactoryTab, { settingsPort, botPort, pickFolder }));
@@ -386,7 +405,8 @@ describe('Add team', () => {
         issue: 'botsPage.teamName.issue', reviewer: 'botsPage.teamName.reviewer',
       },
     });
-    expect(onDone).toHaveBeenCalledWith(lead);
+    // The lead opens; the whole team goes along (the page offers a group chat with it).
+    expect(onDone).toHaveBeenCalledWith(lead, [lead]);
   });
 
   it('is not offered in a workspace that already has a coordinator; with the bots off it asks first', async () => {
@@ -395,7 +415,7 @@ describe('Add team', () => {
     await render(createElement(AddBotForm, { port, t, rows: withLead, workspaces: [{ id: WS, name: 'App' }], defaultWorkspaceId: WS, onDone: () => undefined }));
     expect(q('factory-add-team')).toBeNull();
     const off = teamPort([]);
-    const turnOn = vi.fn(async () => true);
+    const turnOn = vi.fn(async () => 'on' as const);
     await render(createElement(AddBotForm, { port: off.port, t, rows: [], workspaces: [{ id: WS, name: 'App' }], defaultWorkspaceId: WS, onDone: () => undefined, botsOff: true, turnOn }));
     await act(async () => q<HTMLButtonElement>('factory-add-team')!.click());
     expect(off.createTeam).not.toHaveBeenCalled();

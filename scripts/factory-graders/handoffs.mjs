@@ -151,6 +151,35 @@ export function leadTaskSystemGate(snap, expect) {
   ];
 }
 
+/** research-no-repo-closes: a repo-less researcher's research task runs in
+ *  a scratch folder under the bot's data folder and its report completes it
+ *  without a gate; the researcher takes one turn after it. */
+export function researchNoRepoCloses(snap, expect) {
+  const id = botId(snap, expect.researcher);
+  const bot = arr(snap.bots).find((b) => b.id === id) ?? null;
+  const tasks = arr(snap.ledger).filter((e) => e.dispatch?.origin?.botId === id);
+  const task = tasks.length === 1 ? tasks[0] : null;
+  const reports = arr(snap.workers).filter((e) => e.event === 'ledger_update');
+  const folders = arr(snap.workers).filter((e) => e.event === 'start').map((e) => String(e.cwd ?? ''));
+  const taskWakes = wakesOf(snap, expect.researcher).filter((w) => w.reason?.kind === 'facts' && arr(w.reason.factIds).some((f) => /^task\./.test(f)));
+  const settles = stubTools(snap, expect.researcher, 'ledger_update');
+  const closed = arr(snap.cards).filter((c) => c.actor?.kind === 'system' && c.title === 'Research reported: task completed');
+  return [
+    criterion('bot_has_no_repo', !!bot && !bot.repo, bot ? `repo ${bot.repo ? 'set' : 'none'}` : 'no bot'),
+    criterion('one_research_task', !!task && task.dispatch?.preset === 'research', `${tasks.length} task(s), preset ${task?.dispatch?.preset ?? '-'}`),
+    criterion('scratch_folder_under_bot', folders.length >= 1 && folders.every((f) => f.includes(`/factory/bots/${id}/research/`)), folders.join(', ') || 'no worker start'),
+    criterion('worker_reported', reports.length >= 1, `${reports.length} worker report(s)`),
+    criterion('completed_without_gate', task?.status === 'completed' && !task.gate && task.updatedBy?.kind === 'brain' && !String(task.summary ?? '').includes('[forced:'),
+      task ? `${task.status} by ${task.updatedBy?.kind}, gate ${task.gate ? 'recorded' : 'none'}` : 'no task'),
+    criterion('research_is_tainted', task?.dispatch?.origin?.tainted === true, String(task?.dispatch?.origin?.tainted)),
+    criterion('woken_once_after_report', taskWakes.length === 1 && taskWakes[0].state === 'done', taskWakes.map((w) => `${arr(w.reason.factIds).join('+')}:${w.state}`).join(', ') || 'no task wake'),
+    criterion('bot_did_not_settle', settles.length === 0, `${settles.length} ledger_update call(s) by the bot`),
+    criterion('closed_card', closed.length === 1, `${closed.length} card(s)`),
+    // Reclaim found the worker in its scratch folder and stopped its agent.
+    criterion('worker_reclaimed', arr(snap.cards).some((c) => c.actor?.kind === 'system' && String(c.title ?? '').startsWith('Worker done')), 'no "Worker done" card'),
+  ];
+}
+
 /** chain-survives-worker: a result sent from a task wake answers the
  *  dispatch the task was started for, in the owner's run. */
 export function chainSurvivesWorker(snap, expect) {
@@ -263,5 +292,31 @@ export function teamRelayOwnerTagsResearcher(snap, expect) {
       && wakesOf(snap, expect.lead).some((w) => w.reason?.kind === 'handoff' && w.reason.handoffId === last.id && w.state === 'done'),
       last ? `${last.status} ${last.runId}` : 'no last result'),
     criterion('no_refusals', hs.every((h) => h.status !== 'refused'), hs.filter((h) => h.status === 'refused').map((h) => `${h.kind}:${h.refusal?.code}`).join(', ') || 'none'),
+  ];
+}
+
+/** bot-worker-codex-engine: the owner's engine pick for a bot puts its
+ *  fan-out worker on codex, on main's guarded line, and that worker reports
+ *  through its own wmux tools (its pane's identity). */
+export function botWorkerCodexEngine(snap, expect) {
+  const leadId = botId(snap, expect.lead);
+  const lead = arr(snap.bots).find((b) => b.id === leadId) ?? null;
+  const tasks = arr(snap.ledger).filter((e) => e.dispatch?.origin?.botId === leadId);
+  const task = tasks.length === 1 ? tasks[0] : null;
+  // The worker of the lead's task: its start names the task.
+  const starts = arr(snap.workers).filter((e) => e.event === 'start' && task && e.taskId === task.id);
+  const start = starts.length === 1 ? starts[0] : null;
+  const args = arr(start?.args);
+  const after = (flag) => { const i = args.indexOf(flag); return i >= 0 ? args[i + 1] : undefined; };
+  // Its reports: the same process (the worker's own MCP calls).
+  const reports = arr(snap.workers).filter((e) => e.event === 'ledger_update' && start && e.pid === start.pid);
+  return [
+    criterion('engine_set_in_profile', lead?.workerAgent?.agent === 'codex', JSON.stringify(lead?.workerAgent ?? null)),
+    criterion('one_task', !!task, `${tasks.length} lead task(s)`),
+    criterion('worker_ran_codex', start?.agent === 'codex', starts.map((s) => s.agent).join(', ') || 'no worker start for the task'),
+    criterion('rules_file_in_place', start?.rulesPresent === true, String(start?.rulesPresent)),
+    criterion('guarded_line', after('-a') === 'never' && after('-s') === 'workspace-write' && !!start && after('-C') === start.cwd && args.includes('--')
+      && !args.some((a) => /danger-full-access|--yolo|--dangerously/.test(a)), args.slice(0, 16).join(' ').slice(0, 300)),
+    criterion('reported_as_itself', reports.length >= 1 && reports.every((r) => r.ok === true), reports.map((r) => `${r.ok}:${String(r.text ?? '').slice(0, 80)}`).join(' | ') || 'no report from the worker'),
   ];
 }

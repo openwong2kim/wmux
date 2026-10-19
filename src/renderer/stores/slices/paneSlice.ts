@@ -212,6 +212,12 @@ export interface PaneSlice {
   // per-turn workspace snapshot (deckBrain.buildWorkspaceContextSummary).
   paneRole: Record<string, string>;
   setPaneRole: (paneId: string, role: string | undefined) => void;
+  /**
+   * Mute or unmute notifications from one pane (PaneLeaf.notificationsMuted).
+   * Finds the leaf in the layout or the stash; `workspaceId` defaults to the
+   * active workspace. Unmuting removes the key so session.json stays clean.
+   */
+  setPaneNotificationsMuted: (paneId: string, muted: boolean, workspaceId?: string) => void;
   // X1: per-surface listening ports keyed by ptyId. Main emits ports per PTY
   // (PID-tree scoped); the workspace-level sidebar value is the UNION over
   // the workspace's surfaces, computed at write time in
@@ -749,6 +755,20 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
       delete state.paneRole[paneId];
     }
   }),
+
+  setPaneNotificationsMuted: (paneId, muted, workspaceId) => {
+    let changed = false;
+    set((state: StoreState) => {
+      const ws = state.workspaces.find((w) => w.id === (workspaceId ?? state.activeWorkspaceId));
+      const leaf = ws && getWorkspaceLeafPanes(ws).find((l) => l.id === paneId);
+      if (!leaf || (leaf.notificationsMuted === true) === muted) return;
+      if (muted) leaf.notificationsMuted = true;
+      else delete leaf.notificationsMuted;
+      changed = true;
+    });
+    // A mute set just before quitting must not wait for the 5s autosave.
+    if (changed) saveSessionNow();
+  },
 
   surfacePorts: {},
 

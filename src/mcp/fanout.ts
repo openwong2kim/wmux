@@ -141,6 +141,13 @@ const FANOUT_START_SHAPE = {
     .max(BOT_SECRET_LIMITS.NAMES_PER_FANOUT)
     .optional()
     .describe('Bot: stored secret names (secret_list) each worker gets as env vars.'),
+  connectors: z
+    .array(z.string().regex(/^[a-z][a-z0-9-]{0,30}[a-z0-9]$/))
+    .min(1)
+    .max(8)
+    .optional()
+    .describe('Bot: connections (MCP servers) from your wake prompt that each worker loads; their output is outside text, so the task is never merged without the owner.'),
+  thread_id: z.string().min(1).max(240).optional().describe('Bot: the room thread the tasks report in (default: your wake\'s).'),
 };
 
 /** Register the fan-out tool on the given MCP server. */
@@ -169,7 +176,7 @@ export function registerFanOutTools(server: McpServer, deps: FanOutToolDeps): vo
       'Repository and owning workspace come from your verified identity — fan-out runs in YOUR repository, the tasks are owned by you, and it is refused without that identity. A preset may skip the worktree: each task then writes into its own folder. ' +
       'An accept or the completed poll may carry `warnings` (also printed as WARNING lines): the fan-out ran, but something will stop its reports reaching you or the tasks did not start from a fresh origin commit — act on it.',
     FANOUT_START_SHAPE,
-    async ({ idempotency_key, titles, prompt, task_prompts, roles, preset, agents, files, depends_on, cancel_pending, checkout, secret_names }) => {
+    async ({ idempotency_key, titles, prompt, task_prompts, roles, preset, agents, files, depends_on, cancel_pending, checkout, secret_names, connectors, thread_id }) => {
       const params: Record<string, unknown> = {
         idempotencyKey: idempotency_key,
         titles,
@@ -186,6 +193,8 @@ export function registerFanOutTools(server: McpServer, deps: FanOutToolDeps): vo
         params['checkout'] = { sha: checkout.sha, ...(checkout.fetch_ref !== undefined ? { fetchRef: checkout.fetch_ref } : {}) };
       }
       if (secret_names !== undefined) params['secretNames'] = secret_names;
+      if (connectors !== undefined) params['connectors'] = connectors;
+      if (thread_id !== undefined) params['threadId'] = thread_id;
       // The verified ptyId is the whole identity basis for this call — the
       // handler resolves it to the owning workspace and refuses without it.
       // Resolve identity FIRST: the walk that produces that ptyId is a side

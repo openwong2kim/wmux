@@ -9,7 +9,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vites
 // one that treats WMUX_DIR as the mounted drive — what is under test is the
 // wiring: translation before the sandbox, the sandbox unchanged after it, and
 // the agent's spelling in what the tool says back. The translator itself is
-// covered by wslPaths.test.ts, and the download test below runs it for real.
+// covered by wslPaths.os.test.ts, and the download test below runs it for real.
 const WMUX_DIR = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-upload-wsl-')));
 const UPLOADS = path.join(WMUX_DIR, 'uploads');
 const AGENT_DRIVE = '/mnt/c';

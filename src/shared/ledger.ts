@@ -66,13 +66,22 @@ export interface LedgerGateResult {
    *  nothing to fail — `completed` is allowed (the exitCode is 0) and the
    *  ledger says why, in `command: 'none'` and in the tail. The other two skips
    *  (`deps_missing`, `gate_unavailable`) are NOT recorded at all: there a gate
-   *  existed and the environment stopped it, which is a human's problem. */
-  skipped?: 'no_gate_command';
+   *  existed and the environment stopped it, which is a human's problem.
+   *  `no_changes` (written by the bot task gate, factory/taskGate.ts): the
+   *  task's branch has no commits beyond the commit it started from, so a gate
+   *  would grade that base and not the task. Recorded the same way, so the
+   *  bot that reads the report can settle it `completed` or `failed`; the
+   *  system completes nothing on it (isSystemGatePass refuses any skip). */
+  skipped?: 'no_gate_command' | 'no_changes';
   /** The worktree HEAD the gate ran on: read by the gate runner before the
    *  run and again after it, and set only when both reads agree. Absent when
    *  HEAD could not be read or moved during the run — such a result is not
    *  evidence about any commit. */
   headSha?: string;
+  /** On a `no_changes` record only, stamped by the ledger itself: the
+   *  report it was recorded for (LedgerEntry.reportedAtRev then). `completed`
+   *  takes the record only while the row's current report is that one. */
+  reportRev?: number;
 }
 
 export interface LedgerEntry {
@@ -98,6 +107,23 @@ export interface LedgerEntry {
    *  which preset, and on what checkout. Absent on rows registered before it
    *  existed. */
   dispatch?: LedgerDispatch;
+  /** What ended a `completed` row when it was not a gate: `merge` = main
+   *  completed it because the pull request from its branch was merged
+   *  (factory/taskGate.ts). Set only by main's own in-process ledger write
+   *  (LedgerUpdateInput.completion; the ledger RPC never forwards it), never
+   *  by a worker or a brain. Absent otherwise. */
+  completion?: LedgerCompletion;
+  /** The rev of the row's latest move to review_requested (its current
+   *  report), written by the ledger on that move. Absent on rows not
+   *  reported since it existed. */
+  reportedAtRev?: number;
+}
+
+/** See LedgerEntry.completion. */
+export interface LedgerCompletion {
+  source: 'merge';
+  /** The merged pull request's number. */
+  pr: number;
 }
 
 /** See LedgerEntry.dispatch. */
@@ -109,18 +135,68 @@ export interface LedgerDispatch {
   origin: { kind: string; botId?: string; tainted?: boolean };
   /** The fan-out preset name; absent when none. */
   preset?: string;
+  /** A code task: the repository it was started in (normalized
+   *  `host/owner/repo`; a bot's from its profile at dispatch, an owner's from
+   *  the caller repository's origin). A merged pull request ends only a bot
+   *  task of its own repository, and task_push and task_fetch work only with
+   *  it; absent (a row written before it existed, a research task, an origin
+   *  with no `host/owner/repo`) = no merge ends it, and task_fetch refuses a
+   *  task that is not a bot's. */
+  repoKey?: string;
+  /** A code task: the git dir of the repository its worktree was created in
+   *  (the repository's common dir, resolved), recorded by main at dispatch.
+   *  task_push and task_fetch run git on this path and never on one found
+   *  through the worktree; absent (a row written before it existed, a task
+   *  with no worktree) = a bot's task uses its profile's repository, any
+   *  other task is refused. */
+  gitCommonDir?: string;
+  /** A code task: the git dir of the task's own worktree
+   *  (`<gitCommonDir>/worktrees/<id>`), recorded by main at dispatch. task_push
+   *  reads HEAD by this path; absent = derived from the common dir's
+   *  `worktrees/` for a row written before it existed. */
+  gitWorktreeDir?: string;
+  /** A code task: origin's address as the repository config held it
+   *  (shared/originPin.ts), recorded by main at dispatch, or at the first
+   *  task_push or task_fetch for a row written before it existed. task_push
+   *  and task_fetch work only with an origin that matches it. */
+  originPin?: string;
   /** Set when the task worktree was created detached at a commit. */
   checkout?: { sha: string; detached: true };
-  /** A bot's task: the room thread of the wake that started it, read from
-   *  main's own wake state at dispatch (never from the bot's arguments). The
-   *  task's wakes and cards go there; absent (no thread, `general`, or a row
-   *  written before it existed) = the task's own `task:<id>` thread. */
+  /** The commit main created the task's branch from (origin's default branch
+   *  at fan-out), a full commit id; absent for a detached checkout, a task
+   *  with no worktree, one that fell back to the owner's HEAD, and rows
+   *  written before it existed. The no-changes check measures against it. */
+  baseOid?: string;
+  /** A bot's task: the room thread the bot named when it started it (checked
+   *  like a post's), else the PR it checks out, else the thread of the wake
+   *  that started it (main's own wake state at dispatch). The task's wakes
+   *  and cards go there; absent (no thread, `general`, or a row written
+   *  before it existed) = the task's own `task:<id>` thread. */
   threadId?: string;
-  /** A bot's task: the handoff the wake that started it delivered (a
-   *  dispatch it was given), read from main's own wake state at dispatch.
-   *  The task's wakes answer that handoff: a `result` sent from them, with no
-   *  replyTo, is that handoff's result. Absent = none. */
+  /** A bot's task: the handoff it belongs to, settled by main at dispatch
+   *  (HandoffRouter.taskHandoff): the one the wake that started it
+   *  delivered, unless the task's subject (named thread, checked-out PR) is
+   *  another open dispatch's to this bot. The task's wakes answer that
+   *  handoff: a `result` sent from them, with no replyTo, is that handoff's
+   *  result. Absent = none. */
   handoffId?: string;
+  /** A bot's task: the connections its worker was started with (names). */
+  connectors?: string[];
+  /** Written by the WorkTask reconciler for a task it mirrored with no row,
+   *  from the task's lineage stamp: only `origin` is known. The fan-out's own
+   *  register, when it lands later, replaces it with the full record. */
+  reconciled?: true;
+}
+
+/** The bot fan-out preset of a research task: no repository, no worktree,
+ *  no code (main/worktask/botFanoutPresets.ts). */
+export const RESEARCH_PRESET = 'research';
+
+/** Whether a row is a bot's research task: main wrote its dispatch with the
+ *  research preset. Such a task changes no code, so there is no gate to run
+ *  and its report completes it without one (TaskLedger.update). Pure. */
+export function isResearchDispatch(d: LedgerDispatch | undefined): boolean {
+  return d?.origin.kind === 'bot' && typeof d.origin.botId === 'string' && d.origin.botId.length > 0 && d.preset === RESEARCH_PRESET;
 }
 
 // Lifecycle rules the writer enforces (stated here so the three consumers

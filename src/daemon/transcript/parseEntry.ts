@@ -15,7 +15,8 @@
 //   user / assistant                → the conversation (see below)
 //   pr-link                         → meta (`pr_link`)
 //   system, last-prompt, mode, permission-mode, attachment,
-//   file-history-snapshot, ai-title, queue-operation, anything unknown → []
+//   file-history-snapshot, ai-title, queue-operation, api-request-blob
+//   (2.1.301), anything unknown → []
 //
 // The `[]` default is why a future Claude Code entry type cannot leak into the
 // chat as if the agent had said it.
@@ -119,8 +120,12 @@ export function parseTranscriptLineDetailed(
     }
     return empty;
   }
-  const isUser = type === 'user' || role === 'user';
-  const isAssistant = type === 'assistant' || role === 'assistant';
+  // The role only stands in for a missing `type`. A typed entry of another
+  // class can still carry a `message` — Claude Code 2.1.301 logs every API
+  // request as `api-request-blob` with the last message inside it, and reading
+  // that as a turn showed each prompt and tool call twice.
+  const isUser = type === 'user' || (!type && role === 'user');
+  const isAssistant = type === 'assistant' || (!type && role === 'assistant');
   if (!isUser && !isAssistant) return empty;
 
   // A sidechain entry belongs to a SUBAGENT's thread, not to the pane's

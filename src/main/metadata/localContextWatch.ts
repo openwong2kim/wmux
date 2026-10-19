@@ -7,6 +7,7 @@ import {
   getCwd,
   updateBranch,
   removeBranch,
+  markBranchAbsent,
   updateWorktree,
   updatePorts,
 } from '../ipc/handlers/metadata.handler';
@@ -31,10 +32,13 @@ export function startLocalContextWatch(
   const portWatcher = new PortWatcher(() => ptyManager.getActiveSessionPids());
   const branchByPty = new Map<string, string>();
 
-  gitWatcher.on('git', (payload: { sessionId: string; branch: string | null; isWorktree: boolean }) => {
+  gitWatcher.on('git', (payload: { sessionId: string; branch: string | null; isWorktree: boolean; absent?: true }) => {
     const ptyId = payload.sessionId;
     const branch = payload.branch ?? '';
+    // Same three answers as WorkspaceContextRouter: branch, known absent
+    // (the poll spawns no git), unknown (the poll may ask git).
     if (branch) updateBranch(ptyId, branch);
+    else if (payload.absent) markBranchAbsent(ptyId);
     else removeBranch(ptyId);
     updateWorktree(ptyId, payload.isWorktree);
     branchByPty.set(ptyId, branch);

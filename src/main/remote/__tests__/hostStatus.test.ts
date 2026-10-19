@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { HostStatusProber, combineHostStatus } from '../hostStatus';
 import type { RemoteHost } from '../../../shared/remoteHosts';
+import { deliberateSleep } from '../../../test-utils/waitFor';
 
 const host = (id: string, token = `tok-${id}`): RemoteHost => ({
   id,
@@ -59,7 +60,7 @@ describe('HostStatusProber', () => {
     const fetchImpl = vi.fn(async () => {
       inFlight += 1;
       peak = Math.max(peak, inFlight);
-      await new Promise((r) => setTimeout(r, 5));
+      await deliberateSleep(5, 'stub latency: overlapping fetches would show in the peak count');
       inFlight -= 1;
       return answer(200);
     });

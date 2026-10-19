@@ -811,10 +811,11 @@ export function registerWorktaskRpc(router: RpcRouter, deps: WorktaskRpcDeps): v
     if (!task.worktreePath || !fileExists(task.worktreePath)) {
       // Nothing on disk to remove — close-only, exactly as the IPC path
       // reconciles an unmaterialized or already-deleted task.
-      return deps.close.closeTask({ taskId: task.id, verifiedWorkspaceId: workspaceId });
+      return deps.close.closeTask({ taskId: task.id, verifiedWorkspaceId: workspaceId, ...(task.worktreePath ? { leftoverPath: task.worktreePath } : {}) });
     }
     const repo = await resolveRepoInfo(task.worktreePath);
-    if (!repo) return deps.close.closeTask({ taskId: task.id, verifiedWorkspaceId: workspaceId });
+    // #2388: a folder an earlier close left half removed is finished first.
+    if (!repo) return deps.close.closeTask({ taskId: task.id, verifiedWorkspaceId: workspaceId, leftoverPath: task.worktreePath });
     return deps.close.closeTask({
       taskId: task.id,
       verifiedWorkspaceId: workspaceId,

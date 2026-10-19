@@ -6,6 +6,7 @@
 // as injected deps.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { deliberateSleep } from '../../../../test-utils/waitFor';
 
 const ipcHandlers = new Map<string, (...args: unknown[]) => unknown>();
 const ipcListeners = new Map<string, (...args: unknown[]) => unknown>();
@@ -1654,7 +1655,7 @@ describe('remote.handler — paneAttach refuses a needs-HTTPS host up front', ()
     const sender = { id: 1, isDestroyed: () => false, send: vi.fn(), on: vi.fn(), once: vi.fn(), removeListener: vi.fn() };
     const res = await getHandler(IPC.REMOTE_PANE_ATTACH)({ sender }, 'lan', 's1');
     expect(res).toMatchObject({ ok: false, reason: 'insecure-transport' });
-    await new Promise((r) => setTimeout(r, 20));
+    await deliberateSleep(20, 'negative: an insecure transport sends nothing');
     expect(fetchImpl).not.toHaveBeenCalled();
     expect(sender.send).not.toHaveBeenCalled();
   });

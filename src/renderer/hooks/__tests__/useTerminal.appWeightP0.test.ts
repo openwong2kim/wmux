@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
-import { createPtyDispatcher } from '../useTerminal';
+import { __resetPtyDispatchersForTests, createPtyDispatcher, onDaemonConnected } from '../useTerminal';
 
 // App-weight P0 (plans/app-weight-reduction-2026-07-16.md) — the three
 // renderer fixes the eng review made mandatory for the retention default flip.
@@ -55,6 +55,44 @@ describe('P0-3 — single-dispatch PTY fan-out (source wiring)', () => {
     expect((src.match(/ptyDataDispatcher\.register\(/g) ?? []).length).toBe(2);
     expect((src.match(/ptyExitDispatcher\.register\(/g) ?? []).length).toBe(2);
     expect((src.match(/ptyFlushDispatcher\.register\(/g) ?? []).length).toBe(2);
+  });
+
+  it('daemon:connected and pty restarts are one raw subscription each, not one per terminal', () => {
+    expect((src.match(/window\.electronAPI\.daemon\.onConnected\(/g) ?? []).length).toBe(1);
+    expect((src.match(/window\.electronAPI\.pty\.onRestarted\(/g) ?? []).length).toBe(1);
+    expect((src.match(/onDaemonConnected\(\(\) =>/g) ?? []).length).toBe(2);
+    expect((src.match(/ptyRestartedDispatcher\.register\(/g) ?? []).length).toBe(1);
+  });
+});
+
+describe('daemon:connected fan-out (MaxListenersExceededWarning past ten panes)', () => {
+  it('twelve terminals share one IPC listener; each gets the event and its unsubscribe removes only it', () => {
+    const raw: { emit: () => void } = { emit: () => undefined };
+    const detach = vi.fn();
+    const onConnected = vi.fn((cb: () => void) => {
+      raw.emit = cb;
+      return detach;
+    });
+    const emit = () => raw.emit();
+    vi.stubGlobal('window', { electronAPI: { daemon: { onConnected } } });
+    __resetPtyDispatchersForTests();
+    try {
+      const seen = new Array(12).fill(0);
+      const offs = seen.map((_, k) => onDaemonConnected(() => { seen[k] += 1; }));
+      expect(onConnected).toHaveBeenCalledTimes(1);
+      emit();
+      expect(seen).toEqual(new Array(12).fill(1));
+      offs[3]();
+      emit();
+      expect(seen[3]).toBe(1);
+      expect(seen.filter((n) => n === 2)).toHaveLength(11);
+      for (const off of offs) off();
+      emit();
+      expect(seen[0]).toBe(2);
+    } finally {
+      __resetPtyDispatchersForTests();
+      vi.unstubAllGlobals();
+    }
   });
 });
 

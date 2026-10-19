@@ -254,15 +254,6 @@ export function IconClock({ size = 14 }: { size?: number }) {
   );
 }
 
-/** Paperclip — attach file. Replaces the ＋ glyph on the toolbar attach button. */
-export function IconPaperclip({ size = 14 }: { size?: number }) {
-  return (
-    <Icon size={size}>
-      <path d="M10.7 6.2 L6 10.9 a2.4 2.4 0 0 1 -3.4 -3.4 L7.6 2.5 a1.6 1.6 0 0 1 2.3 2.3 L5.2 9.6 a0.8 0.8 0 0 1 -1.2 -1.2 L8.3 4" />
-    </Icon>
-  );
-}
-
 /** Folder — file explorer. Replaces the 📁 emoji. */
 export function IconFolder({ size = 14 }: { size?: number }) {
   return (
@@ -287,20 +278,6 @@ export function IconFile({ size = 14 }: { size?: number }) {
   );
 }
 
-/** File tree — a folder with two entries hanging off it: the file tree
- *  column's titlebar toggle. */
-export function IconFileTree({ size = 14 }: { size?: number }) {
-  return (
-    <Icon size={size}>
-      <path d="M1.8 2 H4 L4.8 3 H7 V5.4 H1.8 Z" />
-      <path d="M3.4 5.4 V11 H6.4" />
-      <line x1="3.4" y1="8.2" x2="6.4" y2="8.2" />
-      <rect x="7.2" y="6.9" width="5" height="2.6" rx="0.6" />
-      <rect x="7.2" y="9.7" width="5" height="2.6" rx="0.6" />
-    </Icon>
-  );
-}
-
 /** Sort — the sidebar's order menu: two arrows, down and up. */
 export function IconSort({ size = 14 }: { size?: number }) {
   return (
@@ -321,6 +298,17 @@ export function IconBell({ size = 14 }: { size?: number }) {
     <Icon size={size}>
       <path d="M7 1.6a3.4 3.4 0 0 0-3.4 3.4c0 3.2-1.1 4.2-1.1 4.2h9c0 0-1.1-1-1.1-4.2A3.4 3.4 0 0 0 7 1.6Z" />
       <path d="M5.9 11.4a1.2 1.2 0 0 0 2.2 0" />
+    </Icon>
+  );
+}
+
+/** Bell with a slash — a pane whose notifications are muted. */
+export function IconBellOff({ size = 14 }: { size?: number }) {
+  return (
+    <Icon size={size}>
+      <path d="M7 1.6a3.4 3.4 0 0 0-3.4 3.4c0 3.2-1.1 4.2-1.1 4.2h9c0 0-1.1-1-1.1-4.2A3.4 3.4 0 0 0 7 1.6Z" />
+      <path d="M5.9 11.4a1.2 1.2 0 0 0 2.2 0" />
+      <line x1="1.8" y1="1.8" x2="12.2" y2="12.2" />
     </Icon>
   );
 }
@@ -549,6 +537,17 @@ export function IconPin({ size = 14 }: { size?: number }) {
     <Icon size={size}>
       <path d="M5 2.2 H9 L8.4 5.6 L10.4 7.6 H3.6 L5.6 5.6 Z" />
       <line x1="7" y1="7.6" x2="7" y2="11.8" />
+    </Icon>
+  );
+}
+
+/** A picture: a frame, a sun and a hill — attaching a photo. */
+export function IconImage({ size = 14 }: { size?: number }) {
+  return (
+    <Icon size={size}>
+      <rect x="1.8" y="2.6" width="10.4" height="8.8" rx="1.6" />
+      <circle cx="5" cy="5.6" r="1" />
+      <path d="M2.2 10.2 L5.6 7.2 L8 9.2 L9.6 7.8 L11.8 9.8" />
     </Icon>
   );
 }

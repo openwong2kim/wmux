@@ -32,8 +32,13 @@ import { TEAM_TEMPLATES, type FactoryBotCreateResult, type FactoryBotCreateTeamR
 import { BOTS_MAX } from './botStore';
 import type { WakeItem } from '../../shared/wake';
 import { normalizeRepoKey } from '../../shared/repoKey';
+import { getWmuxHomeDir } from '../../shared/constants';
+import { dmThreadId } from '../../shared/room';
 import { git as runGit, type GitResult } from '../git/git';
+import { dubiousOwnership, dubiousOwnershipMessage } from '../git/dubiousOwnership';
 import { parseRemoteKey } from '../github/PrProvider';
+import { readRawOriginUrl } from '../worktask/workerGit';
+import { isOriginPin } from '../../shared/originPin';
 import type { WorkspaceListEntry } from '../../shared/workspaceMirror';
 import type { BotStore } from './botStore';
 import type { WakeEnqueueInput } from './wakeQueue';
@@ -44,8 +49,19 @@ export interface BotRepoDeps {
 }
 
 export type BotRepoResult =
-  | { ok: true; repo: { repoKey: string; repoPath: string } }
-  | { ok: false; code: 'invalid_argument' | 'not_a_repo' | 'no_remote'; message: string };
+  | { ok: true; repo: { repoKey: string; repoPath: string; originPin?: string } }
+  | { ok: false; code: 'invalid_argument' | 'not_a_repo' | 'repo_untrusted' | 'no_remote'; message: string };
+
+/** A repository inside WSL (`\\wsl.localhost\<distro>\…`, `\\wsl$\…`): its bot's
+ *  task worktrees on Windows are checked by their own path too, so the hint
+ *  names wmux's task folder root. */
+/** What a linked repository needs, said with every no_remote refusal. */
+const NEEDS_HOSTED_ORIGIN =
+  'A bot pushes its work to origin and opens pull requests there, so origin must be an https or ssh address of an owner/repo repository, such as https://github.com/<owner>/<repo>.git. A local path or a bare repository on disk cannot be used. Set it with "git remote set-url origin <address>" (or "git remote add origin <address>") and choose the folder again.';
+
+function taskFoldersFor(folder: string): string | undefined {
+  return /^(?:\\\\|\/\/)(?:wsl\$|wsl\.localhost)[\\/]/i.test(folder) ? path.join(getWmuxHomeDir(), 'worktrees') : undefined;
+}
 
 /** The bot repo a picked folder names: its git root and origin's repo key. */
 export async function resolveBotRepo(folder: unknown, deps: BotRepoDeps = {}): Promise<BotRepoResult> {
@@ -56,7 +72,13 @@ export async function resolveBotRepo(folder: unknown, deps: BotRepoDeps = {}): P
   const realpath = deps.realpath ?? ((p: string) => fs.realpathSync(p));
   const top = await git(['rev-parse', '--show-toplevel'], folder).catch(() => null);
   const root = top && top.code === 0 ? top.stdout.trim() : '';
-  if (!root) return { ok: false, code: 'not_a_repo', message: `${folder} is not a git checkout.` };
+  if (!root) {
+    // A repository git will not open (another user's: every WSL one, for Git
+    // for Windows) is not "not a checkout": say what to run.
+    const untrusted = top ? dubiousOwnership(top.stderr, folder) : null;
+    if (untrusted) return { ok: false, code: 'repo_untrusted', message: dubiousOwnershipMessage(folder, untrusted.command, taskFoldersFor(folder)) };
+    return { ok: false, code: 'not_a_repo', message: `${folder} is not a git checkout.` };
+  }
   let repoPath = root;
   try {
     repoPath = realpath(root);
@@ -65,15 +87,26 @@ export async function resolveBotRepo(folder: unknown, deps: BotRepoDeps = {}): P
   }
   const remote = await git(['remote', 'get-url', 'origin'], repoPath).catch(() => null);
   const url = remote && remote.code === 0 ? remote.stdout.trim() : '';
-  if (!url) return { ok: false, code: 'no_remote', message: `${repoPath} has no origin remote.` };
-  const repoKey = normalizeRepoKey(parseRemoteKey(url));
-  if (!repoKey) return { ok: false, code: 'no_remote', message: `The origin remote of ${repoPath} does not name an owner/repo repository.` };
-  return { ok: true, repo: { repoKey, repoPath } };
+  const untrustedRoot = !url && remote ? dubiousOwnership(remote.stderr, repoPath) : null;
+  if (untrustedRoot) return { ok: false, code: 'repo_untrusted', message: dubiousOwnershipMessage(repoPath, untrustedRoot.command, taskFoldersFor(repoPath)) };
+  // The refusal says what a bot needs, not only what is missing: the folder
+  // picker is the only way to link a repository, so the person has to learn
+  // here that the fix is in the repository's own remote (#2296 E2E, F1).
+  if (!url) return { ok: false, code: 'no_remote', message: `${repoPath} has no origin remote. ${NEEDS_HOSTED_ORIGIN}` };
+  // The key and the pin come from origin's URL as the repository config holds
+  // it, the address task_push compares against (an owner's `url.*.insteadOf`
+  // is applied by get-url only); get-url's when that one names no repository.
+  const raw = await readRawOriginUrl(git, repoPath);
+  const rawKey = raw === null ? null : normalizeRepoKey(parseRemoteKey(raw));
+  const repoKey = rawKey ?? normalizeRepoKey(parseRemoteKey(url));
+  if (!repoKey) return { ok: false, code: 'no_remote', message: `The origin remote of ${repoPath} is not an owner/repo address on a git host. ${NEEDS_HOSTED_ORIGIN}` };
+  const originPin = rawKey && isOriginPin(raw) ? raw : null;
+  return { ok: true, repo: { repoKey, repoPath, ...(originPin ? { originPin } : {}) } };
 }
 
 /** The repo a workspace's bots already work on (its oldest repo bot's), or
  *  null when none has one. */
-export function workspaceRepo(store: BotStore, workspaceId: unknown): { repoKey: string; repoPath: string } | null {
+export function workspaceRepo(store: BotStore, workspaceId: unknown): { repoKey: string; repoPath: string; originPin?: string } | null {
   if (typeof workspaceId !== 'string' || workspaceId.length === 0) return null;
   const withRepo = store.list({ workspaceId }).filter((b) => b.repo).sort((a, b) => a.createdAt - b.createdAt);
   return withRepo[0]?.repo ? { ...withRepo[0].repo } : null;
@@ -87,7 +120,7 @@ export async function createBotFromFolder(
 ): Promise<FactoryBotCreateResult> {
   if (!store) return { ok: false, code: 'not_started', message: 'The factory is not running.' };
   const r = req && typeof req === 'object' && !Array.isArray(req) ? (req as Record<string, unknown>) : {};
-  let repo: { repoKey: string; repoPath: string } | undefined;
+  let repo: { repoKey: string; repoPath: string; originPin?: string } | undefined;
   if (r.repoFolder === undefined) {
     // No folder: the workspace's repo, when one of its bots has one.
     const inherited = workspaceRepo(store, r.workspaceId);
@@ -119,6 +152,33 @@ export async function createBotFromFolder(
     ...(r.avatar !== undefined ? { avatar: r.avatar } : {}),
   });
   return created.ok ? { ok: true, bot: created.bot } : created;
+}
+
+/** The repo patch for an existing bot's "Change" (the Bots page profile):
+ *  the folder resolved exactly as "Add bot" resolves it (git root, origin's
+ *  owner/repo, never a local-path origin), refused when another bot of its
+ *  workspace works on another repository (a workspace works on one). */
+export async function botRepoFromFolder(
+  store: BotStore,
+  botId: string,
+  folder: unknown,
+  deps: BotRepoDeps = {},
+): Promise<BotRepoResult | { ok: false; code: 'not_found' | 'repo_mismatch'; message: string }> {
+  const bot = store.get(botId);
+  if (!bot) return { ok: false, code: 'not_found', message: `no bot ${botId}` };
+  const resolved = await resolveBotRepo(folder, deps);
+  if (!resolved.ok) return resolved;
+  // Read after the await: a bot changed meanwhile counts.
+  const others = store.list({ workspaceId: bot.workspaceId }).filter((b) => b.id !== botId && b.repo).sort((a, b) => a.createdAt - b.createdAt);
+  const current = others[0]?.repo;
+  if (current && current.repoKey !== resolved.repo.repoKey) {
+    return {
+      ok: false,
+      code: 'repo_mismatch',
+      message: `This workspace's other bots work on ${current.repoKey} (${current.repoPath}); ${resolved.repo.repoPath} is ${resolved.repo.repoKey}. A workspace works on one repository.`,
+    };
+  }
+  return resolved;
 }
 
 /** "Add team": the five team bots, coordinator first, one repository. */
@@ -186,14 +246,16 @@ export async function createTeamFromFolder(
 }
 
 /** Queue a new bot's first wake (`intro`: greet the owner, ask what to do
- *  with choices). Deduped by its reason key, so it runs once. Returns the
- *  item, or null when nothing was queued (no queue yet, bot disabled). */
+ *  with choices), pinned to the bot's 1:1 thread: the greeting is said to
+ *  the owner there, never in the room's General. Deduped by its reason key,
+ *  so it runs once. Returns the item, or null when nothing was queued (no
+ *  queue yet, bot disabled). */
 export function greetNewBot(
   bot: Pick<BotProfile, 'id' | 'workspaceId' | 'enabled'>,
   enqueue: ((input: WakeEnqueueInput) => WakeItem | null) | null,
 ): WakeItem | null {
   if (!bot.enabled || !enqueue) return null;
-  return enqueue({ botId: bot.id, workspaceId: bot.workspaceId, reason: { kind: 'intro' }, priority: 0 });
+  return enqueue({ botId: bot.id, workspaceId: bot.workspaceId, reason: { kind: 'intro' }, priority: 0, threadId: dmThreadId(bot.id) });
 }
 
 export interface BotRepoSuggestDeps extends BotRepoDeps {

@@ -231,6 +231,12 @@ export const th = {
   'pane.browserPolicyGrantSensitive': "ข้อมูลการลงชื่อเข้าใช้ของ {host}",
   'pane.browserPolicyRevoke': "เพิกถอน",
   'pane.browserPolicyRevokeFailed': "เพิกถอนไม่ได้",
+  'pane.browserPolicySummaryBlocked': "บล็อกล่าสุด {count} รายการ",
+  'pane.browserPolicyRecentlyBlocked': "บล็อกล่าสุด",
+  'pane.browserPolicyRecentlyBlockedDesc': "เว็บไซต์ที่ Chrome ของบานนี้ถูกปฏิเสธตั้งแต่เริ่มทำงานหรือตั้งแต่การป้องกันเปลี่ยนครั้งล่าสุด อนุญาตจะเพิ่มเว็บไซต์นั้นลงในรายการที่อนุญาตทันที",
+  'pane.browserPolicyRecentlyBlockedCount': "บล็อก {count} ครั้ง",
+  'pane.browserPolicyAllow': "อนุญาต",
+  'pane.browserPolicyAllowHost': "อนุญาต {host}",
   'browser.private': "ส่วนตัว",
   'browser.privateTab': "แท็บส่วนตัว",
   'browser.privateTooltip': "แท็บส่วนตัว: คุกกี้และข้อมูลเว็บไซต์อยู่ในหน่วยความจำเท่านั้น และจะถูกลบเมื่อปิดแท็บส่วนตัวสุดท้าย ไม่กู้คืนหลังรีสตาร์ท",
@@ -530,9 +536,6 @@ export const th = {
 
   // ─── Agent toolbar: fan-out / broadcast buttons ───
   'toolbar.fanOut': 'Multi Task',
-  'toolbar.broadcast': 'Broadcast',
-  'toolbar.broadcastTooltip': 'Broadcast — ข้อความเดียวกันไปยังทุกพาเนลเทอร์มินัลในพื้นที่ทำงานปัจจุบัน (ไม่มีการแยก)',
-  'toolbar.broadcastPrompt': 'Broadcast — ส่งไปยังทุกพาเนลเทอร์มินัลในพื้นที่ทำงานปัจจุบัน',
 
   // ─── Fan-out dialog (1 prompt → N isolated tasks) ───
   'fanout.title': 'Fan-out — 1 พรอมต์ → N งานที่แยกจากกัน',
@@ -653,4 +656,21 @@ export const th = {
   'git.secret.more': "(และอีก {count} รายการ)",
   'settings.secretGuard': "บล็อกรหัสผ่านและคีย์ในคอมมิต พุช และ PR",
   'settings.secretGuardDesc': "คอมมิต พุช และสร้าง PR ในหน้า Git รวมถึงการรับงานเข้ามา จะปฏิเสธการเปลี่ยนแปลงที่เพิ่มไฟล์ .env คีย์ส่วนตัว หรือ API key",
+  'botsPage.consent.title': "บอตทำงานด้วยแพ็กเกจ Claude ของคุณ",
+  'botsPage.consent.engine': "บอตแต่ละตัวคิดด้วย Claude Agent SDK โดยลงชื่อเข้าใช้ด้วยการล็อกอิน Claude Code บนคอมพิวเตอร์เครื่องนี้ ผู้ช่วยงานของบอตจะรัน Claude Code ของคุณเอง",
+  'botsPage.consent.usage': "การใช้งานของบอตจะนับรวมในขีดจำกัดของแพ็กเกจ Claude ของคุณ",
+  'botsPage.consent.terms': "ข้อกำหนดของ Anthropic สำหรับแพ็กเกจของคุณมีผลบังคับใช้ wmux จะไม่อ่าน จัดเก็บ หรือส่งข้อมูลการลงชื่อเข้าใช้ Claude ของคุณ",
+  'botsPage.consent.turnOn': "เปิดบอต",
+  'botsPage.consent.cancel': "ยกเลิก",
+  'botsPage.consent.keepOn': "เปิดบอตต่อไป",
+  'botsPage.consent.turnOff': "ปิดบอต",
+
+  // Task cleanup list: detail line per scan entry
+  'worktask.cleanup.detail.unmaterialized': 'ไม่ได้สร้าง worktree สำหรับงานนี้ — ปิดงาน หรือสร้าง worktree ใหม่',
+  'worktask.cleanup.detail.preserved': 'เก็บงานที่ยังไม่ได้ commit ไว้ — ตรวจดู diff แล้ว commit หรือเปิด PR หรือทิ้งไป',
+  'worktask.cleanup.detail.phone': 'สร้างจากโทรศัพท์ (branch phone/…) — ตรวจสอบ แล้วลบออกเมื่อไม่ต้องการแล้ว',
+  'worktask.cleanup.detail.orphanEnded': 'ไม่มีงานที่เปิดอยู่เชื่อมโยงกับรายการนี้ (งานจบแล้วหรือถูกล้างไปแล้ว) — ตรวจสอบ แล้วลบ',
+  'worktask.cleanup.detail.orphanUnlinked': 'ไม่มีงานหรือบันทึกงานเชื่อมโยงกับรายการนี้ — ตรวจสอบ แล้วลบ',
+  'worktask.cleanup.detail.orphanMeta': 'เหลือเพียงบันทึกงาน ไม่มี worktree (การลบถูกขัดจังหวะ) — ตรวจสอบ แล้วลบ',
+  'worktask.cleanup.detail.diskMissing': 'ไม่พบ worktree บนดิสก์ (ถูกลบนอก wmux หรือเกิดการขัดข้อง) — ปิดงานเพื่อเคลียร์',
 } as const;

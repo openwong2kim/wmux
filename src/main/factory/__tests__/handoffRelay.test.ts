@@ -13,6 +13,7 @@ import type { WakeItem } from '../../../shared/wake';
 import { HANDOFFS_FILENAME, HandoffRouter, deckDecisionPort, forwardKey } from '../handoffRouter';
 import { RoomWriter, writeFactCards, type FactoryRoomPorts, type RunningWake } from '../roomWriter';
 import { WakeTaint } from '../wakeTaint';
+import { startedThreadsOf, threadKey, type WorkOwner } from '../../../shared/botsWork';
 
 let dir = '';
 let now = 1_000_000_000_000;
@@ -51,7 +52,7 @@ interface Rig {
   run: (b: BotProfile, reason: WakeItem['reason'], extra?: Partial<RunningWake>, thread?: ThreadId | null) => void;
 }
 
-async function rig(bots: BotProfile[], opts: { slowFlush?: boolean } = {}): Promise<Rig> {
+async function rig(bots: BotProfile[], opts: { slowFlush?: boolean; groups?: FactoryRoomPorts['groups'] } = {}): Promise<Rig> {
   const facts: Fact[] = [];
   const subs = new Set<(f: Fact) => void>();
   const rooms = new RoomWriter({ dir: path.join(dir, 'factory', 'rooms'), now: () => now, log: () => undefined });
@@ -88,6 +89,7 @@ async function rig(bots: BotProfile[], opts: { slowFlush?: boolean } = {}): Prom
     },
     currentWakeThread: (botId) => running.get(botId)?.thread ?? null,
     currentWake: (botId) => running.get(botId)?.wake ?? null,
+    ...(opts.groups ? { groups: opts.groups } : {}),
   };
   factLog.subscribe((f) => void writeFactCards(rooms, f, directory));
   let router: HandoffRouter | null = null;
@@ -202,7 +204,7 @@ describe('a coordinator\'s relay', () => {
     // General gets one pointer to the thread.
     const pointers = r.rooms.read('ws1', { threadId: 'general' }).cards.filter((c) => c.refs?.threadId === root.threadId);
     expect(pointers).toHaveLength(1);
-    expect(pointers[0]).toMatchObject({ kind: 'fact', title: 'Finished: Ship the widget', refs: { handoffId: res3.ok ? res3.handoffId : '' } });
+    expect(pointers[0]).toMatchObject({ kind: 'fact', title: 'Finished: Ship the widget', notice: { code: 'thread.finished', args: { title: 'Ship the widget' } }, refs: { handoffId: res3.ok ? res3.handoffId : '' } });
     expect(pointers[0].body).toBeUndefined();
   });
 
@@ -514,6 +516,85 @@ describe('the General card that points at a coordinator\'s thread', () => {
     expect(r.rooms.read('ws1', { threadId: ownThread }).cards[0].refs?.requestCardId).toBeUndefined();
   });
 
+  it('work the lead takes on in its 1:1 opens its own thread, linked to the owner\'s 1:1 message; its pointer lands in the 1:1, never in General', async () => {
+    const t = team();
+    const r = await rig(t.all);
+    const dm = `dm:${t.lead.id}` as ThreadId;
+    const request = r.rooms.append({ workspaceId: 'ws1', threadId: dm, kind: 'human', actor: { kind: 'human' }, title: 'Add a --version flag', refs: { botId: t.lead.id } })!;
+    r.run(t.lead, owner(), { runId: `run-${request.id}` }, dm);
+    const d = r.router.send(binding(t.lead), { kind: 'dispatch', toBotId: t.dev.id, title: 'Add the flag', body: 'b' });
+    if (!d.ok) throw new Error('refused');
+    r.running.delete(t.lead.id);
+    await r.router.idle();
+    const root = r.router.get(d.handoffId)!;
+    expect(root).toMatchObject({ threadId: `handoff:${d.handoffId}`, opensThread: true, openedIn: dm });
+    expect(r.rooms.read('ws1', { threadId: root.threadId }).cards[0].refs).toMatchObject({ requestCardId: request.id, threadId: dm });
+    const res = answer(r, t.dev, root, 'Added');
+    if (!res.ok) throw new Error('refused');
+    await r.router.idle();
+    expect(r.rooms.read('ws1', { threadId: dm }).cards.filter((c) => c.refs?.threadId === root.threadId))
+      .toEqual([expect.objectContaining({ title: 'Finished: Add the flag', replyTo: request.id })]);
+    expect(pointers(r, root.threadId)).toEqual([]);
+    // The room's thread list says whose 1:1 each of these is (a page of
+    // cards that misses the opening hop still knows), and when the 1:1 began.
+    const summaries = r.rooms.threads('ws1');
+    expect(summaries.find((th) => th.threadId === root.threadId)?.dmBotId).toBe(t.lead.id);
+    expect(summaries.find((th) => th.threadId === dm)).toMatchObject({ dmBotId: t.lead.id, firstAt: request.at });
+    expect(summaries.find((th) => th.threadId === 'general')?.dmBotId).toBeUndefined();
+    // A dispatch from the 1:1 that is refused links the 1:1 too.
+    t.iss.enabled = false;
+    r.run(t.lead, owner(), { runId: `run-${request.id}` }, dm);
+    const refused = r.router.send(binding(t.lead), { kind: 'dispatch', toBotId: t.iss.id, title: 'File it', body: 'b' });
+    r.running.delete(t.lead.id);
+    expect(refused.ok).toBe(false);
+    await r.router.idle();
+    const refusedThread = r.rooms.read('ws1').cards.find((c) => c.kind === 'refusal' && c.title.includes('File it'));
+    expect(refusedThread?.refs?.threadId).toBe(dm);
+    t.iss.enabled = true;
+    // The 1:1 it was opened from survives a restart.
+    const again = await rig(t.all);
+    await again.router.idle();
+    expect(again.router.get(d.handoffId)?.openedIn).toBe(dm);
+    // A bot names another bot's 1:1 only from a wake running in it.
+    expect(r.router.send(binding(t.dev), { kind: 'message', toBotId: t.lead.id, title: 'hi', body: '', threadId: dm })).toMatchObject({ ok: false });
+  });
+
+  it('work the lead takes on in a group chat opens its own thread, linked to the group; its pointer lands in the group; only members name the group', async () => {
+    const t = team();
+    const GROUP = 'group:grp-00000001' as ThreadId;
+    const groups = { byThread: (ws: string, th: ThreadId | null | undefined) => (ws === 'ws1' && th === GROUP
+      ? { id: 'grp-00000001', workspaceId: 'ws1', name: 'Ship', memberIds: [t.lead.id, t.dev.id], threadId: GROUP, createdAt: 1, updatedAt: 1 }
+      : null) };
+    const r = await rig(t.all, { groups });
+    const request = r.rooms.append({ workspaceId: 'ws1', threadId: GROUP, kind: 'human', actor: { kind: 'human' }, title: 'Add a --version flag', refs: { botIds: [t.lead.id, t.dev.id] } })!;
+    r.run(t.lead, owner(), { runId: `run-${request.id}` }, GROUP);
+    const d = r.router.send(binding(t.lead), { kind: 'dispatch', toBotId: t.dev.id, title: 'Add the flag', body: 'b' });
+    if (!d.ok) throw new Error('refused');
+    r.running.delete(t.lead.id);
+    await r.router.idle();
+    const root = r.router.get(d.handoffId)!;
+    expect(root).toMatchObject({ threadId: `handoff:${d.handoffId}`, opensThread: true, openedIn: GROUP });
+    expect(r.rooms.read('ws1', { threadId: root.threadId }).cards[0].refs).toMatchObject({ requestCardId: request.id, threadId: GROUP });
+    const res = answer(r, t.dev, root, 'Added');
+    if (!res.ok) throw new Error('refused');
+    await r.router.idle();
+    expect(r.rooms.read('ws1', { threadId: GROUP }).cards.filter((c) => c.refs?.threadId === root.threadId))
+      .toEqual([expect.objectContaining({ title: 'Finished: Add the flag', replyTo: request.id })]);
+    expect(pointers(r, root.threadId)).toEqual([]);
+    const summaries = r.rooms.threads('ws1');
+    expect(summaries.find((th) => th.threadId === root.threadId)).toMatchObject({ groupId: 'grp-00000001' });
+    expect(summaries.find((th) => th.threadId === root.threadId)?.dmBotId).toBeUndefined();
+    expect(summaries.find((th) => th.threadId === GROUP)?.groupId).toBe('grp-00000001');
+    expect(summaries.find((th) => th.threadId === 'general')?.groupId).toBeUndefined();
+    // The group it was opened from survives a restart.
+    const again = await rig(t.all, { groups });
+    await again.router.idle();
+    expect(again.router.get(d.handoffId)?.openedIn).toBe(GROUP);
+    // A member names the group's thread; a bot outside it does not.
+    expect(r.router.send(binding(t.dev), { kind: 'message', toBotId: t.lead.id, title: 'hi', body: '', threadId: GROUP })).toMatchObject({ ok: true });
+    expect(r.router.send(binding(t.iss), { kind: 'message', toBotId: t.lead.id, title: 'hi', body: '', threadId: GROUP })).toMatchObject({ ok: false });
+  });
+
   it('a stopped relay points there too, once: "Stopped: <title>"', async () => {
     const t = team();
     const r = await rig(t.all);
@@ -524,6 +605,7 @@ describe('the General card that points at a coordinator\'s thread', () => {
     if (!res1.ok) throw new Error('refused');
     await r.router.idle();
     expect(pointers(r, root.threadId).map((c) => c.title)).toEqual(['Stopped: Ship the widget']);
+    expect(pointers(r, root.threadId)[0].notice).toEqual({ code: 'thread.stopped', args: { title: 'Ship the widget' } });
     expect(r.router.get(res1.handoffId)?.pointed).toBe(true);
     // A restart writes no second card.
     const again = await rig(t.all);
@@ -584,6 +666,79 @@ describe('the General card that points at a coordinator\'s thread', () => {
     expect(pointers(again, root.threadId).map((c) => c.refs?.handoffId)).toEqual(['h-last']);
     await again.router.idle();
     expect(again.router.get('h-last')).toMatchObject({ status: 'delivered', pointed: true });
+  });
+});
+
+describe('work handed off from a conversation opens its own thread, which the conversation folds', () => {
+  const GROUP = 'group:grp-00000002' as ThreadId;
+  const groupOf = (memberIds: string[]) => ({ byThread: (ws: string, th: ThreadId | null | undefined) => (ws === 'ws1' && th === GROUP
+    ? { id: 'grp-00000002', workspaceId: 'ws1', name: 'Ship', memberIds, threadId: GROUP, createdAt: 1, updatedAt: 1 }
+    : null) });
+  /** The sender, woken by the owner in `thread`, dispatches with `named` as thread_id. */
+  async function dispatchFrom(r: Rig, from: BotProfile, to: BotProfile, thread: ThreadId, named?: ThreadId): Promise<Handoff> {
+    const request = r.rooms.append({ workspaceId: 'ws1', threadId: thread, kind: 'human', actor: { kind: 'human' }, title: 'Add a --version flag', refs: { botId: from.id } })!;
+    r.run(from, owner(), { runId: `run-${request.id}` }, thread);
+    const d = r.router.send(binding(from), { kind: 'dispatch', toBotId: to.id, title: 'Add the flag', body: 'b', ...(named ? { threadId: named } : {}) });
+    if (!d.ok) throw new Error(`refused: ${d.message}`);
+    r.running.delete(from.id);
+    await r.router.idle();
+    return r.router.get(d.handoffId)!;
+  }
+  const folded = (r: Rig, owner: WorkOwner) => startedThreadsOf(owner, r.rooms.read('ws1').cards, { ws1: r.rooms.threads('ws1') });
+
+  it('a coordinator naming its own 1:1 as thread_id opens a thread there, as leaving it out does', async () => {
+    const t = team();
+    const r = await rig(t.all);
+    const dm = `dm:${t.lead.id}` as ThreadId;
+    const root = await dispatchFrom(r, t.lead, t.dev, dm, dm);
+    expect(root).toMatchObject({ threadId: `handoff:${root.id}`, opensThread: true, openedIn: dm });
+    expect(folded(r, { botId: t.lead.id })).toEqual(new Set([threadKey('ws1', root.threadId)]));
+  });
+
+  it('a coordinator naming its group chat as thread_id opens a thread there', async () => {
+    const t = team();
+    const r = await rig(t.all, { groups: groupOf([t.lead.id, t.dev.id]) });
+    const root = await dispatchFrom(r, t.lead, t.dev, GROUP, GROUP);
+    expect(root).toMatchObject({ threadId: `handoff:${root.id}`, opensThread: true, openedIn: GROUP });
+    expect(folded(r, { threadId: GROUP })).toEqual(new Set([threadKey('ws1', root.threadId)]));
+  });
+
+  it('a name-only first bot (lead, custom) opens a thread from its 1:1, and its report points back there', async () => {
+    const t = team();
+    const first = bot('lead', 'custom');
+    const r = await rig([first, t.dev]);
+    const dm = `dm:${first.id}` as ThreadId;
+    const root = await dispatchFrom(r, first, t.dev, dm);
+    expect(root).toMatchObject({ threadId: `handoff:${root.id}`, opensThread: true, openedIn: dm });
+    // A lead's chain keeps the depth and the powers of a non-coordinator.
+    expect(root.depth).toBe(1);
+    const res = answer(r, t.dev, root, 'Added');
+    if (!res.ok) throw new Error('refused');
+    await r.router.idle();
+    expect(r.rooms.read('ws1', { threadId: dm }).cards.filter((c) => c.refs?.threadId === root.threadId))
+      .toEqual([expect.objectContaining({ title: 'Finished: Add the flag' })]);
+    expect(folded(r, { botId: first.id })).toEqual(new Set([threadKey('ws1', root.threadId)]));
+    // Its work said in General stays there: only a coordinator's opens a thread from General.
+    const inGeneral = await dispatchFrom(r, first, t.dev, 'general' as ThreadId);
+    expect(inGeneral.threadId).toBe('general');
+    expect(inGeneral.opensThread).toBeUndefined();
+  });
+
+  it('naming a thread other than the wake\'s opens none', async () => {
+    const t = team();
+    const r = await rig(t.all, { groups: groupOf([t.lead.id, t.dev.id]) });
+    const dm = `dm:${t.lead.id}` as ThreadId;
+    const fromDm = await dispatchFrom(r, t.lead, t.dev, dm, 'general' as ThreadId);
+    expect(fromDm.threadId).toBe('general');
+    expect(fromDm.opensThread).toBeUndefined();
+    const fromGeneral = await dispatchFrom(r, t.lead, t.dev, 'general' as ThreadId, dm);
+    expect(fromGeneral.threadId).toBe(dm);
+    expect(fromGeneral.opensThread).toBeUndefined();
+    const toGroup = await dispatchFrom(r, t.lead, t.dev, dm, GROUP);
+    expect(toGroup.threadId).toBe(GROUP);
+    expect(toGroup.opensThread).toBeUndefined();
+    expect(folded(r, { botId: t.lead.id }).size).toBe(0);
+    expect(folded(r, { threadId: GROUP }).size).toBe(0);
   });
 });
 

@@ -180,10 +180,14 @@ import {
   type WireResponse,
 } from './chatWire';
 import { MOA_WAKE_RETRY_AFTER, type MoaWakeService, type MoaWakeWire } from '../phone/MoaWakeService';
-import { FACTORY_PHONE_MESSAGE_CAPABILITY, MOA_WAKE_COMMAND } from '../../shared/moaWake';
+import { FACTORY_PHONE_MESSAGE_CAPABILITY, FACTORY_THREAD_ATTACHMENTS_CAPABILITY, FACTORY_THREAD_MESSAGE_CAPABILITY, MOA_WAKE_COMMAND, type MoaWakeAttachment } from '../../shared/moaWake';
+import { ROOM_ATTACHMENT_LIMITS, UPLOAD_NAME_RE } from '../../shared/roomAttachments';
+import { dmThreadBot, groupThreadGroup, parseThreadId } from '../../shared/room';
+import { PHONE_ROOM_ATTACHMENT_COMMAND, isPhoneRoomWorkspaceId } from '../../shared/phoneRooms';
 import { FLEET_TICKET_ROUTE_PREFIX, fleetTicketDetailResponse, fleetTicketsFields } from './fleetTickets';
 import { factoryOn, moaConfigFields } from './factoryConfig';
-import { ROOMS_ROUTE, roomsResponse, roomsSupported } from './rooms';
+import { ROOMS_ROUTE, ROOM_ATTACHMENT_ROUTE, ROOM_MESSAGES_ROUTE, roomAttachmentResponse, roomsResponse, roomsSupported } from './rooms';
+import { BOTS_ROUTE, botsResponse, botsSupported } from './bots';
 import { BOT_APPROVALS_ROUTE, botApprovalDecisionRefusal, botApprovalsResponse, botApprovalsSupported, type BotApprovalsCaller } from './botApprovals';
 import type { ChatV2Binding } from '../../shared/chatv2/ipc';
 import { buildWebCsp, WEB_APP_FONT_FILE } from './webCsp';
@@ -788,6 +792,12 @@ interface WebTerminalServerDeps {
    * by `browser_file_upload` without a second policy.
    */
   uploadsDir?: string;
+  /**
+   * `<wmuxDir>/factory/room-attachments`, main's store of the photos on Bots
+   * room cards. Read only, by `GET /api/rooms/:ws/attachments/:id`, after
+   * main confirmed a kept card carries the photo. Absent: that route is 503.
+   */
+  roomAttachmentsDir?: string;
   /**
    * Records one file served because the pane's agent sent it with
    * `SendUserFile` (the device audit log). Device, pane, basename and size
@@ -2802,6 +2812,17 @@ export class WebTerminalServer {
           roomsReadable: this.opts?.allowTranscript === true && roomsSupported(this.availableDesktop()),
           roomsClient: clientCaps(req).roomsV1 === true,
         }),
+        // The Bots page (bots.ts): `GET /api/bots` answers here (transcript,
+        // and a desktop that announced the list), and `POST
+        // /api/rooms/:workspaceId/messages` would pass its gates for this
+        // caller (the chat write gates, and a desktop that takes a message
+        // for one conversation). OMITTED, not false, otherwise.
+        ...(this.opts?.allowTranscript === true && botsSupported(this.availableDesktop()) ? { bots: true } : {}),
+        ...(this.roomMessageWritable(principal) ? { botMessages: true } : {}),
+        // Photos on those messages: the upload grant and a desktop that takes them.
+        ...(this.roomAttachmentsWritable(principal) ? { botAttachments: true } : {}),
+        // `GET /api/rooms/:ws/attachments/:id` answers: the transcript grant and a desktop that serves them.
+        ...(this.opts?.allowTranscript === true && this.availableDesktop()?.supports(PHONE_ROOM_ATTACHMENT_COMMAND) === true ? { roomAttachments: true } : {}),
         // Phone channel Inbox (§9): the four `/api/channels*` routes answer
         // here. OMITTED, not false, exactly when they would answer 503
         // `channels-unavailable` — the shape a pre-channels daemon serves.
@@ -2867,6 +2888,15 @@ export class WebTerminalServer {
     }
     if (p === '/api/moa/messages' && req.method === 'POST') {
       return this.handleMoaSend(req, res, url, principal);
+    }
+    if (req.method === 'GET' && p === BOTS_ROUTE) {
+      void botsResponse({ allowTranscript: this.opts?.allowTranscript === true, desktop: this.availableDesktop() })
+        .then(r => this.json(res,r.status,r.body,{'Cache-Control':'no-store'}));
+      return;
+    }
+    const roomMessageRoute = req.method === 'POST' ? ROOM_MESSAGES_ROUTE.exec(p) : null;
+    if (roomMessageRoute) {
+      return this.handleRoomMessage(req, res, url, principal, roomMessageRoute[1]);
     }
     if (req.method === 'GET' && p.startsWith('/api/moa/messages/')) {
       return this.handleMoaSendReceipt(res, p.slice('/api/moa/messages/'.length), principal);
@@ -3001,6 +3031,25 @@ export class WebTerminalServer {
     if (req.method === 'GET' && p.startsWith(FLEET_TICKET_ROUTE_PREFIX)) {
       void fleetTicketDetailResponse(p.slice(FLEET_TICKET_ROUTE_PREFIX.length), { allowTranscript: this.opts?.allowTranscript === true, desktop: this.availableDesktop() })
         .then(r => this.json(res,r.status,r.body,{'Cache-Control':'no-store'}));
+      return;
+    }
+    const roomAttachmentRoute = req.method === 'GET' ? ROOM_ATTACHMENT_ROUTE.exec(p) : null;
+    if (roomAttachmentRoute) {
+      void roomAttachmentResponse(roomAttachmentRoute[1], roomAttachmentRoute[2], url.searchParams, {
+        allowTranscript: this.opts?.allowTranscript === true, desktop: this.availableDesktop(), roomAttachmentsDir: this.deps.roomAttachmentsDir,
+      }).then((r) => {
+        if (!('bytes' in r)) return this.json(res, r.status, r.body, { 'Cache-Control': 'no-store' });
+        res.writeHead(200, {
+          ...this.securityHeaders(),
+          'Content-Type': r.contentType,
+          'Content-Length': String(r.bytes.length),
+          'Content-Disposition': 'inline',
+          'Cache-Control': 'no-store',
+          // Inert even if opened as a document.
+          'Content-Security-Policy': "default-src 'none'; sandbox",
+        });
+        res.end(r.bytes);
+      }).catch((err: unknown) => this.failRequest(res, err));
       return;
     }
     const roomsRoute = req.method === 'GET' ? ROOMS_ROUTE.exec(p) : null;
@@ -3568,6 +3617,7 @@ export class WebTerminalServer {
       }
     }
     const nesting = phoneTaskNesting(sidebar.workspaces, new Set(byId.keys()), listedPanes);
+    const botWorkers = botWorkerIndex(sidebar);
     const merged = workspaces.map((w) => {
       const extra = fields.get(w.id);
       const panes = w.panes.map((pane) => {
@@ -3591,8 +3641,9 @@ export class WebTerminalServer {
             // The tree may name only this row's own sessions (see phoneWorkspaceLayout).
             ...(extra.layout ? { layout: phoneWorkspaceLayout(extra.layout, w.panes.map((pane) => pane.sessionId)) } : {}),
             ...hqRole(sidebar, w.id),
+            ...botWorkerField(botWorkers, w.id),
           }
-        : { ...w, panes, ...hqRole(sidebar, w.id) };
+        : { ...w, panes, ...hqRole(sidebar, w.id), ...botWorkerField(botWorkers, w.id) };
     });
     // Workspaces the desktop shows that have no live terminal: listed as
     // `empty: true` rows with no panes (and no name or layout — the snapshot
@@ -3631,11 +3682,13 @@ export class WebTerminalServer {
     const sessions = this.listSessions(principal);
     if (!sidebar) return this.json(res, 200, { sessions });
     const labels = new Map(sidebar.panes.map((p) => [p.ptyId, p]));
+    const botWorkers = botWorkerIndex(sidebar);
     return this.json(res, 200, {
       sessions: sessions.map((s) => {
         const pane = labels.get(s.id);
-        // By the daemon's own record of the session's workspace, label or not.
-        const role = hqRole(sidebar, s.workspaceId);
+        // By the daemon's own record of the session's workspace, label or not
+        // (a bot worker's panes are never labeled: the desktop leaves them out).
+        const role = { ...hqRole(sidebar, s.workspaceId), ...botWorkerField(botWorkers, s.workspaceId) };
         if (!pane) return { ...s, ...role };
         return {
           ...s,
@@ -5453,6 +5506,177 @@ export class WebTerminalServer {
   }
 
   /**
+   * The `{clientMessageId, text}` body of a phone message (`POST
+   * /api/moa/messages`, and `POST /api/rooms/:workspaceId/messages` with its
+   * `threadId`): exactly those fields and `extra`, the chat send id and text
+   * rules. Answers the 400 itself and returns null when the body fails them.
+   */
+  private parsePhoneMessageBody(
+    res: http.ServerResponse,
+    body: unknown,
+    extra: readonly string[],
+    opts: { allowEmptyText?: boolean } = {},
+  ): { clientMessageId: string; text: string; fields: Record<string, unknown> } | null {
+    const o = body && typeof body === 'object' && !Array.isArray(body) ? body as Record<string, unknown> : null;
+    const cmid = typeof o?.clientMessageId === 'string' ? o.clientMessageId : undefined;
+    const invalid = (detail: string) => {
+      this.json(res, 400, { error: 'invalid-chat-request', detail, effect: 'none', ...(cmid !== undefined ? { clientMessageId: cmid } : {}) });
+      return null;
+    };
+    if (!o) return invalid('body must be a JSON object');
+    const unknown = Object.keys(o).find((k) => k !== 'clientMessageId' && k !== 'text' && !extra.includes(k));
+    if (unknown !== undefined) return invalid(`unknown field: ${unknown.slice(0, 64)}`);
+    if (cmid === undefined) return invalid('clientMessageId must be a string');
+    if (typeof o.text !== 'string') return invalid('text must be a string');
+    const text = o.text;
+    const idCheck = checkChatId(cmid, this.now(), CHAT_MESSAGE_RETENTION_MS);
+    if (idCheck === 'invalid') return invalid('clientMessageId');
+    if (idCheck === 'expired') {
+      this.json(res, 400, { error: 'message-id-expired', effect: 'none', clientMessageId: cmid });
+      return null;
+    }
+    if (!text.trim() && opts.allowEmptyText !== true) return invalid('text');
+    // The chat send limit and its refusal, so a client has one rule.
+    if (text.length > CHAT_SEND_MAX_UNITS) {
+      this.json(res, 400, { error: 'text-too-long', result: 'error', limit: 'units', effect: 'none', clientMessageId: cmid });
+      return null;
+    }
+    return { clientMessageId: cmid, text, fields: o };
+  }
+
+  /** `/api/config` `botMessages`: the room message route would pass its gates for this caller. */
+  private roomMessageWritable(principal: WebPrincipal): boolean {
+    const desktop = this.availableDesktop();
+    return !!this.deps.moaWake && this.chatWriteRefusal(principal) === null &&
+      desktop?.supports(MOA_WAKE_COMMAND) === true && desktop.supports(FACTORY_THREAD_MESSAGE_CAPABILITY);
+  }
+
+  /** `/api/config` `botAttachments`: the room message route takes photos from this caller. */
+  private roomAttachmentsWritable(principal: WebPrincipal): boolean {
+    return this.roomMessageWritable(principal) && this.opts?.allowUpload === true && this.deps.uploadsDir !== undefined &&
+      this.availableDesktop()?.supports(FACTORY_THREAD_ATTACHMENTS_CAPABILITY) === true;
+  }
+
+  /**
+   * The uploads a new room message names, read once its receipt is begun:
+   * each a regular file of this server's uploads folder (never a link), at
+   * most the upload cap, PNG or JPEG by its bytes; main copies it again from
+   * its own path and checks it is these bytes. One that is gone is sent by
+   * name alone (`missing`): a retry of a message whose card is already up
+   * needs no file (main reuses the card's photos), and main refuses a new
+   * one, which then answers `attachment-not-found`.
+   */
+  private async readRoomMessageUploads(uploads: readonly string[], clientMessageId: string): Promise<{ ok: true; attachments: MoaWakeAttachment[]; missing: number[] } | { ok: false; wire: { status: number; body: Record<string, unknown> } }> {
+    const dir = this.deps.uploadsDir;
+    const refuse = (status: number, error: string, index: number, extra: Record<string, unknown> = {}) =>
+      ({ ok: false as const, wire: { status, body: { error, index, ...extra, effect: 'none', clientMessageId } } });
+    const tooLarge = (index: number) => refuse(413, 'attachment-too-large', index, { limit: ROOM_ATTACHMENT_LIMITS.SOURCE_MAX_BYTES });
+    const out: MoaWakeAttachment[] = [];
+    const missing: number[] = [];
+    for (const [index, name] of uploads.entries()) {
+      let data: Buffer | null = null;
+      if (dir) {
+        const file = path.join(dir, name);
+        try {
+          const st = await fs.promises.lstat(file);
+          if (st.isFile() && !st.isSymbolicLink()) {
+            if (st.size > ROOM_ATTACHMENT_LIMITS.SOURCE_MAX_BYTES) return tooLarge(index);
+            const handle = await fs.promises.open(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
+            try {
+              const fst = await handle.stat();
+              if (fst.size > ROOM_ATTACHMENT_LIMITS.SOURCE_MAX_BYTES) return tooLarge(index);
+              if (fst.isFile()) data = await handle.readFile();
+            } finally {
+              await handle.close().catch(() => undefined);
+            }
+          }
+        } catch {
+          data = null;
+        }
+      }
+      if (!data) {
+        missing.push(index);
+        out.push({ uploadId: name });
+        continue;
+      }
+      if (!sniffImageExt(data)) return refuse(415, 'attachment-unsupported', index);
+      out.push({ uploadId: name, bytes: data.length, sha256: crypto.createHash('sha256').update(data).digest('hex') });
+    }
+    return { ok: true, attachments: out, missing };
+  }
+
+  /**
+   * `POST /api/rooms/:workspaceId/messages` `{clientMessageId, text,
+   * threadId}`: a message to one conversation of the desktop's Bots page — a
+   * bot's 1:1 (`dm:<botId>`) or a group chat (`group:<groupId>`, or `general`
+   * for a group made from the room). The gates, body rules and answers of
+   * `POST /api/moa/messages` on the factory route, on the same receipt file:
+   * the desktop posts the owner's card in that thread and queues a wake for
+   * each bot it is for, or refuses before posting when no bot there is on.
+   * Optional `attachments: [{uploadId}]`: photos this server's upload routes
+   * stored, named in the receipt by their upload names and read only once
+   * the id is new (readRoomMessageUploads); with them the text may be empty.
+   */
+  private handleRoomMessage(req: http.IncomingMessage, res: http.ServerResponse, url: URL, principal: WebPrincipal, rawWorkspaceId: string): void {
+    res.setHeader('Cache-Control', 'no-store');
+    const refusal = this.chatWriteRefusal(principal);
+    if (refusal === 'transcript') return this.refuseTranscript(res);
+    if (refusal === 'input') return this.refuseInput(res, principal, 'Sending to a bot needs input');
+    const workspaceId = decodePathSegment(rawWorkspaceId);
+    if (workspaceId === null || !isPhoneRoomWorkspaceId(workspaceId)) return this.json(res, 404, { error: 'room-not-found' });
+    this.readJsonBody(req, res, (body) => {
+      void (async () => {
+        const fresh = await this.authenticate(req, url, false).catch(() => ({ ok: false as const }));
+        if (!fresh.ok || !sameCaller(principal, fresh.principal)) return this.json(res, 401, { error: 'authorization-expired' });
+        if (this.chatWriteRefusal(fresh.principal) !== null) return this.refuseInput(res, fresh.principal, 'Input permission changed');
+        const caller = fresh.principal;
+        // With photos the words may be empty (a photo-only message).
+        const withPhotos = !!body && typeof body === 'object' && Array.isArray((body as { attachments?: unknown }).attachments) &&
+          ((body as { attachments: unknown[] }).attachments.length > 0);
+        const parsed = this.parsePhoneMessageBody(res, body, ['threadId', 'attachments'], { allowEmptyText: withPhotos });
+        if (!parsed) return;
+        const { clientMessageId: cmid, text } = parsed;
+        // A conversation's own thread only: a bot's 1:1 or a group chat's.
+        const threadId = parseThreadId(parsed.fields.threadId);
+        if (!threadId || !(dmThreadBot(threadId) || groupThreadGroup(threadId) || threadId === 'general')) {
+          return this.json(res, 400, { error: 'invalid-chat-request', detail: 'threadId', effect: 'none', clientMessageId: cmid });
+        }
+        const uploads = parsed.fields.attachments === undefined ? [] : roomMessageUploads(parsed.fields.attachments);
+        if (uploads === null) return this.json(res, 400, { error: 'invalid-chat-request', detail: 'attachments', effect: 'none', clientMessageId: cmid });
+        const target = { workspaceId, threadId };
+        const owner = chatOwner(caller);
+        const wake = this.deps.moaWake?.() ?? null;
+        if (!wake) return this.json(res, 503, { error: 'desktop-unavailable', clientMessageId: cmid });
+        const seen = wake.peek(owner, cmid, text, target, uploads);
+        if (seen) return this.moaWire(res, seen);
+        // The chat path never carries a room message: an id it spent is reused.
+        const prior = this.deps.chat?.()?.priorSend?.(owner, cmid);
+        if (prior && prior.view.state !== 'unknown') return this.json(res, 409, { error: 'message-id-reused', clientMessageId: cmid });
+        // A new message with photos (a replay answered above, whatever the
+        // grants and the desktop are now): the upload grant, and a desktop
+        // that takes photos.
+        if (uploads.length > 0) {
+          if (this.opts?.allowUpload !== true) {
+            return this.json(res, 403, { error: 'uploads-disabled: server started without --allow-upload', effect: 'none', clientMessageId: cmid });
+          }
+          if (this.availableDesktop()?.supports(FACTORY_THREAD_ATTACHMENTS_CAPABILITY) !== true) {
+            return this.json(res, 409, { error: 'attachments-unsupported', effect: 'none', clientMessageId: cmid });
+          }
+        }
+        if (caller.kind === 'device') {
+          try { this.deps.auditMoaSend?.({ deviceId: caller.deviceId, sessionId: `room:${workspaceId}`, route: 'wake' }); } catch { /* best-effort */ }
+        } else {
+          this.deps.log('info', '[web] bot message sent by the operator');
+        }
+        return this.moaWire(res, await wake.roomMessage({
+          owner, clientMessageId: cmid, text, target, ...(caller.kind === 'device' ? { deviceId: caller.deviceId } : {}),
+          ...(uploads.length > 0 ? { uploads, readAttachments: () => this.readRoomMessageUploads(uploads, cmid) } : {}),
+        }));
+      })().catch((err: unknown) => this.failRequest(res, err));
+    }, CHAT_SEND_MAX_BODY_BYTES);
+  }
+
+  /**
    * `POST /api/moa/messages` `{clientMessageId, text}`: a message to Moa
    * whether or not its brain runs yet. Same gates as a chat send. A wake
    * receipt for the id answers first, so a retry after the pane appeared is
@@ -5471,25 +5695,9 @@ export class WebTerminalServer {
         if (!fresh.ok || !sameCaller(principal, fresh.principal)) return this.json(res, 401, { error: 'authorization-expired' });
         if (this.chatWriteRefusal(fresh.principal) !== null) return this.refuseInput(res, fresh.principal, 'Input permission changed');
         const caller = fresh.principal;
-        const o = body && typeof body === 'object' && !Array.isArray(body) ? body as Record<string, unknown> : null;
-        const cmid = typeof o?.clientMessageId === 'string' ? o.clientMessageId : undefined;
-        const invalid = (detail: string) => this.json(res, 400, {
-          error: 'invalid-chat-request', detail, effect: 'none', ...(cmid !== undefined ? { clientMessageId: cmid } : {}),
-        });
-        if (!o) return invalid('body must be a JSON object');
-        const extra = Object.keys(o).find((k) => k !== 'clientMessageId' && k !== 'text');
-        if (extra !== undefined) return invalid(`unknown field: ${extra.slice(0, 64)}`);
-        if (cmid === undefined) return invalid('clientMessageId must be a string');
-        if (typeof o.text !== 'string') return invalid('text must be a string');
-        const text = o.text;
-        const idCheck = checkChatId(cmid, this.now(), CHAT_MESSAGE_RETENTION_MS);
-        if (idCheck === 'invalid') return invalid('clientMessageId');
-        if (idCheck === 'expired') return this.json(res, 400, { error: 'message-id-expired', effect: 'none', clientMessageId: cmid });
-        if (!text.trim()) return invalid('text');
-        // The chat send limit and its refusal, so a client has one rule.
-        if (text.length > CHAT_SEND_MAX_UNITS) {
-          return this.json(res, 400, { error: 'text-too-long', result: 'error', limit: 'units', effect: 'none', clientMessageId: cmid });
-        }
+        const parsed = this.parsePhoneMessageBody(res, body, []);
+        if (!parsed) return;
+        const { clientMessageId: cmid, text } = parsed;
         const owner = chatOwner(caller);
         const wake = this.deps.moaWake?.() ?? null;
         const seen = wake?.peek(owner, cmid, text);
@@ -9106,6 +9314,13 @@ export class WebTerminalServer {
     this.deliverChatEvent(event.sessionId, () => ({ event: 'chat.cancel', body }), (principal) => chatOwner(principal) === event.owner);
   }
 
+  /** A web or phone client streams this pane (or is opening one) or watches its turns. */
+  hasPaneViewer(sessionId: string): boolean {
+    for (const client of this.clients) if (client.sessionId === sessionId) return true;
+    for (const client of this.pendingStreams) if (client.sessionId === sessionId) return true;
+    return (this.transcriptWatchers.get(sessionId)?.size ?? 0) > 0;
+  }
+
   emitTranscriptNudge(sessionId: string): void {
     if (this.eventClients.size === 0) return;
     // N3 — a new transcript row can open or close an OpenCode dialog.
@@ -10227,6 +10442,21 @@ function hqRole(sidebar: PhoneSidebarSnapshot | null, workspaceId: unknown): { r
   return sidebar?.hqWorkspaceId !== undefined && workspaceId === sidebar.hqWorkspaceId ? { role: 'hq' } : {};
 }
 
+/** The snapshot's bot workers by workspace id, for `botWorkerField`. */
+function botWorkerIndex(sidebar: PhoneSidebarSnapshot): Map<string, { botId: string; taskId?: string }> {
+  return new Map((sidebar.botWorkers ?? []).map((w) => [w.workspaceId, { botId: w.botId, ...(w.taskId !== undefined ? { taskId: w.taskId } : {}) }]));
+}
+
+/**
+ * `botWorker: {botId, taskId?}` on a row of a factory bot's worker workspace,
+ * nothing for any other row. The desktop keeps those workspaces out of its
+ * sidebar; the phone still lists them and decides how to show them by this.
+ */
+function botWorkerField(index: ReadonlyMap<string, { botId: string; taskId?: string }>, workspaceId: unknown): { botWorker?: { botId: string; taskId?: string } } {
+  const worker = typeof workspaceId === 'string' ? index.get(workspaceId) : undefined;
+  return worker ? { botWorker: worker } : {};
+}
+
 /** A pane's extracted scrollback is current while nothing was written and the geometry held. */
 function scrollbackKey(managed: ManagedSession): string {
   return `${managed.meta.incarnationId ?? ''}\0${managed.ringBuffer.totalBytesWritten}\0${managed.meta.cols}x${managed.meta.rows}`;
@@ -10787,18 +11017,26 @@ function sniffSentFileContentType(head: Buffer): string | null {
 }
 
 /**
- * Exactly the names `handleUpload` generates, every segment anchored:
- * `photo-` + an ISO 8601 instant with `:` and `.` rewritten to `-` + `-` +
- * eight lowercase hex + `.jpg` or `.png`. General attachments use the same
- * timestamp/random structure with `file-` and a bounded alphanumeric extension.
- *
- * This is a DELETION predicate, so it is written to be over-strict rather than
- * convenient. `~/.wmux/uploads` is also where an operator stages files for
- * `browser_file_upload`, and a looser pattern (`photo-*.jpg`) would happily
- * unlink `photo-vacation.jpg` a day after they put it there. Nothing this route
- * did not write is ever removed.
+ * A room message's `attachments`: 1–PER_MESSAGE objects that are exactly
+ * `{uploadId}`, each a name this server's upload routes generate, no name
+ * twice. The upload names in order, or null for any other shape.
  */
-const UPLOAD_NAME_RE = /^(?:photo-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z-[0-9a-f]{8}\.(?:jpg|png)|file-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z-[0-9a-f]{8}\.[a-z0-9]{1,12})$/;
+function roomMessageUploads(value: unknown): string[] | null {
+  if (!Array.isArray(value) || value.length === 0 || value.length > ROOM_ATTACHMENT_LIMITS.PER_MESSAGE) return null;
+  const out: string[] = [];
+  for (const entry of value) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
+    const keys = Object.keys(entry);
+    const id = (entry as { uploadId?: unknown }).uploadId;
+    if (keys.length !== 1 || keys[0] !== 'uploadId' || typeof id !== 'string' || !UPLOAD_NAME_RE.test(id) || out.includes(id)) return null;
+    out.push(id);
+  }
+  return out;
+}
+
+// UPLOAD_NAME_RE (the uploads sweep's deletion predicate) lives in
+// shared/roomAttachments.ts: a room message names an upload by the same rule.
+
 
 /**
  * Delete uploads older than the TTL. Modelled on `pruneOldLogs`, including the

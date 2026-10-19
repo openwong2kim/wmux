@@ -20,9 +20,10 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { tokenize, launcherStem } from './agentResume';
+import { tokenize, launcherStem, isPlausibleResumeSessionId, PERMISSION_FLAG, type PermissionMode } from './agentResume';
 import { splitModelEnvMarker } from './workerLaunch';
 import { stripPromptFileArgument } from './promptFileArgument';
+import { wslClaudeHooks } from './wslIntegration';
 
 /** `gh <group> <verb>` in every spelling gh runs it: with global options
  *  (`-R o/r`, `--repo=o/r`, `--hostname h`) before the group, between the
@@ -108,7 +109,12 @@ export const BOT_WORKER_DENY: readonly string[] = [...BOT_WORKER_MERGE_DENY, ...
 
 /** The worker's `--settings` document: every rule. */
 export function buildBotWorkerSettings(): Record<string, unknown> {
-  return { permissions: { deny: [...BOT_WORKER_DENY] } };
+  // Only a WSL pane's worker launches with this file alone (#2261). The WSL
+  // claude shim passes wmux's hooks as its own `--settings`, and of two
+  // `--settings` flags the last one wins, so this file carries those hooks
+  // too: without them no turn end and no session id reached wmux, so the
+  // worker was never paused when idle and could not be resumed.
+  return { permissions: { deny: [...BOT_WORKER_DENY] }, disableAllHooks: false, hooks: wslClaudeHooks() };
 }
 
 // ── factory/worker-default-branches.json ─────────────────────────────────────
@@ -221,10 +227,53 @@ export function isSingleCommand(command: string): boolean {
   return quote === null;
 }
 
+/**
+ * A launch line for a cmd.exe pane. cmd has its own quoting: only `"…"`
+ * (and `^` escapes) quote, and `%`/`!` expand even inside double quotes, so
+ * isSingleCommand's reading does not hold there. With wmux's own prompt
+ * argument taken out, the rest may hold none of `'`, `&`, `|`, `^`, `%`, `!`,
+ * `<`, `>` or a line break. A `$(` anywhere is refused too: cmd evaluates
+ * none, so a prompt argument left in the PowerShell or POSIX shape (a prompt
+ * path cmdPromptFileArgument cannot name) would reach claude as its prompt.
+ * Pure.
+ */
+export function isPlainCmdLaunchLine(line: string): boolean {
+  return !line.includes('$(') && !/['&|^%!<>\r\n]/.test(stripPromptFileArgument(line));
+}
+
 /** Command or process substitution, quoted or not. */
 const SUBSTITUTION = /\$\(|`|<\(|>\(/;
 
-function isClaudeLauncher(word: string): boolean {
+/**
+ * Could the shell turn an argument after the launcher into a word the line
+ * does not show? An escape, a variable, a brace list, a tilde or a glob can
+ * each spell a flag the guard looks for (`--set\tings`, `--set${X}tings`,
+ * `--{settings,x}`) without the word reading as one. Outside quotes each of
+ * them counts; inside double quotes a `\` or `$` (the shell still reads
+ * them there); inside single quotes nothing. Pass the line without its
+ * prompt-file argument. Pure.
+ */
+export function argumentsMayExpand(command: string): boolean {
+  const tokens = tokenize(command);
+  if (tokens.length === 0) return false;
+  const args = command.slice(tokens[0].end);
+  let quote: '"' | "'" | null = null;
+  for (const c of args) {
+    if (quote === "'") {
+      if (c === "'") quote = null;
+    } else if (quote === '"') {
+      if (c === '"') quote = null;
+      else if (c === '\\' || c === '$') return true;
+    } else if (c === '"' || c === "'") {
+      quote = c;
+    } else if (/[\\${}~*?[\]]/.test(c)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+export function isClaudeLauncher(word: string): boolean {
   return launcherStem(word) === 'claude';
 }
 
@@ -233,8 +282,8 @@ function isClaudeLauncher(word: string): boolean {
  * leading model-env marker. Returns the line unchanged when this file is
  * already the launcher's first argument and no other settings flag follows,
  * and null when it cannot carry it: another launcher, an empty line, more than
- * one command, an end-of-options `--`, another `--settings`, or a path that
- * cannot be quoted.
+ * one command, an argument the shell could expand (argumentsMayExpand), an
+ * end-of-options `--`, another `--settings`, or a path that cannot be quoted.
  */
 export function spliceSettingsFlag(fullCommand: string, settingsPath: string): string | null {
   const { marker, command } = splitModelEnvMarker(fullCommand);
@@ -242,7 +291,9 @@ export function spliceSettingsFlag(fullCommand: string, settingsPath: string): s
   // The prompt-file argument fan-out builds (FanOutService.buildInitialCommand)
   // is the one substitution a launch line may hold, by its exact shape.
   const rest = stripPromptFileArgument(command);
-  if (SUBSTITUTION.test(rest) || !isSingleCommand(rest)) return null;
+  const spliced = ` --settings="${settingsPath}"`;
+  // Our own flag, already spliced, holds a path (a Windows one has `\`).
+  if (SUBSTITUTION.test(rest) || !isSingleCommand(rest) || argumentsMayExpand(rest.split(spliced).join(''))) return null;
   const tokens = tokenize(command);
   if (tokens.length === 0 || !isClaudeLauncher(tokens[0].value)) return null;
   if (tokens.some((t) => t.value === '--')) return null;
@@ -252,7 +303,7 @@ export function spliceSettingsFlag(fullCommand: string, settingsPath: string): s
   if (passed.length > 0) return passed.length === 1 && tokens[1] === passed[0] && passed[0].value === ours ? fullCommand : null;
   // The `=` form, like --mcp-config in toolSurfaceLaunch: one word on both shells.
   const at = tokens[0].end;
-  return `${marker}${command.slice(0, at)} --settings="${settingsPath}"${command.slice(at)}`;
+  return `${marker}${command.slice(0, at)}${spliced}${command.slice(at)}`;
 }
 
 /** A claude launcher as a word of its own, a path's last part, or right
@@ -268,11 +319,109 @@ export function namesClaude(line: string): boolean {
     || CLAUDE_LAUNCHER_ANYWHERE.test(line);
 }
 
+// ── The worker folder's own Claude settings ──────────────────────────────────
+//
+// A worker's claude still reads its folder's project settings
+// (`.claude/settings.json`, `.claude/settings.local.json`): `--setting-sources
+// user` would leave them out, but it also leaves out the repository's
+// CLAUDE.md (measured on claude 2.1.300), which a worker needs. So a launch
+// goes ahead only when those files set nothing that runs a program or sets
+// the worker's environment, the way a codex worker launches only without a
+// project `.codex/config.toml`.
+
+/** Project settings keys that run a program or set the environment. */
+export const WORKER_PROJECT_SETTINGS_REFUSED: readonly string[] = [
+  'hooks', 'env', 'apiKeyHelper', 'awsAuthRefresh', 'awsCredentialExport', 'otelHeadersHelper',
+  'statusLine', 'fileSuggestion', 'enabledPlugins', 'extraKnownMarketplaces',
+];
+
+/** Why a claude worker cannot launch in `cwd` because of its project
+ *  settings, or null. A file that cannot be read or parsed counts. */
+export function workerProjectSettingsRefusal(cwd: string): string | null {
+  for (const name of ['settings.json', 'settings.local.json']) {
+    const file = path.join(cwd, '.claude', name);
+    let text: string;
+    try {
+      text = fs.readFileSync(file, 'utf8');
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT' || (err as NodeJS.ErrnoException).code === 'ENOTDIR') continue;
+      return `.claude/${name} could not be read`;
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      return `.claude/${name} is not valid JSON`;
+    }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return `.claude/${name} is not a settings object`;
+    const set = WORKER_PROJECT_SETTINGS_REFUSED.filter((k) => k in (parsed as Record<string, unknown>));
+    if (set.length > 0) return `.claude/${name} sets ${set.join(', ')}`;
+  }
+  return null;
+}
+
 // ── factory/bot-worker-sessions.json ─────────────────────────────────────────
 
 export const BOT_WORKER_SESSIONS_VERSION = 1;
 
-export interface BotWorkerSessionRecord { workspaceId: string; at: number }
+/** The files a session's claude launches carry (shared/botWorkerMcp.ts),
+ *  so a re-fire or a resume reads the same servers and rules as the first
+ *  launch. */
+export interface BotWorkerLaunchFiles {
+  settingsFile: string;
+  mcpConfigFile: string;
+  level: 'core' | 'full';
+  /** The connection keys the launch's environment was given (names), kept
+   *  out of every other connection's server on a re-fire or resume. */
+  connectionKeys?: string[];
+  /** `project`: the launch loads no user settings (`--setting-sources
+   *  project`), its hooks come from its own settings file — an isolated
+   *  instance's worker, run on that build's hook bridge (#2231). */
+  settingSources?: 'project';
+}
+
+/** One bot worker session. `workspaceId` and `at` are the version-1 record
+ *  every reader knows. The rest are optional additions (no version bump: a
+ *  reader keeps what it knows, and an older one ignores them): where a codex
+ *  worker was launched and for which repository, so a re-fire or a resume of
+ *  that pane is guarded the same way (main/agents/codexWorkerGuard.ts); the
+ *  files a claude launch carried (`launch`); `wsl`: the pane's shell is WSL,
+ *  whose launches keep the worker settings file alone. */
+export interface BotWorkerSessionRecord {
+  workspaceId: string;
+  at: number;
+  /** The CLI main launched there (`codex`), when it recorded one. */
+  agent?: string;
+  /** The worktree the launch was guarded in (absolute). */
+  cwd?: string;
+  /** The bot repository's key. */
+  repoKey?: string;
+  /** The CODEX_HOME the launch was checked with (an account's), when set. */
+  codexHome?: string;
+  launch?: BotWorkerLaunchFiles;
+  wsl?: boolean;
+  /** The bot task whose own fan-out (or resume) launch created this pane;
+   *  absent for any other pane of the task's workspace. */
+  taskId?: string;
+  /** The conversation the launch line pinned (`--session-id`), and the
+   *  permission mode its flags started it in: what a resume of that
+   *  conversation falls back to when no hook recorded a mode. */
+  launchSessionId?: string;
+  permissionMode?: PermissionMode;
+}
+
+/** The per-launch files under `<dir>/factory/`: only these folders, a JSON
+ *  file name, a path that can be quoted. Pure. */
+export function isWorkerLaunchFiles(raw: unknown, dir: string): raw is BotWorkerLaunchFiles {
+  if (!raw || typeof raw !== 'object') return false;
+  const r = raw as Record<string, unknown>;
+  const inside = (p: unknown, sub: string): boolean => typeof p === 'string' && isQuotable(p)
+    && path.dirname(p) === path.join(dir, 'factory', sub) && /^[0-9a-f]{12}\.json$/.test(path.basename(p));
+  const keys = r.connectionKeys === undefined
+    || (Array.isArray(r.connectionKeys) && r.connectionKeys.length <= 32 && r.connectionKeys.every((k) => typeof k === 'string' && /^[A-Z_][A-Z0-9_]{0,63}$/.test(k)));
+  return inside(r.settingsFile, 'worker-settings') && inside(r.mcpConfigFile, 'worker-mcp') && (r.level === 'core' || r.level === 'full') && keys
+    && (r.settingSources === undefined || r.settingSources === 'project');
+}
 
 export function botWorkerSessionsPath(dir: string): string {
   return path.join(dir, 'factory', 'bot-worker-sessions.json');
@@ -288,7 +437,25 @@ export function readBotWorkerSessions(dir: string): { sessions: Map<string, BotW
     for (const [id, rec] of Object.entries(raw.sessions as Record<string, unknown>)) {
       const r = rec as Partial<BotWorkerSessionRecord> | null;
       if (!id || typeof r?.workspaceId !== 'string' || typeof r.at !== 'number') throw new Error(`a malformed record (${id})`);
-      out.set(id, { workspaceId: r.workspaceId, at: r.at });
+      // Launch files that are not main's own are not used (the launch is then
+      // guarded as a record without them).
+      const launch = isWorkerLaunchFiles(r.launch, dir)
+        ? { settingsFile: r.launch.settingsFile, mcpConfigFile: r.launch.mcpConfigFile, level: r.launch.level, ...(r.launch.connectionKeys?.length ? { connectionKeys: [...r.launch.connectionKeys] } : {}), ...(r.launch.settingSources ? { settingSources: r.launch.settingSources } : {}) }
+        : undefined;
+      out.set(id, {
+        workspaceId: r.workspaceId,
+        at: r.at,
+        // Optional additions: kept when well-formed, ignored otherwise.
+        ...(typeof r.agent === 'string' && r.agent.length <= 32 ? { agent: r.agent } : {}),
+        ...(typeof r.cwd === 'string' && r.cwd.length <= 4096 ? { cwd: r.cwd } : {}),
+        ...(typeof r.repoKey === 'string' && r.repoKey.length <= 256 ? { repoKey: r.repoKey } : {}),
+        ...(typeof r.codexHome === 'string' && r.codexHome.length <= 4096 ? { codexHome: r.codexHome } : {}),
+        ...(launch ? { launch } : {}),
+        ...(r.wsl === true ? { wsl: true } : {}),
+        ...(typeof r.taskId === 'string' && r.taskId.length > 0 && r.taskId.length <= 128 ? { taskId: r.taskId } : {}),
+        ...(typeof r.launchSessionId === 'string' && isPlausibleResumeSessionId('claude', r.launchSessionId) ? { launchSessionId: r.launchSessionId } : {}),
+        ...(typeof r.permissionMode === 'string' && Object.prototype.hasOwnProperty.call(PERMISSION_FLAG, r.permissionMode) ? { permissionMode: r.permissionMode } : {}),
+      });
     }
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== 'ENOENT') return { unreadable: String(err) };

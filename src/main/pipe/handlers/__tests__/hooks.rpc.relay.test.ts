@@ -190,6 +190,20 @@ describe('hooks.signal — daemon relay', () => {
     expect(bindingCalls()).toHaveLength(1);
   });
 
+  it('local fallback binds a Claude turn start with its mode, as the daemon does', async () => {
+    const { router: hookRouter } = stubHookRouter();
+    const daemon = fakeDaemon({ connected: false });
+    const bindingCalls = () => daemon.rpc.mock.calls.filter(([method]) => method === 'daemon.setResumeBinding');
+    await dispatchSignal(daemon.client, hookRouter, {
+      ptyId: 'pty-1', kind: 'agent.user_prompt_submit', agentSessionId: 'conv-prompt', payload: { permissionMode: 'bypassPermissions' },
+    });
+    expect(bindingCalls()).toHaveLength(1);
+    expect(bindingCalls()[0][1]).toMatchObject({ id: 'pty-1', resumeBinding: { sessionId: 'conv-prompt', permissionMode: 'bypassPermissions' } });
+    // Another agent's turn start does not bind.
+    await dispatchSignal(daemon.client, hookRouter, { ptyId: 'pty-1', agent: 'codex', kind: 'agent.user_prompt_submit', agentSessionId: 'conv-codex' });
+    expect(bindingCalls()).toHaveLength(1);
+  });
+
   it('falls back to local processing when there is no daemon client at all', async () => {
     const { router: hookRouter, recordHook } = stubHookRouter();
 

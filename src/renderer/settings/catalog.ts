@@ -26,6 +26,8 @@ export interface SettingsCatalogEntry {
   descKey?: TranslationKey;
   /** Extra search terms (English + native-language synonyms). Space-separated. */
   synonyms: string;
+  /** Rendered only on this platform; search leaves it out elsewhere. */
+  platform?: NodeJS.Platform;
 }
 
 /**
@@ -115,6 +117,7 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
   { id: 'fontsize', tab: 'appearance', labelKey: 'settings.fontSize', synonyms: 'type size zoom text 글자' },
   { id: 'fontfamily', tab: 'appearance', labelKey: 'settings.fontFamily', descKey: 'settings.fontFamilyDesc', synonyms: 'typeface mono cascadia jetbrains 폰트' },
   { id: 'cursorshape', tab: 'appearance', labelKey: 'settings.cursorShape', descKey: 'settings.cursorShapeDesc', synonyms: 'cursor caret bar block underline beam 커서 캐럿 막대 블록 shape type style' },
+  { id: 'windowglass', tab: 'appearance', labelKey: 'settings.windowGlass', descKey: 'settings.windowGlassDesc', synonyms: 'transparent translucent transparency vibrancy blur glass opacity 투명 반투명 투명도 유리 블러', platform: 'darwin' },
   { id: 'chrome', tab: 'appearance', labelKey: 'settings.chromePreset', descKey: 'settings.chromePresetDesc', synonyms: 'density compact comfortable' },
   { id: 'sidebarpos', tab: 'appearance', labelKey: 'settings.sidebarPosition', descKey: 'settings.sidebarPositionDesc', synonyms: 'sidebar left right dock' },
   { id: 'sidebarattention', tab: 'appearance', labelKey: 'settings.sidebarSort', descKey: 'settings.sidebarSortDesc', synonyms: 'needs you waiting attention sort order recent activity manual pin top 대기 정렬 순서 최근' },
@@ -129,7 +132,7 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
   { id: 'multiview', tab: 'appearance', labelKey: 'settings.multiviewArrangement', descKey: 'settings.multiviewArrangementDesc', synonyms: 'grid split stack columns rows' },
   { id: 'uiscale', tab: 'appearance', labelKey: 'settings.uiScale', descKey: 'settings.uiScaleDesc', synonyms: 'zoom dpi accessibility scale 배율' },
   { id: 'titlebarvitals', tab: 'appearance', labelKey: 'settings.titlebarVitals', descKey: 'settings.titlebarVitalsDesc', synonyms: 'memory ram cpu usage gauge chip titlebar status vitals 메모리 사용량 타이틀바' },
-  { id: 'toolbar', tab: 'appearance', labelKey: 'settings.agentToolbarShow', descKey: 'settings.agentToolbarShowDesc', synonyms: 'toolbar compose new chat' },
+  { id: 'toolbar', tab: 'appearance', labelKey: 'settings.agentToolbarShow', descKey: 'settings.agentToolbarShowDesc', synonyms: 'toolbar compose files snippets schedule multi task' },
 
   { id: 'sound', tab: 'notifications', labelKey: 'settings.sound', descKey: 'settings.soundDesc', synonyms: 'sound audio beep alarm 소리' },
   { id: 'toast', tab: 'notifications', labelKey: 'settings.toast', descKey: 'settings.toastDesc', synonyms: 'toast popup banner' },
@@ -163,6 +166,7 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
   { id: 'factorylanedailycap', tab: 'factory', labelKey: 'settings.factory.laneDailyCap', descKey: 'settings.factory.laneDailyCapDesc', synonyms: 'merge lane daily cap limit per day' },
   { id: 'factoryphonebot', tab: 'factory', labelKey: 'settings.factory.phoneBot', descKey: 'settings.factory.phoneBotDesc', synonyms: 'phone mobile ios bot addressee moa coordinator 폰 휴대폰' },
   { id: 'factorybots', tab: 'factory', labelKey: 'settings.factory.bots', descKey: 'settings.factory.botsDesc', synonyms: 'bots add bot profile lead triage verifier maintainer budget workspace repository 봇 추가' },
+  { id: 'factoryconnections', tab: 'factory', labelKey: 'settings.factory.connections.section', descKey: 'settings.factory.connections.sectionDesc', synonyms: 'connections connectors mcp server tools github filesystem 연결 커넥터 서버 도구' },
   { id: 'factorykeys', tab: 'factory', labelKey: 'settings.factory.keys', descKey: 'settings.factory.keysDesc', synonyms: 'keys secrets api key token env environment variable credential 키 비밀 토큰' },
 
   { id: 'roles', tab: 'roles', labelKey: 'settings.roleBindings', descKey: 'settings.roleBindingsDesc', synonyms: 'role reviewer tester planner model bind' },

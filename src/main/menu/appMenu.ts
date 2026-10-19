@@ -41,7 +41,7 @@ import { quitAndStopSessions, type QuitAndStopCallbacks } from '../quit/quitAndS
 /**
  * Electron version these role accelerators were probed against. Bumping
  * Electron without re-probing is how this table silently goes wrong, so
- * `appMenu.template.test.ts` fails when package.json's major drifts from this.
+ * `appMenu.template.os.test.ts` fails when package.json's major drifts from this.
  * Re-probe with `npx electron scripts/probe-menu-role-accelerators.js`.
  */
 export const PROBED_ELECTRON_MAJOR = 41;
@@ -103,7 +103,7 @@ function roleAccelerator(role: string, platform: NodeJS.Platform): string | unde
  * Every accelerator a template actually installs: the ones it declares, plus
  * the ones its roles bring along. Recurses into submenus.
  *
- * Exported for `appMenu.template.test.ts`, which is the regression pin: a menu
+ * Exported for `appMenu.template.os.test.ts`, which is the regression pin: a menu
  * item that steals a `WMUX_KEYMAP` combo fails CI instead of shipping as a dead
  * shortcut nobody notices for three releases.
  */
@@ -160,7 +160,7 @@ const EDIT_MENU_MEMBERS = [
  * Build the application menu template.
  *
  * Pure so the shape can be asserted without an Electron runtime — same split as
- * `tray.ts` / `tray.macTemplate.test.ts`.
+ * `tray.ts` / `tray.macTemplate.os.test.ts`.
  *
  * `isDev` gates the Developer submenu. Reload stays reachable while developing,
  * but on `Alt`-prefixed keys (never `Cmd+R` / `Cmd+Shift+R`) and never in a

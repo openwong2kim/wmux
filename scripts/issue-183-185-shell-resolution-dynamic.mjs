@@ -53,7 +53,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
  * match }.
  */
 async function runScenario(manager, { id, cmd, probeLine, matcher, settleMs = 1500, timeoutMs = 12_000 }) {
-  const session = manager.createSession({ id, cmd, cwd: os.homedir() });
+  const session = await manager.createSessionAsync({ id, cmd, cwd: os.homedir() });
   const resolvedCmd = session.cmd;
   const managed = manager.getSession(id);
   if (!managed || !managed.ptyProcess) throw new Error('no ptyProcess on managed session');

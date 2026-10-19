@@ -37,7 +37,7 @@
 // command the rules do not match can still reach the same effects.
 
 import path from 'node:path';
-import { launcherStem, tokenize } from './agentResume';
+import { isPlausibleResumeSessionId, launcherStem, tokenize } from './agentResume';
 import { EFFORT_TOKEN_RE } from './agentLaunchOptions';
 import { FANOUT_MODEL_RE, codexTrustOverride } from './fanoutPreset';
 import { ORCH_ROLES, ROLE_BINDING_MODEL_MAX, type OrchRole, type WmuxTools } from './orchestratorRole';
@@ -46,6 +46,8 @@ import { stripPromptFileArgument } from './promptFileArgument';
 import { BROWSER_TOOL_SURFACE, CORE_TOOL_SURFACE } from './coreSurface';
 import { UNLISTED_TOOLS } from './unlistedTools';
 import { FANOUT_WORKER_DISALLOWED_TOOLS, splitModelEnvMarker } from './workerLaunch';
+import type { Connector } from './botConnector';
+import { CONNECTOR_NPM_REGISTRY } from './botWorkerMcp';
 
 /** The rules file, relative to the worktree. */
 export const CODEX_WORKER_RULES_PATH = '.codex/rules/wmux-bot-worker.rules';
@@ -160,7 +162,9 @@ export interface CodexWorkerLine {
   /** The wmux tool level the line asked for (`-c mcp_servers.wmux…`): only
    *  the level is kept; main writes the server's arguments itself. */
   wmuxTools?: CodexWorkerToolLevel;
-  /** The prompt-file argument, verbatim. */
+  /** `codex resume <id>`: the conversation to resume (session lines only). */
+  resumeId?: string;
+  /** The prompt-file argument, verbatim; '' for a resume without one. */
   promptArgument: string;
 }
 
@@ -223,6 +227,8 @@ export function isCodexToolKey(name: string): boolean {
   return TOOL_KEY.test(name);
 }
 const DEFAULT_ASK_VALUE = 'mcp_servers.wmux.default_tools_approval_mode=prompt';
+const TOOL_TABLE_VALUE = /^mcp_servers\.wmux\.tools=\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}$/;
+const TOOL_ENTRY = /^([A-Za-z0-9_-]{1,64})=\{approval_mode="(approve|prompt)"\}$/;
 
 /**
  * The `-c` words that set a codex bot worker's wmux tool approvals: the
@@ -239,7 +245,128 @@ export function codexWorkerToolApprovals(ownerApproved: readonly string[] = []):
   return [`-c ${DEFAULT_ASK_VALUE}`, `-c ${shellWord(`mcp_servers.wmux.tools={${table}}`)}`];
 }
 
+/** A tool table codexWorkerToolApprovals writes: each entry once, and
+ *  `approve` only for an approved tool. Pure. */
+function isWorkerToolTable(value: string): boolean {
+  const m = TOOL_TABLE_VALUE.exec(value);
+  if (!m) return false;
+  const seen = new Set<string>();
+  for (const entry of m[1].split(',')) {
+    const e = TOOL_ENTRY.exec(entry);
+    if (!e || seen.has(e[1])) return false;
+    if (e[2] === 'approve' && !CODEX_WORKER_APPROVED_TOOLS.includes(e[1])) return false;
+    seen.add(e[1]);
+  }
+  return true;
+}
+
+// ── A codex worker's MCP servers: wmux and its task's connections only ──────
+//
+// The Codex twin of shared/botWorkerMcp.ts, measured on codex-cli 0.162.1:
+//  - `-c mcp_servers.<k>.enabled=false` turns an owner's server off; an
+//    override of a server the config does not define stops codex at startup,
+//    so only the servers the config names are turned off;
+//  - `features.apps=false` drops the ChatGPT apps server (`codex_apps`, 265
+//    tools on a signed-in account, GitHub writes among them) and
+//    `features.plugins=false` the plugins;
+//  - a `-c mcp_servers.<n>={...}` table MERGES with a config table of the same
+//    name (the owner's `env` reached our server), so a connection named like an
+//    owner server is refused;
+//  - a server's environment is a short default set (PATH and HOME kept) plus
+//    its `env` table and the variables `env_vars` names: a key goes by name;
+//  - `bearer_token_env_var` sends `Authorization: Bearer <value>`,
+//    `env_http_headers` a header's raw value;
+//  - `enabled_tools` exposes only the tools it lists, `disabled_tools` hides
+//    the ones it lists, and `default_tools_approval_mode="approve"` runs the
+//    rest under `-a never`.
+
+/** An owner server a launch line can turn off by name (a bare TOML key). */
+const OWNER_SERVER_KEY = /^[A-Za-z0-9_-]{1,64}$/;
+const OWNER_SERVER_OFF_VALUE = /^mcp_servers\.([A-Za-z0-9_-]{1,64})\.enabled=false$/;
+/** A connection's table as codexWorkerMcpWords writes it (read back on a
+ *  re-fire, then rebuilt). */
+const CONNECTION_TABLE_VALUE = /^mcp_servers\.([a-z][a-z0-9-]{0,30}[a-z0-9])=\{.*\}$/;
+const FEATURES_OFF = ['features.apps=false', 'features.plugins=false'] as const;
+
+export interface CodexWorkerMcpInput {
+  /** The servers the owner's codex config defines (`wmux` is left on). */
+  ownerServers: readonly string[];
+  connectors: readonly Connector[];
+  /** A stdio connection's run folder (outside every worktree). */
+  runDir: (c: Connector) => string;
+  /** The empty npm user config in that folder. */
+  npmrc: (c: Connector) => string;
+}
+
+/** Why a connection cannot reach a codex worker, or null. Pure. */
+export function codexConnectorRefusal(c: Connector): string | null {
+  if (c.transport === 'sse') return `${c.name}: codex workers do not connect to SSE servers`;
+  const bearer = c.secrets.find((s) => s.as === 'header' && s.scheme === 'bearer' && s.header.toLowerCase() !== 'authorization');
+  if (bearer) return `${c.name}: codex workers send a Bearer key only in the Authorization header`;
+  if (c.secrets.filter((s) => s.as === 'header' && s.scheme === 'bearer').length > 1) return `${c.name}: codex workers send one Bearer key`;
+  return null;
+}
+
+/** A TOML inline table of `[key, toml value]` pairs (keys quoted). Pure. */
+function tomlTable(entries: Array<[string, string]>): string {
+  return `{${entries.map(([k, v]) => `${tomlString(k)}=${v}`).join(',')}}`;
+}
+
+const tomlArray = (values: readonly string[]): string => `[${values.map(tomlString).join(',')}]`;
+
+/**
+ * The `-c` words that give a codex worker exactly wmux and its task's
+ * connections: apps and plugins off, every other server of the owner's
+ * config off, and one table per connection. Null when that cannot be written:
+ * an owner server name that is not a bare key, a connection named like an
+ * owner server, one codexConnectorRefusal names, or text that would not read
+ * back as plain words (a quote or backslash). Pure.
+ */
+export function codexWorkerMcpWords(input: CodexWorkerMcpInput): string[] | null {
+  const words: string[] = FEATURES_OFF.map((v) => `-c ${v}`);
+  for (const name of input.ownerServers) {
+    if (name === 'wmux') continue;
+    if (!OWNER_SERVER_KEY.test(name)) return null;
+    words.push(`-c mcp_servers.${name}.enabled=false`);
+  }
+  for (const c of input.connectors) {
+    if (input.ownerServers.includes(c.name) || codexConnectorRefusal(c)) return null;
+    const tools: Array<[string, string]> = c.tools.mode === 'all'
+      ? [['default_tools_approval_mode', '"approve"'], ['disabled_tools', tomlArray(c.tools.blocked)]]
+      : [['default_tools_approval_mode', '"approve"'], ['enabled_tools', tomlArray(c.tools.allowed)]];
+    let table: string;
+    if (c.transport === 'stdio' && c.stdio) {
+      const env = { ...c.stdio.env, npm_config_userconfig: input.npmrc(c), npm_config_registry: CONNECTOR_NPM_REGISTRY };
+      table = tomlTable([
+        ['command', tomlString('/usr/bin/env')],
+        ['args', tomlArray(['-C', input.runDir(c), c.stdio.command, ...c.stdio.args])],
+        ['env', tomlTable(Object.entries(env).map(([k, v]) => [k, tomlString(v)]))],
+        ['env_vars', tomlArray(c.secrets.filter((s) => s.as === 'env').map((s) => s.secret))],
+        ...tools,
+      ]);
+    } else if (c.remote && c.transport === 'http') {
+      const bearer = c.secrets.find((s) => s.as === 'header' && s.scheme === 'bearer');
+      const raw = c.secrets.filter((s): s is Extract<typeof s, { as: 'header' }> => s.as === 'header' && s.scheme === 'raw');
+      table = tomlTable([
+        ['url', tomlString(c.remote.url)],
+        ['http_headers', tomlTable(Object.entries(c.remote.headers).map(([k, v]) => [k, tomlString(v)]))],
+        ...(bearer ? [['bearer_token_env_var', tomlString(bearer.secret)] as [string, string]] : []),
+        ...(raw.length > 0 ? [['env_http_headers', tomlTable(raw.map((s) => [s.header, tomlString(s.secret)]))] as [string, string]] : []),
+        ...tools,
+      ]);
+    } else {
+      return null;
+    }
+    const value = `mcp_servers.${c.name}=${table}`;
+    if (/['\\]/.test(value) || !CONNECTION_TABLE_VALUE.test(value)) return null;
+    words.push(`-c ${shellWord(value)}`);
+  }
+  return words;
+}
+
 const POSIX_PROMPT_ARGUMENT = /^"\$\(cat '(?:[^']|'\\'')*'\)"$/;
+/** The writable-roots override main builds: a TOML array of guardable paths. */
+const WRITABLE_ROOTS_VALUE = /^sandbox_workspace_write\.writable_roots=\[(?:"\/[^"'`$\\]*",)*"\/[^"'`$\\]*"\]$/;
 
 /**
  * A codex fan-out line, checked against an ALLOWLIST: the launcher `codex`,
@@ -249,21 +376,25 @@ const POSIX_PROMPT_ARGUMENT = /^"\$\(cat '(?:[^']|'\\'')*'\)"$/;
  * at most once. Anything else — another flag, a subcommand, a second shell
  * command — returns null. POSIX shells only. Pure.
  */
-export function parseCodexWorkerLine(fullLine: string, cwd: string): CodexWorkerLine | null {
+export function parseCodexWorkerLine(fullLine: string, cwd: string, opts: { resume?: boolean } = {}): CodexWorkerLine | null {
   if (!isGuardablePath(cwd)) return null;
-  const { marker, command } = splitModelEnvMarker(fullLine);
-  if (marker) return null;
+  // A leading model-env marker is wmux's own prefix (workerLaunch.ts), about a
+  // Claude variable codex never reads: read past it, and the rebuilt line
+  // leaves it out.
+  const { command } = splitModelEnvMarker(fullLine);
   const trimmed = command.trim();
   const lastSpace = trimmed.lastIndexOf(' "$(cat ');
-  if (lastSpace < 0) return null;
-  const promptArgument = trimmed.slice(lastSpace + 1);
-  if (!POSIX_PROMPT_ARGUMENT.test(promptArgument)) return null;
-  const head = trimmed.slice(0, lastSpace);
-  if (stripPromptFileArgument(head) !== head || /[;&|`\n\r<>]|\$\(/.test(head.replace(/'[^']*'/g, "''"))) return null;
+  const promptArgument = lastSpace < 0 ? '' : trimmed.slice(lastSpace + 1);
+  if (promptArgument && !POSIX_PROMPT_ARGUMENT.test(promptArgument)) return null;
+  // The line main builds puts `--` before the prompt.
+  const head = (lastSpace < 0 ? trimmed : trimmed.slice(0, lastSpace)).replace(/ --$/, '');
+  if (stripPromptFileArgument(head) !== head || !plainQuotedWords(head) || /[;&|`\n\r<>]|\$\(/.test(head.replace(/'[^']*'/g, "''"))) return null;
   const tokens = tokenize(head);
   if (tokens.length === 0 || tokens[0].value !== 'codex' || tokens[0].quoted) return null;
+  const first = 1;
+  let resumeId: string | undefined;
   const trust = codexTrustOverride(cwd, 'darwin');
-  const trustValue = trust ? trust.slice(4, -1).replace(/'\\''/g, "'") : undefined;
+  const trustValue = trust ? trust.slice(4, -1) : undefined;
   const seen = new Set<string>();
   const once = (key: string): boolean => {
     if (seen.has(key)) return false;
@@ -271,12 +402,17 @@ export function parseCodexWorkerLine(fullLine: string, cwd: string): CodexWorker
     return true;
   };
   const out: Omit<CodexWorkerLine, 'promptArgument'> = {};
-  for (let k = 1; k < tokens.length; k++) {
+  for (let k = first; k < tokens.length; k++) {
     const flag = tokens[k].value;
     const value = tokens[k + 1]?.value;
     if (tokens[k].quoted || value === undefined) return null;
     k++;
-    if (flag === '-a' && value === 'never') {
+    // `resume <id>` (session lines only), once, among the flags: the resume
+    // chip may put a model flag before it.
+    if (opts.resume && flag === 'resume') {
+      if (resumeId !== undefined || tokens[k].quoted || !isPlausibleResumeSessionId('codex', value) || !/^[A-Za-z0-9-]+$/.test(value)) return null;
+      resumeId = value;
+    } else if (flag === '-a' && value === 'never') {
       if (!once('-a')) return null;
     } else if (flag === '-s' && value === 'workspace-write') {
       if (!once('-s')) return null;
@@ -291,12 +427,49 @@ export function parseCodexWorkerLine(fullLine: string, cwd: string): CodexWorker
     } else if (flag === '-c' && value.startsWith('mcp_servers.wmux.') && parseCodexToolLevel(value)) {
       if (!once('wmux')) return null;
       out.wmuxTools = parseCodexToolLevel(value)!;
+    // What main itself adds to a line it built (a re-fire or a resume brings it
+    // back): accepted and then rebuilt, never taken as given.
+    } else if (flag === '-c' && WRITABLE_ROOTS_VALUE.test(value)) {
+      if (!once('roots')) return null;
+    } else if (flag === '-c' && value === 'sandbox_workspace_write.network_access=true') {
+      if (!once('network')) return null;
+    } else if (flag === '-c' && value === DEFAULT_ASK_VALUE) {
+      if (!once('default-ask')) return null;
+    } else if (flag === '-c' && isWorkerToolTable(value)) {
+      if (!once('tool-table')) return null;
+    } else if (flag === '-C' && path.posix.resolve(value) === path.posix.resolve(cwd)) {
+      if (!once('-C')) return null;
+    // The MCP words main adds (codexWorkerMcpWords): rebuilt from main's own
+    // records, never taken from the line.
+    } else if (flag === '-c' && (FEATURES_OFF as readonly string[]).includes(value)) {
+      if (!once(value)) return null;
+    } else if (flag === '-c' && OWNER_SERVER_OFF_VALUE.test(value)) {
+      if (!once(value)) return null;
+    } else if (flag === '-c' && CONNECTION_TABLE_VALUE.test(value) && !value.startsWith('mcp_servers.wmux=')) {
+      if (!once(`table:${CONNECTION_TABLE_VALUE.exec(value)![1]}`)) return null;
     } else {
       return null;
     }
   }
-  if (!seen.has('trust')) return null;
-  return { ...out, promptArgument };
+  // A launch names the prompt and the trust override; a resume names neither
+  // necessarily (main rebuilds the trust from its own record of the folder).
+  if (!resumeId && (!promptArgument || !seen.has('trust'))) return null;
+  return { ...out, ...(resumeId ? { resumeId } : {}), promptArgument };
+}
+
+/** Every quote on the line is closed, and nothing is escaped: a backslash
+ *  anywhere, or an unterminated quote, is not a word this guard reads. Pure. */
+function plainQuotedWords(head: string): boolean {
+  if (head.includes('\\')) return false;
+  let quote: string | null = null;
+  for (const c of head) {
+    if (quote) {
+      if (c === quote) quote = null;
+    } else if (c === '"' || c === "'") {
+      quote = c;
+    }
+  }
+  return quote === null;
 }
 
 /** A POSIX single-quoted shell word. Pure. */
@@ -312,7 +485,8 @@ function tomlString(value: string): string {
 /**
  * The line main launches: its own sandbox, approval, writable roots and
  * working root, the caller's model, effort and tool level, the worker's wmux
- * tool approvals when `opts.toolApprovals`, then `--` and the prompt. `writableRoots` are
+ * tool approvals when `opts.toolApprovals`, its MCP words (`opts.mcpWords`),
+ * then `--` and the prompt. `writableRoots` are
  * codexWorkerWritableRoots. Returns null when a path cannot be written as
  * one shell word. Pure.
  */
@@ -320,7 +494,7 @@ export function buildCodexWorkerLaunchLine(
   parsed: CodexWorkerLine,
   cwd: string,
   writableRoots: readonly string[],
-  opts: { toolApprovals?: { ownerApproved: readonly string[] }; mcpEntry?: string } = {},
+  opts: { toolApprovals?: { ownerApproved: readonly string[] }; mcpEntry?: string; mcpWords?: readonly string[] } = {},
 ): string | null {
   const trust = codexTrustOverride(cwd, 'darwin');
   if (!trust || writableRoots.length === 0 || ![cwd, ...writableRoots].every(isGuardablePath)) return null;
@@ -329,6 +503,7 @@ export function buildCodexWorkerLaunchLine(
   if (toolLevel === null) return null;
   return [
     'codex',
+    ...(parsed.resumeId ? [`resume ${parsed.resumeId}`] : []),
     trust,
     '-a never',
     '-s workspace-write',
@@ -340,11 +515,12 @@ export function buildCodexWorkerLaunchLine(
     // Only with a wmux server in the codex config: an override of a server
     // the config does not define stops codex at startup.
     ...(opts.toolApprovals ? codexWorkerToolApprovals(opts.toolApprovals.ownerApproved) : []),
+    // Wmux and the task's connections only (codexWorkerMcpWords).
+    ...(opts.mcpWords ?? []),
     // Codex's working root, pinned to the folder the rules were written into.
     `-C ${shellWord(cwd)}`,
     // The prompt is never read as an option, whatever its text starts with.
-    '--',
-    parsed.promptArgument,
+    ...(parsed.promptArgument ? ['--', parsed.promptArgument] : []),
   ].join(' ');
 }
 

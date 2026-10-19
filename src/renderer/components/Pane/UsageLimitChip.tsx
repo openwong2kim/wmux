@@ -6,7 +6,7 @@
 // reset passed, and a dismiss ×. Compact (narrow pane) = glyph + countdown.
 // Muted at rest; only the armed "Resuming at reset" label is warm, because it
 // means the system will act on its own.
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import { getLocale } from '../../i18n';
@@ -14,6 +14,8 @@ import { updateUsageLimit } from '../../hooks/useUsageLimitBridge';
 import { IconClock, IconX } from '../icons';
 import { FOCUS_RING } from '../focusRing';
 import { usageLimitStatusText, usageLimitView } from './usageLimitPresentation';
+import PaneActionsMenu from './PaneActionsMenu';
+import { usePaneContinueOnAccount } from './usePaneContinueOnAccount';
 
 /** Re-render every 30s while `active`, so countdowns stay current. */
 export function useUsageLimitNow(active: boolean): number {
@@ -29,10 +31,16 @@ export function useUsageLimitNow(active: boolean): number {
 
 const TEXT_BTN = `ui-icon-btn ${FOCUS_RING} h-6 px-1.5 shrink-0 text-[11px] leading-none whitespace-nowrap`;
 
-export default function UsageLimitChip({ ptyId, compact }: { ptyId: string | undefined; compact: boolean }) {
+export default function UsageLimitChip({ ptyId, compact, readOnly = false, workspaceId }: { ptyId: string | undefined; compact: boolean; readOnly?: boolean; workspaceId?: string }) {
   const t = useT();
   const limit = useStore((s) => (ptyId ? s.usageLimits[ptyId] : undefined));
   const now = useUsageLimitNow(!!limit);
+  // Another Claude account can take the conversation over while this one waits.
+  const continueAccount = usePaneContinueOnAccount({ ptyId, allowed: !!limit && !readOnly, workspaceId });
+  const reloadContinueAccount = continueAccount.reload;
+  useEffect(() => { reloadContinueAccount(); }, [reloadContinueAccount]);
+  const continueBtnRef = useRef<HTMLButtonElement>(null);
+  const [continueAnchor, setContinueAnchor] = useState<{ top: number; left: number; right: number; bottom: number } | null>(null);
   if (!limit || !ptyId) return null;
 
   const view = usageLimitView(limit, now, getLocale());
@@ -80,6 +88,31 @@ export default function UsageLimitChip({ ptyId, compact }: { ptyId: string | und
         >
           {t('usageLimit.resume')}
         </button>
+      )}
+      {!compact && continueAccount.enabled && (
+        <button
+          ref={continueBtnRef}
+          type="button"
+          className={TEXT_BTN}
+          title={t('usageLimit.continueOnTitle')}
+          aria-haspopup="menu"
+          aria-expanded={!!continueAnchor}
+          onClick={(e) => {
+            if (continueAnchor) { setContinueAnchor(null); return; }
+            setContinueAnchor(e.currentTarget.getBoundingClientRect());
+          }}
+          data-usage-limit-action="continue-on"
+        >
+          {t('usageLimit.continueOn')}
+        </button>
+      )}
+      {continueAnchor && (
+        <PaneActionsMenu
+          anchor={continueAnchor}
+          triggerRef={continueBtnRef}
+          items={continueAccount.subItems}
+          onClose={() => setContinueAnchor(null)}
+        />
       )}
       {!compact && (
         <button

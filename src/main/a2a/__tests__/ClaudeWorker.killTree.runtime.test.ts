@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import type { BrowserWindow } from 'electron';
+import { deliberateSleep } from '../../../test-utils/waitFor';
 
 // #1473 — the worker's kill path, against REAL processes on every platform CI
 // runs (this is the Windows dogfood: on win32 it drives `taskkill /T /F` for
@@ -114,7 +115,7 @@ describe(`ClaudeWorker kill path on real processes (${process.platform})`, () =>
 
     expect(await until(() => !alive(parent) && !alive(child), GONE_WITHIN_MS)).toBe(true);
     // Cancel is recorded by the RPC layer; the worker adds no second outcome.
-    await new Promise((r) => setTimeout(r, 500));
+    await deliberateSleep(500, 'negative: the worker adds no outcome of its own after cancel');
     expect(terminal()).toEqual([]);
   }, 60_000);
 
@@ -128,7 +129,7 @@ describe(`ClaudeWorker kill path on real processes (${process.platform})`, () =>
     vi.useRealTimers();
 
     expect(await until(() => !alive(parent) && !alive(child), GONE_WITHIN_MS)).toBe(true);
-    await new Promise((r) => setTimeout(r, 500));
+    await deliberateSleep(500, 'negative: the task fails exactly once, no second outcome');
     expect(terminal()).toHaveLength(1);
     expect(terminal()[0]).toMatchObject({ status: 'failed', message: 'Worker produced no output for 10 min and was stopped' });
   }, 60_000);
@@ -140,7 +141,7 @@ describe(`ClaudeWorker kill path on real processes (${process.platform})`, () =>
     worker.stop();
 
     expect(await until(() => !alive(parent) && !alive(child), GONE_WITHIN_MS)).toBe(true);
-    await new Promise((r) => setTimeout(r, 500));
+    await deliberateSleep(500, 'negative: the task fails exactly once, no second outcome');
     expect(terminal()).toHaveLength(1);
     expect(terminal()[0]).toMatchObject({ status: 'failed', message: 'wmux quit while the worker was running' });
   }, 60_000);

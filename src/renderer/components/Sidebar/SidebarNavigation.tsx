@@ -22,7 +22,7 @@ import { FOCUS_RING } from '../focusRing';
 export default function SidebarNavigation({ compact = false, home = false }: {
   compact?: boolean;
   /** The rail: pages only, each swapped into the sheet — Workspaces (home),
-   *  Bots, Fleet, Schedules, Remote and Git. The command palette is not a
+   *  Bots (while the bots are on), Fleet, Schedules, Remote and Git. The command palette is not a
    *  page: ⌘K and the rail's More menu open it. */
   home?: boolean;
 }) {
@@ -77,6 +77,8 @@ export default function SidebarNavigation({ compact = false, home = false }: {
   // Bots: the bots' questions and their workers waiting on the owner —
   // the sum of the page's own 1:1 rows (botsModel.ts). The rail keeps the
   // page's rooms read, so the count is live before the page is opened.
+  // The item is listed only while the bots are on (Settings › Bots turns
+  // them on); off, useBotsSync reads nothing.
   const botsState = useBots();
   useBotsSync(botsState, { focus: home });
   const botsNeeds = home ? botsState.model.needsYou : 0;
@@ -98,11 +100,11 @@ export default function SidebarNavigation({ compact = false, home = false }: {
       id: 'home', label: t('sidebar.workspaces'), name: t('sidebar.workspaces'), active: route === 'workspaces',
       icon: <IconGrid size={16} />,
       onClick: () => useStore.getState().setAppRoute('workspaces'),
-    }, {
+    }, ...(botsState.on ? [{
       id: 'bots', label: t('botsPage.title'), name: botsName, active: route === 'bots',
       icon: <IconRobot size={16} />,
       onClick: () => useStore.getState().setAppRoute('bots'),
-    }] : [search]),
+    }] : [])] : [search]),
     {
       id: 'fleet', label: t('fleet.title'), name: fleetName, active: fleetOpen,
       icon: <IconUsers size={16} />,

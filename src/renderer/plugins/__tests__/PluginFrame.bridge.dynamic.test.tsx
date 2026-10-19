@@ -25,6 +25,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import PluginFrame from '../PluginFrame';
 import { useStore } from '../../stores';
 import { PLUGIN_BRIDGE_VERSION } from '../../../shared/pluginHost';
+import { deliberateSleep } from '../../../test-utils/waitFor';
 
 const act = React.act;
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -197,13 +198,13 @@ describe('PluginFrame — bridge lifetime across a workspace switch', () => {
       await Promise.resolve();
       await Promise.resolve();
     });
-    await new Promise((r) => setTimeout(r, 20));
+    await deliberateSleep(20, 'negative: the stale port delivers nothing');
 
     // 양성 통제: 새 포트가 정상 요청에는 응답을 받는가
     rpc.mockImplementation(() => Promise.resolve({ ok: true, result: {} }));
     secondPort.postMessage({ v: PLUGIN_BRIDGE_VERSION, id: 'live', kind: 'request', method: 'workspace.current' });
     await act(async () => { await Promise.resolve(); await Promise.resolve(); });
-    await new Promise((r) => setTimeout(r, 20));
+    await vi.waitFor(() => expect(onSecond.mock.calls.map((c) => (c[0] as MessageEvent).data?.id)).toContain('live'), { timeout: 5_000 });
     const allIds = onSecond.mock.calls.map((c) => (c[0] as MessageEvent).data?.id);
     expect(allIds, '새 포트가 아무것도 못 받음 — 리스너 배선 문제').toContain('live');
     const idsSeen = allIds;

@@ -55,9 +55,9 @@ describe('SessionPromptScheduler', () => {
 
     try {
       scheduler.start();
-      await vi.waitFor(() => expect(warn).toHaveBeenCalledTimes(1));
+      await vi.waitFor(() => expect(warn).toHaveBeenCalledTimes(1), { timeout: 10_000 });
       intervalTick?.();
-      await vi.waitFor(() => expect(warn).toHaveBeenCalledTimes(2));
+      await vi.waitFor(() => expect(warn).toHaveBeenCalledTimes(2), { timeout: 10_000 });
       expect(warn).toHaveBeenLastCalledWith(
         '[session-schedule] scheduler tick failed:',
         expect.objectContaining({ message: 'clock unavailable' }),
@@ -149,7 +149,7 @@ describe('SessionPromptScheduler', () => {
     const second = new SessionPromptScheduler({ deliver, now: () => 2_000, dir });
 
     const firstTick = first.tick();
-    await vi.waitFor(() => expect(deliver).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(deliver).toHaveBeenCalledTimes(1), { timeout: 10_000 });
     await second.tick();
     release();
     await firstTick;

@@ -231,6 +231,12 @@ export const ms = {
   'pane.browserPolicyGrantSensitive': "Data log masuk untuk {host}",
   'pane.browserPolicyRevoke': "Tarik balik",
   'pane.browserPolicyRevokeFailed': "Tidak dapat menarik balik.",
+  'pane.browserPolicySummaryBlocked': "{count} disekat baru-baru ini",
+  'pane.browserPolicyRecentlyBlocked': "Disekat baru-baru ini",
+  'pane.browserPolicyRecentlyBlockedDesc': "Laman yang ditolak untuk Chrome anak tetingkap ini sejak ia dimulakan atau sejak perlindungan terakhir diubah. Benarkan terus menambahkannya ke laman yang dibenarkan.",
+  'pane.browserPolicyRecentlyBlockedCount': "Disekat {count}×",
+  'pane.browserPolicyAllow': "Benarkan",
+  'pane.browserPolicyAllowHost': "Benarkan {host}",
   'browser.private': "Peribadi",
   'browser.privateTab': "Tab peribadi",
   'browser.privateTooltip': "Tab peribadi: kuki dan data laman hanya disimpan dalam memori dan dipadam apabila tab peribadi terakhir ditutup. Tidak dipulihkan selepas dimulakan semula.",
@@ -536,9 +542,6 @@ export const ms = {
 
   // ─── Agent toolbar: fan-out / broadcast buttons ───
   'toolbar.fanOut': 'Multi Task',
-  'toolbar.broadcast': 'Broadcast',
-  'toolbar.broadcastTooltip': 'Broadcast — teks yang sama ke setiap panel terminal dalam ruang kerja semasa (tanpa pengasingan)',
-  'toolbar.broadcastPrompt': 'Broadcast — hantar ke setiap panel terminal dalam ruang kerja semasa',
 
   // ─── Fan-out dialog (1 prompt → N isolated tasks) ───
   'fanout.title': 'Fan-out — 1 prompt → N tugas terasing',
@@ -659,4 +662,21 @@ export const ms = {
   'git.secret.more': "(dan {count} lagi)",
   'settings.secretGuard': "Sekat kata laluan dan kunci dalam commit, push dan PR",
   'settings.secretGuardDesc': "Commit, Push dan Cipta PR di halaman Git, serta mengambil alih tugasan, menolak perubahan yang menambah fail .env, kunci peribadi atau kunci API.",
+  'botsPage.consent.title': "Bot berjalan pada pelan Claude anda",
+  'botsPage.consent.engine': "Setiap bot berfikir dengan Claude Agent SDK, dilog masuk dengan log masuk Claude Code pada komputer ini. Pekerjanya menjalankan Claude Code anda sendiri.",
+  'botsPage.consent.usage': "Penggunaannya dikira dalam had pelan Claude anda.",
+  'botsPage.consent.terms': "Terma Anthropic untuk pelan anda terpakai. wmux tidak pernah membaca, menyimpan atau menghantar log masuk Claude anda.",
+  'botsPage.consent.turnOn': "Hidupkan bot",
+  'botsPage.consent.cancel': "Batal",
+  'botsPage.consent.keepOn': "Kekalkan bot hidup",
+  'botsPage.consent.turnOff': "Matikan bot",
+
+  // Task cleanup list: detail line per scan entry
+  'worktask.cleanup.detail.unmaterialized': 'Tiada worktree dicipta untuk tugasan ini — tutup tugasan, atau cipta semula worktree.',
+  'worktask.cleanup.detail.preserved': 'Kerja yang belum di-commit disimpan — semak diff, kemudian commit atau buka PR, atau buang.',
+  'worktask.cleanup.detail.phone': 'Dicipta dari telefon (cabang phone/…) — semak, kemudian alih keluar apabila tidak diperlukan lagi.',
+  'worktask.cleanup.detail.orphanEnded': 'Tiada tugasan terbuka yang dipautkan (tugasan tamat atau telah dibersihkan) — semak, kemudian padam.',
+  'worktask.cleanup.detail.orphanUnlinked': 'Tiada tugasan atau rekod tugasan yang dipautkan — semak, kemudian padam.',
+  'worktask.cleanup.detail.orphanMeta': 'Hanya rekod tugasan yang tinggal, tanpa worktree (pengalihan keluar terganggu) — semak, kemudian padam.',
+  'worktask.cleanup.detail.diskMissing': 'Worktree tiada pada cakera (dipadam di luar wmux, atau ranap) — tutup tugasan untuk membersihkannya.',
 } as const;

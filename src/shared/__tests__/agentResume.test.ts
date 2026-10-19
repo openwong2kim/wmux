@@ -1,11 +1,13 @@
 import { describe, it, expect } from 'vitest';
 import {
+  launchedConversation,
   toResumeCommand,
   isResumableLaunchCommand,
   resumeOfferForRecovered,
   permissionFlagFor,
   mergeResumeBinding,
   isProvisionalCapture,
+  transcriptRelocated,
   normalizeResumeCwd,
   isUsableResumeBinding,
   resumeGrammarFor,
@@ -461,6 +463,49 @@ describe('toResumeCommand (X6)', () => {
     it('EXCLUDES supervised units', () => {
       expect(resumeOfferForRecovered({ supervision: { restart: 'always' }, lastDetectedAgent: 'claude' })).toBeUndefined();
     });
+    it('falls back to the saved binding\'s agent when the detection is missing or unresumable', () => {
+      // A Claude-only pane whose detector got taken over by a row naming
+      // Gemini: the guess cannot be resumed, the binding is the hook's own word.
+      const resumeBinding = { agent: 'claude', sessionId: 'abc', cwd: '/w' };
+      expect(resumeOfferForRecovered({ lastDetectedAgent: 'gemini', resumeBinding })).toBe('claude');
+      expect(resumeOfferForRecovered({ lastDetectedAgent: 'aider', resumeBinding })).toBe('claude');
+      expect(resumeOfferForRecovered({ resumeBinding })).toBe('claude');
+    });
+    it('a usable binding beats a conflicting name that has no proof of a later launch', () => {
+      // A Claude-only pane whose name was persisted as "codex" from a quoted
+      // banner row (or before the evidence stamp existed): the pill must offer
+      // the Claude conversation, not Codex's picker.
+      const resumeBinding = { agent: 'claude', sessionId: 'abc', cwd: '/w', ts: 2_000 };
+      expect(resumeOfferForRecovered({ lastDetectedAgent: 'codex', resumeBinding })).toBe('claude');
+      expect(resumeOfferForRecovered({ lastDetectedAgent: 'codex', lastDetectedAgentEvidence: { source: 'screen', at: 3_000 }, resumeBinding })).toBe('claude');
+      // Proven, but before the binding was captured: Claude ran after it.
+      expect(resumeOfferForRecovered({ lastDetectedAgent: 'codex', lastDetectedAgentEvidence: { source: 'process', at: 1_000 }, resumeBinding })).toBe('claude');
+      // A malformed stamp proves nothing.
+      expect(resumeOfferForRecovered({ lastDetectedAgent: 'codex', lastDetectedAgentEvidence: { source: 'hook' }, resumeBinding })).toBe('claude');
+    });
+    it('a name a hook or a live process proved after the binding wins', () => {
+      // Claude ran (binding), then Codex with no Codex binding captured: the
+      // pill must offer Codex's picker, not the older Claude conversation.
+      const resumeBinding = { agent: 'claude', sessionId: 'abc', cwd: '/w', ts: 2_000 };
+      expect(resumeOfferForRecovered({ lastDetectedAgent: 'codex', lastDetectedAgentEvidence: { source: 'process', at: 3_000 }, resumeBinding })).toBe('codex');
+      expect(resumeOfferForRecovered({ lastDetectedAgent: 'codex', lastDetectedAgentEvidence: { source: 'hook', at: 3_000 }, resumeBinding })).toBe('codex');
+    });
+    it('a proven later run of an agent wmux cannot resume offers nothing', () => {
+      const resumeBinding = { agent: 'claude', sessionId: 'abc', cwd: '/w', ts: 2_000 };
+      expect(resumeOfferForRecovered({ lastDetectedAgent: 'aider', lastDetectedAgentEvidence: { source: 'process', at: 3_000 }, resumeBinding })).toBeUndefined();
+      expect(resumeOfferForRecovered({ lastDetectedAgent: 'gemini', lastDetectedAgentEvidence: { source: 'hook', at: 3_000 }, resumeBinding })).toBeUndefined();
+      // Proven before the binding, or only seen on screen: the binding stands.
+      expect(resumeOfferForRecovered({ lastDetectedAgent: 'gemini', lastDetectedAgentEvidence: { source: 'process', at: 1_000 }, resumeBinding })).toBe('claude');
+      expect(resumeOfferForRecovered({ lastDetectedAgent: 'gemini', lastDetectedAgentEvidence: { source: 'screen', at: 3_000 }, resumeBinding })).toBe('claude');
+    });
+    it('a name that agrees with the binding is offered as is', () => {
+      expect(resumeOfferForRecovered({ lastDetectedAgent: 'claude', resumeBinding: { agent: 'claude', sessionId: 'abc', cwd: '/w', ts: 1 } })).toBe('claude');
+      expect(resumeOfferForRecovered({ lastDetectedAgent: 'codex' })).toBe('codex');
+    });
+    it('an unusable or unresumable binding offers nothing', () => {
+      expect(resumeOfferForRecovered({ lastDetectedAgent: 'gemini', resumeBinding: { agent: 'claude', sessionId: '', cwd: '/w' } })).toBeUndefined();
+      expect(resumeOfferForRecovered({ lastDetectedAgent: 'gemini', resumeBinding: { agent: 'gemini', sessionId: 'x', cwd: '/w' } })).toBeUndefined();
+    });
   });
 });
 
@@ -553,6 +598,34 @@ describe('isProvisionalCapture (#1624 — Codex first-turn title thread)', () =>
   });
 });
 
+describe('transcriptRelocated (#2228)', () => {
+  const id = 'a1b2c3d4-0000-0000-0000-9f8e7d6c5b4a';
+  const at = (dir: string, cwd: string) => ({ agent: 'claude', sessionId: id, cwd, transcriptPath: `${dir}\\${id}.jsonl`, ts: 1 });
+  const home = 'C:\\Users\\u\\.claude\\projects\\C--X';
+  const wt = 'C:\\Users\\u\\.claude\\projects\\C--X--claude-worktrees-w';
+
+  it('is true when EnterWorktree moved the transcript to another project folder', () => {
+    expect(transcriptRelocated(at(home, 'C:\\X'), at(wt, 'C:\\X\\.claude\\worktrees\\w'))).toBe(true);
+  });
+
+  it('is false after a Bash cd: the cwd changed but the transcript stayed', () => {
+    expect(transcriptRelocated(at(home, 'C:\\X'), at(home, 'C:\\X\\sub'))).toBe(false);
+  });
+
+  it('is false without both paths, or across sessions', () => {
+    expect(transcriptRelocated(undefined, at(wt, 'C:\\W'))).toBe(false);
+    expect(transcriptRelocated({ ...at(home, 'C:\\X'), transcriptPath: undefined }, at(wt, 'C:\\W'))).toBe(false);
+    expect(transcriptRelocated(at(home, 'C:\\X'), { ...at(wt, 'C:\\W'), sessionId: 'other' })).toBe(false);
+  });
+
+  it('handles POSIX paths', () => {
+    expect(transcriptRelocated(
+      { ...at(home, '/x'), transcriptPath: `/h/.claude/projects/-x/${id}.jsonl` },
+      { ...at(wt, '/x/w'), transcriptPath: `/h/.claude/projects/-x-w/${id}.jsonl` },
+    )).toBe(true);
+  });
+});
+
 describe('isPlausibleResumeSessionId / parseCodexRolloutStem (#1823)', () => {
   const stem = 'rollout-2026-10-03T12-48-30-01234567-89ab-7cde-8fab-0123456789ab';
 
@@ -567,6 +640,29 @@ describe('isPlausibleResumeSessionId / parseCodexRolloutStem (#1823)', () => {
   it('splits a rollout stem into its local date and thread id', () => {
     expect(parseCodexRolloutStem(stem)).toEqual({ year: '2026', month: '10', day: '03', threadId: '01234567-89ab-7cde-8fab-0123456789ab' });
     expect(parseCodexRolloutStem('01234567-89ab-7cde-8fab-0123456789ab')).toBeUndefined();
+  });
+});
+
+describe('launchedConversation', () => {
+  const U = '7b0e3c2a-1f4d-4c8e-9a6b-2d5f8e1c3a90';
+  it('reads the pinned conversation and the mode the line starts it in', () => {
+    expect(launchedConversation(`claude --session-id ${U} --settings="/x/s.json" --dangerously-skip-permissions "$(cat '/w/.wtask/prompt.md')"`))
+      .toEqual({ sessionId: U, permissionMode: 'bypassPermissions' });
+    expect(launchedConversation(`claude --session-id ${U.toUpperCase()} "Cost task A" --permission-mode auto --allowedTools x`)).toEqual({ sessionId: U, permissionMode: 'auto' });
+    expect(launchedConversation(`claude --session-id=${U} --permission-mode=acceptEdits`)).toEqual({ sessionId: U, permissionMode: 'acceptEdits' });
+    // The last mode flag wins; no flag, no mode.
+    expect(launchedConversation(`claude --session-id ${U} --dangerously-skip-permissions --permission-mode plan`)).toEqual({ sessionId: U, permissionMode: 'plan' });
+    expect(launchedConversation(`claude --session-id ${U}`)).toEqual({ sessionId: U });
+  });
+
+  it('takes nothing from a prompt, after --, or from a line that pins no id or is not Claude', () => {
+    expect(launchedConversation(`claude --session-id ${U} "--dangerously-skip-permissions"`)).toEqual({ sessionId: U });
+    expect(launchedConversation(`claude --session-id ${U} -- --dangerously-skip-permissions`)).toEqual({ sessionId: U });
+    expect(launchedConversation(`claude --session-id ${U} --permission-mode someday`)).toEqual({ sessionId: U });
+    expect(launchedConversation('claude --dangerously-skip-permissions')).toBeNull();
+    expect(launchedConversation(`claude --session-id not-a-uuid --dangerously-skip-permissions`)).toBeNull();
+    expect(launchedConversation(`codex --session-id ${U} --dangerously-skip-permissions`)).toBeNull();
+    expect(launchedConversation(`claude --resume ${U} --dangerously-skip-permissions`)).toBeNull();
   });
 });
 

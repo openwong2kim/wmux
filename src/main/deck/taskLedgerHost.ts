@@ -90,6 +90,10 @@ export interface WorkTaskReconcilerPorts {
   /** `task.mission.list` for one owner — the daemon's owner-scoped read. */
   listTasks: (ownerWorkspaceId: string) => Promise<unknown>;
   ledger?: TaskLedger;
+  /** Who started the task in `taskWorkspaceId`, from its lineage stamp, or
+   *  null. A mirrored row carries it as its dispatch origin, so a recovered
+   *  bot worker counts on its bot's slots. */
+  originOf?: (taskWorkspaceId: string) => { kind: string; botId?: string; tainted?: boolean } | null;
   /** Minimum spacing between two full passes (default 10s). */
   minIntervalMs?: number;
   now?: () => number;
@@ -172,12 +176,31 @@ export function createWorkTaskReconciler(ports: WorkTaskReconcilerPorts): () => 
           }
           if (typeof t.missionChannelId === 'string') missionChannels.set(t.id, t.missionChannelId);
           if (!t.paneGroupId || l.get(t.id)) continue;
+          let origin: { kind: string; botId?: string; tainted?: boolean } | null = null;
+          try {
+            origin = ports.originOf?.(t.paneGroupId) ?? null;
+          } catch {
+            origin = null;
+          }
           try {
             await l.register({
               id: t.id,
               taskWorkspaceId: t.paneGroupId,
               ownerWorkspaceId: t.owner.verifiedWorkspaceId,
               title: typeof t.title === 'string' ? t.title : t.id,
+              ...(origin && typeof origin.kind === 'string' && origin.kind
+                ? {
+                    dispatch: {
+                      origin: {
+                        kind: origin.kind,
+                        ...(origin.botId ? { botId: origin.botId } : {}),
+                        // Absent stays absent: a bot task without it counts as tainted.
+                        ...(typeof origin.tainted === 'boolean' ? { tainted: origin.tainted } : {}),
+                      },
+                      reconciled: true as const,
+                    },
+                  }
+                : {}),
             });
           } catch (err) {
             console.warn(`[deck] ledger register for ${t.id} failed: ${String(err)}`);

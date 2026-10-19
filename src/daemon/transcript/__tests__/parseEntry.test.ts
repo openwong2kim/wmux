@@ -500,6 +500,18 @@ describe('parseTranscriptLine — malformed.jsonl', () => {
     expect(junk[0].ts).toBeUndefined();
   });
 
+  it('skips api-request-blob entries even though they carry a message (Claude Code 2.1.301)', () => {
+    const blob = (message: unknown) => JSON.stringify({ type: 'api-request-blob', sessionId: 's', hash: 'h', message });
+    expect(parseTranscriptLine(blob({ role: 'user', content: 'go with the recommendation' }), 10)).toEqual([]);
+    expect(parseTranscriptLine(blob({ role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: {} }] }), 20)).toEqual([]);
+    expect(parseTranscriptLine(blob({ role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: 'ok' }] }), 30)).toEqual([]);
+  });
+
+  it('still reads an untyped entry by its message role', () => {
+    const [event] = parseTranscriptLine('{"uuid":"u","message":{"role":"user","content":"hi"}}', 0);
+    expect(event?.kind).toBe('user_text');
+  });
+
   it('falls back to offset:index for an entry with no uuid', () => {
     const events = parseTranscriptLine('{"type":"user","message":{"role":"user","content":"hi"}}', 4096);
     expect(events[0].id).toBe('4096:0');

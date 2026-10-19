@@ -26,7 +26,7 @@ describe('onFactorySettingsChanged', () => {
     const off = onFactorySettingsChanged(() => seen.push(getFactorySettings().enabled));
     const s = store();
     setFactorySettingsStore(s);
-    await s.update({ enabled: true });
+    await s.update({ enabled: true, planConsent: { version: 1, at: '2026-10-15T00:00:00.000Z' } });
     setFactorySettingsStore(null);
     expect(seen).toEqual([false, true, false]);
     off();
@@ -41,7 +41,7 @@ describe('onFactorySettingsChanged', () => {
     const offGood = onFactorySettingsChanged(good);
     const s = store();
     setFactorySettingsStore(s);
-    await expect(s.update({ enabled: true })).resolves.toMatchObject({ enabled: true });
+    await expect(s.update({ enabled: true, planConsent: { version: 1, at: '2026-10-15T00:00:00.000Z' } })).resolves.toMatchObject({ enabled: true });
     expect(good).toHaveBeenCalledTimes(2);
     offBad();
     offGood();
@@ -59,7 +59,7 @@ describe('onFactorySettingsChanged', () => {
     const seen: boolean[] = [];
     const off = onFactorySettingsChanged(() => seen.push(getFactorySettings().enabled));
     try {
-      await expect(s.update({ enabled: true })).rejects.toThrow();
+      await expect(s.update({ enabled: true, planConsent: { version: 1, at: '2026-10-15T00:00:00.000Z' } })).rejects.toThrow();
       expect(seen).toEqual([true]);
     } finally {
       off();
@@ -71,7 +71,7 @@ describe('onFactorySettingsChanged', () => {
     setFactorySettingsStore(s);
     const seen: boolean[] = [];
     const off = onFactorySettingsChanged(() => seen.push(getFactorySettings().enabled));
-    const writing = s.update({ enabled: true });
+    const writing = s.update({ enabled: true, planConsent: { version: 1, at: '2026-10-15T00:00:00.000Z' } });
     expect(seen).toEqual([true]);
     await writing;
     off();

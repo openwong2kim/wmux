@@ -71,6 +71,10 @@ export type PhoneBotApprovalReply =
 
 const LINE_MAX = 200;
 
+/** The acts the phone shows and decides: not a bot's skill proposal, which
+ *  is approved on its desktop card, where its change is shown. */
+export const PHONE_APPROVAL_ACTIONS: readonly ApprovalAction[] = APPROVAL_ACTIONS.filter((a) => a !== 'skill');
+
 function isRecord(v: unknown): v is Record<string, unknown> {
   return !!v && typeof v === 'object' && !Array.isArray(v);
 }
@@ -98,7 +102,7 @@ export function isPhoneBotApprovalId(v: unknown): v is string {
 export function parsePhoneBotApproval(value: unknown): PhoneBotApproval | null {
   if (!isRecord(value)) return null;
   const requestId = isPhoneBotApprovalId(value.requestId) ? value.requestId : undefined;
-  const action = (APPROVAL_ACTIONS as readonly unknown[]).includes(value.action) ? value.action as ApprovalAction : undefined;
+  const action = (PHONE_APPROVAL_ACTIONS as readonly unknown[]).includes(value.action) ? value.action as ApprovalAction : undefined;
   const state = (STATES as readonly unknown[]).includes(value.state) ? value.state as ApprovalState : undefined;
   const threadId = parseThreadId(value.threadId);
   const workspaceId = line(value.workspaceId);

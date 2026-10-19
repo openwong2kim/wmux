@@ -1,7 +1,7 @@
 /**
  * v2 RCA fix (reboot-reattach, axis A) — AppLayout session-save invariants.
  *
- * Structural test (house pattern: sessionEnd.daemonShutdown.test.ts,
+ * Structural test (house pattern: sessionEnd.daemonShutdown.os.test.ts,
  * pty.handler.resize-retry.test.ts): AppLayout has no jsdom fixture, and these
  * invariants encode review-confirmed data-loss/correctness decisions that a
  * refactor could silently undo with every unit test staying green:
@@ -19,14 +19,14 @@
  *      reconcile stage resets it (a valid multi-RPC pass may exceed 15s).
  */
 import { describe, it, expect } from 'vitest';
-import * as fs from 'node:fs';
 import * as path from 'node:path';
 import ts from 'typescript';
 import { selectPcRailPersisted } from '../../../stores/selectors/pcRail';
+import { readSourceText } from '../../../../test-utils/sourceText';
 
 describe('AppLayout — axis A session-save invariants', () => {
   const appLayoutPath = path.join(__dirname, '..', 'AppLayout.tsx');
-  const source = fs.readFileSync(appLayoutPath, 'utf-8');
+  const source = readSourceText(appLayoutPath);
 
   function startupRegion(): string {
     const start = source.indexOf('// 앱 시작 시 세션 복원');
@@ -130,6 +130,32 @@ describe('AppLayout — axis A session-save invariants', () => {
       surfaceDismissedQuestion: { 'pty-1': 'Shall I merge?' },
     }) }, selectPcRailPersisted);
     expect(JSON.parse(JSON.stringify(snapshot)).surfaceDismissedQuestion).toEqual({ 'pty-1': 'Shall I merge?' });
+  });
+
+  it('saves the notification effects, including false values and a non-default opacity (#2294)', () => {
+    const tree = ts.createSourceFile('AppLayout.tsx', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+    const builder = tree.statements.find(
+      (node) => ts.isFunctionDeclaration(node) && node.name?.text === 'buildSessionData',
+    );
+    const code = ts.transpileModule(builder!.getText(tree), {
+      compilerOptions: { target: ts.ScriptTarget.ES2022 },
+    }).outputText;
+    const build = new Function('useStore', 'selectPcRailPersisted', `${code}; return buildSessionData(new Map());`);
+    const snapshot = JSON.parse(JSON.stringify(build({ getState: () => ({
+      workspaces: [],
+      archivedWorkspaces: [],
+      orchestratorRoleBindings: {},
+      layoutTemplates: [],
+      recentCommands: [],
+      toolbarSnippets: [],
+      surfaceDismissedQuestion: {},
+      paneRingEnabled: false,
+      paneFlashEnabled: false,
+      taskbarFlashEnabled: false,
+      paneGlowOpacity: 0.85,
+    }) }, selectPcRailPersisted)));
+    expect([snapshot.paneRingEnabled, snapshot.paneFlashEnabled, snapshot.taskbarFlashEnabled, snapshot.paneGlowOpacity])
+      .toEqual([false, false, false, 0.85]);
   });
 
   it('persists the usage-limit auto-resume setting explicitly, including false', () => {

@@ -248,12 +248,16 @@ export function planRecoveryPillType(args: {
    *  once (no progressive stage). Ignored without `sessionId` (#1916): the
    *  session picker never carries a skip flag. */
   forceSkip: boolean;
+  /** Withhold the role's skip/bypass flag (and its skip spellings in the
+   *  role's args) for every agent, not only the ones the pill's toggle covers.
+   *  The automatic resume sets it: it never grants bypass on its own. */
+  withholdRoleSkip?: boolean;
   /** Progressive-assembly stage: 0 = nothing typed yet, 1 = base typed. */
   resumeStage: number;
   /** The pane's role→model binding (re-asserted on the launch), if bound. */
   roleBinding: RoleBinding | undefined;
 }): RecoveryPillPlan | null {
-  const { launcher, sessionId, permFlag, forceSkip, resumeStage, roleBinding } = args;
+  const { launcher, sessionId, permFlag, forceSkip, withholdRoleSkip, resumeStage, roleBinding } = args;
   const grammar = resumeGrammarFor(launcher);
   if (!grammar) return null; // not resumable — pill shouldn't have shown (defensive)
   // Re-assert the bound model on a launcher-prefixed line. The stage-2
@@ -266,7 +270,7 @@ export function planRecoveryPillType(args: {
   // wmux can vouch for (#1946: it opens the session picker). It never carries a
   // permission flag: not the toggle's, and none of the role's (skip flag or a
   // permission choice in its args), for any agent.
-  const toggledOff = !sessionId || (!forceSkip && agentSupportsPermissionFlag(launcher));
+  const toggledOff = !sessionId || !!withholdRoleSkip || (!forceSkip && agentSupportsPermissionFlag(launcher));
   const rewrite = (cmd: string): { text: string; rewritten: boolean } => {
     const r = applyRoleBinding(cmd, roleBinding, {
       suppressSkipPermissions: toggledOff,
@@ -357,7 +361,30 @@ export function claimAutoResume(ptyId: string): boolean {
 }
 
 /**
- * The line to run when a recovered Claude pane is resumed on app start, or null
+ * Whether the recovery pill must stay hidden because the pane's agent is live:
+ * process truth or OSC 133 says so (strong evidence), or the daemon's screen
+ * tier sighted it there since the restart and it is still on screen (#2408).
+ *
+ * Hiding destroys nothing, so the weak screen evidence may hide; it never
+ * consumes the offer (only a hook or a live process does, daemon-side), and
+ * the pill is back once the sighting goes stale. A process observed dead or a
+ * shell back at its prompt outranks the screen read.
+ */
+export function recoveryAgentLive(args: {
+  agentAlive?: boolean;
+  commandRunning?: boolean;
+  agentOnScreen?: boolean;
+}): boolean {
+  if (args.agentAlive === true || args.commandRunning === true) return true;
+  return args.agentOnScreen === true && args.agentAlive !== false && args.commandRunning !== false;
+}
+
+/** Agents whose recovered panes are resumed automatically on start. */
+const AUTO_RESUME_AGENTS: ReadonlySet<string> = new Set(['claude', 'codex']);
+
+/**
+ * The line to run when a recovered Claude Code or Codex pane is resumed on app
+ * start, or null
  * when it should be left alone. Same assembly as the Resume pill, with the
  * permission mode that session had restored. Only the EXACT conversation is
  * resumed automatically, when the saved binding still matches the pane's cwd.
@@ -379,30 +406,42 @@ export function planAutoResume(args: {
   commandRunning?: boolean;
   /** Process truth: the pane's agent process is alive. */
   agentAlive?: boolean;
+  /** #2408: the screen tier sighted an agent in the pane since the restart,
+   *  whether or not it is on screen now (the read may still be pending). */
+  agentSighted?: boolean;
 }): string | null {
-  if (!args.enabled || args.agent !== 'claude') return null;
+  const agent = args.agent;
+  if (!args.enabled || !agent || !AUTO_RESUME_AGENTS.has(agent)) return null;
   // The daemon outlives an app quit, so a pane it recovered once keeps its
   // resume hint across app restarts while the resumed agent runs in it. Typing
   // then would land in the agent's own input box. Unknown signals do not block.
   if (args.commandRunning === true || args.agentAlive === true) return null;
+  // An agent was started in the pane by hand since the restart (#2408): the
+  // pill may still offer the resume, but nothing is typed on its own.
+  if (args.agentSighted === true) return null;
   const { binding } = args;
-  // Validate the session id before typing it: only a well-formed Claude session
-  // id is ever put on the line; anything else leaves the pane to the pill.
+  // Validate the session id before typing it: only a well-formed session id (a
+  // UUID, for Claude and Codex alike) is ever put on the line; anything else
+  // leaves the pane to the pill.
   const sessionId = binding?.sessionId && CHATV2_PROVIDER_SESSION_ID.test(binding.sessionId)
     ? binding.sessionId
     : undefined;
-  const exact = !!binding && !!sessionId && binding.agent === 'claude' &&
+  const exact = !!binding && !!sessionId && binding.agent === agent &&
     args.paneCwds.some((c) => !!c && normalizeResumeCwd(binding.cwd) === normalizeResumeCwd(c));
   if (!binding || !sessionId || !exact) return null; // #1946: the pill offers the picker
   const plan = planRecoveryPillType({
-    launcher: 'claude',
+    launcher: agent,
     sessionId,
     // A saved bypassPermissions mode restores as the default mode here: only
     // the pill's explicit toggle may type --dangerously-skip-permissions.
-    permFlag: binding.permissionMode !== 'bypassPermissions'
+    // Codex takes no Claude permission flag.
+    permFlag: agentSupportsPermissionFlag(agent) && binding.permissionMode !== 'bypassPermissions'
       ? permissionFlagFor(binding.permissionMode)
       : '',
     forceSkip: false,
+    // No bypass on the automatic path for any agent: Codex has no pill toggle,
+    // so without this a role's skipPermissions or bypass args would be typed.
+    withholdRoleSkip: true,
     // Both flags land on one line: the staged click flow does not apply here.
     resumeStage: 0,
     roleBinding: args.roleBinding,
@@ -411,7 +450,7 @@ export function planAutoResume(args: {
   // With a permission flag and an exact id the plan types only the base line
   // first; build the whole line instead.
   if (plan.advanceStage) {
-    const grammar = resumeGrammarFor('claude');
+    const grammar = resumeGrammarFor(agent);
     if (!grammar || !sessionId) return null;
     return `${plan.text} ${grammar.withId(sessionId)}`;
   }
@@ -829,12 +868,16 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
   const resumeHint = useStore((s) =>
     activeSurfacePtyId ? s.resumeHintByPtyId[activeSurfacePtyId] : undefined,
   );
-  // The pane's agent is running right now (process truth or OSC 133). A hint
-  // can outlive the resume it asked for when the daemon outlives an app quit;
-  // the pill must not offer a resume into that running agent.
+  // The pane's agent is running right now (process truth, OSC 133, or a live
+  // agent on its screen, #2408). A hint can outlive the resume it asked for
+  // when the daemon outlives an app quit; the pill must not offer a resume
+  // into that running agent.
   const resumeAgentLive = useStore((s) =>
-    !!activeSurfacePtyId &&
-    (s.agentAliveByPtyId[activeSurfacePtyId] === true || s.commandRunningByPtyId[activeSurfacePtyId] === true),
+    !!activeSurfacePtyId && recoveryAgentLive({
+      agentAlive: s.agentAliveByPtyId[activeSurfacePtyId],
+      commandRunning: s.commandRunningByPtyId[activeSurfacePtyId],
+      agentOnScreen: s.resumeAgentOnScreenByPtyId[activeSurfacePtyId] === true,
+    }),
   );
   const resumeBinding = useStore((s) =>
     activeSurfacePtyId ? s.resumeBindingByPtyId[activeSurfacePtyId] : undefined,
@@ -847,7 +890,7 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
   // on the same conversation. Asked only for panes that offer a resume.
   const chatV2Binding = usePaneChatV2Binding(activeSurfacePtyId || undefined, !!resumeBinding || !!resumeHint);
   const chatV2OwnsPane = !!chatV2Binding && chatV2Binding.status !== 'handed-off';
-  // Resume Claude Code panes automatically on app start, when the user opted
+  // Resume Claude Code and Codex panes automatically on app start, when the user opted
   // in (`claudeResumeOnStart`, off by default; off keeps the pill). The setting
   // is read when the pane becomes ready, not subscribed to: turning it on must
   // not type into panes already showing the pill. A pane recovered this
@@ -869,29 +912,51 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
       roleBinding: paneRoleBinding,
       commandRunning: useStore.getState().commandRunningByPtyId[ptyId],
       agentAlive: useStore.getState().agentAliveByPtyId[ptyId],
+      agentSighted: useStore.getState().resumeAgentOnScreenByPtyId[ptyId] !== undefined,
     });
     if (!line) return;
     // A beat after the first output, so the prompt is up and reading input.
+    let cancelled = false;
     const timer = setTimeout(() => {
       if (!useStore.getState().claudeResumeOnStart) return; // turned off meanwhile
-      if (useStore.getState().resumeHintByPtyId[ptyId] !== 'claude') return; // typed into / dismissed meanwhile
+      if (useStore.getState().resumeHintByPtyId[ptyId] !== resumeHint) return; // typed into / dismissed meanwhile
       // Re-checked here, not only when planning: the liveness snapshot lands
       // with the session list, which can arrive after the pane is ready.
-      const { commandRunningByPtyId, agentAliveByPtyId } = useStore.getState();
+      const { commandRunningByPtyId, agentAliveByPtyId, resumeAgentOnScreenByPtyId } = useStore.getState();
       if (commandRunningByPtyId[ptyId] === true || agentAliveByPtyId[ptyId] === true) {
         // The agent is already running in this pane: the hint is stale.
         useStore.getState().clearResumeHint(ptyId);
         return;
       }
-      if (!claimAutoResume(ptyId)) return; // resumed already, or the pill was clicked meanwhile
-      // Through main, which guards a bot worker's resume (botWorkerMergeGuard).
-      // A refused line keeps the pill, so the pane can still be resumed by hand.
-      window.electronAPI.pty.writeLaunch(ptyId, line, true).then(
-        () => useStore.getState().clearResumeHint(ptyId),
-        (err: unknown) => console.warn('[wmux:resume] the resume line was not typed', String(err)),
-      );
+      // Seen only by the screen tier: skip, but keep the offer (#2408).
+      if (resumeAgentOnScreenByPtyId[ptyId] !== undefined) return;
+      // The store's sighting is as old as the last list, and an agent banner
+      // or hook can land after it: ask the daemon once more right before
+      // typing, and type only while it still offers this resume. A list that
+      // fails types nothing; the pill stays.
+      void window.electronAPI.pty.list().then((sessions) => {
+        if (cancelled) return; // the pane changed hands meanwhile (chat-v2, supervision, another pty)
+        const now = sessions.find((s) => s.id === ptyId);
+        // A dead pane's offer lives in the renderer (deadPaneRecoveryOfferByPtyId);
+        // the daemon holds every other one.
+        const ownOffer = !!useStore.getState().deadPaneRecoveryOfferByPtyId[ptyId];
+        if (!now || (!ownOffer && now.resumeAgent !== resumeHint)) return;
+        if (now.resumeAgentOnScreen !== undefined || now.commandRunning === true || now.agentProcessAlive === true) return;
+        if (!useStore.getState().claudeResumeOnStart) return;
+        if (useStore.getState().resumeHintByPtyId[ptyId] !== resumeHint) return;
+        if (!claimAutoResume(ptyId)) return; // resumed already, or the pill was clicked meanwhile
+        // Through main, which guards a bot worker's resume (botWorkerMergeGuard).
+        // A refused line keeps the pill, so the pane can still be resumed by hand.
+        window.electronAPI.pty.writeLaunch(ptyId, line, true).then(
+          () => useStore.getState().clearResumeHint(ptyId),
+          (err: unknown) => console.warn('[wmux:resume] the resume line was not typed', String(err)),
+        );
+      }, () => undefined);
     }, 400);
-    return () => clearTimeout(timer);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeSurfacePtyId, resumePtyReady, resumeHint, resumeBinding, supervision, chatV2OwnsPane]);
   // The persistent resume chip's "is this pane's agent busy?" gate — and the

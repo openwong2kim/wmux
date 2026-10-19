@@ -11,6 +11,7 @@ import {
   DAEMON_STATE_REGISTRY,
   type MigrationRegistry,
 } from '../migrate';
+import { deliberateSleep } from '../../../../test-utils/waitFor';
 
 let tmpDir: string;
 let targetPath: string;
@@ -197,7 +198,7 @@ describe('writePremigrateSnapshot', () => {
     // Second call with different payload — snapshot must stay
     // pinned to the original so operators can recover the true
     // pre-migration state.
-    await new Promise((r) => setTimeout(r, 10));
+    await deliberateSleep(10, 'clock: mtime resolution is coarse on some platforms');
     await writePremigrateSnapshot(
       targetPath,
       { version: 1, name: 'overwritten' },

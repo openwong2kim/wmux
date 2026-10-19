@@ -16,6 +16,7 @@ import {
   __resetPaneResolverForTesting,
 } from '../paneResolver';
 import { PlaywrightEngine } from '../playwright/PlaywrightEngine';
+import { deliberateSleep } from '../../test-utils/waitFor';
 
 // Broker isolation invariants (Option A). The broker hosts N MCP server
 // instances in ONE process; everything the single-child world kept in
@@ -127,9 +128,9 @@ describe('connectionScope isolation', () => {
   it('scope propagates through async continuations (transport-dispatch shape)', async () => {
     const a = createConnectionScope();
     const result = await runInConnectionScope(a, async () => {
-      await new Promise((r) => setTimeout(r, 5));
+      await deliberateSleep(5, 'real timer: the scope must survive a timer boundary');
       setClientIdentity('late-writer', '9.9');
-      await new Promise((r) => setTimeout(r, 5));
+      await deliberateSleep(5, 'real timer: the scope must survive a timer boundary');
       return getConnectionScope();
     });
     expect(result).toBe(a);

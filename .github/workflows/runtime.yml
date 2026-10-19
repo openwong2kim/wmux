@@ -1,0 +1,141 @@
+name: Runtime suite
+
+# The runtime suite (`npm run test:runtime`, every `*.runtime.test.*`): real
+# Chrome, ConPTY shells, Windows process probes and the bundled daemon. It used
+# to run as `validate-runtime` in ci.yml on every pull request, where its
+# timing-sensitive tests (ProtectedChrome among them) turned unrelated PRs red
+# on a loaded runner. It is off the pull request path now, and runs:
+#
+# - nightly, on main;
+# - on every push to main, so a regression is pinned to a merge or a short
+#   range of merges, not a whole day. A newer push cancels the run in flight:
+#   on a burst of merges only the last one runs, which keeps the cost at one
+#   Windows job at a time;
+# - on demand: `gh workflow run runtime.yml --ref <branch>` (or "Run workflow"
+#   in the Actions tab) for a pull request that touches what this suite covers.
+#
+# Nothing requires this workflow to pass. A red run on main opens a
+# `Nightly red: <workflow>` issue (scripts/ci-failure-issue.mjs), which the
+# triage bot picks up; the next green run closes it.
+on:
+  schedule:
+    # 18:23 UTC = 03:23 KST. Off the hour: scheduled runs on :00 queue longest.
+    - cron: '23 18 * * *'
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # Pushes to main share one group and supersede each other. The nightly and
+  # manual runs get their own groups, so a merge never cancels them.
+  group: runtime-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'push' }}
+
+jobs:
+  validate-runtime:
+    runs-on: windows-latest
+    # The runtime suite takes ~4-5 min plus setup; the cap only stops a hang.
+    timeout-minutes: 25
+    steps:
+      # Same pins and toolchain as validate in ci.yml; see the comments there.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        id: node
+        with:
+          node-version: '>=24.21.0 <25'
+          cache: npm
+
+      - name: Use npm 11
+        run: npm install -g npm@11
+
+      # See the checks job in ci.yml for the key.
+      - name: Restore node_modules
+        id: node-modules
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: node_modules
+          key: node-modules-${{ runner.os }}-${{ runner.arch }}-node${{ steps.node.outputs.node-version }}-${{ hashFiles('package-lock.json', 'patches/**', 'scripts/fix-node-pty.js', 'scripts/apply-patches.mjs') }}
+
+      - name: Install dependencies
+        if: steps.node-modules.outputs.cache-hit != 'true'
+        run: npm ci
+
+      # Two runtime suites drive the REAL bundled daemon (#546 boot marker,
+      # #596 web restore). Both skip when `dist/daemon-bundle/index.js` is
+      # absent, and a skip reads as green, so this step is what gives those
+      # suites any signal at all.
+      - name: Build daemon bundle (the runtime suites drive it)
+        run: npm run build:daemon
+
+      - name: Test (runtime suite)
+        run: npm run test:runtime
+        env:
+          # Tells those suites the bundle was promised, so removing the step
+          # above fails a test instead of silently retiring both files.
+          WMUX_REQUIRE_DAEMON_BUNDLE: '1'
+
+      # Same as validate's two steps in ci.yml: list tests that passed only on
+      # retry (vitest.runtime.config.ts writes retries-runtime.json) and keep
+      # the report. Nobody watches a green nightly, so the artifact is how its
+      # flakes add up across runs (scripts/flaky-report.mjs).
+      - name: Flaky test report
+        id: flaky
+        if: ${{ !cancelled() }}
+        run: node scripts/flaky-report.mjs test-results
+
+      - name: Upload test report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: test-report-runtime
+          path: test-results/
+          if-no-files-found: ignore
+
+      # The retry reports on their own, only when one lists a retried test,
+      # for the weekly rollup (scripts/flaky-weekly.mjs): it downloads these
+      # and nothing else, so a run without a retry costs it no API call.
+      - name: Upload retry report
+        if: ${{ !cancelled() && steps.flaky.outputs.retried == 'true' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: test-report-retries-runtime
+          path: test-results/retries-*.json
+          if-no-files-found: ignore
+
+  # After the test job, whatever happened to it (a timeout included),
+  # on main: one red run opens (or comments on) the `Nightly red: <workflow>`
+  # issue so the triage bot sees it, and a green one closes it. A job of its
+  # own, not a last step in the test job, because a timed-out job never runs
+  # its own `if: failure()` step.
+  # scripts/lib/ci-failure-issue.mjs has the rules.
+  report:
+    name: Report to issue
+    needs: validate-runtime
+    if: always() && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # Files and closes the issue (issues), reads the run's jobs and recent
+    # runs (actions) and a cancelled job's annotations (checks: a timeout).
+    # The workflow default stays read-only.
+    permissions:
+      contents: read
+      issues: write
+      actions: read
+      checks: read
+    steps:
+      # Same pins as validate in ci.yml. Node built-ins and gh only: no npm ci.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '>=24.21.0 <25'
+
+      - name: Open, update or close the nightly issue
+        run: node scripts/ci-failure-issue.mjs
+        env:
+          GH_TOKEN: ${{ github.token }}

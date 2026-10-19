@@ -79,7 +79,7 @@ pre-announce targets."*
   unclassified Chromium child types such as zygote, crashpad-handler, …).
   Processes are bucketed from the Electron `--type=` command-line flag plus
   image-name heuristics (pure classifier in `scripts/perf-process-classify.mjs`,
-  unit-tested in `scripts/__tests__/perfProcessClassify.test.mjs`). Each bucket
+  unit-tested in `scripts/__tests__/perfProcessClassify.os.test.mjs`). Each bucket
   carries `{workingSetBytes, commitBytes, processCount}` and the buckets
   reconcile exactly to the flat total. **Additive and never gated** — it exists
   to locate the ~70 MB/pane cost (renderer V8 heap vs GPU vs daemon vs conhost)

@@ -60,6 +60,7 @@ const RUN_DETAILS: ReadonlySet<string> = new Set<AutomationRunDetail>([
   'browser_needs_consent',
   'browser_policy_denied',
   'browser_consent_unattended',
+  'previous_session_open',
 ]);
 const ATTENTION_KINDS: ReadonlySet<string> = new Set<AutomationAttentionKind>(['proposed', 'grant-raised', 'needs-regrant']);
 

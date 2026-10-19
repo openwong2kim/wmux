@@ -386,8 +386,10 @@ describe('SurfaceTabs — the ⋮ overflow menu', () => {
     // affordance that replaces it — the cluster stays icon-sized actions.
     // The snap-* entries (#1237) re-fit the RUNNING panes into each saved
     // layout template — the built-ins seed five of them.
+    // mute-notifications is menu-only too: a per-pane setting, not a verb
+    // the five-button cluster has room for.
     expect(keys.sort()).toEqual([
-      'new-browser', 'rename-pane', 'snap-builtin-2col', 'snap-builtin-2row',
+      'mute-notifications', 'new-browser', 'rename-pane', 'snap-builtin-2col', 'snap-builtin-2row',
       'snap-builtin-3col', 'snap-builtin-grid', 'snap-builtin-main-side',
       'split-down', 'split-right', 'stash', 'zoom',
     ]);
@@ -533,8 +535,8 @@ describe('SurfaceTabs — the ⋮ overflow menu', () => {
     mount(rootLeafId(), { actionsMode: 'overflow' });
     openOverflowMenu();
     const items = [...document.querySelectorAll<HTMLButtonElement>('[data-pane-menu-action]')];
-    // 6 base actions + 5 snap-to-layout entries (the built-in templates).
-    expect(items.length).toBe(11);
+    // 7 base actions + 5 snap-to-layout entries (the built-in templates).
+    expect(items.length).toBe(12);
     const press = (key: string) => act(() => {
       document.activeElement!.dispatchEvent(
         new KeyboardEvent('keydown', { key, bubbles: true }),

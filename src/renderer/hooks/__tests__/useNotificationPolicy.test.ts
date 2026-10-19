@@ -88,6 +88,22 @@ describe('decideNotificationActions', () => {
     expect(result[0].kind).toBe('addNotification');
   });
 
+  // Per-pane mute: same "recorded, surfaces silent" contract as a muted
+  // workspace, including the unfocused-window OS toast; watched still wins.
+  it('returns only addNotification when the originating pane is muted', () => {
+    for (const windowFocused of [true, false]) {
+      const result = decideNotificationActions(
+        samplePayload,
+        sampleTarget,
+        baseCtx({ isMutedPane: true, windowFocused }),
+      );
+      expect(result.map((a) => a.kind)).toEqual(['addNotification']);
+    }
+    expect(
+      decideNotificationActions(samplePayload, sampleTarget, baseCtx({ isMutedPane: true, isActiveSurface: true })),
+    ).toEqual([]);
+  });
+
   // C3
   it('happy path: focused window + inactive pane + all toggles on → add + toast + sound + ring(flash), NO flashFrame', () => {
     const result = decideNotificationActions(samplePayload, sampleTarget, baseCtx());

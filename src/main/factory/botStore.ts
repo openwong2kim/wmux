@@ -11,13 +11,30 @@
 // Settings' Add bot) and `setAvatar`, both checked by botAvatar.ts; `update`
 // refuses it, so the pipe's bot.update never sets one. A picture that fails
 // the check on read is dropped and the bot kept; so is a job that fails
-// normalizeBotJob.
+// normalizeBotJob, a worker agent (`workerAgent`, optional, owner-set
+// through `update`) that fails validateBotWorkerAgent. An engine model is
+// checked on create/update only (shared/fanoutPreset.ts validateBotBrainModel
+// for claude-sdk, validateFanoutModel otherwise); a stored one is kept as
+// written, and one that fails the rule is ignored when the bot runs
+// (botEngines.ts), never dropped from the file.
+//
+// A bot's own model and effort are its engine's (`engine.model`/`effort`,
+// claude-sdk); its workers' are `workerAgent`. Both are optional, so a
+// profile written before the Bots profile could pick them loads unchanged.
+// A new bot of a template starts on that template's models
+// (shared/bot.ts TEMPLATE_MODEL_DEFAULTS) unless the caller names an engine
+// or worker agent; a stored bot is never moved onto them.
 //
 // Any number of bots, of any template, may share a workspace. A profile
 // written before templates gets its template from its role on read
 // (shared/bot.ts templateOfRole), and keeps it on the next write; bots.json
 // stays version 1. A stored hourly turn cap of 0 is read as no hourly cap
 // (BotBudget.maxTurnsPerHour is never 0) and refused on write.
+//
+// A removed bot leaves a tombstone (`removed`, shared/bot.ts RemovedBot: its
+// id, name, role, picture and colour slot), so the cards it wrote keep its
+// name and face after a restart. A build without it drops the list on its
+// next write; bots.json stays version 1.
 
 import { randomBytes } from 'node:crypto';
 import path from 'node:path';
@@ -27,11 +44,13 @@ import {
   BOT_NAME_MAX,
   DEFAULT_BOT_BUDGETS,
   TEMPLATE_LEGACY_ROLE,
+  TEMPLATE_MODEL_DEFAULTS,
   isBotBinding,
   isBotRole,
   isBotTemplate,
   normalizeBotJob,
   normalizeBotName,
+  storedBotName,
   templateOfRole,
   type BotBudget,
   type BotEngine,
@@ -39,14 +58,22 @@ import {
   type BotRole,
   type BotTemplate,
   type BotTrigger,
+  type RemovedBot,
+  BOT_IDENTITY_SLOTS,
+  identityHueIndexes,
+  isIdentitySlot,
 } from '../../shared/bot';
 import { CLAUDE_EFFORT_LEVELS } from '../../shared/claudeModels';
 import { isFactKind, type FactFilter } from '../../shared/facts';
 import { normalizeRepoKey } from '../../shared/repoKey';
+import { isOriginPin } from '../../shared/originPin';
 import { emptyUsage, pruneUsage, sanitizeUsage, type BotUsage } from './budget';
 import { createFilePersister, readVersionedFile, type FilePersister } from './versionedFile';
-import { LEGACY_TRIAGE_TRIGGERS, defaultTriggers } from './roleDefaults';
+import { LEGACY_TRIAGE_TRIGGERS, LEGACY_VERIFIER_TRIGGERS, defaultTriggers } from './roleDefaults';
 import { parseBotAvatar } from './botAvatar';
+import { validateBotWorkerAgent } from '../../shared/botWorkerAgent';
+import { BOT_BRAIN_MODEL_MAX, validateBotBrainModel, validateFanoutModel } from '../../shared/fanoutPreset';
+import { ROLE_BINDING_MODEL_MAX } from '../../shared/orchestratorRole';
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return !!v && typeof v === 'object' && !Array.isArray(v);
@@ -54,16 +81,19 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 
 export const BOTS_FILE_VERSION = 1 as const;
 export const BOTS_MAX = 64;
+/** Removed bots remembered (bots.json `removed`), newest kept. */
+export const REMOVED_BOTS_MAX = 64;
 const NAME_MAX = BOT_NAME_MAX;
 const TRIGGERS_MAX = 32;
 const ACP_COMMAND_MAX = 512;
 const ACP_ARGS_MAX = 32;
 const ACP_ARG_MAX = 512;
-const MODEL_MAX = 128;
 const LABEL_MAX = 100;
 const BATCH_WINDOW_MAX_MS = 24 * 3_600_000;
 const BATCH_MAX = 100;
 const EFFORTS: ReadonlySet<string> = new Set(CLAUDE_EFFORT_LEVELS);
+/** The refusal for an engine sanitizeBotEngine rejects, with both model rules. */
+const ENGINE_MALFORMED = `engine is malformed (a claude-sdk model must be one model id of up to ${BOT_BRAIN_MODEL_MAX} characters: a letter or digit first, then letters, digits and . _ : / @ -, optionally ending in a [variant], so a Bedrock or Vertex id or a model ARN passes; a claude-pty model: a letter or digit first, then letters, digits and . _ : -, up to ${ROLE_BINDING_MODEL_MAX})`;
 
 /** What a store answers to the trigger engine (§14). */
 export interface BotDirectoryApi {
@@ -79,23 +109,30 @@ function boundedString(v: unknown, max: number): string | undefined {
   return t.length > 0 && t.length <= max ? t : undefined;
 }
 
-/** A well-formed engine (a fresh object), or null. */
-export function sanitizeBotEngine(raw: unknown): BotEngine | null {
+/** A well-formed engine (a fresh object), or null. On create/update a model
+ *  must pass the brain model rule (claude-sdk, validateBotBrainModel) or
+ *  fan-out's (validateFanoutModel). On a read (`read: true`) a stored model
+ *  string is kept exactly as written, valid or not, so a later write never
+ *  drops it from bots.json; the engine factory ignores one that fails the
+ *  rule (the bot runs on claude's default) and the profile warns of it. */
+export function sanitizeBotEngine(raw: unknown, opts: { read?: boolean } = {}): BotEngine | null {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
   const r = raw as Record<string, unknown>;
-  const model = r.model === undefined ? undefined : boundedString(r.model, MODEL_MAX);
-  if (r.model !== undefined && model === undefined) return null;
+  const read = opts.read === true;
+  const checked = r.model === undefined || read ? undefined : r.kind === 'claude-sdk' ? validateBotBrainModel(r.model) : validateFanoutModel(r.model);
+  if (checked && !checked.ok) return null;
+  const model = read ? (typeof r.model === 'string' ? r.model : undefined) : checked?.ok ? checked.model : undefined;
   switch (r.kind) {
     case 'claude-sdk': {
       if (r.effort !== undefined && (typeof r.effort !== 'string' || !EFFORTS.has(r.effort))) return null;
       return {
         kind: 'claude-sdk',
-        ...(model ? { model } : {}),
+        ...(model !== undefined ? { model } : {}),
         ...(typeof r.effort === 'string' ? { effort: r.effort } : {}),
       };
     }
     case 'claude-pty':
-      return { kind: 'claude-pty', ...(model ? { model } : {}) };
+      return { kind: 'claude-pty', ...(model !== undefined ? { model } : {}) };
     case 'acp': {
       const command = boundedString(r.command, ACP_COMMAND_MAX);
       if (!command || !Array.isArray(r.args) || r.args.length > ACP_ARGS_MAX) return null;
@@ -200,7 +237,7 @@ function sanitizeRepo(raw: unknown): BotProfile['repo'] | null {
   const repoKey = normalizeRepoKey(r.repoKey);
   if (!repoKey) return null;
   if (typeof r.repoPath !== 'string' || r.repoPath.length > 4096 || !path.isAbsolute(r.repoPath)) return null;
-  return { repoKey, repoPath: path.normalize(r.repoPath) };
+  return { repoKey, repoPath: path.normalize(r.repoPath), ...(isOriginPin(r.originPin) ? { originPin: r.originPin } : {}) };
 }
 
 function sanitizeParked(raw: unknown): BotProfile['parked'] | null {
@@ -208,10 +245,33 @@ function sanitizeParked(raw: unknown): BotProfile['parked'] | null {
   const r = raw as Record<string, unknown>;
   if (r.reason !== 'budget' && r.reason !== 'error' && r.reason !== 'human') return null;
   if (!Number.isSafeInteger(r.at)) return null;
-  return { reason: r.reason, at: r.at as number };
+  const until = r.reason === 'error' && Number.isSafeInteger(r.until) ? (r.until as number) : undefined;
+  return { reason: r.reason, at: r.at as number, ...(until !== undefined ? { until } : {}) };
 }
 
 /** A profile read from disk, fully validated (a fresh object), or null. */
+/** A removed bot's tombstone, validated (null: dropped). */
+export function parseRemovedBot(raw: unknown): RemovedBot | null {
+  if (!isRecord(raw)) return null;
+  if (typeof raw.id !== 'string' || !BOT_ID_RE.test(raw.id)) return null;
+  if (typeof raw.workspaceId !== 'string' || raw.workspaceId.length === 0 || raw.workspaceId.length > 200) return null;
+  if (!isBotRole(raw.role)) return null;
+  const name = storedBotName(raw.name);
+  if (!name || !Number.isSafeInteger(raw.removedAt)) return null;
+  const avatar = raw.avatar === undefined ? null : parseBotAvatar(raw.avatar);
+  const hue = Number.isInteger(raw.hue) && (raw.hue as number) >= 0 && (raw.hue as number) < BOT_IDENTITY_SLOTS ? (raw.hue as number) : undefined;
+  return {
+    id: raw.id,
+    workspaceId: raw.workspaceId,
+    role: raw.role,
+    ...(isBotTemplate(raw.template) ? { template: raw.template } : {}),
+    name,
+    ...(avatar ? { avatar } : {}),
+    ...(hue !== undefined ? { hue } : {}),
+    removedAt: raw.removedAt as number,
+  };
+}
+
 export function parseBotProfile(raw: unknown): BotProfile | null {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
   const r = raw as Record<string, unknown>;
@@ -220,7 +280,7 @@ export function parseBotProfile(raw: unknown): BotProfile | null {
   if (!isBotRole(r.role)) return null;
   if (!isBotBinding({ workspaceId: r.workspaceId, botId: r.id, role: r.role })) return null;
   const name = boundedString(r.name, NAME_MAX);
-  const engine = sanitizeBotEngine(r.engine);
+  const engine = sanitizeBotEngine(r.engine, { read: true });
   const triggers = sanitizeTriggers(r.triggers);
   const budget = sanitizeBudget(r.budget, DEFAULT_BOT_BUDGETS[r.role], { read: true });
   if (!name || !engine || !triggers || !budget || typeof r.enabled !== 'boolean') return null;
@@ -233,6 +293,9 @@ export function parseBotProfile(raw: unknown): BotProfile | null {
   // but not a template: Custom, which grants nothing beyond the shared set.
   const template: BotTemplate = r.template === undefined ? templateOfRole(r.role) : isBotTemplate(r.template) ? r.template : 'custom';
   const job = normalizeBotJob(r.job);
+  // What the workers run on: kept when it still validates, dropped (the bot
+  // kept, on the presets' engine) otherwise.
+  const workerAgent = r.workerAgent === undefined ? undefined : validateBotWorkerAgent(r.workerAgent);
   return {
     version: 1,
     id: r.id,
@@ -242,15 +305,25 @@ export function parseBotProfile(raw: unknown): BotProfile | null {
     name,
     ...(job ? { job } : {}),
     engine,
+    ...(workerAgent?.ok ? { workerAgent: workerAgent.value } : {}),
     triggers,
     budget,
     ...(repo ? { repo } : {}),
     ...(avatar ? { avatar } : {}),
+    ...(isIdentitySlot(r.hue) ? { hue: r.hue } : {}),
     enabled: r.enabled,
     ...(parked ? { parked } : {}),
     createdAt: r.createdAt as number,
     updatedAt: r.updatedAt as number,
   };
+}
+
+/** The default engine with the template's own model (TEMPLATE_MODEL_DEFAULTS
+ *  `brain`) when it is claude-sdk and names no model itself. Pure. */
+function withTemplateBrain(engine: BotEngine | null, template: BotTemplate): BotEngine | null {
+  const brain = TEMPLATE_MODEL_DEFAULTS[template]?.brain;
+  if (!engine || !brain || engine.kind !== 'claude-sdk' || engine.model) return engine;
+  return { ...engine, model: brain.model };
 }
 
 function copyProfile(p: BotProfile): BotProfile {
@@ -307,6 +380,9 @@ export interface BotCreateInput {
   /** The job text (normalizeBotJob); absent = none. */
   job?: unknown;
   engine?: unknown;
+  /** What its workers run on (validateBotWorkerAgent); absent = the
+   *  template's default (TEMPLATE_MODEL_DEFAULTS), else the presets' engine. */
+  workerAgent?: unknown;
   triggers?: unknown;
   budget?: unknown;
   repo?: unknown;
@@ -316,15 +392,18 @@ export interface BotCreateInput {
 }
 
 /** The fields `update` may change (identity — id, workspace, role — never).
- *  `job: null` clears the job; `template` changes what the bot is shown as
+ *  `job: null` clears the job, `workerAgent: null` puts the workers back on
+ *  the presets' engine; `template` changes what the bot is shown as
  *  and, for the Coordinator, its reads in other workspaces. */
-export const BOT_UPDATABLE_FIELDS = ['name', 'job', 'template', 'engine', 'triggers', 'budget', 'repo', 'enabled'] as const;
+export const BOT_UPDATABLE_FIELDS = ['name', 'job', 'template', 'engine', 'workerAgent', 'triggers', 'budget', 'repo', 'enabled'] as const;
 
 export interface BotStoreOptions {
   now?: () => number;
   newId?: () => string;
   /** Engine for a create that names none (factory settings). */
   defaultEngine?: () => BotEngine;
+  /** The host a worker agent is saved for (default: this one). */
+  platform?: string;
 }
 
 export function botsFilePath(wmuxDir: string): string {
@@ -334,10 +413,12 @@ export function botsFilePath(wmuxDir: string): string {
 export class BotStore implements BotDirectoryApi {
   private bots = new Map<string, BotProfile>();
   private usage = new Map<string, BotUsage>();
+  private removed: RemovedBot[] = [];
   private readonly persister: FilePersister;
   private readonly now: () => number;
   private readonly newId: () => string;
   private readonly defaultEngine: () => BotEngine;
+  private readonly platform: string;
   private readonly listeners = new Set<() => void>();
   /** Triage bots moved off the old default triggers by the last load. */
   private migrated: string[] = [];
@@ -346,17 +427,26 @@ export class BotStore implements BotDirectoryApi {
     this.now = opts.now ?? Date.now;
     this.newId = opts.newId ?? (() => `bot-${randomBytes(4).toString('hex')}`);
     this.defaultEngine = opts.defaultEngine ?? (() => ({ kind: 'claude-sdk' }));
+    this.platform = opts.platform ?? process.platform;
     this.persister = createFilePersister(file, () => this.snapshot());
   }
 
   /** Read the file (missing → empty). Throws on another version. A triage
-   *  profile still on the old default triggers gets the current defaults
-   *  (written back); triggers the owner edited are kept as they are. */
+   *  or verifier profile still on its role's old default triggers gets the
+   *  current defaults (written back); triggers the owner edited are kept as
+   *  they are. */
   load(): void {
     const raw = readVersionedFile(this.file, BOTS_FILE_VERSION);
     this.bots.clear();
     this.usage.clear();
+    this.removed = [];
     if (!raw) return;
+    if (Array.isArray(raw.removed)) {
+      for (const entry of raw.removed.slice(-REMOVED_BOTS_MAX)) {
+        const r = parseRemovedBot(entry);
+        if (r) this.removed.push(r);
+      }
+    }
     const list = Array.isArray(raw.bots) ? raw.bots : [];
     let migrated = false;
     this.migrated = [];
@@ -372,6 +462,11 @@ export class BotStore implements BotDirectoryApi {
         migrated = true;
         this.migrated.push(bot.id);
       }
+      if (bot.role === 'verifier' && JSON.stringify(bot.triggers) === JSON.stringify(LEGACY_VERIFIER_TRIGGERS)) {
+        bot.triggers = defaultTriggers('verifier');
+        bot.updatedAt = this.now();
+        migrated = true;
+      }
       // A profile written before templates (no `template` on disk) is
       // written back with the one parseBotProfile derived from its role, and
       // loses its role's old default hourly cap once; a cap on a profile
@@ -383,6 +478,16 @@ export class BotStore implements BotDirectoryApi {
       }
       if (legacy || entry.template !== bot.template) migrated = true;
       this.bots.set(bot.id, bot);
+    }
+    // A profile from before identity slots were stored gets the slot the
+    // Bots page computed for it (oldest first, among its workspace's bots),
+    // written back once, so no bot's character changes with the upgrade.
+    const live = [...this.bots.values()];
+    const missing = live.filter((b) => b.hue === undefined);
+    if (missing.length > 0) {
+      const taken = live.filter((b) => b.hue !== undefined).map((b) => ({ workspaceId: b.workspaceId, index: b.hue as number }));
+      for (const [id, hue] of identityHueIndexes(missing, taken)) (this.bots.get(id) as BotProfile).hue = hue;
+      migrated = true;
     }
     const usage = raw.usage && typeof raw.usage === 'object' && !Array.isArray(raw.usage)
       ? (raw.usage as Record<string, unknown>)
@@ -399,7 +504,7 @@ export class BotStore implements BotDirectoryApi {
   private snapshot(): unknown {
     const usage: Record<string, BotUsage> = {};
     for (const [id, u] of this.usage) usage[id] = u;
-    return { version: BOTS_FILE_VERSION, bots: [...this.bots.values()], usage };
+    return { version: BOTS_FILE_VERSION, bots: [...this.bots.values()], usage, ...(this.removed.length > 0 ? { removed: this.removed } : {}) };
   }
 
   /** Resolves once the current state is on disk. */
@@ -457,9 +562,15 @@ export class BotStore implements BotDirectoryApi {
     if (input.job !== undefined && job === undefined) return refuse('invalid_argument', `job must be 1-${BOT_JOB_MAX} characters, no control characters but newlines`);
     const fallbackName = input.template === undefined && input.role !== undefined ? DEFAULT_NAMES[role] : TEMPLATE_NAMES[template];
     const name = input.name === undefined ? fallbackName : normalizeBotName(input.name);
-    if (!name) return refuse('invalid_argument', `name must be 1-${NAME_MAX} characters, no control characters`);
-    const engine = input.engine === undefined ? sanitizeBotEngine(this.defaultEngine()) : sanitizeBotEngine(input.engine);
-    if (!engine) return refuse('invalid_argument', 'engine is malformed');
+    if (!name) return refuse('invalid_argument', `name must be 1-${NAME_MAX} characters, no control characters or slashes`);
+    const engine = input.engine === undefined ? withTemplateBrain(sanitizeBotEngine(this.defaultEngine()), template) : sanitizeBotEngine(input.engine);
+    if (!engine) return refuse('invalid_argument', ENGINE_MALFORMED);
+    let workerAgent = TEMPLATE_MODEL_DEFAULTS[template]?.worker;
+    if (input.workerAgent !== undefined) {
+      const v = validateBotWorkerAgent(input.workerAgent, this.platform);
+      if (!v.ok) return refuse('invalid_argument', v.error);
+      workerAgent = v.value;
+    }
     // No triggers given: the role's defaults (roleDefaults.ts), so a new bot
     // wakes on its role's facts without the caller spelling them out.
     const triggers = input.triggers === undefined ? defaultTriggers(role) : sanitizeTriggers(input.triggers);
@@ -475,6 +586,12 @@ export class BotStore implements BotDirectoryApi {
     for (let i = 0; this.bots.has(id) && i < 8; i++) id = this.newId();
     if (!BOT_ID_RE.test(id) || this.bots.has(id)) return refuse('invalid_argument', 'could not mint a bot id');
     const now = this.now();
+    // The first slot free among the workspace's live bots, in the spread
+    // order; a removed bot's slot is free again.
+    const taken = [...this.bots.values()]
+      .filter((b) => b.workspaceId === workspaceId && b.hue !== undefined)
+      .map((b) => ({ workspaceId, index: b.hue as number }));
+    const hue = identityHueIndexes([{ id, createdAt: now, workspaceId }], taken).get(id);
     const bot: BotProfile = {
       version: 1,
       id,
@@ -484,10 +601,12 @@ export class BotStore implements BotDirectoryApi {
       name,
       ...(job ? { job } : {}),
       engine,
+      ...(workerAgent ? { workerAgent: { ...workerAgent } } : {}),
       triggers,
       budget,
       ...(repo ? { repo } : {}),
       ...(avatar ? { avatar } : {}),
+      ...(hue !== undefined ? { hue } : {}),
       enabled: input.enabled ?? true,
       createdAt: now,
       updatedAt: now,
@@ -508,7 +627,7 @@ export class BotStore implements BotDirectoryApi {
     const next: BotProfile = { ...cur };
     if (patch.name !== undefined) {
       const name = normalizeBotName(patch.name);
-      if (!name) return refuse('invalid_argument', `name must be 1-${NAME_MAX} characters, no control characters`);
+      if (!name) return refuse('invalid_argument', `name must be 1-${NAME_MAX} characters, no control characters or slashes`);
       next.name = name;
     }
     if (patch.job !== undefined) {
@@ -526,8 +645,22 @@ export class BotStore implements BotDirectoryApi {
     }
     if (patch.engine !== undefined) {
       const engine = sanitizeBotEngine(patch.engine);
-      if (!engine) return refuse('invalid_argument', 'engine is malformed');
+      if (!engine) return refuse('invalid_argument', ENGINE_MALFORMED);
+      // A stored model that fails the rule cannot be sent back, so a patch
+      // without a model keeps it: only picking another model replaces it.
+      if (engine.kind === 'claude-sdk' && engine.model === undefined && cur.engine.kind === 'claude-sdk' && cur.engine.model !== undefined && !validateBotBrainModel(cur.engine.model).ok) {
+        engine.model = cur.engine.model;
+      }
       next.engine = engine;
+    }
+    if (patch.workerAgent !== undefined) {
+      if (patch.workerAgent === null) {
+        delete next.workerAgent;
+      } else {
+        const v = validateBotWorkerAgent(patch.workerAgent, this.platform);
+        if (!v.ok) return refuse('invalid_argument', v.error);
+        next.workerAgent = v.value;
+      }
     }
     if (patch.triggers !== undefined) {
       const triggers = sanitizeTriggers(patch.triggers);
@@ -586,11 +719,25 @@ export class BotStore implements BotDirectoryApi {
     return { ok: true, bot: copyProfile(next) };
   }
 
-  remove(botId: string): boolean {
-    if (!this.bots.delete(botId)) return false;
+  /** Delete a profile, keeping its tombstone with its colour slot (its
+   *  stored one; `hue`, the remover's, only for a profile without one). */
+  remove(botId: string, opts: { hue?: number } = {}): boolean {
+    const cur = this.bots.get(botId);
+    if (!cur || !this.bots.delete(botId)) return false;
     this.usage.delete(botId);
+    const tomb = parseRemovedBot({
+      id: cur.id, workspaceId: cur.workspaceId, role: cur.role, template: cur.template, name: cur.name,
+      avatar: cur.avatar, hue: cur.hue ?? opts.hue, removedAt: this.now(),
+    });
+    this.removed = this.removed.filter((r) => r.id !== botId);
+    if (tomb) this.removed = [...this.removed, tomb].slice(-REMOVED_BOTS_MAX);
     this.changed();
     return true;
+  }
+
+  /** The removed bots remembered, oldest first (copies). */
+  listRemoved(): RemovedBot[] {
+    return this.removed.map((r) => ({ ...r }));
   }
 
   /** Park (or, with null, unpark) a bot. */
@@ -598,7 +745,7 @@ export class BotStore implements BotDirectoryApi {
     const cur = this.bots.get(botId);
     if (!cur) return null;
     const next: BotProfile = { ...cur, updatedAt: this.now() };
-    if (parked) next.parked = { reason: parked.reason, at: parked.at };
+    if (parked) next.parked = { reason: parked.reason, at: parked.at, ...(parked.reason === 'error' && parked.until !== undefined ? { until: parked.until } : {}) };
     else delete next.parked;
     this.bots.set(botId, next);
     this.changed();

@@ -58,6 +58,7 @@ before(async () => {
   await win.locator('text=Workspaces').first().waitFor({ timeout: 60_000 });
   // The welcome dialog arrives a few seconds after the window does.
   await win.getByText('Skip for now', { exact: true }).first().click({ timeout: 30_000 }).catch(() => {});
+  // eslint-disable-next-line no-restricted-syntax -- the welcome dialog closes with no signal to wait on
   await sleep(500);
   const dontAsk = win.getByText("Don't ask again", { exact: true });
   if (await dontAsk.count()) await dontAsk.first().click();
@@ -84,6 +85,7 @@ describe('fan-out cost baseline (Electron e2e)', () => {
   it('counts what an ordinary pane parent pays to follow a 3-task fan-out', async () => {
     const term = win.locator('.xterm').first();
     await term.waitFor({ timeout: 30_000 });
+    // eslint-disable-next-line no-restricted-syntax -- the shell prompt has no DOM signal to wait on
     await sleep(1_000);
     await term.click();
     await win.keyboard.type(`cd ${sb.project} && claude\n`);

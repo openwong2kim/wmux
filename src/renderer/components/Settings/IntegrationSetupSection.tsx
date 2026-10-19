@@ -38,8 +38,22 @@ export interface IntegrationSetupApi {
      *  owns the same four hook events when it is present, and then an install
      *  deliberately writes nothing — so a row that read `installed` alone would
      *  sit at "not installed" forever while the signals actually flow. */
-    status: () => Promise<{ installed: boolean; outcome?: { pluginAlsoInstalled?: boolean } }>;
+    status: () => Promise<{
+      installed: boolean;
+      /** #2404 — installed, but older than the hook set this build expects. */
+      updateAvailable?: boolean;
+      outcome?: { pluginAlsoInstalled?: boolean; hooks?: Array<{ label: string; state: string }> };
+      /** Claude account folders whose own settings copy drifted (see
+       *  hooksBridge.handler accountHookDrift). */
+      accounts?: Array<{ accountId: string; name: string; stale: string[] }>;
+    }>;
     install: () => Promise<{ ok: boolean; error: string | null }>;
+    /** #2404 — adds only the hooks a newer build expects. Optional: without
+     *  it an older preload never shows the Update state. */
+    update?: () => Promise<{ ok: boolean; error: string | null }>;
+    /** The same Update for one account folder, by account id. Optional: without
+     *  it no account row is shown. */
+    updateAccount?: (accountId: string) => Promise<{ ok: boolean; error: string | null }>;
     /** The install prompt's durable "Don't ask again". Optional: an older
      *  preload simply never shows the re-enable line. */
     getPromptPreference?: () => Promise<{ suppressed: boolean }>;
@@ -158,6 +172,7 @@ export function foreignCommandSuffix(targets?: StatuslineTargetProbe[]): string 
 export type RowState =
   | 'unknown'      // pre-probe; never rendered as "not installed"
   | 'installed'
+  | 'outdated'     // #2404 — installed, but older than this build's hook set
   | 'missing'
   | 'working'
   | 'error'
@@ -173,9 +188,18 @@ interface RowModel {
   /** Configs another tool owns, from the last probe. Present even on an
    *  `installed` row: that is the partially-foreign case. */
   foreign?: StatuslineTargetProbe[];
+  /** #2404 — the hooks an Update would write, by label, from the last probe. */
+  stale?: string[];
 }
 
 const INITIAL: RowModel = { state: 'unknown', error: null };
+
+/** A Claude account folder whose own settings copy drifted. */
+interface AccountHookRow {
+  accountId: string;
+  name: string;
+  model: RowModel;
+}
 const UNAVAILABLE: RowModel = { state: 'unavailable', error: null };
 
 /** Probe → row state. Kept separate so the mapping is testable without a DOM. */
@@ -216,6 +240,9 @@ export function IntegrationSetupSection({
 }): React.ReactElement {
   const t = useT();
   const [hooks, setHooks] = useState<RowModel>(INITIAL);
+  // One row per Claude account folder whose settings copy drifted, replaced
+  // whole by each probe: an account brought up to date drops out.
+  const [accountHooks, setAccountHooks] = useState<AccountHookRow[]>([]);
   const [mcp, setMcp] = useState<RowModel>(INITIAL);
   const [statusline, setStatusline] = useState<RowModel>(INITIAL);
   // The install prompt's durable refusal. `null` means "no answer to show" —
@@ -268,14 +295,31 @@ export function IntegrationSetupSection({
     if (!api.hooks) commit(setHooks, UNAVAILABLE, gen);
     else api.hooks
       .status()
+      .then((s) => {
+        if (mountedRef.current && gen === genRef.current) {
+          // A row whose Update is still running keeps its state until that
+          // Update settles.
+          setAccountHooks((prev) => (api.hooks?.updateAccount ? s.accounts ?? [] : []).map((a) => {
+            const running = prev.find((r) => r.accountId === a.accountId && r.model.state === 'working');
+            return running ?? { accountId: a.accountId, name: a.name, model: { state: 'outdated', error: null, stale: a.stale } };
+          }));
+        }
+        return s;
+      })
       .then((s) =>
-        commit(setHooks, {
-          // Plugin-owned hooks fire the same signals, and an install against
-          // them writes nothing — without this the row sits at "not installed"
-          // forever while an Install click reports success and changes nothing.
-          state: rowStateFromProbe(s.installed || s.outcome?.pluginAlsoInstalled === true),
-          error: null,
-        }, gen),
+        commit(setHooks, s.updateAvailable === true && api.hooks?.update
+          ? {
+              state: 'outdated',
+              error: null,
+              stale: (s.outcome?.hooks ?? []).filter((h) => h.state !== 'ok').map((h) => h.label),
+            }
+          : {
+              // Plugin-owned hooks fire the same signals, and an install against
+              // them writes nothing — without this the row sits at "not installed"
+              // forever while an Install click reports success and changes nothing.
+              state: rowStateFromProbe(s.installed || s.outcome?.pluginAlsoInstalled === true),
+              error: null,
+            }, gen),
       )
       .catch(() => commit(setHooks, INITIAL, gen));
     // Probed with the rows but kept OUT of RowModel: it is not an install
@@ -333,7 +377,7 @@ export function IntegrationSetupSection({
       // Carry the probe's foreign detail across the in-flight state: a flat
       // model here dropped it, and the skip message that follows then had no
       // command to name.
-      commit(set, (prev) => ({ state: 'working', error: null, foreign: prev.foreign }), gen);
+      commit(set, (prev) => ({ state: 'working', error: null, foreign: prev.foreign, stale: prev.stale }), gen);
       try {
         const outcome = await install();
         // When the install reports per-target outcomes, `ok` alone is not
@@ -356,6 +400,8 @@ export function IntegrationSetupSection({
             error: outcome.error ?? skippedReason(outcome.targets),
             skip: skipReasonOf(outcome.targets),
             foreign: prev.foreign,
+            // A failed Update stays an Update on retry.
+            stale: prev.stale,
           }),
           gen,
         );
@@ -417,12 +463,42 @@ export function IntegrationSetupSection({
       .catch(() => { /* leave the line up: the refusal is still in force */ });
   }, [api]);
 
+  // One account folder's Update. Not runInstall: its single generation would
+  // let a second account's Update swallow the first one's result. Each row
+  // settles on its own; a success also re-probes, which replaces the rows.
+  const runAccountUpdate = useCallback(async (accountId: string) => {
+    const update = api.hooks?.updateAccount;
+    if (!update) return;
+    const setRow = (model: (prev: RowModel) => RowModel) => {
+      if (!mountedRef.current) return;
+      setAccountHooks((rows) => rows.map((r) => (r.accountId === accountId ? { ...r, model: model(r.model) } : r)));
+    };
+    setRow((prev) => ({ ...prev, state: 'working', error: null }));
+    try {
+      const outcome = await update(accountId);
+      if (outcome.ok) {
+        // Settled here, not by the probe: another row's install can discard
+        // that probe. The probe then drops the row once the file agrees.
+        setRow((prev) => ({ ...prev, state: 'installed', error: null, stale: [] }));
+        probeAll();
+        return;
+      }
+      setRow((prev) => ({ ...prev, state: 'error', error: outcome.error }));
+    } catch (err) {
+      setRow((prev) => ({ ...prev, state: 'error', error: err instanceof Error ? err.message : null }));
+    }
+  }, [api, probeAll]);
+
   // DESIGN.md "One primary per surface": the first row that needs the user
   // carries the warm primary; every other action on the card is secondary.
   // A row mid-install keeps the slot (drawn secondary while it runs), so the
   // emphasis does not jump to the next row until that install settles.
-  const needsAction = (m: RowModel) => m.state === 'missing' || m.state === 'error' || m.state === 'working';
-  const primaryRow = needsAction(hooks) ? 'hooks' : needsAction(mcp) ? 'mcp' : needsAction(statusline) ? 'statusline' : null;
+  const needsAction = (m: RowModel) =>
+    m.state === 'missing' || m.state === 'outdated' || m.state === 'error' || m.state === 'working';
+  const accountNeedingAction = accountHooks.find((r) => needsAction(r.model));
+  const primaryRow = needsAction(hooks) ? 'hooks'
+    : accountNeedingAction ? `hooks-account-${accountNeedingAction.accountId}`
+    : needsAction(mcp) ? 'mcp' : needsAction(statusline) ? 'statusline' : null;
 
   return (
     <section
@@ -443,8 +519,17 @@ export function IntegrationSetupSection({
           title={t('integrationSetup.hooks.title')}
           description={t('integrationSetup.hooks.description')}
           model={hooks}
-          actionLabel={t('integrationSetup.installButton')}
-          onAction={() => { if (api.hooks) void runInstall(setHooks, api.hooks.install); }}
+          actionLabel={t(hooks.stale ? 'integrationSetup.updateButton' : 'integrationSetup.installButton')}
+          onAction={() => {
+            const h = api.hooks;
+            if (!h) return;
+            // Update only from the probe that offered it (or a retry of that
+            // Update); every other state is a fresh install.
+            void runInstall(setHooks, hooks.stale && h.update ? h.update : h.install);
+          }}
+          note={hooks.state === 'outdated' && (hooks.stale?.length ?? 0) > 0
+            ? t('integrationSetup.hooks.updateNote', { hooks: (hooks.stale ?? []).join(', ') })
+            : null}
         />
         {promptSuppressed === true && (
           <div className="ui-row" data-hooks-prompt-suppressed>
@@ -462,6 +547,22 @@ export function IntegrationSetupSection({
             </button>
           </div>
         )}
+        {accountHooks.map((row) => (
+          <SetupRow
+            key={row.accountId}
+            id={`hooks-account-${row.accountId}`}
+            required
+            title={t('integrationSetup.hooks.accountTitle', { name: row.name })}
+            description={t('integrationSetup.hooks.accountDescription')}
+            model={row.model}
+            actionLabel={t('integrationSetup.updateButton')}
+            primary={primaryRow === `hooks-account-${row.accountId}`}
+            onAction={() => void runAccountUpdate(row.accountId)}
+            note={(row.model.stale?.length ?? 0) > 0
+              ? t('integrationSetup.hooks.updateNote', { hooks: (row.model.stale ?? []).join(', ') })
+              : null}
+          />
+        ))}
         <SetupRow
           id="mcp"
           required
@@ -622,6 +723,7 @@ function StateChip({ state }: { state: RowState }): React.ReactElement {
   const t = useT();
   const label =
     state === 'installed' ? t('integrationSetup.state.installed')
+    : state === 'outdated' ? t('integrationSetup.state.outdated')
     : state === 'working' ? t('integrationSetup.state.working')
     : state === 'unknown' ? t('integrationSetup.state.unknown')
     : state === 'error' ? t('integrationSetup.state.error')

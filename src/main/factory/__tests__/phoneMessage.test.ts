@@ -16,6 +16,12 @@ describe('handlePhoneMoaWake', () => {
       { ...base, actor: '' },
       { ...base, deviceId: 7 },
       { ...base, mode: 'moa' },
+      // A target is both fields, a room and a thread, and only for the factory.
+      { ...base, mode: 'factory', workspaceId: 'ws-1' },
+      { ...base, mode: 'factory', threadId: 'dm:bot-0000aaaa' },
+      { ...base, mode: 'factory', workspaceId: '../x', threadId: 'dm:bot-0000aaaa' },
+      { ...base, mode: 'factory', workspaceId: 'ws-1', threadId: 'dm:nobody' },
+      { ...base, workspaceId: 'ws-1', threadId: 'dm:bot-0000aaaa' },
     ]) {
       await expect(handlePhoneMoaWake(bad)).rejects.toThrow(/invalid moa\.wake payload/);
     }
@@ -39,6 +45,13 @@ describe('handlePhoneMoaWake', () => {
     setFactoryPhoneMessageHandler(taker);
     expect(await handlePhoneMoaWake({ ...base, mode: 'factory', deviceId: 'd1', extra: 'dropped' })).toEqual(queued);
     expect(taker).toHaveBeenCalledWith({ ...base, mode: 'factory', deviceId: 'd1' });
+  });
+
+  it('passes a conversation target through', async () => {
+    const taker = vi.fn(async () => queued);
+    setFactoryPhoneMessageHandler(taker);
+    expect(await handlePhoneMoaWake({ ...base, mode: 'factory', workspaceId: 'ws-1', threadId: 'group:grp-0000abcd' })).toEqual(queued);
+    expect(taker).toHaveBeenCalledWith({ ...base, mode: 'factory', workspaceId: 'ws-1', threadId: 'group:grp-0000abcd' });
   });
 
   it('answers only once the taker has finished (its wake is on disk)', async () => {

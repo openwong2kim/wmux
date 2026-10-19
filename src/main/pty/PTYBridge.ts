@@ -5,7 +5,7 @@ import { TerminalNotificationParser } from './oscNotification';
 import { AgentDetector, agentDisplayToSlug } from './AgentDetector';
 import { ActivityMonitor } from './ActivityMonitor';
 import { parseOsc7Cwd, detectPromptCwd } from './cwdDetect';
-import { sanitizeTitle } from './titleDetect';
+import { ClaudeTitleTurnEdge, sanitizeTitle } from './titleDetect';
 import { IPC } from '../../shared/constants';
 import {
   updateCwd,
@@ -19,10 +19,15 @@ import {
 import { dispatchNotification } from '../notification/dispatchNotification';
 import { createLeadingEdgeThrottle, VETO_TRACE_THROTTLE_MS } from '../pipe/handlers/hooks.rpc';
 import { settleHookTurnToIdle } from '../notification/turnSettle';
-import { InterruptKeystrokeDetector } from '../../shared/hooks/interruptKeystroke';
+import { InterruptKeystrokeDetector, isEscapeChunk } from '../../shared/hooks/interruptKeystroke';
+import { kittyChunkAsLegacy } from '../../shared/kittyKeyEvents';
 import {
   recentlyResized,
   RESIZE_REDRAW_GUARD_MS,
+  clearEscapeKey,
+  markEscapeKey,
+  markUserInput,
+  recentlyEscaped,
   recentlySettled,
   SETTLE_REDRAW_GUARD_MS,
   clearPty as clearSuppression,
@@ -277,13 +282,20 @@ export class PTYBridge {
    *
    * Live finding (Claude Code 2.1.236): an interrupted turn fires NO Stop hook,
    * and `claude` stays the foreground command so OSC 133 cannot see it either —
-   * the keystroke is the pane's only evidence that the turn ended.
+   * the keystroke, and the agent's "Interrupted" row after it, are the pane's
+   * only evidence that the turn ended.
    *
    * A pane with no open latch is left alone: a Ctrl+C in a plain shell is not a
    * turn end, and broadcasting there would be the byte heuristic's job anyway.
+   *
+   * A lone Escape (Claude Code's own interrupt key) is only recorded here: it
+   * settles the pane once the agent confirms with its "Interrupted" row (see
+   * recentlyEscaped and the onInterrupted handlers).
    */
   noteInterruptInput(ptyId: string, data: string): void {
     try {
+      markUserInput(ptyId);
+      if (isEscapeChunk(kittyChunkAsLegacy(data))) markEscapeKey(ptyId);
       if (!this.interruptKeystrokes.observe(ptyId, data)) return;
       settleHookTurnToIdle(ptyId, this.getHookRouter?.() ?? null, this.getWindow());
     } catch (err) {
@@ -367,6 +379,17 @@ export class PTYBridge {
     const agentDetector = new AgentDetector();
     this.agentDetectors.set(ptyId, agentDetector);
 
+    // The agent says its turn is over right after a lone Escape: that confirms
+    // the Escape as an interrupt (#2247). Two things say it: the "Interrupted"
+    // row (onInterrupted below) and, for an Esc while Claude Code is still
+    // thinking, which draws no row, its title turning idle (#2264).
+    const confirmEscapeInterrupt = (): void => {
+      if (!recentlyEscaped(ptyId) || recentlyResized(ptyId, RESIZE_REDRAW_GUARD_MS)) return;
+      clearEscapeKey(ptyId);
+      settleHookTurnToIdle(ptyId, this.getHookRouter?.() ?? null, this.getWindow());
+    };
+    const titleTurnEdge = new ClaudeTitleTurnEdge();
+
     // Handle OSC events
     oscParser.onOsc((event) => {
       const win = this.getWindow();
@@ -379,6 +402,9 @@ export class PTYBridge {
           // Code's `/rename`. OSC 1 (icon name only) is intentionally ignored.
           const title = sanitizeTitle(event.data);
           if (title) win.webContents.send(IPC.TERMINAL_TITLE_CHANGED, ptyId, title);
+          if (titleTurnEdge.observe(title) && agentDetector.getLastAgent() === 'Claude Code') {
+            confirmEscapeInterrupt();
+          }
           break;
         }
         case 7: {
@@ -716,10 +742,42 @@ export class PTYBridge {
         // reset below — a deferred working cue landing 3s later would reset
         // `announced` on repaint noise and re-open the door to a duplicate
         // toast for an already-announced turn.
+        const resized = recentlyResized(ptyId, RESIZE_REDRAW_GUARD_MS);
         const activeAlarm = this.getAlarm?.() ?? null;
         const activeSlug = agentDisplayToSlug(lastAgent);
-        if (activeAlarm && activeSlug && !recentlyResized(ptyId, RESIZE_REDRAW_GUARD_MS)) {
+        if (activeAlarm && activeSlug && !resized) {
           activeAlarm.observe(ptyId, activeSlug, { class: 'working' });
+        }
+        // #2262: a resize repaint is not work, so it does not reach the status
+        // dot either — the local-mode mirror of the daemon fix (#2241). Revealing
+        // a workspace refits its panes, and an idle TUI (Codex) repaints the
+        // whole screen, well over the threshold: broadcasting `running` here lit
+        // an idle pane, and the unmarked idle that followed left it lit for the
+        // renderer's two-minute activity window. Hand the cycle back instead of
+        // consuming it, so a real turn that keeps writing past the guard window
+        // still reports running. No hook-armed exemption is needed here (the
+        // daemon has one, #2251): main never arms a cycle from a hook's running
+        // edge, and a pane whose hooks govern its running state never gets this
+        // broadcast at all.
+        //
+        // Resize-redraw guard for the detector: resetting the emission dedup on
+        // the repaint burst lets the unchanged idle footer re-match and re-fire
+        // a stale "Ready for input" for a pane where nothing happened. The
+        // reset is deferred to the end of the guard window, not skipped: a
+        // genuinely new turn whose short reply never crosses the threshold
+        // again would otherwise get no fresh dedup state, and its completion
+        // would be deduped as a repeat of the last-notified turn (codex review
+        // catch). Deferring keeps the repaint itself from re-triggering while
+        // that real completion, which arrives over at least one network
+        // round-trip, still sees a reset dedup state.
+        if (resized) {
+          if (resizeGuardTimer) clearTimeout(resizeGuardTimer);
+          resizeGuardTimer = setTimeout(() => {
+            resizeGuardTimer = null;
+            agentDetector.resetEmissionState();
+          }, RESIZE_REDRAW_GUARD_MS);
+          this.activityMonitor.endTurn(ptyId);
+          return;
         }
         // Hook-governed pane: its bridge reports the turn START, so the
         // heuristic's guess is strictly worse than what the pane already
@@ -749,42 +807,27 @@ export class PTYBridge {
           });
         }
         // #935 direction 3: recorded at the broadcastMetadataUpdate funnel.
-        // Resize-redraw guard: a workspace switch / split / zoom refits xterm,
-        // fires pty:resize, and TUI agents answer with a multi-KB full redraw —
-        // a burst indistinguishable from real activity. Resetting the emission
-        // dedup on THAT burst lets the unchanged idle footer re-match and
-        // re-fire a stale "Ready for input" for a pane where nothing happened.
-        //
-        // onActive fires EXACTLY ONCE per active-to-idle cycle (ActivityMonitor
-        // re-arms it only on the next idle→active transition). So a plain
-        // "skip the reset this one time" would permanently skip it for the
-        // REST of this cycle too — if a genuinely new turn's output continues
-        // streaming into the SAME cycle (no 5s idle gap between the resize
-        // repaint and the real response), that turn's completion would never
-        // get a fresh dedup state and would be silently deduped as a repeat
-        // of the last-notified turn (codex review catch). Deferring the
-        // reset to fire once the guard window elapses — rather than skipping
-        // it outright — keeps the repaint itself from re-triggering while
-        // still guaranteeing this cycle's real completion (which streams in
-        // over at least one network round-trip, essentially always >3s) sees
-        // a reset dedup state by the time it arrives.
-        if (recentlyResized(ptyId, RESIZE_REDRAW_GUARD_MS)) {
-          if (resizeGuardTimer) clearTimeout(resizeGuardTimer);
-          resizeGuardTimer = setTimeout(() => {
-            resizeGuardTimer = null;
-            agentDetector.resetEmissionState();
-          }, RESIZE_REDRAW_GUARD_MS);
-        } else {
-          agentDetector.resetEmissionState();
-        }
+        agentDetector.resetEmissionState();
       } catch (err) {
         console.warn('[PTYBridge] onActive callback error:', err);
+      }
+    });
+
+    // The agent's "Interrupted" row confirms a lone Escape as an interrupt.
+    // Without a recent Escape the row is an old turn's, reprinted by a redraw
+    // (or the turn was already settled by Ctrl+C / ESC ESC).
+    const unsubInterrupted = agentDetector.onInterrupted(() => {
+      try {
+        confirmEscapeInterrupt();
+      } catch (err) {
+        console.warn('[PTYBridge] onInterrupted callback error:', err);
       }
     });
 
     this.agentDetectorCleanups.set(ptyId, [
       unsubAgent,
       unsubActive,
+      unsubInterrupted,
       () => { if (resizeGuardTimer) clearTimeout(resizeGuardTimer); },
     ]);
 
@@ -805,6 +848,7 @@ export class PTYBridge {
 
     // 2. OSC parser
     this.addMiddleware(ptyId, (data) => {
+      titleTurnEdge.noteOutput(data);
       oscParser.process(data);
     });
 

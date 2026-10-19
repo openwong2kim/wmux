@@ -12,6 +12,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { createElectronApiShim } from '../electronApiShim';
 import { webElectronApiImpl } from '../webElectronApi';
+import { deliberateSleep } from '../../../test-utils/waitFor';
 
 const workspacesReply = {
   activeWorkspaceId: 'ws-a',
@@ -75,7 +76,7 @@ beforeAll(async () => {
     stop = startWebSync({ token: 't', fetchImpl: fetchImpl as unknown as typeof fetch, intervalMs: 60_000, onUnauthorized: () => undefined });
     root.render(<WebApp />);
   });
-  await act(async () => { await new Promise((r) => setTimeout(r, 50)); });
+  await act(async () => { await deliberateSleep(50, 'not yet converted (#2363): lets the first sync render under act; nothing polled'); });
   // The import above pulls in the whole pane tree, terminal included; on a
   // loaded machine that alone can pass the default 10 s hook budget.
 }, 30_000);

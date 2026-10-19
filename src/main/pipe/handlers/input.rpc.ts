@@ -57,7 +57,7 @@ import {
 } from '../../workspace/ptyOwnership';
 import { getWorkspaceMirror } from '../../workspace/WorkspaceMirror';
 import { getTaskLedger } from '../../deck/taskLedgerHost';
-import { getWorkerResumePorts, workerWorkspaceOf } from '../../factory/workerReclaim';
+import { reclaimedWorkerWorkspaces } from '../../factory/workerReclaim';
 import { hasRedactedSecrets, redactStoredSecrets } from '../../factory/secretRedaction';
 import type { TaskLedger } from '../../../daemon/ledger/TaskLedger';
 
@@ -1046,10 +1046,7 @@ export function registerInputRpc(
   deliveryGate: (ptyId: string) => Promise<GatedSubmitRefusal | null>;
 } {
   const ledgerOf = deps.getLedger ?? getTaskLedger;
-  const reclaimedOf = deps.reclaimedWorkerWorkspaces ?? ((botId: string, owner: string): string[] =>
-    (getWorkerResumePorts()?.store.all() ?? [])
-      .filter((r) => r.botId === botId && r.ownerWorkspaceId === owner)
-      .map((r) => workerWorkspaceOf(r)));
+  const reclaimedOf = deps.reclaimedWorkerWorkspaces ?? ((botId: string, owner: string): string[] => reclaimedWorkerWorkspaces(botId, owner));
 
   /**
    * The fresh-context step for one new-task send (#1680), against the live

@@ -116,6 +116,12 @@ describe('botTaskViews / FactoryBotRow.tasks', () => {
     expect(views.has('bot-0000000b')).toBe(false);
   });
 
+  it('an ended task whose folder was kept for uncommitted changes says so', async () => {
+    const rows = [row('kept', 'cancelled', { updatedAt: 2 }), row('gone', 'completed', { updatedAt: 1 })];
+    const views = await botTaskViews([{ id: BOT }], { ...sources(rows), folderKept: (id) => id === 'kept' });
+    expect(views.get(BOT)?.map((v) => [v.taskId, v.folder])).toEqual([['kept', 'kept_dirty'], ['gone', undefined]]);
+  });
+
   it('caps a bot\'s list', async () => {
     const rows = Array.from({ length: BOT_TASK_VIEW_MAX + 5 }, (_, i) => row(`t${i}`, 'working', { updatedAt: i }));
     const views = await botTaskViews([{ id: BOT }], sources(rows));

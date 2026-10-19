@@ -130,6 +130,12 @@ export interface WorkspaceMirrorPushPayload {
    * renderer omits it, which main reads as "unknown" (no context line).
    */
   viewed?: ViewedPointer;
+  /**
+   * The workspace the Bots page's worker panel shows now: the owner reads it
+   * beside the chat without making it the active workspace. A bot worker
+   * there is never stopped as idle. Absent: none shown, or an old renderer.
+   */
+  panelWorkspaceId?: string;
 }
 
 /** The viewed workspace, its active pane, and that pane's active surface's own

@@ -364,7 +364,7 @@ export default function CommandPalette() {
       {
         label: t('palette.cmd.openBots'),
         shortcut: 'toggleBotsView',
-        action: () => { useStore.getState().setAppRoute('bots'); setVisible(false); },
+        action: () => { useStore.getState().openBotsPage(); setVisible(false); },
       },
       {
         label: t('palette.cmd.openFleetView'),

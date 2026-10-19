@@ -1,0 +1,235 @@
+{
+  "pass": {
+    "schemaVersion": 1,
+    "scenario": "connector-worker-launch",
+    "run": 1,
+    "workspaceId": "ws-bb4149c9-4447-49d1-846e-b14c2244bf3b",
+    "botKeys": {
+      "lead": "bot-849cc6ad"
+    },
+    "harnessErrors": [],
+    "sources": {
+      "facts": {
+        "present": true,
+        "ok": true,
+        "errors": 0
+      },
+      "wakes": {
+        "present": true,
+        "ok": true,
+        "errors": 0
+      },
+      "handoffs": {
+        "present": false,
+        "ok": false,
+        "errors": 0
+      },
+      "bots": {
+        "present": true,
+        "ok": true,
+        "errors": 0
+      },
+      "settings": {
+        "present": true,
+        "ok": true,
+        "errors": 0
+      },
+      "repoWatch": {
+        "present": false,
+        "ok": false,
+        "errors": 0
+      },
+      "ledger": {
+        "present": true,
+        "ok": true,
+        "errors": 0
+      },
+      "verdicts": {
+        "present": false,
+        "ok": false,
+        "errors": 0
+      },
+      "effects": {
+        "present": false,
+        "ok": false,
+        "errors": 0
+      },
+      "approvals": {
+        "present": false,
+        "ok": false,
+        "errors": 0
+      },
+      "approvalRules": {
+        "present": false,
+        "ok": false,
+        "errors": 0
+      },
+      "decisions": {
+        "present": false,
+        "ok": false,
+        "errors": 0
+      },
+      "routines": {
+        "present": false,
+        "ok": false,
+        "errors": 0
+      },
+      "cards": {
+        "present": true,
+        "ok": true,
+        "errors": 0
+      },
+      "workers": {
+        "present": true,
+        "ok": true,
+        "errors": 0
+      },
+      "ghCalls": {
+        "present": true,
+        "ok": true,
+        "errors": 0
+      }
+    },
+    "records": [
+      {
+        "label": "connector",
+        "result": {
+          "ok": true,
+          "connector": {
+            "name": "probe",
+            "purpose": "a probe server for the smoke",
+            "transport": "stdio",
+            "stdio": {
+              "command": "/usr/bin/true",
+              "args": [],
+              "env": {}
+            },
+            "secrets": [],
+            "tools": {
+              "mode": "listed",
+              "allowed": [
+                "probe_read"
+              ]
+            },
+            "scope": {
+              "kind": "all"
+            },
+            "offFor": [],
+            "enabled": true,
+            "id": "con-fe4e088a",
+            "missingKeys": []
+          }
+        }
+      }
+    ],
+    "ledger": [
+      {
+        "id": "wtask-mv8ptd29-rxafux4x",
+        "taskWorkspaceId": "ws-bc7ca663-7803-438f-9b68-1c984b9acb06",
+        "ownerWorkspaceId": "ws-bb4149c9-4447-49d1-846e-b14c2244bf3b",
+        "status": "completed",
+        "dispatch": {
+          "origin": {
+            "kind": "bot",
+            "botId": "bot-849cc6ad",
+            "tainted": true
+          },
+          "preset": "default",
+          "connectors": [
+            "probe"
+          ]
+        }
+      }
+    ],
+    "workers": [
+      {
+        "at": 1792018953166,
+        "event": "start",
+        "taskId": "wtask-mv8ptd29-rxafux4x",
+        "agent": "claude",
+        "strict": true,
+        "mcpServers": [
+          "wmux",
+          "probe"
+        ],
+        "allow": [
+          "mcp__probe__probe_read"
+        ]
+      },
+      {
+        "at": 1792018955008,
+        "event": "ledger_update"
+      }
+    ]
+  },
+  "fail": [
+    {
+      "why": "the worker launched without --strict-mcp-config",
+      "failing": [
+        "worker_strict"
+      ],
+      "mutate": [
+        {
+          "op": "set",
+          "path": "workers.0.strict",
+          "value": false
+        }
+      ]
+    },
+    {
+      "why": "the owner's own servers loaded too",
+      "failing": [
+        "worker_servers"
+      ],
+      "mutate": [
+        {
+          "op": "set",
+          "path": "workers.0.mcpServers",
+          "value": [
+            "wmux",
+            "probe",
+            "claude_ai_Gmail"
+          ]
+        }
+      ]
+    },
+    {
+      "why": "a listed-tools connection was allowed whole",
+      "failing": [
+        "worker_listed_tools_only"
+      ],
+      "mutate": [
+        {
+          "op": "push",
+          "path": "workers.0.allow",
+          "value": "mcp__probe"
+        }
+      ]
+    },
+    {
+      "why": "the task with a connection is recorded as clean",
+      "failing": [
+        "task_tainted"
+      ],
+      "mutate": [
+        {
+          "op": "set",
+          "path": "ledger.0.dispatch.origin.tainted",
+          "value": false
+        }
+      ]
+    },
+    {
+      "why": "the ledger does not name the connection",
+      "failing": [
+        "task_names_connection"
+      ],
+      "mutate": [
+        {
+          "op": "remove",
+          "path": "ledger.0.dispatch.connectors"
+        }
+      ]
+    }
+  ]
+}

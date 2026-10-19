@@ -21,6 +21,7 @@ import { decUnread } from './notificationSlice';
 import { mergeDeadPaneRecovery, type DeadPaneRecovery } from '../../../shared/ptyRecovery';
 import { stashedPaneLiveness } from '../../../shared/paneStash';
 import { resolveAttentionBlink, resolveAttentionBlinkFinished, resolveAttentionRemindMs } from '../../components/Sidebar/attentionBlink';
+import { resolveWindowGlass } from '../../utils/windowGlass';
 import { restorePcRail } from './pcRailSlice';
 import { LOCAL_PC_ID, isShadowWorkspaceId } from '../../../shared/pcRail';
 import {
@@ -1576,6 +1577,10 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       state.attentionBlink = resolveAttentionBlink(data.attentionBlink);
       state.attentionBlinkRemindMs = resolveAttentionRemindMs(data.attentionBlinkRemindMs);
       state.attentionBlinkFinished = resolveAttentionBlinkFinished(data.attentionBlinkFinished);
+      if (data.windowGlass !== undefined) {
+        state.windowGlass = resolveWindowGlass(data.windowGlass);
+        document.documentElement.setAttribute('data-glass-level', state.windowGlass);
+      }
       // #1481 — the sort mode supersedes the attention flag; a session that
       // predates it carries only the flag, which maps onto 'attention'.
       state.sidebarSortMode = resolveSidebarSortMode(data);
@@ -1656,6 +1661,15 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
         window.electronAPI.settings.setToastEnabled(data.toastEnabled);
       }
       if (data.notificationRingEnabled != null) state.notificationRingEnabled = data.notificationRingEnabled;
+      // #2294 — only an explicit boolean turns an effect off; a session that
+      // predates the fields keeps the defaults. The opacity is clamped the
+      // same way the setter clamps it.
+      if (typeof data.paneRingEnabled === 'boolean') state.paneRingEnabled = data.paneRingEnabled;
+      if (typeof data.paneFlashEnabled === 'boolean') state.paneFlashEnabled = data.paneFlashEnabled;
+      if (typeof data.taskbarFlashEnabled === 'boolean') state.taskbarFlashEnabled = data.taskbarFlashEnabled;
+      if (typeof data.paneGlowOpacity === 'number' && Number.isFinite(data.paneGlowOpacity)) {
+        state.paneGlowOpacity = Math.min(1, Math.max(0.6, data.paneGlowOpacity));
+      }
       if (typeof data.anthropicUsageEnabled === 'boolean') {
         state.anthropicUsageEnabled = data.anthropicUsageEnabled;
         window.electronAPI.usage.setEnabled(data.anthropicUsageEnabled);
@@ -1739,7 +1753,6 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
         state.agentToolbarPinned = data.agentToolbarPinned;
       }
       if (data.agentToolbarSnippets != null) state.toolbarSnippets = data.agentToolbarSnippets;
-      if (data.agentToolbarNewCommand != null) state.newConversationCommand = data.agentToolbarNewCommand;
       if (data.prefixConfig) {
         // Merge the saved bindings ON TOP of DEFAULT_PREFIX_CONFIG instead of
         // wholesale replacement (mirrors the layoutTemplates merge above). A

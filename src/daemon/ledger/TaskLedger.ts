@@ -21,10 +21,15 @@
 //   - transitions: `canTransition`; a same-status resubmit is a no-op.
 //   - authz: `canActorSet` — the ONE predicate, never re-implemented.
 //   - gate results are written by the `system` actor only (`recordGate`,
-//     the gate runner); `update` ignores a caller-supplied gate.
+//     the gate runner), never on a completed or cancelled entry; `update`
+//     ignores a caller-supplied gate.
 //   - `completed`: only by a `brain`, only from `review_requested` (table),
-//     only with a SYSTEM-recorded gate whose exitCode is exactly 0 — unless
-//     `force: true` with a non-empty `reason`, which is logged on the entry.
+//     only with a SYSTEM-recorded gate whose exitCode is exactly 0 (a
+//     `no_changes` skip counts only for the report it was recorded on:
+//     LedgerGateResult.reportRev against LedgerEntry.reportedAtRev) —
+//     unless `force: true` with a non-empty `reason`, which is logged on the entry,
+//     or the row is a bot's research task (`isResearchDispatch`: main wrote
+//     its dispatch; it changes no code, so there is no gate to run).
 //   - CAS: every update names the `expectedRev` it read; a stale one is
 //     refused.
 //   - WorkTask closed/detached → `closeTask` forces `cancelled` unless the
@@ -38,6 +43,9 @@
 // boots and acknowledged only once a wake actually delivered it.
 
 import * as fs from 'node:fs';
+import { assertNotLiveWmuxPath } from '../../shared/constants';
+import { normalizeRepoKey } from '../../shared/repoKey';
+import { isOriginPin } from '../../shared/originPin';
 import * as path from 'node:path';
 import {
   LEDGER_GATE_TAIL_MAX_BYTES,
@@ -48,7 +56,9 @@ import {
   canActorSet,
   canTransition,
   isLedgerStatus,
+  isResearchDispatch,
   type LedgerActor,
+  type LedgerCompletion,
   type LedgerDispatch,
   type LedgerEntry,
   type LedgerGateResult,
@@ -109,6 +119,9 @@ export interface LedgerUpdateInput {
   summary?: string;
   force?: boolean;
   reason?: string;
+  /** On a move to `completed` only: what ended it (LedgerEntry.completion).
+   *  Main's own in-process write; no RPC forwards it. */
+  completion?: LedgerCompletion;
 }
 
 export type LedgerUpdateError =
@@ -199,6 +212,14 @@ export function truncateHead(text: string, maxBytes: number): string {
   return buf.subarray(0, end).toString('utf8');
 }
 
+/** Whether a row's no-changes skip was recorded for its current report
+ *  (LedgerGateResult.reportRev). A row reported before reports were
+ *  stamped takes the skip it holds; its next report does not. */
+export function noChangesReceiptCurrent(entry: Pick<LedgerEntry, 'gate' | 'reportedAtRev'>): boolean {
+  const r = entry.gate?.reportRev;
+  return typeof r === 'number' && r === (entry.reportedAtRev ?? r);
+}
+
 function boundGate(gate: LedgerGateResult): LedgerGateResult {
   return {
     exitCode: gate.exitCode === null ? null : typeof gate.exitCode === 'number' ? gate.exitCode : null,
@@ -207,7 +228,7 @@ function boundGate(gate: LedgerGateResult): LedgerGateResult {
     command: truncateHead(typeof gate.command === 'string' ? gate.command : '', LEDGER_GATE_COMMAND_MAX_BYTES),
     recordedBy: 'system',
     // Carry the no-gate label through so the persisted entry says why exitCode is 0.
-    ...(gate.skipped === 'no_gate_command' ? { skipped: 'no_gate_command' as const } : {}),
+    ...(gate.skipped === 'no_gate_command' || gate.skipped === 'no_changes' ? { skipped: gate.skipped } : {}),
     // The HEAD the gate ran on, kept only when it is a full commit SHA.
     ...(typeof gate.headSha === 'string' && /^[0-9a-f]{40}([0-9a-f]{24})?$/.test(gate.headSha) ? { headSha: gate.headSha } : {}),
   };
@@ -226,13 +247,30 @@ function isEntryShape(v: unknown): v is LedgerEntry {
   );
 }
 
+/** An absolute path (POSIX, a Windows drive or a UNC share) with no control
+ *  character. */
+function isRecordedGitDir(v: unknown): v is string {
+  // eslint-disable-next-line no-control-regex
+  return typeof v === 'string' && v.length <= 4096 && /^(?:\/|[A-Za-z]:[\\/]|\\\\)/.test(v) && !/[\x00-\x1f\x7f]/.test(v);
+}
+
 function copyDispatch(d: LedgerDispatch): LedgerDispatch {
   return {
     origin: { kind: d.origin.kind, ...(d.origin.botId ? { botId: d.origin.botId } : {}), ...(typeof d.origin.tainted === 'boolean' ? { tainted: d.origin.tainted } : {}) },
     ...(d.preset ? { preset: d.preset } : {}),
+    // Only the factory's own spelling of a repository (shared/repoKey.ts).
+    ...(typeof d.repoKey === 'string' && normalizeRepoKey(d.repoKey) === d.repoKey ? { repoKey: d.repoKey } : {}),
+    ...(isRecordedGitDir(d.gitCommonDir) ? { gitCommonDir: d.gitCommonDir } : {}),
+    ...(isRecordedGitDir(d.gitWorktreeDir) ? { gitWorktreeDir: d.gitWorktreeDir } : {}),
+    ...(isOriginPin(d.originPin) ? { originPin: d.originPin } : {}),
     ...(d.checkout ? { checkout: { sha: d.checkout.sha, detached: true as const } } : {}),
+    ...(typeof d.baseOid === 'string' && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(d.baseOid) ? { baseOid: d.baseOid } : {}),
     ...(d.threadId ? { threadId: d.threadId } : {}),
     ...(typeof d.handoffId === 'string' && /^[A-Za-z0-9_.:-]{1,100}$/.test(d.handoffId) ? { handoffId: d.handoffId } : {}),
+    ...(Array.isArray(d.connectors) && d.connectors.length > 0 && d.connectors.length <= 8 && d.connectors.every((n) => typeof n === 'string' && /^[a-z][a-z0-9-]{0,30}[a-z0-9]$/.test(n))
+      ? { connectors: [...d.connectors] }
+      : {}),
+    ...(d.reconciled === true ? { reconciled: true as const } : {}),
   };
 }
 
@@ -268,6 +306,7 @@ export class TaskLedger {
   readonly recoveredFromRotated: boolean;
 
   constructor(opts: TaskLedgerOptions) {
+    assertNotLiveWmuxPath(opts.dir);
     this.dir = opts.dir;
     this.filePath = getTaskLedgerPath(opts.dir);
     this.now = opts.now ?? Date.now;
@@ -341,8 +380,9 @@ export class TaskLedger {
       const existing = this.entries.get(input.id);
       if (existing) {
         // A row mirrored before its fan-out registered it (the reconciler)
-        // gets the dispatch once; a recorded dispatch is never replaced.
-        if (input.dispatch && !existing.dispatch) {
+        // gets the dispatch once; a recorded dispatch is never replaced,
+        // except the reconciler's own (origin only) by the full one.
+        if (input.dispatch && (!existing.dispatch || (existing.dispatch.reconciled === true && input.dispatch.reconciled !== true))) {
           const entry: LedgerEntry = this.redact({ ...existing, dispatch: copyDispatch(input.dispatch) });
           await this.append({ op: 'entry', entry });
           this.entries.set(entry.id, entry);
@@ -437,13 +477,18 @@ export class TaskLedger {
       // Provenance, not just value: the gate must have been RECORDED by the
       // gate runner (system). A gate that arrived on the wire never counts.
       const gate = entry.gate;
-      const gatePassed = gate !== undefined && gate.recordedBy === 'system' && gate.exitCode === 0;
-      if (!gatePassed) {
+      // A no-changes skip holds for the report it was recorded on only: a
+      // task sent back and reported again needs a record of its own.
+      const staleSkip = gate?.skipped === 'no_changes' && !noChangesReceiptCurrent(entry);
+      const gatePassed = gate !== undefined && gate.recordedBy === 'system' && gate.exitCode === 0 && !staleSkip;
+      if (!gatePassed && !isResearchDispatch(entry.dispatch)) {
         if (input.force !== true) {
           return {
             ok: false,
             error: 'gate_required',
-            message: gate
+            message: staleSkip
+              ? 'the no-changes skip on this task was recorded for an earlier report; the current report has no gate result yet'
+              : gate
               ? `the recorded gate did not pass (exitCode ${String(gate.exitCode)}); run the gate again or force with a reason`
               : 'no gate result recorded for this task; run the gate first or force with a reason',
             entry,
@@ -477,6 +522,11 @@ export class TaskLedger {
       updatedAt: this.now(),
       updatedBy: input.actor,
       ...(summary !== undefined ? { summary } : {}),
+      // A new report: what a no-changes skip is recorded for.
+      ...(next === 'review_requested' ? { reportedAtRev: entry.rev + 1 } : {}),
+      ...(next === 'completed' && input.completion?.source === 'merge' && Number.isInteger(input.completion.pr) && input.completion.pr > 0
+        ? { completion: { source: 'merge' as const, pr: input.completion.pr } }
+        : {}),
     });
     try {
       await this.append({ op: 'entry', entry: updated });
@@ -524,9 +574,31 @@ export class TaskLedger {
           entry,
         };
       }
+      // An ended task keeps the record it ended on: a gate that finishes
+      // after the task was completed or cancelled grades nothing.
+      if (entry.status === 'completed' || entry.status === 'cancelled') {
+        return {
+          ok: false,
+          error: 'illegal_transition',
+          message: `task ${id} is ${entry.status}: a gate result is recorded only on an open task`,
+          entry,
+        };
+      }
+      // A no-changes skip is about one report: only on a reported row, and
+      // stamped with that report (never with a rev the caller supplies).
+      const noChanges = gate.skipped === 'no_changes';
+      if (noChanges && entry.status !== 'review_requested') {
+        return {
+          ok: false,
+          error: 'illegal_transition',
+          message: `task ${id} is ${entry.status}: a no-changes skip is recorded only on a reported task`,
+          entry,
+        };
+      }
+      const bounded = boundGate(this.redact(gate));
       const updated: LedgerEntry = this.redact({
         ...entry,
-        gate: boundGate(this.redact(gate)),
+        gate: noChanges ? { ...bounded, reportRev: entry.reportedAtRev ?? entry.rev } : bounded,
         rev: entry.rev + 1,
         updatedAt: this.now(),
         updatedBy: actor,
@@ -580,6 +652,24 @@ export class TaskLedger {
       }
       this.entries.set(input.id, updated);
       return { ok: true, entry: updated };
+    });
+  }
+
+  /** The origin pin of a task whose dispatch records none (a row written
+   *  before pins existed), set once: a recorded pin is never replaced.
+   *  Resolves with the pin the row holds afterwards, or null when the row has
+   *  no dispatch or `pin` is not a pin. No status change, no rev bump, no
+   *  transition event. */
+  recordOriginPin(id: string, pin: string): Promise<string | null> {
+    return this.serialize(async () => {
+      const entry = this.entries.get(id);
+      if (!entry?.dispatch) return null;
+      if (entry.dispatch.originPin) return entry.dispatch.originPin;
+      if (!isOriginPin(pin)) return null;
+      const updated: LedgerEntry = this.redact({ ...entry, dispatch: copyDispatch({ ...entry.dispatch, originPin: pin }) });
+      await this.append({ op: 'entry', entry: updated });
+      this.entries.set(id, updated);
+      return pin;
     });
   }
 

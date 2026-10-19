@@ -141,7 +141,7 @@ export async function resolveBackgroundLaunch(
     if (opts.checkQuota === false) return bound();
     const rotation = deps.rotation ?? getAccountRotationService();
     const decision = await rotation.prepareLaunch(vendor, workspaceId);
-    if (decision.kind === 'hold') return { kind: 'hold', message: allOutMessage(vendor, decision.availableAtMs) };
+    if (decision.kind === 'hold') return { kind: 'hold', message: allOutMessage(vendor, decision.availableAtMs, decision.grouped) };
     if (decision.kind === 'switch') {
       const account = store.getAccount(decision.accountId);
       if (account) return accountRun(account, vendor);
@@ -165,9 +165,10 @@ function label(vendor: Vendor): string {
   return agentSlugToDisplay(vendor);
 }
 
-export function allOutMessage(vendor: Vendor, availableAtMs: number | null): string {
+export function allOutMessage(vendor: Vendor, availableAtMs: number | null, grouped?: boolean): string {
   const when = availableAtMs ? ` The first one frees up at ${new Date(availableAtMs).toLocaleString()}.` : '';
-  return `${label(vendor)} was not started: every registered ${label(vendor)} account is out of quota.${when}`;
+  const which = grouped ? `${label(vendor)} account in this account group` : `registered ${label(vendor)} account`;
+  return `${label(vendor)} was not started: every ${which} is out of quota.${when}`;
 }
 
 export function resumeHeldMessage(vendor: Vendor, accountName: string, availableAtMs: number | null): string {

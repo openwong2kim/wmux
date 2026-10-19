@@ -382,6 +382,8 @@ async function setup(ctx) {
   for (let i = 0; i < 60 && !settings; i++) {
     settings = await driver.api('factory.setSettings', {
       enabled: true,
+      // The run stands in for the owner's "Bots run on your Claude plan" consent.
+      planConsent: { version: 1, at: new Date().toISOString() },
       hqWorkspaceId: ctx.workspaceId,
       trustedAuthors: [TRUSTED_AUTHOR],
       ...(sc.setup?.settings ?? {}),

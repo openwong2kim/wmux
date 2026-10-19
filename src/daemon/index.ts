@@ -1,7 +1,9 @@
 // Must stay the first import: turns off working-directory executable lookup (Windows) before any module runs.
 import '../shared/exeSearchGuard';
+import { isInternalForkPayload } from '../shared/hooks/internalFork';
 import { terminalCoreRuntime, terminalCoreSelection } from '../shared/terminalCoreSettings';
 import { collectDaemonMemoryDiagnostics } from './memoryDiagnostics';
+import { createStartupRecovery } from './startupRecovery';
 import { loadChatSkills } from './transcript/chatSkills';
 import { TerminalChatService } from './transcript/TerminalChatService';
 import { OpenCodeIdleSettler } from './transcript/openCodeIdleSettle';
@@ -27,6 +29,7 @@ import { RunHistoryStore } from './history/RunHistoryStore';
 import { AutomationEngine } from './automation/AutomationEngine';
 import { assertExternalSessionId, registerAutomationRpc } from './automation/rpc';
 import { killProcessTree } from './automation/treeKill';
+import { captureProcessTree, matchesRecordedStart, recordedStartOf, type CapturedTree } from './automation/verifiedTreeKill';
 import { recordedRunPtyIds } from './automation/store';
 import { AUTOMATION_EVENT } from '../shared/automation';
 import { InputReceiptStore } from './web/InputReceiptStore';
@@ -80,9 +83,9 @@ import { generateSnapshotUnqueued, enqueueSnapshotJob, generateTextSnapshot, cap
 import { readSessionTextReplay } from './sessionTextReplay';
 import type { TerminalPty } from '../shared/terminalPty';
 import { serializeSession } from './sessionSerialize';
-import { AwaitingScreenVerifier, questionInFlight, renderPaneScreen } from './AwaitingScreenVerifier';
+import { AwaitingScreenVerifier, AWAITING_NARROW_DIALOG_COLS, questionInFlight, renderPaneScreen } from './AwaitingScreenVerifier';
 import { snapshotRingTextUnqueued } from './nativeRingSnapshot';
-import { screenShowsAgentDialog } from './transcript/chatScreenGate';
+import { screenShowsAgentDialog, screenShowsActiveDialog, screenShowsPermissionDialog } from './transcript/chatScreenGate';
 import { ApprovalPushRouter } from './push/approvalPushRouter';
 import { readPendingToolUse } from './transcript/pendingToolUse';
 import { isClaudeFamilyAgent } from './approvals/terminalPrompt';
@@ -122,15 +125,17 @@ import { WorkTaskService } from './worktask/WorkTaskService';
 import { isTaskState, type AgentStatus, type Task } from '../shared/types';
 import { ProcessMonitor } from './ProcessMonitor';
 import { AgentProcessTracker } from './AgentProcessTracker';
-import { liveRecoveryHint } from './recoveryHint';
-import { checkWslAgentRunning, reportedAgentForPane, WslPidWatcher } from './wslAgentProcess';
+import { liveRecoveryHint, namedAgentAlive, screenShowsLiveAgent, sightedRecoveredAgent } from './recoveryHint';
+import { checkWslAgentRunning, reportedAgentForPane, stopWslAgent, WslPidWatcher } from './wslAgentProcess';
 import { GateFlagFile } from './gateFlagFile';
 import { WSL_GATE_FLAG_FILE } from '../shared/wslIntegration';
 import { CommandStartAgentProbe } from './commandStartAgentProbe';
-import { resolveCanonicalAgentIdentity, detectorSuppressedBy, reportedAgentName, provesLiveAgent, type CanonicalAgentIdentity } from './canonicalAgent';
+import { resolveCanonicalAgentIdentity, detectorSuppressedBy, reportedAgentName, provesLiveAgent, type CanonicalAgentIdentity, recordPaneIdentity } from './canonicalAgent';
 import { decideLaunchPresence, launchPresenceNeedsProcessRead, type IdleShellRead } from './launchPresence';
+import { promptLineState } from '../shared/promptLineState';
+import { parseWriteExpectation, writeIfUnchanged } from './writeIfUnchanged';
 import { Watchdog } from './Watchdog';
-import { selectRecoverableSessions } from './recoverySelector';
+import { selectRecoverableSessions, startLeftoverShellReaps } from './recoverySelector';
 import { isShutdownKillExit, SHUTDOWN_KILL_RECLASSIFY_MS } from './shutdownKill';
 import {
   classifyReapIdentity,
@@ -138,28 +143,32 @@ import {
   getWin32BootId,
   getWin32BootIdSync,
   isPidAlive,
-  isWin32ShellProcess,
   isSameBootProven,
   mayReap,
+  readPosixStartTime,
+  readWin32ReapIdentity,
+  setNativeProcessReadWarn,
   shouldReconcileTombstone,
 } from './phantomExit';
 import { createSnapshotRunner } from './snapshotRunner';
+import { createBufferHibernation } from './BufferHibernation';
 import { RingBuffer } from './RingBuffer';
 import { GitContextWatcher } from '../main/pty/gitContextWatch';
 import { PortWatcher } from '../main/pty/portWatch';
 import { initDaemonLogSink, isBrokenPipeError, stdioErrorsConsumed } from './util/logSink';
 import { newerTimestamp } from './util/idleAnchor';
 import type { DaemonState } from './types';
-import type { DaemonEvent, DaemonCreateSessionParams, DaemonSessionIdParams, DaemonResizeParams, DaemonSetResumeBindingParams } from '../shared/rpc';
+import type { DaemonEvent, DaemonCreateSessionParams, DaemonDestroySessionParams, DaemonSessionIdParams, DaemonResizeParams, DaemonSetResumeBindingParams } from '../shared/rpc';
 import { isWslDistroSpawnArgs } from '../shared/wslDistro';
+import { gitDirMapperFor, gitWatchCwdFor } from './gitWatchCwd';
 import { randomUUID } from 'node:crypto';
 import { monitorEventLoopDelay, performance as nodePerformance } from 'node:perf_hooks';
 import { DAEMON_EXIT_ALREADY_RUNNING, ENV_KEYS, isBrainPty } from '../shared/constants';
-import { toResumeCommand, resumeGrammarFor, resumeOfferForRecovered, mergeResumeBinding, isProvisionalCapture, normalizeResumeCwd, isUsableResumeBinding, isPlausibleResumeSessionId } from '../shared/agentResume';
+import { toResumeCommand, resumeGrammarFor, resumeOfferForRecovered, mergeResumeBinding, isProvisionalCapture, transcriptRelocated, normalizeResumeCwd, isUsableResumeBinding, isPlausibleResumeSessionId } from '../shared/agentResume';
 import type { ResumeBinding } from '../shared/agentResume';
-import { agentDisplayToSlug, AGENT_SLUG_SET, isAgentSlug } from '../shared/agentIdentity';
+import { agentDisplayToSlug, agentRow, AGENT_SLUG_SET, isAgentSlug } from '../shared/agentIdentity';
 import type { AgentEventStatus } from '../main/pty/AgentDetector';
-import { HookIngest, identifiedAgentPid, type HookArbitration } from './hooks/HookIngest';
+import { DIALOG_RECHECK_MS, HookIngest, identifiedAgentPid, type HookArbitration } from './hooks/HookIngest';
 import { DetectionAgreementLog } from './diagnostics/detectionAgreementLog';
 import { deriveAgentLiveness } from './hooks/agentLiveness';
 import { classifyClaudeStopFailure, classifyCodexTurnCompleted, type TurnFailure } from '../shared/phoneTurnFailure';
@@ -169,6 +178,7 @@ import { agentSlugToDisplay, isAgentSignal, type AgentSignal } from '../shared/h
 import { checkNativeTranscriptPath } from './transcript/providers';
 import { TranscriptProjector } from './transcript/TranscriptProjector';
 import { TranscriptActivityWatcher } from './transcript/TranscriptActivityWatcher';
+import { ApiErrorTurnEnds, stopFailureSignal } from './transcript/apiErrorTurnEnd';
 import { TranscriptDiscovery, DISCOVERABLE_AGENT } from './transcript/TranscriptDiscovery';
 import { admitCodexCapture, gateCodexStop } from './transcript/codexCapture';
 import { CodexCwdBinder, codexLiveFor, describeCodexPane, readProcessStartMs, type CodexPaneFacts } from './transcript/codexRolloutByCwd';
@@ -195,7 +205,7 @@ import { ApprovalRegistry } from './approvals/ApprovalRegistry';
 import { WorkspaceFactStore, type WorkspaceFactRowInput } from './approvals/workspaceFacts';
 import { MoaPaneRpc, resolveMoaPane } from './web/moaPane';
 import { MoaPromptSync } from './web/moaPrompt';
-import { parseApprovalResolveRequest } from './approvals/resolveRequest';
+import { parseApprovalResolveRequest, parsePlanAnswerRequest, planDetailOnly } from './approvals/resolveRequest';
 import { GateBroker } from './approvals/GateBroker';
 import { coerceGate } from './approvals/gateConfig';
 import { DeviceStore, type DeviceBatchRevocationCause } from './web/DeviceStore';
@@ -209,7 +219,9 @@ import { LANLINK_SENTINEL_SESSION_ID } from '../shared/lanlink';
 import { classifyTasklistOutput, classifyKillOutcome, lockOwnerIsReclaimable, type ProcessLiveness } from '../shared/processLiveness';
 import { deliverScheduledPrompt, deliveryInputFence, type ScheduledPromptDeliveryDeps } from './sessionPromptDelivery';
 import { deliverCallerNudge } from './callerNudgeDelivery';
-import { stopAgentTree } from './agentStop';
+import { paneTurnClosed, stopAgentTree } from './agentStop';
+import { continueOnAccount } from './continueOnAccount';
+import { classifyShell } from './shell-integration';
 import { UsageLimitRegistry } from './usageLimit/UsageLimitRegistry';
 import type { SessionPromptScheduleResult } from '../shared/sessionPromptSchedule';
 import { USAGE_LIMIT_CONTINUE_PROMPT, type PaneUsageLimitPatch } from '../shared/usageLimit';
@@ -320,6 +332,7 @@ let transcriptProjector: TranscriptProjector | null = null;
 // Fleet's now-doing line for panes with no per-tool hook (setup-hooks installs,
 // Codex): tails the agent's own transcript. Guarded like the projector.
 let transcriptActivity: TranscriptActivityWatcher | null = null;
+let apiErrorTurnEnds: ApiErrorTurnEnds | null = null;
 // Phone native chat bridge (contract v0.3.1). Built in registerRpcHandlers next
 // to the services it wraps; the web server reads it lazily per request.
 let chatBridge: ChatBridge | null = null;
@@ -387,6 +400,14 @@ let noteCodexTurnFailed: ((id:string, threadId:string, turn:unknown)=>void) | un
 let pushTurnFailed: ((sessionId:string, failure:TurnFailure)=>void) | undefined;
 /** Re-run a pane's awaiting verification (#1901), set by wireEvents. */
 let reverifyAwaiting: ((sessionId: string) => void) | undefined;
+/**
+ * Is a dialog on the pane's screen now (null: grid unreadable or too narrow to
+ * judge)? Set by wireEvents; HookIngest's second layer asks it for a Claude
+ * PermissionRequest that got no permission_prompt Notification.
+ */
+let dialogOnScreen: ((sessionId: string) => Promise<boolean | null>) | undefined;
+/** Retire a lapsed tentative PermissionRequest's phone record (set by wireEvents). */
+let tentativeDialogLapsed: ((sessionId: string) => void) | undefined;
 // Late-bound: the pipe server that carries notices exists only after boot.
 let notifyCodexIdentityRefused: ((id:string,reason:string)=>void) | undefined;
 const codexRefusalNoticedAt = new Map<string,number>();
@@ -904,6 +925,7 @@ async function restoreWebServer(sessionManager: DaemonSessionManager): Promise<v
         // the Playwright sandbox already allowlists, so an uploaded photo is
         // reachable by browser_file_upload without a second policy.
         uploadsDir: path.join(wmuxDir, 'uploads', 'phone'),
+        roomAttachmentsDir: path.join(wmuxDir, 'factory', 'room-attachments'),
         // Each file served because an agent sent it with SendUserFile.
         auditSentFile: (entry) => getDeviceStore().recordSentFile(entry),
         // The Moa (HQ brain) pane main last vouched for, read per request so a
@@ -1623,25 +1645,44 @@ async function reapProcessTree(pid: number, reason: string): Promise<void> {
 async function reapIfIdentityConfirmed(opts: {
   pid: number;
   cmd: string;
+  storedCreatedAtFt?: string;
   storedStartTime?: string;
   reason: string;
 }): Promise<boolean> {
-  const [currentStartTime, looksLikeOurShell] = await Promise.all([
-    getProcessStartTime(opts.pid),
-    // Only consulted when no creation time was recorded, but probing both in
-    // parallel keeps the slow path off the critical path of the common case.
-    isOurShellProcess(opts.pid, opts.cmd),
-  ]);
+  // Windows reads the FILETIME and the executable natively, in one read
+  // (#2398); posix keeps `ps -o lstart=` and `ps -o comm=`.
+  const win32 = process.platform === 'win32';
+  let now: { currentCreatedAtFt: bigint | null; currentStartTime: string | null; currentGone: boolean; looksLikeOurShell: boolean };
+  if (win32) {
+    now = { ...readWin32ReapIdentity(opts.pid, opts.cmd), currentStartTime: null };
+  } else {
+    const [startRead, looksLikeOurShell] = await Promise.all([
+      readPosixStartTime(opts.pid),
+      // Only consulted when no creation time was recorded, but probing both in
+      // parallel keeps the slow path off the critical path of the common case.
+      isOurShellProcess(opts.pid, opts.cmd),
+    ]);
+    now = { currentCreatedAtFt: null, currentStartTime: startRead.value, currentGone: startRead.gone, looksLikeOurShell };
+  }
+  const { currentCreatedAtFt, currentStartTime, looksLikeOurShell } = now;
   const identity = classifyReapIdentity({
+    storedCreatedAtFt: opts.storedCreatedAtFt,
     storedStartTime: opts.storedStartTime,
-    currentStartTime,
-    looksLikeOurShell,
+    ...now,
   });
+  if (identity === 'gone') {
+    // Nothing to kill, and not a refusal: counting these as unconfirmed
+    // identities is what made the refusal counts unreadable.
+    log('info', `[reap] pid ${opts.pid} already exited (${opts.reason})`);
+    return false;
+  }
   if (!mayReap(identity)) {
+    const current = win32 ? currentCreatedAtFt?.toString() : currentStartTime;
     log(
       'warn',
       `[reap] refusing to kill pid ${opts.pid} (${opts.reason}): identity unconfirmed ` +
-        `(storedStartTime=${opts.storedStartTime ?? 'none'} currentStartTime=${currentStartTime ?? 'unknown'} ` +
+        `(storedCreatedAtFt=${opts.storedCreatedAtFt ?? 'none'} storedStartTime=${opts.storedStartTime ?? 'none'} ` +
+        `currentStartTime=${current ?? 'unknown'} ` +
         `looksLikeOurShell=${looksLikeOurShell} cmd=${opts.cmd}) — the pid may belong to another process now`,
     );
     return false;
@@ -1654,24 +1695,21 @@ async function reapIfIdentityConfirmed(opts: {
   return true;
 }
 
-/** Check if a PID belongs to the shell process we originally spawned.
+/** Check if a PID belongs to the shell process we originally spawned (posix;
+ *  Windows reads it with the creation time in readWin32ReapIdentity).
  *  Prevents killing unrelated processes after PID recycling (e.g. reboot). */
 async function isOurShellProcess(pid: number, expectedCmd: string): Promise<boolean> {
   try {
     const { execFile } = require('child_process');
     const { promisify } = require('util');
     const execFileAsync = promisify(execFile);
-    if (process.platform === 'win32') {
-      return await isWin32ShellProcess(pid, expectedCmd);
-    } else {
-      // Unix: check /proc/<pid>/exe or use ps
-      const { stdout } = await execFileAsync('ps', ['-o', 'comm=', '-p', String(pid)], {
-        encoding: 'utf-8', timeout: 3000,
-      });
-      const actualCmd = (stdout as string).trim();
-      const expectedBase = path.basename(expectedCmd);
-      return actualCmd === expectedBase || actualCmd.includes(expectedBase);
-    }
+    // Unix: check /proc/<pid>/exe or use ps
+    const { stdout } = await execFileAsync('ps', ['-o', 'comm=', '-p', String(pid)], {
+      encoding: 'utf-8', timeout: 3000,
+    });
+    const actualCmd = (stdout as string).trim();
+    const expectedBase = path.basename(expectedCmd);
+    return actualCmd === expectedBase || actualCmd.includes(expectedBase);
   } catch {
     // If we can't determine, err on the side of caution — don't kill
     return false;
@@ -1876,6 +1914,33 @@ async function recoverSessions(
     );
   }
 
+  // Stop each live session's previous shell if it is still running and is
+  // ours. Each check costs a tasklist call, plus a process probe when the pid
+  // is alive: 0.6-1.2 s per session on Windows. Asked one at a time inside the
+  // loop below, a 25-pane recovery kept the daemon from answering for 25 s
+  // ("Restoring panes..." the whole time). Run them up front, a few at a time;
+  // each one confirms the identity and kills right after that check, and the
+  // loop waits for a session's entry before recreating it. WSL and
+  // scheduled-run sessions keep their own paths below.
+  const leftoverShells = rebooted
+    ? new Map<string, Promise<void>>()
+    : startLeftoverShellReaps(
+      state.sessions.filter((s) =>
+        s.state !== 'dead' && s.state !== 'suspended' && recoverableIds.has(s.id)
+        && !automationRunPtyIds.has(s.id) && !isWslShell(s.cmd)),
+      {
+        limit: 6,
+        isAlive: (pid) => ProcessMonitor.isAlive(pid),
+        reap: (s) => reapIfIdentityConfirmed({
+          pid: s.pid,
+          cmd: s.cmd,
+          storedCreatedAtFt: s.pidCreatedAtFt,
+          storedStartTime: s.pidStartTime,
+          reason: `recovery of ${s.id}`,
+        }),
+      },
+    );
+
   for (const session of state.sessions) {
     if (session.state === 'dead') {
       // #646: a tombstone is supposed to mean "the process is gone". Before
@@ -1890,6 +1955,7 @@ async function recoverSessions(
         const reaped = await reapIfIdentityConfirmed({
           pid,
           cmd: session.cmd,
+          storedCreatedAtFt: session.pidCreatedAtFt,
           storedStartTime: session.pidStartTime,
           reason: `tombstone reconciliation of session ${session.id}`,
         });
@@ -1910,6 +1976,7 @@ async function recoverSessions(
         await reapIfIdentityConfirmed({
           pid: session.pid,
           cmd: session.cmd,
+          storedCreatedAtFt: session.pidCreatedAtFt,
           storedStartTime: session.pidStartTime,
           reason: `scheduled-run session ${session.id} left by a previous daemon`,
         });
@@ -1929,7 +1996,8 @@ async function recoverSessions(
     if (isWslShell(session.cmd)) {
       if (!rebooted && session.state !== 'suspended' && recoverableIds.has(session.id)) {
         await reapIfIdentityConfirmed({ pid: session.pid, cmd: session.cmd,
-          storedStartTime: session.pidStartTime, reason: `WSL recovery of ${session.id}` });
+          storedCreatedAtFt: session.pidCreatedAtFt, storedStartTime: session.pidStartTime,
+          reason: `WSL recovery of ${session.id}` });
       }
       session.state = 'suspended';
       session.bufferDumpPath ??= stateWriter.getBufferDumpPath(session.id);
@@ -2063,15 +2131,9 @@ async function recoverSessions(
     } else {
       // Non-suspended live session — check for periodic snapshot buf file
       // (written every 30s, survives forced kills / power loss)
-      if (!rebooted && await ProcessMonitor.isAlive(session.pid)) {
-        // Guard against PID recycling: verify the process is actually
-        // the shell we spawned, not an unrelated system process.
-        if (await isOurShellProcess(session.pid, session.cmd)) {
-          try { process.kill(session.pid); } catch { /* ignore */ }
-        } else {
-          log('warn', `PID ${session.pid} is alive but not our shell (${session.cmd}) — skipping kill`);
-        }
-      }
+      // The previous shell was stopped above (only after its identity was
+      // confirmed); wait for that before recreating the session.
+      await leftoverShells.get(session.id);
 
       const snapshotPath = stateWriter.getBufferDumpPath(session.id);
       if (fs.existsSync(snapshotPath)) {
@@ -2191,6 +2253,7 @@ async function recoverSessions(
       if (!managed) continue;
       if (persisted.lastDetectedAgent && !managed.meta.lastDetectedAgent) {
         managed.meta.lastDetectedAgent = persisted.lastDetectedAgent;
+        if (persisted.lastDetectedAgentEvidence) managed.meta.lastDetectedAgentEvidence = persisted.lastDetectedAgentEvidence;
       }
       if (persisted.resumeBinding && !managed.meta.resumeBinding) {
         managed.meta.resumeBinding = persisted.resumeBinding;
@@ -2346,7 +2409,10 @@ async function restartSupervisedSession(
   const fresh = sessionManager.getSession(recovered.id);
   if (fresh) {
     if (meta.resumeBinding && !fresh.meta.resumeBinding) fresh.meta.resumeBinding = meta.resumeBinding;
-    if (meta.lastDetectedAgent && !fresh.meta.lastDetectedAgent) fresh.meta.lastDetectedAgent = meta.lastDetectedAgent;
+    if (meta.lastDetectedAgent && !fresh.meta.lastDetectedAgent) {
+      fresh.meta.lastDetectedAgent = meta.lastDetectedAgent;
+      if (meta.lastDetectedAgentEvidence) fresh.meta.lastDetectedAgentEvidence = meta.lastDetectedAgentEvidence;
+    }
     if (meta.codexRelayResume && !fresh.meta.codexRelayResume) fresh.meta.codexRelayResume = meta.codexRelayResume;
     if (meta.handoffFrom && !fresh.meta.handoffFrom) fresh.meta.handoffFrom = meta.handoffFrom;
     if (meta.paneAccount && !fresh.meta.paneAccount) fresh.meta.paneAccount = meta.paneAccount;
@@ -2432,7 +2498,9 @@ function registerRpcHandlers(
     if (shuttingDown) {
       throw new Error('SHUTTING_DOWN: daemon is shutting down — retry after reconnect');
     }
-    if (watchdog.isBlocked) {
+    // #2375: re-sample before refusing, so a block set by one transient RSS
+    // spike lifts as soon as memory is back under the limit.
+    if (watchdog.recheckBlock()) {
       throw new Error('Cannot create session: memory pressure too high. Try again later.');
     }
     const p = params as unknown as DaemonCreateSessionParams;
@@ -2520,11 +2588,29 @@ function registerRpcHandlers(
   // Named for the same reason as createSessionRpc:
   // DELETE /api/sessions/:id must reap a pane exactly as a pane close does,
   // including the pipe stop, the listener removal and the buffer-dump cleanup.
+  //
+  // `killTree` (#2388): the pane's whole process tree is killed and checked
+  // gone, not just its shell. The tree is captured right before the PTY is
+  // destroyed, while the shell still runs (the destroy would orphan it), and
+  // killed after; the reply's `tree` says whether every process exited. A
+  // caller about to delete the folder the pane ran in keeps it when one did
+  // not.
+  /** A pane's tree kill under way: a second `killTree` destroy of the same
+   *  pane waits for its answer instead of finding no session (#2388). */
+  const treeKillsInFlight = new Map<string, Promise<unknown>>();
   const destroySessionRpc = async (params: Record<string, unknown>): Promise<unknown> => {
-    const p = params as unknown as DaemonSessionIdParams;
+    const p = params as unknown as DaemonDestroySessionParams;
+    const inFlight = p.killTree === true ? treeKillsInFlight.get(p.id) : undefined;
+    if (inFlight) return inFlight;
+    if (p.killTree !== true) return destroySessionNow(p);
+    const run = destroySessionNow(p).finally(() => treeKillsInFlight.delete(p.id));
+    treeKillsInFlight.set(p.id, run);
+    return run;
+  };
+  const destroySessionNow = async (p: DaemonDestroySessionParams): Promise<unknown> => {
     // OBSERVABILITY: log wmux-initiated kills (pane/workspace close, reset) so
     // they can be told apart from a process self-exit in the session:died log.
-    log('info', `[lifecycle] destroySession id=${p.id} reason=rpc`);
+    log('info', `[lifecycle] destroySession id=${p.id} reason=rpc${p.killTree === true ? ' killTree' : ''}`);
 
     // Remove data listener to prevent leak
     const tracked = sessionDataListeners.get(p.id);
@@ -2550,7 +2636,20 @@ function registerRpcHandlers(
     paneSupervisor.disarm(p.id);
 
     await codexPaneRelays.retire(p.id);
-    sessionManager.destroySession(p.id);
+    let captured: CapturedTree | null = null;
+    const live = p.killTree === true ? sessionManager.getSession(p.id)?.meta : undefined;
+    if (live && (live.state === 'attached' || live.state === 'detached') && live.pid > 0) {
+      const recorded = recordedStartOf(live);
+      captured = await captureProcessTree(live.pid, { rootIsOurs: (start) => matchesRecordedStart(recorded, start) });
+    }
+    try {
+      sessionManager.destroySession(p.id);
+    } catch (err) {
+      // Nothing killed: the captured tree runs on (POSIX: thawed).
+      captured?.release();
+      throw err;
+    }
+    const tree = p.killTree === true ? (captured ? await captured.kill() : { ok: true as const, killed: [] }) : undefined;
 
     // Clean up buffer dump file if exists
     const bufPath = stateWriter.getBufferDumpPath(p.id);
@@ -2559,7 +2658,9 @@ function registerRpcHandlers(
     const state = buildState(sessionManager);
     stateWriter.saveImmediate(state);
 
-    return { ok: true };
+    if (!tree) return { ok: true };
+    if (!tree.ok) log('warn', `[lifecycle] destroySession id=${p.id}: ${tree.survivors.length} process(es) of the pane did not exit: ${tree.survivors.map((s) => `${s.pid} (${s.reason})`).join(', ')}`);
+    return { ok: true, tree };
   };
   pipeServer.onRpc('daemon.destroySession', destroySessionRpc);
 
@@ -2984,10 +3085,72 @@ function registerRpcHandlers(
     return { ok: true, mode: 'rows', rows: capped.rows, bufferType: outcome.bufferType, rowsBelowCursor: outcome.rowsBelowCursor, truncated: capped.truncated };
   });
 
+  // #2408: how long a session list waits for a recovered pane's screen read.
+  const RECOVERED_SIGHTING_LIST_WAIT_MS = 300;
+  // #2408: per recovered pane, the ring position its screen was last read at
+  // and whether that screen showed a live agent the screen tier sighted.
+  const recoveredSighting = new Map<string, { at: number; onScreen: boolean }>();
+  const sightingReads = new Map<string, Promise<void>>();
+  /**
+   * #2408: read a recovered pane's screen again when its fresh detector
+   * sighted Claude or Codex since the restart and output has arrived since the
+   * last read. The verdict (the agent's composer at the bottom of the grid, or
+   * its dialog) only hides the pill; the offer stays until a hook or a live
+   * process consumes it. Panes with no sighting are never rendered, and an
+   * unreadable frame leaves the last verdict standing. Returns the read in
+   * flight, if any.
+   */
+  const readRecoveredSighting = (id: string): Promise<void> | undefined => {
+    const managed = sessionManager.getSession(id);
+    const slug = managed && recoveredAgentShellIds.has(id) ? sightedRecoveredAgent(managed.bridge.getLastAgent()) : undefined;
+    if (!managed || !slug) {
+      recoveredSighting.delete(id);
+      return undefined;
+    }
+    const inFlight = sightingReads.get(id);
+    if (inFlight || recoveredSighting.get(id)?.at === managed.ringBuffer.totalBytesWritten) return inFlight;
+    const read = renderPaneScreen(() => sessionManager.getSession(id), generateTextSnapshot)
+      .then((frame) => {
+        if (frame && sessionManager.getSession(id) === managed && recoveredAgentShellIds.has(id)) {
+          recoveredSighting.set(id, { at: frame.mark, onScreen: screenShowsLiveAgent(frame.rows, slug) });
+        }
+      })
+      .catch(() => undefined)
+      .finally(() => sightingReads.delete(id));
+    sightingReads.set(id, read);
+    return read;
+  };
+  // A burst of output has settled, so the screen is drawn: read it then, and
+  // a list finds the verdict ready instead of waiting on a render.
+  sessionManager.on('session:idle', (payload: { sessionId: string }) => readRecoveredSighting(payload.sessionId));
+
   // daemon.listSessions
   pipeServer.onRpc('daemon.listSessions', async (rawParams) => {
     const params = (rawParams ?? {}) as Record<string, unknown>;
     const includeSuspended = params['includeSuspended'] === true;
+    // #2393: asked with `withRecovery`, the list comes as `{sessions,
+    // recoveryDone}`, so a client can tell "still restoring" from "no
+    // sessions". Additive: without it the reply stays the bare list, and a
+    // client that gets a bare list back (an older daemon) takes it as
+    // recovered, as every read was taken before.
+    const withRecovery = params['withRecovery'] === true;
+    // Taken before the sighting wait below, so `recoveryDone` never describes
+    // a later state than the sessions listed after it.
+    const doneBeforeList = startupRecovery.done();
+    const reply = (sessions: unknown[]): unknown => (withRecovery ? { sessions, recoveryDone: doneBeforeList } : sessions);
+    // #2408: a sighted recovered pane whose screen changed since its last
+    // read is read now, waited on only briefly: the snapshot queue is shared,
+    // and a read that takes longer lands on a later list.
+    for (const id of recoveredSighting.keys()) {
+      if (!recoveredAgentShellIds.has(id)) recoveredSighting.delete(id);
+    }
+    const sightingReadsNow = [...recoveredAgentShellIds.keys()].flatMap((id) => readRecoveredSighting(id) ?? []);
+    if (sightingReadsNow.length > 0) {
+      await Promise.race([
+        Promise.all(sightingReadsNow),
+        new Promise<void>((resolve) => { setTimeout(resolve, RECOVERED_SIGHTING_LIST_WAIT_MS).unref?.(); }),
+      ]);
+    }
     // X8: join the supervisor's volatile runtime (restart counts, pending
     // backoff) onto supervised sessions — additive field consumed by
     // `wmux list --json` and the sidebar badge.
@@ -2996,7 +3159,7 @@ function registerRpcHandlers(
     const activeSessions = sessionManager.listSessions().map((s) => {
       // The slug is held in the map (captured from the persisted session at
       // recovery) — NOT read off the live meta, which is a fresh shell here.
-      const resumeAgent = liveRecoveryHint(s.id, (id) => agentProcessTracker.statusFor(id), recoveredAgentShellIds, recoveredResumeBindings);
+      const resumeAgent = liveRecoveryHint(s.id, (id) => namedAgentAlive(agentProcessTracker.identityFor(id)), recoveredAgentShellIds, recoveredResumeBindings);
       // X6 ③: the captured binding for the EXACT-session resume, also recovery-
       // only (same transient-map reasoning as resumeAgent) and guarded by the
       // cwd-match + transcript existence-probe at recovery time.
@@ -3021,7 +3184,14 @@ function registerRpcHandlers(
       const withRuntime = base.supervision
         ? { ...base, supervisionRuntime: paneSupervisor.getRuntime(s.id) }
         : base;
-      const withAgent = resumeAgent ? { ...withRuntime, resumeAgent } : withRuntime;
+      // #2408: additive, and present only for a pane whose screen tier sighted
+      // Claude or Codex since the restart: true while the last read shows it
+      // on screen, false while it is gone or not read yet. An older daemon
+      // sends none and the renderer gates the pill as before.
+      const sighted = !!resumeAgent && !!sightedRecoveredAgent(sessionManager.getSession(s.id)?.bridge.getLastAgent());
+      const withAgent = resumeAgent
+        ? { ...withRuntime, resumeAgent, ...(sighted ? { resumeAgentOnScreen: recoveredSighting.get(s.id)?.onScreen === true } : {}) }
+        : withRuntime;
       // Binding to SURFACE: the recovery-transient one (recovered-this-boot,
       // cwd+transcript guarded) OR the durable meta binding re-probed for
       // transcript existence (D5). The cwd guard (F7) is deliberately NOT applied
@@ -3069,7 +3239,14 @@ function registerRpcHandlers(
       const agentProcessAlive = s.exec
         ? (s.state === 'attached' || s.state === 'detached' ? true : undefined)
         : agentProcessTracker.statusFor(s.id);
-      const withAlive = agentProcessAlive !== undefined ? { ...withPrompt, agentProcessAlive } : withPrompt;
+      const withAlive0 = agentProcessAlive !== undefined ? { ...withPrompt, agentProcessAlive } : withPrompt;
+      // A pane this daemon respawned at recovery runs a fresh shell until
+      // something shows an agent there again (its banner, a hook, the process
+      // watch): said only while that holds, so a client can tell "no agent
+      // since the restart" from "never attributed".
+      const withAlive = managedForPrompt?.recoveredAgentUnconfirmed === true && agentProcessAlive !== true
+        ? { ...withAlive0, recoveredAgentUnconfirmed: true as const }
+        : withAlive0;
       return surfacedBinding ? { ...withAlive, resumeBinding: surfacedBinding } : withAlive;
     });
 
@@ -3088,9 +3265,9 @@ function registerRpcHandlers(
           createdAt: s.createdAt,
           lastActivity: s.lastActivity,
         }));
-      return [...activeSessions, ...suspendedEntries];
+      return reply([...activeSessions, ...suspendedEntries]);
     }
-    return activeSessions;
+    return reply(activeSessions);
   });
 
   // daemon.promoteSession — on-demand recovery of a cap-skipped suspended
@@ -3215,6 +3392,7 @@ function registerRpcHandlers(
         if (!startFresh) {
           promotedSession.meta.resumeBinding = session.resumeBinding;
           promotedSession.meta.lastDetectedAgent = session.lastDetectedAgent;
+          promotedSession.meta.lastDetectedAgentEvidence = session.lastDetectedAgentEvidence;
           promotedSession.meta.codexRelayResume = session.codexRelayResume;
           const offer = resumeOfferForRecovered(promotedSession.meta);
           if (offer) recoveredAgentShellIds.set(sessionId, offer as AgentSlug);
@@ -3275,10 +3453,19 @@ function registerRpcHandlers(
   // in-flight promotion. Exec units also resume when no GUI is attached.
   setImmediate(() => {
     if (shuttingDown) return;
-    const pending = sessionManager.listSessions().filter(s => sessionManager.getPendingRecovery(s.id));
-    const selected = selectRecoverableSessions(pending, Math.min(loadConfig().session.maxSessions, MAX_RECOVER_SESSIONS));
-    for (const session of pending.filter(s => selected.recoverableIds.has(s.id))) {
-      void promoteOnce(session.id).catch(err => log('error', `WSL background recovery ${session.id}:`, err));
+    const promotions: Array<Promise<unknown>> = [];
+    try {
+      const pending = sessionManager.listSessions().filter(s => sessionManager.getPendingRecovery(s.id));
+      const selected = selectRecoverableSessions(pending, Math.min(loadConfig().session.maxSessions, MAX_RECOVER_SESSIONS));
+      for (const session of pending.filter(s => selected.recoverableIds.has(s.id))) {
+        promotions.push(promoteOnce(session.id).catch(err => log('error', `WSL background recovery ${session.id}:`, err)));
+      }
+    } catch (err) {
+      log('error', 'WSL background recovery could not start:', err);
+    } finally {
+      // Recovery is done for daemon.listSessions once these settle. Always
+      // tracked: a pass that threw must not leave it "not done" for good.
+      startupRecovery.track(promotions);
     }
   });
 
@@ -3335,6 +3522,7 @@ function registerRpcHandlers(
       ...(channelPhoneApi ? { channels: channelPhoneApi } : {}),
       // See the restore path for why this directory and not another.
       uploadsDir: path.join(wmuxDir, 'uploads', 'phone'),
+        roomAttachmentsDir: path.join(wmuxDir, 'factory', 'room-attachments'),
       // See the restore path.
       auditSentFile: (entry) => getDeviceStore().recordSentFile(entry),
       // See the restore path.
@@ -3718,6 +3906,13 @@ function registerRpcHandlers(
     // miss) must not wipe a previously-captured mode (codex review 2026-06-14).
     // A synchronous exact-ID discovery may have just supplied the path.
     const next = mergeResumeBinding(managed.meta.resumeBinding, p.resumeBinding);
+    // The agent may have changed directory without the shell (EnterWorktree).
+    // Recovery spawns the pane in meta.cwd and resumes the exact session only
+    // when that matches the binding's cwd, so the pane follows the agent, but
+    // only when the transcript moved with it: after a Bash `cd` the hook's cwd
+    // changes while `--resume <id>` still works only from the old folder.
+    // `session:cwd` persists the move and tells the renderer.
+    if (transcriptRelocated(prev, next)) sessionManager.adoptAgentCwd(p.id, next.cwd);
     let durableChange = !prev
       || prev.sessionId !== next.sessionId
       || prev.agent !== next.agent
@@ -3833,6 +4028,34 @@ function registerRpcHandlers(
     pipeServer.onClientClose((clientId) => projectorForClose.dropClient(clientId));
   }
   const projector = transcriptProjector;
+  // A Claude turn that died on an API error, on an install without the
+  // StopFailure hook: the transcript's error entry stands in for the hook. It
+  // reads the activity watcher's tail, never a file of its own.
+  if (!apiErrorTurnEnds) {
+    apiErrorTurnEnds = new ApiErrorTurnEnds({
+      isCurrentOpenTurn: (id, at) => {
+        const bridge = sessionManager.getSession(id)?.bridge;
+        return !!bridge && bridge.isTurnOpen() && bridge.turnAt(at)?.current === true;
+      },
+      isReader: (id, path) => transcriptActivity?.readsLines(id, path) === true,
+      // Only the pane's own session, read from the file its binding names and
+      // that file still passing the same check the hook's path had to.
+      signalFor: (id, path, end) => {
+        const session = sessionManager.getSession(id);
+        const binding = resolveTranscriptBinding(id);
+        if (!session || isBrainPty({ id, env: session.meta.env })) return null;
+        const agent = agentRow(binding?.agent);
+        if (!binding || !agent?.apiErrorTurnEnd || binding.transcriptPath !== path) return null;
+        if (!checkNativeTranscriptPath(agent.slug, path, binding.sessionId, session.meta.env).ok) return null;
+        return stopFailureSignal(id, { agent: agent.slug, sessionId: binding.sessionId, cwd: binding.cwd }, end, Date.now());
+      },
+      emit: (signal) => {
+        log('info', `[hooks] ${signal.ptyId}: API-error turn end (${String(signal.payload.error)}) read from the transcript; no StopFailure hook arrived`);
+        hookIngest?.handle(signal);
+      },
+    });
+  }
+  const turnEnds = apiErrorTurnEnds;
   if (!transcriptActivity) {
     transcriptActivity = new TranscriptActivityWatcher({
       listSessionIds: () => sessionManager.listLiveSessions().map((s) => s.id),
@@ -3847,6 +4070,9 @@ function registerRpcHandlers(
         const event: DaemonEvent = { type: 'agent.transcriptActivity', sessionId, data: { activity } };
         pipeServer.broadcast(event);
       },
+      onClaudeLine: (sessionId, path, line) => turnEnds.noteLine(sessionId, path, line),
+      onClaudeGap: (sessionId) => turnEnds.noteGap(sessionId),
+      afterTick: () => turnEnds.settle(),
     });
     transcriptActivity.start();
   }
@@ -4466,6 +4692,7 @@ function registerRpcHandlers(
       },
       log: (level, message) => log(level, message),
       isAutomationPane: (id) => automationEngine?.ownsPane(id) === true,
+      latestEndedTurn: (id) => sessionManager.getSession(id)?.bridge.endedTurnId() ?? null,
       // M2 — hook-sourced awaiting_input is the ONLY thing that mints an
       // approval request. Wired here, on the daemon-internal path, because this
       // is where provenance and the dedup decision are both already known.
@@ -4478,13 +4705,16 @@ function registerRpcHandlers(
       onResolvedSignal: (sessionId, signal) => {
         if (signal.ptyId === sessionId) usageLimits?.noteHookSignal(sessionId, signal);
       },
+      dialogOnScreen: (sessionId) => dialogOnScreen?.(sessionId) ?? Promise.resolve(null),
+      onTentativeDialogLapsed: (sessionId) => { tentativeDialogLapsed?.(sessionId); },
       // Chat View P1 — the tail nudge rides the existing hook signals rather
       // than a new hook. Fired for every resolved kind; a no-op for panes with
       // no Chat surface open.
-      onTranscriptNudge: (sessionId, kind, agentSessionId) => {
+      onTranscriptNudge: (sessionId, kind, agentSessionId, ts, promptId) => {
         projector.nudge(sessionId, kind, agentSessionId);
         // A hook-fed session's own activity line wins over the transcript.
         transcriptActivity?.noteHookSignal(sessionId, kind);
+        apiErrorTurnEnds?.noteHookSignal(sessionId, kind, ts, promptId);
         // #782 — phone turn-view nudge. Non-recording: bypasses attentionLog so
         // a busy pane cannot evict a pending approval and blank the badge on
         // replay (CRITICAL 3). Delivered only to devices watching this pane; a
@@ -4520,6 +4750,26 @@ function registerRpcHandlers(
         const managed = sessionManager.getSession(sessionId);
         if (!managed) return;
         sessionManager.confirmAgent(sessionId);
+        // The hook tier changed: persist it like the banner and process sites
+        // do. This is what corrects a rename the screen tier was refused when
+        // the agent's attribution then fails. The tier rule keeps a stale,
+        // cwd-routed or process-contradicted hook out, and the write happens
+        // once per transition, not per tool use.
+        const screenAgent = managed.bridge.getLastAgent();
+        const canonical = canonicalIdentityFor(
+          agentProcessTracker,
+          sessionId,
+          screenAgent ? agentDisplayToSlug(screenAgent) : undefined,
+        );
+        if (recordPaneIdentity(managed.meta, canonical, Date.now())) {
+          stateWriter.saveImmediate(buildState(sessionManager));
+        }
+        // A hook that resolves to a live agent (hook or process tier) is the
+        // other evidence that consumes a recovered pane's resume offer.
+        if (canonical && canonical.source !== 'screen') {
+          recoveredAgentShellIds.delete(sessionId);
+          recoveredResumeBindings.delete(sessionId);
+        }
         const wslTarget = managed.meta.wslTarget;
         if (!wslTarget) {
           agentProcessTracker.arm(sessionId, managed.meta.pid);
@@ -4581,7 +4831,9 @@ function registerRpcHandlers(
       // The module-level binding, not the captured `webServer` const: the
       // restore path can assign the instance after this handler is registered.
       if (!gateAnswerable()) {
-        ingest.handle({ ...signal, kind: 'agent.tool_started' });
+        // Claude Code's own post-turn fork (recap, prompt suggestion) is not
+        // the pane's turn: as tool_started it relit an idle pane for good.
+        if (!isInternalForkPayload(signal.payload)) ingest.handle({ ...signal, kind: 'agent.tool_started' });
         return { ok: true };
       }
       const gate = ingest.handlePermissionGate(signal);
@@ -4675,6 +4927,23 @@ function registerRpcHandlers(
     if ('ok' in request) return request;
     if (!approvalRegistry) return { ok: false, reason: 'not-found' };
     return approvalRegistry.resolve(request);
+  });
+
+  // The desktop's answer to Claude's plan dialog and the plan it shows: the
+  // first-party client only (see parsePlanAnswerRequest). Every other client
+  // keeps answering it in the terminal or from a paired phone.
+  pipeServer.onRpc('daemon.approvals.answerPlan', async (params, ctx) => {
+    const request = parsePlanAnswerRequest(params as Record<string, unknown>, {
+      isFirstParty: firstPartyOnly(ctx.clientId, 'daemon.approvals.answerPlan'),
+    });
+    if ('ok' in request) return request;
+    if (!approvalRegistry) return { ok: false, reason: 'not-found' };
+    return approvalRegistry.answerPlanFromDesktop(request);
+  });
+  pipeServer.onRpc('daemon.approvals.detail', async (params, ctx) => {
+    if (!firstPartyOnly(ctx.clientId, 'daemon.approvals.detail')) return null;
+    const id = typeof (params as { id?: unknown }).id === 'string' ? (params as { id: string }).id : '';
+    return planDetailOnly(id ? approvalRegistry?.terminalPromptDetail(id) ?? null : null);
   });
 
   // ── Main → daemon workspace facts (approval press scope) ─────────────────
@@ -4881,7 +5150,7 @@ function registerRpcHandlers(
     // for a pane recovered this boot whose agent has not been re-detected. The
     // web stream stamps it on the snapshot meta so its stale-replay gate reads
     // exactly the desktop's inputs.
-    const resumeAgent = liveRecoveryHint(id, (pid) => agentProcessTracker.statusFor(pid), recoveredAgentShellIds, recoveredResumeBindings);
+    const resumeAgent = liveRecoveryHint(id, (pid) => namedAgentAlive(agentProcessTracker.identityFor(pid)), recoveredAgentShellIds, recoveredResumeBindings);
     return {
       ...(binding ? { binding } : {}),
       ...(commandRunning !== undefined ? { commandRunning } : {}),
@@ -4910,6 +5179,8 @@ function registerRpcHandlers(
       commandRunning: session?.promptLog.commandRunningIfKnown(),
       isExec: !!session?.meta.exec,
       isWsl: !!session?.meta.wslTarget,
+      exitAfterPrompt: session?.promptLog.exitAfterPrompt(),
+      lineNeverRead: !!session && promptLineState(session.promptLog.snapshot(), session.ringBuffer.totalBytesWritten) === 'idle-at-prompt',
     };
     let idleShell: IdleShellRead | undefined;
     if (session && params['probeProcess'] === true && launchPresenceNeedsProcessRead(inputs)) {
@@ -4943,6 +5214,15 @@ function registerRpcHandlers(
       // whether the composer holds a draft, and how long keys have been quiet.
       hasDraft: bridge.hasDraft(),
       keyInputIdleMs: bridge.keyInputIdleMs(),
+      // #2263 — additive, for main's resync after it subscribes to events
+      // again: the latest window title, which it may have missed meanwhile,
+      // and whether a turn is open (a quiet turn reads `idle` above).
+      title: bridge.getTitle().title,
+      turnOpen: bridge.isTurnOpen(),
+      // Additive, for main's idle stop of a reported bot worker after an app
+      // restart: how long ago the pane's last result settled (null: none
+      // since its agent started), so its idle window runs from that end.
+      settledAgoMs: bridge.settledAgoMs(),
     };
   });
   // #1594 — what main's terminal_send needs to paste into a session: the agent
@@ -5234,6 +5514,43 @@ function registerRpcHandlers(
     return { result: await bridge.desktopInterrupt(id, agentSessionId) };
   });
 
+  // Pane menu "Rewind" for a terminal Claude: its own double ESC, only at rest
+  // with an empty composer (see openClaudeRewind), under the bridge's send lock.
+  pipeServer.onRpc('daemon.transcript.rewind', async (params, ctx) => {
+    if (!firstPartyOnly(ctx.clientId, 'rewind')) return { result: 'unavailable' };
+    const id = typeof params['id'] === 'string' ? params['id'] : '';
+    return { result: await bridge.desktopRewind(id, { kitty: params['kitty'] === true }) };
+  });
+
+  // F26 — type into a session only if it has not moved since main looked at
+  // it: the compare and the PTY write are one synchronous step (see
+  // writeIfUnchanged.ts). Used for a fan-out task pane's second launch line.
+  pipeServer.onRpc('daemon.writeIfUnchanged', async (params) => {
+    const sessionId = typeof params['sessionId'] === 'string' ? params['sessionId'] : '';
+    const data = typeof params['data'] === 'string' ? params['data'] : '';
+    const expect = parseWriteExpectation(params['expect']);
+    if (!sessionId || !data || data.length > 64 * 1024 || !expect) {
+      throw new Error('daemon.writeIfUnchanged: sessionId, data (at most 64 KiB) and expect are required');
+    }
+    const managed = sessionManager.getSession(sessionId);
+    if (!managed) return { written: false };
+    try {
+      return {
+        written: writeIfUnchanged({
+          ringBuffer: managed.ringBuffer,
+          promptLog: managed.promptLog,
+          write: (input) => {
+            managed.ptyProcess.write(input);
+            managed.bridge.noteInput(input);
+          },
+        }, data, expect),
+      };
+    } catch {
+      // A PTY that refused the write (backpressure, gone): not written.
+      return { written: false };
+    }
+  });
+
   // daemon.readPromptEvents — read structured OSC 133 prompt/command events
   // from a session's PromptEventLog. Falls back to an empty response when the
   // session doesn't exist so callers can degrade gracefully.
@@ -5274,6 +5591,9 @@ function registerRpcHandlers(
 
     return {
       events,
+      // The whole log's size, not just this page: daemon.writeIfUnchanged
+      // compares against it.
+      eventCount: managed.promptLog.size,
       lastCompletedRange,
       totalBytesWritten,
       sessionFound: true,
@@ -5375,7 +5695,7 @@ function registerRpcHandlers(
   }
 
   // daemon.ping
-  pipeServer.onRpc('daemon.ping', async (params) => {
+  pipeServer.onRpc('daemon.ping', async (params, ctx) => {
     const sessions = sessionManager.listSessions();
     const uptime = Math.floor((Date.now() - startTime) / 1000);
     // RCA A4 — report event-loop lag (ms) so the controller distinguishes a
@@ -5414,6 +5734,12 @@ function registerRpcHandlers(
       spawnedByVersion: SPAWNED_BY_VERSION,
       channelsEpoch: CHANNELS_EPOCH,
       ...pingFormatVersionField(activeEventLogFormatVersion),
+      // Whether THIS caller still receives pushed events. broadcast() drops a
+      // subscriber whose socket buffer passes the backpressure cap but leaves
+      // the connection up, so the app could not tell it had gone deaf: no
+      // agent status, titles or notifications until it restarted. Its health
+      // probe reads this and subscribes again.
+      eventsSubscribed: pipeServer.isEventSubscriber(ctx.clientId),
       // Explicitly requested diagnostics only: routine health probes stay cheap.
       ...(params?.includeMemory === true ? {
         memory: collectDaemonMemoryDiagnostics(sessionManager.listManagedSessions(), sessionPipes),
@@ -6319,6 +6645,72 @@ function wireEvents(
     }
   });
   reverifyAwaiting = (sessionId) => awaitingVerifier.trigger(sessionId, 'signal');
+  // One render on the shared snapshot queue (two on a miss), only for a
+  // PermissionRequest on a pane that has never sent the permission_prompt
+  // Notification, PERMISSION_NOTIFY_GRACE_MS after the first one. The
+  // same two predicates the verifier releases a pane on: the dialog owns the
+  // bottom of the screen, or its cursor row sits there with no agent output
+  // after it. A grid narrower than the dialog's footer wraps it beyond what
+  // either test can see (#1901), so it is not judged.
+  dialogOnScreen = async (sessionId) => {
+    const frame = await renderPaneScreen(() => sessionManager.getSession(sessionId), generateTextSnapshot);
+    if (!frame || frame.rows.every((row) => row.trim().length === 0)) return null;
+    if (typeof frame.cols === 'number' && frame.cols < AWAITING_NARROW_DIALOG_COLS) return null;
+    return screenShowsActiveDialog(frame.rows) || screenShowsPermissionDialog(frame.rows);
+  };
+  // A tentative PermissionRequest that raised no alert still holds the
+  // terminal_prompt record minted when it landed, and the awaiting verifier
+  // never looks at a pane that was not marked awaiting. Retired like a
+  // screen-cleared answer, once two reads a moment apart show no dialog (one
+  // read is one sample). A dialog still up (someone typing at it, which
+  // defers Claude's Notification) is looked at again every few seconds,
+  // since its answer may come with no hook and no awaiting state to report
+  // it; bounded, and the Notification takes over once the typing stops.
+  // A newer PermissionRequest owns whatever record is pending (its dialog may
+  // not be drawn yet): the sweep expires nothing until that request's own
+  // lapse rebases it. Records are not tracked by id, since the registry
+  // replaces the same dialog's record with a new one as it re-reads it.
+  const LAPSE_SWEEP_GAP_MS = 3_000;
+  const LAPSE_SWEEP_LOOKS = 40;
+  const sweepDelay = (ms: number): Promise<void> => new Promise<void>((resolve) => { setTimeout(resolve, ms).unref?.(); });
+  // One sweep per pane at a time. A later lapse while it runs rebases it onto
+  // that request.
+  const lapseSweeps = new Map<string, { rebase: boolean }>();
+  tentativeDialogLapsed = (sessionId) => {
+    const registry = approvalRegistry;
+    if (!registry) return;
+    const running = lapseSweeps.get(sessionId);
+    if (running) {
+      running.rebase = true;
+      return;
+    }
+    const hasPrompt = (): boolean => registry.list().pending
+      .some((r) => r.sessionId === sessionId && r.kind === 'terminal_prompt');
+    const requests = (): number => hookIngest?.permissionRequestCount(sessionId) ?? 0;
+    if (!hasPrompt()) return;
+    let baseline = requests();
+    const sweep = { rebase: false };
+    lapseSweeps.set(sessionId, sweep);
+    void (async () => {
+      for (let look = 0; look < LAPSE_SWEEP_LOOKS; look++) {
+        if (look > 0) await sweepDelay(LAPSE_SWEEP_GAP_MS);
+        if (sweep.rebase) {
+          sweep.rebase = false;
+          baseline = requests();
+          look = 0;
+        }
+        if (!hasPrompt() || !sessionManager.getSession(sessionId)) return;
+        if (requests() !== baseline) continue;
+        if (!(await registry.dialogGoneFromScreen(sessionId))) continue;
+        await sweepDelay(DIALOG_RECHECK_MS);
+        if (!(await registry.dialogGoneFromScreen(sessionId))) continue;
+        if (sweep.rebase || requests() !== baseline) continue;
+        await registry.expireForSession(sessionId, 'screen-cleared', 'terminal_prompt');
+        return;
+      }
+    })().catch((err: unknown) => log('warn', `[approvals] lapsed permission request sweep failed for ${sessionId}: ${String(err)}`))
+      .finally(() => { lapseSweeps.delete(sessionId); });
+  };
   const forgetAwaiting = (payload: { id: string }): void => awaitingVerifier.forget(payload.id);
   sessionManager.on('session:died', forgetAwaiting);
   sessionManager.on('session:destroyed', forgetAwaiting);
@@ -6376,6 +6768,7 @@ function wireEvents(
     chatSubscribers.delete(payload.id);
     transcriptProjector?.dropPty(payload.id);
     transcriptActivity?.dropSession(payload.id);
+    apiErrorTurnEnds?.dropSession(payload.id);
     terminalChat?.dropPty(payload.id);
     // …and nothing left to discover a transcript FOR.
     transcriptDiscovery?.cancel(payload.id);
@@ -6424,10 +6817,14 @@ function wireEvents(
       log('warn', `session:died unwatch failed for ${payload.id}:`, err);
     }
 
-    // Clean up buffer dump file — dead sessions don't need snapshots
+    // Clean up buffer dump file — dead sessions don't need snapshots. A
+    // hibernated ring's bytes live only in that file: the dead pane keeps its
+    // scrollback in memory until its TTL, so bring them back first, and keep
+    // the file (the TTL reaper removes it) when they cannot be read yet.
     try {
       const bufPath = stateWriter.getBufferDumpPath(payload.id);
-      if (fs.existsSync(bufPath)) fs.unlinkSync(bufPath);
+      const awake = sessionManager.getSession(payload.id)?.ringBuffer.wake() !== false;
+      if (awake && fs.existsSync(bufPath)) fs.unlinkSync(bufPath);
     } catch { /* ignore */ }
 
     // Save state. This is the persistence anchor: even if every other step
@@ -6565,7 +6962,7 @@ function wireEvents(
   // and would leave the still-live shell behind — exactly the orphan this fix
   // exists to prevent. Reattaching to the live ConPTY instead of killing it is
   // a separate piece of work (likely an upstream node-pty fix).
-  sessionManager.on('session:phantomExit', (payload: { id: string; pid?: number; pidStartTime?: string; exitCode: number | null; signal?: number; cmd?: string; lastActivityMsAgo?: number; raw?: string }) => {
+  sessionManager.on('session:phantomExit', (payload: { id: string; pid?: number; pidCreatedAtFt?: string; pidStartTime?: string; exitCode: number | null; signal?: number; cmd?: string; lastActivityMsAgo?: number; raw?: string }) => {
     // `raw` is the verbatim node-pty payload — printed as-is because the
     // native-layer investigation needs the exact shape node-pty produced, not
     // our reading of it.
@@ -6598,6 +6995,7 @@ function wireEvents(
     void reapIfIdentityConfirmed({
       pid: payload.pid,
       cmd: payload.cmd ?? '',
+      storedCreatedAtFt: payload.pidCreatedAtFt,
       storedStartTime: payload.pidStartTime,
       reason: `phantom exit of session ${payload.id}`,
     });
@@ -6690,9 +7088,9 @@ function wireEvents(
     // EXCEPT a resize repaint: a refit burst right after pty:resize is not
     // work, and letting it rebut would silently kill a real completion
     // alarm (the same class of false-negative the resize-redraw guard in
-    // DaemonPTYBridge already protects the detector dedup from). The loose
-    // status-dot broadcast below still runs — only the strict alarm feed
-    // skips repaint-flagged bursts.
+    // DaemonPTYBridge already protects the detector dedup from). The bridge
+    // emits a passive burst inside the resize-redraw window only for a cycle
+    // a hook's running edge armed in a still-open turn, flagged.
     // #919 — compute canonical identity ONCE for this burst and use it for
     // both feeds below. Leaving either on the raw screen name would re-assert
     // the detector's sticky label on every output burst, undoing whatever the
@@ -6738,10 +7136,7 @@ function wireEvents(
     // A banner names Codex before (or without) the process probe: try the cwd bind.
     if (slug === 'codex') codexCwdBinder?.arm(payload.sessionId);
     if (slug) {
-      // The agent is live again → this pane is no longer a "resume me" shell.
-      recoveredAgentShellIds.delete(payload.sessionId);
       sessionManager.confirmAgent(payload.sessionId);
-      recoveredResumeBindings.delete(payload.sessionId);
       // Resume-chip edge trigger: a live banner PROVES the agent is running
       // right now — attach the process watch so the chip can hide on process
       // truth and reappear exactly on the agent's exit edge. Covers codex,
@@ -6772,18 +7167,34 @@ function wireEvents(
     // unarmed pane still resolves screen-tier — corrected on the tracker's
     // attribution callback or the next event once the probe lands.
     const canonical = canonicalIdentityFor(agentProcessTracker, payload.sessionId, slug);
-    if (canonical && managed && managed.meta.lastDetectedAgent !== canonical.slug) {
-      managed.meta.lastDetectedAgent = canonical.slug;
+    // A screen-tier identity may name an unnamed pane, never rename one
+    // (mayPersistIdentity): the flip is what made a Claude pane "codex" for
+    // the resume pill after a quoted banner row or a post-exit shell echo.
+    if (managed && recordPaneIdentity(managed.meta, canonical, Date.now())) {
       // X6 ②: persist IMMEDIATELY, not debounced. lastDetectedAgent is the
       // SOLE basis for the post-reboot resume offer (resumeOfferForRecovered
       // reads it off the persisted session). A real OS reboot SIGKILLs the
       // daemon — flush()/process.on('exit') never run — so a 30s debounce
       // (or the periodic snapshot) can drop a fresh detection that has no
-      // other state-changing event to opportunistically flush it. The
-      // !== slug guard above bounds this to one sync write per agent
+      // other state-changing event to opportunistically flush it.
+      // recordPaneIdentity bounds this to one sync write per agent
       // transition (effectively once per idle agent pane), so the cost is
       // negligible vs. the durability it buys.
       stateWriter.saveImmediate(buildState(sessionManager));
+    }
+    // The agent is live again → this pane is no longer a "resume me" shell.
+    // Only a hook or a live process proves that. A screen-tier read is a row
+    // that looks like an agent's chrome: output quoting a banner on a
+    // recovered shell would otherwise consume the recovery offer and its
+    // exact binding, and the pill would be gone after the next reconnect.
+    // A real relaunch reaches process truth on the tracker's launch edge,
+    // where liveRecoveryHint drops the pair on its next read; until then the
+    // renderer hides the pill on its own live-agent and running-command state,
+    // and on the screen sighting listSessions reports (#2408), which hides
+    // without consuming.
+    if (slug && canonical && canonical.source !== 'screen') {
+      recoveredAgentShellIds.delete(payload.sessionId);
+      recoveredResumeBindings.delete(payload.sessionId);
     }
     // M1: the daemon owns hook-vs-detector arbitration now — the hook lands
     // here, not in main, so main can no longer run it and reads the outcome
@@ -6829,6 +7240,17 @@ function wireEvents(
       type: 'agent.critical',
       sessionId: payload.sessionId,
       data: payload.event,
+    };
+    pipeServer.broadcast(event);
+  });
+
+  // The agent printed its own "turn interrupted" row. No Stop hook follows an
+  // interrupt, so main settles the pane's turn latch on this.
+  sessionManager.on('session:turnInterrupted', (payload: { sessionId: string; agent: string }) => {
+    const event: DaemonEvent = {
+      type: 'agent.interrupted',
+      sessionId: payload.sessionId,
+      data: { agent: payload.agent },
     };
     pipeServer.broadcast(event);
   });
@@ -6981,6 +7403,7 @@ function wireEvents(
     chatSubscribers.delete(payload.id);
     transcriptProjector?.dropPty(payload.id);
     transcriptActivity?.dropSession(payload.id);
+    apiErrorTurnEnds?.dropSession(payload.id);
     terminalChat?.dropPty(payload.id);
     // …and nothing left to discover a transcript FOR.
     transcriptDiscovery?.cancel(payload.id);
@@ -7018,12 +7441,14 @@ function wireContextWatchers(
     sessionManager.listLiveSessions().map((s) => ({ sessionId: s.id, pid: s.pid })),
   );
 
-  gitWatcher.on('git', (payload: { sessionId: string; branch: string | null; isWorktree: boolean }) => {
+  gitWatcher.on('git', (payload: { sessionId: string; branch: string | null; isWorktree: boolean; absent?: true }) => {
     try {
       const event: DaemonEvent = {
         type: 'context.git',
         sessionId: payload.sessionId,
-        data: { branch: payload.branch, isWorktree: payload.isWorktree },
+        data: payload.absent
+          ? { branch: payload.branch, isWorktree: payload.isWorktree, absent: true }
+          : { branch: payload.branch, isWorktree: payload.isWorktree },
       };
       pipeServer.broadcast(event);
     } catch (err) {
@@ -7044,11 +7469,20 @@ function wireContextWatchers(
     }
   });
 
-  const onCreated = (payload: { session: { id: string; cwd: string } }) => {
-    gitWatcher.update(payload.session.id, payload.session.cwd);
+  // #2407: a WSL pane reports a Linux cwd; the watcher reads with Windows fs,
+  // so it is handed the Windows name of that directory (gitWatchCwdFor), and
+  // a way to read a worktree's Linux gitdir the same way (gitDirMapperFor).
+  const onCreated = (payload: { session: { id: string; cwd: string; cmd?: string; wslTarget?: { distribution?: unknown } } }) => {
+    gitWatcher.update(payload.session.id, gitWatchCwdFor(payload.session), gitDirMapperFor(payload.session));
   };
   const onCwd = (payload: { sessionId: string; cwd: string }) => {
-    gitWatcher.update(payload.sessionId, payload.cwd);
+    const meta = sessionManager.getSession(payload.sessionId)?.meta;
+    // Only a live session is watched. A WSL pane's share is polled, and its own
+    // wsl.exe is what keeps the distro running; a cwd adopted for a pane that
+    // has exited (adoptAgentCwd) must not start a poll that would wake it.
+    if (meta?.state !== 'attached' && meta?.state !== 'detached') return;
+    const session = { cwd: payload.cwd, cmd: meta?.cmd, wslTarget: meta?.wslTarget };
+    gitWatcher.update(payload.sessionId, gitWatchCwdFor(session), gitDirMapperFor(session));
   };
   const onGone = (payload: { id: string }) => {
     gitWatcher.remove(payload.id);
@@ -7056,21 +7490,25 @@ function wireContextWatchers(
   sessionManager.on('session:created', onCreated);
   sessionManager.on('session:cwd', onCwd);
   sessionManager.on('session:died', onGone);
+  // An involuntary exit leaves the session suspended, not died: its watch
+  // (and any share poll) goes too.
+  sessionManager.on('session:interrupted', onGone);
   sessionManager.on('session:destroyed', onGone);
 
   portWatcher.start();
 
   // Seed git context for sessions recovered before this wiring ran.
   for (const s of sessionManager.listLiveSessions()) {
-    gitWatcher.update(s.id, s.cwd);
+    gitWatcher.update(s.id, gitWatchCwdFor(s), gitDirMapperFor(s));
   }
 
-  resyncContextWatchers = () => { portWatcher.resync(); };
+  resyncContextWatchers = () => { portWatcher.resync(); gitWatcher.resync(); };
 
   return () => {
     sessionManager.off('session:created', onCreated);
     sessionManager.off('session:cwd', onCwd);
     sessionManager.off('session:died', onGone);
+    sessionManager.off('session:interrupted', onGone);
     sessionManager.off('session:destroyed', onGone);
     portWatcher.stop();
     gitWatcher.dispose();
@@ -7079,7 +7517,7 @@ function wireContextWatchers(
 }
 
 /**
- * #1135 — re-emit the current per-session port sets. Set by
+ * #1135 — re-emit the current per-session port sets and git answers. Set by
  * wireContextWatchers, called when an app subscribes to the event stream: the
  * daemon survives app restarts, so a new app's empty port map has to be
  * refilled from the watcher rather than from whatever the last app persisted.
@@ -7091,6 +7529,9 @@ let disposeContextWatchers: (() => void) | null = null;
 
 /** X8: set in main(); shutdown() cancels pending supervised restarts through it. */
 let paneSupervisorRef: PaneSupervisor | null = null;
+// Whether the background recovery pass after boot has settled
+// (startupRecovery.ts); `daemon.listSessions` says it when asked.
+const startupRecovery = createStartupRecovery({ log: (line) => log('info', line) });
 // Module-level so the standalone shutdown() can dispose the LanLink listener
 // (close the net.Server, drop live connections, remove the firewall rules).
 let lanLinkServerRef: LanLinkServer | null = null;
@@ -7411,6 +7852,7 @@ async function main(): Promise<void> {
   const startTime = Date.now();
   markDaemonBoot('main-start');
   log('info', `wmux-daemon starting (PID ${process.pid})`);
+  setNativeProcessReadWarn((message) => log('warn', message));
 
   // 1. Single-instance check
   if (!(await acquireLock())) {
@@ -8266,13 +8708,118 @@ async function main(): Promise<void> {
       : '';
     const managed = id ? sessionManager.getSession(id) : undefined;
     if (!managed) return { ok: false, code: 'no_session' };
-    if (managed.meta.wslTarget || managed.meta.exec) return { ok: false, code: 'unsupported' };
+    if (managed.meta.exec) return { ok: false, code: 'unsupported' };
+    // Additive: main's idle stop of a reported worker stops only while the
+    // pane's turn is over by the daemon's own state, checked right before the
+    // first signal; otherwise `turn_open` and nothing is signalled.
+    const stillIdle = (rawParams as { ifTurnClosed?: unknown }).ifTurnClosed === true
+      ? () => {
+        const bridge = sessionManager.getSession(id)?.bridge;
+        return !!bridge && paneTurnClosed({ agentStatus: bridge.getAgentStatus(), turnOpen: bridge.isTurnOpen() });
+      }
+      : undefined;
+    if (managed.meta.wslTarget) {
+      // #2261 — a WSL agent attributed from its own hook is stopped inside the
+      // distro; one never attributed stays unsupported (main closes its pane).
+      const wslAgent = agentProcessTracker.wslAgentFor(id);
+      if (!wslAgent) return { ok: false, code: 'unsupported' };
+      if (stillIdle && !stillIdle()) return { ok: false, code: 'turn_open' };
+      try {
+        return await stopWslAgent(wslAgent);
+      } catch {
+        return { ok: false, code: 'unknown' };
+      }
+    }
     try {
       return await stopAgentTree({
         tree: () => agentProcessTracker.agentProcessTree(id, 'claude'),
         stillRunning: (entries) => agentProcessTracker.stillRunning(entries),
         kill: (pid, signal) => process.kill(pid, signal),
+        ...(stillIdle ? { stillIdle } : {}),
       });
+    } catch {
+      return { ok: false, code: 'unknown' };
+    }
+  });
+  // The user's "Continue on <account>": the pane's own Claude conversation is
+  // copied to the account's config dir and resumed there in the same pane
+  // (continueOnAccount.ts). main resolves the account to its directory.
+  pipeServer.onRpc('session.continueOnAccount', async (rawParams, ctx) => {
+    if (!pipeServer.isFirstParty(ctx.clientId)) return { ok: false, code: 'not_authorized' };
+    const p = rawParams as { sessionId?: unknown; configDir?: unknown };
+    const id = typeof p.sessionId === 'string' ? p.sessionId : '';
+    const configDir = typeof p.configDir === 'string' ? p.configDir : '';
+    if (!id || !sessionManager.getSession(id)) return { ok: false, code: 'no_session' };
+    try {
+      return await continueOnAccount({
+        pane: (sid) => sessionManager.getSession(sid)?.meta,
+        // The pane's agent as the canonical tiers name it; none once the shell
+        // is back at its prompt with no live agent process (#1392).
+        liveAgent: (sid) => {
+          const pane = sessionManager.getSession(sid);
+          if (!pane) return undefined;
+          const rawName = pane.bridge.getLastAgent();
+          const canonical = canonicalIdentityFor(agentProcessTracker, sid, rawName ? agentDisplayToSlug(rawName) : undefined);
+          if (!canonical) return undefined;
+          const live = provesLiveAgent(agentProcessTracker.identityFor(sid), canonical.slug);
+          return pane.promptLog.commandRunningIfKnown() === false && !live ? undefined : canonical.slug;
+        },
+        turnClosed: (sid) => {
+          const bridge = sessionManager.getSession(sid)?.bridge;
+          if (!bridge) return false;
+          const status = bridge.getAgentStatus();
+          return bridge.isTurnOpen() !== true && status !== 'running' && status !== 'awaiting_input';
+        },
+        shellKind: (sid) => {
+          const pane = sessionManager.getSession(sid);
+          if (!pane || pane.meta.wslTarget) return null;
+          const shell = classifyShell(pane.meta.cmd ?? '');
+          if (shell === 'pwsh') return 'pwsh';
+          if (shell === 'bash' || shell === 'zsh') return 'posix';
+          return process.platform === 'win32' ? null : 'posix';
+        },
+        stopClaude: (sid, stillIdle) => stopAgentTree({
+          tree: () => agentProcessTracker.agentProcessTree(sid, 'claude'),
+          stillRunning: (entries) => agentProcessTracker.stillRunning(entries),
+          kill: (pid, signal) => process.kill(pid, signal),
+          stillIdle,
+        }),
+        paneFree: async (sid) => {
+          const pane = sessionManager.getSession(sid);
+          if (!pane) return false;
+          const pid = agentProcessTracker.pidFor(sid);
+          if (pid !== undefined && await ProcessMonitor.isRunning(pid)) return false;
+          return (await agentProcessTracker.idleShellState(pane.meta.pid, pane.meta.env, true)).ok;
+        },
+        promptRevision: (sid) => {
+          const pane = sessionManager.getSession(sid);
+          if (!pane || pane.promptLog.size === 0 || pane.promptLog.isCommandRunning()) return null;
+          return pane.bridge.isEmptyShellPrompt() ? pane.bridge.getInputRevision() : null;
+        },
+        rebind: (sid, dir, binding) => {
+          const meta = sessionManager.getSession(sid)?.meta;
+          if (!meta) return null;
+          const before = { env: meta.env, paneAccount: meta.paneAccount, resumeBinding: meta.resumeBinding };
+          const restore = () => {
+            meta.env = before.env;
+            meta.paneAccount = before.paneAccount;
+            meta.resumeBinding = before.resumeBinding;
+          };
+          meta.env = { ...meta.env, CLAUDE_CONFIG_DIR: dir };
+          meta.paneAccount = { vendor: 'claude' };
+          meta.resumeBinding = { ...binding, ts: Date.now() };
+          // Unpersisted, a restart would recover the pane on the old account.
+          if (!stateWriter.saveImmediate(buildState(sessionManager))) { restore(); return null; }
+          return () => { restore(); stateWriter.saveImmediate(buildState(sessionManager)); };
+        },
+        write: (sid, data) => {
+          const pane = sessionManager.getSession(sid);
+          if (!pane) return false;
+          pane.ptyProcess.write(data);
+          pane.bridge.noteInput(data);
+          return true;
+        },
+      }, id, configDir);
     } catch {
       return { ok: false, code: 'unknown' };
     }
@@ -8326,9 +8873,26 @@ async function main(): Promise<void> {
         data: { slug: state.slug ?? null },
       });
     }
+    // A named agent's launch edge is the process evidence that consumes a
+    // recovered pane's resume offer (the banner path leaves it to the process
+    // or hook tier). Done here, not left to liveRecoveryHint's next read: an
+    // agent launched and exited between two reads would leave the old offer
+    // and binding standing for the next reconnect.
+    if (state.alive && state.slug) {
+      recoveredAgentShellIds.delete(sessionId);
+      recoveredResumeBindings.delete(sessionId);
+    }
     const managed = sessionManager.getSession(sessionId);
     if (!managed) return;
     if (state.alive) sessionManager.confirmAgent(sessionId);
+    // A slugless pick (a `tail -f`, an unknown child) that dies while the
+    // screen names an agent: arm() skipped probing while that pick read
+    // alive, so an agent launched in the meantime was never attributed.
+    // Probe again, or the launch edge that consumes the recovery offer and
+    // names the pane never comes.
+    if (!state.alive && state.slug === undefined && managed.bridge.getLastAgent()) {
+      agentProcessTracker.arm(sessionId, managed.meta.pid);
+    }
     // A death edge, or a launch edge for a different agent than the last one
     // seen here, ends the previous agent's running episode.
     const previousSlug = managed.meta.lastDetectedAgent;
@@ -8339,8 +8903,10 @@ async function main(): Promise<void> {
       sessionId,
       screenSlug ? agentDisplayToSlug(screenSlug) : undefined,
     );
-    if (canonical && managed.meta.lastDetectedAgent !== canonical.slug) {
-      managed.meta.lastDetectedAgent = canonical.slug;
+    // Same rule as the live banner site: on the exit edge the dead process
+    // no longer counts, so the screen's last guess would otherwise rename the
+    // pane to whatever row scrolled by last.
+    if (recordPaneIdentity(managed.meta, canonical, Date.now())) {
       stateWriter.saveImmediate(buildState(sessionManager));
     }
   });
@@ -8882,8 +9448,21 @@ async function main(): Promise<void> {
     },
   });
   runSnapshotOnceRef = runSnapshotOnce;
+  // Idle-pane buffer hibernation rides the same tick, after the dumps (it
+  // reuses a dump that is still current instead of writing again).
+  const bufferHibernation = createBufferHibernation({
+    sessions: () => sessionManager.listManagedSessions(),
+    bufferPath: (id) => stateWriter.getBufferDumpPath(id),
+    ensureBufferDir: () => stateWriter.ensureBufferDir(),
+    idleHours: () => config.session.hibernateIdleHours ?? 0,
+    agentProcessAlive: (id) => agentProcessTracker.statusFor(id),
+    remoteViewer: (id) => webTerminalServer?.hasPaneViewer(id) === true,
+    log: (level, msg) => log(level, msg),
+  });
   const snapshotInterval = setInterval(() => {
-    void runSnapshotOnce();
+    void runSnapshotOnce()
+      .then(() => bufferHibernation.sweep())
+      .catch((err) => log('warn', '[hibernate] sweep failed:', err));
   }, (config.daemon.snapshotIntervalSec ?? 30) * 1000); // app-weight P1 knob (clamped 10–600 s)
   snapshotInterval.unref();
 

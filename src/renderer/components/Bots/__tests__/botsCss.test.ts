@@ -23,6 +23,14 @@ describe('bots.css', () => {
     expect(rule('.wmux-bots-chat')).toMatch(/position:\s*relative/);
   });
 
+  it('the chat header\'s workers button shows only in the one-column layout, mirroring the back button', () => {
+    expect(rule('.wmux-bots-head-workers')).toMatch(/display:\s*none/);
+    expect(rule('.wmux-bots-head-workers')).toMatch(/right:\s*16px/);
+    const narrow = css.indexOf('@container bots (max-width: 799px) {');
+    expect(narrow).toBeGreaterThan(-1);
+    expect(css.indexOf('.wmux-bots-head-workers { display: inline-flex; }', narrow)).toBeGreaterThan(narrow);
+  });
+
   it('the worker panel draws no pane done, notification or glow ring (Workspaces keeps them)', () => {
     expect(css).toMatch(/\.wmux-bots-worker-panes \.pane-complete-blink::after,\s*\.wmux-bots-worker-panes \.notification-ring::before,\s*\.wmux-bots-worker-panes \.pane-flash::after \{ display: none; \}/);
     expect(css).toMatch(/\.wmux-bots-worker-panes \.pane-ring-glow \{ box-shadow: none; opacity: 1;/);

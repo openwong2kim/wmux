@@ -38,7 +38,7 @@
 .settings-nav-count { min-height: 16px; margin: 4px 2px 0; font-size: 11px; line-height: 16px; color: var(--text-sub); }
 .settings-nav-list { flex: 1; overflow-y: auto; padding: 4px 8px 12px; }
 .settings-nav-group + .settings-nav-group { margin-top: 12px; }
-.settings-nav-heading { padding: 4px 10px 4px; font-size: 13px; font-weight: 500; line-height: 16px; color: var(--text-muted); }
+.settings-nav-heading { padding: 4px 10px 4px; font-size: 12px; font-weight: 400; line-height: 16px; color: var(--text-sub); }
 .settings-nav-row {
   display: flex;
   align-items: center;
@@ -47,7 +47,7 @@
   min-height: 32px;
   padding: 0 10px;
   border-radius: 8px;
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 400;
   line-height: 20px;
   text-align: left;
@@ -56,13 +56,12 @@
 }
 .settings-nav-row > svg,
 .settings-nav-row .settings-nav-icon { flex-shrink: 0; color: var(--text-muted); }
-.settings-nav-row:hover { background: var(--surface-fill-hover); color: var(--text-main); }
-/* Selected: the sidebar's active row — neutral surface + a steel edge. */
+.settings-nav-row:hover { background: var(--hover-fill); color: var(--text-main); }
+/* Selected: the look's own selection treatment (fill, ring or bar). */
 .settings-nav-row[aria-current="page"] {
-  background: var(--bg-surface);
-  box-shadow: inset -2px 0 0 var(--accent-blue);
+  background: var(--selection);
+  box-shadow: var(--select-ring);
   color: var(--text-main);
-  font-weight: 500;
 }
 .settings-nav-row[aria-current="page"] .settings-nav-icon { color: var(--text-sub); }
 .settings-nav-row[data-dim="true"] { opacity: 0.38; }
@@ -70,36 +69,51 @@
 
 /* Content: one centered column. */
 .settings-content { flex: 1; min-width: 0; overflow-y: auto; }
-.settings-column { width: 100%; max-width: 720px; margin: 0 auto; padding: 28px 24px 48px; }
-.settings-page-title { margin: 0 0 20px; font-size: var(--text-display-size, 16px); font-weight: 600; line-height: 24px; color: var(--text-main); }
-.settings-page { display: flex; flex-direction: column; gap: 28px; }
+.settings-column { width: 100%; max-width: 680px; margin: 0 auto; padding: 32px 24px 48px; }
+.settings-page-title { margin: 0 0 24px; font-size: 22px; font-weight: 500; line-height: 28px; color: var(--text-main); }
+.settings-page { display: flex; flex-direction: column; gap: 32px; }
 
 /* Section: heading over ONE container. */
 .settings-section { display: flex; flex-direction: column; }
 .settings-section-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
 .settings-section-title { margin: 0; }
-.settings-section-desc { margin: -4px 0 8px; font-size: 11px; line-height: 16px; color: var(--text-sub); }
+.settings-column .ui-group-label:not(:is([role="dialog"], [role="alertdialog"], .ui-popover, [role="listbox"]) *) { font-size: 13px; font-weight: 400; line-height: 20px; color: var(--text-sub); }
+.settings-section-desc { margin: -4px 0 8px; font-size: 12px; line-height: 16px; color: var(--text-sub); }
 
 /* Row: Field on the left/right; long copy collapses to one line. */
-.settings-row { display: flex; flex-direction: column; padding: 10px 14px; min-height: 52px; justify-content: center; }
+.settings-row { display: flex; flex-direction: column; padding: 8px 14px; min-height: 48px; justify-content: center; }
 .settings-row > .ui-field { min-height: 32px; }
+/* Calmer type than the shared Field and row recipes: a regular-weight label
+ * over a 12px line. Only the page's own rows: a dialog, popover or listbox
+ * opened inside the column keeps the shared recipe. */
+.settings-column :is(.ui-field-label, .ui-row-title):not(:is([role="dialog"], [role="alertdialog"], .ui-popover, [role="listbox"]) *) { font-size: 14px; font-weight: 400; }
+.settings-column :is(.ui-field-description, .ui-row-detail):not(:is([role="dialog"], [role="alertdialog"], .ui-popover, [role="listbox"]) *) { font-size: 12px; line-height: 16px; color: var(--text-sub); }
 .settings-row .ui-field-text { flex: 1; }
 .settings-clamp { display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden; }
+/* Accounts: a one-line summary, then the rest on its own line behind Learn more. */
+[data-setting-id="claudeacct"] > .settings-section-desc p { white-space: pre-line; }
 .settings-more {
   align-self: flex-start;
   margin-top: 2px;
   padding: 0;
   border-radius: 4px;
-  font-size: 11px;
+  font-size: 12px;
   line-height: 16px;
   color: var(--accent-blue);
   background: none;
 }
 .settings-more:hover { text-decoration: underline; }
-.settings-note { margin: 0; padding: 10px 14px; font-size: 11px; line-height: 16px; color: var(--text-sub); }
+.settings-note { margin: 0; padding: 10px 14px; font-size: 12px; line-height: 16px; color: var(--text-sub); }
 .settings-note[data-tone="warning"] { color: color-mix(in srgb, var(--accent-yellow) 80%, var(--text-main)); }
 .settings-note[data-tone="danger"] { color: color-mix(in srgb, var(--accent-red) 80%, var(--text-main)); }
-.settings-select > select { min-width: 180px; }
+.settings-select > select { min-width: 140px; }
+/* Compact controls: a narrower 6px select and a 30x18 switch whose hit area
+ * stays at least 24px tall. */
+.settings-column .ui-select > select:not(:is([role="dialog"], [role="alertdialog"], .ui-popover, [role="listbox"]) *) { border-radius: 6px; }
+.settings-column .ui-switch:not(:is([role="dialog"], [role="alertdialog"], .ui-popover, [role="listbox"]) *) { width: 30px; height: 18px; }
+.settings-column .ui-switch:not(:is([role="dialog"], [role="alertdialog"], .ui-popover, [role="listbox"]) *)::before { inset: -3px; }
+.settings-column .ui-switch:not(:is([role="dialog"], [role="alertdialog"], .ui-popover, [role="listbox"]) *) .ui-switch-knob { width: 12px; height: 12px; }
+.settings-column .ui-switch[aria-checked="true"]:not(:is([role="dialog"], [role="alertdialog"], .ui-popover, [role="listbox"]) *) .ui-switch-knob { transform: translateX(12px); }
 .settings-input { min-height: 32px; font-size: 13px; }
 .settings-input.font-mono { font-size: 11px; }
 .settings-range { width: 112px; accent-color: var(--text-sub); }
@@ -110,7 +124,7 @@
 
 /* Keyboard rows. */
 .settings-kbd-row { flex-direction: row; align-items: center; justify-content: space-between; gap: 12px; min-height: 40px; padding: 6px 14px; }
-.settings-kbd-desc { font-size: 13px; line-height: 20px; color: var(--text-main); }
+.settings-kbd-desc { font-size: 14px; line-height: 20px; color: var(--text-main); }
 .settings-kbd {
   display: inline-flex;
   align-items: center;
@@ -143,12 +157,20 @@ button.settings-kbd:hover { color: var(--text-main); background: var(--surface-f
 }
 .settings-theme-card:hover { border-color: color-mix(in srgb, var(--text-main) 24%, transparent); }
 .settings-theme-card[aria-checked="true"] { border-color: color-mix(in srgb, var(--text-main) 60%, transparent); box-shadow: 0 0 0 1px color-mix(in srgb, var(--text-main) 60%, transparent); }
+/* The second theme group's heading: the section-heading style, set apart
+ * from the looks above it. */
+.settings-theme-more { margin-top: 12px; }
 
 /* Search jump: rows have no border of their own, so the flash is a tint. */
 .settings-flash { background: color-mix(in srgb, var(--accent-blue) 10%, transparent) !important; }
 
 @media (prefers-reduced-motion: reduce) {
   .settings-nav-row, .settings-theme-card { transition: none; }
+}
+/* Windows: the system animation setting, which the media query misses there (utils/reducedMotion.ts). */
+:root[data-reduced-motion] .settings-nav-row,
+:root[data-reduced-motion] .settings-theme-card {
+  transition: none;
 }
 
 /* Native radios / checkboxes that tests or forms depend on, drawn neutral. */

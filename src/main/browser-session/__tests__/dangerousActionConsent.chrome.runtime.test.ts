@@ -10,6 +10,7 @@ import { openDownloadPass } from '../dangerousActionConsent';
 import { compileHostPolicy } from '../../../shared/browserHostPolicy';
 import { canonicalUrlHost } from '../../pipe/handlers/browserConsent.rpc';
 import { requiredOnThisRunner } from '../../../test-utils/realBrowserHarness';
+import { deliberateSleep } from '../../../test-utils/waitFor';
 
 // The approved download against a REAL protected Chrome (production launcher,
 // proxy and download guard, Playwright attached): exactly the approved tab's
@@ -128,7 +129,7 @@ describe('approved download (real Chrome)', { timeout: 60_000 }, () => {
     expect(await (await otherDl)?.failure()).toBe('canceled');
 
     // Longer than the guard's periodic deny re-assert: the approval must hold.
-    await new Promise((r) => setTimeout(r, 600));
+    await deliberateSleep(600, 'real timer: outlast the guard\'s periodic deny re-assert');
     await approved.click('#d');
     const got = await pass.done;
     expect(got.suggestedFilename).toBe('file.bin');

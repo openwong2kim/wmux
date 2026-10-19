@@ -5,7 +5,7 @@ import path from 'node:path';
 import os from 'node:os';
 
 // Mock node-pty so create/attach do not spawn real processes.
-// Mirrors the pattern in DaemonSessionManager.test.ts.
+// Mirrors the pattern in DaemonSessionManager.os.test.ts.
 class MockPty extends EventEmitter {
   pid = 12345;
   onData() { return { dispose: () => { /* noop */ } }; }
@@ -20,6 +20,14 @@ vi.mock('node-pty', () => ({
     spawn: () => new MockPty(),
   },
   spawn: () => new MockPty(),
+}));
+
+// #2398: a fixed native creation time, so the stamp is the same on every OS.
+const PID_CREATED_AT_FT = 134296036801234567n;
+vi.mock('../phantomExit', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../phantomExit')>()),
+  getProcessCreatedAtFt: () => PID_CREATED_AT_FT,
+  getProcessStartTime: async () => null,
 }));
 
 // Import after mock so DaemonSessionManager wires the mock.
@@ -131,6 +139,27 @@ describe('A1a invariant — saveImmediate persists synchronously', () => {
       expect.objectContaining({ id: sessionId }),
     );
     expect(persisted.bootId).toBeDefined();
+
+    manager.destroySession(session.id);
+  });
+
+  // #2398: the FILETIME is stamped synchronously at create, so the first save
+  // already holds it, and it survives JSON as an exact decimal string.
+  it('createSession stamps pidCreatedAtFt, and it round-trips through sessions.json as a string', () => {
+    const session = manager.createSession({
+      id: 'ft-stamp', cmd: 'bash', cwd: tmpDir, env: {}, cols: 80, rows: 24,
+    });
+    expect(session.pidCreatedAtFt).toBe(PID_CREATED_AT_FT.toString());
+    expect(session.pidStartTime).toBeUndefined();
+
+    writer.saveImmediate(buildState());
+    const raw = JSON.parse(fs.readFileSync(path.join(tmpDir, 'sessions.json'), 'utf-8')) as DaemonState;
+    expect(raw.sessions.find((s) => s.id === 'ft-stamp')?.pidCreatedAtFt).toBe('134296036801234567');
+    const loaded = new StateWriter(tmpDir).load();
+    const reloaded = loaded.sessions.find((s) => s.id === 'ft-stamp');
+    expect(reloaded?.pidCreatedAtFt).toBe('134296036801234567');
+    expect(BigInt(reloaded?.pidCreatedAtFt ?? -1)).toBe(PID_CREATED_AT_FT);
+    expect(reloaded?.pidStartTime).toBeUndefined();
 
     manager.destroySession(session.id);
   });

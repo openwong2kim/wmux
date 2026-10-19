@@ -16,6 +16,7 @@ import type { CollectedTool } from '../../playwright/toolCollector';
 import { ReplRegistry } from '../replRegistry';
 import { ReplSession } from '../ReplSession';
 import { REPL_BROWSER_PROFILE_REFUSAL, formatOutcome, resolveReplBrowser } from '../tools';
+import { deliberateSleep } from '../../../test-utils/waitFor';
 
 const live: ReplSession[] = [];
 
@@ -187,7 +188,7 @@ describe('repl_run browser bridge (real child)', () => {
       10_000,
       binding,
     );
-    await new Promise((resolve) => setTimeout(resolve, 300));
+    await deliberateSleep(300, 'real timer: let the timer scheduled inside the child fire');
     const second = await session.run('globalThis.zeroResult', 10_000, binding);
     expect(second.result?.text).toContain('browser.navigate: refused');
     expect(fake.called).toEqual([]);
@@ -219,7 +220,7 @@ describe('repl_run browser bridge (real child)', () => {
           order.push('probe');
           return { content: [{ type: 'text', text: 'probed' }] };
         }
-        await new Promise((resolve) => setTimeout(resolve, 3_000));
+        await deliberateSleep(3_000, 'stub latency: a navigation slower than the probe');
         order.push('landed');
         return { content: [{ type: 'text', text: 'navigated' }] };
       },
@@ -278,7 +279,7 @@ describe('repl_run browser bridge (real child)', () => {
       binding,
     );
     expect(first.ok).toBe(true);
-    await new Promise((resolve) => setTimeout(resolve, 200));
+    await deliberateSleep(200, 'real timer: let the timer scheduled inside the child fire');
     const second = await session.run('await globalThis.late', 10_000, binding);
     expect(second.result?.text).toContain('BrowserToolError: browser.click: refused');
     expect(fake.called).toEqual([]);

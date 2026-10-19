@@ -5,6 +5,7 @@
 // 실패 hunk 표시 + "적용됨"/"채택불가" 뱃지 + 코멘트 버튼.
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import type {
+  DiffHunk,
   DiffReadFile,
   DiffReadResult,
   DiffApplyRequest,
@@ -13,10 +14,16 @@ import type {
 } from '../../../shared/diffParse';
 import type { ChannelMention } from '../../../shared/channels';
 import { HUMAN_WORKSPACE_ID, CHANNEL_MENTIONS_MAX } from '../../../shared/channels';
+import { commentAnchor, numberHunkLines, type DiffLine } from '../../../shared/prReview';
+import { sanitizeRemoteText } from '../../../shared/a2aRemoteDelivery';
+import { findLeaf } from '../../../shared/paneUtils';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import { unwrapRpc } from '../../utils/unwrapRpc';
-import { HunkLines } from './HunkLines';
+import { findWorkspaceSurfaceById } from '../../utils/paneTraversal';
+import { FOCUS_RING } from '../focusRing';
+import { IconX } from '../icons';
+import { HunkGutter, HunkLines } from './HunkLines';
 
 // gpui button recipes (theme-safe color-mix on tokens; primary/danger keep the
 // rgba sheen the DESIGN spec calls for). Reused across this panel's header.
@@ -62,14 +69,34 @@ interface TaskMeta {
   detached: boolean;
 }
 
+/** Which file a line comment points into: the new file (added or unchanged
+ *  lines) or the old one (removed lines). */
+export type DiffCommentSide = 'new' | 'old';
+
+/** A line (or line range, `line`..`endLine`) on one side of a hunk. */
+export interface DiffLineAnchor {
+  side: DiffCommentSide;
+  line: number;
+  endLine?: number;
+}
+
 // F10 — diff 코멘트 역조회(미션 채널의 diff-comment 앵커 메시지).
-interface DiffComment {
+// A comment without `line` is a hunk comment (every anchor posted before line
+// comments existed carries `line: 0`).
+export interface DiffComment {
   file: string;
   hunkHeader: string;
+  side?: DiffCommentSide;
+  line?: number;
+  endLine?: number;
   author: string;
   text: string;
   postedAt: number;
+  /** Set on a workspace review draft, which can be removed before it is sent. */
+  draftId?: string;
 }
+
+const isLineNumber = (v: unknown): v is number => typeof v === 'number' && Number.isInteger(v) && v > 0;
 
 // 채널 메시지에서 이 태스크의 diff-comment 앵커만 추출한다(§4 data.kind 매칭).
 export function extractDiffComments(
@@ -79,13 +106,17 @@ export function extractDiffComments(
   const out: DiffComment[] = [];
   for (const m of messages) {
     const d = m.data as
-      | { kind?: string; taskId?: string; file?: string; hunkHeader?: string }
+      | { kind?: string; taskId?: string; file?: string; hunkHeader?: string; side?: unknown; line?: unknown; endLine?: unknown }
       | undefined;
     if (!d || d.kind !== 'diff-comment' || d.taskId !== taskId) continue;
     if (typeof d.file !== 'string') continue;
+    // A positive line makes it a line comment; anything else stays a hunk comment.
+    const line = isLineNumber(d.line) ? d.line : 0;
+    const endLine = line && isLineNumber(d.endLine) && d.endLine > line ? d.endLine : undefined;
     out.push({
       file: d.file,
       hunkHeader: typeof d.hunkHeader === 'string' ? d.hunkHeader : '',
+      ...(line ? { side: d.side === 'old' ? 'old' as const : 'new' as const, line, ...(endLine ? { endLine } : {}) } : {}),
       author: m.memberName ?? '(unknown)',
       text: m.text ?? '',
       postedAt: typeof m.postedAt === 'number' ? m.postedAt : 0,
@@ -94,18 +125,134 @@ export function extractDiffComments(
   return out;
 }
 
+/** `12`, `12-15`, with ` (old)` for lines of the old file. */
+export function formatLineRange(a: DiffLineAnchor): string {
+  const range = a.endLine && a.endLine > a.line ? `${a.line}-${a.endLine}` : `${a.line}`;
+  return a.side === 'old' ? `${range} (old)` : range;
+}
+
+/** The side and line a diff line takes a comment on, or null for a meta line. */
+export function lineAnchorOf(line: DiffLine): { side: DiffCommentSide; line: number } | null {
+  const a = commentAnchor(line);
+  return a ? { side: a.side === 'LEFT' ? 'old' : 'new', line: a.line } : null;
+}
+
+/**
+ * Where each comment on a file is drawn. A hunk comment sits under the hunk
+ * whose header it names. A line comment sits under its last line, in the hunk
+ * whose header it names, when that hunk still shows every end of its range on
+ * its side. Anything else moved with the content and is listed under the file.
+ */
+export function placeDiffComments(
+  file: { path: string; hunks: ReadonlyArray<Pick<DiffHunk, 'header' | 'oldStart' | 'newStart' | 'bodyLines'>> },
+  comments: readonly DiffComment[],
+): { byHunk: Map<string, DiffComment[]>; byLine: Map<string, DiffComment[]>; moved: DiffComment[] } {
+  const shown = new Map<string, Set<string>>();
+  for (const h of file.hunks) {
+    const keys = new Set<string>();
+    for (const l of numberHunkLines(h)) {
+      const a = lineAnchorOf(l);
+      if (a) keys.add(`${a.side}:${a.line}`);
+    }
+    shown.set(h.header, keys);
+  }
+  const byHunk = new Map<string, DiffComment[]>();
+  const byLine = new Map<string, DiffComment[]>();
+  const moved: DiffComment[] = [];
+  const add = (map: Map<string, DiffComment[]>, key: string, c: DiffComment) => {
+    const list = map.get(key) ?? [];
+    list.push(c);
+    map.set(key, list);
+  };
+  for (const c of comments) {
+    if (c.file !== file.path) continue;
+    const keys = c.hunkHeader ? shown.get(c.hunkHeader) : undefined;
+    if (!keys) {
+      moved.push(c);
+    } else if (!c.line) {
+      add(byHunk, c.hunkHeader, c);
+    } else {
+      const side = c.side ?? 'new';
+      const end = c.endLine ?? c.line;
+      if (keys.has(`${side}:${c.line}`) && keys.has(`${side}:${end}`)) add(byLine, `${c.hunkHeader}\0${side}:${end}`, c);
+      else moved.push(c);
+    }
+  }
+  return { byHunk, byLine, moved };
+}
+
+/** One comment in a workspace review draft, not yet handed to the agent. */
+export interface DiffReviewDraft {
+  id: string;
+  file: string;
+  hunkHeader: string;
+  /** Absent for a comment on the whole hunk. */
+  anchor?: DiffLineAnchor;
+  text: string;
+  /** The first commented line's text, so a removed line still reads in the note. */
+  snippet: string;
+}
+
+export const REVIEW_COMMENT_MAX = 1000;
+export const REVIEW_SNIPPET_MAX = 120;
+
+/** Control sequences stripped, whitespace collapsed to one line, capped in code points. */
+function reviewLine(raw: string, max: number): string {
+  const chars = Array.from(sanitizeRemoteText(raw).replace(/\s+/g, ' ').trim());
+  return chars.length > max ? `${chars.slice(0, max - 1).join('')}…` : chars.join('');
+}
+
+/**
+ * A workspace review draft as text for the agent. `multiline: false` is the
+ * form typed into the agent's input line: ONE line, because outside bracketed
+ * paste a newline submits the line (the browser hand-off follows the same
+ * rule). The multi-line form is for the clipboard. Every field is stripped of
+ * control sequences; the code snippet comes from the diff and is quoted as a
+ * JSON string so it cannot read as the user's words.
+ */
+export function formatDiffReviewNote(
+  repoPath: string,
+  drafts: readonly DiffReviewDraft[],
+  multiline: boolean,
+): string {
+  const repo = reviewLine(repoPath, 300);
+  const items = drafts.map((d) => {
+    const file = reviewLine(d.file, 300);
+    const head = reviewLine(d.hunkHeader, DIFF_COMMENT_HEADER_MAX);
+    const where = d.anchor ? `${file}:${formatLineRange(d.anchor)}` : head ? `${file} (hunk ${head})` : file;
+    const snippet = d.anchor ? reviewLine(d.snippet, REVIEW_SNIPPET_MAX) : '';
+    return { where, code: snippet ? JSON.stringify(snippet) : '', text: reviewLine(d.text, REVIEW_COMMENT_MAX) };
+  });
+  const intro = `Review comments on the uncommitted changes in ${repo}`;
+  if (!multiline) {
+    const body = items.map((it, i) => `(${i + 1}) ${it.where}${it.code ? ` at ${it.code}` : ''}: ${it.text}`).join(' · ');
+    return `[diff review] ${intro}: ${body}`;
+  }
+  const body = items
+    .map((it, i) => `${i + 1}. ${it.where}${it.code ? ` at ${it.code}` : ''}\n   ${it.text}`)
+    .join('\n');
+  return `${intro}:\n\n${body}\n`;
+}
+
 // J4 §S2 — diff 주석 포스트에 부착할 텍스트 앵커. CLI/MCP read가 data payload를
 // 렌더하지 않아도 에이전트가 어느 파일·hunk에 대한 코멘트인지 본문만으로 알 수 있게
 // 한다. hunkHeader는 text 쪽만 절단하고(data 앵커는 원형 유지 — extractDiffComments가
 // 그걸 읽는다), 비어 있으면 `@ ...` 파트를 생략한다.
 export const DIFF_COMMENT_HEADER_MAX = 80;
 
-export function formatDiffCommentText(file: string, hunkHeader: string, comment: string): string {
+export function formatDiffCommentText(
+  file: string,
+  hunkHeader: string,
+  comment: string,
+  lineAnchor?: DiffLineAnchor,
+): string {
   const head =
     hunkHeader.length > DIFF_COMMENT_HEADER_MAX
       ? hunkHeader.slice(0, DIFF_COMMENT_HEADER_MAX)
       : hunkHeader;
-  const anchor = head ? `[diff: ${file} @ ${head}]` : `[diff: ${file}]`;
+  // A line comment names its line(s) after the file: `a.ts:12-15 @ @@ ...`.
+  const where = lineAnchor && lineAnchor.line > 0 ? `${file}:${formatLineRange(lineAnchor)}` : file;
+  const anchor = head ? `[diff: ${where} @ ${head}]` : `[diff: ${where}]`;
   return `${anchor} ${comment}`;
 }
 
@@ -299,22 +446,72 @@ async function loadMissionRoster(
 }
 
 // F10 — 코멘트 목록 렌더(작성자·본문·시각 — 최소).
-function CommentList({ comments }: { comments: DiffComment[] }) {
+// `bare` drops the list's own rule and fill: under a diff line the row it sits
+// in already draws them (one boundary). `onRemove` offers removing a draft.
+function CommentList({ comments, bare, onRemove, removeLabel }: {
+  comments: DiffComment[];
+  bare?: boolean;
+  onRemove?: (draftId: string) => void;
+  removeLabel?: string;
+}) {
   if (comments.length === 0) return null;
   return (
-    <div className="px-2 py-1 border-t border-[var(--bg-mantle)] bg-[var(--bg-base)] space-y-1">
+    <div className={bare ? 'space-y-1' : 'px-2 py-1 border-t border-[var(--bg-mantle)] bg-[var(--bg-base)] space-y-1'}>
       {comments.map((c, i) => (
-        <div key={i} className="text-[10px]">
+        <div key={c.draftId ?? i} className="text-[10px]" data-diff-comment={c.line ? formatLineRange({ side: c.side ?? 'new', line: c.line, endLine: c.endLine }) : 'hunk'}>
           <span className="text-[var(--text-main)] font-semibold">{c.author}</span>{' '}
           <span className="text-[var(--text-muted)]">
+            {c.line ? `L${formatLineRange({ side: c.side ?? 'new', line: c.line, endLine: c.endLine })} ` : ''}
             {c.postedAt ? new Date(c.postedAt).toLocaleString() : ''}
           </span>
+          {c.draftId && onRemove && (
+            <button
+              type="button"
+              className={`ml-1 align-middle rounded text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-[var(--hover-fill)] ${FOCUS_RING}`}
+              onClick={() => { if (c.draftId) onRemove(c.draftId); }}
+              aria-label={removeLabel}
+              title={removeLabel}
+              data-testid="diff-review-remove"
+            >
+              <IconX size={10} />
+            </button>
+          )}
           <div className="text-[var(--text-sub)] whitespace-pre-wrap">{c.text}</div>
         </div>
       ))}
     </div>
   );
 }
+
+/**
+ * An agent owns this terminal now: one is recorded on it, and neither the
+ * process tracker (it died) nor shell integration (the shell is back at its
+ * prompt) says otherwise. A review note is a prompt for the agent; it must
+ * never be typed into a bare shell.
+ */
+function agentOwnsPty(
+  s: { surfaceAgent: Record<string, unknown>; agentAliveByPtyId: Record<string, boolean>; commandRunningByPtyId: Record<string, boolean> },
+  ptyId: string,
+): boolean {
+  return !!s.surfaceAgent[ptyId] && s.agentAliveByPtyId[ptyId] !== false && s.commandRunningByPtyId[ptyId] !== false;
+}
+
+/** Where the open comment composer points: a hunk (`line` 0) or a line range in it. */
+interface CommentTarget {
+  /** `${path}#${hunkIndex}` */
+  key: string;
+  file: string;
+  hunkHeader: string;
+  side: DiffCommentSide;
+  line: number;
+  endLine?: number;
+  snippet: string;
+  /** The hunk's body when the composer opened: a reload that kept the header
+   *  but changed the lines closes the composer (see the effect below). */
+  hunkBody: string;
+}
+
+const hunkBodyOf = (hunk: Pick<DiffHunk, 'bodyLines'>): string => hunk.bodyLines.join('\n');
 
 // 크롬 emoji 금지(DESIGN.md) — 코멘트 액션은 monochrome 말풍선 glyph.
 function IconComment() {
@@ -356,9 +553,14 @@ export default function DiffPanel({ source, isActive, focused = isActive, surfac
   // F10: 미션 채널에서 역조회한 diff 코멘트.
   const [comments, setComments] = useState<DiffComment[]>([]);
   // Inline comment composer (replaces the dead window.prompt — see handleComment):
-  // `${path}#${idx}` of the hunk whose composer is open, plus its draft text.
-  const [commentTarget, setCommentTarget] = useState<string | null>(null);
+  // where the open composer points (its hunk, plus a line or range for a line
+  // comment), and its draft text.
+  const [commentTarget, setCommentTarget] = useState<CommentTarget | null>(null);
   const [commentText, setCommentText] = useState('');
+  // Workspace diff: comments wait here until they are handed to the agent as
+  // one review note (there is no mission channel to post them to).
+  const [reviewDraft, setReviewDraft] = useState<DiffReviewDraft[]>([]);
+  const draftSeqRef = useRef(0);
   // J3 §1·§2: close·PR 진행 상태(중복 클릭 방지).
   const [lifecycleBusy, setLifecycleBusy] = useState<'close' | 'pr' | null>(null);
   const pushToast = useStore((s) => s.pushToast);
@@ -570,7 +772,30 @@ export default function DiffPanel({ source, isActive, focused = isActive, surfac
 
   // 코멘트 발사(§4·J4): 미션 채널에 diff-comment 앵커 포스트(렌더러 channelLocal 경로).
   const handleComment = useCallback(
-    async (file: string, hunkHeader: string) => {
+    async (target: CommentTarget) => {
+      const { file, hunkHeader } = target;
+      const lineAnchor: DiffLineAnchor | undefined = target.line > 0
+        ? { side: target.side, line: target.line, ...(target.endLine ? { endLine: target.endLine } : {}) }
+        : undefined;
+      if (!isTask) {
+        // Workspace diff: no channel to post to. The comment joins the review
+        // draft, which goes to the agent as one note from the header.
+        const comment = commentText.trim();
+        if (!comment) return;
+        setCommentTarget(null);
+        setCommentText('');
+        const draft: DiffReviewDraft = {
+          id: `d${++draftSeqRef.current}`,
+          file,
+          hunkHeader,
+          ...(lineAnchor ? { anchor: lineAnchor } : {}),
+          text: comment,
+          snippet: target.snippet,
+        };
+        setReviewDraft((prev) => [...prev, draft]);
+        setApplyMsg(t('diff.reviewAdded'));
+        return;
+      }
       if (!meta || meta.channelArchived || !meta.missionChannelId) return;
       // Inline composer, not window.prompt: Electron's renderer has no prompt
       // polyfill and the call throws (dogfood-measured — the same dead path the
@@ -603,7 +828,7 @@ export default function DiffPanel({ source, isActive, focused = isActive, surfac
         memberName: self?.memberName ?? self?.memberId ?? '',
       };
       // J4 §S2: 앵커를 본문에도 각인 — CLI/MCP read가 data를 렌더 안 해도 문맥이 남는다.
-      const text = formatDiffCommentText(file, hunkHeader, comment);
+      const text = formatDiffCommentText(file, hunkHeader, comment, lineAnchor);
       // F9: post 실패(채널 소실·권한·IPC 오류)를 삼키지 않고 에러 메시지로 표면화.
       try {
         const res = (await api.rpc.mutateChannelLocal('a2a.channel.post', {
@@ -614,7 +839,10 @@ export default function DiffPanel({ source, isActive, focused = isActive, surfac
           sender,
           text,
           // data 앵커는 렌더러 인라인 매핑용 — hunkHeader는 원형 유지(§S2, text만 절단).
-          data: { kind: 'diff-comment', taskId, file, hunkHeader, side: 'new', line: 0 },
+          // `line: 0` is a hunk comment; a line comment carries its side, line and range end.
+          data: lineAnchor
+            ? { kind: 'diff-comment', taskId, file, hunkHeader, ...lineAnchor }
+            : { kind: 'diff-comment', taskId, file, hunkHeader, side: 'new', line: 0 },
           ...(mentions.length > 0 ? { mentions } : {}),
         })) as { ok?: boolean; error?: string } | undefined;
         if (res && res.ok === false) {
@@ -628,8 +856,101 @@ export default function DiffPanel({ source, isActive, focused = isActive, surfac
         setApplyMsg(t('diff.commentFailed', { error: e instanceof Error ? e.message : String(e) }));
       }
     },
-    [meta, taskId, verifiedWorkspaceId, commentText, t],
+    [isTask, meta, taskId, verifiedWorkspaceId, commentText, t],
   );
+
+  // A gutter click opens the composer on that line; a shift-click while a line
+  // composer is open in the same hunk and side stretches it to a range.
+  const placeLineComment = useCallback(
+    (key: string, file: string, hunkHeader: string, hunkBody: string, line: DiffLine, extend: boolean) => {
+      const a = lineAnchorOf(line);
+      if (!a) return;
+      setCommentTarget((prev) => {
+        if (extend && prev && prev.key === key && prev.line > 0 && prev.side === a.side) {
+          const lo = Math.min(prev.line, a.line);
+          const hi = Math.max(prev.endLine ?? prev.line, a.line);
+          return { ...prev, line: lo, ...(hi > lo ? { endLine: hi } : { endLine: undefined }), snippet: a.line < prev.line ? line.text : prev.snippet };
+        }
+        return { key, file, hunkHeader, hunkBody, side: a.side, line: a.line, snippet: line.text };
+      });
+    },
+    [],
+  );
+  const lineComposerOpenAt = (key: string, line: DiffLine): boolean => {
+    const a = lineAnchorOf(line);
+    return !!a && commentTarget?.key === key && commentTarget.side === a.side && commentTarget.line === a.line && !commentTarget.endLine;
+  };
+
+  // Workspace review: the terminal the note goes to — the one in this diff's
+  // pane running an agent (the shown terminal first). The note is a prompt for
+  // the agent, never a command for a bare shell, so no agent means Copy only.
+  // Resolved only while a draft exists, as a string key so the selector
+  // re-renders this panel only when the answer changes.
+  const reviewTargetKey = useStore((s) => {
+    if (isTask || reviewDraft.length === 0) return '';
+    for (const ws of s.workspaces) {
+      const at = findWorkspaceSurfaceById(ws, surfaceId);
+      if (!at) continue;
+      const leaf = at.stashed ? null : findLeaf(ws.rootPane, at.paneId);
+      if (!leaf) return '';
+      const terminals = leaf.surfaces.filter((x) => !x.surfaceType || x.surfaceType === 'terminal');
+      const shown = terminals.find((x) => x.id === leaf.activeSurfaceId);
+      const pick = [shown, ...terminals].find((x) => !!x?.ptyId && agentOwnsPty(s, x.ptyId));
+      return pick ? JSON.stringify([ws.id, leaf.id, pick.id, pick.ptyId, s.surfaceAgent[pick.ptyId].name]) : '';
+    }
+    return '';
+  });
+  const reviewTarget = reviewTargetKey
+    ? (JSON.parse(reviewTargetKey) as [string, string, string, string, string])
+    : null;
+
+  const sendReview = useCallback(async () => {
+    if (!reviewTarget || reviewDraft.length === 0) return;
+    const [wsId, paneId, terminalSurfaceId, ptyId, agentName] = reviewTarget;
+    // Checked again at the click: the agent may have exited since the last render.
+    if (!agentOwnsPty(useStore.getState(), ptyId)) return;
+    const sent = reviewDraft;
+    try {
+      // An invoke that resolves only once main handed the bytes to a live
+      // session and rejects otherwise (pty.write is a fire-and-forget send,
+      // so a dropped write would read as success and lose the draft). The
+      // note is one sanitized line, so it is typed as-is, without Enter.
+      await window.electronAPI.pty.writeLaunch(ptyId, formatDiffReviewNote(repoPath, sent, false), false);
+    } catch (e) {
+      // Main refused or the session is gone: keep the draft so it can be sent again or copied.
+      setApplyMsg(t('diff.reviewSendFailed', { error: e instanceof Error ? e.message : String(e) }));
+      return;
+    }
+    // Focus the terminal: the note sits in its input unsent until the user presses Enter.
+    useStore.getState().setActiveSurface(paneId, terminalSurfaceId, wsId);
+    setReviewDraft((prev) => prev.filter((d) => !sent.includes(d)));
+    setApplyMsg(t('diff.reviewSent', { agent: agentName }));
+  }, [reviewTarget, reviewDraft, repoPath, t]);
+
+  const copyReview = useCallback(async () => {
+    if (reviewDraft.length === 0) return;
+    const count = reviewDraft.length;
+    // Kept after a copy: the draft is only cleared once it reached an agent or was discarded.
+    try {
+      await window.clipboardAPI.writeText(formatDiffReviewNote(repoPath, reviewDraft, true));
+      setApplyMsg(t('diff.reviewCopied', { count }));
+    } catch {
+      setApplyMsg(t('diff.reviewCopyFailed'));
+    }
+  }, [reviewDraft, repoPath, t]);
+
+  // A reload that changed the hunk an open composer points at (its header, or
+  // its lines under an unchanged header) closes it, so a comment is never sent
+  // with an anchor or a quoted line taken from content no longer shown. The
+  // typed text is kept for the next composer.
+  useEffect(() => {
+    if (!commentTarget) return;
+    const idx = Number(commentTarget.key.slice(commentTarget.key.lastIndexOf('#') + 1));
+    const hunk = filesByPath.get(commentTarget.file)?.hunks[idx];
+    if (!hunk || hunk.header !== commentTarget.hunkHeader || hunkBodyOf(hunk) !== commentTarget.hunkBody) {
+      setCommentTarget(null);
+    }
+  }, [filesByPath, commentTarget]);
 
   // J3 §1 — close(remove 성공→close 순서). 확인 1회 후 결과를 토스트로 구분
   // (dirty=보존/unpushed=경고+PR 제안/archivePending). main이 데몬 projection에서
@@ -753,24 +1074,78 @@ export default function DiffPanel({ source, isActive, focused = isActive, surfac
 
   // F10 — 활성 파일의 코멘트를 hunkHeader별로 그룹핑. 현재 diff의 hunk 헤더와
   // 일치하는 코멘트는 해당 hunk 아래, 불일치분(라인 드리프트로 헤더가 바뀐 것)은
-  // 파일 하단 "위치 이동됨" 그룹으로 강등. (v1 앵커 정밀도 = hunkHeader 단위 — §4.)
+  // 파일 하단 "위치 이동됨" 그룹으로 강등. A line comment sits under its line
+  // (see placeDiffComments). A workspace diff shows its unsent review draft.
+  const draftAuthor = t('diff.reviewDraftAuthor');
+  const shownComments = useMemo<DiffComment[]>(
+    () =>
+      isTask
+        ? comments
+        : reviewDraft.map((d) => ({
+          file: d.file,
+          hunkHeader: d.hunkHeader,
+          ...(d.anchor ?? {}),
+          author: draftAuthor,
+          text: d.text,
+          postedAt: 0,
+          draftId: d.id,
+        })),
+    [isTask, comments, reviewDraft, draftAuthor],
+  );
   const fileComments = useMemo(() => {
-    if (!activeFile) return { byHunk: new Map<string, DiffComment[]>(), moved: [] as DiffComment[] };
-    const headers = new Set(activeFile.hunks.map((h) => h.header));
-    const byHunk = new Map<string, DiffComment[]>();
-    const moved: DiffComment[] = [];
-    for (const c of comments) {
-      if (c.file !== activeFile.path) continue;
-      if (c.hunkHeader && headers.has(c.hunkHeader)) {
-        const list = byHunk.get(c.hunkHeader) ?? [];
-        list.push(c);
-        byHunk.set(c.hunkHeader, list);
-      } else {
-        moved.push(c);
-      }
+    if (!activeFile) {
+      return { byHunk: new Map<string, DiffComment[]>(), byLine: new Map<string, DiffComment[]>(), moved: [] as DiffComment[] };
     }
-    return { byHunk, moved };
-  }, [activeFile, comments]);
+    return placeDiffComments(activeFile, shownComments);
+  }, [activeFile, shownComments]);
+  const removeDraft = useCallback((id: string) => setReviewDraft((prev) => prev.filter((d) => d.id !== id)), []);
+  // Comments can be written: a task's open mission channel, or any workspace diff.
+  const canComment = isTask ? !!meta && !meta.channelArchived && !!meta.missionChannelId : true;
+
+  // The composer under a hunk header (hunk comment) or under a line (line comment).
+  const renderComposer = (target: CommentTarget, underLine: boolean) => {
+    const where = target.line > 0
+      ? `${target.file}:${formatLineRange({ side: target.side, line: target.line, endLine: target.endLine })}`
+      : target.file;
+    return (
+      <div
+        className={underLine
+          ? 'flex items-center gap-1.5'
+          : 'flex items-center gap-1.5 px-2 py-1 bg-[var(--bg-base)] border-t border-[var(--bg-mantle)]'}
+        data-diff-comment-form
+      >
+        <input
+          type="text"
+          autoFocus
+          value={commentText}
+          onChange={(e) => setCommentText(e.target.value)}
+          onKeyDown={(e) => {
+            // IME 조합 중 Enter(한/일/중)는 조합 확정이지 제출이 아님 —
+            // isComposing/keyCode 229를 가드(ask 폼과 동일).
+            if (e.key === 'Enter' && !e.nativeEvent.isComposing && e.keyCode !== 229) {
+              void handleComment(target);
+            } else if (e.key === 'Escape') {
+              setCommentTarget(null);
+              setCommentText('');
+            }
+          }}
+          placeholder={t('diff.commentPrompt', { file: where })}
+          spellCheck={false}
+          {...(isTask ? {} : { maxLength: REVIEW_COMMENT_MAX })}
+          className="flex-1 min-w-0 bg-transparent text-[11px] text-[var(--text-main)] placeholder-[var(--text-muted)] outline-none px-1"
+          data-testid="diff-comment-input"
+        />
+        <button
+          className="px-1.5 py-0.5 rounded text-[10px] text-[var(--text-sub)] hover:text-[var(--text-main)] border border-[var(--bg-mantle)] disabled:opacity-40"
+          disabled={!commentText.trim()}
+          onClick={() => void handleComment(target)}
+          data-testid="diff-comment-submit"
+        >
+          {isTask ? t('diff.commentSend') || 'Comment' : t('diff.reviewAdd')}
+        </button>
+      </div>
+    );
+  };
 
   return (
     <div
@@ -793,6 +1168,40 @@ export default function DiffPanel({ source, isActive, focused = isActive, surfac
         >
           {t('diff.reload')}
         </button>
+        {/* Workspace review draft: drawn only while it holds a comment. Send
+            types the note into the agent's input (unsent); without an agent
+            terminal in this pane, Copy is the action. */}
+        {!isTask && reviewDraft.length > 0 && (
+          <>
+            <button
+              className={`px-2 py-0.5 text-[10px] text-[var(--text-sub)] hover:text-[var(--text-main)] ${BTN_RAISED}`}
+              onClick={() => { setReviewDraft([]); setApplyMsg(null); }}
+              data-testid="diff-review-discard"
+            >
+              {t('diff.reviewDiscard')}
+            </button>
+            <button
+              className={reviewTarget
+                ? `px-2 py-0.5 text-[10px] text-[var(--text-sub)] hover:text-[var(--text-main)] ${BTN_RAISED}`
+                : `px-2 py-0.5 text-[10px] ${BTN_PRIMARY_WARM}`}
+              onClick={() => void copyReview()}
+              title={t('diff.reviewCopyTitle')}
+              data-testid="diff-review-copy"
+            >
+              {reviewTarget ? t('diff.reviewCopy') : t('diff.reviewCopyCount', { count: reviewDraft.length })}
+            </button>
+            {reviewTarget && (
+              <button
+                className={`px-2 py-0.5 text-[10px] ${BTN_PRIMARY_WARM}`}
+                onClick={() => void sendReview()}
+                title={t('diff.reviewSendTitle')}
+                data-testid="diff-review-send"
+              >
+                {t('diff.reviewSend', { agent: reviewTarget[4], count: reviewDraft.length })}
+              </button>
+            )}
+          </>
+        )}
         {/* 채택은 태스크 모드 전용 — 워크스페이스 모드는 repo 자신 대상이라 무의미(읽기 전용). */}
         {isTask && !(meta?.status === 'closed' && !meta.detached) && (
           <button
@@ -925,12 +1334,16 @@ export default function DiffPanel({ source, isActive, focused = isActive, surfac
                           <span className="text-[10px] text-[var(--accent-red)]">{t('diff.nonAdoptable')}</span>
                         )}
                         <div className="flex-1" />
-                        {!meta?.channelArchived && meta?.missionChannelId && (
+                        {canComment && (
                           <button
                             className="text-[10px] text-[var(--text-muted)] hover:text-[var(--text-main)]"
                             onClick={() => {
                               setCommentText('');
-                              setCommentTarget((prev) => (prev === key ? null : key));
+                              setCommentTarget((prev) =>
+                                prev?.key === key && prev.line === 0
+                                  ? null
+                                  : { key, file: activeFile.path, hunkHeader: hunk.header, hunkBody: hunkBodyOf(hunk), side: 'new', line: 0, snippet: '' },
+                              );
                             }}
                             title={t('diff.commentHunk')}
                             data-testid="diff-comment-open"
@@ -945,46 +1358,59 @@ export default function DiffPanel({ source, isActive, focused = isActive, surfac
                         )}
                       </div>
                       {/* 인라인 코멘트 폼 — Enter 발사, Esc 닫기 (죽은 window.prompt 대체). */}
-                      {commentTarget === key && (
-                        <div
-                          className="flex items-center gap-1.5 px-2 py-1 bg-[var(--bg-base)] border-t border-[var(--bg-mantle)]"
-                          data-diff-comment-form
-                        >
-                          <input
-                            type="text"
-                            autoFocus
-                            value={commentText}
-                            onChange={(e) => setCommentText(e.target.value)}
-                            onKeyDown={(e) => {
-                              // IME 조합 중 Enter(한/일/중)는 조합 확정이지 제출이 아님 —
-                              // isComposing/keyCode 229를 가드(ask 폼과 동일).
-                              if (e.key === 'Enter' && !e.nativeEvent.isComposing && e.keyCode !== 229) {
-                                void handleComment(activeFile.path, hunk.header);
-                              } else if (e.key === 'Escape') {
-                                setCommentTarget(null);
-                                setCommentText('');
-                              }
-                            }}
-                            placeholder={t('diff.commentPrompt', { file: activeFile.path })}
-                            spellCheck={false}
-                            className="flex-1 min-w-0 bg-transparent text-[11px] text-[var(--text-main)] placeholder-[var(--text-muted)] outline-none px-1"
-                            data-testid="diff-comment-input"
-                          />
-                          <button
-                            className="px-1.5 py-0.5 rounded text-[10px] text-[var(--text-sub)] hover:text-[var(--text-main)] border border-[var(--bg-mantle)] disabled:opacity-40"
-                            disabled={!commentText.trim()}
-                            onClick={() => void handleComment(activeFile.path, hunk.header)}
-                            data-testid="diff-comment-submit"
-                          >
-                            {t('diff.commentSend') || 'Comment'}
-                          </button>
-                        </div>
-                      )}
+                      {commentTarget?.key === key && commentTarget.line === 0 && renderComposer(commentTarget, false)}
                       <div className="px-2 py-1">
-                        <HunkLines bodyLines={hunk.bodyLines} />
+                        {/* Numbered lines: a line number is the button that comments on that line. */}
+                        <HunkLines
+                          bodyLines={hunk.bodyLines}
+                          numbered={{ oldStart: hunk.oldStart, newStart: hunk.newStart }}
+                          gutter={(line) => {
+                            const a = lineAnchorOf(line);
+                            if (!a || !canComment) return <HunkGutter line={line} />;
+                            const range = formatLineRange(a);
+                            return (
+                              <button
+                                type="button"
+                                className={`wmux-hunk-gutter-btn ${FOCUS_RING}`}
+                                onClick={(e) => {
+                                  // A second click on the open line closes its composer and its text.
+                                  if (!e.shiftKey && lineComposerOpenAt(key, line)) {
+                                    setCommentTarget(null);
+                                    setCommentText('');
+                                    return;
+                                  }
+                                  placeLineComment(key, activeFile.path, hunk.header, hunkBodyOf(hunk), line, e.shiftKey);
+                                }}
+                                aria-label={t('diff.commentLine', { file: activeFile.path, line: range })}
+                                title={t('diff.commentLineTitle')}
+                                data-testid="diff-line-comment"
+                                data-line-comment={`${a.side}:${a.line}`}
+                              >
+                                <HunkGutter line={line} />
+                              </button>
+                            );
+                          }}
+                          below={(line) => {
+                            const a = lineAnchorOf(line);
+                            if (!a) return null;
+                            const here = fileComments.byLine.get(`${hunk.header}\0${a.side}:${a.line}`) ?? [];
+                            const composing =
+                              commentTarget?.key === key &&
+                              commentTarget.line > 0 &&
+                              commentTarget.side === a.side &&
+                              (commentTarget.endLine ?? commentTarget.line) === a.line;
+                            if (here.length === 0 && !composing) return null;
+                            return (
+                              <>
+                                <CommentList comments={here} bare onRemove={removeDraft} removeLabel={t('diff.reviewRemove')} />
+                                {composing && renderComposer(commentTarget, true)}
+                              </>
+                            );
+                          }}
+                        />
                       </div>
                       {/* F10: 이 hunk 헤더에 매칭된 코멘트 인라인 표시. */}
-                      <CommentList comments={fileComments.byHunk.get(hunk.header) ?? []} />
+                      <CommentList comments={fileComments.byHunk.get(hunk.header) ?? []} onRemove={removeDraft} removeLabel={t('diff.reviewRemove')} />
                     </div>
                   );
                 })}
@@ -994,7 +1420,7 @@ export default function DiffPanel({ source, isActive, focused = isActive, surfac
                   <div className="px-2 py-1 bg-[var(--bg-surface)] text-[10px] text-[var(--text-muted)]">
                     {t('diff.commentMoved', { count: fileComments.moved.length })}
                   </div>
-                  <CommentList comments={fileComments.moved} />
+                  <CommentList comments={fileComments.moved} onRemove={removeDraft} removeLabel={t('diff.reviewRemove')} />
                 </div>
               )}
             </div>

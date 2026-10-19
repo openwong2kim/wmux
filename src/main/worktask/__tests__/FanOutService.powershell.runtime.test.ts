@@ -1,7 +1,7 @@
 /**
  * #1490 — the fan-out launch line against a REAL PowerShell.
  *
- * FanOutService.test.ts pins the shape of the win32 line; only a real shell
+ * FanOutService.os.test.ts pins the shape of the win32 line; only a real shell
  * shows what the agent's argv actually receives. Windows PowerShell 5.1 split
  * a prompt at quoted text containing a space (it does not escape embedded `"`
  * for a native command line) and read the BOM-less UTF-8 prompt file in the

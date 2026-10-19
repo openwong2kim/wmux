@@ -48,6 +48,8 @@ import { useMoaDecisions, useWorkLinks } from './useFleetSources';
 import { buildFleetTickets, loadSeenReports, openTicketFor, saveSeenReports, ticketAttention, type FleetTicket } from './fleetTickets';
 import { TicketDetail, TicketRow, ticketKey } from './TicketList';
 import FleetRequestPanel from './FleetRequestPanel';
+import PlanApprovalList from './PlanApprovalList';
+import { usePlanApprovals } from '../../hooks/usePlanApprovals';
 import { flattenAgentText } from '../../../shared/assistantPreview';
 import { fleetAskOf, lastErrorLine, lastErrorLineIndex, promptChoices } from './nowDoing';
 import { isBotTask, selectBotTaskOwners, selectOwnerWorkspaces } from '../Sidebar/botTasks';
@@ -430,6 +432,8 @@ export default function FleetView() {
     }),
     [mcpPrompts, mcpPromptOrder, pendingExecuteApprovals, pendingExecuteApprovalOrder, browserHelpRequests, browserHelpOrder],
   );
+  // Claude's plan dialogs (Plan cards), held by the daemon's approval registry.
+  const plans = usePlanApprovals();
 
   // LanLink PR-5 remote inbox — pure derivation of off-machine peer messages
   // (PR-2 built the slice + selector; this is the first consumer). dismissRemoteItem
@@ -958,8 +962,16 @@ export default function FleetView() {
           const idx = rowApprovalIndex(inbox, row.pane.workspaceId);
           if (idx >= 0) setInboxIdx(idx);
           setTab('approvals');
-          // The focused row unmounts with the tab switch; put focus on the row.
-          requestAnimationFrame(() => { focusActiveItemRef.current(); });
+          const ptyId = fleetTargetPtyId(row.pane);
+          // The focused row unmounts with the tab switch; put focus on the row,
+          // or on the agent's Plan card — never an unrelated row Enter approves.
+          requestAnimationFrame(() => {
+            if (idx < 0 && plans.some((p) => p.sessionId === ptyId)) {
+              panelRef.current?.querySelector<HTMLElement>(`[data-plan-session="${CSS.escape(ptyId)}"]`)?.focus();
+              return;
+            }
+            focusActiveItemRef.current();
+          });
           return;
         }
         if (row && !row.pane.remote && (key === 'm' || key === 's' || key === 'l' || key === 'r' || key === 'Backspace')) {
@@ -1017,7 +1029,7 @@ export default function FleetView() {
       }
     }, [tab, setTab, rovingKeys, grid, inbox, inboxIdx, remoteInbox, remoteIdx, dismissRemoteItem, setVisible,
       editor, reviewEditor, closeEditor, detailOpen, visibleRows, focusedKey, focusedTicket, verbsFor, selectKey,
-      focusedReview, openReviewDiff, openReviewEditor, jumpToReviewTask]);
+      focusedReview, openReviewDiff, openReviewEditor, jumpToReviewTask, plans]);
 
   // Summary strip: account usage, the next scheduled run, phones watching.
   const usage = useStore((s) => (s.anthropicUsageEnabled ? s.anthropicUsage.snapshot : null));
@@ -1066,7 +1078,7 @@ export default function FleetView() {
   ];
   const nextRun = scheduleNav.nextRunAt !== null && scheduleNav.nextRunAt > now ? scheduleNav.nextRunAt : null;
   const chips = visibleChips([
-    { id: 'approvals', count: inbox.length },
+    { id: 'approvals', count: inbox.length + plans.length },
     { id: 'lan', count: remoteInbox.length },
     { id: 'usage', text: usage ? t('fleetBoard.usage', { session: Math.round(usage.sessionPct), weekly: Math.round(usage.weeklyPct) }) : '' },
     { id: 'next', text: nextRun !== null ? t('fleetBoard.nextSchedule', { time: formatNextShort(nextRun, now) }) : '' },
@@ -1128,7 +1140,16 @@ export default function FleetView() {
     const idx = rowApprovalIndex(inbox, pane.workspaceId);
     if (idx >= 0) setInboxIdx(idx);
     setTab('approvals');
-    requestAnimationFrame(() => { focusActiveItemRef.current(); });
+    const ptyId = fleetTargetPtyId(pane);
+    requestAnimationFrame(() => {
+      // Waiting on a plan, not on an inbox row: focus its card, never an
+      // unrelated row that Enter would approve.
+      if (idx < 0 && plans.some((p) => p.sessionId === ptyId)) {
+        panelRef.current?.querySelector<HTMLElement>(`[data-plan-session="${CSS.escape(ptyId)}"]`)?.focus();
+        return;
+      }
+      focusActiveItemRef.current();
+    });
   };
 
   const renderRow = (row: FleetRow) => {
@@ -1351,11 +1372,12 @@ export default function FleetView() {
             </button>
             {tab === 'approvals' ? (
               <>
+                <PlanApprovalList plans={plans} />
                 {inbox.length > 0 ? (
                   <ApprovalInboxList items={inbox} focusedIdx={inboxIdx} onResolve={resolveInboxItem} onNavigate={() => { restoreFocusRef.current = null; }} />
-                ) : (
+                ) : plans.length === 0 ? (
                   <p className="wmux-board-quiet">{t('fleet.approvals.empty')}</p>
-                )}
+                ) : null}
                 <RecentAutoRuns />
               </>
             ) : remoteInbox.length > 0 ? (
@@ -1501,7 +1523,8 @@ export default function FleetView() {
                         : (errorIdx >= 0 ? flattenAgentText(previewLines[errorIdx].trim()) || undefined : errorLines[detailPane.paneId])}
                       fallback={t(selectedRow.detailKey)}
                       choices={selectedAsk === 'input' ? promptChoices(previewLines) : []}
-                      onOpenApproval={rowApprovalIndex(inbox, detailPane.workspaceId) >= 0 ? () => openApprovalFor(detailPane) : undefined}
+                      onOpenApproval={rowApprovalIndex(inbox, detailPane.workspaceId) >= 0
+                        || plans.some((p) => p.sessionId === fleetTargetPtyId(detailPane)) ? () => openApprovalFor(detailPane) : undefined}
                       onReply={selectedAsk === 'input' && verbsFor(detailPane).messageEnabled ? () => openEditor(detailPane, 'message') : undefined}
                       onJump={() => jump(detailPane)}
                       t={t}

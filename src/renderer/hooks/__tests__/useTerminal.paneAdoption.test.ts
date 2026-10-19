@@ -69,7 +69,7 @@ describe('#1002 — pane-restructure terminal adoption (source-level)', () => {
     expect(afterMainEffect).toMatch(/if \(isDaemonModeActive\(\) && !adoptedAtMountRef\.current\) reattach\('active-at-mount'\);/);
     // A later connect/respawn is a real new daemon generation and MUST still
     // reattach — gating that would strand the pane on a dead session.
-    expect(afterMainEffect).toMatch(/daemon\.onConnected\(\(\) => reattach\('daemon:connected'\)\)/);
+    expect(afterMainEffect).toMatch(/onDaemonConnected\(\(\) => reattach\('daemon:connected'\)\)/);
     expect(afterMainEffect).not.toMatch(/adoptedAtMountRef[\s\S]{0,80}daemon:connected/);
   });
 

@@ -1,7 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { setLocale } from '../../../i18n';
 import type { RoomCard } from '../../../../shared/room';
 import type { RoomEntry } from '../botsModel';
-import { RUN_WINDOW_MS, SEPARATOR_GAP_MS, buildTimeline, elapsed, separatorLabel, splitThreads, threadCards, unreadCount } from '../botsTimeline';
+import { LIVE_ARRIVAL_MS, RUN_WINDOW_MS, SEPARATOR_GAP_MS, buildTimeline, clockTime, elapsed, fullTime, liveNewAfter, separatorLabel, splitThreads, threadCards, unreadCount } from '../botsTimeline';
 
 let seq = 0;
 function card(p: Partial<RoomCard> = {}): RoomCard {
@@ -60,6 +61,26 @@ describe('buildTimeline', () => {
     expect(kinds).toEqual(['day', 'message', 'message', 'new', 'message', 'message']);
     expect(buildTimeline(entries([old]), { waits: never, newAfter: null }).some((i) => i.kind === 'new')).toBe(false);
   });
+
+  it('draws no "New" above a reply that lands while the chat is in view', () => {
+    const now = T0 + 30;
+    const asked = card({ at: T0 + 10, actor: { kind: 'human' }, kind: 'human' });
+    const read = card({ at: T0 });
+    const reply = card({ at: T0 + 20 });
+    // Opened with everything read (boundary T0); the reply arrives in view.
+    const after = liveNewAfter([read, asked, reply], T0, T0 + 10, true, now);
+    expect(after).toBe(T0 + 20);
+    expect(buildTimeline(entries([read, asked, reply]), { waits: never, newAfter: after }).some((i) => i.kind === 'new')).toBe(false);
+    // Out of view it stays new.
+    expect(liveNewAfter([read, asked, reply], T0, T0 + 10, false, now)).toBe(T0);
+    // What was unread when the chat opened keeps its divider.
+    const unread = card({ at: T0 + 5 });
+    expect(liveNewAfter([read, unread, asked, reply], T0, T0 + 10, true, now)).toBe(T0);
+    // History read after the chat opened (nothing there before) stays new.
+    expect(liveNewAfter([read, unread], T0 - 1, 0, true, T0 + LIVE_ARRIVAL_MS + 10)).toBe(T0 - 1);
+    // A catch-up read of cards written while away stays new.
+    expect(liveNewAfter([read, reply], T0, T0, true, T0 + 20 + LIVE_ARRIVAL_MS + 1)).toBe(T0);
+  });
 });
 
 describe('splitThreads', () => {
@@ -95,6 +116,24 @@ describe('splitThreads', () => {
 });
 
 describe('time and counts', () => {
+  it('a run header\'s clock and its tooltip use the app\'s language, not the system\'s (round 7)', () => {
+    const at = new Date(2026, 9, 16, 5, 44).getTime();
+    const time = vi.spyOn(Date.prototype, 'toLocaleTimeString');
+    const full = vi.spyOn(Date.prototype, 'toLocaleString');
+    try {
+      setLocale('ko');
+      expect(clockTime(at)).toBe(new Date(at).toLocaleTimeString('ko', { hour: '2-digit', minute: '2-digit' }));
+      fullTime(at);
+      expect(time.mock.calls[0][0]).toBe('ko');
+      expect(full.mock.calls[0][0]).toBe('ko');
+      expect(clockTime(0)).toBe('');
+    } finally {
+      setLocale('en');
+      time.mockRestore();
+      full.mockRestore();
+    }
+  });
+
   it('labels a separator with the weekday, date and time in the reader\'s language, and elapsed time as m:ss', () => {
     expect(separatorLabel(new Date(2026, 9, 11, 20, 37).getTime(), T0, t, 'en-US')).toBe('botsPage.chat.dateTime(Sun, Oct 11|8:37 PM)');
     // The day period's wording depends on the ICU data present (Electron's says 오후).

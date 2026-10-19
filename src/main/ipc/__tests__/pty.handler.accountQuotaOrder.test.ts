@@ -19,7 +19,12 @@ describe('pty.handler PTY_CREATE — account quota before wmux tools', () => {
   it('applies withAccountQuota first on both the daemon and the local path', () => {
     // The session pin wraps the result last (after the bot worker guard);
     // quota still runs before the tool splice.
-    expect(source.match(/options = withLaunchSessionPin\(withBotWorkerMergeGuard\(await guardCodexBotWorker\(withWmuxTools\(await withAccountQuota\(options\)\), botWorker\), botWorker\)\);/g) ?? []).toHaveLength(2);
+    // Both paths run stageCreate, whose first stage is the quota; the tool
+    // level is applied to its result.
+    expect(source.match(/const staged = await stageCreate\(options, botWorker\);/g) ?? []).toHaveLength(2);
+    const stage = source.slice(source.indexOf('async function stageCreate('));
+    expect(stage.indexOf('let staged = await withAccountQuota(options);')).toBeGreaterThan(-1);
+    expect(stage.indexOf('let staged = await withAccountQuota(options);')).toBeLessThan(stage.indexOf('staged = withWmuxTools(staged);'));
     expect(source).not.toMatch(/withAccountQuota\(withWmuxTools\(/);
   });
 });

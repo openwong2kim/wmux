@@ -101,6 +101,10 @@ export function renderMemoryDiagnostics(
       daemon.sessions.reduce((total, session) => total + session[key], 0);
     lines.push(`  rings: ${mib(sum('ringStoredBytes'))} stored / ${mib(sum('ringAllocatedBytes'))} allocated / ${mib(sum('ringCapacityBytes'))} ceiling`);
     lines.push(`  output queues: ${mib(sum('socketQueuedBytes'))} socket / ${mib(sum('resyncQueuedBytes'))} resync tee`);
+    if (daemon.hibernation) {
+      const failures = daemon.hibernation.wakeFailures ? `; ${daemon.hibernation.wakeFailures} wake(s) could not read the .buf` : '';
+      lines.push(`  hibernated idle panes: ${daemon.hibernation.sessions} (${mib(daemon.hibernation.freedBytes)} ring memory freed${failures})`);
+    }
     for (const session of [...daemon.sessions].sort((a, b) =>
       (b.socketQueuedBytes + b.resyncQueuedBytes + b.ringAllocatedBytes) - (a.socketQueuedBytes + a.resyncQueuedBytes + a.ringAllocatedBytes)).slice(0, 5)) {
       lines.push(`    ${session.id} (${session.state}): ring ${mib(session.ringAllocatedBytes)}, socket ${mib(session.socketQueuedBytes)} (pipe peak ${mib(session.socketPeakQueuedBytes)}), resync ${mib(session.resyncQueuedBytes)}`);

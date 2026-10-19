@@ -154,6 +154,10 @@ interface NativeBindings {
   GetLastError: () => number;
   OpenProcess: (access: number, inherit: number, pid: number) => Handle;
   GetProcessTimes: (handle: Handle, creation: Buffer, exit: Buffer, kernel: Buffer, user: Buffer) => number;
+  QueryFullProcessImageNameW: (handle: Handle, flags: number, name: Buffer, size: Buffer) => number;
+  TerminateProcess: (handle: Handle, exitCode: number) => number;
+  WaitForSingleObject: (handle: Handle, ms: number) => number;
+  GetSystemTimeAsFileTime: (out: Buffer) => void;
 }
 
 /** undefined = load not attempted yet; null = attempted and unavailable. */
@@ -212,6 +216,18 @@ function loadBindings(): NativeBindings | null {
       GetProcessTimes: kernel32.func('GetProcessTimes', 'int', [
         'int64', 'void *', 'void *', 'void *', 'void *',
       ]) as NativeBindings['GetProcessTimes'],
+      QueryFullProcessImageNameW: kernel32.func('QueryFullProcessImageNameW', 'int', [
+        'int64', 'uint32', 'void *', 'void *',
+      ]) as NativeBindings['QueryFullProcessImageNameW'],
+      TerminateProcess: kernel32.func('TerminateProcess', 'int', [
+        'int64', 'uint32',
+      ]) as NativeBindings['TerminateProcess'],
+      WaitForSingleObject: kernel32.func('WaitForSingleObject', 'uint32', [
+        'int64', 'uint32',
+      ]) as NativeBindings['WaitForSingleObject'],
+      GetSystemTimeAsFileTime: kernel32.func('GetSystemTimeAsFileTime', 'void', [
+        'void *',
+      ]) as NativeBindings['GetSystemTimeAsFileTime'],
     };
   } catch (err) {
     warn(`koffi load failed — native snapshot disabled: ${err instanceof Error ? err.message : String(err)}`);
@@ -425,6 +441,67 @@ export function tryProcessCreatedAt(pid: number): bigint | null {
   }
 }
 
+/** OpenProcess on a pid that no longer exists. */
+const ERROR_INVALID_PARAMETER = 87;
+/** QueryFullProcessImageNameW takes and returns a length in WCHARs; 32767 is the longest Win32 path. */
+const MAX_IMAGE_PATH_CHARS = 32767;
+
+/** Creation time (FILETIME, 100 ns units) and executable path of one live process. */
+export interface ProcessIdentityRow {
+  createdAt: bigint;
+  /** Null when Windows withholds the path while still reporting the times. */
+  imagePath: string | null;
+}
+
+/** Why {@link tryProcessIdentity} read nothing. `gone` is true only for a pid that no longer exists. */
+export interface ProcessIdentityFailure {
+  failure: string;
+  gone: boolean;
+}
+
+/**
+ * Creation time and executable path of one process through a single handle
+ * (#2398). This replaces a Windows PowerShell CIM query per read: during a
+ * cold-start burst those started dozens of PowerShell processes and timed
+ * out, which left the daemon unable to confirm any pid it wanted to reap.
+ *
+ * Never throws. A failure says why, so the caller can tell a pid that is gone
+ * (nothing to log) from a read that failed on a live one.
+ */
+export function tryProcessIdentity(pid: number): ProcessIdentityRow | ProcessIdentityFailure {
+  if (!Number.isInteger(pid) || pid <= 0) return { failure: `invalid pid ${pid}`, gone: true };
+  const b = loadFailed ? null : loadBindings();
+  if (!b) {
+    loadFailed = true;
+    return { failure: 'native process reads are unavailable', gone: false };
+  }
+  try {
+    const raw = b.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+    const handle = typeof raw === 'bigint' ? raw : BigInt(raw);
+    if (handle === 0n) {
+      const code = b.GetLastError();
+      return { failure: `OpenProcess failed (error ${code})`, gone: code === ERROR_INVALID_PARAMETER };
+    }
+    try {
+      const creation = Buffer.alloc(8);
+      if (!b.GetProcessTimes(raw, creation, Buffer.alloc(8), Buffer.alloc(8), Buffer.alloc(8))) {
+        return { failure: `GetProcessTimes failed (error ${b.GetLastError()})`, gone: false };
+      }
+      const name = Buffer.alloc(MAX_IMAGE_PATH_CHARS * 2);
+      const size = Buffer.alloc(4);
+      size.writeUInt32LE(MAX_IMAGE_PATH_CHARS, 0);
+      const imagePath = b.QueryFullProcessImageNameW(raw, 0, name, size)
+        ? name.toString('utf16le', 0, size.readUInt32LE(0) * 2) || null
+        : null;
+      return { createdAt: creation.readBigUInt64LE(0), imagePath };
+    } finally {
+      b.CloseHandle(raw);
+    }
+  } catch (err) {
+    return { failure: err instanceof Error ? err.message : String(err), gone: false };
+  }
+}
+
 /**
  * Cumulative CPU time (kernel + user, in 100 ns units) of every process in the
  * trees rooted at `rootPids`, roots included. Used to turn two samples into a
@@ -462,4 +539,124 @@ export function tryProcessTreeCpuTimes(rootPids: readonly number[]): Map<number,
     warn(`process CPU times failed: ${err instanceof Error ? err.message : String(err)}`);
     return null;
   }
+}
+
+const PROCESS_TERMINATE = 0x0001;
+const SYNCHRONIZE = 0x00100000;
+const ERROR_ACCESS_DENIED = 5;
+const WAIT_OBJECT_0 = 0;
+const WAIT_TIMEOUT = 0x102;
+
+/** An open handle on one process. Holding it keeps the pid from being handed
+ *  to another process (Windows reuses a pid only once every handle on the
+ *  old process is closed), so whatever is read through it names that process. */
+export type ProcessHandle = { readonly __processHandle: unique symbol };
+
+/** What {@link ProcessHandleApi.open} found at a pid. */
+export type ProcessOpenResult =
+  | { handle: ProcessHandle; createdAt: bigint; canTerminate: boolean }
+  | { gone: true }
+  | { failure: string };
+
+/**
+ * Process handles for a caller that must kill processes and then KNOW they
+ * are gone (verifiedTreeKill.ts). A pid alone cannot say that: an exited
+ * process whose handle someone still holds keeps its pid and its creation
+ * time, and a pid that is free can be handed to an unrelated process.
+ */
+export interface ProcessHandleApi {
+  /** The pid -> ppid table. Throws when it cannot be read whole. */
+  processTable(): NativeProcRow[];
+  /** Open `pid` to wait on it and read its creation time, and to terminate
+   *  it when this user may. `gone`: no such process. */
+  open(pid: number): ProcessOpenResult;
+  /** TerminateProcess; false when Windows refused. */
+  terminate(handle: ProcessHandle): boolean;
+  /** Whether the process has exited (its handle is signaled); null when the
+   *  wait itself failed. */
+  hasExited(handle: ProcessHandle): boolean | null;
+  close(handle: ProcessHandle): void;
+  /** The system time as a FILETIME, the clock creation times are read in. */
+  now(): bigint;
+}
+
+/**
+ * The native {@link ProcessHandleApi}, or null when it is unavailable
+ * (non-Windows, 32-bit, koffi missing or blocked).
+ */
+export function tryProcessHandleApi(): ProcessHandleApi | null {
+  if (loadFailed) return null;
+  const b = loadBindings();
+  if (!b) {
+    loadFailed = true;
+    return null;
+  }
+  const raw = (h: ProcessHandle): Handle => h as unknown as Handle;
+  const createdAtOf = (h: Handle): bigint | null => {
+    const creation = Buffer.alloc(8);
+    if (!b.GetProcessTimes(h, creation, Buffer.alloc(8), Buffer.alloc(8), Buffer.alloc(8))) return null;
+    return creation.readBigUInt64LE(0);
+  };
+  const isNull = (h: Handle): boolean => (typeof h === 'bigint' ? h : BigInt(h)) === 0n;
+  return {
+    processTable: () => readProcessTable(b),
+    open: (pid) => {
+      if (!Number.isInteger(pid) || pid <= 0) return { gone: true };
+      try {
+        let canTerminate = true;
+        let h = b.OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if (isNull(h)) {
+          const code = b.GetLastError();
+          if (code === ERROR_INVALID_PARAMETER) return { gone: true };
+          if (code !== ERROR_ACCESS_DENIED) return { failure: `OpenProcess failed (error ${code})` };
+          // Not ours to terminate (another user's, or elevated), but it can
+          // still be waited on and identified.
+          canTerminate = false;
+          h = b.OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+          if (isNull(h)) {
+            const again = b.GetLastError();
+            return again === ERROR_INVALID_PARAMETER ? { gone: true } : { failure: `OpenProcess failed (error ${again})` };
+          }
+        }
+        const createdAt = createdAtOf(h);
+        if (createdAt === null) {
+          const code = b.GetLastError();
+          b.CloseHandle(h);
+          return { failure: `GetProcessTimes failed (error ${code})` };
+        }
+        return { handle: h as unknown as ProcessHandle, createdAt, canTerminate };
+      } catch (err) {
+        return { failure: err instanceof Error ? err.message : String(err) };
+      }
+    },
+    terminate: (h) => {
+      try {
+        return b.TerminateProcess(raw(h), 1) !== 0;
+      } catch {
+        return false;
+      }
+    },
+    hasExited: (h) => {
+      try {
+        const r = b.WaitForSingleObject(raw(h), 0);
+        if (r === WAIT_OBJECT_0) return true;
+        if (r === WAIT_TIMEOUT) return false;
+        return null;
+      } catch {
+        return null;
+      }
+    },
+    close: (h) => {
+      try {
+        b.CloseHandle(raw(h));
+      } catch {
+        /* already closed */
+      }
+    },
+    now: () => {
+      const out = Buffer.alloc(8);
+      b.GetSystemTimeAsFileTime(out);
+      return out.readBigUInt64LE(0);
+    },
+  };
 }

@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { selectRecoverableSessions } from '../recoverySelector';
+import { selectRecoverableSessions, startLeftoverShellReaps } from '../recoverySelector';
 import type { DaemonSession, DaemonSessionState } from '../types';
+import { deliberateSleep } from '../../test-utils/waitFor';
 
 function session(
   id: string,
@@ -150,5 +151,44 @@ describe('selectRecoverableSessions', () => {
     expect(recoverableIds.has('attached')).toBe(true);
     expect(recoverableIds.has('detached')).toBe(false);
     expect(cappedCount).toBe(1);
+  });
+});
+
+describe('startLeftoverShellReaps', () => {
+  function live(id: string, pid: number, pidStartTime?: string): DaemonSession {
+    return { ...session(id, 'detached', '2026-05-09T10:00:00.000Z'), pid, pidStartTime };
+  }
+
+  it('hands each alive session, start time included, to the identity-checked reap and skips gone ones', async () => {
+    const reaped: Array<[string, string | undefined]> = [];
+    let running = 0;
+    let peak = 0;
+    const sessions = [live('a', 11, 't-a'), live('b', 12), live('c', 13, 't-c'), live('d', 14, 't-d')];
+    const done = startLeftoverShellReaps(sessions, {
+      limit: 2,
+      isAlive: async (pid) => pid !== 12,
+      reap: async (s) => {
+        running++;
+        peak = Math.max(peak, running);
+        await deliberateSleep(5, 'stub latency: overlapping reaps would show in the peak count');
+        reaped.push([s.id, s.pidStartTime]);
+        running--;
+      },
+    });
+    await Promise.all(done.values());
+    expect(reaped.sort()).toEqual([['a', 't-a'], ['c', 't-c'], ['d', 't-d']]);
+    expect(peak).toBeLessThanOrEqual(2);
+  });
+
+  it('settles every entry when a check throws, so recovery never waits forever', async () => {
+    const done = startLeftoverShellReaps([live('a', 11), live('b', 12)], {
+      limit: 6,
+      isAlive: async (pid) => {
+        if (pid === 11) throw new Error('probe failed');
+        return true;
+      },
+      reap: async () => { throw new Error('kill failed'); },
+    });
+    await expect(Promise.all(done.values())).resolves.toEqual([undefined, undefined]);
   });
 });

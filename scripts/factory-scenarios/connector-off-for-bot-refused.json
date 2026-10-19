@@ -1,0 +1,147 @@
+{
+  "name": "connector-off-for-bot-refused",
+  "layer": "regression",
+  "runs": 1,
+  "model": "stub",
+  "description": "An every-bot connection is switched off for one bot in its profile; that bot names it on a fan-out and is refused before anything starts: no task row, no worker.",
+  "setup": {
+    "repo": true,
+    "worker": {
+      "delayMs": 1500
+    },
+    "bots": [
+      {
+        "key": "lead",
+        "role": "lead",
+        "template": "developer",
+        "repo": true,
+        "triggers": [],
+        "script": {
+          "turns": [
+            {
+              "steps": [
+                {
+                  "capture": {
+                    "key": "idempotency_key \"(wake:[^\"]+)\""
+                  }
+                },
+                {
+                  "tool": "fanout_start",
+                  "args": {
+                    "idempotency_key": "{{key}}",
+                    "titles": [
+                      "probe the connection"
+                    ],
+                    "prompt": "Read one thing through the probe connection.",
+                    "preset": "default",
+                    "connectors": [
+                      "probe"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "steps": [
+                {
+                  "say": "noted"
+                }
+              ]
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "actions": [
+    {
+      "do": "api",
+      "label": "connector",
+      "fn": "factory.connectors.save",
+      "args": [
+        {
+          "connector": {
+            "name": "probe",
+            "purpose": "a probe server for the smoke",
+            "transport": "stdio",
+            "stdio": {
+              "command": "true",
+              "args": [],
+              "env": {}
+            },
+            "secrets": [],
+            "tools": {
+              "mode": "listed",
+              "allowed": [
+                "probe_read"
+              ]
+            },
+            "scope": {
+              "kind": "all"
+            },
+            "enabled": true
+          }
+        }
+      ],
+      "record": true,
+      "save": {
+        "connId": "connector.id"
+      }
+    },
+    {
+      "do": "api",
+      "label": "off for lead",
+      "fn": "factory.connectors.setOffForBot",
+      "args": [
+        {
+          "id": "{{saved.connId}}",
+          "botId": "{{bot.lead}}",
+          "off": true
+        }
+      ],
+      "record": true
+    },
+    {
+      "do": "post",
+      "label": "ask",
+      "post": {
+        "title": "Probe it",
+        "body": "Start a worker on the probe connection.",
+        "mentions": [
+          "{{bot.lead}}"
+        ]
+      }
+    },
+    {
+      "do": "waitFor",
+      "label": "fan-out answered",
+      "cond": {
+        "stub": {
+          "bot": "lead",
+          "event": "tool",
+          "tool": "fanout_start"
+        }
+      },
+      "timeoutMs": 120000,
+      "required": true
+    },
+    {
+      "do": "waitFor",
+      "label": "quiet",
+      "cond": {
+        "idle": true,
+        "quietMs": 3000
+      },
+      "timeoutMs": 60000
+    }
+  ],
+  "expect": {
+    "requires": [
+      "facts",
+      "cards",
+      "bots"
+    ],
+    "lead": "lead",
+    "connector": "probe"
+  }
+}

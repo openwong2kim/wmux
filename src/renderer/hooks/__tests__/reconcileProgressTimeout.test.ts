@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { runWithProgressTimeout } from '../reconcileProgressTimeout';
+import { deliberateSleep } from '../../../test-utils/waitFor';
 
 describe('runWithProgressTimeout', () => {
   afterEach(() => {
@@ -34,7 +35,7 @@ describe('runWithProgressTimeout', () => {
 
     const run = runWithProgressTimeout(
       async (reportProgress) => {
-        await new Promise<void>((resolve) => setTimeout(resolve, 900));
+        await deliberateSleep(900, 'stub latency: a stage slower than the progress timeout');
         reportProgress();
         await new Promise<never>(() => { /* next stage stalled */ });
       },

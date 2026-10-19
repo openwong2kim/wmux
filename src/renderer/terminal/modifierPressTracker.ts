@@ -13,7 +13,7 @@
 // A modifier flag is only trusted when this window has seen that modifier's
 // own keydown since it last gained focus and not yet its keyup. A flag with no
 // such press behind it is "stale". This module only answers the question;
-// it never changes what a key does.
+// the terminal's key handler acts on a stale Meta (staleMetaKey.ts).
 
 export type ModifierName = 'Ctrl' | 'Alt' | 'Shift' | 'Meta';
 
@@ -57,10 +57,13 @@ export interface ModifierPressTracker {
   onBlur(): void;
   /** Modifiers whose flag `e` carries with no press of that modifier seen. */
   staleModifiers(e: ModifierFlags): ModifierName[];
+  /** Which focus session this is: it changes each time the window blurs. */
+  focusSession(): number;
 }
 
 export function createModifierPressTracker(): ModifierPressTracker {
   const held = new Set<ModifierName>();
+  let blurs = 0;
   return {
     onKeyDown(e) {
       const mod = modifierOfCode(e.code);
@@ -72,9 +75,13 @@ export function createModifierPressTracker(): ModifierPressTracker {
     },
     onBlur() {
       held.clear();
+      blurs++;
     },
     staleModifiers(e) {
       return modifiersOf(e).filter((m) => !held.has(m));
+    },
+    focusSession() {
+      return blurs;
     },
   };
 }

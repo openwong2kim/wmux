@@ -32,6 +32,7 @@ import {
 } from '../../../shared/wmuxProjectConfig';
 import type { Pane, PaneLeaf } from '../../../shared/types';
 import { isShadowWorkspaceId } from '../../../shared/pcRail';
+import { isLeafReserved, useReservedLeavesVersion } from '../../utils/reservedLeaves';
 
 type LeafPane = PaneLeaf;
 
@@ -54,6 +55,8 @@ export function EmptyLeafFunnel() {
   const emptyLeafIdsKey = useStore(selectActiveEmptyLeafIdsKey);
   const paneGate = useStore((s) => s.paneGate);
   const addSurface = useStore((s) => s.addSurface);
+  // A released reservation re-runs the effect (reservedLeaves.ts).
+  const reservedVersion = useReservedLeavesVersion();
 
   // Panes with a pty.create in flight. Guards double-creation when the effect
   // re-runs while an earlier run's create hasn't resolved yet — which happens
@@ -103,6 +106,8 @@ export function EmptyLeafFunnel() {
     for (const leaf of emptyLeaves) {
       const paneId = leaf.id;
       if (ptyCreateInFlightRef.current.has(paneId)) continue;
+      // A fan-out spawn is filling this leaf with its worker (reservedLeaves.ts).
+      if (isLeafReserved(paneId)) continue;
       // Issues #173/#174/#175: split-inherited cwd > profile.startupCwd >
       // global startupDirectory > homedir (main-side fallback). The seed is
       // consumed immediately so a later effect re-run (e.g. PTY create failed
@@ -230,7 +235,7 @@ export function EmptyLeafFunnel() {
       });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- addSurface & ipcInvoke are stable; activeWorkspaceId + emptyLeafIdsKey + paneGate are the meaningful triggers
-  }, [activeWorkspaceId, emptyLeafIdsKey, paneGate]);
+  }, [activeWorkspaceId, emptyLeafIdsKey, paneGate, reservedVersion]);
 
   return null;
 }

@@ -12,6 +12,8 @@ import {
   resolveDiffMentionTargets,
   formatDiffCommentText,
   staleSelectionPaths,
+  placeDiffComments,
+  formatDiffReviewNote,
 } from '../DiffPanel';
 import { HUMAN_WORKSPACE_ID, CHANNEL_MENTIONS_MAX } from '../../../../shared/channels';
 
@@ -182,5 +184,69 @@ describe('staleSelectionPaths — which ticks a reload invalidates', () => {
 
   it('treats a path recorded with no digest as stale rather than adoptable', () => {
     expect(staleSelectionPaths({ 'a.ts': '' }, loaded({ 'a.ts': 'd1' }))).toEqual(['a.ts']);
+  });
+});
+
+// Line comments: an anchor carries the line (and range end) it was written on;
+// an anchor posted before line comments existed (`line: 0`) stays a hunk comment.
+describe('line comment anchors', () => {
+  const hunk = { header: '@@ -10,2 +10,3 @@', oldStart: 10, newStart: 10, bodyLines: [' keep', '-gone', '+one', '+two'] };
+  const msg = (data: Record<string, unknown>) => ({
+    text: 't', memberName: 'me', postedAt: 1,
+    data: { kind: 'diff-comment', taskId: 'wtask-1', file: 'a.ts', hunkHeader: hunk.header, ...data },
+  });
+
+  it('reads line, side and range end, and keeps a line-0 anchor a hunk comment', () => {
+    const out = extractDiffComments(
+      [msg({ side: 'new', line: 0 }), msg({ side: 'new', line: 11, endLine: 12 }), msg({ side: 'old', line: 11 }), msg({ line: 'x' })],
+      'wtask-1',
+    );
+    expect(out.map((c) => [c.line, c.side, c.endLine])).toEqual([
+      [undefined, undefined, undefined],
+      [11, 'new', 12],
+      [11, 'old', undefined],
+      [undefined, undefined, undefined],
+    ]);
+  });
+
+  it('names the line range in the post text', () => {
+    expect(formatDiffCommentText('a.ts', '@@ -1 +1 @@', 'fix', { side: 'new', line: 11, endLine: 12 })).toBe(
+      '[diff: a.ts:11-12 @ @@ -1 +1 @@] fix',
+    );
+    expect(formatDiffCommentText('a.ts', '', 'fix', { side: 'old', line: 11 })).toBe('[diff: a.ts:11 (old)] fix');
+  });
+
+  it('places a line comment under its last line and moves one whose line is gone', () => {
+    const [hunkC, rangeC, oldC] = extractDiffComments(
+      [msg({ line: 0 }), msg({ side: 'new', line: 11, endLine: 12 }), msg({ side: 'old', line: 11 })],
+      'wtask-1',
+    );
+    const missing = { ...rangeC, endLine: 40 };
+    const placed = placeDiffComments({ path: 'a.ts', hunks: [hunk] }, [hunkC, rangeC, oldC, missing]);
+    expect(placed.byHunk.get(hunk.header)).toEqual([hunkC]);
+    expect(placed.byLine.get(`${hunk.header}\0new:12`)).toEqual([rangeC]);
+    expect(placed.byLine.get(`${hunk.header}\0old:11`)).toEqual([oldC]);
+    expect(placed.moved).toEqual([missing]);
+  });
+});
+
+describe('formatDiffReviewNote — workspace review handed to the agent', () => {
+  const drafts = [
+    { id: 'd1', file: 'a.ts', hunkHeader: '@@ -1 +1 @@', anchor: { side: 'new' as const, line: 3, endLine: 5 }, text: 'rename\nthis', snippet: 'const x = 1;' },
+    { id: 'd2', file: 'b.ts', hunkHeader: '@@ -7 +7 @@', text: 'drop \x1b[31mthis\x1b[0m hunk', snippet: '' },
+  ];
+
+  it('types one line with no control sequences into the agent input', () => {
+    const note = formatDiffReviewNote('/repo', drafts, false);
+    expect(note).toBe(
+      '[diff review] Review comments on the uncommitted changes in /repo: (1) a.ts:3-5 at "const x = 1;": rename this · (2) b.ts (hunk @@ -7 +7 @@): drop this hunk',
+    );
+    expect(/[\n\r]/.test(note) || note.includes('\x1b')).toBe(false);
+  });
+
+  it('copies a multi-line note to the clipboard and caps a long comment', () => {
+    const note = formatDiffReviewNote('/repo', [{ ...drafts[0], text: 'y'.repeat(5000) }], true);
+    expect(note.split('\n')[2]).toBe('1. a.ts:3-5 at "const x = 1;"');
+    expect(note.length).toBeLessThan(1200);
   });
 });

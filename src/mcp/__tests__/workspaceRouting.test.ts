@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import fs from 'node:fs';
 import path from 'node:path';
+import { readSourceText } from '../../test-utils/sourceText';
 
 // Source-level invariant lock for MCP workspace routing.
 //
@@ -30,7 +30,7 @@ import path from 'node:path';
 //      accidental weak wiring or an unscoped fallback/lease path.
 describe('MCP workspace routing (source-level invariants)', () => {
   const indexPath = path.join(__dirname, '..', 'index.ts');
-  const rawSrc = fs.readFileSync(indexPath, 'utf-8');
+  const rawSrc = readSourceText(indexPath);
 
   // Strip block + line comments before matching. These invariants key off source
   // text, and prose that mentions a resolver by name (e.g. a comment that writes

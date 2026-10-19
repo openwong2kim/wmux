@@ -1,0 +1,1917 @@
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { EventEmitter } from 'node:events';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+// --- Mock node-pty -----------------------------------------------------------
+
+class MockPty extends EventEmitter {
+  pid = 12345;
+  private _cols: number;
+  private _rows: number;
+  /** Captured spawn env, so tests can assert the resolved child environment. */
+  readonly spawnEnv: Record<string, string> | undefined;
+  /** Captured spawn argv (X8 exec wrapper assertions). */
+  readonly spawnArgs: string[];
+  private dataCallbacks: ((data: string) => void)[] = [];
+  private exitCallbacks: ((e: { exitCode: number; signal?: number }) => void)[] = [];
+  killed = false;
+
+  constructor(_cmd: string, args: string[], opts: { cols: number; rows: number; env?: Record<string, string> }) {
+    super();
+    this._cols = opts.cols;
+    this._rows = opts.rows;
+    this.spawnEnv = opts.env;
+    this.spawnArgs = args;
+  }
+
+  onData(cb: (data: string) => void) {
+    this.dataCallbacks.push(cb);
+    return { dispose: () => { /* noop */ } };
+  }
+
+  onExit(cb: (e: { exitCode: number; signal?: number }) => void) {
+    this.exitCallbacks.push(cb);
+    return { dispose: () => { /* noop */ } };
+  }
+
+  /** Everything written to the PTY's input, in order. */
+  writes: string[] = [];
+
+  write(data: string): void { this.writes.push(data); }
+
+  /** Count of resize() calls = SIGWINCH emissions, for startup-grace assertions. */
+  resizeCalls = 0;
+
+  resize(cols: number, rows: number): void {
+    this.resizeCalls += 1;
+    this._cols = cols;
+    this._rows = rows;
+  }
+
+  kill(): void {
+    this.killed = true;
+  }
+
+  // Test helpers
+  simulateData(data: string): void {
+    for (const cb of this.dataCallbacks) cb(data);
+  }
+
+  simulateExit(exitCode: number): void {
+    for (const cb of this.exitCallbacks) cb({ exitCode });
+  }
+
+  get cols() { return this._cols; }
+  get rows() { return this._rows; }
+}
+
+let lastMockPty: MockPty | null = null;
+
+vi.mock('node-pty', () => ({
+  default: {
+    spawn: (cmd: string, args: string[], opts: Record<string, unknown>) => {
+      const mock = new MockPty(cmd, args as string[], opts as { cols: number; rows: number });
+      lastMockPty = mock;
+      return mock;
+    },
+  },
+  spawn: (cmd: string, args: string[], opts: Record<string, unknown>) => {
+    const mock = new MockPty(cmd, args as string[], opts as { cols: number; rows: number });
+    lastMockPty = mock;
+    return mock;
+  },
+}));
+
+// Import after mock is set up
+import { DaemonSessionManager } from '../DaemonSessionManager';
+import { restoreSeam } from '../../shared/restoreSeam';
+import { createDefaultConfig } from '../config';
+import { PWSH_EXIT_TAIL } from '../execWrapper';
+import { FACTORY_DEFAULT_SCOPES, __setPolicyProbeForTests } from '../../shared/pwshExecutionPolicy';
+import { CONPTY_BACKEND_ENV } from '../../shared/conptyWindows';
+
+// #1620: never let the host's real registry decide PowerShell argv here. Pin a
+// machine with an explicit policy (no extra args) unless a test opts in.
+const EXPLICIT_POLICY = { scopes: { ...FACTORY_DEFAULT_SCOPES, currentUser: 'set' as const }, platform: 'win32' as const };
+
+describe('DaemonSessionManager', () => {
+  let manager: DaemonSessionManager;
+  let prevBackendEnv: string | undefined;
+
+  beforeEach(() => {
+    __setPolicyProbeForTests(EXPLICIT_POLICY);
+    // The mocked PTY models the in-box ConPTY (it "repaints" when a test says
+    // so). Windows hosts default to the bundled backend since #1932, so pin
+    // in-box here; the bundled cases set `conptyBackend` on the session.
+    prevBackendEnv = process.env[CONPTY_BACKEND_ENV];
+    process.env[CONPTY_BACKEND_ENV] = 'inbox';
+    manager = new DaemonSessionManager();
+    lastMockPty = null;
+  });
+
+  afterEach(() => {
+    manager.disposeAll();
+    __setPolicyProbeForTests(null);
+    if (prevBackendEnv === undefined) delete process.env[CONPTY_BACKEND_ENV];
+    else process.env[CONPTY_BACKEND_ENV] = prevBackendEnv;
+  });
+
+  // 1. createSession → session created with state = detached
+  it('creates a session in detached state', () => {
+    const session = manager.createSession({
+      id: 'test-1',
+      cmd: 'cmd.exe',
+      cwd: 'C:\\Users',
+    });
+
+    expect(session).toBeDefined();
+    expect(session.id).toBe('test-1');
+    expect(session.state).toBe('detached');
+    expect(session.cmd).toContain('cmd.exe');
+    expect(session.cwd).toBe('C:\\Users');
+    expect(session.cols).toBe(80);
+    expect(session.rows).toBe(24);
+    expect(session.pid).toBe(12345);
+    expect(session.incarnationId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    );
+    expect(session.createdAt).toBeTruthy();
+  });
+
+  it('replays one incarnation but mints a new one for a replacement session id', () => {
+    const persistedIncarnation = '11111111-1111-4111-8111-111111111111';
+    const replayed = manager.createSession({
+      id: 'stable-incarnation',
+      cmd: 'cmd.exe',
+      cwd: os.tmpdir(),
+      incarnationId: persistedIncarnation,
+    });
+    expect(replayed.incarnationId).toBe(persistedIncarnation);
+
+    const first = manager.createSession({ id: 'reused-id', cmd: 'cmd.exe', cwd: os.tmpdir() });
+    const firstIncarnation = first.incarnationId;
+    manager.destroySession('reused-id');
+    const replacement = manager.createSession({ id: 'reused-id', cmd: 'cmd.exe', cwd: os.tmpdir() });
+    expect(replacement.incarnationId).toBeTruthy();
+    expect(replacement.incarnationId).not.toBe(firstIncarnation);
+  });
+
+  it('replaces a corrupt persisted incarnation instead of replaying it', () => {
+    const session = manager.createSession({
+      id: 'corrupt-incarnation',
+      cmd: 'cmd.exe',
+      cwd: os.tmpdir(),
+      incarnationId: 'not-a-uuid',
+    });
+    expect(session.incarnationId).not.toBe('not-a-uuid');
+    expect(session.incarnationId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    );
+  });
+
+  it('★ records spawnCwd at creation, and OSC 7 moves cwd WITHOUT moving it', () => {
+    // meta.cwd follows the pane: the shell emits OSC 7 on every `cd` and the
+    // daemon records it. But ANY process in that pane can write those bytes —
+    // it is terminal output, not a privileged call — so anything that ACTS on a
+    // pane's directory (the web diff route) must read spawnCwd instead.
+    // Without this split, a hostile process in a pane could point a remote,
+    // read-only diff at any repository on the machine.
+    const session = manager.createSession({ id: 'osc7', cmd: 'cmd.exe', cwd: os.tmpdir() });
+    expect(session.spawnCwd).toBe(os.tmpdir());
+
+    const target = path.join(os.tmpdir(), 'somewhere-else');
+    // Build the URL the way real shells emit it (and parseOsc7Cwd expects it):
+    // a POSIX path rides after the host verbatim, a Windows drive path becomes
+    // "/C:/Users/..." — leading slash, forward slashes. Feeding the raw
+    // backslash path parses to nothing on Windows, failing the test there
+    // while it passes everywhere else.
+    const osc7Path = target.startsWith('/') ? target : '/' + target.replace(/\\/g, '/');
+    lastMockPty?.simulateData(`\u001b]7;file://localhost${osc7Path}\u0007`);
+
+    const meta = manager.getSession('osc7')?.meta;
+    expect(meta?.cwd).toBe(target);
+    expect(meta?.spawnCwd).toBe(os.tmpdir());
+  });
+
+  it('adoptAgentCwd moves cwd to the agent directory, and the shell moves it back', () => {
+    // An agent that changes directory on its own (EnterWorktree) emits no
+    // OSC 7, so without this the pane recovered into the launch folder.
+    const session = manager.createSession({ id: 'agent-cwd', cmd: 'cmd.exe', cwd: os.tmpdir() });
+    const toOsc7 = (p: string) => `\u001b]7;file://localhost${p.startsWith('/') ? p : '/' + p.replace(/\\/g, '/')}\u0007`;
+    const launch = path.join(os.tmpdir(), 'launch');
+    const worktree = path.join(launch, 'worktree');
+    lastMockPty?.simulateData(toOsc7(launch));
+
+    const moves: string[] = [];
+    manager.on('session:cwd', (e: { cwd: string }) => moves.push(e.cwd));
+    expect(manager.adoptAgentCwd('agent-cwd', worktree)).toBe(true);
+    expect(manager.adoptAgentCwd('agent-cwd', worktree)).toBe(false);
+    const meta = manager.getSession('agent-cwd')?.meta;
+    expect(meta?.cwd).toBe(worktree);
+    expect(meta?.spawnCwd).toBe(session.spawnCwd);
+
+    // The agent exits; the shell re-reports the folder it never left. That
+    // repeat of its last report must still move the cwd back.
+    lastMockPty?.simulateData(toOsc7(launch));
+    expect(meta?.cwd).toBe(launch);
+    expect(moves).toEqual([worktree, launch]);
+  });
+
+  it('adoptAgentCwd ignores unknown panes, empty values and control characters', () => {
+    manager.createSession({ id: 'agent-cwd-guard', cmd: 'cmd.exe', cwd: os.tmpdir() });
+    expect(manager.adoptAgentCwd('missing', os.tmpdir())).toBe(false);
+    expect(manager.adoptAgentCwd('agent-cwd-guard', '')).toBe(false);
+    expect(manager.adoptAgentCwd('agent-cwd-guard', 'C:\\a\u0007b')).toBe(false);
+    expect(manager.getSession('agent-cwd-guard')?.meta.cwd).toBe(os.tmpdir());
+  });
+
+  it('★ REPLAYS a given spawnCwd instead of re-deriving it from the live cwd', () => {
+    // Recovery and the supervised restart pass the LIVE meta.cwd back as `cwd`,
+    // so the pane comes back where the human left it. That value has been
+    // tracking OSC 7 — i.e. whatever the pane's own process claimed. Seeding
+    // spawnCwd from it would let a `cd`, or a forged OSC 7, become the
+    // immutable diff root the moment the daemon restarts, which is exactly the
+    // property the split exists to guarantee.
+    const original = os.tmpdir();
+    const osc7Moved = path.join(os.tmpdir(), 'osc7-said-so');
+    const replayed = manager.createSession({
+      id: 'replayed',
+      cmd: 'cmd.exe',
+      cwd: osc7Moved,
+      spawnCwd: original,
+    });
+    expect(replayed.cwd).toBe(osc7Moved);
+    expect(replayed.spawnCwd).toBe(original);
+  });
+
+  it('a brand-new session with no spawnCwd still gets one from its resolved cwd', () => {
+    // The pre-spawnCwd `sessions.json` case too: an absent field must not make
+    // the session spawnCwd-less forever.
+    const fresh = manager.createSession({ id: 'fresh', cmd: 'cmd.exe', cwd: os.tmpdir() });
+    expect(fresh.spawnCwd).toBe(os.tmpdir());
+  });
+
+  it('resolves an OMITTED cmd to the default shell — the web spawn path relies on it', () => {
+    // `wmux web`'s POST /api/sessions names no command on purpose: the default
+    // shell is decided in exactly one place (platform tables, Store aliases,
+    // $SHELL) and a second copy of that decision would drift. It used to send
+    // `cmd: ''`, which reached the same branch only because resolveShellPath
+    // treats the empty string as falsy — one line elsewhere deciding an empty
+    // command is a request rather than a default, and it spawns nothing.
+    const omitted = manager.createSession({ id: 'no-cmd', cwd: '.' });
+    expect(omitted.cmd).toBeTruthy();
+    // Same answer for the empty string, so neither caller can be broken by the
+    // other's convention.
+    expect(manager.createSession({ id: 'empty-cmd', cmd: '', cwd: '.' }).cmd).toBe(omitted.cmd);
+  });
+
+  // Env resolution: the daemon trusts a supplied (main-resolved) env verbatim
+  // except its own auth token, but for the process.env FALLBACK it drops the
+  // whole reserved WMUX_* namespace so a daemon launched from a wmux pane can't
+  // leak a stale identity. See resolveSpawnEnv (main) for the symmetric strip.
+  it('drops the whole reserved WMUX_* namespace from the process.env fallback', () => {
+    const prevWs = process.env.WMUX_WORKSPACE_ID;
+    const prevSock = process.env.WMUX_SOCKET_PATH;
+    process.env.WMUX_WORKSPACE_ID = 'stale-ws';
+    process.env.WMUX_SOCKET_PATH = '\\\\.\\pipe\\stale';
+    try {
+      manager.createSession({ id: 'fallback-env', cmd: 'cmd.exe', cwd: '.' }); // no env supplied
+      expect(lastMockPty?.spawnEnv?.WMUX_WORKSPACE_ID).toBeUndefined();
+      expect(lastMockPty?.spawnEnv?.WMUX_SOCKET_PATH).toBeUndefined();
+    } finally {
+      if (prevWs === undefined) delete process.env.WMUX_WORKSPACE_ID; else process.env.WMUX_WORKSPACE_ID = prevWs;
+      if (prevSock === undefined) delete process.env.WMUX_SOCKET_PATH; else process.env.WMUX_SOCKET_PATH = prevSock;
+    }
+  });
+
+  it('trusts a supplied env verbatim except the auth token (forced identity preserved)', () => {
+    manager.createSession({
+      id: 'supplied-env',
+      cmd: 'cmd.exe',
+      cwd: '.',
+      env: { WMUX_WORKSPACE_ID: 'real-ws', WMUX_AUTH_TOKEN: 'secret', FOO: 'bar' },
+    });
+    // main already forced identity into the supplied env — keep it.
+    expect(lastMockPty?.spawnEnv?.WMUX_WORKSPACE_ID).toBe('real-ws');
+    expect(lastMockPty?.spawnEnv?.FOO).toBe('bar');
+    // the daemon's own RPC token is always stripped, even from a supplied env.
+    expect(lastMockPty?.spawnEnv?.WMUX_AUTH_TOKEN).toBeUndefined();
+  });
+
+  it('drops agent-nesting markers and WMUX_SOCKET_PATH from a supplied env (fresh and recovered panes)', () => {
+    manager.createSession({
+      id: 'nesting-env',
+      cmd: 'cmd.exe',
+      cwd: '.',
+      env: {
+        CLAUDE_CODE_CHILD_SESSION: '1',
+        CLAUDECODE: '1',
+        CLAUDE_CODE_SESSION_X: 'abc',
+        claude_code_entrypoint: 'cli', // case-insensitive
+        WMUX_SOCKET_PATH: '/tmp/parent.sock',
+        WMUX_WORKSPACE_ID: 'real-ws',
+        CLAUDE_CONFIG_DIR: '/Users/me/.claude-work',
+        ANTHROPIC_BASE_URL: 'https://example.invalid',
+        CLAUDE_CODE_SANDBOXED: '1', // set on purpose for fan-out/automation panes
+      },
+    });
+    const env = lastMockPty?.spawnEnv ?? {};
+    for (const key of ['CLAUDE_CODE_CHILD_SESSION', 'CLAUDECODE', 'CLAUDE_CODE_SESSION_X', 'claude_code_entrypoint', 'WMUX_SOCKET_PATH']) {
+      expect(env[key]).toBeUndefined();
+    }
+    expect(env.WMUX_WORKSPACE_ID).toBe('real-ws');
+    expect(env.CLAUDE_CONFIG_DIR).toBe('/Users/me/.claude-work');
+    expect(env.ANTHROPIC_BASE_URL).toBe('https://example.invalid');
+    expect(env.CLAUDE_CODE_SANDBOXED).toBe('1');
+  });
+
+  // Instance-isolation suffix (WMUX_DATA_SUFFIX) must always reflect THIS
+  // daemon's own instance, never a value carried in a replayed/persisted env
+  // blob — otherwise a recovered pane could be pointed at a DIFFERENT instance's
+  // control pipe. stripReservedSuppliedEnv keeps WMUX_DATA_SUFFIX in a supplied env, so
+  // the daemon forces its own inherited suffix over the blob (and scrubs it when
+  // the daemon itself has none).
+  it("forces the daemon's own WMUX_DATA_SUFFIX over a replayed env blob", () => {
+    const prev = process.env.WMUX_DATA_SUFFIX;
+    process.env.WMUX_DATA_SUFFIX = '-rc35';
+    try {
+      manager.createSession({
+        id: 'suffix-override',
+        cmd: 'cmd.exe',
+        cwd: '.',
+        env: { WMUX_DATA_SUFFIX: '-attacker', FOO: 'bar' },
+      });
+      expect(lastMockPty?.spawnEnv?.WMUX_DATA_SUFFIX).toBe('-rc35'); // blob value overwritten
+      expect(lastMockPty?.spawnEnv?.FOO).toBe('bar');
+    } finally {
+      if (prev === undefined) delete process.env.WMUX_DATA_SUFFIX; else process.env.WMUX_DATA_SUFFIX = prev;
+    }
+  });
+
+  it('scrubs a stale WMUX_DATA_SUFFIX from a replayed blob when the daemon has none (prod)', () => {
+    const prev = process.env.WMUX_DATA_SUFFIX;
+    delete process.env.WMUX_DATA_SUFFIX; // production daemon: no suffix
+    try {
+      manager.createSession({
+        id: 'suffix-scrub',
+        cmd: 'cmd.exe',
+        cwd: '.',
+        env: { WMUX_DATA_SUFFIX: '-dev', FOO: 'bar' },
+      });
+      expect(lastMockPty?.spawnEnv?.WMUX_DATA_SUFFIX).toBeUndefined(); // not left on the '-dev' pipe
+      expect(lastMockPty?.spawnEnv?.FOO).toBe('bar');
+    } finally {
+      if (prev === undefined) delete process.env.WMUX_DATA_SUFFIX; else process.env.WMUX_DATA_SUFFIX = prev;
+    }
+  });
+
+  it('scrubs a CASE-VARIANT WMUX_DATA_SUFFIX from a replayed blob (Windows env is case-insensitive)', () => {
+    const prev = process.env.WMUX_DATA_SUFFIX;
+    delete process.env.WMUX_DATA_SUFFIX; // production daemon: no suffix
+    try {
+      manager.createSession({
+        id: 'suffix-case',
+        cmd: 'cmd.exe',
+        cwd: '.',
+        env: { wmux_data_suffix: '-stale', FOO: 'bar' }, // lowercase variant survives stripReservedSuppliedEnv
+      });
+      const spawned = lastMockPty?.spawnEnv ?? {};
+      const anyVariant = Object.keys(spawned).some((k) => k.toUpperCase() === 'WMUX_DATA_SUFFIX');
+      expect(anyVariant).toBe(false); // no case-variant reaches the child
+      expect(spawned.FOO).toBe('bar');
+    } finally {
+      if (prev === undefined) delete process.env.WMUX_DATA_SUFFIX; else process.env.WMUX_DATA_SUFFIX = prev;
+    }
+  });
+
+  // shared/exeSearch.ts: the daemon sets NoDefaultCurrentDirectoryInExePath on
+  // itself (marked WMUX_EXE_SEARCH_GUARD) so its helper spawns never start an
+  // executable out of a working directory. A pane is the user's shell and must
+  // not inherit that — but a value the user set themselves passes through.
+  describe('executable-lookup guard does not reach panes', () => {
+    const KEYS = ['NoDefaultCurrentDirectoryInExePath', 'WMUX_EXE_SEARCH_GUARD'] as const;
+    let saved: Record<string, string | undefined>;
+    beforeEach(() => { saved = Object.fromEntries(KEYS.map((k) => [k, process.env[k]])); });
+    afterEach(() => {
+      for (const k of KEYS) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]; }
+    });
+    const guardKeys = (env: Record<string, string>) =>
+      Object.keys(env).filter((k) => ['NODEFAULTCURRENTDIRECTORYINEXEPATH', 'WMUX_EXE_SEARCH_GUARD'].includes(k.toUpperCase()));
+
+    it('strips it from a supplied env (any case) when wmux added it', () => {
+      process.env.NoDefaultCurrentDirectoryInExePath = '1';
+      process.env.WMUX_EXE_SEARCH_GUARD = '1';
+      manager.createSession({
+        id: 'exe-guard-supplied', cmd: 'cmd.exe', cwd: '.',
+        env: { NoDefaultCurrentDirectoryInExePath: '1', nodefaultcurrentdirectoryinexepath: '1', WMUX_EXE_SEARCH_GUARD: '1', FOO: 'bar' },
+      });
+      expect(guardKeys(lastMockPty?.spawnEnv ?? {})).toEqual([]);
+      expect(lastMockPty?.spawnEnv?.FOO).toBe('bar');
+    });
+
+    it('strips it from the process.env fallback when wmux added it', () => {
+      process.env.NoDefaultCurrentDirectoryInExePath = '1';
+      process.env.WMUX_EXE_SEARCH_GUARD = '1';
+      manager.createSession({ id: 'exe-guard-fallback', cmd: 'cmd.exe', cwd: '.' });
+      expect(guardKeys(lastMockPty?.spawnEnv ?? {})).toEqual([]);
+    });
+
+    it("keeps the user's own setting", () => {
+      process.env.NoDefaultCurrentDirectoryInExePath = '1';
+      delete process.env.WMUX_EXE_SEARCH_GUARD;
+      manager.createSession({ id: 'exe-guard-user', cmd: 'cmd.exe', cwd: '.', env: { NoDefaultCurrentDirectoryInExePath: '1' } });
+      expect(lastMockPty?.spawnEnv?.NoDefaultCurrentDirectoryInExePath).toBe('1');
+    });
+  });
+
+  it("propagates the daemon's own suffix in the process.env fallback (no supplied env)", () => {
+    const prev = process.env.WMUX_DATA_SUFFIX;
+    process.env.WMUX_DATA_SUFFIX = '-rc35';
+    try {
+      manager.createSession({ id: 'suffix-fallback', cmd: 'cmd.exe', cwd: '.' }); // no env
+      expect(lastMockPty?.spawnEnv?.WMUX_DATA_SUFFIX).toBe('-rc35');
+    } finally {
+      if (prev === undefined) delete process.env.WMUX_DATA_SUFFIX; else process.env.WMUX_DATA_SUFFIX = prev;
+    }
+  });
+
+  it('emits session:created event', () => {
+    const handler = vi.fn();
+    manager.on('session:created', handler);
+
+    manager.createSession({ id: 'test-ev', cmd: 'cmd.exe', cwd: '.' });
+
+    expect(handler).toHaveBeenCalledOnce();
+    expect(handler.mock.calls[0][0].session.id).toBe('test-ev');
+  });
+
+  it('throws when creating a session with duplicate id', () => {
+    manager.createSession({ id: 'dup', cmd: 'cmd.exe', cwd: '.' });
+    expect(() => manager.createSession({ id: 'dup', cmd: 'cmd.exe', cwd: '.' }))
+      .toThrow("Session 'dup' already exists");
+  });
+
+  // 2. listSessions → returns created sessions
+  it('returns all sessions via listSessions', () => {
+    manager.createSession({ id: 's1', cmd: 'cmd.exe', cwd: '.' });
+    manager.createSession({ id: 's2', cmd: 'cmd.exe', cwd: '.' });
+
+    const sessions = manager.listSessions();
+    expect(sessions).toHaveLength(2);
+    expect(sessions.map((s) => s.id).sort()).toEqual(['s1', 's2']);
+  });
+
+  // 2b. listLiveSessions → filters out dead + suspended
+  it('listLiveSessions excludes dead and suspended sessions', () => {
+    // Seed four sessions covering every state. createSession defaults
+    // to 'detached'; attachSession flips one to 'attached'; the
+    // simulateExit hook on the mocked PTY drives one to 'dead'; the
+    // last one we drop into 'suspended' by reaching into the managed
+    // record directly because that transition normally happens inside
+    // recovery paths the manager does not expose publicly.
+    manager.createSession({ id: 'attached-one', cmd: 'cmd.exe', cwd: '.' });
+    manager.attachSession('attached-one');
+
+    manager.createSession({ id: 'detached-one', cmd: 'cmd.exe', cwd: '.' });
+    // Already in 'detached' on creation — no transition needed.
+
+    manager.createSession({ id: 'dead-one', cmd: 'cmd.exe', cwd: '.' });
+    lastMockPty?.simulateExit(0);
+
+    manager.createSession({ id: 'suspended-one', cmd: 'cmd.exe', cwd: '.' });
+    const susp = manager.getSession('suspended-one');
+    if (!susp) throw new Error('test setup: suspended-one not found');
+    susp.meta.state = 'suspended';
+
+    const live = manager.listLiveSessions();
+    expect(live.map((s) => s.id).sort()).toEqual(['attached-one', 'detached-one']);
+    // listSessions still returns all four — listLiveSessions is the
+    // filtered view, not a replacement.
+    expect(manager.listSessions()).toHaveLength(4);
+  });
+
+  it('listLiveSessions returns an empty array when only tombstones exist', () => {
+    // Worst-case shape for the idle-shutdown predicate: the daemon
+    // accepts a wmux disconnect, every remaining session is dead or
+    // suspended, and the reap TTL is still 24h away. listLiveSessions
+    // must report 0 so Watchdog can self-terminate without waiting.
+    manager.createSession({ id: 'd1', cmd: 'cmd.exe', cwd: '.' });
+    lastMockPty?.simulateExit(0);
+    manager.createSession({ id: 'd2', cmd: 'cmd.exe', cwd: '.' });
+    lastMockPty?.simulateExit(0);
+    const s = manager.createSession({ id: 'sp', cmd: 'cmd.exe', cwd: '.' });
+    void s;
+    const sp = manager.getSession('sp')!;
+    sp.meta.state = 'suspended';
+
+    expect(manager.listLiveSessions()).toEqual([]);
+    expect(manager.listSessions()).toHaveLength(3);
+  });
+
+  // 3. attachSession → state changes to attached
+  it('changes state to attached via attachSession', () => {
+    manager.createSession({ id: 'att', cmd: 'cmd.exe', cwd: '.' });
+    const stateHandler = vi.fn();
+    manager.on('session:stateChanged', stateHandler);
+
+    manager.attachSession('att');
+
+    expect(stateHandler).toHaveBeenCalledWith({ id: 'att', state: 'attached' });
+    const sessions = manager.listSessions();
+    expect(sessions[0].state).toBe('attached');
+  });
+
+  it('throws when attaching non-existent session', () => {
+    expect(() => manager.attachSession('nope')).toThrow("Session 'nope' not found");
+  });
+
+  // 4. detachSession → state changes to detached
+  it('changes state to detached via detachSession', () => {
+    manager.createSession({ id: 'det', cmd: 'cmd.exe', cwd: '.' });
+    manager.attachSession('det');
+
+    const stateHandler = vi.fn();
+    manager.on('session:stateChanged', stateHandler);
+
+    manager.detachSession('det');
+
+    expect(stateHandler).toHaveBeenCalledWith({ id: 'det', state: 'detached' });
+    const sessions = manager.listSessions();
+    expect(sessions[0].state).toBe('detached');
+  });
+
+  // #766 — viewer visibility: renderer-reported "is this pane on screen",
+  // consumed by the phone resize route (attached && viewerVisible → 409).
+  it('records viewer visibility and resets it to visible on detach, not attach', () => {
+    manager.createSession({ id: 'vis', cmd: 'cmd.exe', cwd: '.' });
+    // Safe default: nobody has reported, so the desk owns the size.
+    expect(manager.getSession('vis')?.viewerVisible).toBe(true);
+
+    // The mount-time report can land BEFORE the attach RPC — attach must not
+    // overwrite it (that would mark every hidden retained pane visible).
+    manager.setSessionViewerVisibility('vis', false);
+    manager.attachSession('vis');
+    expect(manager.getSession('vis')?.viewerVisible).toBe(false);
+
+    // Detach resets to the safe default so the next attacher — possibly an
+    // older renderer that never reports — starts with the desk owning.
+    manager.detachSession('vis');
+    expect(manager.getSession('vis')?.viewerVisible).toBe(true);
+  });
+
+  it('ignores a visibility report for an unknown session', () => {
+    // Fire-and-forget path: the report can race a dispose.
+    expect(() => manager.setSessionViewerVisibility('nope', false)).not.toThrow();
+  });
+
+  // 5. destroySession → session removed
+  it('destroys a session and removes it from the list', () => {
+    manager.createSession({ id: 'kill', cmd: 'cmd.exe', cwd: '.' });
+    const destroyHandler = vi.fn();
+    manager.on('session:destroyed', destroyHandler);
+
+    manager.destroySession('kill');
+
+    expect(destroyHandler).toHaveBeenCalledWith({ id: 'kill' });
+    expect(manager.listSessions()).toHaveLength(0);
+    expect(manager.getSession('kill')).toBeUndefined();
+  });
+
+  it('destroySession on non-existent id is a no-op', () => {
+    expect(() => manager.destroySession('ghost')).not.toThrow();
+  });
+
+  // 6. disposeAll → all sessions destroyed
+  it('disposes all sessions', () => {
+    manager.createSession({ id: 'a', cmd: 'cmd.exe', cwd: '.' });
+    manager.createSession({ id: 'b', cmd: 'cmd.exe', cwd: '.' });
+    manager.createSession({ id: 'c', cmd: 'cmd.exe', cwd: '.' });
+
+    const destroyHandler = vi.fn();
+    manager.on('session:destroyed', destroyHandler);
+
+    manager.disposeAll();
+
+    expect(manager.listSessions()).toHaveLength(0);
+    expect(destroyHandler).toHaveBeenCalledTimes(3);
+  });
+
+  // resizeSession
+  it('resizes a session', () => {
+    manager.createSession({ id: 'rsz', cmd: 'cmd.exe', cwd: '.', cols: 80, rows: 24 });
+    manager.resizeSession('rsz', 120, 40);
+
+    const session = manager.getSession('rsz');
+    expect(session?.meta.cols).toBe(120);
+    expect(session?.meta.rows).toBe(40);
+  });
+
+  it('throws when resizing non-existent session', () => {
+    expect(() => manager.resizeSession('nope', 80, 24)).toThrow("Session 'nope' not found");
+  });
+
+  it('codex review catch: an actual geometry change stamps the bridge resize-guard timestamp (noteResize)', () => {
+    // DaemonPTYBridge.noteResize() feeds the resize-redraw guard that
+    // defers (not skips) the AgentDetector emission-dedup reset — without
+    // this wiring, the daemon-mode guard would never engage at all and
+    // every workspace switch would risk a stale re-notification (the local-
+    // mode PTYBridge equivalent is covered end-to-end in
+    // PTYBridge.lifecycle.test.ts; DaemonPTYBridge has no dedicated harness,
+    // so this pins the SessionManager→bridge wiring specifically).
+    manager.createSession({ id: 'rsz-note', cmd: 'cmd.exe', cwd: '.', cols: 80, rows: 24 });
+    const session = manager.getSession('rsz-note');
+    const noteResizeSpy = vi.spyOn(session!.bridge, 'noteResize');
+
+    manager.resizeSession('rsz-note', 120, 40);
+    expect(noteResizeSpy).toHaveBeenCalledTimes(1);
+
+    // Same geometry again → the early-return-on-unchanged-size path (SIGWINCH
+    // avoidance) must also skip noting a resize — nothing actually changed.
+    manager.resizeSession('rsz-note', 120, 40);
+    expect(noteResizeSpy).toHaveBeenCalledTimes(1);
+
+    // A genuine further change notes again.
+    manager.resizeSession('rsz-note', 100, 30);
+    expect(noteResizeSpy).toHaveBeenCalledTimes(2);
+  });
+
+  // getSession
+  it('returns managed session by id', () => {
+    manager.createSession({ id: 'get-me', cmd: 'cmd.exe', cwd: '.' });
+    const managed = manager.getSession('get-me');
+    expect(managed).toBeDefined();
+    expect(managed?.meta.id).toBe('get-me');
+    expect(managed?.ringBuffer).toBeDefined();
+    expect(managed?.bridge).toBeDefined();
+  });
+
+  // PTY exit → session:died
+  it('emits session:died when PTY process exits', () => {
+    manager.createSession({ id: 'die', cmd: 'cmd.exe', cwd: '.' });
+    const diedHandler = vi.fn();
+    manager.on('session:died', diedHandler);
+
+    // Simulate exit on the mock PTY
+    lastMockPty?.simulateExit(1);
+
+    // Payload also carries forensic fields (signal/cmd/lastActivityMsAgo) used
+    // by the daemon's death logging; assert the contract fields, tolerate extras.
+    expect(diedHandler).toHaveBeenCalledWith(expect.objectContaining({ id: 'die', exitCode: 1 }));
+    const session = manager.getSession('die');
+    expect(session?.meta.state).toBe('dead');
+  });
+
+  // Dead session cannot be attached/detached
+  it('throws when attaching or detaching a dead session', () => {
+    manager.createSession({ id: 'dead', cmd: 'cmd.exe', cwd: '.' });
+    lastMockPty?.simulateExit(0);
+
+    expect(() => manager.attachSession('dead')).toThrow("Session 'dead' is dead");
+    expect(() => manager.detachSession('dead')).toThrow("Session 'dead' is dead");
+  });
+
+  // PTY data → ring buffer
+  it('writes PTY data to the ring buffer', () => {
+    manager.createSession({ id: 'buf', cmd: 'cmd.exe', cwd: '.' });
+    const managed = manager.getSession('buf');
+
+    lastMockPty?.simulateData('hello world');
+
+    const stored = managed?.ringBuffer.readAll().toString();
+    expect(stored).toBe('hello world');
+  });
+
+  // Agent metadata on session
+  it('stores agent metadata when provided', () => {
+    const session = manager.createSession({
+      id: 'agent-s',
+      cmd: 'cmd.exe',
+      cwd: '.',
+      agent: { role: 'coder', teamId: 'team-1', displayName: 'Claude' },
+    });
+
+    expect(session.agent).toEqual({ role: 'coder', teamId: 'team-1', displayName: 'Claude' });
+  });
+
+  // Session recovery: scrollbackData pre-fills ring buffer
+  it('pre-fills ring buffer with scrollbackData when provided', () => {
+    const scrollback = Buffer.from('previous terminal output\r\n$ ls\r\nfile.txt');
+    const session = manager.createSession({
+      id: 'recover-1',
+      cmd: 'cmd.exe',
+      cwd: '.',
+      scrollbackData: scrollback,
+    });
+
+    const managed = manager.getSession('recover-1');
+    const stored = managed?.ringBuffer.readAll().toString();
+    // #952: the dump is followed by the restore seam, which scrolls the dead
+    // screen into scrollback so the fresh process paints on an empty viewport.
+    expect(stored).toBe(
+      'previous terminal output\r\n$ ls\r\nfile.txt' + restoreSeam(24),
+    );
+    expect(session.id).toBe('recover-1');
+  });
+
+  // Session recovery: preserves original createdAt
+  it('preserves original createdAt when provided', () => {
+    const originalDate = '2025-01-15T10:30:00.000Z';
+    const session = manager.createSession({
+      id: 'recover-2',
+      cmd: 'cmd.exe',
+      cwd: '.',
+      createdAt: originalDate,
+    });
+
+    expect(session.createdAt).toBe(originalDate);
+  });
+
+  // listManagedSessions returns ManagedSession objects
+  it('listManagedSessions returns internal managed sessions', () => {
+    manager.createSession({ id: 'm1', cmd: 'cmd.exe', cwd: '.' });
+    manager.createSession({ id: 'm2', cmd: 'cmd.exe', cwd: '.' });
+
+    const managed = manager.listManagedSessions();
+    expect(managed).toHaveLength(2);
+    expect(managed[0].ringBuffer).toBeDefined();
+    expect(managed[0].bridge).toBeDefined();
+    expect(managed[0].ptyProcess).toBeDefined();
+  });
+
+  // v2.8.1 hotfix (Bug 1) + substrate 3.0: the cap is configurable and the
+  // error is actionable. One test, because the two are the same branch.
+  //
+  // #1274: this used to be two tests, the first spawning 200 mock sessions to
+  // reach the *default* cap. Those 200 sessions' garbage was collected during
+  // the next one — which is why "honours a custom session.maxSessions", a
+  // three-session test that takes 4 ms in isolation, was measured at 5.4-7.3 s
+  // against the 5 s per-test limit on macos-14. The ceiling is read from
+  // config (and the no-config path falls back to createDefaultConfig), so a
+  // small configured cap exercises the identical branch with 1/50th of the
+  // allocation, and the default 200 is pinned by an assertion instead of by
+  // 200 PTY spawns.
+  it('honours session.maxSessions and refuses past it with an actionable error', () => {
+    const cfg = createDefaultConfig();
+    expect(cfg.session.maxSessions).toBe(200);
+    cfg.session.maxSessions = 3;
+    manager.setConfig(cfg);
+    for (let i = 0; i < 3; i++) {
+      manager.createSession({ id: `cm-${i}`, cmd: 'cmd.exe', cwd: '.' });
+    }
+    // The cap is now 3, not the default 200 — and the message echoes it. It
+    // must be showable verbatim in the UI: the pre-v2.8.1 text was "Maximum
+    // session limit (50) reached", which surfaced as a generic "unknown error"
+    // toast in the renderer.
+    expect(() =>
+      manager.createSession({ id: 'cm-overflow', cmd: 'cmd.exe', cwd: '.' }),
+    ).toThrow(
+      /Cannot create new terminal: 3 active sessions already running\. Close some panes/,
+    );
+  });
+
+  // codex P2: DEAD tombstones must not occupy a cap slot
+  it('does not count DEAD tombstones against maxSessions', () => {
+    const cfg = createDefaultConfig();
+    cfg.session.maxSessions = 2;
+    manager.setConfig(cfg);
+    manager.createSession({ id: 'd1', cmd: 'cmd.exe', cwd: '.' });
+    const d1Pty = lastMockPty; // capture before d2 overwrites lastMockPty
+    manager.createSession({ id: 'd2', cmd: 'cmd.exe', cwd: '.' });
+    // d1's PTY exits → it becomes a DEAD tombstone still held in the map.
+    d1Pty?.simulateExit(0);
+    expect(manager.getSession('d1')?.meta.state).toBe('dead');
+    // 1 live (d2) + 1 dead (d1). Under cap=2 a new session must be allowed —
+    // the dead tombstone must not occupy a live slot.
+    expect(() =>
+      manager.createSession({ id: 'd3', cmd: 'cmd.exe', cwd: '.' }),
+    ).not.toThrow();
+  });
+
+  // substrate 3.0: dead-TTL is stamped per session from config (codex #5)
+  it('stamps new sessions with deadSessionTtlHours from config', () => {
+    const cfg = createDefaultConfig();
+    cfg.session.deadSessionTtlHours = 48;
+    manager.setConfig(cfg);
+    const s = manager.createSession({ id: 'ttl-cfg', cmd: 'cmd.exe', cwd: '.' });
+    expect(s.deadTtlHours).toBe(48);
+  });
+
+  it('defaults deadTtlHours to 24 when no config is set (createDefaultConfig SSOT)', () => {
+    const s = manager.createSession({ id: 'ttl-def', cmd: 'cmd.exe', cwd: '.' });
+    expect(s.deadTtlHours).toBe(24);
+  });
+
+  // codex P2: recovery passes the saved per-session value, which must win
+  // over the current config so a recovered session keeps its create-time
+  // retention instead of being silently restamped.
+  it('preserves a passed deadTtlHours over the config default (recovery path)', () => {
+    const cfg = createDefaultConfig();
+    cfg.session.deadSessionTtlHours = 48; // current config
+    manager.setConfig(cfg);
+    // Recovery hands back the value the session was created with (e.g. 12h
+    // from an older config), not the current 48h.
+    const s = manager.createSession({ id: 'rec-ttl', cmd: 'cmd.exe', cwd: '.', deadTtlHours: 12 });
+    expect(s.deadTtlHours).toBe(12);
+  });
+
+  // #557: recovery must thread the persisted lastActivity through so the
+  // detached TTL reaper can age out stale orphan shells. Without this,
+  // createSession stamped `now` on every boot, immortalising resurrected
+  // detached sessions (the orphan-leak the issue reports).
+  it('preserves a passed lastActivity over the default `now` (recovery path)', () => {
+    const persisted = '2026-01-01T00:00:00.000Z';
+    const s = manager.createSession({
+      id: 'rec-activity',
+      cmd: 'cmd.exe',
+      cwd: '.',
+      lastActivity: persisted,
+    });
+    expect(s.lastActivity).toBe(persisted);
+  });
+
+  it('updates detached activity without subscribing to byte delivery', () => {
+    const persisted = '2026-01-01T00:00:00.000Z';
+    manager.createSession({ id: 'native-activity', cmd: 'cmd.exe', cwd: '.', lastActivity: persisted });
+    const managed = manager.getSession('native-activity');
+    expect(managed?.bridge.listenerCount('data')).toBe(0);
+    lastMockPty?.simulateData('working');
+    expect(managed?.meta.lastActivity).not.toBe(persisted);
+    expect(managed?.ringBuffer.readAll().toString()).toContain('working');
+  });
+
+  it('stamps lastActivity to ~now for brand-new sessions (no lastActivity passed)', () => {
+    const before = Date.now();
+    const s = manager.createSession({ id: 'new-activity', cmd: 'cmd.exe', cwd: '.' });
+    const stamped = new Date(s.lastActivity).getTime();
+    expect(stamped).toBeGreaterThanOrEqual(before);
+    expect(stamped).toBeLessThanOrEqual(Date.now());
+  });
+
+  // v2.8.1 hotfix: deferred output mode for recovered sessions (Bug 2)
+  describe('deferOutput (recovery mode)', () => {
+    it('drops PTY data while deferred and the ring buffer stays clean', () => {
+      manager.createSession({
+        id: 'rec-1',
+        cmd: 'cmd.exe',
+        cwd: '.',
+        deferOutput: true,
+      });
+      const managed = manager.getSession('rec-1');
+      expect(managed?.deferred).toBe(true);
+      expect(managed?.bridge.isMuted).toBe(true);
+
+      // ConPTY-style early output (saved geometry) gets dropped.
+      lastMockPty?.simulateData('\x1b[?25l$ \x1b[K');
+      expect(managed?.ringBuffer.readAll().toString()).toBe('');
+    });
+
+    it('preserves pre-filled scrollback while muted', () => {
+      // Saved buffer dump is written directly into the ring buffer
+      // before `setupDataForwarding`, so it must survive muting.
+      manager.createSession({
+        id: 'rec-2',
+        cmd: 'cmd.exe',
+        cwd: '.',
+        scrollbackData: Buffer.from('history-before-restart'),
+        deferOutput: true,
+      });
+      const managed = manager.getSession('rec-2');
+      // Replay buffer was pre-filled (dump + #952 restore seam).
+      expect(managed?.ringBuffer.readAll().toString()).toBe(
+        'history-before-restart' + restoreSeam(24),
+      );
+    });
+
+    it('★ the mode tracker sees pre-filled scrollback, in the ring\'s offsets', () => {
+      // A pane that was inside vim when the daemon went down: the alt-screen
+      // switch lives in the RESTORED bytes, which are written to the ring
+      // before the bridge exists. If the tracker misses them, `/api/stream`
+      // sends no preamble and the replayed frames land on the client's normal
+      // buffer — the exact garbling outputModeTracker.ts exists to prevent.
+      const restored = '\x1b[?1049h\x1b[2J\x1b[H' + 'frame line\r\n'.repeat(50);
+      manager.createSession({
+        id: 'rec-modes',
+        cmd: 'cmd.exe',
+        cwd: '.',
+        scrollbackData: Buffer.from(restored, 'utf8'),
+        deferOutput: true,
+      });
+      const managed = manager.getSession('rec-modes');
+      const modes = managed?.bridge.outputModes;
+      // #952: the restore seam appended after the dump leaves the alternate
+      // screen (`?1049l`) — the dead vim cannot own the fresh process's
+      // buffer, so the tracker's END state is normal-buffer…
+      expect(modes?.altScreen).toBe(false);
+
+      const total = managed?.ringBuffer.totalBytesWritten ?? 0;
+      // …which means no window gets a stale alt-screen preamble: neither a
+      // full replay (the switch AND the seam's exit are both inside it) nor a
+      // tail window (the mode is no longer active at the end of the ring).
+      expect(modes?.preamble(0)).toBe('');
+      expect(modes?.preamble(total - 4)).toBe('');
+    });
+
+    // #1464: the replay decision reads process.platform when the unmute timer
+    // FIRES, so a platform override has to span the resize AND the timers.
+    // Sessions are created on the host platform first — createSession has its
+    // own win32 paths (shell resolution) this suite is not about.
+    const withPlatform = (platform: NodeJS.Platform, body: () => void): void => {
+      const orig = Object.getOwnPropertyDescriptor(process, 'platform');
+      Object.defineProperty(process, 'platform', { value: platform, configurable: true });
+      try {
+        body();
+      } finally {
+        if (orig) Object.defineProperty(process, 'platform', orig);
+      }
+    };
+
+    it('unmutes after first resize plus the drain delay', () => {
+      vi.useFakeTimers();
+      try {
+        manager.createSession({
+          id: 'rec-3',
+          cmd: 'cmd.exe',
+          cwd: '.',
+          deferOutput: true,
+        });
+        const managed = manager.getSession('rec-3');
+        expect(managed?.deferred).toBe(true);
+
+        // Resize flips deferred → false synchronously but schedules
+        // the actual unmute so any output ConPTY emits at the prior
+        // geometry can drain first. That flush is a ConPTY behavior, so the
+        // drop below is the Windows contract (#1464 replays it elsewhere).
+        withPlatform('win32', () => {
+          manager.resizeSession('rec-3', 120, 30);
+          expect(managed?.deferred).toBe(false);
+          expect(managed?.bridge.isMuted).toBe(true);
+
+          // Output that fires DURING the drain window is still muted.
+          lastMockPty?.simulateData('stale-geometry-bytes');
+          expect(managed?.ringBuffer.readAll().toString()).toBe('');
+
+          vi.advanceTimersByTime(100);
+        });
+        expect(managed?.bridge.isMuted).toBe(false);
+
+        // Output produced AFTER the drain reaches the ring buffer.
+        lastMockPty?.simulateData('post-resize prompt $ ');
+        expect(managed?.ringBuffer.readAll().toString()).toBe(
+          'post-resize prompt $ ',
+        );
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('#1464: replays output held while muted when the first resize keeps the saved geometry', () => {
+      vi.useFakeTimers();
+      try {
+        manager.createSession({
+          id: 'rec-same',
+          cmd: '/bin/zsh',
+          cwd: '.',
+          cols: 62,
+          rows: 44,
+          scrollbackData: Buffer.from('history-before-crash'),
+          deferOutput: true,
+        });
+        const managed = manager.getSession('rec-same');
+        const prefill = 'history-before-crash' + restoreSeam(44);
+
+        // The fresh shell prints its first prompt before the renderer attaches,
+        // together with a DA1 and a cursor-position query it has long stopped
+        // waiting for by the time the replay reaches xterm.
+        lastMockPty?.simulateData('fresh-\x1b[c');
+        lastMockPty?.simulateData('prompt % \x1b[6n');
+        expect(managed?.ringBuffer.readAll().toString()).toBe(prefill);
+
+        // Same geometry: no SIGWINCH reaches the shell, so it will never
+        // repaint that prompt on its own. Holds on Windows too — there is no
+        // stale geometry to drain.
+        withPlatform('win32', () => {
+          manager.resizeSession('rec-same', 62, 44);
+          vi.advanceTimersByTime(100);
+        });
+        expect(managed?.bridge.isMuted).toBe(false);
+        // Replayed, with the queries stripped (they would otherwise draw a
+        // late reply into the program's input).
+        expect(managed?.ringBuffer.readAll().toString()).toBe(prefill + 'fresh-prompt % ');
+
+        // Live output after the unmute follows the replayed prompt in order.
+        lastMockPty?.simulateData('ls');
+        expect(managed?.ringBuffer.readAll().toString()).toBe(prefill + 'fresh-prompt % ls');
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('#1464: a geometry change drops the old-size output but replays the repaint at the new size', () => {
+      vi.useFakeTimers();
+      try {
+        manager.createSession({ id: 'rec-diff', cmd: '/bin/zsh', cwd: '.', cols: 62, rows: 44, deferOutput: true });
+        const managed = manager.getSession('rec-diff');
+        withPlatform('linux', () => {
+          lastMockPty?.simulateData('prompt-at-saved-geometry % ');
+          // The relaunched renderer's first fit is often transient (27 → 25 → 27
+          // cols in the #1464 repro), so a second resize can land inside the
+          // drain window too. Each one makes the shell repaint at the new size.
+          manager.resizeSession('rec-diff', 100, 30);
+          lastMockPty?.simulateData('repaint-at-100x30 % ');
+          manager.resizeSession('rec-diff', 98, 30);
+          lastMockPty?.simulateData('repaint-at-98x30 % ');
+          expect(managed?.ringBuffer.readAll().toString()).toBe('');
+
+          vi.advanceTimersByTime(100);
+        });
+        expect(managed?.bridge.isMuted).toBe(false);
+        expect(managed?.ringBuffer.readAll().toString()).toBe('repaint-at-98x30 % ');
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('#1464: on Windows a size change at a LATER resize inside the window discards, then asks ConPTY to repaint', () => {
+      // The first resize keeps the saved size, the second (the Resume row
+      // shrinking the pane) changes it: the held bytes may mix ConPTY frames
+      // from both sizes, so none are replayed. The prompt comes back from a
+      // same-size resize after the unmute, which ConPTY answers with a full
+      // repaint at the current geometry.
+      vi.useFakeTimers();
+      try {
+        manager.createSession({ id: 'rec-win', cmd: 'cmd.exe', cwd: '.', cols: 62, rows: 44, deferOutput: true });
+        const managed = manager.getSession('rec-win');
+        const pty = lastMockPty!;
+        const sizes: Array<[number, number]> = [];
+        const resize = pty.resize.bind(pty);
+        pty.resize = (cols: number, rows: number) => {
+          sizes.push([cols, rows]);
+          resize(cols, rows);
+        };
+        withPlatform('win32', () => {
+          pty.simulateData('prompt-at-saved-geometry > ');
+          manager.resizeSession('rec-win', 62, 44);
+          vi.advanceTimersByTime(50);
+          manager.resizeSession('rec-win', 62, 42);
+          pty.simulateData('conpty-frame-at-62x42 > ');
+          vi.advanceTimersByTime(50);
+        });
+        expect(managed?.bridge.isMuted).toBe(false);
+        expect(managed?.ringBuffer.readAll().toString()).toBe('');
+        // One real change, then the repaint request at the current geometry.
+        expect(sizes).toEqual([[62, 42], [62, 42]]);
+        // The repaint ConPTY sends in answer goes out live.
+        pty.simulateData('conpty-repaint > ');
+        expect(managed?.ringBuffer.readAll().toString()).toBe('conpty-repaint > ');
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('#1464: no repaint request when nothing changed size, or off Windows', () => {
+      vi.useFakeTimers();
+      try {
+        for (const [platform, id, to] of [
+          ['win32', 'rec-win-same', [62, 44]],
+          ['linux', 'rec-linux-diff', [62, 42]],
+        ] as const) {
+          manager.createSession({ id, cmd: 'sh', cwd: '.', cols: 62, rows: 44, deferOutput: true });
+          const pty = lastMockPty!;
+          withPlatform(platform, () => {
+            manager.resizeSession(id, to[0], to[1]);
+            const before = pty.resizeCalls;
+            vi.advanceTimersByTime(100);
+            expect(pty.resizeCalls).toBe(before);
+          });
+        }
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('#1464: past the hold cap the head is kept, so the first prompt survives', () => {
+      vi.useFakeTimers();
+      try {
+        manager.createSession({ id: 'rec-big', cmd: '/bin/zsh', cwd: '.', cols: 62, rows: 44, deferOutput: true });
+        const managed = manager.getSession('rec-big');
+        lastMockPty?.simulateData('first-prompt % ');
+        // A burst past the 256 KiB cap (a busy recovered pane) is not held…
+        lastMockPty?.simulateData('x'.repeat(300 * 1024));
+        // …and nothing after it either, or the replay would have a hole in it.
+        lastMockPty?.simulateData('tail');
+        manager.resizeSession('rec-big', 62, 44);
+        vi.advanceTimersByTime(100);
+        expect(managed?.bridge.isMuted).toBe(false);
+        expect(managed?.ringBuffer.readAll().toString()).toBe('first-prompt % ');
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('activateDeferred releases held output at the saved size, on every platform', () => {
+      // A pane no desktop renderer mounts (headless daemon, phone-only) is
+      // activated by a web viewer, which never resizes: nothing may change
+      // size, and the prompt held while muted must reach the ring.
+      vi.useFakeTimers();
+      try {
+        for (const platform of ['win32', 'linux'] as const) {
+          const id = `rec-activate-${platform}`;
+          manager.createSession({ id, cmd: 'sh', cwd: '.', cols: 62, rows: 44, deferOutput: true });
+          const managed = manager.getSession(id);
+          const pty = lastMockPty;
+          if (!pty) throw new Error('no pty spawned');
+          pty.simulateData('held-prompt $ ');
+          expect(managed?.ringBuffer.readAll().toString()).toBe('');
+
+          withPlatform(platform, () => {
+            manager.activateDeferred(id);
+            expect(managed?.deferred).toBe(false);
+            vi.advanceTimersByTime(100);
+          });
+          expect(managed?.bridge.isMuted).toBe(false);
+          expect(managed?.ringBuffer.readAll().toString()).toBe('held-prompt $ ');
+          expect(pty.resizeCalls).toBe(0);
+          expect(managed?.meta.cols).toBe(62);
+
+          pty.simulateData('after');
+          expect(managed?.ringBuffer.readAll().toString()).toBe('held-prompt $ after');
+        }
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('activateDeferred is a no-op on an active or unknown session', () => {
+      vi.useFakeTimers();
+      try {
+        manager.createSession({ id: 'rec-twice', cmd: 'sh', cwd: '.', deferOutput: true });
+        const managed = manager.getSession('rec-twice');
+        manager.activateDeferred('rec-twice');
+        vi.advanceTimersByTime(100);
+        lastMockPty?.simulateData('live');
+        // A second activation must not mute again or replay anything twice.
+        manager.activateDeferred('rec-twice');
+        vi.advanceTimersByTime(100);
+        expect(managed?.bridge.isMuted).toBe(false);
+        expect(managed?.ringBuffer.readAll().toString()).toBe('live');
+        expect(() => manager.activateDeferred('no-such-session')).not.toThrow();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('activating the output does not confirm the recovered agent; only confirmAgent does', () => {
+      vi.useFakeTimers();
+      try {
+        manager.createSession({ id: 'rec-agent', cmd: 'sh', cwd: '.', deferOutput: true });
+        manager.createSession({ id: 'fresh', cmd: 'sh', cwd: '.' });
+        const managed = manager.getSession('rec-agent');
+        expect(managed?.recoveredAgentUnconfirmed).toBe(true);
+        expect(manager.getSession('fresh')?.recoveredAgentUnconfirmed).toBe(false);
+
+        manager.activateDeferred('rec-agent');
+        vi.advanceTimersByTime(100);
+        manager.resizeSession('rec-agent', 100, 30);
+        expect(managed?.bridge.isMuted).toBe(false);
+        expect(managed?.recoveredAgentUnconfirmed).toBe(true);
+
+        manager.confirmAgent('rec-agent');
+        expect(managed?.recoveredAgentUnconfirmed).toBe(false);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('a pending unmute does not touch a new session created under the same id', () => {
+      vi.useFakeTimers();
+      try {
+        manager.createSession({ id: 'rec-reuse', cmd: 'sh', cwd: '.', deferOutput: true });
+        manager.activateDeferred('rec-reuse');
+        manager.destroySession('rec-reuse');
+        manager.createSession({ id: 'rec-reuse', cmd: 'sh', cwd: '.', deferOutput: true });
+        vi.advanceTimersByTime(100);
+        const fresh = manager.getSession('rec-reuse');
+        expect(fresh?.deferred).toBe(true);
+        expect(fresh?.bridge.isMuted).toBe(true);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    // Records every PTY resize, so the Windows repaint request can be counted.
+    const recordSizes = (): Array<[number, number]> => {
+      const pty = lastMockPty;
+      if (!pty) throw new Error('no pty spawned');
+      const sizes: Array<[number, number]> = [];
+      const resize = pty.resize.bind(pty);
+      pty.resize = (cols: number, rows: number) => {
+        sizes.push([cols, rows]);
+        resize(cols, rows);
+      };
+      return sizes;
+    };
+
+    it('on Windows the first desk resize after a web activation still gets a ConPTY repaint', () => {
+      vi.useFakeTimers();
+      try {
+        for (const [platform, repaints] of [['win32', 1], ['linux', 0]] as const) {
+          const id = `rec-first-${platform}`;
+          manager.createSession({ id, cmd: 'sh', cwd: '.', cols: 62, rows: 44, deferOutput: true });
+          const managed = manager.getSession(id);
+          const sizes = recordSizes();
+          withPlatform(platform, () => {
+            manager.activateDeferred(id);
+            vi.advanceTimersByTime(100);
+            expect(managed?.bridge.isMuted).toBe(false);
+            manager.resizeSession(id, 100, 30);
+            vi.advanceTimersByTime(100);
+            // Only the first resize is the desk's first geometry.
+            manager.resizeSession(id, 90, 30);
+            vi.advanceTimersByTime(100);
+          });
+          const repaint: Array<[number, number]> = repaints ? [[100, 30]] : [];
+          expect(sizes).toEqual([[100, 30], ...repaint, [90, 30]]);
+        }
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('on Windows a size change inside the drain window after a web activation discards, then repaints', () => {
+      vi.useFakeTimers();
+      try {
+        manager.createSession({ id: 'rec-web-win', cmd: 'cmd.exe', cwd: '.', cols: 62, rows: 44, deferOutput: true });
+        const managed = manager.getSession('rec-web-win');
+        const pty = lastMockPty;
+        if (!pty) throw new Error('no pty spawned');
+        const sizes = recordSizes();
+        withPlatform('win32', () => {
+          pty.simulateData('prompt-at-saved-geometry > ');
+          manager.activateDeferred('rec-web-win');
+          vi.advanceTimersByTime(50);
+          manager.resizeSession('rec-web-win', 62, 42);
+          pty.simulateData('conpty-frame-at-62x42 > ');
+          vi.advanceTimersByTime(50);
+          // The first-geometry repaint is not requested twice.
+          vi.advanceTimersByTime(200);
+        });
+        expect(managed?.bridge.isMuted).toBe(false);
+        expect(managed?.ringBuffer.readAll().toString()).toBe('');
+        expect(sizes).toEqual([[62, 42], [62, 42]]);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    // #1965: the bundled OpenConsole (Windows 10, or WMUX_CONPTY_BACKEND)
+    // emits 0 bytes on every resize, so nothing would replace held output that
+    // is discarded, and a repaint request is answered by nothing.
+    it('#1965: bundled ConPTY keeps and replays held output across a size change, with no repaint request', () => {
+      vi.useFakeTimers();
+      try {
+        manager.createSession({ id: 'rec-bundled', cmd: 'cmd.exe', cwd: '.', cols: 62, rows: 44, deferOutput: true });
+        const managed = manager.getSession('rec-bundled')!;
+        managed.conptyBackend = 'bundled';
+        const pty = lastMockPty!;
+        const sizes = recordSizes();
+        withPlatform('win32', () => {
+          pty.simulateData('prompt-at-spawn-geometry > ');
+          manager.resizeSession('rec-bundled', 62, 44);
+          vi.advanceTimersByTime(50);
+          manager.resizeSession('rec-bundled', 62, 42);
+          vi.advanceTimersByTime(50);
+          vi.advanceTimersByTime(200);
+        });
+        expect(managed.bridge.isMuted).toBe(false);
+        // The only frame there is reaches the viewer, at the spawn geometry.
+        expect(managed.ringBuffer.readAll().toString()).toBe('prompt-at-spawn-geometry > ');
+        // One real change, no same-size repaint request after it.
+        expect(sizes).toEqual([[62, 42]]);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('#1965: bundled ConPTY gets no repaint request on the first desk resize after a web activation', () => {
+      vi.useFakeTimers();
+      try {
+        manager.createSession({ id: 'rec-bundled-web', cmd: 'sh', cwd: '.', cols: 62, rows: 44, deferOutput: true });
+        const managed = manager.getSession('rec-bundled-web')!;
+        managed.conptyBackend = 'bundled';
+        const sizes = recordSizes();
+        withPlatform('win32', () => {
+          manager.activateDeferred('rec-bundled-web');
+          vi.advanceTimersByTime(100);
+          manager.resizeSession('rec-bundled-web', 100, 30);
+          vi.advanceTimersByTime(200);
+        });
+        expect(sizes).toEqual([[100, 30]]);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('default (non-deferred) sessions capture data immediately', () => {
+      // Regression guard: Bug 2 fix must not change normal create flow.
+      manager.createSession({ id: 'live-1', cmd: 'cmd.exe', cwd: '.' });
+      const managed = manager.getSession('live-1');
+      expect(managed?.deferred).toBe(false);
+      expect(managed?.bridge.isMuted).toBe(false);
+
+      lastMockPty?.simulateData('immediate output');
+      expect(managed?.ringBuffer.readAll().toString()).toBe('immediate output');
+    });
+
+    it('deferred session that exits before resize still emits session:died', () => {
+      // Exit notification path must work even while muted — otherwise
+      // a recovered shell that crashes before its first resize would
+      // never tell the daemon, and the slot would leak.
+      manager.createSession({
+        id: 'rec-exit',
+        cmd: 'cmd.exe',
+        cwd: '.',
+        deferOutput: true,
+      });
+      const diedHandler = vi.fn();
+      manager.on('session:died', diedHandler);
+
+      lastMockPty?.simulateExit(2);
+
+      expect(diedHandler).toHaveBeenCalledWith(expect.objectContaining({ id: 'rec-exit', exitCode: 2 }));
+      expect(manager.getSession('rec-exit')?.meta.state).toBe('dead');
+    });
+  });
+
+  // #1965: the bundled OpenConsole waits ~3 s for an answer to its startup
+  // DA1. The daemon answers it only for a bundled session, and only when no
+  // renderer receives that chunk live.
+  describe('startup DA1 reply (#1965)', () => {
+    const PREAMBLE = '\x1b[1t\x1b[c\x1b[?1004h\x1b[?9001h';
+    const REPLY = '\x1b[?62;4;9;22c';
+
+    it('answers once for a bundled session no renderer is receiving live', () => {
+      manager.createSession({ id: 'da1-bundled', cmd: 'sh', cwd: '.' });
+      manager.getSession('da1-bundled')!.conptyBackend = 'bundled';
+      const pty = lastMockPty!;
+      pty.simulateData(PREAMBLE);
+      pty.simulateData('\x1b[c');
+      expect(pty.writes).toEqual([REPLY]);
+    });
+
+    it('does not answer for an in-box session', () => {
+      manager.createSession({ id: 'da1-inbox', cmd: 'sh', cwd: '.' });
+      manager.getSession('da1-inbox')!.conptyBackend = 'inbox';
+      const pty = lastMockPty!;
+      pty.simulateData(PREAMBLE);
+      expect(pty.writes).toEqual([]);
+    });
+
+    it('does not answer while a renderer receives the output live', () => {
+      manager.setLiveRendererProbe((id) => id === 'da1-live');
+      manager.createSession({ id: 'da1-live', cmd: 'sh', cwd: '.' });
+      manager.getSession('da1-live')!.conptyBackend = 'bundled';
+      const pty = lastMockPty!;
+      pty.simulateData(PREAMBLE);
+      expect(pty.writes).toEqual([]);
+    });
+
+    it('answers for a muted (recovered) session even with a live renderer pipe', () => {
+      manager.setLiveRendererProbe(() => true);
+      manager.createSession({ id: 'da1-muted', cmd: 'sh', cwd: '.', deferOutput: true });
+      manager.getSession('da1-muted')!.conptyBackend = 'bundled';
+      const pty = lastMockPty!;
+      pty.simulateData(PREAMBLE);
+      expect(pty.writes).toEqual([REPLY]);
+    });
+
+    it('does not answer a query that follows shell output', () => {
+      manager.createSession({ id: 'da1-late', cmd: 'sh', cwd: '.' });
+      manager.getSession('da1-late')!.conptyBackend = 'bundled';
+      const pty = lastMockPty!;
+      pty.simulateData('Microsoft Windows\r\n');
+      pty.simulateData('\x1b[c');
+      expect(pty.writes).toEqual([]);
+    });
+  });
+
+  // The daemon's own default-shell fallback (getDefaultShell), used when a
+  // session is created with no explicit cmd, listed Windows PowerShell 5.1
+  // before PowerShell 7 — the same ordering bug #176/#178 fixed in the main
+  // process but left unfixed on the daemon path. Since 5.1 ships on every
+  // Windows box, a 5.1-first order masks an installed pwsh 7 forever.
+  describe('default shell fallback (Windows)', () => {
+    let origPlatform: PropertyDescriptor | undefined;
+    let origSystemRoot: string | undefined;
+    let origProgramFiles: string | undefined;
+    let origLocalAppData: string | undefined;
+    let existsSpy: ReturnType<typeof vi.spyOn>;
+    let lstatSpy: ReturnType<typeof vi.spyOn>;
+    let readlinkSpy: ReturnType<typeof vi.spyOn>;
+
+    // The shared candidate table (shared/shellResolution.ts, #183) composes
+    // paths from these env vars via template literals, so pin them to fixed
+    // values: the test must match the source's exact string on any CI OS
+    // (where these vars are normally unset).
+    const PWSH7 = 'C:\\Program Files\\PowerShell\\7\\pwsh.exe';
+    const PS5 = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
+    const ALIAS = 'C:\\Users\\test\\AppData\\Local\\Microsoft\\WindowsApps\\pwsh.exe';
+    const ALIAS_TARGET = 'C:\\Program Files\\WindowsApps\\Microsoft.PowerShell_7.5.0.0_x64__8wekyb3d8bbwe\\pwsh.exe';
+
+    beforeEach(() => {
+      origPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+      Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+      origSystemRoot = process.env.SystemRoot;
+      origProgramFiles = process.env.ProgramFiles;
+      origLocalAppData = process.env.LOCALAPPDATA;
+      process.env.SystemRoot = 'C:\\Windows';
+      process.env.ProgramFiles = 'C:\\Program Files';
+      process.env.LOCALAPPDATA = 'C:\\Users\\test\\AppData\\Local';
+      existsSpy = vi.spyOn(fs, 'existsSync');
+      // Default: the WindowsApps alias slot is empty (lstat throws), so tests
+      // that don't opt into the alias scenario never touch the real fs.
+      lstatSpy = vi.spyOn(fs, 'lstatSync').mockImplementation(() => {
+        throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+      });
+      readlinkSpy = vi.spyOn(fs, 'readlinkSync').mockImplementation(() => {
+        throw Object.assign(new Error('EINVAL'), { code: 'EINVAL' });
+      });
+    });
+
+    afterEach(() => {
+      if (origPlatform) Object.defineProperty(process, 'platform', origPlatform);
+      if (origSystemRoot === undefined) delete process.env.SystemRoot;
+      else process.env.SystemRoot = origSystemRoot;
+      if (origProgramFiles === undefined) delete process.env.ProgramFiles;
+      else process.env.ProgramFiles = origProgramFiles;
+      if (origLocalAppData === undefined) delete process.env.LOCALAPPDATA;
+      else process.env.LOCALAPPDATA = origLocalAppData;
+      existsSpy.mockRestore();
+      lstatSpy.mockRestore();
+      readlinkSpy.mockRestore();
+    });
+
+    it('prefers PowerShell 7 over Windows PowerShell 5.1 when both exist', () => {
+      existsSpy.mockImplementation((p: fs.PathLike) => p === PWSH7 || p === PS5);
+      // Empty cmd is falsy → resolveShellPath returns null → getDefaultShell runs.
+      const session = manager.createSession({ id: 'def-pwsh7', cmd: '', cwd: '.' });
+      expect(session.cmd).toBe(PWSH7);
+    });
+
+    it('falls back to Windows PowerShell 5.1 when pwsh 7 is absent', () => {
+      existsSpy.mockImplementation((p: fs.PathLike) => p === PS5);
+      const session = manager.createSession({ id: 'def-ps5', cmd: '', cwd: '.' });
+      expect(session.cmd).toBe(PS5);
+    });
+
+    // Issue #183: on a machine where pwsh 7 exists ONLY as the Microsoft
+    // Store App Execution Alias (no traditional install), the daemon must
+    // resolve the alias to its spawnable package target instead of dropping
+    // to 5.1 — the same behavior #179/#180 gave the main process.
+    it('picks Store-installed pwsh 7 (WindowsApps alias) when it is the only pwsh 7 present', () => {
+      existsSpy.mockImplementation((p: fs.PathLike) => p === ALIAS_TARGET || p === PS5);
+      lstatSpy.mockImplementation((p: fs.PathLike) => {
+        if (p === ALIAS) return { isSymbolicLink: () => true } as fs.Stats;
+        throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+      });
+      readlinkSpy.mockImplementation((p: fs.PathLike) => {
+        if (p === ALIAS) return ALIAS_TARGET;
+        throw Object.assign(new Error('EINVAL'), { code: 'EINVAL' });
+      });
+      const session = manager.createSession({ id: 'def-alias', cmd: '', cwd: '.' });
+      // The resolved package target, NOT the alias stub (node-pty cannot
+      // spawn the stub — it silently falls back to 5.1).
+      expect(session.cmd).toBe(ALIAS_TARGET);
+    });
+
+    // X8: an exec unit whose resolved shell has no known wrapper-argv shape
+    // must swap to the platform default (a PowerShell family on Windows)
+    // instead of guessing argv for an unknown binary.
+    it('falls back to the default shell for an unknown exec wrapper family', () => {
+      existsSpy.mockImplementation((p: fs.PathLike) => p === PWSH7 || p === PS5);
+      const session = manager.createSession({
+        id: 'exec-fallback',
+        cmd: 'nu', // unknown family — buildExecArgs returns null for it
+        cwd: '.',
+        exec: { command: 'claude /loop' },
+      });
+      expect(session.cmd).toBe(PWSH7);
+      expect(lastMockPty?.spawnArgs).toEqual([
+        '-NoLogo',
+        '-NoProfile',
+        '-Command',
+        `claude /loop${PWSH_EXIT_TAIL}`,
+      ]);
+    });
+
+    it('resolves a bare "pwsh.exe" cmd through the Store alias when no traditional install exists', () => {
+      existsSpy.mockImplementation((p: fs.PathLike) => p === ALIAS_TARGET || p === PS5);
+      lstatSpy.mockImplementation((p: fs.PathLike) => {
+        if (p === ALIAS) return { isSymbolicLink: () => true } as fs.Stats;
+        throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+      });
+      readlinkSpy.mockImplementation((p: fs.PathLike) => {
+        if (p === ALIAS) return ALIAS_TARGET;
+        throw Object.assign(new Error('EINVAL'), { code: 'EINVAL' });
+      });
+      const session = manager.createSession({ id: 'bare-pwsh', cmd: 'pwsh.exe', cwd: '.' });
+      expect(session.cmd).toBe(ALIAS_TARGET);
+    });
+  });
+
+  // === X8 pane supervision: exec-style units + supervision meta + tombstone removal ===
+  describe('X8 exec sessions and supervision', () => {
+    it('spawns an exec unit with wrapper argv instead of OSC 133 injection', () => {
+      // Bare 'pwsh.exe' deterministically resolves to itself when no
+      // well-known install is present (resolveShellPath PATH fallback), so
+      // this test is independent of the host machine's PowerShell layout.
+      const session = manager.createSession({
+        id: 'exec-1',
+        cmd: 'pwsh.exe',
+        cwd: '.',
+        exec: { command: 'claude /loop' },
+      });
+      expect(lastMockPty?.spawnArgs).toEqual([
+        '-NoLogo',
+        '-NoProfile',
+        '-Command',
+        `claude /loop${PWSH_EXIT_TAIL}`,
+      ]);
+      // No interactive-integration markers: -NoExit (pwsh injection) must
+      // not leak into a unit that has no prompt to keep alive.
+      expect(lastMockPty?.spawnArgs).not.toContain('-NoExit');
+      // The unit command is persisted on meta so recovery/restart replays
+      // the loop itself, not an empty shell.
+      expect(session.exec).toEqual({ command: 'claude /loop' });
+    });
+
+    // #1620: on a factory-default Windows client powershell.exe resolves an npm
+    // agent (`codex`) to its .ps1 shim, and Restricted blocks it.
+    it('gives a Windows PowerShell 5.1 exec unit RemoteSigned on a factory-default machine', () => {
+      __setPolicyProbeForTests({ scopes: FACTORY_DEFAULT_SCOPES, platform: 'win32' });
+      manager.createSession({ id: 'exec-ps51', cmd: 'powershell.exe', cwd: '.', exec: { command: 'codex' } });
+      expect(lastMockPty?.spawnArgs).toEqual([
+        '-NoLogo',
+        '-NoProfile',
+        '-ExecutionPolicy',
+        'RemoteSigned',
+        '-Command',
+        `codex${PWSH_EXIT_TAIL}`,
+      ]);
+    });
+
+    it('leaves a 5.1 exec unit alone when the machine has an explicit policy', () => {
+      manager.createSession({ id: 'exec-ps51-explicit', cmd: 'powershell.exe', cwd: '.', exec: { command: 'codex' } });
+      expect(lastMockPty?.spawnArgs).not.toContain('-ExecutionPolicy');
+    });
+
+    it('never gives a pwsh 7 exec unit the flag', () => {
+      __setPolicyProbeForTests({ scopes: FACTORY_DEFAULT_SCOPES, platform: 'win32' });
+      manager.createSession({ id: 'exec-pwsh7', cmd: 'pwsh.exe', cwd: '.', exec: { command: 'codex' } });
+      expect(lastMockPty?.spawnArgs).not.toContain('-ExecutionPolicy');
+    });
+
+    // X6: a non-persisted execLaunchCommand spawns the resume-rewritten command
+    // (used by recovery/restart replays) while meta.exec.command stays original.
+    it('spawns execLaunchCommand but persists the ORIGINAL exec.command (X6 resume replay)', () => {
+      const session = manager.createSession({
+        id: 'x6-replay',
+        cmd: 'pwsh.exe',
+        cwd: '.',
+        exec: { command: 'claude' },
+        execLaunchCommand: 'claude --continue',
+      });
+      // Spawned argv carries the resume form...
+      expect(lastMockPty?.spawnArgs).toEqual([
+        '-NoLogo',
+        '-NoProfile',
+        '-Command',
+        `claude --continue${PWSH_EXIT_TAIL}`,
+      ]);
+      // ...but the persisted unit command is the ORIGINAL (badge / future
+      // first-launch semantics / no drift across repeated replays).
+      expect(session.exec).toEqual({ command: 'claude' });
+    });
+
+    // Phone contract v-next item 4: a phone workspace pane's agent runs on the
+    // account the pane was created on even when the login profile exports
+    // another one, lineage is on the meta from creation, and a gone account
+    // directory is dropped rather than handed to the CLI.
+    it.skipIf(process.platform === 'win32')('pins a phone pane account after the login profile and records lineage at creation', () => {
+      const lineage = { sessionId: 'web-src', verified: true, at: 7 };
+      const gone = path.join(os.tmpdir(), `wmux-gone-${process.pid}-${Date.now()}`);
+      const session = manager.createSession({
+        id: 'web-3f1c2e4a-0b6d-4c1e-9a7f-2d8e5b6c7a90',
+        cmd: '/bin/sh',
+        cwd: '.',
+        env: { WMUX_WORKSPACE_ID: 'ws-1', CLAUDE_CONFIG_DIR: os.tmpdir(), CODEX_HOME: gone },
+        exec: { command: 'claude' },
+        handoffFrom: lineage,
+        paneAccount: { vendor: 'claude' },
+      });
+      expect(lastMockPty?.spawnArgs).toEqual(['-lc', `export CLAUDE_CONFIG_DIR='${os.tmpdir()}'; claude`]);
+      expect(session.exec).toEqual({ command: 'claude' });
+      expect(session.handoffFrom).toEqual(lineage);
+      expect(session.paneAccount).toEqual({ vendor: 'claude' });
+      expect(session.env.CODEX_HOME).toBeUndefined();
+    });
+
+    it('keeps a temporary Codex relay out of persisted recovery commands', () => {
+      const session = manager.createSession({
+        id:'codex-relay',cmd:'pwsh.exe',cwd:'.',
+        exec:{command:'codex --model model-a'},
+        execLaunchCommand:'codex --model model-a --remote unix:///tmp/wmux-tui-owned/tui.sock',
+      });
+      expect(lastMockPty?.spawnArgs.join(' ')).toContain('--remote unix:///tmp/wmux-tui-owned/tui.sock');
+      expect(session.exec).toEqual({command:'codex --model model-a'});
+      expect(JSON.stringify(manager.listSessions())).not.toContain('wmux-tui-owned');
+    });
+
+    it('without execLaunchCommand, spawns the original exec.command (first launch unchanged)', () => {
+      manager.createSession({
+        id: 'x6-fresh',
+        cmd: 'pwsh.exe',
+        cwd: '.',
+        exec: { command: 'claude' },
+      });
+      expect(lastMockPty?.spawnArgs).toEqual([
+        '-NoLogo',
+        '-NoProfile',
+        '-Command',
+        `claude${PWSH_EXIT_TAIL}`,
+      ]);
+    });
+
+    it('stores supervision meta as an owned copy (no caller aliasing)', () => {
+      const limit = { burst: 5, healthyUptimeSec: 300 };
+      const session = manager.createSession({
+        id: 'sup-copy',
+        cmd: 'pwsh.exe',
+        cwd: '.',
+        exec: { command: 'claude /loop' },
+        supervision: { restart: 'on-failure', limit, status: 'armed' },
+      });
+      expect(session.supervision).toEqual({
+        restart: 'on-failure',
+        limit: { burst: 5, healthyUptimeSec: 300 },
+        status: 'armed',
+      });
+      // meta is persisted via buildState — a later caller-side mutation
+      // must not bleed into the persisted blob.
+      limit.burst = 99;
+      expect(manager.getSession('sup-copy')?.meta.supervision?.limit.burst).toBe(5);
+    });
+
+    it('recovery replay preserves a sticky stopped status', () => {
+      const session = manager.createSession({
+        id: 'sup-stopped',
+        cmd: 'pwsh.exe',
+        cwd: '.',
+        exec: { command: 'claude /loop' },
+        supervision: { restart: 'always', limit: { burst: 5, healthyUptimeSec: 300 }, status: 'stopped' },
+      });
+      // A runaway-guard 'stopped' must survive the persist→recover replay
+      // verbatim — silently re-arming across a reboot is a trust violation.
+      expect(session.supervision?.status).toBe('stopped');
+    });
+
+    it('persists supervision.restorePermissionMode through the owned copy (U-PERM)', () => {
+      const session = manager.createSession({
+        id: 'sup-restore',
+        cmd: 'pwsh.exe',
+        cwd: '.',
+        exec: { command: 'claude' },
+        supervision: { restart: 'on-failure', limit: { burst: 5, healthyUptimeSec: 300 }, status: 'armed', restorePermissionMode: true },
+      });
+      // The consent-gated bit must survive the field-by-field own-copy — a plain
+      // {restart,limit,status} rebuild silently dropped it (tsc-invisible: the
+      // field is optional on the target). Covers the persist half; the create RPC
+      // handler + recovery replay halves are covered by scripts/u-perm-restore-probe.mjs.
+      expect(session.supervision?.restorePermissionMode).toBe(true);
+      expect(manager.getSession('sup-restore')?.meta.supervision?.restorePermissionMode).toBe(true);
+    });
+
+    it('omits restorePermissionMode when consent is off', () => {
+      const session = manager.createSession({
+        id: 'sup-norestore',
+        cmd: 'pwsh.exe',
+        cwd: '.',
+        exec: { command: 'claude' },
+        supervision: { restart: 'on-failure', limit: { burst: 5, healthyUptimeSec: 300 }, status: 'armed', restorePermissionMode: false },
+      });
+      expect(session.supervision?.restorePermissionMode).toBeUndefined();
+    });
+
+    describe('removeTombstone', () => {
+      it('removes a dead tombstone silently so the same id can be re-created', () => {
+        manager.createSession({ id: 'tomb', cmd: 'pwsh.exe', cwd: '.', exec: { command: 'claude /loop' } });
+        lastMockPty?.simulateExit(1);
+        expect(manager.getSession('tomb')?.meta.state).toBe('dead');
+
+        const destroyHandler = vi.fn();
+        manager.on('session:destroyed', destroyHandler);
+
+        expect(manager.removeTombstone('tomb')).toBe(true);
+        expect(manager.getSession('tomb')).toBeUndefined();
+        // The whole point: a restart must look like died → (silence) →
+        // created. 'session:destroyed' means "user closed the pane" to the
+        // supervisor and "pane teardown" to main — neither may fire here.
+        expect(destroyHandler).not.toHaveBeenCalled();
+
+        // The supervised-restart invariant: same id is creatable again.
+        expect(() =>
+          manager.createSession({ id: 'tomb', cmd: 'pwsh.exe', cwd: '.', exec: { command: 'claude /loop' } }),
+        ).not.toThrow();
+      });
+
+      it('throws on a live session and returns false for a missing id', () => {
+        manager.createSession({ id: 'alive', cmd: 'pwsh.exe', cwd: '.' });
+        expect(() => manager.removeTombstone('alive')).toThrow(/is 'detached', not 'dead'/);
+        expect(manager.removeTombstone('ghost')).toBe(false);
+      });
+
+      it('reinsertSession restores the tombstone after a failed restart spawn', () => {
+        manager.createSession({ id: 'undo', cmd: 'pwsh.exe', cwd: '.', exec: { command: 'claude /loop' } });
+        lastMockPty?.simulateExit(1);
+        const managed = manager.getSession('undo')!;
+        manager.removeTombstone('undo');
+        expect(manager.getSession('undo')).toBeUndefined();
+
+        // createSession failed (cap / transient ConPTY) → put the dead
+        // record back so sessions.json, the badge, and rearm keep a target.
+        manager.reinsertSession(managed);
+        expect(manager.getSession('undo')?.meta.state).toBe('dead');
+        expect(manager.getSession('undo')?.meta.exec).toEqual({ command: 'claude /loop' });
+
+        // Guards: only dead records, only into a free slot.
+        expect(() => manager.reinsertSession(managed)).toThrow(/id already present/);
+        manager.createSession({ id: 'live-guard', cmd: 'pwsh.exe', cwd: '.' });
+        const live = manager.getSession('live-guard')!;
+        expect(() => manager.reinsertSession(live)).toThrow(/not 'dead'/);
+      });
+    });
+  });
+
+  // Shutdown-kill classification (reboot-reattach RCA 2026-07-02): an exit the
+  // injected classifier marks involuntary must SUSPEND the session (recovery
+  // replays it under the same id) instead of marking it dead (recovery purges
+  // it — which is how every in-use session vanished across an OS reboot).
+  describe('involuntary exit classification (shutdown-kill)', () => {
+    it('default classifier: exits keep the pre-fix died flow', () => {
+      manager.createSession({ id: 'default-die', cmd: 'cmd.exe', cwd: '.' });
+      const died = vi.fn();
+      const interrupted = vi.fn();
+      manager.on('session:died', died);
+      manager.on('session:interrupted', interrupted);
+
+      lastMockPty?.simulateExit(1073807364); // even the shutdown code — unwired = unchanged
+
+      expect(died).toHaveBeenCalledTimes(1);
+      expect(interrupted).not.toHaveBeenCalled();
+      expect(manager.getSession('default-die')?.meta.state).toBe('dead');
+    });
+
+    it('classified exit → suspended + session:interrupted, NO session:died', () => {
+      manager.setInvoluntaryExitClassifier((exitCode) => exitCode === 1073807364);
+      manager.createSession({ id: 'shutdown-kill', cmd: 'cmd.exe', cwd: '.' });
+      const died = vi.fn();
+      const interrupted = vi.fn();
+      const stateChanged = vi.fn();
+      manager.on('session:died', died);
+      manager.on('session:interrupted', interrupted);
+      manager.on('session:stateChanged', stateChanged);
+
+      lastMockPty?.simulateExit(1073807364);
+
+      expect(died).not.toHaveBeenCalled();
+      // Same forensics contract as session:died — daemon logging depends on it.
+      expect(interrupted).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'shutdown-kill', exitCode: 1073807364 }),
+      );
+      expect(stateChanged).toHaveBeenCalledWith({ id: 'shutdown-kill', state: 'suspended' });
+      const managed = manager.getSession('shutdown-kill');
+      expect(managed?.meta.state).toBe('suspended');
+      // exitCode still recorded for forensics even on the suspend path.
+      expect(managed?.meta.exitCode).toBe(1073807364);
+    });
+
+    it('classifier false → normal death even when wired', () => {
+      manager.setInvoluntaryExitClassifier((exitCode) => exitCode === 1073807364);
+      manager.createSession({ id: 'user-exit', cmd: 'cmd.exe', cwd: '.' });
+      const died = vi.fn();
+      const interrupted = vi.fn();
+      manager.on('session:died', died);
+      manager.on('session:interrupted', interrupted);
+
+      lastMockPty?.simulateExit(0); // user typed `exit`
+
+      expect(died).toHaveBeenCalledWith(expect.objectContaining({ id: 'user-exit', exitCode: 0 }));
+      expect(interrupted).not.toHaveBeenCalled();
+      expect(manager.getSession('user-exit')?.meta.state).toBe('dead');
+    });
+
+    it('interrupted-suspended session survives in listSessions but is not live', () => {
+      manager.setInvoluntaryExitClassifier(() => true);
+      manager.createSession({ id: 'susp-list', cmd: 'cmd.exe', cwd: '.' });
+      lastMockPty?.simulateExit(1073807364);
+
+      // Persisted via listSessions (buildState) — this is the recovery payload.
+      expect(manager.listSessions().find((s) => s.id === 'susp-list')?.state).toBe('suspended');
+      // Not a live PTY holder — Watchdog idle-shutdown must not be held by it.
+      expect(manager.listLiveSessions().find((s) => s.id === 'susp-list')).toBeUndefined();
+    });
+
+    // Adversarial review (2026-07-02): attachSession/resizeSession only
+    // guarded 'dead', so an RPC against a 'suspended' session (renderer
+    // reconnect during the misclassification window) would flip it to
+    // 'attached' or resize a destroyed ptyProcess — a real crash risk, since
+    // the caller (daemon/index.ts) then wires a fresh SessionPipe straight
+    // into a socket that no longer has a live process behind it.
+    it('attachSession rejects a suspended session (no live ptyProcess to wire)', () => {
+      manager.setInvoluntaryExitClassifier(() => true);
+      manager.createSession({ id: 'susp-attach', cmd: 'cmd.exe', cwd: '.' });
+      lastMockPty?.simulateExit(1073807364);
+      expect(manager.getSession('susp-attach')?.meta.state).toBe('suspended');
+
+      expect(() => manager.attachSession('susp-attach')).toThrow(/suspended/i);
+      // Rejection must not have side-effected the state.
+      expect(manager.getSession('susp-attach')?.meta.state).toBe('suspended');
+    });
+
+    it('resizeSession rejects a suspended session (no live ptyProcess to resize)', () => {
+      manager.setInvoluntaryExitClassifier(() => true);
+      manager.createSession({ id: 'susp-resize', cmd: 'cmd.exe', cwd: '.' });
+      lastMockPty?.simulateExit(1073807364);
+
+      expect(() => manager.resizeSession('susp-resize', 100, 40)).toThrow(/suspended/i);
+    });
+  });
+});
+
+// Root cause 2026-07-04 (deterministic repro): resizing an interactive zsh to
+// cols <= 6 crashes it with SIGBUS inside zle.so resetvideo/zrefresh — 6/6 at
+// cols 2-6, 0/6 at cols >= 7, rows irrelevant. Split/layout transitions
+// transiently compute 2-5-col geometries, which is when panes died "randomly".
+// The daemon floors every geometry at MIN_SAFE_COLS(10)/MIN_SAFE_ROWS(2) and
+// skips same-size SIGWINCHes entirely.
+describe('DaemonSessionManager — degenerate-geometry SIGBUS guard', () => {
+  let mgr: DaemonSessionManager;
+
+  beforeEach(() => {
+    mgr = new DaemonSessionManager();
+    lastMockPty = null;
+  });
+
+  afterEach(() => {
+    mgr.disposeAll();
+  });
+
+  function spawn(id = 's1', cols = 80, rows = 24): MockPty {
+    mgr.createSession({ id, cmd: 'zsh', cwd: '.', cols, rows });
+    return lastMockPty!;
+  }
+
+  it('skips the SIGWINCH when the geometry is unchanged (no-op resize)', () => {
+    const pty = spawn('s1', 80, 24);
+    mgr.resizeSession('s1', 80, 24);
+    expect(pty.resizeCalls).toBe(0);
+  });
+
+  it('floors a crash-narrow resize at the safe minimum (zsh dies at cols <= 6)', () => {
+    const pty = spawn('s1', 80, 24);
+    mgr.resizeSession('s1', 2, 24); // what a mid-split layout transient sends
+    expect(pty.resizeCalls).toBe(1);
+    expect(pty.cols).toBe(10); // floored, never 2
+    expect(mgr.getSession('s1')?.meta.cols).toBe(10);
+  });
+
+  it('floors degenerate rows too', () => {
+    const pty = spawn('s1', 80, 24);
+    mgr.resizeSession('s1', 120, 1);
+    expect(pty.rows).toBe(2);
+    expect(pty.cols).toBe(120);
+  });
+
+  it('treats repeated degenerate resizes as no-ops after the first (same clamped geometry)', () => {
+    const pty = spawn('s1', 80, 24);
+    mgr.resizeSession('s1', 2, 24);
+    mgr.resizeSession('s1', 4, 24); // clamps to the same 10x24
+    mgr.resizeSession('s1', 6, 24);
+    expect(pty.resizeCalls).toBe(1); // one SIGWINCH total
+  });
+
+  it('leaves a normal resize untouched', () => {
+    const pty = spawn('s1', 80, 24);
+    mgr.resizeSession('s1', 120, 30);
+    expect(pty.cols).toBe(120);
+    expect(pty.rows).toBe(30);
+  });
+
+  it('clamps the spawn geometry as well (spawning INTO a 2-col PTY crashes the same way)', () => {
+    const pty = spawn('s1', 2, 1);
+    expect(pty.cols).toBe(10);
+    expect(pty.rows).toBe(2);
+    expect(mgr.getSession('s1')?.meta.cols).toBe(10);
+  });
+});

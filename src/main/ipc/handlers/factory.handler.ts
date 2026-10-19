@@ -31,12 +31,17 @@ import type {
 import { getWorkspaceMirror } from '../../workspace/WorkspaceMirror';
 import { BOT_AVATAR_EXTENSIONS, pickBotAvatar, type BotAvatarPickerDeps } from '../../factory/botAvatar';
 import { isMainWindowSender } from '../mainWindowSender';
-import type { BotTaskView } from '../../../shared/botTask';
+import type { BotTaskView, FactoryTaskFolderCleanResult, FactoryTaskFolderUsage } from '../../../shared/botTask';
+import { cleanTaskFolders, getTaskFolderPorts, taskFolderUsage } from '../../factory/taskFolderCleanup';
 import { botTaskViews, getBotTaskSources, type BotTaskSources } from '../../factory/botTasks';
-import { getFactoryStopPorts, stopFactoryWork, type FactoryStopPorts, type FactoryStopResult } from '../../factory/factoryStop';
+import { getFactoryStopPorts, stopFactoryTask, stopFactoryWork, type FactoryStopPorts, type FactoryStopResult } from '../../factory/factoryStop';
 import { getWorkerResumePorts, resumeWorker, type WorkerResumePorts, type WorkerResumeResult } from '../../factory/workerReclaim';
+import { getAgentSlots, type AgentSlots } from '../../factory/agentSlots';
 import { botClaudeConfigDir, engineReadiness, startEngineLogin, type EngineLoginDeps, type EngineReadinessDeps } from '../../factory/engineReadiness';
 import type { FactoryEngineReadiness } from '../../../shared/factoryEngine';
+import { BOT_WORKER_AGENTS, botWorkerAgentLabel, botWorkerAgentSupported, type BotWorkerAgentOption } from '../../../shared/botWorkerAgent';
+import { agentExecEnv } from '../../../shared/execEnv';
+import { resolveOnPath } from '../../factory/botEngines';
 import { resolveClaudeExecutable } from '../../claude/resolveClaudeExecutable';
 import { loadClaudeCredential } from '../../claude/claudeCredential';
 import { sendToRenderer } from '../../pipe/handlers/_bridge';
@@ -80,18 +85,30 @@ export async function factoryBotRowsWithTasks(
   }
 }
 
-const STOP_NONE = { botsInterrupted: 0, workersStopped: 0, gatesCancelled: 0 } as const;
+const STOP_NONE = { botsInterrupted: 0, workersStopped: 0, tasksCancelled: 0, gatesCancelled: 0 } as const;
 
-/** FACTORY_STOP_ALL / FACTORY_STOP_BOT's body: the sender check, the bot id
- *  (stop-bot only), then factoryStop. A stop of a bot the store no longer
- *  holds still stops the tasks it started. */
+/** A bot task's ledger id. */
+const TASK_ID_RE = /^wtask-[A-Za-z0-9_-]{1,80}$/;
+
+/** FACTORY_STOP_ALL / FACTORY_STOP_BOT / FACTORY_STOP_TASK's body: the
+ *  sender check, the bot id (stop-bot) or task id (stop-task), then
+ *  factoryStop. A stop of a bot the store no longer holds still stops the
+ *  tasks it started. */
 export function factoryStopHandler(
   getWindow: () => BrowserWindow | null,
-  scope: 'all' | 'bot',
+  scope: 'all' | 'bot' | 'task',
   ports: () => FactoryStopPorts | null = getFactoryStopPorts,
 ): (e: { sender?: unknown; senderFrame?: unknown }, req?: unknown) => Promise<FactoryStopResult> {
   return async (e, req) => {
     if (!isMainWindowSender(e, getWindow())) return { ok: false, ...STOP_NONE, code: 'operator_only', message: 'only the main window may stop the bots' };
+    // One task's worker (the Bots page's Stop worker): that task only.
+    if (scope === 'task') {
+      const raw = req && typeof req === 'object' && !Array.isArray(req) ? (req as { taskId?: unknown }).taskId : undefined;
+      if (typeof raw !== 'string' || !TASK_ID_RE.test(raw)) return { ok: false, ...STOP_NONE, code: 'invalid_argument', message: 'taskId must be a task id' };
+      const p = ports();
+      if (!p) return { ok: false, ...STOP_NONE, code: 'not_started', message: 'The factory is not running.' };
+      return stopFactoryTask(p, raw);
+    }
     let botId: string | undefined;
     if (scope === 'bot') {
       const raw = req && typeof req === 'object' && !Array.isArray(req) ? (req as { botId?: unknown }).botId : undefined;
@@ -105,18 +122,38 @@ export function factoryStopHandler(
 }
 
 /** FACTORY_WORKER_RESUME's body: the sender check, the task id, then the
- *  resume (the owner's: no bot check, never held by the agent budget). */
+ *  resume (the owner's: no bot check). A resumed worker holds an agent slot
+ *  like a bot's resume does (agentSlots.ts), so it starts only with a slot
+ *  free now; otherwise it is refused with the cap, and nothing starts. A
+ *  worker resumed already says so without taking a slot. */
 export function factoryWorkerResumeHandler(
   getWindow: () => BrowserWindow | null,
   ports: () => WorkerResumePorts | null = getWorkerResumePorts,
+  slots: () => AgentSlots | null = getAgentSlots,
 ): (e: { sender?: unknown; senderFrame?: unknown }, req?: unknown) => Promise<WorkerResumeResult> {
   return async (e, req) => {
     if (!isMainWindowSender(e, getWindow())) return { ok: false, code: 'operator_only', message: 'only the main window may resume a worker' };
     const raw = req && typeof req === 'object' && !Array.isArray(req) ? (req as { taskId?: unknown }).taskId : undefined;
-    if (typeof raw !== 'string' || !/^wtask-[A-Za-z0-9_-]{1,80}$/.test(raw)) return { ok: false, code: 'invalid_argument', message: 'taskId must be a task id' };
+    if (typeof raw !== 'string' || !TASK_ID_RE.test(raw)) return { ok: false, code: 'invalid_argument', message: 'taskId must be a task id' };
     const p = ports();
     if (!p) return { ok: false, code: 'not_started', message: 'The factory is not running.' };
-    return resumeWorker(p, raw, { kind: 'owner' });
+    if (p.store.get(raw)?.state === 'resumed') return resumeWorker(p, raw, { kind: 'owner' });
+    const s = slots();
+    const botId = p.store.get(raw)?.botId;
+    const slot = s ? s.tryAcquire({ taskId: raw, ...(botId ? { botId } : {}), byOwner: true }) : null;
+    if (s && !slot) {
+      const cap = s.limit();
+      return { ok: false, code: 'no_slot', cap, message: `No free agent slot (the limit is ${cap}). Stop an idle worker, or raise the limit in Settings › Bots.` };
+    }
+    // The slot hands over to the resumed-worker count once the line is typed.
+    const release = (): void => {
+      if (slot?.ok) slot.release();
+    };
+    try {
+      return await resumeWorker(p, raw, { kind: 'owner' }, undefined, release);
+    } finally {
+      release();
+    }
   };
 }
 
@@ -138,6 +175,54 @@ export function factoryEngineReadinessHandler(
   return async (e) => {
     if (!isMainWindowSender(e, getWindow())) return { ready: false, reason: 'unknown', message: 'only the main window may ask' };
     return engineReadiness(deps);
+  };
+}
+
+/** FACTORY_WORKER_AGENTS: the engines a bot's workers may run on, each with
+ *  whether its CLI is on the login shell's PATH here (the lookup bot engines
+ *  use, botEngines.resolveOnPath). Main window only; any other sender gets
+ *  none. */
+export function factoryWorkerAgentsHandler(
+  getWindow: () => BrowserWindow | null,
+  deps: { env?: () => Promise<NodeJS.ProcessEnv>; resolve?: (cmd: string, env: NodeJS.ProcessEnv) => string | null; platform?: NodeJS.Platform } = {},
+): (e: { sender?: unknown; senderFrame?: unknown }) => Promise<BotWorkerAgentOption[]> {
+  return async (e) => {
+    if (!isMainWindowSender(e, getWindow())) return [];
+    const env = await (deps.env ?? (() => agentExecEnv(process.env)))();
+    const resolve = deps.resolve ?? ((cmd: string, en: NodeJS.ProcessEnv) => resolveOnPath(cmd, en));
+    const platform = deps.platform ?? process.platform;
+    return BOT_WORKER_AGENTS.map((agent) => ({ agent, label: botWorkerAgentLabel(agent), installed: resolve(agent, env) !== null, supported: botWorkerAgentSupported(agent, platform) }));
+  };
+}
+
+/** FACTORY_TASK_FOLDERS_USAGE: the space bot task folders use; null for
+ *  another sender or before the factory runs. */
+export function factoryTaskFoldersUsageHandler(
+  getWindow: () => BrowserWindow | null,
+  ports: () => ReturnType<typeof getTaskFolderPorts> = getTaskFolderPorts,
+): (e: { sender?: unknown; senderFrame?: unknown }) => Promise<FactoryTaskFolderUsage | null> {
+  return async (e) => {
+    if (!isMainWindowSender(e, getWindow())) return null;
+    const p = ports();
+    return p ? taskFolderUsage(p, p.allRows()) : null;
+  };
+}
+
+/** FACTORY_TASK_FOLDERS_CLEAN: Clean up now — the task-end rules applied to
+ *  every ended bot task (a folder kept dirty is looked at again). */
+export function factoryTaskFoldersCleanHandler(
+  getWindow: () => BrowserWindow | null,
+  ports: () => ReturnType<typeof getTaskFolderPorts> = getTaskFolderPorts,
+): (e: { sender?: unknown; senderFrame?: unknown }) => Promise<FactoryTaskFolderCleanResult> {
+  return async (e) => {
+    if (!isMainWindowSender(e, getWindow())) return { ok: false, code: 'operator_only', message: 'only the main window may clean up task folders' };
+    const p = ports();
+    if (!p) return { ok: false, code: 'not_started', message: 'The factory is not running.' };
+    try {
+      return { ok: true, ...(await cleanTaskFolders(p, p.allRows(), { force: true })) };
+    } catch (err) {
+      return { ok: false, code: 'unavailable', message: `The daemon could not be read: ${String(err)}` };
+    }
   };
 }
 
@@ -268,19 +353,54 @@ export function factoryBotSetAvatarHandler(
   };
 }
 
+/** What switching "Run bots" off stopped (FACTORY_SETTINGS_SET's answer,
+ *  present when it stopped something or could not stop everything). */
+export interface FactoryOffStopped {
+  /** Workers whose processes were confirmed gone. */
+  workers: number;
+  /** Open bot tasks cancelled ("stopped by owner"). */
+  tasks: number;
+  ok: boolean;
+}
+
 /** FACTORY_SETTINGS_SET's body: the sender check, then the settings store.
- *  null = not written. */
+ *  null = not written. Switching "Run bots" off stops the bots' running
+ *  work (factoryStop.ts, `off`): the switch is written first, so nothing new
+ *  launches, then the same stop as Stop all runs. */
 export function factorySettingsSetHandler(
   getWindow: () => BrowserWindow | null,
   store: typeof getFactorySettingsStore = getFactorySettingsStore,
-): (e: { sender?: unknown; senderFrame?: unknown }, patch: unknown) => Promise<FactorySettings | null> {
+  stopPorts: () => FactoryStopPorts | null = getFactoryStopPorts,
+): (e: { sender?: unknown; senderFrame?: unknown }, patch: unknown) => Promise<(FactorySettings & { stoppedWork?: FactoryOffStopped }) | null> {
   return async (e, patch) => {
     if (!isMainWindowSender(e, getWindow())) return null;
     const s = store();
     if (!s) return null;
-    const next = await s.update(patch);
+    const wasOn = s.get().enabled;
+    // The store applies a patch before its write lands, so the switch is
+    // live once update() is called. The stop starts in the same tick and
+    // reads what it stops right away: a switch-on that lands while it runs
+    // (or while the write is pending) keeps the work started after it.
+    const writing = s.update(patch);
+    const switchingOff = wasOn && !s.get().enabled;
     getBotRuntime()?.kick();
-    return next;
+    const ports = switchingOff ? stopPorts() : null;
+    const stopping = ports ? stopFactoryWork(ports, { off: true }) : null;
+    let next: FactorySettings | null = null;
+    let failure: unknown = null;
+    try {
+      next = await writing;
+    } catch (err) {
+      // A write that failed after switching off still stops the work.
+      failure = err;
+    }
+    let stoppedWork: FactoryOffStopped | undefined;
+    if (stopping) {
+      const r = await stopping;
+      if (r.workersStopped > 0 || r.tasksCancelled > 0 || !r.ok) stoppedWork = { workers: r.workersStopped, tasks: r.tasksCancelled, ok: r.ok };
+    }
+    if (!next) throw failure;
+    return stoppedWork ? { ...next, stoppedWork } : next;
   };
 }
 
@@ -300,9 +420,13 @@ export function registerFactoryHandlers(
     IPC.FACTORY_BOT_SUGGEST_REPO,
     IPC.FACTORY_STOP_ALL,
     IPC.FACTORY_STOP_BOT,
+    IPC.FACTORY_STOP_TASK,
     IPC.FACTORY_WORKER_RESUME,
     IPC.FACTORY_ENGINE_READINESS,
     IPC.FACTORY_ENGINE_LOGIN,
+    IPC.FACTORY_WORKER_AGENTS,
+    IPC.FACTORY_TASK_FOLDERS_USAGE,
+    IPC.FACTORY_TASK_FOLDERS_CLEAN,
   ];
   for (const c of channels) ipcMain.removeHandler(c);
 
@@ -342,11 +466,19 @@ export function registerFactoryHandlers(
 
   ipcMain.handle(IPC.FACTORY_STOP_BOT, wrapHandler(IPC.FACTORY_STOP_BOT, factoryStopHandler(getWindow, 'bot')));
 
+  ipcMain.handle(IPC.FACTORY_STOP_TASK, wrapHandler(IPC.FACTORY_STOP_TASK, factoryStopHandler(getWindow, 'task')));
+
   ipcMain.handle(IPC.FACTORY_WORKER_RESUME, wrapHandler(IPC.FACTORY_WORKER_RESUME, factoryWorkerResumeHandler(getWindow)));
 
   ipcMain.handle(IPC.FACTORY_ENGINE_READINESS, wrapHandler(IPC.FACTORY_ENGINE_READINESS, factoryEngineReadinessHandler(getWindow)));
 
   ipcMain.handle(IPC.FACTORY_ENGINE_LOGIN, wrapHandler(IPC.FACTORY_ENGINE_LOGIN, factoryEngineLoginHandler(getWindow, defaultEngineLoginDeps(getWindow))));
+
+  ipcMain.handle(IPC.FACTORY_WORKER_AGENTS, wrapHandler(IPC.FACTORY_WORKER_AGENTS, factoryWorkerAgentsHandler(getWindow)));
+
+  ipcMain.handle(IPC.FACTORY_TASK_FOLDERS_USAGE, wrapHandler(IPC.FACTORY_TASK_FOLDERS_USAGE, factoryTaskFoldersUsageHandler(getWindow)));
+
+  ipcMain.handle(IPC.FACTORY_TASK_FOLDERS_CLEAN, wrapHandler(IPC.FACTORY_TASK_FOLDERS_CLEAN, factoryTaskFoldersCleanHandler(getWindow)));
 
   return () => {
     for (const c of channels) ipcMain.removeHandler(c);

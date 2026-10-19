@@ -45,9 +45,18 @@ export interface DaemonSession {
   lastActivity: string;     // ISO 8601
   pid: number;              // child process PID
   /**
-   * OS-reported creation time of `pid`, as the platform prints it (Windows
-   * CIM `CreationDate` in wmic's DMTF format, posix `ps -o lstart=`). Opaque — only ever compared
-   * for equality against a fresh reading of the same pid.
+   * Windows: the creation time of `pid` as a FILETIME (100 ns units since
+   * 1601), in decimal — a bigint cannot go into JSON and a number would lose
+   * precision. Read natively and stamped synchronously right after the spawn
+   * (#2398). Compared exactly against a fresh reading of the same pid. Absent
+   * on posix, and on records written before it existed.
+   */
+  pidCreatedAtFt?: string;
+  /**
+   * OS-reported creation time of `pid`, as the platform prints it. Posix
+   * still writes it (`ps -o lstart=`, compared for equality). Windows only
+   * reads it: records from before `pidCreatedAtFt` hold wmic's DMTF format
+   * (`20260915084549.500977+540`), compared in UTC microseconds.
    *
    * A pid alone is not an identity: Windows recycles pids aggressively and a
    * tombstone can outlive its shell by `deadTtlHours`, so a later "pid is
@@ -55,7 +64,7 @@ export interface DaemonSession {
    * (pid, pidStartTime) is unique, and #646's reaping paths kill a process
    * tree — they must not fire on a recycled pid.
    *
-   * Optional: filled in asynchronously just after spawn (so it is absent for
+   * Optional: on posix it is filled in asynchronously just after spawn (so it is absent for
    * the first moments of a session's life), and absent entirely from records
    * written before this field existed. Consumers must degrade, not guess.
    */
@@ -130,6 +139,14 @@ export interface DaemonSession {
    * RECOVERED this boot (see recoveredAgentShellIds) — never live reconnects.
    */
   lastDetectedAgent?: AgentSlug;
+  /**
+   * What last decided `lastDetectedAgent`, and when (ms): the canonical tier
+   * (`hook`, `process` or `screen`) whose identity was written. Absent on a
+   * name that predates it, or that the resume binding or spool filled in.
+   * Lets the recovery pill tell a proven later launch from a screen guess
+   * when the name and the saved conversation disagree.
+   */
+  lastDetectedAgentEvidence?: { source: 'hook' | 'process' | 'screen'; at: number };
   /**
    * X6 ③ resume-by-id: the captured handle on this pane's agent conversation
    * (origin session id + cwd + last permission mode), set live from the claude
@@ -263,6 +280,14 @@ export interface DaemonConfig {
      * the default when absent/garbage. See #557.
      */
     detachedTtlHours: number;
+    /**
+     * Hours without PTY output after which an open pane that no one is
+     * viewing and no agent runs in moves its ring buffer to its recovery
+     * `.buf` and frees the memory (BufferHibernation.ts). The shell keeps
+     * running and the bytes come back on the next read or write. `0` turns
+     * it off. Fractions are allowed. Backfilled from the default when absent.
+     */
+    hibernateIdleHours?: number;
   };
   /**
    * Channel retention policy. OPTIONAL — old config.json files predate it, so

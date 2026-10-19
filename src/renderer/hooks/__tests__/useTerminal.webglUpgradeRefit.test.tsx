@@ -15,7 +15,8 @@ import { installCanvas2dStub } from '../../../test-utils/canvas2dStub';
 import { act, useRef } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { FitAddon } from '@xterm/addon-fit';
-import { webglUpgradeQueue } from '../../terminal/webglUpgradeQueue';
+import { WEBGL_UPGRADE_HIDE_MAX_MS, webglUpgradeQueue } from '../../terminal/webglUpgradeQueue';
+import { deliberateSleep } from '../../../test-utils/waitFor';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -84,7 +85,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-const settle = (ms = 50) => act(async () => { await new Promise((r) => setTimeout(r, ms)); });
+const settle = (ms = 50) => act(async () => { await deliberateSleep(ms, 'not yet converted (#2363): settle helper under act; callers assert after it'); });
 
 async function setup(ptyId: string) {
   const { useTerminal } = await import('../useTerminal');
@@ -158,5 +159,42 @@ describe('useTerminal WebGL upgrade refit', { timeout: 60_000 }, () => {
     });
     await settle();
     expect(fitSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe('useTerminal WebGL upgrade keeps the DOM frame off screen', { timeout: 60_000 }, () => {
+  // At a fractional device pixel ratio the DOM cell is wider and taller than
+  // the WebGL one, so showing the DOM frame first made the text visibly
+  // tighten when the renderer swapped. The pane stays hidden until then.
+  const xtermEl = () => host!.querySelector('.xterm') as HTMLElement;
+
+  it('hides the pane until the upgraded renderer has refit', async () => {
+    const { jobs } = await setup('p-upgrade-hidden-until-refit');
+    expect(xtermEl().style.opacity).toBe('0');
+    await act(async () => { jobs.at(-1)!(); });
+    expect(xtermEl().style.opacity).toBe('0');
+    await settle();
+    expect(xtermEl().style.opacity).toBe('');
+  });
+
+  it('shows the pane when building the renderer failed', async () => {
+    const { jobs } = await setup('p-upgrade-fail-shows');
+    webgl.fail = true;
+    await act(async () => { jobs.at(-1)!(); });
+    expect(xtermEl().style.opacity).toBe('');
+  });
+
+  it('shows the pane after a bounded wait when the build never runs', async () => {
+    await setup('p-upgrade-never-runs');
+    expect(xtermEl().style.opacity).toBe('0');
+    await act(async () => { await deliberateSleep(WEBGL_UPGRADE_HIDE_MAX_MS + 50, 'real timer: the bounded upgrade hide must expire'); });
+    expect(xtermEl().style.opacity).toBe('');
+  });
+
+  it('shows the pane again when it hides before the upgrade ran', async () => {
+    const { Harness } = await setup('p-upgrade-hide-shows');
+    expect(xtermEl().style.opacity).toBe('0');
+    await act(async () => { root!.render(<Harness visible={false} />); });
+    expect(xtermEl().style.opacity).toBe('');
   });
 });

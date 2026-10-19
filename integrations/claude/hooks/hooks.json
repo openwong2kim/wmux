@@ -64,6 +64,17 @@
         ]
       }
     ],
+    "Notification": [
+      {
+        "matcher": "permission_prompt",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/wmux-bridge.mjs\" Notification"
+          }
+        ]
+      }
+    ],
     "StopFailure": [
       {
         "matcher": "",

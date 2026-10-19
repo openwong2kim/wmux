@@ -2,13 +2,13 @@
 // Toggling never moves a row (that is the pin's job), a removed workspace
 // keeps no bookmark, and bookmarks survive a save/load round trip.
 import { describe, it, expect, beforeEach } from 'vitest';
-import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { create } from 'zustand';
 import { immer } from 'zustand/middleware/immer';
 import { createWorkspaceSlice, type WorkspaceSlice } from '../workspaceSlice';
 import { createUISlice, type UISlice } from '../uiSlice';
 import { createWorkspace, type SessionData, type Workspace } from '../../../../shared/types';
+import { readSourceText } from '../../../../test-utils/sourceText';
 
 type TestState = WorkspaceSlice & UISlice & { multiviewIds: string[]; moa: unknown };
 
@@ -86,7 +86,7 @@ describe('workspace bookmarks', () => {
   });
 
   it('is written by the session save', () => {
-    const source = fs.readFileSync(path.resolve(__dirname, '../../../components/Layout/AppLayout.tsx'), 'utf8');
+    const source = readSourceText(path.resolve(__dirname, '../../../components/Layout/AppLayout.tsx'));
     const start = source.indexOf('function buildSessionData');
     expect(start).toBeGreaterThan(-1);
     expect(source.slice(start, start + 8000)).toContain('sidebarBookmarkedIds: state.sidebarBookmarkedIds');

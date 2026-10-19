@@ -32,6 +32,7 @@ import {
   SESSION_DATA_REGISTRY,
   type MigrationRegistry,
 } from '../migrate';
+import { deliberateSleep } from '../../../../test-utils/waitFor';
 
 // ── Fixture loaders ──────────────────────────────────────────────────
 
@@ -273,7 +274,7 @@ describe('migration chaining (atomicReadJSON integration)', () => {
 
     // Pause so any mtime change would be observable on platforms
     // with coarse timestamp resolution.
-    await new Promise((r) => setTimeout(r, 15));
+    await deliberateSleep(15, 'clock: mtime resolution is coarse on some platforms');
 
     // Corrupt the on-disk file (still v1-shaped but with a different
     // workspaceId) — if the snapshot logic were broken and rewrote

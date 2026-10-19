@@ -9,6 +9,7 @@ import type { Fact, FactDraft } from '../../../shared/facts';
 import type { RoomCard } from '../../../shared/room';
 import { createFactLog } from '../factLog';
 import { correctionGroups, correctionKey, Gardener, GARDENER_FILENAME, GARDENER_THREAD_PREFIX } from '../gardener';
+import { deliberateSleep } from '../../../test-utils/waitFor';
 
 const NOW = Date.parse('2026-10-12T09:00:00Z');
 
@@ -91,8 +92,7 @@ describe('gardener wakes', () => {
     for (let i = 0; i < 3; i++) r.log.append(correction({ category: 'missing-test' }));
     expect(r.wake).toHaveBeenCalledTimes(1);
     r.g.dispose();
-    await new Promise((res) => setTimeout(res, 30));
-    expect(fs.existsSync(path.join(r.dir, 'factory', GARDENER_FILENAME))).toBe(true);
+    await vi.waitFor(() => expect(fs.existsSync(path.join(r.dir, 'factory', GARDENER_FILENAME))).toBe(true), { timeout: 10_000 });
     const again = new Gardener({ factLog: () => r.log, bots: () => directory(), wake: r.wake, factoryDir: path.join(r.dir, 'factory'), now: () => NOW });
     again.start();
     expect(r.wake).toHaveBeenCalledTimes(1);
@@ -119,7 +119,7 @@ describe('gardener wakes', () => {
     const g = new Gardener({ factLog: () => r.log, bots: () => directory(), wake: r.wake, factoryDir: path.join(r.dir, 'factory'), now: () => NOW, log });
     g.start();
     for (let i = 0; i < 3; i++) r.log.append(correction({ category: 'missing-test' }));
-    await new Promise((res) => setTimeout(res, 20));
+    await deliberateSleep(20, 'negative: a newer file version keeps the gardener off');
     expect(r.wake).not.toHaveBeenCalled();
     expect(JSON.parse(fs.readFileSync(file, 'utf8')).version).toBe(2);
     expect(log.mock.calls[0][0]).toMatch(/stays off/);

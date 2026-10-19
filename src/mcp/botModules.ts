@@ -8,5 +8,6 @@ import './factoryTools';
 import './botApprovals';
 import './botJob';
 import './botRoutines';
+import './botSkills';
 import './botWorkers';
 import './factorySecrets';

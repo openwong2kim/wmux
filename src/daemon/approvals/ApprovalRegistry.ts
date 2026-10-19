@@ -1921,7 +1921,8 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
    * chat view, a person at this machine. It goes through the same checks as a
    * `decision-v2` phone answer (the form, its fingerprint, the answer age, the
    * one-answer-in-flight claim) and the same adapter call; only the web marker
-   * is replaced by this entry point, which no pipe RPC or MCP tool reaches.
+   * is replaced by this entry point, which only the first-party chat-v2 host
+   * reaches (no MCP tool does).
    * `answers`: questions only, one entry per form question in order.
    */
   answerNativeFromDesktop(input: {
@@ -1953,6 +1954,31 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
     };
     return this.resolveNative(
       { id: record.id, decision: input.decision, resolvedBy: 'desktop', resolver: 'human', decisionAnswer },
+      record,
+      'desktop',
+    );
+  }
+
+  /**
+   * The first-party desktop answer to Claude's ExitPlanMode dialog (a `plan`
+   * form): the main app's Fleet approvals tab, a person at this machine. The
+   * same path as a `decision-v2` phone answer (answerPlan: the form, its
+   * fingerprint, the answer age, the screen re-read and the fences); only the
+   * web marker is replaced by this entry point, which the first-party pipe
+   * RPC `daemon.approvals.answerPlan` reaches and no MCP tool does.
+   */
+  answerPlanFromDesktop(input: { id: string; answer: DecisionAnswer }): Promise<ApprovalResolveResult> {
+    const record = this.requests.find((r) => r.id === input.id);
+    if (!record || record.kind !== 'terminal_prompt' || isNative(record)) {
+      return Promise.resolve({ ok: false, reason: 'not-found' });
+    }
+    if (record.state === 'pending' && record.form?.kind !== 'plan') {
+      return Promise.resolve({
+        ok: false, reason: 'answer-in-terminal', answerRefusal: 'unsupported-shape', request: copyRequest(record),
+      });
+    }
+    return this.answerPlan(
+      { id: record.id, decision: 'approve', resolvedBy: 'desktop', resolver: 'human', decisionAnswer: input.answer },
       record,
       'desktop',
     );
@@ -2825,7 +2851,8 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
    *
    *   1. settled → `already-resolved` / `expired`; a key already written
    *      (`pressedAt`) or a stepwise answer started (`step`) → `already-answered`
-   *   2. who: a human through the web answer route (its Symbol marker) →
+   *   2. who: a human through the web answer route (its Symbol marker) or
+   *      the desktop entry point (answerPlanFromDesktop) →
    *      else `answer-in-terminal`; a record that is not bound, has no form or
    *      was made with the `stepwise` switch off (or it is off now) →
    *      `unsupported-shape`
@@ -2842,12 +2869,16 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
    * screen — under the same fence and `pressedAt` CAS as a v1 answer.
    * `feedback` runs the stepwise driver (see driveFeedback).
    */
-  private async answerPlan(params: ApprovalResolveParams, record: ApprovalRequest): Promise<ApprovalResolveResult> {
+  private async answerPlan(
+    params: ApprovalResolveParams,
+    record: ApprovalRequest,
+    origin: 'remote' | 'desktop' = 'remote',
+  ): Promise<ApprovalResolveResult> {
     const answer = params.decisionAnswer;
     const audit = (outcome: string): void => {
       this.deps.log?.(
         'info',
-        `[approvals] plan answer outcome=${outcome} record=${record.id} session=${record.sessionId} ` +
+        `[approvals] plan answer outcome=${outcome} record=${record.id} session=${record.sessionId} via=${origin} ` +
           `by="${logText(sanitizeResolvedBy(params.resolvedBy))}" action=${logText(answer?.action, 20) || '-'} ` +
           `text=${answer?.text !== undefined ? Buffer.byteLength(answer.text, 'utf8') : 0}B ` +
           `step=${record.step ? `${record.step.index}/${record.step.total}:${record.step.status}` : '-'} ` +
@@ -2873,7 +2904,8 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
       };
     }
     if (record.pressedAt !== undefined || record.step) return refuse('already-answered');
-    if ((params.resolver ?? 'human') !== 'human' || params.decisionV2Answer !== DECISION_V2_WEB_ANSWER || !answer) {
+    if ((params.resolver ?? 'human') !== 'human'
+      || (origin !== 'desktop' && params.decisionV2Answer !== DECISION_V2_WEB_ANSWER) || !answer) {
       return inTerminal('no-capability');
     }
     const identity = identityOf(record);

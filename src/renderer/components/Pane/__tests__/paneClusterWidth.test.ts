@@ -236,9 +236,10 @@ describe('the ⋮ menu offers exactly what the cluster does', () => {
     // link-remote-pane (cross-PC pane links) is menu-only too, rendered only
     // where the daemon's a2a.remote bridge exists. new-private-browser is
     // menu-only as well: a sixth cluster button would break the width contract.
+    // mute-notifications is a per-pane setting, menu-only for the same reason.
     for (const key of cluster) expect(menu).toContain(key);
     expect(menu.filter((k) => !cluster.includes(k))).toEqual([
-      'link-remote-pane', 'new-private-browser', 'new-remote', 'rename-pane', 'rename-tab', 'split-down-remote', 'split-right-remote',
+      'link-remote-pane', 'mute-notifications', 'new-private-browser', 'new-remote', 'rename-pane', 'rename-tab', 'split-down-remote', 'split-right-remote',
     ]);
   });
 });

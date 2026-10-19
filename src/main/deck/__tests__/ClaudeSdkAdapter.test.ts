@@ -85,6 +85,9 @@ import {
   buildCommanderSystemPrompt,
   __resetLimitShapeLogForTests,
   type SdkQueryHandle,
+  withShadowedWarningOnce,
+  __resetShadowedWarningForTesting,
+  CAN_USE_TOOL_SHADOWED,
 } from '../ClaudeSdkAdapter';
 import { loadCommanderMemory } from '../commanderMemory';
 import type { RawSdkMessage } from '../BrainAdapter';
@@ -953,5 +956,26 @@ describe('ClaudeSdkAdapter model + effort options', () => {
     const options = await run({});
     expect(options).not.toHaveProperty('model');
     expect(options).not.toHaveProperty('effort');
+  });
+});
+
+describe('the SDK\'s canUseTool-shadowed warning', () => {
+  it('passes once per process, filters only that code, and puts emitWarning back', () => {
+    __resetShadowedWarningForTesting();
+    const seen: unknown[][] = [];
+    const original = (...a: unknown[]) => { seen.push(a); };
+    const proc = { emitWarning: original } as unknown as Pick<NodeJS.Process, 'emitWarning'>;
+    const turn = () => withShadowedWarningOnce(() => {
+      proc.emitWarning('shadowed', { code: CAN_USE_TOOL_SHADOWED });
+      proc.emitWarning('other', { code: 'SOMETHING_ELSE' });
+      return 'handle';
+    }, proc);
+    expect(turn()).toBe('handle');
+    expect(turn()).toBe('handle');
+    expect(seen.map((a) => a[0])).toEqual(['shadowed', 'other', 'other']);
+    expect(proc.emitWarning).toBe(original);
+    // A throw inside still puts it back.
+    expect(() => withShadowedWarningOnce(() => { throw new Error('x'); }, proc)).toThrow('x');
+    expect(proc.emitWarning).toBe(original);
   });
 });

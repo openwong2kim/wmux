@@ -66,6 +66,7 @@ export { PROPOSAL_RESOLUTION } from './CardAnswers';
  *  requests main holds. */
 export function useIdLabels(bots: readonly FactoryBotRow[], t: T): IdLabels {
   const { byId } = useApprovals();
+  const locale = useStore((s) => s.locale);
   return useMemo((): IdLabels => {
     const tasks = new Map<string, string>();
     for (const r of bots) for (const task of r.tasks ?? []) tasks.set(task.taskId, task.title);
@@ -77,7 +78,7 @@ export function useIdLabels(bots: readonly FactoryBotRow[], t: T): IdLabels {
         return r.prNumber !== undefined ? t('botsPage.idLabel.approvalPr', { pr: r.prNumber }) : t('botsPage.idLabel.approval');
       },
     };
-  }, [bots, byId, t]);
+  }, [bots, byId, t, locale]);
 }
 
 export interface RoomCardProps {
@@ -127,7 +128,7 @@ export function RoomCard({ card, workspaceId, t, bots, replyToCard, decisionApi,
   const nameOf = useWorkspaceNames();
   const plan = card.kind === 'plan';
   const idLabels = useIdLabels(bots, t);
-  const shown = ownerCardText(card, bots.map((b) => b.bot.name), idLabels);
+  const shown = ownerCardText(card, bots.map((b) => b.bot.name), idLabels, t);
   const title = plan ? planTextWithNames(shown.title, nameOf, t) : shown.title;
   const body = (plan ? planTextWithNames(shown.body, nameOf, t) : shown.body).trim();
   const foldable = body.length > BODY_FOLD_CHARS;
@@ -157,7 +158,12 @@ export function RoomCard({ card, workspaceId, t, bots, replyToCard, decisionApi,
       <div className="flex items-center gap-1.5 text-[11px] text-[var(--text-muted)] min-w-0">
         {author && authorRole && (
           <BotAvatar
-            bot={authorRow?.bot ?? { id: author.botId, name: roleLabel(authorRole, t), role: authorRole }}
+            bot={authorRow?.bot ?? {
+              id: author.botId,
+              name: actors[author.botId]?.name ?? roleLabel(authorRole, t),
+              role: authorRole,
+              ...(actors[author.botId]?.avatar ? { avatar: actors[author.botId]?.avatar } : {}),
+            }}
             size={16}
             t={t}
           />

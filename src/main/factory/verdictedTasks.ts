@@ -12,6 +12,7 @@
 // quit cut short), and when its verdict was refused because the PR head
 // moved past the head the task checked out (verify.rpc.ts).
 
+import { holderInputsChanged } from './holderInputs';
 import fs from 'node:fs';
 import path from 'node:path';
 import { atomicReadJSONSync, atomicWriteJSONSync } from '../../daemon/util/atomicWrite';
@@ -47,6 +48,7 @@ export class VerdictedTasks {
     if (!taskId || this.set.has(taskId)) return;
     this.ids.push(taskId);
     this.set.add(taskId);
+    holderInputsChanged();
     while (this.ids.length > MAX) this.set.delete(this.ids.shift() as string);
     try {
       fs.mkdirSync(path.dirname(this.file), { recursive: true });

@@ -9,6 +9,13 @@
 // A pane that was rebound to another profile or moved to another workspace
 // stays protected with every site refused until the operator confirms the
 // list again — the notice says so, and Save is that confirmation.
+//
+// Recently blocked (#2063): the hosts the pane's proxy refused since its
+// Chrome started or the policy last changed, each with an Allow. Allow is an
+// ordinary write through the same `set` path, naming the epoch it read: it
+// adds that one host to the STORED allow list (unsaved edits stay unsaved,
+// the textarea gains the host too) and, being a policy change, empties the
+// list on main.
 
 import { useCallback, useEffect, useId, useState } from 'react';
 import { createPortal } from 'react-dom';
@@ -20,9 +27,9 @@ import Field, { useFieldWiring } from '../ui/Field';
 import Switch from '../ui/Switch';
 import SegmentedControl from '../ui/SegmentedControl';
 import { IconLock } from '../icons';
-import { paneProtection } from './usePaneBrowserPolicyMenu';
-import type { PaneConsentGrants } from '../../../shared/browserPolicy';
-import { parseHostRule, type HostPolicyMode } from '../../../shared/browserHostPolicy';
+import { allowableBlockedHosts, paneProtection, type AllowableBlockedHost } from './usePaneBrowserPolicyMenu';
+import type { BlockedHost, PaneConsentGrants } from '../../../shared/browserPolicy';
+import { parseHostRule, type HostPolicy, type HostPolicyMode } from '../../../shared/browserHostPolicy';
 
 /** One host rule per line: trimmed, empty lines dropped. */
 export function hostLines(text: string): string[] {
@@ -55,6 +62,16 @@ interface Loaded {
   needsConfirm: boolean;
   /** The pane's Chrome runs protected now (a change restarts it). */
   running: boolean;
+  /** The stored site list, while it is the one the pane runs under
+   *  (protected and confirmed) — what an Allow adds to. */
+  stored: HostPolicy | null;
+}
+
+/** The textarea text with `rule` on a line of its own, unless it has it. */
+export function withHostLine(text: string, rule: string): string {
+  if (hostLines(text).includes(rule)) return text;
+  const kept = text.replace(/\s+$/, '');
+  return kept ? `${kept}\n${rule}` : rule;
 }
 
 function HostList({
@@ -113,11 +130,24 @@ export default function BrowserPolicyDialog({ workspaceId, paneId, onClose, onSa
   const [allowText, setAllowText] = useState('');
   const [blockText, setBlockText] = useState('');
   const [grants, setGrants] = useState<PaneConsentGrants>({});
+  const [blocked, setBlocked] = useState<BlockedHost[]>([]);
   const [busy, setBusy] = useState(false);
 
   const toast = useCallback((level: 'info' | 'error', message: string) => {
     useStore.getState().pushToast({ level, message });
   }, []);
+
+  // What the pane's proxy refused recently. Best effort: an older main (or a
+  // failed read) just shows no list.
+  const loadBlocked = useCallback(async () => {
+    const api = window.electronAPI?.browser?.policy;
+    try {
+      const res = api?.blocked ? await api.blocked(workspaceId, paneId) : undefined;
+      setBlocked(res?.ok ? res.hosts ?? [] : []);
+    } catch {
+      setBlocked([]);
+    }
+  }, [workspaceId, paneId]);
 
   const load = useCallback(async (): Promise<boolean> => {
     const api = window.electronAPI?.browser?.policy;
@@ -139,6 +169,9 @@ export default function BrowserPolicyDialog({ workspaceId, paneId, onClose, onSa
         lost,
         needsConfirm: refused && !!entry?.protected,
         running: protection.kind !== 'off',
+        stored: protection.kind === 'protected' && entry?.hosts
+          ? { ...entry.hosts, allow: [...entry.hosts.allow], block: [...entry.hosts.block] }
+          : null,
       });
       setIsProtected(!!entry?.protected);
       setMode(entry?.hosts.mode ?? 'off');
@@ -153,7 +186,10 @@ export default function BrowserPolicyDialog({ workspaceId, paneId, onClose, onSa
   }, [workspaceId, paneId, toast, t]);
 
   useEffect(() => {
-    void load().then((ok) => { if (!ok) onClose(); });
+    void load().then((ok) => {
+      if (!ok) onClose();
+      else void loadBlocked();
+    });
     // Mount only: the dialog edits one pane.
   }, []);
 
@@ -237,6 +273,51 @@ export default function BrowserPolicyDialog({ workspaceId, paneId, onClose, onSa
       setBusy(false);
     }
   }, [loaded, workspaceId, paneId, load, toast, t]);
+  // Allow one recently blocked host: the stored policy plus that host, written
+  // now with the epoch the dialog read. The editor's unsaved edits are kept
+  // (and the host joins the textarea, so a later Save keeps it).
+  const allowHost = useCallback(async (row: AllowableBlockedHost) => {
+    const api = window.electronAPI?.browser?.policy;
+    const stored = loaded?.stored;
+    if (!api || !loaded?.currentProfile || !stored) return;
+    setBusy(true);
+    try {
+      const res = await api.set({
+        workspaceId,
+        paneId,
+        profileId: loaded.currentProfile,
+        protected: true,
+        hosts: { mode: stored.mode, allow: row.nextAllow, block: stored.block },
+        expectedEpoch: loaded.epoch,
+      });
+      if (res.ok && typeof res.epoch === 'number') {
+        const epoch = res.epoch;
+        setLoaded((l) => (l ? { ...l, epoch, stored: { ...stored, allow: row.nextAllow } } : l));
+        setAllowText((text) => withHostLine(text, row.rule));
+        onSaved?.(true);
+        // A policy change empties main's list; show what is there now.
+        await loadBlocked();
+        return;
+      }
+      if (res.code === 'stale') {
+        toast('info', t('pane.browserPolicyStale'));
+        if (await load()) await loadBlocked();
+        return;
+      }
+      toast('error', res.error || t('pane.browserPolicySaveFailed'));
+    } catch {
+      toast('error', t('pane.browserPolicySaveFailed'));
+    } finally {
+      setBusy(false);
+    }
+  }, [loaded, workspaceId, paneId, onSaved, load, loadBlocked, toast, t]);
+  // Offered only while the pane runs the stored "Only these sites" list and the
+  // editor still shows that mode: on a pane awaiting confirmation every host is
+  // refused, and an Allow there would quietly stand in for the confirming Save.
+  const blockedRows = loaded?.stored && !loaded.needsConfirm && isProtected && mode === 'allowlist'
+    ? allowableBlockedHosts(loaded.stored, blocked)
+    : [];
+
   const grantRows: Array<{ key: string; label: string; next: PaneConsentGrants }> = [
     ...(grants.evaluate ? [{ key: 'evaluate', label: t('pane.browserPolicyGrantEvaluate'), next: { ...grants, evaluate: false } }] : []),
     ...(grants.download ? [{ key: 'download', label: t('pane.browserPolicyGrantDownload'), next: { ...grants, download: false } }] : []),
@@ -252,7 +333,10 @@ export default function BrowserPolicyDialog({ workspaceId, paneId, onClose, onSa
   return createPortal(
     <Dialog onClose={onClose} width={460} data-testid="browser-policy-dialog">
       <DialogHeader title={t('pane.browserPolicyTitle')} description={t('pane.browserPolicyDescription')} />
-      <DialogBody className="flex flex-col gap-3">
+      {/* Fields keep their height so a long body scrolls instead of the
+          fields shrinking over one another (.ui-dialog-body only pins a
+          direct .ui-group; these groups sit inside a Field). */}
+      <DialogBody className="flex flex-col gap-3 [&>*]:shrink-0">
         {loaded?.needsConfirm && (
           <div className="ui-notice flex items-start gap-2.5 px-3.5 py-3" data-testid="browser-policy-rebound">
             <span className="shrink-0 mt-0.5 text-[var(--text-muted)]" aria-hidden="true"><IconLock size={12} /></span>
@@ -307,6 +391,38 @@ export default function BrowserPolicyDialog({ workspaceId, paneId, onClose, onSa
               <p className="text-[11px] leading-4 text-[var(--text-sub)]" data-testid="browser-policy-empty-allowlist">
                 {t('pane.browserPolicyEmptyAllowlist')}
               </p>
+            )}
+            {blockedRows.length > 0 && (
+              <Field
+                label={t('pane.browserPolicyRecentlyBlocked')}
+                description={t('pane.browserPolicyRecentlyBlockedDesc')}
+                layout="stacked"
+              >
+                {/* Up to 20 hosts, Chrome's own background hosts among them:
+                    the list scrolls on its own so the fields below stay near. */}
+                <div className="ui-group w-full max-h-[240px] overflow-y-auto" data-testid="browser-policy-recently-blocked">
+                  {blockedRows.map((row) => (
+                    <div key={row.rule} className="ui-row" data-blocked-host={row.rule}>
+                      <div className="ui-row-text">
+                        <p className="ui-row-title font-mono truncate" title={row.rule}>{row.rule}</p>
+                        <p className="ui-row-detail tabular-nums">
+                          {t('pane.browserPolicyRecentlyBlockedCount', { count: row.count })}
+                        </p>
+                      </div>
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        disabled={busy || !loaded?.currentProfile}
+                        onClick={() => { void allowHost(row); }}
+                        aria-label={t('pane.browserPolicyAllowHost', { host: row.rule })}
+                        data-testid={`browser-policy-allow-host-${row.rule}`}
+                      >
+                        {t('pane.browserPolicyAllow')}
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              </Field>
             )}
             <Field label={t('pane.browserPolicyBlocked')} description={t('pane.browserPolicyBlockedDesc')} layout="stacked">
               <HostList value={blockText} onChange={setBlockText} invalid={blockInvalid} testId="browser-policy-block" />

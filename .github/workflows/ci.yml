@@ -21,37 +21,47 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  # Two jobs, run in parallel: `validate` (type checks, builds, the unit suite)
-  # and `validate-runtime` (the runtime suite). Together they run exactly what
-  # `npm test` does (test:parallel, then test:runtime), so wall time is the
-  # slower job rather than the sum (#1685).
-  validate:
+  # Jobs run in parallel: `checks` (type checks, builds, lint, the lockfile
+  # guard — OS-independent, so on Linux) and `validate` (the unit suite,
+  # `npm run test:parallel`, split in two shards). The checks used to run on
+  # shard 2 ahead of its tests, which made that shard the longest job by
+  # ~3 min; on their own job they overlap. The runtime suite (`npm run
+  # test:runtime`: real Chrome, ConPTY, the bundled daemon) is not here: it
+  # runs nightly, on every push to main and on demand in runtime.yml, so its
+  # timing-sensitive tests never block a pull request.
+  checks:
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
-    runs-on: windows-latest
-    # validate takes ~10 min; a hung step must not hold a runner for the 6 h default.
-    timeout-minutes: 35
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        id: node
         with:
-          # The floor is the fix for #984: official Node 24.16.0-24.20.0 ship
-          # libuv 1.52.1 without libuv/libuv#5152 and abort on a directory
-          # watch under the runner's 8.3 `%TEMP%` (C:\Users\RUNNER~1),
-          # killing a vitest fork. 24.21.0 carries the fix. A bare `24` is not
-          # enough: it resolved from the runner's tool cache to 24.19.0.
+          # Same range as validate (see #984 there), so the node_modules cache
+          # key below means the same Node everywhere.
           node-version: '>=24.21.0 <25'
           cache: npm
 
-      # npm 11 owns package-lock.json (see CONTRIBUTING; npm 10's `npm ci`
-      # rejects an npm-11-written lock). Node 24 bundles an npm 11 minor that
-      # moves with the Node patch; installing the latest npm 11 keeps the
-      # lineage guard below on the same npm as release.yml, perf.yml and
-      # CONTRIBUTING.
       - name: Use npm 11
         run: npm install -g npm@11
 
+      # node_modules is 1.1 GB and `npm ci` takes ~85 s on the Windows jobs; a
+      # tree installed for this lockfile, these patches and this Node is reused.
+      # Keyed on everything that shapes the tree: the lock, the patch files
+      # apply-patches.mjs applies, the postinstall scripts, OS, arch and the
+      # exact Node (native modules are built for its ABI). No restore-keys:
+      # a partial tree is worse than a fresh install.
+      - name: Restore node_modules
+        id: node-modules
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: node_modules
+          key: node-modules-${{ runner.os }}-${{ runner.arch }}-node${{ steps.node.outputs.node-version }}-${{ hashFiles('package-lock.json', 'patches/**', 'scripts/fix-node-pty.js', 'scripts/apply-patches.mjs') }}
+
       - name: Install dependencies
+        if: steps.node-modules.outputs.cache-hit != 'true'
         run: npm ci
 
       # Lockfile lineage guard. npm 11 (this job's npm) accepts an npm-10-shaped
@@ -66,9 +76,9 @@ jobs:
           git diff --exit-code package-lock.json
 
       # Every type-check program except mcp and daemon, which CI compiles with
-      # the same tsconfig anyway: `build:mcp` below and `build:daemon` in
-      # validate-runtime both start with `tsc -p` (so a daemon type error
-      # fails validate-runtime). cli has no build step here, so it is checked.
+      # the same tsconfig anyway: `build:mcp` and `build:daemon` below both
+      # start with `tsc -p` (so a daemon type error fails the daemon build).
+      # cli has no build step here, so it is checked.
       # Locally, `npm run typecheck` still runs all of them.
       # scripts/__tests__/typecheckSlices.test.mjs ties this list to those
       # build steps.
@@ -77,6 +87,13 @@ jobs:
 
       - name: Build and probe MCP protocol
         run: npm run build:mcp && npm run probe:mcp
+
+      # The daemon bundle the runtime suite drives. That suite left the pull
+      # request path (runtime.yml), but the build did not: it compiles the
+      # daemon program the type check above skips, and a bundle that no longer
+      # builds must fail the pull request that broke it, not the next nightly.
+      - name: Build daemon bundle
+        run: npm run build:daemon
 
       # The push relay is a separate Cloudflare Worker deployment with its own
       # tsconfig (WebWorker libs, no @types/node — node-only code must not
@@ -94,48 +111,105 @@ jobs:
       # warns "shallow checkout" instead of printing a false all-clear.
       - name: Locale drift advisory (#1037)
         continue-on-error: true
-        shell: bash
         run: |
           git fetch --unshallow --no-tags --quiet origin HEAD || true
           node scripts/locale-drift-report.mjs --check
 
-      # The runtime suites (`*.runtime.test.*`) run in validate-runtime below.
-      - name: Test (unit suite)
-        run: npm run test:parallel
+      # Lint on the files added by the cross-platform port, which must stay
+      # free of errors and warnings. Lint does not depend on the OS, so it
+      # runs here once instead of on every Baseline leg.
+      - name: ESLint (cross-platform files, strict)
+        run: npx eslint --max-warnings=0 src/shared/platform.ts src/shared/__tests__/platform.os.test.ts src/shared/ShellDetector.ts src/shared/__tests__/ShellDetector.os.test.ts src/shared/shellResolution.ts src/shared/__tests__/shellResolution.os.test.ts src/main/notification/__tests__/ToastManager.test.ts
 
-  validate-runtime:
+  validate:
+    name: validate (${{ matrix.shard }}/2)
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
-    runs-on: windows-latest
-    # The runtime suite takes ~4-5 min plus setup; the cap only stops a hang.
-    timeout-minutes: 25
+    # The unit lane: pure, OS-agnostic tests (scripts/lib/test-lanes.mjs; every
+    # file that touches the OS or so much as mentions win32 is in the
+    # integration job below, on Windows). Linux spawns and reads files several
+    # times faster than Windows, and over the 21 PR commits that had run on
+    # both OSes before the lanes none failed on Windows alone. windows.yml
+    # still runs every lane on Windows nightly and on each push to main.
+    runs-on: ubuntu-latest
+    # The heavier shard took ~8 min of tests on Windows; a hung step must not
+    # hold a runner for the 6 h default.
+    timeout-minutes: 35
+    strategy:
+      # Both shards report, so one red shard does not hide the other's failures.
+      fail-fast: false
+      matrix:
+        # The unit suite alone took ~11 min of a ~15 min job on one runner.
+        # Vitest splits files by path hash, not duration.
+        shard: [1, 2]
     steps:
-      # Same pins and toolchain as validate; see the comments there.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        id: node
         with:
+          # The floor is the fix for #984: official Node 24.16.0-24.20.0 ship
+          # libuv 1.52.1 without libuv/libuv#5152 and abort on a directory
+          # watch under the runner's 8.3 `%TEMP%` (C:\Users\RUNNER~1),
+          # killing a vitest fork. 24.21.0 carries the fix. A bare `24` is not
+          # enough: it resolved from the runner's tool cache to 24.19.0. That
+          # was on Windows; the range stays here so every job runs one Node.
           node-version: '>=24.21.0 <25'
           cache: npm
 
+      # npm 11 owns package-lock.json (see CONTRIBUTING; npm 10's `npm ci`
+      # rejects an npm-11-written lock). Node 24 bundles an npm 11 minor that
+      # moves with the Node patch; installing the latest npm 11 keeps the
+      # lineage guard below on the same npm as release.yml, perf.yml and
+      # CONTRIBUTING.
       - name: Use npm 11
         run: npm install -g npm@11
 
+      # See the checks job for the key.
+      - name: Restore node_modules
+        id: node-modules
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: node_modules
+          key: node-modules-${{ runner.os }}-${{ runner.arch }}-node${{ steps.node.outputs.node-version }}-${{ hashFiles('package-lock.json', 'patches/**', 'scripts/fix-node-pty.js', 'scripts/apply-patches.mjs') }}
+
       - name: Install dependencies
+        if: steps.node-modules.outputs.cache-hit != 'true'
         run: npm ci
 
-      # Two runtime suites drive the REAL bundled daemon (#546 boot marker,
-      # #596 web restore). Both skip when `dist/daemon-bundle/index.js` is
-      # absent, and a skip reads as green, so this step is what gives those
-      # suites any signal at all.
-      - name: Build daemon bundle (the runtime suites drive it)
-        run: npm run build:daemon
+      # The type checks, builds and lint run on the checks job above. The
+      # runtime suites (`*.runtime.test.*`) run in runtime.yml.
+      - name: Test (unit lane, shard ${{ matrix.shard }}/2)
+        run: npm run test:unit -- --shard=${{ matrix.shard }}/2
 
-      - name: Test (runtime suite)
-        run: npm run test:runtime
-        env:
-          # Tells those suites the bundle was promised, so removing the step
-          # above fails a test instead of silently retiring both files.
-          WMUX_REQUIRE_DAEMON_BUNDLE: '1'
+      # The unit suite retries a failed test once on CI (vitest.config.ts). A
+      # test that passes on retry leaves the job green, so these two steps keep
+      # it from going unnoticed: the job summary and a warning annotation list
+      # it under "Flaky (passed on retry)", and the report is kept as an
+      # artifact so flakes add up across runs (scripts/flaky-report.mjs reads a
+      # directory of downloaded ones). Neither step can fail the job.
+      - name: Flaky test report
+        id: flaky
+        if: ${{ !cancelled() }}
+        run: node scripts/flaky-report.mjs test-results
+
+      - name: Upload test report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: test-report-validate-${{ matrix.shard }}
+          path: test-results/
+          if-no-files-found: ignore
+
+      # The retry reports on their own, only when one lists a retried test,
+      # for the weekly rollup (scripts/flaky-weekly.mjs): it downloads these
+      # and nothing else, so a run without a retry costs it no API call.
+      - name: Upload retry report
+        if: ${{ !cancelled() && steps.flaky.outputs.retried == 'true' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: test-report-retries-validate-${{ matrix.shard }}
+          path: test-results/retries-*.json
+          if-no-files-found: ignore
 
   # The native Windows computer-use helper (native/computer-use-windows): the
   # C# unit tests, the NativeAOT publish main spawns in dev builds, and a smoke
@@ -199,3 +273,81 @@ jobs:
       - name: Smoke run (hello, capabilities, listApps with Notepad open)
         timeout-minutes: 5
         run: node native/computer-use-windows/smoke.mjs native/computer-use-windows/dist/wmux-computer-use.exe --limited native/computer-use-windows/tools/dist/RunLimited.exe --hang native/computer-use-windows/tools/dist/HangWindow.exe --require-full
+
+  # The integration lane, on Windows: the test files that spawn processes
+  # (git, node, PowerShell), open sockets or pipes, run such code in a real
+  # temp dir, or mention win32 at all (scripts/lib/test-lanes.mjs decides;
+  # their names end in .os.test.*). They used to share validate's shards and
+  # runners with ~1,700 pure unit files, one worker per core, and every flake
+  # of a week was one of them waiting on that crowded OS. Here they run on
+  # Windows runners of their own, two files at a time per runner (the
+  # project's maxWorkers is 50% of the 4 vCPUs) with 30 s timeouts. This is
+  # the PR's Windows check; validate runs `test:unit`, everything else, on
+  # Linux. Together the two jobs run what `npm run test:parallel` runs.
+  integration:
+    name: integration (${{ matrix.shard }}/2)
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: windows-latest
+    # Before the win32 rule the lane was ~8.6% of the files but ~64% of the
+    # suite's test time on windows-latest (main, 2026-10-17: 826 s of
+    # 1,287 s); the rule roughly doubles the file count with mostly light
+    # files. At two workers that is ~9-11 min on one runner; two shards keep
+    # each near 4-6 min. The cap only stops a hang.
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+    steps:
+      # Same pins and toolchain as validate; see the comments there.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        id: node
+        with:
+          node-version: '>=24.21.0 <25'
+          cache: npm
+
+      - name: Use npm 11
+        run: npm install -g npm@11
+
+      # See the checks job for the key.
+      - name: Restore node_modules
+        id: node-modules
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: node_modules
+          key: node-modules-${{ runner.os }}-${{ runner.arch }}-node${{ steps.node.outputs.node-version }}-${{ hashFiles('package-lock.json', 'patches/**', 'scripts/fix-node-pty.js', 'scripts/apply-patches.mjs') }}
+
+      - name: Install dependencies
+        if: steps.node-modules.outputs.cache-hit != 'true'
+        run: npm ci
+
+      - name: Test (integration lane, shard ${{ matrix.shard }}/2)
+        run: npm run test:integration -- --shard=${{ matrix.shard }}/2
+
+      # Same as validate's two steps: list tests that passed only on retry
+      # and keep the report for scripts/flaky-report.mjs.
+      - name: Flaky test report
+        id: flaky
+        if: ${{ !cancelled() }}
+        run: node scripts/flaky-report.mjs test-results
+
+      - name: Upload test report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: test-report-integration-${{ matrix.shard }}
+          path: test-results/
+          if-no-files-found: ignore
+
+      # The retry reports on their own, only when one lists a retried test,
+      # for the weekly rollup (scripts/flaky-weekly.mjs): it downloads these
+      # and nothing else, so a run without a retry costs it no API call.
+      - name: Upload retry report
+        if: ${{ !cancelled() && steps.flaky.outputs.retried == 'true' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: test-report-retries-integration-${{ matrix.shard }}
+          path: test-results/retries-*.json
+          if-no-files-found: ignore

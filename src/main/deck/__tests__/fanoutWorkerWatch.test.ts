@@ -13,6 +13,7 @@ import {
   type FanoutWorkerWatchPorts,
 } from '../fanoutWorkerWatch';
 import { installFanoutCallerLedgerNotify, notifyFanoutCaller, type FanoutCallerEvent } from '../fanoutCallerNotify';
+import { deliberateSleep } from '../../../test-utils/waitFor';
 
 const IDLE_MS = 15 * 60_000;
 
@@ -154,14 +155,12 @@ describe('fan-out worker watch — exits', () => {
     start({ diedGraceMs: 30 });
     daemon.emit('session:died', { sessionId: 'pty-w1' });
     daemon.emit('session:restarted', { sessionId: 'pty-w1' });
-    await new Promise((r) => setTimeout(r, 60));
+    await deliberateSleep(60, 'negative: a restart inside the 30ms grace is not an end');
     await settle();
     expect(ledger.get('wtask-1')!.status).toBe('working');
     // Not restarted: the end counts.
     daemon.emit('session:died', { sessionId: 'pty-w1' });
-    await new Promise((r) => setTimeout(r, 60));
-    await settle();
-    expect(ledger.get('wtask-1')!.summary).toBe(WORKER_PTY_ENDED_SUMMARY);
+    await vi.waitFor(() => expect(ledger.get('wtask-1')!.summary).toBe(WORKER_PTY_ENDED_SUMMARY), { timeout: 5_000 });
   });
 
   it('an agent exit whose pane starts a running turn during the grace is not an exit', async () => {

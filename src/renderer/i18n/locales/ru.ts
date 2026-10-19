@@ -231,6 +231,12 @@ export const ru = {
   'pane.browserPolicyGrantSensitive': "Данные входа для {host}",
   'pane.browserPolicyRevoke': "Отозвать",
   'pane.browserPolicyRevokeFailed': "Не удалось отозвать.",
+  'pane.browserPolicySummaryBlocked': "Недавно заблокировано: {count}",
+  'pane.browserPolicyRecentlyBlocked': "Недавно заблокированные",
+  'pane.browserPolicyRecentlyBlockedDesc': "Сайты, в которых Chrome этой панели было отказано с момента запуска или последнего изменения защиты. «Разрешить» сразу добавляет сайт в разрешённые.",
+  'pane.browserPolicyRecentlyBlockedCount': "Заблокировано {count}×",
+  'pane.browserPolicyAllow': "Разрешить",
+  'pane.browserPolicyAllowHost': "Разрешить {host}",
   'browser.private': "Приватно",
   'browser.privateTab': "Приватная вкладка",
   'browser.privateTooltip': "Приватная вкладка: cookie и данные сайтов хранятся только в памяти и удаляются при закрытии последней приватной вкладки. После перезапуска не восстанавливается.",
@@ -536,9 +542,6 @@ export const ru = {
 
   // ─── Agent toolbar: fan-out / broadcast buttons ───
   'toolbar.fanOut': 'Multi Task',
-  'toolbar.broadcast': 'Broadcast',
-  'toolbar.broadcastTooltip': 'Broadcast — один и тот же текст во все панели терминала в текущем рабочем пространстве (без изоляции)',
-  'toolbar.broadcastPrompt': 'Broadcast — отправить во все панели терминала в текущем рабочем пространстве',
 
   // ─── Fan-out dialog (1 prompt → N isolated tasks) ───
   'fanout.title': 'Fan-out — 1 промпт → N изолированных задач',
@@ -659,4 +662,21 @@ export const ru = {
   'git.secret.more': "(и ещё {count})",
   'settings.secretGuard': "Блокировать пароли и ключи в коммитах, push и PR",
   'settings.secretGuardDesc': "Коммит, Push и Создать PR на странице Git, а также принятие задачи отклоняют изменение, которое добавляет файл .env, закрытый ключ или API-ключ.",
+  'botsPage.consent.title': "Боты работают на вашем тарифе Claude",
+  'botsPage.consent.engine': "Каждый бот думает с помощью Claude Agent SDK, используя вход в Claude Code на этом компьютере. Его исполнители запускают ваш собственный Claude Code.",
+  'botsPage.consent.usage': "Их использование учитывается в лимитах вашего тарифа Claude.",
+  'botsPage.consent.terms': "Действуют условия Anthropic для вашего тарифа. wmux никогда не читает, не хранит и не отправляет ваши данные входа в Claude.",
+  'botsPage.consent.turnOn': "Включить ботов",
+  'botsPage.consent.cancel': "Отмена",
+  'botsPage.consent.keepOn': "Оставить ботов включёнными",
+  'botsPage.consent.turnOff': "Выключить ботов",
+
+  // Task cleanup list: detail line per scan entry
+  'worktask.cleanup.detail.unmaterialized': 'Для этой задачи worktree не был создан — закройте её или создайте worktree заново.',
+  'worktask.cleanup.detail.preserved': 'Незакоммиченная работа сохранена — просмотрите diff, затем сделайте коммит или откройте PR либо отмените изменения.',
+  'worktask.cleanup.detail.phone': 'Создано с телефона (ветка phone/…) — проверьте и удалите, когда станет не нужно.',
+  'worktask.cleanup.detail.orphanEnded': 'Ни одна открытая задача не связана с ним (задача завершена или очищена) — проверьте, затем удалите.',
+  'worktask.cleanup.detail.orphanUnlinked': 'С ним не связаны ни задача, ни запись задачи — проверьте, затем удалите.',
+  'worktask.cleanup.detail.orphanMeta': 'Осталась только запись задачи, без worktree (удаление было прервано) — проверьте, затем удалите.',
+  'worktask.cleanup.detail.diskMissing': 'Worktree отсутствует на диске (удалён вне wmux или после сбоя) — закройте задачу, чтобы навести порядок.',
 } as const;

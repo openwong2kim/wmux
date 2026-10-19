@@ -231,6 +231,12 @@ export const bs = {
   'pane.browserPolicyGrantSensitive': "Podaci za prijavu za {host}",
   'pane.browserPolicyRevoke': "Opozovi",
   'pane.browserPolicyRevokeFailed': "Opoziv nije uspio.",
+  'pane.browserPolicySummaryBlocked': "Nedavno blokirano: {count}",
+  'pane.browserPolicyRecentlyBlocked': "Nedavno blokirano",
+  'pane.browserPolicyRecentlyBlockedDesc': "Stranice koje je Chrome ovog okna odbio otkako je pokrenut ili otkako je zaštita zadnji put promijenjena. Dozvoli odmah dodaje stranicu na dozvoljene.",
+  'pane.browserPolicyRecentlyBlockedCount': "Blokirano {count}×",
+  'pane.browserPolicyAllow': "Dozvoli",
+  'pane.browserPolicyAllowHost': "Dozvoli {host}",
   'browser.private': "Privatno",
   'browser.privateTab': "Privatna kartica",
   'browser.privateTooltip': "Privatna kartica: kolačići i podaci stranica čuvaju se samo u memoriji i brišu se kada se zatvori posljednja privatna kartica. Ne vraća se nakon ponovnog pokretanja.",
@@ -535,9 +541,6 @@ export const bs = {
 
   // ─── Agent toolbar: fan-out / broadcast dugmad ───
   'toolbar.fanOut': 'Multi Task',
-  'toolbar.broadcast': 'Broadcast',
-  'toolbar.broadcastTooltip': 'Broadcast — isti tekst u svaki terminalski panel u trenutnom radnom prostoru (bez izolacije)',
-  'toolbar.broadcastPrompt': 'Broadcast — pošalji u svaki terminalski panel u trenutnom radnom prostoru',
 
   // ─── Fan-out dijalog (1 prompt → N izolovanih zadataka) ───
   'fanout.title': 'Fan-out — 1 prompt → N izolovanih zadataka',
@@ -658,4 +661,21 @@ export const bs = {
   'git.secret.more': "(i još {count})",
   'settings.secretGuard': "Blokiraj lozinke i ključeve u commitima, pushevima i PR-ovima",
   'settings.secretGuardDesc': "Commit, Push i Create PR na Git stranici te preuzimanje zadatka odbijaju izmjenu koja dodaje .env datoteku, privatni ključ ili API ključ.",
+  'botsPage.consent.title': "Botovi rade na vašem Claude planu",
+  'botsPage.consent.engine': "Svaki bot razmišlja pomoću Claude Agent SDK-a, prijavljen Claude Code prijavom na ovom računaru. Njegovi radnici pokreću vaš vlastiti Claude Code.",
+  'botsPage.consent.usage': "Njihova potrošnja se računa u limite vašeg Claude plana.",
+  'botsPage.consent.terms': "Vrijede Anthropicovi uslovi za vaš plan. wmux nikad ne čita, ne čuva niti šalje vašu Claude prijavu.",
+  'botsPage.consent.turnOn': "Uključi botove",
+  'botsPage.consent.cancel': "Otkaži",
+  'botsPage.consent.keepOn': "Ostavi botove uključene",
+  'botsPage.consent.turnOff': "Isključi botove",
+
+  // Task cleanup list: detail line per scan entry
+  'worktask.cleanup.detail.unmaterialized': 'Za ovaj zadatak nije kreiran worktree — zatvorite ga ili ponovo kreirajte worktree.',
+  'worktask.cleanup.detail.preserved': 'Nekomitovani rad je sačuvan — pregledajte diff, zatim komitujte ili otvorite PR, ili ga odbacite.',
+  'worktask.cleanup.detail.phone': 'Kreirano s telefona (grana phone/…) — provjerite ga, pa ga uklonite kad vam više ne treba.',
+  'worktask.cleanup.detail.orphanEnded': 'Nijedan otvoreni zadatak nije povezan s njim (zadatak je završen ili očišćen) — provjerite, pa obrišite.',
+  'worktask.cleanup.detail.orphanUnlinked': 'Nijedan zadatak ni zapis zadatka nije povezan s njim — provjerite, pa obrišite.',
+  'worktask.cleanup.detail.orphanMeta': 'Ostao je samo zapis zadatka, bez worktreeja (uklanjanje je prekinuto) — provjerite, pa obrišite.',
+  'worktask.cleanup.detail.diskMissing': 'Worktree nedostaje na disku (obrisan izvan wmuxa ili zbog pada) — zatvorite zadatak da to uredite.',
 } as const;

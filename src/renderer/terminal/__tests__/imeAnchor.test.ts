@@ -303,8 +303,7 @@ describe('#874 attachImeAnchor', () => {
     dom.textarea.dispatchEvent(new Event('compositionupdate'));
     // Simulate xterm's deferred updateCompositionElements(true) moving it.
     dom.textarea.style.top = `${6 * 17.6}px`;
-    await new Promise((r) => setTimeout(r, 1));
-    expect(translateOf(dom.textarea)?.dy).toBeCloseTo(14 * 17.6, 6);
+    await vi.waitFor(() => expect(translateOf(dom.textarea)?.dy).toBeCloseTo(14 * 17.6, 6), { timeout: 5_000 });
     handle.dispose();
   });
 

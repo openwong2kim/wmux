@@ -231,6 +231,12 @@ export const id = {
   'pane.browserPolicyGrantSensitive': "Data masuk untuk {host}",
   'pane.browserPolicyRevoke': "Cabut",
   'pane.browserPolicyRevokeFailed': "Tidak dapat mencabut.",
+  'pane.browserPolicySummaryBlocked': "{count} diblokir baru-baru ini",
+  'pane.browserPolicyRecentlyBlocked': "Baru-baru ini diblokir",
+  'pane.browserPolicyRecentlyBlockedDesc': "Situs yang ditolak untuk Chrome panel ini sejak dimulai atau sejak perlindungan terakhir diubah. Izinkan langsung menambahkannya ke situs yang diizinkan.",
+  'pane.browserPolicyRecentlyBlockedCount': "Diblokir {count}×",
+  'pane.browserPolicyAllow': "Izinkan",
+  'pane.browserPolicyAllowHost': "Izinkan {host}",
   'browser.private': "Privat",
   'browser.privateTab': "Tab privat",
   'browser.privateTooltip': "Tab privat: cookie dan data situs hanya disimpan di memori dan dihapus saat tab privat terakhir ditutup. Tidak dipulihkan setelah mulai ulang.",
@@ -535,9 +541,6 @@ export const id = {
 
   // ─── Agent toolbar: fan-out / broadcast buttons ───
   'toolbar.fanOut': 'Multi Task',
-  'toolbar.broadcast': 'Broadcast',
-  'toolbar.broadcastTooltip': 'Broadcast — teks yang sama ke setiap panel terminal di ruang kerja saat ini (tanpa isolasi)',
-  'toolbar.broadcastPrompt': 'Broadcast — kirim ke setiap panel terminal di ruang kerja saat ini',
 
   // ─── Fan-out dialog (1 prompt → N isolated tasks) ───
   'fanout.title': 'Fan-out — 1 prompt → N tugas terisolasi',
@@ -658,4 +661,21 @@ export const id = {
   'git.secret.more': "(dan {count} lainnya)",
   'settings.secretGuard': "Blokir kata sandi dan kunci di commit, push, dan PR",
   'settings.secretGuardDesc': "Commit, Push, dan Buat PR di halaman Git, serta mengadopsi tugas, menolak perubahan yang menambahkan file .env, kunci privat, atau kunci API.",
+  'botsPage.consent.title': "Bot berjalan dengan paket Claude Anda",
+  'botsPage.consent.engine': "Setiap bot berpikir dengan Claude Agent SDK, masuk dengan login Claude Code di komputer ini. Worker-nya menjalankan Claude Code milik Anda sendiri.",
+  'botsPage.consent.usage': "Penggunaannya dihitung dalam batas paket Claude Anda.",
+  'botsPage.consent.terms': "Ketentuan Anthropic untuk paket Anda berlaku. wmux tidak pernah membaca, menyimpan, atau mengirim info masuk Claude Anda.",
+  'botsPage.consent.turnOn': "Nyalakan bot",
+  'botsPage.consent.cancel': "Batal",
+  'botsPage.consent.keepOn': "Biarkan bot menyala",
+  'botsPage.consent.turnOff': "Matikan bot",
+
+  // Task cleanup list: detail line per scan entry
+  'worktask.cleanup.detail.unmaterialized': 'Tidak ada worktree yang dibuat untuk tugas ini — tutup tugasnya, atau buat ulang worktree-nya.',
+  'worktask.cleanup.detail.preserved': 'Pekerjaan yang belum di-commit disimpan — tinjau diff, lalu commit atau buka PR, atau buang.',
+  'worktask.cleanup.detail.phone': 'Dibuat dari ponsel (branch phone/…) — periksa, lalu hapus jika sudah tidak diperlukan.',
+  'worktask.cleanup.detail.orphanEnded': 'Tidak ada tugas terbuka yang terhubung (tugas selesai atau sudah dibersihkan) — periksa, lalu hapus.',
+  'worktask.cleanup.detail.orphanUnlinked': 'Tidak ada tugas atau catatan tugas yang terhubung — periksa, lalu hapus.',
+  'worktask.cleanup.detail.orphanMeta': 'Hanya catatan tugas yang tersisa, tanpa worktree (penghapusan terputus) — periksa, lalu hapus.',
+  'worktask.cleanup.detail.diskMissing': 'Worktree tidak ada di disk (dihapus di luar wmux, atau crash) — tutup tugas untuk merapikannya.',
 } as const;

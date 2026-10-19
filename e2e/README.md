@@ -17,8 +17,10 @@ or vitest.
   `WMUX_E2E_KEEP=1` to keep the sandbox HOME.
 - **macOS**: the sandbox lives under `/tmp` (the per-user temp dir is too long
   for the daemon's Unix sockets), Electron's userData is pointed into the
-  sandbox with `--user-data-dir`, and cleanup reads `ps -E` where there is no
-  `/proc`.
+  sandbox with `--user-data-dir`, cleanup reads `ps -E` where there is no
+  `/proc`, and the app runs with `--use-mock-keychain`: the sandbox HOME has no
+  login keychain, so the first safeStorage call would block the app's main
+  thread on a keychain dialog (forever on a locked screen).
 
 ## Scenarios
 

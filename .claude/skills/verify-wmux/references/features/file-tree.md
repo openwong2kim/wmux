@@ -14,9 +14,8 @@ The file tree is a column beside the panes that lists the focused pane's folder 
 
 ## How to get to it (user POV)
 
-- Titlebar button "Show file tree" (right end).
+- The agent bar's "Files" button (`data-toolbar-action="file-tree"`); the column's own header has a close button (`data-file-tree-close`).
 - Shortcut ⇧⌘E (Ctrl+Shift+E); palette "Toggle File Tree".
-- Not to be confused with the agent toolbar "Files" popover (`data-testid="file-explorer"`), which inserts a path into the terminal instead of opening a viewer.
 
 ## Driving it with control-wmux
 
@@ -24,10 +23,10 @@ Preconditions:
 
 - Baseline state; the terminal has `cd`'d into a scratch directory you created that is not inside a git repo, containing a known file, e.g. run in the pane `mkdir -p /tmp/wmux-verify-<run> && cd /tmp/wmux-verify-<run> && printf 'verify-file-body\n' > note.txt` (see terminal.md for `type` + `press Enter`).
 
-- **Show the tree.** Run `control-wmux click --selector '[data-file-tree-toggle]'`, then `control-wmux wait-settle --selector '#wmux-file-tree'`. `control-wmux inspect --js "({root: document.querySelector('[data-file-tree-root]')?.title, pressed: document.querySelector('[data-file-tree-toggle]').getAttribute('aria-pressed')})"` gives the scratch path and `"true"`.
+- **Show the tree.** The toggle is the agent bar's Files button (`[data-toolbar-action="file-tree"]`); the bar is revealed on approach, so drive it by its shortcut. Run `control-wmux press --key Meta+Shift+e` (Control+Shift+e off macOS), then `control-wmux wait-settle --selector '#wmux-file-tree'`. `control-wmux inspect --js "({root: document.querySelector('[data-file-tree-root]')?.title, pressed: document.querySelector('[data-toolbar-action="file-tree"]').getAttribute('aria-pressed')})"` gives the scratch path and `"true"`.
 - **Open a file.** Run `control-wmux click --selector '[data-file-tree-row="file"][title$="/note.txt"]'`, then `control-wmux wait-settle`. `control-wmux inspect --js "({tabs: [...document.querySelectorAll('.wmux-surface-tab')].map(t => t.textContent), body: document.querySelector('pre')?.textContent})"` lists a `note.txt` tab and `verify-file-body`. The row has `aria-selected="true"`.
 - **Filter.** Run `control-wmux click --selector '[data-file-tree-filter-toggle]'`, then `control-wmux type --text note --selector '[data-file-tree-filter]'`. Only matching rows remain (`[data-file-tree-no-match]` appears for a miss).
-- **Hide.** Click `[data-file-tree-toggle]` again; `#wmux-file-tree` is gone and `aria-pressed` is `"false"`.
+- **Hide.** Press the shortcut again; `#wmux-file-tree` is gone and `aria-pressed` is `"false"`.
 - **Proof.** `control-wmux snapshot --selector '#wmux-file-tree' --as tree` shows `tree "<folder name>"` with the rows.
 
 ## Gotchas

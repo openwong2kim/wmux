@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { RemoteAttentionGate, formatRemoteAttention } from '../remoteAttention';
 import { RemoteAttentionSubscriber } from '../RemoteAttentionSubscriber';
 import type { RemoteHost } from '../../../shared/remoteHosts';
+import { deliberateSleep } from '../../../test-utils/waitFor';
 
 function frame(event: string, body: unknown): string {
   return `event: ${event}\ndata: ${JSON.stringify(body)}\n\n`;
@@ -189,7 +190,7 @@ describe('RemoteAttentionSubscriber', () => {
     });
 
     sub.start();
-    await vi.waitFor(() => expect(h.reconnectDelays().length).toBe(1));
+    await vi.waitFor(() => expect(h.reconnectDelays().length).toBe(1), { timeout: 5_000 });
     // Only the post-head event fired; the replayed one did not.
     expect(seen).toEqual([{ host: 'office-mac', title: 'Turn done' }]);
 
@@ -199,7 +200,7 @@ describe('RemoteAttentionSubscriber', () => {
     });
 
     h.fireReconnect();
-    await vi.waitFor(() => expect(seen.length).toBe(2));
+    await vi.waitFor(() => expect(seen.length).toBe(2), { timeout: 5_000 });
     // The reconnect replayed id 4 (already notified) and delivered id 5 fresh.
     expect(seen[1]).toEqual({ host: 'office-mac', title: 'Approval needed' });
 
@@ -224,7 +225,7 @@ describe('RemoteAttentionSubscriber', () => {
     });
 
     sub.start();
-    await vi.waitFor(() => expect(h.reconnectDelays()).toEqual([60_000]));
+    await vi.waitFor(() => expect(h.reconnectDelays()).toEqual([60_000]), { timeout: 5_000 });
     sub.stop();
   });
 
@@ -243,9 +244,9 @@ describe('RemoteAttentionSubscriber', () => {
       onNotification: () => { throw new Error('must not notify'); },
     });
     sub.start();
-    await vi.waitFor(() => expect(h.reconnectDelays()).toEqual([60_000]));
+    await vi.waitFor(() => expect(h.reconnectDelays()).toEqual([60_000]), { timeout: 5_000 });
     h.fireReconnect();
-    await vi.waitFor(() => expect(h.reconnectDelays()).toEqual([60_000, 60_000]));
+    await vi.waitFor(() => expect(h.reconnectDelays()).toEqual([60_000, 60_000]), { timeout: 5_000 });
     expect(fetchImpl).toHaveBeenCalledTimes(2);
     sub.stop();
   });
@@ -265,12 +266,12 @@ describe('RemoteAttentionSubscriber', () => {
       onNotification: (_l, n) => seen.push(n.title),
     });
     sub.start();
-    await vi.waitFor(() => expect(seen).toEqual(['one']));
+    await vi.waitFor(() => expect(seen).toEqual(['one']), { timeout: 5_000 });
     sub.stop();
     const before = h.scheduled.length;
     // A timer that fires after stop() must not restart the loop.
     for (const t of h.scheduled) t.cb();
-    await new Promise((r) => setTimeout(r, 10));
+    await deliberateSleep(10, 'negative: a timer after stop() does not restart the loop');
     expect(h.scheduled.length).toBe(before);
     expect(seen).toEqual(['one']);
   });

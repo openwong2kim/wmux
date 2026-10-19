@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-const { spawn } = vi.hoisted(() => ({ spawn: vi.fn(() => ({ pid: 0, kill() {} })) }));
+const { spawn } = vi.hoisted(() => ({ spawn: vi.fn(() => ({ pid: 4242, kill() {} })) }));
 vi.mock('node-pty', () => ({ spawn, default: { spawn } }));
 import { PTYManager } from '../PTYManager';
 

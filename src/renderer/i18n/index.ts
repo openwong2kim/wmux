@@ -96,6 +96,9 @@ export function getLocale(): Locale {
 }
 
 export function setLocale(locale: Locale): void {
+  // The page's language follows the app's, so screen readers, hyphenation
+  // and CJK glyph choice read the UI as written.
+  if (typeof document !== 'undefined') document.documentElement.lang = locale;
   if (locale === currentLocale) return;
   currentLocale = locale;
 }
@@ -107,21 +110,23 @@ export function setLocale(locale: Locale): void {
  * @example
  * t('terminal.exited', { code: 1 }) // "Process exited with code 1"
  */
+// `string & {}` keeps autocompletion for known keys while taking any string.
+// eslint-disable-next-line @typescript-eslint/ban-types
 export function t(key: TranslationKey | (string & {}), vars?: Record<string, string | number>): string {
   const map = translations[currentLocale];
   const k = key as TranslationKey;
   let str: string = (map[k] ?? translations.en[k] ?? key) as string;
 
   if (vars) {
-    for (const [k, v] of Object.entries(vars)) {
-      // Replacer FUNCTION, not a replacement string: `String.replace` reads
-      // `$&`, `$$`, "$`" and `$'` in a replacement string as patterns, so a
-      // value containing one would splice the match back into the result
-      // (`{message}` reappearing verbatim) instead of being inserted. Values
-      // used to be counts and names; they are now raw `Error.message`,
-      // agent-authored titles and pane titles carrying paths.
-      str = str.replace(new RegExp(`\\{${k}\\}`, 'g'), () => String(v));
-    }
+    // One pass over the template, with a replacer FUNCTION, not a replacement
+    // string: `String.replace` reads `$&`, `$$`, "$`" and `$'` in a
+    // replacement string as patterns, so a value containing one would splice
+    // the match back into the result (`{message}` reappearing verbatim)
+    // instead of being inserted. One pass, so an inserted value is never read
+    // as a template: a task titled "Fix {pane}" keeps its braces. Values used
+    // to be counts and names; they are now raw `Error.message`,
+    // agent-authored titles and pane titles carrying paths.
+    str = str.replace(/\{([^{}]+)\}/g, (m, name: string) => (Object.prototype.hasOwnProperty.call(vars, name) ? String(vars[name]) : m));
   }
 
   return str;

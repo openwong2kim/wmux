@@ -17,7 +17,7 @@
  *
  * The output is a pure function of package-lock.json plus the LICENSE/NOTICE
  * files on disk — no wall-clock timestamp, no platform-dependent package set
- * — so --check is a usable CI gate. scripts/__tests__/generateNotices.test.mjs
+ * — so --check is a usable CI gate. scripts/__tests__/generateNotices.os.test.mjs
  * runs it with the rest of the suite.
  *
  * Run via `npm run notices` after dependency changes.
@@ -238,7 +238,7 @@ lines.push('');
 lines.push(`Generated from the package-lock.json production closure (transitive included,`);
 lines.push(`every platform variant of platform-specific packages included).`);
 // Deliberately no "last regenerated" date: this file is byte-compared against a
-// fresh run by scripts/__tests__/generateNotices.test.mjs, and a wall-clock
+// fresh run by scripts/__tests__/generateNotices.os.test.mjs, and a wall-clock
 // stamp would make that guard fail every day. Git history records when it moved.
 lines.push(`Total packages: ${packages.length}`);
 lines.push('');

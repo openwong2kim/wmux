@@ -22,8 +22,11 @@ import { promisify } from 'node:util';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
 import * as crypto from 'node:crypto';
+import * as os from 'node:os';
 import { getWmuxHomeDir } from '../../shared/constants';
 import { getExecEnv } from '../../shared/execEnv';
+import { originPinFromConfigList } from './workerGit';
+import type { PendingRemovalStore, PendingWorktreeRemoval } from './pendingWorktreeRemovals';
 
 const execFileAsync = promisify(execFile);
 
@@ -138,6 +141,13 @@ export interface TaskWorktreePlan {
   branch: string;
   /** 프롬프트 등 메타 파일 디렉토리(worktree 밖 — diff 청정성 §4). */
   metaDir: string;
+  /** The repository's common git dir, resolved; absent when it could not be
+   *  read. Recorded on the task's ledger row (LedgerDispatch.gitCommonDir). */
+  gitCommonDir?: string;
+  /** origin's pin, read through gitCommonDir; absent when origin is not a
+   *  plain https or ssh address. Recorded on the task's ledger row
+   *  (LedgerDispatch.originPin). */
+  originPin?: string;
 }
 
 export type PreflightResult =
@@ -145,7 +155,7 @@ export type PreflightResult =
   | { ok: false; error: string };
 
 export type CreateResult =
-  | { ok: true; worktreePath: string; branch: string }
+  | { ok: true; worktreePath: string; branch: string; gitWorktreeDir?: string }
   | { ok: false; error: string };
 
 /**
@@ -169,6 +179,8 @@ export interface RunGitOptions {
   timeoutMs?: number;
   noPrompt?: boolean;
   sshBatchMode?: boolean;
+  /** Added to the environment of this call (a temporary GIT_INDEX_FILE). */
+  env?: Record<string, string>;
 }
 
 type RunGit = (args: string[], cwd: string, opts?: RunGitOptions) => Promise<{ stdout: string; stderr: string }>;
@@ -183,6 +195,46 @@ export type RemoveResult =
        *  not when the status check itself failed (also preserved, cause unknown). */
       dirty?: boolean;
     };
+
+/** What the second layer did with a folder `git worktree remove` left. */
+type LeftoverResult =
+  | { ok: true }
+  | { ok: false; error: string; registered?: boolean; dirty?: boolean };
+
+/** `child` is strictly inside `parent` (both canonical). */
+function strictlyInside(child: string, parent: string): boolean {
+  const rel = path.relative(parent, child);
+  return !!rel && !rel.startsWith('..') && !path.isAbsolute(rel);
+}
+
+/**
+ * Why a leftover's `.git` makes it a checkout that is still alive, or null
+ * when it does not: none, or a gitfile naming a git dir that is gone (the
+ * marker of the worktree git just dropped). A `.git` folder is a repository
+ * of its own; a gitfile naming a git dir that exists is a live checkout (the
+ * path reused for another worktree); one that cannot be read is not known.
+ */
+function leftoverGitEntry(folder: string): string | null {
+  const marker = path.join(folder, '.git');
+  let st: fs.Stats;
+  try {
+    st = fs.lstatSync(marker);
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'ENOENT' ? null : (err as Error).message;
+  }
+  if (!st.isFile()) return 'it holds a repository of its own';
+  try {
+    const m = /^gitdir:\s*(.+?)\s*$/m.exec(fs.readFileSync(marker, 'utf8'));
+    if (!m) return 'its .git file cannot be read';
+    return fs.existsSync(path.resolve(folder, m[1])) ? 'its .git file names a git dir that exists (a live checkout)' : null;
+  } catch (err) {
+    return (err as Error).message;
+  }
+}
+
+function sameCanonical(a: string, b: string): boolean {
+  return process.platform === 'win32' || process.platform === 'darwin' ? a.toLowerCase() === b.toLowerCase() : a === b;
+}
 
 /**
  * repo 단위 직렬 큐를 갖춘 worktree 매니저. 인스턴스는 프로세스 수명 동안 재사용
@@ -199,14 +251,36 @@ export class TaskWorktreeManager {
    *  (the app installs its pre-commit secret check there). */
   private onCreated?: (repoRoot: string) => void;
 
-  constructor(opts?: { runGit?: RunGit; onCreated?: (repoRoot: string) => void }) {
+  /** Removals not finished yet (#2388), so a later close or the sweep at
+   *  start can finish one. Absent: nothing is recorded. */
+  private readonly pendingRemovals?: PendingRemovalStore;
+
+  /** The folder every task worktree lives under; the second layer never
+   *  deletes anything outside it. */
+  private readonly worktreesRoot: string;
+
+  /** Deletes a leftover folder without following a link (tests inject). */
+  private readonly removeTree: (dir: string, root: string) => Promise<void>;
+
+  constructor(opts?: {
+    runGit?: RunGit;
+    onCreated?: (repoRoot: string) => void;
+    pendingRemovals?: PendingRemovalStore;
+    worktreesRoot?: string;
+    removeTree?: (dir: string, root: string) => Promise<void>;
+  }) {
     this.onCreated = opts?.onCreated;
+    this.pendingRemovals = opts?.pendingRemovals;
+    this.worktreesRoot = opts?.worktreesRoot ?? path.join(getWmuxHomeDir(), 'worktrees');
+    // Imported when used: taskFolderCleanup pulls in the bot runtime.
+    this.removeTree = opts?.removeTree ?? (async (dir, root) => (await import('../factory/taskFolderCleanup')).removeTreeNoFollow(dir, root));
     this.runGit =
       opts?.runGit ??
       (async (args, cwd, runOpts) => {
         // GIT_TERMINAL_PROMPT=0: the GUI process has no TTY, so a credential
         // prompt would only sit there until the timeout fires.
         let env = runOpts?.noPrompt ? { ...getExecEnv(), GIT_TERMINAL_PROMPT: '0' } : getExecEnv();
+        if (runOpts?.env) env = { ...env, ...runOpts.env };
         // GIT_TERMINAL_PROMPT does not cover ssh, which prompts on /dev/tty.
         // An ssh command the user already set in the environment wins.
         if (runOpts?.sshBatchMode && !env.GIT_SSH_COMMAND && !env.GIT_SSH) {
@@ -229,6 +303,56 @@ export class TaskWorktreeManager {
    *   - 전용 루트 쓰기 가능 + 경로 길이(260자) 검증.
    *   - branch·slug·경로 파생 반환(성공 시).
    */
+  /** The repository's common git dir (resolved) and origin's pin, read
+   *  through that git dir (origin's URL as the config holds it, no URL
+   *  rewrite applied); either absent when it cannot be read. Never throws. */
+  private async gitDirAndPin(realRoot: string): Promise<{ gitCommonDir?: string; originPin?: string }> {
+    let gitCommonDir: string | undefined;
+    try {
+      const { stdout } = await this.runGit(['rev-parse', '--git-common-dir'], realRoot);
+      const out = stdout.trim();
+      if (out) {
+        const resolved = path.resolve(realRoot, out);
+        try {
+          gitCommonDir = fs.realpathSync.native(resolved);
+        } catch {
+          // A repository inside a WSL distro, on a share Windows cannot
+          // resolve: the distro resolves the path itself (taskPush.ts).
+          gitCommonDir = process.platform === 'win32' && /^\\\\wsl(?:\$|\.localhost)\\/i.test(resolved) ? resolved : undefined;
+        }
+      }
+    } catch {
+      gitCommonDir = undefined;
+    }
+    if (!gitCommonDir) return {};
+    try {
+      const { stdout } = await this.runGit([`--git-dir=${gitCommonDir}`, 'config', '-z', '--list', '--show-scope'], realRoot);
+      const originPin = originPinFromConfigList(stdout) ?? undefined;
+      return { gitCommonDir, ...(originPin ? { originPin } : {}) };
+    } catch {
+      return { gitCommonDir };
+    }
+  }
+
+  /** origin's pin for the repository at `repoInput`, read as preflight reads
+   *  it; undefined when it cannot be read. Never throws. */
+  async readOriginPin(repoInput: string): Promise<string | undefined> {
+    try {
+      const { stdout } = await this.runGit(['rev-parse', '--show-toplevel'], repoInput);
+      const top = stdout.trim();
+      if (!top) return undefined;
+      let realRoot = top;
+      try {
+        realRoot = fs.realpathSync(top);
+      } catch {
+        // kept as git printed it, as preflight does
+      }
+      return (await this.gitDirAndPin(realRoot)).originPin;
+    } catch {
+      return undefined;
+    }
+  }
+
   async preflight(
     repoPathRaw: string,
     title: string,
@@ -291,6 +415,9 @@ export class TaskWorktreeManager {
       realRoot = repoRoot;
     }
     const repoHash = crypto.createHash('sha256').update(realRoot).digest('hex').slice(0, 12);
+    // The git dir task_push and task_fetch later run on, and origin's pin,
+    // read here before any worker exists.
+    const { gitCommonDir, originPin } = await this.gitDirAndPin(realRoot);
 
     // 경로 파생.
     const taskSlug = buildTaskSlug(title, taskId);
@@ -337,7 +464,7 @@ export class TaskWorktreeManager {
       }
     }
 
-    return { ok: true, plan: { repoRoot: realRoot, repoHash, taskSlug, worktreePath, branch, metaDir } };
+    return { ok: true, plan: { repoRoot: realRoot, repoHash, taskSlug, worktreePath, branch, metaDir, ...(gitCommonDir ? { gitCommonDir } : {}), ...(originPin ? { originPin } : {}) } };
   }
 
   /**
@@ -506,13 +633,34 @@ export class TaskWorktreeManager {
       } catch (err) {
         return { ok: false, error: `createWorktree: git worktree add --detach failed: ${(err as Error).message}` };
       }
+      const gitWorktreeDir = await this.worktreeGitDir(safePath);
       try {
         this.onCreated?.(plan.repoRoot);
       } catch {
         /* best-effort: never fails a created worktree */
       }
-      return { ok: true, worktreePath: safePath, branch: '' };
+      return { ok: true, worktreePath: safePath, branch: '', ...(gitWorktreeDir ? { gitWorktreeDir } : {}) };
     });
+  }
+
+  /** The new worktree's own git dir (`<common>/worktrees/<id>`), read right
+   *  after `git worktree add` (no worker exists yet), resolved. Undefined when
+   *  it cannot be read: task_push then derives it from the recorded common dir. */
+  private async worktreeGitDir(worktreePath: string): Promise<string | undefined> {
+    try {
+      const { stdout } = await this.runGit(['rev-parse', '--path-format=absolute', '--git-dir'], worktreePath);
+      const dir = stdout.trim();
+      if (!dir) return undefined;
+      try {
+        return fs.realpathSync.native(dir);
+      } catch {
+        // A repository inside a WSL distro, on a share Windows cannot resolve:
+        // the distro resolves the path itself (taskPush.ts).
+        return process.platform === 'win32' && /^\\\\wsl(?:\$|\.localhost)\\/i.test(dir) ? dir : undefined;
+      }
+    } catch {
+      return undefined;
+    }
   }
 
   /** `rev-parse --verify --quiet <ref>^{commit}` — the commit OID, or undefined. */
@@ -554,12 +702,13 @@ export class TaskWorktreeManager {
       } catch (err) {
         return { ok: false, error: `createWorktree: git worktree add failed: ${(err as Error).message}` };
       }
+      const gitWorktreeDir = await this.worktreeGitDir(safePath);
       try {
         this.onCreated?.(plan.repoRoot);
       } catch {
         /* best-effort: never fails a created worktree */
       }
-      return { ok: true, worktreePath: safePath, branch: safeBranch };
+      return { ok: true, worktreePath: safePath, branch: safeBranch, ...(gitWorktreeDir ? { gitWorktreeDir } : {}) };
     });
   }
 
@@ -570,31 +719,55 @@ export class TaskWorktreeManager {
   /**
    * `beforeRemove` runs only once removal is decided (the dirty check passed), so a refused close
    * never stops anything. If it throws, the worktree is kept.
+   *
+   * `force` is only for a worktree no agent ever worked in (a fan-out spawn
+   * refused before its pane existed, #2349): whatever is in it was written by
+   * wmux's own setup, so the dirty check is skipped and git is told
+   * `--force`. Commits are never at stake here; the branch is a separate step.
+   *
+   * #2388: the status is read again after `beforeRemove`, right before the
+   * removal (what the stopped panes wrote meanwhile counts). A folder git
+   * leaves behind after dropping its record goes to the second layer
+   * (removeDeregisteredLeftover), never in `force` mode; one it cannot finish
+   * stays recorded in the pending store for a later close or the sweep at
+   * start (finishPendingRemoval).
    */
   async removeWorktree(
     repoRoot: string,
     repoHash: string,
     worktreePath: string,
     beforeRemove?: (worktreePath: string) => Promise<void>,
+    opts?: { force?: boolean },
   ): Promise<RemoveResult> {
     return this.withRepoLock(repoHash, async () => {
       const safePath = validatePath(worktreePath, 'worktreePath');
+      const force = opts?.force === true;
 
       // dirty 검사: worktree 안에서 porcelain. 커밋 안 된 변경이 있으면 보존.
-      try {
-        const { stdout } = await this.runGit(['status', '--porcelain'], safePath);
-        if (stdout.trim().length > 0) {
-          return { ok: false, error: 'removeWorktree: worktree is dirty; preserved', preserved: true, dirty: true };
+      if (!force) {
+        try {
+          const { stdout } = await this.runGit(['status', '--porcelain'], safePath);
+          if (stdout.trim().length > 0) {
+            return { ok: false, error: 'removeWorktree: worktree is dirty; preserved', preserved: true, dirty: true };
+          }
+        } catch (err) {
+          // status 실패(경로 부재 등) — 보수적으로 제거 시도하지 않고 보존.
+          return { ok: false, error: `removeWorktree: status check failed: ${(err as Error).message}`, preserved: true };
         }
-      } catch (err) {
-        // status 실패(경로 부재 등) — 보수적으로 제거 시도하지 않고 보존.
-        return { ok: false, error: `removeWorktree: status check failed: ${(err as Error).message}`, preserved: true };
       }
+
+      // The commit a leftover folder is compared with, recorded before
+      // anything is stopped, so a later close can finish what this one leaves.
+      const pending: PendingWorktreeRemoval | null = force
+        ? null
+        : { path: safePath, repoRoot, repoHash, ...(await this.headOf(safePath).then((head) => (head ? { head } : {}))), at: Date.now() };
+      if (pending) await this.rememberPending(pending);
 
       if (beforeRemove) {
         try {
           await beforeRemove(safePath);
         } catch (err) {
+          await this.forgetPending(safePath);
           return {
             ok: false,
             error: `removeWorktree: could not stop the panes started in the worktree, so it was kept: ${(err as Error).message}`,
@@ -603,16 +776,323 @@ export class TaskWorktreeManager {
         }
       }
 
+      // Read again now that the panes are stopped: they may have written
+      // since the check above.
+      if (!force) {
+        try {
+          const { stdout } = await this.runGit(['status', '--porcelain'], safePath);
+          if (stdout.trim().length > 0) {
+            await this.forgetPending(safePath);
+            return { ok: false, error: 'removeWorktree: worktree is dirty; preserved', preserved: true, dirty: true };
+          }
+        } catch (err) {
+          await this.forgetPending(safePath);
+          return { ok: false, error: `removeWorktree: status check failed: ${(err as Error).message}`, preserved: true };
+        }
+        // A commit the stopped panes made meanwhile is what the folder is
+        // clean against now.
+        const headNow = await this.headOf(safePath);
+        if (pending && headNow !== pending.head) {
+          if (headNow) pending.head = headNow;
+          else delete pending.head;
+          await this.rememberPending(pending);
+        }
+      }
+
+      let failure: string | null = null;
       try {
-        await this.runGit(['worktree', 'remove', safePath], repoRoot);
+        await this.runGit(['worktree', 'remove', ...(force ? ['--force'] : []), safePath], repoRoot);
       } catch (err) {
+        failure = `removeWorktree: git worktree remove failed: ${(err as Error).message}`;
+      }
+      if (!fs.existsSync(safePath)) {
+        await this.forgetPending(safePath);
         // A process that outlived its pane can still hold files: keep the record so nothing is lost silently.
-        return { ok: false, error: `removeWorktree: git worktree remove failed: ${(err as Error).message}`, preserved: true };
+        return failure === null ? { ok: true } : { ok: false, error: failure, preserved: true };
       }
-      if (fs.existsSync(safePath)) {
-        return { ok: false, error: 'removeWorktree: files were left behind in the worktree folder', preserved: true };
+      failure ??= 'removeWorktree: files were left behind in the worktree folder';
+      if (!pending) return { ok: false, error: failure, preserved: true };
+      const leftover = await this.removeDeregisteredLeftover(pending);
+      if (leftover.ok) {
+        await this.forgetPending(safePath);
+        return { ok: true };
       }
-      return { ok: true };
+      // Still a worktree: the next close takes the usual route.
+      if (leftover.registered) await this.forgetPending(safePath);
+      return { ok: false, error: leftover.registered ? failure : `${failure}; ${leftover.error}`, preserved: true, ...(leftover.dirty ? { dirty: true } : {}) };
+    });
+  }
+
+  /**
+   * Finish a removal the pending store still holds (#2388): `git worktree
+   * remove` dropped the worktree but left part of its folder, and the leftover
+   * could not be deleted then. `beforeRemove` stops what still runs in the
+   * folder first. The leftover goes only under the second layer's checks
+   * (removeDeregisteredLeftover). Null when no removal of `worktreePath` is
+   * recorded; a folder already gone ends the record.
+   */
+  async finishPendingRemoval(worktreePath: string, beforeRemove?: (worktreePath: string) => Promise<void>): Promise<RemoveResult | null> {
+    const rec = this.pendingRemovals?.get(worktreePath);
+    if (!rec) return null;
+    return this.withRepoLock(rec.repoHash, async () => {
+      if (!fs.existsSync(rec.path)) {
+        await this.forgetPending(rec.path);
+        return { ok: true };
+      }
+      // Every check first, stopping nothing: a folder that is kept anyway
+      // (work written into it since, git listing it again) never costs the
+      // panes running in it. The checks run again after the stop.
+      const eligible = await this.removeDeregisteredLeftover(rec, { checkOnly: true });
+      if (!eligible.ok) return this.leftoverKept(rec, eligible);
+      if (beforeRemove) {
+        try {
+          await beforeRemove(rec.path);
+        } catch (err) {
+          return {
+            ok: false,
+            error: `removeWorktree: could not stop the panes started in the folder, so it was kept: ${(err as Error).message}`,
+            preserved: true,
+          };
+        }
+      }
+      const leftover = await this.removeDeregisteredLeftover(rec);
+      if (leftover.ok) {
+        await this.forgetPending(rec.path);
+        return { ok: true };
+      }
+      return this.leftoverKept(rec, leftover);
+    });
+  }
+
+  /** The result of a pending removal the second layer refused; a folder git
+   *  lists again ends its record (the next close takes the usual route). */
+  private async leftoverKept(rec: PendingWorktreeRemoval, leftover: Exclude<LeftoverResult, { ok: true }>): Promise<RemoveResult> {
+    if (leftover.registered) await this.forgetPending(rec.path);
+    return {
+      ok: false,
+      error: leftover.registered ? 'removeWorktree: the folder is a worktree of its repository again; it was kept' : `removeWorktree: ${leftover.error}`,
+      preserved: true,
+      ...(leftover.dirty ? { dirty: true } : {}),
+    };
+  }
+
+  /** The removals the pending store holds (the sweep at start). */
+  pendingRemovalPaths(): string[] {
+    return this.pendingRemovals?.all().map((r) => r.path) ?? [];
+  }
+
+  /**
+   * Second layer (#2388), not the fix: the fix is that the panes' whole
+   * process trees are gone before the removal (stopSessionsInDir). This only
+   * finishes a folder `git worktree remove` left behind after dropping the
+   * worktree's record (it deletes the record even when the folder could not
+   * be deleted), and only when ALL of these hold; otherwise the folder stays:
+   *   - its canonical path (links, junctions and 8.3 names resolved) is
+   *     strictly inside the canonical worktrees root, is not the repository
+   *     and does not hold it, and has no `.git` folder of its own;
+   *   - git positively confirms it is no longer a worktree: the repository's
+   *     list reads, names the repository itself, and names nothing that is
+   *     this folder (compared by file identity, not by spelling);
+   *   - what is left matches the commit recorded when it was found clean:
+   *     a status against that commit (a temporary index, so the deleted
+   *     worktree's own index is not needed) shows nothing but files git
+   *     already deleted, so nothing uncommitted is in it;
+   *   - it is deleted by removeTreeNoFollow from the trusted root, which
+   *     never follows a link and checks each folder is where it was.
+   */
+  private async removeDeregisteredLeftover(rec: PendingWorktreeRemoval, opts: { checkOnly?: boolean } = {}): Promise<LeftoverResult> {
+    let real: string;
+    let rootReal: string;
+    let repoReal: string;
+    try {
+      real = fs.realpathSync.native(rec.path);
+      rootReal = fs.realpathSync.native(this.worktreesRoot);
+      repoReal = fs.realpathSync.native(rec.repoRoot);
+    } catch (err) {
+      return { ok: false, error: `the leftover folder was kept: a path could not be resolved (${(err as Error).message})` };
+    }
+    if (!strictlyInside(real, rootReal)) return { ok: false, error: 'the leftover folder was kept: it is not inside the wmux worktrees folder' };
+    if (sameCanonical(real, repoReal) || strictlyInside(repoReal, real) || strictlyInside(real, repoReal)) {
+      return { ok: false, error: 'the leftover folder was kept: it is, or holds, or sits in the repository' };
+    }
+    const gitEntry = leftoverGitEntry(real);
+    if (gitEntry !== null) return { ok: false, error: `the leftover folder was kept: ${gitEntry}` };
+
+    const registered = await this.listsWorktree(rec.repoRoot, repoReal, real);
+    if (registered === null) return { ok: false, error: 'the leftover folder was kept: git did not confirm it is no longer a worktree' };
+    if (registered) return { ok: false, registered: true, error: 'the folder is still a worktree' };
+
+    if (!rec.head) return { ok: false, error: 'the leftover folder was kept: no clean commit was recorded to compare it with' };
+    const changed = await this.leftoverChanges(rec.repoRoot, real, rec.head);
+    if (typeof changed !== 'number') return { ok: false, error: `the leftover folder was kept: its contents could not be compared with ${rec.head}: ${changed.error}` };
+    if (changed > 0) return { ok: false, dirty: true, error: `the leftover folder was kept: ${changed} file(s) in it are not what git left` };
+    if (opts.checkOnly) return { ok: true };
+
+    try {
+      await this.removeTree(real, rootReal);
+    } catch (err) {
+      return { ok: false, error: `the leftover folder could not be deleted: ${(err as Error).message}` };
+    }
+    try {
+      await this.runGit(['worktree', 'prune'], rec.repoRoot);
+    } catch {
+      /* the record is gone already; prune only tidies */
+    }
+    return { ok: true };
+  }
+
+  /** Whether git lists `folder` as a worktree of the repository, compared by
+   *  file identity (device and file id) and canonical path. Null when the
+   *  list cannot be read, or does not name the repository itself (an answer
+   *  that cannot be trusted), or an entry cannot be compared. */
+  private async listsWorktree(repoRoot: string, repoReal: string, folder: string): Promise<boolean | null> {
+    let out: string;
+    try {
+      out = (await this.runGit(['worktree', 'list', '--porcelain'], repoRoot)).stdout;
+    } catch {
+      return null;
+    }
+    let mine: fs.BigIntStats;
+    let repo: fs.BigIntStats;
+    try {
+      mine = fs.statSync(folder, { bigint: true });
+      repo = fs.statSync(repoReal, { bigint: true });
+    } catch {
+      return null;
+    }
+    const same = (a: fs.BigIntStats, b: fs.BigIntStats): boolean => a.dev === b.dev && a.ino === b.ino;
+    let namesRepo = false;
+    for (const line of out.split(/\r?\n/)) {
+      if (!line.startsWith('worktree ')) continue;
+      const listed = line.slice('worktree '.length);
+      let st: fs.BigIntStats;
+      let listedReal: string;
+      try {
+        st = fs.statSync(listed, { bigint: true });
+        listedReal = fs.realpathSync.native(listed);
+      } catch (err) {
+        // A listed folder that is gone is not this one, which exists.
+        if ((err as NodeJS.ErrnoException).code === 'ENOENT' || (err as NodeJS.ErrnoException).code === 'ENOTDIR') continue;
+        return null;
+      }
+      if (same(st, mine) || sameCanonical(listedReal, folder)) return true;
+      if (same(st, repo) || sameCanonical(listedReal, repoReal)) namesRepo = true;
+    }
+    return namesRepo ? false : null;
+  }
+
+  /** How many entries of `folder` differ from `head` other than files that
+   *  are missing (git deleted them), through a temporary index seeded from
+   *  `head`: the files compared with that index (not with the repository's
+   *  own HEAD, which the task's commits are not on), and untracked files
+   *  listed; ignored files do not count, as in `git status`. An error when
+   *  git cannot say. */
+  private async leftoverChanges(repoRoot: string, folder: string, head: string): Promise<number | { error: string }> {
+    let tmp: string | null = null;
+    try {
+      const { stdout } = await this.runGit(['rev-parse', '--git-common-dir'], repoRoot);
+      const commonDir = path.resolve(repoRoot, stdout.trim());
+      tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-leftover-'));
+      const env = { GIT_INDEX_FILE: path.join(tmp, 'index') };
+      const base = ['-c', 'core.fsmonitor=false', `--git-dir=${commonDir}`, `--work-tree=${folder}`];
+      await this.runGit([...base, 'read-tree', head], folder, { env });
+      // read-tree leaves no file stats in the index: refresh hashes each file
+      // once, so an unchanged one compares equal. It exits non-zero when some
+      // file differs, which the comparison below reports.
+      await this.runGit([...base, 'update-index', '-q', '--refresh'], folder, { env }).catch(() => undefined);
+      // An ignore file git already deleted still decides what counts as
+      // untracked: marked skip-worktree, git reads it from the index.
+      const ignoreFiles = (await this.runGit([...base, 'ls-files', '-z'], folder, { env })).stdout.split('\0')
+        .filter((f) => (f === '.gitignore' || f.endsWith('/.gitignore')) && !fs.existsSync(path.join(folder, f)));
+      if (ignoreFiles.length > 0) await this.runGit([...base, 'update-index', '--skip-worktree', '--', ...ignoreFiles], folder, { env });
+      const changed = await this.runGit([...base, 'diff-files', '--name-status', '--ignore-submodules=none'], folder, { env });
+      const untracked = await this.runGit([...base, 'ls-files', '--others', '--exclude-standard'], folder, { env });
+      const lines = (s: string): string[] => s.split(/\r?\n/).filter((l) => l.length > 0);
+      return lines(changed.stdout).filter((l) => !l.startsWith('D\t')).length + lines(untracked.stdout).length;
+    } catch (err) {
+      return { error: (err as Error).message };
+    } finally {
+      if (tmp) fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  }
+
+  /** The commit a worktree has checked out, or undefined when it cannot be read. */
+  private async headOf(worktreePath: string): Promise<string | undefined> {
+    try {
+      const head = (await this.runGit(['rev-parse', '--verify', '--quiet', 'HEAD'], worktreePath)).stdout.trim().toLowerCase();
+      return /^[0-9a-f]{40,64}$/.test(head) ? head : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async rememberPending(rec: PendingWorktreeRemoval): Promise<void> {
+    try {
+      await this.pendingRemovals?.put(rec);
+    } catch (err) {
+      // Only a leftover's later finish needs it; the removal itself goes on.
+      console.warn(`[worktask] the pending removal of ${rec.path} was not recorded: ${(err as Error).message}`);
+    }
+  }
+
+  private async forgetPending(worktreePath: string): Promise<void> {
+    try {
+      await this.pendingRemovals?.delete(worktreePath);
+    } catch (err) {
+      console.warn(`[worktask] the pending removal of ${worktreePath} was not forgotten: ${(err as Error).message}`);
+    }
+  }
+
+  /**
+   * Delete a task branch only while it still points at `expectedOid`, the
+   * commit it was created from: `git update-ref -d` compares and deletes in
+   * one step, so a branch that gained a commit is kept and nothing committed
+   * is ever lost. For a task whose worktree was rolled back (#2349).
+   */
+  async deleteBranchIfAt(
+    repoRoot: string,
+    repoHash: string,
+    branch: string,
+    expectedOid: string,
+  ): Promise<{ ok: true } | { ok: false; error: string }> {
+    return this.withRepoLock(repoHash, async () => {
+      const safeBranch = validateGitRef(branch, 'branch');
+      const safeOid = validateGitRef(expectedOid, 'expectedOid');
+      try {
+        await this.runGit(['update-ref', '-d', `refs/heads/${safeBranch}`, safeOid], repoRoot);
+        return { ok: true };
+      } catch (err) {
+        return { ok: false, error: `deleteBranchIfAt: ${(err as Error).message}` };
+      }
+    });
+  }
+
+  /**
+   * Put a removed task worktree back at the same path, on its kept branch
+   * (`git worktree add <path> <branch>`: no new branch, no reset), or, for a
+   * detached checkout (`detached`: `ref` is a commit), on that commit.
+   * Refused when the branch or commit is gone or the path is taken. The same
+   * folder is what lets an agent's per-folder conversation resume there.
+   */
+  async restoreWorktree(repoRoot: string, repoHash: string, worktreePath: string, ref: string, detached = false): Promise<CreateResult> {
+    return this.withRepoLock(repoHash, async () => {
+      const safeRef = validateGitRef(ref, detached ? 'commit' : 'branch');
+      if (detached && !/^[0-9a-f]{40,64}$/.test(safeRef)) return { ok: false, error: 'restoreWorktree: not a commit id' };
+      const safePath = validatePath(worktreePath, 'worktreePath');
+      if (fs.existsSync(safePath)) return { ok: false, error: 'restoreWorktree: the path is already taken' };
+      try {
+        await this.runGit(['rev-parse', '--verify', '--quiet', detached ? `${safeRef}^{commit}` : `refs/heads/${safeRef}`], repoRoot);
+      } catch {
+        return { ok: false, error: `restoreWorktree: ${detached ? 'the commit' : 'the branch'} is gone: ${safeRef}` };
+      }
+      try {
+        // A stale record of the removed folder would make git refuse the path.
+        await this.runGit(['worktree', 'prune'], repoRoot);
+        await this.runGit(detached ? ['worktree', 'add', '--detach', safePath, safeRef] : ['worktree', 'add', safePath, safeRef], repoRoot);
+      } catch (err) {
+        return { ok: false, error: `restoreWorktree: git worktree add failed: ${(err as Error).message}` };
+      }
+      return { ok: true, worktreePath: safePath, branch: detached ? '' : safeRef };
     });
   }
 

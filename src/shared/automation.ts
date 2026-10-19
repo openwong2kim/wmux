@@ -173,7 +173,9 @@ export type AutomationRunDetail =
   /** A browser call was refused by the pane's policy. */
   | 'browser_policy_denied'
   /** A browser action needed a person's consent, and nobody watches a scheduled run. */
-  | 'browser_consent_unattended';
+  | 'browser_consent_unattended'
+  /** Skipped as overlap only because a finished run's session is still open (it lingers, then closes). */
+  | 'previous_session_open';
 
 export interface AutomationRun {
   id: string;

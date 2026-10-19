@@ -1,0 +1,112 @@
+{
+  "name": "bot-worker-codex-engine",
+  "layer": "regression",
+  "runs": 1,
+  "model": "stub",
+  "description": "The owner sets a lead's workers to run on Codex in its profile; the lead fans out one default task naming no engine. Main puts the task on codex: the worker launches through the codex stand-in on main's guarded line (workspace-write sandbox, pinned folder, rules file in place) and reports through its own wmux tools.",
+  "setup": {
+    "repo": true,
+    "worker": {
+      "delayMs": 1000
+    },
+    "bots": [
+      {
+        "key": "lead",
+        "role": "lead",
+        "repo": true,
+        "script": {
+          "turns": [
+            {
+              "steps": [
+                {
+                  "capture": {
+                    "key": "idempotency_key \"(wake:[^\"]+)\""
+                  }
+                },
+                {
+                  "tool": "fanout_start",
+                  "args": {
+                    "idempotency_key": "{{key}}",
+                    "titles": [
+                      "change A"
+                    ],
+                    "prompt": "Make the small change named in the title.",
+                    "preset": "default",
+                    "files": [
+                      [
+                        "a.txt"
+                      ]
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "steps": [
+                {
+                  "say": "task read"
+                }
+              ]
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "actions": [
+    {
+      "do": "rpc",
+      "label": "pick-codex",
+      "method": "bot.update",
+      "params": {
+        "botId": "{{bot.lead}}",
+        "patch": {
+          "workerAgent": {
+            "agent": "codex"
+          }
+        }
+      }
+    },
+    {
+      "do": "post",
+      "label": "ask",
+      "post": {
+        "title": "Change A",
+        "body": "Make change A.",
+        "to": "lead"
+      }
+    },
+    {
+      "do": "waitFor",
+      "label": "report",
+      "cond": {
+        "workers": {
+          "event": "ledger_update",
+          "min": 1
+        }
+      },
+      "timeoutMs": 240000,
+      "required": true
+    },
+    {
+      "do": "waitFor",
+      "label": "quiet",
+      "cond": {
+        "idle": true,
+        "quietMs": 8000
+      },
+      "timeoutMs": 90000
+    }
+  ],
+  "expect": {
+    "requires": [
+      "facts",
+      "cards",
+      "bots",
+      "wakes",
+      "ledger",
+      "workers"
+    ],
+    "lead": "lead"
+  }
+}

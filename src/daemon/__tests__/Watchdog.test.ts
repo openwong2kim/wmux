@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from 'vitest';
 import { Watchdog } from '../Watchdog';
 
 describe('Watchdog', () => {
@@ -160,6 +160,106 @@ describe('Watchdog', () => {
     watchdog.start(healthCheck); // should not create another interval
     vi.advanceTimersByTime(1000);
     expect(healthCheck).toHaveBeenCalledTimes(1);
+  });
+
+  describe('create-time recheck (#2375)', () => {
+    // A 30 s interval like production, so any unblock observed between ticks
+    // can only have come from recheckBlock().
+    const MB = 1024 * 1024;
+    let wd: Watchdog;
+    let memoryBytes: number;
+    let healthCheck: Mock<() => { sessions: number; memory: number; uptime: number }>;
+
+    beforeEach(() => {
+      vi.spyOn(console, 'log').mockImplementation(() => undefined);
+      wd = new Watchdog(30_000);
+      memoryBytes = 1538 * MB;
+      healthCheck = vi.fn(() => ({ sessions: 120, memory: memoryBytes, uptime: 10 }));
+    });
+
+    afterEach(() => {
+      wd.stop();
+      vi.restoreAllMocks();
+    });
+
+    it('lifts the block at create time once memory is back under the limit, without waiting for the next tick', () => {
+      const onBlock = vi.fn();
+      wd.setCallbacks({ onBlockNewSessions: onBlock });
+      wd.start(healthCheck);
+      vi.advanceTimersByTime(30_000);
+      expect(wd.isBlocked).toBe(true);
+      expect(onBlock).toHaveBeenCalledWith(true);
+      onBlock.mockClear();
+
+      memoryBytes = 732 * MB;
+      vi.advanceTimersByTime(5_000); // well before the next 30 s tick
+      expect(wd.recheckBlock()).toBe(false);
+      expect(wd.isBlocked).toBe(false);
+      expect(onBlock).toHaveBeenCalledTimes(1);
+      expect(onBlock).toHaveBeenCalledWith(false);
+      expect(console.log).toHaveBeenCalledWith(
+        expect.stringContaining('Memory recovered to 732.0MB — unblocking new sessions'),
+      );
+    });
+
+    it('keeps refusing creates while memory is still over the limit at recheck', () => {
+      const onBlock = vi.fn();
+      wd.setCallbacks({ onBlockNewSessions: onBlock });
+      wd.start(healthCheck);
+      vi.advanceTimersByTime(30_000);
+      onBlock.mockClear();
+      const samplesBefore = healthCheck.mock.calls.length;
+
+      memoryBytes = 1100 * MB;
+      vi.advanceTimersByTime(5_000);
+      expect(wd.recheckBlock()).toBe(true);
+      expect(healthCheck.mock.calls.length).toBe(samplesBefore + 1);
+      expect(wd.isBlocked).toBe(true);
+      expect(onBlock).not.toHaveBeenCalled();
+    });
+
+    it('re-samples at most once per second — a burst of creates reuses the last answer', () => {
+      wd.start(healthCheck);
+      vi.advanceTimersByTime(30_000);
+      const samplesBefore = healthCheck.mock.calls.length;
+
+      expect(wd.recheckBlock()).toBe(true);
+      expect(healthCheck.mock.calls.length).toBe(samplesBefore + 1);
+
+      // Memory drops, but the next recheck is inside the 1 s window: no new
+      // sample, the previous answer stands.
+      memoryBytes = 700 * MB;
+      vi.advanceTimersByTime(500);
+      expect(wd.recheckBlock()).toBe(true);
+      expect(wd.recheckBlock()).toBe(true);
+      expect(healthCheck.mock.calls.length).toBe(samplesBefore + 1);
+
+      // Once the window has passed, the next create samples again and unblocks.
+      vi.advanceTimersByTime(500);
+      expect(wd.recheckBlock()).toBe(false);
+      expect(healthCheck.mock.calls.length).toBe(samplesBefore + 2);
+    });
+
+    it('samples again when the clock went back since the last recheck', () => {
+      wd.start(healthCheck);
+      vi.advanceTimersByTime(30_000);
+      expect(wd.recheckBlock()).toBe(true);
+      const samplesBefore = healthCheck.mock.calls.length;
+
+      memoryBytes = 700 * MB;
+      vi.setSystemTime(Date.now() - 60_000);
+      expect(wd.recheckBlock()).toBe(false);
+      expect(healthCheck.mock.calls.length).toBe(samplesBefore + 1);
+    });
+
+    it('does not sample when not blocked', () => {
+      memoryBytes = 100 * MB;
+      wd.start(healthCheck);
+      vi.advanceTimersByTime(30_000);
+      const samplesBefore = healthCheck.mock.calls.length;
+      expect(wd.recheckBlock()).toBe(false);
+      expect(healthCheck.mock.calls.length).toBe(samplesBefore);
+    });
   });
 
   describe('idle shutdown', () => {

@@ -28,6 +28,7 @@ registerFactoryRpcModule('approvals', (router, deps: FactoryHostDeps) => {
         import('./mergeLaneHost'),
         import('../../shared/bot'),
       ]);
+      const { getSkillApprovalHost } = await import('../pipe/handlers/skill.rpc');
       const { noticeBot } = await import('./botNotices');
       let service: ApprovalService;
       try {
@@ -59,6 +60,7 @@ registerFactoryRpcModule('approvals', (router, deps: FactoryHostDeps) => {
             const win = deps.getMainWindow();
             if (win && !win.isDestroyed()) win.webContents.send(BOT_EVENT, payload);
           },
+          skills: getSkillApprovalHost,
         });
       } catch (err) {
         startFailure = String(err);

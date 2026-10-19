@@ -9,9 +9,9 @@
 // pure over the usage record they are given.
 //
 // A refusal is never retried in a loop: the runtime parks the bot, emits a
-// `bot.budget_exhausted` hook, and drops the wake with code `budget` — unless
-// the wake carries the owner's words, which wait queued until the window
-// allows a turn again (`nextTurnAllowedAt`) or the owner resumes the bot.
+// `bot.budget_exhausted` hook, and keeps the wake queued until the window
+// allows a turn again (`nextTurnAllowedAt`), a profile edit raises the cap,
+// or the owner resumes the bot.
 
 import type { BotBudget } from '../../shared/bot';
 
@@ -30,6 +30,9 @@ export interface BotUsage {
   turns: number[];
   /** Workers that ran inside the last day, plus every one still running. */
   workers: BotWorkerUsage[];
+  /** The engine's cost estimate (USD at API prices) of each turn inside the
+   *  last day, and of every turn ever. Absent until a turn reports one. */
+  cost?: { day: { at: number; usd: number }[]; total: number };
 }
 
 export type BudgetRefusalReason = 'turns_hour' | 'turns_day' | 'concurrent_workers' | 'worker_hours_day';
@@ -44,7 +47,24 @@ export function emptyUsage(): BotUsage {
 export function pruneUsage(usage: BotUsage, now: number): BotUsage {
   usage.turns = usage.turns.filter((t) => t > now - DAY_MS && t <= now);
   usage.workers = usage.workers.filter((w) => w.endedAt === undefined || w.endedAt > now - DAY_MS);
+  if (usage.cost) usage.cost.day = usage.cost.day.filter((c) => c.at > now - DAY_MS && c.at <= now);
   return usage;
+}
+
+/** Add one turn's cost estimate. Ignores a value that is not a finite,
+ *  non-negative number. */
+export function recordCost(usage: BotUsage, usd: number, now: number): void {
+  if (!Number.isFinite(usd) || usd < 0) return;
+  pruneUsage(usage, now);
+  const cost = usage.cost ?? { day: [], total: 0 };
+  cost.day.push({ at: now, usd });
+  cost.total += usd;
+  usage.cost = cost;
+}
+
+/** The cost estimate of the turns in the last day (USD). */
+export function costUsdDay(usage: BotUsage, now: number): number {
+  return (usage.cost?.day ?? []).filter((c) => c.at > now - DAY_MS && c.at <= now).reduce((sum, c) => sum + c.usd, 0);
 }
 
 function turnsSince(usage: BotUsage, since: number, now: number): number {
@@ -77,6 +97,40 @@ export function hourlyCap(budget: BotBudget): number | null {
 /** Turns the bot started inside the last day (the profile's "used today"). */
 export function turnsUsedDay(usage: BotUsage, now: number): number {
   return turnsSince(usage, now - DAY_MS, now);
+}
+
+/** Turns the bot started inside the last hour. */
+export function turnsUsedHour(usage: BotUsage, now: number): number {
+  return turnsSince(usage, now - HOUR_MS, now);
+}
+
+/** The earliest time the bot's worker time in the last day drops below its
+ *  cap again, counting its running workers as if they stopped now (a worker
+ *  still running pushes the real time later): `now` when it is below the cap
+ *  now, Infinity when the cap is 0. */
+export function workerTimeAllowedAt(budget: BotBudget, usage: BotUsage, now: number): number {
+  const max = budget.maxWorkerHoursPerDay;
+  if (workerHoursDay(usage, now) < max) return now;
+  if (max <= 0) return Infinity;
+  // Worker time in the window ending at t, no worker time after now: it only
+  // falls as t moves on, so a binary search finds the first t below the cap.
+  const used = (t: number): number => {
+    let ms = 0;
+    for (const w of usage.workers) {
+      const start = Math.max(w.startedAt, t - DAY_MS);
+      const end = Math.min(w.endedAt ?? now, now);
+      if (end > start) ms += end - start;
+    }
+    return ms / HOUR_MS;
+  };
+  let lo = now;
+  let hi = now + DAY_MS;
+  while (hi - lo > 1_000) {
+    const mid = Math.floor((lo + hi) / 2);
+    if (used(mid) < max) hi = mid;
+    else lo = mid;
+  }
+  return hi;
 }
 
 export interface BudgetLeft {
@@ -133,6 +187,15 @@ export function recordTurn(usage: BotUsage, now: number): void {
   usage.turns.push(now);
 }
 
+/** Give back the turn recorded at `at` (a turn that never reached the model:
+ *  the network failed). Returns false when none was recorded then. */
+export function unrecordTurn(usage: BotUsage, at: number): boolean {
+  const i = usage.turns.lastIndexOf(at);
+  if (i < 0) return false;
+  usage.turns.splice(i, 1);
+  return true;
+}
+
 /** A task's worker starts once: a second start of the same task records
  *  nothing. `resumed`: the task's stopped worker runs again, a new interval
  *  (unless one is still open). */
@@ -182,5 +245,18 @@ export function sanitizeUsage(raw: unknown): BotUsage {
       });
     }
   }
+  const cost = r.cost as Record<string, unknown> | null | undefined;
+  if (cost && typeof cost === 'object' && !Array.isArray(cost) && isUsd(cost.total)) {
+    const day: { at: number; usd: number }[] = [];
+    for (const c of Array.isArray(cost.day) ? cost.day.slice(-USAGE_TURNS_MAX) : []) {
+      const x = c as Record<string, unknown> | null;
+      if (x && typeof x === 'object' && Number.isSafeInteger(x.at) && (x.at as number) > 0 && isUsd(x.usd)) day.push({ at: x.at as number, usd: x.usd as number });
+    }
+    out.cost = { day, total: cost.total as number };
+  }
   return out;
+}
+
+function isUsd(v: unknown): v is number {
+  return typeof v === 'number' && Number.isFinite(v) && v >= 0;
 }

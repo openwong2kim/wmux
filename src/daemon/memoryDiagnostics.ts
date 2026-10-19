@@ -1,6 +1,7 @@
 import type { DaemonMemoryDiagnostics } from '../shared/memoryDiagnostics';
 import type { ManagedSession } from './DaemonSessionManager';
 import type { SessionPipe } from './SessionPipe';
+import { RingBuffer } from './RingBuffer';
 
 /** Read counters only: never copy terminal contents or trigger a snapshot. */
 export function collectDaemonMemoryDiagnostics(
@@ -8,6 +9,7 @@ export function collectDaemonMemoryDiagnostics(
   pipes: ReadonlyMap<string, SessionPipe>,
 ): DaemonMemoryDiagnostics {
   const memory = process.memoryUsage();
+  const hibernated = sessions.filter(({ ringBuffer }) => ringBuffer.isHibernated);
   return {
     pid: process.pid,
     rssBytes: memory.rss,
@@ -24,6 +26,12 @@ export function collectDaemonMemoryDiagnostics(
       ...(pipes.get(meta.id)?.getMemoryDiagnostics() ?? {
         socketQueuedBytes: 0, socketPeakQueuedBytes: 0, resyncQueuedBytes: 0,
       }),
+      ...(ringBuffer.isHibernated ? { ringHibernated: true } : {}),
     })),
+    hibernation: {
+      sessions: hibernated.length,
+      freedBytes: hibernated.reduce((total, { ringBuffer }) => total + ringBuffer.hibernatedBytes, 0),
+      wakeFailures: RingBuffer.wakeFailures,
+    },
   };
 }

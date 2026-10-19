@@ -49,7 +49,7 @@ export function registerWorkerResumeRpc(router: FactoryRouter, deps: WorkerResum
     const rec = ports.store.get(taskId);
     if (!rec || rec.botId !== ctx.bot.botId) return refuse('not_found', 'no stopped worker of a task you started has this id');
     const slots = deps.slots();
-    const slot = slots ? slots.tryAcquire() : null;
+    const slot = slots ? slots.tryAcquire({ taskId, botId: ctx.bot.botId }) : null;
     if (slots && !slot) return refuse('no_slot', `every agent slot (${slots.limit()}) is in use; try again once a task ends`);
     // The slot hands over to the resumed-worker count once the line is typed.
     const release = (): void => {

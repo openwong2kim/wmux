@@ -32,6 +32,7 @@ import { startFanoutWorkerWatch } from '../../deck/fanoutWorkerWatchHost';
 import { notifyPrOwner, setPrOwnerSink } from '../../deck/prOwnerNotify';
 import { isStartupDeckReconcileDone, tryStartupDeckReconcile } from '../../deck/deckOrphanReconcile';
 import { getWorkLinkStore } from '../../workLink/workLinkStore';
+import { getFanOutGuards } from '../../worktask/fanoutGuards';
 
 type GetWindow = () => BrowserWindow | null;
 
@@ -78,6 +79,7 @@ export function registerDeckHandler(getWindow: GetWindow, opts: RegisterDeckHand
       if (!client) return null;
       return client.rpc('task.mission.list', { verifiedWorkspaceId: owner });
     },
+    originOf: (taskWorkspaceId) => getFanOutGuards().lineageFor([taskWorkspaceId])[taskWorkspaceId]?.origin ?? null,
   });
   // Every ledger transition is posted to the task's mission channel as the
   // owner workspace, so the channel transcript and the ledger never disagree.

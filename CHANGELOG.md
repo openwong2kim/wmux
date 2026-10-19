@@ -1,5 +1,1634 @@
 ## [Unreleased]
 
+## [4.7.0] — 2026-10-19
+
+### Added
+
+- **Bots write their own skills, and you approve each one.** After you
+  correct a bot, or after one of its tasks failed and then succeeded, the
+  bot can write down the procedure as a skill (a `SKILL.md` with a name,
+  description and version, kept in its own folder). Each proposal shows up
+  as an approval card with the whole change as a diff (a proposal too large
+  to show in full is refused); Approve loads it, Deny archives it, and
+  nothing loads before you approve. wmux keeps its own record of each
+  approved version and loads a skill only while its files are still that
+  version; one that changed since approval is marked in the profile and
+  stays unloaded until the bot proposes it again. An approved skill is
+  listed in the bot's wakes, where it reads it on demand, and is copied into
+  the worktree of every Claude Code worker it starts, kept out of git
+  (research workers get none). The bot's profile lists its skills and where
+  each stands, with Archive; archiving a skill posts a note in the bot's
+  chat, and the bot's next wake tells it not to apply that skill. An update
+  to a skill never changes the approved version until you approve it.
+  (#2288, #2300)
+
+- **The phone gets what it needs to word bot cards in your language.** A
+  wmux system card in a room, such as a task done, a gate result or a hop
+  between bots, now carries its stable code and values to the phone for every
+  code the contract publishes. The phone can show the card in its own language
+  and still falls back to the English title. Before, the phone only had the
+  English text. (#2297)
+
+- **The phone's Bots list shows the work each conversation handed off.** Each
+  1:1 and group chat lists the threads it started as the same work cards the
+  desktop draws: who the work was handed to, its state, the request and the
+  newest message. (#2297)
+
+- **The phone knows what an approval is for.** An approval card names the act
+  its request asks for, so the phone can mark the ones that are approved on
+  the desktop only. (#2297)
+
+- **Pause a bot from its profile.** A Pause button now sits beside Stop in a
+  bot's profile. It parks the bot at once, with no confirm, and the profile
+  then shows "Paused by you" with Resume. Before, the only way to park a bot
+  from the Bots page was Stop, which also ends its workers. (#2304)
+
+- **Mute notifications for a single pane.** The pane menu (⋮ or right-click
+  on the pane header) now has Mute notifications. A muted pane stops popping
+  toasts, playing sounds, ringing, flashing the taskbar and sending OS
+  notifications. Its notifications are still recorded, and the sidebar still
+  shows its state. The mute is saved with the pane, so it survives a restart,
+  and a small bell-off icon in the pane header shows it is on. Before, you
+  could only mute a whole workspace or a whole notification category. (#2334)
+
+- **Panes say when the daemon connection drops.** If the background daemon
+  goes away while wmux is running, every terminal pane that was attached to it
+  now shows a notice at once — reconnecting, then reconnected (which clears on
+  its own), or a lasting notice if wmux gives up, with what to do next. If you
+  typed or pasted into a pane while it was cut off, the pane says that input may
+  not have reached the shell, so you can check before typing it again. Before,
+  panes froze silently and that input disappeared without a trace.
+
+- **Continue a Claude conversation on another account.** A pane running Claude
+  Code now offers "Continue on another account" in its pane menu. When the pane
+  hits a usage limit, its limit chip offers "Continue on…" with the same list.
+  Pick a registered Claude account and wmux stops Claude in that pane, copies
+  the conversation to the account and resumes the same conversation there, in
+  the same pane. The original transcript stays where it was. Before, an
+  account choice applied only to new terminals, so moving a conversation meant
+  quitting Claude and resuming it by hand. (#2336)
+
+- **Account groups keep work and personal accounts apart.** In Settings ›
+  Accounts each Claude or Codex account can be put in a group (for example
+  Work or Personal). "Switch accounts by quota" now only moves a workspace's
+  panes, Command Deck and background (A2A) launches to another account in
+  the same group as the account the workspace is bound to; when every
+  account in that group is out of quota the launch waits, as it did when
+  every account was out, instead of moving to another group. Before, it could
+  pick any registered account of that vendor. Accounts without a group form
+  one pool, so nothing changes until you create a group. Each account row
+  has a menu to move it to a group, and moving an account a workspace is
+  bound to says first which workspaces switch to another pool. The
+  workspace and pane account menus list the bound account's group first and
+  the other groups below; picking one by hand still works. (#2347)
+
+- **`npm run changelog:check` checks the changelog.d fragments.** It reports
+  what a release fold would get wrong as errors: an empty fragment, a section
+  Keep a Changelog does not have, a `##`, `####` or malformed heading, text
+  the fold drops, an empty section, a duplicated entry, or "see below" with
+  nothing below it once folded. The README's style rules and PR numbers
+  missing from local git history are warnings. The release fold
+  (`scripts/collect-changelog.mjs`) now refuses to fold fragments with
+  errors. Before, such mistakes surfaced only in the published release
+  notes. (#2348)
+
+- **Markdown files render in the editor's View mode.** A `.md` file opened in the editor showed its raw `#`, `**` and backticks; View now draws headings, lists, tables, code blocks and links, and Edit still shows the source. A document too long to draw whole is shown as raw text instead of being cut short. (#2364)
+
+- **Send photos to your bots.** A message in a Bots conversation can now
+  carry up to four PNG or JPEG photos: from the picture button in the
+  composer, a paste, or a drop on the page on the desktop, and from the phone
+  app. The bot sees the photos themselves in the turn that answers the
+  message; before, only text reached a bot, and a file path in the text was
+  useless to it because a bot has no file tools. The owner's message shows
+  the photos as thumbnails; a click opens one full size. wmux keeps each
+  photo, as one copy at most 1568 px on its long edge, as long as the room
+  keeps the message (90 days), instead of the phone upload's 24 hours. The
+  phone contract gains `attachments` on `POST /api/rooms/:workspaceId/messages`
+  and on owner cards, `GET /api/rooms/:workspaceId/attachments/:id`, and the
+  `/api/config` keys `botAttachments` and `roomAttachments`. (#2378)
+
+- **A bot's profile shows its account's usage limits and what its turns
+  cost.** The Today block now leads with the Claude account the bot's brain
+  runs on and that account's 5-hour and weekly usage, with the reset times,
+  read from the usage readings wmux already holds (no extra requests). Below
+  the limits, the cost the engine reports for the bot's turns is added up for
+  today and in all, labelled as an API-equivalent estimate: a subscription is
+  not charged it. Before, the block showed only the bot's own activity, and the
+  cost reached the logs only. (#2381)
+
+- **Comment on a diff line, and hand a workspace review to the agent.**
+  A diff's line numbers are now buttons: click one to comment on that line,
+  Shift-click another to cover a range. On a task diff the comment is posted
+  to the mission channel with its line and shown under it; before, a comment
+  could only name the whole hunk. The workspace diff, which could not be
+  commented on at all, collects comments into a review and types the whole
+  review into the input of the agent beside it in one click, unsent, or
+  copies it when no agent runs there. (#2382)
+
+- **The browser element hand-off shows the agent how the element looks.**
+  Picking an element and handing it to the agent used to send its selector,
+  tag and the start of its text. It now also sends a short list of the
+  element's computed styles (layout, size, spacing, colours, font, border)
+  and the path of a screenshot of the element, so Claude Code or Codex can
+  open the image. Private tabs are never captured. (#2383)
+
+- **Rewind a Claude Code turn from the pane menu.** A terminal pane running
+  Claude Code now has "Rewind…" in its actions menu (⋮, or right-click on the
+  pane header). It opens Claude's own Rewind picker, where you choose the turn
+  to go back to and whether to restore the code, the conversation or both.
+  Before, the only way in was knowing Claude's double-Escape gesture. wmux
+  sends it only while Claude is idle with an empty input, and otherwise tells
+  you why it can't (still working, text in the input, a prompt on screen).
+
+- **Answer Claude's plan from Fleet.** When a pane is waiting on Claude's plan approval, Fleet's approvals tab shows a Plan card with the whole plan and the dialog's own choices — approve it, or tell Claude what to change — answered with the same safety checks a paired phone uses. Before, the plan could only be answered in the pane or from a phone. A plan wmux cannot tie to its call shows the card without buttons and points at the pane. (#2386)
+
+- **A hint when scrolling a fullscreen app clears your selection.** In an
+  app that runs fullscreen and uses the mouse, such as Codex, the wheel
+  scrolls the app's own transcript, and that clears the terminal selection
+  (the text under it is redrawn). The first time this happens in a pane, wmux
+  now says so, and that Shift+drag (Option+drag on macOS) selects what is on
+  screen. The wheel still goes to the app. Claude Code, which keeps its own
+  selection while it scrolls, is left out. (#2402)
+
+- **GitLab merge requests show their CI status.** In the Git page, each merge request in a GitLab repo now has the same green, red or grey dot as a GitHub pull request, read from its latest pipeline. Before, GitLab merge requests never had a dot. wmux also checks the GitLab CLI's sign-in less often, instead of on every list refresh. (#2421)
+
+- **GitLab issues on the Git page.** On a GitLab repo the Issues tab lists open issues (all, assigned to you, created by you, or by label) and opens one with its comments, read through glab. (#2432)
+
+### Changed
+
+- **A task worker publishes only to the repository its task was started for.** `task_push` now checks the same remote settings as `task_fetch`, and pushes to the repository recorded when the task was dispatched. A bot task with no recorded repository falls back to its bot's repository; a task with neither is refused with a message. (#2310)
+
+- **`task_push` and `task_fetch` go through a git repository wmux owns.** Each
+  push, fetch and ls-remote for a task runs in a bare repository under wmux's
+  data folder that borrows the task repository's objects, so wmux's network git
+  works on the repository wmux recorded when it started the task and writes
+  nothing under it. `task_fetch` now returns a `git fetch` line the worker runs
+  in its own shell to update its `origin/<branch>` refs, then merges. `task_push`
+  no longer writes `branch.<name>.remote`/`.merge` or a remote-tracking ref;
+  workers open the pull request with `gh pr create --head <branch>`. A task of
+  your own started before this update cannot push or fetch; start it again. (#2337)
+
+- **Pushing a pane's branch from the phone goes through a git repository wmux
+  owns.** The push and its remote reads run in a bare repository under wmux's
+  data folder that borrows the pane repository's objects, and wmux writes
+  nothing into the pane's repository: a branch the phone push created no
+  longer gets an upstream or a remote-tracking ref set for it. Pushing that
+  branch from the phone again is a fast-forward onto the branch the first push
+  created. (#2345)
+
+- **`task_push` and `task_fetch` compare the recorded origin including its
+  port.** wmux now records origin's address as the repository config holds it
+  when it starts a task (and when you pick a bot's repository folder), and
+  pushes or fetches only while origin still matches it: the same transport,
+  host, port and ssh user, the path in any case. Pushes and fetches then use
+  the recorded address as written, with your git config applied as usual. If
+  you move origin to another transport or port, pick the bot's repository
+  folder again or start a new task. A task started before this update records
+  the address at its first push or fetch when origin uses its transport's
+  default port; otherwise start a new task. (#2346)
+
+### Fixed
+
+- **Notification effect settings now survive a restart.** Turning off the pane
+  ring, its flash or the taskbar flash, or changing the unread pane
+  brightness, lasted only until wmux restarted. They are now saved with the
+  rest of your settings. (#2296)
+
+- **Linking a bot's repository says what the repository needs.** A folder
+  whose origin is a local path was refused without saying why. The refusal
+  and the bot's profile now say that origin must be an owner/repo address
+  on a git host, such as GitHub, and how to set it. (#2299)
+
+- **wmux no longer waits on the macOS keychain at startup when no bot
+  secrets are stored.** Loading the bot key store asked the keychain whether
+  encryption was available even when the store was empty, and the app's main
+  thread waited for the answer. If the keychain needed a response (for
+  example an access prompt), wmux stopped responding until someone answered.
+  The keychain is now asked only when a stored key has to be decrypted or a
+  new one is saved. (#2301)
+
+- **Worker cards say which task they are about.** When several tasks ended
+  at once, the room showed one identical "Worker done (resumable)" card per
+  task, each with its own Resume, and nothing on the card said which task it
+  was. The Worker done, Worker paused and Worker resumed cards now name their
+  task by its title, or by its short id when it has none, on the desktop and
+  for the phone. (#2302)
+
+- **Work a bot hands off from a chat folds into one work card again.** When
+  a Coordinator named the chat it was talking in as the handoff's thread,
+  no thread of its own opened, so the other bots' replies flooded the 1:1
+  or group chat instead of folding into a work card. The same happened to
+  every handoff from the first bot made with only a name. Both now open
+  their own thread and fold. (#2303)
+
+- **Answering a new bot's greeting can set its job.** The greeting asks
+  what the bot should do in your own words, but an answer given on that
+  card was refused with "only from a message you write in chat". Your
+  answer to a bot's question now counts as your own words. (#2303)
+
+- **Bots answer in the language you write in.** With an English interface
+  and English messages, a bot could still greet you in another language,
+  because nothing told it the language was English. It is now named, and
+  when you write in another script, such as Korean, that language wins.
+  (#2303)
+
+- **The Today block no longer contradicts "Workers now".** Its cap line read
+  "Running workers 2 of 3" while "Workers now" said 0 running, because the cap
+  counts agent slots, and a task in review still holds a slot while its worker
+  runs. The line now reads "Worker slots in use" and says how many slots are
+  held by tasks in review. (#2304)
+
+- **List previews follow a language change.** After switching to Korean, a
+  bot's row in the Bots list kept reading "In Team: …" in English until a new
+  message arrived. (#2304)
+
+- **"Resuming…" after Resume.** Right after Resume, a bot's profile briefly
+  read "On · Not reported yet". It now reads "Resuming…" until the bot's
+  runtime reports its state, for at most 10 seconds. (#2304)
+
+- **A bot names its workspace by its name.** A new bot's greeting could name
+  the workspace after the repository folder ("added to the
+  wmux-gitwrite-sandbox workspace") instead of the workspace's name, such as
+  "Workspace 1". (#2304)
+
+- **A WSL bot worker resumes in the permission mode it was started in, even
+  when its task ended at its own report.** Its mode was recorded only when a
+  turn ended. A worker whose task completed before that had none, and Resume
+  started it in Claude Code's default mode. wmux now records the mode when a
+  turn starts too, and otherwise uses the mode the worker was launched with.
+  (#2305)
+
+- **A bot task ends when its pull request is merged.** In a repository with
+  no test or lint scripts there was no check to complete a bot's task, so a
+  task whose pull request you had merged stayed open, and its worker and task
+  folder stayed with it. A merge of the task's own pull request into the
+  default branch now completes the task, once the merge holds all of the
+  task's commits. This applies to tasks started after this update. (#2306)
+
+- **A bot's worker can bring in fresh main without its own credentials.**
+  A worker whose shell can't reach origin, such as a WSL pane working on a
+  Windows-drive repository, couldn't fetch, so it couldn't settle a conflict
+  with the default branch or read it fresh. The new `task_fetch` tool has
+  wmux fetch origin's default branch and the worker's own branch with its
+  own credentials, the same way `task_push` publishes. It only fetches: the
+  worker then runs `git merge origin/<default>` itself. (#2308)
+
+- **A bot's worker in a WSL pane uses this build's wmux tools.** Its claude
+  loaded whatever wmux server the distribution's own claude config named,
+  which could be an older one missing tools such as `task_fetch`. It now
+  loads this build's server alone, the same way a worker outside WSL does.
+  A launch that can't reach it from WSL is refused rather than falling back
+  to another server. (#2308)
+
+- **A bot hears when you delete a key it used.** Deleting a key in
+  Settings › Bots › Keys used to tell the bot nothing, so it could only
+  guess why the key was gone. Each bot that asked for the key or used it
+  last now gets a "Key deleted" card in its conversation, naming the key
+  (never its value). Its next turn is told the key is gone and how to get
+  it back. The Delete button in the Keys list now names its key for screen
+  readers. (#2309)
+
+- **Bots conversations show their messages after a cold start instead of
+  staying empty until the window is refocused.** When the app and its daemon
+  started together (after a reboot, say), the Bots page read its rooms before
+  they had started. The refused read left an empty placeholder that counted
+  as already read, so every conversation without an open question showed "No
+  messages yet" until the window lost and regained focus. A refused first
+  read is now tried again a few times, and again as soon as the rooms report
+  they run. (#2311)
+
+- **Stop one bot worker.** A bot's running worker could only be stopped with
+  the bot-wide Stop, which also ends the bot's turn and every other worker.
+  The worker panel's Worker options menu now has Stop worker: it cancels
+  that one task and stops its worker, and keeps the task's branch and
+  folder. (#2312)
+
+- **A stopped bot task keeps its folder.** A task ended by Stop worker, a
+  bot's Stop, Stop all or turning bots off no longer has its worktree or
+  research folder removed automatically; Settings › Bots › Clean up now
+  still applies the usual rules to it. (#2312)
+
+- **A delegate's first word stays in the work's thread.** When a Coordinator's
+  1:1 or a group chat handed work to another bot, that bot's acknowledgement
+  ("Got it: worker starting…") could land in the conversation itself, next to
+  the folded work card, instead of inside the work's thread. (#2313)
+
+- **First-run answers no longer read as corrections.** Answering a new bot's
+  greeting, or any question that asks for your own words, in your own words
+  was logged as overriding the bot, and a few minutes later the bot proposed a
+  skill about it. Only rejecting or replacing the options a bot offered counts
+  now. (#2313)
+
+- **A deleted bot keeps its name under your messages.** After deleting a bot,
+  your earlier message to it read "Sent to Lead" (its role) instead of "Sent
+  to Rex (removed)". (#2313)
+
+- **A bot reply prints once.** A reply whose text repeated its first line,
+  or began with a title cut from that text, showed it twice. (#2313)
+
+- **A pasted command is not a bot name.** Add bot accepted a pasted shell
+  command such as `cd /private/tmp/…` as a name. Names may no longer contain
+  `/` or `\`; letters of any script, spaces and other punctuation are still
+  fine. (#2313)
+
+- **A bot not addressed stays quiet.** In a group chat, when you named one
+  bot with work for it, the other bot could post a card saying it was not
+  posting anything this time. A bot with nothing to add now ends its turn
+  without a word. (#2313)
+
+- **Finished bot workers free their slot after a restart.** After the app
+  restarted, a bot worker whose task was already reported for review was
+  never stopped for being idle, so it kept its worker slot and the bot could
+  not start new work. wmux now reads the worker's turn from the background
+  service and frees the slot after the usual five idle minutes. Only the
+  task's own worker is stopped, never another terminal in its workspace.
+  (#2314)
+
+- **A worker resumed after its task ended can tell its bot how the follow-up
+  went.** A completed task stays completed, so the report of a worker
+  resumed for a follow-up was refused and nobody heard of it. Now the bot
+  that started the task is woken with the worker's message, and the task's
+  conversation shows a card saying the worker reported after its task
+  ended. (#2315)
+
+- **A bot can read the terminal of a worker it resumed.** The pane a Resume
+  opens for a bot's ended task is now readable by that bot, like the pane of
+  a task it started. (#2315)
+
+- **A paused bot's 1:1 says so.** While you have paused a bot, a quiet line
+  under its composer says your message goes and the bot reads it when you
+  resume it. Before, only the amber dot hinted at it, and the message read
+  "Sent to <bot>". (#2316)
+
+- **Quiet conversations show their last message.** A 1:1 or group chat whose
+  latest message was older than the room's newest page read "No messages
+  yet" in the list until you opened it. (#2316)
+
+- **Bots speak to you directly.** In Korean replies, bots called you
+  "owner님". They now address you directly, with no title. (#2316)
+
+- **A Coordinator's plan thread carries one report, in your language.** When
+  a Coordinator handed plan work to another bot, both bots posted a full
+  report of the same result at the same moment, and the delegate's was in
+  English even when you wrote in Korean. The delegate now sends its result to
+  the Coordinator only, the Coordinator reports, and a bot working in a
+  thread another bot started writes in the language you used with that bot.
+  Approval request reasons follow your language too. (#2317)
+
+- **Always allow says what its rule still needs, and why it did not apply.**
+  A rule from Always allow merges only when a verifier passed the head, CI is
+  green, the author is trusted and nothing started from outside text, so in a
+  workspace without a Reviewer bot, or on a repository with no required CI
+  checks, it could never fire, and the next request asked again without a
+  word. A merge card now says under Always allow what a rule would still
+  need here, and a request a rule could not approve names its first unmet
+  condition. A rule covers the merges its bot asks for (not the pull requests
+  its workers wrote); a request from another bot now says so, and Settings
+  words the rule that way. (#2317)
+
+- **A bot task that changed nothing is no longer marked completed by the
+  check.** A task that made no commits, such as one that only calls an API,
+  had the repository's tests run on the unchanged code. When they passed, the
+  task was closed as "gate passed, task completed", even when the task's own
+  report said it had failed. Such a task now skips the check, shows "Gate
+  skipped (the task made no changes)", and stays open until its bot settles it
+  as completed or failed from the report. (#2318)
+
+- **A question that says not to answer in your own words.** Such a question
+  counted as one inviting your own words, so replacing its options was not
+  noted as a correction to the bot. (#2320)
+
+- **Bots start new workers again when no worker is running.** A task in
+  review whose worker wmux had paused could still take one of the three bot
+  worker slots, and after wmux and its background service restarted, every
+  reopened pane counted as a running worker. New workers were then refused
+  as over the limit. Now only workers that are running count. A bot's turn
+  also no longer says one of its workers is waiting for input when that
+  task has since been cancelled. (#2321)
+
+- **A new bot worker no longer takes another pane's identity after a
+  restart.** On Windows, a process ID left behind by a pane from before a
+  background-service restart could be reused by a new worker, which then acted
+  as that old pane: its task updates were refused and the task stayed stuck.
+  wmux now keeps only each pane's current process ID, clears stale ones at
+  startup, and accepts a match only when it is the pane's live shell. (#2322)
+
+- **Pane identity stays correct right after a restart.** After a
+  background-service restart, or after a supervised pane restarted its process,
+  wmux could briefly match a pane against a shell list from before the restart.
+  It now reads the current shell list before it ties a caller to a pane, and
+  never reuses a list from an earlier daemon connection. (#2323)
+
+- **Phone and chat turn views show each message once.** With Claude Code
+  2.1.301 or later, every message, tool call and tool result appeared twice.
+  (#2324)
+
+- **Folders kept after you stop a bot task are cleaned up after 7 days.**
+  When you stopped a bot's task, wmux kept its folder so you could look at
+  what the worker left, and only Clean up now removed it. Now a kept folder
+  with no uncommitted changes is removed by itself 7 days after the task's
+  worker last stopped (a resumed worker restarts the count), with the
+  same safety checks as every other cleanup, and its branch stays. One quiet
+  card in the task's conversation says so. A folder with uncommitted
+  changes is still never removed by itself. A worktree that git removed
+  only part of (a locked file, a leftover node_modules link) is now
+  finished instead of being retried forever, without ever following a link
+  out of the folder, and Clean up now lists any folder it could not remove,
+  with the reason. (#2325)
+
+- **A bot worker left open on screen is paused once you leave it alone.**
+  A worker whose terminal was shown, for example in the Bots side panel,
+  was never paused as idle, so it ran until you closed it. Now being shown
+  keeps a worker running only for 30 minutes after you last typed in it or
+  switched to it. After that it is paused like any idle worker, and it can
+  be resumed. A worker in the middle of a turn or waiting on a question or
+  an approval is never paused. (#2325)
+
+- **Finished bot tasks no longer leave empty terminals behind.** After wmux
+  and its background service restart together (for example after a reboot),
+  every bot task terminal came back as a plain shell with no agent, and a
+  finished task could keep its idle shell open for good. Now a finished,
+  failed or owner-stopped bot task's leftover shell closes by itself, with
+  its workspace once nothing else is in it. A task still in review or in
+  progress keeps its terminal, and its worker is saved so Resume continues
+  the same conversation in the same permission mode. A terminal that runs
+  something, that you typed into, or that you are looking at is never
+  closed. (#2326)
+
+- **A WSL terminal you open in a bot task's workspace is left alone.** wmux
+  took any WSL terminal running a command in the task's folder for the task's
+  worker, so it closed that terminal when the task ended and refused Resume
+  while it ran. Only the worker that the task started now counts. (#2327)
+
+- **A bot task's check no longer fails on lint errors that were already in
+  the repository.** The check ran the whole repository's lint, which already
+  reports errors on the default branch, so tasks with clean work were left
+  open as "gate failed". It now lints only the files the task changed, counts
+  only the errors the task added, and the card lists them. A task whose
+  `node_modules` is a link to another checkout is still skipped, and its card
+  now says exactly how to give it a real install. (#2328)
+
+- **A terminal's last row is no longer cut off at some font sizes.** The fit
+  counted the pane's 4px padding as usable space, so whenever a cell fit into
+  those extra pixels the grid got one row too many and its bottom row (Claude
+  Code's status line, for one) showed only its top half. (#2329)
+
+- **Workers of your own fan-outs can use `task_fetch` again.** A fan-out
+  started from a pane recorded no repository for its tasks, so their workers'
+  `task_fetch` was refused with "wmux recorded no origin for this task". The
+  task now records the repository its origin names. A repository whose origin
+  is a local path still records none. (#2330)
+
+- **A finished agent's idle recap no longer keeps its pane "in a turn".**
+  When Claude Code printed its `※ recap` summary, or redrew the pane for a
+  viewer that attached, after its turn had ended, wmux read that output as a
+  new turn that nothing ever closed, so an idle bot worker was never stopped.
+  Output drawn under Claude Code's idle title no longer opens a turn, and a
+  turn opened by output alone on a pane with hooks ends once the output stops. (#2331)
+
+- **Stopping a bot task right after wmux starts no longer leaves its WSL
+  worker running unreported.** A stop that came before wmux knew its
+  workspaces skipped every WSL terminal and still reported success, so the
+  task's WSL worker kept running and held an agent slot. wmux now stops a
+  WSL worker it can identify at once. If any other WSL terminal in the task
+  folder cannot be told apart from one you opened yourself, it is left
+  alone and the stop is reported as partial ("the app is still loading its
+  workspaces; stop again in a moment"), so you stop again. (#2332)
+
+- **A PowerShell or WSL bot worker refused for the data folder now says why.**
+  When the wmux data folder's path holds a character no shell can pass (such
+  as `!`), a Command Prompt worker already said so and told you to move the
+  folder. A PowerShell or WSL worker was refused for the same cause, but its
+  room card said only that its pane could not be opened. Every shell now gives
+  the same reason and the same remedy. (#2338)
+
+- **Finished and owner-stopped bot tasks no longer hold fan-out slots.**
+  A task workspace kept open after its task ended (stopped by you,
+  completed, cancelled or failed) still counted toward the 8 live fan-out
+  tasks, even with no agent running in it. A few of those blocked every
+  new fan-out for hours. Such a workspace now frees its slot as soon as no
+  agent runs in it, whether or not it was closed. A worker stuck at
+  "stopping" after a failed or interrupted stop is checked again after a
+  restart or two minutes later. If its agent is gone it is marked stopped;
+  if the agent still runs, wmux tries to stop it once more. When the cap
+  is reached, the refusal now names the tasks holding the slots and how
+  each one frees. (#2339)
+
+- **The fan-out audit log no longer lists a launch line for a task that never started.**
+  A task whose pane could not be created was recorded with the command it would
+  have run, which read like a run. It is now marked `started: false`, with its
+  error and no command. (#2340)
+
+- **A Claude Code turn that ends on an API error no longer leaves the pane running.**
+  When Claude stopped right away on an error such as "your organization has
+  disabled Claude subscription access", the pane kept reading `running` and
+  wmux kept the turn open, so actions that wait for the turn to finish (such
+  as continuing on another account) were refused. This happened on hook
+  installs made before wmux registered Claude Code's `StopFailure` hook, and in
+  every account folder copied from one. wmux now reads the same turn end from
+  Claude's transcript: the pane shows the failed turn, and a usage-limit error
+  still raises the usage-limit chip. Installs that have the hook behave as
+  before, except that a turn's end is now reported once: a second end for a
+  turn that already ended (a slow hook arriving after wmux already read the
+  end from the transcript, or any repeated Stop) no longer raises a second
+  notification or history entry. (#2341)
+
+- **Starting many WSL workers at once works.** When eight or so tasks started
+  together in WSL, the last one could fail with a false "the directory no
+  longer exists", and its folder was left behind. Slow WSL spawns are now
+  waited for, and a WSL folder check that times out or fails without a
+  message is reported as something to retry, not as a missing folder.
+  (#2342)
+
+- **A worker whose launch line never reached its shell is no longer left
+  silent.** In a WSL pane such a line is not typed again: the task is reported
+  as not started and needing you (its card asks you to re-run the line in that
+  pane), and nothing is ever typed into a program that is already running. In
+  other shells the line is typed once more, and only when the shell is
+  provably idle at a prompt drawn after the line and nothing runs in the pane.
+  (#2342)
+
+- **The task cleanup list speaks your language.** In Workspaces › Tasks › Clean
+  up, each row's explanation was shown in Korean whatever the UI language. It
+  now follows the UI language. (#2343)
+
+- **Your own fan-out tasks no longer wake your bots.** When tasks you started
+  from the app ended or stopped, every lead bot in the workspace woke for each
+  one and posted its own card about it, though none of them had started the
+  task. A task no bot started now wakes no bot; a bot's own task still wakes
+  that bot only. (#2344)
+
+- **A phone Bots conversation's question badge clears.** A conversation row
+  counted the open questions of every task thread it had started, which the
+  phone cannot answer, so its badge never went away. It now counts only the
+  questions asked in the conversation itself. (#2350)
+
+- **Bots without a model of their own keep the model your environment sets.**
+  Since per-bot model selection (#2272), a bot with no model of its own started
+  Claude Code with `--model default`. That overrode an `ANTHROPIC_MODEL` set for
+  a gateway or Bedrock, so on a GLM gateway every bot turn failed. Such a bot
+  now passes no model at all. Setting, changing or clearing a bot's model now
+  starts a new conversation with it, because a resumed conversation would
+  stay on the model it last ran on. (#2353)
+
+- **Fan-out workers on Bedrock or Vertex keep the model your environment
+  sets.** A worker launched without a model of its own unset `ANTHROPIC_MODEL`
+  unless `ANTHROPIC_BASE_URL` was set, so with `CLAUDE_CODE_USE_BEDROCK` or
+  `CLAUDE_CODE_USE_VERTEX` it fell back to a model the provider may not
+  serve. (#2353)
+
+- **A bot's saved model is no longer lost when wmux starts.** Since #2272, a
+  model saved earlier, such as a Bedrock ARN or a name longer than 64
+  characters, was dropped from `bots.json` on load, and the next save made the
+  loss permanent. Saved models are now kept as written. A bot's own model may
+  now be a Bedrock or Vertex id or a model ARN of up to 256 characters. A saved
+  model wmux cannot pass on is ignored and the bot runs on the default model,
+  and the bot's profile shows a warning instead. (#2353)
+
+- **Bots that verify a wmux pull request run the repository's guard tests.**
+  The `verify` gate ran only the tests that import a changed file. That missed
+  the tests that check a rule of the whole repository: a new per-agent branch,
+  an English string without a Polish one, a room notice the phone does not
+  know, or an RPC change without a regenerated API reference. Such a change
+  passed the gate and then failed in CI. The gate now always runs the tests
+  listed in `scripts/verify-guards.txt`, and a change cannot drop one from its
+  own gate. (#2357)
+
+- **Markdown in PR and issue bodies no longer hides text after inline code such as `` `<script>` ``, and very long bodies no longer stall or crash the view.** (#2364)
+
+- **Changing only the effort of a bot whose saved model wmux cannot use now
+  saves.** Since #2353, such a bot's profile filled the model picker with that
+  model, so Save refused it even when you had changed only the effort. The
+  picker now opens empty, the saved model stays as it was, and the warning
+  stays until you pick another model. The message for a refused bot model now
+  states the current rule: up to 256 characters, with `/`, `:` and `@`
+  allowed, so Bedrock and Vertex ids and model ARNs pass. Model ids saved with
+  surrounding spaces are shown without them. (#2353, #2368)
+
+- **A fan-out no longer fails to start tasks on a window with many
+  workspaces.** Opening a pane competed with background status reads for one
+  shared daemon request budget. With dozens of workspaces those reads used it
+  up, and a task's pane was refused with "rate limited (global)". The task
+  then left its worktree folder behind with no record of the task. Opening
+  and attaching a pane now has its own budget. A spawn that fails before any
+  pane exists removes the worktree it made and is always recorded. The
+  missions list also no longer re-reads every workspace several times over
+  while a fan-out starts its tasks. (#2369)
+
+- **A worker in a WSL shell on a Windows-host repository gets a fetch line
+  that works.** `task_fetch` handed that worker a Linux-git line for the
+  task's relay, but the relay names the repository's objects by a Windows
+  path that Linux git cannot read, so the fetch failed. The WSL line now runs
+  Windows git through interop (`git.exe`), and `task_fetch` labels the
+  Windows-shell and WSL-shell lines when they differ. (#2373)
+
+- **Closing a task no longer times out while a fetch or push is running for
+  it.** `task_close` waited for the task's relay to be removed, which waits
+  for any `task_fetch` or `task_push` in progress, so the call could report a
+  timeout even though the close went through. The relay is now removed in the
+  background. (#2373)
+
+- **New panes no longer fail for half a minute after wmux starts with many
+  panes open.** Restoring a large set of panes briefly pushes the background
+  service's memory over its safety limit, and it then refused every new pane
+  ("memory pressure too high") until its next check 30 seconds later, even
+  though the memory had already dropped. It now checks again when a pane is
+  asked for and lets it through as soon as memory is back under the limit.
+  (#2377)
+
+- **A repro bot's pull request now gets CI.** The repro worker opened its PR
+  as a draft and never marked it ready, and CI skips drafts, so nothing ran
+  until a person marked it ready by hand. The worker still opens a draft while
+  it reproduces, then runs `gh pr ready` once the failing test (and the fix,
+  if there is one) is pushed. When the issue does not reproduce, the PR stays
+  a draft. (#2379)
+
+- **After a restart, a Claude pane's resume pill offers Claude's own
+  conversation, even when Codex or Gemini was mentioned.** A line that
+  merely named Gemini — a Claude reply comparing models, a table of model
+  scores, `cd ~/gemini` — could make the screen detector take the pane over,
+  and after a daemon restart the pill was missing or offered another agent's
+  session picker. Gemini is now recognised only by its own screen: its
+  composer placeholder, its footer row or its update notice. When the pane's
+  recorded agent and its saved conversation disagree, the pill now offers
+  the saved conversation, unless the agent's own hook or a running process
+  showed a later launch of the other agent. A row that only looks like an
+  agent's screen no longer uses up the restored pane's resume offer either.
+  (#2389)
+
+- **No more "needs you" toasts while Claude is still working.** Claude Code
+  reports every permission dialog it is about to show, including ones nobody
+  sees: a request another hook or the host decides, a background agent's
+  request that is denied because it cannot prompt, a dialog you answered
+  straight away. Each report used to become a toast about 1.5 s later, so a
+  busy pane could nag every couple of seconds with nothing to answer. wmux now
+  raises the alert on Claude Code's own "permission prompt is waiting"
+  notification, which Claude sends once a prompt has been up for about six
+  seconds, and treats the earlier report only as a hint. A dialog you are
+  looking at still marks the pane as soon as wmux sees it on screen, as before.
+  The phone's pending card is unchanged. (#2390)
+
+- **One more Claude Code hook: the permission-prompt notification.** The
+  hooks now include `Notification` for type `permission_prompt`. The Claude Code plugin ships it from this release; with hooks
+  installed by `wmux setup-hooks`, run it again (or reinstall the hooks in
+  Settings) to add it. Until then, wmux checks the pane's screen eight seconds
+  after a permission request and alerts only if a dialog is still there.
+  (#2390)
+
+- **Panes outside a git repo no longer run `git` every five seconds.** The
+  pane header's 5 s poll threw away the git watcher's "not a repo" answer and
+  ran `git` to find out again, for every such pane, for as long as the app
+  ran. The watcher's answer is now kept, so those panes spawn nothing. Panes
+  the watcher has no answer for still ask `git`, but the answer is now
+  remembered per directory (a minute for "not a repo", 15 s for a branch, a
+  few seconds for a lookup that failed), and a pane inside a WSL distro never
+  runs Windows `git` against it. A repo with no commit yet now shows its
+  branch name; a detached HEAD still shows `HEAD`. (#2392)
+
+- **A pane is not renamed by a line that merely looks like another agent's
+  banner.** A Claude reply quoting Codex's banner row, or a shell line after
+  Claude exited, could make wmux record the pane as a Codex pane; after a
+  restart the resume pill then offered Codex's session picker instead of
+  the Claude conversation. A banner seen on screen can now name a pane that
+  has no agent yet, but only the agent's own hook or a live process can
+  change the name. (#2397)
+
+- **Removing an account no longer leaves it in its group.** The account's
+  entry in `account-groups.json` is now dropped in the same step that removes
+  the account, instead of lingering until some later group edit. A group whose
+  last account is removed disappears with it, as it already did in Settings.
+  (#2400)
+
+- **A finished bot task's worker card gives the right reason.** When a task
+  ended (the bot settled or cancelled it, its gate completed it, or a merge
+  ended it), the "Worker done" card said its Claude "stopped to free memory",
+  the wording of the idle sweep. It now says the Claude stopped because the
+  task ended; only the cards for a worker stopped after sitting idle mention
+  freeing memory. (#2401)
+
+- **Finished tasks stay off the fan-out and agent limits across restarts.**
+  Right after wmux started, with many workspaces of finished tasks still
+  open, a bot or agent could be refused a fan-out with "at most 8 fan-out
+  tasks may be live at once (96 live now)". wmux now remembers, on disk, each
+  finished task whose agent it saw stop. After a restart, or while the
+  background service is still bringing back its WSL terminals, those tasks no
+  longer count as running. A task whose agent was still running when wmux
+  closed keeps its slot until wmux sees that agent stop. A task counts as
+  running again as soon as it is resumed or reopened, or an agent is started
+  in it. (#2387, #2403)
+
+- **A recovered bot worker counts against its bot's limit again.** A bot
+  task that wmux re-registered after a restart was not counted as that bot's
+  worker, so the bot could start more workers than its limit allowed. (#2403)
+
+- **The element picker keeps working after the page navigates.** Following a
+  link while picking left the toolbar showing "Stop picking", but nothing on
+  the new page highlighted and a click picked nothing. The picker now arms
+  itself again on each new page. (#2405)
+
+- **Cmd/Ctrl + `=` / `-` / `0` zoom the page in a browser pane.** They used to
+  change the terminal font when the pane's toolbar had focus and do nothing
+  inside the page. They now zoom the page in Chrome's steps; everywhere else
+  they still change the terminal font size. (#2406)
+
+- **An older hook install says it is out of date, and Settings can update it.**
+  Hooks installed with `wmux setup-hooks` before the permission-prompt
+  notification hook existed never got it, and `wmux setup-hooks --status` and
+  Settings still reported the install as healthy. Status now lists every hook
+  the current wmux expects and flags a missing or outdated one. Settings ›
+  Claude Code › Setup offers an **Update** button that adds only wmux's missing
+  hooks and leaves your own hooks, and their order, as they are. Nothing
+  changes until you click it. (#2409)
+
+- **The Claude Code plugin's version moves to 0.6.0, so `claude plugin update`
+  picks up the permission-prompt notification hook.** The plugin's hooks
+  changed with the permission alarm fix, but its version did not, so an
+  installed plugin reported "already at the latest version" and kept the old
+  hooks. (#2409)
+
+- **The Resume pill no longer sits over an agent you restarted by hand.** On
+  a restored pane where wmux cannot see the agent's process or the shell's
+  prompt markers (an SSH session, a WSL pane without hooks), starting Claude
+  Code or Codex again yourself left the "Resume" pill up, and clicking it
+  typed a resume command into the running agent. The automatic resume on
+  start could type it there too. wmux now hides the pill while that agent is
+  on the pane's screen and shows it again once the agent has exited. The
+  automatic resume does not type into such a pane. The saved conversation is
+  kept until the agent's own hook or process confirms it is running, so text
+  that only looks like an agent cannot take the offer away. (#2408, #2410)
+
+- **wmux remembers which task each worker terminal belongs to, across
+  restarts.** The limits on running bot workers and fan-out tasks used to
+  work out which task a terminal belonged to, and when its worker last
+  started, from records that change on any edit or are lost at a restart. A
+  worker that was resumed, opened again in a new workspace, or moved to
+  another workspace could then be counted twice, or not at all. wmux now
+  writes this down before it starts a worker. If it cannot write it, the
+  worker does not start. (#2393, #2411)
+
+- **A WSL pane inside a git repository on a Windows drive shows its branch.**
+  The branch watcher runs on the Windows side and was given the pane's Linux
+  path (`/mnt/d/repo`), which names nothing there, so the header and pane
+  metadata stayed empty. It now reads the same directory through its Windows
+  name (`D:\repo`), without running git; a linked worktree whose `gitdir`
+  Linux git wrote as `/mnt/d/…` resolves the same way. (#2413)
+
+- **No PowerShell process per terminal on Windows.** Every new terminal pane
+  used to start an extra hidden PowerShell process just to read the shell's
+  start time. A big restore therefore launched dozens of them at once, and
+  under that load the reads timed out, so wmux could not tell which leftover
+  shells were its own. The start time is now read directly from Windows, and
+  a shell that has already exited is no longer reported as an unconfirmed
+  leftover. (#2398)
+
+- **The bot and fan-out limits count the same workers.** Four limits used to decide separately which tasks still held a slot:
+  - the agent limit (Settings › Bots);
+  - the factory-wide bot worker limit;
+  - each bot's own worker limit;
+  - the limit of 8 live fan-out tasks.
+
+  So they could disagree. A verify task with its verdict freed a bot worker slot but kept its agent slot. A finished bot worker that was not stopped yet held an agent slot but not a worker slot. Editing a paused task's row charged its bot slot again.
+
+  All four now read one list of tasks. Which task a terminal or workspace belongs to, and when its worker was last started, come from the launch record wmux keeps on disk. The numbers on the Bots page and in refusal messages can change:
+  - a verify task whose verdict is recorded frees every limit;
+  - a finished bot worker that wmux has not stopped yet, and whose agent is not known to be gone, counts on every limit, also after a day when its workspace is still open;
+  - a finished bot worker whose workspace is closed, with no stop recorded, counts for up to a day after it was last started (no longer a day after it finished);
+  - an open task whose terminals all run no agent frees the limit of 8 too, the owner's own fan-outs included;
+  - a worker started or restarted in the last 2 minutes counts, as does one that wmux has not read since it started;
+  - a worker that wmux stopped is not counted again because of a read taken before the stop;
+  - a fan-out still starting counts once, not once as a booking and again as its workspace or task;
+  - a task waiting for an agent slot counts on the worker limits that booked it, not on the agent limit it waits for;
+  - editing a task's row never changes any count. (#2393, #2417)
+
+- **A WSL pane inside a repository in the distro itself shows its branch.**
+  A repository under `/home/…` in WSL used to show no branch in the pane
+  header. wmux now reads it through the distro's share, without running git
+  and without ever making the app wait on the WSL virtual machine. Switching
+  branches with `git checkout` shows up within a few seconds, without having
+  to `cd` again. (#2407)
+
+- **Account folders with an older copy of Claude Code settings now show up in
+  Settings, with an Update.** Each account you add keeps its own copy of
+  Claude Code's `settings.json`, made when the account was added. An account
+  added before wmux registered a hook never got it: for example, without the
+  `StopFailure` hook a Claude turn that ended on an API error stayed open in
+  that account. Settings › Claude Code › Setup now lists every account whose
+  copy is missing a hook the current wmux expects, names the missing hooks,
+  and offers the same **Update** as the main install. Update adds only those
+  hooks and leaves your own as they are. Nothing changes until you click it.
+  (#2424)
+
+- **Closing a task on Windows removes its folder the first time.** If the
+  task's terminal had started something that was still running, such as an
+  agent or a tool, the first close failed with "Permission denied", and a
+  second close left the task's folder behind. Closing a task now stops
+  everything its terminals started and checks that it all exited before the
+  folder is removed. A half-removed folder is finished later, and only when it
+  is safe to do so; if wmux cannot confirm that everything stopped, it keeps
+  the folder and tells you why. Stopping a bot's worker also stops everything
+  that worker started. (#2388)
+
+- **The Bots reviewer verifies only what it is asked to.** Before, it woke on every new pull request, every push and every failed check from a trusted author, and the owner counts as trusted. Each push from the owner's own sessions started a verification nobody had asked for. That used up the reviewer's daily turns and worker hours and filled its queue, so checks someone did ask for had to wait until the next day. Now it verifies a pull request when a message, a mention or another bot's handoff names it. A reviewer still on the old default triggers is moved on upgrade, and its queued wakes for pull-request events are dropped. Triggers you edited yourself are kept, so you can still have it watch pull requests. Without those triggers, the merge lane waits for a requested verdict instead of starting one by itself. (#2427)
+
+- **Closing many panes at once no longer crashes the background daemon on
+  Windows.** When a lot of terminals ended together, for example when a
+  startup check timed out and closed the panes it had opened, the daemon
+  could die with no message, and every pane disconnected and came back.
+  The cause was a race inside the terminal library (node-pty 1.1.0); wmux
+  now uses the version that fixes it, and waits for each new terminal to
+  report its process before using it. (#2429)
+
+### Security
+
+- **A bot's skill reaches its workers with only the front matter you approved.**
+  A skill's front matter (the block between its `---` lines) could be read
+  one way by wmux and another way by Claude Code. An indented `---` ended it
+  for wmux but not for every Claude Code reader, so the lines after it could
+  reach a worker's copy of the skill as settings instead of text, and the
+  approval card showed them as part of the procedure. wmux now finds the
+  front matter the way Claude Code's skill loader does: after one
+  byte-order mark, it ends at the first `---`. It reads that block as
+  YAML and accepts only a name, a description and a version. Anchors,
+  aliases, tags, merge keys, a key given twice and any other key are
+  refused. A worker's copy is written fresh from those three fields, not
+  copied byte for byte, so everything after the front matter stays the
+  procedure. The approval card shows the fields apart from the procedure,
+  exactly as Claude Code will read them. A procedure may use any Markdown,
+  `---` rules and fenced YAML included. Skill and reference names can no
+  longer be a Windows device name such as `con` or `aux.md`. An approved
+  skill that fails the new check shows as changed in the bot's profile and
+  stops loading until the bot proposes it again. Follows up #2288. (#2351)
+
+## [4.6.1] — 2026-10-16
+
+### Added
+
+- **The phone can list every bot and write in any bot conversation.** A new
+  `GET /api/bots` route gives the phone the desktop Bots page's list in one
+  call: each bot with its name, role, status and Mochi character, and each 1:1
+  and group chat across workspaces, newest first, with the group's name and
+  members, the last message, unread and open questions. Before, the phone had
+  no bot names or avatars, no group names or members, and needed one request
+  per workspace. A new `POST /api/rooms/:workspaceId/messages` route sends a
+  message to any of those conversations, not only to the HQ bot, with the same
+  permissions, retries and answers as messages to Moa; a bot or group that is
+  switched off or gone is refused before anything is posted.
+
+- **Pick each bot's model and its workers' model.** A bot's profile on the
+  Bots page now sets the model and effort the bot thinks on, and the model
+  and effort of the workers it starts, next to the engine they run on. An
+  invalid model id is refused there, and wmux checks it again. New
+  Coordinator, Issue and Researcher bots think on a fast model (haiku), and
+  new Developer and Reviewer bots' workers run on the strongest (opus);
+  bots you already have keep what they ran on. Settings › Bots and the
+  group chat dialog show a short note of the models a bot uses. Before, a
+  bot always thought on the default model and its workers on the preset's.
+  (#2272)
+
+- **A bot's profile shows what it used of each limit today, and what stops
+  it.** A bot has separate limits for turns, worker time, workers at once
+  and the factory's agent slots, plus a queue cap, and a bot stopped by one
+  of them used to look simply stuck. The profile's Today block lists each
+  limit with what is used of it, shows a limit that is reached in yellow,
+  and puts one line on top naming the first thing that keeps the bot from
+  new work: paused, stopped after errors, the usage limit, out of turns or
+  worker time (with when it frees up), its workers at the cap, the factory
+  full, or its queue full. (#2290)
+
+### Changed
+
+- **The Bots chat's working rail leaves out ended tasks.** The rail above the
+  composer still shows workers waiting for a slot and open tasks whose worker
+  was paused. It no longer lists completed, cancelled or failed tasks with a
+  Resume button, so their rows go away. Resuming an ended task's worker is the
+  bot's call. You can still do it from the task's panel or from its "Worker
+  done" card. (#2271)
+
+- **Bots that verify a wmux pull request check what it changed.** The
+  repository now declares its own `verify` command in `wmux.json`: lint on
+  the changed files, the typecheck, and the tests related to the change.
+  Before, every check linted the whole tree and failed on errors older than
+  the change. Trust `wmux.json` once to use it. (#2278)
+
+- **Work a bot hands off is one card in the chat.** In a bot's 1:1 (a
+  coordinator's above all) and in a group chat, work the conversation handed
+  to another bot used to flood the timeline: that bot's replies "in thread"
+  and every system line of its thread (task reported, gate results, the next
+  dispatch, Finished). Each piece of handed-off work is now one card where
+  it started: who has it and its state (Working, Waiting for review, waiting
+  on you, Done, Failed, Cancelled), the request, that bot's newest message,
+  the PR or issue it is about and how many steps it took. Show steps lists
+  the steps in place, and Open thread opens the whole thread beside the
+  chat. Anything that waits on your answer still shows in the chat as before.
+  (#2286)
+
+### Fixed
+
+- **The app restores its panes faster after the background service
+  restarts.** Before, each pane waited for two Windows process lookups in turn,
+  which took about a second per pane. (#2242)
+
+- **A bot worker that Command Prompt cannot start now says why.** A bot worker
+  can be refused in a Command Prompt pane because its prompt file or the wmux
+  data folder has a path cmd cannot pass (it contains a character such as `!`,
+  `%` or `&`, or it is a network share). That refusal used to be reported as a merge-lane guard
+  failure, and the room card said only that the pane could not be opened. The
+  refusal and the card now name the cause and the fix: for a folder with `&`,
+  `|`, `^`, `<` or `>`, use PowerShell as the default shell or move the folder;
+  for one with `!` or `%`, or on a network share, which no shell can pass, move
+  the folder.
+
+- **A bot's new worker is no longer refused for workers that already
+  paused.** The factory-wide worker cap read which workers still run an
+  agent from a snapshot that was refreshed only when the previous check ran,
+  so after a quiet period it could count workers that had paused minutes
+  earlier. The cap check now reads the workers' panes as they are before it
+  decides. (#2258)
+
+- **A schedule run skipped because the previous run's session is still open now says so.** A finished run keeps its session open for up to 10 minutes in case it asked something, and the next run waits for it. The skip used to read "previous run still going", and **Run now** even said "Run started.". The run now reads "previous run's session still open" with a note that the session closes by itself, and Run now says it did not start. (#2259, refs #2065)
+
+- **Bot workers in WSL panes are stopped.** Delete bot, turning Run bots off
+  and an owner stop now close a WSL worker's pane, and the Bots-off count
+  includes it; so does the reclaim of a completed or cancelled task. A task
+  still in review, or one that failed, keeps its pane as its card says. Only
+  the task's own worker pane is closed, never a pane the owner opened in the
+  same folder. Before, wmux never found a WSL pane in its task worktree (the
+  pane records a Linux path), so its Linux Claude kept running, and Clean up
+  now tried to remove the folder it still held; now that folder is kept as in
+  use. A WSL worker is told apart from a plain shell by its running command
+  (OSC 133), which the bash integration reports; a WSL worker under zsh or
+  fish is not stopped this way yet. (#2260)
+
+- **A bot's worker in a WSL shell is paused when idle and can be resumed.**
+  A WSL worker ran without wmux's hooks, so wmux never saw its turn end or
+  the conversation it started. A worker left idle in review was never paused
+  and kept its agent slot, and Resume was never offered for it. Its launch
+  now keeps those hooks. wmux can also stop a WSL worker's agent now, so an
+  idle worker in review is paused like a Windows one. A resumed worker no
+  longer stops at Claude Code's "trust this folder" question. A relaunch
+  from the phone into a WSL worker also finds its settings file again. (#2265)
+
+- **Resumed bot workers no longer pile up.** Before, a worker you resumed on
+  an ended task stayed resident at its prompt until someone stopped it, and
+  kept holding its memory and an agent slot. After a few Resumes, bots were
+  refused new workers. Now a resumed worker whose turn has ended, and that
+  nothing has been typed into for five minutes, has its Claude stopped again.
+  Its slot frees, a "Worker paused (resumable)" card says so, and Resume
+  still picks up the same conversation. (#2271)
+
+- **A worker in review is no longer stopped right after you use it.** Before,
+  a reported task's worker counted as idle from the time it reported. If you
+  prompted it six minutes later, it could be stopped as soon as its answer
+  ended, even while you were looking at it or typing. Now idle time counts
+  from the pane's own last turn end and your last input there. Only a turn
+  end the agent actually reported counts. A long tool run that goes quiet, or
+  a worker wmux knows nothing about after a restart, is left alone. A worker
+  is never stopped as idle while you are looking at it, whether in its
+  workspace or in the Bots worker panel. Resumed workers follow the same rule.
+  (#2271)
+
+- **Resume respects the agent limit.** Resuming a bot's worker yourself now
+  takes a free agent slot, the same as when a bot resumes it. When every slot
+  is in use, Resume is refused with the limit in force. To make room, stop an
+  idle worker or raise the limit in Settings › Bots. Before, your Resume
+  started a worker past the limit. (#2271)
+
+- **Ending a verify task no longer drops commits its worker made.** A
+  verify task works on a detached checkout of a pull request. When the task
+  ended, its folder was removed like any other, and commits the worker had
+  made there were left on no branch, so git could later delete them. Before
+  such a folder goes, wmux now keeps those commits under
+  `refs/wmux/keep/<task id>`, and a resume still puts the folder back on
+  them. (#2273)
+
+- **Long bot messages are handled like short ones.** A bot's closing words, hand-off, question or a phone message longer than its card now goes through the same text handling as shorter text before it is shortened. (#2274)
+
+- **A schedule run skipped behind an unfinished run no longer says the
+  session closes by itself.** When the previous run's agent had exited but
+  its session was still up, the skip read "previous run's session still
+  open" with a note that the session closes within 10 minutes. That session
+  can stay until the run limit, so the skip now reads "previous run still
+  going". (#2275)
+
+- **Revealing a workspace no longer lights an idle pane running when the
+  daemon is off.** In local mode, the full-screen repaint an idle agent or
+  pager draws when its pane is refitted read as activity, and the pane showed
+  "running" for up to two minutes. The daemon path was fixed in #2241; this
+  covers local mode. (#2276)
+
+- **A bot that hits its Claude usage limit picks up again by itself.** It
+  used to stop as if it had failed and wait for you to resume it. It now
+  waits until the limit resets (the time Claude names, or at most five
+  hours when it names none), then carries on with the messages that were
+  waiting. Its card and profile say when. A bot you paused yourself stays
+  paused. (#2277)
+
+- **Workers no longer run their checks all at once.** When several workers
+  finished together, each started its own full lint, typecheck and test run
+  at the same moment, alongside any `npm ci` from a new task, and the machine
+  could slow to a crawl. Checks now run one at a time across all tasks, and a
+  new task's setup waits its turn too. A check that waited says how long.
+  (#2279)
+
+- **A bot's report now lands in the conversation it is about.** A bot that
+  started a worker while busy with another subject (the reviewer starting
+  the next queued pull request from inside the previous one) filed that
+  worker's progress, results and follow-ups under the previous subject. A
+  bot can now name the conversation its worker belongs to, and a worker that
+  checks out a pull request reports in that pull request's conversation.
+  (#2280)
+
+- **When you ask the coordinator in its 1:1, the other bots' answers come
+  back there.** When you asked the coordinator something in its 1:1 and it
+  asked the other bots in General, their answers went to General instead of
+  back to you. They now come to the 1:1 where you asked. (#2280)
+
+- **A resumed WSL bot worker starts in the same permission mode as its first
+  launch.** Before, the worker's saved session had no permission mode, so
+  Resume opened it in auto mode even when it first ran with bypass
+  permissions. The background service also stops logging a WSL agent's own
+  transcript file as refused on every turn. (#2283)
+
+- **An Esc while Claude Code is still thinking now settles the pane.** That
+  Esc ends the turn without Claude Code's "Interrupted" row, so the pane kept
+  showing running until its turn latch expired. wmux now reads the end of the
+  turn from Claude Code's window title instead. An Esc that only closes a
+  popup still leaves a running turn alone. (#2284)
+
+- **A bot's worker reports back to the request it was started for.** When a
+  bot was busy with one request and started a worker for another queued one
+  (the reviewer finishing PR #Y and starting the waiting check of PR #X), the
+  worker's result answered the request it was busy with. The request for #X
+  never got an answer, and the result showed in the wrong conversation. A
+  worker now answers the request about the thread it was started in or the
+  pull request it checks out. If wmux cannot tell which request that is, the
+  result is not attached to any request rather than to the wrong one. (#2285)
+
+- **More Bots system cards read in your language.** PR merged and closed,
+  verdicts, hand-off lines ("dispatch → …", "result → …", "message → …",
+  "Answered → …"), a coordinator's Finished and Stopped lines, the verify
+  gate's cards, a bot's error and a worker that could not start now show in
+  Korean, Polish or Chinese when the app is set to one. Before, they showed in
+  English whatever the language. Cards already in a room keep the words they
+  were written with. (#2287)
+
+- **Panes show the right status and title again after the app catches up
+  with a busy daemon.** When the daemon had dropped the app for falling
+  behind, the app subscribed again but kept whatever it missed in between: a
+  turn that started then read Idle until it ended, one that ended stayed
+  running, and titles stayed old. The app now reads each pane's state from
+  the daemon right after it subscribes again and corrects it, without
+  replaying notifications from the gap. (#2289)
+
+- The Korean UI calls the Bots page "Bots" in its title, the sidebar, Settings and the command palette, instead of translating the name to "봇".
+
+## [4.6.0] — 2026-10-16
+
+### Added
+
+- **New group chat, and who a group message goes to.** The Bots page's "+"
+  now offers New group chat: a name and the bots of one workspace. A
+  group's name opens its settings to rename it, change its bots or delete
+  it (its messages stay saved). Above a group's message box, "To: everyone"
+  opens a checkbox per bot to send to some of them only; typing `@Name`
+  ticks that bot, and the choice resets after each message. After Add team,
+  one click makes a group chat with the new team. (#2224)
+
+- **Change a bot's repository from its profile.** The Repository line has
+  Change, which uses the same folder picker as Add bot and checks the folder
+  the same way: the folder's origin must name an owner/repo, and a workspace
+  keeps one repository. Before, the repository a bot was created with could
+  not be changed. (#2227)
+
+- **Window glass on macOS, with Off, Soft and Clear.** The window frame and
+  sidebar let the desktop show through in every theme, dark or light. Pick
+  how much in Settings › Appearance › Window glass; the terminal stays
+  opaque. (#2233)
+
+- **Settings › Bots shows how much space bot task folders use, with a "Clean up now" button.** It applies the same rules to every bot task that has already ended, and says what it removed, what it kept because of uncommitted changes, and what is still in use. (#2234)
+
+- **The phone can tell a bot's worker workspace from an ordinary one.** The desktop shows a factory bot's worker workspaces only on its Bots page, but the phone API still listed their panes as plain top-level workspaces, so the phone's Fleet counted rows the desktop hides. `GET /api/workspaces` rows and `GET /api/sessions` rows of such a workspace now carry an optional `botWorker: { botId, taskId? }`. The rows are still listed, and nothing is removed or renamed. (#2250)
+
+### Changed
+
+- **A bot's private chat and the workspace room are separate.** What you say
+  to a bot in its chat, its answers, its greeting and the work it starts
+  there stay in that chat; the room shows only what is said in the room.
+  Before, the private chat was a view of the room, so the two mirrored each
+  other. Group chats are the ones you make (see below). Messages from the
+  phone to its bot land in that bot's chat too. (#2217)
+
+- **The Bots item appears in the sidebar only after you turn bots on in
+  Settings.** Settings › Bots' switch now says that turning it on adds Bots to
+  the sidebar, and the item shows up right away. Turning the bots off while the
+  Bots page is open goes back to Workspaces, and the Bots shortcut and command
+  open Settings › Bots while they are off. (#2220)
+
+- **Group chats are yours to make; a workspace no longer gets a room by
+  itself.** A group chat is a name and two or more bots of one workspace.
+  A message in it goes to every bot in it, or only to the bots you pick, and
+  a bot that has not spoken there yet introduces itself when it answers.
+  Before, a workspace with two or more bots showed a room on its own, and a
+  message to a room with a lead went to the lead alone. A room you had
+  written in becomes a group chat named after its workspace, with its
+  messages kept. (#2223)
+
+- **Turning "Run bots" off now stops the bots' running work.** Before, off only paused: no new turn or worker started, but what was already running kept going. Now the switch is written first, so nothing new launches, and then the same stop as Stop all runs. Running turns end, open bot tasks are cancelled as "stopped by owner", running gates are cancelled, workers' processes are stopped, and routines are paused. While bots stay off, a worker launch that was already under way is stopped as soon as it registers. Nothing is deleted: worktrees, branches, scratch folders, logs and conversations stay. Turning bots on again reopens nothing. (#2226)
+
+- **The agent bar is shorter: Files, Snippets, Rich Input, Schedule and
+  Multi Task.** Files now opens and closes the file tree column, and the
+  titlebar's file tree icon is gone. The file tree header has its own close
+  button. (#2229)
+
+- **Settings reads calmer.** Row titles are no longer bold, descriptions are
+  a quieter colour at a slightly larger size, the page title is larger, and
+  switches and selects are more compact. The selected tab follows the look's
+  own selection, so only Amber Line keeps an accent bar on its edge. (#2230)
+
+- **wmux's own themes lead the theme picker.** Settings › Appearance lists
+  Tint, Zinc, Graphite, Paper and Amber Line first, and every other theme
+  under a "More themes" heading. (#2230)
+
+- **The workspace area fills the window on macOS.** The panel no longer
+  leaves a margin on the right and bottom, and the panes meet the sidebar
+  with a rounded edge and a thin line. (#2233)
+
+- **Bots have characters now.** A bot without its own picture is one of
+  eight Mochi characters, picked by its identity colour, so the bots in a
+  group never look alike. They breathe and blink at rest and hop while the
+  bot is working. Small avatars only blink, avatars off screen are paused,
+  and the system's reduce-motion setting stops all of it. A picture you set
+  for a bot still replaces its character. (#2235)
+
+- **An ended bot task's folder is removed when nothing in it is uncommitted.** When a bot task finishes, is cancelled or fails, its worktree is removed with `git worktree remove` once no pane, process or gate is using it. A research task's scratch folder is removed the same way, and its report stays in the chat and the task ledger. The branch is kept. A worktree with uncommitted changes is never removed automatically; the task shows "Folder kept: uncommitted changes". Resuming the task's worker, whether you press Resume or the bot calls `worker_resume`, first puts the folder back at the same path, so Claude Code continues the same conversation there. Only bot tasks' own folders are touched. Your fan-outs, phone worktrees and worktrees you made yourself are left alone. (#2234)
+
+- **Idle panes give their scrollback memory back.** An open pane that has
+  printed nothing for 24 hours, has no agent or command running, and that no
+  one is looking at (on the desk, the web or the phone) now has its scrollback
+  moved to the recovery file the daemon already keeps for it, and the memory
+  is freed. The shell keeps running. The scrollback comes back as soon as
+  anything reads it or the pane prints again, with nothing lost or repeated.
+  Before, every open pane held its full scrollback buffer (8 MB by default)
+  in memory for as long as it stayed open. Set
+  `session.hibernateIdleHours` in the daemon's `config.json` to change the
+  window, or `0` to turn it off. `wmux doctor --performance` reports how many
+  panes are hibernated and how much memory that freed. (#2249)
+
+### Removed
+
+- **Attach, Broadcast and New chat are no longer on the agent bar**, and the
+  New-conversation command setting is gone. Drop a file on a terminal or use
+  the file tree's *Insert path* instead of Attach, use Multi Task for parallel
+  work, and type `/clear` for a new conversation. (#2229)
+
+### Fixed
+
+- **A terminal no longer changes its letter and line spacing just after a
+  workspace switch.** Before, at display scaling such as 150 %, it first
+  showed with wider spacing and then tightened a moment later. (#2212)
+
+- **OpenCode 2.x reports turn ends and approvals again.** OpenCode 2.x refused
+  to load the wmux lifecycle plugin, so wmux never learned that an OpenCode 2.x
+  turn had finished or was waiting for an approval or a question. The plugin now
+  loads on OpenCode 1.4+ and 2.x alike. In OpenCode 2.x's shared background
+  service, signals are routed by the session's directory: two OpenCode panes in
+  the same directory cannot be told apart there, and `opencode --standalone`
+  restores exact pane routing. wmux replaces the installed copy the next time it
+  starts, and OpenCode 2.x's service reloads it by itself. (#2215)
+
+- **Typing `@Name` in a bots room sends the message to that bot.** An `@` and
+  the name of one of the room's bots anywhere in the message now addresses
+  that bot, as a picked chip does; before, only a name at the very start of
+  the message did, so `@대장` later in a sentence went to the room's default
+  addressee instead. Typing `@` also suggests the room's bots: Enter, Tab or
+  a click puts the name in. (#2216)
+
+- **A bot whose turn cannot reach its wmux tools now shows an error.** Before
+  this fix, a bot's model could call its tools by their short names
+  (`room_post` instead of the real tool name). Every call failed, yet the
+  turn ended as done, so a request handed to that bot stopped without any
+  sign. Bots are now told the exact names of their tools. A turn that
+  reaches none of them, or a bot whose wmux tools did not load, is retried
+  once. If the retry also fails, the bot shows the error and the room gets
+  a "hit an error" card.
+
+- **Bot workers no longer wait for agent slots that nothing is using.** "Agents running at once" used to count every open task, including the owner's own fan-outs, tasks whose worker had long gone and test leftovers, so bot workers could wait 30 minutes and be cancelled without ever starting. Only bot workers that still run now count. The waiting card says the worker has not started and names what holds the slots, and a bot told its worker budget is full is told which of its workers are only waiting (#2219).
+
+- **A network hiccup no longer parks a bot.** A turn that fails because the API server cannot be reached, the connection drops or the server is overloaded now runs again by itself after a short, growing wait, without spending the bot's turns. Only if that keeps failing for about 45 minutes does the bot stop and wait for you (#2219).
+
+- **A bot that called its tools by the wrong names starts over cleanly.** Its retry used to resume the same conversation, which was full of the failed calls, and failed the same way. The retry now starts a fresh conversation (#2219).
+
+- **The coordinator checks an issue before handing it out.** It reads whether the issue or pull request is still open, and tells you when a merged pull request has already closed the issue instead of dispatching the work again (#2219).
+
+- **A bot without a repository can research.** Bots have a new `research` fan-out preset. Each worker runs in a scratch folder under the bot's own data folder, with no repository, worktree, git, push or gate. Before, a researcher created with "No repository" was offered research but every task was refused with "this bot has no repository to fan out in". Presets that change code still need a repository, and their refusal now points to `research`. (#2221)
+
+- **Research tasks close, and their workers stop.** A research worker's report now completes its task without a gate. Before, the task was left open with "Gate not run" and the bot could not close it. Once the task ends, the worker's Claude is stopped to free memory. Before, a worker without a worktree was never found, so it kept running after its task ended. (#2221)
+
+- **The morning report no longer fires when bots are first turned on in the afternoon.** On first use, or after a missed scheduled day, it fires only within two hours of the configured hour. Otherwise the next one comes on the next scheduled morning. (#2221)
+
+- **No "No handler registered" errors for the Remote page at startup.** Reads made before the daemon connects now wait for it. (#2221)
+
+- **A 1:1's "working" line no longer shows in the room.** On the Bots page, a bot's running turn now shows as working only in the conversation it answers. Before, a bot replying in a 1:1 also showed as working in its room. (#2222)
+
+- **An open conversation no longer keeps its unread count.** A message that arrives in the 1:1 or room you have open is marked read while that conversation is on screen, even when you have scrolled up. The "N new" pill still shows inside the chat. (#2222)
+
+- **No listener warning with many terminals.** All open terminals now share one daemon-connect listener and one restart listener. Before, every pane registered its own, and more than ten panes logged a `MaxListenersExceededWarning`. (#2222)
+
+- **The morning report setting no longer mentions Moa.** It now says the Coordinator posts the team's morning report. (#2222)
+
+- **Stopping bot work stops the whole worker and reports only what really stopped.** A worker's Claude and the processes under it are asked to exit, killed after a short grace and checked gone, and then the task's panes are closed. A terminal you opened in the task's folder from another workspace is left alone. The count shows only workers confirmed gone. A turn that could not be interrupted, or a gate that could not be cancelled, now marks the stop as partial, and the next stop retries the gate. (#2226)
+
+- **No duplicate "Gate refused" card after a restart.** A task whose report was already gated and carded at the same point is no longer gated and carded again when wmux restarts. Its bot is still reminded. (#2226)
+
+- **A task left in review no longer keeps its worker running.** When a bot task stays in review because its gate refused or failed, its worker's Claude is stopped once its pane has been idle for five minutes. This frees about 170 MB and an agent slot. The task stays open for review, its pane stays, and Resume continues the same conversation. (#2226)
+
+- **A new repository's first test script gets a clear answer.** If a task adds the first npm test script to a repository whose default branch has none, the gate still does not run the task's own script, because a task never supplies the check that grades it. The card now says what to do: merge a test script to the default branch first and send the task back, or end the task. (#2226)
+
+- **No "No handler registered" errors for group chats at startup.** If the Bots page lists group chats before the bots have started, the list now waits for them instead of failing. (#2226)
+
+- **A bot's needs-you count leads to the question.** When a bot asked
+  something in a group chat, its row showed the count, but a click opened
+  its empty 1:1. Now the click opens that group with the question's thread
+  beside the chat. A bot whose latest post is in a group shows that post in
+  its row ("In <group>: …") instead of "No messages yet". (#2227)
+
+- **A notification about a bot's worker keeps you on the Bots page.**
+  Clicking it used to switch to Workspaces. It now shows the worker beside
+  its bot's chat. (#2227)
+
+- **No "New" divider above a reply you are watching arrive.** A reply that
+  came into a chat you were reading got a "New" divider above it. (#2227)
+
+- **The team-added notice is readable in the conversation list.** Its
+  button used to squeeze the text to one word per line. (#2227)
+
+- **Bots copy no longer mentions rooms.** The Bots on description, the
+  group chat dialog and a question's answer field now talk about workspaces
+  and group chats. The description also says that turning bots off stops
+  their running work, and a toast says how many workers stopped. (#2227)
+
+- **A restart resumes Claude in the folder it moved to.** When Claude changed
+  directory on its own, most often by entering a git worktree, the pane kept
+  the folder Claude was launched from. After a restart or reboot the pane came
+  back there and offered a session picker, where another session started in
+  that folder could be resumed by mistake. The pane now follows the folder
+  Claude reports, so the exact session resumes, and it moves back to the
+  shell's folder once Claude exits.
+
+- **An idle worker in review now stops after five minutes, not thirty.** Claude's end-of-turn signal did not clear the "running" claim its turn had made, so the idle check waited for the 30-minute fallback. A turn that reported its end now counts as idle. A worker in the middle of a turn, or waiting on a prompt, is still never stopped. (#2232)
+
+- **A pane no longer stays "running" after Claude Code's own post-turn helper uses a tool.** About two seconds after a turn ends, Claude Code can run a short helper (a recap or a prompt suggestion) that calls a tool through wmux's permission gate. That call marked the pane running again and cancelled the turn's completion, so the pane looked busy forever. The helper's tools no longer count as the pane's turn. A real turn's tools, and a real subagent's, still show the pane as running. (#2232)
+
+- **The "Run bots" off toast counts each worker once.** A resumed worker of an open task was counted twice, and a worker that was already gone was counted as stopped. Each worker is now counted once, and only if this stop actually stopped it. An already-gone worker still does not make the stop fail. (#2232)
+
+- **A task you stopped shows "Cancelled", not "Failed".** In the Bots worker list, a task stopped by the owner now has its own neutral state with no red error mark. (#2232)
+
+- **Repository refusals keep their reason code.** When the Bots page changes a bot's repository and main refuses, the refusal's code (such as `repo_mismatch` or `no_remote`) now reaches the page along with its message. (#2232)
+
+- **Bot system messages follow your language.** Task gate and worker messages such as "Worker paused (resumable)" or "No gate on the default branch yet" were always in English. They now appear in your language. A gate's command output and error text are still shown as written. (#2232)
+
+- **Resume from the "Worker paused" message.** The message that says a stopped worker can resume now has a Resume button, available while that worker can still be resumed. (#2232)
+
+- **Stars & Stripes, Red Dynasty and Nightowl no longer show a terminal in a
+  different colour from the rest of the app.** (#2233)
+
+- **A bot's worker in a WSL pane starts.** With Settings › Terminal ›
+  Default shell set to WSL, every bot worker failed to launch: its line held
+  the PowerShell form of the prompt, which bash rejects. The prompt is now
+  read the way the pane's shell expects, and the worker's rules file is
+  handed to Linux Claude by its `/mnt` path. A launch that still fails
+  there is now reported as a failed launch instead of "Worker running"
+  forever. (#2237)
+
+- **A WSL worker can use git in its task worktree.** A worktree on a
+  Windows drive names its repository by a Windows path, which Linux git
+  could not follow, so `git status` failed in the worker. The worker's
+  shell now gets the repository's location as Linux paths, and the line
+  endings Git for Windows checked the files out with, so they do not read
+  as modified. Your repository's own configuration is not changed. (#2237)
+
+- **A repository inside WSL is no longer called "not a git checkout".**
+  Git for Windows refuses such a repository until you trust it
+  (`safe.directory`). Add bot and the task gate now say so and show the
+  exact command git suggests; wmux does not add the exception for you.
+  (#2237)
+
+- **Bot workers run the MCP tools and hooks of the app that started them.**
+  An isolated copy of wmux, and a build of the same version as the
+  installed one, ran its workers on the installed app's MCP server, which
+  could be older and miss tools such as `task_push`; an isolated copy's
+  workers also ran the installed app's hook bridge. (#2237)
+
+- **The narrow Bots layout reaches a bot's workers from the chat.** Under
+  800px, a workers button beside the name pill opens the bot's worker tree,
+  so you no longer go back to the list to open a worker. (#2237)
+
+- **Empty research batch folders are cleaned up.** When a bot's research
+  tasks end, their batch folder (`research/<batch>/`) now goes with the last
+  task folder instead of staying behind empty. (#2237)
+
+- **A bot that runs out of turns keeps your message and says when it picks up again.** The card said "Reviewer is out of budget (turns_hour)" and gave no time. It now says which limit was reached and the time the bot picks up again, in your language. The message that hit the limit used to be dropped; it now waits and runs once the limit frees up. A routine that fires again while it waits runs once, not once per firing. Your own messages still run past the limit. (#2238)
+
+- **Raising a bot's turn limit wakes it at once.** A bot stayed "On · Parked" after you raised its limit, until a later message woke it. It now picks up right away. A bot stopped after errors still waits for you. (#2238)
+
+- **Resume a parked bot from its profile.** A bot that is out of turns, stopped after errors or paused now says why in its profile, with a Resume button. Resume runs every message waiting for it, past its limit if needed. (#2238)
+
+- **Delete a bot from its profile.** Delete bot asks in place and says what happens: its messages stay in your chats, its running workers are stopped and its routines are removed. Its tasks end as "stopped by owner". Before, deleting a bot left its worker running. (#2238)
+
+- **A deleted bot's messages keep its name and face.** They showed its old role ("Lead" for a Developer) and, after a restart, "Bot" with no picture. They now show its name followed by "(removed)", with its picture, character and colour. (#2238)
+
+- **A bot's newer plan closes its older one.** An older plan that was never answered stayed open in the stored data. It is now closed when the bot posts a newer plan. (#2238)
+
+- **The connection dialog's bot checkboxes each have their own id.** All five shared one id, and the Scope label pointed at a checkbox. (#2238)
+
+- **A Claude SDK warning no longer prints on every bot turn.** `CLAUDE_SDK_CAN_USE_TOOL_SHADOWED` describes a setup wmux uses on purpose: wmux's own tools skip the permission callback, which guards only file writes and repository reads. It now prints once per run. (#2238)
+
+- **A task you stopped reads "Cancelled · stopped by owner", not "Task failed".** A task cancelled before it reported posted a card that said it had failed. It now says it was cancelled, and that you stopped it when you did. "Task done", "Task failed" and the other task cards now appear in your language. (#2238)
+
+- **The "Worker waiting" card names what holds the slots in your language.** The list of bots in a turn and workers holding the agent slots was always in English. It now follows your language. (#2238)
+
+- **A bot task's "Folder kept: uncommitted changes" note shows where the task is.** It used to appear only in the list at the foot of the chat, which leaves out a task whose workspace is still open, so a stopped task never showed it. The task's row in the Bots list and the worker panel's header now say it. (#2239)
+
+- **A task reported for review reads "In review", not Done.** Its row and the worker panel's header show "In review", or "In review · worker paused" once its worker was stopped, with no done check. A cleared task the owner stopped reads Cancelled (or Failed) at the foot of the chat instead of Done. (#2239)
+
+- **Worker text such as `2**31` is no longer turned bold in the Bots chat.** `*` and `**` between letters or digits stay as written; bold elsewhere, including bold followed by a Korean particle, still works. (#2239)
+
+- **The onboarding tour's Skip, Back, Next, Done and step label are in Korean** in the Korean UI. (#2239)
+
+- **Windows: turning off "Animation effects" now reduces motion in wmux.** The app read only the browser's reduced-motion preference, which stayed off on Windows, so avatars, blinks and transitions kept moving. wmux now reads the Windows setting at start and whenever its window regains focus. (#2239)
+
+- **Deleting a bot no longer changes the other bots' characters after a relaunch.** Each bot's character slot is now stored with it, given when the bot is added (the first one free in its workspace) and kept for its life; existing bots keep the character they show today. A bot added after a delete takes the freed character. (#2240)
+
+- **Turning bots off counts only workers it actually stopped, and keeps the panes it should.** It also re-stopped every task stopped in the last day by closing its panes, so a plain shell left in a stopped task's folder was closed and counted as a worker ("3 workers" with one agent running). A task stopped before now has only a leftover agent stopped; its panes stay. (#2240)
+
+- **A bot parked on its turn budget a second time within the same hour gets a card again.** The report was limited to one per bot per clock hour; it is now one per park. (#2240)
+
+- **A task a worker reported for review reads "Task reported · in review", not "Task done".** A task in review that the owner's stop cancelled now gets the "stopped by owner" card; it got none before. (#2240)
+
+- **A skipped gate's reason is worded in the reader's language** instead of showing a code such as `gate_unavailable`. (#2240)
+
+- **A deleted bot's 1:1 stays in the Bots list,** as the delete confirm promises: a muted row at the bottom, its name marked "(removed)", read-only with no composer. (#2240)
+
+- **The page's language follows the app's** (`<html lang>` stayed `en` in the Korean UI). (#2240)
+
+- **An idle Codex pane no longer shows as running after its workspace is
+  opened.** Before, the screen redraw after the resize lit the running dot for
+  up to two minutes. (#2241)
+
+- **Codex panes resume on start too.** With "Resume Claude Code and Codex panes
+  automatically on start" on, a pane that was running Codex now continues its
+  exact thread after a restart. Before, only Claude Code panes did, and a Codex
+  pane waited for the Resume pill. (#2243)
+
+- **Running dots and pane status come back on their own after the app falls
+  behind the background service.** Before, an app that fell too far behind
+  while busy (for example when restarting with many panes) stopped receiving
+  agent status, titles and notifications until it was restarted, so every pane
+  read Idle. (#2244)
+
+- **A bot's reply written as plain text now reaches the chat.** A bot that answered in its own words without posting a card left the owner with no visible answer, in a 1:1 and in a group chat alike, though its turn was marked done. When a turn answering an owner message ends normally and the bot wrote nothing in that thread, its last words are now posted as its message there, through the same checks and caps as any bot post. A turn that already posted, ended with no words, failed or was interrupted adds nothing, and wakes the owner did not start (facts, routines, handoffs, the intro) stay silent without a post. (#2245)
+
+- **Clock times on the Bots page follow the app's language.** Times such as "05:44 AM" showed in English inside the Korean UI (message times, budget notices, run headers and tooltips); they now use the app's language, as the date separators already did. (#2245)
+
+- **A finished research worker's card no longer mentions a worktree.** Research tasks work in a task folder, so their resumable-worker card now says the task folder and the conversation are kept. (#2245)
+
+- **A bot's worker in a WSL pane no longer stops on Claude Code's "do you
+  trust this folder" question.** Windows workers already skipped it; the
+  setting now reaches Linux Claude too. Ordinary WSL panes still ask. (#2246)
+
+- **Commits made in a WSL shell pass wmux's secret check** in a repository
+  on a Windows drive (`/mnt/<drive>/…`, where bot task folders live). The
+  check named the Windows app by its Windows path, which WSL cannot open, so
+  every such commit was refused; it now runs the Windows app from WSL. In a
+  repository on the Linux file system the check still cannot run (Git for
+  Windows does not trust it), so the commit is still refused. (#2246)
+
+- **A bot's worker in a Command Prompt pane gets its task.** Command Prompt
+  could not read the prompt, so the worker only saw an unexpanded command.
+  It is now told which file holds its task, and the task's text stays
+  intact. (#2246)
+
+- **The task check says first when git refuses a folder over ownership,**
+  and suggests one `safe.directory` entry that covers every wmux task folder.
+  (#2246)
+
+- **On the Bots page, notices no longer cover the chat header's buttons.**
+  (#2246)
+
+- **No stray home pane beside a bot's worker when WSL is the default
+  shell.** (#2246)
+
+- **The "Task needs input" card says why in your language** when wmux
+  itself is the one waiting (a trust question, a first-run screen, or an
+  agent that did not start). (#2246)
+
+- **A WSL worker's commits keep file modes and your git identity.** Files
+  on a Windows drive no longer show as mode changes or get committed as
+  executable, and the worker commits as your Windows git `user.name` and
+  `user.email` when those are set. (#2246)
+
+- **Interrupting Claude Code with Esc clears the running dot.** Claude Code
+  sends no turn-end signal when a turn is interrupted, and wmux only recognised
+  Ctrl+C or a double Esc as an interrupt. After a single Esc, the most common
+  way to stop a turn, the pane kept its running dot for up to 30 minutes. wmux
+  now settles the pane when Claude Code prints its "Interrupted" line right
+  after an Esc. An Esc that only closes a popup changes nothing. (#2247)
+
+- **On Windows, a stuck Win key no longer silences Space and letters in every terminal until a restart.** Windows can keep reporting the Win key as held after it was released, and the terminal then typed nothing for Space or plain letters. When wmux has not seen the Win key pressed in this window, those keys now type their character. A Win key you are really holding works as before, and wmux logs one `[wmux:stale-meta]` line per focus so the cause can still be traced. This is a recovery for the one cause found so far; the report stays open until it is confirmed. (#2248, refs #1950)
+
+- **A pane whose turn is still open no longer turns running again when it is
+  revealed.** A boot paint, or a prompt whose turn never got a settle, left
+  the turn open, and the repaint on a workspace reveal lit the pane running.
+  (#2251)
+
+- **A hidden window no longer keeps every Bots page you left.** While the
+  window is minimized, covered or the display is asleep, Chromium draws no
+  frames, and it frees a removed element's CSS animations and queued scroll
+  events only on a frame. Each Bots page left in that state stayed in memory
+  (about 600 nodes, more with long chats) until the window was shown again.
+  The bot avatars now stop moving while the window is hidden, and the chat
+  waits until it is shown to scroll to the newest message. (#2252)
+
+## [4.5.0] — 2026-10-15
+
+### Added
+
+- **Releases now include a headless wmux for Linux hosts.** Each release
+  publishes `wmux-server-<version>-linux-x64.tar.gz` and `-linux-arm64.tar.gz`.
+  Each one bundles its own Node, so it runs on a Linux machine without root or
+  a system Node and puts the daemon and `wmux web` in `~/.wmux/runtime`. The
+  desktop app ships with the hashes of both files, so the upcoming "Add PC over
+  SSH" can verify what it installs. To install it by hand, see
+  `docs/how-to/install-wmux-server-manually.md`.
+
+- **`wmux web pair`.** `wmux web pair --name <device> [--kind desktop|phone]
+  [--json]` starts a pairing on the web server that is already running and
+  prints its code, port and input grant. It never restarts the server, so
+  devices that are already paired stay paired, and it never prints the access
+  token. A computer paired with `--kind desktop` may also open new workspaces
+  on that host. Phones never can.
+
+- **`wmux daemon status --json` reports more.** It now includes the daemon's
+  release version, how many panes are running, and whether the web server is
+  on (with its port and input grant).
+
+- **Add a PC over SSH.** "Add PC over SSH…" in the computer switcher (and
+  from Connect a PC) lists the hosts in your `~/.ssh/config`, or takes
+  `user@host`, and does the rest: it installs the wmux server on that Linux
+  computer (checked against this app build), starts `wmux web` on loopback,
+  pairs this computer and adds it to the switcher, all over your own ssh with
+  your keys or agent. Before, a headless Linux box had to be set up and
+  paired by hand. wmux keeps one SSH connection open to the host while it is
+  paired and sends nothing until that connection is up and the host is the
+  one you confirmed. If the server there stopped while idle, wmux starts it
+  again, on the same port and settings, the next time it connects. When the
+  host's identity changes, "Check SSH connection…" shows
+  what changed and asks before trusting it again. Password prompts are never
+  answered for you: run `ssh <host>` once in a terminal first. (#2176)
+
+- **Keep the daemon running on a Linux server.** `wmux daemon install-service`
+  sets up a systemd user service so the wmux daemon starts at boot and keeps
+  running after you log out of SSH. It never stops a daemon that is already
+  running, and it never runs sudo. If your account needs lingering, it prints
+  the one command to run. `wmux daemon uninstall-service` removes it and leaves
+  the running daemon alone. On macOS, or without systemd, it prints the command
+  to run under your own supervisor instead.
+
+- Add PC over SSH: an opt-in **Start after reboot** checkbox installs the wmux daemon on that computer as a login service (Linux with systemd), and the PC switcher's host settings get a matching on/off. The dialog says plainly when the host cannot run it, or when linger is off and shows the one `sudo` command to run there.
+
+- **New workspaces on a computer added over SSH.** With that computer selected
+  in the PC switcher, the sidebar's `+` (and the collapsed rail's) now opens a
+  new workspace on that computer, with a shell running there, and shows it in
+  its list. It appears only for computers that let this desktop create
+  workspaces; other paired computers still have no `+`.
+
+- **Your lead bot can run a relay.** When the coordinator hands work to a bot, it can name the bots that follow — say research, then build, then triage — and wmux passes each result straight on. The coordinator hears back once, with the final result or why the relay stopped. The work runs in its own thread, and General gets one "Finished" or "Stopped" card under your message that opens it. (#2193)
+
+- **Add a whole team at once.** "Add team" on the Bots page adds a lead and four role bots — research, build, triage and review — to the current workspace. Only the lead greets you; in that room the composer shows you're talking to the lead, and the others join when it hands them work or you @mention them. If you haven't pinned a bot for the phone, the new lead becomes the one your phone talks to. (#2195)
+
+- **Connections for bots' workers.** Settings › Bots › Connections holds MCP servers you define once — for every bot, or the bots you pick — and a bot's profile lists the ones that apply to it, with a switch to turn an every-bot connection off for that bot alone. Presets for GitHub and local files start read-only, with their write tools blocked; a custom connection allows only the tools you list. A connection's keys are stored encrypted with your other bot keys, and a bot cannot hand them to a worker on its own. (#2205)
+
+- **Choose what a bot's workers run on: Claude Code or Codex.** A bot's
+  profile now has a "Workers run on" setting, with an optional model and
+  effort. Every task the bot fans out runs on that engine, under the same
+  worker guard; before, a bot's workers always ran on Claude Code. Codex
+  workers are not available on Windows yet: the profile shows them as
+  unavailable there, and choosing Codex is refused with the reason. (#2206)
+
+- **Turning bots on now asks you to confirm that bots run on your own Claude plan.** Each bot thinks with the Claude Agent SDK on this computer's Claude Code sign-in and its workers run your own Claude Code, so their usage counts toward your plan's limits. If your bots were already on, the Bots page asks once, and you can keep them on or turn them off. (#2208)
+
+- **Bots' workers use their connections.** A bot can give a task the connections that apply to it, and the Claude worker it starts loads them, with the tool rules you set: blocked tools stay blocked, and a custom connection runs only the tools you listed, even when the worker skips permission prompts. A connection's keys reach only that task's worker. A task with connections is treated like a task with keys: it does not merge on its own. (#2209)
+
+- **Bots' Codex workers use their connections too.** When a bot's workers run on Codex, a task's connections reach them with the same tool rules as on Claude Code. Codex sends a Bearer key only in the Authorization header and does not reach SSE servers, so a task with such a connection is refused for Codex workers. (#2210)
+
+- **A protected pane shows the sites it recently blocked, with an Allow for each.**
+  In "Only these sites" mode a page that needs a host you did not list (sign-in,
+  a CDN, an API) used to fail with Chrome's generic connection error and no hint
+  why. Browser protection now lists the hosts the pane's Chrome was refused since
+  it started or the protection last changed, and Allow adds one to that pane's
+  allowed sites at once. The list is the operator's alone: agents still get
+  `policy_denied` and cannot read it or allow hosts. (#2063)
+
+### Changed
+
+- **Panes opened from another computer survive the night.** A pane created
+  through the web API (a phone or a paired computer) used to be closed after
+  8 hours with no client attached and no output, so a shell left on a remote
+  host overnight was gone in the morning. Those panes now stay for up to a week
+  of silence, across daemon restarts, and are still closed when you close them.
+
+- **"Add PC over SSH" now supports older Linux hosts.** The headless server it
+  installs needed glibc 2.34, so Ubuntu 20.04, Debian 11 and RHEL 8 machines
+  were refused. It now runs on glibc 2.28 and newer, on both x64 and arm64.
+
+- **Bots start with a name and a hello.** An empty Bots page asks for your first bot's name; Start turns bots on, adds it to the current workspace and opens its chat, where it greets you. No bots or HQ workspace are made for you any more: the Moa and Lead bots an earlier update created are removed when you never dealt with them (a backup is kept), and a former HQ workspace is an ordinary one. If Claude isn't signed in, the panel offers Log in to Claude. (#2187)
+
+- **Bot chats read like a messenger.** Bots on the left, you on the right, each bot with its own colour and shape, date separators, PR and issue chips, and a rounded composer. A finished task's answer shows in the chat, and a thread opens beside it with its whole history. (#2187)
+
+- **A bot's workers are listed under it.** Like a workspace's tasks in the Sidebar: state, title, branch and changes. Clicking one opens its terminal beside the chat on the Bots page, without switching workspaces; bot workers no longer crowd the Sidebar, Fleet or Missions. The room panel on the right side of the window is gone — the Bots page is the one place for bot conversations. (#2187)
+
+- **A room with a lead bot talks to it.** In a workspace room that has a coordinator bot, a message you post without @mentioning anyone goes to the coordinator alone; the other bots join when you @mention them or the coordinator hands them work. Rooms without a coordinator work as before. (#2189)
+
+- **The coordinator leads its room.** In a workspace with a coordinator bot, results and requests with no other addressee go to it, and a job it hands to another bot stays connected after that bot passes the work to a worker — the answer comes back to whoever asked instead of starting over. (#2191)
+
+- Internal: the Token usage Custom tab's MCP server list and wmux tools list now render their tool rows with one shared `McpToolRow` (and one switch-or-state toggle), instead of two copies. Golden HTML tests pin both lists first; what the tab shows is unchanged. (#2192)
+
+- **Bots know their team.** Each bot now sees every bot in its room with its role and job, and the role templates follow the team flow: the coordinator plans the request and names who follows, the others pass their result on when asked and otherwise answer whoever asked. The coordinator no longer talks about Moa. (#2194)
+
+- **Bot workers publish their work through wmux.** A bot's worker no longer runs `git push` itself; wmux pushes the worker's own task branch for it — only to the bot's repository, never to the default branch, never with force — and refuses when the repository's git settings would send it elsewhere. Worker terminals no longer open on Claude Code's notice about a permission rule. (#2196)
+
+- **A bot's workers load only wmux and the connections you give bots, not your own MCP servers.** Before, a bot's Claude worker also loaded every MCP server from your own Claude Code setup (user and project servers, plugins and claude.ai connectors). (#2209)
+
+- **A bot's Claude worker does not start in a folder whose own Claude settings run a program or set the environment.** A repository's `.claude/settings.json` or `.claude/settings.local.json` with hooks, `env`, a status line, a key helper or plugins now stops the worker from launching there, with the reason. (#2209)
+
+- **A bot's Codex workers load only wmux and the connections you give bots.** Your own Codex MCP servers, ChatGPT apps and plugins are turned off for them. (#2210)
+
+### Fixed
+
+- **A terminal shows its last screen on the first switch after a restart.**
+  Before, the pane stayed blank for up to a second while its output was
+  replayed. The screens are saved only while "Restore on launch" is on;
+  turning it off stops saving them and drops the ones already saved. (#2162)
+
+- **A WSL login tab receives the account directory selected in Settings.** Windows account paths are translated for the Linux agent, and explicit Linux profile paths are preserved. Previously the login could use a different directory while wmux kept waiting for the selected account. This transfer is limited to the login tab's vendor; ordinary WSL panes retain their existing Linux profile selection. (#2170)
+
+- **Opening a pane in a workspace works on a host with no desktop app.** On a
+  machine running only the wmux daemon (a headless server), opening a new pane
+  in an existing workspace from another computer or a phone failed with
+  "desktop unavailable". The daemon now reads the workspace's account binding
+  itself. A workspace with no account runs on the default login. A bound
+  account whose folder is gone, or an account file it cannot read, still
+  refuses instead of guessing.
+
+- **Rust terminal engine availability in desktop installers.** Include the optional native module in Windows x64, macOS arm64 and Linux x64 release builds so the Rust choice in Settings can be enabled. Node remains the default. Packaging now checks the copied module and runs a real PTY with the packaged executable before creating installers. (#2179)
+
+- **A remote pane in a narrow split keeps a readable font.** When the split was
+  too narrow for 40 columns at your font size, the mirror never asked the
+  other computer to resize, so the pane kept its 80-column grid and the font
+  shrank to about 6px. It now asks for 40 columns, the narrowest the host
+  accepts, and the font shrinks only slightly. Widening the split resizes it
+  again.
+
+- Remote page: a paired computer's status now comes from the same source as the PC switcher, so the page no longer says Waiting while the switcher says Online. It reads Connected while the computer answers (an SSH host included), Disconnected with when it was last seen, or Waiting before the first check.
+
+- **Keys you give a bot reach its workers in WSL.** Their names are passed through `WSLENV`; the values are never written to a file. (#2187)
+
+- **Typing a message no longer closes a bot's open question,** and a sent message no longer flips back to "Queued". (#2187)
+
+- **Wheel and drag keep working in Codex panes on Windows after a reattach.**
+  When a Windows console app such as Codex turns on mouse input, the terminal
+  host announces it as one sequence that also selects the SGR mouse format.
+  The daemon's pane snapshot read only that format switch when it stood alone,
+  so a pane rebuilt from a snapshot (reattach, workspace switch) kept mouse
+  tracking but lost the format. Its wheel and drag events were then dropped
+  instead of reaching the app, while keys still worked. The snapshot now
+  restores the format from either form. (#2190)
+
+- The first Bots screen offers "Add a team" beside Start. (#2195)
+
+- Room lines and list previews name a bot by its name only, without its internal role ("Lead", not "Lead (moa)"). (#2195)
+
+- A bot's greeting question closes once you message it, so its needs-you badge no longer stays after you've given it work. (#2195)
+
+- Bots in the same room get clearly different colours. (#2195)
+
+- A lead's request thread is titled with the first line of your message instead of "Request". (#2195)
+
+- The Bots list previews each conversation's latest message, not a system line. (#2195)
+
+- **Computer use captures a DPI-unaware window whole at display scaling above 100 %.** Older apps that are not DPI-aware were shown shrunk into the top-left corner of a mostly black screenshot, and coordinates read from it were wrong. (#2199)
+
+- **Bots push from WSL repositories and to GitLab.** When a bot's repository lives inside a WSL distro, wmux now pushes the worker's task branch with that distro's own git, so the SSH keys and credential helpers set up in WSL are used. Before, the push ran in Windows git, which could not see them. Bots also work with GitLab projects, including self-hosted servers, custom ports and projects in subgroups (`group/sub/project`). Before, a subgroup project could not be a bot's repository, and only GitHub was asked for the default branch. (#2201)
+
+### Security
+
+- **Pairing no longer falls back to the shared token.** A daemon that could not
+  load its device roster used to answer a pairing code with the operator
+  token, which no one can revoke per device. It now refuses to pair and says
+  why.
+
+- **Research results count as untrusted input.** Work a researcher bot starts or hands on is marked as coming from untrusted input, so it can't reach the merge lane as if you had asked for it directly. (#2189)
+
 ## [4.4.0] — 2026-10-14
 
 ### Added

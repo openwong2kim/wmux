@@ -2,12 +2,14 @@ import { isWslShell, resolveWslCwd, type WslTarget, type ResolvedWslCwd } from '
 import { buildWslInjection } from '../../shared/wslIntegration';
 import { BASH_INIT } from '../../daemon/shell-integration';
 import { getWmuxDir } from '../../daemon/config';
-import * as pty from 'node-pty';
-import { spawnTerminalPty, type TerminalPty } from '../../shared/terminalPty';
+import type { IPty } from 'node-pty';
+import type { TerminalPty } from '../../shared/terminalPty';
+import { spawnPty, spawnPtySync, type SpawnPtyRequest } from '../../shared/spawnPty';
 import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
-import { getPipeName, ENV_KEYS, getPidMapDir } from '../../shared/constants';
+import { getPipeName, ENV_KEYS } from '../../shared/constants';
+import { writePidMap, removePidMapByPtyId } from './pidMap';
 import { expandTilde } from '../../shared/expandTilde';
 import { resolveSpawnEnv } from './resolveSpawnEnv';
 import { withFreshWindowsPath } from '../../shared/windowsPathEnv';
@@ -21,17 +23,17 @@ import {
   CONPTY_BACKEND_ENV,
   parseConptyBackendOverride,
   shouldUseBundledConpty,
-  spawnWithConptyPolicy,
 } from '../../shared/conptyWindows';
 import { ShellDetector } from '../../shared/ShellDetector';
 import { forgetPtyShell, recordPtyShell } from './ptyShellRegistry';
+import { applyWslWorkerGit, type WslWorkerGitConfig, type WslWorkerGitPlan } from '../agents/wslWorkerGit';
 import { windowsPowerShellPolicyArgs } from '../../shared/pwshExecutionPolicy';
 
 export type ShellType = 'powershell' | 'bash' | 'cmd' | 'unknown';
 
 export interface PTYInstance {
   id: string;
-  process: pty.IPty;
+  process: IPty;
   shell: string;
   cwd?: string;
   /**
@@ -44,6 +46,19 @@ export interface PTYInstance {
 }
 
 const MAX_PTY_INSTANCES = 20;
+
+/** What prepareSpawn resolved for one create, carried across the spawn. */
+interface PreparedSpawn {
+  id: string;
+  shell: string;
+  cwd: string;
+  hostCwd: string;
+  spawnArgs: string[];
+  env: Record<string, string>;
+  cols: number;
+  rows: number;
+  workspaceId?: string;
+}
 
 export class PTYManager {
   private instances = new Map<string, PTYInstance>();
@@ -146,17 +161,29 @@ export class PTYManager {
 
   private createGeneration = 0;
 
-  create(options?: Parameters<PTYManager['spawnPrepared']>[0]): PTYInstance {
+  /**
+   * Synchronous create, for test doubles whose PTY has a pid on return. A
+   * real Windows ConPTY does not (#2398), so this refuses it; production uses
+   * createAsync.
+   */
+  create(options?: Parameters<PTYManager['prepareSpawn']>[0]): PTYInstance {
     if (isWslShell(options?.shell || this.getDefaultShell())) throw new Error('WSL creation requires createAsync');
-    return this.spawnPrepared(options);
+    const prepared = this.prepareSpawn(options);
+    let ptyProcess: IPty;
+    try {
+      ptyProcess = spawnPtySync(this.spawnRequest(prepared));
+    } catch (err) {
+      throw this.spawnFailure(prepared, err);
+    }
+    return this.registerSpawned(prepared, ptyProcess);
   }
 
-  async createAsync(options?: Parameters<PTYManager['spawnPrepared']>[0]): Promise<PTYInstance> {
+  async createAsync(options?: Parameters<PTYManager['prepareSpawn']>[0]): Promise<PTYInstance> {
     const shell = options?.shell || this.getDefaultShell();
-    if (!isWslShell(shell)) return this.create(options);
     const generation = this.createGeneration;
-    // Reserve the id before the (slow) WSL probe so dispose(id) inside the
-    // pending window cancels the spawn instead of leaving an orphan PTY.
+    // Reserve the id before the first await (the WSL cwd probe, and on Windows
+    // the ConPTY pid) so dispose(id) inside the pending window cancels the
+    // spawn instead of leaving an orphan PTY.
     const id = `pty-${++this.nextId}`;
     this.pendingCreates.add(id);
     // #1305 — dispose(id) only helps someone who KNOWS the id, and the id is
@@ -172,10 +199,30 @@ export class PTYManager {
       forSurface.add(id);
       this.pendingCreatesBySurface.set(surfaceId, forSurface);
     }
+    const cancelled = (): boolean => generation !== this.createGeneration || !this.pendingCreates.has(id);
     try {
-      const wsl = await resolveWslCwd(shell, options?.cwd, options?.wslTarget, undefined, options?.shellArgs);
-      if (generation !== this.createGeneration || !this.pendingCreates.has(id)) throw new Error('PTY creation cancelled');
-      return this.spawnPrepared({ ...options, shell }, wsl, id);
+      const wsl = isWslShell(shell)
+        ? await resolveWslCwd(shell, options?.cwd, options?.wslTarget, undefined, options?.shellArgs)
+        : undefined;
+      if (cancelled()) throw new Error('PTY creation cancelled');
+      const prepared = this.prepareSpawn({ ...options, shell }, wsl, id);
+      let ptyProcess: IPty;
+      this.spawningIds.add(id);
+      try {
+        ptyProcess = await spawnPty(this.spawnRequest(prepared));
+      } catch (err) {
+        // A cancelled create reports the cancel, not the spawn error.
+        if (cancelled()) throw new Error('PTY creation cancelled');
+        throw this.spawnFailure(prepared, err);
+      } finally {
+        this.spawningIds.delete(id);
+      }
+      // Re-checked after the await. Never keep a half-made pane.
+      if (cancelled() || this.instances.size >= MAX_PTY_INSTANCES) {
+        try { ptyProcess.kill(); } catch { /* already gone */ }
+        throw new Error(cancelled() ? 'PTY creation cancelled' : 'Maximum PTY instances reached');
+      }
+      return this.registerSpawned(prepared, ptyProcess);
     } finally {
       this.pendingCreates.delete(id);
       if (surfaceId) {
@@ -206,13 +253,21 @@ export class PTYManager {
     return cancelled;
   }
 
-  /** Ids reserved by createAsync whose WSL probe has not finished yet. */
+  /**
+   * Ids whose PTY is spawned but whose pid is still pending (#2398). They
+   * count against MAX_PTY_INSTANCES, so a burst of creates cannot all pass
+   * the limit and start shells before any of them registers.
+   */
+  private spawningIds = new Set<string>();
+  /** Ids reserved by createAsync that have not finished spawning yet. */
   private pendingCreates = new Set<string>();
   /** #1305 — surfaceId → every id `pendingCreates` has reserved for it. */
   private pendingCreatesBySurface = new Map<string, Set<string>>();
 
-  private spawnPrepared(options?: {
+  private prepareSpawn(options?: {
     wslAccountLoginEnvKey?: 'CLAUDE_CONFIG_DIR' | 'CODEX_HOME';
+    /** #2231 — a WSL fan-out task pane's worktree git location. */
+    wslTaskGit?: { plan: WslWorkerGitPlan; config: WslWorkerGitConfig };
     shell?: string;
     /**
      * #1103 — validated WSL distro selection (`['-d', '<name>']`), prepended
@@ -234,8 +289,8 @@ export class PTYManager {
      * 'user-shell'만 env 투과, 나머지·미지정은 fail-closed로 gated.
      */
     spawnKind?: SpawnKind;
-  }, wsl?: ResolvedWslCwd, reservedId?: string): PTYInstance {
-    if (this.instances.size >= MAX_PTY_INSTANCES) {
+  }, wsl?: ResolvedWslCwd, reservedId?: string): PreparedSpawn {
+    if (this.instances.size + this.spawningIds.size >= MAX_PTY_INSTANCES) {
       throw new Error('Maximum PTY instances reached');
     }
     const id = reservedId ?? `pty-${++this.nextId}`;
@@ -305,55 +360,68 @@ export class PTYManager {
 
     // Detect shell type and inject hook
     const shellType = this.detectShellType(shell);
+    // #2231 — a fan-out task pane's worktree git location (main/agents/wslWorkerGit.ts).
+    if (wsl && options?.wslTaskGit) applyWslWorkerGit(env, options.wslTaskGit.plan, options.wslTaskGit.config);
     const hookInjection = wsl
       ? buildWslInjection({ target: wsl.target, cwd, env, integrationDir: getWmuxDir(), bashInit: BASH_INIT, wslAccountLoginEnvKey: options?.wslAccountLoginEnvKey })
       : this.buildHookInjection(shellType, env, shell);
     const spawnArgs = wsl ? hookInjection.args : [...(options?.shellArgs ?? []), ...hookInjection.args];
 
-    // node-pty throws synchronously on a missing/invalid shell binary or an
-    // unreadable cwd (common on macOS/Linux where the shell path differs from
-    // Windows). Surface an actionable error instead of the raw node-pty throw.
-    // (useConpty is a Windows-only hint; node-pty ignores it elsewhere.)
-    //
-    // #910/#1932: Windows spawns take the bundled conpty.dll (see
-    // shared/conptyWindows.ts shouldUseBundledConpty), so local-mode spawns
-    // match the daemon's backend. DLL-load failures fall
-    // back to in-box exactly once; anything else keeps failing so transient
-    // ConPTY errors reach the supervisor's restart backoff.
-    let ptyProcess: ReturnType<typeof pty.spawn>;
-    const useConptyDll = shouldUseBundledConpty(
-      process.platform,
-      parseWindowsBuildNumber(os.release()),
-      parseConptyBackendOverride(process.env[CONPTY_BACKEND_ENV]),
-    );
-    try {
-      ptyProcess = spawnWithConptyPolicy(
-        (useBundled) => spawnTerminalPty(shell, spawnArgs, {
-          name: 'xterm-256color',
-          cols: options?.cols || 80,
-          rows: options?.rows || 24,
-          cwd: hostCwd,
-          env: hookInjection.env,
-          useConpty: true,
-          ...(useBundled ? { useConptyDll: true } : {}),
-        }, pty.spawn),
-        useConptyDll,
-        (level, message) => {
-          if (level === 'warn') console.error(`[PTYManager] pane ${id}: ${message}`);
-          else console.log(`[PTYManager] pane ${id}: ${message}`);
-        },
-      );
-    } catch (err) {
-      const detail = err instanceof Error ? err.message : String(err);
-      throw new Error(`Failed to start shell "${shell}" in "${cwd}": ${detail}`);
-    }
+    return { id, shell, cwd, hostCwd, spawnArgs, env: hookInjection.env, cols: options?.cols || 80, rows: options?.rows || 24, workspaceId: options?.workspaceId };
+  }
 
+  /**
+   * node-pty throws on a missing/invalid shell binary or an unreadable cwd
+   * (common on macOS/Linux where the shell path differs from Windows), and
+   * since 1.2.0-beta reports a Windows CreateProcess failure as an exit before
+   * the pid is known, which spawnPty turns back into the same throw (#2398).
+   * spawnFailure surfaces either as an actionable error instead of the raw
+   * node-pty throw.
+   *
+   * #910/#1932: Windows spawns take the bundled conpty.dll (see
+   * shared/conptyWindows.ts shouldUseBundledConpty), so local-mode spawns
+   * match the daemon's backend. DLL-load failures fall
+   * back to in-box exactly once; anything else keeps failing so transient
+   * ConPTY errors reach the supervisor's restart backoff.
+   */
+  private spawnRequest(prepared: PreparedSpawn): SpawnPtyRequest {
+    const { id } = prepared;
+    return {
+      command: prepared.shell,
+      args: prepared.spawnArgs,
+      options: {
+        name: 'xterm-256color',
+        cols: prepared.cols,
+        rows: prepared.rows,
+        cwd: prepared.hostCwd,
+        env: prepared.env,
+      },
+      useBundledConpty: shouldUseBundledConpty(
+        process.platform,
+        parseWindowsBuildNumber(os.release()),
+        parseConptyBackendOverride(process.env[CONPTY_BACKEND_ENV]),
+      ),
+      onNotice: (level, message) => {
+        if (level === 'warn') console.error(`[PTYManager] pane ${id}: ${message}`);
+        else console.log(`[PTYManager] pane ${id}: ${message}`);
+      },
+    };
+  }
+
+  private spawnFailure(prepared: PreparedSpawn, err: unknown): Error {
+    const detail = err instanceof Error ? err.message : String(err);
+    return new Error(`Failed to start shell "${prepared.shell}" in "${prepared.cwd}": ${detail}`);
+  }
+
+  /** Registers a pane around a PTY whose pid is known. */
+  private registerSpawned(prepared: PreparedSpawn, ptyProcess: IPty): PTYInstance {
+    const { id, shell, cwd, workspaceId } = prepared;
     const instance: PTYInstance = {
       id,
       process: ptyProcess,
       shell,
       cwd,
-      ...(options?.workspaceId ? { workspaceId: options.workspaceId } : {}),
+      ...(workspaceId ? { workspaceId } : {}),
     };
     this.instances.set(id, instance);
     // Mirrored into the shared registry so the clipboard handler can ask one
@@ -364,26 +432,12 @@ export class PTYManager {
     // Code doesn't propagate env vars to MCP child processes). We store the
     // ptyId (stable) rather than the workspaceId — the owning workspace is
     // resolved live by a2a.resolve.identity, so it can't go stale if the
-    // workspace id is re-minted.
-    if (ptyProcess.pid) {
-      this.writePidMap(ptyProcess.pid, id);
-    }
+    // workspace id is re-minted. The shared writer also keeps one PID per
+    // ptyId, the same rule daemon-mode panes follow.
+    // spawnPty/spawnPtySync only return a PTY whose pid is known.
+    writePidMap(ptyProcess.pid, id);
 
     return instance;
-  }
-
-  private writePidMap(pid: number, ptyId: string): void {
-    try {
-      const dir = getPidMapDir();
-      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-      fs.writeFileSync(`${dir}/${pid}`, ptyId, 'utf8');
-    } catch { /* best-effort */ }
-  }
-
-  private removePidMap(pid: number): void {
-    try {
-      fs.unlinkSync(`${getPidMapDir()}/${pid}`);
-    } catch { /* best-effort */ }
   }
 
   write(id: string, data: string): void {
@@ -412,7 +466,10 @@ export class PTYManager {
     this.pendingCreates.delete(id);
     const instance = this.instances.get(id);
     if (instance) {
-      this.removePidMap(instance.process.pid);
+      // Keyed by content (this pane's ptyId), not by the PID filename: it
+      // removes every anchor of this pane and never one that a reused PID
+      // now gives to another pane.
+      removePidMapByPtyId(id);
       try { instance.process.kill(); } catch { /* already dead */ }
       (instance.process as TerminalPty).dispose?.();
       this.onDisposeCallback?.(id);

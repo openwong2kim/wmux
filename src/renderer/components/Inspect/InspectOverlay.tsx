@@ -19,6 +19,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
+import { usePrefersReducedMotion } from '../ui/MediaPreview';
 import {
   findTokenForElement,
   regionsForToken,
@@ -117,11 +118,7 @@ export default function InspectOverlay(): React.ReactElement | null {
   // when unchanged (D-perf cache). Lives in a ref so the listener stays stable.
   const lastTokenRef = useRef<string | null>(null);
   const rafRef = useRef<number | null>(null);
-  const reducedMotion = useRef(
-    typeof window !== 'undefined' &&
-      typeof window.matchMedia === 'function' &&
-      window.matchMedia('(prefers-reduced-motion: reduce)').matches,
-  );
+  const reducedMotion = usePrefersReducedMotion();
 
   // ── Commit a token target (used by click + Enter). Stay in inspect: the
   //    overlay yields capture (overlayShouldCapture → false) and the Settings
@@ -402,11 +399,11 @@ export default function InspectOverlay(): React.ReactElement | null {
             width: r.width,
             height: r.height,
             border: `2px solid ${C.outline}`,
-            backgroundColor: reducedMotion.current ? 'transparent' : C.outlineSoft,
+            backgroundColor: reducedMotion ? 'transparent' : C.outlineSoft,
             boxShadow: `0 0 0 1px ${C.chipBg}`,
             pointerEvents: 'none',
             borderRadius: 4,
-            transition: reducedMotion.current ? undefined : 'opacity 120ms ease',
+            transition: reducedMotion ? undefined : 'opacity 120ms ease',
           }}
         />
       ))}

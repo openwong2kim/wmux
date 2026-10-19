@@ -1,0 +1,147 @@
+{
+  "name": "connector-codex-worker-launch",
+  "layer": "regression",
+  "runs": 1,
+  "model": "stub",
+  "description": "The owner sets a developer bot's workers to Codex and adds a keyless connection for every bot; the bot names it on a fan-out. The codex worker's line turns the apps, the plugins and the owner's other servers off, carries the connection as one table that lists only its allowed tool, and the task is recorded as tainted with the connection's name.",
+  "setup": {
+    "repo": true,
+    "worker": {
+      "delayMs": 1500
+    },
+    "bots": [
+      {
+        "key": "lead",
+        "role": "lead",
+        "template": "developer",
+        "repo": true,
+        "triggers": [],
+        "script": {
+          "turns": [
+            {
+              "steps": [
+                {
+                  "capture": {
+                    "key": "idempotency_key \"(wake:[^\"]+)\""
+                  }
+                },
+                {
+                  "tool": "fanout_start",
+                  "args": {
+                    "idempotency_key": "{{key}}",
+                    "titles": [
+                      "probe the connection"
+                    ],
+                    "prompt": "Read one thing through the probe connection.",
+                    "preset": "default",
+                    "connectors": [
+                      "probe"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "steps": [
+                {
+                  "say": "noted"
+                }
+              ]
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "actions": [
+    {
+      "do": "api",
+      "label": "connector",
+      "fn": "factory.connectors.save",
+      "args": [
+        {
+          "connector": {
+            "name": "probe",
+            "purpose": "a probe server for the smoke",
+            "transport": "stdio",
+            "stdio": {
+              "command": "true",
+              "args": [],
+              "env": {}
+            },
+            "secrets": [],
+            "tools": {
+              "mode": "listed",
+              "allowed": [
+                "probe_read"
+              ]
+            },
+            "scope": {
+              "kind": "all"
+            },
+            "enabled": true
+          }
+        }
+      ],
+      "record": true,
+      "save": {
+        "connId": "connector.id"
+      }
+    },
+    {
+      "do": "rpc",
+      "label": "pick-codex",
+      "method": "bot.update",
+      "params": {
+        "botId": "{{bot.lead}}",
+        "patch": {
+          "workerAgent": {
+            "agent": "codex"
+          }
+        }
+      }
+    },
+    {
+      "do": "post",
+      "label": "ask",
+      "post": {
+        "title": "Probe it",
+        "body": "Start a worker on the probe connection.",
+        "mentions": [
+          "{{bot.lead}}"
+        ]
+      }
+    },
+    {
+      "do": "waitFor",
+      "label": "worker started",
+      "cond": {
+        "workers": {
+          "event": "start"
+        }
+      },
+      "timeoutMs": 180000,
+      "required": true
+    },
+    {
+      "do": "waitFor",
+      "label": "quiet",
+      "cond": {
+        "idle": true,
+        "quietMs": 3000
+      },
+      "timeoutMs": 60000
+    }
+  ],
+  "expect": {
+    "requires": [
+      "facts",
+      "cards",
+      "bots",
+      "ledger",
+      "workers"
+    ],
+    "lead": "lead",
+    "connector": "probe"
+  }
+}

@@ -269,6 +269,70 @@ describe('AgentDetector', () => {
     });
   });
 
+  describe('interrupted-turn row', () => {
+    const ROW = '  \x1b[2m⎿\x1b[0m  Interrupted · What should Claude do instead?\n';
+
+    it('reports Claude Code\'s interrupt row on every sighting', () => {
+      const { det } = claudeGated();
+      const cb = vi.fn();
+      det.onInterrupted(cb);
+      det.feed(ROW);
+      expect(cb).toHaveBeenCalledTimes(1);
+      expect(cb.mock.calls[0][0]).toEqual({ agent: 'Claude Code' });
+      // A redraw prints it again; consumers filter on the preceding Escape.
+      det.feed(ROW);
+      expect(cb).toHaveBeenCalledTimes(2);
+    });
+
+    it('ignores the sentence quoted in a reply, and on a pane Claude does not own', () => {
+      const { det } = claudeGated();
+      const cb = vi.fn();
+      det.onInterrupted(cb);
+      det.feed('⏺ Claude printed "Interrupted · What should Claude do instead?" there.\n');
+      det.feed('  Interrupted · What should Claude do instead?\n');
+      expect(cb).not.toHaveBeenCalled();
+
+      const bare = new AgentDetector();
+      const bareCb = vi.fn();
+      bare.onInterrupted(bareCb);
+      bare.feed(ROW);
+      expect(bareCb).not.toHaveBeenCalled();
+    });
+
+    // Recorded from Claude Code 2.1.301 (120x40, fullscreen renderer): a single
+    // Esc while a Bash tool ran. The previous frame already showed
+    // `  ⎿  $ ping ...` on that row, so the diff skips the gutter with
+    // `CSI 4 C` (the `⎿` is never written again), moves down with `CSI 1 B`,
+    // and ends the row with a CUP instead of a newline. Nothing follows it
+    // until the next spinner frame, seconds later.
+    const LIVE_FRAME_BEFORE = '\u001b[?25l\u001b[H\r\u001b[10C\u001b[8B\u001b[1m1\u001b[22m shell\u001b[19Gcommand'
+      + '\u001b[38;2;153;153;153m · 10s\u001b[39m…\u001b[K\r\u001b[5C\u001b[2B\u001b[K\r\u001b[23B\u001b[K\r\u001b[3B❯ '
+      + '\u001b[40;1H\u001b[37;3H\u001b[?25h';
+    const LIVE_INTERRUPTED_FRAME = '\u001b[?25l\u001b[H\r\u001b[8B \u001b[3G\u001b[38;2;153;153;153mRan \u001b[1m1\u001b[22m'
+      + ' shell command \u001b[39m\u001b[K\r\u001b[4C\u001b[1B\u001b[38;2;153;153;153m Interrupted · What should Claude do instead?'
+      + '\u001b[39m\u001b[40;1H\u001b[37;3H\u001b[?25h';
+
+    it('reports the row as Claude Code draws it live, from the frame that draws it', () => {
+      const { det } = claudeGated();
+      const cb = vi.fn();
+      det.onInterrupted(cb);
+      det.feed(LIVE_FRAME_BEFORE);
+      expect(cb).not.toHaveBeenCalled();
+      det.feed(LIVE_INTERRUPTED_FRAME);
+      expect(cb).toHaveBeenCalledTimes(1);
+      expect(cb.mock.calls[0][0]).toEqual({ agent: 'Claude Code' });
+    });
+
+    it('does not take a cursor-placed row that never had the gutter', () => {
+      const { det } = claudeGated();
+      const cb = vi.fn();
+      det.onInterrupted(cb);
+      // Placed by CUP at its first column: a reply row, not the tool-result row.
+      det.feed('\u001b[12;3HInterrupted\u001b[1C·\u001b[1CWhat\u001b[1Cshould\u001b[1CClaude\u001b[1Cdo\u001b[1Cinstead?\u001b[40;1H');
+      expect(cb).not.toHaveBeenCalled();
+    });
+  });
+
   describe('Codex approval prompts (Phase 2 — clean-room transcribed from Codex CLI 0.145.0)', () => {
     const gated = () => {
       const det = new AgentDetector();
@@ -398,6 +462,112 @@ describe('AgentDetector', () => {
       expect(cb).toHaveBeenCalledTimes(2);
       expect(cb.mock.calls[0][0].status).toBe('waiting');
       expect(cb.mock.calls[1][0].status).toBe('complete');
+    });
+  });
+
+  describe('Gemini CLI gate is line-level chrome, not a substring', () => {
+    it('opens the gate on the empty composer placeholder (every session, every footer config)', () => {
+      const det = new AgentDetector();
+      const cb = vi.fn();
+      det.onEvent(cb);
+      det.feed('\u2502 >   Type your message or @path/to/file                        \u2502\n');
+      expect(det.getLastAgent()).toBe('Gemini CLI');
+      const agents = cb.mock.calls.map((c) => (c[0] as { agent: string }).agent);
+      expect(agents).toContain('Gemini CLI');
+    });
+
+    it('opens the gate on the voice-mode placeholder and the YOLO prompt glyph', () => {
+      for (const row of [
+        '>   Type your message or hold space to talk (Esc to exit)\n',
+        '*   Type your message or @path/to/file\n',
+      ]) {
+        const det = new AgentDetector();
+        det.feed(row);
+        expect(det.getLastAgent(), row).toBe('Gemini CLI');
+      }
+    });
+
+    it('opens the gate on the footer model column, in its current and older shapes', () => {
+      for (const row of [
+        '~/repo  main*  no sandbox  gemini-2.5-pro  12% used\n',
+        '~/repo \u00b7 no sandbox \u00b7 gemini-2.5-pro \u00b7 12%\n',
+        '~/repo   no sandbox (see /docs)   gemini-2.5-pro (88% context left)\n',
+      ]) {
+        const det = new AgentDetector();
+        det.feed(row);
+        expect(det.getLastAgent(), row).toBe('Gemini CLI');
+      }
+    });
+
+    it('opens the gate on the update notice', () => {
+      const det = new AgentDetector();
+      det.feed('Gemini CLI update available! 0.1.9 \u2192 0.2.0\n');
+      expect(det.getLastAgent()).toBe('Gemini CLI');
+    });
+
+    it('does NOT open the gate on a Claude table row or prose that starts with "Gemini CLI"', () => {
+      const det = new AgentDetector();
+      det.feed('\u2502 Gemini CLI \u2502 Google \u2502 Apache-2.0 \u2502\n');
+      det.feed("  Gemini CLI is Google's open-source agent and it\n");
+      det.feed('\u23fa Claude ran with gemini-2.5-pro as the judge model.\n');
+      expect(det.getLastAgent()).toBeNull();
+    });
+
+    it('does NOT open the gate on a model name followed by a percentage inside other output', () => {
+      for (const row of [
+        '\u23fa Claude ran with gemini-2.5-pro 95% of the time.\n',
+        '~/code/gemini-cli 45% | Opus\n',
+        '\u2502 gemini-2.5-pro \u2502 63% \u2502 fast \u2502\n',
+        'added @google/gemini-cli 100% done\n',
+        // Comparison tables: the column rules must not be read as footer gaps.
+        '\u2502 gemini-2.5-pro \u2502 63% \u2502\n',
+        '\u2502 Gemini \u2502 gemini-2.5-pro \u2502 63% \u2502\n',
+        '| gemini-2.5-pro | 63% |\n',
+        '| gemini-2.5-pro | 63%\n',
+        // An aligned two-column table has no column before the model.
+        'gemini-2.5-pro      63%\n',
+      ]) {
+        const det = new AgentDetector();
+        det.feed(row);
+        expect(det.getLastAgent(), row).toBeNull();
+      }
+    });
+
+    it('opens the gate on a footer row whose column gaps are cursor moves', () => {
+      const det = new AgentDetector();
+      det.feed('~/repo\u001b[3Cno sandbox\u001b[3Cgemini-2.5-pro\u001b[3C12% used\n');
+      expect(det.getLastAgent()).toBe('Gemini CLI');
+    });
+
+    it('opens the gate on a composer row drawn with cursor moves (no literal spaces)', () => {
+      const det = new AgentDetector();
+      det.feed('>\u001b[3CType\u001b[1Cyour\u001b[1Cmessage\u001b[1Cor\u001b[1C@path/to/file\n');
+      expect(det.getLastAgent()).toBe('Gemini CLI');
+    });
+
+    it('does NOT open the gate on a Claude reply, a shell command or a package name that names Gemini', () => {
+      // Reddit report: a Claude-only pane came back after a reboot offering
+      // "Resume Gemini" — the substring gate had taken the pane over on text
+      // like these while Claude's compound gate was still unconfirmed.
+      const det = new AgentDetector();
+      const cb = vi.fn();
+      det.onEvent(cb);
+      det.feed('⏺ I compared it with the gemini model and Claude was faster.\n');
+      det.feed('$ cd ~/projects/gemini \n');
+      det.feed('GEMINI_API_KEY=xxx gemini pro\n');
+      det.feed('⏺ Install Gemini CLI with npm i -g @google/gemini-cli\n');
+      expect(det.getLastAgent()).toBeNull();
+      expect(cb).not.toHaveBeenCalled();
+    });
+
+    it('does NOT open the gate after Claude exited and the shell echoes "gemini"', () => {
+      const det = new AgentDetector();
+      det.feed('\u001b]0;✳ Claude Code\u0007');
+      det.feed('? for shortcuts                       bypass permissions on (shift+tab to cycle)\n');
+      expect(det.getLastAgent()).toBe('Claude Code');
+      det.feed('\u001b]133;A\u0007');
+      det.feed('$ ls gemini \n');
+      expect(det.getLastAgent()).toBe('Claude Code');
     });
   });
 

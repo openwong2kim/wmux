@@ -135,5 +135,8 @@ describe('OwnerRequestAnswers', () => {
     expect(row.textContent).toContain('NPM_TOKEN');
     expect(row.textContent).toContain('Wmux Dev');
     expect(container.innerHTML).not.toContain(VALUE);
+    // Its Delete button is named for the key it deletes.
+    const del = container.querySelector('[data-testid="factory-key-delete-NPM_TOKEN"]') as HTMLButtonElement;
+    expect(del.getAttribute('aria-label')).toBe('settings.factory.keyDeleteNamed:{"name":"NPM_TOKEN"}');
   });
 });

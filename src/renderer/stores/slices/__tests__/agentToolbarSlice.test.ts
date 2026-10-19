@@ -9,7 +9,6 @@ describe('agentToolbarSlice', () => {
       richDraftByPane: {},
       toolbarPopover: null,
       fanOutWorkspaceId: null,
-      newConversationCommand: '/clear',
     });
   });
 
@@ -39,11 +38,9 @@ describe('agentToolbarSlice', () => {
     expect(useStore.getState().richDraftByPane['pty-1']).toBeUndefined();
   });
 
-  it('sets popover and new-conversation command', () => {
+  it('sets popover', () => {
     useStore.getState().setToolbarPopover('rich');
     expect(useStore.getState().toolbarPopover).toBe('rich');
-    useStore.getState().setNewConversationCommand('/reset');
-    expect(useStore.getState().newConversationCommand).toBe('/reset');
   });
 
   it('openFanOut closes any toolbar popover — the two must not stack', () => {

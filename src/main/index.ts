@@ -54,9 +54,12 @@ import { createWindow, loadMainRenderer } from './window/createWindow';
 import { attachDesktopPresenceReporter, reportDesktopPresence } from './window/desktopPresence';
 import { PTYManager } from './pty/PTYManager';
 import { PTYBridge } from './pty/PTYBridge';
+import { pruneDaemonPidMapAtConnect } from './pty/pidMap';
 import { registerAllHandlers } from './ipc/registerHandlers';
 import { RpcRouter } from './pipe/RpcRouter';
 import type { RpcMethod } from '../shared/rpc';
+import { liveNoChangesCheck } from './factory/noChangesCheck';
+import { getBotStore } from './factory/botStore';
 import { PipeServer } from './pipe/PipeServer';
 import { registerWorkspaceRpc } from './pipe/handlers/workspace.rpc';
 import { registerSurfaceRpc } from './pipe/handlers/surface.rpc';
@@ -100,6 +103,7 @@ import { registerPluginProtocolHandler } from './plugins/pluginProtocol';
 import { registerPrivilegedSchemes } from './privilegedSchemes';
 import { registerPreviewProtocol } from './preview/previewProtocol';
 import { isHtmlPreviewContents, registerHtmlPreview } from './preview/previewHtml';
+import { pageZoomKey, stepPageZoom } from '../shared/browserZoom';
 import { registerPluginHostHandlers } from './ipc/handlers/pluginHost.handler';
 import { registerProjectConfigHandlers } from './ipc/handlers/projectConfig.handler';
 import { registerChannelLocalHandlers } from './ipc/handlers/channelLocal.handler';
@@ -170,6 +174,7 @@ import { ChromeProfileStore, reconcilePaneBindingsFromMirror } from './browser-s
 import { CHROME_PANE_IPC } from '../shared/chromePaneBinding';
 import { BrowserPolicyStore, reconcileBrowserPoliciesFromMirror } from './browser-session/BrowserPolicyStore';
 import { isTrustedMainFrameSender, registerBrowserPolicyIpc, UNTRUSTED_SENDER_ERROR } from './ipc/handlers/browserPolicy.handler';
+import { registerElementShotHandler } from './ipc/handlers/browserElementShot.handler';
 import { ChromeSurfaceStore } from './browser-session/ChromeSurfaceStore';
 import { getActionCacheStore } from './browser-session/ActionCacheStore';
 import { getPromotedSkillStore } from './browser-session/PromotedSkillStore';
@@ -179,6 +184,7 @@ import { DaemonClient, getDaemonPipeName, readDaemonAuthToken } from './DaemonCl
 import { raceDaemonShutdown } from './daemonShutdownRace';
 import { migrateScrollbackOnce } from './scrollback/legacyMigration';
 import { DaemonNotificationRouter } from './notification/DaemonNotificationRouter';
+import { resyncAfterResubscribe } from './notification/resubscribeResync';
 import { markRendererNotificationListenerNotReady } from './notification/rendererNotificationReadiness';
 import { RemoteInboxBridge } from './lanlink/RemoteInboxBridge';
 import { RemoteA2aBridge } from './a2a/RemoteA2aBridge';
@@ -1051,6 +1057,9 @@ const chromeRegistry = new ChromeLauncherRegistry({
     browserPolicyStore.protectionPlanFor(profile, { paneBindings: () => chromeProfileStore.getPaneBindings() }),
 });
 browserPolicyStore.onChange(() => {
+  // #2063: every policy change (an Allow included) starts the recently-blocked
+  // lists over; what was refused under the old policy may not be any more.
+  chromeRegistry.clearBlockedHosts();
   void chromeRegistry.reconcileProtection();
 });
 // Phase 2.2 enforcement mode. Production wmux defaults to `enforce`; dev
@@ -1188,7 +1197,17 @@ registerGitHandoffHandlers({
   startFanOut: (req) => startGuiFanOut(fanOutService, req),
 });
 registerFanOutRpc(rpcRouter, fanOutService, () => mainWindow, { getDaemonClient: () => daemonClient });
-registerLedgerRpc(rpcRouter, () => mainWindow);
+registerLedgerRpc(rpcRouter, () => mainWindow, {
+  // A completion on a no-changes skip asks the no-changes check again.
+  noChangesCheck: liveNoChangesCheck({
+    rpc: () => (daemonClient ? (method, params) => (daemonClient as DaemonClient).rpc(method as RpcMethod, params as Record<string, unknown>) : null),
+    wmuxDir: getWmuxDir,
+    botRepoKey: (botId) => getBotStore()?.get(botId)?.repo?.repoKey,
+    botRepoPath: (botId) => getBotStore()?.get(botId)?.repo?.repoPath,
+    botOriginPin: (botId) => getBotStore()?.get(botId)?.repo?.originPin,
+    recordOriginPin: (taskId, pin) => getTaskLedger().recordOriginPin(taskId, pin),
+  }),
+});
 registerTaskPushRpc(rpcRouter, {
   getWindow: () => mainWindow,
   daemon: {
@@ -1214,6 +1233,18 @@ const factoryHost = registerFactoryRpc(rpcRouter, {
   resolvePtyWorkspace: (ptyId) => resolvePtyOwnerWorkspace(() => mainWindow, ptyId),
   paneCwd: paneOwnCwdOf,
   wmuxDir: () => getWmuxDir(),
+  // A bot's quota line: the usage readings held below, never a new request.
+  // Called after start, once both services exist.
+  claudeUsage: () => ({
+    read: (accountId) => (accountId === null
+      ? usagePoller.getState().snapshot
+      : accountUsageService.getAll().find((e) => e.accountId === accountId)?.snapshot ?? null),
+    onChange: (cb) => {
+      const offAccounts = accountUsageService.onChange(() => cb());
+      const offDefault = usagePoller.onStateChange(() => cb());
+      return () => { offAccounts(); offDefault(); };
+    },
+  }),
 });
 // Scheduled runs for agents: draft-only propose + redacted reads, relayed to
 // the daemon over main's first-party connection (pipe/handlers/automation.rpc.ts).
@@ -1604,6 +1635,8 @@ ipcMain.handle('browser:set-discard', (_event, enabled: boolean) => {
   webviewCdpManager.setDiscardMode(enabled);
   return { ok: true };
 });
+// Inspector hand-off: the picked element's screenshot, saved for the agent.
+registerElementShotHandler(() => mainWindow);
 // Private browser tabs: the renderer asks once the last one has closed. The
 // clear waits for the closed tabs' guests to be destroyed (tracked here).
 trackPrivateBrowserContents();
@@ -1731,6 +1764,7 @@ registerBrowserPolicyIpc(ipcMain, {
   profileFor: (workspaceId, paneId) => chromeProfileStore.profileFor(workspaceId, paneId),
   paneBindings: () => chromeProfileStore.getPaneBindings(),
   paneWorkspace: (paneId) => getWorkspaceMirror().getPaneWorkspaces()?.get(paneId) ?? null,
+  blockedHostsFor: (profile) => chromeRegistry.blockedHostsFor(profile),
 });
 // Discard/wake signals travel main → renderer: the renderer owns the <webview>
 // element, so main can only ask it to unmount (discard) or remount (wake).
@@ -2159,6 +2193,17 @@ app.on('ready', async () => {
         invokeRendererRpc,
       });
       logLine('info', 'main', 'handler swap (daemon connect): register done');
+      // Clear pid-map files that no longer name a daemon session's current
+      // shell. A daemon restart gives every recovered session a new shell PID,
+      // and an old PID left on disk can be reused by another process that then
+      // resolves to the old pane's identity. The daemon answers only after its
+      // recovery, so this list is complete.
+      void pruneDaemonPidMapAtConnect(() => client.rpc('daemon.listSessions', { includeSuspended: true }))
+        .then((removed) => {
+          if (removed > 0) logLine('info', 'main', `pid-map: removed ${removed} stale daemon entr${removed === 1 ? 'y' : 'ies'}`);
+        }, (err: unknown) => {
+          logLine('warn', 'main', `pid-map prune failed: ${err instanceof Error ? err.message : String(err)}`);
+        });
       // Mount the notification router now that we have a live daemon
       // client. PTY data flows through daemon → DaemonClient events,
       // and this router translates them into the same renderer-facing
@@ -2294,6 +2339,24 @@ app.on('ready', async () => {
           );
         }
       }
+    },
+    // #2263 — the daemon dropped our event subscription and the health probe
+    // subscribed again; correct the panes from a fresh read of their state.
+    onEventsResubscribed: (client) => {
+      void resyncAfterResubscribe({
+        listSessionIds: async () => {
+          const sessions = (await client.rpc('daemon.listSessions', {})) as Array<{ id?: unknown }>;
+          return sessions.map((s) => s.id).filter((id): id is string => typeof id === 'string' && id.length > 0);
+        },
+        readState: (id) => client.getAgentState(id),
+        emitTitle: (id, title) => { client.emit('session:title', { sessionId: id, title }); },
+        hookRouter: hookSignalRouter,
+        win: mainWindow && !mainWindow.isDestroyed() ? mainWindow : null,
+      }).then((r) => {
+        logLine('info', 'daemon-respawn', `resync after resubscribe: ${r.panes} panes, ${r.statusesCorrected} statuses corrected, ${r.titles} titles`);
+      }, (err: unknown) => {
+        logLine('warn', 'daemon-respawn', `resync after resubscribe failed: ${err instanceof Error ? err.message : String(err)}`);
+      });
     },
     logger: {
       info: (msg) => { logLine('info', 'daemon-respawn', msg); },
@@ -2632,6 +2695,13 @@ app.on('web-contents-created', (_event, contents) => {
       void contents.loadURL(url);
     }
     return { action: 'deny' };
+  });
+  // Cmd/Ctrl + = / - / 0 inside the page zoom the page (browserZoom.ts).
+  contents.on('before-input-event', (event, input) => {
+    const step = pageZoomKey(input, process.platform);
+    if (!step) return;
+    event.preventDefault();
+    contents.setZoomFactor(stepPageZoom(contents.getZoomFactor(), step));
   });
 });
 

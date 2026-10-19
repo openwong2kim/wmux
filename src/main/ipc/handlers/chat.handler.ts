@@ -140,6 +140,8 @@ export function registerChatHandlers(
     },
     [CHAT_IPC.interrupt]: (e, args) => trusted(e) && args && validId(args.ptyId) && validId(args.agentSessionId)
       ? rpc('daemon.transcript.interrupt', { id: args.ptyId, agentSessionId: args.agentSessionId }, { result: 'error' }) : { result: 'unavailable' },
+    [CHAT_IPC.rewind]: (e, args) => trusted(e) && args && validId(args.ptyId)
+      ? rpc('daemon.transcript.rewind', { id: args.ptyId, kitty: args.kitty === true }, { result: 'error' }) : { result: 'unavailable' },
     [CHAT_IPC.attachment]: (e, args) => trusted(e) && args ? previewChatAttachment(args.path) : { ok: false, reason: 'missing' },
   };
   handlers[CHAT_IPC.settings] = async (e, args) => {

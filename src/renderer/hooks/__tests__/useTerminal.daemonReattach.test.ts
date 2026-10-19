@@ -60,7 +60,7 @@ describe('Fix D — daemon session reattach (source-level)', () => {
   });
 
   it('reattaches on daemon:connected for late-connect / respawn', () => {
-    expect(afterMainEffect).toMatch(/daemon\.onConnected\(\s*\(\)\s*=>\s*reattach\(/);
+    expect(afterMainEffect).toMatch(/onDaemonConnected\(\s*\(\)\s*=>\s*reattach\(/);
   });
 
   it('gates only the at-mount reattach on isDaemonModeActive(), never the event path (Codex P2)', () => {

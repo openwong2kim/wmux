@@ -12,6 +12,7 @@ import { TranscriptDiscovery } from '../TranscriptDiscovery';
 import { TranscriptProjector } from '../TranscriptProjector';
 import type { ResumeBinding } from '../../../shared/agentResume';
 import type { TranscriptAppendData } from '../../../shared/transcript/turnEvents';
+import { deliberateSleep } from '../../../test-utils/waitFor';
 
 const OLD_ID = '11111111-1111-1111-1111-111111111111';
 const NEW_ID = '22222222-2222-2222-2222-222222222222';
@@ -116,7 +117,7 @@ describe('stopping', () => {
     expect(discovery.activeCount).toBe(0);
 
     fs.writeFileSync(path.join(dir, `${NEW_ID}.jsonl`), entry('e-1', 'hello'), 'utf8');
-    await delay(150);
+    await deliberateSleep(150, 'negative: nothing is adopted');
     expect(found).toEqual([]);
   });
 
@@ -128,7 +129,7 @@ describe('stopping', () => {
     await waitFor(() => discovery!.activeCount === 0);
 
     fs.writeFileSync(path.join(dir, `${NEW_ID}.jsonl`), entry('e-1', 'hello'), 'utf8');
-    await delay(150);
+    await deliberateSleep(150, 'negative: nothing is adopted');
     expect(found).toEqual([]);
   });
 
@@ -142,7 +143,7 @@ describe('stopping', () => {
 
     // The PREVIOUS conversation's file must not be re-adopted...
     fs.writeFileSync(path.join(dir, `${OLD_ID}.jsonl`), entry('o-1', 'previous'), 'utf8');
-    await delay(150);
+    await deliberateSleep(150, 'negative: the previous conversation\'s file is not re-adopted');
     expect(found).toEqual([]);
 
     // ...but the new session's own file is legitimate.
@@ -228,13 +229,13 @@ describe('projector handoff', () => {
     // `/clear`: a SessionStart for a NEW id, whose provisional capture carries no
     // path, so the OLD binding is still the one on file.
     projector.nudge('pty-1', 'agent.session_start', NEW_ID);
-    await delay(80);
+    await deliberateSleep(80, 'ordering: let the /clear nudge settle before taking the baseline');
     const afterClear = appends.length;
 
     // Anything that re-reads the binding — including the discovery handoff —
     // must NOT re-adopt the old transcript.
     projector.rebind('pty-1');
-    await delay(80);
+    await deliberateSleep(80, 'negative: a rebind does not re-adopt the old transcript');
     expect(appends).toHaveLength(afterClear);
     expect(projector.status('pty-1')).toMatchObject({ available: true, reason: 'ok' });
 
@@ -272,7 +273,7 @@ describe('projector handoff', () => {
     // The first agent.stop arrives with the SAME path the search adopted, so the
     // handover is a no-op for the client — no reset, no second snapshot.
     projector.nudge('pty-1', 'agent.stop', NEW_ID);
-    await delay(80);
+    await deliberateSleep(80, 'negative: the handover adds no second snapshot');
     expect(appends).toHaveLength(1);
 
     // ...and the search is gone, so it cannot fight the hook afterwards.

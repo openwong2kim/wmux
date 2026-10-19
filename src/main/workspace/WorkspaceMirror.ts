@@ -41,6 +41,7 @@ export class WorkspaceMirror {
   // null ⇒ no paneIds field (old renderer): the pane set is unknown.
   private paneIds: string[] | null = null;
   private viewed: ViewedPointer | null = null;
+  private panelWorkspaceId: string | null = null;
   private setAt = 0;
   private populated = false;
   private sessionRestored = false;
@@ -63,6 +64,7 @@ export class WorkspaceMirror {
     this.paneIds = payload.paneIds ? [...payload.paneIds] : null;
     this.sessionRestored = payload.sessionRestored === true;
     this.viewed = payload.viewed ? { ...payload.viewed } : null;
+    this.panelWorkspaceId = payload.panelWorkspaceId ?? null;
     // Stamp with our own clock, not the renderer's `payload.ts`: `peek().ageMs`
     // must be measured against the same clock the caller reads `now()` on, so a
     // clock skew between renderer and main can never make a snapshot look
@@ -173,6 +175,11 @@ export class WorkspaceMirror {
    *  pushed yet, or an old renderer that omits the field). */
   getViewed(): ViewedPointer | null {
     return this.viewed === null ? null : { ...this.viewed };
+  }
+
+  /** The workspace the Bots worker panel shows, or null (none, or unknown). */
+  getPanelWorkspaceId(): string | null {
+    return this.panelWorkspaceId;
   }
 
   /** The per-workspace agent-status snapshot, or null when unknown. */

@@ -10,6 +10,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PaneBranch, PaneLeaf, Surface, Task, Workspace } from '../../../shared/types';
 import { useStore } from '../../stores';
 import { handleRpcMethod } from '../useRpcBridge';
+import { deliberateSleep } from '../../../test-utils/waitFor';
 
 function leaf(id: string, ptyId: string): PaneLeaf {
   const surface = { id: `surf-${id}`, ptyId, title: id, shell: '', cwd: '', surfaceType: 'terminal' } as Surface;
@@ -104,7 +105,7 @@ describe('a sender message reopens an ended task', () => {
     await receiverMoves(taskId, 'working');
     await receiverMoves(taskId, 'completed');
     const before = useStore.getState().getTask(taskId)!.metadata.updatedAt;
-    await new Promise((r) => setTimeout(r, 2));
+    await deliberateSleep(2, 'clock: updatedAt must advance');
 
     const res = await viaMain('a2a.task.send', { workspaceId: SENDER.id, taskId, message: 'one more thing', silent: true });
 

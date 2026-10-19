@@ -8,7 +8,7 @@ import type { Fact } from '../../../shared/facts';
 import type { Handoff } from '../../../shared/handoff';
 import type { LedgerEntry } from '../../../shared/ledger';
 import type { WakeItem } from '../../../shared/wake';
-import { WakeTaint, taskTainted, type WakeTaintPorts } from '../wakeTaint';
+import { WakeTaint, runningWakeTainted, setWakeTaint, taskTainted, type WakeTaintPorts } from '../wakeTaint';
 
 let dir: string;
 beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-taint-')); });
@@ -160,6 +160,59 @@ describe('WakeTaint', () => {
     expect(t.handoffTainted('ans-dirty')).toBe(true);
     expect(t.handoffTainted('ans-clean')).toBe(false);
     expect(t.handoffTainted('ans-none')).toBe(false);
+  });
+
+  it('an answer whose question was pruned is handled like outside text, for every reader of the mark', () => {
+    const fromBot = { kind: 'bot' as const, workspaceId: 'ws', botId: 'bot-a' };
+    const human = { kind: 'human' as const };
+    const answer = (id: string, askId?: string): Handoff => ({ ...handoff(id, human), kind: 'answer', to: fromBot, ...(askId ? { replyTo: askId } : {}) });
+    const kept: Handoff = { ...handoff('a-kept', fromBot), kind: 'ask_person', to: human };
+    // The pruned question's answer, an intact one with no hop, and owner text that answers no question.
+    const hs = [kept, answer('ans-pruned', 'a-pruned'), answer('ans-kept', 'a-kept'), answer('ans-direct'), handoff('h-out', fromBot), handoff('h-out-2', fromBot)];
+    let running: { item: WakeItem; startedAt: number } | null = null;
+    const t = make({ file: undefined, runningWake: () => running }, [], hs);
+    const on = (id: string) => wake({ kind: 'handoff', handoffId: id });
+    // The mark itself, and the wake on it (approvals, job_set).
+    expect(t.handoffTainted('ans-pruned')).toBe(true);
+    expect(t.wakeTainted(on('ans-pruned'))).toBe(true);
+    expect(t.wakeTainted(on('ans-kept'))).toBe(false);
+    expect(t.wakeTainted(on('ans-direct'))).toBe(false);
+    // Delivered as owner text, it is still tainted (its delivery mark is clean).
+    t.onFact(fact('x1', 'handoff.received', { handoffId: 'ans-pruned' }));
+    expect(t.handoffTainted('ans-pruned')).toBe(true);
+    // A fact about it (a wake on handoff facts).
+    expect(t.factTainted(fact('x2', 'handoff.received', { handoffId: 'ans-pruned' }))).toBe(true);
+    expect(t.factTainted(fact('x3', 'handoff.received', { handoffId: 'ans-kept' }))).toBe(false);
+    // A handoff the bot sends from that wake, and one answering it.
+    running = { item: on('ans-pruned'), startedAt: 0 };
+    t.markSent('h-out', 'bot-a');
+    expect(t.handoffTainted('h-out')).toBe(true);
+    running = { item: on('ans-kept'), startedAt: 0 };
+    t.markSent('h-out-2', 'bot-a', ['ans-pruned']);
+    expect(t.handoffTainted('h-out-2')).toBe(true);
+    expect(t.markForward('h-fwd', { handoffIds: ['ans-pruned'] })).toBe(true);
+    expect(t.markForward('h-fwd-2', { handoffIds: ['ans-kept'] })).toBe(false);
+    // The answer pruned in turn: its delivery mark says what it was.
+    hs.push({ ...handoff('h-dirty', fromBot) }, { ...kept, id: 'a-dirty', forHop: 'h-dirty' }, answer('ans-dirty', 'a-dirty'));
+    t.onFact(fact('x4', 'handoff.received', { handoffId: 'ans-kept' }));
+    t.onFact(fact('x5', 'handoff.received', { handoffId: 'ans-dirty' }));
+    for (const id of ['ans-pruned', 'ans-kept', 'ans-dirty', 'a-dirty']) hs.splice(hs.findIndex((h) => h.id === id), 1);
+    expect(t.handoffTainted('ans-pruned')).toBe(true);
+    expect(t.handoffTainted('ans-dirty')).toBe(true);
+    expect(t.handoffTainted('ans-kept')).toBe(false);
+    // An answer gone with no mark at all reads tainted.
+    expect(t.handoffTainted('ans-never-seen')).toBe(true);
+    hs.push(answer('ans-pruned', 'a-pruned'), answer('ans-kept', 'a-kept'));
+    // The running wake's mark (worker_message's sender and a fan-out's origin).
+    setWakeTaint(t, () => running);
+    try {
+      running = { item: on('ans-pruned'), startedAt: 0 };
+      expect(runningWakeTainted('bot-a')).toBe(true);
+      running = { item: on('ans-kept'), startedAt: 0 };
+      expect(runningWakeTainted('bot-a')).toBe(false);
+    } finally {
+      setWakeTaint(null);
+    }
   });
 
   it('a send is marked in the sender\'s turn, so a turn that ended before delivery does not taint it', () => {

@@ -18,7 +18,7 @@ const execFileAsync = promisify(execFile);
  * They used to shell out to PowerShell, which got the unsigned app flagged as
  * a trojan by Defender's behavioral heuristics — see issue #1051 and the
  * header of winSnapshotNative.ts. Do NOT reintroduce a PowerShell spawn
- * here (regression-guarded in __tests__/winSnapshotNative.test.ts).
+ * here (regression-guarded in __tests__/winSnapshotNative.os.test.ts).
  *
  * Unlike the old MetadataCollector path (which listed the FIRST 20 ports of
  * the whole machine for every workspace), ports are matched against each

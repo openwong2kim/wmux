@@ -22,6 +22,7 @@ import {
 } from '../../eventlog/SnapshotStore';
 import { evaluateWatermark, stampWatermark } from '../../eventlog/migrateToEventLog';
 import { EMPTY_CHANNEL_STATE, type ChannelState } from '../../../shared/channels';
+import { deliberateSleep } from '../../../test-utils/waitFor';
 
 let dir: string;
 let eventsDir: string;
@@ -433,7 +434,7 @@ describe('ChannelService × 이벤트로그 (§5 커밋경로 반전)', () => {
         channelId: chId, sender: { workspaceId: 'ws-1', memberId: 'm-1' },
         text: 'optimistic', verifiedWorkspaceId: 'ws-1', clientMsgId: 'cli-g1',
       });
-      await new Promise((r) => setTimeout(r, 10)); // write+배리어 진입 대기
+      await deliberateSleep(10, 'negative: no dirty read while the write waits at the barrier'); // write+배리어 진입 대기
       expect(h.svc.getMessages(chId, undefined, 'ws-1')).toHaveLength(0); // dirty read 없음
       expect(stateOf(h.svc)).toEqual(before);
       expect(h.emit).not.toHaveBeenCalled();
@@ -452,7 +453,7 @@ describe('ChannelService × 이벤트로그 (§5 커밋경로 반전)', () => {
         channelId: chId, sender: { workspaceId: 'ws-1', memberId: 'm-1' },
         text: 'committed', verifiedWorkspaceId: 'ws-1', clientMsgId: 'cli-g1', // 재시도(같은 키)
       });
-      await new Promise((r) => setTimeout(r, 10));
+      await deliberateSleep(10, 'negative: the retried write stays invisible until the barrier opens');
       expect(h.svc.getMessages(chId, undefined, 'ws-1')).toHaveLength(0); // 아직 비가시
       release!();
       const r2 = await postPromise2;
@@ -487,7 +488,7 @@ describe('ChannelService × 이벤트로그 (§5 커밋경로 반전)', () => {
         member: { workspaceId: 'ws-2', memberId: 'm-2' },
         verifiedWorkspaceId: 'ws-2',
       });
-      await new Promise((r) => setTimeout(r, 10));
+      await deliberateSleep(10, 'negative: an uncommitted join stays invisible');
       expect(h.svc.getMembers(created.channel.id, 'ws-1')).toHaveLength(1); // 미커밋 join 비가시
       release!();
       expect((await joinPromise).ok).toBe(true);

@@ -5,6 +5,7 @@ import os from 'node:os';
 
 import { StateWriter } from '../StateWriter';
 import type { DaemonState } from '../types';
+import { readSourceText } from '../../test-utils/sourceText';
 
 // X6 ② reboot-survival durability regression lock.
 //
@@ -104,12 +105,58 @@ describe('X6 ② reboot-survival durability', () => {
   const daemonIndexPath = path.join(__dirname, '..', 'index.ts');
 
   it('session:agent handler persists via saveImmediate, not saveDebounced', () => {
-    const src = fs.readFileSync(daemonIndexPath, 'utf-8');
+    const src = readSourceText(daemonIndexPath);
     const body = extractEventHandlerBody(src, 'session:agent');
     expect(body).toMatch(/stateWriter\.saveImmediate\(/);
     // The bug: this used to be saveDebounced. Lock it out.
     expect(body).not.toMatch(/stateWriter\.saveDebounced\(/);
     expect(body).not.toMatch(/setImmediate\([^)]*saveImmediate/);
+  });
+
+  it('session:agent consumes the recovery offer only on hook or process evidence', () => {
+    // A screen-tier read is a row that looks like an agent's chrome. Output
+    // quoting a banner on a recovered shell used to delete the recovery offer
+    // and its exact binding, so the pill was gone after the next reconnect.
+    const src = readSourceText(daemonIndexPath);
+    const body = extractEventHandlerBody(src, 'session:agent');
+    const guard = body.indexOf("if (slug && canonical && canonical.source !== 'screen') {");
+    expect(guard).toBeGreaterThan(body.indexOf('const canonical = canonicalIdentityFor('));
+    const deletes = [...body.matchAll(/recovered(?:AgentShellIds|ResumeBindings)\.delete\(payload\.sessionId\)/g)];
+    expect(deletes).toHaveLength(2);
+    for (const d of deletes) {
+      expect(d.index).toBeGreaterThan(guard);
+      expect(d.index).toBeLessThan(guard + 300);
+    }
+  });
+
+  it('a named agent\'s launch edge consumes the recovery offer at once', () => {
+    // liveRecoveryHint drops the pair only when a session list is read while
+    // the agent is alive; an agent launched and exited between two reads
+    // would otherwise leave the old offer for the next reconnect.
+    const src = readSourceText(daemonIndexPath);
+    const idx = src.indexOf('agentProcessTracker.setStateChangeListener(');
+    expect(idx).toBeGreaterThan(-1);
+    const body = src.slice(idx, idx + 6000);
+    const guard = body.indexOf('if (state.alive && state.slug) {');
+    expect(guard).toBeGreaterThan(-1);
+    expect(body.slice(guard, guard + 160)).toMatch(/recoveredAgentShellIds\.delete\(sessionId\);\s*recoveredResumeBindings\.delete\(sessionId\);/);
+  });
+
+  it('a slugless pick dying while the screen names an agent probes again', () => {
+    // arm() is a no-op while any pick reads alive, so an agent launched
+    // while a `tail -f` was still tracked would never reach a launch edge.
+    const src = fs.readFileSync(daemonIndexPath, 'utf-8');
+    const idx = src.indexOf('agentProcessTracker.setStateChangeListener(');
+    const body = src.slice(idx, idx + 8000);
+    expect(body).toMatch(/if \(!state\.alive && state\.slug === undefined && managed\.bridge\.getLastAgent\(\)\) \{\s*agentProcessTracker\.arm\(sessionId, managed\.meta\.pid\);/);
+  });
+
+  it('a hook that resolves to a live agent consumes the recovery offer', () => {
+    const src = fs.readFileSync(daemonIndexPath, 'utf-8');
+    const idx = src.indexOf('onAuthorityTouched: (sessionId, signal) =>');
+    expect(idx).toBeGreaterThan(-1);
+    const body = src.slice(idx, idx + 2500);
+    expect(body).toMatch(/if \(canonical && canonical\.source !== 'screen'\) \{\s*recoveredAgentShellIds\.delete\(sessionId\);\s*recoveredResumeBindings\.delete\(sessionId\);/);
   });
 
   it('session:cwd handler persists via saveAsap (immediate persist, async write)', () => {
@@ -123,6 +170,16 @@ describe('X6 ② reboot-survival durability', () => {
     const body = extractEventHandlerBody(src, 'session:cwd');
     expect(body).toMatch(/stateWriter\.saveAsap\(/);
     expect(body).not.toMatch(/stateWriter\.saveDebounced\(/);
+  });
+
+  it('applyResumeBinding moves the pane cwd only when the transcript relocated', () => {
+    // Recovery resumes the exact session only when meta.cwd matches the
+    // binding's cwd; an agent that changed directory itself must move meta.cwd.
+    const src = fs.readFileSync(daemonIndexPath, 'utf-8');
+    const idx = src.indexOf('const applyResumeBinding =');
+    expect(idx).toBeGreaterThan(-1);
+    const body = src.slice(idx, src.indexOf("pipeServer.onRpc('daemon.setResumeBinding'", idx));
+    expect(body).toMatch(/transcriptRelocated\(prev, next\)\) sessionManager\.adoptAgentCwd\(p\.id, next\.cwd\)/);
   });
 
   it('useTerminal onData guards clearResumeHint against focus reports (CSI I / CSI O)', () => {

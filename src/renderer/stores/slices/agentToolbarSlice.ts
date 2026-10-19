@@ -10,7 +10,7 @@ export interface ToolbarSnippet {
   text: string;
 }
 
-export type ToolbarPopover = 'explorer' | 'snippets' | 'rich' | 'schedule' | null;
+export type ToolbarPopover = 'snippets' | 'rich' | 'schedule' | null;
 
 /** Trigger rect in viewport coords. `right`/`bottom` are required: placePopover
  *  right-aligns the dialog against `right`, so a synthesised rect that reused
@@ -56,10 +56,6 @@ export interface AgentToolbarSlice {
   /** Which toolbar popover is open. Transient. */
   toolbarPopover: ToolbarPopover;
   setToolbarPopover: (popover: ToolbarPopover) => void;
-
-  /** Command sent by the "New" button. Persisted (default '/clear'). */
-  newConversationCommand: string;
-  setNewConversationCommand: (cmd: string) => void;
 }
 
 export const createAgentToolbarSlice: StateCreator<
@@ -127,10 +123,5 @@ export const createAgentToolbarSlice: StateCreator<
   toolbarPopover: null,
   setToolbarPopover: (popover) => set((draft: StoreState) => {
     draft.toolbarPopover = popover;
-  }),
-
-  newConversationCommand: '/clear',
-  setNewConversationCommand: (cmd) => set((draft: StoreState) => {
-    draft.newConversationCommand = cmd;
   }),
 });

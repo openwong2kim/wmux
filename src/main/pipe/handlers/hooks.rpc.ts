@@ -40,10 +40,12 @@
 // IPC.SIGNAL_HEALTH_UPDATE (1Hz throttle). The renderer feeds them into
 // uiSlice.setHookSignalHealth for the Settings → Claude integration card.
 
+import { isInternalForkPayload } from '../../../shared/hooks/internalFork';
 import type { BrowserWindow } from 'electron';
 import type { RpcRouter } from '../RpcRouter';
 import { sendToRenderer } from './_bridge';
 import { dispatchNotification } from '../../notification/dispatchNotification';
+import { clearEscapeKey } from '../../notification/idleSuppression';
 import { broadcastMetadataUpdate } from '../../ipc/handlers/metadata.handler';
 import { DEFAULT_DEDUP_WINDOW_MS, type HookSignalRouter } from '../../hooks/HookSignalRouter';
 import { HookFloodMeter, describeHookFlood } from '../../hooks/HookFloodMeter';
@@ -52,7 +54,7 @@ import { IPC, dataSuffix } from '../../../shared/constants';
 import { summarizeActivity } from '../../../shared/activitySummary';
 import { assistantPreview, flattenAgentText } from '../../../shared/assistantPreview';
 import type { DaemonClient } from '../../DaemonClient';
-import type { ResumeBinding, PermissionMode } from '../../../shared/agentResume';
+import { agentSupportsPermissionFlag, type ResumeBinding, type PermissionMode } from '../../../shared/agentResume';
 import { readLastAssistantMessage } from '../../claude/lastAssistantMessage';
 import { deliverBrainPtyHookSignal } from '../../deck/brainPtyHookBus';
 import { getWorkspaceMirror, type WorkspaceMirror } from '../../workspace/WorkspaceMirror';
@@ -647,7 +649,11 @@ export function registerHooksRpc(
 
     // The daemon-unreachable twin of HookIngest's drop: an interrupted-turn
     // Stop that lands after the next prompt has no effect at all.
-    if (signal.kind === 'agent.user_prompt_submit') lastPromptAtByPty.set(ptyId, Date.now());
+    // A new turn also forgets the last one's Escape (idleSuppression.clearEscapeKey).
+    if (signal.kind === 'agent.user_prompt_submit') {
+      lastPromptAtByPty.set(ptyId, Date.now());
+      clearEscapeKey(ptyId);
+    }
     if (isStaleInterruptedStop(signal, lastPromptAtByPty.get(ptyId))) return { ok: true };
 
     // Hook authority: EVERY resolved bridge signal (emit-class or not —
@@ -662,6 +668,11 @@ export function registerHooksRpc(
     // unaffected. See HOOK_AUTHORITY_TTL_MS for staleness.
     hookRouter.touchAuthority(ptyId, signal.agent, Date.now(), true, signal.kind);
 
+    // This fallback keeps the old rule: a Claude PermissionRequest raises the
+    // alert. The permission_prompt Notification the daemon raises on instead
+    // (#2390) would be a second alert for the same dialog here.
+    if (signal.kind === 'agent.awaiting_input' && signal.payload?.['hook_event_name'] === 'Notification') return { ok: true };
+
     // X6 ③: persist the resume binding for session-LIFECYCLE kinds. This runs
     // BEFORE the isEmitKind gate below, which drops SessionStart for the
     // notification path — but SessionStart is a key live-capture point (the
@@ -673,8 +684,11 @@ export function registerHooksRpc(
     // Only for a pane-EXACT route (#1523): this fallback cannot see the pane's
     // current binding, so a workspace/cwd guess could replace another agent's
     // conversation. Skipping it also keeps a guess out of the spool.
+    // A turn start of an agent with permission modes binds too, as on the
+    // daemon's own ingest (HookIngest): it carries the mode the turn runs in.
     if (
       (signal.kind === 'agent.session_start'
+        || (signal.kind === 'agent.user_prompt_submit' && agentSupportsPermissionFlag(signal.agent))
         || signal.kind === 'agent.stop'
         || signal.kind === 'agent.subagent_stop')
       && signal.agentSessionId
@@ -848,7 +862,10 @@ export function registerHooksRpc(
       // reset (session_start), and the answered cues that cancel a pending
       // attention window. These kinds return here, so this is their only feed
       // site on the local path.
-      alarm?.observe(ptyId, signal.agent, normalizeHookCue(signal));
+      // Not a tool of Claude Code's own post-turn fork (its permission gate
+      // reaches here): it would rebut the Stop's completion (HookIngest's
+      // handlePermissionGate skips it the same way).
+      if (!isInternalForkPayload(signal.payload)) alarm?.observe(ptyId, signal.agent, normalizeHookCue(signal));
       // #1680 — fresh-context evidence, the daemon-unreachable twin of
       // DaemonNotificationRouter's session_start replay.
       if (signal.kind === 'agent.session_start') hookRouter.noteSessionStart(ptyId, signal, receivedAt);

@@ -487,6 +487,16 @@ function makeInstance() {
   const userDataDir = path.join(env.APPDATA, `wmux${suffix}`);
   fs.mkdirSync(userDataDir, { recursive: true });
   fs.writeFileSync(path.join(userDataDir, '.first-run'), new Date().toISOString(), 'utf8');
+  // The sandbox HOME has no CLI hooks, so the Deck's "Install wmux hooks"
+  // prompt would open over the panes at launch, and the input scenario's
+  // click would land on its dialog text instead of the terminal. The input
+  // scenario then passed only when the pane already had focus from its reveal,
+  // and a reveal-focus regression read as "click did not focus" (#2212).
+  // Answer it the way "Don't ask again" does: hooks-prompt.json in the wmux
+  // data dir (~/.wmux<suffix>).
+  const wmuxDataDir = path.join(home, `.wmux${suffix}`);
+  fs.mkdirSync(wmuxDataDir, { recursive: true });
+  fs.writeFileSync(path.join(wmuxDataDir, 'hooks-prompt.json'), JSON.stringify({ suppressed: true }), 'utf8');
   // PR D scrollback A/B: pre-seed session.json so loadSession applies the
   // scrollbackLines preference BEFORE any terminal mounts (see
   // buildScrollbackSeedSession for why this beats CDP store-injection). Only
@@ -858,12 +868,23 @@ async function measureInputLatency(page, sampleTarget, label) {
   // <body> — every sample then times out. Re-dismiss and retry.
   let focused = false;
   for (let attempt = 0; attempt < 4 && !focused; attempt++) {
-    await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+    const cx = box.x + box.width / 2;
+    const cy = box.y + box.height / 2;
+    await page.mouse.click(cx, cy);
     await sleep(300);
     focused = await page.evaluate(() =>
       !!document.activeElement?.classList?.contains('xterm-helper-textarea'));
     if (!focused) {
-      console.error(`[${label}] click did not focus the terminal (attempt ${attempt + 1}/4) — dismissing overlays and retrying`);
+      // Name what the click hit: an overlay over the pane and a pane that
+      // refuses focus fail the same way otherwise.
+      const hit = await page.evaluate(({ x, y }) => {
+        const el = document.elementFromPoint(x, y);
+        if (!el) return 'nothing';
+        if (el.closest('.xterm')) return 'the terminal';
+        const cls = typeof el.className === 'string' && el.className ? `.${el.className.trim().split(/s+/).slice(0, 3).join('.')}` : '';
+        return `<${el.tagName.toLowerCase()}${cls}>`;
+      }, { x: cx, y: cy }).catch(() => 'unknown');
+      console.error(`[${label}] click did not focus the terminal (attempt ${attempt + 1}/4; the click hit ${hit}) — dismissing overlays and retrying`);
       await dismissOverlays(page);
     }
   }

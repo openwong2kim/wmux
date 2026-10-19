@@ -11,7 +11,6 @@ import { createRoot, type Root } from 'react-dom/client';
 // Stub the pty write path (only mount/toggle is verified — nothing is fired).
 vi.mock('../inject', () => ({
   injectText: () => Promise.resolve(),
-  attachFilesToPty: () => Promise.resolve(),
   insertPathsIntoPty: () => Promise.resolve(),
   quotePathsForPrompt: (paths: string[]) => paths.join(' '),
 }));
@@ -59,6 +58,8 @@ beforeEach(() => {
       // Pinned so the bar is on screen without simulating pointer approach —
       // reveal behaviour is covered by useHoverReveal's own test.
       agentToolbarPinned: true,
+      fileTreeVisible: false,
+      appRoute: 'workspaces',
     });
   });
 });
@@ -94,6 +95,34 @@ describe('AgentToolbar — fan-out entry', () => {
     ) as HTMLButtonElement | null;
     expect(schedule).not.toBeNull();
     expect(schedule?.disabled).toBe(false);
+  });
+
+  it('shows only the trimmed verbs: Files, Snippets, Rich Input, Schedule, Multi Task and the pin', () => {
+    mount();
+    const bar = container.querySelector('[data-testid="agent-toolbar"]') as HTMLElement;
+    expect(bar.querySelectorAll('button')).toHaveLength(6);
+    expect(bar.querySelector('[data-testid="broadcast-button"]')).toBeNull();
+    expect(bar.querySelector('[data-testid="new-conversation"]')).toBeNull();
+  });
+
+  it('Files toggles the file tree column and is pressed only while the column is on screen', () => {
+    mount();
+    const files = () => container.querySelector('[data-toolbar-action="file-tree"]') as HTMLButtonElement;
+    expect(files().getAttribute('aria-label')).toBeTruthy();
+    expect(files().getAttribute('aria-pressed')).toBe('false');
+    act(() => { files().click(); });
+    expect(useStore.getState().fileTreeVisible).toBe(true);
+    expect(files().getAttribute('aria-pressed')).toBe('true');
+    act(() => useStore.setState({ appRoute: 'git' }));
+    expect(files().getAttribute('aria-pressed')).toBe('false');
+  });
+
+  it('Files closes an open Multi Task dialog, like every other opener', () => {
+    mount();
+    act(() => { fanoutButton().dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+    expect(document.querySelector('[data-testid="fanout-dialog"]')).not.toBeNull();
+    act(() => { (container.querySelector('[data-toolbar-action="file-tree"]') as HTMLButtonElement).click(); });
+    expect(document.querySelector('[data-testid="fanout-dialog"]')).toBeNull();
   });
 
   it('toggles the FanOutDialog open and closed on click', () => {

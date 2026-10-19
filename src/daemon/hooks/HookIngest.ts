@@ -37,6 +37,7 @@
 // no coalescing, no fast path, no fallback tiers. That is why the flood meter
 // below reports every signal as `fastPathed` and never `degraded`.
 
+import { isInternalForkPayload } from '../../shared/hooks/internalFork';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { HookSignalRouter } from '../../shared/hooks/HookSignalRouter';
@@ -62,11 +63,13 @@ import { ENV_KEYS, isBrainPty } from '../../shared/constants';
 import { hasCriticalRiskIn } from '../../shared/criticalPatterns';
 // Pure regex/lookup module (no electron), already imported by src/daemon/index.ts.
 import { agentDisplayToSlug, agentStatusToSignalKind, type AgentEventStatus } from '../../main/pty/AgentDetector';
-import { isPlausibleResumeSessionId, type ResumeBinding, type PermissionMode } from '../../shared/agentResume';
+import { agentSupportsPermissionFlag, isPlausibleResumeSessionId, type ResumeBinding, type PermissionMode } from '../../shared/agentResume';
 import type { ApprovalHookSink, TerminalPromptNote } from '../approvals/types';
 import { claudeQuestionsForm, extractAskUserQuestion } from '../approvals/askUserQuestion';
 import { boundRecordText, isClaudeFamilyAgent, TERMINAL_PROMPT_TOOL_NAME_MAX } from '../approvals/terminalPrompt';
 import { checkNativeTranscriptPath } from '../transcript/providers';
+import { isWslOwnTranscriptPath } from './transcriptPathGuard';
+import type { WslTarget } from '../../shared/wslTarget';
 
 /** Rolling flood-summary interval. Mirrors the main-side handler. */
 const HOOK_FLOOD_LOG_INTERVAL_MS = 30_000;
@@ -97,6 +100,8 @@ export interface HookIngestSession {
   resumeBinding?: Pick<ResumeBinding, 'agent'> & { sessionId?: string };
   /** Canonical agent the detector/process tracker last saw in this pane. */
   lastDetectedAgent?: string;
+  /** The pane runs in WSL: its agent reports Linux paths. */
+  wslTarget?: WslTarget;
 }
 
 /**
@@ -177,6 +182,43 @@ export interface HookAgentEventData extends HookArbitration {
   signal: AgentSignal;
 }
 
+/**
+ * How long a Claude PermissionRequest waits for its `Notification`
+ * (`permission_prompt`) before the second layer looks at the screen. Claude
+ * Code sends that notification once its permission prompt has waited about
+ * six seconds (hooks reference); the rest is margin for the hook's own spawn.
+ */
+export const PERMISSION_NOTIFY_GRACE_MS = 8_000;
+
+/**
+ * Second look at the grid after the second layer's first read found no
+ * dialog. Claude shows the dialog only once every PermissionRequest hook has
+ * returned, so a slow third-party hook can leave the first read empty.
+ */
+export const DIALOG_RECHECK_MS = 1_500;
+
+/**
+ * Claude Code's PermissionRequest hook: a permission dialog it is ABOUT to
+ * show. Not proof a human is blocked (see `holdTentativeDialog`).
+ */
+function isClaudePermissionRequest(signal: AgentSignal): boolean {
+  return signal.kind === 'agent.awaiting_input'
+    && signal.payload?.['hook_event_name'] === 'PermissionRequest'
+    && isClaudeFamilyAgent(signal.agent);
+}
+
+/**
+ * Claude Code's `Notification` hook of type `permission_prompt`: a permission
+ * prompt that has been on screen, unanswered, for about six seconds. The
+ * provider's own word that a human is blocked.
+ */
+function isClaudePermissionNotification(signal: AgentSignal): boolean {
+  return signal.kind === 'agent.awaiting_input'
+    && signal.payload?.['hook_event_name'] === 'Notification'
+    && signal.payload?.['notification_type'] === 'permission_prompt'
+    && isClaudeFamilyAgent(signal.agent);
+}
+
 export interface HookIngestDeps {
   /** Live daemon sessions, re-read per signal (topology changes constantly). */
   listLiveSessions: () => HookIngestSession[];
@@ -242,6 +284,22 @@ export interface HookIngestDeps {
    */
   onResolvedSignal?: (sessionId: string, signal: AgentSignal) => void;
   /**
+   * Is a dialog on the pane's screen right now? The second layer only: asked
+   * when a Claude PermissionRequest got no `permission_prompt` Notification
+   * within PERMISSION_NOTIFY_GRACE_MS on a pane that has never sent one (the
+   * hook is not registered there). `false` drops the alarm, `null` means the
+   * grid could not be read and the hook is trusted. Optional: only the daemon
+   * supplies it; without it the hook is trusted after the grace.
+   */
+  dialogOnScreen?: (sessionId: string) => Promise<boolean | null>;
+  /**
+   * A tentative Claude PermissionRequest ended without an alert (no
+   * Notification, no dialog on screen, or settled first). Its phone record was
+   * minted at once and has no other way out, since the pane was never marked
+   * awaiting: the daemon retires it if the screen shows no dialog. Optional.
+   */
+  onTentativeDialogLapsed?: (sessionId: string) => void;
+  /**
    * Transcript projection — tell the TranscriptProjector that this pane's
    * transcript may have grown. Fired for EVERY resolved signal, including the
    * non-emit kinds: `agent.activity` is the mid-turn liveness nudge,
@@ -259,6 +317,10 @@ export interface HookIngestDeps {
     kind: AgentSignalKind,
     /** The signal's own agent session id, when it carried one. */
     agentSessionId?: string,
+    /** When the hook fired (the bridge's clock). */
+    ts?: number,
+    /** Claude Code's `prompt_id` on the hook, when it carried one. */
+    promptId?: string,
   ) => void;
   /**
    * CompletionAlarm — emit a DETECTOR-sourced `agent.event` whose completion
@@ -316,6 +378,13 @@ export interface HookIngestDeps {
    * approval mode). Registry membership, never the id prefix.
    */
   isAutomationPane?: (sessionId: string) => boolean;
+  /**
+   * One turn has one end. The daemon's id for the pane's latest episode when
+   * that episode is over for good (DaemonPTYBridge.endedTurnId: a hard close;
+   * a soft close resumes under the same id), else null. Optional: without it
+   * no turn end is deduplicated.
+   */
+  latestEndedTurn?: (sessionId: string) => string | null;
 }
 
 /**
@@ -539,6 +608,7 @@ function summarizeToolInput(payload: Record<string, unknown> | undefined): strin
   for (const f of fields) {
     const v = ti[f];
     if (typeof v === 'string' && v.length > 0) {
+      // eslint-disable-next-line no-control-regex
       const clean = v.replace(/[\x00-\x1f\x7f]/g, '').trim();
       return clean.length > TOOL_INPUT_SUMMARY_MAX
         ? clean.slice(0, TOOL_INPUT_SUMMARY_MAX) + '…'
@@ -666,6 +736,18 @@ function eventShapeFor(
   }
 }
 
+/**
+ * What a lead turn end says: its kind, the prompt it belongs to (Claude
+ * Code's `prompt_id`, on every hook until the next user prompt; the
+ * transcript stand-in reads the same id from the turn's user entry), Claude's
+ * error code and its last message (trimmed and bounded as the stand-in
+ * bounds it, see daemon/transcript/apiErrorTurnEnd). Two ends of one turn
+ * say the same.
+ */
+function turnEndSignature(signal: AgentSignal): string {
+  const field = (key: string): string => (typeof signal.payload?.[key] === 'string' ? signal.payload[key] as string : '');
+  return `${signal.kind}|${field('prompt_id')}|${field('error')}|${field('last_assistant_message').trim().slice(0, 2000)}`;
+}
 /** OpenCode's request id on a bridge 0.3.0 signal (`payload.permId`), when well-formed. */
 function openCodeRequestId(signal: AgentSignal): string | undefined {
   const raw = signal.payload?.['permId'];
@@ -692,6 +774,20 @@ export class HookIngest {
    */
   private readonly leadTurnEnded = new Set<string>();
   /**
+   * Per pane, the daemon's id of the latest episode whose end this ingest
+   * delivered, and that end closed for good. A further end while that is
+   * still the pane's latest episode is a duplicate and is dropped: the real
+   * StopFailure after the transcript's stand-in for it
+   * (daemon/transcript/apiErrorTurnEnd), the stand-in after the real hook, or
+   * any repeat. Keyed on the episode id, never on time: no hook timestamp is
+   * read, so a hook clock off the daemon's cannot misplace an end. The end
+   * must also say the same thing (`turnEndSignature`): a turn that opened no
+   * episode (an autonomous turn with no hook before its end) ends with its
+   * own reply and is not taken for a repeat. An end that arrives after a
+   * newer episode opened is not caught; it never was.
+   */
+  private readonly endedTurn = new Map<string, { turn: string; signature: string }>();
+  /**
    * When each session's latest UserPromptSubmit landed. An interrupted-turn
    * Stop from the Claude Code mod (integrations/claude-mod) is sent a second
    * or more after the interrupt; a prompt that landed after the interrupt
@@ -706,6 +802,37 @@ export class HookIngest {
    * the oldest go first; a request is answered once.
    */
   private readonly answeredRequests = new Set<string>();
+  /**
+   * Per pane, bumped ONLY by cues that settle or supersede a dialog: the
+   * answered kinds, an answer keystroke (noteAnswered), a lead Stop /
+   * StopFailure, SessionStart and a new prompt. Never by working evidence —
+   * a subagent's PostToolUse behind a real dialog is not an answer (the same
+   * asymmetry CompletionAlarm keeps for firm attention). A tentative
+   * PermissionRequest and its second-layer screen read compare the value
+   * they captured with the current one and stand down if they differ: both
+   * outlast the alarm's own window, so this is their only cancel.
+   */
+  private readonly dialogEpoch = new Map<string, number>();
+  /**
+   * Per pane, the open tentative PermissionRequest (see holdTentativeDialog):
+   * its grace timer, and the fan-out of the latest request it stands for.
+   */
+  private readonly tentativeDialogs = new Map<string, { epoch: number; cancel: () => void; fanOut: (repeat?: boolean) => unknown }>();
+  /**
+   * Panes whose Claude has sent a `permission_prompt` Notification this
+   * session: the hook is registered there, so a PermissionRequest that gets
+   * no Notification had no prompt left waiting, and no second layer runs.
+   * Cleared on SessionStart (the settings may differ) and pane disposal.
+   */
+  private readonly permissionNotifyPanes = new Set<string>();
+  /**
+   * Per pane, when the second layer last raised a dialog, at which epoch: a
+   * `permission_prompt` Notification for that same dialog (drawn late, so it
+   * came after the grace) must not alert a second time.
+   */
+  private readonly secondLayerRaised = new Map<string, { epoch: number; at: number }>();
+  /** Per pane, how many Claude PermissionRequests have landed (see permissionRequestCount). */
+  private readonly permissionRequests = new Map<string, number>();
   /** #1823: panes already logged for a provider mismatch (log once per pane). */
   private readonly mismatchLogged = new Set<string>();
   /** Foreign-process senders already logged (`pane|reason`), bounded like the rest. */
@@ -913,6 +1040,14 @@ export class HookIngest {
       this.deps.log?.('warn', `[hooks] authority-touch callback failed for ${sessionId}: ${String(err)}`);
     }
 
+    // A tool of Claude Code's own post-turn fork (the recap, the prompt
+    // suggestion), about 2 s after the Stop, is not the pane's turn: as
+    // working evidence it rebutted that Stop's completion, and its running
+    // broadcast lit the pane for good (the fork's SubagentStop is skipped).
+    // It gets no opinion here, so it follows the session's own permission
+    // flow, and touches no pane state.
+    if (isInternalForkPayload(signal.payload)) return { ok: true, sessionId };
+
     // Verdict-gate feed (R4): PreToolUse never reaches `handle()` — the RPC
     // interceptor routes awaiting_permission straight here — so this is the
     // ONLY working-evidence feed for tool calls on the daemon path. Both the
@@ -923,7 +1058,7 @@ export class HookIngest {
 
     // Transcript nudge: a PreToolUse means the agent is active.
     try {
-      this.deps.onTranscriptNudge?.(sessionId, signal.kind, signal.agentSessionId);
+      this.deps.onTranscriptNudge?.(sessionId, signal.kind, signal.agentSessionId, signal.ts, typeof signal.payload?.['prompt_id'] === 'string' ? signal.payload['prompt_id'] : undefined);
     } catch (err) {
       this.deps.log?.('warn', `[hooks] transcript nudge failed for ${sessionId}: ${String(err)}`);
     }
@@ -1106,7 +1241,20 @@ export class HookIngest {
     // User answered a pending approval locally — no turn boundary, just expire the request.
     // The alarm is fed FIRST: an `answered` cue cancels a pending ATTENTION
     // window, and these kinds return before any other cue-feeding site below.
-    this.alarm.observe(sessionId, signal.agent, normalizeHookCue(signal));
+    // Claude's permission request and Notification feed the alarm below, on
+    // their own terms: a firm attention cue here, with no resume, would
+    // replace a real dialog's pending window (a tentative request's, or a
+    // Notification the second layer already raised).
+    if (signal.kind === 'agent.input_answered' || signal.kind === 'agent.permission_answered') this.bumpDialogEpoch(sessionId);
+    // One turn, one end: checked before the alarm is fed, so a duplicate
+    // changes no window another cue opened. It still reaches the binding
+    // capture and the transcript nudge below; only its outcome is dropped.
+    const duplicateEnd = this.isDuplicateTurnEnd(sessionId, signal);
+    const claudeNotification = signal.kind === 'agent.awaiting_input'
+      && signal.payload?.['hook_event_name'] === 'Notification' && isClaudeFamilyAgent(signal.agent);
+    if (!isClaudePermissionRequest(signal) && !claudeNotification && !duplicateEnd) {
+      this.alarm.observe(sessionId, signal.agent, normalizeHookCue(signal));
+    }
     if (signal.kind === 'agent.input_answered') {
       const permId = openCodeRequestId(signal);
       if (permId && this.deps.approvals?.expireHookAwaiting) {
@@ -1149,8 +1297,13 @@ export class HookIngest {
     // notification path but is the EARLIEST point the origin session id is
     // known. agentSessionId is the #12235-safe id (transcript basename) the
     // bridge derived; cwd + permissionMode complete the binding (F5/F7).
+    // A turn start binds too: it carries the mode that turn runs in, and is the
+    // only hook with a mode for a worker whose task ends before its first Stop
+    // (a WSL agent's SessionStart has none). The latest mode wins. Only an
+    // agent with permission modes (Claude): its bridge puts the mode there.
     if (
       (signal.kind === 'agent.session_start'
+        || (signal.kind === 'agent.user_prompt_submit' && agentSupportsPermissionFlag(signal.agent))
         || signal.kind === 'agent.stop'
         || signal.kind === 'agent.subagent_stop')
       && signal.agentSessionId
@@ -1166,8 +1319,14 @@ export class HookIngest {
         ? signal.payload.transcript_path
         : undefined;
       let transcriptPath: string | undefined;
-      if (claimedPath) {
-        const sessionEnv = sessions.find((s) => s.id === sessionId)?.env;
+      const routed = sessions.find((s) => s.id === sessionId);
+      if (claimedPath && routed?.wslTarget && isWslOwnTranscriptPath(claimedPath, signal.agentSessionId, routed.wslTarget)) {
+        // #2270: the WSL pane's own transcript, inside its distro. This process
+        // cannot open that path, so the binding goes without it, as before,
+        // but it is not a refusal.
+        this.deps.log?.('debug', `[hooks] ${sessionId}: transcript is in WSL ${routed.wslTarget.distribution}; not stored`);
+      } else if (claimedPath) {
+        const sessionEnv = routed?.env;
         const check = checkNativeTranscriptPath(signal.agent, claimedPath, signal.agentSessionId, sessionEnv);
         if (check.ok) {
           transcriptPath = claimedPath;
@@ -1185,7 +1344,6 @@ export class HookIngest {
       // The pane switching agents is not a clobber: when the detector/process
       // tracker already sees `signal.agent` running there, the old binding is
       // the stale one and the new session must be captured.
-      const routed = sessions.find((s) => s.id === sessionId);
       const prevAgent = routed?.resumeBinding?.agent;
       // #1823: the binding is only as good as the pane's agent. A different
       // agent's process alive in the pane, or an id the agent's resume grammar
@@ -1237,7 +1395,7 @@ export class HookIngest {
     // hook, and is wrapped because a projector failure must not turn into a
     // fatal hook — the bridge treats an RPC error as one.
     try {
-      this.deps.onTranscriptNudge?.(sessionId, signal.kind, signal.agentSessionId);
+      this.deps.onTranscriptNudge?.(sessionId, signal.kind, signal.agentSessionId, signal.ts, typeof signal.payload?.['prompt_id'] === 'string' ? signal.payload['prompt_id'] : undefined);
     } catch (err) {
       this.deps.log?.('warn', `[hooks] transcript nudge failed for ${sessionId}: ${String(err)}`);
     }
@@ -1259,6 +1417,13 @@ export class HookIngest {
       // completion window and arm the turn gate), session_start is a SESSION
       // boundary (resets the gate so a fresh session must work before any
       // stop can announce).
+      if (signal.kind === 'agent.session_start' || signal.kind === 'agent.user_prompt_submit') this.bumpDialogEpoch(sessionId);
+      if (signal.kind === 'agent.session_start') this.permissionNotifyPanes.delete(sessionId);
+      // A submitted prompt means no dialog is up any more. As a working cue it
+      // cannot rebut a firm attention window, which would then still confirm a
+      // stale "needs you" (and a detector report that replaced the window's
+      // callback carries no epoch guard of its own), so it answers the window.
+      if (signal.kind === 'agent.user_prompt_submit') this.alarm.observe(sessionId, signal.agent, { class: 'answered' });
       this.alarm.observe(sessionId, signal.agent, normalizeHookCue(signal));
       // M2: a fresh session on this pane means the question the PREVIOUS
       // session asked will never be answered — the same reasoning that makes
@@ -1306,6 +1471,11 @@ export class HookIngest {
     // status dot and nothing else, and a later same-turn candidate can still
     // arbitrate cleanly instead of finding a ghost 'emit'.
     const cue = normalizeHookCue(signal);
+    if (duplicateEnd) return { ok: true };
+    // Only a stop that ends the turn: one with background work still running
+    // (#1096) is not, and a background agent's dialog may be up behind it.
+    if (cue.class === 'stop' && !cue.child && cue.leftoverWork === 0) this.bumpDialogEpoch(sessionId);
+    if (signal.kind === 'agent.stop_failure') this.bumpDialogEpoch(sessionId);
     if (signal.kind === 'agent.subagent_stop') {
       // Never a lead-turn end, and never a verdict about one: the cue is a
       // NO-OP in the alarm — it leaves a window the lead turn's own stop
@@ -1355,13 +1525,25 @@ export class HookIngest {
 
     // Awaiting input keeps its phone card IMMEDIATELY (R5): a remote device
     // must see the question while the provisional window runs, not 1.5s later.
-    if (signal.kind === 'agent.awaiting_input') {
+    // Not for the permission Notification: it names no tool, and the dialog
+    // it reports already got its record from the PermissionRequest (or, with
+    // no hook before it, from the detector's screen read).
+    const permissionNotification = isClaudePermissionNotification(signal);
+    // The bridge forwards no other notification type; one from an older or
+    // foreign sender (idle, auth, elicitation) says nothing about a dialog.
+    if (claudeNotification && !permissionNotification) {
+      return { ok: true };
+    }
+    if (signal.kind === 'agent.awaiting_input' && !permissionNotification) {
       this.noteAwaitingInput(signal, sessionId, sessions);
     }
 
     const { status, message } = eventShapeFor(signal.kind);
-    const resume = () => {
-      const decision = this.router.recordHook(signal, sessionId, this.now());
+    // `repeat`: the second layer re-raising a dialog it already raised, which
+    // refreshes the pane's state but is no new toast (see holdTentativeDialog).
+    const fanOut = (repeat = false): HookSignalResponse => {
+      const routed = this.router.recordHook(signal, sessionId, this.now());
+      const decision = repeat ? 'dedup' : routed;
       if (signal.kind === 'agent.stop') {
         this.deps.approvals?.expireForSession(sessionId, 'turn-ended');
       }
@@ -1379,6 +1561,46 @@ export class HookIngest {
         signal,
       });
     };
+    // Claude's PermissionRequest is a dialog it is ABOUT to show, and it fires
+    // for ones nobody ever sees: a request another hook or the SDK host
+    // decides, one auto-denied because the session cannot prompt, one
+    // answered at once. Taken as firm attention, each such hook confirmed a
+    // "needs you" toast ~1.5 s later while the agent visibly kept working —
+    // reported as "notified every 2 seconds that input is required; when I
+    // click, the AI is still working". It is tentative now: no window, no
+    // broadcast, no pane status. The firm signal is Claude's own Notification
+    // of type `permission_prompt`, sent once the prompt has really waited.
+    if (isClaudePermissionRequest(signal)) {
+      this.holdTentativeDialog(sessionId, signal.agent, fanOut);
+      return { ok: true };
+    }
+    // Called bare: the alarm hands its resume a ConfirmedWindow, never `repeat`.
+    let resume: () => unknown = () => fanOut();
+    if (permissionNotification) {
+      // The root signal took over: no second layer for this dialog, and none
+      // on this pane while its session lasts.
+      this.permissionNotifyPanes.add(sessionId);
+      this.clearTentativeDialog(sessionId);
+      const raised = this.secondLayerRaised.get(sessionId);
+      this.secondLayerRaised.delete(sessionId);
+      if (raised !== undefined && raised.epoch === this.dialogEpoch.get(sessionId)
+          && this.now() - raised.at < PERMISSION_NOTIFY_GRACE_MS) {
+        // The second layer already raised this dialog (drawn late, so the
+        // Notification came after the grace): one alert per dialog, and its
+        // window, if still open, is left to confirm.
+        this.deps.log?.('debug', `[hooks] permission_prompt Notification on ${sessionId}: already raised by the screen check`);
+        return { ok: true };
+      }
+      // Stands down a second-layer screen read already in flight.
+      this.bumpDialogEpoch(sessionId);
+      resume = this.unlessSettled(sessionId, fanOut);
+      // The phone record, read off the screen, for a prompt no request came
+      // before (a sandboxed network request) or whose record was retired
+      // meanwhile. The registry refuses it while one is pending, and a
+      // detector report that replaces this window inherits its firmness and
+      // so skips its own note.
+      this.noteDetectorTerminalPrompt(sessionId, signal.agent);
+    }
     const outcome = this.alarm.observe(sessionId, signal.agent, cue, resume);
     if (outcome === 'hold') {
       // The bridge is answered NOW; the broadcast fires at confirmation (or
@@ -1531,6 +1753,14 @@ export class HookIngest {
     } catch (err) {
       this.deps.log?.('warn', `[hooks] agent.event broadcast failed for ${sessionId}: ${String(err)}`);
       return { ok: false, reason: 'internal-error' };
+    }
+    // A delivered turn outcome (not status-only or held) that the daemon took
+    // as a close for good: that episode has had its end. A soft close (a Codex
+    // stop the rollout has not confirmed) records nothing.
+    if ((data.hookKind === 'agent.stop' || data.hookKind === 'agent.stop_failure') && data.status !== 'running'
+      && !['internal', 'veto', 'pending'].includes(data.decision ?? '')) {
+      const ended = this.deps.latestEndedTurn?.(sessionId) ?? null;
+      if (ended !== null) this.endedTurn.set(sessionId, { turn: ended, signature: turnEndSignature(data.signal) });
     }
     return { ok: true };
   }
@@ -1718,8 +1948,218 @@ export class HookIngest {
    * bridge's awaiting state with nothing left on screen to answer.
    */
   noteAnswered(sessionId: string, slug?: string): void {
+    // The dialog is settled whatever the slug: a tentative PermissionRequest
+    // or a second-layer screen read still in flight must not raise it now.
+    this.bumpDialogEpoch(sessionId);
     if (!slug) return;
     this.alarm.observe(sessionId, slug, { class: 'answered' });
+  }
+
+  /** Monotonic across panes, so a disposed pane's id can never read as current again. */
+  private dialogEpochClock = 0;
+
+  private bumpDialogEpoch(sessionId: string): void {
+    this.dialogEpoch.set(sessionId, ++this.dialogEpochClock);
+  }
+
+  /** The pane's current epoch, minted on first use so a fresh pane is never 0. */
+  private dialogEpochOf(sessionId: string): number {
+    const current = this.dialogEpoch.get(sessionId);
+    if (current !== undefined) return current;
+    this.bumpDialogEpoch(sessionId);
+    return this.dialogEpoch.get(sessionId) as number;
+  }
+
+  /**
+   * A Claude PermissionRequest: a dialog that MAY be coming. It raises
+   * nothing by itself; the `permission_prompt` Notification Claude sends once
+   * the prompt has waited is the firm signal (handled in `handle`).
+   *
+   * Second layer, for a pane that has never sent that Notification (wmux's
+   * Notification hook is not registered there yet: an install from before
+   * it, a hand-written settings file): after PERMISSION_NOTIFY_GRACE_MS with
+   * no answer, turn end or new prompt, the screen decides (confirmAgainstScreen)
+   * and a dialog still up opens the firm attention window. A pane that has
+   * sent one gets no second layer: no Notification means no prompt waited.
+   *
+   * One timer per pane. A later request while it runs only replaces the
+   * fan-out: a stream of requests (the reported storm, one every 2 s) must
+   * not postpone the check forever behind a dialog that is really up.
+   */
+  private holdTentativeDialog(sessionId: string, slug: string, fanOut: (repeat?: boolean) => unknown): void {
+    this.permissionRequests.set(sessionId, (this.permissionRequests.get(sessionId) ?? 0) + 1);
+    const epoch = this.dialogEpochOf(sessionId);
+    const open = this.tentativeDialogs.get(sessionId);
+    if (open && open.epoch === epoch) {
+      open.fanOut = fanOut;
+      return;
+    }
+    this.clearTentativeDialog(sessionId);
+    const entry: { epoch: number; cancel: () => void; fanOut: (repeat?: boolean) => unknown } = { epoch, cancel: () => undefined, fanOut };
+    // Asked while a dialog this layer raised is still open: this request waits
+    // behind it, and the next epoch move may be that dialog's close, not this
+    // one's. The screen decides then, instead of the epoch.
+    const raised = this.secondLayerRaised.get(sessionId);
+    const behindRaised = raised !== undefined && raised.epoch === epoch;
+    const timer = setTimeout(() => {
+      if (this.tentativeDialogs.get(sessionId) !== entry) return;
+      this.tentativeDialogs.delete(sessionId);
+      // A request that ends without an alert may still hold its phone record
+      // (noteAwaitingInput mints it at once), and nothing else retires it:
+      // with no awaiting broadcast, the awaiting verifier never looks.
+      const lapse = (): void => {
+        try {
+          this.deps.onTentativeDialogLapsed?.(sessionId);
+        } catch (err) {
+          this.deps.log?.('warn', `[hooks] tentative dialog lapse failed for ${sessionId}: ${String(err)}`);
+        }
+      };
+      if (this.permissionNotifyPanes.has(sessionId)) {
+        // The Notification hook is registered here and none came: no prompt
+        // waited (or someone is typing at it, which the lapse's screen read
+        // tells apart).
+        this.deps.log?.('debug', `[hooks] PermissionRequest on ${sessionId} lapsed: no permission_prompt Notification`);
+        lapse();
+        return;
+      }
+      const moved = this.dialogEpoch.get(sessionId) !== epoch;
+      if (moved && !behindRaised) {
+        lapse();
+        return;
+      }
+      const raise = (): void => {
+        // Judged when the dialog would be raised, not when the request came:
+        // a dialog this layer already raised that is still unsettled is most
+        // likely the one on screen (Claude shows one at a time), and another
+        // request (a background agent's) must not toast it again. Its close
+        // usually moves the epoch within seconds (the answer keystroke, or the
+        // awaiting verifier's screen-cleared release, both reach
+        // noteAnswered), but not always (a click answer, a next dialog drawn
+        // at once), so the repeat still goes out, as a `dedup`: the pane's
+        // "needs you" is refreshed, only the second toast is withheld.
+        const raised = this.secondLayerRaised.get(sessionId);
+        const repeat = raised !== undefined && raised.epoch === this.dialogEpoch.get(sessionId);
+        // Recorded as the window opens. Whatever closes a firm window either
+        // moves the epoch (an answer, a turn-ending stop, a prompt, a session
+        // boundary) or replaces it with one that still alerts (the detector's
+        // report, the Notification), so the record never outlives its alert.
+        if (!repeat) this.secondLayerRaised.set(sessionId, { epoch: this.dialogEpochOf(sessionId), at: this.now() });
+        this.alarm.observe(sessionId, slug, { class: 'attention', firm: true }, this.unlessSettled(sessionId, () => entry.fanOut(repeat)));
+      };
+      const verifyOnScreen = this.deps.dialogOnScreen;
+      if (!verifyOnScreen) {
+        raise();
+        return;
+      }
+      // Behind a dialog that has since been settled, only a dialog actually
+      // seen on screen counts: the settle may have been this one's too (a
+      // turn end clears both), so an unreadable grid is not trusted here.
+      this.confirmAgainstScreen(sessionId, verifyOnScreen, raise, moved, lapse);
+    }, PERMISSION_NOTIFY_GRACE_MS);
+    timer.unref?.();
+    entry.cancel = () => clearTimeout(timer);
+    this.tentativeDialogs.set(sessionId, entry);
+  }
+
+  /**
+   * How many Claude PermissionRequests this pane has had. The daemon's lapse
+   * sweep compares it across its reads: a newer request owns whatever record
+   * is pending now (its dialog may not be drawn yet), so the sweep waits for
+   * that request's own lapse instead of expiring under it.
+   */
+  permissionRequestCount(sessionId: string): number {
+    return this.permissionRequests.get(sessionId) ?? 0;
+  }
+
+  /**
+   * `fanOut`, unless the dialog was settled (answered, turn ended, new prompt)
+   * while its firm window ran: working cues cannot rebut a firm window, so a
+   * new prompt would otherwise still be followed by a stale "needs you".
+   */
+  private unlessSettled(sessionId: string, fanOut: () => unknown): () => void {
+    const epoch = this.dialogEpochOf(sessionId);
+    return () => {
+      if (this.dialogEpoch.get(sessionId) !== epoch) {
+        this.deps.log?.('info', `[hooks] awaiting_input for ${sessionId} stood down: settled before it confirmed`);
+        return;
+      }
+      fanOut();
+    };
+  }
+
+  private clearTentativeDialog(sessionId: string): void {
+    this.tentativeDialogs.get(sessionId)?.cancel();
+    this.tentativeDialogs.delete(sessionId);
+  }
+
+  /**
+   * The second layer's screen check: `raise` runs only if the dialog is
+   * really on the screen.
+   *
+   *   - The read is asynchronous, so an answer (a hook or the answer
+   *     keystroke), a turn end, a new prompt or the root Notification that
+   *     lands meanwhile is honoured here: the epoch captured first must still
+   *     be current when the read returns, else nothing is raised.
+   *   - One miss is not proof. Claude draws the dialog only after every
+   *     PermissionRequest hook has returned, so a slow third-party hook can
+   *     leave the grid dialog-free. A miss is re-read once after
+   *     DIALOG_RECHECK_MS; only a second miss drops the alarm.
+   *   - `null` (unreadable or narrow grid, #1901) and a thrown check trust
+   *     the hook, unless `seenOnly` asks for a dialog actually seen.
+   */
+  private confirmAgainstScreen(
+    sessionId: string,
+    verifyOnScreen: NonNullable<HookIngestDeps['dialogOnScreen']>,
+    raise: () => void,
+    seenOnly = false,
+    dropped: () => void = () => undefined,
+  ): void {
+    const epoch = this.dialogEpochOf(sessionId);
+    // A pane dropped meanwhile has no entry: stale, never a broadcast.
+    const stale = (): boolean => this.dialogEpoch.get(sessionId) !== epoch;
+    const send = (seen: boolean): void => {
+      if (seenOnly && !seen) {
+        this.deps.log?.('info', `[hooks] awaiting_input for ${sessionId} dropped: queued behind a settled dialog and none seen on screen`);
+        dropped();
+        return;
+      }
+      if (stale()) {
+        this.deps.log?.('info', `[hooks] awaiting_input for ${sessionId} stood down: answered or superseded during the screen read`);
+        dropped();
+        return;
+      }
+      try {
+        raise();
+      } catch (err) {
+        this.deps.log?.('warn', `[hooks] awaiting_input fan-out for ${sessionId} threw: ${String(err)}`);
+      }
+    };
+    const read = (attempt: 1 | 2): void => {
+      if (stale()) { dropped(); return; }
+      let result: Promise<boolean | null>;
+      try {
+        result = verifyOnScreen(sessionId);
+      } catch (err) {
+        this.deps.log?.('warn', `[hooks] dialog screen check failed for ${sessionId}: ${String(err)}`);
+        send(false);
+        return;
+      }
+      result.then((up) => {
+        if (up !== false) { send(up === true); return; }
+        if (stale()) { dropped(); return; }
+        if (attempt === 1) {
+          const t = setTimeout(() => read(2), DIALOG_RECHECK_MS);
+          t.unref?.();
+          return;
+        }
+        this.deps.log?.('info', `[hooks] awaiting_input for ${sessionId} dropped: no permission_prompt Notification and no dialog on screen`);
+        dropped();
+      }, (err: unknown) => {
+        this.deps.log?.('warn', `[hooks] dialog screen check failed for ${sessionId}: ${String(err)}`);
+        send(false);
+      });
+    };
+    read(1);
   }
 
   /**
@@ -1729,8 +2169,14 @@ export class HookIngest {
    * backstop rather than an inherited hook veto.
    */
   dropPty(sessionId: string): void {
+    this.dialogEpoch.delete(sessionId);
+    this.clearTentativeDialog(sessionId);
+    this.permissionNotifyPanes.delete(sessionId);
+    this.secondLayerRaised.delete(sessionId);
+    this.permissionRequests.delete(sessionId);
     this.router.dropPty(sessionId);
     this.leadTurnEnded.delete(sessionId);
+    this.endedTurn.delete(sessionId);
     this.lastPromptAt.delete(sessionId);
     // Cancel any open provisional window for the disposed pane — a reused id
     // must start from an empty gate, not an inherited pending confirmation.
@@ -1741,8 +2187,22 @@ export class HookIngest {
     this.deps.approvals?.expireForSession(sessionId, 'pane-gone');
   }
 
+  /** A lead turn end while the pane's latest episode already had its end. */
+  private isDuplicateTurnEnd(sessionId: string, signal: AgentSignal): boolean {
+    if (signal.kind !== 'agent.stop' && signal.kind !== 'agent.stop_failure') return false;
+    const cue = normalizeHookCue(signal);
+    if (signal.kind === 'agent.stop' && !(cue.class === 'stop' && !cue.child && cue.leftoverWork === 0)) return false;
+    const ended = this.deps.latestEndedTurn?.(sessionId) ?? null;
+    const last = this.endedTurn.get(sessionId);
+    if (ended === null || last?.turn !== ended || last.signature !== turnEndSignature(signal)) return false;
+    this.deps.log?.('info', `[hooks] ${signal.kind} for ${sessionId} dropped: turn ${ended} already ended`);
+    return true;
+  }
+
   dispose(): void {
     clearInterval(this.floodTimer);
+    for (const entry of this.tentativeDialogs.values()) entry.cancel();
+    this.tentativeDialogs.clear();
     this.alarm.dispose();
   }
 }

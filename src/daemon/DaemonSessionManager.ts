@@ -3,9 +3,9 @@ import { buildWslInjection } from '../shared/wslIntegration';
 import { getWmuxDir } from './config';
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
-import * as pty from 'node-pty';
 import type { IPty } from 'node-pty';
-import { spawnTerminalPty, ptyBackend, type TerminalPty } from '../shared/terminalPty';
+import { ptyBackend, type TerminalPty } from '../shared/terminalPty';
+import { spawnPty, spawnPtySync, type SpawnPtyRequest } from '../shared/spawnPty';
 import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -32,13 +32,12 @@ import {
   type ConptyBackend,
   parseConptyBackendOverride,
   shouldUseBundledConpty,
-  spawnWithConptyPolicy,
 } from '../shared/conptyWindows';
 import { getWindowsDefaultShell, resolveBareShellName, resolveLaunchableWindowsExe } from '../shared/shellResolution';
 import { ENV_KEYS } from '../shared/constants';
 import { containsControlChars } from '../shared/cwdShape';
 import { createDefaultConfig } from './config';
-import { getProcessStartTime, isPhantomExit, isPidAlive } from './phantomExit';
+import { getProcessCreatedAtFt, getProcessStartTime, isPhantomExit, isPidAlive } from './phantomExit';
 
 const DEFAULT_COLS = 80;
 const DEFAULT_ROWS = 24;
@@ -109,6 +108,22 @@ function stripReservedNamespace(env: Record<string, string>): Record<string, str
     out[k] = v;
   }
   return out;
+}
+
+/** What prepareSpawn resolved for one create, carried across the spawn. */
+interface PreparedSpawn {
+  params: Parameters<DaemonSessionManager['prepareSpawn']>[0];
+  cfg: DaemonConfig;
+  /** Final, after an exec session's fallback-shell swap. */
+  cmd: string;
+  spawnArgs: string[];
+  cwd: string;
+  hostCwd: string;
+  env: Record<string, string>;
+  secretEnv: Record<string, string> | null;
+  cols: number;
+  rows: number;
+  wsl: ResolvedWslCwd | undefined;
 }
 
 /**
@@ -222,8 +237,8 @@ const clampRows = (rows: number): number => Math.max(MIN_SAFE_ROWS, rows);
  *      A PTY exit classified as involuntary (OS shutdown killing children —
  *      see shutdownKill.ts). The session is SUSPENDED, not dead: daemon/index
  *      dumps the buffer + persists so post-reboot recovery replays the same id.
- *  - 'session:phantomExit'  → { id, pid, pidStartTime, exitCode, signal, cmd,
- *                               lastActivityMsAgo, raw }
+ *  - 'session:phantomExit'  → { id, pid, pidCreatedAtFt, pidStartTime, exitCode,
+ *                               signal, cmd, lastActivityMsAgo, raw }
  *      A PTY exit that reported no exit code and no signal while the shell pid
  *      is STILL ALIVE (node-pty's ConPTY socket-close path — see
  *      phantomExit.ts / issue #646). Mechanism only: no state is set and no
@@ -273,6 +288,13 @@ export class DaemonSessionManager extends EventEmitter {
 
   private pendingRecovery = new Map<string, DaemonSession>();
   private pendingCreates = new Map<string, symbol>();
+  /**
+   * Creates whose PTY is spawned but whose pid is still pending (#2398), by
+   * their pendingCreates token: a cancelled attempt and its replacement under
+   * the same id hold separate reservations. They count against maxSessions,
+   * so overlapping creates cannot all pass the cap before any registers.
+   */
+  private spawningCreates = new Set<symbol>();
 
   cancelPendingCreates(): void { this.pendingCreates.clear(); }
 
@@ -331,31 +353,70 @@ export class DaemonSessionManager extends EventEmitter {
     return true;
   }
 
-  /** Synchronous native-shell API. Production callers use createSessionAsync. */
-  createSession(params: Parameters<DaemonSessionManager['spawnSession']>[0]): DaemonSession {
+  /**
+   * Synchronous native-shell API, for test doubles whose PTY has a pid on
+   * return. A real Windows ConPTY does not (#2398), so this refuses it;
+   * production callers use createSessionAsync.
+   */
+  createSession(params: Parameters<DaemonSessionManager['prepareSpawn']>[0]): DaemonSession {
     const cmd = this.resolveShellPath(params.cmd) || this.getDefaultShell();
     if (isWslShell(cmd)) throw new Error('WSL creation requires createSessionAsync');
-    return this.spawnSession({ ...params, cmd });
+    if (this.pendingCreates.has(params.id)) throw new Error(`Session '${params.id}' creation is already pending`);
+    const prepared = this.prepareSpawn({ ...params, cmd });
+    let conptyBackend: ConptyBackend = 'inbox';
+    let ptyProcess: IPty;
+    try {
+      ptyProcess = spawnPtySync(this.spawnRequest(prepared, (backend) => { conptyBackend = backend; }));
+    } catch (err) {
+      throw this.spawnFailure(prepared, err);
+    }
+    return this.registerSession(prepared, ptyProcess, conptyBackend);
   }
 
-  async createSessionAsync(params: Parameters<DaemonSessionManager['spawnSession']>[0]): Promise<DaemonSession> {
+  async createSessionAsync(params: Parameters<DaemonSessionManager['prepareSpawn']>[0]): Promise<DaemonSession> {
     const cmd = this.resolveShellPath(params.cmd) || this.getDefaultShell();
-    if (!isWslShell(cmd)) return this.createSession({ ...params, cmd });
     if (this.pendingCreates.has(params.id)) throw new Error(`Session '${params.id}' creation is already pending`);
+    // Every create now has an await (a WSL cwd probe, and on Windows the
+    // ConPTY pid), so every create can be cancelled by destroySession while
+    // it is pending.
     const token = Symbol(params.id);
     this.pendingCreates.set(params.id, token);
     try {
-      const wsl = await resolveWslCwd(cmd, params.cwd, params.wslTarget, undefined, params.args);
+      const wsl = isWslShell(cmd)
+        ? await resolveWslCwd(cmd, params.cwd, params.wslTarget, undefined, params.args)
+        : undefined;
       if (this.pendingCreates.get(params.id) !== token) throw new Error('Session creation cancelled');
-      const created = this.spawnSession({ ...params, cmd }, wsl);
-      this.pendingRecovery.delete(params.id);
+      const prepared = this.prepareSpawn({ ...params, cmd }, wsl);
+      const cancelled = (): boolean => this.pendingCreates.get(params.id) !== token || this.sessions.has(params.id);
+      let conptyBackend: ConptyBackend = 'inbox';
+      let ptyProcess: IPty;
+      this.spawningCreates.add(token);
+      try {
+        ptyProcess = await spawnPty(this.spawnRequest(prepared, (backend) => { conptyBackend = backend; }));
+      } catch (err) {
+        // A create cancelled while its pid was pending reports the cancel, not
+        // the spawn error: a supervised restart restores the old tombstone on
+        // any other error, which would bring a closed pane back.
+        if (cancelled()) throw new Error('Session creation cancelled');
+        throw this.spawnFailure(prepared, err);
+      } finally {
+        this.spawningCreates.delete(token);
+      }
+      // Re-checked after the await: the create may have been cancelled, or the
+      // id taken, while the pid was pending. Never keep a half-made session.
+      if (cancelled()) {
+        try { ptyProcess.kill(); } catch { /* already gone */ }
+        throw new Error('Session creation cancelled');
+      }
+      const created = this.registerSession(prepared, ptyProcess, conptyBackend);
+      if (wsl) this.pendingRecovery.delete(params.id);
       return created;
     } finally {
       if (this.pendingCreates.get(params.id) === token) this.pendingCreates.delete(params.id);
     }
   }
 
-  private spawnSession(params: {
+  private prepareSpawn(params: {
     wslAccountLoginEnvKey?: 'CLAUDE_CONFIG_DIR' | 'CODEX_HOME';
     id: string;
     /**
@@ -471,7 +532,7 @@ export class DaemonSessionManager extends EventEmitter {
      * runaway-guard 'stopped' survives reboots.
      */
     supervision?: DaemonSessionSupervision;
-  }, wsl?: ResolvedWslCwd): DaemonSession {
+  }, wsl?: ResolvedWslCwd): PreparedSpawn {
     // Validate session ID to prevent path traversal, injection, or oversized keys
     if (!/^[a-zA-Z0-9_-]{1,64}$/.test(params.id)) {
       throw new Error(`Invalid session ID: must be 1-64 chars of [a-zA-Z0-9_-]`);
@@ -497,7 +558,7 @@ export class DaemonSessionManager extends EventEmitter {
     // map (it is a disk-only state the shutdown path demotes live sessions to
     // before persisting, and recovery re-creates them as `detached`).
     const maxSessions = cfg.session.maxSessions;
-    let liveCount = 0;
+    let liveCount = this.spawningCreates.size;
     for (const m of this.sessions.values()) {
       if (m.meta.state === 'attached' || m.meta.state === 'detached') liveCount++;
     }
@@ -668,55 +729,65 @@ export class DaemonSessionManager extends EventEmitter {
       }
     }
 
-    // Spawn the PTY. node-pty throws synchronously on a missing/invalid shell
-    // binary or an unreadable cwd — common on macOS/Linux where the resolved
-    // shell path differs from Windows. Surface an actionable message instead of
-    // letting the raw node-pty error propagate as an opaque session-create
-    // failure. (useConpty is a Windows-only hint; node-pty ignores it elsewhere.)
-    //
-    // #910/#1932: Windows spawns against node-pty's bundled conpty.dll (the
-    // in-box ConPTY drops mouse DECSETs on Windows 10 and swallows sixel on
-    // Windows 11; see shouldUseBundledConpty). If the bundled DLL itself is
-    // missing/corrupt (a packaging failure), fall back to in-box exactly once —
-    // any other failure keeps failing, because PaneSupervisor's restart backoff
-    // exists to absorb transient ConPTY errors (87) and a broad fallback would
-    // silently demote the pane to mouse-less forever.
-    let ptyProcess: IPty;
-    let conptyBackend: ConptyBackend = 'inbox';
-    const useConptyDll = shouldUseBundledConpty(
-      process.platform,
-      parseWindowsBuildNumber(os.release()),
-      parseConptyBackendOverride(process.env[CONPTY_BACKEND_ENV]),
-    );
-    try {
+    return { params, cfg, cmd, spawnArgs, cwd, hostCwd, env, secretEnv, cols, rows, wsl };
+  }
+
+  /**
+   * The spawn request for a prepared session.
+   *
+   * node-pty throws on a missing/invalid shell binary or an unreadable cwd,
+   * and since 1.2.0-beta reports a Windows CreateProcess failure as an exit
+   * before the pid is known, which spawnPty turns back into the same throw
+   * (#2398). spawnFailure gives either an actionable message. (useConpty is a
+   * Windows-only hint; node-pty ignores it elsewhere.)
+   *
+   * #910/#1932: Windows spawns against node-pty's bundled conpty.dll (the
+   * in-box ConPTY drops mouse DECSETs on Windows 10 and swallows sixel on
+   * Windows 11; see shouldUseBundledConpty). If the bundled DLL itself is
+   * missing/corrupt (a packaging failure), fall back to in-box exactly once —
+   * any other failure keeps failing, because PaneSupervisor's restart backoff
+   * exists to absorb transient ConPTY errors (87) and a broad fallback would
+   * silently demote the pane to mouse-less forever.
+   */
+  private spawnRequest(prepared: PreparedSpawn, onBackend: (backend: ConptyBackend) => void): SpawnPtyRequest {
+    const { params, cmd, spawnArgs, hostCwd, env, secretEnv, cols, rows, wsl } = prepared;
+    return {
+      command: cmd,
+      args: spawnArgs,
+      options: {
+        name: 'xterm-256color',
+        cols,
+        rows,
+        cwd: hostCwd,
+        // A worker's secrets reach the process only; meta.env below is
+        // `env` itself, without them (and without their WSLENV names).
+        env: secretEnv ? withSecretEnv(env, secretEnv, !!wsl || isWslShell(cmd)) : env,
+      },
+      useBundledConpty: shouldUseBundledConpty(
+        process.platform,
+        parseWindowsBuildNumber(os.release()),
+        parseConptyBackendOverride(process.env[CONPTY_BACKEND_ENV]),
+      ),
       // #910 dogfood: the notices below are what makes a "shipped, still
       // broken" report diagnosable — they say which backend actually started,
       // on every spawn, and name any demotion.
-      ptyProcess = spawnWithConptyPolicy(
-        (useBundled) => spawnTerminalPty(cmd, spawnArgs, {
-          name: 'xterm-256color',
-          cols,
-          rows,
-          cwd: hostCwd,
-          // A worker's secrets reach the process only; meta.env below is
-          // `env` itself, without them (and without their WSLENV names).
-          env: secretEnv ? withSecretEnv(env, secretEnv, !!wsl || isWslShell(cmd)) : env,
-          useConpty: true,
-          ...(useBundled ? { useConptyDll: true } : {}),
-        }, pty.spawn),
-        useConptyDll,
-        (level, message) => {
-          const line = `[DaemonSessionManager] session ${params.id}: ${message}`;
-          if (level === 'warn') console.error(line);
-          else console.log(line);
-        },
-        (backend) => { conptyBackend = backend; },
-      );
-    } catch (err) {
-      const detail = err instanceof Error ? err.message : String(err);
-      throw new Error(`Failed to start shell "${cmd}" in "${cwd}": ${detail}`);
-    }
+      onNotice: (level, message) => {
+        const line = `[DaemonSessionManager] session ${params.id}: ${message}`;
+        if (level === 'warn') console.error(line);
+        else console.log(line);
+      },
+      onBackend,
+    };
+  }
 
+  private spawnFailure(prepared: PreparedSpawn, err: unknown): Error {
+    const detail = err instanceof Error ? err.message : String(err);
+    return new Error(`Failed to start shell "${prepared.cmd}" in "${prepared.cwd}": ${detail}`);
+  }
+
+  /** Builds and registers the session around a PTY whose pid is known. */
+  private registerSession(prepared: PreparedSpawn, ptyProcess: IPty, conptyBackend: ConptyBackend): DaemonSession {
+    const { params, cfg, cmd, cwd, env, cols, rows, wsl } = prepared;
     const now = new Date().toISOString();
     const meta: DaemonSession = {
       id: params.id,
@@ -860,6 +931,10 @@ export class DaemonSessionManager extends EventEmitter {
       this.emit('session:usageLimit', payload);
     });
 
+    bridge.on('turnInterrupted', (payload) => {
+      this.emit('session:turnInterrupted', payload);
+    });
+
     bridge.on('inputSubmitted', (payload) => {
       this.emit('session:inputSubmitted', payload);
     });
@@ -960,6 +1035,7 @@ export class DaemonSessionManager extends EventEmitter {
           cmd: meta.cmd,
           lastActivityMsAgo,
           // Identity of the pid we are about to ask the policy layer to kill.
+          pidCreatedAtFt: meta.pidCreatedAtFt,
           pidStartTime: meta.pidStartTime,
           // Carried, not logged here: this class has no access to the daemon's
           // file logger, and a console.log would never reach the daemon log
@@ -1014,15 +1090,24 @@ export class DaemonSessionManager extends EventEmitter {
     bridge.setupDataForwarding(ptyProcess, ringBuffer, params.id, promptLog);
 
     // #646: stamp the pid's OS creation time so later reaping paths can tell
-    // OUR shell from whatever process inherits the pid after recycling.
-    // Deliberately not awaited — createSession is synchronous and the probe
-    // shells out. The value lands on the live meta well before any tombstone
-    // could be written, and every sessions.json write reads meta at write
-    // time, so persistence picks it up. If the probe fails the field stays
-    // absent and the reaping paths fall back to their weaker check.
-    void getProcessStartTime(meta.pid).then((startTime) => {
-      if (startTime) meta.pidStartTime = startTime;
-    });
+    // OUR shell from whatever process inherits the pid after recycling. If the
+    // read fails the field stays absent and the reaping paths fall back to
+    // their weaker check.
+    // #2398: on Windows a native read (null elsewhere), so it is taken here,
+    // before the session is announced or persisted. It used to be a
+    // PowerShell probe per create, and in a recovery burst those timed out
+    // and left the field empty.
+    const createdAtFt = getProcessCreatedAtFt(meta.pid);
+    if (createdAtFt !== null) meta.pidCreatedAtFt = createdAtFt.toString();
+    if (process.platform !== 'win32') {
+      // Not awaited — createSession is synchronous and `ps` is a subprocess.
+      // The value lands on the live meta well before any tombstone could be
+      // written, and every sessions.json write reads meta at write time, so
+      // persistence picks it up.
+      void getProcessStartTime(meta.pid).then((startTime) => {
+        if (startTime) meta.pidStartTime = startTime;
+      });
+    }
 
     this.emit('session:created', { session: { ...meta } });
     return { ...meta };
@@ -1191,6 +1276,26 @@ export class DaemonSessionManager extends EventEmitter {
   confirmAgent(id: string): void {
     const managed = this.sessions.get(id);
     if (managed) managed.recoveredAgentUnconfirmed = false;
+  }
+
+  /**
+   * Move a pane's live cwd to the directory its agent reported in a hook.
+   * The shell only reports a `cd` it runs itself, so an agent that changes
+   * directory on its own (Claude's EnterWorktree, for one) left `meta.cwd` at
+   * the launch folder and recovery restarted the pane there, where the agent's
+   * session cannot be resumed. Only `cwd`, never `spawnCwd`, as on the shell
+   * path. Returns true when the cwd changed.
+   */
+  adoptAgentCwd(id: string, cwd: string): boolean {
+    const managed = this.sessions.get(id);
+    if (!managed || !cwd || managed.meta.cwd === cwd) return false;
+    if (containsControlChars(cwd)) return false;
+    managed.meta.cwd = cwd;
+    // The shell reports its own directory again once the agent exits; that
+    // report must not be swallowed as a repeat.
+    managed.bridge.forgetEmittedCwd();
+    this.emit('session:cwd', { sessionId: id, cwd });
+    return true;
   }
 
   /** Ask ConPTY for a full repaint by resizing to the size it already has. */

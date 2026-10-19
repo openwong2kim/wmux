@@ -54,7 +54,7 @@ import { registerExtractionTools } from './playwright/tools/extraction';
 import { registerChannelTools } from './channels';
 import { registerFanOutTools } from './fanout';
 import { registerLedgerUpdateTool, registerLedgerListTool, registerLedgerBrainUpdateTool } from './ledger';
-import { registerTaskPushTool } from './taskPush';
+import { registerTaskFetchTool, registerTaskPushTool } from './taskPush';
 import { registerWorktaskTools } from './worktask';
 import { registerGitTools } from './git';
 import { registerPaneLifecycleTools } from './paneLifecycle';
@@ -2398,6 +2398,11 @@ registerLedgerUpdateTool(server, {
 });
 // task_push: the worker's own branch, pushed by main (bot workers cannot push).
 registerTaskPushTool(server, {
+  getSenderPtyId: () => verifiedPtyId(),
+  resolveWorkspaceId: requireWorkspaceId,
+});
+// task_fetch: origin fetched by main into the worker's task repository.
+registerTaskFetchTool(server, {
   getSenderPtyId: () => verifiedPtyId(),
   resolveWorkspaceId: requireWorkspaceId,
 });

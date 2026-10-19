@@ -18,6 +18,7 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
 import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
+import { deliberateSleep } from '../../../../test-utils/waitFor';
 
 vi.mock('../Pane', () => ({
   default: ({ pane }: { pane: { id: string } }) =>
@@ -162,7 +163,7 @@ describe('PaneContainer — layout sync across child-set changes', () => {
     expect(rendered([a.id, b.id])).toEqual([50, 50]);
 
     // And the cached 17/83 is not written back into the store afterwards.
-    await act(async () => { await new Promise((r) => setTimeout(r, 250)); });
+    await act(async () => { await deliberateSleep(250, 'negative: the cached sizes are not written back'); });
     expect(rootSizes()).toEqual([50, 50]);
     expect(rendered([a.id, b.id])).toEqual([50, 50]);
   });

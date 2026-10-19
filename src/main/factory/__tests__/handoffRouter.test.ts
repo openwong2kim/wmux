@@ -841,6 +841,46 @@ describe('messages and room mentions (group rooms)', () => {
     expect(later.wakes).toEqual([]);
   });
 
+  it('a broadcast in General from a wake the owner started in the poster\'s 1:1 wakes its room\'s bots in that 1:1', async () => {
+    const coord = bot('ws1', 'lead');
+    const b = bot('ws1', 'triage');
+    const far = bot('ws2', 'verifier');
+    const h = await harness([coord, b, far]);
+    const dm = `dm:${coord.id}` as ThreadId;
+    h.wake.thread = dm;
+    h.wake.id = { wakeId: 'w-own', attempt: 1, reasonKind: 'human', ownerCardId: 'c-owner' } as Harness['wake']['id'];
+    const out = h.router.mention(binding(coord), card('c-ask'), [b.id, far.id]);
+    const [mine, theirs] = out.map((o) => (o.result.ok ? h.router.get(o.result.handoffId)! : null));
+    expect(mine).toMatchObject({ kind: 'message', threadId: dm });
+    expect(h.wakes.find((w) => w.botId === b.id)).toMatchObject({ threadId: dm, reason: { kind: 'mention' } });
+    // A bot of another room answers in its own room, as before.
+    expect(theirs).toMatchObject({ threadId: 'general' });
+    // Woken there, the bot's answer lands in the 1:1 (its wake's thread).
+    const posted = await handleRoomPost({ kind: 'status', title: 'Checked' }, { bot: binding(b) } as RpcContext, { writer: () => h.rooms, ports: () => h.ports, wmuxDir: () => dir }) as { ok: boolean; card?: { threadId: string } };
+    expect(posted).toMatchObject({ ok: true, card: { threadId: dm } });
+  });
+
+  it('any other mention keeps the card\'s thread', async () => {
+    const coord = bot('ws1', 'lead');
+    const b = bot('ws1', 'triage');
+    const h = await harness([coord, b]);
+    const dm = `dm:${coord.id}` as ThreadId;
+    const cases: Array<{ thread: ThreadId; reasonKind: string; cardThread: ThreadId }> = [
+      // Not an owner message: a handoff the coordinator runs in its 1:1.
+      { thread: dm, reasonKind: 'handoff', cardThread: 'general' },
+      // The owner's message in General.
+      { thread: 'general', reasonKind: 'human', cardThread: 'general' },
+      // A card the poster put in another subject's thread on purpose.
+      { thread: dm, reasonKind: 'human', cardThread: 'pr:github.com/acme/app#5' },
+    ];
+    for (const [i, c] of cases.entries()) {
+      h.wake.thread = c.thread;
+      h.wake.id = { wakeId: `w-${i}`, attempt: 1, reasonKind: c.reasonKind } as Harness['wake']['id'];
+      const [o] = h.router.mention(binding(coord), card(`c-other${i}`, { threadId: c.cardThread }), [b.id]);
+      expect(o.result.ok && h.router.get(o.result.handoffId)).toMatchObject({ threadId: c.cardThread });
+    }
+  });
+
   it('a queued mention redelivered on start wakes as the same mention', async () => {
     const a = bot('ws1', 'lead');
     const b = bot('ws1', 'triage');
@@ -1178,6 +1218,105 @@ describe('the team lead and a chain that outlives a worker', () => {
     const late = await h.router.askPerson(binding(dev), { title: 'Anything else?', body: '', threadId: 'general' });
     if (!late.ok) throw new Error('not asked');
     expect(h.router.get(late.handoffId)?.forHop).toBeUndefined();
+  });
+});
+
+describe('the handoff a bot\'s worker belongs to (taskHandoff)', () => {
+  const PR = (n: number) => `pr:github.com/acme/app#${n}` as ThreadId;
+  const subject = (n: number, thread = true) => ({ ...(thread ? { threadId: PR(n) } : {}), pr: { number: n, threadId: PR(n) } });
+  async function reviewerRig() {
+    const lead = bot('ws1', 'moa');
+    const reviewer = bot('ws1', 'verifier');
+    const other = bot('ws1', 'verifier');
+    const h = await harness([lead, reviewer, other]);
+    const send = (to: BotProfile, n: number, extra: { threadId?: ThreadId; refs?: { pr: number } } = { threadId: PR(n) }) => {
+      const d = h.router.send(binding(lead), { kind: 'dispatch', toBotId: to.id, title: `verify PR #${n}`, body: '', ...extra });
+      if (!d.ok) throw new Error('dispatch failed');
+      return d.handoffId;
+    };
+    return { h, lead, reviewer, other, send, me: { workspaceId: reviewer.workspaceId, botId: reviewer.id } };
+  }
+
+  it('a worker for PR #X started from the wake about #Y answers #X\'s dispatch, and #Y\'s stays open', async () => {
+    const { h, lead, reviewer, send, me } = await reviewerRig();
+    const y = send(reviewer, 2);
+    const x = send(reviewer, 1);
+    const bound = h.router.taskHandoff(me, subject(1), y);
+    expect(bound).toBe(x);
+    // The task's wake carries what its row recorded (runningWakeOf).
+    h.wake.id = { wakeId: 'w-task', attempt: 1, handoffId: String(bound), reasonKind: 'facts' } as Harness['wake']['id'];
+    const r = h.router.send(binding(reviewer), { kind: 'result', title: 'PR #1 passes', body: '' });
+    expect(r).toMatchObject({ ok: true, to: { botId: lead.id } });
+    if (r.ok) expect(h.router.get(r.handoffId)?.replyTo).toBe(x);
+    expect(h.router.summarize(x)).toMatchObject({ answered: true });
+    expect(h.router.summarize(y)?.answered).toBeUndefined();
+  });
+
+  it('a coordinator\'s dispatches in their own threads: the PR is told by refs.pr, or by the thread the bot names', async () => {
+    const { h, reviewer, send, me } = await reviewerRig();
+    const y = send(reviewer, 2, { refs: { pr: 2 } });
+    const x = send(reviewer, 1, { refs: { pr: 1 } });
+    expect(h.router.get(x)?.threadId).toBe(`handoff:${x}`);
+    expect(h.router.taskHandoff(me, subject(1, false), y)).toBe(x);
+    const plainY = send(reviewer, 4, {});
+    const plainX = send(reviewer, 3, {});
+    expect(h.router.taskHandoff(me, { threadId: `handoff:${plainX}` as ThreadId }, plainY)).toBe(plainX);
+  });
+
+  it('a worker for the wake\'s own subject keeps the wake\'s handoff', async () => {
+    const { h, reviewer, send, me } = await reviewerRig();
+    const y = send(reviewer, 2);
+    send(reviewer, 1);
+    expect(h.router.taskHandoff(me, subject(2), y)).toBe(y);
+    expect(h.router.taskHandoff(me, {}, y)).toBe(y);
+    // A dispatch in its own thread with no PR named: nothing says it is about another PR.
+    const plain = send(reviewer, 5, {});
+    expect(h.router.taskHandoff(me, subject(5, false), plain)).toBe(plain);
+  });
+
+  it('no open dispatch, or several, for the task\'s subject: bound to none, never to the wake\'s', async () => {
+    const { h, reviewer, send, me } = await reviewerRig();
+    const y = send(reviewer, 2);
+    expect(h.router.taskHandoff(me, subject(1), y)).toBeNull();
+    send(reviewer, 1);
+    send(reviewer, 1, { refs: { pr: 1 } });
+    expect(h.router.taskHandoff(me, subject(1), y)).toBeNull();
+  });
+
+  it('a dispatch addressed to another bot, or one already answered, is never the task\'s', async () => {
+    const { h, reviewer, other, send, me } = await reviewerRig();
+    const y = send(reviewer, 2);
+    send(other, 1);
+    expect(h.router.taskHandoff(me, subject(1), y)).toBeNull();
+    const x = send(reviewer, 1);
+    h.wake.id = { wakeId: 'w-x', attempt: 1, handoffId: x, reasonKind: 'handoff' } as Harness['wake']['id'];
+    expect(h.router.send(binding(reviewer), { kind: 'refusal', title: 'busy', body: '' })).toMatchObject({ ok: true });
+    expect(h.router.taskHandoff(me, subject(1), y)).toBeNull();
+  });
+
+  it('another bot\'s wake handoff is never kept; PR #n of another repository is not this one\'s', async () => {
+    const { h, reviewer, other, send, me } = await reviewerRig();
+    const foreign = send(other, 2);
+    expect(h.router.taskHandoff(me, {}, foreign)).toBeNull();
+    expect(h.router.taskHandoff(me, subject(2), foreign)).toBeNull();
+    const y = send(reviewer, 2);
+    send(reviewer, 1, { threadId: 'pr:github.com/acme/other#1' as ThreadId, refs: { pr: 1 } });
+    expect(h.router.taskHandoff(me, subject(1), y)).toBeNull();
+  });
+
+  it('an answer\'s wake is judged by the dispatch its question was asked on', async () => {
+    const { h, reviewer, send, me } = await reviewerRig();
+    const y = send(reviewer, 2, { refs: { pr: 2 } });
+    h.wake.id = { wakeId: 'w-y', attempt: 1, handoffId: y };
+    const ask = await h.router.askPerson(binding(reviewer), { title: 'Which base?', body: '' });
+    if (!ask.ok) throw new Error('not asked');
+    const answered = await h.router.answer(ask.handoffId, 'main');
+    if (!answered.ok || !answered.answerHandoffId) throw new Error('not answered');
+    const a = answered.answerHandoffId;
+    expect(h.router.taskHandoff(me, subject(2, false), a)).toBe(a);
+    expect(h.router.taskHandoff(me, subject(1, false), a)).toBeNull();
+    const x = send(reviewer, 1, { refs: { pr: 1 } });
+    expect(h.router.taskHandoff(me, subject(1, false), a)).toBe(x);
   });
 });
 

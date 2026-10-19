@@ -8,6 +8,7 @@ import {
   PLUGIN_TRUST_SCHEMA_VERSION,
   PluginTrustStore,
 } from '../PluginTrustStore';
+import { deliberateSleep } from '../../../test-utils/waitFor';
 
 let tmpDir = '';
 let dbPath = '';
@@ -53,7 +54,7 @@ describe('PluginTrustStore.upsertContact', () => {
     const store = new PluginTrustStore(dbPath);
     const first = await store.upsertContact('claude-ai', '1.0.0');
     // Bump the clock perceptibly so lastSeen advances
-    await new Promise((r) => setTimeout(r, 5));
+    await deliberateSleep(5, 'clock: lastSeen must advance');
     const second = await store.upsertContact('claude-ai', '1.0.1');
     expect(second.firstSeen).toBe(first.firstSeen);
     expect(second.lastSeen).toBeGreaterThanOrEqual(first.lastSeen);

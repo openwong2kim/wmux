@@ -11,10 +11,30 @@
 // integration, accounts, quick commands), which is why it is its own module:
 // those files are imported BY SettingsPanel and cannot import from it.
 
-import { useLayoutEffect, useRef, useState, type HTMLAttributes, type ReactNode } from 'react';
+import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState, type HTMLAttributes, type ReactNode } from 'react';
 import { useT } from '../../hooks/useT';
 import { FOCUS_RING } from '../focusRing';
 import Field from '../ui/Field';
+
+// ─── Dialogs Settings owns ───────────────────────────────────────────────────
+//
+// A modal opened FROM Settings (key capture, paired devices) is the top-most
+// layer: Escape closes only it and Ctrl/Cmd+F must not pull focus to the
+// search box behind it. Settings' own key handler runs first (window,
+// capture), so it has to know when one is open. Each owner registers while it
+// is open; a DOM query for any aria-modal dialog would also match dialogs
+// Settings does not own (the floating terminal stays mounted, hidden).
+// Lives here so section files (which SettingsPanel imports) can use it too.
+export const OwnedDialogContext = createContext<(delta: number) => void>(() => undefined);
+
+export function useOwnedDialog(open: boolean): void {
+  const register = useContext(OwnedDialogContext);
+  useEffect(() => {
+    if (!open) return;
+    register(1);
+    return () => register(-1);
+  }, [open, register]);
+}
 
 /**
  * One-line clamp with a disclosure that appears only when the line actually

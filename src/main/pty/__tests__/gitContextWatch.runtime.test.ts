@@ -10,7 +10,7 @@ import { shortPathOf } from '../../../test-utils/shortPath';
  * Real-filesystem end-to-end proof that the production default actually wires
  * `fs.watch` and re-emits on a real HEAD rewrite. The deterministic logic
  * (filename filtering, debounce coalescing, re-resolve, teardown) is covered by
- * the fake-watcher unit tests in gitContextWatch.test.ts; this one exists only
+ * the fake-watcher unit tests in gitContextWatch.os.test.ts; this one exists only
  * so a regression in the default wiring cannot hide behind the test seam.
  *
  * Lives under vitest.runtime.config.ts (serial, no file parallelism) because it
@@ -119,7 +119,7 @@ describe('GitContextWatcher (real fs.watch)', () => {
     });
 
     watcher.update('s1', short);
-    expect(events).toEqual([{ sessionId: 's1', branch: null, isWorktree: false }]);
+    expect(events).toEqual([{ sessionId: 's1', branch: null, isWorktree: false, absent: true }]);
 
     execFileSync('git', ['-c', 'init.defaultBranch=main', 'init', '-q'], { cwd: root, stdio: 'ignore' });
     await sawMain;

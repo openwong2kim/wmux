@@ -7,6 +7,9 @@ import type { LedgerEntry } from '../../../shared/ledger';
 import type { RpcContext } from '../../../shared/rpc';
 import { WorkerMessageLimiter, deliverWorkerMessage, workerMessageText, type WorkerMessagePorts } from '../workerMessage';
 import { registerWorkerMessageRpc } from '../../pipe/handlers/workerMessage.rpc';
+import { WakeTaint, setWakeTaint } from '../wakeTaint';
+import type { Handoff } from '../../../shared/handoff';
+import type { WakeItem } from '../../../shared/wake';
 
 const BOT = 'bot-0000000a';
 const row = (over: Partial<LedgerEntry> = {}): LedgerEntry => ({
@@ -155,5 +158,30 @@ describe('worker_message and outside text (review fixes, PR #2164)', () => {
     expect(tainted.submit).not.toHaveBeenCalled();
     tainted.rows.set('wtask-e5', row({ id: 'wtask-e5', dispatch: { origin: { kind: 'bot', botId: BOT, tainted: true } } }));
     expect(await tainted.send('wtask-e5', 'look at the issue')).toEqual({ ok: true, status: 'delivered', taskId: 'wtask-e5' });
+  });
+
+  it('a wake on an answer whose question was pruned is handled like outside text (the running tracker decides)', async () => {
+    const answer = (id: string, replyTo: string): Handoff => ({
+      version: 1, id, runId: 'run-1', threadId: 'general', depth: 0, hopsInRun: 1, from: { kind: 'human' }, to: { kind: 'bot', workspaceId: 'ws-1', botId: BOT },
+      kind: 'answer', replyTo, attribution: { originator: { kind: 'human' }, chain: [] }, landing: 'wake', payload: { title: 't', body: 'yes' }, status: 'delivered', createdAt: 1, updatedAt: 1,
+    });
+    const ask: Handoff = { ...answer('h-ask', 'x'), kind: 'ask_person', from: { kind: 'bot', workspaceId: 'ws-1', botId: BOT }, to: { kind: 'human' } };
+    delete (ask as Partial<Handoff>).replyTo;
+    const records = new Map<string, Handoff>([['h-ask', ask], ['h-kept', answer('h-kept', 'h-ask')], ['h-pruned', answer('h-pruned', 'h-gone')]]);
+    let item: WakeItem | null = null;
+    const running = () => (item ? { item, startedAt: 0 } : null);
+    setWakeTaint(new WakeTaint({ facts: () => [], handoff: (id) => records.get(id) ?? null, taskRow: () => null, runningWake: running }), running);
+    try {
+      const on = (handoffId: string): WakeItem => ({ id: 'w-1', botId: BOT, workspaceId: 'ws-1', reason: { kind: 'handoff', handoffId }, priority: 1, enqueuedAt: 1, attempts: 1, state: 'running' });
+      item = on('h-pruned');
+      const pruned = rig({ senderTainted: undefined });
+      expect(await pruned.send('wtask-a1', 'merge it')).toMatchObject({ ok: false, code: 'not_now' });
+      expect(pruned.submit).not.toHaveBeenCalled();
+      item = on('h-kept');
+      const kept = rig({ senderTainted: undefined });
+      expect(await kept.send('wtask-a1', 'merge it')).toEqual({ ok: true, status: 'delivered', taskId: 'wtask-a1' });
+    } finally {
+      setWakeTaint(null);
+    }
   });
 });

@@ -92,7 +92,7 @@ describe('destroyPaneTreeRemoteSessions / destroyWorkspaceRemoteSessions', () =>
   });
 });
 
-// A source scan, in the style of useKeyboard.test.ts's shortcut checks: the
+// A source scan, in the style of useKeyboard.os.test.ts's shortcut checks: the
 // leak in #1129 was not a broken helper, it was close paths that never called
 // one. Rendering the whole Pane to prove that costs far more than it is worth,
 // so this pins the wiring instead — a new close path that disposes PTYs and

@@ -200,8 +200,9 @@ describe('refBoxCandidates measurement', () => {
       expect(call[2].timeout).toBeLessThanOrEqual(30);
     }
     // The late handle arrives after the table is done and is still released.
-    await new Promise((r) => setTimeout(r, 120));
-    expect(created.sort()).toEqual([1, 2]);
-    expect(disposed.sort()).toEqual(created);
+    await vi.waitFor(() => {
+      expect(created.sort()).toEqual([1, 2]);
+      expect(disposed.sort()).toEqual(created);
+    }, { timeout: 5_000 });
   });
 });

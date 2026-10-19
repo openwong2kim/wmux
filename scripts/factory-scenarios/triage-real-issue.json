@@ -3,7 +3,7 @@
   "layer": "workflow",
   "runs": 3,
   "model": "real",
-  "description": "A real triage bot on a scratch repo with a seeded bug: issue.opened wakes it, it posts a triage card in the issue thread and starts one repro worker (a real agent) that opens a draft PR or reports no-repro.",
+  "description": "A real triage bot on a scratch repo with a seeded bug: issue.opened wakes it, it posts a triage card in the issue thread and starts one repro worker (a real agent) that opens a PR (a draft, marked ready once its test is pushed) or reports no-repro.",
   "setup": {
     "repo": true,
     "gh": {

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import fs from 'node:fs';
 import path from 'node:path';
+import { blockAt, readSourceText } from '../../../test-utils/sourceText';
 
 // Phase 3 PR-A — hidden-pane retention wiring in useTerminal. Like the other
 // useTerminal suites, this verifies the load-bearing wiring at the source
@@ -10,7 +10,7 @@ import path from 'node:path';
 // packaged-app dogfood + perf-bench (hiddenFlood) gate.
 describe('Phase 3 PR-A — useTerminal hidden-pane retention wiring (source-level)', () => {
   const hookPath = path.join(__dirname, '..', 'useTerminal.ts');
-  const src = fs.readFileSync(hookPath, 'utf-8');
+  const src = readSourceText(hookPath);
 
   it('gates retention on daemon mode AND the settings flag', () => {
     // Retention without a daemon RingBuffer would make dirtiness unrecoverable.
@@ -20,9 +20,12 @@ describe('Phase 3 PR-A — useTerminal hidden-pane retention wiring (source-leve
   });
 
   it('routes pty:data through the resync hold-out before the scheduler', () => {
-    const idx = src.indexOf('const routePtyData');
-    expect(idx).toBeGreaterThan(0);
-    const body = src.slice(idx, idx + 2000);
+    // routePtyData hands every payload to deliverPtyData, which holds the
+    // hold-out and the scheduler write. Pinned by function body, not by a
+    // character count: a 2,000-character window from routePtyData kept
+    // passing only because it spilled into deliverPtyData after the split.
+    expect(blockAt(src, src.indexOf('const routePtyData'))).toMatch(/deliverPtyData\(/);
+    const body = blockAt(src, src.indexOf('const deliverPtyData'));
     // In-flight resync buffers bytes out of xterm entirely…
     expect(body).toMatch(/st\.buffer\.push\(payload\)/);
     expect(body).toMatch(/RESYNC_BUFFER_MAX_CHARS/);
@@ -107,8 +110,7 @@ describe('Phase 3 PR-A — useTerminal hidden-pane retention wiring (source-leve
     // Hydration ends with a parse barrier so callers read a settled buffer —
     // a BOUNDED one, so a wedged xterm write buffer (a handler that threw
     // mid-drain strands every queued callback) cannot hang the read instead.
-    const idx = src.indexOf('const hydrateForRead');
-    const body = src.slice(idx, idx + 900);
+    const body = blockAt(src, src.indexOf('const hydrateForRead'));
     expect(body).toMatch(/await\s+awaitParseBarrier\(terminal\)/);
     expect(src).toMatch(/import\s+\{\s*awaitParseBarrier\s*\}\s+from\s+'\.\.\/terminal\/parseBarrier'/);
     // Teardown silences any in-flight resync.
@@ -129,9 +131,8 @@ describe('Phase 3 PR-A — useTerminal hidden-pane retention wiring (source-leve
 // PR-A block above pins retention wiring.
 describe('Phase 3 PR-B — useTerminal snapshot-resync ladder (source-level)', () => {
   const hookPath = path.join(__dirname, '..', 'useTerminal.ts');
-  const src = fs.readFileSync(hookPath, 'utf-8');
-  const startIdx = src.indexOf('const startResync');
-  const body = src.slice(startIdx, startIdx + 4600);
+  const src = readSourceText(hookPath);
+  const body = blockAt(src, src.indexOf('const startResync'));
 
   it('prefers the non-disruptive pty.resync, guarded against stale preloads', () => {
     // A packaged app updated under a running renderer may lack pty.resync —
@@ -192,9 +193,7 @@ describe('Phase 3 PR-B — useTerminal snapshot-resync ladder (source-level)', (
     // is parsed — a trailing empty write is the parse barrier, the same
     // shape as hydrateForRead.
     for (const [name, fn] of [['dead-snapshot', 'const paintDeadSnapshot'], ['flush-complete', 'const completeResyncFromFlush']] as const) {
-      const idx = src.indexOf(fn);
-      expect(idx).toBeGreaterThan(0);
-      const body = src.slice(idx, idx + 2600);
+      const body = blockAt(src, src.indexOf(fn));
       const capture = body.indexOf('fromBottom = Math.max(0,');
       // dead-snapshot resets with term.reset(); flush-complete in-stream.
       const reset = body.indexOf(name === 'dead-snapshot' ? '.reset()' : 'write(REPAINT_BEGIN');

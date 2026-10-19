@@ -6,7 +6,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createElement, act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { renderBrainMarkdown, MAX_QUOTE_DEPTH, MAX_BLOCKS } from '../BrainMarkdown';
+import { renderBrainMarkdown, renderBrainMarkdownWhole, MAX_QUOTE_DEPTH, MAX_BLOCKS } from '../BrainMarkdown';
 
 let container: HTMLDivElement;
 let root: Root;
@@ -117,6 +117,54 @@ describe('renderBrainMarkdown', () => {
     expect(container.querySelector('[data-brain-md-cut]')).not.toBeNull();
   });
 
+  it('GitHub HTML: a ~300 KB body of short lines does not overflow the stack', () => {
+    // Preprocessing once pushed every line as one spread argument.
+    expect(() => renderBrainMarkdown('a\n'.repeat(150_000), { githubHtml: true })).not.toThrow();
+  });
+
+  it('GitHub HTML: a comment opener or <script> written as inline code hides nothing after it', () => {
+    gh('Use `<\x21--` to open a comment.\n\n# After comment\n\nUse `<script>` here.\n\n# After script');
+    const codes = [...container.querySelectorAll('[data-brain-md-code-inline]')].map((c) => c.textContent);
+    expect(codes).toEqual(['<\x21--', '<script>']);
+    const heads = [...container.querySelectorAll('[data-brain-md-heading]')].map((h) => h.textContent);
+    expect(heads).toEqual(['After comment', 'After script']);
+  });
+
+  it('GitHub HTML: a backtick inside a real comment does not keep the comment open; private-use characters stay as written', () => {
+    gh('<\x21-- `hidden -->` stray\n\n# Visible\n\nkeep 0 and `code`');
+    expect(container.textContent).not.toContain('hidden');
+    expect([...container.querySelectorAll('[data-brain-md-heading]')].map((h) => h.textContent)).toEqual(['Visible']);
+    expect(container.textContent).toContain('keep 0 and code');
+    expect(container.textContent).not.toContain('undefined');
+  });
+
+  it('a long line that is not a table separator is rejected in linear time', () => {
+    const start = performance.now();
+    renderBrainMarkdown(`a|b\n${' '.repeat(256_000)}x|`);
+    expect(performance.now() - start).toBeLessThan(1_500);
+  });
+
+  it('GitHub HTML: repeated unclosed <script openers are scanned in linear time', () => {
+    const start = performance.now();
+    renderBrainMarkdown('<script '.repeat(64_000), { githubHtml: true });
+    expect(performance.now() - start).toBeLessThan(1_500);
+  });
+
+  it('unclosed link and anchor openers render in linear time', () => {
+    // Each opener once rescanned to the end of the line: ~100 KB of `[`
+    // took seconds. A generous bound still separates linear from quadratic.
+    const start = performance.now();
+    for (const src of ['['.repeat(100_000), '[a](b'.repeat(20_000), '<a>'.repeat(33_000), '<a '.repeat(33_000)]) {
+      renderBrainMarkdown(src, { links: true, githubHtml: true });
+    }
+    expect(performance.now() - start).toBeLessThan(1_500);
+  });
+
+  it('renderBrainMarkdownWhole returns null only when the render would be cut', () => {
+    expect(renderBrainMarkdownWhole('line\n'.repeat(MAX_BLOCKS - 1))).not.toBeNull();
+    expect(renderBrainMarkdownWhole('line\n'.repeat(MAX_BLOCKS + 1))).toBeNull();
+  });
+
   it('renders consecutive > lines as one blockquote, markdown inside', () => {
     render('before\n> ## Limit\n> **bold** text\n>\n> - item\nafter');
     const q = container.querySelectorAll('[data-brain-md-quote]');
@@ -217,6 +265,18 @@ describe('renderBrainMarkdown', () => {
     expect(container.textContent).toContain('after');
   });
 
+  it('a fence closes only on a backtick run at least as long as its own, so a longer fence keeps ``` and links inside as text', () => {
+    render(['````diff', '  ```', '  [label](https://example.com/a)', '- [old](https://example.com/b)', '+ ```js', '````', 'after'].join('\n'));
+    const blocks = container.querySelectorAll('[data-brain-md-code]');
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0].textContent).toBe(['  ```', '  [label](https://example.com/a)', '- [old](https://example.com/b)', '+ ```js'].join('\n'));
+    expect(container.querySelector('a')).toBeNull();
+    expect(container.textContent).toContain('after');
+    // A plain fence still closes on a plain ``` line.
+    render('```\ncode\n```\nafter');
+    expect(container.querySelector('[data-brain-md-code]')?.textContent).toBe('code');
+  });
+
   it('an unclosed fence (mid-stream) swallows to the end as code', () => {
     render('streaming:\n```\nhalf of a block');
     expect(container.querySelector('[data-brain-md-code]')?.textContent).toBe('half of a block');
@@ -287,5 +347,38 @@ describe('renderBrainMarkdown richCode (the Bots chat)', () => {
     render('```ts\nconst a = 1;\n```');
     expect(container.querySelector('[data-brain-md-code-rich]')).toBeNull();
     expect(container.querySelector('pre[data-brain-md-code]')?.className).toContain('border');
+  });
+});
+
+describe('renderBrainMarkdown strictEmphasis (worker text in the Bots chat)', () => {
+  function renderWith(source: string, strictEmphasis: boolean): void {
+    act(() => {
+      root.render(createElement('div', null, renderBrainMarkdown(source, { links: true, strictEmphasis })));
+    });
+  }
+
+  it('keeps code-like `**` and `*` between letters or digits as written', () => {
+    const text = '|0 wraps past 2^31 (2**31|0=-2147483648, (2**32+5)|0=5) and a*b*c stays';
+    renderWith(text, true);
+    expect(container.querySelector('strong')).toBeNull();
+    expect(container.querySelector('em')).toBeNull();
+    expect(container.textContent).toBe(text);
+  });
+
+  it('still reads emphasis at word boundaries, a Korean particle right after bold included', () => {
+    renderWith('**파일**을 고쳤고 *mostly* done, **index.js**에 추가 (**bold**).', true);
+    expect([...container.querySelectorAll('strong')].map((n) => n.textContent)).toEqual(['파일', 'index.js', 'bold']);
+    expect(container.querySelector('em')?.textContent).toBe('mostly');
+  });
+
+  it('a delimiter with a space on its inner side is no emphasis', () => {
+    renderWith('2 * 3 * 4 and ** loose **', true);
+    expect(container.querySelector('em')).toBeNull();
+    expect(container.querySelector('strong')).toBeNull();
+  });
+
+  it('without the option, emphasis reads as before', () => {
+    renderWith('(2**31|0=-2147483648, (2**32+5)|0=5)', false);
+    expect(container.querySelector('strong')?.textContent).toBe('31|0=-2147483648, (2');
   });
 });

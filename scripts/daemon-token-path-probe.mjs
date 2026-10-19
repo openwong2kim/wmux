@@ -24,7 +24,7 @@
  *       NOTE: this drives the path FORMULA end-to-end against the real daemon; the
  *       reader FUNCTIONS' own logic (readDaemonAuthToken / resolveDaemonAuthToken,
  *       suffix-first-then-legacy) is asserted with exact paths in the vitest units
- *       (client.daemonPipe.test.ts, DaemonPipeServer.test.ts).
+ *       (client.daemonPipe.os.test.ts, DaemonPipeServer.os.test.ts).
  *   P4  ...and that reader-resolved token authenticates against the live daemon
  *   P5  a WRONG token is rejected (unauthorized) — sanity
  *   P6  BACKWARD COMPAT: with NO suffix, a pre-existing `~/.wmux/daemon-auth-token`

@@ -57,7 +57,7 @@ vi.mock('../../pipe/handlers/_bridge', () => ({
 }));
 
 import { DaemonNotificationRouter } from '../DaemonNotificationRouter';
-import { clearPty as clearSuppression, SETTLE_REDRAW_GUARD_MS } from '../idleSuppression';
+import { clearPty as clearSuppression, ESC_INTERRUPT_CONFIRM_MS, markEscapeKey, SETTLE_REDRAW_GUARD_MS } from '../idleSuppression';
 
 const broadcastMetadataUpdateMock = metadataHandlerMocks.broadcastMetadataUpdate;
 
@@ -68,6 +68,7 @@ interface Captured {
   agent?: (payload: { sessionId: string; event: unknown }) => void;
   active?: (payload: { sessionId: string; agentName?: string }) => void;
   processExit?: (payload: { sessionId: string; slug: string | null }) => void;
+  interrupted?: (payload: { sessionId: string }) => void;
   prompt?: (payload: { sessionId: string; event: unknown }) => void;
 }
 
@@ -104,6 +105,7 @@ function makeRouter(
       if (event === 'session:agent') captured.agent = cb as Captured['agent'];
       if (event === 'session:active') captured.active = cb as Captured['active'];
       if (event === 'session:agentProcessExit') captured.processExit = cb as Captured['processExit'];
+      if (event === 'session:agentInterrupted') captured.interrupted = cb as Captured['interrupted'];
       if (event === 'session:prompt') captured.prompt = cb as Captured['prompt'];
     }),
     off: vi.fn(),
@@ -421,6 +423,91 @@ describe('DaemonNotificationRouter — an agent that died without a Stop settles
     captured.processExit?.({ sessionId: PTY, slug: 'claude' });
     expect(broadcastMetadataUpdateMock).not.toHaveBeenCalled();
     expect(hookRouter.releaseHookTurnStart).not.toHaveBeenCalled();
+    router.stop();
+  });
+});
+
+/**
+ * Claude Code fires no Stop hook for an interrupted turn, and its interrupt key
+ * is a single Escape, which on its own also closes popups. The daemon reports
+ * the agent's own "Interrupted" row; it settles the pane only right after an
+ * Escape, so an old turn's row reprinted by a redraw does not.
+ */
+describe('DaemonNotificationRouter — the interrupt row closes the turn', () => {
+  beforeEach(() => {
+    broadcastMetadataUpdateMock.mockClear();
+    metadataHandlerMocks.lastBroadcastAgentStatus.delete(PTY);
+    metadataHandlerMocks.runningClaim.delete(PTY);
+    clearSuppression(PTY);
+  });
+
+  it('settles a latched pane when the row follows an Escape', () => {
+    const hookRouter = stubHookRouter(true);
+    const { router, captured } = makeRouter(hookRouter);
+    captured.agent?.(metadataEvent('agent.user_prompt_submit'));
+    expect(lastStatus()).toBe('running');
+
+    markEscapeKey(PTY);
+    captured.interrupted?.({ sessionId: PTY });
+    expect(hookRouter.releaseHookTurnStart).toHaveBeenCalledWith(PTY);
+    expect(lastStatus()).toBe('idle');
+    router.stop();
+  });
+
+  it('ignores the row with no recent Escape (a redraw of an old turn)', () => {
+    let now = 1_000_000;
+    const hookRouter = stubHookRouter(true);
+    const { router, captured } = makeRouter(hookRouter, [], 0, () => now);
+    captured.agent?.(metadataEvent('agent.user_prompt_submit'));
+    markEscapeKey(PTY, now);
+    now += ESC_INTERRUPT_CONFIRM_MS;
+
+    captured.interrupted?.({ sessionId: PTY });
+    expect(hookRouter.releaseHookTurnStart).not.toHaveBeenCalled();
+    expect(lastStatus()).toBe('running');
+    router.stop();
+  });
+
+  it('one Escape settles one turn: the next turn survives a redraw of the old row', () => {
+    let now = 1_000_000;
+    const hookRouter = stubHookRouter(true);
+    const { router, captured } = makeRouter(hookRouter, [], 0, () => now);
+    captured.agent?.(metadataEvent('agent.user_prompt_submit'));
+    markEscapeKey(PTY, now);
+    captured.interrupted?.({ sessionId: PTY });
+    expect(lastStatus()).toBe('idle');
+
+    // Turn B starts 1.5 s later, inside the Escape window, and a repaint
+    // prints turn A's row again.
+    now += 1_500;
+    captured.agent?.(metadataEvent('agent.user_prompt_submit'));
+    expect(lastStatus()).toBe('running');
+    captured.interrupted?.({ sessionId: PTY });
+    expect(hookRouter.releaseHookTurnStart).toHaveBeenCalledTimes(1);
+    expect(lastStatus()).toBe('running');
+    router.stop();
+  });
+
+  it('a new prompt forgets an Escape that settled nothing', () => {
+    let now = 1_000_000;
+    const hookRouter = stubHookRouter(true);
+    const { router, captured } = makeRouter(hookRouter, [], 0, () => now);
+    // An Escape that only closed a popup, then the next prompt.
+    markEscapeKey(PTY, now);
+    now += 500;
+    captured.agent?.(metadataEvent('agent.user_prompt_submit'));
+    now += 500;
+    captured.interrupted?.({ sessionId: PTY });
+    expect(hookRouter.releaseHookTurnStart).not.toHaveBeenCalled();
+    expect(lastStatus()).toBe('running');
+    router.stop();
+  });
+
+  it('leaves a pane with no open turn alone', () => {
+    const { router, captured } = makeRouter(stubHookRouter(false));
+    markEscapeKey(PTY);
+    captured.interrupted?.({ sessionId: PTY });
+    expect(broadcastMetadataUpdateMock).not.toHaveBeenCalled();
     router.stop();
   });
 });

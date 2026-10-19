@@ -16,6 +16,7 @@ import { ROW_STATS_DEBOUNCE_MS } from '../GitTab';
 import { useStore } from '../../../stores';
 import { initialGitPageState } from '../gitPageState';
 import type { Workspace, Pane } from '../../../../shared/types';
+import { deliberateSleep } from '../../../../test-utils/waitFor';
 
 function workspace(id: string, cwd: string, extra: Partial<Workspace> = {}): Workspace {
   return {
@@ -28,7 +29,7 @@ function workspace(id: string, cwd: string, extra: Partial<Workspace> = {}): Wor
 
 const settle = async () => {
   for (let i = 0; i < 20; i++) await act(async () => { await Promise.resolve(); });
-  await act(async () => { await new Promise((r) => setTimeout(r, ROW_STATS_DEBOUNCE_MS + 20)); });
+  await act(async () => { await deliberateSleep(ROW_STATS_DEBOUNCE_MS + 20, 'real timer: the row-stats debounce must fire under act'); });
   for (let i = 0; i < 20; i++) await act(async () => { await Promise.resolve(); });
 };
 

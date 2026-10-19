@@ -176,6 +176,26 @@ export function codexDefinesWmuxServer(configPath: string): boolean {
   }
 }
 
+/** The MCP server names the codex config at `configPath` defines (its
+ *  `[mcp_servers.<name>]` tables). A missing file → []; unreadable or
+ *  malformed → null (the caller cannot tell which servers would load). */
+export function codexMcpServerNames(configPath: string): string[] | null {
+  let text: string;
+  try {
+    text = fs.readFileSync(configPath, 'utf8');
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'ENOENT' ? [] : null;
+  }
+  try {
+    const servers = (parseConfig(text, 'toml') as { mcp_servers?: unknown }).mcp_servers;
+    if (servers === undefined) return [];
+    if (!servers || typeof servers !== 'object' || Array.isArray(servers)) return null;
+    return Object.keys(servers);
+  } catch {
+    return null;
+  }
+}
+
 /** The tools the codex config at `configPath` approves on its `wmux` server
  *  (`[mcp_servers.wmux.tools.<name>] approval_mode = "approve"`). Missing /
  *  unreadable / malformed → []. */

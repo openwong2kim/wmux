@@ -290,6 +290,38 @@ describe('TaskLedger — transition matrix', () => {
     expect(a.get('wtask-1')!.gate).not.toHaveProperty('skipped');
   });
 
+  it('a no-changes system record keeps its skipped label and the report it is for, on disk too; only on a reported row', async () => {
+    const a = open();
+    await seed(a);
+    expect(await a.recordGate('wtask-1', { ...PASS, command: 'none', skipped: 'no_changes' })).toMatchObject({ ok: false, error: 'illegal_transition' });
+    await driveTo(a, 'wtask-1', 'review_requested');
+    const reportedAt = a.get('wtask-1')?.reportedAtRev;
+    expect(reportedAt).toBe(2);
+    // A caller-supplied reportRev is not the ledger's: it stamps its own.
+    await a.recordGate('wtask-1', { ...PASS, command: 'none', skipped: 'no_changes', reportRev: 99 });
+    expect(a.get('wtask-1')?.gate).toMatchObject({ exitCode: 0, command: 'none', skipped: 'no_changes', recordedBy: 'system', reportRev: reportedAt });
+    expect(open().get('wtask-1')?.gate).toMatchObject({ skipped: 'no_changes', reportRev: reportedAt });
+    expect(open().get('wtask-1')?.reportedAtRev).toBe(reportedAt);
+  });
+
+  it('a no-changes skip completes only the report it was recorded on: a new report needs a new one', async () => {
+    const a = open();
+    await seed(a);
+    await driveTo(a, 'wtask-1', 'review_requested');
+    await a.recordGate('wtask-1', { ...PASS, command: 'none', skipped: 'no_changes' });
+    // Sent back, worked on, reported again: the skip on the row is the old report's.
+    for (const [status, actor] of [['working', BRAIN], ['review_requested', WORKER]] as const) {
+      const r = await a.update({ id: 'wtask-1', status, actor, expectedRev: a.get('wtask-1')?.rev ?? 0 });
+      if (!r.ok) throw new Error(r.message);
+    }
+    const stale = await a.update({ id: 'wtask-1', status: 'completed', actor: BRAIN, expectedRev: a.get('wtask-1')?.rev ?? 0 });
+    expect(stale).toMatchObject({ ok: false, error: 'gate_required' });
+    expect(stale.ok ? '' : stale.message).toContain('earlier report');
+    // A skip recorded for this report completes it.
+    await a.recordGate('wtask-1', { ...PASS, command: 'none', skipped: 'no_changes' });
+    expect(await a.update({ id: 'wtask-1', status: 'completed', actor: BRAIN, expectedRev: a.get('wtask-1')?.rev ?? 0 })).toMatchObject({ ok: true, entry: { status: 'completed' } });
+  });
+
   it('completed needs a SYSTEM-recorded passing gate unless forced with a reason, and only a brain may set it', async () => {
     const a = open();
     await seed(a);
@@ -321,6 +353,88 @@ describe('TaskLedger — transition matrix', () => {
     fs.appendFileSync(getTaskLedgerPath(dir), `${JSON.stringify({ op: 'entry', entry: forged })}\n`, 'utf8');
     const b = open();
     expect(await b.update({ id: 'wtask-1', status: 'completed', actor: BRAIN, expectedRev: 3 })).toMatchObject({ ok: false, error: 'gate_required' });
+  });
+
+  it('a gate result is recorded only on an open entry: a completed or cancelled one is left as it ended', async () => {
+    const a = open();
+    await seed(a, 'wtask-1');
+    await seed(a, 'wtask-2');
+    await seed(a, 'wtask-3');
+    await driveTo(a, 'wtask-1', 'completed');
+    await driveTo(a, 'wtask-2', 'cancelled');
+    await driveTo(a, 'wtask-3', 'failed');
+    for (const id of ['wtask-1', 'wtask-2']) {
+      const before = a.get(id);
+      expect(await a.recordGate(id, { ...PASS, exitCode: 1 }, SYSTEM, before?.rev)).toMatchObject({ ok: false, error: 'illegal_transition' });
+      expect(a.get(id)).toEqual(before);
+    }
+    // A failed task can be sent back to work, so a gate may still grade it.
+    expect((await a.recordGate('wtask-3', PASS)).ok).toBe(true);
+  });
+
+  it('a dispatch keeps the recorded git dir when it is an absolute path with no control character, across a reload', async () => {
+    const a = open();
+    const ok = ['/home/me/repo/.git', 'C:\\Users\\me\\repo\\.git', '\\\\wsl.localhost\\Ubuntu\\home\\me\\repo\\.git'];
+    for (const [i, dir] of ok.entries()) {
+      await a.register({ id: `wtask-${i}`, taskWorkspaceId: 'ws-task', ownerWorkspaceId: 'ws-owner', title: 'lane', dispatch: { origin: { kind: 'bot', botId: 'b1' }, gitCommonDir: dir } });
+      expect(open().get(`wtask-${i}`)?.dispatch?.gitCommonDir).toBe(dir);
+    }
+    for (const [i, dir] of ['repo/.git', '/r/.git\n', ''].entries()) {
+      await a.register({ id: `wtask-bad-${i}`, taskWorkspaceId: 'ws-task', ownerWorkspaceId: 'ws-owner', title: 'lane', dispatch: { origin: { kind: 'bot', botId: 'b1' }, gitCommonDir: dir } });
+      expect(a.get(`wtask-bad-${i}`)?.dispatch?.gitCommonDir).toBeUndefined();
+    }
+  });
+
+  it('a dispatch keeps origin\'s pin, a plain address as written, across a reload', async () => {
+    const a = open();
+    const pin = 'ssh://git@git.corp.example:2222/Team/App';
+    await a.register({ id: 'wtask-pin', taskWorkspaceId: 'ws-task', ownerWorkspaceId: 'ws-owner', title: 'lane', dispatch: { origin: { kind: 'bot', botId: 'b1' }, originPin: pin } });
+    expect(open().get('wtask-pin')?.dispatch?.originPin).toBe(pin);
+    for (const [i, bad] of [' https://x.example/o/r', 'file:///x/o/r', '/srv/r.git', ''].entries()) {
+      await a.register({ id: `wtask-pin-bad-${i}`, taskWorkspaceId: 'ws-task', ownerWorkspaceId: 'ws-owner', title: 'lane', dispatch: { origin: { kind: 'bot', botId: 'b1' }, originPin: bad } });
+      expect(a.get(`wtask-pin-bad-${i}`)?.dispatch?.originPin).toBeUndefined();
+    }
+  });
+
+  it('a row with no pin is pinned once: a recorded pin is never replaced, and survives a reload', async () => {
+    const a = open();
+    await a.register({ id: 'wtask-old', taskWorkspaceId: 'ws-task', ownerWorkspaceId: 'ws-owner', title: 'lane', dispatch: { origin: { kind: 'bot', botId: 'b1' }, repoKey: 'github.com/acme/app' } });
+    const rev = a.get('wtask-old')?.rev;
+    expect(await a.recordOriginPin('wtask-old', 'not a pin')).toBeNull();
+    expect(await a.recordOriginPin('wtask-old', 'git@github.com:acme/app')).toBe('git@github.com:acme/app');
+    expect(await a.recordOriginPin('wtask-old', 'https://github.com:443/acme/app')).toBe('git@github.com:acme/app');
+    const reloaded = open().get('wtask-old');
+    expect(reloaded?.dispatch).toMatchObject({ repoKey: 'github.com/acme/app', originPin: 'git@github.com:acme/app' });
+    expect(reloaded?.rev).toBe(rev);
+    await a.register({ id: 'wtask-none', taskWorkspaceId: 'ws-task', ownerWorkspaceId: 'ws-owner', title: 'lane' });
+    expect(await a.recordOriginPin('wtask-none', 'git@github.com:acme/app')).toBeNull();
+    expect(await a.recordOriginPin('wtask-missing', 'git@github.com:acme/app')).toBeNull();
+  });
+
+  it('a dispatch keeps the base commit main created the branch from, a full commit id only, across a reload', async () => {
+    const a = open();
+    const base = 'b'.repeat(40);
+    await a.register({ id: 'wtask-1', taskWorkspaceId: 'ws-task', ownerWorkspaceId: 'ws-owner', title: 'lane', dispatch: { origin: { kind: 'bot', botId: 'b1' }, baseOid: base } });
+    await a.register({ id: 'wtask-2', taskWorkspaceId: 'ws-task', ownerWorkspaceId: 'ws-owner', title: 'lane', dispatch: { origin: { kind: 'bot', botId: 'b1' }, baseOid: 'HEAD' } });
+    expect(a.get('wtask-1')?.dispatch?.baseOid).toBe(base);
+    expect(a.get('wtask-2')?.dispatch?.baseOid).toBeUndefined();
+    expect(open().get('wtask-1')?.dispatch?.baseOid).toBe(base);
+  });
+
+  it('a merge completion is recorded only on a move to completed; a dispatch keeps a well-formed repo key only', async () => {
+    const a = open();
+    await a.register({ id: 'wtask-1', taskWorkspaceId: 'ws-task', ownerWorkspaceId: 'ws-owner', title: 'lane', dispatch: { origin: { kind: 'bot', botId: 'b1' }, repoKey: 'github.com/acme/app' } });
+    await a.register({ id: 'wtask-2', taskWorkspaceId: 'ws-task', ownerWorkspaceId: 'ws-owner', title: 'lane', dispatch: { origin: { kind: 'bot', botId: 'b1' }, repoKey: 'GitHub.com/Acme/App' } });
+    expect(a.get('wtask-1')?.dispatch?.repoKey).toBe('github.com/acme/app');
+    expect(a.get('wtask-2')?.dispatch?.repoKey).toBeUndefined();
+    await driveTo(a, 'wtask-1', 'review_requested');
+    const sent = await a.update({ id: 'wtask-1', status: 'input_required', actor: BRAIN, expectedRev: 2, completion: { source: 'merge', pr: 4 } });
+    expect(sent.ok && sent.entry.completion).toBeUndefined();
+    await a.update({ id: 'wtask-1', status: 'review_requested', actor: SYSTEM, expectedRev: 3 });
+    const done = await a.update({ id: 'wtask-1', status: 'completed', actor: BRAIN, expectedRev: 4, force: true, reason: 'merged', completion: { source: 'merge', pr: 4 } });
+    expect(done.ok && done.entry.completion).toEqual({ source: 'merge', pr: 4 });
+    // Persisted: a restart reads it back.
+    expect(open().get('wtask-1')?.completion).toEqual({ source: 'merge', pr: 4 });
   });
 
   it('forced completion logs the reason on the entry', async () => {

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { formatElementHandoff, parseInspectedElement } from '../browserElementHandoff';
+import { elementShotRect, ELEMENT_SHOT_MAX_SIDE, formatElementHandoff, parseInspectedElement } from '../browserElementHandoff';
 
 const base = {
   title: 'Checkout',
@@ -65,5 +65,34 @@ describe('formatElementHandoff', () => {
   it('truncation never splits a surrogate pair', () => {
     const el = parseInspectedElement({ ...base, text: `${'a'.repeat(198)}😀😀😀` });
     expect(el?.text).toBe(`${'a'.repeat(198)}😀…`);
+  });
+});
+
+describe('computed styles and the screenshot', () => {
+  it('keeps only the allow-listed styles, cleaned and capped', () => {
+    const el = parseInspectedElement({
+      ...base,
+      styles: { display: 'flex', color: 'rgb(0, 0, 0)\x1b[31m', 'font-family': 'x'.repeat(300), cursor: 'pointer', 'z-index': '' },
+    });
+    expect(Object.keys(el?.styles ?? {})).toEqual(['display', 'color', 'font-family']);
+    expect(el?.styles.color).toBe('rgb(0, 0, 0)');
+    expect(el?.styles['font-family']).toHaveLength(80);
+  });
+
+  it('carries styles and the screenshot path in the JSON, still one line', () => {
+    const el = parseInspectedElement({ selector: 'button.pay', styles: { display: 'block' } });
+    if (!el) throw new Error('parse failed');
+    const line = formatElementHandoff({ ...el, screenshot: '/tmp/wmux-element-1.png' }, 'fix');
+    expect(line).toBe('fix [browser element] {"selector":"button.pay","styles":{"display":"block"},"screenshot":"/tmp/wmux-element-1.png"}');
+  });
+
+  it('a malformed rect is dropped; the shot is the visible part, null when off screen', () => {
+    expect(parseInspectedElement({ ...base, rect: { x: 1, y: 2, width: 'x' } })?.rect).toBeUndefined();
+    const vp = { viewportWidth: 800, viewportHeight: 600 };
+    expect(elementShotRect({ x: 10.4, y: -20, width: 100.2, height: 50, ...vp })).toEqual({ x: 10, y: 0, width: 101, height: 30 });
+    expect(elementShotRect({ x: 900, y: 10, width: 50, height: 50, ...vp })).toBeNull();
+    expect(elementShotRect({ x: 0, y: 0, width: 1e6, height: 1e6, viewportWidth: 1e5, viewportHeight: 1e5 })).toEqual({
+      x: 0, y: 0, width: ELEMENT_SHOT_MAX_SIDE, height: ELEMENT_SHOT_MAX_SIDE,
+    });
   });
 });

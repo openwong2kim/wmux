@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   HookIngest,
+  PERMISSION_NOTIFY_GRACE_MS,
   gateInputIsCritical,
   resolveSessionIdForSignal,
   type DetectorHeldEventData,
@@ -856,6 +857,63 @@ describe('HookIngest', () => {
       expect(fixture.bindings[0].binding.transcriptPath).toBeUndefined();
     });
 
+    // #2270: a WSL pane's Claude reports its transcript as a Linux path inside
+    // the distro, which this process cannot open. Its own projects file is not
+    // stored and not warned about; any other path keeps the refusal.
+    describe('a WSL pane\'s transcript path', () => {
+      const SID = '0a1b2c3d-0000-4000-8000-000000000001';
+      const own = `/home/dev/.claude/projects/-home-dev-repo/${SID}.jsonl`;
+      function wslIngest(wslTarget?: { distribution: string; user: string }) {
+        const f = makeDeps([session({ id: 'pty-a', ...(wslTarget ? { wslTarget } : {}) })]);
+        const logs: Array<{ level: string; message: string }> = [];
+        const i = new HookIngest({ ...f.deps, log: (level: string, message: string) => { logs.push({ level, message }); } });
+        const stop = (transcript_path: string) => i.handle(makeSignal({
+          ptyId: 'pty-a', kind: 'agent.stop', agentSessionId: SID,
+          payload: { transcript_path, permissionMode: 'bypassPermissions' },
+        }));
+        const warned = () => logs.some((l) => l.level === 'warn' && l.message.includes('refused transcript_path'));
+        return { f, stop, warned };
+      }
+
+      it('binds without the path and without a refusal for the distro user\'s own file', () => {
+        const w = wslIngest({ distribution: 'Ubuntu', user: 'dev' });
+        expect(w.stop(own)).toEqual({ ok: true });
+        expect(w.warned()).toBe(false);
+        expect(w.f.bindings).toHaveLength(1);
+        expect(w.f.bindings[0].binding).toMatchObject({ sessionId: SID, permissionMode: 'bypassPermissions' });
+        expect(w.f.bindings[0].binding.transcriptPath).toBeUndefined();
+      });
+
+      it('binds the mode a turn starts in, before any Stop, and keeps the latest one', () => {
+        const w = wslIngest({ distribution: 'Ubuntu', user: 'dev' });
+        const signal = (kind: AgentSignalKind, permissionMode?: string, ts = 1) => makeSignal({
+          ptyId: 'pty-a', kind, agentSessionId: SID, ts,
+          payload: { transcript_path: own, ...(permissionMode ? { permissionMode } : {}) },
+        });
+        const i = new HookIngest(w.f.deps);
+        // SessionStart has no mode on a WSL pane; the first prompt does.
+        expect(i.handle(signal('agent.session_start', undefined, 1))).toEqual({ ok: true });
+        expect(i.handle(signal('agent.user_prompt_submit', 'bypassPermissions', 2))).toEqual({ ok: true });
+        expect(w.f.bindings.map((b) => b.binding.permissionMode)).toEqual([undefined, 'bypassPermissions']);
+        expect(w.f.bindings[1].binding).toMatchObject({ agent: 'claude', sessionId: SID });
+        expect(i.handle(signal('agent.user_prompt_submit', 'acceptEdits', 3))).toEqual({ ok: true });
+        expect(w.f.bindings[2].binding.permissionMode).toBe('acceptEdits');
+      });
+
+      it('still refuses another user\'s file, a traversal, and the same path from a non-WSL pane', () => {
+        for (const [target, p] of [
+          [{ distribution: 'Ubuntu', user: 'dev' }, `/home/other/.claude/projects/-repo/${SID}.jsonl`],
+          [{ distribution: 'Ubuntu', user: 'dev' }, `/home/dev/.claude/projects/-repo/../../../../etc/${SID}.jsonl`],
+          [undefined, own],
+        ] as const) {
+          const w = wslIngest(target);
+          w.stop(p);
+          expect(w.warned()).toBe(true);
+          expect(w.f.bindings[0].binding.transcriptPath).toBeUndefined();
+        }
+      });
+    });
+
     it('accepts a projects root relocated by CLAUDE_CONFIG_DIR in the pane env', () => {
       const f = makeDeps([session({
         id: 'pty-a',
@@ -1031,6 +1089,39 @@ describe('HookIngest', () => {
       expect(stats.total).toBe(12);
       expect(stats.workspaceMatchRate).toEqual({ matched: 12, missed: 0 });
       expect(stats.perAgent.claude).toBe(12);
+    });
+  });
+
+  describe('Claude Code\'s post-turn fork through the permission gate', () => {
+    const fork = { agent_id: 'a1b2c3', agent_type: '' };
+    const gate = (payload: Record<string, unknown>) => makeSignal({ kind: 'agent.awaiting_permission', ptyId: 'pty-a', payload: { tool_name: 'Read', ...payload } });
+
+    it('a fork\'s tool ~2 s after the Stop neither cancels the completion nor marks the pane running', () => {
+      ingest.handle(makeSignal({ ptyId: 'pty-a', kind: 'agent.user_prompt_submit' }));
+      ingest.handle(makeSignal({ ptyId: 'pty-a' }));
+      fixture.advance(2_000);
+      expect(ingest.handlePermissionGate(gate(fork))).toEqual({ ok: true, sessionId: 'pty-a' });
+      expect(fixture.emitted.filter((e) => e.data.hookKind === 'agent.tool_started')).toHaveLength(0);
+      vi.advanceTimersByTime(DEFAULT_ALARM_WINDOW_MS * 2);
+      expect(fixture.emitted.at(-1)?.data).toMatchObject({ hookKind: 'agent.stop', decision: 'emit', status: 'complete' });
+    });
+
+    it('a fork\'s gated tool raises no gate card: it follows the session\'s own permission flow', () => {
+      let gates = 0;
+      const gating = new HookIngest({ ...fixture.deps, gateConfig: () => ({ gatedTools: ['Bash'] }), approvals: { ...fixture.deps.approvals, noteGateAwaiting: () => { gates += 1; return 'gate-id'; } } });
+      expect(gating.handlePermissionGate(makeSignal({ kind: 'agent.awaiting_permission', ptyId: 'pty-a', payload: { tool_name: 'Bash', ...fork } }))).toEqual({ ok: true, sessionId: 'pty-a' });
+      expect(gates).toBe(0);
+      expect(gating.handlePermissionGate(makeSignal({ kind: 'agent.awaiting_permission', ptyId: 'pty-a', payload: { tool_name: 'Bash' } }))).toMatchObject({ ok: true, gateId: 'gate-id' });
+    });
+
+    it('the lead\'s own tool and a real subagent\'s still mark the turn running and rebut the Stop', () => {
+      ingest.handle(makeSignal({ ptyId: 'pty-a', kind: 'agent.user_prompt_submit' }));
+      ingest.handle(makeSignal({ ptyId: 'pty-a' }));
+      ingest.handlePermissionGate(gate({}));
+      ingest.handlePermissionGate(gate({ agent_id: 'sub-1', agent_type: 'general-purpose' }));
+      expect(fixture.emitted.filter((e) => e.data.hookKind === 'agent.tool_started' && e.data.status === 'running')).toHaveLength(2);
+      vi.advanceTimersByTime(DEFAULT_ALARM_WINDOW_MS * 2);
+      expect(fixture.emitted.filter((e) => e.data.hookKind === 'agent.stop' && e.data.decision === 'emit')).toHaveLength(0);
     });
   });
 
@@ -1270,7 +1361,7 @@ describe('HookIngest', () => {
       return { ingestWithCards, awaitingInput, emitted: base.emitted };
     }
 
-    it('broadcasts awaiting_input but raises no approval card', () => {
+    it('broadcasts awaiting_input (after its Notification grace) but raises no approval card', () => {
       const { ingestWithCards, awaitingInput, emitted } = ingestTracking();
 
       ingestWithCards.handle(makeSignal({
@@ -1278,7 +1369,7 @@ describe('HookIngest', () => {
         ptyId: 'pty-a',
         payload: { hook_event_name: 'PermissionRequest', tool_name: 'Bash', tool_input: { command: 'rm -rf build' } },
       }));
-      vi.advanceTimersByTime(DEFAULT_ALARM_WINDOW_MS);
+      vi.advanceTimersByTime(PERMISSION_NOTIFY_GRACE_MS + DEFAULT_ALARM_WINDOW_MS);
 
       expect(awaitingInput).toEqual([]);
       expect(emitted.at(-1)?.data).toMatchObject({ status: 'awaiting_input', source: 'hook' });
@@ -1300,23 +1391,23 @@ describe('HookIngest', () => {
     const awaitingEmits = (base: { emitted: Array<{ data: HookAgentEventData }> }) =>
       base.emitted.filter((e) => e.data.status === 'awaiting_input');
 
-    it('an answer inside the window cancels the held awaiting (no late re-lock)', () => {
+    it('an answer before it is raised cancels the held awaiting (no late re-lock)', () => {
       const base = makeDeps([session({ id: 'pty-a' })]);
       const ing = new HookIngest(base.deps);
       ing.handle(makeSignal({ kind: 'agent.awaiting_input', ptyId: 'pty-a', payload: PERMISSION_REQUEST }));
       vi.advanceTimersByTime(300);
       ing.noteAnswered('pty-a', 'claude');
-      vi.advanceTimersByTime(DEFAULT_ALARM_WINDOW_MS * 2);
+      vi.advanceTimersByTime(PERMISSION_NOTIFY_GRACE_MS + DEFAULT_ALARM_WINDOW_MS * 2);
       expect(awaitingEmits(base)).toEqual([]);
     });
 
-    it('subagent tool activity during the window does not cancel it', () => {
+    it('subagent tool activity before it is raised does not cancel it', () => {
       const base = makeDeps([session({ id: 'pty-a' })]);
       const ing = new HookIngest(base.deps);
       ing.handle(makeSignal({ kind: 'agent.awaiting_input', ptyId: 'pty-a', payload: PERMISSION_REQUEST }));
       ing.handle(makeSignal({ kind: 'agent.activity', ptyId: 'pty-a', payload: { tool_name: 'Grep' } }));
       ing.notePaneWorking('pty-a', 'claude');
-      vi.advanceTimersByTime(DEFAULT_ALARM_WINDOW_MS);
+      vi.advanceTimersByTime(PERMISSION_NOTIFY_GRACE_MS + DEFAULT_ALARM_WINDOW_MS);
       expect(awaitingEmits(base)).toHaveLength(1);
     });
 
@@ -1327,9 +1418,11 @@ describe('HookIngest', () => {
       vi.advanceTimersByTime(100);
       const arb = ing.arbitrateDetector('pty-a', { agent: 'Claude Code', status: 'awaiting_input', message: 'Approval requested' });
       expect(arb.decision).toBe('pending');
-      vi.advanceTimersByTime(DEFAULT_ALARM_WINDOW_MS * 2);
-      const detectorAwaiting = base.detectorEmitted.filter((e) => e.data.status === 'awaiting_input');
-      expect(awaitingEmits(base).length + detectorAwaiting.length).toBe(1);
+      vi.advanceTimersByTime(PERMISSION_NOTIFY_GRACE_MS + DEFAULT_ALARM_WINDOW_MS * 2);
+      // Both may broadcast (the hook's later one is a dedup); one toast.
+      const detectorToasts = base.detectorEmitted.filter((e) => e.data.status === 'awaiting_input' && e.data.decision === 'emit');
+      const hookToasts = awaitingEmits(base).filter((e) => e.data.decision === 'emit');
+      expect(hookToasts.length + detectorToasts.length).toBe(1);
     });
 
     it('leaves the Codex PermissionRequest card path as it was', () => {

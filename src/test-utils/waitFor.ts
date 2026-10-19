@@ -7,7 +7,7 @@
  * ── Why this exists as one shared thing ────────────────────────────────────
  * Four test files had defined their own byte-identical copy, and a fifth had
  * open-coded the same idea as `setTimeout(50)`. That last one is the reason
- * this file exists: `DaemonPipeServer.test.ts` slept 50ms as a stand-in for
+ * this file exists: `DaemonPipeServer.os.test.ts` slept 50ms as a stand-in for
  * "the server has registered this socket", and on a loaded windows-latest
  * runner the sleep finished first. The socket was not yet in the server's set,
  * `rotateToken()` did not drop it, and the test hung until vitest killed it at
@@ -57,4 +57,32 @@ export async function waitFor(
 function describe(predicate: () => boolean): string {
   const source = String(predicate).replace(/\s+/g, ' ').trim();
   return source.length > MAX_LABEL_CHARS ? `${source.slice(0, MAX_LABEL_CHARS)}…` : source;
+}
+
+/**
+ * Sleep a fixed span ON PURPOSE. The one sanctioned fixed sleep in a test.
+ *
+ * Test files may not write `await new Promise((r) => setTimeout(r, N))` or call
+ * a local `sleep(N)`/`delay(N)`/`wait(N)` (lint: no-restricted-syntax in the
+ * test-file override of .eslintrc.json). Everything above says why. A fixed
+ * wait is still right in a few places, and this is how a test says it is one:
+ *
+ * - a NEGATIVE check: "after 200ms the callback has still not fired". There is
+ *   no condition to wait for; the span is the claim.
+ * - a real product timer that must elapse, where fake timers cannot be used
+ *   (a child process, a real socket or browser, a debounce under React act).
+ * - simulated latency inside a stub ("a slow git call"), or putting two
+ *   timestamps apart.
+ *
+ * It is NOT for "wait until X, then assert X". That is `vi.waitFor(() =>
+ * expect(X)..., { timeout: 10_000 })` (5_000 when X is in-memory state), or
+ * `vi.useFakeTimers()` + `vi.advanceTimersByTimeAsync(ms)` when the thing being
+ * waited for is a timer.
+ *
+ * `why` is required and must say which of the cases above this is, so the next
+ * reader (and the next flake hunt) does not have to work it out again.
+ */
+export function deliberateSleep(ms: number, why: string): Promise<void> {
+  if (!why.trim()) throw new Error('deliberateSleep: say why this fixed sleep is not a wait for something');
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }

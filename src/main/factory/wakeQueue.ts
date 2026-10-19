@@ -432,10 +432,14 @@ export class WakeQueue implements WakeSinkApi {
     });
   }
 
-  /** running → queued (a failed attempt that may run again). */
-  retry(id: string): WakeItem | null {
+  /** running → queued (a failed attempt that may run again). `notBefore`
+   *  holds it until then; `refundAttempt` gives the attempt back (a network
+   *  failure is not the wake's fault). */
+  retry(id: string, opts: { notBefore?: number; refundAttempt?: boolean } = {}): WakeItem | null {
     return this.transition(id, ['running'], (i) => {
       i.state = 'queued';
+      if (opts.notBefore !== undefined) i.notBefore = opts.notBefore;
+      if (opts.refundAttempt) i.attempts = Math.max(0, i.attempts - 1);
     });
   }
 
@@ -467,6 +471,26 @@ export class WakeQueue implements WakeSinkApi {
       if (i.botId === botId && i.state === 'parked') {
         i.state = 'queued';
         i.attempts = 0;
+        n++;
+      }
+    }
+    if (n > 0) this.changed();
+    return n;
+  }
+
+  /** Drop a bot's queued and parked PR-event wakes (pr.opened,
+   *  pr.head_moved, ci.failed) whose kind is no longer among its triggers
+   *  (`kept`): a reviewer moved to on-request verification was never asked
+   *  for those heads, and a parked one would run once its park lifts. Only
+   *  triggers enqueue these kinds. Code `expired`. */
+  dropPrEventWakes(botId: string, kept: ReadonlySet<string>): number {
+    let n = 0;
+    for (const i of this.items) {
+      if (i.botId !== botId || (i.state !== 'queued' && i.state !== 'parked') || i.reason.kind !== 'facts') continue;
+      const k = i.reason.trigger.kind;
+      if ((k === 'pr.opened' || k === 'pr.head_moved' || k === 'ci.failed') && !kept.has(k)) {
+        i.state = 'dropped';
+        i.dropped = { code: 'expired' };
         n++;
       }
     }

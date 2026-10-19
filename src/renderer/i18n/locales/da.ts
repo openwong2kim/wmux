@@ -231,6 +231,12 @@ export const da = {
   'pane.browserPolicyGrantSensitive': "Logindata for {host}",
   'pane.browserPolicyRevoke': "Tilbagekald",
   'pane.browserPolicyRevokeFailed': "Kunne ikke tilbagekalde.",
+  'pane.browserPolicySummaryBlocked': "{count} blokeret for nylig",
+  'pane.browserPolicyRecentlyBlocked': "Blokeret for nylig",
+  'pane.browserPolicyRecentlyBlockedDesc': "Websteder, som denne rudes Chrome blev nægtet, siden den startede, eller beskyttelsen sidst blev ændret. Tillad føjer straks webstedet til de tilladte.",
+  'pane.browserPolicyRecentlyBlockedCount': "Blokeret {count}×",
+  'pane.browserPolicyAllow': "Tillad",
+  'pane.browserPolicyAllowHost': "Tillad {host}",
   'browser.private': "Privat",
   'browser.privateTab': "Privat fane",
   'browser.privateTooltip': "Privat fane: cookies og webstedsdata findes kun i hukommelsen og slettes, når den sidste private fane lukkes. Gendannes ikke efter genstart.",
@@ -534,9 +540,6 @@ export const da = {
 
   // ─── Agent toolbar: fan-out / broadcast buttons ───
   'toolbar.fanOut': 'Multi Task',
-  'toolbar.broadcast': 'Broadcast',
-  'toolbar.broadcastTooltip': 'Broadcast — samme tekst til hvert terminalpanel i det aktuelle arbejdsområde (ingen isolering)',
-  'toolbar.broadcastPrompt': 'Broadcast — send til hvert terminalpanel i det aktuelle arbejdsområde',
 
   // ─── Fan-out-dialog (1 prompt → N isolerede opgaver) ───
   'fanout.title': 'Fan-out — 1 prompt → N isolerede opgaver',
@@ -657,4 +660,21 @@ export const da = {
   'git.secret.more': "(og {count} mere)",
   'settings.secretGuard': "Bloker adgangskoder og nøgler i commits, pushes og PR'er",
   'settings.secretGuardDesc': "Commit, Push og Opret PR på Git-siden samt overtagelse af en opgave afviser en ændring, der tilføjer en .env-fil, en privat nøgle eller en API-nøgle.",
+  'botsPage.consent.title': "Bots kører på dit Claude-abonnement",
+  'botsPage.consent.engine': "Hver bot tænker med Claude Agent SDK, logget ind med Claude Code-login'et på denne computer. Dens workers kører din egen Claude Code.",
+  'botsPage.consent.usage': "Deres forbrug tæller med i grænserne for dit Claude-abonnement.",
+  'botsPage.consent.terms': "Anthropics vilkår for dit abonnement gælder. wmux læser, gemmer eller sender aldrig dit Claude-login.",
+  'botsPage.consent.turnOn': "Slå bots til",
+  'botsPage.consent.cancel': "Annuller",
+  'botsPage.consent.keepOn': "Behold bots slået til",
+  'botsPage.consent.turnOff': "Slå bots fra",
+
+  // Task cleanup list: detail line per scan entry
+  'worktask.cleanup.detail.unmaterialized': 'Der blev ikke oprettet noget worktree til denne opgave — luk den, eller opret worktreet igen.',
+  'worktask.cleanup.detail.preserved': 'Ikke-committet arbejde er bevaret — gennemgå diffen, og commit eller åbn en PR, eller kassér det.',
+  'worktask.cleanup.detail.phone': 'Oprettet fra telefonen (gren phone/…) — tjek det, og fjern det, når du ikke længere har brug for det.',
+  'worktask.cleanup.detail.orphanEnded': 'Ingen åben opgave er knyttet til det (opgaven er afsluttet eller ryddet op) — tjek det, og slet det.',
+  'worktask.cleanup.detail.orphanUnlinked': 'Ingen opgave eller opgavepost er knyttet til det — tjek det, og slet det.',
+  'worktask.cleanup.detail.orphanMeta': 'Kun opgaveposten er tilbage, ikke worktreet (en fjernelse blev afbrudt) — tjek det, og slet det.',
+  'worktask.cleanup.detail.diskMissing': 'Worktreet mangler på disken (slettet uden for wmux, eller et nedbrud) — luk opgaven for at rydde op.',
 } as const;

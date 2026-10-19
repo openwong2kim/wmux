@@ -297,6 +297,9 @@ function payloadFor(event, matcher, { transcriptPath, cwd } = {}) {
   if (event === 'PostToolUse') {
     return { ...base, tool_name: matcher || 'Read', tool_response: { ok: true } };
   }
+  if (event === 'Notification') {
+    return { ...base, message: 'Claude needs your permission to use Bash', notification_type: matcher || 'permission_prompt' };
+  }
   return base;
 }
 

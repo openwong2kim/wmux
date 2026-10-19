@@ -5,7 +5,7 @@ import { EventEmitter } from 'events';
 //
 // The contract under test: the surfaceId an agent holds is minted by wmux and
 // outlives Chrome swapping the CDP target behind the tab, a dead Chrome, and
-// an app restart. Same fakes as ChromeLauncher.test.ts (child_process, global
+// an app restart. Same fakes as ChromeLauncher.os.test.ts (child_process, global
 // fetch, DevToolsActivePort); the surface store is a small in-memory double so
 // these stay unit tests with no disk in the loop.
 

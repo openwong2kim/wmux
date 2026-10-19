@@ -75,6 +75,7 @@ export const CORE_TOOL_SURFACE: readonly string[] = [
   'fanout_start',
   'ledger_update',
   'task_push',
+  'task_fetch',
   // Scheduled runs: draft-only propose + redacted reads.
   'automation_propose',
   'automation_list',

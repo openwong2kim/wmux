@@ -100,6 +100,13 @@ export type BrainEvent =
       /** Set when the brain process never came up (spawn or attach failed,
        *  or it died during startup), so the prompt was never typed. */
       spawnFailed?: true;
+      /** What a turn that failed after reaching the model reported using
+       *  (an error result's cost, e.g. past max turns). */
+      usage?: BrainUsage;
+      /** Set by a bot turn that reached none of its wmux tools (botToolGuard.ts):
+       *  'missing' — the tools did not load; 'unreached' — the model called
+       *  them by names they do not have. Its conversation is not resumed. */
+      botTools?: 'missing' | 'unreached';
     }
   // Main changed this workspace's decision slot outside a brain turn (Moa's
   // issue proposals). Carries nothing: the decision card refetches.
@@ -173,6 +180,18 @@ export interface BrainSendOptions {
    *  CommanderSessionManager records it for the turn (a Moa goal refuses to
    *  fan out from such a turn); adapters ignore it. */
   remoteMoa?: boolean;
+  /** Bots only: photos the owner sent with the message this turn answers,
+   *  shown to the model as image blocks before the text (base64 JPEG, the
+   *  room's normalised copy). An adapter that cannot show images ignores
+   *  them; the text says how many there are. */
+  images?: ReadonlyArray<BrainImage>;
+}
+
+/** One image of a turn's user message. */
+export interface BrainImage {
+  mediaType: string;
+  /** Base64, no data: prefix. */
+  data: string;
 }
 
 /**
@@ -252,6 +271,10 @@ export interface RawSdkMessage {
   usage?: { input_tokens?: number; output_tokens?: number };
   /** Present on `type:'rate_limit_event'` frames (SDKRateLimitEvent). */
   rate_limit_info?: RawRateLimitInfo;
+  /** Present on `type:'system', subtype:'init'` frames (SDKSystemMessage):
+   *  the session's tool names and its MCP servers' connection status. */
+  tools?: string[];
+  mcp_servers?: Array<{ name?: string; status?: string }>;
   /** Present on `type:'system', subtype:'api_retry'` frames (SDKAPIRetryMessage):
    *  a typed error enum + the SDK's auto-retry counters. `error:'rate_limit'` is
    *  the only value we treat as a limit (see normalizeSdkMessage). */
@@ -463,20 +486,20 @@ export function normalizeSdkMessage(msg: RawSdkMessage, state: NormalizeState): 
 
     case 'result': {
       const isError = msg.is_error === true || (msg.subtype ? msg.subtype !== 'success' : false);
-      if (isError) {
-        const detail =
-          (msg.errors && msg.errors.length > 0 && msg.errors.join('; ')) ||
-          msg.subtype ||
-          'the brain turn failed';
-        out.push({ type: 'error', message: detail });
-        return out;
-      }
       const usage: BrainUsage = {};
       const u = msg.usage;
       if (u?.input_tokens != null) usage.inputTokens = u.input_tokens;
       if (u?.output_tokens != null) usage.outputTokens = u.output_tokens;
       if (msg.total_cost_usd != null) usage.costUsd = msg.total_cost_usd;
       if (msg.num_turns != null) usage.numTurns = msg.num_turns;
+      if (isError) {
+        const detail =
+          (msg.errors && msg.errors.length > 0 && msg.errors.join('; ')) ||
+          msg.subtype ||
+          'the brain turn failed';
+        out.push({ type: 'error', message: detail, ...(usage.costUsd !== undefined ? { usage } : {}) });
+        return out;
+      }
       out.push({
         type: 'turn-end',
         sessionId: state.sessionId,

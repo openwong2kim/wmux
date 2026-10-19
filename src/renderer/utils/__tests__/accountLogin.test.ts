@@ -99,6 +99,23 @@ describe('startAccountLogin', () => {
     expect(state.closeSurface).toHaveBeenCalledWith('pane-1', 'surf-login', 'ws-1');
   });
 
+  it('a group that fails to apply warns but still finishes the registered login', async () => {
+    const { api, pty, statuses, state } = setup();
+    api.add.mockResolvedValue({ id: 'acc-1' });
+    const setGroup = vi.fn(async () => { throw new Error('disk full'); });
+    (api as unknown as { setGroup: typeof setGroup }).setGroup = setGroup;
+    await startAccountLogin({ vendor: 'claude', name: 'Work', configDir: '/acc/claude-1', loginCommand: 'x', group: 'Office' });
+    statuses.push({ loggedIn: false }, { loggedIn: true, stamp: 's1' });
+    await vi.advanceTimersByTimeAsync(LOGIN_POLL_INTERVAL_MS * 2);
+    expect(setGroup).toHaveBeenCalledWith({ id: 'acc-1', group: 'Office' });
+    const levels = (state.pushToast.mock.calls as unknown as [{ level: string }][]).map(([toast]) => toast.level);
+    expect(levels).toContain('warn');
+    expect(levels).not.toContain('error');
+    expect(getPendingAccountLogins()).toEqual([]);
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(pty.dispose).toHaveBeenCalledWith('pty-login');
+  });
+
   it('a re-login waits for a NEW credential, not the stale one it replaces', async () => {
     const { api, statuses } = setup();
     statuses.push({ loggedIn: true, stamp: "old" }); // baseline read

@@ -12,6 +12,7 @@ import { describe, it, expect, beforeAll, afterEach, vi } from 'vitest';
 import { installCanvas2dStub } from '../../../test-utils/canvas2dStub';
 import { act, useRef } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
+import { deliberateSleep } from '../../../test-utils/waitFor';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -92,7 +93,7 @@ describe('useTerminal WebGL retention', { timeout: 60_000 }, () => {
     // A pane shown without a context paints with the DOM renderer and is
     // upgraded once reveals settle (webglUpgradeQueue). Then fonts.ready may
     // rebuild it once for the atlas. Count from that settled state.
-    await act(async () => { await new Promise((r) => setTimeout(r, 900)); });
+    await act(async () => { await deliberateSleep(900, 'real timer: reveal settle and webgl upgrade queue must run'); });
     const created = webgl.created;
     const disposed = webgl.disposed;
     expect(created).toBeGreaterThan(0);
@@ -153,7 +154,7 @@ describe('useTerminal WebGL grant when the pool is full', { timeout: 60_000 }, (
     const before = webgl.created;
     await act(async () => { root!.render(<Harness visible />); });
     // Longer than any delay a deferred grant could use.
-    await act(async () => { await new Promise((r) => setTimeout(r, 1_000)); });
+    await act(async () => { await deliberateSleep(1_000, 'negative: no deferred grant creates a context'); });
     expect(webgl.created).toBe(before);
     expect(fillers.every((t) => webglContextPool.grantedTokens().includes(t))).toBe(true);
   });
@@ -162,18 +163,18 @@ describe('useTerminal WebGL grant when the pool is full', { timeout: 60_000 }, (
     const { Harness, webglContextPool } = await setup();
     const before = webgl.created;
     await act(async () => { root!.render(<Harness visible />); });
-    await act(async () => { await new Promise((r) => setTimeout(r, 30)); });
+    await act(async () => { await deliberateSleep(30, 'not yet converted (#2363): lets the reveal paint under act; nothing polled'); });
 
     // A slot frees while the pane is on screen: no swap under the reader.
     webglContextPool.release(fillers.shift()!);
-    await act(async () => { await new Promise((r) => setTimeout(r, 300)); });
+    await act(async () => { await deliberateSleep(300, 'negative: no context swap while the pane is shown'); });
     expect(webgl.created).toBe(before);
 
     // The next reveal takes it, after the reveal has painted.
     await act(async () => { root!.render(<Harness visible={false} />); });
     await act(async () => { root!.render(<Harness visible />); });
     expect(webgl.created).toBe(before);
-    await act(async () => { await new Promise((r) => setTimeout(r, 900)); });
+    await act(async () => { await deliberateSleep(900, 'real timer: the next reveal\'s webgl upgrade must run'); });
     expect(webgl.created).toBe(before + 1);
   });
 });

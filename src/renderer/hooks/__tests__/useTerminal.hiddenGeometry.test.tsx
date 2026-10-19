@@ -17,6 +17,7 @@ import type { Terminal } from '@xterm/xterm';
 import { createRoot, type Root } from 'react-dom/client';
 import { FitAddon } from '@xterm/addon-fit';
 import { setDaemonModeActive } from '../../daemon/daemonMode';
+import { deliberateSleep } from '../../../test-utils/waitFor';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -95,7 +96,7 @@ async function mount(ptyId: string, visible: boolean) {
   document.body.appendChild(host);
   root = createRoot(host);
   await act(async () => { root!.render(<Harness />); });
-  await act(async () => { await new Promise((r) => setTimeout(r, 50)); });
+  await act(async () => { await deliberateSleep(50, 'not yet converted (#2363): lets the mount settle under act; nothing polled'); });
 }
 
 // The first case pays for importing the whole hook under jsdom.

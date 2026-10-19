@@ -58,11 +58,20 @@ const KEYS = [
   'pane.browserPolicyInAppNotCovered',
   'pane.browserPolicyProfileNameTaken',
   'pane.browserPolicyUnreadable',
+  'pane.browserPolicySummaryBlocked',
+  'pane.browserPolicyRecentlyBlocked',
+  'pane.browserPolicyRecentlyBlockedDesc',
+  'pane.browserPolicyRecentlyBlockedCount',
+  'pane.browserPolicyAllow',
+  'pane.browserPolicyAllowHost',
 ] as const;
 
 const VARS: Partial<Record<(typeof KEYS)[number], string[]>> = {
   'pane.browserPolicyInvalidLine': ['{line}', '{rule}'],
   'pane.browserPolicySummarySites': ['{count}'],
+  'pane.browserPolicySummaryBlocked': ['{count}'],
+  'pane.browserPolicyRecentlyBlockedCount': ['{count}'],
+  'pane.browserPolicyAllowHost': ['{host}'],
 };
 
 type BrowserPolicyTranslationKey = (typeof KEYS)[number];

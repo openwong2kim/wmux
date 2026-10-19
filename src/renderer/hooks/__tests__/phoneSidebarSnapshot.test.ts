@@ -105,6 +105,24 @@ describe('buildPhoneSidebarSnapshot — workspace rows', () => {
     expect(snap.panes.map((p) => p.ptyId)).toEqual(['pty-a']);
   });
 
+  it('names each bot worker it leaves out, with its task record, and none when there is no bot worker', () => {
+    const a = workspace('a', [leaf('pa', [surface('sa', 'pty-a')])]);
+    const t = workspace('t', [leaf('pt', [surface('st', 'pty-t')])]);
+    const u = workspace('u', [leaf('pu', [surface('su', 'pty-u')])]);
+    const own = workspace('own', [leaf('pw', [surface('sw', 'pty-w')])]);
+    const snap = buildPhoneSidebarSnapshot(state({
+      workspaces: [a, t, u, own],
+      missions: { t: mission('wtask-t', 'a', { paneGroupId: 't' }), own: mission('wtask-own', 'a', { paneGroupId: 'own' }) },
+      lineage: { own: 'a' },
+      origin: { t: { kind: 'bot', botId: 'bot-1' }, u: { kind: 'bot', botId: 'bot-2' } },
+    }));
+    expect(snap.botWorkers).toEqual([{ workspaceId: 't', botId: 'bot-1', taskId: 'wtask-t' }, { workspaceId: 'u', botId: 'bot-2' }]);
+    // The owner's own task stays an ordinary row and is never named a worker.
+    expect(snap.workspaces.map((w) => w.id)).toEqual(['a', 'own']);
+    expect(parsePhoneSidebarSnapshot(snap)?.botWorkers).toEqual(snap.botWorkers);
+    expect(buildPhoneSidebarSnapshot(state({ workspaces: [a] }))).not.toHaveProperty('botWorkers');
+  });
+
   it('omits a null git sync and leaves no key for an absent color', () => {
     const a = workspace('a', [leaf('pa', [surface('sa', 'pty-a')])], { metadata: { gitSync: null } });
     const [row] = buildPhoneSidebarSnapshot(state({ workspaces: [a] })).workspaces;

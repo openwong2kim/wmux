@@ -234,12 +234,12 @@ export function createWindow(opts: { deferLoad?: boolean } = {}): BrowserWindow 
         // Window glass. Adapted from MonoCode (hardbeat920/monocode@6bd432ca,
         // src-tauri/src/macos.rs), MIT License, Copyright (c) 2026 Nick: a
         // behind-window material under a transparent window. The page decides
-        // what shows through — under a dark theme the renderer sets
-        // `data-glass` and tints only the chrome (globals.css); the workspace
-        // frame and terminals stay opaque, and a light theme paints the whole
-        // page opaque. The material also covers the first frame, so there is
-        // no white flash before the renderer paints.
-        vibrancy: 'under-window',
+        // what shows through — once the app's appearance matches the theme the
+        // renderer sets `data-glass` and tints only the frame and the sidebar
+        // (globals.css); the panes and terminals stay opaque. The material
+        // also covers the first frame, so there is no white flash before the
+        // renderer paints.
+        vibrancy: 'sidebar',
         visualEffectState: 'active',
         backgroundColor: '#00000000',
       },

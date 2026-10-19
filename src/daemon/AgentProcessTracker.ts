@@ -837,6 +837,13 @@ export class AgentProcessTracker {
     return s?.alive === true && s.wsl !== undefined;
   }
 
+  /** #2261 — the live WSL agent a stop may signal (its Linux pid, boot id and
+   *  start time, and the pane's wsl.exe), or undefined. Never probes. */
+  wslAgentFor(sessionId: string): WslWatchedAgent | undefined {
+    const s = this.states.get(sessionId);
+    return s?.alive === true ? s.wsl : undefined;
+  }
+
   /** #1307 — the attributed process's pid, for a delivery-time liveness
    *  probe fresher than the cached `alive` flag (a death between
    *  ProcessMonitor polls). undefined = never attributed. */

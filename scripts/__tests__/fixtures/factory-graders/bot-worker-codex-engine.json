@@ -1,0 +1,299 @@
+{
+  "pass": {
+    "schemaVersion": 1,
+    "scenario": "bot-worker-codex-engine",
+    "run": 1,
+    "workspaceId": "ws-c6771bbc-f8e9-4de4-9bab-a7eca298cc33",
+    "botKeys": {
+      "lead": "bot-1284448f"
+    },
+    "injected": [
+      {
+        "label": "ask",
+        "kind": "card",
+        "id": "c-mv8bqbra56c1e543e6",
+        "threadId": "general",
+        "at": 1791995296005
+      }
+    ],
+    "actions": [
+      {
+        "do": "rpc",
+        "label": "pick-codex"
+      },
+      {
+        "do": "post",
+        "label": "ask"
+      },
+      {
+        "do": "waitFor",
+        "label": "report",
+        "ok": true
+      },
+      {
+        "do": "waitFor",
+        "label": "quiet",
+        "ok": true
+      }
+    ],
+    "harnessErrors": [],
+    "sources": {
+      "facts": {
+        "present": true,
+        "ok": true,
+        "errors": 0
+      },
+      "wakes": {
+        "present": true,
+        "ok": true,
+        "errors": 0
+      },
+      "handoffs": {
+        "present": false,
+        "ok": false,
+        "errors": 0
+      },
+      "bots": {
+        "present": true,
+        "ok": true,
+        "errors": 0
+      },
+      "settings": {
+        "present": true,
+        "ok": true,
+        "errors": 0
+      },
+      "repoWatch": {
+        "present": false,
+        "ok": false,
+        "errors": 0
+      },
+      "ledger": {
+        "present": true,
+        "ok": true,
+        "errors": 0
+      },
+      "verdicts": {
+        "present": false,
+        "ok": false,
+        "errors": 0
+      },
+      "effects": {
+        "present": false,
+        "ok": false,
+        "errors": 0
+      },
+      "approvals": {
+        "present": false,
+        "ok": false,
+        "errors": 0
+      },
+      "approvalRules": {
+        "present": false,
+        "ok": false,
+        "errors": 0
+      },
+      "decisions": {
+        "present": false,
+        "ok": false,
+        "errors": 0
+      },
+      "routines": {
+        "present": false,
+        "ok": false,
+        "errors": 0
+      },
+      "cards": {
+        "present": true,
+        "ok": true,
+        "errors": 0
+      },
+      "workers": {
+        "present": true,
+        "ok": true,
+        "errors": 0
+      },
+      "ghCalls": {
+        "present": true,
+        "ok": true,
+        "errors": 0
+      }
+    },
+    "timeouts": [],
+    "saved": {},
+    "records": [],
+    "facts": [],
+    "wakes": [
+      {
+        "id": "w-mv8bqbrb-971556ac",
+        "botId": "bot-1284448f",
+        "workspaceId": "ws-c6771bbc-f8e9-4de4-9bab-a7eca298cc33",
+        "reason": {
+          "kind": "human",
+          "text": "Make change A.",
+          "source": "desktop",
+          "clientMessageId": "c-mv8bqbra56c1e543e6",
+          "runId": "run-c-mv8bqbra56c1e543e6"
+        },
+        "threadId": "general",
+        "priority": 0,
+        "enqueuedAt": 1791995296007,
+        "attempts": 1,
+        "state": "done"
+      },
+      {
+        "id": "w-mv8bqk6t-4feb06d5",
+        "botId": "bot-1284448f",
+        "workspaceId": "ws-c6771bbc-f8e9-4de4-9bab-a7eca298cc33",
+        "reason": {
+          "kind": "facts",
+          "factIds": [
+            "task.gated:wtask-mv8bqfw7-7c9ogdfn@4"
+          ],
+          "trigger": {
+            "kind": "task.done"
+          }
+        },
+        "threadId": "task:wtask-mv8bqfw7-7c9ogdfn",
+        "priority": 1,
+        "enqueuedAt": 1791995306933,
+        "attempts": 1,
+        "state": "done"
+      }
+    ],
+    "bots": [
+      {
+        "id": "bot-1284448f",
+        "workspaceId": "ws-c6771bbc-f8e9-4de4-9bab-a7eca298cc33",
+        "role": "lead",
+        "name": "Lead",
+        "workerAgent": {
+          "agent": "codex"
+        }
+      }
+    ],
+    "ledger": [
+      {
+        "id": "wtask-mv8bqfw7-7c9ogdfn",
+        "status": "completed",
+        "dispatch": {
+          "origin": {
+            "kind": "bot",
+            "botId": "bot-1284448f",
+            "tainted": false
+          },
+          "preset": "default"
+        },
+        "taskWorkspaceId": "ws-739c885d-6a7f-42c1-9dbb-cb163eb65754",
+        "ownerWorkspaceId": "ws-c6771bbc-f8e9-4de4-9bab-a7eca298cc33"
+      }
+    ],
+    "cards": [],
+    "stub": {},
+    "workers": [
+      {
+        "at": 1791995305427,
+        "pid": 96619,
+        "cwd": "/data/worktrees/985e77733d10/change-a-7c9ogdfn",
+        "event": "start",
+        "taskId": "wtask-mv8bqfw7-7c9ogdfn",
+        "agent": "codex",
+        "rulesPresent": true,
+        "args": [
+          "-c",
+          "features.daemon_auto_start=false",
+          "--no-daemon",
+          "-c",
+          "projects={\"/data/worktrees/985e77733d10/change-a-7c9ogdfn\"={trust_level=\"trusted\"}}",
+          "-a",
+          "never",
+          "-s",
+          "workspace-write",
+          "-c",
+          "sandbox_workspace_write.writable_roots=[\"/tmp/x\",\"/tmp/x",
+          "-c",
+          "sandbox_workspace_write.network_access=true",
+          "-C",
+          "/data/worktrees/985e77733d10/change-a-7c9ogdfn",
+          "--",
+          "# Task worker\n\nYou are a task worker dispatched by a factory bot. Your worktree is a fresh branch from origin's default branch.\n\nWhat you can do here: implement the task below within the files it name"
+        ]
+      },
+      {
+        "at": 1791995306639,
+        "pid": 96619,
+        "cwd": "/data/worktrees/985e77733d10/change-a-7c9ogdfn",
+        "event": "ledger_update",
+        "ok": true,
+        "text": "{\n  \"ok\": true,\n  \"entry\": {\n    \"schemaVersion\": 1,\n    \"id\": \"wtask-mv8bqfw7-7c9ogdfn\",\n    \"taskWorkspaceId\": \"ws-739c885d-6a7f-42c1-9dbb-cb163eb65754\",\n    \"ownerWorkspaceId\": \"ws-c6771bbc-f8e9-4de4-9bab-a7eca298cc33\",\n    \"title\": \"change A\",\n    \"status\": \"review_requested\",\n    \"rev\": 2,\n    \"updatedAt\": 1791995306636,\n    \"updatedBy\": {\n      \"kind\": \"worker\",\n      \"workspaceId\": \"ws-739c885d-6a7f-42c1-9dbb-cb163eb65754\"\n    },\n    \"dispatch\": {\n      \"origin\": {\n        \"kind\": \"bot\",\n        \"botId\": \"bot-1284448f\",\n        \"tainted\": false\n      },\n      \"preset\": \"default\"\n    },\n    \"summary\": \"fake worker: review_requested for wtask-mv8bqfw7-7c9ogdfn\"\n  }\n}"
+      }
+    ]
+  },
+  "fail": [
+    {
+      "why": "the workers ran on the default engine",
+      "failing": [
+        "engine_set_in_profile"
+      ],
+      "mutate": [
+        {
+          "op": "set",
+          "path": "bots.0.workerAgent",
+          "value": null
+        }
+      ]
+    },
+    {
+      "why": "the worker ran claude",
+      "failing": [
+        "worker_ran_codex"
+      ],
+      "mutate": [
+        {
+          "op": "set",
+          "path": "workers.0.agent",
+          "value": "claude"
+        }
+      ]
+    },
+    {
+      "why": "the rules file was missing",
+      "failing": [
+        "rules_file_in_place"
+      ],
+      "mutate": [
+        {
+          "op": "set",
+          "path": "workers.0.rulesPresent",
+          "value": false
+        }
+      ]
+    },
+    {
+      "why": "the line asked for approvals",
+      "failing": [
+        "guarded_line"
+      ],
+      "mutate": [
+        {
+          "op": "set",
+          "path": "workers.0.args.6",
+          "value": "on-request"
+        }
+      ]
+    },
+    {
+      "why": "the report failed",
+      "failing": [
+        "reported_as_itself"
+      ],
+      "mutate": [
+        {
+          "op": "set",
+          "path": "workers.1.ok",
+          "value": false
+        }
+      ]
+    }
+  ]
+}

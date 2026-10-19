@@ -1,7 +1,7 @@
 /**
  * #1464 — the recovery replay decision against a REAL ConPTY.
  *
- * DaemonSessionManager.test.ts covers the same decision with a mocked PTY;
+ * DaemonSessionManager.os.test.ts covers the same decision with a mocked PTY;
  * the Windows branch (keep ConPTY's stale-geometry discard) only means
  * something against the real thing, and nobody on the team runs Windows. This
  * suite is that dogfood: it runs on the CI windows-latest runner and is
@@ -24,6 +24,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { ManagedSession } from '../DaemonSessionManager';
 import { DaemonSessionManager } from '../DaemonSessionManager';
+import { deliberateSleep } from '../../test-utils/waitFor';
 
 const SYS = process.env.SystemRoot || 'C:\\Windows';
 const CMD_EXE = `${SYS}\\System32\\cmd.exe`;
@@ -87,7 +88,7 @@ describe.skipIf(!onWindows)('recovery replay — real ConPTY (win32 only; elsewh
   async function recoverWithHeldHead(id: string): Promise<{ mgr: DaemonSessionManager; managed: ManagedSession; client: Client }> {
     const mgr = new DaemonSessionManager();
     manager = mgr;
-    mgr.createSession({
+    await mgr.createSessionAsync({
       id,
       cmd: CMD_EXE,
       cwd: path.resolve(process.cwd()),
@@ -127,7 +128,7 @@ describe.skipIf(!onWindows)('recovery replay — real ConPTY (win32 only; elsewh
 
     mgr.resizeSession(managed.meta.id, 80, 24);
     await waitFor(() => !managed.bridge.isMuted, 'unmute');
-    await sleep(UNMUTE_SETTLE_MS);
+    await deliberateSleep(UNMUTE_SETTLE_MS, 'real timer: the deferred unmute (100ms) must fire');
 
     // History arrived with the attach flush…
     expect(client.flush).toContain(HISTORY);
@@ -184,7 +185,7 @@ describe.skipIf(!onWindows)('recovery replay — real ConPTY (win32 only; elsewh
 
     mgr.resizeSession(managed.meta.id, 80, 24);
     await waitFor(() => !managed.bridge.isMuted, 'unmute');
-    await sleep(UNMUTE_SETTLE_MS);
+    await deliberateSleep(UNMUTE_SETTLE_MS, 'real timer: the deferred unmute (100ms) must fire');
 
     const replayed = client.replayed.join('');
     expect(replayed).toContain(HEAD);

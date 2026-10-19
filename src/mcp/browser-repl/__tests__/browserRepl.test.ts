@@ -34,6 +34,7 @@ import {
 import { IMAGE_CAP_NOTE, RUN_IMAGE_TOTAL_BYTES } from '../runCollect';
 import { MAX_SCREENSHOT_BASE64_BYTES } from '../../resultCap';
 import { ActionRing, recordAction, type ActionRingDeps } from '../../browser-replay/actionRing';
+import { deliberateSleep } from '../../../test-utils/waitFor';
 
 function ok(text: string, extraBlocks: string[] = []): CallToolResult {
   return {
@@ -142,7 +143,7 @@ function harness(overrides: Partial<Record<string, (args: Record<string, unknown
   );
   add('extract_text', { surfaceId: z.string().optional() }, async () => ok('Hello world'));
   add('wait', { ms: z.number().optional() }, async (a) => {
-    await new Promise((r) => setTimeout(r, Number(a.ms ?? 0)));
+    await deliberateSleep(Number(a.ms ?? 0), 'stub latency: the stub wait tool');
     return ok('waited');
   });
   add('cookies', { action: z.string() }, async () => ok('cookies'));
@@ -580,7 +581,7 @@ describe('browser_repl session', () => {
       10_000,
       bridge,
     );
-    await new Promise((r) => setTimeout(r, 80));
+    await deliberateSleep(80, 'real timer: let the late call scheduled by the run fire');
     const out = await session.run('await globalThis.late', 10_000, bridge);
     expect(out.result?.text).toContain('refused — made after its browser_repl run finished');
     expect(h.calls).toHaveLength(0);
@@ -691,7 +692,7 @@ describe('browser_repl session', () => {
     const bridge = createBrowserBridge(h.tools, {});
     const session = newSession();
     await session.run('setTimeout(() => process.exit(3), 10); 1', 10_000, bridge);
-    await new Promise((r) => setTimeout(r, 150));
+    await deliberateSleep(150, 'real timer: let the runtime exit after its 10ms timer');
     const out = await session.run('1', 10_000, bridge);
     expect(out.ok).toBe(true);
     expect(out.freshRuntime).toBe(true);

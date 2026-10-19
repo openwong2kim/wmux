@@ -118,6 +118,10 @@ export interface BotSecretEntry {
   label?: string;
   /** The bot whose request created it, if any. */
   requestedBy?: string;
+  /** Entered for a connection (shared/botConnector.ts). */
+  connectorId?: string;
+  /** The connections that use it (the owner's list only). */
+  connections?: string[];
   createdAt: number;
   updatedAt: number;
   /** The last worker grant that carried it. */

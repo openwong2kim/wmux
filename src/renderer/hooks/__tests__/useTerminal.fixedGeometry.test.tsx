@@ -11,6 +11,7 @@ import { installCanvas2dStub } from '../../../test-utils/canvas2dStub';
 import { act, useRef } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { FitAddon } from '@xterm/addon-fit';
+import { deliberateSleep } from '../../../test-utils/waitFor';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -83,7 +84,7 @@ async function mount(fixedGeometry: { cols: number; rows: number } | undefined) 
   document.body.appendChild(host);
   root = createRoot(host);
   await act(async () => { root!.render(<Harness geometry={fixedGeometry} />); });
-  await act(async () => { await new Promise((r) => setTimeout(r, 30)); });
+  await act(async () => { await deliberateSleep(30, 'not yet converted (#2363): lets the first fit settle under act; nothing polled'); });
   const rerender = async (g: { cols: number; rows: number } | undefined) => {
     await act(async () => { root!.render(<Harness geometry={g} />); });
   };
@@ -105,13 +106,13 @@ describe('useTerminal fixedGeometry', { timeout: 60_000 }, () => {
 
     // The owner resized the pane.
     await rerender({ cols: 100, rows: 30 });
-    await act(async () => { await new Promise((r) => setTimeout(r, 30)); });
+    await act(async () => { await deliberateSleep(30, 'not yet converted (#2363): lets the rerender fit settle under act'); });
     expect(term().cols).toBe(100);
     expect(term().rows).toBe(30);
 
     // A container resize runs the observer's fit: still the owner's grid.
     window.dispatchEvent(new Event('resize'));
-    await act(async () => { await new Promise((r) => setTimeout(r, 30)); });
+    await act(async () => { await deliberateSleep(30, 'negative: a container resize does not resize the PTY'); });
     expect(term().cols).toBe(100);
     expect(resize).not.toHaveBeenCalled();
   });

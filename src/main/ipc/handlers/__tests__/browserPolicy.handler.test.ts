@@ -43,15 +43,21 @@ describe('registerBrowserPolicyIpc', () => {
       decisionFor: vi.fn((): PanePolicyDecision => ({ kind: 'legacy' })),
       write: vi.fn(async () => 1),
     };
+    const bindings: Record<string, { workspaceId: string; profile: string }> = {
+      'pane-1': { workspaceId: 'ws-1', profile: 'pa' },
+    };
+    const blockedHostsFor = vi.fn((profile: string) =>
+      profile === 'pa' ? [{ host: 'cdn.test', port: 443, lastSeen: 5, count: 2 }] : []);
     registerBrowserPolicyIpc({ handle: (ch: string, fn: never) => handlers.set(ch, fn) } as never, {
       getWindow: () => win,
       store,
       profileFor: () => 'pa',
-      paneBindings: () => ({ 'pane-1': { workspaceId: 'ws-1', profile: 'pa' } }),
+      paneBindings: () => bindings,
       paneWorkspace: (paneId) => (paneId === 'pane-1' ? 'ws-1' : null),
+      blockedHostsFor,
     });
     const trusted = { sender: webContents, senderFrame: mainFrame };
-    return { handlers, store, trusted };
+    return { handlers, store, trusted, bindings, blockedHostsFor };
   }
   const write = {
     workspaceId: 'ws-1',
@@ -98,5 +104,47 @@ describe('registerBrowserPolicyIpc', () => {
       kind: 'protected', epoch: 2, profileId: 'pa', hosts: { mode: 'allowlist', allow: [], block: [] }, confirmed: false,
     });
     expect(await read()).toMatchObject({ decision: 'protected', confirmed: false });
+  });
+
+  describe('recently blocked hosts (#2063)', () => {
+    const where = { workspaceId: 'ws-1', paneId: 'pane-1' };
+
+    it('refuses a webview guest, a subframe and another window without reading the list', async () => {
+      const { handlers, blockedHostsFor, trusted } = setup();
+      const read = handlers.get(BROWSER_POLICY_IPC.blocked)!;
+      const guest = { sender: { mainFrame: {} }, senderFrame: {} };
+      const subframe = { sender: trusted.sender, senderFrame: { id: 'sub' } };
+      const other = fakeWindow();
+      for (const sender of [guest, subframe, { sender: other.webContents, senderFrame: other.mainFrame }]) {
+        expect(await read(sender, where)).toEqual({ ok: false, error: UNTRUSTED_SENDER_ERROR });
+      }
+      expect(blockedHostsFor).not.toHaveBeenCalled();
+    });
+
+    it('refuses a pane that is not in the named workspace', async () => {
+      const { handlers, blockedHostsFor, trusted } = setup();
+      expect(await handlers.get(BROWSER_POLICY_IPC.blocked)!(trusted, { ...where, workspaceId: 'ws-2' }))
+        .toMatchObject({ ok: false });
+      expect(await handlers.get(BROWSER_POLICY_IPC.blocked)!(trusted, {})).toMatchObject({ ok: false });
+      expect(blockedHostsFor).not.toHaveBeenCalled();
+    });
+
+    it("answers the trusted sender with the pane's own profile's list", async () => {
+      const { handlers, blockedHostsFor, trusted } = setup();
+      expect(await handlers.get(BROWSER_POLICY_IPC.blocked)!(trusted, where)).toEqual({
+        ok: true,
+        hosts: [{ host: 'cdn.test', port: 443, lastSeen: 5, count: 2 }],
+      });
+      expect(blockedHostsFor).toHaveBeenCalledWith('pa');
+    });
+
+    it('answers an empty list for a profile the pane does not own alone', async () => {
+      const { handlers, blockedHostsFor, trusted, bindings } = setup();
+      delete bindings['pane-1'];
+      expect(await handlers.get(BROWSER_POLICY_IPC.blocked)!(trusted, where)).toEqual({ ok: true, hosts: [] });
+      bindings['pane-1'] = { workspaceId: 'ws-other', profile: 'pa' };
+      expect(await handlers.get(BROWSER_POLICY_IPC.blocked)!(trusted, where)).toEqual({ ok: true, hosts: [] });
+      expect(blockedHostsFor).not.toHaveBeenCalled();
+    });
   });
 });

@@ -2747,6 +2747,11 @@ staged in that directory is neither swept nor counted against the quota.
 
 There is no offline queue. A failed upload is a notice and a manual retry.
 
+A photo sent with a Bots room message is copied out of this folder when the
+message is posted and kept with the room card (see
+[Photos on Bots messages](#photos-on-bots-messages-botattachments-roomattachments));
+the upload itself still expires after 24 hours.
+
 ---
 
 ## 9. Channels — reading what the agents said to each other
@@ -3768,6 +3773,38 @@ Approvals and decisions raised by the HQ's panes are not filtered: they reach
 workspace's do, so answer them from the approvals inbox as usual even while
 the HQ's rows are hidden.
 
+#### Bot workers (`botWorker`)
+
+A fan-out task workspace that an agent factory bot started is that bot's
+worker. The desktop shows it on its Bots page only: it is not in the desktop's
+workspace sidebar or Fleet, and it carries none of this section's sidebar
+fields (`order`, `ownerWorkspaceId`, `nested`, …). The daemon still lists its
+live panes, so its rows still come back. One additive key marks them:
+
+```json
+"botWorker": { "botId": "bot-1a2b3c4d", "taskId": "wtask-0b6c1f2e-5d4a-4e1b-9c3d-2a7f8e6b1c90" }
+```
+
+- On every `GET /api/workspaces` row of a bot's worker workspace, and on every
+  `GET /api/sessions` row whose `workspaceId` is that workspace (by the
+  daemon's own record, so every pane and tab of the worker carries it).
+- `botId` — the bot that started the fan-out: the same id as a `bots[]`
+  entry on the row of the workspace that bot belongs to (see *The agent
+  factory* below). Always present.
+- `taskId` — optional: the desktop's task record for the workspace
+  (`wtask-…`). It is **not** an A2A task id, so it never matches a Fleet
+  ticket's or a delegation's `taskId`. Absent until the desktop has the record.
+- Absent means one of: the row is not a bot's worker, the desktop's snapshot
+  does not have it yet (no desktop attached, or the first poll after start),
+  the desktop's reply was over its size budget (this list is the first thing
+  cut, all at once), or an older desktop. Treat an absent key exactly as before this key existed.
+- A task workspace the owner fanned out themselves is never marked: it keeps
+  `ownerWorkspaceId` / `nested` as described above. No row carries both
+  `botWorker` and `ownerWorkspaceId`.
+- Nothing is removed: keep the rows for typing and for resuming a pane, and
+  decide how to show them (hide them from the workspace list, or group them
+  under the bot) by this key alone.
+
 #### The Moa pane (`moaSessionId`)
 
 The Moa pane is the HQ's orchestrator brain: the terminal Moa itself runs in.
@@ -4042,7 +4079,9 @@ In 5.0 the desktop's Moa becomes the HQ bot of an **agent factory**: long-lived
 bots bound to workspaces by role (`lead`, `triage`, `verifier`, `maintainer`,
 and the HQ's `moa`). Bots have no pane and no terminal. What they say lands in
 the workspace's **room**, a timeline of typed cards split into threads (one per
-PR, issue, task, handoff, plan or report, plus `general`). A desktop whose
+PR, issue, task, handoff, plan or report, plus `general`, one per bot that
+has talked with the owner: its 1:1, `dm:<botId>`, and one per group chat the
+owner made, `group:<groupId>`). A desktop whose
 factory is switched off keeps the Moa behaviour above unchanged.
 
 **`/api/config`.**
@@ -4101,7 +4140,11 @@ GET /api/config   (X-Wmux-Client-Caps: rooms-v1)
 unchanged on the wire, but the factory route wins over everything else — even
 over a Moa pane that is still up. The message becomes a `human` card in the HQ
 bot's room (`hqWorkspaceId`) addressed to that one bot (`hqBotId`), and a wake
-queued for it; the daemon answers on queue, never on reply:
+queued for it; the daemon answers on queue, never on reply. The card is in
+the HQ bot's 1:1 thread, `dm:<hqBotId>` (the desktop shows it in that
+bot's 1:1, not in its room), and so are the replies to it: read the room
+without `thread` (every card) or with `thread=dm:<hqBotId>`, not
+`thread=general`:
 
 | Answer | Meaning | Retry |
 |---|---|---|
@@ -4172,7 +4215,25 @@ is always listed.
 arrival order (`seq`, increasing; never sort by `at`).
 
 - `thread` — a thread id from the list (URL-encoded); omitted: every card of
-  the room. `general` reads the general thread only.
+  the room. `general` reads the general thread only. `dm:<botId>` is a
+  bot's 1:1 with the owner: the owner's messages to that bot from
+  its private chat (the desktop's, or the phone's to the HQ bot), its
+  answers and greeting, and the cards about work it starts there (a
+  coordinator's work runs in a `handoff:` thread whose `Finished` pointer
+  card lands here instead of `general`); the desktop never shows
+  it in the room. It is listed by `/threads` like any thread, with no
+  `pr`/`issue` reference; name it after the bot, never by its id.
+  `group:<groupId>` (`grp-` and 8 hex digits) is a group chat the owner made
+  on the desktop: its name and its bots are served by `GET /api/bots`
+  (below); without that route, name it generically ("Group chat"), never by
+  its id. It
+  holds the owner's messages to that group, the bots' answers and the cards
+  of the work started there (a coordinator's `handoff:` thread opened there
+  points back to it). Since the desktop's group chats (2026-10-15) a
+  workspace's room is no conversation by itself: `general` keeps every
+  earlier card, and a workspace whose room the owner had written in reads
+  on as a group chat in `general`. Additive: no field, route or answer
+  changed; a client that draws threads generically shows it like any other.
 - `sinceSeq` — cards with a larger `seq`. Omitted: the newest page. Read
   forward from `0` for the whole history.
 - `limit` — 1–100, default 50.
@@ -4189,7 +4250,8 @@ arrival order (`seq`, increasing; never sort by `at`).
 
 - An owner card a phone sent (`kind: "human"`, `actor.kind: "human"`)
   carries `clientMessageId`: the id it was sent under to
-  `POST /api/moa/messages`. No other card has one. Use it to find your own
+  `POST /api/moa/messages` or `POST /api/rooms/:workspaceId/messages`. No
+  other card has one. Use it to find your own
   message, for example one that was posted but answered `moa-busy`.
 - Pass `nextSinceSeq` back as `sinceSeq` for the next page; `hasMore` says
   more cards follow it. A page can hold fewer than `limit` cards: replies are
@@ -4234,6 +4296,22 @@ arrival order (`seq`, increasing; never sort by `at`).
 - `greeting: true` — on a `question` card only: the bot's greeting question,
   asked in its first turn after the owner added it. It closes once the bot has
   a job.
+- `notice` — on a system card (`actor.kind: "system"`) only: `{code, args?}`,
+  the card's stable code and the values its words need, so the app can word
+  the card in the reader's language. Served only for a code listed in
+  [Room card notice codes](#room-card-notice-codes), with only the args that
+  table lists for it, each of its type (a string at most 500 characters, a
+  finite number). `title` and `body` stay the English text on every card:
+  show the `title` for a code the app does not know, for an arg that names
+  a word (`status`, `cause`, `limit`, `hop`, …) whose value the table does
+  not list, and for a template whose placeholder has no arg: a listed arg
+  may be absent (the desktop wrote none, or its value was not of its type).
+- `approvalAction` — on an `approval` card only: the act its request asks
+  for — `merge`, `push_default`, `issue_create`, `issue_close`, `comment`,
+  `release`, or `skill` (a skill a bot wrote for itself). A `skill`
+  approval, and any action the app does not know (any lower-case name may
+  come), is approved on the desktop only: show "Approve on the desktop" with
+  no buttons. Absent when the desktop no longer has the request.
 - `state` — `open` or `resolved` on `question`, `proposal` and `plan` cards.
   `closes: true` — the card records the end of its thread's subject.
 - `replyTo` — the id of a card of the same thread this one answers. A card a
@@ -4270,6 +4348,361 @@ bot-authored), checked before anything else; no input grant. Every answer is
 | `503 {error:"desktop-unavailable"}` | No desktop attached (rooms live on the desktop; the daemon keeps no copy). |
 | `503 {error:"rooms-unavailable"}` | The desktop cannot read rooms: too old, its factory has not started, or the room's file cannot be read. |
 | `504 {error:"desktop-timeout"}` / `502 {error:"desktop-bad-reply"}` | The desktop did not answer, or answered badly. |
+
+#### Room card notice codes
+
+A system card's `notice.code` is one of these. The desktop words the card's
+title from the code with the English template below, `{name}` being the
+card's arg of that name; it carries the same templates in every language it
+ships. A card's `body` is served as written: show it as is. A code a later
+desktop adds is not served until it is listed here.
+
+Placeholders that are not args: `{time}` is `until` (a time in epoch ms) as
+a local time; `{cause}`, `{reason}` and `{verdict}` are their arg's value
+worded (the values listed); a value not listed means the English `title`.
+
+| Code | Args | English title (desktop) | Values |
+|---|---|---|---|
+| `worker.paused` | `title` string | `Worker paused: {title}`<br>`Worker paused` | `title`: the task's title, or its short id when it has none. The second title when there is no `title` (a card written before worker cards named their task). |
+| `worker.pausedResumable` | `title` string, `kind` string | `Worker paused (resumable): {title}`<br>`Worker paused (resumable)` | `title` as `worker.paused`. `kind: "research"`: a research task (a task folder, not a worktree). |
+| `worker.idlePausedResumable` | `title` string, `kind` string | `Worker paused (resumable): {title}`<br>`Worker paused (resumable)` | As `worker.pausedResumable`. |
+| `worker.done` | `title` string, `status` string | `Worker done: {title}`<br>`Worker done` | `title` as `worker.paused`. `status`: `completed`, `cancelled` or `failed`. |
+| `worker.doneResumable` | `title` string, `status` string, `kind` string | `Worker done (resumable): {title}`<br>`Worker done (resumable)` | As `worker.done`; `kind` as `worker.pausedResumable`. |
+| `worker.resumed` | `title` string, `by` string, `where` string | `Worker resumed: {title}`<br>`Worker resumed` | `title` as `worker.paused`. `by`: `owner` or `bot`. `where`: `folder` or `newPane`. |
+| `worker.waiting` | `title` string, `inUse` number, `cap` number, `holders` string, `bots` string, `botCount` number, `workers` string, `workerCount` number | `Worker waiting, not started` | `bots` / `workers`: names, one per line (the first few). `holders`: the same in English. |
+| `worker.noReport` | — | `Worker answered without reporting its task` | — |
+| `worker.stillNoReport` | — | `Worker still has not reported its task` | — |
+| `worker.reportAfterEnd` | `title` string | `Worker of "{title}" reported after its task ended` | `title`: the task's title. The task stays as it ended; the bot is woken with the worker's message. |
+| `worker.startFailed` | `title` string, `cause` string | `Worker for "{title}" could not start: {cause}` | `cause`: `fetch`, `worktree`, `repository`, `promptFile`, `slot`, `pane`, `setupStep` or `setup`. |
+| `gate.checked` | — | `Task checked: gate passed, task completed` | — |
+| `gate.passedNotCompleted` | — | `Gate passed: task not completed` | — |
+| `gate.passed` | — | `Gate passed: task left open` | — |
+| `gate.killed` | — | `Gate was killed: task left open` | — |
+| `gate.failed` | `exit` number | `Gate failed (exit {exit}): task left open` | — |
+| `gate.skipped` | `reason` string | `Gate skipped ({reason}): task left open` | `reason`: `deps_missing`, `no_gate_command`, `gate_unavailable` or `no_changes`. |
+| `gate.busy` | — | `Gate already running: task left open` | — |
+| `gate.noBase` | `detail` string | `No gate on the default branch yet: task left open` | `detail`: the error, in English. |
+| `gate.refused` | — | `Gate refused: task left open` | — |
+| `gate.notRunNoBot` | — | `Gate not run: task left open` | — |
+| `gate.notRunNoWorktree` | — | `Gate not run: task left open` | — |
+| `gate.notRunNoBaseRef` | — | `Gate not run: task left open` | — |
+| `research.completed` | — | `Research reported: task completed` | — |
+| `research.notCompleted` | — | `Research reported: task not completed` | — |
+| `task.merged` | `pr` number | `PR #{pr} merged: task completed` | `pr`: the merged pull request that ended the task. |
+| `verify.passed` | — | `Verify gate passed` | — |
+| `verify.killed` | — | `Verify gate was killed` | — |
+| `verify.failed` | `exit` number | `Verify gate failed (exit {exit})` | — |
+| `verify.skipped` | `reason` string | `Verify gate skipped ({reason})` | As `gate.skipped`. |
+| `verify.busy` | — | `Verify gate already running` | — |
+| `verify.refused` | — | `Verify gate refused` | — |
+| `verify.notRunNoBot` | — | `Verify gate not run` | — |
+| `verify.notRunNoWorktree` | — | `Verify gate not run` | — |
+| `verify.notRunNoBaseRef` | — | `Verify gate not run` | — |
+| `budget.exhausted` | `bot` string, `limit` string, `until` number | `{bot} is out of turns for this hour`<br>`{bot} is out of turns for today`<br>`{bot} is running as many workers as it may at once`<br>`{bot} has used its worker hours for today`<br>`{bot} waits: the bots are running as many workers as they may at once` | One title per `limit`, in this order: `turns_hour`, `turns_day`, `concurrent_workers`, `worker_hours_day`, `factory_workers`. `until`: when it picks up by itself. |
+| `budget.held` | `bot` string, `until` number | `Queued: {bot} is out of turns` | `until`: when it has turns again. |
+| `bot.usageLimit` | `bot` string, `until` number | `{bot} hit its usage limit; it picks up again at {time}` | `{time}` is `until`. |
+| `bot.error` | `bot` string | `{bot} hit an error` | — |
+| `task.done` | `title` string | `Task done: {title}` | — |
+| `task.reported` | `title` string | `Task reported · in review: {title}` | — |
+| `task.failed` | `title` string | `Task failed: {title}` | — |
+| `task.cancelled` | `title` string | `Task cancelled: {title}` | — |
+| `task.stoppedByOwner` | `title` string | `Task cancelled · stopped by owner: {title}` | — |
+| `task.keptFolderCleaned` | `title` string, `days` number, `kind` string | `Removed the kept folder of "{title}"` | A folder kept after the owner stopped the task, removed by wmux after `days` days with no changes. `kind`: `research` for a research task's folder (no branch); absent for a worktree, whose branch stays. |
+| `task.inputRequired` | `title` string, `why` string | `Task needs input: {title}` | `why`: `trustDialog`, `firstRun` or `launchFailed`. |
+| `pr.merged` | `pr` number, `title` string | `PR #{pr} merged: {title}`<br>`PR #{pr} merged` | The second title when there is no `title`. |
+| `pr.closed` | `pr` number, `title` string | `PR #{pr} closed: {title}`<br>`PR #{pr} closed` | As `pr.merged`. |
+| `verdict.recorded` | `verdict` string, `pr` number, `sha` string, `bot` string | `Verdict {verdict} for #{pr} at {sha} by {bot}` | `verdict`: `pass` or `fail`. |
+| `handoff.sent` | `hop` string, `to` string, `title` string, `relay` number | `dispatch → {to}: {title}`<br>`result → {to}: {title}`<br>`message → {to}: {title}`<br>`refusal → {to}: {title}`<br>`Answered → {to}: {title}` | One title per `hop`, in this order: `dispatch`, `result`, `message`, `refusal`, `answer`. `relay: 1`: wmux forwarded it (the desktop adds "(forwarded by wmux)"). |
+| `thread.finished` | `title` string | `Finished: {title}` | — |
+| `thread.stopped` | `title` string | `Stopped: {title}` | — |
+| `skill.archived` | `skill` string | `Skill archived: {skill}` | `skill`: the skill's name. |
+| `secret.deleted` | `name` string | `Key deleted: {name}` | `name`: the key's name (never its value). |
+
+#### The Bots page (`bots`, `botMessages`, `/api/bots`, `/api/rooms/:workspaceId/messages`)
+
+> **Serving: not yet.** Like *The agent factory* above. Additive: every
+> route and key above is unchanged, and a daemon or desktop that predates
+> this section omits both keys and answers the two routes `404`.
+
+The desktop's Bots page is a messenger: one conversation per bot (its 1:1,
+`dm:<botId>`) and one per group chat the owner made, across every workspace,
+newest first. These two routes give the phone the same list in one call and
+let it write in any of those conversations, not only to the HQ bot.
+
+**`/api/config`.**
+
+- `bots` — `true` when `GET /api/bots` answers here: `--allow-transcript`
+  and an attached desktop that announced the list. Omitted, never `false`,
+  otherwise.
+- `botMessages` — `true` when `POST /api/rooms/:workspaceId/messages` passes
+  its gates for this caller: the chat write gates (transcript and this
+  caller's input), and an attached desktop that takes a message for one
+  conversation. Omitted, never `false`, otherwise. It does not say the
+  factory is on: read `factoryEnabled` on the list.
+
+Neither key, nor either route, depends on the `rooms-v1` client capability:
+a client that calls these routes reads replies as room cards by definition.
+
+**`GET /api/bots`** — every bot and every conversation.
+
+```json
+{ "factoryEnabled": true,
+  "bots": [ { "id": "bot-1a2b3c4d", "name": "Lead", "role": "lead", "workspaceId": "ws-1",
+              "enabled": true, "isHq": false, "presence": "running", "queueDepth": 1,
+              "avatar": { "hue": 3, "picture": false } } ],
+  "conversations": [
+    { "kind": "group", "threadId": "group:grp-0a1b2c3d", "workspaceId": "ws-1", "workspaceName": "wmux",
+      "name": "Release crew", "groupId": "grp-0a1b2c3d", "memberBotIds": [ "bot-1a2b3c4d", "bot-5e6f7a8b" ],
+      "lastAt": 1759600000000, "lastSeq": 42, "lastPreview": "PR is green",
+      "lastActor": { "kind": "bot", "botId": "bot-1a2b3c4d", "role": "lead", "name": "Lead" },
+      "unread": null, "openQuestions": 0 },
+    { "kind": "dm", "threadId": "dm:bot-1a2b3c4d", "workspaceId": "ws-1", "workspaceName": "wmux",
+      "name": "Lead", "botId": "bot-1a2b3c4d", "memberBotIds": [ "bot-1a2b3c4d" ],
+      "lastAt": 1759500000000, "lastSeq": 40, "lastPreview": "Can you fix the login?",
+      "lastActor": { "kind": "human" }, "unread": 2, "openQuestions": 1,
+      "work": [ { "threadId": "handoff:hof-7c1d2e3f", "rootCardId": "c-1759400000100-a1b2",
+                  "delegateBotId": "bot-5e6f7a8b", "state": "review", "title": "Fix the login redirect",
+                  "latestCardId": "c-1759450000000-c3d4", "latestPreview": "PR #57 is up",
+                  "steps": 4, "lastAt": 1759450000000,
+                  "refUrl": "https://github.com/acme/app/pull/57" } ] } ] }
+```
+
+- `factoryEnabled` — the desktop's factory switch. Off, the bots are paused:
+  the list is still served (the desktop shows it read-only), no bot is
+  `isHq`, and a send answers `409 factory-off`.
+- `bots` — every bot, oldest first (at most 64), switched off ones too.
+  - `role`, `presence`, `queueDepth` — as on `/api/workspaces` rows above.
+  - `enabled` — `false`: switched off on the desktop. Its 1:1 stays listed
+    and readable, and a send to it answers `409 no-recipient` (`bot-off`).
+  - `isHq` — the bot `POST /api/moa/messages` reaches (`factory.hqBotId`).
+  - `avatar.hue` — the bot's identity slot, `0`–`7`, kept for its life: its
+    Mochi character and colour, in the desktop's order (`0` Loaf `#3d6ff5`,
+    `1` Nova `#5b5bd6`, `2` Plume `#7c4ddb`, `3` Wink `#9d3fd1`, `4` Momo
+    `#c0359f`, `5` Pip `#0b8fb0`, `6` Koa `#2a8fd8`, `7` Nub `#5a6b8c`).
+    `null` only for a profile the desktop has not given one yet.
+  - `avatar.picture` — the owner set a picture for the bot, which the desktop
+    draws instead of the character. The picture itself is not served; draw
+    the character.
+- `conversations` — at most 200, newest first: by `lastAt`, a tie by the
+  row's key (`bot:<botId>` or `group:<groupId>`) in string order, as the
+  desktop sorts them. Fewer when
+  the reply would pass 112 KiB; `truncated: true` when the oldest were left
+  out.
+  - `kind` — `dm` (a bot's 1:1) or `group` (a group chat).
+  - `threadId` — the conversation's own thread, the one to read with
+    `GET /api/rooms/:workspaceId/cards?thread=` and to post to: `dm:<botId>`,
+    `group:<groupId>`, or **`general`** for a group made from its workspace's
+    room before group chats existed. Take it from this field; never build it
+    from `groupId`.
+  - `name` — a 1:1: its bot's name. A group: the owner's name for it; a
+    group made from a room has none and is named after its workspace (empty
+    when the workspace is not open on the desktop).
+  - `workspaceName` — the workspace's name, when it is open on the desktop.
+  - `botId` (a 1:1) / `groupId` (a group). `memberBotIds` — a 1:1: its bot;
+    a group: its bots in the owner's order.
+  - `lastAt` — the newest card's time in the conversation (its own thread
+    and the threads work started there opened), wmux's own lines included;
+    its creation when it has no card. `lastSeq` — that card's `seq` in its
+    room (`0`: none).
+  - `lastPreview` / `lastActor` — the newest message, a bot's or the
+    owner's, never one of wmux's own lines: its title (one line, at most 200
+    characters) and who said it (`{kind:"human"}` or `{kind:"bot", botId,
+    role?, name?}`). Absent when nothing has been said. The desktop row
+    writes "You: …" for the owner and, in a group, "<bot name>: …".
+  - `unread` — cards after the owner's read position in its own thread, or
+    `null` when none is known (not zero).
+  - `openQuestions` — questions asked in its own thread that are not answered
+    yet. Questions in the threads it started (`work`) are not counted: the
+    phone cannot answer there.
+  - `work` — the work this conversation handed off: one entry per thread it
+    started (a coordinator's request thread, `handoff:<id>`), the card the
+    desktop draws in its place, newest first, at most 20. Absent when there
+    is none. A long list may come shortened to fit the reply (its oldest
+    entries left out); a conversation is never left out for its `work`.
+    Each entry, read from the newest 100 cards of the conversation's thread
+    and of each started thread:
+    - `threadId` — the started thread; read it with
+      `GET /api/rooms/:workspaceId/cards?thread=`. Its cards, and wmux's
+      `Finished: …` / `Stopped: …` line about it, are what the desktop folds
+      into the card.
+    - `rootCardId` — the card in the conversation's own thread the work card
+      sits under, as the desktop places it: the delegating bot's message
+      announcing the hand-off (its "handing this to …" reply), else the card
+      before the work's first card (often the owner's request). With no card
+      of the conversation before it, the work's first card read, which may
+      be in `threadId`: place it by `lastAt` then.
+    - `delegateBotId` — the bot the work was handed to.
+    - `state` — `working` (a worker at it, or no end yet), `review` (its
+      report waits for review), `waiting_on_you` (a card in it waits on the
+      owner, or its worker asks for input), `done`, `failed`, `stopped`
+      (cancelled). The desktop's states map one to one (`needsYou` →
+      `waiting_on_you`, `cancelled` → `stopped`). It reads the work's tasks
+      when the desktop lists them within 2 s, else its cards alone, so a
+      busy desktop can serve a reported task whose PR merged as `review`
+      rather than `done` until the next read.
+    - `title` — the request's words (the hand-off's title, else the thread's
+      title), one line, at most 200 characters; empty when neither is known.
+    - `latestCardId` / `latestPreview` — the delegate's newest message in the
+      thread and its title (one line, at most 200 characters).
+    - `steps` — the cards folded into it, of those read. `lastAt` — its
+      newest card's time.
+    - `refUrl` — the GitHub pull request or issue it is about: one a task of
+      it opened, else the newest one a card links.
+
+A 1:1 here is its `dm:` thread. Before 1:1 threads existed the desktop's 1:1
+also gathered a bot's cards from `general`; this list does not, so an old
+conversation can sort a little differently on the phone.
+
+Read-only; needs `--allow-transcript`, checked first; no input grant. Every
+answer is `Cache-Control: no-store`.
+
+| Answer | Meaning |
+|---|---|
+| `200` | The list above. |
+| `403 {error:"transcript-disabled"}` | The server runs without `--allow-transcript`. |
+| `503 {error:"desktop-unavailable"}` | No desktop attached. |
+| `503 {error:"bots-unavailable"}` | The desktop cannot list its bots: too old, or its factory has not started. |
+| `504 {error:"desktop-timeout"}` / `502 {error:"desktop-bad-reply"}` | The desktop did not answer, or answered badly. |
+
+**`POST /api/rooms/:workspaceId/messages`** `{clientMessageId, text,
+threadId}` — a message to one conversation from the list: `workspaceId` and
+`threadId` exactly as the list gives them. Exactly these three fields. The
+desktop posts the owner's `human` card in that thread, as its own composer
+does: in a 1:1 for that bot alone, in a group for every member that is on.
+Each bot it is for gets a wake; the daemon answers on queue, never on reply.
+The card carries `clientMessageId` on `/cards`, and the bots' replies name it
+by `replyTo`, as for `/api/moa/messages`. It may carry photos: see
+[Photos on Bots messages](#photos-on-bots-messages-botattachments-roomattachments)
+below.
+
+Gates and body rules are those of `POST /api/moa/messages`: transcript, then
+this caller's input (the operator token may use it), then the
+`clientMessageId` and `text` rules and their `400`s. Also `400
+{error:"invalid-chat-request", detail:"threadId", effect:"none"}` for a
+`threadId` that is not `dm:<botId>`, `group:<groupId>` or `general`, and `404
+{error:"room-not-found"}` for a malformed `workspaceId`. All checked before
+anything is recorded or sent.
+
+```
+POST /api/rooms/ws-1/messages
+{ "clientMessageId": "1759600000000-…", "text": "Can you fix the login?", "threadId": "dm:bot-1a2b3c4d" }
+→ 202 { "state": "queued", "clientMessageId": "1759600000000-…", "replayed": false }
+```
+
+| Answer | Meaning | Retry |
+|---|---|---|
+| `202 {state:"queued", clientMessageId}` | The card is posted and every bot it is for has the message in its queue. A busy bot queues, it never refuses. | — |
+| `409 {error:"no-recipient", reason, state:"failed"}` | Nothing was posted: `bot-missing` (no such bot in that workspace), `bot-off` (the bot is switched off), `group-missing` (no live group chat in that thread), `group-off` (none of the group's bots is on). Final for this id. `room-refused` (the room took no card): the id is released. | new id, once the desktop changed (`room-refused`: same id, later) |
+| `409 {error:"moa-busy", state:"failed"}`, `Retry-After: 5` | The factory has not finished starting, or a bot's queue is full. Nothing was queued; the id is released. | same id, after the delay |
+| `409 {error:"factory-off", state:"failed"}` | The desktop's factory is switched off. Nothing was posted; the id is released. | same id, once it is on |
+| `503 {error:"desktop-unavailable"}` | No desktop attached, or one too old to take a message for one conversation (it is never sent one). Nothing recorded. | same id, later |
+
+The replay, id-reuse, `desktop-busy`, `uncertain` and `message-history-full`
+answers are those of `POST /api/moa/messages`, on the same receipts: a
+`clientMessageId` is one message whichever route sent it. The same id with
+the same text replays its answer (`replayed: true`) and never posts twice;
+with other text, or the same text to another conversation (or to Moa), it is
+`409 {error:"message-id-reused"}`. That holds after a `moa-busy` too: when a
+full queue refused the wake, the card is already posted and the released id
+stays that card's — send it again with the same text and thread to queue the
+wake, never with a new message. An id this caller spent on a chat send to a
+pane is `409 message-id-reused` as well.
+
+There is no receipt route of its own: `GET /api/moa/messages/:clientMessageId`
+reads these messages too (`state: "queued"` once queued, `failed` with
+`code: "no-recipient"`, `pending`, `uncertain`).
+
+#### Photos on Bots messages (`botAttachments`, `roomAttachments`)
+
+Additive. A daemon or desktop that predates this omits both keys, never puts
+`attachments` on a card, and refuses the field on the message route with
+`400 {error:"invalid-chat-request", detail:"unknown field: attachments"}`.
+
+**`/api/config`.**
+
+- `botAttachments` — `true` when this caller may send photos with
+  `POST /api/rooms/:workspaceId/messages`: `botMessages` holds, uploads are
+  on (`allowUpload`), and the attached desktop takes photos. Gate the attach
+  button on it. Omitted, never `false`, otherwise.
+- `roomAttachments` — `true` when `GET /api/rooms/:workspaceId/attachments/:id`
+  answers here: `--allow-transcript` and a desktop that serves photos. Draw
+  photos on cards when it is present; a read-only phone sees photos it cannot
+  send. Omitted, never `false`, otherwise.
+
+**Sending.** Upload each photo first with `POST /api/upload` (§8), then send
+the message with the upload names:
+
+```
+POST /api/rooms/ws-1/messages
+{ "clientMessageId": "1759600000000-…", "text": "This crashes on launch", "threadId": "dm:bot-1a2b3c4d",
+  "attachments": [ { "uploadId": "photo-2026-10-18T01-02-03-456Z-0a1b2c3d.jpg" } ] }
+→ 202 { "state": "queued", "clientMessageId": "1759600000000-…", "replayed": false }
+```
+
+- `attachments` — 1 to 4 objects, each exactly `{uploadId}`: the file name
+  (the last path segment) of the `path` an upload returned. No other form;
+  never send a path. No name twice.
+- PNG or JPEG only, decided by the bytes; at most 10 MiB each (the upload cap).
+- `text` may be `""` when at least one photo is attached (a photo-only
+  message). Without photos the text rules are unchanged.
+- A `clientMessageId` stands for its text, its thread and its photos (their
+  upload names, in order) together. The same id with the same photos replays
+  its answer, even after the uploads expired, after uploads were switched
+  off, or with a desktop that no longer takes photos; with other photos it
+  is `409 message-id-reused`. A retry of a message whose card is already up
+  (after `moa-busy`) needs no upload file either: the card keeps its photos.
+- The desktop copies each photo into the room before it posts the card, as
+  one JPEG at most 1568 px on its long edge. That copy is what the card
+  shows, what you fetch and what the bot sees. It is kept by wmux as long as
+  the card (90 days), not the upload's 24 hours. An agent's own conversation
+  record is outside wmux and is not covered by this.
+- The bot each message is for sees the photos themselves in the turn that
+  answers it. A worker the bot hands the task to receives only what the bot
+  tells it.
+
+New answers, all checked before anything is posted. `effect: "none"`; the
+id is not spent:
+
+| Answer | Meaning | Retry |
+|---|---|---|
+| `400 {error:"invalid-chat-request", detail:"attachments"}` | Not 1–4 objects that are exactly `{uploadId}` with a name the upload routes generate, or a name twice. Also `detail:"text"` for empty text without photos. | fix the request |
+| `400 {error:"attachment-not-found", index}` | The upload at `index` is not there: it expired (24 h), or was never uploaded here. | upload again, same id |
+| `413 {error:"attachment-too-large", index, limit}` | Over 10 MiB. | — |
+| `415 {error:"attachment-unsupported", index}` | Not PNG or JPEG. | — |
+| `403 {error:"uploads-disabled: …"}` | The server runs without `--allow-upload` (match the prefix). | send without photos |
+| `409 {error:"attachments-unsupported"}` | The desktop takes no photos (too old). | send without photos |
+| `409 {error:"attachment-refused", reason, state:"failed"}` | The desktop could not take a photo: `missing`, `type`, `size`, or `changed` (the file was replaced after the daemon read it). Nothing was posted; the id is released. | same id, after uploading again |
+| `507 {error:"attachments-full", state:"failed"}` | The room's photo store is full (2000 photos or 1 GiB). Nothing was posted; the id is released. | see below |
+
+`attachments-full`: tell the owner the room's photo storage is full and offer
+to send the message without its photos. Room photos expire with their cards
+after 90 days; the owner frees room sooner on the desktop by deleting files
+from `~/.wmux/factory/room-attachments/<workspaceId>/` (a card whose photo
+is gone shows it as unavailable). Never retry the same message in a loop.
+
+**On cards.** An owner card (`kind: "human"`, `actor: {kind:"human"}`) of
+`GET /api/rooms/:workspaceId/cards` may carry:
+
+```
+"attachments": [ { "id": "3f2a…(32 lowercase hex)", "mediaType": "image/jpeg", "bytes": 482113, "width": 1568, "height": 1176 } ]
+```
+
+At most 4. `width`/`height` may be absent. A card with `attachments` and no
+`body` is a photo-only message: its `title` is wmux's placeholder (`Photo`,
+`2 photos`), so draw only the photos. Cards of other kinds never carry it.
+
+**`GET /api/rooms/:workspaceId/attachments/:attachmentId[?variant=thumb]`** —
+the photo's bytes. `--allow-transcript`, checked first; no input grant. The
+desktop must still keep a card of that room carrying the id.
+
+| Answer | Meaning |
+|---|---|
+| `200` | The JPEG. `Content-Type: image/jpeg`, `Content-Length`, `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`, `Content-Security-Policy: default-src 'none'; sandbox`. `variant=thumb` answers the same copy (it is already small); scale it on the phone. |
+| `400 {error:"invalid-room-request", detail:"variant"}` | A `variant` other than `thumb`. |
+| `403 {error:"transcript-disabled"}` | The server runs without `--allow-transcript`. |
+| `404 {error:"attachment-not-found"}` | No such photo on a kept card of that room, or its file is gone. Show the photo as unavailable. |
+| `503 {error:"desktop-unavailable"}` / `503 {error:"rooms-unavailable"}` | No desktop, or one that cannot serve photos. |
+| `504 {error:"desktop-timeout"}` | The desktop did not answer. |
 
 #### Bot approvals (`/api/bot-approvals`)
 
@@ -6329,6 +6762,13 @@ receipt {"requestId": "…", "state": "done", "pushed": "<oid>", "target": "refs
 - **Where it pushes.** To the upstream branch, which may have a different
   name than the local branch; show `target.ref`. `create:true` means a new
   remote branch (the app shows its own copy on the same sheet).
+- **A branch with no upstream.** The push goes to the same-named remote
+  branch: `create:true` when the remote has none, a fast-forward
+  (`create:false`) when the remote branch is already in the local branch's
+  history, and `remote-branch-exists` otherwise. The daemon writes nothing
+  into the pane's repository, so a branch the push created still has no
+  upstream afterwards (the branch list shows no ahead/behind for it), and the
+  pane's remote-tracking ref moves only when the pane fetches.
 - **`fastForward:false`.** The push will fail with `non-fast-forward`.
   Disable the button.
 - **Never force-pushes.** There is no override.

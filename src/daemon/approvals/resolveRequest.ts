@@ -37,7 +37,10 @@
 // class reaches this RPC. Main declares `automated` on the brain's behalf, and
 // its own desktop UI keeps saying nothing and stays human.
 
-import type { ApprovalDecision, ApprovalResolveParams } from './types';
+import type {
+  AnswerRefusalReason, ApprovalDecision, ApprovalResolveParams, DecisionAnswer, DecisionTextRefusal, TerminalPromptDetail,
+} from './types';
+import { parseDecisionAnswerBody } from '../web/decisionAnswer';
 
 /** A malformed request, with the wire reason to answer. */
 export interface ApprovalResolveRejection {
@@ -92,4 +95,47 @@ export function parseApprovalResolveRequest(
         }
       : {}),
   };
+}
+
+// ─── daemon.approvals.answerPlan — the desktop's answer to a plan dialog ────
+//
+// The app's own Fleet approvals tab answers Claude's ExitPlanMode dialog the
+// way a paired phone does (`POST /api/approvals/:id/answer`), through
+// ApprovalRegistry.answerPlanFromDesktop. Only the first-party client (main,
+// which serves it to the main window alone) may: the CLI, the MCP server and
+// every other token holder get `answer-in-terminal`, as they do today. The
+// answer body goes through the phone route's own parser, so the text rules
+// (no control characters, bounded length) are the same.
+
+export type PlanAnswerRejection =
+  | { ok: false; reason: 'answer-in-terminal'; answerRefusal: AnswerRefusalReason }
+  | { ok: false; reason: 'not-found' | 'invalid-choice' }
+  | { ok: false; reason: 'invalid-text'; textRefusal: DecisionTextRefusal };
+
+export function parsePlanAnswerRequest(
+  params: Record<string, unknown>,
+  ctx: { isFirstParty: boolean },
+): { id: string; answer: DecisionAnswer } | PlanAnswerRejection {
+  if (!ctx.isFirstParty) return { ok: false, reason: 'answer-in-terminal', answerRefusal: 'no-capability' };
+  const id = typeof params['id'] === 'string' ? params['id'] : '';
+  if (!id) return { ok: false, reason: 'not-found' };
+  const parsed = parseDecisionAnswerBody(params['answer']);
+  if (!parsed.ok) {
+    return parsed.error === 'invalid-text' && parsed.textRefusal
+      ? { ok: false, reason: 'invalid-text', textRefusal: parsed.textRefusal }
+      : { ok: false, reason: 'invalid-choice' };
+  }
+  // A plan form is answered by one of its actions, never by question answers.
+  if (parsed.answer.action === undefined || parsed.answer.answers !== undefined) {
+    return { ok: false, reason: 'invalid-choice' };
+  }
+  return { id, answer: parsed.answer };
+}
+
+/**
+ * `daemon.approvals.detail` serves the plan only: every other dialog's full
+ * command (a Bash line, a path) stays where it was served before.
+ */
+export function planDetailOnly(detail: TerminalPromptDetail | null): TerminalPromptDetail | null {
+  return detail?.toolName === 'ExitPlanMode' ? detail : null;
 }

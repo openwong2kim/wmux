@@ -7,6 +7,7 @@ import { wrapHandler } from '../wrapHandler';
 import { imagePathForPane } from '../../../shared/imagePaste';
 import { getPtyShell } from '../../pty/ptyShellRegistry';
 import { EphemeralClipboard } from '../../clipboard/ephemeralClipboard';
+import { ELEMENT_SHOT_PREFIX } from '../../../shared/browserElementHandoff';
 
 let ephemeral: EphemeralClipboard | null = null;
 let quitHookInstalled = false;
@@ -27,7 +28,8 @@ function cleanupStalePasteFiles(): void {
   }
   const cutoff = Date.now() - MAX_PASTE_FILE_AGE_MS;
   for (const name of entries) {
-    if (!name.startsWith('wmux-paste-') || !name.endsWith('.png')) continue;
+    // Element screenshots from the browser hand-off share the sweep.
+    if (!(name.startsWith('wmux-paste-') || name.startsWith(ELEMENT_SHOT_PREFIX)) || !name.endsWith('.png')) continue;
     const filePath = path.join(tempDir, name);
     try {
       if (fs.statSync(filePath).mtimeMs < cutoff) fs.unlinkSync(filePath);

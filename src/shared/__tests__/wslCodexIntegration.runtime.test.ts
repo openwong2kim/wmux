@@ -159,7 +159,7 @@ describe.skipIf(process.platform === 'win32')('WSL Codex per-launch notify', () 
 
   // #1523: a shared app-server carries the environment of the pane that
   // started it, and only the Linux side can see that server. The hook hands
-  // its argv to the Windows bridge, which decides (codexNotifyOrigin.test.ts);
+  // its argv to the Windows bridge, which decides (codexNotifyOrigin.os.test.ts);
   // the fake Codex's argv stands in for `codex app-server …`. Linux only: the
   // hook reads /proc, which macOS does not have.
   it.runIf(process.platform === 'linux')('hands the argv of the spawning Codex to the bridge', () => {

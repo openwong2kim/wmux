@@ -14,7 +14,7 @@ import { resolveCtrlAltLetterBytes } from '../ctrlLetterKeys';
 // keydown there as AltGr and waits for a keypress; with no AltGr character for
 // the key no keypress comes, so the chord never reaches the PTY. wmux's key
 // handler writes it first. The handler's own placement is pinned in
-// hooks/__tests__/useTerminal.ctrlLetterEncoding.test.ts.
+// hooks/__tests__/useTerminal.ctrlLetterEncoding.os.test.ts.
 describe('Ctrl+Alt+letter on Windows (#2136)', () => {
   const terms: Terminal[] = [];
   beforeAll(() => {

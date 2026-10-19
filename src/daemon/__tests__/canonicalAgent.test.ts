@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  mayPersistIdentity,
   IDENTITY_TTL_MS,
   resolveCanonicalAgentIdentity,
   detectorSuppressedBy,
@@ -29,7 +30,7 @@ describe('resolveCanonicalAgentIdentity (#919 tier rule)', () => {
   it('an unarmed tracker + fresh exact-routed hook → hook wins', () => {
     expect(
       resolveCanonicalAgentIdentity({ auth: auth('claude', 30_000), screenSlug: 'grok' }),
-    ).toEqual({ slug: 'claude', source: 'hook' });
+    ).toEqual({ slug: 'claude', source: 'hook', observedAgoMs: 30_000 });
   });
 
   it('corroboration bypasses age and routing: a 25-min-old cwd-routed hook with a live same-slug process wins', () => {
@@ -101,7 +102,7 @@ describe('resolveCanonicalAgentIdentity (#919 tier rule)', () => {
         auth: auth('claude', 5_000),
         screenSlug: 'claude',
       }),
-    ).toEqual({ slug: 'claude', source: 'hook' });
+    ).toEqual({ slug: 'claude', source: 'hook', observedAgoMs: 5_000 });
     // Past IDENTITY_TTL the hook can no longer vouch: residue again.
     expect(
       resolveCanonicalAgentIdentity({
@@ -128,6 +129,27 @@ describe('resolveCanonicalAgentIdentity (#919 tier rule)', () => {
         screenSlug: 'grok',
       }),
     ).toEqual({ slug: 'grok', source: 'screen' });
+  });
+});
+
+describe('mayPersistIdentity (screen tier names, never renames)', () => {
+  it('names an unnamed pane from any tier, including the screen', () => {
+    expect(mayPersistIdentity(undefined, { slug: 'codex', source: 'screen' })).toBe(true);
+    expect(mayPersistIdentity(undefined, { slug: 'claude', source: 'hook' })).toBe(true);
+  });
+  it('never flips a named pane on a screen-tier guess', () => {
+    // A Claude reply quoting Codex's banner, a shell echo naming an agent
+    // after Claude exited: the row is not the pane.
+    expect(mayPersistIdentity('claude', { slug: 'codex', source: 'screen' })).toBe(false);
+    expect(mayPersistIdentity('claude', { slug: 'gemini', source: 'screen' })).toBe(false);
+  });
+  it('a hook or a live process may rename the pane (the user switched agents)', () => {
+    expect(mayPersistIdentity('claude', { slug: 'codex', source: 'process' })).toBe(true);
+    expect(mayPersistIdentity('claude', { slug: 'codex', source: 'hook' })).toBe(true);
+  });
+  it('no write when the name is already right', () => {
+    expect(mayPersistIdentity('codex', { slug: 'codex', source: 'screen' })).toBe(false);
+    expect(mayPersistIdentity('codex', { slug: 'codex', source: 'process' })).toBe(false);
   });
 });
 

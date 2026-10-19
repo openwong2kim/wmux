@@ -30,6 +30,10 @@ type TestState = WorkspaceSlice & {
   notificationSoundEnabled: boolean;
   toastEnabled: boolean;
   notificationRingEnabled: boolean;
+  paneRingEnabled: boolean;
+  paneFlashEnabled: boolean;
+  taskbarFlashEnabled: boolean;
+  paneGlowOpacity: number;
   anthropicUsageEnabled: boolean;
   usageLimitAutoResume: boolean;
   claudeResumeOnStart: boolean;
@@ -53,7 +57,6 @@ type TestState = WorkspaceSlice & {
   // agentToolbarSlice fields touched by loadSession
   agentToolbarEnabled: boolean;
   toolbarSnippets: { id: string; label: string; text: string }[];
-  newConversationCommand: string;
   // #517 — main-owned browser backend mirror (NOT a SessionData key).
   browserBackend: 'builtin' | 'external';
   // Orchestrator brain vendor — loadSession re-coerces it on every load.
@@ -91,6 +94,10 @@ function createTestStore() {
       notificationSoundEnabled: true,
       toastEnabled: true,
       notificationRingEnabled: true,
+      paneRingEnabled: true,
+      paneFlashEnabled: true,
+      taskbarFlashEnabled: true,
+      paneGlowOpacity: 0.6,
       anthropicUsageEnabled: false,
       usageLimitAutoResume: false,
       claudeResumeOnStart: false,
@@ -112,7 +119,6 @@ function createTestStore() {
       sessionStartTime: null,
       agentToolbarEnabled: true,
       toolbarSnippets: [],
-      newConversationCommand: '/clear',
       // #517 — main-owned backend mirror. Seeded here so the non-persistence
       // test can prove loadSession never writes it (it isn't a SessionData key).
       browserBackend: 'builtin',
@@ -524,11 +530,9 @@ describe('loadSession — agent toolbar prefs', () => {
       sidebarVisible: true,
       agentToolbarEnabled: false,
       agentToolbarSnippets: [{ id: 's1', label: 'A', text: 'aaa' }],
-      agentToolbarNewCommand: '/reset',
     } as any);
     expect(store.getState().agentToolbarEnabled).toBe(false);
     expect(store.getState().toolbarSnippets).toEqual([{ id: 's1', label: 'A', text: 'aaa' }]);
-    expect(store.getState().newConversationCommand).toBe('/reset');
   });
 });
 
@@ -568,6 +572,47 @@ describe('loadSession — A2A execute auto-approve', () => {
       a2aAutoApproveExecute: 'true',
     } as unknown as SessionData);
     expect(store.getState().a2aAutoApproveExecute).toBe(false);
+  });
+});
+
+describe('loadSession — notification effects (#2294)', () => {
+  function sessionWith(extra: Record<string, unknown>): SessionData {
+    const ws: Workspace = {
+      id: 'ws-fx',
+      name: 'FX',
+      rootPane: makeBrowserSurfaceTree('https://example.com'),
+      activePaneId: 'pane-root',
+    };
+    return { workspaces: [ws], activeWorkspaceId: ws.id, sidebarVisible: true, ...extra } as unknown as SessionData;
+  }
+
+  it('restores the effects turned off and a non-default glow opacity', () => {
+    const store = createTestStore();
+    store.getState().loadSession(sessionWith({
+      paneRingEnabled: false,
+      paneFlashEnabled: false,
+      taskbarFlashEnabled: false,
+      paneGlowOpacity: 0.85,
+    }));
+    const s = store.getState();
+    expect([s.paneRingEnabled, s.paneFlashEnabled, s.taskbarFlashEnabled, s.paneGlowOpacity]).toEqual([false, false, false, 0.85]);
+  });
+
+  it('keeps the defaults for a session that predates the fields, or holds malformed values', () => {
+    for (const extra of [{}, { paneRingEnabled: 'false', paneFlashEnabled: 0, taskbarFlashEnabled: null, paneGlowOpacity: 'x' }]) {
+      const store = createTestStore();
+      store.getState().loadSession(sessionWith(extra));
+      const s = store.getState();
+      expect([s.paneRingEnabled, s.paneFlashEnabled, s.taskbarFlashEnabled, s.paneGlowOpacity]).toEqual([true, true, true, 0.6]);
+    }
+  });
+
+  it('clamps a persisted opacity the way the setter does', () => {
+    for (const [saved, loaded] of [[0.2, 0.6], [3, 1]] as const) {
+      const store = createTestStore();
+      store.getState().loadSession(sessionWith({ paneGlowOpacity: saved }));
+      expect(store.getState().paneGlowOpacity).toBe(loaded);
+    }
   });
 });
 

@@ -11,6 +11,7 @@ import { join } from 'node:path';
 import { runInNewContext } from 'node:vm';
 import { createRequire } from 'node:module';
 import { DESKTOP_PAIR_FRAGMENT_KEY, buildDesktopPairLink } from '../../../shared/web';
+import { deliberateSleep } from '../../../test-utils/waitFor';
 
 // jsdom ships no type declarations here; only the handful of members used below.
 interface JsdomWindow extends Window {
@@ -50,7 +51,7 @@ async function load(url: string): Promise<Loaded> {
   win['wmuxTouchScroll'] = {};
   dom.window.eval(read('pairQuery.js'));
   dom.window.eval(read('app.js'));
-  await new Promise((r) => setTimeout(r, 20));
+  await deliberateSleep(20, 'not yet converted (#2363): lets app.js boot in jsdom; nothing polled');
   return { dom, fetchCalls };
 }
 

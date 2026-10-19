@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import fs from 'node:fs';
 import path from 'node:path';
+import { readSourceText } from '../../../../test-utils/sourceText';
 
 // Phase A — A6. The renderer helper that drives 5s autosave + beforeunload
 // session save must skip its entire body in daemon mode so the
@@ -12,7 +12,7 @@ import path from 'node:path';
 // the actual invariant under test (the daemon-mode gate).
 describe('A6 — dumpScrollbackBuffersSync daemon-mode skip (source-level)', () => {
   const appLayoutPath = path.join(__dirname, '..', 'AppLayout.tsx');
-  const src = fs.readFileSync(appLayoutPath, 'utf-8');
+  const src = readSourceText(appLayoutPath);
 
   it('imports isDaemonModeActive from the renderer daemon module', () => {
     expect(src).toMatch(

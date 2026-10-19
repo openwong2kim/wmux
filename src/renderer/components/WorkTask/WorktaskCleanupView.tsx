@@ -12,7 +12,7 @@ import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import { findLeafPanes, activePaneTerminalPty } from '../../hooks/a2aAddressing';
 import { formatBracketedPastePayload } from '../../utils/ptyMessageDelivery';
-import type { WorktaskScanEntryWire, WorktaskScanCategoryWire } from '../../../shared/workTask';
+import type { WorktaskScanEntryWire, WorktaskScanCategoryWire, WorktaskScanDetailCodeWire } from '../../../shared/workTask';
 import Dialog, { DialogBody, DialogHeader } from '../ui/Dialog';
 import Button from '../ui/Button';
 import Badge from '../ui/Badge';
@@ -29,6 +29,18 @@ const CATEGORY_LABEL_KEY: Record<WorktaskScanCategoryWire, string> = {
   preserved: 'worktask.cleanup.cat.preserved',
   'orphan-dir': 'worktask.cleanup.cat.orphan',
   'phone-worktree': 'worktask.cleanup.cat.phoneWorktree',
+};
+
+// Localized detail line per scan code. A code this renderer does not know
+// (a newer main) or no code at all (an older main) falls back to `e.detail`.
+const DETAIL_LABEL_KEY: Record<WorktaskScanDetailCodeWire, string> = {
+  unmaterialized: 'worktask.cleanup.detail.unmaterialized',
+  preserved: 'worktask.cleanup.detail.preserved',
+  phone: 'worktask.cleanup.detail.phone',
+  'orphan-ended': 'worktask.cleanup.detail.orphanEnded',
+  'orphan-unlinked': 'worktask.cleanup.detail.orphanUnlinked',
+  'orphan-meta': 'worktask.cleanup.detail.orphanMeta',
+  'disk-missing': 'worktask.cleanup.detail.diskMissing',
 };
 
 // Status tones tint a neutral badge; steel is kept for focus and links.
@@ -382,6 +394,10 @@ export default function WorktaskCleanupView() {
           <div className="ui-group">
             {entries.map((e, i) => {
               const canClose = e.taskId && e.category !== 'orphan-dir';
+              const detailKey = e.detailCode && Object.prototype.hasOwnProperty.call(DETAIL_LABEL_KEY, e.detailCode)
+                ? DETAIL_LABEL_KEY[e.detailCode]
+                : undefined;
+              const detailText = detailKey ? t(detailKey) : e.detail;
               return (
                 <div key={`${e.category}-${e.taskId ?? e.worktreePath ?? i}`} className="ui-row !items-start">
                   <div className="ui-row-text">
@@ -396,7 +412,7 @@ export default function WorktaskCleanupView() {
                         {e.worktreePath}
                       </p>
                     )}
-                    {e.detail && <p className="ui-row-detail">{e.detail}</p>}
+                    {detailText && <p className="ui-row-detail">{detailText}</p>}
                     {e.closedAt && (
                       <p className="ui-row-detail">
                         {t('worktask.cleanup.closedAt')}: {new Date(e.closedAt).toLocaleString()}

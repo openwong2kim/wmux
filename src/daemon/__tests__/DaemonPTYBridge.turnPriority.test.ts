@@ -41,7 +41,7 @@ function makeFakePty(): { pty: IPty; feed: (data: string) => void } {
       dataHandler = cb;
       return { dispose: () => { dataHandler = null; } };
     },
-    onExit: () => ({ dispose: () => {} }),
+    onExit: () => ({ dispose: () => { /* no-op */ } }),
   } as unknown as IPty;
   return { pty, feed: (data: string) => dataHandler?.(data) };
 }
@@ -408,7 +408,7 @@ describe('DaemonPTYBridge turn priority', () => {
 
     it('without forceSubmitted a bare digit on a pane that is not blocked stays inert', () => {
       // On a pane blocked on a dialog the same digit IS the answer — see
-      // DaemonPTYBridge.answerRelease.test.ts.
+      // DaemonPTYBridge.answerRelease.os.test.ts.
       bridge.noteAgentStatus('waiting');
       bridge.noteInput('2');
       feed('.');
@@ -472,20 +472,110 @@ describe('DaemonPTYBridge turn priority', () => {
     // review-team [2-MODEL] catch: the alarm's working feed consumes
     // session:active, so a TUI repaint right after a resize would rebut a
     // pending completion window and silently kill a real "finished" alarm.
-    // The flag lets daemon/index.ts skip ONLY the alarm feed — the loose
-    // status dot still updates.
-    it('flags a passive burst inside the guard window, clears it after', () => {
+    // A passive burst inside the guard window is not emitted at all: it also
+    // lit the status dot, so revealing a workspace (which refits its panes)
+    // showed an idle Codex pane as running.
+    it('does not emit a passive burst inside the guard window', () => {
       const payloads: Array<{ sessionId: string; likelyRepaint?: boolean }> = [];
       bridge.on('active', (e: { sessionId: string; likelyRepaint?: boolean }) => payloads.push(e));
 
       bridge.noteResize();
       feed(BIG);
-      expect(payloads).toEqual([{ sessionId: 'sess-1', agentName: undefined, likelyRepaint: true }]);
+      expect(payloads).toEqual([]);
 
-      // Idle out, then a burst AFTER the guard window is real output.
+      // A burst AFTER the guard window is real output.
       vi.advanceTimersByTime(5_000 + 100);
       feed(BIG);
-      expect(payloads[1]).toMatchObject({ sessionId: 'sess-1', likelyRepaint: false });
+      expect(payloads).toEqual([{ sessionId: 'sess-1', agentName: undefined, likelyRepaint: false }]);
+    });
+
+    it('a turn that keeps writing past the guard window still reports running', () => {
+      const payloads: Array<{ sessionId: string; likelyRepaint?: boolean }> = [];
+      bridge.on('active', (e: { sessionId: string; likelyRepaint?: boolean }) => payloads.push(e));
+
+      bridge.noteResize();
+      feed(BIG);
+      expect(payloads).toEqual([]);
+      // No idle gap: the rejected burst handed its cycle back, so output
+      // right after the guard window opens a new one.
+      vi.advanceTimersByTime(3_100);
+      feed(BIG);
+      expect(payloads).toEqual([{ sessionId: 'sess-1', agentName: undefined, likelyRepaint: false }]);
+    });
+
+    it('a hook running edge inside the guard window still reports running', () => {
+      // The hook's running edge armed the cycle; the first output byte is its
+      // proof even inside the resize window, and a sparse turn after it must
+      // not fall back to the byte threshold.
+      bridge.noteResize();
+      bridge.noteAgentStatus('running', true);
+      feed('tick');
+      for (let i = 0; i < 10; i++) {
+        vi.advanceTimersByTime(1_000);
+        feed('tick');
+      }
+      expect(active).toEqual(['sess-1']);
+      expect(idle).toEqual([]);
+    });
+
+    it('a hook running edge just before a resize still reports running', () => {
+      const payloads: Array<{ sessionId: string; likelyRepaint?: boolean }> = [];
+      bridge.on('active', (e: { sessionId: string; likelyRepaint?: boolean }) => payloads.push(e));
+
+      bridge.noteAgentStatus('running', true);
+      bridge.noteResize();
+      feed('tick');
+      for (let i = 0; i < 10; i++) {
+        vi.advanceTimersByTime(1_000);
+        feed('tick');
+      }
+      expect(payloads).toEqual([{ sessionId: 'sess-1', agentName: undefined, likelyRepaint: true }]);
+      expect(idle).toEqual([]);
+    });
+
+    // A turn left open without a settle is not a hook-armed cycle: its reveal
+    // repaint must not light the pane running again.
+    function reveal(): Array<{ sessionId: string; likelyRepaint?: boolean }> {
+      const payloads: Array<{ sessionId: string; likelyRepaint?: boolean }> = [];
+      bridge.on('active', (e: { sessionId: string; likelyRepaint?: boolean }) => payloads.push(e));
+      vi.advanceTimersByTime(PAST_GUARDS_MS);
+      bridge.noteResize();
+      feed(BIG);
+      return payloads;
+    }
+
+    it('a submitted prompt that never settled does not report its reveal repaint', () => {
+      bridge.noteInput('do it\r');
+      feed(BIG);
+      expect(active).toEqual(['sess-1']);
+      expect(reveal()).toEqual([]);
+    });
+
+    it('a boot paint that never settled does not report its reveal repaint', () => {
+      feed(BIG);
+      expect(active).toEqual(['sess-1']);
+      expect(reveal()).toEqual([]);
+    });
+
+    it('a hook edge inside an already active cycle does not carry over to a reveal', () => {
+      feed(BIG);
+      bridge.noteAgentStatus('running', true);
+      vi.advanceTimersByTime(5_000);
+      expect(idle).toEqual(['sess-1']);
+      expect(reveal()).toEqual([]);
+    });
+
+    it('a hook-armed cycle whose turn the transcript closed does not report a reveal', () => {
+      bridge.noteAgentStatus('running', true);
+      vi.advanceTimersByTime(100);
+      bridge.noteTranscriptTurnEnd(Date.now());
+      expect(reveal()).toEqual([]);
+    });
+
+    it('a hook-armed cycle whose agent ended does not report a reveal', () => {
+      bridge.noteAgentStatus('running', true);
+      bridge.noteAgentEnded();
+      expect(reveal()).toEqual([]);
     });
 
     it('never flags a burst started by submitted input', () => {

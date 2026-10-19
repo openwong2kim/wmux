@@ -190,3 +190,33 @@ describe('PromptEventLog.commandRunningIfKnown — only a shell that emits C can
     expect(log.commandRunningIfKnown()).toBeUndefined();
   });
 });
+
+describe('PromptEventLog.exitAfterPrompt — the shell came back to a prompt after a line (#2231)', () => {
+  const feed = (...payloads: string[]) => {
+    const log = new PromptEventLog();
+    payloads.forEach((p, i) => log.append(parseOsc133Payload(p, i, i)!));
+    return log;
+  };
+
+  it('ignores the first D (the rc files\' status before the first prompt)', () => {
+    expect(feed('D;1', 'A', 'B').exitAfterPrompt()).toBeUndefined();
+  });
+
+  it('a line bash cannot parse: no C, then D;2 and the next prompt', () => {
+    expect(feed('D;0', 'A', 'B', 'D;2', 'A', 'B').exitAfterPrompt()).toBe(2);
+  });
+
+  it('a command that ran and failed: C, D;127', () => {
+    expect(feed('D;0', 'A', 'B', 'C', 'D;127', 'A', 'B').exitAfterPrompt()).toBe(127);
+  });
+
+  it('nothing while a command runs, and the newest D wins after a later start', () => {
+    expect(feed('D;0', 'A', 'B', 'C').exitAfterPrompt()).toBeUndefined();
+    expect(feed('D;0', 'A', 'B', 'D;2', 'A', 'B', 'C').exitAfterPrompt()).toBeUndefined();
+    expect(feed('D;0', 'A', 'B', 'D;2', 'A', 'B', 'C', 'D;0', 'A').exitAfterPrompt()).toBe(0);
+  });
+
+  it('empty log → undefined', () => {
+    expect(new PromptEventLog().exitAfterPrompt()).toBeUndefined();
+  });
+});

@@ -7,7 +7,7 @@ import type { TemplateDefinition } from './common';
 export const COORDINATOR_TEMPLATE: TemplateDefinition = {
   template: 'coordinator',
   defaultJob:
-    'You lead this room\'s team. The owner talks to you: for each request you decide the flow — answer it yourself, or pick the bots that should work on it and their order from the roster — and hand it on with one dispatch to the first bot (to_bot_id), naming the bots that follow in next. wmux passes each result on and wakes you once, with the last result; you report it to the owner. Between requests you keep track of what the bots are doing, bring what is ready to merge or needs a decision to the owner in one message, and route the owner\'s decisions to the bot that acts on them.',
+    'You lead this workspace\'s team. The owner talks to you: for each request you decide the flow — answer it yourself, or pick the bots that should work on it and their order from the roster — and hand it on with one dispatch to the first bot (to_bot_id), naming the bots that follow in next. wmux passes each result on and wakes you once, with the last result; you report it to the owner. Between requests you keep track of what the bots are doing, bring what is ready to merge or needs a decision to the owner in one message, and route the owner\'s decisions to the bot that acts on them.',
   powers: {
     bot_list: 'list the bots of every workspace: their names, templates, jobs, presence, queue and budget left.',
     room_read: 'read your room, or any workspace\'s room (workspace_id): its open threads and questions.',
@@ -30,6 +30,7 @@ export const COORDINATOR_TEMPLATE: TemplateDefinition = {
   ],
   wakes: [
     'An owner message (to the room or to you): decide the flow. Answer it yourself when no bot needs to work on it; otherwise send one dispatch to the first bot with the ones that follow in next, and say in one line who works on it in what order.',
+    'Before you dispatch work on an issue or a pull request (an owner message, a plan item, a relay you send on), read its state now with issue_read or pr_read: an issue that is closed (a merged pull request that closes it closes it too) or a pull request already merged or closed is not dispatched again; tell the owner it is done and by what, and ask only if they still want more.',
     'A relay\'s last result (the wake shows the trail of every hop): a `report` card for the owner in that thread — what each bot did and what comes out of it.',
     'A relay that stopped (the wake says why): decide what happens next — send the work on yourself, ask the owner, or report what is done.',
     'schedule.fired (the morning): the fact\'s payload carries the morning data — trust metrics, merged and blocked work, open threads per workspace, correction patterns. Read what it lacks with your read tools, post the report card, end the turn.',
