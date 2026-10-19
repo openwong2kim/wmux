@@ -133,6 +133,20 @@ function decodeEntities(text: string): string {
 const attr = (tag: string, name: string) => tag.match(new RegExp(`\\b${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, 'i'));
 const attrValue = (m: RegExpMatchArray | null) => (m ? (m[1] ?? m[2] ?? m[3] ?? '') : '');
 
+/** `s.replace(/<[^>]*>/g, '')` in one pass: that regex rescans the rest of
+ *  the text from every `<` that has no `>` after it. */
+function stripTags(s: string): string {
+  let out = '';
+  let pos = 0;
+  for (;;) {
+    const lt = s.indexOf('<', pos);
+    const gt = lt < 0 ? -1 : s.indexOf('>', lt);
+    if (gt < 0) return out + s.slice(pos);
+    out += s.slice(pos, lt);
+    pos = gt + 1;
+  }
+}
+
 /** One line of GitHub text with its inline HTML reduced to text (code spans
  *  kept as written): <img> → alt, <a href> → a markdown link when http(s),
  *  every other tag dropped, entities decoded. */
@@ -141,7 +155,7 @@ export function reduceInlineHtml(text: string): string {
     if (i % 2 === 1) return part;
     let t = part.replace(/<img\b[^<>]*>/gi, (tag) => decodeEntities(attrValue(attr(tag, 'alt'))));
     t = t.replace(/<a\b([^<>]*)>((?:(?!<a\b)[\s\S])*?)<\/a\s*>/gi, (_m, attrs: string, inner: string) => {
-      const label = decodeEntities(inner.replace(/<[^<>]*>/g, '')).replace(/[[\]]/g, '').trim();
+      const label = decodeEntities(stripTags(inner)).replace(/[[\]]/g, '').trim();
       const href = decodeEntities(attrValue(attr(`<a${attrs}>`, 'href'))).trim();
       if (label && HTTP_URL.test(href) && !/[\s()]/.test(href)) return `[${label}](${href})`;
       return label;
@@ -236,7 +250,9 @@ function renderInline(raw: string, keyPrefix: string, opts: MarkdownOptions = {}
       regex.lastIndex = match.index + run;
       continue;
     }
-    if (match.index > lastIndex) parts.push(...plainText(text.slice(lastIndex, match.index), `${keyPrefix}p${lastIndex}`, opts));
+    // Appended one by one: a spread passes every node as an argument, and a
+    // long run of mentions would exceed the call stack.
+    if (match.index > lastIndex) for (const n of plainText(text.slice(lastIndex, match.index), `${keyPrefix}p${lastIndex}`, opts)) parts.push(n);
     if (m.startsWith('`')) {
       parts.push(
         // Mono on a faint surface, no accent: inline code is a machine token
@@ -289,7 +305,7 @@ function renderInline(raw: string, keyPrefix: string, opts: MarkdownOptions = {}
     }
     lastIndex = match.index + m.length;
   }
-  if (lastIndex < text.length) parts.push(...plainText(text.slice(lastIndex), `${keyPrefix}p${lastIndex}`, opts));
+  if (lastIndex < text.length) for (const n of plainText(text.slice(lastIndex), `${keyPrefix}p${lastIndex}`, opts)) parts.push(n);
   return parts.length > 0 ? parts : plainText(text, `${keyPrefix}p0`, opts);
 }
 
@@ -330,13 +346,13 @@ export function renderBrainMarkdownWhole(source: string, opts: MarkdownOptions =
 export const MAX_QUOTE_DEPTH = 4;
 /** Blocks drawn per render, every quote level together; the rest is cut. */
 export const MAX_BLOCKS = 2000;
-/** Cells one table draws, its header row included; the rest is cut. */
+/** Table cells drawn per render, every table and header row together; the rest is cut. */
 export const MAX_TABLE_CELLS = 5000;
 /** Lines put back into the stream per splice call (see the <details> branch). */
 const SPLICE_CHUNK = 8192;
 
 /** Blocks left to draw; `cut` is set once a render ran out of them. */
-interface BlockBudget { left: number; cut?: boolean }
+interface BlockBudget { left: number; cut?: boolean; cells?: number }
 
 function renderBlocks(source: string, opts: MarkdownOptions, depth: number, budget: BlockBudget): React.ReactNode[] {
   const lines = source.split('\n');
@@ -384,12 +400,14 @@ function renderBlocks(source: string, opts: MarkdownOptions, depth: number, budg
     // and a wide table scrolls inside its own box.
     if (line.includes('|') && i + 1 < lines.length && lines[i + 1].includes('|') && TABLE_SEPARATOR.test(lines[i + 1])) {
       const allHead = tableCells(line);
-      const head = allHead.slice(0, MAX_TABLE_CELLS);
+      // The cell allowance is shared by every table in the render.
+      const cellsLeft = budget.cells ?? MAX_TABLE_CELLS;
+      const head = allHead.slice(0, cellsLeft);
       const align = tableCells(lines[i + 1]).map(tableAlign);
       const rows: string[][] = [];
       // Every body row draws the header's width, so the cells, not the
       // source, set the cost: past MAX_TABLE_CELLS the rest is cut.
-      const maxRows = Math.floor(MAX_TABLE_CELLS / Math.max(1, head.length)) - 1;
+      const maxRows = Math.max(0, Math.floor(cellsLeft / Math.max(1, head.length)) - 1);
       let cut = head.length < allHead.length;
       i += 2;
       while (i < lines.length && lines[i].includes('|') && lines[i].trim() !== '') {
@@ -428,6 +446,7 @@ function renderBlocks(source: string, opts: MarkdownOptions, depth: number, budg
           </table>
         </div>,
       );
+      budget.cells = Math.max(0, cellsLeft - head.length * (rows.length + 1));
       if (cut) {
         budget.cut = true;
         out.push(<div key={out.length} data-brain-md-cut className="text-[var(--text-muted)]">…</div>);
@@ -449,7 +468,7 @@ function renderBlocks(source: string, opts: MarkdownOptions, depth: number, budg
         i++;
         if (level <= 0) break;
       }
-      let body = buf.join('\n').replace(/^\s*<details\b[^<>]*>/i, '');
+      let body = buf.join('\n').replace(/^\s*<details\b[^>]*>/i, '');
       // The last closing tag, found in one pass (a lookahead for "no later
       // one" rescans the rest of the body at every candidate).
       let close = -1;
