@@ -19,9 +19,9 @@ Run fleets of AI agents — Claude Code, Codex, Gemini, or any CLI — side by s
 
 [**Download**](https://github.com/openwong2kim/wmux/releases/latest) · [**Website**](https://www.wmux.app) · [**Docs**](docs/README.md) · [**iOS app**](https://apps.apple.com/app/wmux-workspace-for-ai-agents/id6797904556)
 
-<a href="https://www.wmux.app"><img alt="Multi Task splits one prompt into two tasks, and Claude Code works in each task's own worktree; Fleet shows both ready to review, hunks from two files are adopted and the tests pass; then a bot named Nova takes a slugify job in chat, runs a Claude Code worker on its own branch and reports the tests passing" src="docs/readme/hero.gif" width="900" /></a>
+<a href="https://www.wmux.app"><img alt="Multi Task splits one prompt into two tasks, Strip accents and Usage section, and Claude Code works in each task's own worktree; the task that asks a question shows under Needs you in Fleet and is answered there; both reach Ready to review, hunks from two files are adopted and node --test passes" src="docs/readme/hero.gif" width="900" /></a>
 
-<sub>Run tasks in parallel → review and adopt → hand a job to a bot. Recorded on wmux 4.6.1 with real Claude Code on a sample repo; waits are cut and the rest is sped up.</sub>
+<sub>Run tasks in parallel → answer the one that asks → review and adopt. Recorded on wmux 4.6.1 with real Claude Code on a sample repo; waits are cut and the rest is sped up.</sub>
 
 </div>
 
@@ -56,35 +56,35 @@ winget install openwong2kim.wmux    # or: choco install wmux
 
 Name a bot and tell it what to do in plain words. It plans the change, starts a Claude Code worker on its own branch, runs the tests and reports back. Anything public, like merging a PR, waits for your approval.
 
-<img alt="A new bot, Nova, asks what to take on and is told in chat to tidy up slugify with a test for each case and no PR; it reports the change with the tests passing, then takes one more job, capping slugs at 60 characters on a word boundary, runs a Claude Code worker on its own branch and reports all 7 tests passing" src="docs/readme/bots.gif" width="900" />
+<img alt="The bot Nova is told in chat to make slugify turn &amp; into and, with a test and no PR yet; a worker row appears, its panel shows Claude Code editing and testing on its own branch, and Nova reports the commit once its test gate passes" src="docs/readme/bots.gif" width="900" />
 
 ### One prompt, N worktrees
 
 Split one prompt into up to 8 tasks with **Multi Task** — compare approaches to the same problem, or run different jobs side by side. Each task gets its own git worktree on a fresh `wtask/*` branch with its own agent pane. See [fan-out task environments](docs/how-to/fan-out-task-environment.md) for ports and prepared worktrees.
 
-<img alt="Multi Task splits a release-prep prompt into two tasks, Limit slug length and Document usage; each gets its own worktree branch and Claude Code pane, and the slug task's agent edits slug.js and its test, runs them and commits" src="docs/readme/worktrees.gif" width="900" />
+<img alt="Multi Task splits a release-prep prompt into two tasks, Strip accents and Usage section; each gets its own worktree branch and Claude Code pane, the accents task's agent edits slug.js and its test and runs them, and both tasks reach Ready to review in Fleet" src="docs/readme/worktrees.gif" width="900" />
 
 Review the diffs, tick the hunks you want across files, and adopt them as one all-or-nothing `git apply` — your tree takes the whole selection or stays untouched. Then close the task (the worktree is removed only after a clean check) or open a pull request.
 
-<img alt="Both tasks wait in Fleet under Ready to review; in the diff review a hunk is ticked in slug.js and another in slug.test.js, Adopt (2) applies them to the working tree, and node --test passes" src="docs/readme/adopt.gif" width="900" />
+<img alt="From Fleet, the Strip accents result is opened; a hunk is ticked in slug.js and another in slug.test.js, Adopt (2) applies them to the working tree, and node --test passes in the main workspace" src="docs/readme/adopt.gif" width="900" />
 
 ### Answer from your phone
 
-When an agent stops to ask you something — a Claude Code question (single or multi-select, several questions, or an "Other" answer) or a permission prompt — it reaches the Inbox on your iPhone. Answer it there and the pane on your desktop moves on. Terminals and agent output travel straight from the daemon on your machine to your phone. A default install does not send push notifications yet, so you see the question when you open the app. When push is configured, notifications pass through the project's relay as sealed envelopes it cannot read; only the lock-screen Live Activity carries a few counts and your computer's name in plain text. Details: [the phone client contract](docs/phone-client-contract.md).
+When an agent stops to ask you something — a Claude Code question (single or multi-select, several questions, or an "Other" answer) or a permission prompt — it shows under Needs attention in Fleet on your iPhone. Answer it there and the pane on your desktop moves on. Terminals and agent output travel straight from the daemon on your machine to your phone. A default install does not send push notifications yet, so you see the question when you open the app. When push is configured, notifications pass through the project's relay as sealed envelopes it cannot read; only the lock-screen Live Activity carries a few counts and your computer's name in plain text. Details: [the phone client contract](docs/phone-client-contract.md).
 
-<img alt="An agent's question in the iPhone Inbox is answered by picking Three dots; the desktop pane receives the answer and the agent edits, tests and commits while the Inbox reads Nothing is waiting on you" src="docs/readme/phone.gif" width="900" />
+<img alt="Claude Code on the desktop asks whether slugify should keep digits; the same question shows in Fleet on the iPhone, Keep digits is picked and submitted there, the desktop pane receives the answer and the agent adds a test that passes, while the phone reads Nothing is waiting on you" src="docs/readme/phone.gif" width="900" />
 
 ### Git page
 
 **Git** on the rail shows a repo's issues and pull requests. A pull request lists its checks, and a failed GitHub Actions run shows the end of its log right there, with **Rerun failed jobs**. Read the diff, comment on a line, approve or request changes, and squash and merge — every action is tied to the commit you were looking at. To hand an issue or PR to an agent, drag its row onto the agent's pane or a workspace in the sidebar; the agent gets a short reference with the link, never the item's text. Signed out? Connect GitHub from the page itself; `gh` keeps the credential.
 
-<img alt="The Git page lists a repo's pull requests led by #12, whose CI is failing; its detail shows the failed check test (node 22), its failure log and the diff" src="docs/readme/git.gif" width="900" />
+<img alt="The Git page shows a demo repo's issues, then its pull requests led by #12, whose CI is failing; its detail shows the failed check test (node 22), its failure log and the diff of slug.js with a review comment" src="docs/readme/git.gif" width="900" />
 
 ### Fleet
 
 Fleet (`⌘⇧A` on macOS, `Ctrl+Shift+A` on Windows and Linux) lists every agent across every workspace as one attention list: **Needs you** on top, then Ready to review, Running, and a folded Idle row. A row that needs you shows the agent's question; open it to reply, open the approval, or jump to the pane. Running rows say what the agent is doing (`Running npm test`), and finished rows say what it did last.
 
-<img alt="Fleet as an attention list: the agent that asks is on top under Needs you with its question and choices; it is answered from Fleet and the row leaves Needs you while the other agents finish" src="docs/readme/fleet.gif" width="900" />
+<img alt="Fleet as an attention list: the Usage section task is on top under Needs you with its question; Respond opens it, the answer is given, and the row moves on while Strip accents keeps running, until both are Ready to review" src="docs/readme/fleet.gif" width="900" />
 
 ### Two ways to browse
 
@@ -92,7 +92,7 @@ Your agents drive a browser through wmux's MCP tools — navigate, click, type, 
 
 **Built-in browser panes.** A browser pane opens as a split beside the agent, and each agent gets its own.
 
-<img alt="Two agents each open their own built-in browser pane beside their terminal (nodejs.org and MDN) and answer from it" src="docs/readme/browser-builtin.gif" width="900" />
+<img alt="Two Claude Code agents each open their own built-in browser pane beside their terminal, one on the nodejs.org download page and one on the Python docs, and answer from it" src="docs/readme/browser-builtin.gif" width="900" />
 
 **A dedicated Chrome over CDP.** Agents drive a real Chrome, each in its own tab, with a persistent profile separate from your daily browser — sign in once and the logins stick. See [browser backends](docs/browser-backends.md) for what CDP can and cannot do.
 
@@ -102,23 +102,23 @@ Your agents drive a browser through wmux's MCP tools — navigate, click, type, 
 
 Agents in different panes message each other through wmux, whichever CLI they run. Here Claude Code changes a function and asks the Codex pane next to it for a review with `send_message`; Codex replies the same way with a missing test case, and Claude adds it.
 
-<img alt="Claude Code changes slugify() and asks Codex in the next pane for a review over wmux; Codex replies with a missing test case, Claude adds it and the tests pass" src="docs/readme/a2a.gif" width="900" />
+<img alt="Claude Code changes slugify() and asks Codex in the next pane for a review with send_message; Codex reads the diff, runs the tests and replies, and Claude reports the result" src="docs/readme/a2a.gif" width="900" />
 
 ### Survives quit, crash, and reboot
 
 A standalone daemon owns every terminal, so quitting the app leaves your sessions running — processes and all.
 
-<img alt="wmux quits while an agent and a counter are running; after reopening, the counter kept counting and the agent finished its turn" src="docs/readme/survive-quit.gif" width="900" />
+<img alt="An agent gets a job while a counter runs in the next pane; wmux quits, and when it reopens 45 seconds later the counter has kept counting and the agent has finished its turn" src="docs/readme/survive-quit.gif" width="900" />
 
 After a crash or a reboot, a recovered pane offers **Resume**: it types the agent command back in, with the exact conversation when wmux knows which one the pane held. Panes declared in `wmux.json` with a restart policy are supervised and restarted automatically.
 
-<img alt="After a crash, the recovered pane offers Resume Claude, then resume this session, and the exact conversation comes back" src="docs/readme/survive-resume.gif" width="900" />
+<img alt="After the daemon is killed and restarts, the recovered pane offers Pick a Claude session; the session picker opens and the conversation comes back" src="docs/readme/survive-resume.gif" width="900" />
 
 ### Usage limits and accounts
 
 When Claude Code or Codex hits its usage limit, the pane pauses: its header and its Fleet row say when the limit resets, and wmux holds scheduled prompts and agent messages for that pane instead of typing them into a turn that cannot run. Turn on **Resume at reset** for a pane (or "Continue after a usage limit resets" in Settings, off by default) and it continues by itself when the window resets. With several of your own Claude or Codex subscriptions registered, **Switch Claude accounts by quota** and **Switch Codex accounts by quota** in Settings → Accounts (both off by default) start a new pane on the account with the most quota left when the workspace's own account is out of quota. Settings → Token usage shows each provider's usage windows.
 
-<img alt="An agent is paused by a usage limit; the pane header shows when it resets, Resume at reset is armed, and at the reset wmux sends the continue message and the agent finishes" src="docs/readme/limits.gif" width="900" />
+<img alt="An agent is paused by a usage limit; the pane header shows when it resets, Resume at reset is armed, and at the reset wmux sends the continue message and the agent finishes the change with the tests passing" src="docs/readme/limits.gif" width="900" />
 
 ## More
 
