@@ -2,7 +2,7 @@
 //
 // The bot runtime (BotRuntime, the wake queue, budget accounting) reports the
 // events the factory records as facts through this one listener seam: a budget
-// refusal, a bot parked on errors, a turn that was running when the app quit,
+// refusal, a fan-out waiting for a worker slot, a bot parked on errors, a turn that was running when the app quit,
 // an owner's message held while its bot is out of turns.
 // The fact log module subscribes (`onBotHook`) and turns each into a fact; the
 // runtime never imports the fact log. A listener that throws is logged and
@@ -15,8 +15,8 @@ export type BotHookEvent =
       type: 'bot.budget_exhausted';
       botId: string;
       workspaceId: string;
-      /** Which window refused. */
-      reason: 'turns_hour' | 'turns_day' | 'concurrent_workers' | 'worker_hours_day' | 'factory_workers';
+      /** Which window refused (a full worker slot is `bot.workers_full`). */
+      reason: 'turns_hour' | 'turns_day' | 'worker_hours_day';
       wakeId?: string;
       /** When the window allows a turn again (a turn refusal only; absent:
        *  not by itself, or not known). */
@@ -26,6 +26,11 @@ export type BotHookEvent =
       parkedAt?: number;
       at: number;
     }
+  /** A bot's fan-out found every worker slot in use: its own
+   *  (`scope` bot: maxConcurrentWorkers) or the factory's (`scope` factory:
+   *  WAKE_LIMITS.GLOBAL_CONCURRENT_WORKERS). Not a budget limit: a slot
+   *  frees when a running worker ends. */
+  | { type: 'bot.workers_full'; botId: string; workspaceId: string; scope: 'bot' | 'factory'; running: number; limit: number; at: number }
   /** `until`: the turn hit the provider's usage limit; the bot is parked
    *  until then and picks up by itself. */
   | { type: 'bot.error'; botId: string; workspaceId: string; message: string; wakeId?: string; until?: number; at: number }

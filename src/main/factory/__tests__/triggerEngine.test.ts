@@ -169,6 +169,13 @@ describe('trigger matching', () => {
     expect(botSeesFact(lead, fact('bot.budget_exhausted', { workspaceId: 'ws-2' }))).toBe(false);
   });
 
+  it('a full worker slot does not wake the coordinator; an exhausted budget does', () => {
+    const moa = bot('bot-00000009', 'moa', { workspaceId: 'hq', repo: undefined });
+    const ref = { botId: 'bot-00000001' };
+    expect(matchingTrigger(moa, fact('bot.budget_exhausted', { workspaceId: 'ws-1', ref, payload: { reason: 'worker_hours_day' } }), trust)?.kind).toBe('bot.budget_exhausted');
+    expect(matchingTrigger(moa, fact('bot.workers_full', { workspaceId: 'ws-1', ref, payload: { scope: 'bot', running: 1, limit: 1 } }), trust)).toBeNull();
+  });
+
   it('priority: human 0, handoff / verdict / merge 1, other facts 2', () => {
     expect(wakePriority('human.message')).toBe(0);
     expect(wakePriority('handoff.received')).toBe(1);

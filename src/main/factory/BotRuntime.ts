@@ -57,7 +57,7 @@ import type { BotEngineFactory } from './botEngines';
 import type { BotStore } from './botStore';
 import {
   budgetLeft, checkTurn, costUsdDay, hourlyCap, nextTurnAllowedAt, recordCost, recordTurn, runningWorkers, turnsUsedDay, turnsUsedHour, unrecordTurn,
-  workerHoursDay, workerTimeAllowedAt, type BotUsage, type BudgetRefusalReason,
+  workerHoursDay, workerTimeAllowedAt, type BotUsage,
 } from './budget';
 import type { FactorySettings } from './factorySettings';
 import { createFilePersister, readVersionedFile, type FilePersister } from './versionedFile';
@@ -425,6 +425,12 @@ export class BotRuntime {
     const now = this.now();
     const usage = this.deps.store.usageOf(botId);
     const left = budgetLeft(profile.budget, usage, now);
+    let load: BotWorkerLoad | null = null;
+    try {
+      load = this.deps.workerLoad?.(botId) ?? null;
+    } catch {
+      /* the status never fails on the load */
+    }
     const sessionId = live?.adapter.sessionId ?? this.deps.sessions.get(botId)?.sessionId;
     const err = this.lastError.get(botId);
     return {
@@ -433,8 +439,18 @@ export class BotRuntime {
       ...(sessionId ? { sessionId } : {}),
       ...(run ? { currentTurn: { wakeId: run.item.id, startedAt: run.startedAt, ...(run.item.threadId ? { threadId: run.item.threadId } : {}) } } : {}),
       queueDepth: this.deps.queue.depth(botId),
-      budgetLeft: { turnsHour: left.turnsHour, turnsDay: left.turnsDay, workerHoursDay: left.workerHoursDay },
-      usage: this.usageView(profile, usage, now),
+      budgetLeft: {
+        turnsHour: left.turnsHour,
+        turnsDay: left.turnsDay,
+        workerHoursDay: left.workerHoursDay,
+        ...(load
+          ? {
+              workerSlots: Math.max(0, profile.budget.maxConcurrentWorkers - load.running),
+              factoryWorkerSlots: Math.max(0, WAKE_LIMITS.GLOBAL_CONCURRENT_WORKERS - load.factoryRunning),
+            }
+          : {}),
+      },
+      usage: this.usageView(profile, usage, now, load),
       ...this.quotaView(profile),
       ...(err ? { lastError: { ...err } } : {}),
     };
@@ -471,7 +487,7 @@ export class BotRuntime {
 
   /** The status's `usage`: what the bot used of each limit, when an
    *  exhausted one frees up, and the worker load (when reported). */
-  private usageView(profile: BotProfile, usage: BotUsage, now: number): BotStatusUsage {
+  private usageView(profile: BotProfile, usage: BotUsage, now: number, load: BotWorkerLoad | null): BotStatusUsage {
     const out: BotStatusUsage = {
       turnsHour: hourlyCap(profile.budget) === null ? null : turnsUsedHour(usage, now),
       turnsDay: turnsUsedDay(usage, now),
@@ -484,12 +500,6 @@ export class BotRuntime {
     if (!checkTurn(profile.budget, usage, now).ok) {
       const at = nextTurnAllowedAt(profile.budget, usage, now);
       if (Number.isFinite(at)) out.nextTurnAt = at;
-    }
-    let load: BotWorkerLoad | null = null;
-    try {
-      load = this.deps.workerLoad?.(profile.id) ?? null;
-    } catch {
-      /* the status never fails on the load */
     }
     if (out.workerHoursDay >= profile.budget.maxWorkerHoursPerDay && runningWorkers(usage) === 0 && (load?.running ?? 0) === 0) {
       const at = workerTimeAllowedAt(profile.budget, usage, now);
@@ -856,7 +866,7 @@ export class BotRuntime {
 
   /** The bot just ran out of turns at `head`: park it and report it once,
    *  with when the window allows a turn again. `head` stays queued. */
-  private outOfTurns(profile: BotProfile, head: WakeItem, reason: BudgetRefusalReason, now: number): void {
+  private outOfTurns(profile: BotProfile, head: WakeItem, reason: 'turns_hour' | 'turns_day', now: number): void {
     this.deps.store.setParked(profile.id, { reason: 'budget', at: now });
     profile.parked = { reason: 'budget', at: now };
     const until = nextTurnAllowedAt(profile.budget, this.deps.store.usageOf(profile.id), now);

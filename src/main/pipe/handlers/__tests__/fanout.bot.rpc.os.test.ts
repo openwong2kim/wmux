@@ -64,7 +64,7 @@ function botCtx(role: BotRole): RpcContext {
 interface Rig {
   call: (params: Record<string, unknown>, ctx: RpcContext) => Promise<Record<string, unknown>>;
   start: ReturnType<typeof vi.fn>;
-  port: FanOutBotPort & { started: string[][]; exhausted: string[]; seen: Set<string>; refusal: string | null; outcomes: BotWorkerStartOutcome[] };
+  port: FanOutBotPort & { started: string[][]; exhausted: string[]; full: Array<{ scope: string; running: number; limit: number }>; seen: Set<string>; refusal: string | null; outcomes: BotWorkerStartOutcome[] };
   approve: () => void;
   setWake: (id: string | null) => void;
   setThread: (t: string | null) => void;
@@ -119,6 +119,7 @@ function rig(role: BotRole, over: Partial<BotProfile> = {}, opts: { builtinPrese
   const port: Rig['port'] = {
     started: [],
     exhausted: [],
+    full: [],
     seen: new Set<string>(),
     refusal: null,
     outcomes: [],
@@ -142,6 +143,9 @@ function rig(role: BotRole, over: Partial<BotProfile> = {}, opts: { builtinPrese
     },
     budgetExhausted: (_b, reason) => {
       port.exhausted.push(reason);
+    },
+    workersFull: (_b, full) => {
+      port.full.push({ ...full });
     },
   };
   registerFanOutRpc(router, service, () => null, {
@@ -533,14 +537,27 @@ describe('task.fanout.start — bot origin', () => {
     expect(pane.ok).toBe(false);
   });
 
-  it('refuses over the bot\'s worker budget and over the factory-wide cap, with a hook', async () => {
+  it('a full worker slot (the bot\'s or the factory\'s) is reported as workers_full, not as an exhausted budget', async () => {
     const r = rig('verifier'); // maxConcurrentWorkers 1
     r.setOpen({ bot: 1, factory: 1 });
-    expect(errorOf(await r.call({ idempotencyKey: 'wake:w-1:1', titles: ['x'], preset: 'verify', checkout: { sha: SHA } }, botCtx('verifier'))).code).toBe('RESOURCE_EXHAUSTED');
+    const own = errorOf(await r.call({ idempotencyKey: 'wake:w-1:1', titles: ['x'], preset: 'verify', checkout: { sha: SHA } }, botCtx('verifier')));
+    expect(own.code).toBe('RESOURCE_EXHAUSTED');
+    expect(own.message).toMatch(/not a budget limit: start it again once one of the running workers ends/);
     r.setOpen({ bot: 0, factory: 3 });
     expect(errorOf(await r.call({ idempotencyKey: 'wake:w-1:2', titles: ['x'], preset: 'verify', checkout: { sha: SHA } }, botCtx('verifier'))).code).toBe('RESOURCE_EXHAUSTED');
-    expect(r.port.exhausted).toEqual(['concurrent_workers', 'factory_workers']);
+    expect(r.port.exhausted).toEqual([]);
+    expect(r.port.full).toEqual([
+      { scope: 'bot', running: 1, limit: 1 },
+      { scope: 'factory', running: 3, limit: 3 },
+    ]);
     expect(r.start).not.toHaveBeenCalled();
+  });
+
+  it('worker hours used up stay a budget refusal', async () => {
+    const r = rig('verifier', { budget: { ...DEFAULT_BOT_BUDGETS.verifier, maxWorkerHoursPerDay: 0 } });
+    expect(errorOf(await r.call({ idempotencyKey: 'wake:w-1:1', titles: ['x'], preset: 'verify', checkout: { sha: SHA } }, botCtx('verifier'))).code).toBe('RESOURCE_EXHAUSTED');
+    expect(r.port.exhausted).toEqual(['worker_hours_day']);
+    expect(r.port.full).toEqual([]);
   });
 
   it('reads the workers\' panes fresh before the factory-wide cap check (#2255)', async () => {

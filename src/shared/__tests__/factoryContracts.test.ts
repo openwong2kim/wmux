@@ -55,9 +55,25 @@ describe('factDedupeKey', () => {
     expect(first).toBe(`bot.budget_exhausted:bot-0000beef:park:${AT}`);
     expect(again).toBe(first);
     expect(second).not.toBe(first);
-    // No park (a worker start refused): one per hour, as before.
-    expect(factDedupeKey({ kind: 'bot.budget_exhausted', at: AT, ref: bot, payload: { reason: 'concurrent_workers' } }))
-      .toBe(`bot.budget_exhausted:bot-0000beef:${Math.floor(AT / 3_600_000)}`);
+    // No park (a worker start refused): one per reason per hour.
+    expect(factDedupeKey({ kind: 'bot.budget_exhausted', at: AT, ref: bot, payload: { reason: 'worker_hours_day' } }))
+      .toBe(`bot.budget_exhausted:bot-0000beef:worker_hours_day:${Math.floor(AT / 3_600_000)}`);
+  });
+
+  it('a slot refusal and a budget refusal in the same hour keep their own keys', () => {
+    const bot = { botId: 'bot-0000beef' };
+    const hour = Math.floor(AT / 3_600_000);
+    const keys = [
+      factDedupeKey({ kind: 'bot.workers_full', at: AT, ref: bot, payload: { scope: 'bot', running: 2, limit: 2 } }),
+      factDedupeKey({ kind: 'bot.workers_full', at: AT, ref: bot, payload: { scope: 'factory', running: 3, limit: 3 } }),
+      factDedupeKey({ kind: 'bot.budget_exhausted', at: AT, ref: bot, payload: { reason: 'worker_hours_day' } }),
+    ];
+    expect(keys).toEqual([
+      `bot.workers_full:bot-0000beef:bot:${hour}`,
+      `bot.workers_full:bot-0000beef:factory:${hour}`,
+      `bot.budget_exhausted:bot-0000beef:worker_hours_day:${hour}`,
+    ]);
+    expect(factDedupeKey({ kind: 'bot.workers_full', at: AT, ref: bot, payload: {} })).toBe(`bot.workers_full:bot-0000beef:${hour}`);
   });
 
   it('a verdict from a pane (no bot) keys on its workspace', () => {

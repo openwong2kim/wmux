@@ -138,7 +138,7 @@ import { runningWakeTainted } from '../../factory/wakeTaint';
 import { botThreadRefusal, resolveRoomPorts, runningWake } from '../../factory/roomWriter';
 import { getHandoffRouter } from '../../factory/handoffRouter';
 import { emitBotHook } from '../../factory/botHooks';
-import { checkWorkers, recordWorkerStart, type BotUsage, type BudgetRefusalReason } from '../../factory/budget';
+import { checkWorkerHours, recordWorkerStart, workerSlotsFull, type BotUsage, type WorkerSlotsFull } from '../../factory/budget';
 import { botFanoutPreset, botFanoutPresetList, botPresetCheckoutRefusal, composeBotWorkerPrompt } from '../../worktask/botFanoutPresets';
 import { getFactLog } from '../../factory/factLog';
 import { getWakeQueue } from '../../factory/wakeQueue';
@@ -727,7 +727,10 @@ export interface FanOutBotPort {
   refreshLiveness?(): Promise<void>;
   usage(botId: string): BotUsage;
   workersStarted(botId: string, taskIds: readonly string[]): void;
-  budgetExhausted(bot: BotBinding, reason: BudgetRefusalReason | 'factory_workers'): void;
+  /** The bot's worker hours for today are used: a budget limit. */
+  budgetExhausted(bot: BotBinding, reason: 'worker_hours_day'): void;
+  /** Every worker slot the fan-out needs is in use: not a budget limit. */
+  workersFull(bot: BotBinding, full: WorkerSlotsFull): void;
   /** Whether this fan-out key was accepted before (durable across restarts). */
   fanoutKeySeen(key: string): boolean;
   recordFanoutKey(key: string): void;
@@ -740,6 +743,15 @@ export interface FanOutBotPort {
    *  a card in the bot's thread for a task that could not start
    *  (factory/botNotices.ts noticeWorkerStarts). Absent: nobody is told. */
   workerStartOutcome?(botId: string, outcome: BotWorkerStartOutcome): void;
+}
+
+/** What a slot refusal tells the bot: whose slots are full, and that it
+ *  can start the fan-out again once a worker ends. Pure. */
+export function workersFullText(full: WorkerSlotsFull, heldNote = ''): string {
+  const whose = full.scope === 'factory'
+    ? `the factory's bot worker slots are all in use (${full.running} of ${full.limit}, every bot's workers counted)`
+    : `all of this bot's worker slots are in use (${full.running} of ${full.limit})${heldNote}`;
+  return `${whose}. This is not a budget limit: start it again once one of the running workers ends.`;
 }
 
 /** What an accepted bot fan-out answers: the workers are not up yet. */
@@ -827,6 +839,9 @@ function defaultBotPort(): FanOutBotPort | null {
     },
     budgetExhausted: (bot, reason) => {
       emitBotHook({ type: 'bot.budget_exhausted', botId: bot.botId, workspaceId: bot.workspaceId, reason, at: Date.now() });
+    },
+    workersFull: (bot, full) => {
+      emitBotHook({ type: 'bot.workers_full', botId: bot.botId, workspaceId: bot.workspaceId, ...full, at: Date.now() });
     },
     workerStartOutcome: (botId, outcome) => {
       noticeWorkerStarts({ factLog: getFactLog, wakes: getWakeQueue }, botId, outcome);
@@ -1473,26 +1488,32 @@ export function registerFanOutRpc(
     // Over a cap is a refusal, never a queued prompt: with approval off by
     // default there is nobody to drain a queue, and with it on a loop would
     // bury the operator in dialogs.
-    // A bot's own worker budget, and the factory-wide worker cap, counted
-    // over open bot tasks plus bot fan-outs still being started (booked in
-    // this same tick, so two concurrent starts cannot both pass).
+    // A bot's worker hours are its budget. Its worker slots, and the
+    // factory-wide ones, are not (bot.workers_full): counted over open bot
+    // tasks plus bot fan-outs still being started (booked in this same
+    // tick, so two concurrent starts cannot both pass).
     // The bot holders (factory/workerHolders.ts) count the fan-outs still
     // being started: each is booked under the live cap below in this tick.
     if (bot && botPort && botProfile) {
       const open = botPort.openWorkers(bot.botId);
       const bookedBot = open.botStarting ?? 0;
       const n = parsed.titles.length;
-      if (open.factory + n > WAKE_LIMITS.GLOBAL_CONCURRENT_WORKERS) {
-        botPort.budgetExhausted(bot, 'factory_workers');
-        return deny('RESOURCE_EXHAUSTED', `the factory runs at most ${WAKE_LIMITS.GLOBAL_CONCURRENT_WORKERS} bot workers at once`);
+      const hours = checkWorkerHours(botProfile.budget, botPort.usage(bot.botId), Date.now());
+      if (!hours.ok) {
+        botPort.budgetExhausted(bot, 'worker_hours_day');
+        return deny('RESOURCE_EXHAUSTED', 'this bot\'s worker budget refuses the fan-out (worker_hours_day): its worker hours for today are used');
       }
-      const budget = checkWorkers(botProfile.budget, botPort.usage(bot.botId), open.bot, n, Date.now());
-      if (!budget.ok) {
-        botPort.budgetExhausted(bot, budget.reason);
-        const held = budget.reason === 'concurrent_workers'
+      const most = Math.min(botProfile.budget.maxConcurrentWorkers, WAKE_LIMITS.GLOBAL_CONCURRENT_WORKERS);
+      if (n > most) {
+        return deny('RESOURCE_EXHAUSTED', `this bot runs at most ${most} worker${most === 1 ? '' : 's'} at once: start at most ${most} task${most === 1 ? '' : 's'} per fan-out`);
+      }
+      const full = workerSlotsFull(botProfile.budget, open.bot, open.factory, n, WAKE_LIMITS.GLOBAL_CONCURRENT_WORKERS);
+      if (full) {
+        botPort.workersFull(bot, full);
+        const note = full.scope === 'bot'
           ? workersHeldNote(open.bot - bookedBot, bookedBot, getAgentSlots()?.waiting().filter((w) => w.botId === bot.botId).length ?? 0)
           : '';
-        return deny('RESOURCE_EXHAUSTED', `this bot's worker budget refuses the fan-out (${budget.reason})${held}`);
+        return deny('RESOURCE_EXHAUSTED', workersFullText(full, note));
       }
     }
 

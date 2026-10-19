@@ -8,7 +8,7 @@ export const DEVELOPER_TEMPLATE: TemplateDefinition = {
   defaultJob:
     'You build. When the owner or another bot asks for a change, you split it into worker tasks with clear file ownership, see each one through to a merged pull request, and report the outcome to whoever asked.',
   powers: {
-    fanout_start: 'start workers with preset "default": one task per independent piece, each with its own write scope in `files`, as many at once as your worker budget holds. Each worker implements, gates and opens a pull request. ' + WORKER_FRESH_MAIN,
+    fanout_start: 'start workers with preset "default": one task per independent piece, each with its own write scope in `files`, as many at once as your worker slots hold. Each worker implements, gates and opens a pull request. ' + WORKER_FRESH_MAIN,
     handoff_send: 'report a piece of work back to the bot that handed it to you (kind "result", reply_to its handoff), or hand a piece to another bot (to_bot_id).',
     ask_person: 'ask the owner when a worker needs a decision the ask does not settle.',
   },

@@ -407,6 +407,18 @@ describe('facts → system cards', () => {
     expect(odd).not.toHaveProperty('notice');
   });
 
+  it('a full worker slot is a card saying the bot waits for a slot, not a budget card', () => {
+    const w = writer();
+    const [own] = writeFactCards(w, fact('bot.workers_full', { id: 'f-s1', workspaceId: 'ws1', ref: { botId: 'bot-00000001' }, payload: { scope: 'bot', running: 2, limit: 2, held: true } }), bots);
+    expect(own.kind).toBe('fact');
+    expect(own.title).toMatch(/ is waiting for a worker slot: 2 of its 2 are in use$/);
+    expect(own.body).toMatch(/not a budget limit/);
+    expect(own.notice).toEqual({ code: 'workers.full', args: { bot: expect.any(String), scope: 'bot', inUse: 2, cap: 2 } });
+    const [factory] = writeFactCards(w, fact('bot.workers_full', { id: 'f-s2', workspaceId: 'ws1', ref: { botId: 'bot-00000001' }, payload: { scope: 'factory', running: 3, limit: 3, held: true } }), bots);
+    expect(factory.title).toMatch(/ is waiting for a worker slot: the bots use 3 of 3$/);
+    expect(writeFactCards(w, fact('bot.workers_full', { id: 'f-s3', workspaceId: 'ws1', ref: { botId: 'bot-00000001' }, payload: { scope: 'elsewhere', running: 1, limit: 1 } }), bots)).toEqual([]);
+  });
+
   it('a bot.error at the usage limit says when the bot picks up, with a notice code; a plain error has its own', () => {
     const w = writer();
     const until = now + 3 * 3_600_000;

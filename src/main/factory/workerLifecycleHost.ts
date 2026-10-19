@@ -524,7 +524,10 @@ export function startWorkerLifecycle(deps: WorkerLifecycleDeps): () => void {
         if (!live) return 'the bot\'s worker count is not available yet';
         const open = holderCounts(live.holders.filter((h) => h.taskId !== taskId && h.why !== 'resuming'), botId).bot + starting;
         const c = checkWorkers(profile.budget, store.usageOf(botId), open, 1, Date.now());
-        return c.ok ? null : `this bot's worker budget refuses another worker now (${c.reason})`;
+        if (c.ok) return null;
+        return c.reason === 'concurrent_workers'
+          ? 'all of this bot\'s worker slots are in use (not a budget limit): resume it once one of its workers ends'
+          : `this bot's worker budget refuses another worker now (${c.reason})`;
       },
       note,
       changed,

@@ -26,6 +26,7 @@ export type FactKind =
   | 'handoff.received' | 'handoff.refused'
   | 'human.message' | 'human.correction'         // correction = owner reverted/overrode a bot output
   | 'bot.refused' | 'bot.budget_exhausted' | 'bot.error'
+  | 'bot.workers_full'                           // a fan-out waits for a worker slot (not a budget limit)
   | 'bot.notice'                                 // main tells one bot what became of its work (BotNoticePayload)
   | 'schedule.fired';                            // the one timer-origin fact (morning wake)
 
@@ -40,6 +41,7 @@ export const FACT_KINDS: readonly FactKind[] = [
   'handoff.received', 'handoff.refused',
   'human.message', 'human.correction',
   'bot.refused', 'bot.budget_exhausted', 'bot.error',
+  'bot.workers_full',
   'bot.notice',
   'schedule.fired',
 ];
@@ -163,6 +165,12 @@ function join(kind: FactKind, ...parts: Array<string | number | null | undefined
   return [kind, ...parts].join(':');
 }
 
+/** A payload value as an optional key part: one refusal reason cannot
+ *  swallow another's fact (absent: no part). */
+function payloadPart(v: unknown): string[] {
+  return typeof v === 'string' && v.length > 0 && v.length <= 64 ? [v] : [];
+}
+
 /**
  * The dedupe key of a fact, or null when the parts its kind needs are missing
  * (the fact must then be refused). Pure.
@@ -186,7 +194,9 @@ function join(kind: FactKind, ...parts: Array<string | number | null | undefined
  *   bot.refused                bot.refused:<botId>:<method>:<epochMinute>
  *   bot.budget_exhausted       bot.budget_exhausted:<botId>:park:<parkedAt> (a park: one per park,
  *                              so a new park in the same hour is reported again),
- *                              else bot.budget_exhausted:<botId>:<epochHour>
+ *                              else bot.budget_exhausted:<botId>:<reason>:<epochHour>
+ *   bot.workers_full           bot.workers_full:<botId>:<scope>:<epochHour>
+ *                              (<reason> / <scope> left out when the payload has none)
  *   bot.error                  bot.error:<botId>:<epochMinute>
  *   bot.notice                 bot.notice:<botId>:<messageId>
  *   schedule.fired             schedule.fired:<scheduleId>:<epochDay>
@@ -239,8 +249,10 @@ export function factDedupeKey(draft: Pick<FactDraft, 'kind' | 'at' | 'repoKey' |
       const parkedAt = draft.payload?.parkedAt;
       return typeof parkedAt === 'number' && Number.isSafeInteger(parkedAt)
         ? join(kind, ref.botId, 'park', parkedAt)
-        : join(kind, ref.botId, Math.floor(at / HOUR_MS));
+        : join(kind, ref.botId, ...payloadPart(draft.payload?.reason), Math.floor(at / HOUR_MS));
     }
+    case 'bot.workers_full':
+      return join(kind, ref.botId, ...payloadPart(draft.payload?.scope), Math.floor(at / HOUR_MS));
     case 'bot.error':
       return join(kind, ref.botId, minute);
     case 'bot.notice':

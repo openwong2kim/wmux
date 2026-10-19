@@ -322,8 +322,11 @@ export interface BotStatus {
    *  or `general`), so a busy line shows in that conversation only. */
   currentTurn?: { wakeId: string; startedAt: number; threadId?: string };
   queueDepth: number;
-  /** turnsHour is null when the bot has no hourly cap. */
-  budgetLeft: { turnsHour: number | null; turnsDay: number; workerHoursDay: number };
+  /** turnsHour is null when the bot has no hourly cap. `workerSlots`: the
+   *  workers the bot may start now under its own cap, `factoryWorkerSlots`:
+   *  under the factory-wide one (every bot's workers counted). A full slot is
+   *  not a budget limit: one frees when a worker ends. Absent: not known. */
+  budgetLeft: { turnsHour: number | null; turnsDay: number; workerHoursDay: number; workerSlots?: number; factoryWorkerSlots?: number };
   /** What the profile's Today block shows beside budgetLeft (absent from an
    *  older build). */
   usage?: BotStatusUsage;

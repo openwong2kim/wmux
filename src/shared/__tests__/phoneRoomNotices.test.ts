@@ -13,7 +13,7 @@ const codes = Object.entries(PHONE_ROOM_NOTICE_CODES);
 
 /** A known value for the args the desktop words (roomFormat.ts NOTICE_WORDS). */
 const WORD_VALUES: Readonly<Record<string, string>> = {
-  status: 'completed', by: 'owner', where: 'folder', limit: 'turns_hour', kind: 'research', hop: 'dispatch', verdict: 'pass', cause: 'fetch',
+  status: 'completed', by: 'owner', where: 'folder', limit: 'turns_hour', kind: 'research', hop: 'dispatch', verdict: 'pass', cause: 'fetch', scope: 'bot',
 };
 
 function docSection(): string {

@@ -1215,6 +1215,24 @@ export function systemCardForFact(fact: Fact, bots?: BotDirectoryApi): SystemCar
         ...(reason in BUDGET_LIMIT_TEXT ? { notice: { code: 'budget.exhausted', args: { bot: name, limit: reason, ...(until !== null ? { until } : {}) } } } : {}),
       };
     }
+    case 'bot.workers_full': {
+      // Not a budget limit: the bot waits for a worker slot, its own or the
+      // factory's, which frees when a running worker ends.
+      const name = botLabel(bots, fact.ref?.botId);
+      const scope = p.scope === 'factory' ? 'factory' : p.scope === 'bot' ? 'bot' : null;
+      const running = typeof p.running === 'number' && Number.isSafeInteger(p.running) ? p.running : null;
+      const limit = typeof p.limit === 'number' && Number.isSafeInteger(p.limit) ? p.limit : null;
+      if (!scope || running === null || limit === null) return null;
+      return {
+        workspaces: factRooms(fact, bots), threadId: GENERAL_THREAD, kind: 'fact',
+        title: scope === 'bot'
+          ? `${name} is waiting for a worker slot: ${running} of its ${limit} are in use`
+          : `${name} is waiting for a worker slot: the bots use ${running} of ${limit}`,
+        body: 'This is not a budget limit: it picks the work up when a running worker ends.',
+        refs: baseRefs,
+        notice: { code: 'workers.full', args: { bot: name, scope, inUse: running, cap: limit } },
+      };
+    }
     case 'bot.notice': {
       // Main's own line to one bot; the owner sees it only when it says so
       // (a worker that could not start), in the thread it is about, title only.

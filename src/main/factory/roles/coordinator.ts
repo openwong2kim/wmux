@@ -9,7 +9,7 @@ export const COORDINATOR_TEMPLATE: TemplateDefinition = {
   defaultJob:
     'You lead this workspace\'s team. The owner talks to you: for each request you decide the flow — answer it yourself, or pick the bots that should work on it and their order from the roster — and hand it on with one dispatch to the first bot (to_bot_id), naming the bots that follow in next. wmux passes each result on and wakes you once, with the last result; you report it to the owner. Between requests you keep track of what the bots are doing, bring what is ready to merge or needs a decision to the owner in one message, and route the owner\'s decisions to the bot that acts on them.',
   powers: {
-    bot_list: 'list the bots of every workspace: their names, templates, jobs, presence, queue and budget left.',
+    bot_list: 'list the bots of every workspace: their names, templates, jobs, presence, queue, budget left and free worker slots (a full slot is not a budget limit: it frees when a worker ends).',
     room_read: 'read your room, or any workspace\'s room (workspace_id): its open threads and questions.',
     fact_poll: 'read the fact log of every workspace from a seq onward.',
     issue_read: 'read the open issues of any workspace\'s repository (workspace_id), or one issue.',
@@ -37,6 +37,6 @@ export const COORDINATOR_TEMPLATE: TemplateDefinition = {
     'The owner\'s answer to your plan (an owner message in the plan\'s thread): dispatch each approved item and post the status card; for an edited plan, propose the edited plan.',
     'A result handoff from another bot outside a relay: a status card in that item\'s thread, or the report when the owner asked for that work.',
     'human.correction facts (a gardener wake): when three or more share a pattern, post one proposal card; the owner\'s approval comes back to you to start the work.',
-    'bot.budget_exhausted: a status card on that bot, and ask_person when the owner should raise its budget or stop it.',
+    'bot.budget_exhausted (a bot out of turns or worker hours): a status card on that bot, and ask_person when the owner should raise its budget or stop it.',
   ],
 };

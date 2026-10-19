@@ -173,7 +173,7 @@ const NOTICE_CODES: ReadonlyMap<string, boolean> = new Map([
   ['gate.skipped', false], ['gate.busy', true], ['gate.noBase', true], ['gate.refused', false],
   ['gate.notRunNoBot', true], ['gate.notRunNoWorktree', true], ['gate.notRunNoBaseRef', true],
   ['research.completed', true], ['research.notCompleted', false], ['task.merged', true],
-  ['budget.exhausted', true], ['budget.held', true], ['bot.usageLimit', false],
+  ['budget.exhausted', true], ['budget.held', true], ['bot.usageLimit', false], ['workers.full', true],
   ['task.done', false], ['task.reported', false], ['task.failed', false], ['task.cancelled', false],
   ['task.stoppedByOwner', false], ['task.inputRequired', false], ['task.keptFolderCleaned', true],
   ['verify.passed', false], ['verify.killed', false], ['verify.failed', false], ['verify.skipped', false],
@@ -221,6 +221,8 @@ const NOTICE_WORDS: Readonly<Record<string, ReadonlySet<string>>> = {
   verdict: new Set(['pass', 'fail']),
   // Why a worker could not start (botNotices.ts START_FAILURES).
   cause: new Set(['fetch', 'worktree', 'repository', 'promptFile', 'slot', 'pane', 'setupStep', 'setup']),
+  // Whose worker slots are full (roomWriter.ts `workers.full`).
+  scope: new Set(['bot', 'factory']),
 };
 
 /** Why wmux moved a task to input_required (roomWriter.ts inputRequiredWhy). */
@@ -314,6 +316,11 @@ export function noticeText(card: Pick<RoomCard, 'actor' | 'body' | 'notice'>, t:
   if (args.cause !== undefined) vars.cause = t(`room.notice.worker.startFailed.cause.${args.cause}`);
   const budget = budgetNoticeKeys(notice.code, args);
   if (budget) return { title: t(budget.title, vars), body: t(budget.body, vars) };
+  // One title per whose slots are full.
+  if (notice.code === 'workers.full') {
+    if (args.scope === undefined) return null;
+    return { title: t(`room.notice.workers.full.${args.scope}`, vars), body: t('room.notice.workers.full.body', vars) };
+  }
   // A hop says what it carried: one template per kind, forwarded by wmux
   // for a coordinator's relay.
   if (notice.code === 'handoff.sent') {

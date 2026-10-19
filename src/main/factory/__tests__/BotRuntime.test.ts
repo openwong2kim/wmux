@@ -91,7 +91,7 @@ interface Rig {
   spawns: BotEngineSpawnInput[];
 }
 
-function rig(opts: { mode?: FakeAdapter['mode']; engines?: BotEngineFactory; load?: boolean; timers?: Array<{ fn: () => void; at: number }>; claudeQuota?: BotRuntimeDeps['claudeQuota'] } = {}): Rig {
+function rig(opts: { mode?: FakeAdapter['mode']; engines?: BotEngineFactory; load?: boolean; timers?: Array<{ fn: () => void; at: number }>; claudeQuota?: BotRuntimeDeps['claudeQuota']; workerLoad?: BotRuntimeDeps['workerLoad'] } = {}): Rig {
   const store = new BotStore(botsFilePath(dir), { now: () => clock });
   const sessions = new BotSessionStore(botSessionsPath(dir));
   let runtime: BotRuntime | null = null;
@@ -116,6 +116,7 @@ function rig(opts: { mode?: FakeAdapter['mode']; engines?: BotEngineFactory; loa
     wmuxDir: dir,
     now: () => clock,
     ...(opts.claudeQuota ? { claudeQuota: opts.claudeQuota } : {}),
+    ...(opts.workerLoad ? { workerLoad: opts.workerLoad } : {}),
     ...(timers ? {
       setTimer: (fn: () => void, ms: number) => { timers.push({ fn, at: clock + ms }); return timers.length; },
       clearTimer: () => undefined,
@@ -191,6 +192,16 @@ describe('BotRuntime', () => {
     // A day later the day's sum is gone; the total stays.
     clock += 24 * HOUR_MS;
     expect(r.runtime.status(id)?.usage).toMatchObject({ costUsdDay: 0, costUsdTotal: 1 });
+  });
+
+  it('budget left shows the worker slots free: the bot\'s own and the factory\'s', () => {
+    const r = rig({ workerLoad: () => ({ running: 1, factoryRunning: 3, waiting: 0, slots: null }) });
+    const id = createBot(r, 'lead', 'ws-1', { maxConcurrentWorkers: 2 });
+    expect(r.runtime.status(id)?.budgetLeft).toMatchObject({ workerSlots: 1, factoryWorkerSlots: 0 });
+    expect(r.runtime.status(id)?.usage?.workersRunning).toBe(1);
+    // Without a worker count the slots are not claimed either way.
+    const bare = rig();
+    expect(bare.runtime.status(createBot(bare))?.budgetLeft).not.toHaveProperty('workerSlots');
   });
 
   it('the running turn\'s status names the thread it answers in (the page shows it busy there only)', async () => {

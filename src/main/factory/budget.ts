@@ -37,7 +37,7 @@ export interface BotUsage {
 
 export type BudgetRefusalReason = 'turns_hour' | 'turns_day' | 'concurrent_workers' | 'worker_hours_day';
 
-export type BudgetCheck = { ok: true } | { ok: false; reason: BudgetRefusalReason };
+export type BudgetCheck<R extends BudgetRefusalReason = BudgetRefusalReason> = { ok: true } | { ok: false; reason: R };
 
 export function emptyUsage(): BotUsage {
   return { turns: [], workers: [] };
@@ -150,7 +150,7 @@ export function budgetLeft(budget: BotBudget, usage: BotUsage, now: number): Bud
 }
 
 /** May the bot start one more turn now? */
-export function checkTurn(budget: BotBudget, usage: BotUsage, now: number): BudgetCheck {
+export function checkTurn(budget: BotBudget, usage: BotUsage, now: number): BudgetCheck<'turns_hour' | 'turns_day'> {
   const perHour = hourlyCap(budget);
   if (perHour !== null && turnsSince(usage, now - HOUR_MS, now) >= perHour) return { ok: false, reason: 'turns_hour' };
   if (turnsSince(usage, now - DAY_MS, now) >= budget.maxTurnsPerDay) return { ok: false, reason: 'turns_day' };
@@ -164,6 +164,30 @@ export function checkWorkers(budget: BotBudget, usage: BotUsage, running: number
   if (running + count > budget.maxConcurrentWorkers) return { ok: false, reason: 'concurrent_workers' };
   if (workerHoursDay(usage, now) >= budget.maxWorkerHoursPerDay) return { ok: false, reason: 'worker_hours_day' };
   return { ok: true };
+}
+
+/** A fan-out every worker slot of which is in use: the bot's own
+ *  (`scope` bot) or the factory's, counted over every bot (`scope` factory).
+ *  Not a budget limit: a slot frees when a worker ends. */
+export interface WorkerSlotsFull {
+  scope: 'bot' | 'factory';
+  running: number;
+  limit: number;
+}
+
+/** Whether `count` more workers fit the bot's worker slots and the
+ *  factory's now: null when they do, else the cap that is full (the
+ *  factory's first). `running`/`factoryRunning`: the open workers as the
+ *  fan-out counts them (openBotWorkers.ts). Pure. */
+export function workerSlotsFull(budget: Pick<BotBudget, 'maxConcurrentWorkers'>, running: number, factoryRunning: number, count: number, factoryLimit: number): WorkerSlotsFull | null {
+  if (factoryRunning + count > factoryLimit) return { scope: 'factory', running: factoryRunning, limit: factoryLimit };
+  if (running + count > budget.maxConcurrentWorkers) return { scope: 'bot', running, limit: budget.maxConcurrentWorkers };
+  return null;
+}
+
+/** May the bot's workers run more worker time today? Pure. */
+export function checkWorkerHours(budget: BotBudget, usage: BotUsage, now: number): BudgetCheck<'worker_hours_day'> {
+  return workerHoursDay(usage, now) >= budget.maxWorkerHoursPerDay ? { ok: false, reason: 'worker_hours_day' } : { ok: true };
 }
 
 /** The earliest time `checkTurn` allows a turn again if no other turn starts
