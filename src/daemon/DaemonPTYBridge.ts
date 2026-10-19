@@ -20,7 +20,7 @@ import { isEscapeChunk } from '../shared/hooks/interruptKeystroke';
 import { stripPassiveInput } from '../shared/terminal/passiveInput';
 import { kittyChunkAsLegacy } from '../shared/kittyKeyEvents';
 import { titleShowsFinishedTurn, titleShowsRunningTurn } from './transcript/chatScreenGate';
-import { CLAUDE_IDLE_TITLE, CLAUDE_RUNNING_TITLE, CLAUDE_RUNNING_TITLE_OSC } from '../shared/agentTitleRules';
+import { AWAITING_TITLE, CLAUDE_IDLE_TITLE, CLAUDE_RUNNING_TITLE, CLAUDE_RUNNING_TITLE_OSC, RUNNING_TITLE } from '../shared/agentTitleRules';
 import { agentDisplayToSlug, agentRow, isAgentSlug } from '../shared/agentIdentity';
 import type { AgentSignal } from '../shared/hooks/signal-types';
 import { canSeedHookIdentity, DETECTOR_IDENTITY_HOOK_MAX_AGE_MS } from '../shared/hooks/detectorIdentity';
@@ -515,7 +515,8 @@ export class DaemonPTYBridge extends EventEmitter {
 
   /**
    * The dialog this pane was blocked on is gone, although no answer key was
-   * seen (the screen verifier read the pane and found no dialog on it twice).
+   * seen (the screen verifier read the pane and found no dialog on it twice,
+   * or the agent's title stopped showing it: noteTitleAwaitingHuman).
    * Runs exactly the path a recognised answer key runs. Returns false, and
    * does nothing, when the pane was not awaiting.
    */
@@ -588,7 +589,9 @@ export class DaemonPTYBridge extends EventEmitter {
     }
     // A submit, or a human answering the agent's dialog: a turn either way.
     this.byteOpenedTurn = false;
-    this.spinnerOpenedTurn = false;
+    // An answer resumes the episode it interrupted, so who opened it stands:
+    // a turn the spinner opened is still ended by its frame dropping.
+    if (!wasAwaiting) this.spinnerOpenedTurn = false;
     this.lastTurnStartedAt = Date.now();
     this.preTurn = false;
     this.codexBootWindow = false;
@@ -700,6 +703,13 @@ export class DaemonPTYBridge extends EventEmitter {
     // the turn was blocked on. The detector's own `waiting` / `complete` cannot:
     // the idle footer under an approval box matches those patterns too.
     if (status === 'awaiting_input') {
+      // Who answers for the dialog is settled when it opens; a later match of
+      // the same box (the detector's line, the hook) only adds the hook's claim.
+      if (!this.awaitingHuman) {
+        this.titleRaisedAwaiting = false;
+        this.awaitingFromHook = false;
+      }
+      if (authoritative) this.awaitingFromHook = true;
       this.awaitingHuman = true;
       this.awaitingQuestionAt = questionAt ?? null;
       // The agent's own dialog hook means its turn is running: an episode a
@@ -927,6 +937,61 @@ export class DaemonPTYBridge extends EventEmitter {
   /** The activity monitor's own idle delay. */
   private static readonly TITLE_CYCLE_IDLE_MS = 5_000;
 
+  /**
+   * Codex keeps `[ ! ] Action Required | …` in its window title while an
+   * approval box waits. The question on screen can wrap on a narrow pane or
+   * arrive in cursor-addressed pieces the detector's line patterns never see,
+   * so a pane without the PermissionRequest hook read running through the
+   * whole approval. The title raises the same `awaiting_input` the detector
+   * would, once per dialog (the title blinks). The agent is the one the
+   * process tracker watches alive in the pane, as for the running title.
+   *
+   * The title also says when the box is gone, which a keystroke cannot: Codex
+   * takes `y` / `p` as answers (not read as one by noteInput), and the box
+   * can be answered from elsewhere or withdrawn. A dialog the title raised
+   * ends when the title stops showing it, through the release a screen read
+   * runs (clearAwaiting).
+   */
+  private noteTitleAwaitingHuman(sessionId: string): void {
+    const slug = this.trackedAgent?.alive ? this.trackedAgent.slug : undefined;
+    const rule = slug ? AWAITING_TITLE.get(slug) : undefined;
+    if (!slug || !rule || this.muted) return;
+    if (rule.test(this.lastTitle)) {
+      if (this.awaitingHuman) {
+        // The detector's own line match for the same box: the title now
+        // answers for it too. A hook's dialog stays the hook's.
+        if (!this.awaitingFromHook) this.titleRaisedAwaiting = true;
+        return;
+      }
+      this.noteAgentStatus('awaiting_input');
+      this.titleRaisedAwaiting = true;
+      this.emit('agent', {
+        sessionId,
+        event: { agent: agentRow(slug)?.display ?? slug, status: 'awaiting_input', message: 'Approval requested' },
+      });
+      return;
+    }
+    if (!this.titleRaisedAwaiting || this.awaitingFromHook || !this.awaitingHuman || !this.lastTitle) return;
+    this.titleRaisedAwaiting = false;
+    // The box is gone from the pane's own display: the release a screen read
+    // that finds no dialog runs (answered event, approval card, turn resumed).
+    this.clearAwaiting('screen-cleared');
+    // Answered and still working: the running-title path carries the turn on.
+    if (RUNNING_TITLE.get(slug)?.test(this.lastTitle)) return;
+    // No spinner: the turn ended with the box (withdrawn, or denied). The
+    // resumed cycle would wait for output that may never come, so the pane
+    // settles at its prompt now, as the detector's idle prompt settles it.
+    this.noteAgentStatus('waiting');
+    this.emit('agent', {
+      sessionId,
+      event: { agent: agentRow(slug)?.display ?? slug, status: 'waiting', message: 'Waiting for input' },
+    });
+  }
+  /** The open dialog is one the title shows (noteTitleAwaitingHuman), not a hook's. */
+  private titleRaisedAwaiting = false;
+  /** The open dialog was raised by the agent's own hook. */
+  private awaitingFromHook = false;
+
   /** How often a still-spinning Codex title re-reports running (well inside
    *  the renderer's 120 s activity window). */
   private static readonly CODEX_SPINNER_REFRESH_MS = 30_000;
@@ -1001,7 +1066,7 @@ export class DaemonPTYBridge extends EventEmitter {
 
   /** The current activity cycle was armed by noteSpinnerTitle and has not fired yet. */
   private spinnerArmedCycle = false;
-  /** The open episode was opened by noteSpinnerTitle, and no hook or submit has spoken since. */
+  /** The open episode was opened by a running title (noteSpinnerTitle, noteCodexTitleSpinner), and no hook or submit has spoken since (answering its dialog keeps it). */
   private spinnerOpenedTurn = false;
   /** The settled status noteSpinnerTitle cleared, for endSpinnerTurn to put back. */
   private spinnerSettledStatus: AgentEventStatus | null = null;
@@ -1602,6 +1667,7 @@ export class DaemonPTYBridge extends EventEmitter {
         if (titleTurnEdge.observe(title)) this.noteTitleTurnEnd(sessionId);
         if (CLAUDE_RUNNING_TITLE.test(title)) this.noteSpinnerTitle();
         else if (this.spinnerOpenedTurn && this.turnOpen && !this.awaitingHuman && CLAUDE_IDLE_TITLE.test(title)) this.endSpinnerTurn();
+        this.noteTitleAwaitingHuman(sessionId);
         this.noteCodexTitleSpinner(sessionId);
         return;
       }

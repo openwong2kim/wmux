@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { CLAUDE_IDLE_TITLE, CLAUDE_RUNNING_TITLE, CLAUDE_RUNNING_TITLE_OSC, CODEX_RUNNING_TITLE, RUNNING_TITLE } from '../agentTitleRules';
+import { AWAITING_TITLE, CLAUDE_IDLE_TITLE, CLAUDE_RUNNING_TITLE, CLAUDE_RUNNING_TITLE_OSC, CODEX_AWAITING_TITLE, CODEX_RUNNING_TITLE, RUNNING_TITLE } from '../agentTitleRules';
 
 describe('agent title rules', () => {
   it("reads Claude Code's spinner and idle titles", () => {
@@ -22,5 +22,14 @@ describe('agent title rules', () => {
   it('has a running title for claude and codex only', () => {
     expect([...RUNNING_TITLE.keys()]).toEqual(['claude', 'codex']);
     expect(RUNNING_TITLE.get('constructor')).toBeUndefined();
+  });
+
+  it("reads Codex's approval title, blinking or not, and never as running", () => {
+    expect(CODEX_AWAITING_TITLE.test('[ ! ] Action Required | Create hello.txt | work')).toBe(true);
+    expect(CODEX_AWAITING_TITLE.test('[ . ] Action Required | ⠹ | work')).toBe(true);
+    expect(CODEX_AWAITING_TITLE.test('⠙ Action Required | work')).toBe(false);
+    expect(CODEX_AWAITING_TITLE.test('fix [ ! ] Action Required')).toBe(false);
+    expect(CODEX_RUNNING_TITLE.test('[ ! ] Action Required | ⠹ | work')).toBe(false);
+    expect([...AWAITING_TITLE.keys()]).toEqual(['codex']);
   });
 });

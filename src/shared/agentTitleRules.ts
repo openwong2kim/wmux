@@ -23,3 +23,13 @@ export const RUNNING_TITLE: ReadonlyMap<string, RegExp> = new Map([
   ['claude', CLAUDE_RUNNING_TITLE],
   ['codex', CODEX_RUNNING_TITLE],
 ]);
+
+/** Codex while an approval box waits (`[ ! ] Action Required | <name> | <cwd>`,
+ *  alternating with `[ . ]`, captured on 0.163.0). The question on screen can
+ *  wrap or arrive in cursor-addressed pieces; the title stays whole. */
+export const CODEX_AWAITING_TITLE = /^\[ [!.] \] Action Required\b/;
+
+/** The waiting-on-a-human title per agent slug; an agent without one is absent. */
+export const AWAITING_TITLE: ReadonlyMap<string, RegExp> = new Map([
+  ['codex', CODEX_AWAITING_TITLE],
+]);
