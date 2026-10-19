@@ -141,7 +141,7 @@ export function reduceInlineHtml(text: string): string {
     if (i % 2 === 1) return part;
     let t = part.replace(/<img\b[^<>]*>/gi, (tag) => decodeEntities(attrValue(attr(tag, 'alt'))));
     t = t.replace(/<a\b([^<>]*)>((?:(?!<a\b)[\s\S])*?)<\/a\s*>/gi, (_m, attrs: string, inner: string) => {
-      const label = decodeEntities(inner.replace(/<[^>]*>/g, '')).replace(/[[\]]/g, '').trim();
+      const label = decodeEntities(inner.replace(/<[^<>]*>/g, '')).replace(/[[\]]/g, '').trim();
       const href = decodeEntities(attrValue(attr(`<a${attrs}>`, 'href'))).trim();
       if (label && HTTP_URL.test(href) && !/[\s()]/.test(href)) return `[${label}](${href})`;
       return label;
@@ -330,6 +330,10 @@ export function renderBrainMarkdownWhole(source: string, opts: MarkdownOptions =
 export const MAX_QUOTE_DEPTH = 4;
 /** Blocks drawn per render, every quote level together; the rest is cut. */
 export const MAX_BLOCKS = 2000;
+/** Cells one table draws, its header row included; the rest is cut. */
+export const MAX_TABLE_CELLS = 5000;
+/** Lines put back into the stream per splice call (see the <details> branch). */
+const SPLICE_CHUNK = 8192;
 
 /** Blocks left to draw; `cut` is set once a render ran out of them. */
 interface BlockBudget { left: number; cut?: boolean }
@@ -379,12 +383,18 @@ function renderBlocks(source: string, opts: MarkdownOptions, depth: number, budg
     // rows until a line without a pipe. Cells are inline text like any line,
     // and a wide table scrolls inside its own box.
     if (line.includes('|') && i + 1 < lines.length && lines[i + 1].includes('|') && TABLE_SEPARATOR.test(lines[i + 1])) {
-      const head = tableCells(line);
+      const allHead = tableCells(line);
+      const head = allHead.slice(0, MAX_TABLE_CELLS);
       const align = tableCells(lines[i + 1]).map(tableAlign);
       const rows: string[][] = [];
+      // Every body row draws the header's width, so the cells, not the
+      // source, set the cost: past MAX_TABLE_CELLS the rest is cut.
+      const maxRows = Math.floor(MAX_TABLE_CELLS / Math.max(1, head.length)) - 1;
+      let cut = head.length < allHead.length;
       i += 2;
       while (i < lines.length && lines[i].includes('|') && lines[i].trim() !== '') {
-        rows.push(tableCells(lines[i]));
+        if (rows.length < maxRows) rows.push(tableCells(lines[i]));
+        else cut = true;
         i++;
       }
       const key = out.length;
@@ -418,6 +428,10 @@ function renderBlocks(source: string, opts: MarkdownOptions, depth: number, budg
           </table>
         </div>,
       );
+      if (cut) {
+        budget.cut = true;
+        out.push(<div key={out.length} data-brain-md-cut className="text-[var(--text-muted)]">…</div>);
+      }
       continue;
     }
 
@@ -435,20 +449,36 @@ function renderBlocks(source: string, opts: MarkdownOptions, depth: number, budg
         i++;
         if (level <= 0) break;
       }
-      let body = buf.join('\n').replace(/^\s*<details\b[^>]*>/i, '');
-      const close = body.search(/<\/details\s*>(?![\s\S]*<\/details\s*>)/i);
+      let body = buf.join('\n').replace(/^\s*<details\b[^<>]*>/i, '');
+      // The last closing tag, found in one pass (a lookahead for "no later
+      // one" rescans the rest of the body at every candidate).
+      let close = -1;
+      for (const m of body.matchAll(/<\/details\s*>/gi)) close = m.index ?? close;
       if (close >= 0) {
         const rest = body.slice(body.indexOf('>', close) + 1);
         body = body.slice(0, close);
-        // Text after the closing tag goes back into the stream.
-        if (rest.trim()) lines.splice(i, 0, ...rest.split('\n'));
+        // Text after the closing tag goes back into the stream, in slices: a
+        // spread of every line at once would exceed the call stack.
+        if (rest.trim()) {
+          const back = rest.split('\n');
+          for (let k = 0; k < back.length; k += SPLICE_CHUNK) lines.splice(i + k, 0, ...back.slice(k, k + SPLICE_CHUNK));
+        }
       }
-      // This level's summary: the first one before any nested <details>.
+      // This level's summary: the first one before any nested <details>,
+      // with the first closing tag after it (indexes, not a lazy regex scan
+      // retried at every opener).
       const nested = body.search(/<details\b/i);
       const head = nested >= 0 ? body.slice(0, nested) : body;
-      const sm = head.match(/<summary\b[^>]*>([\s\S]*?)<\/summary\s*>/i);
-      if (sm) body = body.replace(sm[0], '');
-      const label = sm ? sm[1].replace(/\s+/g, ' ').trim() : '';
+      const sOpen = head.search(/<summary\b/i);
+      const sGt = sOpen >= 0 ? head.indexOf('>', sOpen) : -1;
+      const sClose = sGt >= 0 ? head.slice(sGt + 1).search(/<\/summary\s*>/i) : -1;
+      let label = '';
+      if (sClose >= 0) {
+        const inner = head.slice(sGt + 1, sGt + 1 + sClose);
+        const end = head.indexOf('>', sGt + 1 + sClose) + 1;
+        body = body.slice(0, sOpen) + body.slice(end);
+        label = inner.replace(/\s+/g, ' ').trim();
+      }
       out.push(
         <details key={out.length} data-brain-md-details className="my-1">
           <summary className="cursor-pointer select-none text-[var(--text-sub)]">
