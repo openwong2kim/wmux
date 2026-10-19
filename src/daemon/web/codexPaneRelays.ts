@@ -36,6 +36,19 @@ export interface CodexPaneRelayHooks {
 }
 /** One Codex request, keyed by (relay incarnation, thread, server request id). */
 export interface CodexDecisionRef {relayId:string; threadId:string; requestId:string; method?:string}
+/** The Codex account a pane's relay serves: the pane's own CODEX_HOME, else
+ * ~/.codex. A caller may name it; naming another account is refused, so a
+ * relay serves only the pane's own account. */
+export function paneCodexHome(asked:string | undefined, paneHome:string | undefined,
+  {home = os.homedir(), caseInsensitive = process.platform === 'win32'}:{home?:string; caseInsensitive?:boolean} = {}):string {
+  const own = path.resolve(paneHome || path.join(home,'.codex'));
+  if (asked === undefined) return own;
+  if (!path.isAbsolute(asked) || asked.includes('\0')) throw new Error('Invalid Codex account scope');
+  const key = (p:string)=>caseInsensitive ? p.toLowerCase() : p;
+  if (key(path.resolve(asked)) !== key(own)) throw new Error(`This terminal's Codex account is ${own}. Run wmux codex with that CODEX_HOME, or open a terminal for the other account.`);
+  return own;
+}
+
 /** Remembered thread owners; the oldest is forgotten past this (forgotten = unknown owner). */
 const MAX_THREAD_OWNERS = 4096;
 /** Hard bound on a native interrupt: the request and the wait for the pane's own `turn/completed`. */

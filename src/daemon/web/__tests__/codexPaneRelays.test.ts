@@ -1,6 +1,6 @@
 import {describe,it,expect,vi} from 'vitest';
 import type {ManagedSession} from '../../DaemonSessionManager';
-import {CodexPaneRelays} from '../codexPaneRelays';
+import {CodexPaneRelays,paneCodexHome} from '../codexPaneRelays';
 import {CodexUpstreamError,type createCodexTuiRelay} from '../codexTuiRelay';
 const owner=(id='pane')=>({meta:{id,state:'attached'}} as ManagedSession);
 function relay() {
@@ -30,6 +30,21 @@ function relay() {
       for(const waiter of [...state.waiters])if(waiter.turnId===turnId)waiter.resolve(status);
     }};
 }
+describe('Codex pane relay account',()=>{
+  it('serves the pane\'s own account and refuses another one',()=>{
+    expect(paneCodexHome(undefined,undefined,{home:'/u/me'})).toBe('/u/me/.codex');
+    expect(paneCodexHome('/u/me/.codex',undefined,{home:'/u/me'})).toBe('/u/me/.codex');
+    expect(paneCodexHome('/acct/b',  '/acct/b',{home:'/u/me'})).toBe('/acct/b');
+    expect(()=>paneCodexHome('/tmp/other',undefined,{home:'/u/me'})).toThrow(/Codex account is \/u\/me\/\.codex/);
+    expect(()=>paneCodexHome('/acct/a','/acct/b',{home:'/u/me'})).toThrow(/Codex account is \/acct\/b/);
+    expect(()=>paneCodexHome('relative',undefined,{home:'/u/me'})).toThrow('Invalid Codex account scope');
+  });
+  it('compares without case where the file system does',()=>{
+    expect(paneCodexHome('/U/Me/.Codex',undefined,{home:'/u/me',caseInsensitive:true})).toBe('/u/me/.codex');
+    expect(()=>paneCodexHome('/U/Me/.Codex',undefined,{home:'/u/me',caseInsensitive:false})).toThrow();
+  });
+});
+
 describe('Codex pane relay lifetime',()=>{
   it('publishes selection only for its committed managed instance',async()=>{
     const connection=relay();const registry=new CodexPaneRelays(async()=>connection);

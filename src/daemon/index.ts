@@ -17,7 +17,7 @@ import { persistCodexThreadOwner, invalidateCodexThreadOwner, trackCodexPaneOwne
 import { codexCdOperand, recoverCodexPane, withCodexRemote } from './web/recoverCodexPane';
 import { CodexRelayUnavailableError } from './web/codexTuiRelay';
 import { paneCodexSettings } from './web/paneCodexSettings';
-import { CodexPaneRelays } from './web/codexPaneRelays';
+import { CodexPaneRelays, paneCodexHome } from './web/codexPaneRelays';
 import { createCodexAccountStatusReader } from './web/codexAccountStatus';
 import { buildAgentLaunch, installedAgentLaunchOptions, pinnedAgentLaunch } from './web/agentLaunch';
 import { agentExecEnv } from '../shared/execEnv';
@@ -4509,8 +4509,7 @@ function registerRpcHandlers(
     const id = typeof params.id === 'string' ? params.id : '';
     const owner = sessionManager.getSession(id);
     if (!owner || !['attached','detached'].includes(owner.meta.state)) throw new Error('Terminal is no longer live');
-    const codeHome = typeof params.codeHome === 'string' ? params.codeHome : owner.meta.env?.CODEX_HOME;
-    if (codeHome !== undefined && (!path.isAbsolute(codeHome) || codeHome.includes('\0'))) throw new Error('Invalid Codex account scope');
+    const codeHome = paneCodexHome(typeof params.codeHome === 'string' ? params.codeHome : undefined, owner.meta.env?.CODEX_HOME);
     const relay = await codexPaneRelays.prepare(id,codeHome);
     if (sessionManager.getSession(id) !== owner || !relay.commit(owner)) {
       await relay.close();
