@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { claudeComposerEmpty, claudeComposerRows, claudeComposerShows, claudeComposerVisible, codexComposerEmpty, deliverChatPrompt, type ChatDeliveryDeps } from '../deliverChatPrompt';
+import { claudeComposerEmpty, claudeComposerRows, claudeComposerShows, claudeComposerVisible, codexComposerEmpty, codexComposerVisible, deliverChatPrompt, type ChatDeliveryDeps } from '../deliverChatPrompt';
 import type { ScheduledPromptAgentState } from '../../sessionPromptDelivery';
 import { generateTextSnapshot } from '../../HeadlessSnapshot';
 
@@ -307,6 +307,47 @@ describe('Codex 0.158 composer', () => {
     expect(codexComposerEmpty(await render(screen('half-typed', '← for agents · ? for shortcuts')))).toBe(false);
     expect(codexComposerEmpty(await render(screen(placeholder, '← for agents · Press enter to confirm')))).toBe(false);
     expect(codexComposerEmpty(await render(screen(placeholder, '← for agents · ? for shortcuts  Press enter to confirm')))).toBe(false);
+  });
+});
+
+describe('Codex 0.163 composer', () => {
+  // A long-running `codex --no-daemon` session on codex-cli 0.163.0 (80x54,
+  // 2026-10-19) left its model/cwd footer row blank: the composer, an empty
+  // row, the blank footer row, then the hint, which `--no-daemon` draws
+  // without `← for agents`. Layout from the pane's own bytes; text replaced.
+  const render = async (prompt: string, cols = 80) => {
+    const bytes = `• done\r\n\r\n\x1b[2m  Worked for 8m 37s • 4:03 PM\x1b[0m\r\n\r\n\r\n› ${prompt}\x1b[0m\r\n\r\n\r\n  ? for shortcuts`;
+    const outcome = await generateTextSnapshot({ cols, rows: 24, scrollback: 0, initial: Buffer.from(bytes), undimmed: true });
+    if (!outcome.ok) throw new Error('snapshot failed');
+    return Object.assign(outcome.rows.map((r) => r.text), { undimmed: outcome.rows.map((r) => r.undimmed ?? r.text) });
+  };
+  const placeholder = '\x1b[2mAsk Codex to do anything\x1b[22m';
+
+  it('is empty with a blank footer row when the hint marks the bottom composer', async () => {
+    expect(codexComposerEmpty(await render(placeholder))).toBe(true);
+    expect(codexComposerVisible(await render(placeholder))).toBe(true);
+  });
+
+  it('still refuses a draft over a blank footer, as a visible composer', async () => {
+    const draft = await render('half-typed in Terminal');
+    expect(codexComposerEmpty(draft)).toBe(false);
+    expect(codexComposerVisible(draft)).toBe(true);
+  });
+
+  it('refuses a placeholder with nothing under it, or an unknown row in the footer\'s place', () => {
+    expect(codexComposerEmpty(['› Ask Codex to do anything', '', ''])).toBe(false);
+    expect(codexComposerEmpty(['› Ask Codex to do anything', '', '  Press enter to confirm', '  ? for shortcuts'])).toBe(false);
+  });
+
+  it('reads the hint a 30-column pane cuts to `? for shortcu`', () => {
+    expect(codexComposerEmpty(['› Ask Codex to do anything', '', '  GPT-6.1-Sol default · /priv…', '  ← for agents · ? for shortcu'])).toBe(true);
+  });
+
+  it('sends into the blank-footer composer when idle', async () => {
+    const f = fixture(); f.state.slug = 'codex'; f.state.status = 'idle';
+    f.show(await render(placeholder));
+    expect(await deliverChatPrompt('conversation-1', 'next', f.deps)).toBe('sent');
+    expect(f.write).toHaveBeenNthCalledWith(1, '\x1b[200~next\x1b[201~');
   });
 });
 

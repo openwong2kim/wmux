@@ -187,21 +187,25 @@ export function claudeComposerShows(shown: { rows: readonly string[]; width: num
   return pos === text.length;
 }
 
-/** The Codex composer is on screen (a `›` row over its model/cwd footer), empty or not. */
+/** The Codex composer is on screen (a `›` row over its model/cwd footer or
+ *  its shortcut hint), empty or not. */
 export function codexComposerVisible(rows: ChatScreenRows | null): boolean {
   if (!rows || codexScreenBlocked(rows)) return false;
   const tail = rows.map(row => row.trimEnd());
   const prompts = tail.flatMap((row, index) => /^\s*› /.test(row) || /^\s*›$/.test(row) ? [index] : []);
   const at = prompts.at(-1);
   if (at === undefined) return false;
-  return tail.slice(at + 1).some(row => /^\s*\S.+ · (?:[A-Za-z]:[\\/]|\/|~)/.test(row));
+  return tail.slice(at + 1).some(row => CODEX_FOOTER.test(row) || CODEX_SHORTCUT_HINT.test(row) || CODEX_SCROLLED_HINT.test(row));
 }
 
+/** Codex's model/cwd footer under the composer: `GPT-6.1-Sol low · ~/work`. */
+const CODEX_FOOTER = /^\s*\S.+ · (?:[A-Za-z]:[\\/]|\/|~)/;
 /** The shortcut hint Codex draws under its footer: `? for shortcuts` (0.157),
- * then `← for agents · ? for shortcuts` (0.158), which a narrow pane cuts to
- * `? for shortcut` when a right-aligned `⚠ N warning(s) · f2 to view` badge
- * shares the row. */
-const CODEX_SHORTCUT_HINT = /^\s*(?:← for agents · )?\? for shortcuts?(?:\s+⚠\s*\d+ warnings? · f2 to view)?$/;
+ * then `← for agents · ? for shortcuts` (0.158; `--no-daemon` drops the
+ * agents part), which a narrow pane cuts (`? for shortcut` beside a
+ * right-aligned `⚠ N warning(s) · f2 to view` badge, `? for shortcu` at 30
+ * columns on 0.163). */
+const CODEX_SHORTCUT_HINT = /^\s*(?:← for agents · )?\? for short\w*(?:\s+⚠\s*\d+ warnings? · f2 to view)?$/;
 /** The hint Codex 0.162 draws in place of CODEX_SHORTCUT_HINT while its
  * transcript is scrolled back and new output arrived: `New activity · enter/esc
  * latest`, with ` · ? shortcuts` when the pane is wide enough. The `enter/`
@@ -210,12 +214,14 @@ const CODEX_SHORTCUT_HINT = /^\s*(?:← for agents · )?\? for shortcuts?(?:\s+�
  * 0.162.1 at 40x27, 2026-10-13). */
 const CODEX_SCROLLED_HINT = /^\s*New activity · enter\/esc latest(?: · \? shortcuts?)?(?:\s+⚠\s*\d+ warnings? · f2 to view)?$/;
 
-/** Codex 0.156–0.162 TUI; positive evidence, not an absence-of-errors heuristic.
+/** Codex 0.156–0.163 TUI; positive evidence, not an absence-of-errors heuristic.
  * Match only the bottom composer with its own model/cwd footer. 0.157 adds a
  * shortcut hint under the footer (CODEX_SHORTCUT_HINT, or CODEX_SCROLLED_HINT
- * while the transcript is scrolled back); with `undimmed` rows a
- * prompt row holding only dim text (placeholder or suggestion) is empty, typed
- * text is not. */
+ * while the transcript is scrolled back). 0.163 can leave the footer row
+ * blank (a long-running `--no-daemon` session, 80x54, 2026-10-19), and then
+ * the hint alone marks the bottom composer. With `undimmed` rows a prompt row
+ * holding only dim text (placeholder or suggestion) is empty, typed text is
+ * not. */
 export function codexComposerEmpty(rows: ChatScreenRows | null): boolean {
   if (!rows || codexScreenBlocked(rows)) return false;
   const tail = rows.map(row => row.trimEnd());
@@ -224,8 +230,11 @@ export function codexComposerEmpty(rows: ChatScreenRows | null): boolean {
   if (at === undefined) return false;
   const empty = /^\s*› Ask Codex to do anything\s*$/.test(tail[at]) || /^\s*›$/.test(rows.undimmed?.[at]?.trimEnd() ?? '');
   if (!empty) return false;
-  const below = tail.slice(at + 1).filter(row => row.trim() && !CODEX_SHORTCUT_HINT.test(row) && !CODEX_SCROLLED_HINT.test(row));
-  return below.length === 1 && /^\s*\S.+ · (?:[A-Za-z]:[\\/]|\/|~)/.test(below[0]);
+  const after = tail.slice(at + 1).filter(row => row.trim());
+  const isHint = (row: string) => CODEX_SHORTCUT_HINT.test(row) || CODEX_SCROLLED_HINT.test(row);
+  const below = after.filter(row => !isHint(row));
+  if (below.length === 0) return after.length > 0;
+  return below.length === 1 && CODEX_FOOTER.test(below[0]);
 }
 
 function codexScreenBlocked(rows: readonly string[] | null): boolean {
