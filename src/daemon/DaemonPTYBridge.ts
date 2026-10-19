@@ -478,6 +478,10 @@ export class DaemonPTYBridge extends EventEmitter {
     const keyProbe = wasAwaiting ? data.replace(DaemonPTYBridge.NON_KEY_INPUT, '') : data;
     const answerKey = wasAwaiting && !this.inputInBracketedPaste
       && (/^[1-9]$/.test(keyProbe) || isEscapeChunk(keyProbe));
+    // A single letter into a box the agent's title holds open (Codex's y / p /
+    // n): it went to the box, not the composer.
+    const titleDialogKey = wasAwaiting && this.titleRaisedAwaiting && !this.inputInBracketedPaste
+      && /^[a-z]$/i.test(keyProbe);
     const hasSubmitBoundary = this.scanSubmittedInput(data);
     const answered = forceSubmitted || hasSubmitBoundary || answerKey;
     // An unsubmitted draft in the composer: typed or pasted text with no Enter
@@ -490,7 +494,7 @@ export class DaemonPTYBridge extends EventEmitter {
       if (this.sessionId) this.emit('inputSubmitted', { sessionId: this.sessionId });
     } else if (clearsComposer) {
       this.draftPending = false;
-    } else if (!answerKey && DaemonPTYBridge.typesDraftText(data)) {
+    } else if (!answerKey && !titleDialogKey && DaemonPTYBridge.typesDraftText(data)) {
       // Not for a lone digit that answered a dialog: it went to the dialog,
       // not the composer. Counting it left a phantom draft that no Enter ever
       // followed, so every later hand-off into the idle pane was refused as
@@ -1720,8 +1724,11 @@ export class DaemonPTYBridge extends EventEmitter {
     // same-chunk/full-screen redraw cannot race a terminal state back to running.
     this.agentUnsubscribe = agentDetector.onEvent((agentEvent) => {
       const wasSettled = this.explicitTerminalStatus;
+      // The question line of a box the agent's title already raised: the
+      // same dialog, told once (noteTitleAwaitingHuman).
+      const sameDialog = agentEvent.status === 'awaiting_input' && this.awaitingHuman && this.titleRaisedAwaiting;
       this.noteAgentStatus(agentEvent.status);
-      this.emit('agent', { sessionId, event: agentEvent });
+      if (!sameDialog) this.emit('agent', { sessionId, event: agentEvent });
       // #1463 — the agent's idle prompt, before any turn. The status above
       // ends the byte cycle, so no silence idle follows it, and main withholds
       // a detector `waiting` on a hook-reporting pane: without this the boot

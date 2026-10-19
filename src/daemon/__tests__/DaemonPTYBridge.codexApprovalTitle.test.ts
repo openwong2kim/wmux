@@ -150,6 +150,32 @@ describe('DaemonPTYBridge — a Codex approval title reads as waiting on a human
     expect(bridge.getAgentStatus()).toBe('awaiting_input');
   });
 
+  it('the question line matching after the title raised the box adds no second approval event', () => {
+    blink(1);
+    feed('\x1b[20;1H  Would you like to run the following command?\r\n');
+    blink(2);
+    expect(agentEvents.filter((e) => e.status === 'awaiting_input')).toHaveLength(1);
+  });
+
+  it('a `y` that answered the box leaves no draft in the composer, and a real draft survives', () => {
+    blink(1);
+    bridge.noteInput('y');
+    feed(title('⠹ Create hello.txt | work'));
+    expect(bridge.hasDraft()).toBe(false);
+    bridge.noteInput('half a thought');
+    blink(1);
+    bridge.noteInput('p');
+    feed(title('⠹ Create hello.txt | work'));
+    expect(bridge.hasDraft()).toBe(true);
+    // Text typed once the box is gone is the composer's again.
+    bridge.noteInput('\x15');
+    blink(1);
+    bridge.noteInput('y');
+    feed(title('⠹ Create hello.txt | work'));
+    bridge.noteInput('next');
+    expect(bridge.hasDraft()).toBe(true);
+  });
+
   it('reads the title only for a pane the process tracker attributes to Codex', () => {
     bridge.noteAgentProcess({ slug: 'claude', alive: true });
     blink(4);
