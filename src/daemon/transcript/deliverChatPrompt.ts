@@ -205,7 +205,7 @@ const CODEX_FOOTER = /^\s*\S.+ · (?:[A-Za-z]:[\\/]|\/|~)/;
  * agents part), which a narrow pane cuts (`? for shortcut` beside a
  * right-aligned `⚠ N warning(s) · f2 to view` badge, `? for shortcu` at 30
  * columns on 0.163). */
-const CODEX_SHORTCUT_HINT = /^\s*(?:← for agents · )?\? for short\w*(?:\s+⚠\s*\d+ warnings? · f2 to view)?$/;
+const CODEX_SHORTCUT_HINT = /^\s*(?:← for agents · )?\? for shortcu(?:ts?)?(?:\s+⚠\s*\d+ warnings? · f2 to view)?$/;
 /** The hint Codex 0.162 draws in place of CODEX_SHORTCUT_HINT while its
  * transcript is scrolled back and new output arrived: `New activity · enter/esc
  * latest`, with ` · ? shortcuts` when the pane is wide enough. The `enter/`
@@ -228,7 +228,11 @@ export function codexComposerEmpty(rows: ChatScreenRows | null): boolean {
   const prompts = tail.flatMap((row, index) => /^\s*› /.test(row) ? [index] : []);
   const at = prompts.at(-1);
   if (at === undefined) return false;
-  const empty = /^\s*› Ask Codex to do anything\s*$/.test(tail[at]) || /^\s*›$/.test(rows.undimmed?.[at]?.trimEnd() ?? '');
+  // The placeholder's words prove nothing on their own (a draft can hold
+  // them); with the dim-blanked copy, only a bare `›` there is empty.
+  const empty = rows.undimmed
+    ? /^\s*›$/.test(rows.undimmed[at]?.trimEnd() ?? '')
+    : /^\s*› Ask Codex to do anything\s*$/.test(tail[at]);
   if (!empty) return false;
   const after = tail.slice(at + 1).filter(row => row.trim());
   const isHint = (row: string) => CODEX_SHORTCUT_HINT.test(row) || CODEX_SCROLLED_HINT.test(row);

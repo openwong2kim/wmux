@@ -339,6 +339,15 @@ describe('Codex 0.163 composer', () => {
     expect(codexComposerEmpty(['› Ask Codex to do anything', '', '  Press enter to confirm', '  ? for shortcuts'])).toBe(false);
   });
 
+  it('refuses a typed draft that holds the placeholder\'s words or a hint-like line', async () => {
+    const multiline = await render('Explain why I see this:\r\n  › Ask Codex to do anything');
+    expect(codexComposerEmpty(multiline)).toBe(false);
+    const withFooter = Object.assign(
+      ['› Ask Codex to do anything', '  ? for shortlist', '', '  GPT-6.1-Sol low · ~/work', '  ? for shortcuts'],
+      { undimmed: ['› Ask Codex to do anything', '  ? for shortlist', '', '  GPT-6.1-Sol low · ~/work', '  ? for shortcuts'] });
+    expect(codexComposerEmpty(withFooter)).toBe(false);
+  });
+
   it('reads the hint a 30-column pane cuts to `? for shortcu`', () => {
     expect(codexComposerEmpty(['› Ask Codex to do anything', '', '  GPT-6.1-Sol default · /priv…', '  ← for agents · ? for shortcu'])).toBe(true);
   });
