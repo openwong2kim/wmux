@@ -201,7 +201,7 @@
   "botProfiles": {
     "lead": {
       "maxListBytes": 40000,
-      "wireResultSha256": "fca4f1687e3b0e665e25d2ace29be0fd628a9f054971e86766b9c31191f6187b",
+      "wireResultSha256": "bbd74a9d547225d09ecc9b9cd7998ed4ee3c83f2c6adc2909055640bcf8a49c7",
       "instructionSha256": "7c1100716407e8c1dbe49aba89adc91ed5719827564d1b63eb285d0520430ce4",
       "toolNames": [
         "terminal_read",
@@ -240,7 +240,7 @@
     },
     "triage": {
       "maxListBytes": 40000,
-      "wireResultSha256": "fca4f1687e3b0e665e25d2ace29be0fd628a9f054971e86766b9c31191f6187b",
+      "wireResultSha256": "bbd74a9d547225d09ecc9b9cd7998ed4ee3c83f2c6adc2909055640bcf8a49c7",
       "instructionSha256": "7c1100716407e8c1dbe49aba89adc91ed5719827564d1b63eb285d0520430ce4",
       "toolNames": [
         "terminal_read",
@@ -279,7 +279,7 @@
     },
     "verifier": {
       "maxListBytes": 40000,
-      "wireResultSha256": "fca4f1687e3b0e665e25d2ace29be0fd628a9f054971e86766b9c31191f6187b",
+      "wireResultSha256": "bbd74a9d547225d09ecc9b9cd7998ed4ee3c83f2c6adc2909055640bcf8a49c7",
       "instructionSha256": "7c1100716407e8c1dbe49aba89adc91ed5719827564d1b63eb285d0520430ce4",
       "toolNames": [
         "terminal_read",
@@ -318,7 +318,7 @@
     },
     "maintainer": {
       "maxListBytes": 40000,
-      "wireResultSha256": "fca4f1687e3b0e665e25d2ace29be0fd628a9f054971e86766b9c31191f6187b",
+      "wireResultSha256": "bbd74a9d547225d09ecc9b9cd7998ed4ee3c83f2c6adc2909055640bcf8a49c7",
       "instructionSha256": "7c1100716407e8c1dbe49aba89adc91ed5719827564d1b63eb285d0520430ce4",
       "toolNames": [
         "terminal_read",
@@ -357,7 +357,7 @@
     },
     "moa": {
       "maxListBytes": 40000,
-      "wireResultSha256": "fca4f1687e3b0e665e25d2ace29be0fd628a9f054971e86766b9c31191f6187b",
+      "wireResultSha256": "bbd74a9d547225d09ecc9b9cd7998ed4ee3c83f2c6adc2909055640bcf8a49c7",
       "instructionSha256": "7c1100716407e8c1dbe49aba89adc91ed5719827564d1b63eb285d0520430ce4",
       "toolNames": [
         "terminal_read",
