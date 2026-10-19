@@ -1473,7 +1473,7 @@ export const ko = {
   'room.notice.budget.exhausted.workers': "실행 중인 워커 하나가 끝나면 새 워커가 시작됩니다.",
   'room.notice.workers.full.bot': "{bot}: 워커 자리를 기다리는 중입니다 ({cap}개 중 {inUse}개 사용 중)",
   'room.notice.workers.full.factory': "{bot}: 워커 자리를 기다리는 중입니다 (봇 전체 {cap}개 중 {inUse}개 사용 중)",
-  'room.notice.workers.full.body': "예산 한도가 아닙니다. 실행 중인 워커가 끝나면 이어서 작업합니다.",
+  'room.notice.workers.full.body': "예산 한도가 아닙니다. 실행 중인 워커가 끝나면 자리가 납니다.",
   'room.notice.bot.usageLimit': "{bot}: 사용량 한도에 도달해 {time}에 다시 시작합니다",
   'room.notice.budget.held': "대기 중: {bot}의 턴이 소진됐습니다",
   'room.notice.budget.held.at': "메시지는 {time}에 실행됩니다. {bot} 프로필에서 재개하면 바로 실행됩니다.",

@@ -1228,7 +1228,7 @@ export function systemCardForFact(fact: Fact, bots?: BotDirectoryApi): SystemCar
         title: scope === 'bot'
           ? `${name} is waiting for a worker slot: ${running} of its ${limit} are in use`
           : `${name} is waiting for a worker slot: the bots use ${running} of ${limit}`,
-        body: 'This is not a budget limit: it picks the work up when a running worker ends.',
+        body: 'This is not a budget limit: a slot frees when a running worker ends.',
         refs: baseRefs,
         notice: { code: 'workers.full', args: { bot: name, scope, inUse: running, cap: limit } },
       };

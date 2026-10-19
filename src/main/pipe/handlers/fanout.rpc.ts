@@ -1503,11 +1503,14 @@ export function registerFanOutRpc(
         botPort.budgetExhausted(bot, 'worker_hours_day');
         return deny('RESOURCE_EXHAUSTED', 'this bot\'s worker budget refuses the fan-out (worker_hours_day): its worker hours for today are used');
       }
+      const full = workerSlotsFull(botProfile.budget, open.bot, open.factory, n, WAKE_LIMITS.GLOBAL_CONCURRENT_WORKERS);
       const most = Math.min(botProfile.budget.maxConcurrentWorkers, WAKE_LIMITS.GLOBAL_CONCURRENT_WORKERS);
       if (n > most) {
+        // More tasks than the slots could ever hold: reported only when the
+        // slots are all in use too (the card would say so).
+        if (full && full.running >= full.limit) botPort.workersFull(bot, full);
         return deny('RESOURCE_EXHAUSTED', `this bot runs at most ${most} worker${most === 1 ? '' : 's'} at once: start at most ${most} task${most === 1 ? '' : 's'} per fan-out`);
       }
-      const full = workerSlotsFull(botProfile.budget, open.bot, open.factory, n, WAKE_LIMITS.GLOBAL_CONCURRENT_WORKERS);
       if (full) {
         botPort.workersFull(bot, full);
         const note = full.scope === 'bot'

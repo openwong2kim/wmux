@@ -2040,7 +2040,7 @@ export const zh = {
   'room.notice.budget.exhausted.workers': "正在运行的工作者结束一个后，新的工作者才会启动。",
   'room.notice.workers.full.bot': "{bot} 正在等待工作者名额：已用 {inUse}/{cap}",
   'room.notice.workers.full.factory': "{bot} 正在等待工作者名额：所有机器人已用 {inUse}/{cap}",
-  'room.notice.workers.full.body': "这不是预算限制：有正在运行的工作者结束后，它会继续这项工作。",
+  'room.notice.workers.full.body': "这不是预算限制：有正在运行的工作者结束后就会空出名额。",
   'room.notice.bot.usageLimit': "{bot} 已达使用限额；将于 {time} 继续",
   'room.notice.budget.held': "已排队：{bot} 的回合已用完",
   'room.notice.budget.held.at': "你的消息将于 {time} 处理；在 {bot} 的资料中恢复即可立即处理。",

@@ -553,6 +553,17 @@ describe('task.fanout.start — bot origin', () => {
     expect(r.start).not.toHaveBeenCalled();
   });
 
+  it('more tasks than the bot\'s slots hold: a batch-size refusal, reported as workers_full only while its slots are all in use', async () => {
+    const r = rig('lead', { budget: { ...DEFAULT_BOT_BUDGETS.lead, maxConcurrentWorkers: 1 } }, { builtinPresets: true });
+    const two = { titles: ['x', 'y'], prompt: 'build it', preset: 'default' };
+    expect(errorOf(await r.call({ idempotencyKey: 'wake:w-1:1', ...two }, botCtx('lead'))).message).toMatch(/start at most 1 task per fan-out/);
+    expect(r.port.full).toEqual([]);
+    r.setOpen({ bot: 1, factory: 1 });
+    expect(errorOf(await r.call({ idempotencyKey: 'wake:w-1:2', ...two }, botCtx('lead'))).message).toMatch(/start at most 1 task per fan-out/);
+    expect(r.port.full).toEqual([{ scope: 'bot', running: 1, limit: 1 }]);
+    expect(r.port.exhausted).toEqual([]);
+  });
+
   it('worker hours used up stay a budget refusal', async () => {
     const r = rig('verifier', { budget: { ...DEFAULT_BOT_BUDGETS.verifier, maxWorkerHoursPerDay: 0 } });
     expect(errorOf(await r.call({ idempotencyKey: 'wake:w-1:1', titles: ['x'], preset: 'verify', checkout: { sha: SHA } }, botCtx('verifier'))).code).toBe('RESOURCE_EXHAUSTED');
