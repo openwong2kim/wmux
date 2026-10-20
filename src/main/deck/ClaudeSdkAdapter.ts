@@ -52,26 +52,19 @@ import {
   normalizeSdkMessage,
 } from './BrainAdapter';
 
-/** What a bot on a Claude API key never inherits (the SDK's own provider,
- *  endpoint and credential variables, plus the request-shaping ones): any of
- *  them could send the key elsewhere or sign in another way. */
-export const BOT_API_KEY_CLEARED_ENV: readonly string[] = [
-  // Another provider instead of Anthropic's API.
-  'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_FOUNDRY',
-  'CLAUDE_CODE_USE_ANTHROPIC_AWS', 'CLAUDE_CODE_USE_MANTLE', 'CLAUDE_CODE_USE_GATEWAY',
-  'CLAUDE_CODE_SKIP_BEDROCK_AUTH', 'CLAUDE_CODE_SKIP_VERTEX_AUTH', 'CLAUDE_CODE_SKIP_FOUNDRY_AUTH',
-  'CLAUDE_CODE_SKIP_MANTLE_AUTH', 'CLAUDE_CODE_SKIP_ANTHROPIC_AWS_AUTH',
-  // Another endpoint.
-  'ANTHROPIC_BASE_URL', '_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL', 'ANTHROPIC_BEDROCK_BASE_URL',
-  'ANTHROPIC_VERTEX_BASE_URL', 'ANTHROPIC_FOUNDRY_BASE_URL', 'ANTHROPIC_AWS_BASE_URL',
-  'ANTHROPIC_BEDROCK_MANTLE_BASE_URL', 'ANTHROPIC_UNIX_SOCKET',
-  // Another credential.
-  'ANTHROPIC_AUTH_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN', 'AWS_BEARER_TOKEN_BEDROCK',
-  'ANTHROPIC_FOUNDRY_API_KEY', 'ANTHROPIC_FOUNDRY_AUTH_TOKEN', 'ANTHROPIC_AWS_API_KEY',
-  'ANTHROPIC_BEDROCK_MANTLE_API_KEY',
-  // Extra request headers.
-  'ANTHROPIC_CUSTOM_HEADERS',
-];
+/** What a bot on a Claude API key never inherits: every variable under
+ *  these prefixes (any provider, endpoint, credential, header or host-managed
+ *  setting claude reads), plus the one Bedrock credential outside them, so
+ *  the key reaches Anthropic's API only. Matched ignoring case (Windows env
+ *  names are). wmux's own values (`launch.env`) are applied after. */
+export const BOT_API_KEY_CLEARED_PREFIXES: readonly string[] = ['ANTHROPIC_', 'CLAUDE_CODE_', '_CLAUDE_CODE_'];
+export const BOT_API_KEY_CLEARED_NAMES: readonly string[] = ['AWS_BEARER_TOKEN_BEDROCK'];
+
+/** Whether an inherited variable is dropped for a bot on an API key. Pure. */
+export function clearedForBotApiKey(name: string): boolean {
+  const upper = name.toUpperCase();
+  return BOT_API_KEY_CLEARED_NAMES.includes(upper) || BOT_API_KEY_CLEARED_PREFIXES.some((p) => upper.startsWith(p));
+}
 
 // ─── Injectable SDK seam ─────────────────────────────────────────────────────
 
@@ -897,8 +890,15 @@ export class ClaudeSdkAdapter implements BrainAdapter {
    */
   private buildEnv(launch: Extract<BackgroundLaunch, { kind: 'run' }>): Record<string, string | undefined> {
     const env: Record<string, string | undefined> = { ...process.env };
-    // Zero-API: never let an ambient key flip the session onto metered API auth.
-    delete env.ANTHROPIC_API_KEY;
+    const apiKeyBot = !!this.bot && this._turnAuth.mode === 'apiKey';
+    if (apiKeyBot) {
+      // The owner's key goes to Anthropic's own API only: nothing inherited
+      // that could pick another provider, endpoint or credential survives.
+      for (const name of Object.keys(env)) if (clearedForBotApiKey(name)) delete env[name];
+    } else {
+      // Zero-API: never let an ambient key flip the session onto metered API auth.
+      delete env.ANTHROPIC_API_KEY;
+    }
     // Multi-account (M0): the orchestrator brain is a claude spawn that bypasses
     // the PTY path, so it applies the account send() resolved for this turn
     // (the binding, or the account quota rotation chose) — otherwise it
@@ -908,10 +908,7 @@ export class ClaudeSdkAdapter implements BrainAdapter {
     // when no account env was applied (default credential). Used to stamp limit
     // events (M3 §1a).
     this._launchAccountId = launch.accountId;
-    if (this.bot && this._turnAuth.mode === 'apiKey') {
-      // The owner's key goes to Anthropic's own API only: an inherited
-      // gateway, cloud provider, credential or header override never sees it.
-      for (const name of BOT_API_KEY_CLEARED_ENV) delete env[name];
+    if (apiKeyBot && this._turnAuth.mode === 'apiKey') {
       env.ANTHROPIC_API_KEY = this._turnAuth.apiKey;
       return env;
     }

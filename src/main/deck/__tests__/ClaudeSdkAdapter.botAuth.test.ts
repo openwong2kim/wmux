@@ -116,6 +116,10 @@ describe('ClaudeSdkAdapter: a bot\'s Claude sign-in', () => {
       CLAUDE_CODE_USE_BEDROCK: '1',
       ANTHROPIC_VERTEX_BASE_URL: 'https://vertex.example',
       ANTHROPIC_CUSTOM_HEADERS: 'X-Leak: 1',
+      CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST: '1',
+      CLAUDE_CODE_HOST_CREDS_FILE: '/tmp/gateway-creds.json',
+      ANTHROPIC_FOO: 'bar',
+      AWS_BEARER_TOKEN_BEDROCK: 'bedrock-tok',
     };
     Object.assign(process.env, inherited);
     try {
@@ -126,6 +130,17 @@ describe('ClaudeSdkAdapter: a bot\'s Claude sign-in', () => {
       expect(env.ANTHROPIC_API_KEY).toBe(KEY);
       for (const name of Object.keys(inherited)) expect(env[name]).toBeUndefined();
       a.dispose();
+      // wmux's own launch values still apply after the clearing.
+      const launched = recorder();
+      const c = botAdapter(launched.queryFn, () => ({ mode: 'apiKey', apiKey: KEY }));
+      const build = (c as unknown as { buildEnv(l: { kind: 'run'; env: Record<string, string>; accountId: string | null }): Record<string, string | undefined> });
+      (c as unknown as { _turnAuth: BotClaudeAuth })._turnAuth = { mode: 'apiKey', apiKey: KEY };
+      const own = build.buildEnv({ kind: 'run', env: { CLAUDE_CONFIG_DIR: '/accounts/work', CLAUDE_CODE_OWN: 'wmux' }, accountId: 'acc-1' });
+      expect(own.CLAUDE_CONFIG_DIR).toBe('/accounts/work');
+      expect(own.CLAUDE_CODE_OWN).toBe('wmux');
+      expect(own.ANTHROPIC_API_KEY).toBe(KEY);
+      expect(own.CLAUDE_CODE_HOST_CREDS_FILE).toBeUndefined();
+      c.dispose();
       // The subscription and the workspace brain keep what they inherit.
       const sub = recorder();
       const b = botAdapter(sub.queryFn, () => ({ mode: 'subscription' }));
