@@ -6,11 +6,14 @@
 // approval card, approved with an update waiting, changed on disk since
 // approval (so not loaded), archived — and every one
 // not archived has Archive. Approving and denying happen on the card, where
-// the change is shown; the profile only lists and archives.
+// the change is shown; the profile only lists and archives. An approved
+// skill also says when the bot last read it; a stale one (unused for 30
+// days) carries a Stale tag and sorts first, so the owner can archive it.
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { FOCUS_RING } from '../focusRing';
 import type { FactoryBotRow } from '../Room/factoryPorts';
 import { getFactoryBotPort } from '../Room/factoryPorts';
+import { timeAgo } from '../../utils/timeAgo';
 import type { BotSkillView, SkillArchiveRequest, SkillArchiveResult, SkillListResult } from '../../../shared/botSkill';
 
 type T = (key: string, vars?: Record<string, string | number>) => string;
@@ -72,6 +75,20 @@ export function skillStateText(s: BotSkillView, t: T): string {
   return parts.join(' · ');
 }
 
+/** When the bot last read an approved skill; null for any other. Pure but
+ *  for timeAgo's words. */
+export function skillUsageText(s: BotSkillView, t: T, now: number = Date.now()): string | null {
+  if (s.state !== 'approved') return null;
+  return s.lastUsedAt === undefined ? t('bots.skills.neverUsed') : t('bots.skills.lastUsed', { time: timeAgo(s.lastUsedAt, now) });
+}
+
+/** Stale skills first, longest unused first; the rest keep their order. Pure. */
+export function sortSkillsForProfile(skills: readonly BotSkillView[]): BotSkillView[] {
+  const idle = (s: BotSkillView): number => Math.max(s.approvedAt ?? 0, s.lastUsedAt ?? 0);
+  const stale = skills.filter((s) => s.stale).sort((a, b) => idle(a) - idle(b));
+  return [...stale, ...skills.filter((s) => !s.stale)];
+}
+
 export function BotSkills({ row, t, port: p = getBotSkillPort() }: { row: FactoryBotRow; t: T; port?: BotSkillPort }): React.ReactElement | null {
   const botId = row.bot.id;
   const skills = useBotSkills(botId, p);
@@ -99,19 +116,27 @@ export function BotSkills({ row, t, port: p = getBotSkillPort() }: { row: Factor
       <div className="min-w-0 flex-1">
         {skills.length === 0 && <p className="text-[var(--text-muted)]">{t('botsPage.profile.skillsEmpty')}</p>}
         <ul className="space-y-0.5">
-          {skills.map((s) => (
-            <li key={s.name} data-bot-skill={s.name} data-skill-state={s.state} className="flex items-center gap-2">
-              <span className={`min-w-0 flex-1 truncate ${s.state === 'approved' && !s.changed ? 'text-[var(--text-main)]' : 'text-[var(--text-muted)]'}`} title={s.description ?? s.proposed?.description}>
-                {s.name}
-                <span className="text-[var(--text-muted)]">{` · ${skillStateText(s, t)}`}</span>
-              </span>
-              {s.state !== 'archived' && (
-                <button type="button" data-testid={`bot-skill-archive-${s.name}`} disabled={busy !== null} onClick={() => archive(s.name)} className={`text-[11px] text-[var(--text-muted)] hover:text-[var(--text-main)] disabled:opacity-50 ${FOCUS_RING}`}>
-                  {t('botsPage.profile.skillArchive')}
-                </button>
-              )}
-            </li>
-          ))}
+          {sortSkillsForProfile(skills).map((s) => {
+            const usage = skillUsageText(s, t);
+            return (
+              <li key={s.name} data-bot-skill={s.name} data-skill-state={s.state} data-skill-stale={s.stale ? '' : undefined} className="flex items-center gap-2">
+                <span className={`min-w-0 flex-1 truncate ${s.state === 'approved' && !s.changed ? 'text-[var(--text-main)]' : 'text-[var(--text-muted)]'}`} title={s.description ?? s.proposed?.description}>
+                  {s.name}
+                  <span className="text-[var(--text-muted)]">{` · ${skillStateText(s, t)}${usage ? ` · ${usage}` : ''}`}</span>
+                </span>
+                {s.stale && (
+                  <span className="shrink-0 rounded-[var(--chip-radius)] bg-[var(--selection)] px-1.5 text-[11px] text-[var(--text-sub)]" title={t('bots.skills.staleHint')}>
+                    {t('bots.skills.stale')}
+                  </span>
+                )}
+                {s.state !== 'archived' && (
+                  <button type="button" data-testid={`bot-skill-archive-${s.name}`} disabled={busy !== null} onClick={() => archive(s.name)} className={`text-[11px] text-[var(--text-muted)] hover:text-[var(--text-main)] disabled:opacity-50 ${FOCUS_RING}`}>
+                    {t('botsPage.profile.skillArchive')}
+                  </button>
+                )}
+              </li>
+            );
+          })}
         </ul>
         {error && <p className="mt-1 text-[var(--accent-red)]">{error}</p>}
       </div>

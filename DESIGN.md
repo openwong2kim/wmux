@@ -523,7 +523,12 @@ status bar badges, `fleet_triage` or the phone's sidebar.
   or after "approved 1.0.0" the muted note that it changed since approval
   and does not load until the bot proposes it again);
   an approved skill's name is in the main text colour, every other one
-  muted, and the description is the row's tooltip. Each one not archived
+  muted, and the description is the row's tooltip. An approved skill adds,
+  muted, when the bot last read it ("last used 3d ago", or "not used
+  yet"); one approved and unused for 30 days carries a neutral **Stale**
+  tag (`--selection`, `--chip-radius`, 11px; no colour — it still loads,
+  its tooltip says so) and stale ones sort first, longest unused first, so
+  the owner can archive them. Each one not archived
   has a muted text button, Archive, which acts at once (a skill is
   proposed again by the bot, never restored by hand); a failure is one red
   line under the list. With none, one muted line says when a bot proposes

@@ -17,7 +17,10 @@
 // Each skill's state, and the content hash of the version the owner
 // approved, are kept by main in its own `<wmuxDir>/factory/bot-skills.json`,
 // not in the skill folder. Every load hashes the files on disk again and
-// uses them only when they are the approved version.
+// uses them only when they are the approved version. The same file counts
+// each `skill_read` of an approved skill's body (its use); one unused for
+// 30 days is shown stale in the profile, for the owner to archive — it
+// still loads, and nothing archives it but the owner.
 //
 // SKILL.md is markdown with a front matter of exactly `name`, `description`
 // and `version` (agentskills.io style). Writing a skill only ever creates a
@@ -127,6 +130,12 @@ export interface BotSkillView {
   /** The approved version's files on disk are not the ones the owner
    *  approved: nothing of it loads until a new proposal is approved. */
   changed?: true;
+  /** How many times `skill_read` returned its body, and when last. */
+  useCount?: number;
+  lastUsedAt?: number;
+  /** Unused for SKILL_STALE_AFTER_MS (skillIsStale): a hint for the owner's
+   *  Archive only — it still loads. */
+  stale?: true;
   updatedAt: number;
 }
 
@@ -140,6 +149,16 @@ export interface SkillListRequest { botId: string; }
 export type SkillListResult = { ok: true; skills: BotSkillView[] } | { ok: false; error: string };
 export interface SkillArchiveRequest { botId: string; name: string; }
 export type SkillArchiveResult = { ok: true; skill: BotSkillView } | { ok: false; error: string };
+
+/** An approved skill neither approved nor used for this long is stale. */
+export const SKILL_STALE_AFTER_MS = 30 * 24 * 60 * 60 * 1000;
+
+/** Stale: approved, approved at least SKILL_STALE_AFTER_MS ago (a new or
+ *  updated skill gets that long), and not used since that long. Pure. */
+export function skillIsStale(s: Pick<BotSkillView, 'state' | 'approvedAt' | 'lastUsedAt'>, now: number): boolean {
+  if (s.state !== 'approved' || s.approvedAt === undefined) return false;
+  return now - Math.max(s.approvedAt, s.lastUsedAt ?? 0) >= SKILL_STALE_AFTER_MS;
+}
 
 /** The folder name of a bot's skill copied into a worker's worktree. */
 export function workerSkillDirName(name: string): string {

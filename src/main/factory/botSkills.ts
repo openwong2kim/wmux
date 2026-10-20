@@ -41,6 +41,7 @@ import {
   SKILL_NAME_RE,
   SKILL_REFERENCE_NAME_RE,
   WORKER_SKILLS_EXCLUDE_LINE,
+  skillIsStale,
   skillVersionNewer,
   workerSkillDirName,
   type BotSkillView,
@@ -88,6 +89,10 @@ interface SkillMeta {
   state: SkillState;
   approved?: VersionMeta;
   proposed?: VersionMeta & { approvalId?: string; reason: string };
+  /** `skill_read` returned the approved body this many times, last at
+   *  lastUsedAt (recordUse). Absent in a record written before they were. */
+  useCount?: number;
+  lastUsedAt?: number;
   createdAt: number;
   updatedAt: number;
 }
@@ -319,7 +324,20 @@ function isMeta(v: unknown, name: string): v is SkillMeta {
     && Number.isSafeInteger(m.createdAt) && Number.isSafeInteger(m.updatedAt);
 }
 
-function view(m: SkillMeta, changed: boolean): BotSkillView {
+/** A record's use, when it is a count and a time (a record written before
+ *  either existed has none; a malformed one loses only its use, never the
+ *  skill). Also carries it into a record built anew (a proposal, an approve). */
+function usage(m: SkillMeta | null): Pick<SkillMeta, 'useCount' | 'lastUsedAt'> {
+  const count = m?.useCount;
+  const at = m?.lastUsedAt;
+  return {
+    ...(typeof count === 'number' && Number.isSafeInteger(count) && count >= 0 ? { useCount: count } : {}),
+    ...(typeof at === 'number' && Number.isSafeInteger(at) ? { lastUsedAt: at } : {}),
+  };
+}
+
+function view(m: SkillMeta, changed: boolean, now?: number): BotSkillView {
+  const approvedAt = m.approved?.at;
   return {
     name: m.name,
     state: m.state,
@@ -333,6 +351,8 @@ function view(m: SkillMeta, changed: boolean): BotSkillView {
       },
     } : {}),
     ...(changed ? { changed: true as const } : {}),
+    ...usage(m),
+    ...(now !== undefined && skillIsStale({ state: m.state, approvedAt, lastUsedAt: m.lastUsedAt }, now) ? { stale: true as const } : {}),
     updatedAt: m.updatedAt,
   };
 }
@@ -366,7 +386,11 @@ export class BotSkillStore {
         const map = new Map<string, SkillMeta>();
         for (const rec of skills as unknown[]) {
           const name = (rec as { name?: unknown } | null)?.name;
-          if (typeof name === 'string' && SKILL_NAME_RE.test(name) && isMeta(rec, name)) map.set(name, rec);
+          if (typeof name !== 'string' || !SKILL_NAME_RE.test(name) || !isMeta(rec, name)) continue;
+          const clean: SkillMeta = { ...rec };
+          delete clean.useCount;
+          delete clean.lastUsedAt;
+          map.set(name, { ...clean, ...usage(rec) });
         }
         if (map.size > 0) this.records.set(botId, map);
       }
@@ -538,13 +562,15 @@ export class BotSkillStore {
   }
 
   /** The bot's skills, by name. An approved skill whose files on disk are
-   *  not the approved version is `changed`. Never throws. */
+   *  not the approved version is `changed`; one unused for a while is
+   *  `stale` (skillIsStale). Never throws. */
   list(botId: string): BotSkillView[] {
     if (typeof botId !== 'string' || !BOT_ID_RE.test(botId)) return [];
+    const now = this.now();
     return this.names(botId).map((name) => {
       const rec = this.record(botId, name) as SkillMeta;
       const changed = rec.state === 'approved' && !this.verified(botId, name, rec);
-      return view(rec, changed);
+      return view(rec, changed, now);
     });
   }
 
@@ -621,6 +647,15 @@ export class BotSkillStore {
 
   // ── writes ──
 
+  /** `skill_read` returned the body of an approved skill: one more use.
+   *  Best effort — a use that cannot be recorded never fails the read.
+   *  updatedAt stays: a use changes nothing of the skill. */
+  recordUse(botId: string, name: string): boolean {
+    const rec = typeof botId === 'string' && BOT_ID_RE.test(botId) && typeof name === 'string' ? this.record(botId, name) : null;
+    if (rec?.state !== 'approved') return false;
+    return this.commit(botId, name, { ...rec, useCount: (rec.useCount ?? 0) + 1, lastUsedAt: this.now() });
+  }
+
   /** `skill_propose`: write a proposed version of a skill (an update when
    *  the skill exists). Never changes the approved version. */
   propose(botId: string, raw: { name?: unknown; content?: unknown; references?: unknown; reason?: unknown }): SkillProposal | SkillRefusal {
@@ -688,6 +723,7 @@ export class BotSkillStore {
       state: meta?.state ?? 'proposed',
       ...(meta?.approved ? { approved: meta.approved } : {}),
       proposed: { hash, version: prep.version, description: prep.description, at, reason },
+      ...usage(meta),
       createdAt: meta?.createdAt ?? at,
       updatedAt: at,
     };
@@ -842,6 +878,7 @@ export class BotSkillStore {
     const next: SkillMeta = {
       version: 1, name, state: 'approved',
       approved: { hash, version: fm.frontmatter.version, description: fm.frontmatter.description, at },
+      ...usage(meta),
       createdAt: meta.createdAt, updatedAt: at,
     };
     removeQuietly(tmp);

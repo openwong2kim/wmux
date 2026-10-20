@@ -20,8 +20,9 @@ registerToolModule({
 
     host.tool(
       'skill_propose',
-      'Write a skill: a procedure for one kind of your work (steps, checks, pitfalls), not a standing fact. '
-        + 'Proposing a name you already have updates that skill (prefer it over a new one); an update takes a newer version. '
+      'Write a skill: a reusable procedure or lesson for one kind of your work (steps, checks, pitfalls); never task progress, a one-off fact, a secret, or what the repository already says. '
+        + 'Update before you add: the skill you just used, else a broader one it fits, else a reference file of one; a new name only when none fits. '
+        + 'Proposing a name you already have updates that skill; an update takes a newer version. '
         + 'Nothing loads until the owner approves the card that shows the change; Deny archives the proposal. '
         + `The card shows the whole change, so it is at most ${SKILL_LIMITS.DIFF_MAX} characters (a new skill counts in full): keep a skill short, or split it.`,
       {

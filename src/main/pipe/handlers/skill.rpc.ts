@@ -9,7 +9,7 @@
 //                  the proposed version written. A proposal that gets no
 //                  card writes nothing.
 //   skill.read     a bot: one of its own approved skills, or the list of
-//                  them (no name).
+//                  them (no name). Reading a skill's body records its use.
 //   IPC list / archive   the main window only.
 // Anyone else is refused. Before the module started every method answers
 // `not_started`.
@@ -109,7 +109,12 @@ export function registerSkillHandlers(router: Pick<FactoryRouter, 'register'>, d
     const store = deps.store();
     if (!store) return NOT_STARTED;
     const p = obj(raw);
-    return store.read(ctx.bot.botId, p.name, p.reference);
+    const res = store.read(ctx.bot.botId, p.name, p.reference);
+    // A skill's body read is its use (the profile's last used and stale); a
+    // reference or the list is not. A worker's copy is not either: every
+    // approved skill is copied into every worker, used or not.
+    if (res.ok && typeof p.name === 'string' && p.reference === undefined) store.recordUse(ctx.bot.botId, p.name);
+    return res;
   });
 }
 
