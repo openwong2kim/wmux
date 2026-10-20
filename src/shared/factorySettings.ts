@@ -10,7 +10,7 @@ import { WAKE_LIMITS } from './wake';
 
 export const FACTORY_SETTINGS_VERSION = 1 as const;
 
-/** The version of the "Bots run on your Claude plan" consent. Turning bots
+/** The version of the "Bots run on your Claude account" consent. Turning bots
  *  on needs the owner's consent at this version (main refuses otherwise);
  *  raise it when what the owner agrees to changes, and everyone is asked
  *  again. */

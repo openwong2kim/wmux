@@ -121,7 +121,7 @@ export function mergeFactorySettings(base: FactorySettings, raw: unknown): Facto
  *  current version, that bots run on their own Claude plan. Only the wmux
  *  app's own window can ask them. */
 export const BOTS_PLAN_CONSENT_REQUIRED =
-  'Bots run on your Claude plan: turn bots on in the wmux app first, where you confirm it.';
+  'Bots run on your Claude account: turn bots on in the wmux app first, where you confirm it.';
 
 /** Why the HQ workspace was refused: it is a guest workspace. */
 export const HQ_NOT_GUEST_WORKSPACE = 'A guest workspace cannot be the HQ workspace.';

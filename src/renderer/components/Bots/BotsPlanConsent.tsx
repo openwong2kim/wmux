@@ -1,4 +1,4 @@
-// "Bots run on your Claude plan" (owner decision 2026-10-15): bots think
+// "Bots run on your Claude account" (owner decision 2026-10-15): bots think
 // with the Claude Agent SDK on this computer's Claude Code sign-in and their
 // workers run the owner's own Claude Code, so turning bots on asks the owner
 // to confirm that once per consent version. Main refuses a turn-on without

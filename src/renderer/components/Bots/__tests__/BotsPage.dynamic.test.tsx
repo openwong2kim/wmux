@@ -2011,7 +2011,7 @@ describe('Bots page', () => {
     const settings = { available: true, get: vi.fn(async () => stored as never), set: vi.fn(async (p: object) => ({ enabled: true, ...p }) as never) };
     await render(<BotsPage settings={settings} />);
     const dialog = () => document.querySelector('[data-testid="bots-plan-consent"]');
-    expect(dialog()?.textContent).toContain('Bots run on your Claude plan');
+    expect(dialog()?.textContent).toContain('Bots run on your Claude account');
     expect(dialog()?.textContent).toContain('Their usage counts toward your Claude plan\'s limits.');
     expect(document.querySelector('[data-testid="bots-plan-consent-cancel"]')?.textContent).toBe('Turn bots off');
     await act(async () => { document.querySelector<HTMLButtonElement>('[data-testid="bots-plan-consent-confirm"]')!.click(); });
