@@ -205,7 +205,8 @@ describe('git as it runs', () => {
     expect(decide('git commit -m x', [{ argv: ['git', 'commit'], anyArgs: true }])).toMatchObject({ ok: true, run: expect.stringContaining("'gpg.x509.program=false' 'commit'") });
   });
 
-  it('git -C names only the bot folder itself or its repository itself', () => {
+  // Bot commands are off on Windows, and its drive paths are not words the floor's charset takes.
+  it.skipIf(process.platform === 'win32')('git -C names only the bot folder itself or its repository itself', () => {
     const repo = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'botexec-repo-')));
     try {
       fs.mkdirSync(path.join(botDir, 'sub'));
