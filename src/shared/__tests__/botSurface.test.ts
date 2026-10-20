@@ -5,6 +5,7 @@ import {
   BOT_TOOL_RPC,
   COORDINATOR_READ_EXTENSION,
   FACTORY_RPC_METHODS,
+  GUEST_SAFE_RPC,
   ROLE_SURFACES,
   SHARED_SURFACE,
   SHARED_SURFACE_TOOLS,
@@ -19,7 +20,7 @@ import { FIRST_PARTY_METHODS } from '../../main/mcp/firstParty';
 import { METHOD_CAPABILITY, resolveRequiredCapability } from '../../main/mcp/methodCapabilityMap';
 import type { RpcMethod } from '../rpc';
 
-const COMMON = ['ask_person', 'room_post', 'room_read', 'room_search', 'handoff_send', 'fact_poll'];
+const COMMON = ['ask_person', 'room_post', 'room_read', 'room_search', 'handoff_send', 'fact_poll', 'memory_update'];
 
 describe('ROLE_SURFACES', () => {
   it('defines every role', () => {
@@ -73,6 +74,14 @@ describe('ROLE_SURFACES', () => {
     expect(SHARED_SURFACE.rpc.has('room.search')).toBe(true);
     expect(FACTORY_RPC_METHODS).toContain('room.search');
     expect('room.search' in COORDINATOR_READ_EXTENSION).toBe(false);
+  });
+
+  it('memory.update is every bot\'s, for its own notes only: no Coordinator extension, never guest-safe', () => {
+    expect(BOT_TOOL_RPC.memory_update).toEqual(['memory.update']);
+    expect(SHARED_SURFACE.rpc.has('memory.update')).toBe(true);
+    expect(FACTORY_RPC_METHODS).toContain('memory.update');
+    expect('memory.update' in COORDINATOR_READ_EXTENSION).toBe(false);
+    expect(GUEST_SAFE_RPC.has('memory.update')).toBe(false);
   });
 
   it('the Coordinator extension names only read methods already on the surface (and plan.propose)', () => {

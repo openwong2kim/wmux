@@ -496,7 +496,7 @@ status bar badges, `fleet_triage` or the phone's sidebar.
   its routines, its connections — each library connection that applies to
   it, an every-bot one with a switch that turns it off for this bot alone,
   a picked one with Edit and Remove from this bot, then Add connection and
-  Manage (Settings › Bots › Connections); its skills (Skills, below); then, read-only, what it can do in the owner's words — one phrase per power of
+  Manage (Settings › Bots › Connections); its skills and memory (Skills, Memory, below); then, read-only, what it can do in the owner's words — one phrase per power of
   the shared surface, plus a Coordinator's reads in every workspace, never
   per-bot settings — whom it reports to (You), and its workers now; last,
   Pause — a neutral secondary that parks the bot at once, with no confirm
@@ -540,6 +540,17 @@ status bar badges, `fleet_triage` or the phone's sidebar.
   Approve and Deny do, then the change as a `diff` code block (removed
   lines `- `, added `+ `), always whole: a proposal whose change would not
   fit the card is refused to the bot, never cut.
+- **Memory (2026-10-21):** under Skills, a Memory row shows what the bot
+  keeps for its later sessions in two lists: its own notes, and About you
+  (the owner's profile, shared by every bot). Each list's muted title
+  carries how much of its limit is used ("312 of 2200 characters"); its
+  entries are main-text lines, each with a muted Remove that acts at once;
+  a list with entries has a muted Clear that asks in place (InlineConfirm,
+  the solid red only on its confirm, which says whose sessions start
+  without it). An empty list is one muted line; a muted hint under both
+  says changes apply from the bot's next session; a failure is one red
+  line. There is no Add or Edit: the bot writes, the owner reads and
+  removes.
 - **Messages are bubbles in runs (owner decision 2026-10-14, the reference
   messenger's look; replaces the same day's flat rows):** a bot's messages
   on the left in soft `--selection-subtle` bubbles (18px radius, fill only,

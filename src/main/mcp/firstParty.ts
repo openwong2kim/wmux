@@ -379,6 +379,7 @@ export const FIRST_PARTY_METHODS: ReadonlySet<RpcMethod> = new Set<RpcMethod>([
   'botLogin.request',
   'skill.propose',
   'skill.read',
+  'memory.update',
   // Task lifecycle — the eight commander-only tools (task_gate_run,
   // task_gate_cancel, task_adopt, task_close, task_pr, git_status, git_log,
   // gh_pr_view).

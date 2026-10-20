@@ -27,6 +27,7 @@ import { pathToFileURL } from 'url';
 import { app } from 'electron';
 import { getWmuxDir } from '../../daemon/config';
 import { loadCommanderMemory, getMemoryRootDir } from './commanderMemory';
+import { loadBotMemory } from '../factory/botMemory';
 import { getAccountStore } from '../account/accountStore';
 import { resolveBackgroundLaunch, type BackgroundLaunch } from '../account/backgroundLaunchAccount';
 import { mintBotToken, mintCommanderToken, revokeCommanderToken } from './commanderTrust';
@@ -272,8 +273,8 @@ export interface ClaudeSdkAdapterDeps {
    *  (mintBotToken) handed to the MCP child in a fresh 0600 file per turn
    *  (never the environment), the MCP server in `--bot=<role>` mode, no
    *  built-in tools at all (`tools: []`), every permission prompt denied, no
-   *  filesystem settings and no memory, and `cwd` as the session's working
-   *  directory (the bot's own empty folder). `allowedTools` should be the
+   *  filesystem settings, its own memory only (factory/botMemory.ts), and
+   *  `cwd` as the session's working directory (the bot's own empty folder). `allowedTools` should be the
    *  role's MCP tools; `fullPower` is ignored. With `repoRoot` the session
    *  also holds Read, Grep and Glob, each call decided by main inside that
    *  repository (factory/botRepoRead.ts). */
@@ -807,8 +808,10 @@ export class ClaudeSdkAdapter implements BrainAdapter {
     this.profile = deps.profile;
     // Default loader layers both partitions for THIS workspace (M1c). Bound to
     // deps.workspaceId at construction so the brain only ever sees its own
-    // workspace's memory plus the shared global partition.
-    this.loadMemory = deps.loadMemory ?? (this.bot ? () => '' : () => loadCommanderMemory({ workspaceId: deps.workspaceId }));
+    // workspace's memory plus the shared global partition. A bot loads its
+    // own notes and the owner's profile instead (factory/botMemory.ts).
+    const bot = this.bot;
+    this.loadMemory = deps.loadMemory ?? (bot ? () => loadBotMemory(bot.wmuxDir, bot.binding) : () => loadCommanderMemory({ workspaceId: deps.workspaceId }));
     this._workspaceId = this.bot ? this.bot.binding.workspaceId : deps.workspaceId;
     this._memoryRoot = deps.memoryRoot;
     // An empty binding registers an unroutable token — fail closed rather

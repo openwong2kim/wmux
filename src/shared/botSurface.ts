@@ -38,6 +38,7 @@ import { BOT_SECRET_RPC } from './botSecret';
 import { ROUTINE_RPC } from './botRoutine';
 import { WORKFLOW_RPC } from './botWorkflow';
 import { BOT_SKILL_RPC } from './botSkill';
+import { BOT_MEMORY_RPC } from './botMemory';
 
 /** Read-side factory RPCs behind the role tools (handlers: main/factory/roles). */
 export const FACTORY_READ_RPC = {
@@ -76,6 +77,8 @@ export const FACTORY_RPC_METHODS: readonly RpcMethod[] = [
   BOT_SECRET_RPC.request, BOT_SECRET_RPC.list, BOT_SECRET_RPC.loginRequest,
   // A bot's own skills (shared/botSkill.ts).
   BOT_SKILL_RPC.propose, BOT_SKILL_RPC.read,
+  // A bot's own notes and the owner's profile (shared/botMemory.ts).
+  BOT_MEMORY_RPC.update,
 ];
 
 /** Every tool a bot surface may list, with the RPC methods it invokes (the
@@ -127,6 +130,7 @@ export const BOT_TOOL_RPC = {
   login_request: [BOT_SECRET_RPC.loginRequest],
   skill_propose: [BOT_SKILL_RPC.propose],
   skill_read: [BOT_SKILL_RPC.read],
+  memory_update: [BOT_MEMORY_RPC.update],
 } as const satisfies Readonly<Record<string, readonly [RpcMethod, ...RpcMethod[]]>>;
 
 export type BotToolName = keyof typeof BOT_TOOL_RPC;
@@ -191,6 +195,8 @@ export const SHARED_SURFACE_TOOLS: readonly BotToolName[] = [
   'workflow_create', 'workflow_read', 'workflow_advance',
   // own skills (proposals wait for the owner's approval)
   'skill_propose', 'skill_read',
+  // own memory and the owner's profile (loaded when a session starts)
+  'memory_update',
   // workers (terminal_read reaches only the bot's own task panes, main-scoped)
   'fanout_start', 'ledger_update', 'terminal_read', 'workspace_list', 'worker_resume', 'worker_message',
   // repository reads

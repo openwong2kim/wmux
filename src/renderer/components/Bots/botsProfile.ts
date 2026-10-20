@@ -28,6 +28,7 @@ export const CAN_DO_PHRASES: ReadonlyArray<{ key: string; tools: readonly BotToo
   { key: 'botsPage.canDo.job', tools: ['job_set'] },
   { key: 'botsPage.canDo.routines', tools: ['routine_set', 'routine_list', 'routine_pause'] },
   { key: 'botsPage.canDo.skills', tools: ['skill_propose', 'skill_read'] },
+  { key: 'bots.memory.canDo', tools: ['memory_update'] },
   { key: 'botsPage.canDo.stop', tools: ['stop_my_work'] },
   { key: 'botsPage.canDo.approval', tools: ['approval_request', 'approval_list'] },
   { key: 'botsPage.canDo.secrets', tools: ['secret_request', 'secret_list', 'login_request'] },

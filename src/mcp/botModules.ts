@@ -9,6 +9,7 @@ import './botApprovals';
 import './botJob';
 import './botRoutines';
 import './botSkills';
+import './botMemory';
 import './botWorkers';
 import './factorySecrets';
 import './botWorkflow';

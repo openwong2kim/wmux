@@ -128,6 +128,32 @@ describe('ClaudeSdkAdapter bot mode', () => {
     adapter.dispose();
   });
 
+  it('its own notes and the owner\'s profile open the first prompt only, fenced as data', async () => {
+    const mem = path.join(dir, 'factory', 'bot-memory');
+    fs.mkdirSync(mem, { recursive: true });
+    fs.writeFileSync(path.join(mem, `${BINDING.botId}.txt`), 'Gate is npm run verify\n');
+    fs.writeFileSync(path.join(mem, 'owner.txt'), 'The owner is Kim\n');
+    const prompts: string[] = [];
+    const adapter = new ClaudeSdkAdapter({
+      bot: { binding: BINDING, cwd: dir, wmuxDir: dir },
+      workspaceId: BINDING.workspaceId,
+      mcpBundlePath: '/b.js',
+      queryFn: ({ prompt }) => {
+        prompts.push(prompt as string);
+        return { async *[Symbol.asyncIterator]() { yield { type: 'result', subtype: 'success', session_id: 's' }; } };
+      },
+    });
+    adapter.start({ systemPrompt: 'BOT' });
+    await collect(adapter.send('one'));
+    await collect(adapter.send('two'));
+    expect(prompts[0]).toMatch(/^\[memory\] /);
+    expect(prompts[0]).toContain('```memory\nGate is npm run verify\n```');
+    expect(prompts[0]).toContain('```owner-profile\nThe owner is Kim\n```');
+    expect(prompts[0].endsWith('\n\n---\n\none')).toBe(true);
+    expect(prompts[1]).toBe('two');
+    adapter.dispose();
+  });
+
   // The 4.5.0 researcher incident: its session held every mcp__wmux__ tool,
   // but the model called them by the bare names the prompts use, each call
   // failed with "No such tool available", and the turn settled as done.

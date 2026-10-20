@@ -202,6 +202,8 @@ describe('FIRST_PARTY_METHODS source invariant', () => {
       // A bot's own skills: a proposal only waits for the owner's card.
       'skill.propose',
       'skill.read',
+      // A bot's own notes and the owner's profile: gated by the wake.
+      'memory.update',
       // `company.a2a.*` was here for the six company_a2a_* tools; both the
       // tools and the grants are gone (the least-privilege assertion below is
       // what would have caught them lingering).

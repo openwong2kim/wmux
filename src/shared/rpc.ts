@@ -729,6 +729,8 @@ export type RpcMethod =
   // approval, read an approved one.
   | 'skill.propose'
   | 'skill.read'
+  // A bot's own notes and the owner's profile (shared/botMemory.ts).
+  | 'memory.update'
   // Task lifecycle on the pipe (pipe/handlers/worktask.rpc.ts) — the half of
   // fan-out that finishes a task. Local-origin only, owner-scoped against
   // `task.mission.list`, and `task.close` / `task.pr` additionally raise a
@@ -1026,6 +1028,7 @@ export const ALL_RPC_METHODS = [
   'botLogin.request',
   'skill.propose',
   'skill.read',
+  'memory.update',
   'task.gate.run',
   'task.gate.cancel',
   'task.adopt',

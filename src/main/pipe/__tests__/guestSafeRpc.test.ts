@@ -44,6 +44,8 @@ const CLEAN_ONLY_TOOLS: readonly BotToolName[] = [
   'routine_list', 'workflow_read', 'skill_read',
   // Searching the room's history: a guest's reply does not need it.
   'room_search',
+  // Memory loads into every later session: a guest-sourced wake saves none.
+  'memory_update',
   'secret_request', 'secret_list', 'login_request',
 ];
 

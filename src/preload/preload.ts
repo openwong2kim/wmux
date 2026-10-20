@@ -19,6 +19,7 @@ import { BOT_SECRET_IPC } from '../shared/botSecret';
 import { CONNECTOR_IPC } from '../shared/botConnector';
 import { GUEST_BOT_IPC } from '../shared/guestBots';
 import { BOT_SKILL_IPC } from '../shared/botSkill';
+import { BOT_MEMORY_IPC } from '../shared/botMemory';
 import { BOT_GROUP_IPC } from '../shared/botGroup';
 import type { PaneLabelRejection } from '../shared/paneLabelRules';
 import { CHROME_PANE_IPC, type ChromePaneBindings } from '../shared/chromePaneBinding';
@@ -1347,6 +1348,16 @@ const electronAPI = {
       list: (botId: string) => ipcRenderer.invoke(BOT_SKILL_IPC.list, { botId }) as Promise<import('../shared/botSkill').SkillListResult>,
       archive: (req: import('../shared/botSkill').SkillArchiveRequest) =>
         ipcRenderer.invoke(BOT_SKILL_IPC.archive, req) as Promise<import('../shared/botSkill').SkillArchiveResult>,
+    },
+    // A bot's notes and the owner's profile (renderer/components/Bots/
+    // BotMemory.tsx): read, and the owner's Remove and Clear; changes arrive
+    // as BOT_EVENT {type:'memory-changed'}.
+    memory: {
+      read: (botId: string) => ipcRenderer.invoke(BOT_MEMORY_IPC.read, { botId }) as Promise<import('../shared/botMemory').MemoryReadResult>,
+      remove: (req: import('../shared/botMemory').MemoryRemoveRequest) =>
+        ipcRenderer.invoke(BOT_MEMORY_IPC.remove, req) as Promise<import('../shared/botMemory').MemorySimpleResult>,
+      clear: (req: import('../shared/botMemory').MemoryClearRequest) =>
+        ipcRenderer.invoke(BOT_MEMORY_IPC.clear, req) as Promise<import('../shared/botMemory').MemorySimpleResult>,
     },
     // Guest bots (renderer/components/Bots/guestBots.ts): an outside agent's
     // token comes back once, from create; nothing reads one back.
