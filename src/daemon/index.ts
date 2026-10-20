@@ -160,7 +160,7 @@ import { initDaemonLogSink, isBrokenPipeError, stdioErrorsConsumed } from './uti
 import { installExitEvidence, noteExitReason, STATUS_CONTROL_C_EXIT } from './exitEvidence';
 import { newerTimestamp } from './util/idleAnchor';
 import type { DaemonSession, DaemonState } from './types';
-import { withDiskOnlySessions } from './diskOnlySessions';
+import { retireAdopted, withDiskOnlySessions } from './diskOnlySessions';
 import type { DaemonEvent, DaemonCreateSessionParams, DaemonDestroySessionParams, DaemonSessionIdParams, DaemonResizeParams, DaemonSetResumeBindingParams } from '../shared/rpc';
 import { isWslDistroSpawnArgs } from '../shared/wslDistro';
 import { gitDirMapperFor, gitWatchCwdFor } from './gitWatchCwd';
@@ -7541,6 +7541,8 @@ function wireEvents(
     recoveredAgentShellIds.delete(payload.id); // X6 ②: drop hint on explicit close too (CodeRabbit #2)
     recoveredResumeBindings.delete(payload.id); // X6 ③: drop the exact binding too (id reuse, CodeRabbit)
     spendContinue(sessionManager, stateWriter, payload.id);
+    // #2493: a closed pane's old disk-only record must not come back on the next save.
+    diskOnlySessions = diskOnlySessions.filter((s) => s.id !== payload.id);
     hookIngest?.dropPty(payload.id); // M1: ...and the dedup ledger / hook authority
     // Transcript projection: the pane is gone, so its watch has no reader left…
     chatSessions?.drop(payload.id);
@@ -7704,6 +7706,13 @@ let cachedBootId: string | undefined;
 /** Records recovery left on disk without managing them (see diskOnlySessions.ts). */
 let diskOnlySessions: DaemonSession[] = [];
 
+/** What every save writes: the managed sessions, then the disk-only records they have not taken. */
+function sessionsToSave(sessionManager: DaemonSessionManager): DaemonSession[] {
+  const managed = sessionManager.listSessions();
+  diskOnlySessions = retireAdopted(managed, diskOnlySessions);
+  return withDiskOnlySessions(managed, diskOnlySessions);
+}
+
 /** Initialize the cached boot ID (call once at startup). */
 async function initBootId(): Promise<void> {
   cachedBootId = await getBootId();
@@ -7725,7 +7734,7 @@ function buildState(sessionManager: DaemonSessionManager): DaemonState {
   if (!cachedBootId) cachedBootId = getBootIdSync();
   return {
     version: 1,
-    sessions: withDiskOnlySessions(sessionManager.listSessions(), diskOnlySessions),
+    sessions: sessionsToSave(sessionManager),
     bootId: cachedBootId,
   };
 }
@@ -7916,7 +7925,7 @@ async function shutdown(
   const stateSaveStart = phaseStartedAt();
   const suspendState: DaemonState = {
     version: 1,
-    sessions: sessionManager.listSessions(),
+    sessions: sessionsToSave(sessionManager),
     bootId: cachedBootId,
   };
   // saveImmediate is non-throwing (returns false on write failure). Capture
@@ -9693,7 +9702,7 @@ async function main(): Promise<void> {
         if (!cachedBootId) cachedBootId = getBootIdSync();
         const suspendState: DaemonState = {
           version: 1,
-          sessions: sessionManager.listSessions(),
+          sessions: sessionsToSave(sessionManager),
           bootId: cachedBootId,
         };
         stateWriter.saveImmediate(suspendState);

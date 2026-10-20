@@ -9,6 +9,17 @@
 
 import type { DaemonSession } from './types';
 
+/**
+ * The disk-only records the manager has not taken: one it adopted (a promoted
+ * pane, a recreated id) is its own from then on, so a later close or TTL reap
+ * of it is never undone by the old record.
+ */
+export function retireAdopted(managed: readonly DaemonSession[], diskOnly: DaemonSession[]): DaemonSession[] {
+  if (diskOnly.length === 0) return diskOnly;
+  const ids = new Set(managed.map((s) => s.id));
+  return diskOnly.some((s) => ids.has(s.id)) ? diskOnly.filter((s) => !ids.has(s.id)) : diskOnly;
+}
+
 /** The managed sessions, authoritative for their ids, then every disk-only record no managed session has taken. */
 export function withDiskOnlySessions(managed: DaemonSession[], diskOnly: readonly DaemonSession[]): DaemonSession[] {
   if (diskOnly.length === 0) return managed;

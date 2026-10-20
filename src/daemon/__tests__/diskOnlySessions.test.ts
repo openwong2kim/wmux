@@ -3,7 +3,7 @@
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
-import { withDiskOnlySessions } from '../diskOnlySessions';
+import { retireAdopted, withDiskOnlySessions } from '../diskOnlySessions';
 import type { DaemonSession } from '../types';
 
 const session = (id: string, state: DaemonSession['state'] = 'attached'): DaemonSession => ({ id, state } as DaemonSession);
@@ -19,6 +19,14 @@ describe('withDiskOnlySessions', () => {
     expect(merged).toEqual([session('a'), session('c', 'suspended')]);
   });
 
+  it('a record the manager adopted is retired, so closing that pane later does not bring it back', () => {
+    let diskOnly = [session('capped', 'suspended'), session('other', 'suspended')];
+    diskOnly = retireAdopted([session('capped')], diskOnly);
+    expect(diskOnly.map((s) => s.id)).toEqual(['other']);
+    // The pane closes: the manager no longer lists it, and nothing restores it.
+    expect(withDiskOnlySessions([], diskOnly).map((s) => s.id)).toEqual(['other']);
+  });
+
   it('returns the managed list as it is when nothing is disk-only', () => {
     const managed = [session('a')];
     expect(withDiskOnlySessions(managed, [])).toBe(managed);
@@ -30,9 +38,18 @@ describe('withDiskOnlySessions', () => {
 describe('disk-only wiring', () => {
   const src = fs.readFileSync(path.join(__dirname, '..', 'index.ts'), 'utf-8');
 
-  it('every buildState save writes the disk-only records back', () => {
+  it('every save writes the disk-only records back, shutdown saves included', () => {
     const at = src.indexOf('function buildState(sessionManager: DaemonSessionManager): DaemonState {');
-    expect(src.slice(at, at + 600)).toMatch(/sessions: withDiskOnlySessions\(sessionManager\.listSessions\(\), diskOnlySessions\)/);
+    expect(src.slice(at, at + 600)).toMatch(/sessions: sessionsToSave\(sessionManager\)/);
+    // Graceful shutdown and the synchronous exit handler build their state directly.
+    expect(src.match(/const suspendState: DaemonState = \{\s*version: 1,\s*sessions: sessionsToSave\(sessionManager\),/g)).toHaveLength(2);
+    expect(src).not.toMatch(/sessions: sessionManager\.listSessions\(\),/);
+  });
+
+  it('a destroyed session\'s disk-only record is retired', () => {
+    const at = src.indexOf("sessionManager.on('session:destroyed', (payload: { id: string }) => {\n    recoveredAgentShellIds.delete(payload.id);");
+    expect(at).toBeGreaterThan(-1);
+    expect(src.slice(at, at + 700)).toMatch(/diskOnlySessions = diskOnlySessions\.filter\(\(s\) => s\.id !== payload\.id\);/);
   });
 
   it('recovery records what it left on disk whether or not anything changed', () => {
