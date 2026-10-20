@@ -2044,7 +2044,7 @@ function BotProfile({ row, workers, workspaceName, t, stopPort, jobPort, adminPo
           <span className="w-[112px] shrink-0 text-[var(--text-muted)]">{t('botsPage.profile.routines')}</span>
           <ul className="min-w-0 flex-1 space-y-0.5">
             {routines.map((r) => (
-              <li key={r.id} data-bot-routine={r.id} className={`truncate ${r.state === 'paused' ? 'text-[var(--text-muted)]' : 'text-[var(--text-main)]'}`}>
+              <li key={r.id} data-bot-routine={r.id} className={`truncate ${r.state !== 'active' ? 'text-[var(--text-muted)]' : 'text-[var(--text-main)]'}`}>
                 {`${r.title} · ${routineScheduleText(r.schedule)} · ${routineStateText(r)}`}
               </li>
             ))}

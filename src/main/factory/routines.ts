@@ -19,12 +19,20 @@
 // - a slot missed while the app was closed fires once (the latest), not once
 //   per missed slot; a slot that comes while the bot cannot run (switched off,
 //   parked, the factory off) is skipped;
+// - a one-time (`once`) routine fires at its time, or on the first look after
+//   it when that is at most ONCE_GRACE_MS late, and is then `done`; later than
+//   that, or when its bot cannot run, it is done as `missed` without firing.
+//   A done routine never fires again (a change with a new time re-arms it);
+// - an interval routine's slot is skipped when it, or the moment it would
+//   fire, falls inside the routine's quiet hours. Daily and one-time routines
+//   run at the time chosen for them;
 // - stopping a bot (stop_my_work, Stop all, Stop bot) pauses its routines
 //   until it or the owner resumes them; parking it, switching it off or
 //   switching "Run bots" off pauses them too, and lifting that resumes them.
 //   A resumed routine counts from the moment it resumes, with no catch-up;
 // - creating, changing, pausing or resuming one posts a `routine` card in the
-//   bot's room (a park or an off switch does not: the Schedules page shows it).
+//   bot's room (a park or an off switch does not: the Schedules page shows it),
+//   and so does a one-time routine that was missed.
 //
 // A change that did not reach the file is still made in memory and retried
 // with the next write (the store keeps no history worth refusing for).
@@ -39,7 +47,9 @@ import {
   ROUTINE_ID_RE,
   ROUTINE_LIMITS,
   type BotRoutine,
+  type RoutineDoneReason,
   type RoutinePauseReason,
+  type RoutineQuietHours,
   type RoutineResult,
   type RoutineSchedule,
   type RoutineSetParams,
@@ -52,8 +62,13 @@ import type { WakeQueue } from './wakeQueue';
 export const ROUTINES_VERSION = 1 as const;
 export const ROUTINES_FILENAME = 'routines.json';
 
-/** Longest interval: a routine is a recurring wake, not a reminder. */
+/** Longest interval: a far-off single wake is a `once` routine instead. */
 export const ROUTINE_MAX_INTERVAL_MS = 30 * 24 * 3_600_000;
+/** How late a one-time routine may still fire (the app was closed at its
+ *  time); later, it is done as missed. */
+export const ONCE_GRACE_MS = 6 * 3_600_000;
+/** A done one-time routine is dropped on load this long after it ended. */
+const DONE_KEEP_MS = 7 * 24 * 3_600_000;
 /** The timer looks at the routines at least this often. */
 const TICK_MAX_MS = 60_000;
 const TICK_MIN_MS = 250;
@@ -68,12 +83,18 @@ interface StoredRoutine extends BotRoutine {
 }
 
 const PAUSE_REASONS: readonly RoutinePauseReason[] = ['bot', 'owner', 'stop', 'park', 'off'];
+const DONE_REASONS: readonly RoutineDoneReason[] = ['fired', 'missed'];
+const HHMM_RE = /^([01]\d|2[0-3]):([0-5]\d)$/;
+/** An ISO 8601 date and time (seconds optional; no offset = local time). */
+const ISO_AT_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,3})?)?(Z|[+-]\d{2}:\d{2})?$/;
 
 // ── Schedules (pure) ───────────────────────────────────────────────────────
 
 /** A schedule as given, or why it is not one. `minIntervalMs` is
- *  ROUTINE_LIMITS.MIN_INTERVAL_MS outside tests. Pure. */
-export function parseSchedule(raw: unknown, minIntervalMs: number = ROUTINE_LIMITS.MIN_INTERVAL_MS): RoutineSchedule | string {
+ *  ROUTINE_LIMITS.MIN_INTERVAL_MS outside tests. With `now`, a one-time
+ *  routine's time must lie ahead of it (at most ONCE_MAX_AHEAD_MS); a stored
+ *  one is read without it. Pure. */
+export function parseSchedule(raw: unknown, minIntervalMs: number = ROUTINE_LIMITS.MIN_INTERVAL_MS, now?: number): RoutineSchedule | string {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return 'schedule is required';
   const r = raw as Record<string, unknown>;
   if (r.kind === 'interval') {
@@ -93,7 +114,38 @@ export function parseSchedule(raw: unknown, minIntervalMs: number = ROUTINE_LIMI
     const weekdays = [...new Set(r.weekdays as number[])].sort((a, b) => a - b);
     return weekdays.length === 7 ? { kind: 'daily', hour, minute } : { kind: 'daily', hour, minute, weekdays };
   }
-  return 'schedule.kind must be interval or daily';
+  if (r.kind === 'once') {
+    const at = typeof r.at === 'string' && ISO_AT_RE.test(r.at) ? Date.parse(r.at) : r.at;
+    if (typeof at !== 'number' || !Number.isSafeInteger(at) || at <= 0) return 'at must be an ISO 8601 date and time, e.g. 2026-10-23T09:00 (local) or 2026-10-23T09:00+09:00';
+    if (now !== undefined && at <= now) return 'at must be in the future';
+    if (now !== undefined && at > now + ROUTINE_LIMITS.ONCE_MAX_AHEAD_MS) return 'at must be at most a year ahead';
+    return { kind: 'once', at };
+  }
+  return 'schedule.kind must be interval, daily or once';
+}
+
+/** Quiet hours as given (absent: undefined), or why they are not. Pure. */
+export function parseQuietHours(raw: unknown): RoutineQuietHours | undefined | string {
+  if (raw === undefined) return undefined;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return 'quietHours must be { start, end }';
+  const { start, end } = raw as Record<string, unknown>;
+  if (typeof start !== 'string' || !HHMM_RE.test(start) || typeof end !== 'string' || !HHMM_RE.test(end)) return 'quietHours start and end are HH:MM (00:00..23:59)';
+  if (start === end) return 'quietHours start and end must differ';
+  return { start, end };
+}
+
+function minuteOfDay(hhmm: string): number {
+  return Number(hhmm.slice(0, 2)) * 60 + Number(hhmm.slice(3, 5));
+}
+
+/** `at` falls inside the window (local time; start inclusive, end
+ *  exclusive; start after end wraps past midnight). Pure. */
+export function inQuietHours(q: RoutineQuietHours, at: number): boolean {
+  const d = new Date(at);
+  const m = d.getHours() * 60 + d.getMinutes();
+  const start = minuteOfDay(q.start);
+  const end = minuteOfDay(q.end);
+  return start < end ? m >= start && m < end : m >= start || m < end;
 }
 
 function dailyAt(base: number, dayOffset: number, s: Extract<RoutineSchedule, { kind: 'daily' }>): number {
@@ -105,9 +157,11 @@ function dayAllowed(at: number, s: Extract<RoutineSchedule, { kind: 'daily' }>):
   return !s.weekdays || s.weekdays.includes(new Date(at).getDay());
 }
 
-/** The first slot strictly after `after` (local time for a daily one). Pure. */
+/** The first slot strictly after `after` (local time for a daily one). A
+ *  one-time routine has one slot, its time, past or not. Pure. */
 export function nextSlot(s: RoutineSchedule, after: number): number {
   if (s.kind === 'interval') return after + s.everyMs;
+  if (s.kind === 'once') return s.at;
   for (let i = 0; i <= 8; i++) {
     const at = dailyAt(after, i, s);
     if (at > after && dayAllowed(at, s)) return at;
@@ -118,7 +172,7 @@ export function nextSlot(s: RoutineSchedule, after: number): number {
 /** The latest slot at or before `now` of a routine due at `dueAt` (≤ now):
  *  the one slot a run of missed slots fires. Pure. */
 export function latestSlot(s: RoutineSchedule, dueAt: number, now: number): number {
-  if (now <= dueAt) return dueAt;
+  if (now <= dueAt || s.kind === 'once') return dueAt;
   if (s.kind === 'interval') return dueAt + Math.floor((now - dueAt) / s.everyMs) * s.everyMs;
   for (let i = 0; i <= 8; i++) {
     const at = dailyAt(now, -i, s);
@@ -134,6 +188,11 @@ export function scheduleLabel(s: RoutineSchedule): string {
   if (s.kind === 'interval') {
     const min = Math.round(s.everyMs / 60_000);
     return min % 60 === 0 && min >= 60 ? `every ${min / 60} h` : `every ${min} min`;
+  }
+  if (s.kind === 'once') {
+    const d = new Date(s.at);
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return `once on ${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} at ${pad(d.getHours())}:${pad(d.getMinutes())}`;
   }
   const hhmm = `${String(s.hour).padStart(2, '0')}:${String(s.minute).padStart(2, '0')}`;
   return s.weekdays ? `${s.weekdays.map((d) => WEEKDAY[d]).join(', ')} at ${hhmm}` : `daily at ${hhmm}`;
@@ -155,14 +214,19 @@ function parseStored(raw: unknown): StoredRoutine | null {
   const prompt = textField(r.prompt, ROUTINE_LIMITS.PROMPT_MAX);
   // A stored schedule is held to the floor of its time, not today's.
   const schedule = parseSchedule(r.schedule, 1);
-  if (!title || !prompt || typeof schedule === 'string') return null;
-  if (r.state !== 'active' && r.state !== 'paused') return null;
+  const quietHours = parseQuietHours(r.quietHours);
+  if (!title || !prompt || typeof schedule === 'string' || typeof quietHours === 'string') return null;
+  if (r.state !== 'active' && r.state !== 'paused' && r.state !== 'done') return null;
   for (const k of ['createdAt', 'updatedAt'] as const) if (!Number.isSafeInteger(r[k])) return null;
   const threadId = r.threadId === undefined ? undefined : parseThreadId(r.threadId) ?? undefined;
   const p = r.paused as { reason?: unknown; at?: unknown } | undefined;
   const paused = r.state === 'paused' && p && PAUSE_REASONS.includes(p.reason as RoutinePauseReason) && Number.isSafeInteger(p.at)
     ? { reason: p.reason as RoutinePauseReason, at: p.at as number }
     : r.state === 'paused' ? { reason: 'owner' as const, at: r.updatedAt as number } : undefined;
+  const d = r.done as { reason?: unknown; at?: unknown } | undefined;
+  const done = r.state === 'done' && d && DONE_REASONS.includes(d.reason as RoutineDoneReason) && Number.isSafeInteger(d.at)
+    ? { reason: d.reason as RoutineDoneReason, at: d.at as number }
+    : r.state === 'done' ? { reason: 'missed' as const, at: r.updatedAt as number } : undefined;
   return {
     id: r.id,
     botId: r.botId,
@@ -170,9 +234,11 @@ function parseStored(raw: unknown): StoredRoutine | null {
     title,
     prompt,
     schedule,
+    ...(quietHours ? { quietHours } : {}),
     ...(threadId ? { threadId } : {}),
     state: r.state,
     ...(paused ? { paused } : {}),
+    ...(done ? { done } : {}),
     createdAt: r.createdAt as number,
     updatedAt: r.updatedAt as number,
     ...(Number.isSafeInteger(r.lastFiredAt) ? { lastFiredAt: r.lastFiredAt as number } : {}),
@@ -182,7 +248,13 @@ function parseStored(raw: unknown): StoredRoutine | null {
 }
 
 function publicCopy(r: StoredRoutine): BotRoutine {
-  const out: StoredRoutine = { ...r, schedule: { ...r.schedule } as RoutineSchedule, ...(r.paused ? { paused: { ...r.paused } } : {}) };
+  const out: StoredRoutine = {
+    ...r,
+    schedule: { ...r.schedule } as RoutineSchedule,
+    ...(r.quietHours ? { quietHours: { ...r.quietHours } } : {}),
+    ...(r.paused ? { paused: { ...r.paused } } : {}),
+    ...(r.done ? { done: { ...r.done } } : {}),
+  };
   delete out.clientRoutineId;
   return out;
 }
@@ -251,6 +323,7 @@ export class RoutineStore {
       const r = parseStored(entry);
       if (!r || seen.has(r.id)) continue;
       seen.add(r.id);
+      if (r.done && this.now() - r.done.at > DONE_KEEP_MS) continue;
       // An active routine always has a due time.
       if (r.state === 'active' && r.nextDueAt === undefined) r.nextDueAt = nextSlot(r.schedule, this.now());
       this.routines.push(r);
@@ -309,21 +382,31 @@ export class RoutineStore {
     if (!title) return bad(`title is required (one line, at most ${ROUTINE_LIMITS.TITLE_MAX} characters)`);
     const prompt = textField(p.prompt, ROUTINE_LIMITS.PROMPT_MAX);
     if (!prompt) return bad(`prompt is required (at most ${ROUTINE_LIMITS.PROMPT_MAX} characters)`);
-    const schedule = parseSchedule(p.schedule, this.deps.minIntervalMs ?? ROUTINE_LIMITS.MIN_INTERVAL_MS);
+    const now = this.now();
+    const schedule = parseSchedule(p.schedule, this.deps.minIntervalMs ?? ROUTINE_LIMITS.MIN_INTERVAL_MS, now);
     if (typeof schedule === 'string') return bad(schedule);
+    const quietHours = parseQuietHours(p.quietHours);
+    if (typeof quietHours === 'string') return bad(quietHours);
     const threadId = p.threadId === undefined ? undefined : parseThreadId(p.threadId);
     if (threadId === null) return bad('threadId is not a thread id');
     if (p.clientRoutineId !== undefined && !isClientId(p.clientRoutineId)) return bad('clientRoutineId is not a valid key');
-    const now = this.now();
     if (p.routineId !== undefined) {
       const r = this.routines.find((x) => x.id === p.routineId);
       if (!r || r.botId !== bot.botId) return { ok: false, code: 'not_found', message: `you have no routine ${String(p.routineId)}` };
+      if (r.state === 'done' && this.atCap(bot.botId)) return tooMany();
       r.title = title;
       r.prompt = prompt;
       r.schedule = schedule;
+      if (quietHours) r.quietHours = quietHours;
+      else delete r.quietHours;
       if (threadId) r.threadId = threadId;
       else delete r.threadId;
       r.updatedAt = now;
+      // A done one-time routine given a new time runs again.
+      if (r.state === 'done') {
+        r.state = 'active';
+        delete r.done;
+      }
       if (r.state === 'active') r.nextDueAt = nextSlot(schedule, now);
       this.card(r, { kind: 'bot', workspaceId: r.workspaceId, botId: r.botId }, 'Routine changed');
       this.changed([r.botId]);
@@ -333,9 +416,7 @@ export class RoutineStore {
       const prior = this.routines.find((x) => x.botId === bot.botId && x.clientRoutineId === p.clientRoutineId);
       if (prior) return { ok: true, routine: publicCopy(prior) };
     }
-    if (this.routines.filter((x) => x.botId === bot.botId).length >= ROUTINE_LIMITS.MAX_PER_BOT) {
-      return { ok: false, code: 'too_many', message: `a bot keeps at most ${ROUTINE_LIMITS.MAX_PER_BOT} routines; change or pause one instead` };
-    }
+    if (this.atCap(bot.botId)) return tooMany();
     const r: StoredRoutine = {
       id: this.newId(),
       botId: bot.botId,
@@ -343,6 +424,7 @@ export class RoutineStore {
       title,
       prompt,
       schedule,
+      ...(quietHours ? { quietHours } : {}),
       ...(threadId ? { threadId } : {}),
       state: 'active',
       createdAt: now,
@@ -356,12 +438,18 @@ export class RoutineStore {
     return { ok: true, routine: publicCopy(r) };
   }
 
+  /** A done one-time routine is history, not a routine the bot keeps. */
+  private atCap(botId: string): boolean {
+    return this.routines.filter((x) => x.botId === botId && x.state !== 'done').length >= ROUTINE_LIMITS.MAX_PER_BOT;
+  }
+
   /** Pause (`paused`) or resume a routine: a bot its own, the owner any. */
   pause(actor: RoutineActor, routineId: unknown, paused: unknown): RoutineResult {
     if (typeof routineId !== 'string' || !ROUTINE_ID_RE.test(routineId)) return bad('routineId is not a routine id');
     if (typeof paused !== 'boolean') return bad('paused must be true or false');
     const r = this.routines.find((x) => x.id === routineId);
     if (!r || (actor.kind === 'bot' && r.botId !== actor.botId)) return { ok: false, code: 'not_found', message: `you have no routine ${routineId}` };
+    if (!paused && r.state === 'done') return bad('this one-time routine is done; give it a new time with routine_set (routineId)');
     const party: Party = actor.kind === 'bot' ? { kind: 'bot', workspaceId: r.workspaceId, botId: r.botId } : { kind: 'human' };
     if (paused && r.state === 'active') {
       this.pauseOne(r, actor.kind === 'bot' ? 'bot' : 'owner');
@@ -457,21 +545,42 @@ export class RoutineStore {
   }
 
   /** Fire every routine that is due (once each, at its latest slot) and
-   *  skip the slots of bots that cannot run. Returns the ids fired. */
+   *  skip the slots of bots that cannot run or that fall in quiet hours; a
+   *  due one-time routine fires or is missed, and is done. Returns the ids
+   *  fired. */
   tick(): string[] {
     const now = this.now();
     const fired: string[] = [];
     const touched = new Set<string>();
     for (const r of this.routines) {
       if (r.state !== 'active' || r.nextDueAt === undefined || r.nextDueAt > now) continue;
+      touched.add(r.botId);
+      const bot = this.botOf(r.botId);
+      const runner = bot && bot.enabled && bot.parked?.reason !== 'human' && bot.parked?.reason !== 'error' && this.deps.factoryEnabled() ? bot : null;
+      if (r.schedule.kind === 'once') {
+        // Its one slot, after a restart too: it fires when at most
+        // ONCE_GRACE_MS late and its bot can run; otherwise it is missed.
+        const dueAt = r.nextDueAt;
+        const ok = runner !== null && now - dueAt <= ONCE_GRACE_MS && this.fire(r, runner, dueAt);
+        r.state = 'done';
+        r.done = { reason: ok ? 'fired' : 'missed', at: now };
+        r.updatedAt = now;
+        delete r.nextDueAt;
+        if (ok) {
+          r.lastFiredAt = now;
+          fired.push(r.id);
+        } else {
+          this.card(r, { kind: 'system' }, 'Routine missed');
+        }
+        continue;
+      }
       // The latest slot due is the one that fires; the next is the slot
       // after it (after now, on the routine's own grid).
       const dueAt = latestSlot(r.schedule, r.nextDueAt, now);
       r.nextDueAt = nextSlot(r.schedule, dueAt);
-      touched.add(r.botId);
-      const bot = this.botOf(r.botId);
-      if (!bot || !bot.enabled || bot.parked?.reason === 'human' || bot.parked?.reason === 'error' || !this.deps.factoryEnabled()) continue;
-      if (this.fire(r, bot, dueAt)) {
+      if (!runner) continue;
+      if (r.quietHours && r.schedule.kind === 'interval' && (inQuietHours(r.quietHours, dueAt) || inQuietHours(r.quietHours, now))) continue;
+      if (this.fire(r, runner, dueAt)) {
         r.lastFiredAt = now;
         fired.push(r.id);
       }
@@ -528,7 +637,7 @@ export class RoutineStore {
         kind: 'routine',
         actor,
         title: `${verb}: ${r.title}`,
-        body: `${scheduleLabel(r.schedule)}\n\n${r.prompt}`,
+        body: `${scheduleLabel(r.schedule)}${r.quietHours && r.schedule.kind === 'interval' ? `, quiet ${r.quietHours.start}–${r.quietHours.end}` : ''}\n\n${r.prompt}`,
         refs: { routineId: r.id, botId: r.botId },
       }, replyTo ? { replyTo } : undefined);
     } catch (err) {
@@ -539,6 +648,10 @@ export class RoutineStore {
 
 function bad(message: string): RoutineResult {
   return { ok: false, code: 'invalid_argument', message };
+}
+
+function tooMany(): RoutineResult {
+  return { ok: false, code: 'too_many', message: `a bot keeps at most ${ROUTINE_LIMITS.MAX_PER_BOT} routines; change or pause one instead` };
 }
 
 let current: RoutineStore | null = null;

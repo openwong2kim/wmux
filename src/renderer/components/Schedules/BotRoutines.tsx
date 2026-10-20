@@ -4,7 +4,8 @@
 // schedules the owner edits: a bot sets them in chat when the owner asks, and
 // pauses them itself or when it is stopped. The Schedules page lists them
 // under the schedules, and a bot's profile lists its own, read-only — the
-// title, the bot, when it runs and whether it is paused (and why). Read
+// title, the bot, when it runs and whether it is paused (and why) or, for a
+// one-time routine, done (fired or missed). Read
 // through `electronAPI.factory.listRoutines` (routine.list as the operator),
 // again on every bot event.
 import { useEffect, useState } from 'react';
@@ -25,8 +26,10 @@ function bridge(): RoutineBridge | null {
   return f && typeof f === 'object' ? (f as RoutineBridge) : null;
 }
 
-/** "Every 15 min", "Every 2 h", "Daily 09:00", "Mon Wed 09:00". */
-export function routineScheduleText(s: RoutineSchedule): string {
+/** "Every 15 min", "Every 2 h", "Daily 09:00", "Mon Wed 09:00",
+ *  "Once Tomorrow 09:00". */
+export function routineScheduleText(s: RoutineSchedule, now = Date.now()): string {
+  if (s.kind === 'once') return t('schedules.routines.once', { when: formatWhen(s.at, now) });
   if (s.kind === 'interval') {
     const min = Math.round(s.everyMs / 60_000);
     return min >= 60 && min % 60 === 0 ? t('schedules.routines.everyHours', { count: min / 60 }) : t('schedules.routines.everyMinutes', { count: min });
@@ -35,10 +38,12 @@ export function routineScheduleText(s: RoutineSchedule): string {
   return `${describeDays(s.weekdays ?? DAILY)} ${time}`;
 }
 
-/** The state in words: when it runs next, or why it is paused. */
+/** The state in words: when it runs next, why it is paused, or how a
+ *  one-time routine ended (its time is in the schedule text already). */
 export function routineStateText(r: BotRoutine, now = Date.now()): string {
   if (r.state === 'paused') return t(`schedules.routines.paused.${r.paused?.reason ?? 'owner'}`);
-  return r.nextDueAt !== undefined ? formatWhen(r.nextDueAt, now) : t('schedules.routines.active');
+  if (r.state === 'done') return t(`schedules.routines.done.${r.done?.reason ?? 'missed'}`);
+  return r.nextDueAt !== undefined && r.schedule.kind !== 'once' ? formatWhen(r.nextDueAt, now) : t('schedules.routines.active');
 }
 
 /** Every routine and the bots' names, or null while unread / without the
@@ -90,7 +95,7 @@ export function BotRoutinesSection(): React.ReactElement | null {
       <ul className="wmux-schedules-rows">
         {data.routines.map((r) => (
           <li key={r.id} data-bot-routine={r.id} data-state={r.state}>
-            <div className="wmux-schedules-row wmux-schedules-row-static" data-off={r.state === 'paused' ? 'true' : undefined}>
+            <div className="wmux-schedules-row wmux-schedules-row-static" data-off={r.state !== 'active' ? 'true' : undefined}>
               <span className="wmux-schedules-row-name"><span className="truncate">{r.title}</span></span>
               <span className="wmux-schedules-row-meta truncate">
                 {`${data.names[r.botId] ?? tt('room.actor.bot')} · ${routineScheduleText(r.schedule)} · ${routineStateText(r)}`}

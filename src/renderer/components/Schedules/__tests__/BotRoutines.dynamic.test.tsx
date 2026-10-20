@@ -33,6 +33,11 @@ describe('routine text', () => {
     expect(routineStateText(routine('r-1'), NOW)).toMatch(/09:00/);
     expect(routineStateText(routine('r-2', { state: 'paused', paused: { reason: 'stop', at: 1 } }))).toBe('Paused (stopped)');
     expect(routineStateText(routine('r-3', { state: 'paused', paused: { reason: 'park', at: 1 } }))).toBe('Paused (bot parked)');
+    const nine = new Date(2026, 9, 13, 9, 5).getTime();
+    expect(routineScheduleText({ kind: 'once', at: nine }, NOW)).toMatch(/^Once .*09:05/);
+    expect(routineStateText(routine('r-4', { schedule: { kind: 'once', at: nine }, nextDueAt: nine }), NOW)).toBe('Active');
+    expect(routineStateText(routine('r-5', { schedule: { kind: 'once', at: nine }, state: 'done', done: { reason: 'fired', at: nine } }))).toBe('Done');
+    expect(routineStateText(routine('r-6', { schedule: { kind: 'once', at: nine }, state: 'done', done: { reason: 'missed', at: nine } }))).toBe('Missed (not run)');
   });
 });
 

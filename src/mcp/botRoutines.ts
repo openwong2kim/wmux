@@ -28,15 +28,27 @@ const SCHEDULE = z
       minute: z.number().int().min(0).max(59),
       weekdays: z.array(z.number().int().min(0).max(6)).min(1).max(7).optional().describe('0 = Sunday; omit for every day.'),
     }),
+    z.object({
+      kind: z.literal('once'),
+      // wmux parses it (local time when there is no offset) and holds the range.
+      at: z.string().min(16).max(40).describe('ISO 8601, e.g. "2026-10-23T09:00" (local) or with an offset; within a year.'),
+    }),
   ])
-  .describe('Every N minutes, or daily at a local time.');
+  .describe('Every N minutes, daily at a local time, or once at a date and time.');
+
+const HHMM = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/);
+
+const QUIET_HOURS = z
+  .object({ start: HHMM, end: HHMM })
+  .describe('Interval only: runs in this local HH:MM window are skipped (22:00-07:00 wraps midnight). A change without it clears it.');
 
 type ScheduleArg = z.infer<typeof SCHEDULE>;
 
 function scheduleParam(s: ScheduleArg): Record<string, unknown> {
   return s.kind === 'interval'
     ? { kind: 'interval', everyMs: s.every_minutes * 60_000 }
-    : { kind: 'daily', hour: s.hour, minute: s.minute, ...(s.weekdays ? { weekdays: s.weekdays } : {}) };
+    : s.kind === 'once' ? { kind: 'once', at: s.at }
+      : { kind: 'daily', hour: s.hour, minute: s.minute, ...(s.weekdays ? { weekdays: s.weekdays } : {}) };
 }
 
 registerToolModule({
@@ -50,21 +62,25 @@ registerToolModule({
 
     host.tool(
       'routine_set',
-      'Schedule a routine for yourself — you are woken with its prompt every time it is due ("every 60 minutes: check the open PRs") — '
-        + 'or change one of yours (routine_id). Only in a turn on the owner\'s words: set one when the owner asks for recurring work. '
+      'Schedule a routine for yourself — you are woken with its prompt every time it is due ("every 60 minutes: check the open PRs"), '
+        + 'or once ("remind me Friday 9am"; then done, or missed if wmux was off over 6 h past it) — '
+        + 'or change one of yours (routine_id; a done one given a new time runs again). '
+        + 'Only in a turn on the owner\'s words: set one when the owner asks for recurring or timed work. '
         + `A card in the room shows it; you keep at most ${ROUTINE_LIMITS.MAX_PER_BOT}. Returns the routine with its next due time.`,
       {
         title: z.string().min(1).max(ROUTINE_LIMITS.TITLE_MAX).describe('One line for the owner, in their language: what the routine is.'),
         prompt: z.string().min(1).max(ROUTINE_LIMITS.PROMPT_MAX).describe('What to tell yourself when it fires.'),
         schedule: SCHEDULE,
+        quiet_hours: QUIET_HOURS.optional(),
         routine_id: ROUTINE_ID.optional().describe('Change this routine of yours instead of creating one.'),
         thread_id: z.string().min(1).max(240).optional().describe('The room thread its wakes run in (default "general").'),
       },
-      async ({ title, prompt, schedule, routine_id, thread_id }) =>
+      async ({ title, prompt, schedule, quiet_hours, routine_id, thread_id }) =>
         call(ROUTINE_RPC.set, {
           title,
           prompt,
           schedule: scheduleParam(schedule),
+          ...(quiet_hours ? { quietHours: quiet_hours } : {}),
           ...(routine_id ? { routineId: routine_id } : {}),
           ...(thread_id ? { threadId: thread_id } : {}),
         }),
@@ -72,7 +88,7 @@ registerToolModule({
 
     host.tool(
       'routine_list',
-      'List your routines: schedule, state (active or paused, and why) and the next due time.',
+      'List your routines: schedule, quiet hours, state (active, paused and why, or done: fired or missed) and the next due time.',
       {},
       async () => call(ROUTINE_RPC.list, {}),
     );

@@ -10,7 +10,9 @@
 //
 // Rules main enforces: an interval of at least ROUTINE_LIMITS.MIN_INTERVAL_MS;
 // at most ROUTINE_LIMITS.MAX_PER_BOT per bot; a routine missed while the app
-// was closed fires once, not once per missed slot; stopping the bot
+// was closed fires once, not once per missed slot; a one-time (`once`)
+// routine fires at its time and is then done; an interval routine skips the
+// slots inside its quiet hours; stopping the bot
 // (stop_my_work, Stop all, Stop bot), parking it or switching it off pauses
 // its routines. Creating one posts a `routine` card (shared/room.ts) in the
 // room; the Schedules rail page and the bot profile show a read-only
@@ -32,18 +34,32 @@ export const ROUTINE_LIMITS = {
   MAX_PER_BOT: 10,
   TITLE_MAX: 120,
   PROMPT_MAX: 2000,
+  /** How far ahead a one-time routine may be set. */
+  ONCE_MAX_AHEAD_MS: 365 * 24 * 3_600_000,
 } as const;
 
 /** `r-` + 8..32 url-safe characters, minted by main. */
 export const ROUTINE_ID_RE = /^r-[A-Za-z0-9_-]{8,32}$/;
 
-/** When a routine fires: every `everyMs` (≥ MIN_INTERVAL_MS), or at a local
- *  time of day on the given weekdays (0 = Sunday; absent = every day). */
+/** When a routine fires: every `everyMs` (≥ MIN_INTERVAL_MS), at a local
+ *  time of day on the given weekdays (0 = Sunday; absent = every day), or
+ *  once at `at` (epoch ms; `routine.set` also takes an ISO 8601 string, local
+ *  time when it has no offset). */
 export type RoutineSchedule =
   | { kind: 'interval'; everyMs: number }
-  | { kind: 'daily'; hour: number; minute: number; weekdays?: number[] };
+  | { kind: 'daily'; hour: number; minute: number; weekdays?: number[] }
+  | { kind: 'once'; at: number };
+
+/** A local-time window ('HH:MM', start inclusive, end exclusive; start after
+ *  end wraps past midnight) in which an interval routine's slots are skipped.
+ *  A daily or one-time routine runs at the time chosen for it regardless. */
+export interface RoutineQuietHours { start: string; end: string; }
 
 export type RoutinePauseReason = 'bot' | 'owner' | 'stop' | 'park' | 'off';
+
+/** How a one-time routine ended: it fired, or its time passed unfired (the
+ *  app was off for longer than the grace window, or the bot could not run). */
+export type RoutineDoneReason = 'fired' | 'missed';
 
 export interface BotRoutine {
   id: string;
@@ -55,8 +71,12 @@ export interface BotRoutine {
   schedule: RoutineSchedule;
   /** The thread its wakes run in; absent = `general`. */
   threadId?: ThreadId;
-  state: 'active' | 'paused';
+  /** Interval routines only: slots inside this window are skipped. */
+  quietHours?: RoutineQuietHours;
+  state: 'active' | 'paused' | 'done';
   paused?: { reason: RoutinePauseReason; at: number };
+  /** A one-time routine that has ended (state `done`). */
+  done?: { reason: RoutineDoneReason; at: number };
   createdAt: number;
   updatedAt: number;
   lastFiredAt?: number;
@@ -71,6 +91,8 @@ export interface RoutineSetParams {
   title: string;
   prompt: string;
   schedule: RoutineSchedule;
+  /** Absent = none (a change without it clears it). */
+  quietHours?: RoutineQuietHours;
   threadId?: ThreadId;
   /** Idempotency key; default `wake:<wakeId>:r<n>` from the running wake. */
   clientRoutineId?: string;

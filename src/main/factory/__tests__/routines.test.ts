@@ -1,6 +1,7 @@
 // A bot's own routines: validation, the per-bot cap, firing once per slot
 // (a run of missed slots fires once), skipping bots that cannot run, the
-// pause reasons and what lifts them, cards, and persistence.
+// pause reasons and what lifts them, cards, and persistence; one-time
+// routines and their grace window; quiet hours.
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -10,7 +11,7 @@ import type { FactDraft } from '../../../shared/facts';
 import { ROUTINE_LIMITS, type RoutineSchedule } from '../../../shared/botRoutine';
 import type { WakeEnqueueInput } from '../wakeQueue';
 import type { RoomCardInput } from '../roomWriter';
-import { RoutineStore, latestSlot, nextSlot, parseSchedule, routinesPath, scheduleLabel } from '../routines';
+import { ONCE_GRACE_MS, RoutineStore, inQuietHours, latestSlot, nextSlot, parseQuietHours, parseSchedule, routinesPath, scheduleLabel } from '../routines';
 
 const MIN = 60_000;
 const HOUR = 60 * MIN;
@@ -329,5 +330,127 @@ describe('RoutineStore', () => {
     r.timers.at(-1)?.fn();
     expect(r.wakes).toHaveLength(1);
     r.store.dispose();
+  });
+});
+
+describe('one-time routines and quiet hours', () => {
+  const at = (d: number, h: number, m = 0) => new Date(2026, 9, d, h, m).getTime();
+
+  it('parseSchedule: a once time is ISO 8601 or epoch ms, ahead of now and within a year; a stored one may be past', () => {
+    expect(parseSchedule({ kind: 'once', at: '2026-10-16T09:00' }, 1, clock)).toEqual({ kind: 'once', at: at(16, 9) });
+    expect(parseSchedule({ kind: 'once', at: '2026-10-16T09:00:00Z' }, 1, clock)).toEqual({ kind: 'once', at: Date.UTC(2026, 9, 16, 9) });
+    expect(parseSchedule({ kind: 'once', at: at(16, 9) }, 1, clock)).toEqual({ kind: 'once', at: at(16, 9) });
+    expect(parseSchedule({ kind: 'once', at: '2026-10-12T09:00' }, 1, clock)).toMatch(/future/);
+    expect(parseSchedule({ kind: 'once', at: clock + 366 * 24 * HOUR }, 1, clock)).toMatch(/year/);
+    for (const bad of ['2026-10-16', 'Friday 9am', '2026-10-16T25:00', 1.5, undefined]) {
+      expect(typeof parseSchedule({ kind: 'once', at: bad }, 1, clock), String(bad)).toBe('string');
+    }
+    expect(parseSchedule({ kind: 'once', at: at(1, 9) })).toEqual({ kind: 'once', at: at(1, 9) });
+    expect(nextSlot({ kind: 'once', at: at(16, 9) }, at(17, 9))).toBe(at(16, 9));
+    expect(scheduleLabel({ kind: 'once', at: at(16, 9) })).toBe('once on 2026-10-16 at 09:00');
+  });
+
+  it('parseQuietHours / inQuietHours: HH:MM pairs, start inclusive, end exclusive, wrapping past midnight', () => {
+    expect(parseQuietHours(undefined)).toBeUndefined();
+    expect(parseQuietHours({ start: '22:00', end: '07:00' })).toEqual({ start: '22:00', end: '07:00' });
+    for (const bad of [{ start: '22:00' }, { start: '24:00', end: '07:00' }, { start: '9:00', end: '10:00' }, { start: '08:00', end: '08:00' }, 'night', null]) {
+      expect(typeof parseQuietHours(bad), JSON.stringify(bad)).toBe('string');
+    }
+    const night = { start: '22:00', end: '07:00' };
+    expect([at(13, 21, 59), at(13, 22), at(13, 23, 30), at(14, 2), at(14, 6, 59), at(14, 7), at(14, 12)].map((t) => inQuietHours(night, t)))
+      .toEqual([false, true, true, true, true, false, false]);
+    const lunch = { start: '12:00', end: '13:00' };
+    expect([at(13, 11, 59), at(13, 12), at(13, 12, 59), at(13, 13)].map((t) => inQuietHours(lunch, t))).toEqual([false, true, true, false]);
+  });
+
+  it('a once routine fires at its time, is then done, and never fires again, after a restart too', async () => {
+    const r = rig();
+    const made = set(r, A, { schedule: { kind: 'once', at: '2026-10-13T09:30' } });
+    if (!made.ok) throw new Error('create');
+    expect(made.routine).toMatchObject({ state: 'active', nextDueAt: at(13, 9, 30) });
+    clock = at(13, 9, 30);
+    expect(r.store.tick()).toEqual([made.routine.id]);
+    expect(r.wakes[0].reason).toEqual({ kind: 'routine', routineId: made.routine.id, dueAt: at(13, 9, 30) });
+    expect(r.store.get(made.routine.id)).toMatchObject({ state: 'done', done: { reason: 'fired', at: clock }, lastFiredAt: clock });
+    expect(r.store.get(made.routine.id)?.nextDueAt).toBeUndefined();
+    clock += 24 * HOUR;
+    expect(r.store.tick()).toEqual([]);
+    await r.store.flush();
+    const again = r.make();
+    again.load();
+    expect(again.tick()).toEqual([]);
+    expect(r.wakes).toHaveLength(1);
+    // A done one cannot resume, and a new time runs it again.
+    expect(again.pause({ kind: 'owner' }, made.routine.id, false)).toMatchObject({ ok: false, code: 'invalid_argument' });
+    const rearm = (s: RoutineStore) => s.set({ botId: A, workspaceId: 'ws-1' }, { routineId: made.routine.id, title: 'Standup', prompt: 'Remind me.', schedule: { kind: 'once', at: at(15, 9) } });
+    const rearmed = rearm(r.store);
+    expect(rearmed).toMatchObject({ ok: true, routine: { state: 'active', nextDueAt: at(15, 9) } });
+    expect(rearmed.ok && rearmed.routine.done).toBeUndefined();
+    // A done one does not count toward the cap, until it is re-armed.
+    for (let i = 0; i < ROUTINE_LIMITS.MAX_PER_BOT; i++) expect(set({ ...r, store: again }).ok).toBe(true);
+    expect(set({ ...r, store: again })).toMatchObject({ ok: false, code: 'too_many' });
+    expect(rearm(again)).toMatchObject({ ok: false, code: 'too_many' });
+  });
+
+  it('a once routine missed while the app was closed fires on start within the grace window, else is done as missed', async () => {
+    for (const [late, outcome] of [[ONCE_GRACE_MS - MIN, 'fired'], [ONCE_GRACE_MS + MIN, 'missed']] as const) {
+      fs.rmSync(routinesPath(dir), { force: true });
+      clock = at(13, 8);
+      const r = rig();
+      const made = set(r, A, { schedule: { kind: 'once', at: at(13, 9) } });
+      if (!made.ok) throw new Error('create');
+      await r.store.flush();
+      clock = at(13, 9) + late;
+      const again = r.make();
+      again.load();
+      expect(again.tick(), outcome).toEqual(outcome === 'fired' ? [made.routine.id] : []);
+      expect(r.wakes, outcome).toHaveLength(outcome === 'fired' ? 1 : 0);
+      expect(again.get(made.routine.id), outcome).toMatchObject({ state: 'done', done: { reason: outcome } });
+      if (outcome === 'missed') expect(r.cards.at(-1)).toMatchObject({ title: 'Routine missed: Check PRs', actor: { kind: 'system' } });
+      await again.flush();
+    }
+  });
+
+  it('a once routine whose bot cannot run at its time is missed, not held', () => {
+    const r = rig({ bots: [profile(A, { enabled: false })] });
+    const made = set(r, A, { schedule: { kind: 'once', at: at(13, 9) } });
+    if (!made.ok) throw new Error('create');
+    clock = at(13, 9);
+    expect(r.store.tick()).toEqual([]);
+    expect(r.store.get(made.routine.id)).toMatchObject({ state: 'done', done: { reason: 'missed' } });
+  });
+
+  it('an interval slot inside quiet hours is skipped, not queued; a daily or once routine runs through them', () => {
+    clock = at(13, 20);
+    const r = rig();
+    const quietHours = { start: '22:00', end: '07:00' };
+    const hourlyRoutine = set(r, A, { quietHours });
+    const daily = set(r, A, { schedule: { kind: 'daily', hour: 23, minute: 0 }, quietHours });
+    const once = set(r, A, { schedule: { kind: 'once', at: at(14, 2) }, quietHours });
+    if (!hourlyRoutine.ok || !daily.ok || !once.ok) throw new Error('create');
+    expect(r.cards[0].body).toContain('every 1 h, quiet 22:00–07:00');
+    const firedAt = (h: number, d = 13) => { clock = at(d, h); return r.store.tick(); };
+    expect(firedAt(21)).toEqual([hourlyRoutine.routine.id]);
+    expect(firedAt(22)).toEqual([]);
+    expect(firedAt(23)).toEqual([daily.routine.id]);
+    expect(firedAt(2, 14)).toEqual([once.routine.id]);
+    expect(r.store.get(hourlyRoutine.routine.id)?.nextDueAt).toBe(at(14, 3));
+    expect(firedAt(6, 14)).toEqual([]);
+    expect(firedAt(7, 14)).toEqual([hourlyRoutine.routine.id]);
+    expect(set(r, A, { quietHours: { start: '22:00', end: '22:00' } })).toMatchObject({ ok: false, code: 'invalid_argument' });
+  });
+
+  it('a stored routine without the new fields loads unchanged; a malformed quietHours drops the row', async () => {
+    const r = rig();
+    const made = set(r);
+    if (!made.ok) throw new Error('create');
+    await r.store.flush();
+    const raw = JSON.parse(fs.readFileSync(routinesPath(dir), 'utf8')) as { version: number; routines: Array<Record<string, unknown>> };
+    expect(raw.routines[0]).not.toHaveProperty('quietHours');
+    raw.routines.push({ ...raw.routines[0], id: 'r-badquiet0001', quietHours: { start: 'late', end: '07:00' } });
+    fs.writeFileSync(routinesPath(dir), JSON.stringify(raw));
+    const again = r.make();
+    again.load();
+    expect(again.list()).toEqual([made.routine]);
   });
 });
