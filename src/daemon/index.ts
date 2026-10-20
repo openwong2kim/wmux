@@ -140,7 +140,7 @@ import { selectRecoverableSessions, startLeftoverShellReaps } from './recoverySe
 import { isShutdownKillExit, SHUTDOWN_KILL_RECLASSIFY_MS } from './shutdownKill';
 import {
   classifyReapIdentity,
-  comparableStoredBootId,
+  comparableBootId,
   getProcessStartTime,
   getWin32BootId,
   getWin32BootIdSync,
@@ -1925,15 +1925,16 @@ async function recoverSessions(
 
   // Detect reboot: if bootId changed, all old PIDs are stale — skip kill attempts
   const currentBootId = await getBootId();
-  const storedBootId = comparableStoredBootId(state.bootId);
-  const rebooted = storedBootId != null && storedBootId !== currentBootId;
+  const storedBootId = comparableBootId(state.bootId);
+  const liveBootId = comparableBootId(currentBootId);
+  const rebooted = storedBootId != null && liveBootId != null && storedBootId !== liveBootId;
   // #646: `rebooted` is "we can prove a reboot happened", so a state file with
   // no bootId at all (written by a pre-bootId build, or lost) reads as false —
   // fine for the kill-stale-pid paths it was written for, fatal for tombstone
   // reconciliation, which would then taskkill a recycled pid after a real
   // reboot. Reconciliation needs the opposite claim: proof that we are on the
   // SAME boot, which requires the bootId to exist AND match.
-  const sameBootProven = isSameBootProven(storedBootId, currentBootId);
+  const sameBootProven = isSameBootProven(storedBootId, liveBootId);
   if (rebooted) {
     log('info', `Boot ID changed (${state.bootId} → ${currentBootId}) — reboot detected, skipping PID kills`);
   }

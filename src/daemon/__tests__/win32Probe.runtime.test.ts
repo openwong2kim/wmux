@@ -16,7 +16,9 @@ import {
 
 // #1493: the real probes on a real Windows box. wmic.exe is absent on current
 // Windows 11, so before the fix every one of these came back empty.
-// #2398: the per-process reads are native now; the boot ID is still CIM.
+// #2398: the per-process reads are native now. #2497: the boot ID is the
+// registry boot counter.
+const BOOT_COUNTER = /^win32-boot-\d+$/;
 const DMTF = /^\d{14}\.\d{6}[+-]\d{3}$/;
 const FILETIME = /^\d{17,}$/;
 const onWindows = process.platform === 'win32';
@@ -37,12 +39,12 @@ function spawnCmd(): ChildProcess {
 }
 
 describe.skipIf(!onWindows)('win32 probes (live)', () => {
-  it('boot ID is a DMTF boot time and identical across uncached reads', async () => {
+  it('boot ID is the registry boot counter and identical across uncached reads', async () => {
     resetWin32BootIdCache();
     const first = await getWin32BootId();
     resetWin32BootIdCache();
     const second = getWin32BootIdSync();
-    expect(first).toMatch(DMTF);
+    expect(first).toMatch(BOOT_COUNTER);
     expect(second).toBe(first);
   }, 20_000);
 
@@ -50,13 +52,12 @@ describe.skipIf(!onWindows)('win32 probes (live)', () => {
     resetWin32BootIdCache();
     const here = await getWin32BootId();
     const script =
-      "[System.Management.ManagementDateTimeConverter]::ToDmtfDateTime(" +
-      '(Get-CimInstance Win32_OperatingSystem).LastBootUpTime)';
+      "(Get-ItemProperty 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Memory Management\\PrefetchParameters').BootId";
     const there = execFileSync('powershell.exe', ['-NoProfile', '-Command', script], {
       encoding: 'utf-8',
       windowsHide: true,
     }).trim();
-    expect(here).toBe(there);
+    expect(here).toBe(`win32-boot-${there}`);
   }, 20_000);
 
   it('start time of a spawned shell is readable and stable', async () => {

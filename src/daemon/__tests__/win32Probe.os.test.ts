@@ -1,8 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // #1493: the Windows probes moved from wmic.exe to CIM through PowerShell.
-// #2398: the per-process reads then moved to native calls; only the boot ID
-// still runs PowerShell. These pin the parsing and the fail-closed contract
+// #2398: the per-process reads then moved to native calls. #2497: the boot ID
+// moved to the registry boot counter (reg.exe). These pin the parsing and the fail-closed contract
 // with a mocked execFile and native read; win32Probe.runtime.test.ts proves
 // the real probes on a Windows box.
 const { execFileMock, execFileSyncMock, tryProcessIdentityMock } = vi.hoisted(() => ({
@@ -55,41 +55,38 @@ beforeEach(() => {
   setNativeProcessReadWarn(() => undefined);
 });
 
-describe('parseWin32BootId', () => {
-  it('reads the wmic-format DMTF boot time', () => {
-    expect(parseWin32BootId('LastBootUpTime=20260915084549.500977+540\r\n')).toBe(
-      '20260915084549.500977+540',
-    );
-  });
+const REG_OUT =
+  '\r\nHKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Memory Management\\PrefetchParameters\r\n' +
+  '    BootId    REG_DWORD    0x1a\r\n\r\n';
 
-  it('accepts a negative UTC offset', () => {
-    expect(parseWin32BootId('LastBootUpTime=20260915084549.500977-420')).toBe(
-      '20260915084549.500977-420',
-    );
+describe('parseWin32BootId', () => {
+  it('reads the registry boot counter', () => {
+    expect(parseWin32BootId(REG_OUT)).toBe('win32-boot-26');
   });
 
   it('rejects empty or malformed output', () => {
     expect(parseWin32BootId('')).toBeNull();
-    expect(parseWin32BootId('LastBootUpTime=')).toBeNull();
-    expect(parseWin32BootId('LastBootUpTime=9/15/2026 8:45:49 AM')).toBeNull();
+    expect(parseWin32BootId('ERROR: The system was unable to find the specified registry key or value.')).toBeNull();
+    expect(parseWin32BootId('LastBootUpTime=20260915084549.500977+540')).toBeNull();
   });
 });
 
 describe('getWin32BootId', () => {
-  it('runs Windows PowerShell with a CIM query, never wmic', async () => {
-    execFileReturns('LastBootUpTime=20260915084549.500977+540\r\n');
-    await expect(getWin32BootId()).resolves.toBe('20260915084549.500977+540');
+  // #2497: CIM LastBootUpTime moved with clock steps, so a same-boot restart
+  // read as a reboot. The boot counter in the registry cannot move.
+  it('queries the registry boot counter with reg.exe, not CIM', async () => {
+    execFileReturns(REG_OUT);
+    await expect(getWin32BootId()).resolves.toBe('win32-boot-26');
     const [file, args] = execFileMock.mock.calls[0];
-    expect(String(file).toLowerCase()).toMatch(/windowspowershell\\v1\.0\\powershell\.exe$/);
-    expect(String(file).toLowerCase()).not.toContain('wmic');
-    expect(args.join(' ')).toContain('Win32_OperatingSystem');
+    expect(String(file).toLowerCase()).toMatch(/\\system32\\reg\.exe$/);
+    expect(args).toEqual(['query', expect.stringContaining('PrefetchParameters'), '/v', 'BootId']);
   });
 
   it('memoizes the first good read, sync and async alike', async () => {
-    execFileReturns('LastBootUpTime=20260915084549.500977+540');
+    execFileReturns(REG_OUT);
     await getWin32BootId();
     await getWin32BootId();
-    expect(getWin32BootIdSync()).toBe('20260915084549.500977+540');
+    expect(getWin32BootIdSync()).toBe('win32-boot-26');
     expect(execFileMock).toHaveBeenCalledTimes(1);
     expect(execFileSyncMock).not.toHaveBeenCalled();
   });
@@ -102,13 +99,13 @@ describe('getWin32BootId', () => {
   it('throws on unparseable output instead of caching garbage', async () => {
     execFileReturns('');
     await expect(getWin32BootId()).rejects.toThrow();
-    execFileReturns('LastBootUpTime=20260915084549.500977+540');
-    await expect(getWin32BootId()).resolves.toBe('20260915084549.500977+540');
+    execFileReturns(REG_OUT);
+    await expect(getWin32BootId()).resolves.toBe('win32-boot-26');
   });
 
   it('sync read parses the same output', () => {
-    execFileSyncMock.mockReturnValue('LastBootUpTime=20260915084549.500977+540\r\n');
-    expect(getWin32BootIdSync()).toBe('20260915084549.500977+540');
+    execFileSyncMock.mockReturnValue(REG_OUT);
+    expect(getWin32BootIdSync()).toBe('win32-boot-26');
   });
 });
 

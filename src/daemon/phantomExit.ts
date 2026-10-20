@@ -148,58 +148,41 @@ export async function readPosixStartTime(pid: number): Promise<ProcessStartRead<
   }
 }
 
-// === Windows probes (#1493, #2398) ===
+// === Windows probes (#1493, #2398, #2497) ===
 //
 // These used to shell out to wmic.exe, which is disabled on Windows 11 24H2
 // and absent on later builds. Every probe then threw, so the boot ID fell back
 // to `uptime-<sec>` (a "reboot" on every daemon start) and every start-time /
-// executable read came back empty — all reaping was withheld. CIM through
-// Windows PowerShell 5.1 replaced it, the route daemonLauncherCore's
-// getProcessArgv already takes.
+// executable read came back empty — all reaping was withheld. The per-process
+// reads (start time, executable) are native since #2398.
 //
-// The boot ID still takes that route: it is read once and memoized. The
-// per-process reads (start time, executable) are native since #2398 — one
-// PowerShell per create and per reap meant dozens of them during a cold-start
-// burst, and the ones that timed out left the reaper unable to confirm a pid.
-//
-// Boot dates are printed with ManagementDateTimeConverter.ToDmtfDateTime,
-// which yields exactly wmic's `/value` format (`20260915084549.500977+540`),
-// so the boot IDs persisted by wmic-era builds still compare equal against new
-// reads. Only a state file holding the old `uptime-N` fallback reads as
-// "rebooted" once after upgrading, which fails closed. pidStartTime values in
-// that format are compared through {@link dmtfToUtcMicros}.
+// The boot ID came from CIM LastBootUpTime until #2497. Windows moves that
+// value with every clock step (+1.2 s in one measured boot), so a same-boot
+// restart read as a reboot. It is now the kernel's per-boot counter in the
+// registry, which a clock change cannot touch, read once with reg.exe and
+// memoized. A LastBootUpTime ID stored by an older build is not comparable
+// (see {@link comparableBootId}); pidStartTime values in its DMTF format are
+// still compared through {@link dmtfToUtcMicros}.
 
-/** Windows PowerShell 5.1 ships with every supported Windows; pwsh may not. */
-function windowsPowerShellPath(): string {
-  const systemRoot = process.env.SystemRoot || 'C:\\Windows';
-  return `${systemRoot}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`;
-}
-
-/**
- * PowerShell cold start is ~0.5-1 s, so wmic's 3 s budget is too tight: a
- * timeout would quietly bring back the "identity unknown" state. 5 s matches
- * daemonLauncherCore. UTF-8 output keeps a non-ASCII executable path from
- * being mangled by the OEM code page.
- */
+/** reg.exe answers in tens of ms; this only bounds a wedged system. */
 const WIN32_PROBE_TIMEOUT_MS = 5000;
-const WIN32_UTF8_OUTPUT = '[Console]::OutputEncoding=[Text.Encoding]::UTF8;';
 
 /** wmic-style CIM_DATETIME, e.g. `20260915084549.500977+540`. */
 const DMTF_DATETIME_RE = /^\d{14}\.\d{6}[+-]\d{3}$/;
 
-const WIN32_BOOT_ID_SCRIPT =
-  `${WIN32_UTF8_OUTPUT} 'LastBootUpTime=' + ` +
-  '[System.Management.ManagementDateTimeConverter]::ToDmtfDateTime(' +
-  '(Get-CimInstance Win32_OperatingSystem -ErrorAction Stop).LastBootUpTime)';
+/** The kernel bumps `BootId` here once per boot. */
+const WIN32_BOOT_ID_KEY =
+  'HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Memory Management\\PrefetchParameters';
 
-function win32PowerShellArgs(script: string): string[] {
-  return ['-NoProfile', '-NonInteractive', '-Command', script];
+function win32RegExe(): { file: string; args: string[] } {
+  const systemRoot = process.env.SystemRoot || 'C:\\Windows';
+  return { file: `${systemRoot}\\System32\\reg.exe`, args: ['query', WIN32_BOOT_ID_KEY, '/v', 'BootId'] };
 }
 
-/** The boot time in the probe output, or null when it is not a DMTF date. */
+/** The boot counter in `reg query` output as `win32-boot-<n>`, or null. */
 export function parseWin32BootId(stdout: string): string | null {
-  const value = String(stdout).match(/LastBootUpTime=(\S+)/)?.[1];
-  return value && DMTF_DATETIME_RE.test(value) ? value : null;
+  const hex = String(stdout).match(/\bBootId\s+REG_DWORD\s+0x([0-9a-fA-F]+)\b/)?.[1];
+  return hex ? `win32-boot-${parseInt(hex, 16)}` : null;
 }
 
 /**
@@ -216,13 +199,18 @@ export function parseDarwinBootId(stdout: string): string | null {
 }
 
 /**
- * The stored boot ID as recovery may compare it. Builds before #2497 saved
- * `darwin-<boottime seconds>`, which can never equal a UUID ID, so it proves
- * neither a reboot nor the same boot: read it like a state file with no boot
- * ID (#646), which still lets the identity-checked leftover reap run.
+ * A boot ID as recovery may compare it, or null when it proves nothing either
+ * way. Read like a state file with no boot ID (#646), which still lets the
+ * identity-checked leftover reap run:
+ * - `uptime-`/`fallback-`: a failed read. Comparing one with a good read made
+ *   both that start and the next read as reboots (#2497).
+ * - `darwin-<seconds>` and a DMTF LastBootUpTime: older builds' clock-derived
+ *   IDs, which can never equal the current counter or UUID.
  */
-export function comparableStoredBootId(stored: string | null | undefined): string | null | undefined {
-  return stored && /^darwin-\d+$/.test(stored) ? null : stored;
+export function comparableBootId(id: string | null | undefined): string | null {
+  if (!id) return null;
+  if (/^(?:uptime|fallback)-/.test(id) || /^darwin-\d+$/.test(id) || DMTF_DATETIME_RE.test(id)) return null;
+  return id;
 }
 
 /**
@@ -240,20 +228,19 @@ export function leftoverReapEligible(
 /**
  * The boot ID cannot change while this process lives, and startup asks for it
  * up to three times (stale-lock check, initBootId, recovery). Memoizing the
- * first good read keeps that at one PowerShell spawn.
+ * first good read keeps that at one reg.exe spawn.
  */
 let win32BootIdCache: string | null = null;
 
-/** Windows boot ID (CIM LastBootUpTime). Throws when it cannot be read. */
+/** Windows boot ID (the registry boot counter). Throws when it cannot be read. */
 export async function getWin32BootId(): Promise<string> {
   if (win32BootIdCache) return win32BootIdCache;
+  const { file, args } = win32RegExe();
   const { stdout } = await promisify(execFile)(
-    windowsPowerShellPath(),
-    win32PowerShellArgs(WIN32_BOOT_ID_SCRIPT),
-    { encoding: 'utf-8', timeout: WIN32_PROBE_TIMEOUT_MS, windowsHide: true },
+    file, args, { encoding: 'utf-8', timeout: WIN32_PROBE_TIMEOUT_MS, windowsHide: true },
   );
   const bootId = parseWin32BootId(String(stdout));
-  if (!bootId) throw new Error('LastBootUpTime missing from CIM output');
+  if (!bootId) throw new Error('BootId missing from reg query output');
   win32BootIdCache = bootId;
   return bootId;
 }
@@ -264,13 +251,10 @@ export async function getWin32BootId(): Promise<string> {
  */
 export function getWin32BootIdSync(): string {
   if (win32BootIdCache) return win32BootIdCache;
-  const stdout = execFileSync(
-    windowsPowerShellPath(),
-    win32PowerShellArgs(WIN32_BOOT_ID_SCRIPT),
-    { encoding: 'utf-8', timeout: WIN32_PROBE_TIMEOUT_MS, windowsHide: true },
-  );
+  const { file, args } = win32RegExe();
+  const stdout = execFileSync(file, args, { encoding: 'utf-8', timeout: WIN32_PROBE_TIMEOUT_MS, windowsHide: true });
   const bootId = parseWin32BootId(String(stdout));
-  if (!bootId) throw new Error('LastBootUpTime missing from CIM output');
+  if (!bootId) throw new Error('BootId missing from reg query output');
   win32BootIdCache = bootId;
   return bootId;
 }
