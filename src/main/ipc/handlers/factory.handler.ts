@@ -544,12 +544,13 @@ export function registerFactoryHandlers(
 
   ipcMain.handle(IPC.FACTORY_TASK_FOLDERS_CLEAN, wrapHandler(IPC.FACTORY_TASK_FOLDERS_CLEAN, factoryTaskFoldersCleanHandler(getWindow)));
 
-  // Never through wrapHandler: these never throw, and the key never reaches its log.
+  // These never throw, so wrapHandler's error log (which masks a `key` field
+  // anyway) never sees the key.
   const claudeAuth = factoryClaudeAuthHandlers(getWindow);
-  ipcMain.handle(IPC.FACTORY_CLAUDE_AUTH_STATUS, (e) => claudeAuth.status(e));
-  ipcMain.handle(IPC.FACTORY_CLAUDE_KEY_SET, (e, req: unknown) => claudeAuth.setKey(e, req));
-  ipcMain.handle(IPC.FACTORY_CLAUDE_KEY_REMOVE, (e) => claudeAuth.removeKey(e));
-  ipcMain.handle(IPC.FACTORY_CLAUDE_KEY_CHECK, (e) => claudeAuth.check(e));
+  ipcMain.handle(IPC.FACTORY_CLAUDE_AUTH_STATUS, wrapHandler(IPC.FACTORY_CLAUDE_AUTH_STATUS, (e: Electron.IpcMainInvokeEvent) => claudeAuth.status(e)));
+  ipcMain.handle(IPC.FACTORY_CLAUDE_KEY_SET, wrapHandler(IPC.FACTORY_CLAUDE_KEY_SET, (e: Electron.IpcMainInvokeEvent, req: unknown) => claudeAuth.setKey(e, req)));
+  ipcMain.handle(IPC.FACTORY_CLAUDE_KEY_REMOVE, wrapHandler(IPC.FACTORY_CLAUDE_KEY_REMOVE, (e: Electron.IpcMainInvokeEvent) => claudeAuth.removeKey(e)));
+  ipcMain.handle(IPC.FACTORY_CLAUDE_KEY_CHECK, wrapHandler(IPC.FACTORY_CLAUDE_KEY_CHECK, (e: Electron.IpcMainInvokeEvent) => claudeAuth.check(e)));
 
   return () => {
     for (const c of channels) ipcMain.removeHandler(c);
