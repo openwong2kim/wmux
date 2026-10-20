@@ -159,7 +159,8 @@ import { PortWatcher } from '../main/pty/portWatch';
 import { initDaemonLogSink, isBrokenPipeError, stdioErrorsConsumed } from './util/logSink';
 import { installExitEvidence, noteExitReason, STATUS_CONTROL_C_EXIT } from './exitEvidence';
 import { newerTimestamp } from './util/idleAnchor';
-import type { DaemonState } from './types';
+import type { DaemonSession, DaemonState } from './types';
+import { withDiskOnlySessions } from './diskOnlySessions';
 import type { DaemonEvent, DaemonCreateSessionParams, DaemonDestroySessionParams, DaemonSessionIdParams, DaemonResizeParams, DaemonSetResumeBindingParams } from '../shared/rpc';
 import { isWslDistroSpawnArgs } from '../shared/wslDistro';
 import { gitDirMapperFor, gitWatchCwdFor } from './gitWatchCwd';
@@ -2313,15 +2314,15 @@ async function recoverSessions(
       // still owed. On the meta, so every save keeps it until spent.
       if (recordWasMidTurn(persisted, Date.now())) managed.meta.resumeContinuePending = true;
     }
-    // Build combined state: recovered (live) sessions + everything we
-    // intentionally left untouched (originally-dead within TTL, plus
-    // any session the recovery cap excluded — which stays suspended).
-    const liveState = buildState(sessionManager);
-    const preservedFromState = state.sessions.filter(
-      (s) => !liveState.sessions.some((live) => live.id === s.id),
-    );
-    liveState.sessions.push(...preservedFromState);
-    stateWriter.saveImmediate(liveState);
+  }
+  // Everything recovery left untouched (originally-dead within TTL, plus any
+  // session the recovery cap excluded — which stays suspended) stays on disk
+  // through every later save, not only this one (#2493).
+  const managedIds = new Set(sessionManager.listSessions().map((s) => s.id));
+  diskOnlySessions = state.sessions.filter((s) => !managedIds.has(s.id));
+  if (changed) {
+    // Build combined state: recovered (live) sessions + the disk-only ones.
+    stateWriter.saveImmediate(buildState(sessionManager));
   }
 
   // X6 ③ (Rung 3): reconcile the durable hook spool onto the recovered sessions
@@ -7700,6 +7701,8 @@ let activeEventLogFormatVersion: number | undefined = undefined;
 
 /** Cached boot ID — populated at startup via initBootId() */
 let cachedBootId: string | undefined;
+/** Records recovery left on disk without managing them (see diskOnlySessions.ts). */
+let diskOnlySessions: DaemonSession[] = [];
 
 /** Initialize the cached boot ID (call once at startup). */
 async function initBootId(): Promise<void> {
@@ -7722,7 +7725,7 @@ function buildState(sessionManager: DaemonSessionManager): DaemonState {
   if (!cachedBootId) cachedBootId = getBootIdSync();
   return {
     version: 1,
-    sessions: sessionManager.listSessions(),
+    sessions: withDiskOnlySessions(sessionManager.listSessions(), diskOnlySessions),
     bootId: cachedBootId,
   };
 }

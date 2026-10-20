@@ -86,7 +86,7 @@ describe('selectRecoverableSessions', () => {
     // daemon derives cap = min(maxSessions, 40) (see index.ts main()). The
     // overflow must stay suspended: it lands in cappedCount, never in
     // recoverableIds, so recoverSessions preserves it verbatim
-    // (buildState + preservedFromState) and never calls createSession for
+    // (buildState keeps its disk-only record) and never calls createSession for
     // it — which means it can never trip the MAX_SESSIONS throw → catch →
     // dead-mark path. cap ≤ maxSessions by construction also guarantees
     // recovery itself can't exhaust the cap. This is the data-loss guard.

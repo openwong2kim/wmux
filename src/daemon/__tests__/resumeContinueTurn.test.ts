@@ -200,7 +200,7 @@ describe('turnRunningSince wiring', () => {
     expect(rec).toMatch(/if \(m\.resumeContinuePending && recordedTurnStillOpen\(recoveredResumeBindings\.get\(recoveredId\) \?\? m\.resumeBinding, m\.env\)\) \{\s*recoveredWasRunning\.add\(recoveredId\);\s*\} else delete m\.resumeContinuePending;/);
     // The carry-forward reads the OLD record into the owed continue, before
     // the merged recovery save, and never copies the raw mark onto the new meta.
-    const carry = src.slice(src.indexOf('for (const persisted of state.sessions) {'), src.indexOf('const liveState = buildState(sessionManager);'));
+    const carry = src.slice(src.indexOf('for (const persisted of state.sessions) {'), src.indexOf('diskOnlySessions = state.sessions.filter('));
     expect(carry).not.toMatch(/turnRunningSince/);
     expect(carry).toMatch(/if \(recordWasMidTurn\(persisted, Date\.now\(\)\)\) managed\.meta\.resumeContinuePending = true;/);
   });
