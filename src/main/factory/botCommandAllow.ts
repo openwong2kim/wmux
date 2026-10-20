@@ -13,7 +13,7 @@
 //     STDIN_FILTERS, named bare, with no input redirection.
 // Anything else is not on the list (`decideBotCommand` answers `unlisted`).
 
-import { commandFloor, normalizeCommand, parseCommandLine, type FloorContext, type SimpleCommand } from './botCommandFloor';
+import { commandFloor, commandLineToRun, normalizeCommand, parseCommandLine, type FloorContext, type SimpleCommand } from './botCommandFloor';
 
 /** One owner rule: the command's leading words, and whether more may follow. */
 export interface BotCommandRule {
@@ -41,11 +41,24 @@ function operands(args: readonly string[], valued: ReadonlySet<string> = new Set
   return out;
 }
 
-function refuseOptions(name: string, pred: (a: string) => boolean): ArgCheck {
+/** Whether option word `a` is one of the refused options in any form:
+ *  a short letter anywhere in a short-option word (`-o`, `-oFILE`, `-uo`),
+ *  or a long option or any prefix of one the program would accept as its
+ *  abbreviation (`--output`, `--output=FILE`, `--out`). Errs to refusing. */
+export function hitsOption(a: string, refused: { short?: string; long?: readonly string[] }): boolean {
+  if (a.startsWith('--')) {
+    const name = a.slice(2).split('=')[0];
+    return name.length > 0 && (refused.long ?? []).some((l) => l.startsWith(name));
+  }
+  return a.length > 1 && a.startsWith('-') && [...a.slice(1)].some((ch) => (refused.short ?? '').includes(ch));
+}
+
+/** Options that write a file or run a program, refused in every form. */
+function refuseOptions(name: string, refused: { short?: string; long?: readonly string[] }): ArgCheck {
   return (args) => {
     for (const a of args) {
       if (a === '--') return null;
-      if (a.startsWith('-') && pred(a)) return `${name} ${a} is not on the built-in list`;
+      if (hitsOption(a, refused)) return `${name} ${a} is not on the built-in list`;
     }
     return null;
   };
@@ -75,7 +88,8 @@ function gitCheck(args: readonly string[]): string | null {
   if (!sub || !GIT_READ_SUBCOMMANDS.has(sub)) return `git ${sub ?? ''} is not on the built-in list`.trim();
   const rest = args.slice(k + 1);
   for (const a of rest) {
-    if (/^--output(=|$)/.test(a) || a === '--ext-diff' || a === '-o') return `git ${sub} ${a} is not on the built-in list`;
+    if (a === '--') break;
+    if (hitsOption(a, { long: ['output', 'ext-diff', 'textconv'] })) return `git ${sub} ${a} is not on the built-in list`;
   }
   if (sub === 'branch') {
     const listing = rest.some((a) => a === '--list' || a === '-l');
@@ -110,11 +124,11 @@ export const BUILTIN_COMMANDS: ReadonlyMap<string, ArgCheck> = new Map<string, A
   ['fgrep', anyArgs],
   // The floor already refuses -exec, -execdir, -ok, -delete and -fprint*.
   ['find', anyArgs],
-  ['file', refuseOptions('file', (a) => a === '-C' || a === '--compile')],
-  ['date', refuseOptions('date', (a) => a === '--set' || a.startsWith('--set=') || (/^-[A-Za-z]+$/.test(a) && a.includes('s')))],
-  ['sort', refuseOptions('sort', (a) => /^--(output|compress-program)(=|$)/.test(a) || (/^-[A-Za-z]+$/.test(a) && a.includes('o')))],
+  ['file', refuseOptions('file', { short: 'C', long: ['compile'] })],
+  ['date', refuseOptions('date', { short: 's', long: ['set'] })],
+  ['sort', refuseOptions('sort', { short: 'oT', long: ['output', 'compress-program', 'temporary-directory'] })],
   ['uniq', (args) => (operands(args, new Set(['-f', '-s', '-w'])).length > 1 ? 'uniq with an output file is not on the built-in list' : null)],
-  ['rg', refuseOptions('rg', (a) => /^--(pre|pre-glob|hostname-bin)(=|$)/.test(a))],
+  ['rg', refuseOptions('rg', { long: ['pre', 'pre-glob', 'hostname-bin'] })],
   ['git', gitCheck],
 ]);
 
@@ -143,7 +157,8 @@ function filterRefusal(cmd: SimpleCommand): string | null {
 }
 
 export type CommandDecision =
-  | { ok: true; layer: 'allowlist'; command: string; matched: 'builtin' | 'rule' }
+  /** `run`: the line as it runs (commandLineToRun). */
+  | { ok: true; layer: 'allowlist'; command: string; run: string; matched: 'builtin' | 'rule' }
   | { ok: false; layer: 'parse' | 'floor' | 'unlisted'; command: string; reason: string };
 
 /**
@@ -175,5 +190,5 @@ export function decideBotCommand(line: unknown, ctx: FloorContext & { rules: rea
       if (r) return { ok: false, layer: 'unlisted', command, reason: r };
     }
   }
-  return { ok: true, layer: 'allowlist', command, matched: viaRule ? 'rule' : 'builtin' };
+  return { ok: true, layer: 'allowlist', command, run: commandLineToRun(parsed.pipelines, parsed.joins), matched: viaRule ? 'rule' : 'builtin' };
 }

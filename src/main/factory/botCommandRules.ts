@@ -5,7 +5,8 @@
 // (botCommandAllow.ts). Main reads it when a bot's command is decided; only
 // the owner's own path writes it (`setRules`, called from main for the
 // owner's settings — no bot RPC reaches this module, and no bot tool names
-// it). The floor applies whatever a rule says.
+// it). The floor applies whatever a rule says, and a rule for a shell or an
+// interpreter must name its script and may not take any arguments.
 //
 // A missing file is an empty list. A file of another version, or one that
 // cannot be read, is an empty list too (logged) and is never overwritten.
@@ -13,6 +14,7 @@
 import path from 'node:path';
 import { getWmuxDir } from '../../daemon/config';
 import type { BotCommandRule } from './botCommandAllow';
+import { commandName, isShellOrInterpreter } from './botCommandFloor';
 import { createFilePersister, readVersionedFile, type FilePersister } from './versionedFile';
 
 export const BOT_COMMAND_RULES_FILE = 'bot-command-rules.json';
@@ -34,6 +36,9 @@ export function parseBotCommandRule(value: unknown): BotCommandRule | null {
     argv.push(w);
   }
   if (v.anyArgs !== undefined && typeof v.anyArgs !== 'boolean') return null;
+  // A shell or interpreter rule names its script and takes nothing else:
+  // with any arguments it would run whatever code follows.
+  if (isShellOrInterpreter(commandName(argv[0])) && (v.anyArgs === true || !argv.slice(1).some((w) => !w.startsWith('-')))) return null;
   return v.anyArgs ? { argv, anyArgs: true } : { argv };
 }
 
@@ -52,6 +57,7 @@ export class BotCommandRulesStore {
       for (const [botId, list] of Object.entries(bots)) {
         if (!Array.isArray(list)) continue;
         const parsed = list.map(parseBotCommandRule).filter((r): r is BotCommandRule => r !== null);
+        if (parsed.length < list.length) console.warn(`[factory] bot command rules: dropped ${list.length - parsed.length} malformed or unsafe rule(s) of ${botId}`);
         if (parsed.length > 0) this.rules.set(botId, parsed.slice(0, BOT_COMMAND_RULES_LIMITS.RULES_PER_BOT));
       }
     } catch (err) {

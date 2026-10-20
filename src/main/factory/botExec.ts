@@ -14,8 +14,10 @@
 //   3. the list (botCommandAllow.ts) — the built-in read-only commands and
 //      the owner's rules for this bot (botCommandRules.ts) are allowed;
 //   4. anything else is refused (`unlisted`).
-// An allowed call runs with `dangerouslyDisableSandbox` and
-// `run_in_background` removed and its timeout clamped to BOT_EXEC_TIMEOUT_MS.
+// An allowed call runs as main rebuilt it (every word quoted, every command
+// as `\command <name>`, past the owner's aliases and functions), with
+// `dangerouslyDisableSandbox` and `run_in_background` removed and its
+// timeout clamped to BOT_EXEC_TIMEOUT_MS.
 //
 // Write and Edit: attended, then the path is checked inside the bot's folder
 // (botFolderPath.ts). Read: inside the bot's folder (a bot with a
@@ -88,7 +90,9 @@ export function evaluateBotExecTool(toolName: string, input: Record<string, unkn
       // `unlisted` is where a later review step decides; today it refuses.
       return { ok: false, layer: d.layer, reason: d.reason, command: d.command };
     }
-    return { ok: true, layer: d.layer, input: sanitizeBashInput(input), command: d.command };
+    // It runs as main rebuilt it from the approved words (botCommandFloor.ts
+    // commandLineToRun), never as the model wrote it.
+    return { ok: true, layer: d.layer, input: { ...sanitizeBashInput(input), command: d.run }, command: d.command };
   }
   if (!attended) return { ok: false, layer: 'attended', reason: UNATTENDED };
   const r = checkBotFolderPath(input.file_path, ctx.botDir, ctx.fs);

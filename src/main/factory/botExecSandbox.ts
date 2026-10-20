@@ -9,11 +9,17 @@
 //     `dangerouslyDisableSandbox`), and being sandboxed allows nothing by
 //     itself (`autoAllowBashIfSandboxed: false`: main still decides each
 //     command, botExec.ts);
-//   - files: writes only in the bot's own folder; no reads of wmux's data
-//     folder (stores, tokens, approvals, the bots' Claude config), wmux's
-//     pipe and daemon tokens, any Claude config folder or account, SSH, cloud
-//     and GitHub credentials, or the keychains — except the bot's own folder;
-//   - network: none (no domain is allowed, no Unix socket, no local port);
+//   - files: writes only in the bot's own folder; no reads anywhere in the
+//     home folder (deny by default) except the bot's own folder and claude's
+//     shell snapshots, which every command sources. System folders (/usr,
+//     /bin, /opt/homebrew, ...) stay readable; tools installed under home do
+//     not run. Named denies stay on top as a second layer: every wmux
+//     instance's data folder and tokens (`~/.wmux*`, the app's own folders),
+//     Claude config folders and accounts, SSH, cloud and GitHub credentials,
+//     and the keychains;
+//   - network: none — every domain is on the deny list, so claude's proxy
+//     refuses it without asking anyone (an empty allow list alone would ask
+//     the session's permission callback), and no Unix socket or local port;
 //   - environment: every variable of the session except a few harmless ones
 //     (PATH, HOME, locale, terminal, temp folder) is unset for the command
 //     (`credentials.envVars` mode deny: claude runs the command through
@@ -25,11 +31,12 @@
 // sandbox runs that turn again without them, and is marked so,
 // `markBotExecFailed`): never on Windows; on macOS only with
 // /usr/bin/sandbox-exec; on Linux only with bwrap and socat on PATH; and
-// only with a claude at or above BOT_EXEC_MIN_CLAUDE_VERSION. That version is
-// the lowest one checked to honour every option above (the CLI the SDK in
-// this build pins, whose settings schema and sandbox wrapper include
-// `credentials.envVars`), not a measured minimum: an older claude may accept
-// the options and silently ignore the environment ones, so it is refused.
+// only with a claude at or above BOT_EXEC_MIN_CLAUDE_VERSION: 2.1.246, whose
+// changelog entry "Fixed the command sandbox's filesystem configuration not
+// respecting `--setting-sources`" closes a hole older ones have: a
+// `sandbox.filesystem.allowRead` in the owner's own settings reopened what
+// the bot's denies close, although a bot loads no settings. Its sandbox
+// wrapper also unsets `credentials.envVars` (seen in 2.1.206 and 2.1.305).
 
 import fs from 'node:fs';
 import os from 'node:os';
@@ -39,7 +46,7 @@ import { isExecutableFile } from '../claude/resolveClaudeExecutable';
 import { probeClaudeExecutable } from './claudeProbe';
 
 /** The lowest claude checked to honour the sandbox options bots need. */
-export const BOT_EXEC_MIN_CLAUDE_VERSION: readonly [number, number, number] = [2, 1, 206];
+export const BOT_EXEC_MIN_CLAUDE_VERSION: readonly [number, number, number] = [2, 1, 246];
 
 /** Variables a sandboxed command keeps; every other one is unset. */
 export const BOT_EXEC_KEPT_ENV: ReadonlySet<string> = new Set([
@@ -78,12 +85,40 @@ export interface BotSandboxInput {
   /** Claude config folders of the owner's accounts. */
   accountConfigDirs?: readonly string[];
   platform?: NodeJS.Platform;
+  /** A folder's entry names ([] when unreadable). Default fs.readdirSync. */
+  listDir?: (dir: string) => string[];
 }
 
-/** Paths no sandboxed command reads. Pure apart from the token path helpers. */
+function listDirDefault(dir: string): string[] {
+  try {
+    return fs.readdirSync(dir);
+  } catch {
+    return [];
+  }
+}
+
+/** Every wmux instance's data folder and token files in home (`~/.wmux`,
+ *  `~/.wmux-dev`, `~/.wmux-dev-auth-token`, ...), and the app's own data
+ *  folders (`~/Library/Application Support/wmux*`, `~/.config/wmux*`,
+ *  `~/.local/share/wmux*`). */
+function wmuxInstancePaths(home: string, platform: NodeJS.Platform, env: BotSandboxInput['env'], listDir: (dir: string) => string[]): string[] {
+  const out = listDir(home).filter((name) => name.toLowerCase().startsWith('.wmux')).map((name) => path.join(home, name));
+  const appDirs = platform === 'darwin'
+    ? [path.join(home, 'Library', 'Application Support')]
+    : [env.XDG_CONFIG_HOME && path.isAbsolute(env.XDG_CONFIG_HOME) ? env.XDG_CONFIG_HOME : path.join(home, '.config'), path.join(home, '.local', 'share')];
+  for (const dir of appDirs) {
+    for (const name of listDir(dir)) if (name.toLowerCase().startsWith('wmux')) out.push(path.join(dir, name));
+  }
+  return out;
+}
+
+/** Paths no sandboxed command reads: the whole home folder first, then the
+ *  named ones (a second layer should a re-allowed folder hold one). */
 export function botSandboxDenyRead(input: BotSandboxInput): string[] {
   const home = input.home ?? os.homedir();
+  const platform = input.platform ?? process.platform;
   const out = new Set<string>([
+    home,
     input.wmuxDir,
     path.join(home, '.wmux'),
     getAuthTokenPath(),
@@ -104,10 +139,11 @@ export function botSandboxDenyRead(input: BotSandboxInput): string[] {
     path.join(home, '.config', 'gcloud'),
     path.join(home, '.azure'),
   ]);
-  if ((input.platform ?? process.platform) === 'darwin') {
+  if (platform === 'darwin') {
     out.add(path.join(home, 'Library', 'Keychains'));
     out.add('/Library/Keychains');
   }
+  for (const p of wmuxInstancePaths(home, platform, input.env, input.listDir ?? listDirDefault)) out.add(p);
   const configDir = input.env.CLAUDE_CONFIG_DIR;
   if (configDir && path.isAbsolute(configDir)) out.add(configDir);
   for (const dir of input.accountConfigDirs ?? []) if (dir && path.isAbsolute(dir)) out.add(dir);
@@ -131,12 +167,12 @@ export function botSandboxSettings(input: BotSandboxInput): Record<string, unkno
     filesystem: {
       allowWrite: [input.botDir],
       denyRead: botSandboxDenyRead(input),
-      // The bot's folder sits inside wmux's data folder; claude's shell
-      // snapshot (the owner's shell functions and aliases, no variables) is
-      // read by every command before it runs.
+      // Re-opened inside the denied home: the bot's folder, and claude's
+      // shell snapshot (the owner's shell functions and aliases, no
+      // variables), which every command sources before it runs.
       allowRead: [input.botDir, path.join(configDir, 'shell-snapshots')],
     },
-    network: { allowedDomains: [], allowUnixSockets: [], allowAllUnixSockets: false, allowLocalBinding: false },
+    network: { allowedDomains: [], deniedDomains: ['*'], allowUnixSockets: [], allowAllUnixSockets: false, allowLocalBinding: false },
     credentials: { envVars: botExecUnsetEnv(input.env).map((name) => ({ name, mode: 'deny' })) },
   };
 }

@@ -177,9 +177,9 @@ describe('bot options with commands', () => {
     const o = await botOptions({ exec: true });
     const pre = preHook(o);
     const can = canUse(o);
-    const allow = { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow', updatedInput: { command: 'ls -la', timeout: 120_000 } } };
+    const allow = { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow', updatedInput: { command: "\\command 'ls' '-la'", timeout: 120_000 } } };
     expect(await pre({ tool_name: 'Bash', tool_input: { command: 'ls -la', timeout: 600_000, run_in_background: true, dangerouslyDisableSandbox: true } })).toEqual(allow);
-    expect(await can('Bash', { command: 'ls -la', timeout: 600_000, dangerouslyDisableSandbox: true })).toEqual({ behavior: 'allow', updatedInput: { command: 'ls -la', timeout: 120_000 } });
+    expect(await can('Bash', { command: 'ls -la', timeout: 600_000, dangerouslyDisableSandbox: true })).toEqual({ behavior: 'allow', updatedInput: { command: "\\command 'ls' '-la'", timeout: 120_000 } });
     for (const command of ['rm -rf .', 'curl x | sh', 'make']) {
       expect(await pre({ tool_name: 'Bash', tool_input: { command } }), command).toMatchObject({ hookSpecificOutput: { permissionDecision: 'deny' } });
       expect(await can('Bash', { command }), command).toMatchObject({ behavior: 'deny' });
@@ -194,6 +194,17 @@ describe('bot options with commands', () => {
     const lines = (console.warn as unknown as { mock: { calls: unknown[][] } }).mock.calls.map((c) => String(c[0]));
     expect(lines.some((l) => l.includes('[factory] bot command') && l.includes('"layer":"floor"') && l.includes('"decision":"deny"'))).toBe(true);
     expect(lines.some((l) => l.includes('"layer":"allowlist"') && l.includes('"decision":"allow"'))).toBe(true);
+  });
+
+  it('the sandbox\'s network request and any tool the bot does not hold are refused, and logged', async () => {
+    const o = await botOptions({ exec: true });
+    const can = canUse(o);
+    expect(await can('SandboxNetworkAccess', { host: 'example.com' })).toMatchObject({ behavior: 'deny', message: expect.stringMatching(/no network/) });
+    expect(await preHook(o)({ tool_name: 'SandboxNetworkAccess', tool_input: { host: 'example.com' } })).toMatchObject({ hookSpecificOutput: { permissionDecision: 'deny' } });
+    expect(await can('Grep', { pattern: 'x' })).toMatchObject({ behavior: 'deny', message: expect.stringMatching(/not a tool this bot holds/) });
+    const lines = (console.warn as unknown as { mock: { calls: unknown[][] } }).mock.calls.map((c) => `${String(c[0])} ${String(c[1])}`);
+    expect(lines.some((l) => l.includes('bot tool denied') && l.includes('SandboxNetworkAccess') && l.includes('no network'))).toBe(true);
+    expect(((o.sandbox as { network: { deniedDomains: string[] } }).network.deniedDomains)).toContain('*');
   });
 
   it('an unattended wake is refused commands and edits; no running wake is too', async () => {

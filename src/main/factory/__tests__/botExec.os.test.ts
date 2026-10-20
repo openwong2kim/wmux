@@ -116,6 +116,23 @@ describe('the floor', () => {
     ['kill 1', 'kill'],
     ['npx something', 'npx'],
     ['echo "unterminated', 'unterminated quote'],
+    // Expansion: the words checked must be the words that run.
+    ['find . -e* /usr/bin/id \\;', 'glob that matches a file named -exec'],
+    ['find . -exe? id', 'glob ?'],
+    ['find . -[e]xec id', 'glob class'],
+    ['ls {a,b}', 'brace expansion'],
+    ['cat ~/x', 'tilde'],
+    ['ls =ls', 'zsh = expansion'],
+    ['git log HEAD^', 'zsh extended glob ^'],
+    ['ls a#b', 'zsh extended glob #'],
+    ['ls ä', 'non-literal character'],
+    // Interpreter code attached to its option.
+    ['python3 -c"print(123)" ignored', 'python -c attached'],
+    ['python3 -cprint ignored', 'python -c glued'],
+    ['node -e"1" x.js', 'node -e attached'],
+    ['perl -E\'say 1\' x.pl', 'perl -E attached'],
+    ['ruby -e\'1\' x.rb', 'ruby -e attached'],
+    ['bash -lc ls x.sh', 'bash -lc'],
     ['ls |', 'dangling pipe'],
   ];
   it.each(FLOOR)('refuses %s (%s)', (line) => {
@@ -126,6 +143,7 @@ describe('the floor', () => {
 
   it('an owner rule never lifts the floor', () => {
     expect(decide('rm -rf x', [{ argv: ['rm'], anyArgs: true }])).toMatchObject({ ok: false, layer: 'floor' });
+    expect(decide('python3 -c"print(123)" ignored', [{ argv: ['python3'], anyArgs: true }])).toMatchObject({ ok: false, layer: 'floor' });
     expect(decide('bash -c ls', [{ argv: ['bash', '-c', 'ls'] }])).toMatchObject({ ok: false, layer: 'floor' });
   });
 
@@ -141,8 +159,27 @@ describe('the floor', () => {
   it('parses quotes, escapes and descriptor copies into words', () => {
     const p = parseCommandLine('grep -n \'a b\' "c\\"d" e\\ f 2>&1 | head -5');
     expect(p.ok && p.pipelines[0].map((c) => c.argv)).toEqual([['grep', '-n', 'a b', 'c"d', 'e f'], ['head', '-5']]);
-    expect(p.ok && p.pipelines[0][0].redirects).toEqual([{ op: '>&', fd: 2, target: '1', expands: false }]);
+    expect(p.ok && p.pipelines[0][0].redirects).toEqual([{ op: '>&', fd: 2, target: '1' }]);
     expect(p.ok && commandFloor(p.pipelines, { botDir })).toBeNull();
+  });
+});
+
+describe('the line as it runs', () => {
+  it.each([
+    ['ls -la', "\\command 'ls' '-la'"],
+    ['cat notes.md | sort | head -5', "\\command 'cat' 'notes.md' | \\command 'sort' | \\command 'head' '-5'"],
+    ['grep -n "a b" notes.md 2>&1', "\\command 'grep' '-n' 'a b' 'notes.md' 2>&1"],
+    ['echo "it\'s" > out.txt && pwd', "\\command 'echo' 'it'\\''s' >'out.txt' && \\command 'pwd'"],
+    ['ls 2>/dev/null; date -u', "\\command 'ls' 2>'/dev/null' ; \\command 'date' '-u'"],
+  ])('%s runs as %s', (line, run) => {
+    expect(decide(line)).toMatchObject({ ok: true, run });
+  });
+
+  it('an alias or function of an approved name cannot run in its place', () => {
+    // `alias cat=bat` would make `cat --pager=...` run a shell; \command
+    // skips aliases and functions, so `cat` is the real cat.
+    const d = decide('cat notes.md');
+    expect(d.ok && d.run.startsWith('\\command ')).toBe(true);
   });
 });
 
@@ -156,7 +193,7 @@ describe('the list', () => {
     'wc -l notes.md',
     'git status',
     'git -C /some/repo log --oneline -5',
-    'git diff HEAD~1',
+    'git diff \'HEAD~1\'',
     'git show HEAD',
     'git branch -a',
     'git log | head -20',
@@ -179,6 +216,22 @@ describe('the list', () => {
     ['git branch -D old', 'git branch delete'],
     ['git diff --output=x', 'git --output'],
     ['sort -o x notes.md', 'sort -o'],
+    ['sort -o/tmp/claude-1000/escape notes.md', 'sort -o attached'],
+    ['sort -uo/tmp/x notes.md', 'sort -o in a cluster'],
+    ['sort --output=/tmp/x notes.md', 'sort --output='],
+    ['sort --out=/tmp/x notes.md', 'sort --output abbreviated'],
+    ['sort -T /tmp notes.md', 'sort temp dir'],
+    ['sort --temporary-directory=/tmp notes.md', 'sort --temporary-directory'],
+    ['sort --compress-prog=x notes.md', 'sort compress program abbreviated'],
+    ['git diff --out=/tmp/x', 'git --output abbreviated'],
+    ['git log --output=/tmp/x', 'git log --output'],
+    ['git diff --ext-diff', 'git --ext-diff'],
+    ['file -C', 'file -C'],
+    ['file --comp', 'file --compile abbreviated'],
+    ['date --set=2020', 'date --set='],
+    ['date -us 2020', 'date -s in a cluster'],
+    ['tee x', 'tee is not on the list'],
+    ['ls | tee x', 'tee is not a pipe filter'],
     ['sort --compress-program=x notes.md', 'sort compress program'],
     ['uniq notes.md out.txt', 'uniq output file'],
     ['rg --pre=x foo', 'rg --pre'],
@@ -285,7 +338,7 @@ describe('the attended rule and the decision on each tool', () => {
   it('attended: an allowed command runs sandboxed, clamped and in the foreground', () => {
     running = wake({ kind: 'human', text: 'hi', source: 'phone' });
     const d = evaluateBotExecTool('Bash', { command: 'ls', timeout: 600_000, run_in_background: true, dangerouslyDisableSandbox: true, description: 'list' }, ctx());
-    expect(d).toEqual({ ok: true, layer: 'allowlist', command: 'ls', input: { command: 'ls', timeout: BOT_EXEC_TIMEOUT_MS, description: 'list' } });
+    expect(d).toEqual({ ok: true, layer: 'allowlist', command: 'ls', input: { command: "\\command 'ls'", timeout: BOT_EXEC_TIMEOUT_MS, description: 'list' } });
     expect(evaluateBotExecTool('Write', { file_path: 'a.md', content: 'x' }, ctx())).toEqual({ ok: true, layer: 'path', input: { file_path: path.join(botDir, 'a.md'), content: 'x' } });
     expect(evaluateBotExecTool('Write', { file_path: path.join(outside, 'target.txt'), content: 'x' }, ctx())).toMatchObject({ ok: false, layer: 'path' });
     expect(evaluateBotExecTool('Bash', { command: 'make' }, ctx())).toMatchObject({ ok: false, layer: 'unlisted' });
@@ -308,6 +361,28 @@ describe('the owner\'s command rules file', () => {
     expect(new BotCommandRulesStore(file).rulesFor('bot-1')).toEqual([{ argv: ['npm', 'test'] }, { argv: ['make'], anyArgs: true }]);
     await expect(store.setRules('bot-1', [{ argv: [] }])).rejects.toThrow(/malformed/);
     await expect(store.setRules('bot-1', [{ argv: ['a\nb'] }])).rejects.toThrow(/malformed/);
+  });
+
+  it.each([
+    [{ argv: ['python3'], anyArgs: true }],
+    [{ argv: ['python3'] }],
+    [{ argv: ['/usr/bin/python3', '-u'] }],
+    [{ argv: ['bash', 'x.sh'], anyArgs: true }],
+    [{ argv: ['node'], anyArgs: true }],
+  ])('a shell or interpreter rule must name its script and take nothing else: %j', async (rule) => {
+    const store = new BotCommandRulesStore(botCommandRulesPath(botDir));
+    await expect(store.setRules('bot-1', [rule])).rejects.toThrow(/malformed/);
+  });
+
+  it('an interpreter rule naming its script is kept; an unsafe one in the file is dropped on load', async () => {
+    const file = botCommandRulesPath(botDir);
+    const store = new BotCommandRulesStore(file);
+    await store.setRules('bot-1', [{ argv: ['python3', 'tool.py'] }]);
+    expect(store.rulesFor('bot-1')).toEqual([{ argv: ['python3', 'tool.py'] }]);
+    fs.writeFileSync(file, JSON.stringify({ version: BOT_COMMAND_RULES_VERSION, bots: { 'bot-1': [{ argv: ['python3'], anyArgs: true }, { argv: ['make'] }] } }));
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    expect(new BotCommandRulesStore(file).rulesFor('bot-1')).toEqual([{ argv: ['make'] }]);
+    vi.restoreAllMocks();
   });
 
   it('a file of another version gives no rules and is never overwritten', async () => {
@@ -351,7 +426,8 @@ describe('the sandbox settings', () => {
       path.join(home, 'Library', 'Keychains'), '/Users/someone/claude-work', path.join(wmuxDir, 'factory', 'claude-api-config'),
     ]));
     expect(s.filesystem.allowRead).toContain(bot);
-    expect(s.network).toMatchObject({ allowedDomains: [], allowAllUnixSockets: false, allowLocalBinding: false });
+    // Every domain is denied by the proxy itself, never asked of the session.
+    expect(s.network).toMatchObject({ allowedDomains: [], deniedDomains: ['*'], allowAllUnixSockets: false, allowLocalBinding: false });
     const unset = s.credentials.envVars;
     expect(unset.every((e) => e.mode === 'deny')).toBe(true);
     const names = unset.map((e) => e.name);
@@ -364,20 +440,72 @@ describe('the sandbox settings', () => {
   });
 });
 
+describe('home is denied by default', () => {
+  it('denies all of home, re-opens only the bot folder and the shell snapshots, and names every wmux instance', () => {
+    const home = '/home/someone';
+    const listing: Record<string, string[]> = {
+      [home]: ['.wmux', '.wmux-dev', '.wmux-dev-auth-token', '.wmux-auth-token', '.pypirc', 'projects'],
+      [path.join(home, '.config')]: ['wmux', 'wmux-dev', 'other'],
+      [path.join(home, '.local', 'share')]: ['wmux'],
+    };
+    const bot = path.join(home, '.wmux', 'factory', 'bots', 'bot-1');
+    const s = botSandboxSettings({
+      botDir: bot,
+      wmuxDir: path.join(home, '.wmux'),
+      home,
+      platform: 'linux',
+      env: { PATH: '/usr/bin' },
+      listDir: (d) => listing[d] ?? [],
+    }) as { filesystem: { denyRead: string[]; allowRead: string[]; allowWrite: string[] } };
+    expect(s.filesystem.denyRead[0]).toBe(home);
+    expect(s.filesystem.denyRead).toEqual(expect.arrayContaining([
+      path.join(home, '.wmux-dev'),
+      path.join(home, '.wmux-dev-auth-token'),
+      path.join(home, '.wmux-auth-token'),
+      path.join(home, '.config', 'wmux'),
+      path.join(home, '.config', 'wmux-dev'),
+      path.join(home, '.local', 'share', 'wmux'),
+    ]));
+    expect(s.filesystem.denyRead).not.toContain(path.join(home, '.config', 'other'));
+    // `.pypirc` and `projects` sit under the denied home: no list needed.
+    expect(s.filesystem.allowRead).toEqual([bot, path.join(home, '.claude', 'shell-snapshots')]);
+    expect(s.filesystem.allowWrite).toEqual([bot]);
+    // System folders are never denied.
+    for (const sys of ['/usr', '/bin', '/opt/homebrew', '/etc']) expect(s.filesystem.denyRead.some((p) => sys === p || sys.startsWith(`${p}/`))).toBe(false);
+  });
+
+  it('on macOS the app\'s Application Support folders are named too', () => {
+    const home = '/Users/someone';
+    const s = botSandboxSettings({
+      botDir: path.join(home, '.wmux', 'factory', 'bots', 'b'),
+      wmuxDir: path.join(home, '.wmux'),
+      home,
+      platform: 'darwin',
+      env: {},
+      listDir: (d) => (d === path.join(home, 'Library', 'Application Support') ? ['wmux', 'Other'] : []),
+    }) as { filesystem: { denyRead: string[] } };
+    expect(s.filesystem.denyRead).toEqual(expect.arrayContaining([home, path.join(home, 'Library', 'Application Support', 'wmux')]));
+    expect(s.filesystem.denyRead).not.toContain(path.join(home, 'Library', 'Application Support', 'Other'));
+  });
+});
+
 describe('the capability check', () => {
   beforeEach(() => __clearBotExecSupportCacheForTesting());
   const version = (v: string) => async () => ({ ok: true as const, version: v });
 
   it('runs on macOS with sandbox-exec and a new enough claude', async () => {
     expect(await probeBotExecSupport('/c', { platform: 'darwin', isFile: () => true, version: version('2.1.305 (Claude Code)') })).toEqual({ ok: true, version: '2.1.305 (Claude Code)' });
-    expect(await probeBotExecSupport('/c', { platform: 'darwin', isFile: () => true, version: version('2.1.206 (Claude Code)') })).toMatchObject({ ok: true });
+    expect(await probeBotExecSupport('/c', { platform: 'darwin', isFile: () => true, version: version('2.1.246 (Claude Code)') })).toMatchObject({ ok: true });
+    // Older ones reopen denied folders through the owner's own settings.
+    expect(await probeBotExecSupport('/c', { platform: 'darwin', isFile: () => true, version: version('2.1.245 (Claude Code)') })).toMatchObject({ ok: false });
+    expect(await probeBotExecSupport('/c', { platform: 'darwin', isFile: () => true, version: version('2.1.206 (Claude Code)') })).toMatchObject({ ok: false });
   });
 
   it('is off on Windows, without the sandbox tools, on an older claude, or with no claude', async () => {
     expect(await probeBotExecSupport('/c', { platform: 'win32', version: version('9.9.9') })).toMatchObject({ ok: false });
     expect(await probeBotExecSupport('/c', { platform: 'darwin', isFile: () => false, version: version('2.1.305') })).toMatchObject({ ok: false });
     expect(await probeBotExecSupport('/c', { platform: 'linux', onPath: (c) => c === 'bwrap', version: version('2.1.305') })).toMatchObject({ ok: false, reason: expect.stringMatching(/socat/) });
-    expect(await probeBotExecSupport('/old', { platform: 'darwin', isFile: () => true, version: version('2.1.205 (Claude Code)') })).toMatchObject({ ok: false, reason: expect.stringMatching(/older/) });
+    expect(await probeBotExecSupport('/old', { platform: 'darwin', isFile: () => true, version: version('2.1.205 (Claude Code)') })).toMatchObject({ ok: false, reason: expect.stringMatching(/older than 2\.1\.246/) });
     expect(await probeBotExecSupport('/c', { platform: 'darwin', isFile: () => true, version: async () => ({ ok: false as const, detail: 'boom' }) })).toMatchObject({ ok: false });
     expect(await probeBotExecSupport(null, { platform: 'darwin', isFile: () => true })).toMatchObject({ ok: false });
   });

@@ -11,7 +11,11 @@
 // (`>`, `>>`, `<`, `2>&1`). It refuses outright: a newline, a backtick, any
 // `$` outside single quotes (variable, command and arithmetic expansion),
 // here-documents and here-strings, process substitution, subshells and
-// brace groups, background `&`, comments and unquoted `{`, `}` or `!`.
+// brace groups, background `&`, and comments. Outside quotes a word holds
+// only literal characters (letters, digits and `_ . / : @ % + , = -`, no `=`
+// first): a glob, brace, tilde or any other character the shell (bash or
+// zsh, with whatever options the owner's shell snapshot sets) could expand
+// must be quoted, so the words checked are the words that run.
 //
 // The floor (`commandFloor`) then refuses, whatever the owner allowed:
 // environment assignments; commands that run, wrap or re-read other
@@ -32,8 +36,6 @@ export interface Redirect {
   fd?: number;
   /** The target word, quotes removed. */
   target: string;
-  /** The target had an unquoted glob or a leading `~`. */
-  expands: boolean;
 }
 
 export interface SimpleCommand {
@@ -50,10 +52,13 @@ export type Pipeline = SimpleCommand[];
 export type ParseResult = { ok: true; pipelines: Pipeline[]; joins: string[] } | { ok: false; reason: string };
 
 type Token =
-  | { kind: 'word'; value: string; quoted: boolean; expands: boolean; assignment: boolean; glued: boolean }
+  | { kind: 'word'; value: string; quoted: boolean; assignment: boolean; glued: boolean }
   | { kind: 'op'; op: string };
 
 const MAX_COMMAND_LENGTH = 8_000;
+
+/** Characters a word may hold outside quotes: none of them expands. */
+const LITERAL_UNQUOTED = /^[A-Za-z0-9_./:@%+,=-]$/;
 
 function tokenize(line: string): { ok: true; tokens: Token[] } | { ok: false; reason: string } {
   const tokens: Token[] = [];
@@ -99,10 +104,8 @@ function tokenize(line: string): { ok: true; tokens: Token[] } | { ok: false; re
     // A word: runs until unquoted whitespace or an operator character.
     let value = '';
     let quoted = false;
-    let expands = false;
     let unquotedPrefix = '';
     let sawQuote = false;
-    const start = i;
     while (i < n) {
       const ch = line[i];
       if (ch === ' ' || ch === '\t' || ch === '|' || ch === '&' || ch === ';' || ch === '<' || ch === '>' || ch === '(' || ch === ')') break;
@@ -148,16 +151,15 @@ function tokenize(line: string): { ok: true; tokens: Token[] } | { ok: false; re
         continue;
       }
       if (ch === '$' || ch === '`') return { ok: false, reason: 'variables and command substitution are not run' };
-      if (ch === '{' || ch === '}') return { ok: false, reason: 'unquoted braces are not supported (quote them)' };
-      if (ch === '!') return { ok: false, reason: 'an unquoted "!" is not supported (quote it)' };
-      if (ch === '*' || ch === '?' || ch === '[') expands = true;
-      if (ch === '~' && i === start) expands = true;
+      if (!LITERAL_UNQUOTED.test(ch) || (ch === '=' && value === '' && !sawQuote)) {
+        return { ok: false, reason: `an unquoted "${ch}" may expand (globs, braces, ~ and the like are not run; quote the word)` };
+      }
       if (!sawQuote) unquotedPrefix += ch;
       value += ch;
       i++;
     }
     tokens.push({
-      kind: 'word', value, quoted, expands,
+      kind: 'word', value, quoted,
       assignment: /^[A-Za-z_][A-Za-z0-9_]*\+?=/.test(unquotedPrefix),
       // Written right against a redirection (`2>`): a descriptor number.
       glued: i < n && (line[i] === '<' || line[i] === '>'),
@@ -196,7 +198,7 @@ export function parseCommandLine(line: unknown): ParseResult {
       if (!tok.quoted && tok.glued && /^\d$/.test(tok.value) && next?.kind === 'op' && /^(>|>>|>\||>&|<|<&)$/.test(next.op)) {
         const target = toks[k + 2];
         if (target?.kind !== 'word') return { ok: false, reason: 'a redirection without a target' };
-        cmd.redirects.push({ op: next.op, fd: Number(tok.value), target: target.value, expands: target.expands });
+        cmd.redirects.push({ op: next.op, fd: Number(tok.value), target: target.value });
         k += 2;
         continue;
       }
@@ -207,7 +209,7 @@ export function parseCommandLine(line: unknown): ParseResult {
     if (['>', '>>', '>|', '>&', '<', '<&', '&>', '&>>'].includes(tok.op)) {
       const target = toks[k + 1];
       if (target?.kind !== 'word') return { ok: false, reason: 'a redirection without a target' };
-      cmd.redirects.push({ op: tok.op, target: target.value, expands: target.expands });
+      cmd.redirects.push({ op: tok.op, target: target.value });
       k++;
       continue;
     }
@@ -270,14 +272,22 @@ export function isShellOrInterpreter(name: string): boolean {
   return interpreterOf(name) !== null;
 }
 
+/** Whether an option word of `family` may carry inline code: a long form
+ *  (or its `=` value), or a short option word holding an inline-code
+ *  letter anywhere, attached value included (`-c"code"`, `-Bc`). Errs to
+ *  refusing. Pure. */
+function inlineCodeOption(family: (typeof INTERPRETER_INLINE)[number], a: string): boolean {
+  if (a.startsWith('--')) return family.long.some((l) => a === l || a.startsWith(`${l}=`));
+  return a.length > 1 && a.startsWith('-') && [...a.slice(1)].some((ch) => family.letters.includes(ch));
+}
+
 function interpreterRefusal(name: string, args: readonly string[]): string | null {
   const family = interpreterOf(name);
   if (!family) return null;
   let operand = false;
   for (const a of args) {
     if (a === '-') return `${name} reading code from stdin is not run`;
-    if (family.long.some((l) => a === l || a.startsWith(`${l}=`))) return `${name} with inline code is not run`;
-    if (/^-[A-Za-z]+$/.test(a) && [...a.slice(1)].some((ch) => family.letters.includes(ch))) return `${name} with inline code is not run`;
+    if (inlineCodeOption(family, a)) return `${name} with inline code is not run`;
     if (!a.startsWith('-')) {
       operand = true;
       break;
@@ -360,7 +370,6 @@ function simpleCommandRefusal(cmd: SimpleCommand, ctx: FloorContext): string | n
       if (r.op === '<&') return 'that redirection is not supported';
     }
     if (r.target === '/dev/null') continue;
-    if (r.expands) return `output to ${r.target} would expand; name a plain path in the bot folder`;
     const check = checkBotFolderPath(r.target, ctx.botDir, ctx.fs);
     if (!check.ok) return `output to ${r.target}: ${check.reason}`;
   }
@@ -389,5 +398,34 @@ export function normalizeCommand(pipelines: readonly Pipeline[], joins: readonly
   const q = (w: string): string => (/^[A-Za-z0-9_./:=@%+,-]+$/.test(w) ? w : `'${w.replace(/'/g, `'\\''`)}'`);
   return pipelines
     .map((p) => p.map((c) => [...c.assignments.map(q), ...c.argv.map(q), ...c.redirects.map((r) => `${r.fd ?? ''}${r.op}${q(r.target)}`)].join(' ')).join(' | '))
+    .reduce((line, part, k) => (k === 0 ? part : `${line} ${joins[k - 1] ?? ';'} ${part}`), '');
+}
+
+/** A word as the shell reads it literally: single-quoted. Pure. */
+function shellQuote(w: string): string {
+  return `'${w.replace(/'/g, `'\\''`)}'`;
+}
+
+/**
+ * The line as it runs: rebuilt from the parsed words, every word
+ * single-quoted (the parse already refused anything that would expand) and
+ * every command run as `\command <name>`, which skips the owner's aliases
+ * and shell functions that claude's shell snapshot restores (bash and zsh
+ * alike), so the program that runs is the one the list approved. A shell
+ * function the owner named `command` itself would still run. Built only
+ * from a line that passed the floor and the list. Pure.
+ */
+export function commandLineToRun(pipelines: readonly Pipeline[], joins: readonly string[]): string {
+  const simple = (c: SimpleCommand): string => {
+    // `\command`: the backslash skips an alias named `command` too.
+    const words = ['\\command', ...c.argv.map(shellQuote)];
+    for (const r of c.redirects) {
+      const target = (r.op === '>&' || r.op === '<&') && /^(\d|-)$/.test(r.target) ? r.target : shellQuote(r.target);
+      words.push(`${r.fd ?? ''}${r.op}${target}`);
+    }
+    return words.join(' ');
+  };
+  return pipelines
+    .map((p) => p.map(simple).join(' | '))
     .reduce((line, part, k) => (k === 0 ? part : `${line} ${joins[k - 1] ?? ';'} ${part}`), '');
 }
