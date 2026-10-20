@@ -16,8 +16,9 @@
 //   4. anything else is `unlisted`: refused, unless the reviewer
 //      (botCommandReviewer.ts, factory setting `botCommandReviewer`) judges
 //      it a small task in the bot's folder (`reviewUnlistedCommand`); a line
-//      that runs code from a file is refused before that (`script`), since
-//      only an owner rule may allow it.
+//      that runs code from a file (`script`), or any program but a plain
+//      file utility (`unlisted`), is refused before that, since only an
+//      owner rule may allow it.
 // An allowed call runs as main rebuilt it (every word quoted, every command
 // as `\command <name>`, past the owner's aliases and functions), with
 // `dangerouslyDisableSandbox` and `run_in_background` removed and its
@@ -59,6 +60,8 @@ export type BotExecLayer = 'attended' | 'parse' | 'floor' | 'allowlist' | 'unlis
 export interface UnlistedCommand {
   run: string;
   argv: string[][];
+  /** The commands neither listed nor allowed by an owner rule. */
+  offList: string[][];
 }
 
 export type BotExecDecision =
@@ -101,7 +104,7 @@ export function evaluateBotExecTool(toolName: string, input: Record<string, unkn
     const d = decideBotCommand(input.command, { botDir: ctx.botDir, repoRoot: ctx.repoRoot, fs: ctx.fs, rules });
     if (!d.ok) {
       // `unlisted` is refused here; reviewUnlistedCommand may take it up.
-      if (d.layer === 'unlisted') return { ok: false, layer: d.layer, reason: d.reason, command: d.command, unlisted: { run: d.run, argv: d.argv } };
+      if (d.layer === 'unlisted') return { ok: false, layer: d.layer, reason: d.reason, command: d.command, unlisted: { run: d.run, argv: d.argv, offList: d.offList } };
       return { ok: false, layer: d.layer, reason: d.reason, command: d.command };
     }
     // It runs as main rebuilt it from the approved words (botCommandFloor.ts
@@ -131,9 +134,11 @@ const REVIEW_REFUSALS: Record<Exclude<ReviewCode, 'reviewer_allow'>, string> = {
 };
 
 /**
- * The reviewer step for an `unlisted` Bash line (and only that). A line
- * that runs code from a file is refused first (`script`, whatever the
- * setting: it takes an owner rule). Otherwise, with the setting on, in an
+ * The reviewer step for an `unlisted` Bash line (and only that). Whatever
+ * the setting, a line that runs code from a file is refused first
+ * (`script`), then one with a program the reviewer does not judge
+ * (`unlisted`: it needs an owner rule) or a refused option of one (`floor`):
+ * botCommandReviewer.ts reviewerRefusal. Otherwise, with the setting on, in an
  * attended turn, the reviewer's verdict decides. Allowed,
  * the line runs as main rebuilt it (commandLineToRun, from the words the
  * floor passed), never as the bot wrote it. Every other decision, and an
@@ -141,8 +146,8 @@ const REVIEW_REFUSALS: Record<Exclude<ReviewCode, 'reviewer_allow'>, string> = {
  */
 export async function reviewUnlistedCommand(d: BotExecDecision, input: Record<string, unknown>, gate: ReviewGate): Promise<BotExecDecision> {
   if (d.ok || d.layer !== 'unlisted' || !d.unlisted) return d;
-  const script = reviewerRefusal(d.unlisted.argv);
-  if (script) return { ok: false, layer: 'script', reason: script, command: d.command };
+  const refused = reviewerRefusal(d.unlisted.argv, d.unlisted.offList);
+  if (refused) return { ok: false, layer: refused.layer, reason: refused.reason, command: d.command };
   let open = false;
   try {
     open = gate.enabled() && gate.attended();

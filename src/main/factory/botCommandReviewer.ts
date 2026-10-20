@@ -27,11 +27,18 @@
 // an interpreter, or is a build, task, test or package runner (FILE_RUNNERS)
 // — every one of them runs code the folder holds.
 //
+// And the reviewer judges only plain file utilities (REVIEWABLE_COMMANDS):
+// a program off the bot's list that is not one of them is refused before
+// any call (`unlisted`; it needs an owner rule), since a program may load
+// config, plugins or helpers the bot wrote, or take a program as an option.
+// FILE_RUNNERS stays as the second lock.
+//
 // Answers are kept per bot for one turn only (keyed by the normalized line),
 // since the folder may change between turns; nothing is saved. Calls are
 // capped per turn and per bot per local day (in memory: the day count starts
 // again when wmux restarts — a cost guard, not a boundary).
 
+import { hitsOption } from './botCommandAllow';
 import { commandName, isShellOrInterpreter } from './botCommandFloor';
 import { localDay } from './morningSchedule';
 
@@ -48,15 +55,68 @@ export const FILE_RUNNERS: ReadonlySet<string> = new Set([
   'jest', 'vitest', 'mocha', 'playwright', 'cypress', 'eslint', 'prettier', 'stylelint', 'babel', 'webpack', 'rollup', 'vite', 'nodemon', 'pm2',
 ]);
 
-/** Why the reviewer may not judge this line (a command in it runs code
- *  from a file), or null. Pure. */
-export function reviewerRefusal(argv: readonly (readonly string[])[]): string | null {
+type OptionCheck = (args: readonly string[]) => string | null;
+
+const plain: OptionCheck = () => null;
+
+/** Refuse these options in every form (hitsOption: clusters, attached
+ *  values, abbreviations), up to `--`. */
+function refusing(name: string, refused: { short?: string; long?: readonly string[] }): OptionCheck {
+  return (args) => {
+    for (const a of args) {
+      if (a === '--') return null;
+      if (hitsOption(a, refused)) return `${name} ${a} is not run`;
+    }
+    return null;
+  };
+}
+
+/**
+ * The programs the reviewer may judge: plain file utilities named bare,
+ * each checked to load no config, plugin or helper from the folder and to
+ * run no program through an option (GNU coreutils and the macOS tools).
+ *   - cp, mv, mkdir, rmdir, touch: copy, move and create; no option runs a
+ *     program. Writes land in the sandbox's folder or fail.
+ *   - rm: one file at a time (the floor refuses -r, -R and -f).
+ *   - cmp, comm, join, paste, nl, fold, column, expand, unexpand, rev,
+ *     basename, dirname, realpath: read their operands and print.
+ *   - diff: likewise, but -l / --paginate pipes through `pr`, so it is
+ *     refused.
+ *   - md5, md5sum, shasum, sha1sum, sha256sum, sha512sum: print digests.
+ *   - csplit: writes pieces named by its own prefix; runs nothing.
+ *   - split: GNU --filter runs a shell command, so it is refused.
+ *   - tree: -o writes its listing to a file and -R runs tree again with
+ *     one in every folder, so both are refused.
+ * Left out on purpose: ln (a symlink is what the folder checks refuse
+ * elsewhere), sed (GNU `e` and `w`), awk, jq, less and more, editors, tar,
+ * zip and unzip, rsync, xargs, find, install (--strip-program), patch.
+ */
+export const REVIEWABLE_COMMANDS: ReadonlyMap<string, OptionCheck> = new Map<string, OptionCheck>([
+  ...['cp', 'mv', 'mkdir', 'rmdir', 'touch', 'rm'].map((n): [string, OptionCheck] => [n, plain]),
+  ['diff', refusing('diff', { short: 'l', long: ['paginate'] })],
+  ...['cmp', 'comm', 'join', 'paste', 'nl', 'fold', 'column', 'expand', 'unexpand', 'rev', 'basename', 'dirname', 'realpath'].map((n): [string, OptionCheck] => [n, plain]),
+  ...['md5', 'md5sum', 'shasum', 'sha1sum', 'sha256sum', 'sha512sum', 'csplit'].map((n): [string, OptionCheck] => [n, plain]),
+  ['split', refusing('split', { long: ['filter'] })],
+  ['tree', refusing('tree', { short: 'oR' })],
+]);
+
+/** Why the reviewer may not judge this line, or null. `argv` is every
+ *  command's words; `offList` those of the commands neither built-in nor
+ *  an owner rule allowed (the ones the reviewer would judge). Pure. */
+export function reviewerRefusal(argv: readonly (readonly string[])[], offList: readonly (readonly string[])[] = argv): { layer: 'script' | 'unlisted' | 'floor'; reason: string } | null {
   for (const words of argv) {
     const first = words[0] ?? '';
-    if (/[\\/]/.test(first)) return `${first} is a file named by its path; running it needs an owner rule for it`;
+    if (/[\\/]/.test(first)) return { layer: 'script', reason: `${first} is a file named by its path; running it needs an owner rule for it` };
     const name = commandName(first);
-    if (isShellOrInterpreter(name)) return `${name} runs a script, which needs an owner rule for it`;
-    if (FILE_RUNNERS.has(name)) return `${name} runs the project's own code, which needs an owner rule for it`;
+    if (isShellOrInterpreter(name)) return { layer: 'script', reason: `${name} runs a script, which needs an owner rule for it` };
+    if (FILE_RUNNERS.has(name)) return { layer: 'script', reason: `${name} runs the project's own code, which needs an owner rule for it` };
+  }
+  for (const words of offList) {
+    const first = words[0] ?? '';
+    const check = REVIEWABLE_COMMANDS.get(first);
+    if (!check) return { layer: 'unlisted', reason: `${first} needs an owner rule (only plain file utilities go to the command reviewer)` };
+    const refused = check(words.slice(1));
+    if (refused) return { layer: 'floor', reason: refused };
   }
   return null;
 }
@@ -80,6 +140,8 @@ export const BOT_COMMAND_REVIEWER_LIMITS = Object.freeze({
 /** The reviewer's fixed system prompt. */
 export const BOT_COMMAND_REVIEWER_SYSTEM_PROMPT = [
   'You review one shell command for wmux before it runs. A bot (an AI agent) wants to run it in its own folder. The command is not on the bot\'s list of known commands, so your judgment decides whether it runs.',
+  '',
+  'What reaches you: only plain file utilities (cp, mv, mkdir, rmdir, touch, rm of single files, diff, cmp, comm, join, paste, nl, fold, column, expand, unexpand, rev, basename, dirname, realpath, digest tools, split, csplit, tree), possibly piped with the bot\'s read-only commands. Anything else needs the owner and never reaches you.',
   '',
   'Where it runs:',
   '- The working directory is the bot\'s own folder; relative paths resolve there.',

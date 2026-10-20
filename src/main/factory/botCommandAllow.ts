@@ -164,9 +164,10 @@ export type CommandDecision =
   /** `run`: the line as it runs (commandLineToRun). */
   | { ok: true; layer: 'allowlist'; command: string; run: string; matched: 'builtin' | 'rule' }
   | { ok: false; layer: 'parse' | 'floor'; command: string; reason: string }
-  /** Past the floor but not on the list: `run` is the line as it would run
-   *  and `argv` each command's words, for the reviewer to judge. */
-  | { ok: false; layer: 'unlisted'; command: string; reason: string; run: string; argv: string[][] };
+  /** Past the floor but not on the list: `run` is the line as it would run,
+   *  `argv` each command's words, and `offList` the words of the commands
+   *  neither the built-in list nor an owner rule allowed, for the reviewer. */
+  | { ok: false; layer: 'unlisted'; command: string; reason: string; run: string; argv: string[][]; offList: string[][] };
 
 /**
  * Main's decision on one Bash command line of a bot: parse, the floor, then
@@ -181,10 +182,12 @@ export function decideBotCommand(line: unknown, ctx: FloorContext & { rules: rea
   const command = normalizeCommand(parsed.pipelines, parsed.joins);
   const floor = commandFloor(parsed.pipelines, ctx);
   if (floor) return { ok: false, layer: 'floor', command, reason: floor };
+  const offListCommands: string[][] = [];
   const unlisted = (reason: string): CommandDecision => ({
     ok: false, layer: 'unlisted', command, reason,
     run: commandLineToRun(parsed.pipelines, parsed.joins),
     argv: parsed.pipelines.flatMap((p) => p.map((c) => [...c.argv])),
+    offList: offListCommands,
   });
   // The whole line is read first: a refused built-in anywhere in it is the
   // floor's, even after a command that is merely not on the list.
@@ -205,6 +208,7 @@ export function decideBotCommand(line: unknown, ctx: FloorContext & { rules: rea
           if (r) return { ok: false, layer: 'floor', command, reason: r };
         }
         offList ??= `${name} cannot read a pipe here (only ${[...STDIN_FILTERS].join(', ')})`;
+        offListCommands.push([...cmd.argv]);
         continue;
       }
       if (ctx.rules.some((rule) => ruleMatches(rule, cmd.argv))) {
@@ -213,6 +217,7 @@ export function decideBotCommand(line: unknown, ctx: FloorContext & { rules: rea
       }
       if (!BUILTIN_COMMANDS.has(name)) {
         offList ??= `${name} is not on the built-in list`;
+        offListCommands.push([...cmd.argv]);
         continue;
       }
       const r = builtinRefusal(cmd);

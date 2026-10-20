@@ -218,6 +218,31 @@ describe('the command reviewer at the unlisted seam', () => {
     r.adapter.dispose();
   });
 
+  it('only plain file utilities reach the reviewer: another program needs an owner rule, a refused option is floor', async () => {
+    const r = rig({ reviewer: true });
+    const o = await r.turn();
+    const pre = preHook(o);
+    for (const command of ['jq .a f.json', 'sed s/a/b/ f.txt', 'tar xf a.tar', 'ln -s a b', 'tree | jq .']) {
+      expect(await pre({ tool_name: 'Bash', tool_input: { command } }), command).toMatchObject({ hookSpecificOutput: { permissionDecision: 'deny', permissionDecisionReason: expect.stringContaining('needs an owner rule') } });
+    }
+    for (const command of ['split --filter=sh f.txt', 'tree -o out.txt', 'tree -R', 'diff -l a b']) {
+      expect(await pre({ tool_name: 'Bash', tool_input: { command } }), command).toMatchObject({ hookSpecificOutput: { permissionDecision: 'deny', permissionDecisionReason: expect.stringContaining('is not run') } });
+    }
+    expect(r.reviews).toHaveLength(0);
+    const lines = logLines();
+    expect(lines.some((l) => l.includes('"layer":"unlisted"') && l.includes('jq .a f.json'))).toBe(true);
+    expect(lines.some((l) => l.includes('"layer":"floor"') && l.includes('split --filter=sh f.txt'))).toBe(true);
+    // A listed utility reaches it.
+    expect(await pre({ tool_name: 'Bash', tool_input: { command: 'cp a.txt b.txt' } })).toMatchObject({ hookSpecificOutput: { permissionDecision: 'allow', updatedInput: { command: "\\command 'cp' 'a.txt' 'b.txt'" } } });
+    expect(r.reviews).toHaveLength(1);
+    // An owner rule still allows an unknown program, without the reviewer.
+    const { getBotCommandRulesStore } = await import('../../factory/botCommandRules');
+    await getBotCommandRulesStore().setRules(BINDING.botId, [{ argv: ['jq'], anyArgs: true }]);
+    expect(await pre({ tool_name: 'Bash', tool_input: { command: 'jq .a f.json' } })).toMatchObject({ hookSpecificOutput: { permissionDecision: 'allow' } });
+    expect(r.reviews).toHaveLength(1);
+    r.adapter.dispose();
+  });
+
   it('the bot\'s PreToolUse decision carries a timeout above the reviewer\'s', async () => {
     const r = rig({ reviewer: true });
     const o = await r.turn();

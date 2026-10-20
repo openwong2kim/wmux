@@ -8,6 +8,7 @@ import {
   BOT_COMMAND_REVIEWER_SYSTEM_PROMPT,
   BotCommandReviewer,
   FILE_RUNNERS,
+  REVIEWABLE_COMMANDS,
   __resetBotCommandReviewerBudgetForTesting,
   parseReviewerVerdict,
   reviewerRefusal,
@@ -199,12 +200,35 @@ describe('reviewerRefusal', () => {
     [[['make', 'test']]],
     [[['NPM', 'test']]],
     [[['tree'], ['cargo', 'run']]],
-  ])('refuses %j before any call', (argv) => {
-    expect(reviewerRefusal(argv)).toMatch(/owner rule/);
+  ])('refuses %j as script before any call', (argv) => {
+    expect(reviewerRefusal(argv)).toEqual({ layer: 'script', reason: expect.stringMatching(/owner rule/) });
   });
 
-  it('lets a plain command through', () => {
-    expect(reviewerRefusal([['tree', '-L', '2'], ['jq', '.name', 'package.json']])).toBeNull();
+  it('refuses a program that is not a plain file utility as unlisted: it needs an owner rule', () => {
+    for (const words of [['jq', '.a', 'f.json'], ['sed', 's/a/b/', 'f'], ['tar', 'xf', 'a.tar'], ['ln', '-s', 'a', 'b'], ['CP', 'a', 'b'], ['git', 'status']]) {
+      expect(reviewerRefusal([words]), words[0]).toEqual({ layer: 'unlisted', reason: expect.stringMatching(/needs an owner rule/) });
+    }
+  });
+
+  it.each([
+    [['split', '--filter=sh', 'f']],
+    [['split', '--fil', 'sh', 'f']],
+    [['tree', '-o', 'out.txt']],
+    [['tree', '-aR']],
+    [['diff', '-l', 'a', 'b']],
+    [['diff', '--paginate', 'a', 'b']],
+  ])('refuses %j as floor: an option that runs a program or writes a file', (words) => {
+    expect(reviewerRefusal([words])).toEqual({ layer: 'floor', reason: expect.stringMatching(/is not run/) });
+  });
+
+  it('lets plain file utilities through, with the read-only built-ins beside them', () => {
+    expect(reviewerRefusal([['tree', '-L', '2']])).toBeNull();
+    expect(reviewerRefusal([['ls'], ['cp', 'a', 'b']], [['cp', 'a', 'b']])).toBeNull();
+    expect(reviewerRefusal([['split', '-l', '10', 'f'], ['diff', '-u', 'a', 'b']])).toBeNull();
+    // Only the off-list commands are matched against the utilities.
+    expect(reviewerRefusal([['git', 'status'], ['tree']], [['tree']])).toBeNull();
+    for (const name of ['cp', 'mv', 'rm', 'diff', 'tree', 'split']) expect(REVIEWABLE_COMMANDS.has(name)).toBe(true);
+    for (const name of ['ln', 'sed', 'awk', 'jq', 'tar', 'find', 'xargs']) expect(REVIEWABLE_COMMANDS.has(name)).toBe(false);
     expect(FILE_RUNNERS.has('make')).toBe(true);
   });
 });
