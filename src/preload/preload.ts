@@ -20,6 +20,7 @@ import { CONNECTOR_IPC } from '../shared/botConnector';
 import { GUEST_BOT_IPC } from '../shared/guestBots';
 import { BOT_SKILL_IPC } from '../shared/botSkill';
 import { BOT_MEMORY_IPC } from '../shared/botMemory';
+import { BOT_COMMAND_IPC } from '../shared/botCommand';
 import { BOT_GROUP_IPC } from '../shared/botGroup';
 import type { PaneLabelRejection } from '../shared/paneLabelRules';
 import { CHROME_PANE_IPC, type ChromePaneBindings } from '../shared/chromePaneBinding';
@@ -1377,6 +1378,18 @@ const electronAPI = {
         ipcRenderer.invoke(BOT_MEMORY_IPC.remove, req) as Promise<import('../shared/botMemory').MemorySimpleResult>,
       clear: (req: import('../shared/botMemory').MemoryClearRequest) =>
         ipcRenderer.invoke(BOT_MEMORY_IPC.clear, req) as Promise<import('../shared/botMemory').MemorySimpleResult>,
+    },
+    // A bot's commands (renderer/components/Bots/BotCommands.tsx): the
+    // owner's switch, the decision log, Always allow and the rules; changes
+    // arrive as BOT_EVENT {type:'commands-changed'}.
+    commands: {
+      read: (botId: string) => ipcRenderer.invoke(BOT_COMMAND_IPC.read, { botId }) as Promise<import('../shared/botCommand').BotCommandReadResult>,
+      setEnabled: (req: import('../shared/botCommand').BotCommandSetEnabledRequest) =>
+        ipcRenderer.invoke(BOT_COMMAND_IPC.setEnabled, req) as Promise<import('../shared/botCommand').BotCommandSimpleResult>,
+      allow: (req: import('../shared/botCommand').BotCommandAllowRequest) =>
+        ipcRenderer.invoke(BOT_COMMAND_IPC.allow, req) as Promise<import('../shared/botCommand').BotCommandSimpleResult>,
+      removeRule: (req: import('../shared/botCommand').BotCommandRemoveRuleRequest) =>
+        ipcRenderer.invoke(BOT_COMMAND_IPC.removeRule, req) as Promise<import('../shared/botCommand').BotCommandSimpleResult>,
     },
     // Guest bots (renderer/components/Bots/guestBots.ts): an outside agent's
     // token comes back once, from create; nothing reads one back.

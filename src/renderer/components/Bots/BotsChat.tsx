@@ -90,6 +90,7 @@ import { botCanDo } from './botsProfile';
 import { BotConnections } from './BotConnections';
 import { BotSkills } from './BotSkills';
 import { BotMemory } from './BotMemory';
+import { BotCommands } from './BotCommands';
 import { BotToday } from './BotToday';
 import { BrainModelLine, WorkerModelLine } from './BotModelLines';
 import { stopBotSummary, useWorkerStopUnfinished, type BotsStopPort } from './botsStop';
@@ -2055,6 +2056,7 @@ function BotProfile({ row, workers, workspaceName, t, stopPort, jobPort, adminPo
       <BotConnections row={row} t={t} />
       <BotSkills row={row} t={t} />
       <BotMemory row={row} t={t} />
+      <BotCommands row={row} t={t} />
       <div className="mt-1 border-t border-[var(--stroke)] pt-1">
         <div className="flex items-baseline gap-3 py-1 text-[12px]" data-bots-profile-can-do>
           <span className="w-[112px] shrink-0 text-[var(--text-muted)]">{t('botsPage.profile.canDo')}</span>

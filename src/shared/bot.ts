@@ -481,6 +481,8 @@ export interface BotSetJobParams {
  *  - `skills-changed`: a bot's skills changed (shared/botSkill.ts);
  *  - `memory-changed`: a bot's notes or the owner's profile changed
  *    (shared/botMemory.ts);
+ *  - `commands-changed`: a bot's command decisions, rules or switch
+ *    changed (shared/botCommand.ts);
  *  - `settings-changed`: the factory settings changed (the bots switched
  *    on or off, from any caller). */
 export type BotEventPayload =
@@ -493,6 +495,7 @@ export type BotEventPayload =
   | { type: 'groups-changed' }
   | { type: 'skills-changed'; botId?: string }
   | { type: 'memory-changed'; botId?: string }
+  | { type: 'commands-changed'; botId?: string }
   | { type: 'settings-changed' };
 
 export const BOT_EVENT = 'bot.event';

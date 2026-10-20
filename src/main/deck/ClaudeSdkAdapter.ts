@@ -38,7 +38,7 @@ import { guestGateProvenance, runningWakeAttended } from '../factory/wakeTaint';
 import { BOT_EXEC_TOOLS, evaluateBotExecTool, logBotExecDecision, reviewUnlistedCommand, type BotExecDecision } from '../factory/botExec';
 import { BOT_COMMAND_REVIEWER_LIMITS, BotCommandReviewer, sdkReviewerAsk } from '../factory/botCommandReviewer';
 import { UNSETTABLE_ENV_NAME, botSandboxSettings, type BotExecSupport } from '../factory/botExecSandbox';
-import { botCommandRulesFor } from '../factory/botCommandRules';
+import { botCommandRulesFor, botCommandsEnabled } from '../factory/botCommandRules';
 import { claudeNotFoundMessage } from '../factory/engineError';
 import type { BotClaudeAuth } from '../factory/claudeApiKey';
 import type { BotBinding } from '../../shared/bot';
@@ -318,7 +318,8 @@ export interface ClaudeSdkAdapterDeps {
    *  repository (factory/botRepoRead.ts). `auth` says how the bot signs in
    *  to Claude, read on every turn (absent: the subscription), and
    *  `onAuthSeen` is told the sign-in the session reported (factory/
-   *  claudeApiKey.ts). With `exec` reporting the OS sandbox available, the
+   *  claudeApiKey.ts). With `exec` reporting the OS sandbox available, and
+   *  the owner's switch for the bot on (factory/botCommandRules.ts), the
    *  session also holds Bash, Write and Edit, sandboxed to `cwd` and decided
    *  by main on every call (factory/botExec.ts). */
   bot?: BotDeps;
@@ -1187,6 +1188,7 @@ export class ClaudeSdkAdapter implements BrainAdapter {
       repoRoot: root,
       attended: () => runningWakeAttended(botId),
       rules: () => botCommandRulesFor(botId),
+      enabled: () => botCommandsEnabled(botId),
     };
     // This turn's command reviewer, on the turn's own sign-in: the env (as
     // the sandbox left it) and claude of these options, read when it is
@@ -1414,11 +1416,12 @@ export class ClaudeSdkAdapter implements BrainAdapter {
           return;
         }
       }
-      // Commands only where the OS sandbox runs; a failed check is no commands.
+      // Commands only where the OS sandbox runs and the owner has not
+      // switched them off for this bot; a failed check is no commands.
       this._turnExec = false;
       try {
         const support = this.bot.exec ? await this.bot.exec() : null;
-        this._turnExec = support?.ok === true;
+        this._turnExec = support?.ok === true && botCommandsEnabled(this.bot.binding.botId);
         this._turnExecVersion = support?.ok ? support.version : '';
       } catch {
         this._turnExec = false;

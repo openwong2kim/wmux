@@ -17,7 +17,7 @@
 // further: a command not on the list makes it `unlisted`, with the line as
 // it would run and its words, for the reviewer (botCommandReviewer.ts).
 
-import { commandFloor, commandLineToRun, normalizeCommand, parseCommandLine, type FloorContext, type SimpleCommand } from './botCommandFloor';
+import { commandFloor, commandLineToRun, normalizeCommand, parseCommandLine, type FloorContext, type Pipeline, type SimpleCommand } from './botCommandFloor';
 
 /** One owner rule: the command's leading words, and whether more may follow. */
 export interface BotCommandRule {
@@ -151,6 +151,19 @@ export function ruleMatches(rule: BotCommandRule, argv: readonly string[]): bool
   if (rule.argv.length === 0 || argv.length < rule.argv.length) return false;
   if (!rule.argv.every((w, k) => argv[k] === w)) return false;
   return rule.anyArgs === true || argv.length === rule.argv.length;
+}
+
+/** The words of each pipeline head that neither the built-in list nor
+ *  `rules` allow: what an owner rule would have to name for the line to be
+ *  on the list (a command after a pipe is never allowed by a rule). Pure. */
+export function unlistedHeads(pipelines: readonly Pipeline[], rules: readonly BotCommandRule[]): string[][] {
+  const out: string[][] = [];
+  for (const p of pipelines) {
+    const head = p[0];
+    if (!head || rules.some((rule) => ruleMatches(rule, head.argv)) || builtinRefusal(head) === null) continue;
+    if (!out.some((argv) => argv.length === head.argv.length && argv.every((w, k) => w === head.argv[k]))) out.push([...head.argv]);
+  }
+  return out;
 }
 
 /** A known pipe filter's refusal of its arguments or input, or null. */

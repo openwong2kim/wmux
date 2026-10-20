@@ -432,8 +432,8 @@ describe('the owner\'s command rules file', () => {
     const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
     expect(raw.version).toBe(BOT_COMMAND_RULES_VERSION);
     expect(new BotCommandRulesStore(file).rulesFor('bot-1')).toEqual([{ argv: ['npm', 'test'] }, { argv: ['make'], anyArgs: true }]);
-    await expect(store.setRules('bot-1', [{ argv: [] }])).rejects.toThrow(/malformed/);
-    await expect(store.setRules('bot-1', [{ argv: ['a\nb'] }])).rejects.toThrow(/malformed/);
+    await expect(store.setRules('bot-1', [{ argv: [] }])).rejects.toThrow(/names no command/);
+    await expect(store.setRules('bot-1', [{ argv: ['a\nb'] }])).rejects.toThrow(/multi-line word/);
   });
 
   it.each([
@@ -444,7 +444,7 @@ describe('the owner\'s command rules file', () => {
     [{ argv: ['node'], anyArgs: true }],
   ])('a shell or interpreter rule must name its script and take nothing else: %j', async (rule) => {
     const store = new BotCommandRulesStore(botCommandRulesPath(botDir));
-    await expect(store.setRules('bot-1', [rule])).rejects.toThrow(/malformed/);
+    await expect(store.setRules('bot-1', [rule])).rejects.toThrow(/must name the script it runs/);
   });
 
   it('an interpreter rule naming its script is kept; an unsafe one in the file is dropped on load', async () => {

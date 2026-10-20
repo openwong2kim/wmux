@@ -554,6 +554,18 @@ status bar badges, `fleet_triage` or the phone's sidebar.
   profile?", "Change this in your profile?" or "Remove this from your
   profile?", the exact entry fenced, replace showing Now and Becomes),
   approved on the card only, as a skill is.
+- **Commands (2026-10-21):** under Memory, only where the bot runs
+  commands at all (a Claude SDK bot, the OS sandbox present, a new enough
+  Claude Code), a Commands row: first "Let this bot run commands" with a
+  Switch (on by default; off, the bot holds none of the command tools) and
+  a muted hint; then Recent, main's decisions newest first, 20 at a time
+  with a muted Show more: the command or path on a main-text mono line,
+  under it one muted line — Allowed, or Refused in the danger red (the
+  word only), the time, the tool, where it was decided and main's reason. A
+  command refused as not on the list carries a muted Always allow that adds
+  a rule for exactly that command; main's refusal shows as one red line.
+  Last, Your rules, one mono line each with a muted Remove that acts at
+  once; empty lists are one muted line. No fills, no chips.
 - **Messages are bubbles in runs (owner decision 2026-10-14, the reference
   messenger's look; replaces the same day's flat rows):** a bot's messages
   on the left in soft `--selection-subtle` bubbles (18px radius, fill only,

@@ -155,6 +155,32 @@ describe('bot options with commands', () => {
     }
   });
 
+  it('a bot whose commands the owner switched off holds no command tool, even with the sandbox', async () => {
+    const { getBotCommandRulesStore } = await import('../../factory/botCommandRules');
+    await getBotCommandRulesStore().setCommandsEnabled(BINDING.botId, false);
+    const o = await botOptions({ exec: true });
+    expect(o.tools).toEqual([]);
+    expect(o.sandbox).toBeUndefined();
+    expect(o.disallowedTools).toEqual(expect.arrayContaining(['Bash', 'Write', 'Edit', 'Read']));
+    expect(o.systemPrompt).not.toContain(BOT_EXEC_PROMPT);
+    // A bot with a repository keeps its repository reads, nothing more.
+    const repo = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'botexec-repo-')));
+    try {
+      const withRepo = await botOptions({ exec: true, repoRoot: repo });
+      expect(withRepo.tools).toEqual(['Read', 'Grep', 'Glob']);
+      expect(withRepo.sandbox).toBeUndefined();
+      expect(await preHook(withRepo)({ tool_name: 'Read', tool_input: { file_path: path.join(botDir, 'notes.md') } })).toMatchObject({ hookSpecificOutput: { permissionDecision: 'deny' } });
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+    // Switched off during a turn that holds the tools: the gate refuses.
+    await getBotCommandRulesStore().setCommandsEnabled(BINDING.botId, true);
+    const on = await botOptions({ exec: true });
+    await getBotCommandRulesStore().setCommandsEnabled(BINDING.botId, false);
+    expect(await preHook(on)({ tool_name: 'Bash', tool_input: { command: 'ls' } })).toMatchObject({ hookSpecificOutput: { permissionDecision: 'deny', permissionDecisionReason: expect.stringContaining('switched this bot\'s commands off') } });
+    expect(await canUse(on)('Write', { file_path: 'out.md', content: 'x' })).toMatchObject({ behavior: 'deny' });
+  });
+
   it('with a repository too: repository reads plus the command tools', async () => {
     const repo = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'botexec-repo-')));
     fs.writeFileSync(path.join(repo, 'a.ts'), 'x');

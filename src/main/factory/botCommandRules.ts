@@ -8,13 +8,17 @@
 // it). The floor applies whatever a rule says, and a rule for a shell or an
 // interpreter must name its script and may not take any arguments.
 //
-// A missing file is an empty list. A file of another version, or one that
-// cannot be read, is an empty list too (logged) and is never overwritten.
+// It also holds the owner's per-bot switch: a bot listed in `off` runs no
+// commands at all (no Bash, Write or Edit, and no Read of its own folder).
+//
+// A missing file is an empty list with every bot on. A file of another
+// version, or one that cannot be read, is an empty list too (logged), is
+// never overwritten, and turns every bot's commands off.
 
 import path from 'node:path';
 import { getWmuxDir } from '../../daemon/config';
 import type { BotCommandRule } from './botCommandAllow';
-import { commandName, isShellOrInterpreter } from './botCommandFloor';
+import { commandName, isShellOrInterpreter, normalizeCommand } from './botCommandFloor';
 import { createFilePersister, readVersionedFile, type FilePersister } from './versionedFile';
 
 export const BOT_COMMAND_RULES_FILE = 'bot-command-rules.json';
@@ -25,31 +29,48 @@ export function botCommandRulesPath(wmuxDir: string): string {
   return path.join(wmuxDir, 'factory', BOT_COMMAND_RULES_FILE);
 }
 
-/** One rule from the file or the owner, or null when malformed. Pure. */
-export function parseBotCommandRule(value: unknown): BotCommandRule | null {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+/** Why `value` is not a rule, or null when it is one. Pure. */
+export function botCommandRuleRefusal(value: unknown): string | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return 'a command rule is malformed';
   const v = value as { argv?: unknown; anyArgs?: unknown };
-  if (!Array.isArray(v.argv) || v.argv.length === 0 || v.argv.length > BOT_COMMAND_RULES_LIMITS.WORDS) return null;
-  const argv: string[] = [];
+  if (!Array.isArray(v.argv) || v.argv.length === 0) return 'a command rule names no command';
+  if (v.argv.length > BOT_COMMAND_RULES_LIMITS.WORDS) return `a command rule has more than ${BOT_COMMAND_RULES_LIMITS.WORDS} words`;
   for (const w of v.argv) {
-    if (typeof w !== 'string' || w.length === 0 || w.length > BOT_COMMAND_RULES_LIMITS.WORD_MAX || /[\0\r\n]/.test(w)) return null;
-    argv.push(w);
+    if (typeof w !== 'string' || w.length === 0 || w.length > BOT_COMMAND_RULES_LIMITS.WORD_MAX || /[\0\r\n]/.test(w)) return 'a command rule has an empty, overlong or multi-line word';
   }
-  if (v.anyArgs !== undefined && typeof v.anyArgs !== 'boolean') return null;
+  if (v.anyArgs !== undefined && typeof v.anyArgs !== 'boolean') return 'a command rule is malformed';
   // A shell or interpreter rule names its script and takes nothing else:
   // with any arguments it would run whatever code follows.
-  if (isShellOrInterpreter(commandName(argv[0])) && (v.anyArgs === true || !argv.slice(1).some((w) => !w.startsWith('-')))) return null;
+  const argv = v.argv as string[];
+  if (isShellOrInterpreter(commandName(argv[0])) && (v.anyArgs === true || !argv.slice(1).some((w) => !w.startsWith('-')))) {
+    return `a rule for ${commandName(argv[0])} must name the script it runs, and takes no other arguments`;
+  }
+  return null;
+}
+
+/** One rule from the file or the owner, or null when malformed. Pure. */
+export function parseBotCommandRule(value: unknown): BotCommandRule | null {
+  if (botCommandRuleRefusal(value) !== null) return null;
+  const v = value as { argv: string[]; anyArgs?: boolean };
+  const argv = [...v.argv];
   return v.anyArgs ? { argv, anyArgs: true } : { argv };
+}
+
+/** A rule as one command line (its words quoted as main runs them). Pure. */
+export function botCommandRuleText(rule: BotCommandRule): string {
+  return normalizeCommand([[{ assignments: [], argv: rule.argv, redirects: [] }]]);
 }
 
 export class BotCommandRulesStore {
   private readonly rules = new Map<string, BotCommandRule[]>();
+  /** Bots the owner switched commands off for. */
+  private readonly off = new Set<string>();
   private readonly persister: FilePersister;
   /** The file could not be read as this version: nothing is written over it. */
   private readonly locked: boolean;
 
   constructor(private readonly file: string) {
-    this.persister = createFilePersister(file, () => ({ version: BOT_COMMAND_RULES_VERSION, bots: Object.fromEntries(this.rules) }));
+    this.persister = createFilePersister(file, () => ({ version: BOT_COMMAND_RULES_VERSION, bots: Object.fromEntries(this.rules), off: [...this.off] }));
     let locked = false;
     try {
       const raw = readVersionedFile(file, BOT_COMMAND_RULES_VERSION);
@@ -60,6 +81,7 @@ export class BotCommandRulesStore {
         if (parsed.length < list.length) console.warn(`[factory] bot command rules: dropped ${list.length - parsed.length} malformed or unsafe rule(s) of ${botId}`);
         if (parsed.length > 0) this.rules.set(botId, parsed.slice(0, BOT_COMMAND_RULES_LIMITS.RULES_PER_BOT));
       }
+      if (raw && Array.isArray(raw.off)) for (const botId of raw.off) if (typeof botId === 'string' && botId.length > 0) this.off.add(botId);
     } catch (err) {
       locked = true;
       console.warn(`[factory] bot command rules not loaded (every bot keeps the built-in list only): ${String(err)}`);
@@ -82,9 +104,25 @@ export class BotCommandRulesStore {
     if (typeof botId !== 'string' || botId.length === 0) throw new Error('a bot id is required');
     if (rules.length > BOT_COMMAND_RULES_LIMITS.RULES_PER_BOT) throw new Error('too many command rules');
     const parsed = rules.map(parseBotCommandRule);
-    if (parsed.some((r) => r === null)) throw new Error('a command rule is malformed');
+    const refusal = rules.map(botCommandRuleRefusal).find((r) => r !== null);
+    if (refusal) throw new Error(refusal);
     if (parsed.length === 0) this.rules.delete(botId);
     else this.rules.set(botId, parsed as BotCommandRule[]);
+    await this.persister.schedule();
+  }
+
+  /** Whether `botId` may run commands: on unless the owner switched it off,
+   *  and off for every bot while the file cannot be read. */
+  commandsEnabled(botId: string): boolean {
+    return !this.locked && !this.off.has(botId);
+  }
+
+  /** The owner's switch for one bot. The owner's path only, as setRules. */
+  async setCommandsEnabled(botId: string, enabled: boolean): Promise<void> {
+    if (this.locked) throw new Error(`${this.file} is from another version of wmux and is not changed`);
+    if (typeof botId !== 'string' || botId.length === 0) throw new Error('a bot id is required');
+    if (enabled) this.off.delete(botId);
+    else this.off.add(botId);
     await this.persister.schedule();
   }
 }
@@ -103,6 +141,16 @@ export function botCommandRulesFor(botId: string): BotCommandRule[] {
     return getBotCommandRulesStore().rulesFor(botId);
   } catch {
     return [];
+  }
+}
+
+/** Whether `botId` may run commands (the owner's switch); false when the
+ *  switch cannot be read. */
+export function botCommandsEnabled(botId: string): boolean {
+  try {
+    return getBotCommandRulesStore().commandsEnabled(botId);
+  } catch {
+    return false;
   }
 }
 

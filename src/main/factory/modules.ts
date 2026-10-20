@@ -26,3 +26,4 @@ import '../pipe/handlers/workerResume.rpc';
 import '../pipe/handlers/workerMessage.rpc';
 import './botWorkflowModule';
 import '../pipe/handlers/memory.rpc';
+import './botCommandModule';

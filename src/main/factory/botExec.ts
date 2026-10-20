@@ -28,7 +28,11 @@
 // (botFolderPath.ts). Read: inside the bot's folder (a bot with a
 // repository also reads that, botRepoRead.ts). Every decision on Bash, Write
 // and Edit is logged with its layer, a short reason and the parsed command,
-// with stored secrets masked.
+// with stored secrets masked, and handed to the owner's decision log
+// (botCommandLog.ts, through setBotExecDecisionSink).
+//
+// Before all of them, a bot the owner switched off (botCommandRules.ts) is
+// refused (`off`); the adapter also gives it none of these tools.
 
 import { decideBotCommand, type BotCommandRule } from './botCommandAllow';
 import { BOT_COMMAND_REVIEWER_LIMITS, reviewerRefusal, type BotCommandReviewer, type ReviewCode, type ReviewFolder, type ReviewOutcome } from './botCommandReviewer';
@@ -51,10 +55,12 @@ export interface BotExecContext {
   attended: () => boolean;
   /** The owner's command rules for this bot. */
   rules: () => readonly BotCommandRule[];
+  /** The owner's switch for this bot (absent: on); an error counts as off. */
+  enabled?: () => boolean;
   fs?: BotFolderDeps;
 }
 
-export type BotExecLayer = 'attended' | 'parse' | 'floor' | 'allowlist' | 'unlisted' | 'script' | 'reviewer' | 'path' | 'input';
+export type BotExecLayer = 'attended' | 'parse' | 'floor' | 'allowlist' | 'rule' | 'unlisted' | 'script' | 'reviewer' | 'path' | 'input' | 'off';
 
 /** An `unlisted` line as the reviewer sees it and as it would run. */
 export interface UnlistedCommand {
@@ -79,9 +85,17 @@ export function sanitizeBashInput(input: Record<string, unknown>): Record<string
 }
 
 const UNATTENDED = 'commands and file edits run only in a turn the owner started (their message or the run button)';
+const SWITCHED_OFF = 'the owner switched this bot\'s commands off';
 
 /** Main's decision on one Bash, Write, Edit or Read call of a bot. */
 export function evaluateBotExecTool(toolName: string, input: Record<string, unknown>, ctx: BotExecContext): BotExecDecision {
+  let enabled = true;
+  try {
+    enabled = ctx.enabled ? ctx.enabled() : true;
+  } catch {
+    enabled = false;
+  }
+  if (!enabled) return { ok: false, layer: 'off', reason: SWITCHED_OFF, command: toolName === 'Bash' && typeof input.command === 'string' ? input.command.slice(0, 200) : undefined };
   if (toolName === 'Read') {
     const r = checkBotFolderPath(input.file_path, ctx.botDir, ctx.fs);
     return r.ok ? { ok: true, layer: 'path', input: { ...input, file_path: r.real } } : { ok: false, layer: 'path', reason: `${String(input.file_path)}: ${r.reason}` };
@@ -109,7 +123,7 @@ export function evaluateBotExecTool(toolName: string, input: Record<string, unkn
     }
     // It runs as main rebuilt it from the approved words (botCommandFloor.ts
     // commandLineToRun), never as the model wrote it.
-    return { ok: true, layer: d.layer, input: { ...sanitizeBashInput(input), command: d.run }, command: d.command };
+    return { ok: true, layer: d.matched === 'rule' ? 'rule' : d.layer, input: { ...sanitizeBashInput(input), command: d.run }, command: d.command };
   }
   if (!attended) return { ok: false, layer: 'attended', reason: UNATTENDED };
   const r = checkBotFolderPath(input.file_path, ctx.botDir, ctx.fs);
@@ -175,6 +189,25 @@ export async function reviewUnlistedCommand(d: BotExecDecision, input: Record<st
   return { ok: false, layer: 'reviewer', reason: REVIEW_REFUSALS[code], command, review };
 }
 
+/** One decision as the owner's log keeps it (before masking). */
+export interface BotExecDecisionRecord {
+  tool: string;
+  decision: 'allow' | 'deny';
+  layer: string;
+  reason?: string;
+  target?: string;
+}
+
+type BotExecDecisionSink = (botId: string, record: BotExecDecisionRecord) => void;
+
+let decisionSink: BotExecDecisionSink | null = null;
+
+/** Where every decision goes besides the console (the owner's log,
+ *  botCommandModule.ts); null: nowhere. */
+export function setBotExecDecisionSink(next: BotExecDecisionSink | null): void {
+  decisionSink = next;
+}
+
 /** One log line per decision on Bash, Write or Edit (never a secret). */
 export function logBotExecDecision(botId: string, toolName: string, d: BotExecDecision, log: (line: string) => void = console.warn): void {
   const target = toolName === 'Bash' ? d.command : d.ok ? (d.input.file_path as string | undefined) : undefined;
@@ -204,4 +237,9 @@ export function logBotExecDecision(botId: string, toolName: string, d: BotExecDe
     line = JSON.stringify({ botId, tool: toolName, decision: entry.decision, layer: d.layer });
   }
   log(`[factory] bot command ${line}`);
+  try {
+    decisionSink?.(botId, { tool: toolName, decision: d.ok ? 'allow' : 'deny', layer: d.layer, ...(d.ok ? {} : { reason: d.reason }), ...(target ? { target } : {}) });
+  } catch {
+    /* the owner's log is best effort; the console line is kept */
+  }
 }
