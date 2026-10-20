@@ -473,6 +473,41 @@ describe('one-time routines and quiet hours', () => {
     expect(r.queued.map((w) => w.state)).toEqual(['dropped', 'queued']);
   });
 
+  it('a once routine resumed after its time is missed, not caught up; one resumed before it still fires', () => {
+    const r = rig();
+    const late = set(r, A, { schedule: { kind: 'once', at: at(13, 9) } });
+    const early = set(r, A, { schedule: { kind: 'once', at: at(13, 11) } });
+    if (!late.ok || !early.ok) throw new Error('create');
+    clock = at(13, 8, 30);
+    expect(r.store.pauseFor(A, 'park')).toBe(2);
+    clock = at(13, 10);
+    expect(r.store.resumeFor(A, 'park')).toBe(2);
+    expect(r.store.get(late.routine.id)).toMatchObject({ state: 'done', done: { reason: 'missed', at: clock } });
+    expect(r.store.get(late.routine.id)).not.toHaveProperty('paused');
+    expect(r.cards.at(-1)).toMatchObject({ title: 'Routine missed: Check PRs', actor: { kind: 'system' } });
+    expect(r.store.get(early.routine.id)).toMatchObject({ state: 'active', nextDueAt: at(13, 11) });
+    expect(r.store.tick()).toEqual([]);
+    expect(r.wakes).toEqual([]);
+    // The owner's own resume after its time: missed too, with no "resumed" card.
+    r.store.pause({ kind: 'owner' }, early.routine.id, true);
+    clock = at(13, 12);
+    const cards = r.cards.length;
+    expect(r.store.pause({ kind: 'owner' }, early.routine.id, false)).toMatchObject({ ok: true, routine: { state: 'done', done: { reason: 'missed' } } });
+    expect(r.cards.slice(cards).map((c) => c.title)).toEqual(['Routine missed: Check PRs']);
+  });
+
+  it('any change to a routine takes back its wake still waiting', () => {
+    const r = rig();
+    const made = set(r);
+    if (!made.ok) throw new Error('create');
+    clock += HOUR;
+    expect(r.store.tick()).toEqual([made.routine.id]);
+    expect(r.queued.map((w) => w.state)).toEqual(['queued']);
+    const changed = set(r, A, { routineId: made.routine.id, prompt: 'Remind me once.', schedule: { kind: 'once', at: clock + 2 * HOUR } });
+    expect(changed).toMatchObject({ ok: true, routine: { state: 'active', nextDueAt: clock + 2 * HOUR } });
+    expect(r.queued.map((w) => w.state)).toEqual(['dropped']);
+  });
+
   it('a done routine is dropped seven days after it ended while the app stays open', () => {
     const r = rig();
     r.store.start();

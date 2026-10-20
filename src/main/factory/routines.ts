@@ -20,8 +20,9 @@
 //   per missed slot; a slot that comes while the bot cannot run (switched off,
 //   parked, the factory off) is skipped;
 // - a one-time (`once`) routine fires at its time, or on the first look after
-//   it when that is at most ONCE_GRACE_MS late, and is then `done`; later than
-//   that, or when its bot cannot run, it is done as `missed` without firing.
+//   it when that is at most ONCE_GRACE_MS late (the app was closed), and is
+//   then `done`; later than that, when its bot cannot run, or when it is
+//   resumed after its time, it is done as `missed` without firing.
 //   A done routine never fires again (a change with a new time re-arms it);
 //   a pause or stop takes back its wake still waiting, and it is dropped
 //   DONE_KEEP_MS after it ended;
@@ -404,10 +405,11 @@ export class RoutineStore {
       if (threadId) r.threadId = threadId;
       else delete r.threadId;
       r.updatedAt = now;
-      // A done one-time routine given a new time runs again; a wake of its
-      // last firing still waiting would run the new prompt now, so it goes.
+      // A wake of it still waiting would run the changed routine early (and
+      // a one-time routine again at its new time), so it goes.
+      this.dropQueued(r);
+      // A done one-time routine given a new time runs again.
       if (r.state === 'done') {
-        this.dropQueued(r);
         r.state = 'active';
         delete r.done;
       }
@@ -464,7 +466,7 @@ export class RoutineStore {
       this.changed([r.botId]);
     } else if (!paused && r.state === 'paused') {
       this.resumeOne(r);
-      this.card(r, party, 'Routine resumed');
+      if (r.state === 'active') this.card(r, party, 'Routine resumed');
       this.changed([r.botId]);
     }
     return { ok: true, routine: publicCopy(r) };
@@ -507,11 +509,20 @@ export class RoutineStore {
     return true;
   }
 
+  /** A resumed routine counts from now, with no catch-up: a one-time
+   *  routine whose time passed while paused is done as missed. */
   private resumeOne(r: StoredRoutine): void {
     const now = this.now();
-    r.state = 'active';
     delete r.paused;
     r.updatedAt = now;
+    if (r.schedule.kind === 'once' && r.schedule.at <= now) {
+      r.state = 'done';
+      r.done = { reason: 'missed', at: now };
+      delete r.nextDueAt;
+      this.card(r, { kind: 'system' }, 'Routine missed');
+      return;
+    }
+    r.state = 'active';
     r.nextDueAt = nextSlot(r.schedule, now);
   }
 
