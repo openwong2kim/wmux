@@ -440,6 +440,59 @@ describe('one-time routines and quiet hours', () => {
     expect(set(r, A, { quietHours: { start: '22:00', end: '22:00' } })).toMatchObject({ ok: false, code: 'invalid_argument' });
   });
 
+  it('a pause or stop takes back a fired once routine\'s wake still waiting; it is then missed', () => {
+    const r = rig();
+    const a = set(r, A, { schedule: { kind: 'once', at: at(13, 9) } });
+    const b = set(r, B, { schedule: { kind: 'once', at: at(13, 9) } });
+    if (!a.ok || !b.ok) throw new Error('create');
+    clock = at(13, 9);
+    expect(r.store.tick()).toEqual([a.routine.id, b.routine.id]);
+    expect(r.queued.map((w) => w.state)).toEqual(['queued', 'queued']);
+    // Stop bot A: its waiting wake goes, the other bot's stays.
+    r.store.pauseFor(A, 'stop');
+    expect(r.queued.map((w) => w.state)).toEqual(['dropped', 'queued']);
+    expect(r.store.get(a.routine.id)).toMatchObject({ state: 'done', done: { reason: 'missed' } });
+    // The owner pauses B's routine: same.
+    expect(r.store.pause({ kind: 'owner' }, b.routine.id, true)).toMatchObject({ ok: true, routine: { state: 'done', done: { reason: 'missed' } } });
+    expect(r.queued.map((w) => w.state)).toEqual(['dropped', 'dropped']);
+    expect(r.cards.at(-1)).toMatchObject({ title: 'Routine paused: Check PRs', actor: { kind: 'human' } });
+  });
+
+  it('re-arming a done once routine takes back the wake of its last firing still waiting', () => {
+    const r = rig();
+    const made = set(r, A, { schedule: { kind: 'once', at: at(13, 9) } });
+    if (!made.ok) throw new Error('create');
+    clock = at(13, 9);
+    r.store.tick();
+    expect(r.queued.map((w) => w.state)).toEqual(['queued']);
+    const rearmed = r.store.set({ botId: A, workspaceId: 'ws-1' }, { routineId: made.routine.id, title: 'Later', prompt: 'New prompt.', schedule: { kind: 'once', at: at(13, 10) } });
+    expect(rearmed).toMatchObject({ ok: true, routine: { state: 'active', nextDueAt: at(13, 10) } });
+    expect(r.queued.map((w) => w.state)).toEqual(['dropped']);
+    clock = at(13, 10);
+    expect(r.store.tick()).toEqual([made.routine.id]);
+    expect(r.queued.map((w) => w.state)).toEqual(['dropped', 'queued']);
+  });
+
+  it('a done routine is dropped seven days after it ended while the app stays open', () => {
+    const r = rig();
+    r.store.start();
+    const made = set(r, A, { schedule: { kind: 'once', at: at(13, 9) } });
+    if (!made.ok) throw new Error('create');
+    clock = at(13, 9);
+    r.timers.at(-1)?.fn();
+    expect(r.store.get(made.routine.id)?.state).toBe('done');
+    // With only a done routine left the timer still runs, and prunes it.
+    const eventsBefore = r.events.length;
+    clock += 6 * 24 * HOUR;
+    r.timers.at(-1)?.fn();
+    expect(r.store.list(A)).toHaveLength(1);
+    clock += 24 * HOUR + MIN;
+    r.timers.at(-1)?.fn();
+    expect(r.store.list(A)).toEqual([]);
+    expect(r.events.slice(eventsBefore)).toEqual([{ type: 'routines-changed', botId: A }]);
+    r.store.dispose();
+  });
+
   it('a stored routine without the new fields loads unchanged; a malformed quietHours drops the row', async () => {
     const r = rig();
     const made = set(r);

@@ -23,6 +23,8 @@
 //   it when that is at most ONCE_GRACE_MS late, and is then `done`; later than
 //   that, or when its bot cannot run, it is done as `missed` without firing.
 //   A done routine never fires again (a change with a new time re-arms it);
+//   a pause or stop takes back its wake still waiting, and it is dropped
+//   DONE_KEEP_MS after it ended;
 // - an interval routine's slot is skipped when it, or the moment it would
 //   fire, falls inside the routine's quiet hours. Daily and one-time routines
 //   run at the time chosen for them;
@@ -323,7 +325,7 @@ export class RoutineStore {
       const r = parseStored(entry);
       if (!r || seen.has(r.id)) continue;
       seen.add(r.id);
-      if (r.done && this.now() - r.done.at > DONE_KEEP_MS) continue;
+      if (expired(r, this.now())) continue;
       // An active routine always has a due time.
       if (r.state === 'active' && r.nextDueAt === undefined) r.nextDueAt = nextSlot(r.schedule, this.now());
       this.routines.push(r);
@@ -402,8 +404,10 @@ export class RoutineStore {
       if (threadId) r.threadId = threadId;
       else delete r.threadId;
       r.updatedAt = now;
-      // A done one-time routine given a new time runs again.
+      // A done one-time routine given a new time runs again; a wake of its
+      // last firing still waiting would run the new prompt now, so it goes.
       if (r.state === 'done') {
+        this.dropQueued(r);
         r.state = 'active';
         delete r.done;
       }
@@ -455,6 +459,9 @@ export class RoutineStore {
       this.pauseOne(r, actor.kind === 'bot' ? 'bot' : 'owner');
       this.card(r, party, 'Routine paused');
       this.changed([r.botId]);
+    } else if (paused && r.state === 'done' && this.cancelDone(r)) {
+      this.card(r, party, 'Routine paused');
+      this.changed([r.botId]);
     } else if (!paused && r.state === 'paused') {
       this.resumeOne(r);
       this.card(r, party, 'Routine resumed');
@@ -475,16 +482,29 @@ export class RoutineStore {
   /** A paused routine runs no more: its wake still waiting in the queue or
    *  parked with its bot is taken back (one already running goes on to its
    *  end). */
-  private dropQueued(r: StoredRoutine): void {
+  private dropQueued(r: StoredRoutine): number {
+    let n = 0;
     try {
       const q = this.deps.wakes();
-      if (!q?.list || !q.drop) return;
+      if (!q?.list || !q.drop) return 0;
       for (const w of q.list({ botId: r.botId, states: ['queued', 'parked'] })) {
-        if (w.reason.kind === 'routine' && w.reason.routineId === r.id) q.drop(w.id, 'expired');
+        if (w.reason.kind === 'routine' && w.reason.routineId === r.id && q.drop(w.id, 'expired')) n++;
       }
     } catch (err) {
       this.log(`routine ${r.id}: queued wake not dropped: ${String(err)}`);
     }
+    return n;
+  }
+
+  /** A pause or stop reaches a one-time routine that fired but whose wake
+   *  has not started: the wake is taken back and the routine counts as
+   *  missed. Returns whether a wake was taken back. */
+  private cancelDone(r: StoredRoutine): boolean {
+    if (r.done?.reason !== 'fired' || this.dropQueued(r) === 0) return false;
+    const now = this.now();
+    r.done = { reason: 'missed', at: now };
+    r.updatedAt = now;
+    return true;
   }
 
   private resumeOne(r: StoredRoutine): void {
@@ -506,7 +526,9 @@ export class RoutineStore {
       this.pauseOne(r, reason);
       if (reason === 'stop') this.card(r, { kind: 'system' }, 'Routine paused (stopped)');
     }
-    if (hit.length > 0) this.changed(hit.map((r) => r.botId));
+    // A one-time routine that fired with its wake still waiting is stopped too.
+    const cancelled = this.routines.filter((r) => r.state === 'done' && (botId === undefined || r.botId === botId) && this.cancelDone(r));
+    if (hit.length + cancelled.length > 0) this.changed([...hit, ...cancelled].map((r) => r.botId));
     return hit.length;
   }
 
@@ -535,7 +557,9 @@ export class RoutineStore {
     if (!this.running) return;
     if (this.timer !== null) this.clearTimer(this.timer);
     this.timer = null;
-    const due = this.routines.filter((r) => r.state === 'active' && r.nextDueAt !== undefined).map((r) => r.nextDueAt as number);
+    // A done routine is due too: it is pruned DONE_KEEP_MS after it ended.
+    const due = this.routines.flatMap((r) => r.state === 'active' && r.nextDueAt !== undefined ? [r.nextDueAt]
+      : r.done ? [r.done.at + DONE_KEEP_MS + 1] : []);
     if (due.length === 0) return;
     const wait = Math.min(TICK_MAX_MS, Math.max(TICK_MIN_MS, Math.min(...due) - this.now()));
     this.timer = this.setTimer(() => {
@@ -552,6 +576,9 @@ export class RoutineStore {
     const now = this.now();
     const fired: string[] = [];
     const touched = new Set<string>();
+    // Done routines kept long enough go, while the app stays open too.
+    for (const r of this.routines) if (expired(r, now)) touched.add(r.botId);
+    if (touched.size > 0) this.routines = this.routines.filter((r) => !expired(r, now));
     for (const r of this.routines) {
       if (r.state !== 'active' || r.nextDueAt === undefined || r.nextDueAt > now) continue;
       touched.add(r.botId);
@@ -648,6 +675,10 @@ export class RoutineStore {
 
 function bad(message: string): RoutineResult {
   return { ok: false, code: 'invalid_argument', message };
+}
+
+function expired(r: StoredRoutine, now: number): boolean {
+  return r.done !== undefined && now - r.done.at > DONE_KEEP_MS;
 }
 
 function tooMany(): RoutineResult {
