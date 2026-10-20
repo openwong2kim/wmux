@@ -8,29 +8,31 @@
 //                  in a wake known clean: never one an external guest's
 //                  message started or derived from (RpcRouter refuses
 //                  those first), nor one started from outside text (a PR,
-//                  an issue, CI, a tainted handoff). The owner's profile
-//                  (`user`) only in a wake on the owner's words: their
-//                  message, their button, or their answer to the bot's
-//                  question (not one closed without an answer). A wake
-//                  that cannot be told is refused.
-//                  The conversation counts too (factory/conversationMarks.ts):
-//                  the runtime resumes one conversation across wakes, so
-//                  nothing is saved from one that ran a tainted or guest
-//                  wake, and the owner's profile is not written from one
-//                  that read outside text (OUTSIDE_TEXT_RPC), until a fresh
-//                  conversation starts. No live conversation: refused.
+//                  an issue, CI, a tainted handoff). The conversation counts
+//                  too (factory/conversationMarks.ts): the runtime resumes
+//                  one conversation across wakes, so nothing is saved from
+//                  one that ran a tainted or guest wake until a fresh one
+//                  starts; no live conversation is refused. Its own notes
+//                  are written at once. The owner's profile (`user`) is
+//                  never written by a bot: the change is checked and raised
+//                  as an `owner_profile` approval card (factory/approvals.ts
+//                  proposeOwnerProfile), only in a wake on the owner's words
+//                  (their message, their button, or their answer to the
+//                  bot's question), and the owner's Approve applies it,
+//                  checked again (getOwnerProfileApprovalHost).
 //   IPC read / remove / clear   the main window only.
 // A removed bot's notes are deleted with it (BotRuntime onBotRemoved).
 // Anyone else is refused. Before the module started every method answers
 // `not_started`.
 
 import { ipcMain, type BrowserWindow } from 'electron';
-import { BOT_EVENT, type BotEventPayload } from '../../../shared/bot';
-import { BOT_MEMORY_IPC, BOT_MEMORY_RPC, MEMORY_TARGETS, type MemoryTarget, type MemoryUpdateResult } from '../../../shared/botMemory';
+import { BOT_EVENT, type BotBinding, type BotEventPayload } from '../../../shared/bot';
+import { BOT_MEMORY_IPC, BOT_MEMORY_RPC, MEMORY_TARGETS, type MemoryChange, type MemoryTarget, type MemoryUpdateResult } from '../../../shared/botMemory';
 import type { RpcContext } from '../../../shared/rpc';
 import type { WakeReason } from '../../../shared/wake';
 import { registerFactoryRpcModule, type FactoryHostDeps, type FactoryModuleHandle, type FactoryRouter } from '../../factory/factoryHost';
-import { clearMemory, forgetMemoryOfRemovedBots, readMemoryView, removeMemoryEntry, updateMemory } from '../../factory/botMemory';
+import { applyMemoryChange, clearMemory, forgetMemoryOfRemovedBots, planMemoryChange, readMemoryView, removeMemoryEntry, updateMemory } from '../../factory/botMemory';
+import { getApprovalService, type ApprovalOwnerProfileHost } from '../../factory/approvals';
 import { guestOfRunningWake, runningWakeTainted, type GuestProvenance } from '../../factory/wakeTaint';
 import { currentWakeItem } from '../../factory/wakeQueue';
 import { getBotRuntime, onBotRemoved } from '../../factory/BotRuntime';
@@ -55,8 +57,8 @@ function isTarget(v: unknown): v is MemoryTarget {
 export const MEMORY_GUEST_REFUSAL = 'this turn comes from an external guest\'s message (or wmux cannot tell where it came from), and such a turn saves no memory; tell the owner what you would remember';
 export const MEMORY_TAINT_REFUSAL = 'this turn started from outside text (a pull request, an issue, CI, or work that read them), or wmux cannot tell where it started, and such a turn saves no memory; save it in a turn the owner starts';
 export const MEMORY_CONVERSATION_REFUSAL = 'this conversation has run a turn started from outside text or by a guest (or wmux cannot tell), and such a conversation saves no memory until a fresh one starts; tell the owner what you would remember';
-export const MEMORY_OUTSIDE_READ_REFUSAL = 'this conversation has read outside text (pull requests, issues, CI, worker panes or reports, facts), so it does not write the owner\'s profile; keep it in your own notes (target memory), or tell the owner';
-export const MEMORY_USER_REFUSAL = 'the owner\'s profile is written only in a turn on the owner\'s words (their message, their button, or their answer to your question); save it then, or keep it in your own notes (target memory)';
+export const MEMORY_USER_REFUSAL = 'a change to the owner\'s profile is proposed in a turn on the owner\'s words (their message, their button, or their answer to your question); propose it then, or keep it in your own notes (target memory)';
+export const OWNER_PROFILE_PENDING = 'Waiting for the owner: their approval card shows this change, and their Approve applies it (every bot\'s next session starts with it). The entries below are the profile as it stands now.';
 
 /** The reason of the wake `botId` is running now, when the queue and the
  *  runtime agree on which wake that is; null otherwise. Never throws. */
@@ -96,6 +98,14 @@ export interface MemoryHandlerDeps {
   ownerAnswer?: (handoffId: string) => boolean;
   /** The bot's live conversation's marks, or null. Default: conversationMarks.ts. */
   conversation?: (botId: string) => ConversationMarks | null;
+  /** Raise the owner's approval card for a profile change. Default: the
+   *  approval store's proposeOwnerProfile. */
+  propose?: (bot: BotBinding, change: MemoryChange) => { ok: true; request: { requestId: string }; duplicate?: true } | { ok: false; code: string; message: string };
+}
+
+function proposeToOwner(bot: BotBinding, change: MemoryChange): ReturnType<NonNullable<MemoryHandlerDeps['propose']>> {
+  const service = getApprovalService();
+  return service ? service.proposeOwnerProfile(bot, change) : { ok: false, code: 'not_started', message: 'approvals are not running yet' };
 }
 
 /** Why the bot's running wake may not write `target`, or null. Fails
@@ -107,7 +117,6 @@ export function memoryWriteRefusal(botId: string, target: MemoryTarget, deps: Pi
     const marks = (deps.conversation ?? conversationMarks)(botId);
     if (!marks || marks.tainted) return refuse('not_authorized', MEMORY_CONVERSATION_REFUSAL);
     if (target === 'user') {
-      if (marks.readOutside) return refuse('not_authorized', MEMORY_OUTSIDE_READ_REFUSAL);
       const reason = (deps.wakeReason ?? runningWakeReason)(botId);
       const owners = reason?.kind === 'human' || reason?.kind === 'manual'
         || (reason?.kind === 'handoff' && (deps.ownerAnswer ?? ownerAnswered)(reason.handoffId));
@@ -128,6 +137,20 @@ export function handleMemoryUpdate(raw: unknown, ctx: RpcContext | undefined, de
   if (!isTarget(p.target)) return refuse('invalid', 'target is memory (your notes) or user (the owner\'s profile)');
   const gate = memoryWriteRefusal(bot.botId, p.target, deps);
   if (gate) return gate;
+  if (p.target === 'user') {
+    // Checked now (the scanner, secrets, the limit, the entry match finds),
+    // written only by the owner's Approve.
+    const plan = planMemoryChange(wmuxDir, 'user', bot.botId, { action: p.action, text: p.text, match: p.match });
+    if (!plan.ok) return plan;
+    const now = readMemoryView(wmuxDir, 'user', bot.botId);
+    if (plan.unchanged) return { ok: true, action: plan.change.action, unchanged: true, message: plan.unchanged, ...now };
+    const asked = (deps.propose ?? proposeToOwner)(bot, plan.change);
+    if (!asked.ok) {
+      const code: Refusal['code'] = asked.code === 'invalid' || asked.code === 'write_failed' || asked.code === 'not_started' ? asked.code : 'not_authorized';
+      return refuse(code, asked.message);
+    }
+    return { ok: true, action: plan.change.action, pending: true, approvalId: asked.request.requestId, message: OWNER_PROFILE_PENDING, ...now };
+  }
   const res = updateMemory(wmuxDir, p.target, bot.botId, { action: p.action, text: p.text, match: p.match });
   if (res.ok && !res.unchanged) {
     try {
@@ -137,6 +160,32 @@ export function handleMemoryUpdate(raw: unknown, ctx: RpcContext | undefined, de
     }
   }
   return res;
+}
+
+let profileHost: ApprovalOwnerProfileHost | null = null;
+
+/** What the approval store's `owner_profile` Approve does, once the module
+ *  started: the change on the card, checked again and written. */
+export function getOwnerProfileApprovalHost(): ApprovalOwnerProfileHost | null {
+  return profileHost;
+}
+
+export function ownerProfileApprovalHost(wmuxDir: () => string | null, emit: (payload: BotEventPayload) => void): ApprovalOwnerProfileHost {
+  return {
+    approve(r) {
+      const dir = wmuxDir();
+      if (!dir) return 'memory is not running';
+      if (!r.ownerProfile) return 'the request names no change';
+      const res = applyMemoryChange(dir, 'user', r.botId, r.ownerProfile);
+      if (!res.ok) return res.message;
+      try {
+        emit({ type: 'memory-changed', botId: r.botId });
+      } catch {
+        /* the profile re-reads on its next event */
+      }
+      return null;
+    },
+  };
 }
 
 export function registerMemoryHandlers(router: Pick<FactoryRouter, 'register'>, deps: MemoryHandlerDeps): void {
@@ -208,6 +257,7 @@ export function createMemoryModule(deps: Pick<FactoryHostDeps, 'wmuxDir' | 'getM
     start() {
       state.dir = deps.wmuxDir();
       offIpc = registerMemoryIpc(deps.getMainWindow, { wmuxDir: () => state.dir, emit });
+      profileHost = ownerProfileApprovalHost(() => state.dir, emit);
       offRemoved = onBotRemoved((botId) => {
         const dir = state.dir;
         if (!dir) return;
@@ -231,6 +281,7 @@ export function createMemoryModule(deps: Pick<FactoryHostDeps, 'wmuxDir' | 'getM
       offIpc = null;
       offRemoved?.();
       offRemoved = null;
+      profileHost = null;
       state.dir = null;
     },
   };

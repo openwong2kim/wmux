@@ -9,6 +9,7 @@ import type { Handoff } from '../../../shared/handoff';
 import type { LedgerEntry } from '../../../shared/ledger';
 import type { WakeItem } from '../../../shared/wake';
 import { __resetGuestWorkspacesForTesting, noteGuestRecordWorkspaces } from '../guestWorkspaces';
+import { endConversation, startConversation } from '../conversationMarks';
 import { GUEST_TURN_STARTS_NO_WORKERS, WakeTaint, expectWakeTaint, factVisibleToBot, guestTurnProbeOf, untrackedGuest, guestOfWake, guestTurnRefusal, runningWakeTainted, setWakeTaint, taskTainted, type WakeTaintPorts } from '../wakeTaint';
 
 let dir: string;
@@ -270,6 +271,34 @@ describe('WakeTaint', () => {
     fs.writeFileSync(path.join(dir, 'factory', 'taint.json'), '{nope');
     const fromBot = { kind: 'bot' as const, workspaceId: 'ws', botId: 'bot-a' };
     expect(make({}, [], [handoff('h', fromBot)]).handoffTainted('h')).toBe(true);
+  });
+});
+
+describe('handoffs follow the sender\'s conversation', () => {
+  it('a handoff sent in a clean wake from a conversation that ran a tainted wake is tainted', () => {
+    let conversationTainted = true;
+    const running = { item: wake({ kind: 'human', text: 'status?', source: 'desktop' }), startedAt: 0 };
+    const t = make({ runningWake: () => running, conversationTainted: () => conversationTainted });
+    expect(t.wakeTainted(running.item)).toBe(false);
+    expect(t.markSent('h-poisoned', 'bot-a')).toBe(true);
+    expect(t.markForward('h-fwd', { senderBotId: 'bot-a', handoffIds: [] })).toBe(true);
+    conversationTainted = false;
+    expect(t.markSent('h-clean', 'bot-a')).toBe(false);
+    // A conversation whose mark cannot be read counts as tainted.
+    const broken = make({ runningWake: () => running, conversationTainted: () => { throw new Error('x'); } });
+    expect(broken.markSent('h-unknown', 'bot-a')).toBe(true);
+  });
+
+  it('by default reads the conversation mark the runtime keeps', () => {
+    const running = { item: { ...wake({ kind: 'human', text: 'hi', source: 'desktop' }), botId: 'bot-c' }, startedAt: 0 };
+    const t = make({ runningWake: () => running });
+    startConversation('bot-c', { tainted: true });
+    try {
+      expect(t.markSent('h-c1', 'bot-c')).toBe(true);
+    } finally {
+      endConversation('bot-c');
+    }
+    expect(t.markSent('h-c2', 'bot-c')).toBe(false);
   });
 });
 

@@ -8,7 +8,7 @@
 import { useSyncExternalStore } from 'react';
 import type { ElectronAPI } from '../../../preload/preload';
 import type { ApprovalAction, ApprovalRequest } from '../../../shared/botApproval';
-import { APPROVAL_NEVER_BY_RULE } from '../../../shared/botApproval';
+import { APPROVAL_NEVER_BY_RULE, CARD_ONLY_ACTIONS } from '../../../shared/botApproval';
 import type { RoomCard } from '../../../shared/room';
 
 export type ApprovalsApi = ElectronAPI['approvals'];
@@ -112,8 +112,8 @@ export function approvalPhase(r: ApprovalView | undefined, now: number): Approva
       // A rule carries out merges only (never a release or a default-branch push).
       return { phase: 'pending', canAlways: r.action === 'merge' && !APPROVAL_NEVER_BY_RULE.has(r.action) };
     case 'approved':
-      // An approved skill is in place already: approving was the act.
-      if (r.action !== 'merge') return { phase: 'approved', byRule: r.decidedBy === 'rule', recordedOnly: r.action !== 'skill' };
+      // An approved skill or profile change is in place already: approving was the act.
+      if (r.action !== 'merge') return { phase: 'approved', byRule: r.decidedBy === 'rule', recordedOnly: !CARD_ONLY_ACTIONS.has(r.action) };
       if (!r.effectId && r.executeAfter !== undefined && now < r.executeAfter) {
         return { phase: 'undo', secondsLeft: Math.max(1, Math.ceil((r.executeAfter - now) / 1000)) };
       }
@@ -143,8 +143,8 @@ export function pendingForChip(
   scope: { workspaceId?: string; threadId?: string | null; botId?: string },
 ): ApprovalView[] {
   const shown = new Set(cards.map((c) => c.id));
-  // A skill is approved on its own card, where its change is shown.
-  return list.filter((r) => r.state === 'pending' && r.action !== 'skill'
+  // A skill or a profile change is approved on its own card, where the change is shown.
+  return list.filter((r) => r.state === 'pending' && !CARD_ONLY_ACTIONS.has(r.action)
     && (!scope.workspaceId || r.workspaceId === scope.workspaceId)
     && (!scope.threadId || r.threadId === scope.threadId)
     && (!scope.botId || r.botId === scope.botId) && !!r.cardId && shown.has(r.cardId));

@@ -1365,21 +1365,18 @@ describe('external guests and the bot\'s conversation', () => {
 describe('conversation marks and removal', () => {
   beforeEach(() => __resetConversationMarksForTesting());
 
-  it('a tainted wake marks the conversation, the marks are saved and a resume carries them; a fresh one starts clean', async () => {
+  it('a tainted wake marks the conversation, the mark is saved and a resume carries it; a fresh one starts clean', async () => {
     setBotRuntimePorts({ wakeTainted: (item) => item.reason.kind === 'routine' });
     const r = rig({ mode: 'ok' });
     const id = createBot(r);
     must(r.runtime.wake(id, { text: 'one' }));
     await settle(10);
-    expect(conversationMarks(id)).toEqual({ tainted: false, readOutside: false });
-    expect(r.sessions.get(id)).toMatchObject({ sessionId: 'sess-1', tainted: false, readOutside: false });
+    expect(conversationMarks(id)).toEqual({ tainted: false });
+    expect(r.sessions.get(id)).toMatchObject({ sessionId: 'sess-1', tainted: false });
     r.queue.enqueue({ botId: id, workspaceId: 'ws-1', reason: { kind: 'routine', routineId: 'r-abcdefgh', dueAt: clock }, priority: 2 });
     await settle(10);
-    expect(conversationMarks(id)).toEqual({ tainted: true, readOutside: false });
-    expect(r.sessions.get(id)).toMatchObject({ tainted: true, readOutside: false });
-    // A mark set mid-turn (RpcRouter) is saved at once.
-    markConversation(id, 'readOutside');
-    expect(r.sessions.get(id)).toMatchObject({ tainted: true, readOutside: true });
+    expect(conversationMarks(id)).toEqual({ tainted: true });
+    expect(r.sessions.get(id)).toMatchObject({ tainted: true });
 
     r.runtime.dispose();
     await r.sessions.flush();
@@ -1388,7 +1385,7 @@ describe('conversation marks and removal', () => {
     must(again.runtime.wake(id, { text: 'two' }));
     await settle(10);
     expect(again.adapters[0].started?.resumeSessionId).toBe('sess-1');
-    expect(conversationMarks(id)).toEqual({ tainted: true, readOutside: true });
+    expect(conversationMarks(id)).toEqual({ tainted: true });
 
     // No saved conversation: the next one is fresh and clean.
     again.sessions.delete(id);
@@ -1400,21 +1397,30 @@ describe('conversation marks and removal', () => {
     must(again.runtime.wake(id, { text: 'three' }));
     await settle(10);
     expect(again.adapters[1].started?.resumeSessionId).toBeUndefined();
-    expect(conversationMarks(id)).toEqual({ tainted: false, readOutside: false });
+    expect(conversationMarks(id)).toEqual({ tainted: false });
   });
 
-  it('a saved conversation with no marks resumes as unknown; every wake is tainted without the taint port', async () => {
+  it('a mark set mid-turn is saved at once; a saved conversation with no mark resumes tainted, and so does every wake without the taint port', async () => {
+    setBotRuntimePorts({ wakeTainted: () => false });
     const r = rig({ mode: 'ok' });
     const id = createBot(r);
-    r.sessions.set(id, { sessionId: 'sess-old', updatedAt: 1 });
     must(r.runtime.wake(id, { text: 'one' }));
     await settle(10);
-    expect(r.adapters[0].started?.resumeSessionId).toBe('sess-old');
-    expect(conversationMarks(id)).toEqual({ tainted: true, readOutside: true });
+    expect(r.sessions.get(id)).toMatchObject({ tainted: false });
+    markConversation(id, 'tainted');
+    expect(r.sessions.get(id)).toMatchObject({ tainted: true });
+
+    __resetBotRuntimePortsForTesting();
+    const old = createBot(r);
+    r.sessions.set(old, { sessionId: 'sess-old', updatedAt: 1 });
+    must(r.runtime.wake(old, { text: 'one' }));
+    await settle(10);
+    expect(r.adapters.at(-1)?.started?.resumeSessionId).toBe('sess-old');
+    expect(conversationMarks(old)).toEqual({ tainted: true });
     const fresh = createBot(r);
     must(r.runtime.wake(fresh, { text: 'one' }));
     await settle(10);
-    expect(conversationMarks(fresh)).toEqual({ tainted: true, readOutside: false });
+    expect(conversationMarks(fresh)).toEqual({ tainted: true });
   });
 
   it('tells the removal listeners once a bot is removed', () => {

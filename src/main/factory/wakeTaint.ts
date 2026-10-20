@@ -17,7 +17,9 @@
 //             mark; an unknown workflow or future revision remains tainted.
 //   handoff,  the handoff's own mark: recorded when it is sent (or, failing
 //   mention   that, when it was delivered), from the sender's running wake
-//             (a send is synchronous inside the sender's turn). A dispatch
+//             (a send is synchronous inside the sender's turn) and its
+//             conversation: one that ran a tainted wake earlier
+//             (conversationMarks.ts) taints what it sends. A dispatch
 //             wmux sends on for a relay is marked before it is stored, as
 //             tainted as the result it carries, the hop that result answers
 //             and the relay's first dispatch (an unmarked one is tainted).
@@ -68,6 +70,7 @@ import type { BotWorkflow } from '../../shared/botWorkflow';
 import type { WakeItem, WakeReason } from '../../shared/wake';
 import { taskIdOfFactId } from './wakePrompt';
 import { factInIsland, isGuestWorkspace } from './guestWorkspaces';
+import { conversationMarks } from './conversationMarks';
 
 /** Facts whose payload is GitHub-authored text. */
 export const OUTSIDE_TEXT_FACT_KINDS: ReadonlySet<FactKind> = new Set<FactKind>([
@@ -122,6 +125,11 @@ export interface WakeTaintPorts {
   runningWake: (botId: string) => { item: WakeItem; startedAt: number } | null;
   /** A bot's profile (its template and workspace), or null when it is not known. */
   bot?: (botId: string) => Pick<BotProfile, 'template' | 'role' | 'workspaceId'> | null;
+  /** Whether the bot's live conversation ran a tainted wake
+   *  (conversationMarks.ts). Default: its mark; a bot with no live
+   *  conversation is read by its wake alone (a sending bot is in a turn,
+   *  which always has one). */
+  conversationTainted?: (botId: string) => boolean;
   /** Whether a workspace is a guest workspace (default isGuestWorkspace). */
   guestWorkspace?: (workspaceId: string) => GuestProvenance;
   /** `<wmuxDir>/factory/taint.json`; absent: marks in memory only. */
@@ -455,6 +463,16 @@ export class WakeTaint {
 
   /** A researcher-template bot's sends are always tainted; a bot that
    *  cannot be looked up is not known to be clean either. */
+  /** The sender's conversation ran a tainted wake: what it sends now may
+   *  carry that text, whatever woke this turn. */
+  private conversationTainted(botId: string): boolean {
+    try {
+      return (this.ports.conversationTainted ?? ((id: string) => conversationMarks(id)?.tainted === true))(botId);
+    } catch {
+      return true;
+    }
+  }
+
   private alwaysTainted(botId: string): boolean {
     if (!this.ports.bot) return false;
     try {
@@ -466,7 +484,7 @@ export class WakeTaint {
   }
 
   /** A bot is sending a handoff now, inside its turn: mark it from that
-   *  turn's wake, and as tainted and as guest-sourced as any handoff it
+   *  turn's wake and the sender's conversation (a tainted one taints it), and as tainted and as guest-sourced as any handoff it
    *  answers (`answers`). `guestSource`, when given, is the provenance of
    *  the card it carries (a room mention), read in place of the turn's. A
    *  handoff already marked keeps its mark. Returns the mark, or null when
@@ -479,7 +497,8 @@ export class WakeTaint {
     let guest = true;
     try {
       const running = this.ports.runningWake(senderBotId);
-      tainted = guestSource === true || !running || this.alwaysTainted(senderBotId) || this.wakeTainted(running.item) || answers.some((id) => this.handoffTainted(id));
+      tainted = guestSource === true || !running || this.alwaysTainted(senderBotId) || this.wakeTainted(running.item)
+        || this.conversationTainted(senderBotId) || answers.some((id) => this.handoffTainted(id));
       guest = (guestSource ?? (!running || this.wakeGuest(running.item) !== false)) || answers.some((id) => this.handoffGuest(id) !== false);
     } catch {
       tainted = true;
@@ -501,7 +520,7 @@ export class WakeTaint {
     try {
       const sender = from.senderBotId;
       const running = sender ? this.ports.runningWake(sender) : null;
-      tainted = (sender ? !running || this.alwaysTainted(sender) || this.wakeTainted(running.item) : false)
+      tainted = (sender ? !running || this.alwaysTainted(sender) || this.wakeTainted(running.item) || this.conversationTainted(sender) : false)
         || from.handoffIds.some((id) => this.handoffTainted(id));
       guest = (sender ? !running || this.wakeGuest(running.item) !== false : false)
         || from.handoffIds.some((id) => this.handoffGuest(id) !== false);

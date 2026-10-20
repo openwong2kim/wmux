@@ -30,6 +30,7 @@ import {
   MEMORY_LIMITS,
   memoryLimit,
   type MemoryAction,
+  type MemoryChange,
   type MemoryTarget,
   type MemoryUpdateResult,
   type MemoryView,
@@ -156,46 +157,39 @@ export function prepareEntry(raw: unknown): { ok: true; text: string } | Refusal
 
 const SAVED = 'Saved. It loads at the start of your next session, not into this one.';
 
-/** `memory_update` on one store: add an entry (the same text again changes
- *  nothing), or replace or remove the one entry holding `match`. A change
- *  that would pass the store's limit is refused with the entries as they
- *  stand, so the bot can make room. */
-export function updateMemory(
-  wmuxDir: string,
-  target: MemoryTarget,
-  botId: string,
-  p: { action?: unknown; text?: unknown; match?: unknown },
-): MemoryUpdateResult {
-  const file = memoryFile(wmuxDir, target, botId);
-  if (!file) return refuse('invalid', 'not a bot');
-  const action = p.action as MemoryAction;
-  if (!MEMORY_ACTIONS.includes(action)) return refuse('invalid', 'action is add, replace or remove');
-  const entries = readStored(file);
+/** A change resolved against a store's entries: the entries it found, what
+ *  they become, and the change as an owner's card shows it (`old`: the
+ *  entry it replaces or removes). `unchanged`: nothing to do, and why. */
+export interface MemoryPlan {
+  ok: true;
+  entries: string[];
+  next: string[];
+  change: MemoryChange;
+  unchanged?: string;
+}
+
+/** The change at `at` (an entry's index; add: none), from the bot's raw
+ *  text: scanned, masked, deduplicated and held to the store's limit. */
+function planAt(target: MemoryTarget, entries: string[], action: MemoryAction, at: number, rawText: unknown): MemoryPlan | Refusal {
   const limit = memoryLimit(target);
   const current = { entries, used: entriesUsage(entries), limit };
   let next: string[];
-  if (action === 'add') {
-    const prep = prepareEntry(p.text);
-    if (!prep.ok) return prep;
-    if (entries.includes(prep.text)) return { ok: true, action, unchanged: true, message: 'Already saved; nothing changed.', ...view(target, entries) };
-    next = [...entries, prep.text];
+  let change: MemoryChange;
+  if (action === 'remove') {
+    next = entries.filter((_, i) => i !== at);
+    change = { action, old: entries[at] };
   } else {
-    const match = p.match;
-    if (typeof match !== 'string' || match.trim().length === 0 || match.length > MEMORY_LIMITS.MATCH_MAX) {
-      return refuse('invalid', `match is required for ${action}: a substring of the entry, at most ${MEMORY_LIMITS.MATCH_MAX} characters`);
-    }
-    const hits = entries.flatMap((e, i) => (e.includes(match) ? [i] : []));
-    if (hits.length === 0) return refuse('not_found', `no entry holds "${match}"; the entries are listed in entries`, current);
-    if (hits.length > 1) return refuse('ambiguous', `${hits.length} entries hold "${match}"; pass a longer match that only one holds`, current);
-    const at = hits[0];
-    if (action === 'remove') {
-      next = entries.filter((_, i) => i !== at);
+    const prep = prepareEntry(rawText);
+    if (!prep.ok) return prep;
+    if (action === 'add') {
+      if (entries.includes(prep.text)) return { ok: true, entries, next: entries, change: { action, text: prep.text }, unchanged: 'Already saved; nothing changed.' };
+      next = [...entries, prep.text];
+      change = { action, text: prep.text };
     } else {
-      const prep = prepareEntry(p.text);
-      if (!prep.ok) return prep;
-      if (prep.text === entries[at]) return { ok: true, action, unchanged: true, message: 'The entry already says that; nothing changed.', ...view(target, entries) };
+      if (prep.text === entries[at]) return { ok: true, entries, next: entries, change: { action, text: prep.text, old: entries[at] }, unchanged: 'The entry already says that; nothing changed.' };
       // The new text already being another entry: the replaced one goes.
       next = entries.includes(prep.text) ? entries.filter((_, i) => i !== at) : entries.map((e, i) => (i === at ? prep.text : e));
+      change = { action, text: prep.text, old: entries[at] };
     }
   }
   const used = entriesUsage(next);
@@ -206,13 +200,76 @@ export function updateMemory(
       current,
     );
   }
+  return { ok: true, entries, next, change };
+}
+
+/** `memory_update`'s change on one store, checked but not written: add an
+ *  entry, or replace or remove the one entry holding `match`. */
+export function planMemoryChange(
+  wmuxDir: string,
+  target: MemoryTarget,
+  botId: string,
+  p: { action?: unknown; text?: unknown; match?: unknown },
+): MemoryPlan | Refusal {
+  const file = memoryFile(wmuxDir, target, botId);
+  if (!file) return refuse('invalid', 'not a bot');
+  const action = p.action as MemoryAction;
+  if (!MEMORY_ACTIONS.includes(action)) return refuse('invalid', 'action is add, replace or remove');
+  const entries = readStored(file);
+  if (action === 'add') return planAt(target, entries, action, -1, p.text);
+  const match = p.match;
+  if (typeof match !== 'string' || match.trim().length === 0 || match.length > MEMORY_LIMITS.MATCH_MAX) {
+    return refuse('invalid', `match is required for ${action}: a substring of the entry, at most ${MEMORY_LIMITS.MATCH_MAX} characters`);
+  }
+  const current = { entries, used: entriesUsage(entries), limit: memoryLimit(target) };
+  const hits = entries.flatMap((e, i) => (e.includes(match) ? [i] : []));
+  if (hits.length === 0) return refuse('not_found', `no entry holds "${match}"; the entries are listed in entries`, current);
+  if (hits.length > 1) return refuse('ambiguous', `${hits.length} entries hold "${match}"; pass a longer match that only one holds`, current);
+  return planAt(target, entries, action, hits[0], p.text);
+}
+
+/** Write a plan's entries; the result the bot reads. */
+function commitPlan(wmuxDir: string, target: MemoryTarget, botId: string, plan: MemoryPlan): MemoryUpdateResult {
+  const action = plan.change.action;
+  if (plan.unchanged) return { ok: true, action, unchanged: true, message: plan.unchanged, ...view(target, plan.entries) };
+  const file = memoryFile(wmuxDir, target, botId);
+  if (!file) return refuse('invalid', 'not a bot');
   try {
-    writeStored(file, next);
+    writeStored(file, plan.next);
   } catch (err) {
     // The code only: the message would name main's data folder to the bot.
     return refuse('write_failed', `the memory could not be written (${(err as NodeJS.ErrnoException)?.code ?? 'error'})`);
   }
-  return { ok: true, action, message: action === 'remove' ? 'Removed. Your next session starts without it.' : SAVED, ...view(target, next) };
+  return { ok: true, action, message: action === 'remove' ? 'Removed. Your next session starts without it.' : SAVED, ...view(target, plan.next) };
+}
+
+/** `memory_update` on one store, written at once (a bot's own notes). A
+ *  change over the store's limit is refused with the entries as they stand,
+ *  so the bot can make room. */
+export function updateMemory(
+  wmuxDir: string,
+  target: MemoryTarget,
+  botId: string,
+  p: { action?: unknown; text?: unknown; match?: unknown },
+): MemoryUpdateResult {
+  const plan = planMemoryChange(wmuxDir, target, botId, p);
+  return plan.ok ? commitPlan(wmuxDir, target, botId, plan) : plan;
+}
+
+/** A change the owner approved (an `owner_profile` card): checked again as
+ *  it stands now (the scanner, secrets, the limit) and written. A replaced
+ *  or removed entry must still read as the card showed it. */
+export function applyMemoryChange(wmuxDir: string, target: MemoryTarget, botId: string, change: MemoryChange): MemoryUpdateResult {
+  const file = memoryFile(wmuxDir, target, botId);
+  if (!file) return refuse('invalid', 'not a bot');
+  if (!MEMORY_ACTIONS.includes(change.action)) return refuse('invalid', 'action is add, replace or remove');
+  const entries = readStored(file);
+  const at = change.action === 'add' ? -1 : entries.indexOf(change.old ?? '');
+  if (change.action !== 'add' && at < 0) {
+    return refuse('not_found', 'the entry the change was for is no longer there as it read', { entries, used: entriesUsage(entries), limit: memoryLimit(target) });
+  }
+  const plan = planAt(target, entries, change.action, at, change.text);
+  return plan.ok ? commitPlan(wmuxDir, target, botId, plan) : plan;
 }
 
 /** The owner removes one entry: `index` and `text` must still name the same

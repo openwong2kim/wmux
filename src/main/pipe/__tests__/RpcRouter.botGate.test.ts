@@ -24,7 +24,6 @@ import type { RpcContext, RpcMethod } from '../../../shared/rpc';
 import type { BotRefusal } from '../../../shared/botSurface';
 import type { WakeItem } from '../../../shared/wake';
 import { WakeTaint, expectWakeTaint, setWakeTaint } from '../../factory/wakeTaint';
-import { conversationMarks, endConversation, startConversation } from '../../factory/conversationMarks';
 
 let tmpDir = '';
 let store: PluginTrustStore;
@@ -125,23 +124,6 @@ describe.each(['shadow', 'enforce'] as const)('bot role gate (%s mode)', (mode) 
       expect(refusals[0].bot).toEqual(VERIFIER);
     } finally {
       off();
-      revokeCommanderToken(token);
-    }
-  });
-
-  it('marks the bot\'s conversation when a call returns outside text, before its handler runs', async () => {
-    setWakeTaint(null);
-    expectWakeTaint(false);
-    router.register('pr.read' as RpcMethod, async () => ({ ok: true }));
-    startConversation(VERIFIER.botId, { tainted: false, readOutside: false });
-    const token = mintBotToken(VERIFIER);
-    try {
-      expect((await call('room.post', token)).ok).toBe(true);
-      expect(conversationMarks(VERIFIER.botId)).toEqual({ tainted: false, readOutside: false });
-      expect((await call('pr.read', token)).ok).toBe(true);
-      expect(conversationMarks(VERIFIER.botId)).toEqual({ tainted: false, readOutside: true });
-    } finally {
-      endConversation(VERIFIER.botId);
       revokeCommanderToken(token);
     }
   });

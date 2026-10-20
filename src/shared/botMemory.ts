@@ -15,10 +15,13 @@
 //                                              by every bot of the owner
 //
 // Both load into a bot's session when it starts (a snapshot: what a bot saves
-// applies from its next session). A bot writes them only through
-// `memory_update`, in a wake known clean (never a guest's or one started from
-// outside text); `user` only in a wake the owner started. Every text is
-// checked for instructions and secrets before it is kept. The owner reads,
+// applies from its next session). A bot writes its notes only through
+// `memory_update`, in a conversation known clean (never a guest's, never one
+// that ran a wake started from outside text). It never writes the owner's
+// profile: `memory_update` on `user` raises an `owner_profile` approval card
+// (shared/botApproval.ts) showing the exact change, and only the owner's
+// Approve applies it. Every text is checked for instructions and secrets
+// before it is kept, and again when the owner approves. The owner reads,
 // removes and clears both in the bot's profile (BOT_MEMORY_IPC); the bot
 // never names a file or a bot.
 
@@ -69,6 +72,14 @@ export interface MemoryUpdateParams {
   match?: string;
 }
 
+/** A change as main checked it: the entry's text for add and replace, and
+ *  the entry it replaces or removes (`old`), as it read then. */
+export interface MemoryChange {
+  action: MemoryAction;
+  text?: string;
+  old?: string;
+}
+
 /** One store as the bot and the owner see it. */
 export interface MemoryView {
   target: MemoryTarget;
@@ -79,7 +90,12 @@ export interface MemoryView {
 }
 
 export type MemoryUpdateResult =
-  | ({ ok: true; action: MemoryAction; message: string; unchanged?: true } & MemoryView)
+  | ({
+    ok: true; action: MemoryAction; message: string; unchanged?: true;
+    /** `user`: the change waits for the owner on an approval card (this
+     *  one); the entries are as they stand, without it. */
+    pending?: true; approvalId?: string;
+  } & MemoryView)
   | {
     ok: false;
     code: 'not_bot' | 'not_started' | 'not_authorized' | 'invalid' | 'unsafe' | 'not_found' | 'ambiguous' | 'over_limit' | 'write_failed';

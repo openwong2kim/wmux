@@ -17,7 +17,7 @@
 // Room cards: an `approval` card's refs carry `approvalId`, the requestId
 // these routes take (shared/phoneRooms.ts).
 
-import { APPROVAL_ACTIONS, APPROVAL_ID_RE, APPROVAL_NEVER_BY_RULE, type ApprovalAction, type ApprovalRequest, type ApprovalState } from './botApproval';
+import { APPROVAL_ACTIONS, APPROVAL_ID_RE, APPROVAL_NEVER_BY_RULE, CARD_ONLY_ACTIONS, type ApprovalAction, type ApprovalRequest, type ApprovalState } from './botApproval';
 import { parseThreadId, type ThreadId } from './room';
 
 export const PHONE_BOT_APPROVAL_COMMAND = 'workspaces.botApproval';
@@ -71,9 +71,10 @@ export type PhoneBotApprovalReply =
 
 const LINE_MAX = 200;
 
-/** The acts the phone shows and decides: not a bot's skill proposal, which
- *  is approved on its desktop card, where its change is shown. */
-export const PHONE_APPROVAL_ACTIONS: readonly ApprovalAction[] = APPROVAL_ACTIONS.filter((a) => a !== 'skill');
+/** The acts the phone shows and decides: not a bot's skill proposal or a
+ *  change to the owner's profile, which are approved on their desktop card,
+ *  where the change is shown. */
+export const PHONE_APPROVAL_ACTIONS: readonly ApprovalAction[] = APPROVAL_ACTIONS.filter((a) => !CARD_ONLY_ACTIONS.has(a));
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return !!v && typeof v === 'object' && !Array.isArray(v);

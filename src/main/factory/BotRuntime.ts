@@ -94,11 +94,10 @@ export interface BotSessionRecord {
    *  conversation's last model whenever no --model is given; a record
    *  without it predates it. */
   model?: string | null;
-  /** The conversation's marks (conversationMarks.ts): a wake run in it was
-   *  tainted, or a call of it read outside text. A record without them is
-   *  of unknown history and resumes with both set. */
+  /** The conversation's mark (conversationMarks.ts): a wake run in it was
+   *  tainted. A record without it is of unknown history and resumes
+   *  tainted. */
   tainted?: boolean;
-  readOutside?: boolean;
   updatedAt: number;
 }
 
@@ -138,7 +137,6 @@ export class BotSessionStore {
         ...(repoPath !== undefined ? { repoPath } : {}),
         ...(model !== undefined ? { model } : {}),
         ...(typeof r.tainted === 'boolean' ? { tainted: r.tainted } : {}),
-        ...(typeof r.readOutside === 'boolean' ? { readOutside: r.readOutside } : {}),
         updatedAt: r.updatedAt as number,
       });
     }
@@ -337,8 +335,8 @@ export function notifyBotRemoved(botId: string): void {
   }
 }
 
-const CLEAN_MARKS: ConversationMarks = { tainted: false, readOutside: false };
-const UNKNOWN_MARKS: ConversationMarks = { tainted: true, readOutside: true };
+const CLEAN_MARKS: ConversationMarks = { tainted: false };
+const UNKNOWN_MARKS: ConversationMarks = { tainted: true };
 
 /** Longest the runtime waits at launch for the modules its wake prompts
  *  read from; past it, a module that failed to start holds no bot. */
@@ -462,7 +460,7 @@ export class BotRuntime {
     const live = this.live.get(botId);
     const rec = this.deps.sessions.get(botId);
     if (!live || live.ephemeral || !rec) return;
-    this.deps.sessions.set(botId, { ...rec, tainted: m.tainted, readOutside: m.readOutside });
+    this.deps.sessions.set(botId, { ...rec, tainted: m.tainted });
   }
 
   // ── status ────────────────────────────────────────────────────────────────
@@ -1088,10 +1086,9 @@ export class BotRuntime {
     });
     const live: LiveSession = { adapter: spawned.adapter, engineKey, attached: false, ...(opts.ephemeral ? { ephemeral: true } : {}) };
     this.live.set(profile.id, live);
-    // A guest's conversation of its own counts as holding everything; a
-    // resumed one carries its record's marks (none recorded: unknown).
-    startConversation(profile.id, opts.ephemeral ? UNKNOWN_MARKS
-      : saved ? { tainted: saved.tainted ?? true, readOutside: saved.readOutside ?? true } : CLEAN_MARKS);
+    // A guest's conversation of its own counts as tainted; a resumed one
+    // carries its record's mark (none recorded: unknown).
+    startConversation(profile.id, opts.ephemeral ? UNKNOWN_MARKS : saved ? { tainted: saved.tainted ?? true } : CLEAN_MARKS);
     return { ok: true, live };
   }
 
@@ -1185,7 +1182,7 @@ export class BotRuntime {
         if (sessionId && !s.live.ephemeral) {
           const accountId = s.live.adapter.conversationAccountId;
           const m = conversationMarks(botId) ?? UNKNOWN_MARKS;
-          this.deps.sessions.set(botId, { sessionId, ...(accountId !== undefined ? { accountId } : {}), repoPath: profile.repo?.repoPath ?? null, model: modelPin(profile), tainted: m.tainted, readOutside: m.readOutside, updatedAt: this.now() });
+          this.deps.sessions.set(botId, { sessionId, ...(accountId !== undefined ? { accountId } : {}), repoPath: profile.repo?.repoPath ?? null, model: modelPin(profile), tainted: m.tainted, updatedAt: this.now() });
         }
         // A reply to the owner the bot wrote as plain text instead of a
         // room_post would reach nobody: it becomes the bot's card, while the

@@ -549,8 +549,11 @@ status bar badges, `fleet_triage` or the phone's sidebar.
   the solid red only on its confirm, which says whose sessions start
   without it). An empty list is one muted line; a muted hint under both
   says changes apply from the bot's next session; a failure is one red
-  line. There is no Add or Edit: the bot writes, the owner reads and
-  removes.
+  line. There is no Add or Edit: a bot writes its own notes, and a change
+  to About you comes as an approval card (its title "Add this to your
+  profile?", "Change this in your profile?" or "Remove this from your
+  profile?", the exact entry fenced, replace showing Now and Becomes),
+  approved on the card only, as a skill is.
 - **Messages are bubbles in runs (owner decision 2026-10-14, the reference
   messenger's look; replaces the same day's flat rows):** a bot's messages
   on the left in soft `--selection-subtle` bubbles (18px radius, fill only,
