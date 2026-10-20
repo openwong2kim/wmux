@@ -15,7 +15,16 @@
 //
 // The guard watches the raw SDK frames of one turn and names either case, so
 // the adapter ends the turn with an error instead of a silent success.
+//
+// It also stops a turn stuck in a loop: the same tool called with the same
+// input (key order ignored) failing the same way REPEAT_LIMIT times in a row,
+// or two such calls alternating REPEAT_LIMIT times each. Without it the loop
+// runs until maxTurns and spends the bot's budget. Calls and outcomes are kept
+// as hashes only. Identical successes never stop a turn: a bot waiting on a
+// worker polls a status read between sleeps and legitimately gets the same
+// answer back; that wait is bounded by maxTurns and the turn timeout.
 
+import { createHash } from 'node:crypto';
 import type { RawSdkMessage } from './BrainAdapter';
 
 export const BOT_TOOL_PREFIX = 'mcp__wmux__';
@@ -23,13 +32,41 @@ export const BOT_TOOL_PREFIX = 'mcp__wmux__';
 /** The MCP statuses that can still become usable within the turn. */
 const NOT_YET_FAILED = new Set(['connected', 'pending']);
 
+/** How many identical failing calls in a row (or alternations of a pair)
+ *  end the turn. */
+export const REPEAT_LIMIT = 3;
+
 interface RawBlock {
   type: string;
   id?: string;
   name?: string;
   tool_use_id?: string;
   is_error?: boolean;
+  input?: unknown;
+  content?: unknown;
 }
+
+/** One finished call: what was called with what, and how it came out. */
+interface CallOutcome {
+  name: string;
+  key: string;
+  failed: boolean;
+}
+
+/** JSON with object keys sorted at every level, so `{a,b}` and `{b,a}` match. */
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  if (value !== null && typeof value === 'object') {
+    const obj = value as Record<string, unknown>;
+    return `{${Object.keys(obj).sort().map((k) => `${JSON.stringify(k)}:${canonicalJson(obj[k])}`).join(',')}}`;
+  }
+  return JSON.stringify(value) ?? 'undefined';
+}
+
+const hashOf = (text: string): string => createHash('sha256').update(text).digest('hex');
+
+/** A tool name as the bot's prompts spell it (room_post, not mcp__wmux__room_post). */
+const shownName = (name: string): string => (name.startsWith(BOT_TOOL_PREFIX) ? name.slice(BOT_TOOL_PREFIX.length) : name);
 
 /** One line for a bot's system prompt: the exact names of its wmux tools. */
 export function botToolNamingRule(allowedTools: readonly string[]): string {
@@ -44,9 +81,12 @@ export function botToolNamingRule(allowedTools: readonly string[]): string {
 export class BotToolGuard {
   private sessionTools: Set<string> | null = null;
   private readonly wmuxTools: ReadonlySet<string>;
-  private readonly started = new Map<string, string>();
+  /** tool_use id → its name and the hash of its input. */
+  private readonly started = new Map<string, { name: string; input: string }>();
   private wmuxOk = 0;
   private readonly unknown: string[] = [];
+  /** The last 2 × REPEAT_LIMIT finished calls, oldest first. */
+  private readonly recent: CallOutcome[] = [];
 
   /** `allowedTools`: the session's allowed tool names; its `mcp__wmux__`
    *  entries are the bot's wmux tools. */
@@ -55,19 +95,26 @@ export class BotToolGuard {
   }
 
   /** Feed one raw SDK frame. Returns an error message when the session has
-   *  no usable wmux tools at all (the turn should stop now), else null. */
+   *  no usable wmux tools at all, or the model is stuck repeating a failing
+   *  call (the turn should stop now), else null. */
   observe(msg: RawSdkMessage): string | null {
     if (msg.type === 'system' && msg.subtype === 'init') return this.onInit(msg);
     const blocks = (msg.message?.content ?? []) as RawBlock[];
     if (msg.type === 'assistant') {
       for (const b of blocks) {
-        if (b.type === 'tool_use' && b.id && typeof b.name === 'string') this.started.set(b.id, b.name);
+        if (b.type === 'tool_use' && b.id && typeof b.name === 'string') {
+          this.started.set(b.id, { name: b.name, input: hashOf(canonicalJson(b.input)) });
+        }
       }
     } else if (msg.type === 'user') {
       for (const b of blocks) {
         if (b.type !== 'tool_result' || !b.tool_use_id) continue;
-        const name = this.started.get(b.tool_use_id);
-        if (name === undefined) continue;
+        const call = this.started.get(b.tool_use_id);
+        if (call === undefined) continue;
+        const { name } = call;
+        const failed = b.is_error === true;
+        const loop = this.onOutcome({ name, key: hashOf(`${name}\0${call.input}\0${failed}\0${canonicalJson(b.content)}`), failed });
+        if (loop) return loop;
         if (name.startsWith(BOT_TOOL_PREFIX)) {
           if (b.is_error !== true) this.wmuxOk += 1;
         } else if (this.isBareWmuxName(name)) {
@@ -85,6 +132,27 @@ export class BotToolGuard {
     if (this.wmuxOk > 0 || this.unknown.length === 0) return null;
     const names = [...new Set(this.unknown)].slice(0, 5).join(', ');
     return `the bot called ${names}, which are not its tools (its wmux tools are named ${BOT_TOOL_PREFIX}<name>), so nothing it meant to post or hand off went out`;
+  }
+
+  /** Record one finished call; a stop message when it completes a loop. */
+  private onOutcome(c: CallOutcome): string | null {
+    const r = this.recent;
+    r.push(c);
+    if (r.length > 2 * REPEAT_LIMIT) r.shift();
+    const n = r.length;
+    // The same failing call, REPEAT_LIMIT times in a row.
+    if (c.failed && n >= REPEAT_LIMIT && r.slice(n - REPEAT_LIMIT).every((o) => o.key === c.key)) {
+      return `Stopped: ${shownName(c.name)} was called ${REPEAT_LIMIT} times in a row with the same input and the same result.`;
+    }
+    // Two calls taking turns (A, B, A, B, …), at least one of them failing.
+    if (n === 2 * REPEAT_LIMIT) {
+      const a = r[0];
+      const b = r[1];
+      if (a.key !== b.key && (a.failed || b.failed) && r.every((o, i) => o.key === (i % 2 === 0 ? a : b).key)) {
+        return `Stopped: ${shownName(a.name)} and ${shownName(b.name)} were called in turn ${REPEAT_LIMIT} times each with the same inputs and the same results.`;
+      }
+    }
+    return null;
   }
 
   private onInit(msg: RawSdkMessage): string | null {
