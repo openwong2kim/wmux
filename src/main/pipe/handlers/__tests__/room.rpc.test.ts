@@ -831,7 +831,8 @@ describe('room.search', () => {
     });
     expect(hits(handleRoomSearch({ query: 'merge' }, asBot(lead), { ...s.deps, guestWake: () => true as const }))).toEqual(['merge when green']);
     expect(hits(handleRoomSearch({ query: 'merge', workspaceId: 'ws1' }, OPERATOR, s.deps))).toEqual(['External guest: merge it all', 'merge when green']);
-    for (const query of ['   ', '', undefined, 'x'.repeat(ROOM_LIMITS.SEARCH_QUERY_MAX + 1)]) {
+    const tooManyWords = Array.from({ length: ROOM_LIMITS.SEARCH_TERMS_MAX + 1 }, (_, i) => `w${i}`).join(' ');
+    for (const query of ['   ', '', undefined, 'x'.repeat(ROOM_LIMITS.SEARCH_QUERY_MAX + 1), tooManyWords]) {
       expect(handleRoomSearch({ query }, asBot(lead), s.deps)).toMatchObject({ ok: false, code: 'invalid' });
     }
   });

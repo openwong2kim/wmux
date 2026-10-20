@@ -410,11 +410,11 @@ export function capBody(value: unknown, max: number = ROOM_LIMITS.CARD_BODY_MAX)
 }
 
 /** A room.search query as its terms: lowercased, split on whitespace,
- *  repeats dropped, at most SEARCH_TERMS_MAX. Empty for no words. Pure. */
+ *  repeats dropped. Empty for no words; the caller refuses more than
+ *  SEARCH_TERMS_MAX rather than matching a silently shortened query. Pure. */
 export function searchTerms(query: unknown): string[] {
   if (typeof query !== 'string') return [];
-  const terms = new Set(query.toLowerCase().split(/\s+/).filter(Boolean));
-  return [...terms].slice(0, ROOM_LIMITS.SEARCH_TERMS_MAX);
+  return [...new Set(query.toLowerCase().split(/\s+/).filter(Boolean))];
 }
 
 const SNIPPET_LEAD = 60;

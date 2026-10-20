@@ -561,6 +561,9 @@ export function handleRoomSearch(raw: unknown, ctx: RpcContext | undefined, deps
   }
   const terms = searchTerms(p.query);
   if (terms.length === 0) return refusal('invalid', 'query has no words');
+  if (terms.length > ROOM_LIMITS.SEARCH_TERMS_MAX) {
+    return refusal('invalid', `query has more than ${ROOM_LIMITS.SEARCH_TERMS_MAX} distinct words`);
+  }
   const page = writer.search(ws, terms, {
     ...(typeof p.before === 'number' ? { before: p.before } : {}),
     ...(typeof p.limit === 'number' ? { limit: p.limit } : {}),
