@@ -6,7 +6,7 @@ const ALLOWED = ['mcp__wmux__room_post', 'mcp__wmux__fanout_start'];
 const call = (id: string, name: string, input?: unknown): RawSdkMessage =>
   ({ type: 'assistant', message: { content: [{ type: 'tool_use', id, name, input }] } });
 const result = (id: string, isError: boolean, content?: unknown): RawSdkMessage =>
-  ({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: id, is_error: isError, content }] } }) as RawSdkMessage;
+  ({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: id, is_error: isError, content }] } }) as unknown as RawSdkMessage;
 
 /** Feeds one call and its result; returns what the guard said on the result. */
 let seq = 0;
