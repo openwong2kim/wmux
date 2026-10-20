@@ -1,13 +1,16 @@
 import { describe, it, expect } from 'vitest';
 import {
   classifyReapIdentity,
+  comparableStoredBootId,
   dmtfToUtcMicros,
   fileTimeToUtcMicros,
   isPhantomExit,
   sameProcessStartTime,
   isPidAlive,
   isSameBootProven,
+  leftoverReapEligible,
   mayReap,
+  parseDarwinBootId,
   shouldReconcileTombstone,
 } from '../phantomExit';
 
@@ -279,6 +282,37 @@ describe('isSameBootProven', () => {
   it('an unknown current boot id proves nothing either', () => {
     expect(isSameBootProven('boot-a', null)).toBe(false);
     expect(isSameBootProven(null, null)).toBe(false);
+  });
+});
+
+// #2497: the macOS boot ID comes from kern.bootsessionuuid, which a clock
+// step cannot move (kern.boottime did, so restarts read as reboots).
+describe('parseDarwinBootId', () => {
+  it('reads the per-boot UUID, ignoring the trailing newline and case', () => {
+    expect(parseDarwinBootId('720ea125-4ad9-4cdb-b5c9-c833baea1477\n')).toBe(
+      'darwin-720EA125-4AD9-4CDB-B5C9-C833BAEA1477',
+    );
+  });
+
+  it('rejects output that is not a UUID', () => {
+    expect(parseDarwinBootId('')).toBeNull();
+    expect(parseDarwinBootId('{ sec = 1791626393, usec = 148973 } Sat Oct 10 18:59:53 2026')).toBeNull();
+  });
+
+  it('a pre-#2497 macOS id proves neither a reboot nor the same boot', () => {
+    const current = 'darwin-720EA125-4AD9-4CDB-B5C9-C833BAEA1477';
+    const stored = comparableStoredBootId('darwin-1791626389');
+    expect(stored).toBeNull();
+    expect(isSameBootProven(stored, current)).toBe(false);
+    expect(comparableStoredBootId(current)).toBe(current);
+    expect(comparableStoredBootId('20260915084549.500977+540')).toBe('20260915084549.500977+540');
+  });
+
+  it('without a proven same boot, only a record with a start time is reaped', () => {
+    expect(leftoverReapEligible({}, true)).toBe(true);
+    expect(leftoverReapEligible({}, false)).toBe(false);
+    expect(leftoverReapEligible({ pidStartTime: 'Mon Oct 19 10:00:00 2026' }, false)).toBe(true);
+    expect(leftoverReapEligible({ pidCreatedAtFt: '134050000000000000' }, false)).toBe(true);
   });
 });
 

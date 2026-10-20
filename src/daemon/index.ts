@@ -140,12 +140,15 @@ import { selectRecoverableSessions, startLeftoverShellReaps } from './recoverySe
 import { isShutdownKillExit, SHUTDOWN_KILL_RECLASSIFY_MS } from './shutdownKill';
 import {
   classifyReapIdentity,
+  comparableStoredBootId,
   getProcessStartTime,
   getWin32BootId,
   getWin32BootIdSync,
   isPidAlive,
   isSameBootProven,
+  leftoverReapEligible,
   mayReap,
+  parseDarwinBootId,
   readPosixStartTime,
   readWin32ReapIdentity,
   setNativeProcessReadWarn,
@@ -1182,8 +1185,7 @@ async function getBootId(): Promise<string> {
       // #1493: CIM LastBootUpTime, not wmic.exe (gone on current Windows 11).
       return await getWin32BootId();
     } else if (process.platform === 'darwin') {
-      // macOS: sysctl exposes the boot timestamp; encode it as a stable string.
-      // Format: "{ sec = 1745678901, usec = 123456 } Mon Apr 28 ..."
+      // macOS: a UUID minted per boot (see parseDarwinBootId).
       // eslint-disable-next-line @typescript-eslint/no-var-requires -- keep this optional dependency lazy
       const { execFile } = require('child_process');
       // eslint-disable-next-line @typescript-eslint/no-var-requires -- keep this optional dependency lazy
@@ -1191,11 +1193,10 @@ async function getBootId(): Promise<string> {
       const execFileAsync = promisify(execFile);
       const { stdout } = await execFileAsync(
         'sysctl',
-        ['-n', 'kern.boottime'],
+        ['-n', 'kern.bootsessionuuid'],
         { encoding: 'utf-8', timeout: 5000 },
       );
-      const match = (stdout as string).match(/sec\s*=\s*(\d+)/);
-      return match ? `darwin-${match[1]}` : `fallback-${os.uptime()}`;
+      return parseDarwinBootId(stdout as string) ?? `fallback-${os.uptime()}`;
     } else {
       // Linux: /proc/sys/kernel/random/boot_id
       return fs.readFileSync('/proc/sys/kernel/random/boot_id', 'utf-8').trim();
@@ -1216,11 +1217,10 @@ function getBootIdSync(): string {
       const { execFileSync } = require('child_process');
       const result = execFileSync(
         'sysctl',
-        ['-n', 'kern.boottime'],
+        ['-n', 'kern.bootsessionuuid'],
         { encoding: 'utf-8', timeout: 5000 },
       );
-      const match = (result as string).match(/sec\s*=\s*(\d+)/);
-      return match ? `darwin-${match[1]}` : `fallback-${os.uptime()}`;
+      return parseDarwinBootId(result as string) ?? `fallback-${os.uptime()}`;
     } else {
       return fs.readFileSync('/proc/sys/kernel/random/boot_id', 'utf-8').trim();
     }
@@ -1925,14 +1925,15 @@ async function recoverSessions(
 
   // Detect reboot: if bootId changed, all old PIDs are stale — skip kill attempts
   const currentBootId = await getBootId();
-  const rebooted = state.bootId != null && state.bootId !== currentBootId;
+  const storedBootId = comparableStoredBootId(state.bootId);
+  const rebooted = storedBootId != null && storedBootId !== currentBootId;
   // #646: `rebooted` is "we can prove a reboot happened", so a state file with
   // no bootId at all (written by a pre-bootId build, or lost) reads as false —
   // fine for the kill-stale-pid paths it was written for, fatal for tombstone
   // reconciliation, which would then taskkill a recycled pid after a real
   // reboot. Reconciliation needs the opposite claim: proof that we are on the
   // SAME boot, which requires the bootId to exist AND match.
-  const sameBootProven = isSameBootProven(state.bootId, currentBootId);
+  const sameBootProven = isSameBootProven(storedBootId, currentBootId);
   if (rebooted) {
     log('info', `Boot ID changed (${state.bootId} → ${currentBootId}) — reboot detected, skipping PID kills`);
   }
@@ -1981,7 +1982,8 @@ async function recoverSessions(
     : startLeftoverShellReaps(
       state.sessions.filter((s) =>
         s.state !== 'dead' && s.state !== 'suspended' && recoverableIds.has(s.id)
-        && !automationRunPtyIds.has(s.id) && !isWslShell(s.cmd)),
+        && !automationRunPtyIds.has(s.id) && !isWslShell(s.cmd)
+        && leftoverReapEligible(s, sameBootProven)),
       {
         limit: 6,
         isAlive: (pid) => ProcessMonitor.isAlive(pid),
@@ -2048,7 +2050,8 @@ async function recoverSessions(
     // waiting for a cold distro, and one unavailable target must not lose its
     // identity, binding or snapshot. Attach/promote retries asynchronously.
     if (isWslShell(session.cmd)) {
-      if (!rebooted && session.state !== 'suspended' && recoverableIds.has(session.id)) {
+      if (!rebooted && session.state !== 'suspended' && recoverableIds.has(session.id)
+        && leftoverReapEligible(session, sameBootProven)) {
         await reapIfIdentityConfirmed({ pid: session.pid, cmd: session.cmd,
           storedCreatedAtFt: session.pidCreatedAtFt, storedStartTime: session.pidStartTime,
           reason: `WSL recovery of ${session.id}` });

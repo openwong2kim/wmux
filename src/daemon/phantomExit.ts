@@ -203,6 +203,41 @@ export function parseWin32BootId(stdout: string): string | null {
 }
 
 /**
+ * macOS boot ID from `sysctl -n kern.bootsessionuuid`, or null when the output
+ * is not a UUID. Not `kern.boottime`: XNU shifts that by the delta of every
+ * calendar clock step (an NTP sync), so a same-boot restart read as a reboot
+ * and skipped leftover-shell cleanup (#2497).
+ */
+export function parseDarwinBootId(stdout: string): string | null {
+  const value = String(stdout).trim();
+  return /^[0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}$/.test(value)
+    ? `darwin-${value.toUpperCase()}`
+    : null;
+}
+
+/**
+ * The stored boot ID as recovery may compare it. Builds before #2497 saved
+ * `darwin-<boottime seconds>`, which can never equal a UUID ID, so it proves
+ * neither a reboot nor the same boot: read it like a state file with no boot
+ * ID (#646), which still lets the identity-checked leftover reap run.
+ */
+export function comparableStoredBootId(stored: string | null | undefined): string | null | undefined {
+  return stored && /^darwin-\d+$/.test(stored) ? null : stored;
+}
+
+/**
+ * May recovery's leftover reap try this record? Without a proven same boot the
+ * pid may have been recycled, and a same-named shell would pass the name
+ * heuristic, so only a recorded start time can confirm it (#2497).
+ */
+export function leftoverReapEligible(
+  record: { pidStartTime?: string; pidCreatedAtFt?: string },
+  sameBootProven: boolean,
+): boolean {
+  return sameBootProven || !!record.pidCreatedAtFt || !!record.pidStartTime;
+}
+
+/**
  * The boot ID cannot change while this process lives, and startup asks for it
  * up to three times (stale-lock check, initBootId, recovery). Memoizing the
  * first good read keeps that at one PowerShell spawn.
