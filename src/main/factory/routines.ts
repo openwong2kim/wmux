@@ -466,7 +466,8 @@ export class RoutineStore {
       this.changed([r.botId]);
     } else if (!paused && r.state === 'paused') {
       this.resumeOne(r);
-      if (r.state === 'active') this.card(r, party, 'Routine resumed');
+      // resumeOne marks a one-shot past its time missed instead of active.
+      if ((r.state as StoredRoutine['state']) === 'active') this.card(r, party, 'Routine resumed');
       this.changed([r.botId]);
     }
     return { ok: true, routine: publicCopy(r) };
