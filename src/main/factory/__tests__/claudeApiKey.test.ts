@@ -77,14 +77,26 @@ describe('ClaudeApiKeyStore', () => {
     expect(fs.existsSync(file)).toBe(false);
   });
 
-  it('removes the key', () => {
+  it('removes the key, which stays redacted for the rest of the run', () => {
     const s = store();
     s.set(KEY);
     expect(s.remove()).toBe(true);
     expect(s.status()).toEqual({ set: false });
     expect(s.key()).toBeNull();
+    // A session started before may still hold it.
+    expect(redactStoredSecrets(`env ${KEY}`)).toBe('env [secret:ANTHROPIC_API_KEY]');
+    expect(fs.readFileSync(file, 'utf8')).not.toContain(KEY);
     expect(store().key()).toBeNull();
-    expect(redactStoredSecrets(KEY)).toBe(KEY);
+  });
+
+  it('a replaced key stays redacted next to the new one', () => {
+    const s = store();
+    s.set(KEY);
+    const next = 'sk-ant-api03-the-replacement-key-0123';
+    expect(s.set(next)).toMatchObject({ ok: true, status: { last4: '0123' } });
+    expect(s.key()).toBe(next);
+    expect(redactStoredSecrets(`${KEY} ${next}`)).toBe('[secret:ANTHROPIC_API_KEY] [secret:ANTHROPIC_API_KEY]');
+    expect(fs.readFileSync(file, 'utf8')).not.toContain(KEY);
   });
 
   it('records the sign-in a session reported', () => {

@@ -52,6 +52,27 @@ import {
   normalizeSdkMessage,
 } from './BrainAdapter';
 
+/** What a bot on a Claude API key never inherits (the SDK's own provider,
+ *  endpoint and credential variables, plus the request-shaping ones): any of
+ *  them could send the key elsewhere or sign in another way. */
+export const BOT_API_KEY_CLEARED_ENV: readonly string[] = [
+  // Another provider instead of Anthropic's API.
+  'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_FOUNDRY',
+  'CLAUDE_CODE_USE_ANTHROPIC_AWS', 'CLAUDE_CODE_USE_MANTLE', 'CLAUDE_CODE_USE_GATEWAY',
+  'CLAUDE_CODE_SKIP_BEDROCK_AUTH', 'CLAUDE_CODE_SKIP_VERTEX_AUTH', 'CLAUDE_CODE_SKIP_FOUNDRY_AUTH',
+  'CLAUDE_CODE_SKIP_MANTLE_AUTH', 'CLAUDE_CODE_SKIP_ANTHROPIC_AWS_AUTH',
+  // Another endpoint.
+  'ANTHROPIC_BASE_URL', '_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL', 'ANTHROPIC_BEDROCK_BASE_URL',
+  'ANTHROPIC_VERTEX_BASE_URL', 'ANTHROPIC_FOUNDRY_BASE_URL', 'ANTHROPIC_AWS_BASE_URL',
+  'ANTHROPIC_BEDROCK_MANTLE_BASE_URL', 'ANTHROPIC_UNIX_SOCKET',
+  // Another credential.
+  'ANTHROPIC_AUTH_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN', 'AWS_BEARER_TOKEN_BEDROCK',
+  'ANTHROPIC_FOUNDRY_API_KEY', 'ANTHROPIC_FOUNDRY_AUTH_TOKEN', 'ANTHROPIC_AWS_API_KEY',
+  'ANTHROPIC_BEDROCK_MANTLE_API_KEY',
+  // Extra request headers.
+  'ANTHROPIC_CUSTOM_HEADERS',
+];
+
 // ─── Injectable SDK seam ─────────────────────────────────────────────────────
 
 /** The shape the adapter needs from an SDK `query()` result: an async iterable
@@ -820,7 +841,9 @@ export class ClaudeSdkAdapter implements BrainAdapter {
     this.model = deps.model;
     this.effort = deps.effort;
     this.maxTurns = deps.maxTurns ?? DEFAULT_MAX_TURNS;
-    this.profile = deps.profile;
+    // A bot never takes an endpoint profile: its sign-in is the owner's bot
+    // setting alone (an API key must reach Anthropic, nowhere else).
+    this.profile = this.bot ? undefined : deps.profile;
     // Default loader layers both partitions for THIS workspace (M1c). Bound to
     // deps.workspaceId at construction so the brain only ever sees its own
     // workspace's memory plus the shared global partition.
@@ -885,7 +908,13 @@ export class ClaudeSdkAdapter implements BrainAdapter {
     // when no account env was applied (default credential). Used to stamp limit
     // events (M3 §1a).
     this._launchAccountId = launch.accountId;
-    if (this.bot && this._turnAuth.mode === 'apiKey') env.ANTHROPIC_API_KEY = this._turnAuth.apiKey;
+    if (this.bot && this._turnAuth.mode === 'apiKey') {
+      // The owner's key goes to Anthropic's own API only: an inherited
+      // gateway, cloud provider, credential or header override never sees it.
+      for (const name of BOT_API_KEY_CLEARED_ENV) delete env[name];
+      env.ANTHROPIC_API_KEY = this._turnAuth.apiKey;
+      return env;
+    }
     if (this.profile?.baseUrl) env.ANTHROPIC_BASE_URL = this.profile.baseUrl;
     if (this.profile?.authToken) env.ANTHROPIC_AUTH_TOKEN = this.profile.authToken;
     return env;

@@ -109,6 +109,51 @@ describe('ClaudeSdkAdapter: a bot\'s Claude sign-in', () => {
     a.dispose();
   });
 
+  it('a bot on the API key reaches Anthropic only: inherited endpoint, provider and credential overrides are dropped', async () => {
+    const inherited = {
+      ANTHROPIC_BASE_URL: 'https://gateway.example',
+      ANTHROPIC_AUTH_TOKEN: 'tok',
+      CLAUDE_CODE_USE_BEDROCK: '1',
+      ANTHROPIC_VERTEX_BASE_URL: 'https://vertex.example',
+      ANTHROPIC_CUSTOM_HEADERS: 'X-Leak: 1',
+    };
+    Object.assign(process.env, inherited);
+    try {
+      const { calls, queryFn } = recorder();
+      const a = botAdapter(queryFn, () => ({ mode: 'apiKey', apiKey: KEY }));
+      await collect(a.send('hi'));
+      const env = envOf(calls[0]);
+      expect(env.ANTHROPIC_API_KEY).toBe(KEY);
+      for (const name of Object.keys(inherited)) expect(env[name]).toBeUndefined();
+      a.dispose();
+      // The subscription and the workspace brain keep what they inherit.
+      const sub = recorder();
+      const b = botAdapter(sub.queryFn, () => ({ mode: 'subscription' }));
+      await collect(b.send('hi'));
+      expect(envOf(sub.calls[0]).ANTHROPIC_BASE_URL).toBe('https://gateway.example');
+      b.dispose();
+    } finally {
+      for (const name of Object.keys(inherited)) delete process.env[name];
+    }
+  });
+
+  it('a bot never takes an endpoint profile', async () => {
+    const { calls, queryFn } = recorder();
+    const cwd = path.join(dir, 'bot');
+    fs.mkdirSync(cwd, { recursive: true });
+    const a = new ClaudeSdkAdapter({
+      bot: { binding: BINDING, cwd, wmuxDir: dir, auth: () => ({ mode: 'apiKey', apiKey: KEY }) },
+      profile: { baseUrl: 'https://glm.example', authToken: 'glm-tok' },
+      workspaceId: BINDING.workspaceId, mcpBundlePath: '/fake/mcp.js', queryFn,
+    });
+    a.start({ systemPrompt: 'BOT' });
+    await collect(a.send('hi'));
+    expect(envOf(calls[0]).ANTHROPIC_BASE_URL).toBeUndefined();
+    expect(envOf(calls[0]).ANTHROPIC_AUTH_TOKEN).toBeUndefined();
+    expect(envOf(calls[0]).ANTHROPIC_API_KEY).toBe(KEY);
+    a.dispose();
+  });
+
   it('a refused sign-in ends the turn with its message and spawns nothing', async () => {
     const { calls, queryFn } = recorder();
     const a = botAdapter(queryFn, () => ({ mode: 'refused', message: 'no key saved' }));
